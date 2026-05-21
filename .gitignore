@@ -18,5 +18,10 @@ vitest-out.log
 # Test artefacts
 test_results.json
 
-.github
+# Copilot/editor customization (local only)
+.github/context/
+.github/instructions/
+.github/skills/
+.github/agents/
+.github/*.md
 .claude
