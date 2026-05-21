@@ -1,4 +1,4 @@
-const css = `
+export const adminDashboardCss = `
 :root {
   --bg:        #f1f5f9;
   --surface:   #ffffff;
@@ -1427,6 +1427,13 @@ q('[data-role="logout"]')?.addEventListener('click', () => {
 
 q('[data-nav="tasks"]')?.addEventListener('click', () => switchView('tasks'));
 q('[data-nav="configuration"]')?.addEventListener('click', () => switchView('configuration'));
+document.getElementById('filt-all')?.addEventListener('click', () => { S.tasksFilter.state = 'all'; renderTasks(); });
+document.getElementById('filt-run')?.addEventListener('click', () => { S.tasksFilter.state = 'AGENT_RUNNING'; renderTasks(); });
+document.getElementById('filt-rev')?.addEventListener('click', () => { S.tasksFilter.state = 'IN_REVIEW'; renderTasks(); });
+document.getElementById('filt-done')?.addEventListener('click', () => { S.tasksFilter.state = 'DONE'; renderTasks(); });
+document.getElementById('filt-fail')?.addEventListener('click', () => { S.tasksFilter.state = 'FAILED'; renderTasks(); });
+document.getElementById('filt-review')?.addEventListener('click', () => { S.tasksFilter.state = 'REVIEW'; renderTasks(); });
+document.getElementById('sort-dir')?.addEventListener('click', () => { S.tasksFilter.sortDir = S.tasksFilter.sortDir === 'desc' ? 'asc' : 'desc'; renderTasks(); });
 
 renderAuthPanel();
 if (!BC.requiresAuth) {
@@ -5775,6 +5782,7 @@ export function renderAdminDashboardHtml(options?: {
   gerritBaseUrl?: string | undefined;
   gitlabBaseUrl?: string | undefined;
   ticketLinkTemplates?: Record<string, string> | undefined;
+  nonce?: string | undefined;
 }): string {
   // ⚠️ SECURITY: Escape HTML special characters in bootstrap JSON to prevent XSS.
   // JSON embedded in <script> tags must be carefully escaped to avoid breaking out of the string context.
@@ -5799,7 +5807,7 @@ export function renderAdminDashboardHtml(options?: {
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Virtual Engineer — Admin</title>
-    <style>${css}</style>
+    <link rel="stylesheet" href="/assets/dashboard.css" />
   </head>
   <body>
     <div class="app">
@@ -5828,14 +5836,14 @@ export function renderAdminDashboardHtml(options?: {
                 <div class="section-head-row">
                   <div class="section-head">Tasks</div>
                   <div class="tasks-filter-icons">
-                    <button class="tasks-filter-btn" id="filt-all"    onclick="S.tasksFilter.state='all';renderTasks()">All</button>
-                    <button class="tasks-filter-btn" id="filt-run"    onclick="S.tasksFilter.state='AGENT_RUNNING';renderTasks()" title="Agent Running">⚙</button>
-                    <button class="tasks-filter-btn" id="filt-rev"    onclick="S.tasksFilter.state='IN_REVIEW';renderTasks()" title="In Review">👁</button>
-                    <button class="tasks-filter-btn" id="filt-done"   onclick="S.tasksFilter.state='DONE';renderTasks()" title="Done">✓</button>
-                    <button class="tasks-filter-btn" id="filt-fail"   onclick="S.tasksFilter.state='FAILED';renderTasks()" title="Failed">✕</button>
-                    <button class="tasks-filter-btn" id="filt-review" onclick="S.tasksFilter.state='REVIEW';renderTasks()" title="Code Reviews">📝</button>
+                    <button class="tasks-filter-btn" id="filt-all">All</button>
+                    <button class="tasks-filter-btn" id="filt-run" title="Agent Running">⚙</button>
+                    <button class="tasks-filter-btn" id="filt-rev" title="In Review">👁</button>
+                    <button class="tasks-filter-btn" id="filt-done" title="Done">✓</button>
+                    <button class="tasks-filter-btn" id="filt-fail" title="Failed">✕</button>
+                    <button class="tasks-filter-btn" id="filt-review" title="Code Reviews">📝</button>
                     <div class="tasks-filter-divider"></div>
-                    <button class="tasks-sort-btn" id="sort-dir" onclick="S.tasksFilter.sortDir=S.tasksFilter.sortDir==='desc'?'asc':'desc';renderTasks()" title="Sort by last updated">↕</button>
+                    <button class="tasks-sort-btn" id="sort-dir" title="Sort by last updated">↕</button>
                   </div>
                 </div>
                 <div data-role="tasks"></div>
@@ -5858,8 +5866,8 @@ export function renderAdminDashboardHtml(options?: {
         </div>
       </div>
     </div>
-    <script>window.__VE_ADMIN_BOOTSTRAP__ = ${bootstrap};</script>
-    <script>${script}</script>
+    <script nonce="${options?.nonce ?? ''}">window.__VE_ADMIN_BOOTSTRAP__ = ${bootstrap};</script>
+    <script nonce="${options?.nonce ?? ''}">${script}</script>
   </body>
 </html>`;
 }

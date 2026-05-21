@@ -1,8 +1,8 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { getLogger } from "../logger.js";
 import type { OAuthAppStore, IntegrationStore, PromptStore, StateStore, Integration } from "../interfaces.js";
-import { renderAdminDashboardHtml } from "./dashboard.js";
+import { adminDashboardCss, renderAdminDashboardHtml } from "./dashboard.js";
 import type { PluginManager } from "../plugins/pluginManager.js";
 import type { ProviderAuthService } from "../agents/providerAuthService.js";
 import { handleAgentsRoute, type AgentsRouteStore } from "./adminAgentsRoutes.js";
@@ -165,11 +165,20 @@ async function handleRequest(
   response: ServerResponse,
   dependencies: AdminServerDependencies
 ): Promise<void> {
-  applySecurityHeaders(response);
-
   const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
   const path = requestUrl.pathname;
   const method = request.method ?? "GET";
+
+  // ─── Static assets (public, long-lived cache, no security headers) ─────────
+  if (path === "/assets/dashboard.css" && method === "GET") {
+    response.writeHead(200, { "content-type": "text/css; charset=utf-8", "cache-control": "public, max-age=3600" });
+    response.end(adminDashboardCss);
+    return;
+  }
+
+  // ⚠️ SECURITY: Generate a per-request cryptographic nonce for CSP
+  const nonce = randomBytes(16).toString("base64url");
+  applySecurityHeaders(response, nonce);
 
   // ─── Public routes (no auth required) ─────────────────────────────────────
 
@@ -182,6 +191,7 @@ async function handleRequest(
     writeHtml(response, 200, renderAdminDashboardHtml({
       requiresAuth,
       authMode: getAdminAuthMode(dependencies.config),
+      nonce,
       ...getProviderUrls(dependencies.pluginManager),
     }));
     return;
@@ -443,7 +453,7 @@ function isAuthorizedToken(token: string, config: AdminRuntimeConfig): boolean {
 }
 
 /** Set security-oriented HTTP response headers on every admin response. */
-function applySecurityHeaders(response: ServerResponse): void {
+function applySecurityHeaders(response: ServerResponse, nonce: string): void {
   // ⚠️ SECURITY: Prevent browser caching of sensitive admin responses
   response.setHeader("cache-control", "no-store");
   response.setHeader("pragma", "no-cache");
@@ -453,9 +463,10 @@ function applySecurityHeaders(response: ServerResponse): void {
   response.setHeader("x-frame-options", "DENY");
   // ⚠️ SECURITY: Limit Referer header exposure
   response.setHeader("referrer-policy", "no-referrer");
-  // ⚠️ SECURITY: Content Security Policy mitigates XSS attacks
+  // ⚠️ SECURITY: Nonce-based CSP — blocks injected scripts without the per-request nonce;
+  // style-src 'self' covers the external /assets/dashboard.css (no unsafe-inline)
   response.setHeader(
     "content-security-policy",
-    "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data:; connect-src 'self'"
+    `default-src 'self'; script-src 'nonce-${nonce}'; style-src 'self'; img-src 'self' data:; connect-src 'self'`
   );
 }

@@ -423,6 +423,65 @@ describe("createAdminServer", () => {
     }
   });
 
+  it("uses per-request nonce in CSP and never uses unsafe-inline", async () => {
+    const server = createAdminServer({
+      stateStore: makeStateStore(),
+      config: { nodeEnv: "test", logLevel: "info", maxAgentCycles: 3, maxRetryAttempts: 5, pollingIntervalMs: 30_000 },
+      polling: { isRunning: () => true, getIntervals: () => ({ intervalMs: 30_000 }) },
+      providers: providerSummaries,
+    });
+
+    try {
+      const baseUrl = await listen(server);
+      const [res1, res2] = await Promise.all([
+        fetch(`${baseUrl}/admin`),
+        fetch(`${baseUrl}/admin`),
+      ]);
+
+      const csp1 = res1.headers.get("content-security-policy") ?? "";
+      const csp2 = res2.headers.get("content-security-policy") ?? "";
+
+      // Must use nonce-based CSP — unsafe-inline must not appear
+      expect(csp1).not.toContain("unsafe-inline");
+      expect(csp2).not.toContain("unsafe-inline");
+      expect(csp1).toMatch(/script-src 'nonce-[A-Za-z0-9_-]+'/);
+      expect(csp1).toContain("style-src 'self'");
+
+      // Each request must produce a unique nonce
+      expect(csp1).not.toEqual(csp2);
+
+      // The nonce in the CSP header must match the nonce attributes in the HTML
+      const nonceMatch = csp1.match(/'nonce-([A-Za-z0-9_-]+)'/);
+      expect(nonceMatch).not.toBeNull();
+      const nonce = nonceMatch![1]!;
+      const html = await res1.text();
+      expect(html).toContain(`nonce="${nonce}"`);
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it("serves the admin dashboard CSS as a static asset", async () => {
+    const server = createAdminServer({
+      stateStore: makeStateStore(),
+      config: { nodeEnv: "test", logLevel: "info", maxAgentCycles: 3, maxRetryAttempts: 5, pollingIntervalMs: 30_000 },
+      polling: { isRunning: () => true, getIntervals: () => ({ intervalMs: 30_000 }) },
+      providers: providerSummaries,
+    });
+
+    try {
+      const baseUrl = await listen(server);
+      const response = await fetch(`${baseUrl}/assets/dashboard.css`);
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toContain("text/css");
+      expect(response.headers.get("cache-control")).toContain("public");
+      await expect(response.text()).resolves.toContain(":root {");
+    } finally {
+      await closeServer(server);
+    }
+  });
+
   it("protects API endpoints with HMAC-SHA256 authentication", async () => {
     const crypto = await import("crypto");
     const secret = "top-secret";

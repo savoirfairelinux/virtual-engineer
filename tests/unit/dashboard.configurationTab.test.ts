@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { renderAdminDashboardHtml } from "../../src/admin/dashboard.js";
+import { renderAdminDashboardHtml, adminDashboardCss } from "../../src/admin/dashboard.js";
 
 function extractSection(html: string, startToken: string, endToken: string): string {
   const start = html.indexOf(startToken);
@@ -23,7 +23,7 @@ describe("Admin Dashboard - Configuration Shell", () => {
     const configurationView = extractSection(
       html,
       '<div class="page-view" data-view="configuration">',
-      '</div>\n      </div>\n    </div>\n    <script>'
+      '</div>\n      </div>\n    </div>\n    <script nonce="">'
     );
 
     expect(configurationView).toContain('data-role="configuration-shell"');
@@ -214,23 +214,19 @@ describe("Admin Dashboard - Configuration Shell", () => {
   });
 
   it("includes configuration shell CSS for layout, list, and drawer states", () => {
-    const html = renderAdminDashboardHtml();
-
-    expect(html).toContain(".configuration-shell");
-    expect(html).toContain(".configuration-nav");
-    expect(html).toContain(".configuration-main");
-    expect(html).toContain(".configuration-toolbar");
-    expect(html).toContain(".resource-table");
-    expect(html).toContain(".integration-row");
-    expect(html).toContain(".integration-row.is-expanded");
+    expect(adminDashboardCss).toContain(".configuration-shell");
+    expect(adminDashboardCss).toContain(".configuration-nav");
+    expect(adminDashboardCss).toContain(".configuration-main");
+    expect(adminDashboardCss).toContain(".configuration-toolbar");
+    expect(adminDashboardCss).toContain(".resource-table");
+    expect(adminDashboardCss).toContain(".integration-row");
+    expect(adminDashboardCss).toContain(".integration-row.is-expanded");
   });
 
   it("renders expanded integration details flush with the row width and without an outer framed card", () => {
-    const html = renderAdminDashboardHtml();
-
-    expect(html).toContain(".integration-row-details {\n  margin: 0;\n  padding: 0;");
-    expect(html).toContain("border: none;");
-    expect(html).toContain("background: transparent;");
+    expect(adminDashboardCss).toContain(".integration-row-details {\n  margin: 0;\n  padding: 0;");
+    expect(adminDashboardCss).toContain("border: none;");
+    expect(adminDashboardCss).toContain("background: transparent;");
   });
 
   it("keeps the tasks view intact while moving prompts into configuration section", () => {

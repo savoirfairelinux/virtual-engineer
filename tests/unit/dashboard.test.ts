@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { runInNewContext } from "node:vm";
-import { renderAdminDashboardHtml } from "../../src/admin/dashboard.js";
+import { renderAdminDashboardHtml, adminDashboardCss } from "../../src/admin/dashboard.js";
 
 function extractSection(html: string, startToken: string, endToken: string): string {
   const start = html.indexOf(startToken);
@@ -53,26 +53,22 @@ describe("renderAdminDashboardHtml", () => {
   });
 
   it("includes CSS styles for icon task actions", () => {
-    const html = renderAdminDashboardHtml();
-
-    expect(html).toContain(".task-action-btn");
-    expect(html).toContain(".task-action-btn:hover");
-    expect(html).toContain("width: 28px");
-    expect(html).toContain("backdrop-filter: blur(6px)");
-    expect(html).toContain("translateY(-0.5px)");
-    expect(html).toContain(".task-action-btn[data-action=abandon]");
-    expect(html).toContain(".task-action-btn svg");
-    expect(html).not.toContain('.task-action-btn[data-action=resume] svg');
-    expect(html).not.toContain('.task-action-btn[data-action=retry] svg');
-    expect(html).toContain("button:disabled");
+    expect(adminDashboardCss).toContain(".task-action-btn");
+    expect(adminDashboardCss).toContain(".task-action-btn:hover");
+    expect(adminDashboardCss).toContain("width: 28px");
+    expect(adminDashboardCss).toContain("backdrop-filter: blur(6px)");
+    expect(adminDashboardCss).toContain("translateY(-0.5px)");
+    expect(adminDashboardCss).toContain(".task-action-btn[data-action=abandon]");
+    expect(adminDashboardCss).toContain(".task-action-btn svg");
+    expect(adminDashboardCss).not.toContain('.task-action-btn[data-action=resume] svg');
+    expect(adminDashboardCss).not.toContain('.task-action-btn[data-action=retry] svg');
+    expect(adminDashboardCss).toContain("button:disabled");
   });
 
   it("includes CSS styles for live logs panel", () => {
-    const html = renderAdminDashboardHtml();
-
-    expect(html).toContain(".logs-panel");
-    expect(html).toContain(".logs-output");
-    expect(html).toContain(".log-entry");
+    expect(adminDashboardCss).toContain(".logs-panel");
+    expect(adminDashboardCss).toContain(".logs-output");
+    expect(adminDashboardCss).toContain(".log-entry");
   });
 
   it("includes JavaScript for action button handlers", () => {
@@ -218,26 +214,22 @@ describe("renderAdminDashboardHtml", () => {
   });
 
   it("uses position: relative/absolute for detail-head layout", () => {
-    const html = renderAdminDashboardHtml();
-
     // Detail head should use position: relative for absolute-positioned children
-    expect(html).toContain(".detail-head");
-    expect(html).toContain("position: relative;");
-    expect(html).toContain("padding: 20px;");
-    expect(html).toContain("background: var(--surface);");
-    expect(html).toContain("border: 1px solid var(--border);");
-    expect(html).toContain("border-radius: 8px;");
-    expect(html).toContain("margin-bottom: 20px;");
+    expect(adminDashboardCss).toContain(".detail-head");
+    expect(adminDashboardCss).toContain("position: relative;");
+    expect(adminDashboardCss).toContain("padding: 20px;");
+    expect(adminDashboardCss).toContain("background: var(--surface);");
+    expect(adminDashboardCss).toContain("border: 1px solid var(--border);");
+    expect(adminDashboardCss).toContain("border-radius: 8px;");
+    expect(adminDashboardCss).toContain("margin-bottom: 20px;");
   });
 
   it("positions badge absolutely in top-right corner", () => {
-    const html = renderAdminDashboardHtml();
-
     // Badge should break out of flex with absolute positioning
-    expect(html).toContain(".detail-head .badge");
-    expect(html).toContain("position: absolute;");
-    expect(html).toContain("top: 16px;");
-    expect(html).toContain("right: 16px;");
+    expect(adminDashboardCss).toContain(".detail-head .badge");
+    expect(adminDashboardCss).toContain("position: absolute;");
+    expect(adminDashboardCss).toContain("top: 16px;");
+    expect(adminDashboardCss).toContain("right: 16px;");
   });
 
   it("renders detail elements as direct children of detail-head (flattened structure)", () => {
@@ -274,13 +266,11 @@ describe("renderAdminDashboardHtml", () => {
   });
 
   it("detail description text aligns left without flex indentation", () => {
-    const html = renderAdminDashboardHtml();
-
     // Detail description should have no special flexbox-related width constraints
-    expect(html).toContain(".detail-description");
-    expect(html).toContain("font-size: 13px; color: var(--text);");
+    expect(adminDashboardCss).toContain(".detail-description");
+    expect(adminDashboardCss).toContain("font-size: 13px; color: var(--text);");
     // Should NOT contain the flex workaround of wrapping in .detail-copy
-    expect(html).not.toContain(".detail-copy { display: flex;");
+    expect(adminDashboardCss).not.toContain(".detail-copy { display: flex;");
   });
 
   it("preserves markdown rendering in flattened detail structure", () => {
@@ -300,18 +290,18 @@ describe("renderAdminDashboardHtml", () => {
     // Image rendering via parseImageLine and renderRichImage should still work
     expect(html).toContain("function parseImageLine(line)");
     expect(html).toContain("function renderRichImage(image, options)");
-    expect(html).toContain(".detail-description img { max-width: 100%; height: auto; display: block; }");
+    expect(adminDashboardCss).toContain(".detail-description img { max-width: 100%; height: auto; display: block; }");
     expect(html).toContain("resolveRichAssetUrl(image.url, options?.baseUrl)");
   });
 
   it("origin, title, subtitle, and description flow vertically with no flex wrapper", () => {
     const html = renderAdminDashboardHtml();
 
-    // Validate the HTML sequence: badge, origin, title-text, subtitle, description
-    expect(html).toContain(".detail-origin { display: inline-block; font-size: 11px;");
-    expect(html).toContain(".detail-title-text { display: block; font-size: 18px; font-weight: 700;");
-    expect(html).toContain(".detail-subtitle { font-size: 12px; color: var(--muted); margin-top: 6px;");
-    expect(html).toContain(".detail-description { font-size: 13px; color: var(--text); margin-top: 14px; line-height: 1.6;");
+    // CSS: validate element-level display rules
+    expect(adminDashboardCss).toContain(".detail-origin { display: inline-block; font-size: 11px;");
+    expect(adminDashboardCss).toContain(".detail-title-text { display: block; font-size: 18px; font-weight: 700;");
+    expect(adminDashboardCss).toContain(".detail-subtitle { font-size: 12px; color: var(--muted); margin-top: 6px;");
+    expect(adminDashboardCss).toContain(".detail-description { font-size: 13px; color: var(--text); margin-top: 14px; line-height: 1.6;");
 
     // Each element is independent block/inline element, no flex dependencies
     expect(html).toContain("'<span class=\"detail-origin\">'");
@@ -321,17 +311,15 @@ describe("renderAdminDashboardHtml", () => {
   });
 
   it("badge does not participate in flex layout flow", () => {
-    const html = renderAdminDashboardHtml();
-
     // Validate old flex layout is removed
-    expect(html).not.toContain(".detail-head { display: flex");
+    expect(adminDashboardCss).not.toContain(".detail-head { display: flex");
     // Validate new positioning
-    expect(html).toContain(".detail-head");
-    expect(html).toContain("position: relative;");
-    expect(html).toContain(".detail-head .badge");
-    expect(html).toContain("position: absolute;");
-    expect(html).toContain("top: 16px;");
-    expect(html).toContain("right: 16px;");
+    expect(adminDashboardCss).toContain(".detail-head");
+    expect(adminDashboardCss).toContain("position: relative;");
+    expect(adminDashboardCss).toContain(".detail-head .badge");
+    expect(adminDashboardCss).toContain("position: absolute;");
+    expect(adminDashboardCss).toContain("top: 16px;");
+    expect(adminDashboardCss).toContain("right: 16px;");
   });
 
   it("renders markdown images for ticket descriptions", () => {
@@ -340,8 +328,8 @@ describe("renderAdminDashboardHtml", () => {
     expect(html).toContain("function parseImageLine(line)");
     expect(html).toContain("function resolveRichAssetUrl(url, baseUrl)");
     expect(html).toContain("blocks.push(renderRichImage(image, options))");
-    expect(html).toContain(".cycle-rich-text img,");
-    expect(html).toContain(".detail-description img { max-width: 100%; height: auto; display: block; }");
+    expect(adminDashboardCss).toContain(".cycle-rich-text img,");
+    expect(adminDashboardCss).toContain(".detail-description img { max-width: 100%; height: auto; display: block; }");
     expect(html).toContain("new URL(raw, baseUrl).toString()");
   });
 
@@ -355,8 +343,8 @@ describe("renderAdminDashboardHtml", () => {
     const html = renderAdminDashboardHtml();
 
     expect(html).toContain("task-meta");
-    expect(html).toContain("display: flex");
-    expect(html).toContain("flex-direction: row");
+    expect(adminDashboardCss).toContain("display: flex");
+    expect(adminDashboardCss).toContain("flex-direction: row");
     expect(html).toContain("task-origin-badge");
     expect(html).toContain('class="badge badge-link" data-tone="');
     expect(html).not.toContain("task-description");
@@ -387,37 +375,33 @@ describe("renderAdminDashboardHtml", () => {
     const html = renderAdminDashboardHtml();
 
     expect(html).toContain("task-meta");
-    expect(html).toContain("grid-template-columns: repeat(6, auto);");
-    expect(html).toContain("gap: 10px;");
-    expect(html).toContain("align-items: center;");
+    expect(adminDashboardCss).toContain("grid-template-columns: repeat(6, auto);");
+    expect(adminDashboardCss).toContain("gap: 10px;");
+    expect(adminDashboardCss).toContain("align-items: center;");
   });
 
   it("uses an accent outline style for the provenance badge", () => {
-    const html = renderAdminDashboardHtml();
-
-    expect(html).toContain(".task-origin-badge");
-    expect(html).toContain("color: var(--accent)");
-    expect(html).toContain("background: var(--accent-bg)");
+    expect(adminDashboardCss).toContain(".task-origin-badge");
+    expect(adminDashboardCss).toContain("color: var(--accent)");
+    expect(adminDashboardCss).toContain("background: var(--accent-bg)");
   });
 
   it("keeps the source badge purple and linked task badges hoverable", () => {
     const html = renderAdminDashboardHtml();
 
     expect(html).toContain('class="badge task-origin-badge badge-link"');
-    expect(html).toContain('.task-origin-badge.badge-link');
-    expect(html).toContain('color: var(--accent);');
-    expect(html).toContain(".task-tags .badge-link:hover");
-    expect(html).toContain("text-decoration: none;");
-    expect(html).toContain("cursor: pointer;");
+    expect(adminDashboardCss).toContain('.task-origin-badge.badge-link');
+    expect(adminDashboardCss).toContain('color: var(--accent);');
+    expect(adminDashboardCss).toContain(".task-tags .badge-link:hover");
+    expect(adminDashboardCss).toContain("text-decoration: none;");
+    expect(adminDashboardCss).toContain("cursor: pointer;");
   });
 
   it("uses the light theme design tokens", () => {
-    const html = renderAdminDashboardHtml();
-
-    expect(html).toContain("--bg:");
-    expect(html).toContain("--surface:");
-    expect(html).toContain("--accent:");
-    expect(html).toContain("color-scheme: light");
+    expect(adminDashboardCss).toContain("--bg:");
+    expect(adminDashboardCss).toContain("--surface:");
+    expect(adminDashboardCss).toContain("--accent:");
+    expect(adminDashboardCss).toContain("color-scheme: light");
   });
 
   it("includes a rich-text renderer for the agent response column", () => {
@@ -430,15 +414,15 @@ describe("renderAdminDashboardHtml", () => {
     expect(html).toContain("function parseUnorderedItem(line)");
     expect(html).toContain("function parseOrderedItem(line)");
     expect(html).toContain("<div class=\"cycle-rich-text cycle-panel\">' + renderRichText(c.result.summary || '\u2014') + '</div>'");
-    expect(html).toContain(".cycle-rich-text strong");
-    expect(html).toContain(".cycle-rich-text em");
-    expect(html).toContain(".cycle-rich-text u");
-    expect(html).toContain(".cycle-rich-text code");
-    expect(html).toContain(".cycle-rich-text ul");
-    expect(html).toContain(".cycle-rich-text ol");
-    expect(html).toContain(".cycle-rich-text h1");
-    expect(html).toContain(".cycle-rich-text h2");
-    expect(html).toContain(".cycle-rich-text h3");
+    expect(adminDashboardCss).toContain(".cycle-rich-text strong");
+    expect(adminDashboardCss).toContain(".cycle-rich-text em");
+    expect(adminDashboardCss).toContain(".cycle-rich-text u");
+    expect(adminDashboardCss).toContain(".cycle-rich-text code");
+    expect(adminDashboardCss).toContain(".cycle-rich-text ul");
+    expect(adminDashboardCss).toContain(".cycle-rich-text ol");
+    expect(adminDashboardCss).toContain(".cycle-rich-text h1");
+    expect(adminDashboardCss).toContain(".cycle-rich-text h2");
+    expect(adminDashboardCss).toContain(".cycle-rich-text h3");
     expect(html).toContain("listType = 'ul'");
     expect(html).toContain("listType = 'ol'");
   });
@@ -446,8 +430,8 @@ describe("renderAdminDashboardHtml", () => {
   it("uses shared stretch panels for commit message and agent response", () => {
     const html = renderAdminDashboardHtml();
 
-    expect(html).toContain(".cycle-column { display: flex; flex-direction: column; min-width: 0; }");
-    expect(html).toContain(".cycle-panel { flex: 1; }");
+    expect(adminDashboardCss).toContain(".cycle-column { display: flex; flex-direction: column; min-width: 0; }");
+    expect(adminDashboardCss).toContain(".cycle-panel { flex: 1; }");
     expect(html).toContain("<div class=\"cycle-rich-text cycle-panel\">' + renderRichText(c.result.summary || '—') + '</div>'");
     expect(html).toContain("<div class=\"cycle-col-label\">Agent Response</div>");
     expect(html).toContain("<div class=\"cycle-col-label\">Commit Message");
@@ -743,7 +727,8 @@ describe("renderAdminDashboardHtml — connectGlobalStream", () => {
 
 describe("renderAdminDashboardHtml — embedded JavaScript validity", () => {
   function extractEmbeddedScript(html: string): string {
-    const separator = "</script>\n    <script>";
+    // The two <script> blocks now carry a nonce attribute (empty string when no nonce is passed)
+    const separator = '</script>\n    <script nonce="">';
     const idx = html.indexOf(separator);
     expect(idx).toBeGreaterThan(-1);
     const jsStart = idx + separator.length;
@@ -842,7 +827,8 @@ describe("renderAdminDashboardHtml — embedded JavaScript validity", () => {
 
 describe("renderAdminDashboardHtml — cycle metrics regressions", () => {
   function extractEmbeddedScript(html: string): string {
-    const separator = "</script>\n    <script>";
+    // The two <script> blocks now carry a nonce attribute (empty string when no nonce is passed)
+    const separator = '</script>\n    <script nonce="">';
     const idx = html.indexOf(separator);
     expect(idx).toBeGreaterThan(-1);
     const jsStart = idx + separator.length;
