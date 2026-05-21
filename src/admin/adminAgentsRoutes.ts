@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { z } from "zod";
 import { getLogger } from "../logger.js";
+import { writeJson, readBody, asRecord, SECRET_MASK, parseConfig } from "./adminRouteUtils.js";
 import {
   makeAgentId,
   type AgentId,
@@ -20,7 +21,6 @@ import { decryptToken } from "../utils/encryption.js";
 import { getPluginDescriptor } from "../plugins/registry.js";
 
 const log = getLogger("admin-agents");
-const SECRET_MASK = "********";
 
 /** Subset of state-store methods required by the agents routes. */
 export interface AgentsRouteStore {
@@ -72,13 +72,6 @@ function parsePluginOAuthRoute(path: string): { pluginType: IntegrationType; act
   const pluginType = decodeURIComponent(match[1] ?? "") as IntegrationType;
   const action = match[2] as PluginOAuthRouteAction;
   return { pluginType, action };
-}
-
-function toRecord(value: unknown): Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return {};
-  }
-  return value as Record<string, unknown>;
 }
 
 function mergePluginOAuthConfig(
@@ -142,7 +135,7 @@ async function resolvePluginOAuthConfig(
   body: Record<string, unknown>,
   integrationStore?: Pick<IntegrationStore, "getIntegration"> | undefined
 ): Promise<Record<string, unknown>> {
-  const updates = toRecord(body["config"]);
+  const updates = asRecord(body["config"]);
   const integrationId = body["integrationId"];
   if (typeof integrationId !== "string" || !integrationId || !integrationStore) {
     return updates;
@@ -198,17 +191,6 @@ export function mergeAgentConfig(
     merged[k] = v;
   }
   return merged;
-}
-
-/** Parse a JSON string into a config record; returns an empty object on any failure. */
-function parseConfig(json: string): Record<string, unknown> {
-  try {
-    const parsed = JSON.parse(json) as unknown;
-    if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
-      return parsed as Record<string, unknown>;
-    }
-  } catch { /* fallthrough */ }
-  return {};
 }
 
 export interface AgentSummary {
@@ -282,37 +264,7 @@ const updateSchema = z.object({
   enabled: z.boolean().optional(),
 });
 
-/** Write a JSON response with the given status code. */
-function writeJson(response: ServerResponse, statusCode: number, payload: unknown): void {
-  response.statusCode = statusCode;
-  response.setHeader("content-type", "application/json; charset=utf-8");
-  response.end(JSON.stringify(payload));
-}
 
-/** Read and parse the request body as JSON, returning null on error or when the body exceeds 512 KB. */
-async function readBody(request: IncomingMessage): Promise<Record<string, unknown> | null> {
-  return new Promise((resolve) => {
-    const chunks: Buffer[] = [];
-    let total = 0;
-    const MAX = 512 * 1024;
-    request.on("data", (chunk: Buffer) => {
-      total += chunk.length;
-      if (total > MAX) {
-        request.destroy();
-        resolve(null);
-        return;
-      }
-      chunks.push(chunk);
-    });
-    request.on("end", () => {
-      const raw = Buffer.concat(chunks).toString("utf8");
-      if (!raw) { resolve(null); return; }
-      try { resolve(JSON.parse(raw) as Record<string, unknown>); }
-      catch { resolve(null); }
-    });
-    request.on("error", () => resolve(null));
-  });
-}
 
 /** Count the number of projects that reference the given agent id. */
 async function countProjectsForAgent(store: AgentsRouteStore, agentId: AgentId): Promise<number> {

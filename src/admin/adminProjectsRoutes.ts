@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { z } from "zod";
 import { getLogger } from "../logger.js";
+import { writeJson, readBody } from "./adminRouteUtils.js";
 import {
   makeAgentId,
   makeProjectId,
@@ -136,33 +137,7 @@ const projectUpdateSchema = z.object({
   reviewConfig: reviewConfigSchema.optional(),
 });
 
-/** Write a JSON response with the given status code. */
-function writeJson(response: ServerResponse, statusCode: number, payload: unknown): void {
-  response.statusCode = statusCode;
-  response.setHeader("content-type", "application/json; charset=utf-8");
-  response.end(JSON.stringify(payload));
-}
 
-/** Read and parse the request body as JSON, returning null on error or when the body exceeds 512 KB. */
-async function readBody(request: IncomingMessage): Promise<Record<string, unknown> | null> {
-  return new Promise((resolve) => {
-    const chunks: Buffer[] = [];
-    let total = 0;
-    const MAX = 512 * 1024;
-    request.on("data", (chunk: Buffer) => {
-      total += chunk.length;
-      if (total > MAX) { request.destroy(); resolve(null); return; }
-      chunks.push(chunk);
-    });
-    request.on("end", () => {
-      const raw = Buffer.concat(chunks).toString("utf8");
-      if (!raw) { resolve(null); return; }
-      try { resolve(JSON.parse(raw) as Record<string, unknown>); }
-      catch { resolve(null); }
-    });
-    request.on("error", () => resolve(null));
-  });
-}
 
 interface IntegrationLookup {
   byId: Map<string, Integration>;

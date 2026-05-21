@@ -72,9 +72,16 @@ src/
   logger.ts             # Pino logger factory (silent in test)
 
   admin/                # HTTP admin server + dashboard HTML
-    adminServer.ts        # Core request handler + route dispatch
-    adminAgentsRoutes.ts  # /api/admin/agents CRUD
+    adminServer.ts        # Thin route multiplexer, auth, security headers
+    adminRouteUtils.ts    # Shared HTTP primitives (writeJson, readBody, etc.)
+    adminTaskRoutes.ts    # /api/admin/tasks CRUD + actions
+    adminPromptRoutes.ts  # /api/admin/prompts CRUD
+    adminStreamRoutes.ts  # SSE endpoints (logs/stream, events/stream)
+    adminIntegrationRoutes.ts # /api/admin/integrations + plugins + oauth-apps
+    adminAgentsRoutes.ts  # /api/admin/agents CRUD + plugin OAuth
     adminProjectsRoutes.ts# /api/admin/projects CRUD
+    adminConcurrencyRoutes.ts # /api/admin/concurrency
+    adminWebhookRoutes.ts # Webhook secret rotation, allowed-IPs, info
     dashboard.ts          # Single-page HTML dashboard (inline)
     startAdminServer.ts   # net.Server lifecycle wrapper
     closeAdminServer.ts
@@ -239,26 +246,27 @@ Manages the **Docker volume lifecycle** for each agent cycle. All VCS operations
 
 ### 3.4 Admin Server
 
-`src/admin/adminServer.ts`
+`src/admin/adminServer.ts` — thin multiplexer and auth gate.
 
-Plain Node.js `http.createServer` — no framework. Handles the dashboard HTML, REST API, and SSE streams.
+Plain Node.js `http.createServer` — no framework. The main file handles auth, security headers, and public endpoints (dashboard, health, img-proxy), then dispatches to modular route handlers that each follow the pattern `handleXxxRoute(req, res, path, method, deps): Promise<boolean>`.
 
 **Authentication:** `Authorization: Bearer <hex-HMAC-SHA256>` when `ADMIN_AUTH_SECRET` is set. Comparison uses `crypto.timingSafeEqual`.
 
-**Routes:**
+**Route modules:**
 
-| Group | Routes |
-|-------|--------|
-| Dashboard | `GET /admin` |
-| Tasks | `GET/DELETE /api/admin/tasks`, `GET /api/admin/tasks/:id`, `POST /api/admin/tasks/:id/{pause,resume,retry,abandon}` |
-| Integrations | `GET/POST /api/admin/integrations`, `GET/PUT/DELETE /api/admin/integrations/:id`, `POST /api/admin/integrations/test`, `PATCH /api/admin/integrations/:id/{enable,disable}`, `POST /api/admin/integrations/:id/test` |
-| Agents | `GET/POST /api/admin/agents`, `GET/PUT/DELETE /api/admin/agents/:id`, `PATCH /api/admin/agents/:id/{enable,disable}` |
-| Projects | `GET/POST /api/admin/projects`, `GET/PUT/DELETE /api/admin/projects/:id`, `PATCH /api/admin/projects/:id/{enable,disable}` |
-| Prompts | `GET/POST /api/admin/prompts`, `GET/PUT/DELETE /api/admin/prompts/:id` |
-| Concurrency | `GET/PUT /api/admin/concurrency` |
-| Logs / Events | `GET /api/admin/logs/stream` (SSE), `GET /api/admin/events/stream` (SSE) |
-| Webhooks | `POST /webhooks/:integrationId/:event`, `GET/PUT /api/admin/integrations/:id/webhook-secret` |
-| Health | `GET /health` (public) |
+| Module | Route group |
+|--------|-------------|
+| `adminServer.ts` | Dashboard (`GET /admin`), health (`GET /health`), img-proxy, status, config, providers |
+| `adminTaskRoutes.ts` | `GET/DELETE /api/admin/tasks`, `GET /api/admin/tasks/:id`, `GET .../cycles`, `GET .../transitions`, `PATCH .../pause`, `PATCH .../resume`, `POST .../retry`, `POST .../abandon` |
+| `adminPromptRoutes.ts` | `GET/POST /api/admin/prompts`, `GET/PUT/DELETE /api/admin/prompts/:id`, `GET .../usage` |
+| `adminStreamRoutes.ts` | `GET /api/admin/logs/stream` (SSE), `GET /api/admin/events/stream` (SSE) |
+| `adminIntegrationRoutes.ts` | `GET/POST /api/admin/integrations`, `GET/PUT/DELETE .../integrations/:id`, `POST .../test`, `PATCH .../{enable,disable}`, `POST .../discover`, `GET .../models`, `GET /api/admin/plugins`, `GET/POST/DELETE /api/admin/oauth-apps` |
+| `adminAgentsRoutes.ts` | `GET/POST /api/admin/agents`, `GET/PUT/DELETE .../agents/:id`, `PATCH .../{enable,disable}`, `POST /api/admin/plugins/:type/oauth/*` |
+| `adminProjectsRoutes.ts` | `GET/POST /api/admin/projects`, `GET/PUT/DELETE .../projects/:id`, `PATCH .../{enable,disable}` |
+| `adminConcurrencyRoutes.ts` | `GET/PUT /api/admin/concurrency` |
+| `adminWebhookRoutes.ts` | `POST .../webhook-secret/rotate`, `GET/PUT .../webhook-allowed-ips`, `GET .../webhook-info` |
+
+**Shared primitives** (`adminRouteUtils.ts`): `writeJson`, `writeHtml`, `readBody` (512 KB limit), `toIsoTimestamp`, `asRecord`, `SECRET_MASK`.
 
 Editing an integration calls `onIntegrationUpdated()` which invalidates the VCS connector cache and hot-reloads the plugin manager without a restart.
 
