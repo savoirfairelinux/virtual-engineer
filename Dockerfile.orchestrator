@@ -1,0 +1,72 @@
+# Virtual Engineer — Orchestrator Image
+#
+# Multi-stage build:
+#   Stage 1 (builder): install deps (including native compilation) + compile TypeScript
+#   Stage 2 (runtime): lean image — copies compiled artifacts from builder
+
+# ── Stage 1: Build stage ─────────────────────────────────────────────────────
+FROM node:20-bookworm-slim AS builder
+
+# better-sqlite3 is a native Node addon — requires Python + build tools to compile
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      python3 \
+      make \
+      g++ \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY package*.json tsconfig.json ./
+# Install ALL deps (including devDeps for tsc). Native modules compiled here.
+RUN npm ci
+
+COPY src/ ./src/
+RUN npx tsc
+
+# Prune devDependencies from node_modules after build so we can copy a lean set
+RUN npm prune --omit=dev
+
+# ── Stage 2: Runtime image ───────────────────────────────────────────────────
+FROM node:20-bookworm-slim
+
+# Runtime system tools
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+       git \
+       openssh-client \
+       curl \
+       ca-certificates \
+  && install -m 0755 -d /etc/apt/keyrings \
+  && curl -fsSL https://download.docker.com/linux/debian/gpg \
+       -o /etc/apt/keyrings/docker.asc \
+  && chmod a+r /etc/apt/keyrings/docker.asc \
+  && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] \
+       https://download.docker.com/linux/debian bookworm stable" \
+       > /etc/apt/sources.list.d/docker.list \
+  && apt-get update \
+  && apt-get install -y --no-install-recommends docker-ce-cli \
+  && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy compiled native node_modules from builder (already includes better-sqlite3 .node binary)
+COPY --from=builder /app/node_modules ./node_modules/
+
+# Compiled TypeScript output
+COPY --from=builder /app/dist ./dist/
+
+# Agent worker and default prompts
+COPY agent-worker/ ./agent-worker/
+COPY prompts/ ./prompts/
+COPY prompts/ ./dist/prompts/
+
+RUN mkdir -p /app/data /app/secrets /tmp/ve-workspaces
+
+EXPOSE 3100
+
+# Healthcheck uses /health endpoint, which is unauthenticated and always available.
+# This avoids issues if the admin API requires bearer token authentication.
+HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
+  CMD curl -sf http://127.0.0.1:3100/health || exit 1
+
+CMD ["node", "dist/src/index.js"]

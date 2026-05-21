@@ -1,0 +1,22 @@
+.env
+data/
+dist/
+node_modules/
+secrets/
+drizzle/
+coverage/
+playwright-report/
+test-results/
+*.db
+*.db-shm
+*.db-wal
+
+# Temp vitest logs
+vitest-err.log
+vitest-out.log
+
+# Test artefacts
+test_results.json
+
+.github
+.claude

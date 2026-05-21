@@ -1,0 +1,489 @@
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { Integration } from "../../src/interfaces.js";
+
+const { logger } = vi.hoisted(() => ({
+  logger: {
+    trace: vi.fn(),
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    fatal: vi.fn(),
+  },
+}));
+
+vi.mock("../../src/logger.js", () => ({
+  getLogger: vi.fn(() => logger),
+}));
+
+import {
+  GerritStreamEventsManager,
+  type GerritStreamOrchestrator,
+  type GerritStreamReviewTrigger,
+} from "../../src/connectors/gerritStreamEvents.js";
+
+// ─── Fakes ────────────────────────────────────────────────────────────────────
+
+class FakeChildProcess extends EventEmitter {
+  readonly stdout = new PassThrough();
+  readonly stderr = new PassThrough();
+  readonly kill = vi.fn((signal?: NodeJS.Signals | number) => {
+    this.emit("close", null, typeof signal === "string" ? signal : null);
+    return true;
+  });
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+const VE_SSH_USER = "ve";
+
+function makeIntegration(id: string, overrides: Partial<Integration> = {}): Integration {
+  return {
+    id,
+    type: "gerrit",
+    name: id,
+    configJson: JSON.stringify({
+      sshHost: "gerrit.example.com",
+      sshPort: 29418,
+      sshUser: VE_SSH_USER,
+      sshKeyPath: "/tmp/id_rsa",
+    }),
+    enabled: true,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    ...overrides,
+  };
+}
+
+/**
+ * Build an sshQueryFn mock that simulates `gerrit query --all-reviewers`:
+ * returns NDJSON with the given usernames in the allReviewers field.
+ */
+function makeSshReviewerQueryFn(reviewerUsernames: string[]) {
+  const ndjson = [
+    JSON.stringify({ number: 1, allReviewers: reviewerUsernames.map((u) => ({ username: u, name: u })) }),
+    JSON.stringify({ type: "stats", rowCount: 1, runTimeMilliseconds: 1 }),
+  ].join("\n");
+  return vi.fn(async (_args: string[], _config: Record<string, unknown>) => ndjson);
+}
+
+function createManager(
+  children: FakeChildProcess[],
+  sshQueryFn?: (args: string[], config: Record<string, unknown>) => Promise<string>
+) {
+  const orchestrator: GerritStreamOrchestrator = {
+    triggerFeedbackForChange: vi.fn(async () => {}),
+    markChangeMerged: vi.fn(async () => {}),
+    markChangeAbandoned: vi.fn(async () => {}),
+  };
+  const reviewTrigger: GerritStreamReviewTrigger = {
+    triggerReviewForChange: vi.fn(async () => {}),
+  };
+  const spawnProcess = vi.fn(() => {
+    const child = children.shift();
+    if (!child) throw new Error("No fake child process left for spawn");
+    return child as unknown as ReturnType<typeof import("node:child_process").spawn>;
+  });
+
+  type SshQueryFnType = (args: string[], config: { sshHost: string; sshPort: number; sshUser: string; sshKeyPath: string }) => Promise<string>;
+
+  const manager = new GerritStreamEventsManager({
+    orchestrator,
+    getReviewTrigger: () => reviewTrigger,
+    reconnectDelayMs: 50,
+    spawnProcess: spawnProcess as typeof import("node:child_process").spawn,
+    ...(sshQueryFn !== undefined ? { sshQueryFn: sshQueryFn as SshQueryFnType } : {}),
+  });
+
+  return { manager, orchestrator, reviewTrigger, spawnProcess };
+}
+
+async function flushAsyncWork(): Promise<void> {
+  // setImmediate fires after all pending microtasks are drained, which is
+  // necessary because queryVeIsReviewer adds extra async hops via sshQueryFn.
+  await new Promise<void>((resolve) => setImmediate(resolve));
+}
+
+// ─── Tests ────────────────────────────────────────────────────────────────────
+
+describe("GerritStreamEventsManager", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.clearAllMocks();
+  });
+
+  it("state is 'connecting' after spawn and only transitions to 'connected' on first stdout data", async () => {
+    const child = new FakeChildProcess();
+    const { manager } = createManager([child]);
+
+    await manager.reconcile([makeIntegration("gerrit-a")]);
+
+    // Before spawn: connecting
+    expect(manager.getStatus("gerrit-a")).toEqual(expect.objectContaining({ state: "connecting" }));
+
+    // After spawn: still connecting (SSH process started, handshake not yet complete)
+    child.emit("spawn");
+    expect(manager.getStatus("gerrit-a")).toEqual(expect.objectContaining({ state: "connecting" }));
+
+    // After first stdout byte: now connected
+    child.stdout.write(JSON.stringify({ type: "change-merged", change: { id: "I1" } }) + "\n");
+    await flushAsyncWork();
+    expect(manager.getStatus("gerrit-a")).toEqual(expect.objectContaining({ state: "connected" }));
+
+    // Second event does not change state (idempotent)
+    child.stdout.write(JSON.stringify({ type: "change-merged", change: { id: "I2" } }) + "\n");
+    await flushAsyncWork();
+    expect(manager.getStatus("gerrit-a")).toEqual(expect.objectContaining({ state: "connected" }));
+  });
+
+  it("SSH spawn args include BatchMode=yes and ConnectTimeout=30", async () => {
+    const child = new FakeChildProcess();
+    const { manager, spawnProcess } = createManager([child]);
+
+    await manager.reconcile([makeIntegration("gerrit-a")]);
+
+    expect(spawnProcess).toHaveBeenCalledWith(
+      "ssh",
+      expect.arrayContaining(["BatchMode=yes", expect.stringMatching(/^ConnectTimeout=/)]),
+      expect.anything()
+    );
+  });
+
+  it("logs every JSON event payload at info level when it arrives", async () => {
+    const child = new FakeChildProcess();
+    const { manager } = createManager([child]);
+
+    await manager.reconcile([makeIntegration("gerrit-a")]);
+    child.emit("spawn");
+    logger.info.mockClear();
+
+    child.stdout.write(JSON.stringify({ type: "comment-added", change: { id: "Icomment" } }) + "\n");
+    await flushAsyncWork();
+
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        integrationId: "gerrit-a",
+        integrationName: "gerrit-a",
+        payload: expect.objectContaining({
+          type: "comment-added",
+          change: expect.objectContaining({ id: "Icomment" }),
+        }),
+      }),
+      "Gerrit stream-events: raw event received"
+    );
+  });
+
+  it("routes merged/abandoned events and comment-added feedback to orchestrator", async () => {
+    const child = new FakeChildProcess();
+    const { manager, orchestrator, reviewTrigger, spawnProcess } = createManager([child]);
+
+    await manager.reconcile([makeIntegration("gerrit-a")]);
+    expect(spawnProcess).toHaveBeenCalledTimes(1);
+
+    child.emit("spawn");
+    child.stdout.write(JSON.stringify({ type: "change-merged", change: { id: "Imerged" } }) + "\n");
+    child.stdout.write(JSON.stringify({ type: "change-abandoned", change: { id: "Iabandoned" } }) + "\n");
+    child.stdout.write(JSON.stringify({ type: "comment-added", change: { id: "Icomment" } }) + "\n");
+    await flushAsyncWork();
+
+    expect(orchestrator.markChangeMerged).toHaveBeenCalledWith("gerrit-a", "Imerged");
+    expect(orchestrator.markChangeAbandoned).toHaveBeenCalledWith("gerrit-a", "Iabandoned");
+    expect(orchestrator.triggerFeedbackForChange).toHaveBeenCalledWith("gerrit-a", "Icomment");
+    // No review triggers for any of the above
+    expect(reviewTrigger.triggerReviewForChange).not.toHaveBeenCalled();
+    expect(manager.getStatus("gerrit-a")).toEqual(expect.objectContaining({
+      state: "connected",
+      lastEventType: "comment-added",
+    }));
+  });
+
+  it("starts and stops one listener per active Gerrit integration", async () => {
+    const childA = new FakeChildProcess();
+    const childB = new FakeChildProcess();
+    const { manager, spawnProcess } = createManager([childA, childB]);
+
+    await manager.reconcile([makeIntegration("gerrit-a"), makeIntegration("gerrit-b")]);
+    expect(spawnProcess).toHaveBeenCalledTimes(2);
+
+    childA.emit("spawn");
+    childB.emit("spawn");
+    await manager.reconcile([makeIntegration("gerrit-a")]);
+
+    expect(childB.kill).toHaveBeenCalledWith("SIGTERM");
+    expect(manager.getStatus("gerrit-b")).toBeNull();
+    expect(manager.getStatus("gerrit-a")).toEqual(expect.objectContaining({ state: "connecting" }));
+  });
+
+  it("reconnects after an unexpected disconnect", async () => {
+    vi.useFakeTimers();
+
+    const firstChild = new FakeChildProcess();
+    const secondChild = new FakeChildProcess();
+    const { manager, spawnProcess } = createManager([firstChild, secondChild]);
+
+    await manager.reconcile([makeIntegration("gerrit-a")]);
+    firstChild.emit("spawn");
+    firstChild.emit("close", 255, null);
+
+    expect(manager.getStatus("gerrit-a")).toEqual(expect.objectContaining({
+      state: "reconnecting",
+      reconnectCount: 1,
+    }));
+
+    await vi.advanceTimersByTimeAsync(50);
+    expect(spawnProcess).toHaveBeenCalledTimes(2);
+
+    secondChild.emit("spawn");
+    expect(manager.getStatus("gerrit-a")).toEqual(expect.objectContaining({
+      state: "connecting",
+      reconnectCount: 1,
+    }));
+  });
+
+  // ── reviewer-added ──────────────────────────────────────────────────────────
+
+  it("reviewer-added: triggers review when VE itself is added as reviewer", async () => {
+    const child = new FakeChildProcess();
+    const { manager, orchestrator, reviewTrigger } = createManager([child]);
+
+    await manager.reconcile([makeIntegration("gerrit-a")]);
+    child.emit("spawn");
+
+    child.stdout.write(
+      JSON.stringify({
+        type: "reviewer-added",
+        change: { id: "Ichange" },
+        reviewer: { username: VE_SSH_USER, name: "Virtual Engineer" },
+      }) + "\n"
+    );
+    await flushAsyncWork();
+
+    expect(orchestrator.triggerFeedbackForChange).toHaveBeenCalledWith("gerrit-a", "Ichange");
+    expect(reviewTrigger.triggerReviewForChange).toHaveBeenCalledTimes(1);
+    expect(reviewTrigger.triggerReviewForChange).toHaveBeenCalledWith("gerrit-a", "Ichange");
+  });
+
+  it("reviewer-added: does NOT trigger review when a different user is added", async () => {
+    const child = new FakeChildProcess();
+    const { manager, orchestrator, reviewTrigger } = createManager([child]);
+
+    await manager.reconcile([makeIntegration("gerrit-a")]);
+    child.emit("spawn");
+
+    child.stdout.write(
+      JSON.stringify({
+        type: "reviewer-added",
+        change: { id: "Ichange" },
+        reviewer: { username: "alice", name: "Alice" },
+      }) + "\n"
+    );
+    await flushAsyncWork();
+
+    expect(orchestrator.triggerFeedbackForChange).toHaveBeenCalledWith("gerrit-a", "Ichange");
+    expect(reviewTrigger.triggerReviewForChange).not.toHaveBeenCalled();
+  });
+
+  it("reviewer-added: does NOT trigger review when reviewer field is absent", async () => {
+    const child = new FakeChildProcess();
+    const { manager, reviewTrigger } = createManager([child]);
+
+    await manager.reconcile([makeIntegration("gerrit-a")]);
+    child.emit("spawn");
+
+    child.stdout.write(
+      JSON.stringify({ type: "reviewer-added", change: { id: "Ichange" } }) + "\n"
+    );
+    await flushAsyncWork();
+
+    expect(reviewTrigger.triggerReviewForChange).not.toHaveBeenCalled();
+  });
+
+  // ── patchset-created ────────────────────────────────────────────────────────
+
+  it("patchset-created: triggers review for REWORK patchset when VE is a reviewer", async () => {
+    const sshQuery = makeSshReviewerQueryFn([VE_SSH_USER, "alice"]);
+    const child = new FakeChildProcess();
+    const { manager, orchestrator, reviewTrigger } = createManager([child], sshQuery);
+
+    await manager.reconcile([makeIntegration("gerrit-a")]);
+    child.emit("spawn");
+
+    child.stdout.write(
+      JSON.stringify({
+        type: "patchset-created",
+        change: { id: "Ipatch" },
+        patchSet: { kind: "REWORK", number: 3 },
+      }) + "\n"
+    );
+    await flushAsyncWork();
+
+    expect(orchestrator.triggerFeedbackForChange).toHaveBeenCalledWith("gerrit-a", "Ipatch");
+    expect(sshQuery).toHaveBeenCalledOnce();
+    expect(reviewTrigger.triggerReviewForChange).toHaveBeenCalledTimes(1);
+    expect(reviewTrigger.triggerReviewForChange).toHaveBeenCalledWith("gerrit-a", "Ipatch");
+  });
+
+  it("patchset-created: does NOT trigger review for TRIVIAL_REBASE (SSH not called)", async () => {
+    const sshQuery = makeSshReviewerQueryFn([VE_SSH_USER]);
+    const child = new FakeChildProcess();
+    const { manager, orchestrator, reviewTrigger } = createManager([child], sshQuery);
+
+    await manager.reconcile([makeIntegration("gerrit-a")]);
+    child.emit("spawn");
+
+    child.stdout.write(
+      JSON.stringify({
+        type: "patchset-created",
+        change: { id: "Ipatch" },
+        patchSet: { kind: "TRIVIAL_REBASE", number: 4 },
+      }) + "\n"
+    );
+    await flushAsyncWork();
+
+    expect(orchestrator.triggerFeedbackForChange).toHaveBeenCalledWith("gerrit-a", "Ipatch");
+    // SSH query must NOT be called for trivial kinds
+    expect(sshQuery).not.toHaveBeenCalled();
+    expect(reviewTrigger.triggerReviewForChange).not.toHaveBeenCalled();
+  });
+
+  it.each(["NO_CHANGE", "NO_CODE_CHANGE"])(
+    "patchset-created: does NOT trigger review for %s kind",
+    async (kind) => {
+      const sshQuery = makeSshReviewerQueryFn([VE_SSH_USER]);
+      const child = new FakeChildProcess();
+      const { manager, reviewTrigger } = createManager([child], sshQuery);
+
+      await manager.reconcile([makeIntegration("gerrit-a")]);
+      child.emit("spawn");
+
+      child.stdout.write(
+        JSON.stringify({ type: "patchset-created", change: { id: "Ipatch" }, patchSet: { kind } }) + "\n"
+      );
+      await flushAsyncWork();
+
+      expect(sshQuery).not.toHaveBeenCalled();
+      expect(reviewTrigger.triggerReviewForChange).not.toHaveBeenCalled();
+    }
+  );
+
+  it("patchset-created: does NOT trigger review when VE is not in the reviewer list", async () => {
+    const sshQuery = makeSshReviewerQueryFn(["alice", "bob"]); // VE not present
+    const child = new FakeChildProcess();
+    const { manager, orchestrator, reviewTrigger } = createManager([child], sshQuery);
+
+    await manager.reconcile([makeIntegration("gerrit-a")]);
+    child.emit("spawn");
+
+    child.stdout.write(
+      JSON.stringify({
+        type: "patchset-created",
+        change: { id: "Ipatch" },
+        patchSet: { kind: "REWORK", number: 2 },
+      }) + "\n"
+    );
+    await flushAsyncWork();
+
+    expect(orchestrator.triggerFeedbackForChange).toHaveBeenCalledWith("gerrit-a", "Ipatch");
+    expect(sshQuery).toHaveBeenCalledOnce();
+    expect(reviewTrigger.triggerReviewForChange).not.toHaveBeenCalled();
+  });
+
+  it("patchset-created: does NOT trigger review and does NOT crash when SSH query fails", async () => {
+    const failingSshQuery = vi.fn(async () => { throw new Error("SSH connection refused"); });
+    const child = new FakeChildProcess();
+    const { manager, orchestrator, reviewTrigger } = createManager(
+      [child],
+      failingSshQuery as unknown as (args: string[], config: Record<string, unknown>) => Promise<string>
+    );
+
+    await manager.reconcile([makeIntegration("gerrit-a")]);
+    child.emit("spawn");
+
+    child.stdout.write(
+      JSON.stringify({
+        type: "patchset-created",
+        change: { id: "Ipatch" },
+        patchSet: { kind: "REWORK", number: 1 },
+      }) + "\n"
+    );
+    await flushAsyncWork();
+
+    expect(orchestrator.triggerFeedbackForChange).toHaveBeenCalledWith("gerrit-a", "Ipatch");
+    expect(reviewTrigger.triggerReviewForChange).not.toHaveBeenCalled();
+    // Stream listener must still be alive
+    expect(manager.getStatus("gerrit-a")).toEqual(expect.objectContaining({ state: "connected" }));
+  });
+
+  it("feedback (triggerFeedbackForChange) always fires for patchset-created and comment-added regardless of review filtering", async () => {
+    // Even when review is blocked (wrong kind, not a reviewer), feedback must still be delivered
+    const sshQuery = makeSshReviewerQueryFn([]); // VE not a reviewer
+    const child = new FakeChildProcess();
+    const { manager, orchestrator, reviewTrigger } = createManager([child], sshQuery);
+
+    await manager.reconcile([makeIntegration("gerrit-a")]);
+    child.emit("spawn");
+
+    child.stdout.write(
+      JSON.stringify({ type: "patchset-created", change: { id: "Ip1" }, patchSet: { kind: "TRIVIAL_REBASE" } }) + "\n"
+    );
+    child.stdout.write(
+      JSON.stringify({ type: "patchset-created", change: { id: "Ip2" }, patchSet: { kind: "REWORK" } }) + "\n"
+    );
+    child.stdout.write(
+      JSON.stringify({ type: "comment-added", change: { id: "Ic" } }) + "\n"
+    );
+    await flushAsyncWork();
+
+    expect(orchestrator.triggerFeedbackForChange).toHaveBeenCalledTimes(3);
+    expect(orchestrator.triggerFeedbackForChange).toHaveBeenCalledWith("gerrit-a", "Ip1");
+    expect(orchestrator.triggerFeedbackForChange).toHaveBeenCalledWith("gerrit-a", "Ip2");
+    expect(orchestrator.triggerFeedbackForChange).toHaveBeenCalledWith("gerrit-a", "Ic");
+    expect(reviewTrigger.triggerReviewForChange).not.toHaveBeenCalled();
+  });
+
+  // ── serialized event processing ─────────────────────────────────────────────
+
+  it("serializes event processing: reviewer-added + patchset-created in same chunk do not race", async () => {
+    // Simulate SSH buffering: both events arrive in one TCP chunk.
+    // Before the fix, both would be processed concurrently (fire-and-forget),
+    // and the patchset-created handler's queryVeIsReviewer would see VE as
+    // already added, triggering a second review concurrently.
+    //
+    // With serialized processing, reviewer-added runs and completes first,
+    // then patchset-created runs. Both trigger reviews, but sequentially —
+    // allowing the orchestrator to deduplicate the second call.
+    const sshQuery = makeSshReviewerQueryFn([VE_SSH_USER]);
+    const child = new FakeChildProcess();
+    const { manager, reviewTrigger } = createManager([child], sshQuery);
+
+    // Track call order to verify serialization (not concurrent).
+    const callOrder: string[] = [];
+    (reviewTrigger.triggerReviewForChange as ReturnType<typeof vi.fn>).mockImplementation(
+      async () => { callOrder.push("review"); }
+    );
+
+    await manager.reconcile([makeIntegration("gerrit-a")]);
+    child.emit("spawn");
+
+    // Write both events in a single chunk — they arrive together.
+    child.stdout.write(
+      JSON.stringify({
+        type: "reviewer-added",
+        change: { id: "Isame" },
+        reviewer: { username: VE_SSH_USER, name: "Virtual Engineer" },
+      }) + "\n" +
+      JSON.stringify({
+        type: "patchset-created",
+        change: { id: "Isame" },
+        patchSet: { kind: "REWORK", number: 1 },
+      }) + "\n"
+    );
+    await flushAsyncWork();
+
+    // Both events trigger review calls, but they are sequential (not concurrent).
+    expect(reviewTrigger.triggerReviewForChange).toHaveBeenCalledTimes(2);
+    expect(callOrder).toEqual(["review", "review"]);
+  });
+});

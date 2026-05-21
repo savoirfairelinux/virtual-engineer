@@ -1,0 +1,46 @@
+{
+  "name": "virtual-engineer",
+  "version": "0.1.0",
+  "description": "AI-orchestrated development workflow: Redmine → AI Agent → Gerrit",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/src/index.js",
+    "dev": "tsx src/index.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui",
+    "lint": "eslint src tests",
+    "typecheck": "tsc --noEmit",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "tsx src/state/migrate.ts",
+    "e2e:mock": "tsx scripts/run-complete-mock-flow.ts",
+    "create:ticket": "tsx scripts/create-calculator-ticket.ts",
+    "reset:instance": "./scripts/reset-instance.sh"
+  },
+  "dependencies": {
+    "@github/copilot-sdk": "^0.2.2",
+    "better-sqlite3": "^9.4.3",
+    "drizzle-orm": "^0.45.2",
+    "p-retry": "^6.2.0",
+    "pino": "^9.1.0",
+    "pino-pretty": "^11.0.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.60.0",
+    "@types/better-sqlite3": "^7.6.10",
+    "@types/node": "^20.19.41",
+    "@typescript-eslint/eslint-plugin": "^8.59.3",
+    "@typescript-eslint/parser": "^8.59.3",
+    "@vitest/coverage-v8": "^3.2.4",
+    "drizzle-kit": "^0.31.10",
+    "eslint": "^9.5.0",
+    "tsx": "^4.15.6",
+    "typescript": "^5.4.5",
+    "vitest": "^3.2.4"
+  }
+}

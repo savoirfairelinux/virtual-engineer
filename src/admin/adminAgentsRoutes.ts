@@ -1,0 +1,697 @@
+import type { IncomingMessage, ServerResponse } from "node:http";
+import { z } from "zod";
+import { getLogger } from "../logger.js";
+import {
+  makeAgentId,
+  type AgentId,
+  type AgentRecord,
+  type AgentType,
+  type OAuthAppStore,
+  type IntegrationStore,
+  type IntegrationType,
+  type ProjectRecord,
+} from "../interfaces.js";
+import {
+  defaultProviderAuthService,
+  type ProviderAuthService,
+} from "../agents/providerAuthService.js";
+import { exchangeForSessionToken, fetchAvailableModels } from "../agents/copilotModelsService.js";
+import { decryptToken } from "../utils/encryption.js";
+import { getPluginDescriptor } from "../plugins/registry.js";
+
+const log = getLogger("admin-agents");
+const SECRET_MASK = "********";
+
+/** Subset of state-store methods required by the agents routes. */
+export interface AgentsRouteStore {
+  createAgent(input: {
+    id?: string;
+    name: string;
+    type: AgentType;
+    modelConfigJson: string;
+    integrationId?: string | null;
+    systemPromptId?: string | null;
+    instructionsPromptId?: string | null;
+    maxConcurrent?: number;
+    enabled?: boolean;
+  }): Promise<AgentRecord>;
+  getAgentById(id: AgentId): Promise<AgentRecord | null>;
+  listAgents(filter?: { type?: AgentType; enabled?: boolean }): Promise<AgentRecord[]>;
+  updateAgent(
+    id: AgentId,
+    partial: Partial<Pick<AgentRecord, "name" | "type" | "modelConfigJson" | "integrationId" | "systemPromptId" | "instructionsPromptId" | "maxConcurrent" | "enabled">>
+  ): Promise<AgentRecord>;
+  deleteAgent(id: AgentId): Promise<void>;
+  setAgentEnabled(id: AgentId, enabled: boolean): Promise<void>;
+  listProjects(filter?: { type?: AgentType; enabled?: boolean }): Promise<ProjectRecord[]>;
+}
+
+export interface AgentsRouteDeps {
+  agentStore?: AgentsRouteStore | undefined;
+  integrationStore?: Pick<IntegrationStore, "getIntegration"> | undefined;
+  oAuthAppStore?: OAuthAppStore | undefined;
+  adminAuthSecret?: string | undefined;
+  providerAuthService?: ProviderAuthService | undefined;
+}
+
+type PluginOAuthRouteAction = "device-code" | "token" | "start" | "complete";
+
+class PluginOAuthConfigError extends Error {
+  constructor(message: string, readonly statusCode: number) {
+    super(message);
+    this.name = "PluginOAuthConfigError";
+  }
+}
+
+function parsePluginOAuthRoute(path: string): { pluginType: IntegrationType; action: PluginOAuthRouteAction } | null {
+  const match = path.match(/^\/api\/admin\/plugins\/([^/]+)\/oauth\/(device-code|token|start|complete)$/);
+  if (!match) {
+    return null;
+  }
+
+  const pluginType = decodeURIComponent(match[1] ?? "") as IntegrationType;
+  const action = match[2] as PluginOAuthRouteAction;
+  return { pluginType, action };
+}
+
+function toRecord(value: unknown): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return {};
+  }
+  return value as Record<string, unknown>;
+}
+
+function mergePluginOAuthConfig(
+  pluginType: IntegrationType,
+  existingConfig: Record<string, unknown>,
+  updates: Record<string, unknown>
+): Record<string, unknown> {
+  const descriptor = getPluginDescriptor(pluginType);
+  const merged: Record<string, unknown> = {
+    ...existingConfig,
+    ...updates,
+  };
+
+  if (!descriptor) {
+    return merged;
+  }
+
+  for (const secretField of descriptor.requiredFields.filter((field) => field.type === "password")) {
+    const incomingValue = updates[secretField.key];
+    if (
+      incomingValue === undefined ||
+      incomingValue === null ||
+      incomingValue === "" ||
+      incomingValue === SECRET_MASK
+    ) {
+      if (secretField.key in existingConfig) {
+        merged[secretField.key] = existingConfig[secretField.key];
+      } else {
+        delete merged[secretField.key];
+      }
+    }
+  }
+
+  for (const key of Object.keys({ ...existingConfig, ...updates })) {
+    if (!/secret/i.test(key)) {
+      continue;
+    }
+    if (descriptor.requiredFields.some((field) => field.key === key && field.type === "password")) {
+      continue;
+    }
+    const incomingValue = updates[key];
+    if (
+      incomingValue === undefined ||
+      incomingValue === null ||
+      incomingValue === "" ||
+      incomingValue === SECRET_MASK
+    ) {
+      if (key in existingConfig) {
+        merged[key] = existingConfig[key];
+      } else {
+        delete merged[key];
+      }
+    }
+  }
+
+  return merged;
+}
+
+async function resolvePluginOAuthConfig(
+  pluginType: IntegrationType,
+  body: Record<string, unknown>,
+  integrationStore?: Pick<IntegrationStore, "getIntegration"> | undefined
+): Promise<Record<string, unknown>> {
+  const updates = toRecord(body["config"]);
+  const integrationId = body["integrationId"];
+  if (typeof integrationId !== "string" || !integrationId || !integrationStore) {
+    return updates;
+  }
+
+  const existing = await integrationStore.getIntegration(integrationId);
+  if (!existing) {
+    throw new PluginOAuthConfigError("Integration not found", 404);
+  }
+  if (existing.type !== pluginType) {
+    throw new PluginOAuthConfigError("Integration type mismatch", 400);
+  }
+
+  return mergePluginOAuthConfig(pluginType, parseConfig(existing.configJson), updates);
+}
+
+/** Detect "secret-like" keys in an arbitrary modelConfig object. */
+const SECRET_KEY_PATTERNS = ["token", "password", "secret", "apikey", "key"];
+
+/** Returns true if the field name matches a known secret-key pattern. */
+function isSecretKey(key: string): boolean {
+  const lower = key.toLowerCase();
+  return SECRET_KEY_PATTERNS.some((pattern) => lower.includes(pattern));
+}
+
+/** Mask all secret-looking string values in a model config object. */
+export function maskAgentSecrets(config: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(config)) {
+    if (isSecretKey(k) && typeof v === "string" && v.length > 0) {
+      out[k] = SECRET_MASK;
+    } else {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
+/**
+ * Merge updates into an existing config, treating SECRET_MASK as "preserve
+ * existing value" for any secret-looking key.
+ */
+export function mergeAgentConfig(
+  existing: Record<string, unknown>,
+  updates: Record<string, unknown>
+): Record<string, unknown> {
+  const merged: Record<string, unknown> = { ...existing };
+  for (const [k, v] of Object.entries(updates)) {
+    if (isSecretKey(k) && v === SECRET_MASK) {
+      // preserve existing
+      continue;
+    }
+    merged[k] = v;
+  }
+  return merged;
+}
+
+/** Parse a JSON string into a config record; returns an empty object on any failure. */
+function parseConfig(json: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(json) as unknown;
+    if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch { /* fallthrough */ }
+  return {};
+}
+
+export interface AgentSummary {
+  id: string;
+  name: string;
+  type: AgentType;
+  enabled: boolean;
+  maxConcurrent: number;
+  model: string | null;
+  integrationId: string | null;
+  systemPromptId: string | null;
+  instructionsPromptId: string | null;
+  projectCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AgentDetail extends AgentSummary {
+  modelConfig: Record<string, unknown>;
+}
+
+/** Convert an AgentRecord to its summary API shape. */
+function toAgentSummary(agent: AgentRecord, projectCount: number): AgentSummary {
+  const config = parseConfig(agent.modelConfigJson);
+  const model = typeof config["model"] === "string" ? (config["model"] as string) : null;
+  return {
+    id: agent.id,
+    name: agent.name,
+    type: agent.type,
+    enabled: agent.enabled,
+    maxConcurrent: agent.maxConcurrent,
+    model,
+    integrationId: agent.integrationId,
+    systemPromptId: agent.systemPromptId,
+    instructionsPromptId: agent.instructionsPromptId,
+    projectCount,
+    createdAt: agent.createdAt.toISOString(),
+    updatedAt: agent.updatedAt.toISOString(),
+  };
+}
+
+/** Convert an AgentRecord to its full detail API shape with masked model config. */
+function toAgentDetail(agent: AgentRecord, projectCount: number): AgentDetail {
+  const config = parseConfig(agent.modelConfigJson);
+  return {
+    ...toAgentSummary(agent, projectCount),
+    modelConfig: maskAgentSecrets(config),
+  };
+}
+
+const createSchema = z.object({
+  id: z.string().optional(),
+  name: z.string().min(1),
+  type: z.enum(["coding", "review"]),
+  modelConfig: z.record(z.unknown()).default({}),
+  integrationId: z.string().nullable().optional(),
+  systemPromptId: z.string().nullable().optional(),
+  instructionsPromptId: z.string().nullable().optional(),
+  maxConcurrent: z.number().int().min(1).optional(),
+  enabled: z.boolean().optional(),
+});
+
+const updateSchema = z.object({
+  name: z.string().min(1).optional(),
+  type: z.enum(["coding", "review"]).optional(),
+  modelConfig: z.record(z.unknown()).optional(),
+  integrationId: z.string().nullable().optional(),
+  systemPromptId: z.string().nullable().optional(),
+  instructionsPromptId: z.string().nullable().optional(),
+  maxConcurrent: z.number().int().min(1).optional(),
+  enabled: z.boolean().optional(),
+});
+
+/** Write a JSON response with the given status code. */
+function writeJson(response: ServerResponse, statusCode: number, payload: unknown): void {
+  response.statusCode = statusCode;
+  response.setHeader("content-type", "application/json; charset=utf-8");
+  response.end(JSON.stringify(payload));
+}
+
+/** Read and parse the request body as JSON, returning null on error or when the body exceeds 512 KB. */
+async function readBody(request: IncomingMessage): Promise<Record<string, unknown> | null> {
+  return new Promise((resolve) => {
+    const chunks: Buffer[] = [];
+    let total = 0;
+    const MAX = 512 * 1024;
+    request.on("data", (chunk: Buffer) => {
+      total += chunk.length;
+      if (total > MAX) {
+        request.destroy();
+        resolve(null);
+        return;
+      }
+      chunks.push(chunk);
+    });
+    request.on("end", () => {
+      const raw = Buffer.concat(chunks).toString("utf8");
+      if (!raw) { resolve(null); return; }
+      try { resolve(JSON.parse(raw) as Record<string, unknown>); }
+      catch { resolve(null); }
+    });
+    request.on("error", () => resolve(null));
+  });
+}
+
+/** Count the number of projects that reference the given agent id. */
+async function countProjectsForAgent(store: AgentsRouteStore, agentId: AgentId): Promise<number> {
+  const all = await store.listProjects();
+  return all.filter((p) => p.agentId === agentId).length;
+}
+
+/**
+ * Try to handle an agents-route request. Returns true if the request was
+ * handled (response sent), false otherwise.
+ */
+export async function handleAgentsRoute(
+  request: IncomingMessage,
+  response: ServerResponse,
+  path: string,
+  method: string,
+  deps: AgentsRouteDeps
+): Promise<boolean> {
+  const pluginOAuthRoute = parsePluginOAuthRoute(path);
+  if (!path.startsWith("/api/admin/agents") && !pluginOAuthRoute) return false;
+
+  const providerAuthService = deps.providerAuthService ?? defaultProviderAuthService;
+
+  // ── Generic plugin OAuth routes (no agentStore needed) ──────────────────
+  if (pluginOAuthRoute) {
+    if (method !== "POST") {
+      writeJson(response, 405, { error: "Method not allowed" });
+      return true;
+    }
+
+    const body = (await readBody(request)) ?? {};
+    const descriptor = getPluginDescriptor(pluginOAuthRoute.pluginType);
+    let oauthConfig: Record<string, unknown>;
+    try {
+      oauthConfig = await resolvePluginOAuthConfig(
+        pluginOAuthRoute.pluginType,
+        body,
+        deps.integrationStore
+      );
+      if (descriptor?.resolveOAuthConfig) {
+        oauthConfig = await descriptor.resolveOAuthConfig(oauthConfig, {
+          oAuthAppStore: deps.oAuthAppStore,
+        });
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      writeJson(response, err instanceof PluginOAuthConfigError ? err.statusCode : 400, { error: msg });
+      return true;
+    }
+
+    const oauth = descriptor?.oauth;
+    const handler = descriptor?.createOAuthHandler?.(oauthConfig);
+    if (!descriptor || !oauth || !handler || oauth.mode !== handler.kind) {
+      writeJson(response, 404, { error: "OAuth route not available" });
+      return true;
+    }
+
+    if (oauth.mode === "device") {
+      if (pluginOAuthRoute.action === "device-code") {
+        try {
+          const result = await providerAuthService.startAuthFlow(handler);
+          writeJson(response, 200, result);
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          log.warn({ err, pluginType: pluginOAuthRoute.pluginType }, "provider device flow start failed");
+          writeJson(response, 502, { error: msg });
+        }
+        return true;
+      }
+
+      if (pluginOAuthRoute.action !== "token") {
+        writeJson(response, 404, { error: "OAuth route not available" });
+        return true;
+      }
+
+      const deviceCode = body?.["deviceCode"];
+      if (typeof deviceCode !== "string" || !deviceCode) {
+        writeJson(response, 400, { error: "deviceCode is required" });
+        return true;
+      }
+
+      try {
+        const { encryptedToken, isPlaintext } = await providerAuthService.completeAuthFlow(
+          handler,
+          { deviceCode },
+          { adminAuthSecret: deps.adminAuthSecret }
+        );
+        writeJson(response, 200, { encryptedToken, isPlaintext });
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        log.warn({ err, pluginType: pluginOAuthRoute.pluginType }, "provider token exchange failed");
+        writeJson(response, 502, { error: msg });
+      }
+      return true;
+    }
+
+    if (pluginOAuthRoute.action === "start") {
+      const redirectUri = body?.["redirectUri"];
+      const state = body?.["state"];
+      const codeChallenge = body?.["codeChallenge"];
+      const codeChallengeMethod = body?.["codeChallengeMethod"];
+      if (typeof redirectUri !== "string" || !redirectUri) {
+        writeJson(response, 400, { error: "redirectUri is required" });
+        return true;
+      }
+      if (state !== undefined && typeof state !== "string") {
+        writeJson(response, 400, { error: "state must be a string" });
+        return true;
+      }
+      if (codeChallenge !== undefined && typeof codeChallenge !== "string") {
+        writeJson(response, 400, { error: "codeChallenge must be a string" });
+        return true;
+      }
+      if (codeChallengeMethod !== undefined && typeof codeChallengeMethod !== "string") {
+        writeJson(response, 400, { error: "codeChallengeMethod must be a string" });
+        return true;
+      }
+
+      try {
+        const result = await providerAuthService.startAuthFlow(handler, {
+          redirectUri,
+          ...(state !== undefined ? { state } : {}),
+          ...(codeChallenge !== undefined ? { codeChallenge } : {}),
+          ...(codeChallengeMethod !== undefined ? { codeChallengeMethod } : {}),
+        });
+        writeJson(response, 200, result);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        log.warn({ err, pluginType: pluginOAuthRoute.pluginType }, "provider redirect flow start failed");
+        writeJson(response, 502, { error: msg });
+      }
+      return true;
+    }
+
+    if (pluginOAuthRoute.action !== "complete") {
+      writeJson(response, 404, { error: "OAuth route not available" });
+      return true;
+    }
+
+    const code = body?.["code"];
+    const state = body?.["state"];
+    const redirectUri = body?.["redirectUri"];
+    const codeVerifier = body?.["codeVerifier"];
+    if (typeof code !== "string" || !code) {
+      writeJson(response, 400, { error: "code is required" });
+      return true;
+    }
+    if (typeof redirectUri !== "string" || !redirectUri) {
+      writeJson(response, 400, { error: "redirectUri is required" });
+      return true;
+    }
+    if (state !== undefined && typeof state !== "string") {
+      writeJson(response, 400, { error: "state must be a string" });
+      return true;
+    }
+    if (codeVerifier !== undefined && typeof codeVerifier !== "string") {
+      writeJson(response, 400, { error: "codeVerifier must be a string" });
+      return true;
+    }
+
+    try {
+      const { encryptedToken, isPlaintext } = await providerAuthService.completeAuthFlow(
+        handler,
+        {
+          code,
+          redirectUri,
+          ...(state !== undefined ? { state } : {}),
+          ...(codeVerifier !== undefined ? { codeVerifier } : {}),
+        },
+        { adminAuthSecret: deps.adminAuthSecret }
+      );
+      writeJson(response, 200, { encryptedToken, isPlaintext });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log.warn({ err, pluginType: pluginOAuthRoute.pluginType }, "provider redirect completion failed");
+      writeJson(response, 502, { error: msg });
+    }
+    return true;
+  }
+
+  if (!deps.agentStore) {
+    writeJson(response, 501, { error: "Agent store not available" });
+    return true;
+  }
+  const store = deps.agentStore;
+
+  if (path === "/api/admin/agents" && method === "GET") {
+    const agents = await store.listAgents();
+    const projects = await store.listProjects();
+    const counts = new Map<string, number>();
+    for (const p of projects) {
+      counts.set(p.agentId, (counts.get(p.agentId) ?? 0) + 1);
+    }
+    writeJson(response, 200, {
+      agents: agents.map((a) => toAgentSummary(a, counts.get(a.id) ?? 0)),
+    });
+    return true;
+  }
+
+  if (path === "/api/admin/agents" && method === "POST") {
+    const body = await readBody(request);
+    if (!body) {
+      writeJson(response, 400, { error: "Request body required" });
+      return true;
+    }
+    const parsed = createSchema.safeParse(body);
+    if (!parsed.success) {
+      writeJson(response, 400, { error: "Invalid agent payload", details: parsed.error.flatten() });
+      return true;
+    }
+    try {
+      const created = await store.createAgent({
+        ...(parsed.data.id !== undefined ? { id: parsed.data.id } : {}),
+        name: parsed.data.name,
+        type: parsed.data.type,
+        modelConfigJson: JSON.stringify(parsed.data.modelConfig ?? {}),
+        ...(parsed.data.integrationId !== undefined ? { integrationId: parsed.data.integrationId } : {}),
+        ...(parsed.data.systemPromptId !== undefined ? { systemPromptId: parsed.data.systemPromptId } : {}),
+        ...(parsed.data.instructionsPromptId !== undefined ? { instructionsPromptId: parsed.data.instructionsPromptId } : {}),
+        ...(parsed.data.maxConcurrent !== undefined ? { maxConcurrent: parsed.data.maxConcurrent } : {}),
+        ...(parsed.data.enabled !== undefined ? { enabled: parsed.data.enabled } : {}),
+      });
+      writeJson(response, 201, { agent: toAgentDetail(created, 0) });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log.warn({ err }, "create agent failed");
+      writeJson(response, 500, { error: msg });
+    }
+    return true;
+  }
+
+  // ── Available models for agent ──────────────────────────────────────────
+  const modelsMatch = /^\/api\/admin\/agents\/([^/]+)\/available-models$/.exec(path);
+  if (modelsMatch && method === "GET") {
+    const id = makeAgentId(decodeURIComponent(modelsMatch[1] ?? ""));
+    const agent = await store.getAgentById(id);
+    if (!agent) {
+      writeJson(response, 404, { error: "Agent not found" });
+      return true;
+    }
+    let configJson: Record<string, unknown> = {};
+    try {
+      configJson = agent.modelConfigJson
+        ? (JSON.parse(agent.modelConfigJson) as Record<string, unknown>)
+        : {};
+    } catch {
+      // ignore parse errors
+    }
+    const encrypted = typeof configJson["sessionToken"] === "string" ? configJson["sessionToken"] : undefined;
+    if (!encrypted) {
+      writeJson(response, 400, { error: "No session token configured for this agent" });
+      return true;
+    }
+    try {
+      const plain = decryptToken(encrypted, deps.adminAuthSecret);
+      const sessionToken = await exchangeForSessionToken(plain);
+      const models = await fetchAvailableModels(sessionToken);
+      writeJson(response, 200, { models });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log.warn({ err }, "fetch available models failed");
+      writeJson(response, 502, { error: msg });
+    }
+    return true;
+  }
+
+  const idMatch = /^\/api\/admin\/agents\/([^/]+)$/.exec(path);
+  if (idMatch) {
+    const id = makeAgentId(decodeURIComponent(idMatch[1] ?? ""));
+    const existing = await store.getAgentById(id);
+
+    if (method === "GET") {
+      if (!existing) {
+        writeJson(response, 404, { error: "Agent not found" });
+        return true;
+      }
+      const count = await countProjectsForAgent(store, id);
+      writeJson(response, 200, { agent: toAgentDetail(existing, count) });
+      return true;
+    }
+
+    if (method === "PUT") {
+      if (!existing) {
+        writeJson(response, 404, { error: "Agent not found" });
+        return true;
+      }
+      const body = await readBody(request);
+      if (!body) {
+        writeJson(response, 400, { error: "Request body required" });
+        return true;
+      }
+      const parsed = updateSchema.safeParse(body);
+      if (!parsed.success) {
+        writeJson(response, 400, { error: "Invalid agent payload", details: parsed.error.flatten() });
+        return true;
+      }
+      const updates: Parameters<AgentsRouteStore["updateAgent"]>[1] = {};
+      if (parsed.data.name !== undefined) updates.name = parsed.data.name;
+      if (parsed.data.type !== undefined) updates.type = parsed.data.type;
+      if (parsed.data.modelConfig !== undefined) {
+        const existingConfig = parseConfig(existing.modelConfigJson);
+        const merged = mergeAgentConfig(existingConfig, parsed.data.modelConfig);
+        updates.modelConfigJson = JSON.stringify(merged);
+      }
+      if (parsed.data.integrationId !== undefined) updates.integrationId = parsed.data.integrationId;
+      if (parsed.data.systemPromptId !== undefined) updates.systemPromptId = parsed.data.systemPromptId;
+      if (parsed.data.instructionsPromptId !== undefined) updates.instructionsPromptId = parsed.data.instructionsPromptId;
+      if (parsed.data.maxConcurrent !== undefined) updates.maxConcurrent = parsed.data.maxConcurrent;
+      if (parsed.data.enabled !== undefined) updates.enabled = parsed.data.enabled;
+
+      try {
+        const updated = await store.updateAgent(id, updates);
+        const count = await countProjectsForAgent(store, id);
+        writeJson(response, 200, { agent: toAgentDetail(updated, count) });
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        log.warn({ err, id }, "update agent failed");
+        writeJson(response, 500, { error: msg });
+      }
+      return true;
+    }
+
+    if (method === "DELETE") {
+      if (!existing) {
+        writeJson(response, 404, { error: "Agent not found" });
+        return true;
+      }
+      const count = await countProjectsForAgent(store, id);
+      if (count > 0) {
+        writeJson(response, 409, {
+          error: "Conflict",
+          message: `Agent ${id} is referenced by ${count} project(s) and cannot be deleted`,
+          referencedByProjects: count,
+        });
+        return true;
+      }
+      try {
+        await store.deleteAgent(id);
+        response.statusCode = 204;
+        response.end();
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        log.warn({ err, id }, "delete agent failed");
+        writeJson(response, 500, { error: msg });
+      }
+      return true;
+    }
+
+    writeJson(response, 405, { error: "Method not allowed" });
+    return true;
+  }
+
+  const enableMatch = /^\/api\/admin\/agents\/([^/]+)\/enable$/.exec(path);
+  if (enableMatch && method === "PATCH") {
+    const id = makeAgentId(decodeURIComponent(enableMatch[1] ?? ""));
+    const existing = await store.getAgentById(id);
+    if (!existing) {
+      writeJson(response, 404, { error: "Agent not found" });
+      return true;
+    }
+    await store.setAgentEnabled(id, true);
+    response.statusCode = 204;
+    response.end();
+    return true;
+  }
+
+  const disableMatch = /^\/api\/admin\/agents\/([^/]+)\/disable$/.exec(path);
+  if (disableMatch && method === "PATCH") {
+    const id = makeAgentId(decodeURIComponent(disableMatch[1] ?? ""));
+    const existing = await store.getAgentById(id);
+    if (!existing) {
+      writeJson(response, 404, { error: "Agent not found" });
+      return true;
+    }
+    await store.setAgentEnabled(id, false);
+    response.statusCode = 204;
+    response.end();
+    return true;
+  }
+
+  return false;
+}

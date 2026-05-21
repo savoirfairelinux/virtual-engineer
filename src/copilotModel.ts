@@ -1,0 +1,1 @@
+export const DEFAULT_COPILOT_MODEL = "auto";

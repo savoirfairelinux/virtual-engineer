@@ -1,0 +1,40 @@
+FROM node:24-bookworm-slim
+
+# Suppress interactive prompts from apt-get and npm
+ENV DEBIAN_FRONTEND=noninteractive
+ENV NPM_CONFIG_UPDATE_NOTIFIER=false
+
+# Install required tools: git, SSH client, GitHub CLI, curl, jq
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    openssh-client \
+    curl \
+    ca-certificates \
+    jq \
+  && rm -rf /var/lib/apt/lists/*
+# Default SSH config — accepts unknown host keys as a fallback for ephemeral
+# containers. When sshKnownHostsPath is configured on the Gerrit integration,
+# dockerVolume.ts overrides GIT_SSH_COMMAND at runtime with strict checking.
+RUN mkdir -p ~/.ssh && echo "Host gerrit\n  StrictHostKeyChecking=no\n  UserKnownHostsFile=/dev/null" > ~/.ssh/config
+
+# Install GitHub CLI
+# Default GIT_SSH_COMMAND — overridden at runtime by dockerVolume.ts when
+# sshKeyPath (and optionally sshKnownHostsPath) are configured.
+ENV GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+    | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
+  && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
+  && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+    > /etc/apt/sources.list.d/github-cli.list \
+  && apt-get update && apt-get install -y --no-install-recommends gh \
+  && rm -rf /var/lib/apt/lists/*
+
+# Copy the agent worker and install dependencies
+COPY agent-worker/ /agent-worker/
+RUN npm --prefix /agent-worker ci --omit=dev --no-fund
+
+# Set working directory
+WORKDIR /workspace
+
+# Default shell
+CMD ["/bin/bash"]
