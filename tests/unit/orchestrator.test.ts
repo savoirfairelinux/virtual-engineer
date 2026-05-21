@@ -153,6 +153,7 @@ describe("Orchestrator", () => {
       getChangesForTask: vi.fn().mockResolvedValue([]),
       saveChangePerRepository: vi.fn().mockResolvedValue(undefined),
       updateChangePerRepositoryStatus: vi.fn().mockResolvedValue(undefined),
+      findTaskByExternalChangeId: vi.fn().mockResolvedValue(null),
       getActiveRepoSetLock: vi.fn().mockResolvedValue(null),
       ...overrides,
     } as unknown as StateStore;
@@ -262,20 +263,20 @@ describe("Orchestrator", () => {
   }
 
   it("ignores Gerrit events with no matching active task", async () => {
-    const stateStore = makeStateStore({ getActiveTasks: vi.fn().mockResolvedValue([]) });
+    const stateStore = makeStateStore({ findTaskByExternalChangeId: vi.fn().mockResolvedValue(null) });
     const orchestrator = makeOrchestrator({ stateStore });
 
     await orchestrator.handleGerritEvent(makeExternalChangeId("Imissing"));
 
-    expect(stateStore.getActiveTasks).toHaveBeenCalled();
+    expect(stateStore.findTaskByExternalChangeId).toHaveBeenCalledWith(null, "Imissing");
   });
 
   it("ignores Gerrit events for tasks not in IN_REVIEW", async () => {
     const gerritChangeId = makeExternalChangeId("I123");
     const stateStore = makeStateStore({
-      getActiveTasks: vi.fn().mockResolvedValue([
+      findTaskByExternalChangeId: vi.fn().mockResolvedValue(
         makeTask({ state: "AGENT_RUNNING", externalChangeId: gerritChangeId }),
-      ]),
+      ),
     });
     const gerritConnector = makeGerritConnector();
     const orchestrator = makeOrchestrator({ stateStore, gerritConnector });
@@ -289,7 +290,7 @@ describe("Orchestrator", () => {
     const gerritChangeId = makeExternalChangeId("Idelegate");
     const task = makeTask({ state: "IN_REVIEW", externalChangeId: gerritChangeId });
     const stateStore = makeStateStore({
-      getActiveTasks: vi.fn().mockResolvedValue([task]),
+      findTaskByExternalChangeId: vi.fn().mockResolvedValue(task),
     });
     const orchestrator = makeOrchestrator({ stateStore });
     const checkReviewProgress = vi.spyOn(orchestrator as any, "checkReviewProgress").mockResolvedValue(undefined);
@@ -302,9 +303,9 @@ describe("Orchestrator", () => {
   it("ignores Gerrit events for terminal tasks", async () => {
     const gerritChangeId = makeExternalChangeId("Idone");
     const stateStore = makeStateStore({
-      getActiveTasks: vi.fn().mockResolvedValue([
+      findTaskByExternalChangeId: vi.fn().mockResolvedValue(
         makeTask({ state: "DONE", externalChangeId: gerritChangeId }),
-      ]),
+      ),
     });
     const orchestrator = makeOrchestrator({ stateStore });
     const checkReviewProgress = vi.spyOn(orchestrator as any, "checkReviewProgress").mockResolvedValue(undefined);

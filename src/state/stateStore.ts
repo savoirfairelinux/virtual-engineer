@@ -1,7 +1,7 @@
 /** SQLite-backed state store using better-sqlite3 and Drizzle ORM. WAL mode and foreign keys enabled at startup. */
 import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
-import { eq, and } from "drizzle-orm";
+import { eq, and, notInArray } from "drizzle-orm";
 import { mkdir, readFile, writeFile } from "fs/promises";
 import { dirname, join } from "path";
 import { randomUUID } from "crypto";
@@ -486,10 +486,10 @@ export class SqliteStateStore implements StateStore, IntegrationStore, PromptSto
 
   /** Return all tasks that are not in a terminal state. */
   async getActiveTasks(): Promise<Task[]> {
-    const rows = await this.db.query.tasks.findMany();
-    return rows
-      .map((r) => this.rowToTask(r))
-      .filter((t) => !TERMINAL_STATES.has(t.state));
+    const rows = await this.db.query.tasks.findMany({
+      where: notInArray(tasks.state, [...TERMINAL_STATES]),
+    });
+    return rows.map((r) => this.rowToTask(r));
   }
 
   /** Return every task ordered by most-recently updated first. */

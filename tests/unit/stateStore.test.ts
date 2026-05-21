@@ -202,6 +202,51 @@ describe("SqliteStateStore", () => {
       expect(activeIds).not.toContain(id2);
       expect(activeIds).not.toContain(id3);
     });
+
+    it("excludes all terminal states including review states", async () => {
+      const idActive = makeTaskId(randomUUID());
+      const idAbandoned = makeTaskId(randomUUID());
+      const idReviewDone = makeTaskId(randomUUID());
+      const idReviewFailed = makeTaskId(randomUUID());
+
+      await store.createTask(idActive, makeTicketId("act"));
+      await store.createTask(idAbandoned, makeTicketId("abn"));
+
+      await store.createReviewTask({
+        taskId: idReviewDone,
+        ticketId: makeTicketId("rd"),
+        subject: "review done",
+        changeId: makeExternalChangeId("I1"),
+        patchset: 1,
+      });
+      await store.createReviewTask({
+        taskId: idReviewFailed,
+        ticketId: makeTicketId("rf"),
+        subject: "review failed",
+        changeId: makeExternalChangeId("I2"),
+        patchset: 1,
+      });
+
+      // DETECTED → CONTEXT_BUILDING → AGENT_RUNNING → ABANDONED
+      await store.transition(idAbandoned, "CONTEXT_BUILDING");
+      await store.transition(idAbandoned, "AGENT_RUNNING");
+      await store.transition(idAbandoned, "ABANDONED");
+
+      // REVIEW_PENDING → REVIEW_RUNNING → REVIEW_COMMENTING → REVIEW_DONE
+      await store.transition(idReviewDone, "REVIEW_RUNNING");
+      await store.transition(idReviewDone, "REVIEW_COMMENTING");
+      await store.transition(idReviewDone, "REVIEW_DONE");
+
+      // REVIEW_PENDING → REVIEW_FAILED
+      await store.transition(idReviewFailed, "REVIEW_FAILED");
+
+      const active = await store.getActiveTasks();
+      const activeIds = active.map((t) => t.taskId);
+      expect(activeIds).toContain(idActive);
+      expect(activeIds).not.toContain(idAbandoned);
+      expect(activeIds).not.toContain(idReviewDone);
+      expect(activeIds).not.toContain(idReviewFailed);
+    });
   });
 
   describe("getAllTasks", () => {
