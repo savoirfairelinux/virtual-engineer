@@ -1024,15 +1024,24 @@ export class Orchestrator {
     const sorted = [...pushTargets].sort((a, b) => a.commitOrder - b.commitOrder);
 
     for (const target of sorted) {
-      // Dirty-check before resolving connector — a clean repo is NO_CHANGE regardless of connector availability.
+      // Check whether there are local commits ahead of origin that need pushing.
+      // The agent always commits its work, so git status --porcelain is always empty
+      // after a successful cycle. The only meaningful question is: are there commits
+      // on this branch that haven't been pushed yet?
       let isDirty = false;
-      try {
-        const status = this.workspaceRunner.execGitInVolume
-          ? await this.workspaceRunner.execGitInVolume(handle, ["status", "--porcelain"], target.localPath)
-          : "";
-        isDirty = status.trim().length > 0;
-      } catch (err) {
-        log.warn({ taskId: task.taskId, repoKey: target.repoKey, err }, "git status failed for project push target; treating as no-change");
+      if (this.workspaceRunner.execGitInVolume) {
+        try {
+          const aheadOut = await this.workspaceRunner.execGitInVolume(
+            handle,
+            ["rev-list", "--count", "HEAD", `^origin/${target.targetBranch}`],
+            target.localPath
+          );
+          isDirty = (parseInt(aheadOut.trim(), 10) || 0) > 0;
+        } catch (err) {
+          // rev-list failed — assume there is something to push.
+          log.warn({ taskId: task.taskId, repoKey: target.repoKey, err }, "git rev-list failed for project push target; assuming changes present");
+          isDirty = true;
+        }
       }
 
       if (!isDirty) {

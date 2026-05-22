@@ -140,7 +140,7 @@ function makeWorkspaceRunner(over: Partial<WorkspaceRunner> = {}): WorkspaceRunn
     }),
     cloneRepo: vi.fn().mockResolvedValue({ success: true, localPath: "/workspace" }),
     prepareProjectWorkspace: vi.fn().mockResolvedValue({ success: true, localPath: "/workspace" }),
-    execGitInVolume: vi.fn().mockResolvedValue(" M file.ts\n"),
+    execGitInVolume: vi.fn().mockResolvedValue("1\n"),
     runAgent: vi.fn().mockResolvedValue({
       status: "success",
       modifiedFiles: ["src/a.ts"],
@@ -512,11 +512,11 @@ describe("Orchestrator — Phase 4 project mode", () => {
 
     const orch = new Orchestrator(baseConfig(), stateStore, ws, undefined, undefined, projectMode);
 
-    // First target dirty, second target clean
+    // First target has 1 commit ahead of origin (push needed), second has 0 (NO_CHANGE).
     let call = 0;
     (ws.execGitInVolume as ReturnType<typeof vi.fn>).mockImplementation(async () => {
       call++;
-      return call === 1 ? " M file.ts\n" : "";
+      return call === 1 ? "1\n" : "0\n";
     });
 
     const task = makeTask({ state: "AGENT_RUNNING" });
@@ -532,6 +532,63 @@ describe("Orchestrator — Phase 4 project mode", () => {
       "none",
       2,
       ""
+    );
+  });
+
+  it("project-mode runAgentCycle pushes a repo whose working tree is clean but has commits ahead of origin", async () => {
+    // Regression: git status --porcelain returns "" after the agent commits its work,
+    // but there are local commits ahead of origin that must still be pushed.
+    const stateStore = makeStateStore();
+    const ws = makeWorkspaceRunner();
+    const project = makeProject();
+    const targets = [
+      makePushTarget({ id: 1, commitOrder: 1, localPath: ".", integrationId: "vcs-root", repoKey: "root" }),
+    ];
+    const vcsRoot: VcsConnector = {
+      clone: vi.fn(),
+      push: vi.fn(),
+      pushDirect: vi.fn().mockResolvedValue({ changeId: "Iroot", url: "u-root", status: "OPEN" }),
+      getChangeStatus: vi.fn(),
+      buildPushSpec: vi.fn().mockReturnValue({ ref: "refs/for/main", topic: "VE-task-id" }),
+      useChangeIdContinuity: true,
+      reviewSystemLabel: "gerrit",
+    } as unknown as VcsConnector;
+
+    const projectMode: ProjectModeDeps = {
+      projectStore: {
+        getProjectById: vi.fn(async () => project),
+        listProjectPushTargets: vi.fn(async () => targets),
+        getProjectTicketSource: vi.fn().mockResolvedValue({ integrationId: "redmine-int" }),
+        getProjectReviewConfig: vi.fn().mockResolvedValue(null),
+        getAgentById: vi.fn(),
+      },
+      pluginManager: { getConnectorForIntegration: vi.fn().mockImplementation((id: string) => {
+        if (id === "redmine-int") return makeRedmine();
+        return null;
+      }) },
+      resolveVcsForIntegration: vi.fn(async () => vcsRoot),
+    };
+
+    const orch = new Orchestrator(baseConfig(), stateStore, ws, undefined, undefined, projectMode);
+
+    // Agent committed its work: 1 commit ahead of origin, working tree clean.
+    (ws.execGitInVolume as ReturnType<typeof vi.fn>).mockResolvedValue("1\n");
+
+    const task = makeTask({ state: "AGENT_RUNNING" });
+    await (orch as unknown as { runAgentCycle: (t: Task) => Promise<void> }).runAgentCycle(task);
+
+    // Must have pushed, not recorded NO_CHANGE
+    expect(vcsRoot.pushDirect).toHaveBeenCalled();
+    expect(stateStore.saveChangePerRepository).toHaveBeenCalledWith(
+      task.taskId,
+      "root",
+      "Iroot",
+      "u-root",
+      "OPEN",
+      "vcs-root",
+      "gerrit",
+      1,
+      expect.any(String)
     );
   });
 
