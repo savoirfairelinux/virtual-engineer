@@ -74,7 +74,7 @@ describe("PluginManager — Phase 4 multi-instance", () => {
       makeIntegration({
         id: "redmine-a",
         type: "redmine",
-        configJson: JSON.stringify({ baseUrl: "http://r-a:3000", apiKey: "k", virtualEngineerUserId: 1 }),
+        configJson: JSON.stringify({ baseUrl: "http://r-a:3000", apiKey: "k", virtualEngineerUserLogin: "ve" }),
       }),
       makeIntegration({
         id: "copilot-a",
@@ -103,7 +103,7 @@ describe("PluginManager — Phase 4 multi-instance", () => {
       makeIntegration({
         id: "redmine-1",
         type: "redmine",
-        configJson: JSON.stringify({ baseUrl: "http://r:3000", apiKey: "k", virtualEngineerUserId: 1 }),
+        configJson: JSON.stringify({ baseUrl: "http://r:3000", apiKey: "k", virtualEngineerUserLogin: "ve" }),
       }),
       makeIntegration({
         id: "gitlab-1",
@@ -240,7 +240,7 @@ describe("PluginManager — Phase 4 multi-instance", () => {
       makeIntegration({
         id: "redmine-1",
         type: "redmine",
-        configJson: JSON.stringify({ baseUrl: "http://r:3000", apiKey: "k", virtualEngineerUserId: 1 }),
+        configJson: JSON.stringify({ baseUrl: "http://r:3000", apiKey: "k", virtualEngineerUserLogin: "ve" }),
       }),
       makeIntegration({
         id: "gitlab-1",

@@ -532,7 +532,7 @@ describe("runtime bootstrap provider selection", () => {
           configJson: JSON.stringify({
             baseUrl: "http://db-redmine.test",
             apiKey: "db-redmine-key",
-            virtualEngineerUserId: 17,
+            virtualEngineerUserLogin: "ve",
             inProgressStatusId: 12,
             inReviewStatusId: 13,
             closedStatusId: 14,
@@ -667,7 +667,7 @@ describe("runtime bootstrap provider selection", () => {
         configJson: JSON.stringify({
           baseUrl: "http://db-redmine.initial",
           apiKey: "db-redmine-key",
-          virtualEngineerUserId: 17,
+          virtualEngineerUserLogin: "ve",
         }),
       }),
     };
@@ -691,7 +691,7 @@ describe("runtime bootstrap provider selection", () => {
       configJson: JSON.stringify({
         baseUrl: "http://db-redmine.updated",
         apiKey: "db-redmine-key",
-        virtualEngineerUserId: 17,
+        virtualEngineerUserLogin: "ve",
       }),
     });
 

@@ -14,16 +14,27 @@ import {
 } from "./helpers/fixtures.js";
 
 const BASE_URL = "http://redmine.test";
+const VE_LOGIN = "ve-user";
+const VE_USER_ID = 5;
 
 function makeConnector(overrides?: Partial<ConstructorParameters<typeof HttpRedmineConnector>[0]>) {
   return new HttpRedmineConnector({
     baseUrl: BASE_URL,
     apiKey: "test-api-key",
-    virtualEngineerUserId: 5,
+    virtualEngineerUserLogin: VE_LOGIN,
     closedStatusId: 5,
     inProgressStatusId: 2,
     inReviewStatusId: 4,
     ...overrides,
+  });
+}
+
+function mockLoginLookup(fetchMock: ReturnType<typeof vi.fn>): void {
+  fetchMock.mockImplementationOnce(async (url: string) => {
+    if (!url.endsWith("/users/current.json")) {
+      throw new Error(`expected /users/current.json call, got: ${url}`);
+    }
+    return jsonResponse({ user: { id: VE_USER_ID, login: VE_LOGIN } });
   });
 }
 
@@ -43,6 +54,7 @@ describe("HttpRedmineConnector", () => {
 
   describe("getAssignedTickets", () => {
     it("returns mapped tickets from the API", async () => {
+      mockLoginLookup(fetchMock);
       fetchMock.mockResolvedValueOnce(jsonResponse(redmineIssuesListResponse));
       const tickets = await makeConnector().getAssignedTickets();
 
@@ -54,45 +66,51 @@ describe("HttpRedmineConnector", () => {
     });
 
     it("maps custom fields into a record", async () => {
+      mockLoginLookup(fetchMock);
       fetchMock.mockResolvedValueOnce(jsonResponse(redmineIssuesListResponse));
       const tickets = await makeConnector().getAssignedTickets();
       expect(tickets[0]?.customFields?.["Priority-Score"]).toBe("high");
     });
 
     it("sends X-Redmine-API-Key header", async () => {
+      mockLoginLookup(fetchMock);
       fetchMock.mockResolvedValueOnce(jsonResponse(redmineIssuesListResponse));
       await makeConnector().getAssignedTickets();
 
-      const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+      const [, init] = fetchMock.mock.calls[1] as [string, RequestInit];
       const headers = init?.headers as Record<string, string>;
       expect(headers?.["X-Redmine-API-Key"]).toBe("test-api-key");
     });
 
     it("includes assigned_to_id query parameter", async () => {
+      mockLoginLookup(fetchMock);
       fetchMock.mockResolvedValueOnce(jsonResponse(redmineIssuesListResponse));
       await makeConnector().getAssignedTickets();
 
-      const [url] = fetchMock.mock.calls[0] as [string];
+      const [url] = fetchMock.mock.calls[1] as [string];
       expect(url).toContain("assigned_to_id=5");
     });
 
     it("Phase 4: passes project_id query parameter when projectKey opt is provided", async () => {
+      mockLoginLookup(fetchMock);
       fetchMock.mockResolvedValueOnce(jsonResponse(redmineIssuesListResponse));
       await makeConnector().getAssignedTickets({ projectKey: "platform" });
 
-      const [url] = fetchMock.mock.calls[0] as [string];
+      const [url] = fetchMock.mock.calls[1] as [string];
       expect(url).toContain("project_id=platform");
     });
 
     it("Phase 4: omits project_id when projectKey is not provided", async () => {
+      mockLoginLookup(fetchMock);
       fetchMock.mockResolvedValueOnce(jsonResponse(redmineIssuesListResponse));
       await makeConnector().getAssignedTickets();
 
-      const [url] = fetchMock.mock.calls[0] as [string];
+      const [url] = fetchMock.mock.calls[1] as [string];
       expect(url).not.toContain("project_id=");
     });
 
     it("returns empty array when no issues returned", async () => {
+      mockLoginLookup(fetchMock);
       fetchMock.mockResolvedValueOnce(jsonResponse({ issues: [], total_count: 0 }));
       const tickets = await makeConnector().getAssignedTickets();
       expect(tickets).toHaveLength(0);

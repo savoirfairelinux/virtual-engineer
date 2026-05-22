@@ -17,7 +17,7 @@ function makeIntegration(overrides: Partial<Integration> = {}): Integration {
     id: INTEGRATION_ID,
     type: "redmine",
     name: "Redmine 1",
-    configJson: JSON.stringify({ webhookSecret: SECRET, baseUrl: "http://r/", apiKey: "x", virtualEngineerUserId: 1 }),
+    configJson: JSON.stringify({ webhookSecret: SECRET, baseUrl: "http://r/", apiKey: "x", virtualEngineerUserLogin: "ve" }),
     enabled: true,
     createdAt: new Date(),
     updatedAt: new Date(),
@@ -189,7 +189,7 @@ describe("webhookServer", () => {
     it("returns 401 for integration without webhookSecret configured", async () => {
       const noSecret = makeIntegration({
         id: "no-secret",
-        configJson: JSON.stringify({ baseUrl: "http://r/", apiKey: "x", virtualEngineerUserId: 1 }),
+        configJson: JSON.stringify({ baseUrl: "http://r/", apiKey: "x", virtualEngineerUserLogin: "ve" }),
       });
       store = makeIntegrationStore([makeIntegration(), noSecret]);
       await ctx.closeServer();

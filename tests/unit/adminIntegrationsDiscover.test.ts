@@ -122,7 +122,7 @@ const REDMINE_INTEGRATION: Integration = {
   configJson: JSON.stringify({
     baseUrl: "http://redmine.test",
     apiKey: "secret",
-    virtualEngineerUserId: 1,
+    virtualEngineerUserLogin: "ve",
     closedStatusId: 5,
     inProgressStatusId: 2,
     inReviewStatusId: 4,

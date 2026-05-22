@@ -11,7 +11,7 @@ function makeConnector() {
   return new HttpRedmineConnector({
     baseUrl: BASE_URL,
     apiKey: "test-api-key",
-    virtualEngineerUserId: 1,
+    virtualEngineerUserLogin: "ve",
     closedStatusId: 5,
     inProgressStatusId: 2,
     inReviewStatusId: 4,

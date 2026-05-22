@@ -92,7 +92,7 @@ describe("Admin /api/admin/integrations/:id/webhook-secret/rotate + /webhook-inf
       id: "redmine-1",
       type: "redmine",
       name: "Redmine 1",
-      configJson: JSON.stringify({ baseUrl: "http://r/", apiKey: "k", virtualEngineerUserId: 1 }),
+      configJson: JSON.stringify({ baseUrl: "http://r/", apiKey: "k", virtualEngineerUserLogin: "ve" }),
       enabled: false,
       createdAt: new Date(),
       updatedAt: new Date(),

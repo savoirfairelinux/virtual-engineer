@@ -22,7 +22,7 @@ const DISCOVERY_TIMEOUT_MS = 30_000;
 const RedmineCustomFieldSchema = z.object({
   id: z.number(),
   name: z.string(),
-  value: z.string().optional(),
+  value: z.union([z.string(), z.array(z.string()), z.null()]).optional(),
 });
 
 const RedmineIssueSchema = z.object({
@@ -57,12 +57,25 @@ const RedmineProjectsResponseSchema = z.object({
   limit: z.number().optional(),
 });
 
+const RedmineUserSchema = z.object({
+  id: z.number(),
+  login: z.string(),
+});
+
+const RedmineUsersResponseSchema = z.object({
+  users: z.array(RedmineUserSchema),
+});
+
+const RedmineUserResponseSchema = z.object({
+  user: RedmineUserSchema,
+});
+
 // ─── Connector implementation ─────────────────────────────────────────────────
 
 export interface RedmineConnectorConfig {
   baseUrl: string;
   apiKey: string;
-  virtualEngineerUserId: number;
+  virtualEngineerUserLogin: string;
   /** Status ID in Redmine that maps to "closed" */
   closedStatusId: number;
   /** Status ID in Redmine that maps to "in progress" */
@@ -78,12 +91,15 @@ export class HttpRedmineConnector extends AbstractTicketConnector implements Tic
   /** @inheritdoc */
   protected get inReviewStatusId(): number { return this.config.inReviewStatusId; }
 
+  private resolvedUserId: number | undefined;
+
   constructor(private readonly config: RedmineConnectorConfig) { super(); }
 
   /** Fetch all open Redmine issues assigned to the configured virtual-engineer user. */
   async getAssignedTickets(opts?: AssignedTicketQueryOptions): Promise<Ticket[]> {
+    const userId = await this.resolveUserId();
     const url = new URL(`${this.config.baseUrl}/issues.json`);
-    url.searchParams.set("assigned_to_id", String(this.config.virtualEngineerUserId));
+    url.searchParams.set("assigned_to_id", String(userId));
     url.searchParams.set("status_id", "open");
     url.searchParams.set("limit", "50");
     if (opts?.projectKey) {
@@ -186,6 +202,51 @@ export class HttpRedmineConnector extends AbstractTicketConnector implements Tic
     return all;
   }
 
+  /** Resolve the configured login to a Redmine user id (cached).
+   *  Tries /users/current.json (no admin needed), then /users.json?name= (admin-only).
+   */
+  private async resolveUserId(): Promise<number> {
+    if (this.resolvedUserId !== undefined) return this.resolvedUserId;
+
+    const login = this.config.virtualEngineerUserLogin.trim();
+    if (!login) {
+      throw new Error("Redmine connector requires virtualEngineerUserLogin");
+    }
+
+    const currentUrl = `${this.config.baseUrl}/users/current.json`;
+    const currentResponse = await this.fetch(currentUrl);
+    const currentParsed = RedmineUserResponseSchema.parse(await currentResponse.json());
+    if (currentParsed.user.login === login) {
+      this.resolvedUserId = currentParsed.user.id;
+      log.info({ login, userId: currentParsed.user.id }, "resolved Redmine login via /users/current.json");
+      return currentParsed.user.id;
+    }
+
+    const lookupUrl = `${this.config.baseUrl}/users.json?name=${encodeURIComponent(login)}`;
+    let lookupResponse: Response;
+    try {
+      lookupResponse = await this.fetch(lookupUrl);
+    } catch (err) {
+      if (err instanceof TicketApiError && err.statusCode === 403) {
+        throw new TicketApiError(
+          403,
+          lookupUrl,
+          `Cannot resolve Redmine login '${login}': the API key belongs to '${currentParsed.user.login}' ` +
+            `and is not allowed to list other users (admin only). Configure VE with the API key of '${login}'.`
+        );
+      }
+      throw err;
+    }
+    const parsed = RedmineUsersResponseSchema.parse(await lookupResponse.json());
+    const exact = parsed.users.find((u) => u.login === login);
+    if (!exact) {
+      throw new TicketApiError(404, lookupUrl, `Redmine user not found: no user with login '${login}'`);
+    }
+    this.resolvedUserId = exact.id;
+    log.info({ login, userId: exact.id }, "resolved Redmine login via /users.json lookup");
+    return exact.id;
+  }
+
   /** Issue an authenticated HTTP request to the Redmine API, throwing a typed error on failure. */
   private async fetch(url: string, init?: RequestInit): Promise<Response> {
     const response = await globalThis.fetch(url, {
@@ -223,9 +284,8 @@ export class HttpRedmineConnector extends AbstractTicketConnector implements Tic
   ): Ticket {
     const customFields: Record<string, string> = {};
     for (const cf of i.custom_fields) {
-      if (cf.value !== undefined) {
-        customFields[cf.name] = cf.value;
-      }
+      if (cf.value === undefined || cf.value === null) continue;
+      customFields[cf.name] = Array.isArray(cf.value) ? cf.value.join(", ") : cf.value;
     }
     return {
       id: makeTicketId(String(i.id)),
