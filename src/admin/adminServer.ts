@@ -57,7 +57,7 @@ export interface AdminProviderSummary {
 }
 
 export interface AdminServerDependencies {
-  stateStore: Pick<StateStore, "getActiveTasks" | "getAllTasks" | "getTask" | "getAgentCycles" | "getAgentCycleEvents" | "getStateTransitions" | "pauseTask" | "resumeTask" | "retryTask" | "abandonTask" | "deleteTask" | "deleteTaskGroup">;
+  stateStore: Pick<StateStore, "getActiveTasks" | "getAllTasks" | "getTask" | "getAgentCycles" | "getAgentCycleEvents" | "getStateTransitions" | "getChangesForTask" | "getChangesForTasks" | "pauseTask" | "resumeTask" | "retryTask" | "abandonTask" | "deleteTask" | "deleteTaskGroup">;
   /** Phase 3: store backing the /api/admin/agents routes. */
   agentStore?: AgentsRouteStore;
   providerAuthService?: ProviderAuthService | undefined;

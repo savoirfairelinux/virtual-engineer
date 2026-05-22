@@ -111,6 +111,7 @@ function makeStateStore(overrides: Partial<StateStore> = {}): StateStore {
     getProcessedCommentIds: async () => new Set(),
     markCommentProcessed: async () => undefined,
     getChangesForTask: async () => [],
+    getChangesForTasks: async () => [],
     saveChangePerRepository: async () => undefined,
     updateChangePerRepositoryStatus: async () => undefined,
     getTaskRepositoryContext: async () => null,

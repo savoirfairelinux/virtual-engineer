@@ -107,6 +107,8 @@ function makeMinimalDeps(
       retryTask: vi.fn(async () => { throw new Error("not impl"); }),
       abandonTask: vi.fn(async () => { throw new Error("not impl"); }),
       deleteTask: vi.fn(async () => {}),
+      getChangesForTask: vi.fn(async () => []),
+      getChangesForTasks: vi.fn(async () => []),
       deleteTaskGroup: vi.fn(async () => {}),
     },
     config: {

@@ -12,6 +12,8 @@ export interface TaskRouteStore {
   getTask(id: ReturnType<typeof makeTaskId>): Promise<Task | null>;
   getAgentCycles(taskId: ReturnType<typeof makeTaskId>): Promise<AgentCycle[]>;
   getStateTransitions(taskId: ReturnType<typeof makeTaskId>): Promise<StateTransition[]>;
+  getChangesForTask(taskId: ReturnType<typeof makeTaskId>): Promise<import("../interfaces.js").ChangePerRepository[]>;
+  getChangesForTasks(taskIds: ReturnType<typeof makeTaskId>[]): Promise<import("../interfaces.js").ChangePerRepository[]>;
   pauseTask(taskId: ReturnType<typeof makeTaskId>): Promise<Task>;
   resumeTask(taskId: ReturnType<typeof makeTaskId>): Promise<Task>;
   retryTask(taskId: ReturnType<typeof makeTaskId>): Promise<Task>;
@@ -45,10 +47,22 @@ export async function handleTasksRoute(
       return true;
     }
     const tasks = await deps.stateStore.getAllTasks();
+    const deduplicated = deduplicateByTicket(tasks)
+      .sort((left, right) => right.updatedAt.getTime() - left.updatedAt.getTime());
+    // Augment each task with a fallback reviewUrl from change_per_repository (one batch query)
+    const allChanges = await deps.stateStore.getChangesForTasks(deduplicated.map((t) => t.taskId));
+    const cprReviewUrlByTaskId = new Map<string, string>();
+    for (const c of allChanges) {
+      if (c.reviewUrl && !cprReviewUrlByTaskId.has(c.taskId)) {
+        cprReviewUrlByTaskId.set(c.taskId, c.reviewUrl);
+      }
+    }
     writeJson(response, 200, {
-      tasks: deduplicateByTicket(tasks)
-        .sort((left, right) => right.updatedAt.getTime() - left.updatedAt.getTime())
-        .map(serializeTask),
+      tasks: deduplicated.map((t) => {
+        const s = serializeTask(t);
+        if (!s["reviewUrl"]) s["reviewUrl"] = cprReviewUrlByTaskId.get(t.taskId) ?? null;
+        return s;
+      }),
     });
     return true;
   }
@@ -83,7 +97,21 @@ export async function handleTasksRoute(
       writeJson(response, 404, { error: "Task not found" });
       return true;
     }
-    writeJson(response, 200, { task: serializeTask(task) });
+    const changesPerRepo = await deps.stateStore.getChangesForTask(taskId);
+    const serialized = serializeTask(task) as Record<string, unknown>;
+    serialized["changesPerRepo"] = changesPerRepo.map((c) => ({
+      repoKey: c.repoKey,
+      changeId: c.changeId,
+      reviewUrl: c.reviewUrl,
+      status: c.status,
+      reviewSystem: c.reviewSystem,
+    }));
+    // Populate fallback reviewUrl from CPR when the task-level URL is not set
+    if (!serialized["reviewUrl"]) {
+      const firstUrl = changesPerRepo.find((c) => c.reviewUrl)?.reviewUrl;
+      if (firstUrl) serialized["reviewUrl"] = firstUrl;
+    }
+    writeJson(response, 200, { task: serialized });
     return true;
   }
 

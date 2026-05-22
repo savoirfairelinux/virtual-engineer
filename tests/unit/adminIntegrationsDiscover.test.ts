@@ -76,6 +76,8 @@ function makeBaseDeps(overrides: Partial<AdminServerDependencies> = {}): AdminSe
       retryTask: vi.fn(async () => { throw new Error("nope"); }),
       abandonTask: vi.fn(async () => { throw new Error("nope"); }),
       deleteTask: vi.fn(async () => {}),
+      getChangesForTask: vi.fn(async () => []),
+      getChangesForTasks: vi.fn(async () => []),
       deleteTaskGroup: vi.fn(async () => {}),
     },
     config: {
