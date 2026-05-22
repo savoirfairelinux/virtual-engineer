@@ -48,22 +48,22 @@ export function createGitLabAuthFields(tokenLabel: string): PluginField[] {
       dependsOn: { field: "gitlabMode", value: "self-hosted" },
     },
     {
-      key: "oauthClientId",
-      label: "OAuth Client ID",
-      type: "text",
-      required: false,
-      placeholder: "Application Client ID from GitLab",
-      dependsOn: { field: "gitlabMode", value: "self-hosted" },
-    },
-    {
       key: "authMode",
       label: "Authentication Mode",
       type: "select",
       required: true,
       options: [
-        { value: "oauth", label: "OAuth" },
         { value: "pat", label: "Personal Access Token" },
+        { value: "oauth", label: "OAuth" },
       ],
+    },
+    {
+      key: "oauthClientId",
+      label: "OAuth Client ID",
+      type: "text",
+      required: false,
+      placeholder: "Application Client ID from GitLab",
+      dependsOn: { field: "authMode", value: "oauth" },
     },
     {
       key: "token",
