@@ -271,10 +271,6 @@ export interface AgentResult {
   status: AgentResultStatus;
   /** List of relative paths that were modified (single-repo: string[], multi-repo: Record<repoKey, string[]>) */
   modifiedFiles: string[] | Record<string, string[]>;
-  /** The exact commit message used for the commit (subject + trailers + Change-Id) */
-  commitMessage?: string | undefined;
-  /** Per-repo commit messages (overrides commitMessage for named repos). */
-  commitMessages?: Record<string, string> | undefined;
   /** Commits created by the agent. When non-empty, host skips its own commit step. */
   commits?: CommitDescriptor[] | undefined;
   /** Human-readable summary of changes (LLM prose output, audit trail) */
@@ -858,11 +854,7 @@ export interface StateStore {
   ): Promise<void>;
 
   /** Update per-repo commit messages on a saved cycle (after multi-repo push). */
-  updateAgentCycleCommitMessages(
-    taskId: TaskId,
-    cycleNumber: number,
-    commitMessages: Record<string, string>
-  ): Promise<void>;
+
 
   getAgentCycles(taskId: TaskId): Promise<AgentCycle[]>;
   getAgentCycleEvents(taskId: TaskId, cycleNumber: number): Promise<AgentLogEvent[]>;
@@ -889,6 +881,9 @@ export interface StateStore {
 
   /** Get all per-repo change records for a task. */
   getChangesForTask(taskId: TaskId): Promise<ChangePerRepository[]>;
+
+  /** Get all per-repo change records for a batch of tasks in one query. */
+  getChangesForTasks(taskIds: TaskId[]): Promise<ChangePerRepository[]>;
 
   /** Resolve a task by gerritChangeId or change_per_repository.changeId. */
   findTaskByExternalChangeId(

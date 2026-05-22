@@ -1,7 +1,7 @@
 /** SQLite-backed state store using better-sqlite3 and Drizzle ORM. WAL mode and foreign keys enabled at startup. */
 import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
-import { eq, and, notInArray } from "drizzle-orm";
+import { eq, and, notInArray, inArray } from "drizzle-orm";
 import { mkdir, readFile, writeFile } from "fs/promises";
 import { dirname, join } from "path";
 import { randomUUID } from "crypto";
@@ -293,8 +293,10 @@ export class SqliteStateStore implements StateStore, IntegrationStore, PromptSto
     this.raw.exec(`
       UPDATE prompts SET prompt_type = 'system'
         WHERE id IN (
+          'system_generic_code','instructions_generic_code',
           'system_gerrit_code','system_gitlab_code',
           'system_gerrit_review','system_gitlab_review',
+          'instructions_gerrit_code','instructions_gitlab_code',
           'user_gerrit_review','user_gitlab_review'
         );
     `);
@@ -314,7 +316,7 @@ export class SqliteStateStore implements StateStore, IntegrationStore, PromptSto
     `);
   }
 
-  /** Insert built-in system prompts on first boot; skips rows that already exist. */
+  /** Insert built-in system prompts on first boot; updates existing rows when the bundled content has changed. */
   private async seedBuiltInPrompts(): Promise<void> {
     const now = new Date();
     const defaults = await this.loadDefaultPrompts();
@@ -322,6 +324,13 @@ export class SqliteStateStore implements StateStore, IntegrationStore, PromptSto
     for (const prompt of defaults) {
       const existing = await this.getPrompt(prompt.id);
       if (existing) {
+        // Update only when the bundled/override content differs from the DB row.
+        if (existing.content !== prompt.content) {
+          await this.db
+            .update(prompts)
+            .set({ content: prompt.content, updatedAt: now })
+            .where(eq(prompts.id, prompt.id));
+        }
         continue;
       }
 
@@ -339,12 +348,16 @@ export class SqliteStateStore implements StateStore, IntegrationStore, PromptSto
   /** Resolve the canonical content for each built-in prompt (override file → bundled file). */
   private async loadDefaultPrompts(): Promise<Array<{ id: string; label: string; promptType: "system" | "user"; content: string }>> {
     const entries: Array<{ id: string; label: string; promptType: "system" | "user"; file: string }> = [
-      { id: "system_gerrit_code",   label: "System Prompt — Gerrit (code)",         promptType: "system", file: "../../prompts/system_gerrit_code.md" },
-      { id: "system_gitlab_code",   label: "System Prompt — GitLab (code)",         promptType: "system", file: "../../prompts/system_gitlab_code.md" },
-      { id: "system_gerrit_review", label: "System Prompt — Gerrit (review)",       promptType: "system", file: "../../prompts/system_gerrit_review.md" },
-      { id: "system_gitlab_review", label: "System Prompt — GitLab MR (review)",    promptType: "system", file: "../../prompts/system_gitlab_review.md" },
-      { id: "user_gerrit_review",   label: "User Prompt — Gerrit (review)",         promptType: "system", file: "../../prompts/user_gerrit_review.md" },
-      { id: "user_gitlab_review",   label: "User Prompt — GitLab MR (review)",      promptType: "system", file: "../../prompts/user_gitlab_review.md" },
+      { id: "system_generic_code",      label: "System Prompt — Generic (code)",         promptType: "system", file: "../../prompts/system_generic_code.md" },
+      { id: "instructions_generic_code", label: "Instructions Prompt — Generic (code)",   promptType: "system", file: "../../prompts/instructions_generic_code.md" },
+      { id: "system_gerrit_code",      label: "System Prompt — Gerrit (code)",         promptType: "system", file: "../../prompts/system_gerrit_code.md" },
+      { id: "system_gitlab_code",      label: "System Prompt — GitLab (code)",         promptType: "system", file: "../../prompts/system_gitlab_code.md" },
+      { id: "instructions_gerrit_code", label: "Instructions Prompt — Gerrit (code)",  promptType: "system", file: "../../prompts/instructions_gerrit_code.md" },
+      { id: "instructions_gitlab_code", label: "Instructions Prompt — GitLab (code)",   promptType: "system", file: "../../prompts/instructions_gitlab_code.md" },
+      { id: "system_gerrit_review",    label: "System Prompt — Gerrit (review)",      promptType: "system", file: "../../prompts/system_gerrit_review.md" },
+      { id: "system_gitlab_review",    label: "System Prompt — GitLab MR (review)",   promptType: "system", file: "../../prompts/system_gitlab_review.md" },
+      { id: "user_gerrit_review",      label: "User Prompt — Gerrit (review)",        promptType: "system", file: "../../prompts/user_gerrit_review.md" },
+      { id: "user_gitlab_review",      label: "User Prompt — GitLab MR (review)",     promptType: "system", file: "../../prompts/user_gitlab_review.md" },
     ];
 
     const results = await Promise.all(
@@ -650,32 +663,6 @@ export class SqliteStateStore implements StateStore, IntegrationStore, PromptSto
       agentEvents: result.agentEvents ? JSON.stringify(result.agentEvents) : null,
       createdAt: new Date(),
     });
-  }
-
-  /** Patch the `commitMessages` map inside an existing agent cycle's stored result. */
-  async updateAgentCycleCommitMessages(
-    taskId: TaskId,
-    cycleNumber: number,
-    commitMessages: Record<string, string>
-  ): Promise<void> {
-    const rows = await this.db.query.agentCycles.findMany({
-      where: eq(agentCycles.taskId, taskId),
-    });
-    const row = rows.find((r) => r.cycleNumber === cycleNumber);
-    if (!row) return;
-
-    let result: AgentResult;
-    try {
-      result = JSON.parse(row.agentResult) as AgentResult;
-    } catch {
-      return;
-    }
-
-    const updated: AgentResult = { ...result, commitMessages };
-    await this.db
-      .update(agentCycles)
-      .set({ agentResult: JSON.stringify(updated) })
-      .where(eq(agentCycles.id, row.id));
   }
 
   /** Retrieve all agent cycles for a task, deserialising stored JSON. */
@@ -1299,6 +1286,30 @@ export class SqliteStateStore implements StateStore, IntegrationStore, PromptSto
       .select()
       .from(changePerRepository)
       .where(eq(changePerRepository.taskId, taskId));
+
+    return rows.map((r) => ({
+      id: r.id,
+      taskId: r.taskId as TaskId,
+      repoKey: r.repoKey,
+      changeId: r.changeId,
+      reviewUrl: r.reviewUrl,
+      status: r.status,
+      integrationId: (r as unknown as { integrationId?: string }).integrationId ?? "",
+      reviewSystem: (r as unknown as { reviewSystem?: string }).reviewSystem ?? "",
+      commitIndex: (r as unknown as { commitIndex?: number }).commitIndex ?? 0,
+      subjectHash: (r as unknown as { subjectHash?: string | null }).subjectHash ?? null,
+      createdAt: r.createdAt,
+      updatedAt: r.updatedAt,
+    }));
+  }
+
+  /** Return all per-repository change rows for multiple tasks in one batch query. */
+  async getChangesForTasks(taskIds: TaskId[]): Promise<ChangePerRepository[]> {
+    if (taskIds.length === 0) return [];
+    const rows = await this.db
+      .select()
+      .from(changePerRepository)
+      .where(inArray(changePerRepository.taskId, taskIds as string[]));
 
     return rows.map((r) => ({
       id: r.id,

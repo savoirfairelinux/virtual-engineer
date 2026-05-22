@@ -443,38 +443,6 @@ describe("SqliteStateStore", () => {
     });
   });
 
-  describe("updateAgentCycleCommitMessages", () => {
-    it("updates commitMessages on a saved cycle", async () => {
-      const taskId = makeTaskId(randomUUID());
-      await store.createTask(taskId, makeTicketId("commit-msg-1"));
-
-      const result = {
-        status: "success" as const,
-        modifiedFiles: ["src/main.ts"],
-        summary: "Updated main",
-        agentLogs: "",
-        metadata: {},
-      };
-      await store.saveAgentCycle(taskId, 1, result);
-
-      const commitMessages = {
-        superproject: "feat: add feature\n\nChange-Id: I111",
-        "core-lib": "feat: add core feature\n\nChange-Id: I222",
-      };
-      await store.updateAgentCycleCommitMessages(taskId, 1, commitMessages);
-
-      const cycles = await store.getAgentCycles(taskId);
-      expect(cycles[0]?.result.commitMessages).toEqual(commitMessages);
-    });
-
-    it("does nothing when cycle does not exist", async () => {
-      const taskId = makeTaskId(randomUUID());
-      await store.createTask(taskId, makeTicketId("commit-msg-2"));
-      // Should not throw when no cycle exists
-      await expect(store.updateAgentCycleCommitMessages(taskId, 99, { repo: "msg" })).resolves.not.toThrow();
-    });
-  });
-
   describe("getAgentCycleEvents", () => {
       it("returns empty array when no events are stored", async () => {
         const taskId = makeTaskId(randomUUID());
