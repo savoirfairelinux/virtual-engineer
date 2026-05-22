@@ -280,7 +280,7 @@ a.badge-link:focus-visible {
   background: var(--bg);
   border-radius: 3px;
 }
-.cycle-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 8px; align-items: stretch; }
+.cycle-columns { display: block; margin-top: 8px; }
 .cycle-column { display: flex; flex-direction: column; min-width: 0; }
 .cycle-panel { flex: 1; }
 .review-comments { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
@@ -1664,7 +1664,7 @@ function renderTasks() {
       '<div class="task-row' + sel + '" data-id="' + esc(task.taskId) + '">' +
         '<div class="task-meta">' +
           '<div class="task-tags">' +
-            (task.taskType === 'code-review' ? '<span class="badge" data-tone="neutral" style="font-size:10px">📝</span>' : '') +
+            (task.taskType === 'code-review' ? '<span class="badge" data-tone="neutral" style="font-size:10px">📝</span>' : '<span class="badge" data-tone="neutral" style="font-size:10px">⚙</span>') +
             (ticketLink(task)
               ? '<a href="' + esc(ticketLink(task)) + '" target="_blank" rel="noopener noreferrer" class="badge task-origin-badge badge-link">' + esc(taskOrigin) + '</a>'
               : '<span class="badge task-origin-badge">' + esc(taskOrigin) + '</span>') +
@@ -1732,9 +1732,14 @@ function renderDetailMetaGrid(task) {
   const isReview  = task.taskType === 'code-review';
   const typeLabel = isReview ? '📝 Code Review' : '⚙ Code Gen';
   const reviewUrl = reviewLink(task);
+  // Use gerritChangeId, or fall back to the first CPR change ID
+  const changes = task.changesPerRepo || [];
+  const displayChangeId = task.gerritChangeId
+    || changes.find((c) => c.changeId)?.changeId
+    || null;
   const reviewCard = reviewUrl
-    ? '<div class="meta-card"><div class="meta-label">Review</div><div class="meta-value"><a href="' + esc(reviewUrl) + '" target="_blank" rel="noopener noreferrer" class="badge-link">' + esc(task.gerritChangeId) + '</a></div></div>'
-    : metaCard('Review', task.gerritChangeId || '\u2014');
+    ? '<div class="meta-card"><div class="meta-label">Review</div><div class="meta-value"><a href="' + esc(reviewUrl) + '" target="_blank" rel="noopener noreferrer" class="badge-link">' + esc(displayChangeId || reviewUrl) + '</a></div></div>'
+    : metaCard('Review', displayChangeId || '\u2014');
   return '<div class="meta-grid">' +
     metaCard('Type',        typeLabel) +
     (!isReview ? metaCard('Ticket ID',   String(task.displayId || task.ticketId)) : '') +
@@ -2005,7 +2010,6 @@ function renderReviewCycle(c) {
 }
 
 function renderCodegenCycle(c) {
-    const isFailedCycle = c.result.status === 'failed';
     const modifiedFiles = c.result.modifiedFiles || [];
     const commitShaSuffix = c.result.commitSha ? ' [' + esc(c.result.commitSha.slice(0, 8)) + ']' : '';
     const events = c.result.agentEvents || [];
@@ -2037,27 +2041,10 @@ function renderCodegenCycle(c) {
       '</div>' +
       '<div class="card-body">' +
         '<div class="cycle-columns">' +
-          (isFailedCycle ? '<div class="cycle-column" style="grid-column:1 / -1">' +
+          '<div class="cycle-column">' +
             '<div class="cycle-col-label">Agent Response</div>' +
             '<div class="cycle-rich-text cycle-panel">' + renderRichText(c.result.summary || '—') + '</div>' +
-          '</div>'
-          : '<div class="cycle-column">' +
-              '<div class="cycle-col-label">Agent Response</div>' +
-              '<div class="cycle-rich-text cycle-panel">' + renderRichText(c.result.summary || '—') + '</div>' +
-            '</div>' +
-            '<div class="cycle-column">' +
-              '<div class="cycle-col-label">Commit Message' + (c.result.commitMessages && Object.keys(c.result.commitMessages).length > 1 ? 's' : '') + '</div>' +
-              (c.result.commitMessages && Object.keys(c.result.commitMessages).length > 0
-                ? Object.entries(c.result.commitMessages).map(([repoKey, msg]) =>
-                    '<div style="margin-bottom:8px">' +
-                      (Object.keys(c.result.commitMessages || {}).length > 1
-                        ? '<div style="font-size:11px;font-weight:bold;color:var(--muted);margin-bottom:2px">' + esc(repoKey) + '</div>'
-                        : '') +
-                      '<pre class="cycle-summary cycle-panel">' + esc(msg) + '</pre>' +
-                    '</div>'
-                  ).join('')
-                : '<pre class="cycle-summary cycle-panel">' + esc(c.result.commitMessage || '—') + '</pre>') +
-            '</div>') +
+          '</div>' +
         '</div>' +
         metricsHtml +
         (modifiedFiles.length
@@ -4758,7 +4745,10 @@ function ticketLink(task) {
 }
 
 function reviewLink(task) {
-  const url = task.reviewUrl || null;
+  // Prefer task-level reviewUrl; fall back to first available CPR reviewUrl
+  const url = task.reviewUrl
+    || task.changesPerRepo?.find((c) => c.reviewUrl)?.reviewUrl
+    || null;
   if (!url) return null;
   // ⚠️ SECURITY: Block javascript: and data: URIs that could execute code if clicked
   if (/^javascript:/i.test(url) || /^data:/i.test(url)) return null;

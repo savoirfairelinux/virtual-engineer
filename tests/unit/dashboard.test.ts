@@ -427,16 +427,15 @@ describe("renderAdminDashboardHtml", () => {
     expect(html).toContain("listType = 'ol'");
   });
 
-  it("uses shared stretch panels for commit message and agent response", () => {
+  it("uses full-width agent response column for all cycles", () => {
     const html = renderAdminDashboardHtml();
 
     expect(adminDashboardCss).toContain(".cycle-column { display: flex; flex-direction: column; min-width: 0; }");
     expect(adminDashboardCss).toContain(".cycle-panel { flex: 1; }");
     expect(html).toContain("<div class=\"cycle-rich-text cycle-panel\">' + renderRichText(c.result.summary || '—') + '</div>'");
     expect(html).toContain("<div class=\"cycle-col-label\">Agent Response</div>");
-    expect(html).toContain("<div class=\"cycle-col-label\">Commit Message");
-    expect(html.indexOf("<div class=\"cycle-col-label\">Agent Response</div>")).toBeLessThan(html.indexOf("<div class=\"cycle-col-label\">Commit Message"));
-    expect(html).toContain("esc(c.result.commitMessage || '—')");
+    expect(html).not.toContain("<div class=\"cycle-col-label\">Commit Message");
+    expect(html).not.toContain("esc(c.result.commitMessage || '—')");
   });
 
   it("hides the files section when a cycle has no modified files", () => {
@@ -448,14 +447,12 @@ describe("renderAdminDashboardHtml", () => {
     expect(html).toContain(": ''");
   });
 
-  it("uses a full-width agent response for failed cycles and omits commit message", () => {
+  it("uses a full-width agent response for failed cycles", () => {
     const html = renderAdminDashboardHtml();
 
-    expect(html).toContain("const isFailedCycle = c.result.status === 'failed';");
     expect(html).toContain("'<div class=\"cycle-columns\">' +");
-    expect(html).toContain("(isFailedCycle ? '<div class=\"cycle-column\" style=\"grid-column:1 / -1\">' +");
-    expect(html).toContain("          : '<div class=\"cycle-column\">' +");
-    expect(html).toContain("'<div class=\"cycle-col-label\">Commit Message");
+    expect(html).toContain("'<div class=\"cycle-column\">' +");
+    expect(html).not.toContain("'<div class=\"cycle-col-label\">Commit Message");
   });
 
   it("omits the commit sha placeholder from the cycle title when absent", () => {
@@ -676,7 +673,8 @@ describe("renderAdminDashboardHtml", () => {
 
     expect(html).toContain("reviewLink(task)");
     expect(html).toContain("esc(reviewLink(task))");
-    expect(html).toContain("metaCard('Review', task.gerritChangeId");
+    // Review meta-card now uses displayChangeId (falls back to CPR change ID)
+    expect(html).toContain("metaCard('Review', displayChangeId");
   });
 
   it("detail panel review meta-card uses Review label (not Gerrit)", () => {
@@ -684,7 +682,8 @@ describe("renderAdminDashboardHtml", () => {
 
     // Detail panel should say 'Review' not 'Gerrit' for the link meta card
     expect(html).toContain('<div class="meta-label">Review</div>');
-    expect(html).toContain("metaCard('Review', task.gerritChangeId");
+    // Review meta-card now uses displayChangeId (falls back to CPR change ID)
+    expect(html).toContain("metaCard('Review', displayChangeId");
   });
 
   it("auto-discovers resources when selecting an integration in the project modal", () => {
