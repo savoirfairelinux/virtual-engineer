@@ -136,7 +136,6 @@ describe("MockAgentAdapter", () => {
 
     expect(result.status).toBe("success");
     expect(result.externalChangeId).toBe(existingChangeId);
-    expect(result.commitMessage).toContain(`Change-Id: ${existingChangeId}`);
     expect(result.modifiedFiles).toEqual(["src/mock.ts"]);
   });
 
@@ -150,15 +149,5 @@ describe("MockAgentAdapter", () => {
     expect(result.modifiedFiles).toContain("src/direct-write.ts");
     await expect(readFile(join(workspacePath, "src/direct-write.ts"), "utf8")).resolves.toContain("direct");
     await expect(readFile(join(workspacePath, "repo", "src/direct-write.ts"), "utf8")).rejects.toThrow();
-  });
-
-  it("embedChangeId appends a Change-Id only when missing", () => {
-    const adapter = new MockAgentAdapter();
-
-    const added = (adapter as any).embedChangeId("Fix bug", "Iabcd1234");
-    const preserved = (adapter as any).embedChangeId("Fix bug\n\nChange-Id: Ikeepme\n", "Iignored");
-
-    expect(added).toBe("Fix bug\n\nChange-Id: Iabcd1234\n");
-    expect(preserved).toBe("Fix bug\n\nChange-Id: Ikeepme\n");
   });
 });

@@ -499,55 +499,6 @@ describe("CopilotAdapter", () => {
     });
   });
 
-  // ── commitMessage validation ───────────────────────────────────────────────
-
-  describe("execute — commitMessage handling", () => {
-    it("preserves a valid conventional commit message returned by the agent", async () => {
-      const { adapter } = makeAdapterWithInvoker(
-        agentResultJson({ commitMessage: "feat(api): add /exit endpoint" })
-      );
-      const result = await adapter.execute(makeContext());
-
-      expect(result.status).toBe("success");
-      expect(result.commitMessage).toMatch(/^feat\(api\): add \/exit endpoint/);
-    });
-
-    it("preserves a valid multiline commit message (subject + body)", async () => {
-      const multilineMsg = "feat(api): add /exit endpoint\n\nReturns {\"message\":\"shutting off\"} as JSON.";
-      const { adapter } = makeAdapterWithInvoker(
-        agentResultJson({ commitMessage: multilineMsg })
-      );
-      const result = await adapter.execute(makeContext());
-
-      expect(result.status).toBe("success");
-      expect(result.commitMessage).toBe(multilineMsg);
-    });
-
-    it("discards a non-conventional commit message and falls back to host message", async () => {
-      const { adapter } = makeAdapterWithInvoker(
-        agentResultJson({ commitMessage: "added the exit endpoint and other stuff" })
-      );
-      const result = await adapter.execute(
-        makeContext({ commitMessage: "feat: add exit endpoint" })
-      );
-
-      expect(result.status).toBe("success");
-      expect(result.commitMessage).toMatch(/feat: add exit endpoint/);
-    });
-
-    it("uses host fallback commit message when agent omits commitMessage", async () => {
-      const { adapter } = makeAdapterWithInvoker(
-        agentResultJson({ commitMessage: undefined })
-      );
-      const result = await adapter.execute(
-        makeContext({ commitMessage: "feat: add exit endpoint" })
-      );
-
-      expect(result.status).toBe("success");
-      expect(result.commitMessage).toMatch(/feat: add exit endpoint/);
-    });
-  });
-
   describe("AgentLogEvent — types", () => {
     it("AgentLogEvent has the required shape", () => {
       const event: AgentLogEvent = {
@@ -662,8 +613,6 @@ describe("CopilotAdapter", () => {
       expect(result.commits).toHaveLength(2);
       expect(result.commits![0]!.subject).toBe("feat(api): add endpoint");
       expect(result.commits![1]!.subject).toBe("test(api): add endpoint tests");
-      // Host should NOT inject a fallback commit message when commits[] is present
-      expect(result.commitMessage).toBeUndefined();
     });
 
     it("injects gerritChangeId when commits[] is present but gerritChangeId is missing", async () => {
@@ -689,8 +638,6 @@ describe("CopilotAdapter", () => {
       );
 
       expect(result.status).toBe("success");
-      // Legacy path: host generates commit message
-      expect(result.commitMessage).toContain("feat: fallback");
       expect(result.commits).toEqual([]);
     });
   });

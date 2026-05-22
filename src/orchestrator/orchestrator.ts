@@ -14,7 +14,6 @@ import type {
   TicketId,
   WorkspaceRunner,
   WorkspaceHandle,
-  AgentResult,
   ProjectRecord,
   ResolvedAgentConfig,
 } from "../interfaces.js";
@@ -662,7 +661,7 @@ export class Orchestrator {
       // For Gerrit: agent commits[] are pre-validated; each becomes a separate change (topic-grouped).
       // For GitLab: all N commits land in one MR via force-push.
       if (task.projectId && this.projectMode && projectPushTargets.length > 0) {
-        await this.pushProjectChanges(task, handle, agentResult, projectPushTargets, commitMessage, context.ticketUrl ?? "");
+        await this.pushProjectChanges(task, handle, projectPushTargets, commitMessage, context.ticketUrl ?? "");
       }
 
       task = await this.stateStore.transition(task.taskId, "IN_REVIEW");
@@ -1016,7 +1015,6 @@ export class Orchestrator {
   private async pushProjectChanges(
     task: Task,
     handle: WorkspaceHandle,
-    agentResult: AgentResult,
     pushTargets: import("../interfaces.js").ProjectPushTargetRecord[],
     fallbackCommitMessage: string,
     ticketUrl: string
@@ -1076,9 +1074,8 @@ export class Orchestrator {
 
       const volumeOpts = { volumeName: handle.volumeName, image: handle.containerImage, subPath: target.localPath };
       try {
-        const baseMsg = agentResult.commitMessage ?? fallbackCommitMessage;
-        const commitMsg = this.appendTicketFooter(baseMsg, task.ticketId, ticketUrl, task.ticketSourceLabel);
-        const subjectHash = createHash("sha1").update(baseMsg.split("\n")[0] ?? "").digest("hex");
+        const commitMsg = this.appendTicketFooter(fallbackCommitMessage, task.ticketId, ticketUrl, task.ticketSourceLabel);
+        const subjectHash = createHash("sha1").update(fallbackCommitMessage.split("\n")[0] ?? "").digest("hex");
 
         let pushResult;
         if (vcsConnector.pushDirect) {

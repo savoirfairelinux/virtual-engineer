@@ -6,25 +6,17 @@
  *
  * This script runs INSIDE the Docker container for each task cycle.
  * The repository is pre-cloned by the host orchestrator and mounted at /workspace.
- * This worker is responsible ONLY for code generation — no VCS credentials,
- * no clone, no commit, no push.
+ * This worker is responsible ONLY for code generation.
+ * It has no VCS credentials, does not clone, and never pushes.
  *
  * It receives task context via environment variables, then:
  *   1. Opens a GitHub Copilot SDK session against the pre-cloned repository
  *   2. Sends the task prompt — the CLI agent edits files autonomously
- *   3. Collects modified files via `git status`
- *   4. Writes a JSON AgentResult object to stdout (status, modifiedFiles, summary, commitMessage)
- *
- * Commit message contract:
- *   The task prompt instructs the agent to end its response with:
- *     COMMIT_MSG: <type>(<scope>): <subject>
- *   extractCommitMessage() parses this line. The host CopilotAdapter then validates
- *   it against the Conventional Commits format before using it. If absent or invalid,
- *   the orchestrator generates a `feat: <subject>` fallback instead.
+ *   3. Collects agent-created commits
+ *   4. Writes a JSON AgentResult object to stdout (status, modifiedFiles, commits, summary)
  *
  * The host orchestrator (WorkspaceRunner + VcsConnector) handles:
  *   - Repository clone (before this worker runs)
- *   - Git commit with Change-Id and author metadata
  *   - Push to Gerrit / GitLab (after this worker exits)
  *
  * Authentication: GITHUB_TOKEN env var (for Copilot LLM calls only).
@@ -139,11 +131,16 @@ async function startLocalCliServer() {
   // - API tokens for third-party services (GERRIT_TOKEN, REDMINE_API_KEY)
   // - Admin secrets (ADMIN_SECRET_KEY)
   // Only GITHUB_TOKEN is passed (needed for Copilot LLM API).
+  // GIT_*_NAME/EMAIL are passed so shell-tool git commands inherit identity.
   // PATH, HOME, TMPDIR, TMP, TEMP, USER, XDG_RUNTIME_DIR are required for basic execution.
   const child = spawn(cliPath, ['--headless', '--port', String(port)], {
     cwd: REPO_PATH,
     env: {
       GITHUB_TOKEN: process.env.GITHUB_TOKEN || '',
+      GIT_AUTHOR_NAME: GIT_AUTHOR_NAME,
+      GIT_AUTHOR_EMAIL: GIT_AUTHOR_EMAIL,
+      GIT_COMMITTER_NAME: GIT_COMMITTER_NAME,
+      GIT_COMMITTER_EMAIL: GIT_COMMITTER_EMAIL,
       PATH: process.env.PATH || '',
       HOME: process.env.HOME || '',
       TMPDIR: process.env.TMPDIR || '',
@@ -175,36 +172,6 @@ async function startLocalCliServer() {
 }
 
 
-
-// ── prompt builder ────────────────────────────────────────────────────────────
-function extractCommitMessage(text) {
-  const match = /COMMIT_MSG_START\r?\n([\s\S]*?)\r?\nCOMMIT_MSG_END/m.exec(text);
-  if (!match) return null;
-  return match[1].trim();
-}
-
-/**
- * Extract per-repository commit messages from agent response text.
- * Expects a block like:
- *   COMMIT_MSGS_START
- *   {"repoKey1":"feat: message for repo1","repoKey2":"fix: message for repo2"}
- *   COMMIT_MSGS_END
- *
- * Returns the parsed object or null if absent or invalid.
- */
-function extractPerRepoCommitMessages(text) {
-  const match = /COMMIT_MSGS_START\r?\n([\s\S]*?)\r?\nCOMMIT_MSGS_END/m.exec(text);
-  if (!match) return null;
-  try {
-    const parsed = JSON.parse(match[1].trim());
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      return parsed;
-    }
-  } catch {
-    // ignore parse errors
-  }
-  return null;
-}
 
 // ── unified session runner ────────────────────────────────────────────────────
 /**
@@ -576,7 +543,7 @@ function formatToolLabel(toolName, toolInput) {
  * Returns an object with a `toolCallCount` property for heartbeat logging.
  */
 function registerSessionEventHandlers(session) {
-  const state = { toolCallCount: 0 };
+  const state = { toolCallCount: 0, toolsByKind: {} };
   const toolTimers = {};
 
   session.on('tool.execution_start', (e) => {
@@ -586,6 +553,8 @@ function registerSessionEventHandlers(session) {
     const label = formatToolLabel(toolName, toolInput);
     const callId = `${toolName}_${state.toolCallCount}`;
     toolTimers[callId] = Date.now();
+    // Track per-tool-name counts for diagnostics
+    state.toolsByKind[toolName] = (state.toolsByKind[toolName] || 0) + 1;
     process.stderr.write(`[tool] #${state.toolCallCount} ${label}\n`);
     emitEvent('tool.execution_start', { name: toolName, input: toolInput, callId, callNumber: state.toolCallCount });
   });
@@ -774,9 +743,6 @@ async function main() {
     //    At ~3-5 seconds per tool call, 100 calls ≈ 5-8 minutes, plus headroom for
     //    network, SDK overhead, and model reasoning phases. 59 minutes (3540s) provides
     //    sufficient margin (1 minute under the 1-hour host deadline) for complex tasks.
-    //    The response is expected to end with a COMMIT_MSG: line per the prompt
-    //    contract. extractCommitMessage() parses that line; the remaining text
-    //    becomes the summary returned in the AgentResult.
     let response;
     try {
       response = await session.sendAndWait({ prompt: userPrompt }, 3_540_000);
@@ -785,15 +751,13 @@ async function main() {
     }
 
     const rawContent = response?.data?.content ?? 'Task completed';
-    const commitMessage = extractCommitMessage(rawContent);
-    const commitMessages = extractPerRepoCommitMessages(rawContent);
-    const summary = rawContent
-      .replace(/\nCOMMIT_MSG_START[\s\S]*?COMMIT_MSG_END/m, '')
-      .replace(/\nCOMMIT_MSGS_START[\s\S]*?COMMIT_MSGS_END/m, '')
-      .trim()
-      .slice(0, 1000);
+    const summary = rawContent.trim().slice(0, 1000);
     process.stderr.write(`session idle — collecting changes\n`);
-    emitEvent('session.end', { toolCallCount: handlerState.toolCallCount, model: COPILOT_MODEL });
+    emitEvent('session.end', {
+      toolCallCount: handlerState.toolCallCount,
+      toolsByKind: handlerState.toolsByKind,
+      model: COPILOT_MODEL,
+    });
 
     await session.disconnect();
 
@@ -837,8 +801,6 @@ async function main() {
           modifiedFiles,
           commits,
           summary,
-          ...(commitMessage !== null ? { commitMessage } : {}),
-          ...(commitMessages !== null ? { commitMessages } : {}),
           agentLogs: summary,
           metadata: { adapter: 'copilot-sdk', model: COPILOT_MODEL, agentCommits: true },
         };
@@ -881,14 +843,34 @@ async function main() {
           metadata: { adapter: 'copilot-sdk', model: COPILOT_MODEL },
         };
       } else {
+        // Strict mode: edited files without commits is a hard failure.
+        // The model must run git add/git commit when it changes code.
+        const reason = 'agent edited files but created no commits; run git add/git commit before finishing';
+        const toolSummary = Object.entries(handlerState.toolsByKind)
+          .map(([name, count]) => `${name}=${count}`)
+          .join(', ') || 'none';
+        process.stderr.write(`${reason}\n`);
+        process.stderr.write(`tool usage breakdown: ${toolSummary}\n`);
+        emitEvent('commit.validation_failed', {
+          reason,
+          modifiedFileCount: flatModifiedFiles.length,
+          toolCallCount: handlerState.toolCallCount,
+          toolsByKind: handlerState.toolsByKind,
+        });
         result = {
-          status: 'success',
+          status: 'failed',
           modifiedFiles,
-          summary,
-          ...(commitMessage !== null ? { commitMessage } : {}),
-          ...(commitMessages !== null ? { commitMessages } : {}),
+          summary: `Agent changed files without commits (${flatModifiedFiles.length} file(s)).` +
+            ' The agent must create at least one conventional commit.' +
+            ` Tool usage: ${toolSummary}.`,
           agentLogs: summary,
-          metadata: { adapter: 'copilot-sdk', model: COPILOT_MODEL },
+          metadata: {
+            adapter: 'copilot-sdk',
+            model: COPILOT_MODEL,
+            missingCommits: true,
+            toolCallCount: handlerState.toolCallCount,
+            toolsByKind: handlerState.toolsByKind,
+          },
         };
       }
     }

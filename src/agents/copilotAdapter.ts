@@ -63,7 +63,6 @@ const DEFAULT_CONFIG: CopilotAdapterConfig = {
 
 /**
  * Build the user prompt written to `/ve-home/user-prompt.txt` for a code-generation cycle.
- * The COMMIT_MSG_START/END output protocol is defined in the system prompt, not here.
  */
 export function buildCodegenUserPrompt(
   context: TaskContext,
@@ -346,10 +345,6 @@ export class CopilotAdapter implements AgentAdapter {
     githubToken: string,
     changeId: ExternalChangeId
   ): Promise<AgentResult> {
-    const commitMessage = context.commitMessage.includes("Change-Id:")
-      ? context.commitMessage
-      : `${context.commitMessage.trimEnd()}\n\nChange-Id: ${changeId}\n`;
-
     const stderrState: StderrParseState = {
       buffer: "",
       plainLogLines: [],
@@ -382,28 +377,6 @@ export class CopilotAdapter implements AgentAdapter {
       return result;
     }
 
-    // Validate the agent-provided commit message against Conventional Commits format.
-    // Messages that don't match are discarded so the host fallback takes effect below.
-    const CONVENTIONAL_COMMIT_RE =
-      /^(feat|fix|refactor|test|chore|docs|perf|ci|build)(\([^)]+\))?: .{1,72}$/;
-
-    if (result.commitMessage && result.status === "success") {
-      const firstLine = result.commitMessage.split("\n")[0] ?? "";
-      if (!CONVENTIONAL_COMMIT_RE.test(firstLine)) {
-        log.warn(
-          { taskId: context.taskId, firstLine },
-          "agent returned non-conventional commit subject, discarding"
-        );
-        result.commitMessage = undefined;
-      }
-    }
-
-    // Fall back to the host-generated commit message when the agent did not
-    // produce a valid Conventional Commits message (or is an older worker version).
-    if (!result.commitMessage && result.status === "success") {
-      result.commitMessage = commitMessage;
-    }
-    // Phase 3: agent-worker no longer returns gerritChangeId (host handles commit/push).
     // Inject the host-generated changeId so the orchestrator's Change-Id validation passes.
     if (!result.externalChangeId && result.status === "success") {
       result.externalChangeId = changeId;

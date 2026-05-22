@@ -87,18 +87,11 @@ export class MockAgentAdapter implements AgentAdapter {
     return {
       status: "success",
       modifiedFiles,
-      commitMessage: this.embedChangeId(context.commitMessage, changeId),
       summary: this.options.summary ?? `Applied changes for: ${context.ticketTitle}`,
       agentLogs: logs,
       externalChangeId: changeId,
       metadata: { adapter: "mock", cycleNumber: context.cycleNumber },
     };
-  }
-
-  /** Append a Gerrit Change-Id trailer to a commit message if one is not already present. */
-  private embedChangeId(message: string, changeId: ExternalChangeId): string {
-    if (message.includes("Change-Id:")) return message;
-    return `${message.trimEnd()}\n\nChange-Id: ${changeId}\n`;
   }
 
   /** Generate a deterministic mock Gerrit Change-Id. */
