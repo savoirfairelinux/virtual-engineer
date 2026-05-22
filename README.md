@@ -20,20 +20,6 @@ All provider configuration (ticketing, VCS, agent) is stored in SQLite and manag
 
 ---
 
-## Dev setup (orchestrator on host)
-
-```bash
-npm install
-cp .env.example .env
-npm run db:migrate
-docker build -f Dockerfile.agent -t virtual-engineer-workspace:latest .
-npm run dev
-```
-
-Admin UI: http://127.0.0.1:3100/admin
-
----
-
 ## Prod setup (orchestrator in Docker)
 
 ```bash
@@ -48,6 +34,20 @@ Admin UI: http://127.0.0.1:3100/admin
 Logs: `docker logs -f ve-orchestrator`
 
 > In Docker mode the orchestrator uses host networking, so external services on the same host are reachable via `http://localhost:<port>`.
+
+---
+
+## Dev setup (orchestrator on host)
+
+```bash
+npm install
+cp .env.example .env
+npm run db:migrate
+docker build -f Dockerfile.agent -t virtual-engineer-workspace:latest .
+npm run dev
+```
+
+Admin UI: http://127.0.0.1:3100/admin
 
 ---
 
