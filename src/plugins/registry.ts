@@ -188,6 +188,12 @@ export interface PluginDescriptor {
     /** DB key for the user instructions prompt injected into the review prompt. */
     userPromptId: string;
   };
+  /**
+   * Returns the integration-specific detail lines shown in the admin provider
+   * summary panel. The caller appends category-level details (e.g. polling
+   * interval for ticketing integrations) after this array.
+   */
+  getSummaryDetails(config: Record<string, unknown>): string[];
 }
 
 // ─── Registry ───────────────────────────────────────────────────────────────

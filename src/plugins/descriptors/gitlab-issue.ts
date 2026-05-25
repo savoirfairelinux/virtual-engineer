@@ -103,4 +103,12 @@ export const gitlabIssueDescriptor: PluginDescriptor = {
     }
     return result;
   },
+  getSummaryDetails(config) {
+    const baseUrl = typeof config["baseUrl"] === "string" && config["baseUrl"].length > 0
+      ? config["baseUrl"]
+      : "GitLab URL missing";
+    const id = config["projectId"];
+    const projectId = typeof id === "string" ? id : typeof id === "number" ? String(id) : "unset";
+    return [baseUrl, `Project ${projectId}`];
+  },
 };

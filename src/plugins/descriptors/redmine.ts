@@ -104,4 +104,10 @@ export const redmineDescriptor: PluginDescriptor = {
       return { success: false, error: `Redmine connection test failed: ${err instanceof Error ? err.message : String(err)}` };
     }
   },
+  getSummaryDetails(config) {
+    const baseUrl = typeof config["baseUrl"] === "string" && config["baseUrl"].length > 0
+      ? config["baseUrl"]
+      : "Redmine URL missing";
+    return [baseUrl];
+  },
 };

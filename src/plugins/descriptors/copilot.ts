@@ -65,5 +65,8 @@ export function createCopilotDescriptor(adminAuthSecret?: string): PluginDescrip
         config as CopilotConnectionValidationConfig,
         { adminAuthSecret }
       ),
+    getSummaryDetails(_config: Record<string, unknown>): string[] {
+      return [];
+    },
   };
 }

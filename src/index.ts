@@ -35,7 +35,6 @@ import { PluginManager } from "./plugins/pluginManager.js";
 import type { AppConfig } from "./config.js";
 import { DEFAULT_COPILOT_MODEL } from "./copilotModel.js";
 import { getPluginDescriptor } from "./plugins/registry.js";
-import { GERRIT_SSH_PORT_DEFAULT } from "./plugins/descriptors/gerrit.js";
 
 const log = getLogger("main");
 const SHUTDOWN_TIMEOUT_MS = 5_000;
@@ -642,11 +641,6 @@ function asOptionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
-/** Return `value` as a number if it is a finite number, otherwise undefined. */
-function asOptionalNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
 /** Type guard: return true when `adapter` is a `CopilotAdapter` with `setDockerInvoker`. */
 function isCopilotAdapter(
   adapter: AgentAdapter
@@ -713,77 +707,23 @@ function buildAdminProviderSummaryForIntegration(
   integration: Integration,
   config: ReturnType<typeof getConfig>
 ): AdminProviderSummary {
-  const parsed = parseIntegrationConfig(integration);
-
-  switch (integration.type) {
-    case "redmine":
-      return {
-        id: integration.id,
-        name: integration.name,
-        category: "ticketing",
-        enabled: integration.enabled,
-        configured: true,
-        status: "ready",
-        details: [
-          asOptionalString(parsed?.["baseUrl"]) ?? "Redmine URL missing",
-          `Polling every ${config.pollingIntervalMs} ms`,
-        ],
-      };
-    case "gitlab-issue":
-      return {
-        id: integration.id,
-        name: integration.name,
-        category: "ticketing",
-        enabled: integration.enabled,
-        configured: true,
-        status: "ready",
-        details: [
-          asOptionalString(parsed?.["baseUrl"]) ?? "GitLab URL missing",
-          `Project ${asOptionalString(parsed?.["projectId"]) ?? asOptionalNumber(parsed?.["projectId"])?.toString() ?? "unset"}`,
-          `Polling every ${config.pollingIntervalMs} ms`,
-        ],
-      };
-    case "gerrit":
-      return {
-        id: integration.id,
-        name: integration.name,
-        category: "review",
-        enabled: integration.enabled,
-        configured: true,
-        status: "ready",
-        details: [
-          asOptionalString(parsed?.["baseUrl"]) ?? "Gerrit URL missing",
-          `SSH ${asOptionalString(parsed?.["sshHost"]) ?? "unset"}:${asOptionalNumber(parsed?.["sshPort"]) ?? GERRIT_SSH_PORT_DEFAULT}`,
-        ],
-      };
-    case "gitlab-merge-request":
-      return {
-        id: integration.id,
-        name: integration.name,
-        category: "review",
-        enabled: integration.enabled,
-        configured: true,
-        status: "ready",
-        details: [
-          asOptionalString(parsed?.["baseUrl"]) ?? "GitLab URL missing",
-          `Project ${asOptionalString(parsed?.["projectId"]) ?? asOptionalNumber(parsed?.["projectId"])?.toString() ?? "unset"}`,
-        ],
-      };
-    default:
-      // Generic handler for all agent-category integrations (copilot, mock,
-      // and future AI providers). Adding a new agent type only requires a
-      // descriptor with category: "agent" and a registerFactory call — no
-      // change needed here.
-      return {
-        id: integration.id,
-        name: integration.name,
-        category: "agent",
-        enabled: integration.enabled,
-        configured: true,
-        status: "ready",
-        details: [integration.name],
-      };
+  const parsed = parseIntegrationConfig(integration) ?? {};
+  const descriptor = getPluginDescriptor(integration.type);
+  if (!descriptor) {
+    throw new Error(`No descriptor registered for active integration type '${integration.type}' (id: ${integration.id})`);
   }
+  return {
+    id: integration.id,
+    name: integration.name,
+    category: descriptor.category,
+    enabled: integration.enabled,
+    configured: true,
+    status: "ready",
+    details: [
+      ...descriptor.getSummaryDetails(parsed),
+      ...(descriptor.category === "ticketing" ? [`Polling every ${config.pollingIntervalMs} ms`] : []),
+    ],
+  };
 }
 
 main().catch((err: unknown) => {

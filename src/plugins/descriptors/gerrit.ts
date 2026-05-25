@@ -218,4 +218,14 @@ export const gerritDescriptor: PluginDescriptor = {
       },
     };
   },
+  getSummaryDetails(config) {
+    const baseUrl = typeof config["baseUrl"] === "string" && config["baseUrl"].length > 0
+      ? config["baseUrl"]
+      : "Gerrit URL missing";
+    const sshHost = typeof config["sshHost"] === "string" && config["sshHost"].length > 0
+      ? config["sshHost"]
+      : "unset";
+    const sshPort = typeof config["sshPort"] === "number" ? config["sshPort"] : GERRIT_SSH_PORT_DEFAULT;
+    return [baseUrl, `SSH ${sshHost}:${sshPort}`];
+  },
 };
