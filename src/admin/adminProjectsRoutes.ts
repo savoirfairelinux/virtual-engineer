@@ -84,6 +84,29 @@ const pushTargetSchema = z.object({
   sshKeyPath: z.string().optional(),
 });
 
+/** Validate push-target arrays: unique localPaths, at most one root ("."). */
+const pushTargetsArraySchema = z.array(pushTargetSchema).min(1).superRefine((targets, ctx) => {
+  const paths = targets.map((t) => t.localPath);
+  const roots = paths.filter((p) => p === ".");
+  if (roots.length > 1) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Only one push target may have localPath \".\" (root)",
+    });
+  }
+  const seen = new Set<string>();
+  for (const p of paths) {
+    if (seen.has(p)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `Duplicate localPath "${p}" — each push target must have a unique workspace path`,
+      });
+      break;
+    }
+    seen.add(p);
+  }
+});
+
 const ticketSourceSchema = z.object({
   integrationId: z.string().min(1),
   ticketProjectKey: z.string().min(1),
@@ -103,7 +126,7 @@ const codingProjectCreateSchema = z.object({
   postCloneScript: z.string().optional(),
   enabled: z.boolean().optional(),
   ticketSource: ticketSourceSchema,
-  pushTargets: z.array(pushTargetSchema).min(1),
+  pushTargets: pushTargetsArraySchema,
 });
 
 const reviewProjectCreateSchema = z.object({
@@ -129,7 +152,7 @@ const projectUpdateSchema = z.object({
   postCloneScript: z.string().optional(),
   enabled: z.boolean().optional(),
   ticketSource: ticketSourceSchema.optional(),
-  pushTargets: z.array(pushTargetSchema).optional(),
+  pushTargets: pushTargetsArraySchema.optional(),
   reviewConfig: reviewConfigSchema.optional(),
 });
 

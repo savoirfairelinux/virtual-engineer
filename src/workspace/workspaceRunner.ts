@@ -270,6 +270,19 @@ export class DockerWorkspaceRunner implements WorkspaceRunner {
       return { success: false, localPath: "/workspace", error: "no root push target" };
     }
 
+    // Safety: ensure no two targets share the same localPath.
+    const seenPaths = new Set<string>();
+    for (const t of sorted) {
+      if (seenPaths.has(t.localPath)) {
+        return {
+          success: false,
+          localPath: "/workspace",
+          error: `duplicate localPath "${t.localPath}" in push targets (repoKey: ${t.repoKey})`,
+        };
+      }
+      seenPaths.add(t.localPath);
+    }
+
     log.info(
       {
         taskId: handle.taskId,
