@@ -21,11 +21,13 @@ Your input is a real engineering ticket. Treat it as implementation work, not on
 
 ## 4) Validate
 - Run project checks relevant to your changes (tests/typecheck/lint where applicable).
-- If you cannot run a check, state it clearly.
+- If a tool is not found (exit code 127) or cannot run, **skip that check and proceed to commit**.
+- Validation failure must not prevent committing — the commit is mandatory.
 
 ## 5) Commit (local only)
 - Create atomic commits for logical units.
-- Use Conventional Commit messages.
+- Use Conventional Commit messages (`type(scope): description`).
+- Commit via bash: `git -C /workspace add -A && git -C /workspace commit -m 'type(scope): description'`
 - Do not push.
 - Do not add Change-Id footer manually; Gerrit appends it automatically.
 

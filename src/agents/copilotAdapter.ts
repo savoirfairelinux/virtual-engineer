@@ -105,7 +105,18 @@ export function buildCodegenUserPrompt(
   }
 
   const repoMap = context.agentSession.repositoryMap;
-  if (repoMap && repoMap.submodules.length > 0) {
+  if (!repoMap || repoMap.submodules.length === 0) {
+    // Single-repository workspace: explicit commit reminder.
+    lines.push("### CRITICAL: Commit Requirement");
+    lines.push("After making all your changes you **MUST** commit them using `bash`:");
+    lines.push("```");
+    lines.push("git -C /workspace add -A && git -C /workspace commit -m 'type(scope): description'");
+    lines.push("```");
+    lines.push("The commit message **must** follow Conventional Commits format (`type(scope): subject`).");
+    lines.push("If validation tools (lint, typecheck) are not available in the workspace, **skip them** and commit anyway.");
+    lines.push("Do NOT end your session without committing — uncommitted file changes are discarded.");
+    lines.push("");
+  } else {
     lines.push("### CRITICAL: Multi-Repository One-Shot Requirement");
     lines.push("**You MUST implement ALL changes in ALL repositories before writing your final response.**");
     lines.push("Do NOT stop after one repo. Do NOT say \"let me know\" or \"Next:\". This session ends when you respond — there is no next turn.");
