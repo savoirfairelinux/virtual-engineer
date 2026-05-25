@@ -1609,9 +1609,18 @@ export class SqliteStateStore implements StateStore, IntegrationStore, PromptSto
     return updated;
   }
 
-  /** Delete a project and cascade-delete its ticket source, push targets, and review bindings. */
+  /** Delete a project, cascade child rows, and abandon non-terminal tasks linked to it. */
   async deleteProject(id: ProjectId): Promise<void> {
+    const now = Math.floor(Date.now() / 1000);
+    const reason = `project ${id} deleted while tasks were still active`;
+    const placeholders = [...TERMINAL_STATES].map(() => "?").join(", ");
     this.raw.transaction(() => {
+      this.raw
+        .prepare(
+          `UPDATE tasks SET state = 'ABANDONED', failure_reason = ?, updated_at = ? ` +
+          `WHERE project_id = ? AND state NOT IN (${placeholders})`
+        )
+        .run(reason, now, id, ...TERMINAL_STATES);
       this.raw.prepare("DELETE FROM project_ticket_source WHERE project_id = ?").run(id);
       this.raw.prepare("DELETE FROM project_push_targets WHERE project_id = ?").run(id);
       this.raw.prepare("DELETE FROM project_review_repos WHERE project_id = ?").run(id);

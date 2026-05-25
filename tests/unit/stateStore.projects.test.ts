@@ -6,6 +6,8 @@ import { SqliteStateStore, resolveAgentConfig } from "../../src/state/stateStore
 import {
   makeAgentId,
   makeProjectId,
+  makeTaskId,
+  makeTicketId,
   type AgentRecord,
   type ProjectRecord,
 } from "../../src/interfaces.js";
@@ -125,6 +127,26 @@ describe("SqliteStateStore — Phase 2: projects", () => {
     expect(await store.getProjectById(p.id)).toBeNull();
     expect(await store.getProjectTicketSource(p.id)).toBeNull();
     expect((await store.listProjectPushTargets(p.id)).length).toBe(0);
+  });
+
+  it("deleteProject abandons non-terminal tasks belonging to the project", async () => {
+    const a = await makeAgent(store);
+    const p = await store.createProject({ name: "P", type: "coding", agentId: a.id });
+    const activeId = makeTaskId(randomUUID());
+    const failedId = makeTaskId(randomUUID());
+    await store.createTask(activeId, makeTicketId("100"));
+    await store.createTask(failedId, makeTicketId("101"));
+    await store.setTaskProjectId(activeId, p.id);
+    await store.setTaskProjectId(failedId, p.id);
+    await store.transition(failedId, "FAILED");
+
+    await store.deleteProject(p.id);
+
+    const active = await store.getTask(activeId);
+    const failed = await store.getTask(failedId);
+    expect(active?.state).toBe("ABANDONED");
+    expect(active?.failureReason).toMatch(/project .* deleted/i);
+    expect(failed?.state).toBe("FAILED");
   });
 
   it("setProjectEnabled toggles and listProjects filters work", async () => {
