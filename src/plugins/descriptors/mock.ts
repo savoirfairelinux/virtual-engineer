@@ -19,4 +19,7 @@ export const mockDescriptor: PluginDescriptor = {
     { key: "simulateDelayMs", label: "Simulated Delay (ms)", type: "number", required: false, placeholder: "0" },
   ],
   createInstance: (config) => new MockAgentAdapter(config as ConstructorParameters<typeof MockAgentAdapter>[0]),
+  getSummaryDetails(_config) {
+    return [];
+  },
 };

@@ -115,4 +115,12 @@ export const gitlabMergeRequestDescriptor: PluginDescriptor = {
     gitAuthorEmail: cfg["gitAuthorEmail"] as string,
     ...(typeof cfg["targetBranch"] === "string" ? { targetBranch: cfg["targetBranch"] } : {}),
   }),
+  getSummaryDetails(config) {
+    const baseUrl = typeof config["baseUrl"] === "string" && config["baseUrl"].length > 0
+      ? config["baseUrl"]
+      : "GitLab URL missing";
+    const id = config["projectId"];
+    const projectId = typeof id === "string" ? id : typeof id === "number" ? String(id) : "unset";
+    return [baseUrl, `Project ${projectId}`];
+  },
 };

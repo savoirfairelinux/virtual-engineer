@@ -181,6 +181,7 @@ describe("Admin API — Copilot OAuth routes", () => {
         completePath: "/api/admin/plugins/copilot/oauth/complete",
       },
       createOAuthHandler,
+      getSummaryDetails(_config) { return []; },
     });
     const providerAuthService = {
       startAuthFlow: vi.fn(async () => ({
@@ -250,6 +251,7 @@ describe("Admin API — Copilot OAuth routes", () => {
         completePath: "/api/admin/plugins/copilot/oauth/complete",
       },
       createOAuthHandler,
+      getSummaryDetails(_config) { return []; },
     });
     const providerAuthService = {
       startAuthFlow: vi.fn(),
@@ -337,6 +339,7 @@ describe("Admin API — Copilot OAuth routes", () => {
         completePath: "/api/admin/plugins/copilot/oauth/complete",
       },
       createOAuthHandler,
+      getSummaryDetails(_config) { return []; },
     });
     const providerAuthService = {
       startAuthFlow: vi.fn(async () => ({
@@ -445,6 +448,7 @@ describe("Admin API — Copilot OAuth routes", () => {
         completePath: "/api/admin/plugins/copilot/oauth/complete",
       },
       createOAuthHandler,
+      getSummaryDetails(_config) { return []; },
     });
     server = createAdminServer(makeDeps(store));
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
