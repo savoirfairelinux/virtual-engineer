@@ -1993,9 +1993,11 @@ function renderReviewCycle(c) {
       ).join('') + '</div>'
     : '';
 
+  const reviewCycleTs = c.createdAt ? ' <span style="font-size:11px;color:var(--muted)">' + esc(fmt(c.createdAt)) + '</span>' : '';
+
   return '<div class="card">' +
     '<div class="card-header">' +
-      '<span class="card-title">Review Cycle ' + esc(String(c.cycleNumber)) + '</span>' +
+      '<span class="card-title">Review Cycle ' + esc(String(c.cycleNumber)) + reviewCycleTs + '</span>' +
       '<span class="badge" data-tone="' + tone(c.result.status) + '">' + esc(c.result.status) + '</span>' +
     '</div>' +
     '<div class="card-body">' +
@@ -2034,9 +2036,11 @@ function renderCodegenCycle(c) {
         '</div>'
       : '';
 
+    const cycleTs = c.createdAt ? ' <span style="font-size:11px;color:var(--muted)">' + esc(fmt(c.createdAt)) + '</span>' : '';
+
     return '<div class="card">' +
       '<div class="card-header">' +
-        '<span class="card-title">Cycle ' + esc(String(c.cycleNumber)) + commitShaSuffix + '</span>' +
+        '<span class="card-title">Cycle ' + esc(String(c.cycleNumber)) + commitShaSuffix + cycleTs + '</span>' +
         '<span class="badge" data-tone="' + tone(c.result.status) + '">' + esc(c.result.status) + '</span>' +
       '</div>' +
       '<div class="card-body">' +

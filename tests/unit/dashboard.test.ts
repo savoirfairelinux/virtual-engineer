@@ -459,7 +459,7 @@ describe("renderAdminDashboardHtml", () => {
     const html = renderAdminDashboardHtml();
 
     expect(html).toContain("const commitShaSuffix = c.result.commitSha ? ' [' + esc(c.result.commitSha.slice(0, 8)) + ']' : '';");
-    expect(html).toContain("'<span class=\"card-title\">Cycle ' + esc(String(c.cycleNumber)) + commitShaSuffix + '</span>'");
+    expect(html).toContain("'<span class=\"card-title\">Cycle ' + esc(String(c.cycleNumber)) + commitShaSuffix + cycleTs + '</span>'");
   });
 
   it("loadProviders calls renderStatusBar after receiving providers data", () => {
