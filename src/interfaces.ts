@@ -983,7 +983,10 @@ export const INTEGRATION_TYPES = [
   "gitlab-merge-request",
   "copilot",
   "mock",
+  "github-issue",
+  "github-pull-request",
 ] as const;
+
 export type IntegrationType = (typeof INTEGRATION_TYPES)[number];
 
 /** Integration types that act as code-hosting + review systems */
