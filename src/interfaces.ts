@@ -186,6 +186,18 @@ export interface FeedbackItem {
   _gerritCommentId?: string | undefined; // For gerrit_review source — used to resolve comments
 }
 
+/** Describes one repository entry in a multi-repo workspace layout. */
+export interface RepositoryMapEntry {
+  repoKey: string;
+  localPath: string;
+}
+
+/** Multi-repo workspace layout passed to the agent container via REPOSITORY_MAP_JSON. */
+export interface RepositoryMap {
+  superproject: RepositoryMapEntry;
+  submodules: RepositoryMapEntry[];
+}
+
 export interface AgentSession {
   /** Container image used for the ephemeral Git/GH agent session */
   agentContainerImage: string;
@@ -211,6 +223,8 @@ export interface AgentSession {
   copilotModel?: string | undefined;
   /** Optional reasoning effort level for models that support it (e.g. "low" | "medium" | "high" | "xhigh"). */
   copilotReasoningEffort?: string | undefined;
+  /** Multi-repo workspace layout — when set, agent-worker uses it to group files/commits by repo. */
+  repositoryMap?: RepositoryMap | undefined;
 }
 
 export interface TaskContext {
