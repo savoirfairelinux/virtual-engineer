@@ -592,6 +592,56 @@ describe("Orchestrator — Phase 4 project mode", () => {
     );
   });
 
+  it("project-mode runAgentCycle transitions to FAILED when all push targets fail (email auth error)", async () => {
+    const stateStore = makeStateStore();
+    const ws = makeWorkspaceRunner();
+    const project = makeProject();
+    const targets = [
+      makePushTarget({ id: 1, commitOrder: 1, localPath: ".", integrationId: "vcs-root", repoKey: "root" }),
+    ];
+    const pushError = new Error(
+      "remote: ERROR: commit abc123: email address ve@local is not registered"
+    );
+    const vcsRoot: VcsConnector = {
+      clone: vi.fn(),
+      push: vi.fn(),
+      pushDirect: vi.fn().mockRejectedValue(pushError),
+      getChangeStatus: vi.fn(),
+      buildPushSpec: vi.fn().mockReturnValue({ ref: "refs/for/main", topic: "VE-task-id" }),
+      useChangeIdContinuity: true,
+      reviewSystemLabel: "gerrit",
+    } as unknown as VcsConnector;
+
+    const projectMode: ProjectModeDeps = {
+      projectStore: {
+        getProjectById: vi.fn(async () => project),
+        listProjectPushTargets: vi.fn(async () => targets),
+        getProjectTicketSource: vi.fn().mockResolvedValue({ integrationId: "redmine-int" }),
+        getProjectReviewConfig: vi.fn().mockResolvedValue(null),
+        getAgentById: vi.fn(),
+      },
+      pluginManager: {
+        getConnectorForIntegration: vi.fn().mockImplementation((id: string) => {
+          if (id === "redmine-int") return makeRedmine();
+          return null;
+        }),
+      },
+      resolveVcsForIntegration: vi.fn(async () => vcsRoot),
+    };
+
+    const orch = new Orchestrator(baseConfig(), stateStore, ws, undefined, undefined, projectMode);
+    (ws.execGitInVolume as ReturnType<typeof vi.fn>).mockResolvedValue("1\n");
+
+    const task = makeTask({ state: "AGENT_RUNNING" });
+    // Call runWorkflow so the full error-handling path (handleFatalError) is exercised.
+    await (orch as unknown as { runWorkflow: (t: Task) => Promise<void> }).runWorkflow(task);
+
+    // Task must have been transitioned to FAILED, not IN_REVIEW.
+    const transitionCalls = vi.mocked(stateStore.transition).mock.calls.map((c) => c[1]);
+    expect(transitionCalls).toContain("FAILED");
+    expect(transitionCalls).not.toContain("IN_REVIEW");
+  });
+
   it("project-mode review polling resolves per-repo change connectors with the repo binding", async () => {
     const task = makeTask({ state: "IN_REVIEW" });
     const stateStore = makeStateStore({

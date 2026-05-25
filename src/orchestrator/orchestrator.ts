@@ -440,7 +440,7 @@ export class Orchestrator {
   }
 
   /** Execute one agent cycle: build context, invoke the agent, push changes, and advance state. */
-  private async runAgentCycle(task: Task): Promise<void> {
+  private async runAgentCycle(task: Task, reviewFeedback: FeedbackItem[] = []): Promise<void> {
     let cycleSlot: { projectId: import("../interfaces.js").ProjectId; agentId: import("../interfaces.js").AgentId } | null = null;
     const projectIdForCycle = task.projectId ?? (await this.stateStore.getTask(task.taskId))?.projectId ?? null;
     if (!task.projectId && projectIdForCycle) {
@@ -463,7 +463,7 @@ export class Orchestrator {
 
     const ticketConnector = await this.resolveTicketConnector(task);
     const ticket = await ticketConnector.getTicket(task.ticketId);
-    const priorFeedback = await this.buildPriorFeedback(task);
+    const priorFeedback = await this.buildPriorFeedback(task, reviewFeedback);
     const cycleNumber = await this.stateStore.incrementCycle(task.taskId);
 
     log.info({ taskId: task.taskId, cycleNumber }, "starting agent cycle");
@@ -767,7 +767,7 @@ export class Orchestrator {
       "actionable feedback found, starting retry cycle"
     );
     task = await this.stateStore.transition(task.taskId, "RETRY_CYCLE");
-    await this.runAgentCycle(task);
+    await this.runAgentCycle(task, feedbackItems);
 
     const updatedTask = await this.stateStore.getTask(task.taskId);
     if (updatedTask?.state !== "IN_REVIEW") {
@@ -944,7 +944,7 @@ export class Orchestrator {
       "multi-repo feedback found, starting retry cycle"
     );
     task = await this.stateStore.transition(task.taskId, "RETRY_CYCLE");
-    await this.runAgentCycle(task);
+    await this.runAgentCycle(task, allFeedback);
 
     const updatedTask = await this.stateStore.getTask(task.taskId);
     if (updatedTask?.state !== "IN_REVIEW") {
@@ -1015,6 +1015,10 @@ export class Orchestrator {
   ): Promise<void> {
     const sorted = [...pushTargets].sort((a, b) => a.commitOrder - b.commitOrder);
 
+    let dirtyCount = 0;
+    let successCount = 0;
+    const pushErrors: Array<{ repoKey: string; err: unknown }> = [];
+
     for (const target of sorted) {
       // Check whether there are local commits ahead of origin that need pushing.
       // The agent always commits its work, so git status --porcelain is always empty
@@ -1052,6 +1056,8 @@ export class Orchestrator {
         continue;
       }
 
+      dirtyCount++;
+
       // Connector is only needed when the repo has changes to push.
       let vcsConnector: VcsConnector;
       try {
@@ -1061,6 +1067,7 @@ export class Orchestrator {
           { taskId: task.taskId, repoKey: target.repoKey, integrationId: target.integrationId, err },
           "no VCS connector for push target; skipping"
         );
+        pushErrors.push({ repoKey: target.repoKey, err });
         continue;
       }
       const { ref: computedRef, topic } = vcsConnector.buildPushSpec(
@@ -1094,6 +1101,7 @@ export class Orchestrator {
           target.commitOrder,
           subjectHash
         );
+        successCount++;
         log.info(
           { taskId: task.taskId, repoKey: target.repoKey, changeId: pushResult.changeId, url: pushResult.url },
           "pushed project target"
@@ -1103,7 +1111,24 @@ export class Orchestrator {
           { taskId: task.taskId, repoKey: target.repoKey, err },
           "project push target push failed; continuing with remaining targets"
         );
+        pushErrors.push({ repoKey: target.repoKey, err });
       }
+    }
+
+    // If every dirty target failed, surface the errors so the task transitions
+    // to FAILED (visible in the UI) instead of silently advancing to IN_REVIEW.
+    if (dirtyCount > 0 && successCount === 0 && pushErrors.length > 0) {
+      const detail = pushErrors
+        .map((e) => `${e.repoKey}: ${e.err instanceof Error ? e.err.message : String(e.err)}`)
+        .join("; ");
+      throw new Error(`All push targets failed: ${detail}`);
+    }
+
+    if (pushErrors.length > 0) {
+      log.warn(
+        { taskId: task.taskId, successCount, failedCount: pushErrors.length },
+        "some push targets failed but at least one succeeded; proceeding to IN_REVIEW"
+      );
     }
   }
 
@@ -1241,7 +1266,7 @@ export class Orchestrator {
   }
 
   /** Collect prior agent-cycle failure logs as feedback items for the next cycle. */
-  private async buildPriorFeedback(task: Task): Promise<FeedbackItem[]> {
+  private async buildPriorFeedback(task: Task, reviewFeedback: FeedbackItem[] = []): Promise<FeedbackItem[]> {
     const cycles = await this.stateStore.getAgentCycles(task.taskId);
     const feedback: FeedbackItem[] = [];
     const lastCycle = cycles.at(-1);
@@ -1251,7 +1276,7 @@ export class Orchestrator {
         content: lastCycle.result.agentLogs.slice(0, 3000),
       });
     }
-    return feedback;
+    return [...feedback, ...reviewFeedback];
   }
 
   /**
