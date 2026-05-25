@@ -16,6 +16,8 @@ import type {
   WorkspaceHandle,
   ProjectRecord,
   ResolvedAgentConfig,
+  RepositoryMap,
+  ProjectPushTargetRecord,
 } from "../interfaces.js";
 import { makeTaskId, makeTicketId, TERMINAL_STATES, TicketApiError, TicketNotFoundError } from "../interfaces.js";
 import type { CodeGenState } from "../interfaces.js";
@@ -578,6 +580,9 @@ export class Orchestrator {
             : {}),
           ...(resolvedCopilotModel ? { copilotModel: resolvedCopilotModel } : {}),
           ...(resolvedReasoningEffort !== undefined ? { copilotReasoningEffort: resolvedReasoningEffort } : {}),
+          ...(projectPushTargets.length > 1 || projectPushTargets.some((t) => t.localPath !== ".")
+            ? { repositoryMap: buildRepositoryMap(projectPushTargets) }
+            : {}),
         },
       };
 
@@ -1312,4 +1317,25 @@ export class Orchestrator {
   private isTicketApiError(err: unknown): err is TicketApiError {
     return err instanceof TicketApiError;
   }
+}
+
+// ── helpers ─────────────────────────────────────────────────────────────────
+
+/**
+ * Build a {@link RepositoryMap} from a project's push targets so the agent
+ * container knows which subdirectories map to which repositories.
+ *
+ * The target with `localPath === "."` (or the lowest `commitOrder` if none) is
+ * treated as the superproject; all others become submodules.
+ */
+export function buildRepositoryMap(pushTargets: ProjectPushTargetRecord[]): RepositoryMap {
+  const sorted = [...pushTargets].sort((a, b) => a.commitOrder - b.commitOrder);
+  const rootIdx = sorted.findIndex((t) => t.localPath === ".");
+  const root = rootIdx >= 0 ? sorted[rootIdx]! : sorted[0]!;
+  const rest = sorted.filter((t) => t !== root);
+
+  return {
+    superproject: { repoKey: root.repoKey, localPath: root.localPath },
+    submodules: rest.map((t) => ({ repoKey: t.repoKey, localPath: t.localPath })),
+  };
 }
