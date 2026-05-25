@@ -5167,34 +5167,17 @@ function showAgentModal(existing) {
 
 function bindConcurrencyPanel() {
   if (!el.configurationContent) return;
-  const input = el.configurationContent.querySelector('input[data-role="concurrency-global-input"]');
   const snap = el.configurationContent.querySelector('span[data-role="concurrency-snapshot"]');
-  const saveBtn = el.configurationContent.querySelector('button[data-action="save-concurrency-global"]');
-  if (!input || !snap || !saveBtn) return;
+  if (!snap) return;
   adminFetch('/api/admin/concurrency').then((r) => {
-    if (typeof r.global === 'number') input.value = String(r.global);
     if (r.snapshot) {
       const s = r.snapshot;
-      snap.textContent = 'In-flight: global=' + String(s.global)
-        + ' projects=' + String(Object.keys(s.perProject || {}).length)
-        + ' agents=' + String(Object.keys(s.perAgent || {}).length);
+      const active = s.global ?? 0;
+      const adapters = Object.entries(s.perAgent || {}).map(([k, v]) => k + ':' + String(v)).join(', ');
+      snap.textContent = 'Active runs: ' + String(active)
+        + (adapters ? ' (' + adapters + ')' : '');
     }
   }).catch(() => { /* ignore */ });
-  saveBtn.addEventListener('click', async () => {
-    const raw = String(input.value || '').trim();
-    const value = raw === '' ? null : Number(raw);
-    if (value !== null && (!Number.isFinite(value) || value < 0)) {
-      showActionToast('Invalid limit', true);
-      return;
-    }
-    try {
-      await adminFetch('/api/admin/concurrency', 'PUT', { global: value });
-      showActionToast('Concurrency limit saved', false);
-      bindConcurrencyPanel();
-    } catch (err) {
-      showActionToast('Failed to save: ' + (err instanceof Error ? err.message : ''), true);
-    }
-  });
 }
 
 function renderProjectsSection() {
@@ -5203,10 +5186,9 @@ function renderProjectsSection() {
   const concurrencyPanel =
     '<div class="configuration-panel" data-role="concurrency-panel"><div class="configuration-panel-body">' +
       '<div style="display:flex;align-items:center;gap:0.75rem;flex-wrap:wrap;">' +
-        '<strong>Global concurrency limit:</strong>' +
-        '<input type="number" min="0" data-role="concurrency-global-input" placeholder="unlimited" style="width:8rem;" />' +
-        '<button data-action="save-concurrency-global">Save</button>' +
-        '<span data-role="concurrency-snapshot" style="color:#666;">In-flight: —</span>' +
+        '<strong>Agent adapter concurrency</strong>' +
+        '<span data-role="concurrency-snapshot" style="color:#666;">Active runs: —</span>' +
+        '<small style="color:#999;">Limit is set per-agent in the Agents Library (Max Concurrent).</small>' +
       '</div>' +
     '</div></div>';
   if (S.projects.length === 0) {

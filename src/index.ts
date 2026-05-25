@@ -83,9 +83,7 @@ async function main(): Promise<void> {
   // Phase 6 — single in-process concurrency tracker shared by orchestrator and
   // polling loop. Counters live in memory and reset on process restart.
   const concurrencyTracker = createConcurrencyTracker({
-    projectStore: { getProjectById: (id) => stateStore.getProjectById(id) },
     agentStore: { getAgentById: (id) => stateStore.getAgentById(id) },
-    globalLimitProvider: () => stateStore.getGlobalConcurrencyLimit(),
   });
   const projectModeBase = {
     projectStore: stateStore,
@@ -224,8 +222,6 @@ async function main(): Promise<void> {
       },
       integrationStreams: integrationStreamEvents,
       concurrency: {
-        getGlobalLimit: () => stateStore.getGlobalConcurrencyLimit(),
-        setGlobalLimit: (v) => stateStore.setGlobalConcurrencyLimit(v),
         snapshot: () => concurrencyTracker.snapshot(),
       },
     });

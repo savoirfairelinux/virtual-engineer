@@ -97,10 +97,7 @@ export interface AdminServerDependencies {
    * `max_concurrent` NULL = unlimited.
    */
   concurrency?: {
-    /** Persisted global limit (stateStore-backed). */
-    getGlobalLimit(): Promise<number | null>;
-    setGlobalLimit(value: number | null): Promise<void>;
-    /** Live in-memory snapshot from {@link ConcurrencyTracker}. */
+    /** Live in-memory run-slot counters from {@link ConcurrencyTracker}. */
     snapshot(): { global: number; perProject: Record<string, number>; perAgent: Record<string, number> };
   };
 }

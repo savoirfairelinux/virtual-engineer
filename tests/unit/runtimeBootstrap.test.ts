@@ -227,7 +227,7 @@ async function importRuntime(
     getIntegration: vi.fn(async (id: string) => integrationData.get(id) ?? null),
     listProjects: vi.fn(async () =>
       runnableProject
-        ? [{ id: runnableProject.projectId, type: runnableProject.type, name: "test", enabled: true, agentId: "agent-1", maxConcurrent: 1 }]
+        ? [{ id: runnableProject.projectId, type: runnableProject.type, name: "test", enabled: true, agentId: "agent-1" }]
         : []
     ),
     getProjectTicketSource: vi.fn(async () =>
@@ -780,7 +780,7 @@ describe("runtime bootstrap provider selection", () => {
     // Simulate adding the AI adapter + making a project runnable by mutating mock data
     activeProviders.mock = makeDbAgentAdapter("mock");
     runtime.stateStore.listProjects.mockResolvedValue([
-      { id: "p1", type: "coding", name: "test", enabled: true, agentId: "agent-1", maxConcurrent: 1 },
+      { id: "p1", type: "coding", name: "test", enabled: true, agentId: "agent-1" },
     ]);
     runtime.stateStore.getProjectTicketSource.mockResolvedValue(
       { integrationId: "redmine-active", ticketProjectKey: "TEST" },

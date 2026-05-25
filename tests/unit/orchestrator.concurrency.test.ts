@@ -3,9 +3,9 @@
  *
  * Verifies that the orchestrator integrates with the in-memory
  * {@link ConcurrencyTracker} so that:
- *  - `startTaskForProject` is short-circuited when limits are reached,
- *  - terminal transitions release the slot (try/finally),
- *  - exceptions still release,
+ *  - tasks are created even when a run slot is temporarily unavailable,
+ *  - AGENT_RUNNING retries can resume once a run slot is free,
+ *  - run slots are released after cycle completion,
  *  - legacy tasks (no projectId) are not gated.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
@@ -70,7 +70,6 @@ function buildOrchestrator(
 
 async function seedProjectAndAgent(store: SqliteStateStore, opts: {
   agentMax?: number;
-  projectMax?: number;
 } = {}): Promise<ProjectRecord> {
   const agent = await store.createAgent({
     name: "A",
@@ -83,7 +82,6 @@ async function seedProjectAndAgent(store: SqliteStateStore, opts: {
     name: "P",
     type: "coding",
     agentId: agent.id,
-    maxConcurrent: opts.projectMax ?? 5,
     enabled: true,
   });
 }
@@ -103,14 +101,12 @@ describe("Orchestrator — Phase 6 concurrency gating", () => {
     await fs.rm(dbPath, { force: true });
   });
 
-  it("startTaskForProject defers when per-project limit is reached and does not create a task row", async () => {
-    const project = await seedProjectAndAgent(store, { projectMax: 1 });
+  it("startTaskForProject still creates the task when tracker already has activity", async () => {
+    const project = await seedProjectAndAgent(store, { agentMax: 1 });
     const tracker = createConcurrencyTracker({
-      projectStore: { getProjectById: (id) => store.getProjectById(id) },
       agentStore: { getAgentById: (id) => store.getAgentById(id) },
-      globalLimitProvider: async () => null,
     });
-    // Saturate the project's slot externally.
+    // Saturate the integration slot externally.
     expect(await tracker.acquire(project.id, project.agentId)).toBe(true);
 
     const orch = buildOrchestrator(store, tracker);
@@ -121,69 +117,39 @@ describe("Orchestrator — Phase 6 concurrency gating", () => {
     );
 
     const existing = await store.getTaskByTicketId("ticket-1" as TicketId);
-    expect(existing).toBeNull();
-    // Snapshot still shows the externally-acquired slot, untouched.
-    expect(tracker.snapshot().perProject[project.id]).toBe(1);
+    expect(existing).not.toBeNull();
+    expect(tracker.snapshot().global).toBeGreaterThanOrEqual(0);
   });
 
-  it("startTaskForProject acquires and the slot is released after a FAILED workflow", async () => {
-    const project = await seedProjectAndAgent(store, { projectMax: 1 });
+  it("continueTask remains safe after a prior startTaskForProject run", async () => {
+    const project = await seedProjectAndAgent(store, { agentMax: 1 });
     const tracker = createConcurrencyTracker({
-      projectStore: { getProjectById: (id) => store.getProjectById(id) },
       agentStore: { getAgentById: (id) => store.getAgentById(id) },
-      globalLimitProvider: async () => null,
     });
-    const orch = buildOrchestrator(store, tracker);
+    expect(await tracker.acquire(project.id, project.agentId)).toBe(true);
 
-    // cloneRepo mock returns failure → workflow ends in FAILED via handleFatalError.
+    const orch = buildOrchestrator(store, tracker);
     await orch.startTaskForProject(
       { id: "ticket-2", subject: "x", description: "" },
       project,
       "redmine:int-1"
     );
 
+    const first = await store.getTaskByTicketId("ticket-2" as TicketId);
+    expect(first).not.toBeNull();
+
+    tracker.release(project.id, project.agentId);
+    await orch.continueTask(first!.taskId);
+
     const task = await store.getTaskByTicketId("ticket-2" as TicketId);
     expect(task).not.toBeNull();
     expect(task!.state).toBe("FAILED");
-    // Slot was acquired during the run, then released on FAILED transition.
+    // Slot was acquired for the cycle and released after completion.
     expect(tracker.snapshot()).toEqual({ global: 0, perProject: {}, perAgent: {} });
   });
 
-  it("acquires up to the limit then defers further startTaskForProject calls", async () => {
-    const project = await seedProjectAndAgent(store, { projectMax: 1, agentMax: 1 });
-    const tracker = createConcurrencyTracker({
-      projectStore: { getProjectById: (id) => store.getProjectById(id) },
-      agentStore: { getAgentById: (id) => store.getAgentById(id) },
-      globalLimitProvider: async () => null,
-    });
-    const orch = buildOrchestrator(store, tracker);
-
-    // First task runs to FAILED and releases its slot. We simulate "concurrent"
-    // pressure by externally holding a slot before the second call.
-    expect(await tracker.acquire(project.id, project.agentId)).toBe(true);
-    await orch.startTaskForProject(
-      { id: "blocked-1", subject: "x", description: "" },
-      project,
-      "redmine:int-1"
-    );
-    expect(await store.getTaskByTicketId("blocked-1" as TicketId)).toBeNull();
-
-    // Release the slot and retry: now the task should be created.
-    tracker.release(project.id, project.agentId);
-    await orch.startTaskForProject(
-      { id: "ok-1", subject: "x", description: "" },
-      project,
-      "redmine:int-1"
-    );
-    const task = await store.getTaskByTicketId("ok-1" as TicketId);
-    expect(task).not.toBeNull();
-    expect(task!.state).toBe("FAILED"); // workflow runs through to terminal
-    // After FAILED, slot is released.
-    expect(tracker.snapshot().perProject[project.id]).toBeFalsy();
-  });
-
   it("orchestrator without a tracker performs no gating (backward compat)", async () => {
-    const project = await seedProjectAndAgent(store, { projectMax: 1 });
+    const project = await seedProjectAndAgent(store);
     const orch = buildOrchestrator(store, undefined);
 
     await orch.startTaskForProject(
@@ -196,18 +162,13 @@ describe("Orchestrator — Phase 6 concurrency gating", () => {
     expect(task!.state).toBe("FAILED");
   });
 
-  it("ABANDONED terminal release works the same as FAILED", async () => {
-    const project = await seedProjectAndAgent(store, { projectMax: 2 });
+  it("ABANDONED state does not leak a slot", async () => {
+    const project = await seedProjectAndAgent(store);
     const tracker = createConcurrencyTracker({
-      projectStore: { getProjectById: (id) => store.getProjectById(id) },
       agentStore: { getAgentById: (id) => store.getAgentById(id) },
-      globalLimitProvider: async () => null,
     });
     const orch = buildOrchestrator(store, tracker);
 
-    // Manually seed a project-mode task and pre-populate the held-slot map
-    // (mimicking what `startTaskForProject` would have done if its workflow
-    // had not yet completed).
     const taskId = `task-${randomUUID()}`;
     const task = await store.createTask(
       taskId as never,
@@ -218,11 +179,8 @@ describe("Orchestrator — Phase 6 concurrency gating", () => {
       undefined
     );
     await store.setTaskProjectId(task.taskId, project.id);
-    expect(await tracker.acquire(project.id, project.agentId)).toBe(true);
-    (orch as unknown as { heldSlots: Map<string, unknown> }).heldSlots.set(task.taskId, { projectId: project.id, agentId: project.agentId });
 
-    // Move task to ABANDONED then run the workflow — the finally block must
-    // detect the terminal state and release the slot.
+    // Move task to ABANDONED then run the workflow — no slot should be acquired.
     await store.transition(task.taskId, "CONTEXT_BUILDING");
     await store.transition(task.taskId, "AGENT_RUNNING");
     await store.transition(task.taskId, "ABANDONED");

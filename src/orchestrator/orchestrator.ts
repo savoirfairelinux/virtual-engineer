@@ -83,12 +83,6 @@ export class Orchestrator {
   private vcsConnector: VcsConnector | undefined;
   private readonly vcsConnectorFactory = new VcsConnectorFactory();
   private projectMode: ProjectModeDeps | null = null;
-  /**
-   * In-flight project-mode concurrency slots keyed by taskId.
-   * Ensures `release()` runs at most once per acquire; lazily re-acquired after restart.
-   */
-  private readonly heldSlots = new Map<string, { projectId: import("../interfaces.js").ProjectId; agentId: import("../interfaces.js").AgentId }>();
-
   constructor(
     config: OrchestratorConfig,
     private readonly stateStore: StateStore,
@@ -147,17 +141,6 @@ export class Orchestrator {
       log.warn(
         { ticketId, source: ticketSourceLabel, failedAttempts, projectId: project.id },
         "project ticket has exhausted max retry attempts, not creating new task"
-      );
-      return;
-    }
-
-    // Concurrency gate: skip task creation if any limit is reached; the
-    // polling loop will retry on the next tick.
-    const tracker = this.projectMode?.concurrencyTracker;
-    if (tracker && !(await tracker.canStart(project.id, project.agentId))) {
-      log.info(
-        { ticketId, projectId: project.id, agentId: project.agentId },
-        "concurrency limit reached; deferring project task creation"
       );
       return;
     }
@@ -391,16 +374,6 @@ export class Orchestrator {
     }
     log.info({ taskId: task.taskId, state: task.state }, "running workflow from state");
 
-    // Ensure a concurrency slot is held for project-mode tasks (idempotent on re-runs).
-    const slotOk = await this.ensureSlotForTask(task);
-    if (!slotOk) {
-      log.info(
-        { taskId: task.taskId, projectId: task.projectId },
-        "concurrency limit reached; skipping workflow tick"
-      );
-      return;
-    }
-
     // The code-review early-return above guarantees task.state is a CodeGenState here.
     const codeGenState = task.state as CodeGenState;
     try {
@@ -436,34 +409,6 @@ export class Orchestrator {
       }
     } catch (err) {
       await this.handleFatalError(task, err);
-    } finally {
-      await this.maybeReleaseSlot(task.taskId);
-    }
-  }
-
-  /** Lazily acquire a concurrency slot. Returns false if the caller should defer this tick. */
-  private async ensureSlotForTask(task: Task): Promise<boolean> {
-    const tracker = this.projectMode?.concurrencyTracker;
-    if (!tracker || !task.projectId) return true;
-    if (this.heldSlots.has(task.taskId)) return true;
-    const project = await this.projectMode!.projectStore.getProjectById(task.projectId);
-    if (!project) return true; // can't gate without a project record
-    const ok = await tracker.acquire(project.id, project.agentId);
-    if (!ok) return false;
-    this.heldSlots.set(task.taskId, { projectId: project.id, agentId: project.agentId });
-    return true;
-  }
-
-  /** Release the concurrency slot when the task reaches a terminal state. Idempotent. */
-  private async maybeReleaseSlot(taskId: import("../interfaces.js").TaskId): Promise<void> {
-    const held = this.heldSlots.get(taskId);
-    const tracker = this.projectMode?.concurrencyTracker;
-    if (!held || !tracker) return;
-    const current = await this.stateStore.getTask(taskId);
-    if (!current) return;
-    if (TERMINAL_STATES.has(current.state)) {
-      tracker.release(held.projectId, held.agentId);
-      this.heldSlots.delete(taskId);
     }
   }
 
@@ -488,6 +433,26 @@ export class Orchestrator {
 
   /** Execute one agent cycle: build context, invoke the agent, push changes, and advance state. */
   private async runAgentCycle(task: Task): Promise<void> {
+    let cycleSlot: { projectId: import("../interfaces.js").ProjectId; agentId: import("../interfaces.js").AgentId } | null = null;
+    const projectIdForCycle = task.projectId ?? (await this.stateStore.getTask(task.taskId))?.projectId ?? null;
+    if (!task.projectId && projectIdForCycle) {
+      task.projectId = projectIdForCycle;
+    }
+    if (projectIdForCycle && this.projectMode?.concurrencyTracker) {
+      const project = await this.projectMode.projectStore.getProjectById(projectIdForCycle);
+      if (project) {
+        const acquired = await this.projectMode.concurrencyTracker.acquire(project.id, project.agentId);
+        if (!acquired) {
+          log.info(
+            { taskId: task.taskId, projectId: project.id, agentId: project.agentId },
+            "ai adapter at capacity; retrying on next poll tick"
+          );
+          return;
+        }
+        cycleSlot = { projectId: project.id, agentId: project.agentId };
+      }
+    }
+
     const ticketConnector = await this.resolveTicketConnector(task);
     const ticket = await ticketConnector.getTicket(task.ticketId);
     const priorFeedback = await this.buildPriorFeedback(task);
@@ -675,6 +640,9 @@ export class Orchestrator {
           { taskId: task.taskId, err },
           "workspace cleanup failed (non-fatal, task state unaffected)"
         );
+      }
+      if (cycleSlot && this.projectMode?.concurrencyTracker) {
+        this.projectMode.concurrencyTracker.release(cycleSlot.projectId, cycleSlot.agentId);
       }
     }
   }

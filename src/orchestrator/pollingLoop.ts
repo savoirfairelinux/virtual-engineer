@@ -34,11 +34,6 @@ export interface ProjectAwarePluginManager {
   createConnectorForIntegration?<T>(integrationId: string, context?: IntegrationBindingContext): Promise<T | null>;
 }
 
-/** Minimal concurrency tracker contract used by the polling loop. */
-export interface PollingConcurrencyTracker {
-  canStart(projectId: ProjectId, agentId: import("../interfaces.js").AgentId): Promise<boolean>;
-}
-
 /**
  * Orchestrator hook to start a task wired to a specific project.
  * Called once per (project, ticket) pair during project-mode polling.
@@ -64,12 +59,6 @@ export class PollingLoop {
   private ticketBackoffUntil = 0;
   private projectStore: ProjectAwareStore | null = null;
   private pluginManager: ProjectAwarePluginManager | null = null;
-  private concurrencyTracker: PollingConcurrencyTracker | null = null;
-  /**
-   * Projects deferred because a concurrency limit was hit on the current tick.
-   * Logged at most once per tick to avoid log spam.
-   */
-  private deferredFullProjects = new Set<string>();
 
   constructor(
     private readonly config: PollingConfig,
@@ -78,13 +67,11 @@ export class PollingLoop {
     projectMode?: {
       projectStore: ProjectAwareStore;
       pluginManager: ProjectAwarePluginManager;
-      concurrencyTracker?: PollingConcurrencyTracker;
     }
   ) {
     if (projectMode) {
       this.projectStore = projectMode.projectStore;
       this.pluginManager = projectMode.pluginManager;
-      this.concurrencyTracker = projectMode.concurrencyTracker ?? null;
     }
   }
 
@@ -92,16 +79,13 @@ export class PollingLoop {
   setProjectMode(mode: {
     projectStore: ProjectAwareStore;
     pluginManager: ProjectAwarePluginManager;
-    concurrencyTracker?: PollingConcurrencyTracker;
   } | null): void {
     if (mode) {
       this.projectStore = mode.projectStore;
       this.pluginManager = mode.pluginManager;
-      this.concurrencyTracker = mode.concurrencyTracker ?? null;
     } else {
       this.projectStore = null;
       this.pluginManager = null;
-      this.concurrencyTracker = null;
     }
   }
 
@@ -190,8 +174,6 @@ export class PollingLoop {
     if (!this.projectStore || !this.pluginManager) return;
     const projects = await this.projectStore.listProjects({ type: "coding", enabled: true });
     log.debug({ count: projects.length }, "polling project tickets");
-    // Reset the deferred-log debounce each tick so each tick logs at most once.
-    this.deferredFullProjects.clear();
 
     for (const project of projects) {
       const ticketSource = await this.projectStore.getProjectTicketSource(project.id);
@@ -240,21 +222,6 @@ export class PollingLoop {
           }
 
           if (typeof orchestratorWithProjectMode.startTaskForProject === "function") {
-            // Short-circuit when concurrency limits are reached.
-            // Avoids creating a task row that would immediately defer.
-            if (this.concurrencyTracker) {
-              const canStart = await this.concurrencyTracker.canStart(project.id, project.agentId);
-              if (!canStart) {
-                if (!this.deferredFullProjects.has(project.id)) {
-                  log.info(
-                    { projectId: project.id, agentId: project.agentId },
-                    "project full (concurrency limit reached), deferred"
-                  );
-                  this.deferredFullProjects.add(project.id);
-                }
-                continue;
-              }
-            }
             Promise.resolve()
               .then(() =>
                 orchestratorWithProjectMode.startTaskForProject!(

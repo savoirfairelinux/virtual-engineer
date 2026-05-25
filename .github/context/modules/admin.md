@@ -92,7 +92,7 @@ The admin server is a small HTTP service (default `127.0.0.1:3100`) that serves 
 | `DELETE` | `/api/admin/projects/:id` | Delete project and linked child rows. |
 | `PATCH` | `/api/admin/projects/:id/enable` | Enable project. |
 | `PATCH` | `/api/admin/projects/:id/disable` | Disable project. |
-| `GET` / `PUT` | `/api/admin/concurrency` | Read/update global concurrency plus live in-memory snapshot. |
+| `GET` / `PUT` | `/api/admin/concurrency` | Read/update global concurrency plus live in-memory snapshot. `PUT` accepts `{ global: number | null }` (numeric strings are coerced server-side). |
 
 ## Authentication
 

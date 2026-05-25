@@ -1,9 +1,9 @@
 /**
- * Phase 6 — PollingLoop concurrency-aware short-circuit tests.
+ * Phase 6 — PollingLoop concurrency ingestion tests.
  *
- * Verifies that `pollProjectTickets` defers (does not call
- * `startTaskForProject`) when the tracker reports the project is full, and
- * picks up again on the next tick after a release.
+ * Verifies that `pollProjectTickets` always calls `startTaskForProject`
+ * for eligible tickets; concurrency limiting now happens inside the
+ * orchestrator agent-cycle execution path.
  */
 import { describe, it, expect, vi } from "vitest";
 import { PollingLoop } from "../../src/orchestrator/pollingLoop.js";
@@ -25,7 +25,6 @@ function makeProject(id: string): ProjectRecord {
     agentId: ("agent-1") as unknown as AgentId,
     agentOverrideJson: null,
     postCloneScript: "",
-    maxConcurrent: 1,
     enabled: true,
     createdAt: new Date(),
     updatedAt: new Date(),
@@ -67,7 +66,7 @@ function makeOrchestrator(): Orchestrator & { startTaskForProject: ReturnType<ty
 
 
 describe("PollingLoop — Phase 6 concurrency", () => {
-  it("defers ticket processing when project is full (tracker.canStart=false)", async () => {
+  it("calls startTaskForProject for eligible tickets", async () => {
     const project = makeProject("p-a");
     const projectStore = {
       listProjects: vi.fn(async () => [project]),
@@ -85,47 +84,12 @@ describe("PollingLoop — Phase 6 concurrency", () => {
       getConnectorForIntegration: vi.fn(() => connector),
     } as unknown as { getConnectorForIntegration<T>(id: string): T | null };
     const orchestrator = makeOrchestrator();
-    const tracker = { canStart: vi.fn(async () => false) };
 
     const loop = new PollingLoop(
       { ticketIntervalMs: 60000, maxRetryAttempts: 3 },
       orchestrator,
       makeStore(),
-      { projectStore, pluginManager, concurrencyTracker: tracker }
-    );
-
-    await loop.pollProjectTickets();
-    await new Promise((r) => setImmediate(r));
-
-    expect(tracker.canStart).toHaveBeenCalledWith(project.id, project.agentId);
-    expect(orchestrator.startTaskForProject).not.toHaveBeenCalled();
-  });
-
-  it("calls startTaskForProject when tracker.canStart=true", async () => {
-    const project = makeProject("p-a");
-    const projectStore = {
-      listProjects: vi.fn(async () => [project]),
-      getProjectTicketSource: vi.fn(async (): Promise<ProjectTicketSourceRecord | null> => ({
-        id: 1,
-        projectId: project.id,
-        integrationId: "int-a",
-        ticketProjectKey: "platform",
-        createdAt: new Date(),
-      })),
-      getProjectReviewConfig: vi.fn(async () => null),
-    };
-    const connector = makeRedmine();
-    const pluginManager = {
-      getConnectorForIntegration: vi.fn(() => connector),
-    } as unknown as { getConnectorForIntegration<T>(id: string): T | null };
-    const orchestrator = makeOrchestrator();
-    const tracker = { canStart: vi.fn(async () => true) };
-
-    const loop = new PollingLoop(
-      { ticketIntervalMs: 60000, maxRetryAttempts: 3 },
-      orchestrator,
-      makeStore(),
-      { projectStore, pluginManager, concurrencyTracker: tracker }
+      { projectStore, pluginManager }
     );
 
     await loop.pollProjectTickets();
@@ -133,7 +97,7 @@ describe("PollingLoop — Phase 6 concurrency", () => {
     expect(orchestrator.startTaskForProject).toHaveBeenCalledTimes(1);
   });
 
-  it("retries on the next tick after the slot is released (canStart flips true)", async () => {
+  it("retries on next tick when startTaskForProject previously threw", async () => {
     const project = makeProject("p-a");
     const projectStore = {
       listProjects: vi.fn(async () => [project]),
@@ -151,24 +115,23 @@ describe("PollingLoop — Phase 6 concurrency", () => {
       getConnectorForIntegration: vi.fn(() => connector),
     } as unknown as { getConnectorForIntegration<T>(id: string): T | null };
     const orchestrator = makeOrchestrator();
-    let canStartReturn = false;
-    const tracker = { canStart: vi.fn(async () => canStartReturn) };
+    orchestrator.startTaskForProject
+      .mockRejectedValueOnce(new Error("transient"))
+      .mockResolvedValue(undefined);
 
     const loop = new PollingLoop(
       { ticketIntervalMs: 60000, maxRetryAttempts: 3 },
       orchestrator,
       makeStore(),
-      { projectStore, pluginManager, concurrencyTracker: tracker }
+      { projectStore, pluginManager }
     );
 
     await loop.pollProjectTickets();
     await new Promise((r) => setImmediate(r));
-    expect(orchestrator.startTaskForProject).not.toHaveBeenCalled();
+    expect(orchestrator.startTaskForProject).toHaveBeenCalledTimes(1);
 
-    // Simulate slot release
-    canStartReturn = true;
     await loop.pollProjectTickets();
     await new Promise((r) => setImmediate(r));
-    expect(orchestrator.startTaskForProject).toHaveBeenCalledTimes(1);
+    expect(orchestrator.startTaskForProject).toHaveBeenCalledTimes(2);
   });
 });

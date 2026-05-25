@@ -108,7 +108,7 @@ src/
     orchestrator.ts       # Ticket workflow driver (state machine caller)
     pollingLoop.ts        # 30s tick → per-project connector poll
     feedbackProcessor.ts  # Parses review comments into retry context
-    concurrencyTracker.ts # 3-level in-memory concurrency gates
+    concurrencyTracker.ts # integration-scoped in-memory run-slot gates
 
   plugins/              # Plugin system
     registry.ts           # Static type → descriptor map
@@ -596,29 +596,24 @@ app_concurrency                ← singleton
 
 ## 7. Concurrency model
 
-Three levels gate every `startTaskForProject` call. All counters are **in-memory** — they reset to 0 on process restart (tasks resume via state recovery).
+Two levels gate every `startTaskForProject` call. All counters are **in-memory** — they reset to 0 on process restart (tasks resume via state recovery).
 
 ```
-  startTaskForProject(ticket, project)
+    startTaskForProject(ticket, project)
           │
           ▼
-  ConcurrencyTracker.canStart(projectId, agentId)
-          │
-     ┌────┴────────────────────────────────────┐
-     │                                         │
-     ▼                                         ▼
-  global counter                    per-project counter
-  vs app_concurrency.max_concurrent  vs projects.max_concurrent
-          │
-          ▼
-  per-agent counter
-  vs agents.max_concurrent
-          │
-          ▼ all pass → acquire() → create task
-          │ any fail → defer (retry next tick)
+    create task row + runWorkflow
+      │
+      ▼
+    runAgentCycle() acquires integration slot
+    key = agents.integration_id (fallback: agent id)
+    limit = agents.max_concurrent
+      │
+      ▼
+    slot acquired → run docker-heavy cycle → release()
 ```
 
-Limits are read from SQLite with a 5s TTL cache. Admin UI edits take effect within 5s. `release()` is called when a task reaches a terminal state; it never goes negative (idempotent).
+  Limits are read from SQLite with a 5s TTL cache. Admin UI edits take effect within 5s. `release()` is called after each agent cycle; it never goes negative (idempotent).
 
 ---
 
