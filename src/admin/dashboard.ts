@@ -4509,7 +4509,26 @@ async function adminFetch(path, method, body) {
     let errMsg = 'HTTP ' + res.status;
     try {
       const errBody = await res.json();
-      if (errBody && errBody.error) errMsg = (errBody.message || errBody.error);
+      if (errBody && errBody.error) {
+        errMsg = (errBody.message || errBody.error);
+        const details = errBody.details;
+        if (details && typeof details === 'object') {
+          const parts = [];
+          if (Array.isArray(details.formErrors)) {
+            for (const m of details.formErrors) if (m) parts.push(String(m));
+          }
+          const fe = details.fieldErrors;
+          if (fe && typeof fe === 'object') {
+            for (const k of Object.keys(fe)) {
+              const msgs = fe[k];
+              if (Array.isArray(msgs) && msgs.length > 0) {
+                parts.push(k + ': ' + msgs.join(', '));
+              }
+            }
+          }
+          if (parts.length > 0) errMsg = errMsg + ' — ' + parts.join('; ');
+        }
+      }
     } catch { /* ignore parse errors */ }
     throw new Error(errMsg);
   }
@@ -5440,6 +5459,16 @@ function showProjectModal(existing) {
       ? '<option value="">— no ' + t + ' agents —</option>'
       : matchingAgents.map((a) => '<option value="' + esc(a.id) + '">' + esc(a.name) + '</option>').join('');
     if (existing && existing.agentId) agentSel.value = existing.agentId;
+    const hintId = 'agent-hint-' + t;
+    const existingHint = overlay.querySelector('#' + hintId);
+    if (existingHint) existingHint.remove();
+    if (matchingAgents.length === 0) {
+      const hint = document.createElement('div');
+      hint.id = hintId;
+      hint.style.cssText = 'color:var(--warning,#b85c00);font-size:12px;margin-top:4px';
+      hint.textContent = 'No ' + t + ' agent configured. Open the Agents tab to create and enable one before saving.';
+      agentSel.insertAdjacentElement('afterend', hint);
+    }
   }
 
   function ticketIntegrationOptions() {
