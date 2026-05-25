@@ -207,8 +207,10 @@ const CONVENTIONAL_COMMIT_RE = /^(feat|fix|refactor|test|chore|docs|perf|ci|buil
 /**
  * Read all commits from baseSha..HEAD (oldest → newest).
  * Returns an array of CommitDescriptor objects.
+ * @param {string} baseSha - The base commit SHA
+ * @param {string} [cwd] - Optional working directory (for sub-repos)
  */
-function collectCommits(baseSha) {
+function collectCommits(baseSha, cwd) {
   // Use NUL-delimited format for safe parsing of multi-line bodies.
   // Format: SHA%x00Subject%x00Body%x00 (separator between records: %x01)
   const logOutput = git([
@@ -216,7 +218,7 @@ function collectCommits(baseSha) {
     '--reverse',
     '--format=%H%x00%s%x00%b%x00',
     `${baseSha}..HEAD`,
-  ]);
+  ], cwd);
 
   const commits = [];
   // Each record ends with \0, split on that.
@@ -227,7 +229,10 @@ function collectCommits(baseSha) {
     if (parts.length < 3) continue;
 
     const sha = parts[0].trim();
-    const subject = parts[1].trim();
+    // Sanitize subject: strip literal \n escape sequences (produced by `git commit -m "...\n..."`
+    // in bash where \n is not interpreted as a real newline) and take only the first line.
+    const rawSubject = parts[1] ?? '';
+    const subject = rawSubject.replace(/\\n[\s\S]*/g, '').split('\n')[0].trim();
     const body = parts[2].trim();
 
     if (!sha) continue;
@@ -237,11 +242,11 @@ function collectCommits(baseSha) {
     const changeId = changeIdMatch ? changeIdMatch[1] : '';
 
     // Get files changed in this commit
-    const diffOutput = git(['diff-tree', '--no-commit-id', '--name-only', '-r', sha]);
+    const diffOutput = git(['diff-tree', '--no-commit-id', '--name-only', '-r', sha], cwd);
     const files = diffOutput.split('\n').map((f) => f.trim()).filter(Boolean);
 
-    // Determine repoKey based on file paths.
-    // REPOSITORY_MAP.selected is string[] (repoKeys); use .submodules for objects with localPath.
+    // Determine repoKey based on file paths using the REPOSITORY_MAP
+    // (superproject + submodules with localPath).
     let repoKey = 'superproject';
     if (REPOSITORY_MAP && typeof REPOSITORY_MAP === 'object') {
       const submodules = Array.isArray(REPOSITORY_MAP.submodules) ? REPOSITORY_MAP.submodules : [];
@@ -257,7 +262,15 @@ function collectCommits(baseSha) {
         }
         if (!found) repoKeys.add(REPOSITORY_MAP.superproject?.repoKey || 'superproject');
       }
-      if (repoKeys.size === 1) repoKey = repoKeys.values().next().value;
+      if (repoKeys.size === 1) {
+        repoKey = repoKeys.values().next().value;
+      } else if (repoKeys.size > 1) {
+        process.stderr.write(
+          `Warning: commit ${sha.slice(0, 8)} touches files in multiple repos (${[...repoKeys].join(', ')}); ` +
+          `assigning to superproject. Split changes into per-repo commits for correct Change-Id tracking.\n`
+        );
+        repoKey = REPOSITORY_MAP.superproject?.repoKey || 'superproject';
+      }
     }
 
     commits.push({ repoKey, sha, subject, body, changeId, files });
@@ -326,10 +339,13 @@ function deriveChangeId(taskId, repoKey, index, subject) {
  *
  * @param {string} baseSha - The commit before the agent's first commit.
  * @param {Array} commits - The collected CommitDescriptor array (pre-injection).
+ * @param {string} [cwd] - Optional working directory (for sub-repos).
  * @returns {Array} Updated commits array with changeId fields populated.
  */
-function injectChangeIds(baseSha, commits) {
+function injectChangeIds(baseSha, commits, cwd) {
   if (commits.length === 0) return commits;
+
+  const repoCwd = cwd || REPO_PATH;
 
   // Check if any commits need Change-Id injection
   const needsInjection = commits.some((c) => !c.changeId);
@@ -351,11 +367,16 @@ function injectChangeIds(baseSha, commits) {
   // i directly corresponds to commits[i].
   try {
     execFileSync('git', ['rebase', '-i', baseSha], {
-      cwd: REPO_PATH,
+      cwd: repoCwd,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
       env: {
-        ...process.env,
+        PATH: process.env.PATH || '',
+        HOME: process.env.HOME || '',
+        GIT_AUTHOR_NAME,
+        GIT_AUTHOR_EMAIL,
+        GIT_COMMITTER_NAME,
+        GIT_COMMITTER_EMAIL,
         GIT_SEQUENCE_EDITOR: "sed -i 's/^pick /edit /g'",
       },
     });
@@ -370,26 +391,26 @@ function injectChangeIds(baseSha, commits) {
 
       if (desiredChangeId) {
         // Read current message and append Change-Id footer
-        const currentMsg = git(['log', '-1', '--format=%B']).trim();
+        const currentMsg = git(['log', '-1', '--format=%B'], repoCwd).trim();
         const hasTrailerBlock = /\n\n[A-Za-z][A-Za-z0-9-]*: /.test(currentMsg);
         const newMsg = hasTrailerBlock
           ? `${currentMsg}\nChange-Id: ${desiredChangeId}`
           : `${currentMsg}\n\nChange-Id: ${desiredChangeId}`;
 
-        git(['commit', '--amend', '-m', newMsg]);
+        git(['commit', '--amend', '-m', newMsg], repoCwd);
       }
 
       // Continue rebase to next commit (or finish)
       if (i < commits.length - 1) {
         try {
-          git(['rebase', '--continue']);
+          git(['rebase', '--continue'], repoCwd);
         } catch {
           // Expected: stops at next commit
         }
       } else {
         // Final commit — complete the rebase
         try {
-          git(['rebase', '--continue']);
+          git(['rebase', '--continue'], repoCwd);
         } catch {
           // Rebase is done
         }
@@ -399,16 +420,17 @@ function injectChangeIds(baseSha, commits) {
     // If the rebase is still in progress (e.g. due to a merge conflict), abort it
     // so the repository is left in a clean state. The caller falls back to the
     // original commits (no Change-Id injection) which the host handles gracefully.
-    const rebaseMergePath = join(REPO_PATH, '.git', 'rebase-merge');
-    const rebaseApplyPath = join(REPO_PATH, '.git', 'rebase-apply');
+    const gitDir = join(repoCwd, '.git');
+    const rebaseMergePath = join(gitDir, 'rebase-merge');
+    const rebaseApplyPath = join(gitDir, 'rebase-apply');
     if (existsSync(rebaseMergePath) || existsSync(rebaseApplyPath)) {
-      try { execFileSync('git', ['rebase', '--abort'], { cwd: REPO_PATH }); } catch { /* ignore */ }
+      try { execFileSync('git', ['rebase', '--abort'], { cwd: repoCwd }); } catch { /* ignore */ }
       return commits;
     }
   }
 
   // Re-collect commits with updated SHAs and Change-Ids
-  return collectCommits(baseSha);
+  return collectCommits(baseSha, cwd);
 }
 
 /**
@@ -711,10 +733,42 @@ async function main() {
   git(['config', 'user.name',  GIT_AUTHOR_NAME]);
   git(['config', 'user.email', GIT_AUTHOR_EMAIL]);
   git(['config', 'commit.gpgsign', 'false']);
+
+  // Configure git identity in each sub-repo so commits there also work.
+  if (REPOSITORY_MAP && Array.isArray(REPOSITORY_MAP.submodules)) {
+    for (const sub of REPOSITORY_MAP.submodules) {
+      if (sub.localPath && sub.localPath !== '.') {
+        const subPath = join(REPO_PATH, sub.localPath);
+        try {
+          git(['config', 'user.name',  GIT_AUTHOR_NAME], subPath);
+          git(['config', 'user.email', GIT_AUTHOR_EMAIL], subPath);
+          git(['config', 'commit.gpgsign', 'false'], subPath);
+          process.stderr.write(`configured git identity in sub-repo ${sub.repoKey} (${sub.localPath})\n`);
+        } catch (err) {
+          process.stderr.write(`Warning: failed to configure git in ${sub.localPath}: ${err.message}\n`);
+        }
+      }
+    }
+  }
+
   process.stderr.write(`working directory set to ${REPO_PATH}\n`);
 
-  // Record the base commit SHA so we can enumerate agent-created commits later.
+  // Record the base commit SHA for the root repo and each sub-repo so we can
+  // enumerate agent-created commits after the session ends.
   const baseSha = git(['rev-parse', 'HEAD']).trim();
+  const subRepoBaseShas = {};
+  if (REPOSITORY_MAP && Array.isArray(REPOSITORY_MAP.submodules)) {
+    for (const sub of REPOSITORY_MAP.submodules) {
+      if (sub.localPath && sub.localPath !== '.') {
+        const subPath = join(REPO_PATH, sub.localPath);
+        try {
+          subRepoBaseShas[sub.localPath] = git(['rev-parse', 'HEAD'], subPath).trim();
+        } catch (err) {
+          process.stderr.write(`Warning: could not read HEAD in ${sub.localPath}: ${err.message}\n`);
+        }
+      }
+    }
+  }
 
   process.stderr.write(`starting Copilot SDK client (mode=local-headless, model=${COPILOT_MODEL})\n`);
 
@@ -761,23 +815,74 @@ async function main() {
 
     await session.disconnect();
 
-    // 5. Check for agent-created commits (Phase 2 multi-commit protocol).
-    //    If the agent created commits on top of baseSha, validate them and
-    //    return a commits[] array. Otherwise, fall back to git status
-    //    (legacy single-commit path where the host creates the commit).
-    const headSha = git(['rev-parse', 'HEAD']).trim();
-    const hasAgentCommits = headSha !== baseSha;
+    // 5. Check for agent-created commits across ALL repos (root + sub-repos).
+    //    Multi-repo workspaces have independent git histories per directory.
+    //    We collect commits from each repo and merge them.
+    const rootHeadSha = git(['rev-parse', 'HEAD']).trim();
+    const hasRootCommits = rootHeadSha !== baseSha;
+
+    // Collect sub-repo commits
+    let subRepoCommits = [];
+    const subRepoLocalPaths = Object.keys(subRepoBaseShas);
+    for (const localPath of subRepoLocalPaths) {
+      const subBase = subRepoBaseShas[localPath];
+      const subPath = join(REPO_PATH, localPath);
+      try {
+        const subHead = git(['rev-parse', 'HEAD'], subPath).trim();
+        if (subHead !== subBase) {
+          const sub = REPOSITORY_MAP.submodules.find((s) => s.localPath === localPath);
+          const subCommits = collectCommits(subBase, subPath);
+          // Tag each commit with the sub-repo's repoKey
+          for (const c of subCommits) {
+            c.repoKey = sub ? sub.repoKey : localPath;
+          }
+          subRepoCommits = subRepoCommits.concat(subCommits);
+          process.stderr.write(`${subCommits.length} commit(s) found in sub-repo ${localPath}\n`);
+        }
+      } catch (err) {
+        process.stderr.write(`Warning: failed to check commits in ${localPath}: ${err.message}\n`);
+      }
+    }
+
+    const hasAgentCommits = hasRootCommits || subRepoCommits.length > 0;
 
     if (hasAgentCommits) {
-      // Read the commit chain: baseSha..HEAD (oldest first)
-      let commits = collectCommits(baseSha);
+      // Read root commit chain: baseSha..HEAD (oldest first)
+      let rootCommits = hasRootCommits ? collectCommits(baseSha) : [];
+      // Tag root commits with superproject repoKey
+      if (REPOSITORY_MAP && REPOSITORY_MAP.superproject) {
+        for (const c of rootCommits) {
+          if (c.repoKey === 'superproject') c.repoKey = REPOSITORY_MAP.superproject.repoKey;
+        }
+      }
+
+      let commits = rootCommits.concat(subRepoCommits);
       const validation = validateCommits(commits);
 
       if (validation.valid) {
         // Inject deterministic Change-Ids for commits that lack them.
         // This ensures Gerrit sees stable Change-Ids across retry cycles.
+        // For multi-repo workspaces, inject per-repo (rebase happens in each repo independently).
         if (TASK_ID) {
-          commits = injectChangeIds(baseSha, commits);
+          if (hasRootCommits) {
+            rootCommits = injectChangeIds(baseSha, rootCommits);
+          }
+          for (const localPath of subRepoLocalPaths) {
+            const subBase = subRepoBaseShas[localPath];
+            const subPath = join(REPO_PATH, localPath);
+            const subCommitsForPath = subRepoCommits.filter((c) => {
+              const sub = REPOSITORY_MAP.submodules.find((s) => s.localPath === localPath);
+              return sub && c.repoKey === sub.repoKey;
+            });
+            if (subCommitsForPath.length > 0) {
+              const injected = injectChangeIds(subBase, subCommitsForPath, subPath);
+              // Replace sub-repo commits with injected versions
+              const sub = REPOSITORY_MAP.submodules.find((s) => s.localPath === localPath);
+              const repoKey = sub ? sub.repoKey : localPath;
+              subRepoCommits = subRepoCommits.filter((c) => c.repoKey !== repoKey).concat(injected);
+            }
+          }
+          commits = rootCommits.concat(subRepoCommits);
         }
 
         // Collect all modified files across all commits for modifiedFiles compat
@@ -818,12 +923,36 @@ async function main() {
         };
       }
     } else {
-      // Legacy path: no agent commits — collect modified files from git status.
+      // Legacy path: no agent commits in any repo — collect modified files from git status.
+      // For multi-repo workspaces, check each repo independently and filter out
+      // sub-repo directory entries from the root status (submodule pointer changes).
+      const subLocalPaths = REPOSITORY_MAP && Array.isArray(REPOSITORY_MAP.submodules)
+        ? REPOSITORY_MAP.submodules.map((s) => s.localPath).filter((p) => p && p !== '.')
+        : [];
+
       const statusOutput = git(['status', '--porcelain']);
-      const flatModifiedFiles = statusOutput
+      const rootModified = statusOutput
         .split('\n')
         .map((line) => line.slice(3).trim())
-        .filter(Boolean);
+        .filter((f) => f && !subLocalPaths.includes(f));
+
+      // Also check sub-repos for modified files
+      const subModified = [];
+      for (const localPath of subLocalPaths) {
+        const subPath = join(REPO_PATH, localPath);
+        try {
+          const subStatus = git(['status', '--porcelain'], subPath);
+          const subFiles = subStatus
+            .split('\n')
+            .map((line) => line.slice(3).trim())
+            .filter(Boolean);
+          for (const f of subFiles) {
+            subModified.push(localPath + '/' + f);
+          }
+        } catch { /* ignore */ }
+      }
+
+      const flatModifiedFiles = rootModified.concat(subModified);
 
       let modifiedFiles;
       if (REPOSITORY_MAP && typeof REPOSITORY_MAP === 'object') {
