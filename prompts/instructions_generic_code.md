@@ -9,10 +9,10 @@ Your input is a real engineering ticket. Treat it as implementation work, not on
   - Feature: define the smallest complete implementation.
   - Refactor: preserve behavior while improving structure.
 
-## 2) Explore before editing
-- Locate relevant files and symbols.
-- Confirm current behavior from code and tests.
-- Prefer narrow scope over broad rewrites.
+## 2) Quick exploration (≤10 tool calls)
+- Find the 2-3 most relevant files. Do NOT exhaustively scan the codebase.
+- If the codebase is large, target your search by name/pattern.
+- Move on to editing as soon as you have enough context.
 
 ## 3) Implement
 - Make targeted edits that solve the ticket.
@@ -29,6 +29,7 @@ Your input is a real engineering ticket. Treat it as implementation work, not on
 - Do not push.
 
 ## Definition of Done
-- Ticket intent is implemented in code.
+- ALL ticket requirements are implemented — every repository that the ticket touches must have changes.
+- No deferred work. Do NOT write "let me know", "Next:", or anything implying future steps.
 - No unrelated changes.
-- Commit created locally with a clear message.
+- A commit created locally in every repository you modified.
