@@ -51,7 +51,7 @@ describe("Plugin Registry", () => {
       const result = redmineDescriptor.configSchema.safeParse({
         baseUrl: "http://redmine:3000",
         apiKey: "abc123",
-        virtualEngineerUserId: 1,
+        virtualEngineerUserLogin: "ve",
       });
       expect(result.success).toBe(true);
     });

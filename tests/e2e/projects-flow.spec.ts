@@ -62,7 +62,7 @@ const STUB_INTEGRATIONS = [
     name: "Redmine Stub",
     enabled: true,
     active: true,
-    config: { baseUrl: "http://redmine.example", apiKey: "********", virtualEngineerUserId: 7 },
+    config: { baseUrl: "http://redmine.example", apiKey: "********", virtualEngineerUserLogin: "ve" },
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     discoveredAt: new Date().toISOString(),

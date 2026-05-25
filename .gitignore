@@ -25,3 +25,4 @@ test_results.json
 .github/agents/
 .github/*.md
 .claude
+AGENTS.md

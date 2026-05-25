@@ -177,7 +177,7 @@ describe("Admin API — Plugin & Integration routes", () => {
         body: {
           type: "redmine",
           name: "My Redmine",
-          config: { baseUrl: "http://redmine:3000", apiKey: "key1", virtualEngineerUserId: 1 },
+          config: { baseUrl: "http://redmine:3000", apiKey: "key1", virtualEngineerUserLogin: "ve" },
         },
       });
       expect(status).toBe(201);
@@ -196,7 +196,7 @@ describe("Admin API — Plugin & Integration routes", () => {
           config: {
             baseUrl: "http://redmine:3000",
             apiKey: "key1",
-            virtualEngineerUserId: 1,
+            virtualEngineerUserLogin: "ve",
             unexpectedSecret: "should-not-store",
           },
         },
@@ -253,7 +253,7 @@ describe("Admin API — Plugin & Integration routes", () => {
         configJson: JSON.stringify({
           baseUrl: "http://redmine:3000",
           apiKey: "redmine-secret",
-          virtualEngineerUserId: 7,
+          virtualEngineerUserLogin: "ve",
         }),
         enabled: true,
       });
@@ -272,7 +272,7 @@ describe("Admin API — Plugin & Integration routes", () => {
         config: {
           baseUrl: "http://redmine:3000",
           apiKey: SECRET_MASK,
-          virtualEngineerUserId: 7,
+          virtualEngineerUserLogin: "ve",
         },
       });
     });
@@ -563,7 +563,7 @@ describe("Admin API — Plugin & Integration routes", () => {
         configJson: JSON.stringify({
           baseUrl: "http://redmine:3000",
           apiKey: "existing-api-key",
-          virtualEngineerUserId: 3,
+          virtualEngineerUserLogin: "ve",
         }),
         enabled: false,
       });
@@ -589,7 +589,7 @@ describe("Admin API — Plugin & Integration routes", () => {
         configJson: JSON.stringify({
           baseUrl: "http://redmine:3000",
           apiKey: "existing-api-key",
-          virtualEngineerUserId: 3,
+          virtualEngineerUserLogin: "ve",
         }),
         enabled: false,
       });
@@ -609,7 +609,7 @@ describe("Admin API — Plugin & Integration routes", () => {
       expect(JSON.parse(stored?.configJson ?? "{}") as Record<string, unknown>).toMatchObject({
         baseUrl: "http://redmine:3000",
         apiKey: "existing-api-key",
-        virtualEngineerUserId: 3,
+        virtualEngineerUserLogin: "ve",
       });
     });
 
@@ -621,7 +621,7 @@ describe("Admin API — Plugin & Integration routes", () => {
         configJson: JSON.stringify({
           baseUrl: "http://redmine:3000",
           apiKey: "existing-api-key",
-          virtualEngineerUserId: 3,
+          virtualEngineerUserLogin: "ve",
         }),
         enabled: false,
       });
@@ -632,7 +632,7 @@ describe("Admin API — Plugin & Integration routes", () => {
           name: "Redmine Updated",
           config: {
             baseUrl: "http://redmine.internal:3000",
-            virtualEngineerUserId: 9,
+            virtualEngineerUserLogin: "ve",
           },
         },
       });
@@ -644,7 +644,7 @@ describe("Admin API — Plugin & Integration routes", () => {
         config: {
           baseUrl: "http://redmine.internal:3000",
           apiKey: SECRET_MASK,
-          virtualEngineerUserId: 9,
+          virtualEngineerUserLogin: "ve",
         },
       });
 
@@ -652,7 +652,7 @@ describe("Admin API — Plugin & Integration routes", () => {
       expect(JSON.parse(stored?.configJson ?? "{}") as Record<string, unknown>).toMatchObject({
         baseUrl: "http://redmine.internal:3000",
         apiKey: "existing-api-key",
-        virtualEngineerUserId: 9,
+        virtualEngineerUserLogin: "ve",
       });
     });
 
@@ -664,7 +664,7 @@ describe("Admin API — Plugin & Integration routes", () => {
         configJson: JSON.stringify({
           baseUrl: "http://redmine:3000",
           apiKey: "existing-api-key",
-          virtualEngineerUserId: 3,
+          virtualEngineerUserLogin: "ve",
         }),
         enabled: false,
       });
@@ -674,7 +674,7 @@ describe("Admin API — Plugin & Integration routes", () => {
         body: {
           config: {
             apiKey: SECRET_MASK,
-            virtualEngineerUserId: 12,
+            virtualEngineerUserLogin: "ve",
           },
         },
       });
@@ -685,7 +685,7 @@ describe("Admin API — Plugin & Integration routes", () => {
       expect(JSON.parse(stored?.configJson ?? "{}") as Record<string, unknown>).toMatchObject({
         baseUrl: "http://redmine:3000",
         apiKey: "existing-api-key",
-        virtualEngineerUserId: 12,
+        virtualEngineerUserLogin: "ve",
       });
     });
 
@@ -697,7 +697,7 @@ describe("Admin API — Plugin & Integration routes", () => {
         configJson: JSON.stringify({
           baseUrl: "http://redmine:3000",
           apiKey: "existing-api-key",
-          virtualEngineerUserId: 3,
+          virtualEngineerUserLogin: "ve",
         }),
         enabled: true,
       });
@@ -711,7 +711,7 @@ describe("Admin API — Plugin & Integration routes", () => {
         body: {
           config: {
             baseUrl: "http://redmine.internal:3000",
-            virtualEngineerUserId: 7,
+            virtualEngineerUserLogin: "ve",
           },
         },
       });

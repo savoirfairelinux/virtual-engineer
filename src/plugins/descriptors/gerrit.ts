@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { promises as fs, constants as fsConstants } from "node:fs";
 import type { PluginDescriptor } from "../registry.js";
 import type { Integration } from "../../interfaces.js";
 import {
@@ -18,9 +19,9 @@ export const gerritConfigSchema = z.object({
   sshHost: z.string().min(1),
   sshPort: z.coerce.number().int().positive().default(GERRIT_SSH_PORT_DEFAULT),
   sshUser: z.string().min(1),
-  sshKeyPath: z.string().min(1).default(GERRIT_SSH_KEY_DEFAULT),
+  sshKeyPath: z.string().trim().min(1).default(GERRIT_SSH_KEY_DEFAULT),
   /** Path to a known_hosts file on the orchestrator filesystem. When set, SSH operations use strict host key verification instead of accepting any fingerprint. */
-  sshKnownHostsPath: z.string().min(1).optional(),
+  sshKnownHostsPath: z.string().trim().min(1).optional(),
   /** Optional Gerrit web URL used only to build clickable review links. */
   baseUrl: z.string().url().optional(),
   /**
@@ -102,7 +103,8 @@ export const gerritDescriptor: PluginDescriptor = {
     { key: "sshHost", label: "SSH Host", type: "text", required: true, placeholder: "gerrit" },
     { key: "sshPort", label: "SSH Port", type: "number", required: false, placeholder: "29418" },
     { key: "sshUser", label: "SSH User", type: "text", required: true, placeholder: "admin" },
-    { key: "sshKnownHostsPath", label: "SSH Known Hosts Path", type: "text", required: false, placeholder: "/app/secrets/gerrit_known_hosts" },
+    { key: "sshKeyPath", label: "SSH Key Path", type: "text", required: false, placeholder: "/home/<user>/.ssh/id_ed25519_gerrit" },
+    { key: "sshKnownHostsPath", label: "SSH Known Hosts Path", type: "text", required: false, placeholder: "/home/<user>/.ssh/known_hosts" },
   ],
   discoverResources: async (config) => {
     const parsed = gerritConfigSchema.parse(config);
@@ -135,10 +137,27 @@ export const gerritDescriptor: PluginDescriptor = {
     });
   },
   testConnection: async (config) => {
-    // config arrives stripped of Zod defaults; apply them via buildSshArgs.
-    // sshHost and sshUser are required by schema so they are always present.
     const cfg = config as Record<string, unknown>;
     const ssh = buildSshArgs(cfg);
+    const ensureReadable = async (path: string, label: string): Promise<{ success: false; error: string } | null> => {
+      try {
+        await fs.access(path, fsConstants.R_OK);
+        return null;
+      } catch {
+        return {
+          success: false,
+          error: `Gerrit connection test failed: ${label} not found or unreadable at '${path}'.`,
+        };
+      }
+    };
+
+    const keyError = await ensureReadable(ssh.keyPath, "SSH private key");
+    if (keyError) return keyError;
+
+    if (ssh.knownHostsPath !== undefined) {
+      const knownHostsError = await ensureReadable(ssh.knownHostsPath, "SSH known_hosts file");
+      if (knownHostsError) return knownHostsError;
+    }
     try {
       const repositories = await listRepositoriesViaSsh(ssh);
       log.info({ sshHost: ssh.host, sshUser: ssh.user, sshPort: ssh.port, repositoryCount: repositories.length }, "Gerrit connection test passed");

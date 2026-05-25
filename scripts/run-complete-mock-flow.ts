@@ -68,7 +68,7 @@ async function main(): Promise<void> {
     const redmineConnector = new HttpRedmineConnector({
       baseUrl: appConfig.redmineUrl,
       apiKey: appConfig.redmineApiKey,
-      virtualEngineerUserId: appConfig.redmineVirtualEngineerUserId,
+      virtualEngineerUserLogin: appConfig.redmineVirtualEngineerUserLogin,
       closedStatusId: appConfig.redmineClosedStatusId,
       inProgressStatusId: appConfig.ticketInProgressStatusId,
       inReviewStatusId: appConfig.ticketInReviewStatusId,

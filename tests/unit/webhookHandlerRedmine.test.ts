@@ -8,7 +8,7 @@ const integration: Integration = {
   id: "redmine-1",
   type: "redmine",
   name: "R",
-  configJson: JSON.stringify({ webhookSecret: "x", baseUrl: "http://r/", apiKey: "k", virtualEngineerUserId: 1 }),
+  configJson: JSON.stringify({ webhookSecret: "x", baseUrl: "http://r/", apiKey: "k", virtualEngineerUserLogin: "ve" }),
   enabled: true,
   createdAt: new Date(),
   updatedAt: new Date(),

@@ -74,10 +74,10 @@ export interface ProjectsRouteDeps {
 }
 
 const pushTargetSchema = z.object({
-  integrationId: z.string().min(1),
-  repoKey: z.string().min(1),
-  cloneUrl: z.string().min(1),
-  targetBranch: z.string().min(1),
+  integrationId: z.string().min(1, "VCS integration is required for each repository"),
+  repoKey: z.string().min(1, "Repository must be selected"),
+  cloneUrl: z.string().min(1, "Clone URL is required"),
+  targetBranch: z.string().min(1, "Target branch is required"),
   role: z.enum(["primary", "submodule", "dependency", "related"]),
   commitOrder: z.number().int().min(1),
   localPath: z.string().min(1),
@@ -108,20 +108,20 @@ const pushTargetsArraySchema = z.array(pushTargetSchema).min(1).superRefine((tar
 });
 
 const ticketSourceSchema = z.object({
-  integrationId: z.string().min(1),
-  ticketProjectKey: z.string().min(1),
+  integrationId: z.string().min(1, "Ticket source integration is required"),
+  ticketProjectKey: z.string().min(1, "Ticket source project is required"),
 });
 
 const reviewConfigSchema = z.object({
-  integrationId: z.string().min(1),
-  repoKeys: z.array(z.string()).min(1),
+  integrationId: z.string().min(1, "Review integration is required"),
+  repoKeys: z.array(z.string()).min(1, "Select at least one repository to review"),
 });
 
 const codingProjectCreateSchema = z.object({
   id: z.string().optional(),
   type: z.literal("coding"),
-  name: z.string().min(1),
-  agentId: z.string().min(1),
+  name: z.string().min(1, "Project name is required"),
+  agentId: z.string().min(1, "Agent is required — create and enable a coding agent first (Agents tab)"),
   agentOverrideJson: z.string().nullable().optional(),
   postCloneScript: z.string().optional(),
   enabled: z.boolean().optional(),
@@ -132,8 +132,8 @@ const codingProjectCreateSchema = z.object({
 const reviewProjectCreateSchema = z.object({
   id: z.string().optional(),
   type: z.literal("review"),
-  name: z.string().min(1),
-  agentId: z.string().min(1),
+  name: z.string().min(1, "Project name is required"),
+  agentId: z.string().min(1, "Agent is required — create and enable a review agent first (Agents tab)"),
   agentOverrideJson: z.string().nullable().optional(),
   postCloneScript: z.string().optional(),
   enabled: z.boolean().optional(),
@@ -146,8 +146,8 @@ const projectCreateSchema = z.discriminatedUnion("type", [
 ]);
 
 const projectUpdateSchema = z.object({
-  name: z.string().min(1).optional(),
-  agentId: z.string().min(1).optional(),
+  name: z.string().min(1, "Project name is required").optional(),
+  agentId: z.string().min(1, "Agent is required").optional(),
   agentOverrideJson: z.string().nullable().optional(),
   postCloneScript: z.string().optional(),
   enabled: z.boolean().optional(),

@@ -74,7 +74,7 @@ describe("PluginManager", () => {
           id: "r1",
           type: "redmine",
           name: "Redmine Prod",
-          configJson: JSON.stringify({ baseUrl: "http://r:3000", apiKey: "k", virtualEngineerUserId: 1 }),
+          configJson: JSON.stringify({ baseUrl: "http://r:3000", apiKey: "k", virtualEngineerUserLogin: "ve" }),
           enabled: true,
         }),
         makeIntegration({
@@ -152,7 +152,7 @@ describe("PluginManager", () => {
         makeIntegration({
           id: "r1",
           type: "redmine",
-          configJson: JSON.stringify({ baseUrl: "http://r:3000", apiKey: "k", virtualEngineerUserId: 1 }),
+          configJson: JSON.stringify({ baseUrl: "http://r:3000", apiKey: "k", virtualEngineerUserLogin: "ve" }),
           enabled: false,
         }),
       ]);
@@ -236,7 +236,7 @@ describe("PluginManager", () => {
         makeIntegration({
           id: "r1",
           type: "redmine",
-          configJson: JSON.stringify({ baseUrl: "http://r:3000", apiKey: "k", virtualEngineerUserId: 1 }),
+          configJson: JSON.stringify({ baseUrl: "http://r:3000", apiKey: "k", virtualEngineerUserLogin: "ve" }),
           enabled: true,
         }),
       ]);
@@ -267,7 +267,7 @@ describe("PluginManager", () => {
         makeIntegration({
           id: "r1",
           type: "redmine",
-          configJson: JSON.stringify({ baseUrl: "http://r:3000", apiKey: "k", virtualEngineerUserId: 1 }),
+          configJson: JSON.stringify({ baseUrl: "http://r:3000", apiKey: "k", virtualEngineerUserLogin: "ve" }),
           enabled: false,
         }),
       ]);
@@ -284,7 +284,7 @@ describe("PluginManager", () => {
         makeIntegration({
           id: "r1",
           type: "redmine",
-          configJson: JSON.stringify({ baseUrl: "http://r:3000", apiKey: "bad", virtualEngineerUserId: 1 }),
+          configJson: JSON.stringify({ baseUrl: "http://r:3000", apiKey: "bad", virtualEngineerUserLogin: "ve" }),
           enabled: false,
         }),
       ]);
@@ -364,7 +364,7 @@ describe("PluginManager", () => {
         makeIntegration({
           id: "r1",
           type: "redmine",
-          configJson: JSON.stringify({ baseUrl: "http://r:3000", apiKey: "k", virtualEngineerUserId: 1 }),
+          configJson: JSON.stringify({ baseUrl: "http://r:3000", apiKey: "k", virtualEngineerUserLogin: "ve" }),
           enabled: false,
         }),
       ]);
@@ -386,7 +386,7 @@ describe("PluginManager", () => {
         makeIntegration({
           id: "r1",
           type: "redmine",
-          configJson: JSON.stringify({ baseUrl: "http://r:3000", apiKey: "k", virtualEngineerUserId: 1 }),
+          configJson: JSON.stringify({ baseUrl: "http://r:3000", apiKey: "k", virtualEngineerUserLogin: "ve" }),
           enabled: true,
         }),
       ]);
@@ -411,7 +411,7 @@ describe("PluginManager", () => {
           id: "r1",
           type: "redmine",
           name: "Redmine Prod",
-          configJson: JSON.stringify({ baseUrl: "http://r:3000", apiKey: "k1", virtualEngineerUserId: 1 }),
+          configJson: JSON.stringify({ baseUrl: "http://r:3000", apiKey: "k1", virtualEngineerUserLogin: "ve" }),
           enabled: true,
         }),
       ]);
@@ -436,7 +436,7 @@ describe("PluginManager", () => {
         id: "r1",
         type: "redmine",
         name: "Redmine Prod",
-        configJson: JSON.stringify({ baseUrl: "http://r2:3000", apiKey: "k2", virtualEngineerUserId: 9 }),
+        configJson: JSON.stringify({ baseUrl: "http://r2:3000", apiKey: "k2", virtualEngineerUserLogin: "ve" }),
         enabled: true,
       });
 
@@ -447,7 +447,7 @@ describe("PluginManager", () => {
         {
           baseUrl: "http://r2:3000",
           apiKey: "k2",
-          virtualEngineerUserId: 9,
+          virtualEngineerUserLogin: "ve",
         },
         expect.objectContaining({
           id: "r1",
@@ -465,7 +465,7 @@ describe("PluginManager", () => {
         makeIntegration({
           id: "r1",
           type: "redmine",
-          configJson: JSON.stringify({ baseUrl: "http://r:3000", apiKey: "k", virtualEngineerUserId: 1 }),
+          configJson: JSON.stringify({ baseUrl: "http://r:3000", apiKey: "k", virtualEngineerUserLogin: "ve" }),
           enabled: true,
         }),
         makeIntegration({
@@ -496,7 +496,7 @@ describe("PluginManager", () => {
         makeIntegration({
           id: "r1",
           type: "redmine",
-          configJson: JSON.stringify({ baseUrl: "http://r:3000", apiKey: "k", virtualEngineerUserId: 1 }),
+          configJson: JSON.stringify({ baseUrl: "http://r:3000", apiKey: "k", virtualEngineerUserLogin: "ve" }),
           enabled: true,
         }),
       ]);
@@ -544,7 +544,7 @@ describe("PluginManager", () => {
       const result = await mgr.testConnectionConfig("redmine", {
         baseUrl: "http://r:3000",
         apiKey: "k",
-        virtualEngineerUserId: 1,
+        virtualEngineerUserLogin: "admin",
       });
 
       expect(fetchSpy).toHaveBeenCalledWith(
@@ -570,7 +570,7 @@ describe("PluginManager", () => {
       const result = await mgr.testConnectionConfig("redmine", {
         baseUrl: "http://r:3000",
         apiKey: "bad-key",
-        virtualEngineerUserId: 1,
+        virtualEngineerUserLogin: "ve",
       });
 
       expect(result.success).toBe(false);
