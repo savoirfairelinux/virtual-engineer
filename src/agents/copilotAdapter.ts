@@ -348,17 +348,10 @@ export class CopilotAdapter implements AgentAdapter {
 
   /** Retrieve the GitHub OAuth token, preferring the encrypted session token from agent config. */
   private async getGitHubOAuthToken(context: TaskContext): Promise<string> {
-    // Prefer the encrypted session token from agent modelConfig (OAuth flow).
     const encrypted = context.agentSession.encryptedSessionToken;
     if (encrypted) {
-      const config = getConfig();
-      const secret = config.adminAuthSecret;
-      if (!secret) {
-        throw new Error("ADMIN_AUTH_SECRET is required to decrypt the Copilot session token");
-      }
-      return decryptToken(encrypted, secret);
+      return decryptToken(encrypted, getConfig().adminAuthSecret);
     }
-    // Legacy fallback: direct GitHub token on the session.
     if (context.agentSession.githubToken) {
       return context.agentSession.githubToken;
     }
