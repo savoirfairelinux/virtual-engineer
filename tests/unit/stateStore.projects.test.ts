@@ -103,7 +103,6 @@ describe("SqliteStateStore — Phase 2: projects", () => {
     });
     expect(p.agentId).toBe(a.id);
     expect(p.postCloneScript).toBe("echo hi");
-    expect(p.maxConcurrent).toBe(1);
     expect(p.enabled).toBe(true);
   });
 
@@ -354,7 +353,6 @@ describe("resolveAgentConfig — partial-merge semantics", () => {
       agentId: makeAgentId("a1"),
       agentOverrideJson,
       postCloneScript: "",
-      maxConcurrent: 1,
       enabled: true,
       createdAt: new Date(),
       updatedAt: new Date(),

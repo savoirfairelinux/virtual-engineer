@@ -28,14 +28,13 @@ export interface ProjectsRouteStore {
     agentId: AgentId;
     agentOverrideJson?: string | null;
     postCloneScript?: string;
-    maxConcurrent?: number;
     enabled?: boolean;
   }): Promise<ProjectRecord>;
   getProjectById(id: ProjectId): Promise<ProjectRecord | null>;
   listProjects(filter?: { type?: ProjectType; enabled?: boolean }): Promise<ProjectRecord[]>;
   updateProject(
     id: ProjectId,
-    partial: Partial<Pick<ProjectRecord, "name" | "type" | "agentId" | "agentOverrideJson" | "postCloneScript" | "maxConcurrent" | "enabled">>
+    partial: Partial<Pick<ProjectRecord, "name" | "type" | "agentId" | "agentOverrideJson" | "postCloneScript" | "enabled">>
   ): Promise<ProjectRecord>;
   deleteProject(id: ProjectId): Promise<void>;
   setProjectEnabled(id: ProjectId, enabled: boolean): Promise<void>;
@@ -102,7 +101,6 @@ const codingProjectCreateSchema = z.object({
   agentId: z.string().min(1),
   agentOverrideJson: z.string().nullable().optional(),
   postCloneScript: z.string().optional(),
-  maxConcurrent: z.number().int().min(1).optional(),
   enabled: z.boolean().optional(),
   ticketSource: ticketSourceSchema,
   pushTargets: z.array(pushTargetSchema).min(1),
@@ -115,7 +113,6 @@ const reviewProjectCreateSchema = z.object({
   agentId: z.string().min(1),
   agentOverrideJson: z.string().nullable().optional(),
   postCloneScript: z.string().optional(),
-  maxConcurrent: z.number().int().min(1).optional(),
   enabled: z.boolean().optional(),
   reviewConfig: reviewConfigSchema,
 });
@@ -130,7 +127,6 @@ const projectUpdateSchema = z.object({
   agentId: z.string().min(1).optional(),
   agentOverrideJson: z.string().nullable().optional(),
   postCloneScript: z.string().optional(),
-  maxConcurrent: z.number().int().min(1).optional(),
   enabled: z.boolean().optional(),
   ticketSource: ticketSourceSchema.optional(),
   pushTargets: z.array(pushTargetSchema).optional(),
@@ -166,7 +162,6 @@ interface ProjectSummary {
   agentId: string;
   agentName: string | null;
   enabled: boolean;
-  maxConcurrent: number;
   createdAt: string;
   updatedAt: string;
   ticketSource: { integration: { id: string; name: string; type: string } | null; ticketProjectKey: string } | null;
@@ -228,7 +223,6 @@ async function buildProjectSummary(
     agentId: project.agentId,
     agentName: agent ? agent.name : null,
     enabled: project.enabled,
-    maxConcurrent: project.maxConcurrent,
     createdAt: project.createdAt.toISOString(),
     updatedAt: project.updatedAt.toISOString(),
     ticketSource,
@@ -286,7 +280,6 @@ async function buildProjectDetail(
     agentId: project.agentId,
     agentName: agent ? agent.name : null,
     enabled: project.enabled,
-    maxConcurrent: project.maxConcurrent,
     createdAt: project.createdAt.toISOString(),
     updatedAt: project.updatedAt.toISOString(),
     agentOverrideJson: project.agentOverrideJson,
@@ -386,7 +379,6 @@ export async function handleProjectsRoute(
         agentId: makeAgentId(data.agentId),
         ...(data.agentOverrideJson !== undefined ? { agentOverrideJson: data.agentOverrideJson } : {}),
         ...(data.postCloneScript !== undefined ? { postCloneScript: data.postCloneScript } : {}),
-        ...(data.maxConcurrent !== undefined ? { maxConcurrent: data.maxConcurrent } : {}),
         ...(data.enabled !== undefined ? { enabled: data.enabled } : {}),
       });
     } catch (err: unknown) {
@@ -473,7 +465,6 @@ export async function handleProjectsRoute(
       if (data.agentId !== undefined) updates.agentId = makeAgentId(data.agentId);
       if (data.agentOverrideJson !== undefined) updates.agentOverrideJson = data.agentOverrideJson;
       if (data.postCloneScript !== undefined) updates.postCloneScript = data.postCloneScript;
-      if (data.maxConcurrent !== undefined) updates.maxConcurrent = data.maxConcurrent;
       if (data.enabled !== undefined) updates.enabled = data.enabled;
 
       try {

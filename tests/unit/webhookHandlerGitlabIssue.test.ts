@@ -21,7 +21,6 @@ const project: ProjectRecord = {
   agentId: "a-1" as AgentId,
   agentOverrideJson: null,
   postCloneScript: "",
-  maxConcurrent: 1,
   enabled: true,
   createdAt: new Date(),
   updatedAt: new Date(),

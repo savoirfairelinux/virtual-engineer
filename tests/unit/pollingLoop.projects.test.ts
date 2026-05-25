@@ -18,7 +18,6 @@ function makeProject(over: Omit<Partial<ProjectRecord>, "id" | "type"> & { id: s
     agentId: (over.agentId ?? "agent-1") as AgentId,
     agentOverrideJson: over.agentOverrideJson ?? null,
     postCloneScript: over.postCloneScript ?? "",
-    maxConcurrent: over.maxConcurrent ?? 1,
     enabled: over.enabled ?? true,
     createdAt: over.createdAt ?? new Date(),
     updatedAt: over.updatedAt ?? new Date(),

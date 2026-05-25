@@ -60,7 +60,6 @@ export interface ProjectRecord {
   agentOverrideJson: string | null;
   /** Bash script run on the host after cloning. Empty string means "no script". */
   postCloneScript: string;
-  maxConcurrent: number;
   enabled: boolean;
   createdAt: Date;
   updatedAt: Date;

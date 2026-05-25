@@ -44,7 +44,6 @@ interface ProjectRow {
   agentId: string;
   agentName: string | null;
   enabled: boolean;
-  maxConcurrent: number;
   pushTargetCount: number;
   createdAt: string;
   updatedAt: string;
@@ -187,7 +186,6 @@ test.describe("Phase 3 — Projects flow", () => {
           agentId,
           agentName: agent ? agent.name : null,
           enabled: Boolean(payload["enabled"]),
-          maxConcurrent: Number(payload["maxConcurrent"]) || 1,
           pushTargetCount: pts.length,
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),

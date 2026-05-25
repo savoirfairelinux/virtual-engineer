@@ -64,7 +64,6 @@ function makeProject(): ProjectRecord {
     agentId: makeAgentId("a-1"),
     agentOverrideJson: null,
     postCloneScript: "",
-    maxConcurrent: 1,
     enabled: true,
     createdAt: new Date(),
     updatedAt: new Date(),

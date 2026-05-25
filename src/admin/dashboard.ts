@@ -5295,7 +5295,6 @@ function renderExpandedProjectDetails(p) {
           renderSettingRows([
             ['Type', p.type],
             ['Agent', p.agentName || '—'],
-            ['Max Concurrent', String(p.maxConcurrent)],
             ['Status', p.enabled ? 'Enabled' : 'Disabled'],
             ['Created', fmt(p.createdAt)],
             ['Updated', fmt(p.updatedAt)],
@@ -5428,8 +5427,6 @@ function showProjectModal(existing) {
       '</select>' +
       '<label>Agent</label>' +
       '<select data-f="agentId"></select>' +
-      '<label>Max Concurrent</label>' +
-      '<input type="number" min="1" data-f="maxConcurrent" value="' + esc(String((existing && existing.maxConcurrent) || 1)) + '" />' +
       '<label>Post-Clone Script (coding only)</label>' +
       '<textarea class="post-clone-input" data-f="postCloneScript" rows="1" placeholder="optional bash script">' + esc((existing && existing.postCloneScript) || '') + '</textarea>' +
       '<div data-role="ticketsource-section"></div>' +
@@ -5713,7 +5710,6 @@ function showProjectModal(existing) {
       name: get('name'),
       type: t,
       agentId: agentSel.value,
-      maxConcurrent: Number(get('maxConcurrent')) || 1,
       postCloneScript: get('postCloneScript') || '',
     };
     if (t === 'coding') {

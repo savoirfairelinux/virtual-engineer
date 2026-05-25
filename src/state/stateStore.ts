@@ -203,7 +203,6 @@ export class SqliteStateStore implements StateStore, IntegrationStore, PromptSto
         agent_id            TEXT    NOT NULL REFERENCES agents(id),
         agent_override_json TEXT,
         post_clone_script   TEXT    NOT NULL DEFAULT '',
-        max_concurrent      INTEGER NOT NULL DEFAULT 1,
         enabled             INTEGER NOT NULL DEFAULT 0,
         created_at          INTEGER NOT NULL,
         updated_at          INTEGER NOT NULL
@@ -1532,7 +1531,6 @@ export class SqliteStateStore implements StateStore, IntegrationStore, PromptSto
       agentId: row.agentId as AgentId,
       agentOverrideJson: row.agentOverrideJson ?? null,
       postCloneScript: row.postCloneScript,
-      maxConcurrent: row.maxConcurrent,
       enabled: row.enabled === 1,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
@@ -1547,7 +1545,6 @@ export class SqliteStateStore implements StateStore, IntegrationStore, PromptSto
     agentId: AgentId;
     agentOverrideJson?: string | null;
     postCloneScript?: string;
-    maxConcurrent?: number;
     enabled?: boolean;
   }): Promise<ProjectRecord> {
     const now = new Date();
@@ -1561,7 +1558,6 @@ export class SqliteStateStore implements StateStore, IntegrationStore, PromptSto
       agentId: input.agentId,
       agentOverrideJson: input.agentOverrideJson ?? null,
       postCloneScript: input.postCloneScript ?? "",
-      maxConcurrent: input.maxConcurrent ?? 1,
       enabled: input.enabled === false ? 0 : 1,
       createdAt: now,
       updatedAt: now,
@@ -1591,7 +1587,7 @@ export class SqliteStateStore implements StateStore, IntegrationStore, PromptSto
   /** Apply a partial update to a project record and return the updated row. */
   async updateProject(
     id: ProjectId,
-    partial: Partial<Pick<ProjectRecord, "name" | "type" | "agentId" | "agentOverrideJson" | "postCloneScript" | "maxConcurrent" | "enabled">>
+    partial: Partial<Pick<ProjectRecord, "name" | "type" | "agentId" | "agentOverrideJson" | "postCloneScript" | "enabled">>
   ): Promise<ProjectRecord> {
     const existing = await this.getProjectById(id);
     if (!existing) throw new Error(`Project not found: ${id}`);
@@ -1606,7 +1602,6 @@ export class SqliteStateStore implements StateStore, IntegrationStore, PromptSto
     }
     if (partial.agentOverrideJson !== undefined) update["agentOverrideJson"] = partial.agentOverrideJson;
     if (partial.postCloneScript !== undefined) update["postCloneScript"] = partial.postCloneScript;
-    if (partial.maxConcurrent !== undefined) update["maxConcurrent"] = partial.maxConcurrent;
     if (partial.enabled !== undefined) update["enabled"] = partial.enabled ? 1 : 0;
     await this.db.update(projects).set(update).where(eq(projects.id, id));
     const updated = await this.getProjectById(id);
