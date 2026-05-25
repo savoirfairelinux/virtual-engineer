@@ -11,6 +11,8 @@ import { gitlabIssueDescriptor } from "./descriptors/gitlab-issue.js";
 import { gitlabMergeRequestDescriptor } from "./descriptors/gitlab-merge-request.js";
 import { createCopilotDescriptor } from "./descriptors/copilot.js";
 import { mockDescriptor } from "./descriptors/mock.js";
+import { githubIssueDescriptor } from "./descriptors/github-issue.js";
+import { githubPullRequestDescriptor } from "./descriptors/github-pull-request.js";
 
 /** Register all built-in integration descriptors with the plugin registry. */
 export function registerBuiltinPlugins(options?: { adminAuthSecret?: string }): void {
@@ -20,4 +22,6 @@ export function registerBuiltinPlugins(options?: { adminAuthSecret?: string }): 
   registerPlugin(gitlabMergeRequestDescriptor);
   registerPlugin(createCopilotDescriptor(options?.adminAuthSecret));
   registerPlugin(mockDescriptor);
+  registerPlugin(githubIssueDescriptor);
+  registerPlugin(githubPullRequestDescriptor);
 }
