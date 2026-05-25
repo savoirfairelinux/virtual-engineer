@@ -7,7 +7,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { makeTaskId, makeExternalChangeId } from "../../src/interfaces.js";
-import type { TaskContext, AgentLogEvent } from "../../src/interfaces.js";
+import type { TaskContext, AgentLogEvent, RepositoryMap } from "../../src/interfaces.js";
 import { randomUUID } from "crypto";
 
 // ── Mock child_process BEFORE importing CopilotAdapter ────────────────────────
@@ -35,6 +35,7 @@ vi.mock("child_process", () => {
 
 import { execFile } from "child_process";
 import { CopilotAdapter, agentLogBus } from "../../src/agents/copilotAdapter.js";
+import { buildCodegenUserPrompt } from "../../src/agents/copilotAdapter.js";
 
 const mockExecFile = vi.mocked(execFile);
 
@@ -663,6 +664,96 @@ describe("CopilotAdapter", () => {
       const spec = adapter.buildContainerSpec(makeContext(), { GITHUB_TOKEN: "ghp_test" });
 
       expect(spec.env["MAX_COMMITS_PER_CYCLE"]).toBe("10");
+    });
+
+    it("includes REPOSITORY_MAP_JSON when repositoryMap is set", () => {
+      const repoMap: RepositoryMap = {
+        superproject: { repoKey: "jami-client-qt", localPath: "." },
+        submodules: [{ repoKey: "daemon", localPath: "daemon" }],
+      };
+      const adapter = new CopilotAdapter();
+      const ctx = makeContext({
+        agentSession: {
+          ...makeContext().agentSession,
+          repositoryMap: repoMap,
+        },
+      });
+      const spec = adapter.buildContainerSpec(ctx, { GITHUB_TOKEN: "ghp_test" });
+
+      expect(spec.env["REPOSITORY_MAP_JSON"]).toBe(JSON.stringify(repoMap));
+    });
+
+    it("omits REPOSITORY_MAP_JSON when repositoryMap is undefined", () => {
+      const adapter = new CopilotAdapter();
+      const spec = adapter.buildContainerSpec(makeContext(), { GITHUB_TOKEN: "ghp_test" });
+
+      expect(spec.env["REPOSITORY_MAP_JSON"]).toBeUndefined();
+    });
+  });
+
+  describe("buildCodegenUserPrompt", () => {
+    it("includes workspace layout section when repositoryMap has submodules", () => {
+      const repoMap: RepositoryMap = {
+        superproject: { repoKey: "jami-client-qt", localPath: "." },
+        submodules: [{ repoKey: "daemon", localPath: "daemon" }],
+      };
+      const ctx = makeContext({
+        agentSession: { ...makeContext().agentSession, repositoryMap: repoMap },
+      });
+
+      const prompt = buildCodegenUserPrompt(ctx, "Do the work.");
+
+      expect(prompt).toContain("### Workspace Layout (multi-repository)");
+      expect(prompt).toContain("**jami-client-qt** (root)");
+      expect(prompt).toContain("**daemon**");
+      expect(prompt).toContain("`/workspace/daemon/`");
+      expect(prompt).toContain("cannot reach them");
+      expect(prompt).toContain("find /workspace/daemon/");
+      expect(prompt).toContain("MUST `git add -A && git commit` **separately in each repository");
+      expect(prompt).toContain("cd /workspace/daemon && git add -A && git commit");
+      expect(prompt).toContain("Focus on implementation, not exploration");
+    });
+
+    it("omits workspace layout section for single-repo projects", () => {
+      const prompt = buildCodegenUserPrompt(makeContext(), "Do the work.");
+
+      expect(prompt).not.toContain("Workspace Layout");
+    });
+
+    it("omits workspace layout section when repositoryMap has empty submodules", () => {
+      const repoMap: RepositoryMap = {
+        superproject: { repoKey: "my-project", localPath: "." },
+        submodules: [],
+      };
+      const ctx = makeContext({
+        agentSession: { ...makeContext().agentSession, repositoryMap: repoMap },
+      });
+
+      const prompt = buildCodegenUserPrompt(ctx, "Do the work.");
+
+      expect(prompt).not.toContain("Workspace Layout");
+    });
+
+    it("lists multiple submodules", () => {
+      const repoMap: RepositoryMap = {
+        superproject: { repoKey: "monorepo", localPath: "." },
+        submodules: [
+          { repoKey: "core-lib", localPath: "libs/core" },
+          { repoKey: "utils", localPath: "libs/utils" },
+        ],
+      };
+      const ctx = makeContext({
+        agentSession: { ...makeContext().agentSession, repositoryMap: repoMap },
+      });
+
+      const prompt = buildCodegenUserPrompt(ctx, "Do the work.");
+
+      expect(prompt).toContain("**core-lib**");
+      expect(prompt).toContain("`/workspace/libs/core/`");
+      expect(prompt).toContain("**utils**");
+      expect(prompt).toContain("`/workspace/libs/utils/`");
+      expect(prompt).toContain("cd /workspace/libs/core && git add -A && git commit");
+      expect(prompt).toContain("cd /workspace/libs/utils && git add -A && git commit");
     });
   });
 });

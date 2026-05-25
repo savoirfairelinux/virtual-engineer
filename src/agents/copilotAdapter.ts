@@ -104,9 +104,39 @@ export function buildCodegenUserPrompt(
     lines.push("");
   }
 
+  const repoMap = context.agentSession.repositoryMap;
+  if (repoMap && repoMap.submodules.length > 0) {
+    lines.push("### CRITICAL: Multi-Repository One-Shot Requirement");
+    lines.push("**You MUST implement ALL changes in ALL repositories before writing your final response.**");
+    lines.push("Do NOT stop after one repo. Do NOT say \"let me know\" or \"Next:\". This session ends when you respond — there is no next turn.");
+    lines.push("");
+    lines.push("### Workspace Layout (multi-repository)");
+    lines.push("This workspace contains multiple repositories cloned side-by-side:");
+    lines.push(`- **${repoMap.superproject.repoKey}** (root): \`/workspace/\` — use \`glob\`, \`grep\`, \`view\`, \`edit\` normally`);
+    for (const sub of repoMap.submodules) {
+      lines.push(`- **${sub.repoKey}**: \`/workspace/${sub.localPath}/\` — use \`bash\` for discovery, \`edit\`/\`create\` for changes`);
+    }
+    lines.push("");
+    lines.push("For the root repository, use the standard tools (`glob`, `grep`, `view`, `edit`) as usual.");
+    lines.push("For sub-repositories, `glob`/`grep`/`view` cannot reach them. Use `bash` only for discovery:");
+    lines.push(`- \`find /workspace/${repoMap.submodules[0]!.localPath}/ -name '*.cpp' | head -30\``);
+    lines.push(`- \`grep -rn 'pattern' /workspace/${repoMap.submodules[0]!.localPath}/src/\``);
+    lines.push("Use `edit` or `create` with the full path to modify files in any repository.");
+    lines.push("");
+    lines.push("**Committing**: You MUST `git add -A && git commit` **separately in each repository you modify**.");
+    lines.push("Use `bash` for commits in sub-repositories:");
+    for (const sub of repoMap.submodules) {
+      lines.push(`- \`cd /workspace/${sub.localPath} && git add -A && git commit -m 'feat(scope): description'\``);
+    }
+    lines.push("For the root repository, commit from `/workspace/`.");
+    lines.push("");
+    lines.push("**Focus on implementation, not exploration.** Limit exploration to what you need, then edit and commit.");
+    lines.push("");
+  }
+
   lines.push("### Instructions");
   lines.push(instructionsPromptContent);
-  lines.push(`This is cycle number ${context.cycleNumber}.`);
+  lines.push(`This is cycle number ${context.cycleNumber}. The workspace is a FRESH CLONE of the repository — it contains NO previous changes, no prior work. You must implement the full task from scratch.`);
   if (context.ticketUrl) lines.push(`Ticket URL: ${context.ticketUrl}`);
   lines.push("");
 
@@ -187,11 +217,9 @@ export class CopilotAdapter implements AgentAdapter {
       TASK_ID: context.taskId,
       MAX_CONTEXT_BYTES: String(this.config.maxRepositoryContextBytes),
       MAX_COMMITS_PER_CYCLE: String(this.config.maxCommitsPerCycle ?? 10),
-      // Per-repo Change-Ids for multi-repo retry cycles. The agent can embed these
-      // in commit messages so Gerrit recognises them as new patchsets on existing changes.
-      PER_REPO_CHANGE_IDS_JSON: session.perRepoChangeIds
-        ? JSON.stringify(session.perRepoChangeIds)
-        : "",
+      ...(session.repositoryMap !== undefined
+        ? { REPOSITORY_MAP_JSON: JSON.stringify(session.repositoryMap) }
+        : {}),
     };
 
     const additionalDockerArgs = [
