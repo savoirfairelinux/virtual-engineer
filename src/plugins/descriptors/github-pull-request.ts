@@ -3,7 +3,7 @@ import type { Integration, IntegrationBindingContext } from "../../interfaces.js
 import type { PluginDescriptor } from "../registry.js";
 import { GitHubPullRequestReviewConnector } from "../../connectors/githubPullRequestReviewConnector.js";
 import { GitHubVcsConnector } from "../../vcs/githubVcsConnector.js";
-import { resolveGitHubUrls, type GitHubMode } from "../../utils/githubAuth.js";
+import { resolveGitHubUrls, fetchGitHubRepository, type GitHubMode } from "../../utils/githubAuth.js";
 import {
   githubModeSchema,
   githubAuthModeSchema,
@@ -128,6 +128,30 @@ export const githubPullRequestDescriptor: PluginDescriptor = {
         ? { virtualEngineerUserLogin: parsed.virtualEngineerUserLogin }
         : {}),
     });
+  },
+  discoverResources: async (config) => {
+    const parsed = githubPullRequestConfigSchema.parse(config);
+    const { owner, repo } = parseRepositorySlug(parsed.repositorySlug);
+    const urls = resolveGitHubUrls(parsed.mode as GitHubMode, parsed.baseUrl);
+    const info = await fetchGitHubRepository(
+      getGitHubAccessToken(parsed as Record<string, unknown>),
+      urls.apiBaseUrl,
+      owner,
+      repo
+    );
+    return {
+      repositories: [
+        {
+          key: info.fullName,
+          name: info.name,
+          webUrl: info.htmlUrl,
+          cloneUrlHttp: info.cloneUrl,
+          cloneUrlSsh: info.sshUrl,
+          defaultBranch: info.defaultBranch,
+        },
+      ],
+      discoveredAt: new Date().toISOString(),
+    };
   },
   createVcsConnector: (cfg: Record<string, unknown>, _integration: Integration, _context?: IntegrationBindingContext) => {
     const parsed = githubPullRequestConfigSchema.parse(cfg);

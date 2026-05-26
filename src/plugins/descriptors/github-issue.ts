@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { Integration, IntegrationBindingContext } from "../../interfaces.js";
 import type { PluginDescriptor } from "../registry.js";
 import { GitHubIssueConnector } from "../../connectors/githubIssueConnector.js";
-import { resolveGitHubUrls, type GitHubMode } from "../../utils/githubAuth.js";
+import { resolveGitHubUrls, fetchGitHubRepository, type GitHubMode } from "../../utils/githubAuth.js";
 import {
   githubModeSchema,
   githubAuthModeSchema,
@@ -102,6 +102,21 @@ export const githubIssueDescriptor: PluginDescriptor = {
       placeholder: "virtual-engineer",
     },
   ],
+  discoverResources: async (config) => {
+    const parsed = githubIssueConfigSchema.parse(config);
+    const { owner, repo } = parseRepositorySlug(parsed.repositorySlug);
+    const urls = resolveGitHubUrls(parsed.mode as GitHubMode, parsed.baseUrl);
+    const info = await fetchGitHubRepository(
+      getGitHubAccessToken(parsed as Record<string, unknown>),
+      urls.apiBaseUrl,
+      owner,
+      repo
+    );
+    return {
+      ticketProjects: [{ key: info.fullName, name: info.fullName, url: info.htmlUrl }],
+      discoveredAt: new Date().toISOString(),
+    };
+  },
   createInstance: (config: unknown, _integration: Integration, _context?: IntegrationBindingContext) => {
     const parsed = githubIssueConfigSchema.parse(config);
     const { owner, repo } = parseRepositorySlug(parsed.repositorySlug);

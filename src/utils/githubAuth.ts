@@ -186,6 +186,54 @@ export async function fetchGitHubCurrentUser(
   };
 }
 
+// ─── Repository lookup ───────────────────────────────────────────────────────
+
+export interface GitHubRepoInfo {
+  fullName: string;
+  name: string;
+  htmlUrl: string;
+  cloneUrl: string;
+  sshUrl: string;
+  defaultBranch: string;
+}
+
+export async function fetchGitHubRepository(
+  token: string,
+  apiBaseUrl: string,
+  owner: string,
+  repo: string
+): Promise<GitHubRepoInfo> {
+  const url = `${apiBaseUrl}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
+
+  const response = await globalThis.fetch(url, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: "application/vnd.github+json",
+    },
+  });
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    if (response.status === 404) {
+      throw new GitHubAuthError(
+        `Repository "${owner}/${repo}" was not found or is not visible to the current GitHub token. ` +
+          `Check the owner/repo spelling and that the token has access to it.`
+      );
+    }
+    throw new GitHubAuthError(`Fetch repository failed (${response.status}): ${body}`);
+  }
+
+  const data = (await response.json()) as Record<string, unknown>;
+  return {
+    fullName: data["full_name"] as string,
+    name: data["name"] as string,
+    htmlUrl: data["html_url"] as string,
+    cloneUrl: data["clone_url"] as string,
+    sshUrl: data["ssh_url"] as string,
+    defaultBranch: data["default_branch"] as string,
+  };
+}
+
 // ─── Error ────────────────────────────────────────────────────────────────────
 
 export class GitHubAuthError extends Error {

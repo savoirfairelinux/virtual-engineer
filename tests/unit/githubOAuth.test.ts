@@ -3,6 +3,7 @@ import {
   createGitHubOAuthConfig,
   createGitHubDeviceOAuthHandler,
 } from "../../src/plugins/descriptors/githubOAuth.js";
+import { fetchGitHubRepository } from "../../src/utils/githubAuth.js";
 import { jsonResponse, errorResponse } from "./helpers/fixtures.js";
 
 describe("createGitHubOAuthConfig", () => {
@@ -150,5 +151,55 @@ describe("createGitHubDeviceOAuthHandler", () => {
       oauthClientId: "Iv1.client",
     });
     await expect(handler.complete({ deviceCode: "d" })).rejects.toThrow();
+  });
+});
+
+describe("fetchGitHubRepository", () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+  beforeEach(() => {
+    fetchMock = vi.fn();
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("returns canonical repo info from /repos/{owner}/{repo}", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        full_name: "octocat/Hello-World",
+        name: "Hello-World",
+        html_url: "https://github.com/octocat/Hello-World",
+        clone_url: "https://github.com/octocat/Hello-World.git",
+        ssh_url: "git@github.com:octocat/Hello-World.git",
+        default_branch: "main",
+      })
+    );
+    const info = await fetchGitHubRepository("tok", "https://api.github.com", "octocat", "Hello-World");
+    expect(info).toEqual({
+      fullName: "octocat/Hello-World",
+      name: "Hello-World",
+      htmlUrl: "https://github.com/octocat/Hello-World",
+      cloneUrl: "https://github.com/octocat/Hello-World.git",
+      sshUrl: "git@github.com:octocat/Hello-World.git",
+      defaultBranch: "main",
+    });
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("https://api.github.com/repos/octocat/Hello-World");
+    expect((init.headers as Record<string, string>)["Authorization"]).toBe("Bearer tok");
+  });
+
+  it("throws a helpful error on 404", async () => {
+    fetchMock.mockResolvedValueOnce(errorResponse(404, "Not Found"));
+    await expect(
+      fetchGitHubRepository("tok", "https://api.github.com", "octocat", "missing")
+    ).rejects.toThrow(/octocat\/missing.*not found/i);
+  });
+
+  it("throws on non-2xx, non-404 errors", async () => {
+    fetchMock.mockResolvedValueOnce(errorResponse(500, "boom"));
+    await expect(
+      fetchGitHubRepository("tok", "https://api.github.com", "o", "r")
+    ).rejects.toThrow(/500/);
   });
 });
