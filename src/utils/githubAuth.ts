@@ -73,6 +73,12 @@ export async function startGitHubDeviceFlow(
 
   if (!response.ok) {
     const body = await response.text().catch(() => "");
+    if (response.status === 404) {
+      throw new GitHubAuthError(
+        `Device flow start failed (404): GitHub did not recognise the OAuth Client ID "${clientId}". ` +
+          `Check that the OAuth App exists at ${baseUrl}/settings/developers and that "Device flow" is enabled in its settings.`
+      );
+    }
     throw new GitHubAuthError(`Device flow start failed (${response.status}): ${body}`);
   }
 

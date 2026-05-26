@@ -11,6 +11,7 @@ import {
   githubTokenSchema,
   createGitHubOAuthConfig,
   createGitHubDeviceOAuthHandler,
+  getGitHubAccessToken,
 } from "./githubOAuth.js";
 
 export const githubPullRequestConfigSchema = z.object({
@@ -95,8 +96,9 @@ export const githubPullRequestDescriptor: PluginDescriptor = {
       key: "token",
       label: "Personal Access Token",
       type: "password",
-      required: true,
+      required: false,
       placeholder: "ghp_...",
+      dependsOn: { field: "authMode", value: "pat" },
     },
     {
       key: "repositorySlug",
@@ -121,7 +123,7 @@ export const githubPullRequestDescriptor: PluginDescriptor = {
       apiBaseUrl: urls.apiBaseUrl,
       owner,
       repo,
-      token: parsed.token,
+      token: getGitHubAccessToken(parsed as Record<string, unknown>),
       ...(parsed.virtualEngineerUserLogin !== undefined
         ? { virtualEngineerUserLogin: parsed.virtualEngineerUserLogin }
         : {}),
@@ -137,7 +139,7 @@ export const githubPullRequestDescriptor: PluginDescriptor = {
       host,
       owner,
       repo,
-      token: parsed.token,
+      token: getGitHubAccessToken(parsed as Record<string, unknown>),
       gitAuthorName: parsed.gitAuthorName,
       gitAuthorEmail: parsed.gitAuthorEmail,
       ...(parsed.targetBranch !== undefined ? { targetBranch: parsed.targetBranch } : {}),

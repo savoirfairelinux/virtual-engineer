@@ -22,9 +22,18 @@ export const githubAuthModeSchema = z.enum(["pat", "oauth"]);
 
 export const githubBaseUrlSchema = z.string().url().optional();
 
-export const githubTokenSchema = z.string().min(1);
+export const githubTokenSchema = z.string().min(1).optional();
 
 export const githubOAuthClientIdSchema = z.string().min(1).optional();
+
+export function getGitHubAccessToken(config: Record<string, unknown>): string {
+  const raw = config["token"];
+  const token = typeof raw === "string" ? raw.trim() : "";
+  if (!token) {
+    throw new Error("GitHub access token is required. Complete the OAuth Connect flow or provide a personal access token.");
+  }
+  return token;
+}
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 

@@ -10,6 +10,7 @@ import {
   githubTokenSchema,
   createGitHubOAuthConfig,
   createGitHubDeviceOAuthHandler,
+  getGitHubAccessToken,
 } from "./githubOAuth.js";
 
 export const githubIssueConfigSchema = z.object({
@@ -82,8 +83,9 @@ export const githubIssueDescriptor: PluginDescriptor = {
       key: "token",
       label: "Personal Access Token",
       type: "password",
-      required: true,
+      required: false,
       placeholder: "ghp_...",
+      dependsOn: { field: "authMode", value: "pat" },
     },
     {
       key: "repositorySlug",
@@ -108,7 +110,7 @@ export const githubIssueDescriptor: PluginDescriptor = {
       apiBaseUrl: urls.apiBaseUrl,
       owner,
       repo,
-      token: parsed.token,
+      token: getGitHubAccessToken(parsed as Record<string, unknown>),
       ticketLabel: parsed.ticketLabel,
       ...(parsed.virtualEngineerUserLogin !== undefined
         ? { virtualEngineerUserLogin: parsed.virtualEngineerUserLogin }
