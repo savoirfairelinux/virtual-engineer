@@ -862,6 +862,41 @@ a.detail-origin:hover { text-decoration: underline; }
   border-top: 1px solid var(--border);
 }
 
+/* ── Escape Confirmation Dialog ── */
+.escape-confirm-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10001;
+}
+.escape-confirm-dialog {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 20px;
+  width: 90%;
+  max-width: 380px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+}
+.escape-confirm-dialog h4 {
+  margin-bottom: 8px;
+  font-size: 14px;
+}
+.escape-confirm-dialog p {
+  color: var(--muted);
+  font-size: 12px;
+  margin-bottom: 16px;
+  line-height: 1.5;
+}
+.escape-confirm-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
 /* ── Configuration Page ── */
 .configuration-shell {
   display: grid;
@@ -5774,6 +5809,48 @@ async function refreshIntegrationDiscovery(integrationId) {
     showActionToast('Discovery failed: ' + (err instanceof Error ? err.message : 'Unknown'), true);
   }
 }
+
+// ── Escape key: close configuration modals with save confirmation ──
+document.addEventListener('keydown', function(e) {
+  if (e.key !== 'Escape') return;
+  // Don't interfere if an escape-confirm dialog is already showing
+  if (document.querySelector('.escape-confirm-overlay')) return;
+  const overlay = document.querySelector('.modal-overlay');
+  if (!overlay) return;
+  e.preventDefault();
+  e.stopPropagation();
+
+  const confirmOverlay = document.createElement('div');
+  confirmOverlay.className = 'escape-confirm-overlay';
+  confirmOverlay.innerHTML =
+    '<div class="escape-confirm-dialog">' +
+      '<h4>Unsaved Changes</h4>' +
+      '<p>Do you want to save your changes before closing?</p>' +
+      '<div class="escape-confirm-actions">' +
+        '<button data-role="esc-cancel">Cancel</button>' +
+        '<button data-role="esc-discard" style="color:var(--danger)">Discard</button>' +
+        '<button class="primary" data-role="esc-save">Save</button>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(confirmOverlay);
+
+  confirmOverlay.querySelector('[data-role="esc-cancel"]').addEventListener('click', function() {
+    confirmOverlay.remove();
+  });
+  confirmOverlay.querySelector('[data-role="esc-discard"]').addEventListener('click', function() {
+    confirmOverlay.remove();
+    overlay.remove();
+  });
+  confirmOverlay.querySelector('[data-role="esc-save"]').addEventListener('click', function() {
+    confirmOverlay.remove();
+    var saveBtn = overlay.querySelector('[data-role="modal-save"]') || overlay.querySelector('[data-role="save"]');
+    if (saveBtn) saveBtn.click();
+  });
+  // Close confirmation when clicking outside the dialog
+  confirmOverlay.addEventListener('click', function(ev) {
+    if (ev.target === confirmOverlay) confirmOverlay.remove();
+  });
+});
 `;
 
 /** Render the full admin dashboard HTML page with bootstrapped runtime config. */
