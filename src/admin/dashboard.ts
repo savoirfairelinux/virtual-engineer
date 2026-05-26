@@ -5840,6 +5840,7 @@ function showProjectModal(existing) {
         role: pt.role,
         commitOrder: pt.commitOrder,
         localPath: pt.localPath,
+        ...(pt.sshKeyPath ? { sshKeyPath: pt.sshKeyPath } : {}),
       }));
     } else {
       const rtInteg = rtSection.querySelector('[data-rtf="integrationId"]').value;
