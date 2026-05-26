@@ -133,7 +133,7 @@ export interface VcsConnector {
    * Opaque label persisted in change_per_repository.review_system.
    * Connector-declared — the orchestrator never reads this for control flow.
    */
-  readonly reviewSystemLabel: "gerrit" | "gitlab";
+  readonly reviewSystemLabel: "gerrit" | "gitlab" | "github";
 
   /** Optional path to a known_hosts file used by this connector's SSH transport. */
   readonly sshKnownHostsPath?: string | undefined;

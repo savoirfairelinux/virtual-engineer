@@ -990,14 +990,14 @@ export const INTEGRATION_TYPES = [
 export type IntegrationType = (typeof INTEGRATION_TYPES)[number];
 
 /** Integration types that act as code-hosting + review systems */
-export type CodeSourceIntegrationType = "gerrit" | "gitlab-merge-request";
+export type CodeSourceIntegrationType = "gerrit" | "gitlab-merge-request" | "github-pull-request";
 /** Runtime-iterable list of code-source integration types. Keep in sync with CodeSourceIntegrationType. */
-export const CODE_SOURCE_INTEGRATION_TYPES: readonly CodeSourceIntegrationType[] = ["gerrit", "gitlab-merge-request"] as const;
+export const CODE_SOURCE_INTEGRATION_TYPES: readonly CodeSourceIntegrationType[] = ["gerrit", "gitlab-merge-request", "github-pull-request"] as const;
 
 /** Integration types that act as ticket / work-item sources */
-export type TicketSourceIntegrationType = "redmine" | "gitlab-issue";
+export type TicketSourceIntegrationType = "redmine" | "gitlab-issue" | "github-issue";
 /** Runtime-iterable list of ticket-source integration types. Keep in sync with TicketSourceIntegrationType. */
-export const TICKET_SOURCE_INTEGRATION_TYPES: readonly TicketSourceIntegrationType[] = ["redmine", "gitlab-issue"] as const;
+export const TICKET_SOURCE_INTEGRATION_TYPES: readonly TicketSourceIntegrationType[] = ["redmine", "gitlab-issue", "github-issue"] as const;
 
 export const PLUGIN_CATEGORIES = ["ticketing", "review", "agent"] as const;
 export type PluginCategory = (typeof PLUGIN_CATEGORIES)[number];
