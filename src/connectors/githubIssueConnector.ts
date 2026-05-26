@@ -1,6 +1,7 @@
 import { z } from "zod";
-import type { RedmineConnector, RedmineTicket, TicketId } from "../interfaces.js";
+import type { TicketConnector, Ticket, TicketId, AssignedTicketQueryOptions } from "../interfaces.js";
 import { makeTicketId } from "../interfaces.js";
+import { AbstractTicketConnector } from "./baseTicketConnector.js";
 import { getLogger } from "../logger.js";
 
 const log = getLogger("github-issue-connector");
@@ -42,14 +43,17 @@ export interface GitHubIssueConnectorConfig {
 
 // ─── Connector implementation ─────────────────────────────────────────────────
 
-export class GitHubIssueConnector implements RedmineConnector {
+export class GitHubIssueConnector extends AbstractTicketConnector implements TicketConnector {
+  protected readonly inProgressStatusId = 1;
+  protected readonly inReviewStatusId = 2;
   private readonly inProgressLabel: string;
 
   constructor(private readonly config: GitHubIssueConnectorConfig) {
+    super();
     this.inProgressLabel = config.inProgressLabel ?? "in-progress";
   }
 
-  async getAssignedTickets(): Promise<RedmineTicket[]> {
+  async getAssignedTickets(_opts?: AssignedTicketQueryOptions): Promise<Ticket[]> {
     const url = new URL(
       `${this.config.apiBaseUrl}/repos/${this.config.owner}/${this.config.repo}/issues`
     );
@@ -68,7 +72,7 @@ export class GitHubIssueConnector implements RedmineConnector {
     return filteredIssues.map((i) => this.mapIssue(i));
   }
 
-  async getTicket(ticketId: TicketId): Promise<RedmineTicket> {
+  async getTicket(ticketId: TicketId): Promise<Ticket> {
     const issue = GitHubIssueSchema.parse(
       await this.fetchJson(
         `${this.config.apiBaseUrl}/repos/${this.config.owner}/${this.config.repo}/issues/${ticketId}`
@@ -119,6 +123,10 @@ export class GitHubIssueConnector implements RedmineConnector {
     await this.addNote(ticketId, closingNote);
     await this.transitionStatus(ticketId, 0);
     log.info({ ticketId }, "closed GitHub issue");
+  }
+
+  getSourceLabel(): string {
+    return "github-issue";
   }
 
   // ─── Public ticket-connector-specific methods ──────────────────────────────
@@ -214,7 +222,7 @@ export class GitHubIssueConnector implements RedmineConnector {
     await response.text();
   }
 
-  private mapIssue(i: z.infer<typeof GitHubIssueSchema>): RedmineTicket {
+  private mapIssue(i: z.infer<typeof GitHubIssueSchema>): Ticket {
     const customFields: Record<string, string> = {};
     for (const label of i.labels) {
       const name = typeof label === "string" ? label : label.name;
@@ -228,6 +236,7 @@ export class GitHubIssueConnector implements RedmineConnector {
       assigneeId: i.assignee?.id ?? 0,
       projectId: 0,
       customFields,
+      webUrl: i.html_url,
     };
   }
 }

@@ -211,7 +211,7 @@ describe("githubAuth", () => {
       const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
       expect(url).toBe("https://api.github.com/user");
       const headers = init.headers as Record<string, string>;
-      expect(headers.Authorization).toBe("Bearer gho_abc123");
+      expect(headers["Authorization"]).toBe("Bearer gho_abc123");
 
       expect(user.id).toBe(12345);
       expect(user.login).toBe("ve-bot");

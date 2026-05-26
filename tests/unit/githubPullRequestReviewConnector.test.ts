@@ -3,7 +3,7 @@ import {
   GitHubPullRequestReviewConnector,
   GitHubPrApiError,
 } from "../../src/connectors/githubPullRequestReviewConnector.js";
-import { makeGerritChangeId } from "../../src/interfaces.js";
+import { makeExternalChangeId } from "../../src/interfaces.js";
 import { jsonResponse, errorResponse } from "./helpers/fixtures.js";
 
 const API_BASE_URL = "https://api.github.com";
@@ -95,7 +95,7 @@ describe("GitHubPullRequestReviewConnector", () => {
     it("fetches PR and returns change ref", async () => {
       fetchMock.mockResolvedValueOnce(jsonResponse(githubPr));
 
-      const changeId = makeGerritChangeId("42");
+      const changeId = makeExternalChangeId("42");
       const ref = await makeConnector().getChange(changeId);
 
       expect(ref.changeId).toBe(changeId);
@@ -109,17 +109,17 @@ describe("GitHubPullRequestReviewConnector", () => {
   describe("getChangeStatus", () => {
     it("returns OPEN for open PRs", async () => {
       fetchMock.mockResolvedValueOnce(jsonResponse(githubPr));
-      expect(await makeConnector().getChangeStatus(makeGerritChangeId("42"))).toBe("OPEN");
+      expect(await makeConnector().getChangeStatus(makeExternalChangeId("42"))).toBe("OPEN");
     });
 
     it("returns MERGED for merged PRs", async () => {
       fetchMock.mockResolvedValueOnce(jsonResponse(githubPrMerged));
-      expect(await makeConnector().getChangeStatus(makeGerritChangeId("42"))).toBe("MERGED");
+      expect(await makeConnector().getChangeStatus(makeExternalChangeId("42"))).toBe("MERGED");
     });
 
     it("returns ABANDONED for closed (not merged) PRs", async () => {
       fetchMock.mockResolvedValueOnce(jsonResponse(githubPrClosed));
-      expect(await makeConnector().getChangeStatus(makeGerritChangeId("42"))).toBe("ABANDONED");
+      expect(await makeConnector().getChangeStatus(makeExternalChangeId("42"))).toBe("ABANDONED");
     });
   });
 
@@ -132,7 +132,7 @@ describe("GitHubPullRequestReviewConnector", () => {
       // Issue comments
       fetchMock.mockResolvedValueOnce(jsonResponse(issueComments));
 
-      const comments = await makeConnector().getUnresolvedComments(makeGerritChangeId("42"));
+      const comments = await makeConnector().getUnresolvedComments(makeExternalChangeId("42"));
 
       // Should include: reviewer's review comment (101), reviewer's issue comment (201)
       // Should exclude: ve-bot's reply (102, also has in_reply_to_id), ve-bot's issue comment (202)
@@ -154,7 +154,7 @@ describe("GitHubPullRequestReviewConnector", () => {
       fetchMock.mockResolvedValueOnce(jsonResponse([]));
       fetchMock.mockResolvedValueOnce(jsonResponse([]));
 
-      const comments = await makeConnector().getUnresolvedComments(makeGerritChangeId("42"));
+      const comments = await makeConnector().getUnresolvedComments(makeExternalChangeId("42"));
       expect(comments).toHaveLength(0);
     });
   });
@@ -165,7 +165,7 @@ describe("GitHubPullRequestReviewConnector", () => {
     it("posts a general comment on the PR via issue comments API", async () => {
       fetchMock.mockResolvedValueOnce(jsonResponse({ id: 1 }));
 
-      await makeConnector().addChangeComment(makeGerritChangeId("42"), "Working on it");
+      await makeConnector().addChangeComment(makeExternalChangeId("42"), "Working on it");
 
       const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
       expect(url).toContain("/issues/42/comments");

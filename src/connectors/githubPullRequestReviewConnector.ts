@@ -1,10 +1,10 @@
 import { z } from "zod";
 import type {
-  GerritConnector,
-  GerritChangeRef,
-  GerritChangeStatus,
-  GerritComment,
-  GerritChangeId,
+  ReviewConnector,
+  ReviewChangeRef,
+  ReviewChangeStatus,
+  ReviewComment,
+  ExternalChangeId,
 } from "../interfaces.js";
 import { getLogger } from "../logger.js";
 
@@ -61,12 +61,12 @@ export interface GitHubPullRequestReviewConnectorConfig {
  *
  * changeId convention: the PR number stored as a string, e.g. "42".
  */
-export class GitHubPullRequestReviewConnector implements GerritConnector {
+export class GitHubPullRequestReviewConnector implements ReviewConnector {
   private readonly threadIdCache = new Map<number, string>();
 
   constructor(private readonly config: GitHubPullRequestReviewConnectorConfig) {}
 
-  async getChange(changeId: GerritChangeId): Promise<GerritChangeRef> {
+  async getChange(changeId: ExternalChangeId): Promise<ReviewChangeRef> {
     const prNumber = this.parsePrNumber(String(changeId));
     const pr = GitHubPrSchema.parse(await this.fetchJson(this.prUrl(prNumber)));
 
@@ -78,7 +78,7 @@ export class GitHubPullRequestReviewConnector implements GerritConnector {
     };
   }
 
-  async getChangeStatus(changeId: GerritChangeId): Promise<GerritChangeStatus> {
+  async getChangeStatus(changeId: ExternalChangeId): Promise<ReviewChangeStatus> {
     const prNumber = this.parsePrNumber(String(changeId));
     const pr = GitHubPrSchema.parse(await this.fetchJson(this.prUrl(prNumber)));
 
@@ -88,9 +88,9 @@ export class GitHubPullRequestReviewConnector implements GerritConnector {
   }
 
   async getUnresolvedComments(
-    changeId: GerritChangeId,
+    changeId: ExternalChangeId,
     _sincePatchset?: number
-  ): Promise<GerritComment[]> {
+  ): Promise<ReviewComment[]> {
     const prNumber = this.parsePrNumber(String(changeId));
     const baseUrl = `${this.config.apiBaseUrl}/repos/${this.config.owner}/${this.config.repo}`;
 
@@ -104,7 +104,7 @@ export class GitHubPullRequestReviewConnector implements GerritConnector {
       ).then((data) => GitHubIssueCommentListSchema.parse(data)),
     ]);
 
-    const comments: GerritComment[] = [];
+    const comments: ReviewComment[] = [];
 
     // Filter inline review comments: skip those authored by VE
     for (const rc of reviewComments) {
@@ -144,7 +144,7 @@ export class GitHubPullRequestReviewConnector implements GerritConnector {
     return comments;
   }
 
-  async addChangeComment(changeId: GerritChangeId, message: string): Promise<void> {
+  async addChangeComment(changeId: ExternalChangeId, message: string): Promise<void> {
     const prNumber = this.parsePrNumber(String(changeId));
     await this.fetchJsonVoid(
       `${this.config.apiBaseUrl}/repos/${this.config.owner}/${this.config.repo}/issues/${prNumber}/comments`,
@@ -156,7 +156,7 @@ export class GitHubPullRequestReviewConnector implements GerritConnector {
     log.info({ changeId }, "added comment to GitHub PR");
   }
 
-  async resolveComments(changeId: GerritChangeId, comments: GerritComment[]): Promise<void> {
+  async resolveComments(changeId: ExternalChangeId, comments: ReviewComment[]): Promise<void> {
     if (comments.length === 0) return;
 
     const prNumber = this.parsePrNumber(String(changeId));
