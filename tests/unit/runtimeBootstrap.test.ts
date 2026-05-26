@@ -18,6 +18,8 @@ function getCategoryForType(type: Integration["type"]): "ticketing" | "review" |
     case "copilot":
     case "mock":
       return "agent";
+    default:
+      throw new Error(`Unknown integration type: ${type}`);
   }
 }
 

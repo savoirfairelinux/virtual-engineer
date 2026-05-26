@@ -13,7 +13,10 @@ import type { SshChangeInfo } from "../../src/connectors/gerritSshClient.js";
 vi.mock("child_process");
 
 // Mock GerritSshClient (used for SSH Gerrit operations)
-const mockQueryChange = vi.fn<(changeId: string) => Promise<SshChangeInfo>>();
+const mockQueryChange = vi.fn(async (_changeId: string): Promise<SshChangeInfo> => ({
+  number: 1,
+  status: "NEW",
+}));
 const mockGetUnresolvedComments = vi.fn();
 const mockResolveComments = vi.fn();
 
