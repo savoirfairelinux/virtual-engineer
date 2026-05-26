@@ -2685,8 +2685,8 @@ function renderConfigurationOverview() {
 }
 
 function categoryEmptyStateMessage() {
-  if (S.configurationSection === 'tickets')     return 'No ticket source integrations configured. Click Add to connect Redmine or GitLab Issues.';
-  if (S.configurationSection === 'code-review') return 'No code review integrations configured. Click Add to connect Gerrit or GitLab MR.';
+  if (S.configurationSection === 'tickets')     return 'No ticket source integrations configured. Click Add to connect Redmine, GitLab Issues, or GitHub Issues.';
+  if (S.configurationSection === 'code-review') return 'No code review integrations configured. Click Add to connect Gerrit, GitLab MR, or GitHub Pull Requests.';
   if (S.configurationSection === 'agents')      return 'No agent integrations configured. Click Add to connect Copilot, Claude, or Ollama.';
   return 'No integrations configured.';
 }
@@ -2865,7 +2865,7 @@ function configurationSections() {
   return [
     { id: 'overview',       label: 'Overview',       meta: 'Summary',          description: 'High-level configuration posture across the admin surface.',                         comingSoon: false, category: undefined },
     { id: 'tickets',        label: 'Tickets',        meta: 'Ticket sources',   description: 'Manage ticket source integrations (Redmine, GitLab Issues).',                   comingSoon: false, category: 'ticketing' },
-    { id: 'code-review',    label: 'Code Review',    meta: 'VCS connectors',   description: 'Manage version control and code review integrations (Gerrit, GitLab MR).',     comingSoon: false, category: 'review' },
+    { id: 'code-review',    label: 'Code Review',    meta: 'VCS connectors',   description: 'Manage version control and code review integrations (Gerrit, GitLab MR, GitHub PR).',     comingSoon: false, category: 'review' },
     { id: 'agents',         label: 'Agents',         meta: 'AI adapters',      description: 'Manage agent integrations (Copilot, Claude, Ollama).',                         comingSoon: false, category: 'agent' },
     { id: 'oauth-apps',        label: 'OAuth Apps',    meta: 'Provider registry', description: 'Map provider + base URL to OAuth client IDs for URL-based OAuth connect flows.',  comingSoon: false, category: undefined },
     { id: 'agents-library', label: 'Agents Library', meta: 'Reusable agents',  description: 'Reusable agent definitions (model + prompts) bound to projects.',              comingSoon: false, category: undefined },

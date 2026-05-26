@@ -14,7 +14,7 @@ import {
   type ProjectLookupStore,
 } from "../webhooks/webhookServer.js";
 import { buildGitLabAuthHeaders } from "../utils/gitlabAuth.js";
-import { readBody, writeJson, writeHtml } from "./adminRouteUtils.js";
+import { writeJson, writeHtml } from "./adminRouteUtils.js";
 import { handleTasksRoute } from "./adminTaskRoutes.js";
 import { handlePromptsRoute } from "./adminPromptRoutes.js";
 import { handleStreamRoutes } from "./adminStreamRoutes.js";
@@ -22,13 +22,6 @@ import { handleConcurrencyRoute } from "./adminConcurrencyRoutes.js";
 import { handleWebhookRoutes } from "./adminWebhookRoutes.js";
 import { handleIntegrationRoutes } from "./adminIntegrationRoutes.js";
 import { makeTaskId } from "../interfaces.js";
-import {
-  startGitHubDeviceFlow,
-  pollGitHubDeviceToken,
-  fetchGitHubCurrentUser,
-  resolveGitHubUrls,
-} from "../utils/githubAuth.js";
-import type { GitHubMode } from "../utils/githubAuth.js";
 
 /**
  * Admin HTTP server — REST API for orchestrator status, task control, prompts, integrations,
@@ -36,23 +29,6 @@ import type { GitHubMode } from "../utils/githubAuth.js";
  */
 
 const log = getLogger("admin-server");
-
-// ─── GitHub OAuth Device Flow session store (in-memory) ───────────────────────
-
-interface GitHubDeviceFlowSession {
-  clientId: string;
-  deviceCode: string;
-  webBaseUrl: string;
-  apiBaseUrl: string;
-  interval: number;
-  expiresAt: number;
-}
-
-const githubDeviceFlowSessions = new Map<string, GitHubDeviceFlowSession>();
-
-function randomId(): string {
-  return randomBytes(16).toString("hex");
-}
 
 export interface AdminRuntimeConfig {
   nodeEnv: "development" | "production" | "test";
@@ -399,102 +375,6 @@ async function handleRequest(
     webhookPublicBaseUrl: dependencies.webhooks?.publicBaseUrl,
   })) return;
 
-  // ─── GitHub OAuth Device Flow routes ────────────────────────────────────────
-
-  if (path === "/api/admin/oauth/github/start" && method === "POST") {
-    const body = await readBody(request);
-    if (!body || !body["clientId"]) {
-      writeJson(response, 400, { error: "Missing required field: clientId" });
-      return;
-    }
-
-    const clientId = body["clientId"] as string;
-    const mode = (body["mode"] as GitHubMode) ?? "github.com";
-    const customBaseUrl = body["baseUrl"] as string | undefined;
-
-    try {
-      const urls = resolveGitHubUrls(mode, customBaseUrl);
-      const flowResult = await startGitHubDeviceFlow(clientId, urls.webBaseUrl);
-      const draftId = randomId();
-
-      // Store device code in memory for polling
-      githubDeviceFlowSessions.set(draftId, {
-        clientId,
-        deviceCode: flowResult.deviceCode,
-        webBaseUrl: urls.webBaseUrl,
-        apiBaseUrl: urls.apiBaseUrl,
-        interval: flowResult.interval,
-        expiresAt: Date.now() + flowResult.expiresIn * 1000,
-      });
-
-      writeJson(response, 200, {
-        integrationDraftId: draftId,
-        userCode: flowResult.userCode,
-        verificationUri: flowResult.verificationUri,
-        expiresIn: flowResult.expiresIn,
-        interval: flowResult.interval,
-      });
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Unknown error";
-      writeJson(response, 400, { error: msg });
-    }
-    return;
-  }
-
-  if (path === "/api/admin/oauth/github/poll" && method === "POST") {
-    const body = await readBody(request);
-    if (!body || !body["integrationDraftId"]) {
-      writeJson(response, 400, { error: "Missing required field: integrationDraftId" });
-      return;
-    }
-
-    const draftId = body["integrationDraftId"] as string;
-    const session = githubDeviceFlowSessions.get(draftId);
-    if (!session) {
-      writeJson(response, 404, { error: "Device flow session not found or expired" });
-      return;
-    }
-
-    if (Date.now() > session.expiresAt) {
-      githubDeviceFlowSessions.delete(draftId);
-      writeJson(response, 200, { status: "error", error: "Device flow expired" });
-      return;
-    }
-
-    try {
-      const result = await pollGitHubDeviceToken(
-        session.clientId,
-        session.deviceCode,
-        session.webBaseUrl,
-        session.interval
-      );
-
-      if (result.status === "success") {
-        const user = await fetchGitHubCurrentUser(result.token.accessToken, session.apiBaseUrl);
-        githubDeviceFlowSessions.delete(draftId);
-        writeJson(response, 200, {
-          status: "success",
-          token: result.token.accessToken,
-          login: user.login,
-          userId: user.id,
-        });
-      } else if (result.status === "pending") {
-        writeJson(response, 200, { status: "pending" });
-      } else if (result.status === "slow_down") {
-        session.interval = result.interval;
-        writeJson(response, 200, { status: "pending", interval: result.interval });
-      } else if (result.status === "expired") {
-        githubDeviceFlowSessions.delete(draftId);
-        writeJson(response, 200, { status: "error", error: "Token expired" });
-      } else {
-        writeJson(response, 200, { status: "error", error: result.error });
-      }
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Unknown error";
-      writeJson(response, 400, { error: msg });
-    }
-    return;
-  }
 
   writeJson(response, 404, { error: "Not found" });
 }
