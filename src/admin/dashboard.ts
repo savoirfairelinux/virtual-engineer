@@ -5501,37 +5501,59 @@ function showProjectModal(existing) {
     } catch { /* discovery is best-effort */ }
   }
 
-  function ticketProjectOptions(integrationId) {
+  function ticketProjectOptions(integrationId, search) {
     const integ = S.integrations.find((i) => i.id === integrationId);
     if (!integ || !integ.discoveredResources || !integ.discoveredResources.ticketProjects) {
       return '<option value="">— refresh integration first —</option>';
     }
-    return integ.discoveredResources.ticketProjects
-      .map((p) => '<option value="' + esc(p.key) + '">' + esc(p.key) + ' — ' + esc(p.name) + '</option>').join('');
+    const q = String(search || '').trim().toLowerCase();
+    const items = integ.discoveredResources.ticketProjects
+      .filter((p) => !q || String(p.key).toLowerCase().includes(q) || String(p.name || '').toLowerCase().includes(q))
+      .slice()
+      .sort((a, b) => String(a.key).localeCompare(String(b.key)));
+    if (items.length === 0) {
+      return '<option value="">— no projects match —</option>';
+    }
+    return items.map((p) => '<option value="' + esc(p.key) + '">' + esc(p.key) + ' — ' + esc(p.name) + '</option>').join('');
   }
-  function repoOptions(integrationId) {
+  function repoOptions(integrationId, search) {
     const integ = S.integrations.find((i) => i.id === integrationId);
     if (!integ || !integ.discoveredResources || !integ.discoveredResources.repositories) {
       return '<option value="">— refresh integration first —</option>';
     }
-    return integ.discoveredResources.repositories
-      .map((r) => '<option value="' + esc(r.key) + '" data-clone="' + esc(r.cloneUrlSsh || r.cloneUrlHttp || '') + '" data-branch="' + esc(r.defaultBranch || 'main') + '">' + esc(r.key) + '</option>').join('');
+    const q = String(search || '').trim().toLowerCase();
+    const items = integ.discoveredResources.repositories
+      .filter((r) => !q || String(r.key).toLowerCase().includes(q))
+      .slice()
+      .sort((a, b) => String(a.key).localeCompare(String(b.key)));
+    if (items.length === 0) {
+      return '<option value="">— no repos match —</option>';
+    }
+    return items.map((r) => '<option value="' + esc(r.key) + '" data-clone="' + esc(r.cloneUrlSsh || r.cloneUrlHttp || '') + '" data-branch="' + esc(r.defaultBranch || 'main') + '">' + esc(r.key) + '</option>').join('');
   }
 
   let pushTargets = (existing && existing.type === 'coding' && existing.pushTargets) ? existing.pushTargets.map((p) => ({
     integrationId: p.integrationId, repoKey: p.repoKey, cloneUrl: p.cloneUrl, targetBranch: p.targetBranch,
     role: p.role, commitOrder: p.commitOrder, localPath: p.localPath, sshKeyPath: p.sshKeyPath ?? '',
   })) : [];
+  const pushTargetSearch = [];
+  let ticketProjectSearch = '';
+  let reviewRepoSearch = '';
+  let reviewSelectedRepos = (existing && existing.reviewConfig && existing.reviewConfig.repos)
+    ? existing.reviewConfig.repos.slice()
+    : null;
 
   function renderPushTargetsSection() {
     if (typeSel.value !== 'coding') { ptSection.innerHTML = ''; return; }
     const integOpts = vcsIntegrationOptions();
     const rows = pushTargets.map((pt, idx) => {
-      const repoOpts = repoOptions(pt.integrationId);
+      const search = pushTargetSearch[idx] || '';
+      const repoOpts = repoOptions(pt.integrationId, search);
       return '<div class="pt-row" data-idx="' + idx + '" style="border:1px solid var(--border);padding:6px;margin-top:4px">' +
         '<label>Integration</label>' +
         '<select data-pf="integrationId">' + integOpts + '</select>' +
         '<label>Repo</label>' +
+        '<input type="search" data-pf-search="repoKey" placeholder="Search repositories…" value="' + esc(search) + '" style="width:100%;margin-bottom:4px" />' +
         '<select data-pf="repoKey">' + repoOpts + '</select>' +
         '<label>Clone URL</label>' +
         '<input data-pf="cloneUrl" value="' + esc(pt.cloneUrl) + '" />' +
@@ -5563,8 +5585,23 @@ function showProjectModal(existing) {
         integSel.value = pushTargets[idx].integrationId || '';
         integSel.addEventListener('change', async () => {
           pushTargets[idx].integrationId = integSel.value;
+          pushTargetSearch[idx] = '';
           await ensureDiscovered(integSel.value);
           renderPushTargetsSection();
+        });
+      }
+      const searchInp = row.querySelector('[data-pf-search="repoKey"]');
+      if (searchInp) {
+        searchInp.addEventListener('input', () => {
+          pushTargetSearch[idx] = searchInp.value;
+          const repoSel2 = row.querySelector('[data-pf="repoKey"]');
+          if (repoSel2) {
+            const current = pushTargets[idx].repoKey || '';
+            repoSel2.innerHTML = repoOptions(pushTargets[idx].integrationId, searchInp.value);
+            if (current && Array.from(repoSel2.options).some((o) => o.value === current)) {
+              repoSel2.value = current;
+            }
+          }
         });
       }
       const repoSel = row.querySelector('[data-pf="repoKey"]');
@@ -5592,6 +5629,7 @@ function showProjectModal(existing) {
       if (orderInp) orderInp.addEventListener('input', () => { pushTargets[idx].commitOrder = Number(orderInp.value) || 1; });
       row.querySelector('[data-pa="remove"]').addEventListener('click', () => {
         pushTargets.splice(idx, 1);
+        pushTargetSearch.splice(idx, 1);
         pushTargets.forEach((pt, i) => { pt.commitOrder = i + 1; });
         renderPushTargetsSection();
       });
@@ -5599,6 +5637,8 @@ function showProjectModal(existing) {
         if (idx === 0) return;
         const [moved] = pushTargets.splice(idx, 1);
         pushTargets.splice(idx - 1, 0, moved);
+        const [movedSearch] = pushTargetSearch.splice(idx, 1);
+        pushTargetSearch.splice(idx - 1, 0, movedSearch || '');
         pushTargets.forEach((pt, i) => { pt.commitOrder = i + 1; });
         renderPushTargetsSection();
       });
@@ -5606,6 +5646,8 @@ function showProjectModal(existing) {
         if (idx >= pushTargets.length - 1) return;
         const [moved] = pushTargets.splice(idx, 1);
         pushTargets.splice(idx + 1, 0, moved);
+        const [movedSearch] = pushTargetSearch.splice(idx, 1);
+        pushTargetSearch.splice(idx + 1, 0, movedSearch || '');
         pushTargets.forEach((pt, i) => { pt.commitOrder = i + 1; });
         renderPushTargetsSection();
       });
@@ -5614,6 +5656,7 @@ function showProjectModal(existing) {
     if (addBtn) {
       addBtn.addEventListener('click', () => {
         pushTargets.push({ integrationId: '', repoKey: '', cloneUrl: '', targetBranch: 'main', role: 'primary', commitOrder: pushTargets.length + 1, localPath: '.', sshKeyPath: '' });
+        pushTargetSearch.push('');
         renderPushTargetsSection();
       });
     }
@@ -5629,14 +5672,25 @@ function showProjectModal(existing) {
       '<label>Integration</label>' +
       '<select data-tsf="integrationId">' + integOpts + '</select>' +
       '<label>Project</label>' +
-      '<select data-tsf="ticketProjectKey">' + ticketProjectOptions(integId) + '</select>';
+      '<input type="search" data-tsf-search="ticketProjectKey" placeholder="Search projects…" value="' + esc(ticketProjectSearch) + '" style="width:100%;margin-bottom:4px" />' +
+      '<select data-tsf="ticketProjectKey">' + ticketProjectOptions(integId, ticketProjectSearch) + '</select>';
     const integSel = tsSection.querySelector('[data-tsf="integrationId"]');
     integSel.value = integId;
     integSel.addEventListener('change', async () => {
       const newId = integSel.value;
       await ensureDiscovered(newId);
       const projSel = tsSection.querySelector('[data-tsf="ticketProjectKey"]');
-      projSel.innerHTML = ticketProjectOptions(newId);
+      projSel.innerHTML = ticketProjectOptions(newId, ticketProjectSearch);
+    });
+    const searchInp = tsSection.querySelector('[data-tsf-search="ticketProjectKey"]');
+    searchInp.addEventListener('input', () => {
+      ticketProjectSearch = searchInp.value;
+      const projSel = tsSection.querySelector('[data-tsf="ticketProjectKey"]');
+      const current = projSel.value;
+      projSel.innerHTML = ticketProjectOptions(integSel.value, ticketProjectSearch);
+      if (current && Array.from(projSel.options).some((o) => o.value === current)) {
+        projSel.value = current;
+      }
     });
     const projSel = tsSection.querySelector('[data-tsf="ticketProjectKey"]');
     if (ts.ticketProjectKey) projSel.value = ts.ticketProjectKey;
@@ -5647,15 +5701,31 @@ function showProjectModal(existing) {
     const rc = (existing && existing.reviewConfig) || {};
     const integOpts = reviewIntegrationOptions();
     const integId = (rc.integration && rc.integration.id) || '';
-    const selectedRepos = rc.repos || [];
+
+    function ensureSelections(integrationId) {
+      const integ = S.integrations.find((i) => i.id === integrationId);
+      const repos = (integ && integ.discoveredResources && integ.discoveredResources.repositories) || [];
+      if (reviewSelectedRepos === null) {
+        reviewSelectedRepos = repos.map((r) => r.key);
+      }
+    }
+    ensureSelections(integId);
 
     function repoCheckboxes(integrationId) {
       const integ = S.integrations.find((i) => i.id === integrationId);
       if (!integ || !integ.discoveredResources || !integ.discoveredResources.repositories) {
         return '<div style="color:var(--muted);font-size:12px">No repositories found — refresh integration first.</div>';
       }
-      return integ.discoveredResources.repositories.map((r) => {
-        const checked = selectedRepos.length === 0 || selectedRepos.includes(r.key) ? ' checked' : '';
+      const q = String(reviewRepoSearch || '').trim().toLowerCase();
+      const items = integ.discoveredResources.repositories
+        .filter((r) => !q || String(r.key).toLowerCase().includes(q))
+        .slice()
+        .sort((a, b) => String(a.key).localeCompare(String(b.key)));
+      if (items.length === 0) {
+        return '<div style="color:var(--muted);font-size:12px">No repositories match.</div>';
+      }
+      return items.map((r) => {
+        const checked = (reviewSelectedRepos || []).includes(r.key) ? ' checked' : '';
         return '<label style="display:flex;align-items:center;gap:6px;margin:2px 0">' +
           '<input type="checkbox" class="rc-repo-check" value="' + esc(r.key) + '"' + checked + ' />' +
           '<span>' + esc(r.key) + '</span>' +
@@ -5674,29 +5744,57 @@ function showProjectModal(existing) {
           '<button type="button" data-role="rc-unselect-all" style="font-size:11px;padding:2px 8px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--muted);cursor:pointer">Unselect all</button>' +
         '</div>' +
       '</div>' +
+      '<input type="search" data-rtf-search="repos" placeholder="Search repositories…" value="' + esc(reviewRepoSearch) + '" style="width:100%;margin-bottom:4px" />' +
       '<div data-role="rc-repos">' + repoCheckboxes(integId) + '</div>';
     const integSel = rtSection.querySelector('[data-rtf="integrationId"]');
     integSel.value = integId;
+
+    function persistSelections() {
+      if (reviewSelectedRepos === null) reviewSelectedRepos = [];
+      rtSection.querySelectorAll('.rc-repo-check').forEach((cb) => {
+        const key = cb.value;
+        const i = reviewSelectedRepos.indexOf(key);
+        if (cb.checked && i === -1) reviewSelectedRepos.push(key);
+        if (!cb.checked && i !== -1) reviewSelectedRepos.splice(i, 1);
+      });
+    }
 
     function bindSelectButtons() {
       const selectBtn = rtSection.querySelector('[data-role="rc-select-all"]');
       const unselectBtn = rtSection.querySelector('[data-role="rc-unselect-all"]');
       if (selectBtn) {
         selectBtn.addEventListener('click', () => {
+          const integ = S.integrations.find((i) => i.id === integSel.value);
+          const allKeys = (integ && integ.discoveredResources && integ.discoveredResources.repositories || []).map((r) => r.key);
+          reviewSelectedRepos = allKeys.slice();
           rtSection.querySelectorAll('.rc-repo-check').forEach((b) => { b.checked = true; });
         });
       }
       if (unselectBtn) {
         unselectBtn.addEventListener('click', () => {
+          reviewSelectedRepos = [];
           rtSection.querySelectorAll('.rc-repo-check').forEach((b) => { b.checked = false; });
         });
       }
+      rtSection.querySelectorAll('.rc-repo-check').forEach((cb) => {
+        cb.addEventListener('change', persistSelections);
+      });
     }
     bindSelectButtons();
 
+    const searchInp = rtSection.querySelector('[data-rtf-search="repos"]');
+    searchInp.addEventListener('input', () => {
+      persistSelections();
+      reviewRepoSearch = searchInp.value;
+      rtSection.querySelector('[data-role="rc-repos"]').innerHTML = repoCheckboxes(integSel.value);
+      bindSelectButtons();
+    });
+
     integSel.addEventListener('change', async () => {
       const newId = integSel.value;
+      reviewSelectedRepos = null;
       await ensureDiscovered(newId);
+      ensureSelections(newId);
       rtSection.querySelector('[data-role="rc-repos"]').innerHTML = repoCheckboxes(newId);
       bindSelectButtons();
     });
@@ -5745,10 +5843,15 @@ function showProjectModal(existing) {
       }));
     } else {
       const rtInteg = rtSection.querySelector('[data-rtf="integrationId"]').value;
-      const rtRepoKeys = Array.from(rtSection.querySelectorAll('.rc-repo-check'))
-        .filter((cb) => cb.checked)
-        .map((cb) => cb.value);
-      payload.reviewConfig = { integrationId: rtInteg, repoKeys: rtRepoKeys };
+      const visible = Array.from(rtSection.querySelectorAll('.rc-repo-check'));
+      if (reviewSelectedRepos === null) reviewSelectedRepos = [];
+      visible.forEach((cb) => {
+        const key = cb.value;
+        const i = reviewSelectedRepos.indexOf(key);
+        if (cb.checked && i === -1) reviewSelectedRepos.push(key);
+        if (!cb.checked && i !== -1) reviewSelectedRepos.splice(i, 1);
+      });
+      payload.reviewConfig = { integrationId: rtInteg, repoKeys: reviewSelectedRepos.slice() };
     }
     try {
       if (isEdit) {
