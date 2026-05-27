@@ -669,4 +669,114 @@ describe("SqliteStateStore — retryTask re-attaches orphaned tasks", () => {
     expect(retried.projectId).toBeNull();
     expect(retried.state).toBe("DETECTED");
   });
+
+  it("re-attaches a task whose projectId points to a deleted (ghost) project", async () => {
+    const a = await makeAgent(store);
+    await makeIntegration(store, "redmine-1", "redmine");
+
+    const project = await store.createProject({ name: "Live", type: "coding", agentId: a.id });
+    await store.setProjectTicketSource(project.id, {
+      integrationId: "redmine-1",
+      ticketProjectKey: "PLAT",
+    });
+
+    const taskId = makeTaskId(randomUUID());
+    await store.createTask(
+      taskId,
+      makeTicketId("46"),
+      "title",
+      "desc",
+      "redmine",
+      undefined,
+      undefined,
+      { integrationId: "redmine-1", ticketProjectKey: "PLAT" }
+    );
+    await store.transition(taskId, "CONTEXT_BUILDING");
+    await store.transition(taskId, "AGENT_RUNNING");
+    await store.transition(taskId, "FAILED");
+
+    const ghostProjectId = makeProjectId(randomUUID());
+    (store as unknown as { raw: { prepare(q: string): { run(...args: unknown[]): unknown } } }).raw
+      .prepare("UPDATE tasks SET project_id = ? WHERE task_id = ?")
+      .run(ghostProjectId, taskId);
+
+    const retried = await store.retryTask(taskId);
+
+    expect(retried.projectId).toBe(project.id);
+    expect(retried.state).toBe("DETECTED");
+  });
+
+  it("falls back to ticketSourceLabel when snapshot is missing and a unique integration match exists", async () => {
+    const a = await makeAgent(store);
+    await makeIntegration(store, "redmine-1", "redmine");
+
+    const project = await store.createProject({ name: "Live", type: "coding", agentId: a.id });
+    await store.setProjectTicketSource(project.id, {
+      integrationId: "redmine-1",
+      ticketProjectKey: "PLAT",
+    });
+
+    const taskId = makeTaskId(randomUUID());
+    await store.createTask(taskId, makeTicketId("47"), "title", "desc", "redmine:redmine-1");
+    await store.transition(taskId, "CONTEXT_BUILDING");
+    await store.transition(taskId, "AGENT_RUNNING");
+    await store.transition(taskId, "FAILED");
+
+    const retried = await store.retryTask(taskId);
+
+    expect(retried.projectId).toBe(project.id);
+    expect(retried.state).toBe("DETECTED");
+  });
+
+  it("backfills the ticket source snapshot when adopting via label fallback", async () => {
+    const a = await makeAgent(store);
+    await makeIntegration(store, "redmine-1", "redmine");
+
+    const project = await store.createProject({ name: "Live", type: "coding", agentId: a.id });
+    await store.setProjectTicketSource(project.id, {
+      integrationId: "redmine-1",
+      ticketProjectKey: "PLAT",
+    });
+
+    const taskId = makeTaskId(randomUUID());
+    await store.createTask(taskId, makeTicketId("48"), "title", "desc", "redmine:redmine-1");
+    await store.transition(taskId, "CONTEXT_BUILDING");
+    await store.transition(taskId, "AGENT_RUNNING");
+    await store.transition(taskId, "FAILED");
+
+    await store.retryTask(taskId);
+
+    const row = (store as unknown as { raw: { prepare(q: string): { get(...args: unknown[]): unknown } } }).raw
+      .prepare("SELECT ticket_source_integration_id AS i, ticket_source_project_key AS k FROM tasks WHERE task_id = ?")
+      .get(taskId) as { i: string | null; k: string | null };
+    expect(row.i).toBe("redmine-1");
+    expect(row.k).toBe("PLAT");
+  });
+
+  it("does not adopt when ticketSourceLabel resolves to an integration with multiple ticket sources", async () => {
+    const a = await makeAgent(store);
+    await makeIntegration(store, "redmine-1", "redmine");
+
+    const projectA = await store.createProject({ name: "A", type: "coding", agentId: a.id });
+    await store.setProjectTicketSource(projectA.id, {
+      integrationId: "redmine-1",
+      ticketProjectKey: "PLAT",
+    });
+    const projectB = await store.createProject({ name: "B", type: "coding", agentId: a.id });
+    await store.setProjectTicketSource(projectB.id, {
+      integrationId: "redmine-1",
+      ticketProjectKey: "OTHER",
+    });
+
+    const taskId = makeTaskId(randomUUID());
+    await store.createTask(taskId, makeTicketId("49"), "title", "desc", "redmine:redmine-1");
+    await store.transition(taskId, "CONTEXT_BUILDING");
+    await store.transition(taskId, "AGENT_RUNNING");
+    await store.transition(taskId, "FAILED");
+
+    const retried = await store.retryTask(taskId);
+
+    expect(retried.projectId).toBeNull();
+    expect(retried.state).toBe("DETECTED");
+  });
 });

@@ -839,15 +839,29 @@ export class SqliteStateStore implements StateStore, IntegrationStore, PromptSto
     const task = await this.getTask(taskId);
     if (!task) throw new Error(`Task not found: ${taskId}`);
 
-    const adoptedProjectId = task.projectId === null ? this.findAdoptionTargetForTask(taskId) : null;
+    const adoption = this.isTaskOrphaned(task) ? this.findAdoptionTargetForTask(taskId) : null;
 
     const now = new Date();
     this.raw.transaction(() => {
       const nowSec = Math.floor(now.getTime() / 1000);
-      if (adoptedProjectId !== null) {
+      if (adoption !== null) {
         this.raw
-          .prepare("UPDATE tasks SET state = ?, cycle_count = ?, failure_reason = ?, project_id = ?, updated_at = ? WHERE task_id = ?")
-          .run("DETECTED", 0, null, adoptedProjectId, nowSec, taskId);
+          .prepare(
+            "UPDATE tasks SET state = ?, cycle_count = ?, failure_reason = ?, project_id = ?, " +
+            "ticket_source_integration_id = COALESCE(ticket_source_integration_id, ?), " +
+            "ticket_source_project_key = COALESCE(ticket_source_project_key, ?), " +
+            "updated_at = ? WHERE task_id = ?"
+          )
+          .run(
+            "DETECTED",
+            0,
+            null,
+            adoption.projectId,
+            adoption.integrationId,
+            adoption.ticketProjectKey,
+            nowSec,
+            taskId
+          );
       } else {
         this.raw
           .prepare("UPDATE tasks SET state = ?, cycle_count = ?, failure_reason = ?, updated_at = ? WHERE task_id = ?")
@@ -855,8 +869,8 @@ export class SqliteStateStore implements StateStore, IntegrationStore, PromptSto
       }
 
       const metadata: Record<string, unknown> = { action: "retry" };
-      if (adoptedProjectId !== null) {
-        metadata["adoptedProjectId"] = adoptedProjectId;
+      if (adoption !== null) {
+        metadata["adoptedProjectId"] = adoption.projectId;
       }
       this.raw
         .prepare(
@@ -870,10 +884,19 @@ export class SqliteStateStore implements StateStore, IntegrationStore, PromptSto
     return updated;
   }
 
-  private findAdoptionTargetForTask(taskId: TaskId): string | null {
+  private isTaskOrphaned(task: Task): boolean {
+    if (task.projectId === null) return true;
     const row = this.raw
+      .prepare("SELECT 1 AS hit FROM projects WHERE id = ?")
+      .get(task.projectId) as { hit: number } | undefined;
+    return row === undefined;
+  }
+
+  private findAdoptionTargetForTask(taskId: TaskId): { projectId: string; integrationId: string; ticketProjectKey: string } | null {
+    const snapshotRow = this.raw
       .prepare(
-        "SELECT pts.project_id AS projectId FROM tasks t " +
+        "SELECT pts.project_id AS projectId, t.ticket_source_integration_id AS integrationId, " +
+        "t.ticket_source_project_key AS ticketProjectKey FROM tasks t " +
         "JOIN project_ticket_source pts " +
         "ON pts.integration_id = t.ticket_source_integration_id " +
         "AND pts.ticket_project_key = t.ticket_source_project_key " +
@@ -881,8 +904,23 @@ export class SqliteStateStore implements StateStore, IntegrationStore, PromptSto
         "AND t.ticket_source_integration_id IS NOT NULL " +
         "AND t.ticket_source_project_key IS NOT NULL"
       )
-      .get(taskId) as { projectId: string } | undefined;
-    return row?.projectId ?? null;
+      .get(taskId) as { projectId: string; integrationId: string; ticketProjectKey: string } | undefined;
+    if (snapshotRow) return snapshotRow;
+
+    const labelRow = this.raw
+      .prepare("SELECT ticket_source_label AS label FROM tasks WHERE task_id = ?")
+      .get(taskId) as { label: string } | undefined;
+    const integrationId = parseIntegrationIdFromLabel(labelRow?.label);
+    if (integrationId === null) return null;
+
+    const fallbackRows = this.raw
+      .prepare(
+        "SELECT project_id AS projectId, integration_id AS integrationId, ticket_project_key AS ticketProjectKey " +
+        "FROM project_ticket_source WHERE integration_id = ?"
+      )
+      .all(integrationId) as { projectId: string; integrationId: string; ticketProjectKey: string }[];
+    if (fallbackRows.length !== 1) return null;
+    return fallbackRows[0] ?? null;
   }
 
   /** Transition the task to ABANDONED and record an abandon event. */
@@ -2098,5 +2136,12 @@ function parseConfigJson(json: string): Record<string, unknown> {
   } catch {
     return {};
   }
+}
+
+function parseIntegrationIdFromLabel(label: string | undefined | null): string | null {
+  if (!label) return null;
+  const separatorIndex = label.indexOf(":");
+  if (separatorIndex <= 0 || separatorIndex === label.length - 1) return null;
+  return label.slice(separatorIndex + 1);
 }
 
