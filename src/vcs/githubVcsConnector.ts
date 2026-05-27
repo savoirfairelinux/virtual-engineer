@@ -175,18 +175,19 @@ export class GitHubVcsConnector implements VcsConnector {
       ? `/workspace/${volumeOpts.subPath}`
       : "/workspace";
 
+    const httpsRemote = `https://x-access-token:${this.config.token}@${this.config.host}/${this.config.owner}/${this.config.repo}.git`;
+
     const pushResult = await execInVolume({
       volumeName: volumeOpts.volumeName,
       image: volumeOpts.image,
       command: ["bash", "-c", [
         `cd "${cwd}"`,
-        `git config credential.helper '!f() { echo "username=x-access-token"; echo "password=$VE_GIT_TOKEN"; }; f'`,
         `git checkout -B "$VE_PUSH_REF"`,
-        `git push --force -u origin "$VE_PUSH_REF"`,
+        `git push --force -u "$VE_PUSH_URL" "$VE_PUSH_REF"`,
       ].join(" && ")],
       env: {
         VE_PUSH_REF: ref,
-        VE_GIT_TOKEN: this.config.token,
+        VE_PUSH_URL: httpsRemote,
       },
     });
 
