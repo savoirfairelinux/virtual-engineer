@@ -18,6 +18,12 @@ export interface WebhookCapableOrchestrator {
   triggerFeedbackForChange(integrationId: string, changeId: string): Promise<void>;
   markChangeMerged(integrationId: string, changeId: string): Promise<void>;
   markChangeAbandoned(integrationId: string, changeId: string): Promise<void>;
+  /**
+   * Trigger a standalone code-review task for the given change. Implemented by
+   * the index.ts wrapper that bridges to the active reviewTrigger holder. A
+   * no-op when no review-capable integration is configured.
+   */
+  triggerReviewForChange?(integrationId: string, changeId: string): Promise<void>;
 }
 
 export interface ProjectLookupStore {

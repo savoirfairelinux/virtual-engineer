@@ -296,9 +296,9 @@ export class SqliteStateStore implements StateStore, IntegrationStore, PromptSto
         WHERE id IN (
           'system_generic_code','instructions_generic_code',
           'system_gerrit_code','system_gitlab_code',
-          'system_gerrit_review','system_gitlab_review',
+          'system_gerrit_review','system_gitlab_review','system_github_review',
           'instructions_gerrit_code','instructions_gitlab_code',
-          'user_gerrit_review','user_gitlab_review'
+          'user_gerrit_review','user_gitlab_review','user_github_review'
         );
     `);
 
@@ -359,6 +359,8 @@ export class SqliteStateStore implements StateStore, IntegrationStore, PromptSto
       { id: "system_gitlab_review",    label: "System Prompt — GitLab MR (review)",   promptType: "system", file: "../../prompts/system_gitlab_review.md" },
       { id: "user_gerrit_review",      label: "User Prompt — Gerrit (review)",        promptType: "system", file: "../../prompts/user_gerrit_review.md" },
       { id: "user_gitlab_review",      label: "User Prompt — GitLab MR (review)",     promptType: "system", file: "../../prompts/user_gitlab_review.md" },
+      { id: "system_github_review",    label: "System Prompt — GitHub PR (review)",   promptType: "system", file: "../../prompts/system_github_review.md" },
+      { id: "user_github_review",      label: "User Prompt — GitHub PR (review)",     promptType: "system", file: "../../prompts/user_github_review.md" },
     ];
 
     const results = await Promise.all(
