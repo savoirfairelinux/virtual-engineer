@@ -309,8 +309,8 @@ describe("githubAuth", () => {
       for (const call of fetchMock.mock.calls) {
         const init = (call as [string, RequestInit])[1];
         const headers = init.headers as Record<string, string>;
-        expect(headers.Authorization).toBe("Bearer secret-token");
-        expect(headers.Accept).toBe("application/vnd.github+json");
+        expect(headers["Authorization"]).toBe("Bearer secret-token");
+        expect(headers["Accept"]).toBe("application/vnd.github+json");
       }
     });
   });
