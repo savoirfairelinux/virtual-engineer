@@ -793,7 +793,8 @@ export interface StateStore {
     ticketDescription?: string,
     ticketSourceLabel?: string,
     ticketUrl?: string,
-    displayId?: string
+    displayId?: string,
+    ticketSource?: { integrationId: string; ticketProjectKey: string }
   ): Promise<Task>;
 
   /** Create a code-review task (taskType="code-review", initial state=REVIEW_PENDING). */
@@ -914,6 +915,17 @@ export interface StateStore {
 
   /** Phase 4: link a task to a project (for project-mode iteration). */
   setTaskProjectId(taskId: TaskId, projectId: ProjectId): Promise<void>;
+
+  /**
+   * Re-attach orphaned tasks (project_id IS NULL) whose snapshotted ticket source
+   * matches (integrationId, ticketProjectKey) to `projectId`. Returns the number
+   * of tasks adopted.
+   */
+  adoptOrphanedTasksForProject(
+    projectId: ProjectId,
+    integrationId: string,
+    ticketProjectKey: string
+  ): number;
 
   /** Look up a project by its ID. */
   getProjectById(id: ProjectId): Promise<ProjectRecord | null>;

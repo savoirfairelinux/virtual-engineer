@@ -148,6 +148,9 @@ export class Orchestrator {
     }
 
     const taskId = makeTaskId(randomUUID());
+    // Snapshot the ticket source on the task so it can be adopted by a future
+    // project if this project is later deleted.
+    const ticketSource = await this.projectMode?.projectStore.getProjectTicketSource(project.id);
     const task = await this.stateStore.createTask(
       taskId,
       ticketId,
@@ -155,7 +158,10 @@ export class Orchestrator {
       ticket.description,
       ticketSourceLabel,
       ticket.webUrl,
-      ticket.id
+      ticket.id,
+      ticketSource
+        ? { integrationId: ticketSource.integrationId, ticketProjectKey: ticketSource.ticketProjectKey }
+        : undefined
     );
     await this.stateStore.setTaskProjectId(task.taskId, project.id);
     task.projectId = project.id;
