@@ -29,6 +29,15 @@ export const tasks = sqliteTable("tasks", {
   reviewUrl: text("review_url"),
   /** Project ID — binds the task to a Project record. */
   projectId: text("project_id"),
+  /**
+   * Integration ID of the ticket source that produced this task (snapshot
+   * taken at creation time, or backfilled before owning project deletion).
+   * Used to re-attach orphaned tasks when a new project takes over the same
+   * (integrationId, ticketProjectKey) ticket source.
+   */
+  ticketSourceIntegrationId: text("ticket_source_integration_id"),
+  /** Ticket project key (provider-side identifier) of the originating ticket source. */
+  ticketSourceProjectKey: text("ticket_source_project_key"),
   /** Human-readable identifier for the UI (e.g. ticket number, Gerrit change number). */
   displayId: text("display_id"),
   createdAt: integer("created_at", { mode: "timestamp" }).notNull(),

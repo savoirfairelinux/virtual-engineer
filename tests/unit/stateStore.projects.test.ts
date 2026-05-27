@@ -147,6 +147,76 @@ describe("SqliteStateStore — Phase 2: projects", () => {
     expect(active?.state).toBe("ABANDONED");
     expect(active?.failureReason).toMatch(/project .* deleted/i);
     expect(failed?.state).toBe("FAILED");
+    // project_id is cleared so it doesn't point at a deleted project.
+    expect(active?.projectId ?? null).toBeNull();
+    expect(failed?.projectId ?? null).toBeNull();
+  });
+
+  it("creates a project that adopts orphaned tasks from a previously deleted project with the same ticket source", async () => {
+    const a = await makeAgent(store);
+    await makeIntegration(store, "redmine-1", "redmine");
+
+    // Project A: created, ticket source set, task created and bound.
+    const oldProject = await store.createProject({ name: "Old", type: "coding", agentId: a.id });
+    await store.setProjectTicketSource(oldProject.id, {
+      integrationId: "redmine-1",
+      ticketProjectKey: "PLAT",
+    });
+    const taskId = makeTaskId(randomUUID());
+    await store.createTask(
+      taskId,
+      makeTicketId("42"),
+      "title",
+      "desc",
+      "redmine",
+      undefined,
+      undefined,
+      { integrationId: "redmine-1", ticketProjectKey: "PLAT" }
+    );
+    await store.setTaskProjectId(taskId, oldProject.id);
+
+    // Delete project A: task is orphaned (project_id NULL) but ticket source preserved.
+    await store.deleteProject(oldProject.id);
+    const afterDelete = await store.getTask(taskId);
+    expect(afterDelete?.projectId ?? null).toBeNull();
+    expect(afterDelete?.state).toBe("ABANDONED");
+
+    // Project B: created with the same ticket source. It should adopt the task.
+    const newProject = await store.createProject({ name: "New", type: "coding", agentId: a.id });
+    await store.setProjectTicketSource(newProject.id, {
+      integrationId: "redmine-1",
+      ticketProjectKey: "PLAT",
+    });
+
+    const adopted = await store.getTask(taskId);
+    expect(adopted?.projectId).toBe(newProject.id);
+  });
+
+  it("deleteProject snapshots the ticket source onto tasks that lack one (backfill)", async () => {
+    const a = await makeAgent(store);
+    await makeIntegration(store, "redmine-1", "redmine");
+    const p = await store.createProject({ name: "P", type: "coding", agentId: a.id });
+    await store.setProjectTicketSource(p.id, {
+      integrationId: "redmine-1",
+      ticketProjectKey: "PLAT",
+    });
+
+    const taskId = makeTaskId(randomUUID());
+    // Task created WITHOUT ticket-source snapshot (simulates legacy data).
+    await store.createTask(taskId, makeTicketId("99"));
+    await store.setTaskProjectId(taskId, p.id);
+
+    await store.deleteProject(p.id);
+
+    // A new project with the same ticket source should still be able to adopt it.
+    const p2 = await store.createProject({ name: "P2", type: "coding", agentId: a.id });
+    await store.setProjectTicketSource(p2.id, {
+      integrationId: "redmine-1",
+      ticketProjectKey: "PLAT",
+    });
+
+    const adopted = await store.getTask(taskId);
+    expect(adopted?.projectId).toBe(p2.id);
   });
 
   it("setProjectEnabled toggles and listProjects filters work", async () => {

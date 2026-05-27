@@ -284,6 +284,8 @@ export class SqliteStateStore implements StateStore, IntegrationStore, PromptSto
     this.ensureColumn("integrations", "discovered_at", "INTEGER");
     this.ensureColumn("tasks", "project_id", "TEXT");
     this.ensureColumn("tasks", "display_id", "TEXT");
+    this.ensureColumn("tasks", "ticket_source_integration_id", "TEXT");
+    this.ensureColumn("tasks", "ticket_source_project_key", "TEXT");
     this.ensureColumn("agents", "integration_id", "TEXT REFERENCES integrations(id) ON DELETE SET NULL");
     this.ensureColumn("prompts", "prompt_type", "TEXT NOT NULL DEFAULT 'user'");
 
@@ -441,7 +443,8 @@ export class SqliteStateStore implements StateStore, IntegrationStore, PromptSto
     ticketDescription = "",
     ticketSourceLabel = "redmine",
     ticketUrl?: string,
-    displayId?: string
+    displayId?: string,
+    ticketSource?: { integrationId: string; ticketProjectKey: string }
   ): Promise<Task> {
     const now = new Date();
     try {
@@ -458,6 +461,8 @@ export class SqliteStateStore implements StateStore, IntegrationStore, PromptSto
         failureReason: null,
         ticketUrl: ticketUrl ?? null,
         displayId: displayId ?? null,
+        ticketSourceIntegrationId: ticketSource?.integrationId ?? null,
+        ticketSourceProjectKey: ticketSource?.ticketProjectKey ?? null,
         createdAt: now,
         updatedAt: now,
       });
@@ -1609,24 +1614,78 @@ export class SqliteStateStore implements StateStore, IntegrationStore, PromptSto
     return updated;
   }
 
-  /** Delete a project, cascade child rows, and abandon non-terminal tasks linked to it. */
+  /**
+   * Delete a project, cascade child rows, and abandon non-terminal tasks linked to it.
+   *
+   * Tasks retain a snapshot of their originating ticket source
+   * (`ticket_source_integration_id`, `ticket_source_project_key`) so a future
+   * project bound to the same ticket source can adopt them via
+   * {@link adoptOrphanedTasksForProject}. The deleted project's `project_id`
+   * reference is cleared on those tasks to avoid dangling foreign keys.
+   */
   async deleteProject(id: ProjectId): Promise<void> {
     const now = Math.floor(Date.now() / 1000);
     const reason = `project ${id} deleted while tasks were still active`;
     const placeholders = [...TERMINAL_STATES].map(() => "?").join(", ");
     this.raw.transaction(() => {
+      // Snapshot the ticket source onto every task of this project so it survives
+      // the cascading delete of project_ticket_source.
+      const ts = this.raw
+        .prepare(
+          "SELECT integration_id, ticket_project_key FROM project_ticket_source WHERE project_id = ?"
+        )
+        .get(id) as { integration_id: string; ticket_project_key: string } | undefined;
+      if (ts) {
+        this.raw
+          .prepare(
+            "UPDATE tasks SET ticket_source_integration_id = COALESCE(ticket_source_integration_id, ?), " +
+            "ticket_source_project_key = COALESCE(ticket_source_project_key, ?), updated_at = ? " +
+            "WHERE project_id = ?"
+          )
+          .run(ts.integration_id, ts.ticket_project_key, now, id);
+      }
       this.raw
         .prepare(
           `UPDATE tasks SET state = 'ABANDONED', failure_reason = ?, updated_at = ? ` +
           `WHERE project_id = ? AND state NOT IN (${placeholders})`
         )
         .run(reason, now, id, ...TERMINAL_STATES);
+      // Clear the (now-dangling) FK so the task can be adopted later without
+      // pointing at a deleted project row.
+      this.raw
+        .prepare("UPDATE tasks SET project_id = NULL, updated_at = ? WHERE project_id = ?")
+        .run(now, id);
       this.raw.prepare("DELETE FROM project_ticket_source WHERE project_id = ?").run(id);
       this.raw.prepare("DELETE FROM project_push_targets WHERE project_id = ?").run(id);
       this.raw.prepare("DELETE FROM project_review_repos WHERE project_id = ?").run(id);
       this.raw.prepare("DELETE FROM project_review_integration WHERE project_id = ?").run(id);
       this.raw.prepare("DELETE FROM projects WHERE id = ?").run(id);
     })();
+  }
+
+  /**
+   * Re-attach orphaned tasks (project_id IS NULL) that previously belonged to a
+   * deleted project whose ticket source matched (integrationId, ticketProjectKey).
+   *
+   * Used when a new project is created with a ticket source so the new project
+   * can take over the failed tasks left behind by a previously deleted project.
+   * Returns the number of tasks adopted.
+   */
+  adoptOrphanedTasksForProject(
+    projectId: ProjectId,
+    integrationId: string,
+    ticketProjectKey: string
+  ): number {
+    const now = Math.floor(Date.now() / 1000);
+    const result = this.raw
+      .prepare(
+        "UPDATE tasks SET project_id = ?, updated_at = ? " +
+        "WHERE project_id IS NULL " +
+        "AND ticket_source_integration_id = ? " +
+        "AND ticket_source_project_key = ?"
+      )
+      .run(projectId as string, now, integrationId, ticketProjectKey);
+    return Number(result.changes ?? 0);
   }
 
   /** Enable or disable a project without modifying any other fields. */
@@ -1676,6 +1735,9 @@ export class SqliteStateStore implements StateStore, IntegrationStore, PromptSto
           "INSERT INTO project_ticket_source (project_id, integration_id, ticket_project_key, created_at) VALUES (?, ?, ?, ?)"
         )
         .run(projectId, input.integrationId, input.ticketProjectKey, Math.floor(now.getTime() / 1000));
+      // Adopt any orphaned tasks that originated from this exact ticket source
+      // but whose owning project was previously deleted.
+      this.adoptOrphanedTasksForProject(projectId, input.integrationId, input.ticketProjectKey);
       const row = this.raw
         .prepare("SELECT id, project_id, integration_id, ticket_project_key, created_at FROM project_ticket_source WHERE project_id = ?")
         .get(projectId) as { id: number; project_id: string; integration_id: string; ticket_project_key: string; created_at: number };
