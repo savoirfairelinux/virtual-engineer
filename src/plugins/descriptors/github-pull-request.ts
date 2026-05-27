@@ -59,10 +59,19 @@ function deriveHost(mode: GitHubMode, baseUrl: string | undefined): string {
   }
 }
 
+/**
+ * Sentinel returned when an unbound integration-level instance is constructed
+ * (e.g. at boot via PluginManager.loadFromDatabase, before any project binds
+ * a repoKey). Owner-level operations (discovery, test connection) still work;
+ * any repo-scoped API call will 404 — which is the right failure for misuse.
+ */
+const UNBOUND_GITHUB_REPO = "__ve_unbound_repo__";
+
 function resolveRepo(
   parsedOwner: string,
   context: IntegrationBindingContext | undefined,
   legacySlug: string | undefined,
+  options?: { allowUnboundFallback?: boolean },
 ): { owner: string; repo: string } {
   const key = context?.repoKey?.trim();
   if (key) {
@@ -77,6 +86,9 @@ function resolveRepo(
   if (legacySlug) {
     const parts = legacySlug.split("/");
     if (parts[0] && parts[1]) return { owner: parts[0], repo: parts[1] };
+  }
+  if (options?.allowUnboundFallback === true) {
+    return { owner: parsedOwner, repo: UNBOUND_GITHUB_REPO };
   }
   throw new Error(
     `GitHub integration: no repository bound. Bind a project repo (repoKey) or set a legacy repositorySlug. owner='${parsedOwner}'`,
@@ -157,7 +169,9 @@ export const githubPullRequestDescriptor: PluginDescriptor = {
   ],
   createInstance: (config: unknown, _integration: Integration, context?: IntegrationBindingContext) => {
     const parsed = githubPullRequestConfigSchema.parse(config);
-    const { owner, repo } = resolveRepo(parsed.owner as string, context, parsed.repositorySlug);
+    const { owner, repo } = resolveRepo(parsed.owner as string, context, parsed.repositorySlug, {
+      allowUnboundFallback: context === undefined,
+    });
     const urls = resolveGitHubUrls(parsed.mode as GitHubMode, parsed.baseUrl);
     return new GitHubPullRequestReviewConnector({
       apiBaseUrl: urls.apiBaseUrl,

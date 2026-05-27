@@ -90,6 +90,36 @@ describe("github descriptors — schema migration + runtime resolution", () => {
     });
   });
 
+  describe("github-pull-request createInstance — boot vs per-task", () => {
+    const cfg = {
+      mode: "github.com",
+      authMode: "pat",
+      token: "ghp_x",
+      owner: "acme",
+    };
+
+    it("returns an unbound instance when context is undefined (boot path)", () => {
+      const parsed = githubPullRequestConfigSchema.parse(cfg) as unknown as Record<string, unknown>;
+      const conn = githubPullRequestDescriptor.createInstance!(parsed, baseIntegration, undefined);
+      expect(conn).toBeDefined();
+    });
+
+    it("uses context.repoKey when provided (per-task path)", () => {
+      const parsed = githubPullRequestConfigSchema.parse(cfg) as unknown as Record<string, unknown>;
+      const conn = githubPullRequestDescriptor.createInstance!(parsed, baseIntegration, {
+        repoKey: "acme/hello-world",
+      });
+      expect(conn).toBeDefined();
+    });
+
+    it("throws when context is provided but repoKey is empty (strict per-task)", () => {
+      const parsed = githubPullRequestConfigSchema.parse(cfg) as unknown as Record<string, unknown>;
+      expect(() =>
+        githubPullRequestDescriptor.createInstance!(parsed, baseIntegration, { repoKey: "" }),
+      ).toThrow(/no repository bound/i);
+    });
+  });
+
   describe("github-pull-request createVcsConnector — repo resolution", () => {
     const cfg = {
       mode: "github.com",
@@ -147,7 +177,7 @@ describe("github descriptors — schema migration + runtime resolution", () => {
     };
 
     it("uses context.repoKey", () => {
-      const conn = githubIssueDescriptor.createInstance(
+      const conn = githubIssueDescriptor.createInstance!(
         githubIssueConfigSchema.parse(cfg) as unknown as Record<string, unknown>,
         { ...baseIntegration, type: "github-issue" },
         { repoKey: "acme/hello-world" },
@@ -155,15 +185,14 @@ describe("github descriptors — schema migration + runtime resolution", () => {
       expect(conn).toBeDefined();
     });
 
-    it("throws when no context.repoKey and no legacy repositorySlug", () => {
+    it("returns an unbound instance when no context (boot-time owner-level)", () => {
       const parsed = githubIssueConfigSchema.parse(cfg) as unknown as Record<string, unknown>;
-      expect(() =>
-        githubIssueDescriptor.createInstance(
-          parsed,
-          { ...baseIntegration, type: "github-issue" },
-          undefined,
-        ),
-      ).toThrow(/no repository bound/i);
+      const conn = githubIssueDescriptor.createInstance!(
+        parsed,
+        { ...baseIntegration, type: "github-issue" },
+        undefined,
+      );
+      expect(conn).toBeDefined();
     });
 
     it("falls back to legacy repositorySlug when no context", () => {
@@ -171,7 +200,7 @@ describe("github descriptors — schema migration + runtime resolution", () => {
         ...cfg,
         repositorySlug: "acme/legacy",
       }) as unknown as Record<string, unknown>;
-      const conn = githubIssueDescriptor.createInstance(
+      const conn = githubIssueDescriptor.createInstance!(
         cfgWithLegacy,
         { ...baseIntegration, type: "github-issue" },
         undefined,

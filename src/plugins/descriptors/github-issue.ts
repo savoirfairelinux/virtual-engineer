@@ -44,10 +44,13 @@ export const githubIssueConfigSchema = z
 
 export type GitHubIssuePluginConfig = z.infer<typeof githubIssueConfigSchema>;
 
+const UNBOUND_GITHUB_REPO = "__ve_unbound_repo__";
+
 function resolveRepo(
   parsedOwner: string,
   context: IntegrationBindingContext | undefined,
   legacySlug: string | undefined,
+  options?: { allowUnboundFallback?: boolean },
 ): { owner: string; repo: string } {
   const key = context?.repoKey?.trim();
   if (key) {
@@ -62,6 +65,9 @@ function resolveRepo(
   if (legacySlug) {
     const parts = legacySlug.split("/");
     if (parts[0] && parts[1]) return { owner: parts[0], repo: parts[1] };
+  }
+  if (options?.allowUnboundFallback === true) {
+    return { owner: parsedOwner, repo: UNBOUND_GITHUB_REPO };
   }
   throw new Error(
     `GitHub issue integration: no repository bound. Bind a project ticketSourceProjectKey (repoKey) or set a legacy repositorySlug. owner='${parsedOwner}'`,
@@ -146,7 +152,9 @@ export const githubIssueDescriptor: PluginDescriptor = {
   },
   createInstance: (config: unknown, _integration: Integration, context?: IntegrationBindingContext) => {
     const parsed = githubIssueConfigSchema.parse(config);
-    const { owner, repo } = resolveRepo(parsed.owner as string, context, parsed.repositorySlug);
+    const { owner, repo } = resolveRepo(parsed.owner as string, context, parsed.repositorySlug, {
+      allowUnboundFallback: context === undefined,
+    });
     const urls = resolveGitHubUrls(parsed.mode as GitHubMode, parsed.baseUrl);
     return new GitHubIssueConnector({
       apiBaseUrl: urls.apiBaseUrl,
