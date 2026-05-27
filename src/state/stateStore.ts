@@ -839,21 +839,50 @@ export class SqliteStateStore implements StateStore, IntegrationStore, PromptSto
     const task = await this.getTask(taskId);
     if (!task) throw new Error(`Task not found: ${taskId}`);
 
-    // Reset cycle count and transition back to DETECTED
+    const adoptedProjectId = task.projectId === null ? this.findAdoptionTargetForTask(taskId) : null;
+
     const now = new Date();
     this.raw.transaction(() => {
-      this.raw.prepare("UPDATE tasks SET state = ?, cycle_count = ?, failure_reason = ?, updated_at = ? WHERE task_id = ?").run("DETECTED", 0, null, Math.floor(now.getTime() / 1000), taskId);
+      const nowSec = Math.floor(now.getTime() / 1000);
+      if (adoptedProjectId !== null) {
+        this.raw
+          .prepare("UPDATE tasks SET state = ?, cycle_count = ?, failure_reason = ?, project_id = ?, updated_at = ? WHERE task_id = ?")
+          .run("DETECTED", 0, null, adoptedProjectId, nowSec, taskId);
+      } else {
+        this.raw
+          .prepare("UPDATE tasks SET state = ?, cycle_count = ?, failure_reason = ?, updated_at = ? WHERE task_id = ?")
+          .run("DETECTED", 0, null, nowSec, taskId);
+      }
 
+      const metadata: Record<string, unknown> = { action: "retry" };
+      if (adoptedProjectId !== null) {
+        metadata["adoptedProjectId"] = adoptedProjectId;
+      }
       this.raw
         .prepare(
           "INSERT INTO state_transitions (task_id, from_state, to_state, metadata, created_at) VALUES (?, ?, ?, ?, ?)"
         )
-        .run(taskId, task.state, "DETECTED", JSON.stringify({ action: "retry" }), Math.floor(now.getTime() / 1000));
+        .run(taskId, task.state, "DETECTED", JSON.stringify(metadata), nowSec);
     })();
 
     const updated = await this.getTask(taskId);
     if (!updated) throw new Error(`Task disappeared after retry: ${taskId}`);
     return updated;
+  }
+
+  private findAdoptionTargetForTask(taskId: TaskId): string | null {
+    const row = this.raw
+      .prepare(
+        "SELECT pts.project_id AS projectId FROM tasks t " +
+        "JOIN project_ticket_source pts " +
+        "ON pts.integration_id = t.ticket_source_integration_id " +
+        "AND pts.ticket_project_key = t.ticket_source_project_key " +
+        "WHERE t.task_id = ? " +
+        "AND t.ticket_source_integration_id IS NOT NULL " +
+        "AND t.ticket_source_project_key IS NOT NULL"
+      )
+      .get(taskId) as { projectId: string } | undefined;
+    return row?.projectId ?? null;
   }
 
   /** Transition the task to ABANDONED and record an abandon event. */

@@ -555,3 +555,118 @@ describe("getProjectForTask helper", () => {
     expect(fetched?.id).toBe(p.id);
   });
 });
+
+describe("SqliteStateStore — retryTask re-attaches orphaned tasks", () => {
+  let store: SqliteStateStore;
+
+  beforeEach(async () => {
+    store = await SqliteStateStore.create(tempDbPath());
+  });
+
+  afterEach(() => {
+    store.close();
+  });
+
+  it("re-attaches an orphaned task to the project that now owns its ticket source", async () => {
+    const a = await makeAgent(store);
+    await makeIntegration(store, "redmine-1", "redmine");
+
+    const newProject = await store.createProject({ name: "New", type: "coding", agentId: a.id });
+    await store.setProjectTicketSource(newProject.id, {
+      integrationId: "redmine-1",
+      ticketProjectKey: "PLAT",
+    });
+
+    const taskId = makeTaskId(randomUUID());
+    await store.createTask(
+      taskId,
+      makeTicketId("42"),
+      "title",
+      "desc",
+      "redmine",
+      undefined,
+      undefined,
+      { integrationId: "redmine-1", ticketProjectKey: "PLAT" }
+    );
+    await store.transition(taskId, "CONTEXT_BUILDING");
+    await store.transition(taskId, "AGENT_RUNNING");
+    await store.transition(taskId, "FAILED");
+
+    const beforeRetry = await store.getTask(taskId);
+    expect(beforeRetry?.projectId ?? null).toBeNull();
+
+    const retried = await store.retryTask(taskId);
+
+    expect(retried.projectId).toBe(newProject.id);
+    expect(retried.state).toBe("DETECTED");
+  });
+
+  it("leaves projectId null when no current project matches the task's ticket source", async () => {
+    await makeIntegration(store, "redmine-1", "redmine");
+
+    const taskId = makeTaskId(randomUUID());
+    await store.createTask(
+      taskId,
+      makeTicketId("43"),
+      "title",
+      "desc",
+      "redmine",
+      undefined,
+      undefined,
+      { integrationId: "redmine-1", ticketProjectKey: "PLAT" }
+    );
+    await store.transition(taskId, "CONTEXT_BUILDING");
+    await store.transition(taskId, "AGENT_RUNNING");
+    await store.transition(taskId, "FAILED");
+
+    const retried = await store.retryTask(taskId);
+
+    expect(retried.projectId).toBeNull();
+    expect(retried.state).toBe("DETECTED");
+  });
+
+  it("does not change projectId when the task is already attached to a project", async () => {
+    const a = await makeAgent(store);
+    await makeIntegration(store, "redmine-1", "redmine");
+
+    const project = await store.createProject({ name: "P", type: "coding", agentId: a.id });
+    await store.setProjectTicketSource(project.id, {
+      integrationId: "redmine-1",
+      ticketProjectKey: "PLAT",
+    });
+
+    const taskId = makeTaskId(randomUUID());
+    await store.createTask(
+      taskId,
+      makeTicketId("44"),
+      "title",
+      "desc",
+      "redmine",
+      undefined,
+      undefined,
+      { integrationId: "redmine-1", ticketProjectKey: "PLAT" }
+    );
+    await store.setTaskProjectId(taskId, project.id);
+    await store.transition(taskId, "CONTEXT_BUILDING");
+    await store.transition(taskId, "AGENT_RUNNING");
+    await store.transition(taskId, "FAILED");
+
+    const retried = await store.retryTask(taskId);
+
+    expect(retried.projectId).toBe(project.id);
+    expect(retried.state).toBe("DETECTED");
+  });
+
+  it("leaves projectId null when the task has no ticket source snapshot", async () => {
+    const taskId = makeTaskId(randomUUID());
+    await store.createTask(taskId, makeTicketId("45"), "title", "desc", "redmine");
+    await store.transition(taskId, "CONTEXT_BUILDING");
+    await store.transition(taskId, "AGENT_RUNNING");
+    await store.transition(taskId, "FAILED");
+
+    const retried = await store.retryTask(taskId);
+
+    expect(retried.projectId).toBeNull();
+    expect(retried.state).toBe("DETECTED");
+  });
+});
