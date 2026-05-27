@@ -140,7 +140,7 @@ export class GitHubPullRequestReviewConnector implements ReviewConnector {
       });
     }
 
-    log.debug({ changeId, count: comments.length }, "fetched GitHub PR comments");
+    log.info({ changeId, count: comments.length }, "fetched GitHub PR comments");
     return comments;
   }
 

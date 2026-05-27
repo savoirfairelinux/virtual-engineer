@@ -225,18 +225,18 @@ export class Orchestrator {
   async triggerFeedbackForChange(integrationId: string, externalChangeId: string): Promise<void> {
     const task = await this.stateStore.findTaskByExternalChangeId(integrationId, externalChangeId);
     if (!task) {
-      log.debug({ integrationId, externalChangeId }, "webhook feedback: no task for change");
+      log.info({ integrationId, externalChangeId }, "webhook feedback: no task for change (likely a human-authored change, ignoring)");
       return;
     }
     if (TERMINAL_STATES.has(task.state)) {
-      log.debug({ taskId: task.taskId, state: task.state }, "webhook feedback: task terminal, ignoring");
+      log.info({ taskId: task.taskId, state: task.state, externalChangeId }, "webhook feedback: task terminal, ignoring");
       return;
     }
     if (task.state !== "IN_REVIEW") {
-      log.debug({ taskId: task.taskId, state: task.state }, "webhook feedback: task not IN_REVIEW, ignoring");
+      log.info({ taskId: task.taskId, state: task.state, externalChangeId }, "webhook feedback: task not IN_REVIEW, ignoring");
       return;
     }
-    log.info({ taskId: task.taskId, externalChangeId }, "webhook feedback: triggering review progress check");
+    log.info({ taskId: task.taskId, integrationId, externalChangeId }, "webhook feedback: triggering review progress check");
     await this.checkReviewProgress(task);
   }
 
@@ -244,15 +244,15 @@ export class Orchestrator {
   async markChangeMerged(integrationId: string, externalChangeId: string): Promise<void> {
     const task = await this.stateStore.findTaskByExternalChangeId(integrationId, externalChangeId);
     if (!task) {
-      log.debug({ integrationId, externalChangeId }, "webhook merged: no task for change");
+      log.info({ integrationId, externalChangeId }, "webhook merged: no task for change, ignoring");
       return;
     }
     if (TERMINAL_STATES.has(task.state)) {
-      log.debug({ taskId: task.taskId, state: task.state }, "webhook merged: task terminal, ignoring");
+      log.info({ taskId: task.taskId, state: task.state }, "webhook merged: task terminal, ignoring");
       return;
     }
     if (task.state !== "IN_REVIEW") {
-      log.debug({ taskId: task.taskId, state: task.state }, "webhook merged: task not IN_REVIEW, ignoring");
+      log.info({ taskId: task.taskId, state: task.state }, "webhook merged: task not IN_REVIEW, ignoring");
       return;
     }
     log.info({ taskId: task.taskId, externalChangeId }, "webhook merged: closing ticket");
@@ -264,11 +264,11 @@ export class Orchestrator {
   async markChangeAbandoned(integrationId: string, externalChangeId: string): Promise<void> {
     const task = await this.stateStore.findTaskByExternalChangeId(integrationId, externalChangeId);
     if (!task) {
-      log.debug({ integrationId, externalChangeId }, "webhook abandoned: no task for change");
+      log.info({ integrationId, externalChangeId }, "webhook abandoned: no task for change, ignoring");
       return;
     }
     if (TERMINAL_STATES.has(task.state)) {
-      log.debug({ taskId: task.taskId, state: task.state }, "webhook abandoned: task terminal, ignoring");
+      log.info({ taskId: task.taskId, state: task.state }, "webhook abandoned: task terminal, ignoring");
       return;
     }
     log.info({ taskId: task.taskId, externalChangeId }, "webhook abandoned: marking task ABANDONED");

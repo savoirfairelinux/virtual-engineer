@@ -238,7 +238,7 @@ export class GerritSshClient {
       }
     }
 
-    log.debug({ changeId, count: result.length }, "fetched Gerrit comments via SSH");
+    log.info({ changeId, count: result.length }, "fetched Gerrit comments via SSH");
     return result;
   }
 
