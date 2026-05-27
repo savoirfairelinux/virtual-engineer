@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { z } from "zod";
 import { getLogger } from "../logger.js";
-import { writeJson, readBody, asRecord, SECRET_MASK, parseConfig } from "./adminRouteUtils.js";
+import { writeJson, readBody, asRecord, SECRET_MASK, parseConfig, zodErrorBody } from "./adminRouteUtils.js";
 import {
   makeAgentId,
   type AgentId,
@@ -243,24 +243,28 @@ function toAgentDetail(agent: AgentRecord, projectCount: number): AgentDetail {
 
 const createSchema = z.object({
   id: z.string().optional(),
-  name: z.string().min(1),
-  type: z.enum(["coding", "review"]),
+  name: z.string().min(1, "Agent name is required"),
+  type: z.enum(["coding", "review"], {
+    errorMap: () => ({ message: "Agent type must be either 'coding' or 'review'" }),
+  }),
   modelConfig: z.record(z.unknown()).default({}),
   integrationId: z.string().nullable().optional(),
   systemPromptId: z.string().nullable().optional(),
   instructionsPromptId: z.string().nullable().optional(),
-  maxConcurrent: z.number().int().min(1).optional(),
+  maxConcurrent: z.number({ invalid_type_error: "Max concurrent must be a number" }).int("Max concurrent must be an integer").min(1, "Max concurrent must be at least 1").optional(),
   enabled: z.boolean().optional(),
 });
 
 const updateSchema = z.object({
-  name: z.string().min(1).optional(),
-  type: z.enum(["coding", "review"]).optional(),
+  name: z.string().min(1, "Agent name cannot be empty").optional(),
+  type: z.enum(["coding", "review"], {
+    errorMap: () => ({ message: "Agent type must be either 'coding' or 'review'" }),
+  }).optional(),
   modelConfig: z.record(z.unknown()).optional(),
   integrationId: z.string().nullable().optional(),
   systemPromptId: z.string().nullable().optional(),
   instructionsPromptId: z.string().nullable().optional(),
-  maxConcurrent: z.number().int().min(1).optional(),
+  maxConcurrent: z.number({ invalid_type_error: "Max concurrent must be a number" }).int("Max concurrent must be an integer").min(1, "Max concurrent must be at least 1").optional(),
   enabled: z.boolean().optional(),
 });
 
@@ -472,7 +476,7 @@ export async function handleAgentsRoute(
     }
     const parsed = createSchema.safeParse(body);
     if (!parsed.success) {
-      writeJson(response, 400, { error: "Invalid agent payload", details: parsed.error.flatten() });
+      writeJson(response, 400, zodErrorBody(parsed.error, "Invalid agent payload"));
       return true;
     }
     try {
@@ -558,7 +562,7 @@ export async function handleAgentsRoute(
       }
       const parsed = updateSchema.safeParse(body);
       if (!parsed.success) {
-        writeJson(response, 400, { error: "Invalid agent payload", details: parsed.error.flatten() });
+        writeJson(response, 400, zodErrorBody(parsed.error, "Invalid agent payload"));
         return true;
       }
       const updates: Parameters<AgentsRouteStore["updateAgent"]>[1] = {};

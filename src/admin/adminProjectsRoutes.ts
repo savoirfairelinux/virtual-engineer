@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { z } from "zod";
 import { getLogger } from "../logger.js";
-import { writeJson, readBody } from "./adminRouteUtils.js";
+import { writeJson, readBody, zodErrorBody } from "./adminRouteUtils.js";
 import {
   makeAgentId,
   makeProjectId,
@@ -360,7 +360,7 @@ export async function handleProjectsRoute(
     }
     const parsed = projectCreateSchema.safeParse(body);
     if (!parsed.success) {
-      writeJson(response, 400, { error: "Invalid project payload", details: parsed.error.flatten() });
+      writeJson(response, 400, zodErrorBody(parsed.error, "Invalid project payload"));
       return true;
     }
     const data = parsed.data;
@@ -463,7 +463,7 @@ export async function handleProjectsRoute(
       }
       const parsed = projectUpdateSchema.safeParse(body);
       if (!parsed.success) {
-        writeJson(response, 400, { error: "Invalid project payload", details: parsed.error.flatten() });
+        writeJson(response, 400, zodErrorBody(parsed.error, "Invalid project payload"));
         return true;
       }
       const data = parsed.data;
