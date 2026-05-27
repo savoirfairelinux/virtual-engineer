@@ -10,6 +10,7 @@ import type { VcsConnector, VcsPushResult, VolumeExecOptions } from "./vcsConnec
 import type { ReviewComment } from "../interfaces.js";
 import { execInVolume } from "../workspace/dockerVolume.js";
 import { GerritSshClient, buildSshHostKeyOptions } from "../connectors/gerritSshClient.js";
+import { buildBranchSlug } from "../utils/branchSlug.js";
 
 const log = getLogger("gerrit-vcs");
 
@@ -126,9 +127,20 @@ export class GerritVcsConnector implements VcsConnector {
     });
   }
 
-  /** Returns the Gerrit push ref (`refs/for/<branch>`) and topic for the given task. */
-  buildPushSpec(baseBranch: string, taskId: string): { ref: string; topic?: string } {
-    return { ref: `refs/for/${baseBranch}`, topic: `VE-${taskId}` };
+  /**
+   * Returns the Gerrit push ref (`refs/for/<branch>`) and topic for the given task.
+   *
+   * When a ticket subject is supplied the topic is `VE-<slug>` (e.g.
+   * `VE-fix-login-redirect-bug`) instead of the opaque `VE-<taskId>`, making the
+   * grouping topic readable in the Gerrit UI. Falls back to the task ID when no
+   * usable subject is available.
+   */
+  buildPushSpec(
+    baseBranch: string,
+    taskId: string,
+    ticketSubject?: string | null
+  ): { ref: string; topic?: string } {
+    return { ref: `refs/for/${baseBranch}`, topic: `VE-${buildBranchSlug(taskId, ticketSubject)}` };
   }
 
   /**

@@ -345,16 +345,27 @@ describe("GitLabVcsConnector", () => {
       expect(connector.reviewSystemLabel).toBe("gitlab");
     });
 
-    it("buildPushSpec returns feature-<taskId> branch with no topic", () => {
+    it("buildPushSpec falls back to feature-<taskId> when no ticket subject is provided", () => {
       const spec = connector.buildPushSpec("main", "task-1");
       expect(spec.ref).toBe("feature-task-1");
       expect(spec.topic).toBeUndefined();
     });
 
-    it("buildPushSpec ignores baseBranch — ref is always feature-<taskId>", () => {
+    it("buildPushSpec ignores baseBranch — ref is always feature-<slug-or-taskId>", () => {
       const specA = connector.buildPushSpec("main", "id-x");
       const specB = connector.buildPushSpec("release/2.0", "id-x");
       expect(specA.ref).toBe(specB.ref);
+    });
+
+    it("buildPushSpec derives a short readable slug from the ticket subject", () => {
+      const spec = connector.buildPushSpec("main", "task-1", "Fix login redirect bug on Safari mobile");
+      expect(spec.ref).toBe("feature-fix-login-redirect-bug-on");
+      expect(spec.topic).toBeUndefined();
+    });
+
+    it("buildPushSpec falls back to taskId when subject yields an empty slug", () => {
+      const spec = connector.buildPushSpec("main", "abc123", "???");
+      expect(spec.ref).toBe("feature-abc123");
     });
   });
 });

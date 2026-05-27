@@ -116,9 +116,17 @@ export interface VcsConnector {
    * configuration and the host-side push. The orchestrator never interprets
    * the returned ref or topic — it passes them through verbatim.
    * @param baseBranch The base/target branch (e.g. "main")
-   * @param taskId The task identifier used for unique branch or topic names
+   * @param taskId The task identifier — used as a fallback for unique branch or topic names
+   *               when no ticket subject is available.
+   * @param ticketSubject Optional ticket title; when provided, connectors derive a short
+   *                      human-readable slug from it (≤5 key words) so generated branch / topic
+   *                      names are recognisable instead of being opaque UUIDs.
    */
-  buildPushSpec(baseBranch: string, taskId: string): { ref: string; topic?: string };
+  buildPushSpec(
+    baseBranch: string,
+    taskId: string,
+    ticketSubject?: string | null
+  ): { ref: string; topic?: string };
 
   /**
    * Whether this connector's review system uses Change-Id trailers for

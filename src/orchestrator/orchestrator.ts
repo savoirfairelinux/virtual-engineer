@@ -540,7 +540,7 @@ export class Orchestrator {
         );
       }
       const rootConnector = await this.resolveVcsConnectorForTarget(root.integrationId);
-      const { ref: pushRef } = rootConnector.buildPushSpec(cloneBranch, task.taskId);
+      const { ref: pushRef } = rootConnector.buildPushSpec(cloneBranch, task.taskId, ticket.subject);
       const context: TaskContext = {
         taskId: task.taskId,
         ticketTitle: ticket.subject,
@@ -1042,7 +1042,7 @@ export class Orchestrator {
         );
         continue;
       }
-      const { ref, topic } = vcsConnector.buildPushSpec(target.targetBranch, task.taskId);
+      const { ref, topic } = vcsConnector.buildPushSpec(target.targetBranch, task.taskId, task.ticketTitle);
       const reviewSystemLabel = vcsConnector.reviewSystemLabel;
 
       const volumeOpts = { volumeName: handle.volumeName, image: handle.containerImage, subPath: target.localPath };

@@ -10,6 +10,7 @@ import type { ReviewComment } from "../interfaces.js";
 import { ReviewApiError } from "../interfaces.js";
 import { GitLabHttpClient } from "../connectors/gitlabHttpClient.js";
 import { execInVolume } from "../workspace/dockerVolume.js";
+import { buildBranchSlug } from "../utils/branchSlug.js";
 
 const log = getLogger("gitlab-vcs");
 
@@ -50,9 +51,18 @@ export class GitLabVcsConnector implements VcsConnector {
     );
   }
 
-  /** Returns the feature-branch ref name derived from the task ID. */
-  buildPushSpec(_baseBranch: string, taskId: string): { ref: string; topic?: string } {
-    return { ref: `feature-${taskId}` };
+  /**
+   * Returns the feature-branch ref name. When a ticket subject is supplied the branch is
+   * named `feature-<slug>` (e.g. `feature-fix-login-redirect-bug`) instead of the opaque
+   * `feature-<taskId>`. The task ID is used as a fallback when no usable subject is
+   * available so that uniqueness is preserved.
+   */
+  buildPushSpec(
+    _baseBranch: string,
+    taskId: string,
+    ticketSubject?: string | null
+  ): { ref: string; topic?: string } {
+    return { ref: `feature-${buildBranchSlug(taskId, ticketSubject)}` };
   }
 
   /** Clone a GitLab repository via HTTP into the target directory. */

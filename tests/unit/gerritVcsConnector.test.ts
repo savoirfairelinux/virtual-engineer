@@ -334,7 +334,7 @@ describe("GerritVcsConnector", () => {
       expect(connector.reviewSystemLabel).toBe("gerrit");
     });
 
-    it("buildPushSpec returns refs/for/<branch> and topic VE-<taskId>", () => {
+    it("buildPushSpec falls back to topic VE-<taskId> when no ticket subject is provided", () => {
       const spec = connector.buildPushSpec("main", "task-1");
       expect(spec.ref).toBe("refs/for/main");
       expect(spec.topic).toBe("VE-task-1");
@@ -343,6 +343,17 @@ describe("GerritVcsConnector", () => {
     it("buildPushSpec encodes the branch correctly for non-main branches", () => {
       const spec = connector.buildPushSpec("release/1.0", "abc");
       expect(spec.ref).toBe("refs/for/release/1.0");
+      expect(spec.topic).toBe("VE-abc");
+    });
+
+    it("buildPushSpec derives a short readable topic slug from the ticket subject", () => {
+      const spec = connector.buildPushSpec("main", "abc", "Fix login redirect bug on Safari mobile");
+      expect(spec.ref).toBe("refs/for/main");
+      expect(spec.topic).toBe("VE-fix-login-redirect-bug-on");
+    });
+
+    it("buildPushSpec falls back to taskId in topic when subject yields an empty slug", () => {
+      const spec = connector.buildPushSpec("main", "abc", "***");
       expect(spec.topic).toBe("VE-abc");
     });
   });
