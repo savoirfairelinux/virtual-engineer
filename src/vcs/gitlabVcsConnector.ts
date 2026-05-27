@@ -6,6 +6,7 @@
 import { execFileSync } from "child_process";
 import { getLogger } from "../logger.js";
 import type { VcsConnector, VcsPushResult, VolumeExecOptions } from "./vcsConnector.js";
+import { buildFeatureBranchRef } from "./branchNaming.js";
 import type { ReviewComment } from "../interfaces.js";
 import { ReviewApiError } from "../interfaces.js";
 import { GitLabHttpClient } from "../connectors/gitlabHttpClient.js";
@@ -50,9 +51,8 @@ export class GitLabVcsConnector implements VcsConnector {
     );
   }
 
-  /** Returns the feature-branch ref name derived from the task ID. */
-  buildPushSpec(_baseBranch: string, taskId: string): { ref: string; topic?: string } {
-    return { ref: `feature-${taskId}` };
+  buildPushSpec(_baseBranch: string, taskId: string, ticketTitle?: string | null): { ref: string; topic?: string } {
+    return { ref: buildFeatureBranchRef(taskId, ticketTitle ?? null) };
   }
 
   /** Clone a GitLab repository via HTTP into the target directory. */

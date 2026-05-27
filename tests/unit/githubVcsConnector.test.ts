@@ -61,8 +61,18 @@ describe("GitHubVcsConnector", () => {
       expect(c.reviewSystemLabel).toBe("github");
     });
 
-    it("buildPushSpec returns feature-<taskId> ref without topic", () => {
+    it("buildPushSpec returns feature-<taskId> ref without topic when no ticketTitle is given", () => {
       const spec = makeConnector().buildPushSpec("main", "task-123");
+      expect(spec).toEqual({ ref: "feature-task-123" });
+    });
+
+    it("buildPushSpec uses a slug from ticketTitle when provided", () => {
+      const spec = makeConnector().buildPushSpec("main", "b7ddee79-cc3b-4208-815c-70fcf177a49e", "Add login button");
+      expect(spec).toEqual({ ref: "feature/b7ddee79-add-login-button" });
+    });
+
+    it("buildPushSpec falls back to legacy ref when ticketTitle is empty", () => {
+      const spec = makeConnector().buildPushSpec("main", "task-123", "");
       expect(spec).toEqual({ ref: "feature-task-123" });
     });
   });

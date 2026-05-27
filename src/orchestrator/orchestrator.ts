@@ -546,7 +546,9 @@ export class Orchestrator {
         );
       }
       const rootConnector = await this.resolveVcsConnectorForTarget(root.integrationId, { repoKey: root.repoKey });
-      const { ref: pushRef } = rootConnector.buildPushSpec(cloneBranch, task.taskId);
+      const pushRef = await this.resolvePushRef(task, () =>
+        rootConnector.buildPushSpec(cloneBranch, task.taskId, ticket.subject).ref
+      );
       const context: TaskContext = {
         taskId: task.taskId,
         ticketTitle: ticket.subject,
@@ -988,6 +990,19 @@ export class Orchestrator {
   }
 
   /**
+   * Returns the task's persisted pushRef if set, otherwise computes one via `compute()`,
+   * persists it, and returns it. Guarantees a stable branch name across resume/retry cycles.
+   */
+  private async resolvePushRef(task: Task, compute: () => string): Promise<string> {
+    if (task.pushRef) {
+      return task.pushRef;
+    }
+    const ref = compute();
+    await this.stateStore.setTaskPushRef(task.taskId, ref);
+    return ref;
+  }
+
+  /**
    * Project-mode push: for each push target sorted by `commitOrder`, dirty-check and push.
    * Clean repos are recorded as NO_CHANGE. Per-target failures are isolated.
    */
@@ -1048,7 +1063,12 @@ export class Orchestrator {
         );
         continue;
       }
-      const { ref, topic } = vcsConnector.buildPushSpec(target.targetBranch, task.taskId);
+      const { ref: computedRef, topic } = vcsConnector.buildPushSpec(
+        target.targetBranch,
+        task.taskId,
+        task.ticketTitle
+      );
+      const ref = await this.resolvePushRef(task, () => computedRef);
       const reviewSystemLabel = vcsConnector.reviewSystemLabel;
 
       const volumeOpts = { volumeName: handle.volumeName, image: handle.containerImage, subPath: target.localPath };

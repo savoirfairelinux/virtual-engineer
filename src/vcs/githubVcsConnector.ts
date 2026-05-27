@@ -9,6 +9,7 @@
 import { execFileSync } from "child_process";
 import { getLogger } from "../logger.js";
 import type { VcsConnector, VcsPushResult, VolumeExecOptions } from "./vcsConnector.js";
+import { buildFeatureBranchRef } from "./branchNaming.js";
 import type { ReviewComment } from "../interfaces.js";
 import { ReviewApiError } from "../interfaces.js";
 import { execInVolume } from "../workspace/dockerVolume.js";
@@ -54,9 +55,8 @@ export class GitHubVcsConnector implements VcsConnector {
 
   constructor(private readonly config: GitHubVcsConnectorConfig) {}
 
-  /** Feature-branch ref name derived from the task ID. */
-  buildPushSpec(_baseBranch: string, taskId: string): { ref: string; topic?: string } {
-    return { ref: `feature-${taskId}` };
+  buildPushSpec(_baseBranch: string, taskId: string, ticketTitle?: string | null): { ref: string; topic?: string } {
+    return { ref: buildFeatureBranchRef(taskId, ticketTitle ?? null) };
   }
 
   /** Clone a GitHub repository via HTTPS into the target directory. */
