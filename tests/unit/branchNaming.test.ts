@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildFeatureBranchRef } from "../../src/vcs/branchNaming.js";
+import { buildFeatureBranchRef, buildGerritTopic } from "../../src/vcs/branchNaming.js";
 
 const TASK_ID = "b7ddee79-cc3b-4208-815c-70fcf177a49e";
 
@@ -52,5 +52,22 @@ describe("buildFeatureBranchRef", () => {
   it("uses the first 8 chars of taskId as short id", () => {
     const ref = buildFeatureBranchRef("12345678-aaaa-bbbb-cccc-dddddddddddd", "Hello");
     expect(ref).toBe("feature/12345678-hello");
+  });
+});
+
+describe("buildGerritTopic", () => {
+  it("builds VE-{shortId}-{slug} for a normal title", () => {
+    expect(buildGerritTopic(TASK_ID, "Add login button")).toBe("VE-b7ddee79-add-login-button");
+  });
+
+  it("falls back to legacy VE-{fullTaskId} when title is missing or empty", () => {
+    expect(buildGerritTopic(TASK_ID, undefined)).toBe(`VE-${TASK_ID}`);
+    expect(buildGerritTopic(TASK_ID, null)).toBe(`VE-${TASK_ID}`);
+    expect(buildGerritTopic(TASK_ID, "")).toBe(`VE-${TASK_ID}`);
+    expect(buildGerritTopic(TASK_ID, "   ")).toBe(`VE-${TASK_ID}`);
+  });
+
+  it("falls back to legacy when title slugifies to empty", () => {
+    expect(buildGerritTopic(TASK_ID, "!!!???")).toBe(`VE-${TASK_ID}`);
   });
 });

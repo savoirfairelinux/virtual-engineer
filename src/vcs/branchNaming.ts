@@ -10,6 +10,19 @@ export function buildFeatureBranchRef(taskId: string, ticketTitle: string | unde
   return `feature/${shortId}-${slug}`;
 }
 
+/**
+ * Gerrit topic name derived from the ticket title; falls back to `VE-<taskId>`
+ * when the title is empty so legacy retries keep their original topic.
+ */
+export function buildGerritTopic(taskId: string, ticketTitle: string | undefined | null): string {
+  const slug = slugify(ticketTitle ?? "");
+  if (!slug) {
+    return `VE-${taskId}`;
+  }
+  const shortId = taskId.slice(0, SHORT_ID_LENGTH);
+  return `VE-${shortId}-${slug}`;
+}
+
 function slugify(input: string): string {
   return input
     .normalize("NFKD")

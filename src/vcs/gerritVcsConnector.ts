@@ -10,6 +10,7 @@ import type { VcsConnector, VcsPushResult, VolumeExecOptions } from "./vcsConnec
 import type { ReviewComment } from "../interfaces.js";
 import { execInVolume } from "../workspace/dockerVolume.js";
 import { GerritSshClient, buildSshHostKeyOptions } from "../connectors/gerritSshClient.js";
+import { buildGerritTopic } from "./branchNaming.js";
 
 const log = getLogger("gerrit-vcs");
 
@@ -127,8 +128,8 @@ export class GerritVcsConnector implements VcsConnector {
   }
 
   /** Returns the Gerrit push ref (`refs/for/<branch>`) and topic for the given task. */
-  buildPushSpec(baseBranch: string, taskId: string): { ref: string; topic?: string } {
-    return { ref: `refs/for/${baseBranch}`, topic: `VE-${taskId}` };
+  buildPushSpec(baseBranch: string, taskId: string, ticketTitle?: string | null): { ref: string; topic?: string } {
+    return { ref: `refs/for/${baseBranch}`, topic: buildGerritTopic(taskId, ticketTitle) };
   }
 
   /**
