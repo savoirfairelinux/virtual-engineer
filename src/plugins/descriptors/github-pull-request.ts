@@ -244,13 +244,13 @@ export const githubPullRequestDescriptor: PluginDescriptor = {
         token,
         ...(legacyRepo !== undefined ? { repo: legacyRepo } : {}),
       }),
-      buildCloneTarget: (details) => {
+      buildCloneTarget: (details): { cloneUrl: string; sshKeyPath: null; sshKnownHostsPath: null } => {
         const slash = details.project.indexOf("/");
         const repo = slash > 0 ? details.project.slice(slash + 1) : details.project;
         const cloneUrl = `https://x-access-token:${token}@${host}/${owner}/${repo}.git`;
         return { cloneUrl, sshKeyPath: null, sshKnownHostsPath: null };
       },
-      applyPatchset: async (handle, details) => {
+      applyPatchset: async (handle, details): Promise<void> => {
         if (workspaceRunner.execGitInVolume === undefined) {
           throw new Error("workspaceRunner does not support execGitInVolume — cannot fetch GitHub PR ref");
         }
