@@ -503,7 +503,7 @@ export class Orchestrator {
       // Also enrich any push target whose sshKeyPath is null with the key from its linked connector.
       let cloneKnownHostsPath: string | undefined;
       try {
-        const rootConnectorForClone = await this.resolveVcsConnectorForTarget(root.integrationId);
+        const rootConnectorForClone = await this.resolveVcsConnectorForTarget(root.integrationId, { repoKey: root.repoKey });
         cloneKnownHostsPath = rootConnectorForClone.sshKnownHostsPath ?? undefined;
       } catch {
         // Non-fatal — clone proceeds without strict host key checking
@@ -513,7 +513,7 @@ export class Orchestrator {
         projectPushTargets.map(async (pt) => {
           if (pt.sshKeyPath !== null) return pt;
           try {
-            const connector = await this.resolveVcsConnectorForTarget(pt.integrationId);
+            const connector = await this.resolveVcsConnectorForTarget(pt.integrationId, { repoKey: pt.repoKey });
             const fallback = connector.sshKeyPath ?? undefined;
             return fallback !== undefined ? { ...pt, sshKeyPath: fallback } : pt;
           } catch {
@@ -545,7 +545,7 @@ export class Orchestrator {
           "no model resolved from project agent config — container will use adapter default (DEFAULT_COPILOT_MODEL)"
         );
       }
-      const rootConnector = await this.resolveVcsConnectorForTarget(root.integrationId);
+      const rootConnector = await this.resolveVcsConnectorForTarget(root.integrationId, { repoKey: root.repoKey });
       const { ref: pushRef } = rootConnector.buildPushSpec(cloneBranch, task.taskId);
       const context: TaskContext = {
         taskId: task.taskId,

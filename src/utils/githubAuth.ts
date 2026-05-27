@@ -234,6 +234,102 @@ export async function fetchGitHubRepository(
   };
 }
 
+export interface GitHubDiscoveredRepo {
+  fullName: string;
+  name: string;
+  htmlUrl: string;
+  cloneUrl: string;
+  sshUrl: string;
+  defaultBranch: string;
+}
+
+/**
+ * List every repository under a GitHub owner (user or organization) that the
+ * supplied token can see. Tries the /orgs/{owner}/repos endpoint first so we
+ * can pick up private org repos; falls back to /users/{owner}/repos when the
+ * owner is a personal account (the /orgs call 404s).
+ *
+ * Pagination follows the GitHub `Link: <...>; rel="next"` header rather than
+ * incrementing pages blindly, which is the documented mechanism.
+ */
+export async function listGitHubRepositoriesForOwner(
+  token: string,
+  apiBaseUrl: string,
+  owner: string
+): Promise<GitHubDiscoveredRepo[]> {
+  const ownerEnc = encodeURIComponent(owner);
+  const orgUrl = `${apiBaseUrl}/orgs/${ownerEnc}/repos?per_page=100&type=all`;
+  const userUrl = `${apiBaseUrl}/users/${ownerEnc}/repos?per_page=100&type=owner`;
+
+  const first = await fetchPaginated(token, orgUrl);
+  if (first.ok) return first.repos;
+  if (first.status !== 404) {
+    throw new GitHubAuthError(`List org repositories failed (${first.status}): ${first.body}`);
+  }
+
+  const second = await fetchPaginated(token, userUrl);
+  if (second.ok) return second.repos;
+  if (second.status === 404) {
+    throw new GitHubAuthError(
+      `GitHub owner "${owner}" was not found (neither as an organization nor a user). ` +
+        `Check the spelling and that the token has access to it.`
+    );
+  }
+  throw new GitHubAuthError(`List user repositories failed (${second.status}): ${second.body}`);
+}
+
+interface PaginatedResult {
+  ok: boolean;
+  status: number;
+  body: string;
+  repos: GitHubDiscoveredRepo[];
+}
+
+async function fetchPaginated(token: string, firstUrl: string): Promise<PaginatedResult> {
+  const repos: GitHubDiscoveredRepo[] = [];
+  let nextUrl: string | null = firstUrl;
+  let attempts = 0;
+  while (nextUrl !== null) {
+    if (attempts++ > 50) {
+      throw new GitHubAuthError("Too many GitHub repo pagination requests (>50 pages)");
+    }
+    const response: Response = await globalThis.fetch(nextUrl, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/vnd.github+json",
+      },
+    });
+    if (!response.ok) {
+      const body = await response.text().catch(() => "");
+      return { ok: false, status: response.status, body, repos: [] };
+    }
+    const page = (await response.json()) as Array<Record<string, unknown>>;
+    for (const item of page) {
+      repos.push({
+        fullName: item["full_name"] as string,
+        name: item["name"] as string,
+        htmlUrl: item["html_url"] as string,
+        cloneUrl: item["clone_url"] as string,
+        sshUrl: item["ssh_url"] as string,
+        defaultBranch: item["default_branch"] as string,
+      });
+    }
+    nextUrl = parseNextLink(response.headers.get("Link"));
+  }
+  log.debug({ count: repos.length }, "listed GitHub repositories for owner");
+  return { ok: true, status: 200, body: "", repos };
+}
+
+// Link header format: `<https://api.github.com/...&page=2>; rel="next", <...>; rel="last"`
+function parseNextLink(link: string | null): string | null {
+  if (!link) return null;
+  for (const part of link.split(",")) {
+    const m = /<([^>]+)>\s*;\s*rel="next"/.exec(part);
+    if (m) return m[1] ?? null;
+  }
+  return null;
+}
+
 // ─── Error ────────────────────────────────────────────────────────────────────
 
 export class GitHubAuthError extends Error {
