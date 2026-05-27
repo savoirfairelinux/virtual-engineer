@@ -748,4 +748,36 @@ describe("SqliteStateStore", () => {
       expect(second.state).toBe("REVIEW_PENDING");
     });
   });
+
+  describe("setTaskPushRef", () => {
+    it("defaults pushRef to null for newly created tasks", async () => {
+      const taskId = makeTaskId(randomUUID());
+      const ticketId = makeTicketId("push-ref-default");
+      const task = await store.createTask(taskId, ticketId, "Title", "Desc", "jira");
+      expect(task.pushRef ?? null).toBeNull();
+    });
+
+    it("persists pushRef and exposes it on reads", async () => {
+      const taskId = makeTaskId(randomUUID());
+      const ticketId = makeTicketId("push-ref-set");
+      await store.createTask(taskId, ticketId, "Title", "Desc", "jira");
+
+      await store.setTaskPushRef(taskId, "feature/abcd1234-add-login");
+
+      const reloaded = await store.getTask(taskId);
+      expect(reloaded?.pushRef).toBe("feature/abcd1234-add-login");
+    });
+
+    it("overwrites a previously stored pushRef", async () => {
+      const taskId = makeTaskId(randomUUID());
+      const ticketId = makeTicketId("push-ref-overwrite");
+      await store.createTask(taskId, ticketId, "Title", "Desc", "jira");
+
+      await store.setTaskPushRef(taskId, "feature/old");
+      await store.setTaskPushRef(taskId, "feature/new");
+
+      const reloaded = await store.getTask(taskId);
+      expect(reloaded?.pushRef).toBe("feature/new");
+    });
+  });
 });

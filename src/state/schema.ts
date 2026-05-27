@@ -40,6 +40,8 @@ export const tasks = sqliteTable("tasks", {
   ticketSourceProjectKey: text("ticket_source_project_key"),
   /** Human-readable identifier for the UI (e.g. ticket number, Gerrit change number). */
   displayId: text("display_id"),
+  /** Persisted feature branch ref used for the first push; reused on subsequent pushes for idempotence and backward-compat with branches created under the legacy naming scheme. */
+  pushRef: text("push_ref"),
   createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
   updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
 });

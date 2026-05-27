@@ -725,6 +725,8 @@ export interface Task {
   projectId?: ProjectId | null | undefined;
   /** Human-readable identifier for the UI (e.g. ticket number, Gerrit change number). */
   displayId: string | null;
+  /** Persisted feature branch ref for the first push; null for legacy tasks (falls back to legacy naming on resume). */
+  pushRef?: string | null;
 }
 
 /** Per-repository change tracking (Gerrit Change-Id or GitLab MR IID) for multi-repo tasks. */
@@ -926,6 +928,9 @@ export interface StateStore {
     integrationId: string,
     ticketProjectKey: string
   ): number;
+
+  /** Persist the feature branch ref chosen for a task's first push. Read on resume to keep the same branch across retries. */
+  setTaskPushRef(taskId: TaskId, pushRef: string): Promise<void>;
 
   /** Look up a project by its ID. */
   getProjectById(id: ProjectId): Promise<ProjectRecord | null>;

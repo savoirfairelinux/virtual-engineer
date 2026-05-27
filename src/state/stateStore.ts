@@ -286,6 +286,7 @@ export class SqliteStateStore implements StateStore, IntegrationStore, PromptSto
     this.ensureColumn("tasks", "display_id", "TEXT");
     this.ensureColumn("tasks", "ticket_source_integration_id", "TEXT");
     this.ensureColumn("tasks", "ticket_source_project_key", "TEXT");
+    this.ensureColumn("tasks", "push_ref", "TEXT");
     this.ensureColumn("agents", "integration_id", "TEXT REFERENCES integrations(id) ON DELETE SET NULL");
     this.ensureColumn("prompts", "prompt_type", "TEXT NOT NULL DEFAULT 'user'");
 
@@ -1091,6 +1092,7 @@ export class SqliteStateStore implements StateStore, IntegrationStore, PromptSto
       reviewUrl: row.reviewUrl ?? null,
       projectId: (row.projectId ?? null) as Task["projectId"],
       displayId: (row as unknown as { displayId?: string | null }).displayId ?? null,
+      pushRef: (row as unknown as { pushRef?: string | null }).pushRef ?? null,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     };
@@ -1381,6 +1383,12 @@ export class SqliteStateStore implements StateStore, IntegrationStore, PromptSto
     this.raw
       .prepare("UPDATE tasks SET project_id = ?, updated_at = ? WHERE task_id = ?")
       .run(projectId as string, Math.floor(Date.now() / 1000), taskId);
+  }
+
+  async setTaskPushRef(taskId: TaskId, pushRef: string): Promise<void> {
+    this.raw
+      .prepare("UPDATE tasks SET push_ref = ?, updated_at = ? WHERE task_id = ?")
+      .run(pushRef, Math.floor(Date.now() / 1000), taskId);
   }
 
 
