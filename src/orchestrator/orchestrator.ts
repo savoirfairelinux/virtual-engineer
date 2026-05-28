@@ -148,6 +148,9 @@ export class Orchestrator {
     }
 
     const taskId = makeTaskId(randomUUID());
+    // Snapshot the ticket source on the task so it can be adopted by a future
+    // project if this project is later deleted.
+    const ticketSource = await this.projectMode?.projectStore.getProjectTicketSource(project.id);
     const task = await this.stateStore.createTask(
       taskId,
       ticketId,
@@ -155,7 +158,10 @@ export class Orchestrator {
       ticket.description,
       ticketSourceLabel,
       ticket.webUrl,
-      ticket.id
+      ticket.id,
+      ticketSource
+        ? { integrationId: ticketSource.integrationId, ticketProjectKey: ticketSource.ticketProjectKey }
+        : undefined
     );
     await this.stateStore.setTaskProjectId(task.taskId, project.id);
     task.projectId = project.id;
@@ -219,18 +225,18 @@ export class Orchestrator {
   async triggerFeedbackForChange(integrationId: string, externalChangeId: string): Promise<void> {
     const task = await this.stateStore.findTaskByExternalChangeId(integrationId, externalChangeId);
     if (!task) {
-      log.debug({ integrationId, externalChangeId }, "webhook feedback: no task for change");
+      log.info({ integrationId, externalChangeId }, "webhook feedback: no task for change (likely a human-authored change, ignoring)");
       return;
     }
     if (TERMINAL_STATES.has(task.state)) {
-      log.debug({ taskId: task.taskId, state: task.state }, "webhook feedback: task terminal, ignoring");
+      log.info({ taskId: task.taskId, state: task.state, externalChangeId }, "webhook feedback: task terminal, ignoring");
       return;
     }
     if (task.state !== "IN_REVIEW") {
-      log.debug({ taskId: task.taskId, state: task.state }, "webhook feedback: task not IN_REVIEW, ignoring");
+      log.info({ taskId: task.taskId, state: task.state, externalChangeId }, "webhook feedback: task not IN_REVIEW, ignoring");
       return;
     }
-    log.info({ taskId: task.taskId, externalChangeId }, "webhook feedback: triggering review progress check");
+    log.info({ taskId: task.taskId, integrationId, externalChangeId }, "webhook feedback: triggering review progress check");
     await this.checkReviewProgress(task);
   }
 
@@ -238,15 +244,15 @@ export class Orchestrator {
   async markChangeMerged(integrationId: string, externalChangeId: string): Promise<void> {
     const task = await this.stateStore.findTaskByExternalChangeId(integrationId, externalChangeId);
     if (!task) {
-      log.debug({ integrationId, externalChangeId }, "webhook merged: no task for change");
+      log.info({ integrationId, externalChangeId }, "webhook merged: no task for change, ignoring");
       return;
     }
     if (TERMINAL_STATES.has(task.state)) {
-      log.debug({ taskId: task.taskId, state: task.state }, "webhook merged: task terminal, ignoring");
+      log.info({ taskId: task.taskId, state: task.state }, "webhook merged: task terminal, ignoring");
       return;
     }
     if (task.state !== "IN_REVIEW") {
-      log.debug({ taskId: task.taskId, state: task.state }, "webhook merged: task not IN_REVIEW, ignoring");
+      log.info({ taskId: task.taskId, state: task.state }, "webhook merged: task not IN_REVIEW, ignoring");
       return;
     }
     log.info({ taskId: task.taskId, externalChangeId }, "webhook merged: closing ticket");
@@ -258,11 +264,11 @@ export class Orchestrator {
   async markChangeAbandoned(integrationId: string, externalChangeId: string): Promise<void> {
     const task = await this.stateStore.findTaskByExternalChangeId(integrationId, externalChangeId);
     if (!task) {
-      log.debug({ integrationId, externalChangeId }, "webhook abandoned: no task for change");
+      log.info({ integrationId, externalChangeId }, "webhook abandoned: no task for change, ignoring");
       return;
     }
     if (TERMINAL_STATES.has(task.state)) {
-      log.debug({ taskId: task.taskId, state: task.state }, "webhook abandoned: task terminal, ignoring");
+      log.info({ taskId: task.taskId, state: task.state }, "webhook abandoned: task terminal, ignoring");
       return;
     }
     log.info({ taskId: task.taskId, externalChangeId }, "webhook abandoned: marking task ABANDONED");
@@ -497,7 +503,7 @@ export class Orchestrator {
       // Also enrich any push target whose sshKeyPath is null with the key from its linked connector.
       let cloneKnownHostsPath: string | undefined;
       try {
-        const rootConnectorForClone = await this.resolveVcsConnectorForTarget(root.integrationId);
+        const rootConnectorForClone = await this.resolveVcsConnectorForTarget(root.integrationId, { repoKey: root.repoKey });
         cloneKnownHostsPath = rootConnectorForClone.sshKnownHostsPath ?? undefined;
       } catch {
         // Non-fatal — clone proceeds without strict host key checking
@@ -507,7 +513,7 @@ export class Orchestrator {
         projectPushTargets.map(async (pt) => {
           if (pt.sshKeyPath !== null) return pt;
           try {
-            const connector = await this.resolveVcsConnectorForTarget(pt.integrationId);
+            const connector = await this.resolveVcsConnectorForTarget(pt.integrationId, { repoKey: pt.repoKey });
             const fallback = connector.sshKeyPath ?? undefined;
             return fallback !== undefined ? { ...pt, sshKeyPath: fallback } : pt;
           } catch {
@@ -539,8 +545,10 @@ export class Orchestrator {
           "no model resolved from project agent config — container will use adapter default (DEFAULT_COPILOT_MODEL)"
         );
       }
-      const rootConnector = await this.resolveVcsConnectorForTarget(root.integrationId);
-      const { ref: pushRef } = rootConnector.buildPushSpec(cloneBranch, task.taskId);
+      const rootConnector = await this.resolveVcsConnectorForTarget(root.integrationId, { repoKey: root.repoKey });
+      const pushRef = await this.resolvePushRef(task, () =>
+        rootConnector.buildPushSpec(cloneBranch, task.taskId, ticket.subject).ref
+      );
       const context: TaskContext = {
         taskId: task.taskId,
         ticketTitle: ticket.subject,
@@ -982,6 +990,19 @@ export class Orchestrator {
   }
 
   /**
+   * Returns the task's persisted pushRef if set, otherwise computes one via `compute()`,
+   * persists it, and returns it. Guarantees a stable branch name across resume/retry cycles.
+   */
+  private async resolvePushRef(task: Task, compute: () => string): Promise<string> {
+    if (task.pushRef) {
+      return task.pushRef;
+    }
+    const ref = compute();
+    await this.stateStore.setTaskPushRef(task.taskId, ref);
+    return ref;
+  }
+
+  /**
    * Project-mode push: for each push target sorted by `commitOrder`, dirty-check and push.
    * Clean repos are recorded as NO_CHANGE. Per-target failures are isolated.
    */
@@ -1042,7 +1063,12 @@ export class Orchestrator {
         );
         continue;
       }
-      const { ref, topic } = vcsConnector.buildPushSpec(target.targetBranch, task.taskId);
+      const { ref: computedRef, topic } = vcsConnector.buildPushSpec(
+        target.targetBranch,
+        task.taskId,
+        task.ticketTitle
+      );
+      const ref = await this.resolvePushRef(task, () => computedRef);
       const reviewSystemLabel = vcsConnector.reviewSystemLabel;
 
       const volumeOpts = { volumeName: handle.volumeName, image: handle.containerImage, subPath: target.localPath };

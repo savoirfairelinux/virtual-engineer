@@ -118,6 +118,7 @@ function makeStateStore(over: Partial<StateStore> = {}): StateStore {
     updateChangePerRepositoryStatus: vi.fn(),
     getActiveRepoSetLock: vi.fn().mockResolvedValue(null),
     setTaskProjectId: vi.fn(),
+    setTaskPushRef: vi.fn(),
     setTaskRepoSetId: vi.fn(),
     updateGerritChangeId: vi.fn(),
     getRepositorySet: vi.fn().mockResolvedValue(null),

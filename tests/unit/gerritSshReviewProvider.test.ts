@@ -4,8 +4,10 @@ import type { InlineReviewComment } from "../../src/interfaces.js";
 
 // ─── GerritSshClient mock ─────────────────────────────────────────────────────
 
-const mockQuery = vi.fn<(args: string[]) => Promise<string>>();
-const mockReviewJson = vi.fn<(changeSpec: string, input: string) => Promise<void>>();
+const mockQuery = vi.fn(async (_args: string[]) => "");
+const mockReviewJson = vi.fn(async (_changeSpec: string, _input: string) => {
+  return;
+});
 
 vi.mock("../../src/connectors/gerritSshClient.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/connectors/gerritSshClient.js")>();

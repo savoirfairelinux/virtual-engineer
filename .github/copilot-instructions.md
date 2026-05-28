@@ -38,7 +38,7 @@ Helper scripts: `npm run e2e:mock`, `npm run create:ticket`, `npm run reset:inst
 - For each agent cycle the host creates Docker **named volumes**, clones the repo into a volume via a helper container, spawns an **ephemeral Docker container** (`virtual-engineer-workspace:latest`) that edits files and may create one or more local commits; push operations also run in helper containers against the volume. The **host still owns review-system credentials and push orchestration** through `src/vcs/`. Container and volumes are destroyed on exit.
 - **Container constraints** (set by `buildContainerSpec` in `src/agents/copilotAdapter.ts`): `--read-only` rootfs, `--cap-drop ALL`, `--security-opt no-new-privileges:true`, `--tmpfs /tmp:rw,nosuid,size=256m`, `/workspace` named-volume mount, `/ve-home` named-volume mount for Copilot HOME (native modules), optional `/ve-prompts` mount, `networkMode=virtual-engineer_ve-agent-net`.
 - **Persistence**: SQLite WAL via `better-sqlite3` (sync) + Drizzle ORM at `DATABASE_PATH` (default `./data/virtual-engineer.db`).
-- **Providers (per category)**: ticketing = Redmine | GitLab Issues; review/VCS = Gerrit | GitLab Merge Requests; agent = Copilot | Mock. Provider credentials live on `integrations`, while GitLab project selection is VE-project-owned (`project_ticket_source.ticketProjectKey`, `project_push_targets.repoKey`, review repo bindings).
+- **Providers (per category)**: ticketing = Redmine | GitLab Issues | GitHub Issues; review/VCS = Gerrit | GitLab Merge Requests | GitHub Pull Requests; agent = Copilot | Mock. Provider credentials live on `integrations`, while GitLab project selection is VE-project-owned (`project_ticket_source.ticketProjectKey`, `project_push_targets.repoKey`, review repo bindings).
 - **Admin server** (`src/admin/`) exposes the dashboard plus integrations, agents, projects, prompts, concurrency, and webhook-secret operations; secrets are masked on read and the runtime is hot-refreshed after integration changes.
 
 ### Source layout
@@ -63,10 +63,12 @@ src/
                         # gerritSshClient, gerritSshReviewProvider,
                         # gerritStreamEvents, integrationStreamEvents,
                         # gitlabIssueConnector, gitlabHttpClient,
-                        # gitlabMergeRequestConnector, baseTicketConnector
-  orchestrator/         # orchestrator.ts, pollingLoop.ts, feedbackProcessor.ts
+                        # gitlabMergeRequestConnector, baseTicketConnector,
+                        # githubIssueConnector, githubPullRequestReviewConnector
+
   plugins/              # registry, pluginManager, descriptors/{copilot,gerrit,
-                        # gitlab-issue,gitlab-merge-request,mock,redmine}.ts
+                        # gitlab-issue,gitlab-merge-request,github-issue,
+                        # github-pull-request,mock,redmine}.ts
   review/               # reviewOrchestrator, copilotReviewAgent,
                         # prompt builder, parser
   state/                # schema (Drizzle), stateMachine, stateStore, migrate
@@ -79,7 +81,7 @@ agent-worker/index.js   # JS entry inside the agent container
 ```
 
 ## Critical Schema Facts
-- `tasks` PK = `task_id` (TEXT). There is **no** `id` column. Key columns also include `task_type`, `gerrit_change_id`, `current_patchset`, `reviewed_patchset`, `project_id`, `cycle_count`, `failure_reason`, `ticket_url`, `review_url`, `created_at`, `updated_at`.
+- `tasks` PK = `task_id` (TEXT). There is **no** `id` column. Key columns also include `task_type`, `gerrit_change_id`, `current_patchset`, `reviewed_patchset`, `project_id`, `ticket_source_integration_id`, `ticket_source_project_key`, `cycle_count`, `failure_reason`, `ticket_url`, `review_url`, `created_at`, `updated_at`. `ticket_source_integration_id` / `ticket_source_project_key` snapshot the originating ticket source so orphaned tasks can be adopted by a future project bound to the same ticket source.
 - `state_transitions`, `agent_cycles`, `processed_comments` use INTEGER `id` PKs.
 - `agent_cycles.agent_events` (TEXT, JSON `AgentLogEvent[]`) records the streamed agent log.
 - `integrations` (TEXT `id` PK): `type`, `name`, `config_json`, `enabled` (INTEGER), timestamps.
@@ -186,6 +188,7 @@ Scopes: `orchestrator`, `polling-loop`, `state`, `gerrit`, `redmine`, `gitlab`, 
 Body lines ≤72 chars. See `typescript-standard` skill.
 
 ## Recent Gotchas
+- **Orphaned-task adoption**: `deleteProject` snapshots `(integrationId, ticketProjectKey)` onto the project's tasks, sets their `project_id` to `NULL`, and abandons non-terminal ones. When a new project is created and `setProjectTicketSource` binds the same `(integrationId, ticketProjectKey)`, `adoptOrphanedTasksForProject` re-attaches those orphan tasks to the new project — preventing "No ticket source configured for project …" errors.
 - **Copilot defaults**: `src/copilotModel.ts` only defines the default model (`auto`); runtime code should trim optional overrides but not rewrite model ids.
 - **Task resolution**: `getTaskByTicketId()` orders by `createdAt DESC` so polling sees the newest task, not a stale FAILED row.
 - **Pause/Resume** are state_transitions metadata rows, not boolean columns.

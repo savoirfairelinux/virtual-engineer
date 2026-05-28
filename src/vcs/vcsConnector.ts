@@ -117,8 +117,9 @@ export interface VcsConnector {
    * the returned ref or topic — it passes them through verbatim.
    * @param baseBranch The base/target branch (e.g. "main")
    * @param taskId The task identifier used for unique branch or topic names
+   * @param ticketTitle Optional ticket title; connectors that produce branch refs may use it to build a human-readable slug. Connectors that ignore branch names (Gerrit) must ignore this parameter.
    */
-  buildPushSpec(baseBranch: string, taskId: string): { ref: string; topic?: string };
+  buildPushSpec(baseBranch: string, taskId: string, ticketTitle?: string | null): { ref: string; topic?: string };
 
   /**
    * Whether this connector's review system uses Change-Id trailers for
@@ -133,7 +134,7 @@ export interface VcsConnector {
    * Opaque label persisted in change_per_repository.review_system.
    * Connector-declared — the orchestrator never reads this for control flow.
    */
-  readonly reviewSystemLabel: "gerrit" | "gitlab";
+  readonly reviewSystemLabel: "gerrit" | "gitlab" | "github";
 
   /** Optional path to a known_hosts file used by this connector's SSH transport. */
   readonly sshKnownHostsPath?: string | undefined;

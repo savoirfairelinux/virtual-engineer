@@ -375,6 +375,7 @@ async function handleRequest(
     webhookPublicBaseUrl: dependencies.webhooks?.publicBaseUrl,
   })) return;
 
+
   writeJson(response, 404, { error: "Not found" });
 }
 

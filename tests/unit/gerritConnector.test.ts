@@ -5,8 +5,11 @@ import { makeExternalChangeId } from "../../src/interfaces.js";
 
 // ─── GerritSshClient mock ─────────────────────────────────────────────────────
 
-const mockQuery = vi.fn<(args: string[]) => Promise<string>>();
-const mockQueryChange = vi.fn<(changeId: string) => Promise<SshChangeInfo>>();
+const mockQuery = vi.fn(async (_args: string[]) => "");
+const mockQueryChange = vi.fn(async (_changeId: string): Promise<SshChangeInfo> => ({
+  number: 1,
+  status: "NEW",
+}));
 const mockGetUnresolvedComments = vi.fn();
 const mockResolveComments = vi.fn();
 

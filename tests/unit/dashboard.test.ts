@@ -764,7 +764,7 @@ describe("renderAdminDashboardHtml — embedded JavaScript validity", () => {
     const ctx: Record<string, unknown> = {
       S: { authToken },
       localStorage: { getItem: () => authToken, setItem: () => {}, removeItem: () => {} },
-      document: { getElementById: () => null, querySelector: () => null, querySelectorAll: () => [] },
+      document: { getElementById: () => null, querySelector: () => null, querySelectorAll: () => [], addEventListener: () => {}, removeEventListener: () => {}, createElement: () => ({ className: "", innerHTML: "", appendChild: () => {}, querySelector: () => null, querySelectorAll: () => [] }), body: { appendChild: () => {} } },
       window: { __VE_ADMIN_BOOTSTRAP__: bootstrap },
       console,
       URL,
@@ -848,7 +848,7 @@ describe("renderAdminDashboardHtml — cycle metrics regressions", () => {
     const ctx: Record<string, unknown> = {
       window: { __VE_ADMIN_BOOTSTRAP__: bootstrap },
       localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
-      document: { getElementById: () => null, querySelector: () => null, querySelectorAll: () => [] },
+      document: { getElementById: () => null, querySelector: () => null, querySelectorAll: () => [], addEventListener: () => {}, removeEventListener: () => {}, createElement: () => ({ className: "", innerHTML: "", appendChild: () => {}, querySelector: () => null, querySelectorAll: () => [] }), body: { appendChild: () => {} } },
       console,
       URL,
       fetch: () => Promise.resolve(),

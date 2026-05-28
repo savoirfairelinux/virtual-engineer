@@ -399,6 +399,73 @@ describe("CopilotAdapter", () => {
       );
       expect(mockExecFile).not.toHaveBeenCalled();
     });
+
+    it("decodes a plain:-prefixed encryptedSessionToken without ADMIN_AUTH_SECRET", async () => {
+      const { resetConfig } = await import("../../src/config.js");
+      delete process.env["ADMIN_AUTH_SECRET"];
+      resetConfig();
+      const raw = "ghu_plain_oauth_token";
+      const plainEncoded = "plain:" + Buffer.from(raw, "utf8").toString("base64");
+
+      const adapter = new CopilotAdapter();
+      const context = makeContext({
+        agentSession: {
+          ...makeContext().agentSession,
+          githubToken: undefined,
+          encryptedSessionToken: plainEncoded,
+        },
+      });
+
+      const token = await (adapter as any).getGitHubOAuthToken(context);
+
+      expect(token).toBe(raw);
+      expect(mockExecFile).not.toHaveBeenCalled();
+    });
+
+    it("decrypts an AES-encrypted encryptedSessionToken using ADMIN_AUTH_SECRET", async () => {
+      const { resetConfig } = await import("../../src/config.js");
+      const { encryptToken } = await import("../../src/utils/encryption.js");
+      process.env["ADMIN_AUTH_SECRET"] = "test-secret-32-bytes-min-padding!";
+      resetConfig();
+      const raw = "ghu_encrypted_oauth_token";
+      const encrypted = encryptToken(raw, process.env["ADMIN_AUTH_SECRET"]);
+
+      const adapter = new CopilotAdapter();
+      const context = makeContext({
+        agentSession: {
+          ...makeContext().agentSession,
+          githubToken: undefined,
+          encryptedSessionToken: encrypted,
+        },
+      });
+
+      const token = await (adapter as any).getGitHubOAuthToken(context);
+
+      expect(token).toBe(raw);
+      delete process.env["ADMIN_AUTH_SECRET"];
+      resetConfig();
+    });
+
+    it("throws a clear error when an AES-encrypted token is present but ADMIN_AUTH_SECRET is missing", async () => {
+      const { resetConfig } = await import("../../src/config.js");
+      const { encryptToken } = await import("../../src/utils/encryption.js");
+      const encrypted = encryptToken("ghu_secret", "previous-secret-value-32+ chars!!");
+      delete process.env["ADMIN_AUTH_SECRET"];
+      resetConfig();
+
+      const adapter = new CopilotAdapter();
+      const context = makeContext({
+        agentSession: {
+          ...makeContext().agentSession,
+          githubToken: undefined,
+          encryptedSessionToken: encrypted,
+        },
+      });
+
+      await expect((adapter as any).getGitHubOAuthToken(context)).rejects.toThrow(
+        /ADMIN_AUTH_SECRET is required/
+      );
+    });
   });
 
   describe("parseAgentResult and helpers", () => {

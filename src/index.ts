@@ -217,7 +217,16 @@ async function main(): Promise<void> {
       },
       webhooks: {
         projectStore: stateStore,
-        orchestrator,
+        orchestrator: Object.assign(orchestrator, {
+          triggerReviewForChange: async (integrationId: string, changeId: string) => {
+            const trigger = reviewTriggerHolder.current;
+            if (!trigger) {
+              log.debug({ integrationId, changeId }, "webhook review trigger: no review-capable integration configured");
+              return;
+            }
+            await trigger.triggerReviewForChange(integrationId, changeId);
+          },
+        }),
       },
       integrationStreams: integrationStreamEvents,
       concurrency: {

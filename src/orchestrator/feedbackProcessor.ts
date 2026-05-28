@@ -28,13 +28,16 @@ export class FeedbackProcessor {
     );
 
     if (newComments.length === 0) {
-      log.debug({ taskId, changeId }, "no new actionable comments");
+      log.info(
+        { taskId, changeId, totalFetched: comments.length, alreadyProcessed: processedIds.size },
+        "no new actionable review comments"
+      );
       return [[], []];
     }
 
     log.info(
-      { taskId, changeId, count: newComments.length },
-      "new actionable Gerrit comments detected"
+      { taskId, changeId, count: newComments.length, totalFetched: comments.length },
+      "new actionable review comments detected"
     );
 
     // Mark all as processed before returning — prevents re-processing on restart

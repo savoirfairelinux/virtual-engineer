@@ -148,7 +148,7 @@ export class GitLabMergeRequestConnector implements ReviewConnector {
       });
     }
 
-    log.debug({ changeId, count: comments.length }, "fetched unresolved GitLab MR discussions");
+    log.info({ changeId, count: comments.length }, "fetched unresolved GitLab MR discussions");
     return comments;
   }
 

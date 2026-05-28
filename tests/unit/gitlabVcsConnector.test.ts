@@ -356,5 +356,16 @@ describe("GitLabVcsConnector", () => {
       const specB = connector.buildPushSpec("release/2.0", "id-x");
       expect(specA.ref).toBe(specB.ref);
     });
+
+    it("buildPushSpec uses a slug from ticketTitle when provided", () => {
+      const spec = connector.buildPushSpec("main", "b7ddee79-cc3b-4208-815c-70fcf177a49e", "Add login button");
+      expect(spec.ref).toBe("feature/b7ddee79-add-login-button");
+      expect(spec.topic).toBeUndefined();
+    });
+
+    it("buildPushSpec falls back to legacy ref when ticketTitle is empty", () => {
+      const spec = connector.buildPushSpec("main", "task-1", "");
+      expect(spec.ref).toBe("feature-task-1");
+    });
   });
 });

@@ -13,7 +13,10 @@ import type { SshChangeInfo } from "../../src/connectors/gerritSshClient.js";
 vi.mock("child_process");
 
 // Mock GerritSshClient (used for SSH Gerrit operations)
-const mockQueryChange = vi.fn<(changeId: string) => Promise<SshChangeInfo>>();
+const mockQueryChange = vi.fn(async (_changeId: string): Promise<SshChangeInfo> => ({
+  number: 1,
+  status: "NEW",
+}));
 const mockGetUnresolvedComments = vi.fn();
 const mockResolveComments = vi.fn();
 
@@ -334,7 +337,7 @@ describe("GerritVcsConnector", () => {
       expect(connector.reviewSystemLabel).toBe("gerrit");
     });
 
-    it("buildPushSpec returns refs/for/<branch> and topic VE-<taskId>", () => {
+    it("buildPushSpec returns refs/for/<branch> and topic VE-<taskId> when ticketTitle is missing", () => {
       const spec = connector.buildPushSpec("main", "task-1");
       expect(spec.ref).toBe("refs/for/main");
       expect(spec.topic).toBe("VE-task-1");
@@ -344,6 +347,17 @@ describe("GerritVcsConnector", () => {
       const spec = connector.buildPushSpec("release/1.0", "abc");
       expect(spec.ref).toBe("refs/for/release/1.0");
       expect(spec.topic).toBe("VE-abc");
+    });
+
+    it("buildPushSpec uses a slug from ticketTitle when provided", () => {
+      const spec = connector.buildPushSpec("main", "b7ddee79-cc3b-4208-815c-70fcf177a49e", "Add login button");
+      expect(spec.ref).toBe("refs/for/main");
+      expect(spec.topic).toBe("VE-b7ddee79-add-login-button");
+    });
+
+    it("buildPushSpec falls back to VE-<taskId> when ticketTitle is empty", () => {
+      const spec = connector.buildPushSpec("main", "task-1", "");
+      expect(spec.topic).toBe("VE-task-1");
     });
   });
 });

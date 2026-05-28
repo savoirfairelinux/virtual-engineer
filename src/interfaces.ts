@@ -725,6 +725,8 @@ export interface Task {
   projectId?: ProjectId | null | undefined;
   /** Human-readable identifier for the UI (e.g. ticket number, Gerrit change number). */
   displayId: string | null;
+  /** Persisted feature branch ref for the first push; null for legacy tasks (falls back to legacy naming on resume). */
+  pushRef?: string | null;
 }
 
 /** Per-repository change tracking (Gerrit Change-Id or GitLab MR IID) for multi-repo tasks. */
@@ -793,7 +795,8 @@ export interface StateStore {
     ticketDescription?: string,
     ticketSourceLabel?: string,
     ticketUrl?: string,
-    displayId?: string
+    displayId?: string,
+    ticketSource?: { integrationId: string; ticketProjectKey: string }
   ): Promise<Task>;
 
   /** Create a code-review task (taskType="code-review", initial state=REVIEW_PENDING). */
@@ -915,6 +918,20 @@ export interface StateStore {
   /** Phase 4: link a task to a project (for project-mode iteration). */
   setTaskProjectId(taskId: TaskId, projectId: ProjectId): Promise<void>;
 
+  /**
+   * Re-attach orphaned tasks (project_id IS NULL) whose snapshotted ticket source
+   * matches (integrationId, ticketProjectKey) to `projectId`. Returns the number
+   * of tasks adopted.
+   */
+  adoptOrphanedTasksForProject(
+    projectId: ProjectId,
+    integrationId: string,
+    ticketProjectKey: string
+  ): number;
+
+  /** Persist the feature branch ref chosen for a task's first push. Read on resume to keep the same branch across retries. */
+  setTaskPushRef(taskId: TaskId, pushRef: string): Promise<void>;
+
   /** Look up a project by its ID. */
   getProjectById(id: ProjectId): Promise<ProjectRecord | null>;
 
@@ -971,18 +988,21 @@ export const INTEGRATION_TYPES = [
   "gitlab-merge-request",
   "copilot",
   "mock",
+  "github-issue",
+  "github-pull-request",
 ] as const;
+
 export type IntegrationType = (typeof INTEGRATION_TYPES)[number];
 
 /** Integration types that act as code-hosting + review systems */
-export type CodeSourceIntegrationType = "gerrit" | "gitlab-merge-request";
+export type CodeSourceIntegrationType = "gerrit" | "gitlab-merge-request" | "github-pull-request";
 /** Runtime-iterable list of code-source integration types. Keep in sync with CodeSourceIntegrationType. */
-export const CODE_SOURCE_INTEGRATION_TYPES: readonly CodeSourceIntegrationType[] = ["gerrit", "gitlab-merge-request"] as const;
+export const CODE_SOURCE_INTEGRATION_TYPES: readonly CodeSourceIntegrationType[] = ["gerrit", "gitlab-merge-request", "github-pull-request"] as const;
 
 /** Integration types that act as ticket / work-item sources */
-export type TicketSourceIntegrationType = "redmine" | "gitlab-issue";
+export type TicketSourceIntegrationType = "redmine" | "gitlab-issue" | "github-issue";
 /** Runtime-iterable list of ticket-source integration types. Keep in sync with TicketSourceIntegrationType. */
-export const TICKET_SOURCE_INTEGRATION_TYPES: readonly TicketSourceIntegrationType[] = ["redmine", "gitlab-issue"] as const;
+export const TICKET_SOURCE_INTEGRATION_TYPES: readonly TicketSourceIntegrationType[] = ["redmine", "gitlab-issue", "github-issue"] as const;
 
 export const PLUGIN_CATEGORIES = ["ticketing", "review", "agent"] as const;
 export type PluginCategory = (typeof PLUGIN_CATEGORIES)[number];

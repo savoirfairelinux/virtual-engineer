@@ -284,6 +284,9 @@ export class SqliteStateStore implements StateStore, IntegrationStore, PromptSto
     this.ensureColumn("integrations", "discovered_at", "INTEGER");
     this.ensureColumn("tasks", "project_id", "TEXT");
     this.ensureColumn("tasks", "display_id", "TEXT");
+    this.ensureColumn("tasks", "ticket_source_integration_id", "TEXT");
+    this.ensureColumn("tasks", "ticket_source_project_key", "TEXT");
+    this.ensureColumn("tasks", "push_ref", "TEXT");
     this.ensureColumn("agents", "integration_id", "TEXT REFERENCES integrations(id) ON DELETE SET NULL");
     this.ensureColumn("prompts", "prompt_type", "TEXT NOT NULL DEFAULT 'user'");
 
@@ -294,9 +297,9 @@ export class SqliteStateStore implements StateStore, IntegrationStore, PromptSto
         WHERE id IN (
           'system_generic_code','instructions_generic_code',
           'system_gerrit_code','system_gitlab_code',
-          'system_gerrit_review','system_gitlab_review',
+          'system_gerrit_review','system_gitlab_review','system_github_review',
           'instructions_gerrit_code','instructions_gitlab_code',
-          'user_gerrit_review','user_gitlab_review'
+          'user_gerrit_review','user_gitlab_review','user_github_review'
         );
     `);
 
@@ -357,6 +360,8 @@ export class SqliteStateStore implements StateStore, IntegrationStore, PromptSto
       { id: "system_gitlab_review",    label: "System Prompt — GitLab MR (review)",   promptType: "system", file: "../../prompts/system_gitlab_review.md" },
       { id: "user_gerrit_review",      label: "User Prompt — Gerrit (review)",        promptType: "system", file: "../../prompts/user_gerrit_review.md" },
       { id: "user_gitlab_review",      label: "User Prompt — GitLab MR (review)",     promptType: "system", file: "../../prompts/user_gitlab_review.md" },
+      { id: "system_github_review",    label: "System Prompt — GitHub PR (review)",   promptType: "system", file: "../../prompts/system_github_review.md" },
+      { id: "user_github_review",      label: "User Prompt — GitHub PR (review)",     promptType: "system", file: "../../prompts/user_github_review.md" },
     ];
 
     const results = await Promise.all(
@@ -441,7 +446,8 @@ export class SqliteStateStore implements StateStore, IntegrationStore, PromptSto
     ticketDescription = "",
     ticketSourceLabel = "redmine",
     ticketUrl?: string,
-    displayId?: string
+    displayId?: string,
+    ticketSource?: { integrationId: string; ticketProjectKey: string }
   ): Promise<Task> {
     const now = new Date();
     try {
@@ -458,6 +464,8 @@ export class SqliteStateStore implements StateStore, IntegrationStore, PromptSto
         failureReason: null,
         ticketUrl: ticketUrl ?? null,
         displayId: displayId ?? null,
+        ticketSourceIntegrationId: ticketSource?.integrationId ?? null,
+        ticketSourceProjectKey: ticketSource?.ticketProjectKey ?? null,
         createdAt: now,
         updatedAt: now,
       });
@@ -831,21 +839,88 @@ export class SqliteStateStore implements StateStore, IntegrationStore, PromptSto
     const task = await this.getTask(taskId);
     if (!task) throw new Error(`Task not found: ${taskId}`);
 
-    // Reset cycle count and transition back to DETECTED
+    const adoption = this.isTaskOrphaned(task) ? this.findAdoptionTargetForTask(taskId) : null;
+
     const now = new Date();
     this.raw.transaction(() => {
-      this.raw.prepare("UPDATE tasks SET state = ?, cycle_count = ?, failure_reason = ?, updated_at = ? WHERE task_id = ?").run("DETECTED", 0, null, Math.floor(now.getTime() / 1000), taskId);
+      const nowSec = Math.floor(now.getTime() / 1000);
+      if (adoption !== null) {
+        this.raw
+          .prepare(
+            "UPDATE tasks SET state = ?, cycle_count = ?, failure_reason = ?, project_id = ?, " +
+            "ticket_source_integration_id = COALESCE(ticket_source_integration_id, ?), " +
+            "ticket_source_project_key = COALESCE(ticket_source_project_key, ?), " +
+            "updated_at = ? WHERE task_id = ?"
+          )
+          .run(
+            "DETECTED",
+            0,
+            null,
+            adoption.projectId,
+            adoption.integrationId,
+            adoption.ticketProjectKey,
+            nowSec,
+            taskId
+          );
+      } else {
+        this.raw
+          .prepare("UPDATE tasks SET state = ?, cycle_count = ?, failure_reason = ?, updated_at = ? WHERE task_id = ?")
+          .run("DETECTED", 0, null, nowSec, taskId);
+      }
 
+      const metadata: Record<string, unknown> = { action: "retry" };
+      if (adoption !== null) {
+        metadata["adoptedProjectId"] = adoption.projectId;
+      }
       this.raw
         .prepare(
           "INSERT INTO state_transitions (task_id, from_state, to_state, metadata, created_at) VALUES (?, ?, ?, ?, ?)"
         )
-        .run(taskId, task.state, "DETECTED", JSON.stringify({ action: "retry" }), Math.floor(now.getTime() / 1000));
+        .run(taskId, task.state, "DETECTED", JSON.stringify(metadata), nowSec);
     })();
 
     const updated = await this.getTask(taskId);
     if (!updated) throw new Error(`Task disappeared after retry: ${taskId}`);
     return updated;
+  }
+
+  private isTaskOrphaned(task: Task): boolean {
+    if (task.projectId === null) return true;
+    const row = this.raw
+      .prepare("SELECT 1 AS hit FROM projects WHERE id = ?")
+      .get(task.projectId) as { hit: number } | undefined;
+    return row === undefined;
+  }
+
+  private findAdoptionTargetForTask(taskId: TaskId): { projectId: string; integrationId: string; ticketProjectKey: string } | null {
+    const snapshotRow = this.raw
+      .prepare(
+        "SELECT pts.project_id AS projectId, t.ticket_source_integration_id AS integrationId, " +
+        "t.ticket_source_project_key AS ticketProjectKey FROM tasks t " +
+        "JOIN project_ticket_source pts " +
+        "ON pts.integration_id = t.ticket_source_integration_id " +
+        "AND pts.ticket_project_key = t.ticket_source_project_key " +
+        "WHERE t.task_id = ? " +
+        "AND t.ticket_source_integration_id IS NOT NULL " +
+        "AND t.ticket_source_project_key IS NOT NULL"
+      )
+      .get(taskId) as { projectId: string; integrationId: string; ticketProjectKey: string } | undefined;
+    if (snapshotRow) return snapshotRow;
+
+    const labelRow = this.raw
+      .prepare("SELECT ticket_source_label AS label FROM tasks WHERE task_id = ?")
+      .get(taskId) as { label: string } | undefined;
+    const integrationId = parseIntegrationIdFromLabel(labelRow?.label);
+    if (integrationId === null) return null;
+
+    const fallbackRows = this.raw
+      .prepare(
+        "SELECT project_id AS projectId, integration_id AS integrationId, ticket_project_key AS ticketProjectKey " +
+        "FROM project_ticket_source WHERE integration_id = ?"
+      )
+      .all(integrationId) as { projectId: string; integrationId: string; ticketProjectKey: string }[];
+    if (fallbackRows.length !== 1) return null;
+    return fallbackRows[0] ?? null;
   }
 
   /** Transition the task to ABANDONED and record an abandon event. */
@@ -1084,6 +1159,7 @@ export class SqliteStateStore implements StateStore, IntegrationStore, PromptSto
       reviewUrl: row.reviewUrl ?? null,
       projectId: (row.projectId ?? null) as Task["projectId"],
       displayId: (row as unknown as { displayId?: string | null }).displayId ?? null,
+      pushRef: (row as unknown as { pushRef?: string | null }).pushRef ?? null,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     };
@@ -1376,6 +1452,12 @@ export class SqliteStateStore implements StateStore, IntegrationStore, PromptSto
       .run(projectId as string, Math.floor(Date.now() / 1000), taskId);
   }
 
+  async setTaskPushRef(taskId: TaskId, pushRef: string): Promise<void> {
+    this.raw
+      .prepare("UPDATE tasks SET push_ref = ?, updated_at = ? WHERE task_id = ?")
+      .run(pushRef, Math.floor(Date.now() / 1000), taskId);
+  }
+
 
   /** Update the status (and optionally the change ID) of a per-repository change row. */
   async updateChangePerRepositoryStatus(
@@ -1609,24 +1691,78 @@ export class SqliteStateStore implements StateStore, IntegrationStore, PromptSto
     return updated;
   }
 
-  /** Delete a project, cascade child rows, and abandon non-terminal tasks linked to it. */
+  /**
+   * Delete a project, cascade child rows, and abandon non-terminal tasks linked to it.
+   *
+   * Tasks retain a snapshot of their originating ticket source
+   * (`ticket_source_integration_id`, `ticket_source_project_key`) so a future
+   * project bound to the same ticket source can adopt them via
+   * {@link adoptOrphanedTasksForProject}. The deleted project's `project_id`
+   * reference is cleared on those tasks to avoid dangling foreign keys.
+   */
   async deleteProject(id: ProjectId): Promise<void> {
     const now = Math.floor(Date.now() / 1000);
     const reason = `project ${id} deleted while tasks were still active`;
     const placeholders = [...TERMINAL_STATES].map(() => "?").join(", ");
     this.raw.transaction(() => {
+      // Snapshot the ticket source onto every task of this project so it survives
+      // the cascading delete of project_ticket_source.
+      const ts = this.raw
+        .prepare(
+          "SELECT integration_id, ticket_project_key FROM project_ticket_source WHERE project_id = ?"
+        )
+        .get(id) as { integration_id: string; ticket_project_key: string } | undefined;
+      if (ts) {
+        this.raw
+          .prepare(
+            "UPDATE tasks SET ticket_source_integration_id = COALESCE(ticket_source_integration_id, ?), " +
+            "ticket_source_project_key = COALESCE(ticket_source_project_key, ?), updated_at = ? " +
+            "WHERE project_id = ?"
+          )
+          .run(ts.integration_id, ts.ticket_project_key, now, id);
+      }
       this.raw
         .prepare(
           `UPDATE tasks SET state = 'ABANDONED', failure_reason = ?, updated_at = ? ` +
           `WHERE project_id = ? AND state NOT IN (${placeholders})`
         )
         .run(reason, now, id, ...TERMINAL_STATES);
+      // Clear the (now-dangling) FK so the task can be adopted later without
+      // pointing at a deleted project row.
+      this.raw
+        .prepare("UPDATE tasks SET project_id = NULL, updated_at = ? WHERE project_id = ?")
+        .run(now, id);
       this.raw.prepare("DELETE FROM project_ticket_source WHERE project_id = ?").run(id);
       this.raw.prepare("DELETE FROM project_push_targets WHERE project_id = ?").run(id);
       this.raw.prepare("DELETE FROM project_review_repos WHERE project_id = ?").run(id);
       this.raw.prepare("DELETE FROM project_review_integration WHERE project_id = ?").run(id);
       this.raw.prepare("DELETE FROM projects WHERE id = ?").run(id);
     })();
+  }
+
+  /**
+   * Re-attach orphaned tasks (project_id IS NULL) that previously belonged to a
+   * deleted project whose ticket source matched (integrationId, ticketProjectKey).
+   *
+   * Used when a new project is created with a ticket source so the new project
+   * can take over the failed tasks left behind by a previously deleted project.
+   * Returns the number of tasks adopted.
+   */
+  adoptOrphanedTasksForProject(
+    projectId: ProjectId,
+    integrationId: string,
+    ticketProjectKey: string
+  ): number {
+    const now = Math.floor(Date.now() / 1000);
+    const result = this.raw
+      .prepare(
+        "UPDATE tasks SET project_id = ?, updated_at = ? " +
+        "WHERE project_id IS NULL " +
+        "AND ticket_source_integration_id = ? " +
+        "AND ticket_source_project_key = ?"
+      )
+      .run(projectId as string, now, integrationId, ticketProjectKey);
+    return Number(result.changes ?? 0);
   }
 
   /** Enable or disable a project without modifying any other fields. */
@@ -1676,6 +1812,9 @@ export class SqliteStateStore implements StateStore, IntegrationStore, PromptSto
           "INSERT INTO project_ticket_source (project_id, integration_id, ticket_project_key, created_at) VALUES (?, ?, ?, ?)"
         )
         .run(projectId, input.integrationId, input.ticketProjectKey, Math.floor(now.getTime() / 1000));
+      // Adopt any orphaned tasks that originated from this exact ticket source
+      // but whose owning project was previously deleted.
+      this.adoptOrphanedTasksForProject(projectId, input.integrationId, input.ticketProjectKey);
       const row = this.raw
         .prepare("SELECT id, project_id, integration_id, ticket_project_key, created_at FROM project_ticket_source WHERE project_id = ?")
         .get(projectId) as { id: number; project_id: string; integration_id: string; ticket_project_key: string; created_at: number };
@@ -1997,5 +2136,12 @@ function parseConfigJson(json: string): Record<string, unknown> {
   } catch {
     return {};
   }
+}
+
+function parseIntegrationIdFromLabel(label: string | undefined | null): string | null {
+  if (!label) return null;
+  const separatorIndex = label.indexOf(":");
+  if (separatorIndex <= 0 || separatorIndex === label.length - 1) return null;
+  return label.slice(separatorIndex + 1);
 }
 
