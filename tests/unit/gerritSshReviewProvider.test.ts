@@ -285,6 +285,68 @@ describe("GerritSshReviewProvider", () => {
     });
   });
 
+  describe("allowedFiles filtering", () => {
+    it("drops comments whose file is not in allowedFiles, keeps the rest", async () => {
+      mockQuery.mockResolvedValueOnce(sshNdjson(SAMPLE_CHANGE));
+      mockReviewJson.mockResolvedValueOnce(undefined);
+
+      const comments: InlineReviewComment[] = [
+        { file: "src/vkms.c", line: 12, message: "ok", severity: "warning" },
+        { file: "src/main.c", line: 5, message: "hallucinated path", severity: "error" },
+      ];
+      const allowed = new Set(["src/vkms.c"]);
+
+      await makeProvider().postReviewWithComments(CHANGE_ID, 3, comments, "summary", -1, allowed);
+
+      const input = JSON.parse(mockReviewJson.mock.calls[0]![1]) as Record<string, unknown>;
+      const grouped = input["comments"] as Record<string, unknown[]>;
+      expect(Object.keys(grouped)).toEqual(["src/vkms.c"]);
+      expect(grouped["src/main.c"]).toBeUndefined();
+    });
+
+    it("still submits vote+summary when ALL comments are filtered out", async () => {
+      mockQuery.mockResolvedValueOnce(sshNdjson(SAMPLE_CHANGE));
+      mockReviewJson.mockResolvedValueOnce(undefined);
+
+      const comments: InlineReviewComment[] = [
+        { file: "ghost.c", line: 1, message: "nope", severity: "error" },
+      ];
+
+      await makeProvider().postReviewWithComments(CHANGE_ID, 3, comments, "still summary", -1, new Set(["real.c"]));
+
+      expect(mockReviewJson).toHaveBeenCalledOnce();
+      const input = JSON.parse(mockReviewJson.mock.calls[0]![1]) as Record<string, unknown>;
+      expect(input["labels"]).toEqual({ "Code-Review": -1 });
+      expect(input["message"]).toBe("still summary");
+      expect(input["comments"]).toBeUndefined();
+    });
+
+    it("postReviewComments: skips SSH call when all comments filtered and summary empty", async () => {
+      await makeProvider().postReviewComments(
+        CHANGE_ID,
+        3,
+        [{ file: "ghost.c", line: 1, message: "x", severity: "error" }],
+        "",
+        new Set(["real.c"])
+      );
+      expect(mockReviewJson).not.toHaveBeenCalled();
+    });
+
+    it("undefined allowedFiles preserves legacy behaviour (no filtering)", async () => {
+      mockQuery.mockResolvedValueOnce(sshNdjson(SAMPLE_CHANGE));
+      mockReviewJson.mockResolvedValueOnce(undefined);
+
+      const comments: InlineReviewComment[] = [
+        { file: "any/path.ts", line: 1, message: "kept", severity: "warning" },
+      ];
+      await makeProvider().postReviewWithComments(CHANGE_ID, 3, comments, "", 1);
+
+      const input = JSON.parse(mockReviewJson.mock.calls[0]![1]) as Record<string, unknown>;
+      const grouped = input["comments"] as Record<string, unknown[]>;
+      expect(grouped["any/path.ts"]).toBeDefined();
+    });
+  });
+
   describe("vote", () => {
     it("submits a Code-Review vote via SSH", async () => {
       mockQuery.mockResolvedValueOnce(sshNdjson(SAMPLE_CHANGE));

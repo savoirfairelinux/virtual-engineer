@@ -138,6 +138,37 @@ describe("GitHubReviewProvider", () => {
     expect(body.comments).toEqual([{ path: "src/a.ts", line: 5, body: "inline", side: "RIGHT" }]);
   });
 
+  it("allowedFiles drops comments referencing files outside the patchset", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ id: 1 }));
+    await new GitHubReviewProvider(config).postReviewWithComments!(
+      cid, 1,
+      [
+        { file: "src/a.ts", line: 5, message: "kept", severity: "warning" },
+        { file: "src/ghost.ts", line: 9, message: "dropped", severity: "error" },
+      ],
+      "summary", -1,
+      new Set(["src/a.ts"]),
+    );
+    const body = JSON.parse((fetchMock.mock.calls[0]?.[1] as RequestInit).body as string);
+    expect(body.comments).toEqual([{ path: "src/a.ts", line: 5, body: "kept", side: "RIGHT" }]);
+    expect(body.event).toBe("REQUEST_CHANGES");
+    expect(body.body).toBe("summary");
+  });
+
+  it("allowedFiles: when all comments dropped, still posts summary+event", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ id: 1 }));
+    await new GitHubReviewProvider(config).postReviewWithComments!(
+      cid, 1,
+      [{ file: "src/ghost.ts", line: 9, message: "dropped", severity: "error" }],
+      "all gone", -1,
+      new Set(["src/real.ts"]),
+    );
+    const body = JSON.parse((fetchMock.mock.calls[0]?.[1] as RequestInit).body as string);
+    expect(body.comments).toBeUndefined();
+    expect(body.body).toBe("all gone");
+    expect(body.event).toBe("REQUEST_CHANGES");
+  });
+
   it("postReviewComments: skips the API call when all comments are filtered and summary is empty", async () => {
     await new GitHubReviewProvider(config).postReviewComments(
       cid, 1,

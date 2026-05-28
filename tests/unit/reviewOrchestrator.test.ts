@@ -340,14 +340,13 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
       CHANGE_ID,
       2,
       [{ file: "src/a.ts", line: 1, message: "Bug", severity: "error" }],
-      "blocking",
-      new Set(["src/a.ts"])
+      "blocking"
     );
     expect(mocks.provider.vote).toHaveBeenCalledWith(CHANGE_ID, 2, -1, "blocking");
     expect(mocks.store.setReviewedPatchset).toHaveBeenCalledWith(initial.taskId, 2);
   });
 
-  it("passes an allowedFiles set excluding files not in the diff (hallucinated path)", async () => {
+  it("strips hallucinated comments before calling the provider (only in-diff paths sent)", async () => {
     const initial = makeTask({ state: "REVIEW_PENDING" });
     const mocks = makeMocks(initial);
     const hallucinated = [
@@ -367,13 +366,39 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
 
     await orch.runReview(initial.taskId);
 
-    const allowedFiles = (mocks.provider.postReviewComments as ReturnType<typeof vi.fn>).mock
-      .calls[0]?.[4] as ReadonlySet<string>;
-    expect(allowedFiles.has("src/a.ts")).toBe(true);
-    expect(allowedFiles.has("src/ghost.ts")).toBe(false);
+    const postedComments = (mocks.provider.postReviewComments as ReturnType<typeof vi.fn>).mock
+      .calls[0]?.[2] as unknown[];
+    expect(postedComments).toHaveLength(1);
+    expect((postedComments[0] as { file: string }).file).toBe("src/a.ts");
+    expect(mocks.provider.postReviewComments).not.toHaveBeenCalledWith(
+      expect.anything(), expect.anything(),
+      expect.arrayContaining([expect.objectContaining({ file: "src/ghost.ts" })]),
+      expect.anything()
+    );
   });
 
-  it("disables filtering (undefined allowedFiles) when the diff has no files", async () => {
+  it("skips postReviewComments when all comments are outside the diff and summary is empty", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    const allFiltered = [
+      "REVIEW_RESULT_START",
+      JSON.stringify({
+        comments: [{ file: "src/ghost.ts", line: 9, message: "Hallucinated", severity: "error" }],
+        summary: "",
+        score: -1,
+      }),
+      "REVIEW_RESULT_END",
+    ].join("\n");
+    const { runner } = makeWorkspaceRunner(allFiltered);
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+
+    await orch.runReview(initial.taskId);
+
+    expect(mocks.provider.postReviewComments).not.toHaveBeenCalled();
+    expect(mocks.provider.vote).toHaveBeenCalledWith(CHANGE_ID, 2, expect.any(Number), "");
+  });
+
+  it("passes all comments through when diff has no files (no filtering applied)", async () => {
     const initial = makeTask({ state: "REVIEW_PENDING" });
     const mocks = makeMocks(initial);
     (mocks.provider.getChangeDiff as ReturnType<typeof vi.fn>).mockResolvedValue(
@@ -387,9 +412,8 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
     expect(mocks.provider.postReviewComments).toHaveBeenCalledWith(
       CHANGE_ID,
       2,
-      expect.anything(),
-      "blocking",
-      undefined
+      [{ file: "src/a.ts", line: 1, message: "Bug", severity: "error" }],
+      "blocking"
     );
   });
 
