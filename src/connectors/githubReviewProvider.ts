@@ -9,6 +9,7 @@ import type {
   ExternalChangeId,
 } from "../interfaces.js";
 import { getLogger } from "../logger.js";
+import { filterCommentsByAllowedFiles } from "../review/commentFilter.js";
 
 const log = getLogger("github-pr-review-provider");
 
@@ -117,9 +118,10 @@ export class GitHubReviewProvider implements ReviewProvider {
     changeId: ExternalChangeId,
     _revision: number,
     comments: InlineReviewComment[],
-    summary: string
+    summary: string,
+    allowedFiles?: ReadonlySet<string>
   ): Promise<void> {
-    await this.submitReview(changeId, comments, summary, "COMMENT");
+    await this.submitReview(changeId, comments, summary, "COMMENT", allowedFiles);
   }
 
   async postReviewWithComments(
@@ -127,9 +129,16 @@ export class GitHubReviewProvider implements ReviewProvider {
     _revision: number,
     comments: InlineReviewComment[],
     summary: string,
-    score: -1 | 1
+    score: -1 | 1,
+    allowedFiles?: ReadonlySet<string>
   ): Promise<void> {
-    await this.submitReview(changeId, comments, summary, score === -1 ? "REQUEST_CHANGES" : "APPROVE");
+    await this.submitReview(
+      changeId,
+      comments,
+      summary,
+      score === -1 ? "REQUEST_CHANGES" : "APPROVE",
+      allowedFiles
+    );
   }
 
   async vote(
@@ -146,13 +155,21 @@ export class GitHubReviewProvider implements ReviewProvider {
     changeId: ExternalChangeId,
     comments: InlineReviewComment[],
     summary: string,
-    event: "APPROVE" | "REQUEST_CHANGES" | "COMMENT"
+    event: "APPROVE" | "REQUEST_CHANGES" | "COMMENT",
+    allowedFiles?: ReadonlySet<string>
   ): Promise<void> {
     const { repo, prNumber } = this.parseChangeId(changeId);
 
-    const apiComments = comments
+    const filtered = filterCommentsByAllowedFiles(comments, allowedFiles, { repo, prNumber });
+    const apiComments = filtered
       .filter((c) => c.line > 0)
       .map((c) => ({ path: c.file, line: c.line, body: c.message, side: "RIGHT" as const }));
+
+    // A bare COMMENT event with no inline comments and no summary would post a
+    // visible empty review. APPROVE/REQUEST_CHANGES still post since they carry a vote.
+    if (event === "COMMENT" && apiComments.length === 0 && summary.trim().length === 0) {
+      return;
+    }
 
     const body = {
       event,
@@ -198,3 +215,4 @@ function mapFileStatus(status: string): ReviewFileStatus {
     default: return "modified";
   }
 }
+

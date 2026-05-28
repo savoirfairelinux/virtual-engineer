@@ -138,6 +138,16 @@ describe("GitHubReviewProvider", () => {
     expect(body.comments).toEqual([{ path: "src/a.ts", line: 5, body: "inline", side: "RIGHT" }]);
   });
 
+  it("postReviewComments: skips the API call when all comments are filtered and summary is empty", async () => {
+    await new GitHubReviewProvider(config).postReviewComments(
+      cid, 1,
+      [{ file: "src/ghost.ts", line: 9, message: "dropped", severity: "error" }],
+      "",
+      new Set(["src/real.ts"]),
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("throws on non-OK API response", async () => {
     fetchMock.mockResolvedValueOnce(new Response("bad", { status: 404 }));
     await expect(new GitHubReviewProvider(config).getChangeDetails(cid)).rejects.toThrow(/404/);

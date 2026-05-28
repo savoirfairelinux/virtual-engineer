@@ -340,10 +340,57 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
       CHANGE_ID,
       2,
       [{ file: "src/a.ts", line: 1, message: "Bug", severity: "error" }],
-      "blocking"
+      "blocking",
+      new Set(["src/a.ts"])
     );
     expect(mocks.provider.vote).toHaveBeenCalledWith(CHANGE_ID, 2, -1, "blocking");
     expect(mocks.store.setReviewedPatchset).toHaveBeenCalledWith(initial.taskId, 2);
+  });
+
+  it("passes an allowedFiles set excluding files not in the diff (hallucinated path)", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    const hallucinated = [
+      "REVIEW_RESULT_START",
+      JSON.stringify({
+        comments: [
+          { file: "src/a.ts", line: 1, message: "Real", severity: "error" },
+          { file: "src/ghost.ts", line: 9, message: "Hallucinated", severity: "error" },
+        ],
+        summary: "blocking",
+        score: -1,
+      }),
+      "REVIEW_RESULT_END",
+    ].join("\n");
+    const { runner } = makeWorkspaceRunner(hallucinated);
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+
+    await orch.runReview(initial.taskId);
+
+    const allowedFiles = (mocks.provider.postReviewComments as ReturnType<typeof vi.fn>).mock
+      .calls[0]?.[4] as ReadonlySet<string>;
+    expect(allowedFiles.has("src/a.ts")).toBe(true);
+    expect(allowedFiles.has("src/ghost.ts")).toBe(false);
+  });
+
+  it("disables filtering (undefined allowedFiles) when the diff has no files", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    (mocks.provider.getChangeDiff as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makeDiff({ files: [] })
+    );
+    const { runner } = makeWorkspaceRunner();
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+
+    await orch.runReview(initial.taskId);
+
+    expect(mocks.provider.postReviewComments).toHaveBeenCalledWith(
+      CHANGE_ID,
+      2,
+      expect.anything(),
+      "blocking",
+      undefined
+    );
   });
 
   it("transitions to REVIEW_DONE when the change is no longer OPEN after commenting", async () => {
