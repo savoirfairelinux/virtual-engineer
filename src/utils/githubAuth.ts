@@ -65,10 +65,10 @@ export async function startGitHubDeviceFlow(
   const response = await globalThis.fetch(url, {
     method: "POST",
     headers: {
-      "Content-Type": "application/json",
+      "Content-Type": "application/x-www-form-urlencoded",
       Accept: "application/json",
     },
-    body: JSON.stringify({ client_id: clientId, scope: "repo" }),
+    body: new URLSearchParams({ client_id: clientId, scope: "repo" }).toString(),
   });
 
   if (!response.ok) {
@@ -113,14 +113,14 @@ export async function pollGitHubDeviceToken(
   const response = await globalThis.fetch(url, {
     method: "POST",
     headers: {
-      "Content-Type": "application/json",
+      "Content-Type": "application/x-www-form-urlencoded",
       Accept: "application/json",
     },
-    body: JSON.stringify({
+    body: new URLSearchParams({
       client_id: clientId,
       device_code: deviceCode,
       grant_type: "urn:ietf:params:oauth:grant-type:device_code",
-    }),
+    }).toString(),
   });
 
   if (!response.ok) {

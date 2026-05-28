@@ -81,10 +81,9 @@ describe("createGitHubDeviceOAuthHandler", () => {
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe("https://github.com/login/device/code");
     expect(init.method).toBe("POST");
-    expect(JSON.parse(init.body as string)).toEqual({
-      client_id: "Iv1.client",
-      scope: "repo",
-    });
+    const body = new URLSearchParams(init.body as string);
+    expect(body.get("client_id")).toBe("Iv1.client");
+    expect(body.get("scope")).toBe("repo");
   });
 
   it("start() uses enterprise webBaseUrl when configured", async () => {

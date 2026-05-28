@@ -69,9 +69,10 @@ describe("githubAuth", () => {
       const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
       expect(url).toBe("https://github.com/login/device/code");
       expect(init.method).toBe("POST");
-      const body = JSON.parse(init.body as string);
-      expect(body.client_id).toBe("client-id-1");
-      expect(body.scope).toBe("repo");
+      expect((init.headers as Record<string, string>)["Content-Type"]).toBe("application/x-www-form-urlencoded");
+      const body = new URLSearchParams(init.body as string);
+      expect(body.get("client_id")).toBe("client-id-1");
+      expect(body.get("scope")).toBe("repo");
 
       expect(result.deviceCode).toBe("dc-123");
       expect(result.userCode).toBe("ABCD-1234");
