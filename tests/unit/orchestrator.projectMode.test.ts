@@ -116,6 +116,7 @@ function makeStateStore(over: Partial<StateStore> = {}): StateStore {
     getChangesForTask: vi.fn().mockResolvedValue([]),
     saveChangePerRepository: vi.fn(),
     updateChangePerRepositoryStatus: vi.fn(),
+    orphanExcessChanges: vi.fn().mockResolvedValue(0),
     getActiveRepoSetLock: vi.fn().mockResolvedValue(null),
     setTaskProjectId: vi.fn(),
     setTaskPushRef: vi.fn(),
@@ -947,9 +948,9 @@ describe("Orchestrator — Phase 4 project mode", () => {
     );
   });
 
-  it("project-mode retry cycle only passes commit[0] Change-Id per repo to the agent (not HEAD)", async () => {
+  it("project-mode retry cycle passes all commit Change-Ids per repo to the agent", async () => {
     // Simulate a retry: two rows stored for "root" (commitIndex 0 and 1).
-    // The agent must receive only commitIndex=0's Change-Id (Ifirst), not commitIndex=1's (Ilast).
+    // The agent must receive both Change-Ids so it can reuse them for all commits.
     const task = makeTask({ state: "RETRY_CYCLE" });
     const stateStore = makeStateStore({
       getChangesForTask: vi.fn().mockResolvedValue([
@@ -992,8 +993,8 @@ describe("Orchestrator — Phase 4 project mode", () => {
     await (orch as unknown as { runAgentCycle: (t: Task) => Promise<void> }).runAgentCycle(task);
 
     const context = vi.mocked(ws.runAgent).mock.calls[0]?.[1] as import("../../src/interfaces.js").TaskContext;
-    // Only commit[0]'s Change-Id must be passed — NOT Ilast
-    expect(context.agentSession.perRepoChangeIds).toEqual({ root: "Ifirst" });
+    // Both indices' Change-Ids must be passed as an indexed map
+    expect(context.agentSession.perRepoChangeIds).toEqual({ root: { "0": "Ifirst", "1": "Ilast" } });
   });
 
   it("retry cycle checks out existing Gerrit patchset via applyGerritPatchset", async () => {

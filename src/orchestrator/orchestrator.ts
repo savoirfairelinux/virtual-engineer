@@ -581,18 +581,34 @@ export class Orchestrator {
           repoCloneUrl: cloneUrl,
           pushRef,
           existingChangeId: rootConnector.useChangeIdContinuity ? (task.externalChangeId ?? undefined) : undefined,
-          perRepoChangeIds: await (async (): Promise<Record<string, string> | undefined> => {
+          perRepoChangeIds: await (async (): Promise<Record<string, string | Record<string, string>> | undefined> => {
             if (!rootConnector.useChangeIdContinuity) return undefined;
             const storedChanges = await this.stateStore.getChangesForTask(task.taskId);
             if (storedChanges.length === 0) return undefined;
-            // Only pass the first commit's Change-Id per repo (commitIndex === 0) so that
-            // Gerrit receives the same Change-Id as the original push, producing a new
-            // patchset instead of a brand-new change. NO_CHANGE and empty rows are excluded.
-            const primary = storedChanges.filter(
-              (c) => c.commitIndex === 0 && c.status !== "NO_CHANGE" && c.changeId !== ""
+            // Pass ALL commit Change-Ids per repo, keyed by commit index.
+            // Single-commit repos produce a flat string (backward compat).
+            // Multi-commit repos produce { "0": "I...", "1": "I..." }.
+            const validChanges = storedChanges.filter(
+              (c) => c.status !== "NO_CHANGE" && c.changeId !== ""
             );
-            if (primary.length === 0) return undefined;
-            return Object.fromEntries(primary.map((c) => [c.repoKey, c.changeId]));
+            if (validChanges.length === 0) return undefined;
+            const byRepo = new Map<string, Map<number, string>>();
+            for (const c of validChanges) {
+              let m = byRepo.get(c.repoKey);
+              if (!m) { m = new Map(); byRepo.set(c.repoKey, m); }
+              m.set(c.commitIndex, c.changeId);
+            }
+            const result: Record<string, string | Record<string, string>> = {};
+            for (const [repoKey, indexMap] of byRepo) {
+              if (indexMap.size === 1 && indexMap.has(0)) {
+                result[repoKey] = indexMap.get(0)!;
+              } else {
+                const obj: Record<string, string> = {};
+                for (const [idx, cid] of indexMap) obj[String(idx)] = cid;
+                result[repoKey] = obj;
+              }
+            }
+            return Object.keys(result).length > 0 ? result : undefined;
           })(),
           gitAuthorName: this.config.gitAuthorName,
           gitAuthorEmail: this.config.gitAuthorEmail,
@@ -677,7 +693,10 @@ export class Orchestrator {
   /**
    * On retry cycles with Change-Id continuity, fetch the existing Gerrit patchset into
    * the volume so the agent starts from its previous work rather than a blank slate.
-   * Falls back silently — the agent will just work from the fresh clone if checkout fails.
+   *
+   * For multi-commit pushes, the primary change (commitIndex 0) is checked out as
+   * detached HEAD, then commits 1..N are cherry-picked on top in order.
+   * Cherry-pick failures for secondary commits are non-fatal (logged and skipped).
    */
   private async checkoutPriorPatchset(
     task: Task,
@@ -691,9 +710,11 @@ export class Orchestrator {
     if (!this.workspaceRunner.applyGerritPatchset) return;
 
     const storedChanges = await this.stateStore.getChangesForTask(task.taskId);
-    const primaryChange = storedChanges.find(
-      (c) => c.commitIndex === 0 && c.status !== "NO_CHANGE" && c.changeId !== "" && c.repoKey === root.repoKey
-    );
+    const rootChanges = storedChanges
+      .filter((c) => c.repoKey === root.repoKey && c.status !== "NO_CHANGE" && c.changeId !== "")
+      .sort((a, b) => a.commitIndex - b.commitIndex);
+
+    const primaryChange = rootChanges.find((c) => c.commitIndex === 0);
     if (!primaryChange) return;
 
     try {
@@ -703,6 +724,29 @@ export class Orchestrator {
         { taskId: task.taskId, changeId: primaryChange.changeId, changeNumber: patchsetOpts.changeNumber, patchset: patchsetOpts.patchset },
         "checked out existing patchset for retry cycle"
       );
+
+      // Cherry-pick secondary commits (indices 1..N) on top of the primary.
+      // Each is a separate Gerrit change; resolve its latest patchset and cherry-pick.
+      const secondaryChanges = rootChanges.filter((c) => c.commitIndex > 0);
+      if (secondaryChanges.length > 0 && this.workspaceRunner.cherryPickGerritPatchset) {
+        for (const change of secondaryChanges) {
+          try {
+            const secOpts = await rootConnector.resolvePatchsetOptions!(change.changeId);
+            await this.workspaceRunner.cherryPickGerritPatchset(handle, secOpts);
+            log.info(
+              { taskId: task.taskId, changeId: change.changeId, commitIndex: change.commitIndex, changeNumber: secOpts.changeNumber, patchset: secOpts.patchset },
+              "cherry-picked secondary patchset for retry cycle"
+            );
+          } catch (err) {
+            log.warn(
+              { taskId: task.taskId, changeId: change.changeId, commitIndex: change.commitIndex, err },
+              "failed to cherry-pick secondary patchset; agent will see partial history"
+            );
+            // Stop cherry-picking further commits — they likely depend on this one.
+            break;
+          }
+        }
+      }
     } catch (err) {
       log.warn(
         { taskId: task.taskId, changeId: primaryChange.changeId, err },
@@ -1190,6 +1234,14 @@ export class Orchestrator {
             { taskId: task.taskId, repoKey: target.repoKey, commitCount: repoCommits.length, firstChangeId: repoCommits[0]?.changeId },
             "pushed project target (multi-commit)"
           );
+          // Orphan stale rows from prior cycles that had more commits than this one
+          const orphaned = await this.stateStore.orphanExcessChanges(task.taskId, target.repoKey, repoCommits.length - 1);
+          if (orphaned > 0) {
+            log.info(
+              { taskId: task.taskId, repoKey: target.repoKey, orphanedCount: orphaned },
+              "marked excess change_per_repository rows as ORPHANED"
+            );
+          }
         } else {
           // Single-commit: prefer the agent's own Change-Id (commit[0]) over the VCS
           // push result which may differ when the connector re-reads from HEAD.
@@ -1209,6 +1261,14 @@ export class Orchestrator {
             { taskId: task.taskId, repoKey: target.repoKey, changeId: primaryChangeId, url: makeChangeUrl(primaryChangeId) },
             "pushed project target"
           );
+          // Orphan stale rows from prior cycles that had more commits
+          const orphaned = await this.stateStore.orphanExcessChanges(task.taskId, target.repoKey, 0);
+          if (orphaned > 0) {
+            log.info(
+              { taskId: task.taskId, repoKey: target.repoKey, orphanedCount: orphaned },
+              "marked excess change_per_repository rows as ORPHANED"
+            );
+          }
         }
         successCount++;
       } catch (err) {

@@ -1488,6 +1488,28 @@ export class SqliteStateStore implements StateStore, IntegrationStore, PromptSto
     }
   }
 
+  /**
+   * Mark change_per_repository rows as ORPHANED when a retry push produces fewer
+   * commits than the previous cycle. Rows whose commitIndex exceeds maxCommitIndex
+   * for the given task+repo are set to ORPHANED so they are excluded from future
+   * feedback aggregation and Change-Id continuity.
+   */
+  async orphanExcessChanges(
+    taskId: TaskId,
+    repoKey: string,
+    maxCommitIndex: number
+  ): Promise<number> {
+    const now = Math.floor(Date.now() / 1000);
+    const result = this.raw
+      .prepare(
+        `UPDATE change_per_repository SET status = 'ORPHANED', updated_at = ?
+         WHERE task_id = ? AND repo_key = ? AND commit_index > ?
+           AND status NOT IN ('ORPHANED', 'NO_CHANGE', 'MERGED', 'ABANDONED')`
+      )
+      .run(now, taskId, repoKey, maxCommitIndex);
+    return result.changes;
+  }
+
   /** Close the underlying SQLite database connection. */
   close(): void {
     this.raw.close();
