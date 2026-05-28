@@ -100,7 +100,7 @@ function makeStateStore(over: Partial<StateStore> = {}): StateStore {
         projectId: null,
       })
     ),
-    getTask: vi.fn(),
+    getTask: vi.fn().mockResolvedValue(makeTask()),
     getTaskByTicketId: vi.fn().mockResolvedValue(null),
     getActiveTasks: vi.fn().mockResolvedValue([]),
     getFailedAttemptCount: vi.fn().mockResolvedValue(0),
@@ -1170,5 +1170,95 @@ describe("Orchestrator — Phase 4 project mode", () => {
 
     // resolvePatchsetOptions should NOT be called on first cycle
     expect(resolvePatchsetOptions).not.toHaveBeenCalled();
+  });
+
+  it("runAgentCycle discards result when task is deleted while agent is running", async () => {
+    // Regression: if the task is abandoned via webhook and then hard-deleted
+    // while the agent container is still running, saveAgentCycle would hit an
+    // FK constraint error.  The guard re-reads the task from the DB and bails.
+    const task = makeTask({ state: "AGENT_RUNNING" });
+    const stateStore = makeStateStore({
+      // Post-agent guard: task was deleted.
+      getTask: vi.fn().mockResolvedValue(null),
+    });
+    const ws = makeWorkspaceRunner();
+    const project = makeProject();
+    const targets = [
+      makePushTarget({ id: 1, commitOrder: 1, localPath: ".", integrationId: "vcs-root", repoKey: "root" }),
+    ];
+    const vcsRoot: VcsConnector = {
+      clone: vi.fn(),
+      push: vi.fn().mockResolvedValue({ changeId: "Iabc", url: "u", status: "OPEN" }),
+      pushDirect: vi.fn(),
+      getChangeStatus: vi.fn(),
+      buildPushSpec: vi.fn().mockReturnValue({ ref: "refs/for/main", topic: "VE-t-1" }),
+      useChangeIdContinuity: true,
+      reviewSystemLabel: "gerrit",
+    } as unknown as VcsConnector;
+    const projectMode: ProjectModeDeps = {
+      projectStore: {
+        getProjectById: vi.fn(async () => project),
+        listProjectPushTargets: vi.fn(async () => targets),
+        getProjectTicketSource: vi.fn().mockResolvedValue({ integrationId: "redmine-int" }),
+        getProjectReviewConfig: vi.fn().mockResolvedValue(null),
+        getAgentById: vi.fn(),
+      },
+      pluginManager: { getConnectorForIntegration: vi.fn().mockReturnValue(makeRedmine()) },
+      resolveVcsForIntegration: vi.fn(async () => vcsRoot),
+    };
+
+    const orch = new Orchestrator(baseConfig(), stateStore, ws, undefined, undefined, projectMode);
+
+    // Should not throw — the guard catches the deleted-task scenario
+    await (orch as unknown as { runAgentCycle: (t: Task) => Promise<void> }).runAgentCycle(task);
+
+    // saveAgentCycle should NOT be called because the task no longer exists
+    expect(stateStore.saveAgentCycle).not.toHaveBeenCalled();
+    // Only the initial AGENT_RUNNING transition should have been called, not IN_REVIEW
+    const transitionArgs = vi.mocked(stateStore.transition).mock.calls.map((c) => c[1]);
+    expect(transitionArgs).toContain("AGENT_RUNNING");
+    expect(transitionArgs).not.toContain("IN_REVIEW");
+  });
+
+  it("runAgentCycle discards result when task reached terminal state while agent is running", async () => {
+    const task = makeTask({ state: "AGENT_RUNNING" });
+    const stateStore = makeStateStore({
+      // Post-agent guard: task now in ABANDONED terminal state.
+      getTask: vi.fn().mockResolvedValue(makeTask({ state: "ABANDONED" })),
+    });
+    const ws = makeWorkspaceRunner();
+    const project = makeProject();
+    const targets = [
+      makePushTarget({ id: 1, commitOrder: 1, localPath: ".", integrationId: "vcs-root", repoKey: "root" }),
+    ];
+    const vcsRoot: VcsConnector = {
+      clone: vi.fn(),
+      push: vi.fn().mockResolvedValue({ changeId: "Iabc", url: "u", status: "OPEN" }),
+      pushDirect: vi.fn(),
+      getChangeStatus: vi.fn(),
+      buildPushSpec: vi.fn().mockReturnValue({ ref: "refs/for/main", topic: "VE-t-1" }),
+      useChangeIdContinuity: true,
+      reviewSystemLabel: "gerrit",
+    } as unknown as VcsConnector;
+    const projectMode: ProjectModeDeps = {
+      projectStore: {
+        getProjectById: vi.fn(async () => project),
+        listProjectPushTargets: vi.fn(async () => targets),
+        getProjectTicketSource: vi.fn().mockResolvedValue({ integrationId: "redmine-int" }),
+        getProjectReviewConfig: vi.fn().mockResolvedValue(null),
+        getAgentById: vi.fn(),
+      },
+      pluginManager: { getConnectorForIntegration: vi.fn().mockReturnValue(makeRedmine()) },
+      resolveVcsForIntegration: vi.fn(async () => vcsRoot),
+    };
+
+    const orch = new Orchestrator(baseConfig(), stateStore, ws, undefined, undefined, projectMode);
+
+    await (orch as unknown as { runAgentCycle: (t: Task) => Promise<void> }).runAgentCycle(task);
+
+    expect(stateStore.saveAgentCycle).not.toHaveBeenCalled();
+    const transitionArgs2 = vi.mocked(stateStore.transition).mock.calls.map((c) => c[1]);
+    expect(transitionArgs2).toContain("AGENT_RUNNING");
+    expect(transitionArgs2).not.toContain("IN_REVIEW");
   });
 });
