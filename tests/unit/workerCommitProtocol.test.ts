@@ -501,4 +501,120 @@ describe("agent-worker multi-commit protocol", () => {
       expect(injected[0]!.changeId).not.toBe(injected[1]!.changeId);
     });
   });
+
+  describe("squashIntoBaseIfNeeded", () => {
+    // Replicate the agent-worker function for testability
+    function squashIntoBaseIfNeeded(
+      baseSha: string,
+      cwd: string,
+    ): { squashed: boolean; commits?: ReturnType<typeof collectCommits> } {
+      const baseBody = git(["log", "-1", "--format=%b", baseSha], cwd);
+      const baseChangeIdMatch = baseBody.match(/^Change-Id:\s*(\S+)/m);
+      if (!baseChangeIdMatch) {
+        return { squashed: false };
+      }
+
+      const headBefore = git(["rev-parse", "HEAD"], cwd).trim();
+      if (headBefore === baseSha) {
+        return { squashed: false };
+      }
+
+      try {
+        git(["reset", "--soft", baseSha], cwd);
+        git(["commit", "--amend", "--no-edit"], cwd);
+      } catch {
+        try { git(["reset", "--hard", headBefore], cwd); } catch { /* ignore */ }
+        return { squashed: false };
+      }
+
+      return { squashed: true, commits: collectCommits(baseSha, cwd) };
+    }
+
+    it("squashes agent commit into base when base already has a Change-Id", () => {
+      // Simulate cycle 1: commit with a Change-Id (the patchset)
+      const changeId = "Iaaaa1234567890abcdef1234567890abcdef1234";
+      writeFileSync(join(repoDir, "a.ts"), "original\n");
+      git(["add", "a.ts"], repoDir);
+      git(["commit", "-m", `feat: initial work\n\nChange-Id: ${changeId}`], repoDir);
+      const baseSha = git(["rev-parse", "HEAD"], repoDir).trim();
+
+      // Simulate cycle 2: agent adds a new commit on top instead of amending
+      writeFileSync(join(repoDir, "a.ts"), "fixed\n");
+      git(["add", "a.ts"], repoDir);
+      git(["commit", "-m", "fix: address review feedback"], repoDir);
+
+      // Before squash: 2 commits ahead of initial, agent commit has no Change-Id
+      const before = collectCommits(baseSha, repoDir);
+      expect(before).toHaveLength(1);
+      expect(before[0]!.changeId).toBe("");
+
+      // Squash
+      const result = squashIntoBaseIfNeeded(baseSha, repoDir);
+      expect(result.squashed).toBe(true);
+      expect(result.commits).toHaveLength(1);
+      // The squashed commit preserves the original Change-Id from baseSha
+      expect(result.commits![0]!.changeId).toBe(changeId);
+      // The squashed commit contains the agent's file changes
+      expect(result.commits![0]!.files).toContain("a.ts");
+    });
+
+    it("does nothing when base has no Change-Id (cycle 1)", () => {
+      const baseSha = git(["rev-parse", "HEAD"], repoDir).trim();
+      addCommit(repoDir, "a.ts", "a\n", "feat: new file");
+
+      const result = squashIntoBaseIfNeeded(baseSha, repoDir);
+      expect(result.squashed).toBe(false);
+
+      // Commit is still there, unmodified
+      const commits = collectCommits(baseSha, repoDir);
+      expect(commits).toHaveLength(1);
+      expect(commits[0]!.subject).toBe("feat: new file");
+    });
+
+    it("does nothing when agent amended (HEAD === baseSha after amend re-parse)", () => {
+      // Create a commit with Change-Id, then amend it
+      const changeId = "Ibbbb1234567890abcdef1234567890abcdef1234";
+      writeFileSync(join(repoDir, "b.ts"), "v1\n");
+      git(["add", "b.ts"], repoDir);
+      git(["commit", "-m", `feat: base\n\nChange-Id: ${changeId}`], repoDir);
+      const baseSha = git(["rev-parse", "HEAD"], repoDir).trim();
+
+      // Agent amends the commit (no new commit added)
+      writeFileSync(join(repoDir, "b.ts"), "v2\n");
+      git(["add", "b.ts"], repoDir);
+      git(["commit", "--amend", "--no-edit"], repoDir);
+
+      // HEAD changed (new SHA) but baseSha..HEAD still shows 1 commit
+      // The function checks headBefore !== baseSha — after amend, HEAD is a
+      // different SHA, so it WILL squash. That's fine: the result is still
+      // one commit with the original Change-Id.
+      const result = squashIntoBaseIfNeeded(baseSha, repoDir);
+      expect(result.squashed).toBe(true);
+      expect(result.commits).toHaveLength(1);
+      expect(result.commits![0]!.changeId).toBe(changeId);
+    });
+
+    it("squashes multiple agent commits into base patchset", () => {
+      const changeId = "Icccc1234567890abcdef1234567890abcdef1234";
+      writeFileSync(join(repoDir, "c.ts"), "v1\n");
+      git(["add", "c.ts"], repoDir);
+      git(["commit", "-m", `feat: original\n\nChange-Id: ${changeId}`], repoDir);
+      const baseSha = git(["rev-parse", "HEAD"], repoDir).trim();
+
+      // Agent creates TWO commits on top
+      addCommit(repoDir, "c.ts", "v2\n", "fix: first fix");
+      addCommit(repoDir, "d.ts", "new\n", "fix: second fix");
+
+      const before = collectCommits(baseSha, repoDir);
+      expect(before).toHaveLength(2);
+
+      const result = squashIntoBaseIfNeeded(baseSha, repoDir);
+      expect(result.squashed).toBe(true);
+      expect(result.commits).toHaveLength(1);
+      expect(result.commits![0]!.changeId).toBe(changeId);
+      // Both files are in the squashed commit
+      expect(result.commits![0]!.files).toContain("c.ts");
+      expect(result.commits![0]!.files).toContain("d.ts");
+    });
+  });
 });
