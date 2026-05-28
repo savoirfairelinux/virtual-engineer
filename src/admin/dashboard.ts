@@ -1435,6 +1435,70 @@ document.getElementById('filt-fail')?.addEventListener('click', () => { S.tasksF
 document.getElementById('filt-review')?.addEventListener('click', () => { S.tasksFilter.state = 'REVIEW'; renderTasks(); });
 document.getElementById('sort-dir')?.addEventListener('click', () => { S.tasksFilter.sortDir = S.tasksFilter.sortDir === 'desc' ? 'asc' : 'desc'; renderTasks(); });
 
+function findOpenConfigurationModal() {
+  const overlays = Array.from(document.querySelectorAll('.modal-overlay, #prompts-modal'));
+  return overlays.length ? overlays[overlays.length - 1] : null;
+}
+
+function findModalSaveButton(modal) {
+  return modal.querySelector('[data-role="modal-save"]')
+    || modal.querySelector('[data-role="save"]')
+    || modal.querySelector('.modal-actions button.primary')
+    || Array.from(modal.querySelectorAll('button')).find((b) => /^save$/i.test((b.textContent || '').trim()))
+    || null;
+}
+
+function showCloseConfirmModal(targetModal) {
+  if (document.querySelector('[data-role="confirm-close-modal"]')) return;
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.setAttribute('data-role', 'confirm-close-modal');
+  overlay.style.zIndex = '10000';
+  overlay.innerHTML =
+    '<div class="modal" style="max-width:420px">' +
+      '<h3>Close configuration?</h3>' +
+      '<p style="font-size:13px;color:var(--muted);line-height:1.5;margin:8px 0 16px">' +
+        'You are about to close this configuration window. Do you want to save your changes before closing?' +
+      '</p>' +
+      '<div class="modal-actions">' +
+        '<button data-role="confirm-cancel">Cancel</button>' +
+        '<button data-role="confirm-discard">Discard</button>' +
+        '<button class="primary" data-role="confirm-save">Save</button>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(overlay);
+  const close = () => overlay.remove();
+  overlay.querySelector('[data-role="confirm-cancel"]')?.addEventListener('click', close);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  overlay.querySelector('[data-role="confirm-discard"]')?.addEventListener('click', () => {
+    close();
+    targetModal.remove();
+  });
+  overlay.querySelector('[data-role="confirm-save"]')?.addEventListener('click', () => {
+    close();
+    const saveBtn = findModalSaveButton(targetModal);
+    if (saveBtn) saveBtn.click();
+    else targetModal.remove();
+  });
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  const modal = findOpenConfigurationModal();
+  if (!modal) return;
+  e.preventDefault();
+  if (modal.getAttribute('data-role') === 'confirm-close-modal') {
+    modal.remove();
+    return;
+  }
+  const saveBtn = findModalSaveButton(modal);
+  if (!saveBtn) {
+    modal.remove();
+    return;
+  }
+  showCloseConfirmModal(modal);
+});
+
 renderAuthPanel();
 if (!BC.requiresAuth) {
   void boot();
