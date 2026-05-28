@@ -23,14 +23,11 @@
   },
   "dependencies": {
     "@github/copilot-sdk": "^0.2.2",
-    "@octokit/graphql": "^8.0.0",
-    "@octokit/rest": "^21.0.0",
     "better-sqlite3": "^9.4.3",
     "drizzle-orm": "^0.45.2",
     "p-retry": "^6.2.0",
     "pino": "^9.1.0",
     "pino-pretty": "^11.0.0",
-    "simple-git": "^3.24.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {
