@@ -5574,7 +5574,11 @@ function showProjectModal(existing) {
   const pushTargetSearch = [];
   let ticketProjectSearch = '';
   let reviewRepoSearch = '';
-  let reviewSelectedRepos = (existing && existing.reviewConfig && existing.reviewConfig.repos)
+  // Legacy semantics: reviewConfig.repos === [] historically meant "all repos
+  // selected". Treat [] as null here so the render-time defaulting (which fills
+  // null with all repo keys) still applies, instead of persisting repoKeys: []
+  // and silently disabling reviews for existing projects.
+  let reviewSelectedRepos = (existing && existing.reviewConfig && existing.reviewConfig.repos && existing.reviewConfig.repos.length > 0)
     ? existing.reviewConfig.repos.slice()
     : null;
 
