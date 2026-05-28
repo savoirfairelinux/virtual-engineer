@@ -9,7 +9,7 @@ import { getAllPluginDescriptors, getPluginCapabilities, getPluginDescriptor } f
 import { decryptToken } from "../utils/encryption.js";
 import { normalizeGitLabBaseUrl } from "../utils/gitlabAuth.js";
 import { exchangeForSessionToken, fetchAvailableModels } from "../agents/copilotModelsService.js";
-import { writeJson, readBody, asRecord, toIsoTimestamp, SECRET_MASK, parseConfig } from "./adminRouteUtils.js";
+import { writeJson, readBody, asRecord, toIsoTimestamp, SECRET_MASK, parseConfig, formatZodError } from "./adminRouteUtils.js";
 
 const log = getLogger("admin-integrations");
 
@@ -178,8 +178,9 @@ export async function handleIntegrationRoutes(
       asRecord(body["config"]),
       type !== "copilot"
     );
-    if (!validatedConfig) {
-      writeJson(response, 400, { error: type === "copilot" ? `Invalid config for ${type}` : "Invalid integration config" });
+    if (!validatedConfig.ok) {
+      const fallback = type === "copilot" ? `Invalid config for ${type}` : "Invalid integration config";
+      writeJson(response, 400, { error: validatedConfig.message || fallback });
       return true;
     }
     const id = body["id"] as string || randomUUID();
@@ -188,7 +189,7 @@ export async function handleIntegrationRoutes(
         id,
         type,
         name: body["name"] as string,
-        configJson: JSON.stringify(validatedConfig),
+        configJson: JSON.stringify(validatedConfig.data),
         enabled: true,
       });
       if (deps.pluginManager) {
@@ -310,8 +311,8 @@ export async function handleIntegrationRoutes(
       ? getStoredIntegrationConfig(existing)
       : mergeIntegrationConfig(existing, asRecord(nextConfig));
     const validatedConfig = validateIntegrationConfig(descriptor.configSchema, mergedConfig, true);
-    if (!validatedConfig) {
-      writeJson(response, 400, { error: "Invalid integration config" });
+    if (!validatedConfig.ok) {
+      writeJson(response, 400, { error: validatedConfig.message || "Invalid integration config" });
       return true;
     }
 
@@ -320,12 +321,12 @@ export async function handleIntegrationRoutes(
         id,
         type: nextType,
         name: (body["name"] as string) ?? existing.name,
-        configJson: JSON.stringify(validatedConfig),
+        configJson: JSON.stringify(validatedConfig.data),
         enabled: existing.enabled,
       });
-      const fullyValidatedConfig = validateIntegrationConfig(descriptor.configSchema, validatedConfig, false);
+      const fullyValidatedConfig = validateIntegrationConfig(descriptor.configSchema, validatedConfig.data, false);
       let appliedAtRuntime = false;
-      if (updated.enabled && deps.pluginManager && fullyValidatedConfig) {
+      if (updated.enabled && deps.pluginManager && fullyValidatedConfig.ok) {
         await deps.pluginManager.reloadIntegration(id);
         appliedAtRuntime = true;
       }
@@ -700,21 +701,25 @@ function stripUnknownIntegrationConfig(
   return sanitized;
 }
 
-/** Validate a config object against a Zod schema, returning null when validation fails. */
+/**
+ * Validate a config object against a Zod schema.
+ * Returns `{ ok: true, data }` on success or `{ ok: false, message }` on failure
+ * with a human-readable summary of the validation issues.
+ */
 function validateIntegrationConfig(
   schema: z.ZodType<unknown>,
   config: Record<string, unknown>,
   partial: boolean
-): Record<string, unknown> | null {
+): { ok: true; data: Record<string, unknown> } | { ok: false; message: string } {
   const validationSchema = schema instanceof z.ZodObject
     ? (partial ? schema.strict().partial() : schema.strict())
     : schema;
   const validation = validationSchema.safeParse(config);
   if (!validation.success) {
-    return null;
+    return { ok: false, message: formatZodError(validation.error, "Invalid integration config") };
   }
 
-  return asRecord(validation.data);
+  return { ok: true, data: asRecord(validation.data) };
 }
 
 /** Serialize an Integration record to the admin API response shape with masked secrets. */

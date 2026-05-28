@@ -1,6 +1,105 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import type { z } from "zod";
 
 export const SECRET_MASK = "********";
+
+/**
+ * Convert a dotted/array path from a Zod issue into a human-readable label.
+ * Examples:
+ *   "agentId"                -> "Agent"
+ *   "ticketSource.integrationId" -> "Ticket source › Integration"
+ *   "pushTargets.0.repoKey"  -> "Push target #1 › Repository"
+ */
+function humanizeFieldPath(path: ReadonlyArray<string | number>): string {
+  if (path.length === 0) return "";
+  const friendly: Record<string, string> = {
+    agentId: "Agent",
+    name: "Name",
+    type: "Type",
+    integrationId: "Integration",
+    ticketProjectKey: "Ticket project",
+    repoKey: "Repository",
+    cloneUrl: "Clone URL",
+    targetBranch: "Target branch",
+    localPath: "Local path",
+    sshKeyPath: "SSH key path",
+    commitOrder: "Commit order",
+    role: "Role",
+    pushTargets: "Push targets",
+    ticketSource: "Ticket source",
+    reviewConfig: "Review config",
+    repoKeys: "Repositories",
+    modelConfig: "Model config",
+    maxConcurrent: "Max concurrent",
+    systemPromptId: "System prompt",
+    instructionsPromptId: "Instructions prompt",
+    postCloneScript: "Post-clone script",
+    agentOverrideJson: "Agent override (JSON)",
+    enabled: "Enabled",
+    baseUrl: "Base URL",
+    clientId: "Client ID",
+    clientSecret: "Client secret",
+    personalAccessToken: "Personal access token",
+    apiToken: "API token",
+    sessionToken: "Session token",
+    model: "Model",
+    webhookSecret: "Webhook secret",
+  };
+  const parts: string[] = [];
+  for (let i = 0; i < path.length; i++) {
+    const segment = path[i];
+    if (typeof segment === "number") {
+      parts[parts.length - 1] = `${parts[parts.length - 1] ?? "Item"} #${segment + 1}`;
+      continue;
+    }
+    if (segment === undefined) continue;
+    parts.push(friendly[segment] ?? segment);
+  }
+  return parts.join(" › ");
+}
+
+/**
+ * Format a ZodError into a single human-readable summary string, e.g.
+ *   "Agent is required — create and enable a coding agent first (Agents tab); Name: required"
+ * Issues with the same field message are de-duplicated.
+ */
+export function formatZodError(error: z.ZodError, fallback = "Invalid payload"): string {
+  const issues = error.issues;
+  if (!issues || issues.length === 0) return fallback;
+  const seen = new Set<string>();
+  const parts: string[] = [];
+  for (const issue of issues) {
+    const label = humanizeFieldPath(issue.path);
+    const message = issue.message && issue.message.trim().length > 0
+      ? issue.message
+      : "is invalid";
+    // If the message itself already mentions the field (or there's no field), just use the message.
+    const text = !label || message.toLowerCase().includes(label.toLowerCase())
+      ? message
+      : `${label}: ${message}`;
+    if (!seen.has(text)) {
+      seen.add(text);
+      parts.push(text);
+    }
+  }
+  return parts.join("; ");
+}
+
+/**
+ * Build a JSON error body for a failed Zod validation. The top-level `error`
+ * field is a human-readable summary listing the offending fields (so UIs
+ * that only display `error` still surface the actual problem). The
+ * machine-readable `details` field is retained for programmatic clients.
+ */
+export function zodErrorBody(
+  error: z.ZodError,
+  fallback = "Invalid payload"
+): { error: string; details: ReturnType<z.ZodError["flatten"]> } {
+  return {
+    error: formatZodError(error, fallback),
+    details: error.flatten(),
+  };
+}
 
 // ⚠️ SECURITY: Limit request body to 512 KB to prevent memory exhaustion attacks.
 const MAX_BODY_BYTES = 512 * 1024; // 512 KB

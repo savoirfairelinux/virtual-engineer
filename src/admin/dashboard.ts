@@ -4511,8 +4511,11 @@ async function adminFetch(path, method, body) {
       const errBody = await res.json();
       if (errBody && errBody.error) {
         errMsg = (errBody.message || errBody.error);
+        // Append field-level details only when the top-level error/message
+        // is generic (i.e. doesn't already mention the offending fields).
         const details = errBody.details;
-        if (details && typeof details === 'object') {
+        const looksDetailed = /[:›]/.test(errMsg);
+        if (!looksDetailed && details && typeof details === 'object') {
           const parts = [];
           if (Array.isArray(details.formErrors)) {
             for (const m of details.formErrors) if (m) parts.push(String(m));
