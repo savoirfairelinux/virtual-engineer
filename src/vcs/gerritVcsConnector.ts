@@ -388,7 +388,7 @@ export class GerritVcsConnector implements VcsConnector {
    * sincePatchset filtering.
    */
   async getUnresolvedComments(changeId: string): Promise<ReviewComment[]> {
-    return this.sshClient.getUnresolvedComments(changeId);
+    return this.sshClient.getUnresolvedComments(changeId, undefined, this.config.sshUser);
   }
 
   /**

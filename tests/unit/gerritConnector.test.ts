@@ -88,7 +88,7 @@ describe("GerritSshConnector", () => {
     const comments = await makeConnector().getUnresolvedComments(CHANGE_ID, 3);
 
     expect(comments).toBe(fakeComments);
-    expect(mockGetUnresolvedComments).toHaveBeenCalledWith(CHANGE_ID, 3);
+    expect(mockGetUnresolvedComments).toHaveBeenCalledWith(CHANGE_ID, 3, "ve");
   });
 
   it("posts change comments through gerrit review over SSH", async () => {

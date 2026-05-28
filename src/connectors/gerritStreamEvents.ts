@@ -54,6 +54,8 @@ interface GerritStreamHandle {
   stopRequested: boolean;
   /** True once the first byte of stdout data has been received (SSH handshake complete). */
   hasReceivedData: boolean;
+  /** Tail of the event-processing promise chain — serialises events and catches errors. */
+  processingChain: Promise<void>;
 }
 
 export interface GerritStreamEventsManagerOptions extends IntegrationEventStreamDependencies {
@@ -190,6 +192,7 @@ export class GerritStreamEventsManager implements IntegrationEventStreamManager 
       reconnectTimer: null,
       stopRequested: false,
       hasReceivedData: false,
+      processingChain: Promise.resolve(),
     };
     this.handles.set(integration.id, handle);
     this.statuses.set(integration.id, {
@@ -454,7 +457,11 @@ export class GerritStreamEventsManager implements IntegrationEventStreamManager 
     for (const line of lines) {
       const trimmed = line.trim();
       if (!trimmed) continue;
-      void this.processStreamLine(handle, trimmed);
+      handle.processingChain = handle.processingChain
+        .then(() => this.processStreamLine(handle, trimmed))
+        .catch((err: unknown) => {
+          log.error({ integrationId: handle.integration.id, err }, "error processing Gerrit stream event");
+        });
     }
   }
 
@@ -554,8 +561,6 @@ export class GerritStreamEventsManager implements IntegrationEventStreamManager 
         return;
       }
       case "comment-added":
-        // Comments do not trigger a new review — only patchset-created and
-        // reviewer-added should start a review cycle.
         await this.options.orchestrator.triggerFeedbackForChange(handle.integration.id, changeId);
         return;
     }
