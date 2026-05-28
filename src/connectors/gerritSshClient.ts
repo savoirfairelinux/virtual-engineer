@@ -238,8 +238,8 @@ export class GerritSshClient {
       // ── Top-level change messages (review postings via Reply) ─────────────
       const rawMessages = record["comments"];
       if (Array.isArray(rawMessages)) {
-        for (let i = 0; i < rawMessages.length; i++) {
-          const msg = SshCommentSchema.safeParse(rawMessages[i]);
+        for (const raw of rawMessages) {
+          const msg = SshCommentSchema.safeParse(raw);
           if (!msg.success) continue;
           if (sshUser && msg.data.reviewer?.username === sshUser) continue;
           if (SYSTEM_RE.test(msg.data.message)) continue;
@@ -249,7 +249,7 @@ export class GerritSshClient {
             .trim();
           if (!body) continue;
           result.push({
-            id: `ssh-msg-${msg.data.timestamp}-${i}`,
+            id: `gerrit-msg-${msg.data.timestamp}`,
             author: msg.data.reviewer?.email ?? msg.data.reviewer?.name ?? "unknown",
             message: body,
             filePath: undefined,

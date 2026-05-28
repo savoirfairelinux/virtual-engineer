@@ -269,7 +269,7 @@ describe("GerritSshClient", () => {
       expect(comments[0]!.filePath).toBeUndefined();
       expect(comments[0]!.line).toBeUndefined();
       expect(comments[0]!.unresolved).toBe(true);
-      expect(comments[0]!.id).toMatch(/^ssh-msg-/);
+      expect(comments[0]!.id).toMatch(/^gerrit-msg-/);
     });
 
     it("merges top-level change messages with inline currentPatchSet comments", async () => {
@@ -279,8 +279,8 @@ describe("GerritSshClient", () => {
       const comments = await makeClient().getUnresolvedComments("I8473");
 
       expect(comments).toHaveLength(2);
-      const inlineComment = comments.find((c) => c.id.startsWith("ssh-") && !c.id.startsWith("ssh-msg-"));
-      const changeMessage = comments.find((c) => c.id.startsWith("ssh-msg-"));
+      const inlineComment = comments.find((c) => c.id.startsWith("ssh-") && !c.id.startsWith("gerrit-msg-"));
+      const changeMessage = comments.find((c) => c.id.startsWith("gerrit-msg-"));
       expect(inlineComment).toBeDefined();
       expect(changeMessage).toBeDefined();
     });
@@ -358,7 +358,10 @@ describe("GerritSshClient", () => {
       expect(comments).toHaveLength(0);
     });
 
-    it("uses unique IDs for change messages with same timestamp", async () => {
+    it("deduplicates change messages with the same timestamp (id == timestamp)", async () => {
+      // Same-timestamp messages collapse to the same ID. This is intentional
+      // — it lets stream-event comments and SSH-polled comments dedupe naturally
+      // through the feedbackProcessor's processed_comments table.
       const msg1 = { ...BASE_CHANGE_MESSAGE, timestamp: 1710000100 };
       const msg2 = { ...BASE_CHANGE_MESSAGE, timestamp: 1710000100, reviewer: { name: "Bob", email: "bob@example.com", username: "bob" } };
       const row = makeChangeRow([], [msg1, msg2]);
@@ -367,7 +370,7 @@ describe("GerritSshClient", () => {
       const comments = await makeClient().getUnresolvedComments("I8473");
 
       expect(comments).toHaveLength(2);
-      expect(comments[0]!.id).not.toBe(comments[1]!.id);
+      expect(comments[0]!.id).toBe(comments[1]!.id);
     });
   });
 

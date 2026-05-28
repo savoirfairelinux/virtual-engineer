@@ -219,6 +219,61 @@ describe("GerritStreamEventsManager", () => {
     }));
   });
 
+  it("comment-added: injects stream-event comment payload into triggerFeedbackForChange", async () => {
+    // Regression: Gerrit `gerrit query --comments` does not reliably return
+    // top-level change messages, so the stream event payload is the authoritative
+    // source of feedback text for comment-added events.
+    const child = new FakeChildProcess();
+    const { manager, orchestrator } = createManager([child]);
+
+    await manager.reconcile([makeIntegration("gerrit-a")]);
+    child.emit("spawn");
+
+    child.stdout.write(
+      JSON.stringify({
+        type: "comment-added",
+        change: { id: "Ireview" },
+        author: { username: "alice", email: "alice@example.com" },
+        comment: "Patch Set 1:\n\nPlease add documentation for each function",
+        eventCreatedOn: 1710000500,
+      }) + "\n"
+    );
+    await flushAsyncWork();
+
+    expect(orchestrator.triggerFeedbackForChange).toHaveBeenCalledWith(
+      "gerrit-a",
+      "Ireview",
+      [expect.objectContaining({
+        id: "gerrit-msg-1710000500",
+        author: "alice@example.com",
+        message: "Please add documentation for each function",
+        unresolved: true,
+      })]
+    );
+  });
+
+  it("comment-added: skips stream-event comment authored by VE itself", async () => {
+    const child = new FakeChildProcess();
+    const { manager, orchestrator } = createManager([child]);
+
+    await manager.reconcile([makeIntegration("gerrit-a")]);
+    child.emit("spawn");
+
+    child.stdout.write(
+      JSON.stringify({
+        type: "comment-added",
+        change: { id: "Iself" },
+        author: { username: VE_SSH_USER },
+        comment: "Patch Set 1:\n\nUploaded a fix",
+        eventCreatedOn: 1710000600,
+      }) + "\n"
+    );
+    await flushAsyncWork();
+
+    // Falls through to 2-arg call (no stream comments injected)
+    expect(orchestrator.triggerFeedbackForChange).toHaveBeenCalledWith("gerrit-a", "Iself");
+  });
+
   it("starts and stops one listener per active Gerrit integration", async () => {
     const childA = new FakeChildProcess();
     const childB = new FakeChildProcess();
