@@ -1729,8 +1729,8 @@ function renderTasks() {
         '<div class="task-meta">' +
           '<div class="task-tags">' +
             (task.taskType === 'code-review' ? '<span class="badge" data-tone="neutral" style="font-size:10px">📝</span>' : '<span class="badge" data-tone="neutral" style="font-size:10px">⚙</span>') +
-            (ticketLink(task)
-              ? '<a href="' + esc(ticketLink(task)) + '" target="_blank" rel="noopener noreferrer" class="badge task-origin-badge badge-link">' + esc(taskOrigin) + '</a>'
+            (taskOriginLink(task)
+              ? '<a href="' + esc(taskOriginLink(task)) + '" target="_blank" rel="noopener noreferrer" class="badge task-origin-badge badge-link">' + esc(taskOrigin) + '</a>'
               : '<span class="badge task-origin-badge">' + esc(taskOrigin) + '</span>') +
             (reviewLink(task)
               ? '<a href="' + esc(reviewLink(task)) + '" target="_blank" rel="noopener noreferrer" class="badge badge-link" data-tone="' + tone(task.state) + '">' + esc(task.state) + '</a>'
@@ -1836,8 +1836,8 @@ function renderDetail() {
         renderTaskActionButtons() +
         '<span class="badge" data-tone="' + tone(task.state) + '">' + esc(task.state) + '</span>' +
       '</div>' +
-      (ticketLink(task)
-        ? '<a href="' + esc(ticketLink(task)) + '" target="_blank" rel="noopener noreferrer" class="detail-origin">' + esc(taskOrigin) + '</a>'
+      (taskOriginLink(task)
+        ? '<a href="' + esc(taskOriginLink(task)) + '" target="_blank" rel="noopener noreferrer" class="detail-origin">' + esc(taskOrigin) + '</a>'
         : '<span class="detail-origin">' + esc(taskOrigin) + '</span>') +
       '<span class="detail-title-text">' + esc(taskTitle) + '</span>' +
       '<div class="detail-subtitle">' + esc(detailSubtitle) + '</div>' +
@@ -4843,6 +4843,13 @@ function reviewLink(task) {
   // ⚠️ SECURITY: Block javascript: and data: URIs that could execute code if clicked
   if (/^javascript:/i.test(url) || /^data:/i.test(url)) return null;
   return url;
+}
+
+function taskOriginLink(task) {
+  // Code-review tasks have no originating ticket, so their origin badge links to the
+  // change / MR / PR. Code-gen tasks link the origin badge to the ticket; their state
+  // badge separately links to the review URL once the code is pushed.
+  return task.taskType === 'code-review' ? reviewLink(task) : ticketLink(task);
 }
 
 // ─── Phase 3: Agents Library + Projects ─────────────────────────────────────
