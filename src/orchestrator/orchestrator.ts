@@ -511,7 +511,10 @@ export class Orchestrator {
     log.info({ taskId: task.taskId, cycleNumber }, "starting agent cycle");
 
     task = await this.stateStore.transition(task.taskId, "AGENT_RUNNING");
-    const handle = await this.workspaceRunner.createWorkspace(task.taskId);
+    const handle = await this.workspaceRunner.createWorkspace(
+      task.taskId,
+      task.projectId ?? undefined
+    );
 
     try {
       if (!task.projectId || !this.projectMode || !this.workspaceRunner.prepareProjectWorkspace) {

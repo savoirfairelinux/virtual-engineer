@@ -366,6 +366,14 @@ export interface WorkspaceHandle {
   hostWorkspacePath: string;
   /** Docker image used for helper containers (clone, push, scripts) */
   containerImage: string;
+  /**
+   * When true, the home volume is a persistent per-project cache (Copilot CLI
+   * native modules, model caches, etc.) and must NOT be removed by
+   * destroyWorkspace. It is shared across all tasks for a given project so the
+   * agent can amortise startup cost and reuse cached responses, reducing the
+   * tokens needed for follow-up tickets on the same project.
+   */
+  persistentHomeVolume?: boolean | undefined;
 }
 
 export type ValidationStatus = "passed" | "failed" | "skipped";
@@ -428,8 +436,14 @@ export interface GerritPatchsetOptions {
 }
 
 export interface WorkspaceRunner {
-  /** Create a fresh ephemeral workspace directory/container for the agent */
-  createWorkspace(taskId: TaskId): Promise<WorkspaceHandle>;
+  /**
+   * Create a fresh ephemeral workspace volume for the agent. When `projectId`
+   * is provided, the agent HOME volume is reused across tasks of the same
+   * project (a persistent per-project cache) so Copilot CLI / native modules
+   * and prior context don't need to be re-downloaded each cycle. The
+   * workspace volume itself remains ephemeral.
+   */
+  createWorkspace(taskId: TaskId, projectId?: ProjectId | undefined): Promise<WorkspaceHandle>;
   /** Clone repository into the workspace — runs inside a helper container */
   cloneRepo(
     handle: WorkspaceHandle,

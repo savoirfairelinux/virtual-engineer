@@ -6,6 +6,7 @@ import type {
   AgentResult,
   TaskContext,
   TaskId,
+  ProjectId,
   CloneResult,
   GerritPatchsetOptions,
   ReviewWorkspaceInput,
@@ -177,16 +178,33 @@ export class DockerWorkspaceRunner implements WorkspaceRunner {
     });
   }
 
-  /** Create a new workspace/home Docker volume pair for the given task and return its handle. */
-  async createWorkspace(taskId: TaskId): Promise<WorkspaceHandle> {
+  /**
+   * Create a new workspace volume for the given task. The agent HOME volume
+   * is either ephemeral (per-task) or, when `projectId` is provided, a
+   * persistent named volume scoped to that project — acting as a cache of
+   * Copilot CLI native modules, model context, and other state so subsequent
+   * tickets on the same project warm up faster and consume fewer tokens.
+   */
+  async createWorkspace(taskId: TaskId, projectId?: ProjectId): Promise<WorkspaceHandle> {
     const suffix = randomUUID().slice(0, 8);
     const volumeName = `ve-ws-${taskId}-${suffix}`;
-    const homeVolumeName = `ve-home-${taskId}-${suffix}`;
+
+    const persistentHomeVolume = projectId !== undefined;
+    const homeVolumeName = persistentHomeVolume
+      ? projectHomeVolumeName(projectId!)
+      : `ve-home-${taskId}-${suffix}`;
 
     await createVolume(volumeName, "workspace");
-    await createVolume(homeVolumeName, "agent-home");
+    // docker volume create is idempotent — re-creating a per-project cache
+    // volume on subsequent cycles is a no-op and returns the existing name.
+    await createVolume(homeVolumeName, persistentHomeVolume ? "agent-home-project-cache" : "agent-home");
 
-    log.info({ taskId, volumeName, homeVolumeName }, "workspace volumes created");
+    log.info(
+      { taskId, projectId: projectId ?? null, volumeName, homeVolumeName, persistentHomeVolume },
+      persistentHomeVolume
+        ? "workspace created with persistent per-project home cache"
+        : "workspace volumes created"
+    );
 
     return {
       taskId,
@@ -195,6 +213,7 @@ export class DockerWorkspaceRunner implements WorkspaceRunner {
       homeVolumeName,
       hostWorkspacePath: "/workspace",
       containerImage: this.config.agentContainerImage,
+      ...(persistentHomeVolume ? { persistentHomeVolume: true } : {}),
     };
   }
 
@@ -616,15 +635,34 @@ export class DockerWorkspaceRunner implements WorkspaceRunner {
     return result.stdout;
   }
 
-  /** Remove the workspace and home Docker volumes associated with a handle. */
+  /**
+   * Remove the workspace volume associated with a handle. The home volume is
+   * also removed unless it is a persistent per-project cache, in which case
+   * it is preserved so the next cycle for the same project can reuse it.
+   */
   async destroyWorkspace(handle: WorkspaceHandle): Promise<void> {
-    log.info({ taskId: handle.taskId, volumeName: handle.volumeName, homeVolumeName: handle.homeVolumeName }, "destroying workspace volumes");
+    log.info(
+      {
+        taskId: handle.taskId,
+        volumeName: handle.volumeName,
+        homeVolumeName: handle.homeVolumeName,
+        persistentHomeVolume: handle.persistentHomeVolume === true,
+      },
+      "destroying workspace volumes"
+    );
     // Stop any containers still using the workspace volume (e.g. after an agent timeout)
     await stopContainersUsingVolume(handle.volumeName);
     try {
       await removeVolume(handle.volumeName);
     } catch (err) {
       log.warn({ taskId: handle.taskId, err }, "failed to remove workspace volume");
+    }
+    if (handle.persistentHomeVolume === true) {
+      log.debug(
+        { taskId: handle.taskId, homeVolumeName: handle.homeVolumeName },
+        "preserving persistent per-project home cache volume"
+      );
+      return;
     }
     try {
       await removeVolume(handle.homeVolumeName);
@@ -633,6 +671,29 @@ export class DockerWorkspaceRunner implements WorkspaceRunner {
     }
   }
 
+  /**
+   * Remove the persistent per-project home cache volume (best-effort).
+   * Intended for project deletion / reset flows. The volume must not be in
+   * use by a running container; callers should ensure no active cycle is
+   * running for the project before invoking.
+   */
+  async removeProjectHomeCache(projectId: ProjectId): Promise<void> {
+    const volumeName = projectHomeVolumeName(projectId);
+    try {
+      await removeVolume(volumeName);
+      log.info({ projectId, volumeName }, "removed persistent per-project home cache volume");
+    } catch (err) {
+      log.warn({ projectId, volumeName, err }, "failed to remove per-project home cache volume");
+    }
+  }
+
+}
+
+/** Deterministic, idempotent name for the per-project persistent home cache volume. */
+function projectHomeVolumeName(projectId: ProjectId): string {
+  // Docker volume names allow [a-zA-Z0-9][a-zA-Z0-9_.-]*; sanitise just in case.
+  const safe = String(projectId).replace(/[^a-zA-Z0-9_.-]/g, "-");
+  return `ve-home-project-${safe}`;
 }
 
 /** Return true when the adapter exposes the prompt-aware container spec builder. */

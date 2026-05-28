@@ -221,6 +221,14 @@ async function main(): Promise<void> {
           log.error({ err }, "hot-reload of runtime dependencies failed");
         });
       },
+      onProjectDeleted: async (projectId) => {
+        // Best-effort cleanup of the persistent per-project home cache volume.
+        try {
+          await workspaceRunner.removeProjectHomeCache(projectId);
+        } catch (err) {
+          log.warn({ err, projectId }, "failed to remove per-project home cache volume on delete");
+        }
+      },
       webhooks: {
         projectStore: stateStore,
         orchestrator: Object.assign(orchestrator, {

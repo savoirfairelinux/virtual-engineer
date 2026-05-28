@@ -79,6 +79,14 @@ export interface AdminServerDependencies {
   onIntegrationUpdated?: (integrationId: string) => void;
   /** Called after a project is created/updated/enabled/disabled/deleted. */
   onProjectChange?: () => void;
+  /** Called after a project is successfully deleted; removes the persistent home cache volume. */
+  onProjectDeleted?: (project: {
+    id: import("../interfaces.js").ProjectId;
+    homeCacheSeed: string;
+  }) => void | Promise<void>;
+  /** Reserve/release an exclusive block on a project for destructive admin operations. */
+  tryBlockProject?: (id: import("../interfaces.js").ProjectId) => boolean;
+  unblockProject?: (id: import("../interfaces.js").ProjectId) => void;
   /**
    * Webhook receiver. When provided, mounts `POST /webhooks/:integrationId/:event`
    * (HMAC secret is the auth) and admin routes for rotating the per-integration secret.
@@ -225,6 +233,9 @@ function buildApiRouter(dependencies: AdminServerDependencies): Router {
     projectStore: dependencies.projectStore,
     integrationStore: dependencies.integrationStore,
     onProjectChange: dependencies.onProjectChange,
+    onProjectDeleted: dependencies.onProjectDeleted,
+    tryBlockProject: dependencies.tryBlockProject,
+    unblockProject: dependencies.unblockProject,
   });
   registerConcurrencyRoutes(router, { concurrency: dependencies.concurrency });
   registerWebhookRoutes(router, {

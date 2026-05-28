@@ -71,6 +71,12 @@ export interface ProjectsRouteDeps {
   projectStore?: ProjectsRouteStore | undefined;
   integrationStore?: IntegrationStore | undefined;
   onProjectChange?: (() => void) | undefined;
+  onProjectDeleted?:
+    | ((project: { id: ProjectId; homeCacheSeed: string }) => void | Promise<void>)
+    | undefined;
+  /** Reserve an exclusive block before destructive project ops; returns false when a cycle is active. */
+  tryBlockProject?: ((id: ProjectId) => boolean) | undefined;
+  unblockProject?: ((id: ProjectId) => void) | undefined;
 }
 
 const pushTargetSchema = z.object({
@@ -516,14 +522,28 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
     const id = makeProjectId(params["id"] ?? "");
     const existing = await store.getProjectById(id);
     if (!existing) { writeJson(res, 404, { error: "Project not found" }); return; }
+    if (deps.tryBlockProject && !deps.tryBlockProject(id)) {
+      writeJson(res, 409, { error: "Project busy", message: "A cycle is running for this project" });
+      return;
+    }
     try {
       await store.deleteProject(id);
       res.statusCode = 204; res.end();
+      const deletedSeed = existing.homeCacheSeed;
+      if (deps.onProjectDeleted) {
+        void Promise.resolve(deps.onProjectDeleted({ id, homeCacheSeed: deletedSeed })).catch(
+          (cleanupErr: unknown) => {
+            log.warn({ err: cleanupErr, id }, "post-delete cleanup hook failed (non-fatal)");
+          }
+        );
+      }
       deps.onProjectChange?.();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       log.warn({ err, id }, "delete project failed");
       writeJson(res, 500, { error: msg });
+    } finally {
+      deps.unblockProject?.(id);
     }
   });
 }
