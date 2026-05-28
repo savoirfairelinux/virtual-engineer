@@ -40,6 +40,16 @@ const GIT_COMMITTER_NAME  = process.env.GIT_COMMITTER_NAME  || GIT_AUTHOR_NAME;
 const GIT_COMMITTER_EMAIL = process.env.GIT_COMMITTER_EMAIL || GIT_AUTHOR_EMAIL;
 const TASK_ID             = process.env.TASK_ID             || '';
 const MAX_COMMITS_PER_CYCLE = Number(process.env.MAX_COMMITS_PER_CYCLE) || 10;
+/** Change-Id to reuse for the root-repo's first commit on retry cycles (preserves Gerrit patchset continuity). */
+const ROOT_CHANGE_ID = process.env.ROOT_CHANGE_ID || null;
+/** Per-repo Change-Ids to reuse on retry cycles, keyed by repoKey (JSON object or null). */
+let PER_REPO_CHANGE_IDS = null;
+try {
+  const raw = process.env.PER_REPO_CHANGE_IDS_JSON || '';
+  if (raw) PER_REPO_CHANGE_IDS = JSON.parse(raw);
+} catch (_) {
+  process.stderr.write('Warning: failed to parse PER_REPO_CHANGE_IDS_JSON\n');
+}
 const REVIEW_MODE = process.env.REVIEW_MODE === '1';
 const USER_PROMPT_FILE = process.env.USER_PROMPT_FILE || '';
 const SYSTEM_PROMPT = process.env.SYSTEM_PROMPT || '';
@@ -241,9 +251,19 @@ function collectCommits(baseSha, cwd) {
     const changeIdMatch = /^Change-Id:\s+(I[0-9a-f]{40})\s*$/m.exec(body);
     const changeId = changeIdMatch ? changeIdMatch[1] : '';
 
-    // Get files changed in this commit
-    const diffOutput = git(['diff-tree', '--no-commit-id', '--name-only', '-r', sha], cwd);
-    const files = diffOutput.split('\n').map((f) => f.trim()).filter(Boolean);
+    // Get files changed in this commit.
+    // --root handles true root commits (no parent).
+    // Fallback: if diff-tree returns nothing (e.g. the parent is beyond the
+    // shallow-clone boundary after a patchset checkout), diff against baseSha
+    // directly — both refs are guaranteed to be present in the local store.
+    const diffOutput = git(['diff-tree', '--root', '--no-commit-id', '--name-only', '-r', sha], cwd);
+    let files = diffOutput.split('\n').map((f) => f.trim()).filter(Boolean);
+    if (files.length === 0) {
+      try {
+        const fallback = git(['diff', '--name-only', baseSha, sha], cwd);
+        files = fallback.split('\n').map((f) => f.trim()).filter(Boolean);
+      } catch (_) { /* ignore, leave files empty */ }
+    }
 
     // Determine repoKey based on file paths using the REPOSITORY_MAP
     // (superproject + submodules with localPath).
@@ -342,7 +362,7 @@ function deriveChangeId(taskId, repoKey, index, subject) {
  * @param {string} [cwd] - Optional working directory (for sub-repos).
  * @returns {Array} Updated commits array with changeId fields populated.
  */
-function injectChangeIds(baseSha, commits, cwd) {
+function injectChangeIds(baseSha, commits, cwd, existingChangeId = null) {
   if (commits.length === 0) return commits;
 
   const repoCwd = cwd || REPO_PATH;
@@ -352,12 +372,16 @@ function injectChangeIds(baseSha, commits, cwd) {
   if (!needsInjection) return commits;
 
   // Build a map of commit index → desired Change-Id for commits that lack one.
-  // Using the index (not subject) prevents collisions when two commits share the same subject.
+  // For the first commit (index 0), reuse existingChangeId when provided so that
+  // retry cycles produce a new patchset on the same Gerrit change rather than a
+  // brand-new change (the commit subject may differ across cycles).
   const changeIdByIndex = {};
   for (let i = 0; i < commits.length; i++) {
     const c = commits[i];
     if (!c.changeId) {
-      changeIdByIndex[i] = deriveChangeId(TASK_ID, c.repoKey, i, c.subject);
+      changeIdByIndex[i] = (i === 0 && existingChangeId)
+        ? existingChangeId
+        : deriveChangeId(TASK_ID, c.repoKey, i, c.subject);
     }
   }
 
@@ -865,7 +889,7 @@ async function main() {
         // For multi-repo workspaces, inject per-repo (rebase happens in each repo independently).
         if (TASK_ID) {
           if (hasRootCommits) {
-            rootCommits = injectChangeIds(baseSha, rootCommits);
+            rootCommits = injectChangeIds(baseSha, rootCommits, undefined, ROOT_CHANGE_ID);
           }
           for (const localPath of subRepoLocalPaths) {
             const subBase = subRepoBaseShas[localPath];
@@ -875,7 +899,9 @@ async function main() {
               return sub && c.repoKey === sub.repoKey;
             });
             if (subCommitsForPath.length > 0) {
-              const injected = injectChangeIds(subBase, subCommitsForPath, subPath);
+              const subRepoKey = REPOSITORY_MAP.submodules.find((s) => s.localPath === localPath)?.repoKey;
+              const subChangeId = PER_REPO_CHANGE_IDS && subRepoKey ? (PER_REPO_CHANGE_IDS[subRepoKey] || null) : null;
+              const injected = injectChangeIds(subBase, subCommitsForPath, subPath, subChangeId);
               // Replace sub-repo commits with injected versions
               const sub = REPOSITORY_MAP.submodules.find((s) => s.localPath === localPath);
               const repoKey = sub ? sub.repoKey : localPath;
