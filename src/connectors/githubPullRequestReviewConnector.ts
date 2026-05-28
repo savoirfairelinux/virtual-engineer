@@ -56,7 +56,7 @@ export interface GitHubPullRequestReviewConnectorConfig {
 // ─── Connector implementation ─────────────────────────────────────────────────
 
 /**
- * GitHubPullRequestReviewConnector — implements GerritConnector interface
+ * GitHubPullRequestReviewConnector — implements the ReviewConnector interface
  * against GitHub Pull Requests.
  *
  * changeId convention: the PR number stored as a string, e.g. "42".
