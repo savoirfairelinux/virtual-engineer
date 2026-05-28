@@ -58,15 +58,35 @@ function makeIntegration(id: string, overrides: Partial<Integration> = {}): Inte
 }
 
 /**
- * Build an sshQueryFn mock that simulates `gerrit query --all-reviewers`:
- * returns NDJSON with the given usernames in the allReviewers field.
+ * Build an sshQueryFn mock that dispatches by query shape:
+ *  - `--all-reviewers` (reviewer-check) → NDJSON with `allReviewers`
+ *  - `status:open reviewer:<user>` (backfill) → empty NDJSON (by default)
+ *
+ * Pass `backfillChangeIds` to make backfill return specific change IDs.
  */
-function makeSshReviewerQueryFn(reviewerUsernames: string[]) {
-  const ndjson = [
+function makeSshReviewerQueryFn(reviewerUsernames: string[], backfillChangeIds: string[] = []) {
+  const reviewerNdjson = [
     JSON.stringify({ number: 1, allReviewers: reviewerUsernames.map((u) => ({ username: u, name: u })) }),
     JSON.stringify({ type: "stats", rowCount: 1, runTimeMilliseconds: 1 }),
   ].join("\n");
-  return vi.fn(async (_args: string[], _config: Record<string, unknown>) => ndjson);
+  const backfillNdjson = [
+    ...backfillChangeIds.map((id) => JSON.stringify({ id, number: 1 })),
+    JSON.stringify({ type: "stats", rowCount: backfillChangeIds.length, runTimeMilliseconds: 1 }),
+  ].join("\n");
+  return vi.fn(async (args: string[], _config: Record<string, unknown>) => {
+    if (args.includes("--all-reviewers")) return reviewerNdjson;
+    return backfillNdjson;
+  });
+}
+
+/** Count sshQueryFn calls that match the `--all-reviewers` reviewer-check query. */
+function countReviewerChecks(spy: { mock: { calls: unknown[][] } }): number {
+  return spy.mock.calls.filter((call) => Array.isArray(call[0]) && (call[0] as string[]).includes("--all-reviewers")).length;
+}
+
+/** Count sshQueryFn calls that match the `status:open reviewer:<user>` backfill query. */
+function countBackfillQueries(spy: { mock: { calls: unknown[][] } }): number {
+  return spy.mock.calls.filter((call) => Array.isArray(call[0]) && (call[0] as string[]).some((a) => typeof a === "string" && a.startsWith("status:open reviewer:"))).length;
 }
 
 function createManager(
@@ -320,7 +340,7 @@ describe("GerritStreamEventsManager", () => {
     await flushAsyncWork();
 
     expect(orchestrator.triggerFeedbackForChange).toHaveBeenCalledWith("gerrit-a", "Ipatch");
-    expect(sshQuery).toHaveBeenCalledOnce();
+    expect(countReviewerChecks(sshQuery)).toBe(1);
     expect(reviewTrigger.triggerReviewForChange).toHaveBeenCalledTimes(1);
     expect(reviewTrigger.triggerReviewForChange).toHaveBeenCalledWith("gerrit-a", "Ipatch");
   });
@@ -343,8 +363,7 @@ describe("GerritStreamEventsManager", () => {
     await flushAsyncWork();
 
     expect(orchestrator.triggerFeedbackForChange).toHaveBeenCalledWith("gerrit-a", "Ipatch");
-    // SSH query must NOT be called for trivial kinds
-    expect(sshQuery).not.toHaveBeenCalled();
+    expect(countReviewerChecks(sshQuery)).toBe(0);
     expect(reviewTrigger.triggerReviewForChange).not.toHaveBeenCalled();
   });
 
@@ -363,7 +382,7 @@ describe("GerritStreamEventsManager", () => {
       );
       await flushAsyncWork();
 
-      expect(sshQuery).not.toHaveBeenCalled();
+      expect(countReviewerChecks(sshQuery)).toBe(0);
       expect(reviewTrigger.triggerReviewForChange).not.toHaveBeenCalled();
     }
   );
@@ -386,7 +405,7 @@ describe("GerritStreamEventsManager", () => {
     await flushAsyncWork();
 
     expect(orchestrator.triggerFeedbackForChange).toHaveBeenCalledWith("gerrit-a", "Ipatch");
-    expect(sshQuery).toHaveBeenCalledOnce();
+    expect(countReviewerChecks(sshQuery)).toBe(1);
     expect(reviewTrigger.triggerReviewForChange).not.toHaveBeenCalled();
   });
 
@@ -485,5 +504,134 @@ describe("GerritStreamEventsManager", () => {
     // Both events trigger review calls, but they are sequential (not concurrent).
     expect(reviewTrigger.triggerReviewForChange).toHaveBeenCalledTimes(2);
     expect(callOrder).toEqual(["review", "review"]);
+  });
+
+  describe("backfill on first stream-events connect", () => {
+    it("queries open reviews assigned to VE and triggers review for each on first connect", async () => {
+      const sshQuery = makeSshReviewerQueryFn([], ["Iassigned1", "Iassigned2", "Iassigned3"]);
+      const child = new FakeChildProcess();
+      const { manager, reviewTrigger } = createManager([child], sshQuery);
+
+      await manager.reconcile([makeIntegration("gerrit-a")]);
+      child.emit("spawn");
+      child.stdout.write(JSON.stringify({ type: "change-merged", change: { id: "Iother" } }) + "\n");
+      await flushAsyncWork();
+
+      expect(countBackfillQueries(sshQuery)).toBe(1);
+      expect(sshQuery.mock.calls[0]?.[0]).toEqual(["query", "--format", "JSON", `status:open reviewer:${VE_SSH_USER}`]);
+      expect(reviewTrigger.triggerReviewForChange).toHaveBeenCalledTimes(3);
+      expect(reviewTrigger.triggerReviewForChange).toHaveBeenCalledWith("gerrit-a", "Iassigned1");
+      expect(reviewTrigger.triggerReviewForChange).toHaveBeenCalledWith("gerrit-a", "Iassigned2");
+      expect(reviewTrigger.triggerReviewForChange).toHaveBeenCalledWith("gerrit-a", "Iassigned3");
+    });
+
+    it("runs at most once per integration (not on subsequent stdout chunks)", async () => {
+      const sshQuery = makeSshReviewerQueryFn([], ["Ionce"]);
+      const child = new FakeChildProcess();
+      const { manager } = createManager([child], sshQuery);
+
+      await manager.reconcile([makeIntegration("gerrit-a")]);
+      child.emit("spawn");
+      child.stdout.write(JSON.stringify({ type: "change-merged", change: { id: "I1" } }) + "\n");
+      await flushAsyncWork();
+      child.stdout.write(JSON.stringify({ type: "change-merged", change: { id: "I2" } }) + "\n");
+      await flushAsyncWork();
+
+      expect(countBackfillQueries(sshQuery)).toBe(1);
+    });
+
+    it("caps backfill at 20 changes and logs a warning when more are returned", async () => {
+      const tooMany = Array.from({ length: 25 }, (_, i) => `Itoo${i}`);
+      const sshQuery = makeSshReviewerQueryFn([], tooMany);
+      const child = new FakeChildProcess();
+      const { manager, reviewTrigger } = createManager([child], sshQuery);
+
+      await manager.reconcile([makeIntegration("gerrit-a")]);
+      child.emit("spawn");
+      child.stdout.write(JSON.stringify({ type: "change-merged", change: { id: "Iignored" } }) + "\n");
+      await flushAsyncWork();
+
+      expect(reviewTrigger.triggerReviewForChange).toHaveBeenCalledTimes(20);
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ integrationId: "gerrit-a", totalFound: 25, cap: 20 }),
+        expect.stringContaining("backfill capped")
+      );
+    });
+
+    it("does nothing on backfill query failure and logs a warning (does not throw)", async () => {
+      const failingSshQuery = vi.fn(async (args: string[]) => {
+        if (args.some((a) => a.startsWith("status:open reviewer:"))) {
+          throw new Error("SSH refused");
+        }
+        return "";
+      });
+      const child = new FakeChildProcess();
+      const { manager, reviewTrigger } = createManager([child], failingSshQuery);
+
+      await manager.reconcile([makeIntegration("gerrit-a")]);
+      child.emit("spawn");
+      child.stdout.write(JSON.stringify({ type: "change-merged", change: { id: "Iboot" } }) + "\n");
+      await flushAsyncWork();
+
+      expect(reviewTrigger.triggerReviewForChange).not.toHaveBeenCalled();
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ integrationId: "gerrit-a" }),
+        expect.stringContaining("backfill query failed")
+      );
+    });
+
+    it("logs info and skips trigger when no open reviews are assigned", async () => {
+      const sshQuery = makeSshReviewerQueryFn([], []);
+      const child = new FakeChildProcess();
+      const { manager, reviewTrigger } = createManager([child], sshQuery);
+
+      await manager.reconcile([makeIntegration("gerrit-a")]);
+      child.emit("spawn");
+      child.stdout.write(JSON.stringify({ type: "change-merged", change: { id: "Iboot" } }) + "\n");
+      await flushAsyncWork();
+
+      expect(reviewTrigger.triggerReviewForChange).not.toHaveBeenCalled();
+      expect(logger.info).toHaveBeenCalledWith(
+        expect.objectContaining({ integrationId: "gerrit-a", sshUser: VE_SSH_USER }),
+        expect.stringContaining("no assigned open reviews")
+      );
+    });
+
+    it("continues backfilling remaining changes if one triggerReviewForChange throws", async () => {
+      const sshQuery = makeSshReviewerQueryFn([], ["Iok1", "Ifail", "Iok2"]);
+      const child = new FakeChildProcess();
+      const { manager, reviewTrigger } = createManager([child], sshQuery);
+      reviewTrigger.triggerReviewForChange = vi.fn(async (_intId: string, changeId: string) => {
+        if (changeId === "Ifail") throw new Error("downstream boom");
+      });
+
+      await manager.reconcile([makeIntegration("gerrit-a")]);
+      child.emit("spawn");
+      child.stdout.write(JSON.stringify({ type: "change-merged", change: { id: "Iboot" } }) + "\n");
+      await flushAsyncWork();
+
+      expect(reviewTrigger.triggerReviewForChange).toHaveBeenCalledTimes(3);
+      expect(reviewTrigger.triggerReviewForChange).toHaveBeenCalledWith("gerrit-a", "Iok2");
+    });
+
+    it("does not backfill when no reviewTrigger is configured", async () => {
+      const sshQuery = makeSshReviewerQueryFn([], ["Iassigned"]);
+      const child = new FakeChildProcess();
+      const spawnProcess = vi.fn(() => child as unknown as ReturnType<typeof import("node:child_process").spawn>);
+      type SshQueryFnType = (args: string[], config: { sshHost: string; sshPort: number; sshUser: string; sshKeyPath: string }) => Promise<string>;
+      const manager = new GerritStreamEventsManager({
+        orchestrator: { triggerFeedbackForChange: vi.fn(), markChangeMerged: vi.fn(), markChangeAbandoned: vi.fn() },
+        getReviewTrigger: () => undefined,
+        spawnProcess: spawnProcess as unknown as typeof import("node:child_process").spawn,
+        sshQueryFn: sshQuery as unknown as SshQueryFnType,
+      });
+
+      await manager.reconcile([makeIntegration("gerrit-b")]);
+      child.emit("spawn");
+      child.stdout.write(JSON.stringify({ type: "change-merged", change: { id: "Iboot" } }) + "\n");
+      await flushAsyncWork();
+
+      expect(countBackfillQueries(sshQuery)).toBe(0);
+    });
   });
 });

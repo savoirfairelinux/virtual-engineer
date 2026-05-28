@@ -64,10 +64,13 @@ export interface GerritStreamEventsManagerOptions extends IntegrationEventStream
   sshQueryFn?: SshQueryFn;
 }
 
+const BACKFILL_MAX_CHANGES = 20;
+
 export class GerritStreamEventsManager implements IntegrationEventStreamManager {
   private readonly handles = new Map<string, GerritStreamHandle>();
   private readonly statuses = new Map<string, GerritStreamStatus>();
   private readonly desiredIntegrations = new Map<string, Integration>();
+  private readonly backfilledIntegrations = new Set<string>();
   private readonly reconnectDelayMs: number;
   private readonly maxReconnectAttempts: number;
   private readonly spawnProcess: typeof spawn;
@@ -90,6 +93,7 @@ export class GerritStreamEventsManager implements IntegrationEventStreamManager 
     for (const integrationId of [...this.handles.keys()]) {
       if (!this.desiredIntegrations.has(integrationId)) {
         this.stopHandle(integrationId, { removeStatus: true });
+        this.backfilledIntegrations.delete(integrationId);
       }
     }
 
@@ -148,6 +152,7 @@ export class GerritStreamEventsManager implements IntegrationEventStreamManager 
   /** Terminate all active stream-events SSH processes and clear state. */
   async stopAll(): Promise<void> {
     this.desiredIntegrations.clear();
+    this.backfilledIntegrations.clear();
     for (const integrationId of [...this.handles.keys()]) {
       this.stopHandle(integrationId, { removeStatus: true });
     }
@@ -355,6 +360,76 @@ export class GerritStreamEventsManager implements IntegrationEventStreamManager 
     }
   }
 
+  /**
+   * Backfill assigned open reviews on the integration's first successful
+   * connect. `stream-events` is real-time only — changes where VE was added
+   * as reviewer before the SSH stream connected would otherwise be missed.
+   *
+   * Capped at BACKFILL_MAX_CHANGES to avoid task-storms on first-config of
+   * a long-lived Gerrit account. Idempotent: triggerReviewForChange is
+   * gated by isReviewer() + startReviewTask() dedup downstream.
+   */
+  private async runBackfill(handle: GerritStreamHandle): Promise<void> {
+    const reviewTrigger = this.options.getReviewTrigger();
+    if (!reviewTrigger) {
+      return;
+    }
+    let changeIds: string[];
+    try {
+      const out = await this.sshQueryFn(
+        ["query", "--format", "JSON", `status:open reviewer:${handle.config.sshUser}`],
+        handle.config
+      );
+      const rows = out
+        .split("\n")
+        .map((l) => l.trim())
+        .filter((l) => l.startsWith("{"))
+        .map((l) => JSON.parse(l) as unknown)
+        .filter((o) => (o as Record<string, unknown>)["type"] !== "stats");
+      changeIds = rows
+        .map((row) => (row as Record<string, unknown>)["id"])
+        .filter((id): id is string => typeof id === "string" && id.length > 0);
+    } catch (err) {
+      log.warn(
+        { integrationId: handle.integration.id, err },
+        "Gerrit stream-events: backfill query failed — skipping initial review backfill"
+      );
+      return;
+    }
+
+    if (changeIds.length === 0) {
+      log.info(
+        { integrationId: handle.integration.id, sshUser: handle.config.sshUser },
+        "Gerrit stream-events: backfill found no assigned open reviews"
+      );
+      return;
+    }
+
+    const capped = changeIds.slice(0, BACKFILL_MAX_CHANGES);
+    if (changeIds.length > BACKFILL_MAX_CHANGES) {
+      log.warn(
+        { integrationId: handle.integration.id, totalFound: changeIds.length, cap: BACKFILL_MAX_CHANGES },
+        "Gerrit stream-events: backfill capped — extra open reviews will be picked up on next reviewer-added event"
+      );
+    } else {
+      log.info(
+        { integrationId: handle.integration.id, count: capped.length },
+        "Gerrit stream-events: backfilling assigned open reviews"
+      );
+    }
+
+    for (const changeId of capped) {
+      try {
+        await reviewTrigger.triggerReviewForChange(handle.integration.id, changeId);
+      } catch (err) {
+        log.warn(
+          { integrationId: handle.integration.id, changeId, err },
+          "Gerrit stream-events: backfill trigger failed for change — continuing with next"
+        );
+      }
+    }
+  }
+
   /** Append incoming stdout chunk to the line buffer and dispatch complete lines. */
   private consumeStdout(handle: GerritStreamHandle, chunk: string): void {
     if (!handle.hasReceivedData) {
@@ -368,6 +443,10 @@ export class GerritStreamEventsManager implements IntegrationEventStreamManager 
         { integrationId: handle.integration.id, integrationName: handle.integration.name, sshHost: handle.config.sshHost, sshPort: handle.config.sshPort },
         "Gerrit stream-events connected — listening for events"
       );
+      if (!this.backfilledIntegrations.has(handle.integration.id)) {
+        this.backfilledIntegrations.add(handle.integration.id);
+        void this.runBackfill(handle);
+      }
     }
     handle.stdoutBuffer += chunk;
     const lines = handle.stdoutBuffer.split("\n");
