@@ -98,7 +98,7 @@ export async function handlePromptsRoute(
 
     const agents = deps.agentStore ? await deps.agentStore.listAgents() : [];
     const usedBy = agents
-      .filter((a) => a.systemPromptId === promptId || a.instructionsPromptId === promptId)
+      .filter((a) => a.systemPromptId === promptId || a.instructionsPromptId === promptId || a.feedbackInstructionsPromptId === promptId)
       .map((a) => ({ id: a.id, name: a.name }));
     writeJson(response, 200, { promptId, agents: usedBy });
     return true;

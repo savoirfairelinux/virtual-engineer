@@ -26,8 +26,13 @@ Your input is a real engineering ticket. Treat it as implementation work, not on
 
 ## 5) Commit (local only)
 - Create atomic commits for logical units.
-- Use Conventional Commit messages (`type(scope): description`).
-- Commit via bash: `git -C /workspace add -A && git -C /workspace commit -m 'type(scope): description'`
+- Use Conventional Commit messages with **both a subject and a body**:
+  ```bash
+  git -C /workspace add -A
+  git -C /workspace commit -m 'type(scope): short imperative subject' \
+                            -m 'Explain WHAT changed and WHY in 2–4 sentences. Reference the ticket goal.'
+  ```
+- The body is mandatory — a subject-only commit is treated as missing.
 - Do not push.
 - Do not add Change-Id footer manually; Gerrit appends it automatically.
 

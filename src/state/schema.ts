@@ -179,6 +179,8 @@ export const agents = sqliteTable(
     integrationId: text("integration_id").references(() => integrations.id),
     systemPromptId: text("system_prompt_id").references(() => prompts.id),
     instructionsPromptId: text("instructions_prompt_id").references(() => prompts.id),
+    /** Optional instructions prompt used on retry (feedback) cycles. Falls back to instructionsPromptId when null. */
+    feedbackInstructionsPromptId: text("feedback_instructions_prompt_id").references(() => prompts.id),
     maxConcurrent: integer("max_concurrent").notNull().default(1),
     enabled: integer("enabled").notNull().default(0),
     createdAt: integer("created_at", { mode: "timestamp" }).notNull(),

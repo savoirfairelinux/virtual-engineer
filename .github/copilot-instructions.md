@@ -89,6 +89,7 @@ agent-worker/index.js   # JS entry inside the agent container
 - `change_per_repository` (TEXT `id` PK): `task_id`, `repo_key`, `change_id`, `review_url`, `status`, `integration_id`, `review_system`, `commit_index` (INTEGER NOT NULL DEFAULT 0), `subject_hash` (TEXT), timestamps. PK format: `${taskId}:${repoKey}:${commitIndex}` when commitIndex > 0, else `${taskId}:${repoKey}`. Status values: `OPEN`, `NEW`, `MERGED`, `ABANDONED`, `ORPHANED`, `NO_CHANGE`.
 - Phase 2 tables also exist and are live: `agents`, `projects`, `project_ticket_source`, `project_push_targets`, `project_review_integration`, `project_review_repos`, and singleton `app_concurrency`.
 - `agents.enabled` defaults to `0` (disabled), not `1`.
+- `agents.feedback_instructions_prompt_id` (nullable, FK → `prompts.id`) is an optional **per-agent override** used only on retry (feedback) cycles. When set on a coding agent, the orchestrator swaps it in as the instructions prompt for `cycleNumber > 1`; otherwise the regular `instructions_prompt_id` is reused. The seeded default prompt is `instructions_feedback_code` (from `prompts/instructions_feedback_code.md`).
 - All `created_at`/`updated_at` are stored as **seconds since epoch** (Drizzle `mode: "timestamp"`). Correct query: `datetime(created_at, 'unixepoch')`.
 
 Quick troubleshooting query:

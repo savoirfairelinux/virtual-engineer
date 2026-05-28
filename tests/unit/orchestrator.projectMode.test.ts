@@ -185,6 +185,7 @@ function makeAgentRecord(overrides: Partial<AgentRecord> = {}): AgentRecord {
     integrationId: "copilot-a",
     systemPromptId: null,
     instructionsPromptId: null,
+    feedbackInstructionsPromptId: null,
     maxConcurrent: 1,
     enabled: true,
     createdAt: new Date(),
@@ -477,6 +478,68 @@ describe("Orchestrator — Phase 4 project mode", () => {
     expect(context.agentSession.copilotModel).toBe("gpt-4o");
     expect(context.systemPromptId).toBe("project-system");
     expect(context.instructionsPromptId).toBe("project-instructions");
+  });
+
+  it("project-mode runAgentCycle swaps in feedbackInstructionsPromptId on retry cycles", async () => {
+    const stateStore = makeStateStore();
+    const ws = makeWorkspaceRunner();
+    const project = makeProject();
+    const projectAgent = {
+      name: "project-agent",
+      buildContainerSpec: vi.fn(() => ({ image: "x:latest", env: {}, command: [] })),
+      execute: vi.fn(),
+    } as unknown as AgentAdapter;
+    const agentRecord = makeAgentRecord({
+      integrationId: "copilot-project",
+      systemPromptId: "agent-system",
+      instructionsPromptId: "instructions-default",
+      feedbackInstructionsPromptId: "instructions-feedback",
+    });
+
+    const projectMode: ProjectModeDeps = {
+      projectStore: {
+        getProjectById: vi.fn(async () => project),
+        listProjectPushTargets: vi.fn(async () => [
+          makePushTarget({ id: 1, commitOrder: 1, localPath: ".", integrationId: "vcs-1", repoKey: "root" }),
+        ]),
+        getProjectTicketSource: vi.fn().mockResolvedValue({ integrationId: "redmine-int" }),
+        getProjectReviewConfig: vi.fn().mockResolvedValue(null),
+        getAgentById: vi.fn(async () => agentRecord),
+      },
+      pluginManager: {
+        getConnectorForIntegration: vi.fn((integrationId: string) => {
+          if (integrationId === "copilot-project") return projectAgent;
+          if (integrationId === "redmine-int") return makeRedmine();
+          return null;
+        }),
+      } as unknown as ProjectModeDeps["pluginManager"],
+      resolveVcsForIntegration: vi.fn(async () => ({
+        clone: vi.fn(),
+        push: vi.fn().mockResolvedValue({ changeId: "Iroot", url: "u-root", status: "OPEN" }),
+        pushDirect: vi.fn().mockResolvedValue({ changeId: "Iroot", url: "u-root", status: "OPEN" }),
+        getChangeStatus: vi.fn(),
+        buildPushSpec: vi.fn().mockReturnValue({ ref: "refs/for/main", topic: "VE-task-id" }),
+        useChangeIdContinuity: true,
+        reviewSystemLabel: "gerrit",
+      }) as unknown as VcsConnector),
+    };
+
+    const orch = new Orchestrator(baseConfig(), stateStore, ws, undefined, undefined, projectMode);
+
+    // First cycle (cycleCount=0 → cycleNumber=1): default instructions prompt.
+    const firstTask = makeTask({ state: "AGENT_RUNNING", cycleCount: 0 });
+    await (orch as unknown as { runAgentCycle: (t: Task) => Promise<void> }).runAgentCycle(firstTask);
+    const firstContext = vi.mocked(ws.runAgent).mock.calls[0]?.[1] as import("../../src/interfaces.js").TaskContext;
+    expect(firstContext.instructionsPromptId).toBe("instructions-default");
+
+    vi.mocked(ws.runAgent).mockClear();
+
+    // Retry cycle (cycleNumber=2): feedback instructions prompt swapped in.
+    vi.mocked(stateStore.incrementCycle).mockResolvedValueOnce(2);
+    const retryTask = makeTask({ state: "AGENT_RUNNING", cycleCount: 1 });
+    await (orch as unknown as { runAgentCycle: (t: Task) => Promise<void> }).runAgentCycle(retryTask);
+    const retryContext = vi.mocked(ws.runAgent).mock.calls[0]?.[1] as import("../../src/interfaces.js").TaskContext;
+    expect(retryContext.instructionsPromptId).toBe("instructions-feedback");
   });
 
   it("project-mode runAgentCycle records NO_CHANGE for a clean repo (best-effort)", async () => {

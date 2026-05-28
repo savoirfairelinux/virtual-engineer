@@ -569,7 +569,11 @@ export class Orchestrator {
         ...(projectAgentRuntime
           ? {
               systemPromptId: projectAgentRuntime.config.systemPromptId,
-              instructionsPromptId: projectAgentRuntime.config.instructionsPromptId,
+              // On retry cycles, swap in the feedback-specific instructions prompt when one is configured.
+              instructionsPromptId:
+                cycleNumber > 1 && projectAgentRuntime.config.feedbackInstructionsPromptId
+                  ? projectAgentRuntime.config.feedbackInstructionsPromptId
+                  : projectAgentRuntime.config.instructionsPromptId,
             }
           : {}),
         agentSession: {
