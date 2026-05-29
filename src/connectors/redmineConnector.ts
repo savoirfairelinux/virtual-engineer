@@ -86,9 +86,7 @@ export interface RedmineConnectorConfig {
 
 /** HTTP-based Redmine connector. Uses `X-Redmine-API-Key` for auth. */
 export class HttpRedmineConnector extends AbstractTicketConnector implements TicketConnector {
-  /** @inheritdoc */
   protected get inProgressStatusId(): number { return this.config.inProgressStatusId; }
-  /** @inheritdoc */
   protected get inReviewStatusId(): number { return this.config.inReviewStatusId; }
 
   private resolvedUserId: number | undefined;
