@@ -138,7 +138,18 @@ export class ReviewOrchestrator {
       const existing = await this.deps.stateStore.getTaskByTicketId(ticketId);
       if (existing && existing.taskType === "code-review" && !TERMINAL_STATES.has(existing.state)) {
         if (existing.currentPatchset === details.currentPatchset) {
-          tasks.push(existing);
+          // Only return the task to the caller (which will runReview on it)
+          // when it is idle. REVIEW_RUNNING / REVIEW_COMMENTING mean a run is
+          // already in flight; returning the task here would cause a second
+          // concurrent runReview and an InvalidTransition race.
+          if (existing.state === "REVIEW_PENDING" || existing.state === "REVIEW_WATCHING") {
+            tasks.push(existing);
+          } else {
+            log.debug(
+              { taskId: existing.taskId, state: existing.state, changeId: input.changeId },
+              "review already in flight — skipping duplicate trigger"
+            );
+          }
           continue;
         }
         // New patchset arrived while a task is still active.

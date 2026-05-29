@@ -247,6 +247,18 @@ describe("ReviewOrchestrator.startReviewTask", () => {
     expect(mocks.store.createReviewTask).not.toHaveBeenCalled();
   });
 
+  it.each(["REVIEW_RUNNING", "REVIEW_COMMENTING"] as const)(
+    "does NOT return task when a run is already in flight (%s)",
+    async (state) => {
+      const existing = makeTask({ state, currentPatchset: 2 });
+      mocks = makeMocks(existing);
+      const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+      const tasks = await orch.startReviewTask({ changeId: CHANGE_ID });
+      expect(tasks).toHaveLength(0);
+      expect(mocks.store.createReviewTask).not.toHaveBeenCalled();
+    }
+  );
+
   it("re-queues REVIEW_WATCHING task and updates patchset when a new patchset arrives", async () => {
     const existing = makeTask({ state: "REVIEW_WATCHING", currentPatchset: 1 });
     mocks = makeMocks(existing);
