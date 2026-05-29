@@ -27,7 +27,7 @@ import { ReviewOrchestrator } from "./review/reviewOrchestrator.js";
 import { mkdir } from "fs/promises";
 import type { Server } from "node:http";
 import type { AdminProviderSummary } from "./admin/adminServer.js";
-import type { AgentAdapter, Integration, IntegrationType, ProjectId, ProjectPushTargetRecord, ProjectRecord, ProjectReviewConfig, ProjectTicketSourceRecord, ReviewProvider, Task } from "./interfaces.js";
+import type { AgentAdapter, ConfigurableAdapter, Integration, IntegrationType, ProjectId, ProjectPushTargetRecord, ProjectRecord, ProjectReviewConfig, ProjectTicketSourceRecord, ReviewProvider, Task } from "./interfaces.js";
 import { makeTaskId, makeExternalChangeId } from "./interfaces.js";
 import { registerBuiltinPlugins } from "./plugins/init.js";
 import { PluginManager } from "./plugins/pluginManager.js";
@@ -681,34 +681,15 @@ function asOptionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
-/** Type guard: return true when `adapter` is a `CopilotAdapter` with `setDockerInvoker`. */
-function isCopilotAdapter(
-  adapter: AgentAdapter
-): adapter is AgentAdapter & {
-  setDockerInvoker: CopilotAdapter["setDockerInvoker"];
-  setPromptStore?: CopilotAdapter["setPromptStore"];
-} {
-  return adapter.name === "copilot"
-    && "setDockerInvoker" in adapter
-    && typeof adapter.setDockerInvoker === "function";
-}
-
-/** Wire the Copilot adapter to the Docker invoker and optional prompt store after construction or hot-reload. */
+/** Wire the adapter to its runtime dependencies if it implements ConfigurableAdapter. */
 function configureAgentAdapter(
   agentAdapter: AgentAdapter,
   stateStore: SqliteStateStore,
   workspaceRunner: DockerWorkspaceRunner
 ): void {
-  if (!isCopilotAdapter(agentAdapter)) {
-    return;
+  if ("configure" in agentAdapter && typeof (agentAdapter as ConfigurableAdapter).configure === "function") {
+    (agentAdapter as ConfigurableAdapter).configure({ store: stateStore, runner: workspaceRunner });
   }
-
-  if ("setPromptStore" in agentAdapter && typeof agentAdapter.setPromptStore === "function") {
-    agentAdapter.setPromptStore(stateStore);
-  }
-  agentAdapter.setDockerInvoker((context, authEnv, callbacks) =>
-    workspaceRunner.runAgentInDocker(agentAdapter, context, authEnv, callbacks)
-  );
 }
 
 /** Build the list of `AdminProviderSummary` entries shown in the admin UI's provider panel. */
