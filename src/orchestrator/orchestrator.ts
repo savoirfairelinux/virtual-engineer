@@ -912,7 +912,13 @@ export class Orchestrator {
       return;
     }
 
-    const comments = await reviewConnector.getUnresolvedComments(changeId);
+    // Fetch unresolved comments on the latest patchset only. Anchoring the
+    // review to the current patchset (instead of the root) prevents VE from
+    // repeatedly acting on stale comments from earlier patchsets.
+    const comments = await reviewConnector.getUnresolvedComments(
+      changeId,
+      task.currentPatchset
+    );
     // Also collect any failed CI check runs so the agent can fix them.
     const ciComments = reviewConnector.getCICheckFailures
       ? await reviewConnector.getCICheckFailures(changeId).catch((err: unknown) => {
