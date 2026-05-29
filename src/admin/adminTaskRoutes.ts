@@ -1,8 +1,8 @@
-import type { IncomingMessage, ServerResponse } from "node:http";
 import { getLogger } from "../logger.js";
 import { makeTaskId } from "../interfaces.js";
 import type { AgentCycle, StateTransition, Task } from "../interfaces.js";
 import { writeJson, toIsoTimestamp } from "./adminRouteUtils.js";
+import type { Router } from "./router.js";
 
 const log = getLogger("admin-tasks");
 
@@ -30,26 +30,12 @@ export interface TaskRouteDeps {
   } | undefined;
 }
 
-/**
- * Try to handle a task-route request. Returns true if the request was
- * handled (response sent), false otherwise.
- */
-export async function handleTasksRoute(
-  _request: IncomingMessage,
-  response: ServerResponse,
-  path: string,
-  method: string,
-  deps: TaskRouteDeps,
-): Promise<boolean> {
-  if (path === "/api/admin/tasks") {
-    if (method !== "GET") {
-      writeJson(response, 405, { error: "Method not allowed" });
-      return true;
-    }
+/** Register task routes on the given router. */
+export function registerTaskRoutes(router: Router, deps: TaskRouteDeps): void {
+  router.add("GET", "/api/admin/tasks", async (_req, res, _params) => {
     const tasks = await deps.stateStore.getAllTasks();
     const deduplicated = deduplicateByTicket(tasks)
       .sort((left, right) => right.updatedAt.getTime() - left.updatedAt.getTime());
-    // Augment each task with a fallback reviewUrl from change_per_repository (one batch query)
     const allChanges = await deps.stateStore.getChangesForTasks(deduplicated.map((t) => t.taskId));
     const cprReviewUrlByTaskId = new Map<string, string>();
     for (const c of allChanges) {
@@ -57,46 +43,19 @@ export async function handleTasksRoute(
         cprReviewUrlByTaskId.set(c.taskId, c.reviewUrl);
       }
     }
-    writeJson(response, 200, {
+    writeJson(res, 200, {
       tasks: deduplicated.map((t) => {
         const s = serializeTask(t);
         if (!s["reviewUrl"]) s["reviewUrl"] = cprReviewUrlByTaskId.get(t.taskId) ?? null;
         return s;
       }),
     });
-    return true;
-  }
+  });
 
-  const taskMatch = /^\/api\/admin\/tasks\/([^/]+)$/.exec(path);
-  if (taskMatch) {
-    if (method === "DELETE") {
-      const taskId = makeTaskId(decodeURIComponent(taskMatch[1] ?? ""));
-      try {
-        const taskToDelete = await deps.stateStore.getTask(taskId);
-        if (!taskToDelete) {
-          writeJson(response, 404, { error: "Task not found" });
-          return true;
-        }
-        await deps.stateStore.deleteTaskGroup(taskId);
-        writeJson(response, 200, { ok: true });
-      } catch (err: unknown) {
-        log.warn({ err }, "delete task failed");
-        const msg = err instanceof Error ? err.message : "Operation failed";
-        const status = msg.includes("non-terminal") ? 409 : 400;
-        writeJson(response, status, { error: msg });
-      }
-      return true;
-    }
-    if (method !== "GET") {
-      writeJson(response, 405, { error: "Method not allowed" });
-      return true;
-    }
-    const taskId = makeTaskId(decodeURIComponent(taskMatch[1] ?? ""));
+  router.add("GET", "/api/admin/tasks/:id", async (_req, res, params) => {
+    const taskId = makeTaskId(params["id"] ?? "");
     const task = await deps.stateStore.getTask(taskId);
-    if (!task) {
-      writeJson(response, 404, { error: "Task not found" });
-      return true;
-    }
+    if (!task) { writeJson(res, 404, { error: "Task not found" }); return; }
     const changesPerRepo = await deps.stateStore.getChangesForTask(taskId);
     const serialized = serializeTask(task) as Record<string, unknown>;
     serialized["changesPerRepo"] = changesPerRepo.map((c) => ({
@@ -108,108 +67,93 @@ export async function handleTasksRoute(
       commitIndex: c.commitIndex,
       subjectHash: c.subjectHash,
     }));
-    // Populate fallback reviewUrl from CPR when the task-level URL is not set
     if (!serialized["reviewUrl"]) {
       const firstUrl = changesPerRepo.find((c) => c.reviewUrl)?.reviewUrl;
       if (firstUrl) serialized["reviewUrl"] = firstUrl;
     }
-    writeJson(response, 200, { task: serialized });
-    return true;
-  }
+    writeJson(res, 200, { task: serialized });
+  });
 
-  const cyclesMatch = /^\/api\/admin\/tasks\/([^/]+)\/cycles$/.exec(path);
-  if (cyclesMatch) {
-    if (method !== "GET") {
-      writeJson(response, 405, { error: "Method not allowed" });
-      return true;
+  router.add("DELETE", "/api/admin/tasks/:id", async (_req, res, params) => {
+    const taskId = makeTaskId(params["id"] ?? "");
+    try {
+      const taskToDelete = await deps.stateStore.getTask(taskId);
+      if (!taskToDelete) { writeJson(res, 404, { error: "Task not found" }); return; }
+      await deps.stateStore.deleteTaskGroup(taskId);
+      writeJson(res, 200, { ok: true });
+    } catch (err: unknown) {
+      log.warn({ err }, "delete task failed");
+      const msg = err instanceof Error ? err.message : "Operation failed";
+      const status = msg.includes("non-terminal") ? 409 : 400;
+      writeJson(res, status, { error: msg });
     }
-    const taskId = makeTaskId(decodeURIComponent(cyclesMatch[1] ?? ""));
+  });
+
+  router.add("GET", "/api/admin/tasks/:id/cycles", async (_req, res, params) => {
+    const taskId = makeTaskId(params["id"] ?? "");
     const task = await deps.stateStore.getTask(taskId);
-    if (!task) {
-      writeJson(response, 404, { error: "Task not found" });
-      return true;
-    }
+    if (!task) { writeJson(res, 404, { error: "Task not found" }); return; }
     const cycles = await deps.stateStore.getAgentCycles(taskId);
-    writeJson(response, 200, { cycles: cycles.map(serializeCycle) });
-    return true;
-  }
+    writeJson(res, 200, { cycles: cycles.map(serializeCycle) });
+  });
 
-  const transitionsMatch = /^\/api\/admin\/tasks\/([^/]+)\/transitions$/.exec(path);
-  if (transitionsMatch) {
-    if (method !== "GET") {
-      writeJson(response, 405, { error: "Method not allowed" });
-      return true;
-    }
-    const taskId = makeTaskId(decodeURIComponent(transitionsMatch[1] ?? ""));
+  router.add("GET", "/api/admin/tasks/:id/transitions", async (_req, res, params) => {
+    const taskId = makeTaskId(params["id"] ?? "");
     const task = await deps.stateStore.getTask(taskId);
-    if (!task) {
-      writeJson(response, 404, { error: "Task not found" });
-      return true;
-    }
+    if (!task) { writeJson(res, 404, { error: "Task not found" }); return; }
     const transitions = await deps.stateStore.getStateTransitions(taskId);
-    writeJson(response, 200, { transitions: transitions.map(serializeTransition) });
-    return true;
-  }
+    writeJson(res, 200, { transitions: transitions.map(serializeTransition) });
+  });
 
-  const pauseMatch = /^\/api\/admin\/tasks\/([^/]+)\/pause$/.exec(path);
-  if (pauseMatch && method === "PATCH") {
-    const taskId = makeTaskId(decodeURIComponent(pauseMatch[1] ?? ""));
+  router.add("PATCH", "/api/admin/tasks/:id/pause", async (_req, res, params) => {
+    const taskId = makeTaskId(params["id"] ?? "");
     try {
       const task = await deps.stateStore.pauseTask(taskId);
-      writeJson(response, 200, { task: serializeTask(task) });
+      writeJson(res, 200, { task: serializeTask(task) });
     } catch (err: unknown) {
       log.warn({ err }, "pause task failed");
-      writeJson(response, 400, { error: "Operation failed" });
+      writeJson(res, 400, { error: "Operation failed" });
     }
-    return true;
-  }
+  });
 
-  const resumeMatch = /^\/api\/admin\/tasks\/([^/]+)\/resume$/.exec(path);
-  if (resumeMatch && method === "PATCH") {
-    const taskId = makeTaskId(decodeURIComponent(resumeMatch[1] ?? ""));
+  router.add("PATCH", "/api/admin/tasks/:id/resume", async (_req, res, params) => {
+    const taskId = makeTaskId(params["id"] ?? "");
     try {
       const task = await deps.stateStore.resumeTask(taskId);
       void deps.taskControl?.resumeTask(taskId).catch((err: unknown) => {
         log.error({ err, taskId }, "resume task workflow trigger failed");
       });
-      writeJson(response, 200, { task: serializeTask(task) });
+      writeJson(res, 200, { task: serializeTask(task) });
     } catch (err: unknown) {
       log.warn({ err }, "resume task failed");
-      writeJson(response, 400, { error: "Operation failed" });
+      writeJson(res, 400, { error: "Operation failed" });
     }
-    return true;
-  }
+  });
 
-  const retryMatch = /^\/api\/admin\/tasks\/([^/]+)\/retry$/.exec(path);
-  if (retryMatch && method === "POST") {
-    const taskId = makeTaskId(decodeURIComponent(retryMatch[1] ?? ""));
+  router.add("POST", "/api/admin/tasks/:id/retry", async (_req, res, params) => {
+    const taskId = makeTaskId(params["id"] ?? "");
     try {
       const task = await deps.stateStore.retryTask(taskId);
       void deps.taskControl?.retryTask(taskId).catch((err: unknown) => {
         log.error({ err, taskId }, "retry task workflow trigger failed");
       });
-      writeJson(response, 200, { task: serializeTask(task) });
+      writeJson(res, 200, { task: serializeTask(task) });
     } catch (err: unknown) {
       log.warn({ err }, "retry task failed");
-      writeJson(response, 400, { error: "Operation failed" });
+      writeJson(res, 400, { error: "Operation failed" });
     }
-    return true;
-  }
+  });
 
-  const abandonMatch = /^\/api\/admin\/tasks\/([^/]+)\/abandon$/.exec(path);
-  if (abandonMatch && method === "POST") {
-    const taskId = makeTaskId(decodeURIComponent(abandonMatch[1] ?? ""));
+  router.add("POST", "/api/admin/tasks/:id/abandon", async (_req, res, params) => {
+    const taskId = makeTaskId(params["id"] ?? "");
     try {
       const task = await deps.stateStore.abandonTask(taskId);
-      writeJson(response, 200, { task: serializeTask(task) });
+      writeJson(res, 200, { task: serializeTask(task) });
     } catch (err: unknown) {
       log.warn({ err }, "abandon task failed");
-      writeJson(response, 400, { error: "Operation failed" });
+      writeJson(res, 400, { error: "Operation failed" });
     }
-    return true;
-  }
-
-  return false;
+  });
 }
 
 // ─── Serializers & helpers (exported for SSE streams & events route) ────────

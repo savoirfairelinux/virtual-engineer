@@ -1,5 +1,5 @@
-import type { IncomingMessage, ServerResponse } from "node:http";
 import { writeJson } from "./adminRouteUtils.js";
+import type { Router } from "./router.js";
 
 export interface ConcurrencyRouteDeps {
   concurrency?: {
@@ -8,31 +8,13 @@ export interface ConcurrencyRouteDeps {
   } | undefined;
 }
 
-/**
- * Try to handle a concurrency-route request. Returns true if the request was
- * handled (response sent), false otherwise.
- */
-export async function handleConcurrencyRoute(
-  _request: IncomingMessage,
-  response: ServerResponse,
-  path: string,
-  method: string,
-  deps: ConcurrencyRouteDeps,
-): Promise<boolean> {
-  if (path !== "/api/admin/concurrency") {
-    return false;
-  }
-
-  if (!deps.concurrency) {
-    writeJson(response, 501, { error: "Concurrency tracker not available" });
-    return true;
-  }
-
-  if (method === "GET") {
-    writeJson(response, 200, { snapshot: deps.concurrency.snapshot() });
-    return true;
-  }
-
-  writeJson(response, 405, { error: "Method not allowed" });
-  return true;
+/** Register concurrency routes on the given router. */
+export function registerConcurrencyRoutes(router: Router, deps: ConcurrencyRouteDeps): void {
+  router.add("GET", "/api/admin/concurrency", async (_req, res, _params) => {
+    if (!deps.concurrency) {
+      writeJson(res, 501, { error: "Concurrency tracker not available" });
+      return;
+    }
+    writeJson(res, 200, { snapshot: deps.concurrency.snapshot() });
+  });
 }

@@ -1,4 +1,3 @@
-import type { IncomingMessage, ServerResponse } from "node:http";
 import { z } from "zod";
 import { getLogger } from "../logger.js";
 import { writeJson, readBody, zodErrorBody } from "./adminRouteUtils.js";
@@ -17,6 +16,7 @@ import {
   type ProjectType,
   type PushTargetRole,
 } from "../interfaces.js";
+import type { Router } from "./router.js";
 
 const log = getLogger("admin-projects");
 
@@ -343,26 +343,11 @@ function isUniqueConflict(err: unknown): boolean {
   return m.includes("already claimed by project") || /UNIQUE constraint/i.test(m);
 }
 
-/**
- * Try to handle a projects-route request. Returns true if the request was
- * handled (response sent), false otherwise.
- */
-export async function handleProjectsRoute(
-  request: IncomingMessage,
-  response: ServerResponse,
-  path: string,
-  method: string,
-  deps: ProjectsRouteDeps
-): Promise<boolean> {
-  if (!path.startsWith("/api/admin/projects")) return false;
-
-  if (!deps.projectStore) {
-    writeJson(response, 501, { error: "Project store not available" });
-    return true;
-  }
-  const store = deps.projectStore;
-
-  if (path === "/api/admin/projects" && method === "GET") {
+/** Register project routes on the given router. */
+export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): void {
+  router.add("GET", "/api/admin/projects", async (_req, res, _params) => {
+    if (!deps.projectStore) { writeJson(res, 501, { error: "Project store not available" }); return; }
+    const store = deps.projectStore;
     const projects = await store.listProjects();
     const integrations = await loadIntegrationsLookup(deps.integrationStore);
     const agentsById = new Map<string, AgentRecord>();
@@ -370,57 +355,37 @@ export async function handleProjectsRoute(
     for (const p of projects) {
       summaries.push(await buildProjectSummary(p, store, integrations, agentsById));
     }
-    writeJson(response, 200, { projects: summaries });
-    return true;
-  }
+    writeJson(res, 200, { projects: summaries });
+  });
 
-  if (path === "/api/admin/projects" && method === "POST") {
-    const body = await readBody(request);
-    if (!body) {
-      writeJson(response, 400, { error: "Request body required" });
-      return true;
-    }
+  router.add("POST", "/api/admin/projects", async (req, res, _params) => {
+    if (!deps.projectStore) { writeJson(res, 501, { error: "Project store not available" }); return; }
+    const store = deps.projectStore;
+    const body = await readBody(req);
+    if (!body) { writeJson(res, 400, { error: "Request body required" }); return; }
     const parsed = projectCreateSchema.safeParse(body);
-    if (!parsed.success) {
-      writeJson(response, 400, zodErrorBody(parsed.error, "Invalid project payload"));
-      return true;
-    }
+    if (!parsed.success) { writeJson(res, 400, zodErrorBody(parsed.error, "Invalid project payload")); return; }
     const data = parsed.data;
     const agent = await store.getAgentById(makeAgentId(data.agentId));
-    if (!agent) {
-      writeJson(response, 400, { error: `Agent not found: ${data.agentId}` });
-      return true;
-    }
+    if (!agent) { writeJson(res, 400, { error: `Agent not found: ${data.agentId}` }); return; }
     if (agent.type !== data.type) {
-      writeJson(response, 400, {
-        error: `Agent type mismatch: agent is '${agent.type}', project is '${data.type}'`,
-      });
-      return true;
+      writeJson(res, 400, { error: `Agent type mismatch: agent is '${agent.type}', project is '${data.type}'` }); return;
     }
-
-    // Pre-flight conflict check (coding projects only)
     if (data.type === "coding") {
-      const conflict = await store.findProjectByTicketSource(
-        data.ticketSource.integrationId,
-        data.ticketSource.ticketProjectKey
-      );
+      const conflict = await store.findProjectByTicketSource(data.ticketSource.integrationId, data.ticketSource.ticketProjectKey);
       if (conflict) {
-        writeJson(response, 409, {
+        writeJson(res, 409, {
           error: "Conflict",
           message: `Ticket source (${data.ticketSource.integrationId}, ${data.ticketSource.ticketProjectKey}) is already claimed by project '${conflict.name}' (${conflict.id})`,
-          conflictingProjectId: conflict.id,
-          conflictingProjectName: conflict.name,
-        });
-        return true;
+          conflictingProjectId: conflict.id, conflictingProjectName: conflict.name,
+        }); return;
       }
     }
-
     let project: ProjectRecord;
     try {
       project = await store.createProject({
         ...(data.id !== undefined ? { id: data.id } : {}),
-        name: data.name,
-        type: data.type,
+        name: data.name, type: data.type,
         agentId: makeAgentId(data.agentId),
         ...(data.agentOverrideJson !== undefined ? { agentOverrideJson: data.agentOverrideJson } : {}),
         ...(data.postCloneScript !== undefined ? { postCloneScript: data.postCloneScript } : {}),
@@ -429,10 +394,8 @@ export async function handleProjectsRoute(
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       log.warn({ err }, "create project failed");
-      writeJson(response, 500, { error: msg });
-      return true;
+      writeJson(res, 500, { error: msg }); return;
     }
-
     try {
       if (data.type === "coding") {
         const cloneUrlError = await validatePushTargetCloneUrls(data.pushTargets, deps.integrationStore);
@@ -447,180 +410,122 @@ export async function handleProjectsRoute(
         await store.setProjectReviewConfig(project.id, data.reviewConfig.integrationId, data.reviewConfig.repoKeys);
       }
     } catch (err: unknown) {
-      // Best-effort rollback
       try { await store.deleteProject(project.id); } catch { /* ignore */ }
       const msg = err instanceof Error ? err.message : String(err);
       const status = isUniqueConflict(err) ? 409 : 500;
       log.warn({ err, projectId: project.id }, "attach project children failed");
-      writeJson(response, status, { error: status === 409 ? "Conflict" : "Failed to create project", message: msg });
-      return true;
+      writeJson(res, status, { error: status === 409 ? "Conflict" : "Failed to create project", message: msg }); return;
     }
-
     const integrations = await loadIntegrationsLookup(deps.integrationStore);
     const detail = await buildProjectDetail(project, store, integrations);
-    writeJson(response, 201, { project: detail });
+    writeJson(res, 201, { project: detail });
     deps.onProjectChange?.();
-    return true;
-  }
+  });
 
-  const idMatch = /^\/api\/admin\/projects\/([^/]+)$/.exec(path);
-  if (idMatch) {
-    const id = makeProjectId(decodeURIComponent(idMatch[1] ?? ""));
+  // enable/disable must be registered before :id to avoid :id capturing "enable"/"disable"
+  router.add("PATCH", "/api/admin/projects/:id/enable", async (_req, res, params) => {
+    if (!deps.projectStore) { writeJson(res, 501, { error: "Project store not available" }); return; }
+    const store = deps.projectStore;
+    const id = makeProjectId(params["id"] ?? "");
     const existing = await store.getProjectById(id);
-
-    if (method === "GET") {
-      if (!existing) {
-        writeJson(response, 404, { error: "Project not found" });
-        return true;
-      }
-      const integrations = await loadIntegrationsLookup(deps.integrationStore);
-      const detail = await buildProjectDetail(existing, store, integrations);
-      writeJson(response, 200, { project: detail });
-      return true;
-    }
-
-    if (method === "PUT") {
-      if (!existing) {
-        writeJson(response, 404, { error: "Project not found" });
-        return true;
-      }
-      const body = await readBody(request);
-      if (!body) {
-        writeJson(response, 400, { error: "Request body required" });
-        return true;
-      }
-      const parsed = projectUpdateSchema.safeParse(body);
-      if (!parsed.success) {
-        writeJson(response, 400, zodErrorBody(parsed.error, "Invalid project payload"));
-        return true;
-      }
-      const data = parsed.data;
-
-      // Validate agent type match if agentId changes
-      if (data.agentId !== undefined) {
-        const agent = await store.getAgentById(makeAgentId(data.agentId));
-        if (!agent) {
-          writeJson(response, 400, { error: `Agent not found: ${data.agentId}` });
-          return true;
-        }
-        if (agent.type !== existing.type) {
-          writeJson(response, 400, {
-            error: `Agent type mismatch: agent is '${agent.type}', project is '${existing.type}'`,
-          });
-          return true;
-        }
-      }
-
-      const updates: Parameters<ProjectsRouteStore["updateProject"]>[1] = {};
-      if (data.name !== undefined) updates.name = data.name;
-      if (data.agentId !== undefined) updates.agentId = makeAgentId(data.agentId);
-      if (data.agentOverrideJson !== undefined) updates.agentOverrideJson = data.agentOverrideJson;
-      if (data.postCloneScript !== undefined) updates.postCloneScript = data.postCloneScript;
-      if (data.enabled !== undefined) updates.enabled = data.enabled;
-
-      try {
-        if (Object.keys(updates).length > 0) {
-          await store.updateProject(id, updates);
-        }
-        if (data.ticketSource !== undefined) {
-          if (existing.type !== "coding") {
-            writeJson(response, 400, { error: "ticketSource only valid for coding projects" });
-            return true;
-          }
-          await store.setProjectTicketSource(id, data.ticketSource);
-        }
-        if (data.pushTargets !== undefined) {
-          if (existing.type !== "coding") {
-            writeJson(response, 400, { error: "pushTargets only valid for coding projects" });
-            return true;
-          }
-          const cloneUrlError = await validatePushTargetCloneUrls(data.pushTargets, deps.integrationStore);
-          if (cloneUrlError) {
-            writeJson(response, 400, { error: cloneUrlError });
-            return true;
-          }
-          await store.replaceProjectPushTargets(id, data.pushTargets);
-        }
-        if (data.reviewConfig !== undefined) {
-          if (existing.type !== "review") {
-            writeJson(response, 400, { error: "reviewConfig only valid for review projects" });
-            return true;
-          }
-          await store.setProjectReviewConfig(id, data.reviewConfig.integrationId, data.reviewConfig.repoKeys);
-        }
-      } catch (err: unknown) {
-        const status = isUniqueConflict(err) ? 409 : 500;
-        const msg = err instanceof Error ? err.message : String(err);
-        log.warn({ err, id }, "update project children failed");
-        writeJson(response, status, { error: status === 409 ? "Conflict" : "Update failed", message: msg });
-        return true;
-      }
-
-      const refreshed = await store.getProjectById(id);
-      if (!refreshed) {
-        writeJson(response, 500, { error: "Project disappeared after update" });
-        return true;
-      }
-      const integrations = await loadIntegrationsLookup(deps.integrationStore);
-      const detail = await buildProjectDetail(refreshed, store, integrations);
-      writeJson(response, 200, { project: detail });
-      deps.onProjectChange?.();
-      return true;
-    }
-
-    if (method === "DELETE") {
-      if (!existing) {
-        writeJson(response, 404, { error: "Project not found" });
-        return true;
-      }
-      try {
-        await store.deleteProject(id);
-        response.statusCode = 204;
-        response.end();
-        deps.onProjectChange?.();
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        log.warn({ err, id }, "delete project failed");
-        writeJson(response, 500, { error: msg });
-      }
-      return true;
-    }
-
-    writeJson(response, 405, { error: "Method not allowed" });
-    return true;
-  }
-
-  const enableMatch = /^\/api\/admin\/projects\/([^/]+)\/enable$/.exec(path);
-  if (enableMatch && method === "PATCH") {
-    const id = makeProjectId(decodeURIComponent(enableMatch[1] ?? ""));
-    const existing = await store.getProjectById(id);
-    if (!existing) {
-      writeJson(response, 404, { error: "Project not found" });
-      return true;
-    }
+    if (!existing) { writeJson(res, 404, { error: "Project not found" }); return; }
     await store.setProjectEnabled(id, true);
-    response.statusCode = 204;
-    response.end();
+    res.statusCode = 204; res.end();
     deps.onProjectChange?.();
-    return true;
-  }
+  });
 
-  const disableMatch = /^\/api\/admin\/projects\/([^/]+)\/disable$/.exec(path);
-  if (disableMatch && method === "PATCH") {
-    const id = makeProjectId(decodeURIComponent(disableMatch[1] ?? ""));
+  router.add("PATCH", "/api/admin/projects/:id/disable", async (_req, res, params) => {
+    if (!deps.projectStore) { writeJson(res, 501, { error: "Project store not available" }); return; }
+    const store = deps.projectStore;
+    const id = makeProjectId(params["id"] ?? "");
     const existing = await store.getProjectById(id);
-    if (!existing) {
-      writeJson(response, 404, { error: "Project not found" });
-      return true;
-    }
+    if (!existing) { writeJson(res, 404, { error: "Project not found" }); return; }
     await store.setProjectEnabled(id, false);
-    response.statusCode = 204;
-    response.end();
+    res.statusCode = 204; res.end();
     deps.onProjectChange?.();
-    return true;
-  }
+  });
 
-  return false;
+  router.add("GET", "/api/admin/projects/:id", async (_req, res, params) => {
+    if (!deps.projectStore) { writeJson(res, 501, { error: "Project store not available" }); return; }
+    const store = deps.projectStore;
+    const id = makeProjectId(params["id"] ?? "");
+    const existing = await store.getProjectById(id);
+    if (!existing) { writeJson(res, 404, { error: "Project not found" }); return; }
+    const integrations = await loadIntegrationsLookup(deps.integrationStore);
+    const detail = await buildProjectDetail(existing, store, integrations);
+    writeJson(res, 200, { project: detail });
+  });
+
+  router.add("PUT", "/api/admin/projects/:id", async (req, res, params) => {
+    if (!deps.projectStore) { writeJson(res, 501, { error: "Project store not available" }); return; }
+    const store = deps.projectStore;
+    const id = makeProjectId(params["id"] ?? "");
+    const existing = await store.getProjectById(id);
+    if (!existing) { writeJson(res, 404, { error: "Project not found" }); return; }
+    const body = await readBody(req);
+    if (!body) { writeJson(res, 400, { error: "Request body required" }); return; }
+    const parsed = projectUpdateSchema.safeParse(body);
+    if (!parsed.success) { writeJson(res, 400, zodErrorBody(parsed.error, "Invalid project payload")); return; }
+    const data = parsed.data;
+    if (data.agentId !== undefined) {
+      const agent = await store.getAgentById(makeAgentId(data.agentId));
+      if (!agent) { writeJson(res, 400, { error: `Agent not found: ${data.agentId}` }); return; }
+      if (agent.type !== existing.type) {
+        writeJson(res, 400, { error: `Agent type mismatch: agent is '${agent.type}', project is '${existing.type}'` }); return;
+      }
+    }
+    const updates: Parameters<ProjectsRouteStore["updateProject"]>[1] = {};
+    if (data.name !== undefined) updates.name = data.name;
+    if (data.agentId !== undefined) updates.agentId = makeAgentId(data.agentId);
+    if (data.agentOverrideJson !== undefined) updates.agentOverrideJson = data.agentOverrideJson;
+    if (data.postCloneScript !== undefined) updates.postCloneScript = data.postCloneScript;
+    if (data.enabled !== undefined) updates.enabled = data.enabled;
+    try {
+      if (Object.keys(updates).length > 0) await store.updateProject(id, updates);
+      if (data.ticketSource !== undefined) {
+        if (existing.type !== "coding") { writeJson(res, 400, { error: "ticketSource only valid for coding projects" }); return; }
+        await store.setProjectTicketSource(id, data.ticketSource);
+      }
+      if (data.pushTargets !== undefined) {
+        if (existing.type !== "coding") { writeJson(res, 400, { error: "pushTargets only valid for coding projects" }); return; }
+        const cloneUrlError = await validatePushTargetCloneUrls(data.pushTargets, deps.integrationStore);
+        if (cloneUrlError) { writeJson(res, 400, { error: cloneUrlError }); return; }
+        await store.replaceProjectPushTargets(id, data.pushTargets);
+      }
+      if (data.reviewConfig !== undefined) {
+        if (existing.type !== "review") { writeJson(res, 400, { error: "reviewConfig only valid for review projects" }); return; }
+        await store.setProjectReviewConfig(id, data.reviewConfig.integrationId, data.reviewConfig.repoKeys);
+      }
+    } catch (err: unknown) {
+      const status = isUniqueConflict(err) ? 409 : 500;
+      const msg = err instanceof Error ? err.message : String(err);
+      log.warn({ err, id }, "update project children failed");
+      writeJson(res, status, { error: status === 409 ? "Conflict" : "Update failed", message: msg }); return;
+    }
+    const refreshed = await store.getProjectById(id);
+    if (!refreshed) { writeJson(res, 500, { error: "Project disappeared after update" }); return; }
+    const integrations = await loadIntegrationsLookup(deps.integrationStore);
+    const detail = await buildProjectDetail(refreshed, store, integrations);
+    writeJson(res, 200, { project: detail });
+    deps.onProjectChange?.();
+  });
+
+  router.add("DELETE", "/api/admin/projects/:id", async (_req, res, params) => {
+    if (!deps.projectStore) { writeJson(res, 501, { error: "Project store not available" }); return; }
+    const store = deps.projectStore;
+    const id = makeProjectId(params["id"] ?? "");
+    const existing = await store.getProjectById(id);
+    if (!existing) { writeJson(res, 404, { error: "Project not found" }); return; }
+    try {
+      await store.deleteProject(id);
+      res.statusCode = 204; res.end();
+      deps.onProjectChange?.();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log.warn({ err, id }, "delete project failed");
+      writeJson(res, 500, { error: msg });
+    }
+  });
 }
 
 // Re-export types for tests

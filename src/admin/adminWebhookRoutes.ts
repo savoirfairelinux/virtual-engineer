@@ -1,8 +1,8 @@
-import type { IncomingMessage, ServerResponse } from "node:http";
 import { getLogger } from "../logger.js";
 import type { IntegrationStore } from "../interfaces.js";
 import { generateWebhookSecret, listSupportedEvents } from "../webhooks/webhookServer.js";
 import { writeJson, readBody } from "./adminRouteUtils.js";
+import type { Router } from "./router.js";
 
 const log = getLogger("admin-webhooks");
 
@@ -12,29 +12,13 @@ export interface WebhookRouteDeps {
   webhookPublicBaseUrl?: string | undefined;
 }
 
-/**
- * Try to handle a webhook-management route request. Returns true if the request
- * was handled (response sent), false otherwise.
- */
-export async function handleWebhookRoutes(
-  request: IncomingMessage,
-  response: ServerResponse,
-  path: string,
-  method: string,
-  deps: WebhookRouteDeps,
-): Promise<boolean> {
-  const rotateSecretMatch = /^\/api\/admin\/integrations\/([^/]+)\/webhook-secret\/rotate$/.exec(path);
-  if (rotateSecretMatch && method === "POST") {
-    if (!deps.integrationStore) {
-      writeJson(response, 501, { error: "Integration store not available" });
-      return true;
-    }
-    const id = decodeURIComponent(rotateSecretMatch[1] ?? "");
+/** Register webhook-management routes on the given router. */
+export function registerWebhookRoutes(router: Router, deps: WebhookRouteDeps): void {
+  router.add("POST", "/api/admin/integrations/:id/webhook-secret/rotate", async (_req, res, params) => {
+    if (!deps.integrationStore) { writeJson(res, 501, { error: "Integration store not available" }); return; }
+    const id = params["id"] ?? "";
     const integration = await deps.integrationStore.getIntegration(id);
-    if (!integration) {
-      writeJson(response, 404, { error: "Integration not found" });
-      return true;
-    }
+    if (!integration) { writeJson(res, 404, { error: "Integration not found" }); return; }
     const newSecret = generateWebhookSecret();
     let parsed: Record<string, unknown>;
     try {
@@ -57,41 +41,29 @@ export async function handleWebhookRoutes(
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       log.warn({ id, err }, "rotate webhook secret failed");
-      writeJson(response, 500, { error: msg });
-      return true;
+      writeJson(res, 500, { error: msg });
+      return;
     }
     deps.onIntegrationUpdated?.(id);
-    writeJson(response, 200, { secret: newSecret });
-    return true;
-  }
+    writeJson(res, 200, { secret: newSecret });
+  });
 
-  // ─── Webhook allowed IPs management route ─────────────────────────────────
-  const webhookIpsMatch = /^\/api\/admin\/integrations\/([^/]+)\/webhook-allowed-ips$/.exec(path);
-  if (webhookIpsMatch && method === "PUT") {
-    if (!deps.integrationStore) {
-      writeJson(response, 501, { error: "Integration store not available" });
-      return true;
-    }
-    const id = decodeURIComponent(webhookIpsMatch[1] ?? "");
+  router.add("PUT", "/api/admin/integrations/:id/webhook-allowed-ips", async (req, res, params) => {
+    if (!deps.integrationStore) { writeJson(res, 501, { error: "Integration store not available" }); return; }
+    const id = params["id"] ?? "";
     const integration = await deps.integrationStore.getIntegration(id);
-    if (!integration) {
-      writeJson(response, 404, { error: "Integration not found" });
-      return true;
-    }
-    const body = await readBody(request);
-    if (!body) {
-      writeJson(response, 400, { error: "Invalid JSON body" });
-      return true;
-    }
+    if (!integration) { writeJson(res, 404, { error: "Integration not found" }); return; }
+    const body = await readBody(req);
+    if (!body) { writeJson(res, 400, { error: "Invalid JSON body" }); return; }
     const { allowedIps } = body as Record<string, unknown>;
     if (!Array.isArray(allowedIps)) {
-      writeJson(response, 400, { error: "allowedIps must be an array of IP strings" });
-      return true;
+      writeJson(res, 400, { error: "allowedIps must be an array of IP strings" });
+      return;
     }
     for (const ip of allowedIps) {
       if (typeof ip !== "string") {
-        writeJson(response, 400, { error: "Each allowed IP must be a string" });
-        return true;
+        writeJson(res, 400, { error: "Each allowed IP must be a string" });
+        return;
       }
     }
     let parsed: Record<string, unknown>;
@@ -115,26 +87,18 @@ export async function handleWebhookRoutes(
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       log.warn({ id, err }, "update webhook allowed IPs failed");
-      writeJson(response, 500, { error: msg });
-      return true;
+      writeJson(res, 500, { error: msg });
+      return;
     }
     deps.onIntegrationUpdated?.(id);
-    writeJson(response, 200, { allowedIps });
-    return true;
-  }
+    writeJson(res, 200, { allowedIps });
+  });
 
-  // ─── Webhook allowed IPs GET route ────────────────────────────────────────
-  if (webhookIpsMatch && method === "GET") {
-    if (!deps.integrationStore) {
-      writeJson(response, 501, { error: "Integration store not available" });
-      return true;
-    }
-    const id = decodeURIComponent(webhookIpsMatch[1] ?? "");
+  router.add("GET", "/api/admin/integrations/:id/webhook-allowed-ips", async (_req, res, params) => {
+    if (!deps.integrationStore) { writeJson(res, 501, { error: "Integration store not available" }); return; }
+    const id = params["id"] ?? "";
     const integration = await deps.integrationStore.getIntegration(id);
-    if (!integration) {
-      writeJson(response, 404, { error: "Integration not found" });
-      return true;
-    }
+    if (!integration) { writeJson(res, 404, { error: "Integration not found" }); return; }
     let parsed: Record<string, unknown>;
     try {
       const obj = JSON.parse(integration.configJson) as unknown;
@@ -145,22 +109,14 @@ export async function handleWebhookRoutes(
       parsed = {};
     }
     const allowedIps = Array.isArray(parsed["webhookAllowedIps"]) ? parsed["webhookAllowedIps"] : [];
-    writeJson(response, 200, { allowedIps });
-    return true;
-  }
+    writeJson(res, 200, { allowedIps });
+  });
 
-  const webhookInfoMatch = /^\/api\/admin\/integrations\/([^/]+)\/webhook-info$/.exec(path);
-  if (webhookInfoMatch && method === "GET") {
-    if (!deps.integrationStore) {
-      writeJson(response, 501, { error: "Integration store not available" });
-      return true;
-    }
-    const id = decodeURIComponent(webhookInfoMatch[1] ?? "");
+  router.add("GET", "/api/admin/integrations/:id/webhook-info", async (req, res, params) => {
+    if (!deps.integrationStore) { writeJson(res, 501, { error: "Integration store not available" }); return; }
+    const id = params["id"] ?? "";
     const integration = await deps.integrationStore.getIntegration(id);
-    if (!integration) {
-      writeJson(response, 404, { error: "Integration not found" });
-      return true;
-    }
+    if (!integration) { writeJson(res, 404, { error: "Integration not found" }); return; }
     let secretConfigured = false;
     try {
       const obj = JSON.parse(integration.configJson) as unknown;
@@ -169,12 +125,11 @@ export async function handleWebhookRoutes(
         secretConfigured = typeof v === "string" && v.length > 0;
       }
     } catch { /* secretConfigured stays false */ }
-
     const events = listSupportedEvents(integration.type);
-    const hostHeader = request.headers.host ?? "127.0.0.1";
+    const hostHeader = req.headers.host ?? "127.0.0.1";
     const base = deps.webhookPublicBaseUrl ?? `http://${hostHeader}`;
     const sample = events[0] ?? "<event>";
-    writeJson(response, 200, {
+    writeJson(res, 200, {
       integrationId: integration.id,
       integrationType: integration.type,
       url: `${base.replace(/\/$/, "")}/webhooks/${encodeURIComponent(integration.id)}/${encodeURIComponent(sample)}`,
@@ -182,8 +137,5 @@ export async function handleWebhookRoutes(
       events,
       secretConfigured,
     });
-    return true;
-  }
-
-  return false;
+  });
 }

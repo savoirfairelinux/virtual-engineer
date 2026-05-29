@@ -1,4 +1,3 @@
-import type { IncomingMessage, ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { getLogger } from "../logger.js";
@@ -10,6 +9,7 @@ import { decryptToken } from "../utils/encryption.js";
 import { normalizeGitLabBaseUrl } from "../utils/gitlabAuth.js";
 import { exchangeForSessionToken, fetchAvailableModels, fetchAvailableModelsWithPat } from "../agents/copilotModelsService.js";
 import { writeJson, readBody, asRecord, toIsoTimestamp, SECRET_MASK, parseConfig, formatZodError } from "./adminRouteUtils.js";
+import type { Router } from "./router.js";
 
 const log = getLogger("admin-integrations");
 
@@ -22,23 +22,12 @@ export interface IntegrationRouteDeps {
   adminAuthSecret?: string | undefined;
 }
 
-/**
- * Try to handle an integration/plugin/oauth-app route request. Returns true
- * if the request was handled (response sent), false otherwise.
- */
-export async function handleIntegrationRoutes(
-  request: IncomingMessage,
-  response: ServerResponse,
-  path: string,
-  method: string,
-  deps: IntegrationRouteDeps,
-): Promise<boolean> {
-  const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
-
+/** Register integration, plugin and OAuth-app routes on the given router. */
+export function registerIntegrationRoutes(router: Router, deps: IntegrationRouteDeps): void {
   // ─── Plugin discovery ─────────────────────────────────────────────────────
-  if (path === "/api/admin/plugins" && method === "GET") {
+  router.add("GET", "/api/admin/plugins", async (_req, res, _params) => {
     const descriptors = getAllPluginDescriptors();
-    writeJson(response, 200, {
+    writeJson(res, 200, {
       plugins: descriptors.map((d) => ({
         type: d.type,
         name: d.name,
@@ -48,149 +37,90 @@ export async function handleIntegrationRoutes(
         ...(d.oauth !== undefined ? { oauth: d.oauth } : {}),
       })),
     });
-    return true;
-  }
+  });
 
   // ─── OAuth Apps ────────────────────────────────────────────────────────────
-  if (path === "/api/admin/oauth-apps" && method === "GET") {
-    if (!deps.oAuthAppStore) {
-      writeJson(response, 501, { error: "OAuth app registry is not available" });
-      return true;
-    }
+  router.add("GET", "/api/admin/oauth-apps", async (req, res, _params) => {
+    if (!deps.oAuthAppStore) { writeJson(res, 501, { error: "OAuth app registry is not available" }); return; }
+    const requestUrl = new URL(req.url ?? "/", "http://127.0.0.1");
     const providerParam = requestUrl.searchParams.get("provider") ?? undefined;
     const apps = await deps.oAuthAppStore.listOAuthApps(providerParam);
-    writeJson(response, 200, {
-      apps: apps.map((app) => serializeOAuthApp(app)),
-    });
-    return true;
-  }
+    writeJson(res, 200, { apps: apps.map((app) => serializeOAuthApp(app)) });
+  });
 
-  if (path === "/api/admin/oauth-apps" && method === "POST") {
-    if (!deps.oAuthAppStore) {
-      writeJson(response, 501, { error: "OAuth app registry is not available" });
-      return true;
-    }
-    const body = await readBody(request);
+  router.add("POST", "/api/admin/oauth-apps", async (req, res, _params) => {
+    if (!deps.oAuthAppStore) { writeJson(res, 501, { error: "OAuth app registry is not available" }); return; }
+    const body = await readBody(req);
     const provider = typeof body?.["provider"] === "string" ? body["provider"] : "gitlab";
     const baseUrl = typeof body?.["baseUrl"] === "string" ? body["baseUrl"] : "";
     const clientId = typeof body?.["clientId"] === "string" ? body["clientId"] : "";
-    if (!baseUrl || !clientId) {
-      writeJson(response, 400, { error: "Missing required fields: baseUrl, clientId" });
-      return true;
-    }
-    const app = await deps.oAuthAppStore.upsertOAuthApp({
-      provider,
-      baseUrl: normalizeGitLabBaseUrl(baseUrl),
-      clientId,
-    });
-    writeJson(response, 201, { app: serializeOAuthApp(app) });
-    return true;
-  }
+    if (!baseUrl || !clientId) { writeJson(res, 400, { error: "Missing required fields: baseUrl, clientId" }); return; }
+    const app = await deps.oAuthAppStore.upsertOAuthApp({ provider, baseUrl: normalizeGitLabBaseUrl(baseUrl), clientId });
+    writeJson(res, 201, { app: serializeOAuthApp(app) });
+  });
 
-  if (path === "/api/admin/oauth-apps" && method === "DELETE") {
-    if (!deps.oAuthAppStore) {
-      writeJson(response, 501, { error: "OAuth app registry is not available" });
-      return true;
-    }
-    const body = await readBody(request);
+  router.add("DELETE", "/api/admin/oauth-apps", async (req, res, _params) => {
+    if (!deps.oAuthAppStore) { writeJson(res, 501, { error: "OAuth app registry is not available" }); return; }
+    const body = await readBody(req);
     const provider = typeof body?.["provider"] === "string" ? body["provider"] : "gitlab";
     const baseUrl = typeof body?.["baseUrl"] === "string" ? body["baseUrl"] : "";
-    if (!baseUrl) {
-      writeJson(response, 400, { error: "baseUrl is required" });
-      return true;
-    }
+    if (!baseUrl) { writeJson(res, 400, { error: "baseUrl is required" }); return; }
     await deps.oAuthAppStore.deleteOAuthApp(provider, normalizeGitLabBaseUrl(baseUrl));
-    writeJson(response, 200, { ok: true });
-    return true;
-  }
+    writeJson(res, 200, { ok: true });
+  });
 
-  if (path === "/api/admin/oauth-apps/resolve" && method === "POST") {
-    if (!deps.oAuthAppStore) {
-      writeJson(response, 501, { error: "OAuth app registry is not available" });
-      return true;
-    }
-    const body = await readBody(request);
+  // resolve must be registered before oauth-apps/:provider to avoid :provider matching "resolve"
+  router.add("POST", "/api/admin/oauth-apps/resolve", async (req, res, _params) => {
+    if (!deps.oAuthAppStore) { writeJson(res, 501, { error: "OAuth app registry is not available" }); return; }
+    const body = await readBody(req);
     const provider = typeof body?.["provider"] === "string" ? body["provider"] : "gitlab";
     const baseUrl = typeof body?.["baseUrl"] === "string" ? body["baseUrl"] : "";
-    if (!baseUrl) {
-      writeJson(response, 400, { error: "baseUrl is required" });
-      return true;
-    }
+    if (!baseUrl) { writeJson(res, 400, { error: "baseUrl is required" }); return; }
     const normalizedBaseUrl = normalizeGitLabBaseUrl(baseUrl);
     const app = await deps.oAuthAppStore.getOAuthApp(provider, normalizedBaseUrl);
     if (!app) {
-      writeJson(response, 404, { error: `No OAuth app is configured for ${provider}:${normalizedBaseUrl}. Ask an administrator to add one in Configuration / OAuth Apps.` });
-      return true;
+      writeJson(res, 404, { error: `No OAuth app is configured for ${provider}:${normalizedBaseUrl}. Ask an administrator to add one in Configuration / OAuth Apps.` });
+      return;
     }
-    writeJson(response, 200, { app: serializeOAuthApp(app) });
-    return true;
-  }
+    writeJson(res, 200, { app: serializeOAuthApp(app) });
+  });
 
-  // ─── Integrations CRUD ────────────────────────────────────────────────────
-  if (path === "/api/admin/integrations" && method === "GET") {
-    if (!deps.integrationStore) {
-      writeJson(response, 501, { error: "Integration store not available" });
-      return true;
-    }
+  // ─── Integrations CRUD (exact paths before :id pattern) ──────────────────
+  router.add("GET", "/api/admin/integrations", async (_req, res, _params) => {
+    if (!deps.integrationStore) { writeJson(res, 501, { error: "Integration store not available" }); return; }
     const list = await deps.integrationStore.getIntegrations();
-    const pm = deps.pluginManager;
-    writeJson(response, 200, {
-      integrations: list.map((i) => serializeIntegration(i, pm, deps.integrationStreams)),
-    });
-    return true;
-  }
+    writeJson(res, 200, { integrations: list.map((i) => serializeIntegration(i, deps.pluginManager, deps.integrationStreams)) });
+  });
 
-  if (path === "/api/admin/integrations/by-category" && method === "GET") {
-    if (!deps.integrationStore) {
-      writeJson(response, 501, { error: "Integration store not available" });
-      return true;
-    }
+  router.add("GET", "/api/admin/integrations/by-category", async (_req, res, _params) => {
+    if (!deps.integrationStore) { writeJson(res, 501, { error: "Integration store not available" }); return; }
     const codeSourceTypes = new Set<string>(CODE_SOURCE_INTEGRATION_TYPES);
     const ticketSourceTypes = new Set<string>(TICKET_SOURCE_INTEGRATION_TYPES);
     const list = await deps.integrationStore.getIntegrations();
-    const codeSources = list.filter((i) => codeSourceTypes.has(i.type));
-    const ticketSources = list.filter((i) => ticketSourceTypes.has(i.type));
-    writeJson(response, 200, {
-      codeSources: codeSources.map((i) => serializeIntegration(i, deps.pluginManager, deps.integrationStreams)),
-      ticketSources: ticketSources.map((i) => serializeIntegration(i, deps.pluginManager, deps.integrationStreams)),
+    writeJson(res, 200, {
+      codeSources: list.filter((i) => codeSourceTypes.has(i.type)).map((i) => serializeIntegration(i, deps.pluginManager, deps.integrationStreams)),
+      ticketSources: list.filter((i) => ticketSourceTypes.has(i.type)).map((i) => serializeIntegration(i, deps.pluginManager, deps.integrationStreams)),
     });
-    return true;
-  }
+  });
 
-  if (path === "/api/admin/integrations" && method === "POST") {
-    if (!deps.integrationStore) {
-      writeJson(response, 501, { error: "Integration store not available" });
-      return true;
-    }
-    const body = await readBody(request);
+  router.add("POST", "/api/admin/integrations", async (req, res, _params) => {
+    if (!deps.integrationStore) { writeJson(res, 501, { error: "Integration store not available" }); return; }
+    const body = await readBody(req);
     if (!body || !body["type"] || !body["name"]) {
-      writeJson(response, 400, { error: "Missing required fields: type, name" });
-      return true;
+      writeJson(res, 400, { error: "Missing required fields: type, name" }); return;
     }
     const type = body["type"] as Integration["type"];
     const descriptor = getPluginDescriptor(type);
-    if (!descriptor) {
-      writeJson(response, 400, { error: `Unknown integration type: ${body["type"] as string}` });
-      return true;
-    }
-    const validatedConfig = validateIntegrationConfig(
-      descriptor.configSchema,
-      asRecord(body["config"]),
-      type !== "copilot"
-    );
+    if (!descriptor) { writeJson(res, 400, { error: `Unknown integration type: ${body["type"] as string}` }); return; }
+    const validatedConfig = validateIntegrationConfig(descriptor.configSchema, asRecord(body["config"]), type !== "copilot");
     if (!validatedConfig.ok) {
-      const fallback = type === "copilot" ? `Invalid config for ${type}` : "Invalid integration config";
-      writeJson(response, 400, { error: validatedConfig.message || fallback });
-      return true;
+      writeJson(res, 400, { error: validatedConfig.message || (type === "copilot" ? `Invalid config for ${type}` : "Invalid integration config") });
+      return;
     }
     const id = body["id"] as string || randomUUID();
     try {
       const integration = await deps.integrationStore.upsertIntegration({
-        id,
-        type,
-        name: body["name"] as string,
-        configJson: JSON.stringify(validatedConfig.data),
-        enabled: true,
+        id, type, name: body["name"] as string, configJson: JSON.stringify(validatedConfig.data), enabled: true,
       });
       if (deps.pluginManager) {
         try {
@@ -199,123 +129,77 @@ export async function handleIntegrationRoutes(
           log.warn({ id, type, err: activationErr }, "integration created but could not be activated at runtime (incomplete config?)");
         }
       }
-      writeJson(response, 201, { integration: serializeIntegration(integration, deps.pluginManager, deps.integrationStreams) });
+      writeJson(res, 201, { integration: serializeIntegration(integration, deps.pluginManager, deps.integrationStreams) });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       log.warn({ err }, "create integration failed");
-      writeJson(response, 500, { error: msg });
+      writeJson(res, 500, { error: msg });
     }
-    return true;
-  }
+  });
 
-  if (path === "/api/admin/integrations/test" && method === "POST") {
-    if (!deps.pluginManager) {
-      writeJson(response, 501, { error: "Plugin manager not available" });
-      return true;
-    }
-
-    const body = (await readBody(request)) ?? {};
-    const integrationId = typeof body["integrationId"] === "string"
-      ? body["integrationId"]
-      : undefined;
-    const requestedType = typeof body["type"] === "string"
-      ? body["type"] as Integration["type"]
-      : undefined;
+  // test (exact path before :id)
+  router.add("POST", "/api/admin/integrations/test", async (req, res, _params) => {
+    if (!deps.pluginManager) { writeJson(res, 501, { error: "Plugin manager not available" }); return; }
+    const body = (await readBody(req)) ?? {};
+    const integrationId = typeof body["integrationId"] === "string" ? body["integrationId"] : undefined;
+    const requestedType = typeof body["type"] === "string" ? body["type"] as Integration["type"] : undefined;
     const config = asRecord(body["config"]);
-
     try {
       if (integrationId) {
-        if (!deps.integrationStore) {
-          writeJson(response, 501, { error: "Integration store not available" });
-          return true;
-        }
-
+        if (!deps.integrationStore) { writeJson(res, 501, { error: "Integration store not available" }); return; }
         const existing = await deps.integrationStore.getIntegration(integrationId);
-        if (!existing) {
-          writeJson(response, 404, { error: "Integration not found" });
-          return true;
-        }
-
+        if (!existing) { writeJson(res, 404, { error: "Integration not found" }); return; }
         if (requestedType !== undefined && requestedType !== existing.type) {
-          writeJson(response, 400, { error: "Changing integration type is not supported" });
-          return true;
+          writeJson(res, 400, { error: "Changing integration type is not supported" }); return;
         }
-
-        const result = await deps.pluginManager.testConnectionConfig(
-          existing.type,
-          mergeIntegrationConfig(existing, config)
-        );
-
-        // Persist discovered models on successful test
+        const result = await deps.pluginManager.testConnectionConfig(existing.type, mergeIntegrationConfig(existing, config));
         if (result.success && Array.isArray(result.models) && result.models.length > 0) {
           if (typeof deps.integrationStore.setIntegrationDiscoveredResources === "function") {
-            await deps.integrationStore.setIntegrationDiscoveredResources(
-              integrationId,
-              JSON.stringify({ models: result.models })
-            );
+            await deps.integrationStore.setIntegrationDiscoveredResources(integrationId, JSON.stringify({ models: result.models }));
           }
         }
-
-        writeJson(response, 200, result);
-        return true;
+        writeJson(res, 200, result);
+        return;
       }
-
-      if (!requestedType) {
-        writeJson(response, 400, { error: "Integration type is required" });
-        return true;
-      }
-
+      if (!requestedType) { writeJson(res, 400, { error: "Integration type is required" }); return; }
       const result = await deps.pluginManager.testConnectionConfig(requestedType, config);
-      writeJson(response, 200, result);
+      writeJson(res, 200, result);
     } catch (err: unknown) {
       const errorMessage = err instanceof Error ? err.message : String(err);
       log.warn({ integrationId, requestedType, errorMessage }, "config test connection failed");
-      writeJson(response, 400, { success: false, error: errorMessage, models: [] });
+      writeJson(res, 400, { success: false, error: errorMessage, models: [] });
     }
-    return true;
-  }
+  });
 
   // ─── Single integration by ID ─────────────────────────────────────────────
-  const integrationIdMatch = /^\/api\/admin\/integrations\/([^/]+)$/.exec(path);
+  router.add("GET", "/api/admin/integrations/:id", async (_req, res, params) => {
+    if (!deps.integrationStore) { writeJson(res, 501, { error: "Integration store not available" }); return; }
+    const id = params["id"] ?? "";
+    const integration = await deps.integrationStore.getIntegration(id);
+    if (!integration) { writeJson(res, 404, { error: "Integration not found" }); return; }
+    writeJson(res, 200, { integration: serializeIntegration(integration, deps.pluginManager, deps.integrationStreams) });
+  });
 
-  if (integrationIdMatch && method === "PUT") {
-    if (!deps.integrationStore) {
-      writeJson(response, 501, { error: "Integration store not available" });
-      return true;
-    }
-    const id = decodeURIComponent(integrationIdMatch[1] ?? "");
+  router.add("PUT", "/api/admin/integrations/:id", async (req, res, params) => {
+    if (!deps.integrationStore) { writeJson(res, 501, { error: "Integration store not available" }); return; }
+    const id = params["id"] ?? "";
     const existing = await deps.integrationStore.getIntegration(id);
-    if (!existing) {
-      writeJson(response, 404, { error: "Integration not found" });
-      return true;
-    }
-    const body = await readBody(request);
-    if (!body) {
-      writeJson(response, 400, { error: "Request body required" });
-      return true;
-    }
+    if (!existing) { writeJson(res, 404, { error: "Integration not found" }); return; }
+    const body = await readBody(req);
+    if (!body) { writeJson(res, 400, { error: "Request body required" }); return; }
     const requestedType = body["type"] as Integration["type"] | undefined;
     if (requestedType !== undefined && requestedType !== existing.type) {
-      writeJson(response, 400, { error: "Changing integration type is not supported" });
-      return true;
+      writeJson(res, 400, { error: "Changing integration type is not supported" }); return;
     }
-
     const nextType = existing.type;
     const descriptor = getPluginDescriptor(nextType);
-    if (!descriptor) {
-      writeJson(response, 400, { error: `Unknown integration type: ${nextType}` });
-      return true;
-    }
+    if (!descriptor) { writeJson(res, 400, { error: `Unknown integration type: ${nextType}` }); return; }
     const nextConfig = body["config"];
     const mergedConfig = nextConfig === undefined
       ? getStoredIntegrationConfig(existing)
       : mergeIntegrationConfig(existing, asRecord(nextConfig));
     const validatedConfig = validateIntegrationConfig(descriptor.configSchema, mergedConfig, true);
-    if (!validatedConfig.ok) {
-      writeJson(response, 400, { error: validatedConfig.message || "Invalid integration config" });
-      return true;
-    }
-
+    if (!validatedConfig.ok) { writeJson(res, 400, { error: validatedConfig.message || "Invalid integration config" }); return; }
     try {
       const nextConfigJson = JSON.stringify(validatedConfig.data);
       const configChanged = nextConfig !== undefined && nextConfigJson !== existing.configJson;
@@ -337,184 +221,117 @@ export async function handleIntegrationRoutes(
         appliedAtRuntime = true;
       }
       deps.onIntegrationUpdated?.(id);
-      writeJson(response, 200, { 
-        integration: serializeIntegration(fresh, deps.pluginManager, deps.integrationStreams),
-        appliedAtRuntime
-      });
+      writeJson(res, 200, { integration: serializeIntegration(fresh, deps.pluginManager, deps.integrationStreams), appliedAtRuntime });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       log.warn({ err }, "update integration failed");
-      writeJson(response, 500, { error: msg });
+      writeJson(res, 500, { error: msg });
     }
-    return true;
-  }
+  });
 
-  if (integrationIdMatch && method === "GET") {
-    if (!deps.integrationStore) {
-      writeJson(response, 501, { error: "Integration store not available" });
-      return true;
-    }
-    const id = decodeURIComponent(integrationIdMatch[1] ?? "");
-    const integration = await deps.integrationStore.getIntegration(id);
-    if (!integration) {
-      writeJson(response, 404, { error: "Integration not found" });
-      return true;
-    }
-    writeJson(response, 200, { integration: serializeIntegration(integration, deps.pluginManager, deps.integrationStreams) });
-    return true;
-  }
-
-  if (integrationIdMatch && method === "DELETE") {
-    if (!deps.integrationStore) {
-      writeJson(response, 501, { error: "Integration store not available" });
-      return true;
-    }
-    const id = decodeURIComponent(integrationIdMatch[1] ?? "");
+  router.add("DELETE", "/api/admin/integrations/:id", async (_req, res, params) => {
+    if (!deps.integrationStore) { writeJson(res, 501, { error: "Integration store not available" }); return; }
+    const id = params["id"] ?? "";
     const existing = await deps.integrationStore.getIntegration(id);
-    if (!existing) {
-      writeJson(response, 404, { error: "Integration not found" });
-      return true;
-    }
+    if (!existing) { writeJson(res, 404, { error: "Integration not found" }); return; }
     if (deps.integrationStore.countIntegrationReferences) {
       const refCount = await deps.integrationStore.countIntegrationReferences(id);
       if (refCount > 0) {
-        writeJson(response, 409, {
+        writeJson(res, 409, {
           error: "Conflict",
           message: `Integration "${existing.name}" is still referenced by ${refCount} agent(s) or project relation(s) and cannot be deleted`,
           referenceCount: refCount,
         });
-        return true;
+        return;
       }
     }
     try {
-      if (existing.enabled && deps.pluginManager) {
-        await deps.pluginManager.disablePlugin(id);
-      }
+      if (existing.enabled && deps.pluginManager) await deps.pluginManager.disablePlugin(id);
       await deps.integrationStore.deleteIntegration(id);
-      writeJson(response, 200, { deleted: true });
+      writeJson(res, 200, { deleted: true });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       log.warn({ err }, "delete integration failed");
-      writeJson(response, 500, { error: msg });
+      writeJson(res, 500, { error: msg });
     }
-    return true;
-  }
+  });
 
   // ─── Enable / Disable ─────────────────────────────────────────────────────
-  const enableMatch = /^\/api\/admin\/integrations\/([^/]+)\/enable$/.exec(path);
-  if (enableMatch && method === "PATCH") {
-    if (!deps.pluginManager) {
-      writeJson(response, 501, { error: "Plugin manager not available" });
-      return true;
-    }
-    const id = decodeURIComponent(enableMatch[1] ?? "");
+  router.add("PATCH", "/api/admin/integrations/:id/enable", async (_req, res, params) => {
+    if (!deps.pluginManager) { writeJson(res, 501, { error: "Plugin manager not available" }); return; }
+    const id = params["id"] ?? "";
     try {
       await deps.pluginManager.enablePlugin(id);
       const integration = await deps.integrationStore?.getIntegration(id);
-      writeJson(response, 200, { integration: integration ? serializeIntegration(integration, deps.pluginManager, deps.integrationStreams) : { id, enabled: true } });
+      writeJson(res, 200, { integration: integration ? serializeIntegration(integration, deps.pluginManager, deps.integrationStreams) : { id, enabled: true } });
     } catch (err: unknown) {
       log.warn({ err }, "enable plugin failed");
-      writeJson(response, 400, { error: "Operation failed" });
+      writeJson(res, 400, { error: "Operation failed" });
     }
-    return true;
-  }
+  });
 
-  const disableMatch = /^\/api\/admin\/integrations\/([^/]+)\/disable$/.exec(path);
-  if (disableMatch && method === "PATCH") {
-    if (!deps.pluginManager) {
-      writeJson(response, 501, { error: "Plugin manager not available" });
-      return true;
-    }
-    const id = decodeURIComponent(disableMatch[1] ?? "");
+  router.add("PATCH", "/api/admin/integrations/:id/disable", async (_req, res, params) => {
+    if (!deps.pluginManager) { writeJson(res, 501, { error: "Plugin manager not available" }); return; }
+    const id = params["id"] ?? "";
     try {
       await deps.pluginManager.disablePlugin(id);
       const integration = await deps.integrationStore?.getIntegration(id);
-      writeJson(response, 200, { integration: integration ? serializeIntegration(integration, deps.pluginManager, deps.integrationStreams) : { id, enabled: false } });
+      writeJson(res, 200, { integration: integration ? serializeIntegration(integration, deps.pluginManager, deps.integrationStreams) : { id, enabled: false } });
     } catch (err: unknown) {
       log.warn({ err }, "disable plugin failed");
-      writeJson(response, 400, { error: "Operation failed" });
+      writeJson(res, 400, { error: "Operation failed" });
     }
-    return true;
-  }
+  });
 
   // ─── Test (by ID) ─────────────────────────────────────────────────────────
-  const testMatch = /^\/api\/admin\/integrations\/([^/]+)\/test$/.exec(path);
-  if (testMatch && method === "POST") {
-    if (!deps.pluginManager) {
-      writeJson(response, 501, { error: "Plugin manager not available" });
-      return true;
-    }
-    const id = decodeURIComponent(testMatch[1] ?? "");
+  router.add("POST", "/api/admin/integrations/:id/test", async (_req, res, params) => {
+    if (!deps.pluginManager) { writeJson(res, 501, { error: "Plugin manager not available" }); return; }
+    const id = params["id"] ?? "";
     try {
       const result = await deps.pluginManager.testConnection(id);
-
-      // Persist discovered models on successful test
       if (result.success && Array.isArray(result.models) && result.models.length > 0) {
         if (deps.integrationStore && typeof deps.integrationStore.setIntegrationDiscoveredResources === "function") {
-          await deps.integrationStore.setIntegrationDiscoveredResources(
-            id,
-            JSON.stringify({ models: result.models })
-          );
+          await deps.integrationStore.setIntegrationDiscoveredResources(id, JSON.stringify({ models: result.models }));
         }
       }
-
-      writeJson(response, 200, result);
+      writeJson(res, 200, result);
     } catch (err: unknown) {
       const errorMessage = err instanceof Error ? err.message : String(err);
       log.warn({ id, errorMessage }, "test connection failed");
-      writeJson(response, 400, { success: false, error: errorMessage, models: [] });
+      writeJson(res, 400, { success: false, error: errorMessage, models: [] });
     }
-    return true;
-  }
+  });
 
   // ─── Models ───────────────────────────────────────────────────────────────
-  const modelsMatch = /^\/api\/admin\/integrations\/([^/]+)\/models$/.exec(path);
-  if (modelsMatch && method === "GET") {
-    if (!deps.integrationStore) {
-      writeJson(response, 501, { error: "Integration store not available" });
-      return true;
-    }
-    const id = decodeURIComponent(modelsMatch[1] ?? "");
+  router.add("GET", "/api/admin/integrations/:id/models", async (_req, res, params) => {
+    if (!deps.integrationStore) { writeJson(res, 501, { error: "Integration store not available" }); return; }
+    const id = params["id"] ?? "";
     const integration = await deps.integrationStore.getIntegration(id);
-    if (!integration) {
-      writeJson(response, 404, { error: "Integration not found" });
-      return true;
-    }
+    if (!integration) { writeJson(res, 404, { error: "Integration not found" }); return; }
     if (typeof deps.integrationStore.getIntegrationDiscoveredResources === "function") {
       const discovered = await deps.integrationStore.getIntegrationDiscoveredResources(id);
       if (discovered.json) {
         try {
           const parsed = JSON.parse(discovered.json) as unknown;
           if (parsed && typeof parsed === "object" && "models" in parsed && Array.isArray((parsed as Record<string, unknown>)["models"])) {
-            writeJson(response, 200, { models: (parsed as Record<string, unknown>)["models"] });
-            return true;
+            writeJson(res, 200, { models: (parsed as Record<string, unknown>)["models"] });
+            return;
           }
         } catch { /* fallthrough to empty */ }
       }
     }
-    writeJson(response, 200, { models: [] });
-    return true;
-  }
+    writeJson(res, 200, { models: [] });
+  });
 
   // ─── Discover ─────────────────────────────────────────────────────────────
-  const discoverMatch = /^\/api\/admin\/integrations\/([^/]+)\/discover$/.exec(path);
-  if (discoverMatch && method === "POST") {
-    if (!deps.integrationStore) {
-      writeJson(response, 501, { error: "Integration store not available" });
-      return true;
-    }
+  router.add("POST", "/api/admin/integrations/:id/discover", async (_req, res, params) => {
+    if (!deps.integrationStore) { writeJson(res, 501, { error: "Integration store not available" }); return; }
     if (typeof deps.integrationStore.setIntegrationDiscoveredResources !== "function") {
-      writeJson(response, 501, { error: "Integration store does not support discovery persistence" });
-      return true;
+      writeJson(res, 501, { error: "Integration store does not support discovery persistence" }); return;
     }
-
-    const id = decodeURIComponent(discoverMatch[1] ?? "");
+    const id = params["id"] ?? "";
     const integration = await deps.integrationStore.getIntegration(id);
-    if (!integration) {
-      writeJson(response, 404, { error: "Integration not found" });
-      return true;
-    }
-
+    if (!integration) { writeJson(res, 404, { error: "Integration not found" }); return; }
     const descriptor = getPluginDescriptor(integration.type);
 
     // ── Copilot: model discovery (OAuth or PAT) ─────────────────────────
@@ -523,8 +340,7 @@ export async function handleIntegrationRoutes(
       try {
         parsedCopilotConfig = JSON.parse(integration.configJson) as Record<string, unknown>;
       } catch {
-        writeJson(response, 500, { error: "Stored integration config is not valid JSON" });
-        return true;
+        writeJson(res, 500, { error: "Stored integration config is not valid JSON" }); return;
       }
       const authMode = typeof parsedCopilotConfig["authMode"] === "string"
         ? parsedCopilotConfig["authMode"]
@@ -533,8 +349,8 @@ export async function handleIntegrationRoutes(
       if (authMode === "pat") {
         const pat = typeof parsedCopilotConfig["token"] === "string" ? parsedCopilotConfig["token"].trim() : "";
         if (!pat) {
-          writeJson(response, 400, { error: "No PAT configured. Set a token in the integration config." });
-          return true;
+          writeJson(res, 400, { error: "No PAT configured. Set a token in the integration config." });
+          return;
         }
         githubToken = pat;
       } else {
@@ -542,10 +358,10 @@ export async function handleIntegrationRoutes(
           ? parsedCopilotConfig["sessionToken"]
           : undefined;
         if (!encryptedToken) {
-          writeJson(response, 400, {
+          writeJson(res, 400, {
             error: "No GitHub OAuth token stored. Connect via OAuth first (AI Adapters → Connect with GitHub).",
           });
-          return true;
+          return;
         }
         githubToken = decryptToken(encryptedToken, deps.adminAuthSecret);
       }
@@ -558,32 +374,24 @@ export async function handleIntegrationRoutes(
           ? await fetchAvailableModelsWithPat(githubToken)
           : await fetchAvailableModels(await exchangeForSessionToken(githubToken));
         const discoveredAt = new Date().toISOString();
-        const json = JSON.stringify({ models, discoveredAt });
-        await deps.integrationStore.setIntegrationDiscoveredResources(id, json);
-        writeJson(response, 200, { ok: true, discoveredAt, counts: { models: models.length } });
+        await deps.integrationStore.setIntegrationDiscoveredResources(id, JSON.stringify({ models, discoveredAt }));
+        writeJson(res, 200, { ok: true, discoveredAt, counts: { models: models.length } });
       } catch (err: unknown) {
         const errorMessage = err instanceof Error ? err.message : String(err);
         log.warn({ id, type: "copilot", errorMessage }, "Copilot model discovery failed");
-        writeJson(response, 502, { error: `Model discovery failed: ${errorMessage}` });
+        writeJson(res, 502, { error: `Model discovery failed: ${errorMessage}` });
       }
-      return true;
+      return;
     }
-    // ─────────────────────────────────────────────────────────────────────
-
     if (!descriptor || typeof descriptor.discoverResources !== "function") {
-      writeJson(response, 400, {
-        error: `Integration type '${integration.type}' does not support resource discovery`,
-      });
-      return true;
+      writeJson(res, 400, { error: `Integration type '${integration.type}' does not support resource discovery` }); return;
     }
-
     let parsedConfig: unknown;
     try {
       parsedConfig = JSON.parse(integration.configJson);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      writeJson(response, 500, { error: `Stored integration config is not valid JSON: ${msg}` });
-      return true;
+      writeJson(res, 500, { error: `Stored integration config is not valid JSON: ${msg}` }); return;
     }
 
     // Decrypt password fields so discoverResources receives real credentials.
@@ -602,25 +410,18 @@ export async function handleIntegrationRoutes(
 
     try {
       const snapshot = await descriptor.discoverResources(decryptedConfig);
-      const json = JSON.stringify(snapshot);
-      await deps.integrationStore.setIntegrationDiscoveredResources(id, json);
-      writeJson(response, 200, {
+      await deps.integrationStore.setIntegrationDiscoveredResources(id, JSON.stringify(snapshot));
+      writeJson(res, 200, {
         ok: true,
         discoveredAt: snapshot.discoveredAt,
-        counts: {
-          ticketProjects: snapshot.ticketProjects?.length ?? 0,
-          repositories: snapshot.repositories?.length ?? 0,
-        },
+        counts: { ticketProjects: snapshot.ticketProjects?.length ?? 0, repositories: snapshot.repositories?.length ?? 0 },
       });
     } catch (err: unknown) {
       const errorMessage = err instanceof Error ? err.message : String(err);
       log.warn({ id, type: integration.type, errorMessage }, "resource discovery failed");
-      writeJson(response, 502, { error: `Discovery failed: ${errorMessage}` });
+      writeJson(res, 502, { error: `Discovery failed: ${errorMessage}` });
     }
-    return true;
-  }
-
-  return false;
+  });
 }
 
 // ─── Integration config helpers ─────────────────────────────────────────────
