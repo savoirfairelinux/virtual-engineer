@@ -45,6 +45,8 @@ export interface AgentRecord {
   integrationId: string | null;
   systemPromptId: string | null;
   instructionsPromptId: string | null;
+  /** Optional override used on retry (feedback) cycles. Falls back to instructionsPromptId when null. */
+  feedbackInstructionsPromptId: string | null;
   maxConcurrent: number;
   enabled: boolean;
   createdAt: Date;
@@ -115,6 +117,8 @@ export interface ResolvedAgentConfig {
   encryptedSessionToken: string | undefined;
   systemPromptId: string | null;
   instructionsPromptId: string | null;
+  /** Optional override used on retry (feedback) cycles. Falls back to instructionsPromptId when null. */
+  feedbackInstructionsPromptId: string | null;
   /** Any other model-related fields preserved from agent + override (override wins). */
   extra: Record<string, unknown>;
 }
@@ -209,8 +213,13 @@ export interface AgentSession {
   pushRef: string;
   /** Existing external change ID to reuse (Gerrit: reuses the patchset; GitLab: reuses the MR branch). */
   existingChangeId?: ExternalChangeId | undefined;
-  /** Per-repo change IDs for retry cycles (keyed by repoKey). */
-  perRepoChangeIds?: Record<string, string> | undefined;
+  /**
+   * Per-repo change IDs for retry cycles.
+   * When value is a string, it is the Change-Id for commitIndex 0 (legacy/single-commit).
+   * When value is a Record<string, string>, keys are string commit indices ("0", "1", …)
+   * mapped to their respective Change-Ids.
+   */
+  perRepoChangeIds?: Record<string, string | Record<string, string>> | undefined;
 
   /** Git identity configured inside the agent session */
   gitAuthorName: string;
@@ -418,6 +427,11 @@ export interface WorkspaceRunner {
   ): Promise<CloneResult>;
   /** Fetch and checkout a Gerrit patchset ref as detached HEAD. */
   applyGerritPatchset?(
+    handle: WorkspaceHandle,
+    opts: GerritPatchsetOptions
+  ): Promise<void>;
+  /** Fetch a Gerrit patchset ref and cherry-pick it on top of the current HEAD. */
+  cherryPickGerritPatchset?(
     handle: WorkspaceHandle,
     opts: GerritPatchsetOptions
   ): Promise<void>;
@@ -914,6 +928,17 @@ export interface StateStore {
     status: string,
     changeId?: string
   ): Promise<void>;
+
+  /**
+   * Mark change_per_repository rows as ORPHANED when a retry push produces
+   * fewer commits than the previous cycle (commitIndex > maxCommitIndex).
+   * Returns the number of rows updated.
+   */
+  orphanExcessChanges(
+    taskId: TaskId,
+    repoKey: string,
+    maxCommitIndex: number
+  ): Promise<number>;
 
   /** Phase 4: link a task to a project (for project-mode iteration). */
   setTaskProjectId(taskId: TaskId, projectId: ProjectId): Promise<void>;

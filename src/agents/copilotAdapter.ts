@@ -108,11 +108,14 @@ export function buildCodegenUserPrompt(
   if (!repoMap || repoMap.submodules.length === 0) {
     // Single-repository workspace: explicit commit reminder.
     lines.push("### CRITICAL: Commit Requirement");
-    lines.push("After making all your changes you **MUST** commit them using `bash`:");
+    lines.push("After making all your changes you **MUST** commit them using `bash`. Every commit needs BOTH a Conventional-Commits subject AND a body (2–4 sentences explaining what changed and why):");
     lines.push("```");
-    lines.push("git -C /workspace add -A && git -C /workspace commit -m 'type(scope): description'");
+    lines.push("git -C /workspace add -A");
+    lines.push("git -C /workspace commit -m 'type(scope): short imperative subject' \\");
+    lines.push("                          -m 'Body: explain WHAT changed and WHY in 2-4 sentences. Reference the ticket goal.'");
     lines.push("```");
-    lines.push("The commit message **must** follow Conventional Commits format (`type(scope): subject`).");
+    lines.push("The commit message **must** follow Conventional Commits format (`type(scope): subject`). Replace `type` with one of: `feat`, `fix`, `refactor`, `test`, `chore`, `docs`, `perf`, `ci`, `build`.");
+    lines.push("A subject-only commit is treated as missing — the body is mandatory.");
     lines.push("If validation tools (lint, typecheck) are not available in the workspace, **skip them** and commit anyway.");
     lines.push("Do NOT end your session without committing — uncommitted file changes are discarded.");
     lines.push("");
@@ -134,10 +137,10 @@ export function buildCodegenUserPrompt(
     lines.push(`- \`grep -rn 'pattern' /workspace/${repoMap.submodules[0]!.localPath}/src/\``);
     lines.push("Use `edit` or `create` with the full path to modify files in any repository.");
     lines.push("");
-    lines.push("**Committing**: You MUST `git add -A && git commit` **separately in each repository you modify**.");
+    lines.push("**Committing**: You MUST `git add -A && git commit` **separately in each repository you modify**. Every commit needs BOTH a Conventional-Commits subject AND a body (2–4 sentences explaining what changed and why) — a subject-only commit is treated as missing.");
     lines.push("Use `bash` for commits in sub-repositories:");
     for (const sub of repoMap.submodules) {
-      lines.push(`- \`cd /workspace/${sub.localPath} && git add -A && git commit -m 'feat(scope): description'\``);
+      lines.push(`- \`cd /workspace/${sub.localPath} && git add -A && git commit -m 'feat(scope): subject' -m 'Body explaining what changed and why.'\``);
     }
     lines.push("For the root repository, commit from `/workspace/`.");
     lines.push("");

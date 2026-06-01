@@ -1804,6 +1804,28 @@ function renderDetailMetaGrid(task) {
   const reviewCard = reviewUrl
     ? '<div class="meta-card"><div class="meta-label">Review</div><div class="meta-value"><a href="' + esc(reviewUrl) + '" target="_blank" rel="noopener noreferrer" class="badge-link">' + esc(displayChangeId || reviewUrl) + '</a></div></div>'
     : metaCard('Review', displayChangeId || '\u2014');
+  // Render per-commit change rows when there are multiple commits
+  const activeChanges = changes.filter(function(c) { return c.status !== 'ORPHANED' && c.status !== 'NO_CHANGE'; });
+  let commitCards = '';
+  if (activeChanges.length > 1) {
+    commitCards = '<div class="meta-card" style="grid-column:1/-1"><div class="meta-label">Commits (' + activeChanges.length + ')</div><div class="meta-value" style="font-size:0.82rem;line-height:1.6">';
+    const sorted = activeChanges.slice().sort(function(a, b) {
+      if (a.repoKey !== b.repoKey) return a.repoKey < b.repoKey ? -1 : 1;
+      return (a.commitIndex || 0) - (b.commitIndex || 0);
+    });
+    for (var ci = 0; ci < sorted.length; ci++) {
+      var ch = sorted[ci];
+      var idShort = (ch.changeId || '').slice(0, 12);
+      var rowLabel = esc(ch.repoKey) + ' #' + (ch.commitIndex || 0);
+      var statusBadge = '<span class="badge" data-tone="' + (ch.status === 'MERGED' ? 'ok' : ch.status === 'ABANDONED' ? 'err' : 'warn') + '" style="font-size:0.7rem;padding:1px 5px;margin-left:4px">' + esc(ch.status) + '</span>';
+      if (ch.reviewUrl) {
+        commitCards += '<div>' + rowLabel + ': <a href="' + esc(ch.reviewUrl) + '" target="_blank" rel="noopener noreferrer" class="badge-link">' + esc(idShort) + '</a>' + statusBadge + '</div>';
+      } else {
+        commitCards += '<div>' + rowLabel + ': ' + esc(idShort || '\u2014') + statusBadge + '</div>';
+      }
+    }
+    commitCards += '</div></div>';
+  }
   return '<div class="meta-grid">' +
     metaCard('Type',        typeLabel) +
     (!isReview ? metaCard('Ticket ID',   String(task.displayId || task.ticketId)) : '') +
@@ -1814,6 +1836,7 @@ function renderDetailMetaGrid(task) {
     metaCard('Created',     fmt(task.createdAt)) +
     reviewCard +
     metaCard('Failure',     task.failureReason || '\u2014') +
+    commitCards +
   '</div>';
 }
 

@@ -54,6 +54,7 @@ function makeStateStore(overrides: Partial<StateStore> = {}): StateStore {
       getChangesForTask: async () => [],
       saveChangePerRepository: async () => undefined,
       updateChangePerRepositoryStatus: async () => undefined,
+      orphanExcessChanges: async () => 0,
       getTaskRepositoryContext: async () => null,
       isTaskPaused: async () => false,        deleteTask: async () => undefined,
         deleteTaskGroup: async () => undefined,    ...overrides,

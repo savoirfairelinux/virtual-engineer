@@ -353,6 +353,30 @@ function deriveChangeId(taskId, repoKey, index, subject) {
 }
 
 /**
+ * Resolve the existing Change-Id for a given repo and commit index from PER_REPO_CHANGE_IDS.
+ * Supports two formats:
+ * - Legacy flat: { "repo": "I1234..." } → only index 0
+ * - Indexed map: { "repo": { "0": "I1234...", "1": "I5678..." } } → any index
+ * @param {string} repoKey - The repository key.
+ * @param {number} commitIndex - The commit index (0-based).
+ * @returns {string|null} The Change-Id to reuse, or null.
+ */
+function resolveExistingChangeId(repoKey, commitIndex) {
+  if (!PER_REPO_CHANGE_IDS) return null;
+  const entry = PER_REPO_CHANGE_IDS[repoKey];
+  if (!entry) return null;
+  if (typeof entry === 'string') {
+    // Legacy flat format: only valid for index 0
+    return commitIndex === 0 ? entry : null;
+  }
+  if (typeof entry === 'object') {
+    // Indexed map format: lookup by string index
+    return entry[String(commitIndex)] || null;
+  }
+  return null;
+}
+
+/**
  * Inject deterministic Change-Id footers into agent-created commits.
  * Uses `git rebase` with `GIT_SEQUENCE_EDITOR` to rewrite each commit
  * that doesn't already have a Change-Id in its footer.
@@ -360,9 +384,11 @@ function deriveChangeId(taskId, repoKey, index, subject) {
  * @param {string} baseSha - The commit before the agent's first commit.
  * @param {Array} commits - The collected CommitDescriptor array (pre-injection).
  * @param {string} [cwd] - Optional working directory (for sub-repos).
+ * @param {string|null} existingChangeId - Legacy single Change-Id for commit 0 (ROOT_CHANGE_ID compat).
+ * @param {string} [repoKeyForLookup] - Repo key used to resolve per-index Change-Ids from PER_REPO_CHANGE_IDS.
  * @returns {Array} Updated commits array with changeId fields populated.
  */
-function injectChangeIds(baseSha, commits, cwd, existingChangeId = null) {
+function injectChangeIds(baseSha, commits, cwd, existingChangeId = null, repoKeyForLookup = null) {
   if (commits.length === 0) return commits;
 
   const repoCwd = cwd || REPO_PATH;
@@ -372,16 +398,18 @@ function injectChangeIds(baseSha, commits, cwd, existingChangeId = null) {
   if (!needsInjection) return commits;
 
   // Build a map of commit index → desired Change-Id for commits that lack one.
-  // For the first commit (index 0), reuse existingChangeId when provided so that
-  // retry cycles produce a new patchset on the same Gerrit change rather than a
-  // brand-new change (the commit subject may differ across cycles).
+  // For each commit, reuse the existing Change-Id from the prior cycle when available
+  // (either from legacy existingChangeId param for index 0, or from PER_REPO_CHANGE_IDS
+  // indexed lookup for any index). This ensures all commits produce new patchsets on
+  // their existing Gerrit changes rather than creating brand-new changes.
   const changeIdByIndex = {};
   for (let i = 0; i < commits.length; i++) {
     const c = commits[i];
     if (!c.changeId) {
-      changeIdByIndex[i] = (i === 0 && existingChangeId)
-        ? existingChangeId
-        : deriveChangeId(TASK_ID, c.repoKey, i, c.subject);
+      // Priority: 1) per-index lookup from PER_REPO_CHANGE_IDS, 2) legacy existingChangeId (index 0 only), 3) derive new
+      const perIndexId = repoKeyForLookup ? resolveExistingChangeId(repoKeyForLookup, i) : null;
+      const legacyId = (i === 0 && existingChangeId) ? existingChangeId : null;
+      changeIdByIndex[i] = perIndexId || legacyId || deriveChangeId(TASK_ID, c.repoKey, i, c.subject);
     }
   }
 
@@ -889,7 +917,31 @@ async function main() {
         // For multi-repo workspaces, inject per-repo (rebase happens in each repo independently).
         if (TASK_ID) {
           if (hasRootCommits) {
-            rootCommits = injectChangeIds(baseSha, rootCommits, undefined, ROOT_CHANGE_ID);
+            // Resolve the existing Change-Id for the root repo:
+            // 1. Legacy ROOT_CHANGE_ID env (single-repo or backward compat)
+            // 2. PER_REPO_CHANGE_IDS entry for the superproject repoKey (project-mode)
+            let rootExistingChangeId = ROOT_CHANGE_ID;
+            let rootRepoKey = null;
+            if (PER_REPO_CHANGE_IDS) {
+              const superprojectKey = REPOSITORY_MAP?.superproject?.repoKey;
+              if (superprojectKey && PER_REPO_CHANGE_IDS[superprojectKey]) {
+                rootRepoKey = superprojectKey;
+                // For index-0 compat, resolve flat string or indexed map
+                const entry = PER_REPO_CHANGE_IDS[superprojectKey];
+                if (!rootExistingChangeId) {
+                  rootExistingChangeId = typeof entry === 'string' ? entry : (entry?.['0'] || null);
+                }
+              } else if (!rootExistingChangeId) {
+                // No REPOSITORY_MAP or no superproject key — try matching the sole entry
+                const keys = Object.keys(PER_REPO_CHANGE_IDS);
+                if (keys.length === 1) {
+                  rootRepoKey = keys[0];
+                  const entry = PER_REPO_CHANGE_IDS[keys[0]];
+                  rootExistingChangeId = typeof entry === 'string' ? entry : (entry?.['0'] || null);
+                }
+              }
+            }
+            rootCommits = injectChangeIds(baseSha, rootCommits, undefined, rootExistingChangeId, rootRepoKey);
           }
           for (const localPath of subRepoLocalPaths) {
             const subBase = subRepoBaseShas[localPath];
@@ -900,8 +952,9 @@ async function main() {
             });
             if (subCommitsForPath.length > 0) {
               const subRepoKey = REPOSITORY_MAP.submodules.find((s) => s.localPath === localPath)?.repoKey;
-              const subChangeId = PER_REPO_CHANGE_IDS && subRepoKey ? (PER_REPO_CHANGE_IDS[subRepoKey] || null) : null;
-              const injected = injectChangeIds(subBase, subCommitsForPath, subPath, subChangeId);
+              const subEntry = PER_REPO_CHANGE_IDS && subRepoKey ? (PER_REPO_CHANGE_IDS[subRepoKey] || null) : null;
+              const subChangeId = typeof subEntry === 'string' ? subEntry : (subEntry?.['0'] || null);
+              const injected = injectChangeIds(subBase, subCommitsForPath, subPath, subChangeId, subRepoKey || null);
               // Replace sub-repo commits with injected versions
               const sub = REPOSITORY_MAP.submodules.find((s) => s.localPath === localPath);
               const repoKey = sub ? sub.repoKey : localPath;

@@ -428,6 +428,66 @@ export class DockerWorkspaceRunner implements WorkspaceRunner {
   }
 
   /**
+   * Fetch a Gerrit patchset and cherry-pick it on top of the current HEAD.
+   * Used on retry cycles to restore commits at indices 1..N after the primary
+   * patchset (index 0) has been checked out via `applyGerritPatchset`.
+   * Failures are non-fatal — the caller logs a warning and continues.
+   */
+  async cherryPickGerritPatchset(
+    handle: WorkspaceHandle,
+    opts: GerritPatchsetOptions
+  ): Promise<void> {
+    const nn = String(opts.changeNumber % 100).padStart(2, "0");
+    const changeRef = `refs/changes/${nn}/${opts.changeNumber}/${opts.patchset}`;
+
+    log.info(
+      { taskId: handle.taskId, changeNumber: opts.changeNumber, patchset: opts.patchset, changeRef },
+      "cherry-picking Gerrit patchset on top of current HEAD"
+    );
+
+    const sshKeyPath = opts.sshKeyPath;
+    if (!opts.sshHost || !sshKeyPath) {
+      throw new Error("Gerrit cherry-pick requires sshHost and sshKeyPath");
+    }
+    const sshPort = opts.sshPort ?? 29418;
+
+    const fetchResult = await execInVolume({
+      volumeName: handle.volumeName,
+      image: this.config.agentContainerImage,
+      command: ["git", "fetch", "origin", changeRef],
+      sshKeyPath,
+      ...(opts.sshKnownHostsPath !== undefined ? { sshKnownHostsPath: opts.sshKnownHostsPath } : {}),
+      sshPort,
+      env: {},
+    });
+    if (fetchResult.exitCode !== 0) {
+      const msg = fetchResult.stderr.slice(0, 500);
+      throw new Error(`Failed to fetch Gerrit patchset ${opts.changeNumber}/${opts.patchset}: ${msg}`);
+    }
+
+    const cherryPickResult = await execInVolume({
+      volumeName: handle.volumeName,
+      image: this.config.agentContainerImage,
+      command: ["git", "cherry-pick", "FETCH_HEAD"],
+    });
+    if (cherryPickResult.exitCode !== 0) {
+      // Abort cherry-pick if in progress to leave workspace clean
+      await execInVolume({
+        volumeName: handle.volumeName,
+        image: this.config.agentContainerImage,
+        command: ["git", "cherry-pick", "--abort"],
+      }).catch(() => { /* ignore */ });
+      const msg = cherryPickResult.stderr.slice(0, 500);
+      throw new Error(`Cherry-pick failed for patchset ${opts.changeNumber}/${opts.patchset}: ${msg}`);
+    }
+
+    log.info(
+      { taskId: handle.taskId, changeNumber: opts.changeNumber, patchset: opts.patchset },
+      "Gerrit patchset cherry-picked successfully"
+    );
+  }
+
+  /**
    * Run the code-review agent inside a Docker container against the workspace volume.
    * Writes the review prompt into the home volume via a helper container, then runs
    * agent-worker with REVIEW_MODE=1. Returns the raw LLM output for the host to

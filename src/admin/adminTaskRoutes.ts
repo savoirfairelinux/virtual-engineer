@@ -105,6 +105,8 @@ export async function handleTasksRoute(
       reviewUrl: c.reviewUrl,
       status: c.status,
       reviewSystem: c.reviewSystem,
+      commitIndex: c.commitIndex,
+      subjectHash: c.subjectHash,
     }));
     // Populate fallback reviewUrl from CPR when the task-level URL is not set
     if (!serialized["reviewUrl"]) {
