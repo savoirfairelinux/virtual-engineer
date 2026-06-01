@@ -2148,7 +2148,8 @@ function renderCodegenCycle(c) {
 
 function formatTaskOrigin(task) {
   const raw = String(task.ticketSourceLabel || 'ticket');
-  const sourceType = raw.split(':')[0].toUpperCase();
+  const sourceKind = raw.split(':')[0];
+  const sourceType = sourceKind === 'github-pull-request' ? 'GITHUB-PR' : sourceKind.toUpperCase();
   return sourceType + ': #' + (task.displayId || task.ticketId);
 }
 
@@ -3118,6 +3119,16 @@ function renderExpandedIntegrationDetails(selected) {
             );
           }
           if (f.dependsOn) {
+            if (f.dependsOn.allOf) {
+              const isVisible = f.dependsOn.allOf.every((c) =>
+                String(selected.config?.[c.field] ?? '') === c.value
+              );
+              return (
+                '<div data-depends-on-all="' + esc(JSON.stringify(f.dependsOn.allOf)) + '"' +
+                  (isVisible ? '' : ' style="display:none"') +
+                '>' + fieldHtml + '</div>'
+              );
+            }
             // Determine initial visibility based on the controlling field's current value
             const controllerValue =
               (f.dependsOn.field === 'gerritMode' && selected.type === 'gerrit')
@@ -3514,6 +3525,26 @@ function bindDependsOnHandlers(root) {
     }
     selectEl.addEventListener('change', applyVisibility);
     applyVisibility();
+  });
+  // Handle multi-condition (allOf) elements: visible only when ALL conditions are met.
+  root.querySelectorAll('[data-depends-on-all]').forEach(function(depEl) {
+    var raw = depEl.getAttribute('data-depends-on-all');
+    if (!raw) return;
+    var conditions;
+    try { conditions = JSON.parse(raw); } catch (_e) { return; }
+    var searchRoot = depEl.closest('[data-role="modal-fields"], [data-role="drawer-edit-form"]') || root;
+    function applyAllVisibility() {
+      var allMet = conditions.every(function(c) {
+        var sel = searchRoot.querySelector('[data-select-field="' + c.field + '"]');
+        return sel ? sel.value === c.value : false;
+      });
+      depEl.style.display = allMet ? '' : 'none';
+    }
+    conditions.forEach(function(c) {
+      var sel = searchRoot.querySelector('[data-select-field="' + c.field + '"]');
+      if (sel) sel.addEventListener('change', applyAllVisibility);
+    });
+    applyAllVisibility();
   });
 }
 
@@ -3959,11 +3990,11 @@ function initDeviceOAuthButton(container, oauth, opts) {
       } catch (pollErr) {
         clearInterval(ticker);
         statusDiv.textContent = 'Auth failed: ' + (pollErr instanceof Error ? pollErr.message : String(pollErr));
-        oauthBtn.textContent = oauth.connectLabel;
+        oauthBtn.textContent = hiddenInput.value ? oauth.reconnectLabel : oauth.connectLabel;
       }
     } catch (err) {
       statusDiv.textContent = 'Error: ' + (err instanceof Error ? err.message : String(err));
-      oauthBtn.textContent = oauth.connectLabel;
+      oauthBtn.textContent = hiddenInput.value ? oauth.reconnectLabel : oauth.connectLabel;
     } finally {
       oauthBtn.disabled = false;
     }
@@ -4023,6 +4054,9 @@ async function showAddIntegrationModal(section) {
           '<input data-field="' + esc(f.key) + '" type="' + (f.type === 'password' ? 'password' : f.type === 'number' ? 'number' : 'text') + '" placeholder="' + esc(f.placeholder || '') + '" />';
       }
       if (f.dependsOn) {
+        if (f.dependsOn.allOf) {
+          return '<div data-depends-on-all="' + esc(JSON.stringify(f.dependsOn.allOf)) + '" style="display:none">' + fieldHtml + '</div>';
+        }
         return '<div data-depends-on-field="' + esc(f.dependsOn.field) + '" data-depends-on-value="' + esc(f.dependsOn.value) + '" style="display:none">' + fieldHtml + '</div>';
       }
       return fieldHtml;
@@ -5630,7 +5664,8 @@ function showProjectModal(existing) {
     if (items.length === 0) {
       return '<option value="">— no repos match —</option>';
     }
-    return items.map((r) => '<option value="' + esc(r.key) + '" data-clone="' + esc(r.cloneUrlSsh || r.cloneUrlHttp || '') + '" data-branch="' + esc(r.defaultBranch || 'main') + '">' + esc(r.key) + '</option>').join('');
+    return '<option value="">— select a repository —</option>' +
+      items.map((r) => '<option value="' + esc(r.key) + '" data-clone="' + esc(r.cloneUrlSsh || r.cloneUrlHttp || '') + '" data-branch="' + esc(r.defaultBranch || 'main') + '">' + esc(r.key) + '</option>').join('');
   }
 
   let pushTargets = (existing && existing.type === 'coding' && existing.pushTargets) ? existing.pushTargets.map((p) => ({
@@ -5716,11 +5751,20 @@ function showProjectModal(existing) {
           pushTargets[idx].repoKey = repoSel.value;
           const opt = repoSel.selectedOptions[0];
           if (opt) {
-            const cloneUrl = opt.getAttribute('data-clone') || pushTargets[idx].cloneUrl;
-            const branch = opt.getAttribute('data-branch') || pushTargets[idx].targetBranch;
-            pushTargets[idx].cloneUrl = cloneUrl;
-            pushTargets[idx].targetBranch = branch || pushTargets[idx].targetBranch || 'main';
-            renderPushTargetsSection();
+            // Auto-fill clone URL and branch from the option's data attributes
+            // without re-rendering the entire section.
+            const dc = opt.getAttribute('data-clone');
+            const db = opt.getAttribute('data-branch');
+            if (dc) {
+              pushTargets[idx].cloneUrl = dc;
+              const ci = row.querySelector('[data-pf="cloneUrl"]');
+              if (ci) ci.value = dc;
+            }
+            if (db) {
+              pushTargets[idx].targetBranch = db;
+              const bi = row.querySelector('[data-pf="targetBranch"]');
+              if (bi) bi.value = db;
+            }
           }
         });
       }
@@ -5765,6 +5809,21 @@ function showProjectModal(existing) {
         renderPushTargetsSection();
       });
     }
+    // Auto-discover on open: for each push target that has an integration selected
+    // but repos not yet fetched, trigger discovery and refresh only the repo dropdown.
+    pushTargets.forEach((pt, idx) => {
+      if (!pt.integrationId) return;
+      ensureDiscovered(pt.integrationId).then(() => {
+        const row = ptSection.querySelector('.pt-row[data-idx="' + idx + '"]');
+        if (!row) return;
+        const repoSel2 = row.querySelector('[data-pf="repoKey"]');
+        if (repoSel2) {
+          const cur = pt.repoKey || '';
+          repoSel2.innerHTML = repoOptions(pt.integrationId, pushTargetSearch[idx] || '');
+          if (cur && Array.from(repoSel2.options).some((o) => o.value === cur)) repoSel2.value = cur;
+        }
+      }).catch(() => {});
+    });
   }
 
   function renderTicketSourceSection() {
@@ -5783,9 +5842,10 @@ function showProjectModal(existing) {
     integSel.value = integId;
     integSel.addEventListener('change', async () => {
       const newId = integSel.value;
+      ticketProjectSearch = '';
       await ensureDiscovered(newId);
-      const projSel = tsSection.querySelector('[data-tsf="ticketProjectKey"]');
-      projSel.innerHTML = ticketProjectOptions(newId, ticketProjectSearch);
+      const projSel2 = tsSection.querySelector('[data-tsf="ticketProjectKey"]');
+      if (projSel2) projSel2.innerHTML = ticketProjectOptions(newId, ticketProjectSearch);
     });
     const searchInp = tsSection.querySelector('[data-tsf-search="ticketProjectKey"]');
     searchInp.addEventListener('input', () => {
@@ -5799,6 +5859,17 @@ function showProjectModal(existing) {
     });
     const projSel = tsSection.querySelector('[data-tsf="ticketProjectKey"]');
     if (ts.ticketProjectKey) projSel.value = ts.ticketProjectKey;
+    // Auto-discover on open when an integration is already selected but not yet discovered.
+    if (integId) {
+      ensureDiscovered(integId).then(() => {
+        const ps = tsSection.querySelector('[data-tsf="ticketProjectKey"]');
+        if (ps) {
+          const cur = ps.value;
+          ps.innerHTML = ticketProjectOptions(integId, ticketProjectSearch);
+          if (cur && Array.from(ps.options).some((o) => o.value === cur)) ps.value = cur;
+        }
+      }).catch(() => {});
+    }
   }
 
   function renderReviewTargetSection() {

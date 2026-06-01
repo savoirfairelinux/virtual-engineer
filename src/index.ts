@@ -52,7 +52,7 @@ async function main(): Promise<void> {
   const stateStore = await SqliteStateStore.create(config.databasePath);
 
   registerBuiltinPlugins(config.adminAuthSecret !== undefined ? { adminAuthSecret: config.adminAuthSecret } : undefined);
-  const pluginManager = new PluginManager(stateStore);
+  const pluginManager = new PluginManager(stateStore, { adminAuthSecret: config.adminAuthSecret });
 
   // Copilot factory: registered explicitly because construction needs AppConfig
   // values (agentDockerNetwork, maxCommitsPerCycle) that are not in configJson.
@@ -102,6 +102,19 @@ async function main(): Promise<void> {
   );
 
   // ─── Polling loop ────────────────────────────────────────────────────────────
+  // Mutable holder so the review trigger survives hot-reload of the review
+  // integration without recreating the stream-events manager.
+  const reviewTriggerHolder = {
+    current: buildReviewTrigger(pluginManager, config.workspaceBaseDir, workspaceRunner, stateStore),
+  };
+
+  /** Thin wrapper that forwards to the stream-events review trigger. Used by the polling loop. */
+  const pollingReviewTrigger: import("./orchestrator/pollingLoop.js").ReviewAssignmentTrigger = {
+    async triggerReview(integrationId: string, changeId: string): Promise<void> {
+      await reviewTriggerHolder.current?.triggerReviewForChange(integrationId, changeId);
+    },
+  };
+
   const pollingLoop = new PollingLoop(
     {
       ticketIntervalMs: config.pollingIntervalMs,
@@ -109,15 +122,9 @@ async function main(): Promise<void> {
     },
     orchestrator,
     stateStore,
-    pollingProjectMode
+    { ...pollingProjectMode, reviewTrigger: pollingReviewTrigger }
   );
-  // Review discovery is handled by SSH stream-events; no reviewWatchPoller needed.
 
-  // Mutable holder so the review trigger survives hot-reload of the Gerrit
-  // integration without recreating the stream-events manager.
-  const reviewTriggerHolder = {
-    current: buildReviewTrigger(pluginManager, config.workspaceBaseDir, workspaceRunner, stateStore),
-  };
   const integrationStreamEvents = new PluginIntegrationStreamEventsManager({
     orchestrator,
     getReviewTrigger: (): import("./connectors/integrationStreamEvents.js").IntegrationEventStreamReviewTrigger | undefined => reviewTriggerHolder.current ?? undefined,
@@ -414,10 +421,7 @@ async function buildReviewBundle(
 
   let rawConfig: Record<string, unknown>;
   try {
-    const parsedJson: unknown = JSON.parse(integration.configJson);
-    rawConfig = (typeof parsedJson === "object" && parsedJson !== null && !Array.isArray(parsedJson))
-      ? (parsedJson as Record<string, unknown>)
-      : {};
+    rawConfig = pluginManager.decryptIntegrationConfig(integration);
   } catch {
     return { integration: null, provider: null, orchestrator: null };
   }
@@ -624,6 +628,7 @@ function buildOrchestratorConfig(
     gitAuthorName: gitAuthorName ?? "Virtual Engineer",
     gitAuthorEmail: gitAuthorEmail ?? "ve@virtual-engineer.local",
     agentContainerImage: config.agentContainerImage,
+    ...(config.adminAuthSecret !== undefined ? { adminAuthSecret: config.adminAuthSecret } : {}),
   };
 }
 

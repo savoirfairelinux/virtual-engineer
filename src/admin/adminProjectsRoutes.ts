@@ -172,6 +172,28 @@ async function loadIntegrationsLookup(store: IntegrationStore | undefined): Prom
   return { byId };
 }
 
+/** Integration types that use HTTPS for cloning — SSH URLs are invalid for these. */
+const HTTPS_ONLY_VCS_TYPES = new Set(["github-pull-request", "gitlab-merge-request"]);
+
+/**
+ * Validate that push targets for HTTPS-based integrations (GitHub, GitLab) do
+ * not use SSH clone URLs (`git@...`). Returns an error message or null.
+ */
+async function validatePushTargetCloneUrls(
+  targets: Array<{ integrationId: string; cloneUrl: string; repoKey: string }>,
+  integrationStore: IntegrationStore | undefined
+): Promise<string | null> {
+  if (!integrationStore) return null;
+  for (const target of targets) {
+    if (!target.cloneUrl.startsWith("git@")) continue;
+    const integration = await integrationStore.getIntegration(target.integrationId).catch(() => null);
+    if (integration && HTTPS_ONLY_VCS_TYPES.has(integration.type)) {
+      return `Push target "${target.repoKey}" uses an SSH clone URL (${target.cloneUrl}) which is not supported for ${integration.type} integrations. Use an HTTPS URL instead (e.g. https://github.com/owner/repo.git).`;
+    }
+  }
+  return null;
+}
+
 /** Return a minimal integration descriptor object for embedding in project API responses. */
 function describeIntegration(integ: Integration | undefined): { id: string; name: string; type: string } | null {
   if (!integ) return null;
@@ -413,6 +435,12 @@ export async function handleProjectsRoute(
 
     try {
       if (data.type === "coding") {
+        const cloneUrlError = await validatePushTargetCloneUrls(data.pushTargets, deps.integrationStore);
+        if (cloneUrlError) {
+          try { await store.deleteProject(project.id); } catch { /* ignore */ }
+          writeJson(response, 400, { error: cloneUrlError });
+          return true;
+        }
         await store.setProjectTicketSource(project.id, data.ticketSource);
         await store.replaceProjectPushTargets(project.id, data.pushTargets);
       } else {
@@ -504,6 +532,11 @@ export async function handleProjectsRoute(
         if (data.pushTargets !== undefined) {
           if (existing.type !== "coding") {
             writeJson(response, 400, { error: "pushTargets only valid for coding projects" });
+            return true;
+          }
+          const cloneUrlError = await validatePushTargetCloneUrls(data.pushTargets, deps.integrationStore);
+          if (cloneUrlError) {
+            writeJson(response, 400, { error: cloneUrlError });
             return true;
           }
           await store.replaceProjectPushTargets(id, data.pushTargets);

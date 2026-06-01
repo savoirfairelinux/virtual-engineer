@@ -568,8 +568,22 @@ export async function handleIntegrationRoutes(
       return true;
     }
 
+    // Decrypt password fields so discoverResources receives real credentials.
+    // Tokens are stored as encrypted (or plain:-prefixed) strings via encryptToken.
+    const decryptedConfig = { ...(parsedConfig as Record<string, unknown>) };
+    for (const field of descriptor.requiredFields.filter((f) => f.type === "password")) {
+      const raw = decryptedConfig[field.key];
+      if (typeof raw === "string" && raw.length > 0) {
+        try {
+          decryptedConfig[field.key] = decryptToken(raw, deps.adminAuthSecret);
+        } catch {
+          // Not a managed encrypted token (e.g. a raw PAT) — leave as-is.
+        }
+      }
+    }
+
     try {
-      const snapshot = await descriptor.discoverResources(parsedConfig);
+      const snapshot = await descriptor.discoverResources(decryptedConfig);
       const json = JSON.stringify(snapshot);
       await deps.integrationStore.setIntegrationDiscoveredResources(id, json);
       writeJson(response, 200, {

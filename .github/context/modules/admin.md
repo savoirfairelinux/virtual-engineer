@@ -120,6 +120,7 @@ The admin server never returns plaintext password-like fields. On `PUT`, values 
 - Agent and project modals filter persisted integrations by derived capabilities, with legacy `category` kept only as a fallback. Coding projects therefore choose ticket sources from `ticketing` integrations and push targets from `vcs` integrations, while review projects choose review targets from `review` integrations.
 - Prompts are managed under Configuration rather than a separate top-level page.
 - The Tasks view streams live agent events backed by `agent_cycles.agent_events` and the in-memory event bus.
+- Task origin badges in the Tasks list/details abbreviate GitHub pull-request sources as `GITHUB-PR` (instead of `GITHUB-PULL-REQUEST`) for compact readability.
 
 The supported server-side model is `projects` / `project_*`. There are no `/api/admin/repository-sets` routes.
 
