@@ -108,4 +108,19 @@ describe("FeedbackProcessor", () => {
     expect(items[0]?.filePath).toBeUndefined();
     expect(items[0]?.line).toBeUndefined();
   });
+
+  it("uses ci_failure source for comments with ci-run- id prefix", async () => {
+    const comment = makeComment({ id: "ci-run-9001", message: "CI / test failed" });
+    const store = makeStateStoreMock();
+    const processor = new FeedbackProcessor(store);
+
+    const [items] = await processor.extractNewFeedback(
+      makeTaskId(randomUUID()),
+      makeExternalChangeId("I000"),
+      [comment]
+    );
+
+    expect(items[0]?.source).toBe("ci_failure");
+    expect(items[0]?.content).toBe("CI / test failed");
+  });
 });

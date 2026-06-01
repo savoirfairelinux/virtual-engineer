@@ -159,6 +159,9 @@ async function importRuntime(
     registerConnectionTester: vi.fn(),
     reloadIntegration: vi.fn().mockResolvedValue(undefined),
     onPluginChange: vi.fn(),
+    decryptIntegrationConfig: vi.fn((integration: Integration) => {
+      return JSON.parse(integration.configJson) as Record<string, unknown>;
+    }),
   };
 
   const PluginManager = vi.fn().mockImplementation(function() { return pluginManagerInstance; });
