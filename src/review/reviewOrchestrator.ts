@@ -136,6 +136,27 @@ export class ReviewOrchestrator {
       const existing = await this.deps.stateStore.getTaskByTicketId(ticketId);
       if (existing && existing.taskType === "code-review" && !TERMINAL_STATES.has(existing.state)) {
         if (existing.currentPatchset === details.currentPatchset) {
+          if (existing.state === "REVIEW_WATCHING") {
+            // We already reviewed this patchset and are watching for a new one.
+            // Do NOT push to tasks — a second runReview call on the same patchset
+            // triggers a redundant agent run, a spurious `submitReview` call, and
+            // the 422 "Line could not be resolved" / race-condition failures we've seen.
+            log.debug(
+              { taskId: existing.taskId, patchset: existing.currentPatchset },
+              "review already completed for patchset — skipping re-trigger"
+            );
+            continue;
+          }
+          if (existing.state === "REVIEW_RUNNING" || existing.state === "REVIEW_COMMENTING") {
+            // Review is actively in flight — skip to avoid a concurrent second pass.
+            log.debug(
+              { taskId: existing.taskId, state: existing.state },
+              "review already in progress — skipping concurrent trigger"
+            );
+            continue;
+          }
+          // REVIEW_PENDING with same patchset: task was created (or manually reset)
+          // but runReview has not yet run. Push so the caller will run it.
           tasks.push(existing);
           continue;
         }

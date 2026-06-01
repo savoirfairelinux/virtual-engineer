@@ -30,10 +30,48 @@ import { normalizeAgentResult, getModifiedFileCount } from "../agents/agentEvent
 import type { VcsConnector } from "../vcs/vcsConnector.js";
 import { NO_REVIEW_SYSTEM } from "../vcs/vcsConnector.js";
 import { VcsConnectorFactory } from "../vcs/vcsFactory.js";
+import { decryptToken } from "../utils/encryption.js";
+import { redactUrls } from "../utils/redactUrl.js";
 import type { ConcurrencyTracker } from "./concurrencyTracker.js";
 import { resolveAgentConfig } from "../state/stateStore.js";
 
 const log = getLogger("orchestrator");
+
+/** Integration types that clone via HTTPS and need a token injected into the clone URL. */
+const HTTPS_VCS_TYPES = new Set(["github-pull-request", "gitlab-merge-request"]);
+
+/**
+ * Build an authenticated HTTPS clone URL for GitHub/GitLab push targets so the
+ * agent container can run `git clone` without interactive credential prompts.
+ * Returns undefined for non-HTTPS integrations (Gerrit) or on any error.
+ */
+function buildAuthenticatedCloneUrl(
+  rawCloneUrl: string,
+  integrationType: string,
+  encryptedToken: unknown,
+  adminAuthSecret: string | undefined
+): string | undefined {
+  if (!HTTPS_VCS_TYPES.has(integrationType)) return undefined;
+  if (typeof encryptedToken !== "string" || !encryptedToken) return undefined;
+  let token: string;
+  try {
+    token = decryptToken(encryptedToken, adminAuthSecret);
+  } catch {
+    return undefined;
+  }
+  const usernamePrefix = integrationType === "github-pull-request" ? "x-access-token" : "oauth2";
+  try {
+    const normalised = rawCloneUrl.startsWith("git@")
+      ? rawCloneUrl.replace(/^git@([^:]+):(.+?)(?:\.git)?$/, "https://$1/$2.git")
+      : rawCloneUrl;
+    const parsed = new URL(normalised);
+    parsed.username = usernamePrefix;
+    parsed.password = token;
+    return parsed.toString();
+  } catch {
+    return undefined;
+  }
+}
 
 export interface OrchestratorConfig {
   maxAgentCycles: number;
@@ -42,6 +80,7 @@ export interface OrchestratorConfig {
   gitAuthorName: string;
   gitAuthorEmail: string;
   agentContainerImage: string;
+  adminAuthSecret?: string | undefined;
 }
 
 /**
@@ -84,7 +123,7 @@ export class Orchestrator {
   private readonly feedbackProcessor: FeedbackProcessor;
   private config: OrchestratorConfig;
   private vcsConnector: VcsConnector | undefined;
-  private readonly vcsConnectorFactory = new VcsConnectorFactory();
+  private readonly vcsConnectorFactory: VcsConnectorFactory;
   private projectMode: ProjectModeDeps | null = null;
   constructor(
     config: OrchestratorConfig,
@@ -95,6 +134,7 @@ export class Orchestrator {
     projectMode?: ProjectModeDeps
   ) {
     this.config = config;
+    this.vcsConnectorFactory = new VcsConnectorFactory({ adminAuthSecret: config.adminAuthSecret });
     this.vcsConnector = vcsConnector;
     this.feedbackProcessor = new FeedbackProcessor(stateStore);
     this.projectMode = projectMode ?? null;
@@ -504,7 +544,7 @@ export class Orchestrator {
       // Also enrich any push target whose sshKeyPath is null with the key from its linked connector.
       let cloneKnownHostsPath: string | undefined;
       try {
-        const rootConnectorForClone = await this.resolveVcsConnectorForTarget(root.integrationId, { repoKey: root.repoKey });
+        const rootConnectorForClone = await this.resolveVcsConnectorForTarget(root.integrationId, { repoKey: root.repoKey, targetBranch: root.targetBranch });
         cloneKnownHostsPath = rootConnectorForClone.sshKnownHostsPath ?? undefined;
       } catch {
         // Non-fatal — clone proceeds without strict host key checking
@@ -512,9 +552,20 @@ export class Orchestrator {
 
       const enrichedPushTargets = await Promise.all(
         projectPushTargets.map(async (pt) => {
+          try {
+            // Inject authenticated HTTPS clone URL for GitHub/GitLab targets
+            const integration = await (this.integrationStore ?? (this.stateStore as unknown as IntegrationStore)).getIntegration(pt.integrationId);
+            if (integration) {
+              const cfg = JSON.parse(integration.configJson) as Record<string, unknown>;
+              const authUrl = buildAuthenticatedCloneUrl(pt.cloneUrl, integration.type, cfg["token"], this.config.adminAuthSecret);
+              if (authUrl !== undefined) return { ...pt, cloneUrl: authUrl };
+            }
+          } catch {
+            // Non-fatal — fall through to sshKeyPath enrichment
+          }
           if (pt.sshKeyPath !== null) return pt;
           try {
-            const connector = await this.resolveVcsConnectorForTarget(pt.integrationId, { repoKey: pt.repoKey });
+            const connector = await this.resolveVcsConnectorForTarget(pt.integrationId, { repoKey: pt.repoKey, targetBranch: pt.targetBranch });
             const fallback = connector.sshKeyPath ?? undefined;
             return fallback !== undefined ? { ...pt, sshKeyPath: fallback } : pt;
           } catch {
@@ -546,7 +597,7 @@ export class Orchestrator {
           "no model resolved from project agent config — container will use adapter default (DEFAULT_COPILOT_MODEL)"
         );
       }
-      const rootConnector = await this.resolveVcsConnectorForTarget(root.integrationId, { repoKey: root.repoKey });
+      const rootConnector = await this.resolveVcsConnectorForTarget(root.integrationId, { repoKey: root.repoKey, targetBranch: root.targetBranch });
       const pushRef = await this.resolvePushRef(task, () =>
         rootConnector.buildPushSpec(cloneBranch, task.taskId, ticket.subject).ref
       );
@@ -854,7 +905,15 @@ export class Orchestrator {
     }
 
     const comments = await reviewConnector.getUnresolvedComments(changeId);
-    const allComments = streamComments && streamComments.length > 0 ? [...streamComments, ...comments] : comments;
+    // Also collect any failed CI check runs so the agent can fix them.
+    const ciComments = reviewConnector.getCICheckFailures
+      ? await reviewConnector.getCICheckFailures(changeId).catch((err: unknown) => {
+          log.warn({ taskId: task.taskId, changeId, err }, "failed to fetch CI check failures (non-fatal)");
+          return [] as import("../interfaces.js").ReviewComment[];
+        })
+      : [];
+    const baseComments = ciComments.length > 0 ? [...comments, ...ciComments] : comments;
+    const allComments = streamComments && streamComments.length > 0 ? [...streamComments, ...baseComments] : baseComments;
 
     task = await this.stateStore.transition(task.taskId, "FEEDBACK_PROCESSING");
     const [feedbackItems, processedComments] = await this.feedbackProcessor.extractNewFeedback(
@@ -987,6 +1046,19 @@ export class Orchestrator {
                 change.changeId as ExternalChangeId
               );
             }
+            // Collect CI check failures via the fallback review connector (which may implement getCICheckFailures).
+            let ciComments: import("../interfaces.js").ReviewComment[] = [];
+            try {
+              const ciSource = await getFallbackReviewConnector();
+              if (ciSource.getCICheckFailures) {
+                ciComments = await ciSource.getCICheckFailures(change.changeId as ExternalChangeId);
+              }
+            } catch (ciErr) {
+              log.warn(
+                { taskId: task.taskId, repoKey: change.repoKey, err: ciErr },
+                "failed to fetch CI check failures for repo (non-fatal)"
+              );
+            }
             // Prepend stream-event comment when it belongs to this specific change.
             // Required because Gerrit's `gerrit query --comments` only returns inline file
             // comments, not top-level change messages — the stream event payload is the
@@ -994,7 +1066,11 @@ export class Orchestrator {
             const extraComments = (streamChangeId === change.changeId && streamComments && streamComments.length > 0)
               ? streamComments
               : [];
-            const allComments = extraComments.length > 0 ? [...extraComments, ...comments] : comments;
+            const allComments = [
+              ...(extraComments.length > 0 ? extraComments : []),
+              ...comments,
+              ...ciComments,
+            ];
             const [feedback, processed] = await this.feedbackProcessor.extractNewFeedback(
               task.taskId,
               change.changeId as ExternalChangeId,
@@ -1406,11 +1482,12 @@ export class Orchestrator {
     }
 
     const reason = err instanceof Error ? err.message : String(err);
-    log.error({ taskId: task.taskId, err: reason }, "fatal task error");
+    const safeReason = redactUrls(reason);
+    log.error({ taskId: task.taskId, err: safeReason }, "fatal task error");
     try {
-      await this.stateStore.setFailureReason(task.taskId, reason);
-      await this.stateStore.transition(task.taskId, "FAILED", { error: reason });
-      await this.notifyTicketFailure(task, `Virtual Engineer encountered an error: ${reason}`);
+      await this.stateStore.setFailureReason(task.taskId, safeReason);
+      await this.stateStore.transition(task.taskId, "FAILED", { error: safeReason });
+      await this.notifyTicketFailure(task, `Virtual Engineer encountered an error: ${safeReason}`);
     } catch (innerErr) {
       log.error({ taskId: task.taskId, innerErr }, "failed to record fatal error in state store");
     }
