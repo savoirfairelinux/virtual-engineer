@@ -405,6 +405,16 @@ describe("SqliteStateStore — Phase 2: integration discovery + concurrency", ()
     expect(after.at).toBeInstanceOf(Date);
   });
 
+  it("clearIntegrationDiscoveredResources resets snapshot to null", async () => {
+    await makeIntegration(store, "redmine-1");
+    await store.setIntegrationDiscoveredResources("redmine-1", JSON.stringify({ ticketProjects: [] }));
+    expect((await store.getIntegrationDiscoveredResources("redmine-1")).json).not.toBeNull();
+
+    await store.clearIntegrationDiscoveredResources("redmine-1");
+
+    expect(await store.getIntegrationDiscoveredResources("redmine-1")).toEqual({ json: null, at: null });
+  });
+
   it("getGlobalConcurrencyLimit defaults to null", async () => {
     expect(await store.getGlobalConcurrencyLimit()).toBeNull();
   });

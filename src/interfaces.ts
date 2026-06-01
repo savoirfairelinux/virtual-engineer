@@ -1048,4 +1048,6 @@ export interface IntegrationStore {
   setIntegrationDiscoveredResources?(id: string, json: string): Promise<void>;
   /** load the latest persisted snapshot (raw JSON + when). */
   getIntegrationDiscoveredResources?(id: string): Promise<{ json: string | null; at: Date | null }>;
+  /** drop the persisted snapshot so a stale config no longer surfaces old resources. */
+  clearIntegrationDiscoveredResources?(id: string): Promise<void>;
 }

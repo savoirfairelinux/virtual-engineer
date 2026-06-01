@@ -317,13 +317,19 @@ export async function handleIntegrationRoutes(
     }
 
     try {
+      const nextConfigJson = JSON.stringify(validatedConfig.data);
+      const configChanged = nextConfig !== undefined && nextConfigJson !== existing.configJson;
       const updated = await deps.integrationStore.upsertIntegration({
         id,
         type: nextType,
         name: (body["name"] as string) ?? existing.name,
-        configJson: JSON.stringify(validatedConfig.data),
+        configJson: nextConfigJson,
         enabled: existing.enabled,
       });
+      if (configChanged) {
+        await deps.integrationStore.clearIntegrationDiscoveredResources?.(id);
+      }
+      const fresh = configChanged ? (await deps.integrationStore.getIntegration(id)) ?? updated : updated;
       const fullyValidatedConfig = validateIntegrationConfig(descriptor.configSchema, validatedConfig.data, false);
       let appliedAtRuntime = false;
       if (updated.enabled && deps.pluginManager && fullyValidatedConfig.ok) {
@@ -332,7 +338,7 @@ export async function handleIntegrationRoutes(
       }
       deps.onIntegrationUpdated?.(id);
       writeJson(response, 200, { 
-        integration: serializeIntegration(updated, deps.pluginManager, deps.integrationStreams),
+        integration: serializeIntegration(fresh, deps.pluginManager, deps.integrationStreams),
         appliedAtRuntime
       });
     } catch (err: unknown) {

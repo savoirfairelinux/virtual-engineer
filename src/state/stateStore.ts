@@ -2050,6 +2050,14 @@ export class SqliteStateStore implements StateStore, IntegrationStore, PromptSto
     };
   }
 
+  /** Drop the discovery snapshot so a changed config no longer surfaces stale resources. */
+  async clearIntegrationDiscoveredResources(id: string): Promise<void> {
+    await this.db
+      .update(integrations)
+      .set({ discoveredResourcesJson: null, discoveredAt: null, updatedAt: new Date() })
+      .where(eq(integrations.id, id));
+  }
+
   // ─── Global concurrency ──────────────────────────────────────────
 
   /** Return the global max-concurrent task limit, or null when unlimited. */

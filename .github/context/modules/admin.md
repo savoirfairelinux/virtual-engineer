@@ -66,11 +66,11 @@ The admin server is a small HTTP service (default `127.0.0.1:3100`) that serves 
 | `GET` | `/api/admin/integrations/by-category` | Grouped integration view used by the dashboard. |
 | `POST` | `/api/admin/integrations` | Create integration. OAuth-backed providers can be created as drafts with no token; the dashboard writes the hidden OAuth token field only after the configured OAuth flow completes. |
 | `GET` | `/api/admin/integrations/:id` | Integration detail. |
-| `PUT` | `/api/admin/integrations/:id` | Update integration; omitted/masked secrets are restored from the stored row. |
+| `PUT` | `/api/admin/integrations/:id` | Update integration; omitted/masked secrets are restored from the stored row. A changed config clears the discovery cache so stale repos/projects are re-fetched on next discover. |
 | `DELETE` | `/api/admin/integrations/:id` | Delete integration. |
 | `POST` | `/api/admin/integrations/test` | Validate unsaved integration config. |
 | `POST` | `/api/admin/integrations/:id/test` | Validate saved integration config. |
-| `POST` | `/api/admin/integrations/:id/discover` | Refresh discovery cache (repos, projects, models, etc.). |
+| `POST` | `/api/admin/integrations/:id/discover` | Refresh discovery cache (repos, projects, models, etc.). GitHub repo discovery is token-centric (`/user/repos`, filtered to the configured owner) so only repos the token can actually access are listed. |
 | `GET` | `/api/admin/integrations/:id/models` | Return cached discovered models. |
 | `PATCH` | `/api/admin/integrations/:id/enable` | Enable integration. |
 | `PATCH` | `/api/admin/integrations/:id/disable` | Disable integration. |

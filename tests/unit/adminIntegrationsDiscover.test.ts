@@ -31,7 +31,14 @@ function makeIntegrationStore(initial: Integration[] = []): DiscoveryStore {
     upsertIntegration: async (inp) => {
       const now = new Date();
       const existing = data.get(inp.id);
-      const next: Integration = { ...inp, createdAt: existing?.createdAt ?? now, updatedAt: now };
+      const next: Integration = {
+        ...inp,
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now,
+        discoveredResourcesJson:
+          inp.discoveredResourcesJson ?? existing?.discoveredResourcesJson ?? null,
+        discoveredAt: inp.discoveredAt ?? existing?.discoveredAt ?? null,
+      };
       data.set(inp.id, next);
       return next;
     },
@@ -57,6 +64,13 @@ function makeIntegrationStore(initial: Integration[] = []): DiscoveryStore {
         json: existing.discoveredResourcesJson ?? null,
         at: existing.discoveredAt ?? null,
       };
+    },
+    clearIntegrationDiscoveredResources: async (id) => {
+      const existing = data.get(id);
+      if (!existing) return;
+      existing.discoveredResourcesJson = null;
+      existing.discoveredAt = null;
+      existing.updatedAt = new Date();
     },
     countIntegrationReferences: async () => 0,
   };
@@ -111,6 +125,20 @@ async function postJson(baseUrl: string, path: string): Promise<{ status: number
 
 async function getJson(baseUrl: string, path: string): Promise<{ status: number; body: Record<string, unknown> }> {
   const res = await fetch(`${baseUrl}${path}`);
+  const body = (await res.json()) as Record<string, unknown>;
+  return { status: res.status, body };
+}
+
+async function putJson(
+  baseUrl: string,
+  path: string,
+  payload: Record<string, unknown>
+): Promise<{ status: number; body: Record<string, unknown> }> {
+  const res = await fetch(`${baseUrl}${path}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
   const body = (await res.json()) as Record<string, unknown>;
   return { status: res.status, body };
 }
@@ -300,5 +328,39 @@ describe("Admin API — POST /api/admin/integrations/:id/discover", () => {
     const { body } = await getJson(baseUrl, "/api/admin/integrations/int-copilot");
     const integration = body["integration"] as Record<string, unknown>;
     expect(integration["discoverySupported"]).toBe(false);
+  });
+
+  it("PUT clears the discovered-resources cache when the config changes", async () => {
+    // Given a discovery snapshot from a previous (stale) config
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ projects: [{ id: 1, identifier: "old", name: "Old" }], total_count: 1 })
+    );
+    await postJson(baseUrl, "/api/admin/integrations/int-redmine/discover");
+    expect((await store.getIntegrationDiscoveredResources("int-redmine")).json).not.toBeNull();
+
+    // When the integration config is edited (e.g. a new API key)
+    const { status } = await putJson(baseUrl, "/api/admin/integrations/int-redmine", {
+      config: { apiKey: "rotated-secret" },
+    });
+    expect(status).toBe(200);
+
+    // Then the stale snapshot is invalidated so the next discovery uses the new config
+    expect((await store.getIntegrationDiscoveredResources("int-redmine")).json).toBeNull();
+  });
+
+  it("PUT keeps the discovered-resources cache when the config is unchanged", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ projects: [{ id: 1, identifier: "keep", name: "Keep" }], total_count: 1 })
+    );
+    await postJson(baseUrl, "/api/admin/integrations/int-redmine/discover");
+    expect((await store.getIntegrationDiscoveredResources("int-redmine")).json).not.toBeNull();
+
+    // Editing only the name (no config field) must not wipe discovery
+    const { status } = await putJson(baseUrl, "/api/admin/integrations/int-redmine", {
+      name: "Renamed Redmine",
+    });
+    expect(status).toBe(200);
+
+    expect((await store.getIntegrationDiscoveredResources("int-redmine")).json).not.toBeNull();
   });
 });
