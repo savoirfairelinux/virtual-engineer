@@ -3,6 +3,7 @@ import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { promisify } from "node:util";
 import { getLogger } from "../logger.js";
+import { redactUrls } from "../utils/redactUrl.js";
 
 const execFileAsync = promisify(execFile);
 const log = getLogger("docker-volume");
@@ -168,7 +169,7 @@ export async function execInVolume(opts: ExecInVolumeOptions): Promise<ExecInVol
     dockerArgs.push(opts.image, ...opts.command);
   }
 
-  log.debug({ volumeName: opts.volumeName, command: opts.command }, "execInVolume");
+  log.debug({ volumeName: opts.volumeName, command: opts.command.map(redactUrls) }, "execInVolume");
 
   try {
     const { stdout, stderr } = await execFileAsync("docker", dockerArgs, { timeout });
