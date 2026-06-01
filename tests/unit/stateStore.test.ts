@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { SqliteStateStore } from "../../src/state/stateStore.js";
 import { InvalidTransitionError } from "../../src/state/stateMachine.js";
-import { makeTaskId, makeTicketId, makeExternalChangeId } from "../../src/interfaces.js";
+import { makeTaskId, makeTicketId, makeExternalChangeId, makeProjectId } from "../../src/interfaces.js";
 import { tmpdir } from "os";
 import { join } from "path";
 import { randomUUID } from "crypto";
@@ -246,6 +246,44 @@ describe("SqliteStateStore", () => {
       expect(activeIds).not.toContain(idAbandoned);
       expect(activeIds).not.toContain(idReviewDone);
       expect(activeIds).not.toContain(idReviewFailed);
+    });
+  });
+
+  describe("getFailedTasksForProject", () => {
+    it("returns both FAILED and REVIEW_FAILED tasks bound to the project", async () => {
+      const projectId = makeProjectId(randomUUID());
+      const idFailed = makeTaskId(randomUUID());
+      const idReviewFailed = makeTaskId(randomUUID());
+      const idActive = makeTaskId(randomUUID());
+      const idOtherProject = makeTaskId(randomUUID());
+
+      await store.createTask(idFailed, makeTicketId("f"));
+      await store.createTask(idActive, makeTicketId("a"));
+      await store.createReviewTask({
+        taskId: idReviewFailed,
+        ticketId: makeTicketId("rf"),
+        subject: "review failed",
+        changeId: makeExternalChangeId("Ifail"),
+        patchset: 1,
+      });
+      await store.createTask(idOtherProject, makeTicketId("o"));
+
+      await store.setTaskProjectId(idFailed, projectId);
+      await store.setTaskProjectId(idActive, projectId);
+      await store.setTaskProjectId(idReviewFailed, projectId);
+      await store.setTaskProjectId(idOtherProject, makeProjectId(randomUUID()));
+
+      await store.transition(idFailed, "FAILED");
+      await store.transition(idReviewFailed, "REVIEW_FAILED");
+      await store.transition(idOtherProject, "FAILED");
+
+      const failed = await store.getFailedTasksForProject(projectId);
+      const ids = failed.map((t) => t.taskId);
+
+      expect(ids).toContain(idFailed);
+      expect(ids).toContain(idReviewFailed);
+      expect(ids).not.toContain(idActive);
+      expect(ids).not.toContain(idOtherProject);
     });
   });
 

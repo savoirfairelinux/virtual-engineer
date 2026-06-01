@@ -225,6 +225,7 @@ function buildApiRouter(dependencies: AdminServerDependencies): Router {
     projectStore: dependencies.projectStore,
     integrationStore: dependencies.integrationStore,
     onProjectChange: dependencies.onProjectChange,
+    taskControl: dependencies.taskControl,
   });
   registerConcurrencyRoutes(router, { concurrency: dependencies.concurrency });
   registerWebhookRoutes(router, {

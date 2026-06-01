@@ -4,6 +4,7 @@ import { writeJson, readBody, zodErrorBody } from "./adminRouteUtils.js";
 import {
   makeAgentId,
   makeProjectId,
+  makeTaskId,
   type AgentId,
   type AgentRecord,
   type Integration,
@@ -15,10 +16,37 @@ import {
   type ProjectTicketSourceRecord,
   type ProjectType,
   type PushTargetRole,
+  type Task,
 } from "../interfaces.js";
 import type { Router } from "./router.js";
 
 const log = getLogger("admin-projects");
+
+async function relaunchFailedTasksForProject(
+  store: ProjectsRouteStore,
+  projectId: ProjectId,
+  taskControl: ProjectsRouteDeps["taskControl"]
+): Promise<void> {
+  let failedTasks: Task[];
+  try {
+    failedTasks = await store.getFailedTasksForProject(projectId);
+  } catch (err: unknown) {
+    log.warn({ err, projectId }, "failed to list failed tasks for automatic relaunch");
+    return;
+  }
+
+  for (const task of failedTasks) {
+    try {
+      await store.retryTask(task.taskId);
+      void taskControl?.retryTask(task.taskId).catch((err: unknown) => {
+        log.warn({ err, projectId, taskId: task.taskId }, "relaunch retryTask failed");
+      });
+      log.info({ projectId, taskId: task.taskId }, "automatically relaunched failed task after reconfiguration");
+    } catch (err: unknown) {
+      log.warn({ err, projectId, taskId: task.taskId }, "failed to automatically relaunch task after reconfiguration");
+    }
+  }
+}
 
 export interface ProjectsRouteStore {
   createProject(input: {
@@ -65,12 +93,19 @@ export interface ProjectsRouteStore {
   getProjectReviewConfig(projectId: ProjectId): Promise<ProjectReviewConfig | null>;
   getAgentById(id: AgentId): Promise<AgentRecord | null>;
   findProjectByTicketSource(integrationId: string, ticketProjectKey: string): Promise<ProjectRecord | null>;
+  getFailedTasksForProject(projectId: ProjectId): Promise<Task[]>;
+  retryTask(taskId: ReturnType<typeof makeTaskId>): Promise<Task>;
 }
 
 export interface ProjectsRouteDeps {
   projectStore?: ProjectsRouteStore | undefined;
   integrationStore?: IntegrationStore | undefined;
   onProjectChange?: (() => void) | undefined;
+  taskControl?:
+    | {
+        retryTask(taskId: ReturnType<typeof makeTaskId>): Promise<void>;
+      }
+    | undefined;
 }
 
 const pushTargetSchema = z.object({
@@ -420,6 +455,9 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
     const detail = await buildProjectDetail(project, store, integrations);
     writeJson(res, 201, { project: detail });
     deps.onProjectChange?.();
+    if (project.enabled) {
+      await relaunchFailedTasksForProject(store, project.id, deps.taskControl);
+    }
   });
 
   // Enable or disable a project by id.
@@ -432,6 +470,9 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
     await store.setProjectEnabled(id, true);
     res.statusCode = 204; res.end();
     deps.onProjectChange?.();
+    if (existing.enabled === false) {
+      await relaunchFailedTasksForProject(store, id, deps.taskControl);
+    }
   });
 
   router.add("PATCH", "/api/admin/projects/:id/disable", async (_req, res, params) => {
@@ -480,6 +521,14 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
     if (data.agentOverrideJson !== undefined) updates.agentOverrideJson = data.agentOverrideJson;
     if (data.postCloneScript !== undefined) updates.postCloneScript = data.postCloneScript;
     if (data.enabled !== undefined) updates.enabled = data.enabled;
+    const reconfigured =
+      data.ticketSource !== undefined ||
+      data.pushTargets !== undefined ||
+      data.reviewConfig !== undefined ||
+      updates.agentId !== undefined ||
+      updates.agentOverrideJson !== undefined ||
+      updates.postCloneScript !== undefined ||
+      (updates.enabled === true && existing.enabled !== true);
     try {
       if (Object.keys(updates).length > 0) await store.updateProject(id, updates);
       if (data.ticketSource !== undefined) {
@@ -508,6 +557,9 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
     const detail = await buildProjectDetail(refreshed, store, integrations);
     writeJson(res, 200, { project: detail });
     deps.onProjectChange?.();
+    if (reconfigured) {
+      await relaunchFailedTasksForProject(store, id, deps.taskControl);
+    }
   });
 
   router.add("DELETE", "/api/admin/projects/:id", async (_req, res, params) => {
