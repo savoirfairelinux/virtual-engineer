@@ -377,6 +377,50 @@ function resolveExistingChangeId(repoKey, commitIndex) {
 }
 
 /**
+ * On feedback cycles the orchestrator checks out the prior patchset before
+ * the agent runs, so baseSha already carries a Change-Id footer.  If the agent
+ * added NEW commits on top instead of amending, the push chain would contain
+ * two commits with the same Change-Id and Gerrit would reject.
+ *
+ * This function detects that situation and squashes all agent commits into the
+ * base patchset commit so only one commit per Change-Id is pushed.
+ *
+ * @param {string} baseSha  – HEAD recorded before the agent ran.
+ * @param {string} [cwd]    – working directory (for sub-repos).
+ * @returns {{ squashed: boolean, commits?: Array }} squashed flag + re-collected commits.
+ */
+function squashIntoBaseIfNeeded(baseSha, cwd) {
+  const repoCwd = cwd || REPO_PATH;
+  const baseBody = git(['log', '-1', '--format=%b', baseSha], repoCwd);
+  const baseChangeIdMatch = baseBody.match(/^Change-Id:\s*(\S+)/m);
+  if (!baseChangeIdMatch) {
+    return { squashed: false };
+  }
+
+  // baseSha already owns a Change-Id — squash agent commits into it.
+  const headBefore = git(['rev-parse', 'HEAD'], repoCwd).trim();
+  if (headBefore === baseSha) {
+    // Agent did not create any new commits (amend case already handled).
+    return { squashed: false };
+  }
+
+  try {
+    git(['reset', '--soft', baseSha], repoCwd);
+    git(['commit', '--amend', '--no-edit'], repoCwd);
+  } catch (err) {
+    // Restore HEAD on failure so the original commits are preserved.
+    try { git(['reset', '--hard', headBefore], repoCwd); } catch { /* ignore */ }
+    process.stderr.write(`Warning: failed to squash feedback commits: ${err.message}\n`);
+    return { squashed: false };
+  }
+
+  process.stderr.write(
+    `squashed feedback commits into base patchset (Change-Id: ${baseChangeIdMatch[1]})\n`
+  );
+  return { squashed: true, commits: collectCommits(baseSha, cwd) };
+}
+
+/**
  * Inject deterministic Change-Id footers into agent-created commits.
  * Uses `git rebase` with `GIT_SEQUENCE_EDITOR` to rewrite each commit
  * that doesn't already have a Change-Id in its footer.
@@ -917,6 +961,19 @@ async function main() {
         // For multi-repo workspaces, inject per-repo (rebase happens in each repo independently).
         if (TASK_ID) {
           if (hasRootCommits) {
+            // On feedback cycles the base commit already has a Change-Id.
+            // If the agent added new commits on top instead of amending,
+            // squash them into the base so only one commit per Change-Id is pushed.
+            const squashResult = squashIntoBaseIfNeeded(baseSha);
+            if (squashResult.squashed) {
+              rootCommits = squashResult.commits;
+              if (REPOSITORY_MAP && REPOSITORY_MAP.superproject) {
+                for (const c of rootCommits) {
+                  if (c.repoKey === 'superproject') c.repoKey = REPOSITORY_MAP.superproject.repoKey;
+                }
+              }
+            }
+
             // Resolve the existing Change-Id for the root repo:
             // 1. Legacy ROOT_CHANGE_ID env (single-repo or backward compat)
             // 2. PER_REPO_CHANGE_IDS entry for the superproject repoKey (project-mode)
