@@ -5,6 +5,14 @@ import { randomUUID } from "crypto";
 import type { Server } from "node:http";
 import { SqliteStateStore } from "../../src/state/stateStore.js";
 import { createAdminServer, type AdminServerDependencies } from "../../src/admin/adminServer.js";
+import { fetchAvailableModelsWithPat } from "../../src/agents/copilotModelsService.js";
+
+// Partially mock copilotModelsService: replace the SDK-based PAT function with
+// a vi.fn() to avoid spawning the copilot CLI process in unit tests.
+vi.mock("../../src/agents/copilotModelsService.js", async (importActual) => {
+  const actual = await importActual<typeof import("../../src/agents/copilotModelsService.js")>();
+  return { ...actual, fetchAvailableModelsWithPat: vi.fn() };
+});
 
 function tempDbPath(): string {
   return join(tmpdir(), `ve-admin-agents-${randomUUID()}.db`);
@@ -248,5 +256,36 @@ describe("Admin API — Agent routes (/api/admin/agents)", () => {
     expect(r.status).toBe(200);
     const stored = await store.getAgentById(a.id);
     expect(stored?.integrationId).toBe("copilot-2");
+  });
+
+  it("GET /:id/available-models returns models for PAT-mode linked integration", async () => {
+    await store.upsertIntegration({
+      id: "copilot-pat",
+      type: "copilot",
+      name: "Copilot PAT",
+      configJson: JSON.stringify({ authMode: "pat", token: "github_pat_test123" }),
+      enabled: true,
+    });
+    const agent = await store.createAgent({
+      name: "PAT Bot",
+      type: "coding",
+      modelConfigJson: "{}",
+      integrationId: "copilot-pat",
+    });
+
+    try {
+      // PAT mode uses SDK (CLI subprocess) — mock it to avoid spawning copilot CLI
+      vi.mocked(fetchAvailableModelsWithPat).mockResolvedValueOnce([
+        { id: "gpt-4o", name: "GPT-4o", vendor: "Microsoft", version: "gpt-4o", category: "versatile" },
+      ]);
+
+      const r = await rest(server, `/api/admin/agents/${agent.id}/available-models`);
+      expect(r.status).toBe(200);
+      const models = r.body?.["models"] as Array<Record<string, unknown>>;
+      expect(models).toHaveLength(1);
+      expect(models[0]?.["id"]).toBe("gpt-4o");
+    } finally {
+      vi.restoreAllMocks();
+    }
   });
 });

@@ -7,8 +7,17 @@ import type { Integration, IntegrationStore } from "../../src/interfaces.js";
 import { registerBuiltinPlugins } from "../../src/plugins/init.js";
 import { PluginManager } from "../../src/plugins/pluginManager.js";
 import { jsonResponse, errorResponse } from "./helpers/fixtures.js";
+import { fetchAvailableModelsWithPat } from "../../src/agents/copilotModelsService.js";
 
 vi.mock("child_process", () => ({ execFile: vi.fn() }));
+
+// Partially mock copilotModelsService: keep exchange + HTTP-based fetch real
+// (they use globalThis.fetch which is mocked per-test), but replace the SDK-
+// based PAT function with a vi.fn() to avoid spawning the copilot CLI process.
+vi.mock("../../src/agents/copilotModelsService.js", async (importActual) => {
+  const actual = await importActual<typeof import("../../src/agents/copilotModelsService.js")>();
+  return { ...actual, fetchAvailableModelsWithPat: vi.fn() };
+});
 
 type ExecFileCallback = (error: Error | null, result: { stdout: string; stderr: string }) => void;
 
@@ -362,5 +371,54 @@ describe("Admin API — POST /api/admin/integrations/:id/discover", () => {
     expect(status).toBe(200);
 
     expect((await store.getIntegrationDiscoveredResources("int-redmine")).json).not.toBeNull();
+  });
+
+  it("Copilot PAT mode: discover resolves models using PAT directly", async () => {
+    await store.upsertIntegration({
+      id: "int-copilot-pat",
+      type: "copilot",
+      name: "Copilot PAT",
+      configJson: JSON.stringify({ authMode: "pat", token: "github_pat_test123" }),
+      enabled: false,
+    });
+    // PAT mode uses SDK (CLI subprocess) — mock it to avoid spawning copilot CLI
+    vi.mocked(fetchAvailableModelsWithPat).mockResolvedValueOnce([
+      { id: "gpt-4o", name: "GPT-4o", vendor: "Microsoft", version: "gpt-4o", category: "versatile" },
+    ]);
+
+    const { status, body } = await postJson(baseUrl, "/api/admin/integrations/int-copilot-pat/discover");
+    expect(status).toBe(200);
+    expect(body["ok"]).toBe(true);
+    expect(body["counts"]).toEqual({ models: 1 });
+    // SDK path calls no HTTP fetch
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("Copilot PAT mode: discover returns 400 when token is missing", async () => {
+    await store.upsertIntegration({
+      id: "int-copilot-no-token",
+      type: "copilot",
+      name: "Copilot no token",
+      configJson: JSON.stringify({ authMode: "pat" }),
+      enabled: false,
+    });
+
+    const { status, body } = await postJson(baseUrl, "/api/admin/integrations/int-copilot-no-token/discover");
+    expect(status).toBe(400);
+    expect(String(body["error"])).toContain("No PAT");
+  });
+
+  it("Copilot OAuth mode: discover returns 400 when sessionToken is missing", async () => {
+    await store.upsertIntegration({
+      id: "int-copilot-oauth-empty",
+      type: "copilot",
+      name: "Copilot OAuth no token",
+      configJson: JSON.stringify({ authMode: "oauth" }),
+      enabled: false,
+    });
+
+    const { status, body } = await postJson(baseUrl, "/api/admin/integrations/int-copilot-oauth-empty/discover");
+    expect(status).toBe(400);
+    expect(String(body["error"])).toContain("OAuth");
   });
 });

@@ -16,7 +16,7 @@ import {
   defaultProviderAuthService,
   type ProviderAuthService,
 } from "../agents/providerAuthService.js";
-import { exchangeForSessionToken, fetchAvailableModels } from "../agents/copilotModelsService.js";
+import { exchangeForSessionToken, fetchAvailableModels, fetchAvailableModelsWithPat } from "../agents/copilotModelsService.js";
 import { decryptToken } from "../utils/encryption.js";
 import { getPluginDescriptor } from "../plugins/registry.js";
 
@@ -523,15 +523,41 @@ export async function handleAgentsRoute(
     } catch {
       // ignore parse errors
     }
-    const encrypted = typeof configJson["sessionToken"] === "string" ? configJson["sessionToken"] : undefined;
-    if (!encrypted) {
-      writeJson(response, 400, { error: "No session token configured for this agent" });
-      return true;
+    // PAT mode: resolve token from linked integration; OAuth: fall back to agent's sessionToken
+    let githubToken: string | undefined;
+    let isPat = false;
+    if (agent.integrationId && deps.integrationStore) {
+      const integration = await deps.integrationStore.getIntegration(agent.integrationId);
+      if (integration) {
+        let integrationConfig: Record<string, unknown> = {};
+        try { integrationConfig = JSON.parse(integration.configJson) as Record<string, unknown>; } catch { /* ignore */ }
+        if (integrationConfig["authMode"] === "pat") {
+          const pat = typeof integrationConfig["token"] === "string" ? integrationConfig["token"].trim() : "";
+          if (!pat) {
+            writeJson(response, 400, { error: "No PAT configured for the linked integration" });
+            return true;
+          }
+          githubToken = pat;
+          isPat = true;
+        }
+      }
+    }
+    if (githubToken === undefined) {
+      const encrypted = typeof configJson["sessionToken"] === "string" ? configJson["sessionToken"] : undefined;
+      if (!encrypted) {
+        writeJson(response, 400, { error: "No session token configured for this agent" });
+        return true;
+      }
+      githubToken = decryptToken(encrypted, deps.adminAuthSecret);
     }
     try {
-      const plain = decryptToken(encrypted, deps.adminAuthSecret);
-      const sessionToken = await exchangeForSessionToken(plain);
-      const models = await fetchAvailableModels(sessionToken);
+      // PAT: use the @github/copilot-sdk CopilotClient which spawns the
+      //      bundled CLI and handles its own token exchange internally.
+      //      OAuth: exchange the user token for a short-lived session token
+      //      first, then call the Copilot models HTTP API.
+      const models = isPat
+        ? await fetchAvailableModelsWithPat(githubToken!)
+        : await fetchAvailableModels(await exchangeForSessionToken(githubToken!));
       writeJson(response, 200, { models });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);

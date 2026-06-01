@@ -30,7 +30,7 @@ import { normalizeAgentResult, getModifiedFileCount } from "../agents/agentEvent
 import type { VcsConnector } from "../vcs/vcsConnector.js";
 import { NO_REVIEW_SYSTEM } from "../vcs/vcsConnector.js";
 import { VcsConnectorFactory } from "../vcs/vcsFactory.js";
-import { decryptToken } from "../utils/encryption.js";
+import { decryptToken, encryptToken } from "../utils/encryption.js";
 import { redactUrls } from "../utils/redactUrl.js";
 import type { ConcurrencyTracker } from "./concurrencyTracker.js";
 import { resolveAgentConfig } from "../state/stateStore.js";
@@ -846,7 +846,7 @@ export class Orchestrator {
     const resolvedConfig = resolveAgentConfig(agent, project);
 
     // When the agent's modelConfigJson carries no sessionToken, fall back to
-    // the Copilot integration's own configJson.sessionToken (set by OAuth flow).
+    // the Copilot integration's own configJson (OAuth sessionToken or PAT token).
     let encryptedSessionToken = resolvedConfig.encryptedSessionToken;
     if (!encryptedSessionToken) {
       const integration = this.projectMode.pluginManager.getActiveIntegrationById?.(agent.integrationId);
@@ -854,7 +854,14 @@ export class Orchestrator {
         try {
           const integCfg = JSON.parse(integration.configJson) as Record<string, unknown>;
           const t = integCfg["sessionToken"];
-          if (typeof t === "string" && t) encryptedSessionToken = t;
+          if (typeof t === "string" && t) {
+            encryptedSessionToken = t;
+          } else if (integCfg["authMode"] === "pat") {
+            const pat = integCfg["token"];
+            if (typeof pat === "string" && pat) {
+              encryptedSessionToken = encryptToken(pat, this.config.adminAuthSecret);
+            }
+          }
         } catch { /* ignore */ }
       }
     }
