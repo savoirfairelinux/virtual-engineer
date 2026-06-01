@@ -397,6 +397,17 @@ describe("renderAdminDashboardHtml", () => {
     expect(adminDashboardCss).toContain("cursor: pointer;");
   });
 
+  it("links the origin badge by task mode: review tasks to the review URL, code-gen tasks to the ticket URL", () => {
+    const html = renderAdminDashboardHtml();
+
+    // Review-mode tasks have no ticket, so the origin badge links to the change/MR/PR.
+    // Code-gen tasks link the origin badge to the originating ticket; their pushed-code
+    // state badge already links to the review URL separately.
+    expect(html).toContain("function taskOriginLink(task)");
+    expect(html).toContain("return task.taskType === 'code-review' ? reviewLink(task) : ticketLink(task);");
+    expect(html).toContain("esc(taskOriginLink(task))");
+  });
+
   it("uses the light theme design tokens", () => {
     expect(adminDashboardCss).toContain("--bg:");
     expect(adminDashboardCss).toContain("--surface:");
