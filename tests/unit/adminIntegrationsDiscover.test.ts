@@ -203,7 +203,7 @@ describe("Admin API — POST /api/admin/integrations/:id/discover", () => {
   let server: Server;
   let baseUrl: string;
   let store: DiscoveryStore;
-  let fetchMock: ReturnType<typeof vi.fn>;
+  let fetchMock: ReturnType<typeof vi.fn<(url: string | URL | Request, init?: RequestInit) => Promise<Response>>>;
   let realFetch: typeof fetch;
 
   beforeEach(async () => {
@@ -213,13 +213,13 @@ describe("Admin API — POST /api/admin/integrations/:id/discover", () => {
     server = createAdminServer(makeBaseDeps({ integrationStore: store, pluginManager: pm }));
     baseUrl = await listenServer(server);
     realFetch = globalThis.fetch.bind(globalThis);
-    fetchMock = vi.fn();
+    fetchMock = vi.fn<(url: string | URL | Request, init?: RequestInit) => Promise<Response>>();
     vi.stubGlobal("fetch", (url: string | URL | Request, init?: RequestInit) => {
       const u = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
       if (u.startsWith(baseUrl)) {
         return realFetch(url as RequestInfo, init);
       }
-      return fetchMock(url, init) as Promise<Response>;
+      return fetchMock(url, init);
     });
   });
 
