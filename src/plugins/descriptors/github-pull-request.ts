@@ -6,7 +6,7 @@ import { GitHubReviewProvider } from "../../connectors/githubReviewProvider.js";
 import { GitHubVcsConnector } from "../../vcs/githubVcsConnector.js";
 import {
   resolveGitHubUrls,
-  listGitHubRepositoriesForOwner,
+  listGitHubRepositoriesForUser,
   type GitHubMode,
 } from "../../utils/githubAuth.js";
 import {
@@ -26,7 +26,6 @@ export const githubPullRequestConfigSchema = z
     authMode: githubAuthModeSchema,
     oauthClientId: z.string().optional(),
     token: githubTokenSchema,
-    owner: z.string().min(1).optional(),
     repositorySlug: z.string().optional(),
     targetBranch: z.string().min(1).optional(),
     gitAuthorName: z.string().min(1).default("Virtual Engineer"),
@@ -34,17 +33,6 @@ export const githubPullRequestConfigSchema = z
     virtualEngineerUserLogin: z.string().optional(),
     virtualEngineerUserId: z.number().optional(),
     webhookSecret: z.string().min(1).optional(),
-  })
-  .transform((cfg) => {
-    if (!cfg.owner && cfg.repositorySlug) {
-      const before = cfg.repositorySlug.split("/")[0];
-      if (before) return { ...cfg, owner: before };
-    }
-    return cfg;
-  })
-  .refine((cfg) => Boolean(cfg.owner), {
-    message: "GitHub integration requires an `owner` (user or organization login)",
-    path: ["owner"],
   });
 
 export type GitHubPullRequestPluginConfig = z.infer<typeof githubPullRequestConfigSchema>;
@@ -66,9 +54,9 @@ function deriveHost(mode: GitHubMode, baseUrl: string | undefined): string {
  * any repo-scoped API call will 404 — which is the right failure for misuse.
  */
 const UNBOUND_GITHUB_REPO = "__ve_unbound_repo__";
+const UNBOUND_GITHUB_OWNER = "__ve_unbound_owner__";
 
 function resolveRepo(
-  parsedOwner: string,
   context: IntegrationBindingContext | undefined,
   legacySlug: string | undefined,
   options?: { allowUnboundFallback?: boolean },
@@ -81,17 +69,17 @@ function resolveRepo(
       const r = key.slice(slash + 1);
       if (o && r) return { owner: o, repo: r };
     }
-    return { owner: parsedOwner, repo: key };
+    throw new Error(`GitHub integration: invalid project repoKey '${key}'. Expected 'owner/repo'.`);
   }
   if (legacySlug) {
     const parts = legacySlug.split("/");
     if (parts[0] && parts[1]) return { owner: parts[0], repo: parts[1] };
   }
   if (options?.allowUnboundFallback === true) {
-    return { owner: parsedOwner, repo: UNBOUND_GITHUB_REPO };
+    return { owner: UNBOUND_GITHUB_OWNER, repo: UNBOUND_GITHUB_REPO };
   }
   throw new Error(
-    `GitHub integration: no repository bound. Bind a project repo (repoKey) or set a legacy repositorySlug. owner='${parsedOwner}'`,
+    "GitHub integration: no repository bound. Bind a project repo (repoKey) or set a legacy repositorySlug.",
   );
 }
 
@@ -135,7 +123,7 @@ export const githubPullRequestDescriptor: PluginDescriptor = {
       type: "text",
       required: false,
       placeholder: "Iv1.abc123",
-      dependsOn: { field: "authMode", value: "oauth" },
+      dependsOn: { allOf: [{ field: "authMode", value: "oauth" }, { field: "mode", value: "github-enterprise" }] },
     },
     {
       key: "token",
@@ -144,20 +132,6 @@ export const githubPullRequestDescriptor: PluginDescriptor = {
       required: false,
       placeholder: "ghp_...",
       dependsOn: { field: "authMode", value: "pat" },
-    },
-    {
-      key: "owner",
-      label: "Owner (user or organization)",
-      type: "text",
-      required: true,
-      placeholder: "octocat",
-    },
-    {
-      key: "targetBranch",
-      label: "Target branch",
-      type: "text",
-      required: false,
-      placeholder: "main",
     },
     {
       key: "webhookSecret",
@@ -169,7 +143,7 @@ export const githubPullRequestDescriptor: PluginDescriptor = {
   ],
   createInstance: (config: unknown, _integration: Integration, context?: IntegrationBindingContext) => {
     const parsed = githubPullRequestConfigSchema.parse(config);
-    const { owner, repo } = resolveRepo(parsed.owner as string, context, parsed.repositorySlug, {
+    const { owner, repo } = resolveRepo(context, parsed.repositorySlug, {
       allowUnboundFallback: context === undefined,
     });
     const urls = resolveGitHubUrls(parsed.mode as GitHubMode, parsed.baseUrl);
@@ -187,7 +161,10 @@ export const githubPullRequestDescriptor: PluginDescriptor = {
     const parsed = githubPullRequestConfigSchema.parse(config);
     const urls = resolveGitHubUrls(parsed.mode as GitHubMode, parsed.baseUrl);
     const token = getGitHubAccessToken(parsed as Record<string, unknown>);
-    const repos = await listGitHubRepositoriesForOwner(token, urls.apiBaseUrl, parsed.owner as string);
+    if (!token) {
+      return { repositories: [], discoveredAt: new Date().toISOString() };
+    }
+    const repos = await listGitHubRepositoriesForUser(token, urls.apiBaseUrl);
     repos.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
     return {
       repositories: repos.map((r) => ({
@@ -203,9 +180,10 @@ export const githubPullRequestDescriptor: PluginDescriptor = {
   },
   createVcsConnector: (cfg: Record<string, unknown>, _integration: Integration, context?: IntegrationBindingContext) => {
     const parsed = githubPullRequestConfigSchema.parse(cfg);
-    const { owner, repo } = resolveRepo(parsed.owner as string, context, parsed.repositorySlug);
+    const { owner, repo } = resolveRepo(context, parsed.repositorySlug);
     const urls = resolveGitHubUrls(parsed.mode as GitHubMode, parsed.baseUrl);
     const host = deriveHost(parsed.mode as GitHubMode, parsed.baseUrl);
+    const targetBranch = context?.targetBranch ?? parsed.targetBranch;
     return new GitHubVcsConnector({
       apiBaseUrl: urls.apiBaseUrl,
       host,
@@ -214,19 +192,17 @@ export const githubPullRequestDescriptor: PluginDescriptor = {
       token: getGitHubAccessToken(parsed as Record<string, unknown>),
       gitAuthorName: parsed.gitAuthorName,
       gitAuthorEmail: parsed.gitAuthorEmail,
-      ...(parsed.targetBranch !== undefined ? { targetBranch: parsed.targetBranch } : {}),
+      ...(targetBranch !== undefined ? { targetBranch } : {}),
     });
   },
   getSummaryDetails(config) {
-    const owner = typeof config["owner"] === "string" ? config["owner"] : "?";
     const mode = typeof config["mode"] === "string" ? config["mode"] : "github.com";
-    return [mode, owner];
+    return [mode, "project-bound"];
   },
   reviewSystemPromptId: "system_github_review",
   reviewUserPromptId: "user_github_review",
   createReviewer: (cfg, _integration, workspaceRunner) => {
     const parsed = githubPullRequestConfigSchema.parse(cfg);
-    const owner = parsed.owner as string;
     const urls = resolveGitHubUrls(parsed.mode as GitHubMode, parsed.baseUrl);
     const token = getGitHubAccessToken(parsed as Record<string, unknown>);
     const host = deriveHost(parsed.mode as GitHubMode, parsed.baseUrl);
@@ -240,14 +216,14 @@ export const githubPullRequestDescriptor: PluginDescriptor = {
       userPromptId: "user_github_review",
       provider: new GitHubReviewProvider({
         apiBaseUrl: urls.apiBaseUrl,
-        owner,
         token,
         ...(legacyRepo !== undefined ? { repo: legacyRepo } : {}),
       }),
       buildCloneTarget: (details): { cloneUrl: string; sshKeyPath: null; sshKnownHostsPath: null } => {
         const slash = details.project.indexOf("/");
+        const ownerSlug = slash > 0 ? details.project.slice(0, slash) : "";
         const repo = slash > 0 ? details.project.slice(slash + 1) : details.project;
-        const cloneUrl = `https://x-access-token:${token}@${host}/${owner}/${repo}.git`;
+        const cloneUrl = `https://x-access-token:${token}@${host}/${ownerSlug}/${repo}.git`;
         return { cloneUrl, sshKeyPath: null, sshKnownHostsPath: null };
       },
       applyPatchset: async (handle, details): Promise<void> => {

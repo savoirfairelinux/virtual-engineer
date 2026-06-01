@@ -113,7 +113,9 @@ export const gitlabMergeRequestDescriptor: PluginDescriptor = {
     token: getGitLabAccessToken(cfg),
     gitAuthorName: cfg["gitAuthorName"] as string,
     gitAuthorEmail: cfg["gitAuthorEmail"] as string,
-    ...(typeof cfg["targetBranch"] === "string" ? { targetBranch: cfg["targetBranch"] } : {}),
+    ...(context?.targetBranch !== undefined
+      ? { targetBranch: context.targetBranch }
+      : typeof cfg["targetBranch"] === "string" ? { targetBranch: cfg["targetBranch"] } : {}),
   }),
   getSummaryDetails(config) {
     const baseUrl = typeof config["baseUrl"] === "string" && config["baseUrl"].length > 0
