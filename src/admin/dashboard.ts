@@ -867,6 +867,10 @@ a.detail-origin:hover { text-decoration: underline; }
   pointer-events: auto;
 }
 
+.hidden {
+  display: none !important;
+}
+
 /* ── Configuration Page ── */
 .configuration-shell {
   display: grid;
@@ -2397,24 +2401,24 @@ function showPromptsModal(promptId) {
   const overlay = document.createElement('div');
   overlay.id = 'prompts-modal';
   overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:9999';
-  
+
   const isEdit = !!promptId;
   const prompt = isEdit ? S.prompts.find((p) => p.id === promptId) : null;
-  
+
   const modal = document.createElement('div');
   modal.style.cssText = 'display:flex;flex-direction:column;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:20px;width:90%;max-width:90vw;min-width:380px;height:60vh;min-height:320px;max-height:90vh;box-shadow:0 8px 32px rgba(0,0,0,0.2);resize:both;overflow:auto';
-  
+
   const title = document.createElement('h3');
   title.textContent = isEdit ? 'Edit Prompt' : 'New Prompt';
   title.style.margin = '0 0 16px 0';
   modal.appendChild(title);
-  
+
   if (!isEdit) {
     const nameLabel = document.createElement('label');
     nameLabel.textContent = 'Prompt Name';
     nameLabel.style.cssText = 'display:block;font-size:12px;font-weight:600;color:var(--muted);margin-bottom:4px';
     modal.appendChild(nameLabel);
-    
+
     const nameInput = document.createElement('input');
     nameInput.id = 'prompt-name-input';
     nameInput.type = 'text';
@@ -2426,28 +2430,28 @@ function showPromptsModal(promptId) {
     idLabel.textContent = 'Prompt ID (read-only)';
     idLabel.style.cssText = 'display:block;font-size:12px;font-weight:600;color:var(--muted);margin-bottom:4px';
     modal.appendChild(idLabel);
-    
+
     const idField = document.createElement('div');
     idField.textContent = promptId;
     idField.style.cssText = 'padding:8px 12px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);margin-bottom:12px;font-family:monospace;font-size:12px';
     modal.appendChild(idField);
   }
-  
+
   const contentLabel = document.createElement('label');
   contentLabel.textContent = 'Prompt Content';
   contentLabel.style.cssText = 'display:block;font-size:12px;font-weight:600;color:var(--muted);margin-bottom:4px';
   modal.appendChild(contentLabel);
-  
+
   const textarea = document.createElement('textarea');
   textarea.id = 'prompt-content-input';
   textarea.placeholder = 'Enter prompt content...';
   textarea.value = prompt?.content || '';
   textarea.style.cssText = 'width:100%;flex:1 1 auto;min-height:120px;padding:8px 12px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-family:ui-monospace,"SF Mono",monospace;font-size:12px;resize:none;box-sizing:border-box;margin-bottom:12px';
   modal.appendChild(textarea);
-  
+
   const actions = document.createElement('div');
   actions.style.cssText = 'display:flex;gap:8px;justify-content:flex-end';
-  
+
   const cancelBtn = document.createElement('button');
   cancelBtn.textContent = 'Cancel';
   cancelBtn.style.cssText = 'padding:8px 16px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--text);cursor:pointer;font-size:12px';
@@ -2455,7 +2459,7 @@ function showPromptsModal(promptId) {
     handleModalBackgroundClick(overlay);
   };
   actions.appendChild(cancelBtn);
-  
+
   const saveBtn = document.createElement('button');
   saveBtn.textContent = 'Save';
   saveBtn.style.cssText = 'padding:8px 16px;border:none;border-radius:6px;background:var(--accent);color:var(--accent-text);cursor:pointer;font-size:12px;font-weight:600';
@@ -2479,13 +2483,13 @@ function showPromptsModal(promptId) {
   };
   actions.appendChild(saveBtn);
   modal.appendChild(actions);
-  
+
   overlay.appendChild(modal);
   overlay.onclick = (e) => {
     if (e.target === overlay) handleModalBackgroundClick(overlay);
   };
   document.body.appendChild(overlay);
-  
+
   setTimeout(() => {
     if (isEdit) {
       textarea.focus();
@@ -2541,7 +2545,7 @@ async function deletePrompt(id) {
 
 function renderPromptsConfigSection() {
   if (!el.configurationContent) return;
-  
+
   const BUILT_IN_PROMPT_IDS = new Set([
     'system_gerrit_code', 'system_gitlab_code',
     'system_gerrit_review', 'system_gitlab_review',
@@ -2557,7 +2561,7 @@ function renderPromptsConfigSection() {
     editBtn.textContent = 'Edit';
     editBtn.style.cssText = 'padding:4px 8px;margin-right:4px;border:1px solid var(--border);border-radius:4px;background:transparent;color:var(--text);cursor:pointer;font-size:11px';
     editBtn.onclick = () => showPromptsModal(prompt.id);
-    
+
     let deleteBtn = null;
     if (isDeletable) {
       deleteBtn = document.createElement('button');
@@ -2565,10 +2569,10 @@ function renderPromptsConfigSection() {
       deleteBtn.style.cssText = 'padding:4px 8px;border:1px solid var(--danger-border,var(--border));border-radius:4px;background:transparent;color:var(--danger,var(--text));cursor:pointer;font-size:11px';
       deleteBtn.onclick = () => deletePrompt(prompt.id);
     }
-    
+
     const row = document.createElement('div');
     row.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:8px;border-bottom:1px solid var(--border)';
-    
+
     const info = document.createElement('div');
     info.style.cssText = 'flex:1';
     const label = document.createElement('div');
@@ -2582,21 +2586,21 @@ function renderPromptsConfigSection() {
     info.appendChild(label);
     info.appendChild(meta);
     row.appendChild(info);
-    
+
     const actions = document.createElement('div');
     actions.style.cssText = 'display:flex;gap:4px';
     actions.appendChild(editBtn);
     if (deleteBtn) actions.appendChild(deleteBtn);
     row.appendChild(actions);
-    
+
     return row;
   });
-  
+
   el.configurationContent.innerHTML = '';
-  
+
   const panel = document.createElement('div');
   panel.style.cssText = 'display:flex;flex-direction:column;height:100%';
-  
+
   const header = document.createElement('div');
   header.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-bottom:1px solid var(--border);flex-shrink:0';
   const title = document.createElement('div');
@@ -2609,10 +2613,10 @@ function renderPromptsConfigSection() {
   header.appendChild(title);
   header.appendChild(newBtn);
   panel.appendChild(header);
-  
+
   const body = document.createElement('div');
   body.style.cssText = 'flex:1;overflow-y:auto';
-  
+
   if (S.prompts.length === 0) {
     const note = document.createElement('div');
     note.style.cssText = 'padding:16px;color:var(--muted);text-align:center';
@@ -2621,7 +2625,7 @@ function renderPromptsConfigSection() {
   } else {
     rows.forEach((row) => body.appendChild(row));
   }
-  
+
   panel.appendChild(body);
   el.configurationContent.appendChild(panel);
 }
@@ -5008,7 +5012,7 @@ function renderExpandedAgentDetails(agent) {
   agentIntegrations.forEach(function(i) { integrationNameMap[i.id] = i.name || i.type; });
   var systemPrompt = agent.systemPromptId ? S.prompts.find(p => p.id === agent.systemPromptId) : null;
   var instructionsPrompt = agent.instructionsPromptId ? S.prompts.find(p => p.id === agent.instructionsPromptId) : null;
-  
+
   return (
     '<div class="integration-row-details" data-agent-details-for="' + esc(agent.id) + '">' +
       '<div class="integration-row-details-grid">' +
@@ -5195,7 +5199,7 @@ function showAgentModal(existing) {
   var reasoningLabel = overlay.querySelector('[data-role="reasoning-label"]');
   var reasoningSelect = overlay.querySelector('[data-role="reasoning-select"]');
   var cachedModels = [];
-  
+
   function formatModelOption(m) {
     var parts = [esc(m.name)];
     if (m.capabilities && m.capabilities.type) {
@@ -5214,7 +5218,7 @@ function showAgentModal(existing) {
     }
     return parts.join(' ');
   }
-  
+
   function updateReasoningSelect(selectedModelId, preselectedEffort) {
     var model = cachedModels.find(function(m) { return m.id === selectedModelId; });
     var efforts = model && model.supportedReasoningEfforts;
@@ -5598,8 +5602,10 @@ function showProjectModal(existing) {
       '</select>' +
       '<label>Agent</label>' +
       '<select data-f="agentId"></select>' +
-      '<label>Post-Clone Script (coding only)</label>' +
-      '<textarea class="post-clone-input" data-f="postCloneScript" rows="1" placeholder="optional bash script">' + esc((existing && existing.postCloneScript) || '') + '</textarea>' +
+      '<div data-role="postclone-section">' +
+        '<label>Post-Clone Script</label>' +
+        '<textarea class="post-clone-input" data-f="postCloneScript" rows="1" placeholder="optional bash script">' + esc((existing && existing.postCloneScript) || '') + '</textarea>' +
+      '</div>' +
       '<div data-role="ticketsource-section"></div>' +
       '<div data-role="pushtargets-section"></div>' +
       '<div data-role="reviewtarget-section"></div>' +
@@ -5613,6 +5619,8 @@ function showProjectModal(existing) {
 
   const typeSel = overlay.querySelector('[data-f="type"]');
   const agentSel = overlay.querySelector('[data-f="agentId"]');
+  const postcloneSection = overlay.querySelector('[data-role="postclone-section"]');
+  console.log('[showProjectModal] postcloneSection:', postcloneSection ? 'found' : 'NOT FOUND', { selector: '[data-role="postclone-section"]' });
   const tsSection = overlay.querySelector('[data-role="ticketsource-section"]');
   const ptSection = overlay.querySelector('[data-role="pushtargets-section"]');
   const rtSection = overlay.querySelector('[data-role="reviewtarget-section"]');
@@ -5635,6 +5643,21 @@ function showProjectModal(existing) {
       hint.textContent = 'No ' + t + ' agent configured. Open the Agents tab to create and enable one before saving.';
       agentSel.insertAdjacentElement('afterend', hint);
     }
+  }
+
+  function renderPostCloneScriptSection() {
+    if (!postcloneSection) {
+      console.warn('[renderPostCloneScriptSection] postcloneSection not found in DOM');
+      return;
+    }
+    console.log('[renderPostCloneScriptSection] called', { type: typeSel.value, sectionExists: !!postcloneSection });
+    if (typeSel.value !== 'coding') {
+      console.log('[renderPostCloneScriptSection] hiding (not coding)');
+      postcloneSection.classList.add('hidden');
+      return;
+    }
+    console.log('[renderPostCloneScriptSection] showing (is coding)');
+    postcloneSection.classList.remove('hidden');
   }
 
   function ticketIntegrationOptions() {
@@ -6005,12 +6028,14 @@ function showProjectModal(existing) {
   }
 
   refreshAgentDropdown();
+  renderPostCloneScriptSection();
   renderTicketSourceSection();
   renderPushTargetsSection();
   renderReviewTargetSection();
 
   typeSel.addEventListener('change', () => {
     refreshAgentDropdown();
+    renderPostCloneScriptSection();
     renderTicketSourceSection();
     renderPushTargetsSection();
     renderReviewTargetSection();
