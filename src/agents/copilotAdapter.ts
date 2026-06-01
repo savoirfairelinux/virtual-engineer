@@ -250,6 +250,12 @@ export class CopilotAdapter implements AgentAdapter {
       env["PROMPTS_DIR"] = "/ve-prompts";
     }
 
+    // Mount project cache volume if present
+    if (context.projectCacheVolumeName) {
+      additionalDockerArgs.push("-v", `${context.projectCacheVolumeName}:/ve-cache`);
+      env["PROJECT_CACHE_DIR"] = "/ve-cache";
+    }
+
     return {
       image: session.agentContainerImage,
       env,

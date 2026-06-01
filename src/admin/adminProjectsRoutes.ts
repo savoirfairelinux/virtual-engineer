@@ -34,7 +34,7 @@ export interface ProjectsRouteStore {
   listProjects(filter?: { type?: ProjectType; enabled?: boolean }): Promise<ProjectRecord[]>;
   updateProject(
     id: ProjectId,
-    partial: Partial<Pick<ProjectRecord, "name" | "type" | "agentId" | "agentOverrideJson" | "postCloneScript" | "enabled">>
+    partial: Partial<Pick<ProjectRecord, "name" | "type" | "agentId" | "agentOverrideJson" | "postCloneScript" | "cacheVolumeName" | "enabled">>
   ): Promise<ProjectRecord>;
   deleteProject(id: ProjectId): Promise<void>;
   setProjectEnabled(id: ProjectId, enabled: boolean): Promise<void>;
@@ -71,6 +71,9 @@ export interface ProjectsRouteDeps {
   projectStore?: ProjectsRouteStore | undefined;
   integrationStore?: IntegrationStore | undefined;
   onProjectChange?: (() => void) | undefined;
+  workspaceRunner?: {
+    destroyProjectCacheVolume?(projectId: ProjectId, cacheVolumeName: string): Promise<void>;
+  } | undefined;
 }
 
 const pushTargetSchema = z.object({
@@ -541,6 +544,15 @@ export async function handleProjectsRoute(
         return true;
       }
       try {
+        // Clean up the project's persistent cache volume if it exists
+        if (existing.cacheVolumeName && deps.workspaceRunner?.destroyProjectCacheVolume) {
+          try {
+            await deps.workspaceRunner.destroyProjectCacheVolume(id, existing.cacheVolumeName);
+          } catch (err) {
+            log.warn({ projectId: id, cacheVolumeName: existing.cacheVolumeName, err }, "failed to destroy project cache volume");
+            // Continue with project deletion even if cache cleanup fails
+          }
+        }
         await store.deleteProject(id);
         response.statusCode = 204;
         response.end();

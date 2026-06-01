@@ -60,6 +60,8 @@ export interface ProjectRecord {
   agentOverrideJson: string | null;
   /** Bash script run on the host after cloning. Empty string means "no script". */
   postCloneScript: string;
+  /** Persistent Docker volume name for project-level caching. NULL if cache not initialized. */
+  cacheVolumeName: string | null;
   enabled: boolean;
   createdAt: Date;
   updatedAt: Date;
@@ -239,6 +241,8 @@ export interface TaskContext {
   volumeName: string;
   /** Named volume for the agent HOME directory */
   homeVolumeName: string;
+  /** Optional persistent project cache volume name */
+  projectCacheVolumeName?: string | undefined;
   /** Constraints e.g. "do not add new dependencies" */
   constraints: string[];
   priorFeedback: FeedbackItem[];
@@ -334,6 +338,8 @@ export interface WorkspaceHandle {
   hostWorkspacePath: string;
   /** Docker image used for helper containers (clone, push, scripts) */
   containerImage: string;
+  /** Optional persistent project cache volume name for token/context caching */
+  projectCacheVolumeName?: string | undefined;
 }
 
 export type ValidationStatus = "passed" | "failed" | "skipped";
@@ -437,6 +443,10 @@ export interface WorkspaceRunner {
   ): Promise<string>;
   /** Destroy workspace/container — always call in finally block */
   destroyWorkspace(handle: WorkspaceHandle): Promise<void>;
+  /** Create or get a persistent project cache volume. Returns the volume name. */
+  getOrCreateProjectCacheVolume?(projectId: ProjectId): Promise<string>;
+  /** Destroy a project's persistent cache volume. */
+  destroyProjectCacheVolume?(projectId: ProjectId, cacheVolumeName: string): Promise<void>;
 }
 
 // ─── Review system interfaces (system-agnostic) ─────────────────────────────

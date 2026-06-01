@@ -54,6 +54,7 @@ function makeProjectRecord(): ProjectRecord {
     agentId: "agent-1" as AgentId,
     agentOverrideJson: null,
     postCloneScript: "",
+    cacheVolumeName: null,
     enabled: true,
     createdAt: new Date(),
     updatedAt: new Date(),

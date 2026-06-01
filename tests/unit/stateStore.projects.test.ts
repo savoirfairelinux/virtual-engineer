@@ -228,6 +228,19 @@ describe("SqliteStateStore — Phase 2: projects", () => {
     await store.setProjectEnabled(p1.id, false);
     expect((await store.listProjects({ enabled: true })).length).toBe(0);
   });
+
+  it("updateProject with cacheVolumeName persists the cache volume name", async () => {
+    const a = await makeAgent(store);
+    const p = await store.createProject({ name: "P", type: "coding", agentId: a.id });
+    expect(p.cacheVolumeName).toBeNull();
+    
+    const cacheVolumeName = `ve-cache-${p.id}`;
+    const updated = await store.updateProject(p.id, { cacheVolumeName });
+    expect(updated.cacheVolumeName).toBe(cacheVolumeName);
+    
+    const fetched = await store.getProjectById(p.id);
+    expect(fetched?.cacheVolumeName).toBe(cacheVolumeName);
+  });
 });
 
 describe("SqliteStateStore — Phase 2: project ticket source", () => {
@@ -455,6 +468,7 @@ describe("resolveAgentConfig — partial-merge semantics", () => {
       agentId: makeAgentId("a1"),
       agentOverrideJson,
       postCloneScript: "",
+      cacheVolumeName: null,
       enabled: true,
       createdAt: new Date(),
       updatedAt: new Date(),

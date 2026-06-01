@@ -63,6 +63,10 @@ export interface AdminServerDependencies {
   providerAuthService?: ProviderAuthService | undefined;
   /** Phase 3: store backing the /api/admin/projects routes. */
   projectStore?: ProjectsRouteStore;
+  /** Workspace runner for managing persistent project cache volumes. */
+  workspaceRunner?: {
+    destroyProjectCacheVolume?(projectId: import("../interfaces.js").ProjectId, cacheVolumeName: string): Promise<void>;
+  };
   integrationStore?: IntegrationStore;
   oAuthAppStore?: OAuthAppStore;
   promptStore?: PromptStore | undefined;
@@ -363,6 +367,7 @@ async function handleRequest(
     projectStore: dependencies.projectStore,
     integrationStore: dependencies.integrationStore,
     onProjectChange: dependencies.onProjectChange,
+    workspaceRunner: dependencies.workspaceRunner,
   })) return;
 
   if (await handleConcurrencyRoute(request, response, path, method, {

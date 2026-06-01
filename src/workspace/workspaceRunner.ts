@@ -6,6 +6,7 @@ import type {
   AgentResult,
   TaskContext,
   TaskId,
+  ProjectId,
   CloneResult,
   GerritPatchsetOptions,
   ReviewWorkspaceInput,
@@ -568,6 +569,40 @@ export class DockerWorkspaceRunner implements WorkspaceRunner {
       await removeVolume(handle.homeVolumeName);
     } catch {
       // ignore — home volume may not exist if agent never ran
+    }
+  }
+
+  /** Create or get a persistent project cache volume. Returns the volume name. */
+  async getOrCreateProjectCacheVolume(projectId: ProjectId): Promise<string> {
+    const cacheVolumeName = `ve-cache-${projectId}`;
+    try {
+      // Try to create — will succeed if doesn't exist, no-op if already exists
+      await createVolume(cacheVolumeName, "project-cache");
+      log.info({ projectId, cacheVolumeName }, "project cache volume created or already exists");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // Only throw if it's not a "already exists" error
+      if (!msg.includes("already exists") && !msg.includes("already in use")) {
+        throw err;
+      }
+      log.debug({ projectId, cacheVolumeName }, "project cache volume already exists");
+    }
+    return cacheVolumeName;
+  }
+
+  /** Destroy a project's persistent cache volume. */
+  async destroyProjectCacheVolume(projectId: ProjectId, cacheVolumeName: string): Promise<void> {
+    try {
+      log.info({ projectId, cacheVolumeName }, "destroying project cache volume");
+      await removeVolume(cacheVolumeName);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // Swallow "no such volume" — it may have been removed already or never existed
+      if (msg.includes("no such volume") || msg.includes("No such volume")) {
+        log.debug({ projectId, cacheVolumeName }, "cache volume already removed (no-op)");
+      } else {
+        log.warn({ projectId, cacheVolumeName, err }, "failed to remove cache volume");
+      }
     }
   }
 

@@ -50,6 +50,10 @@ export interface OrchestratorConfig {
 export interface ProjectModeDeps {
   projectStore: {
     getProjectById(id: import("../interfaces.js").ProjectId): Promise<ProjectRecord | null>;
+    updateProject?(
+      id: import("../interfaces.js").ProjectId,
+      partial: Partial<Pick<ProjectRecord, "cacheVolumeName">>
+    ): Promise<ProjectRecord>;
     listProjectPushTargets(id: import("../interfaces.js").ProjectId): Promise<import("../interfaces.js").ProjectPushTargetRecord[]>;
     getProjectTicketSource(id: import("../interfaces.js").ProjectId): Promise<import("../interfaces.js").ProjectTicketSourceRecord | null>;
     getProjectReviewConfig(id: import("../interfaces.js").ProjectId): Promise<import("../interfaces.js").ProjectReviewConfig | null>;
@@ -486,6 +490,18 @@ export class Orchestrator {
       if (!projectRecord) {
         throw new Error(`Project not found for task: ${task.projectId}`);
       }
+
+      // Set up persistent project cache volume
+      let cacheVolumeName = projectRecord.cacheVolumeName;
+      if (!cacheVolumeName && this.workspaceRunner.getOrCreateProjectCacheVolume) {
+        cacheVolumeName = await this.workspaceRunner.getOrCreateProjectCacheVolume(task.projectId);
+        // Update the project record with the cache volume name for future runs
+        await this.projectMode.projectStore.updateProject?.(task.projectId, { cacheVolumeName });
+      }
+      if (cacheVolumeName) {
+        handle.projectCacheVolumeName = cacheVolumeName;
+      }
+
       projectPushTargets = await this.projectMode.projectStore.listProjectPushTargets(task.projectId);
       if (projectPushTargets.length === 0) {
         throw new Error(`Project ${task.projectId} has no push targets configured`);
@@ -558,6 +574,7 @@ export class Orchestrator {
         workspacePath: handle.hostWorkspacePath,
         volumeName: handle.volumeName,
         homeVolumeName: handle.homeVolumeName,
+        projectCacheVolumeName: handle.projectCacheVolumeName,
         constraints: [],
         priorFeedback,
         cycleNumber,

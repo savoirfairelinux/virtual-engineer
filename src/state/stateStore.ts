@@ -289,6 +289,7 @@ export class SqliteStateStore implements StateStore, IntegrationStore, PromptSto
     this.ensureColumn("tasks", "push_ref", "TEXT");
     this.ensureColumn("agents", "integration_id", "TEXT REFERENCES integrations(id) ON DELETE SET NULL");
     this.ensureColumn("prompts", "prompt_type", "TEXT NOT NULL DEFAULT 'user'");
+    this.ensureColumn("projects", "cache_volume_name", "TEXT");
 
     // Backfill: mark built-in prompts as 'system' so the protection logic
     // can rely on promptType instead of an in-memory ID set.
@@ -1613,6 +1614,7 @@ export class SqliteStateStore implements StateStore, IntegrationStore, PromptSto
       agentId: row.agentId as AgentId,
       agentOverrideJson: row.agentOverrideJson ?? null,
       postCloneScript: row.postCloneScript,
+      cacheVolumeName: row.cacheVolumeName ?? null,
       enabled: row.enabled === 1,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
@@ -1669,7 +1671,7 @@ export class SqliteStateStore implements StateStore, IntegrationStore, PromptSto
   /** Apply a partial update to a project record and return the updated row. */
   async updateProject(
     id: ProjectId,
-    partial: Partial<Pick<ProjectRecord, "name" | "type" | "agentId" | "agentOverrideJson" | "postCloneScript" | "enabled">>
+    partial: Partial<Pick<ProjectRecord, "name" | "type" | "agentId" | "agentOverrideJson" | "postCloneScript" | "cacheVolumeName" | "enabled">>
   ): Promise<ProjectRecord> {
     const existing = await this.getProjectById(id);
     if (!existing) throw new Error(`Project not found: ${id}`);
@@ -1684,6 +1686,7 @@ export class SqliteStateStore implements StateStore, IntegrationStore, PromptSto
     }
     if (partial.agentOverrideJson !== undefined) update["agentOverrideJson"] = partial.agentOverrideJson;
     if (partial.postCloneScript !== undefined) update["postCloneScript"] = partial.postCloneScript;
+    if (partial.cacheVolumeName !== undefined) update["cacheVolumeName"] = partial.cacheVolumeName;
     if (partial.enabled !== undefined) update["enabled"] = partial.enabled ? 1 : 0;
     await this.db.update(projects).set(update).where(eq(projects.id, id));
     const updated = await this.getProjectById(id);

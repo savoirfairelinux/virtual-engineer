@@ -183,6 +183,7 @@ async function main(): Promise<void> {
       oAuthAppStore: stateStore,
       promptStore: stateStore,
       pluginManager,
+      workspaceRunner,
       taskControl: {
         resumeTask: async (taskId) => {
           const task = await stateStore.getTask(makeTaskId(String(taskId)));

@@ -205,6 +205,8 @@ export const projects = sqliteTable(
     agentOverrideJson: text("agent_override_json"),
     /** Bash script run on the host after cloning. Empty string means "no script". */
     postCloneScript: text("post_clone_script").notNull().default(""),
+    /** Persistent Docker volume name for project-level caching (e.g., ve-cache-{projectId}). */
+    cacheVolumeName: text("cache_volume_name"),
     enabled: integer("enabled").notNull().default(0),
     createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
     updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
