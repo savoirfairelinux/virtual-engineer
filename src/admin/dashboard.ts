@@ -1448,6 +1448,21 @@ function findModalSaveButton(modal) {
     || null;
 }
 
+function handleModalBackgroundClick(overlay) {
+  // If this is already a confirm-close-modal, just close it
+  if (overlay.getAttribute('data-role') === 'confirm-close-modal') {
+    overlay.remove();
+    return;
+  }
+  // If modal has a save button, show confirmation. Otherwise just close.
+  const saveBtn = findModalSaveButton(overlay);
+  if (!saveBtn) {
+    overlay.remove();
+    return;
+  }
+  showCloseConfirmModal(overlay);
+}
+
 function showCloseConfirmModal(targetModal) {
   if (document.querySelector('[data-role="confirm-close-modal"]')) return;
   const overlay = document.createElement('div');
@@ -2405,7 +2420,9 @@ function showPromptsModal(promptId) {
   const cancelBtn = document.createElement('button');
   cancelBtn.textContent = 'Cancel';
   cancelBtn.style.cssText = 'padding:8px 16px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--text);cursor:pointer;font-size:12px';
-  cancelBtn.onclick = closePromptsModal;
+  cancelBtn.onclick = () => {
+    handleModalBackgroundClick(overlay);
+  };
   actions.appendChild(cancelBtn);
   
   const saveBtn = document.createElement('button');
@@ -2434,7 +2451,7 @@ function showPromptsModal(promptId) {
   
   overlay.appendChild(modal);
   overlay.onclick = (e) => {
-    if (e.target === overlay) closePromptsModal();
+    if (e.target === overlay) handleModalBackgroundClick(overlay);
   };
   document.body.appendChild(overlay);
   
@@ -2598,8 +2615,8 @@ function showOAuthAppModal(existingApp) {
     '</div>';
 
   document.body.appendChild(overlay);
-  overlay.querySelector('[data-role="modal-cancel"]')?.addEventListener('click', () => overlay.remove());
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+  overlay.querySelector('[data-role="modal-cancel"]')?.addEventListener('click', () => handleModalBackgroundClick(overlay));
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) handleModalBackgroundClick(overlay); });
 
   overlay.querySelector('[data-role="modal-save"]')?.addEventListener('click', async () => {
     const provider = overlay.querySelector('[data-role="oauth-app-provider"]')?.value?.trim() || 'gitlab';
@@ -4015,8 +4032,8 @@ async function showAddIntegrationModal(section) {
   typeSelect?.addEventListener('change', renderFields);
   renderFields();
 
-  overlay.querySelector('[data-role="modal-cancel"]')?.addEventListener('click', () => overlay.remove());
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+  overlay.querySelector('[data-role="modal-cancel"]')?.addEventListener('click', () => handleModalBackgroundClick(overlay));
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) handleModalBackgroundClick(overlay); });
 
   overlay.querySelector('[data-role="modal-test"]')?.addEventListener('click', async () => {
     const type = typeSelect?.value;
@@ -4117,7 +4134,7 @@ function showDetailedError(title, message) {
   mainDiv.querySelector('button')?.addEventListener('click', () => overlay.remove());
   overlay.appendChild(mainDiv);
   document.body.appendChild(overlay);
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) handleModalBackgroundClick(overlay); });
 }
 
 // ── Live logs (Server-Sent Events) ──
@@ -5224,7 +5241,8 @@ function showAgentModal(existing) {
     var sel2 = overlay.querySelector('[data-f="instructionsPromptId"]');
     if (sel2) sel2.value = existing.instructionsPromptId;
   }
-  overlay.querySelector('[data-role="cancel"]').addEventListener('click', function() { overlay.remove(); });
+  overlay.querySelector('[data-role="cancel"]').addEventListener('click', function() { handleModalBackgroundClick(overlay); });
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) handleModalBackgroundClick(overlay); });
   overlay.querySelector('[data-role="save"]').addEventListener('click', async function() {
     var get = function(k) {
       var node = overlay.querySelector('[data-f="' + k + '"]');
@@ -5887,7 +5905,8 @@ function showProjectModal(existing) {
     renderReviewTargetSection();
   });
 
-  overlay.querySelector('[data-role="cancel"]').addEventListener('click', () => overlay.remove());
+  overlay.querySelector('[data-role="cancel"]').addEventListener('click', () => handleModalBackgroundClick(overlay));
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) handleModalBackgroundClick(overlay); });
   overlay.querySelector('[data-role="save"]').addEventListener('click', async () => {
     errorBox.textContent = '';
     const get = (k) => {
