@@ -223,7 +223,7 @@ export class Orchestrator {
    * apply the appropriate lifecycle step. All three are no-ops for unknown or terminal tasks;
    * the polling loop remains the source-of-truth fallback.
    */
-  async triggerFeedbackForChange(integrationId: string, externalChangeId: string): Promise<void> {
+  async triggerFeedbackForChange(integrationId: string, externalChangeId: string, streamComments?: import("../interfaces.js").ReviewComment[]): Promise<void> {
     const task = await this.stateStore.findTaskByExternalChangeId(integrationId, externalChangeId);
     if (!task) {
       log.info({ integrationId, externalChangeId }, "webhook feedback: no task for change (likely a human-authored change, ignoring)");
@@ -238,7 +238,7 @@ export class Orchestrator {
       return;
     }
     log.info({ taskId: task.taskId, integrationId, externalChangeId }, "webhook feedback: triggering review progress check");
-    await this.checkReviewProgress(task);
+    await this.checkReviewProgress(task, externalChangeId, streamComments);
   }
 
   /** Webhook handler: mark the associated task's change as merged and close its ticket. */
@@ -752,11 +752,11 @@ export class Orchestrator {
   }
 
   /** Poll review system status; advance to MERGED, trigger a retry cycle, or stay IN_REVIEW. */
-  private async checkReviewProgress(task: Task): Promise<void> {
+  private async checkReviewProgress(task: Task, streamChangeId?: string, streamComments?: import("../interfaces.js").ReviewComment[]): Promise<void> {
     // Check for per-repository changes first (multi-repo path)
     const perRepoChanges = await this.stateStore.getChangesForTask(task.taskId);
     if (perRepoChanges.length > 0) {
-      await this.checkMultiRepoReviewProgress(task, perRepoChanges);
+      await this.checkMultiRepoReviewProgress(task, perRepoChanges, streamChangeId, streamComments);
       return;
     }
 
@@ -790,12 +790,13 @@ export class Orchestrator {
     }
 
     const comments = await reviewConnector.getUnresolvedComments(changeId);
+    const allComments = streamComments && streamComments.length > 0 ? [...streamComments, ...comments] : comments;
 
     task = await this.stateStore.transition(task.taskId, "FEEDBACK_PROCESSING");
     const [feedbackItems, processedComments] = await this.feedbackProcessor.extractNewFeedback(
       task.taskId,
       changeId,
-      comments
+      allComments
     );
 
     if (feedbackItems.length === 0) {
@@ -838,7 +839,9 @@ export class Orchestrator {
    */
   private async checkMultiRepoReviewProgress(
     task: Task,
-    perRepoChanges: import("../interfaces.js").ChangePerRepository[]
+    perRepoChanges: import("../interfaces.js").ChangePerRepository[],
+    streamChangeId?: string,
+    streamComments?: import("../interfaces.js").ReviewComment[]
   ): Promise<void> {
     const activeChanges = perRepoChanges.filter((c) => c.status !== "NO_CHANGE" && c.status !== "ORPHANED");
     if (activeChanges.length === 0) {
@@ -920,10 +923,18 @@ export class Orchestrator {
                 change.changeId as ExternalChangeId
               );
             }
+            // Prepend stream-event comment when it belongs to this specific change.
+            // Required because Gerrit's `gerrit query --comments` only returns inline file
+            // comments, not top-level change messages — the stream event payload is the
+            // only reliable source of general review feedback for Gerrit.
+            const extraComments = (streamChangeId === change.changeId && streamComments && streamComments.length > 0)
+              ? streamComments
+              : [];
+            const allComments = extraComments.length > 0 ? [...extraComments, ...comments] : comments;
             const [feedback, processed] = await this.feedbackProcessor.extractNewFeedback(
               task.taskId,
               change.changeId as ExternalChangeId,
-              comments
+              allComments
             );
             // Tag feedback with repoKey for agent context
             for (const item of feedback) {
