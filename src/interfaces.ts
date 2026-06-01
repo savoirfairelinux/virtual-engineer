@@ -101,12 +101,35 @@ export interface ProjectReviewConfig {
   repos: string[];
 }
 
+/** A single PR/MR that VE has been requested to review. */
+export interface ReviewAssignmentDiscovery {
+  /** Provider-specific change ID, e.g. `"owner/repo#42"` for GitHub. */
+  changeId: string;
+  /** Repository key, e.g. `"owner/repo"`. */
+  project: string;
+  subject?: string | undefined;
+}
+
+/**
+ * Optional capability exposed by review connectors that support polling for
+ * open PRs / MRs where VE has been assigned as a reviewer.
+ *
+ * The polling loop checks for this interface on the unbound integration
+ * connector at each tick and fires a review trigger for every discovered
+ * assignment that does not yet have an active review task.
+ */
+export interface ReviewDiscoveryConnector {
+  getOpenReviewAssignments(repos: string[]): Promise<ReviewAssignmentDiscovery[]>;
+}
+
 /** Optional VE project-owned binding data used to specialize integration connectors at runtime. */
 export interface IntegrationBindingContext {
   /** Ticket-system project selector owned by the VE project configuration. */
   ticketProjectKey?: string | undefined;
   /** Repository key owned by the VE project configuration. */
   repoKey?: string | undefined;
+  /** Target branch for PR/MR creation, taken from the project push-target config. */
+  targetBranch?: string | undefined;
 }
 
 /** Resolved agent config after merging project override on top of agent defaults. */
@@ -183,7 +206,7 @@ export const TERMINAL_STATES: ReadonlySet<TaskState> = new Set<TaskState>([
 // ─── Agent interfaces ─────────────────────────────────────────────────────────
 
 export interface FeedbackItem {
-  source: "gerrit_review" | "test_failure" | "lint_failure";
+  source: "gerrit_review" | "test_failure" | "lint_failure" | "ci_failure";
   content: string;
   filePath?: string | undefined;
   line?: number | undefined;
@@ -486,6 +509,12 @@ export type GerritComment = ReviewComment;
 
 /** System-agnostic interface for interacting with a code review system. */
 export interface ReviewConnector {
+  /**
+   * Optional: fetch failed CI check runs (e.g. GitHub Actions) for a change and return them
+   * as ReviewComment objects for deduplication and agent feedback. Implementations should
+   * return comments with `id` prefixed `"ci-run-{runId}"` for stable deduplication.
+   */
+  getCICheckFailures?(changeId: ExternalChangeId): Promise<ReviewComment[]>;
   /** Resolve a change reference from a known Change-Id or MR IID */
   getChange(changeId: ExternalChangeId): Promise<ReviewChangeRef>;
 
