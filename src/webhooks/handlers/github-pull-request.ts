@@ -57,8 +57,8 @@ const handlePullRequest: WebhookHandler = async (ctx) => {
   if (typeof number !== "number" && typeof number !== "string") {
     return { status: 400, body: { error: "Pull request payload missing 'number'" } };
   }
-  const repo = extractRepoName(payload);
-  if (!repo) return { status: 400, body: { error: "Payload missing 'repository.name'" } };
+  const repo = extractFullName(payload);
+  if (!repo) return { status: 400, body: { error: "Payload missing 'repository.full_name'" } };
   const changeId = `${repo}#${number}`;
 
   if (action === "closed") {
@@ -94,8 +94,8 @@ const handleReviewActivity: WebhookHandler = async (ctx) => {
   if (typeof number !== "number" && typeof number !== "string") {
     return { status: 400, body: { error: "Pull request payload missing 'number'" } };
   }
-  const repo = extractRepoName(payload);
-  if (!repo) return { status: 400, body: { error: "Payload missing 'repository.name'" } };
+  const repo = extractFullName(payload);
+  if (!repo) return { status: 400, body: { error: "Payload missing 'repository.full_name'" } };
   const changeId = `${repo}#${number}`;
   const action = typeof payload["action"] === "string" ? payload["action"] : undefined;
   ctx.log.info({ changeId, action }, "GitHub PR review activity: triggering feedback check");
@@ -119,8 +119,8 @@ const handleIssueComment: WebhookHandler = async (ctx) => {
   if (typeof number !== "number" && typeof number !== "string") {
     return { status: 400, body: { error: "Issue payload missing 'number'" } };
   }
-  const repo = extractRepoName(payload);
-  if (!repo) return { status: 400, body: { error: "Payload missing 'repository.name'" } };
+  const repo = extractFullName(payload);
+  if (!repo) return { status: 400, body: { error: "Payload missing 'repository.full_name'" } };
   const changeId = `${repo}#${number}`;
   const action = typeof payload["action"] === "string" ? payload["action"] : undefined;
   ctx.log.info({ changeId, action }, "GitHub PR issue_comment: triggering feedback check");
@@ -128,11 +128,11 @@ const handleIssueComment: WebhookHandler = async (ctx) => {
   return { status: 202, body: { queued: true, action: "feedback", changeId } };
 };
 
-function extractRepoName(payload: Record<string, unknown>): string | undefined {
+function extractFullName(payload: Record<string, unknown>): string | undefined {
   const repository = asObject(payload["repository"]);
   if (!repository) return undefined;
-  const name = repository["name"];
-  return typeof name === "string" && name.length > 0 ? name : undefined;
+  const full = repository["full_name"];
+  return typeof full === "string" && full.includes("/") ? full : undefined;
 }
 
 function asObject(value: unknown): Record<string, unknown> | null {
