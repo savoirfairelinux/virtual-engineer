@@ -244,10 +244,11 @@ export interface GitHubDiscoveredRepo {
 }
 
 /**
- * List every repository under a GitHub owner (user or organization) that the
- * supplied token can see. Tries the /orgs/{owner}/repos endpoint first so we
- * can pick up private org repos; falls back to /users/{owner}/repos when the
- * owner is a personal account (the /orgs call 404s).
+ * List the repositories the supplied token can actually access under a given
+ * owner. Uses /user/repos (token-centric) rather than /orgs/{owner}/repos so
+ * the result reflects the token's real grants — a fine-grained PAT scoped to a
+ * single repo returns only that repo, instead of every public repo of the org.
+ * Results are then filtered to the configured owner (case-insensitive).
  *
  * Pagination follows the GitHub `Link: <...>; rel="next"` header rather than
  * incrementing pages blindly, which is the documented mechanism.
@@ -257,25 +258,15 @@ export async function listGitHubRepositoriesForOwner(
   apiBaseUrl: string,
   owner: string
 ): Promise<GitHubDiscoveredRepo[]> {
-  const ownerEnc = encodeURIComponent(owner);
-  const orgUrl = `${apiBaseUrl}/orgs/${ownerEnc}/repos?per_page=100&type=all`;
-  const userUrl = `${apiBaseUrl}/users/${ownerEnc}/repos?per_page=100&type=owner`;
+  const url = `${apiBaseUrl}/user/repos?per_page=100&affiliation=owner,collaborator,organization_member`;
 
-  const first = await fetchPaginated(token, orgUrl);
-  if (first.ok) return first.repos;
-  if (first.status !== 404) {
-    throw new GitHubAuthError(`List org repositories failed (${first.status}): ${first.body}`);
+  const result = await fetchPaginated(token, url);
+  if (!result.ok) {
+    throw new GitHubAuthError(`List repositories failed (${result.status}): ${result.body}`);
   }
 
-  const second = await fetchPaginated(token, userUrl);
-  if (second.ok) return second.repos;
-  if (second.status === 404) {
-    throw new GitHubAuthError(
-      `GitHub owner "${owner}" was not found (neither as an organization nor a user). ` +
-        `Check the spelling and that the token has access to it.`
-    );
-  }
-  throw new GitHubAuthError(`List user repositories failed (${second.status}): ${second.body}`);
+  const ownerLc = owner.toLowerCase();
+  return result.repos.filter((r) => r.fullName.split("/")[0]?.toLowerCase() === ownerLc);
 }
 
 interface PaginatedResult {

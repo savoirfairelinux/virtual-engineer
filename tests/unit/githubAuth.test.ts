@@ -229,13 +229,13 @@ describe("githubAuth", () => {
   });
 
   describe("listGitHubRepositoriesForOwner", () => {
-    function repo(name: string) {
+    function repo(name: string, owner = "acme") {
       return {
-        full_name: `acme/${name}`,
+        full_name: `${owner}/${name}`,
         name,
-        html_url: `https://github.com/acme/${name}`,
-        clone_url: `https://github.com/acme/${name}.git`,
-        ssh_url: `git@github.com:acme/${name}.git`,
+        html_url: `https://github.com/${owner}/${name}`,
+        clone_url: `https://github.com/${owner}/${name}.git`,
+        ssh_url: `git@github.com:${owner}/${name}.git`,
         default_branch: "main",
       };
     }
@@ -245,31 +245,36 @@ describe("githubAuth", () => {
       return new Response(JSON.stringify(data), { status: 200, headers });
     }
 
-    it("hits /orgs first and returns the repos when the owner is an org", async () => {
-      fetchMock.mockResolvedValueOnce(pageResponse([repo("alpha"), repo("beta")]));
+    it("lists token-accessible repos via /user/repos and filters to the owner", async () => {
+      fetchMock.mockResolvedValueOnce(pageResponse([repo("alpha"), repo("beta"), repo("other", "someone-else")]));
 
       const result = await listGitHubRepositoriesForOwner("tok", "https://api.github.com", "acme");
 
       expect(fetchMock).toHaveBeenCalledTimes(1);
       const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
-      expect(url).toBe("https://api.github.com/orgs/acme/repos?per_page=100&type=all");
-      expect(result.map((r) => r.name)).toEqual(["alpha", "beta"]);
-      expect(result[0]?.fullName).toBe("acme/alpha");
+      expect(url).toBe(
+        "https://api.github.com/user/repos?per_page=100&affiliation=owner,collaborator,organization_member"
+      );
+      expect(result.map((r) => r.fullName)).toEqual(["acme/alpha", "acme/beta"]);
       expect(result[0]?.cloneUrl).toBe("https://github.com/acme/alpha.git");
       expect(result[0]?.sshUrl).toBe("git@github.com:acme/alpha.git");
       expect(result[0]?.defaultBranch).toBe("main");
     });
 
-    it("falls back to /users when /orgs returns 404 (personal account)", async () => {
-      fetchMock.mockResolvedValueOnce(errorResponse(404, "Not Found"));
-      fetchMock.mockResolvedValueOnce(pageResponse([repo("solo")]));
+    it("matches the owner case-insensitively", async () => {
+      fetchMock.mockResolvedValueOnce(pageResponse([repo("alpha", "Acme")]));
 
       const result = await listGitHubRepositoriesForOwner("tok", "https://api.github.com", "acme");
 
-      expect(fetchMock).toHaveBeenCalledTimes(2);
-      const [secondUrl] = fetchMock.mock.calls[1] as [string, RequestInit];
-      expect(secondUrl).toBe("https://api.github.com/users/acme/repos?per_page=100&type=owner");
-      expect(result.map((r) => r.name)).toEqual(["solo"]);
+      expect(result.map((r) => r.fullName)).toEqual(["Acme/alpha"]);
+    });
+
+    it("returns an empty list when the token sees no repos under the owner", async () => {
+      fetchMock.mockResolvedValueOnce(pageResponse([repo("priv", "other-org")]));
+
+      const result = await listGitHubRepositoriesForOwner("tok", "https://api.github.com", "acme");
+
+      expect(result).toEqual([]);
     });
 
     it("follows Link rel=next pagination across pages", async () => {
@@ -283,21 +288,12 @@ describe("githubAuth", () => {
       expect(result.map((r) => r.name)).toEqual(["p1a", "p1b", "p2a"]);
     });
 
-    it("throws when the owner is neither user nor org (both 404)", async () => {
-      fetchMock.mockResolvedValueOnce(errorResponse(404, ""));
-      fetchMock.mockResolvedValueOnce(errorResponse(404, ""));
-
-      await expect(
-        listGitHubRepositoriesForOwner("tok", "https://api.github.com", "ghost"),
-      ).rejects.toThrow(/was not found/);
-    });
-
-    it("throws on /orgs non-404 error without falling back", async () => {
-      fetchMock.mockResolvedValueOnce(errorResponse(500, "boom"));
+    it("throws on a /user/repos error", async () => {
+      fetchMock.mockResolvedValueOnce(errorResponse(401, "Bad credentials"));
 
       await expect(
         listGitHubRepositoriesForOwner("tok", "https://api.github.com", "acme"),
-      ).rejects.toThrow(/List org repositories failed \(500\)/);
+      ).rejects.toThrow(/List repositories failed \(401\)/);
       expect(fetchMock).toHaveBeenCalledTimes(1);
     });
 

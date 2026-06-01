@@ -70,7 +70,7 @@ The admin server is a small HTTP service (default `127.0.0.1:3100`) that serves 
 | `DELETE` | `/api/admin/integrations/:id` | Delete integration. |
 | `POST` | `/api/admin/integrations/test` | Validate unsaved integration config. |
 | `POST` | `/api/admin/integrations/:id/test` | Validate saved integration config. |
-| `POST` | `/api/admin/integrations/:id/discover` | Refresh discovery cache (repos, projects, models, etc.). |
+| `POST` | `/api/admin/integrations/:id/discover` | Refresh discovery cache (repos, projects, models, etc.). GitHub repo discovery is token-centric (`/user/repos`, filtered to the configured owner) so only repos the token can actually access are listed. |
 | `GET` | `/api/admin/integrations/:id/models` | Return cached discovered models. |
 | `PATCH` | `/api/admin/integrations/:id/enable` | Enable integration. |
 | `PATCH` | `/api/admin/integrations/:id/disable` | Disable integration. |
