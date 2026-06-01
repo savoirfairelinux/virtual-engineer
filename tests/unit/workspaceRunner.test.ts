@@ -12,10 +12,11 @@ vi.mock("../../src/workspace/dockerVolume.js", () => ({
   createVolume: vi.fn().mockResolvedValue(undefined),
   removeVolume: vi.fn().mockResolvedValue(undefined),
   execInVolume: vi.fn().mockResolvedValue({ stdout: "", stderr: "", exitCode: 0 }),
+  stopContainersUsingVolume: vi.fn().mockResolvedValue(undefined),
 }));
 
 import { spawn } from "child_process";
-import { createVolume, removeVolume, execInVolume } from "../../src/workspace/dockerVolume.js";
+import { createVolume, removeVolume, execInVolume, stopContainersUsingVolume } from "../../src/workspace/dockerVolume.js";
 import { DockerWorkspaceRunner } from "../../src/workspace/workspaceRunner.js";
 import { makeTaskId, makeExternalChangeId } from "../../src/interfaces.js";
 import type { AgentAdapter, AgentResult, TaskContext } from "../../src/interfaces.js";
@@ -24,6 +25,7 @@ const mockSpawn = vi.mocked(spawn);
 const mockCreateVolume = vi.mocked(createVolume);
 const mockRemoveVolume = vi.mocked(removeVolume);
 const mockExecInVolume = vi.mocked(execInVolume);
+const mockStopContainersUsingVolume = vi.mocked(stopContainersUsingVolume);
 
 type MockChildProcess = EventEmitter & {
   stdout: EventEmitter;
@@ -441,6 +443,20 @@ describe("DockerWorkspaceRunner", () => {
       expect(mockRemoveVolume).toHaveBeenCalledTimes(2);
       expect(mockRemoveVolume).toHaveBeenCalledWith(handle.volumeName);
       expect(mockRemoveVolume).toHaveBeenCalledWith(handle.homeVolumeName);
+    });
+
+    it("stops containers using workspace volume before removing it", async () => {
+      const callOrder: string[] = [];
+      mockStopContainersUsingVolume.mockImplementation(async () => { callOrder.push("stop"); });
+      mockRemoveVolume.mockImplementation(async () => { callOrder.push("remove"); });
+
+      const runner = makeRunner();
+      const handle = await runner.createWorkspace(makeTaskId("task-1"));
+      await runner.destroyWorkspace(handle);
+
+      expect(mockStopContainersUsingVolume).toHaveBeenCalledWith(handle.volumeName);
+      expect(callOrder[0]).toBe("stop");
+      expect(callOrder[1]).toBe("remove");
     });
 
     it("does not throw when removeVolume fails (logs warning instead)", async () => {

@@ -12,7 +12,7 @@ import type {
   ProjectPushTargetRecord,
 } from "../interfaces.js";
 import type { AgentAdapter } from "../interfaces.js";
-import { createVolume, removeVolume, execInVolume } from "./dockerVolume.js";
+import { createVolume, removeVolume, execInVolume, stopContainersUsingVolume } from "./dockerVolume.js";
 import { getLogger } from "../logger.js";
 
 const log = getLogger("workspace-runner");
@@ -396,8 +396,8 @@ export class DockerWorkspaceRunner implements WorkspaceRunner {
     const fetchResult = await execInVolume({
       volumeName: handle.volumeName,
       image: this.config.agentContainerImage,
-      command: ["git", "fetch", "--depth=1", "origin", changeRef],
-      sshKeyPath: sshKeyPath ?? undefined,
+      command: ["git", "fetch", "origin", changeRef],
+      sshKeyPath,
       ...(opts.sshKnownHostsPath !== undefined ? { sshKnownHostsPath: opts.sshKnownHostsPath } : {}),
       sshPort,
       env: {},
@@ -559,6 +559,8 @@ export class DockerWorkspaceRunner implements WorkspaceRunner {
   /** Remove the workspace and home Docker volumes associated with a handle. */
   async destroyWorkspace(handle: WorkspaceHandle): Promise<void> {
     log.info({ taskId: handle.taskId, volumeName: handle.volumeName, homeVolumeName: handle.homeVolumeName }, "destroying workspace volumes");
+    // Stop any containers still using the workspace volume (e.g. after an agent timeout)
+    await stopContainersUsingVolume(handle.volumeName);
     try {
       await removeVolume(handle.volumeName);
     } catch (err) {
