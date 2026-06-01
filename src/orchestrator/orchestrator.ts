@@ -640,6 +640,22 @@ export class Orchestrator {
       );
       clearTaskEventBuffer(task.taskId);
 
+      // Guard: the task may have been abandoned/deleted while the agent was
+      // running (e.g. webhook change-abandoned + admin delete).  Re-read from
+      // the database before writing any child rows to avoid FK violations.
+      const freshTask = await this.stateStore.getTask(task.taskId);
+      if (!freshTask) {
+        log.warn({ taskId: task.taskId }, "task no longer exists after agent cycle; discarding result");
+        return;
+      }
+      if (TERMINAL_STATES.has(freshTask.state)) {
+        log.warn(
+          { taskId: task.taskId, state: freshTask.state },
+          "task reached terminal state while agent was running; discarding result"
+        );
+        return;
+      }
+
       if (normalizedResult.status === "no_change") {
         await this.stateStore.saveAgentCycle(task.taskId, cycleNumber, normalizedResult);
         await this.handleNoChange(task, cycleNumber);
@@ -1367,6 +1383,14 @@ export class Orchestrator {
 
   /** Handle unexpected errors by persisting them and transitioning the task to FAILED. */
   private async handleFatalError(task: Task, err: unknown): Promise<void> {
+    // If the task no longer exists (deleted externally while running), there is
+    // nothing to persist — log and bail out.
+    const current = await this.stateStore.getTask(task.taskId).catch(() => null);
+    if (!current) {
+      log.warn({ taskId: task.taskId, err }, "task no longer exists; cannot record fatal error");
+      return;
+    }
+
     if (this.isTicketNotFoundError(err)) {
       const reason = `Ticket ${task.ticketId} (${task.ticketSourceLabel}) was not found`;
       log.warn({ taskId: task.taskId, ticketId: task.ticketId, err }, "ticket missing during task execution");
