@@ -133,7 +133,7 @@ export class GerritSshConnector implements ReviewConnector {
     changeId: ExternalChangeId,
     sincePatchset?: number
   ): Promise<ReviewComment[]> {
-    return this.sshClient.getUnresolvedComments(changeId, sincePatchset);
+    return this.sshClient.getUnresolvedComments(changeId, sincePatchset, this.config.ssh.user);
   }
 
   /** Post a top-level (patchset-level) comment on the given Gerrit change. */

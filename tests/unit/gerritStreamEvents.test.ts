@@ -462,6 +462,52 @@ describe("GerritStreamEventsManager", () => {
     expect(reviewTrigger.triggerReviewForChange).not.toHaveBeenCalled();
   });
 
+  it("orchestrator errors during event processing are caught and logged — listener stays alive and does not cause an unhandled rejection", async () => {
+    const child = new FakeChildProcess();
+    const { manager, orchestrator } = createManager([child]);
+
+    // Simulate an agent timeout propagating back through triggerFeedbackForChange
+    (orchestrator.triggerFeedbackForChange as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error("Agent timed out after 600000ms")
+    );
+
+    await manager.reconcile([makeIntegration("gerrit-a")]);
+    child.emit("spawn");
+    child.stdout.write(JSON.stringify({ type: "comment-added", change: { id: "Ifail" } }) + "\n");
+    await flushAsyncWork();
+
+    // The error must be logged — not thrown as an unhandled rejection
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ integrationId: "gerrit-a" }),
+      "error processing Gerrit stream event"
+    );
+    // The listener must still be alive after the error
+    expect(manager.getStatus("gerrit-a")).toEqual(expect.objectContaining({ state: "connected" }));
+  });
+
+  it("event processing continues after a failed event — subsequent events are still dispatched", async () => {
+    const child = new FakeChildProcess();
+    const { manager, orchestrator } = createManager([child]);
+
+    const callOrder: string[] = [];
+    (orchestrator.triggerFeedbackForChange as ReturnType<typeof vi.fn>)
+      .mockRejectedValueOnce(new Error("first call fails"))
+      .mockImplementation(async () => { callOrder.push("ok"); });
+
+    await manager.reconcile([makeIntegration("gerrit-a")]);
+    child.emit("spawn");
+
+    child.stdout.write(
+      JSON.stringify({ type: "comment-added", change: { id: "Ifail" } }) + "\n" +
+      JSON.stringify({ type: "comment-added", change: { id: "Iok" } }) + "\n"
+    );
+    await flushAsyncWork();
+
+    // First call fails (logged), second call succeeds
+    expect(logger.error).toHaveBeenCalledOnce();
+    expect(callOrder).toEqual(["ok"]);
+  });
+
   // ── serialized event processing ─────────────────────────────────────────────
 
   it("serializes event processing: reviewer-added + patchset-created in same chunk do not race", async () => {

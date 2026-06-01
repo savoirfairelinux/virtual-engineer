@@ -181,11 +181,21 @@ describe("GerritSshClient", () => {
       patchSet: 3,
     };
 
-    function makeChangeRow(comments: unknown[] = [BASE_COMMENT]): unknown {
+    const BASE_CHANGE_MESSAGE = {
+      timestamp: 1710000100,
+      reviewer: { name: "Alice", email: "alice@example.com", username: "alice" },
+      message: "Patch Set 1:\n\n(2 comments)\n\nPlease fix the error handling",
+    };
+
+    function makeChangeRow(
+      comments: unknown[] = [BASE_COMMENT],
+      changeMessages?: unknown[],
+    ): unknown {
       return {
         number: 42,
         status: "NEW",
         currentPatchSet: { number: 3, revision: "abc", comments },
+        ...(changeMessages !== undefined ? { comments: changeMessages } : {}),
       };
     }
 
@@ -246,6 +256,119 @@ describe("GerritSshClient", () => {
 
       expect(comments[0]!.author).toBe("unknown");
     });
+
+    it("extracts top-level change messages when currentPatchSet has no comments", async () => {
+      const row = makeChangeRow([], [BASE_CHANGE_MESSAGE]);
+      execFileResults = [{ stdout: sshNdjson(row), stderr: "" }];
+
+      const comments = await makeClient().getUnresolvedComments("I8473");
+
+      expect(comments).toHaveLength(1);
+      expect(comments[0]!.author).toBe("alice@example.com");
+      expect(comments[0]!.message).toBe("Please fix the error handling");
+      expect(comments[0]!.filePath).toBeUndefined();
+      expect(comments[0]!.line).toBeUndefined();
+      expect(comments[0]!.unresolved).toBe(true);
+      expect(comments[0]!.id).toMatch(/^ssh-msg-/);
+    });
+
+    it("merges top-level change messages with inline currentPatchSet comments", async () => {
+      const row = makeChangeRow([BASE_COMMENT], [BASE_CHANGE_MESSAGE]);
+      execFileResults = [{ stdout: sshNdjson(row), stderr: "" }];
+
+      const comments = await makeClient().getUnresolvedComments("I8473");
+
+      expect(comments).toHaveLength(2);
+      const inlineComment = comments.find((c) => c.id.startsWith("ssh-") && !c.id.startsWith("ssh-msg-"));
+      const changeMessage = comments.find((c) => c.id.startsWith("ssh-msg-"));
+      expect(inlineComment).toBeDefined();
+      expect(changeMessage).toBeDefined();
+    });
+
+    it("filters out VE's own change messages when sshUser is provided", async () => {
+      const veMessage = {
+        ...BASE_CHANGE_MESSAGE,
+        reviewer: { name: "VE Bot", email: "ve@gerrit.test", username: "ve" },
+      };
+      const humanMessage = BASE_CHANGE_MESSAGE;
+      const row = makeChangeRow([], [veMessage, humanMessage]);
+      execFileResults = [{ stdout: sshNdjson(row), stderr: "" }];
+
+      const comments = await makeClient().getUnresolvedComments("I8473", undefined, "ve");
+
+      expect(comments).toHaveLength(1);
+      expect(comments[0]!.author).toBe("alice@example.com");
+    });
+
+    it("filters out system-generated 'Uploaded patch set' messages", async () => {
+      const systemMessage = {
+        ...BASE_CHANGE_MESSAGE,
+        message: "Uploaded patch set 2.",
+        reviewer: { name: "Alice", email: "alice@example.com", username: "alice" },
+      };
+      const humanMessage = BASE_CHANGE_MESSAGE;
+      const row = makeChangeRow([], [systemMessage, humanMessage]);
+      execFileResults = [{ stdout: sshNdjson(row), stderr: "" }];
+
+      const comments = await makeClient().getUnresolvedComments("I8473");
+
+      expect(comments).toHaveLength(1);
+      expect(comments[0]!.message).toContain("Please fix");
+    });
+
+    it("filters out system-generated merge messages", async () => {
+      const mergeMessage = {
+        ...BASE_CHANGE_MESSAGE,
+        message: "Change has been successfully merged",
+      };
+      const row = makeChangeRow([], [mergeMessage]);
+      execFileResults = [{ stdout: sshNdjson(row), stderr: "" }];
+
+      const comments = await makeClient().getUnresolvedComments("I8473");
+
+      expect(comments).toHaveLength(0);
+    });
+
+    it("extracts body from a vote+comment message, discarding the preamble", async () => {
+      const voteAndComment = {
+        timestamp: 1710000200,
+        reviewer: { name: "Bob", email: "bob@example.com", username: "bob" },
+        message: "Patch Set 1: Code-Review+2\n\n(1 comment)\n\nLooks good, but please fix the indentation",
+      };
+      const row = makeChangeRow([], [voteAndComment]);
+      execFileResults = [{ stdout: sshNdjson(row), stderr: "" }];
+
+      const comments = await makeClient().getUnresolvedComments("I8473");
+
+      expect(comments).toHaveLength(1);
+      expect(comments[0]!.message).toBe("Looks good, but please fix the indentation");
+    });
+
+    it("skips pure vote messages with no body after preamble stripping", async () => {
+      const pureVote = {
+        timestamp: 1710000200,
+        reviewer: { name: "Bob", email: "bob@example.com", username: "bob" },
+        message: "Patch Set 1: Code-Review+2\n\n",
+      };
+      const row = makeChangeRow([], [pureVote]);
+      execFileResults = [{ stdout: sshNdjson(row), stderr: "" }];
+
+      const comments = await makeClient().getUnresolvedComments("I8473");
+
+      expect(comments).toHaveLength(0);
+    });
+
+    it("uses unique IDs for change messages with same timestamp", async () => {
+      const msg1 = { ...BASE_CHANGE_MESSAGE, timestamp: 1710000100 };
+      const msg2 = { ...BASE_CHANGE_MESSAGE, timestamp: 1710000100, reviewer: { name: "Bob", email: "bob@example.com", username: "bob" } };
+      const row = makeChangeRow([], [msg1, msg2]);
+      execFileResults = [{ stdout: sshNdjson(row), stderr: "" }];
+
+      const comments = await makeClient().getUnresolvedComments("I8473");
+
+      expect(comments).toHaveLength(2);
+      expect(comments[0]!.id).not.toBe(comments[1]!.id);
+    });
   });
 
   describe("resolveComments", () => {
@@ -255,22 +378,23 @@ describe("GerritSshClient", () => {
       currentPatchSet: { number: 2, revision: "abc" },
     };
 
-    it("groups comments by file and posts via review --json", async () => {
+    it("groups comments by file and posts via reviewJson (spawn)", async () => {
       execFileResults = [
         { stdout: sshNdjson(CHANGE_ROW), stderr: "" }, // queryChange
-        { stdout: "", stderr: "" },                     // queryWithInput (review --json)
       ];
+      spawnExitCode = 0;
 
       await makeClient().resolveComments("I8473", [
         { id: "c1", author: "a@b.com", message: "Fix", filePath: "src/main.ts", line: 10, unresolved: true, patchset: 2, updatedAt: new Date() },
         { id: "c2", author: "a@b.com", message: "Here too", filePath: "src/main.ts", line: 20, unresolved: true, patchset: 2, updatedAt: new Date() },
       ]);
 
-      const reviewCall = execFileCalls[1]!;
+      expect(spawnCalls).toHaveLength(1);
+      const reviewCall = spawnCalls[0]!;
       expect(reviewCall.args).toContain("--json");
       expect(reviewCall.args).toContain("42,2");
 
-      const input = JSON.parse((reviewCall.opts as Record<string, string>)["input"] ?? "{}") as {
+      const input = JSON.parse(reviewCall.stdinData) as {
         comments: Record<string, Array<{ unresolved: boolean }>>;
       };
       expect(input.comments["src/main.ts"]).toHaveLength(2);
