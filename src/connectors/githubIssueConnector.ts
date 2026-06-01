@@ -36,7 +36,6 @@ export interface GitHubIssueConnectorConfig {
   owner: string;
   repo: string;
   token: string;
-  ticketLabel: string;
   inProgressLabel?: string;
   virtualEngineerUserLogin?: string | undefined;
 }
@@ -47,6 +46,8 @@ export class GitHubIssueConnector extends AbstractTicketConnector implements Tic
   protected readonly inProgressStatusId = 1;
   protected readonly inReviewStatusId = 2;
   private readonly inProgressLabel: string;
+  /** Cached login of the authenticated user, resolved lazily from GET /user. */
+  private resolvedLogin: string | undefined;
 
   constructor(private readonly config: GitHubIssueConnectorConfig) {
     super();
@@ -54,11 +55,12 @@ export class GitHubIssueConnector extends AbstractTicketConnector implements Tic
   }
 
   async getAssignedTickets(_opts?: AssignedTicketQueryOptions): Promise<Ticket[]> {
+    const login = await this.resolveUserLogin();
     const url = new URL(
       `${this.config.apiBaseUrl}/repos/${this.config.owner}/${this.config.repo}/issues`
     );
     url.searchParams.set("state", "open");
-    url.searchParams.set("labels", this.config.ticketLabel);
+    url.searchParams.set("assignee", login);
     url.searchParams.set("per_page", "100");
 
     const issues = GitHubIssuesResponseSchema.parse(
@@ -68,7 +70,7 @@ export class GitHubIssueConnector extends AbstractTicketConnector implements Tic
     // Filter out pull requests (GitHub returns PRs in issue endpoints)
     const filteredIssues = issues.filter((i) => !i.pull_request);
 
-    log.debug({ count: filteredIssues.length }, "fetched open GitHub issues");
+    log.debug({ login, count: filteredIssues.length }, "fetched open GitHub issues assigned to VE account");
     return filteredIssues.map((i) => this.mapIssue(i));
   }
 
@@ -180,6 +182,19 @@ export class GitHubIssueConnector extends AbstractTicketConnector implements Tic
         body: JSON.stringify({ assignees: [login] }),
       }
     );
+  }
+
+  /**
+   * Returns the GitHub login of the authenticated account.
+   * Uses `virtualEngineerUserLogin` from config if set; otherwise calls GET /user
+   * once and caches the result for the lifetime of this connector instance.
+   */
+  private async resolveUserLogin(): Promise<string> {
+    if (this.config.virtualEngineerUserLogin) return this.config.virtualEngineerUserLogin;
+    if (this.resolvedLogin) return this.resolvedLogin;
+    const user = await this.fetchJson<{ login: string }>(`${this.config.apiBaseUrl}/user`);
+    this.resolvedLogin = user.login;
+    return this.resolvedLogin;
   }
 
   private async fetchJson<T = unknown>(url: string, init?: RequestInit): Promise<T> {
