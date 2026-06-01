@@ -304,7 +304,16 @@ export class PollingLoop {
       }
 
       const trigger = this.reviewTrigger;
+      const now = Date.now();
+      const cooldownMs = this.config.ticketIntervalMs;
       for (const assignment of assignments) {
+        const cooldownKey = `${reviewConfig.integrationId}:${assignment.changeId}`;
+        const lastTriggered = this.reviewPollCooldowns.get(cooldownKey);
+        if (lastTriggered !== undefined && now - lastTriggered < cooldownMs) {
+          log.debug({ changeId: assignment.changeId }, "skipping recently triggered review assignment");
+          continue;
+        }
+        this.reviewPollCooldowns.set(cooldownKey, now);
         Promise.resolve()
           .then(() => trigger.triggerReview(reviewConfig.integrationId, assignment.changeId))
           .catch((err: unknown) =>

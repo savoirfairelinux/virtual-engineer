@@ -51,7 +51,10 @@ export class FeedbackProcessor {
 
   /** Convert a ReviewComment to a FeedbackItem for agent consumption. */
   private toFeedbackItem(comment: ReviewComment): FeedbackItem {
-    const source: FeedbackItem["source"] = comment.id.startsWith("ci-run-") ? "ci_failure" : "gerrit_review";
+    const source: FeedbackItem["source"] =
+      comment.id.startsWith("ci-run-") ? "ci_failure" :
+      comment.id.startsWith("issue-") || /^\d+$/.test(comment.id) ? "github_review" :
+      "gerrit_review";
     return {
       source,
       content: comment.message,

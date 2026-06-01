@@ -56,7 +56,8 @@ function buildAuthenticatedCloneUrl(
   let token: string;
   try {
     token = decryptToken(encryptedToken, adminAuthSecret);
-  } catch {
+  } catch (err) {
+    log.warn({ integrationType, cloneUrl: rawCloneUrl, err }, "failed to decrypt token for authenticated clone URL");
     return undefined;
   }
   const usernamePrefix = integrationType === "github-pull-request" ? "x-access-token" : "oauth2";

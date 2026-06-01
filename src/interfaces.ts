@@ -206,11 +206,11 @@ export const TERMINAL_STATES: ReadonlySet<TaskState> = new Set<TaskState>([
 // ─── Agent interfaces ─────────────────────────────────────────────────────────
 
 export interface FeedbackItem {
-  source: "gerrit_review" | "test_failure" | "lint_failure" | "ci_failure";
+  source: "gerrit_review" | "github_review" | "test_failure" | "lint_failure" | "ci_failure";
   content: string;
   filePath?: string | undefined;
   line?: number | undefined;
-  _gerritCommentId?: string | undefined; // For gerrit_review source — used to resolve comments
+  _gerritCommentId?: string | undefined; // For gerrit_review source — used to resolve Gerrit comments
 }
 
 /** Describes one repository entry in a multi-repo workspace layout. */

@@ -94,6 +94,48 @@ describe("FeedbackProcessor", () => {
     });
   });
 
+  it("uses gerrit_review source for ssh-prefixed comment ids", async () => {
+    const comment = makeComment({ id: "ssh-1234567890-2", message: "Please fix this" });
+    const store = makeStateStoreMock();
+    const processor = new FeedbackProcessor(store);
+
+    const [items] = await processor.extractNewFeedback(
+      makeTaskId(randomUUID()),
+      makeExternalChangeId("I123"),
+      [comment]
+    );
+
+    expect(items[0]?.source).toBe("gerrit_review");
+  });
+
+  it("uses github_review source for issue-prefixed comment ids", async () => {
+    const comment = makeComment({ id: "issue-98765", message: "Please update docs" });
+    const store = makeStateStoreMock();
+    const processor = new FeedbackProcessor(store);
+
+    const [items] = await processor.extractNewFeedback(
+      makeTaskId(randomUUID()),
+      makeExternalChangeId("42"),
+      [comment]
+    );
+
+    expect(items[0]?.source).toBe("github_review");
+  });
+
+  it("uses github_review source for numeric comment ids (GitHub inline review)", async () => {
+    const comment = makeComment({ id: "123456789", message: "Suggestion here" });
+    const store = makeStateStoreMock();
+    const processor = new FeedbackProcessor(store);
+
+    const [items] = await processor.extractNewFeedback(
+      makeTaskId(randomUUID()),
+      makeExternalChangeId("7"),
+      [comment]
+    );
+
+    expect(items[0]?.source).toBe("github_review");
+  });
+
   it("handles comments with no file path (patchset-level)", async () => {
     const comment = makeComment({ filePath: undefined, line: undefined });
     const store = makeStateStoreMock();

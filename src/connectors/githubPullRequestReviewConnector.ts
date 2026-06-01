@@ -109,7 +109,6 @@ export interface GitHubPullRequestReviewConnectorConfig {
  */
 export class GitHubPullRequestReviewConnector implements ReviewConnector, ReviewDiscoveryConnector {
   private readonly threadIdCache = new Map<number, string>();
-  private resolvedLogin: string | undefined;
 
   constructor(private readonly config: GitHubPullRequestReviewConnectorConfig) {}
 
@@ -155,14 +154,27 @@ export class GitHubPullRequestReviewConnector implements ReviewConnector, Review
       return [];
     }
 
-    // Fetch review comments (inline) and issue comments (general)
+    // Fetch review comments (inline) and issue comments (general) — paginated
+    const PER_PAGE = 100;
+    const MAX_PAGES = 5;
+    const fetchAllPages = async <T>(buildUrl: (page: number) => string, schema: z.ZodType<T[]>): Promise<T[]> => {
+      const all: T[] = [];
+      for (let page = 1; page <= MAX_PAGES; page++) {
+        const batch = schema.parse(await this.fetchJson(buildUrl(page)));
+        all.push(...batch);
+        if (batch.length < PER_PAGE) break;
+      }
+      return all;
+    };
     const [reviewComments, issueComments] = await Promise.all([
-      this.fetchJson<z.infer<typeof GitHubReviewCommentListSchema>>(
-        `${baseUrl}/pulls/${prNumber}/comments?per_page=100`
-      ).then((data) => GitHubReviewCommentListSchema.parse(data)),
-      this.fetchJson<z.infer<typeof GitHubIssueCommentListSchema>>(
-        `${baseUrl}/issues/${prNumber}/comments?per_page=100`
-      ).then((data) => GitHubIssueCommentListSchema.parse(data)),
+      fetchAllPages(
+        (p) => `${baseUrl}/pulls/${prNumber}/comments?per_page=${PER_PAGE}&page=${p}`,
+        GitHubReviewCommentListSchema
+      ),
+      fetchAllPages(
+        (p) => `${baseUrl}/issues/${prNumber}/comments?per_page=${PER_PAGE}&page=${p}`,
+        GitHubIssueCommentListSchema
+      ),
     ]);
 
     const comments: ReviewComment[] = [];
@@ -405,8 +417,8 @@ export class GitHubPullRequestReviewConnector implements ReviewConnector, Review
               .map((a) => `  ${a.path}:${a.start_line} [${a.annotation_level}] ${a.title ?? a.message}`)
               .join("\n");
         }
-      } catch {
-        // Non-fatal — proceed without annotations
+      } catch (annotationErr) {
+        log.debug({ changeId, runId: run.id, err: annotationErr }, "could not fetch CI annotations (non-fatal)");
       }
 
       const outputParts: string[] = [];
@@ -493,12 +505,17 @@ export class GitHubPullRequestReviewConnector implements ReviewConnector, Review
   }
 
   /** Resolve VE's GitHub login: uses configured value or fetches from GET /user once. */
+  private loginPromise: Promise<string> | undefined;
   private async resolveLogin(): Promise<string> {
     if (this.config.virtualEngineerUserLogin) return this.config.virtualEngineerUserLogin;
-    if (this.resolvedLogin) return this.resolvedLogin;
-    const user = await this.fetchJson<{ login: string }>(`${this.config.apiBaseUrl}/user`);
-    this.resolvedLogin = user.login;
-    return this.resolvedLogin;
+    this.loginPromise ??= this.fetchJson<{ login: string }>(`${this.config.apiBaseUrl}/user`)
+      .then((user) => {
+        if (typeof user.login !== "string" || !user.login) {
+          throw new Error("GitHub /user response missing expected 'login' field");
+        }
+        return user.login;
+      });
+    return this.loginPromise;
   }
 
   // ─── Helpers ────────────────────────────────────────────────────────────────

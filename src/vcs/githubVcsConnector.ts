@@ -271,6 +271,9 @@ export class GitHubVcsConnector implements VcsConnector {
         log.info({ prNumber: existing[0]!.number }, "reusing existing PR");
         return existing[0]!;
       }
+    } else if (listResponse.status !== 404) {
+      const errorBody = await listResponse.text().catch(() => "");
+      throw new ReviewApiError(listResponse.status, listUrl, errorBody);
     }
 
     // Create new PR

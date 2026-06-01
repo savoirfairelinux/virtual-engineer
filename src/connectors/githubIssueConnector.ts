@@ -46,8 +46,6 @@ export class GitHubIssueConnector extends AbstractTicketConnector implements Tic
   protected readonly inProgressStatusId = 1;
   protected readonly inReviewStatusId = 2;
   private readonly inProgressLabel: string;
-  /** Cached login of the authenticated user, resolved lazily from GET /user. */
-  private resolvedLogin: string | undefined;
 
   constructor(private readonly config: GitHubIssueConnectorConfig) {
     super();
@@ -56,19 +54,25 @@ export class GitHubIssueConnector extends AbstractTicketConnector implements Tic
 
   async getAssignedTickets(_opts?: AssignedTicketQueryOptions): Promise<Ticket[]> {
     const login = await this.resolveUserLogin();
-    const url = new URL(
-      `${this.config.apiBaseUrl}/repos/${this.config.owner}/${this.config.repo}/issues`
-    );
-    url.searchParams.set("state", "open");
-    url.searchParams.set("assignee", login);
-    url.searchParams.set("per_page", "100");
+    const baseUrl = `${this.config.apiBaseUrl}/repos/${this.config.owner}/${this.config.repo}/issues`;
+    const PER_PAGE = 100;
+    const MAX_PAGES = 5;
 
-    const issues = GitHubIssuesResponseSchema.parse(
-      await this.fetchJson(url.toString())
-    );
+    const allIssues: z.infer<typeof GitHubIssuesResponseSchema> = [];
+    for (let page = 1; page <= MAX_PAGES; page++) {
+      const url = new URL(baseUrl);
+      url.searchParams.set("state", "open");
+      url.searchParams.set("assignee", login);
+      url.searchParams.set("per_page", String(PER_PAGE));
+      url.searchParams.set("page", String(page));
+
+      const batch = GitHubIssuesResponseSchema.parse(await this.fetchJson(url.toString()));
+      allIssues.push(...batch);
+      if (batch.length < PER_PAGE) break;
+    }
 
     // Filter out pull requests (GitHub returns PRs in issue endpoints)
-    const filteredIssues = issues.filter((i) => !i.pull_request);
+    const filteredIssues = allIssues.filter((i) => !i.pull_request);
 
     log.debug({ login, count: filteredIssues.length }, "fetched open GitHub issues assigned to VE account");
     return filteredIssues.map((i) => this.mapIssue(i));
@@ -189,12 +193,17 @@ export class GitHubIssueConnector extends AbstractTicketConnector implements Tic
    * Uses `virtualEngineerUserLogin` from config if set; otherwise calls GET /user
    * once and caches the result for the lifetime of this connector instance.
    */
+  private loginPromise: Promise<string> | undefined;
   private async resolveUserLogin(): Promise<string> {
     if (this.config.virtualEngineerUserLogin) return this.config.virtualEngineerUserLogin;
-    if (this.resolvedLogin) return this.resolvedLogin;
-    const user = await this.fetchJson<{ login: string }>(`${this.config.apiBaseUrl}/user`);
-    this.resolvedLogin = user.login;
-    return this.resolvedLogin;
+    this.loginPromise ??= this.fetchJson<{ login: string }>(`${this.config.apiBaseUrl}/user`)
+      .then((user) => {
+        if (typeof user.login !== "string" || !user.login) {
+          throw new Error("GitHub /user response missing expected 'login' field");
+        }
+        return user.login;
+      });
+    return this.loginPromise;
   }
 
   private async fetchJson<T = unknown>(url: string, init?: RequestInit): Promise<T> {
