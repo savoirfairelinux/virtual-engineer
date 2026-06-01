@@ -450,6 +450,7 @@ button {
   cursor: pointer;
   transition: background 120ms, border-color 120ms, box-shadow 120ms;
   letter-spacing: -0.01em;
+  pointer-events: auto;
 }
 button:hover { background: var(--bg); border-color: var(--muted); box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
 button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 500; }
@@ -799,6 +800,7 @@ a.detail-origin:hover { text-decoration: underline; }
   overflow-y: auto;
   display: flex;
   flex-direction: column;
+  pointer-events: none;
 }
 .modal h3 {
   font-size: 15px;
@@ -825,6 +827,7 @@ a.detail-origin:hover { text-decoration: underline; }
   font-size: 13px;
   outline: none;
   transition: border-color 150ms, box-shadow 150ms;
+  pointer-events: auto;
 }
 .modal textarea.post-clone-input {
   min-height: unset;
@@ -844,6 +847,7 @@ a.detail-origin:hover { text-decoration: underline; }
   resize: vertical;
   outline: none;
   transition: border-color 150ms, box-shadow 150ms;
+  pointer-events: auto;
 }
 .modal input:not([type="checkbox"]):focus, .modal select:focus {
   border-color: var(--accent);
@@ -860,6 +864,7 @@ a.detail-origin:hover { text-decoration: underline; }
   margin-top: 20px;
   padding-top: 16px;
   border-top: 1px solid var(--border);
+  pointer-events: auto;
 }
 
 /* ── Configuration Page ── */
@@ -1449,6 +1454,7 @@ function findModalSaveButton(modal) {
 }
 
 function handleModalBackgroundClick(overlay) {
+  console.log('[handleModalBackgroundClick] called', { dataRole: overlay.getAttribute('data-role') });
   // If this is already a confirm-close-modal, just close it
   if (overlay.getAttribute('data-role') === 'confirm-close-modal') {
     overlay.remove();
@@ -1456,6 +1462,7 @@ function handleModalBackgroundClick(overlay) {
   }
   // If modal has a save button, show confirmation. Otherwise just close.
   const saveBtn = findModalSaveButton(overlay);
+  console.log('[handleModalBackgroundClick] saveBtn found:', !!saveBtn);
   if (!saveBtn) {
     overlay.remove();
     return;
@@ -4033,7 +4040,10 @@ async function showAddIntegrationModal(section) {
   renderFields();
 
   overlay.querySelector('[data-role="modal-cancel"]')?.addEventListener('click', () => handleModalBackgroundClick(overlay));
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) handleModalBackgroundClick(overlay); });
+  overlay.addEventListener('click', (e) => {
+    console.log('[Add Integration] click event:', { target: e.target === overlay ? 'overlay' : e.target.tagName, isOverlay: e.target === overlay });
+    if (e.target === overlay) handleModalBackgroundClick(overlay);
+  });
 
   overlay.querySelector('[data-role="modal-test"]')?.addEventListener('click', async () => {
     const type = typeSelect?.value;
