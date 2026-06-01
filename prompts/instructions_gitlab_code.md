@@ -22,12 +22,13 @@ After making changes, commit them using `git add` and `git commit`.
 Each commit must be:
 - **Self-contained**: one logical change per commit
 - **Well-formatted**: follow Conventional Commits format
+- **Body required**: every commit MUST include a 2–4 sentence body — a subject-only commit is treated as missing
 
 **Commit message format:**
 ```
 <type>(<optional-scope>): <subject ≤50 chars, imperative, no trailing period>
 
-Optional body (≤72 chars per line)
+Body (mandatory, ≤72 chars per line): explain WHAT changed and WHY in 2–4 sentences.
 ```
 
 **Valid types**: `feat`, `fix`, `refactor`, `test`, `chore`, `docs`, `perf`, `ci`, `build`

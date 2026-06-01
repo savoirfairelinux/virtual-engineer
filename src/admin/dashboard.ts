@@ -5094,6 +5094,8 @@ function showAgentModal(existing) {
       '<select data-f="systemPromptId">' + promptOptions + '</select>' +
       '<label>Instructions Prompt</label>' +
       '<select data-f="instructionsPromptId">' + promptOptions + '</select>' +
+      '<label>Feedback Instructions Prompt <span style="font-weight:normal;color:#888;font-size:0.85em">(coding only, used on retry cycles)</span></label>' +
+      '<select data-f="feedbackInstructionsPromptId"><option value="">— same as Instructions Prompt —</option>' + promptOptions + '</select>' +
       '<label>Max Concurrent</label>' +
       '<input type="number" min="1" data-f="maxConcurrent" value="' + esc(String((existing && existing.maxConcurrent) || 1)) + '" />' +
       '<div class="modal-actions">' +
@@ -5224,6 +5226,10 @@ function showAgentModal(existing) {
     var sel2 = overlay.querySelector('[data-f="instructionsPromptId"]');
     if (sel2) sel2.value = existing.instructionsPromptId;
   }
+  if (existing && existing.feedbackInstructionsPromptId) {
+    var sel3 = overlay.querySelector('[data-f="feedbackInstructionsPromptId"]');
+    if (sel3) sel3.value = existing.feedbackInstructionsPromptId;
+  }
   overlay.querySelector('[data-role="cancel"]').addEventListener('click', function() { overlay.remove(); });
   overlay.querySelector('[data-role="save"]').addEventListener('click', async function() {
     var get = function(k) {
@@ -5244,6 +5250,7 @@ function showAgentModal(existing) {
       integrationId: get('integrationId') || null,
       systemPromptId: get('systemPromptId') || null,
       instructionsPromptId: get('instructionsPromptId') || null,
+      feedbackInstructionsPromptId: get('feedbackInstructionsPromptId') || null,
       maxConcurrent: Number(get('maxConcurrent')) || 1,
     };
     try {
