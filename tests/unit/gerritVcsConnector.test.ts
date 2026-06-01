@@ -24,11 +24,13 @@ vi.mock("../../src/connectors/gerritSshClient.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/connectors/gerritSshClient.js")>();
   return {
     ...actual,
-    GerritSshClient: vi.fn().mockImplementation(() => ({
-      queryChange: mockQueryChange,
-      getUnresolvedComments: mockGetUnresolvedComments,
-      resolveComments: mockResolveComments,
-    })),
+    GerritSshClient: vi.fn().mockImplementation(function() {
+      return {
+        queryChange: mockQueryChange,
+        getUnresolvedComments: mockGetUnresolvedComments,
+        resolveComments: mockResolveComments,
+      };
+    }),
   };
 });
 
