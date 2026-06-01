@@ -418,6 +418,41 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
     );
   });
 
+  it("posts the review on the LATEST patchset when a new one arrives during the agent run", async () => {
+    // The change is cloned/reviewed at patchset 2, but a new patchset 3 is
+    // uploaded while the agent runs. The review must be posted on 3 (the latest),
+    // not on the stale patchset 2 captured at clone time.
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+    (mocks.provider.getChangeDetails as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(makeDetails({ currentPatchset: 2 })) // clone/apply: reviewed patchset
+      .mockResolvedValueOnce(makeDetails({ currentPatchset: 3 })) // fresh fetch before posting
+      .mockResolvedValueOnce(makeDetails({ currentPatchset: 3 })); // post-check: still OPEN
+
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+    await orch.runReview(initial.taskId);
+
+    expect(runner.applyGerritPatchset).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ patchset: 2 })
+    );
+    expect(mocks.provider.postReviewComments).toHaveBeenCalledWith(
+      CHANGE_ID,
+      3,
+      [{ file: "src/a.ts", line: 1, message: "Bug", severity: "error" }],
+      "blocking"
+    );
+    expect(mocks.provider.vote).toHaveBeenCalledWith(CHANGE_ID, 3, -1, "blocking");
+    expect(mocks.store.setReviewedPatchset).toHaveBeenCalledWith(initial.taskId, 3);
+    expect(mocks.provider.postReviewComments).not.toHaveBeenCalledWith(
+      CHANGE_ID,
+      2,
+      expect.anything(),
+      expect.anything()
+    );
+  });
+
   it("skips postReviewComments when all comments are outside the diff and summary is empty", async () => {
     const initial = makeTask({ state: "REVIEW_PENDING" });
     const mocks = makeMocks(initial);
@@ -463,6 +498,7 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
     const mocks = makeMocks(initial);
     const { runner } = makeWorkspaceRunner();
     (mocks.provider.getChangeDetails as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(makeDetails({ status: "OPEN" }))
       .mockResolvedValueOnce(makeDetails({ status: "OPEN" }))
       .mockResolvedValueOnce(makeDetails({ status: "MERGED" }));
 

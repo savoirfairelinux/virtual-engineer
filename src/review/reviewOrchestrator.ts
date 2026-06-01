@@ -380,15 +380,22 @@ export class ReviewOrchestrator {
         summary: result.summary.slice(0, 200),
       });
 
-      await this.postReview(changeId, details.currentPatchset, result, diff);
+      // Fetch fresh details before posting to get the latest patchset.
+      // This ensures we post the review on the latest patchset if a new one
+      // was uploaded while the agent was running, preventing duplicate reviews
+      // on older patchsets.
+      const latestDetails = await this.deps.reviewProvider.getChangeDetails(changeId);
+      const reviewPatchset = latestDetails.currentPatchset;
+
+      await this.postReview(changeId, reviewPatchset, result, diff);
 
       await this.deps.stateStore.transition(taskId, "REVIEW_COMMENTING");
-      await this.deps.stateStore.setReviewedPatchset(taskId, details.currentPatchset);
+      await this.deps.stateStore.setReviewedPatchset(taskId, reviewPatchset);
 
       emitReviewEvent("review.completed", {
         commentCount: result.comments.length,
         vote,
-        patchset: details.currentPatchset,
+        patchset: reviewPatchset,
       });
 
       // Save the review cycle to the database for history.
@@ -400,7 +407,7 @@ export class ReviewOrchestrator {
         agentEvents: collectedEvents,
         metadata: {
           reviewMode: true,
-          patchset: details.currentPatchset,
+          patchset: reviewPatchset,
           commentCount: result.comments.length,
           vote,
           comments: result.comments,
