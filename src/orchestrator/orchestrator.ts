@@ -3,6 +3,7 @@ import { randomUUID, createHash } from "crypto";
 import { formatTicketFooter, hasTicketFooter } from "../utils/ticketFooterFormatter.js";
 import type {
   AgentAdapter,
+  CommitDescriptor,
   FeedbackItem,
   ExternalChangeId,
   IntegrationBindingContext,
@@ -549,6 +550,8 @@ export class Orchestrator {
       const pushRef = await this.resolvePushRef(task, () =>
         rootConnector.buildPushSpec(cloneBranch, task.taskId, ticket.subject).ref
       );
+
+      await this.checkoutPriorPatchset(task, cycleNumber, handle, root, rootConnector);
       const context: TaskContext = {
         taskId: task.taskId,
         ticketTitle: ticket.subject,
@@ -578,7 +581,14 @@ export class Orchestrator {
             if (!rootConnector.useChangeIdContinuity) return undefined;
             const storedChanges = await this.stateStore.getChangesForTask(task.taskId);
             if (storedChanges.length === 0) return undefined;
-            return Object.fromEntries(storedChanges.map((c) => [c.repoKey, c.changeId]));
+            // Only pass the first commit's Change-Id per repo (commitIndex === 0) so that
+            // Gerrit receives the same Change-Id as the original push, producing a new
+            // patchset instead of a brand-new change. NO_CHANGE and empty rows are excluded.
+            const primary = storedChanges.filter(
+              (c) => c.commitIndex === 0 && c.status !== "NO_CHANGE" && c.changeId !== ""
+            );
+            if (primary.length === 0) return undefined;
+            return Object.fromEntries(primary.map((c) => [c.repoKey, c.changeId]));
           })(),
           gitAuthorName: this.config.gitAuthorName,
           gitAuthorEmail: this.config.gitAuthorEmail,
@@ -639,7 +649,7 @@ export class Orchestrator {
       // For Gerrit: agent commits[] are pre-validated; each becomes a separate change (topic-grouped).
       // For GitLab: all N commits land in one MR via force-push.
       if (task.projectId && this.projectMode && projectPushTargets.length > 0) {
-        await this.pushProjectChanges(task, handle, projectPushTargets, commitMessage, context.ticketUrl ?? "");
+        await this.pushProjectChanges(task, handle, projectPushTargets, commitMessage, context.ticketUrl ?? "", agentResult.commits);
       }
 
       task = await this.stateStore.transition(task.taskId, "IN_REVIEW");
@@ -657,6 +667,43 @@ export class Orchestrator {
       if (cycleSlot && this.projectMode?.concurrencyTracker) {
         this.projectMode.concurrencyTracker.release(cycleSlot.projectId, cycleSlot.agentId);
       }
+    }
+  }
+
+  /**
+   * On retry cycles with Change-Id continuity, fetch the existing Gerrit patchset into
+   * the volume so the agent starts from its previous work rather than a blank slate.
+   * Falls back silently — the agent will just work from the fresh clone if checkout fails.
+   */
+  private async checkoutPriorPatchset(
+    task: Task,
+    cycleNumber: number,
+    handle: WorkspaceHandle,
+    root: ProjectPushTargetRecord,
+    rootConnector: VcsConnector
+  ): Promise<void> {
+    if (cycleNumber <= 1 || !rootConnector.useChangeIdContinuity) return;
+    if (!rootConnector.resolvePatchsetOptions) return;
+    if (!this.workspaceRunner.applyGerritPatchset) return;
+
+    const storedChanges = await this.stateStore.getChangesForTask(task.taskId);
+    const primaryChange = storedChanges.find(
+      (c) => c.commitIndex === 0 && c.status !== "NO_CHANGE" && c.changeId !== "" && c.repoKey === root.repoKey
+    );
+    if (!primaryChange) return;
+
+    try {
+      const patchsetOpts = await rootConnector.resolvePatchsetOptions(primaryChange.changeId);
+      await this.workspaceRunner.applyGerritPatchset(handle, patchsetOpts);
+      log.info(
+        { taskId: task.taskId, changeId: primaryChange.changeId, changeNumber: patchsetOpts.changeNumber, patchset: patchsetOpts.patchset },
+        "checked out existing patchset for retry cycle"
+      );
+    } catch (err) {
+      log.warn(
+        { taskId: task.taskId, changeId: primaryChange.changeId, err },
+        "failed to checkout patchset for retry; agent will work from fresh clone"
+      );
     }
   }
 
@@ -1011,7 +1058,8 @@ export class Orchestrator {
     handle: WorkspaceHandle,
     pushTargets: import("../interfaces.js").ProjectPushTargetRecord[],
     fallbackCommitMessage: string,
-    ticketUrl: string
+    ticketUrl: string,
+    agentCommits: CommitDescriptor[] | undefined = undefined
   ): Promise<void> {
     const sorted = [...pushTargets].sort((a, b) => a.commitOrder - b.commitOrder);
 
@@ -1049,7 +1097,7 @@ export class Orchestrator {
           "NO_CHANGE",
           target.integrationId,
           NO_REVIEW_SYSTEM,
-          target.commitOrder,
+          0,
           ""
         );
         log.info({ taskId: task.taskId, repoKey: target.repoKey }, "project push target had no changes");
@@ -1090,22 +1138,64 @@ export class Orchestrator {
           pushResult = await vcsConnector.push(handle.hostWorkspacePath, ref, commitMsg, undefined, volumeOpts);
         }
 
-        await this.stateStore.saveChangePerRepository(
-          task.taskId,
-          target.repoKey,
-          pushResult.changeId,
-          pushResult.url,
-          pushResult.status || "OPEN",
-          target.integrationId,
-          reviewSystemLabel,
-          target.commitOrder,
-          subjectHash
-        );
+        // Use Change-Ids from agent commits when available — this is the source of truth
+        // for multi-commit pushes where pushResult.changeId only reflects HEAD (the last commit).
+        // The agent already injected deterministic Change-Ids into each commit before pushing.
+        const repoCommits = (agentCommits ?? []).filter((c) => c.repoKey === target.repoKey);
+
+        // Derive URL for a given Change-Id by replacing the head Change-Id in pushResult.url.
+        // Falls back to pushResult.url when changeId is absent or replacement is not possible.
+        const makeChangeUrl = (targetChangeId: string): string => {
+          if (!pushResult.url) return "";
+          if (pushResult.changeId && pushResult.url.includes(pushResult.changeId)) {
+            return pushResult.url.replace(pushResult.changeId, targetChangeId);
+          }
+          return pushResult.url;
+        };
+
+        if (repoCommits.length > 1) {
+          // Multi-commit: save each commit at its own index so the retry cycle can
+          // retrieve commit[0]'s Change-Id and reuse it to produce a new patchset.
+          for (let i = 0; i < repoCommits.length; i++) {
+            const commit = repoCommits[i]!;
+            const cHash = createHash("sha1").update(commit.subject).digest("hex");
+            await this.stateStore.saveChangePerRepository(
+              task.taskId,
+              target.repoKey,
+              commit.changeId,
+              i === 0 ? makeChangeUrl(commit.changeId) : "",
+              pushResult.status || "OPEN",
+              target.integrationId,
+              reviewSystemLabel,
+              i,
+              cHash
+            );
+          }
+          log.info(
+            { taskId: task.taskId, repoKey: target.repoKey, commitCount: repoCommits.length, firstChangeId: repoCommits[0]?.changeId },
+            "pushed project target (multi-commit)"
+          );
+        } else {
+          // Single-commit: prefer the agent's own Change-Id (commit[0]) over the VCS
+          // push result which may differ when the connector re-reads from HEAD.
+          const primaryChangeId = repoCommits[0]?.changeId || pushResult.changeId;
+          await this.stateStore.saveChangePerRepository(
+            task.taskId,
+            target.repoKey,
+            primaryChangeId,
+            makeChangeUrl(primaryChangeId),
+            pushResult.status || "OPEN",
+            target.integrationId,
+            reviewSystemLabel,
+            0,
+            subjectHash
+          );
+          log.info(
+            { taskId: task.taskId, repoKey: target.repoKey, changeId: primaryChangeId, url: makeChangeUrl(primaryChangeId) },
+            "pushed project target"
+          );
+        }
         successCount++;
-        log.info(
-          { taskId: task.taskId, repoKey: target.repoKey, changeId: pushResult.changeId, url: pushResult.url },
-          "pushed project target"
-        );
       } catch (err) {
         log.error(
           { taskId: task.taskId, repoKey: target.repoKey, err },
