@@ -167,6 +167,51 @@ describe("GitHubReviewProvider", () => {
     expect(body.body).toContain("out-of-diff");
   });
 
+  it("allowedFiles drops comments referencing files outside the patchset", async () => {
+    // File filter drops ghost.ts; line validation fetches /files first
+    fetchMock.mockResolvedValueOnce(jsonResponse([
+      { filename: "src/a.ts", status: "modified", patch: "@@ -1,5 +1,5 @@\n line1\n line2\n line3\n line4\n line5" },
+    ]));
+    fetchMock.mockResolvedValueOnce(jsonResponse({ id: 1 }));
+    await new GitHubReviewProvider(config).postReviewWithComments!(
+      cid, 1,
+      [
+        { file: "src/a.ts", line: 5, message: "kept", severity: "warning" },
+        { file: "src/ghost.ts", line: 9, message: "dropped", severity: "error" },
+      ],
+      "summary", -1,
+      new Set(["src/a.ts"]),
+    );
+    const body = JSON.parse((fetchMock.mock.calls[1]?.[1] as RequestInit).body as string);
+    expect(body.comments).toEqual([{ path: "src/a.ts", line: 5, body: "kept", side: "RIGHT" }]);
+    expect(body.event).toBe("REQUEST_CHANGES");
+    expect(body.body).toBe("summary");
+  });
+
+  it("allowedFiles: when all comments dropped, still posts summary+event", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ id: 1 }));
+    await new GitHubReviewProvider(config).postReviewWithComments!(
+      cid, 1,
+      [{ file: "src/ghost.ts", line: 9, message: "dropped", severity: "error" }],
+      "all gone", -1,
+      new Set(["src/real.ts"]),
+    );
+    const body = JSON.parse((fetchMock.mock.calls[0]?.[1] as RequestInit).body as string);
+    expect(body.comments).toBeUndefined();
+    expect(body.body).toBe("all gone");
+    expect(body.event).toBe("REQUEST_CHANGES");
+  });
+
+  it("postReviewComments: skips the API call when all comments are filtered and summary is empty", async () => {
+    await new GitHubReviewProvider(config).postReviewComments(
+      cid, 1,
+      [{ file: "src/ghost.ts", line: 9, message: "dropped", severity: "error" }],
+      "",
+      new Set(["src/real.ts"]),
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("throws on non-OK API response", async () => {
     fetchMock.mockResolvedValueOnce(new Response("bad", { status: 404 }));
     await expect(new GitHubReviewProvider(config).getChangeDetails(cid)).rejects.toThrow(/404/);

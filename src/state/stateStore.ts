@@ -38,6 +38,7 @@ import type {
   PushTargetRole,
 } from "../interfaces.js";
 import { makeExternalChangeId, TERMINAL_STATES } from "../interfaces.js";
+import { getLogger } from "../logger.js";
 import { validateTransition } from "./stateMachine.js";
 import {
   tasks,
@@ -58,6 +59,8 @@ import {
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import * as schema from "./schema.js";
 import { normalizeGitLabBaseUrl } from "../utils/gitlabAuth.js";
+
+const log = getLogger("state-store");
 
 /** SQLite-backed implementation of `StateStore`, `IntegrationStore`, and `PromptStore`. Use the static `create()` factory. */
 export class SqliteStateStore implements StateStore, IntegrationStore, PromptStore, OAuthAppStore {
@@ -837,12 +840,27 @@ export class SqliteStateStore implements StateStore, IntegrationStore, PromptSto
     }
   }
 
-  /** Reset the task to DETECTED with zero cycle count, recording a retry event. */
+  /**
+   * Reset the task to its workflow's initial state (DETECTED for code-gen,
+   * REVIEW_PENDING for code-review), recording a retry event.
+   */
   async retryTask(taskId: TaskId): Promise<Task> {
     const task = await this.getTask(taskId);
     if (!task) throw new Error(`Task not found: ${taskId}`);
 
-    const adoption = this.isTaskOrphaned(task) ? this.findAdoptionTargetForTask(taskId) : null;
+    const isReview = task.taskType === "code-review";
+    const resetState: TaskState = isReview ? "REVIEW_PENDING" : "DETECTED";
+    // Adoption only applies to code-gen tasks: review tasks are tied to a
+    // specific change/patchset and never lose their project mapping.
+    const adoption = !isReview && this.isTaskOrphaned(task)
+      ? this.findAdoptionTargetForTask(taskId)
+      : null;
+    if (isReview && this.isTaskOrphaned(task)) {
+      log.warn(
+        { taskId, state: task.state },
+        "retrying an orphaned code-review task: project mapping cannot be restored, next runReview may fail"
+      );
+    }
 
     const now = new Date();
     this.raw.transaction(() => {
@@ -856,7 +874,7 @@ export class SqliteStateStore implements StateStore, IntegrationStore, PromptSto
             "updated_at = ? WHERE task_id = ?"
           )
           .run(
-            "DETECTED",
+            resetState,
             0,
             null,
             adoption.projectId,
@@ -868,7 +886,7 @@ export class SqliteStateStore implements StateStore, IntegrationStore, PromptSto
       } else {
         this.raw
           .prepare("UPDATE tasks SET state = ?, cycle_count = ?, failure_reason = ?, updated_at = ? WHERE task_id = ?")
-          .run("DETECTED", 0, null, nowSec, taskId);
+          .run(resetState, 0, null, nowSec, taskId);
       }
 
       const metadata: Record<string, unknown> = { action: "retry" };
@@ -879,7 +897,7 @@ export class SqliteStateStore implements StateStore, IntegrationStore, PromptSto
         .prepare(
           "INSERT INTO state_transitions (task_id, from_state, to_state, metadata, created_at) VALUES (?, ?, ?, ?, ?)"
         )
-        .run(taskId, task.state, "DETECTED", JSON.stringify(metadata), nowSec);
+        .run(taskId, task.state, resetState, JSON.stringify(metadata), nowSec);
     })();
 
     const updated = await this.getTask(taskId);

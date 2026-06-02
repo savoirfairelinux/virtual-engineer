@@ -7,6 +7,7 @@ import {
   type ProjectPushTargetRecord,
   type ReviewAgentResult,
   type ReviewChangeDetails,
+  type ReviewChangeDiff,
   type ReviewProvider,
   type StateStore,
   type Task,
@@ -19,6 +20,7 @@ import {
 } from "../interfaces.js";
 import { buildReviewPrompt } from "./reviewPromptBuilder.js";
 import { computeVote, parseReviewResult } from "./reviewResultParser.js";
+import { filterCommentsByAllowedFiles } from "./commentFilter.js";
 import { agentLogBus, pushToTaskBuffer, clearTaskEventBuffer } from "../agents/agentEventBus.js";
 
 const log = getLogger("review-orchestrator");
@@ -150,8 +152,8 @@ export class ReviewOrchestrator {
           if (existing.state === "REVIEW_RUNNING" || existing.state === "REVIEW_COMMENTING") {
             // Review is actively in flight — skip to avoid a concurrent second pass.
             log.debug(
-              { taskId: existing.taskId, state: existing.state },
-              "review already in progress — skipping concurrent trigger"
+              { taskId: existing.taskId, state: existing.state, changeId: input.changeId },
+              "review already in flight — skipping duplicate trigger"
             );
             continue;
           }
@@ -378,7 +380,7 @@ export class ReviewOrchestrator {
         summary: result.summary.slice(0, 200),
       });
 
-      await this.postReview(changeId, details.currentPatchset, result);
+      await this.postReview(changeId, details.currentPatchset, result, diff);
 
       await this.deps.stateStore.transition(taskId, "REVIEW_COMMENTING");
       await this.deps.stateStore.setReviewedPatchset(taskId, details.currentPatchset);
@@ -493,28 +495,36 @@ export class ReviewOrchestrator {
   private async postReview(
     changeId: ExternalChangeId,
     revision: number,
-    result: ReviewAgentResult
+    result: ReviewAgentResult,
+    diff: ReviewChangeDiff
   ): Promise<void> {
     const score = computeVote(result);
-    // Use the combined postReviewWithComments when available to avoid duplicate
-    // comments on retry (both labels + comments in one API call).
+    // An empty diff (e.g. a transient fetch failure) must not silently drop every
+    // comment: fall back to no filtering rather than an all-rejecting empty set.
+    const allowedFiles =
+      diff.files.length > 0 ? new Set(diff.files.map((f) => f.path)) : undefined;
+    const filteredComments = filterCommentsByAllowedFiles(result.comments, allowedFiles, { changeId, revision });
+    // Prefer the combined call when available so a retry posts comments + vote in
+    // one review event instead of two, avoiding duplicate inline comments.
     if (typeof this.deps.reviewProvider.postReviewWithComments === "function") {
       await this.deps.reviewProvider.postReviewWithComments(
         changeId,
         revision,
-        result.comments,
+        filteredComments,
         result.summary,
-        score
+        score,
       );
       return;
     }
-    // Fall back to two-call pattern for providers that don't support combined posting.
-    if (result.comments.length > 0 || result.summary.trim().length > 0) {
+    // Fallback two-call path for providers without combined posting. Guard on the
+    // post-filter count so a batch where every comment is filtered out (all paths
+    // outside the diff) never triggers an empty postReviewComments call.
+    if (filteredComments.length > 0 || result.summary.trim().length > 0) {
       await this.deps.reviewProvider.postReviewComments(
         changeId,
         revision,
-        result.comments,
-        result.summary
+        filteredComments,
+        result.summary,
       );
     }
     await this.deps.reviewProvider.vote(changeId, revision, score, result.summary);

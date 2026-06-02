@@ -20,6 +20,7 @@ import {
   type ReviewProvider,
 } from "../interfaces.js";
 import { getLogger } from "../logger.js";
+import { filterCommentsByAllowedFiles } from "../review/commentFilter.js";
 import { GerritSshClient, parseSshNdjson, buildSshHostKeyOptions } from "./gerritSshClient.js";
 
 const log = getLogger("gerrit-ssh-review-provider");
@@ -243,7 +244,8 @@ export class GerritSshReviewProvider implements ReviewProvider {
     revision: number,
     comments: InlineReviewComment[],
     summary: string,
-    score: -1 | 1
+    score: -1 | 1,
+    allowedFiles?: ReadonlySet<string>
   ): Promise<void> {
     const details = await this.getChangeDetails(changeId);
     const changeSpec = `${details.changeNumber},${revision}`;
@@ -254,22 +256,14 @@ export class GerritSshReviewProvider implements ReviewProvider {
     const trimmedSummary = summary.trim();
     if (trimmedSummary.length > 0) reviewInput["message"] = trimmedSummary;
 
-    if (comments.length > 0) {
-      const grouped: Record<string, Array<{ line: number; message: string; unresolved: boolean }>> = {};
-      for (const c of comments) {
-        const arr = grouped[c.file] ?? (grouped[c.file] = []);
-        arr.push({
-          line: c.line,
-          message: formatCommentBody(c),
-          unresolved: c.severity !== "suggestion",
-        });
-      }
-      reviewInput["comments"] = grouped;
+    const kept = filterCommentsByAllowedFiles(comments, allowedFiles, { changeId, revision });
+    if (kept.length > 0) {
+      reviewInput["comments"] = groupCommentsByFile(kept);
     }
 
     await this.sshClient.reviewJson(changeSpec, JSON.stringify(reviewInput));
     log.info(
-      { changeId, revision, comments: comments.length, score },
+      { changeId, revision, comments: kept.length, score },
       "posted review comments and vote via SSH"
     );
   }
@@ -279,10 +273,12 @@ export class GerritSshReviewProvider implements ReviewProvider {
     changeId: ExternalChangeId,
     revision: number,
     comments: InlineReviewComment[],
-    summary: string
+    summary: string,
+    allowedFiles?: ReadonlySet<string>
   ): Promise<void> {
     const trimmedSummary = summary.trim();
-    if (comments.length === 0 && trimmedSummary.length === 0) return;
+    const kept = filterCommentsByAllowedFiles(comments, allowedFiles, { changeId, revision });
+    if (kept.length === 0 && trimmedSummary.length === 0) return;
 
     const details = await this.getChangeDetails(changeId);
     const changeSpec = `${details.changeNumber},${revision}`;
@@ -290,22 +286,13 @@ export class GerritSshReviewProvider implements ReviewProvider {
     const reviewInput: Record<string, unknown> = {};
     if (trimmedSummary.length > 0) reviewInput["message"] = trimmedSummary;
 
-    if (comments.length > 0) {
-      const grouped: Record<string, Array<{ line: number; message: string; unresolved: boolean }>> = {};
-      for (const c of comments) {
-        const arr = grouped[c.file] ?? (grouped[c.file] = []);
-        arr.push({
-          line: c.line,
-          message: formatCommentBody(c),
-          unresolved: c.severity !== "suggestion",
-        });
-      }
-      reviewInput["comments"] = grouped;
+    if (kept.length > 0) {
+      reviewInput["comments"] = groupCommentsByFile(kept);
     }
 
     await this.sshClient.reviewJson(changeSpec, JSON.stringify(reviewInput));
     log.info(
-      { changeId, revision, comments: comments.length },
+      { changeId, revision, comments: kept.length },
       "posted review comments via SSH"
     );
   }
@@ -411,3 +398,19 @@ function formatCommentBody(c: InlineReviewComment): string {
   const tag = severity === "error" ? "[error]" : severity === "warning" ? "[warning]" : `[${c.severity}]`;
   return `${tag} ${linePrefix}${c.message}`;
 }
+
+function groupCommentsByFile(
+  comments: InlineReviewComment[]
+): Record<string, Array<{ line: number; message: string; unresolved: boolean }>> {
+  const grouped: Record<string, Array<{ line: number; message: string; unresolved: boolean }>> = {};
+  for (const c of comments) {
+    const arr = grouped[c.file] ?? (grouped[c.file] = []);
+    arr.push({
+      line: c.line,
+      message: formatCommentBody(c),
+      unresolved: c.severity !== "suggestion",
+    });
+  }
+  return grouped;
+}
+

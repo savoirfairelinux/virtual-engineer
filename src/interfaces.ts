@@ -614,24 +614,36 @@ export interface ReviewProvider {
   /** Fetch the diff for a specific patchset (defaults to current). */
   getChangeDiff(changeId: ExternalChangeId, patchset?: number): Promise<ReviewChangeDiff>;
 
-  /** Post inline comments and a summary on the given revision. */
+  /**
+   * Post inline comments and a summary on the given revision.
+   *
+   * `allowedFiles`, when provided, restricts the comments actually submitted to
+   * files present in the patchset diff. Comments referencing files outside this
+   * set are dropped and logged. This guards against the underlying API (e.g.
+   * Gerrit `review --json`) rejecting the whole batch on a single unknown path.
+   */
   postReviewComments(
     changeId: ExternalChangeId,
     revision: number,
     comments: InlineReviewComment[],
-    summary: string
+    summary: string,
+    allowedFiles?: ReadonlySet<string>
   ): Promise<void>;
 
   /**
    * Post inline comments + vote atomically (optional; reviewOrchestrator falls back
    * to separate postReviewComments + vote calls when absent).
+   *
+   * `allowedFiles` semantics are the same as on `postReviewComments`. If all
+   * comments are filtered out, the vote and summary are still submitted.
    */
   postReviewWithComments?(
     changeId: ExternalChangeId,
     revision: number,
     comments: InlineReviewComment[],
     summary: string,
-    score: -1 | 1
+    score: -1 | 1,
+    allowedFiles?: ReadonlySet<string>
   ): Promise<void>;
 
   /** Cast a Code-Review-style vote (-1, 0, or +1). */
