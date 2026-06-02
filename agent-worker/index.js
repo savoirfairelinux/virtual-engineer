@@ -80,6 +80,12 @@ try {
 const WORKSPACE = '/workspace';
 const REPO_PATH = WORKSPACE; // repo root is mounted directly at /workspace
 
+// Persistent per-project brief carried across tasks; best-effort, never fails the task.
+const PROJECT_CACHE_DIR = process.env.PROJECT_CACHE_DIR || '';
+const PROJECT_BRIEF_FILENAME = 'context.md';
+const PROJECT_BRIEF_MAX_BYTES = 8 * 1024;
+const PROJECT_BRIEF_MAX_LINES = 150;
+
 // ── git helper ────────────────────────────────────────────────────────────────
 function git(args, cwd) {
   try {
@@ -707,6 +713,77 @@ async function runReviewMode() {
   }
 }
 
+// ── project brief cache ─────────────────────────────────────────────────────
+function projectBriefPath() {
+  return join(PROJECT_CACHE_DIR, PROJECT_BRIEF_FILENAME);
+}
+
+function loadProjectBrief() {
+  if (!PROJECT_CACHE_DIR) return '';
+  try {
+    const { readFileSync } = require('fs');
+    const path = projectBriefPath();
+    if (!existsSync(path)) return '';
+    let brief = readFileSync(path, 'utf8').trim();
+    if (!brief) return '';
+    if (Buffer.byteLength(brief, 'utf8') > PROJECT_BRIEF_MAX_BYTES) {
+      brief = Buffer.from(brief, 'utf8').subarray(0, PROJECT_BRIEF_MAX_BYTES).toString('utf8');
+    }
+    return brief;
+  } catch (err) {
+    process.stderr.write(`Warning: failed to load project brief: ${err.message}\n`);
+    return '';
+  }
+}
+
+function injectProjectBrief(userPrompt) {
+  const brief = loadProjectBrief();
+  if (!brief) return userPrompt;
+  process.stderr.write(`injecting project brief (${Buffer.byteLength(brief, 'utf8')} bytes)\n`);
+  return [
+    '## Project knowledge from previous tasks (may be stale — verify before trusting)',
+    '',
+    brief,
+    '',
+    '---',
+    '',
+    userPrompt,
+  ].join('\n');
+}
+
+function writeProjectBriefAtomic(brief) {
+  if (!PROJECT_CACHE_DIR) return;
+  try {
+    const { writeFileSync, renameSync } = require('fs');
+    const tmpPath = join(PROJECT_CACHE_DIR, `.${PROJECT_BRIEF_FILENAME}.tmp.${process.pid}`);
+    writeFileSync(tmpPath, brief, 'utf8');
+    renameSync(tmpPath, projectBriefPath());
+    process.stderr.write(`project brief updated (${Buffer.byteLength(brief, 'utf8')} bytes)\n`);
+  } catch (err) {
+    process.stderr.write(`Warning: failed to write project brief: ${err.message}\n`);
+  }
+}
+
+async function updateProjectBrief(session) {
+  if (!PROJECT_CACHE_DIR) return;
+  try {
+    const existing = loadProjectBrief();
+    const instruction = [
+      `Produce a concise project brief (<= ${PROJECT_BRIEF_MAX_LINES} lines) for the NEXT agent`,
+      'working on this repository, so it can skip re-exploring. Cover: architecture, key',
+      'directories, build/test/lint commands, conventions, and gotchas. Output ONLY the brief',
+      'as Markdown, no preamble.',
+      existing ? '\nUpdate and correct this existing brief rather than rewriting from scratch:\n' : '',
+      existing,
+    ].join('\n').trim();
+    const response = await session.sendAndWait({ prompt: instruction }, 600_000);
+    const brief = (response?.data?.content ?? '').trim();
+    if (brief) writeProjectBriefAtomic(brief);
+  } catch (err) {
+    process.stderr.write(`Warning: project brief refresh turn failed: ${err.message}\n`);
+  }
+}
+
 // ── main ──────────────────────────────────────────────────────────────────────
 async function main() {
   if (!GITHUB_TOKEN) throw new Error('GITHUB_TOKEN env var is required');
@@ -727,6 +804,8 @@ async function main() {
   if (REVIEW_MODE) {
     return runReviewMode();
   }
+
+  const effectivePrompt = injectProjectBrief(userPrompt);
 
   // 1. Configure git identity in the pre-cloned repository and set CWD.
   process.chdir(REPO_PATH);
@@ -772,7 +851,7 @@ async function main() {
 
   process.stderr.write(`starting Copilot SDK client (mode=local-headless, model=${COPILOT_MODEL})\n`);
 
-  const { session, client, localCliServer } = await runSession(userPrompt);
+  const { session, client, localCliServer } = await runSession(effectivePrompt);
 
   let result;
   try {
@@ -799,7 +878,7 @@ async function main() {
     //    sufficient margin (1 minute under the 1-hour host deadline) for complex tasks.
     let response;
     try {
-      response = await session.sendAndWait({ prompt: userPrompt }, 3_540_000);
+      response = await session.sendAndWait({ prompt: effectivePrompt }, 3_540_000);
     } finally {
       clearInterval(heartbeat);
     }
@@ -812,6 +891,8 @@ async function main() {
       toolsByKind: handlerState.toolsByKind,
       model: COPILOT_MODEL,
     });
+
+    await updateProjectBrief(session);
 
     await session.disconnect();
 
