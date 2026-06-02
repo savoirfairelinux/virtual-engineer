@@ -14,7 +14,7 @@ const mockGetUnresolvedComments = vi.fn();
 const mockResolveComments = vi.fn();
 
 vi.mock("../../src/connectors/gerritSshClient.js", () => ({
-  GerritSshClient: vi.fn().mockImplementation(function() {
+  GerritSshClient: vi.fn().mockImplementation(function () {
     return {
       query: mockQuery,
       queryChange: mockQueryChange,
