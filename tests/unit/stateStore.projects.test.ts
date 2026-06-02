@@ -439,6 +439,7 @@ describe("resolveAgentConfig — partial-merge semantics", () => {
       integrationId: null,
       systemPromptId: "system",
       instructionsPromptId: "instructions",
+      feedbackInstructionsPromptId: null,
       maxConcurrent: 1,
       enabled: true,
       createdAt: new Date(),

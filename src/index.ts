@@ -24,7 +24,6 @@ import { startAdminServer } from "./admin/startAdminServer.js";
 
 import { PluginIntegrationStreamEventsManager } from "./connectors/integrationStreamEvents.js";
 import { ReviewOrchestrator } from "./review/reviewOrchestrator.js";
-import { decryptToken } from "./utils/encryption.js";
 import { mkdir } from "fs/promises";
 import type { Server } from "node:http";
 import type { AdminProviderSummary } from "./admin/adminServer.js";
@@ -52,7 +51,7 @@ async function main(): Promise<void> {
   const stateStore = await SqliteStateStore.create(config.databasePath);
 
   registerBuiltinPlugins(config.adminAuthSecret !== undefined ? { adminAuthSecret: config.adminAuthSecret } : undefined);
-  const pluginManager = new PluginManager(stateStore);
+  const pluginManager = new PluginManager(stateStore, { adminAuthSecret: config.adminAuthSecret });
 
   // Copilot factory: registered explicitly because construction needs AppConfig
   // values (agentDockerNetwork, maxCommitsPerCycle) that are not in configJson.
@@ -102,6 +101,19 @@ async function main(): Promise<void> {
   );
 
   // ─── Polling loop ────────────────────────────────────────────────────────────
+  // Mutable holder so the review trigger survives hot-reload of the review
+  // integration without recreating the stream-events manager.
+  const reviewTriggerHolder = {
+    current: buildReviewTrigger(pluginManager, config.workspaceBaseDir, workspaceRunner, stateStore),
+  };
+
+  /** Thin wrapper that forwards to the stream-events review trigger. Used by the polling loop. */
+  const pollingReviewTrigger: import("./orchestrator/pollingLoop.js").ReviewAssignmentTrigger = {
+    async triggerReview(integrationId: string, changeId: string): Promise<void> {
+      await reviewTriggerHolder.current?.triggerReviewForChange(integrationId, changeId);
+    },
+  };
+
   const pollingLoop = new PollingLoop(
     {
       ticketIntervalMs: config.pollingIntervalMs,
@@ -109,15 +121,9 @@ async function main(): Promise<void> {
     },
     orchestrator,
     stateStore,
-    pollingProjectMode
+    { ...pollingProjectMode, reviewTrigger: pollingReviewTrigger }
   );
-  // Review discovery is handled by SSH stream-events; no reviewWatchPoller needed.
 
-  // Mutable holder so the review trigger survives hot-reload of the Gerrit
-  // integration without recreating the stream-events manager.
-  const reviewTriggerHolder = {
-    current: buildReviewTrigger(pluginManager, config.workspaceBaseDir, workspaceRunner, stateStore),
-  };
   const integrationStreamEvents = new PluginIntegrationStreamEventsManager({
     orchestrator,
     getReviewTrigger: (): import("./connectors/integrationStreamEvents.js").IntegrationEventStreamReviewTrigger | undefined => reviewTriggerHolder.current ?? undefined,
@@ -402,35 +408,55 @@ async function buildReviewBundle(
   workspaceRunner?: DockerWorkspaceRunner,
   target?: string | Task,
 ): Promise<ReviewBundle> {
+  const bundleLog = getLogger("review-bundle");
+  const targetId = typeof target === "string" ? target : target?.taskId ?? "(none)";
+
   const integration = resolveReviewIntegration(pluginManager, target);
   if (!integration) {
+    bundleLog.warn(
+      { target: targetId },
+      "buildReviewBundle: no active review integration with createReviewer — ensure a Gerrit/GitHub/GitLab review integration is enabled"
+    );
     return { integration: null, provider: null, orchestrator: null };
   }
 
   const descriptor = getPluginDescriptor(integration.type);
   if (!descriptor?.createReviewer) {
+    bundleLog.warn(
+      { integrationId: integration.id, type: integration.type },
+      "buildReviewBundle: plugin descriptor for integration type does not implement createReviewer"
+    );
     return { integration: null, provider: null, orchestrator: null };
   }
 
   let rawConfig: Record<string, unknown>;
   try {
-    const parsedJson: unknown = JSON.parse(integration.configJson);
-    rawConfig = (typeof parsedJson === "object" && parsedJson !== null && !Array.isArray(parsedJson))
-      ? (parsedJson as Record<string, unknown>)
-      : {};
-  } catch {
+    rawConfig = pluginManager.decryptIntegrationConfig(integration);
+  } catch (err) {
+    bundleLog.warn(
+      { integrationId: integration.id, err },
+      "buildReviewBundle: failed to decrypt integration config — check ADMIN_AUTH_SECRET and integration credentials"
+    );
     return { integration: null, provider: null, orchestrator: null };
   }
 
   const store = stateStore;
 
   if (!workspaceRunner) {
+    bundleLog.warn(
+      { integrationId: integration.id },
+      "buildReviewBundle: no DockerWorkspaceRunner available"
+    );
     return { integration: null, provider: null, orchestrator: null };
   }
 
   // Extract the agent token from the active agent integration for the review container.
   const agentToken = getAgentTokenForReview(pluginManager);
   if (!agentToken) {
+    bundleLog.warn(
+      { integrationId: integration.id },
+      "buildReviewBundle: no agent token available — ensure a Copilot integration is enabled and has a sessionToken or apiKey configured"
+    );
     return { integration: null, provider: null, orchestrator: null };
   }
 
@@ -551,19 +577,23 @@ function buildReviewTrigger(
  */
 function getAgentTokenForReview(pluginManager: PluginManager): string | null {
   const agentIntegration = getPrimaryActiveIntegration(pluginManager, "copilot");
-  const agentConfig = parseIntegrationConfig(agentIntegration);
+  if (!agentIntegration) return null;
 
-  const encryptedToken = asOptionalString(agentConfig?.["sessionToken"]);
-  if (encryptedToken) {
-    const secret = getConfig().adminAuthSecret;
-    try {
-      return decryptToken(encryptedToken, secret);
-    } catch {
-      // fall through to apiKey fallback
-    }
+  let agentConfig: Record<string, unknown>;
+  try {
+    // decryptIntegrationConfig handles both AES-256-GCM encrypted tokens (OAuth
+    // sessionToken) and plaintext PATs (token field), leaving unknown strings as-is.
+    agentConfig = pluginManager.decryptIntegrationConfig(agentIntegration);
+  } catch {
+    return null;
   }
 
-  return asOptionalString(agentConfig?.["apiKey"]) ?? null;
+  // OAuth mode: sessionToken decrypted by decryptIntegrationConfig.
+  const sessionToken = asOptionalString(agentConfig["sessionToken"]);
+  if (sessionToken) return sessionToken;
+
+  // PAT mode: token field, plaintext or decrypted.
+  return asOptionalString(agentConfig["token"]) ?? null;
 }
 
 /** Return the first active agent-adapter connector found in the plugin manager, or null. */
@@ -624,6 +654,7 @@ function buildOrchestratorConfig(
     gitAuthorName: gitAuthorName ?? "Virtual Engineer",
     gitAuthorEmail: gitAuthorEmail ?? "ve@virtual-engineer.local",
     agentContainerImage: config.agentContainerImage,
+    ...(config.adminAuthSecret !== undefined ? { adminAuthSecret: config.adminAuthSecret } : {}),
   };
 }
 

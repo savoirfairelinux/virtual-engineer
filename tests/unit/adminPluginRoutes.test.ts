@@ -453,6 +453,7 @@ describe("Admin API — Plugin & Integration routes", () => {
 
       const tester = vi.fn(async (config: unknown) => {
         expect(config).toEqual({
+          authMode: "oauth",
           sessionToken: "secret-token",
         });
 

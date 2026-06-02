@@ -153,6 +153,7 @@ describe("Orchestrator", () => {
       getChangesForTask: vi.fn().mockResolvedValue([]),
       saveChangePerRepository: vi.fn().mockResolvedValue(undefined),
       updateChangePerRepositoryStatus: vi.fn().mockResolvedValue(undefined),
+      orphanExcessChanges: vi.fn().mockResolvedValue(0),
       findTaskByExternalChangeId: vi.fn().mockResolvedValue(null),
       getActiveRepoSetLock: vi.fn().mockResolvedValue(null),
       ...overrides,
@@ -502,7 +503,10 @@ describe("Orchestrator", () => {
     await (orchestrator as any).checkReviewProgress(task);
 
     expect(stateStore.markCommentProcessed).toHaveBeenCalledWith(task.taskId, comment.id);
-    expect(runAgentCycle).toHaveBeenCalledWith(expect.objectContaining({ state: "RETRY_CYCLE" }));
+    expect(runAgentCycle).toHaveBeenCalledWith(
+      expect.objectContaining({ state: "RETRY_CYCLE" }),
+      expect.arrayContaining([expect.objectContaining({ source: "gerrit_review" })]),
+    );
     expect(gerritConnector.resolveComments).toHaveBeenCalledWith(task.externalChangeId, [comment]);
   });
 
@@ -573,7 +577,10 @@ describe("Orchestrator", () => {
     await (orchestrator as any).checkReviewProgress(task);
 
     expect(stateStore.markCommentProcessed).toHaveBeenCalledWith(task.taskId, comment.id);
-    expect(runAgentCycle).toHaveBeenCalledWith(expect.objectContaining({ state: "RETRY_CYCLE" }));
+    expect(runAgentCycle).toHaveBeenCalledWith(
+      expect.objectContaining({ state: "RETRY_CYCLE" }),
+      expect.arrayContaining([expect.objectContaining({ source: "gerrit_review" })]),
+    );
     expect(stateStore.getTask).toHaveBeenCalledWith(task.taskId);
     expect(gerritConnector.resolveComments).not.toHaveBeenCalled();
   });
@@ -1027,5 +1034,68 @@ describe("Orchestrator", () => {
       expect(runAgentCycle).not.toHaveBeenCalled();
       expect(handleFatalError).not.toHaveBeenCalled();
     });
+  });
+
+  // ─── Gerrit feedback loop regression ──────────────────────────────────────
+
+  it("passes Gerrit review comments into runAgentCycle as reviewFeedback", async () => {
+    const task = makeTask({ state: "IN_REVIEW", cycleCount: 1 });
+    const comment = makeComment({ message: "Refactor this method", filePath: "src/foo.ts", line: 10 });
+
+    const processedIds = new Set<string>();
+    const stateStore = makeStateStore({
+      getProcessedCommentIds: vi.fn().mockImplementation(() => Promise.resolve(new Set(processedIds))),
+      markCommentProcessed: vi.fn().mockImplementation((_, id) => {
+        processedIds.add(id);
+        return Promise.resolve();
+      }),
+      getTask: vi.fn().mockResolvedValue(makeTask({ state: "IN_REVIEW", cycleCount: 2 })),
+      transition: vi.fn()
+        .mockResolvedValueOnce(makeTask({ state: "FEEDBACK_PROCESSING", cycleCount: 1 }))
+        .mockResolvedValueOnce(makeTask({ state: "RETRY_CYCLE", cycleCount: 1 })),
+    });
+    const gerritConnector = makeGerritConnector({
+      getUnresolvedComments: vi.fn().mockResolvedValue([comment]),
+      resolveComments: vi.fn().mockResolvedValue(undefined),
+    });
+    const orchestrator = makeOrchestrator({ stateStore, gerritConnector });
+    const runAgentCycle = vi.spyOn(orchestrator as any, "runAgentCycle").mockResolvedValue(undefined);
+
+    await (orchestrator as any).checkReviewProgress(task);
+
+    // runAgentCycle must receive the feedback items as second argument — not an empty array
+    expect(runAgentCycle).toHaveBeenCalledWith(
+      expect.objectContaining({ state: "RETRY_CYCLE" }),
+      expect.arrayContaining([
+        expect.objectContaining({
+          source: "gerrit_review",
+          content: expect.stringContaining("Refactor this method"),
+        }),
+      ])
+    );
+  });
+
+  it("buildPriorFeedback merges review feedback with cycle logs", async () => {
+    const task = makeTask({ state: "AGENT_RUNNING" });
+    const stateStore = makeStateStore({
+      getAgentCycles: vi.fn().mockResolvedValue([
+        {
+          id: 1,
+          taskId: task.taskId,
+          cycleNumber: 1,
+          result: { status: "failed", modifiedFiles: [], summary: "bad", agentLogs: "lint error", metadata: {} },
+          validationResult: null,
+          createdAt: new Date(),
+        },
+      ]),
+    });
+    const orchestrator = makeOrchestrator({ stateStore });
+    const reviewFeedback = [{ source: "gerrit_review" as const, content: "Please fix naming" }];
+
+    const result = await (orchestrator as any).buildPriorFeedback(task, reviewFeedback);
+
+    expect(result).toHaveLength(2);
+    expect(result[0]).toMatchObject({ source: "lint_failure", content: "lint error" });
+    expect(result[1]).toMatchObject({ source: "gerrit_review", content: "Please fix naming" });
   });
 });

@@ -10,12 +10,14 @@
 import type { Integration, IntegrationBindingContext } from "../interfaces.js";
 import type { VcsConnector } from "./vcsConnector.js";
 import { getPluginDescriptor } from "../plugins/registry.js";
+import { decryptToken } from "../utils/encryption.js";
 
 /**
  * Parse and fully validate an integration's configJson through its descriptor's
  * Zod schema. Defaults (e.g. sshKeyPath, gitAuthorName) are applied here.
+ * Password fields are decrypted when adminAuthSecret is provided.
  */
-function parseConfig(integration: Integration): Record<string, unknown> {
+function parseConfig(integration: Integration, adminAuthSecret?: string): Record<string, unknown> {
   let rawJson: unknown;
   try {
     rawJson = JSON.parse(integration.configJson);
@@ -37,7 +39,23 @@ function parseConfig(integration: Integration): Record<string, unknown> {
     );
   }
 
-  return result.data as Record<string, unknown>;
+  const cfg = result.data as Record<string, unknown>;
+
+  // Decrypt password fields so connectors always receive plaintext credentials.
+  if (adminAuthSecret !== undefined) {
+    for (const field of descriptor.requiredFields.filter((f) => f.type === "password")) {
+      const raw = cfg[field.key];
+      if (typeof raw === "string" && raw.length > 0) {
+        try {
+          cfg[field.key] = decryptToken(raw, adminAuthSecret);
+        } catch {
+          // Already plaintext — leave as-is
+        }
+      }
+    }
+  }
+
+  return cfg;
 }
 
 /**
@@ -49,7 +67,7 @@ function parseConfig(integration: Integration): Record<string, unknown> {
  * @throws {Error} If the integration type has no `createVcsConnector` hook
  * @throws {Error} If configJson is not valid JSON or fails schema validation
  */
-export function createVcsConnectorForIntegration(integration: Integration, context?: IntegrationBindingContext): VcsConnector {
+export function createVcsConnectorForIntegration(integration: Integration, context?: IntegrationBindingContext, adminAuthSecret?: string): VcsConnector {
   const descriptor = getPluginDescriptor(integration.type);
 
   if (!descriptor?.createVcsConnector) {
@@ -58,7 +76,7 @@ export function createVcsConnectorForIntegration(integration: Integration, conte
     );
   }
 
-  const cfg = parseConfig(integration);
+  const cfg = parseConfig(integration, adminAuthSecret);
   return descriptor.createVcsConnector(cfg, integration, context);
 }
 
@@ -69,6 +87,8 @@ export function createVcsConnectorForIntegration(integration: Integration, conte
 export class VcsConnectorFactory {
   private readonly cache = new Map<string, VcsConnector>();
 
+  constructor(private readonly options: { adminAuthSecret?: string | undefined } = {}) {}
+
   /**
    * Get (or create) a VcsConnector for the given Integration.
    * The connector is cached by integration id. If the integration config changes,
@@ -76,13 +96,13 @@ export class VcsConnectorFactory {
    */
   getConnector(integration: Integration, context?: IntegrationBindingContext): VcsConnector {
     if (context !== undefined) {
-      return createVcsConnectorForIntegration(integration, context);
+      return createVcsConnectorForIntegration(integration, context, this.options.adminAuthSecret);
     }
 
     const cached = this.cache.get(integration.id);
     if (cached) return cached;
 
-    const connector = createVcsConnectorForIntegration(integration);
+    const connector = createVcsConnectorForIntegration(integration, undefined, this.options.adminAuthSecret);
     this.cache.set(integration.id, connector);
     return connector;
   }

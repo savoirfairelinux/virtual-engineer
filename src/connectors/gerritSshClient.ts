@@ -15,12 +15,6 @@ import { getLogger } from "../logger.js";
 const log = getLogger("gerrit-ssh-client");
 const execFileAsync = promisify(execFile);
 
-type ExecFileWithInput = (
-  file: string,
-  args: string[],
-  options: { timeout: number; input: string }
-) => Promise<{ stdout: string; stderr: string }>;
-
 const SSH_TIMEOUT_MS = 30_000;
 const SSH_REVIEW_TIMEOUT_MS = 120_000;
 
@@ -41,12 +35,23 @@ export type SshChangeInfo = z.infer<typeof SshChangeInfoSchema>;
 
 export const SshCommentSchema = z.object({
   timestamp: z.number(),
-  reviewer: z.object({ name: z.string().optional(), email: z.string().optional() }).optional(),
+  reviewer: z.object({
+    name: z.string().optional(),
+    email: z.string().optional(),
+    username: z.string().optional(),
+  }).optional(),
   message: z.string(),
   line: z.number().optional(),
   file: z.string().optional(),
   patchSet: z.number().optional(),
 });
+
+/** Strip the "Patch Set N: [label]\n\n" preamble Gerrit prepends to every review message. */
+export const PREAMBLE_RE = /^Patch Set \d+:[^\n]*\n\n/;
+/** Strip a leading "(N comments)\n" summary line left after preamble removal. */
+export const COMMENTS_SUMMARY_RE = /^\(\d+ comments?\)\n*/;
+/** Gerrit system messages that never contain user-authored content. */
+const SYSTEM_RE = /^(?:Uploaded patch set \d|Change has been successfully|Abandoned$|Restored$|Created a revert|Removed .+ by )/;
 
 // ─── NDJSON parser ────────────────────────────────────────────────────────────
 
@@ -115,20 +120,6 @@ export class GerritSshClient {
   /** Execute a Gerrit SSH command and return stdout. */
   async query(args: string[]): Promise<string> {
     const { stdout } = await execFileAsync("ssh", this.buildArgs(args), { timeout: SSH_TIMEOUT_MS });
-    return stdout;
-  }
-
-  /**
-   * Execute a Gerrit SSH command with JSON piped to stdin, return stdout.
-   * Used for `gerrit review` commands that read review input from stdin.
-   */
-  async queryWithInput(input: string, args: string[]): Promise<string> {
-    const execFileWithInput = execFileAsync as unknown as ExecFileWithInput;
-    const { stdout } = await execFileWithInput(
-      "ssh",
-      this.buildArgs(args),
-      { input, timeout: SSH_TIMEOUT_MS }
-    );
     return stdout;
   }
 
@@ -203,12 +194,16 @@ export class GerritSshClient {
 
   /**
    * Fetch review comments for a Gerrit change via SSH.
-   * SSH does not expose a resolved flag, so every returned comment is treated
-   * as unresolved/actionable.
    *
-   * @param sincePatchset When provided, comments from earlier patchsets are excluded.
+   * Reads both `currentPatchSet.comments` (inline file comments, when present)
+   * and top-level `comments` (change messages posted via Reply). SSH does not
+   * expose a resolved flag, so every returned comment is treated as
+   * unresolved/actionable.
+   *
+   * @param sincePatchset When provided, inline comments from earlier patchsets are excluded.
+   * @param sshUser When provided, change messages authored by this Gerrit user are excluded (prevents VE from treating its own replies as feedback).
    */
-  async getUnresolvedComments(changeId: string, sincePatchset?: number): Promise<ReviewComment[]> {
+  async getUnresolvedComments(changeId: string, sincePatchset?: number, sshUser?: string): Promise<ReviewComment[]> {
     const out = await this.query([
       "query", "--format", "JSON", "--current-patch-set", "--comments", `change:${changeId}`,
     ]);
@@ -218,23 +213,52 @@ export class GerritSshClient {
     const result: ReviewComment[] = [];
     for (const row of rows) {
       const record = row as Record<string, unknown>;
+
+      // ── Inline file comments from currentPatchSet ─────────────────────────
       const rawComments = (record["currentPatchSet"] as Record<string, unknown> | undefined)?.["comments"];
-      if (!Array.isArray(rawComments)) continue;
-      for (const raw of rawComments) {
-        const comment = SshCommentSchema.safeParse(raw);
-        if (!comment.success) continue;
-        const patchset = comment.data.patchSet ?? 0;
-        if (sincePatchset !== undefined && patchset < sincePatchset) continue;
-        result.push({
-          id: `ssh-${comment.data.timestamp}-${patchset}`,
-          author: comment.data.reviewer?.email ?? comment.data.reviewer?.name ?? "unknown",
-          message: comment.data.message,
-          filePath: comment.data.file && comment.data.file !== "/PATCHSET_LEVEL" ? comment.data.file : undefined,
-          line: comment.data.line,
-          unresolved: true,
-          patchset,
-          updatedAt: new Date(comment.data.timestamp * 1000),
-        });
+      if (Array.isArray(rawComments)) {
+        for (const raw of rawComments) {
+          const comment = SshCommentSchema.safeParse(raw);
+          if (!comment.success) continue;
+          const patchset = comment.data.patchSet ?? 0;
+          if (sincePatchset !== undefined && patchset < sincePatchset) continue;
+          result.push({
+            id: `ssh-${comment.data.timestamp}-${patchset}`,
+            author: comment.data.reviewer?.email ?? comment.data.reviewer?.name ?? "unknown",
+            message: comment.data.message,
+            filePath: comment.data.file && comment.data.file !== "/PATCHSET_LEVEL" ? comment.data.file : undefined,
+            line: comment.data.line,
+            unresolved: true,
+            patchset,
+            updatedAt: new Date(comment.data.timestamp * 1000),
+          });
+        }
+      }
+
+      // ── Top-level change messages (review postings via Reply) ─────────────
+      const rawMessages = record["comments"];
+      if (Array.isArray(rawMessages)) {
+        for (const raw of rawMessages) {
+          const msg = SshCommentSchema.safeParse(raw);
+          if (!msg.success) continue;
+          if (sshUser && msg.data.reviewer?.username === sshUser) continue;
+          if (SYSTEM_RE.test(msg.data.message)) continue;
+          const body = msg.data.message
+            .replace(PREAMBLE_RE, "")
+            .replace(COMMENTS_SUMMARY_RE, "")
+            .trim();
+          if (!body) continue;
+          result.push({
+            id: `gerrit-msg-${msg.data.timestamp}`,
+            author: msg.data.reviewer?.email ?? msg.data.reviewer?.name ?? "unknown",
+            message: body,
+            filePath: undefined,
+            line: undefined,
+            unresolved: true,
+            patchset: 0,
+            updatedAt: new Date(msg.data.timestamp * 1000),
+          });
+        }
       }
     }
 
@@ -264,7 +288,7 @@ export class GerritSshClient {
     }
 
     const reviewInput = JSON.stringify({ comments: commentsByFile });
-    await this.queryWithInput(reviewInput, ["review", "--json", `${info.number},${patchset}`]);
+    await this.reviewJson(`${info.number},${patchset}`, reviewInput);
     log.info({ changeId, count: comments.length }, "resolved Gerrit comment threads via SSH review --json");
   }
 }

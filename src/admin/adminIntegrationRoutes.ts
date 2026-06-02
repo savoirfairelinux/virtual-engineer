@@ -8,7 +8,7 @@ import type { PluginManager } from "../plugins/pluginManager.js";
 import { getAllPluginDescriptors, getPluginCapabilities, getPluginDescriptor } from "../plugins/registry.js";
 import { decryptToken } from "../utils/encryption.js";
 import { normalizeGitLabBaseUrl } from "../utils/gitlabAuth.js";
-import { exchangeForSessionToken, fetchAvailableModels } from "../agents/copilotModelsService.js";
+import { exchangeForSessionToken, fetchAvailableModels, fetchAvailableModelsWithPat } from "../agents/copilotModelsService.js";
 import { writeJson, readBody, asRecord, toIsoTimestamp, SECRET_MASK, parseConfig, formatZodError } from "./adminRouteUtils.js";
 
 const log = getLogger("admin-integrations");
@@ -517,7 +517,7 @@ export async function handleIntegrationRoutes(
 
     const descriptor = getPluginDescriptor(integration.type);
 
-    // ── Copilot: model discovery via OAuth token ──────────────────────────
+    // ── Copilot: model discovery (OAuth or PAT) ─────────────────────────
     if (integration.type === "copilot") {
       let parsedCopilotConfig: Record<string, unknown>;
       try {
@@ -526,19 +526,37 @@ export async function handleIntegrationRoutes(
         writeJson(response, 500, { error: "Stored integration config is not valid JSON" });
         return true;
       }
-      const encryptedToken = typeof parsedCopilotConfig["sessionToken"] === "string"
-        ? parsedCopilotConfig["sessionToken"]
-        : undefined;
-      if (!encryptedToken) {
-        writeJson(response, 400, {
-          error: "No GitHub OAuth token stored. Connect via OAuth first (AI Adapters → Connect with GitHub).",
-        });
-        return true;
+      const authMode = typeof parsedCopilotConfig["authMode"] === "string"
+        ? parsedCopilotConfig["authMode"]
+        : "oauth";
+      let githubToken: string;
+      if (authMode === "pat") {
+        const pat = typeof parsedCopilotConfig["token"] === "string" ? parsedCopilotConfig["token"].trim() : "";
+        if (!pat) {
+          writeJson(response, 400, { error: "No PAT configured. Set a token in the integration config." });
+          return true;
+        }
+        githubToken = pat;
+      } else {
+        const encryptedToken = typeof parsedCopilotConfig["sessionToken"] === "string"
+          ? parsedCopilotConfig["sessionToken"]
+          : undefined;
+        if (!encryptedToken) {
+          writeJson(response, 400, {
+            error: "No GitHub OAuth token stored. Connect via OAuth first (AI Adapters → Connect with GitHub).",
+          });
+          return true;
+        }
+        githubToken = decryptToken(encryptedToken, deps.adminAuthSecret);
       }
       try {
-        const oauthToken = decryptToken(encryptedToken, deps.adminAuthSecret);
-        const sessionToken = await exchangeForSessionToken(oauthToken);
-        const models = await fetchAvailableModels(sessionToken);
+        // PAT: use the @github/copilot-sdk CopilotClient which spawns the
+        //      bundled CLI and handles its own token exchange internally.
+        //      OAuth: exchange the user token for a short-lived session token
+        //      first, then call the Copilot models HTTP API.
+        const models = authMode === "pat"
+          ? await fetchAvailableModelsWithPat(githubToken)
+          : await fetchAvailableModels(await exchangeForSessionToken(githubToken));
         const discoveredAt = new Date().toISOString();
         const json = JSON.stringify({ models, discoveredAt });
         await deps.integrationStore.setIntegrationDiscoveredResources(id, json);
@@ -568,8 +586,22 @@ export async function handleIntegrationRoutes(
       return true;
     }
 
+    // Decrypt password fields so discoverResources receives real credentials.
+    // Tokens are stored as encrypted (or plain:-prefixed) strings via encryptToken.
+    const decryptedConfig = { ...(parsedConfig as Record<string, unknown>) };
+    for (const field of descriptor.requiredFields.filter((f) => f.type === "password")) {
+      const raw = decryptedConfig[field.key];
+      if (typeof raw === "string" && raw.length > 0) {
+        try {
+          decryptedConfig[field.key] = decryptToken(raw, deps.adminAuthSecret);
+        } catch {
+          // Not a managed encrypted token (e.g. a raw PAT) — leave as-is.
+        }
+      }
+    }
+
     try {
-      const snapshot = await descriptor.discoverResources(parsedConfig);
+      const snapshot = await descriptor.discoverResources(decryptedConfig);
       const json = JSON.stringify(snapshot);
       await deps.integrationStore.setIntegrationDiscoveredResources(id, json);
       writeJson(response, 200, {

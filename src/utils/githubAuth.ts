@@ -323,6 +323,23 @@ function parseNextLink(link: string | null): string | null {
 
 // ─── Error ────────────────────────────────────────────────────────────────────
 
+/**
+ * List all repositories accessible to the authenticated user (token-scoped).
+ * Uses `GET /user/repos` which returns personal repos + org repos the user has
+ * access to — no owner parameter needed.
+ */
+export async function listGitHubRepositoriesForUser(
+  token: string,
+  apiBaseUrl: string
+): Promise<GitHubDiscoveredRepo[]> {
+  const url = `${apiBaseUrl}/user/repos?per_page=100&sort=full_name&affiliation=owner,collaborator,organization_member`;
+  const result = await fetchPaginated(token, url);
+  if (!result.ok) {
+    throw new GitHubAuthError(`List user repositories failed (${result.status}): ${result.body}`);
+  }
+  return result.repos;
+}
+
 export class GitHubAuthError extends Error {
   constructor(message: string) {
     super(message);

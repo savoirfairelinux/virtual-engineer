@@ -105,7 +105,21 @@ export function buildCodegenUserPrompt(
   }
 
   const repoMap = context.agentSession.repositoryMap;
-  if (repoMap && repoMap.submodules.length > 0) {
+  if (!repoMap || repoMap.submodules.length === 0) {
+    // Single-repository workspace: explicit commit reminder.
+    lines.push("### CRITICAL: Commit Requirement");
+    lines.push("After making all your changes you **MUST** commit them using `bash`. Every commit needs BOTH a Conventional-Commits subject AND a body (2–4 sentences explaining what changed and why):");
+    lines.push("```");
+    lines.push("git -C /workspace add -A");
+    lines.push("git -C /workspace commit -m 'type(scope): short imperative subject' \\");
+    lines.push("                          -m 'Body: explain WHAT changed and WHY in 2-4 sentences. Reference the ticket goal.'");
+    lines.push("```");
+    lines.push("The commit message **must** follow Conventional Commits format (`type(scope): subject`). Replace `type` with one of: `feat`, `fix`, `refactor`, `test`, `chore`, `docs`, `perf`, `ci`, `build`.");
+    lines.push("A subject-only commit is treated as missing — the body is mandatory.");
+    lines.push("If validation tools (lint, typecheck) are not available in the workspace, **skip them** and commit anyway.");
+    lines.push("Do NOT end your session without committing — uncommitted file changes are discarded.");
+    lines.push("");
+  } else {
     lines.push("### CRITICAL: Multi-Repository One-Shot Requirement");
     lines.push("**You MUST implement ALL changes in ALL repositories before writing your final response.**");
     lines.push("Do NOT stop after one repo. Do NOT say \"let me know\" or \"Next:\". This session ends when you respond — there is no next turn.");
@@ -123,10 +137,10 @@ export function buildCodegenUserPrompt(
     lines.push(`- \`grep -rn 'pattern' /workspace/${repoMap.submodules[0]!.localPath}/src/\``);
     lines.push("Use `edit` or `create` with the full path to modify files in any repository.");
     lines.push("");
-    lines.push("**Committing**: You MUST `git add -A && git commit` **separately in each repository you modify**.");
+    lines.push("**Committing**: You MUST `git add -A && git commit` **separately in each repository you modify**. Every commit needs BOTH a Conventional-Commits subject AND a body (2–4 sentences explaining what changed and why) — a subject-only commit is treated as missing.");
     lines.push("Use `bash` for commits in sub-repositories:");
     for (const sub of repoMap.submodules) {
-      lines.push(`- \`cd /workspace/${sub.localPath} && git add -A && git commit -m 'feat(scope): description'\``);
+      lines.push(`- \`cd /workspace/${sub.localPath} && git add -A && git commit -m 'feat(scope): subject' -m 'Body explaining what changed and why.'\``);
     }
     lines.push("For the root repository, commit from `/workspace/`.");
     lines.push("");
@@ -136,7 +150,12 @@ export function buildCodegenUserPrompt(
 
   lines.push("### Instructions");
   lines.push(instructionsPromptContent);
-  lines.push(`This is cycle number ${context.cycleNumber}. The workspace is a FRESH CLONE of the repository — it contains NO previous changes, no prior work. You must implement the full task from scratch.`);
+  lines.push("");
+  if (context.cycleNumber > 1) {
+    lines.push(`This is cycle number ${context.cycleNumber}. The repository has been checked out at your previous patchset — your prior work is already in the workspace. Address the review feedback above by amending existing commits or adding new commits as needed. Do NOT start from scratch.`);
+  } else {
+    lines.push(`This is cycle number ${context.cycleNumber}. The workspace is a FRESH CLONE of the repository — it contains NO previous changes, no prior work. You must implement the full task from scratch.`);
+  }
   if (context.ticketUrl) lines.push(`Ticket URL: ${context.ticketUrl}`);
   lines.push("");
 
@@ -219,6 +238,12 @@ export class CopilotAdapter implements AgentAdapter {
       MAX_COMMITS_PER_CYCLE: String(this.config.maxCommitsPerCycle ?? 10),
       ...(session.repositoryMap !== undefined
         ? { REPOSITORY_MAP_JSON: JSON.stringify(session.repositoryMap) }
+        : {}),
+      ...(session.existingChangeId !== undefined
+        ? { ROOT_CHANGE_ID: session.existingChangeId }
+        : {}),
+      ...(session.perRepoChangeIds !== undefined
+        ? { PER_REPO_CHANGE_IDS_JSON: JSON.stringify(session.perRepoChangeIds) }
         : {}),
     };
 

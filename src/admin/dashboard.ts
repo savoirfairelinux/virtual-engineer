@@ -1826,6 +1826,28 @@ function renderDetailMetaGrid(task) {
   const reviewCard = reviewUrl
     ? '<div class="meta-card"><div class="meta-label">Review</div><div class="meta-value"><a href="' + esc(reviewUrl) + '" target="_blank" rel="noopener noreferrer" class="badge-link">' + esc(displayChangeId || reviewUrl) + '</a></div></div>'
     : metaCard('Review', displayChangeId || '\u2014');
+  // Render per-commit change rows when there are multiple commits
+  const activeChanges = changes.filter(function(c) { return c.status !== 'ORPHANED' && c.status !== 'NO_CHANGE'; });
+  let commitCards = '';
+  if (activeChanges.length > 1) {
+    commitCards = '<div class="meta-card" style="grid-column:1/-1"><div class="meta-label">Commits (' + activeChanges.length + ')</div><div class="meta-value" style="font-size:0.82rem;line-height:1.6">';
+    const sorted = activeChanges.slice().sort(function(a, b) {
+      if (a.repoKey !== b.repoKey) return a.repoKey < b.repoKey ? -1 : 1;
+      return (a.commitIndex || 0) - (b.commitIndex || 0);
+    });
+    for (var ci = 0; ci < sorted.length; ci++) {
+      var ch = sorted[ci];
+      var idShort = (ch.changeId || '').slice(0, 12);
+      var rowLabel = esc(ch.repoKey) + ' #' + (ch.commitIndex || 0);
+      var statusBadge = '<span class="badge" data-tone="' + (ch.status === 'MERGED' ? 'ok' : ch.status === 'ABANDONED' ? 'err' : 'warn') + '" style="font-size:0.7rem;padding:1px 5px;margin-left:4px">' + esc(ch.status) + '</span>';
+      if (ch.reviewUrl) {
+        commitCards += '<div>' + rowLabel + ': <a href="' + esc(ch.reviewUrl) + '" target="_blank" rel="noopener noreferrer" class="badge-link">' + esc(idShort) + '</a>' + statusBadge + '</div>';
+      } else {
+        commitCards += '<div>' + rowLabel + ': ' + esc(idShort || '\u2014') + statusBadge + '</div>';
+      }
+    }
+    commitCards += '</div></div>';
+  }
   return '<div class="meta-grid">' +
     metaCard('Type',        typeLabel) +
     (!isReview ? metaCard('Ticket ID',   String(task.displayId || task.ticketId)) : '') +
@@ -1836,6 +1858,7 @@ function renderDetailMetaGrid(task) {
     metaCard('Created',     fmt(task.createdAt)) +
     reviewCard +
     metaCard('Failure',     task.failureReason || '\u2014') +
+    commitCards +
   '</div>';
 }
 
@@ -2147,7 +2170,8 @@ function renderCodegenCycle(c) {
 
 function formatTaskOrigin(task) {
   const raw = String(task.ticketSourceLabel || 'ticket');
-  const sourceType = raw.split(':')[0].toUpperCase();
+  const sourceKind = raw.split(':')[0];
+  const sourceType = sourceKind === 'github-pull-request' ? 'GITHUB-PR' : sourceKind.toUpperCase();
   return sourceType + ': #' + (task.displayId || task.ticketId);
 }
 
@@ -3119,6 +3143,16 @@ function renderExpandedIntegrationDetails(selected) {
             );
           }
           if (f.dependsOn) {
+            if (f.dependsOn.allOf) {
+              const isVisible = f.dependsOn.allOf.every((c) =>
+                String(selected.config?.[c.field] ?? '') === c.value
+              );
+              return (
+                '<div data-depends-on-all="' + esc(JSON.stringify(f.dependsOn.allOf)) + '"' +
+                  (isVisible ? '' : ' style="display:none"') +
+                '>' + fieldHtml + '</div>'
+              );
+            }
             // Determine initial visibility based on the controlling field's current value
             const controllerValue =
               (f.dependsOn.field === 'gerritMode' && selected.type === 'gerrit')
@@ -3515,6 +3549,26 @@ function bindDependsOnHandlers(root) {
     }
     selectEl.addEventListener('change', applyVisibility);
     applyVisibility();
+  });
+  // Handle multi-condition (allOf) elements: visible only when ALL conditions are met.
+  root.querySelectorAll('[data-depends-on-all]').forEach(function(depEl) {
+    var raw = depEl.getAttribute('data-depends-on-all');
+    if (!raw) return;
+    var conditions;
+    try { conditions = JSON.parse(raw); } catch (_e) { return; }
+    var searchRoot = depEl.closest('[data-role="modal-fields"], [data-role="drawer-edit-form"]') || root;
+    function applyAllVisibility() {
+      var allMet = conditions.every(function(c) {
+        var sel = searchRoot.querySelector('[data-select-field="' + c.field + '"]');
+        return sel ? sel.value === c.value : false;
+      });
+      depEl.style.display = allMet ? '' : 'none';
+    }
+    conditions.forEach(function(c) {
+      var sel = searchRoot.querySelector('[data-select-field="' + c.field + '"]');
+      if (sel) sel.addEventListener('change', applyAllVisibility);
+    });
+    applyAllVisibility();
   });
 }
 
@@ -3960,11 +4014,11 @@ function initDeviceOAuthButton(container, oauth, opts) {
       } catch (pollErr) {
         clearInterval(ticker);
         statusDiv.textContent = 'Auth failed: ' + (pollErr instanceof Error ? pollErr.message : String(pollErr));
-        oauthBtn.textContent = oauth.connectLabel;
+        oauthBtn.textContent = hiddenInput.value ? oauth.reconnectLabel : oauth.connectLabel;
       }
     } catch (err) {
       statusDiv.textContent = 'Error: ' + (err instanceof Error ? err.message : String(err));
-      oauthBtn.textContent = oauth.connectLabel;
+      oauthBtn.textContent = hiddenInput.value ? oauth.reconnectLabel : oauth.connectLabel;
     } finally {
       oauthBtn.disabled = false;
     }
@@ -4024,6 +4078,9 @@ async function showAddIntegrationModal(section) {
           '<input data-field="' + esc(f.key) + '" type="' + (f.type === 'password' ? 'password' : f.type === 'number' ? 'number' : 'text') + '" placeholder="' + esc(f.placeholder || '') + '" />';
       }
       if (f.dependsOn) {
+        if (f.dependsOn.allOf) {
+          return '<div data-depends-on-all="' + esc(JSON.stringify(f.dependsOn.allOf)) + '" style="display:none">' + fieldHtml + '</div>';
+        }
         return '<div data-depends-on-field="' + esc(f.dependsOn.field) + '" data-depends-on-value="' + esc(f.dependsOn.value) + '" style="display:none">' + fieldHtml + '</div>';
       }
       return fieldHtml;
@@ -5121,6 +5178,8 @@ function showAgentModal(existing) {
       '<select data-f="systemPromptId">' + promptOptions + '</select>' +
       '<label>Instructions Prompt</label>' +
       '<select data-f="instructionsPromptId">' + promptOptions + '</select>' +
+      '<label>Feedback Instructions Prompt <span style="font-weight:normal;color:#888;font-size:0.85em">(coding only, used on retry cycles)</span></label>' +
+      '<select data-f="feedbackInstructionsPromptId"><option value="">— same as Instructions Prompt —</option>' + promptOptions + '</select>' +
       '<label>Max Concurrent</label>' +
       '<input type="number" min="1" data-f="maxConcurrent" value="' + esc(String((existing && existing.maxConcurrent) || 1)) + '" />' +
       '<div class="modal-actions">' +
@@ -5251,6 +5310,10 @@ function showAgentModal(existing) {
     var sel2 = overlay.querySelector('[data-f="instructionsPromptId"]');
     if (sel2) sel2.value = existing.instructionsPromptId;
   }
+  if (existing && existing.feedbackInstructionsPromptId) {
+    var sel3 = overlay.querySelector('[data-f="feedbackInstructionsPromptId"]');
+    if (sel3) sel3.value = existing.feedbackInstructionsPromptId;
+  }
   overlay.querySelector('[data-role="cancel"]').addEventListener('click', function() { handleModalBackgroundClick(overlay); });
   overlay.addEventListener('click', (e) => { if (e.target === overlay) handleModalBackgroundClick(overlay); });
   overlay.querySelector('[data-role="save"]').addEventListener('click', async function() {
@@ -5272,6 +5335,7 @@ function showAgentModal(existing) {
       integrationId: get('integrationId') || null,
       systemPromptId: get('systemPromptId') || null,
       instructionsPromptId: get('instructionsPromptId') || null,
+      feedbackInstructionsPromptId: get('feedbackInstructionsPromptId') || null,
       maxConcurrent: Number(get('maxConcurrent')) || 1,
     };
     try {
@@ -5628,7 +5692,8 @@ function showProjectModal(existing) {
     if (items.length === 0) {
       return '<option value="">— no repos match —</option>';
     }
-    return items.map((r) => '<option value="' + esc(r.key) + '" data-clone="' + esc(r.cloneUrlSsh || r.cloneUrlHttp || '') + '" data-branch="' + esc(r.defaultBranch || 'main') + '">' + esc(r.key) + '</option>').join('');
+    return '<option value="">— select a repository —</option>' +
+      items.map((r) => '<option value="' + esc(r.key) + '" data-clone="' + esc(r.cloneUrlSsh || r.cloneUrlHttp || '') + '" data-branch="' + esc(r.defaultBranch || 'main') + '">' + esc(r.key) + '</option>').join('');
   }
 
   let pushTargets = (existing && existing.type === 'coding' && existing.pushTargets) ? existing.pushTargets.map((p) => ({
@@ -5714,11 +5779,20 @@ function showProjectModal(existing) {
           pushTargets[idx].repoKey = repoSel.value;
           const opt = repoSel.selectedOptions[0];
           if (opt) {
-            const cloneUrl = opt.getAttribute('data-clone') || pushTargets[idx].cloneUrl;
-            const branch = opt.getAttribute('data-branch') || pushTargets[idx].targetBranch;
-            pushTargets[idx].cloneUrl = cloneUrl;
-            pushTargets[idx].targetBranch = branch || pushTargets[idx].targetBranch || 'main';
-            renderPushTargetsSection();
+            // Auto-fill clone URL and branch from the option's data attributes
+            // without re-rendering the entire section.
+            const dc = opt.getAttribute('data-clone');
+            const db = opt.getAttribute('data-branch');
+            if (dc) {
+              pushTargets[idx].cloneUrl = dc;
+              const ci = row.querySelector('[data-pf="cloneUrl"]');
+              if (ci) ci.value = dc;
+            }
+            if (db) {
+              pushTargets[idx].targetBranch = db;
+              const bi = row.querySelector('[data-pf="targetBranch"]');
+              if (bi) bi.value = db;
+            }
           }
         });
       }
@@ -5763,6 +5837,21 @@ function showProjectModal(existing) {
         renderPushTargetsSection();
       });
     }
+    // Auto-discover on open: for each push target that has an integration selected
+    // but repos not yet fetched, trigger discovery and refresh only the repo dropdown.
+    pushTargets.forEach((pt, idx) => {
+      if (!pt.integrationId) return;
+      ensureDiscovered(pt.integrationId).then(() => {
+        const row = ptSection.querySelector('.pt-row[data-idx="' + idx + '"]');
+        if (!row) return;
+        const repoSel2 = row.querySelector('[data-pf="repoKey"]');
+        if (repoSel2) {
+          const cur = pt.repoKey || '';
+          repoSel2.innerHTML = repoOptions(pt.integrationId, pushTargetSearch[idx] || '');
+          if (cur && Array.from(repoSel2.options).some((o) => o.value === cur)) repoSel2.value = cur;
+        }
+      }).catch(() => {});
+    });
   }
 
   function renderTicketSourceSection() {
@@ -5781,9 +5870,10 @@ function showProjectModal(existing) {
     integSel.value = integId;
     integSel.addEventListener('change', async () => {
       const newId = integSel.value;
+      ticketProjectSearch = '';
       await ensureDiscovered(newId);
-      const projSel = tsSection.querySelector('[data-tsf="ticketProjectKey"]');
-      projSel.innerHTML = ticketProjectOptions(newId, ticketProjectSearch);
+      const projSel2 = tsSection.querySelector('[data-tsf="ticketProjectKey"]');
+      if (projSel2) projSel2.innerHTML = ticketProjectOptions(newId, ticketProjectSearch);
     });
     const searchInp = tsSection.querySelector('[data-tsf-search="ticketProjectKey"]');
     searchInp.addEventListener('input', () => {
@@ -5797,6 +5887,17 @@ function showProjectModal(existing) {
     });
     const projSel = tsSection.querySelector('[data-tsf="ticketProjectKey"]');
     if (ts.ticketProjectKey) projSel.value = ts.ticketProjectKey;
+    // Auto-discover on open when an integration is already selected but not yet discovered.
+    if (integId) {
+      ensureDiscovered(integId).then(() => {
+        const ps = tsSection.querySelector('[data-tsf="ticketProjectKey"]');
+        if (ps) {
+          const cur = ps.value;
+          ps.innerHTML = ticketProjectOptions(integId, ticketProjectSearch);
+          if (cur && Array.from(ps.options).some((o) => o.value === cur)) ps.value = cur;
+        }
+      }).catch(() => {});
+    }
   }
 
   function renderReviewTargetSection() {

@@ -3,6 +3,7 @@ import { randomUUID, createHash } from "crypto";
 import { formatTicketFooter, hasTicketFooter } from "../utils/ticketFooterFormatter.js";
 import type {
   AgentAdapter,
+  CommitDescriptor,
   FeedbackItem,
   ExternalChangeId,
   IntegrationBindingContext,
@@ -29,10 +30,49 @@ import { normalizeAgentResult, getModifiedFileCount } from "../agents/agentEvent
 import type { VcsConnector } from "../vcs/vcsConnector.js";
 import { NO_REVIEW_SYSTEM } from "../vcs/vcsConnector.js";
 import { VcsConnectorFactory } from "../vcs/vcsFactory.js";
+import { decryptToken, encryptToken } from "../utils/encryption.js";
+import { redactUrls } from "../utils/redactUrl.js";
 import type { ConcurrencyTracker } from "./concurrencyTracker.js";
 import { resolveAgentConfig } from "../state/stateStore.js";
 
 const log = getLogger("orchestrator");
+
+/** Integration types that clone via HTTPS and need a token injected into the clone URL. */
+const HTTPS_VCS_TYPES = new Set(["github-pull-request", "gitlab-merge-request"]);
+
+/**
+ * Build an authenticated HTTPS clone URL for GitHub/GitLab push targets so the
+ * agent container can run `git clone` without interactive credential prompts.
+ * Returns undefined for non-HTTPS integrations (Gerrit) or on any error.
+ */
+function buildAuthenticatedCloneUrl(
+  rawCloneUrl: string,
+  integrationType: string,
+  encryptedToken: unknown,
+  adminAuthSecret: string | undefined
+): string | undefined {
+  if (!HTTPS_VCS_TYPES.has(integrationType)) return undefined;
+  if (typeof encryptedToken !== "string" || !encryptedToken) return undefined;
+  let token: string;
+  try {
+    token = decryptToken(encryptedToken, adminAuthSecret);
+  } catch (err) {
+    log.warn({ integrationType, cloneUrl: rawCloneUrl, err }, "failed to decrypt token for authenticated clone URL");
+    return undefined;
+  }
+  const usernamePrefix = integrationType === "github-pull-request" ? "x-access-token" : "oauth2";
+  try {
+    const normalised = rawCloneUrl.startsWith("git@")
+      ? rawCloneUrl.replace(/^git@([^:]+):(.+?)(?:\.git)?$/, "https://$1/$2.git")
+      : rawCloneUrl;
+    const parsed = new URL(normalised);
+    parsed.username = usernamePrefix;
+    parsed.password = token;
+    return parsed.toString();
+  } catch {
+    return undefined;
+  }
+}
 
 export interface OrchestratorConfig {
   maxAgentCycles: number;
@@ -41,6 +81,7 @@ export interface OrchestratorConfig {
   gitAuthorName: string;
   gitAuthorEmail: string;
   agentContainerImage: string;
+  adminAuthSecret?: string | undefined;
 }
 
 /**
@@ -83,7 +124,7 @@ export class Orchestrator {
   private readonly feedbackProcessor: FeedbackProcessor;
   private config: OrchestratorConfig;
   private vcsConnector: VcsConnector | undefined;
-  private readonly vcsConnectorFactory = new VcsConnectorFactory();
+  private readonly vcsConnectorFactory: VcsConnectorFactory;
   private projectMode: ProjectModeDeps | null = null;
   constructor(
     config: OrchestratorConfig,
@@ -94,6 +135,7 @@ export class Orchestrator {
     projectMode?: ProjectModeDeps
   ) {
     this.config = config;
+    this.vcsConnectorFactory = new VcsConnectorFactory({ adminAuthSecret: config.adminAuthSecret });
     this.vcsConnector = vcsConnector;
     this.feedbackProcessor = new FeedbackProcessor(stateStore);
     this.projectMode = projectMode ?? null;
@@ -222,7 +264,7 @@ export class Orchestrator {
    * apply the appropriate lifecycle step. All three are no-ops for unknown or terminal tasks;
    * the polling loop remains the source-of-truth fallback.
    */
-  async triggerFeedbackForChange(integrationId: string, externalChangeId: string): Promise<void> {
+  async triggerFeedbackForChange(integrationId: string, externalChangeId: string, streamComments?: import("../interfaces.js").ReviewComment[]): Promise<void> {
     const task = await this.stateStore.findTaskByExternalChangeId(integrationId, externalChangeId);
     if (!task) {
       log.info({ integrationId, externalChangeId }, "webhook feedback: no task for change (likely a human-authored change, ignoring)");
@@ -237,7 +279,7 @@ export class Orchestrator {
       return;
     }
     log.info({ taskId: task.taskId, integrationId, externalChangeId }, "webhook feedback: triggering review progress check");
-    await this.checkReviewProgress(task);
+    await this.checkReviewProgress(task, externalChangeId, streamComments);
   }
 
   /** Webhook handler: mark the associated task's change as merged and close its ticket. */
@@ -440,7 +482,7 @@ export class Orchestrator {
   }
 
   /** Execute one agent cycle: build context, invoke the agent, push changes, and advance state. */
-  private async runAgentCycle(task: Task): Promise<void> {
+  private async runAgentCycle(task: Task, reviewFeedback: FeedbackItem[] = []): Promise<void> {
     let cycleSlot: { projectId: import("../interfaces.js").ProjectId; agentId: import("../interfaces.js").AgentId } | null = null;
     const projectIdForCycle = task.projectId ?? (await this.stateStore.getTask(task.taskId))?.projectId ?? null;
     if (!task.projectId && projectIdForCycle) {
@@ -463,7 +505,7 @@ export class Orchestrator {
 
     const ticketConnector = await this.resolveTicketConnector(task);
     const ticket = await ticketConnector.getTicket(task.ticketId);
-    const priorFeedback = await this.buildPriorFeedback(task);
+    const priorFeedback = await this.buildPriorFeedback(task, reviewFeedback);
     const cycleNumber = await this.stateStore.incrementCycle(task.taskId);
 
     log.info({ taskId: task.taskId, cycleNumber }, "starting agent cycle");
@@ -503,7 +545,7 @@ export class Orchestrator {
       // Also enrich any push target whose sshKeyPath is null with the key from its linked connector.
       let cloneKnownHostsPath: string | undefined;
       try {
-        const rootConnectorForClone = await this.resolveVcsConnectorForTarget(root.integrationId, { repoKey: root.repoKey });
+        const rootConnectorForClone = await this.resolveVcsConnectorForTarget(root.integrationId, { repoKey: root.repoKey, targetBranch: root.targetBranch });
         cloneKnownHostsPath = rootConnectorForClone.sshKnownHostsPath ?? undefined;
       } catch {
         // Non-fatal — clone proceeds without strict host key checking
@@ -511,9 +553,20 @@ export class Orchestrator {
 
       const enrichedPushTargets = await Promise.all(
         projectPushTargets.map(async (pt) => {
+          try {
+            // Inject authenticated HTTPS clone URL for GitHub/GitLab targets
+            const integration = await (this.integrationStore ?? (this.stateStore as unknown as IntegrationStore)).getIntegration(pt.integrationId);
+            if (integration) {
+              const cfg = JSON.parse(integration.configJson) as Record<string, unknown>;
+              const authUrl = buildAuthenticatedCloneUrl(pt.cloneUrl, integration.type, cfg["token"], this.config.adminAuthSecret);
+              if (authUrl !== undefined) return { ...pt, cloneUrl: authUrl };
+            }
+          } catch {
+            // Non-fatal — fall through to sshKeyPath enrichment
+          }
           if (pt.sshKeyPath !== null) return pt;
           try {
-            const connector = await this.resolveVcsConnectorForTarget(pt.integrationId, { repoKey: pt.repoKey });
+            const connector = await this.resolveVcsConnectorForTarget(pt.integrationId, { repoKey: pt.repoKey, targetBranch: pt.targetBranch });
             const fallback = connector.sshKeyPath ?? undefined;
             return fallback !== undefined ? { ...pt, sshKeyPath: fallback } : pt;
           } catch {
@@ -545,10 +598,12 @@ export class Orchestrator {
           "no model resolved from project agent config — container will use adapter default (DEFAULT_COPILOT_MODEL)"
         );
       }
-      const rootConnector = await this.resolveVcsConnectorForTarget(root.integrationId, { repoKey: root.repoKey });
+      const rootConnector = await this.resolveVcsConnectorForTarget(root.integrationId, { repoKey: root.repoKey, targetBranch: root.targetBranch });
       const pushRef = await this.resolvePushRef(task, () =>
         rootConnector.buildPushSpec(cloneBranch, task.taskId, ticket.subject).ref
       );
+
+      await this.checkoutPriorPatchset(task, cycleNumber, handle, root, rootConnector);
       const context: TaskContext = {
         taskId: task.taskId,
         ticketTitle: ticket.subject,
@@ -566,7 +621,11 @@ export class Orchestrator {
         ...(projectAgentRuntime
           ? {
               systemPromptId: projectAgentRuntime.config.systemPromptId,
-              instructionsPromptId: projectAgentRuntime.config.instructionsPromptId,
+              // On retry cycles, swap in the feedback-specific instructions prompt when one is configured.
+              instructionsPromptId:
+                cycleNumber > 1 && projectAgentRuntime.config.feedbackInstructionsPromptId
+                  ? projectAgentRuntime.config.feedbackInstructionsPromptId
+                  : projectAgentRuntime.config.instructionsPromptId,
             }
           : {}),
         agentSession: {
@@ -574,11 +633,34 @@ export class Orchestrator {
           repoCloneUrl: cloneUrl,
           pushRef,
           existingChangeId: rootConnector.useChangeIdContinuity ? (task.externalChangeId ?? undefined) : undefined,
-          perRepoChangeIds: await (async (): Promise<Record<string, string> | undefined> => {
+          perRepoChangeIds: await (async (): Promise<Record<string, string | Record<string, string>> | undefined> => {
             if (!rootConnector.useChangeIdContinuity) return undefined;
             const storedChanges = await this.stateStore.getChangesForTask(task.taskId);
             if (storedChanges.length === 0) return undefined;
-            return Object.fromEntries(storedChanges.map((c) => [c.repoKey, c.changeId]));
+            // Pass ALL commit Change-Ids per repo, keyed by commit index.
+            // Single-commit repos produce a flat string (backward compat).
+            // Multi-commit repos produce { "0": "I...", "1": "I..." }.
+            const validChanges = storedChanges.filter(
+              (c) => c.status !== "NO_CHANGE" && c.changeId !== ""
+            );
+            if (validChanges.length === 0) return undefined;
+            const byRepo = new Map<string, Map<number, string>>();
+            for (const c of validChanges) {
+              let m = byRepo.get(c.repoKey);
+              if (!m) { m = new Map(); byRepo.set(c.repoKey, m); }
+              m.set(c.commitIndex, c.changeId);
+            }
+            const result: Record<string, string | Record<string, string>> = {};
+            for (const [repoKey, indexMap] of byRepo) {
+              if (indexMap.size === 1 && indexMap.has(0)) {
+                result[repoKey] = indexMap.get(0)!;
+              } else {
+                const obj: Record<string, string> = {};
+                for (const [idx, cid] of indexMap) obj[String(idx)] = cid;
+                result[repoKey] = obj;
+              }
+            }
+            return Object.keys(result).length > 0 ? result : undefined;
           })(),
           gitAuthorName: this.config.gitAuthorName,
           gitAuthorEmail: this.config.gitAuthorEmail,
@@ -610,6 +692,22 @@ export class Orchestrator {
       );
       clearTaskEventBuffer(task.taskId);
 
+      // Guard: the task may have been abandoned/deleted while the agent was
+      // running (e.g. webhook change-abandoned + admin delete).  Re-read from
+      // the database before writing any child rows to avoid FK violations.
+      const freshTask = await this.stateStore.getTask(task.taskId);
+      if (!freshTask) {
+        log.warn({ taskId: task.taskId }, "task no longer exists after agent cycle; discarding result");
+        return;
+      }
+      if (TERMINAL_STATES.has(freshTask.state)) {
+        log.warn(
+          { taskId: task.taskId, state: freshTask.state },
+          "task reached terminal state while agent was running; discarding result"
+        );
+        return;
+      }
+
       if (normalizedResult.status === "no_change") {
         await this.stateStore.saveAgentCycle(task.taskId, cycleNumber, normalizedResult);
         await this.handleNoChange(task, cycleNumber);
@@ -639,7 +737,7 @@ export class Orchestrator {
       // For Gerrit: agent commits[] are pre-validated; each becomes a separate change (topic-grouped).
       // For GitLab: all N commits land in one MR via force-push.
       if (task.projectId && this.projectMode && projectPushTargets.length > 0) {
-        await this.pushProjectChanges(task, handle, projectPushTargets, commitMessage, context.ticketUrl ?? "");
+        await this.pushProjectChanges(task, handle, projectPushTargets, commitMessage, context.ticketUrl ?? "", agentResult.commits);
       }
 
       task = await this.stateStore.transition(task.taskId, "IN_REVIEW");
@@ -657,6 +755,71 @@ export class Orchestrator {
       if (cycleSlot && this.projectMode?.concurrencyTracker) {
         this.projectMode.concurrencyTracker.release(cycleSlot.projectId, cycleSlot.agentId);
       }
+    }
+  }
+
+  /**
+   * On retry cycles with Change-Id continuity, fetch the existing Gerrit patchset into
+   * the volume so the agent starts from its previous work rather than a blank slate.
+   *
+   * For multi-commit pushes, the primary change (commitIndex 0) is checked out as
+   * detached HEAD, then commits 1..N are cherry-picked on top in order.
+   * Cherry-pick failures for secondary commits are non-fatal (logged and skipped).
+   */
+  private async checkoutPriorPatchset(
+    task: Task,
+    cycleNumber: number,
+    handle: WorkspaceHandle,
+    root: ProjectPushTargetRecord,
+    rootConnector: VcsConnector
+  ): Promise<void> {
+    if (cycleNumber <= 1 || !rootConnector.useChangeIdContinuity) return;
+    if (!rootConnector.resolvePatchsetOptions) return;
+    if (!this.workspaceRunner.applyGerritPatchset) return;
+
+    const storedChanges = await this.stateStore.getChangesForTask(task.taskId);
+    const rootChanges = storedChanges
+      .filter((c) => c.repoKey === root.repoKey && c.status !== "NO_CHANGE" && c.changeId !== "")
+      .sort((a, b) => a.commitIndex - b.commitIndex);
+
+    const primaryChange = rootChanges.find((c) => c.commitIndex === 0);
+    if (!primaryChange) return;
+
+    try {
+      const patchsetOpts = await rootConnector.resolvePatchsetOptions(primaryChange.changeId);
+      await this.workspaceRunner.applyGerritPatchset(handle, patchsetOpts);
+      log.info(
+        { taskId: task.taskId, changeId: primaryChange.changeId, changeNumber: patchsetOpts.changeNumber, patchset: patchsetOpts.patchset },
+        "checked out existing patchset for retry cycle"
+      );
+
+      // Cherry-pick secondary commits (indices 1..N) on top of the primary.
+      // Each is a separate Gerrit change; resolve its latest patchset and cherry-pick.
+      const secondaryChanges = rootChanges.filter((c) => c.commitIndex > 0);
+      if (secondaryChanges.length > 0 && this.workspaceRunner.cherryPickGerritPatchset) {
+        for (const change of secondaryChanges) {
+          try {
+            const secOpts = await rootConnector.resolvePatchsetOptions!(change.changeId);
+            await this.workspaceRunner.cherryPickGerritPatchset(handle, secOpts);
+            log.info(
+              { taskId: task.taskId, changeId: change.changeId, commitIndex: change.commitIndex, changeNumber: secOpts.changeNumber, patchset: secOpts.patchset },
+              "cherry-picked secondary patchset for retry cycle"
+            );
+          } catch (err) {
+            log.warn(
+              { taskId: task.taskId, changeId: change.changeId, commitIndex: change.commitIndex, err },
+              "failed to cherry-pick secondary patchset; agent will see partial history"
+            );
+            // Stop cherry-picking further commits — they likely depend on this one.
+            break;
+          }
+        }
+      }
+    } catch (err) {
+      log.warn(
+        { taskId: task.taskId, changeId: primaryChange.changeId, err },
+        "failed to checkout patchset for retry; agent will work from fresh clone"
+      );
     }
   }
 
@@ -683,7 +846,7 @@ export class Orchestrator {
     const resolvedConfig = resolveAgentConfig(agent, project);
 
     // When the agent's modelConfigJson carries no sessionToken, fall back to
-    // the Copilot integration's own configJson.sessionToken (set by OAuth flow).
+    // the Copilot integration's own configJson (OAuth sessionToken or PAT token).
     let encryptedSessionToken = resolvedConfig.encryptedSessionToken;
     if (!encryptedSessionToken) {
       const integration = this.projectMode.pluginManager.getActiveIntegrationById?.(agent.integrationId);
@@ -691,7 +854,14 @@ export class Orchestrator {
         try {
           const integCfg = JSON.parse(integration.configJson) as Record<string, unknown>;
           const t = integCfg["sessionToken"];
-          if (typeof t === "string" && t) encryptedSessionToken = t;
+          if (typeof t === "string" && t) {
+            encryptedSessionToken = t;
+          } else if (integCfg["authMode"] === "pat") {
+            const pat = integCfg["token"];
+            if (typeof pat === "string" && pat) {
+              encryptedSessionToken = encryptToken(pat, this.config.adminAuthSecret);
+            }
+          }
         } catch { /* ignore */ }
       }
     }
@@ -705,11 +875,11 @@ export class Orchestrator {
   }
 
   /** Poll review system status; advance to MERGED, trigger a retry cycle, or stay IN_REVIEW. */
-  private async checkReviewProgress(task: Task): Promise<void> {
+  private async checkReviewProgress(task: Task, streamChangeId?: string, streamComments?: import("../interfaces.js").ReviewComment[]): Promise<void> {
     // Check for per-repository changes first (multi-repo path)
     const perRepoChanges = await this.stateStore.getChangesForTask(task.taskId);
     if (perRepoChanges.length > 0) {
-      await this.checkMultiRepoReviewProgress(task, perRepoChanges);
+      await this.checkMultiRepoReviewProgress(task, perRepoChanges, streamChangeId, streamComments);
       return;
     }
 
@@ -743,12 +913,21 @@ export class Orchestrator {
     }
 
     const comments = await reviewConnector.getUnresolvedComments(changeId);
+    // Also collect any failed CI check runs so the agent can fix them.
+    const ciComments = reviewConnector.getCICheckFailures
+      ? await reviewConnector.getCICheckFailures(changeId).catch((err: unknown) => {
+          log.warn({ taskId: task.taskId, changeId, err }, "failed to fetch CI check failures (non-fatal)");
+          return [] as import("../interfaces.js").ReviewComment[];
+        })
+      : [];
+    const baseComments = ciComments.length > 0 ? [...comments, ...ciComments] : comments;
+    const allComments = streamComments && streamComments.length > 0 ? [...streamComments, ...baseComments] : baseComments;
 
     task = await this.stateStore.transition(task.taskId, "FEEDBACK_PROCESSING");
     const [feedbackItems, processedComments] = await this.feedbackProcessor.extractNewFeedback(
       task.taskId,
       changeId,
-      comments
+      allComments
     );
 
     if (feedbackItems.length === 0) {
@@ -767,7 +946,7 @@ export class Orchestrator {
       "actionable feedback found, starting retry cycle"
     );
     task = await this.stateStore.transition(task.taskId, "RETRY_CYCLE");
-    await this.runAgentCycle(task);
+    await this.runAgentCycle(task, feedbackItems);
 
     const updatedTask = await this.stateStore.getTask(task.taskId);
     if (updatedTask?.state !== "IN_REVIEW") {
@@ -791,7 +970,9 @@ export class Orchestrator {
    */
   private async checkMultiRepoReviewProgress(
     task: Task,
-    perRepoChanges: import("../interfaces.js").ChangePerRepository[]
+    perRepoChanges: import("../interfaces.js").ChangePerRepository[],
+    streamChangeId?: string,
+    streamComments?: import("../interfaces.js").ReviewComment[]
   ): Promise<void> {
     const activeChanges = perRepoChanges.filter((c) => c.status !== "NO_CHANGE" && c.status !== "ORPHANED");
     if (activeChanges.length === 0) {
@@ -873,10 +1054,35 @@ export class Orchestrator {
                 change.changeId as ExternalChangeId
               );
             }
+            // Collect CI check failures via the fallback review connector (which may implement getCICheckFailures).
+            let ciComments: import("../interfaces.js").ReviewComment[] = [];
+            try {
+              const ciSource = await getFallbackReviewConnector();
+              if (ciSource.getCICheckFailures) {
+                ciComments = await ciSource.getCICheckFailures(change.changeId as ExternalChangeId);
+              }
+            } catch (ciErr) {
+              log.warn(
+                { taskId: task.taskId, repoKey: change.repoKey, err: ciErr },
+                "failed to fetch CI check failures for repo (non-fatal)"
+              );
+            }
+            // Prepend stream-event comment when it belongs to this specific change.
+            // Required because Gerrit's `gerrit query --comments` only returns inline file
+            // comments, not top-level change messages — the stream event payload is the
+            // only reliable source of general review feedback for Gerrit.
+            const extraComments = (streamChangeId === change.changeId && streamComments && streamComments.length > 0)
+              ? streamComments
+              : [];
+            const allComments = [
+              ...(extraComments.length > 0 ? extraComments : []),
+              ...comments,
+              ...ciComments,
+            ];
             const [feedback, processed] = await this.feedbackProcessor.extractNewFeedback(
               task.taskId,
               change.changeId as ExternalChangeId,
-              comments
+              allComments
             );
             // Tag feedback with repoKey for agent context
             for (const item of feedback) {
@@ -944,7 +1150,7 @@ export class Orchestrator {
       "multi-repo feedback found, starting retry cycle"
     );
     task = await this.stateStore.transition(task.taskId, "RETRY_CYCLE");
-    await this.runAgentCycle(task);
+    await this.runAgentCycle(task, allFeedback);
 
     const updatedTask = await this.stateStore.getTask(task.taskId);
     if (updatedTask?.state !== "IN_REVIEW") {
@@ -1011,9 +1217,14 @@ export class Orchestrator {
     handle: WorkspaceHandle,
     pushTargets: import("../interfaces.js").ProjectPushTargetRecord[],
     fallbackCommitMessage: string,
-    ticketUrl: string
+    ticketUrl: string,
+    agentCommits: CommitDescriptor[] | undefined = undefined
   ): Promise<void> {
     const sorted = [...pushTargets].sort((a, b) => a.commitOrder - b.commitOrder);
+
+    let dirtyCount = 0;
+    let successCount = 0;
+    const pushErrors: Array<{ repoKey: string; err: unknown }> = [];
 
     for (const target of sorted) {
       // Check whether there are local commits ahead of origin that need pushing.
@@ -1045,12 +1256,14 @@ export class Orchestrator {
           "NO_CHANGE",
           target.integrationId,
           NO_REVIEW_SYSTEM,
-          target.commitOrder,
+          0,
           ""
         );
         log.info({ taskId: task.taskId, repoKey: target.repoKey }, "project push target had no changes");
         continue;
       }
+
+      dirtyCount++;
 
       // Connector is only needed when the repo has changes to push.
       let vcsConnector: VcsConnector;
@@ -1061,6 +1274,7 @@ export class Orchestrator {
           { taskId: task.taskId, repoKey: target.repoKey, integrationId: target.integrationId, err },
           "no VCS connector for push target; skipping"
         );
+        pushErrors.push({ repoKey: target.repoKey, err });
         continue;
       }
       const { ref: computedRef, topic } = vcsConnector.buildPushSpec(
@@ -1083,27 +1297,103 @@ export class Orchestrator {
           pushResult = await vcsConnector.push(handle.hostWorkspacePath, ref, commitMsg, undefined, volumeOpts);
         }
 
-        await this.stateStore.saveChangePerRepository(
-          task.taskId,
-          target.repoKey,
-          pushResult.changeId,
-          pushResult.url,
-          pushResult.status || "OPEN",
-          target.integrationId,
-          reviewSystemLabel,
-          target.commitOrder,
-          subjectHash
-        );
-        log.info(
-          { taskId: task.taskId, repoKey: target.repoKey, changeId: pushResult.changeId, url: pushResult.url },
-          "pushed project target"
-        );
+        // Use Change-Ids from agent commits when available — this is the source of truth
+        // for multi-commit pushes where pushResult.changeId only reflects HEAD (the last commit).
+        // The agent already injected deterministic Change-Ids into each commit before pushing.
+        const repoCommits = (agentCommits ?? []).filter((c) => c.repoKey === target.repoKey);
+
+        // Derive URL for a given Change-Id by replacing the head Change-Id in pushResult.url.
+        // Falls back to pushResult.url when changeId is absent or replacement is not possible.
+        const makeChangeUrl = (targetChangeId: string): string => {
+          if (!pushResult.url) return "";
+          if (pushResult.changeId && pushResult.url.includes(pushResult.changeId)) {
+            return pushResult.url.replace(pushResult.changeId, targetChangeId);
+          }
+          return pushResult.url;
+        };
+
+        if (repoCommits.length > 1) {
+          // Multi-commit: save each commit at its own index so the retry cycle can
+          // retrieve commit[0]'s Change-Id and reuse it to produce a new patchset.
+          for (let i = 0; i < repoCommits.length; i++) {
+            const commit = repoCommits[i]!;
+            const cHash = createHash("sha1").update(commit.subject).digest("hex");
+            await this.stateStore.saveChangePerRepository(
+              task.taskId,
+              target.repoKey,
+              commit.changeId,
+              i === 0 ? makeChangeUrl(commit.changeId) : "",
+              pushResult.status || "OPEN",
+              target.integrationId,
+              reviewSystemLabel,
+              i,
+              cHash
+            );
+          }
+          log.info(
+            { taskId: task.taskId, repoKey: target.repoKey, commitCount: repoCommits.length, firstChangeId: repoCommits[0]?.changeId },
+            "pushed project target (multi-commit)"
+          );
+          // Orphan stale rows from prior cycles that had more commits than this one
+          const orphaned = await this.stateStore.orphanExcessChanges(task.taskId, target.repoKey, repoCommits.length - 1);
+          if (orphaned > 0) {
+            log.info(
+              { taskId: task.taskId, repoKey: target.repoKey, orphanedCount: orphaned },
+              "marked excess change_per_repository rows as ORPHANED"
+            );
+          }
+        } else {
+          // Single-commit: prefer the agent's own Change-Id (commit[0]) over the VCS
+          // push result which may differ when the connector re-reads from HEAD.
+          const primaryChangeId = repoCommits[0]?.changeId || pushResult.changeId;
+          await this.stateStore.saveChangePerRepository(
+            task.taskId,
+            target.repoKey,
+            primaryChangeId,
+            makeChangeUrl(primaryChangeId),
+            pushResult.status || "OPEN",
+            target.integrationId,
+            reviewSystemLabel,
+            0,
+            subjectHash
+          );
+          log.info(
+            { taskId: task.taskId, repoKey: target.repoKey, changeId: primaryChangeId, url: makeChangeUrl(primaryChangeId) },
+            "pushed project target"
+          );
+          // Orphan stale rows from prior cycles that had more commits
+          const orphaned = await this.stateStore.orphanExcessChanges(task.taskId, target.repoKey, 0);
+          if (orphaned > 0) {
+            log.info(
+              { taskId: task.taskId, repoKey: target.repoKey, orphanedCount: orphaned },
+              "marked excess change_per_repository rows as ORPHANED"
+            );
+          }
+        }
+        successCount++;
       } catch (err) {
         log.error(
           { taskId: task.taskId, repoKey: target.repoKey, err },
           "project push target push failed; continuing with remaining targets"
         );
+        pushErrors.push({ repoKey: target.repoKey, err });
       }
+    }
+
+    // If every dirty target failed, surface the errors so the task transitions
+    // to FAILED (visible in the UI) instead of silently advancing to IN_REVIEW.
+    if (dirtyCount > 0 && successCount === 0 && pushErrors.length > 0) {
+      const detail = pushErrors
+        .map((e) => `${e.repoKey}: ${e.err instanceof Error ? e.err.message : String(e.err)}`)
+        .join("; ");
+      throw new Error(`All push targets failed: ${detail}`);
+    }
+
+    if (pushErrors.length > 0) {
+      log.warn(
+        { taskId: task.taskId, successCount, failedCount: pushErrors.length },
+        "some push targets failed but at least one succeeded; proceeding to IN_REVIEW"
+      );
     }
   }
 
@@ -1177,6 +1467,14 @@ export class Orchestrator {
 
   /** Handle unexpected errors by persisting them and transitioning the task to FAILED. */
   private async handleFatalError(task: Task, err: unknown): Promise<void> {
+    // If the task no longer exists (deleted externally while running), there is
+    // nothing to persist — log and bail out.
+    const current = await this.stateStore.getTask(task.taskId).catch(() => null);
+    if (!current) {
+      log.warn({ taskId: task.taskId, err }, "task no longer exists; cannot record fatal error");
+      return;
+    }
+
     if (this.isTicketNotFoundError(err)) {
       const reason = `Ticket ${task.ticketId} (${task.ticketSourceLabel}) was not found`;
       log.warn({ taskId: task.taskId, ticketId: task.ticketId, err }, "ticket missing during task execution");
@@ -1192,11 +1490,12 @@ export class Orchestrator {
     }
 
     const reason = err instanceof Error ? err.message : String(err);
-    log.error({ taskId: task.taskId, err: reason }, "fatal task error");
+    const safeReason = redactUrls(reason);
+    log.error({ taskId: task.taskId, err: safeReason }, "fatal task error");
     try {
-      await this.stateStore.setFailureReason(task.taskId, reason);
-      await this.stateStore.transition(task.taskId, "FAILED", { error: reason });
-      await this.notifyTicketFailure(task, `Virtual Engineer encountered an error: ${reason}`);
+      await this.stateStore.setFailureReason(task.taskId, safeReason);
+      await this.stateStore.transition(task.taskId, "FAILED", { error: safeReason });
+      await this.notifyTicketFailure(task, `Virtual Engineer encountered an error: ${safeReason}`);
     } catch (innerErr) {
       log.error({ taskId: task.taskId, innerErr }, "failed to record fatal error in state store");
     }
@@ -1241,7 +1540,7 @@ export class Orchestrator {
   }
 
   /** Collect prior agent-cycle failure logs as feedback items for the next cycle. */
-  private async buildPriorFeedback(task: Task): Promise<FeedbackItem[]> {
+  private async buildPriorFeedback(task: Task, reviewFeedback: FeedbackItem[] = []): Promise<FeedbackItem[]> {
     const cycles = await this.stateStore.getAgentCycles(task.taskId);
     const feedback: FeedbackItem[] = [];
     const lastCycle = cycles.at(-1);
@@ -1251,7 +1550,7 @@ export class Orchestrator {
         content: lastCycle.result.agentLogs.slice(0, 3000),
       });
     }
-    return feedback;
+    return [...feedback, ...reviewFeedback];
   }
 
   /**

@@ -5,7 +5,9 @@ import { getLogger } from "../logger.js";
 const log = getLogger("copilot-connection-validator");
 
 export interface CopilotConnectionValidationConfig {
+  authMode?: string | undefined;
   sessionToken?: string | undefined;
+  token?: string | undefined;
   model?: string | undefined;
 }
 
@@ -16,13 +18,27 @@ export interface CopilotConnectionValidatorDependencies {
 
 const GITHUB_API_USER_URL = "https://api.github.com/user";
 
-/** Test a stored Copilot session token by calling the GitHub user API endpoint. */
+/** Test a stored Copilot session token or PAT by calling the GitHub user API endpoint. */
 export async function validateCopilotConnection(
   config: CopilotConnectionValidationConfig,
   dependencies: CopilotConnectionValidatorDependencies = {}
 ): Promise<ConnectionTestResult> {
-  log.info({ type: "copilot" }, "testing Copilot connection");
+  log.info({ type: "copilot", authMode: config.authMode ?? "oauth" }, "testing Copilot connection");
 
+  // ── PAT mode: use the plaintext token directly ────────────────────────────
+  if (config.authMode === "pat") {
+    const pat = config.token?.trim();
+    if (!pat) {
+      return {
+        success: false,
+        error: "No Personal Access Token provided. Paste your GitHub PAT in the token field.",
+        models: [],
+      };
+    }
+    return callGitHubUserApi(pat, dependencies);
+  }
+
+  // ── OAuth mode (default): decrypt the stored session token ────────────────
   const encrypted = config.sessionToken?.trim();
   if (!encrypted) {
     return {
@@ -45,6 +61,14 @@ export async function validateCopilotConnection(
     };
   }
 
+  return callGitHubUserApi(token, dependencies);
+}
+
+/** Shared helper: call GitHub /user API with the given bearer token. */
+async function callGitHubUserApi(
+  token: string,
+  dependencies: CopilotConnectionValidatorDependencies
+): Promise<ConnectionTestResult> {
   const fetchFn = dependencies.fetch ?? globalThis.fetch;
   try {
     const response = await fetchFn(GITHUB_API_USER_URL, {

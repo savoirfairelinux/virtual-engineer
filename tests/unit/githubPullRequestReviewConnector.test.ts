@@ -31,7 +31,7 @@ const githubPr = {
   state: "open",
   html_url: "https://github.com/octocat/hello-world/pull/42",
   title: "Add feature X",
-  head: { ref: "feature-x" },
+  head: { ref: "feature-x", sha: "abc123def456" },
   merged: false,
 };
 
@@ -127,6 +127,10 @@ describe("GitHubPullRequestReviewConnector", () => {
 
   describe("getUnresolvedComments", () => {
     it("merges review comments and issue comments, filtering VE's own", async () => {
+      // First call: PR reviews — return a CHANGES_REQUESTED review to unblock comment fetch
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse([{ state: "CHANGES_REQUESTED", user: { login: "reviewer" } }])
+      );
       // Review comments
       fetchMock.mockResolvedValueOnce(jsonResponse(reviewComments));
       // Issue comments
@@ -150,12 +154,51 @@ describe("GitHubPullRequestReviewConnector", () => {
       expect(general?.filePath).toBeUndefined();
     });
 
-    it("returns empty array when no comments", async () => {
-      fetchMock.mockResolvedValueOnce(jsonResponse([]));
+    it("returns empty array when no CHANGES_REQUESTED review exists", async () => {
+      // PR reviews: only APPROVED — no CHANGES_REQUESTED
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse([{ state: "APPROVED", user: { login: "reviewer" } }])
+      );
+      // No further calls expected (early return)
+
+      const comments = await makeConnector().getUnresolvedComments(makeExternalChangeId("42"));
+      expect(comments).toHaveLength(0);
+      // Only one fetch call made (the reviews endpoint)
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("returns empty array when no reviews at all", async () => {
       fetchMock.mockResolvedValueOnce(jsonResponse([]));
 
       const comments = await makeConnector().getUnresolvedComments(makeExternalChangeId("42"));
       expect(comments).toHaveLength(0);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("ignores CHANGES_REQUESTED submitted by VE itself", async () => {
+      // VE submitted CHANGES_REQUESTED on its own PR (unusual but should be ignored)
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse([{ state: "CHANGES_REQUESTED", user: { login: "ve-bot" } }])
+      );
+
+      const comments = await makeConnector().getUnresolvedComments(makeExternalChangeId("42"));
+      expect(comments).toHaveLength(0);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("proceeds when at least one non-VE reviewer has CHANGES_REQUESTED", async () => {
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse([
+          { state: "APPROVED", user: { login: "alice" } },
+          { state: "CHANGES_REQUESTED", user: { login: "bob" } },
+        ])
+      );
+      fetchMock.mockResolvedValueOnce(jsonResponse([])); // review comments
+      fetchMock.mockResolvedValueOnce(jsonResponse([])); // issue comments
+
+      const comments = await makeConnector().getUnresolvedComments(makeExternalChangeId("42"));
+      expect(comments).toHaveLength(0); // no actual comments, but proceeds past gate
+      expect(fetchMock).toHaveBeenCalledTimes(3); // reviews + review comments + issue comments
     });
   });
 
@@ -287,6 +330,277 @@ describe("GitHubPullRequestReviewConnector", () => {
       const err = new GitHubPrApiError(403, "https://api.github.com/repos/x/y/pulls", "Forbidden");
       expect(err.message).toContain("403");
       expect(err.name).toBe("GitHubPrApiError");
+    });
+  });
+
+  // ─── getOpenReviewAssignments ─────────────────────────────────────────────
+
+  describe("getOpenReviewAssignments", () => {
+    it("returns PRs where VE is a requested reviewer", async () => {
+      const openPrs = [
+        {
+          number: 10,
+          title: "Add feature",
+          html_url: "https://github.com/octocat/hello-world/pull/10",
+          state: "open",
+          requested_reviewers: [{ login: "ve-bot" }, { login: "other-user" }],
+        },
+        {
+          number: 11,
+          title: "Bug fix",
+          html_url: "https://github.com/octocat/hello-world/pull/11",
+          state: "open",
+          requested_reviewers: [{ login: "other-user" }], // VE not requested
+        },
+      ];
+      fetchMock.mockResolvedValueOnce(jsonResponse(openPrs));
+
+      const connector = makeConnector({ virtualEngineerUserLogin: "ve-bot" });
+      const results = await connector.getOpenReviewAssignments(["octocat/hello-world"]);
+
+      expect(results).toHaveLength(1);
+      expect(results[0]?.changeId).toBe("octocat/hello-world#10");
+      expect(results[0]?.project).toBe("octocat/hello-world");
+      expect(results[0]?.subject).toBe("Add feature");
+    });
+
+    it("returns empty array when VE is not requested on any PR", async () => {
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse([
+          {
+            number: 5,
+            title: "Other PR",
+            html_url: "https://github.com/octocat/hello-world/pull/5",
+            state: "open",
+            requested_reviewers: [{ login: "alice" }],
+          },
+        ])
+      );
+
+      const results = await makeConnector().getOpenReviewAssignments(["octocat/hello-world"]);
+      expect(results).toHaveLength(0);
+    });
+
+    it("resolves login via GET /user when virtualEngineerUserLogin is not configured", async () => {
+      // First call: GET /user to resolve login
+      fetchMock.mockResolvedValueOnce(jsonResponse({ login: "ve-resolved" }));
+      // Second call: PR list
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse([
+          {
+            number: 7,
+            title: "Login resolve test",
+            html_url: "https://github.com/octocat/hello-world/pull/7",
+            state: "open",
+            requested_reviewers: [{ login: "ve-resolved" }],
+          },
+        ])
+      );
+
+      const connector = makeConnector({ virtualEngineerUserLogin: undefined });
+      const results = await connector.getOpenReviewAssignments(["octocat/hello-world"]);
+
+      expect(results).toHaveLength(1);
+      expect(results[0]?.changeId).toBe("octocat/hello-world#7");
+      const [userUrl] = fetchMock.mock.calls[0] as [string];
+      expect(userUrl).toContain("/user");
+    });
+
+    it("caches the resolved login across multiple calls", async () => {
+      fetchMock.mockResolvedValueOnce(jsonResponse({ login: "ve-cached" }));
+      fetchMock.mockResolvedValueOnce(jsonResponse([])); // first repo
+      fetchMock.mockResolvedValueOnce(jsonResponse([])); // second repo
+
+      const connector = makeConnector({ virtualEngineerUserLogin: undefined });
+      await connector.getOpenReviewAssignments(["octocat/repo-a"]);
+      await connector.getOpenReviewAssignments(["octocat/repo-b"]);
+
+      // GET /user called only once across both invocations
+      const userCalls = (fetchMock.mock.calls as [string][]).filter(([url]) => url.endsWith("/user"));
+      expect(userCalls).toHaveLength(1);
+    });
+
+    it("handles multiple repos and combines results", async () => {
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse([
+          {
+            number: 1,
+            title: "PR in repo A",
+            html_url: "https://github.com/octocat/repo-a/pull/1",
+            state: "open",
+            requested_reviewers: [{ login: "ve-bot" }],
+          },
+        ])
+      );
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse([
+          {
+            number: 2,
+            title: "PR in repo B",
+            html_url: "https://github.com/octocat/repo-b/pull/2",
+            state: "open",
+            requested_reviewers: [{ login: "ve-bot" }],
+          },
+        ])
+      );
+
+      const results = await makeConnector().getOpenReviewAssignments(["octocat/repo-a", "octocat/repo-b"]);
+
+      expect(results).toHaveLength(2);
+      expect(results.map((r) => r.changeId)).toEqual(
+        expect.arrayContaining(["octocat/repo-a#1", "octocat/repo-b#2"])
+      );
+    });
+
+    it("returns empty array for repos with no open PRs", async () => {
+      fetchMock.mockResolvedValueOnce(jsonResponse([]));
+
+      const results = await makeConnector().getOpenReviewAssignments(["octocat/empty-repo"]);
+      expect(results).toHaveLength(0);
+    });
+
+    it("paginates when a page returns exactly 100 PRs", async () => {
+      // Generate 100 PRs for page 1 (full page triggers pagination)
+      const page1 = Array.from({ length: 100 }, (_, i) => ({
+        number: i + 1,
+        title: `PR ${i + 1}`,
+        html_url: `https://github.com/octocat/repo/pull/${i + 1}`,
+        state: "open",
+        requested_reviewers: i === 0 ? [{ login: "ve-bot" }] : [],
+      }));
+      // Page 2 has fewer than 100 — last page
+      const page2 = [
+        {
+          number: 101,
+          title: "PR 101",
+          html_url: "https://github.com/octocat/repo/pull/101",
+          state: "open",
+          requested_reviewers: [{ login: "ve-bot" }],
+        },
+      ];
+      fetchMock.mockResolvedValueOnce(jsonResponse(page1));
+      fetchMock.mockResolvedValueOnce(jsonResponse(page2));
+
+      const results = await makeConnector().getOpenReviewAssignments(["octocat/repo"]);
+
+      // Should have fetched 2 pages
+      const pullCalls = (fetchMock.mock.calls as [string][]).filter(([url]) => url.includes("/pulls"));
+      expect(pullCalls).toHaveLength(2);
+      expect(pullCalls[0]![0]).toContain("page=1");
+      expect(pullCalls[1]![0]).toContain("page=2");
+
+      // 2 PRs matched ve-bot
+      expect(results).toHaveLength(2);
+    });
+
+    it("stops paginating at MAX_PAGES (5)", async () => {
+      // All 5 pages return exactly 100 PRs
+      for (let i = 0; i < 5; i++) {
+        const page = Array.from({ length: 100 }, (_, j) => ({
+          number: i * 100 + j + 1,
+          title: `PR ${i * 100 + j + 1}`,
+          html_url: `https://github.com/octocat/repo/pull/${i * 100 + j + 1}`,
+          state: "open",
+          requested_reviewers: [] as Array<{ login: string }>,
+        }));
+        fetchMock.mockResolvedValueOnce(jsonResponse(page));
+      }
+
+      const results = await makeConnector().getOpenReviewAssignments(["octocat/repo"]);
+
+      const pullCalls = (fetchMock.mock.calls as [string][]).filter(([url]) => url.includes("/pulls"));
+      expect(pullCalls).toHaveLength(5); // Capped at 5, not 6
+      expect(results).toHaveLength(0); // None matched ve-bot
+    });
+  });
+
+  // ─── getCICheckFailures ───────────────────────────────────────────────────
+
+  describe("getCICheckFailures", () => {
+    const checkRunsResponse = {
+      check_runs: [
+        {
+          id: 9001,
+          name: "CI / test",
+          conclusion: "failure",
+          status: "completed",
+          html_url: "https://github.com/octocat/hello-world/runs/9001",
+          completed_at: "2026-05-29T10:00:00Z",
+          output: { title: "2 tests failed", summary: "jest failed on foo.test.ts", text: null },
+        },
+        {
+          id: 9002,
+          name: "CI / lint",
+          conclusion: "success",
+          status: "completed",
+          output: { title: null, summary: null, text: null },
+        },
+      ],
+    };
+
+    it("returns ReviewComments for failed check runs", async () => {
+      // 1: PR (head sha)  2: check-runs  3: annotations for run 9001
+      fetchMock.mockResolvedValueOnce(jsonResponse(githubPr));
+      fetchMock.mockResolvedValueOnce(jsonResponse(checkRunsResponse));
+      fetchMock.mockResolvedValueOnce(jsonResponse([])); // no annotations
+
+      const results = await makeConnector().getCICheckFailures(makeExternalChangeId("42"));
+
+      expect(results).toHaveLength(1);
+      const r = results[0]!;
+      expect(r.id).toBe("ci-run-9001");
+      expect(r.author).toBe("github-actions[bot]");
+      expect(r.message).toContain("CI / test");
+      expect(r.message).toContain("failure");
+      expect(r.message).toContain("2 tests failed");
+      expect(r.message).toContain("jest failed on foo.test.ts");
+      expect(r.unresolved).toBe(true);
+    });
+
+    it("includes annotations in the message", async () => {
+      fetchMock.mockResolvedValueOnce(jsonResponse(githubPr));
+      fetchMock.mockResolvedValueOnce(jsonResponse(checkRunsResponse));
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse([
+          { path: "src/foo.ts", start_line: 12, annotation_level: "failure", message: "missing semicolon", title: "Lint error" },
+        ])
+      );
+
+      const results = await makeConnector().getCICheckFailures(makeExternalChangeId("42"));
+
+      expect(results[0]?.message).toContain("src/foo.ts:12");
+      expect(results[0]?.message).toContain("Lint error");
+    });
+
+    it("returns empty array when all checks pass", async () => {
+      const allPass = {
+        check_runs: [
+          { id: 1, name: "build", conclusion: "success", status: "completed", output: {} },
+        ],
+      };
+      fetchMock.mockResolvedValueOnce(jsonResponse(githubPr));
+      fetchMock.mockResolvedValueOnce(jsonResponse(allPass));
+
+      const results = await makeConnector().getCICheckFailures(makeExternalChangeId("42"));
+      expect(results).toHaveLength(0);
+    });
+
+    it("returns empty array and logs warning when check-runs fetch fails", async () => {
+      fetchMock.mockResolvedValueOnce(jsonResponse(githubPr));
+      fetchMock.mockResolvedValueOnce(errorResponse(500, "Internal Server Error"));
+
+      const results = await makeConnector().getCICheckFailures(makeExternalChangeId("42"));
+      expect(results).toHaveLength(0);
+    });
+
+    it("still returns run comment even when annotations fetch fails", async () => {
+      fetchMock.mockResolvedValueOnce(jsonResponse(githubPr));
+      fetchMock.mockResolvedValueOnce(jsonResponse(checkRunsResponse));
+      fetchMock.mockResolvedValueOnce(errorResponse(403, "Forbidden")); // annotations fail
+
+      const results = await makeConnector().getCICheckFailures(makeExternalChangeId("42"));
+      expect(results).toHaveLength(1);
+      expect(results[0]?.message).toContain("CI / test");
     });
   });
 });

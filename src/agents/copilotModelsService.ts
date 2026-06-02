@@ -3,8 +3,15 @@
  *
  * Exchanges an OAuth token for a Copilot session token and fetches the list
  * of available models from the Copilot API. Filters and sorts by capability.
+ *
+ * For PAT (Personal Access Token) authentication, model discovery goes through
+ * the @github/copilot-sdk CopilotClient, which spawns the bundled CLI process
+ * and passes the PAT via COPILOT_SDK_AUTH_TOKEN. The CLI handles its own token
+ * exchange internally, making this compatible with PATs that cannot access the
+ * Copilot session-token exchange endpoint directly.
  */
 
+import { createRequire } from "node:module";
 import { getLogger } from "../logger.js";
 
 const log = getLogger("copilot-models-service");
@@ -209,6 +216,100 @@ function toModelCategory(raw: string | undefined): ModelCategory | undefined {
     return raw;
   }
   return undefined;
+}
+
+// ---------------------------------------------------------------------------
+// PAT-mode model discovery via the @github/copilot-sdk CopilotClient.
+// The SDK spawns the bundled CLI process and passes the token via an env var;
+// the CLI handles its own token exchange, so raw PATs work here.
+// ---------------------------------------------------------------------------
+
+/**
+ * Minimal subset of the SDK's ModelInfo we need for mapping.
+ * Declared locally to avoid a CJS dynamic-import in type position.
+ */
+interface SdkModelInfo {
+  id: string;
+  name: string;
+  capabilities?: {
+    limits?: {
+      max_context_window_tokens?: number | undefined;
+    } | undefined;
+  } | undefined;
+  supportedReasoningEfforts?: string[] | undefined;
+  policy?: { state?: string | undefined } | undefined;
+}
+
+/** Minimal subset of the SDK's CopilotClient we actually call. */
+export interface SdkCopilotClientLike {
+  start(): Promise<void>;
+  stop(): Promise<unknown>;
+  listModels(): Promise<SdkModelInfo[]>;
+}
+
+/**
+ * Fetch available Copilot models using a PAT.
+ *
+ * Spawns the bundled `@github/copilot` CLI via the `@github/copilot-sdk`
+ * CopilotClient and retrieves the model list through its local RPC.
+ * The CLI internally exchanges the PAT for a session token, so this works
+ * for fine-grained PATs that are rejected by the HTTP exchange endpoint.
+ *
+ * Pass `sdkClient` in `deps` to inject a mock client for unit tests.
+ */
+export async function fetchAvailableModelsWithPat(
+  pat: string,
+  deps: { sdkClient?: SdkCopilotClientLike | undefined } = {},
+): Promise<CopilotModel[]> {
+  let client: SdkCopilotClientLike;
+  if (deps.sdkClient !== undefined) {
+    client = deps.sdkClient;
+  } else {
+    const req = createRequire(import.meta.url);
+    const sdk = req("@github/copilot-sdk") as {
+      CopilotClient: new (opts: { githubToken: string }) => SdkCopilotClientLike;
+    };
+    client = new sdk.CopilotClient({ githubToken: pat });
+  }
+
+  let models: SdkModelInfo[];
+  try {
+    await client.start();
+    models = await client.listModels();
+  } finally {
+    await client.stop().catch(() => { /* best-effort */ });
+  }
+
+  const filtered = models.filter((m) => m.policy?.state !== "disabled");
+
+  const mapped: CopilotModel[] = filtered.map((m) => {
+    const model: CopilotModel = {
+      id: m.id,
+      name: m.name,
+      vendor: "",
+      version: m.id,
+      category: inferCategory(m.name),
+    };
+    const ctx = m.capabilities?.limits?.max_context_window_tokens;
+    if (ctx !== undefined) model.contextWindowTokens = ctx;
+    if (m.supportedReasoningEfforts !== undefined) {
+      const valid = m.supportedReasoningEfforts.filter(isValidReasoningEffort);
+      if (valid.length > 0) model.supportedReasoningEfforts = valid;
+    }
+    return model;
+  });
+
+  const seen = new Set<string>();
+  const deduped = mapped.filter((m) => {
+    if (seen.has(m.id)) return false;
+    seen.add(m.id);
+    return true;
+  });
+
+  deduped.sort((a, b) => CATEGORY_ORDER[a.category] - CATEGORY_ORDER[b.category]);
+
+  log.info({ count: deduped.length }, "fetched Copilot models via SDK (PAT mode)");
+  return deduped;
 }
 
 /**

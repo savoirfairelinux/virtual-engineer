@@ -14,12 +14,14 @@ const mockGetUnresolvedComments = vi.fn();
 const mockResolveComments = vi.fn();
 
 vi.mock("../../src/connectors/gerritSshClient.js", () => ({
-  GerritSshClient: vi.fn().mockImplementation(() => ({
-    query: mockQuery,
-    queryChange: mockQueryChange,
-    getUnresolvedComments: mockGetUnresolvedComments,
-    resolveComments: mockResolveComments,
-  })),
+  GerritSshClient: vi.fn().mockImplementation(function() {
+    return {
+      query: mockQuery,
+      queryChange: mockQueryChange,
+      getUnresolvedComments: mockGetUnresolvedComments,
+      resolveComments: mockResolveComments,
+    };
+  }),
 }));
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -86,7 +88,7 @@ describe("GerritSshConnector", () => {
     const comments = await makeConnector().getUnresolvedComments(CHANGE_ID, 3);
 
     expect(comments).toBe(fakeComments);
-    expect(mockGetUnresolvedComments).toHaveBeenCalledWith(CHANGE_ID, 3);
+    expect(mockGetUnresolvedComments).toHaveBeenCalledWith(CHANGE_ID, 3, "ve");
   });
 
   it("posts change comments through gerrit review over SSH", async () => {

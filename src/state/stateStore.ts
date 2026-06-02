@@ -291,6 +291,7 @@ export class SqliteStateStore implements StateStore, IntegrationStore, PromptSto
     this.ensureColumn("tasks", "ticket_source_project_key", "TEXT");
     this.ensureColumn("tasks", "push_ref", "TEXT");
     this.ensureColumn("agents", "integration_id", "TEXT REFERENCES integrations(id) ON DELETE SET NULL");
+    this.ensureColumn("agents", "feedback_instructions_prompt_id", "TEXT REFERENCES prompts(id) ON DELETE SET NULL");
     this.ensureColumn("prompts", "prompt_type", "TEXT NOT NULL DEFAULT 'user'");
 
     // Backfill: mark built-in prompts as 'system' so the protection logic
@@ -302,6 +303,7 @@ export class SqliteStateStore implements StateStore, IntegrationStore, PromptSto
           'system_gerrit_code','system_gitlab_code',
           'system_gerrit_review','system_gitlab_review','system_github_review',
           'instructions_gerrit_code','instructions_gitlab_code',
+          'instructions_feedback_code',
           'user_gerrit_review','user_gitlab_review','user_github_review'
         );
     `);
@@ -359,6 +361,7 @@ export class SqliteStateStore implements StateStore, IntegrationStore, PromptSto
       { id: "system_gitlab_code",      label: "System Prompt — GitLab (code)",         promptType: "system", file: "../../prompts/system_gitlab_code.md" },
       { id: "instructions_gerrit_code", label: "Instructions Prompt — Gerrit (code)",  promptType: "system", file: "../../prompts/instructions_gerrit_code.md" },
       { id: "instructions_gitlab_code", label: "Instructions Prompt — GitLab (code)",   promptType: "system", file: "../../prompts/instructions_gitlab_code.md" },
+      { id: "instructions_feedback_code", label: "Instructions Prompt — Feedback Cycle (code)", promptType: "system", file: "../../prompts/instructions_feedback_code.md" },
       { id: "system_gerrit_review",    label: "System Prompt — Gerrit (review)",      promptType: "system", file: "../../prompts/system_gerrit_review.md" },
       { id: "system_gitlab_review",    label: "System Prompt — GitLab MR (review)",   promptType: "system", file: "../../prompts/system_gitlab_review.md" },
       { id: "user_gerrit_review",      label: "User Prompt — Gerrit (review)",        promptType: "system", file: "../../prompts/user_gerrit_review.md" },
@@ -1503,6 +1506,28 @@ export class SqliteStateStore implements StateStore, IntegrationStore, PromptSto
     }
   }
 
+  /**
+   * Mark change_per_repository rows as ORPHANED when a retry push produces fewer
+   * commits than the previous cycle. Rows whose commitIndex exceeds maxCommitIndex
+   * for the given task+repo are set to ORPHANED so they are excluded from future
+   * feedback aggregation and Change-Id continuity.
+   */
+  async orphanExcessChanges(
+    taskId: TaskId,
+    repoKey: string,
+    maxCommitIndex: number
+  ): Promise<number> {
+    const now = Math.floor(Date.now() / 1000);
+    const result = this.raw
+      .prepare(
+        `UPDATE change_per_repository SET status = 'ORPHANED', updated_at = ?
+         WHERE task_id = ? AND repo_key = ? AND commit_index > ?
+           AND status NOT IN ('ORPHANED', 'NO_CHANGE', 'MERGED', 'ABANDONED')`
+      )
+      .run(now, taskId, repoKey, maxCommitIndex);
+    return result.changes;
+  }
+
   /** Close the underlying SQLite database connection. */
   close(): void {
     this.raw.close();
@@ -1520,6 +1545,7 @@ export class SqliteStateStore implements StateStore, IntegrationStore, PromptSto
       integrationId: row.integrationId ?? null,
       systemPromptId: row.systemPromptId ?? null,
       instructionsPromptId: row.instructionsPromptId ?? null,
+      feedbackInstructionsPromptId: row.feedbackInstructionsPromptId ?? null,
       maxConcurrent: row.maxConcurrent,
       enabled: row.enabled === 1,
       createdAt: row.createdAt,
@@ -1536,6 +1562,7 @@ export class SqliteStateStore implements StateStore, IntegrationStore, PromptSto
     integrationId?: string | null;
     systemPromptId?: string | null;
     instructionsPromptId?: string | null;
+    feedbackInstructionsPromptId?: string | null;
     maxConcurrent?: number;
     enabled?: boolean;
   }): Promise<AgentRecord> {
@@ -1549,6 +1576,7 @@ export class SqliteStateStore implements StateStore, IntegrationStore, PromptSto
       integrationId: input.integrationId ?? null,
       systemPromptId: input.systemPromptId ?? null,
       instructionsPromptId: input.instructionsPromptId ?? null,
+      feedbackInstructionsPromptId: input.feedbackInstructionsPromptId ?? null,
       maxConcurrent: input.maxConcurrent ?? 1,
       enabled: input.enabled === false ? 0 : 1,
       createdAt: now,
@@ -1579,7 +1607,7 @@ export class SqliteStateStore implements StateStore, IntegrationStore, PromptSto
   /** Apply a partial update to an agent record and return the updated row. */
   async updateAgent(
     id: AgentId,
-    partial: Partial<Pick<AgentRecord, "name" | "type" | "modelConfigJson" | "integrationId" | "systemPromptId" | "instructionsPromptId" | "maxConcurrent" | "enabled">>
+    partial: Partial<Pick<AgentRecord, "name" | "type" | "modelConfigJson" | "integrationId" | "systemPromptId" | "instructionsPromptId" | "feedbackInstructionsPromptId" | "maxConcurrent" | "enabled">>
   ): Promise<AgentRecord> {
     const existing = await this.getAgentById(id);
     if (!existing) throw new Error(`Agent not found: ${id}`);
@@ -1591,6 +1619,7 @@ export class SqliteStateStore implements StateStore, IntegrationStore, PromptSto
     if (partial.integrationId !== undefined) update["integrationId"] = partial.integrationId;
     if (partial.systemPromptId !== undefined) update["systemPromptId"] = partial.systemPromptId;
     if (partial.instructionsPromptId !== undefined) update["instructionsPromptId"] = partial.instructionsPromptId;
+    if (partial.feedbackInstructionsPromptId !== undefined) update["feedbackInstructionsPromptId"] = partial.feedbackInstructionsPromptId;
     if (partial.maxConcurrent !== undefined) update["maxConcurrent"] = partial.maxConcurrent;
     if (partial.enabled !== undefined) update["enabled"] = partial.enabled ? 1 : 0;
     await this.db.update(agents).set(update).where(eq(agents.id, id));
@@ -2129,11 +2158,12 @@ export function resolveAgentConfig(agent: AgentRecord, project: ProjectRecord): 
     merged[key] = value;
   }
 
-  const overridePrompts = overrideCfg as { systemPromptId?: unknown; instructionsPromptId?: unknown };
+  const overridePrompts = overrideCfg as { systemPromptId?: unknown; instructionsPromptId?: unknown; feedbackInstructionsPromptId?: unknown };
   const sysOverride = typeof overridePrompts.systemPromptId === "string" ? overridePrompts.systemPromptId : null;
   const insOverride = typeof overridePrompts.instructionsPromptId === "string" ? overridePrompts.instructionsPromptId : null;
+  const fbOverride = typeof overridePrompts.feedbackInstructionsPromptId === "string" ? overridePrompts.feedbackInstructionsPromptId : null;
 
-  const known = new Set(["model", "apiKey", "sessionToken", "systemPromptId", "instructionsPromptId"]);
+  const known = new Set(["model", "apiKey", "sessionToken", "systemPromptId", "instructionsPromptId", "feedbackInstructionsPromptId"]);
   const extra: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(merged)) {
     if (!known.has(key)) extra[key] = value;
@@ -2147,6 +2177,7 @@ export function resolveAgentConfig(agent: AgentRecord, project: ProjectRecord): 
       : undefined,
     systemPromptId: sysOverride ?? agent.systemPromptId ?? "system",
     instructionsPromptId: insOverride ?? agent.instructionsPromptId ?? "instructions",
+    feedbackInstructionsPromptId: fbOverride ?? agent.feedbackInstructionsPromptId ?? null,
     extra,
   };
 }

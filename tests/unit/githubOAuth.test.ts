@@ -42,10 +42,15 @@ describe("createGitHubDeviceOAuthHandler", () => {
     vi.unstubAllGlobals();
   });
 
-  it("throws when oauthClientId is missing", () => {
-    expect(() => createGitHubDeviceOAuthHandler({ mode: "github.com" })).toThrow(
-      /OAuth Client ID is required/
-    );
+  it("uses the hardcoded public client ID for github.com without requiring oauthClientId", () => {
+    // Should NOT throw — github.com uses the built-in GitHub CLI client ID
+    expect(() => createGitHubDeviceOAuthHandler({ mode: "github.com" })).not.toThrow();
+  });
+
+  it("throws when enterprise mode is used without oauthClientId", () => {
+    expect(() =>
+      createGitHubDeviceOAuthHandler({ mode: "github-enterprise", baseUrl: "https://ghe.corp.com" })
+    ).toThrow(/OAuth Client ID is required/);
   });
 
   it("throws when enterprise mode lacks baseUrl", () => {
@@ -65,10 +70,7 @@ describe("createGitHubDeviceOAuthHandler", () => {
       })
     );
 
-    const handler = createGitHubDeviceOAuthHandler({
-      mode: "github.com",
-      oauthClientId: "Iv1.client",
-    });
+    const handler = createGitHubDeviceOAuthHandler({ mode: "github.com" });
     const result = await handler.start();
 
     expect(result).toEqual({
@@ -82,7 +84,8 @@ describe("createGitHubDeviceOAuthHandler", () => {
     expect(url).toBe("https://github.com/login/device/code");
     expect(init.method).toBe("POST");
     const body = new URLSearchParams(init.body as string);
-    expect(body.get("client_id")).toBe("Iv1.client");
+    // Hardcoded GitHub CLI public client ID
+    expect(body.get("client_id")).toBe("178c6fc778ccc68e1d6a");
     expect(body.get("scope")).toBe("repo");
   });
 
@@ -108,48 +111,43 @@ describe("createGitHubDeviceOAuthHandler", () => {
     expect(url).toBe("https://ghe.corp.com/login/device/code");
   });
 
-  it("complete() returns the access token on success", async () => {
-    fetchMock.mockResolvedValueOnce(
-      jsonResponse({
-        access_token: "gho_abc123",
-        token_type: "bearer",
-        scope: "repo",
-      })
-    );
+  it("complete() polls until success and returns the token", async () => {
+    // pending x2, then success
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ error: "authorization_pending" }))
+      .mockResolvedValueOnce(jsonResponse({ error: "authorization_pending" }))
+      .mockResolvedValueOnce(jsonResponse({ access_token: "gho_abc123", token_type: "bearer", scope: "repo" }));
 
-    const handler = createGitHubDeviceOAuthHandler({
-      mode: "github.com",
-      oauthClientId: "Iv1.client",
-    });
-    const result = await handler.complete({ deviceCode: "dev-123" });
+    vi.useFakeTimers();
+    const handler = createGitHubDeviceOAuthHandler({ mode: "github.com" });
+    const resultPromise = handler.complete({ deviceCode: "dev-123" });
+    // Advance timers past 2 pending intervals + 1 success interval (3 × 5 s)
+    await vi.advanceTimersByTimeAsync(15_000);
+    const result = await resultPromise;
+    vi.useRealTimers();
     expect(result).toEqual({ token: "gho_abc123" });
   });
 
-  it("complete() throws authorization_pending while pending", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ error: "authorization_pending" }));
-    const handler = createGitHubDeviceOAuthHandler({
-      mode: "github.com",
-      oauthClientId: "Iv1.client",
-    });
-    await expect(handler.complete({ deviceCode: "d" })).rejects.toThrow(/authorization_pending/);
+  it("complete() throws on expired token after loop", async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ error: "expired_token" }));
+    vi.useFakeTimers();
+    const handler = createGitHubDeviceOAuthHandler({ mode: "github.com" });
+    const p = handler.complete({ deviceCode: "d" });
+    const assertion = expect(p).rejects.toThrow(/expired/i);
+    await vi.advanceTimersByTimeAsync(5_000);
+    await assertion;
+    vi.useRealTimers();
   });
 
-  it("complete() throws on expired token", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ error: "expired_token" }));
-    const handler = createGitHubDeviceOAuthHandler({
-      mode: "github.com",
-      oauthClientId: "Iv1.client",
-    });
-    await expect(handler.complete({ deviceCode: "d" })).rejects.toThrow(/expired/i);
-  });
-
-  it("complete() surfaces server errors", async () => {
+  it("complete() surfaces server errors immediately", async () => {
     fetchMock.mockResolvedValueOnce(errorResponse(500, "boom"));
-    const handler = createGitHubDeviceOAuthHandler({
-      mode: "github.com",
-      oauthClientId: "Iv1.client",
-    });
-    await expect(handler.complete({ deviceCode: "d" })).rejects.toThrow();
+    vi.useFakeTimers();
+    const handler = createGitHubDeviceOAuthHandler({ mode: "github.com" });
+    const p = handler.complete({ deviceCode: "d" });
+    const assertion = expect(p).rejects.toThrow();
+    await vi.advanceTimersByTimeAsync(5_000);
+    await assertion;
+    vi.useRealTimers();
   });
 });
 

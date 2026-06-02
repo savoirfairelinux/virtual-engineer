@@ -11,10 +11,12 @@ import { ReviewApiError } from "../../src/interfaces.js";
 
 vi.mock("child_process");
 vi.mock("../../src/connectors/gitlabHttpClient.js", () => {
-  const GitLabHttpClient = vi.fn().mockImplementation(() => ({
-    fetchJson: vi.fn(),
-    fetchJsonVoid: vi.fn(),
-  }));
+  const GitLabHttpClient = vi.fn().mockImplementation(function() {
+    return {
+      fetchJson: vi.fn(),
+      fetchJsonVoid: vi.fn(),
+    };
+  });
   return { GitLabHttpClient };
 });
 

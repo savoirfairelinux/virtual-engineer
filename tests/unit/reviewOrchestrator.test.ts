@@ -237,11 +237,40 @@ describe("ReviewOrchestrator.startReviewTask", () => {
     expect(mocks.store.createReviewTask).not.toHaveBeenCalled();
   });
 
-  it("returns existing active task when patchset has not changed", async () => {
+  it("does NOT re-queue REVIEW_WATCHING task when patchset has not changed (prevents spurious re-reviews)", async () => {
     const existing = makeTask({ state: "REVIEW_WATCHING", currentPatchset: 2 });
     mocks = makeMocks(existing);
     const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
     const tasks = await orch.startReviewTask({ changeId: CHANGE_ID });
+    // Same patchset + REVIEW_WATCHING means we already reviewed it — no second pass.
+    expect(tasks).toHaveLength(0);
+    expect(mocks.store.createReviewTask).not.toHaveBeenCalled();
+  });
+
+  it("does NOT re-queue REVIEW_RUNNING task when patchset has not changed (review in flight)", async () => {
+    const existing = makeTask({ state: "REVIEW_RUNNING", currentPatchset: 2 });
+    mocks = makeMocks(existing);
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+    const tasks = await orch.startReviewTask({ changeId: CHANGE_ID });
+    expect(tasks).toHaveLength(0);
+    expect(mocks.store.createReviewTask).not.toHaveBeenCalled();
+  });
+
+  it("does NOT re-queue REVIEW_COMMENTING task when patchset has not changed (review in flight)", async () => {
+    const existing = makeTask({ state: "REVIEW_COMMENTING", currentPatchset: 2 });
+    mocks = makeMocks(existing);
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+    const tasks = await orch.startReviewTask({ changeId: CHANGE_ID });
+    expect(tasks).toHaveLength(0);
+    expect(mocks.store.createReviewTask).not.toHaveBeenCalled();
+  });
+
+  it("re-queues REVIEW_PENDING task when patchset has not changed (review not yet started)", async () => {
+    const existing = makeTask({ state: "REVIEW_PENDING", currentPatchset: 2 });
+    mocks = makeMocks(existing);
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+    const tasks = await orch.startReviewTask({ changeId: CHANGE_ID });
+    // REVIEW_PENDING with same patchset means runReview hasn't run yet — push it.
     expect(tasks).toHaveLength(1);
     expect(tasks[0]?.taskId).toBe(existing.taskId);
     expect(mocks.store.createReviewTask).not.toHaveBeenCalled();

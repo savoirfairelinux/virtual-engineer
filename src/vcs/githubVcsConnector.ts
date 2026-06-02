@@ -13,6 +13,7 @@ import { buildFeatureBranchRef } from "./branchNaming.js";
 import type { ReviewComment } from "../interfaces.js";
 import { ReviewApiError } from "../interfaces.js";
 import { execInVolume } from "../workspace/dockerVolume.js";
+import { redactUrls } from "../utils/redactUrl.js";
 
 const log = getLogger("github-vcs");
 
@@ -122,7 +123,7 @@ export class GitHubVcsConnector implements VcsConnector {
       };
     } catch (err: unknown) {
       const error = err instanceof Error ? err : new Error(String(err));
-      throw new Error(`Failed to push to GitHub: ${error.message.slice(0, 500)}`);
+      throw new Error(`Failed to push to GitHub: ${redactUrls(error.message.slice(0, 500))}`);
     }
   }
 
@@ -192,7 +193,7 @@ export class GitHubVcsConnector implements VcsConnector {
     });
 
     if (pushResult.exitCode !== 0) {
-      throw new Error(`Failed to push directly to GitHub (volume): ${pushResult.stderr.slice(0, 500)}`);
+      throw new Error(`Failed to push directly to GitHub (volume): ${redactUrls(pushResult.stderr.slice(0, 500))}`);
     }
 
     const logResult = await execInVolume({
@@ -270,6 +271,9 @@ export class GitHubVcsConnector implements VcsConnector {
         log.info({ prNumber: existing[0]!.number }, "reusing existing PR");
         return existing[0]!;
       }
+    } else if (listResponse.status !== 404) {
+      const errorBody = await listResponse.text().catch(() => "");
+      throw new ReviewApiError(listResponse.status, listUrl, errorBody);
     }
 
     // Create new PR

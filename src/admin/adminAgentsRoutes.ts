@@ -16,7 +16,7 @@ import {
   defaultProviderAuthService,
   type ProviderAuthService,
 } from "../agents/providerAuthService.js";
-import { exchangeForSessionToken, fetchAvailableModels } from "../agents/copilotModelsService.js";
+import { exchangeForSessionToken, fetchAvailableModels, fetchAvailableModelsWithPat } from "../agents/copilotModelsService.js";
 import { decryptToken } from "../utils/encryption.js";
 import { getPluginDescriptor } from "../plugins/registry.js";
 
@@ -32,6 +32,7 @@ export interface AgentsRouteStore {
     integrationId?: string | null;
     systemPromptId?: string | null;
     instructionsPromptId?: string | null;
+    feedbackInstructionsPromptId?: string | null;
     maxConcurrent?: number;
     enabled?: boolean;
   }): Promise<AgentRecord>;
@@ -39,7 +40,7 @@ export interface AgentsRouteStore {
   listAgents(filter?: { type?: AgentType; enabled?: boolean }): Promise<AgentRecord[]>;
   updateAgent(
     id: AgentId,
-    partial: Partial<Pick<AgentRecord, "name" | "type" | "modelConfigJson" | "integrationId" | "systemPromptId" | "instructionsPromptId" | "maxConcurrent" | "enabled">>
+    partial: Partial<Pick<AgentRecord, "name" | "type" | "modelConfigJson" | "integrationId" | "systemPromptId" | "instructionsPromptId" | "feedbackInstructionsPromptId" | "maxConcurrent" | "enabled">>
   ): Promise<AgentRecord>;
   deleteAgent(id: AgentId): Promise<void>;
   setAgentEnabled(id: AgentId, enabled: boolean): Promise<void>;
@@ -203,6 +204,7 @@ export interface AgentSummary {
   integrationId: string | null;
   systemPromptId: string | null;
   instructionsPromptId: string | null;
+  feedbackInstructionsPromptId: string | null;
   projectCount: number;
   createdAt: string;
   updatedAt: string;
@@ -226,6 +228,7 @@ function toAgentSummary(agent: AgentRecord, projectCount: number): AgentSummary 
     integrationId: agent.integrationId,
     systemPromptId: agent.systemPromptId,
     instructionsPromptId: agent.instructionsPromptId,
+    feedbackInstructionsPromptId: agent.feedbackInstructionsPromptId,
     projectCount,
     createdAt: agent.createdAt.toISOString(),
     updatedAt: agent.updatedAt.toISOString(),
@@ -251,6 +254,7 @@ const createSchema = z.object({
   integrationId: z.string().nullable().optional(),
   systemPromptId: z.string().nullable().optional(),
   instructionsPromptId: z.string().nullable().optional(),
+  feedbackInstructionsPromptId: z.string().nullable().optional(),
   maxConcurrent: z.number({ invalid_type_error: "Max concurrent must be a number" }).int("Max concurrent must be an integer").min(1, "Max concurrent must be at least 1").optional(),
   enabled: z.boolean().optional(),
 });
@@ -264,6 +268,7 @@ const updateSchema = z.object({
   integrationId: z.string().nullable().optional(),
   systemPromptId: z.string().nullable().optional(),
   instructionsPromptId: z.string().nullable().optional(),
+  feedbackInstructionsPromptId: z.string().nullable().optional(),
   maxConcurrent: z.number({ invalid_type_error: "Max concurrent must be a number" }).int("Max concurrent must be an integer").min(1, "Max concurrent must be at least 1").optional(),
   enabled: z.boolean().optional(),
 });
@@ -488,6 +493,7 @@ export async function handleAgentsRoute(
         ...(parsed.data.integrationId !== undefined ? { integrationId: parsed.data.integrationId } : {}),
         ...(parsed.data.systemPromptId !== undefined ? { systemPromptId: parsed.data.systemPromptId } : {}),
         ...(parsed.data.instructionsPromptId !== undefined ? { instructionsPromptId: parsed.data.instructionsPromptId } : {}),
+        ...(parsed.data.feedbackInstructionsPromptId !== undefined ? { feedbackInstructionsPromptId: parsed.data.feedbackInstructionsPromptId } : {}),
         ...(parsed.data.maxConcurrent !== undefined ? { maxConcurrent: parsed.data.maxConcurrent } : {}),
         ...(parsed.data.enabled !== undefined ? { enabled: parsed.data.enabled } : {}),
       });
@@ -517,15 +523,41 @@ export async function handleAgentsRoute(
     } catch {
       // ignore parse errors
     }
-    const encrypted = typeof configJson["sessionToken"] === "string" ? configJson["sessionToken"] : undefined;
-    if (!encrypted) {
-      writeJson(response, 400, { error: "No session token configured for this agent" });
-      return true;
+    // PAT mode: resolve token from linked integration; OAuth: fall back to agent's sessionToken
+    let githubToken: string | undefined;
+    let isPat = false;
+    if (agent.integrationId && deps.integrationStore) {
+      const integration = await deps.integrationStore.getIntegration(agent.integrationId);
+      if (integration) {
+        let integrationConfig: Record<string, unknown> = {};
+        try { integrationConfig = JSON.parse(integration.configJson) as Record<string, unknown>; } catch { /* ignore */ }
+        if (integrationConfig["authMode"] === "pat") {
+          const pat = typeof integrationConfig["token"] === "string" ? integrationConfig["token"].trim() : "";
+          if (!pat) {
+            writeJson(response, 400, { error: "No PAT configured for the linked integration" });
+            return true;
+          }
+          githubToken = pat;
+          isPat = true;
+        }
+      }
+    }
+    if (githubToken === undefined) {
+      const encrypted = typeof configJson["sessionToken"] === "string" ? configJson["sessionToken"] : undefined;
+      if (!encrypted) {
+        writeJson(response, 400, { error: "No session token configured for this agent" });
+        return true;
+      }
+      githubToken = decryptToken(encrypted, deps.adminAuthSecret);
     }
     try {
-      const plain = decryptToken(encrypted, deps.adminAuthSecret);
-      const sessionToken = await exchangeForSessionToken(plain);
-      const models = await fetchAvailableModels(sessionToken);
+      // PAT: use the @github/copilot-sdk CopilotClient which spawns the
+      //      bundled CLI and handles its own token exchange internally.
+      //      OAuth: exchange the user token for a short-lived session token
+      //      first, then call the Copilot models HTTP API.
+      const models = isPat
+        ? await fetchAvailableModelsWithPat(githubToken!)
+        : await fetchAvailableModels(await exchangeForSessionToken(githubToken!));
       writeJson(response, 200, { models });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -576,6 +608,7 @@ export async function handleAgentsRoute(
       if (parsed.data.integrationId !== undefined) updates.integrationId = parsed.data.integrationId;
       if (parsed.data.systemPromptId !== undefined) updates.systemPromptId = parsed.data.systemPromptId;
       if (parsed.data.instructionsPromptId !== undefined) updates.instructionsPromptId = parsed.data.instructionsPromptId;
+      if (parsed.data.feedbackInstructionsPromptId !== undefined) updates.feedbackInstructionsPromptId = parsed.data.feedbackInstructionsPromptId;
       if (parsed.data.maxConcurrent !== undefined) updates.maxConcurrent = parsed.data.maxConcurrent;
       if (parsed.data.enabled !== undefined) updates.enabled = parsed.data.enabled;
 

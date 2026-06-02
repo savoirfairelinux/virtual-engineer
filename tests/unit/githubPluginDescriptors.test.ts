@@ -21,72 +21,46 @@ const baseIntegration: Integration = {
 
 describe("github descriptors — schema migration + runtime resolution", () => {
   describe("github-pull-request schema", () => {
-    it("auto-migrates legacy repositorySlug to owner when owner is missing", () => {
+    it("accepts a config with legacy repositorySlug (owner field removed)", () => {
       const parsed = githubPullRequestConfigSchema.parse({
         mode: "github.com",
         authMode: "pat",
         token: "ghp_x",
         repositorySlug: "octocat/hello-world",
       });
-      expect(parsed.owner).toBe("octocat");
       expect(parsed.repositorySlug).toBe("octocat/hello-world");
+      expect("owner" in parsed).toBe(false);
     });
 
-    it("keeps an explicitly provided owner over the legacy slug owner", () => {
-      const parsed = githubPullRequestConfigSchema.parse({
-        mode: "github.com",
-        authMode: "pat",
-        token: "ghp_x",
-        owner: "explicit-org",
-        repositorySlug: "octocat/hello-world",
-      });
-      expect(parsed.owner).toBe("explicit-org");
-    });
-
-    it("accepts owner alone (no legacy slug)", () => {
-      const parsed = githubPullRequestConfigSchema.parse({
-        mode: "github.com",
-        authMode: "pat",
-        token: "ghp_x",
-        owner: "acme",
-      });
-      expect(parsed.owner).toBe("acme");
-      expect(parsed.repositorySlug).toBeUndefined();
-    });
-
-    it("rejects config missing both owner and repositorySlug", () => {
+    it("accepts config without owner when project binding will provide repoKey", () => {
       const result = githubPullRequestConfigSchema.safeParse({
         mode: "github.com",
         authMode: "pat",
         token: "ghp_x",
       });
-      expect(result.success).toBe(false);
-      if (!result.success) {
-        expect(result.error.issues[0]?.path).toEqual(["owner"]);
-      }
+      expect(result.success).toBe(true);
     });
   });
 
   describe("github-issue schema", () => {
-    it("auto-migrates legacy repositorySlug to owner when owner is missing", () => {
+    it("accepts a config with legacy repositorySlug (owner field removed)", () => {
       const parsed = githubIssueConfigSchema.parse({
         mode: "github.com",
         authMode: "pat",
         token: "ghp_x",
         repositorySlug: "octocat/hello-world",
-        ticketLabel: "ve",
       });
-      expect(parsed.owner).toBe("octocat");
+      expect(parsed.repositorySlug).toBe("octocat/hello-world");
+      expect("owner" in parsed).toBe(false);
     });
 
-    it("rejects config missing both owner and repositorySlug", () => {
+    it("accepts config without owner when project binding will provide repoKey", () => {
       const result = githubIssueConfigSchema.safeParse({
         mode: "github.com",
         authMode: "pat",
         token: "ghp_x",
-        ticketLabel: "ve",
       });
-      expect(result.success).toBe(false);
+      expect(result.success).toBe(true);
     });
   });
 
@@ -95,7 +69,6 @@ describe("github descriptors — schema migration + runtime resolution", () => {
       mode: "github.com",
       authMode: "pat",
       token: "ghp_x",
-      owner: "acme",
     };
 
     it("returns an unbound instance when context is undefined (boot path)", () => {
@@ -125,7 +98,6 @@ describe("github descriptors — schema migration + runtime resolution", () => {
       mode: "github.com",
       authMode: "pat",
       token: "ghp_x",
-      owner: "acme",
     };
 
     it("uses context.repoKey when it contains owner/repo", () => {
@@ -137,13 +109,14 @@ describe("github descriptors — schema migration + runtime resolution", () => {
       expect(conn).toBeDefined();
     });
 
-    it("uses context.repoKey as bare repo name (no slash) with parsed owner", () => {
-      const conn = githubPullRequestDescriptor.createVcsConnector!(
-        githubPullRequestConfigSchema.parse(cfg) as unknown as Record<string, unknown>,
-        baseIntegration,
-        { repoKey: "hello-world" },
-      );
-      expect(conn).toBeDefined();
+    it("rejects bare repoKey without owner prefix (no owner fallback)", () => {
+      expect(() =>
+        githubPullRequestDescriptor.createVcsConnector!(
+          githubPullRequestConfigSchema.parse(cfg) as unknown as Record<string, unknown>,
+          baseIntegration,
+          { repoKey: "hello-world" },
+        ),
+      ).toThrow(/expected 'owner\/repo'/i);
     });
 
     it("falls back to legacy repositorySlug when no context is provided", () => {
@@ -172,17 +145,29 @@ describe("github descriptors — schema migration + runtime resolution", () => {
       mode: "github.com",
       authMode: "pat",
       token: "ghp_x",
-      owner: "acme",
-      ticketLabel: "ve",
     };
 
-    it("uses context.repoKey", () => {
+    it("uses context.ticketProjectKey", () => {
       const conn = githubIssueDescriptor.createInstance!(
         githubIssueConfigSchema.parse(cfg) as unknown as Record<string, unknown>,
         { ...baseIntegration, type: "github-issue" },
-        { repoKey: "acme/hello-world" },
+        { ticketProjectKey: "acme/hello-world" },
       );
       expect(conn).toBeDefined();
+    });
+
+    it("rejects bare ticketProjectKey without owner prefix", () => {
+      expect(() =>
+        githubIssueDescriptor.createInstance!(
+          githubIssueConfigSchema.parse({
+            mode: "github.com",
+            authMode: "pat",
+            token: "ghp_x",
+          }) as unknown as Record<string, unknown>,
+          { ...baseIntegration, type: "github-issue" },
+          { ticketProjectKey: "hello-world" },
+        ),
+      ).toThrow(/expected 'owner\/repo'/i);
     });
 
     it("returns an unbound instance when no context (boot-time owner-level)", () => {

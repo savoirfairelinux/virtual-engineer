@@ -19,7 +19,6 @@ function makeConnector(
     owner: OWNER,
     repo: REPO,
     token: TOKEN,
-    ticketLabel: "virtual-engineer",
     virtualEngineerUserLogin: "ve-bot",
     ...overrides,
   });
@@ -64,7 +63,7 @@ describe("GitHubIssueConnector", () => {
   // ─── getAssignedTickets ────────────────────────────────────────────────────
 
   describe("getAssignedTickets", () => {
-    it("fetches open issues with configured label, filtering out PRs", async () => {
+    it("fetches open issues assigned to the VE account, filtering out PRs", async () => {
       fetchMock.mockResolvedValueOnce(jsonResponse([githubIssue, githubIssuePR]));
 
       const tickets = await makeConnector().getAssignedTickets();
@@ -73,7 +72,7 @@ describe("GitHubIssueConnector", () => {
       const [url] = fetchMock.mock.calls[0] as [string];
       expect(url).toContain("/repos/octocat/hello-world/issues");
       expect(url).toContain("state=open");
-      expect(url).toContain("labels=virtual-engineer");
+      expect(url).toContain("assignee=ve-bot");
 
       // Should filter out the PR
       expect(tickets).toHaveLength(1);
@@ -120,6 +119,38 @@ describe("GitHubIssueConnector", () => {
       fetchMock.mockResolvedValueOnce(errorResponse(401, "Unauthorized"));
 
       await expect(makeConnector().getAssignedTickets()).rejects.toThrow(GitHubApiError);
+    });
+
+    it("resolves login via GET /user when virtualEngineerUserLogin is not configured", async () => {
+      // First call: GET /user; second call: GET /repos/.../issues
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ login: "resolved-bot", id: 99 }))
+        .mockResolvedValueOnce(jsonResponse([githubIssue]));
+
+      const connector = makeConnector({ virtualEngineerUserLogin: undefined });
+      const tickets = await connector.getAssignedTickets();
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      const [userUrl] = fetchMock.mock.calls[0] as [string];
+      expect(userUrl).toContain("/user");
+      const [issuesUrl] = fetchMock.mock.calls[1] as [string];
+      expect(issuesUrl).toContain("assignee=resolved-bot");
+      expect(tickets).toHaveLength(1);
+    });
+
+    it("caches the resolved login across multiple calls", async () => {
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ login: "resolved-bot", id: 99 }))
+        .mockResolvedValueOnce(jsonResponse([]))
+        .mockResolvedValueOnce(jsonResponse([]));
+
+      const connector = makeConnector({ virtualEngineerUserLogin: undefined });
+      await connector.getAssignedTickets();
+      await connector.getAssignedTickets();
+
+      // GET /user should only be called once despite two getAssignedTickets calls
+      const userCalls = (fetchMock.mock.calls as [string][]).filter(([url]) => url.endsWith("/user"));
+      expect(userCalls).toHaveLength(1);
     });
   });
 

@@ -1,4 +1,4 @@
-import type { Integration, IntegrationType } from "../interfaces.js";
+import type { Integration, IntegrationType, ReviewComment } from "../interfaces.js";
 import { getPluginDescriptor } from "../plugins/registry.js";
 
 export interface IntegrationEventStreamStatus {
@@ -13,7 +13,7 @@ export interface IntegrationEventStreamStatus {
 }
 
 export interface IntegrationEventStreamOrchestrator {
-  triggerFeedbackForChange(integrationId: string, changeId: string): Promise<void>;
+  triggerFeedbackForChange(integrationId: string, changeId: string, streamComments?: ReviewComment[]): Promise<void>;
   markChangeMerged(integrationId: string, changeId: string): Promise<void>;
   markChangeAbandoned(integrationId: string, changeId: string): Promise<void>;
 }

@@ -13,6 +13,7 @@ import type {
 import { getPluginDescriptor } from "./registry.js";
 import type { PluginDescriptor } from "./registry.js";
 import { getLogger } from "../logger.js";
+import { decryptToken } from "../utils/encryption.js";
 
 const log = getLogger("plugin-manager");
 
@@ -52,7 +53,10 @@ export class PluginManager {
   private readonly testers = new Map<IntegrationType, ConnectionTester>();
   private readonly changeCallbacks: PluginChangeCallback[] = [];
 
-  constructor(private readonly integrationStore: IntegrationStore) {}
+  constructor(
+    private readonly integrationStore: IntegrationStore,
+    private readonly options: { adminAuthSecret?: string | undefined } = {}
+  ) {}
 
   /** Register a connector factory for an integration type. */
   registerFactory(type: IntegrationType, factory: PluginFactory): void {
@@ -229,6 +233,17 @@ export class PluginManager {
     return this.activeIntegrationsById.get(integrationId) ?? null;
   }
 
+  /**
+   * Returns true when the integration's descriptor declares a `streamEvents`
+   * factory.  Stream-backed integrations deliver review events via a persistent
+   * connection and must not be polled for review assignment discovery.
+   */
+  integrationHasStreamEvents(integrationId: string): boolean {
+    const integration = this.activeIntegrationsById.get(integrationId);
+    if (!integration) return false;
+    return getPluginDescriptor(integration.type)?.streamEvents != null;
+  }
+
   /** Returns all currently active integrations of the given category. */
   getActiveIntegrationsByCategory(category: PluginCategory): Integration[] {
     const out: Integration[] = [];
@@ -257,7 +272,10 @@ export class PluginManager {
   private createPluginInstance(integration: Integration, context?: IntegrationBindingContext): PluginInstance {
     const descriptor = this.getDescriptor(integration.type);
 
-    const config = JSON.parse(integration.configJson);
+    const rawConfig = JSON.parse(integration.configJson) as Record<string, unknown>;
+    // Decrypt password fields — OAuth tokens are stored via encryptToken (either
+    // AES-256-GCM or a plain:-prefixed base64 when no ADMIN_AUTH_SECRET is set).
+    const config = this.decryptPasswordFields(rawConfig, descriptor);
     const parsed = descriptor.configSchema.safeParse(config);
     if (!parsed.success) {
       throw new Error(`Invalid config for ${integration.type}: ${parsed.error.message}`);
@@ -278,6 +296,41 @@ export class PluginManager {
     }
 
     throw new Error(`No factory registered for type: ${integration.type}`);
+  }
+
+  /**
+   * Parse and decrypt an integration's configJson, returning a plain-object
+   * record with all password-typed fields decrypted.  Used by callers that
+   * need the live config without going through `createInstance` (e.g. the
+   * review-bundle builder in src/index.ts).
+   */
+  public decryptIntegrationConfig(integration: Integration): Record<string, unknown> {
+    const descriptor = this.getDescriptor(integration.type);
+    const rawConfig = JSON.parse(integration.configJson) as Record<string, unknown>;
+    return this.decryptPasswordFields(rawConfig, descriptor);
+  }
+
+  /**
+   * Decrypt password-typed fields in a raw integration config.
+   * Tokens stored via encryptToken use a `plain:` prefix (no secret) or AES-256-GCM.
+   * Fields that are raw PATs or unknown strings are left as-is when decryption fails.
+   */
+  private decryptPasswordFields(
+    config: Record<string, unknown>,
+    descriptor: PluginDescriptor
+  ): Record<string, unknown> {
+    const result: Record<string, unknown> = { ...config };
+    for (const field of descriptor.requiredFields.filter((f) => f.type === "password")) {
+      const raw = result[field.key];
+      if (typeof raw === "string" && raw.length > 0) {
+        try {
+          result[field.key] = decryptToken(raw, this.options.adminAuthSecret);
+        } catch {
+          // Not a managed encrypted token (e.g. a raw PAT typed by the user) — leave as-is.
+        }
+      }
+    }
+    return result;
   }
 
   /**

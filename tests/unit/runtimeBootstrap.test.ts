@@ -159,22 +159,25 @@ async function importRuntime(
     registerConnectionTester: vi.fn(),
     reloadIntegration: vi.fn().mockResolvedValue(undefined),
     onPluginChange: vi.fn(),
+    decryptIntegrationConfig: vi.fn((integration: Integration) => {
+      return JSON.parse(integration.configJson) as Record<string, unknown>;
+    }),
   };
 
-  const PluginManager = vi.fn().mockImplementation(() => pluginManagerInstance);
-  const HttpRedmineConnector = vi.fn().mockImplementation(() => envTicketing);
-  const GerritSshConnector = vi.fn().mockImplementation(() => envReview);
-  const GitLabIssueConnector = vi.fn().mockImplementation(() => envTicketing);
-  const GitLabMergeRequestConnector = vi.fn().mockImplementation(() => envReview);
-  const MockAgentAdapter = vi.fn().mockImplementation(() => envAgent);
-  const CopilotAdapter = vi.fn().mockImplementation(() => envAgent);
+  const PluginManager = vi.fn().mockImplementation(function() { return pluginManagerInstance; });
+  const HttpRedmineConnector = vi.fn().mockImplementation(function() { return envTicketing; });
+  const GerritSshConnector = vi.fn().mockImplementation(function() { return envReview; });
+  const GitLabIssueConnector = vi.fn().mockImplementation(function() { return envTicketing; });
+  const GitLabMergeRequestConnector = vi.fn().mockImplementation(function() { return envReview; });
+  const MockAgentAdapter = vi.fn().mockImplementation(function() { return envAgent; });
+  const CopilotAdapter = vi.fn().mockImplementation(function() { return envAgent; });
   const integrationStreamEventsInstance = {
     reconcile: vi.fn().mockResolvedValue(undefined),
     stopAll: vi.fn().mockResolvedValue(undefined),
     getStatus: vi.fn().mockReturnValue(null),
     listStatuses: vi.fn().mockReturnValue([]),
   };
-  const PluginIntegrationStreamEventsManager = vi.fn().mockImplementation(() => integrationStreamEventsInstance);
+  const PluginIntegrationStreamEventsManager = vi.fn().mockImplementation(function() { return integrationStreamEventsInstance; });
   type MockReviewProviderInstance = {
     config: Record<string, unknown>;
     isReviewer: ReturnType<typeof vi.fn>;
@@ -183,7 +186,7 @@ async function importRuntime(
     config: Record<string, unknown>;
     isReviewer: ReturnType<typeof vi.fn>;
   }> = [];
-  const GerritSshReviewProvider = vi.fn().mockImplementation((config: Record<string, unknown>) => {
+  const GerritSshReviewProvider = vi.fn().mockImplementation(function(config: Record<string, unknown>) {
     const instance = {
       kind: "gerrit",
       config,
@@ -196,27 +199,33 @@ async function importRuntime(
     reviewProviderInstances.push(instance as MockReviewProviderInstance);
     return instance;
   });
-  const DockerWorkspaceRunner = vi.fn().mockImplementation(() => ({
-    runAgentInDocker: vi.fn(),
-    destroyWorkspace: vi.fn(),
-    updateRuntime: vi.fn(),
-  }));
+  const DockerWorkspaceRunner = vi.fn().mockImplementation(function() {
+    return {
+      runAgentInDocker: vi.fn(),
+      destroyWorkspace: vi.fn(),
+      updateRuntime: vi.fn(),
+    };
+  });
   const createVcsConnectorForIntegration = vi.fn(() => ({ pushRepo: vi.fn() }));
 
-  const Orchestrator = vi.fn().mockImplementation(() => ({
-    resumeActiveTasks: vi.fn().mockResolvedValue(undefined),
-    updateRuntime: vi.fn(),
-    continueTask: vi.fn().mockResolvedValue(undefined),
-    invalidateVcsConnector: vi.fn(),
-  }));
-  const PollingLoop = vi.fn().mockImplementation(() => ({
-    start: vi.fn(),
-    stop: vi.fn(),
-    isRunning: () => false,
-    getIntervals: () => ({ intervalMs: 30_000 }),
-    updateConnectors: vi.fn(),
-    resetBackoff: vi.fn(),
-  }));
+  const Orchestrator = vi.fn().mockImplementation(function() {
+    return {
+      resumeActiveTasks: vi.fn().mockResolvedValue(undefined),
+      updateRuntime: vi.fn(),
+      continueTask: vi.fn().mockResolvedValue(undefined),
+      invalidateVcsConnector: vi.fn(),
+    };
+  });
+  const PollingLoop = vi.fn().mockImplementation(function() {
+    return {
+      start: vi.fn(),
+      stop: vi.fn(),
+      isRunning: () => false,
+      getIntervals: () => ({ intervalMs: 30_000 }),
+      updateConnectors: vi.fn(),
+      resetBackoff: vi.fn(),
+    };
+  });
   const integrationData = new Map<string, Integration>();
   for (const integration of options.storeIntegrations ?? []) {
     integrationData.set(integration.id, { ...integration });
@@ -337,12 +346,14 @@ async function importRuntime(
   vi.doMock("../../src/agents/copilotAdapter.js", () => ({
     CopilotAdapter,
   }));
-  const CopilotReviewAgent = vi.fn().mockImplementation(() => ({ runReview: vi.fn() }));
+  const CopilotReviewAgent = vi.fn().mockImplementation(function() { return { runReview: vi.fn() }; });
   vi.doMock("../../src/review/copilotReviewAgent.js", () => ({ CopilotReviewAgent }));
-  const ReviewOrchestrator = vi.fn().mockImplementation(() => ({
-    startReviewTask: vi.fn().mockResolvedValue([]),
-    runReview: vi.fn().mockResolvedValue(undefined),
-  }));
+  const ReviewOrchestrator = vi.fn().mockImplementation(function() {
+    return {
+      startReviewTask: vi.fn().mockResolvedValue([]),
+      runReview: vi.fn().mockResolvedValue(undefined),
+    };
+  });
   vi.doMock("../../src/review/reviewOrchestrator.js", () => ({ ReviewOrchestrator }));
   vi.doMock("../../src/connectors/gerritSshReviewProvider.js", () => ({ GerritSshReviewProvider }));
   vi.doMock("../../src/connectors/integrationStreamEvents.js", () => ({ PluginIntegrationStreamEventsManager }));
@@ -872,7 +883,7 @@ describe("runtime bootstrap provider selection", () => {
         copilot: makeIntegration({
           id: "copilot-review-routing",
           type: "copilot",
-          configJson: JSON.stringify({ apiKey: "ghp-routing-token" }),
+          configJson: JSON.stringify({ token: "ghp-routing-token" }),
         }),
       },
       {
@@ -930,7 +941,7 @@ describe("runtime bootstrap provider selection", () => {
         copilot: makeIntegration({
           id: "copilot-review-membership",
           type: "copilot",
-          configJson: JSON.stringify({ apiKey: "ghp-review-token" }),
+          configJson: JSON.stringify({ token: "ghp-review-token" }),
         }),
       },
       {
@@ -979,7 +990,7 @@ describe("runtime bootstrap provider selection", () => {
         copilot: makeIntegration({
           id: "copilot-review-ssh-only",
           type: "copilot",
-          configJson: JSON.stringify({ apiKey: "ghp-review-token" }),
+          configJson: JSON.stringify({ token: "ghp-review-token" }),
         }),
       },
       {
@@ -1032,7 +1043,7 @@ describe("runtime bootstrap provider selection", () => {
         copilot: makeIntegration({
           id: "copilot-review-rewrite",
           type: "copilot",
-          configJson: JSON.stringify({ apiKey: "ghp-review-token" }),
+          configJson: JSON.stringify({ token: "ghp-review-token" }),
         }),
       },
       {

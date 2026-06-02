@@ -5,6 +5,8 @@ import type {
   ReviewChangeStatus,
   ReviewComment,
   ExternalChangeId,
+  ReviewDiscoveryConnector,
+  ReviewAssignmentDiscovery,
 } from "../interfaces.js";
 import { getLogger } from "../logger.js";
 
@@ -17,9 +19,36 @@ const GitHubPrSchema = z.object({
   state: z.string(),
   html_url: z.string(),
   title: z.string(),
-  head: z.object({ ref: z.string() }),
+  head: z.object({ ref: z.string(), sha: z.string() }),
   merged: z.boolean().optional().default(false),
 });
+
+const CheckRunSchema = z.object({
+  id: z.number(),
+  name: z.string(),
+  conclusion: z.string().nullable().optional(),
+  status: z.string(),
+  html_url: z.string().optional(),
+  completed_at: z.string().nullable().optional(),
+  started_at: z.string().nullable().optional(),
+  output: z.object({
+    title: z.string().nullable().optional(),
+    summary: z.string().nullable().optional(),
+    text: z.string().nullable().optional(),
+  }).optional(),
+});
+const CheckRunListResponseSchema = z.object({
+  check_runs: z.array(CheckRunSchema),
+});
+
+const CheckAnnotationSchema = z.object({
+  path: z.string(),
+  start_line: z.number(),
+  annotation_level: z.string(),
+  message: z.string(),
+  title: z.string().nullable().optional(),
+});
+const CheckAnnotationListSchema = z.array(CheckAnnotationSchema);
 
 const GitHubReviewCommentSchema = z.object({
   id: z.number(),
@@ -43,6 +72,23 @@ const GitHubIssueCommentSchema = z.object({
 const GitHubReviewCommentListSchema = z.array(GitHubReviewCommentSchema);
 const GitHubIssueCommentListSchema = z.array(GitHubIssueCommentSchema);
 
+// Schema for GET /pulls/{n}/reviews — used to detect CHANGES_REQUESTED state
+const GitHubPrReviewSchema = z.object({
+  state: z.string(),
+  user: z.object({ login: z.string() }),
+});
+const GitHubPrReviewListSchema = z.array(GitHubPrReviewSchema);
+
+// Schema for GET /repos/{owner}/{repo}/pulls?state=open — used for review discovery
+const GitHubPrListItemSchema = z.object({
+  number: z.number(),
+  title: z.string(),
+  html_url: z.string(),
+  state: z.string(),
+  requested_reviewers: z.array(z.object({ login: z.string() })),
+});
+const GitHubPrListSchema = z.array(GitHubPrListItemSchema);
+
 // ─── Config ───────────────────────────────────────────────────────────────────
 
 export interface GitHubPullRequestReviewConnectorConfig {
@@ -61,7 +107,7 @@ export interface GitHubPullRequestReviewConnectorConfig {
  *
  * changeId convention: the PR number stored as a string, e.g. "42".
  */
-export class GitHubPullRequestReviewConnector implements ReviewConnector {
+export class GitHubPullRequestReviewConnector implements ReviewConnector, ReviewDiscoveryConnector {
   private readonly threadIdCache = new Map<number, string>();
 
   constructor(private readonly config: GitHubPullRequestReviewConnectorConfig) {}
@@ -94,14 +140,41 @@ export class GitHubPullRequestReviewConnector implements ReviewConnector {
     const prNumber = this.parsePrNumber(String(changeId));
     const baseUrl = `${this.config.apiBaseUrl}/repos/${this.config.owner}/${this.config.repo}`;
 
-    // Fetch review comments (inline) and issue comments (general)
+    // Only process feedback when a reviewer has explicitly requested changes.
+    // Plain comments and "LGTM" reviews do not trigger a retry cycle.
+    const reviews = GitHubPrReviewListSchema.parse(
+      await this.fetchJson(`${baseUrl}/pulls/${prNumber}/reviews`)
+    );
+    const veLogin = this.config.virtualEngineerUserLogin;
+    const hasChangesRequested = reviews.some(
+      (r) => r.state === "CHANGES_REQUESTED" && (veLogin === undefined || r.user.login !== veLogin)
+    );
+    if (!hasChangesRequested) {
+      log.debug({ changeId }, "no CHANGES_REQUESTED review — skipping feedback");
+      return [];
+    }
+
+    // Fetch review comments (inline) and issue comments (general) — paginated
+    const PER_PAGE = 100;
+    const MAX_PAGES = 5;
+    const fetchAllPages = async <T>(buildUrl: (page: number) => string, schema: z.ZodType<T[]>): Promise<T[]> => {
+      const all: T[] = [];
+      for (let page = 1; page <= MAX_PAGES; page++) {
+        const batch = schema.parse(await this.fetchJson(buildUrl(page)));
+        all.push(...batch);
+        if (batch.length < PER_PAGE) break;
+      }
+      return all;
+    };
     const [reviewComments, issueComments] = await Promise.all([
-      this.fetchJson<z.infer<typeof GitHubReviewCommentListSchema>>(
-        `${baseUrl}/pulls/${prNumber}/comments?per_page=100`
-      ).then((data) => GitHubReviewCommentListSchema.parse(data)),
-      this.fetchJson<z.infer<typeof GitHubIssueCommentListSchema>>(
-        `${baseUrl}/issues/${prNumber}/comments?per_page=100`
-      ).then((data) => GitHubIssueCommentListSchema.parse(data)),
+      fetchAllPages(
+        (p) => `${baseUrl}/pulls/${prNumber}/comments?per_page=${PER_PAGE}&page=${p}`,
+        GitHubReviewCommentListSchema
+      ),
+      fetchAllPages(
+        (p) => `${baseUrl}/issues/${prNumber}/comments?per_page=${PER_PAGE}&page=${p}`,
+        GitHubIssueCommentListSchema
+      ),
     ]);
 
     const comments: ReviewComment[] = [];
@@ -290,6 +363,159 @@ export class GitHubPullRequestReviewConnector implements ReviewConnector {
     }
 
     log.debug({ threadId }, "resolved review thread via GraphQL");
+  }
+
+  // ─── CI check failures ──────────────────────────────────────────────────────
+
+  /**
+   * Fetches failed GitHub Actions check runs for the PR's head commit and returns
+   * them as ReviewComment objects. Comment IDs use the stable `"ci-run-{runId}"`
+   * prefix so the feedback pipeline deduplicates them across poll ticks.
+   *
+   * For each failed run the comment body includes:
+   *  - run name + conclusion
+   *  - output title + summary (truncated to 2 000 chars)
+   *  - up to 20 per-file annotations (path:line + message)
+   */
+  async getCICheckFailures(changeId: ExternalChangeId): Promise<ReviewComment[]> {
+    const prNumber = this.parsePrNumber(String(changeId));
+    const baseUrl = `${this.config.apiBaseUrl}/repos/${this.config.owner}/${this.config.repo}`;
+
+    // Resolve head SHA
+    const pr = GitHubPrSchema.parse(await this.fetchJson(this.prUrl(prNumber)));
+    const sha = pr.head.sha;
+
+    // Fetch all check runs for this commit
+    let failedRuns: z.infer<typeof CheckRunSchema>[];
+    try {
+      const data = CheckRunListResponseSchema.parse(
+        await this.fetchJson(`${baseUrl}/commits/${sha}/check-runs?per_page=100`)
+      );
+      const FAILURE_CONCLUSIONS = new Set(["failure", "timed_out", "action_required"]);
+      failedRuns = data.check_runs.filter(
+        (r) => r.status === "completed" && r.conclusion != null && FAILURE_CONCLUSIONS.has(r.conclusion)
+      );
+    } catch (err) {
+      log.warn({ changeId, err }, "getCICheckFailures: failed to fetch check runs");
+      return [];
+    }
+
+    const results: ReviewComment[] = [];
+
+    for (const run of failedRuns.slice(0, 5)) {
+      // Fetch annotations (per-file errors) — non-fatal if unavailable
+      let annotationLines = "";
+      try {
+        const annotations = CheckAnnotationListSchema.parse(
+          await this.fetchJson(`${baseUrl}/check-runs/${run.id}/annotations?per_page=50`)
+        );
+        if (annotations.length > 0) {
+          annotationLines =
+            "\n\nAnnotations:\n" +
+            annotations
+              .slice(0, 20)
+              .map((a) => `  ${a.path}:${a.start_line} [${a.annotation_level}] ${a.title ?? a.message}`)
+              .join("\n");
+        }
+      } catch (annotationErr) {
+        log.debug({ changeId, runId: run.id, err: annotationErr }, "could not fetch CI annotations (non-fatal)");
+      }
+
+      const outputParts: string[] = [];
+      const title = run.output?.title;
+      const summary = run.output?.summary;
+      const text = run.output?.text;
+      if (title) outputParts.push(title);
+      if (summary) outputParts.push(summary.slice(0, 2000));
+      if (text && !summary) outputParts.push(text.slice(0, 2000));
+
+      const outputText = outputParts.length > 0 ? `\n${outputParts.join("\n")}` : "";
+      const message =
+        `CI check "${run.name}" failed (${run.conclusion ?? "unknown"}).${outputText}${annotationLines}`.trim();
+
+      const completedAt = run.completed_at ?? run.started_at;
+      results.push({
+        id: `ci-run-${run.id}`,
+        author: "github-actions[bot]",
+        message,
+        filePath: undefined,
+        line: undefined,
+        unresolved: true,
+        patchset: 0,
+        updatedAt: completedAt ? new Date(completedAt) : new Date(),
+      });
+    }
+
+    log.info({ changeId, failedCount: failedRuns.length, reported: results.length }, "fetched CI check failures");
+    return results;
+  }
+
+  // ─── Review discovery ────────────────────────────────────────────────────────
+
+  /**
+   * Returns all open PRs across `repos` where VE has been added as a requested
+   * reviewer. The connector's configured `owner`/`repo` are ignored here —
+   * each repo key is parsed from the `"owner/repo"` strings passed in.
+   */
+  async getOpenReviewAssignments(repos: string[]): Promise<ReviewAssignmentDiscovery[]> {
+    const veLogin = await this.resolveLogin();
+    const results: ReviewAssignmentDiscovery[] = [];
+
+    for (const repoKey of repos) {
+      const slash = repoKey.indexOf("/");
+      if (slash <= 0) {
+        log.warn({ repoKey }, "getOpenReviewAssignments: invalid repo key, expected owner/repo");
+        continue;
+      }
+      const owner = repoKey.slice(0, slash);
+      const repo = repoKey.slice(slash + 1);
+
+      let prs: z.infer<typeof GitHubPrListSchema> = [];
+      try {
+        const PER_PAGE = 100;
+        const MAX_PAGES = 5; // Cap at 500 PRs per repo
+        let page = 1;
+        let batch: z.infer<typeof GitHubPrListSchema>;
+        do {
+          batch = GitHubPrListSchema.parse(
+            await this.fetchJson(
+              `${this.config.apiBaseUrl}/repos/${owner}/${repo}/pulls?state=open&per_page=${PER_PAGE}&page=${page}`
+            )
+          );
+          prs = prs.concat(batch);
+          page += 1;
+        } while (batch.length === PER_PAGE && page <= MAX_PAGES);
+      } catch (err) {
+        log.warn({ repoKey, err }, "getOpenReviewAssignments: failed to fetch PRs");
+        continue;
+      }
+
+      for (const pr of prs) {
+        if (!pr.requested_reviewers.some((r) => r.login === veLogin)) continue;
+        results.push({
+          changeId: `${repoKey}#${pr.number}`,
+          project: repoKey,
+          subject: pr.title,
+        });
+      }
+    }
+
+    log.debug({ repos: repos.length, found: results.length }, "review assignment poll complete");
+    return results;
+  }
+
+  /** Resolve VE's GitHub login: uses configured value or fetches from GET /user once. */
+  private loginPromise: Promise<string> | undefined;
+  private async resolveLogin(): Promise<string> {
+    if (this.config.virtualEngineerUserLogin) return this.config.virtualEngineerUserLogin;
+    this.loginPromise ??= this.fetchJson<{ login: string }>(`${this.config.apiBaseUrl}/user`)
+      .then((user) => {
+        if (typeof user.login !== "string" || !user.login) {
+          throw new Error("GitHub /user response missing expected 'login' field");
+        }
+        return user.login;
+      });
+    return this.loginPromise;
   }
 
   // ─── Helpers ────────────────────────────────────────────────────────────────

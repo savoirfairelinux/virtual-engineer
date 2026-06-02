@@ -219,6 +219,61 @@ describe("GerritStreamEventsManager", () => {
     }));
   });
 
+  it("comment-added: injects stream-event comment payload into triggerFeedbackForChange", async () => {
+    // Regression: Gerrit `gerrit query --comments` does not reliably return
+    // top-level change messages, so the stream event payload is the authoritative
+    // source of feedback text for comment-added events.
+    const child = new FakeChildProcess();
+    const { manager, orchestrator } = createManager([child]);
+
+    await manager.reconcile([makeIntegration("gerrit-a")]);
+    child.emit("spawn");
+
+    child.stdout.write(
+      JSON.stringify({
+        type: "comment-added",
+        change: { id: "Ireview" },
+        author: { username: "alice", email: "alice@example.com" },
+        comment: "Patch Set 1:\n\nPlease add documentation for each function",
+        eventCreatedOn: 1710000500,
+      }) + "\n"
+    );
+    await flushAsyncWork();
+
+    expect(orchestrator.triggerFeedbackForChange).toHaveBeenCalledWith(
+      "gerrit-a",
+      "Ireview",
+      [expect.objectContaining({
+        id: "gerrit-msg-1710000500",
+        author: "alice@example.com",
+        message: "Please add documentation for each function",
+        unresolved: true,
+      })]
+    );
+  });
+
+  it("comment-added: skips stream-event comment authored by VE itself", async () => {
+    const child = new FakeChildProcess();
+    const { manager, orchestrator } = createManager([child]);
+
+    await manager.reconcile([makeIntegration("gerrit-a")]);
+    child.emit("spawn");
+
+    child.stdout.write(
+      JSON.stringify({
+        type: "comment-added",
+        change: { id: "Iself" },
+        author: { username: VE_SSH_USER },
+        comment: "Patch Set 1:\n\nUploaded a fix",
+        eventCreatedOn: 1710000600,
+      }) + "\n"
+    );
+    await flushAsyncWork();
+
+    // Falls through to 2-arg call (no stream comments injected)
+    expect(orchestrator.triggerFeedbackForChange).toHaveBeenCalledWith("gerrit-a", "Iself");
+  });
+
   it("starts and stops one listener per active Gerrit integration", async () => {
     const childA = new FakeChildProcess();
     const childB = new FakeChildProcess();
@@ -460,6 +515,52 @@ describe("GerritStreamEventsManager", () => {
     expect(orchestrator.triggerFeedbackForChange).toHaveBeenCalledWith("gerrit-a", "Ip2");
     expect(orchestrator.triggerFeedbackForChange).toHaveBeenCalledWith("gerrit-a", "Ic");
     expect(reviewTrigger.triggerReviewForChange).not.toHaveBeenCalled();
+  });
+
+  it("orchestrator errors during event processing are caught and logged — listener stays alive and does not cause an unhandled rejection", async () => {
+    const child = new FakeChildProcess();
+    const { manager, orchestrator } = createManager([child]);
+
+    // Simulate an agent timeout propagating back through triggerFeedbackForChange
+    (orchestrator.triggerFeedbackForChange as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error("Agent timed out after 600000ms")
+    );
+
+    await manager.reconcile([makeIntegration("gerrit-a")]);
+    child.emit("spawn");
+    child.stdout.write(JSON.stringify({ type: "comment-added", change: { id: "Ifail" } }) + "\n");
+    await flushAsyncWork();
+
+    // The error must be logged — not thrown as an unhandled rejection
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ integrationId: "gerrit-a" }),
+      "error processing Gerrit stream event"
+    );
+    // The listener must still be alive after the error
+    expect(manager.getStatus("gerrit-a")).toEqual(expect.objectContaining({ state: "connected" }));
+  });
+
+  it("event processing continues after a failed event — subsequent events are still dispatched", async () => {
+    const child = new FakeChildProcess();
+    const { manager, orchestrator } = createManager([child]);
+
+    const callOrder: string[] = [];
+    (orchestrator.triggerFeedbackForChange as ReturnType<typeof vi.fn>)
+      .mockRejectedValueOnce(new Error("first call fails"))
+      .mockImplementation(async () => { callOrder.push("ok"); });
+
+    await manager.reconcile([makeIntegration("gerrit-a")]);
+    child.emit("spawn");
+
+    child.stdout.write(
+      JSON.stringify({ type: "comment-added", change: { id: "Ifail" } }) + "\n" +
+      JSON.stringify({ type: "comment-added", change: { id: "Iok" } }) + "\n"
+    );
+    await flushAsyncWork();
+
+    // First call fails (logged), second call succeeds
+    expect(logger.error).toHaveBeenCalledOnce();
+    expect(callOrder).toEqual(["ok"]);
   });
 
   // ── serialized event processing ─────────────────────────────────────────────

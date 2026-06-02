@@ -10,12 +10,17 @@ import type {
 } from "../../agents/providerAuthService.js";
 
 /**
- * Copilot integration descriptor. Auth uses GitHub OAuth device flow.
- * The integration config stores only the encrypted session token; the model lives on the `agents` table.
+ * Copilot integration descriptor. Auth uses GitHub OAuth device flow or a
+ * user-provided Personal Access Token (PAT).
+ * The integration config stores the session/token; the model lives on the `agents` table.
  */
 export const copilotConfigSchema = z.object({
+  /** Auth mode: OAuth device flow or explicit Personal Access Token. */
+  authMode: z.enum(["oauth", "pat"]).default("oauth"),
   /** Encrypted OAuth session token (set by the device flow, not user-entered). */
   sessionToken: z.string().optional(),
+  /** Personal Access Token entered directly by the user (stored when authMode is "pat"). */
+  token: z.string().optional(),
   /** Accepted but discarded — model lives on the agents table. */
   model: z.string().optional().transform(() => undefined),
 });
@@ -29,8 +34,26 @@ export function createCopilotDescriptor(adminAuthSecret?: string): PluginDescrip
     name: "GitHub Copilot",
     category: "agent",
     configSchema: copilotConfigSchema,
-    // sessionToken is hidden: written by the OAuth flow, masked on read, preserved on update.
     requiredFields: [
+      {
+        key: "authMode",
+        label: "Auth Mode",
+        type: "select",
+        required: true,
+        options: [
+          { value: "oauth", label: "OAuth Device Flow" },
+          { value: "pat", label: "Personal Access Token" },
+        ],
+      },
+      {
+        key: "token",
+        label: "Personal Access Token",
+        type: "password",
+        required: false,
+        placeholder: "ghp_… or github_pat_…",
+        dependsOn: { field: "authMode", value: "pat" },
+      },
+      // sessionToken is hidden: written by the OAuth flow, masked on read, preserved on update.
       {
         key: "sessionToken",
         label: "Session Token",
@@ -42,6 +65,7 @@ export function createCopilotDescriptor(adminAuthSecret?: string): PluginDescrip
     oauth: {
       mode: "device",
       tokenField: "sessionToken",
+      dependsOn: { field: "authMode", value: "oauth" },
       providerName: "GitHub",
       heading: "GitHub Copilot Authentication",
       connectLabel: "Connect with GitHub",

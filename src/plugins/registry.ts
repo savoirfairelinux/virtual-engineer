@@ -26,10 +26,9 @@ export const PLUGIN_CAPABILITIES = [
 
 export type PluginCapability = (typeof PLUGIN_CAPABILITIES)[number];
 
-export interface PluginVisibilityCondition {
-  field: string;
-  value: string;
-}
+export type PluginVisibilityCondition =
+  | { field: string; value: string; allOf?: undefined }
+  | { allOf: Array<{ field: string; value: string }>; field?: undefined; value?: undefined };
 
 /** Metadata for a single configuration field rendered in the admin UI form. */
 export interface PluginField {

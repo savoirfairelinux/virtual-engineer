@@ -568,6 +568,44 @@ describe("SqliteStateStore", () => {
       expect(sorted[0]?.status).toBe("OPEN");
       expect(sorted[1]?.status).toBe("MERGED");
     });
+
+    it("orphanExcessChanges marks rows beyond maxCommitIndex as ORPHANED", async () => {
+      const taskId = makeTaskId(randomUUID());
+      await store.createTask(taskId, makeTicketId("repo-orphan"));
+
+      await store.saveChangePerRepository(taskId, "root", "I000", null, "OPEN", "", "gerrit", 0, "h0");
+      await store.saveChangePerRepository(taskId, "root", "I001", null, "OPEN", "", "gerrit", 1, "h1");
+      await store.saveChangePerRepository(taskId, "root", "I002", null, "OPEN", "", "gerrit", 2, "h2");
+
+      // Retry produced only 1 commit (index 0), so orphan indices > 0
+      const count = await store.orphanExcessChanges(taskId, "root", 0);
+      expect(count).toBe(2);
+
+      const changes = await store.getChangesForTask(taskId);
+      const sorted = changes.sort((a, b) => a.commitIndex - b.commitIndex);
+      expect(sorted[0]?.status).toBe("OPEN");
+      expect(sorted[1]?.status).toBe("ORPHANED");
+      expect(sorted[2]?.status).toBe("ORPHANED");
+    });
+
+    it("orphanExcessChanges skips already-terminal rows", async () => {
+      const taskId = makeTaskId(randomUUID());
+      await store.createTask(taskId, makeTicketId("repo-orphan-skip"));
+
+      await store.saveChangePerRepository(taskId, "root", "I000", null, "OPEN", "", "gerrit", 0, "h0");
+      await store.saveChangePerRepository(taskId, "root", "I001", null, "MERGED", "", "gerrit", 1, "h1");
+      await store.saveChangePerRepository(taskId, "root", "I002", null, "OPEN", "", "gerrit", 2, "h2");
+
+      // Orphan indices > 0: row at index 1 is MERGED so should be skipped
+      const count = await store.orphanExcessChanges(taskId, "root", 0);
+      expect(count).toBe(1);
+
+      const changes = await store.getChangesForTask(taskId);
+      const sorted = changes.sort((a, b) => a.commitIndex - b.commitIndex);
+      expect(sorted[0]?.status).toBe("OPEN");
+      expect(sorted[1]?.status).toBe("MERGED");  // untouched
+      expect(sorted[2]?.status).toBe("ORPHANED");
+    });
   });
 
   describe("abandonTask", () => {

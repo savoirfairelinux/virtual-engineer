@@ -5,7 +5,10 @@ import type {
   IntegrationBindingContext,
   ProjectRecord,
   ProjectTicketSourceRecord,
+  ProjectReviewConfig,
   ProjectId,
+  ReviewDiscoveryConnector,
+  ReviewAssignmentDiscovery,
 } from "../interfaces.js";
 import { makeTicketId, TERMINAL_STATES } from "../interfaces.js";
 import { getLogger } from "../logger.js";
@@ -24,6 +27,15 @@ export interface PollingConfig {
 export interface ProjectAwareStore {
   listProjects(filter?: { type?: "coding" | "review"; enabled?: boolean }): Promise<ProjectRecord[]>;
   getProjectTicketSource(projectId: ProjectId): Promise<ProjectTicketSourceRecord | null>;
+  getProjectReviewConfig(projectId: ProjectId): Promise<ProjectReviewConfig | null>;
+}
+
+/**
+ * Trigger interface used by the polling loop to start a review task for a
+ * newly discovered PR/MR where VE has been assigned as reviewer.
+ */
+export interface ReviewAssignmentTrigger {
+  triggerReview(integrationId: string, changeId: string): Promise<void>;
 }
 
 /**
@@ -32,6 +44,12 @@ export interface ProjectAwareStore {
 export interface ProjectAwarePluginManager {
   getConnectorForIntegration<T>(integrationId: string): T | null;
   createConnectorForIntegration?<T>(integrationId: string, context?: IntegrationBindingContext): Promise<T | null>;
+  /**
+   * Returns true when the integration's descriptor declares a `streamEvents`
+   * factory, meaning review discovery is driven by a live event stream rather
+   * than polling.  Optional so tests that don't need this can omit it.
+   */
+  integrationHasStreamEvents?(integrationId: string): boolean;
 }
 
 /**
@@ -59,6 +77,9 @@ export class PollingLoop {
   private ticketBackoffUntil = 0;
   private projectStore: ProjectAwareStore | null = null;
   private pluginManager: ProjectAwarePluginManager | null = null;
+  private reviewTrigger: ReviewAssignmentTrigger | null = null;
+  /** Per-changeId timestamp of last review poll — prevents redundant API calls within the same interval. */
+  private readonly reviewPollCooldowns = new Map<string, number>();
 
   constructor(
     private readonly config: PollingConfig,
@@ -67,11 +88,13 @@ export class PollingLoop {
     projectMode?: {
       projectStore: ProjectAwareStore;
       pluginManager: ProjectAwarePluginManager;
+      reviewTrigger?: ReviewAssignmentTrigger | undefined;
     }
   ) {
     if (projectMode) {
       this.projectStore = projectMode.projectStore;
       this.pluginManager = projectMode.pluginManager;
+      this.reviewTrigger = projectMode.reviewTrigger ?? null;
     }
   }
 
@@ -87,6 +110,11 @@ export class PollingLoop {
       this.projectStore = null;
       this.pluginManager = null;
     }
+  }
+
+  /** Set or clear the review trigger used by `pollReviewProjects`. */
+  setReviewTrigger(trigger: ReviewAssignmentTrigger | null): void {
+    this.reviewTrigger = trigger;
   }
 
   /** Reset exponential backoff counters after a successful poll. */
@@ -159,12 +187,12 @@ export class PollingLoop {
 
   /** Dispatch to project-mode polling; a no-op when no project store is configured. */
   private async pollTickets(): Promise<void> {
-    log.debug("polling ticket system for assigned tickets");
-    // Project-mode polling is the only supported path. When no projects are
-    // configured the loop is effectively idle.
+    log.debug("polling all projects and active tasks");
+    const tasks: Array<Promise<void>> = [this.pollInReviewTasks()];
     if (this.projectStore && this.pluginManager) {
-      await this.pollProjectTickets();
+      tasks.push(this.pollProjectTickets(), this.pollReviewProjects());
     }
+    await Promise.all(tasks);
   }
 
   // ─── Project-mode iteration ────────────────────────────────────────────────
@@ -240,6 +268,123 @@ export class PollingLoop {
       } catch (err) {
         log.warn({ projectId: project.id, err }, "project ticket poll failed");
       }
+    }
+  }
+
+  // ─── Review assignment polling ─────────────────────────────────────────────
+
+  /**
+   * For each enabled review project, poll open PRs/MRs where VE is a
+   * requested reviewer and fire the review trigger for each new discovery.
+   * Requires `reviewTrigger` to be set; no-op otherwise.
+   */
+  async pollReviewProjects(): Promise<void> {
+    if (!this.projectStore || !this.pluginManager || !this.reviewTrigger) return;
+    const projects = await this.projectStore.listProjects({ type: "review", enabled: true });
+    log.debug({ count: projects.length }, "polling review project assignments");
+
+    for (const project of projects) {
+      const reviewConfig = await this.projectStore.getProjectReviewConfig(project.id);
+      if (!reviewConfig) {
+        log.debug({ projectId: project.id }, "skipping review project: no review config");
+        continue;
+      }
+
+      // Stream-events integrations (e.g. Gerrit) receive review assignments
+      // via a persistent SSH connection — they never need to be polled.
+      if (this.pluginManager.integrationHasStreamEvents?.(reviewConfig.integrationId)) {
+        log.trace(
+          { projectId: project.id, integrationId: reviewConfig.integrationId },
+          "skipping review project poll: integration uses stream events for review discovery"
+        );
+        continue;
+      }
+
+      const connector = this.pluginManager.getConnectorForIntegration<ReviewDiscoveryConnector>(
+        reviewConfig.integrationId
+      );
+      if (!connector || typeof (connector as ReviewDiscoveryConnector).getOpenReviewAssignments !== "function") {
+        log.debug(
+          { projectId: project.id, integrationId: reviewConfig.integrationId },
+          "skipping review project: connector does not support review discovery"
+        );
+        continue;
+      }
+
+      let assignments: ReviewAssignmentDiscovery[];
+      try {
+        assignments = await connector.getOpenReviewAssignments(reviewConfig.repos);
+      } catch (err) {
+        log.warn({ projectId: project.id, err }, "review assignment poll failed");
+        continue;
+      }
+
+      const trigger = this.reviewTrigger;
+      const now = Date.now();
+      const cooldownMs = this.config.ticketIntervalMs;
+      for (const assignment of assignments) {
+        const cooldownKey = `${reviewConfig.integrationId}:${assignment.changeId}`;
+        const lastTriggered = this.reviewPollCooldowns.get(cooldownKey);
+        if (lastTriggered !== undefined && now - lastTriggered < cooldownMs) {
+          log.debug({ changeId: assignment.changeId }, "skipping recently triggered review assignment");
+          continue;
+        }
+        this.reviewPollCooldowns.set(cooldownKey, now);
+        Promise.resolve()
+          .then(() => trigger.triggerReview(reviewConfig.integrationId, assignment.changeId))
+          .catch((err: unknown) =>
+            log.error(
+              { projectId: project.id, changeId: assignment.changeId, err },
+              "failed to trigger review for discovered assignment"
+            )
+          );
+      }
+    }
+  }
+
+  // ─── IN_REVIEW code-gen task polling ──────────────────────────────────────
+
+  /**
+   * For each active code-gen task stuck in `IN_REVIEW`, re-check the review
+   * system for new CHANGES_REQUESTED feedback. This is the polling equivalent
+   * of the Gerrit stream-events trigger for GitHub / GitLab integrations.
+   */
+  async pollInReviewTasks(): Promise<void> {
+    const activeTasks = await this.stateStore.getActiveTasks();
+    const inReviewTasks = activeTasks.filter(
+      (t) => t.taskType === "code-gen" && t.state === "IN_REVIEW" && t.externalChangeId != null
+    );
+    log.debug({ count: inReviewTasks.length }, "polling in-review code-gen tasks");
+
+    const now = Date.now();
+    const cooldownMs = this.config.ticketIntervalMs;
+
+    // Evict stale cooldown entries for tasks that are no longer IN_REVIEW.
+    const activeChangeIds = new Set(inReviewTasks.map((t) => t.externalChangeId!));
+    for (const key of this.reviewPollCooldowns.keys()) {
+      if (!activeChangeIds.has(key as import("../interfaces.js").ExternalChangeId)) {
+        this.reviewPollCooldowns.delete(key);
+      }
+    }
+
+    for (const task of inReviewTasks) {
+      // externalChangeId is guaranteed non-null by the filter above
+      const changeId = task.externalChangeId!;
+
+      // Skip tasks already polled within the current interval to avoid
+      // flooding the review API when many tasks are IN_REVIEW simultaneously.
+      const lastPolled = this.reviewPollCooldowns.get(changeId);
+      if (lastPolled !== undefined && now - lastPolled < cooldownMs) {
+        log.debug({ taskId: task.taskId, changeId }, "skipping recently polled in-review task");
+        continue;
+      }
+      this.reviewPollCooldowns.set(changeId, now);
+
+      Promise.resolve()
+        .then(() => this.orchestrator.handleReviewEvent(changeId))
+        .catch((err: unknown) =>
+          log.error({ taskId: task.taskId, changeId, err }, "failed to check in-review task progress")
+        );
     }
   }
 

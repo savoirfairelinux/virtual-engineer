@@ -1,8 +1,8 @@
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { promisify } from "node:util";
-import type { Integration } from "../interfaces.js";
+import type { Integration, ReviewComment } from "../interfaces.js";
 import { getLogger } from "../logger.js";
-import { buildSshHostKeyOptions } from "./gerritSshClient.js";
+import { buildSshHostKeyOptions, PREAMBLE_RE, COMMENTS_SUMMARY_RE } from "./gerritSshClient.js";
 import type {
   IntegrationEventStreamDependencies,
   IntegrationEventStreamManager,
@@ -54,6 +54,8 @@ interface GerritStreamHandle {
   stopRequested: boolean;
   /** True once the first byte of stdout data has been received (SSH handshake complete). */
   hasReceivedData: boolean;
+  /** Tail of the event-processing promise chain — serialises events and catches errors. */
+  processingChain: Promise<void>;
 }
 
 export interface GerritStreamEventsManagerOptions extends IntegrationEventStreamDependencies {
@@ -190,6 +192,7 @@ export class GerritStreamEventsManager implements IntegrationEventStreamManager 
       reconnectTimer: null,
       stopRequested: false,
       hasReceivedData: false,
+      processingChain: Promise.resolve(),
     };
     this.handles.set(integration.id, handle);
     this.statuses.set(integration.id, {
@@ -454,7 +457,11 @@ export class GerritStreamEventsManager implements IntegrationEventStreamManager 
     for (const line of lines) {
       const trimmed = line.trim();
       if (!trimmed) continue;
-      void this.processStreamLine(handle, trimmed);
+      handle.processingChain = handle.processingChain
+        .then(() => this.processStreamLine(handle, trimmed))
+        .catch((err: unknown) => {
+          log.error({ integrationId: handle.integration.id, err }, "error processing Gerrit stream event");
+        });
     }
   }
 
@@ -553,11 +560,19 @@ export class GerritStreamEventsManager implements IntegrationEventStreamManager 
         }
         return;
       }
-      case "comment-added":
-        // Comments do not trigger a new review — only patchset-created and
-        // reviewer-added should start a review cycle.
-        await this.options.orchestrator.triggerFeedbackForChange(handle.integration.id, changeId);
+      case "comment-added": {
+        // Extract the review comment from the stream event payload — this is the
+        // authoritative source. Gerrit's `gerrit query --comments` only returns
+        // inline file comments, not top-level change messages from Reply, so
+        // querying SSH here would return nothing for general review feedback.
+        const streamComment = extractStreamComment(payload, handle.config.sshUser);
+        if (streamComment) {
+          await this.options.orchestrator.triggerFeedbackForChange(handle.integration.id, changeId, [streamComment]);
+        } else {
+          await this.options.orchestrator.triggerFeedbackForChange(handle.integration.id, changeId);
+        }
         return;
+      }
     }
   }
 }
@@ -667,6 +682,43 @@ function extractPatchsetKind(payload: unknown): string | null {
   if (typeof patchSet !== "object" || patchSet === null) return null;
   const kind = (patchSet as Record<string, unknown>)["kind"];
   return typeof kind === "string" && kind.length > 0 ? kind : null;
+}
+
+/**
+ * Extract a review comment from a `comment-added` stream event payload.
+ * Returns null when the comment is from the VE bot, empty after preamble stripping, or absent.
+ */
+function extractStreamComment(payload: unknown, sshUser: string): ReviewComment | null {
+  if (typeof payload !== "object" || payload === null) return null;
+  const p = payload as Record<string, unknown>;
+
+  const raw = p["comment"];
+  if (typeof raw !== "string" || !raw.trim()) return null;
+
+  const author = p["author"];
+  const authorUsername = (typeof author === "object" && author !== null)
+    ? (author as Record<string, unknown>)["username"]
+    : undefined;
+  if (sshUser && authorUsername === sshUser) return null;
+
+  const body = raw.replace(PREAMBLE_RE, "").replace(COMMENTS_SUMMARY_RE, "").trim();
+  if (!body) return null;
+
+  const ts = typeof p["eventCreatedOn"] === "number" ? (p["eventCreatedOn"] as number) : Math.floor(Date.now() / 1000);
+  const authorEmail = (typeof author === "object" && author !== null)
+    ? String((author as Record<string, unknown>)["email"] ?? (author as Record<string, unknown>)["username"] ?? "unknown")
+    : "unknown";
+
+  return {
+    id: `gerrit-msg-${ts}`,
+    author: authorEmail,
+    message: body,
+    filePath: undefined,
+    line: undefined,
+    unresolved: true,
+    patchset: 0,
+    updatedAt: new Date(ts * 1000),
+  };
 }
 
 /** Extract the Gerrit Change-Id or change number from a raw stream-events payload. */

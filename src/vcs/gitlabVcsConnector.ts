@@ -11,6 +11,7 @@ import type { ReviewComment } from "../interfaces.js";
 import { ReviewApiError } from "../interfaces.js";
 import { GitLabHttpClient } from "../connectors/gitlabHttpClient.js";
 import { execInVolume } from "../workspace/dockerVolume.js";
+import { redactUrls } from "../utils/redactUrl.js";
 
 const log = getLogger("gitlab-vcs");
 
@@ -149,7 +150,7 @@ export class GitLabVcsConnector implements VcsConnector {
       };
     } catch (err: unknown) {
       const error = err instanceof Error ? err : new Error(String(err));
-      throw new Error(`Failed to push to GitLab: ${error.message.slice(0, 500)}`);
+      throw new Error(`Failed to push to GitLab: ${redactUrls(error.message.slice(0, 500))}`);
     }
   }
 
@@ -210,7 +211,7 @@ export class GitLabVcsConnector implements VcsConnector {
       };
     } catch (err: unknown) {
       const error = err instanceof Error ? err : new Error(String(err));
-      throw new Error(`Failed to push directly to GitLab: ${error.message.slice(0, 500)}`);
+      throw new Error(`Failed to push directly to GitLab: ${redactUrls(error.message.slice(0, 500))}`);
     }
   }
 
@@ -252,7 +253,7 @@ export class GitLabVcsConnector implements VcsConnector {
     });
 
     if (result.exitCode !== 0) {
-      throw new Error(`Failed to push to GitLab (volume): ${result.stderr.slice(0, 500)}`);
+      throw new Error(`Failed to push to GitLab (volume): ${redactUrls(result.stderr.slice(0, 500))}`);
     }
 
     // Create or find MR via REST API (host-side)
@@ -296,7 +297,7 @@ export class GitLabVcsConnector implements VcsConnector {
     });
 
     if (result.exitCode !== 0) {
-      throw new Error(`Failed to push directly to GitLab (volume): ${result.stderr.slice(0, 500)}`);
+      throw new Error(`Failed to push directly to GitLab (volume): ${redactUrls(result.stderr.slice(0, 500))}`);
     }
 
     // Get HEAD subject for MR title

@@ -150,7 +150,7 @@ Copy `.env.example` → `.env`. All provider credentials live in the DB (admin U
 | `ADMIN_AUTH_SECRET` | — | HMAC-SHA256 Bearer secret — recommended for exposed instances |
 | `MAX_AGENT_CYCLES` | `3` | Max Copilot cycles per task before `FAILED` |
 | `MAX_RETRY_ATTEMPTS` | `5` | Max times a ticket can be retried across all tasks |
-| `AGENT_TIMEOUT_MS` | `600000` | Host-side agent timeout (ms) |
+| `AGENT_TIMEOUT_MS` | `1800000` | Host-side agent timeout (ms, 30 min) |
 | `AGENT_CONTAINER_IMAGE` | `virtual-engineer-workspace:latest` | |
 | `AGENT_DOCKER_NETWORK` | `virtual-engineer_ve-agent-net` | Bridge network for agent containers (created by `init-infra.sh`) |
 

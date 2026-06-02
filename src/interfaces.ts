@@ -45,6 +45,8 @@ export interface AgentRecord {
   integrationId: string | null;
   systemPromptId: string | null;
   instructionsPromptId: string | null;
+  /** Optional override used on retry (feedback) cycles. Falls back to instructionsPromptId when null. */
+  feedbackInstructionsPromptId: string | null;
   maxConcurrent: number;
   enabled: boolean;
   createdAt: Date;
@@ -99,12 +101,35 @@ export interface ProjectReviewConfig {
   repos: string[];
 }
 
+/** A single PR/MR that VE has been requested to review. */
+export interface ReviewAssignmentDiscovery {
+  /** Provider-specific change ID, e.g. `"owner/repo#42"` for GitHub. */
+  changeId: string;
+  /** Repository key, e.g. `"owner/repo"`. */
+  project: string;
+  subject?: string | undefined;
+}
+
+/**
+ * Optional capability exposed by review connectors that support polling for
+ * open PRs / MRs where VE has been assigned as a reviewer.
+ *
+ * The polling loop checks for this interface on the unbound integration
+ * connector at each tick and fires a review trigger for every discovered
+ * assignment that does not yet have an active review task.
+ */
+export interface ReviewDiscoveryConnector {
+  getOpenReviewAssignments(repos: string[]): Promise<ReviewAssignmentDiscovery[]>;
+}
+
 /** Optional VE project-owned binding data used to specialize integration connectors at runtime. */
 export interface IntegrationBindingContext {
   /** Ticket-system project selector owned by the VE project configuration. */
   ticketProjectKey?: string | undefined;
   /** Repository key owned by the VE project configuration. */
   repoKey?: string | undefined;
+  /** Target branch for PR/MR creation, taken from the project push-target config. */
+  targetBranch?: string | undefined;
 }
 
 /** Resolved agent config after merging project override on top of agent defaults. */
@@ -115,6 +140,8 @@ export interface ResolvedAgentConfig {
   encryptedSessionToken: string | undefined;
   systemPromptId: string | null;
   instructionsPromptId: string | null;
+  /** Optional override used on retry (feedback) cycles. Falls back to instructionsPromptId when null. */
+  feedbackInstructionsPromptId: string | null;
   /** Any other model-related fields preserved from agent + override (override wins). */
   extra: Record<string, unknown>;
 }
@@ -179,11 +206,11 @@ export const TERMINAL_STATES: ReadonlySet<TaskState> = new Set<TaskState>([
 // ─── Agent interfaces ─────────────────────────────────────────────────────────
 
 export interface FeedbackItem {
-  source: "gerrit_review" | "test_failure" | "lint_failure";
+  source: "gerrit_review" | "github_review" | "test_failure" | "lint_failure" | "ci_failure";
   content: string;
   filePath?: string | undefined;
   line?: number | undefined;
-  _gerritCommentId?: string | undefined; // For gerrit_review source — used to resolve comments
+  _gerritCommentId?: string | undefined; // For gerrit_review source — used to resolve Gerrit comments
 }
 
 /** Describes one repository entry in a multi-repo workspace layout. */
@@ -209,8 +236,13 @@ export interface AgentSession {
   pushRef: string;
   /** Existing external change ID to reuse (Gerrit: reuses the patchset; GitLab: reuses the MR branch). */
   existingChangeId?: ExternalChangeId | undefined;
-  /** Per-repo change IDs for retry cycles (keyed by repoKey). */
-  perRepoChangeIds?: Record<string, string> | undefined;
+  /**
+   * Per-repo change IDs for retry cycles.
+   * When value is a string, it is the Change-Id for commitIndex 0 (legacy/single-commit).
+   * When value is a Record<string, string>, keys are string commit indices ("0", "1", …)
+   * mapped to their respective Change-Ids.
+   */
+  perRepoChangeIds?: Record<string, string | Record<string, string>> | undefined;
 
   /** Git identity configured inside the agent session */
   gitAuthorName: string;
@@ -421,6 +453,11 @@ export interface WorkspaceRunner {
     handle: WorkspaceHandle,
     opts: GerritPatchsetOptions
   ): Promise<void>;
+  /** Fetch a Gerrit patchset ref and cherry-pick it on top of the current HEAD. */
+  cherryPickGerritPatchset?(
+    handle: WorkspaceHandle,
+    opts: GerritPatchsetOptions
+  ): Promise<void>;
   /** Run the review agent container against the cloned+patched workspace. */
   runReviewInDocker?(
     handle: WorkspaceHandle,
@@ -472,6 +509,12 @@ export type GerritComment = ReviewComment;
 
 /** System-agnostic interface for interacting with a code review system. */
 export interface ReviewConnector {
+  /**
+   * Optional: fetch failed CI check runs (e.g. GitHub Actions) for a change and return them
+   * as ReviewComment objects for deduplication and agent feedback. Implementations should
+   * return comments with `id` prefixed `"ci-run-{runId}"` for stable deduplication.
+   */
+  getCICheckFailures?(changeId: ExternalChangeId): Promise<ReviewComment[]>;
   /** Resolve a change reference from a known Change-Id or MR IID */
   getChange(changeId: ExternalChangeId): Promise<ReviewChangeRef>;
 
@@ -926,6 +969,17 @@ export interface StateStore {
     status: string,
     changeId?: string
   ): Promise<void>;
+
+  /**
+   * Mark change_per_repository rows as ORPHANED when a retry push produces
+   * fewer commits than the previous cycle (commitIndex > maxCommitIndex).
+   * Returns the number of rows updated.
+   */
+  orphanExcessChanges(
+    taskId: TaskId,
+    repoKey: string,
+    maxCommitIndex: number
+  ): Promise<number>;
 
   /** Phase 4: link a task to a project (for project-mode iteration). */
   setTaskProjectId(taskId: TaskId, projectId: ProjectId): Promise<void>;

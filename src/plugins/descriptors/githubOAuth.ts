@@ -16,6 +16,9 @@ import {
 
 // ─── Shared Zod schemas for GitHub OAuth / auth configuration ─────────────────
 
+/** Public client ID for the GitHub CLI OAuth app (safe to embed in version control). */
+const GITHUB_COM_CLIENT_ID = "178c6fc778ccc68e1d6a";
+
 export const githubModeSchema = z.enum(["github.com", "github-enterprise"]);
 
 export const githubAuthModeSchema = z.enum(["pat", "oauth"]);
@@ -82,7 +85,12 @@ export function createGitHubDeviceOAuthHandler(
   const mode = resolveMode(cfg);
   const baseUrl = getString(cfg, "baseUrl");
   const urls = resolveGitHubUrls(mode, baseUrl);
-  const clientId = getRequiredString(cfg, "oauthClientId", "GitHub OAuth Client ID");
+  // For github.com, use the public GitHub CLI client ID — no need to supply your own.
+  // For GitHub Enterprise, a user-registered OAuth App client ID is required.
+  const clientId =
+    mode === "github.com"
+      ? GITHUB_COM_CLIENT_ID
+      : getRequiredString(cfg, "oauthClientId", "GitHub OAuth Client ID");
 
   return {
     kind: "device",
@@ -99,17 +107,28 @@ export function createGitHubDeviceOAuthHandler(
     async complete(
       input: ProviderAuthDeviceCompleteInput
     ): Promise<ProviderAuthHandlerCompleteResult> {
-      const result = await pollGitHubDeviceToken(clientId, input.deviceCode, urls.webBaseUrl);
-      if (result.status === "success") {
-        return { token: result.token.accessToken };
+      // Poll until authorized, expired, or max attempts reached (mirrors Copilot's device flow).
+      let intervalSecs = 5;
+      const maxAttempts = 72; // 6 minutes at 5s interval
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        await new Promise<void>((resolve) => setTimeout(resolve, intervalSecs * 1000));
+        const result = await pollGitHubDeviceToken(clientId, input.deviceCode, urls.webBaseUrl);
+        if (result.status === "success") {
+          return { token: result.token.accessToken };
+        }
+        if (result.status === "slow_down") {
+          intervalSecs = result.interval;
+          continue;
+        }
+        if (result.status === "pending") {
+          continue;
+        }
+        if (result.status === "expired") {
+          throw new Error("Device code expired — user did not authorize in time");
+        }
+        throw new Error(result.status === "error" ? result.error : "Device flow failed");
       }
-      if (result.status === "pending" || result.status === "slow_down") {
-        throw new Error("authorization_pending");
-      }
-      if (result.status === "expired") {
-        throw new Error("Device code expired");
-      }
-      throw new Error(result.status === "error" ? result.error : "Device flow failed");
+      throw new Error("Device flow polling timed out");
     },
   };
 }

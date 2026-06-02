@@ -3,6 +3,7 @@ import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { promisify } from "node:util";
 import { getLogger } from "../logger.js";
+import { redactUrls } from "../utils/redactUrl.js";
 
 const execFileAsync = promisify(execFile);
 const log = getLogger("docker-volume");
@@ -13,6 +14,32 @@ const DOCKER_TIMEOUT_MS = 30_000;
 export async function createVolume(name: string, purpose?: string): Promise<void> {
   await execFileAsync("docker", ["volume", "create", name], { timeout: DOCKER_TIMEOUT_MS });
   log.debug({ volume: name, ...(purpose !== undefined ? { purpose } : {}) }, "created docker volume");
+}
+
+/**
+ * Stop all containers currently using the given named volume.
+ * Called before volume removal so that a timed-out agent container does not
+ * leave the volume locked.
+ */
+export async function stopContainersUsingVolume(name: string): Promise<void> {
+  let stdout: string;
+  try {
+    ({ stdout } = await execFileAsync(
+      "docker",
+      ["ps", "-q", "--filter", `volume=${name}`],
+      { timeout: DOCKER_TIMEOUT_MS }
+    ));
+  } catch {
+    return; // docker not available or command failed — skip
+  }
+  const containerIds = stdout.split("\n").map((s) => s.trim()).filter(Boolean);
+  if (containerIds.length === 0) return;
+  try {
+    await execFileAsync("docker", ["stop", "--time", "5", ...containerIds], { timeout: 30_000 });
+    log.debug({ volume: name, containerIds }, "stopped containers using volume before removal");
+  } catch {
+    // ignore — container may have already exited by the time we stop it
+  }
 }
 
 /** Remove a named Docker volume (force — ignores "not found"). */
@@ -142,7 +169,7 @@ export async function execInVolume(opts: ExecInVolumeOptions): Promise<ExecInVol
     dockerArgs.push(opts.image, ...opts.command);
   }
 
-  log.debug({ volumeName: opts.volumeName, command: opts.command }, "execInVolume");
+  log.debug({ volumeName: opts.volumeName, command: opts.command.map(redactUrls) }, "execInVolume");
 
   try {
     const { stdout, stderr } = await execFileAsync("docker", dockerArgs, { timeout });

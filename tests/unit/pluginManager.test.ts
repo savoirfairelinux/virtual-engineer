@@ -323,7 +323,7 @@ describe("PluginManager", () => {
 
       const result = await mgr.testConnectionConfig("copilot", { sessionToken: "enc_tok" });
 
-      expect(tester).toHaveBeenCalledWith({ sessionToken: "enc_tok" });
+      expect(tester).toHaveBeenCalledWith({ authMode: "oauth", sessionToken: "enc_tok" });
       expect(result).toMatchObject({
         success: true,
         error: null,
@@ -346,6 +346,7 @@ describe("PluginManager", () => {
       });
 
       expect(tester).toHaveBeenCalledWith({
+        authMode: "oauth",
         sessionToken: "enc_tok",
       });
     });

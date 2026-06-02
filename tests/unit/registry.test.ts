@@ -415,6 +415,45 @@ describe("Plugin Registry", () => {
       // model should be transformed to undefined
       expect(parsed.model).toBeUndefined();
     });
+
+    it("defaults authMode to oauth when not specified", () => {
+      const copilotDescriptor = createCopilotDescriptor();
+      const parsed = copilotDescriptor.configSchema.parse({});
+      expect(parsed.authMode).toBe("oauth");
+    });
+
+    it("accepts authMode pat with a token", () => {
+      const copilotDescriptor = createCopilotDescriptor();
+      const parsed = copilotDescriptor.configSchema.parse({
+        authMode: "pat",
+        token: "ghp_my_pat_token",
+      });
+      expect(parsed.authMode).toBe("pat");
+      expect(parsed.token).toBe("ghp_my_pat_token");
+    });
+
+    it("exposes authMode select field and token password field with dependsOn", () => {
+      const copilotDescriptor = createCopilotDescriptor();
+      expect(copilotDescriptor.requiredFields).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ key: "authMode", type: "select" }),
+          expect.objectContaining({
+            key: "token",
+            type: "password",
+            dependsOn: { field: "authMode", value: "pat" },
+          }),
+        ])
+      );
+    });
+
+    it("oauth config has dependsOn authMode oauth", () => {
+      const copilotDescriptor = createCopilotDescriptor();
+      expect(copilotDescriptor.oauth).toEqual(
+        expect.objectContaining({
+          dependsOn: { field: "authMode", value: "oauth" },
+        })
+      );
+    });
   });
 
   describe("mock descriptor", () => {

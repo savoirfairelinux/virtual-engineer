@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { GitHubReviewProvider } from "../../src/connectors/githubReviewProvider.js";
+import { GitHubReviewProvider, parsePatchNewLineNumbers } from "../../src/connectors/githubReviewProvider.js";
 import type { ExternalChangeId } from "../../src/interfaces.js";
 
 const fetchMock = vi.fn();
@@ -82,6 +82,10 @@ describe("GitHubReviewProvider", () => {
   });
 
   it("postReviewWithComments posts an APPROVE review with inline comments", async () => {
+    // First call: files fetch for line validation; src/a.ts has line 10 in hunk
+    fetchMock.mockResolvedValueOnce(jsonResponse([
+      { filename: "src/a.ts", status: "modified", patch: "@@ -8,5 +8,5 @@\n line8\n line9\n line10\n line11\n line12" },
+    ]));
     fetchMock.mockResolvedValueOnce(jsonResponse({ id: 1 }));
     await new GitHubReviewProvider(config).postReviewWithComments!(
       cid, 1,
@@ -89,9 +93,10 @@ describe("GitHubReviewProvider", () => {
       "LGTM",
       1,
     );
-    const call = fetchMock.mock.calls[0];
-    expect(call?.[0]).toBe("https://api.github.com/repos/octocat/hello-world/pulls/42/reviews");
-    const init = call?.[1] as RequestInit;
+    // First call is the files fetch, second is the review POST
+    const reviewCall = fetchMock.mock.calls[1];
+    expect(reviewCall?.[0]).toBe("https://api.github.com/repos/octocat/hello-world/pulls/42/reviews");
+    const init = reviewCall?.[1] as RequestInit;
     expect(init.method).toBe("POST");
     const body = JSON.parse(init.body as string);
     expect(body.event).toBe("APPROVE");
@@ -125,6 +130,8 @@ describe("GitHubReviewProvider", () => {
   });
 
   it("postReviewWithComments drops file-level (line=0) comments from inline list", async () => {
+    // Files fetch returns empty → line-validation map is empty → line>0 comment passes as inline
+    fetchMock.mockResolvedValueOnce(jsonResponse([]));
     fetchMock.mockResolvedValueOnce(jsonResponse({ id: 1 }));
     await new GitHubReviewProvider(config).postReviewWithComments!(
       cid, 1,
@@ -134,11 +141,37 @@ describe("GitHubReviewProvider", () => {
       ],
       "x", -1,
     );
-    const body = JSON.parse((fetchMock.mock.calls[0]?.[1] as RequestInit).body as string);
+    const body = JSON.parse((fetchMock.mock.calls[1]?.[1] as RequestInit).body as string);
     expect(body.comments).toEqual([{ path: "src/a.ts", line: 5, body: "inline", side: "RIGHT" }]);
   });
 
+  it("folds out-of-diff inline comments into review body", async () => {
+    // Patch only covers lines 1-3; comment on line 99 is out-of-diff
+    fetchMock.mockResolvedValueOnce(jsonResponse([
+      { filename: "src/a.ts", status: "modified", patch: "@@ -1,3 +1,3 @@\n line1\n line2\n line3" },
+    ]));
+    fetchMock.mockResolvedValueOnce(jsonResponse({ id: 1 }));
+    await new GitHubReviewProvider(config).postReviewWithComments!(
+      cid, 1,
+      [
+        { file: "src/a.ts", line: 2, message: "valid", severity: "warning" },
+        { file: "src/a.ts", line: 99, message: "out-of-diff", severity: "error" },
+      ],
+      "Summary", -1,
+    );
+    const body = JSON.parse((fetchMock.mock.calls[1]?.[1] as RequestInit).body as string);
+    // Only line 2 is inline; line 99 is folded into body
+    expect(body.comments).toEqual([{ path: "src/a.ts", line: 2, body: "valid", side: "RIGHT" }]);
+    expect(body.body).toContain("Summary");
+    expect(body.body).toContain("`src/a.ts:99`");
+    expect(body.body).toContain("out-of-diff");
+  });
+
   it("allowedFiles drops comments referencing files outside the patchset", async () => {
+    // File filter drops ghost.ts; line validation fetches /files first
+    fetchMock.mockResolvedValueOnce(jsonResponse([
+      { filename: "src/a.ts", status: "modified", patch: "@@ -1,5 +1,5 @@\n line1\n line2\n line3\n line4\n line5" },
+    ]));
     fetchMock.mockResolvedValueOnce(jsonResponse({ id: 1 }));
     await new GitHubReviewProvider(config).postReviewWithComments!(
       cid, 1,
@@ -149,7 +182,7 @@ describe("GitHubReviewProvider", () => {
       "summary", -1,
       new Set(["src/a.ts"]),
     );
-    const body = JSON.parse((fetchMock.mock.calls[0]?.[1] as RequestInit).body as string);
+    const body = JSON.parse((fetchMock.mock.calls[1]?.[1] as RequestInit).body as string);
     expect(body.comments).toEqual([{ path: "src/a.ts", line: 5, body: "kept", side: "RIGHT" }]);
     expect(body.event).toBe("REQUEST_CHANGES");
     expect(body.body).toBe("summary");
@@ -187,5 +220,45 @@ describe("GitHubReviewProvider", () => {
   it("rejects invalid PR number in changeId", async () => {
     await expect(new GitHubReviewProvider(config).getChangeDetails("not-a-number" as unknown as ExternalChangeId))
       .rejects.toThrow(/Invalid GitHub PR number/);
+  });
+});
+
+describe("parsePatchNewLineNumbers", () => {
+  it("returns valid new-file line numbers from a simple hunk", () => {
+    // @@ -1,3 +1,4 @@ means new file starts at 1
+    const patch = "@@ -1,3 +1,4 @@\n line1\n line2\n-removed\n+added\n line3";
+    const valid = parsePatchNewLineNumbers(patch);
+    // context lines 1,2,4 + added line 3 → new-file lines 1,2,3,4
+    expect(valid).toEqual(new Set([1, 2, 3, 4]));
+  });
+
+  it("handles multiple hunks", () => {
+    const patch =
+      "@@ -1,2 +1,2 @@\n line1\n line2\n" +
+      "@@ -10,2 +10,3 @@\n line10\n+inserted\n line11";
+    const valid = parsePatchNewLineNumbers(patch);
+    expect(valid.has(1)).toBe(true);
+    expect(valid.has(2)).toBe(true);
+    expect(valid.has(10)).toBe(true);
+    expect(valid.has(11)).toBe(true);
+    expect(valid.has(12)).toBe(true);
+    // Line 9 is not in any hunk
+    expect(valid.has(9)).toBe(false);
+  });
+
+  it("does not include removed lines in the set", () => {
+    const patch = "@@ -1,2 +1,1 @@\n context\n-removed";
+    const valid = parsePatchNewLineNumbers(patch);
+    expect(valid).toEqual(new Set([1]));
+  });
+
+  it("skips no-newline markers", () => {
+    const patch = "@@ -1,1 +1,1 @@\n line1\n\\ No newline at end of file";
+    const valid = parsePatchNewLineNumbers(patch);
+    expect(valid).toEqual(new Set([1]));
+  });
+
+  it("returns empty set for empty patch", () => {
+    expect(parsePatchNewLineNumbers("")).toEqual(new Set());
   });
 });
