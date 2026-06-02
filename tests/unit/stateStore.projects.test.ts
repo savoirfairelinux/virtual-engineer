@@ -108,6 +108,16 @@ describe("SqliteStateStore — Phase 2: projects", () => {
     expect(p.enabled).toBe(true);
   });
 
+  it("createProject assigns a non-empty immutable homeCacheSeed", async () => {
+    const a = await makeAgent(store);
+    const p1 = await store.createProject({ name: "S1", type: "coding", agentId: a.id });
+    const p2 = await store.createProject({ name: "S2", type: "coding", agentId: a.id });
+    expect(p1.homeCacheSeed.length).toBeGreaterThan(0);
+    expect(p2.homeCacheSeed).not.toBe(p1.homeCacheSeed);
+    const reloaded = await store.getProjectById(p1.id);
+    expect(reloaded?.homeCacheSeed).toBe(p1.homeCacheSeed);
+  });
+
   it("createProject throws when agent does not exist", async () => {
     await expect(
       store.createProject({ name: "Bad", type: "coding", agentId: makeAgentId("missing") })
@@ -456,6 +466,7 @@ describe("resolveAgentConfig — partial-merge semantics", () => {
       agentId: makeAgentId("a1"),
       agentOverrideJson,
       postCloneScript: "",
+      homeCacheSeed: "",
       enabled: true,
       createdAt: new Date(),
       updatedAt: new Date(),

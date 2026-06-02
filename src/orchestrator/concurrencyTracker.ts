@@ -37,13 +37,18 @@ export interface ConcurrencySnapshot {
   perAgent: Record<string, number>;
 }
 
+export interface AcquireOptions {
+  /** When set to 1, reject if the project already has an active cycle (serialize per project). */
+  perProjectLimit?: number;
+}
+
 export interface ConcurrencyTracker {
   /**
     * Returns true if a new task can start (all gating limits would still be
    * respected). Does NOT mutate counters — call {@link acquire} to actually
    * claim a slot.
    */
-  canStart(projectId: ProjectId, agentId: AgentId): Promise<boolean>;
+  canStart(projectId: ProjectId, agentId: AgentId, options?: AcquireOptions): Promise<boolean>;
 
   /**
    * Reserve a slot. Returns false if the call would breach any limit; in that
@@ -51,7 +56,7 @@ export interface ConcurrencyTracker {
    * the caller must not `await` between {@link canStart} and {@link acquire}
    * if it relies on the prior decision.
    */
-  acquire(projectId: ProjectId, agentId: AgentId): Promise<boolean>;
+  acquire(projectId: ProjectId, agentId: AgentId, options?: AcquireOptions): Promise<boolean>;
 
   /**
    * Release a slot when a task reaches a terminal state. Idempotent: releasing
@@ -59,6 +64,16 @@ export interface ConcurrencyTracker {
    * negative).
    */
   release(projectId: ProjectId, agentId: AgentId): void;
+
+  /**
+   * Reserve an exclusive block on a project for destructive operations
+   * (e.g. deletion). Fails when a cycle is active or the project is already
+   * blocked; pairs with {@link unblockProject}.
+   */
+  tryBlockProject(projectId: ProjectId): boolean;
+
+  /** Release a block taken via {@link tryBlockProject}. Idempotent. */
+  unblockProject(projectId: ProjectId): void;
 
   /** Diagnostic snapshot of the live counters. */
   snapshot(): ConcurrencySnapshot;
@@ -114,6 +129,7 @@ export function createConcurrencyTracker(deps: ConcurrencyTrackerDeps): Concurre
   const perProject = new Map<string, number>();
   const perIntegration = new Map<string, number>();
   const agentToIntegration = new Map<string, string>();
+  const blockedProjects = new Set<string>();
   let activeGlobal = 0;
 
   /** Fetch the current concurrency limits for an agent, using the TTL cache. */
@@ -128,24 +144,32 @@ export function createConcurrencyTracker(deps: ConcurrencyTrackerDeps): Concurre
   }
 
   /** Return true when the integration counter is below its limit. */
-  function check(limits: ConcurrencyLimits, projectId: ProjectId, agentId: AgentId): boolean {
-    void projectId;
+  function check(
+    limits: ConcurrencyLimits,
+    projectId: ProjectId,
+    agentId: AgentId,
+    options?: AcquireOptions
+  ): boolean {
     void agentId;
+    if (blockedProjects.has(projectId)) return false;
     if ((perIntegration.get(limits.integrationKey) ?? 0) >= limits.perIntegration) return false;
+    if (options?.perProjectLimit !== undefined) {
+      if ((perProject.get(projectId) ?? 0) >= options.perProjectLimit) return false;
+    }
     return true;
   }
 
   return {
     /** Check whether a new task can start without mutating counters. */
-    async canStart(projectId, agentId): Promise<boolean> {
+    async canStart(projectId, agentId, options): Promise<boolean> {
       const limits = await loadLimits(projectId, agentId);
-      return check(limits, projectId, agentId);
+      return check(limits, projectId, agentId, options);
     },
 
     /** Atomically claim a slot if limits allow, incrementing all three counters. */
-    async acquire(projectId, agentId): Promise<boolean> {
+    async acquire(projectId, agentId, options): Promise<boolean> {
       const limits = await loadLimits(projectId, agentId);
-      if (!check(limits, projectId, agentId)) {
+      if (!check(limits, projectId, agentId, options)) {
         return false;
       }
       activeGlobal += 1;
@@ -185,6 +209,19 @@ export function createConcurrencyTracker(deps: ConcurrencyTrackerDeps): Concurre
       const ag: Record<string, number> = {};
       for (const [k, v] of perIntegration) if (v > 0) ag[k] = v;
       return { global: activeGlobal, perProject: proj, perAgent: ag };
+    },
+
+    /** Reserve an exclusive block on a project; fails if a cycle is active or already blocked. */
+    tryBlockProject(projectId): boolean {
+      if (blockedProjects.has(projectId)) return false;
+      if ((perProject.get(projectId) ?? 0) > 0) return false;
+      blockedProjects.add(projectId);
+      return true;
+    },
+
+    /** Release a project block taken via tryBlockProject. */
+    unblockProject(projectId): void {
+      blockedProjects.delete(projectId);
     },
   };
 }

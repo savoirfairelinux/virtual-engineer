@@ -316,7 +316,7 @@ export class ReviewOrchestrator {
       let rawOutput: string;
 
       try {
-        handle = await this.deps.workspaceRunner.createWorkspace(taskId, project.id);
+        handle = await this.deps.workspaceRunner.createWorkspace(taskId);
 
         const cloneResult = await this.deps.workspaceRunner.prepareProjectWorkspace(
           handle,

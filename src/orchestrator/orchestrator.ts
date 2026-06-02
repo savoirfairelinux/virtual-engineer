@@ -484,22 +484,28 @@ export class Orchestrator {
   /** Execute one agent cycle: build context, invoke the agent, push changes, and advance state. */
   private async runAgentCycle(task: Task, reviewFeedback: FeedbackItem[] = []): Promise<void> {
     let cycleSlot: { projectId: import("../interfaces.js").ProjectId; agentId: import("../interfaces.js").AgentId } | null = null;
+    let projectForCycle: import("../interfaces.js").ProjectRecord | null = null;
     const projectIdForCycle = task.projectId ?? (await this.stateStore.getTask(task.taskId))?.projectId ?? null;
     if (!task.projectId && projectIdForCycle) {
       task.projectId = projectIdForCycle;
     }
-    if (projectIdForCycle && this.projectMode?.concurrencyTracker) {
+    if (projectIdForCycle && this.projectMode) {
       const project = await this.projectMode.projectStore.getProjectById(projectIdForCycle);
       if (project) {
-        const acquired = await this.projectMode.concurrencyTracker.acquire(project.id, project.agentId);
-        if (!acquired) {
-          log.info(
-            { taskId: task.taskId, projectId: project.id, agentId: project.agentId },
-            "ai adapter at capacity; retrying on next poll tick"
-          );
-          return;
+        projectForCycle = project;
+        if (this.projectMode.concurrencyTracker) {
+          const acquired = await this.projectMode.concurrencyTracker.acquire(project.id, project.agentId, {
+            perProjectLimit: 1,
+          });
+          if (!acquired) {
+            log.info(
+              { taskId: task.taskId, projectId: project.id, agentId: project.agentId },
+              "ai adapter at capacity; retrying on next poll tick"
+            );
+            return;
+          }
+          cycleSlot = { projectId: project.id, agentId: project.agentId };
         }
-        cycleSlot = { projectId: project.id, agentId: project.agentId };
       }
     }
 
@@ -513,7 +519,7 @@ export class Orchestrator {
     task = await this.stateStore.transition(task.taskId, "AGENT_RUNNING");
     const handle = await this.workspaceRunner.createWorkspace(
       task.taskId,
-      task.projectId ?? undefined
+      projectForCycle ? { id: projectForCycle.id, homeCacheSeed: projectForCycle.homeCacheSeed } : undefined
     );
 
     try {

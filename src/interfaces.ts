@@ -62,6 +62,8 @@ export interface ProjectRecord {
   agentOverrideJson: string | null;
   /** Bash script run on the host after cloning. Empty string means "no script". */
   postCloneScript: string;
+  /** Immutable seed folded into the persistent home cache volume name so a recreated project (same id) never reuses stale Copilot state. */
+  homeCacheSeed: string;
   enabled: boolean;
   createdAt: Date;
   updatedAt: Date;
@@ -373,7 +375,7 @@ export interface WorkspaceHandle {
    * agent can amortise startup cost and reuse cached responses, reducing the
    * tokens needed for follow-up tickets on the same project.
    */
-  persistentHomeVolume?: boolean | undefined;
+  persistentHomeVolume?: true | undefined;
 }
 
 export type ValidationStatus = "passed" | "failed" | "skipped";
@@ -437,13 +439,16 @@ export interface GerritPatchsetOptions {
 
 export interface WorkspaceRunner {
   /**
-   * Create a fresh ephemeral workspace volume for the agent. When `projectId`
-   * is provided, the agent HOME volume is reused across tasks of the same
-   * project (a persistent per-project cache) so Copilot CLI / native modules
-   * and prior context don't need to be re-downloaded each cycle. The
-   * workspace volume itself remains ephemeral.
+   * Create a fresh ephemeral workspace volume for the agent. When `project` is
+   * provided, the agent HOME volume is a persistent per-project cache (named
+   * from the project id + immutable seed) reused across that project's cycles,
+   * so Copilot CLI / native modules and prior context are not re-downloaded
+   * each cycle. The workspace volume itself remains ephemeral.
    */
-  createWorkspace(taskId: TaskId, projectId?: ProjectId | undefined): Promise<WorkspaceHandle>;
+  createWorkspace(
+    taskId: TaskId,
+    project?: { id: ProjectId; homeCacheSeed: string } | undefined
+  ): Promise<WorkspaceHandle>;
   /** Clone repository into the workspace — runs inside a helper container */
   cloneRepo(
     handle: WorkspaceHandle,
@@ -488,6 +493,10 @@ export interface WorkspaceRunner {
   ): Promise<string>;
   /** Destroy workspace/container — always call in finally block */
   destroyWorkspace(handle: WorkspaceHandle): Promise<void>;
+  /** Remove a project's persistent home cache volume (rejects on Docker failure). */
+  removeProjectHomeCache?(project: { id: ProjectId; homeCacheSeed: string }): Promise<void>;
+  /** Boot-time reconcile of labelled per-project home cache volumes against current projects. */
+  reconcileProjectHomeCaches?(projects: ReadonlyArray<{ id: ProjectId; homeCacheSeed: string }>): Promise<void>;
 }
 
 // ─── Review system interfaces (system-agnostic) ─────────────────────────────
