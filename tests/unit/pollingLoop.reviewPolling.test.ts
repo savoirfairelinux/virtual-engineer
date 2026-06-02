@@ -348,6 +348,37 @@ describe("PollingLoop — pollReviewProjects", () => {
     expect(trigger.triggerReview).not.toHaveBeenCalled();
   });
 
+  it("skips review projects whose integration uses stream events (e.g. Gerrit)", async () => {
+    const project = makeProject({ id: "rp-4a", type: "review" });
+    const projectStore = {
+      listProjects: vi.fn(async () => [project]),
+      getProjectTicketSource: vi.fn(async () => null),
+      getProjectReviewConfig: vi.fn(async () => ({ integrationId: "int-gerrit", repos: ["gerrit/repo"] })),
+    };
+    const discoveryConnector: ReviewDiscoveryConnector = {
+      getOpenReviewAssignments: vi.fn().mockResolvedValue([]),
+    };
+    const pluginManager = {
+      getConnectorForIntegration: vi.fn(() => discoveryConnector),
+      integrationHasStreamEvents: vi.fn((_id: string) => true), // Gerrit uses stream events
+    };
+    const trigger = makeReviewTrigger();
+    const orchestrator = makeOrchestrator();
+    const stateStore = makeStore();
+
+    const loop = new PollingLoop(
+      { ticketIntervalMs: 30_000, maxRetryAttempts: 5 },
+      orchestrator,
+      stateStore,
+      { projectStore: projectStore as never, pluginManager: pluginManager as never, reviewTrigger: trigger },
+    );
+
+    await loop.pollReviewProjects();
+
+    expect(discoveryConnector.getOpenReviewAssignments).not.toHaveBeenCalled();
+    expect(trigger.triggerReview).not.toHaveBeenCalled();
+  });
+
   it("skips projects when connector does not support review discovery", async () => {
     const project = makeProject({ id: "rp-4", type: "review" });
     const projectStore = {

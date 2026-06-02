@@ -233,6 +233,17 @@ export class PluginManager {
     return this.activeIntegrationsById.get(integrationId) ?? null;
   }
 
+  /**
+   * Returns true when the integration's descriptor declares a `streamEvents`
+   * factory.  Stream-backed integrations deliver review events via a persistent
+   * connection and must not be polled for review assignment discovery.
+   */
+  integrationHasStreamEvents(integrationId: string): boolean {
+    const integration = this.activeIntegrationsById.get(integrationId);
+    if (!integration) return false;
+    return getPluginDescriptor(integration.type)?.streamEvents != null;
+  }
+
   /** Returns all currently active integrations of the given category. */
   getActiveIntegrationsByCategory(category: PluginCategory): Integration[] {
     const out: Integration[] = [];

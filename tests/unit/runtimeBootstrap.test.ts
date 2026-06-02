@@ -883,7 +883,7 @@ describe("runtime bootstrap provider selection", () => {
         copilot: makeIntegration({
           id: "copilot-review-routing",
           type: "copilot",
-          configJson: JSON.stringify({ apiKey: "ghp-routing-token" }),
+          configJson: JSON.stringify({ token: "ghp-routing-token" }),
         }),
       },
       {
@@ -941,7 +941,7 @@ describe("runtime bootstrap provider selection", () => {
         copilot: makeIntegration({
           id: "copilot-review-membership",
           type: "copilot",
-          configJson: JSON.stringify({ apiKey: "ghp-review-token" }),
+          configJson: JSON.stringify({ token: "ghp-review-token" }),
         }),
       },
       {
@@ -990,7 +990,7 @@ describe("runtime bootstrap provider selection", () => {
         copilot: makeIntegration({
           id: "copilot-review-ssh-only",
           type: "copilot",
-          configJson: JSON.stringify({ apiKey: "ghp-review-token" }),
+          configJson: JSON.stringify({ token: "ghp-review-token" }),
         }),
       },
       {
@@ -1043,7 +1043,7 @@ describe("runtime bootstrap provider selection", () => {
         copilot: makeIntegration({
           id: "copilot-review-rewrite",
           type: "copilot",
-          configJson: JSON.stringify({ apiKey: "ghp-review-token" }),
+          configJson: JSON.stringify({ token: "ghp-review-token" }),
         }),
       },
       {

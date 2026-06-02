@@ -44,6 +44,12 @@ export interface ReviewAssignmentTrigger {
 export interface ProjectAwarePluginManager {
   getConnectorForIntegration<T>(integrationId: string): T | null;
   createConnectorForIntegration?<T>(integrationId: string, context?: IntegrationBindingContext): Promise<T | null>;
+  /**
+   * Returns true when the integration's descriptor declares a `streamEvents`
+   * factory, meaning review discovery is driven by a live event stream rather
+   * than polling.  Optional so tests that don't need this can omit it.
+   */
+  integrationHasStreamEvents?(integrationId: string): boolean;
 }
 
 /**
@@ -281,6 +287,16 @@ export class PollingLoop {
       const reviewConfig = await this.projectStore.getProjectReviewConfig(project.id);
       if (!reviewConfig) {
         log.debug({ projectId: project.id }, "skipping review project: no review config");
+        continue;
+      }
+
+      // Stream-events integrations (e.g. Gerrit) receive review assignments
+      // via a persistent SSH connection — they never need to be polled.
+      if (this.pluginManager.integrationHasStreamEvents?.(reviewConfig.integrationId)) {
+        log.trace(
+          { projectId: project.id, integrationId: reviewConfig.integrationId },
+          "skipping review project poll: integration uses stream events for review discovery"
+        );
         continue;
       }
 
