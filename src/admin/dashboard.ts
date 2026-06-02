@@ -2356,7 +2356,7 @@ function showPromptsModal(promptId) {
   const prompt = isEdit ? S.prompts.find((p) => p.id === promptId) : null;
   
   const modal = document.createElement('div');
-  modal.style.cssText = 'background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:20px;width:90%;max-width:500px;box-shadow:0 8px 32px rgba(0,0,0,0.2)';
+  modal.style.cssText = 'display:flex;flex-direction:column;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:20px;width:90%;max-width:90vw;min-width:380px;height:60vh;min-height:320px;max-height:90vh;box-shadow:0 8px 32px rgba(0,0,0,0.2);resize:both;overflow:auto';
   
   const title = document.createElement('h3');
   title.textContent = isEdit ? 'Edit Prompt' : 'New Prompt';
@@ -2396,7 +2396,7 @@ function showPromptsModal(promptId) {
   textarea.id = 'prompt-content-input';
   textarea.placeholder = 'Enter prompt content...';
   textarea.value = prompt?.content || '';
-  textarea.style.cssText = 'width:100%;height:200px;padding:8px 12px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-family:ui-monospace,"SF Mono",monospace;font-size:12px;resize:vertical;box-sizing:border-box;margin-bottom:12px';
+  textarea.style.cssText = 'width:100%;flex:1 1 auto;min-height:120px;padding:8px 12px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-family:ui-monospace,"SF Mono",monospace;font-size:12px;resize:none;box-sizing:border-box;margin-bottom:12px';
   modal.appendChild(textarea);
   
   const actions = document.createElement('div');
