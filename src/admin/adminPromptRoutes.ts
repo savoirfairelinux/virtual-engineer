@@ -48,7 +48,7 @@ export function registerPromptRoutes(router: Router, deps: PromptRouteDeps): voi
     }
   });
 
-  // More specific path first to avoid :id catching "usage" segment
+  // Return the list of agents that reference the given prompt.
   router.add("GET", "/api/admin/prompts/:id/usage", async (_req, res, params) => {
     if (!deps.promptStore) { writeJson(res, 501, { error: "Prompt store not available" }); return; }
     const promptId = params["id"] ?? "";

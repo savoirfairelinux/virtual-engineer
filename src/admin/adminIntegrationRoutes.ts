@@ -69,7 +69,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
     writeJson(res, 200, { ok: true });
   });
 
-  // resolve must be registered before oauth-apps/:provider to avoid :provider matching "resolve"
+  // Resolve a provider + base URL to its OAuth app registry entry.
   router.add("POST", "/api/admin/oauth-apps/resolve", async (req, res, _params) => {
     if (!deps.oAuthAppStore) { writeJson(res, 501, { error: "OAuth app registry is not available" }); return; }
     const body = await readBody(req);

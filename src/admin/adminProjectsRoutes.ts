@@ -401,8 +401,8 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
         const cloneUrlError = await validatePushTargetCloneUrls(data.pushTargets, deps.integrationStore);
         if (cloneUrlError) {
           try { await store.deleteProject(project.id); } catch { /* ignore */ }
-          writeJson(response, 400, { error: cloneUrlError });
-          return true;
+          writeJson(res, 400, { error: cloneUrlError });
+          return;
         }
         await store.setProjectTicketSource(project.id, data.ticketSource);
         await store.replaceProjectPushTargets(project.id, data.pushTargets);
@@ -422,7 +422,7 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
     deps.onProjectChange?.();
   });
 
-  // enable/disable must be registered before :id to avoid :id capturing "enable"/"disable"
+  // Enable or disable a project by id.
   router.add("PATCH", "/api/admin/projects/:id/enable", async (_req, res, params) => {
     if (!deps.projectStore) { writeJson(res, 501, { error: "Project store not available" }); return; }
     const store = deps.projectStore;

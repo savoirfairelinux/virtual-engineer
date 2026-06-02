@@ -18,10 +18,12 @@ interface CompiledRoute {
 /** Compile a `:param`-style path pattern to a capturing regex. */
 function compilePattern(pattern: string): { regex: RegExp; keys: string[] } {
   const keys: string[] = [];
-  const regexStr = pattern.replace(/:([^/]+)/g, (_m, key: string) => {
-    keys.push(key);
-    return "([^/]+)";
-  });
+  const regexStr = pattern
+    .replace(/[.+?^${}()|[\]\\]/g, "\\$&")  // escape regex metacharacters in literal segments
+    .replace(/:([^/]+)/g, (_m, key: string) => {
+      keys.push(key);
+      return "([^/]+)";
+    });
   return { regex: new RegExp(`^${regexStr}$`), keys };
 }
 
@@ -67,7 +69,13 @@ export class Router {
       const params: RouteParams = {};
       for (let i = 0; i < route.keys.length; i++) {
         const key = route.keys[i];
-        if (key !== undefined) params[key] = decodeURIComponent(match[i + 1] ?? "");
+        if (key === undefined) continue;
+        try {
+          params[key] = decodeURIComponent(match[i + 1] ?? "");
+        } catch {
+          writeJson(res, 400, { error: "Bad request: malformed URL encoding" });
+          return true;
+        }
       }
       await route.handler(req, res, params);
       return true;
