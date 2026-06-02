@@ -781,3 +781,58 @@ describe("SqliteStateStore", () => {
     });
   });
 });
+
+describe("SqliteStateStore — retryTask resets by task type", () => {
+  let store: SqliteStateStore;
+
+  beforeEach(async () => {
+    store = await SqliteStateStore.create(tempDbPath());
+  });
+
+  afterEach(() => {
+    store.close();
+  });
+
+  it("resets a failed code-review task to REVIEW_PENDING so runReview can pick it up again", async () => {
+    const taskId = makeTaskId(randomUUID());
+    await store.createReviewTask({
+      taskId,
+      ticketId: makeTicketId("rf"),
+      subject: "review failed",
+      changeId: makeExternalChangeId("Iabc"),
+      patchset: 1,
+    });
+    await store.transition(taskId, "REVIEW_RUNNING");
+    await store.transition(taskId, "REVIEW_FAILED");
+
+    const retried = await store.retryTask(taskId);
+
+    expect(retried.state).toBe("REVIEW_PENDING");
+    expect(retried.cycleCount).toBe(0);
+    expect(retried.failureReason ?? null).toBeNull();
+
+    const transitions = await store.getStateTransitions(taskId);
+    const last = transitions[transitions.length - 1];
+    expect(last?.fromState).toBe("REVIEW_FAILED");
+    expect(last?.toState).toBe("REVIEW_PENDING");
+    expect(last?.metadata).toMatchObject({ action: "retry" });
+  });
+
+  it("still resets a failed code-gen task to DETECTED", async () => {
+    const taskId = makeTaskId(randomUUID());
+    await store.createTask(taskId, makeTicketId("cg"), "title", "desc", "jira");
+    await store.transition(taskId, "CONTEXT_BUILDING");
+    await store.transition(taskId, "AGENT_RUNNING");
+    await store.transition(taskId, "FAILED");
+
+    const retried = await store.retryTask(taskId);
+
+    expect(retried.state).toBe("DETECTED");
+    expect(retried.cycleCount).toBe(0);
+
+    const transitions = await store.getStateTransitions(taskId);
+    const last = transitions[transitions.length - 1];
+    expect(last?.fromState).toBe("FAILED");
+    expect(last?.toState).toBe("DETECTED");
+  });
+});
