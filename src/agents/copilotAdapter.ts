@@ -294,7 +294,7 @@ export class CopilotAdapter implements AgentAdapter, ConfigurableAdapter {
     return {
       image: session.agentContainerImage,
       env,
-      command: ["node", "/agent-worker/index.js"],
+      command: ["node", "/agent-worker/dist/index.js"],
       networkMode: this.config.dockerNetwork ?? "virtual-engineer_ve-agent-net",
       additionalDockerArgs,
     };
@@ -339,7 +339,7 @@ export class CopilotAdapter implements AgentAdapter, ConfigurableAdapter {
     return {
       image: input.containerImage ?? "virtual-engineer-workspace:latest",
       env,
-      command: ["node", "/agent-worker/index.js"],
+      command: ["node", "/agent-worker/dist/index.js"],
       networkMode: this.config.dockerNetwork ?? "virtual-engineer_ve-agent-net",
       additionalDockerArgs,
     };

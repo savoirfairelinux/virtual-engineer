@@ -1,116 +1,31 @@
 /**
  * Tests for the agent-worker multi-commit protocol (Phase 2).
  *
- * These tests validate the commit collection, validation, and grouping
- * logic added to agent-worker/index.js. Since the worker is a plain JS
- * module that runs inside Docker, we test the logic by replicating the
- * key functions (collectCommits, validateCommits, groupFilesByRepo) and
- * verifying them against controlled git repositories.
+ * These tests validate commit collection, validation, Change-Id injection,
+ * and squash-into-base functionality defined in agent-worker/src/commitUtils.ts.
+ * Functions are imported directly from source — no duplication.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { execFileSync } from "child_process";
-import { createHash } from "crypto";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "fs";
 import { join, dirname } from "path";
 import { tmpdir } from "os";
+import {
+  collectCommits,
+  validateCommits,
+  deriveChangeId,
+  injectChangeIds,
+  squashIntoBaseIfNeeded,
+} from "../../agent-worker/src/commitUtils.js";
 
-// ── Replicated worker functions for testability ───────────────────────────────
-// These mirror the functions in agent-worker/index.js exactly.
-
-const CONVENTIONAL_COMMIT_RE = /^(feat|fix|refactor|test|chore|docs|perf|ci|build)(\([^)]+\))?: .{1,72}$/;
-
+// ── Test-local git helper (used by initRepo / addCommit only) ─────────────────
 function git(args: string[], cwd: string): string {
   return execFileSync("git", args, {
     cwd,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   });
-}
-
-function collectCommits(baseSha: string, cwd: string): Array<{
-  repoKey: string;
-  sha: string;
-  subject: string;
-  body: string;
-  changeId: string;
-  files: string[];
-}> {
-  const logOutput = git(
-    ["log", "--reverse", "--format=%H%x00%s%x00%b%x00", `${baseSha}..HEAD`],
-    cwd
-  );
-
-  const commits: Array<{
-    repoKey: string;
-    sha: string;
-    subject: string;
-    body: string;
-    changeId: string;
-    files: string[];
-  }> = [];
-
-  const records = logOutput.split("\0\n").filter((r) => r.trim());
-
-  for (const record of records) {
-    const parts = record.split("\0");
-    if (parts.length < 3) continue;
-
-    const sha = (parts[0] ?? "").trim();
-    const subject = (parts[1] ?? "").trim();
-    const body = (parts[2] ?? "").trim();
-
-    if (!sha) continue;
-
-    const changeIdMatch = /^Change-Id:\s+(I[0-9a-f]{40})\s*$/m.exec(body);
-    const changeId = changeIdMatch ? (changeIdMatch[1] ?? "") : "";
-
-    const diffOutput = git(["diff-tree", "--no-commit-id", "--name-only", "-r", sha], cwd);
-    const files = diffOutput
-      .split("\n")
-      .map((f) => f.trim())
-      .filter(Boolean);
-
-    commits.push({ repoKey: "superproject", sha, subject, body, changeId, files });
-  }
-
-  return commits;
-}
-
-function validateCommits(
-  commits: Array<{ subject: string; sha: string; files: string[] }>,
-  maxCommits = 10
-): { valid: boolean; reason?: string } {
-  if (commits.length === 0) {
-    return { valid: false, reason: "no commits found in baseSha..HEAD range" };
-  }
-
-  if (commits.length > maxCommits) {
-    return {
-      valid: false,
-      reason: `too many commits: ${commits.length} exceeds MAX_COMMITS_PER_CYCLE (${maxCommits})`,
-    };
-  }
-
-  for (let i = 0; i < commits.length; i++) {
-    const c = commits[i]!;
-
-    if (!CONVENTIONAL_COMMIT_RE.test(c.subject)) {
-      return {
-        valid: false,
-        reason: `commit ${i + 1}/${commits.length} (${c.sha.slice(0, 8)}) has non-conventional subject: "${c.subject}"`,
-      };
-    }
-
-    if (c.files.length === 0) {
-      return {
-        valid: false,
-        reason: `commit ${i + 1}/${commits.length} (${c.sha.slice(0, 8)}) has empty diff`,
-      };
-    }
-  }
-
-  return { valid: true };
 }
 
 // ── Test helpers ──────────────────────────────────────────────────────────────
@@ -297,13 +212,6 @@ describe("agent-worker multi-commit protocol", () => {
   // ── Phase 4: Deterministic Change-Id tests ─────────────────────────────────
 
   describe("deriveChangeId", () => {
-    function deriveChangeId(taskId: string, repoKey: string, index: number, subject: string): string {
-      const hash = createHash("sha1")
-        .update(`ve:${taskId}:${repoKey}:${index}:${subject}`)
-        .digest("hex");
-      return `I${hash}`;
-    }
-
     it("produces a valid Gerrit Change-Id format (I + 40 hex chars)", () => {
       const changeId = deriveChangeId("TASK-1", "superproject", 0, "feat: add api");
       expect(changeId).toMatch(/^I[0-9a-f]{40}$/);
@@ -341,83 +249,6 @@ describe("agent-worker multi-commit protocol", () => {
   });
 
   describe("injectChangeIds", () => {
-    function deriveChangeId(taskId: string, repoKey: string, index: number, subject: string): string {
-      const hash = createHash("sha1")
-        .update(`ve:${taskId}:${repoKey}:${index}:${subject}`)
-        .digest("hex");
-      return `I${hash}`;
-    }
-
-    function injectChangeIds(
-      baseSha: string,
-      commits: ReturnType<typeof collectCommits>,
-      taskId: string,
-      cwd: string,
-    ): ReturnType<typeof collectCommits> {
-      if (commits.length === 0) return commits;
-
-      const needsInjection = commits.some((c) => !c.changeId);
-      if (!needsInjection) return commits;
-
-      // Build Change-Id map by index (prevents duplicate-subject collisions)
-      const changeIdByIndex: Record<number, string> = {};
-      for (let i = 0; i < commits.length; i++) {
-        const c = commits[i]!;
-        if (!c.changeId) {
-          changeIdByIndex[i] = deriveChangeId(taskId, c.repoKey, i, c.subject);
-        }
-      }
-
-      // Use interactive rebase to amend each commit message
-      try {
-        execFileSync("git", ["rebase", "-i", baseSha], {
-          cwd,
-          encoding: "utf8",
-          stdio: ["ignore", "pipe", "pipe"],
-          env: {
-            ...process.env,
-            GIT_SEQUENCE_EDITOR: "sed -i 's/^pick /edit /g'",
-          },
-        });
-      } catch {
-        // rebase -i stops at first commit — expected
-      }
-
-      try {
-        for (let i = 0; i < commits.length; i++) {
-          const desiredChangeId = changeIdByIndex[i] ?? null;
-
-          if (desiredChangeId) {
-            const currentMsg = git(["log", "-1", "--format=%B"], cwd).trim();
-            const hasTrailerBlock = /\n\n[A-Za-z][A-Za-z0-9-]*: /.test(currentMsg);
-            const newMsg = hasTrailerBlock
-              ? `${currentMsg}\nChange-Id: ${desiredChangeId}`
-              : `${currentMsg}\n\nChange-Id: ${desiredChangeId}`;
-
-            git(["commit", "--amend", "-m", newMsg], cwd);
-          }
-
-          if (i < commits.length - 1) {
-            try {
-              git(["rebase", "--continue"], cwd);
-            } catch {
-              // stops at next commit
-            }
-          } else {
-            try {
-              git(["rebase", "--continue"], cwd);
-            } catch {
-              // rebase is done
-            }
-          }
-        }
-      } finally {
-        // abort any in-progress rebase (e.g. conflict during testing)
-      }
-
-      return collectCommits(baseSha, cwd);
-    }
-
     it("injects deterministic Change-Ids into commits without one", () => {
       const baseSha = git(["rev-parse", "HEAD"], repoDir).trim();
       addCommit(repoDir, "a.ts", "a\n", "feat: add a");
@@ -503,33 +334,6 @@ describe("agent-worker multi-commit protocol", () => {
   });
 
   describe("squashIntoBaseIfNeeded", () => {
-    // Replicate the agent-worker function for testability
-    function squashIntoBaseIfNeeded(
-      baseSha: string,
-      cwd: string,
-    ): { squashed: boolean; commits?: ReturnType<typeof collectCommits> } {
-      const baseBody = git(["log", "-1", "--format=%b", baseSha], cwd);
-      const baseChangeIdMatch = baseBody.match(/^Change-Id:\s*(\S+)/m);
-      if (!baseChangeIdMatch) {
-        return { squashed: false };
-      }
-
-      const headBefore = git(["rev-parse", "HEAD"], cwd).trim();
-      if (headBefore === baseSha) {
-        return { squashed: false };
-      }
-
-      try {
-        git(["reset", "--soft", baseSha], cwd);
-        git(["commit", "--amend", "--no-edit"], cwd);
-      } catch {
-        try { git(["reset", "--hard", headBefore], cwd); } catch { /* ignore */ }
-        return { squashed: false };
-      }
-
-      return { squashed: true, commits: collectCommits(baseSha, cwd) };
-    }
-
     it("squashes agent commit into base when base already has a Change-Id", () => {
       // Simulate cycle 1: commit with a Change-Id (the patchset)
       const changeId = "Iaaaa1234567890abcdef1234567890abcdef1234";

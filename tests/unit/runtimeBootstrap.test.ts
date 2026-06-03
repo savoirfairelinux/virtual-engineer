@@ -48,7 +48,7 @@ function makeDbAgentAdapter(name: string): AgentAdapter {
     buildContainerSpec: vi.fn(() => ({
       image: "virtual-engineer-workspace:latest",
       env: {},
-      command: ["node", "/agent-worker/index.js"],
+      command: ["node", "/agent-worker/dist/index.js"],
     })),
     execute: vi.fn(async (): Promise<AgentResult> => ({
       status: "success",

@@ -90,7 +90,7 @@ function makeMockAgentInstance(name: string): AgentAdapter {
     buildContainerSpec: vi.fn(() => ({
       image: "virtual-engineer-workspace:latest",
       env: {},
-      command: ["node", "/agent-worker/index.js"],
+      command: ["node", "/agent-worker/dist/index.js"],
     })),
     execute: vi.fn(async (_context: TaskContext): Promise<AgentResult> => ({
       status: "success",
