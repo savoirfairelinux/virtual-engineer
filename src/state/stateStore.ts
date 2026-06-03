@@ -518,6 +518,14 @@ export class SqliteStateStore implements StateStore, IntegrationStore, PromptSto
     return rows.map((r) => this.rowToTask(r));
   }
 
+  /** Return FAILED and REVIEW_FAILED tasks bound to a given project (e.g. for automatic relaunch after reconfiguration). */
+  async getFailedTasksForProject(projectId: ProjectId): Promise<Task[]> {
+    const rows = await this.db.query.tasks.findMany({
+      where: and(eq(tasks.projectId, projectId), inArray(tasks.state, ["FAILED", "REVIEW_FAILED"])),
+    });
+    return rows.map((r) => this.rowToTask(r));
+  }
+
   /** Return every task ordered by most-recently updated first. */
   async getAllTasks(): Promise<Task[]> {
     const rows = await this.db.query.tasks.findMany({

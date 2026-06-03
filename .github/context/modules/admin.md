@@ -18,7 +18,7 @@ The admin server is a small HTTP service (default `127.0.0.1:3100`) that serves 
 | `adminStreamRoutes.ts` | SSE endpoints: `/api/admin/logs/stream` (live agent logs) and `/api/admin/events/stream` (task polling). |
 | `adminIntegrationRoutes.ts` | `/api/admin/integrations/*` CRUD, enable/disable, test, discover, models + `/api/admin/plugins` + `/api/admin/oauth-apps/*`. Integration config masking/merging/validation helpers. |
 | `adminAgentsRoutes.ts` | `/api/admin/agents/*` CRUD + enable/disable + masking + `/api/admin/plugins/:type/oauth/*`. |
-| `adminProjectsRoutes.ts` | `/api/admin/projects/*` CRUD, ticket/review target validation, atomic push-target replacement. |
+| `adminProjectsRoutes.ts` | `/api/admin/projects/*` CRUD, ticket/review target validation, atomic push-target replacement, automatic relaunch of FAILED/REVIEW_FAILED tasks on (re)configuration or re-enable. |
 | `adminConcurrencyRoutes.ts` | `/api/admin/concurrency` read/update global concurrency. |
 | `adminWebhookRoutes.ts` | Webhook management: secret rotation, allowed-IPs, webhook-info. |
 | `dashboard.ts` | HTML shell and inline dashboard script. |
@@ -87,11 +87,11 @@ The admin server is a small HTTP service (default `127.0.0.1:3100`) that serves 
 | `PATCH` | `/api/admin/agents/:id/enable` | Enable agent. |
 | `PATCH` | `/api/admin/agents/:id/disable` | Disable agent. |
 | `GET` | `/api/admin/projects` | Project list with resolved agent/integration names. |
-| `POST` | `/api/admin/projects` | Create coding or review project. |
+| `POST` | `/api/admin/projects` | Create coding or review project. Orphaned `FAILED`/`REVIEW_FAILED` tasks adopted via the new ticket-source binding are relaunched automatically, unless the project is created disabled. |
 | `GET` | `/api/admin/projects/:id` | Project detail. |
-| `PUT` | `/api/admin/projects/:id` | Update project; coding-project `pushTargets` replace atomically. |
+| `PUT` | `/api/admin/projects/:id` | Update project; coding-project `pushTargets` replace atomically. When ticket source, push targets, review config, agent binding/override, post-clone script change, or the project is enabled, every `FAILED`/`REVIEW_FAILED` task bound to the project is relaunched automatically (no manual retry click needed). |
 | `DELETE` | `/api/admin/projects/:id` | Delete project and linked child rows. |
-| `PATCH` | `/api/admin/projects/:id/enable` | Enable project. |
+| `PATCH` | `/api/admin/projects/:id/enable` | Enable project. If it was previously disabled, its `FAILED`/`REVIEW_FAILED` tasks are relaunched automatically. |
 | `PATCH` | `/api/admin/projects/:id/disable` | Disable project. |
 | `GET` / `PUT` | `/api/admin/concurrency` | Read/update global concurrency plus live in-memory snapshot. `PUT` accepts `{ global: number | null }` (numeric strings are coerced server-side). |
 
