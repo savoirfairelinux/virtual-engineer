@@ -775,7 +775,7 @@ export class Orchestrator {
   ): Promise<void> {
     if (cycleNumber <= 1 || !rootConnector.useChangeIdContinuity) return;
     if (!rootConnector.resolvePatchsetOptions) return;
-    if (!this.workspaceRunner.applyGerritPatchset) return;
+    if (!this.workspaceRunner.applyPriorPatchset) return;
 
     const storedChanges = await this.stateStore.getChangesForTask(task.taskId);
     const rootChanges = storedChanges
@@ -787,22 +787,22 @@ export class Orchestrator {
 
     try {
       const patchsetOpts = await rootConnector.resolvePatchsetOptions(primaryChange.changeId);
-      await this.workspaceRunner.applyGerritPatchset(handle, patchsetOpts);
+      await this.workspaceRunner.applyPriorPatchset(handle, patchsetOpts);
       log.info(
-        { taskId: task.taskId, changeId: primaryChange.changeId, changeNumber: patchsetOpts.changeNumber, patchset: patchsetOpts.patchset },
+        { taskId: task.taskId, changeId: primaryChange.changeId, revisionNumber: patchsetOpts.revisionNumber, patchset: patchsetOpts.patchset },
         "checked out existing patchset for retry cycle"
       );
 
       // Cherry-pick secondary commits (indices 1..N) on top of the primary.
       // Each is a separate Gerrit change; resolve its latest patchset and cherry-pick.
       const secondaryChanges = rootChanges.filter((c) => c.commitIndex > 0);
-      if (secondaryChanges.length > 0 && this.workspaceRunner.cherryPickGerritPatchset) {
+      if (secondaryChanges.length > 0 && this.workspaceRunner.cherryPickPriorPatchset) {
         for (const change of secondaryChanges) {
           try {
             const secOpts = await rootConnector.resolvePatchsetOptions!(change.changeId);
-            await this.workspaceRunner.cherryPickGerritPatchset(handle, secOpts);
+            await this.workspaceRunner.cherryPickPriorPatchset(handle, secOpts);
             log.info(
-              { taskId: task.taskId, changeId: change.changeId, commitIndex: change.commitIndex, changeNumber: secOpts.changeNumber, patchset: secOpts.patchset },
+              { taskId: task.taskId, changeId: change.changeId, commitIndex: change.commitIndex, revisionNumber: secOpts.revisionNumber, patchset: secOpts.patchset },
               "cherry-picked secondary patchset for retry cycle"
             );
           } catch (err) {

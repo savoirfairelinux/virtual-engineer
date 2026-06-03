@@ -9,7 +9,7 @@
  * Key principle: All VCS credentials stay on the host. The container
  * receives a pre-cloned repository and never interacts with the VCS.
  */
-import type { GerritPatchsetOptions, ReviewComment } from "../interfaces.js";
+import type { PatchsetCheckoutOptions, ReviewComment } from "../interfaces.js";
 
 /**
  * Options for running git commands inside a Docker named volume
@@ -143,10 +143,10 @@ export interface VcsConnector {
   readonly sshKeyPath?: string | undefined;
 
   /**
-   * Resolve a Change-Id to patchset options for WorkspaceRunner.applyGerritPatchset().
+   * Resolve a Change-Id to patchset options for WorkspaceRunner.applyPriorPatchset().
    * Only implemented by connectors that use Change-Id continuity (Gerrit).
    */
-  resolvePatchsetOptions?(changeId: string): Promise<GerritPatchsetOptions>;
+  resolvePatchsetOptions?(changeId: string): Promise<PatchsetCheckoutOptions>;
 }
 
 /**
