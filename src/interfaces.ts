@@ -496,18 +496,12 @@ export interface WorkspaceRunner {
 
 export type ReviewChangeStatus = "OPEN" | "MERGED" | "ABANDONED";
 
-/** @deprecated Use ReviewChangeStatus */
-export type GerritChangeStatus = ReviewChangeStatus;
-
 export interface ReviewChangeRef {
   changeId: ExternalChangeId;
   changeNumber: number;
   patchsetNumber: number;
   url: string;
 }
-
-/** @deprecated Use ReviewChangeRef */
-export type GerritChangeRef = ReviewChangeRef;
 
 export interface ReviewComment {
   id: string;
@@ -519,9 +513,6 @@ export interface ReviewComment {
   patchset: number;
   updatedAt: Date;
 }
-
-/** @deprecated Use ReviewComment */
-export type GerritComment = ReviewComment;
 
 /** System-agnostic interface for interacting with a code review system. */
 export interface ReviewConnector {
@@ -546,9 +537,6 @@ export interface ReviewConnector {
   /** Resolve comment threads that have been addressed */
   resolveComments(changeId: ExternalChangeId, comments: ReviewComment[]): Promise<void>;
 }
-
-/** @deprecated Use ReviewConnector */
-export type GerritConnector = ReviewConnector;
 
 /**
  * Union of all runtime plugin instance types stored in `PluginManager`.
