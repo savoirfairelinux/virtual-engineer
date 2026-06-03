@@ -8,6 +8,14 @@ AI-driven development system with two independent flows.
 
 All provider configuration (ticketing, VCS, agent) is stored in SQLite and managed through the admin UI — no env-var plumbing required.
 
+<p align="center">
+	<img src="https://cdn.simpleicons.org/github/181717" alt="GitHub" width="20" />
+	<img src="https://cdn.simpleicons.org/githubcopilot/000000" alt="GitHub Copilot" width="20" />
+	<img src="https://cdn.simpleicons.org/gitlab/FC6D26" alt="GitLab" width="20" />
+	<img src="https://cdn.simpleicons.org/gerrit/EE0000" alt="Gerrit" width="20" />
+	<img src="https://cdn.simpleicons.org/redmine/B32024" alt="Redmine" width="20" />
+</p>
+
 ---
 
 ## Prerequisites
@@ -165,6 +173,13 @@ rm -rf data/
 npm run db:migrate
 npm run dev
 ```
+
+---
+
+## License
+
+This project is licensed under **GNU GPL v3.0 only**.
+See [LICENSE](LICENSE).
 
 ---
 
