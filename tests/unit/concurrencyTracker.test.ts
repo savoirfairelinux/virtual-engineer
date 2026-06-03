@@ -121,6 +121,55 @@ describe("ConcurrencyTracker", () => {
     expect(t.snapshot()).toEqual({ global: 0, perProject: {}, perAgent: {} });
   });
 
+  describe("perProjectLimit serialization", () => {
+    it("rejects a second concurrent cycle for the same project when perProjectLimit is 1", async () => {
+      const stubs = makeStubs({ perAgent: 5 });
+      const t = createConcurrencyTracker(stubs.deps);
+      expect(await t.acquire(pid("p1"), aid("a1"), { perProjectLimit: 1 })).toBe(true);
+      expect(await t.acquire(pid("p1"), aid("a2"), { perProjectLimit: 1 })).toBe(false);
+    });
+
+    it("allows a new cycle for the same project after the prior slot is released", async () => {
+      const stubs = makeStubs({ perAgent: 5 });
+      const t = createConcurrencyTracker(stubs.deps);
+      expect(await t.acquire(pid("p1"), aid("a1"), { perProjectLimit: 1 })).toBe(true);
+      t.release(pid("p1"), aid("a1"));
+      expect(await t.acquire(pid("p1"), aid("a2"), { perProjectLimit: 1 })).toBe(true);
+    });
+
+    it("does not serialize distinct projects", async () => {
+      const stubs = makeStubs({ perAgent: 5 });
+      const t = createConcurrencyTracker(stubs.deps);
+      expect(await t.acquire(pid("p1"), aid("a1"), { perProjectLimit: 1 })).toBe(true);
+      expect(await t.acquire(pid("p2"), aid("a1"), { perProjectLimit: 1 })).toBe(true);
+    });
+  });
+
+  describe("tryBlockProject / unblockProject", () => {
+    it("blocks a project with no active cycle and rejects acquire while blocked", async () => {
+      const stubs = makeStubs({ perAgent: 5 });
+      const t = createConcurrencyTracker(stubs.deps);
+      expect(t.tryBlockProject(pid("p1"))).toBe(true);
+      expect(await t.acquire(pid("p1"), aid("a1"))).toBe(false);
+    });
+
+    it("fails to block a project with an active cycle", async () => {
+      const stubs = makeStubs({ perAgent: 5 });
+      const t = createConcurrencyTracker(stubs.deps);
+      expect(await t.acquire(pid("p1"), aid("a1"))).toBe(true);
+      expect(t.tryBlockProject(pid("p1"))).toBe(false);
+    });
+
+    it("fails to double-block and re-allows acquire after unblock", async () => {
+      const stubs = makeStubs({ perAgent: 5 });
+      const t = createConcurrencyTracker(stubs.deps);
+      expect(t.tryBlockProject(pid("p1"))).toBe(true);
+      expect(t.tryBlockProject(pid("p1"))).toBe(false);
+      t.unblockProject(pid("p1"));
+      expect(await t.acquire(pid("p1"), aid("a1"))).toBe(true);
+    });
+  });
+
   describe("cache TTL", () => {
     beforeEach(() => {
       vi.useFakeTimers();

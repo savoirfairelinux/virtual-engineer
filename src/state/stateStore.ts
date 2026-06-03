@@ -206,6 +206,7 @@ export class SqliteStateStore implements StateStore, IntegrationStore, PromptSto
         agent_id            TEXT    NOT NULL REFERENCES agents(id),
         agent_override_json TEXT,
         post_clone_script   TEXT    NOT NULL DEFAULT '',
+        home_cache_seed     TEXT    NOT NULL DEFAULT '',
         enabled             INTEGER NOT NULL DEFAULT 0,
         created_at          INTEGER NOT NULL,
         updated_at          INTEGER NOT NULL
@@ -293,6 +294,9 @@ export class SqliteStateStore implements StateStore, IntegrationStore, PromptSto
     this.ensureColumn("agents", "integration_id", "TEXT REFERENCES integrations(id) ON DELETE SET NULL");
     this.ensureColumn("agents", "feedback_instructions_prompt_id", "TEXT REFERENCES prompts(id) ON DELETE SET NULL");
     this.ensureColumn("prompts", "prompt_type", "TEXT NOT NULL DEFAULT 'user'");
+    this.ensureColumn("projects", "home_cache_seed", "TEXT NOT NULL DEFAULT ''");
+
+    this.backfillProjectHomeCacheSeeds();
 
     // Backfill: mark built-in prompts as 'system' so the protection logic
     // can rely on promptType instead of an in-memory ID set.
@@ -442,6 +446,16 @@ export class SqliteStateStore implements StateStore, IntegrationStore, PromptSto
 
     const quotedColumn = `\`${columnName.replaceAll("`", "``")}\``;
     this.raw.exec(`ALTER TABLE ${quotedTable} ADD COLUMN ${quotedColumn} ${definition}`);
+  }
+
+  private backfillProjectHomeCacheSeeds(): void {
+    const rows = this.raw
+      .prepare(`SELECT id FROM projects WHERE home_cache_seed = '' OR home_cache_seed IS NULL`)
+      .all() as Array<{ id: string }>;
+    const update = this.raw.prepare(`UPDATE projects SET home_cache_seed = ? WHERE id = ?`);
+    for (const row of rows) {
+      update.run(randomUUID(), row.id);
+    }
   }
 
   /** Create a new DETECTED code-gen task; returns the existing active task when there is already one for this ticket. */
@@ -1660,6 +1674,7 @@ export class SqliteStateStore implements StateStore, IntegrationStore, PromptSto
       agentId: row.agentId as AgentId,
       agentOverrideJson: row.agentOverrideJson ?? null,
       postCloneScript: row.postCloneScript,
+      homeCacheSeed: row.homeCacheSeed,
       enabled: row.enabled === 1,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
@@ -1687,6 +1702,7 @@ export class SqliteStateStore implements StateStore, IntegrationStore, PromptSto
       agentId: input.agentId,
       agentOverrideJson: input.agentOverrideJson ?? null,
       postCloneScript: input.postCloneScript ?? "",
+      homeCacheSeed: randomUUID(),
       enabled: input.enabled === false ? 0 : 1,
       createdAt: now,
       updatedAt: now,

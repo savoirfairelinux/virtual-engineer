@@ -94,6 +94,7 @@ function makeProject(): ProjectRecord {  return {
     agentId: "agent-1" as import("../../src/interfaces.js").AgentId,
     agentOverrideJson: null,
     postCloneScript: "",
+    homeCacheSeed: "",
     enabled: true,
     createdAt: new Date(),
     updatedAt: new Date(),

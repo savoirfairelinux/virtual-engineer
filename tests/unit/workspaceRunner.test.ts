@@ -13,12 +13,13 @@ vi.mock("../../src/workspace/dockerVolume.js", () => ({
   removeVolume: vi.fn().mockResolvedValue(undefined),
   execInVolume: vi.fn().mockResolvedValue({ stdout: "", stderr: "", exitCode: 0 }),
   stopContainersUsingVolume: vi.fn().mockResolvedValue(undefined),
+  listVolumesByLabel: vi.fn().mockResolvedValue([]),
 }));
 
 import { spawn } from "child_process";
-import { createVolume, removeVolume, execInVolume, stopContainersUsingVolume } from "../../src/workspace/dockerVolume.js";
+import { createVolume, removeVolume, execInVolume, stopContainersUsingVolume, listVolumesByLabel } from "../../src/workspace/dockerVolume.js";
 import { DockerWorkspaceRunner } from "../../src/workspace/workspaceRunner.js";
-import { makeTaskId, makeExternalChangeId } from "../../src/interfaces.js";
+import { makeTaskId, makeProjectId, makeExternalChangeId } from "../../src/interfaces.js";
 import type { AgentAdapter, AgentResult, TaskContext } from "../../src/interfaces.js";
 
 const mockSpawn = vi.mocked(spawn);
@@ -26,6 +27,7 @@ const mockCreateVolume = vi.mocked(createVolume);
 const mockRemoveVolume = vi.mocked(removeVolume);
 const mockExecInVolume = vi.mocked(execInVolume);
 const mockStopContainersUsingVolume = vi.mocked(stopContainersUsingVolume);
+const mockListVolumesByLabel = vi.mocked(listVolumesByLabel);
 
 type MockChildProcess = EventEmitter & {
   stdout: EventEmitter;
@@ -164,6 +166,56 @@ describe("DockerWorkspaceRunner", () => {
       const calls = mockCreateVolume.mock.calls.map((c) => c[0]);
       expect(calls[0]).toMatch(/^ve-ws-task-42-/);
       expect(calls[1]).toMatch(/^ve-home-task-42-/);
+    });
+
+    it("uses a deterministic persistent home volume when a project is given", async () => {
+      const runner = makeRunner();
+      const project = { id: makeProjectId("proj-1"), homeCacheSeed: "seed-abc" };
+
+      const first = await runner.createWorkspace(makeTaskId("task-a"), project);
+      const second = await runner.createWorkspace(makeTaskId("task-b"), project);
+
+      expect(first.persistentHomeVolume).toBe(true);
+      expect(first.homeVolumeName).toMatch(/^ve-home-project-v2-[0-9a-f]{16}$/);
+      expect(second.homeVolumeName).toBe(first.homeVolumeName);
+    });
+
+    it("derives a different home volume name when the cache seed changes", async () => {
+      const runner = makeRunner();
+      const a = await runner.createWorkspace(makeTaskId("task-a"), {
+        id: makeProjectId("proj-1"),
+        homeCacheSeed: "seed-1",
+      });
+      const b = await runner.createWorkspace(makeTaskId("task-b"), {
+        id: makeProjectId("proj-1"),
+        homeCacheSeed: "seed-2",
+      });
+
+      expect(b.homeVolumeName).not.toBe(a.homeVolumeName);
+    });
+
+    it("labels the persistent home volume for orphan reconciliation", async () => {
+      const runner = makeRunner();
+      await runner.createWorkspace(makeTaskId("task-a"), {
+        id: makeProjectId("proj-1"),
+        homeCacheSeed: "seed-abc",
+      });
+
+      const homeCall = mockCreateVolume.mock.calls[1];
+      expect(homeCall?.[1]).toMatchObject({
+        labels: {
+          "ve.owner": "virtual-engineer",
+          "ve.kind": "project-home",
+          "ve.project-id": "proj-1",
+          "ve.cache-seed": "seed-abc",
+        },
+      });
+    });
+
+    it("leaves no persistentHomeVolume flag when no project is given", async () => {
+      const runner = makeRunner();
+      const handle = await runner.createWorkspace(makeTaskId("task-1"));
+      expect(handle.persistentHomeVolume).toBeUndefined();
     });
   });
 
@@ -460,11 +512,83 @@ describe("DockerWorkspaceRunner", () => {
     });
 
     it("does not throw when removeVolume fails (logs warning instead)", async () => {
-      mockRemoveVolume.mockRejectedValue(new Error("volume in use"));
+      mockRemoveVolume.mockRejectedValueOnce(new Error("volume in use"));
       const runner = makeRunner();
       const handle = await runner.createWorkspace(makeTaskId("task-1"));
 
       await expect(runner.destroyWorkspace(handle)).resolves.not.toThrow();
+    });
+
+    it("preserves the persistent home volume", async () => {
+      const runner = makeRunner();
+      const handle = await runner.createWorkspace(makeTaskId("task-1"), {
+        id: makeProjectId("proj-1"),
+        homeCacheSeed: "seed-abc",
+      });
+      await runner.destroyWorkspace(handle);
+
+      expect(mockRemoveVolume).toHaveBeenCalledTimes(1);
+      expect(mockRemoveVolume).toHaveBeenCalledWith(handle.volumeName);
+      expect(mockRemoveVolume).not.toHaveBeenCalledWith(handle.homeVolumeName);
+    });
+  });
+
+  // ─── removeProjectHomeCache ────────────────────────────────────────────────
+
+  describe("removeProjectHomeCache", () => {
+    it("removes the deterministic per-project home volume", async () => {
+      const runner = makeRunner();
+      const expected = (
+        await runner.createWorkspace(makeTaskId("task-a"), {
+          id: makeProjectId("proj-1"),
+          homeCacheSeed: "seed-abc",
+        })
+      ).homeVolumeName;
+      mockRemoveVolume.mockReset();
+      mockRemoveVolume.mockResolvedValue(undefined);
+
+      await runner.removeProjectHomeCache({ id: makeProjectId("proj-1"), homeCacheSeed: "seed-abc" });
+
+      expect(mockRemoveVolume).toHaveBeenCalledWith(expected);
+    });
+
+    it("rejects when removeVolume fails", async () => {
+      mockRemoveVolume.mockRejectedValueOnce(new Error("volume in use"));
+      const runner = makeRunner();
+
+      await expect(
+        runner.removeProjectHomeCache({ id: makeProjectId("proj-1"), homeCacheSeed: "seed-abc" })
+      ).rejects.toThrow("volume in use");
+    });
+  });
+
+  // ─── reconcileProjectHomeCaches ────────────────────────────────────────────
+
+  describe("reconcileProjectHomeCaches", () => {
+    it("removes labelled volumes with no matching project and keeps the rest", async () => {
+      const runner = makeRunner();
+      const keep = (
+        await runner.createWorkspace(makeTaskId("task-a"), {
+          id: makeProjectId("proj-keep"),
+          homeCacheSeed: "seed-keep",
+        })
+      ).homeVolumeName;
+      mockListVolumesByLabel.mockResolvedValueOnce([keep, "ve-home-project-v2-deadbeefdeadbeef"]);
+      mockRemoveVolume.mockClear();
+
+      await runner.reconcileProjectHomeCaches([{ id: makeProjectId("proj-keep"), homeCacheSeed: "seed-keep" }]);
+
+      expect(mockRemoveVolume).toHaveBeenCalledTimes(1);
+      expect(mockRemoveVolume).toHaveBeenCalledWith("ve-home-project-v2-deadbeefdeadbeef");
+      expect(mockRemoveVolume).not.toHaveBeenCalledWith(keep);
+    });
+
+    it("does not throw when an orphan volume is still in use", async () => {
+      const runner = makeRunner();
+      mockListVolumesByLabel.mockResolvedValueOnce(["ve-home-project-v2-deadbeefdeadbeef"]);
+      mockRemoveVolume.mockRejectedValueOnce(new Error("volume in use"));
+
+      await expect(runner.reconcileProjectHomeCaches([])).resolves.not.toThrow();
     });
   });
 

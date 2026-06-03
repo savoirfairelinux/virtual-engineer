@@ -21,6 +21,7 @@ const project: ProjectRecord = {
   agentId: "a-1" as AgentId,
   agentOverrideJson: null,
   postCloneScript: "",
+  homeCacheSeed: "",
   enabled: true,
   createdAt: new Date(),
   updatedAt: new Date(),

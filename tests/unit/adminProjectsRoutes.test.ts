@@ -5,7 +5,7 @@ import { randomUUID } from "crypto";
 import type { Server } from "node:http";
 import { SqliteStateStore } from "../../src/state/stateStore.js";
 import { createAdminServer, type AdminServerDependencies } from "../../src/admin/adminServer.js";
-import { type AgentRecord, type AgentType } from "../../src/interfaces.js";
+import { type AgentRecord, type AgentType, type ProjectId } from "../../src/interfaces.js";
 
 function tempDbPath(): string {
   return join(tmpdir(), `ve-admin-projects-${randomUUID()}.db`);
@@ -296,5 +296,72 @@ describe("Admin API — Project routes (/api/admin/projects)", () => {
     const id = (created.body?.["project"] as Record<string, unknown>)["id"] as string;
     expect((await rest(server, `/api/admin/projects/${id}/enable`, { method: "PATCH" })).status).toBe(204);
     expect((await rest(server, `/api/admin/projects/${id}/disable`, { method: "PATCH" })).status).toBe(204);
+  });
+});
+
+describe("Admin API — Project deletion cleanup hooks", () => {
+  let store: SqliteStateStore;
+  let server: Server;
+  let onProjectDeleted: ReturnType<typeof vi.fn<(project: { id: ProjectId; homeCacheSeed: string }) => Promise<void>>>;
+  let tryBlockProject: ReturnType<typeof vi.fn<(id: ProjectId) => boolean>>;
+  let unblockProject: ReturnType<typeof vi.fn<(id: ProjectId) => void>>;
+
+  async function startServer(blockAllowed: boolean): Promise<void> {
+    onProjectDeleted = vi.fn<(project: { id: ProjectId; homeCacheSeed: string }) => Promise<void>>(async () => {});
+    tryBlockProject = vi.fn<(id: ProjectId) => boolean>(() => blockAllowed);
+    unblockProject = vi.fn<(id: ProjectId) => void>();
+    const deps: AdminServerDependencies = {
+      ...makeDeps(store),
+      onProjectDeleted,
+      tryBlockProject,
+      unblockProject,
+    };
+    server = createAdminServer(deps);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  }
+
+  beforeEach(async () => {
+    store = await SqliteStateStore.create(tempDbPath());
+  });
+
+  afterEach(async () => {
+    await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+    store.close();
+  });
+
+  async function seedProject(): Promise<string> {
+    const agent = await makeAgent(store, "review");
+    await seedIntegration(store, "gerrit-1", "gerrit");
+    const created = await rest(server, "/api/admin/projects", {
+      method: "POST",
+      body: { type: "review", name: "D", agentId: agent.id, reviewConfig: { integrationId: "gerrit-1", repoKeys: ["x"] } },
+    });
+    return (created.body?.["project"] as Record<string, unknown>)["id"] as string;
+  }
+
+  it("invokes onProjectDeleted with id and homeCacheSeed after a successful delete", async () => {
+    await startServer(true);
+    const id = await seedProject();
+
+    const d = await rest(server, `/api/admin/projects/${id}`, { method: "DELETE" });
+
+    expect(d.status).toBe(204);
+    expect(onProjectDeleted).toHaveBeenCalledTimes(1);
+    const arg = onProjectDeleted.mock.calls[0]?.[0] as { id: string; homeCacheSeed: string };
+    expect(arg.id).toBe(id);
+    expect(typeof arg.homeCacheSeed).toBe("string");
+    expect(arg.homeCacheSeed.length).toBeGreaterThan(0);
+    expect(unblockProject).toHaveBeenCalledWith(id);
+  });
+
+  it("returns 409 and skips deletion when the project cannot be blocked", async () => {
+    await startServer(false);
+    const id = await seedProject();
+
+    const d = await rest(server, `/api/admin/projects/${id}`, { method: "DELETE" });
+
+    expect(d.status).toBe(409);
+    expect(onProjectDeleted).not.toHaveBeenCalled();
+    expect(await store.getProjectById(id as never)).not.toBeNull();
   });
 });

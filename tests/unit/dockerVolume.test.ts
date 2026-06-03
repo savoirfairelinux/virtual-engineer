@@ -21,6 +21,7 @@ import {
   createVolume,
   removeVolume,
   execInVolume,
+  listVolumesByLabel,
 } from "../../src/workspace/dockerVolume.js";
 
 const mockExecFile = vi.mocked(execFile);
@@ -53,6 +54,48 @@ describe("createVolume", () => {
       ["volume", "create", "ve-ws-test-1234"],
       expect.objectContaining({ timeout: expect.any(Number) }),
     );
+  });
+
+  it("emits --label key=value for each provided label", async () => {
+    mockExecFileSuccess();
+    await createVolume("ve-home-project-v2-abc", {
+      labels: { "ve.kind": "project-home", "ve.project-id": "proj-1" },
+    });
+
+    expect(mockExecFile).toHaveBeenCalledWith(
+      "docker",
+      [
+        "volume",
+        "create",
+        "--label",
+        "ve.kind=project-home",
+        "--label",
+        "ve.project-id=proj-1",
+        "ve-home-project-v2-abc",
+      ],
+      expect.objectContaining({ timeout: expect.any(Number) }),
+    );
+  });
+});
+
+// ─── listVolumesByLabel ─────────────────────────────────────────────────────────
+
+describe("listVolumesByLabel", () => {
+  it("filters by label and parses newline-separated names", async () => {
+    mockExecFileSuccess("ve-home-project-v2-a\nve-home-project-v2-b\n");
+    const names = await listVolumesByLabel("ve.kind", "project-home");
+
+    expect(mockExecFile).toHaveBeenCalledWith(
+      "docker",
+      ["volume", "ls", "--filter", "label=ve.kind=project-home", "--format", "{{.Name}}"],
+      expect.objectContaining({ timeout: expect.any(Number) }),
+    );
+    expect(names).toEqual(["ve-home-project-v2-a", "ve-home-project-v2-b"]);
+  });
+
+  it("returns an empty array when no volumes match", async () => {
+    mockExecFileSuccess("\n");
+    expect(await listVolumesByLabel("ve.kind", "project-home")).toEqual([]);
   });
 });
 

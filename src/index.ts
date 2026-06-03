@@ -130,6 +130,15 @@ async function main(): Promise<void> {
   });
   await integrationStreamEvents.reconcile(pluginManager.getActiveIntegrations());
 
+  if (workspaceRunner.reconcileProjectHomeCaches) {
+    const allProjects = await stateStore.listProjects();
+    await workspaceRunner
+      .reconcileProjectHomeCaches(allProjects.map((p) => ({ id: p.id, homeCacheSeed: p.homeCacheSeed })))
+      .catch((err: unknown) => {
+        log.warn({ err }, "boot reconcile of per-project home cache volumes failed");
+      });
+  }
+
   const adminRuntimeConfig = {
     nodeEnv: config.nodeEnv,
     logLevel: config.logLevel,
@@ -156,7 +165,8 @@ async function main(): Promise<void> {
     });
     pollingLoop.resetBackoff();
     reviewTriggerHolder.current = buildReviewTrigger(pluginManager, config.workspaceBaseDir, workspaceRunner, stateStore);
-    await integrationStreamEvents.reconcile(pluginManager.getActiveIntegrations());
+  await integrationStreamEvents.reconcile(pluginManager.getActiveIntegrations());
+
     log.info("runtime dependencies refreshed");
     if (!pollingLoop.isRunning() && await hasRunnableProject(stateStore, pluginManager)) {
       log.info("runnable project detected — starting polling loop");
@@ -221,6 +231,11 @@ async function main(): Promise<void> {
           log.error({ err }, "hot-reload of runtime dependencies failed");
         });
       },
+      onProjectDeleted: async (project) => {
+        await workspaceRunner.removeProjectHomeCache(project);
+      },
+      tryBlockProject: (id) => concurrencyTracker.tryBlockProject(id),
+      unblockProject: (id) => concurrencyTracker.unblockProject(id),
       webhooks: {
         projectStore: stateStore,
         orchestrator: Object.assign(orchestrator, {

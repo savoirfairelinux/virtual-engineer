@@ -10,10 +10,38 @@ const log = getLogger("docker-volume");
 
 const DOCKER_TIMEOUT_MS = 30_000;
 
-/** Create a named Docker volume. */
-export async function createVolume(name: string, purpose?: string): Promise<void> {
-  await execFileAsync("docker", ["volume", "create", name], { timeout: DOCKER_TIMEOUT_MS });
-  log.debug({ volume: name, ...(purpose !== undefined ? { purpose } : {}) }, "created docker volume");
+export interface CreateVolumeOptions {
+  purpose?: string | undefined;
+  labels?: Record<string, string> | undefined;
+}
+
+/** Create a named Docker volume (idempotent — re-creating an existing volume is a no-op). */
+export async function createVolume(name: string, options?: CreateVolumeOptions): Promise<void> {
+  const args = ["volume", "create"];
+  if (options?.labels) {
+    for (const [key, value] of Object.entries(options.labels)) {
+      args.push("--label", `${key}=${value}`);
+    }
+  }
+  args.push(name);
+  await execFileAsync("docker", args, { timeout: DOCKER_TIMEOUT_MS });
+  log.debug(
+    { volume: name, ...(options?.purpose !== undefined ? { purpose: options.purpose } : {}) },
+    "created docker volume"
+  );
+}
+
+/** List names of Docker volumes carrying the given `label=value` filter. */
+export async function listVolumesByLabel(label: string, value: string): Promise<string[]> {
+  const { stdout } = await execFileAsync(
+    "docker",
+    ["volume", "ls", "--filter", `label=${label}=${value}`, "--format", "{{.Name}}"],
+    { timeout: DOCKER_TIMEOUT_MS }
+  );
+  return stdout
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
 }
 
 /**
