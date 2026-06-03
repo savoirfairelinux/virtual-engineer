@@ -110,11 +110,75 @@ describe("Orchestrator", () => {
 
     // When there's no new actionable feedback, we should NOT try to resolve previously processed comments.
     // Resolution only happens after new feedback triggers an agent cycle.
-    expect(gerritConnector.getUnresolvedComments).toHaveBeenCalledWith(task.externalChangeId);
+    expect(gerritConnector.getUnresolvedComments).toHaveBeenCalledWith(
+      task.externalChangeId,
+      task.currentPatchset
+    );
     expect(gerritConnector.resolveComments).not.toHaveBeenCalled();
     expect(workspaceRunner.runAgent).not.toHaveBeenCalled();
     expect(stateStore.transition).toHaveBeenNthCalledWith(1, task.taskId, "FEEDBACK_PROCESSING");
     expect(stateStore.transition).toHaveBeenNthCalledWith(2, task.taskId, "IN_REVIEW");
+  });
+
+  it("anchors the review to the latest patchset, not the root", async () => {
+    const task = makeTask({ currentPatchset: 4 });
+
+    const stateStore: StateStore = {
+      getProcessedCommentIds: vi.fn().mockResolvedValue(new Set()),
+      getStateTransitions: vi.fn().mockResolvedValue([]),
+      getChangesForTask: vi.fn().mockResolvedValue([]),
+      transition: vi
+        .fn()
+        .mockResolvedValueOnce({ ...task, state: "FEEDBACK_PROCESSING" })
+        .mockResolvedValueOnce({ ...task, state: "IN_REVIEW" }),
+    } as unknown as StateStore;
+
+    const workspaceRunner: WorkspaceRunner = {
+      createWorkspace: vi.fn(),
+      cloneRepo: vi.fn(),
+      runAgent: vi.fn(),
+      destroyWorkspace: vi.fn(),
+    };
+
+    const gerritConnector: GerritConnector = {
+      getChangeStatus: vi.fn().mockResolvedValue("OPEN"),
+      getUnresolvedComments: vi.fn().mockResolvedValue([]),
+      resolveComments: vi.fn().mockResolvedValue(undefined),
+    } as unknown as GerritConnector;
+
+    const redmineConnector: TicketConnector = {
+      getTicket: vi.fn(),
+      getAssignedTickets: vi.fn(),
+      addNote: vi.fn(),
+      transitionStatus: vi.fn(),
+      transitionToInProgress: vi.fn(),
+      transitionToInReview: vi.fn(),
+      closeTicket: vi.fn(),
+      getSourceLabel: vi.fn().mockReturnValue("redmine"),
+    };
+
+    const orchestrator = new Orchestrator(
+      {
+        maxAgentCycles: 3,
+        maxRetryAttempts: 5,
+        agentTimeoutMs: 1000,
+        gitAuthorName: "Virtual Engineer",
+        gitAuthorEmail: "ve@example.com",
+        agentContainerImage: "virtual-engineer-workspace:latest",
+      },
+      stateStore,
+      workspaceRunner,
+      undefined,
+      undefined,
+      makeProjectMode({ gerritConnector, redmineConnector })
+    );
+
+    await (orchestrator as any).checkReviewProgress(task);
+
+    expect(gerritConnector.getUnresolvedComments).toHaveBeenCalledWith(
+      task.externalChangeId,
+      4
+    );
   });
 
   function makeRedmineTicket() {
