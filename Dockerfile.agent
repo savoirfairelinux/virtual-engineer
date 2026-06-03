@@ -29,9 +29,11 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
   && apt-get update && apt-get install -y --no-install-recommends gh \
   && rm -rf /var/lib/apt/lists/*
 
-# Copy the agent worker and install dependencies
+# Copy the agent worker, install all deps (including esbuild), build, then prune dev deps
 COPY agent-worker/ /agent-worker/
-RUN npm --prefix /agent-worker ci --omit=dev --no-fund
+RUN npm --prefix /agent-worker ci --no-fund \
+  && npm --prefix /agent-worker run build \
+  && npm --prefix /agent-worker prune --omit=dev --no-fund
 
 # Set working directory
 WORKDIR /workspace
