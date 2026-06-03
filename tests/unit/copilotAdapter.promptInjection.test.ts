@@ -36,9 +36,9 @@ import { CopilotAdapter } from "../../src/agents/copilotAdapter.js";
 function makePrompt(id: string, content: string): Prompt {
   return {
     id,
-    label: id === "system"
+    label: id === "system_generic_code"
       ? "System Prompt"
-      : id === "instructions"
+      : id === "instructions_generic_code"
         ? "Instructions Prompt"
         : id,
     content,
@@ -49,8 +49,8 @@ function makePrompt(id: string, content: string): Prompt {
 
 function makePromptStore(overrides: Record<string, string> = {}): PromptStore {
   const prompts: Record<string, Prompt> = {
-    system: makePrompt("system", overrides["system"] ?? "Default system prompt"),
-    instructions: makePrompt("instructions", overrides["instructions"] ?? "Default instructions prompt"),
+    system_generic_code: makePrompt("system_generic_code", overrides["system_generic_code"] ?? "Default system prompt"),
+    instructions_generic_code: makePrompt("instructions_generic_code", overrides["instructions_generic_code"] ?? "Default instructions prompt"),
   };
   for (const [id, content] of Object.entries(overrides)) {
     prompts[id] = makePrompt(id, content);
@@ -130,7 +130,7 @@ describe("CopilotAdapter — prompt injection", () => {
 
   describe("buildContainerSpec — with promptStore", () => {
     it("injects SYSTEM_PROMPT env var from the store", async () => {
-      const store = makePromptStore({ system: "You are a strict TypeScript engineer." });
+      const store = makePromptStore({ system_generic_code: "You are a strict TypeScript engineer." });
       const adapter = new CopilotAdapter({});
       adapter.setPromptStore(store);
 
@@ -140,7 +140,7 @@ describe("CopilotAdapter — prompt injection", () => {
     });
 
     it("sets userPromptContent on the spec from the store", async () => {
-      const store = makePromptStore({ instructions: "Follow these instructions carefully." });
+      const store = makePromptStore({ instructions_generic_code: "Follow these instructions carefully." });
       const adapter = new CopilotAdapter({});
       adapter.setPromptStore(store);
 
@@ -152,8 +152,8 @@ describe("CopilotAdapter — prompt injection", () => {
 
     it("sets SYSTEM_PROMPT env and userPromptContent in one call", async () => {
       const store = makePromptStore({
-        system: "Custom system",
-        instructions: "Custom instructions",
+        system_generic_code: "Custom system",
+        instructions_generic_code: "Custom instructions",
       });
       const adapter = new CopilotAdapter({});
       adapter.setPromptStore(store);
@@ -178,15 +178,15 @@ describe("CopilotAdapter — prompt injection", () => {
       expect(spec.env["GIT_AUTHOR_NAME"]).toBe("Virtual Engineer");
     });
 
-    it("calls promptStore.getPrompt for 'system' and 'instructions'", async () => {
+    it("calls promptStore.getPrompt for 'system_generic_code' and 'instructions_generic_code'", async () => {
       const store = makePromptStore();
       const adapter = new CopilotAdapter({});
       adapter.setPromptStore(store);
 
       await adapter.buildContainerSpecWithPrompts(makeContext(), {});
 
-      expect(vi.mocked(store.getPrompt)).toHaveBeenCalledWith("system");
-      expect(vi.mocked(store.getPrompt)).toHaveBeenCalledWith("instructions");
+      expect(vi.mocked(store.getPrompt)).toHaveBeenCalledWith("system_generic_code");
+      expect(vi.mocked(store.getPrompt)).toHaveBeenCalledWith("instructions_generic_code");
     });
 
     it("uses task-specific prompt ids when provided", async () => {
@@ -263,8 +263,8 @@ describe("CopilotAdapter — prompt injection", () => {
 
   describe("setPromptStore", () => {
     it("can be called multiple times — last store wins", async () => {
-      const store1 = makePromptStore({ system: "Store 1 system" });
-      const store2 = makePromptStore({ system: "Store 2 system" });
+      const store1 = makePromptStore({ system_generic_code: "Store 1 system" });
+      const store2 = makePromptStore({ system_generic_code: "Store 2 system" });
       const adapter = new CopilotAdapter({});
 
       adapter.setPromptStore(store1);
@@ -281,8 +281,8 @@ describe("CopilotAdapter — prompt injection", () => {
     it("passes SYSTEM_PROMPT env and userPromptContent to the docker invoker via container spec", async () => {
       const capturedSpecs: Array<{ env: Record<string, unknown>; userPromptContent?: string }> = [];
       const store = makePromptStore({
-        system: "Injected system prompt",
-        instructions: "Injected instructions",
+        system_generic_code: "Injected system prompt",
+        instructions_generic_code: "Injected instructions",
       });
 
       const adapter = new CopilotAdapter({});

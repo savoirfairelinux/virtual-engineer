@@ -357,9 +357,9 @@ export class CopilotAdapter implements AgentAdapter, ConfigurableAdapter {
       return spec;
     }
 
-    const systemPromptId = context.systemPromptId === undefined ? "system" : context.systemPromptId;
+    const systemPromptId = context.systemPromptId === undefined ? "system_generic_code" : context.systemPromptId;
     const instructionsPromptId = context.instructionsPromptId === undefined
-      ? "instructions"
+      ? "instructions_generic_code"
       : context.instructionsPromptId;
     const promptIds = [...new Set([
       systemPromptId,

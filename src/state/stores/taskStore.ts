@@ -699,7 +699,7 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
            subject_hash = excluded.subject_hash,
            updated_at = excluded.updated_at`
       )
-      .run(id, taskId, repoKey, changeIdValue, reviewUrl, status, integrationId, reviewSystem, commitIndex, subjectHash, now.getTime(), now.getTime());
+      .run(id, taskId, repoKey, changeIdValue, reviewUrl, status, integrationId, reviewSystem, commitIndex, subjectHash, Math.floor(now.getTime() / 1000), Math.floor(now.getTime() / 1000));
   }
 
   async function getChangesForTask(taskId: TaskId): Promise<ChangePerRepository[]> {
