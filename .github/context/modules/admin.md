@@ -10,7 +10,8 @@ The admin server is a small HTTP service (default `127.0.0.1:3100`) that serves 
 | --- | --- |
 | `startAdminServer.ts` | Bind/listen helper used by `src/index.ts` and tests. |
 | `closeAdminServer.ts` | Graceful shutdown helper. |
-| `adminServer.ts` | Thin route multiplexer, auth gate, security headers, and public endpoints (dashboard, health, img-proxy). Delegates to modular route handlers. |
+| `router.ts` | Lightweight declarative micro-router (`Router.add()` / `Router.dispatch()`). Compiles `:param`-style patterns to anchored regexes, extracts and URL-decodes named parameters, and auto-returns 405 when a path matches but the HTTP method does not. |
+| `adminServer.ts` | Auth gate, security headers, and public endpoints (dashboard, health, img-proxy). Builds a single `Router` instance via `buildApiRouter()` at startup and dispatches every authenticated `/api/admin/*` request through it. |
 | `adminRouteUtils.ts` | Shared HTTP primitives (`writeJson`, `writeHtml`, `readBody`, `toIsoTimestamp`, `asRecord`, `SECRET_MASK`). |
 | `adminTaskRoutes.ts` | `/api/admin/tasks/*` list, detail, cycles, transitions, pause/resume/retry/abandon/delete. |
 | `adminPromptRoutes.ts` | `/api/admin/prompts/*` CRUD + usage lookup. |

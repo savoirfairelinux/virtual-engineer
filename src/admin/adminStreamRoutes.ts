@@ -1,10 +1,10 @@
-import type { IncomingMessage, ServerResponse } from "node:http";
 import { makeTaskId } from "../interfaces.js";
 import type { AgentCycle, AgentLogEvent, Task } from "../interfaces.js";
 import { agentLogBus, getTaskEventBuffer } from "../agents/agentEventBus.js";
 import { normalizeAgentEvent } from "../agents/agentEventTypes.js";
 import { writeJson, toIsoTimestamp } from "./adminRouteUtils.js";
 import { deduplicateByTicket } from "./adminTaskRoutes.js";
+import type { Router } from "./router.js";
 
 /** Subset of state-store methods required by the stream routes. */
 export interface StreamRouteStore {
@@ -17,24 +17,10 @@ export interface StreamRouteDeps {
   stateStore: StreamRouteStore;
 }
 
-/**
- * Try to handle a stream-route (SSE) request. Returns true if the request was
- * handled (response sent / connection held open), false otherwise.
- */
-export async function handleStreamRoutes(
-  _request: IncomingMessage,
-  response: ServerResponse,
-  path: string,
-  method: string,
-  deps: StreamRouteDeps,
-): Promise<boolean> {
-  // SSE endpoint for live logs
-  if (path === "/api/admin/logs/stream") {
-    if (method !== "GET") {
-      writeJson(response, 405, { error: "Method not allowed" });
-      return true;
-    }
-    const requestUrl = new URL(_request.url ?? "/", "http://127.0.0.1");
+/** Register SSE stream routes on the given router. */
+export function registerStreamRoutes(router: Router, deps: StreamRouteDeps): void {
+  router.add("GET", "/api/admin/logs/stream", async (req, res, _params) => {
+    const requestUrl = new URL(req.url ?? "/", "http://127.0.0.1");
     const taskIdParam = requestUrl.searchParams.get("taskId");
     let streamEntries: Array<Record<string, unknown>> = [];
 
@@ -42,8 +28,8 @@ export async function handleStreamRoutes(
       const taskId = makeTaskId(taskIdParam);
       const task = await deps.stateStore.getTask(taskId);
       if (!task) {
-        writeJson(response, 404, { error: "Task not found" });
-        return true;
+        writeJson(res, 404, { error: "Task not found" });
+        return;
       }
 
       const cycles = await deps.stateStore.getAgentCycles(taskId);
@@ -55,37 +41,34 @@ export async function handleStreamRoutes(
       ];
     }
 
-    response.statusCode = 200;
-    response.setHeader("content-type", "text/event-stream");
-    response.setHeader("cache-control", "no-cache");
-    response.setHeader("connection", "keep-alive");
-    response.flushHeaders();
+    res.statusCode = 200;
+    res.setHeader("content-type", "text/event-stream");
+    res.setHeader("cache-control", "no-cache");
+    res.setHeader("connection", "keep-alive");
+    res.flushHeaders();
 
     for (const entry of streamEntries) {
-      response.write(`data: ${JSON.stringify(entry)}\n\n`);
+      res.write(`data: ${JSON.stringify(entry)}\n\n`);
     }
 
-    // Replay buffered live events for the current in-flight cycle
     if (taskIdParam) {
       const buffered = getTaskEventBuffer(taskIdParam);
       for (const event of buffered) {
-        if (response.writable) {
-          response.write(`data: ${JSON.stringify(serializeAgentEventEntry(event))}\n\n`);
+        if (res.writable) {
+          res.write(`data: ${JSON.stringify(serializeAgentEventEntry(event))}\n\n`);
         }
       }
     }
 
-    // Subscribe to live events filtered by taskId
     const emittedTimestamps = new Set<string>();
     const eventListener = (event: AgentLogEvent): void => {
       if (taskIdParam && event.taskId !== taskIdParam) return;
-      if (!response.writable) return;
+      if (!res.writable) return;
       const key = `${event.timestamp}:${event.type}:${String(event.cycleNumber)}`;
       if (emittedTimestamps.has(key)) return;
       emittedTimestamps.add(key);
-      response.write(`data: ${JSON.stringify(serializeAgentEventEntry(event))}\n\n`);
+      res.write(`data: ${JSON.stringify(serializeAgentEventEntry(event))}\n\n`);
     };
-    // Seed dedup set from the buffer we already sent
     if (taskIdParam) {
       for (const event of getTaskEventBuffer(taskIdParam)) {
         emittedTimestamps.add(`${event.timestamp}:${event.type}:${String(event.cycleNumber)}`);
@@ -93,67 +76,49 @@ export async function handleStreamRoutes(
     }
     agentLogBus.on("event", eventListener);
 
-    // Heartbeat every 15s to keep connection alive
     const heartbeatLogs = setInterval(() => {
-      if (!response.writable) { clearInterval(heartbeatLogs); return; }
-      response.write(": heartbeat\n\n");
+      if (!res.writable) { clearInterval(heartbeatLogs); return; }
+      res.write(": heartbeat\n\n");
     }, 15_000);
 
-    // Clean up on client disconnect
-    response.on("close", () => {
+    res.on("close", () => {
       agentLogBus.off("event", eventListener);
       clearInterval(heartbeatLogs);
     });
+    // Do NOT call res.end() — keep connection open
+  });
 
-    // Do NOT call response.end() — keep connection open
-    return true;
-  }
-
-  // SSE endpoint for global events (tasks, providers)
-  if (path === "/api/admin/events/stream") {
-    if (method !== "GET") {
-      writeJson(response, 405, { error: "Method not allowed" });
-      return true;
-    }
-
-    response.statusCode = 200;
-    response.setHeader("content-type", "text/event-stream");
-    response.setHeader("cache-control", "no-cache");
-    response.setHeader("connection", "keep-alive");
-    response.flushHeaders();
+  router.add("GET", "/api/admin/events/stream", async (_req, res, _params) => {
+    res.statusCode = 200;
+    res.setHeader("content-type", "text/event-stream");
+    res.setHeader("cache-control", "no-cache");
+    res.setHeader("connection", "keep-alive");
+    res.flushHeaders();
 
     const sendTasks = async (): Promise<void> => {
-      if (!response.writable) return;
+      if (!res.writable) return;
       try {
         const allTasks = await deps.stateStore.getAllTasks();
         const sorted = deduplicateByTicket(allTasks)
           .sort((left, right) => right.updatedAt.getTime() - left.updatedAt.getTime());
-        response.write(`event: tasks\ndata: ${JSON.stringify(sorted)}\n\n`);
+        res.write(`event: tasks\ndata: ${JSON.stringify(sorted)}\n\n`);
       } catch { /* ignore */ }
     };
 
-    // Send initial tasks immediately
     await sendTasks();
 
-    // Poll tasks every 5s
     const taskTimer = setInterval(() => void sendTasks(), 5_000);
 
-    // Heartbeat every 15s
     const heartbeatGlobal = setInterval(() => {
-      if (!response.writable) { clearInterval(heartbeatGlobal); return; }
-      response.write(": heartbeat\n\n");
+      if (!res.writable) { clearInterval(heartbeatGlobal); return; }
+      res.write(": heartbeat\n\n");
     }, 15_000);
 
-    // Clean up on disconnect
-    response.on("close", () => {
+    res.on("close", () => {
       clearInterval(taskTimer);
       clearInterval(heartbeatGlobal);
     });
-
-    return true;
-  }
-
-  return false;
+  });
 }
 
 // ─── Serializers ────────────────────────────────────────────────────────────

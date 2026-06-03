@@ -5,8 +5,8 @@ import type { OAuthAppStore, IntegrationStore, PromptStore, StateStore, Integrat
 import { adminDashboardCss, renderAdminDashboardHtml } from "./dashboard.js";
 import type { PluginManager } from "../plugins/pluginManager.js";
 import type { ProviderAuthService } from "../agents/providerAuthService.js";
-import { handleAgentsRoute, type AgentsRouteStore } from "./adminAgentsRoutes.js";
-import { handleProjectsRoute, type ProjectsRouteStore } from "./adminProjectsRoutes.js";
+import { type AgentsRouteStore, registerAgentRoutes } from "./adminAgentsRoutes.js";
+import { type ProjectsRouteStore, registerProjectRoutes } from "./adminProjectsRoutes.js";
 import {
   handleWebhookRequest,
   isWebhookPath,
@@ -15,13 +15,14 @@ import {
 } from "../webhooks/webhookServer.js";
 import { buildGitLabAuthHeaders } from "../utils/gitlabAuth.js";
 import { writeJson, writeHtml } from "./adminRouteUtils.js";
-import { handleTasksRoute } from "./adminTaskRoutes.js";
-import { handlePromptsRoute } from "./adminPromptRoutes.js";
-import { handleStreamRoutes } from "./adminStreamRoutes.js";
-import { handleConcurrencyRoute } from "./adminConcurrencyRoutes.js";
-import { handleWebhookRoutes } from "./adminWebhookRoutes.js";
-import { handleIntegrationRoutes } from "./adminIntegrationRoutes.js";
+import { registerTaskRoutes } from "./adminTaskRoutes.js";
+import { registerPromptRoutes } from "./adminPromptRoutes.js";
+import { registerStreamRoutes } from "./adminStreamRoutes.js";
+import { registerConcurrencyRoutes } from "./adminConcurrencyRoutes.js";
+import { registerWebhookRoutes } from "./adminWebhookRoutes.js";
+import { registerIntegrationRoutes } from "./adminIntegrationRoutes.js";
 import { makeTaskId } from "../interfaces.js";
+import { Router } from "./router.js";
 
 /**
  * Admin HTTP server — REST API for orchestrator status, task control, prompts, integrations,
@@ -146,9 +147,10 @@ function getProviderUrls(pluginManager: PluginManager | undefined): {
 
 /** Create and return the admin HTTP server with all routes wired up. */
 export function createAdminServer(dependencies: AdminServerDependencies): Server {
+  const router = buildApiRouter(dependencies);
   return createServer(async (request, response) => {
     try {
-      await handleRequest(request, response, dependencies);
+      await handleRequest(request, response, dependencies, router);
     } catch (err: unknown) {
       log.error({ err, method: request.method, url: request.url }, "admin request failed");
       writeJson(response, 500, { error: "Internal server error" });
@@ -156,11 +158,90 @@ export function createAdminServer(dependencies: AdminServerDependencies): Server
   });
 }
 
+/** Build the declarative API router for all /api/admin/* routes. */
+function buildApiRouter(dependencies: AdminServerDependencies): Router {
+  const router = new Router();
+
+  // Status / Config / Providers
+  router.add("GET", "/api/admin/status", async (_req, res, _params) => {
+    const intervals = dependencies.polling.getIntervals();
+    writeJson(res, 200, {
+      polling: { running: dependencies.polling.isRunning(), intervalMs: intervals.intervalMs },
+      runtime: {
+        nodeEnv: dependencies.config.nodeEnv,
+        logLevel: dependencies.config.logLevel,
+        maxAgentCycles: dependencies.config.maxAgentCycles,
+        maxRetryAttempts: dependencies.config.maxRetryAttempts,
+      },
+    });
+  });
+
+  router.add("GET", "/api/admin/config", async (_req, res, _params) => {
+    writeJson(res, 200, {
+      config: {
+        nodeEnv: dependencies.config.nodeEnv,
+        logLevel: dependencies.config.logLevel,
+        maxAgentCycles: dependencies.config.maxAgentCycles,
+        maxRetryAttempts: dependencies.config.maxRetryAttempts,
+        pollingIntervalMs: dependencies.config.pollingIntervalMs,
+      },
+    });
+  });
+
+  router.add("GET", "/api/admin/providers", async (_req, res, _params) => {
+    const providersList = typeof dependencies.providers === "function" ? dependencies.providers() : dependencies.providers;
+    writeJson(res, 200, {
+      providers: providersList.map((provider) => ({
+        id: provider.id,
+        name: provider.name,
+        category: provider.category,
+        enabled: provider.enabled,
+        configured: provider.configured,
+        status: provider.status,
+        details: provider.details,
+      })),
+    });
+  });
+
+  registerStreamRoutes(router, { stateStore: dependencies.stateStore });
+  registerPromptRoutes(router, { promptStore: dependencies.promptStore, agentStore: dependencies.agentStore });
+  registerTaskRoutes(router, { stateStore: dependencies.stateStore, taskControl: dependencies.taskControl });
+  registerIntegrationRoutes(router, {
+    integrationStore: dependencies.integrationStore,
+    pluginManager: dependencies.pluginManager,
+    oAuthAppStore: dependencies.oAuthAppStore,
+    integrationStreams: dependencies.integrationStreams,
+    onIntegrationUpdated: dependencies.onIntegrationUpdated,
+    adminAuthSecret: dependencies.config.adminAuthSecret,
+  });
+  registerAgentRoutes(router, {
+    agentStore: dependencies.agentStore,
+    integrationStore: dependencies.integrationStore,
+    oAuthAppStore: dependencies.oAuthAppStore,
+    adminAuthSecret: dependencies.config.adminAuthSecret,
+    providerAuthService: dependencies.providerAuthService,
+  });
+  registerProjectRoutes(router, {
+    projectStore: dependencies.projectStore,
+    integrationStore: dependencies.integrationStore,
+    onProjectChange: dependencies.onProjectChange,
+  });
+  registerConcurrencyRoutes(router, { concurrency: dependencies.concurrency });
+  registerWebhookRoutes(router, {
+    integrationStore: dependencies.integrationStore,
+    onIntegrationUpdated: dependencies.onIntegrationUpdated,
+    webhookPublicBaseUrl: dependencies.webhooks?.publicBaseUrl,
+  });
+
+  return router;
+}
+
 /** Route an incoming admin HTTP request to the appropriate handler. */
 async function handleRequest(
   request: IncomingMessage,
   response: ServerResponse,
-  dependencies: AdminServerDependencies
+  dependencies: AdminServerDependencies,
+  router: Router
 ): Promise<void> {
   const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
   const path = requestUrl.pathname;
@@ -265,116 +346,9 @@ async function handleRequest(
     return;
   }
 
-  // ─── Status / Config / Providers (small, stays inline) ────────────────────
-
-  if (path === "/api/admin/status") {
-    if (method !== "GET") {
-      writeJson(response, 405, { error: "Method not allowed" });
-      return;
-    }
-    const intervals = dependencies.polling.getIntervals();
-    writeJson(response, 200, {
-      polling: {
-        running: dependencies.polling.isRunning(),
-        intervalMs: intervals.intervalMs,
-      },
-      runtime: {
-        nodeEnv: dependencies.config.nodeEnv,
-        logLevel: dependencies.config.logLevel,
-        maxAgentCycles: dependencies.config.maxAgentCycles,
-        maxRetryAttempts: dependencies.config.maxRetryAttempts,
-      },
-    });
-    return;
-  }
-
-  if (path === "/api/admin/config") {
-    if (method !== "GET") {
-      writeJson(response, 405, { error: "Method not allowed" });
-      return;
-    }
-    writeJson(response, 200, {
-      config: {
-        nodeEnv: dependencies.config.nodeEnv,
-        logLevel: dependencies.config.logLevel,
-        maxAgentCycles: dependencies.config.maxAgentCycles,
-        maxRetryAttempts: dependencies.config.maxRetryAttempts,
-        pollingIntervalMs: dependencies.config.pollingIntervalMs,
-      },
-    });
-    return;
-  }
-
-  if (path === "/api/admin/providers") {
-    if (method !== "GET") {
-      writeJson(response, 405, { error: "Method not allowed" });
-      return;
-    }
-    const providersList = typeof dependencies.providers === 'function' ? dependencies.providers() : dependencies.providers;
-    writeJson(response, 200, {
-      providers: providersList.map((provider) => ({
-        id: provider.id,
-        name: provider.name,
-        category: provider.category,
-        enabled: provider.enabled,
-        configured: provider.configured,
-        status: provider.status,
-        details: provider.details,
-      })),
-    });
-    return;
-  }
-
   // ─── Modular route dispatch ───────────────────────────────────────────────
-  // Each handler returns true if it handled the request, false to continue.
 
-  if (await handleStreamRoutes(request, response, path, method, {
-    stateStore: dependencies.stateStore,
-  })) return;
-
-  if (await handlePromptsRoute(request, response, path, method, {
-    promptStore: dependencies.promptStore,
-    agentStore: dependencies.agentStore,
-  })) return;
-
-  if (await handleTasksRoute(request, response, path, method, {
-    stateStore: dependencies.stateStore,
-    taskControl: dependencies.taskControl,
-  })) return;
-
-  if (await handleIntegrationRoutes(request, response, path, method, {
-    integrationStore: dependencies.integrationStore,
-    pluginManager: dependencies.pluginManager,
-    oAuthAppStore: dependencies.oAuthAppStore,
-    integrationStreams: dependencies.integrationStreams,
-    onIntegrationUpdated: dependencies.onIntegrationUpdated,
-    adminAuthSecret: dependencies.config.adminAuthSecret,
-  })) return;
-
-  if (await handleAgentsRoute(request, response, path, method, {
-    agentStore: dependencies.agentStore,
-    integrationStore: dependencies.integrationStore,
-    oAuthAppStore: dependencies.oAuthAppStore,
-    adminAuthSecret: dependencies.config.adminAuthSecret,
-    providerAuthService: dependencies.providerAuthService,
-  })) return;
-
-  if (await handleProjectsRoute(request, response, path, method, {
-    projectStore: dependencies.projectStore,
-    integrationStore: dependencies.integrationStore,
-    onProjectChange: dependencies.onProjectChange,
-  })) return;
-
-  if (await handleConcurrencyRoute(request, response, path, method, {
-    concurrency: dependencies.concurrency,
-  })) return;
-
-  if (await handleWebhookRoutes(request, response, path, method, {
-    integrationStore: dependencies.integrationStore,
-    onIntegrationUpdated: dependencies.onIntegrationUpdated,
-    webhookPublicBaseUrl: dependencies.webhooks?.publicBaseUrl,
-  })) return;
-
+  if (await router.dispatch(request, response, path, method)) return;
 
   writeJson(response, 404, { error: "Not found" });
 }
