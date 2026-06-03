@@ -3,6 +3,7 @@ import { homedir } from "os";
 import { join, resolve } from "path";
 import type {
   AgentAdapter,
+  ConfigurableAdapter,
   AgentResult,
   AgentLogEvent,
   TaskContext,
@@ -11,6 +12,7 @@ import type {
   AdapterContainerSpec,
   PromptStore,
   ReviewWorkspaceInput,
+  WorkspaceRunner,
 } from "../interfaces.js";
 import { makeExternalChangeId } from "../interfaces.js";
 import { getLogger } from "../logger.js";
@@ -167,7 +169,7 @@ export function buildCodegenUserPrompt(
  * The host owns clone, commit, and push; the container is isolated to an agent-only network.
  * Agent commits must include `COMMIT_MSG: <type>(<scope>): <subject>` for conventional-commit extraction.
  */
-export class CopilotAdapter implements AgentAdapter {
+export class CopilotAdapter implements AgentAdapter, ConfigurableAdapter {
   readonly name = "copilot";
 
   private readonly config: CopilotAdapterConfig;
@@ -186,6 +188,20 @@ export class CopilotAdapter implements AgentAdapter {
   /** Inject the prompt store used to resolve system and instructions prompts. */
   setPromptStore(promptStore: PromptStore): void {
     this.promptStore = promptStore;
+  }
+
+  /**
+   * Wire the adapter to its runtime dependencies.
+   * Implements ConfigurableAdapter so the bootstrap needs no knowledge of
+   * CopilotAdapter internals — it just checks for `configure` and calls it.
+   */
+  configure(deps: { store: PromptStore; runner: WorkspaceRunner }): void {
+    this.setPromptStore(deps.store);
+    if (deps.runner.runAgentInDocker !== undefined) {
+      this.setDockerInvoker((context, authEnv, callbacks) =>
+        deps.runner.runAgentInDocker!(this, context, authEnv, callbacks)
+      );
+    }
   }
 
   /** Resolve auth, build prompts, run the agent container, and return the parsed result. */

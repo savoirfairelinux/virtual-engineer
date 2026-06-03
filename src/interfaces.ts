@@ -353,6 +353,15 @@ export interface AgentAdapter {
   execute(context: TaskContext): Promise<AgentResult>;
 }
 
+/**
+ * Optional interface for adapters that need post-construction wiring.
+ * Implementing `configure` moves adapter-specific setup out of the bootstrap
+ * and into the adapter itself; `index.ts` only needs to duck-check for it.
+ */
+export interface ConfigurableAdapter extends AgentAdapter {
+  configure(deps: { store: PromptStore; runner: WorkspaceRunner }): void;
+}
+
 // ─── Workspace interfaces ─────────────────────────────────────────────────────
 
 export interface WorkspaceHandle {
@@ -464,6 +473,13 @@ export interface WorkspaceRunner {
     input: ReviewWorkspaceInput,
     callbacks?: { onStderrChunk?: ((chunk: string) => void) | undefined } | undefined
   ): Promise<{ rawOutput: string }>;
+  /** Spawn the adapter container and return raw stdout/stderr. Used by ConfigurableAdapter.configure. */
+  runAgentInDocker?(
+    adapter: AgentAdapter,
+    context: TaskContext,
+    authEnv?: Record<string, string>,
+    callbacks?: { onStdoutChunk?: ((chunk: string) => void) | undefined; onStderrChunk?: ((chunk: string) => void) | undefined } | undefined
+  ): Promise<{ stdout: string; stderr: string }>;
   /** Run agent adapter inside the ephemeral execution context. */
   runAgent(handle: WorkspaceHandle, context: TaskContext, adapter?: AgentAdapter): Promise<AgentResult>;
   /** Run a git command in the workspace volume; returns stdout or throws. */

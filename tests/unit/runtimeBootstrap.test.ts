@@ -164,20 +164,20 @@ async function importRuntime(
     }),
   };
 
-  const PluginManager = vi.fn().mockImplementation(function() { return pluginManagerInstance; });
-  const HttpRedmineConnector = vi.fn().mockImplementation(function() { return envTicketing; });
-  const GerritSshConnector = vi.fn().mockImplementation(function() { return envReview; });
-  const GitLabIssueConnector = vi.fn().mockImplementation(function() { return envTicketing; });
-  const GitLabMergeRequestConnector = vi.fn().mockImplementation(function() { return envReview; });
-  const MockAgentAdapter = vi.fn().mockImplementation(function() { return envAgent; });
-  const CopilotAdapter = vi.fn().mockImplementation(function() { return envAgent; });
+  const PluginManager = vi.fn().mockImplementation(function () { return pluginManagerInstance; });
+  const HttpRedmineConnector = vi.fn().mockImplementation(function () { return envTicketing; });
+  const GerritSshConnector = vi.fn().mockImplementation(function () { return envReview; });
+  const GitLabIssueConnector = vi.fn().mockImplementation(function () { return envTicketing; });
+  const GitLabMergeRequestConnector = vi.fn().mockImplementation(function () { return envReview; });
+  const MockAgentAdapter = vi.fn().mockImplementation(function () { return envAgent; });
+  const CopilotAdapter = vi.fn().mockImplementation(function () { return envAgent; });
   const integrationStreamEventsInstance = {
     reconcile: vi.fn().mockResolvedValue(undefined),
     stopAll: vi.fn().mockResolvedValue(undefined),
     getStatus: vi.fn().mockReturnValue(null),
     listStatuses: vi.fn().mockReturnValue([]),
   };
-  const PluginIntegrationStreamEventsManager = vi.fn().mockImplementation(function() { return integrationStreamEventsInstance; });
+  const PluginIntegrationStreamEventsManager = vi.fn().mockImplementation(function () { return integrationStreamEventsInstance; });
   type MockReviewProviderInstance = {
     config: Record<string, unknown>;
     isReviewer: ReturnType<typeof vi.fn>;
@@ -186,7 +186,7 @@ async function importRuntime(
     config: Record<string, unknown>;
     isReviewer: ReturnType<typeof vi.fn>;
   }> = [];
-  const GerritSshReviewProvider = vi.fn().mockImplementation(function(config: Record<string, unknown>) {
+  const GerritSshReviewProvider = vi.fn().mockImplementation(function (config: Record<string, unknown>) {
     const instance = {
       kind: "gerrit",
       config,
@@ -199,7 +199,7 @@ async function importRuntime(
     reviewProviderInstances.push(instance as MockReviewProviderInstance);
     return instance;
   });
-  const DockerWorkspaceRunner = vi.fn().mockImplementation(function() {
+  const DockerWorkspaceRunner = vi.fn().mockImplementation(function () {
     return {
       runAgentInDocker: vi.fn(),
       destroyWorkspace: vi.fn(),
@@ -208,7 +208,7 @@ async function importRuntime(
   });
   const createVcsConnectorForIntegration = vi.fn(() => ({ pushRepo: vi.fn() }));
 
-  const Orchestrator = vi.fn().mockImplementation(function() {
+  const Orchestrator = vi.fn().mockImplementation(function () {
     return {
       resumeActiveTasks: vi.fn().mockResolvedValue(undefined),
       updateRuntime: vi.fn(),
@@ -216,7 +216,7 @@ async function importRuntime(
       invalidateVcsConnector: vi.fn(),
     };
   });
-  const PollingLoop = vi.fn().mockImplementation(function() {
+  const PollingLoop = vi.fn().mockImplementation(function () {
     return {
       start: vi.fn(),
       stop: vi.fn(),
@@ -346,9 +346,9 @@ async function importRuntime(
   vi.doMock("../../src/agents/copilotAdapter.js", () => ({
     CopilotAdapter,
   }));
-  const CopilotReviewAgent = vi.fn().mockImplementation(function() { return { runReview: vi.fn() }; });
+  const CopilotReviewAgent = vi.fn().mockImplementation(function () { return { runReview: vi.fn() }; });
   vi.doMock("../../src/review/copilotReviewAgent.js", () => ({ CopilotReviewAgent }));
-  const ReviewOrchestrator = vi.fn().mockImplementation(function() {
+  const ReviewOrchestrator = vi.fn().mockImplementation(function () {
     return {
       startReviewTask: vi.fn().mockResolvedValue([]),
       runReview: vi.fn().mockResolvedValue(undefined),
@@ -530,7 +530,7 @@ describe("runtime bootstrap provider selection", () => {
   it("propagates database-backed provider config into orchestrator and vcs wiring", async () => {
     const dbTicketing = { source: "db-ticketing" } as unknown as TicketConnector;
     const dbReview = { source: "db-review" } as unknown as GerritConnector;
-    const dbAgent = { name: "copilot", setDockerInvoker: vi.fn() } as unknown as AgentAdapter;
+    const dbAgent = { name: "copilot", configure: vi.fn() } as unknown as AgentAdapter;
 
     const runtime = await importRuntime(
       {
@@ -592,24 +592,13 @@ describe("runtime bootstrap provider selection", () => {
     );
 
     expect(runtime.CopilotAdapter).not.toHaveBeenCalled();
-    expect((dbAgent as unknown as { setDockerInvoker: ReturnType<typeof vi.fn> }).setDockerInvoker).toHaveBeenCalledTimes(1);
-
-    const dockerInvoker = (dbAgent as unknown as { setDockerInvoker: ReturnType<typeof vi.fn> }).setDockerInvoker.mock.calls[0]?.[0] as
-      | ((context: object, authEnv: Record<string, string>, callbacks?: { onStderrChunk?: (chunk: string) => void }) => Promise<unknown>)
-      | undefined;
-    expect(dockerInvoker).toBeTypeOf("function");
 
     const runnerInstance = runtime.DockerWorkspaceRunner.mock.results[0]?.value as {
       runAgentInDocker: ReturnType<typeof vi.fn>;
     };
-    const callbacks = { onStderrChunk: vi.fn() };
-    await dockerInvoker?.({ taskId: "task-1" }, { GITHUB_TOKEN: "token" }, callbacks);
-
-    expect(runnerInstance.runAgentInDocker).toHaveBeenCalledWith(
-      dbAgent,
-      { taskId: "task-1" },
-      { GITHUB_TOKEN: "token" },
-      callbacks
+    expect((dbAgent as unknown as { configure: ReturnType<typeof vi.fn> }).configure).toHaveBeenCalledTimes(1);
+    expect((dbAgent as unknown as { configure: ReturnType<typeof vi.fn> }).configure).toHaveBeenCalledWith(
+      expect.objectContaining({ runner: runnerInstance })
     );
   });
 
