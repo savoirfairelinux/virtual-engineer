@@ -112,7 +112,7 @@ export function createAgentStore(context: AgentStoreContext): AgentStoreApi {
 
   async function updateAgent(
     id: AgentId,
-    partial: Partial<Pick<AgentRecord, "name" | "type" | "modelConfigJson" | "integrationId" | "systemPromptId" | "instructionsPromptId" | "maxConcurrent" | "enabled">>
+    partial: Partial<Pick<AgentRecord, "name" | "type" | "modelConfigJson" | "integrationId" | "systemPromptId" | "instructionsPromptId" | "feedbackInstructionsPromptId" | "maxConcurrent" | "enabled">>
   ): Promise<AgentRecord> {
     const existing = await getAgentById(id);
     if (!existing) throw new Error(`Agent not found: ${id}`);
