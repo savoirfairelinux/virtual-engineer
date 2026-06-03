@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AppConfig } from "../../src/config.js";
-import type { AgentAdapter, AgentResult, GerritConnector, Integration, TicketConnector } from "../../src/interfaces.js";
+import type { AgentAdapter, AgentResult, ReviewConnector, Integration, TicketConnector } from "../../src/interfaces.js";
 
-type ConnectorByType = Partial<Record<Integration["type"], TicketConnector | GerritConnector | AgentAdapter | null>>;
+type ConnectorByType = Partial<Record<Integration["type"], TicketConnector | ReviewConnector | AgentAdapter | null>>;
 
 type ActiveIntegrations = Partial<Record<Integration["type"], Integration>>;
 type ActiveIntegrationLists = Partial<Record<Integration["type"], Integration[]>>;
@@ -96,7 +96,7 @@ async function importRuntime(
   let registerBuiltinPlugins = vi.fn();
   const loadFromDatabase = vi.fn().mockResolvedValue(undefined);
   const envTicketing = { source: "env-ticketing" } as unknown as TicketConnector;
-  const envReview = { source: "env-review" } as unknown as GerritConnector;
+  const envReview = { source: "env-review" } as unknown as ReviewConnector;
   const envAgent = { name: "env-agent" } as unknown as AgentAdapter;
   const activeIntegrationLists: ActiveIntegrationLists = {
     ...options.activeIntegrationLists,
@@ -420,7 +420,7 @@ describe("runtime bootstrap provider selection", () => {
 
   it("prefers database-selected providers over env-configured fallbacks", async () => {
     const dbTicketing = { source: "db-ticketing" } as unknown as TicketConnector;
-    const dbReview = { source: "db-review" } as unknown as GerritConnector;
+    const dbReview = { source: "db-review" } as unknown as ReviewConnector;
     const dbAgent = makeDbAgentAdapter("db-agent");
 
     const runtime = await importRuntime({
@@ -529,7 +529,7 @@ describe("runtime bootstrap provider selection", () => {
 
   it("propagates database-backed provider config into orchestrator and vcs wiring", async () => {
     const dbTicketing = { source: "db-ticketing" } as unknown as TicketConnector;
-    const dbReview = { source: "db-review" } as unknown as GerritConnector;
+    const dbReview = { source: "db-review" } as unknown as ReviewConnector;
     const dbAgent = { name: "copilot", configure: vi.fn() } as unknown as AgentAdapter;
 
     const runtime = await importRuntime(
@@ -604,7 +604,7 @@ describe("runtime bootstrap provider selection", () => {
 
   it("prefers database-selected GitLab providers and propagates their config", async () => {
     const dbTicketing = { source: "db-gitlab-issues" } as unknown as TicketConnector;
-    const dbReview = { source: "db-gitlab-review" } as unknown as GerritConnector;
+    const dbReview = { source: "db-gitlab-review" } as unknown as ReviewConnector;
 
     const runtime = await importRuntime(
       {
@@ -716,7 +716,7 @@ describe("runtime bootstrap provider selection", () => {
     const runtime = await importRuntime(
       {
         redmine: { source: "env-ticketing" } as unknown as TicketConnector,
-        gerrit: { source: "env-review" } as unknown as GerritConnector,
+        gerrit: { source: "env-review" } as unknown as ReviewConnector,
         mock: makeDbAgentAdapter("mock"),
       },
       {},
@@ -736,7 +736,7 @@ describe("runtime bootstrap provider selection", () => {
 
   it("starts the polling loop immediately when all three integrations are configured from DB with project", async () => {
     const dbTicketing = { source: "db-ticketing" } as unknown as TicketConnector;
-    const dbReview = { source: "db-review" } as unknown as GerritConnector;
+    const dbReview = { source: "db-review" } as unknown as ReviewConnector;
     const dbAgent = makeDbAgentAdapter("mock");
 
     const runtime = await importRuntime(
@@ -760,7 +760,7 @@ describe("runtime bootstrap provider selection", () => {
 
   it("starts the polling loop via onPluginChange when a runnable project appears", async () => {
     const dbTicketing = { source: "db-ticketing" } as unknown as TicketConnector;
-    const dbReview = { source: "db-review" } as unknown as GerritConnector;
+    const dbReview = { source: "db-review" } as unknown as ReviewConnector;
 
     // Start with ticket source + review but no runnable project
     const activeProviders: ConnectorByType = { redmine: dbTicketing, gerrit: dbReview };
@@ -802,7 +802,7 @@ describe("runtime bootstrap provider selection", () => {
   });
 
   it("starts the polling loop in review-only mode with a review project", async () => {
-    const dbReview = { source: "db-review" } as unknown as GerritConnector;
+    const dbReview = { source: "db-review" } as unknown as ReviewConnector;
     const dbAgent = makeDbAgentAdapter("mock");
 
     const runtime = await importRuntime(
@@ -1010,7 +1010,7 @@ describe("runtime bootstrap provider selection", () => {
   });
 
   it("passes the agent token into the review orchestrator", async () => {
-    const dbReview = { source: "db-review" } as unknown as GerritConnector;
+    const dbReview = { source: "db-review" } as unknown as ReviewConnector;
     const dbAgent = makeDbAgentAdapter("mock");
 
     const runtime = await importRuntime(
