@@ -1,0 +1,895 @@
+import type Database from "better-sqlite3";
+import { and, eq, inArray, notInArray } from "drizzle-orm";
+import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
+import type {
+  AgentCycle,
+  AgentLogEvent,
+  AgentResult,
+  ChangePerRepository,
+  ExternalChangeId,
+  ProjectId,
+  StateTransition,
+  Task,
+  TaskId,
+  TaskState,
+  TicketId,
+  ValidationResult,
+} from "../../interfaces.js";
+import { makeExternalChangeId, TERMINAL_STATES } from "../../interfaces.js";
+import { getLogger } from "../../logger.js";
+import { validateTransition } from "../stateMachine.js";
+import {
+  agentCycles,
+  changePerRepository,
+  processedComments,
+  stateTransitions,
+  tasks,
+} from "../schema.js";
+import * as schema from "../schema.js";
+
+export interface TaskStoreApi {
+  createTask(
+    taskId: TaskId,
+    ticketId: TicketId,
+    ticketTitle?: string,
+    ticketDescription?: string,
+    ticketSourceLabel?: string,
+    ticketUrl?: string,
+    displayId?: string,
+    ticketSource?: { integrationId: string; ticketProjectKey: string }
+  ): Promise<Task>;
+  getTask(taskId: TaskId): Promise<Task | null>;
+  getTaskByTicketId(ticketId: TicketId): Promise<Task | null>;
+  getActiveTasks(): Promise<Task[]>;
+  getAllTasks(): Promise<Task[]>;
+  transition(taskId: TaskId, toState: TaskState, metadata?: Record<string, unknown>): Promise<Task>;
+  updateExternalChangeId(taskId: TaskId, changeId: ExternalChangeId, patchset: number, reviewUrl?: string): Promise<void>;
+  createReviewTask(input: {
+    taskId: TaskId;
+    ticketId: TicketId;
+    subject: string;
+    description?: string;
+    sourceLabel?: string;
+    changeId: ExternalChangeId;
+    patchset: number;
+    reviewUrl?: string;
+    displayId?: string;
+  }): Promise<Task>;
+  setReviewedPatchset(taskId: TaskId, patchset: number): Promise<void>;
+  incrementCycle(taskId: TaskId): Promise<number>;
+  setFailureReason(taskId: TaskId, reason: string): Promise<void>;
+  saveAgentCycle(
+    taskId: TaskId,
+    cycleNumber: number,
+    result: AgentResult,
+    validationResult?: ValidationResult
+  ): Promise<void>;
+  getAgentCycles(taskId: TaskId): Promise<AgentCycle[]>;
+  getAgentCycleEvents(taskId: TaskId, cycleNumber: number): Promise<AgentLogEvent[]>;
+  getStateTransitions(taskId: TaskId): Promise<StateTransition[]>;
+  getFailedAttemptCount(ticketId: TicketId, ticketSourceLabel?: string): Promise<number>;
+  getProcessedCommentIds(taskId: TaskId): Promise<Set<string>>;
+  markCommentProcessed(taskId: TaskId, gerritCommentId: string): Promise<void>;
+  pauseTask(taskId: TaskId): Promise<Task>;
+  resumeTask(taskId: TaskId): Promise<Task>;
+  isTaskPaused(taskId: TaskId): Promise<boolean>;
+  retryTask(taskId: TaskId): Promise<Task>;
+  abandonTask(taskId: TaskId): Promise<Task>;
+  deleteTask(taskId: TaskId): Promise<void>;
+  deleteTaskGroup(taskId: TaskId): Promise<void>;
+  saveChangePerRepository(
+    taskId: TaskId,
+    repoKey: string,
+    changeId: string,
+    reviewUrl: string | null,
+    status: string,
+    integrationId?: string,
+    reviewSystem?: string,
+    commitIndex?: number,
+    subjectHash?: string | null
+  ): Promise<void>;
+  getChangesForTask(taskId: TaskId): Promise<ChangePerRepository[]>;
+  getChangesForTasks(taskIds: TaskId[]): Promise<ChangePerRepository[]>;
+  findTaskByExternalChangeId(integrationId: string | null, externalChangeId: string): Promise<Task | null>;
+  setTaskProjectId(taskId: TaskId, projectId: ProjectId): Promise<void>;
+  setTaskPushRef(taskId: TaskId, pushRef: string): Promise<void>;
+  updateChangePerRepositoryStatus(taskId: TaskId, repoKey: string, status: string, changeId?: string): Promise<void>;
+  orphanExcessChanges(taskId: TaskId, repoKey: string, maxCommitIndex: number): Promise<number>;
+  getFailedTasksForProject(projectId: ProjectId): Promise<Task[]>;
+}
+
+interface TaskStoreContext {
+  db: BetterSQLite3Database<typeof schema>;
+  raw: Database.Database;
+}
+
+export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
+  const { db, raw } = context;
+
+  function rowToTask(row: typeof tasks.$inferSelect): Task {
+    return {
+      taskId: row.taskId as TaskId,
+      ticketId: row.ticketId as TicketId,
+      ticketSourceLabel: row.ticketSourceLabel,
+      ticketTitle: row.ticketTitle,
+      ticketDescription: row.ticketDescription,
+      state: row.state as TaskState,
+      taskType: row.taskType,
+      externalChangeId: row.gerritChangeId
+        ? makeExternalChangeId(row.gerritChangeId)
+        : null,
+      currentPatchset: row.currentPatchset,
+      reviewedPatchset: row.reviewedPatchset ?? null,
+      cycleCount: row.cycleCount,
+      failureReason: row.failureReason ?? null,
+      ticketUrl: row.ticketUrl ?? null,
+      reviewUrl: row.reviewUrl ?? null,
+      projectId: (row.projectId ?? null) as Task["projectId"],
+      displayId: (row as unknown as { displayId?: string | null }).displayId ?? null,
+      pushRef: (row as unknown as { pushRef?: string | null }).pushRef ?? null,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    };
+  }
+
+  async function getTask(taskId: TaskId): Promise<Task | null> {
+    const row = await db.query.tasks.findFirst({
+      where: eq(tasks.taskId, taskId),
+    });
+    return row ? rowToTask(row) : null;
+  }
+
+  async function getTaskByTicketId(ticketId: TicketId): Promise<Task | null> {
+    const row = await db.query.tasks.findFirst({
+      where: eq(tasks.ticketId, ticketId),
+      orderBy: (t, { desc }) => [desc(t.createdAt)],
+    });
+    return row ? rowToTask(row) : null;
+  }
+
+  async function createTask(
+    taskId: TaskId,
+    ticketId: TicketId,
+    ticketTitle = "",
+    ticketDescription = "",
+    ticketSourceLabel = "redmine",
+    ticketUrl?: string,
+    displayId?: string,
+    ticketSource?: { integrationId: string; ticketProjectKey: string }
+  ): Promise<Task> {
+    const now = new Date();
+    try {
+      await db.insert(tasks).values({
+        taskId,
+        ticketId,
+        ticketSourceLabel,
+        ticketTitle,
+        ticketDescription,
+        state: "DETECTED",
+        gerritChangeId: null,
+        currentPatchset: 0,
+        cycleCount: 0,
+        failureReason: null,
+        ticketUrl: ticketUrl ?? null,
+        displayId: displayId ?? null,
+        ticketSourceIntegrationId: ticketSource?.integrationId ?? null,
+        ticketSourceProjectKey: ticketSource?.ticketProjectKey ?? null,
+        createdAt: now,
+        updatedAt: now,
+      });
+    } catch (err: unknown) {
+      const existing = await getTaskByTicketId(ticketId);
+      if (existing && !TERMINAL_STATES.has(existing.state)) {
+        return existing;
+      }
+      throw err;
+    }
+    const task = await getTask(taskId);
+    if (!task) throw new Error(`Failed to create task ${taskId}`);
+    return task;
+  }
+
+  async function getActiveTasks(): Promise<Task[]> {
+    const rows = await db.query.tasks.findMany({
+      where: notInArray(tasks.state, [...TERMINAL_STATES]),
+    });
+    return rows.map((row) => rowToTask(row));
+  }
+
+  async function getAllTasks(): Promise<Task[]> {
+    const rows = await db.query.tasks.findMany({
+      orderBy: (t, { desc }) => [desc(t.updatedAt)],
+    });
+    return rows.map((row) => rowToTask(row));
+  }
+
+  async function transition(
+    taskId: TaskId,
+    toState: TaskState,
+    metadata: Record<string, unknown> = {}
+  ): Promise<Task> {
+    const task = await getTask(taskId);
+    if (!task) throw new Error(`Task not found: ${taskId}`);
+
+    const result = validateTransition(task.state, toState);
+    if (result === "idempotent") return task;
+
+    const now = new Date();
+    const isReviewPollingTransition =
+      (task.state === "IN_REVIEW" && toState === "FEEDBACK_PROCESSING") ||
+      (task.state === "FEEDBACK_PROCESSING" && toState === "IN_REVIEW");
+
+    raw.transaction(() => {
+      if (isReviewPollingTransition) {
+        raw
+          .prepare("UPDATE tasks SET state = ? WHERE task_id = ?")
+          .run(toState, taskId);
+      } else {
+        raw
+          .prepare("UPDATE tasks SET state = ?, updated_at = ? WHERE task_id = ?")
+          .run(toState, Math.floor(now.getTime() / 1000), taskId);
+      }
+
+      raw
+        .prepare(
+          "INSERT INTO state_transitions (task_id, from_state, to_state, metadata, created_at) VALUES (?, ?, ?, ?, ?)"
+        )
+        .run(taskId, task.state, toState, JSON.stringify(metadata), Math.floor(now.getTime() / 1000));
+    })();
+
+    const updated = await getTask(taskId);
+    if (!updated) throw new Error(`Task disappeared after transition: ${taskId}`);
+    return updated;
+  }
+
+  async function updateExternalChangeId(
+    taskId: TaskId,
+    changeId: ExternalChangeId,
+    patchset: number,
+    reviewUrl?: string
+  ): Promise<void> {
+    const now = new Date();
+    await db
+      .update(tasks)
+      .set({
+        gerritChangeId: changeId,
+        currentPatchset: patchset,
+        updatedAt: now,
+        ...(reviewUrl !== undefined ? { reviewUrl } : {}),
+      })
+      .where(eq(tasks.taskId, taskId));
+  }
+
+  async function createReviewTask(input: {
+    taskId: TaskId;
+    ticketId: TicketId;
+    subject: string;
+    description?: string;
+    sourceLabel?: string;
+    changeId: ExternalChangeId;
+    patchset: number;
+    reviewUrl?: string;
+    displayId?: string;
+  }): Promise<Task> {
+    const now = new Date();
+    try {
+      await db.insert(tasks).values({
+        taskId: input.taskId,
+        ticketId: input.ticketId,
+        ticketSourceLabel: input.sourceLabel ?? "gerrit",
+        ticketTitle: input.subject,
+        ticketDescription: input.description ?? "",
+        state: "REVIEW_PENDING",
+        taskType: "code-review",
+        gerritChangeId: input.changeId,
+        currentPatchset: input.patchset,
+        reviewedPatchset: null,
+        cycleCount: 0,
+        failureReason: null,
+        ticketUrl: null,
+        reviewUrl: input.reviewUrl ?? null,
+        displayId: input.displayId ?? null,
+        createdAt: now,
+        updatedAt: now,
+      });
+    } catch (err: unknown) {
+      const existing = await getTask(input.taskId);
+      if (existing) return existing;
+      throw err;
+    }
+    const task = await getTask(input.taskId);
+    if (!task) throw new Error(`Failed to create review task ${input.taskId}`);
+    return task;
+  }
+
+  async function setReviewedPatchset(taskId: TaskId, patchset: number): Promise<void> {
+    const now = new Date();
+    await db
+      .update(tasks)
+      .set({ reviewedPatchset: patchset, updatedAt: now })
+      .where(eq(tasks.taskId, taskId));
+  }
+
+  async function incrementCycle(taskId: TaskId): Promise<number> {
+    const task = await getTask(taskId);
+    if (!task) throw new Error(`Task not found: ${taskId}`);
+    const newCount = task.cycleCount + 1;
+    await db
+      .update(tasks)
+      .set({ cycleCount: newCount, updatedAt: new Date() })
+      .where(eq(tasks.taskId, taskId));
+    return newCount;
+  }
+
+  async function setFailureReason(taskId: TaskId, reason: string): Promise<void> {
+    await db
+      .update(tasks)
+      .set({ failureReason: reason, updatedAt: new Date() })
+      .where(eq(tasks.taskId, taskId));
+  }
+
+  async function saveAgentCycle(
+    taskId: TaskId,
+    cycleNumber: number,
+    result: AgentResult,
+    validationResult?: ValidationResult
+  ): Promise<void> {
+    await db.insert(agentCycles).values({
+      taskId,
+      cycleNumber,
+      agentResult: JSON.stringify(result),
+      validationResult: validationResult ? JSON.stringify(validationResult) : null,
+      agentEvents: result.agentEvents ? JSON.stringify(result.agentEvents) : null,
+      createdAt: new Date(),
+    });
+  }
+
+  async function getAgentCycles(taskId: TaskId): Promise<AgentCycle[]> {
+    const rows = await db.query.agentCycles.findMany({
+      where: eq(agentCycles.taskId, taskId),
+    });
+    return rows.map((row) => {
+      let result: AgentResult;
+      let validationResult: ValidationResult | null = null;
+      try {
+        result = JSON.parse(row.agentResult) as AgentResult;
+      } catch {
+        result = { status: "failed", summary: "[corrupt cycle data]", modifiedFiles: [], agentLogs: "", metadata: {} };
+      }
+      if (row.validationResult) {
+        try {
+          validationResult = JSON.parse(row.validationResult) as ValidationResult;
+        } catch {
+          validationResult = null;
+        }
+      }
+      return {
+        id: row.id,
+        taskId: row.taskId as TaskId,
+        cycleNumber: row.cycleNumber,
+        result,
+        validationResult,
+        createdAt: row.createdAt,
+      };
+    });
+  }
+
+  async function getAgentCycleEvents(taskId: TaskId, cycleNumber: number): Promise<AgentLogEvent[]> {
+    const row = await db.query.agentCycles.findFirst({
+      where: (table, { and }) => and(eq(table.taskId, taskId), eq(table.cycleNumber, cycleNumber)),
+    });
+    if (!row?.agentEvents) return [];
+    try {
+      return JSON.parse(row.agentEvents) as AgentLogEvent[];
+    } catch {
+      return [];
+    }
+  }
+
+  async function getStateTransitions(taskId: TaskId): Promise<StateTransition[]> {
+    const rows = await db.query.stateTransitions.findMany({
+      where: eq(stateTransitions.taskId, taskId),
+      orderBy: (table, { asc }) => [asc(table.createdAt), asc(table.id)],
+    });
+
+    return rows.map((row) => {
+      let metadata: Record<string, unknown>;
+      try {
+        metadata = JSON.parse(row.metadata) as Record<string, unknown>;
+      } catch {
+        metadata = {};
+      }
+
+      return {
+        id: row.id,
+        taskId: row.taskId as TaskId,
+        fromState: row.fromState as TaskState,
+        toState: row.toState as TaskState,
+        metadata,
+        createdAt: row.createdAt,
+      };
+    });
+  }
+
+  async function getFailedAttemptCount(ticketId: TicketId, ticketSourceLabel?: string): Promise<number> {
+    if (ticketSourceLabel !== undefined) {
+      const row = raw
+        .prepare(
+          "SELECT COUNT(*) AS count FROM tasks WHERE ticket_id = ? AND ticket_source_label = ? AND state IN ('FAILED', 'ABANDONED')"
+        )
+        .get(ticketId, ticketSourceLabel) as { count: number };
+      return row.count;
+    }
+
+    const row = raw
+      .prepare("SELECT COUNT(*) AS count FROM tasks WHERE ticket_id = ? AND state IN ('FAILED', 'ABANDONED')")
+      .get(ticketId) as { count: number };
+
+    return row.count;
+  }
+
+  async function getProcessedCommentIds(taskId: TaskId): Promise<Set<string>> {
+    const rows = await db.query.processedComments.findMany({
+      where: eq(processedComments.taskId, taskId),
+    });
+    return new Set(rows.map((row) => row.gerritCommentId));
+  }
+
+  async function markCommentProcessed(taskId: TaskId, gerritCommentId: string): Promise<void> {
+    await db.insert(processedComments).values({
+      taskId,
+      gerritCommentId,
+      createdAt: new Date(),
+    });
+  }
+
+  async function pauseTask(taskId: TaskId): Promise<Task> {
+    const task = await getTask(taskId);
+    if (!task) throw new Error(`Task not found: ${taskId}`);
+
+    const now = new Date();
+    raw
+      .prepare(
+        "INSERT INTO state_transitions (task_id, from_state, to_state, metadata, created_at) VALUES (?, ?, ?, ?, ?)"
+      )
+      .run(taskId, task.state, task.state, JSON.stringify({ action: "pause" }), Math.floor(now.getTime() / 1000));
+
+    return task;
+  }
+
+  async function resumeTask(taskId: TaskId): Promise<Task> {
+    const task = await getTask(taskId);
+    if (!task) throw new Error(`Task not found: ${taskId}`);
+
+    const now = new Date();
+    raw
+      .prepare(
+        "INSERT INTO state_transitions (task_id, from_state, to_state, metadata, created_at) VALUES (?, ?, ?, ?, ?)"
+      )
+      .run(taskId, task.state, task.state, JSON.stringify({ action: "resume" }), Math.floor(now.getTime() / 1000));
+
+    return task;
+  }
+
+  async function isTaskPaused(taskId: TaskId): Promise<boolean> {
+    const row = raw
+      .prepare(
+        "SELECT metadata FROM state_transitions WHERE task_id = ? ORDER BY id DESC LIMIT 1"
+      )
+      .get(taskId) as { metadata: string } | undefined;
+
+    if (!row) return false;
+
+    try {
+      const metadata = JSON.parse(row.metadata) as Record<string, unknown>;
+      const latestAction = metadata["action"] as string | undefined;
+      return latestAction === "pause";
+    } catch {
+      return false;
+    }
+  }
+
+  function isTaskOrphaned(task: Task): boolean {
+    if (task.projectId === null) return true;
+    const row = raw
+      .prepare("SELECT 1 AS hit FROM projects WHERE id = ?")
+      .get(task.projectId) as { hit: number } | undefined;
+    return row === undefined;
+  }
+
+  function findAdoptionTargetForTask(taskId: TaskId): { projectId: string; integrationId: string; ticketProjectKey: string } | null {
+    const snapshotRow = raw
+      .prepare(
+        "SELECT pts.project_id AS projectId, t.ticket_source_integration_id AS integrationId, " +
+        "t.ticket_source_project_key AS ticketProjectKey FROM tasks t " +
+        "JOIN project_ticket_source pts " +
+        "ON pts.integration_id = t.ticket_source_integration_id " +
+        "AND pts.ticket_project_key = t.ticket_source_project_key " +
+        "WHERE t.task_id = ? " +
+        "AND t.ticket_source_integration_id IS NOT NULL " +
+        "AND t.ticket_source_project_key IS NOT NULL"
+      )
+      .get(taskId) as { projectId: string; integrationId: string; ticketProjectKey: string } | undefined;
+    if (snapshotRow) return snapshotRow;
+
+    const labelRow = raw
+      .prepare("SELECT ticket_source_label AS label FROM tasks WHERE task_id = ?")
+      .get(taskId) as { label: string } | undefined;
+    const integrationId = parseIntegrationIdFromLabel(labelRow?.label);
+    if (integrationId === null) return null;
+
+    const fallbackRows = raw
+      .prepare(
+        "SELECT project_id AS projectId, integration_id AS integrationId, ticket_project_key AS ticketProjectKey " +
+        "FROM project_ticket_source WHERE integration_id = ?"
+      )
+      .all(integrationId) as { projectId: string; integrationId: string; ticketProjectKey: string }[];
+    if (fallbackRows.length !== 1) return null;
+    return fallbackRows[0] ?? null;
+  }
+
+  async function retryTask(taskId: TaskId): Promise<Task> {
+    const task = await getTask(taskId);
+    if (!task) throw new Error(`Task not found: ${taskId}`);
+
+    const isReview = task.taskType === "code-review";
+    const resetState: TaskState = isReview ? "REVIEW_PENDING" : "DETECTED";
+    // Adoption only applies to code-gen tasks: review tasks are tied to a
+    // specific change/patchset and never lose their project mapping.
+    const adoption = !isReview && isTaskOrphaned(task)
+      ? findAdoptionTargetForTask(taskId)
+      : null;
+    if (isReview && isTaskOrphaned(task)) {
+      const log = getLogger("task-store");
+      log.warn(
+        { taskId, state: task.state },
+        "retrying an orphaned code-review task: project mapping cannot be restored, next runReview may fail"
+      );
+    }
+
+    const now = new Date();
+    raw.transaction(() => {
+      const nowSec = Math.floor(now.getTime() / 1000);
+      if (adoption !== null) {
+        raw
+          .prepare(
+            "UPDATE tasks SET state = ?, cycle_count = ?, failure_reason = ?, project_id = ?, " +
+            "ticket_source_integration_id = COALESCE(ticket_source_integration_id, ?), " +
+            "ticket_source_project_key = COALESCE(ticket_source_project_key, ?), " +
+            "updated_at = ? WHERE task_id = ?"
+          )
+          .run(
+            resetState,
+            0,
+            null,
+            adoption.projectId,
+            adoption.integrationId,
+            adoption.ticketProjectKey,
+            nowSec,
+            taskId
+          );
+      } else {
+        raw
+          .prepare("UPDATE tasks SET state = ?, cycle_count = ?, failure_reason = ?, updated_at = ? WHERE task_id = ?")
+          .run(resetState, 0, null, nowSec, taskId);
+      }
+
+      const metadata: Record<string, unknown> = { action: "retry" };
+      if (adoption !== null) {
+        metadata["adoptedProjectId"] = adoption.projectId;
+      }
+      raw
+        .prepare(
+          "INSERT INTO state_transitions (task_id, from_state, to_state, metadata, created_at) VALUES (?, ?, ?, ?, ?)"
+        )
+        .run(taskId, task.state, resetState, JSON.stringify(metadata), nowSec);
+    })();
+
+    const updated = await getTask(taskId);
+    if (!updated) throw new Error(`Task disappeared after retry: ${taskId}`);
+    return updated;
+  }
+
+  async function abandonTask(taskId: TaskId): Promise<Task> {
+    const task = await getTask(taskId);
+    if (!task) throw new Error(`Task not found: ${taskId}`);
+
+    const now = new Date();
+    raw.transaction(() => {
+      raw.prepare("UPDATE tasks SET state = ?, updated_at = ? WHERE task_id = ?").run("ABANDONED", Math.floor(now.getTime() / 1000), taskId);
+
+      raw
+        .prepare(
+          "INSERT INTO state_transitions (task_id, from_state, to_state, metadata, created_at) VALUES (?, ?, ?, ?, ?)"
+        )
+        .run(taskId, task.state, "ABANDONED", JSON.stringify({ action: "abandon" }), Math.floor(now.getTime() / 1000));
+    })();
+
+    const updated = await getTask(taskId);
+    if (!updated) throw new Error(`Task disappeared after abandon: ${taskId}`);
+    return updated;
+  }
+
+  async function deleteTask(taskId: TaskId): Promise<void> {
+    const task = await getTask(taskId);
+    if (!task) throw new Error(`Task not found: ${taskId}`);
+
+    const now = Math.floor(Date.now() / 1000);
+
+    if (!TERMINAL_STATES.has(task.state)) {
+      raw.transaction(() => {
+        raw.prepare("UPDATE tasks SET state = ?, updated_at = ? WHERE task_id = ?").run("ABANDONED", now, taskId);
+        raw
+          .prepare(
+            "INSERT INTO state_transitions (task_id, from_state, to_state, metadata, created_at) VALUES (?, ?, ?, ?, ?)"
+          )
+          .run(taskId, task.state, "ABANDONED", JSON.stringify({ action: "delete" }), now);
+      })();
+      return;
+    }
+
+    raw.transaction(() => {
+      raw.prepare("DELETE FROM change_per_repository WHERE task_id = ?").run(taskId);
+      raw.prepare("DELETE FROM processed_comments WHERE task_id = ?").run(taskId);
+      raw.prepare("DELETE FROM agent_cycles WHERE task_id = ?").run(taskId);
+      raw.prepare("DELETE FROM state_transitions WHERE task_id = ?").run(taskId);
+      raw.prepare("DELETE FROM tasks WHERE task_id = ?").run(taskId);
+    })();
+  }
+
+  async function deleteTaskGroup(taskId: TaskId): Promise<void> {
+    const anchor = raw
+      .prepare("SELECT ticket_id, gerrit_change_id FROM tasks WHERE task_id = ?")
+      .get(taskId) as { ticket_id: string; gerrit_change_id: string | null } | undefined;
+
+    if (!anchor) return;
+
+    const taskIds = new Set<string>();
+
+    const byTicket = raw
+      .prepare("SELECT task_id FROM tasks WHERE ticket_id = ?")
+      .all(anchor.ticket_id) as Array<Record<string, unknown>>;
+    for (const row of byTicket) taskIds.add(row["task_id"] as string);
+
+    if (anchor.gerrit_change_id) {
+      const byChange = raw
+        .prepare("SELECT task_id FROM tasks WHERE gerrit_change_id = ?")
+        .all(anchor.gerrit_change_id) as Array<Record<string, unknown>>;
+      for (const row of byChange) taskIds.add(row["task_id"] as string);
+    }
+
+    if (taskIds.size === 0) return;
+
+    raw.transaction(() => {
+      for (const id of taskIds) {
+        raw.prepare("DELETE FROM change_per_repository WHERE task_id = ?").run(id);
+        raw.prepare("DELETE FROM processed_comments WHERE task_id = ?").run(id);
+        raw.prepare("DELETE FROM agent_cycles WHERE task_id = ?").run(id);
+        raw.prepare("DELETE FROM state_transitions WHERE task_id = ?").run(id);
+        raw.prepare("DELETE FROM tasks WHERE task_id = ?").run(id);
+      }
+    })();
+  }
+
+  async function saveChangePerRepository(
+    taskId: TaskId,
+    repoKey: string,
+    changeIdValue: string,
+    reviewUrl: string | null,
+    status: string,
+    integrationId = "",
+    reviewSystem = "",
+    commitIndex = 0,
+    subjectHash: string | null = null
+  ): Promise<void> {
+    const now = new Date();
+    const id = commitIndex > 0 ? `${taskId}:${repoKey}:${commitIndex}` : `${taskId}:${repoKey}`;
+
+    raw
+      .prepare(
+        `INSERT INTO change_per_repository (id, task_id, repo_key, change_id, review_url, status, integration_id, review_system, commit_index, subject_hash, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           change_id = excluded.change_id,
+           review_url = excluded.review_url,
+           status = excluded.status,
+           integration_id = excluded.integration_id,
+           review_system = excluded.review_system,
+           commit_index = excluded.commit_index,
+           subject_hash = excluded.subject_hash,
+           updated_at = excluded.updated_at`
+      )
+      .run(id, taskId, repoKey, changeIdValue, reviewUrl, status, integrationId, reviewSystem, commitIndex, subjectHash, Math.floor(now.getTime() / 1000), Math.floor(now.getTime() / 1000));
+  }
+
+  async function getChangesForTask(taskId: TaskId): Promise<ChangePerRepository[]> {
+    const rows = await db
+      .select()
+      .from(changePerRepository)
+      .where(eq(changePerRepository.taskId, taskId));
+
+    return rows.map((row) => ({
+      id: row.id,
+      taskId: row.taskId as TaskId,
+      repoKey: row.repoKey,
+      changeId: row.changeId,
+      reviewUrl: row.reviewUrl,
+      status: row.status,
+      integrationId: (row as unknown as { integrationId?: string }).integrationId ?? "",
+      reviewSystem: (row as unknown as { reviewSystem?: string }).reviewSystem ?? "",
+      commitIndex: (row as unknown as { commitIndex?: number }).commitIndex ?? 0,
+      subjectHash: (row as unknown as { subjectHash?: string | null }).subjectHash ?? null,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    }));
+  }
+
+  async function getChangesForTasks(taskIds: TaskId[]): Promise<ChangePerRepository[]> {
+    if (taskIds.length === 0) return [];
+    const rows = await db
+      .select()
+      .from(changePerRepository)
+      .where(inArray(changePerRepository.taskId, taskIds as string[]));
+
+    return rows.map((row) => ({
+      id: row.id,
+      taskId: row.taskId as TaskId,
+      repoKey: row.repoKey,
+      changeId: row.changeId,
+      reviewUrl: row.reviewUrl,
+      status: row.status,
+      integrationId: (row as unknown as { integrationId?: string }).integrationId ?? "",
+      reviewSystem: (row as unknown as { reviewSystem?: string }).reviewSystem ?? "",
+      commitIndex: (row as unknown as { commitIndex?: number }).commitIndex ?? 0,
+      subjectHash: (row as unknown as { subjectHash?: string | null }).subjectHash ?? null,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    }));
+  }
+
+  async function findTaskByExternalChangeId(
+    integrationId: string | null,
+    externalChangeId: string
+  ): Promise<Task | null> {
+    if (!externalChangeId) return null;
+
+    const singleRow = raw
+      .prepare("SELECT * FROM tasks WHERE gerrit_change_id = ? ORDER BY created_at DESC LIMIT 1")
+      .get(externalChangeId) as Record<string, unknown> | undefined;
+    if (singleRow) {
+      const orm = await db.query.tasks.findFirst({
+        where: eq(tasks.taskId, singleRow["task_id"] as TaskId),
+      });
+      if (orm) return rowToTask(orm);
+    }
+
+    const cprRow = integrationId
+      ? raw
+          .prepare(
+            "SELECT task_id FROM change_per_repository WHERE change_id = ? AND integration_id = ? ORDER BY updated_at DESC LIMIT 1"
+          )
+          .get(externalChangeId, integrationId) as { task_id: string } | undefined
+      : raw
+          .prepare(
+            "SELECT task_id FROM change_per_repository WHERE change_id = ? ORDER BY updated_at DESC LIMIT 1"
+          )
+          .get(externalChangeId) as { task_id: string } | undefined;
+
+    if (cprRow) {
+      const orm = await db.query.tasks.findFirst({
+        where: eq(tasks.taskId, cprRow.task_id as TaskId),
+      });
+      if (orm) return rowToTask(orm);
+    }
+
+    return null;
+  }
+
+  async function setTaskProjectId(taskId: TaskId, projectId: ProjectId): Promise<void> {
+    raw
+      .prepare("UPDATE tasks SET project_id = ?, updated_at = ? WHERE task_id = ?")
+      .run(projectId as string, Math.floor(Date.now() / 1000), taskId);
+  }
+
+  async function setTaskPushRef(taskId: TaskId, pushRef: string): Promise<void> {
+    raw
+      .prepare("UPDATE tasks SET push_ref = ?, updated_at = ? WHERE task_id = ?")
+      .run(pushRef, Math.floor(Date.now() / 1000), taskId);
+  }
+
+  async function updateChangePerRepositoryStatus(
+    taskId: TaskId,
+    repoKey: string,
+    status: string,
+    changeId?: string
+  ): Promise<void> {
+    const now = Math.floor(Date.now() / 1000);
+    if (changeId) {
+      raw
+        .prepare(
+          "UPDATE change_per_repository SET status = ?, updated_at = ? WHERE task_id = ? AND change_id = ?"
+        )
+        .run(status, now, taskId, changeId);
+    } else {
+      const id = `${taskId}:${repoKey}`;
+      raw
+        .prepare(
+          "UPDATE change_per_repository SET status = ?, updated_at = ? WHERE id = ?"
+        )
+        .run(status, now, id);
+    }
+  }
+
+  /**
+   * Mark change_per_repository rows as ORPHANED when a retry push produces fewer
+   * commits than the previous cycle. Rows whose commitIndex exceeds maxCommitIndex
+   * for the given task+repo are set to ORPHANED so they are excluded from future
+   * feedback aggregation and Change-Id continuity.
+   */
+  async function getFailedTasksForProject(projectId: ProjectId): Promise<Task[]> {
+    const rows = await db.query.tasks.findMany({
+      where: and(eq(tasks.projectId, projectId), inArray(tasks.state, ["FAILED", "REVIEW_FAILED"])),
+    });
+    return rows.map((row) => rowToTask(row));
+  }
+
+  async function orphanExcessChanges(
+    taskId: TaskId,
+    repoKey: string,
+    maxCommitIndex: number
+  ): Promise<number> {
+    const now = Math.floor(Date.now() / 1000);
+    const result = raw
+      .prepare(
+        `UPDATE change_per_repository SET status = 'ORPHANED', updated_at = ?
+         WHERE task_id = ? AND repo_key = ? AND commit_index > ?
+           AND status NOT IN ('ORPHANED', 'NO_CHANGE', 'MERGED', 'ABANDONED')`
+      )
+      .run(now, taskId, repoKey, maxCommitIndex);
+    return result.changes;
+  }
+
+  return {
+    createTask,
+    getTask,
+    getTaskByTicketId,
+    getActiveTasks,
+    getAllTasks,
+    transition,
+    updateExternalChangeId,
+    createReviewTask,
+    setReviewedPatchset,
+    incrementCycle,
+    setFailureReason,
+    saveAgentCycle,
+    getAgentCycles,
+    getAgentCycleEvents,
+    getStateTransitions,
+    getFailedAttemptCount,
+    getProcessedCommentIds,
+    markCommentProcessed,
+    pauseTask,
+    resumeTask,
+    isTaskPaused,
+    retryTask,
+    abandonTask,
+    deleteTask,
+    deleteTaskGroup,
+    saveChangePerRepository,
+    getChangesForTask,
+    getChangesForTasks,
+    findTaskByExternalChangeId,
+    setTaskProjectId,
+    setTaskPushRef,
+    updateChangePerRepositoryStatus,
+    orphanExcessChanges,
+    getFailedTasksForProject,
+  };
+}
+
+function parseIntegrationIdFromLabel(label: string | undefined | null): string | null {
+  if (!label) return null;
+  const separatorIndex = label.indexOf(":");
+  if (separatorIndex <= 0 || separatorIndex === label.length - 1) return null;
+  return label.slice(separatorIndex + 1);
+}

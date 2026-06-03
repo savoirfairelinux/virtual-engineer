@@ -156,9 +156,11 @@ describe("PluginManager — Phase 4 multi-instance", () => {
 
     const gerritA = makeAgentInstance("gerrit-a");
     const gerritB = makeAgentInstance("gerrit-b");
-    const factory = vi.fn()
-      .mockReturnValueOnce(gerritA)
-      .mockReturnValueOnce(gerritB);
+    const instanceMap: Record<string, ReturnType<typeof makeAgentInstance>> = {
+      "gerrit-a": gerritA,
+      "gerrit-b": gerritB,
+    };
+    const factory = vi.fn((_config: unknown, integration: Integration) => instanceMap[integration.id] ?? gerritA);
 
     const mgr = new PluginManager(store);
     mgr.registerFactory("gerrit", factory);

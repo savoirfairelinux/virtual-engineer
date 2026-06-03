@@ -82,20 +82,28 @@ describe("SqliteStateStore", () => {
 
     it("throws when the inserted task cannot be read back", async () => {
       const taskId = makeTaskId(randomUUID());
-      const originalGetTask = store.getTask.bind(store);
+      // After the store refactor, createTask uses an internal closure getTask,
+      // not the facade's store.getTask. Mock at the db layer instead.
+      const db = (store as unknown as {
+        db: { query: { tasks: { findFirst: (opts: unknown) => Promise<unknown> } } };
+      }).db;
+      const originalFindFirst = db.query.tasks.findFirst.bind(db.query.tasks);
       let firstRead = true;
-
-      store.getTask = (async (requestedTaskId) => {
-        if (firstRead && requestedTaskId === taskId) {
+      db.query.tasks.findFirst = async (opts: unknown) => {
+        if (firstRead) {
           firstRead = false;
-          return null;
+          return undefined;
         }
-        return originalGetTask(requestedTaskId);
-      }) as SqliteStateStore["getTask"];
+        return originalFindFirst(opts);
+      };
 
-      await expect(store.createTask(taskId, makeTicketId("missing-readback"))).rejects.toThrow(
-        `Failed to create task ${taskId}`
-      );
+      try {
+        await expect(store.createTask(taskId, makeTicketId("missing-readback"))).rejects.toThrow(
+          `Failed to create task ${taskId}`
+        );
+      } finally {
+        db.query.tasks.findFirst = originalFindFirst;
+      }
     });
 
     it("rethrows insert errors when there is no recoverable active task", async () => {

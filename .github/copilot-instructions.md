@@ -71,7 +71,9 @@ src/
                         # github-pull-request,mock,redmine}.ts
   review/               # reviewOrchestrator, copilotReviewAgent,
                         # prompt builder, parser
-  state/                # schema (Drizzle), stateMachine, stateStore, migrate
+  state/                # schema (Drizzle), stateMachine, stateStore facade, migrate
+    stores/             # domain-scoped DB modules: task, integration, project,
+                        # prompt(+seeding), and agent(+concurrency)
   utils/                # ticketFooterFormatter, encryption
   vcs/                  # vcsConnector + gerritVcsConnector + gitlabVcsConnector + vcsFactory
   webhooks/             # webhook server + provider handlers
