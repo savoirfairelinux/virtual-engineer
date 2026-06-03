@@ -433,7 +433,7 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
     const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
     await orch.runReview(initial.taskId);
 
-    expect(runner.applyGerritPatchset).toHaveBeenCalledWith(
+    expect(runner.applyPriorPatchset).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ patchset: 2 })
     );
