@@ -425,7 +425,7 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
     }
   });
 
-  // available-models must be registered before :id to avoid :id capturing "available-models"
+  // /agents/:id/available-models has a distinct path shape from /agents/:id (anchored regex), so registration order does not matter here
   router.add("GET", "/api/admin/agents/:id/available-models", async (_req, res, params) => {
     if (!deps.agentStore) { writeJson(res, 501, { error: "Agent store not available" }); return; }
     const id = makeAgentId(params["id"] ?? "");

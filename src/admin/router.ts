@@ -19,7 +19,7 @@ interface CompiledRoute {
 function compilePattern(pattern: string): { regex: RegExp; keys: string[] } {
   const keys: string[] = [];
   const regexStr = pattern
-    .replace(/[.+?^${}()|[\]\\]/g, "\\$&")  // escape regex metacharacters in literal segments
+    .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")  // escape regex metacharacters in literal segments
     .replace(/:([^/]+)/g, (_m, key: string) => {
       keys.push(key);
       return "([^/]+)";
