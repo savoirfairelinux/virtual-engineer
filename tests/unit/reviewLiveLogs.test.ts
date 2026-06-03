@@ -70,7 +70,7 @@ function makeTask(overrides: Partial<Task> = {}): Task {
 }
 
 const PATCHSET_OPTIONS = {
-  gerritBaseUrl: "ssh://admin@gerrit.test:29418",
+  vcsBaseUrl: "ssh://admin@gerrit.test:29418",
   sshHost: "gerrit.test",
   sshPort: 29418,
   sshUser: "admin",
@@ -110,7 +110,7 @@ function makeWorkspaceRunner(rawOutput = GOOD_RAW_OUTPUT) {
   return {
     createWorkspace: vi.fn(async () => handle),
     prepareProjectWorkspace: vi.fn(async () => ({ success: true as const, localPath: handle.hostWorkspacePath })),
-    applyGerritPatchset: vi.fn(async () => undefined),
+    applyPriorPatchset: vi.fn(async () => undefined),
     runReviewInDocker: vi.fn(async () => ({ rawOutput })),
     destroyWorkspace: vi.fn(async () => undefined),
   } as unknown as WorkspaceRunner & { runReviewInDocker: ReturnType<typeof vi.fn> };
@@ -180,9 +180,9 @@ function makeOrch(mocks: ReturnType<typeof makeMocks>, runner: ReturnType<typeof
       sshKnownHostsPath: null,
     }),
     applyPatchset: async (handle, details) => {
-      const r = runner as { applyGerritPatchset?: (h: unknown, opts: unknown) => Promise<void> };
-      if (r.applyGerritPatchset !== undefined) {
-        await r.applyGerritPatchset(handle, { ...PATCHSET_OPTIONS, changeNumber: details.changeNumber, patchset: details.currentPatchset });
+      const r = runner as { applyPriorPatchset?: (h: unknown, opts: unknown) => Promise<void> };
+      if (r.applyPriorPatchset !== undefined) {
+        await r.applyPriorPatchset(handle, { ...PATCHSET_OPTIONS, revisionNumber: details.changeNumber, patchset: details.currentPatchset });
       }
     },
     reviewInstructions: "Review the code changes.",

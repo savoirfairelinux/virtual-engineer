@@ -997,7 +997,7 @@ describe("Orchestrator — Phase 4 project mode", () => {
     expect(context.agentSession.perRepoChangeIds).toEqual({ root: { "0": "Ifirst", "1": "Ilast" } });
   });
 
-  it("retry cycle checks out existing Gerrit patchset via applyGerritPatchset", async () => {
+  it("retry cycle checks out existing patchset via applyPriorPatchset", async () => {
     const task = makeTask({
       state: "AGENT_RUNNING",
       cycleCount: 1, // second cycle
@@ -1012,8 +1012,8 @@ describe("Orchestrator — Phase 4 project mode", () => {
     });
 
     const resolvePatchsetOptions = vi.fn().mockResolvedValue({
-      gerritBaseUrl: "",
-      changeNumber: 12345,
+      vcsBaseUrl: "",
+      revisionNumber: 12345,
       patchset: 2,
       sshKeyPath: "/keys/id",
       sshHost: "gerrit.example.com",
@@ -1032,9 +1032,9 @@ describe("Orchestrator — Phase 4 project mode", () => {
       resolvePatchsetOptions,
     } as unknown as VcsConnector;
 
-    const applyGerritPatchset = vi.fn().mockResolvedValue(undefined);
+    const applyPriorPatchset = vi.fn().mockResolvedValue(undefined);
     const ws = makeWorkspaceRunner({
-      applyGerritPatchset,
+      applyPriorPatchset,
     });
 
     const projectMode: ProjectModeDeps = {
@@ -1061,9 +1061,9 @@ describe("Orchestrator — Phase 4 project mode", () => {
     // Should have resolved the patchset options from the stored Change-Id
     expect(resolvePatchsetOptions).toHaveBeenCalledWith("Iabc123");
     // Should have applied the patchset
-    expect(applyGerritPatchset).toHaveBeenCalledWith(
+    expect(applyPriorPatchset).toHaveBeenCalledWith(
       expect.objectContaining({ volumeName: "v1" }),
-      expect.objectContaining({ changeNumber: 12345, patchset: 2 }),
+      expect.objectContaining({ revisionNumber: 12345, patchset: 2 }),
     );
   });
 
@@ -1095,7 +1095,7 @@ describe("Orchestrator — Phase 4 project mode", () => {
     } as unknown as VcsConnector;
 
     const ws = makeWorkspaceRunner({
-      applyGerritPatchset: vi.fn(),
+      applyPriorPatchset: vi.fn(),
     });
 
     const projectMode: ProjectModeDeps = {

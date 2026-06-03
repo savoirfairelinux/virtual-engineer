@@ -203,15 +203,15 @@ export const gerritDescriptor: PluginDescriptor = {
         sshKnownHostsPath: ssh.knownHostsPath ?? null,
       }),
       applyPatchset: async (handle, details): Promise<void> => {
-        if (workspaceRunner.applyGerritPatchset !== undefined) {
-          await workspaceRunner.applyGerritPatchset(handle, {
-            gerritBaseUrl: baseUrl,
+        if (workspaceRunner.applyPriorPatchset !== undefined) {
+          await workspaceRunner.applyPriorPatchset(handle, {
+            vcsBaseUrl: baseUrl,
             sshHost: ssh.host,
             sshPort: ssh.port,
             sshUser: ssh.user,
             sshKeyPath: ssh.keyPath,
             ...(ssh.knownHostsPath !== undefined ? { sshKnownHostsPath: ssh.knownHostsPath } : {}),
-            changeNumber: details.changeNumber,
+            revisionNumber: details.changeNumber,
             patchset: details.currentPatchset,
           });
         }

@@ -337,9 +337,9 @@ export class ReviewOrchestrator {
         const stderrLineBuffer = { partial: "" };
         const reviewResult = await this.deps.workspaceRunner.runReviewInDocker(handle, {
           changeId,
-          changeNumber: details.changeNumber,
+          revisionNumber: details.changeNumber,
           patchset: details.currentPatchset,
-          project: details.project,
+          repositoryName: details.project,
           prompt,
           systemPrompt: this.deps.reviewSystemPrompt,
           agentToken: this.deps.agentToken,

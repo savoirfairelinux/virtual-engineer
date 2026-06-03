@@ -12,13 +12,13 @@ import {
   type Task,
   type TaskState,
   type WorkspaceRunner,
-  type GerritPatchsetOptions,
+  type PatchsetCheckoutOptions,
 } from "../../src/interfaces.js";
 
 const CHANGE_ID = makeExternalChangeId("p~master~Iabc");
 
-const PATCHSET_OPTIONS: Omit<GerritPatchsetOptions, "changeNumber" | "patchset"> = {
-  gerritBaseUrl: "ssh://admin@gerrit.test:29418",
+const PATCHSET_OPTIONS: Omit<PatchsetCheckoutOptions, "revisionNumber" | "patchset"> = {
+  vcsBaseUrl: "ssh://admin@gerrit.test:29418",
   sshHost: "gerrit.test",
   sshPort: 29418,
   sshUser: "admin",
@@ -114,7 +114,7 @@ function makeWorkspaceRunner(rawOutput = GOOD_RAW_OUTPUT) {
       success: true as const,
       localPath: handle.hostWorkspacePath,
     })),
-    applyGerritPatchset: vi.fn(async () => undefined),
+    applyPriorPatchset: vi.fn(async () => undefined),
     runReviewInDocker: vi.fn(async () => ({ rawOutput })),
     destroyWorkspace: vi.fn(async () => undefined),
     cloneRepo: vi.fn(),
@@ -122,7 +122,7 @@ function makeWorkspaceRunner(rawOutput = GOOD_RAW_OUTPUT) {
   } as unknown as WorkspaceRunner & {
     createWorkspace: ReturnType<typeof vi.fn>;
     prepareProjectWorkspace: ReturnType<typeof vi.fn>;
-    applyGerritPatchset: ReturnType<typeof vi.fn>;
+    applyPriorPatchset: ReturnType<typeof vi.fn>;
     runReviewInDocker: ReturnType<typeof vi.fn>;
     destroyWorkspace: ReturnType<typeof vi.fn>;
   };
@@ -196,9 +196,9 @@ function makeDeps(
       sshKnownHostsPath: null,
     }),
     applyPatchset: async (handle, details) => {
-      await runner.applyGerritPatchset(handle, {
+      await runner.applyPriorPatchset(handle, {
         ...PATCHSET_OPTIONS,
-        changeNumber: details.changeNumber,
+        revisionNumber: details.changeNumber,
         patchset: details.currentPatchset,
       });
     },
@@ -494,15 +494,15 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
       undefined,
       undefined
     );
-    expect(runner.applyGerritPatchset).toHaveBeenCalledWith(
+    expect(runner.applyPriorPatchset).toHaveBeenCalledWith(
       expect.anything(),
-      expect.objectContaining({ changeNumber: 42, patchset: 2, ...PATCHSET_OPTIONS })
+      expect.objectContaining({ revisionNumber: 42, patchset: 2, ...PATCHSET_OPTIONS })
     );
     expect(runner.runReviewInDocker).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
         changeId: CHANGE_ID,
-        changeNumber: 42,
+        revisionNumber: 42,
         patchset: 2,
         agentToken: "gh_test_token",
         prompt: expect.any(String),
@@ -562,7 +562,7 @@ describe("ReviewOrchestrator.runReview â failure paths", () => {
     const initial = makeTask({ state: "REVIEW_PENDING" });
     const mocks = makeMocks(initial);
     const { runner } = makeWorkspaceRunner();
-    runner.applyGerritPatchset.mockRejectedValueOnce(new Error("git fetch failed"));
+    runner.applyPriorPatchset.mockRejectedValueOnce(new Error("git fetch failed"));
 
     const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
     await expect(orch.runReview(initial.taskId)).rejects.toThrow("git fetch failed");

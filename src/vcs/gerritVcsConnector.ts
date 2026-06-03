@@ -7,7 +7,7 @@ import { execFileSync } from "child_process";
 import { createHash } from "crypto";
 import { getLogger } from "../logger.js";
 import type { VcsConnector, VcsPushResult, VolumeExecOptions } from "./vcsConnector.js";
-import type { GerritPatchsetOptions, ReviewComment } from "../interfaces.js";
+import type { PatchsetCheckoutOptions, ReviewComment } from "../interfaces.js";
 import { execInVolume } from "../workspace/dockerVolume.js";
 import { GerritSshClient, buildSshHostKeyOptions } from "../connectors/gerritSshClient.js";
 import { buildGerritTopic } from "./branchNaming.js";
@@ -132,12 +132,12 @@ export class GerritVcsConnector implements VcsConnector {
     return { ref: `refs/for/${baseBranch}`, topic: buildGerritTopic(taskId, ticketTitle) };
   }
 
-  /** Resolve a Change-Id to GerritPatchsetOptions by querying Gerrit via SSH. */
-  async resolvePatchsetOptions(changeId: string): Promise<GerritPatchsetOptions> {
+  /** Resolve a Change-Id to PatchsetCheckoutOptions by querying Gerrit via SSH. */
+  async resolvePatchsetOptions(changeId: string): Promise<PatchsetCheckoutOptions> {
     const info = await this.sshClient.queryChange(changeId);
     return {
-      gerritBaseUrl: this.config.baseUrl ?? "",
-      changeNumber: info.number,
+      vcsBaseUrl: this.config.baseUrl ?? "",
+      revisionNumber: info.number,
       patchset: info.currentPatchSet?.number ?? 1,
       sshKeyPath: this.config.sshKeyPath,
       ...(this.config.sshKnownHostsPath !== undefined ? { sshKnownHostsPath: this.config.sshKnownHostsPath } : {}),

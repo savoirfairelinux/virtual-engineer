@@ -7,7 +7,7 @@ import type {
   TaskContext,
   TaskId,
   CloneResult,
-  GerritPatchsetOptions,
+  PatchsetCheckoutOptions,
   ReviewWorkspaceInput,
   ProjectPushTargetRecord,
 } from "../interfaces.js";
@@ -371,32 +371,32 @@ export class DockerWorkspaceRunner implements WorkspaceRunner {
 
 
   /**
-   * Apply a Gerrit patchset on top of an already-cloned workspace.
+   * Apply a prior patchset on top of an already-cloned workspace.
    * Fetches `refs/changes/NN/CHANGE/PATCHSET` from the git remote and
    * checks it out as a detached HEAD using a helper container.
    */
-  async applyGerritPatchset(
+  async applyPriorPatchset(
     handle: WorkspaceHandle,
-    opts: GerritPatchsetOptions
+    opts: PatchsetCheckoutOptions
   ): Promise<void> {
-    const nn = String(opts.changeNumber % 100).padStart(2, "0");
-    const changeRef = `refs/changes/${nn}/${opts.changeNumber}/${opts.patchset}`;
+    const nn = String(opts.revisionNumber % 100).padStart(2, "0");
+    const patchsetRef = `refs/changes/${nn}/${opts.revisionNumber}/${opts.patchset}`;
 
     log.info(
-      { taskId: handle.taskId, changeNumber: opts.changeNumber, patchset: opts.patchset, changeRef },
-      "applying Gerrit patchset via helper container"
+      { taskId: handle.taskId, revisionNumber: opts.revisionNumber, patchset: opts.patchset, patchsetRef },
+      "applying prior patchset via helper container"
     );
 
     const sshKeyPath = opts.sshKeyPath;
     if (!opts.sshHost || !sshKeyPath) {
-      throw new Error("Gerrit patchset application requires sshHost and sshKeyPath");
+      throw new Error("Patchset application requires sshHost and sshKeyPath");
     }
     const sshPort = opts.sshPort ?? 29418;
 
     const fetchResult = await execInVolume({
       volumeName: handle.volumeName,
       image: this.config.agentContainerImage,
-      command: ["git", "fetch", "origin", changeRef],
+      command: ["git", "fetch", "origin", patchsetRef],
       sshKeyPath,
       ...(opts.sshKnownHostsPath !== undefined ? { sshKnownHostsPath: opts.sshKnownHostsPath } : {}),
       sshPort,
@@ -405,10 +405,10 @@ export class DockerWorkspaceRunner implements WorkspaceRunner {
     if (fetchResult.exitCode !== 0) {
       const msg = fetchResult.stderr.slice(0, 500);
       log.error(
-        { taskId: handle.taskId, changeNumber: opts.changeNumber, patchset: opts.patchset, error: msg },
-        "failed to fetch Gerrit patchset"
+        { taskId: handle.taskId, revisionNumber: opts.revisionNumber, patchset: opts.patchset, error: msg },
+        "failed to fetch prior patchset"
       );
-      throw new Error(`Failed to apply Gerrit patchset ${opts.changeNumber}/${opts.patchset}: ${msg}`);
+      throw new Error(`Failed to apply patchset ${opts.revisionNumber}/${opts.patchset}: ${msg}`);
     }
 
     const checkoutResult = await execInVolume({
@@ -418,43 +418,43 @@ export class DockerWorkspaceRunner implements WorkspaceRunner {
     });
     if (checkoutResult.exitCode !== 0) {
       const msg = checkoutResult.stderr.slice(0, 500);
-      throw new Error(`Failed to checkout FETCH_HEAD for patchset ${opts.changeNumber}/${opts.patchset}: ${msg}`);
+      throw new Error(`Failed to checkout FETCH_HEAD for patchset ${opts.revisionNumber}/${opts.patchset}: ${msg}`);
     }
 
     log.info(
-      { taskId: handle.taskId, changeNumber: opts.changeNumber, patchset: opts.patchset },
-      "Gerrit patchset applied successfully"
+      { taskId: handle.taskId, revisionNumber: opts.revisionNumber, patchset: opts.patchset },
+      "prior patchset applied successfully"
     );
   }
 
   /**
-   * Fetch a Gerrit patchset and cherry-pick it on top of the current HEAD.
+   * Fetch a prior patchset and cherry-pick it on top of the current HEAD.
    * Used on retry cycles to restore commits at indices 1..N after the primary
-   * patchset (index 0) has been checked out via `applyGerritPatchset`.
+   * patchset (index 0) has been checked out via `applyPriorPatchset`.
    * Failures are non-fatal — the caller logs a warning and continues.
    */
-  async cherryPickGerritPatchset(
+  async cherryPickPriorPatchset(
     handle: WorkspaceHandle,
-    opts: GerritPatchsetOptions
+    opts: PatchsetCheckoutOptions
   ): Promise<void> {
-    const nn = String(opts.changeNumber % 100).padStart(2, "0");
-    const changeRef = `refs/changes/${nn}/${opts.changeNumber}/${opts.patchset}`;
+    const nn = String(opts.revisionNumber % 100).padStart(2, "0");
+    const patchsetRef = `refs/changes/${nn}/${opts.revisionNumber}/${opts.patchset}`;
 
     log.info(
-      { taskId: handle.taskId, changeNumber: opts.changeNumber, patchset: opts.patchset, changeRef },
-      "cherry-picking Gerrit patchset on top of current HEAD"
+      { taskId: handle.taskId, revisionNumber: opts.revisionNumber, patchset: opts.patchset, patchsetRef },
+      "cherry-picking prior patchset on top of current HEAD"
     );
 
     const sshKeyPath = opts.sshKeyPath;
     if (!opts.sshHost || !sshKeyPath) {
-      throw new Error("Gerrit cherry-pick requires sshHost and sshKeyPath");
+      throw new Error("Patchset cherry-pick requires sshHost and sshKeyPath");
     }
     const sshPort = opts.sshPort ?? 29418;
 
     const fetchResult = await execInVolume({
       volumeName: handle.volumeName,
       image: this.config.agentContainerImage,
-      command: ["git", "fetch", "origin", changeRef],
+      command: ["git", "fetch", "origin", patchsetRef],
       sshKeyPath,
       ...(opts.sshKnownHostsPath !== undefined ? { sshKnownHostsPath: opts.sshKnownHostsPath } : {}),
       sshPort,
@@ -462,7 +462,7 @@ export class DockerWorkspaceRunner implements WorkspaceRunner {
     });
     if (fetchResult.exitCode !== 0) {
       const msg = fetchResult.stderr.slice(0, 500);
-      throw new Error(`Failed to fetch Gerrit patchset ${opts.changeNumber}/${opts.patchset}: ${msg}`);
+      throw new Error(`Failed to fetch patchset ${opts.revisionNumber}/${opts.patchset}: ${msg}`);
     }
 
     const cherryPickResult = await execInVolume({
@@ -478,12 +478,12 @@ export class DockerWorkspaceRunner implements WorkspaceRunner {
         command: ["git", "cherry-pick", "--abort"],
       }).catch(() => { /* ignore */ });
       const msg = cherryPickResult.stderr.slice(0, 500);
-      throw new Error(`Cherry-pick failed for patchset ${opts.changeNumber}/${opts.patchset}: ${msg}`);
+      throw new Error(`Cherry-pick failed for patchset ${opts.revisionNumber}/${opts.patchset}: ${msg}`);
     }
 
     log.info(
-      { taskId: handle.taskId, changeNumber: opts.changeNumber, patchset: opts.patchset },
-      "Gerrit patchset cherry-picked successfully"
+      { taskId: handle.taskId, revisionNumber: opts.revisionNumber, patchset: opts.patchset },
+      "prior patchset cherry-picked successfully"
     );
   }
 
@@ -511,7 +511,7 @@ export class DockerWorkspaceRunner implements WorkspaceRunner {
     });
 
     log.info(
-      { taskId: handle.taskId, changeId: input.changeId, patchset: input.patchset, project: input.project },
+      { taskId: handle.taskId, changeId: input.changeId, patchset: input.patchset, repositoryName: input.repositoryName },
       "running review agent in Docker container"
     );
 

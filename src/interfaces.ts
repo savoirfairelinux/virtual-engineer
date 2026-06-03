@@ -394,14 +394,14 @@ export interface CloneResult {
 
 /** Input for running the review agent container. Workspace must be pre-cloned and patched. */
 export interface ReviewWorkspaceInput {
-  /** Gerrit Change-Id (opaque string, e.g. "Iabc123...") */
+  /** Change-Id (opaque string, e.g. "Iabc123..." for Gerrit, PR node id for GitHub) */
   changeId: ExternalChangeId;
-  /** Numeric Gerrit change number */
-  changeNumber: number;
-  /** Patchset number */
+  /** Provider-specific numeric change identifier (e.g. Gerrit change number, PR number) */
+  revisionNumber: number;
+  /** Provider-specific patchset/revision version number (e.g. Gerrit patchset, GitHub review round) */
   patchset: number;
-  /** Gerrit project name (e.g. "jami-client-qt") */
-  project: string;
+  /** Repository name as understood by the review provider (e.g. Gerrit project, GitHub repo) */
+  repositoryName: string;
   /** The user prompt (diff + instructions) to send to the agent */
   prompt: string;
   /** System prompt passed as SYSTEM_PROMPT env var to the review container */
@@ -416,13 +416,13 @@ export interface ReviewWorkspaceInput {
   containerImage?: string | undefined;
 }
 
-/** Options for applying a Gerrit patchset onto a cloned workspace. */
-export interface GerritPatchsetOptions {
-  /** Gerrit base URL (used to build the remote fetch URL) */
-  gerritBaseUrl: string;
-  /** Numeric change number */
-  changeNumber: number;
-  /** Patchset number to check out */
+/** Options for checking out a prior patchset/revision onto a cloned workspace. */
+export interface PatchsetCheckoutOptions {
+  /** VCS base URL (used to build the remote fetch URL) */
+  vcsBaseUrl: string;
+  /** Provider-specific numeric change identifier (e.g. Gerrit change number, PR number) */
+  revisionNumber: number;
+  /** Patchset/revision number to check out */
   patchset: number;
   /** Optional SSH key path; uses default git credential chain if absent */
   sshKeyPath?: string | undefined;
@@ -457,15 +457,15 @@ export interface WorkspaceRunner {
     postCloneScript?: string,
     sshKnownHostsPath?: string
   ): Promise<CloneResult>;
-  /** Fetch and checkout a Gerrit patchset ref as detached HEAD. */
-  applyGerritPatchset?(
+  /** Fetch and checkout a prior patchset ref as detached HEAD. */
+  applyPriorPatchset?(
     handle: WorkspaceHandle,
-    opts: GerritPatchsetOptions
+    opts: PatchsetCheckoutOptions
   ): Promise<void>;
-  /** Fetch a Gerrit patchset ref and cherry-pick it on top of the current HEAD. */
-  cherryPickGerritPatchset?(
+  /** Fetch a prior patchset ref and cherry-pick it on top of the current HEAD. */
+  cherryPickPriorPatchset?(
     handle: WorkspaceHandle,
-    opts: GerritPatchsetOptions
+    opts: PatchsetCheckoutOptions
   ): Promise<void>;
   /** Run the review agent container against the cloned+patched workspace. */
   runReviewInDocker?(
