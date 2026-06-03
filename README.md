@@ -65,19 +65,26 @@ The orchestrator picks up tickets, generates code, and pushes changes for review
 - **Test** → **Save** → **Enable**
 
 **Step 2 — Add a ticket source integration**
-- Go to **Integrations** → **Add** → select **Redmine** or **GitLab Issues**
+- Go to **Integrations** → **Add** → select **Redmine**, **GitLab Issues**, or **GitHub Issues**
 - *Redmine*: fill in `URL` and `API key`
 - *GitLab Issues*: fill in `Base URL`, choose `Authentication Mode`
 - `OAuth` recommended: enter `OAuth Client ID` + `OAuth Client Secret`, click **Connect with GitLab**, then **Test**
 - `Personal Access Token` fallback: enter the token manually, then **Test**
+- *GitHub Issues*: choose `GitHub Mode` (`GitHub.com` or `GitHub Enterprise Server`)
+- For Enterprise, set the `Base URL` (e.g. `https://github.example.com`)
+- `OAuth Device Flow` recommended: click **Connect with GitHub**, enter the shown user code at the verification URL, and VE polls until authorized (Enterprise also needs an `OAuth Client ID`)
+- `Personal Access Token` fallback: paste a `ghp_…` token with `repo` scope, then **Test**
+- One GitHub Issues integration maps to one `owner/repo`; bind the repo via the project ticket source key
 - **Test** → **Save** → **Enable**
 
 **Step 3 — Add a VCS / code review integration**
-- Go to **Integrations** → **Add** → select **Gerrit** or **GitLab Merge Requests**
+- Go to **Integrations** → **Add** → select **Gerrit**, **GitLab Merge Requests**, or **GitHub Pull Requests**
 - *Gerrit*: fill in `URL` and credentials (`HTTP password` or SSH-only config, depending on your setup)
 - *GitLab Merge Requests*: fill in `Base URL`, choose `Authentication Mode`
 - `OAuth` recommended: enter `OAuth Client ID` + `OAuth Client Secret`, click **Connect with GitLab**, then **Test**
 - `Personal Access Token` fallback: enter the token manually, then **Test**
+- *GitHub Pull Requests*: choose `GitHub Mode`, then authenticate with the same OAuth Device Flow or PAT (`repo` scope) used for GitHub Issues
+- VE pushes the branch over HTTPS (`x-access-token:<token>`), opens the PR, requests review, reads inline/review/general comments, replies, and resolves review threads (via GraphQL) once feedback is addressed
 - **Test** → **Save** → **Enable**
 
 **Step 4 — Create an agent in the Agents Library**
@@ -101,7 +108,7 @@ The orchestrator reviews every patchset and posts inline comments automatically 
 
 **Step 1 — Add a Copilot integration** *(same as coding step 1)*
 
-**Step 2 — Add a Gerrit or GitLab MR integration** *(same as coding step 3; GitLab now supports OAuth-first auth with PAT fallback)*
+**Step 2 — Add a Gerrit, GitLab MR, or GitHub PR integration** *(same as coding step 3; GitLab and GitHub support OAuth-first auth with PAT fallback)*
 
 **Step 3 — Create an agent in the Agents Library**
 - Go to **Agents Library** → **Add**
@@ -116,6 +123,7 @@ The orchestrator reviews every patchset and posts inline comments automatically 
 **Step 5 — Wire up event delivery**
 - *Gerrit*: the orchestrator connects via SSH stream-events automatically when the integration is enabled — no webhook needed.
 - *GitLab*: open the integration drawer → copy the webhook URL and secret → paste into the GitLab project's webhook settings.
+- *GitHub*: open the integration drawer → copy the webhook URL and secret → add a repository webhook (Pull request + Pull request review events) in the GitHub repo settings.
 
 Every new or updated patchset triggers: `REVIEW_PENDING → REVIEW_RUNNING → REVIEW_COMMENTING → REVIEW_WATCHING → REVIEW_DONE`.
 
