@@ -152,7 +152,7 @@ async function validateConnection(): Promise<ValidationResult> {
 
     if (!response) {
       return toFailure(
-        `GitHub Copilot did not return a validation response for model "${selectedModel ?? 'unknown'}".`,
+        `GitHub Copilot did not return a validation response for model "${selectedModel}".`,
         models,
       );
     }
