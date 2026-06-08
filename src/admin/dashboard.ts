@@ -800,7 +800,6 @@ a.detail-origin:hover { text-decoration: underline; }
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  pointer-events: none;
 }
 .modal h3 {
   font-size: 15px;
@@ -827,7 +826,6 @@ a.detail-origin:hover { text-decoration: underline; }
   font-size: 13px;
   outline: none;
   transition: border-color 150ms, box-shadow 150ms;
-  pointer-events: auto;
 }
 .modal textarea.post-clone-input {
   min-height: unset;
@@ -847,7 +845,6 @@ a.detail-origin:hover { text-decoration: underline; }
   resize: vertical;
   outline: none;
   transition: border-color 150ms, box-shadow 150ms;
-  pointer-events: auto;
 }
 .modal input:not([type="checkbox"]):focus, .modal select:focus {
   border-color: var(--accent);
@@ -864,7 +861,6 @@ a.detail-origin:hover { text-decoration: underline; }
   margin-top: 20px;
   padding-top: 16px;
   border-top: 1px solid var(--border);
-  pointer-events: auto;
 }
 
 .hidden {
@@ -1458,7 +1454,6 @@ function findModalSaveButton(modal) {
 }
 
 function handleModalBackgroundClick(overlay) {
-  console.log('[handleModalBackgroundClick] called', { dataRole: overlay.getAttribute('data-role') });
   // If this is already a confirm-close-modal, just close it
   if (overlay.getAttribute('data-role') === 'confirm-close-modal') {
     overlay.remove();
@@ -1466,7 +1461,6 @@ function handleModalBackgroundClick(overlay) {
   }
   // If modal has a save button, show confirmation. Otherwise just close.
   const saveBtn = findModalSaveButton(overlay);
-  console.log('[handleModalBackgroundClick] saveBtn found:', !!saveBtn);
   if (!saveBtn) {
     overlay.remove();
     return;
@@ -4102,7 +4096,6 @@ async function showAddIntegrationModal(section) {
 
   overlay.querySelector('[data-role="modal-cancel"]')?.addEventListener('click', () => handleModalBackgroundClick(overlay));
   overlay.addEventListener('click', (e) => {
-    console.log('[Add Integration] click event:', { target: e.target === overlay ? 'overlay' : e.target.tagName, isOverlay: e.target === overlay });
     if (e.target === overlay) handleModalBackgroundClick(overlay);
   });
 

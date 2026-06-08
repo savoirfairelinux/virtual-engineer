@@ -292,4 +292,21 @@ test.describe("Phase 3 — Projects flow", () => {
     await page.locator('div[data-role="project-modal"] button[data-role="save"]').click();
     await expect(page.locator('div[data-role="project-modal"] [data-role="modal-error"]')).toContainText('App Project');
   });
+
+  test("clicking inside the project modal but outside inputs keeps it open", async ({ page }) => {
+    await page.locator('[data-nav="configuration"]').click();
+    await page.locator('[data-config-section="projects"]').click();
+    await page.locator('button[data-role="add-project"]').click();
+
+    const modal = page.locator('div[data-role="project-modal"]');
+    await expect(modal).toBeVisible();
+
+    await modal.getByRole('heading', { name: 'New Project' }).click();
+
+    await expect(page.locator('[data-role="confirm-close-modal"]')).toHaveCount(0);
+    await expect(modal).toBeVisible();
+
+    await page.locator('.modal-overlay').click({ position: { x: 5, y: 5 } });
+    await expect(page.locator('[data-role="confirm-close-modal"]')).toHaveCount(1);
+  });
 });
