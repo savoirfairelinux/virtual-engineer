@@ -165,7 +165,7 @@ export function buildCodegenUserPrompt(
 }
 
 /**
- * Runs code-generation via a Docker agent container (Dockerfile.agent / agent-worker/index.js).
+ * Runs code-generation via a Docker agent container (Dockerfile.agent / agent-worker/dist/index.js).
  * The host owns clone, commit, and push; the container is isolated to an agent-only network.
  * Agent commits must include `COMMIT_MSG: <type>(<scope>): <subject>` for conventional-commit extraction.
  */
@@ -234,7 +234,7 @@ export class CopilotAdapter implements AgentAdapter, ConfigurableAdapter {
     authEnv: Record<string, string> = {}
   ): AdapterContainerSpec {
     const session = context.agentSession;
-    // Security: only task-specific vars are passed here; agent-worker/index.js further
+    // Security: only task-specific vars are passed here; agent-worker/dist/index.js further
     // filters to a minimal whitelist — DB credentials and API tokens are never exposed.
 
     const copilotModel = context.agentSession.copilotModel ?? this.config.model;
@@ -294,7 +294,7 @@ export class CopilotAdapter implements AgentAdapter, ConfigurableAdapter {
     return {
       image: session.agentContainerImage,
       env,
-      command: ["node", "/agent-worker/index.js"],
+      command: ["node", "/agent-worker/dist/index.js"],
       networkMode: this.config.dockerNetwork ?? "virtual-engineer_ve-agent-net",
       additionalDockerArgs,
     };
@@ -339,7 +339,7 @@ export class CopilotAdapter implements AgentAdapter, ConfigurableAdapter {
     return {
       image: input.containerImage ?? "virtual-engineer-workspace:latest",
       env,
-      command: ["node", "/agent-worker/index.js"],
+      command: ["node", "/agent-worker/dist/index.js"],
       networkMode: this.config.dockerNetwork ?? "virtual-engineer_ve-agent-net",
       additionalDockerArgs,
     };

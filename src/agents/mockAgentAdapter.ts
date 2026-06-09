@@ -31,7 +31,7 @@ export class MockAgentAdapter implements AgentAdapter {
     return {
       image: "virtual-engineer-workspace:latest",
       env: {},
-      command: ["node", "/agent-worker/index.js"],
+      command: ["node", "/agent-worker/dist/index.js"],
       additionalDockerArgs: [],
     };
   }

@@ -12,12 +12,12 @@ const backendRules = {
 
 export default [
   {
-    files: ["src/**/*.ts"],
+    files: ["src/**/*.ts", "agent-worker/src/**/*.ts"],
     ignores: ["src/admin/ui/**"],
     languageOptions: {
       parser: tsParser,
       parserOptions: {
-        project: "./tsconfig.json",
+        project: ["./tsconfig.json", "./agent-worker/tsconfig.json"],
         ecmaVersion: 2022,
         sourceType: "module",
       },

@@ -29,8 +29,9 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
   && apt-get update && apt-get install -y --no-install-recommends gh \
   && rm -rf /var/lib/apt/lists/*
 
-# Copy the agent worker and install dependencies
-COPY agent-worker/ /agent-worker/
+# Copy the built agent worker and install dependencies
+COPY agent-worker/dist /agent-worker/dist
+COPY agent-worker/package.json agent-worker/package-lock.json /agent-worker/
 RUN npm --prefix /agent-worker ci --omit=dev --no-fund
 
 # Set working directory
