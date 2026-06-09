@@ -226,7 +226,7 @@ describe("Admin API — POST /api/admin/integrations/:id/discover", () => {
     vi.stubGlobal("fetch", (url: string | URL | Request, init?: RequestInit) => {
       const u = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
       if (u.startsWith(baseUrl)) {
-        return realFetch(url as RequestInfo, init);
+        return realFetch(url as Parameters<typeof fetch>[0], init);
       }
       return fetchMock(url, init);
     });

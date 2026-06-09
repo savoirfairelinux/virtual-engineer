@@ -26,7 +26,6 @@ npm test            # Vitest — must pass
 npm run typecheck   # zero TypeScript errors
 npm run lint        # zero ESLint errors
 npm run dev         # start orchestrator (tsx src/index.ts)
-npm run test:e2e    # Playwright admin-dashboard E2E
 npm run db:migrate  # apply Drizzle migrations
 ```
 
@@ -170,7 +169,6 @@ Implementation: `src/agents/copilotAdapter.ts`, `src/agents/copilotOAuthService.
 
 ## Test Layout
 - **Unit + integration tests**: `tests/unit/` (Vitest). All external I/O (fetch, fs, Docker, SDK) is mocked via `vi.mock`/`vi.spyOn`. Current project-mode and webhook-oriented scenarios live alongside unit specs (for example `orchestrator.projectMode.test.ts`, `orchestrator.webhookEntryPoints.test.ts`, `pollingLoop.projects.test.ts`).
-- **E2E**: `tests/e2e/` (Playwright) drives the admin dashboard.
 - **Helpers/fixtures**: `tests/unit/helpers/`.
 
 ## Development Workflow (TDD mandatory)

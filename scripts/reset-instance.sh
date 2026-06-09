@@ -105,7 +105,6 @@ remove_path "${DATABASE_PATH}-shm"
 remove_path "./secrets/gerrit_id_ed25519"
 remove_path "./secrets/gerrit_id_ed25519.pub"
 remove_path "./coverage"
-remove_path "./playwright-report"
 remove_path "./test-results"
 remove_path "./dist"
 

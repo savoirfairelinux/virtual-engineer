@@ -52,7 +52,6 @@ This project follows **TDD practices** — add or update tests for every change.
 npm test                     # Vitest unit + integration tests — must pass
 npm run typecheck            # zero TypeScript errors
 npm run lint                 # zero ESLint errors
-npm run test:e2e             # Playwright admin dashboard E2E tests
 npm run dev                  # start orchestrator locally
 npm run db:migrate           # apply Drizzle migrations after schema changes
 ```

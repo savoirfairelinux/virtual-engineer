@@ -3,7 +3,8 @@
  *
  * The old tests exercised the vanilla-JS implementation. Now that the
  * Configuration view is a React component (src/admin/ui/views/ConfigView/),
- * these behaviour tests have moved to E2E (Playwright).
+ * this file keeps a minimal shell-level check and leaves component behaviour
+ * to targeted unit coverage closer to the UI code.
  *
  * This file keeps a minimal smoke test to verify the HTML shell is still
  * served (the React app mounts into it at runtime).
