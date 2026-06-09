@@ -191,6 +191,16 @@ describe("Orchestrator — webhook entry points (Phase 5)", () => {
       expect(calls).toContain("DONE");
     });
 
+    it("transitions REVIEW_WATCHING → REVIEW_DONE for merged review tasks", async () => {
+      const task = makeTask({ state: "REVIEW_WATCHING" });
+      const stateStore = makeStateStore({
+        findTaskByExternalChangeId: vi.fn().mockResolvedValue(task),
+      });
+      const orch = makeOrchestrator(stateStore);
+      await orch.markChangeMerged("g-1", "Iabc");
+      expect(stateStore.transition).toHaveBeenCalledWith(task.taskId, "REVIEW_DONE");
+    });
+
     it("does nothing when task is not IN_REVIEW", async () => {
       const task = makeTask({ state: "AGENT_RUNNING" });
       const stateStore = makeStateStore({ findTaskByExternalChangeId: vi.fn().mockResolvedValue(task) });
