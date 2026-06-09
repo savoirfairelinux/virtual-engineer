@@ -216,6 +216,10 @@ export function serializeTask(task: Task): Record<string, unknown> {
 
 /** Serialize an AgentCycle to the admin API response shape. */
 export function serializeCycle(cycle: AgentCycle): Record<string, unknown> {
+  const startMs = cycle.createdAt instanceof Date ? cycle.createdAt.getTime() : cycle.createdAt * 1000;
+  const lastEvent = (cycle.result.agentEvents as Array<{ timestamp: string }> | undefined)?.at(-1);
+  const endMs = lastEvent ? new Date(lastEvent.timestamp).getTime() : null;
+  const durationMs = endMs !== null && endMs > startMs ? endMs - startMs : null;
   return {
     id: cycle.id,
     taskId: cycle.taskId,
@@ -223,6 +227,7 @@ export function serializeCycle(cycle: AgentCycle): Record<string, unknown> {
     result: cycle.result,
     validationResult: cycle.validationResult,
     createdAt: toIsoTimestamp(cycle.createdAt),
+    durationMs,
   };
 }
 

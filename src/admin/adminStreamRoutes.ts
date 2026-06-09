@@ -47,32 +47,31 @@ export function registerStreamRoutes(router: Router, deps: StreamRouteDeps): voi
     res.setHeader("connection", "keep-alive");
     res.flushHeaders();
 
-    for (const entry of streamEntries) {
+    const emittedKeys = new Set<string>();
+    const writeEntry = (entry: Record<string, unknown>): void => {
+      const key = streamEntryKey(entry);
+      if (emittedKeys.has(key)) return;
+      emittedKeys.add(key);
       res.write(`data: ${JSON.stringify(entry)}\n\n`);
+    };
+
+    for (const entry of streamEntries) {
+      writeEntry(entry);
     }
 
     if (taskIdParam) {
       const buffered = getTaskEventBuffer(taskIdParam);
       for (const event of buffered) {
         if (res.writable) {
-          res.write(`data: ${JSON.stringify(serializeAgentEventEntry(event))}\n\n`);
+          writeEntry(serializeAgentEventEntry(event));
         }
       }
     }
 
-    const emittedTimestamps = new Set<string>();
     const eventListener = (event: AgentLogEvent): void => {
       if (taskIdParam && event.taskId !== taskIdParam) return;
       if (!res.writable) return;
-      const key = `${event.timestamp}:${event.type}:${String(event.cycleNumber)}`;
-      if (emittedTimestamps.has(key)) return;
-      emittedTimestamps.add(key);
-      res.write(`data: ${JSON.stringify(serializeAgentEventEntry(event))}\n\n`);
-    };
-    if (taskIdParam) {
-      for (const event of getTaskEventBuffer(taskIdParam)) {
-        emittedTimestamps.add(`${event.timestamp}:${event.type}:${String(event.cycleNumber)}`);
-      }
+      writeEntry(serializeAgentEventEntry(event));
     }
     agentLogBus.on("event", eventListener);
 
@@ -164,4 +163,25 @@ function serializeAgentEventEntry(event: AgentLogEvent): Record<string, unknown>
     cycleNumber: normalized.cycleNumber,
     data: normalized.data,
   };
+}
+
+/** Build a deterministic key used to deduplicate SSE entries. */
+function streamEntryKey(entry: Record<string, unknown>): string {
+  const parts = [
+    String(entry["timestamp"] ?? ""),
+    String(entry["taskId"] ?? ""),
+    String(entry["cycleNumber"] ?? ""),
+    String(entry["type"] ?? ""),
+    String(entry["level"] ?? ""),
+    String(entry["message"] ?? ""),
+  ];
+  const data = entry["data"];
+  if (data !== undefined) {
+    try {
+      parts.push(typeof data === "string" ? data : JSON.stringify(data));
+    } catch {
+      parts.push(String(data));
+    }
+  }
+  return parts.join("|");
 }
