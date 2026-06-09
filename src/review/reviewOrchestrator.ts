@@ -48,6 +48,7 @@ export interface ReviewOrchestratorDeps {
     | "transition"
     | "setReviewedPatchset"
     | "setFailureReason"
+    | "incrementCycle"
     | "saveAgentCycle"
     | "getAgentCycles"
     | "findProjectsByReviewTarget"
@@ -233,9 +234,8 @@ export class ReviewOrchestrator {
 
     const changeId = task.externalChangeId;
 
-    // Determine the cycle number for this review pass (sequential per task).
-    const existingCycles = await this.deps.stateStore.getAgentCycles(taskId);
-    const cycleNumber = existingCycles.length + 1;
+    // Keep task.cycleCount in sync with persisted review cycles.
+    const cycleNumber = await this.deps.stateStore.incrementCycle(taskId);
 
     // Collected agent log events for persistence.
     const collectedEvents: AgentLogEvent[] = [];
