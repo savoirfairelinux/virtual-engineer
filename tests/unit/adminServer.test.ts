@@ -446,7 +446,7 @@ describe("createAdminServer", () => {
       // Must use nonce-based CSP — unsafe-inline must not appear
       expect(csp1).not.toContain("unsafe-inline");
       expect(csp2).not.toContain("unsafe-inline");
-      expect(csp1).toMatch(/script-src 'nonce-[A-Za-z0-9_-]+'/);
+      expect(csp1).toMatch(/script-src 'self' 'nonce-[A-Za-z0-9_-]+'/);
       expect(csp1).toContain("style-src 'self'");
 
       // Each request must produce a unique nonce
@@ -458,27 +458,6 @@ describe("createAdminServer", () => {
       const nonce = nonceMatch![1]!;
       const html = await res1.text();
       expect(html).toContain(`nonce="${nonce}"`);
-    } finally {
-      await closeServer(server);
-    }
-  });
-
-  it("serves the admin dashboard CSS as a static asset", async () => {
-    const server = createAdminServer({
-      stateStore: makeStateStore(),
-      config: { nodeEnv: "test", logLevel: "info", maxAgentCycles: 3, maxRetryAttempts: 5, pollingIntervalMs: 30_000 },
-      polling: { isRunning: () => true, getIntervals: () => ({ intervalMs: 30_000 }) },
-      providers: providerSummaries,
-    });
-
-    try {
-      const baseUrl = await listen(server);
-      const response = await fetch(`${baseUrl}/assets/dashboard.css`);
-
-      expect(response.status).toBe(200);
-      expect(response.headers.get("content-type")).toContain("text/css");
-      expect(response.headers.get("cache-control")).toContain("public");
-      await expect(response.text()).resolves.toContain(":root {");
     } finally {
       await closeServer(server);
     }
@@ -522,7 +501,7 @@ describe("createAdminServer", () => {
 
       const dashboardResponse = await fetch(`${baseUrl}/admin`);
       expect(dashboardResponse.status).toBe(200);
-      await expect(dashboardResponse.text()).resolves.toContain("Unlock dashboard");
+      await expect(dashboardResponse.text()).resolves.toContain("__VE_ADMIN_BOOTSTRAP__");
     } finally {
       await closeServer(server);
     }
@@ -1586,6 +1565,55 @@ describe("SSE endpoints", () => {
       expect(text).toContain("tool.execution_start");
       expect(text).toContain("readFile");
     } finally {
+      await closeServer(server);
+    }
+  });
+
+  it("GET /api/admin/logs/stream de-duplicates overlapping history and buffered events", async () => {
+    const { pushToTaskBuffer, clearTaskEventBuffer } = await import("../../src/agents/agentEventBus.js");
+    const task = makeTask();
+    const duplicateEvent = {
+      type: "tool.execution_start",
+      timestamp: "2026-04-07T09:30:00.000Z",
+      data: { tool: "readFile" },
+      taskId: task.taskId,
+      cycleNumber: 1,
+    };
+
+    pushToTaskBuffer(duplicateEvent);
+
+    const server = createAdminServer({
+      stateStore: makeStateStore({
+        getTask: async (taskId) => (taskId === task.taskId ? task : null),
+        getAgentCycles: async () => [makeCycle({
+          result: {
+            status: "success",
+            modifiedFiles: [],
+            summary: "Structured-only",
+            agentLogs: "",
+            agentEvents: [duplicateEvent],
+            metadata: { adapter: "copilot-sdk" },
+          },
+        })],
+      }),
+      config: {
+        nodeEnv: "test",
+        logLevel: "info",
+        maxAgentCycles: 3,
+        maxRetryAttempts: 5,
+        pollingIntervalMs: 30000,
+      },
+      polling: { isRunning: () => true, getIntervals: () => ({ intervalMs: 30000 }) },
+      providers: providerSummaries,
+    });
+    const base = await listen(server);
+    try {
+      const response = await fetch(`${base}/api/admin/logs/stream?taskId=${encodeURIComponent(task.taskId)}`);
+      const text = await readFirstChunk(response);
+      expect(text).toContain("tool.execution_start");
+      expect((text.match(/tool\.execution_start/g) ?? []).length).toBe(1);
+    } finally {
+      clearTaskEventBuffer(task.taskId);
       await closeServer(server);
     }
   });

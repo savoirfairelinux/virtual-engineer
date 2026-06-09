@@ -10,6 +10,7 @@ export default defineConfig({
       provider: "v8",
       include: ["src/**/*.ts"],
       exclude: [
+        "src/admin/ui/**",
         "src/index.ts",
         "src/interfaces.ts",
         "src/state/schema.ts",

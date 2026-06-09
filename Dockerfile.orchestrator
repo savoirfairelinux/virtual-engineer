@@ -21,7 +21,9 @@ COPY package*.json tsconfig.json ./
 RUN npm ci
 
 COPY src/ ./src/
-RUN npx tsc
+COPY vite.admin.config.ts tsconfig.admin-ui.json ./
+COPY src/admin/ui/ ./src/admin/ui/
+RUN npx tsc && npm run typecheck:ui && npm run build:ui
 
 # Prune devDependencies from node_modules after build so we can copy a lean set
 RUN npm prune --omit=dev

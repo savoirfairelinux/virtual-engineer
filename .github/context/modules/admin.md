@@ -93,7 +93,7 @@ The admin server is a small HTTP service (default `127.0.0.1:3100`) that serves 
 | `DELETE` | `/api/admin/projects/:id` | Delete project and linked child rows. |
 | `PATCH` | `/api/admin/projects/:id/enable` | Enable project. If it was previously disabled, its `FAILED`/`REVIEW_FAILED` tasks are relaunched automatically. |
 | `PATCH` | `/api/admin/projects/:id/disable` | Disable project. |
-| `GET` / `PUT` | `/api/admin/concurrency` | Read/update global concurrency plus live in-memory snapshot. `PUT` accepts `{ global: number | null }` (numeric strings are coerced server-side). |
+| `GET` / `PUT` | `/api/admin/concurrency` | Read/update global concurrency plus live in-memory snapshot. `PUT` accepts `{ global: number \| null }` (numeric strings are coerced server-side). |
 
 ## Authentication
 
@@ -119,9 +119,19 @@ The admin server never returns plaintext password-like fields. On `PUT`, values 
 - Successful Copilot tests and discovery refreshes populate cached model choices that the Agents UI reads via `/api/admin/integrations/:id/models`.
 - Stream-capable integration details surface live runtime state (connection state, last event, reconnect count, last error) whenever the descriptor exposes `streamEvents`; Gerrit is the current implementation.
 - Agent and project modals filter persisted integrations by derived capabilities, with legacy `category` kept only as a fallback. Coding projects therefore choose ticket sources from `ticketing` integrations and push targets from `vcs` integrations, while review projects choose review targets from `review` integrations.
+- Project review-repository selection is discovery-driven and now includes client-side search plus `Select all` / `Unselect all` actions on the currently visible repository subset.
+- Projects can now be edited from both the Projects list row action and the Project detail drawer. The edit flow loads `/api/admin/projects/:id`, pre-fills project-specific fields, and persists changes through `PUT /api/admin/projects/:id`.
 - Prompts are managed under Configuration rather than a separate top-level page.
-- The Tasks view streams live agent events backed by `agent_cycles.agent_events` and the in-memory event bus.
+- The Tasks view streams live agent events backed by `agent_cycles.agent_events` and the in-memory event bus; log filters are `All`, `Tools`, `Usage`, `Errors`.
+- Live log ingestion de-duplicates overlapping SSE replay sources (persisted cycle history, in-memory task buffer, and reconnect replays) so reconnects do not render duplicate rows.
+- Live log rows render structured `data` payloads as formatted JSON blocks (instead of single-line raw serialization) when the payload is object/array-shaped.
+- Task rows and task details expose a single primary ticket/review link on the source identifier; detail headers avoid duplicate secondary link controls, while per-repository review links are still shown from `changesPerRepo` when available.
+- Task detail footer badges now show compact task/review identifiers (`displayId` / `gerritChangeId`) instead of full internal task ids.
 - Task origin badges in the Tasks list/details abbreviate GitHub pull-request sources as `GITHUB-PR` (instead of `GITHUB-PULL-REQUEST`) for compact readability.
+- Top-bar and overview provider counters are integration-driven (enabled integrations), avoiding the extra runtime-provider card count used by `/api/admin/providers`.
+- Overview throughput labeling now includes the dynamic polling window (`last N ticks (~Xm)`), derived from the current polling interval.
+- System Settings now prioritize live runtime/status values (polling state/interval, env, log level, cycle/retry limits) with configured values shown separately for comparison.
+- Desktop drawers use a push layout that shifts the main app left so the right drawer does not cover the working content area.
 
 The supported server-side model is `projects` / `project_*`. There are no `/api/admin/repository-sets` routes.
 

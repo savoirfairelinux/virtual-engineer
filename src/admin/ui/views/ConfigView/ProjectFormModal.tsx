@@ -1,0 +1,695 @@
+import { useEffect, useMemo, useState } from "react";
+import { Modal, Field, FieldInput, FieldSelect, FormError, FormRow, FormActions, FieldTextarea } from "../../components/Modal.tsx";
+import { Icon } from "../../components/Icon.tsx";
+import { api } from "../../api.ts";
+import type { ApiAgent, ApiIntegration } from "../../types.ts";
+
+interface Props {
+  agents: ApiAgent[];
+  integrations: ApiIntegration[];
+  project?: ProjectFormProject;
+  onClose: () => void;
+  onSaved: () => void;
+}
+
+interface ProjectFormProject {
+  id: string;
+  name: string;
+  type: "coding" | "review";
+  agentId: string | null;
+  postCloneScript?: string;
+  ticketSource?: {
+    integration: { id: string; name: string; type: string } | null;
+    ticketProjectKey: string;
+  } | null;
+  reviewConfig?: {
+    integration: { id: string; name: string; type: string } | null;
+    repos: string[];
+  } | null;
+  pushTargets?: Array<{
+    integrationId: string;
+    repoKey: string;
+    cloneUrl: string;
+    targetBranch: string;
+    role: "primary" | "submodule" | "dependency" | "related";
+    commitOrder: number;
+    localPath: string;
+  }>;
+}
+
+interface TicketSource {
+  integrationId: string;
+  ticketProjectKey: string;
+}
+
+interface PushTarget {
+  integrationId: string;
+  repoKey: string;
+  cloneUrl: string;
+  targetBranch: string;
+  role: "primary" | "submodule" | "dependency" | "related";
+  commitOrder: string;
+  localPath: string;
+}
+
+interface RepositoryOption {
+  key: string;
+  name: string;
+  cloneUrlSsh?: string;
+  cloneUrlHttp?: string;
+  defaultBranch?: string;
+  webUrl?: string;
+}
+
+interface TicketProjectOption {
+  key: string;
+  name: string;
+  url?: string;
+}
+
+function emptyPushTarget(order = 1): PushTarget {
+  return { integrationId: "", repoKey: "", cloneUrl: "", targetBranch: "main", role: "primary", commitOrder: String(order), localPath: "." };
+}
+
+function normalizeRepository(option: RepositoryOption | string | null | undefined): RepositoryOption | null {
+  if (!option) return null;
+  if (typeof option === "string") {
+    return { key: option, name: option };
+  }
+  if (typeof option.key !== "string" || !option.key || typeof option.name !== "string" || !option.name) {
+    return null;
+  }
+  return option;
+}
+
+function repositoryLabel(repo: RepositoryOption): string {
+  const extra = [repo.defaultBranch, repo.webUrl].filter((v) => typeof v === "string" && v.length > 0) as string[];
+  return extra.length > 0 ? `${repo.name} · ${extra[0]}` : repo.name;
+}
+
+function normalizeTicketProject(item: TicketProjectOption | string | null | undefined): TicketProjectOption | null {
+  if (!item) return null;
+  if (typeof item === "string") return { key: item, name: item };
+  if (typeof item.key !== "string" || !item.key) return null;
+  return { key: item.key, name: (item.name && item.name.length > 0) ? item.name : item.key, ...(item.url ? { url: item.url } : {}) };
+}
+
+function useTicketProjectOptions(integrationId: string, integrations: ApiIntegration[]) {
+  const [ticketProjects, setTicketProjects] = useState<TicketProjectOption[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!integrationId) { setTicketProjects([]); setLoading(false); return; }
+    const integration = integrations.find((i) => i.id === integrationId);
+    const cached = integration?.discoveredResources?.ticketProjects;
+    if (Array.isArray(cached) && cached.length > 0) {
+      setTicketProjects(cached.map(normalizeTicketProject).filter((p): p is TicketProjectOption => p !== null));
+      setLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setLoading(true);
+    api.post(`/api/admin/integrations/${integrationId}/discover`, {})
+      .then(() => api.get<{ integration: ApiIntegration }>(`/api/admin/integrations/${integrationId}`))
+      .then((res) => {
+        if (cancelled) return;
+        const discovered = res.integration.discoveredResources?.ticketProjects ?? [];
+        setTicketProjects(
+          Array.isArray(discovered)
+            ? discovered.map(normalizeTicketProject).filter((p): p is TicketProjectOption => p !== null)
+            : []
+        );
+      })
+      .catch(() => { if (!cancelled) setTicketProjects([]); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [integrationId, integrations]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  return { ticketProjects, loading };
+}
+
+function useRepositoryOptions(integrationId: string, integrations: ApiIntegration[]) {
+  const [repositories, setRepositories] = useState<RepositoryOption[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!integrationId) {
+      setRepositories([]);
+      setLoading(false);
+      return;
+    }
+
+    const integration = integrations.find((i) => i.id === integrationId);
+    const cached = integration?.discoveredResources?.repositories;
+    if (Array.isArray(cached) && cached.length > 0) {
+      setRepositories(cached.map((item) => normalizeRepository(item)).filter((item): item is RepositoryOption => item !== null));
+      setLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setLoading(true);
+    api.post(`/api/admin/integrations/${integrationId}/discover`, {})
+      .then(() => api.get<{ integration: ApiIntegration }>(`/api/admin/integrations/${integrationId}`))
+      .then((res) => {
+        if (cancelled) return;
+        const discovered = res.integration.discoveredResources?.repositories ?? [];
+        const normalized = Array.isArray(discovered)
+          ? discovered.map((item) => normalizeRepository(item)).filter((item): item is RepositoryOption => item !== null)
+          : [];
+        setRepositories(normalized);
+      })
+      .catch(() => {
+        if (!cancelled) setRepositories([]);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => { cancelled = true; };
+  }, [integrationId, integrations]);
+
+  return { repositories, loading };
+}
+
+function RepositoryKeyField({
+  label,
+  hint,
+  integrationId,
+  integrations,
+  value,
+  onChange,
+  onRepositorySelected,
+  required,
+  placeholder,
+}: {
+  label: string;
+  hint?: string;
+  integrationId: string;
+  integrations: ApiIntegration[];
+  value: string;
+  onChange: (nextValue: string) => void;
+  onRepositorySelected?: (repo: RepositoryOption) => void;
+  required?: boolean;
+  placeholder: string;
+}) {
+  const { repositories, loading } = useRepositoryOptions(integrationId, integrations);
+  const selected = useMemo(() => repositories.find((repo) => repo.key === value) ?? null, [repositories, value]);
+
+  useEffect(() => {
+    if (repositories.length > 0 && value && !selected) {
+      onChange("");
+    }
+  }, [onChange, repositories, selected, value]);
+
+  const handleSelect = (key: string) => {
+    onChange(key);
+    if (key && onRepositorySelected) {
+      const repo = repositories.find((r) => r.key === key);
+      if (repo) onRepositorySelected(repo);
+    }
+  };
+
+  const defaultHint = repositories.length > 0
+    ? "Select a repository — clone URL and branch will be filled automatically"
+    : loading ? undefined : "Enter repository key manually (run discover first to get a list)";
+
+  return (
+    <Field label={label} required={required} hint={hint ?? defaultHint}>
+      {repositories.length > 0 ? (
+        <FieldSelect value={value} onChange={(e) => handleSelect(e.target.value)} disabled={loading}>
+          <option value="">— select —</option>
+          {repositories.map((repo) => (
+            <option key={repo.key} value={repo.key}>
+              {repositoryLabel(repo)}
+            </option>
+          ))}
+        </FieldSelect>
+      ) : (
+        <FieldInput value={value} placeholder={loading ? "Loading repositories…" : placeholder} onChange={(e) => onChange(e.target.value)} disabled={loading} />
+      )}
+    </Field>
+  );
+}
+
+function TicketProjectKeyField({
+  integrationId,
+  integrations,
+  value,
+  onChange,
+  required,
+}: {
+  integrationId: string;
+  integrations: ApiIntegration[];
+  value: string;
+  onChange: (v: string) => void;
+  required?: boolean;
+}) {
+  const { ticketProjects, loading } = useTicketProjectOptions(integrationId, integrations);
+  const selected = useMemo(() => ticketProjects.find((p) => p.key === value) ?? null, [ticketProjects, value]);
+  useEffect(() => {
+    if (ticketProjects.length > 0 && value && !selected) onChange("");
+  }, [onChange, ticketProjects, selected, value]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const hint = loading
+    ? "Loading projects…"
+    : ticketProjects.length > 0
+    ? `${ticketProjects.length} project${ticketProjects.length === 1 ? "" : "s"} found`
+    : "e.g. project identifier in Redmine / GitLab group or project path";
+
+  return (
+    <Field label="Ticket Project Key" required={required} hint={hint}>
+      {ticketProjects.length > 0 ? (
+        <FieldSelect value={value} onChange={(e) => onChange(e.target.value)} disabled={loading}>
+          <option value="">— select —</option>
+          {ticketProjects.map((p) => (
+            <option key={p.key} value={p.key}>
+              {p.name !== p.key ? `${p.name}  [${p.key}]` : p.key}
+            </option>
+          ))}
+        </FieldSelect>
+      ) : (
+        <FieldInput value={value} placeholder={loading ? "Loading…" : "PROJECT_KEY"} disabled={loading} onChange={(e) => onChange(e.target.value)} />
+      )}
+    </Field>
+  );
+}
+
+function RepositoryKeysField({
+  label,
+  hint,
+  integrationId,
+  integrations,
+  value,
+  onChange,
+  required,
+}: {
+  label: string;
+  hint?: string;
+  integrationId: string;
+  integrations: ApiIntegration[];
+  value: string[];
+  onChange: (nextValue: string[]) => void;
+  required?: boolean;
+}) {
+  const { repositories, loading } = useRepositoryOptions(integrationId, integrations);
+  const [search, setSearch] = useState("");
+
+  useEffect(() => {
+    if (repositories.length > 0) {
+      const next = value.filter((key) => repositories.some((repo) => repo.key === key));
+      if (next.length !== value.length) onChange(next);
+    }
+  }, [onChange, repositories, value]);
+
+  const normalizedSearch = search.trim().toLowerCase();
+  const filteredRepositories = normalizedSearch.length > 0
+    ? repositories.filter((repo) => {
+      const label = repositoryLabel(repo).toLowerCase();
+      return repo.key.toLowerCase().includes(normalizedSearch) || label.includes(normalizedSearch);
+    })
+    : repositories;
+
+  const filteredKeys = filteredRepositories.map((repo) => repo.key);
+  const selectedFilteredCount = filteredKeys.filter((key) => value.includes(key)).length;
+
+  const selectAllFiltered = () => {
+    const next = new Set(value);
+    for (const key of filteredKeys) next.add(key);
+    onChange(Array.from(next));
+  };
+
+  const unselectAllFiltered = () => {
+    if (filteredKeys.length === 0) return;
+    onChange(value.filter((key) => !filteredKeys.includes(key)));
+  };
+
+  return (
+    <Field label={label} required={required} hint={hint ?? (repositories.length > 0 ? `${value.length} of ${repositories.length} selected` : "Enter repository keys manually if discovery is unavailable")}>
+      {repositories.length > 0 ? (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <FieldInput
+              value={search}
+              placeholder="Search repositories by name or key"
+              onChange={(e) => setSearch(e.target.value)}
+              disabled={loading}
+            />
+            <button
+              type="button"
+              className="btn ghost"
+              onClick={selectAllFiltered}
+              disabled={loading || filteredKeys.length === 0 || selectedFilteredCount === filteredKeys.length}
+              style={{ whiteSpace: "nowrap", fontSize: "11px", padding: "6px 10px" }}
+            >
+              Select all
+            </button>
+            <button
+              type="button"
+              className="btn ghost"
+              onClick={unselectAllFiltered}
+              disabled={loading || selectedFilteredCount === 0}
+              style={{ whiteSpace: "nowrap", fontSize: "11px", padding: "6px 10px" }}
+            >
+              Unselect all
+            </button>
+          </div>
+
+          <div className="mono" style={{ fontSize: "10.5px", color: "var(--text-faint)" }}>
+            {filteredRepositories.length} visible · {selectedFilteredCount} selected
+          </div>
+
+          <div style={{ display: "flex", flexDirection: "column", gap: 1, maxHeight: 240, overflowY: "auto", padding: "6px 8px", background: "var(--panel-2)", borderRadius: "var(--radius-sm)", border: "1px solid var(--border-soft)" }}>
+            {filteredRepositories.map((repo) => {
+            const checked = value.includes(repo.key);
+            return (
+              <label
+                key={repo.key}
+                style={{ display: "flex", alignItems: "center", gap: 8, cursor: loading ? "default" : "pointer", fontSize: "13px", padding: "5px 6px", borderRadius: "var(--radius-sm)", background: checked ? "var(--accent-soft)" : "transparent", userSelect: "none" }}
+              >
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  disabled={loading}
+                  onChange={(e) => onChange(e.target.checked ? [...value, repo.key] : value.filter((k) => k !== repo.key))}
+                  style={{ accentColor: "var(--accent)", cursor: loading ? "default" : "pointer", flexShrink: 0 }}
+                />
+                <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {repositoryLabel(repo)}
+                </span>
+                <span className="mono" style={{ fontSize: "10px", color: "var(--text-faint)", flexShrink: 0 }}>{repo.key}</span>
+              </label>
+            );
+            })}
+            {filteredRepositories.length === 0 && (
+              <div style={{ padding: "8px 6px", color: "var(--text-faint)", fontSize: "12px" }}>
+                No repositories match this search.
+              </div>
+            )}
+          </div>
+        </div>
+      ) : (
+        <FieldInput
+          value={value.join(", ")}
+          placeholder={loading ? "Loading repositories…" : "repo-a, repo-b"}
+          onChange={(e) => onChange(e.target.value.split(",").map((s) => s.trim()).filter(Boolean))}
+          disabled={loading}
+        />
+      )}
+    </Field>
+  );
+}
+
+export function ProjectFormModal({ agents, integrations, project, onClose, onSaved }: Props) {
+  const isEditMode = project !== undefined;
+  const [projectType, setProjectType] = useState<"coding" | "review">(project?.type ?? "coding");
+  const [name, setName] = useState("");
+  const [agentId, setAgentId] = useState("");
+  const [postCloneScript, setPostCloneScript] = useState("");
+
+  // Coding-specific
+  const [ticketSource, setTicketSource] = useState<TicketSource>({ integrationId: "", ticketProjectKey: "" });
+  const [pushTargets, setPushTargets] = useState<PushTarget[]>([emptyPushTarget(1)]);
+
+  // Review-specific
+  const [reviewIntegrationId, setReviewIntegrationId] = useState("");
+  const [reviewRepoKeys, setReviewRepoKeys] = useState<string[]>([]);
+
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!project) return;
+    setProjectType(project.type);
+    setName(project.name);
+    setAgentId(project.agentId ?? "");
+    setPostCloneScript(project.postCloneScript ?? "");
+
+    if (project.type === "coding") {
+      setTicketSource({
+        integrationId: project.ticketSource?.integration?.id ?? "",
+        ticketProjectKey: project.ticketSource?.ticketProjectKey ?? "",
+      });
+      const nextTargets = (project.pushTargets ?? []).map((t) => ({
+        integrationId: t.integrationId,
+        repoKey: t.repoKey,
+        cloneUrl: t.cloneUrl,
+        targetBranch: t.targetBranch,
+        role: t.role,
+        commitOrder: String(t.commitOrder),
+        localPath: t.localPath,
+      }));
+      setPushTargets(nextTargets.length > 0 ? nextTargets : [emptyPushTarget(1)]);
+    } else {
+      setReviewIntegrationId(project.reviewConfig?.integration?.id ?? "");
+      setReviewRepoKeys(project.reviewConfig?.repos ?? []);
+    }
+  }, [project]);
+
+  const codingAgents = agents.filter((a) => a.type === "coding");
+  const reviewAgents = agents.filter((a) => a.type === "review");
+  const currentAgents = projectType === "coding" ? codingAgents : reviewAgents;
+
+  const ticketingIntegrations = integrations.filter((i) => i.category === "ticketing");
+  const vcsIntegrations = integrations.filter((i) => i.category === "review");
+  const reviewIntegrations = integrations.filter((i) => i.category === "review");
+
+  const updatePushTarget = (idx: number, key: keyof PushTarget, val: string) => {
+    setPushTargets((prev) => prev.map((t, i) => i === idx ? { ...t, [key]: val } : t));
+  };
+
+  const addPushTarget = () => {
+    setPushTargets((prev) => [...prev, emptyPushTarget(prev.length + 1)]);
+  };
+
+  const removePushTarget = (idx: number) => {
+    setPushTargets((prev) => prev.filter((_, i) => i !== idx));
+  };
+
+  const handleSave = async () => {
+    if (!name.trim()) { setError("Project name is required"); return; }
+    if (!agentId) { setError("Select an agent"); return; }
+    setSaving(true);
+    setError(null);
+    try {
+      if (projectType === "coding") {
+        if (!ticketSource.integrationId) { setError("Ticket source integration is required"); setSaving(false); return; }
+        if (!ticketSource.ticketProjectKey.trim()) { setError("Ticket project key is required"); setSaving(false); return; }
+        if (pushTargets.length === 0) { setError("At least one push target is required"); setSaving(false); return; }
+        const payload = {
+          type: "coding",
+          name,
+          agentId,
+          postCloneScript: postCloneScript || undefined,
+          ticketSource: { integrationId: ticketSource.integrationId, ticketProjectKey: ticketSource.ticketProjectKey },
+          pushTargets: pushTargets.map((t) => ({
+            integrationId: t.integrationId,
+            repoKey: t.repoKey,
+            cloneUrl: t.cloneUrl,
+            targetBranch: t.targetBranch,
+            role: t.role,
+            commitOrder: parseInt(t.commitOrder, 10) || 1,
+            localPath: t.localPath,
+          })),
+        };
+        if (isEditMode && project) {
+          await api.put(`/api/admin/projects/${project.id}`, payload);
+        } else {
+          await api.post("/api/admin/projects", payload);
+        }
+      } else {
+        if (!reviewIntegrationId) { setError("Review integration is required"); setSaving(false); return; }
+        if (reviewRepoKeys.length === 0) { setError("At least one repository key is required"); setSaving(false); return; }
+        const payload = {
+          type: "review",
+          name,
+          agentId,
+          postCloneScript: postCloneScript || undefined,
+          reviewConfig: { integrationId: reviewIntegrationId, repoKeys: reviewRepoKeys },
+        };
+        if (isEditMode && project) {
+          await api.put(`/api/admin/projects/${project.id}`, payload);
+        } else {
+          await api.post("/api/admin/projects", payload);
+        }
+      }
+      onSaved();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Save failed");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal title={isEditMode ? "Edit Project" : "New Project"} onClose={onClose} width={640}>
+      <FormRow>
+        <Field label="Name" required>
+          <FieldInput value={name} placeholder="My project" onChange={(e) => setName(e.target.value)} />
+        </Field>
+
+        <Field label="Type" required hint={isEditMode ? "Project type cannot be changed after creation" : undefined}>
+          <FieldSelect
+            value={projectType}
+            disabled={isEditMode}
+            onChange={(e) => { setProjectType(e.target.value as "coding" | "review"); setAgentId(""); }}
+          >
+            <option value="coding">Coding — ticket-driven code generation</option>
+            <option value="review">Review — automated code review</option>
+          </FieldSelect>
+        </Field>
+
+        <Field label="Agent" required hint={`Select an enabled ${projectType} agent`}>
+          <FieldSelect value={agentId} onChange={(e) => setAgentId(e.target.value)}>
+            {currentAgents.length === 0 && <option value="">— no {projectType} agents —</option>}
+            {currentAgents.length > 0 && <option value="">— select —</option>}
+            {currentAgents.map((a) => (
+              <option key={a.id} value={a.id}>{a.name}</option>
+            ))}
+          </FieldSelect>
+        </Field>
+
+        {projectType === "coding" && (
+          <>
+            <div style={{ paddingTop: 4 }}>
+              <div style={{ fontSize: "13px", fontWeight: 600, marginBottom: 12 }}>Ticket Source</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 12, padding: "14px 16px", background: "var(--panel-2)", borderRadius: "var(--radius-sm)", border: "1px solid var(--border-soft)" }}>
+                <Field label="Ticketing Integration" required>
+                  <FieldSelect value={ticketSource.integrationId} onChange={(e) => setTicketSource((prev) => ({ ...prev, integrationId: e.target.value }))}>
+                    {ticketingIntegrations.length === 0 && <option value="">— no ticketing integrations —</option>}
+                    {ticketingIntegrations.length > 0 && <option value="">— select —</option>}
+                    {ticketingIntegrations.map((i) => (
+                      <option key={i.id} value={i.id}>{i.name}</option>
+                    ))}
+                  </FieldSelect>
+                </Field>
+                <TicketProjectKeyField
+                  required
+                  integrationId={ticketSource.integrationId}
+                  integrations={integrations}
+                  value={ticketSource.ticketProjectKey}
+                  onChange={(v) => setTicketSource((prev) => ({ ...prev, ticketProjectKey: v }))}
+                />
+              </div>
+            </div>
+
+            <div>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+                <div style={{ fontSize: "13px", fontWeight: 600 }}>Push Targets ({pushTargets.length})</div>
+                <button className="btn ghost" style={{ fontSize: "12px", padding: "4px 10px" }} onClick={addPushTarget}>
+                  <Icon name="plus" size={12} /> Add repository
+                </button>
+              </div>
+              {pushTargets.map((t, idx) => (
+                <div
+                  key={idx}
+                  style={{ display: "flex", flexDirection: "column", gap: 10, padding: "14px 16px", background: "var(--panel-2)", borderRadius: "var(--radius-sm)", border: "1px solid var(--border-soft)", marginBottom: 10 }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                    <div style={{ fontSize: "12.5px", fontWeight: 600, color: "var(--text-dim)" }}>Repository #{idx + 1}</div>
+                    {pushTargets.length > 1 && (
+                      <button className="iconbtn" onClick={() => removePushTarget(idx)}><Icon name="x" size={12} /></button>
+                    )}
+                  </div>
+                  <Field label="VCS Integration" required>
+                    <FieldSelect value={t.integrationId} onChange={(e) => updatePushTarget(idx, "integrationId", e.target.value)}>
+                      {vcsIntegrations.length === 0 && <option value="">— no VCS integrations —</option>}
+                      {vcsIntegrations.length > 0 && <option value="">— select —</option>}
+                      {vcsIntegrations.map((i) => (
+                        <option key={i.id} value={i.id}>{i.name}</option>
+                      ))}
+                    </FieldSelect>
+                  </Field>
+                  <RepositoryKeyField
+                    label="Repository Key"
+                    required
+                    integrationId={t.integrationId}
+                    integrations={integrations}
+                    value={t.repoKey}
+                    placeholder="repo-name"
+                    onChange={(nextValue) => updatePushTarget(idx, "repoKey", nextValue)}
+                    onRepositorySelected={(repo) => {
+                      setPushTargets((prev) => prev.map((t2, i) => i !== idx ? t2 : {
+                        ...t2,
+                        cloneUrl: t2.cloneUrl || (repo.cloneUrlHttp ?? repo.cloneUrlSsh ?? ""),
+                        targetBranch: (!t2.targetBranch || t2.targetBranch === "main")
+                          ? (repo.defaultBranch ?? "main")
+                          : t2.targetBranch,
+                      }));
+                    }}
+                  />
+                  <Field label="Clone URL" required>
+                    <FieldInput value={t.cloneUrl} placeholder="https://github.com/org/repo.git" onChange={(e) => updatePushTarget(idx, "cloneUrl", e.target.value)} />
+                  </Field>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                    <Field label="Target Branch" required>
+                      <FieldInput value={t.targetBranch} placeholder="main" onChange={(e) => updatePushTarget(idx, "targetBranch", e.target.value)} />
+                    </Field>
+                    <Field label="Local Path" required hint={`"." for root`}>
+                      <FieldInput value={t.localPath} placeholder="." onChange={(e) => updatePushTarget(idx, "localPath", e.target.value)} />
+                    </Field>
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                    <Field label="Role">
+                      <FieldSelect value={t.role} onChange={(e) => updatePushTarget(idx, "role", e.target.value)}>
+                        <option value="primary">Primary</option>
+                        <option value="submodule">Submodule</option>
+                        <option value="dependency">Dependency</option>
+                        <option value="related">Related</option>
+                      </FieldSelect>
+                    </Field>
+                    <Field label="Commit Order">
+                      <FieldInput type="number" min={1} value={t.commitOrder} onChange={(e) => updatePushTarget(idx, "commitOrder", e.target.value)} />
+                    </Field>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+
+        {projectType === "review" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 12, padding: "14px 16px", background: "var(--panel-2)", borderRadius: "var(--radius-sm)", border: "1px solid var(--border-soft)" }}>
+            <div style={{ fontSize: "13px", fontWeight: 600, marginBottom: 2 }}>Review Configuration</div>
+            <Field label="Review Integration" required>
+              <FieldSelect value={reviewIntegrationId} onChange={(e) => setReviewIntegrationId(e.target.value)}>
+                {reviewIntegrations.length === 0 && <option value="">— no review integrations —</option>}
+                {reviewIntegrations.length > 0 && <option value="">— select —</option>}
+                {reviewIntegrations.map((i) => (
+                  <option key={i.id} value={i.id}>{i.name}</option>
+                ))}
+              </FieldSelect>
+            </Field>
+            <RepositoryKeysField
+              label="Repository Keys"
+              required
+              integrationId={reviewIntegrationId}
+              integrations={integrations}
+              value={reviewRepoKeys}
+              onChange={setReviewRepoKeys}
+              hint="Select repository keys after discovery"
+            />
+          </div>
+        )}
+
+        <Field label="Post-Clone Script" hint="Optional shell script to run after repo clone (before agent runs)">
+          <FieldTextarea
+            value={postCloneScript}
+            placeholder="#!/bin/sh&#10;npm install"
+            onChange={(e) => setPostCloneScript(e.target.value)}
+            style={{ minHeight: "80px", fontFamily: "var(--font-mono)" }}
+          />
+        </Field>
+
+        <FormError msg={error} />
+
+        <FormActions>
+          <button className="btn ghost" onClick={onClose}>Cancel</button>
+          <button className="btn primary" onClick={handleSave} disabled={saving}>
+            {saving ? "Saving…" : (isEditMode ? "Save changes" : "Create project")}
+          </button>
+        </FormActions>
+      </FormRow>
+    </Modal>
+  );
+}

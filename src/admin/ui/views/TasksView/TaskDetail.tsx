@@ -1,0 +1,246 @@
+import { useEffect, useState } from "react";
+import { Icon } from "../../components/Icon.tsx";
+import { StatePill } from "../../components/StatePill.tsx";
+import { Tag } from "../../components/Tag.tsx";
+import { Meta } from "../../components/Meta.tsx";
+import { Tabs, TabPanel } from "../../components/Tabs.tsx";
+import { ProviderGlyph } from "../../components/ProviderGlyph.tsx";
+import { StatePipeline } from "./StatePipeline.tsx";
+import { AgentCycles } from "./AgentCycles.tsx";
+import { StateTimeline } from "./StateTimeline.tsx";
+import { LiveLogs } from "./LiveLogs.tsx";
+import { api } from "../../api.ts";
+import { isActiveState, isTerminalState } from "../../states.ts";
+import type { ApiTask, ApiCycle, ApiTransition } from "../../types.ts";
+
+interface TaskDetailProps {
+  task: ApiTask;
+}
+
+type TabId = "cycles" | "timeline" | "logs";
+
+export function TaskDetail({ task }: TaskDetailProps) {
+  const [tab, setTab] = useState<TabId>("cycles");
+  const [taskDetails, setTaskDetails] = useState<ApiTask | null>(null);
+  const [cycles, setCycles] = useState<ApiCycle[] | null>(null);
+  const [transitions, setTransitions] = useState<ApiTransition[] | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  const running   = isActiveState(task.state);
+  const terminal  = isTerminalState(task.state);
+
+  useEffect(() => {
+    setTaskDetails(null);
+    setCycles(null);
+    setTransitions(null);
+    void api.get<{ task: ApiTask }>(`/api/admin/tasks/${task.taskId}`)
+      .then((r) => setTaskDetails(r.task))
+      .catch(() => setTaskDetails(task));
+    void api.get<{ cycles: ApiCycle[] }>(`/api/admin/tasks/${task.taskId}/cycles`)
+      .then((r) => setCycles(r.cycles))
+      .catch(() => setCycles([]));
+    void api.get<{ transitions: ApiTransition[] }>(`/api/admin/tasks/${task.taskId}/transitions`)
+      .then((r) => setTransitions(r.transitions))
+      .catch(() => setTransitions([]));
+  }, [task.taskId]);
+
+  async function doAction(path: string, method: "PATCH" | "POST" | "DELETE") {
+    setActionError(null);
+    try {
+      await api[method === "PATCH" ? "patch" : method === "POST" ? "post" : "delete"](path);
+      // Parent will refresh via SSE; no local state update needed
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Action failed");
+    }
+  }
+
+  const tabItems = [
+    { id: "cycles",   label: "Agent cycles",  count: cycles?.length ?? task.cycleCount },
+    { id: "timeline", label: "State timeline", count: transitions?.length ?? null },
+    { id: "logs",     label: "Live logs" },
+  ];
+
+  const displayTitle = task.ticketTitle || task.displayId || task.taskId;
+  const sourceLabel  = task.ticketSourceLabel.toUpperCase();
+  const taskWithDetails = taskDetails ?? task;
+  const loadedCycleCount = cycles ? Math.max(cycles.length, ...cycles.map((cycle) => cycle.cycleNumber)) : 0;
+  const effectiveCycleCount = Math.max(taskWithDetails.cycleCount, loadedCycleCount);
+  const repoReviewLinks = (taskWithDetails.changesPerRepo ?? []).filter((c) => typeof c.reviewUrl === "string" && c.reviewUrl.length > 0);
+  const primaryLink = taskWithDetails.ticketUrl ?? taskWithDetails.reviewUrl;
+  const footerRefLabel = task.taskType === "code-review"
+    ? (task.gerritChangeId ?? task.displayId ?? task.ticketId)
+    : (task.displayId ?? task.ticketId);
+
+  const metaCells = [
+    { label: "Type",        value: task.taskType === "code-review" ? "Code review" : "Code generation", mono: false },
+    { label: "Patchset",    value: String(task.currentPatchset || "—"),    mono: true },
+    { label: "Reviewed PS", value: String(task.reviewedPatchset ?? "—"),    mono: true },
+    { label: "Cycles",      value: String(effectiveCycleCount),            mono: true },
+    { label: "Ticket",      value: task.displayId ?? task.ticketId,         mono: true },
+    { label: "Updated",     value: new Date(task.updatedAt).toLocaleString(), mono: true },
+  ];
+
+  return (
+    <div key={task.taskId} className="fade-up" style={{ flex: 1, overflowY: "auto", minWidth: 0, padding: "20px 24px 28px" }}>
+      <div style={{ maxWidth: "1080px", margin: "0 auto", display: "flex", flexDirection: "column", gap: "16px" }}>
+
+        {/* header card */}
+        <div className="card" style={{ padding: "20px 22px" }}>
+          <div style={{ display: "flex", alignItems: "flex-start", gap: "16px" }}>
+            <ProviderGlyph provider={task.ticketSourceLabel} size={40} />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "9px", marginBottom: "6px" }}>
+                {primaryLink ? (
+                  <a
+                    href={primaryLink}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="mono"
+                    style={{ fontSize: "11.5px", color: "var(--accent-strong)", textDecoration: "none" }}
+                    title="Open task/review"
+                  >
+                    {sourceLabel} · #{task.displayId ?? task.ticketId}
+                  </a>
+                ) : (
+                  <span className="mono" style={{ fontSize: "11.5px", color: "var(--text-faint)" }}>
+                    {sourceLabel} · #{task.displayId ?? task.ticketId}
+                  </span>
+                )}
+              </div>
+              <h1 style={{ margin: 0, fontSize: "20px", fontWeight: 600, lineHeight: 1.3, letterSpacing: "-0.01em" }}>
+                {displayTitle}
+              </h1>
+              {task.gerritChangeId && (
+                <div className="mono" style={{ fontSize: "11.5px", color: "var(--text-faint)", marginTop: "8px", display: "flex", gap: "8px", alignItems: "center" }}>
+                  <Icon name="link" size={12} />
+                  <span>Change-Id: {task.gerritChangeId}</span>
+                </div>
+              )}
+              {repoReviewLinks.length > 0 && (
+                <div style={{ marginTop: "9px", display: "flex", flexWrap: "wrap", gap: "8px" }}>
+                  {repoReviewLinks.map((change) => (
+                    <a
+                      key={`${change.repoKey}:${change.changeId}:${change.commitIndex}`}
+                      href={change.reviewUrl as string}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="mono"
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: "5px",
+                        fontSize: "10.5px",
+                        color: "var(--text-dim)",
+                        border: "1px solid var(--border-soft)",
+                        borderRadius: "99px",
+                        padding: "3px 9px",
+                        textDecoration: "none",
+                        background: "var(--panel-2)",
+                      }}
+                      title={`Open review for ${change.repoKey}`}
+                    >
+                      <Icon name="link" size={11} />
+                      {change.repoKey}
+                    </a>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "12px" }}>
+              <StatePill state={task.state} />
+              {/* action bar */}
+              <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
+                {!terminal && (
+                  <>
+                    {running
+                      ? <button className="iconbtn" title="Pause" onClick={() => void doAction(`/api/admin/tasks/${task.taskId}/pause`, "PATCH")}><Icon name="pause" size={15} /></button>
+                      : <button className="iconbtn" title="Resume" onClick={() => void doAction(`/api/admin/tasks/${task.taskId}/resume`, "PATCH")}><Icon name="play" size={15} /></button>
+                    }
+                    <button className="iconbtn" title="Retry" onClick={() => void doAction(`/api/admin/tasks/${task.taskId}/retry`, "POST")}><Icon name="refresh" size={15} /></button>
+                    <button className="iconbtn danger" title="Abandon" onClick={() => void doAction(`/api/admin/tasks/${task.taskId}/abandon`, "POST")}><Icon name="x" size={15} /></button>
+                  </>
+                )}
+                <div style={{ width: 1, height: 20, background: "var(--border-soft)", margin: "0 3px" }} />
+                <button
+                  className="iconbtn danger"
+                  title="Delete task"
+                  onClick={() => void doAction(`/api/admin/tasks/${task.taskId}`, "DELETE")}
+                >
+                  <Icon name="trash" size={15} />
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* state pipeline */}
+          <div style={{ marginTop: "10px", borderTop: "1px solid var(--border-soft)", paddingTop: "4px" }}>
+            <StatePipeline task={task} />
+          </div>
+        </div>
+
+        {/* meta strip */}
+        <div className="card" style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", padding: 0 }}>
+          {metaCells.map((m, i) => (
+            <div key={m.label} style={{ padding: "14px 16px", borderRight: i < 5 ? "1px solid var(--border-soft)" : "none" }}>
+              <Meta label={m.label} mono={m.mono}>{m.value}</Meta>
+            </div>
+          ))}
+        </div>
+
+        {/* failure banner */}
+        {task.failureReason && (
+          <div
+            style={{
+              display: "flex", gap: "11px", alignItems: "center", padding: "12px 16px",
+              borderRadius: "var(--radius)", background: "var(--danger-soft)",
+              border: "1px solid color-mix(in oklab,var(--danger) 30%, transparent)",
+            }}
+          >
+            <Icon name="alert" size={16} style={{ color: "var(--danger)", flex: "none" }} />
+            <div>
+              <span className="eyebrow" style={{ color: "var(--danger)" }}>Failure reason</span>
+              <div className="mono" style={{ fontSize: "12.5px", color: "var(--text)", marginTop: "2px" }}>
+                {task.failureReason}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {actionError && (
+          <div style={{ color: "var(--danger)", fontSize: "12.5px", padding: "8px 0" }}>
+            {actionError}
+          </div>
+        )}
+
+        {/* tabs */}
+        <div style={{ display: "flex", alignItems: "center", borderBottom: "1px solid var(--border-soft)", paddingBottom: "10px" }}>
+          <Tabs tabs={tabItems} value={tab} onChange={(id) => setTab(id as TabId)} />
+        </div>
+
+        {/* tab body */}
+        <TabPanel>
+          {tab === "cycles" && (
+            cycles === null
+              ? <div style={{ color: "var(--text-faint)", fontSize: "13px" }}>Loading…</div>
+              : cycles.length === 0
+                ? <div className="placeholder" style={{ minHeight: "120px" }}>No agent cycles yet.</div>
+                : <AgentCycles cycles={cycles} />
+          )}
+          {tab === "timeline" && (
+            transitions === null
+              ? <div style={{ color: "var(--text-faint)", fontSize: "13px" }}>Loading…</div>
+              : <div className="card" style={{ padding: "16px 20px" }}><StateTimeline transitions={transitions} /></div>
+          )}
+          {tab === "logs" && (
+            <LiveLogs taskId={task.taskId} running={running} />
+          )}
+        </TabPanel>
+
+        <Tag tone="info" mono={false}>
+          {task.taskType === "code-review" ? "review" : "task"}: {footerRefLabel}
+        </Tag>
+
+      </div>
+    </div>
+  );
+}
