@@ -50,6 +50,11 @@ export interface PluginField {
    * The controlling field must be a `select` type field in the same form.
    */
   dependsOn?: PluginVisibilityCondition;
+  /**
+   * When `true` this field is rendered inside a collapsed "Advanced settings"
+   * section in the admin UI form rather than at the top level.
+   */
+  advanced?: boolean | undefined;
 }
 
 /** Result shape returned by `PluginDescriptor.testConnection`. */
