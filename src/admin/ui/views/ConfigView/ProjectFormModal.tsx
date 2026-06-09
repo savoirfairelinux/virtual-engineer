@@ -123,7 +123,7 @@ function useTicketProjectOptions(integrationId: string, integrations: ApiIntegra
       .catch(() => { if (!cancelled) setTicketProjects([]); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [integrationId, integrations]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [integrationId, integrations]);
 
   return { ticketProjects, loading };
 }
@@ -249,7 +249,7 @@ function TicketProjectKeyField({
   const selected = useMemo(() => ticketProjects.find((p) => p.key === value) ?? null, [ticketProjects, value]);
   useEffect(() => {
     if (ticketProjects.length > 0 && value && !selected) onChange("");
-  }, [onChange, ticketProjects, selected, value]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [onChange, ticketProjects, selected, value]);
 
   const hint = loading
     ? "Loading projects…"

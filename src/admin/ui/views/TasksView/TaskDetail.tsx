@@ -42,7 +42,7 @@ export function TaskDetail({ task }: TaskDetailProps) {
     void api.get<{ transitions: ApiTransition[] }>(`/api/admin/tasks/${task.taskId}/transitions`)
       .then((r) => setTransitions(r.transitions))
       .catch(() => setTransitions([]));
-  }, [task.taskId]);
+  }, [task.taskId]); // eslint-disable-line react-hooks/exhaustive-deps -- task is used as catch fallback only; re-fetch is intentionally gated on taskId
 
   async function doAction(path: string, method: "PATCH" | "POST" | "DELETE") {
     setActionError(null);
