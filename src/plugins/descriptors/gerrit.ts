@@ -103,8 +103,8 @@ export const gerritDescriptor: PluginDescriptor = {
     { key: "sshHost", label: "SSH Host", type: "text", required: true, placeholder: "gerrit" },
     { key: "sshPort", label: "SSH Port", type: "number", required: false, placeholder: "29418" },
     { key: "sshUser", label: "SSH User", type: "text", required: true, placeholder: "admin" },
-    { key: "sshKeyPath", label: "SSH Key Path", type: "text", required: false, placeholder: "/home/<user>/.ssh/id_ed25519_gerrit" },
-    { key: "sshKnownHostsPath", label: "SSH Known Hosts Path", type: "text", required: false, placeholder: "/home/<user>/.ssh/known_hosts" },
+    { key: "sshKeyPath", label: "SSH Key Path", type: "text", required: false, placeholder: "/home/<user>/.ssh/id_ed25519_gerrit", advanced: true },
+    { key: "sshKnownHostsPath", label: "SSH Known Hosts Path", type: "text", required: false, placeholder: "/home/<user>/.ssh/known_hosts", advanced: true },
   ],
   discoverResources: async (config) => {
     const parsed = gerritConfigSchema.parse(config);

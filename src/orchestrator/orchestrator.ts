@@ -228,6 +228,40 @@ export class Orchestrator {
     }
   }
 
+  /**
+   * Polling fallback for code-review tasks stuck in REVIEW_WATCHING.
+   * Queries the review system for the current change status and transitions
+   * to REVIEW_DONE (merged) or ABANDONED accordingly. This compensates for
+   * missed `change-merged` stream events when the Gerrit SSH connection drops.
+   */
+  async checkReviewWatchingTask(taskId: ReturnType<typeof makeTaskId>): Promise<void> {
+    const task = await this.stateStore.getTask(taskId);
+    if (!task || task.state !== "REVIEW_WATCHING" || !task.externalChangeId) {
+      return;
+    }
+    let reviewConnector: ReviewConnector;
+    try {
+      reviewConnector = await this.resolveReviewConnector(task);
+    } catch (err) {
+      log.warn({ taskId, err }, "checkReviewWatchingTask: could not resolve review connector — skipping");
+      return;
+    }
+    let status: string;
+    try {
+      status = await reviewConnector.getChangeStatus(task.externalChangeId);
+    } catch (err) {
+      log.warn({ taskId, changeId: task.externalChangeId, err }, "checkReviewWatchingTask: failed to fetch change status — staying REVIEW_WATCHING");
+      return;
+    }
+    if (status === "MERGED") {
+      log.info({ taskId, changeId: task.externalChangeId }, "checkReviewWatchingTask: change is MERGED — transitioning to REVIEW_DONE");
+      await this.stateStore.transition(taskId, "REVIEW_DONE");
+    } else if (status === "ABANDONED") {
+      log.info({ taskId, changeId: task.externalChangeId }, "checkReviewWatchingTask: change is ABANDONED — abandoning review task");
+      await this.handleAbandoned(task, "change was abandoned externally (poll)");
+    }
+  }
+
   /** Handle an external review event by looking up the in-flight task and checking review progress. */
   async handleReviewEvent(changeId: ExternalChangeId): Promise<void> {
     const task = await this.stateStore.findTaskByExternalChangeId(null, changeId);
@@ -293,10 +327,20 @@ export class Orchestrator {
       log.info({ taskId: task.taskId, state: task.state }, "webhook merged: task terminal, ignoring");
       return;
     }
-    if (task.state !== "IN_REVIEW") {
-      log.info({ taskId: task.taskId, state: task.state }, "webhook merged: task not IN_REVIEW, ignoring");
+
+    // Code-review tasks wait in REVIEW_WATCHING after posting comments.
+    // When the patchset merges, close the review task immediately.
+    if (task.state === "REVIEW_WATCHING") {
+      log.info({ taskId: task.taskId, externalChangeId }, "webhook merged: marking review task REVIEW_DONE");
+      await this.stateStore.transition(task.taskId, "REVIEW_DONE");
       return;
     }
+
+    if (task.state !== "IN_REVIEW") {
+      log.info({ taskId: task.taskId, state: task.state }, "webhook merged: task not IN_REVIEW/REVIEW_WATCHING, ignoring");
+      return;
+    }
+
     log.info({ taskId: task.taskId, externalChangeId }, "webhook merged: closing ticket");
     const merged = await this.stateStore.transition(task.taskId, "MERGED");
     await this.closeTicket(merged);

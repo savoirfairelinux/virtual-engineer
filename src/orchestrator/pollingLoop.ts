@@ -188,7 +188,7 @@ export class PollingLoop {
   /** Dispatch to project-mode polling; a no-op when no project store is configured. */
   private async pollTickets(): Promise<void> {
     log.debug("polling all projects and active tasks");
-    const tasks: Array<Promise<void>> = [this.pollInReviewTasks()];
+    const tasks: Array<Promise<void>> = [this.pollInReviewTasks(), this.pollReviewWatchingTasks()];
     if (this.projectStore && this.pluginManager) {
       tasks.push(this.pollProjectTickets(), this.pollReviewProjects());
     }
@@ -384,6 +384,41 @@ export class PollingLoop {
         .then(() => this.orchestrator.handleReviewEvent(changeId))
         .catch((err: unknown) =>
           log.error({ taskId: task.taskId, changeId, err }, "failed to check in-review task progress")
+        );
+    }
+  }
+
+  // ─── REVIEW_WATCHING fallback polling ─────────────────────────────────────
+
+  /**
+   * Polling fallback for code-review tasks in REVIEW_WATCHING.
+   * Compensates for missed `change-merged` stream events by actively querying
+   * the review system for the current change status every polling interval.
+   */
+  async pollReviewWatchingTasks(): Promise<void> {
+    const activeTasks = await this.stateStore.getActiveTasks();
+    const watchingTasks = activeTasks.filter(
+      (t) => t.taskType === "code-review" && t.state === "REVIEW_WATCHING" && t.externalChangeId != null
+    );
+    log.debug({ count: watchingTasks.length }, "polling review-watching code-review tasks");
+
+    const now = Date.now();
+    const cooldownMs = this.config.ticketIntervalMs;
+
+    for (const task of watchingTasks) {
+      const changeId = task.externalChangeId!;
+
+      const lastPolled = this.reviewPollCooldowns.get(changeId);
+      if (lastPolled !== undefined && now - lastPolled < cooldownMs) {
+        log.debug({ taskId: task.taskId, changeId }, "skipping recently polled review-watching task");
+        continue;
+      }
+      this.reviewPollCooldowns.set(changeId, now);
+
+      Promise.resolve()
+        .then(() => this.orchestrator.checkReviewWatchingTask(task.taskId))
+        .catch((err: unknown) =>
+          log.error({ taskId: task.taskId, changeId, err }, "failed to check review-watching task status")
         );
     }
   }

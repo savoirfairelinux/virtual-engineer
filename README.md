@@ -137,7 +137,6 @@ Every new or updated patchset triggers: `REVIEW_PENDING → REVIEW_RUNNING → R
 | `npm test` | Run Vitest unit tests |
 | `npm run typecheck` | Zero TypeScript errors |
 | `npm run lint` | Zero ESLint errors |
-| `npm run test:e2e` | Playwright admin dashboard E2E tests |
 | `npm run db:migrate` | Apply Drizzle migrations |
 | `npm run reset:instance` | Full reset (tasks, integrations, agents, projects) |
 | `docker build -f Dockerfile.agent -t virtual-engineer-workspace:latest .` | Rebuild agent image after changes to `Dockerfile.agent` or `agent-worker/` |

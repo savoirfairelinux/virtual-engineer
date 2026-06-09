@@ -152,6 +152,14 @@ function makeMocks(initialTask?: Task) {
       }
     }),
     setFailureReason: vi.fn(async () => undefined),
+    incrementCycle: vi.fn(async () => {
+      if (store.task) {
+        const next = store.task.cycleCount + 1;
+        store.task = { ...store.task, cycleCount: next };
+        return next;
+      }
+      return 1;
+    }),
     getAgentCycles: vi.fn(async () => []),
     saveAgentCycle: vi.fn(async () => undefined),
     findProjectsByReviewTarget: vi.fn(async () => [makeProject()]),
@@ -374,6 +382,7 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
 
     await orch.runReview(initial.taskId);
 
+    expect(mocks.store.incrementCycle).toHaveBeenCalledWith(initial.taskId);
     const transitions = mocks.store.transition.mock.calls.map((c: [unknown, unknown]) => c[1]);
     expect(transitions).toEqual(["REVIEW_RUNNING", "REVIEW_COMMENTING", "REVIEW_WATCHING"]);
 

@@ -1,8 +1,11 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { readFileSync, existsSync } from "node:fs";
+import { join, extname, resolve } from "node:path";
 import { getLogger } from "../logger.js";
 import type { OAuthAppStore, IntegrationStore, PromptStore, StateStore, Integration } from "../interfaces.js";
-import { adminDashboardCss, renderAdminDashboardHtml } from "./dashboard.js";
+import { renderAdminDashboardHtml } from "./dashboard.js";
+import { registerOverviewRoutes } from "./adminOverviewRoutes.js";
 import type { PluginManager } from "../plugins/pluginManager.js";
 import type { ProviderAuthService } from "../agents/providerAuthService.js";
 import { type AgentsRouteStore, registerAgentRoutes } from "./adminAgentsRoutes.js";
@@ -23,6 +26,25 @@ import { registerWebhookRoutes } from "./adminWebhookRoutes.js";
 import { registerIntegrationRoutes } from "./adminIntegrationRoutes.js";
 import { makeTaskId } from "../interfaces.js";
 import { Router } from "./router.js";
+
+// process.cwd() is the project root in both dev (tsx src/) and prod (node dist/src/index.js).
+const DIST_UI_DIR = resolve(process.cwd(), "dist/admin-ui");
+
+const MIME_MAP: Record<string, string> = {
+  ".html": "text/html; charset=utf-8",
+  ".js":   "application/javascript; charset=utf-8",
+  ".mjs":  "application/javascript; charset=utf-8",
+  ".css":  "text/css; charset=utf-8",
+  ".svg":  "image/svg+xml",
+  ".png":  "image/png",
+  ".jpg":  "image/jpeg",
+  ".ico":  "image/x-icon",
+  ".woff": "font/woff",
+  ".woff2": "font/woff2",
+  ".ttf":  "font/ttf",
+  ".json": "application/json",
+  ".map":  "application/json",
+};
 
 /**
  * Admin HTTP server — REST API for orchestrator status, task control, prompts, integrations,
@@ -233,6 +255,12 @@ function buildApiRouter(dependencies: AdminServerDependencies): Router {
     onIntegrationUpdated: dependencies.onIntegrationUpdated,
     webhookPublicBaseUrl: dependencies.webhooks?.publicBaseUrl,
   });
+  registerOverviewRoutes(router, {
+    stateStore: dependencies.stateStore,
+    config: dependencies.config,
+    databasePath: process.env["DATABASE_PATH"] ?? "./data/virtual-engineer.db",
+    pollingIntervalMs: dependencies.config.pollingIntervalMs,
+  });
 
   return router;
 }
@@ -248,10 +276,35 @@ async function handleRequest(
   const path = requestUrl.pathname;
   const method = request.method ?? "GET";
 
-  // ─── Static assets (public, long-lived cache, no security headers) ─────────
-  if (path === "/assets/dashboard.css" && method === "GET") {
-    response.writeHead(200, { "content-type": "text/css; charset=utf-8", "cache-control": "public, max-age=3600" });
-    response.end(adminDashboardCss);
+  // ─── React admin UI static files (hashed → long-lived cache) ───────────────
+  if (method === "GET" && path.startsWith("/admin-ui/")) {
+    // ⚠️ SECURITY: Prevent path traversal — resolve and ensure it stays inside DIST_UI_DIR
+    const relative = path.slice("/admin-ui/".length);
+    const absolute = join(DIST_UI_DIR, relative);
+    const realDist = resolve(DIST_UI_DIR);
+    if (!absolute.startsWith(realDist + "/") && absolute !== realDist) {
+      writeJson(response, 403, { error: "Forbidden" });
+      return;
+    }
+    if (!existsSync(absolute)) {
+      writeJson(response, 404, { error: "Not found" });
+      return;
+    }
+    try {
+      const buf = readFileSync(absolute);
+      const ext = extname(absolute).toLowerCase();
+      const contentType = MIME_MAP[ext] ?? "application/octet-stream";
+      // Hashed assets get long cache; others short.
+      const isHashed = /\.[a-f0-9]{8,}\./.test(relative);
+      response.writeHead(200, {
+        "content-type": contentType,
+        "cache-control": isHashed ? "public, max-age=31536000, immutable" : "public, max-age=60",
+        "x-content-type-options": "nosniff",
+      });
+      response.end(buf);
+    } catch {
+      writeJson(response, 500, { error: "Failed to read file" });
+    }
     return;
   }
 
@@ -437,9 +490,9 @@ function applySecurityHeaders(response: ServerResponse, nonce: string): void {
   // ⚠️ SECURITY: Limit Referer header exposure
   response.setHeader("referrer-policy", "no-referrer");
   // ⚠️ SECURITY: Nonce-based CSP — blocks injected scripts without the per-request nonce;
-  // style-src 'self' covers the external /assets/dashboard.css (no unsafe-inline)
+  // style-src 'self' covers Vite CSS assets served from /admin-ui/assets/ (no unsafe-inline)
   response.setHeader(
     "content-security-policy",
-    `default-src 'self'; script-src 'nonce-${nonce}'; style-src 'self'; img-src 'self' data:; connect-src 'self'`
+    `default-src 'self'; script-src 'self' 'nonce-${nonce}'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'self'`
   );
 }
