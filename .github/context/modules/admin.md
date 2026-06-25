@@ -72,6 +72,7 @@ The admin server is a small HTTP service (default `127.0.0.1:3100`) that serves 
 | `POST` | `/api/admin/integrations/test` | Validate unsaved integration config. |
 | `POST` | `/api/admin/integrations/:id/test` | Validate saved integration config. |
 | `POST` | `/api/admin/integrations/:id/discover` | Refresh discovery cache (repos, projects, models, etc.). GitHub repo discovery is token-centric (`/user/repos`, filtered to the configured owner) so only repos the token can actually access are listed. |
+| `GET` | `/api/admin/integrations/:id/branches?repoKey=…` | On-demand branch discovery for one repository (used by the project push-target / review forms). Requires a `repoKey` query param (URL-encoded, may contain `/`). Resolves the provider descriptor's `discoverBranches` hook (Gerrit / GitLab / GitHub); decrypts password config fields before invoking it. `400` when `repoKey` is missing or the provider has no `discoverBranches`, `404` for unknown integrations, `502` on upstream failure. Not cached. |
 | `GET` | `/api/admin/integrations/:id/models` | Return cached discovered models. |
 | `PATCH` | `/api/admin/integrations/:id/enable` | Enable integration. |
 | `PATCH` | `/api/admin/integrations/:id/disable` | Disable integration. |

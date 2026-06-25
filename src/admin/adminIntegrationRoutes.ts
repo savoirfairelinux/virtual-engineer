@@ -403,6 +403,55 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
       writeJson(res, 502, { error: `Discovery failed: ${errorMessage}` });
     }
   });
+
+  // ─── Branches (per-repository, on-demand) ───────────────────────────────────
+  router.add("GET", "/api/admin/integrations/:id/branches", async (req, res, params) => {
+    if (!deps.integrationStore) { writeJson(res, 501, { error: "Integration store not available" }); return; }
+    const id = params["id"] ?? "";
+    const integration = await deps.integrationStore.getIntegration(id);
+    if (!integration) { writeJson(res, 404, { error: "Integration not found" }); return; }
+
+    const requestUrl = new URL(req.url ?? "/", "http://127.0.0.1");
+    const repoKey = requestUrl.searchParams.get("repoKey") ?? "";
+    if (repoKey.trim().length === 0) {
+      writeJson(res, 400, { error: "Missing 'repoKey' query parameter" }); return;
+    }
+
+    const descriptor = getProviderDescriptor(integration.provider);
+    if (!descriptor || typeof descriptor.discoverBranches !== "function") {
+      writeJson(res, 400, { error: `Provider '${integration.provider}' does not support branch discovery` }); return;
+    }
+
+    let parsedConfig: unknown;
+    try {
+      parsedConfig = JSON.parse(integration.configJson);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      writeJson(res, 500, { error: `Stored integration config is not valid JSON: ${msg}` }); return;
+    }
+
+    // Decrypt password fields so discoverBranches receives real credentials.
+    const decryptedConfig = { ...(parsedConfig as Record<string, unknown>) };
+    for (const field of descriptor.requiredFields.filter((f) => f.type === "password")) {
+      const raw = decryptedConfig[field.key];
+      if (typeof raw === "string" && raw.length > 0) {
+        try {
+          decryptedConfig[field.key] = decryptToken(raw, deps.adminAuthSecret);
+        } catch {
+          // Not a managed encrypted token (e.g. a raw PAT) — leave as-is.
+        }
+      }
+    }
+
+    try {
+      const branches = await descriptor.discoverBranches(decryptedConfig, repoKey);
+      writeJson(res, 200, { branches });
+    } catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      log.warn({ id, provider: integration.provider, repoKey, errorMessage }, "branch discovery failed");
+      writeJson(res, 502, { error: `Branch discovery failed: ${errorMessage}` });
+    }
+  });
 }
 
 // ─── Integration config helpers ─────────────────────────────────────────────

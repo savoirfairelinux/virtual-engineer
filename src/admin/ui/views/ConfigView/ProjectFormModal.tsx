@@ -172,6 +172,145 @@ function useRepositoryOptions(integrationId: string, integrations: ApiIntegratio
   return { repositories, loading };
 }
 
+interface SelectOption {
+  value: string;
+  label: string;
+  meta?: string;
+}
+
+/**
+ * Single-select picker with a search box and a filterable, clickable list —
+ * mirrors the multi-select repository field. When no options are available it
+ * falls back to a free-text input so manual entry still works.
+ */
+function SearchableSelect({
+  options,
+  value,
+  onChange,
+  onFreeText,
+  loading,
+  disabled,
+  searchPlaceholder = "Search…",
+  emptyMessage = "No matches.",
+  freeTextPlaceholder,
+}: {
+  options: SelectOption[];
+  value: string;
+  onChange: (value: string) => void;
+  onFreeText?: (value: string) => void;
+  loading?: boolean;
+  disabled?: boolean;
+  searchPlaceholder?: string;
+  emptyMessage?: string;
+  freeTextPlaceholder?: string;
+}) {
+  const [search, setSearch] = useState("");
+  const normalized = search.trim().toLowerCase();
+  const filtered = normalized.length > 0
+    ? options.filter((o) =>
+      o.value.toLowerCase().includes(normalized)
+      || o.label.toLowerCase().includes(normalized)
+      || (o.meta ? o.meta.toLowerCase().includes(normalized) : false))
+    : options;
+
+  if (options.length === 0) {
+    return (
+      <FieldInput
+        value={value}
+        placeholder={loading ? "Loading…" : (freeTextPlaceholder ?? "")}
+        disabled={loading || disabled}
+        onChange={(e) => (onFreeText ?? onChange)(e.target.value)}
+      />
+    );
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <FieldInput
+        value={search}
+        placeholder={searchPlaceholder}
+        disabled={loading || disabled}
+        onChange={(e) => setSearch(e.target.value)}
+      />
+      <div style={{ display: "flex", flexDirection: "column", gap: 1, maxHeight: 200, overflowY: "auto", padding: "6px 8px", background: "var(--panel-2)", borderRadius: "var(--radius-sm)", border: "1px solid var(--border-soft)" }}>
+        {filtered.map((o) => {
+          const sel = o.value === value;
+          return (
+            <button
+              type="button"
+              key={o.value}
+              disabled={loading || disabled}
+              onClick={() => onChange(o.value)}
+              style={{ display: "flex", alignItems: "center", gap: 8, textAlign: "left", cursor: (loading || disabled) ? "default" : "pointer", fontSize: "13px", padding: "5px 6px", borderRadius: "var(--radius-sm)", background: sel ? "var(--accent-soft)" : "transparent", border: "none", color: "inherit", width: "100%" }}
+            >
+              <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{o.label}</span>
+              {o.meta && <span className="mono" style={{ fontSize: "10px", color: "var(--text-faint)", flexShrink: 0 }}>{o.meta}</span>}
+            </button>
+          );
+        })}
+        {filtered.length === 0 && (
+          <div style={{ padding: "8px 6px", color: "var(--text-faint)", fontSize: "12px" }}>{emptyMessage}</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** Lazily fetch the branches of a repository for a given integration + repoKey. */
+function useBranchOptions(integrationId: string, repoKey: string) {
+  const [branches, setBranches] = useState<string[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!integrationId || !repoKey) { setBranches([]); setLoading(false); return; }
+    let cancelled = false;
+    setLoading(true);
+    api.get<{ branches: string[] }>(`/api/admin/integrations/${integrationId}/branches?repoKey=${encodeURIComponent(repoKey)}`)
+      .then((res) => { if (!cancelled) setBranches(Array.isArray(res.branches) ? res.branches : []); })
+      .catch(() => { if (!cancelled) setBranches([]); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [integrationId, repoKey]);
+
+  return { branches, loading };
+}
+
+function TargetBranchField({
+  integrationId,
+  repoKey,
+  value,
+  onChange,
+}: {
+  integrationId: string;
+  repoKey: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const { branches, loading } = useBranchOptions(integrationId, repoKey);
+  const options = useMemo<SelectOption[]>(() => branches.map((b) => ({ value: b, label: b })), [branches]);
+
+  const hint = loading
+    ? "Loading branches…"
+    : branches.length > 0
+    ? `${branches.length} branch${branches.length === 1 ? "" : "es"} found`
+    : "Enter the target branch (discovery unavailable)";
+
+  return (
+    <Field label="Target Branch" required hint={hint}>
+      <SearchableSelect
+        options={options}
+        value={value}
+        onChange={onChange}
+        onFreeText={onChange}
+        loading={loading}
+        searchPlaceholder="Search branches…"
+        freeTextPlaceholder="main"
+        emptyMessage="No branches match this search."
+      />
+    </Field>
+  );
+}
+
 function RepositoryKeyField({
   label,
   hint,
@@ -214,20 +353,23 @@ function RepositoryKeyField({
     ? "Select a repository — clone URL and branch will be filled automatically"
     : loading ? undefined : "Enter repository key manually (run discover first to get a list)";
 
+  const options = useMemo<SelectOption[]>(
+    () => repositories.map((repo) => ({ value: repo.key, label: repositoryLabel(repo), meta: repo.key })),
+    [repositories]
+  );
+
   return (
     <Field label={label} required={required} hint={hint ?? defaultHint}>
-      {repositories.length > 0 ? (
-        <FieldSelect value={value} onChange={(e) => handleSelect(e.target.value)} disabled={loading}>
-          <option value="">— select —</option>
-          {repositories.map((repo) => (
-            <option key={repo.key} value={repo.key}>
-              {repositoryLabel(repo)}
-            </option>
-          ))}
-        </FieldSelect>
-      ) : (
-        <FieldInput value={value} placeholder={loading ? "Loading repositories…" : placeholder} onChange={(e) => onChange(e.target.value)} disabled={loading} />
-      )}
+      <SearchableSelect
+        options={options}
+        value={value}
+        onChange={handleSelect}
+        onFreeText={onChange}
+        loading={loading}
+        searchPlaceholder="Search repositories by name or key"
+        freeTextPlaceholder={placeholder}
+        emptyMessage="No repositories match this search."
+      />
     </Field>
   );
 }
@@ -257,20 +399,27 @@ function TicketProjectKeyField({
     ? `${ticketProjects.length} project${ticketProjects.length === 1 ? "" : "s"} found`
     : "e.g. project identifier in Redmine / GitLab group or project path";
 
+  const options = useMemo<SelectOption[]>(
+    () => ticketProjects.map((p) => ({
+      value: p.key,
+      label: p.name !== p.key ? p.name : p.key,
+      ...(p.name !== p.key ? { meta: p.key } : {}),
+    })),
+    [ticketProjects]
+  );
+
   return (
     <Field label="Ticket Project Key" required={required} hint={hint}>
-      {ticketProjects.length > 0 ? (
-        <FieldSelect value={value} onChange={(e) => onChange(e.target.value)} disabled={loading}>
-          <option value="">— select —</option>
-          {ticketProjects.map((p) => (
-            <option key={p.key} value={p.key}>
-              {p.name !== p.key ? `${p.name}  [${p.key}]` : p.key}
-            </option>
-          ))}
-        </FieldSelect>
-      ) : (
-        <FieldInput value={value} placeholder={loading ? "Loading…" : "PROJECT_KEY"} disabled={loading} onChange={(e) => onChange(e.target.value)} />
-      )}
+      <SearchableSelect
+        options={options}
+        value={value}
+        onChange={onChange}
+        onFreeText={onChange}
+        loading={loading}
+        searchPlaceholder="Search projects by name or key"
+        freeTextPlaceholder="PROJECT_KEY"
+        emptyMessage="No projects match this search."
+      />
     </Field>
   );
 }
@@ -622,9 +771,12 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
                     <FieldInput value={t.cloneUrl} placeholder="https://github.com/org/repo.git" onChange={(e) => updatePushTarget(idx, "cloneUrl", e.target.value)} />
                   </Field>
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                    <Field label="Target Branch" required>
-                      <FieldInput value={t.targetBranch} placeholder="main" onChange={(e) => updatePushTarget(idx, "targetBranch", e.target.value)} />
-                    </Field>
+                    <TargetBranchField
+                      integrationId={t.integrationId}
+                      repoKey={t.repoKey}
+                      value={t.targetBranch}
+                      onChange={(v) => updatePushTarget(idx, "targetBranch", v)}
+                    />
                     <Field label="Local Path" required hint={`"." for root`}>
                       <FieldInput value={t.localPath} placeholder="." onChange={(e) => updatePushTarget(idx, "localPath", e.target.value)} />
                     </Field>

@@ -212,6 +212,13 @@ export interface ProviderDescriptor {
    */
   discoverResources?: (config: unknown) => Promise<DiscoveredResources>;
   /**
+   * Optional per-repository branch-discovery hook. When defined, the admin
+   * `GET /api/admin/integrations/:id/branches?repoKey=...` endpoint calls it
+   * with the integration's parsed config and a repo key, returning the branch
+   * names available for push-target selection.
+   */
+  discoverBranches?: (config: unknown, repoKey: string) => Promise<string[]>;
+  /**
    * Optional connection tester used by `PluginManager.testConnectionConfig`.
    * `index.ts`-registered testers always take precedence.
    */

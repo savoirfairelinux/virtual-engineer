@@ -8,6 +8,7 @@ import { GitHubVcsConnector } from "../../vcs/githubVcsConnector.js";
 import {
   resolveGitHubUrls,
   listGitHubRepositoriesForUser,
+  listGitHubBranches,
   type GitHubMode,
 } from "../../utils/githubAuth.js";
 import {
@@ -162,6 +163,15 @@ export const githubDescriptor: ProviderDescriptor = {
       })),
       discoveredAt: new Date().toISOString(),
     };
+  },
+  discoverBranches: async (config, repoKey) => {
+    const parsed = githubConfigSchema.parse(config);
+    const urls = resolveGitHubUrls(parsed.mode as GitHubMode, parsed.baseUrl);
+    const token = getGitHubAccessTokenSafe(parsed);
+    if (!token) {
+      return [];
+    }
+    return listGitHubBranches(token, urls.apiBaseUrl, repoKey);
   },
   getSummaryDetails(config) {
     const mode = typeof config["mode"] === "string" ? config["mode"] : "github.com";

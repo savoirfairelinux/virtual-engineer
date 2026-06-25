@@ -432,3 +432,120 @@ describe("Admin API — POST /api/admin/integrations/:id/discover", () => {
     expect(String(body["error"])).toContain("OAuth");
   });
 });
+
+const GITLAB_INTEGRATION: Integration = {
+  id: "int-gitlab",
+  provider: "gitlab",
+  name: "GitLab Test",
+  configJson: JSON.stringify({
+    baseUrl: "https://gitlab.test",
+    gitlabMode: "self-hosted",
+    authMode: "pat",
+    token: "glpat-secret",
+  }),
+  enabled: false,
+  createdAt: new Date(),
+  updatedAt: new Date(),
+};
+
+describe("Admin API — GET /api/admin/integrations/:id/branches", () => {
+  let server: Server;
+  let baseUrl: string;
+  let store: DiscoveryStore;
+  let fetchMock: ReturnType<typeof vi.fn<(url: string | URL | Request, init?: RequestInit) => Promise<Response>>>;
+  let realFetch: typeof fetch;
+
+  beforeEach(async () => {
+    registerBuiltinPlugins();
+    store = makeIntegrationStore([REDMINE_INTEGRATION, GERRIT_INTEGRATION, GITLAB_INTEGRATION, MOCK_INTEGRATION]);
+    const pm = new PluginManager(store);
+    server = createAdminServer(makeBaseDeps({ integrationStore: store, pluginManager: pm }));
+    baseUrl = await listenServer(server);
+    realFetch = globalThis.fetch.bind(globalThis);
+    fetchMock = vi.fn<(url: string | URL | Request, init?: RequestInit) => Promise<Response>>();
+    vi.stubGlobal("fetch", (url: string | URL | Request, init?: RequestInit) => {
+      const u = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+      if (u.startsWith(baseUrl)) {
+        return realFetch(url as Parameters<typeof fetch>[0], init);
+      }
+      return fetchMock(url, init);
+    });
+  });
+
+  afterEach(async () => {
+    vi.unstubAllGlobals();
+    await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+  });
+
+  it("GitLab: returns branch names for a repo key", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse([{ name: "master" }, { name: "develop" }])
+    );
+
+    const { status, body } = await getJson(
+      baseUrl,
+      "/api/admin/integrations/int-gitlab/branches?repoKey=group%2Fjami-client-qt"
+    );
+    expect(status).toBe(200);
+    expect(body["branches"]).toEqual(["master", "develop"]);
+
+    // The repo key must be URL-encoded into the GitLab projects path.
+    const calledUrl = String(fetchMock.mock.calls[0]?.[0]);
+    expect(calledUrl).toContain("/api/v4/projects/group%2Fjami-client-qt/repository/branches");
+  });
+
+  it("Gerrit: returns branch names via git ls-remote", async () => {
+    getExecFileMock().mockImplementationOnce(
+      (_file: unknown, _args: unknown, _options: unknown, callback: ExecFileCallback) => {
+        callback(null, {
+          stdout: [
+            "abc123\trefs/heads/master",
+            "def456\trefs/heads/stable-1.0",
+          ].join("\n"),
+          stderr: "",
+        });
+        return undefined;
+      }
+    );
+
+    const { status, body } = await getJson(
+      baseUrl,
+      "/api/admin/integrations/int-gerrit/branches?repoKey=demo"
+    );
+    expect(status).toBe(200);
+    expect(body["branches"]).toEqual(["master", "stable-1.0"]);
+  });
+
+  it("returns 400 when repoKey query param is missing", async () => {
+    const { status, body } = await getJson(baseUrl, "/api/admin/integrations/int-gitlab/branches");
+    expect(status).toBe(400);
+    expect(String(body["error"])).toContain("repoKey");
+  });
+
+  it("returns 400 when the provider does not support branch discovery (redmine)", async () => {
+    const { status, body } = await getJson(
+      baseUrl,
+      "/api/admin/integrations/int-redmine/branches?repoKey=demo"
+    );
+    expect(status).toBe(400);
+    expect(String(body["error"])).toContain("does not support branch discovery");
+  });
+
+  it("returns 404 for an unknown integration id", async () => {
+    const { status } = await getJson(
+      baseUrl,
+      "/api/admin/integrations/no-such/branches?repoKey=demo"
+    );
+    expect(status).toBe(404);
+  });
+
+  it("returns 502 when branch discovery throws", async () => {
+    fetchMock.mockResolvedValueOnce(errorResponse(401, "unauthorized"));
+    const { status, body } = await getJson(
+      baseUrl,
+      "/api/admin/integrations/int-gitlab/branches?repoKey=demo"
+    );
+    expect(status).toBe(502);
+    expect(String(body["error"])).toContain("Branch discovery failed");
+  });
+});

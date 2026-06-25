@@ -119,6 +119,15 @@ export const gerritDescriptor: ProviderDescriptor = {
       discoveredAt: new Date().toISOString(),
     };
   },
+  discoverBranches: async (config, repoKey) => {
+    const parsed = gerritConfigSchema.parse(config);
+    const ssh = buildSshArgs(parsed);
+    const connector = new GerritSshConnector({
+      ssh,
+      ...(parsed.baseUrl !== undefined ? { baseUrl: parsed.baseUrl } : {}),
+    });
+    return connector.listBranches(repoKey);
+  },
   testConnection: async (config) => {
     const cfg = config as Record<string, unknown>;
     const ssh = buildSshArgs(cfg);

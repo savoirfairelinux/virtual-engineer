@@ -105,6 +105,17 @@ export const gitlabDescriptor: ProviderDescriptor = {
       discoveredAt: new Date().toISOString(),
     };
   },
+  discoverBranches: async (config, repoKey) => {
+    const parsed = gitlabConfigSchema.parse(config);
+    const baseUrl = parsed.baseUrl ?? GITLAB_COM_BASE_URL;
+    const token = getGitLabAccessToken(parsed);
+    const mrConnector = new GitLabMergeRequestConnector({
+      baseUrl,
+      projectId: UNBOUND_GITLAB_PROJECT_ID,
+      token,
+    });
+    return mrConnector.listBranches(repoKey);
+  },
   testConnection: async (config) => {
     const cfg = config as Record<string, unknown>;
     const result = await testGitLabConnection(cfg);

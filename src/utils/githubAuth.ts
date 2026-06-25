@@ -340,6 +340,43 @@ export async function listGitHubRepositoriesForUser(
   return result.repos;
 }
 
+/**
+ * List the branch names of a GitHub repository (push-target branch selection).
+ * `fullName` is the `owner/repo` slug. Follows `Link: rel="next"` pagination.
+ */
+export async function listGitHubBranches(
+  token: string,
+  apiBaseUrl: string,
+  fullName: string
+): Promise<string[]> {
+  const names: string[] = [];
+  let nextUrl: string | null = `${apiBaseUrl}/repos/${fullName}/branches?per_page=100`;
+  let attempts = 0;
+  while (nextUrl !== null) {
+    if (attempts++ > 50) {
+      throw new GitHubAuthError("Too many GitHub branch pagination requests (>50 pages)");
+    }
+    const response: Response = await globalThis.fetch(nextUrl, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/vnd.github+json",
+      },
+    });
+    if (!response.ok) {
+      const body = await response.text().catch(() => "");
+      throw new GitHubAuthError(`List branches failed (${response.status}): ${body}`);
+    }
+    const page = (await response.json()) as Array<Record<string, unknown>>;
+    for (const item of page) {
+      const name = item["name"];
+      if (typeof name === "string") names.push(name);
+    }
+    nextUrl = parseNextLink(response.headers.get("Link"));
+  }
+  log.debug({ fullName, count: names.length }, "listed GitHub branches");
+  return names;
+}
+
 export class GitHubAuthError extends Error {
   constructor(message: string) {
     super(message);

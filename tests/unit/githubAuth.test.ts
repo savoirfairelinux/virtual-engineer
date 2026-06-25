@@ -5,6 +5,7 @@ import {
   fetchGitHubCurrentUser,
   resolveGitHubUrls,
   listGitHubRepositoriesForOwner,
+  listGitHubBranches,
   GitHubAuthError,
 } from "../../src/utils/githubAuth.js";
 import { jsonResponse, errorResponse } from "./helpers/fixtures.js";
@@ -309,6 +310,46 @@ describe("githubAuth", () => {
         expect(headers["Authorization"]).toBe("Bearer secret-token");
         expect(headers["Accept"]).toBe("application/vnd.github+json");
       }
+    });
+  });
+
+  // ─── listGitHubBranches ─────────────────────────────────────────────────────
+
+  describe("listGitHubBranches", () => {
+    function pageResponse(data: unknown, nextUrl?: string): Response {
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (nextUrl) headers["Link"] = `<${nextUrl}>; rel="next", <https://x/last>; rel="last"`;
+      return new Response(JSON.stringify(data), { status: 200, headers });
+    }
+
+    it("lists branch names for a repository", async () => {
+      fetchMock.mockResolvedValueOnce(pageResponse([{ name: "main" }, { name: "develop" }]));
+
+      const result = await listGitHubBranches("tok", "https://api.github.com", "acme/widget");
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe("https://api.github.com/repos/acme/widget/branches?per_page=100");
+      expect(result).toEqual(["main", "develop"]);
+    });
+
+    it("follows Link rel=next pagination across pages", async () => {
+      fetchMock.mockResolvedValueOnce(pageResponse([{ name: "a" }], "https://api.github.com/page2"));
+      fetchMock.mockResolvedValueOnce(pageResponse([{ name: "b" }]));
+
+      const result = await listGitHubBranches("tok", "https://api.github.com", "acme/widget");
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect((fetchMock.mock.calls[1] as [string])[0]).toBe("https://api.github.com/page2");
+      expect(result).toEqual(["a", "b"]);
+    });
+
+    it("throws GitHubAuthError on a non-ok response", async () => {
+      fetchMock.mockResolvedValueOnce(errorResponse(404, "Not Found"));
+
+      await expect(
+        listGitHubBranches("tok", "https://api.github.com", "acme/missing"),
+      ).rejects.toThrow(/List branches failed \(404\)/);
     });
   });
 });
