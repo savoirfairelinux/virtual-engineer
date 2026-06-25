@@ -3,6 +3,7 @@ import { githubPullRequestWebhookHandler } from "../../src/webhooks/handlers/git
 import type { WebhookContext, WebhookCapableOrchestrator, ProjectLookupStore } from "../../src/webhooks/webhookServer.js";
 import type { IncomingMessage } from "node:http";
 import type { Integration } from "../../src/interfaces.js";
+import type { ProjectRecord } from "../../src/interfaces.js";
 import { getLogger } from "../../src/logger.js";
 
 const integration: Integration = {
@@ -206,5 +207,75 @@ describe("githubPullRequestWebhookHandler", () => {
     const { ctx } = makeCtx("pull_request", { action: "opened", pull_request: {} });
     const r = await githubPullRequestWebhookHandler(ctx);
     expect(r.status).toBe(400);
+  });
+
+  it("issues action=opened → startTaskForProject for the resolved project", async () => {
+    const { ctx, orch } = makeCtx("issues", {
+      action: "opened",
+      repository: { name: "hello-world", full_name: "octocat/hello-world" },
+      issue: { number: 7, title: "Bug", body: "Broken", html_url: "https://github.com/octocat/hello-world/issues/7" },
+    });
+    const project = { id: "proj-1" } as unknown as ProjectRecord;
+    (ctx.projectStore.findProjectByTicketSource as ReturnType<typeof vi.fn>).mockResolvedValueOnce(project);
+    const r = await githubPullRequestWebhookHandler(ctx);
+    expect(r.status).toBe(202);
+    expect(ctx.projectStore.findProjectByTicketSource).toHaveBeenCalledWith("gh-1", "octocat/hello-world");
+    expect(orch.startTaskForProject).toHaveBeenCalledTimes(1);
+    const [ticket, proj, label] = (orch.startTaskForProject as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    expect(ticket).toMatchObject({
+      id: "7",
+      subject: "Bug",
+      description: "Broken",
+      webUrl: "https://github.com/octocat/hello-world/issues/7",
+    });
+    expect(proj).toBe(project);
+    expect(label).toBe("github:gh-1");
+  });
+
+  it("issues with no matching project → ignored 202, no task", async () => {
+    const { ctx, orch } = makeCtx("issues", {
+      action: "opened",
+      repository: { name: "hello-world", full_name: "octocat/hello-world" },
+      issue: { number: 8, title: "X" },
+    });
+    const r = await githubPullRequestWebhookHandler(ctx);
+    expect(r.status).toBe(202);
+    expect(orch.startTaskForProject).not.toHaveBeenCalled();
+  });
+
+  it("issues action=labeled is ingested", async () => {
+    const { ctx, orch } = makeCtx("issues", {
+      action: "labeled",
+      repository: { name: "hello-world", full_name: "octocat/hello-world" },
+      issue: { number: 9, title: "Y" },
+    });
+    (ctx.projectStore.findProjectByTicketSource as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
+      { id: "proj-2" } as unknown as ProjectRecord
+    );
+    const r = await githubPullRequestWebhookHandler(ctx);
+    expect(r.status).toBe(202);
+    expect(orch.startTaskForProject).toHaveBeenCalledTimes(1);
+  });
+
+  it("issues action=deleted (non-ingest) → ignored, no task", async () => {
+    const { ctx, orch } = makeCtx("issues", {
+      action: "deleted",
+      repository: { name: "hello-world", full_name: "octocat/hello-world" },
+      issue: { number: 10 },
+    });
+    const r = await githubPullRequestWebhookHandler(ctx);
+    expect(r.status).toBe(202);
+    expect(orch.startTaskForProject).not.toHaveBeenCalled();
+  });
+
+  it("issues payload referencing a pull_request is ignored", async () => {
+    const { ctx, orch } = makeCtx("issues", {
+      action: "opened",
+      repository: { name: "hello-world", full_name: "octocat/hello-world" },
+      issue: { number: 11, pull_request: { url: "..." } },
+    });
+    const r = await githubPullRequestWebhookHandler(ctx);
+    expect(r.status).toBe(202);
+    expect(orch.startTaskForProject).not.toHaveBeenCalled();
   });
 });
