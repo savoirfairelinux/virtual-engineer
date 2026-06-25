@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Modal, Field, FieldInput, FieldSelect, FormError, FormRow, FormActions, FieldTextarea } from "../../components/Modal.tsx";
 import { Icon } from "../../components/Icon.tsx";
 import { api } from "../../api.ts";
@@ -179,9 +179,11 @@ interface SelectOption {
 }
 
 /**
- * Single-select picker with a search box and a filterable, clickable list —
- * mirrors the multi-select repository field. When no options are available it
- * falls back to a free-text input so manual entry still works.
+ * Single-select dropdown menu with a search box. Collapsed by default (shows
+ * the current selection like a native <select>); clicking it drops down a
+ * panel containing a search field and a filterable, clickable list. When no
+ * options are available it falls back to a free-text input so manual entry
+ * still works.
  */
 function SearchableSelect({
   options,
@@ -193,6 +195,7 @@ function SearchableSelect({
   searchPlaceholder = "Search…",
   emptyMessage = "No matches.",
   freeTextPlaceholder,
+  placeholderLabel = "— select —",
 }: {
   options: SelectOption[];
   value: string;
@@ -203,15 +206,27 @@ function SearchableSelect({
   searchPlaceholder?: string;
   emptyMessage?: string;
   freeTextPlaceholder?: string;
+  placeholderLabel?: string;
 }) {
+  const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
-  const normalized = search.trim().toLowerCase();
-  const filtered = normalized.length > 0
-    ? options.filter((o) =>
-      o.value.toLowerCase().includes(normalized)
-      || o.label.toLowerCase().includes(normalized)
-      || (o.meta ? o.meta.toLowerCase().includes(normalized) : false))
-    : options;
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDocMouseDown = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") { e.stopPropagation(); setOpen(false); } };
+    document.addEventListener("mousedown", onDocMouseDown);
+    document.addEventListener("keydown", onKey, true);
+    return () => {
+      document.removeEventListener("mousedown", onDocMouseDown);
+      document.removeEventListener("keydown", onKey, true);
+    };
+  }, [open]);
 
   if (options.length === 0) {
     return (
@@ -224,34 +239,77 @@ function SearchableSelect({
     );
   }
 
+  const normalized = search.trim().toLowerCase();
+  const filtered = normalized.length > 0
+    ? options.filter((o) =>
+      o.value.toLowerCase().includes(normalized)
+      || o.label.toLowerCase().includes(normalized)
+      || (o.meta ? o.meta.toLowerCase().includes(normalized) : false))
+    : options;
+
+  const selectedOption = options.find((o) => o.value === value) ?? null;
+  const triggerText = loading
+    ? "Loading…"
+    : selectedOption
+    ? selectedOption.label
+    : (value || placeholderLabel);
+  const isPlaceholder = !loading && !selectedOption && !value;
+
+  const select = (next: string) => {
+    onChange(next);
+    setOpen(false);
+    setSearch("");
+  };
+
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-      <FieldInput
-        value={search}
-        placeholder={searchPlaceholder}
+    <div ref={containerRef} style={{ position: "relative" }}>
+      <button
+        type="button"
         disabled={loading || disabled}
-        onChange={(e) => setSearch(e.target.value)}
-      />
-      <div style={{ display: "flex", flexDirection: "column", gap: 1, maxHeight: 200, overflowY: "auto", padding: "6px 8px", background: "var(--panel-2)", borderRadius: "var(--radius-sm)", border: "1px solid var(--border-soft)" }}>
-        {filtered.map((o) => {
-          const sel = o.value === value;
-          return (
-            <button
-              type="button"
-              key={o.value}
-              disabled={loading || disabled}
-              onClick={() => onChange(o.value)}
-              style={{ display: "flex", alignItems: "center", gap: 8, textAlign: "left", cursor: (loading || disabled) ? "default" : "pointer", fontSize: "13px", padding: "5px 6px", borderRadius: "var(--radius-sm)", background: sel ? "var(--accent-soft)" : "transparent", border: "none", color: "inherit", width: "100%" }}
-            >
-              <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{o.label}</span>
-              {o.meta && <span className="mono" style={{ fontSize: "10px", color: "var(--text-faint)", flexShrink: 0 }}>{o.meta}</span>}
-            </button>
-          );
-        })}
-        {filtered.length === 0 && (
-          <div style={{ padding: "8px 6px", color: "var(--text-faint)", fontSize: "12px" }}>{emptyMessage}</div>
-        )}
-      </div>
+        onClick={() => setOpen((o) => !o)}
+        style={{
+          display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
+          padding: "8px 11px", fontSize: "13.5px", fontFamily: "var(--font-sans)",
+          border: `1px solid ${open ? "var(--accent)" : "var(--border)"}`,
+          borderRadius: "var(--radius-sm)", background: "var(--panel-2)",
+          color: isPlaceholder ? "var(--text-ghost)" : "var(--text)",
+          textAlign: "left", width: "100%", cursor: (loading || disabled) ? "default" : "pointer",
+        }}
+      >
+        <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{triggerText}</span>
+        <Icon name="chevdown" size={14} style={{ flexShrink: 0, opacity: 0.7, transform: open ? "rotate(180deg)" : "none", transition: "transform .15s var(--ease)" }} />
+      </button>
+
+      {open && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 6, padding: "8px", background: "var(--panel-2)", border: "1px solid var(--border-soft)", borderRadius: "var(--radius-sm)" }}>
+          <FieldInput
+            autoFocus
+            value={search}
+            placeholder={searchPlaceholder}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+          <div style={{ display: "flex", flexDirection: "column", gap: 1, maxHeight: 220, overflowY: "auto" }}>
+            {filtered.map((o) => {
+              const sel = o.value === value;
+              return (
+                <button
+                  type="button"
+                  key={o.value}
+                  onClick={() => select(o.value)}
+                  style={{ display: "flex", alignItems: "center", gap: 8, textAlign: "left", cursor: "pointer", fontSize: "13px", padding: "6px 7px", borderRadius: "var(--radius-sm)", background: sel ? "var(--accent-soft)" : "transparent", border: "none", color: "inherit", width: "100%" }}
+                >
+                  <Icon name="check" size={13} style={{ flexShrink: 0, opacity: sel ? 1 : 0, color: "var(--accent)" }} />
+                  <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{o.label}</span>
+                  {o.meta && <span className="mono" style={{ fontSize: "10px", color: "var(--text-faint)", flexShrink: 0 }}>{o.meta}</span>}
+                </button>
+              );
+            })}
+            {filtered.length === 0 && (
+              <div style={{ padding: "8px 6px", color: "var(--text-faint)", fontSize: "12px" }}>{emptyMessage}</div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -443,6 +501,22 @@ function RepositoryKeysField({
 }) {
   const { repositories, loading } = useRepositoryOptions(integrationId, integrations);
   const [search, setSearch] = useState("");
+  const [open, setOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDocMouseDown = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") { e.stopPropagation(); setOpen(false); } };
+    document.addEventListener("mousedown", onDocMouseDown);
+    document.addEventListener("keydown", onKey, true);
+    return () => {
+      document.removeEventListener("mousedown", onDocMouseDown);
+      document.removeEventListener("keydown", onKey, true);
+    };
+  }, [open]);
 
   useEffect(() => {
     if (repositories.length > 0) {
@@ -476,9 +550,31 @@ function RepositoryKeysField({
   return (
     <Field label={label} required={required} hint={hint ?? (repositories.length > 0 ? `${value.length} of ${repositories.length} selected` : "Enter repository keys manually if discovery is unavailable")}>
       {repositories.length > 0 ? (
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        <div ref={containerRef} style={{ position: "relative" }}>
+          <button
+            type="button"
+            disabled={loading}
+            onClick={() => setOpen((o) => !o)}
+            style={{
+              display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
+              padding: "8px 11px", fontSize: "13.5px", fontFamily: "var(--font-sans)",
+              border: `1px solid ${open ? "var(--accent)" : "var(--border)"}`,
+              borderRadius: "var(--radius-sm)", background: "var(--panel-2)",
+              color: value.length > 0 ? "var(--text)" : "var(--text-ghost)",
+              textAlign: "left", width: "100%", cursor: loading ? "default" : "pointer",
+            }}
+          >
+            <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {loading ? "Loading…" : value.length > 0 ? `${value.length} repositor${value.length === 1 ? "y" : "ies"} selected` : "— select repositories —"}
+            </span>
+            <Icon name="chevdown" size={14} style={{ flexShrink: 0, opacity: 0.7, transform: open ? "rotate(180deg)" : "none", transition: "transform .15s var(--ease)" }} />
+          </button>
+
+          {open && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 6, padding: "8px", background: "var(--panel-2)", border: "1px solid var(--border-soft)", borderRadius: "var(--radius-sm)" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <FieldInput
+              autoFocus
               value={search}
               placeholder="Search repositories by name or key"
               onChange={(e) => setSearch(e.target.value)}
@@ -508,7 +604,7 @@ function RepositoryKeysField({
             {filteredRepositories.length} visible · {selectedFilteredCount} selected
           </div>
 
-          <div style={{ display: "flex", flexDirection: "column", gap: 1, maxHeight: 240, overflowY: "auto", padding: "6px 8px", background: "var(--panel-2)", borderRadius: "var(--radius-sm)", border: "1px solid var(--border-soft)" }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 1, maxHeight: 240, overflowY: "auto", padding: "6px 8px", background: "var(--panel)", borderRadius: "var(--radius-sm)", border: "1px solid var(--border-soft)" }}>
             {filteredRepositories.map((repo) => {
             const checked = value.includes(repo.key);
             return (
@@ -536,6 +632,8 @@ function RepositoryKeysField({
               </div>
             )}
           </div>
+          </div>
+          )}
         </div>
       ) : (
         <FieldInput
