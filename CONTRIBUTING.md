@@ -103,7 +103,7 @@ This project uses **Conventional Commits** (Gerrit-friendly format):
 4. Update `.github/context/modules/connectors.md` and `plugins.md`  
 5. Add unit tests covering the connector and descriptor  
 
-See existing descriptors (e.g. `src/plugins/descriptors/gitlab-issue.ts`) for the expected shape.
+See existing descriptors (e.g. `src/plugins/descriptors/gitlab.ts`) for the expected shape.
 
 ---
 
