@@ -3,7 +3,7 @@ import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { readFileSync, existsSync } from "node:fs";
 import { join, extname, resolve } from "node:path";
 import { getLogger } from "../logger.js";
-import type { OAuthAppStore, IntegrationStore, PromptStore, StateStore, Integration } from "../interfaces.js";
+import type { OAuthAppStore, IntegrationStore, PromptStore, StateStore, Integration, DomainCapability } from "../interfaces.js";
 import { renderAdminDashboardHtml } from "./dashboard.js";
 import { registerOverviewRoutes } from "./adminOverviewRoutes.js";
 import type { PluginManager } from "../plugins/pluginManager.js";
@@ -73,6 +73,13 @@ export interface AdminProviderSummary {
   id: string;
   name: string;
   category: "ticketing" | "review" | "agent" | "runtime";
+  /** Domain capabilities this provider fulfils (empty for runtime entries). */
+  domainCapabilities: DomainCapability[];
+  /**
+   * Event-intake mechanisms per domain capability, e.g.
+   * `{ issue_tracking: ["polling", "webhook"], code_review: ["stream"] }`.
+   */
+  intake: Partial<Record<DomainCapability, Array<"polling" | "webhook" | "stream">>>;
   enabled: boolean;
   configured: boolean;
   status: "ready" | "disabled" | "incomplete";

@@ -27,13 +27,13 @@ import { ReviewOrchestrator } from "./review/reviewOrchestrator.js";
 import { mkdir } from "fs/promises";
 import type { Server } from "node:http";
 import type { AdminProviderSummary } from "./admin/adminServer.js";
-import type { AgentAdapter, ConfigurableAdapter, Integration, ProviderId, ProjectId, ProjectPushTargetRecord, ProjectRecord, ProjectReviewConfig, ProjectTicketSourceRecord, ReviewProvider, Task } from "./interfaces.js";
+import type { AgentAdapter, ConfigurableAdapter, DomainCapability, Integration, ProviderId, ProjectId, ProjectPushTargetRecord, ProjectRecord, ProjectReviewConfig, ProjectTicketSourceRecord, ReviewProvider, Task } from "./interfaces.js";
 import { makeTaskId, makeExternalChangeId } from "./interfaces.js";
 import { registerBuiltinPlugins } from "./plugins/init.js";
 import { PluginManager } from "./plugins/pluginManager.js";
 import type { AppConfig } from "./config.js";
 import { DEFAULT_COPILOT_MODEL } from "./copilotModel.js";
-import { getProviderDescriptor, getProviderDomainCapabilities } from "./plugins/registry.js";
+import { getProviderDescriptor, getProviderDomainCapabilities, getCapabilityIntake } from "./plugins/registry.js";
 import { buildTicketSourceLabel, parseIntegrationIdFromSourceLabel } from "./utils/ticketSourceLabel.js";
 
 const log = getLogger("main");
@@ -692,6 +692,8 @@ function buildAdminProviderSummaries(config: ReturnType<typeof getConfig>, plugi
       id: "admin-api",
       name: "Admin API",
       category: "runtime",
+      domainCapabilities: [],
+      intake: {},
       enabled: config.adminApiEnabled,
       configured: true,
       status: config.adminApiEnabled ? "ready" : "disabled",
@@ -728,6 +730,13 @@ function buildAdminProviderSummaryForIntegration(
     throw new Error(`No descriptor registered for active integration provider '${integration.provider}' (id: ${integration.id})`);
   }
   const domainCapabilities = getProviderDomainCapabilities(descriptor);
+  const intake: Partial<Record<DomainCapability, Array<"polling" | "webhook" | "stream">>> = {};
+  for (const capability of domainCapabilities) {
+    const mechanisms = getCapabilityIntake(descriptor, capability);
+    if (mechanisms.length > 0) {
+      intake[capability] = mechanisms;
+    }
+  }
   const summaryCategory: AdminProviderSummary["category"] = domainCapabilities.includes("issue_tracking")
     ? "ticketing"
     : domainCapabilities.includes("code_review")
@@ -737,6 +746,8 @@ function buildAdminProviderSummaryForIntegration(
     id: integration.id,
     name: integration.name,
     category: summaryCategory,
+    domainCapabilities,
+    intake,
     enabled: integration.enabled,
     configured: true,
     status: "ready",
