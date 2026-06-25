@@ -130,10 +130,9 @@ function getProviderUrls(pluginManager: PluginManager | undefined): {
   gerritBaseUrl: string | undefined;
   gitlabBaseUrl: string | undefined;
   gitlabToken: string | undefined;
-  gitlabProjectId: string | undefined;
   ticketLinkTemplates: Record<string, string> | undefined;
 } {
-  if (!pluginManager) return { gerritBaseUrl: undefined, gitlabBaseUrl: undefined, gitlabToken: undefined, gitlabProjectId: undefined, ticketLinkTemplates: undefined };
+  if (!pluginManager) return { gerritBaseUrl: undefined, gitlabBaseUrl: undefined, gitlabToken: undefined, ticketLinkTemplates: undefined };
   const parseConfig = (integration: Integration | undefined): Record<string, unknown> | null => {
     if (!integration) return null;
     try {
@@ -154,7 +153,6 @@ function getProviderUrls(pluginManager: PluginManager | undefined): {
   const gitlabConfig = parseConfig(gitlabIntegration);
   const gitlabBaseUrl = str(gitlabConfig?.["baseUrl"]);
   const gitlabToken = str(gitlabConfig?.["token"]);
-  const gitlabProjectId = str(gitlabConfig?.["projectId"]);
 
   const redmineCandidates = pluginManager.getActiveIntegrationsByProvider("redmine");
   const redmineConfig = parseConfig(redmineCandidates[0]);
@@ -163,7 +161,7 @@ function getProviderUrls(pluginManager: PluginManager | undefined): {
     ? { redmine: `${redmineBaseUrl}/issues/{id}` }
     : undefined;
 
-  return { gerritBaseUrl, gitlabBaseUrl, gitlabToken, gitlabProjectId, ticketLinkTemplates };
+  return { gerritBaseUrl, gitlabBaseUrl, gitlabToken, ticketLinkTemplates };
 }
 
 /** Create and return the admin HTTP server with all routes wired up. */
@@ -334,18 +332,14 @@ async function handleRequest(
     const queryToken = requestUrl.searchParams.get("t") ?? "";
     const proxyAuthorized = isAuthorizedToken(queryToken, dependencies.config);
     if (!proxyAuthorized) { writeJson(response, 401, { error: "Unauthorized" }); return; }
-    const { gitlabBaseUrl, gitlabToken: gitlabTokenVal, gitlabProjectId } = getProviderUrls(dependencies.pluginManager);
+    const { gitlabBaseUrl, gitlabToken: gitlabTokenVal } = getProviderUrls(dependencies.pluginManager);
     if (!gitlabBaseUrl || !targetUrl.startsWith(gitlabBaseUrl)) {
       writeJson(response, 400, { error: "Invalid proxy target" }); return;
     }
     try {
       const gitlabToken = gitlabTokenVal ?? "";
-      const uploadMatch = targetUrl.match(/\/uploads\/([a-f0-9]+)\/([^?#]+)$/);
-      const projectId = gitlabProjectId;
-      const fetchUrl = (uploadMatch && projectId && gitlabBaseUrl)
-        ? `${gitlabBaseUrl}/api/v4/projects/${encodeURIComponent(projectId)}/uploads/${uploadMatch[1]}/${uploadMatch[2]}`
-        : targetUrl;
-      log.debug({ fetchUrl, hasToken: Boolean(gitlabToken), rewritten: fetchUrl !== targetUrl }, "img-proxy fetch");
+      const fetchUrl = targetUrl;
+      log.debug({ fetchUrl, hasToken: Boolean(gitlabToken) }, "img-proxy fetch");
       const upstream = await fetch(fetchUrl, gitlabToken
         ? { headers: buildGitLabAuthHeaders(gitlabToken) }
         : undefined);

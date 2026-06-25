@@ -138,13 +138,12 @@ describe("createVcsConnectorForIntegration", () => {
       provider: "gitlab",
       configJson: JSON.stringify({
         baseUrl: "https://gitlab.local",
-        projectId: "team/repo",
         token: "glpat-test",
       }),
     });
 
     it("creates a GitLabVcsConnector for a gitlab-merge-request integration", () => {
-      const connector = createVcsConnectorForIntegration(gitlabIntegration);
+      const connector = createVcsConnectorForIntegration(gitlabIntegration, { repoKey: "team/repo" });
       expect(connector).toBeInstanceOf(GitLabVcsConnector);
     });
 
@@ -152,9 +151,9 @@ describe("createVcsConnectorForIntegration", () => {
       const integration = makeIntegration({
         id: "gitlab-no-url",
         provider: "gitlab",
-        configJson: JSON.stringify({ token: "glpat-test", projectId: "team/repo" }),
+        configJson: JSON.stringify({ token: "glpat-test" }),
       });
-      const connector = createVcsConnectorForIntegration(integration);
+      const connector = createVcsConnectorForIntegration(integration, { repoKey: "team/repo" });
       expect(connector).toBeInstanceOf(GitLabVcsConnector);
     });
 
@@ -162,9 +161,9 @@ describe("createVcsConnectorForIntegration", () => {
       const integration = makeIntegration({
         id: "gitlab-bad",
         provider: "gitlab",
-        configJson: JSON.stringify({ baseUrl: "https://gitlab.local", projectId: "team/repo" }),
+        configJson: JSON.stringify({ baseUrl: "https://gitlab.local" }),
       });
-      expect(() => createVcsConnectorForIntegration(integration)).toThrow(
+      expect(() => createVcsConnectorForIntegration(integration, { repoKey: "team/repo" })).toThrow(
         /GitLab access token is required/
       );
     });
@@ -191,7 +190,7 @@ describe("createVcsConnectorForIntegration", () => {
     });
 
     it("uses default gitAuthorName and gitAuthorEmail when not provided", () => {
-      const connector = createVcsConnectorForIntegration(gitlabIntegration);
+      const connector = createVcsConnectorForIntegration(gitlabIntegration, { repoKey: "team/repo" });
       expect(connector).toBeInstanceOf(GitLabVcsConnector);
     });
 
@@ -201,13 +200,12 @@ describe("createVcsConnectorForIntegration", () => {
         provider: "gitlab",
         configJson: JSON.stringify({
           baseUrl: "https://gitlab.local",
-          projectId: "team/repo",
           token: "glpat-test",
           gitAuthorName: "CI Bot",
           gitAuthorEmail: "ci@company.com",
         }),
       });
-      const connector = createVcsConnectorForIntegration(integration);
+      const connector = createVcsConnectorForIntegration(integration, { repoKey: "team/repo" });
       expect(connector).toBeInstanceOf(GitLabVcsConnector);
     });
 
@@ -217,12 +215,11 @@ describe("createVcsConnectorForIntegration", () => {
         provider: "gitlab",
         configJson: JSON.stringify({
           baseUrl: "https://gitlab.local",
-          projectId: "team/repo",
           token: "glpat-test",
           targetBranch: "develop",
         }),
       });
-      const connector = createVcsConnectorForIntegration(integration);
+      const connector = createVcsConnectorForIntegration(integration, { repoKey: "team/repo" });
       expect(connector).toBeInstanceOf(GitLabVcsConnector);
     });
   });

@@ -35,7 +35,6 @@ const log = getLogger("gitlab-descriptor");
 export const gitlabConfigSchema = z.object({
   baseUrl: z.string().url().optional(),
   gitlabMode: gitlabModeSchema,
-  projectId: z.union([z.string().min(1), z.coerce.number().int().positive()]).transform(String).optional(),
   authMode: gitlabAuthModeSchema,
   oauthClientId: gitlabOAuthClientIdSchema,
   token: gitlabTokenSchema,
@@ -54,11 +53,9 @@ export type GitLabPluginConfig = z.infer<typeof gitlabConfigSchema>;
 
 function resolveGitLabProjectId(
   bound: string | undefined,
-  legacy: string | undefined,
   options?: { allowUnboundFallback?: boolean }
 ): string {
   if (bound && bound.length > 0) return bound;
-  if (legacy !== undefined) return legacy;
   if (options?.allowUnboundFallback === true) return UNBOUND_GITLAB_PROJECT_ID;
   throw new Error("GitLab project binding is required for this capability");
 }
@@ -87,7 +84,7 @@ export const gitlabDescriptor: ProviderDescriptor = {
     const token = getGitLabAccessToken(parsed);
     const issueConnector = new GitLabIssueConnector({
       baseUrl,
-      projectId: parsed.projectId ?? UNBOUND_GITLAB_PROJECT_ID,
+      projectId: UNBOUND_GITLAB_PROJECT_ID,
       token,
       ...(parsed.closedStatusId !== undefined ? { closedStatusId: parsed.closedStatusId } : {}),
       ...(parsed.inProgressStatusId !== undefined ? { inProgressStatusId: parsed.inProgressStatusId } : {}),
@@ -97,7 +94,7 @@ export const gitlabDescriptor: ProviderDescriptor = {
     });
     const mrConnector = new GitLabMergeRequestConnector({
       baseUrl,
-      projectId: parsed.projectId ?? UNBOUND_GITLAB_PROJECT_ID,
+      projectId: UNBOUND_GITLAB_PROJECT_ID,
       token,
     });
     const ticketProjects = await issueConnector.listProjects();
@@ -120,9 +117,7 @@ export const gitlabDescriptor: ProviderDescriptor = {
     const baseUrl = typeof config["baseUrl"] === "string" && config["baseUrl"].length > 0
       ? config["baseUrl"]
       : "GitLab URL missing";
-    const id = config["projectId"];
-    const projectId = typeof id === "string" ? id : typeof id === "number" ? String(id) : "unset";
-    return [baseUrl, `Project ${projectId}`];
+    return [baseUrl, "project-bound"];
   },
   normalizeConfigForRead(masked) {
     // Default legacy configs (saved before authMode existed) to PAT auth so the
@@ -138,7 +133,7 @@ export const gitlabDescriptor: ProviderDescriptor = {
         const parsed = gitlabConfigSchema.parse(config);
         return new GitLabIssueConnector({
           baseUrl: parsed.baseUrl ?? GITLAB_COM_BASE_URL,
-          projectId: context?.ticketProjectKey ?? parsed.projectId ?? UNBOUND_GITLAB_PROJECT_ID,
+          projectId: context?.ticketProjectKey ?? UNBOUND_GITLAB_PROJECT_ID,
           token: getGitLabAccessToken(parsed),
           ...(parsed.closedStatusId !== undefined ? { closedStatusId: parsed.closedStatusId } : {}),
           ...(parsed.inProgressStatusId !== undefined ? { inProgressStatusId: parsed.inProgressStatusId } : {}),
@@ -153,7 +148,7 @@ export const gitlabDescriptor: ProviderDescriptor = {
         const parsed = gitlabConfigSchema.parse(config);
         return new GitLabMergeRequestConnector({
           baseUrl: parsed.baseUrl ?? GITLAB_COM_BASE_URL,
-          projectId: resolveGitLabProjectId(context?.repoKey, parsed.projectId, { allowUnboundFallback: true }),
+          projectId: resolveGitLabProjectId(context?.repoKey, { allowUnboundFallback: true }),
           token: getGitLabAccessToken(parsed),
         });
       },
@@ -164,7 +159,7 @@ export const gitlabDescriptor: ProviderDescriptor = {
         const targetBranch = context?.targetBranch ?? parsed.targetBranch;
         return new GitLabVcsConnector({
           baseUrl: parsed.baseUrl ?? GITLAB_COM_BASE_URL,
-          projectId: resolveGitLabProjectId(context?.repoKey, parsed.projectId),
+          projectId: resolveGitLabProjectId(context?.repoKey),
           token: getGitLabAccessToken(parsed),
           gitAuthorName: parsed.gitAuthorName,
           gitAuthorEmail: parsed.gitAuthorEmail,

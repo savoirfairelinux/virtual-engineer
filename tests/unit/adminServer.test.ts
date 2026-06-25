@@ -1095,7 +1095,6 @@ describe("createAdminServer", () => {
             config: {
               authMode: "pat",
               baseUrl: "http://localhost:8929",
-              projectId: "root/demo-gitlab",
               token: "********",
             },
             createdAt: new Date(1776275823 * 1000).toISOString(),
@@ -1288,7 +1287,6 @@ describe("createAdminServer", () => {
             name: "GitLab MR",
             configJson: JSON.stringify({
               baseUrl: "https://gitlab.example.com",
-              projectId: "group/repo",
               token: "oauth-token",
             }),
             enabled: true,
@@ -1325,7 +1323,7 @@ describe("createAdminServer", () => {
 
       expect(response.status).toBe(200);
       expect(fetchMock).toHaveBeenCalledWith(
-        "https://gitlab.example.com/api/v4/projects/group%2Frepo/uploads/abcdef1234567890/image.png",
+        "https://gitlab.example.com/uploads/abcdef1234567890/image.png",
         expect.objectContaining({
           headers: expect.objectContaining({
             Authorization: "Bearer oauth-token",

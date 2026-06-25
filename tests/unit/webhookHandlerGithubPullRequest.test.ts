@@ -13,7 +13,6 @@ const integration: Integration = {
     mode: "github.com",
     authMode: "pat",
     token: "ghp_x",
-    repositorySlug: "octocat/hello-world",
     webhookSecret: "s",
   }),
   enabled: true,

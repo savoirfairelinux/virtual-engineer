@@ -17,14 +17,14 @@ const baseIntegration: Integration = {
 
 describe("github descriptors — schema migration + runtime resolution", () => {
   describe("github pull request — schema migration + runtime resolution", () => {
-    it("accepts a config with legacy repositorySlug (owner field removed)", () => {
+    it("drops the legacy repositorySlug field (project binding is the source)", () => {
       const parsed = githubConfigSchema.parse({
         mode: "github.com",
         authMode: "pat",
         token: "ghp_x",
         repositorySlug: "octocat/hello-world",
       });
-      expect(parsed.repositorySlug).toBe("octocat/hello-world");
+      expect("repositorySlug" in parsed).toBe(false);
       expect("owner" in parsed).toBe(false);
     });
 
@@ -39,14 +39,14 @@ describe("github descriptors — schema migration + runtime resolution", () => {
   });
 
   describe("github issue — schema migration + runtime resolution", () => {
-    it("accepts a config with legacy repositorySlug (owner field removed)", () => {
+    it("drops the legacy repositorySlug field (project binding is the source)", () => {
       const parsed = githubConfigSchema.parse({
         mode: "github.com",
         authMode: "pat",
         token: "ghp_x",
         repositorySlug: "octocat/hello-world",
       });
-      expect(parsed.repositorySlug).toBe("octocat/hello-world");
+      expect("repositorySlug" in parsed).toBe(false);
       expect("owner" in parsed).toBe(false);
     });
 
@@ -115,20 +115,7 @@ describe("github descriptors — schema migration + runtime resolution", () => {
       ).toThrow(/expected 'owner\/repo'/i);
     });
 
-    it("falls back to legacy repositorySlug when no context is provided", () => {
-      const cfgWithLegacy = githubConfigSchema.parse({
-        ...cfg,
-        repositorySlug: "acme/legacy-repo",
-      }) as unknown as Record<string, unknown>;
-      const conn = githubDescriptor.capabilities.source_control!.createVcsConnector(
-        cfgWithLegacy,
-        baseIntegration,
-        undefined,
-      );
-      expect(conn).toBeDefined();
-    });
-
-    it("throws when no context.repoKey and no legacy repositorySlug", () => {
+    it("throws when no context.repoKey is provided", () => {
       const parsed = githubConfigSchema.parse(cfg) as unknown as Record<string, unknown>;
       expect(() =>
         githubDescriptor.capabilities.source_control!.createVcsConnector(parsed, baseIntegration, undefined),
@@ -170,19 +157,6 @@ describe("github descriptors — schema migration + runtime resolution", () => {
       const parsed = githubConfigSchema.parse(cfg) as unknown as Record<string, unknown>;
       const conn = githubDescriptor.capabilities.issue_tracking!.createConnector(
         parsed,
-        { ...baseIntegration, provider: "github" },
-        undefined,
-      );
-      expect(conn).toBeDefined();
-    });
-
-    it("falls back to legacy repositorySlug when no context", () => {
-      const cfgWithLegacy = githubConfigSchema.parse({
-        ...cfg,
-        repositorySlug: "acme/legacy",
-      }) as unknown as Record<string, unknown>;
-      const conn = githubDescriptor.capabilities.issue_tracking!.createConnector(
-        cfgWithLegacy,
         { ...baseIntegration, provider: "github" },
         undefined,
       );

@@ -32,7 +32,6 @@ export const githubConfigSchema = z.object({
   authMode: githubAuthModeSchema,
   oauthClientId: z.string().optional(),
   token: githubTokenSchema,
-  repositorySlug: z.string().optional(),
   targetBranch: z.string().min(1).optional(),
   gitAuthorName: z.string().min(1).default("Virtual Engineer"),
   gitAuthorEmail: z.string().min(1).default("ve@virtual-engineer.local"),
@@ -66,19 +65,14 @@ function splitSlug(key: string, label: string): { owner: string; repo: string } 
   throw new Error(`GitHub integration: invalid ${label} '${key}'. Expected 'owner/repo'.`);
 }
 
-/** Resolve the bound repository from an explicit key, falling back to the legacy slug. */
+/** Resolve the bound repository from the project binding key. */
 function resolveRepo(
   boundKey: string | undefined,
-  legacySlug: string | undefined,
   label: string,
   options?: { allowUnboundFallback?: boolean },
 ): { owner: string; repo: string } {
   const key = boundKey?.trim();
   if (key) return splitSlug(key, label);
-  if (legacySlug) {
-    const parts = legacySlug.split("/");
-    if (parts[0] && parts[1]) return { owner: parts[0], repo: parts[1] };
-  }
   if (options?.allowUnboundFallback === true) {
     return { owner: UNBOUND_GITHUB_OWNER, repo: UNBOUND_GITHUB_REPO };
   }
@@ -177,7 +171,7 @@ export const githubDescriptor: ProviderDescriptor = {
     issue_tracking: {
       createConnector: (config: unknown, _integration: Integration, context?: IntegrationBindingContext) => {
         const parsed = githubConfigSchema.parse(config);
-        const { owner, repo } = resolveRepo(context?.ticketProjectKey, parsed.repositorySlug, "ticketProjectKey", {
+        const { owner, repo } = resolveRepo(context?.ticketProjectKey, "ticketProjectKey", {
           allowUnboundFallback: context === undefined,
         });
         const urls = resolveGitHubUrls(parsed.mode as GitHubMode, parsed.baseUrl);
@@ -197,7 +191,7 @@ export const githubDescriptor: ProviderDescriptor = {
       userPromptId: "user_github_review",
       createConnector: (config: unknown, _integration: Integration, context?: IntegrationBindingContext) => {
         const parsed = githubConfigSchema.parse(config);
-        const { owner, repo } = resolveRepo(context?.repoKey, parsed.repositorySlug, "repoKey", {
+        const { owner, repo } = resolveRepo(context?.repoKey, "repoKey", {
           allowUnboundFallback: context === undefined,
         });
         const urls = resolveGitHubUrls(parsed.mode as GitHubMode, parsed.baseUrl);
@@ -217,17 +211,12 @@ export const githubDescriptor: ProviderDescriptor = {
         const token = getGitHubAccessToken(parsed as Record<string, unknown>);
         const host = deriveHost(parsed.mode as GitHubMode, parsed.baseUrl);
 
-        const legacyRepo = parsed.repositorySlug
-          ? parsed.repositorySlug.slice(parsed.repositorySlug.indexOf("/") + 1)
-          : undefined;
-
         return {
           systemPromptId: "system_github_review",
           userPromptId: "user_github_review",
           provider: new GitHubReviewProvider({
             apiBaseUrl: urls.apiBaseUrl,
             token,
-            ...(legacyRepo !== undefined ? { repo: legacyRepo } : {}),
           }),
           buildCloneTarget: (details): { cloneUrl: string; sshKeyPath: null; sshKnownHostsPath: null } => {
             const slash = details.project.indexOf("/");
@@ -251,7 +240,7 @@ export const githubDescriptor: ProviderDescriptor = {
     source_control: {
       createVcsConnector: (cfg: Record<string, unknown>, _integration: Integration, context?: IntegrationBindingContext) => {
         const parsed = githubConfigSchema.parse(cfg);
-        const { owner, repo } = resolveRepo(context?.repoKey, parsed.repositorySlug, "repoKey");
+        const { owner, repo } = resolveRepo(context?.repoKey, "repoKey");
         const urls = resolveGitHubUrls(parsed.mode as GitHubMode, parsed.baseUrl);
         const host = deriveHost(parsed.mode as GitHubMode, parsed.baseUrl);
         const targetBranch = context?.targetBranch ?? parsed.targetBranch;

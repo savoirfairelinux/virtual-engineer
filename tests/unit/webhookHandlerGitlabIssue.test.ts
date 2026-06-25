@@ -8,7 +8,7 @@ const integration: Integration = {
   id: "gl-1",
   provider: "gitlab",
   name: "G",
-  configJson: JSON.stringify({ webhookSecret: "x", baseUrl: "https://gitlab/", projectId: "1", token: "t" }),
+  configJson: JSON.stringify({ webhookSecret: "x", baseUrl: "https://gitlab/", token: "t" }),
   enabled: true,
   createdAt: new Date(),
   updatedAt: new Date(),
