@@ -81,8 +81,8 @@ describe("PollingLoop — Phase 6 concurrency", () => {
     };
     const connector = makeRedmine();
     const pluginManager = {
-      getConnectorForIntegration: vi.fn(() => connector),
-    } as unknown as { getConnectorForIntegration<T>(id: string): T | null };
+      getConnectorForCapability: vi.fn(() => connector),
+    } as unknown as { getConnectorForCapability<T>(id: string): T | null };
     const orchestrator = makeOrchestrator();
 
     const loop = new PollingLoop(
@@ -112,8 +112,8 @@ describe("PollingLoop — Phase 6 concurrency", () => {
     };
     const connector = makeRedmine();
     const pluginManager = {
-      getConnectorForIntegration: vi.fn(() => connector),
-    } as unknown as { getConnectorForIntegration<T>(id: string): T | null };
+      getConnectorForCapability: vi.fn(() => connector),
+    } as unknown as { getConnectorForCapability<T>(id: string): T | null };
     const orchestrator = makeOrchestrator();
     orchestrator.startTaskForProject
       .mockRejectedValueOnce(new Error("transient"))

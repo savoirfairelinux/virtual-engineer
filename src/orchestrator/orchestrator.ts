@@ -38,7 +38,7 @@ import { resolveAgentConfig } from "../state/stateStore.js";
 const log = getLogger("orchestrator");
 
 /** Integration types that clone via HTTPS and need a token injected into the clone URL. */
-const HTTPS_VCS_TYPES = new Set(["github-pull-request", "gitlab-merge-request"]);
+const HTTPS_VCS_TYPES = new Set(["github", "gitlab"]);
 
 /**
  * Build an authenticated HTTPS clone URL for GitHub/GitLab push targets so the
@@ -57,10 +57,13 @@ function buildAuthenticatedCloneUrl(
   try {
     token = decryptToken(encryptedToken, adminAuthSecret);
   } catch (err) {
-    log.warn({ integrationType, cloneUrl: rawCloneUrl, err }, "failed to decrypt token for authenticated clone URL");
-    return undefined;
+    // Backward-compatibility: older rows may still contain raw PAT strings.
+    // Use the raw value as a last resort so private HTTPS clones keep working.
+    token = encryptedToken;
+    log.warn({ integrationType, cloneUrl: rawCloneUrl, err }, "failed to decrypt token for authenticated clone URL; falling back to raw token value");
   }
-  const usernamePrefix = integrationType === "github-pull-request" ? "x-access-token" : "oauth2";
+  if (/^\*{4,}$/.test(token)) return undefined;
+  const usernamePrefix = integrationType === "github" ? "x-access-token" : "oauth2";
   try {
     const normalised = rawCloneUrl.startsWith("git@")
       ? rawCloneUrl.replace(/^git@([^:]+):(.+?)(?:\.git)?$/, "https://$1/$2.git")
@@ -98,6 +101,7 @@ export interface ProjectModeDeps {
   };
   pluginManager: {
     getConnectorForIntegration<T>(integrationId: string): T | null;
+    createConnectorForCapability?<T>(integrationId: string, capability: import("../interfaces.js").DomainCapability, context?: IntegrationBindingContext): Promise<T | null>;
     createConnectorForIntegration?<T>(integrationId: string, context?: IntegrationBindingContext): Promise<T | null>;
     getActiveIntegrationById?(integrationId: string): import("../interfaces.js").Integration | null;
   };
@@ -427,12 +431,18 @@ export class Orchestrator {
     if (!ts) {
       throw new Error(`No ticket source configured for project ${task.projectId} (task ${task.taskId})`);
     }
-    const connector = this.projectMode.pluginManager.createConnectorForIntegration
-      ? await this.projectMode.pluginManager.createConnectorForIntegration<TicketConnector>(
+    const connector = this.projectMode.pluginManager.createConnectorForCapability
+      ? await this.projectMode.pluginManager.createConnectorForCapability<TicketConnector>(
         ts.integrationId,
+        "issue_tracking",
         { ticketProjectKey: ts.ticketProjectKey }
       )
-      : this.projectMode.pluginManager.getConnectorForIntegration<TicketConnector>(ts.integrationId);
+      : this.projectMode.pluginManager.createConnectorForIntegration
+        ? await this.projectMode.pluginManager.createConnectorForIntegration<TicketConnector>(
+          ts.integrationId,
+          { ticketProjectKey: ts.ticketProjectKey }
+        )
+        : this.projectMode.pluginManager.getConnectorForIntegration<TicketConnector>(ts.integrationId);
     if (!connector) {
       throw new Error(`Ticket source integration ${ts.integrationId} is not active (task ${task.taskId})`);
     }
@@ -519,10 +529,9 @@ export class Orchestrator {
     await this.runFromContextBuilding(task);
   }
 
-  /** Advance context-building to AGENT_RUNNING and kick off the first agent cycle. */
+  /** Advance context-building to the first agent cycle. */
   private async runFromContextBuilding(task: Task): Promise<void> {
-    const updatedTask = await this.stateStore.transition(task.taskId, "AGENT_RUNNING");
-    await this.runAgentCycle(updatedTask);
+    await this.runAgentCycle(task);
   }
 
   /** Execute one agent cycle: build context, invoke the agent, push changes, and advance state. */
@@ -537,6 +546,11 @@ export class Orchestrator {
       if (project) {
         const acquired = await this.projectMode.concurrencyTracker.acquire(project.id, project.agentId);
         if (!acquired) {
+          if (task.state === "AGENT_RUNNING") {
+            task = await this.stateStore.transition(task.taskId, "RETRY_CYCLE", {
+              reason: "waiting for available agent slot",
+            });
+          }
           log.info(
             { taskId: task.taskId, projectId: project.id, agentId: project.agentId },
             "ai adapter at capacity; retrying on next poll tick"
@@ -602,7 +616,7 @@ export class Orchestrator {
             const integration = await (this.integrationStore ?? (this.stateStore as unknown as IntegrationStore)).getIntegration(pt.integrationId);
             if (integration) {
               const cfg = JSON.parse(integration.configJson) as Record<string, unknown>;
-              const authUrl = buildAuthenticatedCloneUrl(pt.cloneUrl, integration.type, cfg["token"], this.config.adminAuthSecret);
+              const authUrl = buildAuthenticatedCloneUrl(pt.cloneUrl, integration.provider, cfg["token"], this.config.adminAuthSecret);
               if (authUrl !== undefined) return { ...pt, cloneUrl: authUrl };
             }
           } catch {

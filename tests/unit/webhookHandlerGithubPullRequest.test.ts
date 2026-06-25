@@ -7,7 +7,7 @@ import { getLogger } from "../../src/logger.js";
 
 const integration: Integration = {
   id: "gh-1",
-  type: "github-pull-request",
+  provider: "github",
   name: "GH",
   configJson: JSON.stringify({
     mode: "github.com",

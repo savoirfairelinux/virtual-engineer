@@ -6,7 +6,7 @@ import { getLogger } from "../../src/logger.js";
 
 const integration: Integration = {
   id: "redmine-1",
-  type: "redmine",
+  provider: "redmine",
   name: "R",
   configJson: JSON.stringify({ webhookSecret: "x", baseUrl: "http://r/", apiKey: "k", virtualEngineerUserLogin: "ve" }),
   enabled: true,

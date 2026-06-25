@@ -9,7 +9,7 @@
 
 import type { Integration, IntegrationBindingContext } from "../interfaces.js";
 import type { VcsConnector } from "./vcsConnector.js";
-import { getPluginDescriptor } from "../plugins/registry.js";
+import { getProviderDescriptor } from "../plugins/registry.js";
 import { decryptToken } from "../utils/encryption.js";
 
 /**
@@ -25,10 +25,10 @@ function parseConfig(integration: Integration, adminAuthSecret?: string): Record
     throw new Error(`Integration ${integration.id}: invalid configJson (not valid JSON)`);
   }
 
-  const descriptor = getPluginDescriptor(integration.type);
+  const descriptor = getProviderDescriptor(integration.provider);
   if (!descriptor) {
     throw new Error(
-      `Integration ${integration.id}: no descriptor registered for type "${integration.type}"`
+      `Integration ${integration.id}: no descriptor registered for provider "${integration.provider}"`
     );
   }
 
@@ -68,16 +68,17 @@ function parseConfig(integration: Integration, adminAuthSecret?: string): Record
  * @throws {Error} If configJson is not valid JSON or fails schema validation
  */
 export function createVcsConnectorForIntegration(integration: Integration, context?: IntegrationBindingContext, adminAuthSecret?: string): VcsConnector {
-  const descriptor = getPluginDescriptor(integration.type);
+  const descriptor = getProviderDescriptor(integration.provider);
+  const createVcsConnector = descriptor?.capabilities.source_control?.createVcsConnector;
 
-  if (!descriptor?.createVcsConnector) {
+  if (!createVcsConnector) {
     throw new Error(
-      `Integration ${integration.id} has type "${integration.type}" which is not a VCS push target.`
+      `Integration ${integration.id} has provider "${integration.provider}" which is not a VCS push target.`
     );
   }
 
   const cfg = parseConfig(integration, adminAuthSecret);
-  return descriptor.createVcsConnector(cfg, integration, context);
+  return createVcsConnector(cfg, integration, context);
 }
 
 /**

@@ -3,6 +3,7 @@ import type { TicketConnector } from "../interfaces.js";
 import type { StateStore } from "../interfaces.js";
 import type {
   IntegrationBindingContext,
+  DomainCapability,
   ProjectRecord,
   ProjectTicketSourceRecord,
   ProjectReviewConfig,
@@ -42,8 +43,8 @@ export interface ReviewAssignmentTrigger {
  * Minimal plugin manager contract used by the polling loop.
  */
 export interface ProjectAwarePluginManager {
-  getConnectorForIntegration<T>(integrationId: string): T | null;
-  createConnectorForIntegration?<T>(integrationId: string, context?: IntegrationBindingContext): Promise<T | null>;
+  getConnectorForCapability<T>(integrationId: string, capability: DomainCapability): T | null;
+  createConnectorForCapability?<T>(integrationId: string, capability: DomainCapability, context?: IntegrationBindingContext): Promise<T | null>;
   /**
    * Returns true when the integration's descriptor declares a `streamEvents`
    * factory, meaning review discovery is driven by a live event stream rather
@@ -209,12 +210,13 @@ export class PollingLoop {
         log.debug({ projectId: project.id }, "skipping project: no ticket source configured");
         continue;
       }
-      const connector = this.pluginManager.createConnectorForIntegration
-        ? await this.pluginManager.createConnectorForIntegration<TicketConnector>(
+      const connector = this.pluginManager.createConnectorForCapability
+        ? await this.pluginManager.createConnectorForCapability<TicketConnector>(
           ticketSource.integrationId,
+          "issue_tracking",
           { ticketProjectKey: ticketSource.ticketProjectKey }
         )
-        : this.pluginManager.getConnectorForIntegration<TicketConnector>(ticketSource.integrationId);
+        : this.pluginManager.getConnectorForCapability<TicketConnector>(ticketSource.integrationId, "issue_tracking");
       if (!connector) {
         log.debug(
           { projectId: project.id, integrationId: ticketSource.integrationId },
@@ -300,8 +302,9 @@ export class PollingLoop {
         continue;
       }
 
-      const connector = this.pluginManager.getConnectorForIntegration<ReviewDiscoveryConnector>(
-        reviewConfig.integrationId
+      const connector = this.pluginManager.getConnectorForCapability<ReviewDiscoveryConnector>(
+        reviewConfig.integrationId,
+        "code_review"
       );
       if (!connector || typeof (connector as ReviewDiscoveryConnector).getOpenReviewAssignments !== "function") {
         log.debug(

@@ -42,7 +42,7 @@ const VE_SSH_USER = "ve";
 function makeIntegration(id: string, overrides: Partial<Integration> = {}): Integration {
   return {
     id,
-    type: "gerrit",
+    provider: "gerrit",
     name: id,
     configJson: JSON.stringify({
       sshHost: "gerrit.example.com",

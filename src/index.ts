@@ -27,13 +27,13 @@ import { ReviewOrchestrator } from "./review/reviewOrchestrator.js";
 import { mkdir } from "fs/promises";
 import type { Server } from "node:http";
 import type { AdminProviderSummary } from "./admin/adminServer.js";
-import type { AgentAdapter, ConfigurableAdapter, Integration, IntegrationType, ProjectId, ProjectPushTargetRecord, ProjectRecord, ProjectReviewConfig, ProjectTicketSourceRecord, ReviewProvider, Task } from "./interfaces.js";
+import type { AgentAdapter, ConfigurableAdapter, Integration, ProviderId, ProjectId, ProjectPushTargetRecord, ProjectRecord, ProjectReviewConfig, ProjectTicketSourceRecord, ReviewProvider, Task } from "./interfaces.js";
 import { makeTaskId, makeExternalChangeId } from "./interfaces.js";
 import { registerBuiltinPlugins } from "./plugins/init.js";
 import { PluginManager } from "./plugins/pluginManager.js";
 import type { AppConfig } from "./config.js";
 import { DEFAULT_COPILOT_MODEL } from "./copilotModel.js";
-import { getPluginDescriptor } from "./plugins/registry.js";
+import { getProviderDescriptor, getProviderDomainCapabilities } from "./plugins/registry.js";
 
 const log = getLogger("main");
 const SHUTDOWN_TIMEOUT_MS = 5_000;
@@ -293,22 +293,22 @@ async function main(): Promise<void> {
   log.info("Virtual Engineer running — press Ctrl+C to stop");
 }
 
-/** Return all active integrations of `type`, sorted newest-first. */
-function getActiveIntegrationsByType(pluginManager: PluginManager, type: IntegrationType): Integration[] {
+/** Return all active integrations of `provider`, sorted newest-first. */
+function getActiveIntegrationsByType(pluginManager: PluginManager, provider: ProviderId): Integration[] {
   return pluginManager
-    .getActiveIntegrationsByType(type)
+    .getActiveIntegrationsByProvider(provider)
     .slice()
     .sort((left, right) => right.updatedAt.getTime() - left.updatedAt.getTime());
 }
 
-/** Return the most-recently-updated active integration of `type`, or null. */
-function getPrimaryActiveIntegration(pluginManager: PluginManager, type: IntegrationType): Integration | null {
-  return getActiveIntegrationsByType(pluginManager, type)[0] ?? null;
+/** Return the most-recently-updated active integration of `provider`, or null. */
+function getPrimaryActiveIntegration(pluginManager: PluginManager, provider: ProviderId): Integration | null {
+  return getActiveIntegrationsByType(pluginManager, provider)[0] ?? null;
 }
 
-/** Build the `<type>:<id>` source label persisted on tasks and review bundles. */
+/** Build the `<provider>:<id>` source label persisted on tasks and review bundles. */
 function buildIntegrationSourceLabel(integration: Integration): string {
-  return `${integration.type}:${integration.id}`;
+  return `${integration.provider}:${integration.id}`;
 }
 
 /** Parse the integration ID out of a `<type>:<integrationId>` source label string. */
@@ -343,14 +343,14 @@ function resolveReviewIntegration(
 
   if (explicitIntegrationId) {
     const explicitIntegration = pluginManager.getActiveIntegrationById(explicitIntegrationId);
-    if (explicitIntegration && getPluginDescriptor(explicitIntegration.type)?.createReviewer) {
+    if (explicitIntegration && getProviderDescriptor(explicitIntegration.provider)?.capabilities.code_review?.createReviewer) {
       candidates.push(explicitIntegration);
     }
   }
 
-  for (const integration of pluginManager.getActiveIntegrationsByCategory("review")) {
+  for (const integration of pluginManager.getActiveIntegrationsByCapability("code_review")) {
     if (!candidates.some((c) => c.id === integration.id)) {
-      if (getPluginDescriptor(integration.type)?.createReviewer) {
+      if (getProviderDescriptor(integration.provider)?.capabilities.code_review?.createReviewer) {
         candidates.push(integration);
       }
     }
@@ -420,11 +420,12 @@ async function buildReviewBundle(
     return { integration: null, provider: null, orchestrator: null };
   }
 
-  const descriptor = getPluginDescriptor(integration.type);
-  if (!descriptor?.createReviewer) {
+  const descriptor = getProviderDescriptor(integration.provider);
+  const createReviewer = descriptor?.capabilities.code_review?.createReviewer;
+  if (!createReviewer) {
     bundleLog.warn(
-      { integrationId: integration.id, type: integration.type },
-      "buildReviewBundle: plugin descriptor for integration type does not implement createReviewer"
+      { integrationId: integration.id, type: integration.provider },
+      "buildReviewBundle: plugin descriptor for provider does not implement createReviewer"
     );
     return { integration: null, provider: null, orchestrator: null };
   }
@@ -478,7 +479,7 @@ async function buildReviewBundle(
     }
   }
 
-  const reviewer = descriptor.createReviewer(rawConfig, integration, workspaceRunner);
+  const reviewer = createReviewer(rawConfig, integration, workspaceRunner);
 
   const orchestrator = new ReviewOrchestrator({
     stateStore: store,
@@ -598,11 +599,11 @@ function getAgentTokenForReview(pluginManager: PluginManager): string | null {
 
 /** Return the first active agent-adapter connector found in the plugin manager, or null. */
 function getDatabaseAgentAdapter(pluginManager: PluginManager): AgentAdapter | null {
-  // Resolve the first active integration in the "agent" category.
-  // Any integration whose descriptor declares category: "agent" qualifies —
+  // Resolve the first active integration with the agent_execution capability.
+  // Any provider that declares agent_execution qualifies —
   // copilot, mock, and future AI providers are all picked up automatically.
-  for (const integration of pluginManager.getActiveIntegrationsByCategory("agent")) {
-    const connector = pluginManager.getConnectorForIntegration<AgentAdapter>(integration.id);
+  for (const integration of pluginManager.getActiveIntegrationsByCapability("agent_execution")) {
+    const connector = pluginManager.getConnectorForCapability<AgentAdapter>(integration.id, "agent_execution");
     if (connector) {
       return connector;
     }
@@ -629,7 +630,7 @@ function buildOrchestratorConfig(
   // Resolve gitAuthorName/gitAuthorEmail through the descriptor Zod schemas so
   // that defaults declared in the schema apply even for DB rows that predate
   // this field (i.e. rows stored without the key).
-  const gitLabIntegration = getPrimaryActiveIntegration(pluginManager, "gitlab-merge-request");
+  const gitLabIntegration = getPrimaryActiveIntegration(pluginManager, "gitlab");
   const gerritIntegration = getPrimaryActiveIntegration(pluginManager, "gerrit");
 
   let gitAuthorName: string | undefined;
@@ -638,7 +639,7 @@ function buildOrchestratorConfig(
   for (const integration of [gitLabIntegration, gerritIntegration]) {
     if (!integration || (gitAuthorName && gitAuthorEmail)) break;
     const raw = parseIntegrationConfig(integration);
-    const descriptor = getPluginDescriptor(integration.type);
+    const descriptor = getProviderDescriptor(integration.provider);
     const result = descriptor?.configSchema.safeParse(raw ?? {});
     if (result?.success) {
       const data = result.data as Record<string, unknown>;
@@ -711,12 +712,13 @@ function buildAdminProviderSummaries(config: ReturnType<typeof getConfig>, plugi
   }
 
   const activeIntegrations = [
-    ...pluginManager.getActiveIntegrationsByCategory("ticketing"),
-    ...pluginManager.getActiveIntegrationsByCategory("review"),
-    ...pluginManager.getActiveIntegrationsByCategory("agent"),
+    ...pluginManager.getActiveIntegrationsByCapability("issue_tracking"),
+    ...pluginManager.getActiveIntegrationsByCapability("code_review"),
+    ...pluginManager.getActiveIntegrationsByCapability("agent_execution"),
   ];
 
   for (const integration of activeIntegrations) {
+    if (summaries.some((s) => s.id === integration.id)) continue;
     summaries.push(buildAdminProviderSummaryForIntegration(integration, config));
   }
 
@@ -729,20 +731,26 @@ function buildAdminProviderSummaryForIntegration(
   config: ReturnType<typeof getConfig>
 ): AdminProviderSummary {
   const parsed = parseIntegrationConfig(integration) ?? {};
-  const descriptor = getPluginDescriptor(integration.type);
+  const descriptor = getProviderDescriptor(integration.provider);
   if (!descriptor) {
-    throw new Error(`No descriptor registered for active integration type '${integration.type}' (id: ${integration.id})`);
+    throw new Error(`No descriptor registered for active integration provider '${integration.provider}' (id: ${integration.id})`);
   }
+  const domainCapabilities = getProviderDomainCapabilities(descriptor);
+  const summaryCategory: AdminProviderSummary["category"] = domainCapabilities.includes("issue_tracking")
+    ? "ticketing"
+    : domainCapabilities.includes("code_review")
+      ? "review"
+      : "agent";
   return {
     id: integration.id,
     name: integration.name,
-    category: descriptor.category,
+    category: summaryCategory,
     enabled: integration.enabled,
     configured: true,
     status: "ready",
     details: [
       ...descriptor.getSummaryDetails(parsed),
-      ...(descriptor.category === "ticketing" ? [`Polling every ${config.pollingIntervalMs} ms`] : []),
+      ...(domainCapabilities.includes("issue_tracking") ? [`Polling every ${config.pollingIntervalMs} ms`] : []),
     ],
   };
 }

@@ -6,7 +6,7 @@ import { getLogger } from "../../src/logger.js";
 
 const integration: Integration = {
   id: "gl-1",
-  type: "gitlab-issue",
+  provider: "gitlab",
   name: "G",
   configJson: JSON.stringify({ webhookSecret: "x", baseUrl: "https://gitlab/", projectId: "1", token: "t" }),
   enabled: true,
