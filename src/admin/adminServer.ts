@@ -16,7 +16,7 @@ import {
   type WebhookCapableOrchestrator,
   type ProjectLookupStore,
 } from "../webhooks/webhookServer.js";
-import { buildGitLabAuthHeaders } from "../utils/gitlabAuth.js";
+import { buildGitLabAuthHeaders, rewriteGitLabUploadUrl } from "../utils/gitlabAuth.js";
 import { writeJson, writeHtml } from "./adminRouteUtils.js";
 import { registerTaskRoutes } from "./adminTaskRoutes.js";
 import { registerPromptRoutes } from "./adminPromptRoutes.js";
@@ -345,7 +345,7 @@ async function handleRequest(
     }
     try {
       const gitlabToken = gitlabTokenVal ?? "";
-      const fetchUrl = targetUrl;
+      const fetchUrl = rewriteGitLabUploadUrl(targetUrl, gitlabBaseUrl);
       log.debug({ fetchUrl, hasToken: Boolean(gitlabToken) }, "img-proxy fetch");
       const upstream = await fetch(fetchUrl, gitlabToken
         ? { headers: buildGitLabAuthHeaders(gitlabToken) }
