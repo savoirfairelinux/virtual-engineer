@@ -79,12 +79,6 @@ export interface ProjectStoreApi {
   setProjectReviewConfig(projectId: ProjectId, integrationId: string, repoKeys: string[]): Promise<void>;
   getProjectReviewConfig(projectId: ProjectId): Promise<ProjectReviewConfig | null>;
   findProjectsByReviewTarget(integrationId: string, repoKey: string): Promise<ProjectRecord[]>;
-  setProjectBinding(
-    projectId: ProjectId,
-    capability: DomainCapability,
-    integrationId: string,
-    config?: Record<string, unknown>
-  ): Promise<ProjectIntegrationBindingRecord>;
   getProjectBinding(projectId: ProjectId, capability: DomainCapability): Promise<ProjectIntegrationBindingRecord | null>;
   listProjectBindings(projectId: ProjectId): Promise<ProjectIntegrationBindingRecord[]>;
   deleteProjectBinding(projectId: ProjectId, capability: DomainCapability): Promise<void>;
@@ -513,30 +507,6 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
     return row ? rowToBinding(row) : null;
   }
 
-  async function setProjectBinding(
-    projectId: ProjectId,
-    capability: DomainCapability,
-    integrationId: string,
-    config: Record<string, unknown> = {}
-  ): Promise<ProjectIntegrationBindingRecord> {
-    const nowSeconds = Math.floor(Date.now() / 1000);
-    const configJson = JSON.stringify(config);
-    raw.transaction((): void => {
-      raw
-        .prepare("DELETE FROM project_integration_bindings WHERE project_id = ? AND capability = ?")
-        .run(projectId, capability);
-      raw
-        .prepare(
-          "INSERT INTO project_integration_bindings (id, project_id, integration_id, capability, config_json, created_at, updated_at) " +
-          "VALUES (?, ?, ?, ?, ?, ?, ?)"
-        )
-        .run(randomUUID(), projectId, integrationId, capability, configJson, nowSeconds, nowSeconds);
-    })();
-    const created = await getProjectBinding(projectId, capability);
-    if (!created) throw new Error(`Failed to set binding (${projectId}, ${capability})`);
-    return created;
-  }
-
   async function listProjectBindings(projectId: ProjectId): Promise<ProjectIntegrationBindingRecord[]> {
     const rows = await db.query.projectIntegrationBindings.findMany({
       where: eq(projectIntegrationBindings.projectId, projectId),
@@ -568,7 +538,6 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
     setProjectReviewConfig,
     getProjectReviewConfig,
     findProjectsByReviewTarget,
-    setProjectBinding,
     getProjectBinding,
     listProjectBindings,
     deleteProjectBinding,
