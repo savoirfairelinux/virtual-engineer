@@ -607,4 +607,41 @@ describe("PluginManager", () => {
       expect(activeConnector(mgr, "copilot")).toBeNull();
     });
   });
+
+  describe("per-integration capability + intake", () => {
+    it("integrationSupportsCapability checks the active integration's descriptor", async () => {
+      const store = makeStore([
+        makeIntegration({
+          id: "r1",
+          provider: "redmine",
+          configJson: JSON.stringify({ baseUrl: "http://r:3000", apiKey: "k" }),
+          enabled: true,
+        }),
+      ]);
+      const mgr = new PluginManager(store);
+      await mgr.loadFromDatabase();
+
+      expect(mgr.integrationSupportsCapability("r1", "issue_tracking")).toBe(true);
+      expect(mgr.integrationSupportsCapability("r1", "code_review")).toBe(false);
+      // Unknown / inactive integration id
+      expect(mgr.integrationSupportsCapability("missing", "issue_tracking")).toBe(false);
+    });
+
+    it("getIntegrationCapabilityIntake returns the descriptor intake mechanisms", async () => {
+      const store = makeStore([
+        makeIntegration({
+          id: "r1",
+          provider: "redmine",
+          configJson: JSON.stringify({ baseUrl: "http://r:3000", apiKey: "k" }),
+          enabled: true,
+        }),
+      ]);
+      const mgr = new PluginManager(store);
+      await mgr.loadFromDatabase();
+
+      expect(mgr.getIntegrationCapabilityIntake("r1", "issue_tracking")).toEqual(["polling", "webhook"]);
+      expect(mgr.getIntegrationCapabilityIntake("r1", "code_review")).toEqual([]);
+      expect(mgr.getIntegrationCapabilityIntake("missing", "issue_tracking")).toEqual([]);
+    });
+  });
 });

@@ -111,10 +111,21 @@ export interface ReviewerBundle {
   userPromptId: string;
 }
 
+/**
+ * Event-intake mechanism a capability uses to learn about new work.
+ *
+ * - `polling`  — the polling loop periodically queries the provider API.
+ * - `webhook`  — the provider POSTs events to the VE webhook server.
+ * - `stream`   — VE holds a long-lived stream (e.g. Gerrit `ssh stream-events`).
+ */
+export type IntakeMechanism = "polling" | "webhook" | "stream";
+
 /** `issue_tracking` capability: poll and update work items. */
 export interface IssueTrackingCapability {
   /** Factory for the runtime ticket connector (a `TicketConnector`). */
   createConnector: (config: unknown, integration: Integration, context?: IntegrationBindingContext) => PluginInstance;
+  /** How new work items reach VE for this provider. */
+  intake?: IntakeMechanism[] | undefined;
 }
 
 /** `code_review` capability: read diffs, post review comments, watch changes. */
@@ -129,6 +140,8 @@ export interface CodeReviewCapability {
   userPromptId?: string | undefined;
   /** Optional reviewer factory (VE reads diffs and posts comments). */
   createReviewer?: ((config: Record<string, unknown>, integration: Integration, workspaceRunner: WorkspaceRunner) => ReviewerBundle) | undefined;
+  /** How review events reach VE for this provider. */
+  intake?: IntakeMechanism[] | undefined;
 }
 
 /** `source_control` capability: clone, commit, and push to a repository. */
@@ -258,6 +271,24 @@ export function getAllProviderDescriptors(): ProviderDescriptor[] {
 /** Return the domain capabilities a descriptor declares. */
 export function getProviderDomainCapabilities(descriptor: ProviderDescriptor): DomainCapability[] {
   return DOMAIN_CAPABILITIES.filter((capability) => descriptor.capabilities[capability] !== undefined);
+}
+
+/**
+ * Return the event-intake mechanisms a descriptor declares for a domain
+ * capability. Only `issue_tracking` and `code_review` carry intake metadata;
+ * other capabilities (or undeclared intake) yield an empty array.
+ */
+export function getCapabilityIntake(
+  descriptor: ProviderDescriptor,
+  capability: DomainCapability
+): IntakeMechanism[] {
+  if (capability === "issue_tracking") {
+    return [...(descriptor.capabilities.issue_tracking?.intake ?? [])];
+  }
+  if (capability === "code_review") {
+    return [...(descriptor.capabilities.code_review?.intake ?? [])];
+  }
+  return [];
 }
 
 /** Return the technical (non-domain) capabilities derived from descriptor hooks. */

@@ -112,6 +112,7 @@ export const redmineDescriptor: ProviderDescriptor = {
   capabilities: {
     issue_tracking: {
       createConnector: (config) => new HttpRedmineConnector(config as ConstructorParameters<typeof HttpRedmineConnector>[0]),
+      intake: ["polling", "webhook"],
     },
   },
 };

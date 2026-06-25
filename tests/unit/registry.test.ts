@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { getProviderDescriptor, getAllProviderDescriptors, getPluginCapabilities, ModelDiscoveryConfigError } from "../../src/plugins/registry.js";
+import { getProviderDescriptor, getAllProviderDescriptors, getPluginCapabilities, getCapabilityIntake, ModelDiscoveryConfigError } from "../../src/plugins/registry.js";
 import { redmineDescriptor } from "../../src/plugins/descriptors/redmine.js";
 import { gerritDescriptor } from "../../src/plugins/descriptors/gerrit.js";
 import { createCopilotDescriptor } from "../../src/plugins/descriptors/copilot.js";
@@ -37,6 +37,22 @@ describe("Plugin Registry", () => {
   it("returns undefined for unknown type", () => {
     const result = getProviderDescriptor("unknown" as never);
     expect(result).toBeUndefined();
+  });
+
+  describe("getCapabilityIntake", () => {
+    it("reports polling + webhook intake for issue trackers", () => {
+      expect(getCapabilityIntake(redmineDescriptor, "issue_tracking")).toEqual(["polling", "webhook"]);
+      expect(getCapabilityIntake(gitlabDescriptor, "issue_tracking")).toEqual(["polling", "webhook"]);
+    });
+
+    it("reports stream intake for Gerrit code review", () => {
+      expect(getCapabilityIntake(gerritDescriptor, "code_review")).toEqual(["stream"]);
+    });
+
+    it("returns an empty array for capabilities without intake metadata", () => {
+      expect(getCapabilityIntake(redmineDescriptor, "code_review")).toEqual([]);
+      expect(getCapabilityIntake(mockDescriptor, "agent_execution")).toEqual([]);
+    });
   });
 
   describe("redmine descriptor", () => {

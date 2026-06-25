@@ -171,6 +171,7 @@ export const gerritDescriptor: ProviderDescriptor = {
     code_review: {
       systemPromptId: "system_gerrit_review",
       userPromptId: "user_gerrit_review",
+      intake: ["stream"],
       streamEvents: {
         createManager: (deps) => new GerritStreamEventsManager(deps),
       },

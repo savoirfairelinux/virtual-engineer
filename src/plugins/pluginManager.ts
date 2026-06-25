@@ -10,8 +10,8 @@ import type {
   DomainCapability,
   PluginInstance,
 } from "../interfaces.js";
-import { getProviderDescriptor, getProviderDomainCapabilities } from "./registry.js";
-import type { ProviderDescriptor } from "./registry.js";
+import { getProviderDescriptor, getProviderDomainCapabilities, getCapabilityIntake } from "./registry.js";
+import type { ProviderDescriptor, IntakeMechanism } from "./registry.js";
 import { getLogger } from "../logger.js";
 import { decryptToken } from "../utils/encryption.js";
 
@@ -258,6 +258,32 @@ export class PluginManager {
   providerSupportsCapability(provider: ProviderId, capability: DomainCapability): boolean {
     const descriptor = getProviderDescriptor(provider);
     return descriptor !== undefined && descriptor.capabilities[capability] !== undefined;
+  }
+
+  /**
+   * Returns true when a *specific active integration* can serve `capability`:
+   * the integration is active and its provider's descriptor declares the
+   * capability. Use this (rather than `providerSupportsCapability`) when gating
+   * a binding or runtime path on a concrete integration id.
+   */
+  integrationSupportsCapability(integrationId: string, capability: DomainCapability): boolean {
+    const integration = this.activeIntegrationsById.get(integrationId);
+    if (!integration) return false;
+    return this.providerSupportsCapability(integration.provider, capability);
+  }
+
+  /**
+   * Returns the event-intake mechanisms (`polling` | `webhook` | `stream`) an
+   * active integration uses for `capability`, as declared by its descriptor.
+   * Returns an empty array when the integration is inactive or the capability
+   * declares no intake metadata.
+   */
+  getIntegrationCapabilityIntake(integrationId: string, capability: DomainCapability): IntakeMechanism[] {
+    const integration = this.activeIntegrationsById.get(integrationId);
+    if (!integration) return [];
+    const descriptor = getProviderDescriptor(integration.provider);
+    if (!descriptor) return [];
+    return getCapabilityIntake(descriptor, capability);
   }
 
   /** All currently active providers. */

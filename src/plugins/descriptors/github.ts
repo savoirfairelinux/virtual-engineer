@@ -185,10 +185,12 @@ export const githubDescriptor: ProviderDescriptor = {
             : {}),
         });
       },
+      intake: ["polling", "webhook"],
     },
     code_review: {
       systemPromptId: "system_github_review",
       userPromptId: "user_github_review",
+      intake: ["polling", "webhook"],
       createConnector: (config: unknown, _integration: Integration, context?: IntegrationBindingContext) => {
         const parsed = githubConfigSchema.parse(config);
         const { owner, repo } = resolveRepo(context?.repoKey, "repoKey", {

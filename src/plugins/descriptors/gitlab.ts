@@ -142,6 +142,7 @@ export const gitlabDescriptor: ProviderDescriptor = {
           inReviewLabel: parsed.inReviewLabel,
         });
       },
+      intake: ["polling", "webhook"],
     },
     code_review: {
       createConnector: (config: unknown, _integration: Integration, context?: IntegrationBindingContext) => {
@@ -152,6 +153,7 @@ export const gitlabDescriptor: ProviderDescriptor = {
           token: getGitLabAccessToken(parsed),
         });
       },
+      intake: ["polling", "webhook"],
     },
     source_control: {
       createVcsConnector: (cfg: Record<string, unknown>, _integration: Integration, context?: IntegrationBindingContext) => {
