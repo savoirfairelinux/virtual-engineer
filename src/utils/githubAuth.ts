@@ -258,7 +258,7 @@ export async function listGitHubRepositoriesForOwner(
   apiBaseUrl: string,
   owner: string
 ): Promise<GitHubDiscoveredRepo[]> {
-  const url = `${apiBaseUrl}/user/repos?per_page=100&affiliation=owner,collaborator,organization_member`;
+  const url = `${apiBaseUrl}/user/repos?per_page=100&type=all&sort=full_name`;
 
   const result = await fetchPaginated(token, url);
   if (!result.ok) {
@@ -332,7 +332,7 @@ export async function listGitHubRepositoriesForUser(
   token: string,
   apiBaseUrl: string
 ): Promise<GitHubDiscoveredRepo[]> {
-  const url = `${apiBaseUrl}/user/repos?per_page=100&sort=full_name&affiliation=owner,collaborator,organization_member`;
+  const url = `${apiBaseUrl}/user/repos?per_page=100&type=all&sort=full_name`;
   const result = await fetchPaginated(token, url);
   if (!result.ok) {
     throw new GitHubAuthError(`List user repositories failed (${result.status}): ${result.body}`);

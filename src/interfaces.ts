@@ -76,6 +76,21 @@ export interface ProjectTicketSourceRecord {
   createdAt: Date;
 }
 
+/**
+ * A project's choice to use an integration for a specific domain capability,
+ * with per-binding configuration (e.g. `{ ticketProjectKey }` for
+ * `issue_tracking`, `{ repoKeys }` for `code_review`).
+ */
+export interface ProjectIntegrationBindingRecord {
+  id: string;
+  projectId: ProjectId;
+  integrationId: string;
+  capability: DomainCapability;
+  config: Record<string, unknown>;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
 export interface ProjectPushTargetRecord {
   id: number;
   projectId: ProjectId;
@@ -695,7 +710,7 @@ export interface TicketConnector {
   /** Transition to the "in review" workflow state (semantics owned by the connector). */
   transitionToInReview(ticketId: TicketId): Promise<void>;
   closeTicket(ticketId: TicketId, closingNote: string): Promise<void>;
-  /** Return the source label for this connector (e.g., 'redmine', 'gitlab-issue') */
+  /** Return the source label for this connector (e.g., 'redmine', 'gitlab') */
   getSourceLabel(): string;
 }
 
@@ -1051,35 +1066,20 @@ export interface DiscoveredResources {
 
 // ─── Plugin / Integration types ───────────────────────────────────────────────
 
-export const INTEGRATION_TYPES = [
-  "redmine",
-  "gerrit",
-  "gitlab-issue",
-  "gitlab-merge-request",
-  "copilot",
-  "mock",
-  "github-issue",
-  "github-pull-request",
-] as const;
+/** Identifiers for the external systems Virtual Engineer can connect to. */
+export const PROVIDER_IDS = ["github", "gitlab", "gerrit", "redmine", "copilot", "mock"] as const;
+export type ProviderId = (typeof PROVIDER_IDS)[number];
 
-export type IntegrationType = (typeof INTEGRATION_TYPES)[number];
-
-/** Integration types that act as code-hosting + review systems */
-export type CodeSourceIntegrationType = "gerrit" | "gitlab-merge-request" | "github-pull-request";
-/** Runtime-iterable list of code-source integration types. Keep in sync with CodeSourceIntegrationType. */
-export const CODE_SOURCE_INTEGRATION_TYPES: readonly CodeSourceIntegrationType[] = ["gerrit", "gitlab-merge-request", "github-pull-request"] as const;
-
-/** Integration types that act as ticket / work-item sources */
-export type TicketSourceIntegrationType = "redmine" | "gitlab-issue" | "github-issue";
-/** Runtime-iterable list of ticket-source integration types. Keep in sync with TicketSourceIntegrationType. */
-export const TICKET_SOURCE_INTEGRATION_TYPES: readonly TicketSourceIntegrationType[] = ["redmine", "gitlab-issue", "github-issue"] as const;
-
-export const PLUGIN_CATEGORIES = ["ticketing", "review", "agent"] as const;
-export type PluginCategory = (typeof PLUGIN_CATEGORIES)[number];
+/**
+ * Domain capabilities an integration can expose. A project binds an integration
+ * for a specific capability via `project_integration_bindings`.
+ */
+export const DOMAIN_CAPABILITIES = ["issue_tracking", "code_review", "source_control", "agent_execution"] as const;
+export type DomainCapability = (typeof DOMAIN_CAPABILITIES)[number];
 
 export interface Integration {
   id: string;
-  type: IntegrationType;
+  provider: ProviderId;
   name: string;
   configJson: string;
   enabled: boolean;

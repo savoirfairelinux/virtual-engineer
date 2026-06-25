@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { promises as fs, constants as fsConstants } from "node:fs";
-import type { PluginDescriptor } from "../registry.js";
+import type { ProviderDescriptor } from "../registry.js";
 import type { Integration } from "../../interfaces.js";
 import {
   GerritSshConnector,
@@ -94,10 +94,10 @@ function buildSshArgs(cfg: Record<string, unknown>): {
   };
 }
 
-export const gerritDescriptor: PluginDescriptor = {
-  type: "gerrit",
+export const gerritDescriptor: ProviderDescriptor = {
+  provider: "gerrit",
   name: "Gerrit",
-  category: "review",
+  icon: { slug: "gerrit", hex: "EE0000" },
   configSchema: gerritConfigSchema,
   requiredFields: [
     { key: "sshHost", label: "SSH Host", type: "text", required: true, placeholder: "gerrit" },
@@ -118,23 +118,6 @@ export const gerritDescriptor: PluginDescriptor = {
       repositories,
       discoveredAt: new Date().toISOString(),
     };
-  },
-  streamEvents: {
-    createManager: (deps) => new GerritStreamEventsManager(deps),
-  },
-  createInstance: (config) => {
-    const cfg = config as Record<string, unknown>;
-    const ssh = buildSshArgs(cfg);
-    return new GerritSshConnector({
-      ssh: {
-        host: ssh.host,
-        port: ssh.port,
-        user: ssh.user,
-        keyPath: ssh.keyPath,
-        ...(ssh.knownHostsPath !== undefined ? { knownHostsPath: ssh.knownHostsPath } : {}),
-      },
-      ...(typeof cfg["baseUrl"] === "string" ? { baseUrl: cfg["baseUrl"] } : {}),
-    });
   },
   testConnection: async (config) => {
     const cfg = config as Record<string, unknown>;
@@ -166,58 +149,6 @@ export const gerritDescriptor: PluginDescriptor = {
       return { success: false, error: `Gerrit connection test failed: ${err instanceof Error ? err.message : String(err)}` };
     }
   },
-  createVcsConnector: (cfg, _integration) => {
-    const ssh = buildSshArgs(cfg);
-    return new GerritVcsConnector({
-      sshHost: ssh.host,
-      sshPort: ssh.port,
-      sshUser: ssh.user,
-      sshKeyPath: ssh.keyPath,
-      ...(ssh.knownHostsPath !== undefined ? { sshKnownHostsPath: ssh.knownHostsPath } : {}),
-      gitAuthorName: (cfg["gitAuthorName"] as string | undefined) ?? "Virtual Engineer",
-      gitAuthorEmail: (cfg["gitAuthorEmail"] as string | undefined) ?? "ve@virtual-engineer.local",
-      ...(typeof cfg["baseUrl"] === "string" ? { baseUrl: cfg["baseUrl"] } : {}),
-    });
-  },
-  reviewSystemPromptId: "system_gerrit_review",
-  reviewUserPromptId: "user_gerrit_review",
-  createReviewer: (cfg, _integration, workspaceRunner) => {
-    const ssh = buildSshArgs(cfg);
-    const baseUrl = `ssh://${ssh.user}@${ssh.host}:${ssh.port}`;
-    return {
-      systemPromptId: "system_gerrit_review",
-      userPromptId: "user_gerrit_review",
-      provider: new GerritSshReviewProvider({
-        sshHost: ssh.host,
-        sshPort: ssh.port,
-        sshUser: ssh.user,
-        sshKeyPath: ssh.keyPath,
-        ...(ssh.knownHostsPath !== undefined ? { sshKnownHostsPath: ssh.knownHostsPath } : {}),
-        ...(typeof cfg["reviewerAccountId"] === "string" && cfg["reviewerAccountId"] !== ""
-          ? { reviewerAccountId: cfg["reviewerAccountId"] }
-          : {}),
-      }),
-      buildCloneTarget: (details) => ({
-        cloneUrl: `${baseUrl}/${details.project}`,
-        sshKeyPath: ssh.keyPath,
-        sshKnownHostsPath: ssh.knownHostsPath ?? null,
-      }),
-      applyPatchset: async (handle, details): Promise<void> => {
-        if (workspaceRunner.applyPriorPatchset !== undefined) {
-          await workspaceRunner.applyPriorPatchset(handle, {
-            vcsBaseUrl: baseUrl,
-            sshHost: ssh.host,
-            sshPort: ssh.port,
-            sshUser: ssh.user,
-            sshKeyPath: ssh.keyPath,
-            ...(ssh.knownHostsPath !== undefined ? { sshKnownHostsPath: ssh.knownHostsPath } : {}),
-            revisionNumber: details.changeNumber,
-            patchset: details.currentPatchset,
-          });
-        }
-      },
-    };
-  },
   getSummaryDetails(config) {
     const baseUrl = typeof config["baseUrl"] === "string" && config["baseUrl"].length > 0
       ? config["baseUrl"]
@@ -227,5 +158,88 @@ export const gerritDescriptor: PluginDescriptor = {
       : "unset";
     const sshPort = typeof config["sshPort"] === "number" ? config["sshPort"] : GERRIT_SSH_PORT_DEFAULT;
     return [baseUrl, `SSH ${sshHost}:${sshPort}`];
+  },
+  normalizeConfigForRead(masked) {
+    // Gerrit review events arrive via a host-side SSH stream listener, so the
+    // webhook transport fields are never surfaced to the admin UI.
+    const next = { ...masked };
+    delete next["webhookSecret"];
+    delete next["webhookAllowedIps"];
+    return next;
+  },
+  capabilities: {
+    code_review: {
+      systemPromptId: "system_gerrit_review",
+      userPromptId: "user_gerrit_review",
+      streamEvents: {
+        createManager: (deps) => new GerritStreamEventsManager(deps),
+      },
+      createConnector: (config) => {
+        const cfg = config as Record<string, unknown>;
+        const ssh = buildSshArgs(cfg);
+        return new GerritSshConnector({
+          ssh: {
+            host: ssh.host,
+            port: ssh.port,
+            user: ssh.user,
+            keyPath: ssh.keyPath,
+            ...(ssh.knownHostsPath !== undefined ? { knownHostsPath: ssh.knownHostsPath } : {}),
+          },
+          ...(typeof cfg["baseUrl"] === "string" ? { baseUrl: cfg["baseUrl"] } : {}),
+        });
+      },
+      createReviewer: (cfg, _integration, workspaceRunner) => {
+        const ssh = buildSshArgs(cfg);
+        const baseUrl = `ssh://${ssh.user}@${ssh.host}:${ssh.port}`;
+        return {
+          systemPromptId: "system_gerrit_review",
+          userPromptId: "user_gerrit_review",
+          provider: new GerritSshReviewProvider({
+            sshHost: ssh.host,
+            sshPort: ssh.port,
+            sshUser: ssh.user,
+            sshKeyPath: ssh.keyPath,
+            ...(ssh.knownHostsPath !== undefined ? { sshKnownHostsPath: ssh.knownHostsPath } : {}),
+            ...(typeof cfg["reviewerAccountId"] === "string" && cfg["reviewerAccountId"] !== ""
+              ? { reviewerAccountId: cfg["reviewerAccountId"] }
+              : {}),
+          }),
+          buildCloneTarget: (details) => ({
+            cloneUrl: `${baseUrl}/${details.project}`,
+            sshKeyPath: ssh.keyPath,
+            sshKnownHostsPath: ssh.knownHostsPath ?? null,
+          }),
+          applyPatchset: async (handle, details): Promise<void> => {
+            if (workspaceRunner.applyPriorPatchset !== undefined) {
+              await workspaceRunner.applyPriorPatchset(handle, {
+                vcsBaseUrl: baseUrl,
+                sshHost: ssh.host,
+                sshPort: ssh.port,
+                sshUser: ssh.user,
+                sshKeyPath: ssh.keyPath,
+                ...(ssh.knownHostsPath !== undefined ? { sshKnownHostsPath: ssh.knownHostsPath } : {}),
+                revisionNumber: details.changeNumber,
+                patchset: details.currentPatchset,
+              });
+            }
+          },
+        };
+      },
+    },
+    source_control: {
+      createVcsConnector: (cfg, _integration) => {
+        const ssh = buildSshArgs(cfg);
+        return new GerritVcsConnector({
+          sshHost: ssh.host,
+          sshPort: ssh.port,
+          sshUser: ssh.user,
+          sshKeyPath: ssh.keyPath,
+          ...(ssh.knownHostsPath !== undefined ? { sshKnownHostsPath: ssh.knownHostsPath } : {}),
+          gitAuthorName: (cfg["gitAuthorName"] as string | undefined) ?? "Virtual Engineer",
+          gitAuthorEmail: (cfg["gitAuthorEmail"] as string | undefined) ?? "ve@virtual-engineer.local",
+          ...(typeof cfg["baseUrl"] === "string" ? { baseUrl: cfg["baseUrl"] } : {}),
+        });
+      },
+    },
   },
 };

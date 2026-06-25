@@ -1,30 +1,34 @@
 /**
  * Static plugin descriptor registry.
  *
- * Descriptors define the metadata (fields, schema, category) for each
- * integration type. They are registered once at startup via
+ * Descriptors define the metadata (fields, schema, capabilities) for each
+ * provider. They are registered once at startup via
  * `registerBuiltinPlugins()` and queried by the admin UI and `PluginManager`.
  */
 import { z } from "zod";
-import type { DiscoveredResources, OAuthAppStore, Integration, IntegrationBindingContext, IntegrationType, PluginCategory, PluginInstance, ReviewChangeDetails, ReviewProvider, WorkspaceHandle, WorkspaceRunner } from "../interfaces.js";
+import type { DiscoveredResources, OAuthAppStore, Integration, IntegrationBindingContext, ProviderId, DomainCapability, PluginInstance, ReviewChangeDetails, ReviewProvider, WorkspaceHandle, WorkspaceRunner } from "../interfaces.js";
+import { DOMAIN_CAPABILITIES } from "../interfaces.js";
 import type { IntegrationEventStreamFactory } from "../connectors/integrationStreamEvents.js";
 import type { VcsConnector } from "../vcs/vcsConnector.js";
 import type { ProviderAuthHandler } from "../agents/providerAuthService.js";
 
 // ─── Plugin descriptor types ──────────────────────────────────────────────
 
-export const PLUGIN_CAPABILITIES = [
-  "ticketing",
-  "review",
-  "agent",
+/**
+ * Technical (non-domain) capabilities derived from descriptor hooks. These are
+ * surfaced to the admin UI alongside the domain capabilities.
+ */
+export const TECHNICAL_CAPABILITIES = [
   "oauth",
   "discovery",
   "stream-events",
-  "vcs",
   "reviewer",
 ] as const;
 
-export type PluginCapability = (typeof PLUGIN_CAPABILITIES)[number];
+export type TechnicalCapability = (typeof TECHNICAL_CAPABILITIES)[number];
+
+/** Combined capability label as shown in the admin UI. */
+export type PluginCapability = DomainCapability | TechnicalCapability;
 
 export type PluginVisibilityCondition =
   | { field: string; value: string; allOf?: undefined }
@@ -96,19 +100,83 @@ export interface PluginOAuthConfigResolverContext {
   oAuthAppStore?: OAuthAppStore | undefined;
 }
 
-/** Static descriptor for one integration type registered with the plugin system. */
-export interface PluginDescriptor {
-  type: IntegrationType;
-  name: string;
-  category: PluginCategory;
+/** Reviewer factory result: the provider plus its workspace setup hooks. */
+export interface ReviewerBundle {
+  provider: ReviewProvider;
+  buildCloneTarget: (details: ReviewChangeDetails) => { cloneUrl: string; sshKeyPath: string | null; sshKnownHostsPath: string | null };
+  applyPatchset?: (handle: WorkspaceHandle, details: ReviewChangeDetails) => Promise<void>;
+  /** DB key for the system prompt passed to the review agent. */
+  systemPromptId: string;
+  /** DB key for the user instructions prompt injected into the review prompt. */
+  userPromptId: string;
+}
+
+/** `issue_tracking` capability: poll and update work items. */
+export interface IssueTrackingCapability {
+  /** Factory for the runtime ticket connector (a `TicketConnector`). */
+  createConnector: (config: unknown, integration: Integration, context?: IntegrationBindingContext) => PluginInstance;
+}
+
+/** `code_review` capability: read diffs, post review comments, watch changes. */
+export interface CodeReviewCapability {
+  /** Factory for the runtime review connector (a `ReviewConnector`). */
+  createConnector?: ((config: unknown, integration: Integration, context?: IntegrationBindingContext) => PluginInstance) | undefined;
+  /** Optional live event-stream factory (e.g. Gerrit `stream-events`). */
+  streamEvents?: IntegrationEventStreamFactory | undefined;
+  /** ID of the system prompt used when running code-review sessions. */
+  systemPromptId?: string | undefined;
+  /** ID of the user prompt (instructions) used when running code-review sessions. */
+  userPromptId?: string | undefined;
+  /** Optional reviewer factory (VE reads diffs and posts comments). */
+  createReviewer?: ((config: Record<string, unknown>, integration: Integration, workspaceRunner: WorkspaceRunner) => ReviewerBundle) | undefined;
+}
+
+/** `source_control` capability: clone, commit, and push to a repository. */
+export interface SourceControlCapability {
+  createVcsConnector: (config: Record<string, unknown>, integration: Integration, context?: IntegrationBindingContext) => VcsConnector;
+}
+
+/** `agent_execution` capability: run a coding agent inside a workspace. */
+export interface AgentExecutionCapability {
   /**
-   * Optional explicit capabilities. Keep `category` for legacy call sites,
-   * but prefer this list when a descriptor must participate in multiple admin
-   * sections (for example a future unified GitLab integration).
+   * Factory for the runtime agent adapter. Optional because some agents (e.g.
+   * Copilot) are registered via `PluginManager.registerFactory` in `index.ts`
+   * when construction needs `AppConfig` values.
    */
-  capabilities?: readonly PluginCapability[] | undefined;
+  createAdapter?: ((config: unknown, integration: Integration, context?: IntegrationBindingContext) => PluginInstance) | undefined;
+}
+
+/** The domain capabilities a provider exposes. */
+export interface ProviderCapabilities {
+  issue_tracking?: IssueTrackingCapability | undefined;
+  code_review?: CodeReviewCapability | undefined;
+  source_control?: SourceControlCapability | undefined;
+  agent_execution?: AgentExecutionCapability | undefined;
+}
+
+/** Static descriptor for one provider registered with the plugin system. */
+export interface ProviderDescriptor {
+  provider: ProviderId;
+  name: string;
+  /**
+   * Optional brand icon metadata used by the admin UI to render the provider
+   * logo. `slug` is the simpleicons.org slug and `hex` is the brand hex colour
+   * without the leading `#`. The UI renders it via
+   * `https://cdn.simpleicons.org/{slug}/{hex}`. Omit for providers without a
+   * brand logo (the UI falls back to a monogram).
+   */
+  icon?: { slug: string; hex: string } | undefined;
+  /** The domain capabilities this provider can fulfil. */
+  capabilities: ProviderCapabilities;
   configSchema: z.ZodSchema;
   requiredFields: PluginField[];
+  /**
+   * When `true`, the admin `POST /api/admin/integrations` route validates the
+   * config against the full (non-partial) schema on create instead of the
+   * default partial validation. Used by providers (e.g. Copilot) whose config
+   * must be complete before the integration is usable.
+   */
+  validateFullConfigOnCreate?: boolean | undefined;
   /**
    * Optional OAuth metadata used by the admin UI to render a provider-specific
    * auth flow without hardcoding provider types in the dashboard.
@@ -116,8 +184,7 @@ export interface PluginDescriptor {
   oauth?: PluginOAuthConfig | undefined;
   /**
    * Optional provider-auth handler used by the admin server's generic plugin
-   * OAuth routes. Descriptors that expose `oauth` should provide the matching
-   * runtime handler rather than relying on admin-side provider branching.
+   * OAuth routes.
    */
   createOAuthHandler?: ((config?: Record<string, unknown>) => ProviderAuthHandler) | undefined;
   /**
@@ -128,111 +195,85 @@ export interface PluginDescriptor {
   /**
    * Optional resource-discovery hook. When defined, the admin
    * `POST /api/admin/integrations/:id/discover` endpoint will call it with the
-   * integration's parsed config and persist the resulting snapshot on the
-   * integration row. Connectors with nothing to discover simply omit it.
+   * integration's parsed config and persist the resulting snapshot.
    */
   discoverResources?: (config: unknown) => Promise<DiscoveredResources>;
   /**
-   * Optional live event-stream capability. When defined, the runtime creates a
-   * provider-specific stream manager for active integrations of this type.
-   */
-  streamEvents?: IntegrationEventStreamFactory;
-  /**
-   * Optional connector factory. When defined, `PluginManager` uses this to
-   * instantiate the runtime connector without requiring a `registerFactory`
-   * call in `index.ts`. The config has Zod defaults stripped (same as the
-   * `registerFactory` path) so values absent in the DB row are not silently
-   * overwritten on re-save.
-   *
-   * `index.ts`-registered factories always take precedence (useful when
-   * construction needs AppConfig values, e.g. `agentDockerNetwork`).
-   */
-  createInstance?: (config: unknown, integration: Integration, context?: IntegrationBindingContext) => PluginInstance;
-  /**
-   * Optional connection tester. When defined, `PluginManager.testConnectionConfig`
-   * uses this instead of requiring a `registerConnectionTester` call in `index.ts`.
-   *
+   * Optional connection tester used by `PluginManager.testConnectionConfig`.
    * `index.ts`-registered testers always take precedence.
    */
   testConnection?: (config: unknown) => Promise<DescriptorConnectionTestResult>;
   /**
-   * Optional VCS push-target factory. When defined, `createVcsConnectorForIntegration`
-   * in `vcsFactory.ts` uses this to build a `VcsConnector` without any type-specific
-   * dispatch in that file.
-   *
-   * The config is fully parsed (Zod defaults applied) before being passed here.
+   * Optional model-discovery hook. When defined, the admin
+   * `POST /api/admin/integrations/:id/discover` endpoint delegates to it
+   * (instead of the generic resource-discovery path) to fetch the available
+   * agent models for the integration's parsed config.
    */
-  createVcsConnector?: (config: Record<string, unknown>, integration: Integration, context?: IntegrationBindingContext) => VcsConnector;
+  discoverModels?: (config: unknown) => Promise<Array<{ id: string; name: string }>>;
   /**
-   * ID of the system prompt used when running code-review sessions for this
-   * integration (e.g. `"system_gerrit_review"`).
+   * Optional read-time config normalisation hook. When defined, the admin
+   * routes call it with the masked config before returning it to the browser,
+   * letting providers inject defaults or strip transport-only fields without
+   * the route hardcoding provider checks.
    */
-  reviewSystemPromptId?: string | undefined;
+  normalizeConfigForRead?: (maskedConfig: Record<string, unknown>) => Record<string, unknown>;
   /**
-   * ID of the user prompt (instructions) used when running code-review sessions
-   * for this integration (e.g. `"user_gerrit_review"`).
-   */
-  reviewUserPromptId?: string | undefined;
-  /**
-   * Optional reviewer factory. When defined, the descriptor supports acting as
-   * a code reviewer (VE reads diffs and posts comments). Returns the provider
-   * and the workspace setup hooks as a single unit so one cannot exist without
-   * the other.
-   */
-  createReviewer?: (
-    config: Record<string, unknown>,
-    integration: Integration,
-    workspaceRunner: WorkspaceRunner
-  ) => {
-    provider: ReviewProvider;
-    buildCloneTarget: (details: ReviewChangeDetails) => { cloneUrl: string; sshKeyPath: string | null; sshKnownHostsPath: string | null };
-    applyPatchset?: (handle: WorkspaceHandle, details: ReviewChangeDetails) => Promise<void>;
-    /** DB key for the system prompt passed to the review agent. */
-    systemPromptId: string;
-    /** DB key for the user instructions prompt injected into the review prompt. */
-    userPromptId: string;
-  };
-  /**
-   * Returns the integration-specific detail lines shown in the admin provider
-   * summary panel. The caller appends category-level details (e.g. polling
-   * interval for ticketing integrations) after this array.
+   * Returns the provider-specific detail lines shown in the admin provider
+   * summary panel.
    */
   getSummaryDetails(config: Record<string, unknown>): string[];
 }
 
 // ─── Registry ───────────────────────────────────────────────────────────────
 
-const descriptors = new Map<IntegrationType, PluginDescriptor>();
-
-/** Register a plugin descriptor. Called once per type at startup. */
-export function registerPlugin(descriptor: PluginDescriptor): void {
-  descriptors.set(descriptor.type, descriptor);
+/**
+ * Error thrown by a descriptor's `discoverModels` hook when the integration is
+ * not configured for model discovery (e.g. missing token). The admin route maps
+ * this to HTTP 400; any other error maps to HTTP 502.
+ */
+export class ModelDiscoveryConfigError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ModelDiscoveryConfigError";
+  }
 }
 
-/** Look up a descriptor by integration type. Returns `undefined` if not registered. */
-export function getPluginDescriptor(type: IntegrationType): PluginDescriptor | undefined {
-  return descriptors.get(type);
+const descriptors = new Map<ProviderId, ProviderDescriptor>();
+
+/** Register a provider descriptor. Called once per provider at startup. */
+export function registerPlugin(descriptor: ProviderDescriptor): void {
+  descriptors.set(descriptor.provider, descriptor);
 }
 
-/** All registered plugin descriptors as an array. */
-export function getAllPluginDescriptors(): PluginDescriptor[] {
+/** Look up a descriptor by provider id. Returns `undefined` if not registered. */
+export function getProviderDescriptor(provider: ProviderId): ProviderDescriptor | undefined {
+  return descriptors.get(provider);
+}
+
+/** All registered provider descriptors as an array. */
+export function getAllProviderDescriptors(): ProviderDescriptor[] {
   return [...descriptors.values()];
 }
 
-/** Return the merged capability list for a descriptor. */
-export function getPluginCapabilities(descriptor: PluginDescriptor): PluginCapability[] {
-  const capabilities = new Set<PluginCapability>();
+/** Return the domain capabilities a descriptor declares. */
+export function getProviderDomainCapabilities(descriptor: ProviderDescriptor): DomainCapability[] {
+  return DOMAIN_CAPABILITIES.filter((capability) => descriptor.capabilities[capability] !== undefined);
+}
 
-  for (const capability of descriptor.capabilities ?? []) {
-    capabilities.add(capability);
-  }
+/** Return the technical (non-domain) capabilities derived from descriptor hooks. */
+export function getProviderTechnicalCapabilities(descriptor: ProviderDescriptor): TechnicalCapability[] {
+  const technical: TechnicalCapability[] = [];
+  if (descriptor.oauth) technical.push("oauth");
+  if (descriptor.discoverResources) technical.push("discovery");
+  if (descriptor.capabilities.code_review?.streamEvents) technical.push("stream-events");
+  if (descriptor.capabilities.code_review?.createReviewer) technical.push("reviewer");
+  return technical;
+}
 
-  capabilities.add(descriptor.category);
-  if (descriptor.oauth) capabilities.add("oauth");
-  if (descriptor.discoverResources) capabilities.add("discovery");
-  if (descriptor.streamEvents) capabilities.add("stream-events");
-  if (descriptor.createVcsConnector) capabilities.add("vcs");
-  if (descriptor.createReviewer) capabilities.add("reviewer");
-
-  return [...capabilities];
+/** Return the combined capability list (domain + technical) for a descriptor. */
+export function getPluginCapabilities(descriptor: ProviderDescriptor): PluginCapability[] {
+  return [
+    ...getProviderDomainCapabilities(descriptor),
+    ...getProviderTechnicalCapabilities(descriptor),
+  ];
 }

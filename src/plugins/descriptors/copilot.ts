@@ -1,7 +1,10 @@
 import { z } from "zod";
-import type { PluginDescriptor } from "../registry.js";
+import type { ProviderDescriptor } from "../registry.js";
+import { ModelDiscoveryConfigError } from "../registry.js";
 import { validateCopilotConnection, type CopilotConnectionValidationConfig } from "../../agents/copilotConnectionValidator.js";
 import { pollForAccessToken, startDeviceFlow } from "../../agents/copilotOAuthService.js";
+import { exchangeForSessionToken, fetchAvailableModels, fetchAvailableModelsWithPat } from "../../agents/copilotModelsService.js";
+import { decryptToken } from "../../utils/encryption.js";
 import type {
   DeviceProviderAuthHandler,
   ProviderAuthDeviceCompleteInput,
@@ -28,12 +31,13 @@ export const copilotConfigSchema = z.object({
 export type CopilotPluginConfig = z.infer<typeof copilotConfigSchema>;
 
 /** Returns the Copilot plugin descriptor. `adminAuthSecret` is captured for the `testConnection` hook. */
-export function createCopilotDescriptor(adminAuthSecret?: string): PluginDescriptor {
+export function createCopilotDescriptor(adminAuthSecret?: string): ProviderDescriptor {
   return {
-    type: "copilot",
+    provider: "copilot",
     name: "GitHub Copilot",
-    category: "agent",
+    icon: { slug: "githubcopilot", hex: "000000" },
     configSchema: copilotConfigSchema,
+    validateFullConfigOnCreate: true,
     requiredFields: [
       {
         key: "authMode",
@@ -89,8 +93,38 @@ export function createCopilotDescriptor(adminAuthSecret?: string): PluginDescrip
         config as CopilotConnectionValidationConfig,
         { adminAuthSecret }
       ),
+    discoverModels: async (config): Promise<Array<{ id: string; name: string }>> => {
+      const cfg = (config && typeof config === "object" ? config : {}) as Record<string, unknown>;
+      const authMode = typeof cfg["authMode"] === "string" ? cfg["authMode"] : "oauth";
+      let githubToken: string;
+      if (authMode === "pat") {
+        const pat = typeof cfg["token"] === "string" ? cfg["token"].trim() : "";
+        if (!pat) {
+          throw new ModelDiscoveryConfigError("No PAT configured. Set a token in the integration config.");
+        }
+        githubToken = pat;
+      } else {
+        const encryptedToken = typeof cfg["sessionToken"] === "string" ? cfg["sessionToken"] : undefined;
+        if (!encryptedToken) {
+          throw new ModelDiscoveryConfigError(
+            "No GitHub OAuth token stored. Connect via OAuth first (AI Adapters → Connect with GitHub)."
+          );
+        }
+        githubToken = decryptToken(encryptedToken, adminAuthSecret);
+      }
+      // PAT: use the @github/copilot-sdk CopilotClient which spawns the bundled
+      //      CLI and handles its own token exchange internally.
+      //      OAuth: exchange the user token for a short-lived session token
+      //      first, then call the Copilot models HTTP API.
+      return authMode === "pat"
+        ? await fetchAvailableModelsWithPat(githubToken)
+        : await fetchAvailableModels(await exchangeForSessionToken(githubToken));
+    },
     getSummaryDetails(_config: Record<string, unknown>): string[] {
       return [];
+    },
+    capabilities: {
+      agent_execution: {},
     },
   };
 }

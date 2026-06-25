@@ -1,11 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { getPluginDescriptor, getAllPluginDescriptors, getPluginCapabilities } from "../../src/plugins/registry.js";
+import { getProviderDescriptor, getAllProviderDescriptors, getPluginCapabilities, ModelDiscoveryConfigError } from "../../src/plugins/registry.js";
 import { redmineDescriptor } from "../../src/plugins/descriptors/redmine.js";
 import { gerritDescriptor } from "../../src/plugins/descriptors/gerrit.js";
 import { createCopilotDescriptor } from "../../src/plugins/descriptors/copilot.js";
-import { gitlabIssueDescriptor } from "../../src/plugins/descriptors/gitlab-issue.js";
-import { gitlabMergeRequestDescriptor } from "../../src/plugins/descriptors/gitlab-merge-request.js";
+import { gitlabDescriptor } from "../../src/plugins/descriptors/gitlab.js";
 import { mockDescriptor } from "../../src/plugins/descriptors/mock.js";
+import { buildBuiltinDescriptors } from "../../src/plugins/descriptors/index.js";
 import { registerBuiltinPlugins } from "../../src/plugins/init.js";
 
 describe("Plugin Registry", () => {
@@ -20,30 +20,29 @@ describe("Plugin Registry", () => {
   });
 
   it("registers all builtin plugin types", () => {
-    const types = getAllPluginDescriptors().map(d => d.type);
+    const types = getAllProviderDescriptors().map((d) => d.provider);
     expect(types).toContain("redmine");
     expect(types).toContain("gerrit");
-    expect(types).toContain("gitlab-issue");
-    expect(types).toContain("gitlab-merge-request");
+    expect(types).toContain("gitlab");
+    expect(types).toContain("github");
     expect(types).toContain("copilot");
     expect(types).toContain("mock");
   });
 
   it("returns all descriptors", () => {
-    const all = getAllPluginDescriptors();
+    const all = getAllProviderDescriptors();
     expect(all.length).toBeGreaterThanOrEqual(6);
   });
 
   it("returns undefined for unknown type", () => {
-    const result = getPluginDescriptor("unknown" as never);
+    const result = getProviderDescriptor("unknown" as never);
     expect(result).toBeUndefined();
   });
 
   describe("redmine descriptor", () => {
     it("has correct metadata", () => {
-      const desc = getPluginDescriptor("redmine");
+      const desc = getProviderDescriptor("redmine");
       expect(desc?.name).toBe("Redmine");
-      expect(desc?.category).toBe("ticketing");
       expect(desc?.requiredFields.length).toBeGreaterThan(0);
     });
 
@@ -66,9 +65,8 @@ describe("Plugin Registry", () => {
 
   describe("gerrit descriptor", () => {
     it("has correct metadata", () => {
-      const desc = getPluginDescriptor("gerrit");
+      const desc = getProviderDescriptor("gerrit");
       expect(desc?.name).toBe("Gerrit");
-      expect(desc?.category).toBe("review");
     });
 
     it("validates valid gerrit config (SSH only)", () => {
@@ -97,13 +95,12 @@ describe("Plugin Registry", () => {
 
   describe("gitlab issue descriptor", () => {
     it("has correct metadata", () => {
-      const desc = getPluginDescriptor("gitlab-issue");
-      expect(desc?.name).toBe("GitLab Issues");
-      expect(desc?.category).toBe("ticketing");
+      const desc = getProviderDescriptor("gitlab");
+      expect(desc?.name).toBe("GitLab");
     });
 
     it("validates valid gitlab issue PAT config", () => {
-      const result = gitlabIssueDescriptor.configSchema.safeParse({
+      const result = gitlabDescriptor.configSchema.safeParse({
         baseUrl: "https://gitlab.example.com",
         authMode: "pat",
         token: "token-123",
@@ -112,7 +109,7 @@ describe("Plugin Registry", () => {
     });
 
     it("validates valid gitlab issue OAuth config", () => {
-      const result = gitlabIssueDescriptor.configSchema.safeParse({
+      const result = gitlabDescriptor.configSchema.safeParse({
         baseUrl: "https://gitlab.example.com",
         authMode: "oauth",
         token: "oauth-token",
@@ -121,14 +118,14 @@ describe("Plugin Registry", () => {
     });
 
     it("declares device OAuth metadata gated by authMode", () => {
-      const desc = getPluginDescriptor("gitlab-issue");
+      const desc = getProviderDescriptor("gitlab");
 
       expect(desc?.oauth).toMatchObject({
         mode: "device",
         tokenField: "token",
         providerName: "GitLab",
-        startPath: "/api/admin/plugins/gitlab-issue/oauth/device-code",
-        completePath: "/api/admin/plugins/gitlab-issue/oauth/token",
+        startPath: "/api/admin/plugins/gitlab/oauth/device-code",
+        completePath: "/api/admin/plugins/gitlab/oauth/token",
         dependsOn: {
           field: "authMode",
           value: "oauth",
@@ -137,7 +134,7 @@ describe("Plugin Registry", () => {
     });
 
     it("exposes gitlab auth fields without an OAuth client secret input", () => {
-      const fieldKeys = gitlabIssueDescriptor.requiredFields.map((field) => field.key);
+      const fieldKeys = gitlabDescriptor.requiredFields.map((field) => field.key);
 
       expect(fieldKeys).toContain("authMode");
       expect(fieldKeys).toContain("token");
@@ -170,7 +167,7 @@ describe("Plugin Registry", () => {
       });
       vi.stubGlobal("fetch", fetchMock);
 
-      const desc = getPluginDescriptor("gitlab-issue");
+      const desc = getProviderDescriptor("gitlab");
       const handler = desc?.createOAuthHandler?.({
         baseUrl: "https://gitlab.example.com",
         oauthClientId: "client-id",
@@ -229,7 +226,7 @@ describe("Plugin Registry", () => {
       });
       vi.stubGlobal("fetch", fetchMock);
 
-      const desc = getPluginDescriptor("gitlab-issue");
+      const desc = getProviderDescriptor("gitlab");
       const handler = desc?.createOAuthHandler?.({
         baseUrl: "https://gitlab.example.com",
         oauthClientId: "client-id",
@@ -246,7 +243,7 @@ describe("Plugin Registry", () => {
     });
 
     it("returns a guided OAuth message when testConnection is run before OAuth completion", async () => {
-      await expect(gitlabIssueDescriptor.testConnection?.({
+      await expect(gitlabDescriptor.testConnection?.({
         baseUrl: "https://gitlab.example.com",
         authMode: "oauth",
       })).resolves.toEqual({
@@ -256,21 +253,20 @@ describe("Plugin Registry", () => {
     });
 
     it("derives ticketing, discovery, and oauth capabilities", () => {
-      expect(getPluginCapabilities(gitlabIssueDescriptor)).toEqual(
-        expect.arrayContaining(["ticketing", "discovery", "oauth"])
+      expect(getPluginCapabilities(gitlabDescriptor)).toEqual(
+        expect.arrayContaining(["issue_tracking", "discovery", "oauth"])
       );
     });
   });
 
   describe("gitlab merge request descriptor", () => {
     it("has correct metadata", () => {
-      const desc = getPluginDescriptor("gitlab-merge-request");
-      expect(desc?.name).toBe("GitLab Merge Requests");
-      expect(desc?.category).toBe("review");
+      const desc = getProviderDescriptor("gitlab");
+      expect(desc?.name).toBe("GitLab");
     });
 
     it("validates valid gitlab merge request PAT config", () => {
-      const result = gitlabMergeRequestDescriptor.configSchema.safeParse({
+      const result = gitlabDescriptor.configSchema.safeParse({
         baseUrl: "https://gitlab.example.com",
         authMode: "pat",
         token: "token-123",
@@ -279,7 +275,7 @@ describe("Plugin Registry", () => {
     });
 
     it("validates valid gitlab merge request OAuth config", () => {
-      const result = gitlabMergeRequestDescriptor.configSchema.safeParse({
+      const result = gitlabDescriptor.configSchema.safeParse({
         baseUrl: "https://gitlab.example.com",
         authMode: "oauth",
         token: "oauth-token",
@@ -288,14 +284,14 @@ describe("Plugin Registry", () => {
     });
 
     it("declares device OAuth metadata gated by authMode", () => {
-      const desc = getPluginDescriptor("gitlab-merge-request");
+      const desc = getProviderDescriptor("gitlab");
 
       expect(desc?.oauth).toMatchObject({
         mode: "device",
         tokenField: "token",
         providerName: "GitLab",
-        startPath: "/api/admin/plugins/gitlab-merge-request/oauth/device-code",
-        completePath: "/api/admin/plugins/gitlab-merge-request/oauth/token",
+        startPath: "/api/admin/plugins/gitlab/oauth/device-code",
+        completePath: "/api/admin/plugins/gitlab/oauth/token",
         dependsOn: {
           field: "authMode",
           value: "oauth",
@@ -304,7 +300,7 @@ describe("Plugin Registry", () => {
     });
 
     it("reuses gitlab auth fields without an OAuth client secret input", () => {
-      const fieldKeys = gitlabMergeRequestDescriptor.requiredFields.map((field) => field.key);
+      const fieldKeys = gitlabDescriptor.requiredFields.map((field) => field.key);
 
       expect(fieldKeys).toContain("authMode");
       expect(fieldKeys).toContain("token");
@@ -315,13 +311,13 @@ describe("Plugin Registry", () => {
     });
 
     it("derives review, discovery, vcs, and oauth capabilities", () => {
-      expect(getPluginCapabilities(gitlabMergeRequestDescriptor)).toEqual(
-        expect.arrayContaining(["review", "discovery", "vcs", "oauth"])
+      expect(getPluginCapabilities(gitlabDescriptor)).toEqual(
+        expect.arrayContaining(["code_review", "source_control", "discovery", "oauth"])
       );
     });
 
     it("returns a guided OAuth message when testConnection is run before OAuth completion", async () => {
-      await expect(gitlabMergeRequestDescriptor.testConnection?.({
+      await expect(gitlabDescriptor.testConnection?.({
         baseUrl: "https://gitlab.example.com",
         authMode: "oauth",
       })).resolves.toEqual({
@@ -333,13 +329,12 @@ describe("Plugin Registry", () => {
 
   describe("copilot descriptor", () => {
     it("has correct metadata", () => {
-      const desc = getPluginDescriptor("copilot");
+      const desc = getProviderDescriptor("copilot");
       expect(desc?.name).toBe("GitHub Copilot");
-      expect(desc?.category).toBe("agent");
     });
 
     it("declares OAuth metadata for generic dashboard wiring", () => {
-      const desc = getPluginDescriptor("copilot");
+      const desc = getProviderDescriptor("copilot");
 
       expect(desc?.oauth).toMatchObject({
         mode: "device",
@@ -355,7 +350,7 @@ describe("Plugin Registry", () => {
     });
 
     it("provides an OAuth handler through the descriptor", () => {
-      const desc = getPluginDescriptor("copilot");
+      const desc = getProviderDescriptor("copilot");
       const handler = desc?.createOAuthHandler?.();
 
       expect(handler).toMatchObject({ kind: "device" });
@@ -364,16 +359,16 @@ describe("Plugin Registry", () => {
     });
 
     it("derives agent and oauth capabilities", () => {
-      const desc = getPluginDescriptor("copilot");
+      const desc = getProviderDescriptor("copilot");
 
       expect(desc).toBeDefined();
       expect(getPluginCapabilities(desc!)).toEqual(
-        expect.arrayContaining(["agent", "oauth"])
+        expect.arrayContaining(["agent_execution", "oauth"])
       );
     });
 
     it("has a hidden sessionToken field for server-side masking (OAuth button handles auth)", () => {
-      const desc = getPluginDescriptor("copilot");
+      const desc = getProviderDescriptor("copilot");
 
       // The session token field is declared so the server can mask/preserve it,
       // but is hidden from the admin UI (the OAuth button writes it directly).
@@ -458,14 +453,89 @@ describe("Plugin Registry", () => {
 
   describe("mock descriptor", () => {
     it("has correct metadata", () => {
-      const desc = getPluginDescriptor("mock");
+      const desc = getProviderDescriptor("mock");
       expect(desc?.name).toBe("Mock Agent");
-      expect(desc?.category).toBe("agent");
     });
 
     it("validates minimal mock config", () => {
       const result = mockDescriptor.configSchema.safeParse({});
       expect(result.success).toBe(true);
+    });
+  });
+
+  describe("provider icon metadata", () => {
+    it("exposes brand icon metadata on branded providers", () => {
+      expect(getProviderDescriptor("github")?.icon).toEqual({ slug: "github", hex: "181717" });
+      expect(getProviderDescriptor("gitlab")?.icon).toEqual({ slug: "gitlab", hex: "FC6D26" });
+      expect(getProviderDescriptor("gerrit")?.icon).toEqual({ slug: "gerrit", hex: "EE0000" });
+      expect(getProviderDescriptor("redmine")?.icon).toEqual({ slug: "redmine", hex: "B32024" });
+      expect(getProviderDescriptor("copilot")?.icon).toEqual({ slug: "githubcopilot", hex: "000000" });
+    });
+
+    it("omits icon metadata for the unbranded mock provider", () => {
+      expect(getProviderDescriptor("mock")?.icon).toBeUndefined();
+    });
+  });
+
+  describe("buildBuiltinDescriptors", () => {
+    it("returns all six built-in descriptors in registration order", () => {
+      const descriptors = buildBuiltinDescriptors();
+      expect(descriptors.map((d) => d.provider)).toEqual([
+        "redmine",
+        "gerrit",
+        "gitlab",
+        "copilot",
+        "mock",
+        "github",
+      ]);
+    });
+
+    it("threads adminAuthSecret into the copilot descriptor factory", () => {
+      const descriptors = buildBuiltinDescriptors({ adminAuthSecret: "s3cr3t" });
+      const copilot = descriptors.find((d) => d.provider === "copilot");
+      expect(copilot).toBeDefined();
+      expect(typeof copilot?.testConnection).toBe("function");
+      expect(typeof copilot?.discoverModels).toBe("function");
+    });
+  });
+
+  describe("copilot discoverModels hook", () => {
+    it("throws a config error when PAT auth has no token", async () => {
+      const desc = createCopilotDescriptor();
+      await expect(desc.discoverModels?.({ authMode: "pat" })).rejects.toBeInstanceOf(ModelDiscoveryConfigError);
+      await expect(desc.discoverModels?.({ authMode: "pat" })).rejects.toThrow(/No PAT/);
+    });
+
+    it("throws a config error when OAuth auth has no session token", async () => {
+      const desc = createCopilotDescriptor();
+      await expect(desc.discoverModels?.({ authMode: "oauth" })).rejects.toBeInstanceOf(ModelDiscoveryConfigError);
+      await expect(desc.discoverModels?.({})).rejects.toThrow(/OAuth/);
+    });
+  });
+
+  describe("normalizeConfigForRead hooks", () => {
+    it("gitlab defaults a missing authMode to pat", () => {
+      const desc = getProviderDescriptor("gitlab");
+      const normalized = desc?.normalizeConfigForRead?.({ baseUrl: "https://gitlab.example.com" });
+      expect(normalized).toMatchObject({ authMode: "pat" });
+    });
+
+    it("gitlab preserves an explicit authMode", () => {
+      const desc = getProviderDescriptor("gitlab");
+      const normalized = desc?.normalizeConfigForRead?.({ authMode: "oauth" });
+      expect(normalized).toMatchObject({ authMode: "oauth" });
+    });
+
+    it("gerrit strips webhook transport fields from the read config", () => {
+      const desc = getProviderDescriptor("gerrit");
+      const normalized = desc?.normalizeConfigForRead?.({
+        sshHost: "gerrit",
+        webhookSecret: "secret",
+        webhookAllowedIps: "1.2.3.4",
+      });
+      expect(normalized).not.toHaveProperty("webhookSecret");
+      expect(normalized).not.toHaveProperty("webhookAllowedIps");
+      expect(normalized).toMatchObject({ sshHost: "gerrit" });
     });
   });
 });

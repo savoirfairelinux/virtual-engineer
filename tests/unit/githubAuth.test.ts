@@ -253,7 +253,7 @@ describe("githubAuth", () => {
       expect(fetchMock).toHaveBeenCalledTimes(1);
       const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
       expect(url).toBe(
-        "https://api.github.com/user/repos?per_page=100&affiliation=owner,collaborator,organization_member"
+        "https://api.github.com/user/repos?per_page=100&type=all&sort=full_name"
       );
       expect(result.map((r) => r.fullName)).toEqual(["acme/alpha", "acme/beta"]);
       expect(result[0]?.cloneUrl).toBe("https://github.com/acme/alpha.git");
