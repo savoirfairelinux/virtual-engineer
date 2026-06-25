@@ -162,6 +162,10 @@ async function importRuntime(
     decryptIntegrationConfig: vi.fn((integration: Integration) => {
       return JSON.parse(integration.configJson) as Record<string, unknown>;
     }),
+    integrationHasStreamEvents: vi.fn((integrationId: string) => {
+      const integration = getAllActiveIntegrations().find((i) => i.id === integrationId);
+      return integration?.type === "gerrit";
+    }),
   };
 
   const PluginManager = vi.fn().mockImplementation(function () { return pluginManagerInstance; });
@@ -806,20 +810,16 @@ describe("runtime bootstrap provider selection", () => {
     const dbAgent = makeDbAgentAdapter("mock");
 
     const runtime = await importRuntime(
-      // no redmine / gitlab-issue connector
-      { gerrit: dbReview, mock: dbAgent },
+      // no redmine / gitlab-issue connector; use gitlab-merge-request (non-stream-events review)
+      { "gitlab-merge-request": dbReview, mock: dbAgent },
       {
-        gerrit: makeIntegration({
-          id: "gerrit-review-only",
-          type: "gerrit",
+        "gitlab-merge-request": makeIntegration({
+          id: "gitlab-mr-review-only",
+          type: "gitlab-merge-request",
           configJson: JSON.stringify({
-            baseUrl: "http://gerrit.test",
-            httpUsername: "admin",
-            httpPassword: "secret",
-            sshHost: "gerrit.test",
-            sshUser: "ve-bot",
-            sshKeyPath: "/keys/id_rsa",
-            repoCloneUrl: "ssh://gerrit.test/project",
+            baseUrl: "http://gitlab.test",
+            gitlabProjectId: "1",
+            accessToken: "token",
           }),
         }),
       },
@@ -829,7 +829,7 @@ describe("runtime bootstrap provider selection", () => {
         withRunnableProject: {
           projectId: "p1",
           type: "review",
-          reviewTargetIntegrationId: "gerrit-review-only",
+          reviewTargetIntegrationId: "gitlab-mr-review-only",
         },
       }
     );

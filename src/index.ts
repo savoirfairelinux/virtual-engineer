@@ -158,9 +158,12 @@ async function main(): Promise<void> {
     reviewTriggerHolder.current = buildReviewTrigger(pluginManager, config.workspaceBaseDir, workspaceRunner, stateStore);
     await integrationStreamEvents.reconcile(pluginManager.getActiveIntegrations());
     log.info("runtime dependencies refreshed");
-    if (!pollingLoop.isRunning() && await hasRunnableProject(stateStore, pluginManager)) {
-      log.info("runnable project detected — starting polling loop");
+    if (!pollingLoop.isRunning() && await pollingIsRequired(stateStore, pluginManager)) {
+      log.info("polling-requiring project detected — starting polling loop");
       pollingLoop.start();
+    } else if (pollingLoop.isRunning() && !(await pollingIsRequired(stateStore, pluginManager))) {
+      log.info("no polling-requiring projects remain — stopping polling loop");
+      pollingLoop.stop();
     }
   }
 
@@ -282,12 +285,13 @@ async function main(): Promise<void> {
     void shutdown("SIGTERM");
   });
 
-  if (await hasRunnableProject(stateStore, pluginManager)) {
+  if (await pollingIsRequired(stateStore, pluginManager)) {
     pollingLoop.start();
   } else {
     log.warn(
-      "Polling loop not started: no enabled project with all required integrations active. " +
-      "Create a complete project via the admin UI to begin processing tickets."
+      "Polling loop not started: no enabled project with polling-requiring integrations active. " +
+      "Stream-based review systems (e.g., Gerrit) do not require polling. " +
+      "Create a project with polling-based ticket sources or review integrations (e.g., Redmine, GitHub Issues, GitLab MRs) to start polling."
     );
   }
   log.info("Virtual Engineer running — press Ctrl+C to stop");
@@ -359,12 +363,16 @@ function resolveReviewIntegration(
   return candidates[0] ?? null;
 }
 
+
 /**
- * Returns true when at least one enabled project has all required integrations
- * active in the plugin manager. For coding projects: ticket source + at least
- * one push target. For review projects: review target.
+ * Returns true when polling is actually required by at least one enabled project.
+ *
+ * Polling is needed when:
+ * - There is at least one enabled coding project (always requires polling for ticket discovery)
+ * - There is at least one enabled review project whose review integration does NOT support
+ *   stream events (e.g., GitHub/GitLab MRs need polling; Gerrit with streamEvents does not)
  */
-async function hasRunnableProject(
+async function pollingIsRequired(
   store: {
     listProjects(filter?: { enabled?: boolean }): Promise<ProjectRecord[]>;
     getProjectTicketSource(id: ProjectId): Promise<ProjectTicketSourceRecord | null>;
@@ -382,7 +390,8 @@ async function hasRunnableProject(
       if (pts.some(pt => pluginManager.isIntegrationActive(pt.integrationId))) return true;
     } else if (project.type === "review") {
       const rc = await store.getProjectReviewConfig(project.id);
-      if (rc && pluginManager.isIntegrationActive(rc.integrationId)) return true;
+      if (!rc || !pluginManager.isIntegrationActive(rc.integrationId)) continue;
+      if (!pluginManager.integrationHasStreamEvents(rc.integrationId)) return true;
     }
   }
   return false;
