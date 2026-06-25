@@ -26,8 +26,8 @@ async function makeAgent(store: SqliteStateStore, overrides: Partial<Parameters<
   });
 }
 
-async function makeIntegration(store: SqliteStateStore, id: string, type: "redmine" | "gerrit" = "redmine") {
-  await store.upsertIntegration({ id, type, name: id, configJson: "{}", enabled: true });
+async function makeIntegration(store: SqliteStateStore, id: string, provider: "redmine" | "gerrit" = "redmine") {
+  await store.upsertIntegration({ id, provider, name: id, configJson: "{}", enabled: true });
 }
 
 describe("SqliteStateStore — Phase 2: agents", () => {

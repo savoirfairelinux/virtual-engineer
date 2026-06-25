@@ -500,11 +500,12 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
   function findAdoptionTargetForTask(taskId: TaskId): { projectId: string; integrationId: string; ticketProjectKey: string } | null {
     const snapshotRow = raw
       .prepare(
-        "SELECT pts.project_id AS projectId, t.ticket_source_integration_id AS integrationId, " +
+        "SELECT pib.project_id AS projectId, t.ticket_source_integration_id AS integrationId, " +
         "t.ticket_source_project_key AS ticketProjectKey FROM tasks t " +
-        "JOIN project_ticket_source pts " +
-        "ON pts.integration_id = t.ticket_source_integration_id " +
-        "AND pts.ticket_project_key = t.ticket_source_project_key " +
+        "JOIN project_integration_bindings pib " +
+        "ON pib.capability = 'issue_tracking' " +
+        "AND pib.integration_id = t.ticket_source_integration_id " +
+        "AND json_extract(pib.config_json, '$.ticketProjectKey') = t.ticket_source_project_key " +
         "WHERE t.task_id = ? " +
         "AND t.ticket_source_integration_id IS NOT NULL " +
         "AND t.ticket_source_project_key IS NOT NULL"
@@ -520,8 +521,9 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
 
     const fallbackRows = raw
       .prepare(
-        "SELECT project_id AS projectId, integration_id AS integrationId, ticket_project_key AS ticketProjectKey " +
-        "FROM project_ticket_source WHERE integration_id = ?"
+        "SELECT project_id AS projectId, integration_id AS integrationId, " +
+        "json_extract(config_json, '$.ticketProjectKey') AS ticketProjectKey " +
+        "FROM project_integration_bindings WHERE capability = 'issue_tracking' AND integration_id = ?"
       )
       .all(integrationId) as { projectId: string; integrationId: string; ticketProjectKey: string }[];
     if (fallbackRows.length !== 1) return null;

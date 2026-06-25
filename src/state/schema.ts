@@ -1,7 +1,7 @@
 /** Drizzle ORM table definitions for the Virtual Engineer SQLite database. All timestamps are seconds since epoch (`mode: "timestamp"`). */
 import { sqliteTable, text, integer, index, unique, check, primaryKey } from "drizzle-orm/sqlite-core";
 import { sql } from "drizzle-orm";
-import type { TaskState, IntegrationType, TaskType, AgentType, ProjectType, PushTargetRole } from "../interfaces.js";
+import type { TaskState, ProviderId, TaskType, AgentType, ProjectType, PushTargetRole, DomainCapability } from "../interfaces.js";
 
 export const tasks = sqliteTable("tasks", {
   taskId: text("task_id").primaryKey(),
@@ -84,7 +84,7 @@ export const processedComments = sqliteTable("processed_comments", {
 
 export const integrations = sqliteTable("integrations", {
   id: text("id").primaryKey(),
-  type: text("type").$type<IntegrationType>().notNull(),
+  provider: text("provider").$type<ProviderId>().notNull(),
   name: text("name").notNull(),
   configJson: text("config_json").notNull(),
   enabled: integer("enabled").notNull().default(1),
@@ -218,26 +218,27 @@ export const projects = sqliteTable(
 );
 
 /**
- * Coding-project ticket source. A coding project has exactly one ticket source.
- * Globally unique on `(integration_id, ticket_project_key)` so two projects
- * cannot fight over the same ticket source.
+ * A project's binding of an integration to a domain capability. Replaces the
+ * former `project_ticket_source` / `project_review_integration` /
+ * `project_review_repos` tables. One row per `(project_id, capability)`.
+ * `config_json` carries capability-specific config (e.g. `{ ticketProjectKey }`
+ * for `issue_tracking`, `{ repos: [...] }` for `code_review`).
  */
-export const projectTicketSource = sqliteTable(
-  "project_ticket_source",
+export const projectIntegrationBindings = sqliteTable(
+  "project_integration_bindings",
   {
-    id: integer("id").primaryKey({ autoIncrement: true }),
+    id: text("id").primaryKey(),
     projectId: text("project_id").notNull().references(() => projects.id),
     integrationId: text("integration_id").notNull().references(() => integrations.id),
-    ticketProjectKey: text("ticket_project_key").notNull(),
+    capability: text("capability").$type<DomainCapability>().notNull(),
+    configJson: text("config_json").notNull().default("{}"),
     createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
   },
   (table) => ({
-    uqProjectTicketSourceGlobal: unique("uq_project_ticket_source_global").on(
-      table.integrationId,
-      table.ticketProjectKey
-    ),
-    uqProjectTicketSourceProject: unique("uq_project_ticket_source_project").on(table.projectId),
-    idxPtsProjectId: index("idx_pts_project_id").on(table.projectId),
+    uqPibProjectCapability: unique("uq_pib_project_capability").on(table.projectId, table.capability),
+    idxPibProjectId: index("idx_pib_project_id").on(table.projectId),
+    idxPibCapability: index("idx_pib_capability").on(table.capability),
   })
 );
 
@@ -268,31 +269,7 @@ export const projectPushTargets = sqliteTable(
   })
 );
 
-/**
- * Review-project integration binding. One row per review project — links the
- * project to its VCS integration (Gerrit, GitLab MR, …).
- */
-export const projectReviewIntegration = sqliteTable("project_review_integration", {
-  projectId: text("project_id").primaryKey().references(() => projects.id),
-  integrationId: text("integration_id").notNull().references(() => integrations.id),
-});
-
-/**
- * Inclusion list of repositories covered by a review project. Many rows per
- * project (one per repo). A repo can appear in multiple projects simultaneously.
- */
-export const projectReviewRepos = sqliteTable(
-  "project_review_repos",
-  {
-    id: integer("id").primaryKey({ autoIncrement: true }),
-    projectId: text("project_id").notNull().references(() => projects.id),
-    repoKey: text("repo_key").notNull(),
-  },
-  (table) => ({
-    uqProjectRepo: unique("uq_project_review_repo").on(table.projectId, table.repoKey),
-    idxPrrProjectId: index("idx_prr_project_id").on(table.projectId),
-  })
-);
+// (review-project bindings now live in project_integration_bindings above)
 
 /**
  * Singleton table holding the global concurrency limit. `id` is constrained to

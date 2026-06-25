@@ -126,7 +126,7 @@ export class SqliteStateStore {
 
       CREATE TABLE IF NOT EXISTS integrations (
         id          TEXT    PRIMARY KEY,
-        type        TEXT    NOT NULL,
+        provider    TEXT    NOT NULL,
         name        TEXT    NOT NULL,
         config_json TEXT    NOT NULL,
         enabled     INTEGER NOT NULL DEFAULT 1,
@@ -203,19 +203,21 @@ export class SqliteStateStore {
       CREATE INDEX IF NOT EXISTS idx_projects_name ON projects(name);
       CREATE INDEX IF NOT EXISTS idx_projects_enabled ON projects(enabled);
 
-      CREATE TABLE IF NOT EXISTS project_ticket_source (
-        id                 INTEGER PRIMARY KEY AUTOINCREMENT,
-        project_id         TEXT    NOT NULL REFERENCES projects(id),
-        integration_id     TEXT    NOT NULL REFERENCES integrations(id),
-        ticket_project_key TEXT    NOT NULL,
-        created_at         INTEGER NOT NULL
+      CREATE TABLE IF NOT EXISTS project_integration_bindings (
+        id             TEXT    PRIMARY KEY,
+        project_id     TEXT    NOT NULL REFERENCES projects(id),
+        integration_id TEXT    NOT NULL REFERENCES integrations(id),
+        capability     TEXT    NOT NULL,
+        config_json    TEXT    NOT NULL DEFAULT '{}',
+        created_at     INTEGER NOT NULL,
+        updated_at     INTEGER NOT NULL
       );
-      CREATE UNIQUE INDEX IF NOT EXISTS uq_project_ticket_source_global
-        ON project_ticket_source(integration_id, ticket_project_key);
-      CREATE UNIQUE INDEX IF NOT EXISTS uq_project_ticket_source_project
-        ON project_ticket_source(project_id);
-      CREATE INDEX IF NOT EXISTS idx_pts_project_id
-        ON project_ticket_source(project_id);
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_pib_project_capability
+        ON project_integration_bindings(project_id, capability);
+      CREATE INDEX IF NOT EXISTS idx_pib_project_id
+        ON project_integration_bindings(project_id);
+      CREATE INDEX IF NOT EXISTS idx_pib_capability
+        ON project_integration_bindings(capability);
 
       CREATE TABLE IF NOT EXISTS project_push_targets (
         id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -237,20 +239,6 @@ export class SqliteStateStore {
         ON project_push_targets(project_id, commit_order);
       CREATE INDEX IF NOT EXISTS idx_ppt_project_id
         ON project_push_targets(project_id);
-
-      CREATE TABLE IF NOT EXISTS project_review_integration (
-        project_id     TEXT    PRIMARY KEY REFERENCES projects(id),
-        integration_id TEXT    NOT NULL REFERENCES integrations(id)
-      );
-
-      CREATE TABLE IF NOT EXISTS project_review_repos (
-        id             INTEGER PRIMARY KEY AUTOINCREMENT,
-        project_id     TEXT    NOT NULL REFERENCES projects(id),
-        repo_key       TEXT    NOT NULL,
-        UNIQUE(project_id, repo_key)
-      );
-      CREATE INDEX IF NOT EXISTS idx_prr_project_id
-        ON project_review_repos(project_id);
 
       CREATE TABLE IF NOT EXISTS app_concurrency (
         id             TEXT    PRIMARY KEY CHECK (id = 'global'),
