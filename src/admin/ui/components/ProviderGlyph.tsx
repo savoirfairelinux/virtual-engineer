@@ -15,6 +15,10 @@ const BRAND_SVG_URLS: Record<string, string> = Object.fromEntries(
 );
 
 const TYPE_TO_BRAND: Record<string, string> = {
+  // Unified provider keys (post-refactor)
+  github:                 "github",
+  gitlab:                 "gitlab",
+  // Legacy split-descriptor keys (kept for backwards compat with old DB rows)
   "github-issue":         "github",
   "github-pull-request":  "github",
   "gitlab-issue":         "gitlab",

@@ -8,7 +8,7 @@ import {
   type AgentType,
   type OAuthAppStore,
   type IntegrationStore,
-  type IntegrationType,
+  type ProviderId,
   type ProjectRecord,
 } from "../interfaces.js";
 import {
@@ -17,7 +17,7 @@ import {
 } from "../agents/providerAuthService.js";
 import { exchangeForSessionToken, fetchAvailableModels, fetchAvailableModelsWithPat } from "../agents/copilotModelsService.js";
 import { decryptToken } from "../utils/encryption.js";
-import { getPluginDescriptor } from "../plugins/registry.js";
+import { getProviderDescriptor } from "../plugins/registry.js";
 import type { Router } from "./router.js";
 
 const log = getLogger("admin-agents");
@@ -66,11 +66,11 @@ class PluginOAuthConfigError extends Error {
 }
 
 function mergePluginOAuthConfig(
-  pluginType: IntegrationType,
+  pluginType: ProviderId,
   existingConfig: Record<string, unknown>,
   updates: Record<string, unknown>
 ): Record<string, unknown> {
-  const descriptor = getPluginDescriptor(pluginType);
+  const descriptor = getProviderDescriptor(pluginType);
   const merged: Record<string, unknown> = {
     ...existingConfig,
     ...updates,
@@ -122,7 +122,7 @@ function mergePluginOAuthConfig(
 }
 
 async function resolvePluginOAuthConfig(
-  pluginType: IntegrationType,
+  pluginType: ProviderId,
   body: Record<string, unknown>,
   integrationStore?: Pick<IntegrationStore, "getIntegration"> | undefined
 ): Promise<Record<string, unknown>> {
@@ -136,7 +136,7 @@ async function resolvePluginOAuthConfig(
   if (!existing) {
     throw new PluginOAuthConfigError("Integration not found", 404);
   }
-  if (existing.type !== pluginType) {
+  if (existing.provider !== pluginType) {
     throw new PluginOAuthConfigError("Integration type mismatch", 400);
   }
 
@@ -277,7 +277,7 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
 
   // ── Generic plugin OAuth routes (no agentStore needed) ──────────────────
   router.add("POST", "/api/admin/plugins/:type/oauth/:action", async (req, res, params) => {
-    const pluginType = params["type"] as IntegrationType ?? "";
+    const pluginType = params["type"] as ProviderId ?? "";
     const action = params["action"] ?? "";
     if (!VALID_OAUTH_ACTIONS.has(action)) {
       writeJson(res, 404, { error: "OAuth route not available" }); return;
@@ -285,7 +285,7 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
     const oauthAction = action as PluginOAuthRouteAction;
 
     const body = (await readBody(req)) ?? {};
-    const descriptor = getPluginDescriptor(pluginType);
+    const descriptor = getProviderDescriptor(pluginType);
     let oauthConfig: Record<string, unknown>;
     try {
       oauthConfig = await resolvePluginOAuthConfig(pluginType, body, deps.integrationStore);

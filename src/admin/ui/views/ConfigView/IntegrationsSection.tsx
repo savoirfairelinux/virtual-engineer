@@ -71,18 +71,18 @@ export function IntegrationsSection({ integrations, plugins, onRefresh }: Config
           const tone = it.enabled ? "ok" : "muted";
           return (
             <RowCard key={it.id} onClick={() => setDrawerId(it.id)}>
-              <ProviderGlyph provider={it.type} size={36} />
+              <ProviderGlyph provider={it.provider} size={36} />
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: "9px", minWidth: 0 }}>
                   <span style={{ fontSize: "13.5px", fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                     {it.name}
                   </span>
-                  <Tag tone={it.category === "agent" ? "active" : it.category === "ticketing" ? "info" : "warn"} mono={false}>
-                    {it.category}
+                  <Tag tone={it.domainCapabilities.includes("agent_execution") ? "active" : it.domainCapabilities.includes("issue_tracking") ? "info" : "warn"} mono={false}>
+                    {it.provider}
                   </Tag>
                 </div>
                 <div style={{ fontSize: "12px", color: "var(--text-faint)", marginTop: "3px" }}>
-                  {it.type} · {it.id.slice(0, 8)}
+                  {it.provider} · {it.id.slice(0, 8)}
                 </div>
               </div>
               <Tag tone={tone}>

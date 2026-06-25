@@ -221,7 +221,7 @@ describe("Admin API — Agent routes (/api/admin/agents)", () => {
     // Create a copilot integration first
     await store.upsertIntegration({
       id: "copilot-1",
-      type: "copilot",
+      provider: "copilot",
       name: "Copilot",
       configJson: JSON.stringify({ apiKey: "ghp_test" }),
       enabled: true,
@@ -243,7 +243,7 @@ describe("Admin API — Agent routes (/api/admin/agents)", () => {
   it("PUT /:id updates integrationId", async () => {
     await store.upsertIntegration({
       id: "copilot-2",
-      type: "copilot",
+      provider: "copilot",
       name: "Copilot 2",
       configJson: JSON.stringify({ apiKey: "ghp_test" }),
       enabled: true,
@@ -261,7 +261,7 @@ describe("Admin API — Agent routes (/api/admin/agents)", () => {
   it("GET /:id/available-models returns models for PAT-mode linked integration", async () => {
     await store.upsertIntegration({
       id: "copilot-pat",
-      type: "copilot",
+      provider: "copilot",
       name: "Copilot PAT",
       configJson: JSON.stringify({ authMode: "pat", token: "github_pat_test123" }),
       enabled: true,

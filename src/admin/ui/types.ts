@@ -85,14 +85,24 @@ export interface ApiTransition {
   createdAt: string;
 }
 
+export type DomainCapability = "issue_tracking" | "code_review" | "source_control" | "agent_execution";
+
 export interface ApiIntegration {
   id: string;
-  type: string;
+  provider: string;
   name: string;
   enabled: boolean;
-  category: "ticketing" | "review" | "agent";
-  configJson: string;
+  active?: boolean;
+  capabilities: string[];
+  domainCapabilities: DomainCapability[];
+  icon?: string | null;
+  config?: Record<string, string>;
+  discoverySupported?: boolean;
+  streamEventsSupported?: boolean;
   streamStatus?: unknown;
+  discoveredAt?: string | null;
+  createdAt?: string;
+  updatedAt?: string;
   discoveredResources?: {
     ticketProjects?: Array<{
       key: string;
@@ -151,10 +161,11 @@ export interface ApiPluginOAuth {
 }
 
 export interface ApiPlugin {
-  type: string;
+  provider: string;
   name: string;
-  category: "ticketing" | "review" | "agent";
   capabilities: string[];
+  domainCapabilities: DomainCapability[];
+  icon?: string | null;
   requiredFields: PluginField[];
   oauth?: ApiPluginOAuth;
 }
@@ -258,6 +269,7 @@ export interface VeAdminBootstrap {
   gerritBaseUrl: string | null;
   gitlabBaseUrl: string | null;
   ticketLinkTemplates: Record<string, string>;
+  providerLogos?: Record<string, string>;
 }
 
 declare global {

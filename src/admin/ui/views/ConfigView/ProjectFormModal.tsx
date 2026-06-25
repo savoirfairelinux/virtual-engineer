@@ -450,9 +450,9 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
   const reviewAgents = agents.filter((a) => a.type === "review");
   const currentAgents = projectType === "coding" ? codingAgents : reviewAgents;
 
-  const ticketingIntegrations = integrations.filter((i) => i.category === "ticketing");
-  const vcsIntegrations = integrations.filter((i) => i.category === "review");
-  const reviewIntegrations = integrations.filter((i) => i.category === "review");
+  const ticketingIntegrations = integrations.filter((i) => i.domainCapabilities.includes("issue_tracking"));
+  const vcsIntegrations = integrations.filter((i) => i.domainCapabilities.includes("source_control"));
+  const reviewIntegrations = integrations.filter((i) => i.domainCapabilities.includes("code_review"));
 
   const updatePushTarget = (idx: number, key: keyof PushTarget, val: string) => {
     setPushTargets((prev) => prev.map((t, i) => i === idx ? { ...t, [key]: val } : t));

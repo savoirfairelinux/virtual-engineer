@@ -22,11 +22,11 @@ export interface StateMeta {
 export const STATES: Record<TaskState, StateMeta> = {
   // code-gen flow
   DETECTED:            { label: "DETECTED",            tone: "info",   kind: "gen" },
-  CONTEXT_BUILDING:    { label: "CONTEXT_BUILDING",    tone: "info",   kind: "gen" },
+  CONTEXT_BUILDING:    { label: "IN_QUEUE",            tone: "info",   kind: "gen" },
   AGENT_RUNNING:       { label: "AGENT_RUNNING",       tone: "active", kind: "gen" },
   IN_REVIEW:           { label: "IN_REVIEW",           tone: "warn",   kind: "gen" },
   FEEDBACK_PROCESSING: { label: "FEEDBACK_PROCESSING", tone: "active", kind: "gen" },
-  RETRY_CYCLE:         { label: "RETRY_CYCLE",         tone: "active", kind: "gen" },
+  RETRY_CYCLE:         { label: "IN_QUEUE",            tone: "info",   kind: "gen" },
   MERGED:              { label: "MERGED",              tone: "ok",     kind: "gen" },
   CLOSING:             { label: "CLOSING",             tone: "active", kind: "gen" },
   DONE:                { label: "DONE",                tone: "ok",     kind: "gen" },
@@ -54,8 +54,9 @@ export const REV_PIPELINE: TaskState[] = [
 /* Short label per node */
 export const NODE_SHORT: Partial<Record<TaskState, string>> = {
   DETECTED:          "Detected",
-  CONTEXT_BUILDING:  "Context",
+  CONTEXT_BUILDING:  "Queue",
   AGENT_RUNNING:     "Agent",
+  RETRY_CYCLE:       "Queue",
   IN_REVIEW:         "Review",
   MERGED:            "Merged",
   CLOSING:           "Closing",

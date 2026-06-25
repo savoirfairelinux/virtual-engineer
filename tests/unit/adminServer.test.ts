@@ -1037,7 +1037,7 @@ describe("createAdminServer", () => {
     const integrationStore: IntegrationStore = {
       getIntegrations: async () => [{
         id: "gitlab-local",
-        type: "gitlab-issue",
+        provider: "gitlab",
         name: "GitLab Local",
         configJson: JSON.stringify({
           baseUrl: "http://localhost:8929",
@@ -1085,9 +1085,10 @@ describe("createAdminServer", () => {
         integrations: [
           {
             id: "gitlab-local",
-            type: "gitlab-issue",
-            category: "ticketing",
-            capabilities: ["ticketing", "oauth", "discovery"],
+            provider: "gitlab",
+            icon: { slug: "gitlab", hex: "FC6D26" },
+            capabilities: ["issue_tracking", "code_review", "source_control", "oauth", "discovery"],
+            domainCapabilities: ["issue_tracking", "code_review", "source_control"],
             name: "GitLab Local",
             enabled: false,
             active: false,
@@ -1279,11 +1280,11 @@ describe("createAdminServer", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const pluginManager = {
-      getActiveIntegrationsByType(type: string) {
-        if (type === "gitlab-merge-request") {
+      getActiveIntegrationsByProvider(provider: string) {
+        if (provider === "gitlab") {
           return [{
             id: "gitlab-mr",
-            type: "gitlab-merge-request",
+            provider: "gitlab",
             name: "GitLab MR",
             configJson: JSON.stringify({
               baseUrl: "https://gitlab.example.com",
@@ -1342,7 +1343,7 @@ describe("createAdminServer", () => {
       getIntegrations: async () => [
         {
           id: "gerrit-a",
-          type: "gerrit",
+          provider: "gerrit",
           name: "Gerrit A",
           configJson: JSON.stringify({
             sshHost: "gerrit-a.example.com",
@@ -1356,7 +1357,7 @@ describe("createAdminServer", () => {
         },
         {
           id: "gerrit-b",
-          type: "gerrit",
+          provider: "gerrit",
           name: "Gerrit B",
           configJson: JSON.stringify({
             sshHost: "gerrit-b.example.com",

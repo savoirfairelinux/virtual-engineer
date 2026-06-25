@@ -19,6 +19,7 @@ import {
   type Task,
 } from "../interfaces.js";
 import type { Router } from "./router.js";
+import { getProviderDescriptor, getProviderDomainCapabilities } from "../plugins/registry.js";
 
 const log = getLogger("admin-projects");
 
@@ -208,7 +209,7 @@ async function loadIntegrationsLookup(store: IntegrationStore | undefined): Prom
 }
 
 /** Integration types that use HTTPS for cloning — SSH URLs are invalid for these. */
-const HTTPS_ONLY_VCS_TYPES = new Set(["github-pull-request", "gitlab-merge-request"]);
+const HTTPS_ONLY_VCS_TYPES = new Set(["github", "gitlab"]);
 
 /**
  * Validate that push targets for HTTPS-based integrations (GitHub, GitLab) do
@@ -222,17 +223,21 @@ async function validatePushTargetCloneUrls(
   for (const target of targets) {
     if (!target.cloneUrl.startsWith("git@")) continue;
     const integration = await integrationStore.getIntegration(target.integrationId).catch(() => null);
-    if (integration && HTTPS_ONLY_VCS_TYPES.has(integration.type)) {
-      return `Push target "${target.repoKey}" uses an SSH clone URL (${target.cloneUrl}) which is not supported for ${integration.type} integrations. Use an HTTPS URL instead (e.g. https://github.com/owner/repo.git).`;
+    if (integration && HTTPS_ONLY_VCS_TYPES.has(integration.provider)) {
+      return `Push target "${target.repoKey}" uses an SSH clone URL (${target.cloneUrl}) which is not supported for ${integration.provider} integrations. Use an HTTPS URL instead (e.g. https://github.com/owner/repo.git).`;
     }
   }
   return null;
 }
 
 /** Return a minimal integration descriptor object for embedding in project API responses. */
-function describeIntegration(integ: Integration | undefined): { id: string; name: string; type: string } | null {
+function describeIntegration(
+  integ: Integration | undefined,
+): { id: string; name: string; provider: string; domainCapabilities: string[] } | null {
   if (!integ) return null;
-  return { id: integ.id, name: integ.name, type: integ.type };
+  const descriptor = getProviderDescriptor(integ.provider);
+  const domainCapabilities = descriptor ? getProviderDomainCapabilities(descriptor) : [];
+  return { id: integ.id, name: integ.name, provider: integ.provider, domainCapabilities };
 }
 
 interface ProjectSummary {
@@ -244,8 +249,8 @@ interface ProjectSummary {
   enabled: boolean;
   createdAt: string;
   updatedAt: string;
-  ticketSource: { integration: { id: string; name: string; type: string } | null; ticketProjectKey: string } | null;
-  reviewConfig: { integration: { id: string; name: string; type: string } | null; repos: string[] } | null;
+  ticketSource: { integration: { id: string; name: string; provider: string; domainCapabilities: string[] } | null; ticketProjectKey: string } | null;
+  reviewConfig: { integration: { id: string; name: string; provider: string; domainCapabilities: string[] } | null; repos: string[] } | null;
   pushTargetCount: number;
 }
 
@@ -254,7 +259,7 @@ interface ProjectDetail extends ProjectSummary {
   postCloneScript: string;
   pushTargets: Array<{
     id: number;
-    integration: { id: string; name: string; type: string } | null;
+    integration: { id: string; name: string; provider: string; domainCapabilities: string[] } | null;
     integrationId: string;
     repoKey: string;
     cloneUrl: string;

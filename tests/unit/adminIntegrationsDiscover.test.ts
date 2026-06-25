@@ -154,7 +154,7 @@ async function putJson(
 
 const REDMINE_INTEGRATION: Integration = {
   id: "int-redmine",
-  type: "redmine",
+  provider: "redmine",
   name: "Redmine Test",
   configJson: JSON.stringify({
     baseUrl: "http://redmine.test",
@@ -171,7 +171,7 @@ const REDMINE_INTEGRATION: Integration = {
 
 const COPILOT_INTEGRATION: Integration = {
   id: "int-copilot",
-  type: "copilot",
+  provider: "copilot",
   name: "Copilot Test",
   configJson: JSON.stringify({ sessionToken: "enc_secret" }),
   enabled: false,
@@ -181,7 +181,7 @@ const COPILOT_INTEGRATION: Integration = {
 
 const MOCK_INTEGRATION: Integration = {
   id: "int-mock",
-  type: "mock",
+  provider: "mock",
   name: "Mock Test",
   configJson: JSON.stringify({ status: "success" }),
   enabled: false,
@@ -191,7 +191,7 @@ const MOCK_INTEGRATION: Integration = {
 
 const GERRIT_INTEGRATION: Integration = {
   id: "int-gerrit",
-  type: "gerrit",
+  provider: "gerrit",
   name: "Gerrit Test",
   configJson: JSON.stringify({
     baseUrl: "http://gerrit.test:8080",
@@ -327,6 +327,16 @@ describe("Admin API — POST /api/admin/integrations/:id/discover", () => {
     expect(integration["discoverySupported"]).toBe(true);
   });
 
+  it("GET /api/admin/integrations/:id serializes the provider icon", async () => {
+    const { body } = await getJson(baseUrl, "/api/admin/integrations/int-redmine");
+    const integration = body["integration"] as Record<string, unknown>;
+    expect(integration["icon"]).toEqual({ slug: "redmine", hex: "B32024" });
+
+    const { body: mockBody } = await getJson(baseUrl, "/api/admin/integrations/int-mock");
+    const mockIntegration = mockBody["integration"] as Record<string, unknown>;
+    expect(mockIntegration).toHaveProperty("icon", null);
+  });
+
   it("GET reports discoverySupported=false for mock", async () => {
     const { body } = await getJson(baseUrl, "/api/admin/integrations/int-mock");
     const integration = body["integration"] as Record<string, unknown>;
@@ -376,7 +386,7 @@ describe("Admin API — POST /api/admin/integrations/:id/discover", () => {
   it("Copilot PAT mode: discover resolves models using PAT directly", async () => {
     await store.upsertIntegration({
       id: "int-copilot-pat",
-      type: "copilot",
+      provider: "copilot",
       name: "Copilot PAT",
       configJson: JSON.stringify({ authMode: "pat", token: "github_pat_test123" }),
       enabled: false,
@@ -397,7 +407,7 @@ describe("Admin API — POST /api/admin/integrations/:id/discover", () => {
   it("Copilot PAT mode: discover returns 400 when token is missing", async () => {
     await store.upsertIntegration({
       id: "int-copilot-no-token",
-      type: "copilot",
+      provider: "copilot",
       name: "Copilot no token",
       configJson: JSON.stringify({ authMode: "pat" }),
       enabled: false,
@@ -411,7 +421,7 @@ describe("Admin API — POST /api/admin/integrations/:id/discover", () => {
   it("Copilot OAuth mode: discover returns 400 when sessionToken is missing", async () => {
     await store.upsertIntegration({
       id: "int-copilot-oauth-empty",
-      type: "copilot",
+      provider: "copilot",
       name: "Copilot OAuth no token",
       configJson: JSON.stringify({ authMode: "oauth" }),
       enabled: false,

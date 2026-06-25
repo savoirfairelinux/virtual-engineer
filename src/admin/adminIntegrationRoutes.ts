@@ -1,13 +1,17 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { getLogger } from "../logger.js";
-import type { Integration, IntegrationStore, OAuthApp, OAuthAppStore } from "../interfaces.js";
-import { CODE_SOURCE_INTEGRATION_TYPES, TICKET_SOURCE_INTEGRATION_TYPES } from "../interfaces.js";
+import type { Integration, IntegrationStore, OAuthApp, OAuthAppStore, ProviderId } from "../interfaces.js";
 import type { PluginManager } from "../plugins/pluginManager.js";
-import { getAllPluginDescriptors, getPluginCapabilities, getPluginDescriptor } from "../plugins/registry.js";
+import {
+  getAllProviderDescriptors,
+  getPluginCapabilities,
+  getProviderDescriptor,
+  getProviderDomainCapabilities,
+  ModelDiscoveryConfigError,
+} from "../plugins/registry.js";
 import { decryptToken } from "../utils/encryption.js";
 import { normalizeGitLabBaseUrl } from "../utils/gitlabAuth.js";
-import { exchangeForSessionToken, fetchAvailableModels, fetchAvailableModelsWithPat } from "../agents/copilotModelsService.js";
 import { writeJson, readBody, asRecord, toIsoTimestamp, SECRET_MASK, parseConfig, formatZodError } from "./adminRouteUtils.js";
 import type { Router } from "./router.js";
 
@@ -26,13 +30,14 @@ export interface IntegrationRouteDeps {
 export function registerIntegrationRoutes(router: Router, deps: IntegrationRouteDeps): void {
   // ─── Plugin discovery ─────────────────────────────────────────────────────
   router.add("GET", "/api/admin/plugins", async (_req, res, _params) => {
-    const descriptors = getAllPluginDescriptors();
+    const descriptors = getAllProviderDescriptors();
     writeJson(res, 200, {
       plugins: descriptors.map((d) => ({
-        type: d.type,
+        provider: d.provider,
         name: d.name,
-        category: d.category,
+        icon: d.icon ?? null,
         capabilities: getPluginCapabilities(d),
+        domainCapabilities: getProviderDomainCapabilities(d),
         requiredFields: d.requiredFields,
         ...(d.oauth !== undefined ? { oauth: d.oauth } : {}),
       })),
@@ -94,39 +99,41 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
 
   router.add("GET", "/api/admin/integrations/by-category", async (_req, res, _params) => {
     if (!deps.integrationStore) { writeJson(res, 501, { error: "Integration store not available" }); return; }
-    const codeSourceTypes = new Set<string>(CODE_SOURCE_INTEGRATION_TYPES);
-    const ticketSourceTypes = new Set<string>(TICKET_SOURCE_INTEGRATION_TYPES);
+    const supports = (integration: Integration, capability: string): boolean => {
+      const descriptor = getProviderDescriptor(integration.provider);
+      return descriptor ? (getProviderDomainCapabilities(descriptor) as string[]).includes(capability) : false;
+    };
     const list = await deps.integrationStore.getIntegrations();
     writeJson(res, 200, {
-      codeSources: list.filter((i) => codeSourceTypes.has(i.type)).map((i) => serializeIntegration(i, deps.pluginManager, deps.integrationStreams)),
-      ticketSources: list.filter((i) => ticketSourceTypes.has(i.type)).map((i) => serializeIntegration(i, deps.pluginManager, deps.integrationStreams)),
+      codeSources: list.filter((i) => supports(i, "code_review") || supports(i, "source_control")).map((i) => serializeIntegration(i, deps.pluginManager, deps.integrationStreams)),
+      ticketSources: list.filter((i) => supports(i, "issue_tracking")).map((i) => serializeIntegration(i, deps.pluginManager, deps.integrationStreams)),
     });
   });
 
   router.add("POST", "/api/admin/integrations", async (req, res, _params) => {
     if (!deps.integrationStore) { writeJson(res, 501, { error: "Integration store not available" }); return; }
     const body = await readBody(req);
-    if (!body || !body["type"] || !body["name"]) {
-      writeJson(res, 400, { error: "Missing required fields: type, name" }); return;
+    if (!body || !body["provider"] || !body["name"]) {
+      writeJson(res, 400, { error: "Missing required fields: provider, name" }); return;
     }
-    const type = body["type"] as Integration["type"];
-    const descriptor = getPluginDescriptor(type);
-    if (!descriptor) { writeJson(res, 400, { error: `Unknown integration type: ${body["type"] as string}` }); return; }
-    const validatedConfig = validateIntegrationConfig(descriptor.configSchema, asRecord(body["config"]), type !== "copilot");
+    const provider = body["provider"] as ProviderId;
+    const descriptor = getProviderDescriptor(provider);
+    if (!descriptor) { writeJson(res, 400, { error: `Unknown provider: ${body["provider"] as string}` }); return; }
+    const validatedConfig = validateIntegrationConfig(descriptor.configSchema, asRecord(body["config"]), !descriptor.validateFullConfigOnCreate);
     if (!validatedConfig.ok) {
-      writeJson(res, 400, { error: validatedConfig.message || (type === "copilot" ? `Invalid config for ${type}` : "Invalid integration config") });
+      writeJson(res, 400, { error: validatedConfig.message || "Invalid integration config" });
       return;
     }
     const id = body["id"] as string || randomUUID();
     try {
       const integration = await deps.integrationStore.upsertIntegration({
-        id, type, name: body["name"] as string, configJson: JSON.stringify(validatedConfig.data), enabled: true,
+        id, provider, name: body["name"] as string, configJson: JSON.stringify(validatedConfig.data), enabled: true,
       });
       if (deps.pluginManager) {
         try {
           await deps.pluginManager.reloadIntegration(id);
         } catch (activationErr: unknown) {
-          log.warn({ id, type, err: activationErr }, "integration created but could not be activated at runtime (incomplete config?)");
+          log.warn({ id, provider, err: activationErr }, "integration created but could not be activated at runtime (incomplete config?)");
         }
       }
       writeJson(res, 201, { integration: serializeIntegration(integration, deps.pluginManager, deps.integrationStreams) });
@@ -142,17 +149,17 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
     if (!deps.pluginManager) { writeJson(res, 501, { error: "Plugin manager not available" }); return; }
     const body = (await readBody(req)) ?? {};
     const integrationId = typeof body["integrationId"] === "string" ? body["integrationId"] : undefined;
-    const requestedType = typeof body["type"] === "string" ? body["type"] as Integration["type"] : undefined;
+    const requestedProvider = typeof body["provider"] === "string" ? body["provider"] as ProviderId : undefined;
     const config = asRecord(body["config"]);
     try {
       if (integrationId) {
         if (!deps.integrationStore) { writeJson(res, 501, { error: "Integration store not available" }); return; }
         const existing = await deps.integrationStore.getIntegration(integrationId);
         if (!existing) { writeJson(res, 404, { error: "Integration not found" }); return; }
-        if (requestedType !== undefined && requestedType !== existing.type) {
-          writeJson(res, 400, { error: "Changing integration type is not supported" }); return;
+        if (requestedProvider !== undefined && requestedProvider !== existing.provider) {
+          writeJson(res, 400, { error: "Changing integration provider is not supported" }); return;
         }
-        const result = await deps.pluginManager.testConnectionConfig(existing.type, mergeIntegrationConfig(existing, config));
+        const result = await deps.pluginManager.testConnectionConfig(existing.provider, mergeIntegrationConfig(existing, config));
         if (result.success && Array.isArray(result.models) && result.models.length > 0) {
           if (typeof deps.integrationStore.setIntegrationDiscoveredResources === "function") {
             await deps.integrationStore.setIntegrationDiscoveredResources(integrationId, JSON.stringify({ models: result.models }));
@@ -161,12 +168,12 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
         writeJson(res, 200, result);
         return;
       }
-      if (!requestedType) { writeJson(res, 400, { error: "Integration type is required" }); return; }
-      const result = await deps.pluginManager.testConnectionConfig(requestedType, config);
+      if (!requestedProvider) { writeJson(res, 400, { error: "Provider is required" }); return; }
+      const result = await deps.pluginManager.testConnectionConfig(requestedProvider, config);
       writeJson(res, 200, result);
     } catch (err: unknown) {
       const errorMessage = err instanceof Error ? err.message : String(err);
-      log.warn({ integrationId, requestedType, errorMessage }, "config test connection failed");
+      log.warn({ integrationId, requestedProvider, errorMessage }, "config test connection failed");
       writeJson(res, 400, { success: false, error: errorMessage, models: [] });
     }
   });
@@ -187,13 +194,13 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
     if (!existing) { writeJson(res, 404, { error: "Integration not found" }); return; }
     const body = await readBody(req);
     if (!body) { writeJson(res, 400, { error: "Request body required" }); return; }
-    const requestedType = body["type"] as Integration["type"] | undefined;
-    if (requestedType !== undefined && requestedType !== existing.type) {
-      writeJson(res, 400, { error: "Changing integration type is not supported" }); return;
+    const requestedProvider = body["provider"] as ProviderId | undefined;
+    if (requestedProvider !== undefined && requestedProvider !== existing.provider) {
+      writeJson(res, 400, { error: "Changing integration provider is not supported" }); return;
     }
-    const nextType = existing.type;
-    const descriptor = getPluginDescriptor(nextType);
-    if (!descriptor) { writeJson(res, 400, { error: `Unknown integration type: ${nextType}` }); return; }
+    const nextProvider = existing.provider;
+    const descriptor = getProviderDescriptor(nextProvider);
+    if (!descriptor) { writeJson(res, 400, { error: `Unknown provider: ${nextProvider}` }); return; }
     const nextConfig = body["config"];
     const mergedConfig = nextConfig === undefined
       ? getStoredIntegrationConfig(existing)
@@ -205,7 +212,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
       const configChanged = nextConfig !== undefined && nextConfigJson !== existing.configJson;
       const updated = await deps.integrationStore.upsertIntegration({
         id,
-        type: nextType,
+        provider: nextProvider,
         name: (body["name"] as string) ?? existing.name,
         configJson: nextConfigJson,
         enabled: existing.enabled,
@@ -332,59 +339,33 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
     const id = params["id"] ?? "";
     const integration = await deps.integrationStore.getIntegration(id);
     if (!integration) { writeJson(res, 404, { error: "Integration not found" }); return; }
-    const descriptor = getPluginDescriptor(integration.type);
+    const descriptor = getProviderDescriptor(integration.provider);
 
-    // ── Copilot: model discovery (OAuth or PAT) ─────────────────────────
-    if (integration.type === "copilot") {
-      let parsedCopilotConfig: Record<string, unknown>;
+    // ── Model discovery (e.g. Copilot OAuth or PAT) ─────────────────────
+    if (descriptor && typeof descriptor.discoverModels === "function") {
+      let parsedModelConfig: unknown;
       try {
-        parsedCopilotConfig = JSON.parse(integration.configJson) as Record<string, unknown>;
+        parsedModelConfig = JSON.parse(integration.configJson);
       } catch {
         writeJson(res, 500, { error: "Stored integration config is not valid JSON" }); return;
       }
-      const authMode = typeof parsedCopilotConfig["authMode"] === "string"
-        ? parsedCopilotConfig["authMode"]
-        : "oauth";
-      let githubToken: string;
-      if (authMode === "pat") {
-        const pat = typeof parsedCopilotConfig["token"] === "string" ? parsedCopilotConfig["token"].trim() : "";
-        if (!pat) {
-          writeJson(res, 400, { error: "No PAT configured. Set a token in the integration config." });
-          return;
-        }
-        githubToken = pat;
-      } else {
-        const encryptedToken = typeof parsedCopilotConfig["sessionToken"] === "string"
-          ? parsedCopilotConfig["sessionToken"]
-          : undefined;
-        if (!encryptedToken) {
-          writeJson(res, 400, {
-            error: "No GitHub OAuth token stored. Connect via OAuth first (AI Adapters → Connect with GitHub).",
-          });
-          return;
-        }
-        githubToken = decryptToken(encryptedToken, deps.adminAuthSecret);
-      }
       try {
-        // PAT: use the @github/copilot-sdk CopilotClient which spawns the
-        //      bundled CLI and handles its own token exchange internally.
-        //      OAuth: exchange the user token for a short-lived session token
-        //      first, then call the Copilot models HTTP API.
-        const models = authMode === "pat"
-          ? await fetchAvailableModelsWithPat(githubToken)
-          : await fetchAvailableModels(await exchangeForSessionToken(githubToken));
+        const models = await descriptor.discoverModels(parsedModelConfig);
         const discoveredAt = new Date().toISOString();
         await deps.integrationStore.setIntegrationDiscoveredResources(id, JSON.stringify({ models, discoveredAt }));
         writeJson(res, 200, { ok: true, discoveredAt, counts: { models: models.length } });
       } catch (err: unknown) {
+        if (err instanceof ModelDiscoveryConfigError) {
+          writeJson(res, 400, { error: err.message }); return;
+        }
         const errorMessage = err instanceof Error ? err.message : String(err);
-        log.warn({ id, type: "copilot", errorMessage }, "Copilot model discovery failed");
+        log.warn({ id, provider: integration.provider, errorMessage }, "model discovery failed");
         writeJson(res, 502, { error: `Model discovery failed: ${errorMessage}` });
       }
       return;
     }
     if (!descriptor || typeof descriptor.discoverResources !== "function") {
-      writeJson(res, 400, { error: `Integration type '${integration.type}' does not support resource discovery` }); return;
+      writeJson(res, 400, { error: `Provider '${integration.provider}' does not support resource discovery` }); return;
     }
     let parsedConfig: unknown;
     try {
@@ -418,7 +399,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
       });
     } catch (err: unknown) {
       const errorMessage = err instanceof Error ? err.message : String(err);
-      log.warn({ id, type: integration.type, errorMessage }, "resource discovery failed");
+      log.warn({ id, provider: integration.provider, errorMessage }, "resource discovery failed");
       writeJson(res, 502, { error: `Discovery failed: ${errorMessage}` });
     }
   });
@@ -431,7 +412,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
  * by SECRET_MASK. Safe to send to the browser.
  */
 function maskIntegrationConfig(integration: Integration): Record<string, unknown> {
-  const descriptor = getPluginDescriptor(integration.type);
+  const descriptor = getProviderDescriptor(integration.provider);
   const config = getStoredIntegrationConfig(integration);
   if (!descriptor) {
     return config;
@@ -449,24 +430,16 @@ function maskIntegrationConfig(integration: Integration): Record<string, unknown
       masked[key] = SECRET_MASK;
     }
   }
-  if (integration.type === "gerrit") {
-    delete masked["webhookSecret"];
-    delete masked["webhookAllowedIps"];
-  }
-  if (
-    (integration.type === "gitlab-issue" || integration.type === "gitlab-merge-request") &&
-    masked["authMode"] === undefined
-  ) {
-    masked["authMode"] = "pat";
-  }
-  return masked;
+  // Let the descriptor apply read-time normalisation (e.g. inject defaults or
+  // strip transport-only fields) without the route hardcoding provider checks.
+  return descriptor.normalizeConfigForRead ? descriptor.normalizeConfigForRead(masked) : masked;
 }
 
 /**
  * Merges `updates` into the integration's existing config while preserving secrets.
  */
 function mergeIntegrationConfig(integration: Integration, updates: Record<string, unknown>): Record<string, unknown> {
-  const descriptor = getPluginDescriptor(integration.type);
+  const descriptor = getProviderDescriptor(integration.provider);
   const existingConfig = getStoredIntegrationConfig(integration);
   const merged: Record<string, unknown> = {
     ...existingConfig,
@@ -516,15 +489,15 @@ function mergeIntegrationConfig(integration: Integration, updates: Record<string
 
 /** Return the integration's stored config with schema-unknown keys stripped. */
 function getStoredIntegrationConfig(integration: Integration): Record<string, unknown> {
-  return stripUnknownIntegrationConfig(integration.type, parseConfig(integration.configJson));
+  return stripUnknownIntegrationConfig(integration.provider, parseConfig(integration.configJson));
 }
 
 /** Remove any config keys not declared in the integration type's Zod schema. */
 function stripUnknownIntegrationConfig(
-  type: Integration["type"],
+  provider: ProviderId,
   config: Record<string, unknown>
 ): Record<string, unknown> {
-  const descriptor = getPluginDescriptor(type);
+  const descriptor = getProviderDescriptor(provider);
   if (!descriptor || !(descriptor.configSchema instanceof z.ZodObject)) {
     return config;
   }
@@ -567,14 +540,15 @@ function serializeIntegration(
   pm?: PluginManager,
   integrationStreams?: { getStatus(integrationId: string): unknown | null }
 ): Record<string, unknown> {
-  const descriptor = getPluginDescriptor(integration.type);
+  const descriptor = getProviderDescriptor(integration.provider);
   const active = pm ? pm.isIntegrationActive(integration.id) : false;
-  const streamEventsSupported = Boolean(descriptor?.streamEvents);
+  const streamEventsSupported = Boolean(descriptor?.capabilities.code_review?.streamEvents);
   return {
     id: integration.id,
-    type: integration.type,
-    category: descriptor?.category ?? null,
+    provider: integration.provider,
+    icon: descriptor?.icon ?? null,
     capabilities: descriptor ? getPluginCapabilities(descriptor) : [],
+    domainCapabilities: descriptor ? getProviderDomainCapabilities(descriptor) : [],
     name: integration.name,
     enabled: integration.enabled,
     active,

@@ -145,19 +145,18 @@ function getProviderUrls(pluginManager: PluginManager | undefined): {
   };
   const str = (v: unknown): string | undefined => (typeof v === "string" && v.length > 0 ? v : undefined);
 
-  const gerritCandidates = pluginManager.getActiveIntegrationsByType("gerrit");
+  const gerritCandidates = pluginManager.getActiveIntegrationsByProvider("gerrit");
   const gerritConfig = parseConfig(gerritCandidates[0]);
   const gerritBaseUrl = str(gerritConfig?.["baseUrl"]);
 
-  const gitlabMrCandidates = pluginManager.getActiveIntegrationsByType("gitlab-merge-request");
-  const gitlabIssueCandidates = pluginManager.getActiveIntegrationsByType("gitlab-issue");
-  const gitlabIntegration = gitlabMrCandidates[0] ?? gitlabIssueCandidates[0];
+  const gitlabCandidates = pluginManager.getActiveIntegrationsByProvider("gitlab");
+  const gitlabIntegration = gitlabCandidates[0];
   const gitlabConfig = parseConfig(gitlabIntegration);
   const gitlabBaseUrl = str(gitlabConfig?.["baseUrl"]);
   const gitlabToken = str(gitlabConfig?.["token"]);
   const gitlabProjectId = str(gitlabConfig?.["projectId"]);
 
-  const redmineCandidates = pluginManager.getActiveIntegrationsByType("redmine");
+  const redmineCandidates = pluginManager.getActiveIntegrationsByProvider("redmine");
   const redmineConfig = parseConfig(redmineCandidates[0]);
   const redmineBaseUrl = str(redmineConfig?.["baseUrl"]);
   const ticketLinkTemplates = redmineBaseUrl
