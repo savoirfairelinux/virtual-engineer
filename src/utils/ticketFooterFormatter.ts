@@ -5,6 +5,8 @@
  * Extensible: add new systems by extending the TICKET_SYSTEM_CONFIG map.
  */
 
+import { parseProviderFromSourceLabel } from "./ticketSourceLabel.js";
+
 /**
  * Configuration for a ticket system.
  *
@@ -17,20 +19,29 @@ interface TicketSystemConfig {
 }
 
 /**
- * Ticket system configurations. Maps ticketSourceLabel to display name and format.
+ * Ticket system configurations. Maps the provider prefix of a ticketSourceLabel
+ * to a display name and format.
+ *
+ * Labels follow the canonical `<provider>:<integrationId>` scheme, so the
+ * provider prefix is extracted before lookup.
  *
  * All systems use ID format: "System: #ticketId"
  *
  * Current systems:
- * - "gitlab-issue" → "GitLab" display name, ID format (`GitLab: #123`)
+ * - "gitlab" → "GitLab" display name, ID format (`GitLab: #123`)
+ * - "github" → "GitHub" display name, ID format (`GitHub: #123`)
  * - "redmine" → "Redmine" display name, ID format (`Redmine: #456`)
  *
  * To add a new system, simply add a line:
- * "system-id": { displayName: "Display Name", isTicketIdFormat: true }
+ * "provider-id": { displayName: "Display Name", isTicketIdFormat: true }
  */
 const TICKET_SYSTEM_CONFIG: Record<string, TicketSystemConfig> = {
-  "gitlab-issue": {
+  gitlab: {
     displayName: "GitLab",
+    isTicketIdFormat: true,
+  },
+  github: {
+    displayName: "GitHub",
     isTicketIdFormat: true,
   },
   redmine: {
@@ -61,8 +72,8 @@ export function formatTicketFooter(
 ): string | null {
   if (!ticketSourceLabel) return null;
 
-  // Check if system is configured
-  const config = TICKET_SYSTEM_CONFIG[ticketSourceLabel];
+  // Check if system is configured (labels are `<provider>:<integrationId>`)
+  const config = TICKET_SYSTEM_CONFIG[parseProviderFromSourceLabel(ticketSourceLabel)];
   if (!config) return null;
 
   const systemName = config.displayName;
@@ -100,7 +111,7 @@ export function hasTicketFooter(message: string, systemLabel?: string): boolean 
 
   // If system label provided, check for system-specific footer
   if (systemLabel) {
-    const config = TICKET_SYSTEM_CONFIG[systemLabel];
+    const config = TICKET_SYSTEM_CONFIG[parseProviderFromSourceLabel(systemLabel)];
     if (config) {
       const systemName = config.displayName;
       // Escape special regex chars if any, though system names are simple

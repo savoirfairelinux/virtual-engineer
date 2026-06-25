@@ -226,10 +226,11 @@ export class PollingLoop {
       }
       try {
         const tickets = await connector.getAssignedTickets({ projectKey: ticketSource.ticketProjectKey });
-        // Source label scheme: <integrationType>:<integrationId> so two projects sharing the same
-        // connector type but different integration rows have independent failure counts.
-        const integrationType = connector.getSourceLabel();
-        const sourceLabel = `${integrationType}:${ticketSource.integrationId}`;
+        // Canonical source label scheme: <provider>:<integrationId> so two projects sharing the
+        // same provider but different integration rows have independent failure counts. The same
+        // label format is emitted by webhook and stream-event intake paths.
+        const provider = connector.getSourceLabel();
+        const sourceLabel = `${provider}:${ticketSource.integrationId}`;
 
         const orchestratorWithProjectMode = this.orchestrator as unknown as Partial<ProjectAwareOrchestrator>;
         for (const ticket of tickets) {

@@ -70,7 +70,7 @@ describe("redmineWebhookHandler", () => {
     const [ticket, proj, label] = (orchestrator.startTaskForProject as ReturnType<typeof vi.fn>).mock.calls[0]!;
     expect(ticket).toMatchObject({ id: "42", subject: "S", description: "D", webUrl: "http://r/issues/42" });
     expect(proj).toBe(project);
-    expect(label).toBe("redmine");
+    expect(label).toBe("redmine:redmine-1");
   });
 
   it("routes issue.updated identically", async () => {

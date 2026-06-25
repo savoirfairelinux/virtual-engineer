@@ -34,6 +34,7 @@ import { PluginManager } from "./plugins/pluginManager.js";
 import type { AppConfig } from "./config.js";
 import { DEFAULT_COPILOT_MODEL } from "./copilotModel.js";
 import { getProviderDescriptor, getProviderDomainCapabilities } from "./plugins/registry.js";
+import { buildTicketSourceLabel, parseIntegrationIdFromSourceLabel } from "./utils/ticketSourceLabel.js";
 
 const log = getLogger("main");
 const SHUTDOWN_TIMEOUT_MS = 5_000;
@@ -308,21 +309,12 @@ function getPrimaryActiveIntegration(pluginManager: PluginManager, provider: Pro
 
 /** Build the `<provider>:<id>` source label persisted on tasks and review bundles. */
 function buildIntegrationSourceLabel(integration: Integration): string {
-  return `${integration.provider}:${integration.id}`;
+  return buildTicketSourceLabel(integration.provider, integration.id);
 }
 
-/** Parse the integration ID out of a `<type>:<integrationId>` source label string. */
+/** Parse the integration ID out of a `<provider>:<integrationId>` source label string. */
 function getIntegrationIdFromSourceLabel(sourceLabel: string | null | undefined): string | null {
-  if (!sourceLabel) {
-    return null;
-  }
-
-  const separatorIndex = sourceLabel.indexOf(":");
-  if (separatorIndex <= 0 || separatorIndex === sourceLabel.length - 1) {
-    return null;
-  }
-
-  return sourceLabel.slice(separatorIndex + 1);
+  return parseIntegrationIdFromSourceLabel(sourceLabel);
 }
 
 /**
@@ -397,7 +389,7 @@ interface ReviewBundle {
 /**
  * Resolve the optional code-review orchestrator for the best-matching review
  * integration. When `target` is provided it prefers that integration id (or
- * a review task tagged with `ticketSourceLabel = <type>:<integrationId>`),
+ * a review task tagged with `ticketSourceLabel = <provider>:<integrationId>`),
  * then falls back to the next active review integration that declares
  * `createReviewer` in its descriptor.
  */

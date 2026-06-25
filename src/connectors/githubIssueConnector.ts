@@ -132,7 +132,7 @@ export class GitHubIssueConnector extends AbstractTicketConnector implements Tic
   }
 
   getSourceLabel(): string {
-    return "github-issue";
+    return "github";
   }
 
   // ─── Public ticket-connector-specific methods ──────────────────────────────

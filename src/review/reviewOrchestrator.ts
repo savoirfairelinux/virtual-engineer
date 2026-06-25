@@ -67,7 +67,7 @@ export interface ReviewOrchestratorDeps {
   buildCloneTarget: (details: ReviewChangeDetails) => { cloneUrl: string; sshKeyPath: string | null; sshKnownHostsPath: string | null };
   /** Apply a provider-specific patchset onto the cloned workspace (e.g. Gerrit `refs/changes/…`). Omit for GitLab MR branches. */
   applyPatchset?: (handle: WorkspaceHandle, details: ReviewChangeDetails) => Promise<void>;
-  /** Source label persisted on review tasks, typically `<type>:<integrationId>`. */
+  /** Source label persisted on review tasks, typically `<provider>:<integrationId>`. */
   sourceLabel?: string | undefined;
   /** Reviewer instructions (content of the `code-review` prompt from the DB). */
   reviewInstructions: string;
