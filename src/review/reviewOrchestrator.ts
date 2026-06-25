@@ -53,7 +53,6 @@ export interface ReviewOrchestratorDeps {
     | "getAgentCycles"
     | "findProjectsByReviewTarget"
     | "getProjectById"
-    | "setTaskProjectId"
     | "updateExternalChangeId"
   >;
   reviewProvider: ReviewProvider;
@@ -198,8 +197,8 @@ export class ReviewOrchestrator {
         patchset: details.currentPatchset,
         reviewUrl: details.url,
         displayId: String(details.changeNumber),
+        projectId: project.id,
       });
-      await this.deps.stateStore.setTaskProjectId(task.taskId, project.id);
       log.info({ taskId, changeId: input.changeId, patchset: details.currentPatchset, projectId: project.id }, "code-review task created");
       tasks.push({ ...task, projectId: project.id });
     }

@@ -46,6 +46,7 @@ function makeStore(): StateStore {
   return {
     getActiveTasks: vi.fn().mockResolvedValue([]),
     getTaskByTicketId: vi.fn().mockResolvedValue(null),
+    getActiveTaskByTicketId: vi.fn().mockResolvedValue(null),
     getFailedAttemptCount: vi.fn().mockResolvedValue(0),
     getChangesForTask: vi.fn().mockResolvedValue([]),
     isTaskPaused: vi.fn().mockResolvedValue(false),
@@ -201,10 +202,46 @@ describe("PollingLoop — Phase 4 project mode", () => {
     const orchestrator = makeOrchestrator();
 
     const store = makeStore();
-    (store.getTaskByTicketId as ReturnType<typeof vi.fn>).mockResolvedValue({
+    (store.getActiveTaskByTicketId as ReturnType<typeof vi.fn>).mockResolvedValue({
       taskId: "t-1",
       ticketId: "42",
       state: "AGENT_RUNNING",
+    });
+
+    const loop = new PollingLoop(
+      { ticketIntervalMs: 60000, maxRetryAttempts: 3 },
+      orchestrator,
+      store,
+      { projectStore, pluginManager }
+    );
+
+    await loop.pollProjectTickets();
+    await new Promise((r) => setImmediate(r));
+    expect(orchestrator.startTaskForProject).not.toHaveBeenCalled();
+  });
+
+  it("skips ticket when an active task coexists with a newer FAILED task", async () => {
+    const projectStore = {
+      listProjects: vi.fn(async () => [makeProject({ id: "p-1", type: "coding" })]),
+      getProjectTicketSource: vi.fn(async () => ({
+        id: 1, projectId: "p-1" as ProjectId, integrationId: "int-1", ticketProjectKey: "", createdAt: new Date(),
+      })),
+      getProjectReviewConfig: vi.fn(async () => null),
+    };
+    const connector = makeRedmine();
+    (connector.getAssignedTickets as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { id: "1993", subject: "X", description: "", status: "open", assigneeId: 1, projectId: 1, customFields: {} },
+    ]);
+    const pluginManager = { getConnectorForCapability: vi.fn(() => connector) } as unknown as { getConnectorForCapability<T>(id: string): T | null };
+    const orchestrator = makeOrchestrator();
+
+    const store = makeStore();
+    // Newest task by createdAt is FAILED, but an older task is still active.
+    (store.getTaskByTicketId as ReturnType<typeof vi.fn>).mockResolvedValue({
+      taskId: "t-failed", ticketId: "1993", state: "FAILED",
+    });
+    (store.getActiveTaskByTicketId as ReturnType<typeof vi.fn>).mockResolvedValue({
+      taskId: "t-active", ticketId: "1993", state: "AGENT_RUNNING",
     });
 
     const loop = new PollingLoop(

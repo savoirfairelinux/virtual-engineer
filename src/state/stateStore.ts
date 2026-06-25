@@ -288,8 +288,14 @@ export class SqliteStateStore {
 
     this.raw.exec(`
       DROP INDEX IF EXISTS idx_tasks_active_ticket_id;
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_active_ticket_id ON tasks(ticket_id)
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_active_ticket_id ON tasks(project_id, ticket_id)
         WHERE state NOT IN ('DONE', 'FAILED', 'ABANDONED', 'REVIEW_DONE', 'REVIEW_FAILED');
+      -- SQLite treats NULLs as distinct, so the composite index above does not
+      -- constrain project-less rows. A second partial index enforces one active
+      -- task per ticket for the no-project (legacy/single-instance) case.
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_active_ticket_id_noproject ON tasks(ticket_id)
+        WHERE project_id IS NULL
+          AND state NOT IN ('DONE', 'FAILED', 'ABANDONED', 'REVIEW_DONE', 'REVIEW_FAILED');
     `);
   }
 

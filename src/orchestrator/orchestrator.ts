@@ -176,15 +176,18 @@ export class Orchestrator {
     ticketSourceLabel: string
   ): Promise<void> {
     const ticketId = makeTicketId(ticket.id);
-    const existing = await this.stateStore.getTaskByTicketId(ticketId);
-    if (existing && existing.state !== "FAILED" && existing.state !== "ABANDONED" && existing.state !== "DONE") {
+    // Active-task identity is scoped by (project, ticket): two projects bound to
+    // different repos under the same integration may legitimately have tickets
+    // with the same number, and must not alias onto one another.
+    const existing = await this.stateStore.getActiveTaskByTicketId(ticketId, project.id);
+    if (existing) {
       log.info(
         { ticketId, existingTaskId: existing.taskId, state: existing.state, projectId: project.id },
         "project task already in progress, reusing existing task"
       );
       return;
     }
-    const failedAttempts = await this.stateStore.getFailedAttemptCount(ticketId, ticketSourceLabel);
+    const failedAttempts = await this.stateStore.getFailedAttemptCount(ticketId, ticketSourceLabel, project.id);
     if (failedAttempts >= this.config.maxRetryAttempts) {
       log.warn(
         { ticketId, source: ticketSourceLabel, failedAttempts, projectId: project.id },
@@ -195,7 +198,8 @@ export class Orchestrator {
 
     const taskId = makeTaskId(randomUUID());
     // Snapshot the ticket source on the task so it can be adopted by a future
-    // project if this project is later deleted.
+    // project if this project is later deleted. project_id is written atomically
+    // so the (project_id, ticket_id) active-uniqueness index applies at insert.
     const ticketSource = await this.projectMode?.projectStore.getProjectTicketSource(project.id);
     const task = await this.stateStore.createTask(
       taskId,
@@ -207,10 +211,9 @@ export class Orchestrator {
       ticket.id,
       ticketSource
         ? { integrationId: ticketSource.integrationId, ticketProjectKey: ticketSource.ticketProjectKey }
-        : undefined
+        : undefined,
+      project.id
     );
-    await this.stateStore.setTaskProjectId(task.taskId, project.id);
-    task.projectId = project.id;
     log.info(
       { taskId: task.taskId, ticketId, projectId: project.id, source: ticketSourceLabel },
       "created project-mode task"

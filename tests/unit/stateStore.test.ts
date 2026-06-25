@@ -124,6 +124,133 @@ describe("SqliteStateStore", () => {
       db.insert = originalInsert;
     });
 
+    it("rethrows non-unique insert errors even when an active task exists", async () => {
+      // A genuine insert failure (disk full, NOT NULL/FK, corruption) must NOT
+      // be masked as a "reuse" of an unrelated active task: only the unique
+      // active-ticket index conflict (code SQLITE_CONSTRAINT_UNIQUE) recovers.
+      const ticketId = makeTicketId("non-unique-1");
+      await store.createTask(makeTaskId(randomUUID()), ticketId);
+
+      const insertError = new Error("disk full");
+      const db = (store as unknown as {
+        db: { insert: (table: unknown) => { values: (value: unknown) => Promise<void> } };
+      }).db;
+      const originalInsert = db.insert.bind(db);
+      db.insert = () => ({
+        values: async () => {
+          throw insertError;
+        },
+      });
+
+      try {
+        await expect(store.createTask(makeTaskId(randomUUID()), ticketId)).rejects.toBe(insertError);
+      } finally {
+        db.insert = originalInsert;
+      }
+    });
+
+    it("reuses the active task when a newer terminal task exists for the ticket", async () => {
+      const ticketId = makeTicketId("1993");
+      const activeTaskId = makeTaskId(randomUUID());
+      await store.createTask(activeTaskId, ticketId);
+
+      // The partial unique index permits multiple terminal rows alongside one
+      // active row. Insert a newer FAILED task directly so that the newest task
+      // by createdAt is terminal while an older task is still active.
+      const raw = (store as unknown as {
+        raw: { prepare(sql: string): { run(...args: unknown[]): unknown } };
+      }).raw;
+      const laterSeconds = Math.floor(Date.now() / 1000) + 100;
+      raw
+        .prepare(
+          `INSERT INTO tasks (task_id, ticket_id, state, created_at, updated_at)
+           VALUES (?, ?, 'FAILED', ?, ?)`
+        )
+        .run(randomUUID(), ticketId, laterSeconds, laterSeconds);
+
+      // A fresh create violates the active-ticket unique index; recovery must
+      // return the active task instead of surfacing the constraint error.
+      const result = await store.createTask(makeTaskId(randomUUID()), ticketId);
+      expect(result.taskId).toBe(activeTaskId);
+      expect(result.state).toBe("DETECTED");
+    });
+
+    it("allows the same bare ticket id to be active under two different projects", async () => {
+      // Two projects bound to different repos under one integration may have
+      // tickets that share a number. Active-task identity is (project_id,
+      // ticket_id), so each project gets its own active task with no false reuse.
+      const ticketId = makeTicketId("5");
+      const p1 = makeProjectId("proj-a");
+      const p2 = makeProjectId("proj-b");
+      const t1 = makeTaskId(randomUUID());
+      const t2 = makeTaskId(randomUUID());
+
+      const first = await store.createTask(
+        t1,
+        ticketId,
+        "A",
+        "",
+        "redmine:int-1",
+        undefined,
+        undefined,
+        undefined,
+        p1
+      );
+      const second = await store.createTask(
+        t2,
+        ticketId,
+        "B",
+        "",
+        "redmine:int-1",
+        undefined,
+        undefined,
+        undefined,
+        p2
+      );
+
+      expect(first.taskId).toBe(t1);
+      expect(second.taskId).toBe(t2);
+      expect(second.taskId).not.toBe(first.taskId);
+      expect(first.projectId).toBe(p1);
+      expect(second.projectId).toBe(p2);
+
+      // Project-scoped lookups resolve to the correct task, not the other's.
+      const a = await store.getActiveTaskByTicketId(ticketId, p1);
+      const b = await store.getActiveTaskByTicketId(ticketId, p2);
+      expect(a?.taskId).toBe(t1);
+      expect(b?.taskId).toBe(t2);
+    });
+
+    it("still rejects a second active task for the same (project, ticket)", async () => {
+      // Within a single project the partial unique index must continue to permit
+      // only one active task per ticket; a duplicate create recovers it.
+      const ticketId = makeTicketId("7");
+      const projectId = makeProjectId("proj-c");
+      const first = await store.createTask(
+        makeTaskId(randomUUID()),
+        ticketId,
+        "C",
+        "",
+        "redmine:int-1",
+        undefined,
+        undefined,
+        undefined,
+        projectId
+      );
+      const second = await store.createTask(
+        makeTaskId(randomUUID()),
+        ticketId,
+        "C",
+        "",
+        "redmine:int-1",
+        undefined,
+        undefined,
+        undefined,
+        projectId
+      );
+      expect(second.taskId).toBe(first.taskId);
+    });
+
   });
 
   describe("transition", () => {

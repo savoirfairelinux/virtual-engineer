@@ -11,7 +11,7 @@ import type {
   ReviewDiscoveryConnector,
   ReviewAssignmentDiscovery,
 } from "../interfaces.js";
-import { makeTicketId, TERMINAL_STATES } from "../interfaces.js";
+import { makeTicketId } from "../interfaces.js";
 import { getLogger } from "../logger.js";
 
 const log = getLogger("polling-loop");
@@ -235,15 +235,20 @@ export class PollingLoop {
         const orchestratorWithProjectMode = this.orchestrator as unknown as Partial<ProjectAwareOrchestrator>;
         for (const ticket of tickets) {
           const ticketId = makeTicketId(ticket.id);
-          const existing = await this.stateStore.getTaskByTicketId(ticketId);
-          if (existing && !TERMINAL_STATES.has(existing.state)) {
+          // The partial unique index allows at most one active task per
+          // (project, ticket), so skip when any active task exists for this
+          // project — even if it is not the newest row (a newer FAILED task can
+          // coexist with an older still-active one).
+          const activeExisting = await this.stateStore.getActiveTaskByTicketId(ticketId, project.id);
+          if (activeExisting) {
             continue;
           }
+          const existing = await this.stateStore.getTaskByTicketId(ticketId, project.id);
           // FAILED allows retry; all other terminal states skip without a new task.
           if (existing && existing.state !== "FAILED") {
             continue;
           }
-          const failedAttemptsCount = await this.stateStore.getFailedAttemptCount(ticketId, sourceLabel);
+          const failedAttemptsCount = await this.stateStore.getFailedAttemptCount(ticketId, sourceLabel, project.id);
           if (failedAttemptsCount >= this.config.maxRetryAttempts) {
             log.warn(
               { ticketId, source: sourceLabel, failedAttemptsCount },

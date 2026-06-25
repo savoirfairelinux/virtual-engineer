@@ -50,6 +50,7 @@ function makeStore(): StateStore {
   return {
     getActiveTasks: vi.fn().mockResolvedValue([]),
     getTaskByTicketId: vi.fn().mockResolvedValue(null),
+    getActiveTaskByTicketId: vi.fn().mockResolvedValue(null),
     getFailedAttemptCount: vi.fn().mockResolvedValue(0),
     getChangesForTask: vi.fn().mockResolvedValue([]),
     isTaskPaused: vi.fn().mockResolvedValue(false),

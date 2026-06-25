@@ -870,7 +870,8 @@ export interface StateStore {
     ticketSourceLabel?: string,
     ticketUrl?: string,
     displayId?: string,
-    ticketSource?: { integrationId: string; ticketProjectKey: string }
+    ticketSource?: { integrationId: string; ticketProjectKey: string },
+    projectId?: ProjectId
   ): Promise<Task>;
 
   /** Create a code-review task (taskType="code-review", initial state=REVIEW_PENDING). */
@@ -884,17 +885,21 @@ export interface StateStore {
     patchset: number;
     reviewUrl?: string;
     displayId?: string;
+    projectId?: ProjectId;
   }): Promise<Task>;
 
   /** Record the patchset just reviewed by VE (used by re-review polling). */
   setReviewedPatchset(taskId: TaskId, patchset: number): Promise<void>;
   getTask(taskId: TaskId): Promise<Task | null>;
-  getTaskByTicketId(ticketId: TicketId): Promise<Task | null>;
+  getTaskByTicketId(ticketId: TicketId, projectId?: ProjectId): Promise<Task | null>;
+
+  /** Return the single active (non-terminal) task for a ticket, optionally scoped to a project. */
+  getActiveTaskByTicketId(ticketId: TicketId, projectId?: ProjectId): Promise<Task | null>;
   getActiveTasks(): Promise<Task[]>;
   getAllTasks(): Promise<Task[]>;
 
-  /** Count FAILED/ABANDONED tasks for a ticket; scoped by sourceLabel when provided. */
-  getFailedAttemptCount(ticketId: TicketId, ticketSourceLabel?: string): Promise<number>;
+  /** Count FAILED/ABANDONED tasks for a ticket; scoped by sourceLabel and/or project when provided. */
+  getFailedAttemptCount(ticketId: TicketId, ticketSourceLabel?: string, projectId?: ProjectId): Promise<number>;
 
   /** Atomically transition to a new state. Idempotent if already in toState. */
   transition(
