@@ -101,6 +101,7 @@ export interface ProjectModeDeps {
   };
   pluginManager: {
     getConnectorForIntegration<T>(integrationId: string): T | null;
+    getConnectorForCapability?<T>(integrationId: string, capability: import("../interfaces.js").DomainCapability): T | null;
     createConnectorForCapability?<T>(integrationId: string, capability: import("../interfaces.js").DomainCapability, context?: IntegrationBindingContext): Promise<T | null>;
     createConnectorForIntegration?<T>(integrationId: string, context?: IntegrationBindingContext): Promise<T | null>;
     getActiveIntegrationById?(integrationId: string): import("../interfaces.js").Integration | null;
@@ -457,19 +458,39 @@ export class Orchestrator {
     if (!task.projectId || !this.projectMode) {
       throw new Error(`Task ${task.taskId} is not project-bound; cannot resolve review connector`);
     }
-    // Try review config first (for review projects)
+    // Try review config first (for review projects). Resolve the `code_review`
+    // capability explicitly: a unified provider (e.g. github/gitlab) also exposes
+    // `issue_tracking`, and `getConnectorForIntegration` would return the issue
+    // connector first — which lacks `getChangeStatus`.
     const rc = await this.projectMode.projectStore.getProjectReviewConfig(task.projectId);
     if (rc) {
-      const connector = this.projectMode.pluginManager.getConnectorForIntegration<ReviewConnector>(rc.integrationId);
+      const connector = this.resolveReviewCapabilityConnector(rc.integrationId);
       if (connector) return connector;
     }
     // Fall back to push targets (for coding projects — the VCS connector often doubles as review)
     const pts = await this.projectMode.projectStore.listProjectPushTargets(task.projectId);
     for (const pt of pts) {
-      const connector = this.projectMode.pluginManager.getConnectorForIntegration<ReviewConnector>(pt.integrationId);
+      const connector = this.resolveReviewCapabilityConnector(pt.integrationId);
       if (connector) return connector;
     }
     throw new Error(`No active review connector found for project ${task.projectId} (task ${task.taskId})`);
+  }
+
+  /**
+   * Resolve a review-capable connector for an integration id. Prefers the
+   * explicit `code_review` capability so unified providers (github/gitlab) that
+   * also expose `issue_tracking` do not resolve to the issue connector, which
+   * lacks `getChangeStatus`. Falls back to `getConnectorForIntegration` only
+   * when the capability resolver is unavailable.
+   */
+  private resolveReviewCapabilityConnector(integrationId: string): ReviewConnector | null {
+    const pm = this.projectMode?.pluginManager;
+    if (!pm) return null;
+    if (pm.getConnectorForCapability) {
+      const byCapability = pm.getConnectorForCapability<ReviewConnector>(integrationId, "code_review");
+      if (byCapability) return byCapability;
+    }
+    return pm.getConnectorForIntegration<ReviewConnector>(integrationId);
   }
 
   /** Drive the state machine from the task's current state, dispatching to the appropriate step. */
