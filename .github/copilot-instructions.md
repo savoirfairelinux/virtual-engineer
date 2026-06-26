@@ -84,6 +84,7 @@ agent-worker/index.js   # JS entry inside the agent container
 ## Critical Schema Facts
 - `tasks` PK = `task_id` (TEXT). There is **no** `id` column. Key columns also include `task_type`, `gerrit_change_id`, `current_patchset`, `reviewed_patchset`, `project_id`, `ticket_source_integration_id`, `ticket_source_project_key`, `cycle_count`, `failure_reason`, `ticket_url`, `review_url`, `created_at`, `updated_at`. `ticket_source_integration_id` / `ticket_source_project_key` snapshot the originating ticket source so orphaned tasks can be adopted by a future project bound to the same ticket source.
 - `state_transitions`, `agent_cycles`, `processed_comments` use INTEGER `id` PKs.
+- `posted_review_comments` (INTEGER `id` PK): dedup table for the **review posting** side (VE as reviewer). Columns: `task_id`, `change_id`, `comment_hash` (`sha1(file+"\n"+normalized(message))`, line excluded), `file`, `line`, `message`, `severity`, `provider_thread_id` (nullable), `resolved` (0/1), `created_at`. Unique `(task_id, comment_hash)` drives `INSERT OR IGNORE` idempotency; prevents re-posting the same finding across patchsets. Integration-agnostic.
 - `agent_cycles.agent_events` (TEXT, JSON `AgentLogEvent[]`) records the streamed agent log.
 - `integrations` (TEXT `id` PK): `type`, `name`, `config_json`, `enabled` (INTEGER), timestamps.
 - `prompts` (TEXT `id` PK): `label`, `content`, timestamps. Used to inject `SYSTEM_PROMPT` / `INSTRUCTIONS_PROMPT` into the agent container.

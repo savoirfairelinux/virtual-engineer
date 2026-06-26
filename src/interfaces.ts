@@ -604,6 +604,33 @@ export interface ReviewAgentResult {
   score: -1 | 0 | 1;
 }
 
+/** A persisted record of an inline review comment VE has already posted on a change. */
+export interface PostedReviewComment {
+  id: number;
+  taskId: TaskId;
+  changeId: ExternalChangeId;
+  /** Stable content hash (see review/commentHash.ts). */
+  commentHash: string;
+  file: string;
+  line: number;
+  message: string;
+  severity: string;
+  /** Provider-side thread/comment id captured for later resolution. */
+  providerThreadId: string | null;
+  resolved: boolean;
+  createdAt: Date;
+}
+
+/** Input shape for recording a freshly-posted review comment. */
+export interface PostedReviewCommentInput {
+  commentHash: string;
+  file: string;
+  line: number;
+  message: string;
+  severity: string;
+  providerThreadId?: string | null | undefined;
+}
+
 /**
  * System-agnostic interface for VE acting as a code reviewer.
  * Counterpart to ReviewConnector (used when VE is the change author).
@@ -939,6 +966,20 @@ export interface StateStore {
   // Comment deduplication
   getProcessedCommentIds(taskId: TaskId): Promise<Set<string>>;
   markCommentProcessed(taskId: TaskId, gerritCommentId: string): Promise<void>;
+
+  // Posted-review-comment deduplication (VE-as-reviewer side; integration-agnostic)
+  /** Hashes of every inline comment VE has already posted on this review task. */
+  getPostedReviewCommentHashes(taskId: TaskId): Promise<Set<string>>;
+  /** Full records of comments VE has already posted (for prompt memory + resolution). */
+  getPostedReviewComments(taskId: TaskId): Promise<PostedReviewComment[]>;
+  /** Record freshly-posted comments. Duplicate hashes for the task are ignored. */
+  markReviewCommentsPosted(
+    taskId: TaskId,
+    changeId: ExternalChangeId,
+    comments: PostedReviewCommentInput[]
+  ): Promise<void>;
+  /** Mark a previously-posted comment thread as resolved. */
+  markReviewCommentResolved(id: number): Promise<void>;
 
   // Per-repository change tracking (multi-repo tasks)
   /** Upsert a per-repo change record (Gerrit Change-Id or GitLab MR IID). */

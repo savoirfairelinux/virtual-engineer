@@ -453,6 +453,65 @@ describe("SqliteStateStore", () => {
     });
   });
 
+  describe("posted-review-comment deduplication", () => {
+    it("records posted comments and exposes their hashes", async () => {
+      const taskId = makeTaskId(randomUUID());
+      await store.createTask(taskId, makeTicketId("rev-1"));
+      const changeId = makeExternalChangeId("owner/repo#1");
+
+      expect((await store.getPostedReviewCommentHashes(taskId)).size).toBe(0);
+
+      await store.markReviewCommentsPosted(taskId, changeId, [
+        { commentHash: "hash-a", file: "src/a.ts", line: 10, message: "Issue A", severity: "error" },
+        { commentHash: "hash-b", file: "src/b.ts", line: 20, message: "Issue B", severity: "warning", providerThreadId: "thread-b" },
+      ]);
+
+      const hashes = await store.getPostedReviewCommentHashes(taskId);
+      expect(hashes.has("hash-a")).toBe(true);
+      expect(hashes.has("hash-b")).toBe(true);
+
+      const records = await store.getPostedReviewComments(taskId);
+      expect(records).toHaveLength(2);
+      const b = records.find((r) => r.commentHash === "hash-b");
+      expect(b?.providerThreadId).toBe("thread-b");
+      expect(b?.resolved).toBe(false);
+    });
+
+    it("ignores duplicate hashes for the same task", async () => {
+      const taskId = makeTaskId(randomUUID());
+      await store.createTask(taskId, makeTicketId("rev-2"));
+      const changeId = makeExternalChangeId("owner/repo#2");
+
+      await store.markReviewCommentsPosted(taskId, changeId, [
+        { commentHash: "dup", file: "src/a.ts", line: 1, message: "first", severity: "error" },
+      ]);
+      await store.markReviewCommentsPosted(taskId, changeId, [
+        { commentHash: "dup", file: "src/a.ts", line: 99, message: "second", severity: "error" },
+      ]);
+
+      const records = await store.getPostedReviewComments(taskId);
+      expect(records).toHaveLength(1);
+      expect(records[0]?.line).toBe(1);
+    });
+
+    it("marks a posted comment as resolved", async () => {
+      const taskId = makeTaskId(randomUUID());
+      await store.createTask(taskId, makeTicketId("rev-3"));
+      const changeId = makeExternalChangeId("owner/repo#3");
+
+      await store.markReviewCommentsPosted(taskId, changeId, [
+        { commentHash: "h", file: "src/a.ts", line: 5, message: "resolve me", severity: "error" },
+      ]);
+      const [rec] = await store.getPostedReviewComments(taskId);
+      expect(rec).toBeDefined();
+
+      await store.markReviewCommentResolved(rec!.id);
+
+      const [updated] = await store.getPostedReviewComments(taskId);
+      expect(updated?.resolved).toBe(true);
+    });
+  });
+
   describe("saveAgentCycle", () => {
     it("stores and retrieves agent cycle results", async () => {
       const taskId = makeTaskId(randomUUID());
