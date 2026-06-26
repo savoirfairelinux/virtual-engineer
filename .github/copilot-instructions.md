@@ -85,6 +85,7 @@ agent-worker/index.js   # JS entry inside the agent container
 - `tasks` PK = `task_id` (TEXT). There is **no** `id` column. Key columns also include `task_type`, `gerrit_change_id`, `current_patchset`, `reviewed_patchset`, `project_id`, `ticket_source_integration_id`, `ticket_source_project_key`, `cycle_count`, `failure_reason`, `ticket_url`, `review_url`, `created_at`, `updated_at`. `ticket_source_integration_id` / `ticket_source_project_key` snapshot the originating ticket source so orphaned tasks can be adopted by a future project bound to the same ticket source.
 - `state_transitions`, `agent_cycles`, `processed_comments` use INTEGER `id` PKs.
 - `posted_review_comments` (INTEGER `id` PK): dedup table for the **review posting** side (VE as reviewer). Columns: `task_id`, `change_id`, `comment_hash` (`sha1(file+"\n"+normalized(message))`, line excluded), `file`, `line`, `message`, `severity`, `provider_thread_id` (nullable), `resolved` (0/1), `created_at`. Unique `(task_id, comment_hash)` drives `INSERT OR IGNORE` idempotency; prevents re-posting the same finding across patchsets. Integration-agnostic.
+- `review_thread_replies` (INTEGER `id` PK): dedup ledger for **discussion-thread replies** (VE answering human review comments). Columns: `task_id` (FK), `change_id`, `thread_id`, `handled_comment_hash` (`sha1(thread+"\n"+lower(author)+"\n"+normalized(message))` of the latest human comment), `reply_message`, `created_at`. Unique `(task_id, thread_id, handled_comment_hash)` drives `INSERT OR IGNORE`; VE replies once per new human message and never re-answers an already-handled thread across re-reviews. Integration-agnostic.
 - `agent_cycles.agent_events` (TEXT, JSON `AgentLogEvent[]`) records the streamed agent log.
 - `integrations` (TEXT `id` PK): `type`, `name`, `config_json`, `enabled` (INTEGER), timestamps.
 - `prompts` (TEXT `id` PK): `label`, `content`, timestamps. Used to inject `SYSTEM_PROMPT` / `INSTRUCTIONS_PROMPT` into the agent container.
@@ -144,6 +145,7 @@ All env vars are optional. Only system/infra settings remain — provider creden
 | `AGENT_TIMEOUT_MS` | `3_600_000` | host-side agent timeout (60 min) |
 | `MAX_REVIEW_DIFF_CHARS` | `60_000` | max diff chars injected into review prompt |
 | `MAX_REVIEW_COMMENTS` | `20` | max inline comments posted per review pass (excess folded into summary) |
+| `MAX_REVIEW_REPLIES` | `20` | max discussion-thread replies VE posts per review pass |
 | `REVIEW_MIN_SEVERITY` | `info` | min severity (`nit`<`info`<`warning`<`error`) to post inline; lower folded into summary |
 | `AGENT_CONTAINER_IMAGE` | `virtual-engineer-workspace:latest` | |
 | `WORKSPACE_BASE_DIR` | `/tmp/virtual-engineer/workspaces` | scratch space for review diffs; agent workspaces use Docker named volumes |

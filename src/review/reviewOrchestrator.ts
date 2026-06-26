@@ -8,10 +8,12 @@ import {
   type ProjectPushTargetRecord,
   type ReviewChangeDetails,
   type ReviewChangeDiff,
+  type ReviewDiscussionThread,
   type ReviewProvider,
   type StateStore,
   type Task,
   type TaskId,
+  type ThreadReplyRecordInput,
   type WorkspaceRunner,
   type WorkspaceHandle,
   TERMINAL_STATES,
@@ -21,7 +23,7 @@ import {
 import { buildReviewPrompt } from "./reviewPromptBuilder.js";
 import { computeVote, parseReviewResult } from "./reviewResultParser.js";
 import { filterCommentsByAllowedFiles } from "./commentFilter.js";
-import { computeCommentHash } from "./commentHash.js";
+import { computeCommentHash, computeThreadReplyHash } from "./commentHash.js";
 import { applyVolumeAndSeverityGate, buildFoldedSummary } from "./commentSeverity.js";
 import { agentLogBus, pushToTaskBuffer, clearTaskEventBuffer } from "../agents/agentEventBus.js";
 
@@ -60,6 +62,8 @@ export interface ReviewOrchestratorDeps {
     | "getPostedReviewCommentHashes"
     | "getPostedReviewComments"
     | "markReviewCommentsPosted"
+    | "getHandledThreadReplyHashes"
+    | "markThreadReplyPosted"
   >;
   reviewProvider: ReviewProvider;
   /** Gerrit integration ID — used to look up the project via the review_target table. */
@@ -84,6 +88,8 @@ export interface ReviewOrchestratorDeps {
   maxDiffChars?: number | undefined;
   /** Maximum number of inline comments posted per review pass. Defaults to 20. */
   maxReviewComments?: number | undefined;
+  /** Maximum number of discussion-thread replies posted per review pass. Defaults to 20. */
+  maxReviewReplies?: number | undefined;
   /** Minimum severity for a comment to be posted inline. Defaults to "info". */
   reviewMinSeverity?: string | undefined;
 }
@@ -304,6 +310,38 @@ export class ReviewOrchestrator {
       // prompt so the agent does not re-raise points it has already made.
       const priorComments = await this.deps.stateStore.getPostedReviewComments(taskId);
 
+      // Fetch open human discussion threads so the agent can reply. Guarded:
+      // providers without thread support skip this entirely. A thread is
+      // eligible when it is unresolved, has at least one human (non-own)
+      // comment, and the latest human message has not already been answered
+      // (tracked by the reply ledger).
+      const threadById = new Map<string, { thread: ReviewDiscussionThread; handledHash: string }>();
+      const eligibleThreads: ReviewDiscussionThread[] = [];
+      const threadsSupported =
+        typeof this.deps.reviewProvider.getDiscussionThreads === "function" &&
+        typeof this.deps.reviewProvider.postThreadReply === "function";
+      if (threadsSupported && this.deps.reviewProvider.getDiscussionThreads !== undefined) {
+        try {
+          const handledHashes = await this.deps.stateStore.getHandledThreadReplyHashes(taskId);
+          const allThreads = await this.deps.reviewProvider.getDiscussionThreads(changeId);
+          for (const thread of allThreads) {
+            if (thread.resolved) continue;
+            const lastHuman = [...thread.comments].reverse().find((c) => !c.isOwn);
+            if (lastHuman === undefined) continue;
+            const handledHash = computeThreadReplyHash({
+              threadId: thread.threadId,
+              author: lastHuman.author,
+              message: lastHuman.message,
+            });
+            if (handledHashes.has(handledHash)) continue;
+            eligibleThreads.push(thread);
+            threadById.set(thread.threadId, { thread, handledHash });
+          }
+        } catch (err) {
+          log.warn({ err, taskId }, "failed to fetch discussion threads; continuing without replies");
+        }
+      }
+
       const prompt = buildReviewPrompt({
         details,
         diff,
@@ -317,6 +355,7 @@ export class ReviewOrchestrator {
               })),
             }
           : {}),
+        ...(eligibleThreads.length > 0 ? { discussionThreads: eligibleThreads } : {}),
         ...(this.deps.maxDiffChars !== undefined ? { maxDiffChars: this.deps.maxDiffChars } : {}),
       });
 
@@ -421,19 +460,41 @@ export class ReviewOrchestrator {
       });
       const summary = result.summary + buildFoldedSummary(folded);
 
+      // Validate the agent's replies against the eligible thread set: drop
+      // hallucinated threadIds and duplicates, require a non-empty body, and
+      // cap the volume. Replies are posted independently of the summary gate.
+      const maxReplies = this.deps.maxReviewReplies ?? 20;
+      const repliesToPost: Array<{ threadId: string; message: string; handledHash: string }> = [];
+      const seenReplyThreadIds = new Set<string>();
+      for (const reply of result.replies) {
+        if (repliesToPost.length >= maxReplies) break;
+        if (seenReplyThreadIds.has(reply.threadId)) continue;
+        const entry = threadById.get(reply.threadId);
+        if (entry === undefined) continue; // hallucinated or already-handled thread
+        const message = reply.message.trim();
+        if (message.length === 0) continue;
+        seenReplyThreadIds.add(reply.threadId);
+        repliesToPost.push({ threadId: reply.threadId, message, handledHash: entry.handledHash });
+      }
+
       // Avoid re-posting an identical verdict on re-reviews. When a pass
-      // finds nothing new to say (no inline comments, no folded notes) and the
-      // overall vote matches the last review cycle, stay silent instead of
-      // spamming another summary + vote notification.
+      // finds nothing new to say (no inline comments, no folded notes, no
+      // replies) and the overall vote matches the last review cycle, stay
+      // silent instead of spamming another summary + vote notification.
       const hasNothingNew = commentsToPost.length === 0 && folded.length === 0;
       const previousVote = await this.getLastReviewVote(taskId);
       const skipPosting =
-        cycleNumber > 1 && hasNothingNew && previousVote !== null && previousVote === vote;
+        cycleNumber > 1 &&
+        hasNothingNew &&
+        previousVote !== null &&
+        previousVote === vote &&
+        repliesToPost.length === 0;
 
       emitReviewEvent("review.posting_comments", {
         commentCount: commentsToPost.length,
         foldedCount: folded.length,
         dedupedCount,
+        replyCount: repliesToPost.length,
         vote,
         skipped: skipPosting,
         summary: summary.slice(0, 200),
@@ -459,6 +520,28 @@ export class ReviewOrchestrator {
         );
       }
 
+      // Post replies to human discussion threads (independent of the summary
+      // gate). Each successfully-posted reply is recorded in the ledger so the
+      // same human message is never answered twice across re-reviews.
+      const postedReplies: ThreadReplyRecordInput[] = [];
+      if (repliesToPost.length > 0 && this.deps.reviewProvider.postThreadReply !== undefined) {
+        for (const r of repliesToPost) {
+          try {
+            await this.deps.reviewProvider.postThreadReply(changeId, reviewPatchset, r.threadId, r.message);
+            postedReplies.push({
+              threadId: r.threadId,
+              handledCommentHash: r.handledHash,
+              replyMessage: r.message,
+            });
+          } catch (err) {
+            log.warn({ err, taskId, threadId: r.threadId }, "failed to post discussion reply");
+          }
+        }
+        if (postedReplies.length > 0) {
+          await this.deps.stateStore.markThreadReplyPosted(taskId, changeId, postedReplies);
+        }
+      }
+
       await this.deps.stateStore.transition(taskId, "REVIEW_COMMENTING");
       await this.deps.stateStore.setReviewedPatchset(taskId, reviewPatchset);
 
@@ -466,6 +549,7 @@ export class ReviewOrchestrator {
         commentCount: commentsToPost.length,
         foldedCount: folded.length,
         dedupedCount,
+        replyCount: postedReplies.length,
         vote,
         skipped: skipPosting,
         patchset: reviewPatchset,
@@ -482,6 +566,7 @@ export class ReviewOrchestrator {
           reviewMode: true,
           patchset: reviewPatchset,
           commentCount: result.comments.length,
+          replyCount: postedReplies.length,
           vote,
           comments: result.comments,
           score: result.score,

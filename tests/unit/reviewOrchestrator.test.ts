@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { ReviewOrchestrator } from "../../src/review/reviewOrchestrator.js";
-import { computeCommentHash } from "../../src/review/commentHash.js";
+import { computeCommentHash, computeThreadReplyHash } from "../../src/review/commentHash.js";
 import {
   makeExternalChangeId,
   makeProjectId,
@@ -9,6 +9,7 @@ import {
   type ProjectRecord,
   type ReviewChangeDetails,
   type ReviewChangeDiff,
+  type ReviewDiscussionThread,
   type ReviewProvider,
   type Task,
   type TaskState,
@@ -166,6 +167,8 @@ function makeMocks(initialTask?: Task) {
     getPostedReviewCommentHashes: vi.fn(async () => new Set<string>()),
     getPostedReviewComments: vi.fn(async () => []),
     markReviewCommentsPosted: vi.fn(async () => undefined),
+    getHandledThreadReplyHashes: vi.fn(async () => new Set<string>()),
+    markThreadReplyPosted: vi.fn(async () => undefined),
     findProjectsByReviewTarget: vi.fn(async () => [makeProject()]),
     getProjectById: vi.fn(async () => makeProject()),
     setTaskProjectId: vi.fn(async () => undefined),
@@ -749,6 +752,205 @@ describe("ReviewOrchestrator.runReview â terminal state guard", () => {
       expect(mocks.store.transition).not.toHaveBeenCalled();
     });
   }
+});
+
+describe("ReviewOrchestrator.runReview - discussion replies", () => {
+  function makeThread(overrides: Partial<ReviewDiscussionThread> = {}): ReviewDiscussionThread {
+    return {
+      threadId: "disc-1",
+      file: "src/a.ts",
+      line: 1,
+      resolved: false,
+      comments: [{ author: "alice", message: "Why this?", isOwn: false }],
+      ...overrides,
+    };
+  }
+
+  function rawWithReplies(
+    replies: Array<{ threadId: string; message: string }>,
+    opts: { comments?: unknown[]; summary?: string; score?: number } = {}
+  ): string {
+    return [
+      "REVIEW_RESULT_START",
+      JSON.stringify({
+        comments: opts.comments ?? [],
+        summary: opts.summary ?? "",
+        score: opts.score ?? 0,
+        replies,
+      }),
+      "REVIEW_RESULT_END",
+    ].join("\n");
+  }
+
+  function withThreads(
+    mocks: ReturnType<typeof makeMocks>,
+    threads: ReviewDiscussionThread[]
+  ): ReturnType<typeof vi.fn> {
+    mocks.provider.getDiscussionThreads = vi.fn(async () => threads);
+    const postThreadReply = vi.fn(async () => undefined);
+    mocks.provider.postThreadReply = postThreadReply;
+    return postThreadReply;
+  }
+
+  it("posts a reply for an eligible thread and records it in the ledger", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    const postThreadReply = withThreads(mocks, [makeThread()]);
+    const { runner } = makeWorkspaceRunner(
+      rawWithReplies([{ threadId: "disc-1", message: "Good catch, fixed." }])
+    );
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+
+    await orch.runReview(initial.taskId);
+
+    expect(postThreadReply).toHaveBeenCalledWith(CHANGE_ID, 2, "disc-1", "Good catch, fixed.");
+    const handledHash = computeThreadReplyHash({
+      threadId: "disc-1",
+      author: "alice",
+      message: "Why this?",
+    });
+    expect(mocks.store.markThreadReplyPosted).toHaveBeenCalledWith(initial.taskId, CHANGE_ID, [
+      { threadId: "disc-1", handledCommentHash: handledHash, replyMessage: "Good catch, fixed." },
+    ]);
+  });
+
+  it("does not reply to a resolved thread", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    const postThreadReply = withThreads(mocks, [makeThread({ resolved: true })]);
+    const { runner } = makeWorkspaceRunner(rawWithReplies([{ threadId: "disc-1", message: "x" }]));
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+
+    await orch.runReview(initial.taskId);
+
+    expect(postThreadReply).not.toHaveBeenCalled();
+    expect(mocks.store.markThreadReplyPosted).not.toHaveBeenCalled();
+  });
+
+  it("does not reply to a thread that has only VE's own comments", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    const postThreadReply = withThreads(mocks, [
+      makeThread({ comments: [{ author: "ve-bot", message: "mine", isOwn: true }] }),
+    ]);
+    const { runner } = makeWorkspaceRunner(rawWithReplies([{ threadId: "disc-1", message: "x" }]));
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+
+    await orch.runReview(initial.taskId);
+
+    expect(postThreadReply).not.toHaveBeenCalled();
+  });
+
+  it("does not reply again when the latest human message was already answered", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    const handledHash = computeThreadReplyHash({
+      threadId: "disc-1",
+      author: "alice",
+      message: "Why this?",
+    });
+    (mocks.store.getHandledThreadReplyHashes as ReturnType<typeof vi.fn>).mockResolvedValue(
+      new Set([handledHash])
+    );
+    const postThreadReply = withThreads(mocks, [makeThread()]);
+    const { runner } = makeWorkspaceRunner(rawWithReplies([{ threadId: "disc-1", message: "x" }]));
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+
+    await orch.runReview(initial.taskId);
+
+    expect(postThreadReply).not.toHaveBeenCalled();
+  });
+
+  it("drops replies that reference an unknown (hallucinated) threadId", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    const postThreadReply = withThreads(mocks, [makeThread()]);
+    const { runner } = makeWorkspaceRunner(
+      rawWithReplies([{ threadId: "ghost-thread", message: "x" }])
+    );
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+
+    await orch.runReview(initial.taskId);
+
+    expect(postThreadReply).not.toHaveBeenCalled();
+  });
+
+  it("drops replies with an empty body", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    const postThreadReply = withThreads(mocks, [makeThread()]);
+    const { runner } = makeWorkspaceRunner(rawWithReplies([{ threadId: "disc-1", message: "   " }]));
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+
+    await orch.runReview(initial.taskId);
+
+    expect(postThreadReply).not.toHaveBeenCalled();
+  });
+
+  it("caps the number of replies at maxReviewReplies", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    const threads: ReviewDiscussionThread[] = [
+      makeThread({ threadId: "disc-1", comments: [{ author: "a", message: "q1", isOwn: false }] }),
+      makeThread({ threadId: "disc-2", comments: [{ author: "b", message: "q2", isOwn: false }] }),
+      makeThread({ threadId: "disc-3", comments: [{ author: "c", message: "q3", isOwn: false }] }),
+    ];
+    const postThreadReply = withThreads(mocks, threads);
+    const { runner } = makeWorkspaceRunner(
+      rawWithReplies([
+        { threadId: "disc-1", message: "r1" },
+        { threadId: "disc-2", message: "r2" },
+        { threadId: "disc-3", message: "r3" },
+      ])
+    );
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner, { maxReviewReplies: 2 }));
+
+    await orch.runReview(initial.taskId);
+
+    expect(postThreadReply).toHaveBeenCalledTimes(2);
+  });
+
+  it("posts a pending reply even on a re-review with an unchanged verdict", async () => {
+    const initial = makeTask({ state: "REVIEW_WATCHING", cycleCount: 1 });
+    const mocks = makeMocks(initial);
+    // The lone inline comment is already on record and the prior vote matches,
+    // so the summary/vote path would normally be skipped - but a pending reply
+    // must still be delivered.
+    const knownHash = computeCommentHash({ file: "src/a.ts", message: "Bug" });
+    (mocks.store.getPostedReviewCommentHashes as ReturnType<typeof vi.fn>).mockResolvedValue(
+      new Set([knownHash])
+    );
+    (mocks.store.getAgentCycles as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { result: { metadata: { vote: -1 } } },
+    ]);
+    const postThreadReply = withThreads(mocks, [makeThread()]);
+    const { runner } = makeWorkspaceRunner(
+      rawWithReplies([{ threadId: "disc-1", message: "Replying here." }], {
+        comments: [{ file: "src/a.ts", line: 1, message: "Bug", severity: "error" }],
+        summary: "blocking",
+        score: -1,
+      })
+    );
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+
+    await orch.runReview(initial.taskId);
+
+    expect(postThreadReply).toHaveBeenCalledWith(CHANGE_ID, 2, "disc-1", "Replying here.");
+    expect(mocks.store.markThreadReplyPosted).toHaveBeenCalledOnce();
+  });
+
+  it("ignores discussion threads when the provider lacks thread support", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    // Provider has no getDiscussionThreads / postThreadReply (the default).
+    const { runner } = makeWorkspaceRunner(rawWithReplies([{ threadId: "disc-1", message: "x" }]));
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+
+    await orch.runReview(initial.taskId);
+
+    expect(mocks.store.getHandledThreadReplyHashes).not.toHaveBeenCalled();
+    expect(mocks.store.markThreadReplyPosted).not.toHaveBeenCalled();
+  });
 });
 
 describe("Unused symbols import sanity check", () => {

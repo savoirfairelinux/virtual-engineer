@@ -4,7 +4,7 @@
  * Assembles the full prompt string passed to the review agent by combining
  * change metadata, the diff, and per-reviewer instructions.
  */
-import type { ReviewChangeDetails, ReviewChangeDiff } from "../interfaces.js";
+import type { ReviewChangeDetails, ReviewChangeDiff, ReviewDiscussionThread } from "../interfaces.js";
 
 /** Default upper bound on diff size injected into the prompt to avoid token blow-ups. */
 const DEFAULT_MAX_DIFF_CHARS = 60_000;
@@ -23,6 +23,11 @@ export interface ReviewPromptInput {
    * Injected so the agent does not re-raise points it has already made.
    */
   priorComments?: PriorReviewComment[] | undefined;
+  /**
+   * Open human discussion threads the agent may reply to. Each thread carries a
+   * `threadId` the agent must echo back in its `replies[]` output to address it.
+   */
+  discussionThreads?: ReviewDiscussionThread[] | undefined;
 }
 
 /** A previously-posted review comment surfaced back to the agent as memory. */
@@ -34,7 +39,7 @@ export interface PriorReviewComment {
 
 /** Build the full prompt sent to the review agent for a single change. */
 export function buildReviewPrompt(input: ReviewPromptInput): string {
-  const { details, diff, userPrompt, maxDiffChars, priorComments } = input;
+  const { details, diff, userPrompt, maxDiffChars, priorComments, discussionThreads } = input;
 
   const header = [
     `# Code Review Task`,
@@ -63,6 +68,14 @@ export function buildReviewPrompt(input: ReviewPromptInput): string {
     sections.push(``, `## Already reported (do not repeat)`, renderPriorComments(priorComments));
   }
 
+  if (discussionThreads && discussionThreads.length > 0) {
+    sections.push(
+      ``,
+      `## Open discussion threads (respond where relevant)`,
+      renderDiscussionThreads(discussionThreads),
+    );
+  }
+
   sections.push(
     ``,
     `## Files in this patchset`,
@@ -89,6 +102,38 @@ function renderPriorComments(priorComments: PriorReviewComment[]): string {
     "review cycles. Do NOT repeat them; only report genuinely new issues:",
     "",
     ...lines,
+  ].join("\n");
+}
+
+/**
+ * Render open human discussion threads as a numbered list. Each thread is
+ * labelled with its opaque `threadId`; the agent must echo that id back in a
+ * `replies[]` entry to address the thread. Replies are optional per thread.
+ */
+function renderDiscussionThreads(threads: ReviewDiscussionThread[]): string {
+  const blocks = threads.map((thread) => {
+    const anchor =
+      thread.file !== null
+        ? thread.line !== null
+          ? `${thread.file}:${thread.line}`
+          : thread.file
+        : "(change-level)";
+    const conversation = thread.comments
+      .map((c) => {
+        const who = c.isOwn ? `${c.author} (you)` : c.author;
+        const message = c.message.replace(/\s+/g, " ").trim();
+        return `    ${who}: ${message}`;
+      })
+      .join("\n");
+    return [`- threadId: ${thread.threadId}  [${anchor}]`, conversation].join("\n");
+  });
+  return [
+    "The following human discussion threads are open. Reply only where you can",
+    "add value (answer a question, agree/disagree with reasoning, clarify your",
+    "earlier feedback). To reply, add an entry to `replies[]` with the matching",
+    "`threadId`. Leave a thread out if no reply is warranted.",
+    "",
+    ...blocks,
   ].join("\n");
 }
 

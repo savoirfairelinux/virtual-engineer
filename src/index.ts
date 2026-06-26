@@ -502,6 +502,7 @@ async function buildReviewBundle(
     })(),
     maxDiffChars: getConfig().maxReviewDiffChars,
     maxReviewComments: getConfig().maxReviewComments,
+    maxReviewReplies: getConfig().maxReviewReplies,
     reviewMinSeverity: getConfig().reviewMinSeverity,
   });
   return { integration, provider: reviewer.provider, orchestrator };

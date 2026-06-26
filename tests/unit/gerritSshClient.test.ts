@@ -374,6 +374,94 @@ describe("GerritSshClient", () => {
     });
   });
 
+  describe("getDiscussionComments", () => {
+    const INLINE = {
+      timestamp: 1710000000,
+      reviewer: { name: "Alice", email: "alice@example.com", username: "alice" },
+      message: "Why this approach?",
+      file: "src/main.ts",
+      line: 12,
+      patchSet: 3,
+    };
+
+    const OWN_INLINE = {
+      timestamp: 1710000050,
+      reviewer: { name: "VE Bot", email: "ve@gerrit.test", username: "ve" },
+      message: "Because of X.",
+      file: "src/main.ts",
+      line: 12,
+      patchSet: 3,
+    };
+
+    const CHANGE_MESSAGE = {
+      timestamp: 1710000100,
+      reviewer: { name: "Bob", email: "bob@example.com", username: "bob" },
+      message: "Patch Set 3:\n\n(1 comment)\n\nOverall looks reasonable.",
+    };
+
+    function makeRow(comments: unknown[] = [], changeMessages?: unknown[]): unknown {
+      return {
+        number: 42,
+        status: "NEW",
+        currentPatchSet: { number: 3, revision: "abc", comments },
+        ...(changeMessages !== undefined ? { comments: changeMessages } : {}),
+      };
+    }
+
+    it("maps inline comments and tags isOwn against the configured user", async () => {
+      execFileResults = [{ stdout: sshNdjson(makeRow([INLINE, OWN_INLINE])), stderr: "" }];
+
+      const result = await makeClient().getDiscussionComments("I8473");
+
+      expect(result).toHaveLength(2);
+      expect(result[0]).toMatchObject({
+        author: "alice",
+        isOwn: false,
+        message: "Why this approach?",
+        file: "src/main.ts",
+        line: 12,
+        patchSet: 3,
+      });
+      expect(result[0]!.timestampMs).toBe(1710000000 * 1000);
+      expect(result[1]!.isOwn).toBe(true);
+    });
+
+    it("maps top-level change messages with file/line null and strips the preamble", async () => {
+      execFileResults = [{ stdout: sshNdjson(makeRow([], [CHANGE_MESSAGE])), stderr: "" }];
+
+      const result = await makeClient().getDiscussionComments("I8473");
+
+      expect(result).toHaveLength(1);
+      expect(result[0]).toMatchObject({
+        author: "bob",
+        isOwn: false,
+        message: "Overall looks reasonable.",
+        file: null,
+        line: null,
+        patchSet: 0,
+      });
+    });
+
+    it("treats /PATCHSET_LEVEL inline comments as change-level (file null)", async () => {
+      const patchsetLevel = { ...INLINE, file: "/PATCHSET_LEVEL" };
+      execFileResults = [{ stdout: sshNdjson(makeRow([patchsetLevel])), stderr: "" }];
+
+      const result = await makeClient().getDiscussionComments("I8473");
+
+      expect(result[0]!.file).toBeNull();
+    });
+
+    it("skips system messages and empty bodies", async () => {
+      const system = { ...CHANGE_MESSAGE, message: "Uploaded patch set 2." };
+      const pureVote = { ...CHANGE_MESSAGE, message: "Patch Set 3: Code-Review+2\n\n" };
+      execFileResults = [{ stdout: sshNdjson(makeRow([], [system, pureVote])), stderr: "" }];
+
+      const result = await makeClient().getDiscussionComments("I8473");
+
+      expect(result).toHaveLength(0);
+    });
+  });
+
   describe("resolveComments", () => {
     const CHANGE_ROW = {
       number: 42,

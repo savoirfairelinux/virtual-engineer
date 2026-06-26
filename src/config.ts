@@ -67,6 +67,8 @@ const ConfigSchema = z.object({
     maxReviewDiffChars: z.coerce.number().int().positive().default(60_000),
     /** Maximum number of inline comments VE posts per review pass (excess is folded into the summary). */
     maxReviewComments: z.coerce.number().int().positive().default(20),
+    /** Maximum number of discussion-thread replies VE posts per review pass. */
+    maxReviewReplies: z.coerce.number().int().positive().default(20),
     /** Minimum severity for an inline review comment to be posted; lower severities are folded into the summary. */
     reviewMinSeverity: z.enum(["nit", "info", "warning", "error"]).default("info"),
 
@@ -100,6 +102,7 @@ function fromEnv(): Record<string, string | undefined> {
     agentTimeoutMs: process.env["AGENT_TIMEOUT_MS"],
     maxReviewDiffChars: process.env["MAX_REVIEW_DIFF_CHARS"],
     maxReviewComments: process.env["MAX_REVIEW_COMMENTS"],
+    maxReviewReplies: process.env["MAX_REVIEW_REPLIES"],
     reviewMinSeverity: process.env["REVIEW_MIN_SEVERITY"],
     agentContainerImage: process.env["AGENT_CONTAINER_IMAGE"],
     workspaceBaseDir: process.env["WORKSPACE_BASE_DIR"],

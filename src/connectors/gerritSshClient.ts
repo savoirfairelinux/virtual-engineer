@@ -46,6 +46,24 @@ export const SshCommentSchema = z.object({
   patchSet: z.number().optional(),
 });
 
+/** A structured discussion comment surfaced for the reviewer-side reply flow. */
+export interface GerritDiscussionComment {
+  /** SSH username, e-mail, or display name of the author (best available). */
+  author: string;
+  /** True when authored by the configured SSH user (VE itself). */
+  isOwn: boolean;
+  /** Comment body (preamble stripped for change-level messages). */
+  message: string;
+  /** File path for inline comments, or null for change-level messages. */
+  file: string | null;
+  /** 1-based line for inline comments, or null. */
+  line: number | null;
+  /** Patchset the comment belongs to (0 for change-level messages). */
+  patchSet: number;
+  /** Comment timestamp in epoch milliseconds. */
+  timestampMs: number;
+}
+
 /** Strip the "Patch Set N: [label]\n\n" preamble Gerrit prepends to every review message. */
 export const PREAMBLE_RE = /^Patch Set \d+:[^\n]*\n\n/;
 /** Strip a leading "(N comments)\n" summary line left after preamble removal. */
@@ -290,5 +308,67 @@ export class GerritSshClient {
     const reviewInput = JSON.stringify({ comments: commentsByFile });
     await this.reviewJson(`${info.number},${patchset}`, reviewInput);
     log.info({ changeId, count: comments.length }, "resolved Gerrit comment threads via SSH review --json");
+  }
+
+  /**
+   * Fetch every review comment on a change as structured discussion entries,
+   * tagging each with whether it was authored by the configured SSH user.
+   *
+   * Unlike `getUnresolvedComments` (which is shaped for the author-side feedback
+   * loop), this returns the SSH username and keeps VE's own comments so the
+   * reviewer-side reply flow can decide which threads need a response. SSH does
+   * not expose comment UUIDs or a resolved flag, so `uuid` is always null and
+   * resolution is left to the caller (deduped via the reply ledger).
+   */
+  async getDiscussionComments(changeId: string): Promise<GerritDiscussionComment[]> {
+    const out = await this.query([
+      "query", "--format", "JSON", "--current-patch-set", "--comments", `change:${changeId}`,
+    ]);
+    const rows = parseSshNdjson(out);
+    const result: GerritDiscussionComment[] = [];
+    for (const row of rows) {
+      const record = row as Record<string, unknown>;
+
+      const rawComments = (record["currentPatchSet"] as Record<string, unknown> | undefined)?.["comments"];
+      if (Array.isArray(rawComments)) {
+        for (const raw of rawComments) {
+          const c = SshCommentSchema.safeParse(raw);
+          if (!c.success) continue;
+          result.push({
+            author: c.data.reviewer?.username ?? c.data.reviewer?.email ?? c.data.reviewer?.name ?? "unknown",
+            isOwn: c.data.reviewer?.username === this.config.user,
+            message: c.data.message,
+            file: c.data.file && c.data.file !== "/PATCHSET_LEVEL" ? c.data.file : null,
+            line: c.data.line ?? null,
+            patchSet: c.data.patchSet ?? 0,
+            timestampMs: c.data.timestamp * 1000,
+          });
+        }
+      }
+
+      const rawMessages = record["comments"];
+      if (Array.isArray(rawMessages)) {
+        for (const raw of rawMessages) {
+          const m = SshCommentSchema.safeParse(raw);
+          if (!m.success) continue;
+          if (SYSTEM_RE.test(m.data.message)) continue;
+          const body = m.data.message
+            .replace(PREAMBLE_RE, "")
+            .replace(COMMENTS_SUMMARY_RE, "")
+            .trim();
+          if (!body) continue;
+          result.push({
+            author: m.data.reviewer?.username ?? m.data.reviewer?.email ?? m.data.reviewer?.name ?? "unknown",
+            isOwn: m.data.reviewer?.username === this.config.user,
+            message: body,
+            file: null,
+            line: null,
+            patchSet: 0,
+            timestampMs: m.data.timestamp * 1000,
+          });
+        }
+      }
+    }
+    return result;
   }
 }

@@ -14,6 +14,7 @@ import type {
   Task,
   TaskId,
   TaskState,
+  ThreadReplyRecordInput,
   TicketId,
   ValidationResult,
 } from "../../interfaces.js";
@@ -25,6 +26,7 @@ import {
   changePerRepository,
   postedReviewComments,
   processedComments,
+  reviewThreadReplies,
   stateTransitions,
   tasks,
 } from "../schema.js";
@@ -81,6 +83,12 @@ export interface TaskStoreApi {
     comments: PostedReviewCommentInput[]
   ): Promise<void>;
   markReviewCommentResolved(id: number): Promise<void>;
+  getHandledThreadReplyHashes(taskId: TaskId): Promise<Set<string>>;
+  markThreadReplyPosted(
+    taskId: TaskId,
+    changeId: ExternalChangeId,
+    replies: ThreadReplyRecordInput[]
+  ): Promise<void>;
   pauseTask(taskId: TaskId): Promise<Task>;
   resumeTask(taskId: TaskId): Promise<Task>;
   isTaskPaused(taskId: TaskId): Promise<boolean>;
@@ -516,6 +524,35 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
     raw.prepare("UPDATE posted_review_comments SET resolved = 1 WHERE id = ?").run(id);
   }
 
+  async function getHandledThreadReplyHashes(taskId: TaskId): Promise<Set<string>> {
+    const rows = await db.query.reviewThreadReplies.findMany({
+      where: eq(reviewThreadReplies.taskId, taskId),
+    });
+    return new Set(rows.map((row) => row.handledCommentHash));
+  }
+
+  async function markThreadReplyPosted(
+    taskId: TaskId,
+    changeId: ExternalChangeId,
+    replies: ThreadReplyRecordInput[]
+  ): Promise<void> {
+    if (replies.length === 0) return;
+    const now = Math.floor(Date.now() / 1000);
+    // INSERT OR IGNORE so a duplicate (task_id, thread_id, handled_comment_hash)
+    // is silently skipped rather than aborting the whole batch.
+    const stmt = raw.prepare(
+      `INSERT OR IGNORE INTO review_thread_replies
+         (task_id, change_id, thread_id, handled_comment_hash, reply_message, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    );
+    const insertMany = raw.transaction((items: ThreadReplyRecordInput[]) => {
+      for (const r of items) {
+        stmt.run(taskId, String(changeId), r.threadId, r.handledCommentHash, r.replyMessage, now);
+      }
+    });
+    insertMany(replies);
+  }
+
   async function pauseTask(taskId: TaskId): Promise<Task> {
     const task = await getTask(taskId);
     if (!task) throw new Error(`Task not found: ${taskId}`);
@@ -705,6 +742,7 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
       raw.prepare("DELETE FROM change_per_repository WHERE task_id = ?").run(taskId);
       raw.prepare("DELETE FROM processed_comments WHERE task_id = ?").run(taskId);
       raw.prepare("DELETE FROM posted_review_comments WHERE task_id = ?").run(taskId);
+      raw.prepare("DELETE FROM review_thread_replies WHERE task_id = ?").run(taskId);
       raw.prepare("DELETE FROM agent_cycles WHERE task_id = ?").run(taskId);
       raw.prepare("DELETE FROM state_transitions WHERE task_id = ?").run(taskId);
       raw.prepare("DELETE FROM tasks WHERE task_id = ?").run(taskId);
@@ -739,6 +777,7 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
         raw.prepare("DELETE FROM change_per_repository WHERE task_id = ?").run(id);
         raw.prepare("DELETE FROM processed_comments WHERE task_id = ?").run(id);
         raw.prepare("DELETE FROM posted_review_comments WHERE task_id = ?").run(id);
+        raw.prepare("DELETE FROM review_thread_replies WHERE task_id = ?").run(id);
         raw.prepare("DELETE FROM agent_cycles WHERE task_id = ?").run(id);
         raw.prepare("DELETE FROM state_transitions WHERE task_id = ?").run(id);
         raw.prepare("DELETE FROM tasks WHERE task_id = ?").run(id);
@@ -947,6 +986,8 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
     getPostedReviewComments,
     markReviewCommentsPosted,
     markReviewCommentResolved,
+    getHandledThreadReplyHashes,
+    markThreadReplyPosted,
     pauseTask,
     resumeTask,
     isTaskPaused,

@@ -147,3 +147,54 @@ describe("buildReviewPrompt", () => {
     expect(prompt).toContain("src/bar.ts:3 — Use const instead.");
   });
 });
+
+describe("buildReviewPrompt discussion threads", () => {
+  it("omits the open-threads section when none are provided", () => {
+    const prompt = buildReviewPrompt({ details, diff, userPrompt: "Review this." });
+    expect(prompt).not.toContain("## Open discussion threads");
+  });
+
+  it("omits the open-threads section when the list is empty", () => {
+    const prompt = buildReviewPrompt({
+      details,
+      diff,
+      userPrompt: "Review this.",
+      discussionThreads: [],
+    });
+    expect(prompt).not.toContain("## Open discussion threads");
+  });
+
+  it("renders open threads with anchors, threadIds and (you) tags", () => {
+    const prompt = buildReviewPrompt({
+      details,
+      diff,
+      userPrompt: "Review this.",
+      discussionThreads: [
+        {
+          threadId: "disc-1",
+          file: "src/foo.ts",
+          line: 10,
+          resolved: false,
+          comments: [
+            { author: "alice", message: "Why not use a Map here?", isOwn: false },
+            { author: "ve-bot", message: "Because order matters.", isOwn: true },
+          ],
+        },
+        {
+          threadId: "gerrit-change",
+          file: null,
+          line: null,
+          resolved: false,
+          comments: [{ author: "bob", message: "Overall LGTM.", isOwn: false }],
+        },
+      ],
+    });
+    expect(prompt).toContain("## Open discussion threads (respond where relevant)");
+    expect(prompt).toContain("- threadId: disc-1  [src/foo.ts:10]");
+    expect(prompt).toContain("alice: Why not use a Map here?");
+    expect(prompt).toContain("ve-bot (you): Because order matters.");
+    expect(prompt).toContain("- threadId: gerrit-change  [(change-level)]");
+    expect(prompt).toContain("bob: Overall LGTM.");
+  });
+});
+

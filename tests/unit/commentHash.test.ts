@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { computeCommentHash } from "../../src/review/commentHash.js";
+import { computeCommentHash, computeThreadReplyHash } from "../../src/review/commentHash.js";
 
 describe("computeCommentHash", () => {
   it("is stable for identical file + message", () => {
@@ -34,3 +34,30 @@ describe("computeCommentHash", () => {
     expect(a).not.toBe(b);
   });
 });
+
+describe("computeThreadReplyHash", () => {
+  it("is stable for identical thread, author and message", () => {
+    const a = computeThreadReplyHash({ threadId: "disc-1", author: "alice", message: "Please fix." });
+    const b = computeThreadReplyHash({ threadId: "disc-1", author: "alice", message: "Please fix." });
+    expect(a).toBe(b);
+  });
+
+  it("normalizes author case and message whitespace", () => {
+    const a = computeThreadReplyHash({ threadId: "disc-1", author: "Alice", message: "Please   fix." });
+    const b = computeThreadReplyHash({ threadId: "disc-1", author: "alice", message: "Please fix." });
+    expect(a).toBe(b);
+  });
+
+  it("differs when the thread differs", () => {
+    const a = computeThreadReplyHash({ threadId: "disc-1", author: "alice", message: "x" });
+    const b = computeThreadReplyHash({ threadId: "disc-2", author: "alice", message: "x" });
+    expect(a).not.toBe(b);
+  });
+
+  it("differs when a new human message is added", () => {
+    const a = computeThreadReplyHash({ threadId: "disc-1", author: "alice", message: "first" });
+    const b = computeThreadReplyHash({ threadId: "disc-1", author: "alice", message: "second" });
+    expect(a).not.toBe(b);
+  });
+});
+

@@ -16,6 +16,8 @@ import type {
   ReviewChangeDetails,
   ReviewChangeDiff,
   ReviewDiffFile,
+  ReviewDiscussionThread,
+  ReviewDiscussionComment,
   ReviewFileStatus,
   InlineReviewComment,
   ExternalChangeId,
@@ -67,6 +69,32 @@ const MrChangesResponseSchema = z.object({
 
 const ProjectSchema = z.object({ path_with_namespace: z.string() });
 
+const CurrentUserSchema = z.object({ id: z.number(), username: z.string() });
+
+const DiscussionNoteSchema = z.object({
+  id: z.number(),
+  body: z.string().default(""),
+  system: z.boolean().optional().default(false),
+  resolvable: z.boolean().optional().default(false),
+  resolved: z.boolean().optional().default(false),
+  author: z.object({ id: z.number(), username: z.string() }).nullable().optional(),
+  position: z
+    .object({
+      new_path: z.string().nullable().optional(),
+      old_path: z.string().nullable().optional(),
+      new_line: z.number().nullable().optional(),
+      old_line: z.number().nullable().optional(),
+    })
+    .nullable()
+    .optional(),
+});
+
+const DiscussionSchema = z.object({
+  id: z.string(),
+  individual_note: z.boolean().optional().default(false),
+  notes: z.array(DiscussionNoteSchema).optional().default([]),
+});
+
 export interface GitLabMrReviewProviderConfig {
   baseUrl: string;
   /** Default/legacy project (path or numeric id) used when the changeId carries no project prefix. */
@@ -82,6 +110,7 @@ export class GitLabMergeRequestReviewProvider implements ReviewProvider {
   public readonly kind = "gitlab";
 
   private readonly http: GitLabHttpClient;
+  private currentUsername: string | null = null;
 
   constructor(private readonly config: GitLabMrReviewProviderConfig) {
     this.http = new GitLabHttpClient(config.token, createGitLabReviewError);
@@ -295,6 +324,76 @@ export class GitLabMergeRequestReviewProvider implements ReviewProvider {
       });
     } catch (err) {
       log.warn({ project, iid, approve, err }, "GitLab MR approve/unapprove failed (non-fatal)");
+    }
+  }
+
+  async getDiscussionThreads(changeId: ExternalChangeId): Promise<ReviewDiscussionThread[]> {
+    const { project, iid } = this.parseChange(changeId);
+    const me = await this.resolveCurrentUsername();
+    const discussions = z
+      .array(DiscussionSchema)
+      .parse(await this.http.fetchJson(`${this.mrUrl(project, iid)}/discussions`));
+
+    const threads: ReviewDiscussionThread[] = [];
+    for (const d of discussions) {
+      const notes = d.notes.filter((n) => !n.system);
+      if (notes.length === 0) continue;
+
+      const comments: ReviewDiscussionComment[] = notes.map((n) => ({
+        author: n.author?.username ?? "unknown",
+        message: n.body,
+        isOwn: me !== null && n.author?.username === me,
+      }));
+
+      // A discussion is resolved only when it has resolvable notes and all of
+      // them are resolved. Individual notes (non-resolvable) are never resolved.
+      const resolvable = notes.filter((n) => n.resolvable);
+      const resolved = resolvable.length > 0 && resolvable.every((n) => n.resolved);
+
+      const anchor = notes.find((n) => n.position)?.position ?? null;
+      const file = anchor?.new_path ?? anchor?.old_path ?? null;
+      const line = anchor?.new_line ?? null;
+
+      threads.push({
+        threadId: d.id,
+        file: file ?? null,
+        line: line ?? null,
+        resolved,
+        comments,
+      });
+    }
+    return threads;
+  }
+
+  async postThreadReply(
+    changeId: ExternalChangeId,
+    _revision: number,
+    threadId: string,
+    message: string
+  ): Promise<void> {
+    const { project, iid } = this.parseChange(changeId);
+    await this.http.fetchJsonVoid(
+      `${this.mrUrl(project, iid)}/discussions/${encodeURIComponent(threadId)}/notes`,
+      {
+        method: "POST",
+        body: JSON.stringify({ body: message }),
+      }
+    );
+    log.info({ project, iid, threadId }, "posted GitLab MR discussion reply");
+  }
+
+  /** Resolve and cache VE's own GitLab username (used to tag `isOwn` comments). */
+  private async resolveCurrentUsername(): Promise<string | null> {
+    if (this.currentUsername !== null) return this.currentUsername;
+    try {
+      const me = CurrentUserSchema.parse(
+        await this.http.fetchJson(`${this.config.baseUrl}/api/v4/user`)
+      );
+      this.currentUsername = me.username;
+      return this.currentUsername;
+    } catch (err) {
+      log.warn({ err }, "failed to resolve GitLab current user; isOwn tagging disabled");
+      return null;
     }
   }
 

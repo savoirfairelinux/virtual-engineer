@@ -41,6 +41,7 @@ const baseConfig: AppConfig = {
   workspaceBaseDir: "/tmp/virtual-engineer/workspaces",
   maxReviewDiffChars: 60_000,
   maxReviewComments: 20,
+  maxReviewReplies: 20,
   reviewMinSeverity: "info",
 };
 

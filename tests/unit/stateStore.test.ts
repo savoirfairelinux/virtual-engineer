@@ -512,6 +512,57 @@ describe("SqliteStateStore", () => {
     });
   });
 
+  describe("thread-reply ledger", () => {
+    it("records posted replies and exposes their handled hashes", async () => {
+      const taskId = makeTaskId(randomUUID());
+      await store.createTask(taskId, makeTicketId("reply-1"));
+      const changeId = makeExternalChangeId("owner/repo#10");
+
+      expect((await store.getHandledThreadReplyHashes(taskId)).size).toBe(0);
+
+      await store.markThreadReplyPosted(taskId, changeId, [
+        { threadId: "disc-1", handledCommentHash: "hash-1", replyMessage: "Thanks, fixed." },
+        { threadId: "disc-2", handledCommentHash: "hash-2", replyMessage: "I disagree." },
+      ]);
+
+      const hashes = await store.getHandledThreadReplyHashes(taskId);
+      expect(hashes.has("hash-1")).toBe(true);
+      expect(hashes.has("hash-2")).toBe(true);
+      expect(hashes.has("hash-3")).toBe(false);
+    });
+
+    it("ignores duplicate (threadId, handledCommentHash) pairs", async () => {
+      const taskId = makeTaskId(randomUUID());
+      await store.createTask(taskId, makeTicketId("reply-2"));
+      const changeId = makeExternalChangeId("owner/repo#11");
+
+      await store.markThreadReplyPosted(taskId, changeId, [
+        { threadId: "disc-1", handledCommentHash: "dup", replyMessage: "first" },
+      ]);
+      await store.markThreadReplyPosted(taskId, changeId, [
+        { threadId: "disc-1", handledCommentHash: "dup", replyMessage: "second" },
+      ]);
+
+      const hashes = await store.getHandledThreadReplyHashes(taskId);
+      expect(hashes.size).toBe(1);
+    });
+
+    it("scopes handled hashes per task", async () => {
+      const taskA = makeTaskId(randomUUID());
+      const taskB = makeTaskId(randomUUID());
+      await store.createTask(taskA, makeTicketId("reply-3a"));
+      await store.createTask(taskB, makeTicketId("reply-3b"));
+      const changeId = makeExternalChangeId("owner/repo#12");
+
+      await store.markThreadReplyPosted(taskA, changeId, [
+        { threadId: "disc-1", handledCommentHash: "only-a", replyMessage: "hi" },
+      ]);
+
+      expect((await store.getHandledThreadReplyHashes(taskA)).has("only-a")).toBe(true);
+      expect((await store.getHandledThreadReplyHashes(taskB)).has("only-a")).toBe(false);
+    });
+  });
+
   describe("saveAgentCycle", () => {
     it("stores and retrieves agent cycle results", async () => {
       const taskId = makeTaskId(randomUUID());

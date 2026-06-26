@@ -145,4 +145,88 @@ describe("GitLabMergeRequestReviewProvider", () => {
       expect.objectContaining({ method: "POST" })
     );
   });
+
+  describe("discussion threads", () => {
+    it("getDiscussionThreads maps discussions, tags isOwn and resolved", async () => {
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ id: 9, username: "ve-bot" })) // /api/v4/user
+        .mockResolvedValueOnce(
+          jsonResponse([
+            {
+              id: "disc-open",
+              individual_note: false,
+              notes: [
+                {
+                  id: 1,
+                  body: "Why this approach?",
+                  resolvable: true,
+                  resolved: false,
+                  author: { id: 7, username: "alice" },
+                  position: { new_path: "src/a.ts", new_line: 12 },
+                },
+                {
+                  id: 2,
+                  body: "Because of X.",
+                  resolvable: true,
+                  resolved: false,
+                  author: { id: 9, username: "ve-bot" },
+                },
+              ],
+            },
+            {
+              id: "disc-resolved",
+              individual_note: false,
+              notes: [
+                {
+                  id: 3,
+                  body: "nit",
+                  resolvable: true,
+                  resolved: true,
+                  author: { id: 7, username: "alice" },
+                },
+              ],
+            },
+            {
+              id: "disc-system",
+              individual_note: false,
+              notes: [{ id: 4, body: "changed the description", system: true }],
+            },
+          ])
+        );
+
+      const p = new GitLabMergeRequestReviewProvider(config);
+      const threads = await p.getDiscussionThreads(cid);
+
+      // The system-only discussion is dropped.
+      expect(threads).toHaveLength(2);
+      const open = threads.find((t) => t.threadId === "disc-open");
+      expect(open?.resolved).toBe(false);
+      expect(open?.file).toBe("src/a.ts");
+      expect(open?.line).toBe(12);
+      expect(open?.comments).toHaveLength(2);
+      expect(open?.comments[0]).toEqual({
+        author: "alice",
+        message: "Why this approach?",
+        isOwn: false,
+      });
+      expect(open?.comments[1]?.isOwn).toBe(true);
+      const resolved = threads.find((t) => t.threadId === "disc-resolved");
+      expect(resolved?.resolved).toBe(true);
+    });
+
+    it("postThreadReply POSTs a note to the discussion", async () => {
+      fetchMock.mockResolvedValueOnce(jsonResponse({ id: 99 }));
+      const p = new GitLabMergeRequestReviewProvider(config);
+      await p.postThreadReply(cid, 1, "disc-open", "Thanks, addressed.");
+      expect(fetchMock).toHaveBeenCalledWith(
+        "https://gitlab.example.com/api/v4/projects/100/merge_requests/42/discussions/disc-open/notes",
+        expect.objectContaining({ method: "POST" })
+      );
+      const body = JSON.parse(
+        (fetchMock.mock.calls[0]?.[1] as { body: string }).body
+      ) as { body: string };
+      expect(body.body).toBe("Thanks, addressed.");
+    });
+  });
 });
+

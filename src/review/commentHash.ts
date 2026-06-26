@@ -24,3 +24,23 @@ export function computeCommentHash(
 function normalizeMessage(message: string): string {
   return message.trim().replace(/\s+/g, " ").toLowerCase();
 }
+
+/**
+ * Compute a stable deduplication hash for a reply VE posts to a discussion
+ * thread. Derived from the thread id and a normalized form of the latest human
+ * comment in the thread (author + message), so VE replies at most once per NEW
+ * human message: a fresh human follow-up changes the hash and re-opens the
+ * thread for one reply, while a re-review of the same state is suppressed.
+ */
+export function computeThreadReplyHash(input: {
+  threadId: string;
+  author: string;
+  message: string;
+}): string {
+  const normalizedThread = input.threadId.trim();
+  const normalizedAuthor = input.author.trim().toLowerCase();
+  const normalizedMessage = normalizeMessage(input.message);
+  return createHash("sha1")
+    .update(`${normalizedThread}\n${normalizedAuthor}\n${normalizedMessage}`)
+    .digest("hex");
+}

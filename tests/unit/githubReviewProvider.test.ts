@@ -221,7 +221,88 @@ describe("GitHubReviewProvider", () => {
     await expect(new GitHubReviewProvider(config).getChangeDetails("not-a-number" as unknown as ExternalChangeId))
       .rejects.toThrow(/Invalid GitHub PR number/);
   });
+
+  describe("discussion threads (GraphQL)", () => {
+    it("getDiscussionThreads maps review threads and tags isOwn / resolved", async () => {
+      // 1) viewer login lookup, 2) reviewThreads page.
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ data: { viewer: { login: "ve-bot" } } }))
+        .mockResolvedValueOnce(
+          jsonResponse({
+            data: {
+              repository: {
+                pullRequest: {
+                  reviewThreads: {
+                    pageInfo: { hasNextPage: false, endCursor: null },
+                    nodes: [
+                      {
+                        id: "THREAD_1",
+                        isResolved: false,
+                        path: "src/a.ts",
+                        line: 12,
+                        comments: {
+                          nodes: [
+                            { body: "Why not a Map?", author: { login: "alice" } },
+                            { body: "Order matters.", author: { login: "ve-bot" } },
+                          ],
+                        },
+                      },
+                      {
+                        id: "THREAD_2",
+                        isResolved: true,
+                        path: "src/b.ts",
+                        line: 3,
+                        comments: { nodes: [{ body: "nit", author: { login: "bob" } }] },
+                      },
+                    ],
+                  },
+                },
+              },
+            },
+          })
+        );
+
+      const threads = await new GitHubReviewProvider(config).getDiscussionThreads(cid);
+      expect(threads).toHaveLength(2);
+      const t1 = threads.find((t) => t.threadId === "THREAD_1");
+      expect(t1?.resolved).toBe(false);
+      expect(t1?.file).toBe("src/a.ts");
+      expect(t1?.line).toBe(12);
+      expect(t1?.comments[0]).toEqual({ author: "alice", message: "Why not a Map?", isOwn: false });
+      expect(t1?.comments[1]?.isOwn).toBe(true);
+      expect(threads.find((t) => t.threadId === "THREAD_2")?.resolved).toBe(true);
+
+      // First GraphQL call hit the api.github.com/graphql endpoint.
+      expect(fetchMock.mock.calls[0]?.[0]).toBe("https://api.github.com/graphql");
+    });
+
+    it("postThreadReply issues the addPullRequestReviewThreadReply mutation", async () => {
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse({ data: { addPullRequestReviewThreadReply: { comment: { id: "C1" } } } })
+      );
+      await new GitHubReviewProvider(config).postThreadReply(cid, 1, "THREAD_1", "Agreed.");
+      const body = JSON.parse((fetchMock.mock.calls[0]?.[1] as RequestInit).body as string) as {
+        query: string;
+        variables: { threadId: string; body: string };
+      };
+      expect(body.query).toContain("addPullRequestReviewThreadReply");
+      expect(body.variables).toEqual({ threadId: "THREAD_1", body: "Agreed." });
+    });
+
+    it("derives the GraphQL endpoint for GitHub Enterprise base URLs", async () => {
+      const ghe = new GitHubReviewProvider({
+        ...config,
+        apiBaseUrl: "https://ghe.example.com/api/v3",
+      });
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse({ data: { addPullRequestReviewThreadReply: { comment: { id: "C1" } } } })
+      );
+      await ghe.postThreadReply(cid, 1, "THREAD_1", "hi");
+      expect(fetchMock.mock.calls[0]?.[0]).toBe("https://ghe.example.com/api/graphql");
+    });
+  });
 });
+
 
 describe("parsePatchNewLineNumbers", () => {
   it("returns valid new-file line numbers from a simple hunk", () => {
