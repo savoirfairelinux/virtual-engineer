@@ -100,6 +100,14 @@ export interface StartReviewInput {
   project?: string;
   subject?: string;
   ownerAccountId?: string;
+  /**
+   * Manual trigger flag. When true, a fresh review is launched even if VE has
+   * already reviewed the current patchset (e.g. a human removed VE then re-added
+   * it as a reviewer). Automatic triggers (stream backfill, polling-loop
+   * discovery, webhook re-deliveries) omit this so they never double-review an
+   * already-reviewed patchset.
+   */
+  force?: boolean;
 }
 
 /**
@@ -152,54 +160,92 @@ export class ReviewOrchestrator {
       const ticketId = makeTicketId(`${sourceLabel}:${details.changeNumber}:${project.id}`);
 
       const existing = await this.deps.stateStore.getTaskByTicketId(ticketId);
-      if (existing && existing.taskType === "code-review" && !TERMINAL_STATES.has(existing.state)) {
-        if (existing.currentPatchset === details.currentPatchset) {
-          if (existing.state === "REVIEW_WATCHING") {
-            // We already reviewed this patchset and are watching for a new one.
-            // Do NOT push to tasks — a second runReview call on the same patchset
-            // triggers a redundant agent run, a spurious `submitReview` call, and
-            // the 422 "Line could not be resolved" / race-condition failures we've seen.
-            log.debug(
-              { taskId: existing.taskId, patchset: existing.currentPatchset },
-              "review already completed for patchset — skipping re-trigger"
-            );
-            continue;
-          }
-          if (existing.state === "REVIEW_RUNNING" || existing.state === "REVIEW_COMMENTING") {
-            // Review is actively in flight — skip to avoid a concurrent second pass.
-            log.debug(
-              { taskId: existing.taskId, state: existing.state, changeId: input.changeId },
-              "review already in flight — skipping duplicate trigger"
-            );
-            continue;
-          }
-          // REVIEW_PENDING with same patchset: task was created (or manually reset)
-          // but runReview has not yet run. Push so the caller will run it.
-          tasks.push(existing);
+      if (existing && existing.taskType === "code-review") {
+        // A patchset is "already reviewed" once VE has posted a review for it
+        // (reviewedPatchset is set after the COMMENTING transition). This is the
+        // authoritative signal — independent of the task's current state — so it
+        // also covers terminal REVIEW_DONE rows that would otherwise fall through
+        // and spawn a duplicate review task.
+        const alreadyReviewedThisPatchset =
+          existing.reviewedPatchset !== null &&
+          existing.reviewedPatchset === details.currentPatchset;
+
+        // Automatic re-triggers (stream backfill on (re)connect, polling-loop
+        // discovery, webhook re-deliveries) must NOT re-review a patchset VE has
+        // already reviewed — that is the duplicate-review bug seen when a project
+        // is "resynced". Manual triggers set input.force (e.g. a human removed VE
+        // then re-added it as a reviewer) and intentionally bypass this guard.
+        if (alreadyReviewedThisPatchset && input.force !== true) {
+          log.info(
+            { taskId: existing.taskId, patchset: details.currentPatchset, state: existing.state },
+            "patchset already reviewed — skipping automatic re-trigger"
+          );
           continue;
         }
-        // New patchset arrived while a task is still active.
-        // Always update the stored patchset number for admin-UI bookkeeping.
-        if (existing.externalChangeId !== null) {
-          await this.deps.stateStore.updateExternalChangeId(
-            existing.taskId,
-            existing.externalChangeId,
-            details.currentPatchset,
-            details.url
-          );
+
+        if (!TERMINAL_STATES.has(existing.state)) {
+          if (existing.currentPatchset === details.currentPatchset) {
+            // Manual relaunch of an already-reviewed, still-watched patchset:
+            // re-queue so the caller re-runs the review (runReview is invoked
+            // with force to re-post the vote + summary).
+            if (alreadyReviewedThisPatchset && input.force === true) {
+              log.info(
+                { taskId: existing.taskId, patchset: details.currentPatchset },
+                "manual re-trigger — re-running review on current patchset"
+              );
+              tasks.push(existing);
+              continue;
+            }
+            if (existing.state === "REVIEW_WATCHING") {
+              // We already reviewed this patchset and are watching for a new one.
+              // Do NOT push to tasks — a second runReview call on the same patchset
+              // triggers a redundant agent run, a spurious `submitReview` call, and
+              // the 422 "Line could not be resolved" / race-condition failures we've seen.
+              log.debug(
+                { taskId: existing.taskId, patchset: existing.currentPatchset },
+                "review already completed for patchset — skipping re-trigger"
+              );
+              continue;
+            }
+            if (existing.state === "REVIEW_RUNNING" || existing.state === "REVIEW_COMMENTING") {
+              // Review is actively in flight — skip to avoid a concurrent second pass.
+              log.debug(
+                { taskId: existing.taskId, state: existing.state, changeId: input.changeId },
+                "review already in flight — skipping duplicate trigger"
+              );
+              continue;
+            }
+            // REVIEW_PENDING with same patchset: task was created (or manually reset)
+            // but runReview has not yet run. Push so the caller will run it.
+            tasks.push(existing);
+            continue;
+          }
+          // New patchset arrived while a task is still active.
+          // Always update the stored patchset number for admin-UI bookkeeping.
+          if (existing.externalChangeId !== null) {
+            await this.deps.stateStore.updateExternalChangeId(
+              existing.taskId,
+              existing.externalChangeId,
+              details.currentPatchset,
+              details.url
+            );
+          }
+          if (existing.state === "REVIEW_WATCHING") {
+            // Previous review completed — re-queue for a fresh review pass.
+            log.info(
+              { taskId: existing.taskId, oldPatchset: existing.currentPatchset, newPatchset: details.currentPatchset },
+              "new patchset on watched change — re-triggering review"
+            );
+            tasks.push({ ...existing, currentPatchset: details.currentPatchset });
+          }
+          // REVIEW_PENDING / REVIEW_RUNNING: a run is already in flight.
+          // runReview fetches fresh details from Gerrit, so the new patchset
+          // will be picked up naturally. No second trigger needed.
+          continue;
         }
-        if (existing.state === "REVIEW_WATCHING") {
-          // Previous review completed — re-queue for a fresh review pass.
-          log.info(
-            { taskId: existing.taskId, oldPatchset: existing.currentPatchset, newPatchset: details.currentPatchset },
-            "new patchset on watched change — re-triggering review"
-          );
-          tasks.push({ ...existing, currentPatchset: details.currentPatchset });
-        }
-        // REVIEW_PENDING / REVIEW_RUNNING: a run is already in flight.
-        // runReview fetches fresh details from Gerrit, so the new patchset
-        // will be picked up naturally. No second trigger needed.
-        continue;
+        // Terminal existing task that is NOT a duplicate of an already-reviewed
+        // patchset (e.g. REVIEW_FAILED retry, or a manual force on a change whose
+        // prior review is DONE): fall through to create a fresh review task.
       }
 
       const taskId = makeTaskId(`review-${details.changeNumber}-${randomUUID().slice(0, 8)}`);
@@ -226,7 +272,7 @@ export class ReviewOrchestrator {
    * Run a single review pass against the given task. Performs the full
    * REVIEW_PENDING → ... → REVIEW_WATCHING / REVIEW_DONE transition.
    */
-  async runReview(taskId: TaskId): Promise<void> {
+  async runReview(taskId: TaskId, options?: { force?: boolean }): Promise<void> {
     const task = await this.deps.stateStore.getTask(taskId);
     if (!task) throw new Error(`Review task not found: ${taskId}`);
     if (task.taskType !== "code-review") {
@@ -484,6 +530,7 @@ export class ReviewOrchestrator {
       const hasNothingNew = commentsToPost.length === 0 && folded.length === 0;
       const previousVote = await this.getLastReviewVote(taskId);
       const skipPosting =
+        options?.force !== true &&
         cycleNumber > 1 &&
         hasNothingNew &&
         previousVote !== null &&

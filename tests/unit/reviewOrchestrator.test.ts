@@ -378,6 +378,61 @@ describe("ReviewOrchestrator.startReviewTask", () => {
     expect(mocks.store.createReviewTask).toHaveBeenCalledTimes(2);
     expect(mocks.store.setTaskProjectId).toHaveBeenCalledTimes(2);
   });
+
+  it("does NOT re-trigger when the current patchset was already reviewed (automatic resync)", async () => {
+    // Resting state after a completed review: REVIEW_WATCHING with reviewedPatchset
+    // == currentPatchset. An automatic resync (backfill / polling / webhook
+    // re-delivery) must not launch a second review on the same patchset.
+    const existing = makeTask({ state: "REVIEW_WATCHING", currentPatchset: 2, reviewedPatchset: 2 });
+    mocks = makeMocks(existing);
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+    const tasks = await orch.startReviewTask({ changeId: CHANGE_ID });
+    expect(tasks).toHaveLength(0);
+    expect(mocks.store.createReviewTask).not.toHaveBeenCalled();
+  });
+
+  it("does NOT create a duplicate task when a terminal REVIEW_DONE row already reviewed this patchset", async () => {
+    // The double-review bug: a terminal row used to fall through and spawn a new
+    // task. The reviewedPatchset guard now skips it for automatic triggers.
+    const existing = makeTask({ state: "REVIEW_DONE", currentPatchset: 2, reviewedPatchset: 2 });
+    mocks = makeMocks(existing);
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+    const tasks = await orch.startReviewTask({ changeId: CHANGE_ID });
+    expect(tasks).toHaveLength(0);
+    expect(mocks.store.createReviewTask).not.toHaveBeenCalled();
+  });
+
+  it("re-queues an already-reviewed REVIEW_WATCHING task when force is set (manual re-trigger)", async () => {
+    const existing = makeTask({ state: "REVIEW_WATCHING", currentPatchset: 2, reviewedPatchset: 2 });
+    mocks = makeMocks(existing);
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+    const tasks = await orch.startReviewTask({ changeId: CHANGE_ID, force: true });
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]?.taskId).toBe(existing.taskId);
+    expect(mocks.store.createReviewTask).not.toHaveBeenCalled();
+  });
+
+  it("creates a fresh review task when force is set and the prior review is terminal", async () => {
+    const existing = makeTask({ state: "REVIEW_DONE", currentPatchset: 2, reviewedPatchset: 2 });
+    mocks = makeMocks(existing);
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+    const tasks = await orch.startReviewTask({ changeId: CHANGE_ID, force: true });
+    expect(tasks).toHaveLength(1);
+    expect(mocks.store.createReviewTask).toHaveBeenCalledTimes(1);
+  });
+
+  it("re-triggers a watched change on a genuinely new patchset even when the old one was reviewed", async () => {
+    const existing = makeTask({ state: "REVIEW_WATCHING", currentPatchset: 1, reviewedPatchset: 1 });
+    mocks = makeMocks(existing);
+    (mocks.provider.getChangeDetails as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makeDetails({ currentPatchset: 2 })
+    );
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+    const tasks = await orch.startReviewTask({ changeId: CHANGE_ID });
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]?.currentPatchset).toBe(2);
+    expect(mocks.store.createReviewTask).not.toHaveBeenCalled();
+  });
 });
 
 describe("ReviewOrchestrator.runReview â happy path", () => {
@@ -463,6 +518,31 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
     // The lifecycle still advances internally (no external notification).
     const transitions = mocks.store.transition.mock.calls.map((c: [unknown, unknown]) => c[1]);
     expect(transitions).toContain("REVIEW_COMMENTING");
+  });
+
+  it("re-posts summary + vote on a forced re-review even when nothing is new and the verdict is unchanged", async () => {
+    const initial = makeTask({ state: "REVIEW_WATCHING", cycleCount: 1, reviewedPatchset: 2 });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+
+    // Same conditions as the silent re-review above: known comment, unchanged vote.
+    const knownHash = computeCommentHash({ file: "src/a.ts", message: "Bug" });
+    (mocks.store.getPostedReviewCommentHashes as ReturnType<typeof vi.fn>).mockResolvedValue(
+      new Set([knownHash])
+    );
+    (mocks.store.getAgentCycles as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { result: { metadata: { vote: -1 } } },
+    ]);
+
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+    await orch.runReview(initial.taskId, { force: true });
+
+    // Force bypasses the skip gate: the vote + summary are re-posted even though
+    // nothing changed. Inline comments stay deduped (no duplicate comments).
+    expect(mocks.provider.vote).toHaveBeenCalledWith(CHANGE_ID, 2, -1, "blocking");
+    const postedComments = (mocks.provider.postReviewComments as ReturnType<typeof vi.fn>).mock
+      .calls[0]?.[2] as unknown[];
+    expect(postedComments).toEqual([]);
   });
 
   it("strips hallucinated comments before calling the provider (only in-diff paths sent)", async () => {
