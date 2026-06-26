@@ -154,6 +154,9 @@ function makeMocks(initialTask?: Task) {
     saveAgentCycle: vi.fn(async (taskId: string, cycleNumber: number, result: unknown) => {
       savedCycles.push({ taskId, cycleNumber, result });
     }),
+    getPostedReviewCommentHashes: vi.fn(async () => new Set<string>()),
+    getPostedReviewComments: vi.fn(async () => []),
+    markReviewCommentsPosted: vi.fn(async () => undefined),
     findProjectsByReviewTarget: vi.fn(async () => [makeProject()]),
     getProjectById: vi.fn(async () => makeProject()),
     getTaskByTicketId: vi.fn(async () => null),

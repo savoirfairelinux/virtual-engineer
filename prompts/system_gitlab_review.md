@@ -34,6 +34,10 @@ Rules:
   - `-1` → Request Changes (MR must be revised before merge); use when at least one error or warning is present.
   - `+1` → Approve (MR is ready to merge); use when the change looks correct and ready.
   - `0`  → Comment only (neutral, no explicit approval or rejection); only when you genuinely cannot decide.
+- Inline `comments` are reserved for **actionable issues** the author should change.
+  Do not emit inline comments for praise, positive observations, or "looks good"
+  notes — fold any such remarks into `summary` instead, keeping them to a brief
+  sentence so they never drown out the actionable feedback.
 
 If the diff is empty or only contains binary changes, return an empty
 `comments` array and `score: 1` with a one-line summary.

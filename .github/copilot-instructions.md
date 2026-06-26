@@ -143,6 +143,8 @@ All env vars are optional. Only system/infra settings remain — provider creden
 | `MAX_COMMITS_PER_CYCLE` | `10` | max atomic commits per agent cycle |
 | `AGENT_TIMEOUT_MS` | `3_600_000` | host-side agent timeout (60 min) |
 | `MAX_REVIEW_DIFF_CHARS` | `60_000` | max diff chars injected into review prompt |
+| `MAX_REVIEW_COMMENTS` | `20` | max inline comments posted per review pass (excess folded into summary) |
+| `REVIEW_MIN_SEVERITY` | `info` | min severity (`nit`<`info`<`warning`<`error`) to post inline; lower folded into summary |
 | `AGENT_CONTAINER_IMAGE` | `virtual-engineer-workspace:latest` | |
 | `WORKSPACE_BASE_DIR` | `/tmp/virtual-engineer/workspaces` | scratch space for review diffs; agent workspaces use Docker named volumes |
 | `AGENT_DOCKER_NETWORK` | `virtual-engineer_ve-agent-net` | Docker network for agent containers |

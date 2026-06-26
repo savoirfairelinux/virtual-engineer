@@ -111,4 +111,39 @@ describe("buildReviewPrompt", () => {
     });
     expect(prompt).toContain("diff truncated");
   });
+
+  it("omits the prior-comments section when none are provided", () => {
+    const prompt = buildReviewPrompt({
+      details,
+      diff,
+      userPrompt: "Review this.",
+    });
+    expect(prompt).not.toContain("Already reported");
+  });
+
+  it("omits the prior-comments section when the list is empty", () => {
+    const prompt = buildReviewPrompt({
+      details,
+      diff,
+      userPrompt: "Review this.",
+      priorComments: [],
+    });
+    expect(prompt).not.toContain("Already reported");
+  });
+
+  it("injects previously-posted comments as do-not-repeat memory", () => {
+    const prompt = buildReviewPrompt({
+      details,
+      diff,
+      userPrompt: "Review this.",
+      priorComments: [
+        { file: "src/foo.ts", line: 12, message: "Null check missing here." },
+        { file: "src/bar.ts", line: 3, message: "Use   const\ninstead." },
+      ],
+    });
+    expect(prompt).toContain("## Already reported (do not repeat)");
+    expect(prompt).toContain("src/foo.ts:12 — Null check missing here.");
+    // Whitespace in the stored message is collapsed for a compact checklist.
+    expect(prompt).toContain("src/bar.ts:3 — Use const instead.");
+  });
 });

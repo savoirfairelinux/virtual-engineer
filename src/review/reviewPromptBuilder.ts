@@ -18,11 +18,23 @@ export interface ReviewPromptInput {
   userPrompt: string;
   /** Optional override for the max diff size in characters. Defaults to 60 000. */
   maxDiffChars?: number | undefined;
+  /**
+   * Comments VE has already posted on this change in previous review cycles.
+   * Injected so the agent does not re-raise points it has already made.
+   */
+  priorComments?: PriorReviewComment[] | undefined;
+}
+
+/** A previously-posted review comment surfaced back to the agent as memory. */
+export interface PriorReviewComment {
+  file: string;
+  line: number;
+  message: string;
 }
 
 /** Build the full prompt sent to the review agent for a single change. */
 export function buildReviewPrompt(input: ReviewPromptInput): string {
-  const { details, diff, userPrompt, maxDiffChars } = input;
+  const { details, diff, userPrompt, maxDiffChars, priorComments } = input;
 
   const header = [
     `# Code Review Task`,
@@ -40,17 +52,43 @@ export function buildReviewPrompt(input: ReviewPromptInput): string {
 
   const diffSections = renderDiffSections(diff, maxDiffChars ?? DEFAULT_MAX_DIFF_CHARS);
 
-  return [
+  const sections = [
     header,
     ``,
     `## User Instructions`,
     userPrompt,
+  ];
+
+  if (priorComments && priorComments.length > 0) {
+    sections.push(``, `## Already reported (do not repeat)`, renderPriorComments(priorComments));
+  }
+
+  sections.push(
     ``,
     `## Files in this patchset`,
     fileListing || "(no files reported)",
     ``,
     `## Unified diffs`,
     diffSections,
+  );
+
+  return sections.join("\n");
+}
+
+/**
+ * Render previously-posted comments as a compact checklist. The agent is told
+ * not to repeat these so re-reviews only surface genuinely new findings.
+ */
+function renderPriorComments(priorComments: PriorReviewComment[]): string {
+  const lines = priorComments.map((c) => {
+    const message = c.message.replace(/\s+/g, " ").trim();
+    return `- ${c.file}:${c.line} — ${message}`;
+  });
+  return [
+    "You have already left the following comments on this change in earlier",
+    "review cycles. Do NOT repeat them; only report genuinely new issues:",
+    "",
+    ...lines,
   ].join("\n");
 }
 

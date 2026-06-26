@@ -4,8 +4,8 @@ import {
   type AgentLogEvent,
   type AgentResult,
   type ExternalChangeId,
+  type InlineReviewComment,
   type ProjectPushTargetRecord,
-  type ReviewAgentResult,
   type ReviewChangeDetails,
   type ReviewChangeDiff,
   type ReviewProvider,
@@ -21,6 +21,8 @@ import {
 import { buildReviewPrompt } from "./reviewPromptBuilder.js";
 import { computeVote, parseReviewResult } from "./reviewResultParser.js";
 import { filterCommentsByAllowedFiles } from "./commentFilter.js";
+import { computeCommentHash } from "./commentHash.js";
+import { applyVolumeAndSeverityGate, buildFoldedSummary } from "./commentSeverity.js";
 import { agentLogBus, pushToTaskBuffer, clearTaskEventBuffer } from "../agents/agentEventBus.js";
 
 const log = getLogger("review-orchestrator");
@@ -55,6 +57,9 @@ export interface ReviewOrchestratorDeps {
     | "getProjectById"
     | "setTaskProjectId"
     | "updateExternalChangeId"
+    | "getPostedReviewCommentHashes"
+    | "getPostedReviewComments"
+    | "markReviewCommentsPosted"
   >;
   reviewProvider: ReviewProvider;
   /** Gerrit integration ID — used to look up the project via the review_target table. */
@@ -77,6 +82,10 @@ export interface ReviewOrchestratorDeps {
   model?: string | undefined;
   /** Maximum diff characters injected into the review prompt. Defaults to 60 000. */
   maxDiffChars?: number | undefined;
+  /** Maximum number of inline comments posted per review pass. Defaults to 20. */
+  maxReviewComments?: number | undefined;
+  /** Minimum severity for a comment to be posted inline. Defaults to "info". */
+  reviewMinSeverity?: string | undefined;
 }
 
 export interface StartReviewInput {
@@ -291,10 +300,23 @@ export class ReviewOrchestrator {
         updatedAt: new Date(),
       };
 
+      // Feed comments VE already posted on this change back into the
+      // prompt so the agent does not re-raise points it has already made.
+      const priorComments = await this.deps.stateStore.getPostedReviewComments(taskId);
+
       const prompt = buildReviewPrompt({
         details,
         diff,
         userPrompt: this.deps.reviewInstructions,
+        ...(priorComments.length > 0
+          ? {
+              priorComments: priorComments.map((c) => ({
+                file: c.file,
+                line: c.line,
+                message: c.message,
+              })),
+            }
+          : {}),
         ...(this.deps.maxDiffChars !== undefined ? { maxDiffChars: this.deps.maxDiffChars } : {}),
       });
 
@@ -374,12 +396,6 @@ export class ReviewOrchestrator {
       const result = parseReviewResult(rawOutput);
       const vote = computeVote(result);
 
-      emitReviewEvent("review.posting_comments", {
-        commentCount: result.comments.length,
-        vote,
-        summary: result.summary.slice(0, 200),
-      });
-
       // Fetch fresh details before posting to get the latest patchset.
       // This ensures we post the review on the latest patchset if a new one
       // was uploaded while the agent was running, preventing duplicate reviews
@@ -387,14 +403,71 @@ export class ReviewOrchestrator {
       const latestDetails = await this.deps.reviewProvider.getChangeDetails(changeId);
       const reviewPatchset = latestDetails.currentPatchset;
 
-      await this.postReview(changeId, reviewPatchset, result, diff);
+      // Deduplicate inline comments against ones VE already posted on
+      // this change. Only newly-found issues are published; the overall vote and
+      // summary still reflect the full result.
+      const postedHashes = await this.deps.stateStore.getPostedReviewCommentHashes(taskId);
+      const newComments = result.comments.filter(
+        (c) => !postedHashes.has(computeCommentHash(c)),
+      );
+      const dedupedCount = result.comments.length - newComments.length;
+
+      // Gate inline volume + severity. Comments below the minimum
+      // severity or beyond the cap are folded into the summary instead of being
+      // posted inline, keeping the review focused on what matters.
+      const { posted: commentsToPost, folded } = applyVolumeAndSeverityGate(newComments, {
+        minSeverity: this.deps.reviewMinSeverity ?? "info",
+        maxComments: this.deps.maxReviewComments ?? 20,
+      });
+      const summary = result.summary + buildFoldedSummary(folded);
+
+      // Avoid re-posting an identical verdict on re-reviews. When a pass
+      // finds nothing new to say (no inline comments, no folded notes) and the
+      // overall vote matches the last review cycle, stay silent instead of
+      // spamming another summary + vote notification.
+      const hasNothingNew = commentsToPost.length === 0 && folded.length === 0;
+      const previousVote = await this.getLastReviewVote(taskId);
+      const skipPosting =
+        cycleNumber > 1 && hasNothingNew && previousVote !== null && previousVote === vote;
+
+      emitReviewEvent("review.posting_comments", {
+        commentCount: commentsToPost.length,
+        foldedCount: folded.length,
+        dedupedCount,
+        vote,
+        skipped: skipPosting,
+        summary: summary.slice(0, 200),
+      });
+
+      if (!skipPosting) {
+        await this.postReview(changeId, reviewPatchset, commentsToPost, summary, vote, diff);
+      }
+
+      // Persist all newly-handled comment hashes (posted inline AND folded) so
+      // future re-reviews skip them — avoiding both inline and summary spam.
+      if (newComments.length > 0) {
+        await this.deps.stateStore.markReviewCommentsPosted(
+          taskId,
+          changeId,
+          newComments.map((c) => ({
+            commentHash: computeCommentHash(c),
+            file: c.file,
+            line: c.line,
+            message: c.message,
+            severity: c.severity,
+          })),
+        );
+      }
 
       await this.deps.stateStore.transition(taskId, "REVIEW_COMMENTING");
       await this.deps.stateStore.setReviewedPatchset(taskId, reviewPatchset);
 
       emitReviewEvent("review.completed", {
-        commentCount: result.comments.length,
+        commentCount: commentsToPost.length,
+        foldedCount: folded.length,
+        dedupedCount,
         vote,
+        skipped: skipPosting,
         patchset: reviewPatchset,
       });
 
@@ -498,19 +571,35 @@ export class ReviewOrchestrator {
     agentLogBus.emit("event", event);
   }
 
+  /**
+   * Return the overall vote (-1/0/1) recorded on the most recent prior review
+   * cycle for this task, or null when there is no prior cycle / no vote stored.
+   * Used to suppress redundant re-votes when a re-review finds nothing new.
+   */
+  private async getLastReviewVote(taskId: TaskId): Promise<-1 | 0 | 1 | null> {
+    const cycles = await this.deps.stateStore.getAgentCycles(taskId);
+    for (let i = cycles.length - 1; i >= 0; i--) {
+      const meta = cycles[i]?.result?.metadata;
+      const vote = meta?.["vote"];
+      if (vote === -1 || vote === 0 || vote === 1) return vote;
+    }
+    return null;
+  }
+
   /** Post review comments and vote on the given change revision via the review provider. */
   private async postReview(
     changeId: ExternalChangeId,
     revision: number,
-    result: ReviewAgentResult,
+    comments: InlineReviewComment[],
+    summary: string,
+    score: -1 | 1,
     diff: ReviewChangeDiff
   ): Promise<void> {
-    const score = computeVote(result);
     // An empty diff (e.g. a transient fetch failure) must not silently drop every
     // comment: fall back to no filtering rather than an all-rejecting empty set.
     const allowedFiles =
       diff.files.length > 0 ? new Set(diff.files.map((f) => f.path)) : undefined;
-    const filteredComments = filterCommentsByAllowedFiles(result.comments, allowedFiles, { changeId, revision });
+    const filteredComments = filterCommentsByAllowedFiles(comments, allowedFiles, { changeId, revision });
     // Prefer the combined call when available so a retry posts comments + vote in
     // one review event instead of two, avoiding duplicate inline comments.
     if (typeof this.deps.reviewProvider.postReviewWithComments === "function") {
@@ -518,7 +607,7 @@ export class ReviewOrchestrator {
         changeId,
         revision,
         filteredComments,
-        result.summary,
+        summary,
         score,
       );
       return;
@@ -526,15 +615,15 @@ export class ReviewOrchestrator {
     // Fallback two-call path for providers without combined posting. Guard on the
     // post-filter count so a batch where every comment is filtered out (all paths
     // outside the diff) never triggers an empty postReviewComments call.
-    if (filteredComments.length > 0 || result.summary.trim().length > 0) {
+    if (filteredComments.length > 0 || summary.trim().length > 0) {
       await this.deps.reviewProvider.postReviewComments(
         changeId,
         revision,
         filteredComments,
-        result.summary,
+        summary,
       );
     }
-    await this.deps.reviewProvider.vote(changeId, revision, score, result.summary);
+    await this.deps.reviewProvider.vote(changeId, revision, score, summary);
   }
 
 }

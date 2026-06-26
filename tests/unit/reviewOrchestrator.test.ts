@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { ReviewOrchestrator } from "../../src/review/reviewOrchestrator.js";
+import { computeCommentHash } from "../../src/review/commentHash.js";
 import {
   makeExternalChangeId,
   makeProjectId,
@@ -162,6 +163,9 @@ function makeMocks(initialTask?: Task) {
     }),
     getAgentCycles: vi.fn(async () => []),
     saveAgentCycle: vi.fn(async () => undefined),
+    getPostedReviewCommentHashes: vi.fn(async () => new Set<string>()),
+    getPostedReviewComments: vi.fn(async () => []),
+    markReviewCommentsPosted: vi.fn(async () => undefined),
     findProjectsByReviewTarget: vi.fn(async () => [makeProject()]),
     getProjectById: vi.fn(async () => makeProject()),
     setTaskProjectId: vi.fn(async () => undefined),
@@ -394,6 +398,68 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
     );
     expect(mocks.provider.vote).toHaveBeenCalledWith(CHANGE_ID, 2, -1, "blocking");
     expect(mocks.store.setReviewedPatchset).toHaveBeenCalledWith(initial.taskId, 2);
+  });
+
+  it("does not re-post inline comments already posted on the change", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+
+    // Stateful posted-comment store shared across both review passes.
+    const posted = new Set<string>();
+    (mocks.store.getPostedReviewCommentHashes as ReturnType<typeof vi.fn>).mockImplementation(
+      async () => new Set(posted)
+    );
+    (mocks.store.markReviewCommentsPosted as ReturnType<typeof vi.fn>).mockImplementation(
+      async (_taskId: unknown, _changeId: unknown, comments: { commentHash: string }[]) => {
+        for (const c of comments) posted.add(c.commentHash);
+      }
+    );
+
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+
+    // First pass: the single comment is new and gets posted + recorded.
+    await orch.runReview(initial.taskId);
+    expect(
+      (mocks.provider.postReviewComments as ReturnType<typeof vi.fn>).mock.calls[0]?.[2]
+    ).toHaveLength(1);
+    expect(posted.size).toBe(1);
+
+    // Second pass on the same diff (task is now REVIEW_WATCHING, a valid entry).
+    (mocks.provider.postReviewComments as ReturnType<typeof vi.fn>).mockClear();
+    await orch.runReview(initial.taskId);
+
+    // The identical comment is recognised as already posted → no inline comments.
+    const secondPosted = (mocks.provider.postReviewComments as ReturnType<typeof vi.fn>).mock
+      .calls[0]?.[2] as unknown[];
+    expect(secondPosted).toEqual([]);
+    expect(posted.size).toBe(1);
+  });
+
+  it("does not re-post summary or vote on a re-review when nothing is new and the verdict is unchanged", async () => {
+    const initial = makeTask({ state: "REVIEW_WATCHING", cycleCount: 1 });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+
+    // The single comment from GOOD_RAW_OUTPUT is already on record.
+    const knownHash = computeCommentHash({ file: "src/a.ts", message: "Bug" });
+    (mocks.store.getPostedReviewCommentHashes as ReturnType<typeof vi.fn>).mockResolvedValue(
+      new Set([knownHash])
+    );
+    // The previous cycle recorded a blocking (-1) vote — same as this pass.
+    (mocks.store.getAgentCycles as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { result: { metadata: { vote: -1 } } },
+    ]);
+
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+    await orch.runReview(initial.taskId);
+
+    // Nothing new to say and the verdict is unchanged → stay silent.
+    expect(mocks.provider.postReviewComments).not.toHaveBeenCalled();
+    expect(mocks.provider.vote).not.toHaveBeenCalled();
+    // The lifecycle still advances internally (no external notification).
+    const transitions = mocks.store.transition.mock.calls.map((c: [unknown, unknown]) => c[1]);
+    expect(transitions).toContain("REVIEW_COMMENTING");
   });
 
   it("strips hallucinated comments before calling the provider (only in-diff paths sent)", async () => {
