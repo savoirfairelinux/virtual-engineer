@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { PluginDescriptor } from "../registry.js";
 import { GitLabMergeRequestConnector } from "../../connectors/gitlabMergeRequestConnector.js";
+import { GitLabMergeRequestReviewProvider } from "../../connectors/gitlabMergeRequestReviewProvider.js";
 import { GitLabVcsConnector } from "../../vcs/gitlabVcsConnector.js";
 import { getLogger } from "../../logger.js";
 import {
@@ -124,5 +125,35 @@ export const gitlabMergeRequestDescriptor: PluginDescriptor = {
     const id = config["projectId"];
     const projectId = typeof id === "string" ? id : typeof id === "number" ? String(id) : "unset";
     return [baseUrl, `Project ${projectId}`];
+  },
+  reviewSystemPromptId: "system_gitlab_review",
+  reviewUserPromptId: "user_gitlab_review",
+  createReviewer: (cfg, _integration, workspaceRunner) => {
+    const parsed = gitlabMergeRequestConfigSchema.parse(cfg);
+    const baseUrl = parsed.baseUrl ?? GITLAB_COM_BASE_URL;
+    const token = getGitLabAccessToken(parsed);
+    const projectId = resolveGitLabReviewProjectId(parsed.projectId, undefined, {
+      allowUnboundFallback: true,
+    });
+    const host = new URL(baseUrl).host;
+
+    return {
+      systemPromptId: "system_gitlab_review",
+      userPromptId: "user_gitlab_review",
+      provider: new GitLabMergeRequestReviewProvider({ baseUrl, projectId, token }),
+      buildCloneTarget: (details): { cloneUrl: string; sshKeyPath: null; sshKnownHostsPath: null } => {
+        const cloneUrl = `https://oauth2:${token}@${host}/${details.project}.git`;
+        return { cloneUrl, sshKeyPath: null, sshKnownHostsPath: null };
+      },
+      applyPatchset: async (handle, details): Promise<void> => {
+        if (workspaceRunner.execGitInVolume === undefined) {
+          throw new Error("workspaceRunner does not support execGitInVolume — cannot fetch GitLab MR ref");
+        }
+        const mrRef = `merge-requests/${details.changeNumber}/head`;
+        const localBranch = `ve-review-mr-${details.changeNumber}`;
+        await workspaceRunner.execGitInVolume(handle, ["fetch", "--depth=1", "origin", `${mrRef}:${localBranch}`]);
+        await workspaceRunner.execGitInVolume(handle, ["checkout", localBranch]);
+      },
+    };
   },
 };
