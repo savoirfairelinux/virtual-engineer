@@ -72,6 +72,21 @@ describe("GitLabMergeRequestReviewProvider", () => {
     expect((await new GitLabMergeRequestReviewProvider(config).getChangeDetails(cid)).status).toBe("ABANDONED");
   });
 
+  it("getChangeDetails derives currentPatchset from the head SHA so updates re-review", async () => {
+    const p = new GitLabMergeRequestReviewProvider(config);
+
+    fetchMock.mockResolvedValueOnce(jsonResponse({ ...MR_BODY, sha: "aaaaaaaaaaaaaaaa" }));
+    const first = await p.getChangeDetails(cid);
+    fetchMock.mockResolvedValueOnce(jsonResponse({ ...MR_BODY, sha: "aaaaaaaaaaaaaaaa" }));
+    const same = await p.getChangeDetails(cid);
+    fetchMock.mockResolvedValueOnce(jsonResponse({ ...MR_BODY, sha: "bbbbbbbbbbbbbbbb" }));
+    const updated = await p.getChangeDetails(cid);
+
+    // Same head SHA -> same patchset (dedup skips); new head SHA -> new patchset (re-review).
+    expect(first.currentPatchset).toBe(same.currentPatchset);
+    expect(updated.currentPatchset).not.toBe(first.currentPatchset);
+  });
+
   it("parses a project-prefixed changeId", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(MR_BODY));
     const p = new GitLabMergeRequestReviewProvider(config);

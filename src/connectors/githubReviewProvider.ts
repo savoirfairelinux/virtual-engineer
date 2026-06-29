@@ -12,6 +12,7 @@ import type {
 } from "../interfaces.js";
 import { getLogger } from "../logger.js";
 import { filterCommentsByAllowedFiles } from "../review/commentFilter.js";
+import { patchsetFromRevisionSha } from "../review/revisionPatchset.js";
 
 const log = getLogger("github-pr-review-provider");
 
@@ -141,7 +142,9 @@ export class GitHubReviewProvider implements ReviewProvider {
       subject: pr.title,
       description: (pr.body ?? "").trim(),
       ownerAccountId: pr.user ? String(pr.user.id) : "",
-      currentPatchset: 1,
+      // Derived from the PR head SHA so the review dedup re-reviews the PR when
+      // new commits are pushed (GitHub has no monotonic patchset counter).
+      currentPatchset: patchsetFromRevisionSha(pr.head.sha),
       status,
       project: pr.base.repo.full_name,
       targetBranch: pr.base.ref,

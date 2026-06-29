@@ -58,6 +58,25 @@ describe("GitHubReviewProvider", () => {
     expect(r.status).toBe("MERGED");
   });
 
+  it("getChangeDetails derives currentPatchset from the head SHA so updates re-review", async () => {
+    const prAt = (sha: string): unknown => ({
+      number: 42, state: "open", title: "t", html_url: "u", merged: false,
+      base: { ref: "main", repo: { full_name: "o/r" } }, head: { ref: "f", sha },
+    });
+    const p = new GitHubReviewProvider(config);
+
+    fetchMock.mockResolvedValueOnce(jsonResponse(prAt("aaaaaaaaaaaaaaaa")));
+    const first = await p.getChangeDetails(cid);
+    fetchMock.mockResolvedValueOnce(jsonResponse(prAt("aaaaaaaaaaaaaaaa")));
+    const same = await p.getChangeDetails(cid);
+    fetchMock.mockResolvedValueOnce(jsonResponse(prAt("bbbbbbbbbbbbbbbb")));
+    const updated = await p.getChangeDetails(cid);
+
+    // Same head SHA -> same patchset (dedup skips); new head SHA -> new patchset (re-review).
+    expect(first.currentPatchset).toBe(same.currentPatchset);
+    expect(updated.currentPatchset).not.toBe(first.currentPatchset);
+  });
+
   it("getChangeDetails maps closed-unmerged PR to ABANDONED", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({
       number: 8, state: "closed", title: "x", html_url: "u", merged: false,

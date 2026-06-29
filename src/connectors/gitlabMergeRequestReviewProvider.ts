@@ -26,6 +26,7 @@ import { getLogger } from "../logger.js";
 import { GitLabHttpClient } from "./gitlabHttpClient.js";
 import { ReviewApiError } from "../interfaces.js";
 import { filterCommentsByAllowedFiles } from "../review/commentFilter.js";
+import { patchsetFromRevisionSha } from "../review/revisionPatchset.js";
 import { parsePatchNewLineNumbers } from "./githubReviewProvider.js";
 
 const log = getLogger("gitlab-mr-review-provider");
@@ -48,6 +49,7 @@ const MrSchema = z.object({
   target_branch: z.string(),
   source_branch: z.string(),
   project_id: z.number(),
+  sha: z.string().nullable().optional(),
   author: z.object({ id: z.number(), username: z.string() }).nullable().optional(),
   references: z.object({ full: z.string().optional() }).partial().optional(),
   diff_refs: DiffRefsSchema,
@@ -163,7 +165,9 @@ export class GitLabMergeRequestReviewProvider implements ReviewProvider {
       subject: mr.title,
       description: (mr.description ?? "").trim(),
       ownerAccountId: mr.author ? String(mr.author.id) : "",
-      currentPatchset: 1,
+      // Derived from the MR head SHA so the review dedup re-reviews the MR when
+      // new commits are pushed (GitLab has no monotonic patchset counter).
+      currentPatchset: patchsetFromRevisionSha(mr.sha ?? mr.diff_refs?.head_sha ?? null),
       status,
       project: projectPath,
       targetBranch: mr.target_branch,
