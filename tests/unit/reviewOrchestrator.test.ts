@@ -878,6 +878,101 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
   });
 });
 
+describe("ReviewOrchestrator.runReview - inter-patchset delta", () => {
+  it("fetches the delta and injects it into the prompt on a re-review", async () => {
+    const initial = makeTask({
+      state: "REVIEW_WATCHING",
+      cycleCount: 1,
+      reviewedPatchset: 2,
+      currentPatchset: 3,
+    });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+
+    (mocks.provider.getChangeDetails as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makeDetails({ currentPatchset: 3 })
+    );
+    const getInterPatchsetDiff = vi.fn(async () =>
+      makeDiff({
+        patchset: 3,
+        files: [{ path: "src/a.ts", status: "modified", patch: "+delta-line" }],
+      })
+    );
+    mocks.provider.getInterPatchsetDiff =
+      getInterPatchsetDiff as NonNullable<ReviewProvider["getInterPatchsetDiff"]>;
+
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+    await orch.runReview(initial.taskId);
+
+    expect(getInterPatchsetDiff).toHaveBeenCalledWith(CHANGE_ID, 2, 3);
+    const prompt = runner.runReviewInDocker.mock.calls[0]?.[1]?.prompt as string;
+    expect(prompt).toContain("## Changes since last reviewed patchset (PS 2 \u2192 3)");
+    expect(prompt).toContain("+delta-line");
+  });
+
+  it("does not fetch a delta on the first review (no prior reviewed patchset)", async () => {
+    const initial = makeTask({
+      state: "REVIEW_PENDING",
+      reviewedPatchset: null,
+      currentPatchset: 2,
+    });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+    const getInterPatchsetDiff = vi.fn(async () => makeDiff());
+    mocks.provider.getInterPatchsetDiff =
+      getInterPatchsetDiff as NonNullable<ReviewProvider["getInterPatchsetDiff"]>;
+
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+    await orch.runReview(initial.taskId);
+
+    expect(getInterPatchsetDiff).not.toHaveBeenCalled();
+    const prompt = runner.runReviewInDocker.mock.calls[0]?.[1]?.prompt as string;
+    expect(prompt).not.toContain("## Changes since last reviewed patchset");
+  });
+
+  it("does not fetch a delta when the provider lacks getInterPatchsetDiff", async () => {
+    const initial = makeTask({
+      state: "REVIEW_WATCHING",
+      cycleCount: 1,
+      reviewedPatchset: 2,
+      currentPatchset: 3,
+    });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+    (mocks.provider.getChangeDetails as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makeDetails({ currentPatchset: 3 })
+    );
+    // Provider has no getInterPatchsetDiff (default mock omits it).
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+    await orch.runReview(initial.taskId);
+
+    const prompt = runner.runReviewInDocker.mock.calls[0]?.[1]?.prompt as string;
+    expect(prompt).not.toContain("## Changes since last reviewed patchset");
+  });
+
+  it("degrades gracefully when the delta fetch fails", async () => {
+    const initial = makeTask({
+      state: "REVIEW_WATCHING",
+      cycleCount: 1,
+      reviewedPatchset: 2,
+      currentPatchset: 3,
+    });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+    (mocks.provider.getChangeDetails as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makeDetails({ currentPatchset: 3 })
+    );
+    mocks.provider.getInterPatchsetDiff = vi.fn(async () => {
+      throw new Error("fetch failed");
+    }) as NonNullable<ReviewProvider["getInterPatchsetDiff"]>;
+
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+    await expect(orch.runReview(initial.taskId)).resolves.toBeUndefined();
+    const prompt = runner.runReviewInDocker.mock.calls[0]?.[1]?.prompt as string;
+    expect(prompt).not.toContain("## Changes since last reviewed patchset");
+  });
+});
+
 describe("ReviewOrchestrator.runReview â failure paths", () => {
   it("marks task REVIEW_FAILED and rethrows on runReviewInDocker failure", async () => {
     const initial = makeTask({ state: "REVIEW_PENDING" });

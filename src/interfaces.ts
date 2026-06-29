@@ -843,6 +843,18 @@ export interface ReviewProvider {
   getChangeDiff(changeId: ExternalChangeId, patchset?: number): Promise<ReviewChangeDiff>;
 
   /**
+   * Fetch the diff between two patchsets of the same change (`fromPatchset` →
+   * `toPatchset`). Used on a re-review to surface "what changed since my last
+   * review". Optional — providers that cannot compute an inter-patchset diff
+   * omit it and the orchestrator falls back to the full diff only.
+   */
+  getInterPatchsetDiff?(
+    changeId: ExternalChangeId,
+    fromPatchset: number,
+    toPatchset: number
+  ): Promise<ReviewChangeDiff>;
+
+  /**
    * Post inline comments and a summary on the given revision.
    *
    * `allowedFiles`, when provided, restricts the comments actually submitted to

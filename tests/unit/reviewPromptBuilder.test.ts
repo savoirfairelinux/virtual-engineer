@@ -229,3 +229,45 @@ describe("buildReviewPrompt discussion threads", () => {
   });
 });
 
+describe("buildReviewPrompt since-last-review delta", () => {
+  const deltaDiff: ReviewChangeDiff = {
+    changeId: CHANGE_ID,
+    patchset: 3,
+    files: [
+      {
+        path: "src/foo.ts",
+        status: "modified",
+        patch: "--- a/src/foo.ts\n+++ b/src/foo.ts\n@@ -1 +1 @@\n-new\n+newer",
+      },
+    ],
+  };
+
+  it("omits the delta section when sinceLastReview is not provided", () => {
+    const prompt = buildReviewPrompt({ details, diff, userPrompt: "Review this." });
+    expect(prompt).not.toContain("## Changes since last reviewed patchset");
+  });
+
+  it("omits the delta section when the delta has no files", () => {
+    const prompt = buildReviewPrompt({
+      details,
+      diff,
+      userPrompt: "Review this.",
+      sinceLastReview: { fromPatchset: 2, toPatchset: 3, diff: { ...deltaDiff, files: [] } },
+    });
+    expect(prompt).not.toContain("## Changes since last reviewed patchset");
+  });
+
+  it("renders the delta section with the PS range and the delta diff when provided", () => {
+    const prompt = buildReviewPrompt({
+      details,
+      diff,
+      userPrompt: "Review this.",
+      sinceLastReview: { fromPatchset: 2, toPatchset: 3, diff: deltaDiff },
+    });
+    expect(prompt).toContain("## Changes since last reviewed patchset (PS 2 → 3)");
+    expect(prompt).toContain("+newer");
+    // The full diff is still present alongside the delta.
+    expect(prompt).toContain("## Unified diffs");
+  });
+});
+

@@ -453,6 +453,38 @@ export class ReviewOrchestrator {
         }
       }
 
+      // On a re-review, surface what changed since the patchset VE last
+      // reviewed so the agent focuses new findings on the delta. Guarded:
+      // providers without inter-patchset diff support skip this entirely, and
+      // empty deltas are dropped by the prompt builder.
+      let sinceLastReview:
+        | { fromPatchset: number; toPatchset: number; diff: ReviewChangeDiff }
+        | undefined;
+      const previousReviewed = task.reviewedPatchset;
+      if (
+        previousReviewed !== null &&
+        previousReviewed < details.currentPatchset &&
+        typeof this.deps.reviewProvider.getInterPatchsetDiff === "function"
+      ) {
+        try {
+          const deltaDiff = await this.deps.reviewProvider.getInterPatchsetDiff(
+            changeId,
+            previousReviewed,
+            details.currentPatchset
+          );
+          sinceLastReview = {
+            fromPatchset: previousReviewed,
+            toPatchset: details.currentPatchset,
+            diff: deltaDiff,
+          };
+        } catch (err) {
+          log.warn(
+            { err, taskId, fromPatchset: previousReviewed, toPatchset: details.currentPatchset },
+            "failed to compute inter-patchset delta; continuing with full diff only"
+          );
+        }
+      }
+
       const prompt = buildReviewPrompt({
         details,
         diff,
@@ -468,6 +500,7 @@ export class ReviewOrchestrator {
           : {}),
         ...(eligibleThreads.length > 0 ? { discussionThreads: eligibleThreads } : {}),
         ...(this.deps.maxDiffChars !== undefined ? { maxDiffChars: this.deps.maxDiffChars } : {}),
+        ...(sinceLastReview !== undefined ? { sinceLastReview } : {}),
       });
 
       emitReviewEvent("review.prompt_built", { promptLength: prompt.length, patchset: details.currentPatchset });

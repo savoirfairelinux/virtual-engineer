@@ -285,6 +285,51 @@ describe("GerritSshReviewProvider", () => {
     });
   });
 
+  describe("getInterPatchsetDiff", () => {
+    const DELTA_OUTPUT = [
+      "diff --git a/src/main.ts b/src/main.ts",
+      "--- a/src/main.ts",
+      "+++ b/src/main.ts",
+      "@@ -1,3 +1,4 @@",
+      " import { foo } from './foo';",
+      "+import { baz } from './baz';",
+      " ",
+      " console.log(foo);",
+    ].join("\n");
+
+    it("fetches both patchset refs and diffs their tips", async () => {
+      mockQuery.mockResolvedValueOnce(sshNdjson(SAMPLE_CHANGE));
+      // init, remote add, fetch(from), rev-parse(from), fetch(to), rev-parse(to), diff
+      setGitResults(["", "", "", "shaFrom\n", "", "shaTo\n", DELTA_OUTPUT]);
+
+      const result = await makeProvider().getInterPatchsetDiff(CHANGE_ID, 2, 3);
+
+      expect(result.changeId).toBe(CHANGE_ID);
+      expect(result.patchset).toBe(3);
+      expect(result.files).toHaveLength(1);
+      expect(result.files[0]!.path).toBe("src/main.ts");
+      expect(result.files[0]!.patch).toContain("+import { baz }");
+
+      // Verify it fetched the from-ref, the to-ref, then diffed the resolved SHAs.
+      const fetchArgs = gitFileCalls.filter((c) => c.args[0] === "fetch").map((c) => c.args);
+      expect(fetchArgs).toHaveLength(2);
+      expect(fetchArgs[0]).toContain("refs/changes/42/42/2");
+      expect(fetchArgs[1]).toContain("refs/changes/42/42/3");
+      const diffCall = gitFileCalls.find((c) => c.args[0] === "diff");
+      expect(diffCall!.args).toContain("shaFrom..shaTo");
+    });
+
+    it("cleans up temp directory on error", async () => {
+      mockQuery.mockResolvedValueOnce(sshNdjson(SAMPLE_CHANGE));
+      setGitResults([new Error("git init failed")]);
+
+      await expect(makeProvider().getInterPatchsetDiff(CHANGE_ID, 2, 3)).rejects.toThrow(
+        "git init failed"
+      );
+      expect(rm).toHaveBeenCalledWith("/tmp/test-diffs/diff-42-abc", { recursive: true, force: true });
+    });
+  });
+
   describe("postReviewWithComments", () => {
     it("posts review via SSH gerrit review --json", async () => {
       mockQuery.mockResolvedValueOnce(sshNdjson(SAMPLE_CHANGE));
