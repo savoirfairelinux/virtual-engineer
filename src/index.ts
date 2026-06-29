@@ -158,10 +158,11 @@ async function main(): Promise<void> {
     reviewTriggerHolder.current = buildReviewTrigger(pluginManager, config.workspaceBaseDir, workspaceRunner, stateStore);
     await integrationStreamEvents.reconcile(pluginManager.getActiveIntegrations());
     log.info("runtime dependencies refreshed");
-    if (!pollingLoop.isRunning() && await pollingIsRequired(stateStore, pluginManager)) {
+    const pollingRequired = await pollingIsRequired(stateStore, pluginManager);
+    if (!pollingLoop.isRunning() && pollingRequired) {
       log.info("polling-requiring project detected — starting polling loop");
       pollingLoop.start();
-    } else if (pollingLoop.isRunning() && !(await pollingIsRequired(stateStore, pluginManager))) {
+    } else if (pollingLoop.isRunning() && !pollingRequired) {
       log.info("no polling-requiring projects remain — stopping polling loop");
       pollingLoop.stop();
     }
@@ -365,12 +366,16 @@ function resolveReviewIntegration(
 
 
 /**
- * Returns true when polling is actually required by at least one enabled project.
+ * Returns true when polling is actually required.
  *
  * Polling is needed when:
  * - There is at least one enabled coding project (always requires polling for ticket discovery)
  * - There is at least one enabled review project whose review integration does NOT support
  *   stream events (e.g., GitHub/GitLab MRs need polling; Gerrit with streamEvents does not)
+ * - There is at least one active task whose progression depends on the polling-loop fallbacks
+ *   (`pollInReviewTasks` / `pollReviewWatchingTasks`). These compensate for missed stream
+ *   events, so a stream-only setup (e.g. Gerrit) that restarted with an IN_REVIEW code-gen or
+ *   REVIEW_WATCHING code-review task still needs polling to avoid stranding it.
  */
 async function pollingIsRequired(
   store: {
@@ -378,9 +383,21 @@ async function pollingIsRequired(
     getProjectTicketSource(id: ProjectId): Promise<ProjectTicketSourceRecord | null>;
     listProjectPushTargets(id: ProjectId): Promise<ProjectPushTargetRecord[]>;
     getProjectReviewConfig(id: ProjectId): Promise<ProjectReviewConfig | null>;
+    getActiveTasks(): Promise<Task[]>;
   },
   pluginManager: PluginManager
 ): Promise<boolean> {
+  // Active tasks whose only progression path (when their stream event is missed)
+  // is the polling-loop fallback keep polling alive regardless of project config.
+  const activeTasks = await store.getActiveTasks();
+  const needsFallbackPoll = activeTasks.some(
+    (t) =>
+      t.externalChangeId != null &&
+      ((t.taskType === "code-gen" && t.state === "IN_REVIEW") ||
+        (t.taskType === "code-review" && t.state === "REVIEW_WATCHING"))
+  );
+  if (needsFallbackPoll) return true;
+
   const projects = await store.listProjects({ enabled: true });
   for (const project of projects) {
     if (project.type === "coding") {

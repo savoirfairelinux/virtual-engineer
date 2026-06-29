@@ -89,6 +89,8 @@ async function importRuntime(
       pushTargetIntegrationId?: string;
       reviewTargetIntegrationId?: string;
     };
+    /** Active tasks returned by stateStore.getActiveTasks() (drives fallback-poll gating). */
+    withActiveTasks?: Array<{ taskType: string; state: string; externalChangeId: string | null }>;
   } = {}
 ) {
   vi.resetModules();
@@ -260,6 +262,7 @@ async function importRuntime(
         ? { integrationId: runnableProject.reviewTargetIntegrationId, repos: ["test/repo"] }
         : null
     ),
+    getActiveTasks: vi.fn(async () => options.withActiveTasks ?? []),
     upsertIntegration: vi.fn(async (inp: Omit<Integration, "createdAt" | "updatedAt">) => {
       const now = new Date();
       const existing = integrationData.get(inp.id);
@@ -716,6 +719,36 @@ describe("runtime bootstrap provider selection", () => {
     expect(pollingInstance.start).not.toHaveBeenCalled();
   });
 
+  it("starts the polling loop when an active REVIEW_WATCHING task needs fallback polling", async () => {
+    const runtime = await importRuntime(
+      {},
+      {},
+      {
+        withActiveTasks: [
+          { taskType: "code-review", state: "REVIEW_WATCHING", externalChangeId: "change-123" },
+        ],
+      }
+    );
+
+    const pollingInstance = runtime.PollingLoop.mock.results[0]?.value as { start: ReturnType<typeof vi.fn> };
+    expect(pollingInstance.start).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not start polling for an active REVIEW_WATCHING task without an external change id", async () => {
+    const runtime = await importRuntime(
+      {},
+      {},
+      {
+        withActiveTasks: [
+          { taskType: "code-review", state: "REVIEW_WATCHING", externalChangeId: null },
+        ],
+      }
+    );
+
+    const pollingInstance = runtime.PollingLoop.mock.results[0]?.value as { start: ReturnType<typeof vi.fn> };
+    expect(pollingInstance.start).not.toHaveBeenCalled();
+  });
+
   it("starts the polling loop immediately when a runnable coding project exists", async () => {
     const runtime = await importRuntime(
       {
@@ -818,8 +851,10 @@ describe("runtime bootstrap provider selection", () => {
           type: "gitlab-merge-request",
           configJson: JSON.stringify({
             baseUrl: "http://gitlab.test",
-            gitlabProjectId: "1",
-            accessToken: "token",
+            gitlabMode: "self-hosted",
+            authMode: "pat",
+            projectId: "1",
+            token: "token",
           }),
         }),
       },
