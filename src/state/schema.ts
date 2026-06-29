@@ -72,7 +72,11 @@ export const agentCycles = sqliteTable("agent_cycles", {
   agentEvents: text("agent_events"),
   /** GitHub-computed cost in AI credits (1 credit = $0.01); null when unpriced. */
   costAiCredits: real("cost_ai_credits"),
-  /** GitHub-computed cost in USD; null when unpriced. */
+  /**
+   * Cost in USD: GitHub-computed (authoritative) when nano-AIU is present,
+   * otherwise estimated from the premium-request multiplier. Null only when no
+   * cost signal is available.
+   */
   costUsd: real("cost_usd"),
   /** Summed premium-request multiplier across the cycle's distinct requests; null when unavailable. */
   premiumRequests: real("premium_requests"),
@@ -82,6 +86,8 @@ export const agentCycles = sqliteTable("agent_cycles", {
   costOutputTokens: integer("cost_output_tokens"),
   /** Summed cache-read tokens across the cycle's distinct requests. */
   costCachedTokens: integer("cost_cached_tokens"),
+  /** Summed cache-write tokens across the cycle's distinct requests. */
+  costCacheWriteTokens: integer("cost_cache_write_tokens"),
   /** Model id resolved from the usage events. */
   costModelId: text("cost_model_id"),
   createdAt: integer("created_at", { mode: "timestamp" }).notNull(),

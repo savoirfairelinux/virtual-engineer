@@ -349,6 +349,7 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
       costInputTokens: cost.tokens.input > 0 ? cost.tokens.input : null,
       costOutputTokens: cost.tokens.output > 0 ? cost.tokens.output : null,
       costCachedTokens: cost.tokens.cached > 0 ? cost.tokens.cached : null,
+      costCacheWriteTokens: cost.tokens.cacheWrite > 0 ? cost.tokens.cacheWrite : null,
       costModelId: cost.modelId,
       createdAt: new Date(),
     });
@@ -380,6 +381,7 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
         row.costInputTokens !== null ||
         row.costOutputTokens !== null ||
         row.costCachedTokens !== null ||
+        row.costCacheWriteTokens !== null ||
         row.costModelId !== null;
       let cost: CycleCost | undefined;
       if (hasSnapshot) {
@@ -392,7 +394,7 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
             input: row.costInputTokens ?? 0,
             output: row.costOutputTokens ?? 0,
             cached: row.costCachedTokens ?? 0,
-            cacheWrite: 0,
+            cacheWrite: row.costCacheWriteTokens ?? 0,
           },
           modelId: row.costModelId,
         };

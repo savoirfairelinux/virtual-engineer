@@ -277,6 +277,7 @@ export class SqliteStateStore {
     this.ensureColumn("agent_cycles", "cost_input_tokens", "INTEGER");
     this.ensureColumn("agent_cycles", "cost_output_tokens", "INTEGER");
     this.ensureColumn("agent_cycles", "cost_cached_tokens", "INTEGER");
+    this.ensureColumn("agent_cycles", "cost_cache_write_tokens", "INTEGER");
     this.ensureColumn("agent_cycles", "cost_model_id", "TEXT");
     this.ensureColumn("integrations", "discovered_resources_json", "TEXT");
     this.ensureColumn("integrations", "discovered_at", "INTEGER");

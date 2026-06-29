@@ -500,7 +500,7 @@ describe("SqliteStateStore", () => {
           {
             type: "assistant.usage",
             timestamp: "2026-01-01T00:00:00.000Z",
-            data: { apiCallId: "req-1", totalNanoAiu: 2_000_000_000, cost: 1.5, inputTokens: 100, outputTokens: 20, cacheReadTokens: 5, model: "gpt-test" },
+            data: { apiCallId: "req-1", totalNanoAiu: 2_000_000_000, cost: 1.5, inputTokens: 100, outputTokens: 20, cacheReadTokens: 5, cacheWriteTokens: 7, model: "gpt-test" },
             taskId: String(taskId),
             cycleNumber: 1,
           },
@@ -526,6 +526,7 @@ describe("SqliteStateStore", () => {
       expect(cost?.tokens.input).toBe(140);
       expect(cost?.tokens.output).toBe(30);
       expect(cost?.tokens.cached).toBe(5);
+      expect(cost?.tokens.cacheWrite).toBe(7);
       expect(cost?.modelId).toBe("gpt-test");
     });
 
