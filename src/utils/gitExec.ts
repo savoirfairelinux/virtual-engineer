@@ -2,7 +2,8 @@ import { execFileSync } from "child_process";
 
 /**
  * Run a git subcommand in the given directory; throws on non-zero exit.
- * The error message is truncated to 500 characters to keep logs readable.
+ * The underlying git error output is truncated to 500 characters (before the
+ * `git <subcommand>:` prefix is prepended) to keep logs readable.
  */
 export function execGit(args: string[], cwd: string): string {
   try {
