@@ -59,10 +59,20 @@ export function buildReviewPrompt(input: ReviewPromptInput): string {
 
   const sections = [
     header,
+  ];
+
+  // Commit message body ("the why"). Omitted when the change has no description
+  // beyond its subject so we never inject an empty section.
+  const description = details.description.trim();
+  if (description.length > 0) {
+    sections.push(``, `## Commit message`, description);
+  }
+
+  sections.push(
     ``,
     `## User Instructions`,
     userPrompt,
-  ];
+  );
 
   if (priorComments && priorComments.length > 0) {
     sections.push(``, `## Already reported (do not repeat)`, renderPriorComments(priorComments));

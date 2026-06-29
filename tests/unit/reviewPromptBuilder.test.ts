@@ -148,6 +148,37 @@ describe("buildReviewPrompt", () => {
   });
 });
 
+describe("buildReviewPrompt commit message", () => {
+  it("renders the commit message body when the description is non-empty", () => {
+    const prompt = buildReviewPrompt({
+      details: { ...details, description: "Implements rate limiting.\n\nCloses #42." },
+      diff,
+      userPrompt: "Review this.",
+    });
+    expect(prompt).toContain("## Commit message");
+    expect(prompt).toContain("Implements rate limiting.");
+    expect(prompt).toContain("Closes #42.");
+  });
+
+  it("omits the commit message section when the description is empty", () => {
+    const prompt = buildReviewPrompt({
+      details: { ...details, description: "" },
+      diff,
+      userPrompt: "Review this.",
+    });
+    expect(prompt).not.toContain("## Commit message");
+  });
+
+  it("omits the commit message section when the description is whitespace only", () => {
+    const prompt = buildReviewPrompt({
+      details: { ...details, description: "   \n  \n" },
+      diff,
+      userPrompt: "Review this.",
+    });
+    expect(prompt).not.toContain("## Commit message");
+  });
+});
+
 describe("buildReviewPrompt discussion threads", () => {
   it("omits the open-threads section when none are provided", () => {
     const prompt = buildReviewPrompt({ details, diff, userPrompt: "Review this." });
