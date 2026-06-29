@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { ReviewOrchestrator } from "../../src/review/reviewOrchestrator.js";
+import { computeCommentHash, computeThreadReplyHash } from "../../src/review/commentHash.js";
 import {
   makeExternalChangeId,
   makeProjectId,
@@ -8,6 +9,7 @@ import {
   type ProjectRecord,
   type ReviewChangeDetails,
   type ReviewChangeDiff,
+  type ReviewDiscussionThread,
   type ReviewProvider,
   type Task,
   type TaskState,
@@ -162,6 +164,11 @@ function makeMocks(initialTask?: Task) {
     }),
     getAgentCycles: vi.fn(async () => []),
     saveAgentCycle: vi.fn(async () => undefined),
+    getPostedReviewCommentHashes: vi.fn(async () => new Set<string>()),
+    getPostedReviewComments: vi.fn(async () => []),
+    markReviewCommentsPosted: vi.fn(async () => undefined),
+    getHandledThreadReplyHashes: vi.fn(async () => new Set<string>()),
+    markThreadReplyPosted: vi.fn(async () => undefined),
     findProjectsByReviewTarget: vi.fn(async () => [makeProject()]),
     getProjectById: vi.fn(async () => makeProject()),
     setTaskProjectId: vi.fn(async () => undefined),
@@ -374,6 +381,61 @@ describe("ReviewOrchestrator.startReviewTask", () => {
     );
     expect(projectIds).toEqual(["proj-1", "proj-2"]);
   });
+
+  it("does NOT re-trigger when the current patchset was already reviewed (automatic resync)", async () => {
+    // Resting state after a completed review: REVIEW_WATCHING with reviewedPatchset
+    // == currentPatchset. An automatic resync (backfill / polling / webhook
+    // re-delivery) must not launch a second review on the same patchset.
+    const existing = makeTask({ state: "REVIEW_WATCHING", currentPatchset: 2, reviewedPatchset: 2 });
+    mocks = makeMocks(existing);
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+    const tasks = await orch.startReviewTask({ changeId: CHANGE_ID });
+    expect(tasks).toHaveLength(0);
+    expect(mocks.store.createReviewTask).not.toHaveBeenCalled();
+  });
+
+  it("does NOT create a duplicate task when a terminal REVIEW_DONE row already reviewed this patchset", async () => {
+    // The double-review bug: a terminal row used to fall through and spawn a new
+    // task. The reviewedPatchset guard now skips it for automatic triggers.
+    const existing = makeTask({ state: "REVIEW_DONE", currentPatchset: 2, reviewedPatchset: 2 });
+    mocks = makeMocks(existing);
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+    const tasks = await orch.startReviewTask({ changeId: CHANGE_ID });
+    expect(tasks).toHaveLength(0);
+    expect(mocks.store.createReviewTask).not.toHaveBeenCalled();
+  });
+
+  it("re-queues an already-reviewed REVIEW_WATCHING task when force is set (manual re-trigger)", async () => {
+    const existing = makeTask({ state: "REVIEW_WATCHING", currentPatchset: 2, reviewedPatchset: 2 });
+    mocks = makeMocks(existing);
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+    const tasks = await orch.startReviewTask({ changeId: CHANGE_ID, force: true });
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]?.taskId).toBe(existing.taskId);
+    expect(mocks.store.createReviewTask).not.toHaveBeenCalled();
+  });
+
+  it("creates a fresh review task when force is set and the prior review is terminal", async () => {
+    const existing = makeTask({ state: "REVIEW_DONE", currentPatchset: 2, reviewedPatchset: 2 });
+    mocks = makeMocks(existing);
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+    const tasks = await orch.startReviewTask({ changeId: CHANGE_ID, force: true });
+    expect(tasks).toHaveLength(1);
+    expect(mocks.store.createReviewTask).toHaveBeenCalledTimes(1);
+  });
+
+  it("re-triggers a watched change on a genuinely new patchset even when the old one was reviewed", async () => {
+    const existing = makeTask({ state: "REVIEW_WATCHING", currentPatchset: 1, reviewedPatchset: 1 });
+    mocks = makeMocks(existing);
+    (mocks.provider.getChangeDetails as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makeDetails({ currentPatchset: 2 })
+    );
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+    const tasks = await orch.startReviewTask({ changeId: CHANGE_ID });
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]?.currentPatchset).toBe(2);
+    expect(mocks.store.createReviewTask).not.toHaveBeenCalled();
+  });
 });
 
 describe("ReviewOrchestrator.runReview â happy path", () => {
@@ -397,6 +459,93 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
     );
     expect(mocks.provider.vote).toHaveBeenCalledWith(CHANGE_ID, 2, -1, "blocking");
     expect(mocks.store.setReviewedPatchset).toHaveBeenCalledWith(initial.taskId, 2);
+  });
+
+  it("does not re-post inline comments already posted on the change", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+
+    // Stateful posted-comment store shared across both review passes.
+    const posted = new Set<string>();
+    (mocks.store.getPostedReviewCommentHashes as ReturnType<typeof vi.fn>).mockImplementation(
+      async () => new Set(posted)
+    );
+    (mocks.store.markReviewCommentsPosted as ReturnType<typeof vi.fn>).mockImplementation(
+      async (_taskId: unknown, _changeId: unknown, comments: { commentHash: string }[]) => {
+        for (const c of comments) posted.add(c.commentHash);
+      }
+    );
+
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+
+    // First pass: the single comment is new and gets posted + recorded.
+    await orch.runReview(initial.taskId);
+    expect(
+      (mocks.provider.postReviewComments as ReturnType<typeof vi.fn>).mock.calls[0]?.[2]
+    ).toHaveLength(1);
+    expect(posted.size).toBe(1);
+
+    // Second pass on the same diff (task is now REVIEW_WATCHING, a valid entry).
+    (mocks.provider.postReviewComments as ReturnType<typeof vi.fn>).mockClear();
+    await orch.runReview(initial.taskId);
+
+    // The identical comment is recognised as already posted → no inline comments.
+    const secondPosted = (mocks.provider.postReviewComments as ReturnType<typeof vi.fn>).mock
+      .calls[0]?.[2] as unknown[];
+    expect(secondPosted).toEqual([]);
+    expect(posted.size).toBe(1);
+  });
+
+  it("does not re-post summary or vote on a re-review when nothing is new and the verdict is unchanged", async () => {
+    const initial = makeTask({ state: "REVIEW_WATCHING", cycleCount: 1 });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+
+    // The single comment from GOOD_RAW_OUTPUT is already on record.
+    const knownHash = computeCommentHash({ file: "src/a.ts", message: "Bug" });
+    (mocks.store.getPostedReviewCommentHashes as ReturnType<typeof vi.fn>).mockResolvedValue(
+      new Set([knownHash])
+    );
+    // The previous cycle recorded a blocking (-1) vote — same as this pass.
+    (mocks.store.getAgentCycles as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { result: { metadata: { vote: -1 } } },
+    ]);
+
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+    await orch.runReview(initial.taskId);
+
+    // Nothing new to say and the verdict is unchanged → stay silent.
+    expect(mocks.provider.postReviewComments).not.toHaveBeenCalled();
+    expect(mocks.provider.vote).not.toHaveBeenCalled();
+    // The lifecycle still advances internally (no external notification).
+    const transitions = mocks.store.transition.mock.calls.map((c: [unknown, unknown]) => c[1]);
+    expect(transitions).toContain("REVIEW_COMMENTING");
+  });
+
+  it("re-posts summary + vote on a forced re-review even when nothing is new and the verdict is unchanged", async () => {
+    const initial = makeTask({ state: "REVIEW_WATCHING", cycleCount: 1, reviewedPatchset: 2 });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+
+    // Same conditions as the silent re-review above: known comment, unchanged vote.
+    const knownHash = computeCommentHash({ file: "src/a.ts", message: "Bug" });
+    (mocks.store.getPostedReviewCommentHashes as ReturnType<typeof vi.fn>).mockResolvedValue(
+      new Set([knownHash])
+    );
+    (mocks.store.getAgentCycles as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { result: { metadata: { vote: -1 } } },
+    ]);
+
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+    await orch.runReview(initial.taskId, { force: true });
+
+    // Force bypasses the skip gate: the vote + summary are re-posted even though
+    // nothing changed. Inline comments stay deduped (no duplicate comments).
+    expect(mocks.provider.vote).toHaveBeenCalledWith(CHANGE_ID, 2, -1, "blocking");
+    const postedComments = (mocks.provider.postReviewComments as ReturnType<typeof vi.fn>).mock
+      .calls[0]?.[2] as unknown[];
+    expect(postedComments).toEqual([]);
   });
 
   it("strips hallucinated comments before calling the provider (only in-diff paths sent)", async () => {
@@ -428,6 +577,42 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
       expect.arrayContaining([expect.objectContaining({ file: "src/ghost.ts" })]),
       expect.anything()
     );
+  });
+
+  it("does not record or fold out-of-diff comments (only addressable paths persisted)", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    const recorded: Array<{ file: string }> = [];
+    (mocks.store.markReviewCommentsPosted as ReturnType<typeof vi.fn>).mockImplementation(
+      async (_taskId: unknown, _changeId: unknown, comments: Array<{ file: string }>) => {
+        recorded.push(...comments);
+      }
+    );
+    // The hallucinated comment is below the inline-severity threshold, so before
+    // the fix it would be folded into the summary AND recorded in
+    // posted_review_comments even though postReview drops it before posting.
+    const hallucinated = [
+      "REVIEW_RESULT_START",
+      JSON.stringify({
+        comments: [
+          { file: "src/a.ts", line: 1, message: "Real", severity: "error" },
+          { file: "src/ghost.ts", line: 9, message: "Hallucinated", severity: "nit" },
+        ],
+        summary: "blocking",
+        score: -1,
+      }),
+      "REVIEW_RESULT_END",
+    ].join("\n");
+    const { runner } = makeWorkspaceRunner(hallucinated);
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+
+    await orch.runReview(initial.taskId);
+
+    // Only the in-diff comment is recorded into posted_review_comments.
+    expect(recorded.map((c) => c.file)).toEqual(["src/a.ts"]);
+    // The folded-summary appendix never mentions the out-of-diff path.
+    const summaryArg = (mocks.provider.vote as ReturnType<typeof vi.fn>).mock.calls[0]?.[3] as string;
+    expect(summaryArg).not.toContain("src/ghost.ts");
   });
 
   it("posts the review on the LATEST patchset when a new one arrives during the agent run", async () => {
@@ -686,6 +871,205 @@ describe("ReviewOrchestrator.runReview â terminal state guard", () => {
       expect(mocks.store.transition).not.toHaveBeenCalled();
     });
   }
+});
+
+describe("ReviewOrchestrator.runReview - discussion replies", () => {
+  function makeThread(overrides: Partial<ReviewDiscussionThread> = {}): ReviewDiscussionThread {
+    return {
+      threadId: "disc-1",
+      file: "src/a.ts",
+      line: 1,
+      resolved: false,
+      comments: [{ author: "alice", message: "Why this?", isOwn: false }],
+      ...overrides,
+    };
+  }
+
+  function rawWithReplies(
+    replies: Array<{ threadId: string; message: string }>,
+    opts: { comments?: unknown[]; summary?: string; score?: number } = {}
+  ): string {
+    return [
+      "REVIEW_RESULT_START",
+      JSON.stringify({
+        comments: opts.comments ?? [],
+        summary: opts.summary ?? "",
+        score: opts.score ?? 0,
+        replies,
+      }),
+      "REVIEW_RESULT_END",
+    ].join("\n");
+  }
+
+  function withThreads(
+    mocks: ReturnType<typeof makeMocks>,
+    threads: ReviewDiscussionThread[]
+  ): ReturnType<typeof vi.fn> {
+    mocks.provider.getDiscussionThreads = vi.fn(async () => threads);
+    const postThreadReply = vi.fn(async () => undefined);
+    mocks.provider.postThreadReply = postThreadReply;
+    return postThreadReply;
+  }
+
+  it("posts a reply for an eligible thread and records it in the ledger", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    const postThreadReply = withThreads(mocks, [makeThread()]);
+    const { runner } = makeWorkspaceRunner(
+      rawWithReplies([{ threadId: "disc-1", message: "Good catch, fixed." }])
+    );
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+
+    await orch.runReview(initial.taskId);
+
+    expect(postThreadReply).toHaveBeenCalledWith(CHANGE_ID, 2, "disc-1", "Good catch, fixed.");
+    const handledHash = computeThreadReplyHash({
+      threadId: "disc-1",
+      author: "alice",
+      message: "Why this?",
+    });
+    expect(mocks.store.markThreadReplyPosted).toHaveBeenCalledWith(initial.taskId, CHANGE_ID, [
+      { threadId: "disc-1", handledCommentHash: handledHash, replyMessage: "Good catch, fixed." },
+    ]);
+  });
+
+  it("does not reply to a resolved thread", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    const postThreadReply = withThreads(mocks, [makeThread({ resolved: true })]);
+    const { runner } = makeWorkspaceRunner(rawWithReplies([{ threadId: "disc-1", message: "x" }]));
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+
+    await orch.runReview(initial.taskId);
+
+    expect(postThreadReply).not.toHaveBeenCalled();
+    expect(mocks.store.markThreadReplyPosted).not.toHaveBeenCalled();
+  });
+
+  it("does not reply to a thread that has only VE's own comments", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    const postThreadReply = withThreads(mocks, [
+      makeThread({ comments: [{ author: "ve-bot", message: "mine", isOwn: true }] }),
+    ]);
+    const { runner } = makeWorkspaceRunner(rawWithReplies([{ threadId: "disc-1", message: "x" }]));
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+
+    await orch.runReview(initial.taskId);
+
+    expect(postThreadReply).not.toHaveBeenCalled();
+  });
+
+  it("does not reply again when the latest human message was already answered", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    const handledHash = computeThreadReplyHash({
+      threadId: "disc-1",
+      author: "alice",
+      message: "Why this?",
+    });
+    (mocks.store.getHandledThreadReplyHashes as ReturnType<typeof vi.fn>).mockResolvedValue(
+      new Set([handledHash])
+    );
+    const postThreadReply = withThreads(mocks, [makeThread()]);
+    const { runner } = makeWorkspaceRunner(rawWithReplies([{ threadId: "disc-1", message: "x" }]));
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+
+    await orch.runReview(initial.taskId);
+
+    expect(postThreadReply).not.toHaveBeenCalled();
+  });
+
+  it("drops replies that reference an unknown (hallucinated) threadId", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    const postThreadReply = withThreads(mocks, [makeThread()]);
+    const { runner } = makeWorkspaceRunner(
+      rawWithReplies([{ threadId: "ghost-thread", message: "x" }])
+    );
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+
+    await orch.runReview(initial.taskId);
+
+    expect(postThreadReply).not.toHaveBeenCalled();
+  });
+
+  it("drops replies with an empty body", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    const postThreadReply = withThreads(mocks, [makeThread()]);
+    const { runner } = makeWorkspaceRunner(rawWithReplies([{ threadId: "disc-1", message: "   " }]));
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+
+    await orch.runReview(initial.taskId);
+
+    expect(postThreadReply).not.toHaveBeenCalled();
+  });
+
+  it("caps the number of replies at maxReviewReplies", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    const threads: ReviewDiscussionThread[] = [
+      makeThread({ threadId: "disc-1", comments: [{ author: "a", message: "q1", isOwn: false }] }),
+      makeThread({ threadId: "disc-2", comments: [{ author: "b", message: "q2", isOwn: false }] }),
+      makeThread({ threadId: "disc-3", comments: [{ author: "c", message: "q3", isOwn: false }] }),
+    ];
+    const postThreadReply = withThreads(mocks, threads);
+    const { runner } = makeWorkspaceRunner(
+      rawWithReplies([
+        { threadId: "disc-1", message: "r1" },
+        { threadId: "disc-2", message: "r2" },
+        { threadId: "disc-3", message: "r3" },
+      ])
+    );
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner, { maxReviewReplies: 2 }));
+
+    await orch.runReview(initial.taskId);
+
+    expect(postThreadReply).toHaveBeenCalledTimes(2);
+  });
+
+  it("posts a pending reply even on a re-review with an unchanged verdict", async () => {
+    const initial = makeTask({ state: "REVIEW_WATCHING", cycleCount: 1 });
+    const mocks = makeMocks(initial);
+    // The lone inline comment is already on record and the prior vote matches,
+    // so the summary/vote path would normally be skipped - but a pending reply
+    // must still be delivered.
+    const knownHash = computeCommentHash({ file: "src/a.ts", message: "Bug" });
+    (mocks.store.getPostedReviewCommentHashes as ReturnType<typeof vi.fn>).mockResolvedValue(
+      new Set([knownHash])
+    );
+    (mocks.store.getAgentCycles as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { result: { metadata: { vote: -1 } } },
+    ]);
+    const postThreadReply = withThreads(mocks, [makeThread()]);
+    const { runner } = makeWorkspaceRunner(
+      rawWithReplies([{ threadId: "disc-1", message: "Replying here." }], {
+        comments: [{ file: "src/a.ts", line: 1, message: "Bug", severity: "error" }],
+        summary: "blocking",
+        score: -1,
+      })
+    );
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+
+    await orch.runReview(initial.taskId);
+
+    expect(postThreadReply).toHaveBeenCalledWith(CHANGE_ID, 2, "disc-1", "Replying here.");
+    expect(mocks.store.markThreadReplyPosted).toHaveBeenCalledOnce();
+  });
+
+  it("ignores discussion threads when the provider lacks thread support", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    // Provider has no getDiscussionThreads / postThreadReply (the default).
+    const { runner } = makeWorkspaceRunner(rawWithReplies([{ threadId: "disc-1", message: "x" }]));
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+
+    await orch.runReview(initial.taskId);
+
+    expect(mocks.store.getHandledThreadReplyHashes).not.toHaveBeenCalled();
+    expect(mocks.store.markThreadReplyPosted).not.toHaveBeenCalled();
+  });
 });
 
 describe("Unused symbols import sanity check", () => {

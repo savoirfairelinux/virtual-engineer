@@ -19,7 +19,7 @@ export interface IntegrationEventStreamOrchestrator {
 }
 
 export interface IntegrationEventStreamReviewTrigger {
-  triggerReviewForChange(integrationId: string, changeId: string): Promise<void>;
+  triggerReviewForChange(integrationId: string, changeId: string, options?: { force?: boolean }): Promise<void>;
 }
 
 export interface IntegrationEventStreamDependencies {

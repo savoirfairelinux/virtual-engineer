@@ -17,9 +17,9 @@ tests/
 
 State / DB: `stateMachine`, `stateStore`, `stateStore.projects`, `migrations.projects`, `integrationStore`, `promptStore`.
 
-Connectors / VCS: `redmineConnector`, `redmineDiscovery`, `gerritConnector`, `gerritDiscovery`, `gerritSshDiscovery`, `gerritSshClient`, `gerritSshReviewProvider`, `gerritStreamEvents`, `gerritVcsConnector`, `integrationStreamEvents`, `gitlabHttpClient`, `gitlabIssueConnector`, `gitlabIssueDiscovery`, `gitlabMergeRequestConnector`, `gitlabMergeRequestDiscovery`, `gitlabVcsConnector`, `vcsConnector`, `vcsFactory`, `baseTicketConnector`.
+Connectors / VCS: `redmineConnector`, `redmineDiscovery`, `gerritConnector`, `gerritDiscovery`, `gerritSshDiscovery`, `gerritSshClient`, `gerritSshReviewProvider`, `gerritStreamEvents`, `gerritVcsConnector`, `integrationStreamEvents`, `gitlabHttpClient`, `gitlabIssueConnector`, `gitlabIssueDiscovery`, `gitlabMergeRequestConnector`, `gitlabMergeRequestReviewProvider`, `gitlabMergeRequestDiscovery`, `gitlabVcsConnector`, `vcsConnector`, `vcsFactory`, `baseTicketConnector`.
 
-Agents / review runtime: `copilotAdapter`, `copilotAdapter.promptInjection`, `copilotConnectionValidator`, `copilotOAuthService`, `providerAuthService`, `copilotModelsService`, `mockAgentAdapter`, `agentEventTypes`, `agentEventTypes.normalization`, `copilotReviewAgent`, `reviewPromptBuilder`, `reviewResultParser`, `reviewOrchestrator`, `reviewLiveLogs`, `workerCommitProtocol`.
+Agents / review runtime: `copilotAdapter`, `copilotAdapter.promptInjection`, `copilotConnectionValidator`, `copilotOAuthService`, `providerAuthService`, `copilotModelsService`, `mockAgentAdapter`, `agentEventTypes`, `agentEventTypes.normalization`, `copilotReviewAgent`, `reviewPromptBuilder`, `reviewResultParser`, `reviewOrchestrator`, `reviewLiveLogs`, `commentHash`, `commentSeverity`, `workerCommitProtocol`.
 
 Orchestrator / polling / webhooks: `orchestrator`, `orchestrator.projectMode`, `orchestrator.webhookEntryPoints`, `orchestrator.concurrency`, `orchestratorCommitMessage`, `pollingLoop.projects`, `pollingLoop.concurrency`, `concurrencyTracker`, `feedbackProcessor`, `webhookServer`, `webhookHandlerRedmine`, `webhookHandlerGitlabIssue`, `webhookHandlerGitlabMergeRequest`.
 

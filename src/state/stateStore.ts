@@ -117,6 +117,36 @@ export class SqliteStateStore {
         created_at          INTEGER NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS posted_review_comments (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        task_id             TEXT    NOT NULL REFERENCES tasks(task_id),
+        change_id           TEXT    NOT NULL,
+        comment_hash        TEXT    NOT NULL,
+        file                TEXT    NOT NULL,
+        line                INTEGER NOT NULL DEFAULT 0,
+        message             TEXT    NOT NULL DEFAULT '',
+        severity            TEXT    NOT NULL DEFAULT '',
+        provider_thread_id  TEXT,
+        resolved            INTEGER NOT NULL DEFAULT 0,
+        created_at          INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_posted_review_comments_task_id ON posted_review_comments(task_id);
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_posted_review_comments_task_hash
+        ON posted_review_comments(task_id, comment_hash);
+
+      CREATE TABLE IF NOT EXISTS review_thread_replies (
+        id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+        task_id               TEXT    NOT NULL REFERENCES tasks(task_id),
+        change_id             TEXT    NOT NULL,
+        thread_id             TEXT    NOT NULL,
+        handled_comment_hash  TEXT    NOT NULL,
+        reply_message         TEXT    NOT NULL DEFAULT '',
+        created_at            INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_review_thread_replies_task_id ON review_thread_replies(task_id);
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_review_thread_replies_task_thread_hash
+        ON review_thread_replies(task_id, thread_id, handled_comment_hash);
+
       CREATE INDEX IF NOT EXISTS idx_tasks_ticket_id ON tasks(ticket_id);
       CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_active_ticket_id ON tasks(ticket_id)
         WHERE state NOT IN ('DONE', 'FAILED', 'ABANDONED', 'REVIEW_DONE', 'REVIEW_FAILED');

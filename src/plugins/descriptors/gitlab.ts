@@ -7,6 +7,7 @@ import {
   GitLabIssueConnector,
 } from "../../connectors/gitlabIssueConnector.js";
 import { GitLabMergeRequestConnector } from "../../connectors/gitlabMergeRequestConnector.js";
+import { GitLabMergeRequestReviewProvider } from "../../connectors/gitlabMergeRequestReviewProvider.js";
 import { GitLabVcsConnector } from "../../vcs/gitlabVcsConnector.js";
 import { getLogger } from "../../logger.js";
 import {
@@ -156,6 +157,8 @@ export const gitlabDescriptor: ProviderDescriptor = {
       intake: ["polling", "webhook"],
     },
     code_review: {
+      systemPromptId: "system_gitlab_review",
+      userPromptId: "user_gitlab_review",
       createConnector: (config: unknown, _integration: Integration, context?: IntegrationBindingContext) => {
         const parsed = gitlabConfigSchema.parse(config);
         return new GitLabMergeRequestConnector({
@@ -163,6 +166,35 @@ export const gitlabDescriptor: ProviderDescriptor = {
           projectId: resolveGitLabProjectId(context?.repoKey, { allowUnboundFallback: true }),
           token: getGitLabAccessToken(parsed),
         });
+      },
+      createReviewer: (cfg, _integration, workspaceRunner) => {
+        const parsed = gitlabConfigSchema.parse(cfg);
+        const baseUrl = parsed.baseUrl ?? GITLAB_COM_BASE_URL;
+        const token = getGitLabAccessToken(parsed);
+        const host = new URL(baseUrl).host;
+
+        return {
+          systemPromptId: "system_gitlab_review",
+          userPromptId: "user_gitlab_review",
+          provider: new GitLabMergeRequestReviewProvider({
+            baseUrl,
+            projectId: UNBOUND_GITLAB_PROJECT_ID,
+            token,
+          }),
+          buildCloneTarget: (details): { cloneUrl: string; sshKeyPath: null; sshKnownHostsPath: null } => {
+            const cloneUrl = `https://oauth2:${token}@${host}/${details.project}.git`;
+            return { cloneUrl, sshKeyPath: null, sshKnownHostsPath: null };
+          },
+          applyPatchset: async (handle, details): Promise<void> => {
+            if (workspaceRunner.execGitInVolume === undefined) {
+              throw new Error("workspaceRunner does not support execGitInVolume — cannot fetch GitLab MR ref");
+            }
+            const mrRef = `merge-requests/${details.changeNumber}/head`;
+            const localBranch = `ve-review-mr-${details.changeNumber}`;
+            await workspaceRunner.execGitInVolume(handle, ["fetch", "--depth=1", "origin", `${mrRef}:${localBranch}`]);
+            await workspaceRunner.execGitInVolume(handle, ["checkout", localBranch]);
+          },
+        };
       },
       intake: ["polling", "webhook"],
     },
