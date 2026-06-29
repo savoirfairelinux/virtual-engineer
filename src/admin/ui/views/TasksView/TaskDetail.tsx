@@ -9,6 +9,7 @@ import { StatePipeline } from "./StatePipeline.tsx";
 import { AgentCycles } from "./AgentCycles.tsx";
 import { StateTimeline } from "./StateTimeline.tsx";
 import { LiveLogs } from "./LiveLogs.tsx";
+import { sumCycleCosts, formatUsd } from "./costFormat.ts";
 import { api } from "../../api.ts";
 import { isActiveState, isTerminalState } from "../../states.ts";
 import type { ApiTask, ApiCycle, ApiTransition } from "../../types.ts";
@@ -71,9 +72,15 @@ export function TaskDetail({ task }: TaskDetailProps) {
     ? (task.gerritChangeId ?? task.displayId ?? task.ticketId)
     : (task.displayId ?? task.ticketId);
 
+  const costTotals = cycles ? sumCycleCosts(cycles) : null;
+  const costValue = costTotals && costTotals.usd > 0
+    ? `${costTotals.priced ? "" : "~"}${formatUsd(costTotals.usd)}`
+    : "—";
+
   const metaCells = [
     { label: "Type",        value: task.taskType === "code-review" ? "Code review" : "Code generation", mono: false },
     { label: "Patchset",    value: String(task.currentPatchset || "—"),    mono: true },
+    { label: "Total cost",  value: costValue,                              mono: true },
     { label: "Reviewed PS", value: String(task.reviewedPatchset ?? "—"),    mono: true },
     { label: "Cycles",      value: String(effectiveCycleCount),            mono: true },
     { label: "Ticket",      value: task.displayId ?? task.ticketId,         mono: true },
@@ -179,9 +186,9 @@ export function TaskDetail({ task }: TaskDetailProps) {
         </div>
 
         {/* meta strip */}
-        <div className="card" style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", padding: 0 }}>
+        <div className="card" style={{ display: "grid", gridTemplateColumns: `repeat(${metaCells.length}, 1fr)`, padding: 0 }}>
           {metaCells.map((m, i) => (
-            <div key={m.label} style={{ padding: "14px 16px", borderRight: i < 5 ? "1px solid var(--border-soft)" : "none" }}>
+            <div key={m.label} style={{ padding: "14px 16px", borderRight: i < metaCells.length - 1 ? "1px solid var(--border-soft)" : "none" }}>
               <Meta label={m.label} mono={m.mono}>{m.value}</Meta>
             </div>
           ))}

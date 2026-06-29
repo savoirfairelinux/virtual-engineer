@@ -1,5 +1,5 @@
 /** Drizzle ORM table definitions for the Virtual Engineer SQLite database. All timestamps are seconds since epoch (`mode: "timestamp"`). */
-import { sqliteTable, text, integer, index, unique, check, primaryKey } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, integer, real, index, unique, check, primaryKey } from "drizzle-orm/sqlite-core";
 import { sql } from "drizzle-orm";
 import type { TaskState, IntegrationType, TaskType, AgentType, ProjectType, PushTargetRole } from "../interfaces.js";
 
@@ -70,6 +70,26 @@ export const agentCycles = sqliteTable("agent_cycles", {
   validationResult: text("validation_result"),
   // JSON-serialised AgentLogEvent[]
   agentEvents: text("agent_events"),
+  /** GitHub-computed cost in AI credits (1 credit = $0.01); null when unpriced. */
+  costAiCredits: real("cost_ai_credits"),
+  /**
+   * Cost in USD: GitHub-computed (authoritative) when nano-AIU is present,
+   * otherwise estimated from the premium-request multiplier. Null only when no
+   * cost signal is available.
+   */
+  costUsd: real("cost_usd"),
+  /** Summed premium-request multiplier across the cycle's distinct requests; null when unavailable. */
+  premiumRequests: real("premium_requests"),
+  /** Summed input tokens across the cycle's distinct requests. */
+  costInputTokens: integer("cost_input_tokens"),
+  /** Summed output tokens across the cycle's distinct requests. */
+  costOutputTokens: integer("cost_output_tokens"),
+  /** Summed cache-read tokens across the cycle's distinct requests. */
+  costCachedTokens: integer("cost_cached_tokens"),
+  /** Summed cache-write tokens across the cycle's distinct requests. */
+  costCacheWriteTokens: integer("cost_cache_write_tokens"),
+  /** Model id resolved from the usage events. */
+  costModelId: text("cost_model_id"),
   createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
 });
 

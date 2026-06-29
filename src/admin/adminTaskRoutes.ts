@@ -228,6 +228,7 @@ export function serializeCycle(cycle: AgentCycle): Record<string, unknown> {
     validationResult: cycle.validationResult,
     createdAt: toIsoTimestamp(cycle.createdAt),
     durationMs,
+    cost: cycle.cost ?? null,
   };
 }
 

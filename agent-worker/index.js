@@ -718,6 +718,10 @@ function registerSessionEventHandlers(session) {
       outputTokens,
       cacheReadTokens: cacheRead,
       cacheWriteTokens: cacheWrite,
+      cost: deepFindNum(e, ['cost']),
+      totalNanoAiu: deepFindNum(e, ['totalNanoAiu', 'total_nano_aiu']),
+      apiCallId: deepFindStr(e, ['apiCallId', 'api_call_id']),
+      providerCallId: deepFindStr(e, ['providerCallId', 'provider_call_id']),
       model: deepFindStr(e, ['model']) || COPILOT_MODEL,
     });
   });
