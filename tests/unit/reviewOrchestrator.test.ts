@@ -461,6 +461,42 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
     expect(mocks.store.setReviewedPatchset).toHaveBeenCalledWith(initial.taskId, 2);
   });
 
+  it("appends a shareable task-page link to the posted summary when a public base URL is set", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+    const orch = new ReviewOrchestrator(
+      makeDeps(mocks, runner, { taskPageBaseUrl: "https://ve.example.com/" })
+    );
+
+    await orch.runReview(initial.taskId);
+
+    const expectedLink = `https://ve.example.com/#/tasks/${initial.taskId}`;
+    const postedSummary = (mocks.provider.postReviewComments as ReturnType<typeof vi.fn>).mock
+      .calls[0]?.[3] as string;
+    expect(postedSummary).toContain("blocking");
+    expect(postedSummary).toContain(`— Reviewed by Virtual Engineer: ${expectedLink}`);
+    expect(mocks.provider.vote).toHaveBeenCalledWith(
+      CHANGE_ID,
+      2,
+      -1,
+      expect.stringContaining(expectedLink)
+    );
+  });
+
+  it("does not append a task-page link when no public base URL is configured", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+
+    await orch.runReview(initial.taskId);
+
+    const postedSummary = (mocks.provider.postReviewComments as ReturnType<typeof vi.fn>).mock
+      .calls[0]?.[3] as string;
+    expect(postedSummary).toBe("blocking");
+  });
+
   it("does not re-post inline comments already posted on the change", async () => {
     const initial = makeTask({ state: "REVIEW_PENDING" });
     const mocks = makeMocks(initial);
