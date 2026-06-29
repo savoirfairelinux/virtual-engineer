@@ -102,6 +102,9 @@ function renderPriorComments(priorComments: PriorReviewComment[]): string {
     "review cycles. Do NOT repeat them; only report genuinely new issues:",
     "",
     ...lines,
+    "",
+    "If you have no genuinely new issue to raise, return an empty comments list —",
+    "do not repeat the points above or invent comments just to have something to say.",
   ].join("\n");
 }
 

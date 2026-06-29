@@ -146,6 +146,18 @@ describe("buildReviewPrompt", () => {
     // Whitespace in the stored message is collapsed for a compact checklist.
     expect(prompt).toContain("src/bar.ts:3 — Use const instead.");
   });
+
+  it("tells the agent it may return no comments when nothing is new", () => {
+    const prompt = buildReviewPrompt({
+      details,
+      diff,
+      userPrompt: "Review this.",
+      priorComments: [
+        { file: "src/foo.ts", line: 12, message: "Null check missing here." },
+      ],
+    });
+    expect(prompt).toContain("return an empty comments list");
+  });
 });
 
 describe("buildReviewPrompt discussion threads", () => {
