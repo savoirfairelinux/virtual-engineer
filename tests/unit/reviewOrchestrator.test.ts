@@ -1168,6 +1168,35 @@ describe("ReviewOrchestrator.runReview - discussion replies", () => {
 
     expect(postThreadReply).toHaveBeenCalledWith(CHANGE_ID, 2, "disc-1", "Replying here.");
     expect(mocks.store.markThreadReplyPosted).toHaveBeenCalledOnce();
+    // The verdict (summary + vote) is unchanged, so it must NOT be re-posted just
+    // because a reply was delivered — replies and the verdict are decoupled.
+    expect(mocks.provider.postReviewComments).not.toHaveBeenCalled();
+    expect(mocks.provider.vote).not.toHaveBeenCalled();
+  });
+
+  it("re-posts the verdict alongside a reply when a genuinely new finding exists", async () => {
+    const initial = makeTask({ state: "REVIEW_WATCHING", cycleCount: 1 });
+    const mocks = makeMocks(initial);
+    // Prior vote was 0; this pass surfaces a new blocking comment, so the
+    // verdict genuinely changed and must be posted even though a reply also goes out.
+    (mocks.store.getAgentCycles as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { result: { metadata: { vote: 0 } } },
+    ]);
+    const postThreadReply = withThreads(mocks, [makeThread()]);
+    const { runner } = makeWorkspaceRunner(
+      rawWithReplies([{ threadId: "disc-1", message: "Replying here." }], {
+        comments: [{ file: "src/a.ts", line: 1, message: "Brand new bug", severity: "error" }],
+        summary: "blocking",
+        score: -1,
+      })
+    );
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+
+    await orch.runReview(initial.taskId);
+
+    expect(postThreadReply).toHaveBeenCalledOnce();
+    // A new finding → the verdict IS posted.
+    expect(mocks.provider.vote).toHaveBeenCalledWith(CHANGE_ID, 2, -1, "blocking");
   });
 
   it("ignores discussion threads when the provider lacks thread support", async () => {

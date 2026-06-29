@@ -601,10 +601,12 @@ export class ReviewOrchestrator {
         repliesToPost.push({ threadId: reply.threadId, message, handledHash: entry.handledHash });
       }
 
-      // Avoid re-posting an identical verdict on re-reviews. When a pass
-      // finds nothing new to say (no inline comments, no folded notes, no
-      // replies) and the overall vote matches the last review cycle, stay
-      // silent instead of spamming another summary + vote notification.
+      // Avoid re-posting an identical verdict on re-reviews. When a pass finds
+      // nothing new to say (no inline comments, no folded notes) and the overall
+      // vote matches the last review cycle, stay silent instead of spamming
+      // another summary + vote notification. This gate is decoupled from
+      // discussion replies: a pending reply is always delivered through its own
+      // path below and never forces the verdict to be re-posted.
       const hasNothingNew = commentsToPost.length === 0 && folded.length === 0;
       const previousVote = await this.getLastReviewVote(taskId);
       const skipPosting =
@@ -612,8 +614,7 @@ export class ReviewOrchestrator {
         cycleNumber > 1 &&
         hasNothingNew &&
         previousVote !== null &&
-        previousVote === vote &&
-        repliesToPost.length === 0;
+        previousVote === vote;
 
       emitReviewEvent("review.posting_comments", {
         commentCount: commentsToPost.length,
