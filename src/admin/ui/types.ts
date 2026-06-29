@@ -87,6 +87,15 @@ export interface ApiTransition {
 
 export type DomainCapability = "issue_tracking" | "code_review" | "source_control" | "agent_execution";
 
+/**
+ * Provider brand icon metadata as serialized by the admin API. `slug` is the
+ * simpleicons.org slug and `hex` is the brand colour without the leading `#`.
+ */
+export interface ProviderIcon {
+  slug: string;
+  hex: string;
+}
+
 export interface ApiIntegration {
   id: string;
   provider: string;
@@ -95,7 +104,7 @@ export interface ApiIntegration {
   active?: boolean;
   capabilities: string[];
   domainCapabilities: DomainCapability[];
-  icon?: string | null;
+  icon?: ProviderIcon | null;
   config?: Record<string, string>;
   discoverySupported?: boolean;
   streamEventsSupported?: boolean;
@@ -165,7 +174,7 @@ export interface ApiPlugin {
   name: string;
   capabilities: string[];
   domainCapabilities: DomainCapability[];
-  icon?: string | null;
+  icon?: ProviderIcon | null;
   requiredFields: PluginField[];
   oauth?: ApiPluginOAuth;
 }
