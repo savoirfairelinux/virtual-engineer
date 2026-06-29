@@ -839,6 +839,38 @@ export interface AgentCycle {
   result: AgentResult;
   validationResult: ValidationResult | null;
   createdAt: Date;
+  /** GitHub-computed cost of this cycle, derived from Copilot `assistant.usage` events. */
+  cost?: CycleCost;
+}
+
+/** Aggregated token usage across a single agent cycle. */
+export interface CycleCostTokens {
+  input: number;
+  output: number;
+  cached: number;
+  cacheWrite: number;
+}
+
+/**
+ * Per-cycle execution cost derived from the Copilot SDK `assistant.usage`
+ * events. The SDK reports cost per LLM request via `copilotUsage.totalNanoAiu`
+ * (nano-AI-Units) and the `cost` model multiplier; `computeCycleCost`
+ * deduplicates repeated emissions of a request and sums distinct requests.
+ * 1 AI Unit = 1 AI credit = $0.01.
+ */
+export interface CycleCost {
+  /** True when GitHub-computed cost (nano-AIU) was present in the usage events. */
+  priced: boolean;
+  /** Total cost in GitHub AI credits (1 credit = $0.01 USD). */
+  aiCredits: number;
+  /** Total cost in USD. */
+  usd: number;
+  /** Summed premium-request cost (model multiplier) across distinct requests; 0 when unavailable. */
+  premiumRequests: number;
+  /** Aggregated token usage across the cycle. */
+  tokens: CycleCostTokens;
+  /** Model id resolved from the usage events, or null. */
+  modelId: string | null;
 }
 
 export interface Prompt {

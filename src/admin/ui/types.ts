@@ -74,6 +74,24 @@ export interface ApiCycle {
   createdAt: string;
   /** Wall-clock ms from cycle start to last agent event. Null when no events were recorded. */
   durationMs: number | null;
+  /** GitHub-computed cost for the cycle. Null when no usage data was captured. */
+  cost: CycleCost | null;
+}
+
+export interface CycleCostTokens {
+  input: number;
+  output: number;
+  cached: number;
+  cacheWrite: number;
+}
+
+export interface CycleCost {
+  priced: boolean;
+  aiCredits: number;
+  usd: number;
+  premiumRequests: number;
+  tokens: CycleCostTokens;
+  modelId: string | null;
 }
 
 export interface ApiTransition {

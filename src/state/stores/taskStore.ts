@@ -6,6 +6,7 @@ import type {
   AgentLogEvent,
   AgentResult,
   ChangePerRepository,
+  CycleCost,
   ExternalChangeId,
   ProjectId,
   StateTransition,
@@ -16,6 +17,7 @@ import type {
   ValidationResult,
 } from "../../interfaces.js";
 import { makeExternalChangeId, TERMINAL_STATES } from "../../interfaces.js";
+import { computeCycleCost, hasCostData } from "../../agents/cycleCost.js";
 import { getLogger } from "../../logger.js";
 import { validateTransition } from "../stateMachine.js";
 import {
@@ -405,12 +407,21 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
     result: AgentResult,
     validationResult?: ValidationResult
   ): Promise<void> {
+    const cost = computeCycleCost(result.agentEvents);
     await db.insert(agentCycles).values({
       taskId,
       cycleNumber,
       agentResult: JSON.stringify(result),
       validationResult: validationResult ? JSON.stringify(validationResult) : null,
       agentEvents: result.agentEvents ? JSON.stringify(result.agentEvents) : null,
+      costAiCredits: cost.priced ? cost.aiCredits : null,
+      costUsd: cost.usd > 0 ? cost.usd : null,
+      premiumRequests: cost.premiumRequests > 0 ? cost.premiumRequests : null,
+      costInputTokens: cost.tokens.input > 0 ? cost.tokens.input : null,
+      costOutputTokens: cost.tokens.output > 0 ? cost.tokens.output : null,
+      costCachedTokens: cost.tokens.cached > 0 ? cost.tokens.cached : null,
+      costCacheWriteTokens: cost.tokens.cacheWrite > 0 ? cost.tokens.cacheWrite : null,
+      costModelId: cost.modelId,
       createdAt: new Date(),
     });
   }
@@ -434,6 +445,46 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
           validationResult = null;
         }
       }
+      const hasSnapshot =
+        row.costUsd !== null ||
+        row.costAiCredits !== null ||
+        row.premiumRequests !== null ||
+        row.costInputTokens !== null ||
+        row.costOutputTokens !== null ||
+        row.costCachedTokens !== null ||
+        row.costCacheWriteTokens !== null ||
+        row.costModelId !== null;
+      let cost: CycleCost | undefined;
+      if (hasSnapshot) {
+        cost = {
+          priced: row.costAiCredits !== null,
+          aiCredits: row.costAiCredits ?? 0,
+          usd: row.costUsd ?? 0,
+          premiumRequests: row.premiumRequests ?? 0,
+          tokens: {
+            input: row.costInputTokens ?? 0,
+            output: row.costOutputTokens ?? 0,
+            cached: row.costCachedTokens ?? 0,
+            cacheWrite: row.costCacheWriteTokens ?? 0,
+          },
+          modelId: row.costModelId,
+        };
+      } else {
+        // Legacy cycle (persisted before cost columns): recompute from the
+        // streamed event log. Prefer the canonical `agent_events` column over
+        // the larger agentResult JSON, which is more prone to truncation or
+        // corruption (and is replaced by a placeholder when parsing fails above).
+        let events = result.agentEvents;
+        if (row.agentEvents) {
+          try {
+            events = JSON.parse(row.agentEvents) as AgentLogEvent[];
+          } catch {
+            // Fall back to events embedded in the parsed result.
+          }
+        }
+        const recomputed = computeCycleCost(events);
+        if (hasCostData(recomputed)) cost = recomputed;
+      }
       return {
         id: row.id,
         taskId: row.taskId as TaskId,
@@ -441,6 +492,7 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
         result,
         validationResult,
         createdAt: row.createdAt,
+        ...(cost ? { cost } : {}),
       };
     });
   }

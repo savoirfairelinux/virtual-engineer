@@ -234,6 +234,13 @@ function registerReviewEventHandlers(
       data: {
         inputTokens: deepFindNum(e, ["inputTokens", "input_tokens", "promptTokens", "prompt_tokens"]),
         outputTokens: deepFindNum(e, ["outputTokens", "output_tokens", "completionTokens", "completion_tokens"]),
+        cacheReadTokens: deepFindNum(e, ["cacheReadTokens", "cache_read_tokens", "cacheReadInputTokens"]),
+        cacheWriteTokens: deepFindNum(e, ["cacheWriteTokens", "cache_write_tokens", "cacheCreationInputTokens"]),
+        cost: deepFindNum(e, ["cost"]),
+        totalNanoAiu: deepFindNum(e, ["totalNanoAiu", "total_nano_aiu"]),
+        apiCallId: deepFindStr(e, ["apiCallId", "api_call_id"]),
+        providerCallId: deepFindStr(e, ["providerCallId", "provider_call_id"]),
+        model: deepFindStr(e, ["model"]),
       },
     });
   });
