@@ -30,6 +30,7 @@ export function renderAdminDashboardHtml(options?: {
   gerritBaseUrl?: string | undefined;
   gitlabBaseUrl?: string | undefined;
   ticketLinkTemplates?: Record<string, string> | undefined;
+  publicBaseUrl?: string | null | undefined;
   nonce?: string | undefined;
 }): string {
   // ⚠️ SECURITY: Escape HTML special characters in bootstrap JSON to prevent XSS.
@@ -40,6 +41,7 @@ export function renderAdminDashboardHtml(options?: {
     gerritBaseUrl: options?.gerritBaseUrl ?? null,
     gitlabBaseUrl: options?.gitlabBaseUrl ?? null,
     ticketLinkTemplates: options?.ticketLinkTemplates ?? {},
+    publicBaseUrl: options?.publicBaseUrl ?? null,
   })
     .replace(/</g, "\\u003c")
     .replace(/>/g, "\\u003e")

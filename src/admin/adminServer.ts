@@ -60,6 +60,8 @@ export interface AdminRuntimeConfig {
   maxRetryAttempts: number;
   pollingIntervalMs: number;
   adminAuthSecret?: string | undefined;
+  /** Public base URL of the admin UI; surfaced to the dashboard for building shareable task links. */
+  publicBaseUrl?: string | undefined;
 }
 
 export interface AdminPollingStatusSource {
@@ -328,6 +330,7 @@ async function handleRequest(
       requiresAuth,
       authMode: getAdminAuthMode(dependencies.config),
       nonce,
+      publicBaseUrl: dependencies.config.publicBaseUrl ?? null,
       ...getProviderUrls(dependencies.pluginManager),
     }));
     return;
