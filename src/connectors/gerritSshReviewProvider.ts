@@ -16,15 +16,26 @@ import {
   type ReviewChangeDetails,
   type ReviewChangeDiff,
   type ReviewDiffFile,
+  type ReviewDiscussionThread,
   type ReviewFileStatus,
   type ReviewProvider,
 } from "../interfaces.js";
 import { getLogger } from "../logger.js";
 import { filterCommentsByAllowedFiles } from "../review/commentFilter.js";
-import { GerritSshClient, parseSshNdjson, buildSshHostKeyOptions } from "./gerritSshClient.js";
+import {
+  GerritSshClient,
+  type GerritDiscussionComment,
+  parseSshNdjson,
+  buildSshHostKeyOptions,
+} from "./gerritSshClient.js";
 
 const log = getLogger("gerrit-ssh-review-provider");
 const execFileAsync = promisify(execFile);
+
+/** Prefix for inline-thread ids (`gerrit-line:<file>:<line>`). */
+const GERRIT_LINE_PREFIX = "gerrit-line:";
+/** Sentinel thread id for the single change-level discussion bucket. */
+const GERRIT_CHANGE_THREAD_ID = "gerrit-change";
 
 // Git operations allow up to 2 minutes because they involve network I/O
 // and potentially large diffs. SSH query/review operations are handled by
@@ -316,6 +327,69 @@ export class GerritSshReviewProvider implements ReviewProvider {
 
     await this.sshClient.reviewJson(changeSpec, JSON.stringify(reviewInput));
     log.info({ changeId, revision, score }, "submitted Code-Review vote via SSH");
+  }
+
+  /**
+   * Fetch open discussion threads via SSH and group them by location.
+   *
+   * SSH exposes neither comment UUIDs nor a resolved flag, so threads are keyed
+   * by file+line (or a single change-level bucket), `resolved` is always false
+   * (eligibility is deduped by the reply ledger), and replies are posted as a
+   * fresh comment at the same location rather than a true in_reply_to thread.
+   */
+  async getDiscussionThreads(changeId: ExternalChangeId): Promise<ReviewDiscussionThread[]> {
+    const comments = await this.sshClient.getDiscussionComments(String(changeId));
+    const groups = new Map<string, GerritDiscussionComment[]>();
+    for (const c of comments) {
+      const key = c.file === null ? GERRIT_CHANGE_THREAD_ID : `${GERRIT_LINE_PREFIX}${c.file}:${c.line ?? 0}`;
+      const list = groups.get(key);
+      if (list) list.push(c);
+      else groups.set(key, [c]);
+    }
+
+    const threads: ReviewDiscussionThread[] = [];
+    for (const [threadId, list] of groups) {
+      list.sort((a, b) => a.timestampMs - b.timestampMs);
+      const first = list[0];
+      if (!first) continue;
+      threads.push({
+        threadId,
+        file: first.file,
+        line: first.line,
+        resolved: false,
+        comments: list.map((c) => ({ author: c.author, message: c.message, isOwn: c.isOwn })),
+      });
+    }
+    return threads;
+  }
+
+  /**
+   * Post a reply to a discussion thread. Inline threads receive a new comment at
+   * the same file+line; the change-level thread receives a change message. SSH
+   * cannot set in_reply_to, so Gerrit renders the reply alongside the original.
+   */
+  async postThreadReply(
+    changeId: ExternalChangeId,
+    revision: number,
+    threadId: string,
+    message: string
+  ): Promise<void> {
+    const details = await this.getChangeDetails(changeId);
+    const changeSpec = `${details.changeNumber},${revision}`;
+
+    const reviewInput: Record<string, unknown> = {};
+    if (threadId === GERRIT_CHANGE_THREAD_ID || !threadId.startsWith(GERRIT_LINE_PREFIX)) {
+      reviewInput["message"] = message;
+    } else {
+      const key = threadId.slice(GERRIT_LINE_PREFIX.length);
+      const sep = key.lastIndexOf(":");
+      const file = sep > 0 ? key.slice(0, sep) : key;
+      const line = sep > 0 ? parseInt(key.slice(sep + 1), 10) || 0 : 0;
+      reviewInput["comments"] = { [file]: [{ line, message, unresolved: false }] };
+    }
+
+    await this.sshClient.reviewJson(changeSpec, JSON.stringify(reviewInput));
+    log.info({ changeId, revision, threadId }, "posted discussion reply via SSH");
   }
 
   // ─── Private helpers ────────────────────────────────────────────────────────

@@ -102,6 +102,78 @@ export const processedComments = sqliteTable("processed_comments", {
   createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
 });
 
+/**
+ * Records every inline review comment VE has already posted on a change, keyed
+ * by a stable content hash. Used to deduplicate comments across re-reviews
+ * (new patchsets) so the same issue is never posted twice. Integration-agnostic:
+ * populated by the ReviewOrchestrator regardless of the review backend.
+ */
+export const postedReviewComments = sqliteTable(
+  "posted_review_comments",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    taskId: text("task_id")
+      .notNull()
+      .references(() => tasks.taskId),
+    /** External change identifier (Gerrit change id, GitHub `owner/repo#n`, GitLab `project#iid`). */
+    changeId: text("change_id").notNull(),
+    /** Stable hash of file + normalized message (see review/commentHash.ts). */
+    commentHash: text("comment_hash").notNull(),
+    file: text("file").notNull(),
+    line: integer("line").notNull().default(0),
+    /** Original comment body — kept so prior comments can be injected into re-review prompts. */
+    message: text("message").notNull().default(""),
+    severity: text("severity").notNull().default(""),
+    /** Provider-side thread/comment id, captured for later resolution. NULL when unknown. */
+    providerThreadId: text("provider_thread_id"),
+    /** 1 once VE has resolved this thread (issue addressed in a later patchset). */
+    resolved: integer("resolved").notNull().default(0),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+  },
+  (table) => ({
+    idxPostedReviewCommentsTaskId: index("idx_posted_review_comments_task_id").on(table.taskId),
+    uqPostedReviewCommentsTaskHash: unique("uq_posted_review_comments_task_hash").on(
+      table.taskId,
+      table.commentHash
+    ),
+  })
+);
+
+/**
+ * Records every reply VE has posted to a human discussion thread on a change,
+ * keyed by a stable hash of the thread id and the human message being answered
+ * (see review/commentHash.ts `computeThreadReplyHash`). Used to deduplicate
+ * replies across re-reviews so VE answers each human message at most once.
+ * Integration-agnostic: populated by the ReviewOrchestrator regardless of the
+ * review backend.
+ */
+export const reviewThreadReplies = sqliteTable(
+  "review_thread_replies",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    taskId: text("task_id")
+      .notNull()
+      .references(() => tasks.taskId),
+    /** External change identifier (Gerrit change id, GitHub `owner/repo#n`, GitLab `project#iid`). */
+    changeId: text("change_id").notNull(),
+    /** Opaque provider thread token the reply was posted to. */
+    threadId: text("thread_id").notNull(),
+    /** Hash of thread id + the human message answered (see computeThreadReplyHash). */
+    handledCommentHash: text("handled_comment_hash").notNull(),
+    /** The reply body VE posted — kept for audit/debugging. */
+    replyMessage: text("reply_message").notNull().default(""),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+  },
+  (table) => ({
+    idxReviewThreadRepliesTaskId: index("idx_review_thread_replies_task_id").on(table.taskId),
+    uqReviewThreadRepliesTaskThreadHash: unique("uq_review_thread_replies_task_thread_hash").on(
+      table.taskId,
+      table.threadId,
+      table.handledCommentHash
+    ),
+  })
+);
+
 export const integrations = sqliteTable("integrations", {
   id: text("id").primaryKey(),
   type: text("type").$type<IntegrationType>().notNull(),

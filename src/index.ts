@@ -501,6 +501,9 @@ async function buildReviewBundle(
       return p.content;
     })(),
     maxDiffChars: getConfig().maxReviewDiffChars,
+    maxReviewComments: getConfig().maxReviewComments,
+    maxReviewReplies: getConfig().maxReviewReplies,
+    reviewMinSeverity: getConfig().reviewMinSeverity,
   });
   return { integration, provider: reviewer.provider, orchestrator };
 }
@@ -529,7 +532,7 @@ function buildReviewTrigger(
   const log = getLogger("review-trigger");
 
   return {
-    async triggerReviewForChange(integrationId: string, changeId: string): Promise<void> {
+    async triggerReviewForChange(integrationId: string, changeId: string, options?: { force?: boolean }): Promise<void> {
       const bundle = await buildReviewBundle(pluginManager, workspaceBaseDir, stateStore, workspaceRunner, integrationId);
       if (!bundle.orchestrator || !bundle.provider || !bundle.integration) {
         log.warn({ integrationId, changeId }, "review trigger: integration not configured for review routing");
@@ -537,6 +540,7 @@ function buildReviewTrigger(
       }
 
       const gerritChangeId = makeExternalChangeId(changeId);
+      const force = options?.force === true;
 
       // 1. Self-review + assignment guard.
       if (typeof bundle.provider.isReviewer === "function") {
@@ -548,9 +552,14 @@ function buildReviewTrigger(
       }
 
       // 2. Create review tasks — one per matching VE project (idempotent).
+      //    `force` propagates the manual-trigger intent so an already-reviewed
+      //    patchset is re-reviewed instead of skipped.
       let reviewTasks: import("./interfaces.js").Task[];
       try {
-        reviewTasks = await bundle.orchestrator.startReviewTask({ changeId: gerritChangeId });
+        reviewTasks = await bundle.orchestrator.startReviewTask({
+          changeId: gerritChangeId,
+          ...(force ? { force: true } : {}),
+        });
       } catch (err) {
         log.error({ err, integrationId, changeId }, "review trigger: failed to create review task");
         return;
@@ -562,8 +571,8 @@ function buildReviewTrigger(
 
       // 3. Run each review immediately (fire-and-forget with error logging).
       for (const task of reviewTasks) {
-        log.info({ integrationId, taskId: task.taskId, changeId }, "review trigger: task created, starting review");
-        bundle.orchestrator.runReview(task.taskId).catch((err: unknown) => {
+        log.info({ integrationId, taskId: task.taskId, changeId, force }, "review trigger: task created, starting review");
+        bundle.orchestrator.runReview(task.taskId, force ? { force: true } : undefined).catch((err: unknown) => {
           log.error({ err, integrationId, taskId: task.taskId, changeId }, "review trigger: review run failed");
         });
       }

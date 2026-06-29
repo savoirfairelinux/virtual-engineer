@@ -8,6 +8,9 @@ const mockQuery = vi.fn(async (_args: string[]) => "");
 const mockReviewJson = vi.fn(async (_changeSpec: string, _input: string) => {
   return;
 });
+const mockGetDiscussionComments = vi.fn(
+  async (_changeId: string): Promise<import("../../src/connectors/gerritSshClient.js").GerritDiscussionComment[]> => []
+);
 
 vi.mock("../../src/connectors/gerritSshClient.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/connectors/gerritSshClient.js")>();
@@ -17,6 +20,7 @@ vi.mock("../../src/connectors/gerritSshClient.js", async (importOriginal) => {
       return {
         query: mockQuery,
         reviewJson: mockReviewJson,
+        getDiscussionComments: mockGetDiscussionComments,
       };
     }),
   };
@@ -122,6 +126,8 @@ describe("GerritSshReviewProvider", () => {
     gitFileCallIndex = 0;
     mockQuery.mockReset();
     mockReviewJson.mockReset();
+    mockGetDiscussionComments.mockReset();
+    mockGetDiscussionComments.mockResolvedValue([]);
     vi.mocked(rm).mockReturnValue(Promise.resolve(undefined) as unknown as ReturnType<typeof rm>);
   });
 
@@ -360,6 +366,78 @@ describe("GerritSshReviewProvider", () => {
       const input = JSON.parse(mockReviewJson.mock.calls[0]![1]) as Record<string, unknown>;
       expect(input["labels"]).toEqual({ "Code-Review": -1 });
       expect(input["message"]).toBe("Needs work");
+    });
+  });
+
+  describe("discussion threads", () => {
+    it("getDiscussionThreads groups comments by file:line and change-level", async () => {
+      mockGetDiscussionComments.mockResolvedValueOnce([
+        {
+          author: "alice",
+          isOwn: false,
+          message: "Inline question?",
+          file: "src/a.ts",
+          line: 5,
+          patchSet: 3,
+          timestampMs: 1000,
+        },
+        {
+          author: "ve-bot",
+          isOwn: true,
+          message: "Inline answer.",
+          file: "src/a.ts",
+          line: 5,
+          patchSet: 3,
+          timestampMs: 2000,
+        },
+        {
+          author: "bob",
+          isOwn: false,
+          message: "Change-level note.",
+          file: null,
+          line: null,
+          patchSet: 3,
+          timestampMs: 1500,
+        },
+      ]);
+
+      const threads = await makeProvider().getDiscussionThreads(CHANGE_ID);
+
+      expect(threads).toHaveLength(2);
+      const inline = threads.find((t) => t.threadId === "gerrit-line:src/a.ts:5");
+      expect(inline?.file).toBe("src/a.ts");
+      expect(inline?.line).toBe(5);
+      expect(inline?.resolved).toBe(false);
+      // Sorted by timestamp ascending.
+      expect(inline?.comments.map((c) => c.message)).toEqual(["Inline question?", "Inline answer."]);
+      expect(inline?.comments[1]?.isOwn).toBe(true);
+
+      const change = threads.find((t) => t.threadId === "gerrit-change");
+      expect(change?.file).toBeNull();
+      expect(change?.comments[0]?.author).toBe("bob");
+    });
+
+    it("postThreadReply posts a change message for the change-level thread", async () => {
+      mockQuery.mockResolvedValueOnce(sshNdjson(SAMPLE_CHANGE));
+      mockReviewJson.mockResolvedValueOnce(undefined);
+
+      await makeProvider().postThreadReply(CHANGE_ID, 3, "gerrit-change", "Thanks for the note.");
+
+      const input = JSON.parse(mockReviewJson.mock.calls[0]![1]) as Record<string, unknown>;
+      expect(input["message"]).toBe("Thanks for the note.");
+      expect(input["comments"]).toBeUndefined();
+    });
+
+    it("postThreadReply posts an inline comment for a file:line thread", async () => {
+      mockQuery.mockResolvedValueOnce(sshNdjson(SAMPLE_CHANGE));
+      mockReviewJson.mockResolvedValueOnce(undefined);
+
+      await makeProvider().postThreadReply(CHANGE_ID, 3, "gerrit-line:src/a.ts:5", "Inline reply.");
+
+      const input = JSON.parse(mockReviewJson.mock.calls[0]![1]) as Record<string, unknown>;
+      const grouped = input["comments"] as Record<string, Array<{ line: number; message: string }>>;
+      expect(grouped["src/a.ts"]).toEqual([{ line: 5, message: "Inline reply.", unresolved: false }]);
+      expect(input["message"]).toBeUndefined();
     });
   });
 });

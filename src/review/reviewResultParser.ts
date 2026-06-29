@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { InlineReviewComment, ReviewAgentResult, ReviewSeverity } from "../interfaces.js";
+import type { InlineReviewComment, ReviewAgentResult, ReviewSeverity, ThreadReply } from "../interfaces.js";
 
 /**
  * Parser for the structured block emitted by the code-review agent.
@@ -33,10 +33,16 @@ const InlineCommentSchema: z.ZodType<InlineReviewComment> = z.object({
   severity: SeveritySchema,
 });
 
+const ReplySchema: z.ZodType<ThreadReply> = z.object({
+  threadId: z.string().min(1),
+  message: z.string().min(1),
+});
+
 const PayloadSchema = z.object({
   comments: z.array(InlineCommentSchema).default([]),
   summary: z.string().default(""),
   score: z.union([z.literal(-1), z.literal(0), z.literal(1)]).default(0),
+  replies: z.array(ReplySchema).default([]),
 });
 
 export class ReviewResultParseError extends Error {

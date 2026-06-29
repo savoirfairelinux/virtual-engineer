@@ -602,6 +602,82 @@ export interface ReviewAgentResult {
   summary: string;
   /** Suggested vote score: -1, 0, or +1. */
   score: -1 | 0 | 1;
+  /** Replies to existing human discussion threads (empty when none). */
+  replies: ThreadReply[];
+}
+
+/** A single comment inside a discussion thread on a change. */
+export interface ReviewDiscussionComment {
+  /** Display name or username of the comment author. */
+  author: string;
+  /** Comment body. */
+  message: string;
+  /** True when authored by VE itself (the reviewing account). */
+  isOwn: boolean;
+}
+
+/**
+ * A human discussion thread on a change, surfaced to the review agent so it can
+ * reply. Integration-agnostic: `threadId` is whatever opaque token the provider
+ * needs to post a reply (Gerrit comment id, GitLab discussion id, GitHub review
+ * thread node id).
+ */
+export interface ReviewDiscussionThread {
+  /** Opaque provider token used to post a reply to this thread. */
+  threadId: string;
+  /** File path the thread is anchored to, or null for change-level discussion. */
+  file: string | null;
+  /** 1-based line number, or null when not line-anchored. */
+  line: number | null;
+  /** Whether the thread is marked resolved on the provider. */
+  resolved: boolean;
+  /** Ordered comments in the thread (oldest first). */
+  comments: ReviewDiscussionComment[];
+}
+
+/** A reply the agent wants to post to an existing discussion thread. */
+export interface ThreadReply {
+  /** The `threadId` of the thread being replied to. */
+  threadId: string;
+  /** Reply body. */
+  message: string;
+}
+
+/** A persisted record of an inline review comment VE has already posted on a change. */
+export interface PostedReviewComment {
+  id: number;
+  taskId: TaskId;
+  changeId: ExternalChangeId;
+  /** Stable content hash (see review/commentHash.ts). */
+  commentHash: string;
+  file: string;
+  line: number;
+  message: string;
+  severity: string;
+  /** Provider-side thread/comment id captured for later resolution. */
+  providerThreadId: string | null;
+  resolved: boolean;
+  createdAt: Date;
+}
+
+/** Input shape for recording a freshly-posted review comment. */
+export interface PostedReviewCommentInput {
+  commentHash: string;
+  file: string;
+  line: number;
+  message: string;
+  severity: string;
+  providerThreadId?: string | null | undefined;
+}
+
+/** Input shape for recording a reply VE posted to a human discussion thread. */
+export interface ThreadReplyRecordInput {
+  /** Opaque provider thread token the reply was posted to. */
+  threadId: string;
+  /** Dedup hash of thread id + answered human message (see computeThreadReplyHash). */
+  handledCommentHash: string;
+  /** The reply body VE posted. */
+  replyMessage: string;
 }
 
 /**
@@ -663,6 +739,24 @@ export interface ReviewProvider {
    * Optional — omitting falls back to unconditional review creation.
    */
   isReviewer?(changeId: ExternalChangeId): Promise<boolean>;
+
+  /**
+   * Fetch open discussion threads on the change so the review agent can reply.
+   * Optional — providers that do not support thread fetching omit it, and the
+   * orchestrator simply skips the reply flow.
+   */
+  getDiscussionThreads?(changeId: ExternalChangeId): Promise<ReviewDiscussionThread[]>;
+
+  /**
+   * Post a reply to an existing discussion thread identified by `threadId`.
+   * Optional — paired with `getDiscussionThreads`.
+   */
+  postThreadReply?(
+    changeId: ExternalChangeId,
+    revision: number,
+    threadId: string,
+    message: string
+  ): Promise<void>;
 }
 
 // ─── Ticket interfaces ─────────────────────────────────────────────────────────
@@ -971,6 +1065,30 @@ export interface StateStore {
   // Comment deduplication
   getProcessedCommentIds(taskId: TaskId): Promise<Set<string>>;
   markCommentProcessed(taskId: TaskId, gerritCommentId: string): Promise<void>;
+
+  // Posted-review-comment deduplication (VE-as-reviewer side; integration-agnostic)
+  /** Hashes of every inline comment VE has already posted on this review task. */
+  getPostedReviewCommentHashes(taskId: TaskId): Promise<Set<string>>;
+  /** Full records of comments VE has already posted (for prompt memory + resolution). */
+  getPostedReviewComments(taskId: TaskId): Promise<PostedReviewComment[]>;
+  /** Record freshly-posted comments. Duplicate hashes for the task are ignored. */
+  markReviewCommentsPosted(
+    taskId: TaskId,
+    changeId: ExternalChangeId,
+    comments: PostedReviewCommentInput[]
+  ): Promise<void>;
+  /** Mark a previously-posted comment thread as resolved. */
+  markReviewCommentResolved(id: number): Promise<void>;
+
+  // Thread-reply deduplication (VE-as-reviewer side; integration-agnostic)
+  /** Handled-message hashes for every reply VE has already posted on this task. */
+  getHandledThreadReplyHashes(taskId: TaskId): Promise<Set<string>>;
+  /** Record freshly-posted thread replies. Duplicate hashes for the task are ignored. */
+  markThreadReplyPosted(
+    taskId: TaskId,
+    changeId: ExternalChangeId,
+    replies: ThreadReplyRecordInput[]
+  ): Promise<void>;
 
   // Per-repository change tracking (multi-repo tasks)
   /** Upsert a per-repo change record (Gerrit Change-Id or GitLab MR IID). */

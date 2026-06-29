@@ -50,6 +50,36 @@ describe("parseReviewResult", () => {
     expect(result.score).toBe(0);
   });
 
+  it("defaults missing replies to an empty array", () => {
+    const result = parseReviewResult(wrap({ comments: [], summary: "ok", score: 1 }));
+    expect(result.replies).toEqual([]);
+  });
+
+  it("parses thread replies", () => {
+    const result = parseReviewResult(
+      wrap({
+        comments: [],
+        summary: "ok",
+        score: 1,
+        replies: [
+          { threadId: "disc-1", message: "Good point, fixed." },
+          { threadId: "disc-2", message: "I disagree because X." },
+        ],
+      })
+    );
+    expect(result.replies).toHaveLength(2);
+    expect(result.replies[0]).toEqual({ threadId: "disc-1", message: "Good point, fixed." });
+    expect(result.replies[1]?.threadId).toBe("disc-2");
+  });
+
+  it("drops replies with empty threadId or message via schema validation", () => {
+    expect(() =>
+      parseReviewResult(
+        wrap({ comments: [], summary: "ok", score: 1, replies: [{ threadId: "", message: "x" }] })
+      )
+    ).toThrow(ReviewResultParseError);
+  });
+
   it("throws ReviewResultParseError when the start marker is missing", () => {
     expect(() => parseReviewResult("no marker here")).toThrow(ReviewResultParseError);
   });
@@ -77,6 +107,7 @@ describe("computeVote", () => {
     comments: [],
     summary: "",
     score: 0,
+    replies: [],
     ...overrides,
   });
 

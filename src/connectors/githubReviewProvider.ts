@@ -4,12 +4,15 @@ import type {
   ReviewChangeDetails,
   ReviewChangeDiff,
   ReviewDiffFile,
+  ReviewDiscussionThread,
+  ReviewDiscussionComment,
   ReviewFileStatus,
   InlineReviewComment,
   ExternalChangeId,
 } from "../interfaces.js";
 import { getLogger } from "../logger.js";
 import { filterCommentsByAllowedFiles } from "../review/commentFilter.js";
+import { patchsetFromRevisionSha } from "../review/revisionPatchset.js";
 
 const log = getLogger("github-pr-review-provider");
 
@@ -32,6 +35,36 @@ const GitHubPrFileSchema = z.object({
 });
 const GitHubPrFileListSchema = z.array(GitHubPrFileSchema);
 
+const GraphQLThreadCommentSchema = z.object({
+  body: z.string().default(""),
+  author: z.object({ login: z.string() }).nullable().optional(),
+});
+const GraphQLThreadSchema = z.object({
+  id: z.string(),
+  isResolved: z.boolean().optional().default(false),
+  path: z.string().nullable().optional(),
+  line: z.number().nullable().optional(),
+  comments: z.object({ nodes: z.array(GraphQLThreadCommentSchema).default([]) }),
+});
+const GraphQLThreadsResponseSchema = z.object({
+  repository: z
+    .object({
+      pullRequest: z
+        .object({
+          reviewThreads: z.object({
+            pageInfo: z.object({
+              hasNextPage: z.boolean(),
+              endCursor: z.string().nullable().optional(),
+            }),
+            nodes: z.array(GraphQLThreadSchema).default([]),
+          }),
+        })
+        .nullable(),
+    })
+    .nullable(),
+});
+const GraphQLViewerSchema = z.object({ viewer: z.object({ login: z.string() }) });
+
 export interface GitHubReviewProviderConfig {
   apiBaseUrl: string;
   /** Owner (user or org) — optional; preferred source is now the `owner/repo#pr` changeId format. */
@@ -43,6 +76,8 @@ export interface GitHubReviewProviderConfig {
 
 export class GitHubReviewProvider implements ReviewProvider {
   public readonly kind = "github";
+
+  private currentLogin: string | null = null;
 
   constructor(private readonly config: GitHubReviewProviderConfig) {}
 
@@ -107,7 +142,9 @@ export class GitHubReviewProvider implements ReviewProvider {
       subject: pr.title,
       description: (pr.body ?? "").trim(),
       ownerAccountId: pr.user ? String(pr.user.id) : "",
-      currentPatchset: 1,
+      // Derived from the PR head SHA so the review dedup re-reviews the PR when
+      // new commits are pushed (GitHub has no monotonic patchset counter).
+      currentPatchset: patchsetFromRevisionSha(pr.head.sha),
       status,
       project: pr.base.repo.full_name,
       targetBranch: pr.base.ref,
@@ -115,7 +152,7 @@ export class GitHubReviewProvider implements ReviewProvider {
     };
   }
 
-  async getChangeDiff(changeId: ExternalChangeId, _patchset?: number): Promise<ReviewChangeDiff> {
+  async getChangeDiff(changeId: ExternalChangeId, patchset?: number): Promise<ReviewChangeDiff> {
     const { owner, repo, prNumber } = this.parseChangeId(changeId);
     const files = GitHubPrFileListSchema.parse(
       await this.fetchJson(`${this.prUrl(owner, repo, prNumber)}/files?per_page=300`)
@@ -123,7 +160,9 @@ export class GitHubReviewProvider implements ReviewProvider {
 
     return {
       changeId,
-      patchset: 1,
+      // Echo the requested patchset so diff.patchset stays consistent with the
+      // SHA-derived currentPatchset surfaced in prompts/logs.
+      patchset: patchset ?? 1,
       files: files.map((f): ReviewDiffFile => ({
         path: f.filename,
         status: mapFileStatus(f.status),
@@ -181,6 +220,9 @@ export class GitHubReviewProvider implements ReviewProvider {
     // First, drop comments for files not present in the patchset.
     const fileFilteredComments = filterCommentsByAllowedFiles(comments, allowedFiles, { repo, prNumber });
     const positiveLineComments = fileFilteredComments.filter((c) => c.line > 0);
+    // File-level comments (line <= 0) cannot be anchored to a diff line; fold
+    // them into the review body so the feedback is not lost.
+    const fileLevelComments = fileFilteredComments.filter((c) => c.line <= 0);
 
     // Build a map of filename → valid new-file line numbers by fetching the PR
     // diff. GitHub's review API rejects the entire request with 422 if even one
@@ -202,7 +244,7 @@ export class GitHubReviewProvider implements ReviewProvider {
     }
 
     const inlineComments: InlineReviewComment[] = [];
-    const outOfDiffComments: InlineReviewComment[] = [];
+    const outOfDiffComments: InlineReviewComment[] = [...fileLevelComments];
     for (const c of positiveLineComments) {
       const validLines = validLinesByFile.get(c.file);
       if (validLines === undefined || validLines.has(c.line)) {
@@ -213,12 +255,17 @@ export class GitHubReviewProvider implements ReviewProvider {
       }
     }
 
-    // Fold out-of-diff comments into the review body so no feedback is lost.
+    // Fold out-of-diff and file-level comments into the review body so no
+    // feedback is lost. File-level comments (line <= 0) render without a line.
     const foldedSection =
       outOfDiffComments.length > 0
         ? "\n\n---\n**Additional comments (lines outside diff hunk):**\n" +
           outOfDiffComments
-            .map((c) => `- \`${c.file}:${c.line}\` [${c.severity}]: ${c.message}`)
+            .map((c) =>
+              c.line > 0
+                ? `- \`${c.file}:${c.line}\` [${c.severity}]: ${c.message}`
+                : `- \`${c.file}\` [${c.severity}]: ${c.message}`
+            )
             .join("\n")
         : "";
 
@@ -231,7 +278,12 @@ export class GitHubReviewProvider implements ReviewProvider {
 
     // A bare COMMENT event with no inline comments and no summary would post a
     // visible empty review. APPROVE/REQUEST_CHANGES still post since they carry a vote.
-    if (event === "COMMENT" && apiComments.length === 0 && summary.trim().length === 0) {
+    if (
+      event === "COMMENT" &&
+      apiComments.length === 0 &&
+      summary.trim().length === 0 &&
+      foldedSection.length === 0
+    ) {
       return;
     }
 
@@ -271,6 +323,125 @@ export class GitHubReviewProvider implements ReviewProvider {
       throw new Error(`GitHub API ${response.status} ${url}: ${text.slice(0, 500)}`);
     }
     return response.json() as Promise<T>;
+  }
+
+  async getDiscussionThreads(changeId: ExternalChangeId): Promise<ReviewDiscussionThread[]> {
+    const { owner, repo, prNumber } = this.parseChangeId(changeId);
+    const me = await this.resolveCurrentLogin();
+
+    const query = `
+      query($owner:String!,$repo:String!,$number:Int!,$cursor:String){
+        repository(owner:$owner,name:$repo){
+          pullRequest(number:$number){
+            reviewThreads(first:100, after:$cursor){
+              pageInfo{ hasNextPage endCursor }
+              nodes{
+                id
+                isResolved
+                path
+                line
+                comments(first:50){ nodes{ body author{ login } } }
+              }
+            }
+          }
+        }
+      }`;
+
+    const threads: ReviewDiscussionThread[] = [];
+    let cursor: string | null = null;
+    for (let page = 0; page < 20; page++) {
+      const data = GraphQLThreadsResponseSchema.parse(
+        await this.graphql(query, { owner, repo, number: prNumber, cursor })
+      );
+      const reviewThreads = data.repository?.pullRequest?.reviewThreads;
+      if (!reviewThreads) break;
+
+      for (const node of reviewThreads.nodes) {
+        const comments: ReviewDiscussionComment[] = node.comments.nodes.map((c) => ({
+          author: c.author?.login ?? "unknown",
+          message: c.body,
+          isOwn: me !== null && c.author?.login === me,
+        }));
+        if (comments.length === 0) continue;
+        threads.push({
+          threadId: node.id,
+          file: node.path ?? null,
+          line: node.line ?? null,
+          resolved: node.isResolved,
+          comments,
+        });
+      }
+
+      if (!reviewThreads.pageInfo.hasNextPage) break;
+      cursor = reviewThreads.pageInfo.endCursor ?? null;
+      if (cursor === null) break;
+    }
+    return threads;
+  }
+
+  async postThreadReply(
+    _changeId: ExternalChangeId,
+    _revision: number,
+    threadId: string,
+    message: string
+  ): Promise<void> {
+    const mutation = `
+      mutation($threadId:ID!,$body:String!){
+        addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$threadId, body:$body}){
+          comment{ id }
+        }
+      }`;
+    await this.graphql(mutation, { threadId, body: message });
+    log.info({ threadId }, "posted GitHub PR review thread reply");
+  }
+
+  /** Resolve and cache VE's own GitHub login (used to tag `isOwn` comments). */
+  private async resolveCurrentLogin(): Promise<string | null> {
+    if (this.currentLogin !== null) return this.currentLogin;
+    try {
+      const data = GraphQLViewerSchema.parse(await this.graphql(`query{ viewer{ login } }`, {}));
+      this.currentLogin = data.viewer.login;
+      return this.currentLogin;
+    } catch (err) {
+      log.warn({ err }, "failed to resolve GitHub viewer login; isOwn tagging disabled");
+      return null;
+    }
+  }
+
+  /** Derive the GraphQL endpoint from the REST API base URL. */
+  private graphqlEndpoint(): string {
+    const base = this.config.apiBaseUrl.replace(/\/+$/, "");
+    if (base.endsWith("/api/v3")) return `${base.slice(0, -"/api/v3".length)}/api/graphql`;
+    if (base === "https://api.github.com") return "https://api.github.com/graphql";
+    return `${base}/graphql`;
+  }
+
+  private async graphql<T = unknown>(query: string, variables: Record<string, unknown>): Promise<T> {
+    const response = await globalThis.fetch(this.graphqlEndpoint(), {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${this.config.token}`,
+        Accept: "application/vnd.github+json",
+        "Content-Type": "application/json",
+        "X-GitHub-Api-Version": "2022-11-28",
+      },
+      body: JSON.stringify({ query, variables }),
+    });
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      throw new Error(`GitHub GraphQL ${response.status}: ${text.slice(0, 500)}`);
+    }
+    const json = (await response.json()) as {
+      data?: T;
+      errors?: Array<{ message: string }>;
+    };
+    if (json.errors && json.errors.length > 0) {
+      throw new Error(`GitHub GraphQL error: ${json.errors.map((e) => e.message).join("; ")}`);
+    }
+    if (json.data === undefined) {
+      throw new Error("GitHub GraphQL response missing data");
+    }
+    return json.data;
   }
 }
 
