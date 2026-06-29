@@ -64,7 +64,7 @@ function makeStateStore(overrides: Partial<StateStore> = {}): StateStore {
 function makeIntegrationStore(overrides: Partial<Record<"getIntegration" | "getIntegrations", unknown>> = {}) {
   const integration: Integration = {
     id: "gerrit-1",
-    type: "gerrit",
+    provider: "gerrit",
     name: "Gerrit Primary",
     configJson: JSON.stringify({ sshHost: "gerrit.example.com", sshUser: "ve", sshPort: 29418, sshKeyPath: "/tmp/id_rsa" }),
     enabled: true,

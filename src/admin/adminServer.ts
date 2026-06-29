@@ -3,7 +3,7 @@ import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { readFileSync, existsSync } from "node:fs";
 import { join, extname, resolve } from "node:path";
 import { getLogger } from "../logger.js";
-import type { OAuthAppStore, IntegrationStore, PromptStore, StateStore, Integration } from "../interfaces.js";
+import type { OAuthAppStore, IntegrationStore, PromptStore, StateStore, Integration, DomainCapability } from "../interfaces.js";
 import { renderAdminDashboardHtml } from "./dashboard.js";
 import { registerOverviewRoutes } from "./adminOverviewRoutes.js";
 import type { PluginManager } from "../plugins/pluginManager.js";
@@ -16,7 +16,7 @@ import {
   type WebhookCapableOrchestrator,
   type ProjectLookupStore,
 } from "../webhooks/webhookServer.js";
-import { buildGitLabAuthHeaders } from "../utils/gitlabAuth.js";
+import { buildGitLabAuthHeaders, rewriteGitLabUploadUrl } from "../utils/gitlabAuth.js";
 import { writeJson, writeHtml } from "./adminRouteUtils.js";
 import { registerTaskRoutes } from "./adminTaskRoutes.js";
 import { registerPromptRoutes } from "./adminPromptRoutes.js";
@@ -73,6 +73,13 @@ export interface AdminProviderSummary {
   id: string;
   name: string;
   category: "ticketing" | "review" | "agent" | "runtime";
+  /** Domain capabilities this provider fulfils (empty for runtime entries). */
+  domainCapabilities: DomainCapability[];
+  /**
+   * Event-intake mechanisms per domain capability, e.g.
+   * `{ issue_tracking: ["polling", "webhook"], code_review: ["stream"] }`.
+   */
+  intake: Partial<Record<DomainCapability, Array<"polling" | "webhook" | "stream">>>;
   enabled: boolean;
   configured: boolean;
   status: "ready" | "disabled" | "incomplete";
@@ -130,10 +137,9 @@ function getProviderUrls(pluginManager: PluginManager | undefined): {
   gerritBaseUrl: string | undefined;
   gitlabBaseUrl: string | undefined;
   gitlabToken: string | undefined;
-  gitlabProjectId: string | undefined;
   ticketLinkTemplates: Record<string, string> | undefined;
 } {
-  if (!pluginManager) return { gerritBaseUrl: undefined, gitlabBaseUrl: undefined, gitlabToken: undefined, gitlabProjectId: undefined, ticketLinkTemplates: undefined };
+  if (!pluginManager) return { gerritBaseUrl: undefined, gitlabBaseUrl: undefined, gitlabToken: undefined, ticketLinkTemplates: undefined };
   const parseConfig = (integration: Integration | undefined): Record<string, unknown> | null => {
     if (!integration) return null;
     try {
@@ -145,26 +151,24 @@ function getProviderUrls(pluginManager: PluginManager | undefined): {
   };
   const str = (v: unknown): string | undefined => (typeof v === "string" && v.length > 0 ? v : undefined);
 
-  const gerritCandidates = pluginManager.getActiveIntegrationsByType("gerrit");
+  const gerritCandidates = pluginManager.getActiveIntegrationsByProvider("gerrit");
   const gerritConfig = parseConfig(gerritCandidates[0]);
   const gerritBaseUrl = str(gerritConfig?.["baseUrl"]);
 
-  const gitlabMrCandidates = pluginManager.getActiveIntegrationsByType("gitlab-merge-request");
-  const gitlabIssueCandidates = pluginManager.getActiveIntegrationsByType("gitlab-issue");
-  const gitlabIntegration = gitlabMrCandidates[0] ?? gitlabIssueCandidates[0];
+  const gitlabCandidates = pluginManager.getActiveIntegrationsByProvider("gitlab");
+  const gitlabIntegration = gitlabCandidates[0];
   const gitlabConfig = parseConfig(gitlabIntegration);
   const gitlabBaseUrl = str(gitlabConfig?.["baseUrl"]);
   const gitlabToken = str(gitlabConfig?.["token"]);
-  const gitlabProjectId = str(gitlabConfig?.["projectId"]);
 
-  const redmineCandidates = pluginManager.getActiveIntegrationsByType("redmine");
+  const redmineCandidates = pluginManager.getActiveIntegrationsByProvider("redmine");
   const redmineConfig = parseConfig(redmineCandidates[0]);
   const redmineBaseUrl = str(redmineConfig?.["baseUrl"]);
   const ticketLinkTemplates = redmineBaseUrl
     ? { redmine: `${redmineBaseUrl}/issues/{id}` }
     : undefined;
 
-  return { gerritBaseUrl, gitlabBaseUrl, gitlabToken, gitlabProjectId, ticketLinkTemplates };
+  return { gerritBaseUrl, gitlabBaseUrl, gitlabToken, ticketLinkTemplates };
 }
 
 /** Create and return the admin HTTP server with all routes wired up. */
@@ -335,18 +339,14 @@ async function handleRequest(
     const queryToken = requestUrl.searchParams.get("t") ?? "";
     const proxyAuthorized = isAuthorizedToken(queryToken, dependencies.config);
     if (!proxyAuthorized) { writeJson(response, 401, { error: "Unauthorized" }); return; }
-    const { gitlabBaseUrl, gitlabToken: gitlabTokenVal, gitlabProjectId } = getProviderUrls(dependencies.pluginManager);
+    const { gitlabBaseUrl, gitlabToken: gitlabTokenVal } = getProviderUrls(dependencies.pluginManager);
     if (!gitlabBaseUrl || !targetUrl.startsWith(gitlabBaseUrl)) {
       writeJson(response, 400, { error: "Invalid proxy target" }); return;
     }
     try {
       const gitlabToken = gitlabTokenVal ?? "";
-      const uploadMatch = targetUrl.match(/\/uploads\/([a-f0-9]+)\/([^?#]+)$/);
-      const projectId = gitlabProjectId;
-      const fetchUrl = (uploadMatch && projectId && gitlabBaseUrl)
-        ? `${gitlabBaseUrl}/api/v4/projects/${encodeURIComponent(projectId)}/uploads/${uploadMatch[1]}/${uploadMatch[2]}`
-        : targetUrl;
-      log.debug({ fetchUrl, hasToken: Boolean(gitlabToken), rewritten: fetchUrl !== targetUrl }, "img-proxy fetch");
+      const fetchUrl = rewriteGitLabUploadUrl(targetUrl, gitlabBaseUrl);
+      log.debug({ fetchUrl, hasToken: Boolean(gitlabToken) }, "img-proxy fetch");
       const upstream = await fetch(fetchUrl, gitlabToken
         ? { headers: buildGitLabAuthHeaders(gitlabToken) }
         : undefined);

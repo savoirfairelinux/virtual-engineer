@@ -69,6 +69,44 @@ export function buildGitLabApiHeaders(
   };
 }
 
+/**
+ * Rewrite a GitLab project-upload URL to its token-fetchable REST API form.
+ *
+ * GitLab renders project upload markdown as
+ *   `<baseUrl>/<namespace>/<project>/uploads/<secret>/<filename>`
+ * which a browser can only load while logged in. The same upload is fetchable
+ * with a token via the REST API:
+ *   `<baseUrl>/api/v4/projects/<encoded path>/uploads/<secret>/<filename>`
+ *
+ * The project path is parsed from the URL itself, so the rewrite works for any
+ * project without needing a single configured project id. Instance/group-level
+ * uploads (`<baseUrl>/uploads/...`, `<baseUrl>/-/...`) and non-upload URLs are
+ * returned unchanged.
+ */
+export function rewriteGitLabUploadUrl(targetUrl: string, baseUrl: string): string {
+  const base = baseUrl.replace(/\/+$/, "");
+  const prefix = `${base}/`;
+  if (!targetUrl.startsWith(prefix)) {
+    return targetUrl;
+  }
+  const rest = targetUrl.slice(prefix.length);
+  const match = /^(.+?)\/uploads\/([0-9a-f]{32})\/(.+)$/.exec(rest);
+  if (!match) {
+    return targetUrl;
+  }
+  const projectPath = match[1];
+  const secret = match[2];
+  const filename = match[3];
+  if (!projectPath || !secret || !filename) {
+    return targetUrl;
+  }
+  // Skip instance/group-level or already-API upload paths (no project segment).
+  if (projectPath.startsWith("-/") || projectPath.startsWith("api/")) {
+    return targetUrl;
+  }
+  return `${base}/api/v4/projects/${encodeURIComponent(projectPath)}/uploads/${secret}/${filename}`;
+}
+
 export async function fetchGitLabCurrentUser(config: Record<string, unknown>): Promise<Record<string, unknown>> {
   const baseUrl = getGitLabBaseUrl(config);
   const token = getGitLabAccessToken(config);

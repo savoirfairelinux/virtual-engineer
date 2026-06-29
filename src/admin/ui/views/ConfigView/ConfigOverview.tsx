@@ -6,10 +6,10 @@ export function ConfigOverview({ integrations, agents, projects, config }: Confi
   const active = integrations.filter((i) => i.enabled).length;
   const byCat: Record<string, { t: number; a: number }> = {};
   for (const i of integrations) {
-    const c = byCat[i.category] ?? { t: 0, a: 0 };
+    const c = byCat[i.provider] ?? { t: 0, a: 0 };
     c.t++;
     if (i.enabled) c.a++;
-    byCat[i.category] = c;
+    byCat[i.provider] = c;
   }
 
   return (
@@ -49,7 +49,7 @@ export function ConfigOverview({ integrations, agents, projects, config }: Confi
 
       {Object.keys(byCat).length > 0 && (
         <div className="card" style={{ padding: "18px 20px" }}>
-          <div className="eyebrow" style={{ marginBottom: "14px" }}>Integrations by category</div>
+          <div className="eyebrow" style={{ marginBottom: "14px" }}>Integrations by provider</div>
           <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
             {Object.entries(byCat).map(([cat, n]) => (
               <div key={cat} style={{ display: "flex", alignItems: "center", gap: "12px" }}>

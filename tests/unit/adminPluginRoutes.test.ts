@@ -113,8 +113,6 @@ describe("Admin API — Plugin & Integration routes", () => {
     pluginManager = new PluginManager(integrationStore);
     pluginManager.registerFactory("redmine", vi.fn(() => makeMockAgentInstance("redmine-mock")));
     pluginManager.registerFactory("gerrit", vi.fn(() => makeMockAgentInstance("gerrit-mock")));
-    pluginManager.registerFactory("gitlab-issue", vi.fn(() => makeMockAgentInstance("gitlab-issue-mock")));
-    pluginManager.registerFactory("gitlab-merge-request", vi.fn(() => makeMockAgentInstance("gitlab-mr-mock")));
     pluginManager.registerFactory("copilot", vi.fn(() => makeMockAgentInstance("copilot-mock")));
     pluginManager.registerFactory("mock", vi.fn(() => makeMockAgentInstance("mock-mock")));
 
@@ -131,15 +129,25 @@ describe("Admin API — Plugin & Integration routes", () => {
     it("returns all registered plugin types", async () => {
       const { status, body } = await fetchFromServer(server, "/api/admin/plugins");
       expect(status).toBe(200);
-      const plugins = body["plugins"] as Array<{ type: string }>;
+      const plugins = body["plugins"] as Array<{ provider: string }>;
       expect(plugins.length).toBeGreaterThanOrEqual(6);
-      const types = plugins.map((p) => p.type);
-      expect(types).toContain("redmine");
-      expect(types).toContain("gerrit");
-      expect(types).toContain("gitlab-issue");
-      expect(types).toContain("gitlab-merge-request");
-      expect(types).toContain("copilot");
-      expect(types).toContain("mock");
+      const providers = plugins.map((p) => p.provider);
+      expect(providers).toContain("redmine");
+      expect(providers).toContain("gerrit");
+      expect(providers).toContain("gitlab");
+      expect(providers).toContain("github");
+      expect(providers).toContain("copilot");
+      expect(providers).toContain("mock");
+    });
+
+    it("serializes provider icon metadata (null for unbranded providers)", async () => {
+      const { status, body } = await fetchFromServer(server, "/api/admin/plugins");
+      expect(status).toBe(200);
+      const plugins = body["plugins"] as Array<Record<string, unknown>>;
+      const github = plugins.find((p) => p["provider"] === "github");
+      const mock = plugins.find((p) => p["provider"] === "mock");
+      expect(github?.["icon"]).toEqual({ slug: "github", hex: "181717" });
+      expect(mock).toHaveProperty("icon", null);
     });
 
     it("exposes OAuth metadata for providers that support dashboard auth flows", async () => {
@@ -147,12 +155,12 @@ describe("Admin API — Plugin & Integration routes", () => {
       expect(status).toBe(200);
 
       const plugins = body["plugins"] as Array<Record<string, unknown>>;
-      const copilot = plugins.find((plugin) => plugin["type"] === "copilot");
-      const redmine = plugins.find((plugin) => plugin["type"] === "redmine");
+      const copilot = plugins.find((plugin) => plugin["provider"] === "copilot");
+      const redmine = plugins.find((plugin) => plugin["provider"] === "redmine");
 
       expect(copilot).toMatchObject({
-        type: "copilot",
-        capabilities: expect.arrayContaining(["agent", "oauth"]),
+        provider: "copilot",
+        capabilities: expect.arrayContaining(["agent_execution", "oauth"]),
         oauth: {
           mode: "device",
           tokenField: "sessionToken",
@@ -161,10 +169,10 @@ describe("Admin API — Plugin & Integration routes", () => {
           completePath: "/api/admin/plugins/copilot/oauth/token",
         },
       });
-      const gitlabMr = plugins.find((plugin) => plugin["type"] === "gitlab-merge-request");
-      expect(gitlabMr).toMatchObject({
-        type: "gitlab-merge-request",
-        capabilities: expect.arrayContaining(["review", "discovery", "vcs"]),
+      const gitlab = plugins.find((plugin) => plugin["provider"] === "gitlab");
+      expect(gitlab).toMatchObject({
+        provider: "gitlab",
+        capabilities: expect.arrayContaining(["code_review", "source_control", "discovery"]),
       });
       expect(redmine?.["oauth"]).toBeUndefined();
     });
@@ -175,14 +183,14 @@ describe("Admin API — Plugin & Integration routes", () => {
       const { status, body } = await fetchFromServer(server, "/api/admin/integrations", {
         method: "POST",
         body: {
-          type: "redmine",
+          provider: "redmine",
           name: "My Redmine",
           config: { baseUrl: "http://redmine:3000", apiKey: "key1", virtualEngineerUserLogin: "ve" },
         },
       });
       expect(status).toBe(201);
       const integration = body["integration"] as Record<string, unknown>;
-      expect(integration["type"]).toBe("redmine");
+      expect(integration["provider"]).toBe("redmine");
       expect(integration["name"]).toBe("My Redmine");
       expect(integration["enabled"]).toBe(true);
     });
@@ -191,7 +199,7 @@ describe("Admin API — Plugin & Integration routes", () => {
       const { status } = await fetchFromServer(server, "/api/admin/integrations", {
         method: "POST",
         body: {
-          type: "redmine",
+          provider: "redmine",
           name: "My Redmine",
           config: {
             baseUrl: "http://redmine:3000",
@@ -217,7 +225,7 @@ describe("Admin API — Plugin & Integration routes", () => {
       const { status, body } = await fetchFromServer(server, "/api/admin/integrations", {
         method: "POST",
         body: {
-          type: "copilot",
+          provider: "copilot",
           name: "Copilot No Token",
           config: {},
         },
@@ -232,11 +240,11 @@ describe("Admin API — Plugin & Integration routes", () => {
     it("lists all integrations", async () => {
       await fetchFromServer(server, "/api/admin/integrations", {
         method: "POST",
-        body: { type: "redmine", name: "R1", config: {} },
+        body: { provider: "redmine", name: "R1", config: {} },
       });
       await fetchFromServer(server, "/api/admin/integrations", {
         method: "POST",
-        body: { type: "gerrit", name: "G1", config: {} },
+        body: { provider: "gerrit", name: "G1", config: {} },
       });
 
       const { status, body } = await fetchFromServer(server, "/api/admin/integrations");
@@ -248,7 +256,7 @@ describe("Admin API — Plugin & Integration routes", () => {
     it("returns category-aware integrations with masked secret fields", async () => {
       await integrationStore.upsertIntegration({
         id: "redmine-prod",
-        type: "redmine",
+        provider: "redmine",
         name: "Redmine Prod",
         configJson: JSON.stringify({
           baseUrl: "http://redmine:3000",
@@ -266,9 +274,9 @@ describe("Admin API — Plugin & Integration routes", () => {
 
       expect(integration).toMatchObject({
         id: "redmine-prod",
-        type: "redmine",
-        category: "ticketing",
-        capabilities: expect.arrayContaining(["ticketing", "discovery"]),
+        provider: "redmine",
+        domainCapabilities: expect.arrayContaining(["issue_tracking"]),
+        capabilities: expect.arrayContaining(["issue_tracking", "discovery"]),
         config: {
           baseUrl: "http://redmine:3000",
           apiKey: SECRET_MASK,
@@ -280,7 +288,7 @@ describe("Admin API — Plugin & Integration routes", () => {
     it("includes descriptor capabilities on persisted integrations for capability-driven UI selectors", async () => {
       await integrationStore.upsertIntegration({
         id: "gitlab-review",
-        type: "gitlab-merge-request",
+        provider: "gitlab",
         name: "GitLab Review",
         configJson: JSON.stringify({
           baseUrl: "https://gitlab.example.com",
@@ -299,7 +307,7 @@ describe("Admin API — Plugin & Integration routes", () => {
 
       expect(integration).toMatchObject({
         id: "gitlab-review",
-        capabilities: expect.arrayContaining(["review", "discovery", "vcs", "oauth"]),
+        capabilities: expect.arrayContaining(["code_review", "source_control", "discovery", "oauth"]),
       });
     });
   });
@@ -309,7 +317,7 @@ describe("Admin API — Plugin & Integration routes", () => {
       const { body: createBody } = await fetchFromServer(server, "/api/admin/integrations", {
         method: "POST",
         body: {
-          type: "mock",
+          provider: "mock",
           name: "Mock Dev",
           config: {},
         },
@@ -328,7 +336,7 @@ describe("Admin API — Plugin & Integration routes", () => {
       const { body: mockBody } = await fetchFromServer(server, "/api/admin/integrations", {
         method: "POST",
         body: {
-          type: "mock",
+          provider: "mock",
           name: "Mock Agent",
           config: { status: "success", simulateDelayMs: 0 },
         },
@@ -338,7 +346,7 @@ describe("Admin API — Plugin & Integration routes", () => {
       const { body: copilotBody } = await fetchFromServer(server, "/api/admin/integrations", {
         method: "POST",
         body: {
-          type: "copilot",
+          provider: "copilot",
           name: "Copilot Agent",
           config: { sessionToken: "enc_tok" },
         },
@@ -366,7 +374,7 @@ describe("Admin API — Plugin & Integration routes", () => {
     it("disables a plugin", async () => {
       const { body: createBody } = await fetchFromServer(server, "/api/admin/integrations", {
         method: "POST",
-        body: { type: "mock", name: "Mock Dev", config: {} },
+        body: { provider: "mock", name: "Mock Dev", config: {} },
       });
       const id = (createBody["integration"] as Record<string, unknown>)["id"] as string;
 
@@ -393,7 +401,7 @@ describe("Admin API — Plugin & Integration routes", () => {
 
       const { body: createBody } = await fetchFromServer(server, "/api/admin/integrations", {
         method: "POST",
-        body: { type: "copilot", name: "Copilot Test", config: { sessionToken: "enc_test" } },
+        body: { provider: "copilot", name: "Copilot Test", config: { sessionToken: "enc_test" } },
       });
       const id = (createBody["integration"] as Record<string, unknown>)["id"] as string;
 
@@ -423,7 +431,7 @@ describe("Admin API — Plugin & Integration routes", () => {
       const { status, body } = await fetchFromServer(server, "/api/admin/integrations/test", {
         method: "POST",
         body: {
-          type: "copilot",
+          provider: "copilot",
           config: { sessionToken: "enc_test_token" },
         },
       });
@@ -443,7 +451,7 @@ describe("Admin API — Plugin & Integration routes", () => {
     it("merges persisted secret fields for edit-mode tests without saving changes", async () => {
       await integrationStore.upsertIntegration({
         id: "copilot-edit",
-        type: "copilot",
+        provider: "copilot",
         name: "Copilot Edit",
         configJson: JSON.stringify({
           sessionToken: "secret-token",
@@ -469,7 +477,7 @@ describe("Admin API — Plugin & Integration routes", () => {
         method: "POST",
         body: {
           integrationId: "copilot-edit",
-          type: "copilot",
+          provider: "copilot",
           config: {
             sessionToken: SECRET_MASK,
           },
@@ -495,7 +503,7 @@ describe("Admin API — Plugin & Integration routes", () => {
     it("deletes an integration", async () => {
       const { body: createBody } = await fetchFromServer(server, "/api/admin/integrations", {
         method: "POST",
-        body: { type: "mock", name: "To Delete", config: {} },
+        body: { provider: "mock", name: "To Delete", config: {} },
       });
       const id = (createBody["integration"] as Record<string, unknown>)["id"] as string;
 
@@ -515,7 +523,7 @@ describe("Admin API — Plugin & Integration routes", () => {
 
       const { body: createBody } = await fetchFromServer(server, "/api/admin/integrations", {
         method: "POST",
-        body: { type: "mock", name: "In Use", config: {} },
+        body: { provider: "mock", name: "In Use", config: {} },
       });
       const id = (createBody["integration"] as Record<string, unknown>)["id"] as string;
 
@@ -535,7 +543,7 @@ describe("Admin API — Plugin & Integration routes", () => {
     it("updates an integration", async () => {
       const { body: createBody } = await fetchFromServer(server, "/api/admin/integrations", {
         method: "POST",
-        body: { type: "redmine", name: "Old Name", config: {} },
+        body: { provider: "redmine", name: "Old Name", config: {} },
       });
       const id = (createBody["integration"] as Record<string, unknown>)["id"] as string;
 
@@ -559,7 +567,7 @@ describe("Admin API — Plugin & Integration routes", () => {
     it("rejects changing the integration type during update", async () => {
       await integrationStore.upsertIntegration({
         id: "redmine-no-retype",
-        type: "redmine",
+        provider: "redmine",
         name: "Redmine No Retype",
         configJson: JSON.stringify({
           baseUrl: "http://redmine:3000",
@@ -572,20 +580,20 @@ describe("Admin API — Plugin & Integration routes", () => {
       const { status } = await fetchFromServer(server, "/api/admin/integrations/redmine-no-retype", {
         method: "PUT",
         body: {
-          type: "gerrit",
+          provider: "gerrit",
         },
       });
 
       expect(status).toBe(400);
 
       const stored = await integrationStore.getIntegration("redmine-no-retype");
-      expect(stored?.type).toBe("redmine");
+      expect(stored?.provider).toBe("redmine");
     });
 
     it("rejects invalid merged config and leaves the stored integration unchanged", async () => {
       await integrationStore.upsertIntegration({
         id: "redmine-invalid",
-        type: "redmine",
+        provider: "redmine",
         name: "Redmine Invalid",
         configJson: JSON.stringify({
           baseUrl: "http://redmine:3000",
@@ -617,7 +625,7 @@ describe("Admin API — Plugin & Integration routes", () => {
     it("preserves stored secrets when updating non-secret fields", async () => {
       await integrationStore.upsertIntegration({
         id: "redmine-edit",
-        type: "redmine",
+        provider: "redmine",
         name: "Redmine Editable",
         configJson: JSON.stringify({
           baseUrl: "http://redmine:3000",
@@ -641,7 +649,7 @@ describe("Admin API — Plugin & Integration routes", () => {
       expect(status).toBe(200);
       expect(body["integration"]).toMatchObject({
         id: "redmine-edit",
-        category: "ticketing",
+        domainCapabilities: expect.arrayContaining(["issue_tracking"]),
         config: {
           baseUrl: "http://redmine.internal:3000",
           apiKey: SECRET_MASK,
@@ -660,7 +668,7 @@ describe("Admin API — Plugin & Integration routes", () => {
     it("preserves stored secrets when the UI echoes the secret mask or sends an empty secret", async () => {
       await integrationStore.upsertIntegration({
         id: "redmine-secret-mask",
-        type: "redmine",
+        provider: "redmine",
         name: "Redmine Secret Mask",
         configJson: JSON.stringify({
           baseUrl: "http://redmine:3000",
@@ -693,7 +701,7 @@ describe("Admin API — Plugin & Integration routes", () => {
     it("reloads the provider when updating an enabled integration", async () => {
       await integrationStore.upsertIntegration({
         id: "redmine-enabled",
-        type: "redmine",
+        provider: "redmine",
         name: "Redmine Enabled",
         configJson: JSON.stringify({
           baseUrl: "http://redmine:3000",
@@ -724,7 +732,7 @@ describe("Admin API — Plugin & Integration routes", () => {
     it("updates a secret only when a new value is explicitly provided", async () => {
       await integrationStore.upsertIntegration({
         id: "copilot-edit",
-        type: "copilot",
+        provider: "copilot",
         name: "Copilot Editable",
         configJson: JSON.stringify({
           sessionToken: "old-token",
@@ -744,7 +752,7 @@ describe("Admin API — Plugin & Integration routes", () => {
       expect(status).toBe(200);
       expect(body["integration"]).toMatchObject({
         id: "copilot-edit",
-        category: "agent",
+        domainCapabilities: expect.arrayContaining(["agent_execution"]),
         config: {
           sessionToken: SECRET_MASK,
         },

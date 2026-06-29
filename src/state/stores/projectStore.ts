@@ -4,7 +4,9 @@ import { eq } from "drizzle-orm";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import type {
   AgentId,
+  DomainCapability,
   ProjectId,
+  ProjectIntegrationBindingRecord,
   ProjectPushTargetRecord,
   ProjectRecord,
   ProjectReviewConfig,
@@ -15,8 +17,8 @@ import type {
 import { TERMINAL_STATES } from "../../interfaces.js";
 import {
   agents,
+  projectIntegrationBindings,
   projectPushTargets,
-  projectTicketSource,
   projects,
 } from "../schema.js";
 import * as schema from "../schema.js";
@@ -77,6 +79,9 @@ export interface ProjectStoreApi {
   setProjectReviewConfig(projectId: ProjectId, integrationId: string, repoKeys: string[]): Promise<void>;
   getProjectReviewConfig(projectId: ProjectId): Promise<ProjectReviewConfig | null>;
   findProjectsByReviewTarget(integrationId: string, repoKey: string): Promise<ProjectRecord[]>;
+  getProjectBinding(projectId: ProjectId, capability: DomainCapability): Promise<ProjectIntegrationBindingRecord | null>;
+  listProjectBindings(projectId: ProjectId): Promise<ProjectIntegrationBindingRecord[]>;
+  deleteProjectBinding(projectId: ProjectId, capability: DomainCapability): Promise<void>;
 }
 
 interface ProjectStoreContext {
@@ -101,13 +106,24 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
     };
   }
 
-  function rowToProjectTicketSource(row: typeof projectTicketSource.$inferSelect): ProjectTicketSourceRecord {
+  function rowToBinding(row: typeof projectIntegrationBindings.$inferSelect): ProjectIntegrationBindingRecord {
+    let config: Record<string, unknown> = {};
+    try {
+      const parsed = JSON.parse(row.configJson) as unknown;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        config = parsed as Record<string, unknown>;
+      }
+    } catch {
+      config = {};
+    }
     return {
       id: row.id,
       projectId: row.projectId as ProjectId,
       integrationId: row.integrationId,
-      ticketProjectKey: row.ticketProjectKey,
+      capability: row.capability,
+      config,
       createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
     };
   }
 
@@ -205,19 +221,26 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
     const reason = `project ${id} deleted while tasks were still active`;
     const placeholders = [...TERMINAL_STATES].map(() => "?").join(", ");
     raw.transaction(() => {
-      const ticketSource = raw
+      const ticketBinding = raw
         .prepare(
-          "SELECT integration_id, ticket_project_key FROM project_ticket_source WHERE project_id = ?"
+          "SELECT integration_id, config_json FROM project_integration_bindings WHERE project_id = ? AND capability = 'issue_tracking'"
         )
-        .get(id) as { integration_id: string; ticket_project_key: string } | undefined;
-      if (ticketSource) {
+        .get(id) as { integration_id: string; config_json: string } | undefined;
+      if (ticketBinding) {
+        let ticketProjectKey = "";
+        try {
+          const cfg = JSON.parse(ticketBinding.config_json) as { ticketProjectKey?: unknown };
+          if (typeof cfg.ticketProjectKey === "string") ticketProjectKey = cfg.ticketProjectKey;
+        } catch {
+          ticketProjectKey = "";
+        }
         raw
           .prepare(
             "UPDATE tasks SET ticket_source_integration_id = COALESCE(ticket_source_integration_id, ?), " +
             "ticket_source_project_key = COALESCE(ticket_source_project_key, ?), updated_at = ? " +
             "WHERE project_id = ?"
           )
-          .run(ticketSource.integration_id, ticketSource.ticket_project_key, now, id);
+          .run(ticketBinding.integration_id, ticketProjectKey, now, id);
       }
       raw
         .prepare(
@@ -228,10 +251,8 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
       raw
         .prepare("UPDATE tasks SET project_id = NULL, updated_at = ? WHERE project_id = ?")
         .run(now, id);
-      raw.prepare("DELETE FROM project_ticket_source WHERE project_id = ?").run(id);
+      raw.prepare("DELETE FROM project_integration_bindings WHERE project_id = ?").run(id);
       raw.prepare("DELETE FROM project_push_targets WHERE project_id = ?").run(id);
-      raw.prepare("DELETE FROM project_review_repos WHERE project_id = ?").run(id);
-      raw.prepare("DELETE FROM project_review_integration WHERE project_id = ?").run(id);
       raw.prepare("DELETE FROM projects WHERE id = ?").run(id);
     })();
   }
@@ -267,10 +288,13 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
     input: { integrationId: string; ticketProjectKey: string }
   ): Promise<ProjectTicketSourceRecord> {
     const now = new Date();
+    const nowSeconds = Math.floor(now.getTime() / 1000);
     return raw.transaction((): ProjectTicketSourceRecord => {
       const conflict = raw
         .prepare(
-          "SELECT project_id FROM project_ticket_source WHERE integration_id = ? AND ticket_project_key = ? AND project_id != ?"
+          "SELECT project_id FROM project_integration_bindings " +
+          "WHERE capability = 'issue_tracking' AND integration_id = ? " +
+          "AND json_extract(config_json, '$.ticketProjectKey') = ? AND project_id != ?"
         )
         .get(input.integrationId, input.ticketProjectKey, projectId) as { project_id: string } | undefined;
       if (conflict) {
@@ -278,37 +302,48 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
           `Ticket source (${input.integrationId}, ${input.ticketProjectKey}) is already claimed by project ${conflict.project_id}`
         );
       }
-      raw.prepare("DELETE FROM project_ticket_source WHERE project_id = ?").run(projectId);
+      raw
+        .prepare("DELETE FROM project_integration_bindings WHERE project_id = ? AND capability = 'issue_tracking'")
+        .run(projectId);
+      const configJson = JSON.stringify({ ticketProjectKey: input.ticketProjectKey });
       raw
         .prepare(
-          "INSERT INTO project_ticket_source (project_id, integration_id, ticket_project_key, created_at) VALUES (?, ?, ?, ?)"
+          "INSERT INTO project_integration_bindings (id, project_id, integration_id, capability, config_json, created_at, updated_at) " +
+          "VALUES (?, ?, ?, 'issue_tracking', ?, ?, ?)"
         )
-        .run(projectId, input.integrationId, input.ticketProjectKey, Math.floor(now.getTime() / 1000));
+        .run(randomUUID(), projectId, input.integrationId, configJson, nowSeconds, nowSeconds);
       adoptOrphanedTasksForProject(projectId, input.integrationId, input.ticketProjectKey);
-      const row = raw
-        .prepare("SELECT id, project_id, integration_id, ticket_project_key, created_at FROM project_ticket_source WHERE project_id = ?")
-        .get(projectId) as { id: number; project_id: string; integration_id: string; ticket_project_key: string; created_at: number };
       return {
-        id: row.id,
-        projectId: row.project_id as ProjectId,
-        integrationId: row.integration_id,
-        ticketProjectKey: row.ticket_project_key,
-        createdAt: new Date(row.created_at * 1000),
+        id: 0,
+        projectId,
+        integrationId: input.integrationId,
+        ticketProjectKey: input.ticketProjectKey,
+        createdAt: now,
       };
     })();
   }
 
   async function getProjectTicketSource(projectId: ProjectId): Promise<ProjectTicketSourceRecord | null> {
-    const row = await db.query.projectTicketSource.findFirst({
-      where: eq(projectTicketSource.projectId, projectId),
-    });
-    return row ? rowToProjectTicketSource(row) : null;
+    const binding = await getProjectBinding(projectId, "issue_tracking");
+    if (!binding) return null;
+    const ticketProjectKey = typeof binding.config["ticketProjectKey"] === "string"
+      ? (binding.config["ticketProjectKey"] as string)
+      : "";
+    return {
+      id: 0,
+      projectId,
+      integrationId: binding.integrationId,
+      ticketProjectKey,
+      createdAt: binding.createdAt,
+    };
   }
 
   async function findProjectByTicketSource(integrationId: string, ticketProjectKey: string): Promise<ProjectRecord | null> {
     const row = raw
       .prepare(
-        "SELECT project_id FROM project_ticket_source WHERE integration_id = ? AND ticket_project_key = ? LIMIT 1"
+        "SELECT project_id FROM project_integration_bindings " +
+        "WHERE capability = 'issue_tracking' AND integration_id = ? " +
+        "AND json_extract(config_json, '$.ticketProjectKey') = ? LIMIT 1"
       )
       .get(integrationId, ticketProjectKey) as { project_id: string } | undefined;
     if (!row) return null;
@@ -413,34 +448,30 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
     integrationId: string,
     repoKeys: string[]
   ): Promise<void> {
+    const nowSeconds = Math.floor(Date.now() / 1000);
     raw.transaction((): void => {
       raw
+        .prepare("DELETE FROM project_integration_bindings WHERE project_id = ? AND capability = 'code_review'")
+        .run(projectId);
+      const configJson = JSON.stringify({ repos: repoKeys });
+      raw
         .prepare(
-          "INSERT INTO project_review_integration (project_id, integration_id) VALUES (?, ?) " +
-          "ON CONFLICT(project_id) DO UPDATE SET integration_id = excluded.integration_id"
+          "INSERT INTO project_integration_bindings (id, project_id, integration_id, capability, config_json, created_at, updated_at) " +
+          "VALUES (?, ?, ?, 'code_review', ?, ?, ?)"
         )
-        .run(projectId, integrationId);
-      raw.prepare("DELETE FROM project_review_repos WHERE project_id = ?").run(projectId);
-      const insertRepo = raw.prepare(
-        "INSERT INTO project_review_repos (project_id, repo_key) VALUES (?, ?)"
-      );
-      for (const repoKey of repoKeys) {
-        insertRepo.run(projectId, repoKey);
-      }
+        .run(randomUUID(), projectId, integrationId, configJson, nowSeconds, nowSeconds);
     })();
   }
 
   async function getProjectReviewConfig(projectId: ProjectId): Promise<ProjectReviewConfig | null> {
-    const integrationRow = raw
-      .prepare("SELECT integration_id FROM project_review_integration WHERE project_id = ?")
-      .get(projectId) as { integration_id: string } | undefined;
-    if (!integrationRow) return null;
-    const repoRows = raw
-      .prepare("SELECT repo_key FROM project_review_repos WHERE project_id = ?")
-      .all(projectId) as Array<{ repo_key: string }>;
+    const binding = await getProjectBinding(projectId, "code_review");
+    if (!binding) return null;
+    const repos = Array.isArray(binding.config["repos"])
+      ? (binding.config["repos"] as unknown[]).filter((r): r is string => typeof r === "string")
+      : [];
     return {
-      integrationId: integrationRow.integration_id,
-      repos: repoRows.map((row) => row.repo_key),
+      integrationId: binding.integrationId,
+      repos,
     };
   }
 
@@ -448,19 +479,45 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
     const rows = raw
       .prepare(
         `SELECT p.id FROM projects p
-         JOIN project_review_integration pri ON pri.project_id = p.id
-         JOIN project_review_repos prr ON prr.project_id = p.id
-         WHERE prr.repo_key = ?
-           AND pri.integration_id = ?
+         JOIN project_integration_bindings pib ON pib.project_id = p.id
+         WHERE pib.capability = 'code_review'
+           AND pib.integration_id = ?
+           AND EXISTS (
+             SELECT 1 FROM json_each(json_extract(pib.config_json, '$.repos'))
+             WHERE json_each.value = ?
+           )
            AND p.enabled = 1`
       )
-      .all(repoKey, integrationId) as Array<{ id: string }>;
+      .all(integrationId, repoKey) as Array<{ id: string }>;
     const results: ProjectRecord[] = [];
     for (const row of rows) {
       const project = await getProjectById(row.id as ProjectId);
       if (project) results.push(project);
     }
     return results;
+  }
+
+  async function getProjectBinding(
+    projectId: ProjectId,
+    capability: DomainCapability
+  ): Promise<ProjectIntegrationBindingRecord | null> {
+    const row = await db.query.projectIntegrationBindings.findFirst({
+      where: (table, { and, eq: eqOp }) => and(eqOp(table.projectId, projectId), eqOp(table.capability, capability)),
+    });
+    return row ? rowToBinding(row) : null;
+  }
+
+  async function listProjectBindings(projectId: ProjectId): Promise<ProjectIntegrationBindingRecord[]> {
+    const rows = await db.query.projectIntegrationBindings.findMany({
+      where: eq(projectIntegrationBindings.projectId, projectId),
+    });
+    return rows.map((row) => rowToBinding(row));
+  }
+
+  async function deleteProjectBinding(projectId: ProjectId, capability: DomainCapability): Promise<void> {
+    raw
+      .prepare("DELETE FROM project_integration_bindings WHERE project_id = ? AND capability = ?")
+      .run(projectId, capability);
   }
 
   return {
@@ -481,5 +538,8 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
     setProjectReviewConfig,
     getProjectReviewConfig,
     findProjectsByReviewTarget,
+    getProjectBinding,
+    listProjectBindings,
+    deleteProjectBinding,
   };
 }

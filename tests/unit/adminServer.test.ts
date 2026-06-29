@@ -13,6 +13,8 @@ const providerSummaries: readonly AdminProviderSummary[] = [
     id: "redmine",
     name: "Redmine",
     category: "ticketing",
+    domainCapabilities: ["issue_tracking"],
+    intake: { issue_tracking: ["polling", "webhook"] },
     enabled: true,
     configured: true,
     status: "ready",
@@ -22,6 +24,8 @@ const providerSummaries: readonly AdminProviderSummary[] = [
     id: "copilot",
     name: "GitHub Copilot",
     category: "agent",
+    domainCapabilities: ["agent_execution"],
+    intake: {},
     enabled: true,
     configured: true,
     status: "ready",
@@ -975,6 +979,8 @@ describe("createAdminServer", () => {
         id: "redmine",
         name: "Redmine",
         category: "ticketing",
+        domainCapabilities: ["issue_tracking"],
+        intake: { issue_tracking: ["polling", "webhook"] },
         enabled: true,
         configured: true,
         status: "ready",
@@ -1015,6 +1021,8 @@ describe("createAdminServer", () => {
           id: "gitlab",
           name: "GitLab",
           category: "review" as const,
+          domainCapabilities: ["code_review"],
+          intake: { code_review: ["polling", "webhook"] },
           enabled: true,
           configured: true,
           status: "ready" as const,
@@ -1037,7 +1045,7 @@ describe("createAdminServer", () => {
     const integrationStore: IntegrationStore = {
       getIntegrations: async () => [{
         id: "gitlab-local",
-        type: "gitlab-issue",
+        provider: "gitlab",
         name: "GitLab Local",
         configJson: JSON.stringify({
           baseUrl: "http://localhost:8929",
@@ -1085,16 +1093,16 @@ describe("createAdminServer", () => {
         integrations: [
           {
             id: "gitlab-local",
-            type: "gitlab-issue",
-            category: "ticketing",
-            capabilities: ["ticketing", "oauth", "discovery"],
+            provider: "gitlab",
+            icon: { slug: "gitlab", hex: "FC6D26" },
+            capabilities: ["issue_tracking", "code_review", "source_control", "oauth", "discovery", "reviewer"],
+            domainCapabilities: ["issue_tracking", "code_review", "source_control"],
             name: "GitLab Local",
             enabled: false,
             active: false,
             config: {
               authMode: "pat",
               baseUrl: "http://localhost:8929",
-              projectId: "root/demo-gitlab",
               token: "********",
             },
             createdAt: new Date(1776275823 * 1000).toISOString(),
@@ -1279,15 +1287,14 @@ describe("createAdminServer", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const pluginManager = {
-      getActiveIntegrationsByType(type: string) {
-        if (type === "gitlab-merge-request") {
+      getActiveIntegrationsByProvider(provider: string) {
+        if (provider === "gitlab") {
           return [{
             id: "gitlab-mr",
-            type: "gitlab-merge-request",
+            provider: "gitlab",
             name: "GitLab MR",
             configJson: JSON.stringify({
               baseUrl: "https://gitlab.example.com",
-              projectId: "group/repo",
               token: "oauth-token",
             }),
             enabled: true,
@@ -1324,7 +1331,7 @@ describe("createAdminServer", () => {
 
       expect(response.status).toBe(200);
       expect(fetchMock).toHaveBeenCalledWith(
-        "https://gitlab.example.com/api/v4/projects/group%2Frepo/uploads/abcdef1234567890/image.png",
+        "https://gitlab.example.com/uploads/abcdef1234567890/image.png",
         expect.objectContaining({
           headers: expect.objectContaining({
             Authorization: "Bearer oauth-token",
@@ -1342,7 +1349,7 @@ describe("createAdminServer", () => {
       getIntegrations: async () => [
         {
           id: "gerrit-a",
-          type: "gerrit",
+          provider: "gerrit",
           name: "Gerrit A",
           configJson: JSON.stringify({
             sshHost: "gerrit-a.example.com",
@@ -1356,7 +1363,7 @@ describe("createAdminServer", () => {
         },
         {
           id: "gerrit-b",
-          type: "gerrit",
+          provider: "gerrit",
           name: "Gerrit B",
           configJson: JSON.stringify({
             sshHost: "gerrit-b.example.com",

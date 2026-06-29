@@ -2,7 +2,7 @@ import { and, eq } from "drizzle-orm";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import type {
   Integration,
-  IntegrationType,
+  ProviderId,
   OAuthApp,
 } from "../../interfaces.js";
 import { normalizeGitLabBaseUrl } from "../../utils/gitlabAuth.js";
@@ -10,9 +10,8 @@ import {
   agents,
   integrations,
   oauthApps,
+  projectIntegrationBindings,
   projectPushTargets,
-  projectReviewIntegration,
-  projectTicketSource,
 } from "../schema.js";
 import * as schema from "../schema.js";
 
@@ -42,7 +41,7 @@ export function createIntegrationStore(context: IntegrationStoreContext): Integr
   function rowToIntegration(row: typeof integrations.$inferSelect): Integration {
     return {
       id: row.id,
-      type: row.type as IntegrationType,
+      provider: row.provider as ProviderId,
       name: row.name,
       configJson: row.configJson,
       enabled: row.enabled === 1,
@@ -82,7 +81,7 @@ export function createIntegrationStore(context: IntegrationStoreContext): Integr
       await db
         .update(integrations)
         .set({
-          type: data.type,
+          provider: data.provider,
           name: data.name,
           configJson: data.configJson,
           enabled: data.enabled ? 1 : 0,
@@ -92,7 +91,7 @@ export function createIntegrationStore(context: IntegrationStoreContext): Integr
     } else {
       await db.insert(integrations).values({
         id: data.id,
-        type: data.type,
+        provider: data.provider,
         name: data.name,
         configJson: data.configJson,
         enabled: data.enabled ? 1 : 0,
@@ -110,13 +109,12 @@ export function createIntegrationStore(context: IntegrationStoreContext): Integr
   }
 
   async function countIntegrationReferences(id: string): Promise<number> {
-    const [agentRows, ticketRows, pushRows, reviewRows] = await Promise.all([
+    const [agentRows, bindingRows, pushRows] = await Promise.all([
       db.query.agents.findMany({ where: eq(agents.integrationId, id) }),
-      db.query.projectTicketSource.findMany({ where: eq(projectTicketSource.integrationId, id) }),
+      db.query.projectIntegrationBindings.findMany({ where: eq(projectIntegrationBindings.integrationId, id) }),
       db.query.projectPushTargets.findMany({ where: eq(projectPushTargets.integrationId, id) }),
-      db.query.projectReviewIntegration.findMany({ where: eq(projectReviewIntegration.integrationId, id) }),
     ]);
-    return agentRows.length + ticketRows.length + pushRows.length + reviewRows.length;
+    return agentRows.length + bindingRows.length + pushRows.length;
   }
 
   async function setIntegrationEnabled(id: string, enabled: boolean): Promise<Integration> {

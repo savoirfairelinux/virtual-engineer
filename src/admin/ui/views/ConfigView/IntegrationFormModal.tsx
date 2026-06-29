@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { Modal, Field, FieldInput, FieldSelect, FormError, FormRow, FieldTextarea } from "../../components/Modal.tsx";
 import { Icon } from "../../components/Icon.tsx";
+import { ProviderGlyph } from "../../components/ProviderGlyph.tsx";
 import { api } from "../../api.ts";
 import type { ApiIntegration, ApiPlugin, ApiPluginOAuth, PluginField } from "../../types.ts";
 
@@ -12,98 +13,24 @@ interface Props {
 }
 
 type Config = Record<string, string>;
-type UiTheme = "dark" | "light";
 
-// ─── Brand SVGs (vendored files under icons/brands/) ───────────────────────
-const BRAND_SVG_FILES = import.meta.glob("../../icons/brands/*.svg", {
-  eager: true,
-  import: "default",
-}) as Record<string, string>;
-
-const BRAND_SVG_URLS: Record<string, string> = Object.fromEntries(
-  Object.entries(BRAND_SVG_FILES).map(([filePath, src]) => {
-    const name = (filePath.split("/").pop() ?? "mock.svg").replace(/\.svg$/, "");
-    return [name, src];
-  })
-);
-
-const DARK_THEME_INVERT: ReadonlySet<string> = new Set(["github", "mock"]);
-const LIGHT_THEME_INVERT: ReadonlySet<string> = new Set(["copilot", "gerrit"]);
-
-function getUiTheme(): UiTheme {
-  if (typeof document === "undefined") return "dark";
-  return document.documentElement.dataset["theme"] === "light" ? "light" : "dark";
-}
-
-function useUiTheme(): UiTheme {
-  const [theme, setTheme] = useState<UiTheme>(() => getUiTheme());
-
-  useEffect(() => {
-    const root = document.documentElement;
-    const syncTheme = () => setTheme(root.dataset["theme"] === "light" ? "light" : "dark");
-    syncTheme();
-
-    const observer = new MutationObserver(syncTheme);
-    observer.observe(root, { attributes: true, attributeFilter: ["data-theme"] });
-    return () => observer.disconnect();
-  }, []);
-
-  return theme;
-}
-
-const TYPE_TO_BRAND: Record<string, string> = {
-  "github-issue":         "github",
-  "github-pull-request":  "github",
-  "gitlab-issue":         "gitlab",
-  "gitlab-merge-request": "gitlab",
-  gerrit:                 "gerrit",
-  redmine:                "redmine",
-  copilot:                "copilot",
-  mock:                   "mock",
+const CAPABILITY_COLORS: Record<string, { bg: string; color: string }> = {
+  issue_tracking:  { bg: "var(--info-soft)",   color: "var(--info)" },
+  code_review:     { bg: "var(--warn-soft)",   color: "var(--warn)" },
+  source_control:  { bg: "var(--warn-soft)",   color: "var(--warn)" },
+  agent_execution: { bg: "var(--accent-soft)", color: "var(--accent)" },
 };
 
-const CAT_COLORS: Record<string, { bg: string; color: string }> = {
-  ticketing: { bg: "var(--info-soft)",   color: "var(--info)" },
-  review:    { bg: "var(--warn-soft)",   color: "var(--warn)" },
-  agent:     { bg: "var(--accent-soft)", color: "var(--accent)" },
+const CAPABILITY_LABEL: Record<string, string> = {
+  issue_tracking:  "Tickets",
+  code_review:     "Review",
+  source_control:  "VCS",
+  agent_execution: "Agent",
 };
 
-function ProviderLogo({ type, size = 48, theme }: { type: string; size?: number; theme: UiTheme }) {
-  const brandKey = TYPE_TO_BRAND[type] ?? "mock";
-  const src = BRAND_SVG_URLS[brandKey] ?? BRAND_SVG_URLS["mock"] ?? "";
-  const glyphSize = Math.round(size * 0.8);
-  const shouldInvert =
-    (theme === "dark" && DARK_THEME_INVERT.has(brandKey))
-    || (theme === "light" && LIGHT_THEME_INVERT.has(brandKey));
-
-  return (
-    <span
-      style={{
-        width: size, height: size, flexShrink: 0,
-        display: "inline-flex", alignItems: "center", justifyContent: "center",
-        lineHeight: 0,
-      }}
-    >
-      <img
-        src={src}
-        alt=""
-        aria-hidden="true"
-        width={glyphSize}
-        height={glyphSize}
-        style={{
-          display: "block",
-          width: `${glyphSize}px`,
-          height: `${glyphSize}px`,
-          objectFit: "contain",
-          filter: shouldInvert ? "invert(1)" : "none",
-        }}
-      />
-    </span>
-  );
-}
-
-function CategoryBadge({ category }: { category: string }) {
-  const c = CAT_COLORS[category] ?? CAT_COLORS["agent"]!;
+function CapabilityBadge({ capability }: { capability: string }) {
+  const c = CAPABILITY_COLORS[capability] ?? CAPABILITY_COLORS["agent_execution"]!;
+  const label = CAPABILITY_LABEL[capability] ?? capability;
   return (
     <span
       style={{
@@ -112,22 +39,22 @@ function CategoryBadge({ category }: { category: string }) {
         background: c.bg, color: c.color, textTransform: "uppercase",
       }}
     >
-      {category}
+      {label}
     </span>
   );
 }
 
-function TypePicker({ plugins, onSelect, theme }: { plugins: ApiPlugin[]; onSelect: (type: string) => void; theme: UiTheme }) {
+function TypePicker({ plugins, onSelect }: { plugins: ApiPlugin[]; onSelect: (provider: string) => void }) {
   const [hovered, setHovered] = useState<string | null>(null);
   return (
     <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "10px", padding: "4px 0 8px" }}>
       {plugins.map((p) => {
-        const active = hovered === p.type;
+        const active = hovered === p.provider;
         return (
           <button
-            key={p.type}
-            onClick={() => onSelect(p.type)}
-            onMouseEnter={() => setHovered(p.type)}
+            key={p.provider}
+            onClick={() => onSelect(p.provider)}
+            onMouseEnter={() => setHovered(p.provider)}
             onMouseLeave={() => setHovered(null)}
             style={{
               display: "flex", flexDirection: "column", alignItems: "center",
@@ -139,9 +66,11 @@ function TypePicker({ plugins, onSelect, theme }: { plugins: ApiPlugin[]; onSele
               boxShadow: active ? "0 0 0 3px var(--accent-soft)" : "none",
             }}
           >
-            <ProviderLogo type={p.type} size={48} theme={theme} />
+            <ProviderGlyph provider={p.provider} size={48} />
             <span style={{ fontSize: "13px", fontWeight: 600, color: "var(--text)" }}>{p.name}</span>
-            <CategoryBadge category={p.category} />
+            {p.domainCapabilities.slice(0, 2).map((cap) => (
+              <CapabilityBadge key={cap} capability={cap} />
+            ))}
           </button>
         );
       })}
@@ -279,14 +208,13 @@ function DynamicField({
 
 export function IntegrationFormModal({ integration, plugins, onClose, onSaved }: Props) {
   const isEdit = !!integration;
-  const theme = useUiTheme();
 
   const [step, setStep] = useState<"pick" | "form">(isEdit ? "form" : "pick");
-  const [selectedType, setSelectedType] = useState<string>(integration?.type ?? "");
+  const [selectedType, setSelectedType] = useState<string>(integration?.provider ?? "");
   const [name, setName] = useState(integration?.name ?? "");
   const [config, setConfig] = useState<Config>(() => {
-    if (integration?.configJson) {
-      try { return JSON.parse(integration.configJson) as Config; } catch { /* ignore */ }
+    if (integration?.config) {
+      try { return integration.config as Config; } catch { /* ignore */ }
     }
     return {};
   });
@@ -296,7 +224,7 @@ export function IntegrationFormModal({ integration, plugins, onClose, onSaved }:
   const [error, setError] = useState<string | null>(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
 
-  const plugin = plugins.find((p) => p.type === selectedType);
+  const plugin = plugins.find((p) => p.provider === selectedType);
 
   const setConfigField = (key: string, val: string) => {
     setConfig((prev) => ({ ...prev, [key]: val }));
@@ -318,7 +246,7 @@ export function IntegrationFormModal({ integration, plugins, onClose, onSaved }:
   const handlePickType = (type: string) => {
     // Pre-seed config with default values for select fields so dependsOn
     // conditions evaluate correctly on first render (no toggling required).
-    const newPlugin = plugins.find((p) => p.type === type);
+    const newPlugin = plugins.find((p) => p.provider === type);
     const defaults: Config = {};
     for (const f of newPlugin?.requiredFields ?? []) {
       if (f.type === "select" && f.options && f.options.length > 0) {
@@ -345,7 +273,7 @@ export function IntegrationFormModal({ integration, plugins, onClose, onSaved }:
     setTestResult(null);
     setError(null);
     try {
-      const payload = { type: selectedType, name: name || "test", config };
+      const payload = { provider: selectedType, name: name || "test", config };
       const body = integration ? { ...payload, integrationId: integration.id } : payload;
       const res = await api.post<{ success: boolean; message?: string; error?: string }>(
         "/api/admin/integrations/test",
@@ -367,7 +295,7 @@ export function IntegrationFormModal({ integration, plugins, onClose, onSaved }:
       if (isEdit) {
         await api.put(`/api/admin/integrations/${integration!.id}`, { name, config });
       } else {
-        await api.post("/api/admin/integrations", { type: selectedType, name, config });
+        await api.post("/api/admin/integrations", { provider: selectedType, name, config });
       }
       onSaved();
     } catch (e) {
@@ -388,7 +316,7 @@ export function IntegrationFormModal({ integration, plugins, onClose, onSaved }:
           <button className="btn" onClick={onClose}>Cancel</button>
         }
       >
-        <TypePicker plugins={plugins} onSelect={handlePickType} theme={theme} />
+        <TypePicker plugins={plugins} onSelect={handlePickType} />
       </Modal>
     );
   }
@@ -420,10 +348,12 @@ export function IntegrationFormModal({ integration, plugins, onClose, onSaved }:
               borderRadius: "var(--radius-sm)",
             }}
           >
-            <ProviderLogo type={selectedType} size={34} theme={theme} />
+            <ProviderGlyph provider={selectedType} size={34} />
             <div style={{ flex: 1 }}>
               <div style={{ fontSize: "13px", fontWeight: 600, marginBottom: "3px" }}>{plugin.name}</div>
-              <CategoryBadge category={plugin.category} />
+              {plugin.domainCapabilities.slice(0, 2).map((cap) => (
+                <CapabilityBadge key={cap} capability={cap} />
+              ))}
             </div>
             <button
               className="btn ghost"

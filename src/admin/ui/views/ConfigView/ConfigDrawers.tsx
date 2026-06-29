@@ -53,7 +53,7 @@ interface IntegrationDrawerProps {
 }
 
 export function IntegrationDrawer({ item, onClose, onEdit, onToggle, onDelete }: IntegrationDrawerProps) {
-  const categoryTone = item.category === "agent" ? "active" : item.category === "ticketing" ? "info" : "warn";
+  const categoryTone = item.domainCapabilities.includes("agent_execution") ? "active" : item.domainCapabilities.includes("issue_tracking") ? "info" : "warn";
 
   const banner = item.enabled
     ? { tone: "ok" as const, icon: "check", title: "Enabled", sub: "Integration is active and routing traffic." }
@@ -61,9 +61,9 @@ export function IntegrationDrawer({ item, onClose, onEdit, onToggle, onDelete }:
 
   return (
     <Drawer
-      eyebrow={"Integration · " + item.category}
+      eyebrow={"Integration · " + item.provider}
       title={item.name}
-      glyph={<ProviderGlyph provider={item.type} size={40} />}
+      glyph={<ProviderGlyph provider={item.provider} size={40} />}
       onClose={onClose}
       footer={
         <DrawerActions
@@ -78,9 +78,11 @@ export function IntegrationDrawer({ item, onClose, onEdit, onToggle, onDelete }:
       <StatusBanner {...banner} />
 
       <DetailSection label="Provider">
-        <DetailRow k="Type">{item.type}</DetailRow>
-        <DetailRow k="Category">
-          <Tag tone={categoryTone} mono={false}>{item.category}</Tag>
+        <DetailRow k="Provider">{item.provider}</DetailRow>
+        <DetailRow k="Capabilities">
+          {item.domainCapabilities.length > 0
+            ? item.domainCapabilities.join(", ")
+            : <Tag tone={categoryTone} mono={false}>{item.provider}</Tag>}
         </DetailRow>
         <DetailRow k="Status">
           <Tag tone={item.enabled ? "ok" : "muted"}>

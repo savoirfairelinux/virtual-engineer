@@ -164,9 +164,9 @@ describe("Admin API — Copilot OAuth routes", () => {
       complete: vi.fn(),
     }));
     registerPlugin({
-      type: "copilot",
+      provider: "copilot",
       name: "GitHub Copilot",
-      category: "agent",
+      capabilities: { agent_execution: {} },
       configSchema: z.object({}),
       requiredFields: [],
       oauth: {
@@ -234,9 +234,9 @@ describe("Admin API — Copilot OAuth routes", () => {
       complete: vi.fn(),
     }));
     registerPlugin({
-      type: "copilot",
+      provider: "copilot",
       name: "GitHub Copilot",
-      category: "agent",
+      capabilities: { agent_execution: {} },
       configSchema: z.object({}),
       requiredFields: [],
       oauth: {
@@ -300,7 +300,7 @@ describe("Admin API — Copilot OAuth routes", () => {
   it("merges masked secrets from the stored integration config before building the OAuth handler", async () => {
     await store.upsertIntegration({
       id: "copilot-oauth",
-      type: "copilot",
+      provider: "copilot",
       name: "Copilot OAuth",
       configJson: JSON.stringify({
         baseUrl: "https://gitlab.example.com",
@@ -316,9 +316,9 @@ describe("Admin API — Copilot OAuth routes", () => {
       complete: vi.fn(),
     }));
     registerPlugin({
-      type: "copilot",
+      provider: "copilot",
       name: "GitHub Copilot",
-      category: "agent",
+      capabilities: { agent_execution: {} },
       configSchema: z.object({
         baseUrl: z.string().optional(),
         oauthClientId: z.string().optional(),
@@ -395,7 +395,7 @@ describe("Admin API — Copilot OAuth routes", () => {
       return realFetch(url as string, init);
     });
 
-    const result = await rest(server, "/api/admin/plugins/gitlab-issue/oauth/device-code", {
+    const result = await rest(server, "/api/admin/plugins/gitlab/oauth/device-code", {
       method: "POST",
       body: {
         config: {
@@ -431,9 +431,9 @@ describe("Admin API — Copilot OAuth routes", () => {
       complete: vi.fn(),
     }));
     registerPlugin({
-      type: "copilot",
+      provider: "copilot",
       name: "GitHub Copilot",
-      category: "agent",
+      capabilities: { agent_execution: {} },
       configSchema: z.object({}),
       requiredFields: [],
       oauth: {

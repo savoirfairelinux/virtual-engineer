@@ -57,7 +57,6 @@ export interface ReviewOrchestratorDeps {
     | "getAgentCycles"
     | "findProjectsByReviewTarget"
     | "getProjectById"
-    | "setTaskProjectId"
     | "updateExternalChangeId"
     | "getPostedReviewCommentHashes"
     | "getPostedReviewComments"
@@ -76,7 +75,7 @@ export interface ReviewOrchestratorDeps {
   buildCloneTarget: (details: ReviewChangeDetails) => { cloneUrl: string; sshKeyPath: string | null; sshKnownHostsPath: string | null };
   /** Apply a provider-specific patchset onto the cloned workspace (e.g. Gerrit `refs/changes/…`). Omit for GitLab MR branches. */
   applyPatchset?: (handle: WorkspaceHandle, details: ReviewChangeDetails) => Promise<void>;
-  /** Source label persisted on review tasks, typically `<type>:<integrationId>`. */
+  /** Source label persisted on review tasks, typically `<provider>:<integrationId>`. */
   sourceLabel?: string | undefined;
   /** Reviewer instructions (content of the `code-review` prompt from the DB). */
   reviewInstructions: string;
@@ -259,8 +258,8 @@ export class ReviewOrchestrator {
         patchset: details.currentPatchset,
         reviewUrl: details.url,
         displayId: String(details.changeNumber),
+        projectId: project.id,
       });
-      await this.deps.stateStore.setTaskProjectId(task.taskId, project.id);
       log.info({ taskId, changeId: input.changeId, patchset: details.currentPatchset, projectId: project.id }, "code-review task created");
       tasks.push({ ...task, projectId: project.id });
     }

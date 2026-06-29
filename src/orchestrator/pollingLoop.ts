@@ -3,6 +3,7 @@ import type { TicketConnector } from "../interfaces.js";
 import type { StateStore } from "../interfaces.js";
 import type {
   IntegrationBindingContext,
+  DomainCapability,
   ProjectRecord,
   ProjectTicketSourceRecord,
   ProjectReviewConfig,
@@ -10,7 +11,7 @@ import type {
   ReviewDiscoveryConnector,
   ReviewAssignmentDiscovery,
 } from "../interfaces.js";
-import { makeTicketId, TERMINAL_STATES } from "../interfaces.js";
+import { makeTicketId } from "../interfaces.js";
 import { getLogger } from "../logger.js";
 
 const log = getLogger("polling-loop");
@@ -42,8 +43,8 @@ export interface ReviewAssignmentTrigger {
  * Minimal plugin manager contract used by the polling loop.
  */
 export interface ProjectAwarePluginManager {
-  getConnectorForIntegration<T>(integrationId: string): T | null;
-  createConnectorForIntegration?<T>(integrationId: string, context?: IntegrationBindingContext): Promise<T | null>;
+  getConnectorForCapability<T>(integrationId: string, capability: DomainCapability): T | null;
+  createConnectorForCapability?<T>(integrationId: string, capability: DomainCapability, context?: IntegrationBindingContext): Promise<T | null>;
   /**
    * Returns true when the integration's descriptor declares a `streamEvents`
    * factory, meaning review discovery is driven by a live event stream rather
@@ -209,12 +210,13 @@ export class PollingLoop {
         log.debug({ projectId: project.id }, "skipping project: no ticket source configured");
         continue;
       }
-      const connector = this.pluginManager.createConnectorForIntegration
-        ? await this.pluginManager.createConnectorForIntegration<TicketConnector>(
+      const connector = this.pluginManager.createConnectorForCapability
+        ? await this.pluginManager.createConnectorForCapability<TicketConnector>(
           ticketSource.integrationId,
+          "issue_tracking",
           { ticketProjectKey: ticketSource.ticketProjectKey }
         )
-        : this.pluginManager.getConnectorForIntegration<TicketConnector>(ticketSource.integrationId);
+        : this.pluginManager.getConnectorForCapability<TicketConnector>(ticketSource.integrationId, "issue_tracking");
       if (!connector) {
         log.debug(
           { projectId: project.id, integrationId: ticketSource.integrationId },
@@ -224,23 +226,29 @@ export class PollingLoop {
       }
       try {
         const tickets = await connector.getAssignedTickets({ projectKey: ticketSource.ticketProjectKey });
-        // Source label scheme: <integrationType>:<integrationId> so two projects sharing the same
-        // connector type but different integration rows have independent failure counts.
-        const integrationType = connector.getSourceLabel();
-        const sourceLabel = `${integrationType}:${ticketSource.integrationId}`;
+        // Canonical source label scheme: <provider>:<integrationId> so two projects sharing the
+        // same provider but different integration rows have independent failure counts. The same
+        // label format is emitted by webhook and stream-event intake paths.
+        const provider = connector.getSourceLabel();
+        const sourceLabel = `${provider}:${ticketSource.integrationId}`;
 
         const orchestratorWithProjectMode = this.orchestrator as unknown as Partial<ProjectAwareOrchestrator>;
         for (const ticket of tickets) {
           const ticketId = makeTicketId(ticket.id);
-          const existing = await this.stateStore.getTaskByTicketId(ticketId);
-          if (existing && !TERMINAL_STATES.has(existing.state)) {
+          // The partial unique index allows at most one active task per
+          // (project, ticket), so skip when any active task exists for this
+          // project — even if it is not the newest row (a newer FAILED task can
+          // coexist with an older still-active one).
+          const activeExisting = await this.stateStore.getActiveTaskByTicketId(ticketId, project.id);
+          if (activeExisting) {
             continue;
           }
+          const existing = await this.stateStore.getTaskByTicketId(ticketId, project.id);
           // FAILED allows retry; all other terminal states skip without a new task.
           if (existing && existing.state !== "FAILED") {
             continue;
           }
-          const failedAttemptsCount = await this.stateStore.getFailedAttemptCount(ticketId, sourceLabel);
+          const failedAttemptsCount = await this.stateStore.getFailedAttemptCount(ticketId, sourceLabel, project.id);
           if (failedAttemptsCount >= this.config.maxRetryAttempts) {
             log.warn(
               { ticketId, source: sourceLabel, failedAttemptsCount },
@@ -300,8 +308,9 @@ export class PollingLoop {
         continue;
       }
 
-      const connector = this.pluginManager.getConnectorForIntegration<ReviewDiscoveryConnector>(
-        reviewConfig.integrationId
+      const connector = this.pluginManager.getConnectorForCapability<ReviewDiscoveryConnector>(
+        reviewConfig.integrationId,
+        "code_review"
       );
       if (!connector || typeof (connector as ReviewDiscoveryConnector).getOpenReviewAssignments !== "function") {
         log.debug(

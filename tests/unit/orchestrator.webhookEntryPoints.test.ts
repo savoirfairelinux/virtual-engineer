@@ -120,6 +120,11 @@ function makeOrchestrator(stateStore: StateStore, review: ReviewConnector = make
           if (id === "gerrit-int") return review;
           return null;
         }),
+        getConnectorForCapability: vi.fn().mockImplementation((id: string, capability: string) => {
+          if (id === "redmine-int" && capability === "issue_tracking") return redmine;
+          if (id === "gerrit-int" && capability === "code_review") return review;
+          return null;
+        }),
       },
     }
   );
@@ -157,6 +162,48 @@ describe("Orchestrator — webhook entry points (Phase 5)", () => {
       const review = makeReview({ getChangeStatus: vi.fn().mockResolvedValue("OPEN") });
       const stateStore = makeStateStore({ findTaskByExternalChangeId: vi.fn().mockResolvedValue(task) });
       const orch = makeOrchestrator(stateStore, review);
+      await orch.triggerFeedbackForChange("g-1", "Iabc");
+      expect(review.getChangeStatus).toHaveBeenCalled();
+    });
+
+    it("resolves the code_review connector for a unified provider, not the issue connector", async () => {
+      // A unified provider (github/gitlab) exposes BOTH issue_tracking and
+      // code_review. getConnectorForIntegration returns the issue connector
+      // first (which lacks getChangeStatus); the review path must instead
+      // resolve the code_review capability connector.
+      const task = makeTask({ state: "IN_REVIEW" });
+      const review = makeReview({ getChangeStatus: vi.fn().mockResolvedValue("OPEN") });
+      const issueConnector = { getSourceLabel: vi.fn().mockReturnValue("github") };
+      const stateStore = makeStateStore({ findTaskByExternalChangeId: vi.fn().mockResolvedValue(task) });
+      const orch = new Orchestrator(
+        {
+          maxAgentCycles: 3,
+          maxRetryAttempts: 5,
+          agentTimeoutMs: 1000,
+          gitAuthorName: "VE",
+          gitAuthorEmail: "ve@example.com",
+          agentContainerImage: "x:latest",
+        },
+        stateStore,
+        makeWorkspaceRunner(),
+        undefined,
+        undefined,
+        {
+          projectStore: {
+            getProjectById: vi.fn().mockResolvedValue(null),
+            listProjectPushTargets: vi.fn().mockResolvedValue([{ integrationId: "github-int" }]),
+            getProjectTicketSource: vi.fn().mockResolvedValue({ integrationId: "github-int" }),
+            getProjectReviewConfig: vi.fn().mockResolvedValue(null),
+            getAgentById: vi.fn().mockResolvedValue(null),
+          },
+          pluginManager: {
+            getConnectorForIntegration: vi.fn().mockReturnValue(issueConnector),
+            getConnectorForCapability: vi.fn().mockImplementation((id: string, capability: string) =>
+              id === "github-int" && capability === "code_review" ? review : null
+            ),
+          },
+        }
+      );
       await orch.triggerFeedbackForChange("g-1", "Iabc");
       expect(review.getChangeStatus).toHaveBeenCalled();
     });

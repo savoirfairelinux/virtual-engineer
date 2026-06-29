@@ -106,7 +106,7 @@ export class GerritStreamEventsManager implements IntegrationEventStreamManager 
         this.statuses.set(integration.id, {
           integrationId: integration.id,
           integrationName: integration.name,
-          integrationType: integration.type,
+          integrationType: integration.provider,
           state: "error",
           reconnectCount: 0,
           lastEventType: null,
@@ -198,7 +198,7 @@ export class GerritStreamEventsManager implements IntegrationEventStreamManager 
     this.statuses.set(integration.id, {
       integrationId: integration.id,
       integrationName: integration.name,
-      integrationType: integration.type,
+      integrationType: integration.provider,
       state: "connecting",
       reconnectCount,
       lastEventType: null,

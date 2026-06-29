@@ -23,14 +23,14 @@ describe("SqliteStateStore — IntegrationStore", () => {
     it("creates a new integration", async () => {
       const integration = await store.upsertIntegration({
         id: "int-1",
-        type: "redmine",
+        provider: "redmine",
         name: "Redmine Production",
         configJson: JSON.stringify({ baseUrl: "http://redmine:3000", apiKey: "key123" }),
         enabled: false,
       });
 
       expect(integration.id).toBe("int-1");
-      expect(integration.type).toBe("redmine");
+      expect(integration.provider).toBe("redmine");
       expect(integration.name).toBe("Redmine Production");
       expect(integration.enabled).toBe(false);
       expect(integration.createdAt).toBeInstanceOf(Date);
@@ -40,7 +40,7 @@ describe("SqliteStateStore — IntegrationStore", () => {
     it("updates an existing integration", async () => {
       await store.upsertIntegration({
         id: "int-1",
-        type: "redmine",
+        provider: "redmine",
         name: "Redmine v1",
         configJson: "{}",
         enabled: false,
@@ -48,7 +48,7 @@ describe("SqliteStateStore — IntegrationStore", () => {
 
       const updated = await store.upsertIntegration({
         id: "int-1",
-        type: "redmine",
+        provider: "redmine",
         name: "Redmine v2",
         configJson: JSON.stringify({ baseUrl: "http://new-redmine:3000" }),
         enabled: true,
@@ -61,8 +61,8 @@ describe("SqliteStateStore — IntegrationStore", () => {
 
   describe("getIntegrations", () => {
     it("returns all integrations", async () => {
-      await store.upsertIntegration({ id: "a", type: "redmine", name: "R", configJson: "{}", enabled: true });
-      await store.upsertIntegration({ id: "b", type: "gerrit", name: "G", configJson: "{}", enabled: false });
+      await store.upsertIntegration({ id: "a", provider: "redmine", name: "R", configJson: "{}", enabled: true });
+      await store.upsertIntegration({ id: "b", provider: "gerrit", name: "G", configJson: "{}", enabled: false });
 
       const all = await store.getIntegrations();
       expect(all).toHaveLength(2);
@@ -77,11 +77,11 @@ describe("SqliteStateStore — IntegrationStore", () => {
 
   describe("getIntegration", () => {
     it("returns an integration by id", async () => {
-      await store.upsertIntegration({ id: "x", type: "copilot", name: "Copilot", configJson: "{}", enabled: true });
+      await store.upsertIntegration({ id: "x", provider: "copilot", name: "Copilot", configJson: "{}", enabled: true });
 
       const result = await store.getIntegration("x");
       expect(result?.id).toBe("x");
-      expect(result?.type).toBe("copilot");
+      expect(result?.provider).toBe("copilot");
     });
 
     it("returns null for unknown id", async () => {
@@ -92,7 +92,7 @@ describe("SqliteStateStore — IntegrationStore", () => {
 
   describe("deleteIntegration", () => {
     it("removes an integration", async () => {
-      await store.upsertIntegration({ id: "d1", type: "mock", name: "Mock", configJson: "{}", enabled: true });
+      await store.upsertIntegration({ id: "d1", provider: "mock", name: "Mock", configJson: "{}", enabled: true });
       await store.deleteIntegration("d1");
 
       const result = await store.getIntegration("d1");
@@ -106,14 +106,14 @@ describe("SqliteStateStore — IntegrationStore", () => {
 
   describe("setIntegrationEnabled", () => {
     it("enables a disabled integration", async () => {
-      await store.upsertIntegration({ id: "e1", type: "gerrit", name: "Gerrit", configJson: "{}", enabled: false });
+      await store.upsertIntegration({ id: "e1", provider: "gerrit", name: "Gerrit", configJson: "{}", enabled: false });
 
       const result = await store.setIntegrationEnabled("e1", true);
       expect(result.enabled).toBe(true);
     });
 
     it("disables an enabled integration", async () => {
-      await store.upsertIntegration({ id: "e2", type: "gerrit", name: "Gerrit", configJson: "{}", enabled: true });
+      await store.upsertIntegration({ id: "e2", provider: "gerrit", name: "Gerrit", configJson: "{}", enabled: true });
 
       const result = await store.setIntegrationEnabled("e2", false);
       expect(result.enabled).toBe(false);
@@ -131,7 +131,7 @@ describe("SqliteStateStore — IntegrationStore", () => {
       const config = { baseUrl: "http://redmine:3000", apiKey: "secret", userId: 42 };
       await store.upsertIntegration({
         id: "cfg-1",
-        type: "redmine",
+        provider: "redmine",
         name: "Redmine",
         configJson: JSON.stringify(config),
         enabled: true,

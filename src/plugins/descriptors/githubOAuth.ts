@@ -5,7 +5,6 @@ import type {
   ProviderAuthDeviceStartResult,
   ProviderAuthHandlerCompleteResult,
 } from "../../agents/providerAuthService.js";
-import type { IntegrationType } from "../../interfaces.js";
 import type { PluginOAuthConfig } from "../registry.js";
 import {
   resolveGitHubUrls,
@@ -59,7 +58,7 @@ function resolveMode(config: Record<string, unknown>): GitHubMode {
 // ─── PluginOAuthConfig (declarative UI) ───────────────────────────────────────
 
 export function createGitHubOAuthConfig(
-  type: IntegrationType,
+  type: string,
   heading: string
 ): PluginOAuthConfig {
   return {

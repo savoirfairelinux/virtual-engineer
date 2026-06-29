@@ -34,7 +34,7 @@ interface AgentForm {
 
 export function AgentFormModal({ agent, integrations, prompts, onClose, onSaved }: Props) {
   const isEdit = !!agent;
-  const agentIntegrations = integrations.filter((i) => i.category === "agent" && i.enabled);
+  const agentIntegrations = integrations.filter((i) => i.domainCapabilities.includes("agent_execution") && i.enabled);
 
   const [form, setForm] = useState<AgentForm>({
     name: agent?.name ?? "",
@@ -133,11 +133,11 @@ export function AgentFormModal({ agent, integrations, prompts, onClose, onSaved 
           </FieldSelect>
         </Field>
 
-        <Field label="Agent Integration" required hint="An enabled agent-category integration (e.g. Copilot, Mock)">
+        <Field label="Agent Integration" required hint="An enabled agent-execution integration (e.g. Copilot, Mock)">
           <FieldSelect value={form.integrationId} onChange={set("integrationId")}>
             {agentIntegrations.length === 0 && <option value="">— no agent integrations —</option>}
             {agentIntegrations.map((i) => (
-              <option key={i.id} value={i.id}>{i.name} ({i.type})</option>
+              <option key={i.id} value={i.id}>{i.name} ({i.provider})</option>
             ))}
           </FieldSelect>
         </Field>

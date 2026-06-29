@@ -154,7 +154,7 @@ async function putJson(
 
 const REDMINE_INTEGRATION: Integration = {
   id: "int-redmine",
-  type: "redmine",
+  provider: "redmine",
   name: "Redmine Test",
   configJson: JSON.stringify({
     baseUrl: "http://redmine.test",
@@ -171,7 +171,7 @@ const REDMINE_INTEGRATION: Integration = {
 
 const COPILOT_INTEGRATION: Integration = {
   id: "int-copilot",
-  type: "copilot",
+  provider: "copilot",
   name: "Copilot Test",
   configJson: JSON.stringify({ sessionToken: "enc_secret" }),
   enabled: false,
@@ -181,7 +181,7 @@ const COPILOT_INTEGRATION: Integration = {
 
 const MOCK_INTEGRATION: Integration = {
   id: "int-mock",
-  type: "mock",
+  provider: "mock",
   name: "Mock Test",
   configJson: JSON.stringify({ status: "success" }),
   enabled: false,
@@ -191,7 +191,7 @@ const MOCK_INTEGRATION: Integration = {
 
 const GERRIT_INTEGRATION: Integration = {
   id: "int-gerrit",
-  type: "gerrit",
+  provider: "gerrit",
   name: "Gerrit Test",
   configJson: JSON.stringify({
     baseUrl: "http://gerrit.test:8080",
@@ -327,6 +327,16 @@ describe("Admin API — POST /api/admin/integrations/:id/discover", () => {
     expect(integration["discoverySupported"]).toBe(true);
   });
 
+  it("GET /api/admin/integrations/:id serializes the provider icon", async () => {
+    const { body } = await getJson(baseUrl, "/api/admin/integrations/int-redmine");
+    const integration = body["integration"] as Record<string, unknown>;
+    expect(integration["icon"]).toEqual({ slug: "redmine", hex: "B32024" });
+
+    const { body: mockBody } = await getJson(baseUrl, "/api/admin/integrations/int-mock");
+    const mockIntegration = mockBody["integration"] as Record<string, unknown>;
+    expect(mockIntegration).toHaveProperty("icon", null);
+  });
+
   it("GET reports discoverySupported=false for mock", async () => {
     const { body } = await getJson(baseUrl, "/api/admin/integrations/int-mock");
     const integration = body["integration"] as Record<string, unknown>;
@@ -376,7 +386,7 @@ describe("Admin API — POST /api/admin/integrations/:id/discover", () => {
   it("Copilot PAT mode: discover resolves models using PAT directly", async () => {
     await store.upsertIntegration({
       id: "int-copilot-pat",
-      type: "copilot",
+      provider: "copilot",
       name: "Copilot PAT",
       configJson: JSON.stringify({ authMode: "pat", token: "github_pat_test123" }),
       enabled: false,
@@ -397,7 +407,7 @@ describe("Admin API — POST /api/admin/integrations/:id/discover", () => {
   it("Copilot PAT mode: discover returns 400 when token is missing", async () => {
     await store.upsertIntegration({
       id: "int-copilot-no-token",
-      type: "copilot",
+      provider: "copilot",
       name: "Copilot no token",
       configJson: JSON.stringify({ authMode: "pat" }),
       enabled: false,
@@ -411,7 +421,7 @@ describe("Admin API — POST /api/admin/integrations/:id/discover", () => {
   it("Copilot OAuth mode: discover returns 400 when sessionToken is missing", async () => {
     await store.upsertIntegration({
       id: "int-copilot-oauth-empty",
-      type: "copilot",
+      provider: "copilot",
       name: "Copilot OAuth no token",
       configJson: JSON.stringify({ authMode: "oauth" }),
       enabled: false,
@@ -420,5 +430,122 @@ describe("Admin API — POST /api/admin/integrations/:id/discover", () => {
     const { status, body } = await postJson(baseUrl, "/api/admin/integrations/int-copilot-oauth-empty/discover");
     expect(status).toBe(400);
     expect(String(body["error"])).toContain("OAuth");
+  });
+});
+
+const GITLAB_INTEGRATION: Integration = {
+  id: "int-gitlab",
+  provider: "gitlab",
+  name: "GitLab Test",
+  configJson: JSON.stringify({
+    baseUrl: "https://gitlab.test",
+    gitlabMode: "self-hosted",
+    authMode: "pat",
+    token: "glpat-secret",
+  }),
+  enabled: false,
+  createdAt: new Date(),
+  updatedAt: new Date(),
+};
+
+describe("Admin API — GET /api/admin/integrations/:id/branches", () => {
+  let server: Server;
+  let baseUrl: string;
+  let store: DiscoveryStore;
+  let fetchMock: ReturnType<typeof vi.fn<(url: string | URL | Request, init?: RequestInit) => Promise<Response>>>;
+  let realFetch: typeof fetch;
+
+  beforeEach(async () => {
+    registerBuiltinPlugins();
+    store = makeIntegrationStore([REDMINE_INTEGRATION, GERRIT_INTEGRATION, GITLAB_INTEGRATION, MOCK_INTEGRATION]);
+    const pm = new PluginManager(store);
+    server = createAdminServer(makeBaseDeps({ integrationStore: store, pluginManager: pm }));
+    baseUrl = await listenServer(server);
+    realFetch = globalThis.fetch.bind(globalThis);
+    fetchMock = vi.fn<(url: string | URL | Request, init?: RequestInit) => Promise<Response>>();
+    vi.stubGlobal("fetch", (url: string | URL | Request, init?: RequestInit) => {
+      const u = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+      if (u.startsWith(baseUrl)) {
+        return realFetch(url as Parameters<typeof fetch>[0], init);
+      }
+      return fetchMock(url, init);
+    });
+  });
+
+  afterEach(async () => {
+    vi.unstubAllGlobals();
+    await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+  });
+
+  it("GitLab: returns branch names for a repo key", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse([{ name: "master" }, { name: "develop" }])
+    );
+
+    const { status, body } = await getJson(
+      baseUrl,
+      "/api/admin/integrations/int-gitlab/branches?repoKey=group%2Fjami-client-qt"
+    );
+    expect(status).toBe(200);
+    expect(body["branches"]).toEqual(["master", "develop"]);
+
+    // The repo key must be URL-encoded into the GitLab projects path.
+    const calledUrl = String(fetchMock.mock.calls[0]?.[0]);
+    expect(calledUrl).toContain("/api/v4/projects/group%2Fjami-client-qt/repository/branches");
+  });
+
+  it("Gerrit: returns branch names via git ls-remote", async () => {
+    getExecFileMock().mockImplementationOnce(
+      (_file: unknown, _args: unknown, _options: unknown, callback: ExecFileCallback) => {
+        callback(null, {
+          stdout: [
+            "abc123\trefs/heads/master",
+            "def456\trefs/heads/stable-1.0",
+          ].join("\n"),
+          stderr: "",
+        });
+        return undefined;
+      }
+    );
+
+    const { status, body } = await getJson(
+      baseUrl,
+      "/api/admin/integrations/int-gerrit/branches?repoKey=demo"
+    );
+    expect(status).toBe(200);
+    expect(body["branches"]).toEqual(["master", "stable-1.0"]);
+  });
+
+  it("returns 400 when repoKey query param is missing", async () => {
+    const { status, body } = await getJson(baseUrl, "/api/admin/integrations/int-gitlab/branches");
+    expect(status).toBe(400);
+    expect(String(body["error"])).toContain("repoKey");
+  });
+
+  it("returns 400 when the provider does not support branch discovery (redmine)", async () => {
+    const { status, body } = await getJson(
+      baseUrl,
+      "/api/admin/integrations/int-redmine/branches?repoKey=demo"
+    );
+    expect(status).toBe(400);
+    expect(String(body["error"])).toContain("does not support branch discovery");
+  });
+
+  it("returns 404 for an unknown integration id", async () => {
+    const { status } = await getJson(
+      baseUrl,
+      "/api/admin/integrations/no-such/branches?repoKey=demo"
+    );
+    expect(status).toBe(404);
+  });
+
+  it("returns 502 when branch discovery throws", async () => {
+    fetchMock.mockResolvedValueOnce(errorResponse(401, "unauthorized"));
+    const { status, body } = await getJson(
+      baseUrl,
+      "/api/admin/integrations/int-gitlab/branches?repoKey=demo"
+    );
+    expect(status).toBe(502);
+    expect(String(body["error"])).toContain("Branch discovery failed");
   });
 });

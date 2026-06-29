@@ -93,6 +93,8 @@ describe("createAdminServer integration", () => {
             id: "redmine",
             name: "Redmine",
             category: "ticketing",
+            domainCapabilities: ["issue_tracking"],
+            intake: { issue_tracking: ["polling", "webhook"] },
             enabled: true,
             configured: true,
             status: "ready",

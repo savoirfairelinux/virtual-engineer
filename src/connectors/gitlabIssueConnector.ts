@@ -252,7 +252,7 @@ export class GitLabIssueConnector extends AbstractTicketConnector implements Tic
 
   /** Return the source label used to identify this connector in logs and DB records. */
   getSourceLabel(): string {
-    return "gitlab-issue";
+    return "gitlab";
   }
 }
 

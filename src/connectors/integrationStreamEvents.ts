@@ -1,10 +1,10 @@
-import type { Integration, IntegrationType, ReviewComment } from "../interfaces.js";
-import { getPluginDescriptor } from "../plugins/registry.js";
+import type { Integration, ProviderId, ReviewComment } from "../interfaces.js";
+import { getProviderDescriptor } from "../plugins/registry.js";
 
 export interface IntegrationEventStreamStatus {
   integrationId: string;
   integrationName: string;
-  integrationType: IntegrationType;
+  integrationType: ProviderId;
   state: "connecting" | "connected" | "reconnecting" | "error" | "stopped";
   reconnectCount: number;
   lastEventType: string | null;
@@ -39,25 +39,25 @@ export interface IntegrationEventStreamFactory {
 }
 
 export class PluginIntegrationStreamEventsManager implements IntegrationEventStreamManager {
-  private readonly managers = new Map<IntegrationType, IntegrationEventStreamManager>();
+  private readonly managers = new Map<ProviderId, IntegrationEventStreamManager>();
 
   constructor(private readonly deps: IntegrationEventStreamDependencies) {}
 
-  /** Sync per-type sub-managers to match the provided integration list, starting or stopping as needed. */
+  /** Sync per-provider sub-managers to match the provided integration list, starting or stopping as needed. */
   async reconcile(integrations: Integration[]): Promise<void> {
-    const integrationsByType = new Map<IntegrationType, Integration[]>();
+    const integrationsByType = new Map<ProviderId, Integration[]>();
 
     for (const integration of integrations) {
-      const descriptor = getPluginDescriptor(integration.type);
-      if (!descriptor?.streamEvents) {
+      const descriptor = getProviderDescriptor(integration.provider);
+      if (!descriptor?.capabilities.code_review?.streamEvents) {
         continue;
       }
 
-      const existing = integrationsByType.get(integration.type);
+      const existing = integrationsByType.get(integration.provider);
       if (existing) {
         existing.push(integration);
       } else {
-        integrationsByType.set(integration.type, [integration]);
+        integrationsByType.set(integration.provider, [integration]);
       }
     }
 
@@ -72,11 +72,12 @@ export class PluginIntegrationStreamEventsManager implements IntegrationEventStr
     for (const [type, streamIntegrations] of integrationsByType.entries()) {
       let manager = this.managers.get(type);
       if (!manager) {
-        const descriptor = getPluginDescriptor(type);
-        if (!descriptor?.streamEvents) {
+        const descriptor = getProviderDescriptor(type);
+        const streamEvents = descriptor?.capabilities.code_review?.streamEvents;
+        if (!streamEvents) {
           continue;
         }
-        manager = descriptor.streamEvents.createManager(this.deps);
+        manager = streamEvents.createManager(this.deps);
         this.managers.set(type, manager);
       }
       await manager.reconcile(streamIntegrations);

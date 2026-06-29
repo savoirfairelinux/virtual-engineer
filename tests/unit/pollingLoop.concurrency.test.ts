@@ -50,6 +50,7 @@ function makeStore(): StateStore {
   return {
     getActiveTasks: vi.fn().mockResolvedValue([]),
     getTaskByTicketId: vi.fn().mockResolvedValue(null),
+    getActiveTaskByTicketId: vi.fn().mockResolvedValue(null),
     getFailedAttemptCount: vi.fn().mockResolvedValue(0),
     getChangesForTask: vi.fn().mockResolvedValue([]),
     isTaskPaused: vi.fn().mockResolvedValue(false),
@@ -81,8 +82,8 @@ describe("PollingLoop — Phase 6 concurrency", () => {
     };
     const connector = makeRedmine();
     const pluginManager = {
-      getConnectorForIntegration: vi.fn(() => connector),
-    } as unknown as { getConnectorForIntegration<T>(id: string): T | null };
+      getConnectorForCapability: vi.fn(() => connector),
+    } as unknown as { getConnectorForCapability<T>(id: string): T | null };
     const orchestrator = makeOrchestrator();
 
     const loop = new PollingLoop(
@@ -112,8 +113,8 @@ describe("PollingLoop — Phase 6 concurrency", () => {
     };
     const connector = makeRedmine();
     const pluginManager = {
-      getConnectorForIntegration: vi.fn(() => connector),
-    } as unknown as { getConnectorForIntegration<T>(id: string): T | null };
+      getConnectorForCapability: vi.fn(() => connector),
+    } as unknown as { getConnectorForCapability<T>(id: string): T | null };
     const orchestrator = makeOrchestrator();
     orchestrator.startTaskForProject
       .mockRejectedValueOnce(new Error("transient"))

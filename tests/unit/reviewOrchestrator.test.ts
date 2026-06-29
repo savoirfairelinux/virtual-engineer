@@ -376,7 +376,10 @@ describe("ReviewOrchestrator.startReviewTask", () => {
     const tasks = await orch.startReviewTask({ changeId: CHANGE_ID });
     expect(tasks).toHaveLength(2);
     expect(mocks.store.createReviewTask).toHaveBeenCalledTimes(2);
-    expect(mocks.store.setTaskProjectId).toHaveBeenCalledTimes(2);
+    const projectIds = mocks.store.createReviewTask.mock.calls.map(
+      (c: unknown[]) => (c[0] as { projectId?: string }).projectId
+    );
+    expect(projectIds).toEqual(["proj-1", "proj-2"]);
   });
 
   it("does NOT re-trigger when the current patchset was already reviewed (automatic resync)", async () => {

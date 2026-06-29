@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import { and, eq, inArray, notInArray } from "drizzle-orm";
+import { and, eq, inArray, isNull, notInArray } from "drizzle-orm";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import type {
   AgentCycle,
@@ -34,6 +34,19 @@ import {
 } from "../schema.js";
 import * as schema from "../schema.js";
 
+/**
+ * True when `err` is a SQLite UNIQUE-constraint violation (better-sqlite3 sets
+ * `code === "SQLITE_CONSTRAINT_UNIQUE"`). Used to distinguish the recoverable
+ * active-ticket index conflict from genuine insert failures.
+ */
+function isUniqueConstraintViolation(err: unknown): boolean {
+  return (
+    err instanceof Error &&
+    "code" in err &&
+    (err as { code?: unknown }).code === "SQLITE_CONSTRAINT_UNIQUE"
+  );
+}
+
 export interface TaskStoreApi {
   createTask(
     taskId: TaskId,
@@ -43,10 +56,12 @@ export interface TaskStoreApi {
     ticketSourceLabel?: string,
     ticketUrl?: string,
     displayId?: string,
-    ticketSource?: { integrationId: string; ticketProjectKey: string }
+    ticketSource?: { integrationId: string; ticketProjectKey: string },
+    projectId?: ProjectId
   ): Promise<Task>;
   getTask(taskId: TaskId): Promise<Task | null>;
-  getTaskByTicketId(ticketId: TicketId): Promise<Task | null>;
+  getTaskByTicketId(ticketId: TicketId, projectId?: ProjectId): Promise<Task | null>;
+  getActiveTaskByTicketId(ticketId: TicketId, projectId?: ProjectId): Promise<Task | null>;
   getActiveTasks(): Promise<Task[]>;
   getAllTasks(): Promise<Task[]>;
   transition(taskId: TaskId, toState: TaskState, metadata?: Record<string, unknown>): Promise<Task>;
@@ -61,6 +76,7 @@ export interface TaskStoreApi {
     patchset: number;
     reviewUrl?: string;
     displayId?: string;
+    projectId?: ProjectId;
   }): Promise<Task>;
   setReviewedPatchset(taskId: TaskId, patchset: number): Promise<void>;
   incrementCycle(taskId: TaskId): Promise<number>;
@@ -74,7 +90,7 @@ export interface TaskStoreApi {
   getAgentCycles(taskId: TaskId): Promise<AgentCycle[]>;
   getAgentCycleEvents(taskId: TaskId, cycleNumber: number): Promise<AgentLogEvent[]>;
   getStateTransitions(taskId: TaskId): Promise<StateTransition[]>;
-  getFailedAttemptCount(ticketId: TicketId, ticketSourceLabel?: string): Promise<number>;
+  getFailedAttemptCount(ticketId: TicketId, ticketSourceLabel?: string, projectId?: ProjectId): Promise<number>;
   getProcessedCommentIds(taskId: TaskId): Promise<Set<string>>;
   markCommentProcessed(taskId: TaskId, gerritCommentId: string): Promise<void>;
   getPostedReviewCommentHashes(taskId: TaskId): Promise<Set<string>>;
@@ -160,9 +176,37 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
     return row ? rowToTask(row) : null;
   }
 
-  async function getTaskByTicketId(ticketId: TicketId): Promise<Task | null> {
+  async function getTaskByTicketId(ticketId: TicketId, projectId?: ProjectId): Promise<Task | null> {
     const row = await db.query.tasks.findFirst({
-      where: eq(tasks.ticketId, ticketId),
+      where: projectId !== undefined
+        ? and(eq(tasks.ticketId, ticketId), eq(tasks.projectId, projectId))
+        : eq(tasks.ticketId, ticketId),
+      orderBy: (t, { desc }) => [desc(t.createdAt)],
+    });
+    return row ? rowToTask(row) : null;
+  }
+
+  async function getActiveTaskByTicketId(ticketId: TicketId, projectId?: ProjectId): Promise<Task | null> {
+    const row = await db.query.tasks.findFirst({
+      where: and(
+        eq(tasks.ticketId, ticketId),
+        notInArray(tasks.state, [...TERMINAL_STATES]),
+        ...(projectId !== undefined ? [eq(tasks.projectId, projectId)] : [])
+      ),
+      orderBy: (t, { desc }) => [desc(t.createdAt)],
+    });
+    return row ? rowToTask(row) : null;
+  }
+
+  // Recovery-only lookup mirroring `idx_tasks_active_ticket_id_noproject`:
+  // the newest active task for this ticket that has no project binding.
+  async function getActiveProjectlessTaskByTicketId(ticketId: TicketId): Promise<Task | null> {
+    const row = await db.query.tasks.findFirst({
+      where: and(
+        eq(tasks.ticketId, ticketId),
+        isNull(tasks.projectId),
+        notInArray(tasks.state, [...TERMINAL_STATES])
+      ),
       orderBy: (t, { desc }) => [desc(t.createdAt)],
     });
     return row ? rowToTask(row) : null;
@@ -176,7 +220,8 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
     ticketSourceLabel = "redmine",
     ticketUrl?: string,
     displayId?: string,
-    ticketSource?: { integrationId: string; ticketProjectKey: string }
+    ticketSource?: { integrationId: string; ticketProjectKey: string },
+    projectId?: ProjectId
   ): Promise<Task> {
     const now = new Date();
     try {
@@ -193,15 +238,39 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
         failureReason: null,
         ticketUrl: ticketUrl ?? null,
         displayId: displayId ?? null,
+        projectId: projectId ?? null,
         ticketSourceIntegrationId: ticketSource?.integrationId ?? null,
         ticketSourceProjectKey: ticketSource?.ticketProjectKey ?? null,
         createdAt: now,
         updatedAt: now,
       });
     } catch (err: unknown) {
-      const existing = await getTaskByTicketId(ticketId);
-      if (existing && !TERMINAL_STATES.has(existing.state)) {
-        return existing;
+      // The partial unique index `idx_tasks_active_ticket_id` allows at most one
+      // active (non-terminal) task per (project_id, ticket_id). A concurrent
+      // create — or a stale active task that predates a newer terminal one —
+      // may already hold that slot; reuse it instead of surfacing a UNIQUE
+      // constraint error. We must look up the ACTIVE task specifically (the
+      // newest task may be terminal) for the recovery to succeed.
+      //
+      // Only recover from the unique-constraint conflict: any other insert
+      // failure (disk full, NOT NULL/FK violation, corruption) must surface
+      // instead of being masked as a "reuse" of an unrelated active task.
+      if (isUniqueConstraintViolation(err)) {
+        // The conflict comes from one of two partial unique indexes. When
+        // projectId is set the conflict is on the composite
+        // (project_id, ticket_id) index, so scope recovery to that project.
+        // When projectId is undefined the conflict is on the project-less
+        // index (`idx_tasks_active_ticket_id_noproject`); recovery must reuse
+        // the active task with project_id IS NULL — never the newest active
+        // task across all projects, which could belong to a different project
+        // and cause cross-project task reuse.
+        const active =
+          projectId !== undefined
+            ? await getActiveTaskByTicketId(ticketId, projectId)
+            : await getActiveProjectlessTaskByTicketId(ticketId);
+        if (active) {
+          return active;
+        }
       }
       throw err;
     }
@@ -291,6 +360,7 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
     patchset: number;
     reviewUrl?: string;
     displayId?: string;
+    projectId?: ProjectId;
   }): Promise<Task> {
     const now = new Date();
     try {
@@ -310,6 +380,7 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
         ticketUrl: null,
         reviewUrl: input.reviewUrl ?? null,
         displayId: input.displayId ?? null,
+        projectId: input.projectId ?? null,
         createdAt: now,
         updatedAt: now,
       });
@@ -482,20 +553,24 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
     });
   }
 
-  async function getFailedAttemptCount(ticketId: TicketId, ticketSourceLabel?: string): Promise<number> {
+  async function getFailedAttemptCount(
+    ticketId: TicketId,
+    ticketSourceLabel?: string,
+    projectId?: ProjectId
+  ): Promise<number> {
+    const clauses: string[] = ["ticket_id = ?", "state IN ('FAILED', 'ABANDONED')"];
+    const args: unknown[] = [ticketId];
     if (ticketSourceLabel !== undefined) {
-      const row = raw
-        .prepare(
-          "SELECT COUNT(*) AS count FROM tasks WHERE ticket_id = ? AND ticket_source_label = ? AND state IN ('FAILED', 'ABANDONED')"
-        )
-        .get(ticketId, ticketSourceLabel) as { count: number };
-      return row.count;
+      clauses.push("ticket_source_label = ?");
+      args.push(ticketSourceLabel);
     }
-
+    if (projectId !== undefined) {
+      clauses.push("project_id = ?");
+      args.push(projectId);
+    }
     const row = raw
-      .prepare("SELECT COUNT(*) AS count FROM tasks WHERE ticket_id = ? AND state IN ('FAILED', 'ABANDONED')")
-      .get(ticketId) as { count: number };
-
+      .prepare(`SELECT COUNT(*) AS count FROM tasks WHERE ${clauses.join(" AND ")}`)
+      .get(...args) as { count: number };
     return row.count;
   }
 
@@ -662,11 +737,12 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
   function findAdoptionTargetForTask(taskId: TaskId): { projectId: string; integrationId: string; ticketProjectKey: string } | null {
     const snapshotRow = raw
       .prepare(
-        "SELECT pts.project_id AS projectId, t.ticket_source_integration_id AS integrationId, " +
+        "SELECT pib.project_id AS projectId, t.ticket_source_integration_id AS integrationId, " +
         "t.ticket_source_project_key AS ticketProjectKey FROM tasks t " +
-        "JOIN project_ticket_source pts " +
-        "ON pts.integration_id = t.ticket_source_integration_id " +
-        "AND pts.ticket_project_key = t.ticket_source_project_key " +
+        "JOIN project_integration_bindings pib " +
+        "ON pib.capability = 'issue_tracking' " +
+        "AND pib.integration_id = t.ticket_source_integration_id " +
+        "AND json_extract(pib.config_json, '$.ticketProjectKey') = t.ticket_source_project_key " +
         "WHERE t.task_id = ? " +
         "AND t.ticket_source_integration_id IS NOT NULL " +
         "AND t.ticket_source_project_key IS NOT NULL"
@@ -682,8 +758,9 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
 
     const fallbackRows = raw
       .prepare(
-        "SELECT project_id AS projectId, integration_id AS integrationId, ticket_project_key AS ticketProjectKey " +
-        "FROM project_ticket_source WHERE integration_id = ?"
+        "SELECT project_id AS projectId, integration_id AS integrationId, " +
+        "json_extract(config_json, '$.ticketProjectKey') AS ticketProjectKey " +
+        "FROM project_integration_bindings WHERE capability = 'issue_tracking' AND integration_id = ?"
       )
       .all(integrationId) as { projectId: string; integrationId: string; ticketProjectKey: string }[];
     if (fallbackRows.length !== 1) return null;
@@ -1019,6 +1096,7 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
     createTask,
     getTask,
     getTaskByTicketId,
+    getActiveTaskByTicketId,
     getActiveTasks,
     getAllTasks,
     transition,

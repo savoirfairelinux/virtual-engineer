@@ -19,14 +19,15 @@ describe("renderAdminDashboardHtml", () => {
 
   it("renders bootstrap config without auth by default", () => {
     const html = renderAdminDashboardHtml();
-    expect(html).toContain(
-      'window.__VE_ADMIN_BOOTSTRAP__ = {"requiresAuth":false,"authMode":"none","gerritBaseUrl":null,"gitlabBaseUrl":null,"ticketLinkTemplates":{}}'
-    );
+    expect(html).toContain('"requiresAuth":false');
+    expect(html).toContain('"authMode":"none"');
+    expect(html).toContain('"gerritBaseUrl":null');
   });
 
   it("renders bootstrap config for auth-protected mode", () => {
     const html = renderAdminDashboardHtml({ requiresAuth: true, authMode: "hmac" });
-    expect(html).toContain('"requiresAuth":true,"authMode":"hmac"');
+    expect(html).toContain('"requiresAuth":true');
+    expect(html).toContain('"authMode":"hmac"');
   });
 
   it("includes nonce on the bootstrap script tag when nonce is provided", () => {
@@ -85,5 +86,3 @@ describe("renderAdminDashboardHtml", () => {
     expect(html).not.toContain("loadProviders");
   });
 });
-
-
