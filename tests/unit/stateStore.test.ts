@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import Database from "better-sqlite3";
 import { SqliteStateStore } from "../../src/state/stateStore.js";
 import { InvalidTransitionError } from "../../src/state/stateMachine.js";
 import { makeTaskId, makeTicketId, makeExternalChangeId, makeProjectId } from "../../src/interfaces.js";
@@ -528,6 +529,59 @@ describe("SqliteStateStore", () => {
       expect(cost?.tokens.cached).toBe(5);
       expect(cost?.tokens.cacheWrite).toBe(7);
       expect(cost?.modelId).toBe("gpt-test");
+    });
+
+    it("recomputes legacy cycle cost from the agent_events column when the result JSON omits events", async () => {
+      const dbPath = tempDbPath();
+      let localStore = await SqliteStateStore.create(dbPath);
+      const taskId = makeTaskId(randomUUID());
+      await localStore.createTask(taskId, makeTicketId("cost-legacy"));
+      const events = [
+        {
+          type: "assistant.usage",
+          timestamp: "2026-01-01T00:00:00.000Z",
+          data: { apiCallId: "req-1", totalNanoAiu: 2_000_000_000, cost: 1.5, inputTokens: 100, outputTokens: 20, model: "gpt-test" },
+          taskId: String(taskId),
+          cycleNumber: 1,
+        },
+      ];
+      await localStore.saveAgentCycle(taskId, 1, {
+        status: "success",
+        modifiedFiles: [],
+        summary: "done",
+        agentLogs: "",
+        agentEvents: events,
+        metadata: {},
+      });
+      localStore.close();
+
+      // Simulate a legacy row: clear the cost snapshot and strip events from the
+      // agentResult JSON so they survive only in the canonical agent_events column.
+      const raw = new Database(dbPath);
+      raw
+        .prepare(
+          `UPDATE agent_cycles SET cost_ai_credits = NULL, cost_usd = NULL, premium_requests = NULL, cost_input_tokens = NULL, cost_output_tokens = NULL, cost_cached_tokens = NULL, cost_cache_write_tokens = NULL, cost_model_id = NULL, agent_result = ? WHERE task_id = ?`
+        )
+        .run(
+          JSON.stringify({ status: "success", modifiedFiles: [], summary: "done", agentLogs: "", metadata: {} }),
+          String(taskId)
+        );
+      raw.close();
+
+      localStore = await SqliteStateStore.create(dbPath);
+      try {
+        const cycles = await localStore.getAgentCycles(taskId);
+        const cost = cycles[0]?.cost;
+        expect(cost).toBeDefined();
+        expect(cost?.priced).toBe(true);
+        expect(cost?.aiCredits).toBe(2);
+        expect(cost?.usd).toBeCloseTo(0.02, 10);
+        expect(cost?.tokens.input).toBe(100);
+        expect(cost?.tokens.output).toBe(20);
+        expect(cost?.modelId).toBe("gpt-test");
+      } finally {
+        localStore.close();
+      }
     });
 
     it("persists an estimated USD cost from the premium-request multiplier when nano-AIU is absent", async () => {

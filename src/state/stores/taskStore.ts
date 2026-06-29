@@ -399,8 +399,19 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
           modelId: row.costModelId,
         };
       } else {
-        // Legacy cycle (persisted before cost columns): recompute from events.
-        const recomputed = computeCycleCost(result.agentEvents);
+        // Legacy cycle (persisted before cost columns): recompute from the
+        // streamed event log. Prefer the canonical `agent_events` column over
+        // the larger agentResult JSON, which is more prone to truncation or
+        // corruption (and is replaced by a placeholder when parsing fails above).
+        let events = result.agentEvents;
+        if (row.agentEvents) {
+          try {
+            events = JSON.parse(row.agentEvents) as AgentLogEvent[];
+          } catch {
+            // Fall back to events embedded in the parsed result.
+          }
+        }
+        const recomputed = computeCycleCost(events);
         if (hasCostData(recomputed)) cost = recomputed;
       }
       return {
