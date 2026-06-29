@@ -152,7 +152,7 @@ export class GitHubReviewProvider implements ReviewProvider {
     };
   }
 
-  async getChangeDiff(changeId: ExternalChangeId, _patchset?: number): Promise<ReviewChangeDiff> {
+  async getChangeDiff(changeId: ExternalChangeId, patchset?: number): Promise<ReviewChangeDiff> {
     const { owner, repo, prNumber } = this.parseChangeId(changeId);
     const files = GitHubPrFileListSchema.parse(
       await this.fetchJson(`${this.prUrl(owner, repo, prNumber)}/files?per_page=300`)
@@ -160,7 +160,9 @@ export class GitHubReviewProvider implements ReviewProvider {
 
     return {
       changeId,
-      patchset: 1,
+      // Echo the requested patchset so diff.patchset stays consistent with the
+      // SHA-derived currentPatchset surfaced in prompts/logs.
+      patchset: patchset ?? 1,
       files: files.map((f): ReviewDiffFile => ({
         path: f.filename,
         status: mapFileStatus(f.status),

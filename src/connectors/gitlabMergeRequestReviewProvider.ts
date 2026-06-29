@@ -175,7 +175,7 @@ export class GitLabMergeRequestReviewProvider implements ReviewProvider {
     };
   }
 
-  async getChangeDiff(changeId: ExternalChangeId, _patchset?: number): Promise<ReviewChangeDiff> {
+  async getChangeDiff(changeId: ExternalChangeId, patchset?: number): Promise<ReviewChangeDiff> {
     const { project, iid } = this.parseChange(changeId);
     const res = MrChangesResponseSchema.parse(
       await this.http.fetchJson(`${this.mrUrl(project, iid)}/changes`)
@@ -183,7 +183,9 @@ export class GitLabMergeRequestReviewProvider implements ReviewProvider {
 
     return {
       changeId,
-      patchset: 1,
+      // Echo the requested patchset so diff.patchset stays consistent with the
+      // SHA-derived currentPatchset surfaced in prompts/logs.
+      patchset: patchset ?? 1,
       files: res.changes.map(
         (ch): ReviewDiffFile => ({
           path: ch.new_path || ch.old_path,

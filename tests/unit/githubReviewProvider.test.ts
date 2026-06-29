@@ -100,6 +100,14 @@ describe("GitHubReviewProvider", () => {
     expect(r.files[3]?.status).toBe("renamed");
   });
 
+  it("getChangeDiff echoes the requested patchset", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse([
+      { filename: "src/a.ts", status: "modified", patch: "@@\n+new" },
+    ]));
+    const r = await new GitHubReviewProvider(config).getChangeDiff(cid, 42);
+    expect(r.patchset).toBe(42);
+  });
+
   it("postReviewWithComments posts an APPROVE review with inline comments", async () => {
     // First call: files fetch for line validation; src/a.ts has line 10 in hunk
     fetchMock.mockResolvedValueOnce(jsonResponse([

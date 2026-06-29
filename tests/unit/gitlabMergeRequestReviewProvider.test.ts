@@ -106,6 +106,12 @@ describe("GitLabMergeRequestReviewProvider", () => {
     expect(diff.files[0]?.status).toBe("modified");
   });
 
+  it("getChangeDiff echoes the requested patchset", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(CHANGES_BODY));
+    const diff = await new GitLabMergeRequestReviewProvider(config).getChangeDiff(cid, 99);
+    expect(diff.patchset).toBe(99);
+  });
+
   it("postReviewWithComments posts inline discussions, a summary note, and approves on +1", async () => {
     // 1) fetch changes (line validation + diff_refs), 2) discussion, 3) note, 4) approve
     fetchMock
