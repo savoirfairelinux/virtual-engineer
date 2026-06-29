@@ -33,18 +33,19 @@ export function providerHasWebhookHandler(provider: string): boolean {
 }
 
 /**
- * Return the webhook handler for the given provider and event. When the event
- * is unknown, falls back to the provider's first handler so callers can still
- * route generic pings. Returns `undefined` if the provider is unsupported.
+ * Return the webhook handler for the given provider and event. The `event` is
+ * the URL path segment (`/webhooks/:integrationId/:event`) and must match one of
+ * the provider's supported event names — GitHub uses the literal `github`,
+ * GitLab uses `object_kind` values, and Redmine uses `issue.*`. Returns
+ * `undefined` when the provider is unsupported, the event is missing, or the
+ * event matches no handler; the caller then treats the request as ignored
+ * rather than mis-routing an unsupported event to an arbitrary handler.
  */
 export function getHandlerForProviderEvent(provider: string, event?: string): WebhookHandler | undefined {
   const entries = PROVIDER_HANDLERS[provider as ProviderId];
   if (!entries || entries.length === 0) return undefined;
-  if (event) {
-    const matched = entries.find((entry) => entry.events.includes(event));
-    if (matched) return matched.handler;
-  }
-  return entries[0]?.handler;
+  if (!event) return undefined;
+  return entries.find((entry) => entry.events.includes(event))?.handler;
 }
 
 /** Return all event names handled by the given provider (empty array if unknown). */
