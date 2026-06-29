@@ -97,7 +97,10 @@ export function buildFoldedSummary(folded: InlineReviewComment[]): string {
   const lines = folded.map((c) => {
     const message = c.message.replace(/\s+/g, " ").trim();
     const severity = c.severity.trim() || "note";
-    return `- ${c.file}:${c.line} (${severity}) — ${message}`;
+    // File-level comments (line <= 0) render without a noisy ":0" suffix,
+    // matching how the GitHub/GitLab providers render file-level comments.
+    const location = c.line > 0 ? `${c.file}:${c.line}` : c.file;
+    return `- ${location} (${severity}) — ${message}`;
   });
   return ["", "Additional notes (not posted inline):", ...lines].join("\n");
 }

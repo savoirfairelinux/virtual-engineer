@@ -85,4 +85,10 @@ describe("buildFoldedSummary", () => {
     expect(summary).toContain("Additional notes (not posted inline):");
     expect(summary).toContain("a.ts:7 (nit) — Use const here");
   });
+
+  it("renders file-level comments (line 0) without a :0 suffix", () => {
+    const summary = buildFoldedSummary([c("a.ts", 0, "warning", "File-level note")]);
+    expect(summary).toContain("- a.ts (warning) — File-level note");
+    expect(summary).not.toContain("a.ts:0");
+  });
 });
