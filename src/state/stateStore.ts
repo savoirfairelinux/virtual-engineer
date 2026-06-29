@@ -271,6 +271,13 @@ export class SqliteStateStore {
     this.ensureColumn("change_per_repository", "commit_index", "INTEGER NOT NULL DEFAULT 0");
     this.ensureColumn("change_per_repository", "subject_hash", "TEXT");
     this.ensureColumn("agent_cycles", "agent_events", "TEXT");
+    this.ensureColumn("agent_cycles", "cost_ai_credits", "REAL");
+    this.ensureColumn("agent_cycles", "cost_usd", "REAL");
+    this.ensureColumn("agent_cycles", "premium_requests", "REAL");
+    this.ensureColumn("agent_cycles", "cost_input_tokens", "INTEGER");
+    this.ensureColumn("agent_cycles", "cost_output_tokens", "INTEGER");
+    this.ensureColumn("agent_cycles", "cost_cached_tokens", "INTEGER");
+    this.ensureColumn("agent_cycles", "cost_model_id", "TEXT");
     this.ensureColumn("integrations", "discovered_resources_json", "TEXT");
     this.ensureColumn("integrations", "discovered_at", "INTEGER");
     this.ensureColumn("tasks", "project_id", "TEXT");

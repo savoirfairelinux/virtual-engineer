@@ -487,6 +487,99 @@ describe("SqliteStateStore", () => {
       expect(cycles[0]?.result.summary).toBe("[corrupt cycle data]");
       expect(cycles[0]?.validationResult).toBeNull();
     });
+
+    it("computes and persists cycle cost from assistant.usage events", async () => {
+      const taskId = makeTaskId(randomUUID());
+      await store.createTask(taskId, makeTicketId("cost-1"));
+      const result = {
+        status: "success" as const,
+        modifiedFiles: [],
+        summary: "done",
+        agentLogs: "",
+        agentEvents: [
+          {
+            type: "assistant.usage",
+            timestamp: "2026-01-01T00:00:00.000Z",
+            data: { apiCallId: "req-1", totalNanoAiu: 2_000_000_000, cost: 1.5, inputTokens: 100, outputTokens: 20, cacheReadTokens: 5, model: "gpt-test" },
+            taskId: String(taskId),
+            cycleNumber: 1,
+          },
+          {
+            type: "assistant.usage",
+            timestamp: "2026-01-01T00:01:00.000Z",
+            data: { apiCallId: "req-2", totalNanoAiu: 1_000_000_000, cost: 0.5, inputTokens: 40, outputTokens: 10, model: "gpt-test" },
+            taskId: String(taskId),
+            cycleNumber: 1,
+          },
+        ],
+        metadata: {},
+      };
+      await store.saveAgentCycle(taskId, 1, result);
+
+      const cycles = await store.getAgentCycles(taskId);
+      const cost = cycles[0]?.cost;
+      expect(cost).toBeDefined();
+      expect(cost?.priced).toBe(true);
+      expect(cost?.aiCredits).toBe(3);
+      expect(cost?.usd).toBeCloseTo(0.03, 10);
+      expect(cost?.premiumRequests).toBeCloseTo(2.0, 10);
+      expect(cost?.tokens.input).toBe(140);
+      expect(cost?.tokens.output).toBe(30);
+      expect(cost?.tokens.cached).toBe(5);
+      expect(cost?.modelId).toBe("gpt-test");
+    });
+
+    it("persists an estimated USD cost from the premium-request multiplier when nano-AIU is absent", async () => {
+      const taskId = makeTaskId(randomUUID());
+      await store.createTask(taskId, makeTicketId("cost-est"));
+      const result = {
+        status: "success" as const,
+        modifiedFiles: [],
+        summary: "done",
+        agentLogs: "",
+        agentEvents: [
+          {
+            type: "assistant.usage",
+            timestamp: "2026-01-01T00:00:00.000Z",
+            data: { cost: 0.5, inputTokens: 100, outputTokens: 20, model: "gpt-est" },
+            taskId: String(taskId),
+            cycleNumber: 1,
+          },
+        ],
+        metadata: {},
+      };
+      await store.saveAgentCycle(taskId, 1, result);
+
+      const cycles = await store.getAgentCycles(taskId);
+      const cost = cycles[0]?.cost;
+      expect(cost?.priced).toBe(false);
+      expect(cost?.usd).toBeCloseTo(0.02, 10);
+      expect(cost?.aiCredits).toBe(0);
+      expect(cost?.premiumRequests).toBeCloseTo(0.5, 10);
+    });
+
+    it("recomputes cost for legacy cycles persisted without cost columns", async () => {
+      const taskId = makeTaskId(randomUUID());
+      await store.createTask(taskId, makeTicketId("cost-2"));
+      const raw = (store as unknown as { raw: { prepare: (sql: string) => { run: (...args: unknown[]) => void } } }).raw;
+      const events = JSON.stringify([
+        {
+          type: "assistant.usage",
+          timestamp: "2026-01-01T00:00:00.000Z",
+          data: { totalNanoAiu: 5_000_000_000, inputTokens: 12, outputTokens: 4 },
+          taskId: String(taskId),
+          cycleNumber: 1,
+        },
+      ]);
+      const agentResult = JSON.stringify({ status: "success", modifiedFiles: [], summary: "legacy", agentLogs: "", agentEvents: JSON.parse(events), metadata: {} });
+      raw.prepare(
+        "INSERT INTO agent_cycles (task_id, cycle_number, agent_result, validation_result, agent_events, created_at) VALUES (?, ?, ?, ?, ?, ?)"
+      ).run(taskId, 1, agentResult, null, events, Date.now());
+
+      const cycles = await store.getAgentCycles(taskId);
+      expect(cycles[0]?.cost?.priced).toBe(true);
+      expect(cycles[0]?.cost?.aiCredits).toBe(5);
+    });
   });
 
   describe("getAgentCycleEvents", () => {
