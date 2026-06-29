@@ -236,6 +236,9 @@ export class GitLabMergeRequestReviewProvider implements ReviewProvider {
 
     const fileFiltered = filterCommentsByAllowedFiles(comments, allowedFiles, { project, iid });
     const positiveLine = fileFiltered.filter((c) => c.line > 0);
+    // File-level comments (line <= 0) cannot be positioned inline; fold them
+    // into the summary note so the feedback is not lost.
+    const fileLevel = fileFiltered.filter((c) => c.line <= 0);
 
     // Fetch changes once to validate inline comment lines and obtain diff_refs.
     let diffRefs:
@@ -257,7 +260,7 @@ export class GitLabMergeRequestReviewProvider implements ReviewProvider {
     }
 
     const inline: InlineReviewComment[] = [];
-    const outOfDiff: InlineReviewComment[] = [];
+    const outOfDiff: InlineReviewComment[] = [...fileLevel];
     const canPositionInline =
       diffRefs !== null &&
       typeof diffRefs.base_sha === "string" &&
@@ -296,7 +299,13 @@ export class GitLabMergeRequestReviewProvider implements ReviewProvider {
     const foldedSection =
       outOfDiff.length > 0
         ? "\n\n---\n**Additional comments (lines outside diff hunk):**\n" +
-          outOfDiff.map((c) => `- \`${c.file}:${c.line}\` [${c.severity}]: ${c.message}`).join("\n")
+          outOfDiff
+            .map((c) =>
+              c.line > 0
+                ? `- \`${c.file}:${c.line}\` [${c.severity}]: ${c.message}`
+                : `- \`${c.file}\` [${c.severity}]: ${c.message}`
+            )
+            .join("\n")
         : "";
 
     const noteBody = summary + foldedSection;

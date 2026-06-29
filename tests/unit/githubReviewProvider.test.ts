@@ -129,7 +129,7 @@ describe("GitHubReviewProvider", () => {
     expect(events).toEqual(["COMMENT", "APPROVE", "REQUEST_CHANGES"]);
   });
 
-  it("postReviewWithComments drops file-level (line=0) comments from inline list", async () => {
+  it("drops file-level (line=0) comments from inline list but folds them into the body", async () => {
     // Files fetch returns empty → line-validation map is empty → line>0 comment passes as inline
     fetchMock.mockResolvedValueOnce(jsonResponse([]));
     fetchMock.mockResolvedValueOnce(jsonResponse({ id: 1 }));
@@ -143,6 +143,10 @@ describe("GitHubReviewProvider", () => {
     );
     const body = JSON.parse((fetchMock.mock.calls[1]?.[1] as RequestInit).body as string);
     expect(body.comments).toEqual([{ path: "src/a.ts", line: 5, body: "inline", side: "RIGHT" }]);
+    // The file-level comment is folded into the review body (without a line suffix).
+    expect(body.body).toContain("file-level");
+    expect(body.body).toContain("`src/a.ts`");
+    expect(body.body).not.toContain("`src/a.ts:0`");
   });
 
   it("folds out-of-diff inline comments into review body", async () => {

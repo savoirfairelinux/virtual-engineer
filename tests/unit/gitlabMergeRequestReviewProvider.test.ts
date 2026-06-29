@@ -136,6 +136,29 @@ describe("GitLabMergeRequestReviewProvider", () => {
     expect(body.body).toContain("Out of range");
   });
 
+  it("folds file-level (line=0) comments into the summary note without a line suffix", async () => {
+    // Only a file-level comment → no /changes fetch needed, just the summary note.
+    fetchMock.mockResolvedValueOnce(jsonResponse({ id: 1 })); // summary note only
+
+    const p = new GitLabMergeRequestReviewProvider(config);
+    await p.postReviewComments(
+      cid,
+      1,
+      [{ file: "src/a.ts", line: 0, message: "file-level concern", severity: "warning" }],
+      "Summary"
+    );
+
+    const calls = fetchMock.mock.calls;
+    const discussionCalls = calls.filter((c: unknown[]) => String(c[0]).endsWith("/discussions"));
+    expect(discussionCalls).toHaveLength(0);
+    const noteCall = calls.find((c: unknown[]) => String(c[0]).endsWith("/notes"));
+    expect(noteCall).toBeDefined();
+    const body = JSON.parse((noteCall?.[1] as { body: string }).body) as { body: string };
+    expect(body.body).toContain("file-level concern");
+    expect(body.body).toContain("`src/a.ts`");
+    expect(body.body).not.toContain("`src/a.ts:0`");
+  });
+
   it("vote(-1) unapproves the MR", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({})); // unapprove (no inline, no note)
     const p = new GitLabMergeRequestReviewProvider(config);

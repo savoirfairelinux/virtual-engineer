@@ -215,6 +215,9 @@ export class GitHubReviewProvider implements ReviewProvider {
     // First, drop comments for files not present in the patchset.
     const fileFilteredComments = filterCommentsByAllowedFiles(comments, allowedFiles, { repo, prNumber });
     const positiveLineComments = fileFilteredComments.filter((c) => c.line > 0);
+    // File-level comments (line <= 0) cannot be anchored to a diff line; fold
+    // them into the review body so the feedback is not lost.
+    const fileLevelComments = fileFilteredComments.filter((c) => c.line <= 0);
 
     // Build a map of filename → valid new-file line numbers by fetching the PR
     // diff. GitHub's review API rejects the entire request with 422 if even one
@@ -236,7 +239,7 @@ export class GitHubReviewProvider implements ReviewProvider {
     }
 
     const inlineComments: InlineReviewComment[] = [];
-    const outOfDiffComments: InlineReviewComment[] = [];
+    const outOfDiffComments: InlineReviewComment[] = [...fileLevelComments];
     for (const c of positiveLineComments) {
       const validLines = validLinesByFile.get(c.file);
       if (validLines === undefined || validLines.has(c.line)) {
@@ -247,12 +250,17 @@ export class GitHubReviewProvider implements ReviewProvider {
       }
     }
 
-    // Fold out-of-diff comments into the review body so no feedback is lost.
+    // Fold out-of-diff and file-level comments into the review body so no
+    // feedback is lost. File-level comments (line <= 0) render without a line.
     const foldedSection =
       outOfDiffComments.length > 0
         ? "\n\n---\n**Additional comments (lines outside diff hunk):**\n" +
           outOfDiffComments
-            .map((c) => `- \`${c.file}:${c.line}\` [${c.severity}]: ${c.message}`)
+            .map((c) =>
+              c.line > 0
+                ? `- \`${c.file}:${c.line}\` [${c.severity}]: ${c.message}`
+                : `- \`${c.file}\` [${c.severity}]: ${c.message}`
+            )
             .join("\n")
         : "";
 
@@ -265,7 +273,12 @@ export class GitHubReviewProvider implements ReviewProvider {
 
     // A bare COMMENT event with no inline comments and no summary would post a
     // visible empty review. APPROVE/REQUEST_CHANGES still post since they carry a vote.
-    if (event === "COMMENT" && apiComments.length === 0 && summary.trim().length === 0) {
+    if (
+      event === "COMMENT" &&
+      apiComments.length === 0 &&
+      summary.trim().length === 0 &&
+      foldedSection.length === 0
+    ) {
       return;
     }
 
