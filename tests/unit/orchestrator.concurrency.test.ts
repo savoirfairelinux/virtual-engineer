@@ -59,6 +59,7 @@ function buildOrchestrator(
       gitAuthorName: "VE",
       gitAuthorEmail: "ve@x",
       agentContainerImage: "img",
+      publicBaseUrl: "http://127.0.0.1:3100",
     },
     store,
     mockWorkspace as never,
