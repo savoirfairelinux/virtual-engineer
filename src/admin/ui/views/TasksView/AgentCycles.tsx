@@ -2,7 +2,8 @@ import { useState } from "react";
 import { Icon } from "../../components/Icon.tsx";
 import { Tag } from "../../components/Tag.tsx";
 import { TONE } from "../../states.ts";
-import type { ApiCycle } from "../../types.ts";
+import type { ApiCycle, CycleCost } from "../../types.ts";
+import { formatUsd, formatCredits } from "./costFormat.ts";
 
 interface ReviewComment {
   file: string;
@@ -125,6 +126,32 @@ function cycleDuration(cycle: ApiCycle): string {
   return `${Math.floor(ms / 60_000)}m ${Math.round((ms % 60_000) / 1000)}s`;
 }
 
+interface CostBadge {
+  label: string;
+  title: string;
+}
+
+function cycleCostBadge(cost: CycleCost): CostBadge | null {
+  const tokens = `in ${cost.tokens.input} · out ${cost.tokens.output} · cached ${cost.tokens.cached}`;
+  const model = cost.modelId ? ` · ${cost.modelId}` : "";
+  if (cost.usd > 0) {
+    const prefix = cost.priced ? "" : "~";
+    const credits = cost.priced ? ` · ${formatCredits(cost.aiCredits)} AI credits` : "";
+    const estimate = cost.priced ? "" : " (estimated)";
+    return {
+      label: `${prefix}${formatUsd(cost.usd)}`,
+      title: `${prefix}${formatUsd(cost.usd)} USD${estimate}${credits}${model}\n${tokens}`,
+    };
+  }
+  if (cost.tokens.input > 0 || cost.tokens.output > 0) {
+    return {
+      label: `${(cost.tokens.input + cost.tokens.output).toLocaleString()} tok`,
+      title: `${tokens}${model}`,
+    };
+  }
+  return null;
+}
+
 interface CycleCardProps {
   cycle: ApiCycle;
   open: boolean;
@@ -136,6 +163,7 @@ function CycleCard({ cycle, open, onToggle }: CycleCardProps) {
   const tone = running ? "active" : cycle.result.status === "success" ? "ok" : cycle.result.status === "no_change" ? "warn" : "danger";
   const reviewComments = extractReviewComments(cycle);
   const reviewSummary = extractReviewSummary(cycle, reviewComments.length);
+  const costBadge = cycle.cost ? cycleCostBadge(cycle.cost) : null;
 
   return (
     <div className="card" style={{ overflow: "hidden", borderColor: open ? "var(--border)" : "var(--border-soft)" }}>
@@ -173,6 +201,15 @@ function CycleCard({ cycle, open, onToggle }: CycleCardProps) {
           <span style={{ display: "inline-flex", gap: "5px", alignItems: "center" }}>
             <Icon name="clock" size={13} />{cycleDuration(cycle)}
           </span>
+          {costBadge && (
+            <span
+              className="mono"
+              title={costBadge.title}
+              style={{ display: "inline-flex", gap: "5px", alignItems: "center", color: "var(--text-dim)" }}
+            >
+              {costBadge.label}
+            </span>
+          )}
         </div>
       </button>
 
@@ -195,6 +232,36 @@ function CycleCard({ cycle, open, onToggle }: CycleCardProps) {
                     }}
                   >
                     {cycle.result.summary}
+                  </div>
+                </>
+              )}
+              {cycle.cost && (
+                <>
+                  <div className="eyebrow" style={{ margin: "20px 0 8px" }}>Cost</div>
+                  <div
+                    style={{
+                      display: "flex", flexWrap: "nowrap", gap: "16px", fontSize: "12px",
+                      color: "var(--text-dim)", alignItems: "baseline", whiteSpace: "nowrap", overflowX: "auto",
+                    }}
+                  >
+                    {cycle.cost.usd > 0 && (
+                      <span>
+                        <strong style={{ color: "var(--text)" }}>{cycle.cost.priced ? "" : "~"}{formatUsd(cycle.cost.usd)}</strong> USD
+                        {!cycle.cost.priced && <span style={{ color: "var(--text-faint)" }}> (est.)</span>}
+                      </span>
+                    )}
+                    {cycle.cost.priced && (
+                      <span><strong style={{ color: "var(--text)" }}>{formatCredits(cycle.cost.aiCredits)}</strong> AI credits</span>
+                    )}
+                    {cycle.cost.premiumRequests > 0 && (
+                      <span><strong style={{ color: "var(--text)" }}>{cycle.cost.premiumRequests.toFixed(2)}</strong> premium req</span>
+                    )}
+                    <span>in <span className="mono">{cycle.cost.tokens.input.toLocaleString()}</span></span>
+                    <span>out <span className="mono">{cycle.cost.tokens.output.toLocaleString()}</span></span>
+                    <span>cached <span className="mono">{cycle.cost.tokens.cached.toLocaleString()}</span></span>
+                    {cycle.cost.modelId && (
+                      <span className="mono" style={{ color: "var(--text-faint)" }}>{cycle.cost.modelId}</span>
+                    )}
                   </div>
                 </>
               )}
