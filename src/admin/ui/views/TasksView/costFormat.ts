@@ -26,11 +26,14 @@ export interface CostTotals {
 /** Aggregate cost across a task's cycles, or null when no cycle carries cost. */
 export function sumCycleCosts(cycles: ApiCycle[]): CostTotals | null {
   let any = false;
-  const totals: CostTotals = { priced: false, usd: 0, aiCredits: 0, premiumRequests: 0, input: 0, output: 0 };
+  // `priced` for the total means *every* contributing cycle is authoritatively
+  // priced; a single estimated cycle makes the whole total an estimate (shown
+  // with a `~` prefix). Starts true and is cleared by the first unpriced cycle.
+  const totals: CostTotals = { priced: true, usd: 0, aiCredits: 0, premiumRequests: 0, input: 0, output: 0 };
   for (const c of cycles) {
     if (!c.cost) continue;
     any = true;
-    if (c.cost.priced) totals.priced = true;
+    if (!c.cost.priced) totals.priced = false;
     totals.usd += c.cost.usd;
     totals.aiCredits += c.cost.aiCredits;
     totals.premiumRequests += c.cost.premiumRequests;
