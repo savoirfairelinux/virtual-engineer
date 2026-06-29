@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import { and, eq, inArray, notInArray } from "drizzle-orm";
+import { and, eq, inArray, isNull, notInArray } from "drizzle-orm";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import type {
   AgentCycle,
@@ -177,6 +177,20 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
     return row ? rowToTask(row) : null;
   }
 
+  // Recovery-only lookup mirroring `idx_tasks_active_ticket_id_noproject`:
+  // the newest active task for this ticket that has no project binding.
+  async function getActiveProjectlessTaskByTicketId(ticketId: TicketId): Promise<Task | null> {
+    const row = await db.query.tasks.findFirst({
+      where: and(
+        eq(tasks.ticketId, ticketId),
+        isNull(tasks.projectId),
+        notInArray(tasks.state, [...TERMINAL_STATES])
+      ),
+      orderBy: (t, { desc }) => [desc(t.createdAt)],
+    });
+    return row ? rowToTask(row) : null;
+  }
+
   async function createTask(
     taskId: TaskId,
     ticketId: TicketId,
@@ -221,7 +235,18 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
       // failure (disk full, NOT NULL/FK violation, corruption) must surface
       // instead of being masked as a "reuse" of an unrelated active task.
       if (isUniqueConstraintViolation(err)) {
-        const active = await getActiveTaskByTicketId(ticketId, projectId);
+        // The conflict comes from one of two partial unique indexes. When
+        // projectId is set the conflict is on the composite
+        // (project_id, ticket_id) index, so scope recovery to that project.
+        // When projectId is undefined the conflict is on the project-less
+        // index (`idx_tasks_active_ticket_id_noproject`); recovery must reuse
+        // the active task with project_id IS NULL — never the newest active
+        // task across all projects, which could belong to a different project
+        // and cause cross-project task reuse.
+        const active =
+          projectId !== undefined
+            ? await getActiveTaskByTicketId(ticketId, projectId)
+            : await getActiveProjectlessTaskByTicketId(ticketId);
         if (active) {
           return active;
         }

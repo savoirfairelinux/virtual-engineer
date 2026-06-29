@@ -192,6 +192,34 @@ describe("SqliteStateStore — Phase 2: projects", () => {
     expect(adopted?.projectId).toBe(newProject.id);
   });
 
+  it("recovers the project-less active task (not a cross-project one) on duplicate project-less create", async () => {
+    const a = await makeAgent(store);
+    const otherProject = await store.createProject({ name: "Other", type: "coding", agentId: a.id });
+    const ticketId = makeTicketId("dup-noproject");
+
+    // A project-less active task for the ticket — held by idx_tasks_active_ticket_id_noproject.
+    const projectlessId = makeTaskId(randomUUID());
+    await store.createTask(projectlessId, ticketId);
+
+    // A DIFFERENT project's active task for the SAME ticket. Allowed because the
+    // composite (project_id, ticket_id) index treats NULL project_id as distinct.
+    const projectBoundId = makeTaskId(randomUUID());
+    await store.createTask(projectBoundId, ticketId);
+    await store.setTaskProjectId(projectBoundId, otherProject.id);
+
+    // Make the cross-project task strictly newer so the old recovery (newest
+    // active task across ALL projects) would wrongly return it.
+    const raw = (store as unknown as { raw: { prepare(sql: string): { run(...args: unknown[]): unknown } } }).raw;
+    raw.prepare("UPDATE tasks SET created_at = ? WHERE task_id = ?").run(1000, projectlessId);
+    raw.prepare("UPDATE tasks SET created_at = ? WHERE task_id = ?").run(2000, projectBoundId);
+
+    // A second project-less create conflicts on the no-project unique index and
+    // must recover the project-less task, never the cross-project one.
+    const recovered = await store.createTask(makeTaskId(randomUUID()), ticketId);
+    expect(recovered.taskId).toBe(projectlessId);
+    expect(recovered.projectId ?? null).toBeNull();
+  });
+
   it("deleteProject snapshots the ticket source onto tasks that lack one (backfill)", async () => {
     const a = await makeAgent(store);
     await makeIntegration(store, "redmine-1", "redmine");
