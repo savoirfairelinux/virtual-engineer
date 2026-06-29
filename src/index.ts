@@ -35,6 +35,7 @@ import type { AppConfig } from "./config.js";
 import { DEFAULT_COPILOT_MODEL } from "./copilotModel.js";
 import { getProviderDescriptor, getProviderDomainCapabilities, getCapabilityIntake } from "./plugins/registry.js";
 import { buildTicketSourceLabel, parseIntegrationIdFromSourceLabel } from "./utils/ticketSourceLabel.js";
+import { resolvePublicBaseUrl } from "./utils/taskPageUrl.js";
 
 const log = getLogger("main");
 const SHUTDOWN_TIMEOUT_MS = 5_000;
@@ -138,6 +139,7 @@ async function main(): Promise<void> {
     maxRetryAttempts: config.maxRetryAttempts,
     pollingIntervalMs: config.pollingIntervalMs,
     adminAuthSecret: config.adminAuthSecret,
+    publicBaseUrl: config.publicBaseUrl,
   };
 
   /**
@@ -497,6 +499,11 @@ async function buildReviewBundle(
     maxReviewComments: getConfig().maxReviewComments,
     maxReviewReplies: getConfig().maxReviewReplies,
     reviewMinSeverity: getConfig().reviewMinSeverity,
+    taskPageBaseUrl: resolvePublicBaseUrl({
+      publicBaseUrl: getConfig().publicBaseUrl,
+      host: getConfig().adminApiHost,
+      port: getConfig().adminApiPort,
+    }),
   });
   return { integration, provider: reviewer.provider, orchestrator };
 }
@@ -656,6 +663,11 @@ function buildOrchestratorConfig(
     gitAuthorName: gitAuthorName ?? "Virtual Engineer",
     gitAuthorEmail: gitAuthorEmail ?? "ve@virtual-engineer.local",
     agentContainerImage: config.agentContainerImage,
+    publicBaseUrl: resolvePublicBaseUrl({
+      publicBaseUrl: config.publicBaseUrl,
+      host: config.adminApiHost,
+      port: config.adminApiPort,
+    }),
     ...(config.adminAuthSecret !== undefined ? { adminAuthSecret: config.adminAuthSecret } : {}),
   };
 }
