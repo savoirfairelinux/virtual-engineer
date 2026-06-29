@@ -295,7 +295,77 @@ export class GerritSshReviewProvider implements ReviewProvider {
     }
   }
 
-  /** Post inline comments together with a Code-Review vote via SSH `gerrit review --json`. */
+  /**
+   * Diff two patchsets of the same change (`fromPatchset` → `toPatchset`) by
+   * fetching both refs and comparing their tips. Used on a re-review to surface
+   * what changed since VE last reviewed.
+   */
+  async getInterPatchsetDiff(
+    changeId: ExternalChangeId,
+    fromPatchset: number,
+    toPatchset: number
+  ): Promise<ReviewChangeDiff> {
+    const details = await this.getChangeDetails(changeId);
+
+    const baseDir = this.config.workspaceBaseDir ?? "/tmp/ve-review-diffs";
+    const dir = await mkdtemp(join(baseDir, `delta-${details.changeNumber}-`));
+
+    try {
+      const sshUrl = `ssh://${this.config.sshUser}@${this.config.sshHost}:${this.config.sshPort}/${details.project}`;
+      const hostKeyOpts = buildSshHostKeyOptions(this.config.sshKnownHostsPath).join(" ");
+      const sshCmd = `ssh -p ${this.config.sshPort} -i ${this.config.sshKeyPath} ${hostKeyOpts}`;
+      const gitEnv = {
+        ...process.env,
+        GIT_TERMINAL_PROMPT: "0",
+        GIT_SSH_COMMAND: sshCmd,
+      };
+
+      await execFileAsync("git", ["init"], { cwd: dir, timeout: GIT_TIMEOUT_MS });
+      await execFileAsync("git", ["remote", "add", "origin", sshUrl], { cwd: dir, timeout: GIT_TIMEOUT_MS });
+
+      const fromSha = await this.fetchPatchsetTip(dir, gitEnv, details.changeNumber, fromPatchset);
+      const toSha = await this.fetchPatchsetTip(dir, gitEnv, details.changeNumber, toPatchset);
+
+      // Tree-level comparison between the two patchset tips. This does not need
+      // shared history, so shallow (depth=1) fetches of each ref are sufficient.
+      const { stdout: diffOutput } = await execFileAsync(
+        "git",
+        ["diff", `${fromSha}..${toSha}`, "--no-color", "--unified=5"],
+        { cwd: dir, timeout: GIT_TIMEOUT_MS, maxBuffer: 10 * 1024 * 1024 }
+      );
+
+      const files = parseDiffOutput(diffOutput);
+      log.info(
+        { changeId, fromPatchset, toPatchset, fileCount: files.length },
+        "computed inter-patchset diff from SSH fetch"
+      );
+      return { changeId, patchset: toPatchset, files };
+    } finally {
+      await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    }
+  }
+
+  /** Shallow-fetch a single patchset ref and return its tip SHA. */
+  private async fetchPatchsetTip(
+    dir: string,
+    gitEnv: NodeJS.ProcessEnv,
+    changeNumber: number,
+    patchset: number
+  ): Promise<string> {
+    const nn = String(changeNumber % 100).padStart(2, "0");
+    const ref = `refs/changes/${nn}/${changeNumber}/${patchset}`;
+    await execFileAsync("git", ["fetch", "--depth=1", "origin", ref], {
+      cwd: dir,
+      timeout: GIT_TIMEOUT_MS,
+      env: gitEnv,
+    });
+    const { stdout } = await execFileAsync("git", ["rev-parse", "FETCH_HEAD"], {
+      cwd: dir,
+      timeout: GIT_TIMEOUT_MS,
+    });
+    return stdout.trim();
+  }
+
   async postReviewWithComments(
     changeId: ExternalChangeId,
     revision: number,
