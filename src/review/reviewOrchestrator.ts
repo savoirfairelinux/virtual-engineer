@@ -481,6 +481,18 @@ export class ReviewOrchestrator {
       const result = parseReviewResult(rawOutput);
       const vote = computeVote(result);
 
+      // Drop comments referencing files outside the patchset diff before dedup,
+      // gating, persistence and summary folding. Otherwise hallucinated-path
+      // comments would be recorded in posted_review_comments and surface in the
+      // folded-summary appendix even though postReview filters them before
+      // posting them inline.
+      const allowedReviewFiles =
+        diff.files.length > 0 ? new Set(diff.files.map((f) => f.path)) : undefined;
+      const inDiffComments = filterCommentsByAllowedFiles(result.comments, allowedReviewFiles, {
+        changeId,
+        phase: "pre-dedup",
+      });
+
       // Fetch fresh details before posting to get the latest patchset.
       // This ensures we post the review on the latest patchset if a new one
       // was uploaded while the agent was running, preventing duplicate reviews
@@ -492,10 +504,10 @@ export class ReviewOrchestrator {
       // this change. Only newly-found issues are published; the overall vote and
       // summary still reflect the full result.
       const postedHashes = await this.deps.stateStore.getPostedReviewCommentHashes(taskId);
-      const newComments = result.comments.filter(
+      const newComments = inDiffComments.filter(
         (c) => !postedHashes.has(computeCommentHash(c)),
       );
-      const dedupedCount = result.comments.length - newComments.length;
+      const dedupedCount = inDiffComments.length - newComments.length;
 
       // Gate inline volume + severity. Comments below the minimum
       // severity or beyond the cap are folded into the summary instead of being

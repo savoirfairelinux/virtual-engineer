@@ -576,6 +576,42 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
     );
   });
 
+  it("does not record or fold out-of-diff comments (only addressable paths persisted)", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    const recorded: Array<{ file: string }> = [];
+    (mocks.store.markReviewCommentsPosted as ReturnType<typeof vi.fn>).mockImplementation(
+      async (_taskId: unknown, _changeId: unknown, comments: Array<{ file: string }>) => {
+        recorded.push(...comments);
+      }
+    );
+    // The hallucinated comment is below the inline-severity threshold, so before
+    // the fix it would be folded into the summary AND recorded in
+    // posted_review_comments even though postReview drops it before posting.
+    const hallucinated = [
+      "REVIEW_RESULT_START",
+      JSON.stringify({
+        comments: [
+          { file: "src/a.ts", line: 1, message: "Real", severity: "error" },
+          { file: "src/ghost.ts", line: 9, message: "Hallucinated", severity: "nit" },
+        ],
+        summary: "blocking",
+        score: -1,
+      }),
+      "REVIEW_RESULT_END",
+    ].join("\n");
+    const { runner } = makeWorkspaceRunner(hallucinated);
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+
+    await orch.runReview(initial.taskId);
+
+    // Only the in-diff comment is recorded into posted_review_comments.
+    expect(recorded.map((c) => c.file)).toEqual(["src/a.ts"]);
+    // The folded-summary appendix never mentions the out-of-diff path.
+    const summaryArg = (mocks.provider.vote as ReturnType<typeof vi.fn>).mock.calls[0]?.[3] as string;
+    expect(summaryArg).not.toContain("src/ghost.ts");
+  });
+
   it("posts the review on the LATEST patchset when a new one arrives during the agent run", async () => {
     // The change is cloned/reviewed at patchset 2, but a new patchset 3 is
     // uploaded while the agent runs. The review must be posted on 3 (the latest),
