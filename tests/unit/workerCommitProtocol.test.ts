@@ -617,4 +617,101 @@ describe("agent-worker multi-commit protocol", () => {
       expect(result.commits![0]!.files).toContain("d.ts");
     });
   });
+
+  describe("appendCommitTrailer", () => {
+    // Replicate the agent-worker function for testability.
+    function appendCommitTrailer(msg: string, key: string, value: string): string {
+      const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const existing = new RegExp(`^${escapedKey}:[ \\t]*(.*)$`, "m");
+      const match = existing.exec(msg);
+      if (match) {
+        if (match[1]!.trim() === value) return msg;
+        return msg.replace(existing, () => `${key}: ${value}`);
+      }
+      const hasTrailerBlock = /\n\n[A-Za-z][A-Za-z0-9-]*: /.test(msg);
+      return hasTrailerBlock ? `${msg}\n${key}: ${value}` : `${msg}\n\n${key}: ${value}`;
+    }
+
+    it("appends the trailer with a blank line when none exists", () => {
+      const out = appendCommitTrailer("feat: do thing", "Virtual-Engineer", "https://ve/#/tasks/t1");
+      expect(out).toBe("feat: do thing\n\nVirtual-Engineer: https://ve/#/tasks/t1");
+    });
+
+    it("groups the trailer with an existing trailer block", () => {
+      const msg = "feat: do thing\n\nChange-Id: Iabc";
+      const out = appendCommitTrailer(msg, "Virtual-Engineer", "https://ve/#/tasks/t1");
+      expect(out).toBe("feat: do thing\n\nChange-Id: Iabc\nVirtual-Engineer: https://ve/#/tasks/t1");
+    });
+
+    it("is a no-op when the trailer already has the same value", () => {
+      const msg = "feat: do thing\n\nVirtual-Engineer: https://ve/#/tasks/t1";
+      expect(appendCommitTrailer(msg, "Virtual-Engineer", "https://ve/#/tasks/t1")).toBe(msg);
+    });
+
+    it("rewrites the trailer in place when the value differs", () => {
+      const msg = "feat: do thing\n\nChange-Id: Iabc\nVirtual-Engineer: https://old/#/tasks/t1";
+      const out = appendCommitTrailer(msg, "Virtual-Engineer", "https://new/#/tasks/t1");
+      expect(out).toBe("feat: do thing\n\nChange-Id: Iabc\nVirtual-Engineer: https://new/#/tasks/t1");
+      // The Change-Id trailer is left untouched.
+      expect(out).toContain("Change-Id: Iabc");
+    });
+
+    it("does not treat $ in the value as a replacement pattern", () => {
+      const msg = "feat: do thing\n\nVirtual-Engineer: https://old/#/tasks/a";
+      const out = appendCommitTrailer(msg, "Virtual-Engineer", "https://new/#/tasks/$1b");
+      expect(out).toContain("Virtual-Engineer: https://new/#/tasks/$1b");
+    });
+
+    it("escapes regex metacharacters in the trailer key", () => {
+      // A key with metacharacters must be matched literally, not as a pattern.
+      const msg = "feat: do thing\n\nX.Y: old";
+      const out = appendCommitTrailer(msg, "X.Y", "new");
+      expect(out).toBe("feat: do thing\n\nX.Y: new");
+      // A different key that the unescaped pattern would have matched stays put.
+      const other = "feat: do thing\n\nXaY: keep";
+      expect(appendCommitTrailer(other, "X.Y", "new")).toBe(
+        "feat: do thing\n\nXaY: keep\nX.Y: new",
+      );
+    });
+  });
+
+  describe("needsVeTrailer pre-check", () => {
+    // Replicate the agent-worker predicate that decides whether the rebase to
+    // inject the Virtual-Engineer trailer is needed for a set of commit bodies.
+    function needsVeTrailer(bodies: string[], taskPageUrl: string): boolean {
+      return Boolean(taskPageUrl) && bodies.some((body) => {
+        const m = /^Virtual-Engineer:[ \t]*(.*)$/m.exec(body || "");
+        return !m || m[1]!.trim() !== taskPageUrl;
+      });
+    }
+
+    const URL = "https://ve/#/tasks/t1";
+
+    it("flags a commit whose body mentions the URL only in free text (no trailer)", () => {
+      // The URL appears in the body but not as a `Virtual-Engineer:` trailer line:
+      // a substring check would be a false negative and skip injection.
+      const body = `feat: do thing\n\nSee ${URL} for context.`;
+      expect(needsVeTrailer([body], URL)).toBe(true);
+    });
+
+    it("does not flag a commit that already carries the matching trailer", () => {
+      const body = `feat: do thing\n\nChange-Id: Iabc\nVirtual-Engineer: ${URL}`;
+      expect(needsVeTrailer([body], URL)).toBe(false);
+    });
+
+    it("flags a commit whose trailer value is stale", () => {
+      const body = "feat: do thing\n\nVirtual-Engineer: https://old/#/tasks/t1";
+      expect(needsVeTrailer([body], URL)).toBe(true);
+    });
+
+    it("flags when any commit in the set is missing the trailer", () => {
+      const ok = `feat: a\n\nVirtual-Engineer: ${URL}`;
+      const missing = "fix: b";
+      expect(needsVeTrailer([ok, missing], URL)).toBe(true);
+    });
+
+    it("returns false when no task-page URL is configured", () => {
+      expect(needsVeTrailer(["feat: do thing"], "")).toBe(false);
+    });
+  });
 });

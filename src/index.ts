@@ -138,6 +138,7 @@ async function main(): Promise<void> {
     maxRetryAttempts: config.maxRetryAttempts,
     pollingIntervalMs: config.pollingIntervalMs,
     adminAuthSecret: config.adminAuthSecret,
+    publicBaseUrl: config.publicBaseUrl,
   };
 
   /**
@@ -497,6 +498,10 @@ async function buildReviewBundle(
     maxReviewComments: getConfig().maxReviewComments,
     maxReviewReplies: getConfig().maxReviewReplies,
     reviewMinSeverity: getConfig().reviewMinSeverity,
+    // Only embed a task-page link when an externally-reachable base URL is
+    // explicitly configured; never fall back to a localhost URL in review
+    // summaries that leave this machine.
+    taskPageBaseUrl: getConfig().publicBaseUrl,
   });
   return { integration, provider: reviewer.provider, orchestrator };
 }
@@ -656,6 +661,10 @@ function buildOrchestratorConfig(
     gitAuthorName: gitAuthorName ?? "Virtual Engineer",
     gitAuthorEmail: gitAuthorEmail ?? "ve@virtual-engineer.local",
     agentContainerImage: config.agentContainerImage,
+    // Only embed a task-page link when an externally-reachable base URL is
+    // explicitly configured; never fall back to a localhost URL in commit
+    // trailers that leave this machine.
+    ...(config.publicBaseUrl !== undefined ? { publicBaseUrl: config.publicBaseUrl } : {}),
     ...(config.adminAuthSecret !== undefined ? { adminAuthSecret: config.adminAuthSecret } : {}),
   };
 }

@@ -204,6 +204,7 @@ function baseConfig() {
     gitAuthorName: "VE",
     gitAuthorEmail: "ve@x.com",
     agentContainerImage: "img:latest",
+    publicBaseUrl: "http://127.0.0.1:3100",
   };
 }
 

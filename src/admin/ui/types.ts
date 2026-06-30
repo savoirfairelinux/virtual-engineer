@@ -296,6 +296,7 @@ export interface VeAdminBootstrap {
   gerritBaseUrl: string | null;
   gitlabBaseUrl: string | null;
   ticketLinkTemplates: Record<string, string>;
+  publicBaseUrl: string | null;
   providerLogos?: Record<string, string>;
 }
 

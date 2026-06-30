@@ -40,6 +40,8 @@ const GIT_COMMITTER_NAME  = process.env.GIT_COMMITTER_NAME  || GIT_AUTHOR_NAME;
 const GIT_COMMITTER_EMAIL = process.env.GIT_COMMITTER_EMAIL || GIT_AUTHOR_EMAIL;
 const TASK_ID             = process.env.TASK_ID             || '';
 const MAX_COMMITS_PER_CYCLE = Number(process.env.MAX_COMMITS_PER_CYCLE) || 10;
+/** Shareable deep link to this task's Virtual Engineer admin page; injected as a commit trailer. */
+const VE_TASK_PAGE_URL    = process.env.VE_TASK_PAGE_URL    || '';
 /** Change-Id to reuse for the root-repo's first commit on retry cycles (preserves Gerrit patchset continuity). */
 const ROOT_CHANGE_ID = process.env.ROOT_CHANGE_ID || null;
 /** Per-repo Change-Ids to reuse on retry cycles, keyed by repoKey (JSON object or null). */
@@ -421,9 +423,46 @@ function squashIntoBaseIfNeeded(baseSha, cwd) {
 }
 
 /**
- * Inject deterministic Change-Id footers into agent-created commits.
- * Uses `git rebase` with `GIT_SEQUENCE_EDITOR` to rewrite each commit
- * that doesn't already have a Change-Id in its footer.
+ * Append (or converge) a `Key: value` trailer in a commit message.
+ *
+ * If the key is absent it is appended; a blank line is inserted before it only
+ * when the message does not already end with a trailer block, so all trailers
+ * stay grouped in the final paragraph. If the key is already present, the line
+ * is left untouched when the value matches and rewritten in place when it
+ * differs — so a trailer always converges to the desired value (e.g. after
+ * `PUBLIC_BASE_URL` changes between runs) rather than being silently stale.
+ *
+ * Note: callers that must preserve an existing value (e.g. Gerrit `Change-Id`)
+ * already guard against calling this when the key is present.
+ *
+ * @param {string} msg - The current commit message.
+ * @param {string} key - The trailer key (e.g. "Change-Id", "Virtual-Engineer").
+ * @param {string} value - The trailer value.
+ * @returns {string} The message with the trailer appended, updated, or unchanged.
+ */
+function appendCommitTrailer(msg, key, value) {
+  // Escape regex metacharacters in the key so a key like "X.Y" can never be
+  // interpreted as a pattern (defensive — current keys are static literals).
+  const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const existing = new RegExp(`^${escapedKey}:[ \\t]*(.*)$`, 'm');
+  const match = existing.exec(msg);
+  if (match) {
+    if (match[1].trim() === value) return msg;
+    // Use a replacer function so `$` sequences in the value are not treated as
+    // special replacement patterns.
+    return msg.replace(existing, () => `${key}: ${value}`);
+  }
+  const hasTrailerBlock = /\n\n[A-Za-z][A-Za-z0-9-]*: /.test(msg);
+  return hasTrailerBlock ? `${msg}\n${key}: ${value}` : `${msg}\n\n${key}: ${value}`;
+}
+
+/**
+ * Inject deterministic commit-message trailers into agent-created commits.
+ *
+ * Adds a Gerrit-style `Change-Id` footer (for patchset continuity) and a
+ * `Virtual-Engineer` footer (a shareable deep link back to the task's admin
+ * page) to every commit that lacks them. Uses `git rebase` with
+ * `GIT_SEQUENCE_EDITOR` to rewrite each commit.
  *
  * @param {string} baseSha - The commit before the agent's first commit.
  * @param {Array} commits - The collected CommitDescriptor array (pre-injection).
@@ -432,14 +471,23 @@ function squashIntoBaseIfNeeded(baseSha, cwd) {
  * @param {string} [repoKeyForLookup] - Repo key used to resolve per-index Change-Ids from PER_REPO_CHANGE_IDS.
  * @returns {Array} Updated commits array with changeId fields populated.
  */
-function injectChangeIds(baseSha, commits, cwd, existingChangeId = null, repoKeyForLookup = null) {
+function injectCommitTrailers(baseSha, commits, cwd, existingChangeId = null, repoKeyForLookup = null) {
   if (commits.length === 0) return commits;
 
   const repoCwd = cwd || REPO_PATH;
 
-  // Check if any commits need Change-Id injection
-  const needsInjection = commits.some((c) => !c.changeId);
-  if (!needsInjection) return commits;
+  // Determine which trailers are still missing across the commit set.
+  // A commit needs the Virtual-Engineer trailer when it has no `Virtual-Engineer:`
+  // trailer line, or one whose value differs from the desired URL. We parse the
+  // trailer key/value rather than substring-matching the body, so a URL that only
+  // appears in free text is not a false "already present" and a stale trailer is
+  // converged to the new value (mirrors appendCommitTrailer's behaviour).
+  const needsChangeId = commits.some((c) => !c.changeId);
+  const needsVeTrailer = Boolean(VE_TASK_PAGE_URL) && commits.some((c) => {
+    const m = /^Virtual-Engineer:[ \t]*(.*)$/m.exec(c.body || '');
+    return !m || m[1].trim() !== VE_TASK_PAGE_URL;
+  });
+  if (!needsChangeId && !needsVeTrailer) return commits;
 
   // Build a map of commit index → desired Change-Id for commits that lack one.
   // For each commit, reuse the existing Change-Id from the prior cycle when available
@@ -485,14 +533,24 @@ function injectChangeIds(baseSha, commits, cwd, existingChangeId = null, repoKey
     for (let i = 0; i < commits.length; i++) {
       const desiredChangeId = changeIdByIndex[i] ?? null;
 
-      if (desiredChangeId) {
-        // Read current message and append Change-Id footer
-        const currentMsg = git(['log', '-1', '--format=%B'], repoCwd).trim();
-        const hasTrailerBlock = /\n\n[A-Za-z][A-Za-z0-9-]*: /.test(currentMsg);
-        const newMsg = hasTrailerBlock
-          ? `${currentMsg}\nChange-Id: ${desiredChangeId}`
-          : `${currentMsg}\n\nChange-Id: ${desiredChangeId}`;
+      // Read current message and append any missing deterministic trailers.
+      let newMsg = git(['log', '-1', '--format=%B'], repoCwd).trim();
+      let changed = false;
 
+      if (desiredChangeId && !/^Change-Id:\s/m.test(newMsg)) {
+        newMsg = appendCommitTrailer(newMsg, 'Change-Id', desiredChangeId);
+        changed = true;
+      }
+
+      if (VE_TASK_PAGE_URL) {
+        const withVe = appendCommitTrailer(newMsg, 'Virtual-Engineer', VE_TASK_PAGE_URL);
+        if (withVe !== newMsg) {
+          newMsg = withVe;
+          changed = true;
+        }
+      }
+
+      if (changed) {
         git(['commit', '--amend', '-m', newMsg], repoCwd);
       }
 
@@ -515,7 +573,7 @@ function injectChangeIds(baseSha, commits, cwd, existingChangeId = null, repoKey
   } finally {
     // If the rebase is still in progress (e.g. due to a merge conflict), abort it
     // so the repository is left in a clean state. The caller falls back to the
-    // original commits (no Change-Id injection) which the host handles gracefully.
+    // original commits (no trailer injection) which the host handles gracefully.
     const gitDir = join(repoCwd, '.git');
     const rebaseMergePath = join(gitDir, 'rebase-merge');
     const rebaseApplyPath = join(gitDir, 'rebase-apply');
@@ -1002,7 +1060,7 @@ async function main() {
                 }
               }
             }
-            rootCommits = injectChangeIds(baseSha, rootCommits, undefined, rootExistingChangeId, rootRepoKey);
+            rootCommits = injectCommitTrailers(baseSha, rootCommits, undefined, rootExistingChangeId, rootRepoKey);
           }
           for (const localPath of subRepoLocalPaths) {
             const subBase = subRepoBaseShas[localPath];
@@ -1015,7 +1073,7 @@ async function main() {
               const subRepoKey = REPOSITORY_MAP.submodules.find((s) => s.localPath === localPath)?.repoKey;
               const subEntry = PER_REPO_CHANGE_IDS && subRepoKey ? (PER_REPO_CHANGE_IDS[subRepoKey] || null) : null;
               const subChangeId = typeof subEntry === 'string' ? subEntry : (subEntry?.['0'] || null);
-              const injected = injectChangeIds(subBase, subCommitsForPath, subPath, subChangeId, subRepoKey || null);
+              const injected = injectCommitTrailers(subBase, subCommitsForPath, subPath, subChangeId, subRepoKey || null);
               // Replace sub-repo commits with injected versions
               const sub = REPOSITORY_MAP.submodules.find((s) => s.localPath === localPath);
               const repoKey = sub ? sub.repoKey : localPath;

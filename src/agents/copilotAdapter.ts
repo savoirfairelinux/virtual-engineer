@@ -261,6 +261,9 @@ export class CopilotAdapter implements AgentAdapter, ConfigurableAdapter {
       ...(session.perRepoChangeIds !== undefined
         ? { PER_REPO_CHANGE_IDS_JSON: JSON.stringify(session.perRepoChangeIds) }
         : {}),
+      ...(session.taskPageUrl !== undefined
+        ? { VE_TASK_PAGE_URL: session.taskPageUrl }
+        : {}),
     };
 
     const additionalDockerArgs = [

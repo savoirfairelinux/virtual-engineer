@@ -127,6 +127,7 @@ The admin server never returns plaintext password-like fields. On `PUT`, values 
 - Live log ingestion de-duplicates overlapping SSE replay sources (persisted cycle history, in-memory task buffer, and reconnect replays) so reconnects do not render duplicate rows.
 - Live log rows render structured `data` payloads as formatted JSON blocks (instead of single-line raw serialization) when the payload is object/array-shaped.
 - Task rows and task details expose a single primary ticket/review link on the source identifier; detail headers avoid duplicate secondary link controls, while per-repository review links are still shown from `changesPerRepo` when available.
+- The Tasks view uses hash-based routing (`#/tasks/<id>`) so individual tasks are deep-linkable with browser back/forward support; the selected task is derived from the URL, and Task detail exposes a copy-link button that yields a shareable URL (preferring `PUBLIC_BASE_URL`, otherwise falling back to the current browser location client-side).
 - Task detail footer badges now show compact task/review identifiers (`displayId` / `gerritChangeId`) instead of full internal task ids.
 - Task origin badges in the Tasks list/details abbreviate GitHub pull-request sources as `GITHUB-PR` (instead of `GITHUB-PULL-REQUEST`) for compact readability.
 - Top-bar and overview provider counters are integration-driven (enabled integrations), avoiding the extra runtime-provider card count used by `/api/admin/providers`.

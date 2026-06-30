@@ -1,6 +1,7 @@
 import pRetry from "p-retry";
 import { randomUUID, createHash } from "crypto";
 import { formatTicketFooter, hasTicketFooter } from "../utils/ticketFooterFormatter.js";
+import { buildTaskPageUrl } from "../utils/taskPageUrl.js";
 import type {
   AgentAdapter,
   CommitDescriptor,
@@ -85,6 +86,8 @@ export interface OrchestratorConfig {
   gitAuthorEmail: string;
   agentContainerImage: string;
   adminAuthSecret?: string | undefined;
+  /** Externally-reachable base URL used to build shareable task-page links embedded in commits. */
+  publicBaseUrl?: string | undefined;
 }
 
 /**
@@ -754,6 +757,9 @@ export class Orchestrator {
           ...(resolvedReasoningEffort !== undefined ? { copilotReasoningEffort: resolvedReasoningEffort } : {}),
           ...(projectPushTargets.length > 1 || projectPushTargets.some((t) => t.localPath !== ".")
             ? { repositoryMap: buildRepositoryMap(projectPushTargets) }
+            : {}),
+          ...(this.config.publicBaseUrl !== undefined && this.config.publicBaseUrl.trim() !== ""
+            ? { taskPageUrl: buildTaskPageUrl(this.config.publicBaseUrl, task.taskId) }
             : {}),
         },
       };

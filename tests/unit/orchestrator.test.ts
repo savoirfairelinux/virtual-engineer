@@ -810,6 +810,7 @@ describe("Orchestrator", () => {
           gitAuthorName: "Virtual Engineer",
           gitAuthorEmail: "ve@example.com",
           agentContainerImage: "virtual-engineer-workspace:latest",
+          publicBaseUrl: "http://127.0.0.1:3100",
         },
         stateStore,
         workspaceRunner,

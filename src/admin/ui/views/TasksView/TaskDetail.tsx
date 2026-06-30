@@ -26,6 +26,7 @@ export function TaskDetail({ task }: TaskDetailProps) {
   const [cycles, setCycles] = useState<ApiCycle[] | null>(null);
   const [transitions, setTransitions] = useState<ApiTransition[] | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [linkCopied, setLinkCopied] = useState(false);
 
   const running   = isActiveState(task.state);
   const terminal  = isTerminalState(task.state);
@@ -45,6 +46,14 @@ export function TaskDetail({ task }: TaskDetailProps) {
       .catch(() => setTransitions([]));
   }, [task.taskId]); // eslint-disable-line react-hooks/exhaustive-deps -- task is used as catch fallback only; re-fetch is intentionally gated on taskId
 
+  // Reset the "copied" affordance after a short delay, cancelling the timer on
+  // unmount / re-copy so we never setState on an unmounted component.
+  useEffect(() => {
+    if (!linkCopied) return;
+    const timer = setTimeout(() => setLinkCopied(false), 1600);
+    return () => clearTimeout(timer);
+  }, [linkCopied]);
+
   async function doAction(path: string, method: "PATCH" | "POST" | "DELETE") {
     setActionError(null);
     try {
@@ -52,6 +61,26 @@ export function TaskDetail({ task }: TaskDetailProps) {
       // Parent will refresh via SSE; no local state update needed
     } catch (err) {
       setActionError(err instanceof Error ? err.message : "Action failed");
+    }
+  }
+
+  /** Build the shareable deep link to this task's page (prefers the configured public base URL). */
+  function buildShareUrl(): string {
+    const configured = window.__VE_ADMIN_BOOTSTRAP__?.publicBaseUrl;
+    const base = configured && configured.trim() !== ""
+      ? configured.replace(/\/+$/, "")
+      : `${window.location.origin}${window.location.pathname}`.replace(/\/+$/, "");
+    return `${base}/#/tasks/${encodeURIComponent(task.taskId)}`;
+  }
+
+  async function copyTaskLink() {
+    setActionError(null);
+    const url = buildShareUrl();
+    try {
+      await navigator.clipboard.writeText(url);
+      setLinkCopied(true);
+    } catch {
+      setActionError("Could not copy link to clipboard");
     }
   }
 
@@ -157,8 +186,18 @@ export function TaskDetail({ task }: TaskDetailProps) {
               <StatePill state={task.state} />
               {/* action bar */}
               <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
+                <button
+                  className="iconbtn"
+                  type="button"
+                  aria-label={linkCopied ? "Link copied" : "Copy shareable link"}
+                  title={linkCopied ? "Link copied" : "Copy shareable link"}
+                  onClick={() => void copyTaskLink()}
+                >
+                  <Icon name={linkCopied ? "check" : "link"} size={15} />
+                </button>
                 {!terminal && (
                   <>
+                    <div style={{ width: 1, height: 20, background: "var(--border-soft)", margin: "0 3px" }} />
                     {running
                       ? <button className="iconbtn" title="Pause" onClick={() => void doAction(`/api/admin/tasks/${task.taskId}/pause`, "PATCH")}><Icon name="pause" size={15} /></button>
                       : <button className="iconbtn" title="Resume" onClick={() => void doAction(`/api/admin/tasks/${task.taskId}/resume`, "PATCH")}><Icon name="play" size={15} /></button>

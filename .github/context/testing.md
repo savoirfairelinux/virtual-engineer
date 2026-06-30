@@ -27,7 +27,7 @@ Plugins / runtime wiring: `pluginManager`, `pluginManager.multiInstance`, `regis
 
 Admin: `adminServer`, `adminServer.behavior`, `adminServer.integration`, `adminHealthEndpoint`, `adminPluginRoutes`, `adminPromptRoutes`, `adminAgentsRoutes`, `adminAgentsOAuthRoutes`, `adminProjectsRoutes`, `adminConcurrencyRoutes`, `adminIntegrationsDiscover`, `adminWebhookSecretRoutes`, `closeAdminServer`, `dashboard`, `dashboard.configurationTab`.
 
-Misc: `config`, `logger`, `encryption`, `ticketFooterFormatter`, `dockerVolume`, `workspaceRunner`, `workspaceRunner.multiTarget`, `pauseResumeFlow`.
+Misc: `config`, `logger`, `encryption`, `ticketFooterFormatter`, `taskPageUrl`, `dockerVolume`, `workspaceRunner`, `workspaceRunner.multiTarget`, `pauseResumeFlow`.
 
 > **There are integration tests today.** Files ending in `.integration.test.ts` wire several modules together with mocked external I/O.
 

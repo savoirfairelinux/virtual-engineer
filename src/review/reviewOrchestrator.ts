@@ -26,6 +26,7 @@ import { filterCommentsByAllowedFiles } from "./commentFilter.js";
 import { computeCommentHash, computeThreadReplyHash } from "./commentHash.js";
 import { applyVolumeAndSeverityGate, buildFoldedSummary } from "./commentSeverity.js";
 import { agentLogBus, pushToTaskBuffer, clearTaskEventBuffer } from "../agents/agentEventBus.js";
+import { buildTaskPageUrl } from "../utils/taskPageUrl.js";
 
 const log = getLogger("review-orchestrator");
 
@@ -91,6 +92,8 @@ export interface ReviewOrchestratorDeps {
   maxReviewReplies?: number | undefined;
   /** Minimum severity for a comment to be posted inline. Defaults to "info". */
   reviewMinSeverity?: string | undefined;
+  /** Public base URL of the admin UI; used to append a shareable task-page link to the posted review summary. */
+  taskPageBaseUrl?: string | undefined;
 }
 
 export interface StartReviewInput {
@@ -516,6 +519,7 @@ export class ReviewOrchestrator {
         maxComments: this.deps.maxReviewComments ?? 20,
       });
       const summary = result.summary + buildFoldedSummary(folded);
+      const postedSummary = this.appendReviewTaskLink(summary, taskId);
 
       // Validate the agent's replies against the eligible thread set: drop
       // hallucinated threadIds and duplicates, require a non-empty body, and
@@ -559,7 +563,7 @@ export class ReviewOrchestrator {
       });
 
       if (!skipPosting) {
-        await this.postReview(changeId, reviewPatchset, commentsToPost, summary, vote, diff);
+        await this.postReview(changeId, reviewPatchset, commentsToPost, postedSummary, vote, diff);
       }
 
       // Persist all newly-handled comment hashes (posted inline AND folded) so
@@ -712,6 +716,20 @@ export class ReviewOrchestrator {
     collectedEvents.push(event);
     pushToTaskBuffer(event);
     agentLogBus.emit("event", event);
+  }
+
+  /**
+   * Append a shareable link back to this task's Virtual Engineer admin page to
+   * the posted review summary, so humans can navigate from the review back to
+   * the page showing what VE did. No-op when no public base URL is configured
+   * or the link is already present.
+   */
+  private appendReviewTaskLink(summary: string, taskId: TaskId): string {
+    const baseUrl = this.deps.taskPageBaseUrl;
+    if (baseUrl === undefined || baseUrl.trim() === "") return summary;
+    const url = buildTaskPageUrl(baseUrl, taskId);
+    if (summary.includes(url)) return summary;
+    return `${summary}\n\n— Reviewed by Virtual Engineer: ${url}`;
   }
 
   /**

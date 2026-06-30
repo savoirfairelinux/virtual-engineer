@@ -272,6 +272,8 @@ export interface AgentSession {
   copilotReasoningEffort?: string | undefined;
   /** Multi-repo workspace layout — when set, agent-worker uses it to group files/commits by repo. */
   repositoryMap?: RepositoryMap | undefined;
+  /** Shareable deep link to this task's admin page; injected as a `Virtual-Engineer:` commit trailer. */
+  taskPageUrl?: string | undefined;
 }
 
 export interface TaskContext {

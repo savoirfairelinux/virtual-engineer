@@ -56,6 +56,16 @@ const ConfigSchema = z.object({
     adminApiHost: z.string().min(1).default("127.0.0.1"),
     adminApiPort: z.coerce.number().int().positive().default(3100),
     adminAuthSecret: z.string().min(1).optional(),
+    /**
+     * Externally-reachable base URL of the admin dashboard (e.g. https://ve.example.com).
+     * Used to build shareable task-page deep links embedded in commits and review
+     * summaries. When unset, those links are omitted (the dashboard's copy-link
+     * button still falls back to the current browser location).
+     */
+    publicBaseUrl: z.preprocess(
+      (value) => (typeof value === "string" && value.trim() === "" ? undefined : value),
+      z.string().url().optional()
+    ),
 
     // Workflow
     pollingIntervalMs: z.coerce.number().int().positive().default(30_000),
@@ -95,6 +105,7 @@ function fromEnv(): Record<string, string | undefined> {
     adminApiHost: process.env["ADMIN_API_HOST"],
     adminApiPort: process.env["ADMIN_API_PORT"],
     adminAuthSecret: process.env["ADMIN_AUTH_SECRET"],
+    publicBaseUrl: process.env["PUBLIC_BASE_URL"],
     pollingIntervalMs: process.env["POLLING_INTERVAL_MS"],
     maxAgentCycles: process.env["MAX_AGENT_CYCLES"],
     maxRetryAttempts: process.env["MAX_RETRY_ATTEMPTS"],

@@ -21,7 +21,44 @@ const bootstrap: VeAdminBootstrap = window.__VE_ADMIN_BOOTSTRAP__ ?? {
   gerritBaseUrl: null,
   gitlabBaseUrl: null,
   ticketLinkTemplates: {},
+  publicBaseUrl: null,
 };
+
+interface Route {
+  view: ViewId;
+  /** Selected task id when on the tasks view (deep link `#/tasks/<id>`), else null. */
+  taskId: string | null;
+}
+
+/** Decode a URI component, falling back to the raw value when it is malformed (avoids URIError crashing the app on a corrupted hash). */
+function safeDecode(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+/** Parse the current location hash into a route. Supports `#/overview`, `#/config`, `#/tasks`, `#/tasks/<id>`. */
+function parseHash(hash: string): Route {
+  const cleaned = hash.replace(/^#\/?/, "");
+  const [segment, ...rest] = cleaned.split("/");
+  if (segment === "overview") return { view: "overview", taskId: null };
+  if (segment === "config") return { view: "config", taskId: null };
+  if (segment === "tasks") {
+    const raw = rest.join("/");
+    return { view: "tasks", taskId: raw ? safeDecode(raw) : null };
+  }
+  return { view: "tasks", taskId: null };
+}
+
+/** Serialize a route into a location hash fragment. */
+function routeToHash(route: Route): string {
+  if (route.view === "tasks") {
+    return route.taskId ? `#/tasks/${encodeURIComponent(route.taskId)}` : "#/tasks";
+  }
+  return `#/${route.view}`;
+}
 
 function useTheme() {
   const [theme, setTheme] = useState<"dark" | "light">(
@@ -36,8 +73,25 @@ function useTheme() {
 
 export function App() {
   const [theme, toggleTheme] = useTheme();
-  const [view, setView] = useState<ViewId>("tasks");
+  const [route, setRoute] = useState<Route>(() => parseHash(window.location.hash));
   const [authenticated, setAuthenticated] = useState(() => !bootstrap.requiresAuth || !!getStoredToken());
+
+  // Keep the route in sync with browser back/forward and external hash changes.
+  useEffect(() => {
+    const onHashChange = () => setRoute(parseHash(window.location.hash));
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
+
+  const navigate = useCallback((next: Route) => {
+    const hash = routeToHash(next);
+    if (window.location.hash !== hash) {
+      window.location.hash = hash;
+    }
+    setRoute(next);
+  }, []);
+
+  const view = route.view;
 
   // data state
   const [tasks,        setTasks]        = useState<ApiTask[]>([]);
@@ -116,14 +170,14 @@ export function App() {
   const enabledIntegrations = integrations.filter((i) => i.enabled).length;
 
   function handleNavigate(v: "tasks" | "config") {
-    setView(v);
+    navigate({ view: v, taskId: null });
   }
 
   return (
     <div className="app">
       <TopBar
         view={view}
-        setView={setView}
+        setView={(v) => navigate({ view: v, taskId: null })}
         theme={theme}
         toggleTheme={toggleTheme}
         onLogout={() => { clearStoredToken(); setAuthenticated(false); }}
@@ -144,7 +198,11 @@ export function App() {
           />
         )}
         {view === "tasks" && (
-          <TasksView tasks={tasks} />
+          <TasksView
+            tasks={tasks}
+            selectedId={route.taskId}
+            onSelect={(id) => navigate({ view: "tasks", taskId: id })}
+          />
         )}
         {view === "config" && (
           <ConfigView

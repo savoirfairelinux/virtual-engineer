@@ -177,6 +177,25 @@ describe("CopilotAdapter", () => {
 
       expect(spec.env["COPILOT_REASONING_EFFORT"]).toBeUndefined();
     });
+
+    it("injects VE_TASK_PAGE_URL into container env when the session carries a task-page link", () => {
+      const adapter = new CopilotAdapter({ model: "gpt-4o" });
+      const context = makeContext();
+      context.agentSession.taskPageUrl = "https://ve.example.com/#/tasks/task-123";
+
+      const spec = adapter.buildContainerSpec(context, { GITHUB_TOKEN: "ghp_tok" });
+
+      expect(spec.env["VE_TASK_PAGE_URL"]).toBe("https://ve.example.com/#/tasks/task-123");
+    });
+
+    it("does not inject VE_TASK_PAGE_URL when the session has no task-page link", () => {
+      const adapter = new CopilotAdapter({ model: "gpt-4o" });
+      const context = makeContext();
+
+      const spec = adapter.buildContainerSpec(context, { GITHUB_TOKEN: "ghp_tok" });
+
+      expect(spec.env["VE_TASK_PAGE_URL"]).toBeUndefined();
+    });
   });
 
   // ── native PTY failure detection ───────────────────────────────────────────

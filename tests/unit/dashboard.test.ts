@@ -61,6 +61,16 @@ describe("renderAdminDashboardHtml", () => {
     expect(html).toContain('"redmine":"https://rm.example.com/issues/{id}"');
   });
 
+  it("includes publicBaseUrl in the bootstrap config when provided", () => {
+    const html = renderAdminDashboardHtml({ publicBaseUrl: "https://ve.example.com" });
+    expect(html).toContain('"publicBaseUrl":"https://ve.example.com"');
+  });
+
+  it("defaults publicBaseUrl to null in the bootstrap config", () => {
+    const html = renderAdminDashboardHtml();
+    expect(html).toContain('"publicBaseUrl":null');
+  });
+
   it("sets dark theme attribute on html element", () => {
     const html = renderAdminDashboardHtml();
     expect(html).toContain('data-theme="dark"');
