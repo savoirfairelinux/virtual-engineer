@@ -46,6 +46,14 @@ export function TaskDetail({ task }: TaskDetailProps) {
       .catch(() => setTransitions([]));
   }, [task.taskId]); // eslint-disable-line react-hooks/exhaustive-deps -- task is used as catch fallback only; re-fetch is intentionally gated on taskId
 
+  // Reset the "copied" affordance after a short delay, cancelling the timer on
+  // unmount / re-copy so we never setState on an unmounted component.
+  useEffect(() => {
+    if (!linkCopied) return;
+    const timer = setTimeout(() => setLinkCopied(false), 1600);
+    return () => clearTimeout(timer);
+  }, [linkCopied]);
+
   async function doAction(path: string, method: "PATCH" | "POST" | "DELETE") {
     setActionError(null);
     try {
@@ -70,7 +78,6 @@ export function TaskDetail({ task }: TaskDetailProps) {
     try {
       await navigator.clipboard.writeText(url);
       setLinkCopied(true);
-      setTimeout(() => setLinkCopied(false), 1600);
     } catch {
       setActionError("Could not copy link to clipboard");
     }

@@ -474,8 +474,16 @@ function injectCommitTrailers(baseSha, commits, cwd, existingChangeId = null, re
   const repoCwd = cwd || REPO_PATH;
 
   // Determine which trailers are still missing across the commit set.
+  // A commit needs the Virtual-Engineer trailer when it has no `Virtual-Engineer:`
+  // trailer line, or one whose value differs from the desired URL. We parse the
+  // trailer key/value rather than substring-matching the body, so a URL that only
+  // appears in free text is not a false "already present" and a stale trailer is
+  // converged to the new value (mirrors appendCommitTrailer's behaviour).
   const needsChangeId = commits.some((c) => !c.changeId);
-  const needsVeTrailer = Boolean(VE_TASK_PAGE_URL) && commits.some((c) => !(c.body || '').includes(VE_TASK_PAGE_URL));
+  const needsVeTrailer = Boolean(VE_TASK_PAGE_URL) && commits.some((c) => {
+    const m = /^Virtual-Engineer:[ \t]*(.*)$/m.exec(c.body || '');
+    return !m || m[1].trim() !== VE_TASK_PAGE_URL;
+  });
   if (!needsChangeId && !needsVeTrailer) return commits;
 
   // Build a map of commit index → desired Change-Id for commits that lack one.
