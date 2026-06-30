@@ -165,13 +165,22 @@ export class GitHubVcsConnector implements VcsConnector {
 
     const httpsRemote = `https://x-access-token:${this.config.token}@${this.config.host}/${this.config.owner}/${this.config.repo}.git`;
 
+    // The agent's coding session (Copilot CLI / gh) may leave a stale `http.<host>.extraheader`
+    // and/or a global `credential.helper` configured against this same host in /workspace/.git/config,
+    // using a *different* token (e.g. the Copilot integration's own GitHub OAuth token for LLM calls).
+    // Git sends `http.extraheader` regardless of URL-embedded credentials, so a leftover header here
+    // shadows the push credentials below and GitHub rejects the request with a generic auth error.
+    // Clear it and disable any configured credential helper for this push so only the explicit
+    // token embedded in $VE_PUSH_URL is used (mirrors the documented actions/checkout workaround).
+    const pushHost = `https://${this.config.host}/`;
     const pushResult = await execInVolume({
       volumeName: volumeOpts.volumeName,
       image: volumeOpts.image,
       command: ["bash", "-c", [
         `cd "${cwd}"`,
+        `git config --unset-all "http.${pushHost}.extraheader" 2>/dev/null || true`,
         `git checkout -B "$VE_PUSH_REF"`,
-        `git push --force -u "$VE_PUSH_URL" "$VE_PUSH_REF"`,
+        `git -c credential.helper= push --force -u "$VE_PUSH_URL" "$VE_PUSH_REF"`,
       ].join(" && ")],
       env: {
         VE_PUSH_REF: ref,
