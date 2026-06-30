@@ -20,7 +20,7 @@ import { CopilotClient, approveAll } from '@github/copilot-sdk';
 import type { CopilotSession, AssistantMessageEvent } from '@github/copilot-sdk';
 import { execFileSync, spawn } from 'child_process';
 import type { ChildProcess } from 'child_process';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, statSync } from 'fs';
 import { createConnection } from 'net';
 import { join } from 'path';
 
@@ -191,8 +191,11 @@ async function runSession(
   const localCliServer = await startLocalCliServer();
   const client = new CopilotClient({ cliUrl: localCliServer.cliUrl });
 
+  // Never enabled in review mode (defense-in-depth even if the host omits SKILL_DISCOVERY).
+  // Guarded so a missing path — or a non-directory at that path — never aborts the session.
   const skillsDir = join(WORKSPACE, '.github', 'skills');
-  const enableSkillDiscovery = SKILL_DISCOVERY && existsSync(skillsDir);
+  const enableSkillDiscovery = SKILL_DISCOVERY && !REVIEW_MODE
+    && existsSync(skillsDir) && statSync(skillsDir).isDirectory();
 
   try {
     const session = await client.createSession({
