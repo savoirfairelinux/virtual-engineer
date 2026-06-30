@@ -387,21 +387,41 @@ export class DockerWorkspaceRunner implements WorkspaceRunner {
       "applying prior patchset via helper container"
     );
 
-    const sshKeyPath = opts.sshKeyPath;
-    if (!opts.sshHost || !sshKeyPath) {
-      throw new Error("Patchset application requires sshHost and sshKeyPath");
-    }
-    const sshPort = opts.sshPort ?? 29418;
+    // HTTP mode: embed credentials in fetch URL passed via env var
+    // SSH mode: inject SSH key into container and use origin remote
+    const isHttpMode = Boolean(opts.httpToken);
 
-    const fetchResult = await execInVolume({
-      volumeName: handle.volumeName,
-      image: this.config.agentContainerImage,
-      command: ["git", "fetch", "origin", patchsetRef],
-      sshKeyPath,
-      ...(opts.sshKnownHostsPath !== undefined ? { sshKnownHostsPath: opts.sshKnownHostsPath } : {}),
-      sshPort,
-      env: {},
-    });
+    let fetchResult: Awaited<ReturnType<typeof execInVolume>>;
+    if (isHttpMode) {
+      const httpBaseUrl = opts.httpBaseUrl ?? opts.vcsBaseUrl;
+      const baseWithoutProto = httpBaseUrl.replace(/^https?:\/\//, "");
+      const fetchUrl = `https://${opts.httpUsername ?? ""}:${opts.httpToken ?? ""}@${baseWithoutProto}`;
+      fetchResult = await execInVolume({
+        volumeName: handle.volumeName,
+        image: this.config.agentContainerImage,
+        command: ["sh", "-c", `git fetch "$VE_FETCH_URL" "${patchsetRef}"`],
+        env: {
+          VE_FETCH_URL: fetchUrl,
+          GIT_TERMINAL_PROMPT: "0",
+          GIT_ASKPASS: "/bin/false",
+        },
+      });
+    } else {
+      const sshKeyPath = opts.sshKeyPath;
+      if (!opts.sshHost || !sshKeyPath) {
+        throw new Error("Patchset application requires sshHost and sshKeyPath (SSH mode) or httpToken (HTTP mode)");
+      }
+      const sshPort = opts.sshPort ?? 29418;
+      fetchResult = await execInVolume({
+        volumeName: handle.volumeName,
+        image: this.config.agentContainerImage,
+        command: ["git", "fetch", "origin", patchsetRef],
+        sshKeyPath,
+        ...(opts.sshKnownHostsPath !== undefined ? { sshKnownHostsPath: opts.sshKnownHostsPath } : {}),
+        sshPort,
+        env: {},
+      });
+    }
     if (fetchResult.exitCode !== 0) {
       const msg = fetchResult.stderr.slice(0, 500);
       log.error(
@@ -445,21 +465,41 @@ export class DockerWorkspaceRunner implements WorkspaceRunner {
       "cherry-picking prior patchset on top of current HEAD"
     );
 
-    const sshKeyPath = opts.sshKeyPath;
-    if (!opts.sshHost || !sshKeyPath) {
-      throw new Error("Patchset cherry-pick requires sshHost and sshKeyPath");
-    }
-    const sshPort = opts.sshPort ?? 29418;
+    // HTTP mode: embed credentials in fetch URL passed via env var
+    // SSH mode: inject SSH key into container and use origin remote
+    const isHttpModeCherryPick = Boolean(opts.httpToken);
 
-    const fetchResult = await execInVolume({
-      volumeName: handle.volumeName,
-      image: this.config.agentContainerImage,
-      command: ["git", "fetch", "origin", patchsetRef],
-      sshKeyPath,
-      ...(opts.sshKnownHostsPath !== undefined ? { sshKnownHostsPath: opts.sshKnownHostsPath } : {}),
-      sshPort,
-      env: {},
-    });
+    let fetchResult: Awaited<ReturnType<typeof execInVolume>>;
+    if (isHttpModeCherryPick) {
+      const httpBaseUrl = opts.httpBaseUrl ?? opts.vcsBaseUrl;
+      const baseWithoutProto = httpBaseUrl.replace(/^https?:\/\//, "");
+      const fetchUrl = `https://${opts.httpUsername ?? ""}:${opts.httpToken ?? ""}@${baseWithoutProto}`;
+      fetchResult = await execInVolume({
+        volumeName: handle.volumeName,
+        image: this.config.agentContainerImage,
+        command: ["sh", "-c", `git fetch "$VE_FETCH_URL" "${patchsetRef}"`],
+        env: {
+          VE_FETCH_URL: fetchUrl,
+          GIT_TERMINAL_PROMPT: "0",
+          GIT_ASKPASS: "/bin/false",
+        },
+      });
+    } else {
+      const sshKeyPath = opts.sshKeyPath;
+      if (!opts.sshHost || !sshKeyPath) {
+        throw new Error("Patchset cherry-pick requires sshHost and sshKeyPath (SSH mode) or httpToken (HTTP mode)");
+      }
+      const sshPort = opts.sshPort ?? 29418;
+      fetchResult = await execInVolume({
+        volumeName: handle.volumeName,
+        image: this.config.agentContainerImage,
+        command: ["git", "fetch", "origin", patchsetRef],
+        sshKeyPath,
+        ...(opts.sshKnownHostsPath !== undefined ? { sshKnownHostsPath: opts.sshKnownHostsPath } : {}),
+        sshPort,
+        env: {},
+      });
+    }
     if (fetchResult.exitCode !== 0) {
       const msg = fetchResult.stderr.slice(0, 500);
       throw new Error(`Failed to fetch patchset ${opts.revisionNumber}/${opts.patchset}: ${msg}`);
