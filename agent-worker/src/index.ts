@@ -194,8 +194,14 @@ async function runSession(
   // Never enabled in review mode (defense-in-depth even if the host omits SKILL_DISCOVERY).
   // Guarded so a missing path — or a non-directory at that path — never aborts the session.
   const skillsDir = join(WORKSPACE, '.github', 'skills');
-  const enableSkillDiscovery = SKILL_DISCOVERY && !REVIEW_MODE
-    && existsSync(skillsDir) && statSync(skillsDir).isDirectory();
+  let enableSkillDiscovery = false;
+  if (SKILL_DISCOVERY && !REVIEW_MODE) {
+    try {
+      enableSkillDiscovery = statSync(skillsDir).isDirectory();
+    } catch {
+      enableSkillDiscovery = false;
+    }
+  }
 
   try {
     const session = await client.createSession({
