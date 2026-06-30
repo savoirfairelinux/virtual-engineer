@@ -527,6 +527,9 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
         writeJson(res, 400, { error: `Agent type mismatch: agent is '${agent.type}', project is '${existing.type}'` }); return;
       }
     }
+    if (data.skillDiscoveryEnabled !== undefined && existing.type !== "coding") {
+      writeJson(res, 400, { error: "skillDiscoveryEnabled only valid for coding projects" }); return;
+    }
     const updates: Parameters<ProjectsRouteStore["updateProject"]>[1] = {};
     if (data.name !== undefined) updates.name = data.name;
     if (data.agentId !== undefined) updates.agentId = makeAgentId(data.agentId);

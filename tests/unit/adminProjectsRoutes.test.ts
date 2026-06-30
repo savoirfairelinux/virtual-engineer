@@ -267,6 +267,47 @@ describe("Admin API — Project routes (/api/admin/projects)", () => {
     expect(pts[0]?.["repoKey"]).toBe("new");
   });
 
+  it("PUT /:id toggles skillDiscoveryEnabled on a coding project", async () => {
+    const agent = await makeAgent(store, "coding");
+    await seedIntegration(store, "redmine-1");
+    await seedIntegration(store, "gerrit-1", "gerrit");
+    const created = await rest(server, "/api/admin/projects", {
+      method: "POST",
+      body: {
+        type: "coding", name: "Toggle", agentId: agent.id,
+        ticketSource: { integrationId: "redmine-1", ticketProjectKey: "K" },
+        pushTargets: [{ integrationId: "gerrit-1", repoKey: "r", cloneUrl: "u", targetBranch: "main", role: "primary", commitOrder: 1, localPath: "." }],
+      },
+    });
+    const id = (created.body?.["project"] as Record<string, unknown>)["id"] as string;
+    expect((created.body?.["project"] as Record<string, unknown>)["skillDiscoveryEnabled"]).toBe(false);
+    const r = await rest(server, `/api/admin/projects/${id}`, {
+      method: "PUT",
+      body: { skillDiscoveryEnabled: true },
+    });
+    expect(r.status).toBe(200);
+    expect((r.body?.["project"] as Record<string, unknown>)["skillDiscoveryEnabled"]).toBe(true);
+  });
+
+  it("PUT /:id rejects skillDiscoveryEnabled on a review project", async () => {
+    const agent = await makeAgent(store, "review");
+    await seedIntegration(store, "gerrit-1", "gerrit");
+    const created = await rest(server, "/api/admin/projects", {
+      method: "POST",
+      body: { type: "review", name: "RevNoSkills", agentId: agent.id, reviewConfig: { integrationId: "gerrit-1", repoKeys: ["x"] } },
+    });
+    const id = (created.body?.["project"] as Record<string, unknown>)["id"] as string;
+    const r = await rest(server, `/api/admin/projects/${id}`, {
+      method: "PUT",
+      body: { skillDiscoveryEnabled: true },
+    });
+    expect(r.status).toBe(400);
+    expect(r.body?.["error"]).toMatch(/only valid for coding/i);
+    // The field must not have been persisted.
+    const after = await rest(server, `/api/admin/projects/${id}`, { method: "GET" });
+    expect((after.body?.["project"] as Record<string, unknown>)["skillDiscoveryEnabled"]).toBe(false);
+  });
+
   it("DELETE /:id removes the project (idempotent: 404 second time)", async () => {
     const agent = await makeAgent(store, "review");
     await seedIntegration(store, "gerrit-1", "gerrit");
