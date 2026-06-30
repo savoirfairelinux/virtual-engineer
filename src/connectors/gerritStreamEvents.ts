@@ -10,6 +10,7 @@ import type {
   IntegrationEventStreamReviewTrigger,
   IntegrationEventStreamStatus,
 } from "./integrationStreamEvents.js";
+import { GerritSseEventsManager } from "./gerritSseEventsManager.js";
 
 const execFileAsync = promisify(execFile);
 const SSH_QUERY_TIMEOUT_MS = 30_000;
@@ -77,18 +78,36 @@ export class GerritStreamEventsManager implements IntegrationEventStreamManager 
   private readonly maxReconnectAttempts: number;
   private readonly spawnProcess: typeof spawn;
   private readonly sshQueryFn: SshQueryFn;
+  /** Handles HTTP-mode integrations (authMode = "http") via SSE instead of SSH. */
+  private readonly sseManager: GerritSseEventsManager;
 
   constructor(private readonly options: GerritStreamEventsManagerOptions) {
     this.reconnectDelayMs = options.reconnectDelayMs ?? DEFAULT_RECONNECT_DELAY_MS;
     this.maxReconnectAttempts = options.maxReconnectAttempts ?? DEFAULT_MAX_RECONNECT_ATTEMPTS;
     this.spawnProcess = options.spawnProcess ?? spawn;
     this.sshQueryFn = options.sshQueryFn ?? defaultSshQuery;
+    this.sseManager = new GerritSseEventsManager(options);
   }
 
   /** Sync the set of running stream-events listeners to match the provided integration list. */
   async reconcile(integrations: Integration[]): Promise<void> {
-    this.desiredIntegrations.clear();
+    // Partition into SSH integrations (existing path) and HTTP integrations (SSE path)
+    const sshIntegrations: Integration[] = [];
+    const httpIntegrations: Integration[] = [];
     for (const integration of integrations) {
+      if (isHttpModeIntegration(integration)) {
+        httpIntegrations.push(integration);
+      } else {
+        sshIntegrations.push(integration);
+      }
+    }
+
+    // Delegate HTTP integrations to the SSE manager
+    await this.sseManager.reconcile(httpIntegrations);
+
+    // Handle SSH integrations through existing SSH logic
+    this.desiredIntegrations.clear();
+    for (const integration of sshIntegrations) {
       this.desiredIntegrations.set(integration.id, integration);
     }
 
@@ -140,24 +159,27 @@ export class GerritStreamEventsManager implements IntegrationEventStreamManager 
 
   /** Return a snapshot of the current stream status for a single integration, or null if unknown. */
   getStatus(integrationId: string): GerritStreamStatus | null {
-    const status = this.statuses.get(integrationId);
-    return status ? { ...status } : null;
+    const sshStatus = this.statuses.get(integrationId);
+    if (sshStatus) return { ...sshStatus };
+    return this.sseManager.getStatus(integrationId);
   }
 
   /** Return a sorted snapshot of all known stream statuses. */
   listStatuses(): GerritStreamStatus[] {
-    return [...this.statuses.values()]
-      .map((status) => ({ ...status }))
+    const sshStatuses = [...this.statuses.values()].map((status) => ({ ...status }));
+    const sseStatuses = this.sseManager.listStatuses();
+    return [...sshStatuses, ...sseStatuses]
       .sort((left, right) => left.integrationName.localeCompare(right.integrationName));
   }
 
-  /** Terminate all active stream-events SSH processes and clear state. */
+  /** Terminate all active stream-events SSH processes and SSE listeners and clear state. */
   async stopAll(): Promise<void> {
     this.desiredIntegrations.clear();
     this.backfilledIntegrations.clear();
     for (const integrationId of [...this.handles.keys()]) {
       this.stopHandle(integrationId, { removeStatus: true });
     }
+    await this.sseManager.stopAll();
   }
 
   /** Spawn a new SSH `gerrit stream-events` process for an integration and register its event handlers. */
@@ -574,6 +596,16 @@ export class GerritStreamEventsManager implements IntegrationEventStreamManager 
         return;
       }
     }
+  }
+}
+
+/** Returns true when the integration's configJson declares authMode = "http". */
+function isHttpModeIntegration(integration: Integration): boolean {
+  try {
+    const raw = JSON.parse(integration.configJson) as Record<string, unknown>;
+    return raw["authMode"] === "http";
+  } catch {
+    return false;
   }
 }
 
