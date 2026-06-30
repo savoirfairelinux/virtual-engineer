@@ -6,6 +6,7 @@
 import { execFileSync } from "child_process";
 import { createHash } from "crypto";
 import { getLogger } from "../logger.js";
+import { execGit } from "../utils/gitExec.js";
 import type { VcsConnector, VcsPushResult, VolumeExecOptions } from "./vcsConnector.js";
 import type { PatchsetCheckoutOptions, ReviewComment } from "../interfaces.js";
 import { execInVolume } from "../workspace/dockerVolume.js";
@@ -82,24 +83,6 @@ function buildGitEnv(config: GerritVcsConnectorConfig, overrideSshKeyPath?: stri
     ...process.env,
     GIT_SSH_COMMAND: buildSshCommand(config, overrideSshKeyPath),
   };
-}
-
-/**
- * Helper to execute git commands in a specific directory.
- * Throws on non-zero exit.
- */
-function execGit(args: string[], cwd: string): string {
-  try {
-    return execFileSync("git", args, {
-      cwd,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-  } catch (err: unknown) {
-    const error = err instanceof Error ? err : new Error(String(err));
-    const message = error.message || "git command failed";
-    throw new Error(`git ${args[0]}: ${message.slice(0, 500)}`);
-  }
 }
 
 export class GerritVcsConnector implements VcsConnector {
