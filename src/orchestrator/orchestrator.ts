@@ -758,7 +758,7 @@ export class Orchestrator {
           ...(projectPushTargets.length > 1 || projectPushTargets.some((t) => t.localPath !== ".")
             ? { repositoryMap: buildRepositoryMap(projectPushTargets) }
             : {}),
-          ...(this.config.publicBaseUrl !== undefined
+          ...(this.config.publicBaseUrl !== undefined && this.config.publicBaseUrl.trim() !== ""
             ? { taskPageUrl: buildTaskPageUrl(this.config.publicBaseUrl, task.taskId) }
             : {}),
         },

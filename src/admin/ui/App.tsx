@@ -30,6 +30,15 @@ interface Route {
   taskId: string | null;
 }
 
+/** Decode a URI component, falling back to the raw value when it is malformed (avoids URIError crashing the app on a corrupted hash). */
+function safeDecode(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
 /** Parse the current location hash into a route. Supports `#/overview`, `#/config`, `#/tasks`, `#/tasks/<id>`. */
 function parseHash(hash: string): Route {
   const cleaned = hash.replace(/^#\/?/, "");
@@ -38,7 +47,7 @@ function parseHash(hash: string): Route {
   if (segment === "config") return { view: "config", taskId: null };
   if (segment === "tasks") {
     const raw = rest.join("/");
-    return { view: "tasks", taskId: raw ? decodeURIComponent(raw) : null };
+    return { view: "tasks", taskId: raw ? safeDecode(raw) : null };
   }
   return { view: "tasks", taskId: null };
 }

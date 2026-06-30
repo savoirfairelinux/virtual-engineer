@@ -423,20 +423,32 @@ function squashIntoBaseIfNeeded(baseSha, cwd) {
 }
 
 /**
- * Append a `Key: value` trailer to a commit message, idempotently.
+ * Append (or converge) a `Key: value` trailer in a commit message.
  *
- * If the trailer key already exists the message is returned unchanged. A blank
- * line is inserted before the trailer only when the message does not already
- * end with a trailer block, so all trailers stay grouped in the final paragraph.
+ * If the key is absent it is appended; a blank line is inserted before it only
+ * when the message does not already end with a trailer block, so all trailers
+ * stay grouped in the final paragraph. If the key is already present, the line
+ * is left untouched when the value matches and rewritten in place when it
+ * differs — so a trailer always converges to the desired value (e.g. after
+ * `PUBLIC_BASE_URL` changes between runs) rather than being silently stale.
+ *
+ * Note: callers that must preserve an existing value (e.g. Gerrit `Change-Id`)
+ * already guard against calling this when the key is present.
  *
  * @param {string} msg - The current commit message.
  * @param {string} key - The trailer key (e.g. "Change-Id", "Virtual-Engineer").
  * @param {string} value - The trailer value.
- * @returns {string} The message with the trailer appended (or unchanged).
+ * @returns {string} The message with the trailer appended, updated, or unchanged.
  */
 function appendCommitTrailer(msg, key, value) {
-  const existing = new RegExp(`^${key}:\\s`, 'm');
-  if (existing.test(msg)) return msg;
+  const existing = new RegExp(`^${key}:[ \\t]*(.*)$`, 'm');
+  const match = existing.exec(msg);
+  if (match) {
+    if (match[1].trim() === value) return msg;
+    // Use a replacer function so `$` sequences in the value are not treated as
+    // special replacement patterns.
+    return msg.replace(existing, () => `${key}: ${value}`);
+  }
   const hasTrailerBlock = /\n\n[A-Za-z][A-Za-z0-9-]*: /.test(msg);
   return hasTrailerBlock ? `${msg}\n${key}: ${value}` : `${msg}\n\n${key}: ${value}`;
 }

@@ -180,6 +180,8 @@ export function TaskDetail({ task }: TaskDetailProps) {
               <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
                 <button
                   className="iconbtn"
+                  type="button"
+                  aria-label={linkCopied ? "Link copied" : "Copy shareable link"}
                   title={linkCopied ? "Link copied" : "Copy shareable link"}
                   onClick={() => void copyTaskLink()}
                 >

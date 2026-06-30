@@ -617,4 +617,48 @@ describe("agent-worker multi-commit protocol", () => {
       expect(result.commits![0]!.files).toContain("d.ts");
     });
   });
+
+  describe("appendCommitTrailer", () => {
+    // Replicate the agent-worker function for testability.
+    function appendCommitTrailer(msg: string, key: string, value: string): string {
+      const existing = new RegExp(`^${key}:[ \\t]*(.*)$`, "m");
+      const match = existing.exec(msg);
+      if (match) {
+        if (match[1]!.trim() === value) return msg;
+        return msg.replace(existing, () => `${key}: ${value}`);
+      }
+      const hasTrailerBlock = /\n\n[A-Za-z][A-Za-z0-9-]*: /.test(msg);
+      return hasTrailerBlock ? `${msg}\n${key}: ${value}` : `${msg}\n\n${key}: ${value}`;
+    }
+
+    it("appends the trailer with a blank line when none exists", () => {
+      const out = appendCommitTrailer("feat: do thing", "Virtual-Engineer", "https://ve/#/tasks/t1");
+      expect(out).toBe("feat: do thing\n\nVirtual-Engineer: https://ve/#/tasks/t1");
+    });
+
+    it("groups the trailer with an existing trailer block", () => {
+      const msg = "feat: do thing\n\nChange-Id: Iabc";
+      const out = appendCommitTrailer(msg, "Virtual-Engineer", "https://ve/#/tasks/t1");
+      expect(out).toBe("feat: do thing\n\nChange-Id: Iabc\nVirtual-Engineer: https://ve/#/tasks/t1");
+    });
+
+    it("is a no-op when the trailer already has the same value", () => {
+      const msg = "feat: do thing\n\nVirtual-Engineer: https://ve/#/tasks/t1";
+      expect(appendCommitTrailer(msg, "Virtual-Engineer", "https://ve/#/tasks/t1")).toBe(msg);
+    });
+
+    it("rewrites the trailer in place when the value differs", () => {
+      const msg = "feat: do thing\n\nChange-Id: Iabc\nVirtual-Engineer: https://old/#/tasks/t1";
+      const out = appendCommitTrailer(msg, "Virtual-Engineer", "https://new/#/tasks/t1");
+      expect(out).toBe("feat: do thing\n\nChange-Id: Iabc\nVirtual-Engineer: https://new/#/tasks/t1");
+      // The Change-Id trailer is left untouched.
+      expect(out).toContain("Change-Id: Iabc");
+    });
+
+    it("does not treat $ in the value as a replacement pattern", () => {
+      const msg = "feat: do thing\n\nVirtual-Engineer: https://old/#/tasks/a";
+      const out = appendCommitTrailer(msg, "Virtual-Engineer", "https://new/#/tasks/$1b");
+      expect(out).toContain("Virtual-Engineer: https://new/#/tasks/$1b");
+    });
+  });
 });
