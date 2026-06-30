@@ -307,6 +307,26 @@ export interface ApiCostSummary {
   sinceEpochSeconds: number | null;
 }
 
+export interface ApiModelUsageEntry {
+  modelId: string | null;
+  runCount: number;
+  usd: number;
+}
+
+export interface ApiModelUsageProject {
+  projectId: string | null;
+  projectName: string | null;
+  models: ApiModelUsageEntry[];
+}
+
+export interface ApiModelUsageSummary {
+  byModel: ApiModelUsageEntry[];
+  perProject: ApiModelUsageProject[];
+  totalRuns: number;
+  totalUsd: number;
+  sinceEpochSeconds: number | null;
+}
+
 /* ─── Bootstrap injected by the server ────────────────────────────────── */
 export interface VeAdminBootstrap {
   requiresAuth: boolean;

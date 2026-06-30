@@ -1009,6 +1009,44 @@ export interface CostSummary {
   sinceEpochSeconds: number | null;
 }
 
+/** Run-count and cost for a single model. */
+export interface ModelUsageEntry {
+  /** Model id, or null when the model could not be resolved from the cycle. */
+  modelId: string | null;
+  /** Number of agent cycles (runs) executed with this model in the period. */
+  runCount: number;
+  /** Total USD attributed to this model in the period. */
+  usd: number;
+}
+
+/** Per-project model distribution slice. */
+export interface ModelUsageProject {
+  /** Project id, or null for cycles whose task has no project. */
+  projectId: string | null;
+  /** Project name, or null when unassigned / deleted. */
+  projectName: string | null;
+  /** Models used by the project, sorted by descending run count. */
+  models: ModelUsageEntry[];
+}
+
+/**
+ * Distribution of AI models across agent cycles, both globally and per project,
+ * by run count and by cost. Cycles whose model was not recorded in a snapshot
+ * are recomputed from their captured event log so historical runs are included.
+ */
+export interface ModelUsageSummary {
+  /** Global model distribution, sorted by descending run count. */
+  byModel: ModelUsageEntry[];
+  /** Per-project model distribution. */
+  perProject: ModelUsageProject[];
+  /** Instance-wide total number of agent cycles (runs) over the period. */
+  totalRuns: number;
+  /** Instance-wide total USD over the period. */
+  totalUsd: number;
+  /** Inclusive lower bound of the period in epoch seconds, or null for all-time. */
+  sinceEpochSeconds: number | null;
+}
+
 export interface Prompt {
   id: string;
   label: string;
@@ -1124,6 +1162,9 @@ export interface StateStore {
 
   /** Aggregate agent-cycle execution cost per project and instance-wide. */
   getCostSummary(options?: { since?: Date }): Promise<CostSummary>;
+
+  /** Aggregate AI-model usage distribution by run count and cost. */
+  getModelUsageSummary(options?: { since?: Date }): Promise<ModelUsageSummary>;
 
   getStateTransitions(taskId: TaskId): Promise<StateTransition[]>;
 

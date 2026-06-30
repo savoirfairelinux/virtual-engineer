@@ -20,7 +20,7 @@ The admin server is a small HTTP service (default `127.0.0.1:3100`) that serves 
 | `adminAgentsRoutes.ts` | `/api/admin/agents/*` CRUD + enable/disable + masking + `/api/admin/plugins/:type/oauth/*`. |
 | `adminProjectsRoutes.ts` | `/api/admin/projects/*` CRUD, ticket/review target validation, atomic push-target replacement, automatic relaunch of FAILED/REVIEW_FAILED tasks on (re)configuration or re-enable. |
 | `adminConcurrencyRoutes.ts` | `/api/admin/concurrency` read/update global concurrency. |
-| `adminOverviewRoutes.ts` | `/api/admin/overview` dashboard stats/throughput/votes/runtime + `/api/admin/cost-summary` aggregated AI cost (per project & instance total, optional `?days=` period). |
+| `adminOverviewRoutes.ts` | `/api/admin/overview` dashboard stats/throughput/votes/runtime + `/api/admin/cost-summary` aggregated AI cost (per project & instance total, optional `?days=` period) + `/api/admin/model-usage` model distribution by run count & cost (global + per project, optional `?days=<n>` period filter). |
 | `adminWebhookRoutes.ts` | Webhook management: secret rotation, allowed-IPs, webhook-info. |
 | `dashboard.ts` | HTML shell and inline dashboard script. |
 
@@ -98,6 +98,7 @@ The admin server is a small HTTP service (default `127.0.0.1:3100`) that serves 
 | `GET` / `PUT` | `/api/admin/concurrency` | Read/update global concurrency plus live in-memory snapshot. `PUT` accepts `{ global: number \| null }` (numeric strings are coerced server-side). |
 | `GET` | `/api/admin/overview` | Dashboard summary: task stats, throughput sparkline, review-vote breakdown, runtime facts. |
 | `GET` | `/api/admin/cost-summary` | Aggregated AI execution cost: instance total + per-project breakdown (USD / AI credits / runs). Optional `?days=<n>` scopes to a trailing period (omitted = all-time). Legacy cycles without a cost snapshot are recomputed from their event log so historical runs are still counted. |
+| `GET` | `/api/admin/model-usage` | Model usage distribution by run count and cost (global `byModel` + `perProject`). Optional `?days=<n>` trailing-period filter; legacy cycles without a recorded model snapshot are recomputed from `agent_events`. |
 
 ## Authentication
 
