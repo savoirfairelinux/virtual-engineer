@@ -335,13 +335,29 @@ describe("SessionMetrics", () => {
     expect(metrics.usageEventCount).toBe(1);
   });
 
-  it("keeps the latest cumulative token totals across usage events", () => {
+  it("sums token usage across distinct requests", () => {
     updateSessionMetrics(metrics, makeNormEvent("assistant.usage", { inputTokens: 100, outputTokens: 50 }, "usage"));
     updateSessionMetrics(metrics, makeNormEvent("assistant.usage", { inputTokens: 200, outputTokens: 100 }, "usage"));
+    expect(metrics.tokenUsage.inputTokens).toBe(300);
+    expect(metrics.tokenUsage.outputTokens).toBe(150);
+    expect(metrics.tokenUsage.totalTokens).toBe(450);
+    expect(metrics.usageEventCount).toBe(2);
+  });
+
+  it("dedups duplicate usage emissions for the same request", () => {
+    updateSessionMetrics(metrics, makeNormEvent("assistant.usage", { inputTokens: 200, outputTokens: 100, apiCallId: "req-1" }, "usage"));
+    updateSessionMetrics(metrics, makeNormEvent("assistant.usage", { inputTokens: 200, outputTokens: 100, apiCallId: "req-1" }, "usage"));
     expect(metrics.tokenUsage.inputTokens).toBe(200);
     expect(metrics.tokenUsage.outputTokens).toBe(100);
     expect(metrics.tokenUsage.totalTokens).toBe(300);
     expect(metrics.usageEventCount).toBe(2);
+  });
+
+  it("dedups duplicate tool.execution_start emissions by callId", () => {
+    updateSessionMetrics(metrics, makeNormEvent("tool.execution_start", { name: "read_file", callId: "read_file_1" }, "tools"));
+    updateSessionMetrics(metrics, makeNormEvent("tool.execution_start", { name: "read_file", callId: "read_file_1" }, "tools"));
+    expect(metrics.totalToolCalls).toBe(1);
+    expect(metrics.tools["read_file"]!.callCount).toBe(1);
   });
 
   it("does not double count assistant and session usage variants for the same turn", () => {

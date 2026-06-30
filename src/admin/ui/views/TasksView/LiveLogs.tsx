@@ -4,6 +4,7 @@ import { connectSse, getStoredToken } from "../../api.ts";
 import type { AgentLogEvent } from "../../types.ts";
 import { TONE } from "../../states.ts";
 import type { ToneKey } from "../../states.ts";
+import { extractMetrics } from "./liveMetrics.ts";
 
 type StreamEntry = {
   id: number;
@@ -49,29 +50,6 @@ function matchesFilter(entry: StreamEntry, filter: FilterCat): boolean {
     );
   }
   return true;
-}
-
-interface Metrics {
-  toolCalls: number;
-  inputTokens: number;
-  outputTokens: number;
-  cacheRead: number;
-  cacheWrite: number;
-}
-
-function extractMetrics(events: StreamEntry[]): Metrics {
-  let toolCalls = 0, inputTokens = 0, outputTokens = 0, cacheRead = 0, cacheWrite = 0;
-  for (const ev of events) {
-    if (ev.type === "TOOL_CALL" || ev.type?.startsWith("tool.") === true) toolCalls++;
-    if ((ev.type === "MODEL_USAGE" || ev.type === "assistant.usage" || ev.type === "session.usage_info") && ev.data && typeof ev.data === "object") {
-      const d = ev.data as Record<string, number>;
-      inputTokens  += d["input_tokens"] ?? d["inputTokens"] ?? d["promptTokens"] ?? 0;
-      outputTokens += d["output_tokens"] ?? d["outputTokens"] ?? d["completionTokens"] ?? 0;
-      cacheRead    += d["cache_read"] ?? d["cacheReadTokens"] ?? d["cache_read_tokens"] ?? 0;
-      cacheWrite   += d["cache_write"] ?? d["cacheWriteTokens"] ?? d["cache_write_tokens"] ?? 0;
-    }
-  }
-  return { toolCalls, inputTokens, outputTokens, cacheRead, cacheWrite };
 }
 
 function normalizeIncomingEntry(raw: unknown, id: number): StreamEntry | null {

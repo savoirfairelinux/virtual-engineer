@@ -117,7 +117,7 @@ export interface SessionMetrics {
   totalToolCalls: number;
   /** Currently running tool name, or null */
   activeToolName: string | null;
-  /** Cumulative token usage */
+  /** Cumulative token usage (summed across distinct requests) */
   tokenUsage: TokenUsage;
   /** Number of usage events received */
   usageEventCount: number;
@@ -129,6 +129,10 @@ export interface SessionMetrics {
   quotaAvailable: false;
   /** Explanation for unavailable quota */
   quotaMessage: string;
+  /** Internal: request identities already summed into tokenUsage (dedup). */
+  countedUsageKeys: Set<string>;
+  /** Internal: tool-call identities already counted (dedup). */
+  countedToolCallIds: Set<string>;
 }
 
 // ── Secret patterns for sanitization ────────────────────────────────────────
@@ -537,9 +541,18 @@ function readToolFilePath(data: Record<string, unknown> | null): string | null {
   return null;
 }
 
-/** Update cumulative token counts using the max-seen strategy for monotonically increasing fields. */
-function updateCumulativeTokenUsage(
-  tokenUsage: TokenUsage,
+/**
+ * Accumulate per-request token usage, deduping duplicate SDK emissions.
+ *
+ * The Copilot SDK reports usage **per LLM request** and can emit the same
+ * request's usage more than once (a duplicate or a live-then-final pair). Events
+ * are grouped by request identity (`apiCallId`/`providerCallId`, falling back to
+ * a content signature); the first emission of each request is summed into the
+ * cumulative totals and subsequent duplicates are ignored. This mirrors
+ * `computeCycleCost` so streamed metrics match the persisted cycle figures.
+ */
+function accumulateRequestUsage(
+  metrics: SessionMetrics,
   data: Record<string, unknown> | null
 ): void {
   const input = readNum(data, ["inputTokens", "input_tokens", "promptTokens"]);
@@ -548,15 +561,26 @@ function updateCumulativeTokenUsage(
   const cacheWrite = readNum(data, ["cacheWriteTokens", "cache_write_tokens", "cacheCreationInputTokens"]);
   const total = readNum(data, ["totalTokens", "total_tokens", "tokens"]);
 
-  if (input !== null) tokenUsage.inputTokens = Math.max(tokenUsage.inputTokens, input);
-  if (output !== null) tokenUsage.outputTokens = Math.max(tokenUsage.outputTokens, output);
-  if (cacheRead !== null) tokenUsage.cacheReadTokens = Math.max(tokenUsage.cacheReadTokens, cacheRead);
-  if (cacheWrite !== null) tokenUsage.cacheWriteTokens = Math.max(tokenUsage.cacheWriteTokens, cacheWrite);
+  const i = input ?? 0;
+  const o = output ?? 0;
+  const cr = cacheRead ?? 0;
+  const cw = cacheWrite ?? 0;
 
-  const derivedTotal = tokenUsage.inputTokens + tokenUsage.outputTokens;
-  tokenUsage.totalTokens = total !== null
-    ? Math.max(tokenUsage.totalTokens, total, derivedTotal)
-    : Math.max(tokenUsage.totalTokens, derivedTotal);
+  const key =
+    readStr(data, ["apiCallId", "providerCallId"]) ??
+    `sig:${i}|${o}|${cr}|${cw}|${total ?? ""}`;
+  if (metrics.countedUsageKeys.has(key)) return;
+  metrics.countedUsageKeys.add(key);
+
+  const usage = metrics.tokenUsage;
+  usage.inputTokens += i;
+  usage.outputTokens += o;
+  usage.cacheReadTokens += cr;
+  usage.cacheWriteTokens += cw;
+
+  const derivedTotal = usage.inputTokens + usage.outputTokens;
+  usage.totalTokens =
+    total !== null ? Math.max(usage.totalTokens + total, derivedTotal) : Math.max(usage.totalTokens, derivedTotal);
 }
 
 // ── Session metrics aggregator ──────────────────────────────────────────────
@@ -581,6 +605,8 @@ export function createSessionMetrics(): SessionMetrics {
     sessionEndTime: null,
     quotaAvailable: false,
     quotaMessage: "Not exposed by current SDK/CLI",
+    countedUsageKeys: new Set<string>(),
+    countedToolCallIds: new Set<string>(),
   };
 }
 
@@ -604,6 +630,18 @@ export function updateSessionMetrics(
 
     case "tool.execution_start": {
       const name = readStr(event.data, ["name", "tool", "toolName"]) ?? "unknown";
+      // Dedup duplicate SDK emissions when an explicit call identity is present;
+      // without one, count each event (cannot prove it is a duplicate).
+      const callId = readStr(event.data, ["callId", "toolCallId", "id"]);
+      const callNumber = readNum(event.data, ["callNumber"]);
+      const callKey = callId ?? (callNumber !== null ? `${name}#${callNumber}` : null);
+      if (callKey !== null) {
+        if (metrics.countedToolCallIds.has(callKey)) {
+          metrics.activeToolName = name;
+          break;
+        }
+        metrics.countedToolCallIds.add(callKey);
+      }
       metrics.totalToolCalls++;
       metrics.activeToolName = name;
       if (!metrics.tools[name]) {
@@ -650,7 +688,7 @@ export function updateSessionMetrics(
     case "assistant.usage":
     case "session.usage_info": {
       metrics.usageEventCount++;
-      updateCumulativeTokenUsage(metrics.tokenUsage, event.data);
+      accumulateRequestUsage(metrics, event.data);
       break;
     }
 
@@ -676,4 +714,6 @@ export function resetSessionMetrics(metrics: SessionMetrics): void {
   metrics.usageEventCount = 0;
   metrics.sessionStartTime = null;
   metrics.sessionEndTime = null;
+  metrics.countedUsageKeys = new Set<string>();
+  metrics.countedToolCallIds = new Set<string>();
 }
