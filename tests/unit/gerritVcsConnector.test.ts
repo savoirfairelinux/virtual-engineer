@@ -35,6 +35,7 @@ vi.mock("../../src/connectors/gerritSshClient.js", async (importOriginal) => {
 });
 
 const mockConfig: GerritVcsConnectorConfig = {
+  authMode: "ssh",
   baseUrl: "https://gerrit.example.com",
   sshHost: "gerrit.example.com",
   sshPort: 29418,
@@ -75,7 +76,7 @@ describe("GerritVcsConnector", () => {
         ["clone", "--branch", branch, "--depth", "1", repoUrl, targetDir],
         expect.objectContaining({
           env: expect.objectContaining({
-            GIT_SSH_COMMAND: expect.stringContaining(mockConfig.sshKeyPath),
+            GIT_SSH_COMMAND: expect.stringContaining(mockConfig.sshKeyPath!),
           }),
           stdio: ["ignore", "pipe", "pipe"],
         })
@@ -218,7 +219,7 @@ describe("GerritVcsConnector", () => {
         ["push", "origin", `HEAD:${ref}`],
         expect.objectContaining({
           env: expect.objectContaining({
-            GIT_SSH_COMMAND: expect.stringContaining(mockConfig.sshKeyPath),
+            GIT_SSH_COMMAND: expect.stringContaining(mockConfig.sshKeyPath!),
           }),
         })
       );
@@ -361,5 +362,88 @@ describe("GerritVcsConnector", () => {
       const spec = connector.buildPushSpec("main", "task-1", "");
       expect(spec.topic).toBe("VE-task-1");
     });
+  });
+});
+
+// ─── HTTP mode tests ───────────────────────────────────────────────────────────
+
+describe("GerritVcsConnector — HTTP mode", () => {
+  const httpConfig: GerritVcsConnectorConfig = {
+    authMode: "http",
+    baseUrl: "https://gerrit.example.com",
+    httpBaseUrl: "https://gerrit.example.com",
+    httpUsername: "ve-bot",
+    httpToken: "secret-token",
+    gitAuthorName: "Virtual Engineer",
+    gitAuthorEmail: "ve@example.com",
+  };
+
+  beforeEach(() => vi.clearAllMocks());
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("clone uses HTTPS URL with embedded credentials", async () => {
+    const mockExecFileSync = vi.mocked(execFileSync);
+    mockExecFileSync.mockReturnValue("");
+
+    const connector = new GerritVcsConnector(httpConfig);
+    await connector.clone("https://gerrit.example.com/my-repo", "main", "/tmp/repo");
+
+    expect(mockExecFileSync).toHaveBeenCalledWith(
+      "git",
+      ["clone", "--branch", "main", "--depth", "1",
+        "https://ve-bot:secret-token@gerrit.example.com/my-repo",
+        "/tmp/repo"],
+      expect.objectContaining({
+        env: expect.objectContaining({ GIT_TERMINAL_PROMPT: "0" }),
+      })
+    );
+  });
+
+  it("clone does not set GIT_SSH_COMMAND in HTTP mode", async () => {
+    const mockExecFileSync = vi.mocked(execFileSync);
+    mockExecFileSync.mockReturnValue("");
+
+    const connector = new GerritVcsConnector(httpConfig);
+    await connector.clone("https://gerrit.example.com/repo", "main", "/tmp/repo");
+
+    const call = mockExecFileSync.mock.calls[0];
+    const env = (call![2] as Record<string, unknown>)["env"] as Record<string, unknown>;
+    expect(env["GIT_SSH_COMMAND"]).toBeUndefined();
+  });
+
+  it("resolvePatchsetOptions queries REST API and returns HTTP fields", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        `)]}'\n${JSON.stringify({ _number: 55, current_revision: "rev1", revisions: { rev1: { _number: 2 } } })}`,
+        { status: 200 }
+      )
+    );
+
+    const connector = new GerritVcsConnector(httpConfig);
+    const opts = await connector.resolvePatchsetOptions("I8473b95934b5732ac55d26311a706c9c2bde9940");
+
+    expect(opts.revisionNumber).toBe(55);
+    expect(opts.patchset).toBe(2);
+    expect(opts.httpBaseUrl).toBe("https://gerrit.example.com");
+    expect(opts.httpUsername).toBe("ve-bot");
+    expect(opts.httpToken).toBe("secret-token");
+    expect(opts.sshKeyPath).toBeUndefined();
+  });
+
+  it("getChangeStatus queries REST and maps NEW to OPEN", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(`)]}'\n${JSON.stringify({ _number: 1, status: "NEW" })}`, { status: 200 })
+    );
+
+    const connector = new GerritVcsConnector(httpConfig);
+    await expect(connector.getChangeStatus("I123")).resolves.toBe("OPEN");
+  });
+
+  it("getChangeStatus returns OPEN on REST failure", async () => {
+    vi.spyOn(globalThis, "fetch").mockRejectedValueOnce(new Error("network error"));
+
+    const connector = new GerritVcsConnector(httpConfig);
+    await expect(connector.getChangeStatus("I123")).resolves.toBe("OPEN");
   });
 });

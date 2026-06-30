@@ -236,7 +236,7 @@ describe("Admin API — Plugin & Integration routes", () => {
       });
       await fetchFromServer(server, "/api/admin/integrations", {
         method: "POST",
-        body: { type: "gerrit", name: "G1", config: {} },
+        body: { type: "gerrit", name: "G1", config: { sshHost: "gerrit.local", sshUser: "ve-bot" } },
       });
 
       const { status, body } = await fetchFromServer(server, "/api/admin/integrations");
