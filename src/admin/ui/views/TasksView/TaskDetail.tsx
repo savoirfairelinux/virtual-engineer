@@ -74,6 +74,7 @@ export function TaskDetail({ task }: TaskDetailProps) {
   }
 
   async function copyTaskLink() {
+    setActionError(null);
     const url = buildShareUrl();
     try {
       await navigator.clipboard.writeText(url);

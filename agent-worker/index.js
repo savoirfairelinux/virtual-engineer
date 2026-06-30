@@ -441,7 +441,10 @@ function squashIntoBaseIfNeeded(baseSha, cwd) {
  * @returns {string} The message with the trailer appended, updated, or unchanged.
  */
 function appendCommitTrailer(msg, key, value) {
-  const existing = new RegExp(`^${key}:[ \\t]*(.*)$`, 'm');
+  // Escape regex metacharacters in the key so a key like "X.Y" can never be
+  // interpreted as a pattern (defensive — current keys are static literals).
+  const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const existing = new RegExp(`^${escapedKey}:[ \\t]*(.*)$`, 'm');
   const match = existing.exec(msg);
   if (match) {
     if (match[1].trim() === value) return msg;

@@ -621,7 +621,8 @@ describe("agent-worker multi-commit protocol", () => {
   describe("appendCommitTrailer", () => {
     // Replicate the agent-worker function for testability.
     function appendCommitTrailer(msg: string, key: string, value: string): string {
-      const existing = new RegExp(`^${key}:[ \\t]*(.*)$`, "m");
+      const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const existing = new RegExp(`^${escapedKey}:[ \\t]*(.*)$`, "m");
       const match = existing.exec(msg);
       if (match) {
         if (match[1]!.trim() === value) return msg;
@@ -659,6 +660,18 @@ describe("agent-worker multi-commit protocol", () => {
       const msg = "feat: do thing\n\nVirtual-Engineer: https://old/#/tasks/a";
       const out = appendCommitTrailer(msg, "Virtual-Engineer", "https://new/#/tasks/$1b");
       expect(out).toContain("Virtual-Engineer: https://new/#/tasks/$1b");
+    });
+
+    it("escapes regex metacharacters in the trailer key", () => {
+      // A key with metacharacters must be matched literally, not as a pattern.
+      const msg = "feat: do thing\n\nX.Y: old";
+      const out = appendCommitTrailer(msg, "X.Y", "new");
+      expect(out).toBe("feat: do thing\n\nX.Y: new");
+      // A different key that the unescaped pattern would have matched stays put.
+      const other = "feat: do thing\n\nXaY: keep";
+      expect(appendCommitTrailer(other, "X.Y", "new")).toBe(
+        "feat: do thing\n\nXaY: keep\nX.Y: new",
+      );
     });
   });
 
