@@ -28,6 +28,7 @@ interface ApiProjectDetail extends ApiProject {
     localPath: string;
   }>;
   postCloneScript?: string;
+  skillDiscoveryEnabled?: boolean;
 }
 
 export function ProjectsSection({ projects, agents, integrations, onRefresh }: ConfigViewData) {

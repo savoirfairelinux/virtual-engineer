@@ -30,6 +30,15 @@ Each agent cycle runs in an ephemeral Docker container hardened with:
 
 The host owns all push/review credentials and orchestrates network operations; the agent container never holds provider secrets.
 
+### Repository Skill Discovery
+
+Skill discovery is a **per-project, coding-only** setting (`projects.skill_discovery_enabled`, default **off**) chosen in the project-setup form — not an environment flag. When enabled, the in-container agent loads team-defined skills from `<repo>/.github/skills` in the cloned repository. Skills are repository-controlled instructions executed by the agent, so they are a **prompt-injection surface**: a malicious or compromised repo could steer the agent. Mitigations:
+
+- The setting is **disabled by default**; enable it only for repositories you trust.
+- It applies to code-generation projects only — host-side review never loads skills.
+- Only skills are loaded — MCP discovery (`enableConfigDiscovery`) stays off, so untrusted `.mcp.json` / `.vscode/mcp.json` files are never honoured.
+- The agent still runs inside the hardened, network-isolated container described above and never holds provider push/review credentials.
+
 ### Admin API Authentication
 
 The admin dashboard is protected by an HMAC-SHA256 bearer token derived from `ADMIN_AUTH_SECRET`. Tokens embed a timestamp and are validated server-side to prevent replay attacks. Bind the admin port to `127.0.0.1` in production.

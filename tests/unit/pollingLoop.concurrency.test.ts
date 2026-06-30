@@ -25,6 +25,7 @@ function makeProject(id: string): ProjectRecord {
     agentId: ("agent-1") as unknown as AgentId,
     agentOverrideJson: null,
     postCloneScript: "",
+    skillDiscoveryEnabled: false,
     enabled: true,
     createdAt: new Date(),
     updatedAt: new Date(),

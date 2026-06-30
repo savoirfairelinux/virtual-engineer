@@ -261,6 +261,7 @@ export class CopilotAdapter implements AgentAdapter, ConfigurableAdapter {
       ...(session.perRepoChangeIds !== undefined
         ? { PER_REPO_CHANGE_IDS_JSON: JSON.stringify(session.perRepoChangeIds) }
         : {}),
+      ...(session.skillDiscoveryEnabled ? { SKILL_DISCOVERY: "1" } : {}),
     };
 
     const additionalDockerArgs = [

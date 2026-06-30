@@ -18,6 +18,7 @@ interface ProjectFormProject {
   type: "coding" | "review";
   agentId: string | null;
   postCloneScript?: string;
+  skillDiscoveryEnabled?: boolean;
   ticketSource?: {
     integration: { id: string; name: string; type: string } | null;
     ticketProjectKey: string;
@@ -653,6 +654,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
   const [name, setName] = useState("");
   const [agentId, setAgentId] = useState("");
   const [postCloneScript, setPostCloneScript] = useState("");
+  const [skillDiscoveryEnabled, setSkillDiscoveryEnabled] = useState(false);
 
   // Coding-specific
   const [ticketSource, setTicketSource] = useState<TicketSource>({ integrationId: "", ticketProjectKey: "" });
@@ -671,6 +673,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
     setName(project.name);
     setAgentId(project.agentId ?? "");
     setPostCloneScript(project.postCloneScript ?? "");
+    setSkillDiscoveryEnabled(project.skillDiscoveryEnabled ?? false);
 
     if (project.type === "coding") {
       setTicketSource({
@@ -728,6 +731,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
           name,
           agentId,
           postCloneScript: postCloneScript || undefined,
+          skillDiscoveryEnabled,
           ticketSource: { integrationId: ticketSource.integrationId, ticketProjectKey: ticketSource.ticketProjectKey },
           pushTargets: pushTargets.map((t) => ({
             integrationId: t.integrationId,
@@ -930,6 +934,23 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
             style={{ minHeight: "80px", fontFamily: "var(--font-mono)" }}
           />
         </Field>
+
+        {projectType === "coding" && (
+          <Field
+            label="Skill Discovery"
+            hint="When enabled, the agent loads team-defined skills from <repo>/.github/skills. Only enable for trusted repositories."
+          >
+            <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: "13px", userSelect: "none" }}>
+              <input
+                type="checkbox"
+                checked={skillDiscoveryEnabled}
+                onChange={(e) => setSkillDiscoveryEnabled(e.target.checked)}
+                style={{ accentColor: "var(--accent)", cursor: "pointer", flexShrink: 0 }}
+              />
+              <span>Load repository skills from <code>.github/skills</code></span>
+            </label>
+          </Field>
+        )}
 
         <FormError msg={error} />
 

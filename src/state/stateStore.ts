@@ -226,6 +226,7 @@ export class SqliteStateStore {
         agent_id            TEXT    NOT NULL REFERENCES agents(id),
         agent_override_json TEXT,
         post_clone_script   TEXT    NOT NULL DEFAULT '',
+        skill_discovery_enabled INTEGER NOT NULL DEFAULT 0,
         enabled             INTEGER NOT NULL DEFAULT 0,
         created_at          INTEGER NOT NULL,
         updated_at          INTEGER NOT NULL
@@ -306,6 +307,7 @@ export class SqliteStateStore {
     this.ensureColumn("tasks", "push_ref", "TEXT");
     this.ensureColumn("agents", "integration_id", "TEXT REFERENCES integrations(id) ON DELETE SET NULL");
     this.ensureColumn("agents", "feedback_instructions_prompt_id", "TEXT REFERENCES prompts(id) ON DELETE SET NULL");
+    this.ensureColumn("projects", "skill_discovery_enabled", "INTEGER NOT NULL DEFAULT 0");
     this.ensureColumn("prompts", "prompt_type", "TEXT NOT NULL DEFAULT 'user'");
 
     this.raw.exec(`

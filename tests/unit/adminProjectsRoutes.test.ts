@@ -124,6 +124,32 @@ describe("Admin API — Project routes (/api/admin/projects)", () => {
     expect((ts["integration"] as Record<string, unknown>)["id"]).toBe("redmine-1");
   });
 
+  it("POST / persists skillDiscoveryEnabled for coding projects (defaults false)", async () => {
+    const agent = await makeAgent(store, "coding");
+    await seedIntegration(store, "redmine-1", "redmine");
+    await seedIntegration(store, "gerrit-1", "gerrit");
+    const base = {
+      type: "coding",
+      agentId: agent.id,
+      pushTargets: [
+        { integrationId: "gerrit-1", repoKey: "superproject", cloneUrl: "ssh://g/super", targetBranch: "main", role: "primary", commitOrder: 1, localPath: "." },
+      ],
+    };
+    const on = await rest(server, "/api/admin/projects", {
+      method: "POST",
+      body: { ...base, name: "WithSkills", ticketSource: { integrationId: "redmine-1", ticketProjectKey: "A" }, skillDiscoveryEnabled: true },
+    });
+    expect(on.status).toBe(201);
+    expect((on.body?.["project"] as Record<string, unknown>)["skillDiscoveryEnabled"]).toBe(true);
+
+    const off = await rest(server, "/api/admin/projects", {
+      method: "POST",
+      body: { ...base, name: "NoSkills", ticketSource: { integrationId: "redmine-1", ticketProjectKey: "B" } },
+    });
+    expect(off.status).toBe(201);
+    expect((off.body?.["project"] as Record<string, unknown>)["skillDiscoveryEnabled"]).toBe(false);
+  });
+
   it("POST / creates a review project with reviewConfig", async () => {
     const agent = await makeAgent(store, "review");
     await seedIntegration(store, "gerrit-1", "gerrit");

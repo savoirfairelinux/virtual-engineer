@@ -55,6 +55,7 @@ try {
   process.stderr.write('Warning: failed to parse PER_REPO_CHANGE_IDS_JSON\n');
 }
 const REVIEW_MODE = process.env['REVIEW_MODE'] === '1';
+const SKILL_DISCOVERY = process.env['SKILL_DISCOVERY'] === '1';
 const USER_PROMPT_FILE = process.env['USER_PROMPT_FILE'] ?? '';
 const SYSTEM_PROMPT = process.env['SYSTEM_PROMPT'] ?? '';
 
@@ -190,12 +191,16 @@ async function runSession(
   const localCliServer = await startLocalCliServer();
   const client = new CopilotClient({ cliUrl: localCliServer.cliUrl });
 
+  const skillsDir = join(WORKSPACE, '.github', 'skills');
+  const enableSkillDiscovery = SKILL_DISCOVERY && existsSync(skillsDir);
+
   try {
     const session = await client.createSession({
       model: COPILOT_MODEL,
       ...(COPILOT_REASONING_EFFORT && COPILOT_REASONING_EFFORT !== 'none'
         ? { reasoningEffort: COPILOT_REASONING_EFFORT as ReasoningEffort }
         : {}),
+      ...(enableSkillDiscovery ? { skillDirectories: [skillsDir] } : {}),
       systemMessage: { content: SYSTEM_PROMPT },
       onPermissionRequest: approveAll,
       workingDirectory: WORKSPACE,

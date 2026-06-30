@@ -26,6 +26,7 @@ function makeProject(
     agentId: (over.agentId ?? "agent-1") as AgentId,
     agentOverrideJson: over.agentOverrideJson ?? null,
     postCloneScript: over.postCloneScript ?? "",
+    skillDiscoveryEnabled: over.skillDiscoveryEnabled ?? false,
     enabled: over.enabled ?? true,
     createdAt: over.createdAt ?? new Date(),
     updatedAt: over.updatedAt ?? new Date(),
