@@ -434,6 +434,12 @@ export interface PatchsetCheckoutOptions {
   sshPort?: number | undefined;
   /** Gerrit SSH user */
   sshUser?: string | undefined;
+  /** Gerrit HTTP base URL (e.g. https://gerrit.example.com); required when using HTTP auth mode */
+  httpBaseUrl?: string | undefined;
+  /** Gerrit HTTP username for HTTPS git operations and REST API calls */
+  httpUsername?: string | undefined;
+  /** Gerrit HTTP token / password for HTTPS git operations */
+  httpToken?: string | undefined;
 }
 
 export interface WorkspaceRunner {
