@@ -58,8 +58,9 @@ const ConfigSchema = z.object({
     adminAuthSecret: z.string().min(1).optional(),
     /**
      * Externally-reachable base URL of the admin dashboard (e.g. https://ve.example.com).
-     * Used to build shareable task-page deep links embedded in commits and review summaries.
-     * When unset, links fall back to `http://<adminApiHost>:<adminApiPort>`.
+     * Used to build shareable task-page deep links embedded in commits and review
+     * summaries. When unset, those links are omitted (the dashboard's copy-link
+     * button still falls back to the current browser location).
      */
     publicBaseUrl: z.preprocess(
       (value) => (typeof value === "string" && value.trim() === "" ? undefined : value),

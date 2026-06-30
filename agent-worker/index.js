@@ -468,7 +468,7 @@ function appendCommitTrailer(msg, key, value) {
  * @param {string} [repoKeyForLookup] - Repo key used to resolve per-index Change-Ids from PER_REPO_CHANGE_IDS.
  * @returns {Array} Updated commits array with changeId fields populated.
  */
-function injectChangeIds(baseSha, commits, cwd, existingChangeId = null, repoKeyForLookup = null) {
+function injectCommitTrailers(baseSha, commits, cwd, existingChangeId = null, repoKeyForLookup = null) {
   if (commits.length === 0) return commits;
 
   const repoCwd = cwd || REPO_PATH;
@@ -1049,7 +1049,7 @@ async function main() {
                 }
               }
             }
-            rootCommits = injectChangeIds(baseSha, rootCommits, undefined, rootExistingChangeId, rootRepoKey);
+            rootCommits = injectCommitTrailers(baseSha, rootCommits, undefined, rootExistingChangeId, rootRepoKey);
           }
           for (const localPath of subRepoLocalPaths) {
             const subBase = subRepoBaseShas[localPath];
@@ -1062,7 +1062,7 @@ async function main() {
               const subRepoKey = REPOSITORY_MAP.submodules.find((s) => s.localPath === localPath)?.repoKey;
               const subEntry = PER_REPO_CHANGE_IDS && subRepoKey ? (PER_REPO_CHANGE_IDS[subRepoKey] || null) : null;
               const subChangeId = typeof subEntry === 'string' ? subEntry : (subEntry?.['0'] || null);
-              const injected = injectChangeIds(subBase, subCommitsForPath, subPath, subChangeId, subRepoKey || null);
+              const injected = injectCommitTrailers(subBase, subCommitsForPath, subPath, subChangeId, subRepoKey || null);
               // Replace sub-repo commits with injected versions
               const sub = REPOSITORY_MAP.submodules.find((s) => s.localPath === localPath);
               const repoKey = sub ? sub.repoKey : localPath;

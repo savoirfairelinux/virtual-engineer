@@ -11,7 +11,14 @@ interface TasksViewProps {
 }
 
 export function TasksView({ tasks, selectedId, onSelect }: TasksViewProps) {
-  const task = tasks.find((t) => t.taskId === selectedId) ?? tasks[0] ?? null;
+  // A task id in the URL must resolve to that exact task — never silently fall
+  // back to a different one (that would break the deep-link contract). Only
+  // default to the first task when no id is selected.
+  const selectedTask = selectedId !== null ? tasks.find((t) => t.taskId === selectedId) ?? null : null;
+  const task = selectedId === null ? (tasks[0] ?? null) : selectedTask;
+  // Distinguish a genuinely-missing deep link from the initial loading window
+  // (tasks empty) so we don't flash “not found” before the list arrives.
+  const notFound = selectedId !== null && selectedTask === null && tasks.length > 0;
 
   return (
     <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
@@ -20,7 +27,9 @@ export function TasksView({ tasks, selectedId, onSelect }: TasksViewProps) {
         <TaskDetail task={task} />
       ) : (
         <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-ghost)", fontSize: "13px" }}>
-          Select a task to inspect its cycles and timeline.
+          {notFound
+            ? `Task ${selectedId} was not found — it may have been deleted.`
+            : "Select a task to inspect its cycles and timeline."}
         </div>
       )}
     </div>

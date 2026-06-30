@@ -141,7 +141,7 @@ All env vars are optional. Only system/infra settings remain — provider creden
 | `ADMIN_API_ENABLED` | `true` | |
 | `ADMIN_API_HOST` / `ADMIN_API_PORT` | `127.0.0.1` / `3100` | |
 | `ADMIN_AUTH_SECRET` | — | HMAC secret for Bearer auth (`Bearer <hex-hmac>`) |
-| `PUBLIC_BASE_URL` | — | Public base URL of the admin UI; used to build shareable `#/tasks/<id>` deep links embedded in commit trailers (`Virtual-Engineer:`) and review summaries. Falls back to `http://<ADMIN_API_HOST>:<ADMIN_API_PORT>` when unset. |
+| `PUBLIC_BASE_URL` | — | Public base URL of the admin UI; used to build shareable `#/tasks/<id>` deep links embedded in commit trailers (`Virtual-Engineer:`) and review summaries. When unset, those links are omitted (the dashboard's copy-link button still falls back to the current browser location). |
 | `POLLING_INTERVAL_MS` | `30000` | polling loop tick interval |
 | `MAX_AGENT_CYCLES` | `3` | per-task cap → FAILED |
 | `MAX_RETRY_ATTEMPTS` | `5` | per-ticket cap; polling skips ticket past cap |
