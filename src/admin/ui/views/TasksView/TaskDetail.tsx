@@ -45,8 +45,11 @@ export function TaskDetail({ task, onRefresh, onDeleted }: TaskDetailProps) {
     setTaskDetails(null);
     setCycles(null);
     setTransitions(null);
+  }, [task.taskId]);
+
+  useEffect(() => {
     loadDetails(task.taskId, task);
-  }, [task.taskId, task.state, task.updatedAt]); // eslint-disable-line react-hooks/exhaustive-deps -- loadDetails is stable; re-fetch on taskId, state, or updatedAt change
+  }, [task.taskId, task.state, task.updatedAt]); // eslint-disable-line react-hooks/exhaustive-deps -- loadDetails is stable
 
   async function doAction(path: string, method: "PATCH" | "POST" | "DELETE") {
     setActionError(null);
