@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Icon } from "../../components/Icon.tsx";
 import { StatePill } from "../../components/StatePill.tsx";
 import { Tag } from "../../components/Tag.tsx";
@@ -32,20 +32,24 @@ export function TaskDetail({ task, onRefresh, onDeleted }: TaskDetailProps) {
   const running   = isActiveState(task.state);
   const terminal  = isTerminalState(task.state);
 
+  const loadDetails = useCallback((id: string, fallbackTask: ApiTask) => {
+    void api.get<{ task: ApiTask }>(`/api/admin/tasks/${id}`)
+      .then((r) => setTaskDetails(r.task))
+      .catch(() => setTaskDetails(fallbackTask));
+    void api.get<{ cycles: ApiCycle[] }>(`/api/admin/tasks/${id}/cycles`)
+      .then((r) => setCycles(r.cycles))
+      .catch(() => setCycles([]));
+    void api.get<{ transitions: ApiTransition[] }>(`/api/admin/tasks/${id}/transitions`)
+      .then((r) => setTransitions(r.transitions))
+      .catch(() => setTransitions([]));
+  }, []);
+
   useEffect(() => {
     setTaskDetails(null);
     setCycles(null);
     setTransitions(null);
-    void api.get<{ task: ApiTask }>(`/api/admin/tasks/${task.taskId}`)
-      .then((r) => setTaskDetails(r.task))
-      .catch(() => setTaskDetails(task));
-    void api.get<{ cycles: ApiCycle[] }>(`/api/admin/tasks/${task.taskId}/cycles`)
-      .then((r) => setCycles(r.cycles))
-      .catch(() => setCycles([]));
-    void api.get<{ transitions: ApiTransition[] }>(`/api/admin/tasks/${task.taskId}/transitions`)
-      .then((r) => setTransitions(r.transitions))
-      .catch(() => setTransitions([]));
-  }, [task.taskId]); // eslint-disable-line react-hooks/exhaustive-deps -- task is used as catch fallback only; re-fetch is intentionally gated on taskId
+    loadDetails(task.taskId, task);
+  }, [task.taskId, task.state, task.updatedAt]); // eslint-disable-line react-hooks/exhaustive-deps -- loadDetails is stable; re-fetch on taskId, state, or updatedAt change
 
   async function doAction(path: string, method: "PATCH" | "POST" | "DELETE") {
     setActionError(null);
@@ -53,6 +57,8 @@ export function TaskDetail({ task, onRefresh, onDeleted }: TaskDetailProps) {
       await api[method === "PATCH" ? "patch" : method === "POST" ? "post" : "delete"](path);
       if (method === "DELETE") {
         onDeleted();
+      } else {
+        loadDetails(task.taskId, task);
       }
       onRefresh();
     } catch (err) {
