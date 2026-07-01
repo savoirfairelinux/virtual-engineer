@@ -243,7 +243,7 @@ export function TaskDetail({ task, onRefresh, onDeleted }: TaskDetailProps) {
               ? <div style={{ color: "var(--text-faint)", fontSize: "13px" }}>Loading…</div>
               : cycles.length === 0
                 ? <div className="placeholder" style={{ minHeight: "120px" }}>No agent cycles yet.</div>
-                : <AgentCycles cycles={cycles} />
+                : <AgentCycles key={cycles.length} cycles={cycles} />
           )}
           {tab === "timeline" && (
             transitions === null
