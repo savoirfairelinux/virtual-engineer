@@ -167,6 +167,9 @@ export function TaskDetail({ task }: TaskDetailProps) {
                     <button className="iconbtn danger" title="Abandon" onClick={() => void doAction(`/api/admin/tasks/${task.taskId}/abandon`, "POST")}><Icon name="x" size={15} /></button>
                   </>
                 )}
+                {terminal && task.state !== "MERGED" && (
+                  <button className="iconbtn" title="Retry" onClick={() => void doAction(`/api/admin/tasks/${task.taskId}/retry`, "POST")}><Icon name="refresh" size={15} /></button>
+                )}
                 <div style={{ width: 1, height: 20, background: "var(--border-soft)", margin: "0 3px" }} />
                 <button
                   className="iconbtn danger"
