@@ -207,7 +207,7 @@ export function TaskDetail({ task, onRefresh, onDeleted }: TaskDetailProps) {
         </div>
 
         {/* failure banner */}
-        {task.failureReason && (
+        {taskWithDetails.failureReason && (
           <div
             style={{
               display: "flex", gap: "11px", alignItems: "center", padding: "12px 16px",
@@ -219,7 +219,7 @@ export function TaskDetail({ task, onRefresh, onDeleted }: TaskDetailProps) {
             <div>
               <span className="eyebrow" style={{ color: "var(--danger)" }}>Failure reason</span>
               <div className="mono" style={{ fontSize: "12.5px", color: "var(--text)", marginTop: "2px" }}>
-                {task.failureReason}
+                {taskWithDetails.failureReason}
               </div>
             </div>
           </div>
