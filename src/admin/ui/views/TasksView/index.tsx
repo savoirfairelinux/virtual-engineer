@@ -5,9 +5,10 @@ import type { ApiTask } from "../../types.ts";
 
 interface TasksViewProps {
   tasks: ApiTask[];
+  onRefresh: () => void;
 }
 
-export function TasksView({ tasks }: TasksViewProps) {
+export function TasksView({ tasks, onRefresh }: TasksViewProps) {
   const [selectedId, setSelectedId] = useState<string | null>(
     tasks.length > 0 ? (tasks[0]?.taskId ?? null) : null
   );
@@ -17,7 +18,7 @@ export function TasksView({ tasks }: TasksViewProps) {
     <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
       <TaskList tasks={tasks} selectedId={selectedId} onSelect={setSelectedId} />
       {task ? (
-        <TaskDetail task={task} />
+        <TaskDetail task={task} onRefresh={onRefresh} />
       ) : (
         <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-ghost)", fontSize: "13px" }}>
           Select a task to inspect its cycles and timeline.

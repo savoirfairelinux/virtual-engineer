@@ -150,7 +150,7 @@ export function App() {
           />
         )}
         {view === "tasks" && (
-          <TasksView tasks={tasks} />
+          <TasksView tasks={tasks} onRefresh={() => void loadAll()} />
         )}
         {view === "config" && (
           <ConfigView

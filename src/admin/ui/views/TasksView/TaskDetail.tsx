@@ -16,11 +16,12 @@ import type { ApiTask, ApiCycle, ApiTransition } from "../../types.ts";
 
 interface TaskDetailProps {
   task: ApiTask;
+  onRefresh: () => void;
 }
 
 type TabId = "cycles" | "timeline" | "logs";
 
-export function TaskDetail({ task }: TaskDetailProps) {
+export function TaskDetail({ task, onRefresh }: TaskDetailProps) {
   const [tab, setTab] = useState<TabId>("cycles");
   const [taskDetails, setTaskDetails] = useState<ApiTask | null>(null);
   const [cycles, setCycles] = useState<ApiCycle[] | null>(null);
@@ -49,7 +50,7 @@ export function TaskDetail({ task }: TaskDetailProps) {
     setActionError(null);
     try {
       await api[method === "PATCH" ? "patch" : method === "POST" ? "post" : "delete"](path);
-      // Parent will refresh via SSE; no local state update needed
+      onRefresh();
     } catch (err) {
       setActionError(err instanceof Error ? err.message : "Action failed");
     }
