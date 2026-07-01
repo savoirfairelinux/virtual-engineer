@@ -194,7 +194,7 @@ export function TaskDetail({ task, onRefresh, onDeleted }: TaskDetailProps) {
 
           {/* state pipeline */}
           <div style={{ marginTop: "10px", borderTop: "1px solid var(--border-soft)", paddingTop: "4px" }}>
-            <StatePipeline task={task} />
+            <StatePipeline task={taskWithDetails} />
           </div>
         </div>
 
