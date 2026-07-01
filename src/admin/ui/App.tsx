@@ -42,6 +42,16 @@ export function App() {
     if (hash === "#overview") return "overview";
     return "tasks";
   });
+
+  useEffect(() => {
+    const onHashChange = () => {
+      const hash = window.location.hash;
+      setView(hash.startsWith("#config") ? "config" : hash === "#overview" ? "overview" : "tasks");
+    };
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
+
   const [authenticated, setAuthenticated] = useState(() => !bootstrap.requiresAuth || !!getStoredToken());
 
   // data state
