@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Icon } from "../../components/Icon.tsx";
 import type { ApiIntegration, ApiAgent, ApiProject, ApiPrompt, ApiOAuthApp, ApiConfig, ApiPlugin, ApiStatus } from "../../types.ts";
 
@@ -41,6 +41,16 @@ export function ConfigView(props: ConfigViewData) {
     const part = window.location.hash.split("/")[1] ?? "";
     return (CONFIG_NAV.find((n) => n.id === part)?.id) ?? "integrations";
   });
+
+  useEffect(() => {
+    const onHashChange = () => {
+      const part = window.location.hash.split("/")[1] ?? "";
+      const id = CONFIG_NAV.find((n) => n.id === part)?.id ?? "integrations";
+      setSec(id);
+    };
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
 
   function handleSectionChange(id: SectionId) {
     setSec(id);
