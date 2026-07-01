@@ -63,12 +63,6 @@ export function TaskDetail({ task, onRefresh, onDeleted }: TaskDetailProps) {
     }
   }
 
-  const tabItems = [
-    { id: "cycles",   label: "Agent cycles",  count: cycles?.length ?? task.cycleCount },
-    { id: "timeline", label: "State timeline", count: transitions?.length ?? null },
-    { id: "logs",     label: "Live logs" },
-  ];
-
   const displayTitle = task.ticketTitle || task.displayId || task.taskId;
   const sourceLabel  = task.ticketSourceLabel.toUpperCase();
   const taskWithDetails = taskDetails ?? task;
@@ -78,9 +72,9 @@ export function TaskDetail({ task, onRefresh, onDeleted }: TaskDetailProps) {
   const effectiveCycleCount = Math.max(taskWithDetails.cycleCount, loadedCycleCount);
   const repoReviewLinks = (taskWithDetails.changesPerRepo ?? []).filter((c) => typeof c.reviewUrl === "string" && c.reviewUrl.length > 0);
   const primaryLink = taskWithDetails.ticketUrl ?? taskWithDetails.reviewUrl;
-  const footerRefLabel = task.taskType === "code-review"
-    ? (task.gerritChangeId ?? task.displayId ?? task.ticketId)
-    : (task.displayId ?? task.ticketId);
+  const footerRefLabel = taskWithDetails.taskType === "code-review"
+    ? (taskWithDetails.gerritChangeId ?? taskWithDetails.displayId ?? taskWithDetails.ticketId)
+    : (taskWithDetails.displayId ?? taskWithDetails.ticketId);
 
   const costTotals = cycles ? sumCycleCosts(cycles) : null;
   const costValue = costTotals && costTotals.usd > 0
@@ -89,12 +83,18 @@ export function TaskDetail({ task, onRefresh, onDeleted }: TaskDetailProps) {
 
   const metaCells = [
     { label: "Type",        value: task.taskType === "code-review" ? "Code review" : "Code generation", mono: false },
-    { label: "Patchset",    value: String(task.currentPatchset || "—"),    mono: true },
-    { label: "Total cost",  value: costValue,                              mono: true },
-    { label: "Reviewed PS", value: String(task.reviewedPatchset ?? "—"),    mono: true },
-    { label: "Cycles",      value: String(effectiveCycleCount),            mono: true },
-    { label: "Ticket",      value: task.displayId ?? task.ticketId,         mono: true },
-    { label: "Updated",     value: new Date(task.updatedAt).toLocaleString(), mono: true },
+    { label: "Patchset",    value: String(taskWithDetails.currentPatchset || "—"),    mono: true },
+    { label: "Total cost",  value: costValue,                                          mono: true },
+    { label: "Reviewed PS", value: String(taskWithDetails.reviewedPatchset ?? "—"),    mono: true },
+    { label: "Cycles",      value: String(effectiveCycleCount),                        mono: true },
+    { label: "Ticket",      value: task.displayId ?? task.ticketId,                    mono: true },
+    { label: "Updated",     value: new Date(taskWithDetails.updatedAt).toLocaleString(), mono: true },
+  ];
+
+  const tabItems = [
+    { id: "cycles",   label: "Agent cycles",  count: cycles?.length ?? taskWithDetails.cycleCount },
+    { id: "timeline", label: "State timeline", count: transitions?.length ?? null },
+    { id: "logs",     label: "Live logs" },
   ];
 
   return (
