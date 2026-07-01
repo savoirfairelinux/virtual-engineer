@@ -29,9 +29,6 @@ export function TaskDetail({ task, onRefresh, onDeleted }: TaskDetailProps) {
   const [transitions, setTransitions] = useState<ApiTransition[] | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
-  const running   = isActiveState(task.state);
-  const terminal  = isTerminalState(task.state);
-
   const loadDetails = useCallback((id: string, fallbackTask: ApiTask) => {
     void api.get<{ task: ApiTask }>(`/api/admin/tasks/${id}`)
       .then((r) => setTaskDetails(r.task))
@@ -75,6 +72,8 @@ export function TaskDetail({ task, onRefresh, onDeleted }: TaskDetailProps) {
   const displayTitle = task.ticketTitle || task.displayId || task.taskId;
   const sourceLabel  = task.ticketSourceLabel.toUpperCase();
   const taskWithDetails = taskDetails ?? task;
+  const running   = isActiveState(taskWithDetails.state);
+  const terminal  = isTerminalState(taskWithDetails.state);
   const loadedCycleCount = cycles ? Math.max(cycles.length, ...cycles.map((cycle) => cycle.cycleNumber)) : 0;
   const effectiveCycleCount = Math.max(taskWithDetails.cycleCount, loadedCycleCount);
   const repoReviewLinks = (taskWithDetails.changesPerRepo ?? []).filter((c) => typeof c.reviewUrl === "string" && c.reviewUrl.length > 0);
@@ -128,10 +127,10 @@ export function TaskDetail({ task, onRefresh, onDeleted }: TaskDetailProps) {
               <h1 style={{ margin: 0, fontSize: "20px", fontWeight: 600, lineHeight: 1.3, letterSpacing: "-0.01em" }}>
                 {displayTitle}
               </h1>
-              {task.gerritChangeId && (
+              {taskWithDetails.gerritChangeId && (
                 <div className="mono" style={{ fontSize: "11.5px", color: "var(--text-faint)", marginTop: "8px", display: "flex", gap: "8px", alignItems: "center" }}>
                   <Icon name="link" size={12} />
-                  <span>Change-Id: {task.gerritChangeId}</span>
+                  <span>Change-Id: {taskWithDetails.gerritChangeId}</span>
                 </div>
               )}
               {repoReviewLinks.length > 0 && (
@@ -165,7 +164,7 @@ export function TaskDetail({ task, onRefresh, onDeleted }: TaskDetailProps) {
               )}
             </div>
             <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "12px" }}>
-              <StatePill state={task.state} />
+              <StatePill state={taskWithDetails.state} />
               {/* action bar */}
               <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
                 {running && (
@@ -177,7 +176,7 @@ export function TaskDetail({ task, onRefresh, onDeleted }: TaskDetailProps) {
                     <button className="iconbtn danger" title="Abandon" onClick={() => void doAction(`/api/admin/tasks/${task.taskId}/abandon`, "POST")}><Icon name="x" size={15} /></button>
                   </>
                 )}
-                {terminal && task.state !== "MERGED" && (
+                {terminal && taskWithDetails.state !== "MERGED" && (
                   <button className="iconbtn" title="Retry" onClick={() => void doAction(`/api/admin/tasks/${task.taskId}/retry`, "POST")}><Icon name="refresh" size={15} /></button>
                 )}
                 <div style={{ width: 1, height: 20, background: "var(--border-soft)", margin: "0 3px" }} />
