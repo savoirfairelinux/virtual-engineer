@@ -251,7 +251,7 @@ export function TaskDetail({ task, onRefresh, onDeleted }: TaskDetailProps) {
               : <div className="card" style={{ padding: "16px 20px" }}><StateTimeline transitions={transitions} /></div>
           )}
           {tab === "logs" && (
-            <LiveLogs taskId={task.taskId} running={running} />
+            <LiveLogs key={effectiveCycleCount} taskId={task.taskId} running={running} />
           )}
         </TabPanel>
 
