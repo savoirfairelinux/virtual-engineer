@@ -36,7 +36,12 @@ function useTheme() {
 
 export function App() {
   const [theme, toggleTheme] = useTheme();
-  const [view, setView] = useState<ViewId>("tasks");
+  const [view, setView] = useState<ViewId>(() => {
+    const hash = window.location.hash;
+    if (hash.startsWith("#config")) return "config";
+    if (hash === "#overview") return "overview";
+    return "tasks";
+  });
   const [authenticated, setAuthenticated] = useState(() => !bootstrap.requiresAuth || !!getStoredToken());
 
   // data state
@@ -117,13 +122,14 @@ export function App() {
 
   function handleNavigate(v: "tasks" | "config") {
     setView(v);
+    window.location.hash = v;
   }
 
   return (
     <div className="app">
       <TopBar
         view={view}
-        setView={setView}
+        setView={(v) => { setView(v); window.location.hash = v; }}
         theme={theme}
         toggleTheme={toggleTheme}
         onLogout={() => { clearStoredToken(); setAuthenticated(false); }}
