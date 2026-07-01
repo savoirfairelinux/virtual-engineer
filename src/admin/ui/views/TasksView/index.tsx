@@ -18,7 +18,8 @@ export function TasksView({ tasks, onRefresh }: TasksViewProps) {
   useEffect(() => { tasksRef.current = tasks; }, [tasks]);
 
   useEffect(() => {
-    if (selectedId || tasks.length === 0) return;
+    if (tasks.length === 0) return;
+    if (selectedId && tasks.some((t) => t.taskId === selectedId)) return;
     const part = window.location.hash.split("/")[1] ?? "";
     const fromHash = tasks.find((t) => t.taskId === part)?.taskId;
     const id = fromHash ?? tasks[0]?.taskId ?? "";
