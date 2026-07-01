@@ -72,7 +72,10 @@ export function StateTimeline({ transitions }: StateTimelineProps) {
                 <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
                   {isAction ? (
                     <Tag tone={tone} mono={false}>
-                      {action === "pause" ? "⏸ Paused" : "▶ Resumed"}
+                      {action === "pause"    ? "⏸ Paused"
+                       : action === "retry"   ? "↺ Retried"
+                       : action === "abandon" ? "✕ Abandoned"
+                       : "▶ Resumed"}
                     </Tag>
                   ) : (
                     <span style={{ display: "inline-flex", alignItems: "center", gap: "7px" }}>
