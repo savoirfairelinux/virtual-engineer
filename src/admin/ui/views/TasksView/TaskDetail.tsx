@@ -158,12 +158,11 @@ export function TaskDetail({ task, onRefresh }: TaskDetailProps) {
               <StatePill state={task.state} />
               {/* action bar */}
               <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
-                {!terminal && (
+                {running && (
+                  <button className="iconbtn danger" title="Abandon" onClick={() => void doAction(`/api/admin/tasks/${task.taskId}/abandon`, "POST")}><Icon name="x" size={15} /></button>
+                )}
+                {!terminal && !running && (
                   <>
-                    {running
-                      ? <button className="iconbtn" title="Pause" onClick={() => void doAction(`/api/admin/tasks/${task.taskId}/pause`, "PATCH")}><Icon name="pause" size={15} /></button>
-                      : <button className="iconbtn" title="Resume" onClick={() => void doAction(`/api/admin/tasks/${task.taskId}/resume`, "PATCH")}><Icon name="play" size={15} /></button>
-                    }
                     <button className="iconbtn" title="Retry" onClick={() => void doAction(`/api/admin/tasks/${task.taskId}/retry`, "POST")}><Icon name="refresh" size={15} /></button>
                     <button className="iconbtn danger" title="Abandon" onClick={() => void doAction(`/api/admin/tasks/${task.taskId}/abandon`, "POST")}><Icon name="x" size={15} /></button>
                   </>
