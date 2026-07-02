@@ -82,7 +82,7 @@ The orchestrator picks up tickets, generates code, and pushes changes for review
 
 **Step 3 — Add a VCS / code review integration**
 - Go to **Integrations** → **Add** → select **Gerrit** or **GitLab Merge Requests**
-- *Gerrit*: fill in `URL` and credentials (`HTTP password` or SSH-only config, depending on your setup)
+- *Gerrit*: fill in `URL` and **SSH credentials** (username and private key). HTTP credentials are not supported because Gerrit stream-events require an SSH connection
 - *GitLab Merge Requests*: fill in `Base URL`, choose `Authentication Mode`
 - `OAuth` recommended: enter `OAuth Client ID` + `OAuth Client Secret`, click **Connect with GitLab**, then **Test**
 - `Personal Access Token` fallback: enter the token manually, then **Test**
