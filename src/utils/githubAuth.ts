@@ -258,7 +258,7 @@ export async function listGitHubRepositoriesForOwner(
   apiBaseUrl: string,
   owner: string
 ): Promise<GitHubDiscoveredRepo[]> {
-  const url = `${apiBaseUrl}/user/repos?per_page=100&affiliation=owner,collaborator,organization_member`;
+  const url = `${apiBaseUrl}/user/repos?per_page=100&type=all&sort=full_name`;
 
   const result = await fetchPaginated(token, url);
   if (!result.ok) {
@@ -332,12 +332,49 @@ export async function listGitHubRepositoriesForUser(
   token: string,
   apiBaseUrl: string
 ): Promise<GitHubDiscoveredRepo[]> {
-  const url = `${apiBaseUrl}/user/repos?per_page=100&sort=full_name&affiliation=owner,collaborator,organization_member`;
+  const url = `${apiBaseUrl}/user/repos?per_page=100&type=all&sort=full_name`;
   const result = await fetchPaginated(token, url);
   if (!result.ok) {
     throw new GitHubAuthError(`List user repositories failed (${result.status}): ${result.body}`);
   }
   return result.repos;
+}
+
+/**
+ * List the branch names of a GitHub repository (push-target branch selection).
+ * `fullName` is the `owner/repo` slug. Follows `Link: rel="next"` pagination.
+ */
+export async function listGitHubBranches(
+  token: string,
+  apiBaseUrl: string,
+  fullName: string
+): Promise<string[]> {
+  const names: string[] = [];
+  let nextUrl: string | null = `${apiBaseUrl}/repos/${fullName}/branches?per_page=100`;
+  let attempts = 0;
+  while (nextUrl !== null) {
+    if (attempts++ > 50) {
+      throw new GitHubAuthError("Too many GitHub branch pagination requests (>50 pages)");
+    }
+    const response: Response = await globalThis.fetch(nextUrl, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/vnd.github+json",
+      },
+    });
+    if (!response.ok) {
+      const body = await response.text().catch(() => "");
+      throw new GitHubAuthError(`List branches failed (${response.status}): ${body}`);
+    }
+    const page = (await response.json()) as Array<Record<string, unknown>>;
+    for (const item of page) {
+      const name = item["name"];
+      if (typeof name === "string") names.push(name);
+    }
+    nextUrl = parseNextLink(response.headers.get("Link"));
+  }
+  log.debug({ fullName, count: names.length }, "listed GitHub branches");
+  return names;
 }
 
 export class GitHubAuthError extends Error {

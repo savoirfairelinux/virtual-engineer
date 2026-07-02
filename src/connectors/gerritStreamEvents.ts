@@ -106,7 +106,7 @@ export class GerritStreamEventsManager implements IntegrationEventStreamManager 
         this.statuses.set(integration.id, {
           integrationId: integration.id,
           integrationName: integration.name,
-          integrationType: integration.type,
+          integrationType: integration.provider,
           state: "error",
           reconnectCount: 0,
           lastEventType: null,
@@ -198,7 +198,7 @@ export class GerritStreamEventsManager implements IntegrationEventStreamManager 
     this.statuses.set(integration.id, {
       integrationId: integration.id,
       integrationName: integration.name,
-      integrationType: integration.type,
+      integrationType: integration.provider,
       state: "connecting",
       reconnectCount,
       lastEventType: null,
@@ -526,7 +526,10 @@ export class GerritStreamEventsManager implements IntegrationEventStreamManager 
         if (reviewTriggerOnAdded) {
           const addedUsername = extractReviewerUsername(payload);
           if (addedUsername === handle.config.sshUser) {
-            await reviewTriggerOnAdded.triggerReviewForChange(handle.integration.id, changeId);
+            // Manual trigger: a human (re)added VE as a reviewer. Force a fresh
+            // review even if VE already reviewed the current patchset — this is
+            // how a reviewer intentionally relaunches VE's review.
+            await reviewTriggerOnAdded.triggerReviewForChange(handle.integration.id, changeId, { force: true });
           } else {
             log.debug(
               { integrationId: handle.integration.id, changeId, addedUsername, veUser: handle.config.sshUser },

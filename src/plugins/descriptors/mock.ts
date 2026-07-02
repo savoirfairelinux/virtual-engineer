@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { PluginDescriptor } from "../registry.js";
+import type { ProviderDescriptor } from "../registry.js";
 import { MockAgentAdapter } from "../../agents/mockAgentAdapter.js";
 
 export const mockConfigSchema = z.object({
@@ -9,17 +9,20 @@ export const mockConfigSchema = z.object({
 
 export type MockPluginConfig = z.infer<typeof mockConfigSchema>;
 
-export const mockDescriptor: PluginDescriptor = {
-  type: "mock",
+export const mockDescriptor: ProviderDescriptor = {
+  provider: "mock",
   name: "Mock Agent",
-  category: "agent",
   configSchema: mockConfigSchema,
   requiredFields: [
     { key: "status", label: "Default Status", type: "text", required: false, placeholder: "success" },
     { key: "simulateDelayMs", label: "Simulated Delay (ms)", type: "number", required: false, placeholder: "0" },
   ],
-  createInstance: (config) => new MockAgentAdapter(config as ConstructorParameters<typeof MockAgentAdapter>[0]),
   getSummaryDetails(_config) {
     return [];
+  },
+  capabilities: {
+    agent_execution: {
+      createAdapter: (config) => new MockAgentAdapter(config as ConstructorParameters<typeof MockAgentAdapter>[0]),
+    },
   },
 };

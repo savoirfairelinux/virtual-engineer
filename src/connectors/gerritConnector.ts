@@ -89,6 +89,44 @@ export async function listRepositoriesViaSsh(
   return out;
 }
 
+/**
+ * List the branch names of a Gerrit repository via
+ * `git ls-remote --heads ssh://user@host:port/<repoKey>`.
+ *
+ * Gerrit's SSH API has no native list-branches command, so we use git's
+ * ls-remote against the repo and parse the `refs/heads/<branch>` lines.
+ */
+export async function listBranchesViaSsh(
+  ssh: GerritSshDiscoveryConfig,
+  repoKey: string
+): Promise<string[]> {
+  const sshArgs = [
+    "-p", String(ssh.port),
+    "-i", ssh.keyPath,
+    ...(ssh.knownHostsPath
+      ? ["-o", "StrictHostKeyChecking=yes", "-o", `UserKnownHostsFile=${ssh.knownHostsPath}`]
+      : ["-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null"]),
+  ];
+  const repoUrl = `ssh://${ssh.user}@${ssh.host}:${ssh.port}/${repoKey}`;
+  const { stdout } = await execFileAsync(
+    "git",
+    ["ls-remote", "--heads", repoUrl],
+    { timeout: SSH_TIMEOUT_MS, env: { ...process.env, GIT_SSH_COMMAND: `ssh ${sshArgs.join(" ")}` } }
+  );
+
+  const prefix = "refs/heads/";
+  const branches: string[] = [];
+  for (const line of stdout.split("\n")) {
+    const idx = line.indexOf(prefix);
+    if (idx < 0) continue;
+    const name = line.slice(idx + prefix.length).trim();
+    if (name.length > 0) branches.push(name);
+  }
+
+  log.debug({ repoKey, count: branches.length }, "discovered Gerrit branches via SSH");
+  return branches;
+}
+
 export interface GerritConnectorConfig {
   ssh: GerritSshDiscoveryConfig;
   /** Optional Gerrit web URL used only to build clickable change links. */
@@ -161,5 +199,21 @@ export class GerritSshConnector implements ReviewConnector {
       port: ssh?.port ?? this.config.ssh.port,
       keyPath: this.config.ssh.keyPath,
     });
+  }
+
+  /** Discover the branch names of a Gerrit repository via `git ls-remote`. */
+  async listBranches(repoKey: string): Promise<string[]> {
+    return listBranchesViaSsh(
+      {
+        host: this.config.ssh.host,
+        user: this.config.ssh.user,
+        port: this.config.ssh.port,
+        keyPath: this.config.ssh.keyPath,
+        ...(this.config.ssh.knownHostsPath !== undefined
+          ? { knownHostsPath: this.config.ssh.knownHostsPath }
+          : {}),
+      },
+      repoKey
+    );
   }
 }

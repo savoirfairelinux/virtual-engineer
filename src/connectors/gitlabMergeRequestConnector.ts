@@ -63,6 +63,9 @@ const GitLabProjectRepoSchema = z.object({
 
 const GitLabRepoListResponseSchema = z.array(GitLabProjectRepoSchema);
 
+const GitLabBranchSchema = z.object({ name: z.string() });
+const GitLabBranchListResponseSchema = z.array(GitLabBranchSchema);
+
 // ─── Config ───────────────────────────────────────────────────────────────────
 
 export interface GitLabMergeRequestConnectorConfig {
@@ -222,6 +225,35 @@ export class GitLabMergeRequestConnector implements ReviewConnector {
     }
 
     log.debug({ count: all.length }, "discovered GitLab repositories");
+    return all;
+  }
+
+  /**
+   * Discovery: list every branch name of a GitLab project (push-target branch
+   * selection). `repoKey` is the `path_with_namespace` (e.g. `group/proj`).
+   */
+  async listBranches(repoKey: string): Promise<string[]> {
+    const encoded = encodeURIComponent(repoKey);
+    const all: string[] = [];
+    let page = 1;
+
+    while (true) {
+      const url = new URL(`${this.config.baseUrl}/api/v4/projects/${encoded}/repository/branches`);
+      url.searchParams.set("per_page", "100");
+      url.searchParams.set("page", String(page));
+
+      const { body, nextPage } = await this.http.fetchPaginated(url.toString());
+      const branches = GitLabBranchListResponseSchema.parse(body);
+
+      for (const branch of branches) {
+        all.push(branch.name);
+      }
+
+      if (!nextPage) break;
+      page = nextPage;
+    }
+
+    log.debug({ repoKey, count: all.length }, "discovered GitLab branches");
     return all;
   }
 

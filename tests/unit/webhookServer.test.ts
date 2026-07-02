@@ -15,7 +15,7 @@ const SECRET = "s".repeat(64);
 function makeIntegration(overrides: Partial<Integration> = {}): Integration {
   return {
     id: INTEGRATION_ID,
-    type: "redmine",
+    provider: "redmine",
     name: "Redmine 1",
     configJson: JSON.stringify({ webhookSecret: SECRET, baseUrl: "http://r/", apiKey: "x", virtualEngineerUserLogin: "ve" }),
     enabled: true,

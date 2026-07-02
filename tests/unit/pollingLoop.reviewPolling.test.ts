@@ -266,7 +266,7 @@ describe("PollingLoop — pollReviewProjects", () => {
       }),
     };
     const pluginManager = {
-      getConnectorForIntegration: vi.fn((_id: string) => discoveryConnector),
+      getConnectorForCapability: vi.fn((_id: string) => discoveryConnector),
     };
     const trigger = makeReviewTrigger();
     const orchestrator = makeOrchestrator();
@@ -300,7 +300,7 @@ describe("PollingLoop — pollReviewProjects", () => {
       getOpenReviewAssignments: vi.fn().mockResolvedValue([]),
     };
     const pluginManager = {
-      getConnectorForIntegration: vi.fn(() => discoveryConnector),
+      getConnectorForCapability: vi.fn(() => discoveryConnector),
     };
     const orchestrator = makeOrchestrator();
     const stateStore = makeStore();
@@ -329,7 +329,7 @@ describe("PollingLoop — pollReviewProjects", () => {
       getOpenReviewAssignments: vi.fn().mockResolvedValue([]),
     };
     const pluginManager = {
-      getConnectorForIntegration: vi.fn(() => discoveryConnector),
+      getConnectorForCapability: vi.fn(() => discoveryConnector),
     };
     const trigger = makeReviewTrigger();
     const orchestrator = makeOrchestrator();
@@ -359,7 +359,7 @@ describe("PollingLoop — pollReviewProjects", () => {
       getOpenReviewAssignments: vi.fn().mockResolvedValue([]),
     };
     const pluginManager = {
-      getConnectorForIntegration: vi.fn(() => discoveryConnector),
+      getConnectorForCapability: vi.fn(() => discoveryConnector),
       integrationHasStreamEvents: vi.fn((_id: string) => true), // Gerrit uses stream events
     };
     const trigger = makeReviewTrigger();
@@ -389,7 +389,7 @@ describe("PollingLoop — pollReviewProjects", () => {
     // Connector without getOpenReviewAssignments
     const plainConnector = { someOtherMethod: vi.fn() };
     const pluginManager = {
-      getConnectorForIntegration: vi.fn(() => plainConnector),
+      getConnectorForCapability: vi.fn(() => plainConnector),
     };
     const trigger = makeReviewTrigger();
     const orchestrator = makeOrchestrator();
@@ -418,7 +418,7 @@ describe("PollingLoop — pollReviewProjects", () => {
       getOpenReviewAssignments: vi.fn().mockRejectedValue(new Error("network error")),
     };
     const pluginManager = {
-      getConnectorForIntegration: vi.fn(() => failingConnector),
+      getConnectorForCapability: vi.fn(() => failingConnector),
     };
     const trigger = makeReviewTrigger();
     const orchestrator = makeOrchestrator();
@@ -449,7 +449,7 @@ describe("PollingLoop — pollReviewProjects", () => {
       getProjectReviewConfig: vi.fn(async () => ({ integrationId: "int-1", repos: ["octocat/repo"] })),
     };
     const pluginManager = {
-      getConnectorForIntegration: vi.fn(() => discoveryConnector),
+      getConnectorForCapability: vi.fn(() => discoveryConnector),
     };
     const orchestrator = makeOrchestrator();
     const stateStore = makeStore();

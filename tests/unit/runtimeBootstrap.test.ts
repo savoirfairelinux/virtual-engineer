@@ -1,27 +1,22 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AppConfig } from "../../src/config.js";
-import type { AgentAdapter, AgentResult, GerritConnector, Integration, TicketConnector } from "../../src/interfaces.js";
+import type { AgentAdapter, AgentResult, ReviewConnector, Integration, ProviderId, DomainCapability, TicketConnector } from "../../src/interfaces.js";
 
-type ConnectorByType = Partial<Record<Integration["type"], TicketConnector | GerritConnector | AgentAdapter | null>>;
+type ConnectorByType = Partial<Record<ProviderId, TicketConnector | ReviewConnector | AgentAdapter | null>>;
 
-type ActiveIntegrations = Partial<Record<Integration["type"], Integration>>;
-type ActiveIntegrationLists = Partial<Record<Integration["type"], Integration[]>>;
+type ActiveIntegrations = Partial<Record<ProviderId, Integration>>;
+type ActiveIntegrationLists = Partial<Record<ProviderId, Integration[]>>;
 
-function getCategoryForType(type: Integration["type"]): "ticketing" | "review" | "agent" {
-  switch (type) {
-    case "redmine":
-    case "gitlab-issue":
-      return "ticketing";
-    case "gerrit":
-    case "gitlab-merge-request":
-      return "review";
-    case "copilot":
-    case "mock":
-      return "agent";
-    default:
-      throw new Error(`Unknown integration type: ${type}`);
-  }
-}
+const PROVIDER_CAPABILITIES: Record<ProviderId, DomainCapability[]> = {
+  redmine: ["issue_tracking"],
+  gitlab: ["issue_tracking", "code_review", "source_control"],
+  github: ["issue_tracking", "code_review", "source_control"],
+  gerrit: ["code_review", "source_control"],
+  copilot: ["agent_execution"],
+  mock: ["agent_execution"],
+};
+
+const ALL_PROVIDERS: ProviderId[] = ["redmine", "gitlab", "gerrit", "github", "copilot", "mock"];
 
 const baseConfig: AppConfig = {
   nodeEnv: "test" as const,
@@ -40,6 +35,9 @@ const baseConfig: AppConfig = {
   agentDockerNetwork: "virtual-engineer_ve-agent-net",
   workspaceBaseDir: "/tmp/virtual-engineer/workspaces",
   maxReviewDiffChars: 60_000,
+  maxReviewComments: 20,
+  maxReviewReplies: 20,
+  reviewMinSeverity: "info",
 };
 
 function makeDbAgentAdapter(name: string): AgentAdapter {
@@ -60,12 +58,12 @@ function makeDbAgentAdapter(name: string): AgentAdapter {
   };
 }
 
-function makeIntegration(overrides: Partial<Integration> & { id: string; type: Integration["type"] }): Integration {
-  const { id, type, ...rest } = overrides;
+function makeIntegration(overrides: Partial<Integration> & { id: string; provider: ProviderId }): Integration {
+  const { id, provider, ...rest } = overrides;
   return {
     id,
-    type,
-    name: type,
+    provider,
+    name: provider,
     configJson: JSON.stringify({}),
     enabled: true,
     createdAt: new Date(),
@@ -96,41 +94,39 @@ async function importRuntime(
   let registerBuiltinPlugins = vi.fn();
   const loadFromDatabase = vi.fn().mockResolvedValue(undefined);
   const envTicketing = { source: "env-ticketing" } as unknown as TicketConnector;
-  const envReview = { source: "env-review" } as unknown as GerritConnector;
+  const envReview = { source: "env-review" } as unknown as ReviewConnector;
   const envAgent = { name: "env-agent" } as unknown as AgentAdapter;
   const activeIntegrationLists: ActiveIntegrationLists = {
     ...options.activeIntegrationLists,
   };
-  const getActiveIntegrationsByType = (type: Integration["type"]): Integration[] => {
-    const listed = activeIntegrationLists[type];
+  const getActiveIntegrationsByProvider = (provider: ProviderId): Integration[] => {
+    const listed = activeIntegrationLists[provider];
     if (listed !== undefined) {
       return [...listed];
     }
 
-    const integration = activeIntegrations[type];
+    const integration = activeIntegrations[provider];
     if (integration) {
       return [integration];
     }
 
-    if (activeProviders[type] != null) {
-      return [makeIntegration({ id: `${type}-active`, type })];
+    if (activeProviders[provider] != null) {
+      return [makeIntegration({ id: `${provider}-active`, provider })];
     }
 
     return [];
   };
   const getAllActiveIntegrations = (): Integration[] => {
-    const byType = new Map<Integration["type"], Integration[]>();
-    for (const type of ["redmine", "gitlab-issue", "gerrit", "gitlab-merge-request", "copilot", "mock"] as const) {
-      byType.set(type, getActiveIntegrationsByType(type));
+    const byProvider = new Map<ProviderId, Integration[]>();
+    for (const provider of ALL_PROVIDERS) {
+      byProvider.set(provider, getActiveIntegrationsByProvider(provider));
     }
 
-    return [...byType.values()].flat();
+    return [...byProvider.values()].flat();
   };
 
   const pluginManagerInstance = {
     loadFromDatabase,
-    getActiveConnector: vi.fn((type: Integration["type"]) => activeProviders[type] ?? null),
-    getActiveIntegration: vi.fn((type: Integration["type"]) => getActiveIntegrationsByType(type)[0] ?? null),
     getActiveIntegrations: vi.fn(() => getAllActiveIntegrations()),
     getActiveIntegrationById: vi.fn((integrationId: string) => {
       return getAllActiveIntegrations().find((integration) => integration.id === integrationId) ?? null;
@@ -140,21 +136,28 @@ async function importRuntime(
       if (!integration) {
         return null;
       }
-      return activeProviders[integration.type] ?? null;
+      return activeProviders[integration.provider] ?? null;
+    }),
+    getConnectorForCapability: vi.fn((integrationId: string, _capability: DomainCapability) => {
+      const integration = getAllActiveIntegrations().find((candidate) => candidate.id === integrationId);
+      if (!integration) {
+        return null;
+      }
+      return activeProviders[integration.provider] ?? null;
     }),
     isIntegrationActive: vi.fn((integrationId: string) => {
       return getAllActiveIntegrations().some((i) => i.id === integrationId);
     }),
-    getActiveIntegrationsByType: vi.fn((type: Integration["type"]) => getActiveIntegrationsByType(type)),
-    getActiveIntegrationsByCategory: vi.fn((category: "ticketing" | "review" | "agent") => {
-      return getAllActiveIntegrations().filter(
-        (integration): integration is Integration => Boolean(integration) && getCategoryForType(integration.type) === category
+    getActiveIntegrationsByProvider: vi.fn((provider: ProviderId) => getActiveIntegrationsByProvider(provider)),
+    getActiveIntegrationsByCapability: vi.fn((capability: DomainCapability) => {
+      return getAllActiveIntegrations().filter((integration) =>
+        PROVIDER_CAPABILITIES[integration.provider].includes(capability)
       );
     }),
-    getActiveIntegrationTypes: vi.fn(() => {
-      return (Object.keys(activeProviders) as Integration["type"][])
-        .filter((type) => activeProviders[type] != null);
+    getActiveProviders: vi.fn(() => {
+      return ALL_PROVIDERS.filter((provider) => getActiveIntegrationsByProvider(provider).length > 0);
     }),
+    integrationHasStreamEvents: vi.fn((_integrationId: string) => false),
     registerFactory: vi.fn(),
     registerConnectionTester: vi.fn(),
     reloadIntegration: vi.fn().mockResolvedValue(undefined),
@@ -420,7 +423,7 @@ describe("runtime bootstrap provider selection", () => {
 
   it("prefers database-selected providers over env-configured fallbacks", async () => {
     const dbTicketing = { source: "db-ticketing" } as unknown as TicketConnector;
-    const dbReview = { source: "db-review" } as unknown as GerritConnector;
+    const dbReview = { source: "db-review" } as unknown as ReviewConnector;
     const dbAgent = makeDbAgentAdapter("db-agent");
 
     const runtime = await importRuntime({
@@ -484,12 +487,12 @@ describe("runtime bootstrap provider selection", () => {
           copilot: [
             makeIntegration({
               id: "copilot-auto-a",
-              type: "copilot",
+              provider: "copilot",
               configJson: JSON.stringify({ apiKey: "ghp-token-a" }),
             }),
             makeIntegration({
               id: "copilot-auto-b",
-              type: "copilot",
+              provider: "copilot",
               configJson: JSON.stringify({ apiKey: "ghp-token-b" }),
             }),
           ],
@@ -504,12 +507,12 @@ describe("runtime bootstrap provider selection", () => {
   it("starts one Gerrit stream-events listener per active Gerrit integration", async () => {
     const gerritA = makeIntegration({
       id: "gerrit-a",
-      type: "gerrit",
+      provider: "gerrit",
       configJson: JSON.stringify({ sshHost: "gerrit-a", sshUser: "ve", sshPort: 29418, sshKeyPath: "/keys/a" }),
     });
     const gerritB = makeIntegration({
       id: "gerrit-b",
-      type: "gerrit",
+      provider: "gerrit",
       configJson: JSON.stringify({ sshHost: "gerrit-b", sshUser: "ve", sshPort: 29418, sshKeyPath: "/keys/b" }),
     });
 
@@ -529,7 +532,7 @@ describe("runtime bootstrap provider selection", () => {
 
   it("propagates database-backed provider config into orchestrator and vcs wiring", async () => {
     const dbTicketing = { source: "db-ticketing" } as unknown as TicketConnector;
-    const dbReview = { source: "db-review" } as unknown as GerritConnector;
+    const dbReview = { source: "db-review" } as unknown as ReviewConnector;
     const dbAgent = { name: "copilot", configure: vi.fn() } as unknown as AgentAdapter;
 
     const runtime = await importRuntime(
@@ -541,7 +544,7 @@ describe("runtime bootstrap provider selection", () => {
       {
         redmine: makeIntegration({
           id: "redmine-db",
-          type: "redmine",
+          provider: "redmine",
           configJson: JSON.stringify({
             baseUrl: "http://db-redmine.test",
             apiKey: "db-redmine-key",
@@ -553,7 +556,7 @@ describe("runtime bootstrap provider selection", () => {
         }),
         gerrit: makeIntegration({
           id: "gerrit-db",
-          type: "gerrit",
+          provider: "gerrit",
           configJson: JSON.stringify({
             baseUrl: "http://db-gerrit.test",
             httpUsername: "db-http-user",
@@ -566,7 +569,7 @@ describe("runtime bootstrap provider selection", () => {
         }),
         copilot: makeIntegration({
           id: "copilot-db",
-          type: "copilot",
+          provider: "copilot",
           configJson: JSON.stringify({
             model: "gpt-5.4-db",
             apiKey: "db-github-token",
@@ -603,36 +606,39 @@ describe("runtime bootstrap provider selection", () => {
   });
 
   it("prefers database-selected GitLab providers and propagates their config", async () => {
-    const dbTicketing = { source: "db-gitlab-issues" } as unknown as TicketConnector;
-    const dbReview = { source: "db-gitlab-review" } as unknown as GerritConnector;
+    const dbConnector = { source: "db-gitlab" } as unknown as TicketConnector;
 
     const runtime = await importRuntime(
       {
-        "gitlab-issue": dbTicketing,
-        "gitlab-merge-request": dbReview,
+        gitlab: dbConnector,
       },
+      {},
       {
-        "gitlab-issue": makeIntegration({
-          id: "gitlab-issue-db",
-          type: "gitlab-issue",
-          configJson: JSON.stringify({
-            baseUrl: "https://db-gitlab-issues.example.com",
-            projectId: "team/issues",
-            token: "db-issues-token",
-            inProgressStatusId: 21,
-            inReviewStatusId: 22,
-            closedStatusId: 23,
-          }),
-        }),
-        "gitlab-merge-request": makeIntegration({
-          id: "gitlab-review-db",
-          type: "gitlab-merge-request",
-          configJson: JSON.stringify({
-            baseUrl: "https://db-gitlab-review.example.com",
-            projectId: "team/review",
-            token: "db-review-token",
-          }),
-        }),
+        activeIntegrationLists: {
+          gitlab: [
+            makeIntegration({
+              id: "gitlab-issue-db",
+              provider: "gitlab",
+              configJson: JSON.stringify({
+                baseUrl: "https://db-gitlab-issues.example.com",
+                projectId: "team/issues",
+                token: "db-issues-token",
+                inProgressStatusId: 21,
+                inReviewStatusId: 22,
+                closedStatusId: 23,
+              }),
+            }),
+            makeIntegration({
+              id: "gitlab-review-db",
+              provider: "gitlab",
+              configJson: JSON.stringify({
+                baseUrl: "https://db-gitlab-review.example.com",
+                projectId: "team/review",
+                token: "db-review-token",
+              }),
+            }),
+          ],
+        },
       }
     );
 
@@ -665,7 +671,7 @@ describe("runtime bootstrap provider selection", () => {
     const activeIntegrations: ActiveIntegrations = {
       redmine: makeIntegration({
         id: "redmine-db",
-        type: "redmine",
+        provider: "redmine",
         configJson: JSON.stringify({
           baseUrl: "http://db-redmine.initial",
           apiKey: "db-redmine-key",
@@ -689,7 +695,7 @@ describe("runtime bootstrap provider selection", () => {
 
     activeIntegrations.redmine = makeIntegration({
       id: "redmine-db",
-      type: "redmine",
+      provider: "redmine",
       configJson: JSON.stringify({
         baseUrl: "http://db-redmine.updated",
         apiKey: "db-redmine-key",
@@ -716,7 +722,7 @@ describe("runtime bootstrap provider selection", () => {
     const runtime = await importRuntime(
       {
         redmine: { source: "env-ticketing" } as unknown as TicketConnector,
-        gerrit: { source: "env-review" } as unknown as GerritConnector,
+        gerrit: { source: "env-review" } as unknown as ReviewConnector,
         mock: makeDbAgentAdapter("mock"),
       },
       {},
@@ -736,7 +742,7 @@ describe("runtime bootstrap provider selection", () => {
 
   it("starts the polling loop immediately when all three integrations are configured from DB with project", async () => {
     const dbTicketing = { source: "db-ticketing" } as unknown as TicketConnector;
-    const dbReview = { source: "db-review" } as unknown as GerritConnector;
+    const dbReview = { source: "db-review" } as unknown as ReviewConnector;
     const dbAgent = makeDbAgentAdapter("mock");
 
     const runtime = await importRuntime(
@@ -760,7 +766,7 @@ describe("runtime bootstrap provider selection", () => {
 
   it("starts the polling loop via onPluginChange when a runnable project appears", async () => {
     const dbTicketing = { source: "db-ticketing" } as unknown as TicketConnector;
-    const dbReview = { source: "db-review" } as unknown as GerritConnector;
+    const dbReview = { source: "db-review" } as unknown as ReviewConnector;
 
     // Start with ticket source + review but no runnable project
     const activeProviders: ConnectorByType = { redmine: dbTicketing, gerrit: dbReview };
@@ -802,7 +808,7 @@ describe("runtime bootstrap provider selection", () => {
   });
 
   it("starts the polling loop in review-only mode with a review project", async () => {
-    const dbReview = { source: "db-review" } as unknown as GerritConnector;
+    const dbReview = { source: "db-review" } as unknown as ReviewConnector;
     const dbAgent = makeDbAgentAdapter("mock");
 
     const runtime = await importRuntime(
@@ -811,7 +817,7 @@ describe("runtime bootstrap provider selection", () => {
       {
         gerrit: makeIntegration({
           id: "gerrit-review-only",
-          type: "gerrit",
+          provider: "gerrit",
           configJson: JSON.stringify({
             baseUrl: "http://gerrit.test",
             httpUsername: "admin",
@@ -841,7 +847,7 @@ describe("runtime bootstrap provider selection", () => {
   it("routes stream-events-triggered reviews by exact Gerrit integration id", async () => {
     const gerritA = makeIntegration({
       id: "gerrit-review-a",
-      type: "gerrit",
+      provider: "gerrit",
       configJson: JSON.stringify({
         baseUrl: "http://gerrit-a.test",
         httpUsername: "admin-a",
@@ -854,7 +860,7 @@ describe("runtime bootstrap provider selection", () => {
     });
     const gerritB = makeIntegration({
       id: "gerrit-review-b",
-      type: "gerrit",
+      provider: "gerrit",
       configJson: JSON.stringify({
         baseUrl: "http://gerrit-b.test",
         httpUsername: "admin-b",
@@ -871,7 +877,7 @@ describe("runtime bootstrap provider selection", () => {
       {
         copilot: makeIntegration({
           id: "copilot-review-routing",
-          type: "copilot",
+          provider: "copilot",
           configJson: JSON.stringify({ token: "ghp-routing-token" }),
         }),
       },
@@ -912,7 +918,7 @@ describe("runtime bootstrap provider selection", () => {
   it("passes reviewerAccountId into Gerrit review providers", async () => {
     const gerritIntegration = makeIntegration({
       id: "gerrit-review-membership",
-      type: "gerrit",
+      provider: "gerrit",
       configJson: JSON.stringify({
         baseUrl: "http://gerrit.test",
         httpUsername: "admin",
@@ -929,7 +935,7 @@ describe("runtime bootstrap provider selection", () => {
       {
         copilot: makeIntegration({
           id: "copilot-review-membership",
-          type: "copilot",
+          provider: "copilot",
           configJson: JSON.stringify({ token: "ghp-review-token" }),
         }),
       },
@@ -961,7 +967,7 @@ describe("runtime bootstrap provider selection", () => {
   it("uses the SSH review provider even when legacy HTTP fields are present", async () => {
     const gerritIntegration = makeIntegration({
       id: "gerrit-review-ssh-only",
-      type: "gerrit",
+      provider: "gerrit",
       configJson: JSON.stringify({
         baseUrl: "http://gerrit.test",
         httpUsername: "admin",
@@ -978,7 +984,7 @@ describe("runtime bootstrap provider selection", () => {
       {
         copilot: makeIntegration({
           id: "copilot-review-ssh-only",
-          type: "copilot",
+          provider: "copilot",
           configJson: JSON.stringify({ token: "ghp-review-token" }),
         }),
       },
@@ -1010,7 +1016,7 @@ describe("runtime bootstrap provider selection", () => {
   });
 
   it("passes the agent token into the review orchestrator", async () => {
-    const dbReview = { source: "db-review" } as unknown as GerritConnector;
+    const dbReview = { source: "db-review" } as unknown as ReviewConnector;
     const dbAgent = makeDbAgentAdapter("mock");
 
     const runtime = await importRuntime(
@@ -1018,7 +1024,7 @@ describe("runtime bootstrap provider selection", () => {
       {
         gerrit: makeIntegration({
           id: "gerrit-review-rewrite",
-          type: "gerrit",
+          provider: "gerrit",
           configJson: JSON.stringify({
             baseUrl: "http://gerrit.test",
             httpUsername: "admin",
@@ -1031,7 +1037,7 @@ describe("runtime bootstrap provider selection", () => {
         }),
         copilot: makeIntegration({
           id: "copilot-review-rewrite",
-          type: "copilot",
+          provider: "copilot",
           configJson: JSON.stringify({ token: "ghp-review-token" }),
         }),
       },

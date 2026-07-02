@@ -1,31 +1,51 @@
 import type Database from "better-sqlite3";
-import { and, eq, inArray, notInArray } from "drizzle-orm";
+import { and, eq, inArray, isNull, notInArray } from "drizzle-orm";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import type {
   AgentCycle,
   AgentLogEvent,
   AgentResult,
   ChangePerRepository,
+  CycleCost,
   ExternalChangeId,
+  PostedReviewComment,
+  PostedReviewCommentInput,
   ProjectId,
   StateTransition,
   Task,
   TaskId,
   TaskState,
+  ThreadReplyRecordInput,
   TicketId,
   ValidationResult,
 } from "../../interfaces.js";
 import { makeExternalChangeId, TERMINAL_STATES } from "../../interfaces.js";
+import { computeCycleCost, hasCostData } from "../../agents/cycleCost.js";
 import { getLogger } from "../../logger.js";
 import { validateTransition } from "../stateMachine.js";
 import {
   agentCycles,
   changePerRepository,
+  postedReviewComments,
   processedComments,
+  reviewThreadReplies,
   stateTransitions,
   tasks,
 } from "../schema.js";
 import * as schema from "../schema.js";
+
+/**
+ * True when `err` is a SQLite UNIQUE-constraint violation (better-sqlite3 sets
+ * `code === "SQLITE_CONSTRAINT_UNIQUE"`). Used to distinguish the recoverable
+ * active-ticket index conflict from genuine insert failures.
+ */
+function isUniqueConstraintViolation(err: unknown): boolean {
+  return (
+    err instanceof Error &&
+    "code" in err &&
+    (err as { code?: unknown }).code === "SQLITE_CONSTRAINT_UNIQUE"
+  );
+}
 
 export interface TaskStoreApi {
   createTask(
@@ -36,10 +56,12 @@ export interface TaskStoreApi {
     ticketSourceLabel?: string,
     ticketUrl?: string,
     displayId?: string,
-    ticketSource?: { integrationId: string; ticketProjectKey: string }
+    ticketSource?: { integrationId: string; ticketProjectKey: string },
+    projectId?: ProjectId
   ): Promise<Task>;
   getTask(taskId: TaskId): Promise<Task | null>;
-  getTaskByTicketId(ticketId: TicketId): Promise<Task | null>;
+  getTaskByTicketId(ticketId: TicketId, projectId?: ProjectId): Promise<Task | null>;
+  getActiveTaskByTicketId(ticketId: TicketId, projectId?: ProjectId): Promise<Task | null>;
   getActiveTasks(): Promise<Task[]>;
   getAllTasks(): Promise<Task[]>;
   transition(taskId: TaskId, toState: TaskState, metadata?: Record<string, unknown>): Promise<Task>;
@@ -54,6 +76,7 @@ export interface TaskStoreApi {
     patchset: number;
     reviewUrl?: string;
     displayId?: string;
+    projectId?: ProjectId;
   }): Promise<Task>;
   setReviewedPatchset(taskId: TaskId, patchset: number): Promise<void>;
   incrementCycle(taskId: TaskId): Promise<number>;
@@ -67,9 +90,23 @@ export interface TaskStoreApi {
   getAgentCycles(taskId: TaskId): Promise<AgentCycle[]>;
   getAgentCycleEvents(taskId: TaskId, cycleNumber: number): Promise<AgentLogEvent[]>;
   getStateTransitions(taskId: TaskId): Promise<StateTransition[]>;
-  getFailedAttemptCount(ticketId: TicketId, ticketSourceLabel?: string): Promise<number>;
+  getFailedAttemptCount(ticketId: TicketId, ticketSourceLabel?: string, projectId?: ProjectId): Promise<number>;
   getProcessedCommentIds(taskId: TaskId): Promise<Set<string>>;
   markCommentProcessed(taskId: TaskId, gerritCommentId: string): Promise<void>;
+  getPostedReviewCommentHashes(taskId: TaskId): Promise<Set<string>>;
+  getPostedReviewComments(taskId: TaskId): Promise<PostedReviewComment[]>;
+  markReviewCommentsPosted(
+    taskId: TaskId,
+    changeId: ExternalChangeId,
+    comments: PostedReviewCommentInput[]
+  ): Promise<void>;
+  markReviewCommentResolved(id: number): Promise<void>;
+  getHandledThreadReplyHashes(taskId: TaskId): Promise<Set<string>>;
+  markThreadReplyPosted(
+    taskId: TaskId,
+    changeId: ExternalChangeId,
+    replies: ThreadReplyRecordInput[]
+  ): Promise<void>;
   pauseTask(taskId: TaskId): Promise<Task>;
   resumeTask(taskId: TaskId): Promise<Task>;
   isTaskPaused(taskId: TaskId): Promise<boolean>;
@@ -139,9 +176,37 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
     return row ? rowToTask(row) : null;
   }
 
-  async function getTaskByTicketId(ticketId: TicketId): Promise<Task | null> {
+  async function getTaskByTicketId(ticketId: TicketId, projectId?: ProjectId): Promise<Task | null> {
     const row = await db.query.tasks.findFirst({
-      where: eq(tasks.ticketId, ticketId),
+      where: projectId !== undefined
+        ? and(eq(tasks.ticketId, ticketId), eq(tasks.projectId, projectId))
+        : eq(tasks.ticketId, ticketId),
+      orderBy: (t, { desc }) => [desc(t.createdAt)],
+    });
+    return row ? rowToTask(row) : null;
+  }
+
+  async function getActiveTaskByTicketId(ticketId: TicketId, projectId?: ProjectId): Promise<Task | null> {
+    const row = await db.query.tasks.findFirst({
+      where: and(
+        eq(tasks.ticketId, ticketId),
+        notInArray(tasks.state, [...TERMINAL_STATES]),
+        ...(projectId !== undefined ? [eq(tasks.projectId, projectId)] : [])
+      ),
+      orderBy: (t, { desc }) => [desc(t.createdAt)],
+    });
+    return row ? rowToTask(row) : null;
+  }
+
+  // Recovery-only lookup mirroring `idx_tasks_active_ticket_id_noproject`:
+  // the newest active task for this ticket that has no project binding.
+  async function getActiveProjectlessTaskByTicketId(ticketId: TicketId): Promise<Task | null> {
+    const row = await db.query.tasks.findFirst({
+      where: and(
+        eq(tasks.ticketId, ticketId),
+        isNull(tasks.projectId),
+        notInArray(tasks.state, [...TERMINAL_STATES])
+      ),
       orderBy: (t, { desc }) => [desc(t.createdAt)],
     });
     return row ? rowToTask(row) : null;
@@ -155,7 +220,8 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
     ticketSourceLabel = "redmine",
     ticketUrl?: string,
     displayId?: string,
-    ticketSource?: { integrationId: string; ticketProjectKey: string }
+    ticketSource?: { integrationId: string; ticketProjectKey: string },
+    projectId?: ProjectId
   ): Promise<Task> {
     const now = new Date();
     try {
@@ -172,15 +238,39 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
         failureReason: null,
         ticketUrl: ticketUrl ?? null,
         displayId: displayId ?? null,
+        projectId: projectId ?? null,
         ticketSourceIntegrationId: ticketSource?.integrationId ?? null,
         ticketSourceProjectKey: ticketSource?.ticketProjectKey ?? null,
         createdAt: now,
         updatedAt: now,
       });
     } catch (err: unknown) {
-      const existing = await getTaskByTicketId(ticketId);
-      if (existing && !TERMINAL_STATES.has(existing.state)) {
-        return existing;
+      // The partial unique index `idx_tasks_active_ticket_id` allows at most one
+      // active (non-terminal) task per (project_id, ticket_id). A concurrent
+      // create — or a stale active task that predates a newer terminal one —
+      // may already hold that slot; reuse it instead of surfacing a UNIQUE
+      // constraint error. We must look up the ACTIVE task specifically (the
+      // newest task may be terminal) for the recovery to succeed.
+      //
+      // Only recover from the unique-constraint conflict: any other insert
+      // failure (disk full, NOT NULL/FK violation, corruption) must surface
+      // instead of being masked as a "reuse" of an unrelated active task.
+      if (isUniqueConstraintViolation(err)) {
+        // The conflict comes from one of two partial unique indexes. When
+        // projectId is set the conflict is on the composite
+        // (project_id, ticket_id) index, so scope recovery to that project.
+        // When projectId is undefined the conflict is on the project-less
+        // index (`idx_tasks_active_ticket_id_noproject`); recovery must reuse
+        // the active task with project_id IS NULL — never the newest active
+        // task across all projects, which could belong to a different project
+        // and cause cross-project task reuse.
+        const active =
+          projectId !== undefined
+            ? await getActiveTaskByTicketId(ticketId, projectId)
+            : await getActiveProjectlessTaskByTicketId(ticketId);
+        if (active) {
+          return active;
+        }
       }
       throw err;
     }
@@ -270,6 +360,7 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
     patchset: number;
     reviewUrl?: string;
     displayId?: string;
+    projectId?: ProjectId;
   }): Promise<Task> {
     const now = new Date();
     try {
@@ -289,6 +380,7 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
         ticketUrl: null,
         reviewUrl: input.reviewUrl ?? null,
         displayId: input.displayId ?? null,
+        projectId: input.projectId ?? null,
         createdAt: now,
         updatedAt: now,
       });
@@ -334,12 +426,21 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
     result: AgentResult,
     validationResult?: ValidationResult
   ): Promise<void> {
+    const cost = computeCycleCost(result.agentEvents);
     await db.insert(agentCycles).values({
       taskId,
       cycleNumber,
       agentResult: JSON.stringify(result),
       validationResult: validationResult ? JSON.stringify(validationResult) : null,
       agentEvents: result.agentEvents ? JSON.stringify(result.agentEvents) : null,
+      costAiCredits: cost.priced ? cost.aiCredits : null,
+      costUsd: cost.usd > 0 ? cost.usd : null,
+      premiumRequests: cost.premiumRequests > 0 ? cost.premiumRequests : null,
+      costInputTokens: cost.tokens.input > 0 ? cost.tokens.input : null,
+      costOutputTokens: cost.tokens.output > 0 ? cost.tokens.output : null,
+      costCachedTokens: cost.tokens.cached > 0 ? cost.tokens.cached : null,
+      costCacheWriteTokens: cost.tokens.cacheWrite > 0 ? cost.tokens.cacheWrite : null,
+      costModelId: cost.modelId,
       createdAt: new Date(),
     });
   }
@@ -363,6 +464,46 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
           validationResult = null;
         }
       }
+      const hasSnapshot =
+        row.costUsd !== null ||
+        row.costAiCredits !== null ||
+        row.premiumRequests !== null ||
+        row.costInputTokens !== null ||
+        row.costOutputTokens !== null ||
+        row.costCachedTokens !== null ||
+        row.costCacheWriteTokens !== null ||
+        row.costModelId !== null;
+      let cost: CycleCost | undefined;
+      if (hasSnapshot) {
+        cost = {
+          priced: row.costAiCredits !== null,
+          aiCredits: row.costAiCredits ?? 0,
+          usd: row.costUsd ?? 0,
+          premiumRequests: row.premiumRequests ?? 0,
+          tokens: {
+            input: row.costInputTokens ?? 0,
+            output: row.costOutputTokens ?? 0,
+            cached: row.costCachedTokens ?? 0,
+            cacheWrite: row.costCacheWriteTokens ?? 0,
+          },
+          modelId: row.costModelId,
+        };
+      } else {
+        // Legacy cycle (persisted before cost columns): recompute from the
+        // streamed event log. Prefer the canonical `agent_events` column over
+        // the larger agentResult JSON, which is more prone to truncation or
+        // corruption (and is replaced by a placeholder when parsing fails above).
+        let events = result.agentEvents;
+        if (row.agentEvents) {
+          try {
+            events = JSON.parse(row.agentEvents) as AgentLogEvent[];
+          } catch {
+            // Fall back to events embedded in the parsed result.
+          }
+        }
+        const recomputed = computeCycleCost(events);
+        if (hasCostData(recomputed)) cost = recomputed;
+      }
       return {
         id: row.id,
         taskId: row.taskId as TaskId,
@@ -370,6 +511,7 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
         result,
         validationResult,
         createdAt: row.createdAt,
+        ...(cost ? { cost } : {}),
       };
     });
   }
@@ -411,20 +553,24 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
     });
   }
 
-  async function getFailedAttemptCount(ticketId: TicketId, ticketSourceLabel?: string): Promise<number> {
+  async function getFailedAttemptCount(
+    ticketId: TicketId,
+    ticketSourceLabel?: string,
+    projectId?: ProjectId
+  ): Promise<number> {
+    const clauses: string[] = ["ticket_id = ?", "state IN ('FAILED', 'ABANDONED')"];
+    const args: unknown[] = [ticketId];
     if (ticketSourceLabel !== undefined) {
-      const row = raw
-        .prepare(
-          "SELECT COUNT(*) AS count FROM tasks WHERE ticket_id = ? AND ticket_source_label = ? AND state IN ('FAILED', 'ABANDONED')"
-        )
-        .get(ticketId, ticketSourceLabel) as { count: number };
-      return row.count;
+      clauses.push("ticket_source_label = ?");
+      args.push(ticketSourceLabel);
     }
-
+    if (projectId !== undefined) {
+      clauses.push("project_id = ?");
+      args.push(projectId);
+    }
     const row = raw
-      .prepare("SELECT COUNT(*) AS count FROM tasks WHERE ticket_id = ? AND state IN ('FAILED', 'ABANDONED')")
-      .get(ticketId) as { count: number };
-
+      .prepare(`SELECT COUNT(*) AS count FROM tasks WHERE ${clauses.join(" AND ")}`)
+      .get(...args) as { count: number };
     return row.count;
   }
 
@@ -441,6 +587,97 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
       gerritCommentId,
       createdAt: new Date(),
     });
+  }
+
+  async function getPostedReviewCommentHashes(taskId: TaskId): Promise<Set<string>> {
+    const rows = await db.query.postedReviewComments.findMany({
+      where: eq(postedReviewComments.taskId, taskId),
+    });
+    return new Set(rows.map((row) => row.commentHash));
+  }
+
+  async function getPostedReviewComments(taskId: TaskId): Promise<PostedReviewComment[]> {
+    const rows = await db.query.postedReviewComments.findMany({
+      where: eq(postedReviewComments.taskId, taskId),
+    });
+    return rows.map((row) => ({
+      id: row.id,
+      taskId: row.taskId as TaskId,
+      changeId: makeExternalChangeId(row.changeId),
+      commentHash: row.commentHash,
+      file: row.file,
+      line: row.line,
+      message: row.message,
+      severity: row.severity,
+      providerThreadId: row.providerThreadId,
+      resolved: row.resolved === 1,
+      createdAt: row.createdAt,
+    }));
+  }
+
+  async function markReviewCommentsPosted(
+    taskId: TaskId,
+    changeId: ExternalChangeId,
+    comments: PostedReviewCommentInput[]
+  ): Promise<void> {
+    if (comments.length === 0) return;
+    const now = Math.floor(Date.now() / 1000);
+    // INSERT OR IGNORE so a duplicate (task_id, comment_hash) is silently skipped
+    // rather than aborting the whole batch on the unique index.
+    const stmt = raw.prepare(
+      `INSERT OR IGNORE INTO posted_review_comments
+         (task_id, change_id, comment_hash, file, line, message, severity, provider_thread_id, resolved, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`
+    );
+    const insertMany = raw.transaction((items: PostedReviewCommentInput[]) => {
+      for (const c of items) {
+        stmt.run(
+          taskId,
+          String(changeId),
+          c.commentHash,
+          c.file,
+          c.line,
+          c.message,
+          c.severity,
+          c.providerThreadId ?? null,
+          now
+        );
+      }
+    });
+    insertMany(comments);
+  }
+
+  async function markReviewCommentResolved(id: number): Promise<void> {
+    raw.prepare("UPDATE posted_review_comments SET resolved = 1 WHERE id = ?").run(id);
+  }
+
+  async function getHandledThreadReplyHashes(taskId: TaskId): Promise<Set<string>> {
+    const rows = await db.query.reviewThreadReplies.findMany({
+      where: eq(reviewThreadReplies.taskId, taskId),
+    });
+    return new Set(rows.map((row) => row.handledCommentHash));
+  }
+
+  async function markThreadReplyPosted(
+    taskId: TaskId,
+    changeId: ExternalChangeId,
+    replies: ThreadReplyRecordInput[]
+  ): Promise<void> {
+    if (replies.length === 0) return;
+    const now = Math.floor(Date.now() / 1000);
+    // INSERT OR IGNORE so a duplicate (task_id, thread_id, handled_comment_hash)
+    // is silently skipped rather than aborting the whole batch.
+    const stmt = raw.prepare(
+      `INSERT OR IGNORE INTO review_thread_replies
+         (task_id, change_id, thread_id, handled_comment_hash, reply_message, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    );
+    const insertMany = raw.transaction((items: ThreadReplyRecordInput[]) => {
+      for (const r of items) {
+        stmt.run(taskId, String(changeId), r.threadId, r.handledCommentHash, r.replyMessage, now);
+      }
+    });
+    insertMany(replies);
   }
 
   async function pauseTask(taskId: TaskId): Promise<Task> {
@@ -500,11 +737,12 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
   function findAdoptionTargetForTask(taskId: TaskId): { projectId: string; integrationId: string; ticketProjectKey: string } | null {
     const snapshotRow = raw
       .prepare(
-        "SELECT pts.project_id AS projectId, t.ticket_source_integration_id AS integrationId, " +
+        "SELECT pib.project_id AS projectId, t.ticket_source_integration_id AS integrationId, " +
         "t.ticket_source_project_key AS ticketProjectKey FROM tasks t " +
-        "JOIN project_ticket_source pts " +
-        "ON pts.integration_id = t.ticket_source_integration_id " +
-        "AND pts.ticket_project_key = t.ticket_source_project_key " +
+        "JOIN project_integration_bindings pib " +
+        "ON pib.capability = 'issue_tracking' " +
+        "AND pib.integration_id = t.ticket_source_integration_id " +
+        "AND json_extract(pib.config_json, '$.ticketProjectKey') = t.ticket_source_project_key " +
         "WHERE t.task_id = ? " +
         "AND t.ticket_source_integration_id IS NOT NULL " +
         "AND t.ticket_source_project_key IS NOT NULL"
@@ -520,8 +758,9 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
 
     const fallbackRows = raw
       .prepare(
-        "SELECT project_id AS projectId, integration_id AS integrationId, ticket_project_key AS ticketProjectKey " +
-        "FROM project_ticket_source WHERE integration_id = ?"
+        "SELECT project_id AS projectId, integration_id AS integrationId, " +
+        "json_extract(config_json, '$.ticketProjectKey') AS ticketProjectKey " +
+        "FROM project_integration_bindings WHERE capability = 'issue_tracking' AND integration_id = ?"
       )
       .all(integrationId) as { projectId: string; integrationId: string; ticketProjectKey: string }[];
     if (fallbackRows.length !== 1) return null;
@@ -631,6 +870,8 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
     raw.transaction(() => {
       raw.prepare("DELETE FROM change_per_repository WHERE task_id = ?").run(taskId);
       raw.prepare("DELETE FROM processed_comments WHERE task_id = ?").run(taskId);
+      raw.prepare("DELETE FROM posted_review_comments WHERE task_id = ?").run(taskId);
+      raw.prepare("DELETE FROM review_thread_replies WHERE task_id = ?").run(taskId);
       raw.prepare("DELETE FROM agent_cycles WHERE task_id = ?").run(taskId);
       raw.prepare("DELETE FROM state_transitions WHERE task_id = ?").run(taskId);
       raw.prepare("DELETE FROM tasks WHERE task_id = ?").run(taskId);
@@ -664,6 +905,8 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
       for (const id of taskIds) {
         raw.prepare("DELETE FROM change_per_repository WHERE task_id = ?").run(id);
         raw.prepare("DELETE FROM processed_comments WHERE task_id = ?").run(id);
+        raw.prepare("DELETE FROM posted_review_comments WHERE task_id = ?").run(id);
+        raw.prepare("DELETE FROM review_thread_replies WHERE task_id = ?").run(id);
         raw.prepare("DELETE FROM agent_cycles WHERE task_id = ?").run(id);
         raw.prepare("DELETE FROM state_transitions WHERE task_id = ?").run(id);
         raw.prepare("DELETE FROM tasks WHERE task_id = ?").run(id);
@@ -853,6 +1096,7 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
     createTask,
     getTask,
     getTaskByTicketId,
+    getActiveTaskByTicketId,
     getActiveTasks,
     getAllTasks,
     transition,
@@ -868,6 +1112,12 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
     getFailedAttemptCount,
     getProcessedCommentIds,
     markCommentProcessed,
+    getPostedReviewCommentHashes,
+    getPostedReviewComments,
+    markReviewCommentsPosted,
+    markReviewCommentResolved,
+    getHandledThreadReplyHashes,
+    markThreadReplyPosted,
     pauseTask,
     resumeTask,
     isTaskPaused,

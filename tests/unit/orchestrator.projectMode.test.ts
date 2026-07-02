@@ -102,6 +102,7 @@ function makeStateStore(over: Partial<StateStore> = {}): StateStore {
     ),
     getTask: vi.fn().mockResolvedValue(makeTask()),
     getTaskByTicketId: vi.fn().mockResolvedValue(null),
+    getActiveTaskByTicketId: vi.fn().mockResolvedValue(null),
     getActiveTasks: vi.fn().mockResolvedValue([]),
     getFailedAttemptCount: vi.fn().mockResolvedValue(0),
     transition: vi.fn(async (taskId, to) => makeTask({ taskId, state: to })),
@@ -211,7 +212,7 @@ describe("Orchestrator — Phase 4 project mode", () => {
     vi.clearAllMocks();
   });
 
-  it("startTaskForProject creates a task tagged with projectId and calls setTaskProjectId", async () => {
+  it("startTaskForProject creates a task tagged with projectId atomically", async () => {
     const stateStore = makeStateStore();
     const ws = makeWorkspaceRunner();
     const project = makeProject();
@@ -230,7 +231,7 @@ describe("Orchestrator — Phase 4 project mode", () => {
     const orch = new Orchestrator(baseConfig(), stateStore, ws, undefined, undefined, projectMode);
 
     // Make runWorkflow short-circuit so we don't need to mock the entire pipeline.
-    // setTaskProjectId is awaited BEFORE runWorkflow, so make transition throw to bail.
+    // createTask is awaited BEFORE runWorkflow, so make transition throw to bail.
     (stateStore.transition as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("__stop__"));
 
     await orch
@@ -238,13 +239,17 @@ describe("Orchestrator — Phase 4 project mode", () => {
       .catch(() => undefined);
 
     expect(stateStore.createTask).toHaveBeenCalled();
-    expect(stateStore.setTaskProjectId).toHaveBeenCalledWith(expect.any(String), project.id);
+    // project_id is written atomically as the final createTask argument so the
+    // (project_id, ticket_id) active-uniqueness index applies at insert time.
+    const createArgs = (stateStore.createTask as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(createArgs?.[createArgs.length - 1]).toBe(project.id);
+    expect(stateStore.setTaskProjectId).not.toHaveBeenCalled();
   });
 
   it("startTaskForProject reuses existing in-progress task and skips creation", async () => {
     const existing = makeTask({ state: "AGENT_RUNNING" });
     const stateStore = makeStateStore({
-      getTaskByTicketId: vi.fn().mockResolvedValue(existing),
+      getActiveTaskByTicketId: vi.fn().mockResolvedValue(existing),
     });
     const project = makeProject();
     const orch = new Orchestrator(baseConfig(), stateStore, makeWorkspaceRunner());

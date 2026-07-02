@@ -68,8 +68,8 @@ async function makeAgent(store: SqliteStateStore, type: AgentType = "coding"): P
   return store.createAgent({ name: `${type}-bot`, type, modelConfigJson: "{}", enabled: true });
 }
 
-async function seedIntegration(store: SqliteStateStore, id: string, type: "redmine" | "gerrit" = "redmine"): Promise<void> {
-  await store.upsertIntegration({ id, type, name: id, configJson: "{}", enabled: true });
+async function seedIntegration(store: SqliteStateStore, id: string, provider: "redmine" | "gerrit" = "redmine"): Promise<void> {
+  await store.upsertIntegration({ id, provider, name: id, configJson: "{}", enabled: true });
 }
 
 describe("Admin API — Project routes (/api/admin/projects)", () => {
@@ -283,7 +283,7 @@ describe("Admin API — Project routes (/api/admin/projects)", () => {
     const review = projects.find((p) => p["type"] === "review")!;
     const reviewRc = review["reviewConfig"] as Record<string, unknown>;
     const reviewInteg = reviewRc["integration"] as Record<string, unknown>;
-    expect(reviewInteg["type"]).toBe("gerrit");
+    expect(reviewInteg["provider"]).toBe("gerrit");
   });
 
   it("PATCH /:id/enable and /disable toggle the flag", async () => {

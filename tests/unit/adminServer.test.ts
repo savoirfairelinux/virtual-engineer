@@ -13,6 +13,8 @@ const providerSummaries: readonly AdminProviderSummary[] = [
     id: "redmine",
     name: "Redmine",
     category: "ticketing",
+    domainCapabilities: ["issue_tracking"],
+    intake: { issue_tracking: ["polling", "webhook"] },
     enabled: true,
     configured: true,
     status: "ready",
@@ -22,6 +24,8 @@ const providerSummaries: readonly AdminProviderSummary[] = [
     id: "copilot",
     name: "GitHub Copilot",
     category: "agent",
+    domainCapabilities: ["agent_execution"],
+    intake: {},
     enabled: true,
     configured: true,
     status: "ready",
@@ -446,7 +450,7 @@ describe("createAdminServer", () => {
       // Must use nonce-based CSP — unsafe-inline must not appear
       expect(csp1).not.toContain("unsafe-inline");
       expect(csp2).not.toContain("unsafe-inline");
-      expect(csp1).toMatch(/script-src 'nonce-[A-Za-z0-9_-]+'/);
+      expect(csp1).toMatch(/script-src 'self' 'nonce-[A-Za-z0-9_-]+'/);
       expect(csp1).toContain("style-src 'self'");
 
       // Each request must produce a unique nonce
@@ -458,27 +462,6 @@ describe("createAdminServer", () => {
       const nonce = nonceMatch![1]!;
       const html = await res1.text();
       expect(html).toContain(`nonce="${nonce}"`);
-    } finally {
-      await closeServer(server);
-    }
-  });
-
-  it("serves the admin dashboard CSS as a static asset", async () => {
-    const server = createAdminServer({
-      stateStore: makeStateStore(),
-      config: { nodeEnv: "test", logLevel: "info", maxAgentCycles: 3, maxRetryAttempts: 5, pollingIntervalMs: 30_000 },
-      polling: { isRunning: () => true, getIntervals: () => ({ intervalMs: 30_000 }) },
-      providers: providerSummaries,
-    });
-
-    try {
-      const baseUrl = await listen(server);
-      const response = await fetch(`${baseUrl}/assets/dashboard.css`);
-
-      expect(response.status).toBe(200);
-      expect(response.headers.get("content-type")).toContain("text/css");
-      expect(response.headers.get("cache-control")).toContain("public");
-      await expect(response.text()).resolves.toContain(":root {");
     } finally {
       await closeServer(server);
     }
@@ -522,7 +505,7 @@ describe("createAdminServer", () => {
 
       const dashboardResponse = await fetch(`${baseUrl}/admin`);
       expect(dashboardResponse.status).toBe(200);
-      await expect(dashboardResponse.text()).resolves.toContain("Unlock dashboard");
+      await expect(dashboardResponse.text()).resolves.toContain("__VE_ADMIN_BOOTSTRAP__");
     } finally {
       await closeServer(server);
     }
@@ -996,6 +979,8 @@ describe("createAdminServer", () => {
         id: "redmine",
         name: "Redmine",
         category: "ticketing",
+        domainCapabilities: ["issue_tracking"],
+        intake: { issue_tracking: ["polling", "webhook"] },
         enabled: true,
         configured: true,
         status: "ready",
@@ -1036,6 +1021,8 @@ describe("createAdminServer", () => {
           id: "gitlab",
           name: "GitLab",
           category: "review" as const,
+          domainCapabilities: ["code_review"],
+          intake: { code_review: ["polling", "webhook"] },
           enabled: true,
           configured: true,
           status: "ready" as const,
@@ -1058,7 +1045,7 @@ describe("createAdminServer", () => {
     const integrationStore: IntegrationStore = {
       getIntegrations: async () => [{
         id: "gitlab-local",
-        type: "gitlab-issue",
+        provider: "gitlab",
         name: "GitLab Local",
         configJson: JSON.stringify({
           baseUrl: "http://localhost:8929",
@@ -1106,16 +1093,16 @@ describe("createAdminServer", () => {
         integrations: [
           {
             id: "gitlab-local",
-            type: "gitlab-issue",
-            category: "ticketing",
-            capabilities: ["ticketing", "oauth", "discovery"],
+            provider: "gitlab",
+            icon: { slug: "gitlab", hex: "FC6D26" },
+            capabilities: ["issue_tracking", "code_review", "source_control", "oauth", "discovery", "reviewer"],
+            domainCapabilities: ["issue_tracking", "code_review", "source_control"],
             name: "GitLab Local",
             enabled: false,
             active: false,
             config: {
               authMode: "pat",
               baseUrl: "http://localhost:8929",
-              projectId: "root/demo-gitlab",
               token: "********",
             },
             createdAt: new Date(1776275823 * 1000).toISOString(),
@@ -1300,15 +1287,14 @@ describe("createAdminServer", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const pluginManager = {
-      getActiveIntegrationsByType(type: string) {
-        if (type === "gitlab-merge-request") {
+      getActiveIntegrationsByProvider(provider: string) {
+        if (provider === "gitlab") {
           return [{
             id: "gitlab-mr",
-            type: "gitlab-merge-request",
+            provider: "gitlab",
             name: "GitLab MR",
             configJson: JSON.stringify({
               baseUrl: "https://gitlab.example.com",
-              projectId: "group/repo",
               token: "oauth-token",
             }),
             enabled: true,
@@ -1345,7 +1331,7 @@ describe("createAdminServer", () => {
 
       expect(response.status).toBe(200);
       expect(fetchMock).toHaveBeenCalledWith(
-        "https://gitlab.example.com/api/v4/projects/group%2Frepo/uploads/abcdef1234567890/image.png",
+        "https://gitlab.example.com/uploads/abcdef1234567890/image.png",
         expect.objectContaining({
           headers: expect.objectContaining({
             Authorization: "Bearer oauth-token",
@@ -1363,7 +1349,7 @@ describe("createAdminServer", () => {
       getIntegrations: async () => [
         {
           id: "gerrit-a",
-          type: "gerrit",
+          provider: "gerrit",
           name: "Gerrit A",
           configJson: JSON.stringify({
             sshHost: "gerrit-a.example.com",
@@ -1377,7 +1363,7 @@ describe("createAdminServer", () => {
         },
         {
           id: "gerrit-b",
-          type: "gerrit",
+          provider: "gerrit",
           name: "Gerrit B",
           configJson: JSON.stringify({
             sshHost: "gerrit-b.example.com",
@@ -1586,6 +1572,55 @@ describe("SSE endpoints", () => {
       expect(text).toContain("tool.execution_start");
       expect(text).toContain("readFile");
     } finally {
+      await closeServer(server);
+    }
+  });
+
+  it("GET /api/admin/logs/stream de-duplicates overlapping history and buffered events", async () => {
+    const { pushToTaskBuffer, clearTaskEventBuffer } = await import("../../src/agents/agentEventBus.js");
+    const task = makeTask();
+    const duplicateEvent = {
+      type: "tool.execution_start",
+      timestamp: "2026-04-07T09:30:00.000Z",
+      data: { tool: "readFile" },
+      taskId: task.taskId,
+      cycleNumber: 1,
+    };
+
+    pushToTaskBuffer(duplicateEvent);
+
+    const server = createAdminServer({
+      stateStore: makeStateStore({
+        getTask: async (taskId) => (taskId === task.taskId ? task : null),
+        getAgentCycles: async () => [makeCycle({
+          result: {
+            status: "success",
+            modifiedFiles: [],
+            summary: "Structured-only",
+            agentLogs: "",
+            agentEvents: [duplicateEvent],
+            metadata: { adapter: "copilot-sdk" },
+          },
+        })],
+      }),
+      config: {
+        nodeEnv: "test",
+        logLevel: "info",
+        maxAgentCycles: 3,
+        maxRetryAttempts: 5,
+        pollingIntervalMs: 30000,
+      },
+      polling: { isRunning: () => true, getIntervals: () => ({ intervalMs: 30000 }) },
+      providers: providerSummaries,
+    });
+    const base = await listen(server);
+    try {
+      const response = await fetch(`${base}/api/admin/logs/stream?taskId=${encodeURIComponent(task.taskId)}`);
+      const text = await readFirstChunk(response);
+      expect(text).toContain("tool.execution_start");
+      expect((text.match(/tool\.execution_start/g) ?? []).length).toBe(1);
+    } finally {
+      clearTaskEventBuffer(task.taskId);
       await closeServer(server);
     }
   });

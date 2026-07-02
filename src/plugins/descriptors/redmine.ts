@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { PluginDescriptor } from "../registry.js";
+import type { ProviderDescriptor } from "../registry.js";
 import { HttpRedmineConnector } from "../../connectors/redmineConnector.js";
 import { getLogger } from "../../logger.js";
 
@@ -24,10 +24,10 @@ export const redmineConfigSchema = z
 
 export type RedminePluginConfig = z.infer<typeof redmineConfigSchema>;
 
-export const redmineDescriptor: PluginDescriptor = {
-  type: "redmine",
+export const redmineDescriptor: ProviderDescriptor = {
+  provider: "redmine",
   name: "Redmine",
-  category: "ticketing",
+  icon: { slug: "redmine", hex: "B32024" },
   configSchema: redmineConfigSchema,
   requiredFields: [
     { key: "baseUrl", label: "Base URL", type: "url", required: true, placeholder: "http://redmine:3000" },
@@ -52,7 +52,6 @@ export const redmineDescriptor: PluginDescriptor = {
       discoveredAt: new Date().toISOString(),
     };
   },
-  createInstance: (config) => new HttpRedmineConnector(config as ConstructorParameters<typeof HttpRedmineConnector>[0]),
   testConnection: async (config) => {
     try {
       const cfg = config as Record<string, unknown>;
@@ -109,5 +108,11 @@ export const redmineDescriptor: PluginDescriptor = {
       ? config["baseUrl"]
       : "Redmine URL missing";
     return [baseUrl];
+  },
+  capabilities: {
+    issue_tracking: {
+      createConnector: (config) => new HttpRedmineConnector(config as ConstructorParameters<typeof HttpRedmineConnector>[0]),
+      intake: ["polling", "webhook"],
+    },
   },
 };

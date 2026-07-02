@@ -1,4 +1,5 @@
 import type { WebhookHandler } from "../webhookServer.js";
+import { buildTicketSourceLabel } from "../../utils/ticketSourceLabel.js";
 
 /**
  * Phase 5 — Redmine webhook handler.
@@ -54,7 +55,7 @@ export const redmineWebhookHandler: WebhookHandler = async (ctx) => {
       ...(issue.webUrl !== undefined ? { webUrl: issue.webUrl } : {}),
     },
     project,
-    "redmine"
+    buildTicketSourceLabel(ctx.integration.provider, ctx.integrationId)
   );
 
   return { status: 202, body: { queued: true, taskTicketId: String(issue.id), projectId: project.id } };

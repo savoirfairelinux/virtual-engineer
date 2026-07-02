@@ -1,0 +1,86 @@
+/* ============================================================
+   Virtual Engineer — OKLCH design tokens
+   Dark-first. Light via [data-theme="light"].
+   ============================================================ */
+
+:root {
+  /* Accent — overridable hue */
+  --accent-h: 248;
+  --accent:        oklch(0.66 0.15 var(--accent-h));
+  --accent-strong: oklch(0.72 0.16 var(--accent-h));
+  --accent-soft:   oklch(0.66 0.15 var(--accent-h) / 0.14);
+  --accent-line:   oklch(0.66 0.15 var(--accent-h) / 0.40);
+
+  /* State hues */
+  --ok:            oklch(0.74 0.15 158);
+  --ok-soft:       oklch(0.74 0.15 158 / 0.14);
+  --warn:          oklch(0.80 0.13 85);
+  --warn-soft:     oklch(0.80 0.13 85 / 0.15);
+  --danger:        oklch(0.68 0.18 22);
+  --danger-soft:   oklch(0.68 0.18 22 / 0.15);
+  --info:          oklch(0.72 0.12 230);
+  --info-soft:     oklch(0.72 0.12 230 / 0.14);
+  --muted-state:       oklch(0.65 0.01 256);
+  --muted-state-soft:  oklch(0.65 0.01 256 / 0.14);
+
+  /* Shape */
+  --radius:    10px;
+  --radius-sm: 7px;
+  --radius-lg: 14px;
+  --ease:      cubic-bezier(0.22, 0.61, 0.36, 1);
+
+  /* Typography */
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  /* Density multiplier (compact / regular / comfy) */
+  --density-row: 1;
+}
+
+/* ---------- DARK (default) ---------- */
+:root,
+[data-theme="dark"] {
+  --bg:            oklch(0.165 0.012 258);
+  --bg-grad:       oklch(0.185 0.014 262);
+  --panel:         oklch(0.205 0.013 258);
+  --panel-2:       oklch(0.235 0.014 258);
+  --panel-3:       oklch(0.265 0.014 258);
+  --rail:          oklch(0.185 0.012 258);
+  --border:        oklch(0.31 0.013 258);
+  --border-soft:   oklch(0.27 0.012 258);
+  --border-strong: oklch(0.40 0.015 258);
+  --text:          oklch(0.95 0.004 258);
+  --text-dim:      oklch(0.74 0.008 258);
+  --text-faint:    oklch(0.58 0.01 258);
+  --text-ghost:    oklch(0.46 0.012 258);
+  --shadow:        0 1px 2px oklch(0 0 0 / 0.4), 0 8px 28px oklch(0 0 0 / 0.32);
+  --shadow-sm:     0 1px 2px oklch(0 0 0 / 0.35);
+  --inset-hi:      oklch(1 0 0 / 0.04);
+  color-scheme: dark;
+}
+
+/* ---------- LIGHT ---------- */
+[data-theme="light"] {
+  --bg:            oklch(0.975 0.004 258);
+  --bg-grad:       oklch(0.985 0.004 258);
+  --panel:         oklch(1 0 0);
+  --panel-2:       oklch(0.985 0.004 258);
+  --panel-3:       oklch(0.965 0.005 258);
+  --rail:          oklch(0.992 0.003 258);
+  --border:        oklch(0.90 0.006 258);
+  --border-soft:   oklch(0.93 0.005 258);
+  --border-strong: oklch(0.82 0.008 258);
+  --text:          oklch(0.24 0.015 258);
+  --text-dim:      oklch(0.46 0.013 258);
+  --text-faint:    oklch(0.60 0.012 258);
+  --text-ghost:    oklch(0.72 0.01 258);
+  --accent-soft:   oklch(0.66 0.15 var(--accent-h) / 0.10);
+  --shadow:        0 1px 2px oklch(0.5 0.02 258 / 0.06), 0 10px 30px oklch(0.5 0.02 258 / 0.08);
+  --shadow-sm:     0 1px 2px oklch(0.5 0.02 258 / 0.07);
+  --inset-hi:      oklch(1 0 0 / 0.7);
+  --ok:            oklch(0.58 0.15 158);
+  --warn:          oklch(0.66 0.13 75);
+  --danger:        oklch(0.58 0.20 25);
+  --info:          oklch(0.58 0.13 235);
+  color-scheme: light;
+}

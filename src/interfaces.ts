@@ -76,6 +76,21 @@ export interface ProjectTicketSourceRecord {
   createdAt: Date;
 }
 
+/**
+ * A project's choice to use an integration for a specific domain capability,
+ * with per-binding configuration (e.g. `{ ticketProjectKey }` for
+ * `issue_tracking`, `{ repoKeys }` for `code_review`).
+ */
+export interface ProjectIntegrationBindingRecord {
+  id: string;
+  projectId: ProjectId;
+  integrationId: string;
+  capability: DomainCapability;
+  config: Record<string, unknown>;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
 export interface ProjectPushTargetRecord {
   id: number;
   projectId: ProjectId;
@@ -496,18 +511,12 @@ export interface WorkspaceRunner {
 
 export type ReviewChangeStatus = "OPEN" | "MERGED" | "ABANDONED";
 
-/** @deprecated Use ReviewChangeStatus */
-export type GerritChangeStatus = ReviewChangeStatus;
-
 export interface ReviewChangeRef {
   changeId: ExternalChangeId;
   changeNumber: number;
   patchsetNumber: number;
   url: string;
 }
-
-/** @deprecated Use ReviewChangeRef */
-export type GerritChangeRef = ReviewChangeRef;
 
 export interface ReviewComment {
   id: string;
@@ -519,9 +528,6 @@ export interface ReviewComment {
   patchset: number;
   updatedAt: Date;
 }
-
-/** @deprecated Use ReviewComment */
-export type GerritComment = ReviewComment;
 
 /** System-agnostic interface for interacting with a code review system. */
 export interface ReviewConnector {
@@ -546,9 +552,6 @@ export interface ReviewConnector {
   /** Resolve comment threads that have been addressed */
   resolveComments(changeId: ExternalChangeId, comments: ReviewComment[]): Promise<void>;
 }
-
-/** @deprecated Use ReviewConnector */
-export type GerritConnector = ReviewConnector;
 
 /**
  * Union of all runtime plugin instance types stored in `PluginManager`.
@@ -614,6 +617,82 @@ export interface ReviewAgentResult {
   summary: string;
   /** Suggested vote score: -1, 0, or +1. */
   score: -1 | 0 | 1;
+  /** Replies to existing human discussion threads (empty when none). */
+  replies: ThreadReply[];
+}
+
+/** A single comment inside a discussion thread on a change. */
+export interface ReviewDiscussionComment {
+  /** Display name or username of the comment author. */
+  author: string;
+  /** Comment body. */
+  message: string;
+  /** True when authored by VE itself (the reviewing account). */
+  isOwn: boolean;
+}
+
+/**
+ * A human discussion thread on a change, surfaced to the review agent so it can
+ * reply. Integration-agnostic: `threadId` is whatever opaque token the provider
+ * needs to post a reply (Gerrit comment id, GitLab discussion id, GitHub review
+ * thread node id).
+ */
+export interface ReviewDiscussionThread {
+  /** Opaque provider token used to post a reply to this thread. */
+  threadId: string;
+  /** File path the thread is anchored to, or null for change-level discussion. */
+  file: string | null;
+  /** 1-based line number, or null when not line-anchored. */
+  line: number | null;
+  /** Whether the thread is marked resolved on the provider. */
+  resolved: boolean;
+  /** Ordered comments in the thread (oldest first). */
+  comments: ReviewDiscussionComment[];
+}
+
+/** A reply the agent wants to post to an existing discussion thread. */
+export interface ThreadReply {
+  /** The `threadId` of the thread being replied to. */
+  threadId: string;
+  /** Reply body. */
+  message: string;
+}
+
+/** A persisted record of an inline review comment VE has already posted on a change. */
+export interface PostedReviewComment {
+  id: number;
+  taskId: TaskId;
+  changeId: ExternalChangeId;
+  /** Stable content hash (see review/commentHash.ts). */
+  commentHash: string;
+  file: string;
+  line: number;
+  message: string;
+  severity: string;
+  /** Provider-side thread/comment id captured for later resolution. */
+  providerThreadId: string | null;
+  resolved: boolean;
+  createdAt: Date;
+}
+
+/** Input shape for recording a freshly-posted review comment. */
+export interface PostedReviewCommentInput {
+  commentHash: string;
+  file: string;
+  line: number;
+  message: string;
+  severity: string;
+  providerThreadId?: string | null | undefined;
+}
+
+/** Input shape for recording a reply VE posted to a human discussion thread. */
+export interface ThreadReplyRecordInput {
+  /** Opaque provider thread token the reply was posted to. */
+  threadId: string;
+  /** Dedup hash of thread id + answered human message (see computeThreadReplyHash). */
+  handledCommentHash: string;
+  /** The reply body VE posted. */
+  replyMessage: string;
 }
 
 /**
@@ -675,6 +754,24 @@ export interface ReviewProvider {
    * Optional — omitting falls back to unconditional review creation.
    */
   isReviewer?(changeId: ExternalChangeId): Promise<boolean>;
+
+  /**
+   * Fetch open discussion threads on the change so the review agent can reply.
+   * Optional — providers that do not support thread fetching omit it, and the
+   * orchestrator simply skips the reply flow.
+   */
+  getDiscussionThreads?(changeId: ExternalChangeId): Promise<ReviewDiscussionThread[]>;
+
+  /**
+   * Post a reply to an existing discussion thread identified by `threadId`.
+   * Optional — paired with `getDiscussionThreads`.
+   */
+  postThreadReply?(
+    changeId: ExternalChangeId,
+    revision: number,
+    threadId: string,
+    message: string
+  ): Promise<void>;
 }
 
 // ─── Ticket interfaces ─────────────────────────────────────────────────────────
@@ -707,7 +804,7 @@ export interface TicketConnector {
   /** Transition to the "in review" workflow state (semantics owned by the connector). */
   transitionToInReview(ticketId: TicketId): Promise<void>;
   closeTicket(ticketId: TicketId, closingNote: string): Promise<void>;
-  /** Return the source label for this connector (e.g., 'redmine', 'gitlab-issue') */
+  /** Return the source label for this connector (e.g., 'redmine', 'gitlab') */
   getSourceLabel(): string;
 }
 
@@ -836,6 +933,38 @@ export interface AgentCycle {
   result: AgentResult;
   validationResult: ValidationResult | null;
   createdAt: Date;
+  /** GitHub-computed cost of this cycle, derived from Copilot `assistant.usage` events. */
+  cost?: CycleCost;
+}
+
+/** Aggregated token usage across a single agent cycle. */
+export interface CycleCostTokens {
+  input: number;
+  output: number;
+  cached: number;
+  cacheWrite: number;
+}
+
+/**
+ * Per-cycle execution cost derived from the Copilot SDK `assistant.usage`
+ * events. The SDK reports cost per LLM request via `copilotUsage.totalNanoAiu`
+ * (nano-AI-Units) and the `cost` model multiplier; `computeCycleCost`
+ * deduplicates repeated emissions of a request and sums distinct requests.
+ * 1 AI Unit = 1 AI credit = $0.01.
+ */
+export interface CycleCost {
+  /** True when GitHub-computed cost (nano-AIU) was present in the usage events. */
+  priced: boolean;
+  /** Total cost in GitHub AI credits (1 credit = $0.01 USD). */
+  aiCredits: number;
+  /** Total cost in USD. */
+  usd: number;
+  /** Summed premium-request cost (model multiplier) across distinct requests; 0 when unavailable. */
+  premiumRequests: number;
+  /** Aggregated token usage across the cycle. */
+  tokens: CycleCostTokens;
+  /** Model id resolved from the usage events, or null. */
+  modelId: string | null;
 }
 
 export interface Prompt {
@@ -867,7 +996,8 @@ export interface StateStore {
     ticketSourceLabel?: string,
     ticketUrl?: string,
     displayId?: string,
-    ticketSource?: { integrationId: string; ticketProjectKey: string }
+    ticketSource?: { integrationId: string; ticketProjectKey: string },
+    projectId?: ProjectId
   ): Promise<Task>;
 
   /** Create a code-review task (taskType="code-review", initial state=REVIEW_PENDING). */
@@ -881,17 +1011,21 @@ export interface StateStore {
     patchset: number;
     reviewUrl?: string;
     displayId?: string;
+    projectId?: ProjectId;
   }): Promise<Task>;
 
   /** Record the patchset just reviewed by VE (used by re-review polling). */
   setReviewedPatchset(taskId: TaskId, patchset: number): Promise<void>;
   getTask(taskId: TaskId): Promise<Task | null>;
-  getTaskByTicketId(ticketId: TicketId): Promise<Task | null>;
+  getTaskByTicketId(ticketId: TicketId, projectId?: ProjectId): Promise<Task | null>;
+
+  /** Return the single active (non-terminal) task for a ticket, optionally scoped to a project. */
+  getActiveTaskByTicketId(ticketId: TicketId, projectId?: ProjectId): Promise<Task | null>;
   getActiveTasks(): Promise<Task[]>;
   getAllTasks(): Promise<Task[]>;
 
-  /** Count FAILED/ABANDONED tasks for a ticket; scoped by sourceLabel when provided. */
-  getFailedAttemptCount(ticketId: TicketId, ticketSourceLabel?: string): Promise<number>;
+  /** Count FAILED/ABANDONED tasks for a ticket; scoped by sourceLabel and/or project when provided. */
+  getFailedAttemptCount(ticketId: TicketId, ticketSourceLabel?: string, projectId?: ProjectId): Promise<number>;
 
   /** Atomically transition to a new state. Idempotent if already in toState. */
   transition(
@@ -951,6 +1085,30 @@ export interface StateStore {
   // Comment deduplication
   getProcessedCommentIds(taskId: TaskId): Promise<Set<string>>;
   markCommentProcessed(taskId: TaskId, gerritCommentId: string): Promise<void>;
+
+  // Posted-review-comment deduplication (VE-as-reviewer side; integration-agnostic)
+  /** Hashes of every inline comment VE has already posted on this review task. */
+  getPostedReviewCommentHashes(taskId: TaskId): Promise<Set<string>>;
+  /** Full records of comments VE has already posted (for prompt memory + resolution). */
+  getPostedReviewComments(taskId: TaskId): Promise<PostedReviewComment[]>;
+  /** Record freshly-posted comments. Duplicate hashes for the task are ignored. */
+  markReviewCommentsPosted(
+    taskId: TaskId,
+    changeId: ExternalChangeId,
+    comments: PostedReviewCommentInput[]
+  ): Promise<void>;
+  /** Mark a previously-posted comment thread as resolved. */
+  markReviewCommentResolved(id: number): Promise<void>;
+
+  // Thread-reply deduplication (VE-as-reviewer side; integration-agnostic)
+  /** Handled-message hashes for every reply VE has already posted on this task. */
+  getHandledThreadReplyHashes(taskId: TaskId): Promise<Set<string>>;
+  /** Record freshly-posted thread replies. Duplicate hashes for the task are ignored. */
+  markThreadReplyPosted(
+    taskId: TaskId,
+    changeId: ExternalChangeId,
+    replies: ThreadReplyRecordInput[]
+  ): Promise<void>;
 
   // Per-repository change tracking (multi-repo tasks)
   /** Upsert a per-repo change record (Gerrit Change-Id or GitLab MR IID). */
@@ -1063,35 +1221,20 @@ export interface DiscoveredResources {
 
 // ─── Plugin / Integration types ───────────────────────────────────────────────
 
-export const INTEGRATION_TYPES = [
-  "redmine",
-  "gerrit",
-  "gitlab-issue",
-  "gitlab-merge-request",
-  "copilot",
-  "mock",
-  "github-issue",
-  "github-pull-request",
-] as const;
+/** Identifiers for the external systems Virtual Engineer can connect to. */
+export const PROVIDER_IDS = ["github", "gitlab", "gerrit", "redmine", "copilot", "mock"] as const;
+export type ProviderId = (typeof PROVIDER_IDS)[number];
 
-export type IntegrationType = (typeof INTEGRATION_TYPES)[number];
-
-/** Integration types that act as code-hosting + review systems */
-export type CodeSourceIntegrationType = "gerrit" | "gitlab-merge-request" | "github-pull-request";
-/** Runtime-iterable list of code-source integration types. Keep in sync with CodeSourceIntegrationType. */
-export const CODE_SOURCE_INTEGRATION_TYPES: readonly CodeSourceIntegrationType[] = ["gerrit", "gitlab-merge-request", "github-pull-request"] as const;
-
-/** Integration types that act as ticket / work-item sources */
-export type TicketSourceIntegrationType = "redmine" | "gitlab-issue" | "github-issue";
-/** Runtime-iterable list of ticket-source integration types. Keep in sync with TicketSourceIntegrationType. */
-export const TICKET_SOURCE_INTEGRATION_TYPES: readonly TicketSourceIntegrationType[] = ["redmine", "gitlab-issue", "github-issue"] as const;
-
-export const PLUGIN_CATEGORIES = ["ticketing", "review", "agent"] as const;
-export type PluginCategory = (typeof PLUGIN_CATEGORIES)[number];
+/**
+ * Domain capabilities an integration can expose. A project binds an integration
+ * for a specific capability via `project_integration_bindings`.
+ */
+export const DOMAIN_CAPABILITIES = ["issue_tracking", "code_review", "source_control", "agent_execution"] as const;
+export type DomainCapability = (typeof DOMAIN_CAPABILITIES)[number];
 
 export interface Integration {
   id: string;
-  type: IntegrationType;
+  provider: ProviderId;
   name: string;
   configJson: string;
   enabled: boolean;

@@ -5,7 +5,6 @@ node_modules/
 secrets/
 drizzle/
 coverage/
-playwright-report/
 test-results/
 *.db
 *.db-shm

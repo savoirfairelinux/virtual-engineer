@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import Database from "better-sqlite3";
 import { SqliteStateStore } from "../../src/state/stateStore.js";
 import { InvalidTransitionError } from "../../src/state/stateMachine.js";
 import { makeTaskId, makeTicketId, makeExternalChangeId, makeProjectId } from "../../src/interfaces.js";
@@ -122,6 +123,133 @@ describe("SqliteStateStore", () => {
       await expect(store.createTask(makeTaskId(randomUUID()), makeTicketId("rethrow-1"))).rejects.toBe(insertError);
 
       db.insert = originalInsert;
+    });
+
+    it("rethrows non-unique insert errors even when an active task exists", async () => {
+      // A genuine insert failure (disk full, NOT NULL/FK, corruption) must NOT
+      // be masked as a "reuse" of an unrelated active task: only the unique
+      // active-ticket index conflict (code SQLITE_CONSTRAINT_UNIQUE) recovers.
+      const ticketId = makeTicketId("non-unique-1");
+      await store.createTask(makeTaskId(randomUUID()), ticketId);
+
+      const insertError = new Error("disk full");
+      const db = (store as unknown as {
+        db: { insert: (table: unknown) => { values: (value: unknown) => Promise<void> } };
+      }).db;
+      const originalInsert = db.insert.bind(db);
+      db.insert = () => ({
+        values: async () => {
+          throw insertError;
+        },
+      });
+
+      try {
+        await expect(store.createTask(makeTaskId(randomUUID()), ticketId)).rejects.toBe(insertError);
+      } finally {
+        db.insert = originalInsert;
+      }
+    });
+
+    it("reuses the active task when a newer terminal task exists for the ticket", async () => {
+      const ticketId = makeTicketId("1993");
+      const activeTaskId = makeTaskId(randomUUID());
+      await store.createTask(activeTaskId, ticketId);
+
+      // The partial unique index permits multiple terminal rows alongside one
+      // active row. Insert a newer FAILED task directly so that the newest task
+      // by createdAt is terminal while an older task is still active.
+      const raw = (store as unknown as {
+        raw: { prepare(sql: string): { run(...args: unknown[]): unknown } };
+      }).raw;
+      const laterSeconds = Math.floor(Date.now() / 1000) + 100;
+      raw
+        .prepare(
+          `INSERT INTO tasks (task_id, ticket_id, state, created_at, updated_at)
+           VALUES (?, ?, 'FAILED', ?, ?)`
+        )
+        .run(randomUUID(), ticketId, laterSeconds, laterSeconds);
+
+      // A fresh create violates the active-ticket unique index; recovery must
+      // return the active task instead of surfacing the constraint error.
+      const result = await store.createTask(makeTaskId(randomUUID()), ticketId);
+      expect(result.taskId).toBe(activeTaskId);
+      expect(result.state).toBe("DETECTED");
+    });
+
+    it("allows the same bare ticket id to be active under two different projects", async () => {
+      // Two projects bound to different repos under one integration may have
+      // tickets that share a number. Active-task identity is (project_id,
+      // ticket_id), so each project gets its own active task with no false reuse.
+      const ticketId = makeTicketId("5");
+      const p1 = makeProjectId("proj-a");
+      const p2 = makeProjectId("proj-b");
+      const t1 = makeTaskId(randomUUID());
+      const t2 = makeTaskId(randomUUID());
+
+      const first = await store.createTask(
+        t1,
+        ticketId,
+        "A",
+        "",
+        "redmine:int-1",
+        undefined,
+        undefined,
+        undefined,
+        p1
+      );
+      const second = await store.createTask(
+        t2,
+        ticketId,
+        "B",
+        "",
+        "redmine:int-1",
+        undefined,
+        undefined,
+        undefined,
+        p2
+      );
+
+      expect(first.taskId).toBe(t1);
+      expect(second.taskId).toBe(t2);
+      expect(second.taskId).not.toBe(first.taskId);
+      expect(first.projectId).toBe(p1);
+      expect(second.projectId).toBe(p2);
+
+      // Project-scoped lookups resolve to the correct task, not the other's.
+      const a = await store.getActiveTaskByTicketId(ticketId, p1);
+      const b = await store.getActiveTaskByTicketId(ticketId, p2);
+      expect(a?.taskId).toBe(t1);
+      expect(b?.taskId).toBe(t2);
+    });
+
+    it("still rejects a second active task for the same (project, ticket)", async () => {
+      // Within a single project the partial unique index must continue to permit
+      // only one active task per ticket; a duplicate create recovers it.
+      const ticketId = makeTicketId("7");
+      const projectId = makeProjectId("proj-c");
+      const first = await store.createTask(
+        makeTaskId(randomUUID()),
+        ticketId,
+        "C",
+        "",
+        "redmine:int-1",
+        undefined,
+        undefined,
+        undefined,
+        projectId
+      );
+      const second = await store.createTask(
+        makeTaskId(randomUUID()),
+        ticketId,
+        "C",
+        "",
+        "redmine:int-1",
+        undefined,
+        undefined,
+        undefined,
+        projectId
+      );
+      expect(second.taskId).toBe(first.taskId);
     });
 
   });
@@ -453,6 +581,116 @@ describe("SqliteStateStore", () => {
     });
   });
 
+  describe("posted-review-comment deduplication", () => {
+    it("records posted comments and exposes their hashes", async () => {
+      const taskId = makeTaskId(randomUUID());
+      await store.createTask(taskId, makeTicketId("rev-1"));
+      const changeId = makeExternalChangeId("owner/repo#1");
+
+      expect((await store.getPostedReviewCommentHashes(taskId)).size).toBe(0);
+
+      await store.markReviewCommentsPosted(taskId, changeId, [
+        { commentHash: "hash-a", file: "src/a.ts", line: 10, message: "Issue A", severity: "error" },
+        { commentHash: "hash-b", file: "src/b.ts", line: 20, message: "Issue B", severity: "warning", providerThreadId: "thread-b" },
+      ]);
+
+      const hashes = await store.getPostedReviewCommentHashes(taskId);
+      expect(hashes.has("hash-a")).toBe(true);
+      expect(hashes.has("hash-b")).toBe(true);
+
+      const records = await store.getPostedReviewComments(taskId);
+      expect(records).toHaveLength(2);
+      const b = records.find((r) => r.commentHash === "hash-b");
+      expect(b?.providerThreadId).toBe("thread-b");
+      expect(b?.resolved).toBe(false);
+    });
+
+    it("ignores duplicate hashes for the same task", async () => {
+      const taskId = makeTaskId(randomUUID());
+      await store.createTask(taskId, makeTicketId("rev-2"));
+      const changeId = makeExternalChangeId("owner/repo#2");
+
+      await store.markReviewCommentsPosted(taskId, changeId, [
+        { commentHash: "dup", file: "src/a.ts", line: 1, message: "first", severity: "error" },
+      ]);
+      await store.markReviewCommentsPosted(taskId, changeId, [
+        { commentHash: "dup", file: "src/a.ts", line: 99, message: "second", severity: "error" },
+      ]);
+
+      const records = await store.getPostedReviewComments(taskId);
+      expect(records).toHaveLength(1);
+      expect(records[0]?.line).toBe(1);
+    });
+
+    it("marks a posted comment as resolved", async () => {
+      const taskId = makeTaskId(randomUUID());
+      await store.createTask(taskId, makeTicketId("rev-3"));
+      const changeId = makeExternalChangeId("owner/repo#3");
+
+      await store.markReviewCommentsPosted(taskId, changeId, [
+        { commentHash: "h", file: "src/a.ts", line: 5, message: "resolve me", severity: "error" },
+      ]);
+      const [rec] = await store.getPostedReviewComments(taskId);
+      expect(rec).toBeDefined();
+
+      await store.markReviewCommentResolved(rec!.id);
+
+      const [updated] = await store.getPostedReviewComments(taskId);
+      expect(updated?.resolved).toBe(true);
+    });
+  });
+
+  describe("thread-reply ledger", () => {
+    it("records posted replies and exposes their handled hashes", async () => {
+      const taskId = makeTaskId(randomUUID());
+      await store.createTask(taskId, makeTicketId("reply-1"));
+      const changeId = makeExternalChangeId("owner/repo#10");
+
+      expect((await store.getHandledThreadReplyHashes(taskId)).size).toBe(0);
+
+      await store.markThreadReplyPosted(taskId, changeId, [
+        { threadId: "disc-1", handledCommentHash: "hash-1", replyMessage: "Thanks, fixed." },
+        { threadId: "disc-2", handledCommentHash: "hash-2", replyMessage: "I disagree." },
+      ]);
+
+      const hashes = await store.getHandledThreadReplyHashes(taskId);
+      expect(hashes.has("hash-1")).toBe(true);
+      expect(hashes.has("hash-2")).toBe(true);
+      expect(hashes.has("hash-3")).toBe(false);
+    });
+
+    it("ignores duplicate (threadId, handledCommentHash) pairs", async () => {
+      const taskId = makeTaskId(randomUUID());
+      await store.createTask(taskId, makeTicketId("reply-2"));
+      const changeId = makeExternalChangeId("owner/repo#11");
+
+      await store.markThreadReplyPosted(taskId, changeId, [
+        { threadId: "disc-1", handledCommentHash: "dup", replyMessage: "first" },
+      ]);
+      await store.markThreadReplyPosted(taskId, changeId, [
+        { threadId: "disc-1", handledCommentHash: "dup", replyMessage: "second" },
+      ]);
+
+      const hashes = await store.getHandledThreadReplyHashes(taskId);
+      expect(hashes.size).toBe(1);
+    });
+
+    it("scopes handled hashes per task", async () => {
+      const taskA = makeTaskId(randomUUID());
+      const taskB = makeTaskId(randomUUID());
+      await store.createTask(taskA, makeTicketId("reply-3a"));
+      await store.createTask(taskB, makeTicketId("reply-3b"));
+      const changeId = makeExternalChangeId("owner/repo#12");
+
+      await store.markThreadReplyPosted(taskA, changeId, [
+        { threadId: "disc-1", handledCommentHash: "only-a", replyMessage: "hi" },
+      ]);
+
+      expect((await store.getHandledThreadReplyHashes(taskA)).has("only-a")).toBe(true);
+      expect((await store.getHandledThreadReplyHashes(taskB)).has("only-a")).toBe(false);
+    });
+  });
+
   describe("saveAgentCycle", () => {
     it("stores and retrieves agent cycle results", async () => {
       const taskId = makeTaskId(randomUUID());
@@ -486,6 +724,153 @@ describe("SqliteStateStore", () => {
       const cycles = await store.getAgentCycles(taskId);
       expect(cycles[0]?.result.summary).toBe("[corrupt cycle data]");
       expect(cycles[0]?.validationResult).toBeNull();
+    });
+
+    it("computes and persists cycle cost from assistant.usage events", async () => {
+      const taskId = makeTaskId(randomUUID());
+      await store.createTask(taskId, makeTicketId("cost-1"));
+      const result = {
+        status: "success" as const,
+        modifiedFiles: [],
+        summary: "done",
+        agentLogs: "",
+        agentEvents: [
+          {
+            type: "assistant.usage",
+            timestamp: "2026-01-01T00:00:00.000Z",
+            data: { apiCallId: "req-1", totalNanoAiu: 2_000_000_000, cost: 1.5, inputTokens: 100, outputTokens: 20, cacheReadTokens: 5, cacheWriteTokens: 7, model: "gpt-test" },
+            taskId: String(taskId),
+            cycleNumber: 1,
+          },
+          {
+            type: "assistant.usage",
+            timestamp: "2026-01-01T00:01:00.000Z",
+            data: { apiCallId: "req-2", totalNanoAiu: 1_000_000_000, cost: 0.5, inputTokens: 40, outputTokens: 10, model: "gpt-test" },
+            taskId: String(taskId),
+            cycleNumber: 1,
+          },
+        ],
+        metadata: {},
+      };
+      await store.saveAgentCycle(taskId, 1, result);
+
+      const cycles = await store.getAgentCycles(taskId);
+      const cost = cycles[0]?.cost;
+      expect(cost).toBeDefined();
+      expect(cost?.priced).toBe(true);
+      expect(cost?.aiCredits).toBe(3);
+      expect(cost?.usd).toBeCloseTo(0.03, 10);
+      expect(cost?.premiumRequests).toBeCloseTo(2.0, 10);
+      expect(cost?.tokens.input).toBe(140);
+      expect(cost?.tokens.output).toBe(30);
+      expect(cost?.tokens.cached).toBe(5);
+      expect(cost?.tokens.cacheWrite).toBe(7);
+      expect(cost?.modelId).toBe("gpt-test");
+    });
+
+    it("recomputes legacy cycle cost from the agent_events column when the result JSON omits events", async () => {
+      const dbPath = tempDbPath();
+      let localStore = await SqliteStateStore.create(dbPath);
+      const taskId = makeTaskId(randomUUID());
+      await localStore.createTask(taskId, makeTicketId("cost-legacy"));
+      const events = [
+        {
+          type: "assistant.usage",
+          timestamp: "2026-01-01T00:00:00.000Z",
+          data: { apiCallId: "req-1", totalNanoAiu: 2_000_000_000, cost: 1.5, inputTokens: 100, outputTokens: 20, model: "gpt-test" },
+          taskId: String(taskId),
+          cycleNumber: 1,
+        },
+      ];
+      await localStore.saveAgentCycle(taskId, 1, {
+        status: "success",
+        modifiedFiles: [],
+        summary: "done",
+        agentLogs: "",
+        agentEvents: events,
+        metadata: {},
+      });
+      localStore.close();
+
+      // Simulate a legacy row: clear the cost snapshot and strip events from the
+      // agentResult JSON so they survive only in the canonical agent_events column.
+      const raw = new Database(dbPath);
+      raw
+        .prepare(
+          `UPDATE agent_cycles SET cost_ai_credits = NULL, cost_usd = NULL, premium_requests = NULL, cost_input_tokens = NULL, cost_output_tokens = NULL, cost_cached_tokens = NULL, cost_cache_write_tokens = NULL, cost_model_id = NULL, agent_result = ? WHERE task_id = ?`
+        )
+        .run(
+          JSON.stringify({ status: "success", modifiedFiles: [], summary: "done", agentLogs: "", metadata: {} }),
+          String(taskId)
+        );
+      raw.close();
+
+      localStore = await SqliteStateStore.create(dbPath);
+      try {
+        const cycles = await localStore.getAgentCycles(taskId);
+        const cost = cycles[0]?.cost;
+        expect(cost).toBeDefined();
+        expect(cost?.priced).toBe(true);
+        expect(cost?.aiCredits).toBe(2);
+        expect(cost?.usd).toBeCloseTo(0.02, 10);
+        expect(cost?.tokens.input).toBe(100);
+        expect(cost?.tokens.output).toBe(20);
+        expect(cost?.modelId).toBe("gpt-test");
+      } finally {
+        localStore.close();
+      }
+    });
+
+    it("persists an estimated USD cost from the premium-request multiplier when nano-AIU is absent", async () => {
+      const taskId = makeTaskId(randomUUID());
+      await store.createTask(taskId, makeTicketId("cost-est"));
+      const result = {
+        status: "success" as const,
+        modifiedFiles: [],
+        summary: "done",
+        agentLogs: "",
+        agentEvents: [
+          {
+            type: "assistant.usage",
+            timestamp: "2026-01-01T00:00:00.000Z",
+            data: { cost: 0.5, inputTokens: 100, outputTokens: 20, model: "gpt-est" },
+            taskId: String(taskId),
+            cycleNumber: 1,
+          },
+        ],
+        metadata: {},
+      };
+      await store.saveAgentCycle(taskId, 1, result);
+
+      const cycles = await store.getAgentCycles(taskId);
+      const cost = cycles[0]?.cost;
+      expect(cost?.priced).toBe(false);
+      expect(cost?.usd).toBeCloseTo(0.02, 10);
+      expect(cost?.aiCredits).toBe(0);
+      expect(cost?.premiumRequests).toBeCloseTo(0.5, 10);
+    });
+
+    it("recomputes cost for legacy cycles persisted without cost columns", async () => {
+      const taskId = makeTaskId(randomUUID());
+      await store.createTask(taskId, makeTicketId("cost-2"));
+      const raw = (store as unknown as { raw: { prepare: (sql: string) => { run: (...args: unknown[]) => void } } }).raw;
+      const events = JSON.stringify([
+        {
+          type: "assistant.usage",
+          timestamp: "2026-01-01T00:00:00.000Z",
+          data: { totalNanoAiu: 5_000_000_000, inputTokens: 12, outputTokens: 4 },
+          taskId: String(taskId),
+          cycleNumber: 1,
+        },
+      ]);
+      const agentResult = JSON.stringify({ status: "success", modifiedFiles: [], summary: "legacy", agentLogs: "", agentEvents: JSON.parse(events), metadata: {} });
+      raw.prepare(
+        "INSERT INTO agent_cycles (task_id, cycle_number, agent_result, validation_result, agent_events, created_at) VALUES (?, ?, ?, ?, ?, ?)"
+      ).run(taskId, 1, agentResult, null, events, Date.now());
+
+      const cycles = await store.getAgentCycles(taskId);
+      expect(cycles[0]?.cost?.priced).toBe(true);
+      expect(cycles[0]?.cost?.aiCredits).toBe(5);
     });
   });
 

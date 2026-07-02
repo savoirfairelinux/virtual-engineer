@@ -42,7 +42,6 @@ docker run -d \
   --env-file "$ROOT_DIR/.env" \
   -e DATABASE_PATH=/app/data/virtual-engineer.db \
   -e GH_CONFIG_DIR=/ve-gh \
-  -e ADMIN_API_HOST=127.0.0.1 \
   --security-opt label:disable \
   -v /etc/localtime:/etc/localtime:ro \
   -v "$ROOT_DIR/data:/app/data:Z" \
@@ -53,5 +52,5 @@ docker run -d \
   virtual-engineer:latest
 
 info "ve-orchestrator started."
-info "Admin UI : http://127.0.0.1:3100/admin"
+info "Admin UI : http://0.0.0.0:3100/admin (binds per ADMIN_API_HOST in .env)"
 info "Logs     : docker logs -f ve-orchestrator"

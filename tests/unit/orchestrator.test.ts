@@ -3,10 +3,10 @@ import { Orchestrator } from "../../src/orchestrator/orchestrator.js";
 import type {
   StateStore,
   WorkspaceRunner,
-  GerritConnector,
+  ReviewConnector,
   TicketConnector,
   Task,
-  GerritComment,
+  ReviewComment,
 } from "../../src/interfaces.js";
 import {
   makeTaskId,
@@ -39,7 +39,7 @@ function makeTask(overrides: Partial<Task> = {}): Task {
   };
 }
 
-function makeComment(overrides: Partial<GerritComment> = {}): GerritComment {
+function makeComment(overrides: Partial<ReviewComment> = {}): ReviewComment {
   return {
     id: "comment-1",
     author: "reviewer@example.com",
@@ -73,11 +73,11 @@ describe("Orchestrator", () => {
       destroyWorkspace: vi.fn(),
     };
 
-    const gerritConnector: GerritConnector = {
+    const gerritConnector: ReviewConnector = {
       getChangeStatus: vi.fn().mockResolvedValue("OPEN"),
       getUnresolvedComments: vi.fn().mockResolvedValue([comment]),
       resolveComments: vi.fn().mockResolvedValue(undefined),
-    } as unknown as GerritConnector;
+    } as unknown as ReviewConnector;
 
     const redmineConnector: TicketConnector = {
       getTicket: vi.fn(),
@@ -140,11 +140,11 @@ describe("Orchestrator", () => {
       destroyWorkspace: vi.fn(),
     };
 
-    const gerritConnector: GerritConnector = {
+    const gerritConnector: ReviewConnector = {
       getChangeStatus: vi.fn().mockResolvedValue("OPEN"),
       getUnresolvedComments: vi.fn().mockResolvedValue([]),
       resolveComments: vi.fn().mockResolvedValue(undefined),
-    } as unknown as GerritConnector;
+    } as unknown as ReviewConnector;
 
     const redmineConnector: TicketConnector = {
       getTicket: vi.fn(),
@@ -247,7 +247,7 @@ describe("Orchestrator", () => {
     } as unknown as WorkspaceRunner;
   }
 
-  function makeGerritConnector(overrides: Partial<GerritConnector> = {}): GerritConnector {
+  function makeGerritConnector(overrides: Partial<ReviewConnector> = {}): ReviewConnector {
     return {
       getChange: vi.fn().mockResolvedValue({
         changeId: makeExternalChangeId("I123"),
@@ -260,7 +260,7 @@ describe("Orchestrator", () => {
       addChangeComment: vi.fn().mockResolvedValue(undefined),
       resolveComments: vi.fn().mockResolvedValue(undefined),
       ...overrides,
-    } as unknown as GerritConnector;
+    } as unknown as ReviewConnector;
   }
 
   function makeRedmineConnector(overrides: Partial<TicketConnector> = {}): TicketConnector {
@@ -278,7 +278,7 @@ describe("Orchestrator", () => {
   }
 
   function makeProjectMode(overrides: {
-    gerritConnector?: GerritConnector;
+    gerritConnector?: ReviewConnector;
     redmineConnector?: TicketConnector;
   } = {}) {
     const gc = overrides.gerritConnector ?? makeGerritConnector();
@@ -304,7 +304,7 @@ describe("Orchestrator", () => {
   function makeOrchestrator(overrides: {
     stateStore?: StateStore;
     workspaceRunner?: WorkspaceRunner;
-    gerritConnector?: GerritConnector;
+    gerritConnector?: ReviewConnector;
     redmineConnector?: TicketConnector;
   } = {}) {
     return new Orchestrator(

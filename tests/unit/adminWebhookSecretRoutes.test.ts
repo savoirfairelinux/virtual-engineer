@@ -90,7 +90,7 @@ describe("Admin /api/admin/integrations/:id/webhook-secret/rotate + /webhook-inf
     registerBuiltinPlugins();
     const integration: Integration = {
       id: "redmine-1",
-      type: "redmine",
+      provider: "redmine",
       name: "Redmine 1",
       configJson: JSON.stringify({ baseUrl: "http://r/", apiKey: "k", virtualEngineerUserLogin: "ve" }),
       enabled: false,
@@ -169,7 +169,7 @@ describe("Admin /api/admin/integrations/:id/webhook-allowed-ips (IP allowlisting
     const store = makeStore([
       {
         id: "gerrit-1",
-        type: "gerrit",
+        provider: "gerrit",
         name: "Staging Gerrit",
         configJson: JSON.stringify({}),
         enabled: true,

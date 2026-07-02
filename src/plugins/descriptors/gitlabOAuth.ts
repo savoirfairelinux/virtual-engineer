@@ -1,6 +1,5 @@
 import { z } from "zod";
 import type { DeviceProviderAuthHandler, ProviderAuthDeviceCompleteInput, ProviderAuthDeviceStartResult, ProviderAuthHandlerCompleteResult, RedirectProviderAuthHandler } from "../../agents/providerAuthService.js";
-import type { IntegrationType } from "../../interfaces.js";
 import {
   getGitLabBaseUrl,
   getGitLabRequiredConfigString,
@@ -77,7 +76,7 @@ export function createGitLabAuthFields(tokenLabel: string): PluginField[] {
 }
 
 export function createGitLabOAuthConfig(
-  type: IntegrationType,
+  type: string,
   heading: string
 ): PluginOAuthConfig {
   return {

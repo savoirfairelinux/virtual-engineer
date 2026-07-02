@@ -141,10 +141,22 @@ function makeMocks(initialTask?: Task) {
       }
     }),
     setFailureReason: vi.fn(async () => undefined),
+    incrementCycle: vi.fn(async () => {
+      if (store["task"]) {
+        const current = (store["task"] as Task).cycleCount;
+        const next = current + 1;
+        store["task"] = { ...(store["task"] as Task), cycleCount: next };
+        return next;
+      }
+      return 1;
+    }),
     getAgentCycles: vi.fn(async () => []),
     saveAgentCycle: vi.fn(async (taskId: string, cycleNumber: number, result: unknown) => {
       savedCycles.push({ taskId, cycleNumber, result });
     }),
+    getPostedReviewCommentHashes: vi.fn(async () => new Set<string>()),
+    getPostedReviewComments: vi.fn(async () => []),
+    markReviewCommentsPosted: vi.fn(async () => undefined),
     findProjectsByReviewTarget: vi.fn(async () => [makeProject()]),
     getProjectById: vi.fn(async () => makeProject()),
     getTaskByTicketId: vi.fn(async () => null),

@@ -38,7 +38,7 @@ import { resolveAgentConfig } from "../state/stateStore.js";
 const log = getLogger("orchestrator");
 
 /** Integration types that clone via HTTPS and need a token injected into the clone URL. */
-const HTTPS_VCS_TYPES = new Set(["github-pull-request", "gitlab-merge-request"]);
+const HTTPS_VCS_TYPES = new Set(["github", "gitlab"]);
 
 /**
  * Build an authenticated HTTPS clone URL for GitHub/GitLab push targets so the
@@ -57,10 +57,13 @@ function buildAuthenticatedCloneUrl(
   try {
     token = decryptToken(encryptedToken, adminAuthSecret);
   } catch (err) {
-    log.warn({ integrationType, cloneUrl: rawCloneUrl, err }, "failed to decrypt token for authenticated clone URL");
-    return undefined;
+    // Backward-compatibility: older rows may still contain raw PAT strings.
+    // Use the raw value as a last resort so private HTTPS clones keep working.
+    token = encryptedToken;
+    log.warn({ integrationType, cloneUrl: rawCloneUrl, err }, "failed to decrypt token for authenticated clone URL; falling back to raw token value");
   }
-  const usernamePrefix = integrationType === "github-pull-request" ? "x-access-token" : "oauth2";
+  if (/^\*{4,}$/.test(token)) return undefined;
+  const usernamePrefix = integrationType === "github" ? "x-access-token" : "oauth2";
   try {
     const normalised = rawCloneUrl.startsWith("git@")
       ? rawCloneUrl.replace(/^git@([^:]+):(.+?)(?:\.git)?$/, "https://$1/$2.git")
@@ -98,6 +101,8 @@ export interface ProjectModeDeps {
   };
   pluginManager: {
     getConnectorForIntegration<T>(integrationId: string): T | null;
+    getConnectorForCapability?<T>(integrationId: string, capability: import("../interfaces.js").DomainCapability): T | null;
+    createConnectorForCapability?<T>(integrationId: string, capability: import("../interfaces.js").DomainCapability, context?: IntegrationBindingContext): Promise<T | null>;
     createConnectorForIntegration?<T>(integrationId: string, context?: IntegrationBindingContext): Promise<T | null>;
     getActiveIntegrationById?(integrationId: string): import("../interfaces.js").Integration | null;
   };
@@ -172,15 +177,18 @@ export class Orchestrator {
     ticketSourceLabel: string
   ): Promise<void> {
     const ticketId = makeTicketId(ticket.id);
-    const existing = await this.stateStore.getTaskByTicketId(ticketId);
-    if (existing && existing.state !== "FAILED" && existing.state !== "ABANDONED" && existing.state !== "DONE") {
+    // Active-task identity is scoped by (project, ticket): two projects bound to
+    // different repos under the same integration may legitimately have tickets
+    // with the same number, and must not alias onto one another.
+    const existing = await this.stateStore.getActiveTaskByTicketId(ticketId, project.id);
+    if (existing) {
       log.info(
         { ticketId, existingTaskId: existing.taskId, state: existing.state, projectId: project.id },
         "project task already in progress, reusing existing task"
       );
       return;
     }
-    const failedAttempts = await this.stateStore.getFailedAttemptCount(ticketId, ticketSourceLabel);
+    const failedAttempts = await this.stateStore.getFailedAttemptCount(ticketId, ticketSourceLabel, project.id);
     if (failedAttempts >= this.config.maxRetryAttempts) {
       log.warn(
         { ticketId, source: ticketSourceLabel, failedAttempts, projectId: project.id },
@@ -191,7 +199,8 @@ export class Orchestrator {
 
     const taskId = makeTaskId(randomUUID());
     // Snapshot the ticket source on the task so it can be adopted by a future
-    // project if this project is later deleted.
+    // project if this project is later deleted. project_id is written atomically
+    // so the (project_id, ticket_id) active-uniqueness index applies at insert.
     const ticketSource = await this.projectMode?.projectStore.getProjectTicketSource(project.id);
     const task = await this.stateStore.createTask(
       taskId,
@@ -203,10 +212,9 @@ export class Orchestrator {
       ticket.id,
       ticketSource
         ? { integrationId: ticketSource.integrationId, ticketProjectKey: ticketSource.ticketProjectKey }
-        : undefined
+        : undefined,
+      project.id
     );
-    await this.stateStore.setTaskProjectId(task.taskId, project.id);
-    task.projectId = project.id;
     log.info(
       { taskId: task.taskId, ticketId, projectId: project.id, source: ticketSourceLabel },
       "created project-mode task"
@@ -225,6 +233,40 @@ export class Orchestrator {
       this.runWorkflow(task).catch((err: unknown) => {
         log.error({ taskId: task.taskId, err }, "unhandled error resuming task");
       });
+    }
+  }
+
+  /**
+   * Polling fallback for code-review tasks stuck in REVIEW_WATCHING.
+   * Queries the review system for the current change status and transitions
+   * to REVIEW_DONE (merged) or ABANDONED accordingly. This compensates for
+   * missed `change-merged` stream events when the Gerrit SSH connection drops.
+   */
+  async checkReviewWatchingTask(taskId: ReturnType<typeof makeTaskId>): Promise<void> {
+    const task = await this.stateStore.getTask(taskId);
+    if (!task || task.state !== "REVIEW_WATCHING" || !task.externalChangeId) {
+      return;
+    }
+    let reviewConnector: ReviewConnector;
+    try {
+      reviewConnector = await this.resolveReviewConnector(task);
+    } catch (err) {
+      log.warn({ taskId, err }, "checkReviewWatchingTask: could not resolve review connector — skipping");
+      return;
+    }
+    let status: string;
+    try {
+      status = await reviewConnector.getChangeStatus(task.externalChangeId);
+    } catch (err) {
+      log.warn({ taskId, changeId: task.externalChangeId, err }, "checkReviewWatchingTask: failed to fetch change status — staying REVIEW_WATCHING");
+      return;
+    }
+    if (status === "MERGED") {
+      log.info({ taskId, changeId: task.externalChangeId }, "checkReviewWatchingTask: change is MERGED — transitioning to REVIEW_DONE");
+      await this.stateStore.transition(taskId, "REVIEW_DONE");
+    } else if (status === "ABANDONED") {
+      log.info({ taskId, changeId: task.externalChangeId }, "checkReviewWatchingTask: change is ABANDONED — abandoning review task");
+      await this.handleAbandoned(task, "change was abandoned externally (poll)");
     }
   }
 
@@ -293,10 +335,20 @@ export class Orchestrator {
       log.info({ taskId: task.taskId, state: task.state }, "webhook merged: task terminal, ignoring");
       return;
     }
-    if (task.state !== "IN_REVIEW") {
-      log.info({ taskId: task.taskId, state: task.state }, "webhook merged: task not IN_REVIEW, ignoring");
+
+    // Code-review tasks wait in REVIEW_WATCHING after posting comments.
+    // When the patchset merges, close the review task immediately.
+    if (task.state === "REVIEW_WATCHING") {
+      log.info({ taskId: task.taskId, externalChangeId }, "webhook merged: marking review task REVIEW_DONE");
+      await this.stateStore.transition(task.taskId, "REVIEW_DONE");
       return;
     }
+
+    if (task.state !== "IN_REVIEW") {
+      log.info({ taskId: task.taskId, state: task.state }, "webhook merged: task not IN_REVIEW/REVIEW_WATCHING, ignoring");
+      return;
+    }
+
     log.info({ taskId: task.taskId, externalChangeId }, "webhook merged: closing ticket");
     const merged = await this.stateStore.transition(task.taskId, "MERGED");
     await this.closeTicket(merged);
@@ -383,12 +435,18 @@ export class Orchestrator {
     if (!ts) {
       throw new Error(`No ticket source configured for project ${task.projectId} (task ${task.taskId})`);
     }
-    const connector = this.projectMode.pluginManager.createConnectorForIntegration
-      ? await this.projectMode.pluginManager.createConnectorForIntegration<TicketConnector>(
+    const connector = this.projectMode.pluginManager.createConnectorForCapability
+      ? await this.projectMode.pluginManager.createConnectorForCapability<TicketConnector>(
         ts.integrationId,
+        "issue_tracking",
         { ticketProjectKey: ts.ticketProjectKey }
       )
-      : this.projectMode.pluginManager.getConnectorForIntegration<TicketConnector>(ts.integrationId);
+      : this.projectMode.pluginManager.createConnectorForIntegration
+        ? await this.projectMode.pluginManager.createConnectorForIntegration<TicketConnector>(
+          ts.integrationId,
+          { ticketProjectKey: ts.ticketProjectKey }
+        )
+        : this.projectMode.pluginManager.getConnectorForIntegration<TicketConnector>(ts.integrationId);
     if (!connector) {
       throw new Error(`Ticket source integration ${ts.integrationId} is not active (task ${task.taskId})`);
     }
@@ -400,19 +458,39 @@ export class Orchestrator {
     if (!task.projectId || !this.projectMode) {
       throw new Error(`Task ${task.taskId} is not project-bound; cannot resolve review connector`);
     }
-    // Try review config first (for review projects)
+    // Try review config first (for review projects). Resolve the `code_review`
+    // capability explicitly: a unified provider (e.g. github/gitlab) also exposes
+    // `issue_tracking`, and `getConnectorForIntegration` would return the issue
+    // connector first — which lacks `getChangeStatus`.
     const rc = await this.projectMode.projectStore.getProjectReviewConfig(task.projectId);
     if (rc) {
-      const connector = this.projectMode.pluginManager.getConnectorForIntegration<ReviewConnector>(rc.integrationId);
+      const connector = this.resolveReviewCapabilityConnector(rc.integrationId);
       if (connector) return connector;
     }
     // Fall back to push targets (for coding projects — the VCS connector often doubles as review)
     const pts = await this.projectMode.projectStore.listProjectPushTargets(task.projectId);
     for (const pt of pts) {
-      const connector = this.projectMode.pluginManager.getConnectorForIntegration<ReviewConnector>(pt.integrationId);
+      const connector = this.resolveReviewCapabilityConnector(pt.integrationId);
       if (connector) return connector;
     }
     throw new Error(`No active review connector found for project ${task.projectId} (task ${task.taskId})`);
+  }
+
+  /**
+   * Resolve a review-capable connector for an integration id. Prefers the
+   * explicit `code_review` capability so unified providers (github/gitlab) that
+   * also expose `issue_tracking` do not resolve to the issue connector, which
+   * lacks `getChangeStatus`. Falls back to `getConnectorForIntegration` only
+   * when the capability resolver is unavailable.
+   */
+  private resolveReviewCapabilityConnector(integrationId: string): ReviewConnector | null {
+    const pm = this.projectMode?.pluginManager;
+    if (!pm) return null;
+    if (pm.getConnectorForCapability) {
+      const byCapability = pm.getConnectorForCapability<ReviewConnector>(integrationId, "code_review");
+      if (byCapability) return byCapability;
+    }
+    return pm.getConnectorForIntegration<ReviewConnector>(integrationId);
   }
 
   /** Drive the state machine from the task's current state, dispatching to the appropriate step. */
@@ -475,10 +553,9 @@ export class Orchestrator {
     await this.runFromContextBuilding(task);
   }
 
-  /** Advance context-building to AGENT_RUNNING and kick off the first agent cycle. */
+  /** Advance context-building to the first agent cycle. */
   private async runFromContextBuilding(task: Task): Promise<void> {
-    const updatedTask = await this.stateStore.transition(task.taskId, "AGENT_RUNNING");
-    await this.runAgentCycle(updatedTask);
+    await this.runAgentCycle(task);
   }
 
   /** Execute one agent cycle: build context, invoke the agent, push changes, and advance state. */
@@ -493,6 +570,11 @@ export class Orchestrator {
       if (project) {
         const acquired = await this.projectMode.concurrencyTracker.acquire(project.id, project.agentId);
         if (!acquired) {
+          if (task.state === "AGENT_RUNNING") {
+            task = await this.stateStore.transition(task.taskId, "RETRY_CYCLE", {
+              reason: "waiting for available agent slot",
+            });
+          }
           log.info(
             { taskId: task.taskId, projectId: project.id, agentId: project.agentId },
             "ai adapter at capacity; retrying on next poll tick"
@@ -558,7 +640,7 @@ export class Orchestrator {
             const integration = await (this.integrationStore ?? (this.stateStore as unknown as IntegrationStore)).getIntegration(pt.integrationId);
             if (integration) {
               const cfg = JSON.parse(integration.configJson) as Record<string, unknown>;
-              const authUrl = buildAuthenticatedCloneUrl(pt.cloneUrl, integration.type, cfg["token"], this.config.adminAuthSecret);
+              const authUrl = buildAuthenticatedCloneUrl(pt.cloneUrl, integration.provider, cfg["token"], this.config.adminAuthSecret);
               if (authUrl !== undefined) return { ...pt, cloneUrl: authUrl };
             }
           } catch {

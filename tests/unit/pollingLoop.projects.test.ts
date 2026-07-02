@@ -46,6 +46,7 @@ function makeStore(): StateStore {
   return {
     getActiveTasks: vi.fn().mockResolvedValue([]),
     getTaskByTicketId: vi.fn().mockResolvedValue(null),
+    getActiveTaskByTicketId: vi.fn().mockResolvedValue(null),
     getFailedAttemptCount: vi.fn().mockResolvedValue(0),
     getChangesForTask: vi.fn().mockResolvedValue([]),
     isTaskPaused: vi.fn().mockResolvedValue(false),
@@ -89,12 +90,12 @@ describe("PollingLoop — Phase 4 project mode", () => {
     });
 
     const pluginManager = {
-      getConnectorForIntegration: vi.fn(<T,>(id: string): T | null => {
+      getConnectorForCapability: vi.fn(<T,>(id: string): T | null => {
         if (id === "int-a") return connectorA as unknown as T;
         if (id === "int-b") return connectorB as unknown as T;
         return null;
       }),
-    } as unknown as { getConnectorForIntegration<T>(id: string): T | null };
+    } as unknown as { getConnectorForCapability<T>(id: string): T | null };
 
     const orchestrator = makeOrchestrator();
     const loop = new PollingLoop(
@@ -107,8 +108,8 @@ describe("PollingLoop — Phase 4 project mode", () => {
     await loop.pollProjectTickets();
 
     expect(projectStore.listProjects).toHaveBeenCalledWith({ type: "coding", enabled: true });
-    expect(pluginManager.getConnectorForIntegration).toHaveBeenCalledWith("int-a");
-    expect(pluginManager.getConnectorForIntegration).toHaveBeenCalledWith("int-b");
+    expect(pluginManager.getConnectorForCapability).toHaveBeenCalledWith("int-a", "issue_tracking");
+    expect(pluginManager.getConnectorForCapability).toHaveBeenCalledWith("int-b", "issue_tracking");
     expect(connectorA.calls).toEqual([{ projectKey: "platform" }]);
     expect(connectorB.calls).toEqual([{ projectKey: "tools" }]);
     // Wait one microtask flush so the floating Promise.resolve().then(...) runs.
@@ -136,11 +137,11 @@ describe("PollingLoop — Phase 4 project mode", () => {
 
     const connector = makeRedmine();
     const pluginManager = {
-      getConnectorForIntegration: vi.fn(() => null),
-      createConnectorForIntegration: vi.fn(async <T,>(_id: string, _context?: { ticketProjectKey?: string }) => connector as unknown as T),
+      getConnectorForCapability: vi.fn(() => null),
+      createConnectorForCapability: vi.fn(async <T,>(_id: string, _capability: string, _context?: { ticketProjectKey?: string }) => connector as unknown as T),
     } as unknown as {
-      getConnectorForIntegration<T>(id: string): T | null;
-      createConnectorForIntegration?<T>(id: string, context?: { ticketProjectKey?: string }): Promise<T | null>;
+      getConnectorForCapability<T>(id: string): T | null;
+      createConnectorForCapability?<T>(id: string, capability: string, context?: { ticketProjectKey?: string }): Promise<T | null>;
     };
 
     const loop = new PollingLoop(
@@ -152,10 +153,10 @@ describe("PollingLoop — Phase 4 project mode", () => {
 
     await loop.pollProjectTickets();
 
-    expect(pluginManager.createConnectorForIntegration).toHaveBeenCalledWith("gitlab-int", {
+    expect(pluginManager.createConnectorForCapability).toHaveBeenCalledWith("gitlab-int", "issue_tracking", {
       ticketProjectKey: "group/platform",
     });
-    expect(pluginManager.getConnectorForIntegration).not.toHaveBeenCalled();
+    expect(pluginManager.getConnectorForCapability).not.toHaveBeenCalled();
     expect(connector.calls).toEqual([{ projectKey: "group/platform" }]);
   });
 
@@ -166,7 +167,7 @@ describe("PollingLoop — Phase 4 project mode", () => {
       getProjectTicketSource: vi.fn(async () => null),
       getProjectReviewConfig: vi.fn(async () => null),
     };
-    const pluginManager = { getConnectorForIntegration: vi.fn(() => null) } as unknown as { getConnectorForIntegration<T>(id: string): T | null };
+    const pluginManager = { getConnectorForCapability: vi.fn(() => null) } as unknown as { getConnectorForCapability<T>(id: string): T | null };
     const orchestrator = makeOrchestrator();
     const loop = new PollingLoop(
       { ticketIntervalMs: 60000, maxRetryAttempts: 3 },
@@ -197,14 +198,50 @@ describe("PollingLoop — Phase 4 project mode", () => {
     (connector.getAssignedTickets as ReturnType<typeof vi.fn>).mockResolvedValue([
       { id: "42", subject: "X", description: "", status: "open", assigneeId: 1, projectId: 1, customFields: {} },
     ]);
-    const pluginManager = { getConnectorForIntegration: vi.fn(() => connector) } as unknown as { getConnectorForIntegration<T>(id: string): T | null };
+    const pluginManager = { getConnectorForCapability: vi.fn(() => connector) } as unknown as { getConnectorForCapability<T>(id: string): T | null };
     const orchestrator = makeOrchestrator();
 
     const store = makeStore();
-    (store.getTaskByTicketId as ReturnType<typeof vi.fn>).mockResolvedValue({
+    (store.getActiveTaskByTicketId as ReturnType<typeof vi.fn>).mockResolvedValue({
       taskId: "t-1",
       ticketId: "42",
       state: "AGENT_RUNNING",
+    });
+
+    const loop = new PollingLoop(
+      { ticketIntervalMs: 60000, maxRetryAttempts: 3 },
+      orchestrator,
+      store,
+      { projectStore, pluginManager }
+    );
+
+    await loop.pollProjectTickets();
+    await new Promise((r) => setImmediate(r));
+    expect(orchestrator.startTaskForProject).not.toHaveBeenCalled();
+  });
+
+  it("skips ticket when an active task coexists with a newer FAILED task", async () => {
+    const projectStore = {
+      listProjects: vi.fn(async () => [makeProject({ id: "p-1", type: "coding" })]),
+      getProjectTicketSource: vi.fn(async () => ({
+        id: 1, projectId: "p-1" as ProjectId, integrationId: "int-1", ticketProjectKey: "", createdAt: new Date(),
+      })),
+      getProjectReviewConfig: vi.fn(async () => null),
+    };
+    const connector = makeRedmine();
+    (connector.getAssignedTickets as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { id: "1993", subject: "X", description: "", status: "open", assigneeId: 1, projectId: 1, customFields: {} },
+    ]);
+    const pluginManager = { getConnectorForCapability: vi.fn(() => connector) } as unknown as { getConnectorForCapability<T>(id: string): T | null };
+    const orchestrator = makeOrchestrator();
+
+    const store = makeStore();
+    // Newest task by createdAt is FAILED, but an older task is still active.
+    (store.getTaskByTicketId as ReturnType<typeof vi.fn>).mockResolvedValue({
+      taskId: "t-failed", ticketId: "1993", state: "FAILED",
+    });
+    (store.getActiveTaskByTicketId as ReturnType<typeof vi.fn>).mockResolvedValue({
+      taskId: "t-active", ticketId: "1993", state: "AGENT_RUNNING",
     });
 
     const loop = new PollingLoop(
@@ -231,7 +268,7 @@ describe("PollingLoop — Phase 4 project mode", () => {
     (connector.getAssignedTickets as ReturnType<typeof vi.fn>).mockResolvedValue([
       { id: "42", subject: "Retry me", description: "", status: "open", assigneeId: 1, projectId: 1, customFields: {} },
     ]);
-    const pluginManager = { getConnectorForIntegration: vi.fn(() => connector) } as unknown as { getConnectorForIntegration<T>(id: string): T | null };
+    const pluginManager = { getConnectorForCapability: vi.fn(() => connector) } as unknown as { getConnectorForCapability<T>(id: string): T | null };
     const orchestrator = makeOrchestrator();
 
     const store = makeStore();
@@ -266,7 +303,7 @@ describe("PollingLoop — Phase 4 project mode", () => {
       (connector.getAssignedTickets as ReturnType<typeof vi.fn>).mockResolvedValue([
         { id: "42", subject: "X", description: "", status: "open", assigneeId: 1, projectId: 1, customFields: {} },
       ]);
-      const pluginManager = { getConnectorForIntegration: vi.fn(() => connector) } as unknown as { getConnectorForIntegration<T>(id: string): T | null };
+      const pluginManager = { getConnectorForCapability: vi.fn(() => connector) } as unknown as { getConnectorForCapability<T>(id: string): T | null };
       const orchestrator = makeOrchestrator();
 
       const store = makeStore();

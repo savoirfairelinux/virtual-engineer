@@ -63,8 +63,8 @@ The admin server is a small HTTP service (default `127.0.0.1:3100`) that serves 
 | `POST` | `/api/admin/prompts` | Create custom prompt. |
 | `PUT` | `/api/admin/prompts/:id` | Update prompt. |
 | `DELETE` | `/api/admin/prompts/:id` | Delete prompt (`system` / `instructions` are protected). |
-| `GET` | `/api/admin/integrations` | List integrations with masked secrets plus derived descriptor capabilities for capability-driven dashboard selectors. Legacy GitLab rows created before `authMode` existed are serialized back to the dashboard as `authMode = "pat"` for edit-form compatibility. |
-| `GET` | `/api/admin/integrations/by-category` | Grouped integration view used by the dashboard. |
+| `GET` | `/api/admin/integrations` | List integrations with masked secrets. Each row exposes `provider`, derived `capabilities`, and `domainCapabilities` (no `type` / `category`) for capability-driven dashboard selectors. Legacy GitLab rows created before `authMode` existed are serialized back to the dashboard as `authMode = "pat"` for edit-form compatibility. |
+| `GET` | `/api/admin/integrations/by-category` | Grouped integration view used by the dashboard; groups are now keyed by **domain capability** (resolved from each provider descriptor). |
 | `POST` | `/api/admin/integrations` | Create integration. OAuth-backed providers can be created as drafts with no token; the dashboard writes the hidden OAuth token field only after the configured OAuth flow completes. |
 | `GET` | `/api/admin/integrations/:id` | Integration detail. |
 | `PUT` | `/api/admin/integrations/:id` | Update integration; omitted/masked secrets are restored from the stored row. A changed config clears the discovery cache so stale repos/projects are re-fetched on next discover. |
@@ -72,6 +72,7 @@ The admin server is a small HTTP service (default `127.0.0.1:3100`) that serves 
 | `POST` | `/api/admin/integrations/test` | Validate unsaved integration config. |
 | `POST` | `/api/admin/integrations/:id/test` | Validate saved integration config. |
 | `POST` | `/api/admin/integrations/:id/discover` | Refresh discovery cache (repos, projects, models, etc.). GitHub repo discovery is token-centric (`/user/repos`, filtered to the configured owner) so only repos the token can actually access are listed. |
+| `GET` | `/api/admin/integrations/:id/branches?repoKey=…` | On-demand branch discovery for one repository (used by the project push-target / review forms). Requires a `repoKey` query param (URL-encoded, may contain `/`). Resolves the provider descriptor's `discoverBranches` hook (Gerrit / GitLab / GitHub); decrypts password config fields before invoking it. `400` when `repoKey` is missing or the provider has no `discoverBranches`, `404` for unknown integrations, `502` on upstream failure. Not cached. |
 | `GET` | `/api/admin/integrations/:id/models` | Return cached discovered models. |
 | `PATCH` | `/api/admin/integrations/:id/enable` | Enable integration. |
 | `PATCH` | `/api/admin/integrations/:id/disable` | Disable integration. |
@@ -93,7 +94,7 @@ The admin server is a small HTTP service (default `127.0.0.1:3100`) that serves 
 | `DELETE` | `/api/admin/projects/:id` | Delete project and linked child rows. |
 | `PATCH` | `/api/admin/projects/:id/enable` | Enable project. If it was previously disabled, its `FAILED`/`REVIEW_FAILED` tasks are relaunched automatically. |
 | `PATCH` | `/api/admin/projects/:id/disable` | Disable project. |
-| `GET` / `PUT` | `/api/admin/concurrency` | Read/update global concurrency plus live in-memory snapshot. `PUT` accepts `{ global: number | null }` (numeric strings are coerced server-side). |
+| `GET` / `PUT` | `/api/admin/concurrency` | Read/update global concurrency plus live in-memory snapshot. `PUT` accepts `{ global: number \| null }` (numeric strings are coerced server-side). |
 
 ## Authentication
 
@@ -110,7 +111,7 @@ The admin server never returns plaintext password-like fields. On `PUT`, values 
 
 - The configuration UI validates unsaved integration state through `POST /api/admin/integrations/test`.
 - The Providers view renders one card per active integration rather than collapsing everything into a single card per provider type.
-- Integration forms are descriptor-driven. The add-integration modal filters available plugin types by descriptor capabilities, with the legacy single-category field kept only as a fallback for older descriptors.
+- Integration forms are descriptor-driven. The add-integration modal picks a **provider** (not a role) and filters available providers by descriptor domain capabilities. Saved integrations are grouped into a single provider-grouped **Integrations** section with capability badges (`renderCapabilityBadges` over `domainCapabilities`); the former type-centric Tickets / Code Review / Agents nav sections were collapsed away.
 - Integration forms collect both regular inputs and descriptor-backed `select` fields, but only when those controls are currently visible. Fields hidden behind `dependsOn` are skipped during test/save payload generation, which is required for safe OAuth/PAT fallback UX.
 - When a descriptor exposes OAuth metadata, the dashboard renders a provider auth section without hardcoding the integration type and dispatches by `oauth.mode`. Device flows still render the code-entry panel, while redirect flows collect the currently visible config fields, generate a client-side `state` plus PKCE `codeVerifier`/`codeChallenge`, and may resolve additional provider config before calling `startPath`. GitLab uses that hook to look up the matching OAuth app client id from `/api/admin/gitlab-oauth-apps/resolve`, so user-facing GitLab integration forms only need the base URL plus runtime token state. The popup then returns to the admin origin and finishes through `completePath` with the same `redirectUri` only if the returned `state` matches. When editing an existing integration, the server restores masked stored secrets before creating the provider handler, so operators do not need to retype unchanged hidden credentials just to reconnect. OAuth sections can themselves be gated by `dependsOn`, so a future `authMode = oauth | pat` selector can hide or reveal them cleanly. Copilot currently uses the device path for GitHub auth and stores the hidden `sessionToken` field only after the flow completes.
 - GitLab Add Integration forms are now provider-scoped only: they no longer ask for GitLab project IDs or GitLab workflow label settings. For coding projects, the GitLab issue project is selected in the Project modal's Ticket Source section; for GitLab MR/VCS flows, the target GitLab project comes from the selected repository entries in the Project modal.
@@ -118,10 +119,20 @@ The admin server never returns plaintext password-like fields. On `PUT`, values 
 - The GitLab image proxy (`GET /api/admin/img-proxy`) now uses the same Bearer token contract as the main GitLab connectors, so OAuth-backed GitLab integrations can still render proxied GitLab-hosted assets in the admin UI.
 - Successful Copilot tests and discovery refreshes populate cached model choices that the Agents UI reads via `/api/admin/integrations/:id/models`.
 - Stream-capable integration details surface live runtime state (connection state, last event, reconnect count, last error) whenever the descriptor exposes `streamEvents`; Gerrit is the current implementation.
-- Agent and project modals filter persisted integrations by derived capabilities, with legacy `category` kept only as a fallback. Coding projects therefore choose ticket sources from `ticketing` integrations and push targets from `vcs` integrations, while review projects choose review targets from `review` integrations.
+- Agent and project modals filter persisted integrations by derived `domainCapabilities`. Coding projects choose ticket sources from `issue_tracking` integrations and push targets from `source_control` integrations, while review projects choose review targets from `code_review` integrations. Project summaries serialize each bound integration as `{ id, name, provider, domainCapabilities }`.
+- Project review-repository selection is discovery-driven and now includes client-side search plus `Select all` / `Unselect all` actions on the currently visible repository subset.
+- Projects can now be edited from both the Projects list row action and the Project detail drawer. The edit flow loads `/api/admin/projects/:id`, pre-fills project-specific fields, and persists changes through `PUT /api/admin/projects/:id`.
 - Prompts are managed under Configuration rather than a separate top-level page.
-- The Tasks view streams live agent events backed by `agent_cycles.agent_events` and the in-memory event bus.
+- The Tasks view streams live agent events backed by `agent_cycles.agent_events` and the in-memory event bus; log filters are `All`, `Tools`, `Usage`, `Errors`.
+- Live log ingestion de-duplicates overlapping SSE replay sources (persisted cycle history, in-memory task buffer, and reconnect replays) so reconnects do not render duplicate rows.
+- Live log rows render structured `data` payloads as formatted JSON blocks (instead of single-line raw serialization) when the payload is object/array-shaped.
+- Task rows and task details expose a single primary ticket/review link on the source identifier; detail headers avoid duplicate secondary link controls, while per-repository review links are still shown from `changesPerRepo` when available.
+- Task detail footer badges now show compact task/review identifiers (`displayId` / `gerritChangeId`) instead of full internal task ids.
 - Task origin badges in the Tasks list/details abbreviate GitHub pull-request sources as `GITHUB-PR` (instead of `GITHUB-PULL-REQUEST`) for compact readability.
+- Top-bar and overview provider counters are integration-driven (enabled integrations), avoiding the extra runtime-provider card count used by `/api/admin/providers`.
+- Overview throughput labeling now includes the dynamic polling window (`last N ticks (~Xm)`), derived from the current polling interval.
+- System Settings now prioritize live runtime/status values (polling state/interval, env, log level, cycle/retry limits) with configured values shown separately for comparison.
+- Desktop drawers use a push layout that shifts the main app left so the right drawer does not cover the working content area.
 
 The supported server-side model is `projects` / `project_*`. There are no `/api/admin/repository-sets` routes.
 

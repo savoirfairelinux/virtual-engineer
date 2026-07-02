@@ -6,9 +6,25 @@ import type {
   AgentResult,
   IntegrationStore,
   Integration,
-  IntegrationType,
+  ProviderId,
+  DomainCapability,
   TaskContext,
 } from "../../src/interfaces.js";
+
+const PROVIDER_CAPABILITY: Record<ProviderId, DomainCapability> = {
+  redmine: "issue_tracking",
+  gerrit: "code_review",
+  gitlab: "issue_tracking",
+  github: "issue_tracking",
+  mock: "agent_execution",
+  copilot: "agent_execution",
+};
+
+function activeConnector<T>(mgr: PluginManager, provider: ProviderId): T | null {
+  const integration = mgr.getActiveIntegrationsByProvider(provider)[0];
+  if (!integration) return null;
+  return mgr.getConnectorForCapability<T>(integration.id, PROVIDER_CAPABILITY[provider]);
+}
 
 function makeStore(initial: Integration[] = []): IntegrationStore {
   const data = new Map<string, Integration>();
@@ -35,7 +51,7 @@ function makeStore(initial: Integration[] = []): IntegrationStore {
   };
 }
 
-function makeIntegration(overrides: Partial<Integration> & { id: string; type: IntegrationType }): Integration {
+function makeIntegration(overrides: Partial<Integration> & { id: string; provider: ProviderId }): Integration {
   return {
     name: overrides.id,
     configJson: "{}",
@@ -73,26 +89,27 @@ describe("PluginManager — Phase 4 multi-instance", () => {
     const store = makeStore([
       makeIntegration({
         id: "redmine-a",
-        type: "redmine",
+        provider: "redmine",
         configJson: JSON.stringify({ baseUrl: "http://r-a:3000", apiKey: "k", virtualEngineerUserLogin: "ve" }),
       }),
       makeIntegration({
         id: "copilot-a",
-        type: "copilot",
+        provider: "copilot",
         configJson: JSON.stringify({ apiKey: "tok" }),
       }),
     ]);
 
-    const redmineInstance = makeAgentInstance("redmine-instance");
     const copilotInstance = makeAgentInstance("copilot-instance");
 
     const mgr = new PluginManager(store);
-    mgr.registerFactory("redmine", vi.fn(() => redmineInstance));
+    // Factories are honoured only for agent_execution providers (e.g. copilot).
     mgr.registerFactory("copilot", vi.fn(() => copilotInstance));
 
     await mgr.loadFromDatabase();
 
-    expect(mgr.getConnectorForIntegration("redmine-a")).toBe(redmineInstance);
+    // Issue-tracking connector is built from the descriptor (no factory needed).
+    expect(mgr.getConnectorForIntegration("redmine-a")).not.toBeNull();
+    // Agent-execution provider resolves to the registered factory instance.
     expect(mgr.getConnectorForIntegration("copilot-a")).toBe(copilotInstance);
     expect(mgr.getConnectorForIntegration("does-not-exist")).toBeNull();
   });
@@ -102,39 +119,35 @@ describe("PluginManager — Phase 4 multi-instance", () => {
     const store = makeStore([
       makeIntegration({
         id: "redmine-1",
-        type: "redmine",
+        provider: "redmine",
         configJson: JSON.stringify({ baseUrl: "http://r:3000", apiKey: "k", virtualEngineerUserLogin: "ve" }),
       }),
       makeIntegration({
         id: "gitlab-1",
-        type: "gitlab-issue",
+        provider: "gitlab",
         configJson: JSON.stringify({ baseUrl: "https://gl", projectId: "1", token: "t", inProgressLabel: "In Progress", inReviewLabel: "In Review" }),
       }),
     ]);
 
-    const redmineInstance = makeAgentInstance("redmine");
-    const gitlabInstance = makeAgentInstance("gitlab");
     const mgr = new PluginManager(store);
-    mgr.registerFactory("redmine", vi.fn(() => redmineInstance));
-    mgr.registerFactory("gitlab-issue", vi.fn(() => gitlabInstance));
 
     await mgr.loadFromDatabase();
 
     // No auto-disable: both stay enabled in the store.
     expect(store.setIntegrationEnabled).not.toHaveBeenCalled();
-    // Both resolvable by id.
-    expect(mgr.getConnectorForIntegration("redmine-1")).toBe(redmineInstance);
-    expect(mgr.getConnectorForIntegration("gitlab-1")).toBe(gitlabInstance);
+    // Both resolvable by id (built from their descriptors).
+    expect(mgr.getConnectorForIntegration("redmine-1")).not.toBeNull();
+    expect(mgr.getConnectorForIntegration("gitlab-1")).not.toBeNull();
     // Per-type lookup also works.
-    expect(mgr.getActiveConnector("redmine")).toBe(redmineInstance);
-    expect(mgr.getActiveConnector("gitlab-issue")).toBe(gitlabInstance);
+    expect(activeConnector(mgr, "redmine")).not.toBeNull();
+    expect(activeConnector(mgr, "gitlab")).not.toBeNull();
   });
 
   it("keeps multiple Gerrit integrations of the same type addressable by integration id", async () => {
     const store = makeStore([
       makeIntegration({
         id: "gerrit-a",
-        type: "gerrit",
+        provider: "gerrit",
         configJson: JSON.stringify({
           sshHost: "gerrit-a.example.com",
           sshPort: 29418,
@@ -144,7 +157,7 @@ describe("PluginManager — Phase 4 multi-instance", () => {
       }),
       makeIntegration({
         id: "gerrit-b",
-        type: "gerrit",
+        provider: "gerrit",
         configJson: JSON.stringify({
           sshHost: "gerrit-b.example.com",
           sshPort: 29418,
@@ -154,29 +167,23 @@ describe("PluginManager — Phase 4 multi-instance", () => {
       }),
     ]);
 
-    const gerritA = makeAgentInstance("gerrit-a");
-    const gerritB = makeAgentInstance("gerrit-b");
-    const instanceMap: Record<string, ReturnType<typeof makeAgentInstance>> = {
-      "gerrit-a": gerritA,
-      "gerrit-b": gerritB,
-    };
-    const factory = vi.fn((_config: unknown, integration: Integration) => instanceMap[integration.id] ?? gerritA);
-
     const mgr = new PluginManager(store);
-    mgr.registerFactory("gerrit", factory);
 
     await mgr.loadFromDatabase();
 
-    expect(factory).toHaveBeenCalledTimes(2);
-    expect(mgr.getConnectorForIntegration("gerrit-a")).toBe(gerritA);
-    expect(mgr.getConnectorForIntegration("gerrit-b")).toBe(gerritB);
+    // Each Gerrit integration builds its own code_review connector instance.
+    const connectorA = mgr.getConnectorForIntegration("gerrit-a");
+    const connectorB = mgr.getConnectorForIntegration("gerrit-b");
+    expect(connectorA).not.toBeNull();
+    expect(connectorB).not.toBeNull();
+    expect(connectorA).not.toBe(connectorB);
     expect(mgr.isIntegrationActive("gerrit-a")).toBe(true);
     expect(mgr.isIntegrationActive("gerrit-b")).toBe(true);
-    expect(mgr.getActiveIntegrationsByType("gerrit").map((integration) => integration.id).sort()).toEqual([
+    expect(mgr.getActiveIntegrationsByProvider("gerrit").map((integration) => integration.id).sort()).toEqual([
       "gerrit-a",
       "gerrit-b",
     ]);
-    expect(mgr.getActiveIntegrationsByCategory("review").map((integration) => integration.id).sort()).toEqual([
+    expect(mgr.getActiveIntegrationsByCapability("code_review").map((integration) => integration.id).sort()).toEqual([
       "gerrit-a",
       "gerrit-b",
     ]);
@@ -186,12 +193,12 @@ describe("PluginManager — Phase 4 multi-instance", () => {
     const store = makeStore([
       makeIntegration({
         id: "copilot-a",
-        type: "copilot",
+        provider: "copilot",
         configJson: JSON.stringify({ apiKey: "tok-a" }),
       }),
       makeIntegration({
         id: "copilot-b",
-        type: "copilot",
+        provider: "copilot",
         configJson: JSON.stringify({ apiKey: "tok-b" }),
       }),
     ]);
@@ -214,7 +221,7 @@ describe("PluginManager — Phase 4 multi-instance", () => {
     const store = makeStore([
       makeIntegration({
         id: "copilot-configured",
-        type: "copilot",
+        provider: "copilot",
         configJson: JSON.stringify({
           sessionToken: "tok-a",
           model: "gpt-5.4",
@@ -241,23 +248,23 @@ describe("PluginManager — Phase 4 multi-instance", () => {
     const store = makeStore([
       makeIntegration({
         id: "redmine-1",
-        type: "redmine",
+        provider: "redmine",
         configJson: JSON.stringify({ baseUrl: "http://r:3000", apiKey: "k", virtualEngineerUserLogin: "ve" }),
       }),
       makeIntegration({
         id: "gitlab-1",
-        type: "gitlab-issue",
+        provider: "gitlab",
         configJson: JSON.stringify({ baseUrl: "https://gl", projectId: "1", token: "t", inProgressLabel: "In Progress", inReviewLabel: "In Review" }),
       }),
     ]);
 
     const mgr = new PluginManager(store);
     mgr.registerFactory("redmine", vi.fn(() => makeAgentInstance("r")));
-    mgr.registerFactory("gitlab-issue", vi.fn(() => makeAgentInstance("g")));
+    mgr.registerFactory("gitlab", vi.fn(() => makeAgentInstance("g")));
 
     await mgr.loadFromDatabase();
 
-    const issues = mgr.getActiveIntegrationsByCategory("ticketing");
+    const issues = mgr.getActiveIntegrationsByCapability("issue_tracking");
     const ids = issues.map((i) => i.id).sort();
     expect(ids).toEqual(["gitlab-1", "redmine-1"]);
   });

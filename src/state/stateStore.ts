@@ -117,6 +117,36 @@ export class SqliteStateStore {
         created_at          INTEGER NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS posted_review_comments (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        task_id             TEXT    NOT NULL REFERENCES tasks(task_id),
+        change_id           TEXT    NOT NULL,
+        comment_hash        TEXT    NOT NULL,
+        file                TEXT    NOT NULL,
+        line                INTEGER NOT NULL DEFAULT 0,
+        message             TEXT    NOT NULL DEFAULT '',
+        severity            TEXT    NOT NULL DEFAULT '',
+        provider_thread_id  TEXT,
+        resolved            INTEGER NOT NULL DEFAULT 0,
+        created_at          INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_posted_review_comments_task_id ON posted_review_comments(task_id);
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_posted_review_comments_task_hash
+        ON posted_review_comments(task_id, comment_hash);
+
+      CREATE TABLE IF NOT EXISTS review_thread_replies (
+        id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+        task_id               TEXT    NOT NULL REFERENCES tasks(task_id),
+        change_id             TEXT    NOT NULL,
+        thread_id             TEXT    NOT NULL,
+        handled_comment_hash  TEXT    NOT NULL,
+        reply_message         TEXT    NOT NULL DEFAULT '',
+        created_at            INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_review_thread_replies_task_id ON review_thread_replies(task_id);
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_review_thread_replies_task_thread_hash
+        ON review_thread_replies(task_id, thread_id, handled_comment_hash);
+
       CREATE INDEX IF NOT EXISTS idx_tasks_ticket_id ON tasks(ticket_id);
       CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_active_ticket_id ON tasks(ticket_id)
         WHERE state NOT IN ('DONE', 'FAILED', 'ABANDONED', 'REVIEW_DONE', 'REVIEW_FAILED');
@@ -126,7 +156,7 @@ export class SqliteStateStore {
 
       CREATE TABLE IF NOT EXISTS integrations (
         id          TEXT    PRIMARY KEY,
-        type        TEXT    NOT NULL,
+        provider    TEXT    NOT NULL,
         name        TEXT    NOT NULL,
         config_json TEXT    NOT NULL,
         enabled     INTEGER NOT NULL DEFAULT 1,
@@ -203,19 +233,21 @@ export class SqliteStateStore {
       CREATE INDEX IF NOT EXISTS idx_projects_name ON projects(name);
       CREATE INDEX IF NOT EXISTS idx_projects_enabled ON projects(enabled);
 
-      CREATE TABLE IF NOT EXISTS project_ticket_source (
-        id                 INTEGER PRIMARY KEY AUTOINCREMENT,
-        project_id         TEXT    NOT NULL REFERENCES projects(id),
-        integration_id     TEXT    NOT NULL REFERENCES integrations(id),
-        ticket_project_key TEXT    NOT NULL,
-        created_at         INTEGER NOT NULL
+      CREATE TABLE IF NOT EXISTS project_integration_bindings (
+        id             TEXT    PRIMARY KEY,
+        project_id     TEXT    NOT NULL REFERENCES projects(id),
+        integration_id TEXT    NOT NULL REFERENCES integrations(id),
+        capability     TEXT    NOT NULL,
+        config_json    TEXT    NOT NULL DEFAULT '{}',
+        created_at     INTEGER NOT NULL,
+        updated_at     INTEGER NOT NULL
       );
-      CREATE UNIQUE INDEX IF NOT EXISTS uq_project_ticket_source_global
-        ON project_ticket_source(integration_id, ticket_project_key);
-      CREATE UNIQUE INDEX IF NOT EXISTS uq_project_ticket_source_project
-        ON project_ticket_source(project_id);
-      CREATE INDEX IF NOT EXISTS idx_pts_project_id
-        ON project_ticket_source(project_id);
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_pib_project_capability
+        ON project_integration_bindings(project_id, capability);
+      CREATE INDEX IF NOT EXISTS idx_pib_project_id
+        ON project_integration_bindings(project_id);
+      CREATE INDEX IF NOT EXISTS idx_pib_capability
+        ON project_integration_bindings(capability);
 
       CREATE TABLE IF NOT EXISTS project_push_targets (
         id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -238,20 +270,6 @@ export class SqliteStateStore {
       CREATE INDEX IF NOT EXISTS idx_ppt_project_id
         ON project_push_targets(project_id);
 
-      CREATE TABLE IF NOT EXISTS project_review_integration (
-        project_id     TEXT    PRIMARY KEY REFERENCES projects(id),
-        integration_id TEXT    NOT NULL REFERENCES integrations(id)
-      );
-
-      CREATE TABLE IF NOT EXISTS project_review_repos (
-        id             INTEGER PRIMARY KEY AUTOINCREMENT,
-        project_id     TEXT    NOT NULL REFERENCES projects(id),
-        repo_key       TEXT    NOT NULL,
-        UNIQUE(project_id, repo_key)
-      );
-      CREATE INDEX IF NOT EXISTS idx_prr_project_id
-        ON project_review_repos(project_id);
-
       CREATE TABLE IF NOT EXISTS app_concurrency (
         id             TEXT    PRIMARY KEY CHECK (id = 'global'),
         max_concurrent INTEGER,
@@ -271,6 +289,14 @@ export class SqliteStateStore {
     this.ensureColumn("change_per_repository", "commit_index", "INTEGER NOT NULL DEFAULT 0");
     this.ensureColumn("change_per_repository", "subject_hash", "TEXT");
     this.ensureColumn("agent_cycles", "agent_events", "TEXT");
+    this.ensureColumn("agent_cycles", "cost_ai_credits", "REAL");
+    this.ensureColumn("agent_cycles", "cost_usd", "REAL");
+    this.ensureColumn("agent_cycles", "premium_requests", "REAL");
+    this.ensureColumn("agent_cycles", "cost_input_tokens", "INTEGER");
+    this.ensureColumn("agent_cycles", "cost_output_tokens", "INTEGER");
+    this.ensureColumn("agent_cycles", "cost_cached_tokens", "INTEGER");
+    this.ensureColumn("agent_cycles", "cost_cache_write_tokens", "INTEGER");
+    this.ensureColumn("agent_cycles", "cost_model_id", "TEXT");
     this.ensureColumn("integrations", "discovered_resources_json", "TEXT");
     this.ensureColumn("integrations", "discovered_at", "INTEGER");
     this.ensureColumn("tasks", "project_id", "TEXT");
@@ -300,8 +326,14 @@ export class SqliteStateStore {
 
     this.raw.exec(`
       DROP INDEX IF EXISTS idx_tasks_active_ticket_id;
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_active_ticket_id ON tasks(ticket_id)
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_active_ticket_id ON tasks(project_id, ticket_id)
         WHERE state NOT IN ('DONE', 'FAILED', 'ABANDONED', 'REVIEW_DONE', 'REVIEW_FAILED');
+      -- SQLite treats NULLs as distinct, so the composite index above does not
+      -- constrain project-less rows. A second partial index enforces one active
+      -- task per ticket for the no-project (legacy/single-instance) case.
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_active_ticket_id_noproject ON tasks(ticket_id)
+        WHERE project_id IS NULL
+          AND state NOT IN ('DONE', 'FAILED', 'ABANDONED', 'REVIEW_DONE', 'REVIEW_FAILED');
     `);
   }
 

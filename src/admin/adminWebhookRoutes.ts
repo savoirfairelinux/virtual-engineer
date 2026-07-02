@@ -33,7 +33,7 @@ export function registerWebhookRoutes(router: Router, deps: WebhookRouteDeps): v
     try {
       await deps.integrationStore.upsertIntegration({
         id: integration.id,
-        type: integration.type,
+        provider: integration.provider,
         name: integration.name,
         configJson: JSON.stringify(parsed),
         enabled: integration.enabled,
@@ -79,7 +79,7 @@ export function registerWebhookRoutes(router: Router, deps: WebhookRouteDeps): v
     try {
       await deps.integrationStore.upsertIntegration({
         id: integration.id,
-        type: integration.type,
+        provider: integration.provider,
         name: integration.name,
         configJson: JSON.stringify(parsed),
         enabled: integration.enabled,
@@ -125,13 +125,13 @@ export function registerWebhookRoutes(router: Router, deps: WebhookRouteDeps): v
         secretConfigured = typeof v === "string" && v.length > 0;
       }
     } catch { /* secretConfigured stays false */ }
-    const events = listSupportedEvents(integration.type);
+    const events = listSupportedEvents(integration.provider);
     const hostHeader = req.headers.host ?? "127.0.0.1";
     const base = deps.webhookPublicBaseUrl ?? `http://${hostHeader}`;
     const sample = events[0] ?? "<event>";
     writeJson(res, 200, {
       integrationId: integration.id,
-      integrationType: integration.type,
+      integrationType: integration.provider,
       url: `${base.replace(/\/$/, "")}/webhooks/${encodeURIComponent(integration.id)}/${encodeURIComponent(sample)}`,
       urlTemplate: `${base.replace(/\/$/, "")}/webhooks/${encodeURIComponent(integration.id)}/:event`,
       events,

@@ -19,9 +19,9 @@ import { GerritVcsConnector } from "../../src/vcs/gerritVcsConnector.js";
 import { GitLabVcsConnector } from "../../src/vcs/gitlabVcsConnector.js";
 import type { Integration } from "../../src/interfaces.js";
 
-function makeIntegration(overrides: Partial<Integration> & { id: string; type: Integration["type"]; configJson: string }): Integration {
+function makeIntegration(overrides: Partial<Integration> & { id: string; provider: Integration["provider"]; configJson: string }): Integration {
   return {
-    name: overrides.type,
+    name: overrides.provider,
     enabled: true,
     createdAt: new Date(),
     updatedAt: new Date(),
@@ -45,7 +45,7 @@ describe("createVcsConnectorForIntegration", () => {
   describe("Gerrit integration", () => {
     const gerritIntegration = makeIntegration({
       id: "gerrit-1",
-      type: "gerrit",
+      provider: "gerrit",
       configJson: JSON.stringify({
         sshHost: "gerrit.local",
         sshPort: 29418,
@@ -64,7 +64,7 @@ describe("createVcsConnectorForIntegration", () => {
     it("throws when sshHost is missing", () => {
       const integration = makeIntegration({
         id: "gerrit-bad",
-        type: "gerrit",
+        provider: "gerrit",
         configJson: JSON.stringify({ sshUser: "ve-bot", sshKeyPath: "/keys/id_rsa" }),
       });
       expect(() => createVcsConnectorForIntegration(integration)).toThrow(
@@ -75,7 +75,7 @@ describe("createVcsConnectorForIntegration", () => {
     it("throws when sshUser is missing", () => {
       const integration = makeIntegration({
         id: "gerrit-bad",
-        type: "gerrit",
+        provider: "gerrit",
         configJson: JSON.stringify({ sshHost: "gerrit.local", sshKeyPath: "/keys/id_rsa" }),
       });
       expect(() => createVcsConnectorForIntegration(integration)).toThrow(
@@ -86,7 +86,7 @@ describe("createVcsConnectorForIntegration", () => {
     it("uses default sshKeyPath when sshKeyPath is missing", () => {
       const integration = makeIntegration({
         id: "gerrit-no-key",
-        type: "gerrit",
+        provider: "gerrit",
         configJson: JSON.stringify({ sshHost: "gerrit.local", sshUser: "ve-bot" }),
       });
       // sshKeyPath has a Zod default — should not throw
@@ -97,7 +97,7 @@ describe("createVcsConnectorForIntegration", () => {
     it("throws for invalid configJson", () => {
       const integration = makeIntegration({
         id: "gerrit-bad",
-        type: "gerrit",
+        provider: "gerrit",
         configJson: "not-json",
       });
       expect(() => createVcsConnectorForIntegration(integration)).toThrow(
@@ -108,7 +108,7 @@ describe("createVcsConnectorForIntegration", () => {
     it("uses default gitAuthorName and gitAuthorEmail when not provided", () => {
       const integration = makeIntegration({
         id: "gerrit-defaults",
-        type: "gerrit",
+        provider: "gerrit",
         configJson: JSON.stringify({ sshHost: "gerrit.local", sshUser: "ve-bot" }),
       });
       // Should not throw; connector uses schema defaults
@@ -119,7 +119,7 @@ describe("createVcsConnectorForIntegration", () => {
     it("uses explicit gitAuthorName and gitAuthorEmail when provided", () => {
       const integration = makeIntegration({
         id: "gerrit-custom-author",
-        type: "gerrit",
+        provider: "gerrit",
         configJson: JSON.stringify({
           sshHost: "gerrit.local",
           sshUser: "ve-bot",
@@ -135,36 +135,35 @@ describe("createVcsConnectorForIntegration", () => {
   describe("GitLab merge request integration", () => {
     const gitlabIntegration = makeIntegration({
       id: "gitlab-1",
-      type: "gitlab-merge-request",
+      provider: "gitlab",
       configJson: JSON.stringify({
         baseUrl: "https://gitlab.local",
-        projectId: "team/repo",
         token: "glpat-test",
       }),
     });
 
     it("creates a GitLabVcsConnector for a gitlab-merge-request integration", () => {
-      const connector = createVcsConnectorForIntegration(gitlabIntegration);
+      const connector = createVcsConnectorForIntegration(gitlabIntegration, { repoKey: "team/repo" });
       expect(connector).toBeInstanceOf(GitLabVcsConnector);
     });
 
     it("uses GITLAB_COM_BASE_URL when baseUrl is missing", () => {
       const integration = makeIntegration({
         id: "gitlab-no-url",
-        type: "gitlab-merge-request",
-        configJson: JSON.stringify({ token: "glpat-test", projectId: "team/repo" }),
+        provider: "gitlab",
+        configJson: JSON.stringify({ token: "glpat-test" }),
       });
-      const connector = createVcsConnectorForIntegration(integration);
+      const connector = createVcsConnectorForIntegration(integration, { repoKey: "team/repo" });
       expect(connector).toBeInstanceOf(GitLabVcsConnector);
     });
 
     it("throws when token is missing", () => {
       const integration = makeIntegration({
         id: "gitlab-bad",
-        type: "gitlab-merge-request",
-        configJson: JSON.stringify({ baseUrl: "https://gitlab.local", projectId: "team/repo" }),
+        provider: "gitlab",
+        configJson: JSON.stringify({ baseUrl: "https://gitlab.local" }),
       });
-      expect(() => createVcsConnectorForIntegration(integration)).toThrow(
+      expect(() => createVcsConnectorForIntegration(integration, { repoKey: "team/repo" })).toThrow(
         /GitLab access token is required/
       );
     });
@@ -172,7 +171,7 @@ describe("createVcsConnectorForIntegration", () => {
     it("throws when projectId is missing", () => {
       const integration = makeIntegration({
         id: "gitlab-bad",
-        type: "gitlab-merge-request",
+        provider: "gitlab",
         configJson: JSON.stringify({ baseUrl: "https://gitlab.local", token: "glpat-test" }),
       });
       expect(() => createVcsConnectorForIntegration(integration)).toThrow(/GitLab project binding is required/);
@@ -181,7 +180,7 @@ describe("createVcsConnectorForIntegration", () => {
     it("creates a GitLab VCS connector from the VE repo binding when projectId is absent", () => {
       const integration = makeIntegration({
         id: "gitlab-bound",
-        type: "gitlab-merge-request",
+        provider: "gitlab",
         configJson: JSON.stringify({ baseUrl: "https://gitlab.local", token: "glpat-test" }),
       });
 
@@ -191,38 +190,36 @@ describe("createVcsConnectorForIntegration", () => {
     });
 
     it("uses default gitAuthorName and gitAuthorEmail when not provided", () => {
-      const connector = createVcsConnectorForIntegration(gitlabIntegration);
+      const connector = createVcsConnectorForIntegration(gitlabIntegration, { repoKey: "team/repo" });
       expect(connector).toBeInstanceOf(GitLabVcsConnector);
     });
 
     it("uses explicit gitAuthorName and gitAuthorEmail when provided", () => {
       const integration = makeIntegration({
         id: "gitlab-custom-author",
-        type: "gitlab-merge-request",
+        provider: "gitlab",
         configJson: JSON.stringify({
           baseUrl: "https://gitlab.local",
-          projectId: "team/repo",
           token: "glpat-test",
           gitAuthorName: "CI Bot",
           gitAuthorEmail: "ci@company.com",
         }),
       });
-      const connector = createVcsConnectorForIntegration(integration);
+      const connector = createVcsConnectorForIntegration(integration, { repoKey: "team/repo" });
       expect(connector).toBeInstanceOf(GitLabVcsConnector);
     });
 
     it("uses targetBranch when provided in config", () => {
       const integration = makeIntegration({
         id: "gitlab-with-branch",
-        type: "gitlab-merge-request",
+        provider: "gitlab",
         configJson: JSON.stringify({
           baseUrl: "https://gitlab.local",
-          projectId: "team/repo",
           token: "glpat-test",
           targetBranch: "develop",
         }),
       });
-      const connector = createVcsConnectorForIntegration(integration);
+      const connector = createVcsConnectorForIntegration(integration, { repoKey: "team/repo" });
       expect(connector).toBeInstanceOf(GitLabVcsConnector);
     });
   });
@@ -231,7 +228,7 @@ describe("createVcsConnectorForIntegration", () => {
     it("throws for non-VCS integration type", () => {
       const integration = makeIntegration({
         id: "redmine-1",
-        type: "redmine",
+        provider: "redmine",
         configJson: JSON.stringify({}),
       });
       expect(() => createVcsConnectorForIntegration(integration)).toThrow(

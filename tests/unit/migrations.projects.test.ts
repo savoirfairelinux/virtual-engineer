@@ -30,10 +30,8 @@ describe("Phase 2 migrations", () => {
       for (const expected of [
         "agents",
         "projects",
-        "project_ticket_source",
+        "project_integration_bindings",
         "project_push_targets",
-        "project_review_integration",
-        "project_review_repos",
         "app_concurrency",
       ]) {
         expect(names.has(expected), `missing table ${expected}`).toBe(true);
@@ -69,7 +67,7 @@ describe("Phase 2 migrations", () => {
         modelConfigJson: "{}",
         enabled: true,
       });
-      await store.upsertIntegration({ id: "r1", type: "redmine", name: "R", configJson: "{}", enabled: true });
+      await store.upsertIntegration({ id: "r1", provider: "redmine", name: "R", configJson: "{}", enabled: true });
       const p1 = await store.createProject({ name: "P1", type: "coding", agentId: a.id });
       const p2 = await store.createProject({ name: "P2", type: "coding", agentId: a.id });
       await store.setProjectTicketSource(p1.id, { integrationId: "r1", ticketProjectKey: "K" });

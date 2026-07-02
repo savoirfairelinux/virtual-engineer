@@ -58,6 +58,25 @@ describe("GitHubReviewProvider", () => {
     expect(r.status).toBe("MERGED");
   });
 
+  it("getChangeDetails derives currentPatchset from the head SHA so updates re-review", async () => {
+    const prAt = (sha: string): unknown => ({
+      number: 42, state: "open", title: "t", html_url: "u", merged: false,
+      base: { ref: "main", repo: { full_name: "o/r" } }, head: { ref: "f", sha },
+    });
+    const p = new GitHubReviewProvider(config);
+
+    fetchMock.mockResolvedValueOnce(jsonResponse(prAt("aaaaaaaaaaaaaaaa")));
+    const first = await p.getChangeDetails(cid);
+    fetchMock.mockResolvedValueOnce(jsonResponse(prAt("aaaaaaaaaaaaaaaa")));
+    const same = await p.getChangeDetails(cid);
+    fetchMock.mockResolvedValueOnce(jsonResponse(prAt("bbbbbbbbbbbbbbbb")));
+    const updated = await p.getChangeDetails(cid);
+
+    // Same head SHA -> same patchset (dedup skips); new head SHA -> new patchset (re-review).
+    expect(first.currentPatchset).toBe(same.currentPatchset);
+    expect(updated.currentPatchset).not.toBe(first.currentPatchset);
+  });
+
   it("getChangeDetails maps closed-unmerged PR to ABANDONED", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({
       number: 8, state: "closed", title: "x", html_url: "u", merged: false,
@@ -79,6 +98,14 @@ describe("GitHubReviewProvider", () => {
     expect(r.files[0]).toEqual({ path: "src/a.ts", status: "added", patch: "@@\n+new" });
     expect(r.files[2]?.status).toBe("deleted");
     expect(r.files[3]?.status).toBe("renamed");
+  });
+
+  it("getChangeDiff echoes the requested patchset", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse([
+      { filename: "src/a.ts", status: "modified", patch: "@@\n+new" },
+    ]));
+    const r = await new GitHubReviewProvider(config).getChangeDiff(cid, 42);
+    expect(r.patchset).toBe(42);
   });
 
   it("postReviewWithComments posts an APPROVE review with inline comments", async () => {
@@ -129,7 +156,7 @@ describe("GitHubReviewProvider", () => {
     expect(events).toEqual(["COMMENT", "APPROVE", "REQUEST_CHANGES"]);
   });
 
-  it("postReviewWithComments drops file-level (line=0) comments from inline list", async () => {
+  it("drops file-level (line=0) comments from inline list but folds them into the body", async () => {
     // Files fetch returns empty → line-validation map is empty → line>0 comment passes as inline
     fetchMock.mockResolvedValueOnce(jsonResponse([]));
     fetchMock.mockResolvedValueOnce(jsonResponse({ id: 1 }));
@@ -143,6 +170,10 @@ describe("GitHubReviewProvider", () => {
     );
     const body = JSON.parse((fetchMock.mock.calls[1]?.[1] as RequestInit).body as string);
     expect(body.comments).toEqual([{ path: "src/a.ts", line: 5, body: "inline", side: "RIGHT" }]);
+    // The file-level comment is folded into the review body (without a line suffix).
+    expect(body.body).toContain("file-level");
+    expect(body.body).toContain("`src/a.ts`");
+    expect(body.body).not.toContain("`src/a.ts:0`");
   });
 
   it("folds out-of-diff inline comments into review body", async () => {
@@ -221,7 +252,88 @@ describe("GitHubReviewProvider", () => {
     await expect(new GitHubReviewProvider(config).getChangeDetails("not-a-number" as unknown as ExternalChangeId))
       .rejects.toThrow(/Invalid GitHub PR number/);
   });
+
+  describe("discussion threads (GraphQL)", () => {
+    it("getDiscussionThreads maps review threads and tags isOwn / resolved", async () => {
+      // 1) viewer login lookup, 2) reviewThreads page.
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ data: { viewer: { login: "ve-bot" } } }))
+        .mockResolvedValueOnce(
+          jsonResponse({
+            data: {
+              repository: {
+                pullRequest: {
+                  reviewThreads: {
+                    pageInfo: { hasNextPage: false, endCursor: null },
+                    nodes: [
+                      {
+                        id: "THREAD_1",
+                        isResolved: false,
+                        path: "src/a.ts",
+                        line: 12,
+                        comments: {
+                          nodes: [
+                            { body: "Why not a Map?", author: { login: "alice" } },
+                            { body: "Order matters.", author: { login: "ve-bot" } },
+                          ],
+                        },
+                      },
+                      {
+                        id: "THREAD_2",
+                        isResolved: true,
+                        path: "src/b.ts",
+                        line: 3,
+                        comments: { nodes: [{ body: "nit", author: { login: "bob" } }] },
+                      },
+                    ],
+                  },
+                },
+              },
+            },
+          })
+        );
+
+      const threads = await new GitHubReviewProvider(config).getDiscussionThreads(cid);
+      expect(threads).toHaveLength(2);
+      const t1 = threads.find((t) => t.threadId === "THREAD_1");
+      expect(t1?.resolved).toBe(false);
+      expect(t1?.file).toBe("src/a.ts");
+      expect(t1?.line).toBe(12);
+      expect(t1?.comments[0]).toEqual({ author: "alice", message: "Why not a Map?", isOwn: false });
+      expect(t1?.comments[1]?.isOwn).toBe(true);
+      expect(threads.find((t) => t.threadId === "THREAD_2")?.resolved).toBe(true);
+
+      // First GraphQL call hit the api.github.com/graphql endpoint.
+      expect(fetchMock.mock.calls[0]?.[0]).toBe("https://api.github.com/graphql");
+    });
+
+    it("postThreadReply issues the addPullRequestReviewThreadReply mutation", async () => {
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse({ data: { addPullRequestReviewThreadReply: { comment: { id: "C1" } } } })
+      );
+      await new GitHubReviewProvider(config).postThreadReply(cid, 1, "THREAD_1", "Agreed.");
+      const body = JSON.parse((fetchMock.mock.calls[0]?.[1] as RequestInit).body as string) as {
+        query: string;
+        variables: { threadId: string; body: string };
+      };
+      expect(body.query).toContain("addPullRequestReviewThreadReply");
+      expect(body.variables).toEqual({ threadId: "THREAD_1", body: "Agreed." });
+    });
+
+    it("derives the GraphQL endpoint for GitHub Enterprise base URLs", async () => {
+      const ghe = new GitHubReviewProvider({
+        ...config,
+        apiBaseUrl: "https://ghe.example.com/api/v3",
+      });
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse({ data: { addPullRequestReviewThreadReply: { comment: { id: "C1" } } } })
+      );
+      await ghe.postThreadReply(cid, 1, "THREAD_1", "hi");
+      expect(fetchMock.mock.calls[0]?.[0]).toBe("https://ghe.example.com/api/graphql");
+    });
+  });
 });
+
 
 describe("parsePatchNewLineNumbers", () => {
   it("returns valid new-file line numbers from a simple hunk", () => {

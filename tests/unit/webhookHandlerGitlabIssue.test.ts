@@ -6,9 +6,9 @@ import { getLogger } from "../../src/logger.js";
 
 const integration: Integration = {
   id: "gl-1",
-  type: "gitlab-issue",
+  provider: "gitlab",
   name: "G",
-  configJson: JSON.stringify({ webhookSecret: "x", baseUrl: "https://gitlab/", projectId: "1", token: "t" }),
+  configJson: JSON.stringify({ webhookSecret: "x", baseUrl: "https://gitlab/", token: "t" }),
   enabled: true,
   createdAt: new Date(),
   updatedAt: new Date(),
@@ -70,7 +70,7 @@ describe("gitlabIssueWebhookHandler", () => {
     const [ticket, proj, label] = (orchestrator.startTaskForProject as ReturnType<typeof vi.fn>).mock.calls[0]!;
     expect(ticket).toMatchObject({ id: "7", subject: "T", description: "D", webUrl: "https://gitlab/group/proj/-/issues/7" });
     expect(proj).toBe(project);
-    expect(label).toBe("gitlab-issue");
+    expect(label).toBe("gitlab:gl-1");
   });
 
   it("ignores when no project is configured", async () => {

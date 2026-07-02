@@ -6,12 +6,12 @@ import type {
   IntegrationBindingContext,
   IntegrationStore,
   Integration,
-  IntegrationType,
-  PluginCategory,
+  ProviderId,
+  DomainCapability,
   PluginInstance,
 } from "../interfaces.js";
-import { getPluginDescriptor } from "./registry.js";
-import type { PluginDescriptor } from "./registry.js";
+import { getProviderDescriptor, getProviderDomainCapabilities, getCapabilityIntake } from "./registry.js";
+import type { ProviderDescriptor, IntakeMechanism } from "./registry.js";
 import { getLogger } from "../logger.js";
 import { decryptToken } from "../utils/encryption.js";
 
@@ -35,22 +35,26 @@ export type ConnectionTester = (config: unknown) => Promise<ConnectionTestResult
 
 export type PluginChangeCallback = () => void;
 
+/** Capabilities that produce a runtime `PluginInstance` (cached per integration). */
+const INSTANCE_CAPABILITIES: readonly DomainCapability[] = ["issue_tracking", "code_review", "agent_execution"];
+
+function instanceKey(integrationId: string, capability: DomainCapability): string {
+  return `${integrationId}::${capability}`;
+}
+
 /**
  * Manages active plugin instances.
- * Multiple integrations of the same category can be active simultaneously;
- * per-project routing uses `getConnectorForIntegration(id)`.
+ * Multiple integrations of the same provider can be active simultaneously;
+ * per-project routing uses `getConnectorForCapability(id, capability)`.
  */
 export class PluginManager {
-  private readonly activeInstances = new Map<IntegrationType, PluginInstance>();
-  private readonly activeIntegrations = new Map<IntegrationType, Integration>();
-  private readonly activeIntegrationIds = new Map<IntegrationType, string>();
-  private readonly activeCategories = new Map<PluginCategory, IntegrationType>();
-  /** All currently active integrations indexed by integration id. */
-  private readonly activeInstancesById = new Map<string, PluginInstance>();
   /** All currently active integration metadata indexed by integration id. */
   private readonly activeIntegrationsById = new Map<string, Integration>();
-  private readonly factories = new Map<IntegrationType, PluginFactory>();
-  private readonly testers = new Map<IntegrationType, ConnectionTester>();
+  /** Runtime connector instances keyed by `${integrationId}::${capability}`. */
+  private readonly instancesByCapability = new Map<string, PluginInstance>();
+  /** Agent-execution factories registered in index.ts (need AppConfig values). */
+  private readonly factories = new Map<ProviderId, PluginFactory>();
+  private readonly testers = new Map<ProviderId, ConnectionTester>();
   private readonly changeCallbacks: PluginChangeCallback[] = [];
 
   constructor(
@@ -58,14 +62,14 @@ export class PluginManager {
     private readonly options: { adminAuthSecret?: string | undefined } = {}
   ) {}
 
-  /** Register a connector factory for an integration type. */
-  registerFactory(type: IntegrationType, factory: PluginFactory): void {
-    this.factories.set(type, factory);
+  /** Register a connector factory for a provider (used for agent_execution instantiation). */
+  registerFactory(provider: ProviderId, factory: PluginFactory): void {
+    this.factories.set(provider, factory);
   }
 
-  /** Register a connection tester for an integration type (used by the admin test-connection endpoint). */
-  registerConnectionTester(type: IntegrationType, tester: ConnectionTester): void {
-    this.testers.set(type, tester);
+  /** Register a connection tester for a provider (used by the admin test-connection endpoint). */
+  registerConnectionTester(provider: ProviderId, tester: ConnectionTester): void {
+    this.testers.set(provider, tester);
   }
 
   /** Subscribe to plugin activation/deactivation events. */
@@ -82,22 +86,12 @@ export class PluginManager {
       .filter((integration) => integration.enabled)
       .sort((left, right) => right.updatedAt.getTime() - left.updatedAt.getTime());
 
-    // Multiple integrations of the same category can be active simultaneously.
-    // The most-recently-updated integration wins for type-level lookups (sort above).
-    const claimedTypes = new Set<IntegrationType>();
     for (const integration of enabledIntegrations) {
-      const descriptor = this.getDescriptor(integration.type);
       try {
-        this.activateIntegration(
-          integration,
-          descriptor.category,
-          this.createPluginInstance(integration),
-          { promoteTypeLeader: !claimedTypes.has(integration.type) }
-        );
-        claimedTypes.add(integration.type);
-        log.info({ type: integration.type, name: integration.name }, "plugin loaded from database");
+        this.activateIntegration(integration);
+        log.info({ provider: integration.provider, name: integration.name }, "plugin loaded from database");
       } catch (err) {
-        log.error({ type: integration.type, name: integration.name, err }, "failed to load plugin from database");
+        log.error({ provider: integration.provider, name: integration.name, err }, "failed to load plugin from database");
       }
     }
   }
@@ -107,13 +101,9 @@ export class PluginManager {
     const integration = await this.integrationStore.getIntegration(id);
     if (!integration) throw new Error(`Integration not found: ${id}`);
 
-    const descriptor = this.getDescriptor(integration.type);
-    const instance = this.createPluginInstance(integration);
-
-    // Multiple integrations per category are allowed; within the same type the new instance replaces the previous.
-    this.activateIntegration(integration, descriptor.category, instance);
+    this.activateIntegration(integration);
     await this.integrationStore.setIntegrationEnabled(id, true);
-    log.info({ type: integration.type, name: integration.name }, "plugin enabled");
+    log.info({ provider: integration.provider, name: integration.name }, "plugin enabled");
   }
 
   /** Disable the integration with `id`, tear down its connector, and persist the change. */
@@ -123,7 +113,7 @@ export class PluginManager {
 
     this.deactivateIntegration(integration);
     await this.integrationStore.setIntegrationEnabled(id, false);
-    log.info({ type: integration.type, name: integration.name }, "plugin disabled");
+    log.info({ provider: integration.provider, name: integration.name }, "plugin disabled");
   }
 
   /** Re-instantiate the connector for an already-enabled integration (e.g. after config edits). */
@@ -136,12 +126,9 @@ export class PluginManager {
       return;
     }
 
-    const descriptor = this.getDescriptor(integration.type);
-    const instance = this.createPluginInstance(integration);
-
-    // Multiple integrations per category are allowed.
-    this.activateIntegration(integration, descriptor.category, instance);
-    log.info({ type: integration.type, name: integration.name }, "plugin reloaded");
+    this.deactivateIntegration(integration);
+    this.activateIntegration(integration);
+    log.info({ provider: integration.provider, name: integration.name }, "plugin reloaded");
   }
 
   /** Test the stored config of the integration with `id`. */
@@ -149,32 +136,28 @@ export class PluginManager {
     const integration = await this.integrationStore.getIntegration(id);
     if (!integration) throw new Error(`Integration not found: ${id}`);
 
-    return this.testConnectionConfig(integration.type, JSON.parse(integration.configJson));
+    return this.testConnectionConfig(integration.provider, JSON.parse(integration.configJson));
   }
 
   /** Validate and test an arbitrary config object without persisting it. */
-  async testConnectionConfig(type: IntegrationType, config: unknown): Promise<ConnectionTestResult> {
-    const descriptor = this.getDescriptor(type);
+  async testConnectionConfig(provider: ProviderId, config: unknown): Promise<ConnectionTestResult> {
+    const descriptor = this.getDescriptor(provider);
     const parsed = descriptor.configSchema.safeParse(config);
     if (!parsed.success) {
       return {
         success: false,
-        error: `Invalid config for ${type}: ${parsed.error.message}`,
+        error: `Invalid config for ${provider}: ${parsed.error.message}`,
         models: [],
       };
     }
 
     // Explicit tester registered in index.ts takes precedence.
-    const tester = this.testers.get(type);
+    const tester = this.testers.get(provider);
     if (tester) {
       return this.normalizeConnectionTestResult(await tester(parsed.data));
     }
 
     // Fall back to the descriptor's own test hook.
-    // Strip Zod-applied defaults so the tester sees the same config the connector
-    // will receive at runtime (keys absent in the raw row are not filled in).
-    // This prevents a successful test with a Zod-default path from masking a
-    // missing required value that would fail at connector instantiation.
     if (descriptor.testConnection) {
       const strippedConfig = this.stripSchemaDefaults(parsed.data, config);
       return this.normalizeConnectionTestResult(await descriptor.testConnection(strippedConfig));
@@ -183,47 +166,63 @@ export class PluginManager {
     return { success: true, error: null, models: [] };
   }
 
-  /** Return the active type-level connector instance cast to T, or null if not active. */
-  getActiveConnector<T extends PluginInstance>(type: IntegrationType): T | null {
-    return (this.activeInstances.get(type) as T) ?? null;
+  /** Return the connector for a specific integration + capability, cast to T, or null. */
+  getConnectorForCapability<T>(integrationId: string, capability: DomainCapability): T | null {
+    return (this.instancesByCapability.get(instanceKey(integrationId, capability)) as unknown as T) ?? null;
   }
 
-  /** Returns the active connector for a specific integration id. Callers must narrow the result. */
+  /**
+   * Return the active connector for a specific integration id, picking the
+   * first available instance-producing capability. Callers must narrow the
+   * result; prefer `getConnectorForCapability` when the capability is known.
+   */
   getConnectorForIntegration<T>(integrationId: string): T | null {
-    return (this.activeInstancesById.get(integrationId) as unknown as T) ?? null;
+    for (const capability of INSTANCE_CAPABILITIES) {
+      const instance = this.instancesByCapability.get(instanceKey(integrationId, capability));
+      if (instance) {
+        return instance as unknown as T;
+      }
+    }
+    return null;
   }
 
-  /** Build a connector instance for a specific integration id, optionally specialized by VE project binding context. */
-  async createConnectorForIntegration<T>(integrationId: string, context?: IntegrationBindingContext): Promise<T | null> {
-    if (context === undefined) {
-      return this.getConnectorForIntegration<T>(integrationId);
-    }
-
+  /**
+   * Build a connector instance for a specific integration id + capability,
+   * optionally specialized by VE project binding context.
+   */
+  async createConnectorForCapability<T>(
+    integrationId: string,
+    capability: DomainCapability,
+    context?: IntegrationBindingContext
+  ): Promise<T | null> {
     const activeIntegration = this.activeIntegrationsById.get(integrationId);
     if (!activeIntegration) {
       return null;
     }
-
-    return this.createPluginInstance(activeIntegration, context) as unknown as T;
+    if (context === undefined) {
+      return this.getConnectorForCapability<T>(integrationId, capability);
+    }
+    const instance = this.buildCapabilityInstance(activeIntegration, capability, context);
+    return (instance as unknown as T) ?? null;
   }
 
-  /** Return true if the given integration id currently has an active connector. */
+  /** Return true if the given integration id currently has any active connector. */
   isIntegrationActive(integrationId: string): boolean {
     return this.activeIntegrationsById.has(integrationId);
   }
 
-  /** Return all currently active integrations whose type matches the given type. */
-  getActiveIntegrationsByType(type: IntegrationType): Integration[] {
+  /** Return all currently active integrations for the given provider. */
+  getActiveIntegrationsByProvider(provider: ProviderId): Integration[] {
     const out: Integration[] = [];
     for (const integration of this.activeIntegrationsById.values()) {
-      if (integration.type === type) {
+      if (integration.provider === provider) {
         out.push(integration);
       }
     }
     return out;
   }
 
-  /** Return all currently active integrations across all types. */
+  /** Return all currently active integrations across all providers. */
   getActiveIntegrations(): Integration[] {
     return [...this.activeIntegrationsById.values()];
   }
@@ -234,90 +233,167 @@ export class PluginManager {
   }
 
   /**
-   * Returns true when the integration's descriptor declares a `streamEvents`
-   * factory.  Stream-backed integrations deliver review events via a persistent
-   * connection and must not be polled for review assignment discovery.
+   * Returns true when the integration's provider declares a `code_review`
+   * `streamEvents` factory. Stream-backed integrations deliver review events
+   * via a persistent connection and must not be polled for review discovery.
    */
   integrationHasStreamEvents(integrationId: string): boolean {
     const integration = this.activeIntegrationsById.get(integrationId);
     if (!integration) return false;
-    return getPluginDescriptor(integration.type)?.streamEvents != null;
+    return getProviderDescriptor(integration.provider)?.capabilities.code_review?.streamEvents != null;
   }
 
-  /** Returns all currently active integrations of the given category. */
-  getActiveIntegrationsByCategory(category: PluginCategory): Integration[] {
+  /** Returns all currently active integrations that expose the given capability. */
+  getActiveIntegrationsByCapability(capability: DomainCapability): Integration[] {
     const out: Integration[] = [];
     for (const integration of this.activeIntegrationsById.values()) {
-      const descriptor = getPluginDescriptor(integration.type);
-      if (descriptor && descriptor.category === category) out.push(integration);
+      if (this.providerSupportsCapability(integration.provider, capability)) {
+        out.push(integration);
+      }
     }
     return out;
   }
 
-  /** All currently active integration types. */
-  getActiveIntegrationTypes(): IntegrationType[] {
-    const types = new Set<IntegrationType>();
+  /** Returns true when the given provider's descriptor declares `capability`. */
+  providerSupportsCapability(provider: ProviderId, capability: DomainCapability): boolean {
+    const descriptor = getProviderDescriptor(provider);
+    return descriptor !== undefined && descriptor.capabilities[capability] !== undefined;
+  }
+
+  /**
+   * Returns true when a *specific active integration* can serve `capability`:
+   * the integration is active and its provider's descriptor declares the
+   * capability. Use this (rather than `providerSupportsCapability`) when gating
+   * a binding or runtime path on a concrete integration id.
+   */
+  integrationSupportsCapability(integrationId: string, capability: DomainCapability): boolean {
+    const integration = this.activeIntegrationsById.get(integrationId);
+    if (!integration) return false;
+    return this.providerSupportsCapability(integration.provider, capability);
+  }
+
+  /**
+   * Returns the event-intake mechanisms (`polling` | `webhook` | `stream`) an
+   * active integration uses for `capability`, as declared by its descriptor.
+   * Returns an empty array when the integration is inactive or the capability
+   * declares no intake metadata.
+   */
+  getIntegrationCapabilityIntake(integrationId: string, capability: DomainCapability): IntakeMechanism[] {
+    const integration = this.activeIntegrationsById.get(integrationId);
+    if (!integration) return [];
+    const descriptor = getProviderDescriptor(integration.provider);
+    if (!descriptor) return [];
+    return getCapabilityIntake(descriptor, capability);
+  }
+
+  /** All currently active providers. */
+  getActiveProviders(): ProviderId[] {
+    const providers = new Set<ProviderId>();
     for (const integration of this.activeIntegrationsById.values()) {
-      types.add(integration.type);
+      providers.add(integration.provider);
     }
-    return [...types];
-  }
-
-  /** Returns the stored Integration record for the active instance of `type`, or null. */
-  getActiveIntegration(type: IntegrationType): Integration | null {
-    return this.activeIntegrations.get(type) ?? null;
-  }
-
-  /** Instantiate the connector for an integration using a registered factory or descriptor hook. */
-  private createPluginInstance(integration: Integration, context?: IntegrationBindingContext): PluginInstance {
-    const descriptor = this.getDescriptor(integration.type);
-
-    const rawConfig = JSON.parse(integration.configJson) as Record<string, unknown>;
-    // Decrypt password fields — OAuth tokens are stored via encryptToken (either
-    // AES-256-GCM or a plain:-prefixed base64 when no ADMIN_AUTH_SECRET is set).
-    const config = this.decryptPasswordFields(rawConfig, descriptor);
-    const parsed = descriptor.configSchema.safeParse(config);
-    if (!parsed.success) {
-      throw new Error(`Invalid config for ${integration.type}: ${parsed.error.message}`);
-    }
-
-    const strippedConfig = this.stripSchemaDefaults(parsed.data, config);
-
-    // Explicit factory registered in index.ts takes precedence (needed when
-    // construction depends on AppConfig values, e.g. agentDockerNetwork).
-    const factory = this.factories.get(integration.type);
-    if (factory) {
-      return factory(strippedConfig, integration);
-    }
-
-    // Fall back to the descriptor's own factory hook.
-    if (descriptor.createInstance) {
-      return descriptor.createInstance(strippedConfig, integration, context);
-    }
-
-    throw new Error(`No factory registered for type: ${integration.type}`);
+    return [...providers];
   }
 
   /**
    * Parse and decrypt an integration's configJson, returning a plain-object
-   * record with all password-typed fields decrypted.  Used by callers that
-   * need the live config without going through `createInstance` (e.g. the
-   * review-bundle builder in src/index.ts).
+   * record with all password-typed fields decrypted.
    */
   public decryptIntegrationConfig(integration: Integration): Record<string, unknown> {
-    const descriptor = this.getDescriptor(integration.type);
+    const descriptor = this.getDescriptor(integration.provider);
     const rawConfig = JSON.parse(integration.configJson) as Record<string, unknown>;
     return this.decryptPasswordFields(rawConfig, descriptor);
   }
 
+  /** Build and register all instance-producing capability connectors for an integration. */
+  private activateIntegration(integration: Integration): void {
+    const descriptor = this.getDescriptor(integration.provider);
+    this.activeIntegrationsById.set(integration.id, integration);
+
+    for (const capability of getProviderDomainCapabilities(descriptor)) {
+      if (!INSTANCE_CAPABILITIES.includes(capability)) {
+        continue;
+      }
+      try {
+        const instance = this.buildCapabilityInstance(integration, capability);
+        if (instance) {
+          this.instancesByCapability.set(instanceKey(integration.id, capability), instance);
+        }
+      } catch (err) {
+        log.error(
+          { provider: integration.provider, capability, name: integration.name, err },
+          "failed to instantiate capability connector"
+        );
+      }
+    }
+
+    this.notifyChange();
+  }
+
+  /** Remove an integration and all its capability connectors from the active registry. */
+  private deactivateIntegration(integration: Integration): boolean {
+    const hadIntegration = this.activeIntegrationsById.delete(integration.id);
+    let removed = false;
+    for (const capability of INSTANCE_CAPABILITIES) {
+      if (this.instancesByCapability.delete(instanceKey(integration.id, capability))) {
+        removed = true;
+      }
+    }
+    if (!hadIntegration && !removed) {
+      return false;
+    }
+    this.notifyChange();
+    return true;
+  }
+
+  /**
+   * Instantiate the connector for one capability of an integration using a
+   * registered factory (agent_execution) or the descriptor capability hook.
+   * Returns null when the capability declares no instance factory.
+   */
+  private buildCapabilityInstance(
+    integration: Integration,
+    capability: DomainCapability,
+    context?: IntegrationBindingContext
+  ): PluginInstance | null {
+    const descriptor = this.getDescriptor(integration.provider);
+    const rawConfig = JSON.parse(integration.configJson) as Record<string, unknown>;
+    const config = this.decryptPasswordFields(rawConfig, descriptor);
+    const parsed = descriptor.configSchema.safeParse(config);
+    if (!parsed.success) {
+      throw new Error(`Invalid config for ${integration.provider}: ${parsed.error.message}`);
+    }
+    const strippedConfig = this.stripSchemaDefaults(parsed.data, config);
+
+    if (capability === "agent_execution") {
+      // Explicit factory registered in index.ts takes precedence (needs AppConfig).
+      const factory = this.factories.get(integration.provider);
+      if (factory) {
+        return factory(strippedConfig, integration);
+      }
+      const createAdapter = descriptor.capabilities.agent_execution?.createAdapter;
+      return createAdapter ? createAdapter(strippedConfig, integration, context) : null;
+    }
+
+    if (capability === "issue_tracking") {
+      const createConnector = descriptor.capabilities.issue_tracking?.createConnector;
+      return createConnector ? createConnector(strippedConfig, integration, context) : null;
+    }
+
+    if (capability === "code_review") {
+      const createConnector = descriptor.capabilities.code_review?.createConnector;
+      return createConnector ? createConnector(strippedConfig, integration, context) : null;
+    }
+
+    return null;
+  }
+
   /**
    * Decrypt password-typed fields in a raw integration config.
-   * Tokens stored via encryptToken use a `plain:` prefix (no secret) or AES-256-GCM.
-   * Fields that are raw PATs or unknown strings are left as-is when decryption fails.
    */
   private decryptPasswordFields(
     config: Record<string, unknown>,
-    descriptor: PluginDescriptor
+    descriptor: ProviderDescriptor
   ): Record<string, unknown> {
     const result: Record<string, unknown> = { ...config };
     for (const field of descriptor.requiredFields.filter((f) => f.type === "password")) {
@@ -363,100 +439,23 @@ export class PluginManager {
     };
   }
 
-  /** Register an integration and its connector as active, optionally promoting it to type leader. */
-  private activateIntegration(
-    integration: Integration,
-    category: PluginCategory,
-    instance: PluginInstance,
-    options?: { promoteTypeLeader?: boolean }
-  ): void {
-    this.activeInstancesById.set(integration.id, instance);
-    this.activeIntegrationsById.set(integration.id, integration);
-
-    if (options?.promoteTypeLeader ?? true) {
-      this.setTypeLeader(integration, category, instance);
-    }
-
-    this.notifyChange(integration.type, this.activeInstances.get(integration.type) ?? null);
-  }
-
-  /** Remove an integration and its connector from the active registry; returns true if it was present. */
-  private deactivateIntegration(integration: Integration): boolean {
-    const descriptor = this.getDescriptor(integration.type);
-    const hadInstance = this.activeInstancesById.delete(integration.id);
-    const hadIntegration = this.activeIntegrationsById.delete(integration.id);
-    if (!hadInstance && !hadIntegration) {
-      return false;
-    }
-
-    if (this.activeIntegrationIds.get(integration.type) === integration.id) {
-      const fallback = this.findMostRecentActiveIntegrationOfType(integration.type);
-      if (fallback) {
-        const fallbackInstance = this.activeInstancesById.get(fallback.id);
-        if (fallbackInstance) {
-          this.setTypeLeader(fallback, descriptor.category, fallbackInstance);
-        }
-      } else {
-        this.activeInstances.delete(integration.type);
-        this.activeIntegrations.delete(integration.type);
-        this.activeIntegrationIds.delete(integration.type);
-        if (this.activeCategories.get(descriptor.category) === integration.type) {
-          this.activeCategories.delete(descriptor.category);
-        }
-      }
-    }
-
-    this.notifyChange(integration.type, this.activeInstances.get(integration.type) ?? null);
-    return true;
-  }
-
-  /** Clear all active instance, integration, and category maps. */
+  /** Clear all active instance and integration maps. */
   private resetActiveState(): void {
-    this.activeInstances.clear();
-    this.activeIntegrations.clear();
-    this.activeIntegrationIds.clear();
-    this.activeCategories.clear();
-    this.activeInstancesById.clear();
     this.activeIntegrationsById.clear();
+    this.instancesByCapability.clear();
   }
 
-  /** Promote an integration to the type-level leader in all active lookup maps. */
-  private setTypeLeader(
-    integration: Integration,
-    category: PluginCategory,
-    instance: PluginInstance
-  ): void {
-    this.activeInstances.set(integration.type, instance);
-    this.activeIntegrations.set(integration.type, integration);
-    this.activeIntegrationIds.set(integration.type, integration.id);
-    this.activeCategories.set(category, integration.type);
-  }
-
-  /** Find and return the most-recently-updated active integration of the given type. */
-  private findMostRecentActiveIntegrationOfType(type: IntegrationType): Integration | null {
-    let candidate: Integration | null = null;
-    for (const integration of this.activeIntegrationsById.values()) {
-      if (integration.type !== type) {
-        continue;
-      }
-      if (!candidate || integration.updatedAt.getTime() > candidate.updatedAt.getTime()) {
-        candidate = integration;
-      }
-    }
-    return candidate;
-  }
-
-  /** Look up a registered plugin descriptor by type, throwing if not found. */
-  private getDescriptor(type: IntegrationType): PluginDescriptor {
-    const descriptor = getPluginDescriptor(type);
+  /** Look up a registered provider descriptor, throwing if not found. */
+  private getDescriptor(provider: ProviderId): ProviderDescriptor {
+    const descriptor = getProviderDescriptor(provider);
     if (!descriptor) {
-      throw new Error(`Unknown integration type: ${type}`);
+      throw new Error(`Unknown provider: ${provider}`);
     }
     return descriptor;
   }
 
-  /** Invoke all registered plugin-change callbacks, swallowing errors to avoid disrupting callers. */
-  private notifyChange(_type: IntegrationType, _instance: PluginInstance | null): void {
+  /** Invoke all registered plugin-change callbacks, swallowing errors. */
+  private notifyChange(): void {
     for (const cb of this.changeCallbacks) {
       try {
         cb();

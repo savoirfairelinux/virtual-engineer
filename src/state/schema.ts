@@ -1,7 +1,7 @@
 /** Drizzle ORM table definitions for the Virtual Engineer SQLite database. All timestamps are seconds since epoch (`mode: "timestamp"`). */
-import { sqliteTable, text, integer, index, unique, check, primaryKey } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, integer, real, index, unique, check, primaryKey } from "drizzle-orm/sqlite-core";
 import { sql } from "drizzle-orm";
-import type { TaskState, IntegrationType, TaskType, AgentType, ProjectType, PushTargetRole } from "../interfaces.js";
+import type { TaskState, ProviderId, TaskType, AgentType, ProjectType, PushTargetRole, DomainCapability } from "../interfaces.js";
 
 export const tasks = sqliteTable("tasks", {
   taskId: text("task_id").primaryKey(),
@@ -70,6 +70,26 @@ export const agentCycles = sqliteTable("agent_cycles", {
   validationResult: text("validation_result"),
   // JSON-serialised AgentLogEvent[]
   agentEvents: text("agent_events"),
+  /** GitHub-computed cost in AI credits (1 credit = $0.01); null when unpriced. */
+  costAiCredits: real("cost_ai_credits"),
+  /**
+   * Cost in USD: GitHub-computed (authoritative) when nano-AIU is present,
+   * otherwise estimated from the premium-request multiplier. Null only when no
+   * cost signal is available.
+   */
+  costUsd: real("cost_usd"),
+  /** Summed premium-request multiplier across the cycle's distinct requests; null when unavailable. */
+  premiumRequests: real("premium_requests"),
+  /** Summed input tokens across the cycle's distinct requests. */
+  costInputTokens: integer("cost_input_tokens"),
+  /** Summed output tokens across the cycle's distinct requests. */
+  costOutputTokens: integer("cost_output_tokens"),
+  /** Summed cache-read tokens across the cycle's distinct requests. */
+  costCachedTokens: integer("cost_cached_tokens"),
+  /** Summed cache-write tokens across the cycle's distinct requests. */
+  costCacheWriteTokens: integer("cost_cache_write_tokens"),
+  /** Model id resolved from the usage events. */
+  costModelId: text("cost_model_id"),
   createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
 });
 
@@ -82,9 +102,81 @@ export const processedComments = sqliteTable("processed_comments", {
   createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
 });
 
+/**
+ * Records every inline review comment VE has already posted on a change, keyed
+ * by a stable content hash. Used to deduplicate comments across re-reviews
+ * (new patchsets) so the same issue is never posted twice. Integration-agnostic:
+ * populated by the ReviewOrchestrator regardless of the review backend.
+ */
+export const postedReviewComments = sqliteTable(
+  "posted_review_comments",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    taskId: text("task_id")
+      .notNull()
+      .references(() => tasks.taskId),
+    /** External change identifier (Gerrit change id, GitHub `owner/repo#n`, GitLab `project#iid`). */
+    changeId: text("change_id").notNull(),
+    /** Stable hash of file + normalized message (see review/commentHash.ts). */
+    commentHash: text("comment_hash").notNull(),
+    file: text("file").notNull(),
+    line: integer("line").notNull().default(0),
+    /** Original comment body — kept so prior comments can be injected into re-review prompts. */
+    message: text("message").notNull().default(""),
+    severity: text("severity").notNull().default(""),
+    /** Provider-side thread/comment id, captured for later resolution. NULL when unknown. */
+    providerThreadId: text("provider_thread_id"),
+    /** 1 once VE has resolved this thread (issue addressed in a later patchset). */
+    resolved: integer("resolved").notNull().default(0),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+  },
+  (table) => ({
+    idxPostedReviewCommentsTaskId: index("idx_posted_review_comments_task_id").on(table.taskId),
+    uqPostedReviewCommentsTaskHash: unique("uq_posted_review_comments_task_hash").on(
+      table.taskId,
+      table.commentHash
+    ),
+  })
+);
+
+/**
+ * Records every reply VE has posted to a human discussion thread on a change,
+ * keyed by a stable hash of the thread id and the human message being answered
+ * (see review/commentHash.ts `computeThreadReplyHash`). Used to deduplicate
+ * replies across re-reviews so VE answers each human message at most once.
+ * Integration-agnostic: populated by the ReviewOrchestrator regardless of the
+ * review backend.
+ */
+export const reviewThreadReplies = sqliteTable(
+  "review_thread_replies",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    taskId: text("task_id")
+      .notNull()
+      .references(() => tasks.taskId),
+    /** External change identifier (Gerrit change id, GitHub `owner/repo#n`, GitLab `project#iid`). */
+    changeId: text("change_id").notNull(),
+    /** Opaque provider thread token the reply was posted to. */
+    threadId: text("thread_id").notNull(),
+    /** Hash of thread id + the human message answered (see computeThreadReplyHash). */
+    handledCommentHash: text("handled_comment_hash").notNull(),
+    /** The reply body VE posted — kept for audit/debugging. */
+    replyMessage: text("reply_message").notNull().default(""),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+  },
+  (table) => ({
+    idxReviewThreadRepliesTaskId: index("idx_review_thread_replies_task_id").on(table.taskId),
+    uqReviewThreadRepliesTaskThreadHash: unique("uq_review_thread_replies_task_thread_hash").on(
+      table.taskId,
+      table.threadId,
+      table.handledCommentHash
+    ),
+  })
+);
+
 export const integrations = sqliteTable("integrations", {
   id: text("id").primaryKey(),
-  type: text("type").$type<IntegrationType>().notNull(),
+  provider: text("provider").$type<ProviderId>().notNull(),
   name: text("name").notNull(),
   configJson: text("config_json").notNull(),
   enabled: integer("enabled").notNull().default(1),
@@ -218,26 +310,27 @@ export const projects = sqliteTable(
 );
 
 /**
- * Coding-project ticket source. A coding project has exactly one ticket source.
- * Globally unique on `(integration_id, ticket_project_key)` so two projects
- * cannot fight over the same ticket source.
+ * A project's binding of an integration to a domain capability. Replaces the
+ * former `project_ticket_source` / `project_review_integration` /
+ * `project_review_repos` tables. One row per `(project_id, capability)`.
+ * `config_json` carries capability-specific config (e.g. `{ ticketProjectKey }`
+ * for `issue_tracking`, `{ repos: [...] }` for `code_review`).
  */
-export const projectTicketSource = sqliteTable(
-  "project_ticket_source",
+export const projectIntegrationBindings = sqliteTable(
+  "project_integration_bindings",
   {
-    id: integer("id").primaryKey({ autoIncrement: true }),
+    id: text("id").primaryKey(),
     projectId: text("project_id").notNull().references(() => projects.id),
     integrationId: text("integration_id").notNull().references(() => integrations.id),
-    ticketProjectKey: text("ticket_project_key").notNull(),
+    capability: text("capability").$type<DomainCapability>().notNull(),
+    configJson: text("config_json").notNull().default("{}"),
     createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
   },
   (table) => ({
-    uqProjectTicketSourceGlobal: unique("uq_project_ticket_source_global").on(
-      table.integrationId,
-      table.ticketProjectKey
-    ),
-    uqProjectTicketSourceProject: unique("uq_project_ticket_source_project").on(table.projectId),
-    idxPtsProjectId: index("idx_pts_project_id").on(table.projectId),
+    uqPibProjectCapability: unique("uq_pib_project_capability").on(table.projectId, table.capability),
+    idxPibProjectId: index("idx_pib_project_id").on(table.projectId),
+    idxPibCapability: index("idx_pib_capability").on(table.capability),
   })
 );
 
@@ -268,31 +361,7 @@ export const projectPushTargets = sqliteTable(
   })
 );
 
-/**
- * Review-project integration binding. One row per review project — links the
- * project to its VCS integration (Gerrit, GitLab MR, …).
- */
-export const projectReviewIntegration = sqliteTable("project_review_integration", {
-  projectId: text("project_id").primaryKey().references(() => projects.id),
-  integrationId: text("integration_id").notNull().references(() => integrations.id),
-});
-
-/**
- * Inclusion list of repositories covered by a review project. Many rows per
- * project (one per repo). A repo can appear in multiple projects simultaneously.
- */
-export const projectReviewRepos = sqliteTable(
-  "project_review_repos",
-  {
-    id: integer("id").primaryKey({ autoIncrement: true }),
-    projectId: text("project_id").notNull().references(() => projects.id),
-    repoKey: text("repo_key").notNull(),
-  },
-  (table) => ({
-    uqProjectRepo: unique("uq_project_review_repo").on(table.projectId, table.repoKey),
-    idxPrrProjectId: index("idx_prr_project_id").on(table.projectId),
-  })
-);
+// (review-project bindings now live in project_integration_bindings above)
 
 /**
  * Singleton table holding the global concurrency limit. `id` is constrained to

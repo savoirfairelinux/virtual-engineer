@@ -42,7 +42,7 @@ const VE_SSH_USER = "ve";
 function makeIntegration(id: string, overrides: Partial<Integration> = {}): Integration {
   return {
     id,
-    type: "gerrit",
+    provider: "gerrit",
     name: id,
     configJson: JSON.stringify({
       sshHost: "gerrit.example.com",
@@ -337,7 +337,8 @@ describe("GerritStreamEventsManager", () => {
 
     expect(orchestrator.triggerFeedbackForChange).toHaveBeenCalledWith("gerrit-a", "Ichange");
     expect(reviewTrigger.triggerReviewForChange).toHaveBeenCalledTimes(1);
-    expect(reviewTrigger.triggerReviewForChange).toHaveBeenCalledWith("gerrit-a", "Ichange");
+    // Re-adding VE as a reviewer is a manual relaunch → force a fresh review.
+    expect(reviewTrigger.triggerReviewForChange).toHaveBeenCalledWith("gerrit-a", "Ichange", { force: true });
   });
 
   it("reviewer-added: does NOT trigger review when a different user is added", async () => {
@@ -397,6 +398,8 @@ describe("GerritStreamEventsManager", () => {
     expect(orchestrator.triggerFeedbackForChange).toHaveBeenCalledWith("gerrit-a", "Ipatch");
     expect(countReviewerChecks(sshQuery)).toBe(1);
     expect(reviewTrigger.triggerReviewForChange).toHaveBeenCalledTimes(1);
+    // Automatic patchset-created trigger: no force (must not re-review a patchset
+    // already reviewed; a genuinely new patchset is re-reviewed on its own merit).
     expect(reviewTrigger.triggerReviewForChange).toHaveBeenCalledWith("gerrit-a", "Ipatch");
   });
 

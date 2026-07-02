@@ -1,10 +1,10 @@
 import { describe, it, expect, vi } from "vitest";
 import { FeedbackProcessor } from "../../src/orchestrator/feedbackProcessor.js";
-import type { StateStore, GerritComment } from "../../src/interfaces.js";
+import type { StateStore, ReviewComment } from "../../src/interfaces.js";
 import { makeTaskId, makeExternalChangeId } from "../../src/interfaces.js";
 import { randomUUID } from "crypto";
 
-function makeComment(overrides: Partial<GerritComment> = {}): GerritComment {
+function makeComment(overrides: Partial<ReviewComment> = {}): ReviewComment {
   return {
     id: randomUUID(),
     author: "reviewer@example.com",

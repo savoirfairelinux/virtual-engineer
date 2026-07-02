@@ -1,4 +1,5 @@
 import type { WebhookHandler } from "../webhookServer.js";
+import { buildTicketSourceLabel } from "../../utils/ticketSourceLabel.js";
 
 /**
  * Phase 5 — GitLab Issue Hook handler.
@@ -57,7 +58,7 @@ export const gitlabIssueWebhookHandler: WebhookHandler = async (ctx) => {
       ...(issue.url !== undefined ? { webUrl: issue.url } : {}),
     },
     project,
-    "gitlab-issue"
+    buildTicketSourceLabel(ctx.integration.provider, ctx.integrationId)
   );
 
   return { status: 202, body: { queued: true, taskTicketId: String(issue.iid), projectId: project.id } };

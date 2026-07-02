@@ -2,7 +2,7 @@ import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { getLogger } from "../logger.js";
 import type { Integration, IntegrationStore, ProjectRecord } from "../interfaces.js";
-import { getHandlerForIntegrationType, getSupportedEventsForIntegrationType } from "./handlers/index.js";
+import { getHandlerForProviderEvent, getSupportedEventsForProvider, providerHasWebhookHandler } from "./handlers/index.js";
 
 
 const log = getLogger("webhook-server");
@@ -111,12 +111,12 @@ export async function handleWebhookRequest(
     return true;
   }
 
-  // If the integration type has no registered webhook handler, reject early
+  // If the integration provider has no registered webhook handler, reject early
   // without logging an auth warning (avoids noise from integrations like Gerrit
   // that use SSH stream-events instead of webhooks).
-  if (integration && !getHandlerForIntegrationType(integration.type)) {
-    log.debug({ integrationId, integrationType: integration.type }, "webhook ignored: no handler for integration type");
-    writeJson(response, 202, { ignored: true, reason: `No webhook handler for integration type '${integration.type}'` });
+  if (integration && !providerHasWebhookHandler(integration.provider)) {
+    log.debug({ integrationId, integrationType: integration.provider }, "webhook ignored: no handler for provider");
+    writeJson(response, 202, { ignored: true, reason: `No webhook handler for provider '${integration.provider}'` });
     return true;
   }
 
@@ -163,9 +163,9 @@ export async function handleWebhookRequest(
   }
 
   // integration is non-null when secret is non-empty (extractWebhookSecret guards both).
-  // handler is non-null because we already filtered integration types with no handler above.
+  // handler is non-null because we already filtered providers with no handler above.
   const safeIntegration = integration as Integration;
-  const handler = getHandlerForIntegrationType(safeIntegration.type);
+  const handler = getHandlerForProviderEvent(safeIntegration.provider, event);
   if (!handler) {
     writeJson(response, 202, { ignored: true });
     return true;
@@ -174,7 +174,7 @@ export async function handleWebhookRequest(
   log.info(
     {
       integrationId,
-      integrationType: safeIntegration.type,
+      integrationType: safeIntegration.provider,
       event,
       bodyBytes: Buffer.byteLength(rawBody, "utf8"),
       payloadSummary: summarizePayload(payload),
@@ -184,7 +184,7 @@ export async function handleWebhookRequest(
   log.debug(
     {
       integrationId,
-      integrationType: safeIntegration.type,
+      integrationType: safeIntegration.provider,
       event,
       headers: sanitizeHeaders(request.headers),
       rawBodyPreview: makeBodyPreview(rawBody),
@@ -207,7 +207,7 @@ export async function handleWebhookRequest(
     log.info(
       {
         integrationId,
-        integrationType: safeIntegration.type,
+        integrationType: safeIntegration.provider,
         event,
         status: result.status,
         responseSummary: summarizePayload(result.body ?? { ok: true }),
@@ -507,5 +507,5 @@ export function generateWebhookSecret(): string {
  * `webhook-info` admin endpoint. Empty array means no handler is registered.
  */
 export function listSupportedEvents(integrationType: string): readonly string[] {
-  return getSupportedEventsForIntegrationType(integrationType);
+  return getSupportedEventsForProvider(integrationType);
 }

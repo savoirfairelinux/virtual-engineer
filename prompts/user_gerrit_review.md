@@ -39,7 +39,7 @@ Analyze the selected code for:
 Provide feedback as:<br>
 🔴 Critical Issues - Must fix before merge<br>
 🟡 Suggestions - Improvements to consider<br>
-🟢 Good Practices - What's done well<br>
+🟢 Good Practices - What's done well (mention briefly in the summary only, not as inline comments)<br>
 
 For each issue:
 * Specific line references

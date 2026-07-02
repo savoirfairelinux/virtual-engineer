@@ -1,7 +1,23 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { PluginManager } from "../../src/plugins/pluginManager.js";
 import { registerBuiltinPlugins } from "../../src/plugins/init.js";
-import type { AgentAdapter, AgentResult, IntegrationStore, Integration, IntegrationType, TaskContext } from "../../src/interfaces.js";
+import type { AgentAdapter, AgentResult, IntegrationStore, Integration, ProviderId, DomainCapability, TaskContext } from "../../src/interfaces.js";
+
+const PROVIDER_CAPABILITY: Record<ProviderId, DomainCapability> = {
+  redmine: "issue_tracking",
+  gerrit: "code_review",
+  gitlab: "issue_tracking",
+  github: "issue_tracking",
+  mock: "agent_execution",
+  copilot: "agent_execution",
+};
+
+/** Resolve the first active connector for a provider via its primary capability. */
+function activeConnector<T>(mgr: PluginManager, provider: ProviderId): T | null {
+  const integration = mgr.getActiveIntegrationsByProvider(provider)[0];
+  if (!integration) return null;
+  return mgr.getConnectorForCapability<T>(integration.id, PROVIDER_CAPABILITY[provider]);
+}
 
 function makeStore(initial: Integration[] = []): IntegrationStore {
   const data = new Map<string, Integration>();
@@ -33,9 +49,9 @@ function makeStore(initial: Integration[] = []): IntegrationStore {
   };
 }
 
-function makeIntegration(overrides: Partial<Integration> & { id: string; type: IntegrationType }): Integration {
+function makeIntegration(overrides: Partial<Integration> & { id: string; provider: ProviderId }): Integration {
   return {
-    name: overrides.type,
+    name: overrides.provider,
     configJson: "{}",
     enabled: false,
     createdAt: new Date(),
@@ -72,14 +88,14 @@ describe("PluginManager", () => {
       const store = makeStore([
         makeIntegration({
           id: "r1",
-          type: "redmine",
+          provider: "redmine",
           name: "Redmine Prod",
           configJson: JSON.stringify({ baseUrl: "http://r:3000", apiKey: "k", virtualEngineerUserLogin: "ve" }),
           enabled: true,
         }),
         makeIntegration({
           id: "g1",
-          type: "gerrit",
+          provider: "gerrit",
           name: "Gerrit",
           configJson: "{}",
           enabled: false,
@@ -87,22 +103,18 @@ describe("PluginManager", () => {
       ]);
 
       const mgr = new PluginManager(store);
-      const factory = vi.fn(() => makeMockPluginInstance("redmine-instance"));
-      mgr.registerFactory("redmine", factory);
-      mgr.registerFactory("gerrit", vi.fn(() => makeMockPluginInstance("gerrit-instance")));
 
       await mgr.loadFromDatabase();
 
-      expect(factory).toHaveBeenCalledTimes(1);
-      expect(mgr.getActiveConnector("redmine")).toBeTruthy();
-      expect(mgr.getActiveConnector("gerrit")).toBeNull();
+      expect(activeConnector(mgr, "redmine")).toBeTruthy();
+      expect(activeConnector(mgr, "gerrit")).toBeNull();
     });
 
     it("skips plugins with invalid config gracefully", async () => {
       const store = makeStore([
         makeIntegration({
           id: "bad",
-          type: "redmine",
+          provider: "redmine",
           configJson: JSON.stringify({ baseUrl: "not-a-url" }), // missing apiKey
           enabled: true,
         }),
@@ -120,7 +132,7 @@ describe("PluginManager", () => {
       const store = makeStore([
         makeIntegration({
           id: "copilot-legacy",
-          type: "copilot",
+          provider: "copilot",
           configJson: JSON.stringify({
             sessionToken: "encrypted_tok",
           }),
@@ -140,7 +152,7 @@ describe("PluginManager", () => {
         },
         expect.objectContaining({
           id: "copilot-legacy",
-          type: "copilot",
+          provider: "copilot",
         })
       );
     });
@@ -151,19 +163,19 @@ describe("PluginManager", () => {
       const store = makeStore([
         makeIntegration({
           id: "r1",
-          type: "redmine",
-          configJson: JSON.stringify({ baseUrl: "http://r:3000", apiKey: "k", virtualEngineerUserLogin: "ve" }),
+          provider: "copilot",
+          configJson: JSON.stringify({ apiKey: "ghp-test-token" }),
           enabled: false,
         }),
       ]);
 
-      const instance = makeMockPluginInstance("redmine-mock");
+      const instance = makeMockPluginInstance("copilot-mock");
       const mgr = new PluginManager(store);
-      mgr.registerFactory("redmine", vi.fn(() => instance));
+      mgr.registerFactory("copilot", vi.fn(() => instance));
 
       await mgr.enablePlugin("r1");
 
-      expect(mgr.getActiveConnector("redmine")).toBe(instance);
+      expect(activeConnector(mgr, "copilot")).toBe(instance);
       expect(store.setIntegrationEnabled).toHaveBeenCalledWith("r1", true);
     });
 
@@ -171,14 +183,14 @@ describe("PluginManager", () => {
       const store = makeStore([
         makeIntegration({
           id: "m1",
-          type: "mock",
+          provider: "mock",
           name: "Mock Agent",
           configJson: JSON.stringify({ status: "success", simulateDelayMs: 0 }),
           enabled: true,
         }),
         makeIntegration({
           id: "c1",
-          type: "copilot",
+          provider: "copilot",
           name: "Copilot Agent",
           configJson: JSON.stringify({ apiKey: "ghp-test-token" }),
           enabled: false,
@@ -192,7 +204,7 @@ describe("PluginManager", () => {
       mgr.registerFactory("copilot", vi.fn(() => copilotInstance));
 
       await mgr.loadFromDatabase();
-      expect(mgr.getActiveConnector("mock")).toBe(mockInstance);
+      expect(activeConnector(mgr, "mock")).toBe(mockInstance);
 
       await mgr.enablePlugin("c1");
 
@@ -200,8 +212,8 @@ describe("PluginManager", () => {
       // The orchestrator picks the right one per-project via getConnectorForIntegration.
       expect(store.setIntegrationEnabled).not.toHaveBeenCalledWith("m1", false);
       expect(store.setIntegrationEnabled).toHaveBeenCalledWith("c1", true);
-      expect(mgr.getActiveConnector("mock")).toBe(mockInstance);
-      expect(mgr.getActiveConnector("copilot")).toBe(copilotInstance);
+      expect(activeConnector(mgr, "mock")).toBe(mockInstance);
+      expect(activeConnector(mgr, "copilot")).toBe(copilotInstance);
       await expect(store.getIntegration("m1")).resolves.toMatchObject({ enabled: true });
       await expect(store.getIntegration("c1")).resolves.toMatchObject({ enabled: true });
     });
@@ -213,20 +225,20 @@ describe("PluginManager", () => {
       await expect(mgr.enablePlugin("nonexistent")).rejects.toThrow("Integration not found");
     });
 
-    it("throws for invalid config", async () => {
+    it("skips connector creation for invalid config without throwing", async () => {
       const store = makeStore([
         makeIntegration({
           id: "bad",
-          type: "redmine",
+          provider: "redmine",
           configJson: JSON.stringify({ baseUrl: "not-a-url" }),
           enabled: false,
         }),
       ]);
 
         const mgr = new PluginManager(store);
-        mgr.registerFactory("redmine", vi.fn(() => makeMockPluginInstance("bad-redmine")));
 
-      await expect(mgr.enablePlugin("bad")).rejects.toThrow("Invalid config");
+      await expect(mgr.enablePlugin("bad")).resolves.toBeUndefined();
+      expect(activeConnector(mgr, "redmine")).toBeNull();
     });
   });
 
@@ -235,7 +247,7 @@ describe("PluginManager", () => {
       const store = makeStore([
         makeIntegration({
           id: "r1",
-          type: "redmine",
+          provider: "redmine",
           configJson: JSON.stringify({ baseUrl: "http://r:3000", apiKey: "k", virtualEngineerUserLogin: "ve" }),
           enabled: true,
         }),
@@ -245,11 +257,11 @@ describe("PluginManager", () => {
         mgr.registerFactory("redmine", vi.fn(() => makeMockPluginInstance("r")));
       await mgr.loadFromDatabase();
 
-      expect(mgr.getActiveConnector("redmine")).toBeTruthy();
+      expect(activeConnector(mgr, "redmine")).toBeTruthy();
 
       await mgr.disablePlugin("r1");
 
-      expect(mgr.getActiveConnector("redmine")).toBeNull();
+      expect(activeConnector(mgr, "redmine")).toBeNull();
       expect(store.setIntegrationEnabled).toHaveBeenCalledWith("r1", false);
     });
 
@@ -266,7 +278,7 @@ describe("PluginManager", () => {
       const store = makeStore([
         makeIntegration({
           id: "r1",
-          type: "redmine",
+          provider: "redmine",
           configJson: JSON.stringify({ baseUrl: "http://r:3000", apiKey: "k", virtualEngineerUserLogin: "ve" }),
           enabled: false,
         }),
@@ -283,7 +295,7 @@ describe("PluginManager", () => {
       const store = makeStore([
         makeIntegration({
           id: "r1",
-          type: "redmine",
+          provider: "redmine",
           configJson: JSON.stringify({ baseUrl: "http://r:3000", apiKey: "bad", virtualEngineerUserLogin: "ve" }),
           enabled: false,
         }),
@@ -300,7 +312,7 @@ describe("PluginManager", () => {
       const store = makeStore([
         makeIntegration({
           id: "m1",
-          type: "mock",
+          provider: "mock",
           configJson: "{}",
           enabled: false,
         }),
@@ -364,7 +376,7 @@ describe("PluginManager", () => {
       const store = makeStore([
         makeIntegration({
           id: "r1",
-          type: "redmine",
+          provider: "redmine",
           configJson: JSON.stringify({ baseUrl: "http://r:3000", apiKey: "k", virtualEngineerUserLogin: "ve" }),
           enabled: false,
         }),
@@ -386,7 +398,7 @@ describe("PluginManager", () => {
       const store = makeStore([
         makeIntegration({
           id: "r1",
-          type: "redmine",
+          provider: "redmine",
           configJson: JSON.stringify({ baseUrl: "http://r:3000", apiKey: "k", virtualEngineerUserLogin: "ve" }),
           enabled: true,
         }),
@@ -410,22 +422,22 @@ describe("PluginManager", () => {
       const store = makeStore([
         makeIntegration({
           id: "r1",
-          type: "redmine",
-          name: "Redmine Prod",
-          configJson: JSON.stringify({ baseUrl: "http://r:3000", apiKey: "k1", virtualEngineerUserLogin: "ve" }),
+          provider: "copilot",
+          name: "Copilot Prod",
+          configJson: JSON.stringify({ sessionToken: "k1" }),
           enabled: true,
         }),
       ]);
 
-      const initialInstance = makeMockPluginInstance("redmine-old");
-      const reloadedInstance = makeMockPluginInstance("redmine-new");
+      const initialInstance = makeMockPluginInstance("copilot-old");
+      const reloadedInstance = makeMockPluginInstance("copilot-new");
       const factory = vi
         .fn()
         .mockReturnValueOnce(initialInstance)
         .mockReturnValueOnce(reloadedInstance);
 
       const mgr = new PluginManager(store);
-      mgr.registerFactory("redmine", factory);
+      mgr.registerFactory("copilot", factory);
 
       const callback = vi.fn();
       mgr.onPluginChange(callback);
@@ -435,9 +447,9 @@ describe("PluginManager", () => {
 
       await store.upsertIntegration({
         id: "r1",
-        type: "redmine",
-        name: "Redmine Prod",
-        configJson: JSON.stringify({ baseUrl: "http://r2:3000", apiKey: "k2", virtualEngineerUserLogin: "ve" }),
+        provider: "copilot",
+        name: "Copilot Prod",
+        configJson: JSON.stringify({ sessionToken: "k2" }),
         enabled: true,
       });
 
@@ -446,16 +458,14 @@ describe("PluginManager", () => {
       expect(factory).toHaveBeenCalledTimes(2);
       expect(factory).toHaveBeenLastCalledWith(
         {
-          baseUrl: "http://r2:3000",
-          apiKey: "k2",
-          virtualEngineerUserLogin: "ve",
+          sessionToken: "k2",
         },
         expect.objectContaining({
           id: "r1",
-          type: "redmine",
+          provider: "copilot",
         })
       );
-      expect(mgr.getActiveConnector("redmine")).toBe(reloadedInstance);
+      expect(activeConnector(mgr, "copilot")).toBe(reloadedInstance);
       expect(callback).toHaveBeenCalledWith();
     });
   });
@@ -465,13 +475,13 @@ describe("PluginManager", () => {
       const store = makeStore([
         makeIntegration({
           id: "r1",
-          type: "redmine",
+          provider: "redmine",
           configJson: JSON.stringify({ baseUrl: "http://r:3000", apiKey: "k", virtualEngineerUserLogin: "ve" }),
           enabled: true,
         }),
         makeIntegration({
           id: "m1",
-          type: "mock",
+          provider: "mock",
           configJson: "{}",
           enabled: true,
         }),
@@ -482,7 +492,7 @@ describe("PluginManager", () => {
         mgr.registerFactory("mock", vi.fn(() => makeMockPluginInstance("m")));
       await mgr.loadFromDatabase();
 
-      const types = mgr.getActiveIntegrationTypes();
+      const types = mgr.getActiveProviders();
       expect(types).toContain("redmine");
       expect(types).toContain("mock");
     });
@@ -496,7 +506,7 @@ describe("PluginManager", () => {
       const store = makeStore([
         makeIntegration({
           id: "r1",
-          type: "redmine",
+          provider: "redmine",
           configJson: JSON.stringify({ baseUrl: "http://r:3000", apiKey: "k", virtualEngineerUserLogin: "ve" }),
           enabled: true,
         }),
@@ -508,14 +518,14 @@ describe("PluginManager", () => {
       await mgr.loadFromDatabase();
 
       // The descriptor's createInstance should have been used.
-      expect(mgr.getActiveConnector("redmine")).toBeTruthy();
+      expect(activeConnector(mgr, "redmine")).toBeTruthy();
     });
 
     it("uses descriptor.createInstance for mock when no factory is registered", async () => {
       const store = makeStore([
         makeIntegration({
           id: "m1",
-          type: "mock",
+          provider: "mock",
           configJson: JSON.stringify({ status: "success", simulateDelayMs: 0 }),
           enabled: true,
         }),
@@ -526,7 +536,7 @@ describe("PluginManager", () => {
 
       await mgr.loadFromDatabase();
 
-      expect(mgr.getActiveConnector("mock")).toBeTruthy();
+      expect(activeConnector(mgr, "mock")).toBeTruthy();
     });
 
     it("uses descriptor.testConnection when no tester is registered (redmine)", async () => {
@@ -584,7 +594,7 @@ describe("PluginManager", () => {
       const store = makeStore([
         makeIntegration({
           id: "c1",
-          type: "copilot",
+          provider: "copilot",
           configJson: "{}",
           enabled: true,
         }),
@@ -594,7 +604,44 @@ describe("PluginManager", () => {
       // copilot has no descriptor.createInstance; no registerFactory either.
       // loadFromDatabase should log the error and skip the integration gracefully.
       await expect(mgr.loadFromDatabase()).resolves.not.toThrow();
-      expect(mgr.getActiveConnector("copilot")).toBeNull();
+      expect(activeConnector(mgr, "copilot")).toBeNull();
+    });
+  });
+
+  describe("per-integration capability + intake", () => {
+    it("integrationSupportsCapability checks the active integration's descriptor", async () => {
+      const store = makeStore([
+        makeIntegration({
+          id: "r1",
+          provider: "redmine",
+          configJson: JSON.stringify({ baseUrl: "http://r:3000", apiKey: "k" }),
+          enabled: true,
+        }),
+      ]);
+      const mgr = new PluginManager(store);
+      await mgr.loadFromDatabase();
+
+      expect(mgr.integrationSupportsCapability("r1", "issue_tracking")).toBe(true);
+      expect(mgr.integrationSupportsCapability("r1", "code_review")).toBe(false);
+      // Unknown / inactive integration id
+      expect(mgr.integrationSupportsCapability("missing", "issue_tracking")).toBe(false);
+    });
+
+    it("getIntegrationCapabilityIntake returns the descriptor intake mechanisms", async () => {
+      const store = makeStore([
+        makeIntegration({
+          id: "r1",
+          provider: "redmine",
+          configJson: JSON.stringify({ baseUrl: "http://r:3000", apiKey: "k" }),
+          enabled: true,
+        }),
+      ]);
+      const mgr = new PluginManager(store);
+      await mgr.loadFromDatabase();
+
+      expect(mgr.getIntegrationCapabilityIntake("r1", "issue_tracking")).toEqual(["polling", "webhook"]);
+      expect(mgr.getIntegrationCapabilityIntake("r1", "code_review")).toEqual([]);
+      expect(mgr.getIntegrationCapabilityIntake("missing", "issue_tracking")).toEqual([]);
     });
   });
 });

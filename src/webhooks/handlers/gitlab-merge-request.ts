@@ -52,6 +52,16 @@ export const gitlabMergeRequestWebhookHandler: WebhookHandler = async (ctx) => {
     return { status: 202, body: { queued: true, action: "abandoned", changeId } };
   }
 
+  // open / reopen / update → trigger a fresh review pass (when a reviewer is wired).
+  const reviewTriggerActions = new Set(["open", "opened", "reopen", "reopened", "update", "updated"]);
+  if (reviewTriggerActions.has(action ?? "") && ctx.orchestrator.triggerReviewForChange) {
+    try {
+      await ctx.orchestrator.triggerReviewForChange(ctx.integrationId, changeId);
+    } catch (err) {
+      ctx.log.warn({ err, changeId, action }, "review trigger failed; continuing with feedback check");
+    }
+  }
+
   // open / update / approved → re-poll feedback
   await ctx.orchestrator.triggerFeedbackForChange(ctx.integrationId, changeId);
   return { status: 202, body: { queued: true, action: action ?? "feedback", changeId } };

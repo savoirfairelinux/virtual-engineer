@@ -5,6 +5,7 @@
 
 import { execFileSync } from "child_process";
 import { getLogger } from "../logger.js";
+import { execGit } from "../utils/gitExec.js";
 import type { VcsConnector, VcsPushResult, VolumeExecOptions } from "./vcsConnector.js";
 import { buildFeatureBranchRef } from "./branchNaming.js";
 import type { ReviewComment } from "../interfaces.js";
@@ -23,20 +24,6 @@ export interface GitLabVcsConnectorConfig {
   gitAuthorEmail: string;
   /** Target branch for MR creation. Defaults to "main". */
   targetBranch?: string;
-}
-
-/** Run a git subcommand in the given directory; throws on non-zero exit. */
-function execGit(args: string[], cwd: string): string {
-  try {
-    return execFileSync("git", args, {
-      cwd,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-  } catch (err: unknown) {
-    const error = err instanceof Error ? err : new Error(String(err));
-    throw new Error(`git ${args[0]}: ${error.message.slice(0, 500)}`);
-  }
 }
 
 export class GitLabVcsConnector implements VcsConnector {

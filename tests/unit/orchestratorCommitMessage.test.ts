@@ -73,8 +73,8 @@ describe("Orchestrator.buildCommitMessage", () => {
 });
 
 describe("Orchestrator.buildTicketFooter (modular approach)", () => {
-  it("formats gitlab-issue as 'GitLab: #14'", () => {
-    const result = callBuildTicketFooter("gitlab", "14", "https://example.com/14", "gitlab-issue");
+  it("formats gitlab as 'GitLab: #14'", () => {
+    const result = callBuildTicketFooter("gitlab", "14", "https://example.com/14", "gitlab:gl-1");
     expect(result).toBe("GitLab: #14");
   });
 
@@ -95,8 +95,8 @@ describe("Orchestrator.buildTicketFooter (modular approach)", () => {
 });
 
 describe("Orchestrator.appendTicketFooter (integration)", () => {
-  it("appends 'GitLab: #14' footer for gitlab-issue", () => {
-    const result = callAppendTicketFooter("gitlab", "feat: add feature", "14", "", "gitlab-issue");
+  it("appends 'GitLab: #14' footer for gitlab", () => {
+    const result = callAppendTicketFooter("gitlab", "feat: add feature", "14", "", "gitlab:gl-1");
     expect(result).toMatch(/\n\nGitLab: #14\n$/);
   });
 
@@ -113,7 +113,7 @@ describe("Orchestrator.appendTicketFooter (integration)", () => {
 
   it("does NOT duplicate footer if message already contains 'GitLab:'", () => {
     const msg = "feat: add feature\n\nGitLab: #14\n";
-    const result = callAppendTicketFooter("gitlab", msg, "14", "", "gitlab-issue");
+    const result = callAppendTicketFooter("gitlab", msg, "14", "", "gitlab:gl-1");
     expect(result).toBe(msg);
     const occurrences = (result.match(/GitLab:/g) ?? []).length;
     expect(occurrences).toBe(1);

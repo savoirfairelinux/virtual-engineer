@@ -20,6 +20,6 @@
     "noUnusedParameters": true,
     "allowUnreachableCode": false
   },
-  "include": ["src/**/*", "tests/**/*", "vitest.config.ts", "eslint.config.js"],
-  "exclude": ["node_modules", "dist"]
+  "include": ["src/**/*", "tests/**/*", "vitest.config.ts", "eslint.config.js", "vite.admin.config.ts"],
+  "exclude": ["node_modules", "dist", "src/admin/ui"]
 }

@@ -2,13 +2,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import type { Integration } from "../../src/interfaces.js";
 import { registerBuiltinPlugins } from "../../src/plugins/init.js";
-import { getPluginDescriptor, registerPlugin, type PluginDescriptor } from "../../src/plugins/registry.js";
+import { getProviderDescriptor, registerPlugin, type ProviderDescriptor } from "../../src/plugins/registry.js";
 import { PluginIntegrationStreamEventsManager, type IntegrationEventStreamManager } from "../../src/connectors/integrationStreamEvents.js";
 
-function makeIntegration(type: Integration["type"], id: string): Integration {
+function makeIntegration(provider: Integration["provider"], id: string): Integration {
   return {
     id,
-    type,
+    provider,
     name: id,
     configJson: JSON.stringify({}),
     enabled: true,
@@ -25,15 +25,15 @@ describe("PluginIntegrationStreamEventsManager", () => {
   it("routes stream-capable integrations by descriptor instead of hard-coding Gerrit", async () => {
     registerBuiltinPlugins();
 
-    const original = getPluginDescriptor("gitlab-merge-request");
+    const original = getProviderDescriptor("gitlab");
     if (!original) {
-      throw new Error("expected builtin gitlab-merge-request descriptor");
+      throw new Error("expected builtin gitlab descriptor");
     }
 
     const listStatuses = vi.fn(() => [{
       integrationId: "gitlab-stream",
       integrationName: "gitlab-stream",
-      integrationType: "gitlab-merge-request" as const,
+      integrationType: "gitlab" as const,
       state: "connected" as const,
       reconnectCount: 0,
       lastEventType: "merge-request-updated",
@@ -55,10 +55,16 @@ describe("PluginIntegrationStreamEventsManager", () => {
     registerPlugin({
       ...original,
       configSchema: z.object({}),
-      streamEvents: {
-        createManager,
+      capabilities: {
+        ...original.capabilities,
+        code_review: {
+          ...original.capabilities.code_review,
+          streamEvents: {
+            createManager,
+          },
+        },
       },
-    } satisfies PluginDescriptor);
+    } satisfies ProviderDescriptor);
 
     const manager = new PluginIntegrationStreamEventsManager({
       orchestrator: {
@@ -69,7 +75,7 @@ describe("PluginIntegrationStreamEventsManager", () => {
       getReviewTrigger: () => undefined,
     });
 
-    const gitlabIntegration = makeIntegration("gitlab-merge-request", "gitlab-stream");
+    const gitlabIntegration = makeIntegration("gitlab", "gitlab-stream");
     const redmineIntegration = makeIntegration("redmine", "redmine-webhook");
 
     await manager.reconcile([gitlabIntegration, redmineIntegration]);
@@ -77,13 +83,13 @@ describe("PluginIntegrationStreamEventsManager", () => {
     expect(createManager).toHaveBeenCalledTimes(1);
     expect(streamManager.reconcile).toHaveBeenCalledWith([gitlabIntegration]);
     expect(manager.getStatus("gitlab-stream")).toEqual(expect.objectContaining({
-      integrationType: "gitlab-merge-request",
+      integrationType: "gitlab",
       state: "connected",
     }));
     expect(manager.listStatuses()).toEqual([
       expect.objectContaining({
         integrationId: "gitlab-stream",
-        integrationType: "gitlab-merge-request",
+        integrationType: "gitlab",
       }),
     ]);
 
