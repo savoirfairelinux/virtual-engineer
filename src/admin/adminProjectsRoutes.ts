@@ -435,7 +435,7 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
         agentId: makeAgentId(data.agentId),
         ...(data.agentOverrideJson !== undefined ? { agentOverrideJson: data.agentOverrideJson } : {}),
         ...(data.postCloneScript !== undefined ? { postCloneScript: data.postCloneScript } : {}),
-        ...(data.type === "coding" && data.skillDiscoveryEnabled !== undefined ? { skillDiscoveryEnabled: data.skillDiscoveryEnabled } : {}),
+        ...(data.skillDiscoveryEnabled !== undefined ? { skillDiscoveryEnabled: data.skillDiscoveryEnabled } : {}),
         ...(data.enabled !== undefined ? { enabled: data.enabled } : {}),
       });
     } catch (err: unknown) {
@@ -526,9 +526,6 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
       if (agent.type !== existing.type) {
         writeJson(res, 400, { error: `Agent type mismatch: agent is '${agent.type}', project is '${existing.type}'` }); return;
       }
-    }
-    if (data.skillDiscoveryEnabled !== undefined && existing.type !== "coding") {
-      writeJson(res, 400, { error: "skillDiscoveryEnabled only valid for coding projects" }); return;
     }
     const updates: Parameters<ProjectsRouteStore["updateProject"]>[1] = {};
     if (data.name !== undefined) updates.name = data.name;
