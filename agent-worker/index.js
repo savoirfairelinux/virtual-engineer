@@ -202,7 +202,6 @@ async function runSession(userPrompt) {
       workingDirectory: WORKSPACE,
       infiniteSessions: { enabled: false },
     });
-    registerSessionEventHandlers(session);
     return { session, client, localCliServer };
   } catch (err) {
     await client.stop().catch(() => {});
