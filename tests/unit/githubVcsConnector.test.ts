@@ -229,9 +229,15 @@ describe("GitHubVcsConnector", () => {
         exitCode: 1,
       });
 
-      await expect(
-        makeConnector().pushDirect("/unused", "feature-x", undefined, { volumeName: "vol-1", image: "ve:latest" })
-      ).rejects.toThrow(/Failed to push directly to GitHub \(volume\)/);
+      try {
+        await makeConnector().pushDirect("/unused", "feature-x", undefined, { volumeName: "vol-1", image: "ve:latest" });
+        throw new Error("Expected pushDirect to throw");
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        expect(message).toMatch(/Failed to push directly to GitHub \(volume\)/);
+        expect(message).not.toContain(TOKEN);
+        expect(message).toContain("<redacted>@");
+      }
     });
   });
 });
