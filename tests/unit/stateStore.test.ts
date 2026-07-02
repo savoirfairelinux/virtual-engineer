@@ -1304,4 +1304,24 @@ describe("SqliteStateStore — retryTask resets by task type", () => {
     expect(last?.fromState).toBe("FAILED");
     expect(last?.toState).toBe("DETECTED");
   });
+
+  it("preserves cycle_count across retries so cycle numbers keep incrementing", async () => {
+    const taskId = makeTaskId(randomUUID());
+    await store.createTask(taskId, makeTicketId("cg2"), "title", "desc", "jira");
+    await store.transition(taskId, "CONTEXT_BUILDING");
+    await store.transition(taskId, "AGENT_RUNNING");
+    // Simulate two completed agent cycles
+    await store.incrementCycle(taskId); // cycleCount → 1
+    await store.incrementCycle(taskId); // cycleCount → 2
+    await store.transition(taskId, "FAILED");
+
+    const retried = await store.retryTask(taskId);
+
+    // cycle_count must NOT be reset to 0 — the next incrementCycle will yield 3.
+    expect(retried.state).toBe("DETECTED");
+    expect(retried.cycleCount).toBe(2);
+
+    const afterIncrement = await store.incrementCycle(taskId);
+    expect(afterIncrement).toBe(3);
+  });
 });

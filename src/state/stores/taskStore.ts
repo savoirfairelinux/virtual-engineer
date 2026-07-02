@@ -792,14 +792,13 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
       if (adoption !== null) {
         raw
           .prepare(
-            "UPDATE tasks SET state = ?, cycle_count = ?, failure_reason = ?, project_id = ?, " +
+            "UPDATE tasks SET state = ?, failure_reason = ?, project_id = ?, " +
             "ticket_source_integration_id = COALESCE(ticket_source_integration_id, ?), " +
             "ticket_source_project_key = COALESCE(ticket_source_project_key, ?), " +
             "updated_at = ? WHERE task_id = ?"
           )
           .run(
             resetState,
-            0,
             null,
             adoption.projectId,
             adoption.integrationId,
@@ -809,8 +808,8 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
           );
       } else {
         raw
-          .prepare("UPDATE tasks SET state = ?, cycle_count = ?, failure_reason = ?, updated_at = ? WHERE task_id = ?")
-          .run(resetState, 0, null, nowSec, taskId);
+          .prepare("UPDATE tasks SET state = ?, failure_reason = ?, updated_at = ? WHERE task_id = ?")
+          .run(resetState, null, nowSec, taskId);
       }
 
       const metadata: Record<string, unknown> = { action: "retry" };
