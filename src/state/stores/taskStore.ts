@@ -6,6 +6,8 @@ import type {
   AgentLogEvent,
   AgentResult,
   ChangePerRepository,
+  CostSummary,
+  CostSummaryProject,
   CycleCost,
   ExternalChangeId,
   PostedReviewComment,
@@ -133,6 +135,7 @@ export interface TaskStoreApi {
   updateChangePerRepositoryStatus(taskId: TaskId, repoKey: string, status: string, changeId?: string): Promise<void>;
   orphanExcessChanges(taskId: TaskId, repoKey: string, maxCommitIndex: number): Promise<number>;
   getFailedTasksForProject(projectId: ProjectId): Promise<Task[]>;
+  getCostSummary(options?: { since?: Date }): Promise<CostSummary>;
 }
 
 interface TaskStoreContext {
@@ -1091,6 +1094,138 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
     return result.changes;
   }
 
+  /**
+   * Aggregate agent-cycle execution cost across all tasks, broken down per
+   * project and totalled instance-wide. Cycles that were persisted before the
+   * cost columns existed (or that never recorded a USD snapshot) are recomputed
+   * from their captured event log, so historical runs are still accounted for.
+   */
+  async function getCostSummary(options?: { since?: Date }): Promise<CostSummary> {
+    const sinceEpochSeconds =
+      options?.since !== undefined ? Math.floor(options.since.getTime() / 1000) : null;
+
+    interface Bucket {
+      projectId: string | null;
+      projectName: string | null;
+      usd: number;
+      aiCredits: number;
+      premiumRequests: number;
+      runCount: number;
+    }
+    const buckets = new Map<string, Bucket>();
+    const keyOf = (projectId: string | null): string => projectId ?? "\u0000__unassigned__";
+    const bucketFor = (projectId: string | null, projectName: string | null): Bucket => {
+      const key = keyOf(projectId);
+      let bucket = buckets.get(key);
+      if (!bucket) {
+        bucket = { projectId, projectName, usd: 0, aiCredits: 0, premiumRequests: 0, runCount: 0 };
+        buckets.set(key, bucket);
+      } else if (bucket.projectName === null && projectName !== null) {
+        bucket.projectName = projectName;
+      }
+      return bucket;
+    };
+
+    const periodClause = sinceEpochSeconds !== null ? "WHERE c.created_at >= ?" : "";
+    const periodArgs = sinceEpochSeconds !== null ? [sinceEpochSeconds] : [];
+
+    // Pass 1: SQL aggregation of recorded snapshot costs + run counts per project.
+    const aggregateRows = raw
+      .prepare(
+        `SELECT t.project_id AS projectId, p.name AS projectName,
+                SUM(COALESCE(c.cost_usd, 0)) AS usd,
+                SUM(COALESCE(c.cost_ai_credits, 0)) AS aiCredits,
+                SUM(COALESCE(c.premium_requests, 0)) AS premiumRequests,
+                COUNT(*) AS runCount
+         FROM agent_cycles c
+         JOIN tasks t ON t.task_id = c.task_id
+         LEFT JOIN projects p ON p.id = t.project_id
+         ${periodClause}
+         GROUP BY t.project_id, p.name`
+      )
+      .all(...periodArgs) as Array<{
+        projectId: string | null;
+        projectName: string | null;
+        usd: number;
+        aiCredits: number;
+        premiumRequests: number;
+        runCount: number;
+      }>;
+    for (const row of aggregateRows) {
+      const bucket = bucketFor(row.projectId, row.projectName);
+      bucket.usd += row.usd;
+      bucket.aiCredits += row.aiCredits;
+      bucket.premiumRequests += row.premiumRequests;
+      bucket.runCount += row.runCount;
+    }
+
+    // Pass 2: recompute cost for legacy cycles that have no USD snapshot but do
+    // carry a captured event log (run counts already tallied in pass 1).
+    const legacyRows = raw
+      .prepare(
+        `SELECT t.project_id AS projectId, p.name AS projectName,
+                c.agent_events AS agentEvents, c.agent_result AS agentResult
+         FROM agent_cycles c
+         JOIN tasks t ON t.task_id = c.task_id
+         LEFT JOIN projects p ON p.id = t.project_id
+         WHERE c.cost_usd IS NULL
+         ${sinceEpochSeconds !== null ? "AND c.created_at >= ?" : ""}`
+      )
+      .all(...periodArgs) as Array<{
+        projectId: string | null;
+        projectName: string | null;
+        agentEvents: string | null;
+        agentResult: string | null;
+      }>;
+    for (const row of legacyRows) {
+      // Prefer the canonical `agent_events` column, but fall back to events
+      // embedded in the serialized AgentResult for rows persisted before that
+      // column existed (mirrors getAgentCycles' recompute-on-read behavior).
+      let events: AgentLogEvent[] | undefined;
+      if (row.agentEvents) {
+        try {
+          events = JSON.parse(row.agentEvents) as AgentLogEvent[];
+        } catch {
+          events = undefined;
+        }
+      }
+      if (!events && row.agentResult) {
+        try {
+          events = (JSON.parse(row.agentResult) as AgentResult).agentEvents;
+        } catch {
+          events = undefined;
+        }
+      }
+      if (!events) continue;
+      const cost = computeCycleCost(events);
+      if (!hasCostData(cost)) continue;
+      const bucket = bucketFor(row.projectId, row.projectName);
+      bucket.usd += cost.usd;
+      bucket.aiCredits += cost.priced ? cost.aiCredits : 0;
+      bucket.premiumRequests += cost.premiumRequests;
+    }
+
+    const perProject: CostSummaryProject[] = [...buckets.values()]
+      .map((b) => ({
+        projectId: b.projectId,
+        projectName: b.projectName,
+        usd: b.usd,
+        aiCredits: b.aiCredits,
+        premiumRequests: b.premiumRequests,
+        runCount: b.runCount,
+      }))
+      .sort((a, b) => b.usd - a.usd || b.runCount - a.runCount);
+
+    return {
+      totalUsd: perProject.reduce((sum, p) => sum + p.usd, 0),
+      totalAiCredits: perProject.reduce((sum, p) => sum + p.aiCredits, 0),
+      totalPremiumRequests: perProject.reduce((sum, p) => sum + p.premiumRequests, 0),
+      totalRuns: perProject.reduce((sum, p) => sum + p.runCount, 0),
+      perProject,
+      sinceEpochSeconds,
+    };
+  }
+
   return {
     createTask,
     getTask,
@@ -1133,6 +1268,7 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
     updateChangePerRepositoryStatus,
     orphanExcessChanges,
     getFailedTasksForProject,
+    getCostSummary,
   };
 }
 

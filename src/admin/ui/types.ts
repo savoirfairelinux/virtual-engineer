@@ -289,6 +289,24 @@ export interface ApiOverview {
   };
 }
 
+export interface ApiCostSummaryProject {
+  projectId: string | null;
+  projectName: string | null;
+  usd: number;
+  aiCredits: number;
+  premiumRequests: number;
+  runCount: number;
+}
+
+export interface ApiCostSummary {
+  totalUsd: number;
+  totalAiCredits: number;
+  totalPremiumRequests: number;
+  totalRuns: number;
+  perProject: ApiCostSummaryProject[];
+  sinceEpochSeconds: number | null;
+}
+
 /* ─── Bootstrap injected by the server ────────────────────────────────── */
 export interface VeAdminBootstrap {
   requiresAuth: boolean;

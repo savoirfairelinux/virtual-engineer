@@ -152,6 +152,7 @@ export class SqliteStateStore {
         WHERE state NOT IN ('DONE', 'FAILED', 'ABANDONED', 'REVIEW_DONE', 'REVIEW_FAILED');
       CREATE INDEX IF NOT EXISTS idx_state_transitions_task_id ON state_transitions(task_id);
       CREATE INDEX IF NOT EXISTS idx_agent_cycles_task_id ON agent_cycles(task_id);
+      CREATE INDEX IF NOT EXISTS idx_agent_cycles_created_at ON agent_cycles(created_at);
       CREATE INDEX IF NOT EXISTS idx_processed_comments_task_id ON processed_comments(task_id);
 
       CREATE TABLE IF NOT EXISTS integrations (

@@ -973,6 +973,42 @@ export interface CycleCost {
   modelId: string | null;
 }
 
+/** Per-project (or unassigned) slice of an aggregated cost summary. */
+export interface CostSummaryProject {
+  /** Project id, or null for cycles whose task has no project (orphaned/legacy). */
+  projectId: string | null;
+  /** Project name, or null when the project no longer exists or is unassigned. */
+  projectName: string | null;
+  /** Total USD across the project's agent cycles in the period. */
+  usd: number;
+  /** Total GitHub AI credits across the project's agent cycles in the period. */
+  aiCredits: number;
+  /** Total premium-request multiplier across the period. */
+  premiumRequests: number;
+  /** Number of agent cycles (runs) counted for the project in the period. */
+  runCount: number;
+}
+
+/**
+ * Aggregated execution cost across all agent cycles, broken down per project and
+ * totalled instance-wide. Cycles without a recorded cost snapshot are recomputed
+ * from their captured event log so historical runs are still accounted for.
+ */
+export interface CostSummary {
+  /** Instance-wide total USD over the period. */
+  totalUsd: number;
+  /** Instance-wide total GitHub AI credits over the period. */
+  totalAiCredits: number;
+  /** Instance-wide total premium-request multiplier over the period. */
+  totalPremiumRequests: number;
+  /** Instance-wide total number of agent cycles (runs) over the period. */
+  totalRuns: number;
+  /** Per-project breakdown, sorted by descending USD. */
+  perProject: CostSummaryProject[];
+  /** Inclusive lower bound of the period in epoch seconds, or null for all-time. */
+  sinceEpochSeconds: number | null;
+}
+
 export interface Prompt {
   id: string;
   label: string;
@@ -1085,6 +1121,9 @@ export interface StateStore {
 
   getAgentCycles(taskId: TaskId): Promise<AgentCycle[]>;
   getAgentCycleEvents(taskId: TaskId, cycleNumber: number): Promise<AgentLogEvent[]>;
+
+  /** Aggregate agent-cycle execution cost per project and instance-wide. */
+  getCostSummary(options?: { since?: Date }): Promise<CostSummary>;
 
   getStateTransitions(taskId: TaskId): Promise<StateTransition[]>;
 

@@ -65,6 +65,7 @@ function makeDeps(store: SqliteStateStore, overrides: Partial<AdminServerDepende
       getChangesForTask: vi.fn(async () => []),
       getChangesForTasks: vi.fn(async () => []),
       deleteTaskGroup: vi.fn(async () => {}),
+      getCostSummary: vi.fn(async () => ({ totalUsd: 0, totalAiCredits: 0, totalPremiumRequests: 0, totalRuns: 0, perProject: [], sinceEpochSeconds: null })),
     },
     agentStore: store,
     projectStore: store,
