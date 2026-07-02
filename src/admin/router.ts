@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import type { UserRole } from "../interfaces.js";
 import { writeJson } from "./adminRouteUtils.js";
 
 export type RouteParams = Record<string, string>;
@@ -8,11 +9,30 @@ export type RouteHandler = (
   params: RouteParams
 ) => Promise<void>;
 
+/** Per-route metadata. `role` is the minimum role required (default: {@link defaultRoleForMethod}). */
+export interface RouteMeta {
+  role?: UserRole;
+}
+
+/** Minimum role implied by the HTTP method when a route declares none. */
+export function defaultRoleForMethod(method: string): UserRole {
+  const upper = method.toUpperCase();
+  return upper === "GET" || upper === "HEAD" ? "viewer" : "operator";
+}
+
+const ROLE_RANK: Record<UserRole, number> = { viewer: 0, operator: 1, admin: 2 };
+
+/** True when `actual` meets or exceeds `required` (admin > operator > viewer). */
+export function roleSatisfies(actual: UserRole, required: UserRole): boolean {
+  return ROLE_RANK[actual] >= ROLE_RANK[required];
+}
+
 interface CompiledRoute {
   method: string;
   regex: RegExp;
   keys: readonly string[];
   handler: RouteHandler;
+  meta: RouteMeta;
 }
 
 /** Compile a `:param`-style path pattern to a capturing regex. */
@@ -41,10 +61,23 @@ export class Router {
   private readonly routes: CompiledRoute[] = [];
 
   /** Register a handler for the given HTTP method and path pattern. */
-  add(method: string, pattern: string, handler: RouteHandler): this {
+  add(method: string, pattern: string, handler: RouteHandler, meta: RouteMeta = {}): this {
     const { regex, keys } = compilePattern(pattern);
-    this.routes.push({ method: method.toUpperCase(), regex, keys, handler });
+    this.routes.push({ method: method.toUpperCase(), regex, keys, handler, meta });
     return this;
+  }
+
+  /**
+   * Peek at the route that would handle a method + path (without dispatching).
+   * Returns the route's metadata, or null when no route matches.
+   */
+  match(method: string, path: string): { meta: RouteMeta } | null {
+    const upperMethod = method.toUpperCase();
+    for (const route of this.routes) {
+      if (route.method !== upperMethod) continue;
+      if (route.regex.test(path)) return { meta: route.meta };
+    }
+    return null;
   }
 
   /**

@@ -24,8 +24,14 @@ import { registerStreamRoutes } from "./adminStreamRoutes.js";
 import { registerConcurrencyRoutes } from "./adminConcurrencyRoutes.js";
 import { registerWebhookRoutes } from "./adminWebhookRoutes.js";
 import { registerIntegrationRoutes } from "./adminIntegrationRoutes.js";
+import { registerAuthRoutes, type AuthRouteAuditStore, type AuthRouteUserStore } from "./adminAuthRoutes.js";
+import { createAdminAuthService, type AdminAuthService, type AdminAuthStateStore } from "./adminAuthService.js";
+import { getAuthContext, setAuthContext } from "./authContext.js";
 import { makeTaskId } from "../interfaces.js";
-import { Router } from "./router.js";
+import { Router, defaultRoleForMethod, roleSatisfies } from "./router.js";
+
+export { getAuthContext } from "./authContext.js";
+export type { AuthContext } from "./adminAuthService.js";
 
 // process.cwd() is the project root in both dev (tsx src/) and prod (node dist/src/index.js).
 const DIST_UI_DIR = resolve(process.cwd(), "dist/admin-ui");
@@ -173,10 +179,11 @@ function getProviderUrls(pluginManager: PluginManager | undefined): {
 
 /** Create and return the admin HTTP server with all routes wired up. */
 export function createAdminServer(dependencies: AdminServerDependencies): Server {
-  const router = buildApiRouter(dependencies);
+  const authRuntime = createAuthRuntime(dependencies);
+  const router = buildApiRouter(dependencies, authRuntime);
   return createServer(async (request, response) => {
     try {
-      await handleRequest(request, response, dependencies, router);
+      await handleRequest(request, response, dependencies, router, authRuntime);
     } catch (err: unknown) {
       log.error({ err, method: request.method, url: request.url }, "admin request failed");
       writeJson(response, 500, { error: "Internal server error" });
@@ -184,8 +191,67 @@ export function createAdminServer(dependencies: AdminServerDependencies): Server
   });
 }
 
+// ─── Session auth runtime ────────────────────────────────────────────────────
+
+/** Combined user-store surface needed for session auth + user management. */
+type AdminUserCapableStore = AdminAuthStateStore & AuthRouteUserStore;
+
+/**
+ * Feature-detect the user-store methods on the injected state store. Mocks in
+ * tests (and older embedders) may omit them — session auth is then disabled
+ * and the legacy HMAC gate keeps working.
+ */
+function extractUserStore(stateStore: unknown): AdminUserCapableStore | null {
+  const candidate = stateStore as Partial<AdminUserCapableStore> | null | undefined;
+  if (
+    candidate &&
+    typeof candidate.countUsers === "function" &&
+    typeof candidate.getUserByUsername === "function" &&
+    typeof candidate.createSession === "function"
+  ) {
+    return candidate as AdminUserCapableStore;
+  }
+  return null;
+}
+
+/** Feature-detect the audit-store append method on the injected state store. */
+function extractAuditStore(stateStore: unknown): AuthRouteAuditStore | null {
+  const candidate = stateStore as Partial<AuthRouteAuditStore> | null | undefined;
+  return candidate && typeof candidate.appendAuditEntry === "function"
+    ? (candidate as AuthRouteAuditStore)
+    : null;
+}
+
+interface AdminAuthRuntime {
+  authService: AdminAuthService | null;
+  userStore: AdminUserCapableStore | null;
+  /** Cached "≥1 user exists" check — false when the store lacks user methods. */
+  usersExist(): Promise<boolean>;
+  invalidateUsersExistCache(): void;
+}
+
+function createAuthRuntime(dependencies: AdminServerDependencies): AdminAuthRuntime {
+  const userStore = extractUserStore(dependencies.stateStore);
+  const authService = userStore ? createAdminAuthService({ stateStore: userStore }) : null;
+  let usersExistCache: boolean | null = null;
+  return {
+    authService,
+    userStore,
+    async usersExist(): Promise<boolean> {
+      if (!userStore) return false;
+      if (usersExistCache === null) {
+        usersExistCache = (await userStore.countUsers()) > 0;
+      }
+      return usersExistCache;
+    },
+    invalidateUsersExistCache(): void {
+      usersExistCache = null;
+    },
+  };
+}
+
 /** Build the declarative API router for all /api/admin/* routes. */
-function buildApiRouter(dependencies: AdminServerDependencies): Router {
+function buildApiRouter(dependencies: AdminServerDependencies, authRuntime: AdminAuthRuntime): Router {
   const router = new Router();
 
   // Status / Config / Providers
@@ -230,6 +296,12 @@ function buildApiRouter(dependencies: AdminServerDependencies): Router {
   });
 
   registerStreamRoutes(router, { stateStore: dependencies.stateStore });
+  registerAuthRoutes(router, {
+    userStore: authRuntime.userStore ?? undefined,
+    auditStore: extractAuditStore(dependencies.stateStore) ?? undefined,
+    authService: authRuntime.authService ?? undefined,
+    onUsersChanged: () => authRuntime.invalidateUsersExistCache(),
+  });
   registerPromptRoutes(router, { promptStore: dependencies.promptStore, agentStore: dependencies.agentStore });
   registerTaskRoutes(router, { stateStore: dependencies.stateStore, taskControl: dependencies.taskControl });
   registerIntegrationRoutes(router, {
@@ -274,7 +346,8 @@ async function handleRequest(
   request: IncomingMessage,
   response: ServerResponse,
   dependencies: AdminServerDependencies,
-  router: Router
+  router: Router,
+  authRuntime: AdminAuthRuntime
 ): Promise<void> {
   const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
   const path = requestUrl.pathname;
@@ -337,7 +410,9 @@ async function handleRequest(
   if (path === "/api/admin/img-proxy" && method === "GET") {
     const targetUrl = requestUrl.searchParams.get("url") ?? "";
     const queryToken = requestUrl.searchParams.get("t") ?? "";
-    const proxyAuthorized = isAuthorizedToken(queryToken, dependencies.config);
+    const proxyAuthorized = authRuntime.authService && (await authRuntime.usersExist())
+      ? (await authRuntime.authService.validateSession(queryToken)) !== null
+      : isAuthorizedToken(queryToken, dependencies.config);
     if (!proxyAuthorized) { writeJson(response, 401, { error: "Unauthorized" }); return; }
     const { gitlabBaseUrl, gitlabToken: gitlabTokenVal } = getProviderUrls(dependencies.pluginManager);
     if (!gitlabBaseUrl || !targetUrl.startsWith(gitlabBaseUrl)) {
@@ -389,15 +464,56 @@ async function handleRequest(
 
   // ─── Auth gate ────────────────────────────────────────────────────────────
 
-  if (!isAuthorized(request, dependencies.config)) {
-    response.setHeader("www-authenticate", 'Bearer realm="virtual-engineer-admin"');
-    writeJson(response, 401, { error: "Unauthorized" });
-    return;
+  // Public auth endpoints — no credentials required.
+  const isPublicAuthRoute =
+    (method === "GET" && path === "/api/admin/auth/setup-status") ||
+    (method === "POST" && path === "/api/admin/auth/login");
+
+  if (!isPublicAuthRoute) {
+    if (method === "POST" && path === "/api/admin/auth/setup") {
+      // Bootstrap: the legacy HMAC token unlocks first-admin creation
+      // (the route handler additionally enforces that zero users exist).
+      if (!isAuthorized(request, dependencies.config)) {
+        sendUnauthorized(response);
+        return;
+      }
+      setAuthContext(request, { userId: null, username: "bootstrap", role: "admin" });
+    } else if (authRuntime.authService && (await authRuntime.usersExist())) {
+      // ≥1 user exists → only DB-backed session tokens are accepted.
+      const token = extractBearerToken(request);
+      const context = token ? await authRuntime.authService.validateSession(token) : null;
+      if (!context) {
+        sendUnauthorized(response);
+        return;
+      }
+      setAuthContext(request, context);
+    } else {
+      // Bootstrap mode (no users yet) — legacy HMAC keeps working everywhere.
+      if (!isAuthorized(request, dependencies.config)) {
+        sendUnauthorized(response);
+        return;
+      }
+      setAuthContext(request, { userId: null, username: "bootstrap", role: "admin" });
+    }
   }
 
   if (!["GET", "PATCH", "POST", "PUT", "DELETE"].includes(method)) {
     writeJson(response, 405, { error: "Method not allowed" });
     return;
+  }
+
+  // ─── RBAC gate ────────────────────────────────────────────────────────────
+
+  const matched = router.match(method, path);
+  if (matched) {
+    const context = getAuthContext(request);
+    if (context) {
+      const requiredRole = matched.meta.role ?? defaultRoleForMethod(method);
+      if (!roleSatisfies(context.role, requiredRole)) {
+        writeJson(response, 403, { error: "forbidden", requiredRole });
+        return;
+      }
+    }
   }
 
   // ─── Modular route dispatch ───────────────────────────────────────────────
@@ -408,6 +524,20 @@ async function handleRequest(
 }
 
 // ─── Auth & Security ────────────────────────────────────────────────────────
+
+/** Send a 401 with the WWW-Authenticate challenge header. */
+function sendUnauthorized(response: ServerResponse): void {
+  response.setHeader("www-authenticate", 'Bearer realm="virtual-engineer-admin"');
+  writeJson(response, 401, { error: "Unauthorized" });
+}
+
+/** Extract the raw Bearer token from the Authorization header, if any. */
+function extractBearerToken(request: IncomingMessage): string | null {
+  const authorization = request.headers.authorization;
+  if (!authorization?.startsWith("Bearer ")) return null;
+  const token = authorization.slice("Bearer ".length).trim();
+  return token.length > 0 ? token : null;
+}
 
 /** Derive the admin auth mode string from the runtime config. */
 function getAdminAuthMode(config: AdminRuntimeConfig): "none" | "hmac" {

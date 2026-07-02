@@ -46,7 +46,7 @@ export function registerWebhookRoutes(router: Router, deps: WebhookRouteDeps): v
     }
     deps.onIntegrationUpdated?.(id);
     writeJson(res, 200, { secret: newSecret });
-  });
+  }, { role: "admin" });
 
   router.add("PUT", "/api/admin/integrations/:id/webhook-allowed-ips", async (req, res, params) => {
     if (!deps.integrationStore) { writeJson(res, 501, { error: "Integration store not available" }); return; }
@@ -92,7 +92,7 @@ export function registerWebhookRoutes(router: Router, deps: WebhookRouteDeps): v
     }
     deps.onIntegrationUpdated?.(id);
     writeJson(res, 200, { allowedIps });
-  });
+  }, { role: "admin" });
 
   router.add("GET", "/api/admin/integrations/:id/webhook-allowed-ips", async (_req, res, params) => {
     if (!deps.integrationStore) { writeJson(res, 501, { error: "Integration store not available" }); return; }

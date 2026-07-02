@@ -62,7 +62,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
     if (!baseUrl || !clientId) { writeJson(res, 400, { error: "Missing required fields: baseUrl, clientId" }); return; }
     const app = await deps.oAuthAppStore.upsertOAuthApp({ provider, baseUrl: normalizeGitLabBaseUrl(baseUrl), clientId });
     writeJson(res, 201, { app: serializeOAuthApp(app) });
-  });
+  }, { role: "admin" });
 
   router.add("DELETE", "/api/admin/oauth-apps", async (req, res, _params) => {
     if (!deps.oAuthAppStore) { writeJson(res, 501, { error: "OAuth app registry is not available" }); return; }
@@ -72,7 +72,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
     if (!baseUrl) { writeJson(res, 400, { error: "baseUrl is required" }); return; }
     await deps.oAuthAppStore.deleteOAuthApp(provider, normalizeGitLabBaseUrl(baseUrl));
     writeJson(res, 200, { ok: true });
-  });
+  }, { role: "admin" });
 
   // Resolve a provider + base URL to its OAuth app registry entry.
   router.add("POST", "/api/admin/oauth-apps/resolve", async (req, res, _params) => {
@@ -88,7 +88,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
       return;
     }
     writeJson(res, 200, { app: serializeOAuthApp(app) });
-  });
+  }, { role: "admin" });
 
   // ─── Integrations CRUD (exact paths before :id pattern) ──────────────────
   router.add("GET", "/api/admin/integrations", async (_req, res, _params) => {
@@ -142,7 +142,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
       log.warn({ err }, "create integration failed");
       writeJson(res, 500, { error: msg });
     }
-  });
+  }, { role: "admin" });
 
   // test (exact path before :id)
   router.add("POST", "/api/admin/integrations/test", async (req, res, _params) => {
@@ -176,7 +176,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
       log.warn({ integrationId, requestedProvider, errorMessage }, "config test connection failed");
       writeJson(res, 400, { success: false, error: errorMessage, models: [] });
     }
-  });
+  }, { role: "admin" });
 
   // ─── Single integration by ID ─────────────────────────────────────────────
   router.add("GET", "/api/admin/integrations/:id", async (_req, res, params) => {
@@ -234,7 +234,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
       log.warn({ err }, "update integration failed");
       writeJson(res, 500, { error: msg });
     }
-  });
+  }, { role: "admin" });
 
   router.add("DELETE", "/api/admin/integrations/:id", async (_req, res, params) => {
     if (!deps.integrationStore) { writeJson(res, 501, { error: "Integration store not available" }); return; }
@@ -261,7 +261,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
       log.warn({ err }, "delete integration failed");
       writeJson(res, 500, { error: msg });
     }
-  });
+  }, { role: "admin" });
 
   // ─── Enable / Disable ─────────────────────────────────────────────────────
   router.add("PATCH", "/api/admin/integrations/:id/enable", async (_req, res, params) => {
@@ -275,7 +275,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
       log.warn({ err }, "enable plugin failed");
       writeJson(res, 400, { error: "Operation failed" });
     }
-  });
+  }, { role: "admin" });
 
   router.add("PATCH", "/api/admin/integrations/:id/disable", async (_req, res, params) => {
     if (!deps.pluginManager) { writeJson(res, 501, { error: "Plugin manager not available" }); return; }
@@ -288,7 +288,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
       log.warn({ err }, "disable plugin failed");
       writeJson(res, 400, { error: "Operation failed" });
     }
-  });
+  }, { role: "admin" });
 
   // ─── Test (by ID) ─────────────────────────────────────────────────────────
   router.add("POST", "/api/admin/integrations/:id/test", async (_req, res, params) => {
@@ -307,7 +307,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
       log.warn({ id, errorMessage }, "test connection failed");
       writeJson(res, 400, { success: false, error: errorMessage, models: [] });
     }
-  });
+  }, { role: "admin" });
 
   // ─── Models ───────────────────────────────────────────────────────────────
   router.add("GET", "/api/admin/integrations/:id/models", async (_req, res, params) => {
@@ -402,7 +402,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
       log.warn({ id, provider: integration.provider, errorMessage }, "resource discovery failed");
       writeJson(res, 502, { error: `Discovery failed: ${errorMessage}` });
     }
-  });
+  }, { role: "admin" });
 
   // ─── Branches (per-repository, on-demand) ───────────────────────────────────
   router.add("GET", "/api/admin/integrations/:id/branches", async (req, res, params) => {

@@ -10,8 +10,11 @@ The admin server is a small HTTP service (default `127.0.0.1:3100`) that serves 
 | --- | --- |
 | `startAdminServer.ts` | Bind/listen helper used by `src/index.ts` and tests. |
 | `closeAdminServer.ts` | Graceful shutdown helper. |
-| `router.ts` | Lightweight declarative micro-router (`Router.add()` / `Router.dispatch()`). Compiles `:param`-style patterns to anchored regexes, extracts and URL-decodes named parameters, and auto-returns 405 when a path matches but the HTTP method does not. |
-| `adminServer.ts` | Auth gate, security headers, and public endpoints (dashboard, health, img-proxy). Builds a single `Router` instance via `buildApiRouter()` at startup and dispatches every authenticated `/api/admin/*` request through it. |
+| `router.ts` | Lightweight declarative micro-router (`Router.add()` / `Router.dispatch()` / `Router.match()`). Compiles `:param`-style patterns to anchored regexes, extracts and URL-decodes named parameters, and auto-returns 405 when a path matches but the HTTP method does not. Routes carry optional `RouteMeta` (`{ role?: UserRole }`); `defaultRoleForMethod()` maps GET/HEAD → `viewer`, everything else → `operator`, and `roleSatisfies()` compares role rank (`viewer < operator < admin`). |
+| `adminServer.ts` | Auth gate (session tokens + legacy HMAC bootstrap), RBAC enforcement, security headers, and public endpoints (dashboard, health, img-proxy). Builds a single `Router` instance via `buildApiRouter()` at startup and dispatches every authenticated `/api/admin/*` request through it. Re-exports `getAuthContext` / `AuthContext`. |
+| `adminAuthService.ts` | Password hashing (`scrypt`, `scrypt:N:r:p:salt:hash` format), session-token hashing (sha256), and `createAdminAuthService()` (login / validateSession with sliding 7-day expiry / logout). Exports `SESSION_TTL_MS`, `AuthContext`. |
+| `adminAuthRoutes.ts` | `/api/admin/auth/*` (setup-status, setup, login, logout, me) and `/api/admin/users/*` CRUD with last-admin guards, self password change, and audit logging. |
+| `authContext.ts` | Per-request `AuthContext` storage (`WeakMap<IncomingMessage, AuthContext>`): `setAuthContext()` / `getAuthContext()`. |
 | `adminRouteUtils.ts` | Shared HTTP primitives (`writeJson`, `writeHtml`, `readBody`, `toIsoTimestamp`, `asRecord`, `SECRET_MASK`). |
 | `adminTaskRoutes.ts` | `/api/admin/tasks/*` list, detail, cycles, transitions, pause/resume/retry/abandon/delete. |
 | `adminPromptRoutes.ts` | `/api/admin/prompts/*` CRUD + usage lookup. |
@@ -35,11 +38,20 @@ The admin server is a small HTTP service (default `127.0.0.1:3100`) that serves 
 | `GET` | `/` / `/admin` | Dashboard HTML shell. |
 | `GET` | `/health` | Unauthenticated health check. |
 | `POST` | `/webhooks/:integrationId/:event` | Mounted only when webhook deps are provided. Per-integration HMAC secret is the auth layer. Used by Redmine / GitLab; Gerrit review events use SSH `stream-events` instead. |
+| `GET` | `/api/admin/auth/setup-status` | Unauthenticated. `{ needsSetup: boolean }` — true when the store supports users and zero users exist. |
+| `POST` | `/api/admin/auth/login` | Unauthenticated. `{ username, password }` → `{ token, user }` session or 401. |
 
 ### Auth-protected routes
 
 | Method | Path | Notes |
 | --- | --- | --- |
+| `POST` | `/api/admin/auth/setup` | First-run bootstrap: requires the legacy HMAC token (`ADMIN_AUTH_SECRET`), 403 once any user exists. Creates the first `admin` user, returns 201 `{ token, user }`, audits `auth.setup`. |
+| `POST` | `/api/admin/auth/logout` | Revokes the presented session token (204). |
+| `GET` | `/api/admin/auth/me` | Current auth context `{ id, username, role }`. |
+| `GET` / `POST` | `/api/admin/users` | List / create users (admin only). Duplicate username → 409. |
+| `PUT` | `/api/admin/users/:id` | Update role/enabled (admin only). Demoting or disabling the last enabled admin → 409; disabling revokes the user's sessions. |
+| `PUT` | `/api/admin/users/:id/password` | Admins reset anyone; non-admins change their own with a verified `currentPassword` (403 otherwise). Revokes the target's sessions; audits `user.password_change`. |
+| `DELETE` | `/api/admin/users/:id` | Delete user (admin only); deleting the last enabled admin → 409. |
 | `GET` | `/api/admin/status` | Runtime status and provider summary. |
 | `GET` | `/api/admin/config` | Sanitized runtime config view. |
 | `GET` | `/api/admin/providers` | Provider summaries, one entry per active integration plus the runtime admin API card. |
@@ -104,8 +116,16 @@ The admin server is a small HTTP service (default `127.0.0.1:3100`) that serves 
 
 ## Authentication
 
-- `ADMIN_AUTH_SECRET` enables HMAC-based Bearer auth with constant-time verification.
-- The dashboard stores the operator token client-side and sends it through the `Authorization` header.
+Two auth layers share the Bearer header:
+
+- **Bootstrap (zero users)**: `ADMIN_AUTH_SECRET` enables HMAC-based Bearer auth (`timestamp.signature`, constant-time verification, 300s window). While no users exist, HMAC tokens work on every route with an implicit `admin`-role context (`{ userId: null, username: "bootstrap" }`). `POST /api/admin/auth/setup` (HMAC-gated) creates the first admin user.
+- **DB sessions (≥1 user)**: once a user exists, `/api/admin/*` requires a session token from `POST /api/admin/auth/login` (opaque 64-hex token; sha256 hash stored in `user_sessions`; sliding 7-day expiry, touch throttled to once per minute). Legacy HMAC tokens are then rejected everywhere except `POST /api/admin/auth/setup`. Stores without the user-store API (feature-detected via `countUsers`) keep the HMAC-only behavior.
+
+**RBAC**: every routed request resolves a required role — explicit `RouteMeta.role` or `defaultRoleForMethod` (GET/HEAD → `viewer`, mutations → `operator`). Admin-only mutations: integrations CRUD/test/enable/disable/discover, OAuth apps, webhook-secret rotation / allowed-IPs, plugin OAuth actions, and user management. Insufficient role → 403 `{ error: "forbidden", requiredRole }`. The per-request identity is available to handlers via `getAuthContext(request)`.
+
+The GitLab img-proxy `?t=` query token accepts a session token when users exist, HMAC otherwise. Mutations to users and auth are recorded in `audit_log` (`auth.setup`, `user.create`, `user.update`, `user.password_change`, `user.delete`).
+
+The dashboard stores the operator token client-side and sends it through the `Authorization` header.
 
 ## Secret masking
 
@@ -158,5 +178,8 @@ The supported server-side model is `projects` / `project_*`. There are no `/api/
 - `tests/unit/closeAdminServer.test.ts`
 - `tests/unit/adminCostRoutes.test.ts`
 - `tests/unit/adminProjectsRoutes.relaunch.test.ts`
+- `tests/unit/adminAuthService.test.ts`
+- `tests/unit/adminAuthRoutes.test.ts`
+- `tests/unit/adminServerRbac.test.ts`
 - `tests/unit/dashboard.test.ts`
 - `tests/unit/dashboard.configurationTab.test.ts`
