@@ -103,7 +103,7 @@ function renderPriorComments(priorComments: PriorReviewComment[]): string {
     "",
     ...lines,
     "",
-    "If you have no genuinely new issue to raise, return an empty comments list —",
+    "If you have no genuinely new issues to raise, return an empty `comments` array —",
     "do not repeat the points above or invent comments just to have something to say.",
   ].join("\n");
 }
