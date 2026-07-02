@@ -84,9 +84,11 @@ export function extractMetrics(events: readonly MetricEntry[]): Metrics {
       const cacheRead = readNum(d, ["cache_read", "cacheReadTokens", "cache_read_tokens"]);
       const cacheWrite = readNum(d, ["cache_write", "cacheWriteTokens", "cache_write_tokens"]);
       const model = readStr(d, ["model", "modelId"]);
+      const cost = readNum(d, ["cost"]);
+      const nanoAiu = readNum(d, ["totalNanoAiu"]);
       const key =
         readStr(d, ["apiCallId", "providerCallId"]) ??
-        `sig:${model ?? ""}|${input}|${output}|${cacheRead}|${cacheWrite}`;
+        `sig:${model ?? ""}|${input}|${output}|${cacheRead}|${cacheWrite}|${cost || ""}|${nanoAiu || ""}`;
       const existing = usageByRequest.get(key);
       if (existing) {
         // Keep the most complete snapshot for this request (live-then-final).

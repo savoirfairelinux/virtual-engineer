@@ -566,10 +566,12 @@ function accumulateRequestUsage(
   const cr = readNum(data, ["cacheReadTokens", "cache_read_tokens", "cacheReadInputTokens"]) ?? 0;
   const cw = readNum(data, ["cacheWriteTokens", "cache_write_tokens", "cacheCreationInputTokens"]) ?? 0;
   const model = readStr(data, ["model", "modelId"]);
+  const cost = readNum(data, ["cost"]);
+  const nanoAiu = readNum(data, ["totalNanoAiu"]);
 
   const key =
     readStr(data, ["apiCallId", "providerCallId"]) ??
-    `sig:${model ?? ""}|${i}|${o}|${cr}|${cw}`;
+    `sig:${model ?? ""}|${i}|${o}|${cr}|${cw}|${cost ?? ""}|${nanoAiu ?? ""}`;
 
   const usage = metrics.tokenUsage;
   const existing = metrics.requestSnapshots.get(key);
