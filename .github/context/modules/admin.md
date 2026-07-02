@@ -14,6 +14,8 @@ The admin server is a small HTTP service (default `127.0.0.1:3100`) that serves 
 | `adminServer.ts` | Auth gate (session tokens + legacy HMAC bootstrap), RBAC enforcement, security headers, and public endpoints (dashboard, health, img-proxy). Builds a single `Router` instance via `buildApiRouter()` at startup and dispatches every authenticated `/api/admin/*` request through it. Re-exports `getAuthContext` / `AuthContext`. |
 | `adminAuthService.ts` | Password hashing (`scrypt`, `scrypt:N:r:p:salt:hash` format), session-token hashing (sha256), and `createAdminAuthService()` (login / validateSession with sliding 7-day expiry / logout). Exports `SESSION_TTL_MS`, `AuthContext`. |
 | `adminAuthRoutes.ts` | `/api/admin/auth/*` (setup-status, setup, login, logout, me) and `/api/admin/users/*` CRUD with last-admin guards, self password change, and audit logging. |
+| `adminAudit.ts` | Shared audit-trail helper: `recordAudit(store, req, { action, targetType?, targetId?, details? })` resolves the actor from `getAuthContext(req)` (fallback `"unknown"`), masks secret-like detail keys via `maskAuditDetails()`, and appends fire-and-forget (never throws or blocks the response; no-ops when the store lacks `appendAuditEntry`). |
+| `adminAuditRoutes.ts` | `GET /api/admin/audit` — admin-only, paginated audit-log read API. |
 | `authContext.ts` | Per-request `AuthContext` storage (`WeakMap<IncomingMessage, AuthContext>`): `setAuthContext()` / `getAuthContext()`. |
 | `adminRouteUtils.ts` | Shared HTTP primitives (`writeJson`, `writeHtml`, `readBody`, `toIsoTimestamp`, `asRecord`, `SECRET_MASK`). |
 | `adminTaskRoutes.ts` | `/api/admin/tasks/*` list, detail, cycles, transitions, pause/resume/retry/abandon/delete. |
@@ -52,6 +54,7 @@ The admin server is a small HTTP service (default `127.0.0.1:3100`) that serves 
 | `PUT` | `/api/admin/users/:id` | Update role/enabled (admin only). Demoting or disabling the last enabled admin → 409; disabling revokes the user's sessions. |
 | `PUT` | `/api/admin/users/:id/password` | Admins reset anyone; non-admins change their own with a verified `currentPassword` (403 otherwise). Revokes the target's sessions; audits `user.password_change`. |
 | `DELETE` | `/api/admin/users/:id` | Delete user (admin only); deleting the last enabled admin → 409. |
+| `GET` | `/api/admin/audit` | Audit-log read API (admin only). Query params: `limit` (default 50, cap 200), `offset`, `action` (exact match), `actor` (exact `actorName` match). Returns `{ entries, total, limit, offset }`; entries carry `id`, `actorUserId`, `actorName`, `action`, `targetType`, `targetId`, `details`, ISO `createdAt`, newest first. 501 when the store lacks `listAuditEntries`. |
 | `GET` | `/api/admin/status` | Runtime status and provider summary. |
 | `GET` | `/api/admin/config` | Sanitized runtime config view. |
 | `GET` | `/api/admin/providers` | Provider summaries, one entry per active integration plus the runtime admin API card. |
@@ -123,7 +126,30 @@ Two auth layers share the Bearer header:
 
 **RBAC**: every routed request resolves a required role — explicit `RouteMeta.role` or `defaultRoleForMethod` (GET/HEAD → `viewer`, mutations → `operator`). Admin-only mutations: integrations CRUD/test/enable/disable/discover, OAuth apps, webhook-secret rotation / allowed-IPs, plugin OAuth actions, and user management. Insufficient role → 403 `{ error: "forbidden", requiredRole }`. The per-request identity is available to handlers via `getAuthContext(request)`.
 
-The GitLab img-proxy `?t=` query token accepts a session token when users exist, HMAC otherwise. Mutations to users and auth are recorded in `audit_log` (`auth.setup`, `user.create`, `user.update`, `user.password_change`, `user.delete`).
+The GitLab img-proxy `?t=` query token accepts a session token when users exist, HMAC otherwise.
+
+## Audit trail
+
+All mutating admin routes append an `audit_log` row after a successful mutation via the shared `recordAudit()` helper ([adminAudit.ts](../../../src/admin/adminAudit.ts)):
+
+- **Actor** comes from `getAuthContext(req)` (`actorUserId` + `actorName`; HMAC bootstrap mode records `"bootstrap"`, missing context falls back to `"unknown"`).
+- **Details masking**: `maskAuditDetails()` recursively replaces values whose key matches `/token|secret|password|key|credential/i` with `"***"`, except safelisted identifier keys (`repoKey`, `repoKeys`, `ticketProjectKey`). Secrets are never written to the audit log.
+- **Fire-and-forget**: append failures are logged and swallowed — auditing never blocks or fails the API response. Stores without `appendAuditEntry` (feature-detected) are silently skipped, keeping mock-store tests working.
+
+Recorded actions:
+
+| Area | Actions |
+| --- | --- |
+| Auth / users | `auth.setup`, `user.create`, `user.update`, `user.password_change`, `user.delete` |
+| Integrations | `integration.create`, `integration.update`, `integration.delete`, `integration.enable`, `integration.disable`, `integration.discover` |
+| OAuth apps / plugins | `oauth_app.create`, `oauth_app.delete`, `plugin.oauth` |
+| Webhooks | `webhook.secret_rotate`, `webhook.allowed_ips_update` |
+| Agents | `agent.create`, `agent.update`, `agent.delete`, `agent.enable`, `agent.disable` |
+| Projects | `project.create`, `project.update`, `project.delete`, `project.enable`, `project.disable`, `project.ticket_source_set`, `project.push_targets_set`, `project.agent_assign` (the `_set`/`assign` sub-actions are emitted from `PUT /api/admin/projects/:id` when the corresponding payload fields are present) |
+| Prompts | `prompt.create`, `prompt.update`, `prompt.delete` |
+| Tasks | `task.delete`, `task.pause`, `task.resume`, `task.retry`, `task.abandon` |
+
+The log is readable through `GET /api/admin/audit` (admin only, see the endpoints table).
 
 The dashboard stores the operator token client-side and sends it through the `Authorization` header.
 
@@ -181,5 +207,7 @@ The supported server-side model is `projects` / `project_*`. There are no `/api/
 - `tests/unit/adminAuthService.test.ts`
 - `tests/unit/adminAuthRoutes.test.ts`
 - `tests/unit/adminServerRbac.test.ts`
+- `tests/unit/adminAudit.test.ts`
+- `tests/unit/adminAuditRoutes.test.ts`
 - `tests/unit/dashboard.test.ts`
 - `tests/unit/dashboard.configurationTab.test.ts`

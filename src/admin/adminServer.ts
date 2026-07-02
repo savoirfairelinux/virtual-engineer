@@ -25,6 +25,7 @@ import { registerConcurrencyRoutes } from "./adminConcurrencyRoutes.js";
 import { registerWebhookRoutes } from "./adminWebhookRoutes.js";
 import { registerIntegrationRoutes } from "./adminIntegrationRoutes.js";
 import { registerAuthRoutes, type AuthRouteAuditStore, type AuthRouteUserStore } from "./adminAuthRoutes.js";
+import { registerAuditRoutes, type AuditReadStore } from "./adminAuditRoutes.js";
 import { createAdminAuthService, type AdminAuthService, type AdminAuthStateStore } from "./adminAuthService.js";
 import { getAuthContext, setAuthContext } from "./authContext.js";
 import { makeTaskId } from "../interfaces.js";
@@ -222,6 +223,14 @@ function extractAuditStore(stateStore: unknown): AuthRouteAuditStore | null {
     : null;
 }
 
+/** Feature-detect the audit-store list method on the injected state store. */
+function extractAuditReadStore(stateStore: unknown): AuditReadStore | null {
+  const candidate = stateStore as Partial<AuditReadStore> | null | undefined;
+  return candidate && typeof candidate.listAuditEntries === "function"
+    ? (candidate as AuditReadStore)
+    : null;
+}
+
 interface AdminAuthRuntime {
   authService: AdminAuthService | null;
   userStore: AdminUserCapableStore | null;
@@ -296,18 +305,21 @@ function buildApiRouter(dependencies: AdminServerDependencies, authRuntime: Admi
   });
 
   registerStreamRoutes(router, { stateStore: dependencies.stateStore });
+  const auditStore = extractAuditStore(dependencies.stateStore) ?? undefined;
   registerAuthRoutes(router, {
     userStore: authRuntime.userStore ?? undefined,
-    auditStore: extractAuditStore(dependencies.stateStore) ?? undefined,
+    auditStore,
     authService: authRuntime.authService ?? undefined,
     onUsersChanged: () => authRuntime.invalidateUsersExistCache(),
   });
-  registerPromptRoutes(router, { promptStore: dependencies.promptStore, agentStore: dependencies.agentStore });
-  registerTaskRoutes(router, { stateStore: dependencies.stateStore, taskControl: dependencies.taskControl });
+  registerAuditRoutes(router, { auditStore: extractAuditReadStore(dependencies.stateStore) ?? undefined });
+  registerPromptRoutes(router, { promptStore: dependencies.promptStore, agentStore: dependencies.agentStore, auditStore });
+  registerTaskRoutes(router, { stateStore: dependencies.stateStore, taskControl: dependencies.taskControl, auditStore });
   registerIntegrationRoutes(router, {
     integrationStore: dependencies.integrationStore,
     pluginManager: dependencies.pluginManager,
     oAuthAppStore: dependencies.oAuthAppStore,
+    auditStore,
     integrationStreams: dependencies.integrationStreams,
     onIntegrationUpdated: dependencies.onIntegrationUpdated,
     adminAuthSecret: dependencies.config.adminAuthSecret,
@@ -316,18 +328,21 @@ function buildApiRouter(dependencies: AdminServerDependencies, authRuntime: Admi
     agentStore: dependencies.agentStore,
     integrationStore: dependencies.integrationStore,
     oAuthAppStore: dependencies.oAuthAppStore,
+    auditStore,
     adminAuthSecret: dependencies.config.adminAuthSecret,
     providerAuthService: dependencies.providerAuthService,
   });
   registerProjectRoutes(router, {
     projectStore: dependencies.projectStore,
     integrationStore: dependencies.integrationStore,
+    auditStore,
     onProjectChange: dependencies.onProjectChange,
     taskControl: dependencies.taskControl,
   });
   registerConcurrencyRoutes(router, { concurrency: dependencies.concurrency });
   registerWebhookRoutes(router, {
     integrationStore: dependencies.integrationStore,
+    auditStore,
     onIntegrationUpdated: dependencies.onIntegrationUpdated,
     webhookPublicBaseUrl: dependencies.webhooks?.publicBaseUrl,
   });

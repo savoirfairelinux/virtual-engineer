@@ -2,6 +2,7 @@ import { getLogger } from "../logger.js";
 import { makeTaskId } from "../interfaces.js";
 import type { AgentCycle, StateTransition, Task } from "../interfaces.js";
 import { writeJson, toIsoTimestamp } from "./adminRouteUtils.js";
+import { recordAudit, type AuditCapableStore } from "./adminAudit.js";
 import type { Router } from "./router.js";
 
 const log = getLogger("admin-tasks");
@@ -24,6 +25,7 @@ export interface TaskRouteStore {
 
 export interface TaskRouteDeps {
   stateStore: TaskRouteStore;
+  auditStore?: AuditCapableStore | undefined;
   taskControl?: {
     resumeTask(taskId: ReturnType<typeof makeTaskId>): Promise<void>;
     retryTask(taskId: ReturnType<typeof makeTaskId>): Promise<void>;
@@ -74,12 +76,13 @@ export function registerTaskRoutes(router: Router, deps: TaskRouteDeps): void {
     writeJson(res, 200, { task: serialized });
   });
 
-  router.add("DELETE", "/api/admin/tasks/:id", async (_req, res, params) => {
+  router.add("DELETE", "/api/admin/tasks/:id", async (req, res, params) => {
     const taskId = makeTaskId(params["id"] ?? "");
     try {
       const taskToDelete = await deps.stateStore.getTask(taskId);
       if (!taskToDelete) { writeJson(res, 404, { error: "Task not found" }); return; }
       await deps.stateStore.deleteTaskGroup(taskId);
+      recordAudit(deps.auditStore, req, { action: "task.delete", targetType: "task", targetId: taskId, details: { ticketId: taskToDelete.ticketId, state: taskToDelete.state } });
       writeJson(res, 200, { ok: true });
     } catch (err: unknown) {
       log.warn({ err }, "delete task failed");
@@ -105,10 +108,11 @@ export function registerTaskRoutes(router: Router, deps: TaskRouteDeps): void {
     writeJson(res, 200, { transitions: transitions.map(serializeTransition) });
   });
 
-  router.add("PATCH", "/api/admin/tasks/:id/pause", async (_req, res, params) => {
+  router.add("PATCH", "/api/admin/tasks/:id/pause", async (req, res, params) => {
     const taskId = makeTaskId(params["id"] ?? "");
     try {
       const task = await deps.stateStore.pauseTask(taskId);
+      recordAudit(deps.auditStore, req, { action: "task.pause", targetType: "task", targetId: taskId, details: { ticketId: task.ticketId, state: task.state } });
       writeJson(res, 200, { task: serializeTask(task) });
     } catch (err: unknown) {
       log.warn({ err }, "pause task failed");
@@ -116,13 +120,14 @@ export function registerTaskRoutes(router: Router, deps: TaskRouteDeps): void {
     }
   });
 
-  router.add("PATCH", "/api/admin/tasks/:id/resume", async (_req, res, params) => {
+  router.add("PATCH", "/api/admin/tasks/:id/resume", async (req, res, params) => {
     const taskId = makeTaskId(params["id"] ?? "");
     try {
       const task = await deps.stateStore.resumeTask(taskId);
       void deps.taskControl?.resumeTask(taskId).catch((err: unknown) => {
         log.error({ err, taskId }, "resume task workflow trigger failed");
       });
+      recordAudit(deps.auditStore, req, { action: "task.resume", targetType: "task", targetId: taskId, details: { ticketId: task.ticketId, state: task.state } });
       writeJson(res, 200, { task: serializeTask(task) });
     } catch (err: unknown) {
       log.warn({ err }, "resume task failed");
@@ -130,13 +135,14 @@ export function registerTaskRoutes(router: Router, deps: TaskRouteDeps): void {
     }
   });
 
-  router.add("POST", "/api/admin/tasks/:id/retry", async (_req, res, params) => {
+  router.add("POST", "/api/admin/tasks/:id/retry", async (req, res, params) => {
     const taskId = makeTaskId(params["id"] ?? "");
     try {
       const task = await deps.stateStore.retryTask(taskId);
       void deps.taskControl?.retryTask(taskId).catch((err: unknown) => {
         log.error({ err, taskId }, "retry task workflow trigger failed");
       });
+      recordAudit(deps.auditStore, req, { action: "task.retry", targetType: "task", targetId: taskId, details: { ticketId: task.ticketId, state: task.state } });
       writeJson(res, 200, { task: serializeTask(task) });
     } catch (err: unknown) {
       log.warn({ err }, "retry task failed");
@@ -144,10 +150,11 @@ export function registerTaskRoutes(router: Router, deps: TaskRouteDeps): void {
     }
   });
 
-  router.add("POST", "/api/admin/tasks/:id/abandon", async (_req, res, params) => {
+  router.add("POST", "/api/admin/tasks/:id/abandon", async (req, res, params) => {
     const taskId = makeTaskId(params["id"] ?? "");
     try {
       const task = await deps.stateStore.abandonTask(taskId);
+      recordAudit(deps.auditStore, req, { action: "task.abandon", targetType: "task", targetId: taskId, details: { ticketId: task.ticketId, state: task.state } });
       writeJson(res, 200, { task: serializeTask(task) });
     } catch (err: unknown) {
       log.warn({ err }, "abandon task failed");

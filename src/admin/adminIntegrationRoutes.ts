@@ -13,6 +13,7 @@ import {
 import { decryptToken } from "../utils/encryption.js";
 import { normalizeGitLabBaseUrl } from "../utils/gitlabAuth.js";
 import { writeJson, readBody, asRecord, toIsoTimestamp, SECRET_MASK, parseConfig, formatZodError } from "./adminRouteUtils.js";
+import { recordAudit, type AuditCapableStore } from "./adminAudit.js";
 import type { Router } from "./router.js";
 
 const log = getLogger("admin-integrations");
@@ -21,6 +22,7 @@ export interface IntegrationRouteDeps {
   integrationStore?: IntegrationStore | undefined;
   pluginManager?: PluginManager | undefined;
   oAuthAppStore?: OAuthAppStore | undefined;
+  auditStore?: AuditCapableStore | undefined;
   integrationStreams?: { getStatus(integrationId: string): unknown | null } | undefined;
   onIntegrationUpdated?: ((integrationId: string) => void) | undefined;
   adminAuthSecret?: string | undefined;
@@ -61,6 +63,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
     const clientId = typeof body?.["clientId"] === "string" ? body["clientId"] : "";
     if (!baseUrl || !clientId) { writeJson(res, 400, { error: "Missing required fields: baseUrl, clientId" }); return; }
     const app = await deps.oAuthAppStore.upsertOAuthApp({ provider, baseUrl: normalizeGitLabBaseUrl(baseUrl), clientId });
+    recordAudit(deps.auditStore, req, { action: "oauth_app.create", targetType: "oauth_app", targetId: `${app.provider}:${app.baseUrl}`, details: { provider: app.provider, baseUrl: app.baseUrl } });
     writeJson(res, 201, { app: serializeOAuthApp(app) });
   }, { role: "admin" });
 
@@ -70,7 +73,9 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
     const provider = typeof body?.["provider"] === "string" ? body["provider"] : "gitlab";
     const baseUrl = typeof body?.["baseUrl"] === "string" ? body["baseUrl"] : "";
     if (!baseUrl) { writeJson(res, 400, { error: "baseUrl is required" }); return; }
-    await deps.oAuthAppStore.deleteOAuthApp(provider, normalizeGitLabBaseUrl(baseUrl));
+    const normalizedBase = normalizeGitLabBaseUrl(baseUrl);
+    await deps.oAuthAppStore.deleteOAuthApp(provider, normalizedBase);
+    recordAudit(deps.auditStore, req, { action: "oauth_app.delete", targetType: "oauth_app", targetId: `${provider}:${normalizedBase}`, details: { provider, baseUrl: normalizedBase } });
     writeJson(res, 200, { ok: true });
   }, { role: "admin" });
 
@@ -136,6 +141,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
           log.warn({ id, provider, err: activationErr }, "integration created but could not be activated at runtime (incomplete config?)");
         }
       }
+      recordAudit(deps.auditStore, req, { action: "integration.create", targetType: "integration", targetId: id, details: { name: integration.name, provider } });
       writeJson(res, 201, { integration: serializeIntegration(integration, deps.pluginManager, deps.integrationStreams) });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -228,6 +234,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
         appliedAtRuntime = true;
       }
       deps.onIntegrationUpdated?.(id);
+      recordAudit(deps.auditStore, req, { action: "integration.update", targetType: "integration", targetId: id, details: { name: updated.name, provider: nextProvider, configChanged } });
       writeJson(res, 200, { integration: serializeIntegration(fresh, deps.pluginManager, deps.integrationStreams), appliedAtRuntime });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -236,7 +243,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
     }
   }, { role: "admin" });
 
-  router.add("DELETE", "/api/admin/integrations/:id", async (_req, res, params) => {
+  router.add("DELETE", "/api/admin/integrations/:id", async (req, res, params) => {
     if (!deps.integrationStore) { writeJson(res, 501, { error: "Integration store not available" }); return; }
     const id = params["id"] ?? "";
     const existing = await deps.integrationStore.getIntegration(id);
@@ -255,6 +262,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
     try {
       if (existing.enabled && deps.pluginManager) await deps.pluginManager.disablePlugin(id);
       await deps.integrationStore.deleteIntegration(id);
+      recordAudit(deps.auditStore, req, { action: "integration.delete", targetType: "integration", targetId: id, details: { name: existing.name, provider: existing.provider } });
       writeJson(res, 200, { deleted: true });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -264,12 +272,13 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
   }, { role: "admin" });
 
   // ─── Enable / Disable ─────────────────────────────────────────────────────
-  router.add("PATCH", "/api/admin/integrations/:id/enable", async (_req, res, params) => {
+  router.add("PATCH", "/api/admin/integrations/:id/enable", async (req, res, params) => {
     if (!deps.pluginManager) { writeJson(res, 501, { error: "Plugin manager not available" }); return; }
     const id = params["id"] ?? "";
     try {
       await deps.pluginManager.enablePlugin(id);
       const integration = await deps.integrationStore?.getIntegration(id);
+      recordAudit(deps.auditStore, req, { action: "integration.enable", targetType: "integration", targetId: id, details: integration ? { name: integration.name, provider: integration.provider } : {} });
       writeJson(res, 200, { integration: integration ? serializeIntegration(integration, deps.pluginManager, deps.integrationStreams) : { id, enabled: true } });
     } catch (err: unknown) {
       log.warn({ err }, "enable plugin failed");
@@ -277,12 +286,13 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
     }
   }, { role: "admin" });
 
-  router.add("PATCH", "/api/admin/integrations/:id/disable", async (_req, res, params) => {
+  router.add("PATCH", "/api/admin/integrations/:id/disable", async (req, res, params) => {
     if (!deps.pluginManager) { writeJson(res, 501, { error: "Plugin manager not available" }); return; }
     const id = params["id"] ?? "";
     try {
       await deps.pluginManager.disablePlugin(id);
       const integration = await deps.integrationStore?.getIntegration(id);
+      recordAudit(deps.auditStore, req, { action: "integration.disable", targetType: "integration", targetId: id, details: integration ? { name: integration.name, provider: integration.provider } : {} });
       writeJson(res, 200, { integration: integration ? serializeIntegration(integration, deps.pluginManager, deps.integrationStreams) : { id, enabled: false } });
     } catch (err: unknown) {
       log.warn({ err }, "disable plugin failed");
@@ -331,7 +341,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
   });
 
   // ─── Discover ─────────────────────────────────────────────────────────────
-  router.add("POST", "/api/admin/integrations/:id/discover", async (_req, res, params) => {
+  router.add("POST", "/api/admin/integrations/:id/discover", async (req, res, params) => {
     if (!deps.integrationStore) { writeJson(res, 501, { error: "Integration store not available" }); return; }
     if (typeof deps.integrationStore.setIntegrationDiscoveredResources !== "function") {
       writeJson(res, 501, { error: "Integration store does not support discovery persistence" }); return;
@@ -353,6 +363,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
         const models = await descriptor.discoverModels(parsedModelConfig);
         const discoveredAt = new Date().toISOString();
         await deps.integrationStore.setIntegrationDiscoveredResources(id, JSON.stringify({ models, discoveredAt }));
+        recordAudit(deps.auditStore, req, { action: "integration.discover", targetType: "integration", targetId: id, details: { name: integration.name, provider: integration.provider, models: models.length } });
         writeJson(res, 200, { ok: true, discoveredAt, counts: { models: models.length } });
       } catch (err: unknown) {
         if (err instanceof ModelDiscoveryConfigError) {
@@ -392,6 +403,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
     try {
       const snapshot = await descriptor.discoverResources(decryptedConfig);
       await deps.integrationStore.setIntegrationDiscoveredResources(id, JSON.stringify(snapshot));
+      recordAudit(deps.auditStore, req, { action: "integration.discover", targetType: "integration", targetId: id, details: { name: integration.name, provider: integration.provider } });
       writeJson(res, 200, {
         ok: true,
         discoveredAt: snapshot.discoveredAt,

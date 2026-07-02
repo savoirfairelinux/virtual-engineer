@@ -6,6 +6,7 @@ import { writeJson, readBody, toIsoTimestamp } from "./adminRouteUtils.js";
 import type { Router } from "./router.js";
 import { hashPassword, verifyPassword, type AdminAuthService } from "./adminAuthService.js";
 import { getAuthContext } from "./authContext.js";
+import { recordAudit } from "./adminAudit.js";
 
 const log = getLogger("admin-auth");
 
@@ -63,31 +64,6 @@ function extractBearerToken(req: IncomingMessage): string | null {
   return token.length > 0 ? token : null;
 }
 
-/** Fire-and-forget audit append — an audit failure must never fail the mutation. */
-function recordAudit(
-  deps: AuthRouteDeps,
-  req: IncomingMessage,
-  action: string,
-  targetType: string | null,
-  targetId: string | null,
-  details: Record<string, unknown>
-): void {
-  if (!deps.auditStore) return;
-  const context = getAuthContext(req);
-  deps.auditStore
-    .appendAuditEntry({
-      actorUserId: context?.userId ?? null,
-      actorName: context?.username ?? "unknown",
-      action,
-      targetType,
-      targetId,
-      details,
-    })
-    .catch((err: unknown) => {
-      log.error({ err, action }, "audit append failed");
-    });
-}
-
 function isDuplicateError(err: unknown): boolean {
   return err instanceof Error && "code" in err && (err as { code?: unknown }).code === "DUPLICATE";
 }
@@ -137,7 +113,7 @@ export function registerAuthRoutes(router: Router, deps: AuthRouteDeps): void {
       writeJson(res, 500, { error: "Failed to establish session after setup" });
       return;
     }
-    recordAudit(deps, req, "auth.setup", "user", user.id, { username: user.username, role: user.role });
+    recordAudit(deps.auditStore, req, { action: "auth.setup", targetType: "user", targetId: user.id, details: { username: user.username, role: user.role } });
     log.info({ username: user.username }, "first admin user created via setup");
     writeJson(res, 201, session);
   });
@@ -211,7 +187,7 @@ export function registerAuthRoutes(router: Router, deps: AuthRouteDeps): void {
         role: role as UserRole,
       });
       deps.onUsersChanged?.();
-      recordAudit(deps, req, "user.create", "user", user.id, { username: user.username, role: user.role });
+      recordAudit(deps.auditStore, req, { action: "user.create", targetType: "user", targetId: user.id, details: { username: user.username, role: user.role } });
       writeJson(res, 201, { user: serializeUser(user) });
     } catch (err: unknown) {
       if (isDuplicateError(err)) {
@@ -258,10 +234,15 @@ export function registerAuthRoutes(router: Router, deps: AuthRouteDeps): void {
     if (enabled === false) {
       await deps.userStore.deleteSessionsForUser(id);
     }
-    recordAudit(deps, req, "user.update", "user", id, {
-      username: updated.username,
-      ...(role !== undefined ? { role } : {}),
-      ...(enabled !== undefined ? { enabled } : {}),
+    recordAudit(deps.auditStore, req, {
+      action: "user.update",
+      targetType: "user",
+      targetId: id,
+      details: {
+        username: updated.username,
+        ...(role !== undefined ? { role } : {}),
+        ...(enabled !== undefined ? { enabled } : {}),
+      },
     });
     writeJson(res, 200, { user: serializeUser(updated) });
   }, { role: "admin" });
@@ -295,7 +276,7 @@ export function registerAuthRoutes(router: Router, deps: AuthRouteDeps): void {
     await deps.userStore.updateUserPassword(id, passwordHash);
     // Revoke every session of the user — they must log in again with the new password.
     await deps.userStore.deleteSessionsForUser(id);
-    recordAudit(deps, req, "user.password_change", "user", id, { username: target.username });
+    recordAudit(deps.auditStore, req, { action: "user.password_change", targetType: "user", targetId: id, details: { username: target.username } });
     writeJson(res, 200, { ok: true });
   }, { role: "viewer" });
 
@@ -310,7 +291,7 @@ export function registerAuthRoutes(router: Router, deps: AuthRouteDeps): void {
     }
     await deps.userStore.deleteUser(id);
     deps.onUsersChanged?.();
-    recordAudit(deps, req, "user.delete", "user", id, { username: target.username });
+    recordAudit(deps.auditStore, req, { action: "user.delete", targetType: "user", targetId: id, details: { username: target.username } });
     writeJson(res, 200, { ok: true });
   }, { role: "admin" });
 }
