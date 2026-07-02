@@ -439,6 +439,8 @@ export interface ReviewWorkspaceInput {
   reasoningEffort?: string | undefined;
   /** Container image (defaults to agentContainerImage from codegen config) */
   containerImage?: string | undefined;
+  /** When true, the agent container loads team-defined skills from <repo>/.github/skills. */
+  skillDiscoveryEnabled?: boolean | undefined;
 }
 
 /** Options for checking out a prior patchset/revision onto a cloned workspace. */
