@@ -318,6 +318,7 @@ export class CopilotAdapter implements AgentAdapter, ConfigurableAdapter {
       // --tmpfs /tmp mount (bind mounts under a tmpfs can be shadowed).
       USER_PROMPT_FILE: "/ve-home/user-prompt.txt",
       SYSTEM_PROMPT: input.systemPrompt,
+      ...(input.skillDiscoveryEnabled ? { SKILL_DISCOVERY: "1" } : {}),
     };
 
     const additionalDockerArgs = [
