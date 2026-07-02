@@ -48,6 +48,8 @@ export function TaskDetail({ task, onRefresh, onDeleted }: TaskDetailProps) {
   }, [task.taskId]);
 
   useEffect(() => {
+    setCycles(null);
+    setTransitions(null);
     loadDetails(task.taskId, task);
   }, [task.taskId, task.state, task.updatedAt]); // eslint-disable-line react-hooks/exhaustive-deps -- loadDetails is stable
 
