@@ -757,6 +757,7 @@ export class Orchestrator {
           ...(projectPushTargets.length > 1 || projectPushTargets.some((t) => t.localPath !== ".")
             ? { repositoryMap: buildRepositoryMap(projectPushTargets) }
             : {}),
+          ...(projectRecord.skillDiscoveryEnabled ? { skillDiscoveryEnabled: true } : {}),
         },
       };
 

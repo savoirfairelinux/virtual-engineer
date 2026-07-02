@@ -57,13 +57,14 @@ export interface ProjectsRouteStore {
     agentId: AgentId;
     agentOverrideJson?: string | null;
     postCloneScript?: string;
+    skillDiscoveryEnabled?: boolean;
     enabled?: boolean;
   }): Promise<ProjectRecord>;
   getProjectById(id: ProjectId): Promise<ProjectRecord | null>;
   listProjects(filter?: { type?: ProjectType; enabled?: boolean }): Promise<ProjectRecord[]>;
   updateProject(
     id: ProjectId,
-    partial: Partial<Pick<ProjectRecord, "name" | "type" | "agentId" | "agentOverrideJson" | "postCloneScript" | "enabled">>
+    partial: Partial<Pick<ProjectRecord, "name" | "type" | "agentId" | "agentOverrideJson" | "postCloneScript" | "skillDiscoveryEnabled" | "enabled">>
   ): Promise<ProjectRecord>;
   deleteProject(id: ProjectId): Promise<void>;
   setProjectEnabled(id: ProjectId, enabled: boolean): Promise<void>;
@@ -160,6 +161,7 @@ const codingProjectCreateSchema = z.object({
   agentId: z.string().min(1, "Agent is required — create and enable a coding agent first (Agents tab)"),
   agentOverrideJson: z.string().nullable().optional(),
   postCloneScript: z.string().optional(),
+  skillDiscoveryEnabled: z.boolean().optional(),
   enabled: z.boolean().optional(),
   ticketSource: ticketSourceSchema,
   pushTargets: pushTargetsArraySchema,
@@ -172,6 +174,7 @@ const reviewProjectCreateSchema = z.object({
   agentId: z.string().min(1, "Agent is required — create and enable a review agent first (Agents tab)"),
   agentOverrideJson: z.string().nullable().optional(),
   postCloneScript: z.string().optional(),
+  skillDiscoveryEnabled: z.boolean().optional(),
   enabled: z.boolean().optional(),
   reviewConfig: reviewConfigSchema,
 });
@@ -186,6 +189,7 @@ const projectUpdateSchema = z.object({
   agentId: z.string().min(1, "Agent is required").optional(),
   agentOverrideJson: z.string().nullable().optional(),
   postCloneScript: z.string().optional(),
+  skillDiscoveryEnabled: z.boolean().optional(),
   enabled: z.boolean().optional(),
   ticketSource: ticketSourceSchema.optional(),
   pushTargets: pushTargetsArraySchema.optional(),
@@ -247,6 +251,7 @@ interface ProjectSummary {
   agentId: string;
   agentName: string | null;
   enabled: boolean;
+  skillDiscoveryEnabled: boolean;
   createdAt: string;
   updatedAt: string;
   ticketSource: { integration: { id: string; name: string; provider: string; domainCapabilities: string[] } | null; ticketProjectKey: string } | null;
@@ -308,6 +313,7 @@ async function buildProjectSummary(
     agentId: project.agentId,
     agentName: agent ? agent.name : null,
     enabled: project.enabled,
+    skillDiscoveryEnabled: project.skillDiscoveryEnabled,
     createdAt: project.createdAt.toISOString(),
     updatedAt: project.updatedAt.toISOString(),
     ticketSource,
@@ -365,6 +371,7 @@ async function buildProjectDetail(
     agentId: project.agentId,
     agentName: agent ? agent.name : null,
     enabled: project.enabled,
+    skillDiscoveryEnabled: project.skillDiscoveryEnabled,
     createdAt: project.createdAt.toISOString(),
     updatedAt: project.updatedAt.toISOString(),
     agentOverrideJson: project.agentOverrideJson,
@@ -429,6 +436,7 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
         agentId: makeAgentId(data.agentId),
         ...(data.agentOverrideJson !== undefined ? { agentOverrideJson: data.agentOverrideJson } : {}),
         ...(data.postCloneScript !== undefined ? { postCloneScript: data.postCloneScript } : {}),
+        ...(data.skillDiscoveryEnabled !== undefined ? { skillDiscoveryEnabled: data.skillDiscoveryEnabled } : {}),
         ...(data.enabled !== undefined ? { enabled: data.enabled } : {}),
       });
     } catch (err: unknown) {
@@ -525,6 +533,7 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
     if (data.agentId !== undefined) updates.agentId = makeAgentId(data.agentId);
     if (data.agentOverrideJson !== undefined) updates.agentOverrideJson = data.agentOverrideJson;
     if (data.postCloneScript !== undefined) updates.postCloneScript = data.postCloneScript;
+    if (data.skillDiscoveryEnabled !== undefined) updates.skillDiscoveryEnabled = data.skillDiscoveryEnabled;
     if (data.enabled !== undefined) updates.enabled = data.enabled;
     const reconfigured =
       data.ticketSource !== undefined ||
@@ -533,6 +542,7 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
       updates.agentId !== undefined ||
       updates.agentOverrideJson !== undefined ||
       updates.postCloneScript !== undefined ||
+      updates.skillDiscoveryEnabled !== undefined ||
       (updates.enabled === true && existing.enabled !== true);
     try {
       if (Object.keys(updates).length > 0) await store.updateProject(id, updates);

@@ -177,6 +177,53 @@ describe("CopilotAdapter", () => {
 
       expect(spec.env["COPILOT_REASONING_EFFORT"]).toBeUndefined();
     });
+
+    it("injects SKILL_DISCOVERY=1 when the project enabled skill discovery", () => {
+      const adapter = new CopilotAdapter();
+      const context = makeContext();
+      context.agentSession.skillDiscoveryEnabled = true;
+      const spec = adapter.buildContainerSpec(context, { GITHUB_TOKEN: "ghp_tok" });
+
+      expect(spec.env["SKILL_DISCOVERY"]).toBe("1");
+    });
+
+    it("omits SKILL_DISCOVERY when the project did not enable skill discovery", () => {
+      const adapter = new CopilotAdapter();
+      const spec = adapter.buildContainerSpec(makeContext(), { GITHUB_TOKEN: "ghp_tok" });
+
+      expect(spec.env["SKILL_DISCOVERY"]).toBeUndefined();
+    });
+  });
+
+  describe("buildReviewContainerSpec", () => {
+    function makeReviewInput() {
+      return {
+        changeId: makeExternalChangeId("I1234567890abcdef1234567890abcdef12345678"),
+        revisionNumber: 42,
+        patchset: 1,
+        repositoryName: "demo-project",
+        prompt: "Review this diff",
+        systemPrompt: "You are a reviewer",
+        agentToken: "ghp_review_token",
+      };
+    }
+
+    it("omits SKILL_DISCOVERY when skillDiscoveryEnabled is not set", () => {
+      const adapter = new CopilotAdapter();
+      const spec = adapter.buildReviewContainerSpec(makeReviewInput(), {
+        GITHUB_TOKEN: "ghp_tok",
+      });
+
+      expect(spec.env["SKILL_DISCOVERY"]).toBeUndefined();
+    });
+
+    it("injects SKILL_DISCOVERY=1 when skillDiscoveryEnabled is true", () => {
+      const adapter = new CopilotAdapter();
+      const input = { ...makeReviewInput(), skillDiscoveryEnabled: true };
+      const spec = adapter.buildReviewContainerSpec(input, { GITHUB_TOKEN: "ghp_tok" });
+
+      expect(spec.env["SKILL_DISCOVERY"]).toBe("1");
+    });
   });
 
   // ── native PTY failure detection ───────────────────────────────────────────

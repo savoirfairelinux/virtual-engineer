@@ -108,6 +108,25 @@ describe("SqliteStateStore — Phase 2: projects", () => {
     expect(p.enabled).toBe(true);
   });
 
+  it("persists and updates skillDiscoveryEnabled (defaults to false)", async () => {
+    const a = await makeAgent(store);
+    const off = await store.createProject({ name: "Off", type: "coding", agentId: a.id });
+    expect(off.skillDiscoveryEnabled).toBe(false);
+
+    const on = await store.createProject({
+      name: "On",
+      type: "coding",
+      agentId: a.id,
+      skillDiscoveryEnabled: true,
+    });
+    expect(on.skillDiscoveryEnabled).toBe(true);
+    expect((await store.getProjectById(on.id))?.skillDiscoveryEnabled).toBe(true);
+
+    const toggled = await store.updateProject(on.id, { skillDiscoveryEnabled: false });
+    expect(toggled.skillDiscoveryEnabled).toBe(false);
+    expect((await store.getProjectById(on.id))?.skillDiscoveryEnabled).toBe(false);
+  });
+
   it("createProject throws when agent does not exist", async () => {
     await expect(
       store.createProject({ name: "Bad", type: "coding", agentId: makeAgentId("missing") })
@@ -484,6 +503,7 @@ describe("resolveAgentConfig — partial-merge semantics", () => {
       agentId: makeAgentId("a1"),
       agentOverrideJson,
       postCloneScript: "",
+      skillDiscoveryEnabled: false,
       enabled: true,
       createdAt: new Date(),
       updatedAt: new Date(),

@@ -93,7 +93,7 @@ The admin server is a small HTTP service (default `127.0.0.1:3100`) that serves 
 | `GET` | `/api/admin/projects` | Project list with resolved agent/integration names. |
 | `POST` | `/api/admin/projects` | Create coding or review project. Orphaned `FAILED`/`REVIEW_FAILED` tasks adopted via the new ticket-source binding are relaunched automatically, unless the project is created disabled. |
 | `GET` | `/api/admin/projects/:id` | Project detail. |
-| `PUT` | `/api/admin/projects/:id` | Update project; coding-project `pushTargets` replace atomically. When ticket source, push targets, review config, agent binding/override, post-clone script change, or the project is enabled, every `FAILED`/`REVIEW_FAILED` task bound to the project is relaunched automatically (no manual retry click needed). |
+| `PUT` | `/api/admin/projects/:id` | Update project; coding-project `pushTargets` replace atomically. When ticket source, push targets, review config, agent binding/override, post-clone script, or skill-discovery toggle change, or the project is enabled, every `FAILED`/`REVIEW_FAILED` task bound to the project is relaunched automatically (no manual retry click needed). |
 | `DELETE` | `/api/admin/projects/:id` | Delete project and linked child rows. |
 | `PATCH` | `/api/admin/projects/:id/enable` | Enable project. If it was previously disabled, its `FAILED`/`REVIEW_FAILED` tasks are relaunched automatically. |
 | `PATCH` | `/api/admin/projects/:id/disable` | Disable project. |

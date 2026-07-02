@@ -86,6 +86,7 @@ function makeProject(overrides: Partial<ProjectRecord> = {}): ProjectRecord {
     agentId: "agent-1" as import("../../src/interfaces.js").AgentId,
     agentOverrideJson: null,
     postCloneScript: "",
+    skillDiscoveryEnabled: false,
     enabled: true,
     createdAt: new Date(),
     updatedAt: new Date(),

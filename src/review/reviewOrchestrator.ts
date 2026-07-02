@@ -458,6 +458,7 @@ export class ReviewOrchestrator {
           systemPrompt: this.deps.reviewSystemPrompt,
           agentToken: this.deps.agentToken,
           model: this.deps.model,
+          ...(project.skillDiscoveryEnabled ? { skillDiscoveryEnabled: true } : {}),
         }, {
           onStderrChunk: (chunk: string) => {
             stderrLineBuffer.partial += chunk;

@@ -20,7 +20,7 @@ import { CopilotClient, approveAll } from '@github/copilot-sdk';
 import type { CopilotSession, AssistantMessageEvent } from '@github/copilot-sdk';
 import { execFileSync, spawn } from 'child_process';
 import type { ChildProcess } from 'child_process';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, statSync } from 'fs';
 import { createConnection } from 'net';
 import { join } from 'path';
 
@@ -55,6 +55,7 @@ try {
   process.stderr.write('Warning: failed to parse PER_REPO_CHANGE_IDS_JSON\n');
 }
 const REVIEW_MODE = process.env['REVIEW_MODE'] === '1';
+const SKILL_DISCOVERY = process.env['SKILL_DISCOVERY'] === '1';
 const USER_PROMPT_FILE = process.env['USER_PROMPT_FILE'] ?? '';
 const SYSTEM_PROMPT = process.env['SYSTEM_PROMPT'] ?? '';
 
@@ -190,12 +191,25 @@ async function runSession(
   const localCliServer = await startLocalCliServer();
   const client = new CopilotClient({ cliUrl: localCliServer.cliUrl });
 
+  // Opt-in: surface repo-defined skills to the agent without enabling MCP discovery.
+  // Guarded so a missing path — or a non-directory at that path — never aborts the session.
+  const skillsDir = join(WORKSPACE, '.github', 'skills');
+  let enableSkillDiscovery = false;
+  if (SKILL_DISCOVERY) {
+    try {
+      enableSkillDiscovery = statSync(skillsDir).isDirectory();
+    } catch {
+      enableSkillDiscovery = false;
+    }
+  }
+
   try {
     const session = await client.createSession({
       model: COPILOT_MODEL,
       ...(COPILOT_REASONING_EFFORT && COPILOT_REASONING_EFFORT !== 'none'
         ? { reasoningEffort: COPILOT_REASONING_EFFORT as ReasoningEffort }
         : {}),
+      ...(enableSkillDiscovery ? { skillDirectories: [skillsDir] } : {}),
       systemMessage: { content: SYSTEM_PROMPT },
       onPermissionRequest: approveAll,
       workingDirectory: WORKSPACE,
