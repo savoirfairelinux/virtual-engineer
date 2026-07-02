@@ -353,6 +353,14 @@ describe("SessionMetrics", () => {
     expect(metrics.usageEventCount).toBe(2);
   });
 
+  it("applies delta on live-then-final usage pair (outputTokens starts at 0)", () => {
+    updateSessionMetrics(metrics, makeNormEvent("assistant.usage", { inputTokens: 100, outputTokens: 0, apiCallId: "req-live" }, "usage"));
+    updateSessionMetrics(metrics, makeNormEvent("assistant.usage", { inputTokens: 100, outputTokens: 60, apiCallId: "req-live" }, "usage"));
+    expect(metrics.tokenUsage.inputTokens).toBe(100);
+    expect(metrics.tokenUsage.outputTokens).toBe(60);
+    expect(metrics.tokenUsage.totalTokens).toBe(160);
+  });
+
   it("dedups duplicate tool.execution_start emissions by callId", () => {
     updateSessionMetrics(metrics, makeNormEvent("tool.execution_start", { name: "read_file", callId: "read_file_1" }, "tools"));
     updateSessionMetrics(metrics, makeNormEvent("tool.execution_start", { name: "read_file", callId: "read_file_1" }, "tools"));
@@ -384,9 +392,11 @@ describe("SessionMetrics", () => {
     expect(metrics.usageEventCount).toBe(2);
   });
 
-  it("handles session.usage_info with totalTokens only", () => {
+  it("handles session.usage_info with totalTokens only (no input/output breakdown)", () => {
     updateSessionMetrics(metrics, makeNormEvent("session.usage_info", { totalTokens: 500 }, "usage"));
-    expect(metrics.tokenUsage.totalTokens).toBe(500);
+    // totalTokens is derived from inputTokens + outputTokens; without a
+    // breakdown this is 0, not the raw totalTokens field.
+    expect(metrics.tokenUsage.totalTokens).toBe(0);
   });
 
   it("tracks session start/end", () => {

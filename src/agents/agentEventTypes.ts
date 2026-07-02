@@ -129,8 +129,12 @@ export interface SessionMetrics {
   quotaAvailable: false;
   /** Explanation for unavailable quota */
   quotaMessage: string;
-  /** Internal: request identities already summed into tokenUsage (dedup). */
-  countedUsageKeys: Set<string>;
+  /**
+   * Internal: per-request token snapshots for dedup.
+   * Maps request key → last-seen {input, output, cacheRead, cacheWrite} so
+   * live-then-final pairs are handled via delta (not first-wins).
+   */
+  requestSnapshots: Map<string, { input: number; output: number; cacheRead: number; cacheWrite: number }>;
   /** Internal: tool-call identities already counted (dedup). */
   countedToolCallIds: Set<string>;
 }
@@ -545,42 +549,50 @@ function readToolFilePath(data: Record<string, unknown> | null): string | null {
  * Accumulate per-request token usage, deduping duplicate SDK emissions.
  *
  * The Copilot SDK reports usage **per LLM request** and can emit the same
- * request's usage more than once (a duplicate or a live-then-final pair). Events
+ * request's usage more than once (a duplicate or a live-then-final pair where
+ * the first event has outputTokens=0 and the second has the real value). Events
  * are grouped by request identity (`apiCallId`/`providerCallId`, falling back to
- * a content signature); the first emission of each request is summed into the
- * cumulative totals and subsequent duplicates are ignored. This mirrors
- * `computeCycleCost` so streamed metrics match the persisted cycle figures.
+ * a content signature); a per-request snapshot is maintained and deltas applied
+ * on subsequent emissions so later, more-complete snapshots are not discarded.
+ * `totalTokens` is always derived from `inputTokens + outputTokens` to avoid
+ * additive overcounting when the SDK includes a per-request `totalTokens` field.
  */
 function accumulateRequestUsage(
   metrics: SessionMetrics,
   data: Record<string, unknown> | null
 ): void {
-  const input = readNum(data, ["inputTokens", "input_tokens", "promptTokens"]);
-  const output = readNum(data, ["outputTokens", "output_tokens", "completionTokens"]);
-  const cacheRead = readNum(data, ["cacheReadTokens", "cache_read_tokens", "cacheReadInputTokens"]);
-  const cacheWrite = readNum(data, ["cacheWriteTokens", "cache_write_tokens", "cacheCreationInputTokens"]);
-  const total = readNum(data, ["totalTokens", "total_tokens", "tokens"]);
-
-  const i = input ?? 0;
-  const o = output ?? 0;
-  const cr = cacheRead ?? 0;
-  const cw = cacheWrite ?? 0;
+  const i = readNum(data, ["inputTokens", "input_tokens", "promptTokens"]) ?? 0;
+  const o = readNum(data, ["outputTokens", "output_tokens", "completionTokens"]) ?? 0;
+  const cr = readNum(data, ["cacheReadTokens", "cache_read_tokens", "cacheReadInputTokens"]) ?? 0;
+  const cw = readNum(data, ["cacheWriteTokens", "cache_write_tokens", "cacheCreationInputTokens"]) ?? 0;
 
   const key =
     readStr(data, ["apiCallId", "providerCallId"]) ??
-    `sig:${i}|${o}|${cr}|${cw}|${total ?? ""}`;
-  if (metrics.countedUsageKeys.has(key)) return;
-  metrics.countedUsageKeys.add(key);
+    `sig:${i}|${o}|${cr}|${cw}`;
 
   const usage = metrics.tokenUsage;
-  usage.inputTokens += i;
-  usage.outputTokens += o;
-  usage.cacheReadTokens += cr;
-  usage.cacheWriteTokens += cw;
+  const existing = metrics.requestSnapshots.get(key);
+  if (existing) {
+    // Apply only the delta: later emissions in a live-then-final pair carry more
+    // complete token counts (e.g. outputTokens goes from 0 to the real value).
+    usage.inputTokens += Math.max(0, i - existing.input);
+    usage.outputTokens += Math.max(0, o - existing.output);
+    usage.cacheReadTokens += Math.max(0, cr - existing.cacheRead);
+    usage.cacheWriteTokens += Math.max(0, cw - existing.cacheWrite);
+    existing.input = Math.max(existing.input, i);
+    existing.output = Math.max(existing.output, o);
+    existing.cacheRead = Math.max(existing.cacheRead, cr);
+    existing.cacheWrite = Math.max(existing.cacheWrite, cw);
+  } else {
+    metrics.requestSnapshots.set(key, { input: i, output: o, cacheRead: cr, cacheWrite: cw });
+    usage.inputTokens += i;
+    usage.outputTokens += o;
+    usage.cacheReadTokens += cr;
+    usage.cacheWriteTokens += cw;
+  }
 
-  const derivedTotal = usage.inputTokens + usage.outputTokens;
-  usage.totalTokens =
-    total !== null ? Math.max(usage.totalTokens + total, derivedTotal) : Math.max(usage.totalTokens, derivedTotal);
+  // Always derive from accumulated input/output to avoid additive overcounting.
+  usage.totalTokens = usage.inputTokens + usage.outputTokens;
 }
 
 // ── Session metrics aggregator ──────────────────────────────────────────────
@@ -605,7 +617,7 @@ export function createSessionMetrics(): SessionMetrics {
     sessionEndTime: null,
     quotaAvailable: false,
     quotaMessage: "Not exposed by current SDK/CLI",
-    countedUsageKeys: new Set<string>(),
+    requestSnapshots: new Map(),
     countedToolCallIds: new Set<string>(),
   };
 }
@@ -714,6 +726,6 @@ export function resetSessionMetrics(metrics: SessionMetrics): void {
   metrics.usageEventCount = 0;
   metrics.sessionStartTime = null;
   metrics.sessionEndTime = null;
-  metrics.countedUsageKeys = new Set<string>();
+  metrics.requestSnapshots = new Map();
   metrics.countedToolCallIds = new Set<string>();
 }

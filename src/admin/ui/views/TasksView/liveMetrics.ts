@@ -27,7 +27,7 @@ export interface Metrics {
 const USAGE_TYPES = new Set(["MODEL_USAGE", "assistant.usage", "session.usage_info"]);
 
 function isToolStart(type: string | undefined): boolean {
-  return type === "TOOL_CALL" || (type?.startsWith("tool.") ?? false);
+  return type === "TOOL_CALL" || type === "tool.execution_start";
 }
 
 function asRecord(data: unknown): Record<string, unknown> {
