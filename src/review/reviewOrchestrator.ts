@@ -292,6 +292,14 @@ export class ReviewOrchestrator {
       );
     }
 
+    if (task.state === "REVIEW_RUNNING") {
+      log.warn(
+        { taskId },
+        "runReview: task already REVIEW_RUNNING — skipping concurrent invocation"
+      );
+      return;
+    }
+
     const changeId = task.externalChangeId;
 
     // Keep task.cycleCount in sync with persisted review cycles.
