@@ -50,6 +50,8 @@ function insertRawCycle(
     costUsd: number | null;
     costAiCredits: number | null;
     agentEvents: string | null;
+    /** When set, events are embedded in the serialized AgentResult (predates the agent_events column). */
+    resultEvents?: unknown;
   }
 ): void {
   const db = new Database(dbPath);
@@ -64,7 +66,14 @@ function insertRawCycle(
     ).run(
       row.taskId,
       1,
-      JSON.stringify({ status: "completed", summary: "legacy", modifiedFiles: [], agentLogs: "", metadata: {} }),
+      JSON.stringify({
+        status: "success",
+        summary: "legacy",
+        modifiedFiles: [],
+        agentLogs: "",
+        metadata: {},
+        ...(row.resultEvents !== undefined ? { agentEvents: row.resultEvents } : {}),
+      }),
       row.agentEvents,
       row.costAiCredits,
       row.costUsd,
@@ -135,6 +144,33 @@ describe("SqliteStateStore — getCostSummary", () => {
 
     // Sorted by descending USD: unassigned ($0.05) first.
     expect(summary.perProject[0]?.projectId).toBeNull();
+  });
+
+  it("recomputes legacy cost from agent_result when the agent_events column is null", async () => {
+    const agent = await store.createAgent({
+      name: "A",
+      type: "coding",
+      modelConfigJson: JSON.stringify({ model: "gpt-4.1" }),
+      enabled: true,
+    });
+    const p1 = await store.createProject({ name: "PLATFORM", type: "coding", agentId: agent.id });
+    const t1 = await makeTaskForProject(store, p1.id);
+
+    // Row predating the agent_events column: events live only in agent_result.
+    insertRawCycle(dbPath, {
+      taskId: t1,
+      createdAtEpochSeconds: Math.floor(Date.now() / 1000),
+      costUsd: null,
+      costAiCredits: null,
+      agentEvents: null,
+      resultEvents: pricedResult(4).agentEvents,
+    });
+
+    const summary = await store.getCostSummary();
+    expect(summary.totalRuns).toBe(1);
+    expect(summary.totalAiCredits).toBeCloseTo(4, 6);
+    expect(summary.totalUsd).toBeCloseTo(0.04, 6);
+    expect(summary.perProject[0]?.projectId).toBe(p1.id);
   });
 
   it("filters by trailing period via `since`", async () => {

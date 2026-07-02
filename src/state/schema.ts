@@ -91,7 +91,10 @@ export const agentCycles = sqliteTable("agent_cycles", {
   /** Model id resolved from the usage events. */
   costModelId: text("cost_model_id"),
   createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
-});
+}, (table) => ({
+  idxAgentCyclesTaskId: index("idx_agent_cycles_task_id").on(table.taskId),
+  idxAgentCyclesCreatedAt: index("idx_agent_cycles_created_at").on(table.createdAt),
+}));
 
 export const processedComments = sqliteTable("processed_comments", {
   id: integer("id").primaryKey({ autoIncrement: true }),

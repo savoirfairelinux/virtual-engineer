@@ -1164,26 +1164,40 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
     // carry a captured event log (run counts already tallied in pass 1).
     const legacyRows = raw
       .prepare(
-        `SELECT t.project_id AS projectId, p.name AS projectName, c.agent_events AS agentEvents
+        `SELECT t.project_id AS projectId, p.name AS projectName,
+                c.agent_events AS agentEvents, c.agent_result AS agentResult
          FROM agent_cycles c
          JOIN tasks t ON t.task_id = c.task_id
          LEFT JOIN projects p ON p.id = t.project_id
-         WHERE c.cost_usd IS NULL AND c.agent_events IS NOT NULL
+         WHERE c.cost_usd IS NULL
          ${sinceEpochSeconds !== null ? "AND c.created_at >= ?" : ""}`
       )
       .all(...periodArgs) as Array<{
         projectId: string | null;
         projectName: string | null;
         agentEvents: string | null;
+        agentResult: string | null;
       }>;
     for (const row of legacyRows) {
-      if (!row.agentEvents) continue;
-      let events: AgentLogEvent[];
-      try {
-        events = JSON.parse(row.agentEvents) as AgentLogEvent[];
-      } catch {
-        continue;
+      // Prefer the canonical `agent_events` column, but fall back to events
+      // embedded in the serialized AgentResult for rows persisted before that
+      // column existed (mirrors getAgentCycles' recompute-on-read behavior).
+      let events: AgentLogEvent[] | undefined;
+      if (row.agentEvents) {
+        try {
+          events = JSON.parse(row.agentEvents) as AgentLogEvent[];
+        } catch {
+          events = undefined;
+        }
       }
+      if (!events && row.agentResult) {
+        try {
+          events = (JSON.parse(row.agentResult) as AgentResult).agentEvents;
+        } catch {
+          events = undefined;
+        }
+      }
+      if (!events) continue;
       const cost = computeCycleCost(events);
       if (!hasCostData(cost)) continue;
       const bucket = bucketFor(row.projectId, row.projectName);
