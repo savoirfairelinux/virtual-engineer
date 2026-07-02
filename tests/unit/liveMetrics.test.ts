@@ -65,6 +65,15 @@ describe("extractMetrics", () => {
     expect(m.toolCalls).toBe(1);
   });
 
+  it("does not collapse distinct tools that share the same callNumber", () => {
+    // callNumber is per-tool, not globally unique — include name in the key.
+    const m = extractMetrics([
+      toolStart({ name: "read_file", callNumber: 1 }),
+      toolStart({ name: "write_file", callNumber: 1 }),
+    ]);
+    expect(m.toolCalls).toBe(2);
+  });
+
   it("counts every tool start when no identity is available", () => {
     const m = extractMetrics([toolStart(), toolStart()]);
     expect(m.toolCalls).toBe(2);

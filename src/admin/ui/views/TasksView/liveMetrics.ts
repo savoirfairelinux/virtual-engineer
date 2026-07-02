@@ -73,7 +73,10 @@ export function extractMetrics(events: readonly MetricEntry[]): Metrics {
       const d = asRecord(ev.data);
       // Dedup only when the SDK gives us an explicit tool-call identity;
       // without one, count each event (cannot prove it is a duplicate).
-      const numericCall = typeof d["callNumber"] === "number" ? `n:${d["callNumber"]}` : null;
+      // Include tool name in the callNumber key so distinct tools with the
+      // same callNumber are not collapsed (mirrors agentEventTypes.ts keying).
+      const name = readStr(d, ["name", "tool", "toolName"]) ?? "unknown";
+      const numericCall = typeof d["callNumber"] === "number" ? `${name}#${d["callNumber"]}` : null;
       const id = readStr(d, ["callId", "toolCallId", "id"]) ?? numericCall;
       if (id !== null) {
         if (seenToolIds.has(id)) continue;
