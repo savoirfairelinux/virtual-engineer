@@ -1,7 +1,7 @@
 /** Drizzle ORM table definitions for the Virtual Engineer SQLite database. All timestamps are seconds since epoch (`mode: "timestamp"`). */
 import { sqliteTable, text, integer, real, index, unique, check, primaryKey } from "drizzle-orm/sqlite-core";
 import { sql } from "drizzle-orm";
-import type { TaskState, ProviderId, TaskType, AgentType, ProjectType, PushTargetRole, DomainCapability } from "../interfaces.js";
+import type { TaskState, ProviderId, TaskType, AgentType, ProjectType, PushTargetRole, DomainCapability, UserRole } from "../interfaces.js";
 
 export const tasks = sqliteTable("tasks", {
   taskId: text("task_id").primaryKey(),
@@ -381,5 +381,58 @@ export const appConcurrency = sqliteTable(
   },
   (table) => ({
     chkSingleton: check("chk_app_concurrency_singleton", sql`${table.id} = 'global'`),
+  })
+);
+
+// ─── Users / Sessions / Audit (admin RBAC) ───────────────────────────────────
+
+/** Admin dashboard user accounts. `role` gates route access (admin > operator > viewer). */
+export const users = sqliteTable("users", {
+  id: text("id").primaryKey(),
+  username: text("username").notNull().unique(),
+  passwordHash: text("password_hash").notNull(),
+  role: text("role").$type<UserRole>().notNull(),
+  enabled: integer("enabled").notNull().default(1),
+  createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
+});
+
+/**
+ * DB-backed opaque admin sessions. `token_hash` is a hash of the raw bearer
+ * token (the raw token is never stored). Sliding expiry via `touchSession`.
+ */
+export const userSessions = sqliteTable(
+  "user_sessions",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    tokenHash: text("token_hash").notNull().unique(),
+    userId: text("user_id").notNull().references(() => users.id),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+    expiresAt: integer("expires_at", { mode: "timestamp" }).notNull(),
+    lastSeenAt: integer("last_seen_at", { mode: "timestamp" }).notNull(),
+  },
+  (table) => ({
+    idxUserSessionsUserId: index("idx_user_sessions_user_id").on(table.userId),
+  })
+);
+
+/**
+ * Append-only audit trail of admin mutations. `actor_user_id` is NULL for
+ * non-user actors (e.g. bootstrap); `details_json` carries masked context.
+ */
+export const auditLog = sqliteTable(
+  "audit_log",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    actorUserId: text("actor_user_id"),
+    actorName: text("actor_name").notNull(),
+    action: text("action").notNull(),
+    targetType: text("target_type"),
+    targetId: text("target_id"),
+    detailsJson: text("details_json").notNull().default("{}"),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+  },
+  (table) => ({
+    idxAuditLogCreatedAt: index("idx_audit_log_created_at").on(table.createdAt),
   })
 );

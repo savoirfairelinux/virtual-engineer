@@ -21,7 +21,7 @@ tests/
 |---|---|
 | Admin routes / server | `adminServer` (+ `.behavior`, `.integration`), `adminHealthEndpoint`, `adminPluginRoutes`, `adminPromptRoutes`, `adminAgentsRoutes`, `adminAgentsOAuthRoutes`, `adminProjectsRoutes` (+ `.relaunch`), `adminConcurrencyRoutes`, `adminIntegrationsDiscover`, `adminWebhookSecretRoutes`, `adminCostRoutes`, `closeAdminServer`, `dashboard` (+ `.configurationTab`) |
 | Orchestrator / polling | `orchestrator` (+ `.projectMode`, `.webhookEntryPoints`, `.concurrency`), `orchestratorCommitMessage`, `pollingLoop.projects`, `pollingLoop.concurrency`, `pollingLoop.reviewPolling`, `concurrencyTracker`, `feedbackProcessor`, `pauseResumeFlow` |
-| State / stores | `stateMachine`, `stateStore` (+ `.projects`, `.cost`), `migrations.projects`, `integrationStore`, `promptStore` |
+| State / stores | `stateMachine`, `stateStore` (+ `.projects`, `.cost`), `migrations.projects`, `integrationStore`, `promptStore`, `userStore`, `auditStore` |
 | Connectors — Redmine | `redmineConnector`, `redmineDiscovery`, `webhookHandlerRedmine` |
 | Connectors — Gerrit | `gerritConnector`, `gerritDiscovery`, `gerritSshDiscovery`, `gerritSshClient`, `gerritSshReviewProvider`, `gerritStreamEvents`, `gerritVcsConnector` |
 | Connectors — GitLab | `gitlabHttpClient`, `gitlabIssueConnector`, `gitlabIssueDiscovery`, `gitlabMergeRequestConnector`, `gitlabMergeRequestDiscovery`, `gitlabMergeRequestReviewProvider`, `gitlabVcsConnector`, `gitlabAuth`, `webhookHandlerGitlabIssue`, `webhookHandlerGitlabMergeRequest` |
