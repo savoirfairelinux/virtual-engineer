@@ -45,7 +45,7 @@ Virtual Engineer is a **Node.js orchestrator** that runs on the host (or in a Do
                                  │  /workspace  → named volume (repo)      │
                                  │  /ve-home    → named volume (CLI home)  │
                                  │                                         │
-                                 │  node /agent-worker/index.js            │
+                                 │  node /agent-worker/dist/index.js      │
                                  │    → copilot --headless                 │
                                  │    → edits files, git commit            │
                                  │    → AgentResult JSON → stdout          │
@@ -232,7 +232,7 @@ Manages the **Docker volume lifecycle** for each agent cycle. All VCS operations
        │           -v ve-ws:/workspace \
        │           -v ve-home:/ve-home \
        │           virtual-engineer-workspace:latest \
-       │           node /agent-worker/index.js
+       │           node /agent-worker/dist/index.js
        │
        ├─ execInVolume(commit helper)  ← git add + git commit (with Change-Id)
        ├─ execInVolume(push helper)    ← git push refs/for/<branch>
@@ -321,7 +321,7 @@ Builds the **Docker container spec** and parses the agent result.
        │       --security-opt label=disable    (SELinux compat)
        │       --tmpfs /tmp:rw,nosuid,size=256m
        │
-       ├─ docker run → agent-worker/index.js
+       ├─ docker run → agent-worker/dist/index.js
        │     stdout: JSON AgentResult
        │     stderr: structured __ve_event lines + plain logs
        │
@@ -656,7 +656,7 @@ WORKDIR /workspace
 
 The Copilot CLI native binary (`copilot-linux-x64`) is installed on first use into `/ve-home` (the persistent named volume), not into `/tmp`.
 
-### Worker (`agent-worker/index.js`)
+### Worker (`agent-worker/src/index.ts` → `dist/index.js`)
 
 Runs inside the container. Two modes:
 

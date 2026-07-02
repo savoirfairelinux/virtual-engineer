@@ -94,7 +94,7 @@ function makeAgentAdapter(result?: Partial<AgentResult>): AgentAdapter {
     buildContainerSpec: vi.fn().mockReturnValue({
       image: "virtual-engineer-workspace:latest",
       env: {},
-      command: ["node", "/agent-worker/index.js"],
+      command: ["node", "/agent-worker/dist/index.js"],
     }),
     execute: vi.fn().mockResolvedValue({ ...defaultResult, ...result }),
   } as unknown as AgentAdapter;

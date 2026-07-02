@@ -61,7 +61,7 @@ export class DockerWorkspaceRunner implements WorkspaceRunner {
 
   /**
    * Spawn the adapter container and return raw stdout/stderr.
-   * Security: only task-specific vars reach the container; agent-worker/index.js further
+   * Security: only task-specific vars reach the container; agent-worker/src/index.ts further
    * filters to a minimal allowlist to prevent leaking host secrets.
    */
   async runAgentInDocker(
