@@ -191,11 +191,11 @@ async function runSession(
   const localCliServer = await startLocalCliServer();
   const client = new CopilotClient({ cliUrl: localCliServer.cliUrl });
 
-  // Never enabled in review mode (defense-in-depth even if the host omits SKILL_DISCOVERY).
+  // Opt-in: surface repo-defined skills to the agent without enabling MCP discovery.
   // Guarded so a missing path — or a non-directory at that path — never aborts the session.
   const skillsDir = join(WORKSPACE, '.github', 'skills');
   let enableSkillDiscovery = false;
-  if (SKILL_DISCOVERY && !REVIEW_MODE) {
+  if (SKILL_DISCOVERY) {
     try {
       enableSkillDiscovery = statSync(skillsDir).isDirectory();
     } catch {
