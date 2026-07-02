@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Icon } from "../../components/Icon.tsx";
 import { StatePill } from "../../components/StatePill.tsx";
 import { Tag } from "../../components/Tag.tsx";
@@ -16,61 +16,70 @@ import type { ApiTask, ApiCycle, ApiTransition } from "../../types.ts";
 
 interface TaskDetailProps {
   task: ApiTask;
+  onRefresh: () => void;
+  onDeleted: () => void;
 }
 
 type TabId = "cycles" | "timeline" | "logs";
 
-export function TaskDetail({ task }: TaskDetailProps) {
+export function TaskDetail({ task, onRefresh, onDeleted }: TaskDetailProps) {
   const [tab, setTab] = useState<TabId>("cycles");
   const [taskDetails, setTaskDetails] = useState<ApiTask | null>(null);
   const [cycles, setCycles] = useState<ApiCycle[] | null>(null);
   const [transitions, setTransitions] = useState<ApiTransition[] | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
-  const running   = isActiveState(task.state);
-  const terminal  = isTerminalState(task.state);
+  const loadDetails = useCallback((id: string, fallbackTask: ApiTask) => {
+    void api.get<{ task: ApiTask }>(`/api/admin/tasks/${id}`)
+      .then((r) => setTaskDetails(r.task))
+      .catch(() => setTaskDetails(fallbackTask));
+    void api.get<{ cycles: ApiCycle[] }>(`/api/admin/tasks/${id}/cycles`)
+      .then((r) => setCycles(r.cycles))
+      .catch(() => setCycles([]));
+    void api.get<{ transitions: ApiTransition[] }>(`/api/admin/tasks/${id}/transitions`)
+      .then((r) => setTransitions(r.transitions))
+      .catch(() => setTransitions([]));
+  }, []);
 
   useEffect(() => {
     setTaskDetails(null);
     setCycles(null);
     setTransitions(null);
-    void api.get<{ task: ApiTask }>(`/api/admin/tasks/${task.taskId}`)
-      .then((r) => setTaskDetails(r.task))
-      .catch(() => setTaskDetails(task));
-    void api.get<{ cycles: ApiCycle[] }>(`/api/admin/tasks/${task.taskId}/cycles`)
-      .then((r) => setCycles(r.cycles))
-      .catch(() => setCycles([]));
-    void api.get<{ transitions: ApiTransition[] }>(`/api/admin/tasks/${task.taskId}/transitions`)
-      .then((r) => setTransitions(r.transitions))
-      .catch(() => setTransitions([]));
-  }, [task.taskId]); // eslint-disable-line react-hooks/exhaustive-deps -- task is used as catch fallback only; re-fetch is intentionally gated on taskId
+  }, [task.taskId]);
+
+  useEffect(() => {
+    setCycles(null);
+    setTransitions(null);
+    loadDetails(task.taskId, task);
+  }, [task.taskId, task.state, task.updatedAt]); // eslint-disable-line react-hooks/exhaustive-deps -- loadDetails is stable
 
   async function doAction(path: string, method: "PATCH" | "POST" | "DELETE") {
     setActionError(null);
     try {
       await api[method === "PATCH" ? "patch" : method === "POST" ? "post" : "delete"](path);
-      // Parent will refresh via SSE; no local state update needed
+      if (method === "DELETE") {
+        onDeleted();
+      } else {
+        loadDetails(task.taskId, task);
+      }
+      onRefresh();
     } catch (err) {
       setActionError(err instanceof Error ? err.message : "Action failed");
     }
   }
 
-  const tabItems = [
-    { id: "cycles",   label: "Agent cycles",  count: cycles?.length ?? task.cycleCount },
-    { id: "timeline", label: "State timeline", count: transitions?.length ?? null },
-    { id: "logs",     label: "Live logs" },
-  ];
-
   const displayTitle = task.ticketTitle || task.displayId || task.taskId;
   const sourceLabel  = task.ticketSourceLabel.toUpperCase();
   const taskWithDetails = taskDetails ?? task;
+  const running   = isActiveState(taskWithDetails.state);
+  const terminal  = isTerminalState(taskWithDetails.state);
   const loadedCycleCount = cycles ? Math.max(cycles.length, ...cycles.map((cycle) => cycle.cycleNumber)) : 0;
   const effectiveCycleCount = Math.max(taskWithDetails.cycleCount, loadedCycleCount);
   const repoReviewLinks = (taskWithDetails.changesPerRepo ?? []).filter((c) => typeof c.reviewUrl === "string" && c.reviewUrl.length > 0);
   const primaryLink = taskWithDetails.ticketUrl ?? taskWithDetails.reviewUrl;
-  const footerRefLabel = task.taskType === "code-review"
-    ? (task.gerritChangeId ?? task.displayId ?? task.ticketId)
-    : (task.displayId ?? task.ticketId);
+  const footerRefLabel = taskWithDetails.taskType === "code-review"
+    ? (taskWithDetails.gerritChangeId ?? taskWithDetails.displayId ?? taskWithDetails.ticketId)
+    : (taskWithDetails.displayId ?? taskWithDetails.ticketId);
 
   const costTotals = cycles ? sumCycleCosts(cycles) : null;
   const costValue = costTotals && costTotals.usd > 0
@@ -79,12 +88,18 @@ export function TaskDetail({ task }: TaskDetailProps) {
 
   const metaCells = [
     { label: "Type",        value: task.taskType === "code-review" ? "Code review" : "Code generation", mono: false },
-    { label: "Patchset",    value: String(task.currentPatchset || "—"),    mono: true },
-    { label: "Total cost",  value: costValue,                              mono: true },
-    { label: "Reviewed PS", value: String(task.reviewedPatchset ?? "—"),    mono: true },
-    { label: "Cycles",      value: String(effectiveCycleCount),            mono: true },
-    { label: "Ticket",      value: task.displayId ?? task.ticketId,         mono: true },
-    { label: "Updated",     value: new Date(task.updatedAt).toLocaleString(), mono: true },
+    { label: "Patchset",    value: String(taskWithDetails.currentPatchset || "—"),    mono: true },
+    { label: "Total cost",  value: costValue,                                          mono: true },
+    { label: "Reviewed PS", value: String(taskWithDetails.reviewedPatchset ?? "—"),    mono: true },
+    { label: "Cycles",      value: String(effectiveCycleCount),                        mono: true },
+    { label: "Ticket",      value: task.displayId ?? task.ticketId,                    mono: true },
+    { label: "Updated",     value: new Date(taskWithDetails.updatedAt).toLocaleString(), mono: true },
+  ];
+
+  const tabItems = [
+    { id: "cycles",   label: "Agent cycles",  count: cycles?.length ?? taskWithDetails.cycleCount },
+    { id: "timeline", label: "State timeline", count: transitions?.length ?? null },
+    { id: "logs",     label: "Live logs" },
   ];
 
   return (
@@ -117,10 +132,10 @@ export function TaskDetail({ task }: TaskDetailProps) {
               <h1 style={{ margin: 0, fontSize: "20px", fontWeight: 600, lineHeight: 1.3, letterSpacing: "-0.01em" }}>
                 {displayTitle}
               </h1>
-              {task.gerritChangeId && (
+              {taskWithDetails.gerritChangeId && (
                 <div className="mono" style={{ fontSize: "11.5px", color: "var(--text-faint)", marginTop: "8px", display: "flex", gap: "8px", alignItems: "center" }}>
                   <Icon name="link" size={12} />
-                  <span>Change-Id: {task.gerritChangeId}</span>
+                  <span>Change-Id: {taskWithDetails.gerritChangeId}</span>
                 </div>
               )}
               {repoReviewLinks.length > 0 && (
@@ -154,18 +169,20 @@ export function TaskDetail({ task }: TaskDetailProps) {
               )}
             </div>
             <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "12px" }}>
-              <StatePill state={task.state} />
+              <StatePill state={taskWithDetails.state} />
               {/* action bar */}
               <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
-                {!terminal && (
+                {running && (
+                  <button className="iconbtn danger" title="Abandon" onClick={() => void doAction(`/api/admin/tasks/${task.taskId}/abandon`, "POST")}><Icon name="x" size={15} /></button>
+                )}
+                {!terminal && !running && (
                   <>
-                    {running
-                      ? <button className="iconbtn" title="Pause" onClick={() => void doAction(`/api/admin/tasks/${task.taskId}/pause`, "PATCH")}><Icon name="pause" size={15} /></button>
-                      : <button className="iconbtn" title="Resume" onClick={() => void doAction(`/api/admin/tasks/${task.taskId}/resume`, "PATCH")}><Icon name="play" size={15} /></button>
-                    }
                     <button className="iconbtn" title="Retry" onClick={() => void doAction(`/api/admin/tasks/${task.taskId}/retry`, "POST")}><Icon name="refresh" size={15} /></button>
                     <button className="iconbtn danger" title="Abandon" onClick={() => void doAction(`/api/admin/tasks/${task.taskId}/abandon`, "POST")}><Icon name="x" size={15} /></button>
                   </>
+                )}
+                {terminal && taskWithDetails.state !== "MERGED" && (
+                  <button className="iconbtn" title="Retry" onClick={() => void doAction(`/api/admin/tasks/${task.taskId}/retry`, "POST")}><Icon name="refresh" size={15} /></button>
                 )}
                 <div style={{ width: 1, height: 20, background: "var(--border-soft)", margin: "0 3px" }} />
                 <button
@@ -181,7 +198,7 @@ export function TaskDetail({ task }: TaskDetailProps) {
 
           {/* state pipeline */}
           <div style={{ marginTop: "10px", borderTop: "1px solid var(--border-soft)", paddingTop: "4px" }}>
-            <StatePipeline task={task} />
+            <StatePipeline task={taskWithDetails} />
           </div>
         </div>
 
@@ -195,7 +212,7 @@ export function TaskDetail({ task }: TaskDetailProps) {
         </div>
 
         {/* failure banner */}
-        {task.failureReason && (
+        {taskWithDetails.failureReason && (
           <div
             style={{
               display: "flex", gap: "11px", alignItems: "center", padding: "12px 16px",
@@ -207,7 +224,7 @@ export function TaskDetail({ task }: TaskDetailProps) {
             <div>
               <span className="eyebrow" style={{ color: "var(--danger)" }}>Failure reason</span>
               <div className="mono" style={{ fontSize: "12.5px", color: "var(--text)", marginTop: "2px" }}>
-                {task.failureReason}
+                {taskWithDetails.failureReason}
               </div>
             </div>
           </div>
@@ -231,7 +248,7 @@ export function TaskDetail({ task }: TaskDetailProps) {
               ? <div style={{ color: "var(--text-faint)", fontSize: "13px" }}>Loading…</div>
               : cycles.length === 0
                 ? <div className="placeholder" style={{ minHeight: "120px" }}>No agent cycles yet.</div>
-                : <AgentCycles cycles={cycles} />
+                : <AgentCycles key={cycles.length} cycles={cycles} />
           )}
           {tab === "timeline" && (
             transitions === null
@@ -239,7 +256,7 @@ export function TaskDetail({ task }: TaskDetailProps) {
               : <div className="card" style={{ padding: "16px 20px" }}><StateTimeline transitions={transitions} /></div>
           )}
           {tab === "logs" && (
-            <LiveLogs taskId={task.taskId} running={running} />
+            <LiveLogs key={effectiveCycleCount} taskId={task.taskId} running={running} />
           )}
         </TabPanel>
 

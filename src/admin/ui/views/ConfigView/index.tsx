@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Icon } from "../../components/Icon.tsx";
 import type { ApiIntegration, ApiAgent, ApiProject, ApiPrompt, ApiOAuthApp, ApiConfig, ApiPlugin, ApiStatus } from "../../types.ts";
 
@@ -37,7 +37,25 @@ export interface ConfigViewData {
 }
 
 export function ConfigView(props: ConfigViewData) {
-  const [sec, setSec] = useState<SectionId>("integrations");
+  const [sec, setSec] = useState<SectionId>(() => {
+    const part = window.location.hash.split("/")[1] ?? "";
+    return (CONFIG_NAV.find((n) => n.id === part)?.id) ?? "integrations";
+  });
+
+  useEffect(() => {
+    const onHashChange = () => {
+      const part = window.location.hash.split("/")[1] ?? "";
+      const id = CONFIG_NAV.find((n) => n.id === part)?.id ?? "integrations";
+      setSec(id);
+    };
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
+
+  function handleSectionChange(id: SectionId) {
+    setSec(id);
+    window.location.hash = `config/${id}`;
+  }
 
   return (
     <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
@@ -57,7 +75,7 @@ export function ConfigView(props: ConfigViewData) {
             return (
               <button
                 key={n.id}
-                onClick={() => setSec(n.id)}
+                onClick={() => handleSectionChange(n.id)}
                 style={{
                   display: "flex", alignItems: "center", gap: "11px", padding: "9px 10px",
                   borderRadius: "var(--radius-sm)",

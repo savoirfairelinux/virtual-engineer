@@ -36,7 +36,22 @@ function useTheme() {
 
 export function App() {
   const [theme, toggleTheme] = useTheme();
-  const [view, setView] = useState<ViewId>("tasks");
+  const [view, setView] = useState<ViewId>(() => {
+    const hash = window.location.hash;
+    if (hash.startsWith("#config")) return "config";
+    if (hash === "#overview") return "overview";
+    return "tasks";
+  });
+
+  useEffect(() => {
+    const onHashChange = () => {
+      const hash = window.location.hash;
+      setView(hash.startsWith("#config") ? "config" : hash === "#overview" ? "overview" : "tasks");
+    };
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
+
   const [authenticated, setAuthenticated] = useState(() => !bootstrap.requiresAuth || !!getStoredToken());
 
   // data state
@@ -101,6 +116,16 @@ export function App() {
     return stop;
   }, [authenticated]);
 
+  useEffect(() => {
+    if (!authenticated) return;
+    const id = setInterval(() => {
+      void api.get<{ tasks: ApiTask[] }>("/api/admin/tasks")
+        .then((r) => setTasks(r.tasks))
+        .catch(() => { /* ignore — SSE or next poll will recover */ });
+    }, 5_000);
+    return () => clearInterval(id);
+  }, [authenticated]);
+
   if (!authenticated) {
     return (
       <div className="app">
@@ -117,13 +142,14 @@ export function App() {
 
   function handleNavigate(v: "tasks" | "config") {
     setView(v);
+    window.location.hash = v;
   }
 
   return (
     <div className="app">
       <TopBar
         view={view}
-        setView={setView}
+        setView={(v) => { setView(v); window.location.hash = v; }}
         theme={theme}
         toggleTheme={toggleTheme}
         onLogout={() => { clearStoredToken(); setAuthenticated(false); }}
@@ -144,7 +170,7 @@ export function App() {
           />
         )}
         {view === "tasks" && (
-          <TasksView tasks={tasks} />
+          <TasksView tasks={tasks} onRefresh={() => void loadAll()} />
         )}
         {view === "config" && (
           <ConfigView

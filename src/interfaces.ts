@@ -290,6 +290,12 @@ export interface TaskContext {
   constraints: string[];
   priorFeedback: FeedbackItem[];
   cycleNumber: number;
+  /**
+   * True if a prior patchset was successfully checked out into the workspace
+   * volume before this cycle started. When true the agent should amend/extend
+   * existing commits rather than start from scratch.
+   */
+  hasPriorPatchset?: boolean;
   /** Commit message the agent must use for direct Gerrit submission */
   commitMessage: string;
   /** Optional link back to the originating ticket for traceability */
