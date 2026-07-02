@@ -23,13 +23,14 @@ Updates land in the **same commit** as the code change. If a change is purely in
 ## Build & Test (gate every change)
 ```
 npm test            # Vitest — must pass
-npm run typecheck   # zero TypeScript errors
-npm run lint        # zero ESLint errors
+npm run typecheck   # zero TS errors (two passes: tsconfig.json + tsconfig.agent.json)
+npm run lint        # zero ESLint errors (src, tests, agent-worker/src)
 npm run dev         # start orchestrator (tsx src/index.ts)
+npm run build:ui    # Vite build of the admin React SPA → dist/admin-ui
 npm run db:migrate  # apply Drizzle migrations
 ```
 
-Helper scripts: `npm run e2e:mock`, `npm run create:ticket`, `npm run reset:instance`.
+Helper scripts: `npm run e2e:mock`, `npm run reset:instance`, `npm run build:agent` (agent-worker TS build), `npm run dev:ui` (Vite watch), `npm run typecheck:ui`, `npm run db:generate`.
 
 ## Architecture (one screen)
 
@@ -38,7 +39,7 @@ Helper scripts: `npm run e2e:mock`, `npm run create:ticket`, `npm run reset:inst
 - **Container constraints** (set by `buildContainerSpec` in `src/agents/copilotAdapter.ts`): `--read-only` rootfs, `--cap-drop ALL`, `--security-opt no-new-privileges:true`, `--tmpfs /tmp:rw,nosuid,size=256m`, `/workspace` named-volume mount, `/ve-home` named-volume mount for Copilot HOME (native modules), optional `/ve-prompts` mount, `networkMode=virtual-engineer_ve-agent-net`.
 - **Persistence**: SQLite WAL via `better-sqlite3` (sync) + Drizzle ORM at `DATABASE_PATH` (default `./data/virtual-engineer.db`).
 - **Providers (per capability)**: issue_tracking = Redmine | GitLab Issues | GitHub Issues; code_review / source_control = Gerrit | GitLab Merge Requests | GitHub Pull Requests; agent_execution = Copilot | Mock. Provider credentials live on `integrations`, while GitLab project selection is VE-project-owned (`project_integration_bindings` issue_tracking `{ ticketProjectKey }`, `project_push_targets.repoKey`, code_review `{ repos }` bindings).
-- **Admin server** (`src/admin/`) exposes the dashboard plus integrations, agents, projects, prompts, concurrency, and webhook-secret operations; secrets are masked on read and the runtime is hot-refreshed after integration changes.
+- **Admin server** (`src/admin/`) exposes the dashboard plus integrations, agents, projects, prompts, concurrency, and webhook-secret operations; secrets are masked on read and the runtime is hot-refreshed after integration changes. The dashboard client is a **Vite-built React SPA** (`src/admin/ui/`, served from `dist/admin-ui`; build with `npm run build:ui`).
 
 ### Source layout
 ```
@@ -48,49 +49,64 @@ src/
   interfaces.ts         # branded IDs, TaskState, AgentSession, AgentResult, AgentLogEvent
   copilotModel.ts       # Copilot model defaults
   logger.ts             # Pino (silent in NODE_ENV=test by default)
-  admin/                # Plain Node.js admin HTTP server + dashboard HTML
-                        # adminServer (multiplexer/auth), adminRouteUtils,
+  admin/                # Node.js admin HTTP server; serves the Vite-built React SPA
+                        # adminServer (multiplexer/auth), router, adminRouteUtils,
                         # adminTaskRoutes, adminPromptRoutes, adminStreamRoutes,
                         # adminIntegrationRoutes, adminAgentsRoutes,
                         # adminProjectsRoutes, adminConcurrencyRoutes,
-                        # adminWebhookRoutes, dashboard, start/close helpers
+                        # adminWebhookRoutes, adminOverviewRoutes,
+                        # dashboard (SPA shell), start/close helpers
+    ui/                 # React SPA source (App.tsx, views/, components/,
+                        # shell/, theme/, icons/, api.ts, states.ts)
+    assets/             # static assets bundled by Vite
   agents/               # copilotAdapter, copilotConnectionValidator,
                         # copilotOAuthService, providerAuthService,
-                        # copilotModelsService,
+                        # copilotModelsService, cycleCost,
                         # mockAgentAdapter, agentEventTypes, agentEventBus
   connectors/           # redmineConnector, gerritConnector,
                         # gerritSshClient, gerritSshReviewProvider,
                         # gerritStreamEvents, integrationStreamEvents,
                         # gitlabIssueConnector, gitlabHttpClient,
-                        # gitlabMergeRequestConnector, baseTicketConnector,
-                        # githubIssueConnector, githubPullRequestReviewConnector
-
-  plugins/              # registry, pluginManager, init, descriptors/{github,
+                        # gitlabMergeRequestConnector,
+                        # gitlabMergeRequestReviewProvider, baseTicketConnector,
+                        # githubIssueConnector, githubPullRequestReviewConnector,
+                        # githubReviewProvider
+  orchestrator/         # orchestrator, pollingLoop, feedbackProcessor,
+                        # concurrencyTracker
+  plugins/              # registry, pluginManager, init, descriptors/{index,github,
                         # gitlab,gerrit,redmine,copilot,mock}.ts (unified
                         # provider descriptors; githubOAuth/gitlabOAuth helpers)
   review/               # reviewOrchestrator, copilotReviewAgent,
-                        # prompt builder, parser
+                        # reviewPromptBuilder, reviewResultParser,
+                        # commentFilter, commentHash, commentSeverity,
+                        # revisionPatchset
   state/                # schema (Drizzle), stateMachine, stateStore facade, migrate
     stores/             # domain-scoped DB modules: task, integration, project,
                         # prompt(+seeding), and agent(+concurrency)
-  utils/                # ticketFooterFormatter, encryption
-  vcs/                  # vcsConnector + gerritVcsConnector + gitlabVcsConnector + vcsFactory
-  webhooks/             # webhook server + provider handlers
+  utils/                # ticketFooterFormatter, ticketSourceLabel, encryption,
+                        # errorClassifier, gitExec, githubAuth, gitlabAuth,
+                        # redactUrl
+  vcs/                  # vcsConnector + gerrit/gitlab/github VcsConnectors,
+                        # vcsFactory, branchNaming
+  webhooks/             # webhook server + handlers/{redmine,gitlab-issue,
+                        # gitlab-merge-request,github-pull-request}
   workspace/            # dockerVolume (named-volume lifecycle + execInVolume)
                         # workspaceRunner (clone + container lifecycle)
-agent-worker/index.js   # JS entry inside the agent container
+agent-worker/src/       # TS worker inside the agent container (index.ts,
+                        # commitUtils.ts, validate-copilot-connection.ts);
+                        # built via tsconfig.agent.json / npm run build:agent
 ```
 
 ## Critical Schema Facts
-- `tasks` PK = `task_id` (TEXT). There is **no** `id` column. Key columns also include `task_type`, `gerrit_change_id`, `current_patchset`, `reviewed_patchset`, `project_id`, `ticket_source_integration_id`, `ticket_source_project_key`, `cycle_count`, `failure_reason`, `ticket_url`, `review_url`, `created_at`, `updated_at`. `ticket_source_integration_id` / `ticket_source_project_key` snapshot the originating ticket source so orphaned tasks can be adopted by a future project bound to the same ticket source.
+- `tasks` PK = `task_id` (TEXT). There is **no** `id` column. Key columns also include `display_id`, `task_type`, `gerrit_change_id`, `current_patchset`, `reviewed_patchset`, `push_ref`, `project_id`, `ticket_source_integration_id`, `ticket_source_project_key`, `cycle_count`, `failure_reason`, `ticket_url`, `review_url`, `created_at`, `updated_at`. `ticket_source_integration_id` / `ticket_source_project_key` snapshot the originating ticket source so orphaned tasks can be adopted by a future project bound to the same ticket source.
 - `state_transitions`, `agent_cycles`, `processed_comments` use INTEGER `id` PKs.
 - `posted_review_comments` (INTEGER `id` PK): dedup table for the **review posting** side (VE as reviewer). Columns: `task_id`, `change_id`, `comment_hash` (`sha1(file+"\n"+normalized(message))`, line excluded), `file`, `line`, `message`, `severity`, `provider_thread_id` (nullable), `resolved` (0/1), `created_at`. Unique `(task_id, comment_hash)` drives `INSERT OR IGNORE` idempotency; prevents re-posting the same finding across patchsets. Integration-agnostic.
 - `review_thread_replies` (INTEGER `id` PK): dedup ledger for **discussion-thread replies** (VE answering human review comments). Columns: `task_id` (FK), `change_id`, `thread_id`, `handled_comment_hash` (`sha1(thread+"\n"+lower(author)+"\n"+normalized(message))` of the latest human comment), `reply_message`, `created_at`. Unique `(task_id, thread_id, handled_comment_hash)` drives `INSERT OR IGNORE`; VE replies once per new human message and never re-answers an already-handled thread across re-reviews. Integration-agnostic.
 - `agent_cycles.agent_events` (TEXT, JSON `AgentLogEvent[]`) records the streamed agent log.
-- `agent_cycles.agent_events` (TEXT, JSON `AgentLogEvent[]`) records the streamed agent log.
 - `agent_cycles` cost columns (all nullable): `cost_ai_credits` (REAL), `cost_usd` (REAL), `premium_requests` (REAL), `cost_input_tokens` / `cost_output_tokens` / `cost_cached_tokens` / `cost_cache_write_tokens` (INTEGER), `cost_model_id` (TEXT). Derived by `computeCycleCost()` (`src/agents/cycleCost.ts`) from `assistant.usage` events (per-request: events are grouped by request identity — `apiCallId`/`providerCallId` or content signature — to drop duplicate emissions, then summed across distinct requests: `copilotUsage.totalNanoAiu` → `cost_usd`/`cost_ai_credits` where 1 AIU = 1 credit = $0.01). When `totalNanoAiu` is absent, `cost_usd` is **estimated** from `premium_requests` × $0.04 (GitHub overage rate) and `cost_ai_credits` stays null. Legacy rows are recomputed from `agent_events` on read.
 - `integrations` (TEXT `id` PK): `provider`, `name`, `config_json`, `enabled` (INTEGER), `discovered_resources_json`, `discovered_at`, timestamps. `provider` is one of `github | gitlab | gerrit | redmine | copilot | mock` (the former `type` column and the `category` concept were removed).
-- `prompts` (TEXT `id` PK): `label`, `content`, timestamps. Used to inject `SYSTEM_PROMPT` / `INSTRUCTIONS_PROMPT` into the agent container.
+- `prompts` (TEXT `id` PK): `label`, `content`, `prompt_type` (`system | user`, default `user`), timestamps. Used to inject `SYSTEM_PROMPT` / `INSTRUCTIONS_PROMPT` into the agent container.
+- `oauth_apps` (composite PK `(provider, base_url)`): `provider`, `base_url`, `client_id`, timestamps — stores per-host OAuth app registrations. A legacy `gitlab_oauth_apps` table also exists.
 - `change_per_repository` (TEXT `id` PK): `task_id`, `repo_key`, `change_id`, `review_url`, `status`, `integration_id`, `review_system`, `commit_index` (INTEGER NOT NULL DEFAULT 0), `subject_hash` (TEXT), timestamps. PK format: `${taskId}:${repoKey}:${commitIndex}` when commitIndex > 0, else `${taskId}:${repoKey}`. Status values: `OPEN`, `NEW`, `MERGED`, `ABANDONED`, `ORPHANED`, `NO_CHANGE`. The `review_system` column is **kept** (not renamed) and stores `gerrit | gitlab | github` via `VcsConnector.reviewSystemLabel`.
 - `project_integration_bindings` (TEXT `id` PK): `project_id`, `integration_id`, `capability` (`issue_tracking | code_review | source_control | agent_execution`), `config_json`, timestamps. `UNIQUE(project_id, capability)` (`uq_pib_project_capability`). Replaces the dropped `project_ticket_source` / `project_review_integration` / `project_review_repos` tables. `config_json` shapes: issue_tracking = `{ ticketProjectKey }`; code_review = `{ repos: string[] }`. Cross-project ticket-source uniqueness is enforced in **application code** (throws), not by a DB unique index.
 - Phase 2 tables also exist and are live: `agents`, `projects`, `project_integration_bindings`, `project_push_targets` (the `source_control` binding, unchanged), and singleton `app_concurrency`.
@@ -169,12 +185,12 @@ Empty strings in env are treated as `undefined` (helpful for env overrides).
 ## Copilot Execution
 
 1. **Worker-local headless CLI** — code-generation containers always spawn `copilot --headless` inside the container and connect the SDK to that local CLI server.
-2. **Host-side review SDK** — `src/review/copilotReviewAgent.ts` runs on the host for diff-only review tasks and authenticates the Copilot SDK directly with the selected GitHub token.
+2. **Docker review execution** — review tasks also run in the agent container (`REVIEW_MODE=1` via `workspaceRunner.runReviewInDocker`); the worker reads the prompt from `USER_PROMPT_FILE` (`/ve-home/user-prompt.txt`) and returns raw LLM text for the host to parse. `src/review/copilotReviewAgent.ts` (host-side SDK client) is **legacy** — never instantiated in `src/`.
 3. **Container validation fallback** — when the local Node runtime lacks `node:sqlite`, `copilotConnectionValidator` runs the validation script inside `AGENT_CONTAINER_IMAGE`, which also starts a local headless CLI in-container.
 
 Worker `sendAndWait` timeout ≈ 540s. Host agent timeout = `AGENT_TIMEOUT_MS` (default 60 min).
 
-Implementation: `src/agents/copilotAdapter.ts`, `src/agents/copilotOAuthService.ts`, `src/agents/copilotModelsService.ts`, `src/agents/copilotConnectionValidator.ts`, `src/review/copilotReviewAgent.ts`, `agent-worker/index.js`.
+Implementation: `src/agents/copilotAdapter.ts`, `src/agents/copilotOAuthService.ts`, `src/agents/copilotModelsService.ts`, `src/agents/copilotConnectionValidator.ts`, `src/review/copilotReviewAgent.ts`, `agent-worker/src/index.ts`.
 
 ## Test Layout
 - **Unit + integration tests**: `tests/unit/` (Vitest). All external I/O (fetch, fs, Docker, SDK) is mocked via `vi.mock`/`vi.spyOn`. Current project-mode and webhook-oriented scenarios live alongside unit specs (for example `orchestrator.projectMode.test.ts`, `orchestrator.webhookEntryPoints.test.ts`, `pollingLoop.projects.test.ts`).
@@ -203,7 +219,7 @@ Body lines ≤72 chars. See `typescript-standard` skill.
 - **Task resolution**: `getTaskByTicketId()` orders by `createdAt DESC` so polling sees the newest task, not a stale FAILED row.
 - **Pause/Resume** are state_transitions metadata rows, not boolean columns.
 - **Plugin reload**: editing integrations triggers `refreshRuntimeDependencies()` from `src/index.ts`; no orchestrator restart needed.
-- **Container image rebuild**: after editing `src/agents/copilotAdapter.ts`, `agent-worker/index.js`, or `Dockerfile.agent`, run `docker build -f Dockerfile.agent -t virtual-engineer-workspace:latest .` and restart `npm run dev`.
+- **Container image rebuild**: after editing `src/agents/copilotAdapter.ts`, `agent-worker/src/**`, or `Dockerfile.agent`, run `docker build -f Dockerfile.agent -t virtual-engineer-workspace:latest .` and restart `npm run dev`.
 - **Timestamp queries**: stored in seconds → `datetime(created_at, 'unixepoch')` (NOT `created_at/1000`).
 - **`exactOptionalPropertyTypes`**: when forwarding optional fields, prefer conditional spreading (`...(x !== undefined ? { x } : {})`) over `x: x ?? undefined`.
 - **Provider config lives in admin DB**: do not add new env-var-driven provider settings — extend the relevant `integrations` descriptor or the `agents` / `projects` tables instead.
@@ -211,7 +227,7 @@ Body lines ≤72 chars. See `typescript-standard` skill.
 - **One provider, many capabilities**: there is no longer a `github-issue` vs `github-pull-request` (or `gitlab-issue` vs `gitlab-merge-request`) split. A single `github` / `gitlab` provider descriptor exposes multiple domain capabilities; resolve runtime dependencies by capability (`getConnectorForCapability`, `getActiveIntegrationsByCapability`) rather than by an integration type/role.
 - **Ticket-source uniqueness is app-enforced**: there is no DB unique index across projects for the issue_tracking binding. `projectStore` throws when a second project binds the same `(integrationId, ticketProjectKey)`; keep that check in application code.
 - **Multi-instance plugins**: all enabled integrations stay active in memory, including multiple rows of the same provider. Resolve runtime dependencies by `integrationId`, capability, or explicit integration lists; do not add new logic that assumes a single active integration per provider.
-- **Copilot execution path**: no host/external CLI server support remains. Containers and validation scripts always boot a local headless CLI; host-side reviews use direct token auth.
+- **Copilot execution path**: no host/external CLI server support remains. Containers and validation scripts always boot a local headless CLI; reviews run in the agent container with `REVIEW_MODE=1` (`CopilotReviewAgent` is legacy, unused).
 - **Descriptor-driven event streams**: stream-capable integrations are reconciled through `descriptor.streamEvents` plus `PluginManager.getActiveIntegrations()`. Gerrit is the current stream-backed implementation, but the bootstrap is no longer Gerrit-specific.
 - **Descriptor-driven review backends**: generic review routing resolves active review integrations through `descriptor.createReviewer`; keep provider-specific clone/setup logic in the descriptor and out of `src/index.ts` / `src/review/reviewOrchestrator.ts`.
 - **Review tasks are integration-scoped**: webhook-triggered review flows must resolve the exact review integration by `integrationId`, and code-review tasks should preserve that integration in `ticketSourceLabel` / derived `ticketId` to avoid collisions between multiple active Gerrit instances.

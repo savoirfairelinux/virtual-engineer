@@ -2,7 +2,7 @@
 
 ## Frameworks
 
-- **Vitest** (`npm test`, `npm run test:watch`, `npm run test:coverage`) for all unit + integration specs in `tests/unit/`.
+- **Vitest** (`npm test`, `npm run test:watch`, `npm run test:coverage`) for all unit + integration specs in `tests/unit/`. Vitest is the **only** test framework — there is no Playwright setup and no `tests/e2e/` directory.
 
 ## Layout
 
@@ -13,21 +13,26 @@ tests/
     *.test.ts               # one file per source module + integration scenarios
 ```
 
-### Unit-test inventory (excerpt)
+### Test families by area
 
-State / DB: `stateMachine`, `stateStore`, `stateStore.projects`, `migrations.projects`, `integrationStore`, `promptStore`.
+`tests/unit/` currently holds ~100 test files. This table lists the families; run `ls tests/unit/` for the authoritative, always-current list.
 
-Connectors / VCS: `redmineConnector`, `redmineDiscovery`, `gerritConnector`, `gerritDiscovery`, `gerritSshDiscovery`, `gerritSshClient`, `gerritSshReviewProvider`, `gerritStreamEvents`, `gerritVcsConnector`, `integrationStreamEvents`, `gitlabHttpClient`, `gitlabIssueConnector`, `gitlabIssueDiscovery`, `gitlabMergeRequestConnector`, `gitlabMergeRequestReviewProvider`, `gitlabMergeRequestDiscovery`, `gitlabVcsConnector`, `vcsConnector`, `vcsFactory`, `baseTicketConnector`.
-
-Agents / review runtime: `copilotAdapter`, `copilotAdapter.promptInjection`, `copilotConnectionValidator`, `copilotOAuthService`, `providerAuthService`, `copilotModelsService`, `mockAgentAdapter`, `agentEventTypes`, `agentEventTypes.normalization`, `copilotReviewAgent`, `reviewPromptBuilder`, `reviewResultParser`, `reviewOrchestrator`, `reviewLiveLogs`, `commentHash`, `commentSeverity`, `workerCommitProtocol`.
-
-Orchestrator / polling / webhooks: `orchestrator`, `orchestrator.projectMode`, `orchestrator.webhookEntryPoints`, `orchestrator.concurrency`, `orchestratorCommitMessage`, `pollingLoop.projects`, `pollingLoop.concurrency`, `concurrencyTracker`, `feedbackProcessor`, `webhookServer`, `webhookHandlerRedmine`, `webhookHandlerGitlabIssue`, `webhookHandlerGitlabMergeRequest`.
-
-Plugins / runtime wiring: `pluginManager`, `pluginManager.multiInstance`, `registry`, `runtimeBootstrap` (historical test name covering bootstrap wiring in `src/index.ts`).
-
-Admin: `adminServer`, `adminServer.behavior`, `adminServer.integration`, `adminHealthEndpoint`, `adminPluginRoutes`, `adminPromptRoutes`, `adminAgentsRoutes`, `adminAgentsOAuthRoutes`, `adminProjectsRoutes`, `adminConcurrencyRoutes`, `adminIntegrationsDiscover`, `adminWebhookSecretRoutes`, `closeAdminServer`, `dashboard`, `dashboard.configurationTab`.
-
-Misc: `config`, `logger`, `encryption`, `ticketFooterFormatter`, `dockerVolume`, `workspaceRunner`, `workspaceRunner.multiTarget`, `pauseResumeFlow`.
+| Area | Families (file-name stems) |
+|---|---|
+| Admin routes / server | `adminServer` (+ `.behavior`, `.integration`), `adminHealthEndpoint`, `adminPluginRoutes`, `adminPromptRoutes`, `adminAgentsRoutes`, `adminAgentsOAuthRoutes`, `adminProjectsRoutes` (+ `.relaunch`), `adminConcurrencyRoutes`, `adminIntegrationsDiscover`, `adminWebhookSecretRoutes`, `adminCostRoutes`, `closeAdminServer`, `dashboard` (+ `.configurationTab`) |
+| Orchestrator / polling | `orchestrator` (+ `.projectMode`, `.webhookEntryPoints`, `.concurrency`), `orchestratorCommitMessage`, `pollingLoop.projects`, `pollingLoop.concurrency`, `pollingLoop.reviewPolling`, `concurrencyTracker`, `feedbackProcessor`, `pauseResumeFlow` |
+| State / stores | `stateMachine`, `stateStore` (+ `.projects`, `.cost`), `migrations.projects`, `integrationStore`, `promptStore` |
+| Connectors — Redmine | `redmineConnector`, `redmineDiscovery`, `webhookHandlerRedmine` |
+| Connectors — Gerrit | `gerritConnector`, `gerritDiscovery`, `gerritSshDiscovery`, `gerritSshClient`, `gerritSshReviewProvider`, `gerritStreamEvents`, `gerritVcsConnector` |
+| Connectors — GitLab | `gitlabHttpClient`, `gitlabIssueConnector`, `gitlabIssueDiscovery`, `gitlabMergeRequestConnector`, `gitlabMergeRequestDiscovery`, `gitlabMergeRequestReviewProvider`, `gitlabVcsConnector`, `gitlabAuth`, `webhookHandlerGitlabIssue`, `webhookHandlerGitlabMergeRequest` |
+| Connectors — GitHub | `githubIssueConnector`, `githubPullRequestReviewConnector`, `githubReviewProvider`, `githubVcsConnector`, `githubPluginDescriptors`, `githubOAuth`, `githubAuth`, `branchNaming`, `webhookHandlerGithubPullRequest` |
+| VCS (shared) | `vcsConnector`, `vcsFactory`, `baseTicketConnector` |
+| Agents / Copilot | `copilotAdapter` (+ `.promptInjection`), `copilotConnectionValidator`, `copilotOAuthService`, `copilotModelsService`, `providerAuthService`, `mockAgentAdapter`, `agentEventTypes` (+ `.normalization`), `workerCommitProtocol` |
+| Review runtime | `copilotReviewAgent`, `reviewOrchestrator`, `reviewPromptBuilder`, `reviewResultParser`, `reviewLiveLogs`, `commentHash`, `commentSeverity`, `revisionPatchset` |
+| Cost tracking | `cycleCost`, `stateStore.cost`, `adminCostRoutes` |
+| Plugins / runtime wiring | `pluginManager` (+ `.multiInstance`), `registry`, `runtimeBootstrap` (historical name; covers bootstrap wiring in `src/index.ts`), `integrationStreamEvents` |
+| Webhooks | `webhookServer`, `webhookHandlerRegistry` (+ the per-provider handlers listed above) |
+| Workspace / utils / misc | `workspaceRunner` (+ `.multiTarget`), `dockerVolume`, `buildRepositoryMap`, `config`, `logger`, `encryption`, `errorClassifier`, `gitExec`, `ticketFooterFormatter` |
 
 > **There are integration tests today.** Files ending in `.integration.test.ts` wire several modules together with mocked external I/O.
 

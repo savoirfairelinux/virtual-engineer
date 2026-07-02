@@ -17,6 +17,11 @@ vitest-out.log
 # Test artefacts
 test_results.json
 
+# Design-system sync tooling (local only)
+ds-bundle/
+.ds-sync/
+.design-sync/
+
 # Copilot/editor customization (local only)
 .github/context/
 .github/instructions/
