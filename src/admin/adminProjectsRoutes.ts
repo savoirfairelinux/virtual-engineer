@@ -174,6 +174,7 @@ const reviewProjectCreateSchema = z.object({
   agentId: z.string().min(1, "Agent is required — create and enable a review agent first (Agents tab)"),
   agentOverrideJson: z.string().nullable().optional(),
   postCloneScript: z.string().optional(),
+  skillDiscoveryEnabled: z.boolean().optional(),
   enabled: z.boolean().optional(),
   reviewConfig: reviewConfigSchema,
 });
