@@ -32,6 +32,7 @@ import { NO_REVIEW_SYSTEM } from "../vcs/vcsConnector.js";
 import { VcsConnectorFactory } from "../vcs/vcsFactory.js";
 import { decryptToken, encryptToken } from "../utils/encryption.js";
 import { redactUrls } from "../utils/redactUrl.js";
+import { isInfrastructureError } from "../utils/errorClassifier.js";
 import type { ConcurrencyTracker } from "./concurrencyTracker.js";
 import { resolveAgentConfig } from "../state/stateStore.js";
 
@@ -1592,7 +1593,18 @@ export class Orchestrator {
     try {
       await this.stateStore.setFailureReason(task.taskId, safeReason);
       await this.stateStore.transition(task.taskId, "FAILED", { error: safeReason });
-      await this.notifyTicketFailure(task, `Virtual Engineer encountered an error: ${safeReason}`);
+      // Infrastructure / connectivity / config errors (e.g. the Gerrit SSH
+      // connection cannot be established) are already surfaced in the admin UI.
+      // Posting them as a ticket note duplicates that view and adds noise to the
+      // ticket-following process, so skip the notification for those.
+      if (isInfrastructureError(err)) {
+        log.warn(
+          { taskId: task.taskId, ticketId: task.ticketId },
+          "infrastructure error — skipping ticket failure note"
+        );
+      } else {
+        await this.notifyTicketFailure(task, `Virtual Engineer encountered an error: ${safeReason}`);
+      }
     } catch (innerErr) {
       log.error({ taskId: task.taskId, innerErr }, "failed to record fatal error in state store");
     }
