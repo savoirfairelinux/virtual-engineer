@@ -756,6 +756,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
           name,
           agentId,
           postCloneScript: postCloneScript || undefined,
+          skillDiscoveryEnabled,
           reviewConfig: { integrationId: reviewIntegrationId, repoKeys: reviewRepoKeys },
         };
         if (isEditMode && project) {
@@ -935,7 +936,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
           />
         </Field>
 
-        {projectType === "coding" && (
+        {(
           <Field
             label="Skill Discovery"
             hint="When enabled, the agent loads team-defined skills from <repo>/.github/skills. Only enable for trusted repositories."
