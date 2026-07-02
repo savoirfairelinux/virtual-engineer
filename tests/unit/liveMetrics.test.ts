@@ -78,4 +78,24 @@ describe("extractMetrics", () => {
     expect(m.cacheRead).toBe(35);
     expect(m.cacheWrite).toBe(12);
   });
+
+  it("treats identical token counts from different models as distinct requests", () => {
+    // Two requests with the same token counts but different models must NOT be
+    // collapsed into one by the fallback signature.
+    const m = extractMetrics([
+      usage({ input_tokens: 100, output_tokens: 50, model: "gpt-4o" }),
+      usage({ input_tokens: 100, output_tokens: 50, model: "claude-3-5-sonnet" }),
+    ]);
+    expect(m.inputTokens).toBe(200);
+    expect(m.outputTokens).toBe(100);
+  });
+
+  it("still dedups same-model identical emissions when apiCallId is absent", () => {
+    const m = extractMetrics([
+      usage({ input_tokens: 80, output_tokens: 20, model: "gpt-4o" }),
+      usage({ input_tokens: 80, output_tokens: 20, model: "gpt-4o" }),
+    ]);
+    expect(m.inputTokens).toBe(80);
+    expect(m.outputTokens).toBe(20);
+  });
 });

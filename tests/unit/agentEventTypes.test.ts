@@ -361,6 +361,21 @@ describe("SessionMetrics", () => {
     expect(metrics.tokenUsage.totalTokens).toBe(160);
   });
 
+  it("treats identical token counts from different models as distinct requests", () => {
+    // Without apiCallId, requests from different models must not be collapsed.
+    updateSessionMetrics(metrics, makeNormEvent("assistant.usage", { inputTokens: 100, outputTokens: 50, model: "gpt-4o" }, "usage"));
+    updateSessionMetrics(metrics, makeNormEvent("assistant.usage", { inputTokens: 100, outputTokens: 50, model: "claude-3-5-sonnet" }, "usage"));
+    expect(metrics.tokenUsage.inputTokens).toBe(200);
+    expect(metrics.tokenUsage.outputTokens).toBe(100);
+  });
+
+  it("still dedups same-model identical emissions when apiCallId is absent", () => {
+    updateSessionMetrics(metrics, makeNormEvent("assistant.usage", { inputTokens: 80, outputTokens: 20, model: "gpt-4o" }, "usage"));
+    updateSessionMetrics(metrics, makeNormEvent("assistant.usage", { inputTokens: 80, outputTokens: 20, model: "gpt-4o" }, "usage"));
+    expect(metrics.tokenUsage.inputTokens).toBe(80);
+    expect(metrics.tokenUsage.outputTokens).toBe(20);
+  });
+
   it("dedups duplicate tool.execution_start emissions by callId", () => {
     updateSessionMetrics(metrics, makeNormEvent("tool.execution_start", { name: "read_file", callId: "read_file_1" }, "tools"));
     updateSessionMetrics(metrics, makeNormEvent("tool.execution_start", { name: "read_file", callId: "read_file_1" }, "tools"));
