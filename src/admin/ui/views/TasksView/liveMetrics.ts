@@ -50,6 +50,12 @@ function readStr(d: Record<string, unknown>, keys: readonly string[]): string | 
   return null;
 }
 
+/** Returns the numeric value of a single field, or `null` if absent/non-finite. */
+function readNullableNum(d: Record<string, unknown>, key: string): number | null {
+  const v = d[key];
+  return typeof v === "number" && Number.isFinite(v) ? v : null;
+}
+
 interface UsageTotals {
   input: number;
   output: number;
@@ -84,11 +90,13 @@ export function extractMetrics(events: readonly MetricEntry[]): Metrics {
       const cacheRead = readNum(d, ["cache_read", "cacheReadTokens", "cache_read_tokens"]);
       const cacheWrite = readNum(d, ["cache_write", "cacheWriteTokens", "cache_write_tokens"]);
       const model = readStr(d, ["model", "modelId"]);
-      const cost = readNum(d, ["cost"]);
-      const nanoAiu = readNum(d, ["totalNanoAiu"]);
+      // Use nullable reads for cost/nanoAiu so explicit 0 and absent produce
+      // different key components — matching computeCycleCost's signature.
+      const cost = readNullableNum(d, "cost");
+      const nanoAiu = readNullableNum(d, "totalNanoAiu");
       const key =
         readStr(d, ["apiCallId", "providerCallId"]) ??
-        `sig:${model ?? ""}|${input}|${output}|${cacheRead}|${cacheWrite}|${cost || ""}|${nanoAiu || ""}`;
+        `sig:${model ?? ""}|${input}|${output}|${cacheRead}|${cacheWrite}|${cost ?? ""}|${nanoAiu ?? ""}`;
       const existing = usageByRequest.get(key);
       if (existing) {
         // Keep the most complete snapshot for this request (live-then-final).

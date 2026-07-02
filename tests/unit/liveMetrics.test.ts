@@ -98,4 +98,15 @@ describe("extractMetrics", () => {
     expect(m.inputTokens).toBe(80);
     expect(m.outputTokens).toBe(20);
   });
+
+  it("treats cost=0 and cost-absent as distinct signature components", () => {
+    // A request with explicit cost=0 must not be merged with a request where
+    // cost is absent (which also has the same token counts).
+    const m = extractMetrics([
+      usage({ input_tokens: 100, output_tokens: 50, model: "gpt-4o", cost: 0 }),
+      usage({ input_tokens: 100, output_tokens: 50, model: "gpt-4o" }),
+    ]);
+    expect(m.inputTokens).toBe(200);
+    expect(m.outputTokens).toBe(100);
+  });
 });
