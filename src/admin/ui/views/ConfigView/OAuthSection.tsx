@@ -3,9 +3,11 @@ import { RowCard } from "../../components/RowCard.tsx";
 import { Tag } from "../../components/Tag.tsx";
 import { Icon } from "../../components/Icon.tsx";
 import { OAuthDrawer } from "./ConfigDrawers.tsx";
+import { useCurrentUser } from "../../authContext.tsx";
 import type { ConfigViewData } from "./index.tsx";
 
 export function OAuthSection({ oauthApps }: ConfigViewData) {
+  const { isAdmin } = useCurrentUser();
   const [drawerIdx, setDrawerIdx] = useState<number | null>(null);
   const drawerItem = drawerIdx !== null ? oauthApps[drawerIdx] : undefined;
 
@@ -18,7 +20,7 @@ export function OAuthSection({ oauthApps }: ConfigViewData) {
             <h1 style={{ margin: 0, fontSize: "22px", fontWeight: 600, letterSpacing: "-0.01em" }}>OAuth apps</h1>
             <p style={{ margin: "6px 0 0", color: "var(--text-faint)", fontSize: "13.5px" }}>Provider OAuth registrations used to mint short-lived agent tokens.</p>
           </div>
-          <button className="btn primary"><Icon name="plus" size={14} /> Register app</button>
+          {isAdmin && <button className="btn primary"><Icon name="plus" size={14} /> Register app</button>}
         </div>
       </div>
 

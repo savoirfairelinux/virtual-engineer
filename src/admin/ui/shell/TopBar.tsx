@@ -1,4 +1,6 @@
 import { Icon } from "../components/Icon.tsx";
+import { Tag } from "../components/Tag.tsx";
+import type { ApiMe } from "../types.ts";
 import logoUrl from "../icons/virtual_engineer.png";
 
 type ViewId = "overview" | "tasks" | "config";
@@ -8,12 +10,16 @@ interface TopBarProps {
   setView: (v: ViewId) => void;
   theme: "dark" | "light";
   toggleTheme: () => void;
+  user: ApiMe | null;
+  onChangePassword: () => void;
   onLogout: () => void;
   taskCount: number;
   activeCount: number;
   providerCount: number;
   pollingRunning: boolean;
 }
+
+const ROLE_TONE = { admin: "active", operator: "info", viewer: "muted" } as const;
 
 const NAV: { id: ViewId; label: string; icon: string }[] = [
   { id: "overview", label: "Overview", icon: "grid" },
@@ -22,7 +28,7 @@ const NAV: { id: ViewId; label: string; icon: string }[] = [
 ];
 
 export function TopBar({
-  view, setView, theme, toggleTheme, onLogout,
+  view, setView, theme, toggleTheme, user, onChangePassword, onLogout,
   taskCount, activeCount, providerCount, pollingRunning,
 }: TopBarProps) {
   return (
@@ -119,10 +125,24 @@ export function TopBar({
 
       {/* right controls */}
       <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+        {user && (
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <Icon name="user" size={14} style={{ color: "var(--text-faint)" }} />
+            <span style={{ fontSize: "12.5px", fontWeight: 600, color: "var(--text-dim)" }}>
+              {user.username}
+            </span>
+            <Tag tone={ROLE_TONE[user.role]} mono={false}>{user.role}</Tag>
+          </div>
+        )}
         <div style={{ width: "1px", height: "22px", background: "var(--border-soft)", margin: "0 3px" }} />
         <button className="iconbtn" onClick={toggleTheme} title="Toggle theme">
           <Icon name={theme === "dark" ? "sun" : "moon"} size={16} />
         </button>
+        {user && user.id !== null && (
+          <button className="iconbtn" title="Change password" onClick={onChangePassword}>
+            <Icon name="edit" size={15} />
+          </button>
+        )}
         <button className="iconbtn" title="Sign out" onClick={onLogout}>
           <Icon name="logout" size={16} />
         </button>

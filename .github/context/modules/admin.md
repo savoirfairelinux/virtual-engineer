@@ -149,9 +149,9 @@ Recorded actions:
 | Prompts | `prompt.create`, `prompt.update`, `prompt.delete` |
 | Tasks | `task.delete`, `task.pause`, `task.resume`, `task.retry`, `task.abandon` |
 
-The log is readable through `GET /api/admin/audit` (admin only, see the endpoints table).
+The log is readable through `GET /api/admin/audit` (admin only, see the endpoints table) and browsed in the SPA via the admin-only **Audit** tab in Configuration.
 
-The dashboard stores the operator token client-side and sends it through the `Authorization` header.
+The dashboard stores the session token client-side (sessionStorage `ve-admin-token`) and sends it through the `Authorization` header.
 
 ## Secret masking
 
@@ -160,6 +160,14 @@ The admin server never returns plaintext password-like fields. On `PUT`, values 
 ## Dashboard behavior
 
 [dashboard.ts](../../../src/admin/dashboard.ts) serves the shell for the Vite-built React SPA whose source lives in [src/admin/ui/](../../../src/admin/ui/); all client logic lives in the SPA, not inline in the shell.
+
+**Login / setup flow (SPA)**: on load, the auth screen (`shell/AuthScreen.tsx`) calls the public `GET /api/admin/auth/setup-status`. When `needsSetup` is true it renders a “Create first admin” form (raw `ADMIN_AUTH_SECRET` + username + password≥ 8 + confirm) — the client derives a short-lived legacy HMAC token (`timestamp.signature`, Web Crypto) via `deriveLegacyToken()` in `ui/api.ts` and POSTs `/api/admin/auth/setup`, which returns a session token. Otherwise it renders a username/password login form backed by `POST /api/admin/auth/login`. The session token is kept in sessionStorage (`ve-admin-token`; the legacy `ve-admin-secret` key is no longer written) and sent as a Bearer header on all API/SSE calls (plus the `?t=` query token for the log stream). `ui/api.ts` centralizes 401 handling: any 401 clears the token and fires an `onUnauthorized` callback that drops the app back to the login screen; 403 (insufficient role) never logs out — it surfaces as a normal error message.
+
+**Role-aware UI**: after auth, `App.tsx` loads `GET /api/admin/auth/me` and provides `{ user, isAdmin, canOperate }` through `ui/authContext.tsx` (`useCurrentUser()` hook; `canOperate` = role ≠ viewer). The top bar shows the username, a role badge, a change-password button (self password change via `PUT /api/admin/users/:id/password` with `currentPassword`; on success the user is told sessions were revoked and is routed back to login), and Logout (`POST /api/admin/auth/logout`). Gating is at the panel/action level: **viewer** sees no mutating controls anywhere (task retry/abandon/delete bar, prompt/agent/project/integration create-edit-delete-toggle buttons are hidden; the prompt modal opens read-only); **operator** gets everything except the Integrations and OAuth Apps panels, which render read-only (no add/edit/delete/toggle, drawers lose their action buttons); **admin** gets all controls.
+
+**Users tab (admin only)**: Configuration → Users lists accounts (username, role badge, enabled toggle, created date), with a create-user modal (username/password/role), inline role select, reset-password modal, and delete-with-confirm. Server-side 409s (duplicate username, last-admin guard) surface as inline error banners.
+
+**Audit tab (admin only)**: Configuration → Audit renders the paginated audit table (local time, actor, action tag, target type/id, expandable pretty-printed details JSON) with debounced action/actor filter inputs and Newer/Older paging over `GET /api/admin/audit?limit&offset&action&actor`.
 
 - The configuration UI validates unsaved integration state through `POST /api/admin/integrations/test`.
 - The Providers view renders one card per active integration rather than collapsing everything into a single card per provider type.

@@ -1,15 +1,17 @@
-import { useEffect, useState, useCallback, Component, type ReactNode, type ErrorInfo } from "react";
+import { useEffect, useState, useCallback, useMemo, Component, type ReactNode, type ErrorInfo } from "react";
 import { TopBar } from "./shell/TopBar.tsx";
 import { AuthScreen } from "./shell/AuthScreen.tsx";
+import { ChangePasswordModal } from "./shell/ChangePasswordModal.tsx";
 import { TasksView } from "./views/TasksView/index.tsx";
 import { OverviewView } from "./views/OverviewView.tsx";
 import { ConfigView } from "./views/ConfigView/index.tsx";
-import { api, connectSse, getStoredToken, clearStoredToken } from "./api.ts";
+import { api, connectSse, getStoredToken, clearStoredToken, getMe, logout, onUnauthorized } from "./api.ts";
+import { CurrentUserProvider, type CurrentUserValue } from "./authContext.tsx";
 import { isActiveState } from "./states.ts";
 import type {
   ApiTask, ApiIntegration, ApiPlugin, ApiAgent, ApiProject,
   ApiPrompt, ApiOAuthApp, ApiStatus, ApiConfig, ApiProvider, ApiOverview,
-  VeAdminBootstrap,
+  ApiMe, VeAdminBootstrap,
 } from "./types.ts";
 import "./theme/global.css";
 
@@ -53,6 +55,34 @@ export function App() {
   }, []);
 
   const [authenticated, setAuthenticated] = useState(() => !bootstrap.requiresAuth || !!getStoredToken());
+  const [currentUser, setCurrentUser] = useState<ApiMe | null>(null);
+  const [showChangePassword, setShowChangePassword] = useState(false);
+
+  const handleLoggedOut = useCallback(() => {
+    clearStoredToken();
+    setCurrentUser(null);
+    setShowChangePassword(false);
+    setAuthenticated(false);
+  }, []);
+
+  // Central 401 handling — any expired/revoked session drops back to the login screen.
+  useEffect(() => {
+    onUnauthorized(handleLoggedOut);
+    return () => onUnauthorized(null);
+  }, [handleLoggedOut]);
+
+  // Load the authenticated identity for role-aware UI gating.
+  useEffect(() => {
+    if (!authenticated) return;
+    if (currentUser) return;
+    void getMe().then(setCurrentUser).catch(() => { /* 401 handled globally */ });
+  }, [authenticated, currentUser]);
+
+  const currentUserValue = useMemo<CurrentUserValue>(() => ({
+    user: currentUser,
+    isAdmin: currentUser?.role === "admin",
+    canOperate: currentUser !== null && currentUser.role !== "viewer",
+  }), [currentUser]);
 
   // data state
   const [tasks,        setTasks]        = useState<ApiTask[]>([]);
@@ -130,8 +160,7 @@ export function App() {
     return (
       <div className="app">
         <AuthScreen
-          authMode={bootstrap.authMode === "none" ? "bearer" : bootstrap.authMode}
-          onAuthenticated={() => { setAuthenticated(true); }}
+          onAuthenticated={(user) => { setCurrentUser(user); setAuthenticated(true); }}
         />
       </div>
     );
@@ -146,47 +175,58 @@ export function App() {
   }
 
   return (
-    <div className="app">
-      <TopBar
-        view={view}
-        setView={(v) => { setView(v); window.location.hash = v; }}
-        theme={theme}
-        toggleTheme={toggleTheme}
-        onLogout={() => { clearStoredToken(); setAuthenticated(false); }}
-        taskCount={tasks.length}
-        activeCount={activeTasks}
-        providerCount={enabledIntegrations}
-        pollingRunning={status?.polling.running ?? false}
-      />
-      <div style={{ flex: 1, overflow: "hidden", display: "flex" }}>
-        {view === "overview" && (
-          <OverviewView
-            overview={overview}
-            tasks={tasks}
-            providers={providers}
-            activeIntegrationCount={enabledIntegrations}
-            pollingIntervalMs={status?.polling.intervalMs ?? 30000}
-            onNavigate={handleNavigate}
-          />
-        )}
-        {view === "tasks" && (
-          <TasksView tasks={tasks} onRefresh={() => void loadAll()} />
-        )}
-        {view === "config" && (
-          <ConfigView
-            integrations={integrations}
-            plugins={plugins}
-            agents={agents}
-            projects={projects}
-            prompts={prompts}
-            oauthApps={oauthApps}
-            config={config}
-            status={status}
-            onRefresh={() => void loadAll()}
+    <CurrentUserProvider value={currentUserValue}>
+      <div className="app">
+        <TopBar
+          view={view}
+          setView={(v) => { setView(v); window.location.hash = v; }}
+          theme={theme}
+          toggleTheme={toggleTheme}
+          user={currentUser}
+          onChangePassword={() => setShowChangePassword(true)}
+          onLogout={() => { void logout().finally(handleLoggedOut); }}
+          taskCount={tasks.length}
+          activeCount={activeTasks}
+          providerCount={enabledIntegrations}
+          pollingRunning={status?.polling.running ?? false}
+        />
+        <div style={{ flex: 1, overflow: "hidden", display: "flex" }}>
+          {view === "overview" && (
+            <OverviewView
+              overview={overview}
+              tasks={tasks}
+              providers={providers}
+              activeIntegrationCount={enabledIntegrations}
+              pollingIntervalMs={status?.polling.intervalMs ?? 30000}
+              onNavigate={handleNavigate}
+            />
+          )}
+          {view === "tasks" && (
+            <TasksView tasks={tasks} onRefresh={() => void loadAll()} />
+          )}
+          {view === "config" && (
+            <ConfigView
+              integrations={integrations}
+              plugins={plugins}
+              agents={agents}
+              projects={projects}
+              prompts={prompts}
+              oauthApps={oauthApps}
+              config={config}
+              status={status}
+              onRefresh={() => void loadAll()}
+            />
+          )}
+        </div>
+        {showChangePassword && currentUser && currentUser.id !== null && (
+          <ChangePasswordModal
+            user={currentUser}
+            onClose={() => setShowChangePassword(false)}
+            onChanged={handleLoggedOut}
           />
         )}
       </div>
-    </div>
+    </CurrentUserProvider>
   );
 }
 

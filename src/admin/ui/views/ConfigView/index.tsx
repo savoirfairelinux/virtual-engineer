@@ -10,16 +10,21 @@ import { ProjectsSection }      from "./ProjectsSection.tsx";
 import { PromptsSection }       from "./PromptsSection.tsx";
 import { OAuthSection }         from "./OAuthSection.tsx";
 import { SystemSection }        from "./SystemSection.tsx";
+import { UsersSection }         from "./UsersSection.tsx";
+import { AuditSection }         from "./AuditSection.tsx";
+import { useCurrentUser }       from "../../authContext.tsx";
 
 /* ─── Nav items ────────────────────────────────────────────────────────── */
 const CONFIG_NAV = [
-  { id: "overview",      label: "Overview",         sub: "Summary",           icon: "grid" },
-  { id: "integrations",  label: "Integrations",     sub: "Providers",         icon: "server" },
-  { id: "oauth",         label: "OAuth Apps",       sub: "Provider registry", icon: "link" },
-  { id: "agents",        label: "Agents Library",   sub: "Reusable agents",   icon: "spark" },
-  { id: "projects",      label: "Projects",         sub: "Execution units",   icon: "box" },
-  { id: "prompts",       label: "Prompts",          sub: "System & custom",   icon: "edit" },
-  { id: "system",        label: "System Settings",  sub: "Read-only",         icon: "config" },
+  { id: "overview",      label: "Overview",         sub: "Summary",           icon: "grid",   adminOnly: false },
+  { id: "integrations",  label: "Integrations",     sub: "Providers",         icon: "server", adminOnly: false },
+  { id: "oauth",         label: "OAuth Apps",       sub: "Provider registry", icon: "link",   adminOnly: false },
+  { id: "agents",        label: "Agents Library",   sub: "Reusable agents",   icon: "spark",  adminOnly: false },
+  { id: "projects",      label: "Projects",         sub: "Execution units",   icon: "box",    adminOnly: false },
+  { id: "prompts",       label: "Prompts",          sub: "System & custom",   icon: "edit",   adminOnly: false },
+  { id: "users",         label: "Users",            sub: "Accounts & roles",  icon: "user",   adminOnly: true },
+  { id: "audit",         label: "Audit",            sub: "Change history",    icon: "clock",  adminOnly: true },
+  { id: "system",        label: "System Settings",  sub: "Read-only",         icon: "config", adminOnly: false },
 ] as const;
 
 type SectionId = typeof CONFIG_NAV[number]["id"];
@@ -37,6 +42,9 @@ export interface ConfigViewData {
 }
 
 export function ConfigView(props: ConfigViewData) {
+  const { isAdmin } = useCurrentUser();
+  const visibleNav = CONFIG_NAV.filter((n) => !n.adminOnly || isAdmin);
+
   const [sec, setSec] = useState<SectionId>(() => {
     const part = window.location.hash.split("/")[1] ?? "";
     return (CONFIG_NAV.find((n) => n.id === part)?.id) ?? "integrations";
@@ -51,6 +59,10 @@ export function ConfigView(props: ConfigViewData) {
     window.addEventListener("hashchange", onHashChange);
     return () => window.removeEventListener("hashchange", onHashChange);
   }, []);
+
+  // Non-admins cannot land on admin-only sections (deep link / role change).
+  const effectiveSec: SectionId =
+    !isAdmin && CONFIG_NAV.some((n) => n.id === sec && n.adminOnly) ? "integrations" : sec;
 
   function handleSectionChange(id: SectionId) {
     setSec(id);
@@ -70,8 +82,8 @@ export function ConfigView(props: ConfigViewData) {
         <div className="eyebrow" style={{ padding: "0 8px", marginBottom: "4px" }}>Admin</div>
         <div style={{ padding: "0 8px 16px", fontSize: "16px", fontWeight: 600 }}>Configuration</div>
         <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
-          {CONFIG_NAV.map((n) => {
-            const active = sec === n.id;
+          {visibleNav.map((n) => {
+            const active = effectiveSec === n.id;
             return (
               <button
                 key={n.id}
@@ -103,17 +115,19 @@ export function ConfigView(props: ConfigViewData) {
       {/* main content */}
       <div style={{ flex: 1, overflowY: "auto", minHeight: 0 }}>
         <div
-          key={sec}
+          key={effectiveSec}
           className="fade-up"
           style={{ maxWidth: "920px", margin: "0 auto", padding: "26px 28px 40px" }}
         >
-          {sec === "overview"     && <ConfigOverview {...props} />}
-          {sec === "integrations" && <IntegrationsSection {...props} />}
-          {sec === "oauth"        && <OAuthSection {...props} />}
-          {sec === "agents"       && <AgentsSection {...props} />}
-          {sec === "projects"     && <ProjectsSection {...props} />}
-          {sec === "prompts"      && <PromptsSection {...props} />}
-          {sec === "system"       && <SystemSection config={props.config} status={props.status} />}
+          {effectiveSec === "overview"     && <ConfigOverview {...props} />}
+          {effectiveSec === "integrations" && <IntegrationsSection {...props} />}
+          {effectiveSec === "oauth"        && <OAuthSection {...props} />}
+          {effectiveSec === "agents"       && <AgentsSection {...props} />}
+          {effectiveSec === "projects"     && <ProjectsSection {...props} />}
+          {effectiveSec === "prompts"      && <PromptsSection {...props} />}
+          {effectiveSec === "users"        && isAdmin && <UsersSection />}
+          {effectiveSec === "audit"        && isAdmin && <AuditSection />}
+          {effectiveSec === "system"       && <SystemSection config={props.config} status={props.status} />}
         </div>
       </div>
     </div>

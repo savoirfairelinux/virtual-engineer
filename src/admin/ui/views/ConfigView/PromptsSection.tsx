@@ -2,11 +2,13 @@ import { useState } from "react";
 import { RowCard } from "../../components/RowCard.tsx";
 import { Icon } from "../../components/Icon.tsx";
 import { api } from "../../api.ts";
+import { useCurrentUser } from "../../authContext.tsx";
 import { PromptFormModal } from "./PromptFormModal.tsx";
 import type { ApiPrompt } from "../../types.ts";
 import type { ConfigViewData } from "./index.tsx";
 
 export function PromptsSection({ prompts, onRefresh }: ConfigViewData) {
+  const { canOperate } = useCurrentUser();
   const [showAdd, setShowAdd] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
 
@@ -37,9 +39,11 @@ export function PromptsSection({ prompts, onRefresh }: ConfigViewData) {
             <h1 style={{ margin: 0, fontSize: "22px", fontWeight: 600, letterSpacing: "-0.01em" }}>Prompts</h1>
             <p style={{ margin: "6px 0 0", color: "var(--text-faint)", fontSize: "13.5px" }}>System and instruction prompts bound to agents.</p>
           </div>
-          <button className="btn primary" onClick={() => setShowAdd(true)}>
-            <Icon name="plus" size={14} /> New prompt
-          </button>
+          {canOperate && (
+            <button className="btn primary" onClick={() => setShowAdd(true)}>
+              <Icon name="plus" size={14} /> New prompt
+            </button>
+          )}
         </div>
       </div>
 
@@ -68,13 +72,15 @@ export function PromptsSection({ prompts, onRefresh }: ConfigViewData) {
             <span className="mono" style={{ fontSize: "11.5px", color: "var(--text-ghost)", minWidth: "70px", textAlign: "right" }}>
               {p.content.length.toLocaleString()} ch
             </span>
-            <button
-              className="iconbtn"
-              title="Delete"
-              onClick={(e) => { e.stopPropagation(); void deletePrompt(p); }}
-            >
-              <Icon name="trash" size={14} />
-            </button>
+            {canOperate && (
+              <button
+                className="iconbtn"
+                title="Delete"
+                onClick={(e) => { e.stopPropagation(); void deletePrompt(p); }}
+              >
+                <Icon name="trash" size={14} />
+              </button>
+            )}
           </RowCard>
         ))}
       </div>
@@ -82,6 +88,7 @@ export function PromptsSection({ prompts, onRefresh }: ConfigViewData) {
       {(showAdd || editingPrompt) && (
         <PromptFormModal
           prompt={editingPrompt}
+          readOnly={!canOperate}
           onClose={() => { setShowAdd(false); setEditingId(null); }}
           onSaved={handleSaved}
         />
