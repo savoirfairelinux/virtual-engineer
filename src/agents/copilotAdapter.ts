@@ -153,7 +153,7 @@ export function buildCodegenUserPrompt(
   lines.push("### Instructions");
   lines.push(instructionsPromptContent);
   lines.push("");
-  if (context.cycleNumber > 1) {
+  if (context.hasPriorPatchset) {
     lines.push(`This is cycle number ${context.cycleNumber}. The repository has been checked out at your previous patchset — your prior work is already in the workspace. Address the review feedback above by amending existing commits or adding new commits as needed. Do NOT start from scratch.`);
   } else {
     lines.push(`This is cycle number ${context.cycleNumber}. The workspace is a FRESH CLONE of the repository — it contains NO previous changes, no prior work. You must implement the full task from scratch.`);

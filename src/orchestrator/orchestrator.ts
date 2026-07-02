@@ -685,7 +685,7 @@ export class Orchestrator {
         rootConnector.buildPushSpec(cloneBranch, task.taskId, ticket.subject).ref
       );
 
-      await this.checkoutPriorPatchset(task, cycleNumber, handle, root, rootConnector);
+      const hasPriorPatchset = await this.checkoutPriorPatchset(task, cycleNumber, handle, root, rootConnector);
       const context: TaskContext = {
         taskId: task.taskId,
         ticketTitle: ticket.subject,
@@ -698,6 +698,7 @@ export class Orchestrator {
         constraints: [],
         priorFeedback,
         cycleNumber,
+        hasPriorPatchset,
         commitMessage,
         ticketUrl: ticket.webUrl,
         ...(projectAgentRuntime
@@ -848,16 +849,22 @@ export class Orchestrator {
    * detached HEAD, then commits 1..N are cherry-picked on top in order.
    * Cherry-pick failures for secondary commits are non-fatal (logged and skipped).
    */
+  /**
+   * Returns `true` if a prior patchset was successfully checked out into the
+   * workspace volume (so the agent can amend existing commits), `false` if no
+   * patchset was applied (first cycle, non-Gerrit connector, no stored change,
+   * or checkout failure).
+   */
   private async checkoutPriorPatchset(
     task: Task,
     cycleNumber: number,
     handle: WorkspaceHandle,
     root: ProjectPushTargetRecord,
     rootConnector: VcsConnector
-  ): Promise<void> {
-    if (cycleNumber <= 1 || !rootConnector.useChangeIdContinuity) return;
-    if (!rootConnector.resolvePatchsetOptions) return;
-    if (!this.workspaceRunner.applyPriorPatchset) return;
+  ): Promise<boolean> {
+    if (cycleNumber <= 1 || !rootConnector.useChangeIdContinuity) return false;
+    if (!rootConnector.resolvePatchsetOptions) return false;
+    if (!this.workspaceRunner.applyPriorPatchset) return false;
 
     const storedChanges = await this.stateStore.getChangesForTask(task.taskId);
     const rootChanges = storedChanges
@@ -865,7 +872,7 @@ export class Orchestrator {
       .sort((a, b) => a.commitIndex - b.commitIndex);
 
     const primaryChange = rootChanges.find((c) => c.commitIndex === 0);
-    if (!primaryChange) return;
+    if (!primaryChange) return false;
 
     try {
       const patchsetOpts = await rootConnector.resolvePatchsetOptions(primaryChange.changeId);
@@ -897,11 +904,13 @@ export class Orchestrator {
           }
         }
       }
+      return true;
     } catch (err) {
       log.warn(
         { taskId: task.taskId, changeId: primaryChange.changeId, err },
         "failed to checkout patchset for retry; agent will work from fresh clone"
       );
+      return false;
     }
   }
 
