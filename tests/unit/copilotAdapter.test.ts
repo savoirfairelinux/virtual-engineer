@@ -208,13 +208,21 @@ describe("CopilotAdapter", () => {
       };
     }
 
-    it("never injects SKILL_DISCOVERY in review mode", () => {
+    it("omits SKILL_DISCOVERY when skillDiscoveryEnabled is not set", () => {
       const adapter = new CopilotAdapter();
       const spec = adapter.buildReviewContainerSpec(makeReviewInput(), {
         GITHUB_TOKEN: "ghp_tok",
       });
 
       expect(spec.env["SKILL_DISCOVERY"]).toBeUndefined();
+    });
+
+    it("injects SKILL_DISCOVERY=1 when skillDiscoveryEnabled is true", () => {
+      const adapter = new CopilotAdapter();
+      const input = { ...makeReviewInput(), skillDiscoveryEnabled: true };
+      const spec = adapter.buildReviewContainerSpec(input, { GITHUB_TOKEN: "ghp_tok" });
+
+      expect(spec.env["SKILL_DISCOVERY"]).toBe("1");
     });
   });
 

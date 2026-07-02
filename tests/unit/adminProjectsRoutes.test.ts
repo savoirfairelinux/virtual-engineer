@@ -289,23 +289,21 @@ describe("Admin API — Project routes (/api/admin/projects)", () => {
     expect((r.body?.["project"] as Record<string, unknown>)["skillDiscoveryEnabled"]).toBe(true);
   });
 
-  it("PUT /:id rejects skillDiscoveryEnabled on a review project", async () => {
+  it("PUT /:id toggles skillDiscoveryEnabled on a review project", async () => {
     const agent = await makeAgent(store, "review");
     await seedIntegration(store, "gerrit-1", "gerrit");
     const created = await rest(server, "/api/admin/projects", {
       method: "POST",
-      body: { type: "review", name: "RevNoSkills", agentId: agent.id, reviewConfig: { integrationId: "gerrit-1", repoKeys: ["x"] } },
+      body: { type: "review", name: "RevWithSkills", agentId: agent.id, reviewConfig: { integrationId: "gerrit-1", repoKeys: ["x"] } },
     });
     const id = (created.body?.["project"] as Record<string, unknown>)["id"] as string;
+    expect((created.body?.["project"] as Record<string, unknown>)["skillDiscoveryEnabled"]).toBe(false);
     const r = await rest(server, `/api/admin/projects/${id}`, {
       method: "PUT",
       body: { skillDiscoveryEnabled: true },
     });
-    expect(r.status).toBe(400);
-    expect(r.body?.["error"]).toMatch(/only valid for coding/i);
-    // The field must not have been persisted.
-    const after = await rest(server, `/api/admin/projects/${id}`, { method: "GET" });
-    expect((after.body?.["project"] as Record<string, unknown>)["skillDiscoveryEnabled"]).toBe(false);
+    expect(r.status).toBe(200);
+    expect((r.body?.["project"] as Record<string, unknown>)["skillDiscoveryEnabled"]).toBe(true);
   });
 
   it("DELETE /:id removes the project (idempotent: 404 second time)", async () => {
