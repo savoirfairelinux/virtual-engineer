@@ -142,12 +142,6 @@ function modelLabel(modelId: string | null): string {
   return modelId ?? "unknown";
 }
 
-function fmtUsd(n: number): string {
-  if (n === 0) return "$0.00";
-  if (n < 0.01) return "<$0.01";
-  return `$${n.toFixed(2)}`;
-}
-
 function CostSummaryCard() {
   const [days, setDays] = useState<number | null>(30);
   const [summary, setSummary] = useState<ApiCostSummary | null>(null);
@@ -321,7 +315,7 @@ function ModelUsageCard() {
             {models.map((m, i) =>
               m.runCount > 0 ? (
                 <div
-                  key={modelLabel(m.modelId)}
+                  key={m.modelId ?? "\x00null"}
                   title={`${modelLabel(m.modelId)} · ${m.runCount} runs`}
                   style={{ flex: m.runCount, background: colorFor(i), opacity: 0.9 }}
                 />
@@ -332,14 +326,14 @@ function ModelUsageCard() {
             {models.map((m, i) => {
               const pct = totalRuns > 0 ? Math.round((m.runCount / totalRuns) * 100) : 0;
               return (
-                <div key={modelLabel(m.modelId)} style={{ display: "flex", alignItems: "center", gap: "9px" }}>
+                <div key={m.modelId ?? "\x00null"} style={{ display: "flex", alignItems: "center", gap: "9px" }}>
                   <span style={{ width: 9, height: 9, borderRadius: 99, background: colorFor(i), flex: "none" }} />
                   <span style={{ fontSize: "12.5px", color: "var(--text-dim)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     {modelLabel(m.modelId)}
                   </span>
                   <span className="mono" style={{ fontSize: "11.5px", color: "var(--text-faint)" }}>{pct}%</span>
                   <span className="mono metric-val" style={{ width: "44px", textAlign: "right", fontSize: "12px", fontWeight: 600 }}>{m.runCount}</span>
-                  <span className="mono" style={{ width: "58px", textAlign: "right", fontSize: "11.5px", color: "var(--text-faint)" }}>{fmtUsd(m.usd)}</span>
+                  <span className="mono" style={{ width: "58px", textAlign: "right", fontSize: "11.5px", color: "var(--text-faint)" }}>{formatUsd(m.usd)}</span>
                 </div>
               );
             })}
@@ -359,15 +353,17 @@ function ModelUsageCard() {
                       <span className="mono" style={{ color: "var(--text-faint)" }}>{projTotal} runs</span>
                     </div>
                     <div style={{ display: "flex", height: "7px", borderRadius: "99px", overflow: "hidden", gap: "2px" }}>
-                      {p.models.map((m, i) =>
-                        m.runCount > 0 ? (
+                      {p.models.map((m, i) => {
+                        if (m.runCount <= 0) return null;
+                        const globalIdx = models.findIndex((g) => g.modelId === m.modelId);
+                        return (
                           <div
-                            key={modelLabel(m.modelId)}
-                            title={`${modelLabel(m.modelId)} · ${m.runCount} runs · ${fmtUsd(m.usd)}`}
-                            style={{ flex: m.runCount, background: colorFor(models.findIndex((g) => g.modelId === m.modelId) >= 0 ? models.findIndex((g) => g.modelId === m.modelId) : i), opacity: 0.85 }}
+                            key={m.modelId ?? "\x00null"}
+                            title={`${modelLabel(m.modelId)} · ${m.runCount} runs · ${formatUsd(m.usd)}`}
+                            style={{ flex: m.runCount, background: colorFor(globalIdx >= 0 ? globalIdx : i), opacity: 0.85 }}
                           />
-                        ) : null
-                      )}
+                        );
+                      })}
                     </div>
                   </div>
                 );

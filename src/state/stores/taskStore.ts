@@ -1288,7 +1288,7 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
          FROM agent_cycles c
          JOIN tasks t ON t.task_id = c.task_id
          LEFT JOIN projects p ON p.id = t.project_id
-         WHERE NOT (c.cost_model_id IS NULL AND c.agent_events IS NOT NULL)
+         WHERE NOT (c.cost_model_id IS NULL AND COALESCE(c.agent_events, json_extract(c.agent_result, '$.agentEvents')) IS NOT NULL)
          ${sinceEpochSeconds !== null ? "AND c.created_at >= ?" : ""}
          GROUP BY t.project_id, p.name, c.cost_model_id`
       )
@@ -1307,11 +1307,12 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
     // Pass 2: recompute model + USD for cycles missing a model snapshot.
     const legacyRows = raw
       .prepare(
-        `SELECT t.project_id AS projectId, p.name AS projectName, c.agent_events AS agentEvents
+        `SELECT t.project_id AS projectId, p.name AS projectName,
+                COALESCE(c.agent_events, json_extract(c.agent_result, '$.agentEvents')) AS agentEvents
          FROM agent_cycles c
          JOIN tasks t ON t.task_id = c.task_id
          LEFT JOIN projects p ON p.id = t.project_id
-         WHERE c.cost_model_id IS NULL AND c.agent_events IS NOT NULL
+         WHERE c.cost_model_id IS NULL AND COALESCE(c.agent_events, json_extract(c.agent_result, '$.agentEvents')) IS NOT NULL
          ${sinceEpochSeconds !== null ? "AND c.created_at >= ?" : ""}`
       )
       .all(...periodArgs) as Array<{
