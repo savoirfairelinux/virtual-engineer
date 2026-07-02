@@ -116,6 +116,16 @@ export function App() {
     return stop;
   }, [authenticated]);
 
+  useEffect(() => {
+    if (!authenticated) return;
+    const id = setInterval(() => {
+      void api.get<{ tasks: ApiTask[] }>("/api/admin/tasks")
+        .then((r) => setTasks(r.tasks))
+        .catch(() => { /* ignore — SSE or next poll will recover */ });
+    }, 5_000);
+    return () => clearInterval(id);
+  }, [authenticated]);
+
   if (!authenticated) {
     return (
       <div className="app">
