@@ -7,7 +7,7 @@
 Virtual Engineer is a **Node.js orchestrator** that runs on the host (or in a Docker container) and drives two autonomous workflows:
 
 - **Code generation** — picks up tickets, clones the repo into an ephemeral Docker container, lets Copilot implement the changes, then pushes for review.
-- **Code review** — receives Gerrit events via SSH stream or HTTP webhook, runs Copilot on the diff inside a Docker container, and posts inline comments + a vote.
+- **Code review** — receives review events (Gerrit SSH stream, GitLab/GitHub webhooks, or polling), runs Copilot on the diff inside a Docker container, and posts inline comments + a vote.
 
 ```
   ┌──────────────────────────────────────────────────────────────────────────┐
@@ -16,13 +16,14 @@ Virtual Engineer is a **Node.js orchestrator** that runs on the host (or in a Do
   │  ┌────────────────┐  poll 30s   ┌───────────────────────────────────┐   │
   │  │  Ticket System │◄────────────│  PollingLoop                      │   │
   │  │  Redmine /     │             └──────────────┬────────────────────┘   │
-  │  │  GitLab Issues │                            │ startTaskForProject    │
-  │  └────────────────┘                            ▼                        │
-  │                                ┌───────────────────────────────────┐   │
+  │  │  GitLab/GitHub │                            │ startTaskForProject    │
+  │  │  Issues        │                            ▼                        │
+  │  └────────────────┘            ┌───────────────────────────────────┐   │
   │  ┌────────────────┐  SSH/HTTP  │  Orchestrator                     │   │
   │  │  Review System │◄───────────│  runWorkflow / state machine      │   │
   │  │  Gerrit /      │            └──────────────┬────────────────────┘   │
-  │  │  GitLab MR     │                            │                        │
+  │  │  GitLab MR /   │                            │                        │
+  │  │  GitHub PR     │                            ▼                        │
   │  └────────────────┘                            ▼                        │
   │                                ┌───────────────────────────────────┐   │
   │                                │  StateStore  (SQLite WAL)         │   │
@@ -71,8 +72,9 @@ src/
   copilotModel.ts       # Default model constant
   logger.ts             # Pino logger factory (silent in test)
 
-  admin/                # HTTP admin server + dashboard HTML
+  admin/                # HTTP admin server + React SPA dashboard
     adminServer.ts        # Thin route multiplexer, auth, security headers
+    router.ts             # Route-module dispatch table
     adminRouteUtils.ts    # Shared HTTP primitives (writeJson, readBody, etc.)
     adminTaskRoutes.ts    # /api/admin/tasks CRUD + actions
     adminPromptRoutes.ts  # /api/admin/prompts CRUD
@@ -82,7 +84,11 @@ src/
     adminProjectsRoutes.ts# /api/admin/projects CRUD
     adminConcurrencyRoutes.ts # /api/admin/concurrency
     adminWebhookRoutes.ts # Webhook secret rotation, allowed-IPs, info
-    dashboard.ts          # Single-page HTML dashboard (inline)
+    adminOverviewRoutes.ts# Dashboard overview + cost-summary endpoints
+    dashboard.ts          # Serves the Vite-built React SPA from dist/admin-ui
+    ui/                   # React SPA source (App.tsx, views/, components/,
+                          # shell/, theme/, icons/, api.ts, states.ts)
+    assets/               # Static assets bundled by Vite
     startAdminServer.ts   # net.Server lifecycle wrapper
     closeAdminServer.ts
 
@@ -91,16 +97,25 @@ src/
     copilotConnectionValidator.ts
     copilotModelsService.ts
     copilotOAuthService.ts
+    providerAuthService.ts
+    cycleCost.ts          # Derives per-cycle cost from assistant.usage events
     mockAgentAdapter.ts   # Deterministic mock, no Copilot needed
     agentEventBus.ts      # SSE event bus for live log streaming
     agentEventTypes.ts
 
   connectors/           # External system connectors
+    baseTicketConnector.ts
     gerritConnector.ts    # Gerrit SSH review API
+    gerritSshClient.ts
     gerritSshReviewProvider.ts
     gerritStreamEvents.ts    # Gerrit SSH event stream listener
+    githubIssueConnector.ts
+    githubPullRequestReviewConnector.ts
+    githubReviewProvider.ts
+    gitlabHttpClient.ts
     gitlabIssueConnector.ts
     gitlabMergeRequestConnector.ts
+    gitlabMergeRequestReviewProvider.ts
     integrationStreamEvents.ts  # Descriptor-driven stream reconciler
     redmineConnector.ts
 
@@ -111,44 +126,62 @@ src/
     concurrencyTracker.ts # integration-scoped in-memory run-slot gates
 
   plugins/              # Plugin system
-    registry.ts           # Static type → descriptor map
+    registry.ts           # Static provider → descriptor map
     pluginManager.ts      # DB-driven instance lifecycle
-    init.ts               # Registers factories + testers at startup
-    descriptors/          # One file per integration type
+    init.ts               # Registers built-in descriptors at startup
+    descriptors/          # One unified descriptor per provider (+ index.ts,
+                          # githubOAuth/gitlabOAuth helpers)
 
   review/               # Code-review workflow
     reviewOrchestrator.ts # REVIEW_PENDING → REVIEW_DONE lifecycle
-    copilotReviewAgent.ts # Host-side Copilot agent for reviews
+    copilotReviewAgent.ts # Host-side Copilot SDK client for reviews
     reviewPromptBuilder.ts
     reviewResultParser.ts
+    commentFilter.ts      # Filters comments to lines present in the diff
+    commentHash.ts        # sha1(file + normalized message) dedup key
+    commentSeverity.ts    # Severity ranks + volume/severity gate
+    revisionPatchset.ts
 
   state/
     schema.ts             # Drizzle table definitions
     stateMachine.ts       # VALID_TRANSITIONS + validateTransition
-    stateStore.ts         # SqliteStateStore — all DB access
+    stateStore.ts         # SqliteStateStore facade — all DB access
+    stores/               # Domain-scoped DB modules: task, integration,
+                          # project, prompt(+seeding), agent(+concurrency)
     migrate.ts            # Runs Drizzle migrations on startup
 
   utils/
     encryption.ts         # AES-256-GCM token encryption
+    errorClassifier.ts
+    gitExec.ts
+    githubAuth.ts
+    gitlabAuth.ts
+    redactUrl.ts
     ticketFooterFormatter.ts
+    ticketSourceLabel.ts
 
-  vcs/                  # Repository operations (clone, push, MR creation)
+  vcs/                  # Repository operations (clone, push, MR/PR creation)
     vcsConnector.ts       # Interface
     gerritVcsConnector.ts # SSH clone + push via helper containers
     gitlabVcsConnector.ts # HTTP clone + push + MR creation
+    githubVcsConnector.ts # HTTP clone + push + PR creation
+    branchNaming.ts       # Deterministic feature-branch names
     vcsFactory.ts         # createVcsConnectorForIntegration(integration, context?)
 
   webhooks/             # Inbound webhook receiver
     webhookServer.ts
-    handlers/             # Per-provider HMAC-validated handlers
+    handlers/             # redmine, gitlab-issue, gitlab-merge-request,
+                          # github-pull-request (HMAC-validated)
 
   workspace/
     dockerVolume.ts       # createVolume / removeVolume / execInVolume
     workspaceRunner.ts    # DockerWorkspaceRunner — orchestrates clone+run+push
 
 agent-worker/
-  index.js              # Runs INSIDE the agent container (Copilot SDK)
-  validate-copilot-connection.js
+  src/index.ts          # Runs INSIDE the agent container (Copilot SDK);
+                        # built to dist/ via tsconfig.agent.json
+  src/commitUtils.ts
+  src/validate-copilot-connection.ts
 ```
 
 ---
@@ -181,7 +214,7 @@ Drives the **code-generation task lifecycle**. Each task is a state-machine trav
     └────────────────────────────────────────────┘
 ```
 
-Project mode injects `ProjectModeDeps` which provides per-project agent resolution, VCS connector, and the `ConcurrencyTracker`. In project mode the orchestrator resolves the agent and VCS connector from the project's bindings — not from global env vars. GitLab ticket selection comes from `project_ticket_source.ticketProjectKey`, and GitLab MR/push selection comes from the relevant project `repoKey`.
+Project mode injects `ProjectModeDeps` which provides per-project agent resolution, VCS connector, and the `ConcurrencyTracker`. In project mode the orchestrator resolves the agent and VCS connector from the project's bindings — not from global env vars. Ticket selection comes from the project's `project_integration_bindings` issue_tracking binding (`config_json.ticketProjectKey`), and MR/push selection comes from the relevant `project_push_targets.repo_key`.
 
 ---
 
@@ -206,6 +239,7 @@ Tick-based polling with exponential backoff on consecutive failures.
 
 - Backoff: doubles each failure (capped), resets on success.
 - Concurrency: skips projects where `ConcurrencyTracker.canStart()` returns false; logs at most once per tick.
+- Review polling: the same tick also drives `pollInReviewTasks()` (feedback on open changes), `pollReviewWatchingTasks()` (patchset / merge status), and `pollReviewProjects()` (review-assignment discovery via `ReviewAssignmentTrigger`), with per-change review-poll cooldowns.
 - Hot-reload: `setProjectMode()` refreshes the project store and plugin manager reference without a restart.
 
 ---
@@ -257,6 +291,7 @@ Plain Node.js `http.createServer` — no framework. The main file handles auth, 
 | Module | Route group |
 |--------|-------------|
 | `adminServer.ts` | Dashboard (`GET /admin`), health (`GET /health`), img-proxy, status, config, providers |
+| `adminOverviewRoutes.ts` | Dashboard overview aggregates + cost summary |
 | `adminTaskRoutes.ts` | `GET/DELETE /api/admin/tasks`, `GET /api/admin/tasks/:id`, `GET .../cycles`, `GET .../transitions`, `PATCH .../pause`, `PATCH .../resume`, `POST .../retry`, `POST .../abandon` |
 | `adminPromptRoutes.ts` | `GET/POST /api/admin/prompts`, `GET/PUT/DELETE /api/admin/prompts/:id`, `GET .../usage` |
 | `adminStreamRoutes.ts` | `GET /api/admin/logs/stream` (SSE), `GET /api/admin/events/stream` (SSE) |
@@ -267,6 +302,8 @@ Plain Node.js `http.createServer` — no framework. The main file handles auth, 
 | `adminWebhookRoutes.ts` | `POST .../webhook-secret/rotate`, `GET/PUT .../webhook-allowed-ips`, `GET .../webhook-info` |
 
 **Shared primitives** (`adminRouteUtils.ts`): `writeJson`, `writeHtml`, `readBody` (512 KB limit), `toIsoTimestamp`, `asRecord`, `SECRET_MASK`.
+
+The dashboard client is a **Vite-built React SPA** (`src/admin/ui/`, served by `dashboard.ts` from `dist/admin-ui` via manifest lookup; build with `npm run build:ui`, watch with `npm run dev:ui`).
 
 Editing an integration calls `onIntegrationUpdated()` which invalidates the VCS connector cache and hot-reloads the plugin manager without a restart.
 
@@ -287,15 +324,19 @@ Bridges the **static plugin registry** (compile-time descriptors) with the **dyn
     ├─ getIntegrations()  ← reads all enabled rows
     │
     └─ for each integration:
-         factory(configJson)  →  connector instance
-         store in activeInstancesById[id]
-         if type not yet claimed → also set as type-leader in activeInstances[type]
+         descriptor(provider) capability factory(configJson) → connector instance
+         store in activeInstancesById[id]   (all rows stay active in parallel,
+                                             including same-provider duplicates)
 
   runtime lookup
-    getConnectorForIntegration(id)  →  instance from activeInstancesById
-    getActiveIntegrationsByType(t)  →  all active instances of a type
-    getActiveConnector(category)    →  type-leader for a category (legacy)
+    getConnectorForIntegration(id)             →  instance by integrationId
+    getConnectorForCapability(id, capability)  →  capability-scoped connector
+    getActiveIntegrationsByCapability(cap)     →  all active rows exposing a capability
+    getActiveIntegrationsByProvider(provider)  →  all active rows of one provider
+    providerSupportsCapability(provider, cap)  →  static descriptor check
 ```
+
+There is no "type-leader" or category concept: routing is always by `integrationId` or by **domain capability** (`issue_tracking`, `code_review`, `source_control`, `agent_execution`). Project-bound connector instances can be built via `createConnectorForIntegration(integrationId, context)` when a VE project owns part of the provider binding.
 
 Enabling/disabling an integration via the admin API calls `enablePlugin` / `disablePlugin`, updates the DB, and refreshes the in-memory maps — no restart needed.
 
@@ -341,7 +382,7 @@ The agent container is placed on `virtual-engineer_ve-agent-net` — an isolated
 Drives the **code-review lifecycle** for a single change.
 
 ```
-  Gerrit patchset-created event
+  Gerrit patchset-created stream event / GitHub PR / GitLab MR webhook
        │
        ▼
   createReviewTask()  →  REVIEW_PENDING
@@ -351,19 +392,21 @@ Drives the **code-review lifecycle** for a single change.
        │
        ├─ clone repo via execInVolume
        ├─ git fetch refs/changes/<patchset>
-       ├─ buildReviewPrompt(diff)
+       ├─ buildReviewPrompt(diff + "already reported" prior comments)
        │
        ├─ docker run (agent container, REVIEW_MODE=1)
-       │     reads /tmp/review-prompt.txt
+       │     reads USER_PROMPT_FILE (/ve-home/user-prompt.txt)
        │     returns raw LLM text → stdout
        │
        ├─ parseReviewResult(output)  →  comments + vote
+       ├─ dedup against posted_review_comments (comment_hash)
+       ├─ severity/volume gate (REVIEW_MIN_SEVERITY, MAX_REVIEW_COMMENTS);
+       │    excess folded into the summary
        │
        ▼
   REVIEW_COMMENTING
        │
-       ├─ gerritConnector.postInlineComments(comments)
-       ├─ gerritConnector.setReviewVote(vote)
+       ├─ reviewer.postReview(comments, summary, vote)   ← Gerrit / GitLab / GitHub
        │
        ▼
   REVIEW_WATCHING  ←──────────────────────────────────────────┐
@@ -382,6 +425,7 @@ Drives the **code-review lifecycle** for a single change.
 |-----------|-----------|----------------|
 | `GerritVcsConnector` | SSH (via helper container) | `git push refs/for/<branch>` + Change-Id footer |
 | `GitLabVcsConnector` | HTTP (token in `.git-credentials`) | `git push` + GitLab REST API MR creation |
+| `GitHubVcsConnector` | HTTP (token in `.git-credentials`) | `git push` + GitHub REST API PR creation |
 
 Both operate entirely via `execInVolume` — no VCS tools run directly on the orchestrator process. SSH keys are injected as base64 env vars.
 
@@ -462,33 +506,34 @@ Pause and resume are **not boolean columns**. They are `state_transitions` rows 
 ## 5. Plugin system
 
 ```
-  compile time: src/plugins/descriptors/<type>.ts
-       │  registers type + category + config schema
+  compile time: src/plugins/descriptors/<provider>.ts
+       │  one unified descriptor per provider; declares a `capabilities` map
+       │  (issue_tracking / code_review / source_control / agent_execution)
        ▼
-  src/plugins/registry.ts  ←  src/plugins/init.ts (calls registerBuiltinPlugins)
+  src/plugins/registry.ts  ←  src/plugins/init.ts (registers built-in descriptors)
        │
        ▼
   runtime: integrations table (SQLite)
-       │  type, configJson, enabled
+       │  provider, configJson, enabled
        ▼
   PluginManager.loadFromDatabase()
-       │  factory(configJson) → connector instance
+       │  capability factory(configJson) → connector instance
        ▼
   activeInstancesById[integrationId] = instance
 ```
 
 ### Built-in providers
 
-| Category | Type | Description |
-|----------|------|-------------|
-| `ticketing` | `redmine` | Redmine REST API |
-| `ticketing` | `gitlab-issue` | GitLab Issues REST API |
-| `review` | `gerrit` | Gerrit SSH review + HTTP REST |
-| `review` | `gitlab-merge-request` | GitLab Merge Requests REST API |
-| `agent` | `copilot` | GitHub Copilot via Copilot SDK |
-| `agent` | `mock` | Deterministic mock adapter (no Copilot needed) |
+| Provider | Domain capabilities |
+|----------|---------------------|
+| `redmine` | issue_tracking |
+| `gitlab` | issue_tracking, code_review, source_control |
+| `github` | issue_tracking, code_review, source_control |
+| `gerrit` | code_review, source_control |
+| `copilot` | agent_execution |
+| `mock` | agent_execution |
 
-Multiple integrations of the same type can be active simultaneously. The orchestrator routes by `integrationId` in project mode, and may build a project-bound connector instance when the VE project owns part of the provider binding.
+Technical capabilities (`oauth`, `discovery`, `stream-events`, `reviewer`) are derived from descriptor hooks. Multiple integrations of the same provider can be active simultaneously. The orchestrator routes by `integrationId` in project mode, and may build a project-bound connector instance when the VE project owns part of the provider binding.
 
 ---
 
@@ -501,6 +546,7 @@ All timestamps stored as **seconds since epoch** (`mode: "timestamp"` in Drizzle
 ```
 tasks
   task_id          TEXT  PK
+  display_id       TEXT
   ticket_id        TEXT  NOT NULL
   ticket_source_label TEXT
   ticket_title     TEXT
@@ -510,11 +556,14 @@ tasks
   gerrit_change_id TEXT
   current_patchset INTEGER
   reviewed_patchset INTEGER
+  push_ref         TEXT
   cycle_count      INTEGER
   failure_reason   TEXT
   ticket_url       TEXT
   review_url       TEXT
-  project_id       TEXT  → projects.id
+  project_id       TEXT  → projects.id (nullable — orphaned on project delete)
+  ticket_source_integration_id TEXT   ← snapshot for orphan re-adoption
+  ticket_source_project_key    TEXT   ← snapshot for orphan re-adoption
   created_at / updated_at  INTEGER (epoch s)
 
 state_transitions
@@ -531,10 +580,26 @@ agent_cycles
   agent_result     TEXT  JSON (AgentResult)
   validation_result TEXT  JSON | null
   agent_events     TEXT  JSON (AgentLogEvent[])
+  cost_ai_credits / cost_usd / premium_requests  REAL | null
+  cost_input_tokens / cost_output_tokens
+  cost_cached_tokens / cost_cache_write_tokens   INTEGER | null
+  cost_model_id    TEXT | null      ← derived by computeCycleCost()
   created_at       INTEGER
 
 processed_comments
   id / task_id / gerrit_comment_id / created_at
+
+posted_review_comments           ← dedup ledger: VE-as-reviewer inline comments
+  id INTEGER PK / task_id / change_id
+  comment_hash  (sha1(file + "\n" + normalized message), line excluded)
+  file / line / message / severity
+  provider_thread_id (nullable) / resolved (0|1) / created_at
+  UNIQUE(task_id, comment_hash)  → INSERT OR IGNORE idempotency
+
+review_thread_replies            ← dedup ledger: VE replies to human threads
+  id INTEGER PK / task_id / change_id / thread_id
+  handled_comment_hash / reply_message / created_at
+  UNIQUE(task_id, thread_id, handled_comment_hash)
 ```
 
 ### Integration & config tables
@@ -542,7 +607,7 @@ processed_comments
 ```
 integrations
   id               TEXT  PK
-  type             TEXT  (IntegrationType)
+  provider         TEXT  github | gitlab | gerrit | redmine | copilot | mock
   name             TEXT
   config_json      TEXT  JSON (credentials + endpoints)
   enabled          INTEGER  0|1  (default 0)
@@ -551,7 +616,12 @@ integrations
   created_at / updated_at
 
 prompts
-  id / label / content / created_at / updated_at
+  id / label / content / prompt_type ("system"|"user", default "user")
+  created_at / updated_at
+
+oauth_apps                     ← per-host OAuth app registrations
+  provider + base_url  (composite PK) / client_id / timestamps
+  (a legacy gitlab_oauth_apps table also exists)
 ```
 
 ### Project tables
@@ -560,6 +630,7 @@ prompts
 agents
   id / name / type / model_config_json / integration_id
   system_prompt_id / instructions_prompt_id
+  feedback_instructions_prompt_id (nullable — retry-cycle override)
   max_concurrent (default 1) / enabled (default 0)
 
 projects
@@ -567,26 +638,26 @@ projects
   agent_id → agents.id
   agent_override_json (partial model config override)
   post_clone_script (bash, runs on host after clone)
-  max_concurrent (default 1) / enabled (default 0)
+  enabled (default 0)
 
-project_ticket_source          ← 1:1 with coding project
-  project_id / integration_id / ticket_project_key
+project_integration_bindings   ← one row per (project, capability)
+  id / project_id / integration_id
+  capability  issue_tracking | code_review | source_control | agent_execution
+  config_json  — issue_tracking: { ticketProjectKey }; code_review: { repos }
+  UNIQUE(project_id, capability)
+  (replaces the dropped project_ticket_source / project_review_integration /
+   project_review_repos tables; cross-project ticket-source uniqueness is
+   enforced in application code, not by a DB index)
 
-project_push_targets           ← 1:N with coding project
+project_push_targets           ← 1:N with coding project (source_control)
   project_id / integration_id / repo_key / clone_url
   target_branch / role / commit_order / local_path / ssh_key_path
-
-project_review_integration     ← 1:1 with review project
-  project_id / integration_id
-
-project_review_repos           ← 1:N with review project
-  project_id / repo_key
 
 change_per_repository          ← tracks per-repo change IDs
   id = "${taskId}:${repoKey}" or "${taskId}:${repoKey}:${commitIndex}"
   task_id / repo_key / change_id / review_url
-  status ("OPEN"|"MERGED"|"ABANDONED"|"NO_CHANGE")
-  integration_id / review_system / commit_index / subject_hash
+  status ("OPEN"|"NEW"|"MERGED"|"ABANDONED"|"ORPHANED"|"NO_CHANGE")
+  integration_id / review_system (gerrit|gitlab|github) / commit_index / subject_hash
 
 app_concurrency                ← singleton
   id = "global" / max_concurrent (NULL = unlimited)
@@ -626,15 +697,17 @@ Two levels gate every `startTaskForProject` call. All counters are **in-memory**
   validateHmacSignature(secret = integration.configJson.webhookSecret)
           │
           ▼
-  provider handler (e.g. gerrit: patchset-created, change-merged)
+  provider handler — redmine, gitlab-issue, gitlab-merge-request,
+  github-pull-request (GitHub Issues arrive via the `issues` X-GitHub-Event
+  on the same github endpoint)
           │
           ▼
-  orchestrator.handleReviewEvent(changeId)
+  orchestrator.startTaskForProject(ticket)   ← issue events
    or
-  pollingLoop.resetBackoff() + immediate poll trigger
+  triggerReviewForChange(changeId)           ← MR / PR review events
 ```
 
-**Gerrit** also supports an **SSH stream** listener (`gerritStreamEvents.ts`): one persistent `ssh gerrit stream-events` process per active Gerrit integration, reconciled by `integrationStreamEvents.ts` when integrations are added/removed/toggled.
+**Gerrit** does not use webhooks: review events arrive via an **SSH stream** listener (`gerritStreamEvents.ts`) — one persistent `ssh gerrit stream-events` process per active Gerrit integration, reconciled by `integrationStreamEvents.ts` when integrations are added/removed/toggled.
 
 Webhook secrets are per-integration (stored in `configJson.webhookSecret`), rotatable via `PUT /api/admin/integrations/:id/webhook-secret`. The HMAC is the sole auth mechanism for the inbound webhook endpoint.
 
@@ -661,14 +734,14 @@ The Copilot CLI native binary (`copilot-linux-x64`) is installed on first use in
 Runs inside the container. Two modes:
 
 **Code-generation mode** (default):
-1. Opens a GitHub Copilot SDK session against `/workspace`
-2. Sends a prompt built from `TASK_TITLE`, `TASK_DESCRIPTION`, `PRIOR_FEEDBACK_JSON`, `SYSTEM_PROMPT`, `INSTRUCTIONS_PROMPT`
-3. Copilot edits files autonomously
+1. Opens a GitHub Copilot SDK session against `/workspace` (local `copilot --headless` CLI booted in-container)
+2. Sends a prompt built from `TASK_TITLE`, `TASK_DESCRIPTION`, `PRIOR_FEEDBACK_JSON`, `SYSTEM_PROMPT` (required) and the user prompt read from `USER_PROMPT_FILE`
+3. Copilot edits files autonomously and may create up to `MAX_COMMITS_PER_CYCLE` local commits (Change-Ids reused on retry cycles via `ROOT_CHANGE_ID` / `PER_REPO_CHANGE_IDS_JSON`)
 4. Worker collects modified files via `git status`
 5. Writes JSON `AgentResult` to stdout (status, modifiedFiles, summary, commitMessage)
 
 **Review mode** (`REVIEW_MODE=1`):
-1. Reads prompt from `REVIEW_PROMPT_FILE` (`/tmp/review-prompt.txt`)
+1. Reads the prompt from `USER_PROMPT_FILE` (`/ve-home/user-prompt.txt`)
 2. Returns raw LLM response text to stdout (no git operations)
 3. Host `reviewResultParser.ts` parses inline comments and vote
 

@@ -22,7 +22,9 @@ The admin server is a small HTTP service (default `127.0.0.1:3100`) that serves 
 | `adminConcurrencyRoutes.ts` | `/api/admin/concurrency` read/update global concurrency. |
 | `adminOverviewRoutes.ts` | `/api/admin/overview` dashboard stats/throughput/votes/runtime + `/api/admin/cost-summary` aggregated AI cost (per project & instance total, optional `?days=` period). |
 | `adminWebhookRoutes.ts` | Webhook management: secret rotation, allowed-IPs, webhook-info. |
-| `dashboard.ts` | HTML shell and inline dashboard script. |
+| `dashboard.ts` | Serves the HTML shell for the Vite-built React SPA: reads the Vite manifest from `dist/admin-ui/.vite/manifest.json`, injects the hashed JS/CSS asset links plus a `window.__VE_ADMIN_BOOTSTRAP__` payload, and falls back to "Admin UI not built — run npm run build:ui" when the build output is missing. |
+| `ui/` | Admin SPA source (React + TypeScript): `App.tsx`, `main.tsx`, `api.ts`, `states.ts`, `views/`, `components/`, `shell/`, `theme/`, `icons/`. Built with Vite (`vite.admin.config.ts`) into `dist/admin-ui`; `adminServer.ts` serves the hashed assets under `/admin-ui/*`. Commands: `npm run build:ui`, `npm run dev:ui` (watch), `npm run typecheck:ui`. |
+| `assets/` | Static assets bundled with the admin server. |
 
 ## Route surface
 
@@ -110,13 +112,13 @@ The admin server never returns plaintext password-like fields. On `PUT`, values 
 
 ## Dashboard behavior
 
-[dashboard.ts](../../../src/admin/dashboard.ts) renders the shell and most client logic inline.
+[dashboard.ts](../../../src/admin/dashboard.ts) serves the shell for the Vite-built React SPA whose source lives in [src/admin/ui/](../../../src/admin/ui/); all client logic lives in the SPA, not inline in the shell.
 
 - The configuration UI validates unsaved integration state through `POST /api/admin/integrations/test`.
 - The Providers view renders one card per active integration rather than collapsing everything into a single card per provider type.
 - Integration forms are descriptor-driven. The add-integration modal picks a **provider** (not a role) and filters available providers by descriptor domain capabilities. Saved integrations are grouped into a single provider-grouped **Integrations** section with capability badges (`renderCapabilityBadges` over `domainCapabilities`); the former type-centric Tickets / Code Review / Agents nav sections were collapsed away.
 - Integration forms collect both regular inputs and descriptor-backed `select` fields, but only when those controls are currently visible. Fields hidden behind `dependsOn` are skipped during test/save payload generation, which is required for safe OAuth/PAT fallback UX.
-- When a descriptor exposes OAuth metadata, the dashboard renders a provider auth section without hardcoding the integration type and dispatches by `oauth.mode`. Device flows still render the code-entry panel, while redirect flows collect the currently visible config fields, generate a client-side `state` plus PKCE `codeVerifier`/`codeChallenge`, and may resolve additional provider config before calling `startPath`. GitLab uses that hook to look up the matching OAuth app client id from `/api/admin/gitlab-oauth-apps/resolve`, so user-facing GitLab integration forms only need the base URL plus runtime token state. The popup then returns to the admin origin and finishes through `completePath` with the same `redirectUri` only if the returned `state` matches. When editing an existing integration, the server restores masked stored secrets before creating the provider handler, so operators do not need to retype unchanged hidden credentials just to reconnect. OAuth sections can themselves be gated by `dependsOn`, so a future `authMode = oauth | pat` selector can hide or reveal them cleanly. Copilot currently uses the device path for GitHub auth and stores the hidden `sessionToken` field only after the flow completes.
+- When a descriptor exposes OAuth metadata, the dashboard renders a provider auth section without hardcoding the integration type and dispatches by `oauth.mode`. Device flows still render the code-entry panel, while redirect flows collect the currently visible config fields, generate a client-side `state` plus PKCE `codeVerifier`/`codeChallenge`, and may resolve additional provider config before calling `startPath`. GitLab uses that hook to look up the matching OAuth app client id from `/api/admin/oauth-apps/resolve`, so user-facing GitLab integration forms only need the base URL plus runtime token state. The popup then returns to the admin origin and finishes through `completePath` with the same `redirectUri` only if the returned `state` matches. When editing an existing integration, the server restores masked stored secrets before creating the provider handler, so operators do not need to retype unchanged hidden credentials just to reconnect. OAuth sections can themselves be gated by `dependsOn`, so a future `authMode = oauth | pat` selector can hide or reveal them cleanly. Copilot currently uses the device path for GitHub auth and stores the hidden `sessionToken` field only after the flow completes.
 - GitLab Add Integration forms are now provider-scoped only: they no longer ask for GitLab project IDs or GitLab workflow label settings. For coding projects, the GitLab issue project is selected in the Project modal's Ticket Source section; for GitLab MR/VCS flows, the target GitLab project comes from the selected repository entries in the Project modal.
 - Configuration now includes a dedicated `GitLab OAuth` section where admins manage the GitLab OAuth app registry (`baseUrl -> clientId`) used by the URL-only GitLab connect flow.
 - The GitLab image proxy (`GET /api/admin/img-proxy`) now uses the same Bearer token contract as the main GitLab connectors, so OAuth-backed GitLab integrations can still render proxied GitLab-hosted assets in the admin UI.
@@ -153,7 +155,7 @@ The supported server-side model is `projects` / `project_*`. There are no `/api/
 - `tests/unit/adminAgentsRoutes.test.ts`
 - `tests/unit/adminProjectsRoutes.test.ts`
 - `tests/unit/closeAdminServer.test.ts`
+- `tests/unit/adminCostRoutes.test.ts`
+- `tests/unit/adminProjectsRoutes.relaunch.test.ts`
 - `tests/unit/dashboard.test.ts`
 - `tests/unit/dashboard.configurationTab.test.ts`
-- `tests/e2e/admin-dashboard.spec.ts`
-- `tests/e2e/projects-flow.spec.ts`
