@@ -363,10 +363,12 @@ async function main(): Promise<void> {
   if (await pollingIsRequired(stateStore, pluginManager)) {
     pollingLoop.start();
   } else {
-    log.warn(
-      "Polling loop not started: no enabled project with polling-requiring integrations active. " +
-      "Stream-based review systems (e.g., Gerrit) do not require polling. " +
-      "Create a complete project via the admin UI to begin processing tickets."
+    log.info(
+      "Polling loop not started: no enabled project currently requires polling. " +
+      "This only affects ticket-discovery polling (coding projects) and fallback " +
+      "polling for in-review tasks; stream-based review intake (e.g., Gerrit) " +
+      "continues to work. The loop will start automatically when a polling-based " +
+      "project is configured or a task needs the fallback poller."
     );
   }
   log.info("Virtual Engineer running — press Ctrl+C to stop");
