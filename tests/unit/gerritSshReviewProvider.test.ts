@@ -53,6 +53,7 @@ vi.mock("node:child_process", () => ({
 }));
 
 vi.mock("node:fs/promises", () => ({
+  mkdir: vi.fn().mockResolvedValue(undefined),
   mkdtemp: vi.fn().mockResolvedValue("/tmp/test-diffs/diff-42-abc"),
   rm: vi.fn().mockReturnValue(Promise.resolve(undefined)),
 }));
