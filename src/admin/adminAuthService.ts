@@ -103,7 +103,7 @@ export async function verifyPassword(password: string, storedHash: string): Prom
   }
   const salt = Buffer.from(parts[4] ?? "", "base64");
   const expected = Buffer.from(parts[5] ?? "", "base64");
-  if (salt.length === 0 || expected.length === 0) return false;
+  if (salt.length !== SCRYPT_SALT_LENGTH || expected.length !== SCRYPT_KEY_LENGTH) return false;
   try {
     const actual = await scryptAsync(password, salt, expected.length, { N: n, r, p });
     return actual.length === expected.length && timingSafeEqual(actual, expected);
