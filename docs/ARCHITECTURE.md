@@ -69,7 +69,7 @@ src/
   index.ts              # Process entry — boots admin server, plugins, orchestrator
   config.ts             # Zod-validated AppConfig (loads .env)
   interfaces.ts         # Branded IDs, TaskState, all shared interfaces
-  copilotModel.ts       # Default model constant
+  copilotModel.ts       # Default Copilot model constant
   logger.ts             # Pino logger factory (silent in test)
 
   admin/                # HTTP admin server + React SPA dashboard
@@ -98,6 +98,9 @@ src/
     copilotModelsService.ts
     copilotOAuthService.ts
     providerAuthService.ts
+    claudeAdapter.ts      # Claude Code adapter (agent_execution)
+    claudeConnectionValidator.ts
+    claudeModelsService.ts
     cycleCost.ts          # Derives per-cycle cost from assistant.usage events
     mockAgentAdapter.ts   # Deterministic mock, no Copilot needed
     agentEventBus.ts      # SSE event bus for live log streaming
@@ -375,6 +378,21 @@ The agent container is placed on `virtual-engineer_ve-agent-net` — an isolated
 
 ---
 
+### 3.6.1 ClaudeAdapter
+
+`src/agents/claudeAdapter.ts`
+
+An alternative `agent_execution` adapter that runs Anthropic **Claude Code** via the `@anthropic-ai/claude-agent-sdk` inside the same hardened container. It mirrors `CopilotAdapter` (same security args, `/ve-home` HOME volume, `__ve_event` stderr protocol, commit collection, and `AgentResult` contract) but:
+
+- injects `AGENT_PROVIDER=claude` + `CLAUDE_MODEL` and exactly one auth env var — `ANTHROPIC_API_KEY` (api-key integrations, carried via the generic `apiKey`/`githubToken` field) or `CLAUDE_CODE_OAUTH_TOKEN` (subscription integrations, carried via `encryptedSessionToken`);
+- dispatches in the worker: `agent-worker/src/index.ts` routes to `claudeSession.runClaudeAgent()` when `AGENT_PROVIDER=claude`, which drives the SDK `query()` and maps its message stream onto the shared event/commit/result pipeline.
+
+The adapter injects **no** default model: when the agent config leaves the model unset, `CLAUDE_MODEL` is omitted and the Claude CLI picks its own default. Adapters are registered generically — any descriptor that declares `capabilities.agent_execution.buildAdapter` is instantiated by the plugin manager from host runtime context (`AgentAdapterContext`), so `index.ts` special-cases no provider.
+
+Connection methods live on the `claude` descriptor (`src/plugins/descriptors/claude.ts`, `authMode`): `api_key` and `subscription` (interactive authorization-code + PKCE OAuth via `claudeOAuth.ts`, or a token pasted from `claude setup-token`). Cost columns stay null (Claude has no AIU); token usage is still emitted.
+
+---
+
 ### 3.7 ReviewOrchestrator
 
 `src/review/reviewOrchestrator.ts`
@@ -531,6 +549,7 @@ Pause and resume are **not boolean columns**. They are `state_transitions` rows 
 | `github` | issue_tracking, code_review, source_control |
 | `gerrit` | code_review, source_control |
 | `copilot` | agent_execution |
+| `claude` | agent_execution |
 | `mock` | agent_execution |
 
 Technical capabilities (`oauth`, `discovery`, `stream-events`, `reviewer`) are derived from descriptor hooks. Multiple integrations of the same provider can be active simultaneously. The orchestrator routes by `integrationId` in project mode, and may build a project-bound connector instance when the VE project owns part of the provider binding.
@@ -607,7 +626,7 @@ review_thread_replies            ← dedup ledger: VE replies to human threads
 ```
 integrations
   id               TEXT  PK
-  provider         TEXT  github | gitlab | gerrit | redmine | copilot | mock
+  provider         TEXT  github | gitlab | gerrit | redmine | copilot | claude | mock
   name             TEXT
   config_json      TEXT  JSON (credentials + endpoints)
   enabled          INTEGER  0|1  (default 0)

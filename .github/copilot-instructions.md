@@ -38,7 +38,7 @@ Helper scripts: `npm run e2e:mock`, `npm run reset:instance`, `npm run build:age
 - For each agent cycle the host creates Docker **named volumes**, clones the repo into a volume via a helper container, spawns an **ephemeral Docker container** (`virtual-engineer-workspace:latest`) that edits files and may create one or more local commits; push operations also run in helper containers against the volume. The **host still owns review-system credentials and push orchestration** through `src/vcs/`. Container and volumes are destroyed on exit.
 - **Container constraints** (set by `buildContainerSpec` / `buildReviewContainerSpec` in `src/agents/copilotAdapter.ts`): `--read-only` rootfs, `--cap-drop ALL`, `--security-opt no-new-privileges:true`, `--tmpfs /tmp:rw,nosuid,size=256m`, `/workspace` named-volume mount, `/ve-home` named-volume mount for Copilot HOME (native modules), optional `/ve-prompts` mount, `networkMode=virtual-engineer_ve-agent-net`. When the project has `skillDiscoveryEnabled` set, both coding and review containers receive `SKILL_DISCOVERY=1` and the worker loads `<repo>/.github/skills` (skills only; MCP discovery stays off; trusted repos only).
 - **Persistence**: SQLite WAL via `better-sqlite3` (sync) + Drizzle ORM at `DATABASE_PATH` (default `./data/virtual-engineer.db`).
-- **Providers (per capability)**: issue_tracking = Redmine | GitLab Issues | GitHub Issues; code_review / source_control = Gerrit | GitLab Merge Requests | GitHub Pull Requests; agent_execution = Copilot | Mock. Provider credentials live on `integrations`, while GitLab project selection is VE-project-owned (`project_integration_bindings` issue_tracking `{ ticketProjectKey }`, `project_push_targets.repoKey`, code_review `{ repos }` bindings).
+- **Providers (per capability)**: issue_tracking = Redmine | GitLab Issues | GitHub Issues; code_review / source_control = Gerrit | GitLab Merge Requests | GitHub Pull Requests; agent_execution = Copilot | Claude | Mock. Provider credentials live on `integrations`, while GitLab project selection is VE-project-owned (`project_integration_bindings` issue_tracking `{ ticketProjectKey }`, `project_push_targets.repoKey`, code_review `{ repos }` bindings).
 - **Admin server** (`src/admin/`) exposes the dashboard plus integrations, agents, projects, prompts, concurrency, and webhook-secret operations; secrets are masked on read and the runtime is hot-refreshed after integration changes. The dashboard client is a **Vite-built React SPA** (`src/admin/ui/`, served from `dist/admin-ui`; build with `npm run build:ui`).
 
 ### Source layout
@@ -62,6 +62,8 @@ src/
   agents/               # copilotAdapter, copilotConnectionValidator,
                         # copilotOAuthService, providerAuthService,
                         # copilotModelsService, cycleCost,
+                        # claudeAdapter, claudeConnectionValidator,
+                        # claudeModelsService, claudeSession (worker),
                         # mockAgentAdapter, agentEventTypes, agentEventBus
   connectors/           # redmineConnector, gerritConnector,
                         # gerritSshClient, gerritSshReviewProvider,
@@ -74,7 +76,7 @@ src/
   orchestrator/         # orchestrator, pollingLoop, feedbackProcessor,
                         # concurrencyTracker
   plugins/              # registry, pluginManager, init, descriptors/{index,github,
-                        # gitlab,gerrit,redmine,copilot,mock}.ts (unified
+                        # gitlab,gerrit,redmine,copilot,claude,mock}.ts (unified
                         # provider descriptors; githubOAuth/gitlabOAuth helpers)
   review/               # reviewOrchestrator, copilotReviewAgent,
                         # reviewPromptBuilder, reviewResultParser,
@@ -104,7 +106,7 @@ agent-worker/src/       # TS worker inside the agent container (index.ts,
 - `review_thread_replies` (INTEGER `id` PK): dedup ledger for **discussion-thread replies** (VE answering human review comments). Columns: `task_id` (FK), `change_id`, `thread_id`, `handled_comment_hash` (`sha1(thread+"\n"+lower(author)+"\n"+normalized(message))` of the latest human comment), `reply_message`, `created_at`. Unique `(task_id, thread_id, handled_comment_hash)` drives `INSERT OR IGNORE`; VE replies once per new human message and never re-answers an already-handled thread across re-reviews. Integration-agnostic.
 - `agent_cycles.agent_events` (TEXT, JSON `AgentLogEvent[]`) records the streamed agent log.
 - `agent_cycles` cost columns (all nullable): `cost_ai_credits` (REAL), `cost_usd` (REAL), `premium_requests` (REAL), `cost_input_tokens` / `cost_output_tokens` / `cost_cached_tokens` / `cost_cache_write_tokens` (INTEGER), `cost_model_id` (TEXT). Derived by `computeCycleCost()` (`src/agents/cycleCost.ts`) from `assistant.usage` events (per-request: events are grouped by request identity — `apiCallId`/`providerCallId` or content signature — to drop duplicate emissions, then summed across distinct requests: `copilotUsage.totalNanoAiu` → `cost_usd`/`cost_ai_credits` where 1 AIU = 1 credit = $0.01). When `totalNanoAiu` is absent, `cost_usd` is **estimated** from `premium_requests` × $0.04 (GitHub overage rate) and `cost_ai_credits` stays null. Legacy rows are recomputed from `agent_events` on read.
-- `integrations` (TEXT `id` PK): `provider`, `name`, `config_json`, `enabled` (INTEGER), `discovered_resources_json`, `discovered_at`, timestamps. `provider` is one of `github | gitlab | gerrit | redmine | copilot | mock` (the former `type` column and the `category` concept were removed).
+- `integrations` (TEXT `id` PK): `provider`, `name`, `config_json`, `enabled` (INTEGER), `discovered_resources_json`, `discovered_at`, timestamps. `provider` is one of `github | gitlab | gerrit | redmine | copilot | claude | mock` (the former `type` column and the `category` concept were removed).
 - `prompts` (TEXT `id` PK): `label`, `content`, `prompt_type` (`system | user`, default `user`), timestamps. Used to inject `SYSTEM_PROMPT` / `INSTRUCTIONS_PROMPT` into the agent container.
 - `oauth_apps` (composite PK `(provider, base_url)`): `provider`, `base_url`, `client_id`, timestamps — stores per-host OAuth app registrations. A legacy `gitlab_oauth_apps` table also exists.
 - `change_per_repository` (TEXT `id` PK): `task_id`, `repo_key`, `change_id`, `review_url`, `status`, `integration_id`, `review_system`, `commit_index` (INTEGER NOT NULL DEFAULT 0), `subject_hash` (TEXT), timestamps. PK format: `${taskId}:${repoKey}:${commitIndex}` when commitIndex > 0, else `${taskId}:${repoKey}`. Status values: `OPEN`, `NEW`, `MERGED`, `ABANDONED`, `ORPHANED`, `NO_CHANGE`. The `review_system` column is **kept** (not renamed) and stores `gerrit | gitlab | github` via `VcsConnector.reviewSystemLabel`.
@@ -177,7 +179,7 @@ Empty strings in env are treated as `undefined` (helpful for env overrides).
 
 
 ## Plugin System (`src/plugins/`)
-- Static **registry** (`registry.ts`) defines one unified **provider descriptor** per `provider` in `src/plugins/descriptors/{github,gitlab,gerrit,redmine,copilot,mock}.ts`. The former split descriptors were merged: `github-issue` + `github-pull-request` → `github`; `gitlab-issue` + `gitlab-merge-request` → `gitlab`. `PLUGIN_CATEGORIES` / `category` no longer exist.
+- Static **registry** (`registry.ts`) defines one unified **provider descriptor** per `provider` in `src/plugins/descriptors/{github,gitlab,gerrit,redmine,copilot,claude,mock}.ts`. The former split descriptors were merged: `github-issue` + `github-pull-request` → `github`; `gitlab-issue` + `gitlab-merge-request` → `gitlab`. `PLUGIN_CATEGORIES` / `category` no longer exist.
 - Descriptors declare a `capabilities` map keyed by **domain capability** (`issue_tracking`, `code_review`, `source_control`, `agent_execution`) with capability factories: `capabilities.issue_tracking.createConnector`, `capabilities.code_review.{createConnector,createReviewer,streamEvents,systemPromptId,userPromptId}`, `capabilities.source_control.createVcsConnector`, `capabilities.agent_execution.createAdapter`. Technical capabilities (`oauth`, `discovery`, `stream-events`, `reviewer`) are derived from descriptor hooks via `getProviderTechnicalCapabilities(descriptor)`; domain ones via `getProviderDomainCapabilities(descriptor)`.
 - **PluginManager** loads every enabled row from `integrations`, keeps multiple active integrations in parallel even for the same provider, resolves by `integrationId` (`getConnectorForIntegration`, `getActiveIntegrationById`, `isIntegrationActive`) or by capability/provider (`getConnectorForCapability(integrationId, capability)`, `getActiveIntegrationsByCapability(capability)`, `getActiveIntegrationsByProvider(provider)`, `providerSupportsCapability(provider, capability)`). `integrationHasStreamEvents` checks `capabilities.code_review.streamEvents`. It can also build project-bound connector instances via `createConnectorForIntegration(integrationId, context)` when a VE project owns part of the provider binding.
 - Admin dashboard / API can hot-add or toggle integrations; `src/index.ts` refreshes runtime dependencies without restart.
@@ -192,6 +194,18 @@ Empty strings in env are treated as `undefined` (helpful for env overrides).
 Worker `sendAndWait` timeout ≈ 540s. Host agent timeout = `AGENT_TIMEOUT_MS` (default 60 min).
 
 Implementation: `src/agents/copilotAdapter.ts`, `src/agents/copilotOAuthService.ts`, `src/agents/copilotModelsService.ts`, `src/agents/copilotConnectionValidator.ts`, `src/review/copilotReviewAgent.ts`, `agent-worker/src/index.ts`.
+
+## Claude Execution (`agent_execution` alternative to Copilot)
+
+The `claude` provider runs Anthropic **Claude Code** via the `@anthropic-ai/claude-agent-sdk` inside the same agent container. The host `ClaudeAdapter` (`src/agents/claudeAdapter.ts`) injects `AGENT_PROVIDER=claude`, exactly one auth env var, and `CLAUDE_MODEL` **only when a model is configured** (otherwise the Claude CLI picks its own default — no hardcoded default in VE). The worker (`agent-worker/src/claudeSession.ts`, dispatched from `agent-worker/src/index.ts` when `AGENT_PROVIDER=claude`) drives `query()` and maps its message stream onto the shared `__ve_event` / commit / `AgentResult` pipeline. Both coding and review flows are supported (review uses `REVIEW_MODE=1`).
+
+Agent adapters are **descriptor-driven**: a provider that declares `capabilities.agent_execution.buildAdapter(context)` is instantiated by `PluginManager` from an `AgentAdapterContext` (`maxCommitsPerCycle`, `dockerNetwork`) supplied via constructor options. `index.ts` no longer registers per-provider adapter factories — adding a new agent backend is just a new descriptor. `PluginManager.registerFactory` still exists and takes precedence (used by tests).
+
+Two connection methods (descriptor `src/plugins/descriptors/claude.ts`, `authMode`):
+- `api_key` — Anthropic API key → `ANTHROPIC_API_KEY` (carried via the generic `apiKey`/`agentSession.githubToken` field).
+- `subscription` — Claude Pro/Max OAuth token → `CLAUDE_CODE_OAUTH_TOKEN` (carried via `encryptedSessionToken`); obtained either through the interactive authorization-code + PKCE OAuth flow (`src/plugins/descriptors/claudeOAuth.ts`, stored encrypted in `sessionToken`) or pasted manually from `claude setup-token` (stored in `oauthToken`). `orchestrator.resolveProjectAgentRuntime` maps these provider-specific fields onto the generic `ResolvedAgentConfig`.
+
+Cost: Claude has no AIU, so `agent_cycles` USD/credit columns stay null; token usage is still emitted as `assistant.usage` events. Claude OAuth client id/endpoints are best-effort defaults (overridable via config) — see `claudeOAuth.ts`.
 
 ## Test Layout
 - **Unit + integration tests**: `tests/unit/` (Vitest). All external I/O (fetch, fs, Docker, SDK) is mocked via `vi.mock`/`vi.spyOn`. Current project-mode and webhook-oriented scenarios live alongside unit specs (for example `orchestrator.projectMode.test.ts`, `orchestrator.webhookEntryPoints.test.ts`, `pollingLoop.projects.test.ts`).

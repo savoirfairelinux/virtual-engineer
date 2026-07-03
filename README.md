@@ -11,6 +11,7 @@ All provider configuration (ticketing, VCS, agent) is stored in SQLite and manag
 <p align="center">
 	<img src="https://cdn.simpleicons.org/github/181717" alt="GitHub" width="20" />
 	<img src="https://cdn.simpleicons.org/githubcopilot/000000" alt="GitHub Copilot" width="20" />
+	<img src="https://cdn.simpleicons.org/claude/D97757" alt="Claude" width="20" />
 	<img src="https://cdn.simpleicons.org/gitlab/FC6D26" alt="GitLab" width="20" />
 	<img src="https://cdn.simpleicons.org/gerrit/EE0000" alt="Gerrit" width="20" />
 	<img src="https://cdn.simpleicons.org/redmine/B32024" alt="Redmine" width="20" />
@@ -25,6 +26,7 @@ All provider configuration (ticketing, VCS, agent) is stored in SQLite and manag
 | **Node.js** | 20 LTS | Orchestrator runtime |
 | **Docker** | 24 | Agent container execution |
 | **GitHub Copilot** | — | Subscription required for code-gen/review tasks |
+| **Claude** | — | Alternative agent engine — Anthropic API key or a Claude Pro/Max subscription |
 
 ---
 
