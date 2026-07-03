@@ -7,7 +7,7 @@
  */
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
 import {
@@ -105,7 +105,7 @@ export interface GerritSshReviewProviderConfig {
   reviewerAccountId?: string | undefined;
   /**
    * Base directory for temporary git checkouts (used to compute diffs).
-   * Defaults to /tmp/virtual-engineer/review-diffs.
+   * Defaults to /tmp/ve-review-diffs.
    */
   workspaceBaseDir?: string | undefined;
 }
@@ -250,6 +250,7 @@ export class GerritSshReviewProvider implements ReviewProvider {
     const changeRef = `refs/changes/${nn}/${details.changeNumber}/${ps}`;
 
     const baseDir = this.config.workspaceBaseDir ?? "/tmp/ve-review-diffs";
+    await mkdir(baseDir, { recursive: true });
     const dir = await mkdtemp(join(baseDir, `diff-${details.changeNumber}-`));
 
     try {
@@ -308,6 +309,7 @@ export class GerritSshReviewProvider implements ReviewProvider {
     const details = await this.getChangeDetails(changeId);
 
     const baseDir = this.config.workspaceBaseDir ?? "/tmp/ve-review-diffs";
+    await mkdir(baseDir, { recursive: true });
     const dir = await mkdtemp(join(baseDir, `delta-${details.changeNumber}-`));
 
     try {
