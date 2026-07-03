@@ -304,7 +304,7 @@ export class SqliteStateStore {
       CREATE TABLE IF NOT EXISTS user_sessions (
         id           INTEGER PRIMARY KEY AUTOINCREMENT,
         token_hash   TEXT    NOT NULL UNIQUE,
-        user_id      TEXT    NOT NULL REFERENCES users(id),
+        user_id      TEXT    NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         created_at   INTEGER NOT NULL,
         expires_at   INTEGER NOT NULL,
         last_seen_at INTEGER NOT NULL
