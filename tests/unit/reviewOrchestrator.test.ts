@@ -995,6 +995,29 @@ describe("ReviewOrchestrator.runReview - inter-patchset delta", () => {
     const prompt = runner.runReviewInDocker.mock.calls[0]?.[1]?.prompt as string;
     expect(prompt).not.toContain("## Changes since last reviewed patchset");
   });
+
+  it("omits the delta section in the prompt when the delta contains no files", async () => {
+    const initial = makeTask({
+      state: "REVIEW_WATCHING",
+      cycleCount: 1,
+      reviewedPatchset: 2,
+      currentPatchset: 3,
+    });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+    (mocks.provider.getChangeDetails as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makeDetails({ currentPatchset: 3 })
+    );
+    mocks.provider.getInterPatchsetDiff = vi.fn(async () =>
+      makeDiff({ patchset: 3, files: [] })
+    ) as NonNullable<ReviewProvider["getInterPatchsetDiff"]>;
+
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+    await orch.runReview(initial.taskId);
+
+    const prompt = runner.runReviewInDocker.mock.calls[0]?.[1]?.prompt as string;
+    expect(prompt).not.toContain("## Changes since last reviewed patchset");
+  });
 });
 
 describe("ReviewOrchestrator.runReview â failure paths", () => {
