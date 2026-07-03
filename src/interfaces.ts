@@ -1314,7 +1314,7 @@ export interface DiscoveredResources {
 // ─── Plugin / Integration types ───────────────────────────────────────────────
 
 /** Identifiers for the external systems Virtual Engineer can connect to. */
-export const PROVIDER_IDS = ["github", "gitlab", "gerrit", "redmine", "copilot", "mock"] as const;
+export const PROVIDER_IDS = ["github", "gitlab", "gerrit", "redmine", "copilot", "claude", "mock"] as const;
 export type ProviderId = (typeof PROVIDER_IDS)[number];
 
 /**

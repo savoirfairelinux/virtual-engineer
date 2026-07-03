@@ -9,6 +9,7 @@ import { redmineDescriptor } from "./redmine.js";
 import { gerritDescriptor } from "./gerrit.js";
 import { gitlabDescriptor } from "./gitlab.js";
 import { createCopilotDescriptor } from "./copilot.js";
+import { createClaudeDescriptor } from "./claude.js";
 import { mockDescriptor } from "./mock.js";
 import { githubDescriptor } from "./github.js";
 
@@ -19,6 +20,7 @@ export function buildBuiltinDescriptors(options?: { adminAuthSecret?: string }):
     gerritDescriptor,
     gitlabDescriptor,
     createCopilotDescriptor(options?.adminAuthSecret),
+    createClaudeDescriptor(options?.adminAuthSecret),
     mockDescriptor,
     githubDescriptor,
   ];

@@ -14,9 +14,10 @@ const PROVIDER_CAPABILITIES: Record<ProviderId, DomainCapability[]> = {
   gerrit: ["code_review", "source_control"],
   copilot: ["agent_execution"],
   mock: ["agent_execution"],
+  claude: ["agent_execution"],
 };
 
-const ALL_PROVIDERS: ProviderId[] = ["redmine", "gitlab", "gerrit", "github", "copilot", "mock"];
+const ALL_PROVIDERS: ProviderId[] = ["redmine", "gitlab", "gerrit", "github", "copilot", "claude", "mock"];
 
 const baseConfig: AppConfig = {
   nodeEnv: "test" as const,

@@ -441,19 +441,19 @@ async function buildReviewBundle(
     return { integration: null, provider: null, orchestrator: null };
   }
 
-  // Extract the agent token from the active agent integration for the review container.
+  // Extract the agent token from the active agent-execution integration for the review container.
   const agentToken = getAgentTokenForReview(pluginManager);
   if (!agentToken) {
     bundleLog.warn(
       { integrationId: integration.id },
-      "buildReviewBundle: no agent token available — ensure a Copilot integration is enabled and has a sessionToken or apiKey configured"
+      "buildReviewBundle: no agent token available — ensure an agent integration (Copilot or Claude) is enabled with a configured token/key"
     );
     return { integration: null, provider: null, orchestrator: null };
   }
 
   // Resolve the model from the enabled agent linked to the active agent integration.
   // This honours the model chosen in the agents library rather than the global default.
-  const agentIntegration = getPrimaryActiveIntegration(pluginManager, "copilot");
+  const agentIntegration = pluginManager.getActiveIntegrationsByCapability("agent_execution")[0];
   let model: string | undefined;
   if (agentIntegration) {
     try {
@@ -572,27 +572,34 @@ function buildReviewTrigger(
 }
 
 /**
- * Extract the agent token from the active agent integration.
+ * Extract the agent token from the active agent-execution integration.
+ * Provider-agnostic: works for Copilot (OAuth `sessionToken` or PAT `token`)
+ * and Claude (OAuth `sessionToken`, pasted `oauthToken`, or `apiKey`).
  * Returns null when no agent integration is configured or has a valid token.
  */
 function getAgentTokenForReview(pluginManager: PluginManager): string | null {
-  const agentIntegration = getPrimaryActiveIntegration(pluginManager, "copilot");
+  const agentIntegration = pluginManager.getActiveIntegrationsByCapability("agent_execution")[0];
   if (!agentIntegration) return null;
 
   let agentConfig: Record<string, unknown>;
   try {
-    // decryptIntegrationConfig handles both AES-256-GCM encrypted tokens (OAuth
-    // sessionToken) and plaintext PATs (token field), leaving unknown strings as-is.
+    // decryptIntegrationConfig handles AES-256-GCM encrypted tokens (OAuth
+    // sessionToken) and plaintext fields, leaving unknown strings as-is.
     agentConfig = pluginManager.decryptIntegrationConfig(agentIntegration);
   } catch {
     return null;
   }
 
-  // OAuth mode: sessionToken decrypted by decryptIntegrationConfig.
+  // OAuth session token (Copilot OAuth, Claude subscription interactive flow).
   const sessionToken = asOptionalString(agentConfig["sessionToken"]);
   if (sessionToken) return sessionToken;
-
-  // PAT mode: token field, plaintext or decrypted.
+  // Claude subscription token pasted manually from `claude setup-token`.
+  const oauthToken = asOptionalString(agentConfig["oauthToken"]);
+  if (oauthToken) return oauthToken;
+  // Claude API key.
+  const apiKey = asOptionalString(agentConfig["apiKey"]);
+  if (apiKey) return apiKey;
+  // Copilot PAT (plaintext or decrypted).
   return asOptionalString(agentConfig["token"]) ?? null;
 }
 
