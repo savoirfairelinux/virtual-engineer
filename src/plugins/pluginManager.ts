@@ -11,7 +11,7 @@ import type {
   PluginInstance,
 } from "../interfaces.js";
 import { getProviderDescriptor, getProviderDomainCapabilities, getCapabilityIntake } from "./registry.js";
-import type { ProviderDescriptor, IntakeMechanism } from "./registry.js";
+import type { ProviderDescriptor, IntakeMechanism, AgentAdapterContext } from "./registry.js";
 import { getLogger } from "../logger.js";
 import { decryptToken } from "../utils/encryption.js";
 
@@ -59,7 +59,7 @@ export class PluginManager {
 
   constructor(
     private readonly integrationStore: IntegrationStore,
-    private readonly options: { adminAuthSecret?: string | undefined } = {}
+    private readonly options: { adminAuthSecret?: string | undefined; agentAdapterContext?: AgentAdapterContext | undefined } = {}
   ) {}
 
   /** Register a connector factory for a provider (used for agent_execution instantiation). */
@@ -366,10 +366,16 @@ export class PluginManager {
     const strippedConfig = this.stripSchemaDefaults(parsed.data, config);
 
     if (capability === "agent_execution") {
-      // Explicit factory registered in index.ts takes precedence (needs AppConfig).
+      // A test-registered factory takes precedence.
       const factory = this.factories.get(integration.provider);
       if (factory) {
         return factory(strippedConfig, integration);
+      }
+      // Preferred path: the descriptor builds its own adapter from host runtime
+      // context. Adding a new agent provider requires no wiring here.
+      const buildAdapter = descriptor.capabilities.agent_execution?.buildAdapter;
+      if (buildAdapter && this.options.agentAdapterContext) {
+        return buildAdapter(this.options.agentAdapterContext);
       }
       const createAdapter = descriptor.capabilities.agent_execution?.createAdapter;
       return createAdapter ? createAdapter(strippedConfig, integration, context) : null;

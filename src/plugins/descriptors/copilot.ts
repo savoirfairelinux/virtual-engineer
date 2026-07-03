@@ -1,6 +1,8 @@
 import { z } from "zod";
 import type { ProviderDescriptor } from "../registry.js";
 import { ModelDiscoveryConfigError } from "../registry.js";
+import { CopilotAdapter } from "../../agents/copilotAdapter.js";
+import { DEFAULT_COPILOT_MODEL } from "../../copilotModel.js";
 import { validateCopilotConnection, type CopilotConnectionValidationConfig } from "../../agents/copilotConnectionValidator.js";
 import { pollForAccessToken, startDeviceFlow } from "../../agents/copilotOAuthService.js";
 import { exchangeForSessionToken, fetchAvailableModels, fetchAvailableModelsWithPat } from "../../agents/copilotModelsService.js";
@@ -124,7 +126,14 @@ export function createCopilotDescriptor(adminAuthSecret?: string): ProviderDescr
       return [];
     },
     capabilities: {
-      agent_execution: {},
+      agent_execution: {
+        buildAdapter: (context) =>
+          new CopilotAdapter({
+            model: DEFAULT_COPILOT_MODEL,
+            maxCommitsPerCycle: context.maxCommitsPerCycle,
+            dockerNetwork: context.dockerNetwork,
+          }),
+      },
     },
   };
 }

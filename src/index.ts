@@ -12,7 +12,6 @@
 import { getConfig } from "./config.js";
 import { getLogger } from "./logger.js";
 import { SqliteStateStore } from "./state/stateStore.js";
-import { CopilotAdapter } from "./agents/copilotAdapter.js";
 import { MockAgentAdapter } from "./agents/mockAgentAdapter.js";
 import { DockerWorkspaceRunner } from "./workspace/workspaceRunner.js";
 import { Orchestrator } from "./orchestrator/orchestrator.js";
@@ -32,7 +31,6 @@ import { makeTaskId, makeExternalChangeId } from "./interfaces.js";
 import { registerBuiltinPlugins } from "./plugins/init.js";
 import { PluginManager } from "./plugins/pluginManager.js";
 import type { AppConfig } from "./config.js";
-import { DEFAULT_COPILOT_MODEL } from "./copilotModel.js";
 import { getProviderDescriptor, getProviderDomainCapabilities, getCapabilityIntake } from "./plugins/registry.js";
 import { buildTicketSourceLabel, parseIntegrationIdFromSourceLabel } from "./utils/ticketSourceLabel.js";
 
@@ -52,16 +50,16 @@ async function main(): Promise<void> {
   const stateStore = await SqliteStateStore.create(config.databasePath);
 
   registerBuiltinPlugins(config.adminAuthSecret !== undefined ? { adminAuthSecret: config.adminAuthSecret } : undefined);
-  const pluginManager = new PluginManager(stateStore, { adminAuthSecret: config.adminAuthSecret });
-
-  // Copilot factory: registered explicitly because construction needs AppConfig
-  // values (agentDockerNetwork, maxCommitsPerCycle) that are not in configJson.
-  pluginManager.registerFactory("copilot", (_pluginConfig, _integration) => {
-    return new CopilotAdapter({
-      model: DEFAULT_COPILOT_MODEL,
+  // Agent adapters are self-describing: any provider whose descriptor declares
+  // an `agent_execution.buildAdapter` hook is instantiated by the plugin
+  // manager using this host runtime context. Adding a new agent backend
+  // (Copilot, Claude, …) needs no wiring here — only a descriptor.
+  const pluginManager = new PluginManager(stateStore, {
+    ...(config.adminAuthSecret !== undefined ? { adminAuthSecret: config.adminAuthSecret } : {}),
+    agentAdapterContext: {
       maxCommitsPerCycle: config.maxCommitsPerCycle,
       dockerNetwork: config.agentDockerNetwork,
-    });
+    },
   });
 
   await pluginManager.loadFromDatabase();
