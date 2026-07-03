@@ -157,10 +157,14 @@ export function createAdminAuthService(deps: { stateStore: AdminAuthStateStore }
       if (!session) return null;
       const now = new Date();
       if (now.getTime() - session.lastSeenAt.getTime() > TOUCH_THROTTLE_MS) {
-        await stateStore.touchSession(tokenHash, {
-          lastSeenAt: now,
-          expiresAt: new Date(now.getTime() + SESSION_TTL_MS),
-        });
+        try {
+          await stateStore.touchSession(tokenHash, {
+            lastSeenAt: now,
+            expiresAt: new Date(now.getTime() + SESSION_TTL_MS),
+          });
+        } catch {
+          // Sliding-expiry touch is best-effort; do not fail the request if it can't be persisted.
+        }
       }
       return { userId: session.user.id, username: session.user.username, role: session.user.role };
     },
