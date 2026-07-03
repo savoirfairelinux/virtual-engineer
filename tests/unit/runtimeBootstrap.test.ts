@@ -296,6 +296,12 @@ async function importRuntime(
     upsertPrompt: vi.fn(async (id: string, content: string) => ({ id, label: id, content, promptType: "user" as const, updatedAt: new Date() })),
     createPrompt: vi.fn(async (label: string, content: string) => ({ id: label, label, content, promptType: "user" as const, updatedAt: new Date() })),
     deletePrompt: vi.fn(async (_id: string) => {}),
+    getAppSettings: vi.fn(async () => ({ pollingIntervalMs: null, maxAgentCycles: null, maxRetryAttempts: null })),
+    updateAppSettings: vi.fn(async (patch: { pollingIntervalMs?: number | null; maxAgentCycles?: number | null; maxRetryAttempts?: number | null }) => ({
+      pollingIntervalMs: patch.pollingIntervalMs ?? null,
+      maxAgentCycles: patch.maxAgentCycles ?? null,
+      maxRetryAttempts: patch.maxRetryAttempts ?? null,
+    })),
   };
   const createAdminServer = vi.fn(() => ({
     once: vi.fn(),

@@ -49,6 +49,20 @@ async function main(): Promise<void> {
   // ─── State Store ────────────────────────────────────────────────────────────
   const stateStore = await SqliteStateStore.create(config.databasePath);
 
+  // ─── Editable workflow settings ───────────────────────────────────────────────
+  // Env/config values are the fallback defaults; persisted overrides (edited from
+  // the admin UI and stored in `app_settings`) take precedence and are applied here
+  // so the running polling loop / orchestrator honour them from boot.
+  const settingsDefaults = {
+    pollingIntervalMs: config.pollingIntervalMs,
+    maxAgentCycles: config.maxAgentCycles,
+    maxRetryAttempts: config.maxRetryAttempts,
+  };
+  const persistedSettings = await stateStore.getAppSettings();
+  config.pollingIntervalMs = persistedSettings.pollingIntervalMs ?? settingsDefaults.pollingIntervalMs;
+  config.maxAgentCycles = persistedSettings.maxAgentCycles ?? settingsDefaults.maxAgentCycles;
+  config.maxRetryAttempts = persistedSettings.maxRetryAttempts ?? settingsDefaults.maxRetryAttempts;
+
   registerBuiltinPlugins(config.adminAuthSecret !== undefined ? { adminAuthSecret: config.adminAuthSecret } : undefined);
   // Agent adapters are self-describing: any provider whose descriptor declares
   // an `agent_execution.buildAdapter` hook is instantiated by the plugin
@@ -171,12 +185,52 @@ async function main(): Promise<void> {
     });
   }
 
+  /**
+   * Editable-settings controller for the admin API. Persists overrides to
+   * `app_settings` and hot-applies them to the running polling loop, orchestrator,
+   * and the admin runtime config — no process restart required.
+   */
+  const settingsController = {
+    get: (): import("./admin/adminSettingsRoutes.js").EffectiveWorkflowSettings => ({
+      pollingIntervalMs: config.pollingIntervalMs,
+      maxAgentCycles: config.maxAgentCycles,
+      maxRetryAttempts: config.maxRetryAttempts,
+    }),
+    update: async (
+      patch: Partial<import("./admin/adminSettingsRoutes.js").EffectiveWorkflowSettings>
+    ): Promise<import("./admin/adminSettingsRoutes.js").EffectiveWorkflowSettings> => {
+      const persisted = await stateStore.updateAppSettings(patch);
+      config.pollingIntervalMs = persisted.pollingIntervalMs ?? settingsDefaults.pollingIntervalMs;
+      config.maxAgentCycles = persisted.maxAgentCycles ?? settingsDefaults.maxAgentCycles;
+      config.maxRetryAttempts = persisted.maxRetryAttempts ?? settingsDefaults.maxRetryAttempts;
+
+      // Hot-apply to running subsystems.
+      pollingLoop.updateConfig({
+        ticketIntervalMs: config.pollingIntervalMs,
+        maxRetryAttempts: config.maxRetryAttempts,
+      });
+      orchestrator.updateRuntime({ config: buildOrchestratorConfig(config, pluginManager) });
+      adminRuntimeConfig.pollingIntervalMs = config.pollingIntervalMs;
+      adminRuntimeConfig.maxAgentCycles = config.maxAgentCycles;
+      adminRuntimeConfig.maxRetryAttempts = config.maxRetryAttempts;
+
+      log.info(
+        {
+          pollingIntervalMs: config.pollingIntervalMs,
+          maxAgentCycles: config.maxAgentCycles,
+          maxRetryAttempts: config.maxRetryAttempts,
+        },
+        "workflow settings updated"
+      );
+      return settingsController.get();
+    },
+  };
+
   let adminServer: Server | null = null;
   if (config.adminApiEnabled) {
     if (!config.adminAuthSecret) {
       log.warn("admin API is enabled without authentication configured");
     }
-
     adminServer = createAdminServer({
       stateStore,
       config: adminRuntimeConfig,
@@ -237,6 +291,7 @@ async function main(): Promise<void> {
       concurrency: {
         snapshot: () => concurrencyTracker.snapshot(),
       },
+      settings: settingsController,
     });
 
     await startAdminServer(adminServer, config.adminApiPort, config.adminApiHost);

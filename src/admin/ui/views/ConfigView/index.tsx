@@ -19,7 +19,7 @@ const CONFIG_NAV = [
   { id: "agents",        label: "Agents Library",   sub: "Reusable agents",   icon: "spark" },
   { id: "projects",      label: "Projects",         sub: "Execution units",   icon: "box" },
   { id: "prompts",       label: "Prompts",          sub: "System & custom",   icon: "edit" },
-  { id: "system",        label: "System Settings",  sub: "Read-only",         icon: "config" },
+  { id: "system",        label: "System Settings",  sub: "Runtime settings",  icon: "config" },
 ] as const;
 
 type SectionId = typeof CONFIG_NAV[number]["id"];
@@ -113,7 +113,7 @@ export function ConfigView(props: ConfigViewData) {
           {sec === "agents"       && <AgentsSection {...props} />}
           {sec === "projects"     && <ProjectsSection {...props} />}
           {sec === "prompts"      && <PromptsSection {...props} />}
-          {sec === "system"       && <SystemSection config={props.config} status={props.status} />}
+          {sec === "system"       && <SystemSection config={props.config} status={props.status} onRefresh={props.onRefresh} />}
         </div>
       </div>
     </div>
