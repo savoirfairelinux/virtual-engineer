@@ -62,9 +62,9 @@ interface SessionResponse {
 }
 
 describe("role helpers", () => {
-  it("defaults GET/HEAD to viewer and mutating methods to operator", () => {
-    expect(defaultRoleForMethod("GET")).toBe("viewer");
-    expect(defaultRoleForMethod("head")).toBe("viewer");
+  it("defaults every method to operator (fail-closed; viewer access is opt-in)", () => {
+    expect(defaultRoleForMethod("GET")).toBe("operator");
+    expect(defaultRoleForMethod("head")).toBe("operator");
     expect(defaultRoleForMethod("POST")).toBe("operator");
     expect(defaultRoleForMethod("PUT")).toBe("operator");
     expect(defaultRoleForMethod("PATCH")).toBe("operator");
@@ -167,25 +167,34 @@ describe("adminServer RBAC and session auth", () => {
     await expect(me.json()).resolves.toEqual({ id: viewer.user.id, username: "vera", role: "viewer" });
   });
 
-  it("gives viewers read access but 403 on mutations", async () => {
+  it("gives viewers access only to overview/tasks reads and 403 everywhere else", async () => {
     const admin = await setupAndLogin("root", "password123", "admin");
     const viewer = await setupAndLogin("vera", "password123", "viewer", admin);
+    const headers = { authorization: `Bearer ${viewer.token}` };
 
-    const read = await fetch(`${baseUrl}/api/admin/prompts`, {
-      headers: { authorization: `Bearer ${viewer.token}` },
-    });
-    expect(read.status).toBe(200);
+    // Allowed: overview + tasks reads.
+    for (const path of ["/api/admin/status", "/api/admin/tasks", "/api/admin/overview"]) {
+      const response = await fetch(`${baseUrl}${path}`, { headers });
+      expect(response.status, `viewer GET ${path}`).toBe(200);
+    }
 
+    // Forbidden: config-area reads now require operator.
+    for (const path of ["/api/admin/prompts", "/api/admin/integrations", "/api/admin/agents", "/api/admin/projects"]) {
+      const response = await fetch(`${baseUrl}${path}`, { headers });
+      expect(response.status, `viewer GET ${path}`).toBe(403);
+    }
+
+    // Forbidden: mutations.
     const mutate = await fetch(`${baseUrl}/api/admin/prompts`, {
       method: "POST",
-      headers: { authorization: `Bearer ${viewer.token}`, "content-type": "application/json" },
+      headers: { ...headers, "content-type": "application/json" },
       body: JSON.stringify({ label: "Nope", content: "nope" }),
     });
     expect(mutate.status).toBe(403);
     await expect(mutate.json()).resolves.toEqual({ error: "forbidden", requiredRole: "operator" });
   });
 
-  it("gives operators mutations but 403 on admin-only integration and webhook-secret routes", async () => {
+  it("lets operators manage integrations/webhooks but 403s on user-management and audit", async () => {
     const admin = await setupAndLogin("root", "password123", "admin");
     const operator = await setupAndLogin("oscar", "password123", "operator", admin);
 
@@ -197,35 +206,46 @@ describe("adminServer RBAC and session auth", () => {
     });
     expect(promptCreate.status).toBe(201);
 
-    // …but not integration mutations.
+    // Operator now manages integrations — passes RBAC (404: id doesn't exist).
     const integrationPut = await fetch(`${baseUrl}/api/admin/integrations/some-id`, {
       method: "PUT",
       headers: { authorization: `Bearer ${operator.token}`, "content-type": "application/json" },
       body: JSON.stringify({ name: "x" }),
     });
-    expect(integrationPut.status).toBe(403);
-    await expect(integrationPut.json()).resolves.toEqual({ error: "forbidden", requiredRole: "admin" });
+    expect(integrationPut.status).not.toBe(403);
+    expect(integrationPut.status).toBe(404);
 
-    // …nor webhook-secret rotation.
+    // …and webhook-secret rotation — passes RBAC (404: id doesn't exist).
     const rotate = await fetch(`${baseUrl}/api/admin/integrations/some-id/webhook-secret/rotate`, {
       method: "POST",
       headers: { authorization: `Bearer ${operator.token}` },
     });
-    expect(rotate.status).toBe(403);
+    expect(rotate.status).not.toBe(403);
+    expect(rotate.status).toBe(404);
 
-    // The admin gets past the RBAC gate on the same routes (404: integration doesn't exist).
-    const adminPut = await fetch(`${baseUrl}/api/admin/integrations/some-id`, {
-      method: "PUT",
-      headers: { authorization: `Bearer ${admin.token}`, "content-type": "application/json" },
-      body: JSON.stringify({ name: "x" }),
+    // …but NOT user management or the audit log (admin-only).
+    const operatorUsers = await fetch(`${baseUrl}/api/admin/users`, {
+      headers: { authorization: `Bearer ${operator.token}` },
     });
-    expect(adminPut.status).toBe(404);
+    expect(operatorUsers.status).toBe(403);
+    await expect(operatorUsers.json()).resolves.toEqual({ error: "forbidden", requiredRole: "admin" });
 
-    const adminRotate = await fetch(`${baseUrl}/api/admin/integrations/some-id/webhook-secret/rotate`, {
-      method: "POST",
+    const operatorAudit = await fetch(`${baseUrl}/api/admin/audit`, {
+      headers: { authorization: `Bearer ${operator.token}` },
+    });
+    expect(operatorAudit.status).toBe(403);
+    await expect(operatorAudit.json()).resolves.toEqual({ error: "forbidden", requiredRole: "admin" });
+
+    // The admin reaches user management + audit.
+    const adminUsers = await fetch(`${baseUrl}/api/admin/users`, {
       headers: { authorization: `Bearer ${admin.token}` },
     });
-    expect(adminRotate.status).toBe(404);
+    expect(adminUsers.status).toBe(200);
+
+    const adminAudit = await fetch(`${baseUrl}/api/admin/audit`, {
+      headers: { authorization: `Bearer ${admin.token}` },
+    });
+    expect(adminAudit.status).toBe(200);
   });
 
   it("keeps working with mock stores that lack the user methods (legacy embedders)", async () => {

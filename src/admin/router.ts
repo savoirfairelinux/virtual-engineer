@@ -14,10 +14,17 @@ export interface RouteMeta {
   role?: UserRole;
 }
 
-/** Minimum role implied by the HTTP method when a route declares none. */
-export function defaultRoleForMethod(method: string): UserRole {
-  const upper = method.toUpperCase();
-  return upper === "GET" || upper === "HEAD" ? "viewer" : "operator";
+/**
+ * Minimum role for a route that declares no explicit `role` meta.
+ *
+ * Fail-closed: unannotated routes require `operator`, regardless of HTTP
+ * method. Viewer access is opt-in — a route must explicitly declare
+ * `{ role: "viewer" }` to be reachable by viewers (see the overview/tasks
+ * read routes). This keeps any newly added route inaccessible to viewers
+ * until someone deliberately widens it.
+ */
+export function defaultRoleForMethod(_method: string): UserRole {
+  return "operator";
 }
 
 const ROLE_RANK: Record<UserRole, number> = { viewer: 0, operator: 1, admin: 2 };

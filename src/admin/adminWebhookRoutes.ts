@@ -49,7 +49,7 @@ export function registerWebhookRoutes(router: Router, deps: WebhookRouteDeps): v
     deps.onIntegrationUpdated?.(id);
     recordAudit(deps.auditStore, req, { action: "webhook.secret_rotate", targetType: "integration", targetId: id, details: { name: integration.name, provider: integration.provider } });
     writeJson(res, 200, { secret: newSecret });
-  }, { role: "admin" });
+  }, { role: "operator" });
 
   router.add("PUT", "/api/admin/integrations/:id/webhook-allowed-ips", async (req, res, params) => {
     if (!deps.integrationStore) { writeJson(res, 501, { error: "Integration store not available" }); return; }
@@ -96,7 +96,7 @@ export function registerWebhookRoutes(router: Router, deps: WebhookRouteDeps): v
     deps.onIntegrationUpdated?.(id);
     recordAudit(deps.auditStore, req, { action: "webhook.allowed_ips_update", targetType: "integration", targetId: id, details: { name: integration.name, provider: integration.provider, allowedIps } });
     writeJson(res, 200, { allowedIps });
-  }, { role: "admin" });
+  }, { role: "operator" });
 
   router.add("GET", "/api/admin/integrations/:id/webhook-allowed-ips", async (_req, res, params) => {
     if (!deps.integrationStore) { writeJson(res, 501, { error: "Integration store not available" }); return; }

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Icon } from "../components/Icon.tsx";
+import { PasswordField } from "../components/PasswordField.tsx";
 import { fetchSetupStatus, login, setup, ApiError } from "../api.ts";
 import type { ApiMe } from "../types.ts";
 
@@ -133,8 +134,7 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
                 autoFocus={mode === "login"}
                 style={inputStyle}
               />
-              <input
-                type="password"
+              <PasswordField
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder={mode === "setup" ? "Password (min 8 characters)…" : "Password…"}
@@ -142,8 +142,7 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
                 style={inputStyle}
               />
               {mode === "setup" && (
-                <input
-                  type="password"
+                <PasswordField
                   value={confirm}
                   onChange={(e) => setConfirm(e.target.value)}
                   placeholder="Confirm password…"

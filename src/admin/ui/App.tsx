@@ -84,6 +84,12 @@ export function App() {
     canOperate: currentUser !== null && currentUser.role !== "viewer",
   }), [currentUser]);
 
+  // Viewers may only read overview + tasks; the config area and its data
+  // (integrations, agents, projects, prompts, oauth apps, providers) require
+  // operator+. Until the identity resolves, treat the user as a viewer so we
+  // never fire a config request the server would 403.
+  const canOperate = currentUserValue.canOperate;
+
   // data state
   const [tasks,        setTasks]        = useState<ApiTask[]>([]);
   const [providers,    setProviders]    = useState<ApiProvider[]>([]);
@@ -98,8 +104,21 @@ export function App() {
   const [overview,     setOverview]     = useState<ApiOverview | null>(null);
 
   const loadAll = useCallback(async () => {
-    const results = await Promise.allSettled([
+    // Viewer-safe reads — always fetched.
+    const baseResults = await Promise.allSettled([
       api.get<{ tasks:    ApiTask[] }>("/api/admin/tasks"),
+      api.get<ApiStatus>("/api/admin/status"),
+      api.get<ApiConfig>("/api/admin/config"),
+      api.get<ApiOverview>("/api/admin/overview").catch(() => null),
+    ]);
+    if (baseResults[0].status === "fulfilled") setTasks(baseResults[0].value.tasks);
+    if (baseResults[1].status === "fulfilled") setStatus(baseResults[1].value);
+    if (baseResults[2].status === "fulfilled") setConfig(baseResults[2].value.config);
+    if (baseResults[3].status === "fulfilled" && baseResults[3].value) setOverview(baseResults[3].value);
+
+    // Operator+ config-area reads — skipped for viewers (would 403).
+    if (!canOperate) return;
+    const results = await Promise.allSettled([
       api.get<{ providers: ApiProvider[] }>("/api/admin/providers"),
       api.get<{ integrations: ApiIntegration[] }>("/api/admin/integrations"),
       api.get<{ plugins: ApiPlugin[] }>("/api/admin/plugins"),
@@ -107,23 +126,16 @@ export function App() {
       api.get<{ projects: ApiProject[] }>("/api/admin/projects"),
       api.get<{ prompts: ApiPrompt[] }>("/api/admin/prompts"),
       api.get<{ apps: ApiOAuthApp[] }>("/api/admin/oauth-apps"),
-      api.get<ApiStatus>("/api/admin/status"),
-      api.get<ApiConfig>("/api/admin/config"),
-      api.get<ApiOverview>("/api/admin/overview").catch(() => null),
     ]);
 
-    if (results[0].status === "fulfilled") setTasks(results[0].value.tasks);
-    if (results[1].status === "fulfilled") setProviders(results[1].value.providers);
-    if (results[2].status === "fulfilled") setIntegrations(results[2].value.integrations);
-    if (results[3].status === "fulfilled") setPlugins(results[3].value.plugins);
-    if (results[4].status === "fulfilled") setAgents(results[4].value.agents);
-    if (results[5].status === "fulfilled") setProjects(results[5].value.projects);
-    if (results[6].status === "fulfilled") setPrompts(results[6].value.prompts);
-    if (results[7].status === "fulfilled") setOauthApps(results[7].value.apps);
-    if (results[8].status === "fulfilled") setStatus(results[8].value);
-    if (results[9].status === "fulfilled") setConfig(results[9].value.config);
-    if (results[10].status === "fulfilled" && results[10].value) setOverview(results[10].value);
-  }, []);
+    if (results[0].status === "fulfilled") setProviders(results[0].value.providers);
+    if (results[1].status === "fulfilled") setIntegrations(results[1].value.integrations);
+    if (results[2].status === "fulfilled") setPlugins(results[2].value.plugins);
+    if (results[3].status === "fulfilled") setAgents(results[3].value.agents);
+    if (results[4].status === "fulfilled") setProjects(results[4].value.projects);
+    if (results[5].status === "fulfilled") setPrompts(results[5].value.prompts);
+    if (results[6].status === "fulfilled") setOauthApps(results[6].value.apps);
+  }, [canOperate]);
 
   useEffect(() => {
     if (!authenticated) return;
@@ -169,6 +181,10 @@ export function App() {
   const activeTasks   = tasks.filter((t) => isActiveState(t.state)).length;
   const enabledIntegrations = integrations.filter((i) => i.enabled).length;
 
+  // Viewers have no Config view — fall back to Overview if they deep-link to it.
+  const configDenied = currentUser !== null && !canOperate;
+  const effectiveView: ViewId = configDenied && view === "config" ? "overview" : view;
+
   function handleNavigate(v: "tasks" | "config") {
     setView(v);
     window.location.hash = v;
@@ -178,11 +194,12 @@ export function App() {
     <CurrentUserProvider value={currentUserValue}>
       <div className="app">
         <TopBar
-          view={view}
+          view={effectiveView}
           setView={(v) => { setView(v); window.location.hash = v; }}
           theme={theme}
           toggleTheme={toggleTheme}
           user={currentUser}
+          canOperate={canOperate}
           onChangePassword={() => setShowChangePassword(true)}
           onLogout={() => { void logout().finally(handleLoggedOut); }}
           taskCount={tasks.length}
@@ -191,7 +208,7 @@ export function App() {
           pollingRunning={status?.polling.running ?? false}
         />
         <div style={{ flex: 1, overflow: "hidden", display: "flex" }}>
-          {view === "overview" && (
+          {effectiveView === "overview" && (
             <OverviewView
               overview={overview}
               tasks={tasks}
@@ -201,10 +218,10 @@ export function App() {
               onNavigate={handleNavigate}
             />
           )}
-          {view === "tasks" && (
+          {effectiveView === "tasks" && (
             <TasksView tasks={tasks} onRefresh={() => void loadAll()} />
           )}
-          {view === "config" && (
+          {effectiveView === "config" && (
             <ConfigView
               integrations={integrations}
               plugins={plugins}

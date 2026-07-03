@@ -4,6 +4,7 @@ import { Tag } from "../../components/Tag.tsx";
 import { Toggle } from "../../components/Toggle.tsx";
 import { Icon } from "../../components/Icon.tsx";
 import { Modal, Field, FieldInput, FieldSelect, FormError, FormRow, FormActions } from "../../components/Modal.tsx";
+import { PasswordField } from "../../components/PasswordField.tsx";
 import { api } from "../../api.ts";
 import { useCurrentUser } from "../../authContext.tsx";
 import type { ApiUser, UserRole } from "../../types.ts";
@@ -44,12 +45,12 @@ function UserFormModal({ onClose, onSaved }: { onClose: () => void; onSaved: () 
           <FieldInput value={username} autoComplete="off" onChange={(e) => setUsername(e.target.value)} />
         </Field>
         <Field label="Password" required hint="Minimum 8 characters">
-          <FieldInput type="password" value={password} autoComplete="new-password" onChange={(e) => setPassword(e.target.value)} />
+          <PasswordField value={password} autoComplete="new-password" onChange={(e) => setPassword(e.target.value)} />
         </Field>
         <Field label="Confirm password" required>
-          <FieldInput type="password" value={confirm} autoComplete="new-password" onChange={(e) => setConfirm(e.target.value)} />
+          <PasswordField value={confirm} autoComplete="new-password" onChange={(e) => setConfirm(e.target.value)} />
         </Field>
-        <Field label="Role" required hint="viewer = read-only · operator = mutations except integrations/OAuth/webhooks · admin = everything">
+        <Field label="Role" required hint="viewer = overview + tasks (read-only) · operator = all config incl. integrations/OAuth/webhooks · admin = adds user management + audit">
           <FieldSelect value={role} onChange={(e) => setRole(e.target.value as UserRole)}>
             {ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
           </FieldSelect>
@@ -94,10 +95,10 @@ function ResetPasswordModal({ user, onClose, onSaved }: { user: ApiUser; onClose
     <Modal title="Reset password" sub={`Account: ${user.username} — all sessions of this user are revoked`} onClose={onClose}>
       <FormRow>
         <Field label="New password" required hint="Minimum 8 characters">
-          <FieldInput type="password" value={password} autoComplete="new-password" onChange={(e) => setPassword(e.target.value)} />
+          <PasswordField value={password} autoComplete="new-password" onChange={(e) => setPassword(e.target.value)} />
         </Field>
         <Field label="Confirm password" required>
-          <FieldInput type="password" value={confirm} autoComplete="new-password" onChange={(e) => setConfirm(e.target.value)} />
+          <PasswordField value={confirm} autoComplete="new-password" onChange={(e) => setConfirm(e.target.value)} />
         </Field>
 
         <FormError msg={error} />

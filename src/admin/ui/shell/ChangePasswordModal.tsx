@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { Modal, Field, FieldInput, FormError, FormRow, FormActions } from "../components/Modal.tsx";
+import { Modal, Field, FormError, FormRow, FormActions } from "../components/Modal.tsx";
+import { PasswordField } from "../components/PasswordField.tsx";
 import { api } from "../api.ts";
 import type { ApiMe } from "../types.ts";
 
@@ -54,24 +55,21 @@ export function ChangePasswordModal({ user, onClose, onChanged }: Props) {
     <Modal title="Change password" sub={`Account: ${user.username}`} onClose={onClose}>
       <FormRow>
         <Field label="Current password" required>
-          <FieldInput
-            type="password"
+          <PasswordField
             value={currentPassword}
             autoComplete="current-password"
             onChange={(e) => setCurrentPassword(e.target.value)}
           />
         </Field>
         <Field label="New password" required hint="Minimum 8 characters">
-          <FieldInput
-            type="password"
+          <PasswordField
             value={password}
             autoComplete="new-password"
             onChange={(e) => setPassword(e.target.value)}
           />
         </Field>
         <Field label="Confirm new password" required>
-          <FieldInput
-            type="password"
+          <PasswordField
             value={confirm}
             autoComplete="new-password"
             onChange={(e) => setConfirm(e.target.value)}

@@ -275,7 +275,7 @@ function buildApiRouter(dependencies: AdminServerDependencies, authRuntime: Admi
         maxRetryAttempts: dependencies.config.maxRetryAttempts,
       },
     });
-  });
+  }, { role: "viewer" });
 
   router.add("GET", "/api/admin/config", async (_req, res, _params) => {
     writeJson(res, 200, {
@@ -287,7 +287,7 @@ function buildApiRouter(dependencies: AdminServerDependencies, authRuntime: Admi
         pollingIntervalMs: dependencies.config.pollingIntervalMs,
       },
     });
-  });
+  }, { role: "viewer" });
 
   router.add("GET", "/api/admin/providers", async (_req, res, _params) => {
     const providersList = typeof dependencies.providers === "function" ? dependencies.providers() : dependencies.providers;

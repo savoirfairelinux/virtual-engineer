@@ -396,7 +396,7 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
       log.warn({ err, pluginType }, "provider redirect completion failed");
       writeJson(res, 502, { error: msg });
     }
-  }, { role: "admin" });
+  }, { role: "operator" });
 
   // ── Agent CRUD ─────────────────────────────────────────────────────────────
   router.add("GET", "/api/admin/agents", async (_req, res, _params) => {

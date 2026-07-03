@@ -12,7 +12,7 @@ import type { ApiIntegration } from "../../types.ts";
 import type { ConfigViewData } from "./index.tsx";
 
 export function IntegrationsSection({ integrations, plugins, onRefresh }: ConfigViewData) {
-  const { isAdmin } = useCurrentUser();
+  const { canOperate } = useCurrentUser();
   const [busy, setBusy] = useState<string | null>(null);
   const [showAdd, setShowAdd] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -59,7 +59,7 @@ export function IntegrationsSection({ integrations, plugins, onRefresh }: Config
             <h1 style={{ margin: 0, fontSize: "22px", fontWeight: 600, letterSpacing: "-0.01em" }}>Integrations</h1>
             <p style={{ margin: "6px 0 0", color: "var(--text-faint)", fontSize: "13.5px" }}>External providers the orchestrator routes to by integration ID.</p>
           </div>
-          {isAdmin && (
+          {canOperate && (
             <button className="btn primary" onClick={() => setShowAdd(true)}>
               <Icon name="plus" size={14} /> Add integration
             </button>
@@ -96,7 +96,7 @@ export function IntegrationsSection({ integrations, plugins, onRefresh }: Config
                 />
                 {it.enabled ? "enabled" : "disabled"}
               </Tag>
-              {isAdmin && (
+              {canOperate && (
                 <div onClick={(e) => e.stopPropagation()}>
                   <Toggle
                     on={it.enabled}
@@ -105,7 +105,7 @@ export function IntegrationsSection({ integrations, plugins, onRefresh }: Config
                   />
                 </div>
               )}
-              {isAdmin && (
+              {canOperate && (
                 <button
                   className="iconbtn"
                   title="Delete"
@@ -125,7 +125,7 @@ export function IntegrationsSection({ integrations, plugins, onRefresh }: Config
         <IntegrationDrawer
           item={drawerItem}
           onClose={() => setDrawerId(null)}
-          {...(isAdmin ? {
+          {...(canOperate ? {
             onEdit: () => { setDrawerId(null); setEditingId(drawerItem.id); },
             onToggle: () => { void toggleEnabled(drawerItem.id, drawerItem.enabled); setDrawerId(null); },
             onDelete: () => { void deleteIntegration(drawerItem); setDrawerId(null); },
@@ -133,7 +133,7 @@ export function IntegrationsSection({ integrations, plugins, onRefresh }: Config
         />
       )}
 
-      {isAdmin && (showAdd || editingIntegration) && (
+      {canOperate && (showAdd || editingIntegration) && (
         <IntegrationFormModal
           integration={editingIntegration}
           plugins={plugins}

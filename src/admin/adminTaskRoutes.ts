@@ -52,7 +52,7 @@ export function registerTaskRoutes(router: Router, deps: TaskRouteDeps): void {
         return s;
       }),
     });
-  });
+  }, { role: "viewer" });
 
   router.add("GET", "/api/admin/tasks/:id", async (_req, res, params) => {
     const taskId = makeTaskId(params["id"] ?? "");
@@ -74,7 +74,7 @@ export function registerTaskRoutes(router: Router, deps: TaskRouteDeps): void {
       if (firstUrl) serialized["reviewUrl"] = firstUrl;
     }
     writeJson(res, 200, { task: serialized });
-  });
+  }, { role: "viewer" });
 
   router.add("DELETE", "/api/admin/tasks/:id", async (req, res, params) => {
     const taskId = makeTaskId(params["id"] ?? "");
@@ -98,7 +98,7 @@ export function registerTaskRoutes(router: Router, deps: TaskRouteDeps): void {
     if (!task) { writeJson(res, 404, { error: "Task not found" }); return; }
     const cycles = await deps.stateStore.getAgentCycles(taskId);
     writeJson(res, 200, { cycles: cycles.map(serializeCycle) });
-  });
+  }, { role: "viewer" });
 
   router.add("GET", "/api/admin/tasks/:id/transitions", async (_req, res, params) => {
     const taskId = makeTaskId(params["id"] ?? "");
@@ -106,7 +106,7 @@ export function registerTaskRoutes(router: Router, deps: TaskRouteDeps): void {
     if (!task) { writeJson(res, 404, { error: "Task not found" }); return; }
     const transitions = await deps.stateStore.getStateTransitions(taskId);
     writeJson(res, 200, { transitions: transitions.map(serializeTransition) });
-  });
+  }, { role: "viewer" });
 
   router.add("PATCH", "/api/admin/tasks/:id/pause", async (req, res, params) => {
     const taskId = makeTaskId(params["id"] ?? "");
