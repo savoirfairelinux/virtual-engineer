@@ -16,8 +16,6 @@ export interface ClaudeConnectionValidationConfig {
   authMode?: string | undefined;
   /** Anthropic API key (api_key mode). */
   apiKey?: string | undefined;
-  /** Manually pasted subscription OAuth token (subscription mode). */
-  oauthToken?: string | undefined;
   /** Encrypted OAuth token written by the interactive OAuth flow (subscription mode). */
   sessionToken?: string | undefined;
   /** Accepted but ignored — the model lives on the agents table. */
@@ -56,8 +54,7 @@ export async function validateClaudeConnection(
   }
 
   // ── Subscription (OAuth) mode ───────────────────────────────────────────────
-  // Prefer the encrypted token from the interactive OAuth flow; fall back to a
-  // manually pasted token (from `claude setup-token`).
+  // Uses the encrypted token written by the interactive OAuth flow.
   const encrypted = config.sessionToken?.trim();
   if (encrypted) {
     let token: string;
@@ -73,15 +70,9 @@ export async function validateClaudeConnection(
     return callAnthropicModelsApi(token, "oauth", dependencies);
   }
 
-  const pasted = config.oauthToken?.trim();
-  if (pasted) {
-    return callAnthropicModelsApi(pasted, "oauth", dependencies);
-  }
-
   return {
     success: false,
-    error:
-      "No subscription token configured. Connect via OAuth, or paste a token from `claude setup-token`.",
+    error: "No subscription token configured. Connect via “Connect with Claude” to authenticate.",
     models: [],
   };
 }

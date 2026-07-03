@@ -941,14 +941,13 @@ export class Orchestrator {
     // The agent's modelConfigJson rarely carries credentials; fall back to the
     // agent-execution integration's own configJson. This is provider-aware:
     // Copilot stores an OAuth `sessionToken` or a PAT (`token`); Claude stores
-    // an `apiKey` (api_key mode) or an OAuth token (interactive `sessionToken`
-    // or manually pasted `oauthToken`, subscription mode).
+    // an `apiKey` (api_key mode) or an interactive-OAuth `sessionToken`
+    // (subscription mode).
     //
-    // NOTE: `apiKey` and the pasted `oauthToken` are read from the RAW
-    // configJson (user-entered password fields are stored plaintext at rest;
-    // only the OAuth `sessionToken` is AES-encrypted). If password-at-rest
-    // encryption is ever added, decrypt these here before use, and drop the
-    // re-encryption of `oauthToken` below.
+    // NOTE: `apiKey` is read from the RAW configJson (user-entered password
+    // fields are stored plaintext at rest; only the OAuth `sessionToken` is
+    // AES-encrypted). If password-at-rest encryption is ever added, decrypt it
+    // here before use.
     let encryptedSessionToken = resolvedConfig.encryptedSessionToken;
     let apiKey = resolvedConfig.apiKey;
     if (!encryptedSessionToken || !apiKey) {
@@ -966,11 +965,6 @@ export class Orchestrator {
               const sess = integCfg["sessionToken"];
               if (typeof sess === "string" && sess) {
                 encryptedSessionToken = sess;
-              } else {
-                const pasted = integCfg["oauthToken"];
-                if (typeof pasted === "string" && pasted) {
-                  encryptedSessionToken = encryptToken(pasted, this.config.adminAuthSecret);
-                }
               }
             }
           } else if (!encryptedSessionToken) {

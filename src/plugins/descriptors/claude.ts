@@ -15,9 +15,8 @@ import { createClaudeRedirectOAuthHandler } from "./claudeOAuth.js";
  * Two ways of connecting:
  *  - `api_key`      — an Anthropic API key (`ANTHROPIC_API_KEY`).
  *  - `subscription` — a Claude Pro/Max OAuth token (`CLAUDE_CODE_OAUTH_TOKEN`),
- *                     obtained either through the interactive OAuth flow (stored
- *                     in `sessionToken`) or pasted manually from
- *                     `claude setup-token` (stored in `oauthToken`).
+ *                     obtained through the interactive OAuth flow (stored,
+ *                     encrypted, in `sessionToken`).
  * The chosen model lives on the `agents` table, not the integration config.
  */
 export const claudeConfigSchema = z.object({
@@ -25,8 +24,6 @@ export const claudeConfigSchema = z.object({
   authMode: z.enum(["api_key", "subscription"]).default("api_key"),
   /** Anthropic API key entered directly (api_key mode). */
   apiKey: z.string().optional(),
-  /** Subscription OAuth token pasted manually from `claude setup-token` (subscription mode). */
-  oauthToken: z.string().optional(),
   /** Encrypted OAuth token written by the interactive OAuth flow (not user-entered). */
   sessionToken: z.string().optional(),
   /** Accepted but discarded — the model lives on the agents table. */
@@ -40,7 +37,7 @@ export function createClaudeDescriptor(adminAuthSecret?: string): ProviderDescri
   return {
     provider: "claude",
     name: "Claude Code",
-    icon: { slug: "anthropic", hex: "191919" },
+    icon: { slug: "claude", hex: "D97757" },
     configSchema: claudeConfigSchema,
     validateFullConfigOnCreate: true,
     requiredFields: [
@@ -61,15 +58,6 @@ export function createClaudeDescriptor(adminAuthSecret?: string): ProviderDescri
         required: false,
         placeholder: "sk-ant-…",
         dependsOn: { field: "authMode", value: "api_key" },
-      },
-      {
-        key: "oauthToken",
-        label: "Manual token (advanced)",
-        type: "password",
-        required: false,
-        placeholder: "sk-ant-oat… — only if you can't use \u201cConnect with Claude\u201d",
-        dependsOn: { field: "authMode", value: "subscription" },
-        advanced: true,
       },
       // sessionToken is hidden: written by the interactive OAuth flow, masked on read, preserved on update.
       {

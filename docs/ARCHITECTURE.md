@@ -389,7 +389,7 @@ An alternative `agent_execution` adapter that runs Anthropic **Claude Code** via
 
 The adapter injects **no** default model: when the agent config leaves the model unset, `CLAUDE_MODEL` is omitted and the Claude CLI picks its own default. Adapters are registered generically — any descriptor that declares `capabilities.agent_execution.buildAdapter` is instantiated by the plugin manager from host runtime context (`AgentAdapterContext`), so `index.ts` special-cases no provider.
 
-Connection methods live on the `claude` descriptor (`src/plugins/descriptors/claude.ts`, `authMode`): `api_key` and `subscription` (interactive authorization-code + PKCE OAuth via `claudeOAuth.ts`, or a token pasted from `claude setup-token`). Cost columns stay null (Claude has no AIU); token usage is still emitted.
+Connection methods live on the `claude` descriptor (`src/plugins/descriptors/claude.ts`, `authMode`): `api_key` and `subscription` (interactive authorization-code + PKCE OAuth via `claudeOAuth.ts`). Cost columns stay null (Claude has no AIU); token usage is still emitted.
 
 ---
 

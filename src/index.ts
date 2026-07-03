@@ -574,7 +574,7 @@ function buildReviewTrigger(
 /**
  * Extract the agent token from the active agent-execution integration.
  * Provider-agnostic: works for Copilot (OAuth `sessionToken` or PAT `token`)
- * and Claude (OAuth `sessionToken`, pasted `oauthToken`, or `apiKey`).
+ * and Claude (OAuth `sessionToken` or `apiKey`).
  * Returns null when no agent integration is configured or has a valid token.
  */
 function getAgentTokenForReview(pluginManager: PluginManager): string | null {
@@ -593,9 +593,6 @@ function getAgentTokenForReview(pluginManager: PluginManager): string | null {
   // OAuth session token (Copilot OAuth, Claude subscription interactive flow).
   const sessionToken = asOptionalString(agentConfig["sessionToken"]);
   if (sessionToken) return sessionToken;
-  // Claude subscription token pasted manually from `claude setup-token`.
-  const oauthToken = asOptionalString(agentConfig["oauthToken"]);
-  if (oauthToken) return oauthToken;
   // Claude API key.
   const apiKey = asOptionalString(agentConfig["apiKey"]);
   if (apiKey) return apiKey;

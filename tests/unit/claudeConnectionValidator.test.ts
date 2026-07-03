@@ -57,19 +57,6 @@ describe("validateClaudeConnection", () => {
       });
     });
 
-    it("falls back to a manually pasted token", async () => {
-      const fetch = vi.fn().mockResolvedValue(jsonResponse(200));
-      const result = await validateClaudeConnection(
-        { authMode: "subscription", oauthToken: "sk-ant-oat-paste" },
-        { fetch: fetch as unknown as typeof globalThis.fetch }
-      );
-      expect(result.success).toBe(true);
-      const [, init] = fetch.mock.calls[0]!;
-      expect((init as RequestInit).headers).toMatchObject({
-        Authorization: "Bearer sk-ant-oat-paste",
-      });
-    });
-
     it("fails when no subscription token is configured", async () => {
       const fetch = vi.fn();
       const result = await validateClaudeConnection(

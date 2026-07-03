@@ -11,9 +11,10 @@
  *
  * The redirect URI is Anthropic's fixed manual-callback page — NOT VE's admin
  * app — because Anthropic's public Claude Code OAuth client only accepts its
- * own callback. Endpoints/client id are the public Claude Code values and are
- * overridable via config (`oauthClientId`, `oauthAuthorizeUrl`, `oauthTokenUrl`,
- * `oauthRedirectUri`). A token pasted from `claude setup-token` is the fallback.
+ * own callback. The client id and endpoints are the fixed public Claude Code
+ * values and are intentionally NOT overridable from request/config input, so a
+ * malicious/misconfigured config cannot redirect the authorization code + PKCE
+ * verifier to an attacker-controlled host (SSRF / credential redirection).
  */
 import type {
   ProviderAuthRedirectCompleteInput,
@@ -21,7 +22,7 @@ import type {
   RedirectProviderAuthHandler,
 } from "../../agents/providerAuthService.js";
 
-/** Public Claude Code OAuth client id. Overridable via config.oauthClientId. */
+/** Public Claude Code OAuth client id (fixed). */
 export const CLAUDE_CODE_OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 /** claude.ai authorize endpoint (Pro/Max subscription sign-in). */
 const CLAUDE_AUTHORIZE_URL = "https://claude.ai/oauth/authorize";
@@ -33,23 +34,19 @@ const CLAUDE_OAUTH_SCOPE = "org:create_api_key user:profile user:inference";
 /** Required beta header for the Claude Code OAuth token endpoint. */
 const CLAUDE_OAUTH_BETA_HEADER = "oauth-2025-04-20";
 
-function optionalString(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined;
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : undefined;
-}
-
-/** Create the redirect (authorization-code + PKCE) OAuth handler for Claude subscriptions. */
+/**
+ * Create the redirect (authorization-code + PKCE) OAuth handler for Claude
+ * subscriptions. All endpoints/client id are fixed public Claude Code values;
+ * `_config` is accepted for interface parity but intentionally ignored so the
+ * token-exchange target cannot be redirected by request input.
+ */
 export function createClaudeRedirectOAuthHandler(
-  config?: Record<string, unknown>
+  _config?: Record<string, unknown>
 ): RedirectProviderAuthHandler {
-  const resolved = config ?? {};
-  const clientId = optionalString(resolved["oauthClientId"]) ?? CLAUDE_CODE_OAUTH_CLIENT_ID;
-  const authorizeUrl = optionalString(resolved["oauthAuthorizeUrl"]) ?? CLAUDE_AUTHORIZE_URL;
-  const tokenUrl = optionalString(resolved["oauthTokenUrl"]) ?? CLAUDE_TOKEN_URL;
-  // Anthropic only accepts its own callback for the public Claude Code client,
-  // so the caller-supplied redirectUri is ignored in favour of the fixed one.
-  const redirectUri = optionalString(resolved["oauthRedirectUri"]) ?? CLAUDE_REDIRECT_URI;
+  const clientId = CLAUDE_CODE_OAUTH_CLIENT_ID;
+  const authorizeUrl = CLAUDE_AUTHORIZE_URL;
+  const tokenUrl = CLAUDE_TOKEN_URL;
+  const redirectUri = CLAUDE_REDIRECT_URI;
 
   return {
     kind: "redirect",

@@ -203,7 +203,7 @@ Agent adapters are **descriptor-driven**: a provider that declares `capabilities
 
 Two connection methods (descriptor `src/plugins/descriptors/claude.ts`, `authMode`):
 - `api_key` — Anthropic API key → `ANTHROPIC_API_KEY` (carried via the generic `apiKey`/`agentSession.githubToken` field).
-- `subscription` — Claude Pro/Max OAuth token → `CLAUDE_CODE_OAUTH_TOKEN` (carried via `encryptedSessionToken`); obtained either through the interactive authorization-code + PKCE OAuth flow (`src/plugins/descriptors/claudeOAuth.ts`, stored encrypted in `sessionToken`) or pasted manually from `claude setup-token` (stored in `oauthToken`). `orchestrator.resolveProjectAgentRuntime` maps these provider-specific fields onto the generic `ResolvedAgentConfig`.
+- `subscription` — Claude Pro/Max OAuth token → `CLAUDE_CODE_OAUTH_TOKEN` (carried via `encryptedSessionToken`); obtained through the interactive authorization-code + PKCE OAuth flow (`src/plugins/descriptors/claudeOAuth.ts`, stored encrypted in `sessionToken`). `orchestrator.resolveProjectAgentRuntime` maps these provider-specific fields onto the generic `ResolvedAgentConfig`.
 
 Cost: Claude has no AIU, so `agent_cycles` USD/credit columns stay null; token usage is still emitted as `assistant.usage` events. Claude OAuth client id/endpoints are best-effort defaults (overridable via config) — see `claudeOAuth.ts`.
 
