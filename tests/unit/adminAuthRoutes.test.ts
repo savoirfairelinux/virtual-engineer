@@ -162,6 +162,51 @@ describe("adminAuthRoutes", () => {
       expect(response.status).toBe(401);
     });
 
+    it("records a login_failed audit entry (without the password) on bad credentials", async () => {
+      await runSetup(baseUrl);
+      await fetch(`${baseUrl}/api/admin/auth/login`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ username: "root", password: "wrong-password" }),
+      });
+      const { entries } = await store.listAuditEntries({ action: "auth.login_failed" });
+      expect(entries).toHaveLength(1);
+      expect(entries[0]?.details).toEqual({ username: "root" });
+    });
+
+    it("normalizes usernames (case + whitespace) consistently on setup and login", async () => {
+      await runSetup(baseUrl, "  Root  ", "password123");
+      const login = await fetch(`${baseUrl}/api/admin/auth/login`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ username: "ROOT", password: "password123" }),
+      });
+      expect(login.status).toBe(200);
+      const session = (await login.json()) as SessionResponse;
+      expect(session.user.username).toBe("root");
+    });
+
+    it("locks out login after repeated failures from the same IP/username and sets Retry-After", async () => {
+      await runSetup(baseUrl);
+      let last: Response | undefined;
+      for (let i = 0; i < 5; i++) {
+        last = await fetch(`${baseUrl}/api/admin/auth/login`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ username: "root", password: "wrong-password" }),
+        });
+      }
+      expect(last?.status).toBe(401);
+
+      const blocked = await fetch(`${baseUrl}/api/admin/auth/login`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ username: "root", password: "password123" }),
+      });
+      expect(blocked.status).toBe(429);
+      expect(blocked.headers.get("retry-after")).toBeTruthy();
+    });
+
     it("logout revokes the session token", async () => {
       const session = await runSetup(baseUrl);
       const logout = await fetch(`${baseUrl}/api/admin/auth/logout`, {
@@ -207,6 +252,27 @@ describe("adminAuthRoutes", () => {
         expect(user).not.toHaveProperty("passwordHash");
         expect(user).toHaveProperty("role");
       }
+    });
+
+    it("paginates the user list via limit/offset query params", async () => {
+      const session = await runSetup(baseUrl);
+      await createUserViaApi(session.token, { username: "bob", password: "password123", role: "viewer" });
+      await createUserViaApi(session.token, { username: "carol", password: "password123", role: "viewer" });
+
+      const response = await fetch(`${baseUrl}/api/admin/users?limit=1&offset=1`, {
+        headers: { authorization: `Bearer ${session.token}` },
+      });
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as {
+        users: Array<{ username: string }>;
+        total: number;
+        limit: number;
+        offset: number;
+      };
+      expect(body.total).toBe(3);
+      expect(body.limit).toBe(1);
+      expect(body.offset).toBe(1);
+      expect(body.users).toHaveLength(1);
     });
 
     it("creates users and returns 409 on duplicate username", async () => {

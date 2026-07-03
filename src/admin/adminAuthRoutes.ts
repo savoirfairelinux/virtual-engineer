@@ -1,17 +1,34 @@
 import { randomUUID } from "node:crypto";
-import type { IncomingMessage } from "node:http";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { getLogger } from "../logger.js";
 import type { AdminUser, UserRole } from "../interfaces.js";
-import { writeJson, readBody, toIsoTimestamp } from "./adminRouteUtils.js";
+import { writeJson, readBody, toIsoTimestamp, parseNonNegativeInt } from "./adminRouteUtils.js";
 import type { Router } from "./router.js";
 import { hashPassword, verifyPassword, type AdminAuthService } from "./adminAuthService.js";
 import { getAuthContext } from "./authContext.js";
 import { recordAudit } from "./adminAudit.js";
+import { LoginRateLimiter, clientIpKey, usernameKey } from "./loginRateLimiter.js";
 
 const log = getLogger("admin-auth");
 
 const VALID_ROLES: readonly UserRole[] = ["admin", "operator", "viewer"];
 const MIN_PASSWORD_LENGTH = 8;
+const DEFAULT_USERS_LIMIT = 50;
+const MAX_USERS_LIMIT = 200;
+
+/** Normalize a username for storage/lookup: Unicode NFC + trim + lower-case. */
+function normalizeUsername(username: string): string {
+  return username.normalize("NFC").trim().toLowerCase();
+}
+
+function requestIp(req: IncomingMessage): string | undefined {
+  return req.socket.remoteAddress ?? undefined;
+}
+
+function writeRateLimited(res: ServerResponse, retryAfterMs: number): void {
+  res.setHeader("retry-after", String(Math.ceil(retryAfterMs / 1000)));
+  writeJson(res, 429, { error: "Too many attempts. Try again later." });
+}
 
 /** Subset of user-store methods needed by the auth routes (satisfied by SqliteStateStore). */
 export interface AuthRouteUserStore {
@@ -69,7 +86,8 @@ function isDuplicateError(err: unknown): boolean {
 }
 
 function validateCredentials(body: Record<string, unknown> | null): { username: string; password: string } | { error: string } {
-  const username = typeof body?.["username"] === "string" ? body["username"].trim() : "";
+  const rawUsername = typeof body?.["username"] === "string" ? body["username"] : "";
+  const username = normalizeUsername(rawUsername);
   const password = typeof body?.["password"] === "string" ? body["password"] : "";
   if (username.length === 0) return { error: "username must be a non-empty string" };
   if (password.length < MIN_PASSWORD_LENGTH) return { error: `password must be at least ${MIN_PASSWORD_LENGTH} characters` };
@@ -78,13 +96,43 @@ function validateCredentials(body: Record<string, unknown> | null): { username: 
 
 /** Register auth + user-management routes on the given router. */
 export function registerAuthRoutes(router: Router, deps: AuthRouteDeps): void {
+  // Scoped to this registration (one per running admin server) rather than module-level,
+  // so distinct server instances (e.g. one per test) don't share brute-force lockout state.
+  const loginRateLimiter = new LoginRateLimiter();
+
+  /**
+   * Check the per-IP and per-username rate limits for an auth attempt. Returns
+   * the blocking decision (with the longer `retryAfterMs` of the two) or
+   * `null` when the attempt may proceed.
+   */
+  function checkRateLimit(req: IncomingMessage, username: string): { retryAfterMs: number } | null {
+    const now = Date.now();
+    const ipDecision = loginRateLimiter.check(clientIpKey(requestIp(req)), now);
+    const userDecision = loginRateLimiter.check(usernameKey(username), now);
+    const blocked = [ipDecision, userDecision].filter((d) => !d.allowed);
+    if (blocked.length === 0) return null;
+    const retryAfterMs = Math.max(...blocked.map((d) => d.retryAfterMs ?? 0));
+    return { retryAfterMs };
+  }
+
+  function recordAuthFailure(req: IncomingMessage, username: string): void {
+    const now = Date.now();
+    loginRateLimiter.recordFailure(clientIpKey(requestIp(req)), now);
+    loginRateLimiter.recordFailure(usernameKey(username), now);
+  }
+
+  function recordAuthSuccess(req: IncomingMessage, username: string): void {
+    loginRateLimiter.recordSuccess(clientIpKey(requestIp(req)));
+    loginRateLimiter.recordSuccess(usernameKey(username));
+  }
+
   // Public — used by the SPA to decide between the setup screen and the login form.
   router.add("GET", "/api/admin/auth/setup-status", async (_req, res, _params) => {
     const needsSetup = deps.userStore ? (await deps.userStore.countUsers()) === 0 : false;
     writeJson(res, 200, { needsSetup });
   });
 
-  // Bootstrap — legacy-HMAC-gated in handleRequest; only valid while zero users exist.
+  // Bootstrap — unauthenticated while zero users exist; the route handler enforces that invariant.
   router.add("POST", "/api/admin/auth/setup", async (req, res, _params) => {
     if (!deps.userStore || !deps.authService) {
       writeJson(res, 501, { error: "User store not available" });
@@ -100,19 +148,35 @@ export function registerAuthRoutes(router: Router, deps: AuthRouteDeps): void {
       writeJson(res, 400, { error: credentials.error });
       return;
     }
+    const limited = checkRateLimit(req, credentials.username);
+    if (limited) {
+      writeRateLimited(res, limited.retryAfterMs);
+      return;
+    }
     const passwordHash = await hashPassword(credentials.password);
-    const user = await deps.userStore.createUser({
-      id: randomUUID(),
-      username: credentials.username,
-      passwordHash,
-      role: "admin",
-    });
+    let user: AdminUser;
+    try {
+      user = await deps.userStore.createUser({
+        id: randomUUID(),
+        username: credentials.username,
+        passwordHash,
+        role: "admin",
+      });
+    } catch (err: unknown) {
+      if (isDuplicateError(err)) {
+        recordAuthFailure(req, credentials.username);
+        writeJson(res, 409, { error: `Username "${credentials.username}" is already taken` });
+        return;
+      }
+      throw err;
+    }
     deps.onUsersChanged?.();
     const session = await deps.authService.login(credentials.username, credentials.password);
     if (!session) {
       writeJson(res, 500, { error: "Failed to establish session after setup" });
       return;
     }
+    recordAuthSuccess(req, credentials.username);
     recordAudit(deps.auditStore, req, { action: "auth.setup", targetType: "user", targetId: user.id, details: { username: user.username, role: user.role } });
     log.info({ username: user.username }, "first admin user created via setup");
     writeJson(res, 201, session);
@@ -125,17 +189,26 @@ export function registerAuthRoutes(router: Router, deps: AuthRouteDeps): void {
       return;
     }
     const body = await readBody(req);
-    const username = typeof body?.["username"] === "string" ? body["username"] : "";
+    const rawUsername = typeof body?.["username"] === "string" ? body["username"] : "";
+    const username = normalizeUsername(rawUsername);
     const password = typeof body?.["password"] === "string" ? body["password"] : "";
     if (!username || !password) {
       writeJson(res, 400, { error: "username and password are required" });
       return;
     }
+    const limited = checkRateLimit(req, username);
+    if (limited) {
+      writeRateLimited(res, limited.retryAfterMs);
+      return;
+    }
     const session = await deps.authService.login(username, password);
     if (!session) {
+      recordAuthFailure(req, username);
+      recordAudit(deps.auditStore, req, { action: "auth.login_failed", targetType: "user", details: { username } });
       writeJson(res, 401, { error: "Invalid username or password" });
       return;
     }
+    recordAuthSuccess(req, username);
     writeJson(res, 200, session);
   });
 
@@ -159,10 +232,17 @@ export function registerAuthRoutes(router: Router, deps: AuthRouteDeps): void {
 
   // ─── User management (admin only) ─────────────────────────────────────────
 
-  router.add("GET", "/api/admin/users", async (_req, res, _params) => {
+  router.add("GET", "/api/admin/users", async (req, res, _params) => {
     if (!deps.userStore) { writeJson(res, 501, { error: "User store not available" }); return; }
+    const requestUrl = new URL(req.url ?? "/", "http://127.0.0.1");
+    const limit = Math.min(
+      Math.max(parseNonNegativeInt(requestUrl.searchParams.get("limit")) ?? DEFAULT_USERS_LIMIT, 1),
+      MAX_USERS_LIMIT
+    );
+    const offset = Math.max(parseNonNegativeInt(requestUrl.searchParams.get("offset")) ?? 0, 0);
     const users = await deps.userStore.listUsers();
-    writeJson(res, 200, { users: users.map(serializeUser) });
+    const page = users.slice(offset, offset + limit);
+    writeJson(res, 200, { users: page.map(serializeUser), total: users.length, limit, offset });
   }, { role: "admin" });
 
   router.add("POST", "/api/admin/users", async (req, res, _params) => {

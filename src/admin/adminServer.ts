@@ -202,7 +202,8 @@ type AdminUserCapableStore = AdminAuthStateStore & AuthRouteUserStore;
 /**
  * Feature-detect the user-store methods on the injected state store. Mocks in
  * tests (and older embedders) may omit them — session auth is then disabled
- * and the legacy HMAC gate keeps working.
+ * and the admin API runs fully open (no HMAC fallback; see `handleRequest`'s
+ * auth gate).
  */
 function extractUserStore(stateStore: unknown): AdminUserCapableStore | null {
   const candidate = stateStore as Partial<AdminUserCapableStore> | null | undefined;

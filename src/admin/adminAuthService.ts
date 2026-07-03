@@ -1,4 +1,4 @@
-import { createHash, randomBytes, scrypt, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, scrypt, scryptSync, timingSafeEqual } from "node:crypto";
 import type { AdminUser, UserRole, UserSession } from "../interfaces.js";
 
 /**
@@ -15,12 +15,37 @@ const SCRYPT_SALT_LENGTH = 32;
 // 128 * N * r = 16 MiB for the default params; give scrypt ample headroom.
 const SCRYPT_MAXMEM = 64 * 1024 * 1024;
 
+/**
+ * `crypto.scrypt()` has accepted `{ N, r, p }` cost-parameter options since
+ * Node.js 10.5.0 (in addition to the `cost`/`blockSize`/`parallelization`
+ * aliases) — this codebase targets Node 22+ (see `Dockerfile.orchestrator`),
+ * so the options are always supported. Still, verify against the RFC 7914
+ * §12 test vector (`scrypt("", "", N=16, r=1, p=1, dkLen=64)`) once at module
+ * load: this proves N/r/p are actually wired into the KDF rather than
+ * silently ignored (which would quietly weaken every password hash).
+ */
+const RFC7914_TEST_VECTOR =
+  "77d6576238657b203b19ca42c18a0497f16b4844e3074ae8dfdffa3fede2144" +
+  "2fcd0069ded0948f8326a753a0fc81f17e8d3e0fb2e0d3628cf35e20c38d18906";
+
+function assertScryptSupportsNrp(): void {
+  const derived = scryptSync("", "", 64, { N: 16, r: 1, p: 1, maxmem: SCRYPT_MAXMEM });
+  if (derived.toString("hex") !== RFC7914_TEST_VECTOR) {
+    throw new Error(
+      "crypto.scrypt() did not honor the N/r/p cost parameters as expected on this Node.js " +
+      "runtime (RFC 7914 test vector mismatch). Password hashing requires a Node.js version " +
+      "with full scrypt N/r/p option support (Node.js >= 10.5)."
+    );
+  }
+}
+assertScryptSupportsNrp();
+
 /** Idle session lifetime — refreshed on use (sliding expiry). */
 export const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 /** Only persist a sliding-expiry touch when the last one is older than this. */
 const TOUCH_THROTTLE_MS = 60_000;
 
-/** Authenticated request identity. `userId` is null for bootstrap (legacy HMAC) actors. */
+/** Authenticated request identity. `userId` is null for bootstrap actors (no users exist yet). */
 export interface AuthContext {
   userId: string | null;
   username: string;

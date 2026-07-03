@@ -51,7 +51,6 @@ export function PasswordField({ style, onFocus, onBlur, ...rest }: PasswordField
       />
       <button
         type="button"
-        tabIndex={-1}
         aria-label={revealed ? "Hide password" : "Show password"}
         title={revealed ? "Hide password" : "Show password"}
         aria-pressed={revealed}

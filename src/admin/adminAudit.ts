@@ -24,23 +24,31 @@ export interface AuditCapableStore {
 
 /** Key names whose values must never appear in the audit trail. */
 const SECRET_KEY_RE = /token|secret|password|key|credential/i;
-/** Keys that match {@link SECRET_KEY_RE} but are known-safe identifiers, not secrets. */
-const SAFE_KEY_RE = /^(repoKeys?|ticketProjectKey)$/;
+/**
+ * Keys that match {@link SECRET_KEY_RE} but are known-safe identifiers, not secrets:
+ * `repoKey(s)` / `ticketProjectKey` are VE project identifiers, and anything ending in
+ * `Path` (e.g. `sshKeyPath`) is a filesystem path, not the secret material itself.
+ */
+const SAFE_KEY_RE = /^(repoKeys?|ticketProjectKey)$|Path$/;
 const MASK = "***";
 const MAX_DEPTH = 8;
 
-function maskValue(value: unknown, depth: number): unknown {
+function maskValue(value: unknown, depth: number, seen: WeakSet<object>): unknown {
   if (depth >= MAX_DEPTH) return value;
   if (Array.isArray(value)) {
-    return value.map((item) => maskValue(item, depth + 1));
+    if (seen.has(value)) return "[Circular]";
+    seen.add(value);
+    return value.map((item) => maskValue(item, depth + 1, seen));
   }
   if (value !== null && typeof value === "object") {
+    if (seen.has(value)) return "[Circular]";
+    seen.add(value);
     const out: Record<string, unknown> = {};
     for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
       if (SECRET_KEY_RE.test(key) && !SAFE_KEY_RE.test(key) && item !== undefined && item !== null && item !== "") {
         out[key] = MASK;
       } else {
-        out[key] = maskValue(item, depth + 1);
+        out[key] = maskValue(item, depth + 1, seen);
       }
     }
     return out;
@@ -51,10 +59,12 @@ function maskValue(value: unknown, depth: number): unknown {
 /**
  * Recursively replace values of secret-like keys (token / secret / password /
  * key / credential) with `"***"`. Known-safe identifier keys such as
- * `repoKey(s)` and `ticketProjectKey` are preserved.
+ * `repoKey(s)`, `ticketProjectKey`, and any `*Path` field (e.g. `sshKeyPath`)
+ * are preserved. Tracks visited objects/arrays with a `WeakSet` so cyclic
+ * structures resolve to `"[Circular]"` instead of recursing forever or throwing.
  */
 export function maskAuditDetails(details: Record<string, unknown>): Record<string, unknown> {
-  return maskValue(details, 0) as Record<string, unknown>;
+  return maskValue(details, 0, new WeakSet()) as Record<string, unknown>;
 }
 
 /**

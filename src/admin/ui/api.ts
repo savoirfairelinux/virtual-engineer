@@ -2,8 +2,20 @@
  * Admin API client — HTTP helpers + auth + SSE.
  *
  * Auth: DB-backed session tokens. `login()` exchanges username/password for an
- * opaque session token (stored in sessionStorage) that is sent as a Bearer
- * token on every request.
+ * opaque session token that is sent as a Bearer token on every request.
+ *
+ * Token storage trade-off: the token is kept in sessionStorage (tab-scoped,
+ * cleared on tab close) rather than an httpOnly cookie, so it is readable by
+ * any script running on this origin (XSS risk). This is offset by:
+ *   - a strict, nonce-based CSP with no unsafe-inline/unsafe-eval and
+ *     connect-src 'self' (see applySecurityHeaders in adminServer.ts), which
+ *     blocks injected <script> tags and stops exfiltration to other origins
+ *     even if a script did run;
+ *   - server-side session revocation (logout(), password change) that
+ *     invalidates the token immediately regardless of client-side storage.
+ * Moving to httpOnly cookies would remove the injected-script read risk but
+ * requires CSRF defenses (SameSite alone is not sufficient for state-changing
+ * cross-origin requests) and is left as follow-up work.
  */
 
 import type { ApiMe, SetupStatus } from "./types.ts";
@@ -131,10 +143,6 @@ export async function login(username: string, password: string): Promise<ApiMe> 
   return data.user;
 }
 
-/**
- * First-run setup: derives a legacy HMAC token from the raw ADMIN_AUTH_SECRET,
- * creates the first admin user, and stores the returned session token.
- */
 /**
  * First-run setup: creates the first admin user and stores the returned session token.
  */

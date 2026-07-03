@@ -1,5 +1,6 @@
 import type { AuditEntry } from "../interfaces.js";
-import { writeJson, toIsoTimestamp } from "./adminRouteUtils.js";
+import { writeJson, toIsoTimestamp, parseNonNegativeInt } from "./adminRouteUtils.js";
+import { maskAuditDetails } from "./adminAudit.js";
 import type { Router } from "./router.js";
 
 const DEFAULT_LIMIT = 50;
@@ -19,6 +20,8 @@ export interface AuditRouteDeps {
   auditStore?: AuditReadStore | undefined;
 }
 
+// ⚠️ SECURITY: Defense-in-depth — re-mask on read even though entries are already
+// masked at write time, so a future write path that forgets to mask can't leak secrets.
 function serializeAuditEntry(entry: AuditEntry): Record<string, unknown> {
   return {
     id: entry.id,
@@ -27,15 +30,9 @@ function serializeAuditEntry(entry: AuditEntry): Record<string, unknown> {
     action: entry.action,
     targetType: entry.targetType,
     targetId: entry.targetId,
-    details: entry.details,
+    details: maskAuditDetails(entry.details ?? {}),
     createdAt: toIsoTimestamp(entry.createdAt),
   };
-}
-
-function parseNonNegativeInt(value: string | null): number | undefined {
-  if (value === null) return undefined;
-  const parsed = Number.parseInt(value, 10);
-  return Number.isNaN(parsed) || parsed < 0 ? undefined : parsed;
 }
 
 /** Register the audit-trail read route on the given router (admin only). */

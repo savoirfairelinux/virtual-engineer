@@ -55,6 +55,37 @@ describe("maskAuditDetails", () => {
   it("leaves empty/null secret values untouched", () => {
     expect(maskAuditDetails({ token: "", secret: null })).toEqual({ token: "", secret: null });
   });
+
+  it("preserves keys ending in 'Path' (e.g. sshKeyPath) despite containing 'key'", () => {
+    expect(maskAuditDetails({
+      sshKeyPath: "/ve-home/.ssh/id_ed25519",
+      apiKey: "should-be-masked",
+    })).toEqual({
+      sshKeyPath: "/ve-home/.ssh/id_ed25519",
+      apiKey: "***",
+    });
+  });
+
+  it("masks circular references as '[Circular]' instead of throwing or hanging", () => {
+    const details: Record<string, unknown> = { name: "task" };
+    details["self"] = details;
+    const nested: Record<string, unknown> = {};
+    nested["parent"] = details;
+    details["nested"] = nested;
+
+    const result = maskAuditDetails(details) as Record<string, unknown>;
+    expect(result["name"]).toBe("task");
+    expect(result["self"]).toBe("[Circular]");
+    expect((result["nested"] as Record<string, unknown>)["parent"]).toBe("[Circular]");
+  });
+
+  it("masks circular references inside arrays as '[Circular]'", () => {
+    const arr: unknown[] = ["a"];
+    arr.push(arr);
+    const result = maskAuditDetails({ list: arr }) as Record<string, unknown>;
+    expect((result["list"] as unknown[])[0]).toBe("a");
+    expect((result["list"] as unknown[])[1]).toBe("[Circular]");
+  });
 });
 
 describe("recordAudit", () => {

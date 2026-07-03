@@ -331,7 +331,7 @@ export interface ApiModelUsageSummary {
 
 export type UserRole = "admin" | "operator" | "viewer";
 
-/** Current identity from GET /api/admin/auth/me. `id` is null in bootstrap (HMAC) mode. */
+/** Current identity from GET /api/admin/auth/me. `id` is null in bootstrap mode (no users yet — see adminServer.ts). */
 export interface ApiMe {
   id: string | null;
   username: string;
