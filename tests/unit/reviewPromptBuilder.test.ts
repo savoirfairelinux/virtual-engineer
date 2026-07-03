@@ -270,6 +270,44 @@ describe("buildReviewPrompt since-last-review delta", () => {
     expect(prompt).toContain("## Unified diffs");
   });
 
+  it("delta and full diff share the maxDiffChars budget — at least one is truncated when both are large", () => {
+    // Each patch is ~600 chars. With maxDiffChars=1000, each fits individually
+    // (600 < 1000) but together they would exceed the budget (1200 > 1000).
+    // The fix: split the budget so the combined diff content stays within maxDiffChars.
+    // Without the fix both sections render fully → neither is truncated (bug).
+    const maxDiffChars = 1000;
+    const patch600 = "+" + "x".repeat(600);
+
+    const bigFullDiff: ReviewChangeDiff = {
+      changeId: CHANGE_ID,
+      patchset: 3,
+      files: [{ path: "src/full.ts", status: "modified" as const, patch: patch600 }],
+    };
+    const bigDeltaDiff: ReviewChangeDiff = {
+      changeId: CHANGE_ID,
+      patchset: 3,
+      files: [{ path: "src/delta.ts", status: "modified" as const, patch: patch600 }],
+    };
+
+    const prompt = buildReviewPrompt({
+      details,
+      diff: bigFullDiff,
+      userPrompt: "Review.",
+      maxDiffChars,
+      sinceLastReview: { fromPatchset: 2, toPatchset: 3, diff: bigDeltaDiff },
+    });
+
+    const deltaIdx = prompt.indexOf("## Changes since last reviewed patchset");
+    const fullDiffIdx = prompt.indexOf("## Unified diffs");
+    const deltaSection = prompt.slice(deltaIdx, fullDiffIdx);
+    const diffSection = prompt.slice(fullDiffIdx);
+
+    // At least one section must be truncated to respect the shared budget.
+    const atLeastOneTruncated =
+      deltaSection.includes("diff truncated") || diffSection.includes("diff truncated");
+    expect(atLeastOneTruncated).toBe(true);
+  });
+
   it("truncates the delta diff when it exceeds maxDiffChars", () => {
     const hugeDeltaDiff: ReviewChangeDiff = {
       changeId: CHANGE_ID,
