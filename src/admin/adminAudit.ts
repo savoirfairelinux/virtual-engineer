@@ -22,46 +22,39 @@ export interface AuditCapableStore {
   appendAuditEntry?(input: AuditAppendInput): Promise<unknown>;
 }
 
-/** Word segments (case-insensitive) that mark a key as secret-bearing. */
-const SECRET_SEGMENTS: ReadonlySet<string> = new Set([
+/**
+ * Substrings (case-insensitive) that mark a key as secret-bearing. Matching is
+ * intentionally a loose substring test rather than segment-exact: this is a
+ * fail-safe security function where masking a benign field (e.g. `monkey`) is
+ * harmless, but *failing* to mask a real secret is a leak. Substring matching
+ * therefore also covers separator-less compounds like `apikey` / `accesstoken`
+ * that a segment-exact test would miss. Mirrors `SECRET_KEY_PATTERNS` in
+ * `adminAgentsRoutes.ts` so the two masking paths stay consistent.
+ */
+const SECRET_KEY_PATTERNS: readonly string[] = [
   "token",
   "secret",
   "password",
   "passwd",
   "pwd",
   "credential",
-  "credentials",
   "key",
-]);
+];
 /**
- * Full key names that contain a secret segment but are known-safe identifiers,
- * not secrets: `repoKey(s)` / `ticketProjectKey` are VE project identifiers and
- * `publicKey` is public by definition. Anything ending in `Path` (e.g.
- * `sshKeyPath`) is a filesystem path, not the secret material itself.
+ * Keys that contain a secret pattern as a substring but are known-safe
+ * identifiers, not secrets: `repoKey(s)` / `ticketProjectKey` are VE project
+ * identifiers and `publicKey` is public by definition. Anything ending in
+ * `Path` (e.g. `sshKeyPath`) is a filesystem path, not the secret material.
  */
 const SAFE_KEYS: ReadonlySet<string> = new Set(["repoKey", "repoKeys", "ticketProjectKey", "publicKey"]);
 const MASK = "***";
 const MAX_DEPTH = 8;
 
-/**
- * Split a key into lower-cased word segments across camelCase, snake_case, and
- * kebab-case boundaries so secret matching is segment-exact (e.g. `sessionToken`
- * → `["session", "token"]`) rather than a loose substring match that would also
- * flag benign identifiers like `monkey` or `keyboard`.
- */
-function keySegments(key: string): string[] {
-  return key
-    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
-    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
-    .split(/[\s_-]+/)
-    .map((segment) => segment.toLowerCase())
-    .filter((segment) => segment.length > 0);
-}
-
 /** Whether a key's value must be masked in the audit trail. */
 function isSecretKey(key: string): boolean {
   if (SAFE_KEYS.has(key) || /Path$/.test(key)) return false;
-  return keySegments(key).some((segment) => SECRET_SEGMENTS.has(segment));
+  const lower = key.toLowerCase();
+  return SECRET_KEY_PATTERNS.some((pattern) => lower.includes(pattern));
 }
 
 function maskValue(value: unknown, depth: number, seen: WeakSet<object>): unknown {
@@ -124,19 +117,20 @@ export async function appendAuditWithRetry(
   entry: AuditAppendInput,
   delays: readonly number[] = AUDIT_RETRY_DELAYS_MS
 ): Promise<void> {
+  const totalAttempts = delays.length + 1;
   let lastErr: unknown;
-  for (let attempt = 0; attempt <= delays.length; attempt++) {
+  for (let attempt = 0; attempt < totalAttempts; attempt++) {
     try {
       await store.appendAuditEntry(entry);
       return;
     } catch (err: unknown) {
       lastErr = err;
-      const delay = delays[attempt];
-      if (delay !== undefined) await sleep(delay);
+      // Sleep between attempts only — never after the final attempt.
+      if (attempt < delays.length) await sleep(delays[attempt] ?? 0);
     }
   }
   log.error(
-    { err: lastErr, action: entry.action, attempts: delays.length + 1 },
+    { err: lastErr, action: entry.action, attempts: totalAttempts },
     "audit append failed after retries"
   );
 }

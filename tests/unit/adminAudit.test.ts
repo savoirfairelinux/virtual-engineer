@@ -66,24 +66,27 @@ describe("maskAuditDetails", () => {
     });
   });
 
-  it("matches secret words as whole segments, not loose substrings", () => {
+  it("masks secret keys including separator-less compounds, but exempts safelisted identifiers", () => {
     expect(maskAuditDetails({
-      // benign identifiers that merely contain a secret word as a substring
-      monkey: "curious george",
-      keyboard: "mechanical",
-      // publicKey is public by definition, not a secret
+      // safelisted / non-secret identifiers — preserved
       publicKey: "ssh-ed25519 AAAA...",
-      // genuine secrets — the secret word IS a segment
+      repoKey: "group/repo",
+      sshKeyPath: "/ve-home/.ssh/id_ed25519",
+      // genuine secrets in various shapes — all masked (fail-safe substring match)
       privateKey: "-----BEGIN-----",
       sessionToken: "abc",
       webhookSecret: "shh",
+      apikey: "concat-lowercase",
+      accesstoken: "concat-lowercase",
     })).toEqual({
-      monkey: "curious george",
-      keyboard: "mechanical",
       publicKey: "ssh-ed25519 AAAA...",
+      repoKey: "group/repo",
+      sshKeyPath: "/ve-home/.ssh/id_ed25519",
       privateKey: "***",
       sessionToken: "***",
       webhookSecret: "***",
+      apikey: "***",
+      accesstoken: "***",
     });
   });
 
