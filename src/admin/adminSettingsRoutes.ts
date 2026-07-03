@@ -8,21 +8,31 @@ export interface EffectiveWorkflowSettings {
   maxRetryAttempts: number;
 }
 
+/**
+ * A settings patch. Each field is optional; a `null` value clears the persisted
+ * override, reverting that setting to its `config.ts` default.
+ */
+export type WorkflowSettingsPatch = Partial<Record<keyof EffectiveWorkflowSettings, number | null>>;
+
 export interface SettingsController {
   /** Current effective values (persisted overrides merged over config defaults). */
   get(): EffectiveWorkflowSettings;
   /** Persist the provided overrides, hot-apply them, and return the new effective values. */
-  update(patch: Partial<EffectiveWorkflowSettings>): Promise<EffectiveWorkflowSettings>;
+  update(patch: WorkflowSettingsPatch): Promise<EffectiveWorkflowSettings>;
 }
 
 export interface SettingsRouteDeps {
   settings?: SettingsController | undefined;
 }
 
-/** Parse a value into a positive integer, or return an error message. */
-function parsePositiveInt(value: unknown, field: string): number | { error: string } {
+/**
+ * Parse a settings value into a positive integer or `null` (which clears the
+ * override), otherwise return an error message.
+ */
+function parseSetting(value: unknown, field: string): number | null | { error: string } {
+  if (value === null) return null;
   if (typeof value !== "number" || !Number.isFinite(value)) {
-    return { error: `${field} must be a number` };
+    return { error: `${field} must be a number or null` };
   }
   if (!Number.isInteger(value) || value <= 0) {
     return { error: `${field} must be a positive integer` };
@@ -51,22 +61,13 @@ export function registerSettingsRoutes(router: Router, deps: SettingsRouteDeps):
       return;
     }
 
-    const patch: Partial<EffectiveWorkflowSettings> = {};
-
-    if (body["pollingIntervalMs"] !== undefined) {
-      const parsed = parsePositiveInt(body["pollingIntervalMs"], "pollingIntervalMs");
-      if (typeof parsed !== "number") { writeJson(res, 400, parsed); return; }
-      patch.pollingIntervalMs = parsed;
-    }
-    if (body["maxAgentCycles"] !== undefined) {
-      const parsed = parsePositiveInt(body["maxAgentCycles"], "maxAgentCycles");
-      if (typeof parsed !== "number") { writeJson(res, 400, parsed); return; }
-      patch.maxAgentCycles = parsed;
-    }
-    if (body["maxRetryAttempts"] !== undefined) {
-      const parsed = parsePositiveInt(body["maxRetryAttempts"], "maxRetryAttempts");
-      if (typeof parsed !== "number") { writeJson(res, 400, parsed); return; }
-      patch.maxRetryAttempts = parsed;
+    const patch: WorkflowSettingsPatch = {};
+    const fields: (keyof EffectiveWorkflowSettings)[] = ["pollingIntervalMs", "maxAgentCycles", "maxRetryAttempts"];
+    for (const field of fields) {
+      if (body[field] === undefined) continue;
+      const parsed = parseSetting(body[field], field);
+      if (parsed !== null && typeof parsed !== "number") { writeJson(res, 400, parsed); return; }
+      patch[field] = parsed;
     }
 
     if (Object.keys(patch).length === 0) {

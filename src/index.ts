@@ -197,7 +197,7 @@ async function main(): Promise<void> {
       maxRetryAttempts: config.maxRetryAttempts,
     }),
     update: async (
-      patch: Partial<import("./admin/adminSettingsRoutes.js").EffectiveWorkflowSettings>
+      patch: import("./admin/adminSettingsRoutes.js").WorkflowSettingsPatch
     ): Promise<import("./admin/adminSettingsRoutes.js").EffectiveWorkflowSettings> => {
       const persisted = await stateStore.updateAppSettings(patch);
       config.pollingIntervalMs = persisted.pollingIntervalMs ?? settingsDefaults.pollingIntervalMs;

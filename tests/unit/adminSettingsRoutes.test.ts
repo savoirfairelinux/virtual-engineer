@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import type { Server } from "node:http";
 import { createAdminServer, type AdminServerDependencies } from "../../src/admin/adminServer.js";
-import type { SettingsController, EffectiveWorkflowSettings } from "../../src/admin/adminSettingsRoutes.js";
+import type { SettingsController, EffectiveWorkflowSettings, WorkflowSettingsPatch } from "../../src/admin/adminSettingsRoutes.js";
 
 interface Result {
   status: number;
@@ -59,9 +59,13 @@ function makeDeps(settings?: SettingsController): AdminServerDependencies {
 }
 
 function makeController(): SettingsController & { current: EffectiveWorkflowSettings; update: ReturnType<typeof vi.fn> } {
-  const current: EffectiveWorkflowSettings = { pollingIntervalMs: 30000, maxAgentCycles: 3, maxRetryAttempts: 5 };
-  const update = vi.fn(async (patch: Partial<EffectiveWorkflowSettings>) => {
-    Object.assign(current, patch);
+  const defaults: EffectiveWorkflowSettings = { pollingIntervalMs: 30000, maxAgentCycles: 3, maxRetryAttempts: 5 };
+  const current: EffectiveWorkflowSettings = { ...defaults };
+  const update = vi.fn(async (patch: WorkflowSettingsPatch) => {
+    for (const [key, value] of Object.entries(patch) as [keyof EffectiveWorkflowSettings, number | null][]) {
+      // null clears the override → fall back to the default
+      current[key] = value ?? defaults[key];
+    }
     return { ...current };
   });
   return { current, get: () => ({ ...current }), update };
@@ -113,6 +117,15 @@ describe("Admin API — Settings routes", () => {
     const r = await rest(server, "/api/admin/settings", { method: "PUT", body: { pollingIntervalMs: 1.5 } });
     expect(r.status).toBe(400);
     expect(controller.update).not.toHaveBeenCalled();
+  });
+
+  it("PUT accepts null to reset a value to its default", async () => {
+    // First override, then clear it with null.
+    await rest(server, "/api/admin/settings", { method: "PUT", body: { maxAgentCycles: 9 } });
+    const r = await rest(server, "/api/admin/settings", { method: "PUT", body: { maxAgentCycles: null } });
+    expect(r.status).toBe(200);
+    expect(controller.update).toHaveBeenLastCalledWith({ maxAgentCycles: null });
+    expect(r.body).toEqual({ settings: { pollingIntervalMs: 30000, maxAgentCycles: 3, maxRetryAttempts: 5 } });
   });
 
   it("PUT rejects an empty payload", async () => {

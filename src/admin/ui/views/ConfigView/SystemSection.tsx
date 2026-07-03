@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Field, FieldInput } from "../../components/Modal.tsx";
 import { api } from "../../api.ts";
 import type { ApiConfig, ApiStatus } from "../../types.ts";
@@ -32,6 +32,15 @@ export function SystemSection({ config, status, onRefresh }: SystemSectionProps)
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+
+  // Re-sync the form when the server-resolved values change (e.g. after a save,
+  // an onRefresh(), or another admin updating settings) so inputs never show
+  // stale values and `dirty` doesn't spuriously flip to true.
+  useEffect(() => {
+    setPollingSeconds(String(initialPollingSeconds));
+    setMaxCycles(String(initialCycles));
+    setMaxRetries(String(initialRetries));
+  }, [initialPollingSeconds, initialCycles, initialRetries]);
 
   const dirty =
     Number(pollingSeconds) !== initialPollingSeconds ||

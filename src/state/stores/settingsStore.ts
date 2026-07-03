@@ -49,34 +49,27 @@ export function createSettingsStore(context: SettingsStoreContext): SettingsStor
 
   async function updateAppSettings(patch: Partial<AppSettings>): Promise<AppSettings> {
     const now = new Date();
-    const existing = await getAppSettings();
-    const next: AppSettings = {
-      pollingIntervalMs: patch.pollingIntervalMs !== undefined ? patch.pollingIntervalMs : existing.pollingIntervalMs,
-      maxAgentCycles: patch.maxAgentCycles !== undefined ? patch.maxAgentCycles : existing.maxAgentCycles,
-      maxRetryAttempts: patch.maxRetryAttempts !== undefined ? patch.maxRetryAttempts : existing.maxRetryAttempts,
-    };
 
-    const row = await db.query.appSettings.findFirst({ where: eq(appSettings.id, "global") });
-    if (row) {
-      await db
-        .update(appSettings)
-        .set({
-          pollingIntervalMs: next.pollingIntervalMs,
-          maxAgentCycles: next.maxAgentCycles,
-          maxRetryAttempts: next.maxRetryAttempts,
-          updatedAt: now,
-        })
-        .where(eq(appSettings.id, "global"));
-    } else {
-      await db.insert(appSettings).values({
+    // Race-safe single upsert: on conflict, only the columns present in `patch`
+    // are overwritten so concurrent partial updates to different fields don't
+    // clobber each other, and two concurrent first-writes can't collide on the PK.
+    const conflictSet: Record<string, unknown> = { updatedAt: now };
+    if (patch.pollingIntervalMs !== undefined) conflictSet["pollingIntervalMs"] = patch.pollingIntervalMs;
+    if (patch.maxAgentCycles !== undefined) conflictSet["maxAgentCycles"] = patch.maxAgentCycles;
+    if (patch.maxRetryAttempts !== undefined) conflictSet["maxRetryAttempts"] = patch.maxRetryAttempts;
+
+    await db
+      .insert(appSettings)
+      .values({
         id: "global",
-        pollingIntervalMs: next.pollingIntervalMs,
-        maxAgentCycles: next.maxAgentCycles,
-        maxRetryAttempts: next.maxRetryAttempts,
+        pollingIntervalMs: patch.pollingIntervalMs ?? null,
+        maxAgentCycles: patch.maxAgentCycles ?? null,
+        maxRetryAttempts: patch.maxRetryAttempts ?? null,
         updatedAt: now,
-      });
-    }
-    return next;
+      })
+      .onConflictDoUpdate({ target: appSettings.id, set: conflictSet });
+
+    return getAppSettings();
   }
 
   return {
