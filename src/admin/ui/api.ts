@@ -9,8 +9,9 @@
  * any script running on this origin (XSS risk). This is offset by:
  *   - a strict, nonce-based CSP with no unsafe-inline/unsafe-eval and
  *     connect-src 'self' (see applySecurityHeaders in adminServer.ts), which
- *     blocks injected <script> tags and stops exfiltration to other origins
- *     even if a script did run;
+ *     blocks injected <script> tags and restricts the common data-exfiltration
+ *     channels (fetch/XHR/img to other origins) — though no CSP can close
+ *     every path (e.g. top-level navigation) once arbitrary JS is running;
  *   - server-side session revocation (logout(), password change) that
  *     invalidates the token immediately regardless of client-side storage;
  *   - a short, sliding session TTL (SESSION_TTL_MS = 12h in adminAuthService.ts)
