@@ -269,5 +269,25 @@ describe("buildReviewPrompt since-last-review delta", () => {
     // The full diff is still present alongside the delta.
     expect(prompt).toContain("## Unified diffs");
   });
+
+  it("truncates the delta diff when it exceeds maxDiffChars", () => {
+    const hugeDeltaDiff: ReviewChangeDiff = {
+      changeId: CHANGE_ID,
+      patchset: 3,
+      files: Array.from({ length: 5 }, (_, i) => ({
+        path: `src/delta-big-${i}.ts`,
+        status: "modified" as const,
+        patch: "+delta\n".repeat(20_000),
+      })),
+    };
+    const prompt = buildReviewPrompt({
+      details,
+      diff,
+      userPrompt: "Review this.",
+      sinceLastReview: { fromPatchset: 2, toPatchset: 3, diff: hugeDeltaDiff },
+    });
+    expect(prompt).toContain("## Changes since last reviewed patchset");
+    expect(prompt).toContain("diff truncated");
+  });
 });
 
