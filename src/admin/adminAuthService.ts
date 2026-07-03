@@ -88,7 +88,17 @@ export async function verifyPassword(password: string, storedHash: string): Prom
   const n = Number(parts[1]);
   const r = Number(parts[2]);
   const p = Number(parts[3]);
-  if (!Number.isInteger(n) || !Number.isInteger(r) || !Number.isInteger(p) || n <= 1 || r <= 0 || p <= 0) {
+  if (
+    !Number.isInteger(n) ||
+    !Number.isInteger(r) ||
+    !Number.isInteger(p) ||
+    n <= 1 ||
+    r <= 0 ||
+    p <= 0 ||
+    n > SCRYPT_N ||
+    r > SCRYPT_R ||
+    p > SCRYPT_P
+  ) {
     return false;
   }
   const salt = Buffer.from(parts[4] ?? "", "base64");
