@@ -277,6 +277,25 @@ describe("SqliteStateStore", () => {
       await expect(store.transition(taskId, "DONE")).rejects.toThrow(InvalidTransitionError);
     });
 
+    it("notifies onTaskTransition listeners after a successful transition", async () => {
+      const taskId = makeTaskId(randomUUID());
+      await store.createTask(taskId, makeTicketId("3b"));
+      const seen: string[] = [];
+      store.onTaskTransition((task) => seen.push(task.state));
+      await store.transition(taskId, "CONTEXT_BUILDING");
+      expect(seen).toEqual(["CONTEXT_BUILDING"]);
+    });
+
+    it("does not propagate a listener error to the caller of transition", async () => {
+      const taskId = makeTaskId(randomUUID());
+      await store.createTask(taskId, makeTicketId("3c"));
+      store.onTaskTransition(() => {
+        throw new Error("listener boom");
+      });
+      const updated = await store.transition(taskId, "CONTEXT_BUILDING");
+      expect(updated.state).toBe("CONTEXT_BUILDING");
+    });
+
     it("persists transition history", async () => {
       const taskId = makeTaskId(randomUUID());
       await store.createTask(taskId, makeTicketId("4"));

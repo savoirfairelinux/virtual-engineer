@@ -3,6 +3,7 @@ import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { mkdir } from "fs/promises";
 import { dirname } from "path";
+import { getLogger } from "../logger.js";
 import type {
   AgentRecord,
   ProjectRecord,
@@ -45,6 +46,7 @@ export class SqliteStateStore {
   private readonly promptStore: PromptStoreApi;
   private readonly agentStore: AgentStoreApi;
   private readonly settingsStore: SettingsStoreApi;
+  private readonly taskTransitionListeners: Array<(task: Task) => void> = [];
 
   constructor(private readonly raw: Database.Database) {
     this.dbDir = dirname(this.raw.name);
@@ -67,6 +69,38 @@ export class SqliteStateStore {
       this.agentStore,
       this.settingsStore
     );
+
+    // Wrap taskStore.transition (after the Object.assign copy above) so every
+    // caller — orchestrator, reviewOrchestrator, webhook handlers, feedback
+    // processor, etc. — notifies registered listeners on every state change,
+    // without each call site needing to know about polling-loop lifecycle.
+    const rawTransition = this.taskStore.transition;
+    (this as unknown as { transition: TaskStoreApi["transition"] }).transition = async (
+      taskId,
+      toState,
+      metadata
+    ): Promise<Task> => {
+      const updated = await rawTransition(taskId, toState, metadata);
+      for (const listener of this.taskTransitionListeners) {
+        try {
+          listener(updated);
+        } catch (err) {
+          getLogger("state-store").warn({ err, taskId }, "task transition listener failed");
+        }
+      }
+      return updated;
+    };
+  }
+
+  /**
+   * Register a listener invoked synchronously after every task state
+   * transition (including idempotent same-state transitions, but not calls
+   * that throw due to an invalid transition). Used to let the runtime
+   * bootstrap react to state changes (e.g. restart the polling loop) without
+   * every orchestrator call site needing polling-loop plumbing.
+   */
+  onTaskTransition(listener: (task: Task) => void): void {
+    this.taskTransitionListeners.push(listener);
   }
 
   /** Create and initialise a store at `dbPath`. Creates the parent directory, runs migrations, and seeds built-in prompts. */

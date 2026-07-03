@@ -137,6 +137,24 @@ async function main(): Promise<void> {
     { ...pollingProjectMode, reviewTrigger: pollingReviewTrigger }
   );
 
+  // Safety net: if a task transitions into a state whose only recovery path
+  // (when its stream event is missed) is a polling-loop fallback poller
+  // (`pollInReviewTasks` / `pollReviewWatchingTasks`), make sure the loop is
+  // running — even in a stream-only setup where polling is otherwise
+  // stopped. Without this, such a task could only be rescued by an admin
+  // integration/project change or a process restart (see
+  // `refreshRuntimeDependencies` / the startup `pollingIsRequired` check).
+  stateStore.onTaskTransition((task) => {
+    if (task.externalChangeId == null) return;
+    const needsFallbackPoll =
+      (task.taskType === "code-gen" && task.state === "IN_REVIEW") ||
+      (task.taskType === "code-review" && task.state === "REVIEW_WATCHING");
+    if (needsFallbackPoll && !pollingLoop.isRunning()) {
+      log.info({ taskId: task.taskId, state: task.state }, "task requires fallback polling — starting polling loop");
+      pollingLoop.start();
+    }
+  });
+
   const integrationStreamEvents = new PluginIntegrationStreamEventsManager({
     orchestrator,
     getReviewTrigger: (): import("./connectors/integrationStreamEvents.js").IntegrationEventStreamReviewTrigger | undefined => reviewTriggerHolder.current ?? undefined,
