@@ -328,6 +328,31 @@ describe("GerritSshReviewProvider", () => {
       );
       expect(rm).toHaveBeenCalledWith("/tmp/test-diffs/diff-42-abc", { recursive: true, force: true });
     });
+
+    it("returns an empty file list when the two patchsets are identical (empty diff output)", async () => {
+      mockQuery.mockResolvedValueOnce(sshNdjson(SAMPLE_CHANGE));
+      // init, remote add, fetch(from), rev-parse(from), fetch(to), rev-parse(to), diff → empty
+      setGitResults(["", "", "", "shaA\n", "", "shaA\n", ""]);
+
+      const result = await makeProvider().getInterPatchsetDiff(CHANGE_ID, 3, 3);
+
+      expect(result.patchset).toBe(3);
+      expect(result.files).toHaveLength(0);
+    });
+
+    it("pads the two-digit shard correctly for a single-digit change number", async () => {
+      const singleDigitChange = { ...SAMPLE_CHANGE, number: 7 };
+      mockQuery.mockResolvedValueOnce(sshNdjson(singleDigitChange));
+      setGitResults(["", "", "", "sha1\n", "", "sha2\n", ""]);
+
+      await makeProvider().getInterPatchsetDiff(CHANGE_ID, 1, 2);
+
+      const fetchRefs = gitFileCalls
+        .filter((c) => c.args[0] === "fetch")
+        .map((c) => c.args.find((a) => a.startsWith("refs/changes/")));
+      expect(fetchRefs[0]).toBe("refs/changes/07/7/1");
+      expect(fetchRefs[1]).toBe("refs/changes/07/7/2");
+    });
   });
 
   describe("postReviewWithComments", () => {
