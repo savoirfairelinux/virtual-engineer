@@ -59,6 +59,13 @@ export function buildReviewPrompt(input: ReviewPromptInput): string {
   const { details, diff, userPrompt, maxDiffChars, priorComments, discussionThreads, sinceLastReview } =
     input;
 
+  const effectiveMax = maxDiffChars ?? DEFAULT_MAX_DIFF_CHARS;
+  const hasDelta = sinceLastReview !== undefined && sinceLastReview.diff.files.length > 0;
+  // When both a delta section and a full diff are present, split the budget
+  // equally so the combined diff content stays within effectiveMax chars.
+  const deltaBudget = hasDelta ? Math.floor(effectiveMax / 2) : effectiveMax;
+  const fullDiffBudget = hasDelta ? effectiveMax - deltaBudget : effectiveMax;
+
   const header = [
     `# Code Review Task`,
     ``,
@@ -73,7 +80,7 @@ export function buildReviewPrompt(input: ReviewPromptInput): string {
     .map((f) => `- ${f.status.toUpperCase().padEnd(8)} ${f.path}`)
     .join("\n");
 
-  const diffSections = renderDiffSections(diff, maxDiffChars ?? DEFAULT_MAX_DIFF_CHARS);
+  const diffSections = renderDiffSections(diff, fullDiffBudget);
 
   const sections = [
     header,
@@ -108,7 +115,7 @@ export function buildReviewPrompt(input: ReviewPromptInput): string {
     sections.push(
       ``,
       `## Changes since last reviewed patchset (PS ${sinceLastReview.fromPatchset} \u2192 ${sinceLastReview.toPatchset})`,
-      renderSinceLastReview(sinceLastReview, maxDiffChars ?? DEFAULT_MAX_DIFF_CHARS),
+      renderSinceLastReview(sinceLastReview, deltaBudget),
     );
   }
 
