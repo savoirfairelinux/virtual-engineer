@@ -40,8 +40,13 @@ function assertScryptSupportsNrp(): void {
 }
 assertScryptSupportsNrp();
 
-/** Idle session lifetime — refreshed on use (sliding expiry). */
-export const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+/**
+ * Idle session lifetime — refreshed on use (sliding expiry). Kept deliberately
+ * short (12h) as XSS defense-in-depth: session tokens are held in the SPA's
+ * sessionStorage, so a shorter window bounds how long an exfiltrated token is
+ * usable. Active users are kept signed in via the sliding refresh below.
+ */
+export const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 /** Only persist a sliding-expiry touch when the last one is older than this. */
 const TOUCH_THROTTLE_MS = 60_000;
 

@@ -8,6 +8,7 @@ import { hashPassword, verifyPassword, type AdminAuthService } from "./adminAuth
 import { getAuthContext } from "./authContext.js";
 import { recordAudit } from "./adminAudit.js";
 import { LoginRateLimiter, clientIpKey, usernameKey } from "./loginRateLimiter.js";
+import { isCommonPassword } from "./commonPasswords.js";
 
 const log = getLogger("admin-auth");
 
@@ -15,6 +16,20 @@ const VALID_ROLES: readonly UserRole[] = ["admin", "operator", "viewer"];
 const MIN_PASSWORD_LENGTH = 8;
 const DEFAULT_USERS_LIMIT = 50;
 const MAX_USERS_LIMIT = 200;
+
+/**
+ * Validate a candidate password against the minimum-length and common-password
+ * policies. Returns an error message when rejected, or `null` when acceptable.
+ */
+function validatePasswordStrength(password: string): string | null {
+  if (password.length < MIN_PASSWORD_LENGTH) {
+    return `password must be at least ${MIN_PASSWORD_LENGTH} characters`;
+  }
+  if (isCommonPassword(password)) {
+    return "password is too common; choose a less predictable password";
+  }
+  return null;
+}
 
 /** Normalize a username for storage/lookup: Unicode NFC + trim + lower-case. */
 function normalizeUsername(username: string): string {
@@ -90,7 +105,8 @@ function validateCredentials(body: Record<string, unknown> | null): { username: 
   const username = normalizeUsername(rawUsername);
   const password = typeof body?.["password"] === "string" ? body["password"] : "";
   if (username.length === 0) return { error: "username must be a non-empty string" };
-  if (password.length < MIN_PASSWORD_LENGTH) return { error: `password must be at least ${MIN_PASSWORD_LENGTH} characters` };
+  const passwordError = validatePasswordStrength(password);
+  if (passwordError) return { error: passwordError };
   return { username, password };
 }
 
@@ -337,8 +353,9 @@ export function registerAuthRoutes(router: Router, deps: AuthRouteDeps): void {
     if (!target) { writeJson(res, 404, { error: "User not found" }); return; }
     const body = await readBody(req);
     const password = typeof body?.["password"] === "string" ? body["password"] : "";
-    if (password.length < MIN_PASSWORD_LENGTH) {
-      writeJson(res, 400, { error: `password must be at least ${MIN_PASSWORD_LENGTH} characters` });
+    const passwordError = validatePasswordStrength(password);
+    if (passwordError) {
+      writeJson(res, 400, { error: passwordError });
       return;
     }
     if (context.role !== "admin") {

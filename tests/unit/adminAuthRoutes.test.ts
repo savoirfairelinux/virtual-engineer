@@ -51,7 +51,7 @@ interface SessionResponse {
   user: { id: string; username: string; role: string };
 }
 
-async function runSetup(baseUrl: string, username = "root", password = "password123"): Promise<SessionResponse> {
+async function runSetup(baseUrl: string, username = "root", password = "Str0ng-Pass-1x"): Promise<SessionResponse> {
   const response = await fetch(`${baseUrl}/api/admin/auth/setup`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -88,7 +88,7 @@ describe("adminAuthRoutes", () => {
       const response = await fetch(`${baseUrl}/api/admin/auth/setup`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ username: "root", password: "password123" }),
+        body: JSON.stringify({ username: "root", password: "Str0ng-Pass-1x" }),
       });
       expect(response.status).toBe(201);
     });
@@ -113,13 +113,13 @@ describe("adminAuthRoutes", () => {
       const response = await fetch(`${baseUrl}/api/admin/auth/setup`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ username: "second", password: "password123" }),
+        body: JSON.stringify({ username: "second", password: "Str0ng-Pass-1x" }),
       });
       expect(response.status).toBe(403);
     });
 
     it("validates username and password", async () => {
-      for (const body of [{ username: "", password: "password123" }, { username: "root", password: "short" }]) {
+      for (const body of [{ username: "", password: "Str0ng-Pass-1x" }, { username: "root", password: "short" }]) {
         const response = await fetch(`${baseUrl}/api/admin/auth/setup`, {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -127,6 +127,16 @@ describe("adminAuthRoutes", () => {
         });
         expect(response.status).toBe(400);
       }
+    });
+
+    it("rejects a common/weak password at setup", async () => {
+      const response = await fetch(`${baseUrl}/api/admin/auth/setup`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ username: "root", password: "password123" }),
+      });
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toEqual({ error: expect.stringContaining("too common") });
     });
   });
 
@@ -136,7 +146,7 @@ describe("adminAuthRoutes", () => {
       const login = await fetch(`${baseUrl}/api/admin/auth/login`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ username: "root", password: "password123" }),
+        body: JSON.stringify({ username: "root", password: "Str0ng-Pass-1x" }),
       });
       expect(login.status).toBe(200);
       const session = (await login.json()) as SessionResponse;
@@ -175,11 +185,11 @@ describe("adminAuthRoutes", () => {
     });
 
     it("normalizes usernames (case + whitespace) consistently on setup and login", async () => {
-      await runSetup(baseUrl, "  Root  ", "password123");
+      await runSetup(baseUrl, "  Root  ", "Str0ng-Pass-1x");
       const login = await fetch(`${baseUrl}/api/admin/auth/login`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ username: "ROOT", password: "password123" }),
+        body: JSON.stringify({ username: "ROOT", password: "Str0ng-Pass-1x" }),
       });
       expect(login.status).toBe(200);
       const session = (await login.json()) as SessionResponse;
@@ -201,7 +211,7 @@ describe("adminAuthRoutes", () => {
       const blocked = await fetch(`${baseUrl}/api/admin/auth/login`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ username: "root", password: "password123" }),
+        body: JSON.stringify({ username: "root", password: "Str0ng-Pass-1x" }),
       });
       expect(blocked.status).toBe(429);
       expect(blocked.headers.get("retry-after")).toBeTruthy();
@@ -240,7 +250,7 @@ describe("adminAuthRoutes", () => {
 
     it("lists users without exposing password hashes", async () => {
       const session = await runSetup(baseUrl);
-      await createUserViaApi(session.token, { username: "bob", password: "password123", role: "viewer" });
+      await createUserViaApi(session.token, { username: "bob", password: "Str0ng-Pass-1x", role: "viewer" });
 
       const response = await fetch(`${baseUrl}/api/admin/users`, {
         headers: { authorization: `Bearer ${session.token}` },
@@ -256,8 +266,8 @@ describe("adminAuthRoutes", () => {
 
     it("paginates the user list via limit/offset query params", async () => {
       const session = await runSetup(baseUrl);
-      await createUserViaApi(session.token, { username: "bob", password: "password123", role: "viewer" });
-      await createUserViaApi(session.token, { username: "carol", password: "password123", role: "viewer" });
+      await createUserViaApi(session.token, { username: "bob", password: "Str0ng-Pass-1x", role: "viewer" });
+      await createUserViaApi(session.token, { username: "carol", password: "Str0ng-Pass-1x", role: "viewer" });
 
       const response = await fetch(`${baseUrl}/api/admin/users?limit=1&offset=1`, {
         headers: { authorization: `Bearer ${session.token}` },
@@ -277,11 +287,11 @@ describe("adminAuthRoutes", () => {
 
     it("creates users and returns 409 on duplicate username", async () => {
       const session = await runSetup(baseUrl);
-      const created = await createUserViaApi(session.token, { username: "bob", password: "password123", role: "operator" });
+      const created = await createUserViaApi(session.token, { username: "bob", password: "Str0ng-Pass-1x", role: "operator" });
       expect(created.status).toBe(201);
       expect(created.user.role).toBe("operator");
 
-      const duplicate = await createUserViaApi(session.token, { username: "bob", password: "password456", role: "viewer" });
+      const duplicate = await createUserViaApi(session.token, { username: "bob", password: "Str0ng-Pass-2x", role: "viewer" });
       expect(duplicate.status).toBe(409);
 
       const { entries } = await store.listAuditEntries({ action: "user.create" });
@@ -312,7 +322,7 @@ describe("adminAuthRoutes", () => {
 
     it("allows demoting an admin when another enabled admin remains", async () => {
       const session = await runSetup(baseUrl);
-      const second = await createUserViaApi(session.token, { username: "carol", password: "password123", role: "admin" });
+      const second = await createUserViaApi(session.token, { username: "carol", password: "Str0ng-Pass-1x", role: "admin" });
       expect(second.status).toBe(201);
 
       const demote = await fetch(`${baseUrl}/api/admin/users/${second.user.id}`, {
@@ -327,11 +337,11 @@ describe("adminAuthRoutes", () => {
 
     it("forbids non-admin users from managing users", async () => {
       const session = await runSetup(baseUrl);
-      await createUserViaApi(session.token, { username: "bob", password: "password123", role: "operator" });
+      await createUserViaApi(session.token, { username: "bob", password: "Str0ng-Pass-1x", role: "operator" });
       const bobLogin = await fetch(`${baseUrl}/api/admin/auth/login`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ username: "bob", password: "password123" }),
+        body: JSON.stringify({ username: "bob", password: "Str0ng-Pass-1x" }),
       });
       const bob = (await bobLogin.json()) as SessionResponse;
 
@@ -344,18 +354,18 @@ describe("adminAuthRoutes", () => {
       const create = await fetch(`${baseUrl}/api/admin/users`, {
         method: "POST",
         headers: { authorization: `Bearer ${bob.token}`, "content-type": "application/json" },
-        body: JSON.stringify({ username: "eve", password: "password123", role: "admin" }),
+        body: JSON.stringify({ username: "eve", password: "Str0ng-Pass-1x", role: "admin" }),
       });
       expect(create.status).toBe(403);
     });
 
     it("lets a non-admin change their own password with currentPassword, revoking sessions", async () => {
       const session = await runSetup(baseUrl);
-      await createUserViaApi(session.token, { username: "bob", password: "password123", role: "viewer" });
+      await createUserViaApi(session.token, { username: "bob", password: "Str0ng-Pass-1x", role: "viewer" });
       const bobLogin = await fetch(`${baseUrl}/api/admin/auth/login`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ username: "bob", password: "password123" }),
+        body: JSON.stringify({ username: "bob", password: "Str0ng-Pass-1x" }),
       });
       const bob = (await bobLogin.json()) as SessionResponse;
 
@@ -363,14 +373,14 @@ describe("adminAuthRoutes", () => {
       const wrong = await fetch(`${baseUrl}/api/admin/users/${bob.user.id}/password`, {
         method: "PUT",
         headers: { authorization: `Bearer ${bob.token}`, "content-type": "application/json" },
-        body: JSON.stringify({ password: "newpassword456", currentPassword: "not-right" }),
+        body: JSON.stringify({ password: "newStr0ng-Pass-2x", currentPassword: "not-right" }),
       });
       expect(wrong.status).toBe(403);
 
       const change = await fetch(`${baseUrl}/api/admin/users/${bob.user.id}/password`, {
         method: "PUT",
         headers: { authorization: `Bearer ${bob.token}`, "content-type": "application/json" },
-        body: JSON.stringify({ password: "newpassword456", currentPassword: "password123" }),
+        body: JSON.stringify({ password: "newStr0ng-Pass-2x", currentPassword: "Str0ng-Pass-1x" }),
       });
       expect(change.status).toBe(200);
 
@@ -384,44 +394,44 @@ describe("adminAuthRoutes", () => {
       const relogin = await fetch(`${baseUrl}/api/admin/auth/login`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ username: "bob", password: "newpassword456" }),
+        body: JSON.stringify({ username: "bob", password: "newStr0ng-Pass-2x" }),
       });
       expect(relogin.status).toBe(200);
     });
 
     it("forbids a non-admin from changing another user's password", async () => {
       const session = await runSetup(baseUrl);
-      await createUserViaApi(session.token, { username: "bob", password: "password123", role: "operator" });
+      await createUserViaApi(session.token, { username: "bob", password: "Str0ng-Pass-1x", role: "operator" });
       const bobLogin = await fetch(`${baseUrl}/api/admin/auth/login`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ username: "bob", password: "password123" }),
+        body: JSON.stringify({ username: "bob", password: "Str0ng-Pass-1x" }),
       });
       const bob = (await bobLogin.json()) as SessionResponse;
 
       const response = await fetch(`${baseUrl}/api/admin/users/${session.user.id}/password`, {
         method: "PUT",
         headers: { authorization: `Bearer ${bob.token}`, "content-type": "application/json" },
-        body: JSON.stringify({ password: "newpassword456", currentPassword: "password123" }),
+        body: JSON.stringify({ password: "newStr0ng-Pass-2x", currentPassword: "Str0ng-Pass-1x" }),
       });
       expect(response.status).toBe(403);
     });
 
     it("lets an admin reset another user's password without currentPassword", async () => {
       const session = await runSetup(baseUrl);
-      const bob = await createUserViaApi(session.token, { username: "bob", password: "password123", role: "viewer" });
+      const bob = await createUserViaApi(session.token, { username: "bob", password: "Str0ng-Pass-1x", role: "viewer" });
 
       const reset = await fetch(`${baseUrl}/api/admin/users/${bob.user.id}/password`, {
         method: "PUT",
         headers: { authorization: `Bearer ${session.token}`, "content-type": "application/json" },
-        body: JSON.stringify({ password: "resetpassword789" }),
+        body: JSON.stringify({ password: "resetStr0ng-Pass-3x" }),
       });
       expect(reset.status).toBe(200);
 
       const login = await fetch(`${baseUrl}/api/admin/auth/login`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ username: "bob", password: "resetpassword789" }),
+        body: JSON.stringify({ username: "bob", password: "resetStr0ng-Pass-3x" }),
       });
       expect(login.status).toBe(200);
 
@@ -432,7 +442,7 @@ describe("adminAuthRoutes", () => {
 
     it("deletes a non-admin user", async () => {
       const session = await runSetup(baseUrl);
-      const bob = await createUserViaApi(session.token, { username: "bob", password: "password123", role: "viewer" });
+      const bob = await createUserViaApi(session.token, { username: "bob", password: "Str0ng-Pass-1x", role: "viewer" });
 
       const remove = await fetch(`${baseUrl}/api/admin/users/${bob.user.id}`, {
         method: "DELETE", headers: { authorization: `Bearer ${session.token}` },

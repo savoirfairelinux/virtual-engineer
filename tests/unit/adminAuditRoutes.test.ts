@@ -85,7 +85,7 @@ describe("adminAuditRoutes + audit instrumentation", () => {
     const setup = await fetch(`${baseUrl}/api/admin/auth/setup`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ username: "root", password: "password123" }),
+      body: JSON.stringify({ username: "root", password: "Str0ng-Pass-1x" }),
     });
     expect(setup.status).toBe(201);
     const session = (await setup.json()) as SessionResponse;
@@ -102,13 +102,13 @@ describe("adminAuditRoutes + audit instrumentation", () => {
     const create = await fetch(`${baseUrl}/api/admin/users`, {
       method: "POST",
       headers: { authorization: `Bearer ${adminToken}`, "content-type": "application/json" },
-      body: JSON.stringify({ username: "ops", password: "password123", role: "operator" }),
+      body: JSON.stringify({ username: "ops", password: "Str0ng-Pass-1x", role: "operator" }),
     });
     expect(create.status).toBe(201);
     const login = await fetch(`${baseUrl}/api/admin/auth/login`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ username: "ops", password: "password123" }),
+      body: JSON.stringify({ username: "ops", password: "Str0ng-Pass-1x" }),
     });
     expect(login.status).toBe(200);
     return ((await login.json()) as SessionResponse).token;

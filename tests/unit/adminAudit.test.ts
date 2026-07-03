@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { IncomingMessage } from "node:http";
-import { maskAuditDetails, recordAudit } from "../../src/admin/adminAudit.js";
+import { maskAuditDetails, recordAudit, appendAuditWithRetry } from "../../src/admin/adminAudit.js";
 import { setAuthContext } from "../../src/admin/authContext.js";
 
 function fakeRequest(): IncomingMessage {
@@ -63,6 +63,27 @@ describe("maskAuditDetails", () => {
     })).toEqual({
       sshKeyPath: "/ve-home/.ssh/id_ed25519",
       apiKey: "***",
+    });
+  });
+
+  it("matches secret words as whole segments, not loose substrings", () => {
+    expect(maskAuditDetails({
+      // benign identifiers that merely contain a secret word as a substring
+      monkey: "curious george",
+      keyboard: "mechanical",
+      // publicKey is public by definition, not a secret
+      publicKey: "ssh-ed25519 AAAA...",
+      // genuine secrets — the secret word IS a segment
+      privateKey: "-----BEGIN-----",
+      sessionToken: "abc",
+      webhookSecret: "shh",
+    })).toEqual({
+      monkey: "curious george",
+      keyboard: "mechanical",
+      publicKey: "ssh-ed25519 AAAA...",
+      privateKey: "***",
+      sessionToken: "***",
+      webhookSecret: "***",
     });
   });
 
@@ -144,5 +165,26 @@ describe("recordAudit", () => {
       fakeRequest(),
       { action: "x" }
     )).not.toThrow();
+  });
+});
+
+describe("appendAuditWithRetry", () => {
+  it("retries transient failures and succeeds on a later attempt", async () => {
+    const appendAuditEntry = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("db locked"))
+      .mockRejectedValueOnce(new Error("db locked"))
+      .mockResolvedValueOnce({});
+    await appendAuditWithRetry({ appendAuditEntry }, { actorName: "root", action: "x" }, [0, 0, 0]);
+    expect(appendAuditEntry).toHaveBeenCalledTimes(3);
+  });
+
+  it("gives up after exhausting retries without throwing", async () => {
+    const appendAuditEntry = vi.fn().mockRejectedValue(new Error("db down"));
+    await expect(
+      appendAuditWithRetry({ appendAuditEntry }, { actorName: "root", action: "x" }, [0, 0])
+    ).resolves.toBeUndefined();
+    // 1 initial attempt + 2 retries
+    expect(appendAuditEntry).toHaveBeenCalledTimes(3);
   });
 });

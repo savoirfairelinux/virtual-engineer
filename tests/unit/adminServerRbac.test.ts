@@ -138,7 +138,7 @@ describe("adminServer RBAC and session auth", () => {
   });
 
   it("rejects unknown bearer tokens on normal routes once a user exists", async () => {
-    const admin = await setupAndLogin("root", "password123", "admin");
+    const admin = await setupAndLogin("root", "Str0ng-Pass-1x", "admin");
 
     // Any Bearer token that is not a valid session token is rejected.
     const withHmac = await fetch(`${baseUrl}/api/admin/status`, {
@@ -156,8 +156,8 @@ describe("adminServer RBAC and session auth", () => {
   });
 
   it("populates the auth context for session-authenticated requests", async () => {
-    const admin = await setupAndLogin("root", "password123", "admin");
-    const viewer = await setupAndLogin("vera", "password123", "viewer", admin);
+    const admin = await setupAndLogin("root", "Str0ng-Pass-1x", "admin");
+    const viewer = await setupAndLogin("vera", "Str0ng-Pass-1x", "viewer", admin);
 
     const me = await fetch(`${baseUrl}/api/admin/auth/me`, {
       headers: { authorization: `Bearer ${viewer.token}` },
@@ -167,8 +167,8 @@ describe("adminServer RBAC and session auth", () => {
   });
 
   it("gives viewers access only to overview/tasks reads and 403 everywhere else", async () => {
-    const admin = await setupAndLogin("root", "password123", "admin");
-    const viewer = await setupAndLogin("vera", "password123", "viewer", admin);
+    const admin = await setupAndLogin("root", "Str0ng-Pass-1x", "admin");
+    const viewer = await setupAndLogin("vera", "Str0ng-Pass-1x", "viewer", admin);
     const headers = { authorization: `Bearer ${viewer.token}` };
 
     // Allowed: overview + tasks reads.
@@ -194,8 +194,8 @@ describe("adminServer RBAC and session auth", () => {
   });
 
   it("lets operators manage integrations/webhooks but 403s on user-management and audit", async () => {
-    const admin = await setupAndLogin("root", "password123", "admin");
-    const operator = await setupAndLogin("oscar", "password123", "operator", admin);
+    const admin = await setupAndLogin("root", "Str0ng-Pass-1x", "admin");
+    const operator = await setupAndLogin("oscar", "Str0ng-Pass-1x", "operator", admin);
 
     // Operator can perform regular mutations (prompts CRUD).
     const promptCreate = await fetch(`${baseUrl}/api/admin/prompts`, {

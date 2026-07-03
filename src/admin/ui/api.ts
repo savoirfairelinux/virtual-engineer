@@ -12,7 +12,9 @@
  *     blocks injected <script> tags and stops exfiltration to other origins
  *     even if a script did run;
  *   - server-side session revocation (logout(), password change) that
- *     invalidates the token immediately regardless of client-side storage.
+ *     invalidates the token immediately regardless of client-side storage;
+ *   - a short, sliding session TTL (SESSION_TTL_MS = 12h in adminAuthService.ts)
+ *     that bounds how long an exfiltrated token stays usable.
  * Moving to httpOnly cookies would remove the injected-script read risk but
  * requires CSRF defenses (SameSite alone is not sufficient for state-changing
  * cross-origin requests) and is left as follow-up work.
