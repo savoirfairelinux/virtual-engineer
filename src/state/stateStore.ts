@@ -322,6 +322,8 @@ export class SqliteStateStore {
         created_at    INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_audit_log_created_at ON audit_log(created_at);
+      CREATE INDEX IF NOT EXISTS idx_audit_log_action_created_at ON audit_log(action, created_at);
+      CREATE INDEX IF NOT EXISTS idx_audit_log_actor_created_at ON audit_log(actor_name, created_at);
     `);
 
     this.ensureColumn("tasks", "ticket_source_label", "TEXT NOT NULL DEFAULT 'redmine'");

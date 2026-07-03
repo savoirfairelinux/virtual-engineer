@@ -434,5 +434,8 @@ export const auditLog = sqliteTable(
   },
   (table) => ({
     idxAuditLogCreatedAt: index("idx_audit_log_created_at").on(table.createdAt),
+    // Support listAuditEntries filters without full-table scans as the log grows.
+    idxAuditLogActionCreatedAt: index("idx_audit_log_action_created_at").on(table.action, table.createdAt),
+    idxAuditLogActorCreatedAt: index("idx_audit_log_actor_created_at").on(table.actorName, table.createdAt),
   })
 );

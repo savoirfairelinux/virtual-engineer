@@ -1,4 +1,4 @@
-import { and, eq, lte } from "drizzle-orm";
+import { and, eq, lte, sql } from "drizzle-orm";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import type { AdminUser, UserRole, UserSession } from "../../interfaces.js";
 import { users, userSessions } from "../schema.js";
@@ -156,16 +156,16 @@ export function createUserStore(context: UserStoreContext): UserStoreApi {
   }
 
   async function countUsers(): Promise<number> {
-    const rows = await db.query.users.findMany({ columns: { id: true } });
-    return rows.length;
+    const rows = await db.select({ total: sql<number>`COUNT(*)` }).from(users);
+    return rows[0]?.total ?? 0;
   }
 
   async function countEnabledAdmins(): Promise<number> {
-    const rows = await db.query.users.findMany({
-      columns: { id: true },
-      where: and(eq(users.role, "admin"), eq(users.enabled, 1)),
-    });
-    return rows.length;
+    const rows = await db
+      .select({ total: sql<number>`COUNT(*)` })
+      .from(users)
+      .where(and(eq(users.role, "admin"), eq(users.enabled, 1)));
+    return rows[0]?.total ?? 0;
   }
 
   async function createSession(input: {
