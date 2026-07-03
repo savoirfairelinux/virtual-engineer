@@ -38,6 +38,9 @@ function initRepo(): string {
   git(["config", "user.name", "Test"], dir);
   git(["config", "user.email", "test@test.local"], dir);
   git(["config", "commit.gpgsign", "false"], dir);
+  const noHooksDir = join(dir, ".git", "no-hooks");
+  mkdirSync(noHooksDir, { recursive: true });
+  git(["config", "core.hooksPath", noHooksDir], dir);
   writeFileSync(join(dir, "README.md"), "# Test\n");
   git(["add", "README.md"], dir);
   git(["commit", "-m", "chore: initial commit"], dir);
