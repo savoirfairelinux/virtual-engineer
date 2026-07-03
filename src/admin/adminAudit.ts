@@ -58,7 +58,9 @@ function isSecretKey(key: string): boolean {
 }
 
 function maskValue(value: unknown, depth: number, seen: WeakSet<object>): unknown {
-  if (depth >= MAX_DEPTH) return value;
+  if (depth >= MAX_DEPTH) {
+    return (Array.isArray(value) || (value !== null && typeof value === "object")) ? "[MaxDepth]" : value;
+  }
   if (Array.isArray(value)) {
     if (seen.has(value)) return "[Circular]";
     seen.add(value);
