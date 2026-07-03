@@ -53,7 +53,17 @@ export class SqliteStateStore {
     this.db = drizzle(this.raw, { schema });
     this.applyMigrations();
 
-    this.taskStore = createTaskStore({ db: this.db, raw: this.raw });
+    // Pass a state-change dispatcher into the task store so every method that
+    // mutates a task's state (transition, retry, abandon, and a delete that
+    // abandons a non-terminal task) notifies registered listeners uniformly —
+    // no call site needs to know about polling-loop lifecycle. The closure
+    // reads the (already-initialised) listener array so listeners can be added
+    // later.
+    this.taskStore = createTaskStore({
+      db: this.db,
+      raw: this.raw,
+      onTaskStateChange: (task) => this.notifyTaskTransition(task),
+    });
     this.integrationStore = createIntegrationStore({ db: this.db });
     this.projectStore = createProjectStore({ db: this.db, raw: this.raw });
     this.promptStore = createPromptStore({ db: this.db, dbDir: this.dbDir });
@@ -69,35 +79,27 @@ export class SqliteStateStore {
       this.agentStore,
       this.settingsStore
     );
+  }
 
-    // Wrap taskStore.transition (after the Object.assign copy above) so every
-    // caller — orchestrator, reviewOrchestrator, webhook handlers, feedback
-    // processor, etc. — notifies registered listeners on every state change,
-    // without each call site needing to know about polling-loop lifecycle.
-    const rawTransition = this.taskStore.transition;
-    (this as unknown as { transition: TaskStoreApi["transition"] }).transition = async (
-      taskId,
-      toState,
-      metadata
-    ): Promise<Task> => {
-      const updated = await rawTransition(taskId, toState, metadata);
-      for (const listener of this.taskTransitionListeners) {
-        try {
-          listener(updated);
-        } catch (err) {
-          getLogger("state-store").warn({ err, taskId }, "task transition listener failed");
-        }
+  /** Invoke all registered task-transition listeners, swallowing their errors. */
+  private notifyTaskTransition(task: Task): void {
+    for (const listener of this.taskTransitionListeners) {
+      try {
+        listener(task);
+      } catch (err) {
+        getLogger("state-store").warn({ err, taskId: task.taskId }, "task transition listener failed");
       }
-      return updated;
-    };
+    }
   }
 
   /**
-   * Register a listener invoked synchronously after every task state
-   * transition (including idempotent same-state transitions, but not calls
-   * that throw due to an invalid transition). Used to let the runtime
-   * bootstrap react to state changes (e.g. restart the polling loop) without
-   * every orchestrator call site needing polling-loop plumbing.
+   * Register a listener invoked after any task state change — via
+   * `transition()` or the dedicated mutators (`retryTask`, `abandonTask`, and
+   * `deleteTask` when it abandons a non-terminal task). Not fired for
+   * pause/resume, which only append same-state metadata rows. Listeners never
+   * affect the mutating call: their errors are caught and logged. Used to let
+   * the runtime bootstrap react to state changes (e.g. reconcile the polling
+   * loop) without every call site needing polling-loop plumbing.
    */
   onTaskTransition(listener: (task: Task) => void): void {
     this.taskTransitionListeners.push(listener);

@@ -88,6 +88,8 @@ async function importRuntime(
       pushTargetIntegrationId?: string;
       reviewTargetIntegrationId?: string;
     };
+    /** Active tasks returned by stateStore.getActiveTasks at boot. */
+    activeTasks?: Task[];
   } = {}
 ) {
   vi.resetModules();
@@ -224,10 +226,11 @@ async function importRuntime(
     };
   });
   const PollingLoop = vi.fn().mockImplementation(function () {
+    let running = false;
     return {
-      start: vi.fn(),
-      stop: vi.fn(),
-      isRunning: () => false,
+      start: vi.fn(() => { running = true; }),
+      stop: vi.fn(() => { running = false; }),
+      isRunning: () => running,
       getIntervals: () => ({ intervalMs: 30_000 }),
       updateConnectors: vi.fn(),
       resetBackoff: vi.fn(),
@@ -263,7 +266,7 @@ async function importRuntime(
         ? { integrationId: runnableProject.reviewTargetIntegrationId, repos: ["test/repo"] }
         : null
     ),
-    getActiveTasks: vi.fn(async (): Promise<Task[]> => []),
+    getActiveTasks: vi.fn(async (): Promise<Task[]> => options.activeTasks ?? []),
     onTaskTransition: vi.fn(),
     upsertIntegration: vi.fn(async (inp: Omit<Integration, "createdAt" | "updatedAt">) => {
       const now = new Date();
@@ -932,7 +935,7 @@ describe("runtime bootstrap provider selection", () => {
     expect(pollingInstance.start).toHaveBeenCalledTimes(1);
   });
 
-  it("starts the polling loop live when a task transitions into IN_REVIEW, without waiting for a plugin change or restart", async () => {
+  it("starts the polling loop live when a task requiring fallback polling appears, without a plugin change or restart", async () => {
     const dbReview = { source: "db-review" } as unknown as ReviewConnector;
     const dbAgent = makeDbAgentAdapter("mock");
 
@@ -965,25 +968,119 @@ describe("runtime bootstrap provider selection", () => {
       }
     );
 
-    const pollingInstance = runtime.PollingLoop.mock.results[0]?.value as { start: ReturnType<typeof vi.fn> };
+    const pollingInstance = runtime.PollingLoop.mock.results[0]?.value as {
+      start: ReturnType<typeof vi.fn>;
+      isRunning: () => boolean;
+    };
     expect(pollingInstance.start).not.toHaveBeenCalled();
 
-    // Simulate a live task transition into IN_REVIEW (a Gerrit push succeeded)
-    // without any plugin/project change or restart in between.
+    // A code-gen task has entered IN_REVIEW (Gerrit push succeeded). The
+    // debounced reconcile re-queries active tasks, so reflect that here.
+    runtime.stateStore.getActiveTasks.mockResolvedValue([
+      {
+        taskId: "t1",
+        taskType: "code-gen",
+        state: "IN_REVIEW",
+        externalChangeId: "12345",
+      } as unknown as Task,
+    ]);
+
     const onTaskTransitionCallback = runtime.stateStore.onTaskTransition.mock.calls[0]?.[0] as
       ((task: Task) => void) | undefined;
     expect(onTaskTransitionCallback).toBeTypeOf("function");
-    onTaskTransitionCallback?.({
-      taskId: "t1",
-      taskType: "code-gen",
-      state: "IN_REVIEW",
-      externalChangeId: "12345",
-    } as unknown as Task);
+
+    vi.useFakeTimers();
+    try {
+      onTaskTransitionCallback?.({
+        taskId: "t1",
+        taskType: "code-gen",
+        state: "IN_REVIEW",
+        externalChangeId: "12345",
+      } as unknown as Task);
+      // Flush the debounce window + the async reconcile.
+      await vi.advanceTimersByTimeAsync(1_500);
+    } finally {
+      vi.useRealTimers();
+    }
 
     expect(pollingInstance.start).toHaveBeenCalledTimes(1);
   });
 
-  it("does not start the polling loop from onTaskTransition for states that don't need fallback polling", async () => {
+  it("stops the polling loop live once no project or task requires polling", async () => {
+    const dbReview = { source: "db-review" } as unknown as ReviewConnector;
+    const dbAgent = makeDbAgentAdapter("mock");
+
+    // Stream-only Gerrit review project, but an active IN_REVIEW task means
+    // polling is required at boot (fallback poller) so the loop starts.
+    const runtime = await importRuntime(
+      { gerrit: dbReview, mock: dbAgent },
+      {
+        gerrit: makeIntegration({
+          id: "gerrit-review-only",
+          provider: "gerrit",
+          configJson: JSON.stringify({
+            baseUrl: "http://gerrit.test",
+            httpUsername: "admin",
+            httpPassword: "secret",
+            sshHost: "gerrit.test",
+            sshUser: "ve-bot",
+            sshKeyPath: "/keys/id_rsa",
+            repoCloneUrl: "ssh://gerrit.test/project",
+          }),
+        }),
+      },
+      {
+        configOverrides: {
+        },
+        withRunnableProject: {
+          projectId: "p1",
+          type: "review",
+          reviewTargetIntegrationId: "gerrit-review-only",
+        },
+        activeTasks: [
+          {
+            taskId: "t1",
+            taskType: "code-gen",
+            state: "IN_REVIEW",
+            externalChangeId: "12345",
+          } as unknown as Task,
+        ],
+      }
+    );
+
+    const pollingInstance = runtime.PollingLoop.mock.results[0]?.value as {
+      start: ReturnType<typeof vi.fn>;
+      stop: ReturnType<typeof vi.fn>;
+      isRunning: () => boolean;
+    };
+    expect(pollingInstance.start).toHaveBeenCalledTimes(1);
+    expect(pollingInstance.isRunning()).toBe(true);
+
+    // The task reached a terminal state — no active tasks and no polling-based
+    // project remain, so the reconcile should stop the loop.
+    runtime.stateStore.getActiveTasks.mockResolvedValue([]);
+
+    const onTaskTransitionCallback = runtime.stateStore.onTaskTransition.mock.calls[0]?.[0] as
+      ((task: Task) => void) | undefined;
+
+    vi.useFakeTimers();
+    try {
+      onTaskTransitionCallback?.({
+        taskId: "t1",
+        taskType: "code-gen",
+        state: "MERGED",
+        externalChangeId: "12345",
+      } as unknown as Task);
+      await vi.advanceTimersByTimeAsync(1_500);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(pollingInstance.stop).toHaveBeenCalledTimes(1);
+    expect(pollingInstance.isRunning()).toBe(false);
+  });
+
+  it("does not start the polling loop from a transition when nothing requires polling", async () => {
     const dbReview = { source: "db-review" } as unknown as ReviewConnector;
     const dbAgent = makeDbAgentAdapter("mock");
 
@@ -1021,21 +1118,20 @@ describe("runtime bootstrap provider selection", () => {
     const onTaskTransitionCallback = runtime.stateStore.onTaskTransition.mock.calls[0]?.[0] as
       ((task: Task) => void) | undefined;
 
-    // AGENT_RUNNING code-gen task: doesn't rely on polling-loop fallbacks.
-    onTaskTransitionCallback?.({
-      taskId: "t2",
-      taskType: "code-gen",
-      state: "AGENT_RUNNING",
-      externalChangeId: "12345",
-    } as unknown as Task);
-
-    // IN_REVIEW without an external change id: nothing for the fallback poller to check.
-    onTaskTransitionCallback?.({
-      taskId: "t3",
-      taskType: "code-gen",
-      state: "IN_REVIEW",
-      externalChangeId: null,
-    } as unknown as Task);
+    vi.useFakeTimers();
+    try {
+      // AGENT_RUNNING code-gen task: doesn't rely on polling-loop fallbacks,
+      // and getActiveTasks stays empty, so the reconcile keeps polling off.
+      onTaskTransitionCallback?.({
+        taskId: "t2",
+        taskType: "code-gen",
+        state: "AGENT_RUNNING",
+        externalChangeId: "12345",
+      } as unknown as Task);
+      await vi.advanceTimersByTimeAsync(1_500);
+    } finally {
+      vi.useRealTimers();
+    }
 
     expect(pollingInstance.start).not.toHaveBeenCalled();
   });

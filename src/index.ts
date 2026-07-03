@@ -36,6 +36,13 @@ import { buildTicketSourceLabel, parseIntegrationIdFromSourceLabel } from "./uti
 
 const log = getLogger("main");
 const SHUTDOWN_TIMEOUT_MS = 5_000;
+/**
+ * Debounce window for polling-loop reconciliation triggered by task state
+ * changes. Coalesces bursts of transitions (e.g. a task advancing through
+ * several states, or many tasks moving at once) into a single
+ * `pollingIsRequired()` re-check instead of querying the DB per transition.
+ */
+const POLLING_RECONCILE_DEBOUNCE_MS = 1_000;
 
 /** Bootstrap all runtime dependencies and start the Virtual Engineer main loop. */
 async function main(): Promise<void> {
@@ -137,22 +144,44 @@ async function main(): Promise<void> {
     { ...pollingProjectMode, reviewTrigger: pollingReviewTrigger }
   );
 
-  // Safety net: if a task transitions into a state whose only recovery path
-  // (when its stream event is missed) is a polling-loop fallback poller
-  // (`pollInReviewTasks` / `pollReviewWatchingTasks`), make sure the loop is
-  // running — even in a stream-only setup where polling is otherwise
-  // stopped. Without this, such a task could only be rescued by an admin
-  // integration/project change or a process restart (see
-  // `refreshRuntimeDependencies` / the startup `pollingIsRequired` check).
-  stateStore.onTaskTransition((task) => {
-    if (task.externalChangeId == null) return;
-    const needsFallbackPoll =
-      (task.taskType === "code-gen" && task.state === "IN_REVIEW") ||
-      (task.taskType === "code-review" && task.state === "REVIEW_WATCHING");
-    if (needsFallbackPoll && !pollingLoop.isRunning()) {
-      log.info({ taskId: task.taskId, state: task.state }, "task requires fallback polling — starting polling loop");
+  /**
+   * Start or stop the polling loop to match current need. Idempotent: only
+   * acts when the running state disagrees with `pollingIsRequired()`.
+   */
+  async function reconcilePollingLoop(): Promise<void> {
+    const required = await pollingIsRequired(stateStore, pluginManager);
+    if (required && !pollingLoop.isRunning()) {
+      log.info("polling required — starting polling loop");
       pollingLoop.start();
+    } else if (!required && pollingLoop.isRunning()) {
+      log.info("polling no longer required — stopping polling loop");
+      pollingLoop.stop();
     }
+  }
+
+  // Debounced reconcile trigger for task state changes. A single timer
+  // coalesces bursts so we run one `pollingIsRequired()` re-check per window.
+  let pollingReconcileTimer: NodeJS.Timeout | null = null;
+  function schedulePollingReconcile(): void {
+    if (pollingReconcileTimer) return;
+    pollingReconcileTimer = setTimeout(() => {
+      pollingReconcileTimer = null;
+      reconcilePollingLoop().catch((err: unknown) => {
+        log.error({ err }, "polling loop reconcile failed");
+      });
+    }, POLLING_RECONCILE_DEBOUNCE_MS);
+    // Don't keep the event loop alive solely for a pending reconcile.
+    if (typeof pollingReconcileTimer.unref === "function") pollingReconcileTimer.unref();
+  }
+
+  // Reconcile the polling loop whenever a task changes state. This starts the
+  // loop when a task enters a state whose only recovery path (on a missed
+  // stream event) is a fallback poller (`pollInReviewTasks` /
+  // `pollReviewWatchingTasks`) — even in an otherwise stream-only setup — and
+  // stops it again once no project or active task requires polling, so we
+  // don't leave background work running indefinitely.
+  stateStore.onTaskTransition(() => {
+    schedulePollingReconcile();
   });
 
   const integrationStreamEvents = new PluginIntegrationStreamEventsManager({
@@ -189,16 +218,7 @@ async function main(): Promise<void> {
     reviewTriggerHolder.current = buildReviewTrigger(pluginManager, config.workspaceBaseDir, workspaceRunner, stateStore);
     await integrationStreamEvents.reconcile(pluginManager.getActiveIntegrations());
     log.info("runtime dependencies refreshed");
-    // Cache the result instead of awaiting pollingIsRequired() twice below —
-    // avoids redundant DB queries and a possible inconsistent start/stop decision.
-    const pollingRequired = await pollingIsRequired(stateStore, pluginManager);
-    if (!pollingLoop.isRunning() && pollingRequired) {
-      log.info("polling-requiring project detected — starting polling loop");
-      pollingLoop.start();
-    } else if (pollingLoop.isRunning() && !pollingRequired) {
-      log.info("no polling-requiring projects remain — stopping polling loop");
-      pollingLoop.stop();
-    }
+    await reconcilePollingLoop();
   }
 
   if (typeof pluginManager.onPluginChange === "function") {
@@ -338,6 +358,10 @@ async function main(): Promise<void> {
 
     shuttingDown = true;
     log.info({ signal }, "shutting down");
+    if (pollingReconcileTimer) {
+      clearTimeout(pollingReconcileTimer);
+      pollingReconcileTimer = null;
+    }
     pollingLoop.stop();
 
     await closeAdminServer(adminServer, SHUTDOWN_TIMEOUT_MS);
@@ -368,7 +392,8 @@ async function main(): Promise<void> {
       "This only affects ticket-discovery polling (coding projects) and fallback " +
       "polling for in-review tasks; stream-based review intake (e.g., Gerrit) " +
       "continues to work. The loop will start automatically when a polling-based " +
-      "project is configured or a task needs the fallback poller."
+      "project is configured or a task needs the fallback poller, and stop again " +
+      "once neither is the case."
     );
   }
   log.info("Virtual Engineer running — press Ctrl+C to stop");

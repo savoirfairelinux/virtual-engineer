@@ -146,10 +146,28 @@ export interface TaskStoreApi {
 interface TaskStoreContext {
   db: BetterSQLite3Database<typeof schema>;
   raw: Database.Database;
+  /**
+   * Optional callback invoked after any method that changes a task's state:
+   * `transition`, `retryTask`, `abandonTask`, and a `deleteTask` that abandons a
+   * non-terminal task. Lets the facade notify listeners uniformly regardless of
+   * which entry point mutated the state. Not fired for pause/resume, which only
+   * append same-state metadata rows. Never throws into the caller.
+   */
+  onTaskStateChange?: (task: Task) => void;
 }
 
 export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
   const { db, raw } = context;
+
+  /** Fire the state-change callback, swallowing listener errors. */
+  function notifyStateChange(task: Task): void {
+    if (!context.onTaskStateChange) return;
+    try {
+      context.onTaskStateChange(task);
+    } catch (err) {
+      getLogger("task-store").warn({ err, taskId: task.taskId }, "task state-change listener failed");
+    }
+  }
 
   function rowToTask(row: typeof tasks.$inferSelect): Task {
     return {
@@ -337,6 +355,7 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
 
     const updated = await getTask(taskId);
     if (!updated) throw new Error(`Task disappeared after transition: ${taskId}`);
+    notifyStateChange(updated);
     return updated;
   }
 
@@ -833,6 +852,7 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
 
     const updated = await getTask(taskId);
     if (!updated) throw new Error(`Task disappeared after retry: ${taskId}`);
+    notifyStateChange(updated);
     return updated;
   }
 
@@ -853,6 +873,7 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
 
     const updated = await getTask(taskId);
     if (!updated) throw new Error(`Task disappeared after abandon: ${taskId}`);
+    notifyStateChange(updated);
     return updated;
   }
 
@@ -871,6 +892,8 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
           )
           .run(taskId, task.state, "ABANDONED", JSON.stringify({ action: "delete" }), now);
       })();
+      const abandoned = await getTask(taskId);
+      if (abandoned) notifyStateChange(abandoned);
       return;
     }
 
