@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AppConfig } from "../../src/config.js";
-import type { AgentAdapter, AgentResult, ReviewConnector, Integration, ProviderId, DomainCapability, TicketConnector } from "../../src/interfaces.js";
+import type { AgentAdapter, AgentResult, ReviewConnector, Integration, ProviderId, DomainCapability, TicketConnector, Task } from "../../src/interfaces.js";
 
 type ConnectorByType = Partial<Record<ProviderId, TicketConnector | ReviewConnector | AgentAdapter | null>>;
 
@@ -158,7 +158,10 @@ async function importRuntime(
     getActiveProviders: vi.fn(() => {
       return ALL_PROVIDERS.filter((provider) => getActiveIntegrationsByProvider(provider).length > 0);
     }),
-    integrationHasStreamEvents: vi.fn((_integrationId: string) => false),
+    integrationHasStreamEvents: vi.fn((integrationId: string) => {
+      const integration = getAllActiveIntegrations().find((i) => i.id === integrationId);
+      return integration?.provider === "gerrit";
+    }),
     registerFactory: vi.fn(),
     registerConnectionTester: vi.fn(),
     reloadIntegration: vi.fn().mockResolvedValue(undefined),
@@ -260,6 +263,7 @@ async function importRuntime(
         ? { integrationId: runnableProject.reviewTargetIntegrationId, repos: ["test/repo"] }
         : null
     ),
+    getActiveTasks: vi.fn(async (): Promise<Task[]> => []),
     upsertIntegration: vi.fn(async (inp: Omit<Integration, "createdAt" | "updatedAt">) => {
       const now = new Date();
       const existing = integrationData.get(inp.id);
@@ -814,7 +818,7 @@ describe("runtime bootstrap provider selection", () => {
     expect(pollingInstance.start).toHaveBeenCalledTimes(1);
   });
 
-  it("starts the polling loop in review-only mode with a review project", async () => {
+  it("does not start the polling loop for a stream-only (Gerrit) review project", async () => {
     const dbReview = { source: "db-review" } as unknown as ReviewConnector;
     const dbAgent = makeDbAgentAdapter("mock");
 
@@ -846,6 +850,82 @@ describe("runtime bootstrap provider selection", () => {
         },
       }
     );
+
+    const pollingInstance = runtime.PollingLoop.mock.results[0]?.value as { start: ReturnType<typeof vi.fn> };
+    expect(pollingInstance.start).not.toHaveBeenCalled();
+  });
+
+  it("starts the polling loop for a polling-based (GitLab MR) review-only project", async () => {
+    const dbReview = { source: "db-review" } as unknown as ReviewConnector;
+    const dbAgent = makeDbAgentAdapter("mock");
+
+    const runtime = await importRuntime(
+      { gitlab: dbReview, mock: dbAgent },
+      {
+        gitlab: makeIntegration({
+          id: "gitlab-review-only",
+          provider: "gitlab",
+          configJson: JSON.stringify({
+            baseUrl: "http://gitlab.test",
+            token: "token",
+          }),
+        }),
+      },
+      {
+        configOverrides: {
+        },
+        withRunnableProject: {
+          projectId: "p1",
+          type: "review",
+          reviewTargetIntegrationId: "gitlab-review-only",
+        },
+      }
+    );
+
+    const pollingInstance = runtime.PollingLoop.mock.results[0]?.value as { start: ReturnType<typeof vi.fn> };
+    expect(pollingInstance.start).toHaveBeenCalledTimes(1);
+  });
+
+  it("starts the polling loop when an active IN_REVIEW task needs the fallback poll, even in a stream-only setup", async () => {
+    const dbReview = { source: "db-review" } as unknown as ReviewConnector;
+    const dbAgent = makeDbAgentAdapter("mock");
+
+    const runtime = await importRuntime(
+      { gerrit: dbReview, mock: dbAgent },
+      {
+        gerrit: makeIntegration({
+          id: "gerrit-review-only",
+          provider: "gerrit",
+          configJson: JSON.stringify({
+            baseUrl: "http://gerrit.test",
+            httpUsername: "admin",
+            httpPassword: "secret",
+            sshHost: "gerrit.test",
+            sshUser: "ve-bot",
+            sshKeyPath: "/keys/id_rsa",
+            repoCloneUrl: "ssh://gerrit.test/project",
+          }),
+        }),
+      },
+      {
+        configOverrides: {
+        },
+      }
+    );
+
+    runtime.stateStore.getActiveTasks.mockResolvedValue([
+      {
+        taskId: "t1",
+        taskType: "code-gen",
+        state: "IN_REVIEW",
+        externalChangeId: "12345",
+      } as unknown as Task,
+    ]);
+
+    // Re-trigger the same startup check via onPluginChange to exercise pollingIsRequired again.
+    const onPluginChangeCallback = runtime.pluginManagerInstance.onPluginChange.mock.calls[0]?.[0] as (() => void) | undefined;
+    onPluginChangeCallback?.();
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
 
     const pollingInstance = runtime.PollingLoop.mock.results[0]?.value as { start: ReturnType<typeof vi.fn> };
     expect(pollingInstance.start).toHaveBeenCalledTimes(1);

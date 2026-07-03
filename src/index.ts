@@ -171,9 +171,15 @@ async function main(): Promise<void> {
     reviewTriggerHolder.current = buildReviewTrigger(pluginManager, config.workspaceBaseDir, workspaceRunner, stateStore);
     await integrationStreamEvents.reconcile(pluginManager.getActiveIntegrations());
     log.info("runtime dependencies refreshed");
-    if (!pollingLoop.isRunning() && await hasRunnableProject(stateStore, pluginManager)) {
-      log.info("runnable project detected — starting polling loop");
+    // Cache the result instead of awaiting pollingIsRequired() twice below —
+    // avoids redundant DB queries and a possible inconsistent start/stop decision.
+    const pollingRequired = await pollingIsRequired(stateStore, pluginManager);
+    if (!pollingLoop.isRunning() && pollingRequired) {
+      log.info("polling-requiring project detected — starting polling loop");
       pollingLoop.start();
+    } else if (pollingLoop.isRunning() && !pollingRequired) {
+      log.info("no polling-requiring projects remain — stopping polling loop");
+      pollingLoop.stop();
     }
   }
 
@@ -336,11 +342,12 @@ async function main(): Promise<void> {
     void shutdown("SIGTERM");
   });
 
-  if (await hasRunnableProject(stateStore, pluginManager)) {
+  if (await pollingIsRequired(stateStore, pluginManager)) {
     pollingLoop.start();
   } else {
     log.warn(
-      "Polling loop not started: no enabled project with all required integrations active. " +
+      "Polling loop not started: no enabled project with polling-requiring integrations active. " +
+      "Stream-based review systems (e.g., Gerrit) do not require polling. " +
       "Create a complete project via the admin UI to begin processing tickets."
     );
   }
@@ -405,19 +412,43 @@ function resolveReviewIntegration(
 }
 
 /**
- * Returns true when at least one enabled project has all required integrations
- * active in the plugin manager. For coding projects: ticket source + at least
- * one push target. For review projects: review target.
+ * Returns true when polling is actually required.
+ *
+ * Polling is needed when:
+ * - There is at least one enabled coding project with active ticket source +
+ *   push target integrations (ticket discovery always relies on polling).
+ * - There is at least one enabled review project whose active review
+ *   integration does NOT deliver events via a stream (e.g. GitHub/GitLab
+ *   MRs need polling; Gerrit with stream-events does not).
+ * - There is at least one active task whose progression depends on the
+ *   polling-loop fallbacks (`pollInReviewTasks` / `pollReviewWatchingTasks`).
+ *   Those fallbacks compensate for missed stream events, so a stream-only
+ *   setup (e.g. Gerrit) that restarted with an `IN_REVIEW` code-gen or
+ *   `REVIEW_WATCHING` code-review task still needs polling to avoid
+ *   stranding it.
  */
-async function hasRunnableProject(
+async function pollingIsRequired(
   store: {
     listProjects(filter?: { enabled?: boolean }): Promise<ProjectRecord[]>;
     getProjectTicketSource(id: ProjectId): Promise<ProjectTicketSourceRecord | null>;
     listProjectPushTargets(id: ProjectId): Promise<ProjectPushTargetRecord[]>;
     getProjectReviewConfig(id: ProjectId): Promise<ProjectReviewConfig | null>;
+    getActiveTasks(): Promise<Task[]>;
   },
   pluginManager: PluginManager
 ): Promise<boolean> {
+  // Active tasks whose only progression path (when their stream event is
+  // missed) is the polling-loop fallback keep polling alive regardless of
+  // project configuration.
+  const activeTasks = await store.getActiveTasks();
+  const needsFallbackPoll = activeTasks.some(
+    (t) =>
+      t.externalChangeId != null &&
+      ((t.taskType === "code-gen" && t.state === "IN_REVIEW") ||
+        (t.taskType === "code-review" && t.state === "REVIEW_WATCHING"))
+  );
+  if (needsFallbackPoll) return true;
+
   const projects = await store.listProjects({ enabled: true });
   for (const project of projects) {
     if (project.type === "coding") {
@@ -427,7 +458,7 @@ async function hasRunnableProject(
       if (pts.some(pt => pluginManager.isIntegrationActive(pt.integrationId))) return true;
     } else if (project.type === "review") {
       const rc = await store.getProjectReviewConfig(project.id);
-      if (rc && pluginManager.isIntegrationActive(rc.integrationId)) return true;
+      if (rc && pluginManager.isIntegrationActive(rc.integrationId) && !pluginManager.integrationHasStreamEvents(rc.integrationId)) return true;
     }
   }
   return false;
