@@ -971,6 +971,30 @@ describe("ReviewOrchestrator.runReview - inter-patchset delta", () => {
     const prompt = runner.runReviewInDocker.mock.calls[0]?.[1]?.prompt as string;
     expect(prompt).not.toContain("## Changes since last reviewed patchset");
   });
+
+  it("does not fetch a delta when reviewedPatchset equals currentPatchset", async () => {
+    const initial = makeTask({
+      state: "REVIEW_WATCHING",
+      cycleCount: 1,
+      reviewedPatchset: 3,
+      currentPatchset: 3,
+    });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+    (mocks.provider.getChangeDetails as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makeDetails({ currentPatchset: 3 })
+    );
+    const getInterPatchsetDiff = vi.fn(async () => makeDiff());
+    mocks.provider.getInterPatchsetDiff =
+      getInterPatchsetDiff as NonNullable<ReviewProvider["getInterPatchsetDiff"]>;
+
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+    await orch.runReview(initial.taskId);
+
+    expect(getInterPatchsetDiff).not.toHaveBeenCalled();
+    const prompt = runner.runReviewInDocker.mock.calls[0]?.[1]?.prompt as string;
+    expect(prompt).not.toContain("## Changes since last reviewed patchset");
+  });
 });
 
 describe("ReviewOrchestrator.runReview â failure paths", () => {
