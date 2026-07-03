@@ -3,14 +3,12 @@
  *
  * Auth: DB-backed session tokens. `login()` exchanges username/password for an
  * opaque session token (stored in sessionStorage) that is sent as a Bearer
- * token on every request. The legacy ADMIN_AUTH_SECRET HMAC token is only used
- * for the one-time first-admin setup call.
+ * token on every request.
  */
 
 import type { ApiMe, SetupStatus } from "./types.ts";
 
 const TOKEN_KEY  = "ve-admin-token";
-const LEGACY_SECRET_KEY = "ve-admin-secret";
 
 /* ─── Auth token management ───────────────────────────────────────────── */
 
@@ -20,7 +18,6 @@ export function getStoredToken(): string | null {
 
 export function clearStoredToken(): void {
   sessionStorage.removeItem(TOKEN_KEY);
-  sessionStorage.removeItem(LEGACY_SECRET_KEY);
 }
 
 /** Store a session token (used after successful login/setup). */
@@ -40,23 +37,6 @@ export function onUnauthorized(handler: (() => void) | null): void {
 function notifyUnauthorized(): void {
   clearStoredToken();
   unauthorizedHandler?.();
-}
-
-/**
- * Derive a short-lived legacy Bearer token (`timestamp.signature`) from the raw
- * ADMIN_AUTH_SECRET via Web Crypto HMAC-SHA256. Matches the server-side
- * computation in adminServer.ts isAuthorized(). Used ONLY for the first-run
- * `POST /api/admin/auth/setup` call.
- */
-export async function deriveLegacyToken(secret: string): Promise<string> {
-  const timestamp = String(Math.floor(Date.now() / 1000));
-  const enc = new TextEncoder();
-  const key = await crypto.subtle.importKey(
-    "raw", enc.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]
-  );
-  const sig = await crypto.subtle.sign("HMAC", key, enc.encode(timestamp));
-  const hex = Array.from(new Uint8Array(sig)).map((b) => b.toString(16).padStart(2, "0")).join("");
-  return `${timestamp}.${hex}`;
 }
 
 function authHeaders(): Record<string, string> {
@@ -155,12 +135,13 @@ export async function login(username: string, password: string): Promise<ApiMe> 
  * First-run setup: derives a legacy HMAC token from the raw ADMIN_AUTH_SECRET,
  * creates the first admin user, and stores the returned session token.
  */
-export async function setup(secret: string, username: string, password: string): Promise<ApiMe> {
-  const legacyToken = await deriveLegacyToken(secret);
+/**
+ * First-run setup: creates the first admin user and stores the returned session token.
+ */
+export async function setup(username: string, password: string): Promise<ApiMe> {
   const res = await fetch("/api/admin/auth/setup", {
     method: "POST",
     headers: {
-      authorization: `Bearer ${legacyToken}`,
       "content-type": "application/json",
     },
     body: JSON.stringify({ username, password }),

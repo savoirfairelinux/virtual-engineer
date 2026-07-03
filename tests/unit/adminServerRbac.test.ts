@@ -101,7 +101,7 @@ describe("adminServer RBAC and session auth", () => {
     if (!adminSession) {
       const setup = await fetch(`${baseUrl}/api/admin/auth/setup`, {
         method: "POST",
-        headers: { authorization: `Bearer ${hmacToken()}`, "content-type": "application/json" },
+        headers: { "content-type": "application/json" },
         body: JSON.stringify({ username, password }),
       });
       expect(setup.status).toBe(201);
@@ -122,26 +122,25 @@ describe("adminServer RBAC and session auth", () => {
     return (await login.json()) as SessionResponse;
   }
 
-  it("accepts legacy HMAC tokens everywhere while zero users exist", async () => {
+  it("allows unauthenticated requests while zero users exist (bootstrap mode)", async () => {
     for (const path of ["/api/admin/status", "/api/admin/tasks", "/api/admin/prompts"]) {
-      const response = await fetch(`${baseUrl}${path}`, {
-        headers: { authorization: `Bearer ${hmacToken()}` },
-      });
+      const response = await fetch(`${baseUrl}${path}`);
       expect(response.status).toBe(200);
     }
 
     // Mutations work too (bootstrap actor is treated as admin).
     const create = await fetch(`${baseUrl}/api/admin/prompts`, {
       method: "POST",
-      headers: { authorization: `Bearer ${hmacToken()}`, "content-type": "application/json" },
+      headers: { "content-type": "application/json" },
       body: JSON.stringify({ label: "Bootstrap Prompt", content: "hello" }),
     });
     expect(create.status).toBe(201);
   });
 
-  it("rejects legacy HMAC tokens on normal routes once a user exists", async () => {
+  it("rejects unknown bearer tokens on normal routes once a user exists", async () => {
     const admin = await setupAndLogin("root", "password123", "admin");
 
+    // Any Bearer token that is not a valid session token is rejected.
     const withHmac = await fetch(`${baseUrl}/api/admin/status`, {
       headers: { authorization: `Bearer ${hmacToken()}` },
     });
@@ -283,9 +282,7 @@ describe("adminServer RBAC and session auth", () => {
     });
     try {
       const legacyBase = await listen(legacyServer);
-      const response = await fetch(`${legacyBase}/api/admin/status`, {
-        headers: { authorization: `Bearer ${hmacToken()}` },
-      });
+      const response = await fetch(`${legacyBase}/api/admin/status`);
       expect(response.status).toBe(200);
 
       // Session auth is unavailable → setup-status reports no setup needed.

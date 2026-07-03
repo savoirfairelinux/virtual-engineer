@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { readFileSync, existsSync } from "node:fs";
 import { join, extname, resolve } from "node:path";
 import { getLogger } from "../logger.js";
@@ -55,7 +55,9 @@ const MIME_MAP: Record<string, string> = {
 
 /**
  * Admin HTTP server — REST API for orchestrator status, task control, prompts, integrations,
- * agents, projects, concurrency, and webhooks. Auth: HMAC-SHA256 Bearer (ADMIN_AUTH_SECRET).
+ * agents, projects, concurrency, and webhooks.
+ * Auth: DB-backed session tokens (user accounts); ADMIN_AUTH_SECRET is used only for
+ * OAuth token encryption at rest.
  */
 
 const log = getLogger("admin-server");
@@ -411,10 +413,11 @@ async function handleRequest(
       writeJson(response, 405, { error: "Method not allowed" });
       return;
     }
-    const requiresAuth = Boolean(dependencies.config.adminAuthSecret);
+    // Auth is required when the user store is available (session-based).
+    // Without a user store (legacy embedders), the admin API is fully open.
+    const requiresAuth = authRuntime.authService !== null;
     writeHtml(response, 200, renderAdminDashboardHtml({
       requiresAuth,
-      authMode: getAdminAuthMode(dependencies.config),
       nonce,
       ...getProviderUrls(dependencies.pluginManager),
     }));
@@ -427,7 +430,7 @@ async function handleRequest(
     const queryToken = requestUrl.searchParams.get("t") ?? "";
     const proxyAuthorized = authRuntime.authService && (await authRuntime.usersExist())
       ? (await authRuntime.authService.validateSession(queryToken)) !== null
-      : isAuthorizedToken(queryToken, dependencies.config);
+      : true; // bootstrap mode (no users yet): open
     if (!proxyAuthorized) { writeJson(response, 401, { error: "Unauthorized" }); return; }
     const { gitlabBaseUrl, gitlabToken: gitlabTokenVal } = getProviderUrls(dependencies.pluginManager);
     if (!gitlabBaseUrl || !targetUrl.startsWith(gitlabBaseUrl)) {
@@ -486,12 +489,7 @@ async function handleRequest(
 
   if (!isPublicAuthRoute) {
     if (method === "POST" && path === "/api/admin/auth/setup") {
-      // Bootstrap: the legacy HMAC token unlocks first-admin creation
-      // (the route handler additionally enforces that zero users exist).
-      if (!isAuthorized(request, dependencies.config)) {
-        sendUnauthorized(response);
-        return;
-      }
+      // Bootstrap: setup is unauthenticated; the route handler enforces zero users exist.
       setAuthContext(request, { userId: null, username: "bootstrap", role: "admin" });
     } else if (authRuntime.authService && (await authRuntime.usersExist())) {
       // ≥1 user exists → only DB-backed session tokens are accepted.
@@ -503,11 +501,7 @@ async function handleRequest(
       }
       setAuthContext(request, context);
     } else {
-      // Bootstrap mode (no users yet) — legacy HMAC keeps working everywhere.
-      if (!isAuthorized(request, dependencies.config)) {
-        sendUnauthorized(response);
-        return;
-      }
+      // Bootstrap mode (no users yet, or no user store) — all admin routes open.
       setAuthContext(request, { userId: null, username: "bootstrap", role: "admin" });
     }
   }
@@ -554,74 +548,6 @@ function extractBearerToken(request: IncomingMessage): string | null {
   return token.length > 0 ? token : null;
 }
 
-/** Derive the admin auth mode string from the runtime config. */
-function getAdminAuthMode(config: AdminRuntimeConfig): "none" | "hmac" {
-  if (config.adminAuthSecret) {
-    return "hmac";
-  }
-  return "none";
-}
-
-/** Return true if the request carries a valid HMAC-SHA256 Bearer token. */
-function isAuthorized(
-  request: IncomingMessage,
-  config: AdminRuntimeConfig
-): boolean {
-  if (!config.adminAuthSecret) {
-    return true;
-  }
-
-  const authorization = request.headers.authorization;
-  if (!authorization?.startsWith("Bearer ")) {
-    return false;
-  }
-
-  const token = authorization.slice("Bearer ".length);
-
-  const parts = token.split(".");
-  if (parts.length === 2) {
-    const timestampStr = parts[0];
-    const providedSignature = parts[1];
-    if (!timestampStr || !providedSignature) {
-      return false;
-    }
-    const timestamp = parseInt(timestampStr, 10);
-
-    if (!Number.isInteger(timestamp)) {
-      return false;
-    }
-
-    // Check if timestamp is recent (within 5 minutes = 300 seconds)
-    const now = Math.floor(Date.now() / 1000);
-    if (Math.abs(now - timestamp) > 300) {
-      return false;
-    }
-
-    // ⚠️ SECURITY: timingSafeEqual prevents timing attacks.
-    const expectedSignature = createHmac("sha256", config.adminAuthSecret)
-      .update(timestampStr)
-      .digest("hex");
-
-    const expectedBuf = Buffer.from(expectedSignature, "hex");
-    const providedBuf = Buffer.from(providedSignature, "hex");
-    if (
-      expectedBuf.length === providedBuf.length &&
-      timingSafeEqual(expectedBuf, providedBuf)
-    ) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
-/** Return true if the raw token string is valid (used for query-parameter auth on image-proxy routes). */
-function isAuthorizedToken(token: string, config: AdminRuntimeConfig): boolean {
-  if (!config.adminAuthSecret) return true;
-  if (!token) return false;
-  const fakeRequest = { headers: { authorization: "Bearer " + token } } as unknown as IncomingMessage;
-  return isAuthorized(fakeRequest, config);
-}
 
 /** Set security-oriented HTTP response headers on every admin response. */
 function applySecurityHeaders(response: ServerResponse, nonce: string): void {

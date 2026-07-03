@@ -154,7 +154,7 @@ Copy `.env.example` → `.env`. All provider credentials live in the DB (admin U
 | `DATABASE_PATH` | `./data/virtual-engineer.db` | |
 | `ADMIN_API_HOST` | `0.0.0.0` | Use `127.0.0.1` to restrict to localhost |
 | `ADMIN_API_PORT` | `3100` | |
-| `ADMIN_AUTH_SECRET` | — | HMAC-SHA256 Bearer secret — recommended for exposed instances |
+| `ADMIN_AUTH_SECRET` | — | Encrypts OAuth session tokens in the database (recommended when persisting integrations) |
 | `MAX_AGENT_CYCLES` | `3` | Max Copilot cycles per task before `FAILED` |
 | `MAX_RETRY_ATTEMPTS` | `5` | Max times a ticket can be retried across all tasks |
 | `AGENT_TIMEOUT_MS` | `1800000` | Host-side agent timeout (ms, 30 min) |

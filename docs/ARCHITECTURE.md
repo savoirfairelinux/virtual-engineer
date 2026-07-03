@@ -284,7 +284,7 @@ Manages the **Docker volume lifecycle** for each agent cycle. All VCS operations
 
 Plain Node.js `http.createServer` — no framework. The main file handles auth, security headers, and public endpoints (dashboard, health, img-proxy), then dispatches to modular route handlers that each follow the pattern `handleXxxRoute(req, res, path, method, deps): Promise<boolean>`.
 
-**Authentication:** `Authorization: Bearer <hex-HMAC-SHA256>` when `ADMIN_AUTH_SECRET` is set. Comparison uses `crypto.timingSafeEqual`.
+**Authentication:** DB-backed session tokens. `POST /api/admin/auth/login` exchanges username/password for an opaque random token (stored as SHA-256 hash in `user_sessions`). Every subsequent request sends `Authorization: Bearer <token>`. RBAC roles (admin/operator/viewer) are enforced per route. `ADMIN_AUTH_SECRET` is used only to encrypt OAuth tokens stored in the database, not for admin auth.
 
 **Route modules:**
 

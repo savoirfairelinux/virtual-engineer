@@ -23,7 +23,6 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
-  const [secret, setSecret] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -36,7 +35,7 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
   }, []);
 
   const canSubmit = mode === "setup"
-    ? secret.trim().length > 0 && username.trim().length > 0 && password.length >= 8 && confirm.length > 0
+    ? username.trim().length > 0 && password.length >= 8 && confirm.length > 0
     : username.trim().length > 0 && password.length > 0;
 
   async function handleSubmit(e: React.FormEvent) {
@@ -52,15 +51,13 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
     setLoading(true);
     try {
       const user = mode === "setup"
-        ? await setup(secret.trim(), username.trim(), password)
+        ? await setup(username.trim(), password)
         : await login(username.trim(), password);
       onAuthenticated(user);
     } catch (err) {
       if (err instanceof ApiError) {
         if (mode === "login" && err.status === 401) {
           setError("Invalid credentials.");
-        } else if (mode === "setup" && err.status === 401) {
-          setError("Invalid ADMIN_AUTH_SECRET — access denied.");
         } else {
           setError(err.message);
         }
@@ -108,23 +105,13 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
           <>
             <div style={{ marginBottom: "20px", color: "var(--text-dim)", fontSize: "13.5px" }}>
               {mode === "setup" ? (
-                <>No users exist yet. Enter the <code style={{ fontFamily: "var(--font-mono)", fontSize: "12px" }}>ADMIN_AUTH_SECRET</code> to create the first admin account.</>
+                <>No users exist yet. Create the first admin account to get started.</>
               ) : (
                 <>Sign in with your username and password.</>
               )}
             </div>
 
             <form onSubmit={(e) => void handleSubmit(e)}>
-              {mode === "setup" && (
-                <input
-                  type="password"
-                  value={secret}
-                  onChange={(e) => setSecret(e.target.value)}
-                  placeholder="ADMIN_AUTH_SECRET…"
-                  autoFocus
-                  style={inputStyle}
-                />
-              )}
               <input
                 type="text"
                 value={username}

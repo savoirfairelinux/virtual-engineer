@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createHmac, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
@@ -12,11 +12,6 @@ registerBuiltinPlugins();
 
 const SECRET = "audit-routes-secret";
 
-function hmacToken(secret: string = SECRET): string {
-  const timestamp = Math.floor(Date.now() / 1000);
-  const signature = createHmac("sha256", secret).update(timestamp.toString()).digest("hex");
-  return `${timestamp}.${signature}`;
-}
 
 function tempDbPath(): string {
   return join(tmpdir(), `ve-audit-routes-${randomUUID()}.db`);
@@ -89,7 +84,7 @@ describe("adminAuditRoutes + audit instrumentation", () => {
     baseUrl = await listen(server);
     const setup = await fetch(`${baseUrl}/api/admin/auth/setup`, {
       method: "POST",
-      headers: { authorization: `Bearer ${hmacToken()}`, "content-type": "application/json" },
+      headers: { "content-type": "application/json" },
       body: JSON.stringify({ username: "root", password: "password123" }),
     });
     expect(setup.status).toBe(201);

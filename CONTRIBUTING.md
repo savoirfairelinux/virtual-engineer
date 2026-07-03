@@ -36,7 +36,7 @@ Thank you for your interest in contributing! This document covers how to set up 
 
 ```bash
 npm install
-cp .env.example .env         # fill in ADMIN_AUTH_SECRET if needed
+cp .env.example .env         # set ADMIN_AUTH_SECRET if you want encrypted OAuth token storage
 npm run db:migrate
 docker build -f Dockerfile.agent -t virtual-engineer-workspace:latest .
 npm run dev                  # starts orchestrator at http://127.0.0.1:3100/admin

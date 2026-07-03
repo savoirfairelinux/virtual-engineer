@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createHmac, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
@@ -7,12 +7,6 @@ import { SqliteStateStore } from "../../src/state/stateStore.js";
 import { createAdminServer } from "../../src/admin/adminServer.js";
 
 const SECRET = "test-admin-secret";
-
-function hmacToken(secret: string = SECRET): string {
-  const timestamp = Math.floor(Date.now() / 1000);
-  const signature = createHmac("sha256", secret).update(timestamp.toString()).digest("hex");
-  return `${timestamp}.${signature}`;
-}
 
 function tempDbPath(): string {
   return join(tmpdir(), `ve-auth-routes-${randomUUID()}.db`);
@@ -60,7 +54,7 @@ interface SessionResponse {
 async function runSetup(baseUrl: string, username = "root", password = "password123"): Promise<SessionResponse> {
   const response = await fetch(`${baseUrl}/api/admin/auth/setup`, {
     method: "POST",
-    headers: { authorization: `Bearer ${hmacToken()}`, "content-type": "application/json" },
+    headers: { "content-type": "application/json" },
     body: JSON.stringify({ username, password }),
   });
   expect(response.status).toBe(201);
@@ -90,13 +84,13 @@ describe("adminAuthRoutes", () => {
       await expect(response.json()).resolves.toEqual({ needsSetup: true });
     });
 
-    it("rejects setup without the legacy HMAC token", async () => {
+    it("allows setup without any authorization header", async () => {
       const response = await fetch(`${baseUrl}/api/admin/auth/setup`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ username: "root", password: "password123" }),
       });
-      expect(response.status).toBe(401);
+      expect(response.status).toBe(201);
     });
 
     it("creates the first admin, logs them in, and records an audit entry", async () => {
@@ -118,7 +112,7 @@ describe("adminAuthRoutes", () => {
       await runSetup(baseUrl);
       const response = await fetch(`${baseUrl}/api/admin/auth/setup`, {
         method: "POST",
-        headers: { authorization: `Bearer ${hmacToken()}`, "content-type": "application/json" },
+        headers: { "content-type": "application/json" },
         body: JSON.stringify({ username: "second", password: "password123" }),
       });
       expect(response.status).toBe(403);
@@ -128,7 +122,7 @@ describe("adminAuthRoutes", () => {
       for (const body of [{ username: "", password: "password123" }, { username: "root", password: "short" }]) {
         const response = await fetch(`${baseUrl}/api/admin/auth/setup`, {
           method: "POST",
-          headers: { authorization: `Bearer ${hmacToken()}`, "content-type": "application/json" },
+          headers: { "content-type": "application/json" },
           body: JSON.stringify(body),
         });
         expect(response.status).toBe(400);
