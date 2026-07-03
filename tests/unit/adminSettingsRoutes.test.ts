@@ -119,6 +119,12 @@ describe("Admin API — Settings routes", () => {
     expect(controller.update).not.toHaveBeenCalled();
   });
 
+  it("PUT rejects a pollingIntervalMs that is not a whole number of seconds", async () => {
+    const r = await rest(server, "/api/admin/settings", { method: "PUT", body: { pollingIntervalMs: 15500 } });
+    expect(r.status).toBe(400);
+    expect(controller.update).not.toHaveBeenCalled();
+  });
+
   it("PUT accepts null to reset a value to its default", async () => {
     // First override, then clear it with null.
     await rest(server, "/api/admin/settings", { method: "PUT", body: { maxAgentCycles: 9 } });

@@ -27,15 +27,20 @@ export interface SettingsRouteDeps {
 
 /**
  * Parse a settings value into a positive integer or `null` (which clears the
- * override), otherwise return an error message.
+ * override), otherwise return an error message. `pollingIntervalMs` must also
+ * be a whole number of seconds (multiple of 1000ms) to stay consistent with the
+ * seconds-based UI editor.
  */
-function parseSetting(value: unknown, field: string): number | null | { error: string } {
+function parseSetting(value: unknown, field: keyof EffectiveWorkflowSettings): number | null | { error: string } {
   if (value === null) return null;
   if (typeof value !== "number" || !Number.isFinite(value)) {
     return { error: `${field} must be a number or null` };
   }
   if (!Number.isInteger(value) || value <= 0) {
     return { error: `${field} must be a positive integer` };
+  }
+  if (field === "pollingIntervalMs" && value % 1000 !== 0) {
+    return { error: `${field} must be a multiple of 1000 (whole seconds)` };
   }
   return value;
 }
