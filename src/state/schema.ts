@@ -406,7 +406,7 @@ export const userSessions = sqliteTable(
   {
     id: integer("id").primaryKey({ autoIncrement: true }),
     tokenHash: text("token_hash").notNull().unique(),
-    userId: text("user_id").notNull().references(() => users.id),
+    userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
     createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
     expiresAt: integer("expires_at", { mode: "timestamp" }).notNull(),
     lastSeenAt: integer("last_seen_at", { mode: "timestamp" }).notNull(),
