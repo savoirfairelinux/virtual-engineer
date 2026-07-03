@@ -175,7 +175,7 @@ export interface PluginField {
 }
 
 export interface ApiPluginOAuth {
-  mode: "device";
+  mode: "device" | "redirect";
   tokenField: string;
   dependsOn?: { field: string; value: string };
   providerName: string;

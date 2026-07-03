@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { Modal, Field, FieldInput, FieldSelect, FormError, FormRow, FieldTextarea } from "../../components/Modal.tsx";
 import { Icon } from "../../components/Icon.tsx";
 import { ProviderGlyph } from "../../components/ProviderGlyph.tsx";
@@ -78,6 +78,22 @@ function TypePicker({ plugins, onSelect }: { plugins: ApiPlugin[]; onSelect: (pr
   );
 }
 
+function base64UrlEncode(bytes: Uint8Array): string {
+  let s = "";
+  for (const b of bytes) s += String.fromCharCode(b);
+  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+/** Generate a PKCE verifier + S256 challenge pair using the Web Crypto API. */
+async function generatePkce(): Promise<{ verifier: string; challenge: string }> {
+  const randomBytes = new Uint8Array(32);
+  crypto.getRandomValues(randomBytes);
+  const verifier = base64UrlEncode(randomBytes);
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));
+  const challenge = base64UrlEncode(new Uint8Array(digest));
+  return { verifier, challenge };
+}
+
 function useOAuthFlow(
   oauth: ApiPluginOAuth | undefined,
   onToken: (token: string) => void
@@ -87,12 +103,46 @@ function useOAuthFlow(
   const [verificationUri, setVerificationUri] = useState<string | null>(null);
   const [deviceCode, setDeviceCode] = useState<string | null>(null);
   const [oauthError, setOauthError] = useState<string | null>(null);
+  // Redirect (manual-code) flow state.
+  const [authorizationUrl, setAuthorizationUrl] = useState<string | null>(null);
+  const [awaitingCode, setAwaitingCode] = useState(false);
+  const [code, setCode] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const pkceRef = useRef<{ verifier: string; state: string } | null>(null);
+
+  const reset = useCallback(() => {
+    setPending(false);
+    setUserCode(null);
+    setVerificationUri(null);
+    setDeviceCode(null);
+    setAuthorizationUrl(null);
+    setAwaitingCode(false);
+    setCode("");
+    setSubmitting(false);
+    pkceRef.current = null;
+  }, []);
 
   const start = useCallback(async () => {
     if (!oauth) return;
     setOauthError(null);
     setPending(true);
     try {
+      if (oauth.mode === "redirect") {
+        // Manual authorization-code flow: request an authorization URL, then the
+        // user pastes back the code shown on the provider's callback page.
+        const { verifier, challenge } = await generatePkce();
+        const state = base64UrlEncode(crypto.getRandomValues(new Uint8Array(32)));
+        pkceRef.current = { verifier, state };
+        const res = await api.post<{ authorizationUrl: string }>(oauth.startPath, {
+          redirectUri: window.location.origin,
+          state,
+          codeChallenge: challenge,
+          codeChallengeMethod: "S256",
+        });
+        setAuthorizationUrl(res.authorizationUrl);
+        setAwaitingCode(true);
+        return;
+      }
       const res = await api.post<{ userCode: string; verificationUri: string; deviceCode: string }>(
         oauth.startPath,
         {}
@@ -106,9 +156,38 @@ function useOAuthFlow(
     }
   }, [oauth]);
 
-  // Poll for completion
+  const submitCode = useCallback(async () => {
+    if (!oauth || !pkceRef.current) return;
+    const trimmed = code.trim();
+    if (!trimmed) { setOauthError("Paste the authorization code from the provider."); return; }
+    setOauthError(null);
+    setSubmitting(true);
+    try {
+      const res = await api.post<{ encryptedToken?: string; isPlaintext?: boolean }>(
+        oauth.completePath,
+        {
+          code: trimmed,
+          redirectUri: window.location.origin,
+          state: pkceRef.current.state,
+          codeVerifier: pkceRef.current.verifier,
+        }
+      );
+      if (res.encryptedToken) {
+        onToken(res.encryptedToken);
+        reset();
+      } else {
+        setOauthError("No token returned by the provider.");
+        setSubmitting(false);
+      }
+    } catch (e) {
+      setOauthError(e instanceof Error ? e.message : "Failed to exchange authorization code");
+      setSubmitting(false);
+    }
+  }, [oauth, code, onToken, reset]);
+
+  // Poll for completion (device flow only).
   useEffect(() => {
-    if (!oauth || !deviceCode) return;
+    if (!oauth || oauth.mode !== "device" || !deviceCode) return;
     let active = true;
     const poll = async () => {
       try {
@@ -123,10 +202,7 @@ function useOAuthFlow(
         const receivedToken = res.encryptedToken ?? (res[oauth.tokenField] as string | undefined);
         if (receivedToken) {
           onToken(receivedToken);
-          setPending(false);
-          setUserCode(null);
-          setVerificationUri(null);
-          setDeviceCode(null);
+          reset();
         } else {
           setTimeout(poll, 3000);
         }
@@ -136,16 +212,27 @@ function useOAuthFlow(
     };
     const t = setTimeout(poll, 3000);
     return () => { active = false; clearTimeout(t); };
-  }, [oauth, deviceCode, onToken]);
+  }, [oauth, deviceCode, onToken, reset]);
 
   const cancel = useCallback(() => {
-    setPending(false);
-    setUserCode(null);
-    setVerificationUri(null);
-    setDeviceCode(null);
-  }, []);
+    reset();
+  }, [reset]);
 
-  return { pending, userCode, verificationUri, oauthError, start, cancel };
+  return {
+    pending,
+    userCode,
+    verificationUri,
+    oauthError,
+    start,
+    cancel,
+    mode: oauth?.mode ?? "device",
+    authorizationUrl,
+    awaitingCode,
+    code,
+    setCode,
+    submitCode,
+    submitting,
+  };
 }
 
 function DynamicField({
@@ -454,6 +541,42 @@ export function IntegrationFormModal({ integration, plugins, onClose, onSaved }:
                 <button className="btn ghost" onClick={oauth.cancel} style={{ alignSelf: "flex-start" }}>
                   Cancel
                 </button>
+              </div>
+            ) : oauth.awaitingCode ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                <div style={{ fontSize: "13px" }}>
+                  1. Open the authorization page, sign in, and approve access:
+                </div>
+                <a
+                  href={oauth.authorizationUrl ?? "#"}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="btn secondary"
+                  style={{ alignSelf: "flex-start", textDecoration: "none" }}
+                >
+                  Open Claude authorization page ↗
+                </a>
+                <div style={{ fontSize: "13px" }}>
+                  2. Copy the authorization code shown afterwards and paste it here:
+                </div>
+                <FieldInput
+                  type="text"
+                  value={oauth.code}
+                  onChange={(e) => oauth.setCode(e.currentTarget.value)}
+                  placeholder="Paste authorization code…"
+                />
+                <div style={{ display: "flex", gap: "8px" }}>
+                  <button
+                    className="btn secondary"
+                    onClick={oauth.submitCode}
+                    disabled={oauth.submitting || !oauth.code.trim()}
+                  >
+                    {oauth.submitting ? "Connecting…" : "Connect"}
+                  </button>
+                  <button className="btn ghost" onClick={oauth.cancel}>
+                    Cancel
+                  </button>
+                </div>
               </div>
             ) : (
               <button
