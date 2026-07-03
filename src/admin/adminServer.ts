@@ -503,6 +503,9 @@ async function handleRequest(
       setAuthContext(request, context);
     } else {
       // Bootstrap mode (no users yet, or no user store) — all admin routes open.
+      if (!authRuntime.userStore) {
+        log.warn("Admin user store is unavailable; admin API is running without authentication");
+      }
       setAuthContext(request, { userId: null, username: "bootstrap", role: "admin" });
     }
   }
