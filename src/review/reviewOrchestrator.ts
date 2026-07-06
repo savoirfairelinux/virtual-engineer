@@ -58,6 +58,7 @@ export interface ReviewOrchestratorDeps {
     | "findProjectsByReviewTarget"
     | "getProjectById"
     | "updateExternalChangeId"
+    | "findReviewedCodeReviewTask"
     | "getPostedReviewCommentHashes"
     | "getPostedReviewComments"
     | "markReviewCommentsPosted"
@@ -245,6 +246,23 @@ export class ReviewOrchestrator {
         // Terminal existing task that is NOT a duplicate of an already-reviewed
         // patchset (e.g. REVIEW_FAILED retry, or a manual force on a change whose
         // prior review is DONE): fall through to create a fresh review task.
+      }
+
+      // Secondary guard: when the integration was deleted and recreated with a
+      // new UUID, getTaskByTicketId returns null (the ticketId changed), but a
+      // prior task may have already reviewed this patchset for this change+project.
+      // Automatic triggers (force !== true) must not create a duplicate in that case.
+      if (existing === null && input.force !== true) {
+        const priorReviewed = await this.deps.stateStore.findReviewedCodeReviewTask(
+          input.changeId, project.id
+        );
+        if (priorReviewed !== null && priorReviewed.reviewedPatchset === details.currentPatchset) {
+          log.info(
+            { changeId: input.changeId, patchset: details.currentPatchset, projectId: project.id, priorTaskId: priorReviewed.taskId },
+            "patchset already reviewed by prior integration instance — skipping automatic re-trigger"
+          );
+          continue;
+        }
       }
 
       const taskId = makeTaskId(`review-${details.changeNumber}-${randomUUID().slice(0, 8)}`);
