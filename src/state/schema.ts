@@ -261,6 +261,28 @@ export const changePerRepository = sqliteTable(
 // ─── Agents / Projects / Concurrency ─────────────────────────────────────────
 
 /**
+ * Reusable Virtual Engineer identities. Each row defines a name, email, username
+ * and signature. Workflows (projects) may reference an identity via
+ * `projects.identity_id` to control how VE appears when posting comments,
+ * creating tickets, or sending notifications.
+ */
+export const identities = sqliteTable(
+  "identities",
+  {
+    id: text("id").primaryKey(),
+    name: text("name").notNull(),
+    email: text("email").notNull().default(""),
+    username: text("username").notNull().default(""),
+    signature: text("signature").notNull().default(""),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
+  },
+  (table) => ({
+    idxIdentitiesName: index("idx_identities_name").on(table.name),
+  })
+);
+
+/**
  * Reusable agent definitions (library). One agent can back many projects.
  * `modelConfigJson` carries the model + credentials; prompts are referenced by FK.
  */
@@ -304,6 +326,8 @@ export const projects = sqliteTable(
     postCloneScript: text("post_clone_script").notNull().default(""),
     /** When 1, the agent container loads team-defined skills from `<repo>/.github/skills` (coding and review projects). */
     skillDiscoveryEnabled: integer("skill_discovery_enabled").notNull().default(0),
+    /** Optional FK to `identities.id` — the VE identity used for this workflow. NULL = default behaviour. */
+    identityId: text("identity_id").references(() => identities.id),
     enabled: integer("enabled").notNull().default(0),
     createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
     updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),

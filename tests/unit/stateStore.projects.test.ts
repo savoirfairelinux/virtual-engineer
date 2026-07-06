@@ -504,6 +504,7 @@ describe("resolveAgentConfig — partial-merge semantics", () => {
       agentOverrideJson,
       postCloneScript: "",
       skillDiscoveryEnabled: false,
+      identityId: null,
       enabled: true,
       createdAt: new Date(),
       updatedAt: new Date(),

@@ -7,6 +7,7 @@ export type TicketId = string & { readonly __brand: "TicketId" };
 export type ExternalChangeId = string & { readonly __brand: "ExternalChangeId" };
 export type AgentId = string & { readonly __brand: "AgentId" };
 export type ProjectId = string & { readonly __brand: "ProjectId" };
+export type IdentityId = string & { readonly __brand: "IdentityId" };
 
 /** Cast a plain string to the branded `TaskId` type. */
 export function makeTaskId(s: string): TaskId {
@@ -27,6 +28,10 @@ export function makeAgentId(s: string): AgentId {
 /** Cast a plain string to the branded `ProjectId` type. */
 export function makeProjectId(s: string): ProjectId {
   return s as ProjectId;
+}
+/** Cast a plain string to the branded `IdentityId` type. */
+export function makeIdentityId(s: string): IdentityId {
+  return s as IdentityId;
 }
 
 // ─── Phase 2: Agents / Projects / Concurrency types ───────────────────────────
@@ -64,7 +69,33 @@ export interface ProjectRecord {
   postCloneScript: string;
   /** When true, the agent container loads team-defined skills from `<repo>/.github/skills` (coding projects only). */
   skillDiscoveryEnabled: boolean;
+  /**
+   * Optional VE identity used for this workflow's outward-facing interactions
+   * (comment signatures, ticket/notification authorship metadata). NULL = use
+   * the default behaviour (no identity applied).
+   */
+  identityId: string | null;
   enabled: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+/**
+ * A reusable Virtual Engineer identity. Admins define one or more identities and
+ * bind them to workflows (projects). When a workflow has an identity, VE uses it
+ * consistently for outward-facing interactions such as comment signatures,
+ * ticket creation, and notifications. When absent, VE keeps its default behaviour.
+ */
+export interface IdentityRecord {
+  id: IdentityId;
+  /** Human-readable display name (e.g. "Virtual Engineer"). */
+  name: string;
+  /** Email address associated with the identity. Empty string = unset. */
+  email: string;
+  /** Username/handle used on integrations. Empty string = unset. */
+  username: string;
+  /** Signature appended to posted comments. Empty string = no signature. */
+  signature: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -1283,6 +1314,27 @@ export interface StateStore {
 
   /** List agent records, optionally filtered by type and/or enabled status. */
   listAgents(filter?: { type?: AgentType; enabled?: boolean }): Promise<AgentRecord[]>;
+
+  // ─── Identities ────────────────────────────────────────────────────────────
+  /** Create a new VE identity. */
+  createIdentity(input: {
+    id?: string;
+    name: string;
+    email?: string;
+    username?: string;
+    signature?: string;
+  }): Promise<IdentityRecord>;
+  /** Look up an identity by its ID. Returns null when not found. */
+  getIdentityById(id: IdentityId): Promise<IdentityRecord | null>;
+  /** List all VE identities, ordered by name. */
+  listIdentities(): Promise<IdentityRecord[]>;
+  /** Update mutable fields of an identity. */
+  updateIdentity(
+    id: IdentityId,
+    partial: Partial<Pick<IdentityRecord, "name" | "email" | "username" | "signature">>
+  ): Promise<IdentityRecord>;
+  /** Delete an identity. Detaches it from any workflow that references it. */
+  deleteIdentity(id: IdentityId): Promise<void>;
 }
 
 // ─── Resource discovery types ──────────────────────────────────────

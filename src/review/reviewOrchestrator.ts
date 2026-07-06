@@ -25,6 +25,7 @@ import { computeVote, parseReviewResult } from "./reviewResultParser.js";
 import { filterCommentsByAllowedFiles } from "./commentFilter.js";
 import { computeCommentHash, computeThreadReplyHash } from "./commentHash.js";
 import { applyVolumeAndSeverityGate, buildFoldedSummary } from "./commentSeverity.js";
+import { applyIdentitySignature, resolveProjectIdentity } from "../utils/identitySignature.js";
 import { agentLogBus, pushToTaskBuffer, clearTaskEventBuffer } from "../agents/agentEventBus.js";
 
 const log = getLogger("review-orchestrator");
@@ -57,6 +58,7 @@ export interface ReviewOrchestratorDeps {
     | "getAgentCycles"
     | "findProjectsByReviewTarget"
     | "getProjectById"
+    | "getIdentityById"
     | "updateExternalChangeId"
     | "findReviewedCodeReviewTask"
     | "getPostedReviewCommentHashes"
@@ -542,7 +544,14 @@ export class ReviewOrchestrator {
         minSeverity: this.deps.reviewMinSeverity ?? "info",
         maxComments: this.deps.maxReviewComments ?? 20,
       });
-      const summary = result.summary + buildFoldedSummary(folded);
+      // Apply the workflow's configured VE identity signature (if any) to the
+      // review summary so VE appears consistently for this project. No-op when
+      // the project has no identity or the identity has no signature.
+      const identity = await resolveProjectIdentity(this.deps.stateStore, project);
+      const summary = applyIdentitySignature(
+        result.summary + buildFoldedSummary(folded),
+        identity,
+      );
 
       // Validate the agent's replies against the eligible thread set: drop
       // hallucinated threadIds and duplicates, require a non-empty body, and

@@ -219,6 +219,17 @@ export interface ApiProject {
   type: "coding" | "review";
   enabled: boolean;
   agentId: string | null;
+  identityId?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ApiIdentity {
+  id: string;
+  name: string;
+  email: string;
+  username: string;
+  signature: string;
   createdAt: string;
   updatedAt: string;
 }

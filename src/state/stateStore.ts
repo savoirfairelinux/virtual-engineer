@@ -14,6 +14,8 @@ import type {
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import type { AgentStoreApi } from "./stores/agentStore.js";
 import { createAgentStore } from "./stores/agentStore.js";
+import type { IdentityStoreApi } from "./stores/identityStore.js";
+import { createIdentityStore } from "./stores/identityStore.js";
 import type { IntegrationStoreApi } from "./stores/integrationStore.js";
 import { createIntegrationStore } from "./stores/integrationStore.js";
 import type { ProjectStoreApi } from "./stores/projectStore.js";
@@ -32,7 +34,8 @@ type ComposedStoreApi =
   & ProjectStoreApi
   & PromptStoreApi
   & AgentStoreApi
-  & SettingsStoreApi;
+  & SettingsStoreApi
+  & IdentityStoreApi;
 
 /** Facade class that composes domain-scoped store modules over one shared SQLite connection. */
 // eslint-disable-next-line @typescript-eslint/no-unsafe-declaration-merging
@@ -45,6 +48,7 @@ export class SqliteStateStore {
   private readonly promptStore: PromptStoreApi;
   private readonly agentStore: AgentStoreApi;
   private readonly settingsStore: SettingsStoreApi;
+  private readonly identityStore: IdentityStoreApi;
 
   constructor(private readonly raw: Database.Database) {
     this.dbDir = dirname(this.raw.name);
@@ -57,6 +61,7 @@ export class SqliteStateStore {
     this.promptStore = createPromptStore({ db: this.db, dbDir: this.dbDir });
     this.agentStore = createAgentStore({ db: this.db });
     this.settingsStore = createSettingsStore({ db: this.db });
+    this.identityStore = createIdentityStore({ db: this.db, raw: this.raw });
 
     Object.assign(
       this,
@@ -65,7 +70,8 @@ export class SqliteStateStore {
       this.projectStore,
       this.promptStore,
       this.agentStore,
-      this.settingsStore
+      this.settingsStore,
+      this.identityStore
     );
   }
 
@@ -226,6 +232,17 @@ export class SqliteStateStore {
       CREATE INDEX IF NOT EXISTS idx_agents_name ON agents(name);
       CREATE INDEX IF NOT EXISTS idx_agents_enabled ON agents(enabled);
 
+      CREATE TABLE IF NOT EXISTS identities (
+        id          TEXT    PRIMARY KEY,
+        name        TEXT    NOT NULL,
+        email       TEXT    NOT NULL DEFAULT '',
+        username    TEXT    NOT NULL DEFAULT '',
+        signature   TEXT    NOT NULL DEFAULT '',
+        created_at  INTEGER NOT NULL,
+        updated_at  INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_identities_name ON identities(name);
+
       CREATE TABLE IF NOT EXISTS projects (
         id                  TEXT    PRIMARY KEY,
         name                TEXT    NOT NULL,
@@ -234,6 +251,7 @@ export class SqliteStateStore {
         agent_override_json TEXT,
         post_clone_script   TEXT    NOT NULL DEFAULT '',
         skill_discovery_enabled INTEGER NOT NULL DEFAULT 0,
+        identity_id         TEXT    REFERENCES identities(id),
         enabled             INTEGER NOT NULL DEFAULT 0,
         created_at          INTEGER NOT NULL,
         updated_at          INTEGER NOT NULL
@@ -323,6 +341,7 @@ export class SqliteStateStore {
     this.ensureColumn("agents", "integration_id", "TEXT REFERENCES integrations(id) ON DELETE SET NULL");
     this.ensureColumn("agents", "feedback_instructions_prompt_id", "TEXT REFERENCES prompts(id) ON DELETE SET NULL");
     this.ensureColumn("projects", "skill_discovery_enabled", "INTEGER NOT NULL DEFAULT 0");
+    this.ensureColumn("projects", "identity_id", "TEXT REFERENCES identities(id)");
     this.ensureColumn("prompts", "prompt_type", "TEXT NOT NULL DEFAULT 'user'");
 
     this.raw.exec(`

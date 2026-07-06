@@ -82,6 +82,7 @@ src/
     adminIntegrationRoutes.ts # /api/admin/integrations + plugins + oauth-apps
     adminAgentsRoutes.ts  # /api/admin/agents CRUD + plugin OAuth
     adminProjectsRoutes.ts# /api/admin/projects CRUD
+    adminIdentitiesRoutes.ts # /api/admin/identities CRUD (VE personas)
     adminConcurrencyRoutes.ts # /api/admin/concurrency
     adminWebhookRoutes.ts # Webhook secret rotation, allowed-IPs, info
     adminOverviewRoutes.ts# Dashboard overview + cost-summary endpoints
@@ -301,6 +302,7 @@ Plain Node.js `http.createServer` — no framework. The main file handles auth, 
 | `adminIntegrationRoutes.ts` | `GET/POST /api/admin/integrations`, `GET/PUT/DELETE .../integrations/:id`, `POST .../test`, `PATCH .../{enable,disable}`, `POST .../discover`, `GET .../models`, `GET /api/admin/plugins`, `GET/POST/DELETE /api/admin/oauth-apps` |
 | `adminAgentsRoutes.ts` | `GET/POST /api/admin/agents`, `GET/PUT/DELETE .../agents/:id`, `PATCH .../{enable,disable}`, `POST /api/admin/plugins/:type/oauth/*` |
 | `adminProjectsRoutes.ts` | `GET/POST /api/admin/projects`, `GET/PUT/DELETE .../projects/:id`, `PATCH .../{enable,disable}` |
+| `adminIdentitiesRoutes.ts` | `GET/POST /api/admin/identities`, `GET/PUT/DELETE .../identities/:id` |
 | `adminConcurrencyRoutes.ts` | `GET/PUT /api/admin/concurrency` |
 | `adminWebhookRoutes.ts` | `POST .../webhook-secret/rotate`, `GET/PUT .../webhook-allowed-ips`, `GET .../webhook-info` |
 
@@ -657,7 +659,14 @@ projects
   agent_id → agents.id
   agent_override_json (partial model config override)
   post_clone_script (bash, runs on host after clone)
+  skill_discovery_enabled (default 0)
+  identity_id → identities.id (nullable — VE identity for this workflow)
   enabled (default 0)
+
+identities                     ← reusable VE personas
+  id / name / email / username / signature
+  (bound to a workflow via projects.identity_id; when set, VE applies the
+   identity to outward-facing interactions such as review comment signatures)
 
 project_integration_bindings   ← one row per (project, capability)
   id / project_id / integration_id

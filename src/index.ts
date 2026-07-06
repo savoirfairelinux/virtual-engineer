@@ -238,6 +238,7 @@ async function main(): Promise<void> {
       providers: () => buildAdminProviderSummaries(config, pluginManager),
       agentStore: stateStore,
       projectStore: stateStore,
+      identityStore: stateStore,
       integrationStore: stateStore,
       oAuthAppStore: stateStore,
       promptStore: stateStore,

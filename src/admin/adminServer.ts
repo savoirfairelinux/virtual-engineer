@@ -23,6 +23,7 @@ import { registerPromptRoutes } from "./adminPromptRoutes.js";
 import { registerStreamRoutes } from "./adminStreamRoutes.js";
 import { registerConcurrencyRoutes } from "./adminConcurrencyRoutes.js";
 import { registerSettingsRoutes, type SettingsController } from "./adminSettingsRoutes.js";
+import { registerIdentityRoutes, type IdentitiesRouteStore } from "./adminIdentitiesRoutes.js";
 import { registerWebhookRoutes } from "./adminWebhookRoutes.js";
 import { registerIntegrationRoutes } from "./adminIntegrationRoutes.js";
 import { makeTaskId } from "../interfaces.js";
@@ -94,6 +95,8 @@ export interface AdminServerDependencies {
   providerAuthService?: ProviderAuthService | undefined;
   /** Phase 3: store backing the /api/admin/projects routes. */
   projectStore?: ProjectsRouteStore;
+  /** Store backing the /api/admin/identities routes. */
+  identityStore?: IdentitiesRouteStore;
   integrationStore?: IntegrationStore;
   oAuthAppStore?: OAuthAppStore;
   promptStore?: PromptStore | undefined;
@@ -262,6 +265,10 @@ function buildApiRouter(dependencies: AdminServerDependencies): Router {
   });
   registerConcurrencyRoutes(router, { concurrency: dependencies.concurrency });
   registerSettingsRoutes(router, { settings: dependencies.settings });
+  registerIdentityRoutes(router, {
+    identityStore: dependencies.identityStore,
+    onIdentityChange: dependencies.onProjectChange,
+  });
   registerWebhookRoutes(router, {
     integrationStore: dependencies.integrationStore,
     onIntegrationUpdated: dependencies.onIntegrationUpdated,
