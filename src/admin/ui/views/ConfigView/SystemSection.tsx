@@ -65,9 +65,15 @@ export function SystemSection({ config, status, onRefresh }: SystemSectionProps)
       setError(result);
       return;
     }
+    // Build a partial patch with only the fields that actually changed so we
+    // never accidentally overwrite a server-side value the user didn't touch.
+    const patch: Partial<typeof result> = {};
+    if (result.pollingIntervalMs !== initialPollingSeconds * 1000) patch.pollingIntervalMs = result.pollingIntervalMs;
+    if (result.maxAgentCycles !== initialCycles) patch.maxAgentCycles = result.maxAgentCycles;
+    if (result.maxRetryAttempts !== initialRetries) patch.maxRetryAttempts = result.maxRetryAttempts;
     setSaving(true);
     try {
-      await api.put("/api/admin/settings", result);
+      await api.put("/api/admin/settings", patch);
       setSaved(true);
       onRefresh();
     } catch (e) {
