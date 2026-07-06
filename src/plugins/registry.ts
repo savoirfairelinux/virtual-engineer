@@ -103,7 +103,7 @@ export interface PluginOAuthConfigResolverContext {
 /** Reviewer factory result: the provider plus its workspace setup hooks. */
 export interface ReviewerBundle {
   provider: ReviewProvider;
-  buildCloneTarget: (details: ReviewChangeDetails) => { cloneUrl: string; sshKeyPath: string | null; sshKnownHostsPath: string | null };
+  buildCloneTarget: (details: ReviewChangeDetails) => { cloneUrl: string; sshKeyPath: string | null; sshAgentPubKeyPath?: string | null; sshKnownHostsPath: string | null };
   applyPatchset?: (handle: WorkspaceHandle, details: ReviewChangeDetails) => Promise<void>;
   /** DB key for the system prompt passed to the review agent. */
   systemPromptId: string;

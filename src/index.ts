@@ -478,6 +478,12 @@ async function buildReviewBundle(
   let rawConfig: Record<string, unknown>;
   try {
     rawConfig = pluginManager.decryptIntegrationConfig(integration);
+    // Run preprocessConfig so that generated/encrypted SSH keys are resolved
+    // to temp files (sets _resolvedSshKeyPath / _agentPubKeyPath) before the
+    // reviewer factory reads them via buildSshArgs.
+    if (descriptor?.preprocessConfig) {
+      Object.assign(rawConfig, descriptor.preprocessConfig(rawConfig, getConfig().adminAuthSecret, integration.id));
+    }
   } catch (err) {
     bundleLog.warn(
       { integrationId: integration.id, err },
