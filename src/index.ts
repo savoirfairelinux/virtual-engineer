@@ -170,8 +170,6 @@ async function main(): Promise<void> {
         log.error({ err }, "polling loop reconcile failed");
       });
     }, POLLING_RECONCILE_DEBOUNCE_MS);
-    // Don't keep the event loop alive solely for a pending reconcile.
-    if (typeof pollingReconcileTimer.unref === "function") pollingReconcileTimer.unref();
   }
 
   // Reconcile the polling loop whenever a task changes state. This starts the
