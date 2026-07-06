@@ -60,7 +60,7 @@ describe("agent-worker multi-commit protocol", () => {
   });
 
   afterEach(() => {
-    rmSync(repoDir, { recursive: true, force: true });
+    rmSync(repoDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   });
 
   describe("collectCommits", () => {

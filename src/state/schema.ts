@@ -383,3 +383,22 @@ export const appConcurrency = sqliteTable(
     chkSingleton: check("chk_app_concurrency_singleton", sql`${table.id} = 'global'`),
   })
 );
+
+/**
+ * Singleton table holding editable workflow settings that override the env/config
+ * defaults at runtime. `id` is constrained to the literal `'global'`. Each column is
+ * nullable — NULL means "fall back to the `config.ts` default".
+ */
+export const appSettings = sqliteTable(
+  "app_settings",
+  {
+    id: text("id").primaryKey(),
+    pollingIntervalMs: integer("polling_interval_ms"),
+    maxAgentCycles: integer("max_agent_cycles"),
+    maxRetryAttempts: integer("max_retry_attempts"),
+    updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
+  },
+  (table) => ({
+    chkSingleton: check("chk_app_settings_singleton", sql`${table.id} = 'global'`),
+  })
+);

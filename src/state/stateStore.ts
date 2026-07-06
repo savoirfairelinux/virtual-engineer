@@ -20,6 +20,8 @@ import type { ProjectStoreApi } from "./stores/projectStore.js";
 import { createProjectStore } from "./stores/projectStore.js";
 import type { PromptStoreApi } from "./stores/promptStore.js";
 import { createPromptStore } from "./stores/promptStore.js";
+import type { SettingsStoreApi } from "./stores/settingsStore.js";
+import { createSettingsStore } from "./stores/settingsStore.js";
 import type { TaskStoreApi } from "./stores/taskStore.js";
 import { createTaskStore } from "./stores/taskStore.js";
 import * as schema from "./schema.js";
@@ -29,7 +31,8 @@ type ComposedStoreApi =
   & IntegrationStoreApi
   & ProjectStoreApi
   & PromptStoreApi
-  & AgentStoreApi;
+  & AgentStoreApi
+  & SettingsStoreApi;
 
 /** Facade class that composes domain-scoped store modules over one shared SQLite connection. */
 // eslint-disable-next-line @typescript-eslint/no-unsafe-declaration-merging
@@ -41,6 +44,7 @@ export class SqliteStateStore {
   private readonly projectStore: ProjectStoreApi;
   private readonly promptStore: PromptStoreApi;
   private readonly agentStore: AgentStoreApi;
+  private readonly settingsStore: SettingsStoreApi;
 
   constructor(private readonly raw: Database.Database) {
     this.dbDir = dirname(this.raw.name);
@@ -52,6 +56,7 @@ export class SqliteStateStore {
     this.projectStore = createProjectStore({ db: this.db, raw: this.raw });
     this.promptStore = createPromptStore({ db: this.db, dbDir: this.dbDir });
     this.agentStore = createAgentStore({ db: this.db });
+    this.settingsStore = createSettingsStore({ db: this.db });
 
     Object.assign(
       this,
@@ -59,7 +64,8 @@ export class SqliteStateStore {
       this.integrationStore,
       this.projectStore,
       this.promptStore,
-      this.agentStore
+      this.agentStore,
+      this.settingsStore
     );
   }
 
@@ -276,6 +282,14 @@ export class SqliteStateStore {
         id             TEXT    PRIMARY KEY CHECK (id = 'global'),
         max_concurrent INTEGER,
         updated_at     INTEGER NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS app_settings (
+        id                  TEXT    PRIMARY KEY CHECK (id = 'global'),
+        polling_interval_ms INTEGER,
+        max_agent_cycles    INTEGER,
+        max_retry_attempts  INTEGER,
+        updated_at          INTEGER NOT NULL
       );
     `);
 

@@ -83,7 +83,7 @@ export class PollingLoop {
   private readonly reviewPollCooldowns = new Map<string, number>();
 
   constructor(
-    private readonly config: PollingConfig,
+    private config: PollingConfig,
     private readonly orchestrator: Orchestrator,
     private readonly stateStore: StateStore,
     projectMode?: {
@@ -122,6 +122,30 @@ export class PollingLoop {
   resetBackoff(): void {
     this.ticketFailureCount = 0;
     this.ticketBackoffUntil = 0;
+  }
+
+  /**
+   * Apply updated polling configuration at runtime. When the polling interval
+   * changes while the loop is running, the timer is restarted so the new
+   * cadence takes effect immediately (without a process restart).
+   */
+  updateConfig(patch: Partial<PollingConfig>): void {
+    const prevInterval = this.config.ticketIntervalMs;
+    this.config = { ...this.config, ...patch };
+
+    const intervalChanged =
+      patch.ticketIntervalMs !== undefined && patch.ticketIntervalMs !== prevInterval;
+
+    if (intervalChanged && this.running && this.ticketTimer) {
+      clearInterval(this.ticketTimer);
+      this.ticketTimer = setInterval(() => {
+        this.runTicketPollCycle("ticket poll error");
+      }, this.config.ticketIntervalMs);
+      log.info(
+        { ticketIntervalMs: this.config.ticketIntervalMs },
+        "polling interval updated"
+      );
+    }
   }
 
   /** Begin polling: run immediately on start, then on the configured interval. */

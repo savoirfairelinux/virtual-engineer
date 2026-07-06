@@ -39,7 +39,7 @@ Helper scripts: `npm run e2e:mock`, `npm run reset:instance`, `npm run build:age
 - **Container constraints** (set by `buildContainerSpec` / `buildReviewContainerSpec` in `src/agents/copilotAdapter.ts`): `--read-only` rootfs, `--cap-drop ALL`, `--security-opt no-new-privileges:true`, `--tmpfs /tmp:rw,nosuid,size=256m`, `/workspace` named-volume mount, `/ve-home` named-volume mount for Copilot HOME (native modules), optional `/ve-prompts` mount, `networkMode=virtual-engineer_ve-agent-net`. When the project has `skillDiscoveryEnabled` set, both coding and review containers receive `SKILL_DISCOVERY=1` and the worker loads `<repo>/.github/skills` (skills only; MCP discovery stays off; trusted repos only).
 - **Persistence**: SQLite WAL via `better-sqlite3` (sync) + Drizzle ORM at `DATABASE_PATH` (default `./data/virtual-engineer.db`).
 - **Providers (per capability)**: issue_tracking = Redmine | GitLab Issues | GitHub Issues; code_review / source_control = Gerrit | GitLab Merge Requests | GitHub Pull Requests; agent_execution = Copilot | Claude | Mock. Provider credentials live on `integrations`, while GitLab project selection is VE-project-owned (`project_integration_bindings` issue_tracking `{ ticketProjectKey }`, `project_push_targets.repoKey`, code_review `{ repos }` bindings).
-- **Admin server** (`src/admin/`) exposes the dashboard plus integrations, agents, projects, prompts, concurrency, and webhook-secret operations; secrets are masked on read and the runtime is hot-refreshed after integration changes. The dashboard client is a **Vite-built React SPA** (`src/admin/ui/`, served from `dist/admin-ui`; build with `npm run build:ui`).
+- **Admin server** (`src/admin/`) exposes the dashboard plus integrations, agents, projects, prompts, concurrency, editable runtime settings (`GET/PUT /api/admin/settings`), and webhook-secret operations; secrets are masked on read and the runtime is hot-refreshed after integration changes. The dashboard client is a **Vite-built React SPA** (`src/admin/ui/`, served from `dist/admin-ui`; build with `npm run build:ui`).
 
 ### Source layout
 ```
@@ -54,7 +54,8 @@ src/
                         # adminTaskRoutes, adminPromptRoutes, adminStreamRoutes,
                         # adminIntegrationRoutes, adminAgentsRoutes,
                         # adminProjectsRoutes, adminConcurrencyRoutes,
-                        # adminWebhookRoutes, adminOverviewRoutes,
+                        # adminSettingsRoutes, adminWebhookRoutes,
+                        # adminOverviewRoutes,
                         # dashboard (SPA shell), start/close helpers
     ui/                 # React SPA source (App.tsx, views/, components/,
                         # shell/, theme/, icons/, api.ts, states.ts)
@@ -112,6 +113,7 @@ agent-worker/src/       # TS worker inside the agent container (index.ts,
 - `change_per_repository` (TEXT `id` PK): `task_id`, `repo_key`, `change_id`, `review_url`, `status`, `integration_id`, `review_system`, `commit_index` (INTEGER NOT NULL DEFAULT 0), `subject_hash` (TEXT), timestamps. PK format: `${taskId}:${repoKey}:${commitIndex}` when commitIndex > 0, else `${taskId}:${repoKey}`. Status values: `OPEN`, `NEW`, `MERGED`, `ABANDONED`, `ORPHANED`, `NO_CHANGE`. The `review_system` column is **kept** (not renamed) and stores `gerrit | gitlab | github` via `VcsConnector.reviewSystemLabel`.
 - `project_integration_bindings` (TEXT `id` PK): `project_id`, `integration_id`, `capability` (`issue_tracking | code_review | source_control | agent_execution`), `config_json`, timestamps. `UNIQUE(project_id, capability)` (`uq_pib_project_capability`). Replaces the dropped `project_ticket_source` / `project_review_integration` / `project_review_repos` tables. `config_json` shapes: issue_tracking = `{ ticketProjectKey }`; code_review = `{ repos: string[] }`. Cross-project ticket-source uniqueness is enforced in **application code** (throws), not by a DB unique index.
 - Phase 2 tables also exist and are live: `agents`, `projects`, `project_integration_bindings`, `project_push_targets` (the `source_control` binding, unchanged), and singleton `app_concurrency`.
+- `app_settings` (TEXT `id` PK, singleton `id = 'global'`): nullable INTEGER columns `polling_interval_ms`, `max_agent_cycles`, `max_retry_attempts`, plus `updated_at`. Holds the editable runtime workflow settings surfaced in admin UI → System Settings. NULL = fall back to the `config.ts` default (env-seeded). On boot, `src/index.ts` resolves effective values (`db ?? config default`) and overwrites the corresponding `config` fields; `PUT /api/admin/settings` persists overrides and hot-applies them to the running `PollingLoop` (`updateConfig`), `Orchestrator` (`updateRuntime`), and admin runtime config — no restart. Store methods: `getAppSettings` / `updateAppSettings` (`src/state/stores/settingsStore.ts`).
 - `agents.enabled` defaults to `0` (disabled), not `1`.
 - `projects.skill_discovery_enabled` (INTEGER, default `0`) is a **per-project** toggle available to both coding and review projects. When 1, the orchestrator forwards it on `AgentSession.skillDiscoveryEnabled` (coding) or `ReviewWorkspaceInput.skillDiscoveryEnabled` (review), and the respective `buildContainerSpec` / `buildReviewContainerSpec` injects `SKILL_DISCOVERY=1` so the in-container agent loads team skills from `<repo>/.github/skills`. There is no longer an `AGENT_SKILL_DISCOVERY_ENABLED` env flag.
 - `agents.feedback_instructions_prompt_id` (nullable, FK → `prompts.id`) is an optional **per-agent override** used only on retry (feedback) cycles. When set on a coding agent, the orchestrator swaps it in as the instructions prompt for `cycleNumber > 1`; otherwise the regular `instructions_prompt_id` is reused. The seeded default prompt is `instructions_feedback_code` (from `prompts/instructions_feedback_code.md`).
@@ -160,9 +162,9 @@ All env vars are optional. Only system/infra settings remain — provider creden
 | `ADMIN_API_ENABLED` | `true` | |
 | `ADMIN_API_HOST` / `ADMIN_API_PORT` | `127.0.0.1` / `3100` | |
 | `ADMIN_AUTH_SECRET` | — | HMAC secret for Bearer auth (`Bearer <hex-hmac>`) |
-| `POLLING_INTERVAL_MS` | `30000` | polling loop tick interval |
-| `MAX_AGENT_CYCLES` | `3` | per-task cap → FAILED |
-| `MAX_RETRY_ATTEMPTS` | `5` | per-ticket cap; polling skips ticket past cap |
+| `POLLING_INTERVAL_MS` | `30000` | **DB-managed** default seed — polling loop tick interval; runtime value lives in `app_settings` and is edited from admin UI → System Settings |
+| `MAX_AGENT_CYCLES` | `3` | **DB-managed** default seed — per-task cap → FAILED; runtime value in `app_settings` |
+| `MAX_RETRY_ATTEMPTS` | `5` | **DB-managed** default seed — per-ticket cap; runtime value in `app_settings` |
 | `MAX_COMMITS_PER_CYCLE` | `10` | max atomic commits per agent cycle |
 | `AGENT_TIMEOUT_MS` | `3_600_000` | host-side agent timeout (60 min) |
 | `MAX_REVIEW_DIFF_CHARS` | `60_000` | max diff chars injected into review prompt |
@@ -174,6 +176,8 @@ All env vars are optional. Only system/infra settings remain — provider creden
 | `AGENT_DOCKER_NETWORK` | `virtual-engineer_ve-agent-net` | Docker network for agent containers |
 
 Provider configuration (Redmine, Gerrit, GitLab credentials, ticket-source/push-target selection, agent model and prompts, project lifecycle) lives entirely in the `integrations`, `agents`, `projects`, `project_integration_bindings`, and `project_push_targets` tables and is managed via the admin UI. The legacy provider env vars (`TICKET_SYSTEM`, `REVIEW_SYSTEM`, `REDMINE_*`, `GERRIT_*`, `GITLAB_*`, `REPO_CLONE_URL`, `BASE_BRANCH`, `GERRIT_TARGET_BRANCH`) have been **removed** from `src/config.ts` as part of Phase 7 cleanup.
+
+Workflow settings (`POLLING_INTERVAL_MS`, `MAX_AGENT_CYCLES`, `MAX_RETRY_ATTEMPTS`) are **editable at runtime** from admin UI → System Settings and persisted in the `app_settings` singleton table. Their `config.ts` entries remain only as the first-run/default seed (no longer set in `.env.example`); the DB value wins once saved.
 
 Empty strings in env are treated as `undefined` (helpful for env overrides).
 
