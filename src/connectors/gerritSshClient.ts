@@ -92,7 +92,10 @@ export interface GerritSshConfig {
   host: string;
   port: number;
   user: string;
-  keyPath: string;
+  /** Path to an SSH private-key file. Omit to use the system SSH agent. */
+  keyPath?: string | undefined;
+  /** Path to an agent identity `.pub` file for identity pinning (`-o IdentitiesOnly=yes`). Only used when `keyPath` is absent. */
+  agentPubKeyPath?: string | undefined;
   knownHostsPath?: string | undefined;
 }
 
@@ -125,10 +128,17 @@ export class GerritSshClient {
 
   /** Build the SSH argument list for the configured host, port, key, and known-hosts policy. */
   private buildArgs(gerritArgs: string[]): string[] {
-    const { host, port, user, keyPath, knownHostsPath } = this.config;
+    const { host, port, user, keyPath, agentPubKeyPath, knownHostsPath } = this.config;
+    const identityArgs: string[] = [];
+    if (keyPath) {
+      identityArgs.push("-i", keyPath, "-o", "IdentitiesOnly=yes");
+    } else if (agentPubKeyPath) {
+      // Agent mode with identity pinning: offer only the key matching this public key.
+      identityArgs.push("-o", "IdentitiesOnly=yes", "-i", agentPubKeyPath);
+    }
     return [
       "-p", String(port),
-      "-i", keyPath,
+      ...identityArgs,
       ...buildSshHostKeyOptions(knownHostsPath),
       `${user}@${host}`,
       "gerrit", ...gerritArgs,

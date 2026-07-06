@@ -39,6 +39,9 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
         capabilities: getPluginCapabilities(d),
         domainCapabilities: getProviderDomainCapabilities(d),
         requiredFields: d.requiredFields,
+        // Any provider whose descriptor implements generateSshKeyPair supports
+        // the generic SSH auth UI (agent / generated-key / custom-path selector).
+        supportsSshAuth: typeof d.generateSshKeyPair === "function",
         ...(d.oauth !== undefined ? { oauth: d.oauth } : {}),
       })),
     });
@@ -375,7 +378,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
       writeJson(res, 500, { error: `Stored integration config is not valid JSON: ${msg}` }); return;
     }
 
-    // Decrypt password fields so discoverResources receives real credentials.
+    // Decrypt password fields and run preprocessConfig so discoverResources receives real credentials.
     // Tokens are stored as encrypted (or plain:-prefixed) strings via encryptToken.
     const decryptedConfig = { ...(parsedConfig as Record<string, unknown>) };
     for (const field of descriptor.requiredFields.filter((f) => f.type === "password")) {
@@ -387,6 +390,9 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
           // Not a managed encrypted token (e.g. a raw PAT) — leave as-is.
         }
       }
+    }
+    if (descriptor.preprocessConfig) {
+      Object.assign(decryptedConfig, descriptor.preprocessConfig(decryptedConfig, deps.adminAuthSecret, id));
     }
 
     try {
@@ -430,7 +436,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
       writeJson(res, 500, { error: `Stored integration config is not valid JSON: ${msg}` }); return;
     }
 
-    // Decrypt password fields so discoverBranches receives real credentials.
+    // Decrypt password fields and run preprocessConfig so discoverBranches receives real credentials.
     const decryptedConfig = { ...(parsedConfig as Record<string, unknown>) };
     for (const field of descriptor.requiredFields.filter((f) => f.type === "password")) {
       const raw = decryptedConfig[field.key];
@@ -442,6 +448,9 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
         }
       }
     }
+    if (descriptor.preprocessConfig) {
+      Object.assign(decryptedConfig, descriptor.preprocessConfig(decryptedConfig, deps.adminAuthSecret, id));
+    }
 
     try {
       const branches = await descriptor.discoverBranches(decryptedConfig, repoKey);
@@ -450,6 +459,107 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
       const errorMessage = err instanceof Error ? err.message : String(err);
       log.warn({ id, provider: integration.provider, repoKey, errorMessage }, "branch discovery failed");
       writeJson(res, 502, { error: `Branch discovery failed: ${errorMessage}` });
+    }
+  });
+
+  // ─── SSH key management ───────────────────────────────────────────────────
+
+  // Stateless key generation — returns the pair without persisting.
+  // The frontend holds both values in form state and writes them on save.
+  router.add("POST", "/api/admin/ssh-key/generate", async (req, res, _params) => {
+    const body = asRecord(await readBody(req));
+    const provider = typeof body["provider"] === "string" ? body["provider"] as ProviderId : undefined;
+    const descriptor = provider ? getProviderDescriptor(provider) : undefined;
+    if (!descriptor?.generateSshKeyPair) {
+      writeJson(res, 400, { error: `Provider '${provider ?? ""}' does not support SSH key generation` }); return;
+    }
+    try {
+      const { sshPrivateKeyEnc, sshPublicKey } = descriptor.generateSshKeyPair(deps.adminAuthSecret);
+      writeJson(res, 200, { sshPrivateKeyEnc, sshPublicKey });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // Missing ADMIN_AUTH_SECRET is a server-configuration issue the admin
+      // can act on (set the secret) — surface it as 400, not a generic 500.
+      const status = msg.includes("ADMIN_AUTH_SECRET") ? 400 : 500;
+      writeJson(res, status, { error: `SSH key generation failed: ${msg}` });
+    }
+  });
+
+  router.add("POST", "/api/admin/integrations/:id/ssh-key/generate", async (_req, res, params) => {
+    if (!deps.integrationStore) { writeJson(res, 501, { error: "Integration store not available" }); return; }
+    const id = params["id"] ?? "";
+    const integration = await deps.integrationStore.getIntegration(id);
+    if (!integration) { writeJson(res, 404, { error: "Integration not found" }); return; }
+
+    const descriptor = getProviderDescriptor(integration.provider);
+    if (!descriptor || typeof descriptor.generateSshKeyPair !== "function") {
+      writeJson(res, 400, { error: `Provider '${integration.provider}' does not support SSH key generation` }); return;
+    }
+
+    try {
+      const { sshPrivateKeyEnc, sshPublicKey } = descriptor.generateSshKeyPair(deps.adminAuthSecret);
+      const existingConfig = getStoredIntegrationConfig(integration);
+      const updatedConfig = { ...existingConfig, sshPrivateKeyEnc, sshPublicKey };
+      const updatedConfigJson = JSON.stringify(updatedConfig);
+      await deps.integrationStore.upsertIntegration({ ...integration, configJson: updatedConfigJson });
+      deps.onIntegrationUpdated?.(id);
+      writeJson(res, 200, { publicKey: sshPublicKey });
+    } catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      log.warn({ id, errorMessage }, "SSH key generation failed");
+      const status = errorMessage.includes("ADMIN_AUTH_SECRET") ? 400 : 500;
+      writeJson(res, status, { error: `SSH key generation failed: ${errorMessage}` });
+    }
+  });
+
+  router.add("GET", "/api/admin/integrations/:id/ssh-key/public", async (_req, res, params) => {
+    if (!deps.integrationStore) { writeJson(res, 501, { error: "Integration store not available" }); return; }
+    const id = params["id"] ?? "";
+    const integration = await deps.integrationStore.getIntegration(id);
+    if (!integration) { writeJson(res, 404, { error: "Integration not found" }); return; }
+
+    const config = getStoredIntegrationConfig(integration);
+    const publicKey = typeof config["sshPublicKey"] === "string" ? config["sshPublicKey"] : null;
+    writeJson(res, 200, { publicKey });
+  });
+
+  router.add("GET", "/api/admin/ssh-agent/keys", async (_req, res, _params) => {
+    const sshAuthSock = process.env["SSH_AUTH_SOCK"];
+    if (!sshAuthSock) {
+      writeJson(res, 200, { keys: [], agentAvailable: false }); return;
+    }
+
+    const { execFile } = await import("node:child_process");
+    const { promisify } = await import("node:util");
+    const execFileAsync = promisify(execFile);
+
+    try {
+      const { stdout } = await execFileAsync("ssh-add", ["-L"], { timeout: 5000 });
+      const keys = stdout
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0 && !line.startsWith("The agent has no"))
+        .map((line) => {
+          const parts = line.split(" ");
+          const keyType = parts[0] ?? "";
+          const publicKey = parts.slice(0, 2).join(" ");
+          const comment = parts.slice(2).join(" ") || "(no comment)";
+          return { publicKey, keyType, comment };
+        });
+      writeJson(res, 200, { keys, agentAvailable: true });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // ssh-add -L exits 1 when the agent has no keys loaded — treat as an
+      // empty list rather than "agent unavailable". Note: execFile/promisify
+      // errors set `.code` to the process's NUMERIC exit code (not a string),
+      // so we check both the number and the message text to be safe across
+      // ssh-add implementations/locales.
+      const exitCode = (err as { code?: number | string }).code;
+      if (msg.includes("no identities") || exitCode === 1 || exitCode === "1") {
+        writeJson(res, 200, { keys: [], agentAvailable: true }); return;
+      }
+      log.warn({ error: msg }, "ssh-add -L failed");
+      writeJson(res, 200, { keys: [], agentAvailable: false });
     }
   });
 }

@@ -2,7 +2,8 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { Modal, Field, FieldInput, FieldSelect, FormError, FormRow, FieldTextarea } from "../../components/Modal.tsx";
 import { Icon } from "../../components/Icon.tsx";
 import { ProviderGlyph } from "../../components/ProviderGlyph.tsx";
-import { api } from "../../api.ts";
+import { api, generateSshKeyPair, listAgentKeys } from "../../api.ts";
+import type { AgentKey } from "../../api.ts";
 import type { ApiIntegration, ApiPlugin, ApiPluginOAuth, PluginField } from "../../types.ts";
 
 interface Props {
@@ -293,6 +294,242 @@ function DynamicField({
   );
 }
 
+// ─── Generic SSH Authentication section (agent / generated key / custom path) ──
+
+type SshAuthMode = "agent" | "generated" | "custom";
+
+interface SshAuthSectionProps {
+  provider: string;
+  providerName: string;
+  config: Config;
+  onConfigChange: (key: string, value: string) => void;
+}
+
+function SshAuthSection({ provider, providerName, config, onConfigChange }: SshAuthSectionProps) {
+  const detectMode = (): SshAuthMode => {
+    // Check for non-empty strings, not just presence of the key — an empty
+    // string (e.g. a cleared field) must not be mistaken for a configured value.
+    if (typeof config["sshKeyPath"] === "string" && config["sshKeyPath"].trim().length > 0) return "custom";
+    if (typeof config["sshPublicKey"] === "string" && config["sshPublicKey"].trim().length > 0) return "generated";
+    return "agent";
+  };
+
+  const [mode, setMode] = useState<SshAuthMode>(detectMode);
+  const [agentKeys, setAgentKeys] = useState<AgentKey[]>([]);
+  const [agentAvailable, setAgentAvailable] = useState<boolean>(false);
+  const [agentLoading, setAgentLoading] = useState(false);
+  // pubKey comes from form state (config["sshPublicKey"]) so it survives re-renders.
+  // We only need local state as a mirror for display updates.
+  const pubKey = (config["sshPublicKey"] as string | undefined) ?? "";
+  const [generating, setGenerating] = useState(false);
+  const [genError, setGenError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  // Load agent keys when switching to agent mode.
+  // The cleanup function sets a `cancelled` flag so that state setters are not
+  // called on an already-unmounted component (React warning prevention).
+  useEffect(() => {
+    if (mode === "agent") {
+      let cancelled = false;
+      setAgentLoading(true);
+      listAgentKeys().then((r) => {
+        if (!cancelled) {
+          setAgentKeys(r.keys);
+          setAgentAvailable(r.agentAvailable);
+        }
+      }).catch(() => {
+        if (!cancelled) setAgentAvailable(false);
+      }).finally(() => {
+        if (!cancelled) setAgentLoading(false);
+      });
+      return () => { cancelled = true; };
+    }
+  }, [mode]);
+
+  const handleModeChange = (m: SshAuthMode) => {
+    setMode(m);
+    if (m !== "generated") {
+      onConfigChange("sshPrivateKeyEnc", "");
+      onConfigChange("sshPublicKey", "");
+    }
+    if (m !== "agent") {
+      onConfigChange("sshAgentPublicKey", "");
+    }
+    if (m !== "custom") {
+      onConfigChange("sshKeyPath", "");
+    }
+  };
+
+  const handleGenerate = async () => {
+    setGenerating(true);
+    setGenError(null);
+    try {
+      const result = await generateSshKeyPair(provider);
+      onConfigChange("sshPrivateKeyEnc", result.sshPrivateKeyEnc);
+      onConfigChange("sshPublicKey", result.sshPublicKey);
+    } catch (e) {
+      setGenError(e instanceof Error ? e.message : "Key generation failed");
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  const handleCopy = () => {
+    if (!pubKey) return;
+    void navigator.clipboard.writeText(pubKey).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
+  const modeBtn = (m: SshAuthMode, label: string) => (
+    <button
+      type="button"
+      onClick={() => handleModeChange(m)}
+      style={{
+        flex: 1, padding: "7px 10px", fontSize: "12.5px", fontWeight: mode === m ? 600 : 400,
+        borderRadius: "6px", border: "none", cursor: "pointer",
+        background: mode === m ? "var(--accent)" : "transparent",
+        color: mode === m ? "#fff" : "var(--text-dim)",
+        transition: "background .12s, color .12s",
+      }}
+    >
+      {label}
+    </button>
+  );
+
+  return (
+    <div
+      style={{
+        display: "flex", flexDirection: "column", gap: "12px",
+        padding: "14px 16px",
+        background: "var(--panel-2)",
+        border: "1px solid var(--border-soft)",
+        borderRadius: "var(--radius-sm)",
+      }}
+    >
+      <div style={{ fontSize: "13px", fontWeight: 600, marginBottom: "2px" }}>SSH Authentication</div>
+
+      {/* Mode selector */}
+      <div
+        style={{
+          display: "flex", gap: "4px", padding: "4px",
+          background: "var(--panel)", borderRadius: "8px",
+          border: "1px solid var(--border-soft)",
+        }}
+      >
+        {modeBtn("agent", "SSH Agent")}
+        {modeBtn("generated", "Generated key")}
+        {modeBtn("custom", "Custom path")}
+      </div>
+
+      {/* SSH Agent panel */}
+      {mode === "agent" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+          {agentLoading && <span style={{ fontSize: "12px", color: "var(--text-dim)" }}>Checking SSH agent…</span>}
+          {!agentLoading && !agentAvailable && (
+            <div style={{ fontSize: "12.5px", color: "var(--warn)", padding: "6px 10px", background: "var(--warn-soft)", borderRadius: "6px" }}>
+              No SSH agent detected. Start an agent (<code>eval $(ssh-agent -s)</code>) and restart the orchestrator.
+            </div>
+          )}
+          {!agentLoading && agentAvailable && agentKeys.length === 0 && (
+            <div style={{ fontSize: "12.5px", color: "var(--text-dim)" }}>
+              SSH agent is available but has no loaded keys. Try <code>ssh-add ~/.ssh/id_ed25519</code>.
+            </div>
+          )}
+          {!agentLoading && agentKeys.length > 0 && (
+            <Field label="Agent key (optional — leave blank to try all loaded keys)">
+              <FieldSelect
+                value={config["sshAgentPublicKey"] ?? ""}
+                onChange={(e) => onConfigChange("sshAgentPublicKey", e.currentTarget.value)}
+              >
+                <option value="">(use any loaded key)</option>
+                {agentKeys.map((k) => (
+                  <option key={k.publicKey} value={k.publicKey}>{k.comment} [{k.keyType}]</option>
+                ))}
+              </FieldSelect>
+            </Field>
+          )}
+          <div style={{ fontSize: "11.5px", color: "var(--text-dim)", lineHeight: 1.5 }}>
+            The system SSH agent socket is forwarded into agent containers via the same-path trick.
+            Keys loaded in the agent are available to all git operations.
+          </div>
+        </div>
+      )}
+
+      {/* Generated key panel */}
+      {mode === "generated" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+          {pubKey ? (
+            <>
+              <div style={{ fontSize: "12.5px", color: "var(--ok)", fontWeight: 500 }}>✓ Key configured — save the integration to persist it</div>
+              <div style={{ position: "relative" }}>
+                <FieldTextarea
+                  value={pubKey}
+                  readOnly
+                  style={{ fontFamily: "var(--font-mono)", fontSize: "11px", minHeight: "60px", paddingRight: "64px" }}
+                  onChange={() => { /* read-only */ }}
+                />
+                <button
+                  type="button"
+                  className="btn sm ghost"
+                  onClick={handleCopy}
+                  style={{ position: "absolute", top: "6px", right: "6px", fontSize: "11.5px" }}
+                >
+                  {copied ? "Copied!" : "Copy"}
+                </button>
+              </div>
+              <div style={{ fontSize: "11.5px", color: "var(--text-dim)", lineHeight: 1.5 }}>
+                Add this public key to your {providerName} account: <strong>Settings → SSH Keys</strong>
+              </div>
+              <button
+                type="button"
+                className="btn sm ghost"
+                onClick={() => { void handleGenerate(); }}
+                disabled={generating}
+                style={{ alignSelf: "flex-start" }}
+              >
+                {generating ? "Generating…" : "Regenerate key"}
+              </button>
+            </>
+          ) : (
+            <>
+              <div style={{ fontSize: "12.5px", color: "var(--text-dim)" }}>No key generated yet.</div>
+              <button
+                type="button"
+                className="btn sm secondary"
+                onClick={() => { void handleGenerate(); }}
+                disabled={generating}
+                style={{ alignSelf: "flex-start" }}
+              >
+                {generating ? "Generating…" : "Generate key"}
+              </button>
+            </>
+          )}
+          {genError && <span style={{ fontSize: "12px", color: "var(--danger)" }}>{genError}</span>}
+        </div>
+      )}
+
+      {/* Custom path panel */}
+      {mode === "custom" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+          <Field label="SSH key path">
+            <FieldInput
+              value={config["sshKeyPath"] ?? ""}
+              placeholder={`/app/secrets/${provider}_id_ed25519`}
+              onChange={(e) => onConfigChange("sshKeyPath", e.currentTarget.value)}
+            />
+          </Field>
+          <div style={{ fontSize: "11.5px", color: "var(--text-dim)", lineHeight: 1.5 }}>
+            Path to an SSH private key file inside the orchestrator container.
+            Generated by <code>scripts/init-infra.sh</code> or provided manually.
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function IntegrationFormModal({ integration, plugins, onClose, onSaved }: Props) {
   const isEdit = !!integration;
 
@@ -471,6 +708,16 @@ export function IntegrationFormModal({ integration, plugins, onClose, onSaved }:
             allValues={config}
           />
         ))}
+
+        {/* SSH Authentication section — shown for any provider that supports SSH auth */}
+        {plugin?.supportsSshAuth && (
+          <SshAuthSection
+            provider={selectedType}
+            providerName={plugin.name}
+            config={config}
+            onConfigChange={setConfigField}
+          />
+        )}
 
         {/* Advanced settings (collapsed by default) */}
         {(plugin?.requiredFields.some((f) => f.advanced)) && (

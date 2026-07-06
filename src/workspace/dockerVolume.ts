@@ -66,8 +66,21 @@ export interface ExecInVolumeOptions {
   command: string[];
   /** Environment variables */
   env?: Record<string, string> | undefined;
-  /** SSH key path on the orchestrator filesystem — mounted read-only into the helper container */
+  /**
+   * SSH private-key path on the orchestrator filesystem.
+   * The key is base64-encoded and injected as VE_SSH_KEY_B64 rather than
+   * bind-mounted, because the host Docker daemon resolves bind paths against
+   * the HOST filesystem and orchestrator-internal paths would fail.
+   * Omit to use SSH agent mode (requires SSH_AUTH_SOCK to be available).
+   */
   sshKeyPath?: string | undefined;
+  /**
+   * SSH agent public-key path for identity pinning (`.pub` file).
+   * Only used when `sshKeyPath` is absent (agent mode).
+   * Injected as VE_SSH_AGENT_PUB_B64; the container decodes it to a temp
+   * file and uses `-o IdentitiesOnly=yes` to pin the correct agent key.
+   */
+  sshAgentPubKeyPath?: string | undefined;
   /** SSH port to include in GIT_SSH_COMMAND (e.g. 29418 for Gerrit) */
   sshPort?: number | undefined;
   /** Path to a known_hosts file on the orchestrator filesystem. When set alongside sshKeyPath, SSH uses strict host key verification. */
@@ -112,9 +125,10 @@ export async function execInVolume(opts: ExecInVolumeOptions): Promise<ExecInVol
   }
 
   if (opts.sshKeyPath) {
-    // SSH key is injected via base64 env var rather than bind-mount: when the orchestrator
-    // runs inside Docker, the daemon resolves bind paths against the HOST filesystem,
-    // so container-internal paths (e.g. /app/secrets/key) would fail.
+    // ── Private-key mode ────────────────────────────────────────────────────
+    // SSH key is injected via base64 env var rather than bind-mount: when the
+    // orchestrator runs inside Docker, the daemon resolves bind paths against
+    // the HOST filesystem, so container-internal paths would fail.
     let keyContent: Buffer;
     try {
       keyContent = readFileSync(opts.sshKeyPath);
@@ -125,8 +139,6 @@ export async function execInVolume(opts: ExecInVolumeOptions): Promise<ExecInVol
     dockerArgs.push("-e", `VE_SSH_KEY_B64=${keyB64}`);
     const portFlag = opts.sshPort ? ` -p ${opts.sshPort}` : "";
 
-    // When a known_hosts file is provided, use strict host key checking;
-    // otherwise fall back to accepting any fingerprint (legacy behaviour).
     if (opts.sshKnownHostsPath) {
       let khContent: Buffer;
       try {
@@ -138,6 +150,55 @@ export async function execInVolume(opts: ExecInVolumeOptions): Promise<ExecInVol
       dockerArgs.push("-e", `GIT_SSH_COMMAND=ssh -i /tmp/ssh-key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/tmp/ssh-known-hosts${portFlag}`);
     } else {
       dockerArgs.push("-e", `GIT_SSH_COMMAND=ssh -i /tmp/ssh-key -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null${portFlag}`);
+    }
+  } else {
+    // ── SSH agent mode ───────────────────────────────────────────────────────
+    // Forward the host SSH agent socket using the same-path trick: the
+    // orchestrator mounts $SSH_AUTH_SOCK with its original host path, so when
+    // it passes that path to the Docker daemon, the daemon resolves it on the
+    // host and finds the socket.
+    const agentSock = process.env["SSH_AUTH_SOCK"];
+    if (opts.sshAgentPubKeyPath && !agentSock) {
+      throw new Error(
+        "SSH agent identity pinning is configured (sshAgentPubKeyPath) but " +
+        "SSH_AUTH_SOCK is not set. Ensure the SSH agent socket is available " +
+        "and forwarded to this process."
+      );
+    }
+    if (agentSock) {
+      // Same-path bind-mount so child containers launched from this container
+      // can forward the socket using the same path.
+      dockerArgs.push("-v", `${agentSock}:${agentSock}`);
+      dockerArgs.push("-e", `SSH_AUTH_SOCK=${agentSock}`);
+    }
+    const portFlag = opts.sshPort ? ` -p ${opts.sshPort}` : "";
+    const hostKeyOpts = opts.sshKnownHostsPath
+      ? `-o StrictHostKeyChecking=yes -o UserKnownHostsFile=/tmp/ssh-known-hosts`
+      : `-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null`;
+
+    if (opts.sshAgentPubKeyPath && agentSock) {
+      // Agent identity pinning: inject the public key so the container can
+      // instruct the agent to offer only the matching private key.
+      let pubContent: Buffer;
+      try {
+        pubContent = readFileSync(opts.sshAgentPubKeyPath);
+      } catch (err) {
+        throw new Error(`SSH agent public key file not found: ${opts.sshAgentPubKeyPath}`, { cause: err });
+      }
+      dockerArgs.push("-e", `VE_SSH_AGENT_PUB_B64=${pubContent.toString("base64")}`);
+      dockerArgs.push("-e", `GIT_SSH_COMMAND=ssh -o IdentitiesOnly=yes -i /tmp/agent-pub.pub${portFlag} ${hostKeyOpts}`);
+    } else if (agentSock) {
+      dockerArgs.push("-e", `GIT_SSH_COMMAND=ssh${portFlag} ${hostKeyOpts}`);
+    }
+
+    if (opts.sshKnownHostsPath && agentSock) {
+      let khContent: Buffer;
+      try {
+        khContent = readFileSync(opts.sshKnownHostsPath);
+      } catch (err) {
+        throw new Error(`SSH known_hosts file not found or unreadable: ${opts.sshKnownHostsPath}`, { cause: err });
+      }
+      dockerArgs.push("-e", `VE_SSH_KNOWN_HOSTS_B64=${khContent.toString("base64")}`);
     }
   }
 
@@ -157,13 +218,26 @@ export async function execInVolume(opts: ExecInVolumeOptions): Promise<ExecInVol
     }
   }
 
-  // When an SSH key is injected, wrap the command in a shell preamble that
-  // decodes the base64 env var to /tmp/ssh-key with mode 600.
+  // Wrap the command in a shell preamble that decodes any injected key
+  // material. Built as a list of independent parts so every combination of
+  // (private key file) x (known_hosts file) x (agent identity pinning) is
+  // handled correctly — e.g. plain agent mode (no pinning) with a known_hosts
+  // file still needs its own decode step, which previous exclusive-branch
+  // logic missed.
+  const preambleParts: string[] = [];
   if (opts.sshKeyPath) {
+    preambleParts.push(`echo "$VE_SSH_KEY_B64" | base64 -d > /tmp/ssh-key && chmod 600 /tmp/ssh-key && unset VE_SSH_KEY_B64`);
+  }
+  if (opts.sshAgentPubKeyPath && process.env["SSH_AUTH_SOCK"]) {
+    preambleParts.push(`echo "$VE_SSH_AGENT_PUB_B64" | base64 -d > /tmp/agent-pub.pub && chmod 644 /tmp/agent-pub.pub && unset VE_SSH_AGENT_PUB_B64`);
+  }
+  if (opts.sshKnownHostsPath && (opts.sshKeyPath || process.env["SSH_AUTH_SOCK"])) {
+    preambleParts.push(`echo "$VE_SSH_KNOWN_HOSTS_B64" | base64 -d > /tmp/ssh-known-hosts && chmod 644 /tmp/ssh-known-hosts && unset VE_SSH_KNOWN_HOSTS_B64`);
+  }
+
+  if (preambleParts.length > 0) {
     const escaped = opts.command.map(a => `'${a.replace(/'/g, "'\\''")}'`).join(" ");
-    const preamble = opts.sshKnownHostsPath
-      ? `echo "$VE_SSH_KEY_B64" | base64 -d > /tmp/ssh-key && chmod 600 /tmp/ssh-key && unset VE_SSH_KEY_B64 && echo "$VE_SSH_KNOWN_HOSTS_B64" | base64 -d > /tmp/ssh-known-hosts && chmod 644 /tmp/ssh-known-hosts && unset VE_SSH_KNOWN_HOSTS_B64 && exec ${escaped}`
-      : `echo "$VE_SSH_KEY_B64" | base64 -d > /tmp/ssh-key && chmod 600 /tmp/ssh-key && unset VE_SSH_KEY_B64 && exec ${escaped}`;
+    const preamble = `${preambleParts.join(" && ")} && exec ${escaped}`;
     dockerArgs.push(opts.image, "sh", "-c", preamble);
   } else {
     dockerArgs.push(opts.image, ...opts.command);

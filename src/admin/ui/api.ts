@@ -11,8 +11,9 @@ const SECRET_KEY = "ve-admin-secret";
 
 /* ─── Auth token management ───────────────────────────────────────────── */
 
+/** Returns the stored raw secret (truthy when authenticated). */
 export function getStoredToken(): string | null {
-  return sessionStorage.getItem(TOKEN_KEY);
+  return sessionStorage.getItem(SECRET_KEY) || sessionStorage.getItem(TOKEN_KEY);
 }
 
 export function clearStoredToken(): void {
@@ -20,27 +21,32 @@ export function clearStoredToken(): void {
   sessionStorage.removeItem(SECRET_KEY);
 }
 
-/** Store a pre-computed token (used after successful unlock). */
-export function storeToken(token: string): void {
-  sessionStorage.setItem(TOKEN_KEY, token);
+/** Store the raw ADMIN_AUTH_SECRET for per-request token derivation. */
+export function storeToken(secret: string): void {
+  sessionStorage.setItem(SECRET_KEY, secret);
+  sessionStorage.removeItem(TOKEN_KEY);
 }
 
 /**
  * Derive a Bearer token from a raw ADMIN_AUTH_SECRET via Web Crypto HMAC-SHA256.
+ * Format: "<unixTimestamp>.<HMAC-SHA256(secret, unixTimestamp)>"
  * Matches the server-side computation in adminServer.ts isAuthorized().
  */
 export async function deriveToken(secret: string): Promise<string> {
+  const timestamp = Math.floor(Date.now() / 1000).toString();
   const enc = new TextEncoder();
   const key = await crypto.subtle.importKey(
     "raw", enc.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]
   );
-  const sig = await crypto.subtle.sign("HMAC", key, enc.encode(secret));
-  return Array.from(new Uint8Array(sig)).map((b) => b.toString(16).padStart(2, "0")).join("");
+  const sig = await crypto.subtle.sign("HMAC", key, enc.encode(timestamp));
+  const hex = Array.from(new Uint8Array(sig)).map((b) => b.toString(16).padStart(2, "0")).join("");
+  return `${timestamp}.${hex}`;
 }
 
-function authHeaders(): Record<string, string> {
-  const token = getStoredToken();
-  if (!token) return {};
+async function authHeaders(): Promise<Record<string, string>> {
+  const secret = sessionStorage.getItem(SECRET_KEY) || sessionStorage.getItem(TOKEN_KEY);
+  if (!secret) return {};
+  const token = await deriveToken(secret);
   return { authorization: `Bearer ${token}` };
 }
 
@@ -59,7 +65,7 @@ async function request<T>(
   body?: unknown
 ): Promise<T> {
   const headers: Record<string, string> = {
-    ...authHeaders(),
+    ...(await authHeaders()),
     ...(body !== undefined ? { "content-type": "application/json" } : {}),
   };
   const res = await fetch(path, {
@@ -87,6 +93,27 @@ export const api = {
   delete: <T>(path: string, body?: unknown) => request<T>("DELETE", path, body),
 };
 
+/* ─── SSH key management helpers ─────────────────────────────────────── */
+
+export interface AgentKey { publicKey: string; keyType: string; comment: string }
+
+export function generateSshKey(integrationId: string): Promise<{ publicKey: string }> {
+  return request<{ publicKey: string }>("POST", `/api/admin/integrations/${integrationId}/ssh-key/generate`);
+}
+
+/** Generate a key pair without requiring an existing integration (returns both values for in-form state). */
+export function generateSshKeyPair(provider: string): Promise<{ sshPrivateKeyEnc: string; sshPublicKey: string }> {
+  return request<{ sshPrivateKeyEnc: string; sshPublicKey: string }>("POST", "/api/admin/ssh-key/generate", { provider });
+}
+
+export function getSshPublicKey(integrationId: string): Promise<{ publicKey: string | null }> {
+  return request<{ publicKey: string | null }>("GET", `/api/admin/integrations/${integrationId}/ssh-key/public`);
+}
+
+export function listAgentKeys(): Promise<{ keys: AgentKey[]; agentAvailable: boolean }> {
+  return request<{ keys: AgentKey[]; agentAvailable: boolean }>("GET", "/api/admin/ssh-agent/keys");
+}
+
 /* ─── SSE stream helpers ──────────────────────────────────────────────── */
 
 type SseHandler = (eventType: string, data: string) => void;
@@ -109,7 +136,7 @@ export function connectSse(
     abort = new AbortController();
     try {
       const res = await fetch(path, {
-        headers: authHeaders(),
+        headers: await authHeaders(),
         signal: abort.signal,
       });
       if (!res.ok || !res.body) throw new Error(`SSE error ${res.status}`);

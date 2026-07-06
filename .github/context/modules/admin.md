@@ -84,6 +84,10 @@ The admin server is a small HTTP service (default `127.0.0.1:3100`) that serves 
 | `POST` | `/api/admin/integrations/:id/webhook-secret/rotate` | Generate and persist a new webhook secret. |
 | `GET` | `/api/admin/integrations/:id/webhook-allowed-ips` | Read allowed IP list. |
 | `PUT` | `/api/admin/integrations/:id/webhook-allowed-ips` | Replace allowed IP list. |
+| `POST` | `/api/admin/ssh-key/generate` | Stateless SSH key-pair generation (`{ provider }` → `{ sshPrivateKeyEnc, sshPublicKey }`) for any provider whose descriptor implements `generateSshKeyPair` (see `src/utils/sshKeyGen.ts`). Used by the in-form "Generate key" flow before the integration is saved; nothing is persisted. `400` when the provider is unknown/unsupported or `ADMIN_AUTH_SECRET` is unset (generated keys must always be stored encrypted). |
+| `POST` | `/api/admin/integrations/:id/ssh-key/generate` | Generate a new key pair and persist it onto an existing integration's config (`sshPrivateKeyEnc` + `sshPublicKey`), returning `{ publicKey }`. Same `400` cases as above; `404` for unknown integrations. |
+| `GET` | `/api/admin/integrations/:id/ssh-key/public` | Return the currently stored public key (if any) for display/copy in the dashboard. |
+| `GET` | `/api/admin/ssh-agent/keys` | List public keys currently loaded in the host's `ssh-agent` (via `ssh-add -L`), used by the "SSH Agent" auth mode's key picker. Returns `{ keys: [], agentAvailable: false }` when no agent socket is reachable or the agent has no identities loaded — never a 5xx, so the UI can render an actionable empty state. |
 | `GET` | `/api/admin/agents` | Agent library list. |
 | `POST` | `/api/admin/agents` | Create agent record. |
 | `GET` | `/api/admin/agents/:id` | Agent detail with masked secrets. |

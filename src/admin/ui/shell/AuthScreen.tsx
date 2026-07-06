@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Icon } from "../components/Icon.tsx";
-import { deriveToken, storeToken } from "../api.ts";
+import { deriveToken, storeToken, clearStoredToken } from "../api.ts";
 
 interface AuthScreenProps {
   authMode: "bearer" | "hmac" | "mixed";
@@ -18,20 +18,18 @@ export function AuthScreen({ authMode, onAuthenticated }: AuthScreenProps) {
     setLoading(true);
     setError(null);
     try {
-      let token: string;
-      if (authMode === "hmac" || authMode === "mixed") {
-        token = await deriveToken(value.trim());
-      } else {
-        token = value.trim();
-      }
-      storeToken(token);
-      // Verify token by calling a protected endpoint
+      const rawSecret = value.trim();
+      storeToken(rawSecret);
+      // Derive a fresh token and verify against a protected endpoint
+      const token = (authMode === "hmac" || authMode === "mixed")
+        ? await deriveToken(rawSecret)
+        : rawSecret;
       const res = await fetch("/api/admin/status", {
         headers: { authorization: `Bearer ${token}` },
       });
       if (!res.ok) {
         setError("Invalid secret — access denied.");
-        storeToken("");
+        clearStoredToken();
       } else {
         onAuthenticated();
       }

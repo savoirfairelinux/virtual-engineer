@@ -6,22 +6,20 @@ import {
   GerritSshConnector,
   listRepositoriesViaSsh,
 } from "../../connectors/gerritConnector.js";
-import { GerritStreamEventsManager, GERRIT_SSH_KEY_DEFAULT, GERRIT_SSH_PORT_DEFAULT } from "../../connectors/gerritStreamEvents.js";
+import { GerritStreamEventsManager, GERRIT_SSH_PORT_DEFAULT } from "../../connectors/gerritStreamEvents.js";
 
-export { GERRIT_SSH_KEY_DEFAULT, GERRIT_SSH_PORT_DEFAULT } from "../../connectors/gerritStreamEvents.js";
+export { GERRIT_SSH_PORT_DEFAULT } from "../../connectors/gerritStreamEvents.js";
 import { GerritSshReviewProvider } from "../../connectors/gerritSshReviewProvider.js";
 import { GerritVcsConnector } from "../../vcs/gerritVcsConnector.js";
 import { getLogger } from "../../logger.js";
+import { resolveEffectiveSshKeyPath, resolveAgentIdentityPath, SSH_RESOLVED_KEY_PATH, SSH_AGENT_PUBKEY_PATH } from "../../utils/sshKeyResolver.js";
+import { generateSshKeyPair, type GeneratedSshKeyPair } from "../../utils/sshKeyGen.js";
+import { sshConnectionConfigSchema } from "../../utils/sshConfig.js";
 
 const log = getLogger("gerrit-descriptor");
 
-export const gerritConfigSchema = z.object({
-  sshHost: z.string().min(1),
+export const gerritConfigSchema = sshConnectionConfigSchema.extend({
   sshPort: z.coerce.number().int().positive().default(GERRIT_SSH_PORT_DEFAULT),
-  sshUser: z.string().min(1),
-  sshKeyPath: z.string().trim().min(1).default(GERRIT_SSH_KEY_DEFAULT),
-  /** Path to a known_hosts file on the orchestrator filesystem. When set, SSH operations use strict host key verification instead of accepting any fingerprint. */
-  sshKnownHostsPath: z.string().trim().min(1).optional(),
   /** Optional Gerrit web URL used only to build clickable review links. */
   baseUrl: z.string().url().optional(),
   /**
@@ -49,7 +47,7 @@ export type GerritPluginConfig = z.infer<typeof gerritConfigSchema>;
 
 /**
  * Parse a Gerrit integration's stored JSON config through the Zod schema so
- * that defaults (sshKeyPath, sshPort, …) are applied and required fields
+ * that defaults (sshPort, …) are applied and required fields
  * (sshHost, sshUser) are validated in one step.  Empty strings are removed
  * before parsing so that Zod `.default()` values take effect even when DB
  * rows store `""`.
@@ -63,35 +61,54 @@ export function parseGerritConfig(integration: Integration): GerritPluginConfig 
   }
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
   const n = raw as Record<string, unknown>;
-  if ((n["sshKeyPath"] as string | undefined)?.trim() === "") delete n["sshKeyPath"];
-  if ((n["sshKnownHostsPath"] as string | undefined)?.trim() === "") delete n["sshKnownHostsPath"];
+  for (const k of ["sshKeyPath", "sshKnownHostsPath", "sshPrivateKeyEnc", "sshPublicKey", "sshAgentPublicKey"] as const) {
+    if ((n[k] as string | undefined)?.trim() === "") delete n[k];
+  }
   if ((n["sshPort"] as string | undefined) === "") delete n["sshPort"];
   const result = gerritConfigSchema.safeParse(n);
   return result.success ? result.data : null;
 }
 
 /**
- * Build the SSH connection args from a (possibly stripped) config object.
+ * Build the SSH connection args from a (possibly pre-processed) config object.
  *
- * `sshKeyPath` and `sshPort` carry Zod defaults, so they may be absent after
- * `stripSchemaDefaults` is applied.  Apply the defaults here so both
- * `createInstance` and `createVcsConnector` stay in sync — adding a new SSH
- * field only requires changing this helper.
+ * Returns `keyPath` and `agentPubKeyPath` as optional strings:
+ *   - `keyPath` set       → use private-key file (legacy path or resolved temp file)
+ *   - `agentPubKeyPath` set → agent mode with identity pinning (only that key offered)
+ *   - neither set         → SSH agent mode, all loaded keys tried
  */
 function buildSshArgs(cfg: Record<string, unknown>): {
   host: string;
   user: string;
   port: number;
-  keyPath: string;
+  keyPath: string | undefined;
+  agentPubKeyPath: string | undefined;
   knownHostsPath: string | undefined;
 } {
+  // Prefer the pre-resolved path set by preprocessConfig; fall back to the raw
+  // sshKeyPath field for callers that bypass preprocessConfig (e.g. unit tests).
+  const resolvedKeyPath = cfg[SSH_RESOLVED_KEY_PATH] as string | undefined;
+  const rawKeyPath = cfg["sshKeyPath"] as string | undefined;
+  const keyPath = resolvedKeyPath ?? (rawKeyPath && rawKeyPath.trim().length > 0 ? rawKeyPath.trim() : undefined);
   return {
     host: cfg["sshHost"] as string,
     user: cfg["sshUser"] as string,
     port: (cfg["sshPort"] as number | undefined) ?? GERRIT_SSH_PORT_DEFAULT,
-    keyPath: (cfg["sshKeyPath"] as string | undefined) ?? GERRIT_SSH_KEY_DEFAULT,
+    keyPath,
+    agentPubKeyPath: cfg[SSH_AGENT_PUBKEY_PATH] as string | undefined,
     knownHostsPath: (cfg["sshKnownHostsPath"] as string | undefined) ?? undefined,
   };
+}
+
+/**
+ * Generate a Gerrit SSH key pair for the UI-generated-key auth mode.
+ * Thin wrapper around the shared `generateSshKeyPair` util (see
+ * src/utils/sshKeyGen.ts) — kept here so the descriptor's `generateSshKeyPair`
+ * hook can pass a Gerrit-specific comment. Throws if `adminAuthSecret` is
+ * unset, since generated keys must always be stored encrypted.
+ */
+export function generateGerritSshKeyPair(adminAuthSecret: string | undefined): GeneratedSshKeyPair {
+  return generateSshKeyPair(adminAuthSecret, "virtual-engineer-gerrit");
 }
 
 export const gerritDescriptor: ProviderDescriptor = {
@@ -103,12 +120,40 @@ export const gerritDescriptor: ProviderDescriptor = {
     { key: "sshHost", label: "SSH Host", type: "text", required: true, placeholder: "gerrit" },
     { key: "sshPort", label: "SSH Port", type: "number", required: false, placeholder: "29418" },
     { key: "sshUser", label: "SSH User", type: "text", required: true, placeholder: "admin" },
-    { key: "sshKeyPath", label: "SSH Key Path", type: "text", required: false, placeholder: "/home/<user>/.ssh/id_ed25519_gerrit", advanced: true },
     { key: "sshKnownHostsPath", label: "SSH Known Hosts Path", type: "text", required: false, placeholder: "/home/<user>/.ssh/known_hosts", advanced: true },
+    // SSH key fields are managed via the dedicated SSH key UI section, not generic dynamic fields.
+    // sshPrivateKeyEnc and sshPublicKey are hidden so the generic masking logic does not expose them.
+    { key: "sshPrivateKeyEnc", label: "SSH Private Key (encrypted)", type: "password", required: false, hidden: true },
+    { key: "sshPublicKey", label: "SSH Public Key", type: "text", required: false, hidden: true },
+    { key: "sshAgentPublicKey", label: "SSH Agent Public Key", type: "text", required: false, hidden: true },
+    { key: "sshKeyPath", label: "SSH Key Path", type: "text", required: false, hidden: true },
   ],
+
+  /**
+   * Resolve SSH key material to temp-file paths before passing config to
+   * connector factories. Sets `_resolvedSshKeyPath` (for private-key and
+   * generated-key modes) and `_agentPubKeyPath` (for agent identity pinning).
+   */
+  preprocessConfig(config, adminAuthSecret, integrationId) {
+    const extra: Record<string, unknown> = {};
+    const keyPath = resolveEffectiveSshKeyPath(config, adminAuthSecret, integrationId);
+    if (keyPath !== undefined) {
+      extra[SSH_RESOLVED_KEY_PATH] = keyPath;
+    } else {
+      const agentPubKeyPath = resolveAgentIdentityPath(config, integrationId);
+      if (agentPubKeyPath !== undefined) {
+        extra[SSH_AGENT_PUBKEY_PATH] = agentPubKeyPath;
+      }
+    }
+    return extra;
+  },
+
   discoverResources: async (config) => {
-    const parsed = gerritConfigSchema.parse(config);
-    const ssh = buildSshArgs(parsed);
+    const cfg = config as Record<string, unknown>;
+    const parsed = gerritConfigSchema.parse(cfg);
+    // Merge Zod-applied defaults with the original config so runtime fields
+    // (_resolvedSshKeyPath, _agentPubKeyPath) from preprocessConfig are preserved.
+    const ssh = buildSshArgs({ ...(parsed as unknown as Record<string, unknown>), ...cfg });
     const connector = new GerritSshConnector({
       ssh,
       ...(parsed.baseUrl !== undefined ? { baseUrl: parsed.baseUrl } : {}),
@@ -120,8 +165,9 @@ export const gerritDescriptor: ProviderDescriptor = {
     };
   },
   discoverBranches: async (config, repoKey) => {
-    const parsed = gerritConfigSchema.parse(config);
-    const ssh = buildSshArgs(parsed);
+    const cfg = config as Record<string, unknown>;
+    const parsed = gerritConfigSchema.parse(cfg);
+    const ssh = buildSshArgs({ ...(parsed as unknown as Record<string, unknown>), ...cfg });
     const connector = new GerritSshConnector({
       ssh,
       ...(parsed.baseUrl !== undefined ? { baseUrl: parsed.baseUrl } : {}),
@@ -143,8 +189,10 @@ export const gerritDescriptor: ProviderDescriptor = {
       }
     };
 
-    const keyError = await ensureReadable(ssh.keyPath, "SSH private key");
-    if (keyError) return keyError;
+    if (ssh.keyPath !== undefined) {
+      const keyError = await ensureReadable(ssh.keyPath, "SSH private key");
+      if (keyError) return keyError;
+    }
 
     if (ssh.knownHostsPath !== undefined) {
       const knownHostsError = await ensureReadable(ssh.knownHostsPath, "SSH known_hosts file");
@@ -192,7 +240,8 @@ export const gerritDescriptor: ProviderDescriptor = {
             host: ssh.host,
             port: ssh.port,
             user: ssh.user,
-            keyPath: ssh.keyPath,
+            ...(ssh.keyPath !== undefined ? { keyPath: ssh.keyPath } : {}),
+            ...(ssh.agentPubKeyPath !== undefined ? { agentPubKeyPath: ssh.agentPubKeyPath } : {}),
             ...(ssh.knownHostsPath !== undefined ? { knownHostsPath: ssh.knownHostsPath } : {}),
           },
           ...(typeof cfg["baseUrl"] === "string" ? { baseUrl: cfg["baseUrl"] } : {}),
@@ -208,7 +257,8 @@ export const gerritDescriptor: ProviderDescriptor = {
             sshHost: ssh.host,
             sshPort: ssh.port,
             sshUser: ssh.user,
-            sshKeyPath: ssh.keyPath,
+            ...(ssh.keyPath !== undefined ? { sshKeyPath: ssh.keyPath } : {}),
+            ...(ssh.agentPubKeyPath !== undefined ? { sshAgentPubKeyPath: ssh.agentPubKeyPath } : {}),
             ...(ssh.knownHostsPath !== undefined ? { sshKnownHostsPath: ssh.knownHostsPath } : {}),
             ...(typeof cfg["reviewerAccountId"] === "string" && cfg["reviewerAccountId"] !== ""
               ? { reviewerAccountId: cfg["reviewerAccountId"] }
@@ -216,7 +266,8 @@ export const gerritDescriptor: ProviderDescriptor = {
           }),
           buildCloneTarget: (details) => ({
             cloneUrl: `${baseUrl}/${details.project}`,
-            sshKeyPath: ssh.keyPath,
+            sshKeyPath: ssh.keyPath ?? null,
+            sshAgentPubKeyPath: ssh.agentPubKeyPath ?? null,
             sshKnownHostsPath: ssh.knownHostsPath ?? null,
           }),
           applyPatchset: async (handle, details): Promise<void> => {
@@ -226,7 +277,8 @@ export const gerritDescriptor: ProviderDescriptor = {
                 sshHost: ssh.host,
                 sshPort: ssh.port,
                 sshUser: ssh.user,
-                sshKeyPath: ssh.keyPath,
+                ...(ssh.keyPath !== undefined ? { sshKeyPath: ssh.keyPath } : {}),
+                ...(ssh.agentPubKeyPath !== undefined ? { sshAgentPubKeyPath: ssh.agentPubKeyPath } : {}),
                 ...(ssh.knownHostsPath !== undefined ? { sshKnownHostsPath: ssh.knownHostsPath } : {}),
                 revisionNumber: details.changeNumber,
                 patchset: details.currentPatchset,
@@ -243,7 +295,8 @@ export const gerritDescriptor: ProviderDescriptor = {
           sshHost: ssh.host,
           sshPort: ssh.port,
           sshUser: ssh.user,
-          sshKeyPath: ssh.keyPath,
+          ...(ssh.keyPath !== undefined ? { sshKeyPath: ssh.keyPath } : {}),
+          ...(ssh.agentPubKeyPath !== undefined ? { sshAgentPubKeyPath: ssh.agentPubKeyPath } : {}),
           ...(ssh.knownHostsPath !== undefined ? { sshKnownHostsPath: ssh.knownHostsPath } : {}),
           gitAuthorName: (cfg["gitAuthorName"] as string | undefined) ?? "Virtual Engineer",
           gitAuthorEmail: (cfg["gitAuthorEmail"] as string | undefined) ?? "ve@virtual-engineer.local",
@@ -252,4 +305,11 @@ export const gerritDescriptor: ProviderDescriptor = {
       },
     },
   },
+  /** SSH key pair generation — called by the admin API endpoint. */
+  generateSshKeyPair: generateGerritSshKeyPair,
 };
+
+// Re-export for compatibility — the default key path constant is no longer used
+// as a schema default but kept so callers that import it don't break.
+export const GERRIT_SSH_KEY_DEFAULT = "/app/secrets/gerrit_id_ed25519";
+

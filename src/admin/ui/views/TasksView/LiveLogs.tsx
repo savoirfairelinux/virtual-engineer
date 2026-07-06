@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Icon } from "../../components/Icon.tsx";
-import { connectSse, getStoredToken } from "../../api.ts";
+import { connectSse } from "../../api.ts";
 import type { AgentLogEvent } from "../../types.ts";
 import { TONE } from "../../states.ts";
 import type { ToneKey } from "../../states.ts";
@@ -118,8 +118,7 @@ export function LiveLogs({ taskId, running }: LiveLogsProps) {
   useEffect(() => {
     setEntries([]);
     seenEntryKeys.current = new Set();
-    const token = getStoredToken();
-    const path = `/api/admin/logs/stream?taskId=${encodeURIComponent(taskId)}${token ? `&t=${token}` : ""}`;
+    const path = `/api/admin/logs/stream?taskId=${encodeURIComponent(taskId)}`;
     const cleanup = connectSse(path, (_evType, data) => {
       try {
         const parsed = JSON.parse(data) as AgentLogEvent | Record<string, unknown>;

@@ -103,7 +103,7 @@ export interface PluginOAuthConfigResolverContext {
 /** Reviewer factory result: the provider plus its workspace setup hooks. */
 export interface ReviewerBundle {
   provider: ReviewProvider;
-  buildCloneTarget: (details: ReviewChangeDetails) => { cloneUrl: string; sshKeyPath: string | null; sshKnownHostsPath: string | null };
+  buildCloneTarget: (details: ReviewChangeDetails) => { cloneUrl: string; sshKeyPath: string | null; sshAgentPubKeyPath?: string | null; sshKnownHostsPath: string | null };
   applyPatchset?: (handle: WorkspaceHandle, details: ReviewChangeDetails) => Promise<void>;
   /** DB key for the system prompt passed to the review agent. */
   systemPromptId: string;
@@ -253,12 +253,36 @@ export interface ProviderDescriptor {
    */
   discoverModels?: (config: unknown) => Promise<Array<{ id: string; name: string }>>;
   /**
+   * Optional config pre-processing hook called after password decryption and
+   * schema-default stripping, immediately before config is passed to connector
+   * factories (`createConnector`, `createVcsConnector`, `createReviewer`,
+   * `testConnection`, `discoverResources`, `discoverBranches`).
+   *
+   * Providers use this to resolve runtime key material — e.g. decrypt an
+   * encrypted SSH private key stored in `configJson` and write it to a temp
+   * file, returning `{ _resolvedSshKeyPath: path }` that connector factories
+   * then read.
+   *
+   * The returned object is **merged** into the config (shallow), so only
+   * return the extra fields you want to add. Return `{}` to make no changes.
+   */
+  preprocessConfig?: (
+    config: Record<string, unknown>,
+    adminAuthSecret: string | undefined,
+    integrationId: string | undefined
+  ) => Record<string, unknown>;
+  /**
    * Optional read-time config normalisation hook. When defined, the admin
    * routes call it with the masked config before returning it to the browser,
    * letting providers inject defaults or strip transport-only fields without
    * the route hardcoding provider checks.
    */
   normalizeConfigForRead?: (maskedConfig: Record<string, unknown>) => Record<string, unknown>;
+  /**
+   * Optional SSH key pair generator for providers that support UI-generated keys.
+   * Called by the admin API `POST /integrations/:id/ssh-key/generate` endpoint.
+   */
+  generateSshKeyPair?: (adminAuthSecret: string | undefined) => { sshPrivateKeyEnc: string; sshPublicKey: string };
   /**
    * Returns the provider-specific detail lines shown in the admin provider
    * summary panel.

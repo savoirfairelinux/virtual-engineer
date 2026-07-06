@@ -73,7 +73,7 @@ export interface ReviewOrchestratorDeps {
   /** Workspace runner — the review always runs in a Docker container. */
   workspaceRunner: WorkspaceRunner;
   /** Build the git clone URL and optional SSH key paths for the change's repository. */
-  buildCloneTarget: (details: ReviewChangeDetails) => { cloneUrl: string; sshKeyPath: string | null; sshKnownHostsPath: string | null };
+  buildCloneTarget: (details: ReviewChangeDetails) => { cloneUrl: string; sshKeyPath: string | null; sshAgentPubKeyPath?: string | null; sshKnownHostsPath: string | null };
   /** Apply a provider-specific patchset onto the cloned workspace (e.g. Gerrit `refs/changes/…`). Omit for GitLab MR branches. */
   applyPatchset?: (handle: WorkspaceHandle, details: ReviewChangeDetails) => Promise<void>;
   /** Source label persisted on review tasks, typically `<provider>:<integrationId>`. */
@@ -361,7 +361,7 @@ export class ReviewOrchestrator {
         );
       }
 
-      const { cloneUrl, sshKeyPath, sshKnownHostsPath } = this.deps.buildCloneTarget(details);
+      const { cloneUrl, sshKeyPath, sshAgentPubKeyPath, sshKnownHostsPath } = this.deps.buildCloneTarget(details);
       const cloneTarget: ProjectPushTargetRecord = {
         id: -1,
         projectId: project.id,
@@ -373,6 +373,7 @@ export class ReviewOrchestrator {
         commitOrder: 1,
         localPath: ".",
         sshKeyPath,
+        ...(sshAgentPubKeyPath != null ? { sshAgentPubKeyPath } : {}),
         createdAt: new Date(),
         updatedAt: new Date(),
       };

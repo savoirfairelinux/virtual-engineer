@@ -3,6 +3,7 @@ import { promisify } from "node:util";
 import type { Integration, ReviewComment } from "../interfaces.js";
 import { getLogger } from "../logger.js";
 import { buildSshHostKeyOptions, PREAMBLE_RE, COMMENTS_SUMMARY_RE } from "./gerritSshClient.js";
+import { SSH_RESOLVED_KEY_PATH, SSH_AGENT_PUBKEY_PATH } from "../utils/sshKeyResolver.js";
 import type {
   IntegrationEventStreamDependencies,
   IntegrationEventStreamManager,
@@ -14,7 +15,6 @@ import type {
 const execFileAsync = promisify(execFile);
 const SSH_QUERY_TIMEOUT_MS = 30_000;
 
-export const GERRIT_SSH_KEY_DEFAULT = "/app/secrets/gerrit_id_ed25519";
 export const GERRIT_SSH_PORT_DEFAULT = 29418;
 
 type SshQueryFn = (args: string[], config: GerritStreamConfig) => Promise<string>;
@@ -40,7 +40,10 @@ interface GerritStreamConfig {
   sshHost: string;
   sshPort: number;
   sshUser: string;
-  sshKeyPath: string;
+  /** Path to an SSH private-key file. Omit to use the system SSH agent. */
+  sshKeyPath?: string | undefined;
+  /** Path to an agent identity `.pub` file for identity pinning. Only used when sshKeyPath is absent. */
+  sshAgentPubKeyPath?: string | undefined;
   sshKnownHostsPath?: string | undefined;
 }
 
@@ -170,7 +173,7 @@ export class GerritStreamEventsManager implements IntegrationEventStreamManager 
       "ssh",
       [
         "-p", String(config.sshPort),
-        "-i", config.sshKeyPath,
+        ...buildIdentityArgs(config),
         "-o", "BatchMode=yes",
         "-o", `ConnectTimeout=30`,
         ...buildSshHostKeyOptions(config.sshKnownHostsPath),
@@ -597,9 +600,15 @@ function parseGerritStreamConfig(integration: Integration):
   const cfg = raw as Record<string, unknown>;
   const sshHost = typeof cfg["sshHost"] === "string" ? cfg["sshHost"].trim() : "";
   const sshUser = typeof cfg["sshUser"] === "string" ? cfg["sshUser"].trim() : "";
-  const sshKeyPath = typeof cfg["sshKeyPath"] === "string" && cfg["sshKeyPath"].trim() !== ""
-    ? cfg["sshKeyPath"].trim()
-    : GERRIT_SSH_KEY_DEFAULT;
+  // Key path: SSH_RESOLVED_KEY_PATH (from preprocessConfig) > sshKeyPath > undefined (agent mode)
+  const sshKeyPath = typeof cfg[SSH_RESOLVED_KEY_PATH] === "string" && cfg[SSH_RESOLVED_KEY_PATH].trim() !== ""
+    ? cfg[SSH_RESOLVED_KEY_PATH].trim()
+    : typeof cfg["sshKeyPath"] === "string" && cfg["sshKeyPath"].trim() !== ""
+      ? cfg["sshKeyPath"].trim()
+      : undefined;
+  const sshAgentPubKeyPath = typeof cfg[SSH_AGENT_PUBKEY_PATH] === "string" && cfg[SSH_AGENT_PUBKEY_PATH].trim() !== ""
+    ? cfg[SSH_AGENT_PUBKEY_PATH].trim()
+    : undefined;
   const sshPortValue = cfg["sshPort"];
   const sshPort = typeof sshPortValue === "number"
     ? sshPortValue
@@ -607,8 +616,8 @@ function parseGerritStreamConfig(integration: Integration):
       ? Number(sshPortValue)
       : GERRIT_SSH_PORT_DEFAULT;
 
-  if (!sshHost || !sshUser || !sshKeyPath || !Number.isFinite(sshPort) || sshPort <= 0) {
-    return { success: false, error: "Gerrit stream-events requires sshHost, sshUser, sshPort, and sshKeyPath" };
+  if (!sshHost || !sshUser || !Number.isFinite(sshPort) || sshPort <= 0) {
+    return { success: false, error: "Gerrit stream-events requires sshHost, sshUser, and sshPort" };
   }
 
   return {
@@ -617,7 +626,8 @@ function parseGerritStreamConfig(integration: Integration):
       sshHost,
       sshUser,
       sshPort,
-      sshKeyPath,
+      ...(sshKeyPath !== undefined ? { sshKeyPath } : {}),
+      ...(sshAgentPubKeyPath !== undefined ? { sshAgentPubKeyPath } : {}),
       ...(typeof cfg["sshKnownHostsPath"] === "string" && cfg["sshKnownHostsPath"].trim() !== ""
         ? { sshKnownHostsPath: cfg["sshKnownHostsPath"].trim() }
         : {}),
@@ -631,7 +641,7 @@ async function defaultSshQuery(args: string[], config: GerritStreamConfig): Prom
     "ssh",
     [
       "-p", String(config.sshPort),
-      "-i", config.sshKeyPath,
+      ...buildIdentityArgs(config),
       ...buildSshHostKeyOptions(config.sshKnownHostsPath),
       "-o", "LogLevel=ERROR",
       `${config.sshUser}@${config.sshHost}`,
@@ -642,12 +652,24 @@ async function defaultSshQuery(args: string[], config: GerritStreamConfig): Prom
   return stdout;
 }
 
+/** Build SSH identity arguments from a stream config. */
+function buildIdentityArgs(config: GerritStreamConfig): string[] {
+  if (config.sshKeyPath) {
+    return ["-i", config.sshKeyPath, "-o", "IdentitiesOnly=yes"];
+  }
+  if (config.sshAgentPubKeyPath) {
+    return ["-o", "IdentitiesOnly=yes", "-i", config.sshAgentPubKeyPath];
+  }
+  return [];
+}
+
 /** Return true when two GerritStreamConfig objects represent the same SSH endpoint. */
 function sameConfig(left: GerritStreamConfig, right: GerritStreamConfig): boolean {
   return left.sshHost === right.sshHost
     && left.sshPort === right.sshPort
     && left.sshUser === right.sshUser
-    && left.sshKeyPath === right.sshKeyPath
+    && (left.sshKeyPath ?? "") === (right.sshKeyPath ?? "")
+    && (left.sshAgentPubKeyPath ?? "") === (right.sshAgentPubKeyPath ?? "")
     && (left.sshKnownHostsPath ?? "") === (right.sshKnownHostsPath ?? "");
 }
 

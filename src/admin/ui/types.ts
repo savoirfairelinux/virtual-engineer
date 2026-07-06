@@ -194,6 +194,8 @@ export interface ApiPlugin {
   domainCapabilities: DomainCapability[];
   icon?: ProviderIcon | null;
   requiredFields: PluginField[];
+  /** True when the provider supports the generic SSH auth UI (agent / generated-key / custom-path). */
+  supportsSshAuth?: boolean;
   oauth?: ApiPluginOAuth;
 }
 

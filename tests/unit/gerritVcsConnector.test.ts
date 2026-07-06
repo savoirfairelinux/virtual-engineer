@@ -75,7 +75,7 @@ describe("GerritVcsConnector", () => {
         ["clone", "--branch", branch, "--depth", "1", repoUrl, targetDir],
         expect.objectContaining({
           env: expect.objectContaining({
-            GIT_SSH_COMMAND: expect.stringContaining(mockConfig.sshKeyPath),
+            GIT_SSH_COMMAND: expect.stringContaining(mockConfig.sshKeyPath!),
           }),
           stdio: ["ignore", "pipe", "pipe"],
         })
@@ -119,7 +119,7 @@ describe("GerritVcsConnector", () => {
       const callArgs = mockExecFileSync.mock.calls[0];
       const envArg = callArgs![2] as Record<string, unknown>;
       expect((envArg['env'] as Record<string, string>)['GIT_SSH_COMMAND']).not.toContain(
-        mockConfig.sshKeyPath
+        mockConfig.sshKeyPath!
       );
     });
   });
@@ -218,7 +218,7 @@ describe("GerritVcsConnector", () => {
         ["push", "origin", `HEAD:${ref}`],
         expect.objectContaining({
           env: expect.objectContaining({
-            GIT_SSH_COMMAND: expect.stringContaining(mockConfig.sshKeyPath),
+            GIT_SSH_COMMAND: expect.stringContaining(mockConfig.sshKeyPath!),
           }),
         })
       );
