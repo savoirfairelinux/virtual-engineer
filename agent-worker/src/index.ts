@@ -33,10 +33,17 @@ import {
   squashIntoBaseIfNeeded,
   groupFilesByRepo,
 } from './commitUtils.js';
+import { runClaudeAgent } from './claudeSession.js';
 
 // ── Environment ────────────────────────────────────────────────────────────────
+const AGENT_PROVIDER = process.env['AGENT_PROVIDER'] ?? 'copilot';
 const GITHUB_TOKEN = process.env['GITHUB_TOKEN'] ?? '';
 const COPILOT_MODEL = process.env['COPILOT_MODEL'] ?? 'auto';
+/** Empty when unset — the Claude CLI then selects its own default model. */
+const CLAUDE_MODEL = process.env['CLAUDE_MODEL'] ?? '';
+/** Model + adapter label for the active provider (used in events and result metadata). */
+const ACTIVE_MODEL = AGENT_PROVIDER === 'claude' ? (CLAUDE_MODEL || 'cli-default') : COPILOT_MODEL;
+const ADAPTER_LABEL = AGENT_PROVIDER === 'claude' ? 'claude-agent-sdk' : 'copilot-sdk';
 const COPILOT_REASONING_EFFORT = process.env['COPILOT_REASONING_EFFORT'];
 const GIT_AUTHOR_NAME = process.env['GIT_AUTHOR_NAME'] ?? 'Virtual Engineer';
 const GIT_AUTHOR_EMAIL = process.env['GIT_AUTHOR_EMAIL'] ?? 've@virtual-engineer.local';
@@ -439,6 +446,71 @@ function registerSessionEventHandlers(
   return state;
 }
 
+// ── Provider-agnostic agent driver ────────────────────────────────────────────
+
+/** Result of running one agent session, independent of the underlying provider. */
+interface AgentRun {
+  content: string;
+  toolCallCount: number;
+  toolsByKind: Record<string, number>;
+  cleanup: () => Promise<void>;
+}
+
+/** Run a Copilot SDK session (local headless CLI) and return the assistant text + tool stats. */
+async function runCopilotAgent(
+  prompt: string,
+  timeoutMs: number,
+  mode: 'codegen' | 'review',
+): Promise<AgentRun> {
+  const { session, client, localCliServer } = await runSession(prompt);
+  emitEvent('session.start', { model: COPILOT_MODEL, mode, workingDirectory: REPO_PATH });
+  const handlerState = registerSessionEventHandlers(session);
+  process.stderr.write(`sending ${mode} prompt\n`);
+
+  const heartbeat = setInterval(() => {
+    process.stderr.write(`agent working… (${handlerState.toolCallCount} tool call(s) so far)\n`);
+  }, 30_000);
+
+  let response: AssistantMessageEvent | undefined;
+  try {
+    response = await session.sendAndWait({ prompt }, timeoutMs);
+  } finally {
+    clearInterval(heartbeat);
+  }
+
+  const content = response?.data.content ?? 'Task completed';
+  await session.disconnect().catch(() => { /* ignore */ });
+
+  return {
+    content,
+    toolCallCount: handlerState.toolCallCount,
+    toolsByKind: handlerState.toolsByKind,
+    cleanup: async (): Promise<void> => {
+      await client.stop().catch(() => { /* ignore */ });
+      localCliServer.child.kill('SIGTERM');
+    },
+  };
+}
+
+/** Dispatch to the configured agent provider (`copilot` or `claude`). */
+async function runAgent(
+  prompt: string,
+  timeoutMs: number,
+  mode: 'codegen' | 'review',
+): Promise<AgentRun> {
+  if (AGENT_PROVIDER === 'claude') {
+    return runClaudeAgent(prompt, {
+      model: CLAUDE_MODEL,
+      systemPrompt: SYSTEM_PROMPT,
+      cwd: REPO_PATH,
+      timeoutMs,
+      mode,
+      skillDiscovery: SKILL_DISCOVERY,
+    });
+  }
+  return runCopilotAgent(prompt, timeoutMs, mode);
+}
+
 // ── Review mode entry point ────────────────────────────────────────────────────
 
 /** Extended result shape for review mode — rawOutput consumed by workspaceRunner. */
@@ -455,31 +527,15 @@ async function runReviewMode(): Promise<ReviewWorkerResult> {
     throw new Error(`User prompt file is empty: ${USER_PROMPT_FILE}`);
   }
 
-  process.stderr.write(`review mode: model=${COPILOT_MODEL}\n`);
-  emitEvent('session.start', { mode: 'review', model: COPILOT_MODEL });
+  process.stderr.write(`review mode: provider=${AGENT_PROVIDER} model=${ACTIVE_MODEL}\n`);
 
-  const { session, client, localCliServer } = await runSession(reviewPrompt);
-
+  const agent = await runAgent(reviewPrompt, 9 * 60 * 1000, 'review');
   try {
-    registerSessionEventHandlers(session);
-    emitEvent('review.prompt_sent', { promptLength: reviewPrompt.length });
-    process.stderr.write('sending review prompt\n');
-
-    const heartbeat = setInterval(() => {
-      process.stderr.write(`review agent working… (model=${COPILOT_MODEL})\n`);
-    }, 30_000);
-
-    let response: AssistantMessageEvent | undefined;
-    try {
-      response = await session.sendAndWait({ prompt: reviewPrompt }, 9 * 60 * 1000);
-    } finally {
-      clearInterval(heartbeat);
+    const rawOutput = agent.content ?? '';
+    // Claude's runner already emits session.end; only emit here for Copilot.
+    if (AGENT_PROVIDER !== 'claude') {
+      emitEvent('session.end', { mode: 'review', outputLength: rawOutput.length });
     }
-
-    await session.disconnect().catch(() => { /* ignore */ });
-
-    const rawOutput = response?.data.content ?? '';
-    emitEvent('session.end', { mode: 'review', outputLength: rawOutput.length });
     process.stderr.write(`review complete (${rawOutput.length} chars)\n`);
 
     return {
@@ -488,17 +544,18 @@ async function runReviewMode(): Promise<ReviewWorkerResult> {
       modifiedFiles: [],
       summary: rawOutput.slice(0, 500),
       agentLogs: rawOutput,
-      metadata: { adapter: 'copilot-sdk', model: COPILOT_MODEL, reviewMode: true },
+      metadata: { adapter: ADAPTER_LABEL, model: ACTIVE_MODEL, reviewMode: true },
     };
   } finally {
-    await client.stop().catch(() => { /* ignore */ });
-    localCliServer.child.kill('SIGTERM');
+    await agent.cleanup();
   }
 }
 
 // ── Main (code-generation mode) ───────────────────────────────────────────────
 async function main(): Promise<AgentResult> {
-  if (!GITHUB_TOKEN) throw new Error('GITHUB_TOKEN env var is required');
+  if (AGENT_PROVIDER === 'copilot' && !GITHUB_TOKEN) {
+    throw new Error('GITHUB_TOKEN env var is required');
+  }
 
   if (!existsSync(USER_PROMPT_FILE)) {
     throw new Error(`User prompt file not found: ${USER_PROMPT_FILE}`);
@@ -554,47 +611,31 @@ async function main(): Promise<AgentResult> {
     }
   }
 
-  process.stderr.write(
-    `starting Copilot SDK client (mode=local-headless, model=${COPILOT_MODEL})\n`,
-  );
+  process.stderr.write(`starting agent (provider=${AGENT_PROVIDER}, model=${ACTIVE_MODEL})\n`);
 
-  const { session, client, localCliServer } = await runSession(userPrompt);
+  const agent = await runAgent(userPrompt, 3_540_000, 'codegen');
+  const handlerState = { toolCallCount: agent.toolCallCount, toolsByKind: agent.toolsByKind };
+  const rawContent = agent.content ?? 'Task completed';
+  const summary = rawContent.trim().slice(0, 1000);
 
   let result: AgentResult = {
     status: 'failed',
     modifiedFiles: [],
     summary: 'Internal error: result not set',
     agentLogs: '',
-    metadata: { adapter: 'copilot-sdk', model: COPILOT_MODEL },
+    metadata: { adapter: ADAPTER_LABEL, model: ACTIVE_MODEL },
   };
 
   try {
-    emitEvent('session.start', { model: COPILOT_MODEL, workingDirectory: REPO_PATH });
-
-    const handlerState = registerSessionEventHandlers(session);
-    process.stderr.write('sending task prompt\n');
-
-    const heartbeat = setInterval(() => {
-      process.stderr.write(`agent working… (${handlerState.toolCallCount} tool call(s) so far)\n`);
-    }, 30_000);
-
-    let response: AssistantMessageEvent | undefined;
-    try {
-      response = await session.sendAndWait({ prompt: userPrompt }, 3_540_000);
-    } finally {
-      clearInterval(heartbeat);
-    }
-
-    const rawContent = response?.data.content ?? 'Task completed';
-    const summary = rawContent.trim().slice(0, 1000);
     process.stderr.write('session idle — collecting changes\n');
-    emitEvent('session.end', {
-      toolCallCount: handlerState.toolCallCount,
-      toolsByKind: handlerState.toolsByKind,
-      model: COPILOT_MODEL,
-    });
-
-    await session.disconnect();
+    // Claude's runner already emits session.end; only emit here for Copilot.
+    if (AGENT_PROVIDER !== 'claude') {
+      emitEvent('session.end', {
+        toolCallCount: handlerState.toolCallCount,
+        toolsByKind: handlerState.toolsByKind,
+        model: ACTIVE_MODEL,
+      });
+    }
 
     // 3. Check for agent-created commits across ALL repos.
     const rootHeadSha = git(['rev-parse', 'HEAD']).trim();
@@ -855,8 +896,13 @@ async function main(): Promise<AgentResult> {
       }
     }
   } finally {
-    await client.stop().catch(() => { /* ignore */ });
-    localCliServer.child.kill('SIGTERM');
+    await agent.cleanup();
+  }
+
+  // Normalize provider identity in the result metadata (the commit-collection
+  // block above builds several result objects with default labels).
+  if (result.metadata) {
+    result.metadata = { ...result.metadata, adapter: ADAPTER_LABEL, model: ACTIVE_MODEL };
   }
 
   return result;

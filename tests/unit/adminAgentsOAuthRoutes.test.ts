@@ -469,3 +469,76 @@ describe("Admin API — Copilot OAuth routes", () => {
     expect(createOAuthHandler).not.toHaveBeenCalled();
   });
 });
+
+describe("Admin API — Claude subscription OAuth routes (redirect + PKCE)", () => {
+  let store: SqliteStateStore;
+  let server: Server;
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    if (server) {
+      await new Promise<void>((resolve, reject) => server.close((err) => err ? reject(err) : resolve()));
+    }
+    if (store) {
+      store.close();
+    }
+  });
+
+  beforeEach(async () => {
+    registerBuiltinPlugins();
+    store = await SqliteStateStore.create(tempDbPath());
+  });
+
+  it("POST /api/admin/plugins/claude/oauth/start returns a Claude authorization URL with PKCE params", async () => {
+    // Uses the real Claude descriptor + default provider auth service (no network).
+    server = createAdminServer(makeDeps(store));
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+
+    const result = await rest(server, "/api/admin/plugins/claude/oauth/start", {
+      method: "POST",
+      body: {
+        redirectUri: "http://127.0.0.1:3100/api/admin/plugins/claude/oauth/callback",
+        state: "oauth-state",
+        codeChallenge: "pkce-challenge",
+        codeChallengeMethod: "S256",
+        config: { authMode: "subscription" },
+      },
+    });
+
+    expect(result.status).toBe(200);
+    const authorizationUrl = String((result.body ?? {})["authorizationUrl"] ?? "");
+    const url = new URL(authorizationUrl);
+    expect(url.origin + url.pathname).toBe("https://claude.ai/oauth/authorize");
+    expect(url.searchParams.get("response_type")).toBe("code");
+    expect(url.searchParams.get("code_challenge")).toBe("pkce-challenge");
+    expect(url.searchParams.get("code_challenge_method")).toBe("S256");
+  });
+
+  it("POST /api/admin/plugins/claude/oauth/complete exchanges the code for an encrypted token", async () => {
+    // Only stub the Anthropic token exchange; let the test client's own fetch pass through.
+    const realFetch = globalThis.fetch;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("console.anthropic.com/v1/oauth/token")) {
+        return new Response(JSON.stringify({ access_token: "sk-ant-oat-xyz" }), { status: 200 });
+      }
+      return realFetch(input, init);
+    });
+    server = createAdminServer(makeDeps(store));
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+
+    const result = await rest(server, "/api/admin/plugins/claude/oauth/complete", {
+      method: "POST",
+      body: {
+        code: "auth-code",
+        redirectUri: "http://127.0.0.1:3100/api/admin/plugins/claude/oauth/callback",
+        codeVerifier: "pkce-verifier",
+        config: { authMode: "subscription" },
+      },
+    });
+
+    expect(result.status).toBe(200);
+    expect(typeof (result.body ?? {})["encryptedToken"]).toBe("string");
+    expect((result.body ?? {})["encryptedToken"]).not.toBe("");
+  });
+});

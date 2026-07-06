@@ -10,6 +10,7 @@ const PROVIDER_CAPABILITY: Record<ProviderId, DomainCapability> = {
   github: "issue_tracking",
   mock: "agent_execution",
   copilot: "agent_execution",
+  claude: "agent_execution",
 };
 
 /** Resolve the first active connector for a provider via its primary capability. */
@@ -642,6 +643,42 @@ describe("PluginManager", () => {
       expect(mgr.getIntegrationCapabilityIntake("r1", "issue_tracking")).toEqual(["polling", "webhook"]);
       expect(mgr.getIntegrationCapabilityIntake("r1", "code_review")).toEqual([]);
       expect(mgr.getIntegrationCapabilityIntake("missing", "issue_tracking")).toEqual([]);
+    });
+  });
+
+  describe("descriptor-driven agent adapters", () => {
+    it("builds an agent adapter from the descriptor buildAdapter hook using the runtime context (no registerFactory)", async () => {
+      const store = makeStore([
+        makeIntegration({
+          id: "claude-1",
+          provider: "claude",
+          configJson: JSON.stringify({ authMode: "api_key", apiKey: "sk-ant-key" }),
+          enabled: true,
+        }),
+      ]);
+      const mgr = new PluginManager(store, {
+        agentAdapterContext: { maxCommitsPerCycle: 7, dockerNetwork: "ve-net" },
+      });
+      await mgr.loadFromDatabase();
+
+      const adapter = mgr.getConnectorForCapability<AgentAdapter>("claude-1", "agent_execution");
+      expect(adapter).not.toBeNull();
+      expect(adapter?.name).toBe("claude");
+    });
+
+    it("does not build an agent adapter when no runtime context is provided", async () => {
+      const store = makeStore([
+        makeIntegration({
+          id: "claude-2",
+          provider: "claude",
+          configJson: JSON.stringify({ authMode: "api_key", apiKey: "sk-ant-key" }),
+          enabled: true,
+        }),
+      ]);
+      const mgr = new PluginManager(store);
+      await mgr.loadFromDatabase();
+
+      expect(mgr.getConnectorForCapability<AgentAdapter>("claude-2", "agent_execution")).toBeNull();
     });
   });
 });

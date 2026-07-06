@@ -12,7 +12,6 @@
 import { getConfig } from "./config.js";
 import { getLogger } from "./logger.js";
 import { SqliteStateStore } from "./state/stateStore.js";
-import { CopilotAdapter } from "./agents/copilotAdapter.js";
 import { MockAgentAdapter } from "./agents/mockAgentAdapter.js";
 import { DockerWorkspaceRunner } from "./workspace/workspaceRunner.js";
 import { Orchestrator } from "./orchestrator/orchestrator.js";
@@ -32,7 +31,6 @@ import { makeTaskId, makeExternalChangeId } from "./interfaces.js";
 import { registerBuiltinPlugins } from "./plugins/init.js";
 import { PluginManager } from "./plugins/pluginManager.js";
 import type { AppConfig } from "./config.js";
-import { DEFAULT_COPILOT_MODEL } from "./copilotModel.js";
 import { getProviderDescriptor, getProviderDomainCapabilities, getCapabilityIntake } from "./plugins/registry.js";
 import { buildTicketSourceLabel, parseIntegrationIdFromSourceLabel } from "./utils/ticketSourceLabel.js";
 
@@ -52,16 +50,16 @@ async function main(): Promise<void> {
   const stateStore = await SqliteStateStore.create(config.databasePath);
 
   registerBuiltinPlugins(config.adminAuthSecret !== undefined ? { adminAuthSecret: config.adminAuthSecret } : undefined);
-  const pluginManager = new PluginManager(stateStore, { adminAuthSecret: config.adminAuthSecret });
-
-  // Copilot factory: registered explicitly because construction needs AppConfig
-  // values (agentDockerNetwork, maxCommitsPerCycle) that are not in configJson.
-  pluginManager.registerFactory("copilot", (_pluginConfig, _integration) => {
-    return new CopilotAdapter({
-      model: DEFAULT_COPILOT_MODEL,
+  // Agent adapters are self-describing: any provider whose descriptor declares
+  // an `agent_execution.buildAdapter` hook is instantiated by the plugin
+  // manager using this host runtime context. Adding a new agent backend
+  // (Copilot, Claude, …) needs no wiring here — only a descriptor.
+  const pluginManager = new PluginManager(stateStore, {
+    ...(config.adminAuthSecret !== undefined ? { adminAuthSecret: config.adminAuthSecret } : {}),
+    agentAdapterContext: {
       maxCommitsPerCycle: config.maxCommitsPerCycle,
       dockerNetwork: config.agentDockerNetwork,
-    });
+    },
   });
 
   await pluginManager.loadFromDatabase();
@@ -443,23 +441,27 @@ async function buildReviewBundle(
     return { integration: null, provider: null, orchestrator: null };
   }
 
-  // Extract the agent token from the active agent integration for the review container.
-  const agentToken = getAgentTokenForReview(pluginManager);
+  // Resolve the agent-execution integration linked to an enabled review agent.
+  // Using a deterministic lookup avoids Map-insertion-order sensitivity when
+  // multiple agent_execution integrations (e.g. Copilot + Claude) are active.
+  const agentIntegration = await resolveAgentIntegrationForReview(pluginManager, store);
+
+  // Extract the agent token from the resolved agent-execution integration.
+  const agentToken = getAgentTokenForReview(pluginManager, agentIntegration);
   if (!agentToken) {
     bundleLog.warn(
       { integrationId: integration.id },
-      "buildReviewBundle: no agent token available — ensure a Copilot integration is enabled and has a sessionToken or apiKey configured"
+      "buildReviewBundle: no agent token available — ensure an agent integration (Copilot or Claude) is enabled with a configured token/key"
     );
     return { integration: null, provider: null, orchestrator: null };
   }
 
-  // Resolve the model from the enabled agent linked to the active agent integration.
+  // Resolve the model from the enabled review agent linked to the selected integration.
   // This honours the model chosen in the agents library rather than the global default.
-  const agentIntegration = getPrimaryActiveIntegration(pluginManager, "copilot");
   let model: string | undefined;
   if (agentIntegration) {
     try {
-      const agentList = await store.listAgents({ enabled: true });
+      const agentList = await store.listAgents({ type: "review", enabled: true });
       const agent = agentList.find((a) => a.integrationId === agentIntegration.id);
       if (agent) {
         const cfg = JSON.parse(agent.modelConfigJson) as Record<string, unknown>;
@@ -574,27 +576,58 @@ function buildReviewTrigger(
 }
 
 /**
- * Extract the agent token from the active agent integration.
- * Returns null when no agent integration is configured or has a valid token.
+ * Find the agent-execution integration most appropriate for the review flow.
+ * Prefers an integration explicitly linked to an enabled review agent (which
+ * is deterministic and semantically correct); falls back to any active
+ * agent_execution integration sorted by ID to avoid Map-insertion-order
+ * sensitivity when multiple integrations (e.g. Copilot + Claude) are active.
  */
-function getAgentTokenForReview(pluginManager: PluginManager): string | null {
-  const agentIntegration = getPrimaryActiveIntegration(pluginManager, "copilot");
+async function resolveAgentIntegrationForReview(
+  pluginManager: PluginManager,
+  store: import("./interfaces.js").StateStore
+): Promise<Integration | null> {
+  try {
+    const reviewAgents = await store.listAgents({ type: "review", enabled: true });
+    for (const agent of reviewAgents) {
+      if (!agent.integrationId) continue;
+      const integration = pluginManager.getActiveIntegrationById(agent.integrationId);
+      if (integration) return integration;
+    }
+  } catch {
+    // non-fatal — fall through to stable fallback
+  }
+  // Stable fallback: sort by ID so the selection is reproducible across restarts.
+  const all = pluginManager
+    .getActiveIntegrationsByCapability("agent_execution")
+    .sort((a, b) => a.id.localeCompare(b.id));
+  return all[0] ?? null;
+}
+
+/**
+ * Extract the agent token from the provided agent-execution integration.
+ * Provider-agnostic: works for Copilot (OAuth `sessionToken` or PAT `token`)
+ * and Claude (OAuth `sessionToken` or `apiKey`).
+ * Returns null when the integration is null or has no valid token.
+ */
+function getAgentTokenForReview(pluginManager: PluginManager, agentIntegration: Integration | null): string | null {
   if (!agentIntegration) return null;
 
   let agentConfig: Record<string, unknown>;
   try {
-    // decryptIntegrationConfig handles both AES-256-GCM encrypted tokens (OAuth
-    // sessionToken) and plaintext PATs (token field), leaving unknown strings as-is.
+    // decryptIntegrationConfig handles AES-256-GCM encrypted tokens (OAuth
+    // sessionToken) and plaintext fields, leaving unknown strings as-is.
     agentConfig = pluginManager.decryptIntegrationConfig(agentIntegration);
   } catch {
     return null;
   }
 
-  // OAuth mode: sessionToken decrypted by decryptIntegrationConfig.
+  // OAuth session token (Copilot OAuth, Claude subscription interactive flow).
   const sessionToken = asOptionalString(agentConfig["sessionToken"]);
   if (sessionToken) return sessionToken;
-
-  // PAT mode: token field, plaintext or decrypted.
+  // Claude API key.
+  const apiKey = asOptionalString(agentConfig["apiKey"]);
+  if (apiKey) return apiKey;
+  // Copilot PAT (plaintext or decrypted).
   return asOptionalString(agentConfig["token"]) ?? null;
 }
 

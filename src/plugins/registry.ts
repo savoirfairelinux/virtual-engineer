@@ -6,7 +6,7 @@
  * `registerBuiltinPlugins()` and queried by the admin UI and `PluginManager`.
  */
 import { z } from "zod";
-import type { DiscoveredResources, OAuthAppStore, Integration, IntegrationBindingContext, ProviderId, DomainCapability, PluginInstance, ReviewChangeDetails, ReviewProvider, WorkspaceHandle, WorkspaceRunner } from "../interfaces.js";
+import type { DiscoveredResources, OAuthAppStore, Integration, IntegrationBindingContext, ProviderId, DomainCapability, PluginInstance, ReviewChangeDetails, ReviewProvider, WorkspaceHandle, WorkspaceRunner, AgentAdapter } from "../interfaces.js";
 import { DOMAIN_CAPABILITIES } from "../interfaces.js";
 import type { IntegrationEventStreamFactory } from "../connectors/integrationStreamEvents.js";
 import type { VcsConnector } from "../vcs/vcsConnector.js";
@@ -149,12 +149,34 @@ export interface SourceControlCapability {
   createVcsConnector: (config: Record<string, unknown>, integration: Integration, context?: IntegrationBindingContext) => VcsConnector;
 }
 
+/**
+ * Host runtime context passed to an `agent_execution` adapter factory.
+ *
+ * These values come from `AppConfig` (not from the integration `config_json`),
+ * so they are injected by the plugin manager at instantiation time rather than
+ * baked into the descriptor.
+ */
+export interface AgentAdapterContext {
+  /** Max atomic commits an agent may create per cycle. */
+  maxCommitsPerCycle: number;
+  /** Docker network for agent / review containers. */
+  dockerNetwork: string;
+}
+
 /** `agent_execution` capability: run a coding agent inside a workspace. */
 export interface AgentExecutionCapability {
   /**
-   * Factory for the runtime agent adapter. Optional because some agents (e.g.
-   * Copilot) are registered via `PluginManager.registerFactory` in `index.ts`
-   * when construction needs `AppConfig` values.
+   * Factory for the runtime agent adapter, given host runtime context derived
+   * from `AppConfig`. Declaring this makes a provider a fully self-describing
+   * agent backend — no per-provider wiring is needed in `index.ts`; adding a
+   * new agent provider is just a new descriptor.
+   */
+  buildAdapter?: ((context: AgentAdapterContext) => AgentAdapter) | undefined;
+  /**
+   * Lower-level factory keyed to an integration + binding context. Optional;
+   * `buildAdapter` is preferred for agent backends that only need host runtime
+   * context. A test-registered factory (`PluginManager.registerFactory`) still
+   * takes precedence over both.
    */
   createAdapter?: ((config: unknown, integration: Integration, context?: IntegrationBindingContext) => PluginInstance) | undefined;
 }

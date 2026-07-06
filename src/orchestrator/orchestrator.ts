@@ -938,31 +938,57 @@ export class Orchestrator {
 
     const resolvedConfig = resolveAgentConfig(agent, project);
 
-    // When the agent's modelConfigJson carries no sessionToken, fall back to
-    // the Copilot integration's own configJson (OAuth sessionToken or PAT token).
+    // The agent's modelConfigJson rarely carries credentials; fall back to the
+    // agent-execution integration's own configJson. This is provider-aware:
+    // Copilot stores an OAuth `sessionToken` or a PAT (`token`); Claude stores
+    // an `apiKey` (api_key mode) or an interactive-OAuth `sessionToken`
+    // (subscription mode).
+    //
+    // NOTE: `apiKey` is read from the RAW configJson (user-entered password
+    // fields are stored plaintext at rest; only the OAuth `sessionToken` is
+    // AES-encrypted). If password-at-rest encryption is ever added, decrypt it
+    // here before use.
     let encryptedSessionToken = resolvedConfig.encryptedSessionToken;
-    if (!encryptedSessionToken) {
+    let apiKey = resolvedConfig.apiKey;
+    if (!encryptedSessionToken || !apiKey) {
       const integration = this.projectMode.pluginManager.getActiveIntegrationById?.(agent.integrationId);
       if (integration) {
         try {
           const integCfg = JSON.parse(integration.configJson) as Record<string, unknown>;
-          const t = integCfg["sessionToken"];
-          if (typeof t === "string" && t) {
-            encryptedSessionToken = t;
-          } else if (integCfg["authMode"] === "pat") {
-            const pat = integCfg["token"];
-            if (typeof pat === "string" && pat) {
-              encryptedSessionToken = encryptToken(pat, this.config.adminAuthSecret);
+          if (integration.provider === "claude") {
+            if (integCfg["authMode"] === "api_key") {
+              if (!apiKey) {
+                const key = integCfg["apiKey"];
+                if (typeof key === "string" && key) apiKey = key;
+              }
+            } else if (!encryptedSessionToken) {
+              const sess = integCfg["sessionToken"];
+              if (typeof sess === "string" && sess) {
+                encryptedSessionToken = sess;
+              }
+            }
+          } else if (!encryptedSessionToken) {
+            const t = integCfg["sessionToken"];
+            if (typeof t === "string" && t) {
+              encryptedSessionToken = t;
+            } else if (integCfg["authMode"] === "pat") {
+              const pat = integCfg["token"];
+              if (typeof pat === "string" && pat) {
+                encryptedSessionToken = encryptToken(pat, this.config.adminAuthSecret);
+              }
             }
           }
         } catch { /* ignore */ }
       }
     }
 
+    const authChanged =
+      encryptedSessionToken !== resolvedConfig.encryptedSessionToken ||
+      apiKey !== resolvedConfig.apiKey;
     return {
       adapter,
-      config: encryptedSessionToken !== resolvedConfig.encryptedSessionToken
-        ? { ...resolvedConfig, encryptedSessionToken }
+      config: authChanged
+        ? { ...resolvedConfig, encryptedSessionToken, apiKey }
         : resolvedConfig,
     };
   }
