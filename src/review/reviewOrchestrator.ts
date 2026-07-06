@@ -252,7 +252,7 @@ export class ReviewOrchestrator {
       // new UUID, getTaskByTicketId returns null (the ticketId changed), but a
       // prior task may have already reviewed this patchset for this change+project.
       // Automatic triggers (force !== true) must not create a duplicate in that case.
-      if (input.force !== true) {
+      if (existing === null && input.force !== true) {
         const priorReviewed = await this.deps.stateStore.findReviewedCodeReviewTask(
           input.changeId, project.id
         );
