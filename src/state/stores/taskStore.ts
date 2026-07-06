@@ -1039,12 +1039,12 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
     if (!changeId) return null;
     const row = raw
       .prepare(
-        "SELECT * FROM tasks WHERE gerrit_change_id = ? AND project_id = ? AND task_type = 'code-review' AND reviewed_patchset IS NOT NULL ORDER BY created_at DESC LIMIT 1"
+        "SELECT task_id FROM tasks WHERE gerrit_change_id = ? AND project_id = ? AND task_type = 'code-review' AND reviewed_patchset IS NOT NULL ORDER BY created_at DESC LIMIT 1"
       )
-      .get(changeId, projectId as string) as Record<string, unknown> | undefined;
+      .get(changeId, projectId as string) as { task_id: string } | undefined;
     if (!row) return null;
     const orm = await db.query.tasks.findFirst({
-      where: eq(tasks.taskId, row["task_id"] as TaskId),
+      where: eq(tasks.taskId, row.task_id as TaskId),
     });
     return orm ? rowToTask(orm) : null;
   }
