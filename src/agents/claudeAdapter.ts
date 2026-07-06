@@ -123,8 +123,8 @@ export class ClaudeAdapter implements AgentAdapter, ConfigurableAdapter {
     const authEnv = this.resolveAuthEnv(context);
     const changeId = context.agentSession.existingChangeId ?? this.generateChangeId();
 
-    await this.buildContainerSpecWithPrompts(context, authEnv);
-
+    // buildContainerSpecWithPrompts is called inside runAgentContainer → invokeAgentContainer
+    // → dockerInvoker → workspaceRunner.runAgentInDocker, so no separate call needed here.
     const result = await this.runAgentContainer(context, authEnv, changeId);
 
     if (result.status === "success") {
@@ -303,7 +303,7 @@ export class ClaudeAdapter implements AgentAdapter, ConfigurableAdapter {
       return { CLAUDE_CODE_OAUTH_TOKEN: decryptToken(encrypted, getConfig().adminAuthSecret) };
     }
     if (context.agentSession.githubToken) {
-      return { ANTHROPIC_API_KEY: context.agentSession.githubToken };
+      return { ANTHROPIC_API_KEY: context.agentSession.githubToken.trim() };
     }
     throw new Error(
       "No Claude credentials available. Configure an Anthropic API key or connect a Claude subscription in the admin dashboard."
