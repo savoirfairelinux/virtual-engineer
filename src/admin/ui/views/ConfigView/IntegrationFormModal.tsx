@@ -554,7 +554,7 @@ export function IntegrationFormModal({ integration, plugins, onClose, onSaved }:
                   className="btn secondary"
                   style={{ alignSelf: "flex-start", textDecoration: "none" }}
                 >
-                  Open Claude authorization page ↗
+                  Open {plugin.name} authorization page ↗
                 </a>
                 <div style={{ fontSize: "13px" }}>
                   2. Copy the authorization code shown afterwards and paste it here:

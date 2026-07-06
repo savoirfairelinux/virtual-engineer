@@ -532,7 +532,10 @@ async function runReviewMode(): Promise<ReviewWorkerResult> {
   const agent = await runAgent(reviewPrompt, 9 * 60 * 1000, 'review');
   try {
     const rawOutput = agent.content ?? '';
-    emitEvent('session.end', { mode: 'review', outputLength: rawOutput.length });
+    // Claude's runner already emits session.end; only emit here for Copilot.
+    if (AGENT_PROVIDER !== 'claude') {
+      emitEvent('session.end', { mode: 'review', outputLength: rawOutput.length });
+    }
     process.stderr.write(`review complete (${rawOutput.length} chars)\n`);
 
     return {
@@ -625,11 +628,14 @@ async function main(): Promise<AgentResult> {
 
   try {
     process.stderr.write('session idle — collecting changes\n');
-    emitEvent('session.end', {
-      toolCallCount: handlerState.toolCallCount,
-      toolsByKind: handlerState.toolsByKind,
-      model: ACTIVE_MODEL,
-    });
+    // Claude's runner already emits session.end; only emit here for Copilot.
+    if (AGENT_PROVIDER !== 'claude') {
+      emitEvent('session.end', {
+        toolCallCount: handlerState.toolCallCount,
+        toolsByKind: handlerState.toolsByKind,
+        model: ACTIVE_MODEL,
+      });
+    }
 
     // 3. Check for agent-created commits across ALL repos.
     const rootHeadSha = git(['rev-parse', 'HEAD']).trim();

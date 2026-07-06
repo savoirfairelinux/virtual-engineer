@@ -205,7 +205,7 @@ Two connection methods (descriptor `src/plugins/descriptors/claude.ts`, `authMod
 - `api_key` — Anthropic API key → `ANTHROPIC_API_KEY` (carried via the generic `apiKey`/`agentSession.githubToken` field).
 - `subscription` — Claude Pro/Max OAuth token → `CLAUDE_CODE_OAUTH_TOKEN` (carried via `encryptedSessionToken`); obtained through the interactive authorization-code + PKCE OAuth flow (`src/plugins/descriptors/claudeOAuth.ts`, stored encrypted in `sessionToken`). `orchestrator.resolveProjectAgentRuntime` maps these provider-specific fields onto the generic `ResolvedAgentConfig`.
 
-Cost: Claude has no AIU, so `agent_cycles` USD/credit columns stay null; token usage is still emitted as `assistant.usage` events. Claude OAuth client id/endpoints are best-effort defaults (overridable via config) — see `claudeOAuth.ts`.
+Cost: Claude has no AIU, so `agent_cycles` USD/credit columns stay null; token usage is still emitted as `assistant.usage` events. Claude OAuth client id/endpoints are fixed public Claude Code values (not overridable via config — intentionally hard-coded to prevent SSRF/credential redirection) — see `claudeOAuth.ts`.
 
 ## Test Layout
 - **Unit + integration tests**: `tests/unit/` (Vitest). All external I/O (fetch, fs, Docker, SDK) is mocked via `vi.mock`/`vi.spyOn`. Current project-mode and webhook-oriented scenarios live alongside unit specs (for example `orchestrator.projectMode.test.ts`, `orchestrator.webhookEntryPoints.test.ts`, `pollingLoop.projects.test.ts`).
