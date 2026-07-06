@@ -149,7 +149,7 @@ async function main(): Promise<void> {
    * acts when the running state disagrees with `pollingIsRequired()`.
    */
   async function reconcilePollingLoop(): Promise<void> {
-    const required = await pollingIsRequired(stateStore, pluginManager);
+    const required = await pollingIsRequired(stateStore, pluginManager, integrationStreamEvents);
     if (required && !pollingLoop.isRunning()) {
       log.info("polling required — starting polling loop");
       pollingLoop.start();
@@ -384,7 +384,7 @@ async function main(): Promise<void> {
     void shutdown("SIGTERM");
   });
 
-  if (await pollingIsRequired(stateStore, pluginManager)) {
+  if (await pollingIsRequired(stateStore, pluginManager, integrationStreamEvents)) {
     pollingLoop.start();
   } else {
     log.info(
@@ -472,6 +472,10 @@ function resolveReviewIntegration(
  *   `REVIEW_WATCHING` code-review task still needs polling to avoid
  *   stranding it.
  */
+interface StreamStatusChecker {
+  getStatus(integrationId: string): { state: string } | null;
+}
+
 async function pollingIsRequired(
   store: {
     listProjects(filter?: { enabled?: boolean }): Promise<ProjectRecord[]>;
@@ -480,7 +484,8 @@ async function pollingIsRequired(
     getProjectReviewConfig(id: ProjectId): Promise<ProjectReviewConfig | null>;
     getActiveTasks(): Promise<Task[]>;
   },
-  pluginManager: PluginManager
+  pluginManager: PluginManager,
+  streamEvents?: StreamStatusChecker
 ): Promise<boolean> {
   // Active tasks whose only progression path (when their stream event is
   // missed) is the polling-loop fallback keep polling alive regardless of
@@ -503,7 +508,14 @@ async function pollingIsRequired(
       if (pts.some(pt => pluginManager.isIntegrationActive(pt.integrationId))) return true;
     } else if (project.type === "review") {
       const rc = await store.getProjectReviewConfig(project.id);
-      if (rc && pluginManager.isIntegrationActive(rc.integrationId) && !pluginManager.integrationHasStreamEvents(rc.integrationId)) return true;
+      if (!rc || !pluginManager.isIntegrationActive(rc.integrationId)) continue;
+      if (!pluginManager.integrationHasStreamEvents(rc.integrationId)) return true;
+      // Stream-backed (e.g. Gerrit): fall back to polling when the stream
+      // connection is degraded so in-progress tasks are not stranded.
+      if (streamEvents) {
+        const status = streamEvents.getStatus(rc.integrationId);
+        if (status?.state === "error" || status?.state === "stopped") return true;
+      }
     }
   }
   return false;

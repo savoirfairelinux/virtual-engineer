@@ -859,6 +859,62 @@ describe("runtime bootstrap provider selection", () => {
     expect(pollingInstance.start).not.toHaveBeenCalled();
   });
 
+  it("starts polling as fallback when the Gerrit stream-events connection is degraded", async () => {
+    const dbReview = { source: "db-review" } as unknown as ReviewConnector;
+    const dbAgent = makeDbAgentAdapter("mock");
+
+    const runtime = await importRuntime(
+      { gerrit: dbReview, mock: dbAgent },
+      {
+        gerrit: makeIntegration({
+          id: "gerrit-review-only",
+          provider: "gerrit",
+          configJson: JSON.stringify({
+            baseUrl: "http://gerrit.test",
+            httpUsername: "admin",
+            httpPassword: "secret",
+            sshHost: "gerrit.test",
+            sshUser: "ve-bot",
+            sshKeyPath: "/keys/id_rsa",
+            repoCloneUrl: "ssh://gerrit.test/project",
+          }),
+        }),
+      },
+      {
+        withRunnableProject: {
+          projectId: "p1",
+          type: "review",
+          reviewTargetIntegrationId: "gerrit-review-only",
+        },
+      }
+    );
+
+    const pollingInstance = runtime.PollingLoop.mock.results[0]?.value as {
+      start: ReturnType<typeof vi.fn>;
+      isRunning: () => boolean;
+    };
+    // Stream healthy (null → not yet connected) — loop must NOT start.
+    expect(pollingInstance.start).not.toHaveBeenCalled();
+
+    // Simulate the stream going into an error state.
+    runtime.integrationStreamEventsInstance.getStatus.mockReturnValue({
+      integrationId: "gerrit-review-only",
+      state: "error",
+      message: "Connection refused",
+    });
+
+    // Plugin-change fires refreshRuntimeDependencies → reconcilePollingLoop.
+    const onPluginChangeCallback = runtime.pluginManagerInstance.onPluginChange.mock.calls[0]?.[0] as
+      (() => void) | undefined;
+    expect(onPluginChangeCallback).toBeTypeOf("function");
+    onPluginChangeCallback?.();
+
+    // Allow the async refreshRuntimeDependencies promise to settle.
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+    expect(pollingInstance.start).toHaveBeenCalledTimes(1);
+  });
+
   it("starts the polling loop for a polling-based (GitLab MR) review-only project", async () => {
     const dbReview = { source: "db-review" } as unknown as ReviewConnector;
     const dbAgent = makeDbAgentAdapter("mock");
