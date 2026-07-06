@@ -83,6 +83,12 @@ export function resolveAgentPubKeyPath(publicKey: string, integrationId: string)
  *   3. `sshPrivateKeyEnc`    — decrypt and write to temp file
  *   4. `undefined`           — SSH agent mode (no file key)
  *
+ * Throws if `sshPrivateKeyEnc` is set but cannot be decrypted (e.g. wrong or
+ * missing `ADMIN_AUTH_SECRET`), rather than silently falling back to agent
+ * mode — a misconfigured "generated key" integration should fail with a
+ * clear config error, not attempt SSH-agent auth and fail confusingly later
+ * with an unrelated "permission denied".
+ *
  * @param cfg            Parsed config object (may contain encrypted key material).
  * @param adminAuthSecret  Used to decrypt `sshPrivateKeyEnc` when present.
  * @param integrationId   Used to derive a stable temp-file path.
@@ -100,15 +106,19 @@ export function resolveEffectiveSshKeyPath(
   if (typeof enc === "string" && enc.length > 0) {
     // When called from buildCapabilityInstance, decryptPasswordFields has already
     // decrypted the value to a raw PEM string. Detect that case and skip the extra
-    // decryptToken call, which would otherwise fail and silently fall back to agent mode.
+    // decryptToken call, which would otherwise fail unnecessarily.
     if (enc.includes("-----BEGIN")) {
       return resolveKeyFromPem(enc, integrationId ?? "default");
     }
     try {
       const pem = decryptToken(enc, adminAuthSecret);
       return resolveKeyFromPem(pem, integrationId ?? "default");
-    } catch {
-      // Decryption failed — fall through to agent mode
+    } catch (err) {
+      throw new Error(
+        "Failed to decrypt the stored SSH private key (sshPrivateKeyEnc). " +
+        "Check that ADMIN_AUTH_SECRET matches the value used when the key was generated.",
+        { cause: err }
+      );
     }
   }
   return undefined;

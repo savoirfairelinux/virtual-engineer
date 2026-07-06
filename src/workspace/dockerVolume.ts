@@ -211,20 +211,26 @@ export async function execInVolume(opts: ExecInVolumeOptions): Promise<ExecInVol
     }
   }
 
-  // Wrap the command in a shell preamble that decodes injected key material.
+  // Wrap the command in a shell preamble that decodes any injected key
+  // material. Built as a list of independent parts so every combination of
+  // (private key file) x (known_hosts file) x (agent identity pinning) is
+  // handled correctly — e.g. plain agent mode (no pinning) with a known_hosts
+  // file still needs its own decode step, which previous exclusive-branch
+  // logic missed.
+  const preambleParts: string[] = [];
   if (opts.sshKeyPath) {
+    preambleParts.push(`echo "$VE_SSH_KEY_B64" | base64 -d > /tmp/ssh-key && chmod 600 /tmp/ssh-key && unset VE_SSH_KEY_B64`);
+  }
+  if (opts.sshAgentPubKeyPath && process.env["SSH_AUTH_SOCK"]) {
+    preambleParts.push(`echo "$VE_SSH_AGENT_PUB_B64" | base64 -d > /tmp/agent-pub.pub && chmod 644 /tmp/agent-pub.pub && unset VE_SSH_AGENT_PUB_B64`);
+  }
+  if (opts.sshKnownHostsPath && (opts.sshKeyPath || process.env["SSH_AUTH_SOCK"])) {
+    preambleParts.push(`echo "$VE_SSH_KNOWN_HOSTS_B64" | base64 -d > /tmp/ssh-known-hosts && chmod 644 /tmp/ssh-known-hosts && unset VE_SSH_KNOWN_HOSTS_B64`);
+  }
+
+  if (preambleParts.length > 0) {
     const escaped = opts.command.map(a => `'${a.replace(/'/g, "'\\''")}'`).join(" ");
-    const preamble = opts.sshKnownHostsPath
-      ? `echo "$VE_SSH_KEY_B64" | base64 -d > /tmp/ssh-key && chmod 600 /tmp/ssh-key && unset VE_SSH_KEY_B64 && echo "$VE_SSH_KNOWN_HOSTS_B64" | base64 -d > /tmp/ssh-known-hosts && chmod 644 /tmp/ssh-known-hosts && unset VE_SSH_KNOWN_HOSTS_B64 && exec ${escaped}`
-      : `echo "$VE_SSH_KEY_B64" | base64 -d > /tmp/ssh-key && chmod 600 /tmp/ssh-key && unset VE_SSH_KEY_B64 && exec ${escaped}`;
-    dockerArgs.push(opts.image, "sh", "-c", preamble);
-  } else if (opts.sshAgentPubKeyPath && process.env["SSH_AUTH_SOCK"]) {
-    // Agent mode with identity pinning: decode the public key before running.
-    const escaped = opts.command.map(a => `'${a.replace(/'/g, "'\\''")}'`).join(" ");
-    const knownHostsPart = opts.sshKnownHostsPath
-      ? `echo "$VE_SSH_KNOWN_HOSTS_B64" | base64 -d > /tmp/ssh-known-hosts && chmod 644 /tmp/ssh-known-hosts && unset VE_SSH_KNOWN_HOSTS_B64 && `
-      : "";
-    const preamble = `echo "$VE_SSH_AGENT_PUB_B64" | base64 -d > /tmp/agent-pub.pub && chmod 644 /tmp/agent-pub.pub && unset VE_SSH_AGENT_PUB_B64 && ${knownHostsPart}exec ${escaped}`;
+    const preamble = `${preambleParts.join(" && ")} && exec ${escaped}`;
     dockerArgs.push(opts.image, "sh", "-c", preamble);
   } else {
     dockerArgs.push(opts.image, ...opts.command);

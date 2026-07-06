@@ -294,20 +294,23 @@ function DynamicField({
   );
 }
 
-// ─── Gerrit SSH Authentication section ───────────────────────────────────────
+// ─── Generic SSH Authentication section (agent / generated key / custom path) ──
 
 type SshAuthMode = "agent" | "generated" | "custom";
 
-interface GerritSshSectionProps {
+interface SshAuthSectionProps {
+  provider: string;
+  providerName: string;
   config: Config;
   onConfigChange: (key: string, value: string) => void;
 }
 
-function GerritSshSection({ config, onConfigChange }: GerritSshSectionProps) {
+function SshAuthSection({ provider, providerName, config, onConfigChange }: SshAuthSectionProps) {
   const detectMode = (): SshAuthMode => {
-    if (config["sshPublicKey"]) return "generated";
-    if (config["sshAgentPublicKey"] !== undefined) return "agent";
-    if (config["sshKeyPath"]) return "custom";
+    // Check for non-empty strings, not just presence of the key — an empty
+    // string (e.g. a cleared field) must not be mistaken for a configured value.
+    if (typeof config["sshKeyPath"] === "string" && config["sshKeyPath"].trim().length > 0) return "custom";
+    if (typeof config["sshPublicKey"] === "string" && config["sshPublicKey"].trim().length > 0) return "generated";
     return "agent";
   };
 
@@ -353,7 +356,7 @@ function GerritSshSection({ config, onConfigChange }: GerritSshSectionProps) {
     setGenerating(true);
     setGenError(null);
     try {
-      const result = await generateSshKeyPair("gerrit");
+      const result = await generateSshKeyPair(provider);
       onConfigChange("sshPrivateKeyEnc", result.sshPrivateKeyEnc);
       onConfigChange("sshPublicKey", result.sshPublicKey);
     } catch (e) {
@@ -469,7 +472,7 @@ function GerritSshSection({ config, onConfigChange }: GerritSshSectionProps) {
                 </button>
               </div>
               <div style={{ fontSize: "11.5px", color: "var(--text-dim)", lineHeight: 1.5 }}>
-                Add this public key to your Gerrit account: <strong>Settings → SSH Keys</strong>
+                Add this public key to your {providerName} account: <strong>Settings → SSH Keys</strong>
               </div>
               <button
                 type="button"
@@ -505,7 +508,7 @@ function GerritSshSection({ config, onConfigChange }: GerritSshSectionProps) {
           <Field label="SSH key path">
             <FieldInput
               value={config["sshKeyPath"] ?? ""}
-              placeholder="/app/secrets/gerrit_id_ed25519"
+              placeholder={`/app/secrets/${provider}_id_ed25519`}
               onChange={(e) => onConfigChange("sshKeyPath", e.currentTarget.value)}
             />
           </Field>
@@ -698,9 +701,11 @@ export function IntegrationFormModal({ integration, plugins, onClose, onSaved }:
           />
         ))}
 
-        {/* Gerrit SSH Authentication section */}
-        {selectedType === "gerrit" && (
-          <GerritSshSection
+        {/* SSH Authentication section — shown for any provider that supports SSH auth */}
+        {plugin?.supportsSshAuth && (
+          <SshAuthSection
+            provider={selectedType}
+            providerName={plugin.name}
             config={config}
             onConfigChange={setConfigField}
           />

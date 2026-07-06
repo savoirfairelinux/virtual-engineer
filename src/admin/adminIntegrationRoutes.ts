@@ -39,6 +39,9 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
         capabilities: getPluginCapabilities(d),
         domainCapabilities: getProviderDomainCapabilities(d),
         requiredFields: d.requiredFields,
+        // Any provider whose descriptor implements generateSshKeyPair supports
+        // the generic SSH auth UI (agent / generated-key / custom-path selector).
+        supportsSshAuth: typeof d.generateSshKeyPair === "function",
         ...(d.oauth !== undefined ? { oauth: d.oauth } : {}),
       })),
     });
@@ -475,7 +478,10 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
       writeJson(res, 200, { sshPrivateKeyEnc, sshPublicKey });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      writeJson(res, 500, { error: `SSH key generation failed: ${msg}` });
+      // Missing ADMIN_AUTH_SECRET is a server-configuration issue the admin
+      // can act on (set the secret) — surface it as 400, not a generic 500.
+      const status = msg.includes("ADMIN_AUTH_SECRET") ? 400 : 500;
+      writeJson(res, status, { error: `SSH key generation failed: ${msg}` });
     }
   });
 
@@ -501,7 +507,8 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
     } catch (err: unknown) {
       const errorMessage = err instanceof Error ? err.message : String(err);
       log.warn({ id, errorMessage }, "SSH key generation failed");
-      writeJson(res, 500, { error: `SSH key generation failed: ${errorMessage}` });
+      const status = errorMessage.includes("ADMIN_AUTH_SECRET") ? 400 : 500;
+      writeJson(res, status, { error: `SSH key generation failed: ${errorMessage}` });
     }
   });
 
@@ -542,8 +549,13 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
       writeJson(res, 200, { keys, agentAvailable: true });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      // ssh-add -L exits 1 when agent has no keys — treat as empty list
-      if (msg.includes("no identities") || (err as NodeJS.ErrnoException).code === "1") {
+      // ssh-add -L exits 1 when the agent has no keys loaded — treat as an
+      // empty list rather than "agent unavailable". Note: execFile/promisify
+      // errors set `.code` to the process's NUMERIC exit code (not a string),
+      // so we check both the number and the message text to be safe across
+      // ssh-add implementations/locales.
+      const exitCode = (err as { code?: number | string }).code;
+      if (msg.includes("no identities") || exitCode === 1 || exitCode === "1") {
         writeJson(res, 200, { keys: [], agentAvailable: true }); return;
       }
       log.warn({ error: msg }, "ssh-add -L failed");
