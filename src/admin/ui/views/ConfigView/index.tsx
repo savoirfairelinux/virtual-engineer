@@ -1,12 +1,13 @@
 import { useEffect, useState } from "react";
 import { Icon } from "../../components/Icon.tsx";
-import type { ApiIntegration, ApiAgent, ApiProject, ApiPrompt, ApiOAuthApp, ApiConfig, ApiPlugin, ApiStatus } from "../../types.ts";
+import type { ApiIntegration, ApiAgent, ApiProject, ApiPrompt, ApiOAuthApp, ApiConfig, ApiPlugin, ApiStatus, ApiIdentity } from "../../types.ts";
 
 /* ─── Local sub-component imports ─────────────────────────────────────── */
 import { ConfigOverview }       from "./ConfigOverview.tsx";
 import { IntegrationsSection }  from "./IntegrationsSection.tsx";
 import { AgentsSection }        from "./AgentsSection.tsx";
 import { ProjectsSection }      from "./ProjectsSection.tsx";
+import { IdentitiesSection }    from "./IdentitiesSection.tsx";
 import { PromptsSection }       from "./PromptsSection.tsx";
 import { OAuthSection }         from "./OAuthSection.tsx";
 import { SystemSection }        from "./SystemSection.tsx";
@@ -18,6 +19,7 @@ const CONFIG_NAV = [
   { id: "oauth",         label: "OAuth Apps",       sub: "Provider registry", icon: "link" },
   { id: "agents",        label: "Agents Library",   sub: "Reusable agents",   icon: "spark" },
   { id: "projects",      label: "Projects",         sub: "Execution units",   icon: "box" },
+  { id: "identities",    label: "Identities",       sub: "VE personas",       icon: "comment" },
   { id: "prompts",       label: "Prompts",          sub: "System & custom",   icon: "edit" },
   { id: "system",        label: "System Settings",  sub: "Runtime settings",  icon: "config" },
 ] as const;
@@ -29,6 +31,7 @@ export interface ConfigViewData {
   plugins: ApiPlugin[];
   agents: ApiAgent[];
   projects: ApiProject[];
+  identities: ApiIdentity[];
   prompts: ApiPrompt[];
   oauthApps: ApiOAuthApp[];
   config: ApiConfig["config"] | null;
@@ -112,6 +115,7 @@ export function ConfigView(props: ConfigViewData) {
           {sec === "oauth"        && <OAuthSection {...props} />}
           {sec === "agents"       && <AgentsSection {...props} />}
           {sec === "projects"     && <ProjectsSection {...props} />}
+          {sec === "identities"   && <IdentitiesSection {...props} />}
           {sec === "prompts"      && <PromptsSection {...props} />}
           {sec === "system"       && <SystemSection config={props.config} status={props.status} onRefresh={props.onRefresh} />}
         </div>

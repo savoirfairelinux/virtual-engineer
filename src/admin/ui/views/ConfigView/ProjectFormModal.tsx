@@ -2,11 +2,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Modal, Field, FieldInput, FieldSelect, FormError, FormRow, FormActions, FieldTextarea } from "../../components/Modal.tsx";
 import { Icon } from "../../components/Icon.tsx";
 import { api } from "../../api.ts";
-import type { ApiAgent, ApiIntegration } from "../../types.ts";
+import type { ApiAgent, ApiIntegration, ApiIdentity } from "../../types.ts";
 
 interface Props {
   agents: ApiAgent[];
   integrations: ApiIntegration[];
+  identities: ApiIdentity[];
   project?: ProjectFormProject;
   onClose: () => void;
   onSaved: () => void;
@@ -17,6 +18,7 @@ interface ProjectFormProject {
   name: string;
   type: "coding" | "review";
   agentId: string | null;
+  identityId?: string | null;
   postCloneScript?: string;
   skillDiscoveryEnabled?: boolean;
   ticketSource?: {
@@ -648,11 +650,12 @@ function RepositoryKeysField({
   );
 }
 
-export function ProjectFormModal({ agents, integrations, project, onClose, onSaved }: Props) {
+export function ProjectFormModal({ agents, integrations, identities, project, onClose, onSaved }: Props) {
   const isEditMode = project !== undefined;
   const [projectType, setProjectType] = useState<"coding" | "review">(project?.type ?? "coding");
   const [name, setName] = useState("");
   const [agentId, setAgentId] = useState("");
+  const [identityId, setIdentityId] = useState("");
   const [postCloneScript, setPostCloneScript] = useState("");
   const [skillDiscoveryEnabled, setSkillDiscoveryEnabled] = useState(false);
 
@@ -672,6 +675,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
     setProjectType(project.type);
     setName(project.name);
     setAgentId(project.agentId ?? "");
+    setIdentityId(project.identityId ?? "");
     setPostCloneScript(project.postCloneScript ?? "");
     setSkillDiscoveryEnabled(project.skillDiscoveryEnabled ?? false);
 
@@ -730,6 +734,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
           type: "coding",
           name,
           agentId,
+          identityId: identityId || null,
           postCloneScript: postCloneScript || undefined,
           skillDiscoveryEnabled,
           ticketSource: { integrationId: ticketSource.integrationId, ticketProjectKey: ticketSource.ticketProjectKey },
@@ -755,6 +760,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
           type: "review",
           name,
           agentId,
+          identityId: identityId || null,
           postCloneScript: postCloneScript || undefined,
           skillDiscoveryEnabled,
           reviewConfig: { integrationId: reviewIntegrationId, repoKeys: reviewRepoKeys },
@@ -797,6 +803,15 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
             {currentAgents.length > 0 && <option value="">— select —</option>}
             {currentAgents.map((a) => (
               <option key={a.id} value={a.id}>{a.name}</option>
+            ))}
+          </FieldSelect>
+        </Field>
+
+        <Field label="Identity" hint="Optional VE identity for this workflow (comment signature, authorship). Leave as default to keep current behaviour.">
+          <FieldSelect value={identityId} onChange={(e) => setIdentityId(e.target.value)}>
+            <option value="">— default (no identity) —</option>
+            {identities.map((i) => (
+              <option key={i.id} value={i.id}>{i.name}</option>
             ))}
           </FieldSelect>
         </Field>

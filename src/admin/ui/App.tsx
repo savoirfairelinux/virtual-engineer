@@ -9,7 +9,7 @@ import { isActiveState } from "./states.ts";
 import type {
   ApiTask, ApiIntegration, ApiPlugin, ApiAgent, ApiProject,
   ApiPrompt, ApiOAuthApp, ApiStatus, ApiConfig, ApiProvider, ApiOverview,
-  VeAdminBootstrap,
+  ApiIdentity, VeAdminBootstrap,
 } from "./types.ts";
 import "./theme/global.css";
 
@@ -61,6 +61,7 @@ export function App() {
   const [plugins,      setPlugins]      = useState<ApiPlugin[]>([]);
   const [agents,       setAgents]       = useState<ApiAgent[]>([]);
   const [projects,     setProjects]     = useState<ApiProject[]>([]);
+  const [identities,   setIdentities]   = useState<ApiIdentity[]>([]);
   const [prompts,      setPrompts]      = useState<ApiPrompt[]>([]);
   const [oauthApps,    setOauthApps]    = useState<ApiOAuthApp[]>([]);
   const [status,       setStatus]       = useState<ApiStatus | null>(null);
@@ -75,6 +76,7 @@ export function App() {
       api.get<{ plugins: ApiPlugin[] }>("/api/admin/plugins"),
       api.get<{ agents: ApiAgent[] }>("/api/admin/agents"),
       api.get<{ projects: ApiProject[] }>("/api/admin/projects"),
+      api.get<{ identities: ApiIdentity[] }>("/api/admin/identities").catch(() => ({ identities: [] })),
       api.get<{ prompts: ApiPrompt[] }>("/api/admin/prompts"),
       api.get<{ apps: ApiOAuthApp[] }>("/api/admin/oauth-apps"),
       api.get<ApiStatus>("/api/admin/status"),
@@ -88,11 +90,12 @@ export function App() {
     if (results[3].status === "fulfilled") setPlugins(results[3].value.plugins);
     if (results[4].status === "fulfilled") setAgents(results[4].value.agents);
     if (results[5].status === "fulfilled") setProjects(results[5].value.projects);
-    if (results[6].status === "fulfilled") setPrompts(results[6].value.prompts);
-    if (results[7].status === "fulfilled") setOauthApps(results[7].value.apps);
-    if (results[8].status === "fulfilled") setStatus(results[8].value);
-    if (results[9].status === "fulfilled") setConfig(results[9].value.config);
-    if (results[10].status === "fulfilled" && results[10].value) setOverview(results[10].value);
+    if (results[6].status === "fulfilled") setIdentities(results[6].value.identities);
+    if (results[7].status === "fulfilled") setPrompts(results[7].value.prompts);
+    if (results[8].status === "fulfilled") setOauthApps(results[8].value.apps);
+    if (results[9].status === "fulfilled") setStatus(results[9].value);
+    if (results[10].status === "fulfilled") setConfig(results[10].value.config);
+    if (results[11].status === "fulfilled" && results[11].value) setOverview(results[11].value);
   }, []);
 
   useEffect(() => {
@@ -178,6 +181,7 @@ export function App() {
             plugins={plugins}
             agents={agents}
             projects={projects}
+            identities={identities}
             prompts={prompts}
             oauthApps={oauthApps}
             config={config}

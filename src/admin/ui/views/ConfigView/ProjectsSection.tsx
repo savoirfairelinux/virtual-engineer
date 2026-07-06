@@ -31,7 +31,7 @@ interface ApiProjectDetail extends ApiProject {
   skillDiscoveryEnabled?: boolean;
 }
 
-export function ProjectsSection({ projects, agents, integrations, onRefresh }: ConfigViewData) {
+export function ProjectsSection({ projects, agents, integrations, identities, onRefresh }: ConfigViewData) {
   const [busy, setBusy] = useState<string | null>(null);
   const [showAdd, setShowAdd] = useState(false);
   const [editingProject, setEditingProject] = useState<ApiProjectDetail | null>(null);
@@ -162,6 +162,7 @@ export function ProjectsSection({ projects, agents, integrations, onRefresh }: C
         <ProjectFormModal
           agents={agents}
           integrations={integrations}
+          identities={identities}
           onClose={() => setShowAdd(false)}
           onSaved={() => { setShowAdd(false); onRefresh(); }}
         />
@@ -171,6 +172,7 @@ export function ProjectsSection({ projects, agents, integrations, onRefresh }: C
         <ProjectFormModal
           agents={agents}
           integrations={integrations}
+          identities={identities}
           project={editingProject}
           onClose={() => setEditingProject(null)}
           onSaved={() => { setEditingProject(null); onRefresh(); }}

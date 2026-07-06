@@ -21,6 +21,7 @@ The admin server is a small HTTP service (default `127.0.0.1:3100`) that serves 
 | `adminProjectsRoutes.ts` | `/api/admin/projects/*` CRUD, ticket/review target validation, atomic push-target replacement, automatic relaunch of FAILED/REVIEW_FAILED tasks on (re)configuration or re-enable. |
 | `adminConcurrencyRoutes.ts` | `/api/admin/concurrency` read/update global concurrency. |
 | `adminSettingsRoutes.ts` | `GET/PUT /api/admin/settings` — read/update editable runtime workflow settings (polling interval, max agent cycles, max retry attempts). Validates positive integers; delegates persistence + hot-apply to the `SettingsController` wired in `src/index.ts`. |
+| `adminIdentitiesRoutes.ts` | `/api/admin/identities/*` CRUD for reusable VE identities (name, email, username, signature). Workflows reference an identity via `projects.identityId`; when set, VE applies it to outward-facing interactions (e.g. review comment signatures). |
 | `adminOverviewRoutes.ts` | `/api/admin/overview` dashboard stats/throughput/votes/runtime + `/api/admin/cost-summary` aggregated AI cost (per project & instance total, optional `?days=` period) + `/api/admin/model-usage` model distribution by run count & cost (global + per project, optional `?days=<n>` period filter). |
 | `adminWebhookRoutes.ts` | Webhook management: secret rotation, allowed-IPs, webhook-info. |
 | `dashboard.ts` | Serves the HTML shell for the Vite-built React SPA: reads the Vite manifest from `dist/admin-ui/.vite/manifest.json`, injects the hashed JS/CSS asset links plus a `window.__VE_ADMIN_BOOTSTRAP__` payload, and falls back to "Admin UI not built — run npm run build:ui" when the build output is missing. |
@@ -98,6 +99,11 @@ The admin server is a small HTTP service (default `127.0.0.1:3100`) that serves 
 | `DELETE` | `/api/admin/projects/:id` | Delete project and linked child rows. |
 | `PATCH` | `/api/admin/projects/:id/enable` | Enable project. If it was previously disabled, its `FAILED`/`REVIEW_FAILED` tasks are relaunched automatically. |
 | `PATCH` | `/api/admin/projects/:id/disable` | Disable project. |
+| `GET` | `/api/admin/identities` | List reusable VE identities. |
+| `POST` | `/api/admin/identities` | Create an identity `{ name, email?, username?, signature? }`. |
+| `GET` | `/api/admin/identities/:id` | Identity detail. |
+| `PUT` | `/api/admin/identities/:id` | Update an identity's mutable fields. |
+| `DELETE` | `/api/admin/identities/:id` | Delete an identity; any workflow referencing it is detached (reverts to default behaviour). |
 | `GET` / `PUT` | `/api/admin/concurrency` | Read/update global concurrency plus live in-memory snapshot. `PUT` accepts `{ global: number \| null }` (numeric strings are coerced server-side). |
 | `GET` / `PUT` | `/api/admin/settings` | Read/update editable runtime workflow settings. `PUT` accepts any subset of `{ pollingIntervalMs, maxAgentCycles, maxRetryAttempts }` (positive integers; interval in ms). Persists to `app_settings` and hot-applies to the polling loop, orchestrator, and admin runtime config. |
 | `GET` | `/api/admin/overview` | Dashboard summary: task stats, throughput sparkline, review-vote breakdown, runtime facts. |
