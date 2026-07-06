@@ -98,6 +98,12 @@ export function resolveEffectiveSshKeyPath(
   }
   const enc = cfg["sshPrivateKeyEnc"];
   if (typeof enc === "string" && enc.length > 0) {
+    // When called from buildCapabilityInstance, decryptPasswordFields has already
+    // decrypted the value to a raw PEM string. Detect that case and skip the extra
+    // decryptToken call, which would otherwise fail and silently fall back to agent mode.
+    if (enc.includes("-----BEGIN")) {
+      return resolveKeyFromPem(enc, integrationId ?? "default");
+    }
     try {
       const pem = decryptToken(enc, adminAuthSecret);
       return resolveKeyFromPem(pem, integrationId ?? "default");
