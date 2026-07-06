@@ -108,11 +108,14 @@ export function resolveEffectiveSshKeyPath(
     // decrypted the value to a raw PEM string. Detect that case and skip the extra
     // decryptToken call, which would otherwise fail unnecessarily.
     if (enc.includes("-----BEGIN")) {
-      return resolveKeyFromPem(enc, integrationId ?? "default");
+      return resolveKeyFromPem(enc, integrationId ?? stableId(enc));
     }
     try {
       const pem = decryptToken(enc, adminAuthSecret);
-      return resolveKeyFromPem(pem, integrationId ?? "default");
+      // Use a content-derived id when there is no real integrationId (e.g.
+      // unsaved connection tests) so concurrent callers with different keys
+      // get distinct temp files and cannot overwrite each other.
+      return resolveKeyFromPem(pem, integrationId ?? stableId(pem));
     } catch (err) {
       throw new Error(
         "Failed to decrypt the stored SSH private key (sshPrivateKeyEnc). " +
@@ -136,7 +139,10 @@ export function resolveAgentIdentityPath(
   if (typeof cfg["_agentPubKeyPath"] === "string") return cfg["_agentPubKeyPath"];
   const pubKey = cfg["sshAgentPublicKey"];
   if (typeof pubKey === "string" && pubKey.trim().length > 0) {
-    return resolveAgentPubKeyPath(pubKey as string, integrationId ?? "default");
+    // Use a content-derived id when there is no real integrationId (e.g.
+    // unsaved connection tests) so concurrent callers with different public
+    // keys get distinct temp files and cannot overwrite each other.
+    return resolveAgentPubKeyPath(pubKey as string, integrationId ?? stableId(pubKey));
   }
   return undefined;
 }

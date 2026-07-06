@@ -158,6 +158,13 @@ export async function execInVolume(opts: ExecInVolumeOptions): Promise<ExecInVol
     // it passes that path to the Docker daemon, the daemon resolves it on the
     // host and finds the socket.
     const agentSock = process.env["SSH_AUTH_SOCK"];
+    if (opts.sshAgentPubKeyPath && !agentSock) {
+      throw new Error(
+        "SSH agent identity pinning is configured (sshAgentPubKeyPath) but " +
+        "SSH_AUTH_SOCK is not set. Ensure the SSH agent socket is available " +
+        "and forwarded to this process."
+      );
+    }
     if (agentSock) {
       // Same-path bind-mount so child containers launched from this container
       // can forward the socket using the same path.

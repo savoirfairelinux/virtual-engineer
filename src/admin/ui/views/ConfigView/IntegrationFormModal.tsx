@@ -325,16 +325,24 @@ function SshAuthSection({ provider, providerName, config, onConfigChange }: SshA
   const [genError, setGenError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
-  // Load agent keys when switching to agent mode
+  // Load agent keys when switching to agent mode.
+  // The cleanup function sets a `cancelled` flag so that state setters are not
+  // called on an already-unmounted component (React warning prevention).
   useEffect(() => {
     if (mode === "agent") {
+      let cancelled = false;
       setAgentLoading(true);
       listAgentKeys().then((r) => {
-        setAgentKeys(r.keys);
-        setAgentAvailable(r.agentAvailable);
+        if (!cancelled) {
+          setAgentKeys(r.keys);
+          setAgentAvailable(r.agentAvailable);
+        }
       }).catch(() => {
-        setAgentAvailable(false);
-      }).finally(() => setAgentLoading(false));
+        if (!cancelled) setAgentAvailable(false);
+      }).finally(() => {
+        if (!cancelled) setAgentLoading(false);
+      });
+      return () => { cancelled = true; };
     }
   }, [mode]);
 
