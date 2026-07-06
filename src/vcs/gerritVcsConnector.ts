@@ -57,7 +57,10 @@ export interface GerritVcsConnectorConfig {
   sshHost: string;
   sshPort: number;
   sshUser: string;
-  sshKeyPath: string;
+  /** Path to an SSH private-key file. Omit to use the system SSH agent. */
+  sshKeyPath?: string | undefined;
+  /** Path to an agent identity `.pub` file for identity pinning. Only used when sshKeyPath is absent. */
+  sshAgentPubKeyPath?: string | undefined;
   /** Path to a known_hosts file. When set, SSH uses strict host key verification. */
   sshKnownHostsPath?: string | undefined;
   gitAuthorName: string;
@@ -66,15 +69,15 @@ export interface GerritVcsConnectorConfig {
 
 /** Build the GIT_SSH_COMMAND string for authenticating git over SSH with the given config. */
 function buildSshCommand(config: GerritVcsConnectorConfig, overrideSshKeyPath?: string): string {
-  const keyPath = overrideSshKeyPath || config.sshKeyPath;
-  const quotedKeyPath = keyPath.replace(/"/g, '\\"');
+  const keyPath = overrideSshKeyPath ?? config.sshKeyPath;
+  const agentPubKeyPath = config.sshAgentPubKeyPath;
   const hostKeyOpts = buildSshHostKeyOptions(config.sshKnownHostsPath).join(" ");
-  return [
-    "ssh",
-    `-i "${quotedKeyPath}"`,
-    "-o IdentitiesOnly=yes",
-    hostKeyOpts,
-  ].join(" ");
+  const identityPart = keyPath
+    ? `-i "${keyPath.replace(/"/g, '\\"')}" -o IdentitiesOnly=yes`
+    : agentPubKeyPath
+      ? `-o IdentitiesOnly=yes -i "${agentPubKeyPath.replace(/"/g, '\\"')}"`
+      : "";
+  return ["ssh", identityPart, hostKeyOpts].filter(Boolean).join(" ");
 }
 
 /** Build the process env object that injects GIT_SSH_COMMAND for Gerrit operations. */
@@ -95,9 +98,14 @@ export class GerritVcsConnector implements VcsConnector {
     return this.config.sshKnownHostsPath;
   }
 
-  /** Returns the SSH private key path used by this connector. */
-  get sshKeyPath(): string {
+  /** Returns the SSH private key path used by this connector, if configured. */
+  get sshKeyPath(): string | undefined {
     return this.config.sshKeyPath;
+  }
+
+  /** Returns the SSH agent public key path used for identity pinning, if configured. */
+  get sshAgentPubKeyPath(): string | undefined {
+    return this.config.sshAgentPubKeyPath;
   }
 
   constructor(private readonly config: GerritVcsConnectorConfig) {
@@ -105,7 +113,8 @@ export class GerritVcsConnector implements VcsConnector {
       host: config.sshHost,
       port: config.sshPort,
       user: config.sshUser,
-      keyPath: config.sshKeyPath,
+      ...(config.sshKeyPath !== undefined ? { keyPath: config.sshKeyPath } : {}),
+      ...(config.sshAgentPubKeyPath !== undefined ? { agentPubKeyPath: config.sshAgentPubKeyPath } : {}),
       ...(config.sshKnownHostsPath !== undefined ? { knownHostsPath: config.sshKnownHostsPath } : {}),
     });
   }
@@ -122,7 +131,8 @@ export class GerritVcsConnector implements VcsConnector {
       vcsBaseUrl: this.config.baseUrl ?? "",
       revisionNumber: info.number,
       patchset: info.currentPatchSet?.number ?? 1,
-      sshKeyPath: this.config.sshKeyPath,
+      ...(this.config.sshKeyPath !== undefined ? { sshKeyPath: this.config.sshKeyPath } : {}),
+      ...(this.config.sshAgentPubKeyPath !== undefined ? { sshAgentPubKeyPath: this.config.sshAgentPubKeyPath } : {}),
       ...(this.config.sshKnownHostsPath !== undefined ? { sshKnownHostsPath: this.config.sshKnownHostsPath } : {}),
       sshHost: this.config.sshHost,
       sshPort: this.config.sshPort,

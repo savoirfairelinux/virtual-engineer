@@ -159,7 +159,10 @@ export class PluginManager {
 
     // Fall back to the descriptor's own test hook.
     if (descriptor.testConnection) {
-      const strippedConfig = this.stripSchemaDefaults(parsed.data, config);
+      const strippedRaw = this.stripSchemaDefaults(parsed.data, config) as Record<string, unknown>;
+      const strippedConfig = descriptor.preprocessConfig
+        ? { ...strippedRaw, ...descriptor.preprocessConfig(strippedRaw, this.options.adminAuthSecret, undefined) }
+        : strippedRaw;
       return this.normalizeConnectionTestResult(await descriptor.testConnection(strippedConfig));
     }
 
@@ -363,7 +366,10 @@ export class PluginManager {
     if (!parsed.success) {
       throw new Error(`Invalid config for ${integration.provider}: ${parsed.error.message}`);
     }
-    const strippedConfig = this.stripSchemaDefaults(parsed.data, config);
+    const strippedRaw = this.stripSchemaDefaults(parsed.data, config) as Record<string, unknown>;
+    const strippedConfig = descriptor.preprocessConfig
+      ? { ...strippedRaw, ...descriptor.preprocessConfig(strippedRaw, this.options.adminAuthSecret, integration.id) }
+      : strippedRaw;
 
     if (capability === "agent_execution") {
       // A test-registered factory takes precedence.

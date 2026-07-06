@@ -87,6 +87,22 @@ export const api = {
   delete: <T>(path: string, body?: unknown) => request<T>("DELETE", path, body),
 };
 
+/* ─── SSH key management helpers ─────────────────────────────────────── */
+
+export interface AgentKey { publicKey: string; keyType: string; comment: string }
+
+export function generateSshKey(integrationId: string): Promise<{ publicKey: string }> {
+  return request<{ publicKey: string }>("POST", `/api/admin/integrations/${integrationId}/ssh-key/generate`);
+}
+
+export function getSshPublicKey(integrationId: string): Promise<{ publicKey: string | null }> {
+  return request<{ publicKey: string | null }>("GET", `/api/admin/integrations/${integrationId}/ssh-key/public`);
+}
+
+export function listAgentKeys(): Promise<{ keys: AgentKey[]; agentAvailable: boolean }> {
+  return request<{ keys: AgentKey[]; agentAvailable: boolean }>("GET", "/api/admin/ssh-agent/keys");
+}
+
 /* ─── SSE stream helpers ──────────────────────────────────────────────── */
 
 type SseHandler = (eventType: string, data: string) => void;

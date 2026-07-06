@@ -299,6 +299,7 @@ export class DockerWorkspaceRunner implements WorkspaceRunner {
       image: this.config.agentContainerImage,
       command: ["git", "clone", "--branch", root.targetBranch, "--depth", "1", root.cloneUrl, "/workspace"],
       sshKeyPath: root.sshKeyPath ?? undefined,
+      ...(root.sshAgentPubKeyPath !== undefined && root.sshAgentPubKeyPath !== null ? { sshAgentPubKeyPath: root.sshAgentPubKeyPath } : {}),
       ...(sshKnownHostsPath !== undefined ? { sshKnownHostsPath } : {}),
     });
     if (rootResult.exitCode !== 0) {
@@ -332,6 +333,7 @@ export class DockerWorkspaceRunner implements WorkspaceRunner {
         image: this.config.agentContainerImage,
         command: ["git", "clone", "--branch", target.targetBranch, "--depth", "1", target.cloneUrl, `/workspace/${target.localPath}`],
         sshKeyPath: target.sshKeyPath ?? undefined,
+        ...(target.sshAgentPubKeyPath !== undefined && target.sshAgentPubKeyPath !== null ? { sshAgentPubKeyPath: target.sshAgentPubKeyPath } : {}),
         ...(sshKnownHostsPath !== undefined ? { sshKnownHostsPath } : {}),
       });
       if (cloneResult.exitCode !== 0) {
@@ -356,6 +358,7 @@ export class DockerWorkspaceRunner implements WorkspaceRunner {
         image: this.config.agentContainerImage,
         command: ["bash", "-c", postCloneScript],
         sshKeyPath: root.sshKeyPath ?? undefined,
+        ...(root.sshAgentPubKeyPath !== undefined && root.sshAgentPubKeyPath !== null ? { sshAgentPubKeyPath: root.sshAgentPubKeyPath } : {}),
         ...(sshKnownHostsPath !== undefined ? { sshKnownHostsPath } : {}),
       });
       if (scriptResult.exitCode !== 0) {
@@ -388,16 +391,18 @@ export class DockerWorkspaceRunner implements WorkspaceRunner {
     );
 
     const sshKeyPath = opts.sshKeyPath;
-    if (!opts.sshHost || !sshKeyPath) {
-      throw new Error("Patchset application requires sshHost and sshKeyPath");
+    if (!opts.sshHost) {
+      throw new Error("Patchset application requires sshHost");
     }
+    // sshKeyPath may be absent when using SSH agent mode; dockerVolume.ts handles both cases.
     const sshPort = opts.sshPort ?? 29418;
 
     const fetchResult = await execInVolume({
       volumeName: handle.volumeName,
       image: this.config.agentContainerImage,
       command: ["git", "fetch", "origin", patchsetRef],
-      sshKeyPath,
+      ...(sshKeyPath !== undefined ? { sshKeyPath } : {}),
+      ...(opts.sshAgentPubKeyPath !== undefined ? { sshAgentPubKeyPath: opts.sshAgentPubKeyPath } : {}),
       ...(opts.sshKnownHostsPath !== undefined ? { sshKnownHostsPath: opts.sshKnownHostsPath } : {}),
       sshPort,
       env: {},
@@ -446,16 +451,18 @@ export class DockerWorkspaceRunner implements WorkspaceRunner {
     );
 
     const sshKeyPath = opts.sshKeyPath;
-    if (!opts.sshHost || !sshKeyPath) {
-      throw new Error("Patchset cherry-pick requires sshHost and sshKeyPath");
+    if (!opts.sshHost) {
+      throw new Error("Patchset cherry-pick requires sshHost");
     }
+    // sshKeyPath may be absent when using SSH agent mode; dockerVolume.ts handles both cases.
     const sshPort = opts.sshPort ?? 29418;
 
     const fetchResult = await execInVolume({
       volumeName: handle.volumeName,
       image: this.config.agentContainerImage,
       command: ["git", "fetch", "origin", patchsetRef],
-      sshKeyPath,
+      ...(sshKeyPath !== undefined ? { sshKeyPath } : {}),
+      ...(opts.sshAgentPubKeyPath !== undefined ? { sshAgentPubKeyPath: opts.sshAgentPubKeyPath } : {}),
       ...(opts.sshKnownHostsPath !== undefined ? { sshKnownHostsPath: opts.sshKnownHostsPath } : {}),
       sshPort,
       env: {},

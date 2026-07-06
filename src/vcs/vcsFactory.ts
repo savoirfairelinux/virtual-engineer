@@ -55,6 +55,12 @@ function parseConfig(integration: Integration, adminAuthSecret?: string): Record
     }
   }
 
+  // Apply provider-specific config preprocessing (e.g. SSH key resolution).
+  if (descriptor.preprocessConfig) {
+    const extra = descriptor.preprocessConfig(cfg, adminAuthSecret, integration.id);
+    Object.assign(cfg, extra);
+  }
+
   return cfg;
 }
 

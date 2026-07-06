@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // ─── Mocks ────────────────────────────────────────────────────────────────────
 
@@ -96,6 +96,18 @@ describe("execInVolume", () => {
   };
 
   describe("basic docker args (no sshKeyPath)", () => {
+    let savedSshAuthSock: string | undefined;
+    beforeEach(() => {
+      // Unset SSH_AUTH_SOCK so these tests verify behaviour without an agent socket.
+      savedSshAuthSock = process.env["SSH_AUTH_SOCK"];
+      delete process.env["SSH_AUTH_SOCK"];
+    });
+    afterEach(() => {
+      if (savedSshAuthSock !== undefined) {
+        process.env["SSH_AUTH_SOCK"] = savedSshAuthSock;
+      }
+    });
+
     it("mounts volume and runs the command directly", async () => {
       mockExecFileSuccess("ok\n");
 

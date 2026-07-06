@@ -87,7 +87,10 @@ export interface GerritSshReviewProviderConfig {
   sshHost: string;
   sshPort: number;
   sshUser: string;
-  sshKeyPath: string;
+  /** Path to an SSH private-key file. Omit to use the system SSH agent. */
+  sshKeyPath?: string | undefined;
+  /** Path to an agent identity `.pub` file for identity pinning. Only used when sshKeyPath is absent. */
+  sshAgentPubKeyPath?: string | undefined;
   /** Path to a known_hosts file. When set, SSH uses strict host key verification. */
   sshKnownHostsPath?: string | undefined;
   /** Numeric Gerrit account id of the VE reviewer (as a string). Optional — when absent the self-review guard is skipped. */
@@ -115,7 +118,8 @@ export class GerritSshReviewProvider implements ReviewProvider {
       host: config.sshHost,
       port: config.sshPort,
       user: config.sshUser,
-      keyPath: config.sshKeyPath,
+      ...(config.sshKeyPath !== undefined ? { keyPath: config.sshKeyPath } : {}),
+      ...(config.sshAgentPubKeyPath !== undefined ? { agentPubKeyPath: config.sshAgentPubKeyPath } : {}),
       ...(config.sshKnownHostsPath !== undefined ? { knownHostsPath: config.sshKnownHostsPath } : {}),
     });
   }
@@ -214,7 +218,12 @@ export class GerritSshReviewProvider implements ReviewProvider {
     try {
       const sshUrl = `ssh://${this.config.sshUser}@${this.config.sshHost}:${this.config.sshPort}/${details.project}`;
       const hostKeyOpts = buildSshHostKeyOptions(this.config.sshKnownHostsPath).join(" ");
-      const sshCmd = `ssh -p ${this.config.sshPort} -i ${this.config.sshKeyPath} ${hostKeyOpts}`;
+      const identityPart = this.config.sshKeyPath
+        ? `-i ${this.config.sshKeyPath} -o IdentitiesOnly=yes`
+        : this.config.sshAgentPubKeyPath
+          ? `-o IdentitiesOnly=yes -i ${this.config.sshAgentPubKeyPath}`
+          : "";
+      const sshCmd = `ssh -p ${this.config.sshPort} ${identityPart} ${hostKeyOpts}`.replace(/\s+/g, " ").trim();
       const gitEnv = {
         ...process.env,
         GIT_TERMINAL_PROMPT: "0",

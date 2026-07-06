@@ -32,8 +32,18 @@ export interface GerritSshDiscoveryConfig {
   host: string;
   user: string;
   port: number;
-  keyPath: string;
+  /** SSH private-key path. Omit to use the system SSH agent. */
+  keyPath?: string | undefined;
+  /** Agent identity public-key path for identity pinning. Only used when keyPath is absent. */
+  agentPubKeyPath?: string | undefined;
   knownHostsPath?: string | undefined;
+}
+
+/** Build SSH identity flag args from a discovery config. */
+function buildDiscoveryIdentityArgs(ssh: GerritSshDiscoveryConfig): string[] {
+  if (ssh.keyPath) return ["-i", ssh.keyPath, "-o", "IdentitiesOnly=yes"];
+  if (ssh.agentPubKeyPath) return ["-o", "IdentitiesOnly=yes", "-i", ssh.agentPubKeyPath];
+  return [];
 }
 
 /**
@@ -46,7 +56,7 @@ export async function listRepositoriesViaSsh(
     "ssh",
     [
       "-p", String(ssh.port),
-      "-i", ssh.keyPath,
+      ...buildDiscoveryIdentityArgs(ssh),
       ...(ssh.knownHostsPath
         ? ["-o", "StrictHostKeyChecking=yes", "-o", `UserKnownHostsFile=${ssh.knownHostsPath}`]
         : ["-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null"]),
@@ -102,7 +112,7 @@ export async function listBranchesViaSsh(
 ): Promise<string[]> {
   const sshArgs = [
     "-p", String(ssh.port),
-    "-i", ssh.keyPath,
+    ...buildDiscoveryIdentityArgs(ssh),
     ...(ssh.knownHostsPath
       ? ["-o", "StrictHostKeyChecking=yes", "-o", `UserKnownHostsFile=${ssh.knownHostsPath}`]
       : ["-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null"]),
@@ -141,7 +151,8 @@ export class GerritSshConnector implements ReviewConnector {
       host: config.ssh.host,
       port: config.ssh.port,
       user: config.ssh.user,
-      keyPath: config.ssh.keyPath,
+      ...(config.ssh.keyPath !== undefined ? { keyPath: config.ssh.keyPath } : {}),
+      ...(config.ssh.agentPubKeyPath !== undefined ? { agentPubKeyPath: config.ssh.agentPubKeyPath } : {}),
       ...(config.ssh.knownHostsPath !== undefined ? { knownHostsPath: config.ssh.knownHostsPath } : {}),
     });
   }

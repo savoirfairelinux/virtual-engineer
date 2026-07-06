@@ -106,7 +106,10 @@ export interface ProjectPushTargetRecord {
   commitOrder: number;
   /** Workspace-relative path (e.g. ".", "libs/core"). */
   localPath: string;
+  /** SSH private-key path, or null when using the SSH agent. */
   sshKeyPath: string | null;
+  /** SSH agent identity public-key path for identity pinning, or null when not pinning. */
+  sshAgentPubKeyPath?: string | null | undefined;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -453,6 +456,8 @@ export interface PatchsetCheckoutOptions {
   patchset: number;
   /** Optional SSH key path; uses default git credential chain if absent */
   sshKeyPath?: string | undefined;
+  /** Path to an agent identity `.pub` file for identity pinning. Only used when sshKeyPath is absent. */
+  sshAgentPubKeyPath?: string | undefined;
   /** Path to a known_hosts file. When set, SSH uses strict host key verification. */
   sshKnownHostsPath?: string | undefined;
   /** Gerrit SSH host (for SSH fetch; falls back to HTTP if absent) */

@@ -117,6 +117,7 @@ describe("GerritSshClient", () => {
       expect(execFileCalls[0]!.args).toEqual([
         "-p", "29418",
         "-i", "/key",
+        "-o", "IdentitiesOnly=yes",
         "-o", "StrictHostKeyChecking=no",
         "-o", "UserKnownHostsFile=/dev/null",
         "ve@gerrit.test",
@@ -133,6 +134,7 @@ describe("GerritSshClient", () => {
       expect(execFileCalls[0]!.args).toEqual([
         "-p", "29418",
         "-i", "/key",
+        "-o", "IdentitiesOnly=yes",
         "-o", "StrictHostKeyChecking=yes",
         "-o", "UserKnownHostsFile=/etc/ssh/known_hosts",
         "ve@gerrit.test",

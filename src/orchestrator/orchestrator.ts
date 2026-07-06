@@ -645,13 +645,17 @@ export class Orchestrator {
               if (authUrl !== undefined) return { ...pt, cloneUrl: authUrl };
             }
           } catch {
-            // Non-fatal — fall through to sshKeyPath enrichment
+            // Non-fatal — fall through to SSH key enrichment
           }
           if (pt.sshKeyPath !== null) return pt;
           try {
             const connector = await this.resolveVcsConnectorForTarget(pt.integrationId, { repoKey: pt.repoKey, targetBranch: pt.targetBranch });
-            const fallback = connector.sshKeyPath ?? undefined;
-            return fallback !== undefined ? { ...pt, sshKeyPath: fallback } : pt;
+            const fallbackKey = connector.sshKeyPath ?? undefined;
+            const fallbackAgentPub = (connector as { sshAgentPubKeyPath?: string | undefined }).sshAgentPubKeyPath ?? undefined;
+            if (fallbackKey !== undefined) return { ...pt, sshKeyPath: fallbackKey };
+            if (fallbackAgentPub !== undefined) return { ...pt, sshKeyPath: null, sshAgentPubKeyPath: fallbackAgentPub };
+            // SSH agent mode with no identity pinning — leave sshKeyPath null
+            return pt;
           } catch {
             return pt;
           }

@@ -35,6 +35,18 @@ if docker inspect ve-orchestrator >/dev/null 2>&1; then
 fi
 
 info "Starting ve-orchestrator..."
+
+# Forward SSH agent socket into the container using the same host path so that
+# nested Docker containers spawned by the orchestrator can reach it too (same-path trick).
+SSH_AGENT_ARGS=""
+if [ -n "${SSH_AUTH_SOCK:-}" ] && [ -S "$SSH_AUTH_SOCK" ]; then
+  info "SSH agent detected at $SSH_AUTH_SOCK — forwarding into container."
+  SSH_AGENT_ARGS="-v $SSH_AUTH_SOCK:$SSH_AUTH_SOCK -e SSH_AUTH_SOCK=$SSH_AUTH_SOCK"
+else
+  warn "No SSH agent socket found (SSH_AUTH_SOCK not set or not a socket). Agent-based SSH auth will not be available."
+fi
+
+# shellcheck disable=SC2086 — intentional word-splitting for SSH_AGENT_ARGS
 docker run -d \
   --name ve-orchestrator \
   --restart unless-stopped \
@@ -49,6 +61,7 @@ docker run -d \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v "$HOME/.config/gh:/ve-gh:ro" \
   --tmpfs /tmp/ve-review-diffs:rw,size=512m \
+  $SSH_AGENT_ARGS \
   virtual-engineer:latest
 
 info "ve-orchestrator started."

@@ -49,9 +49,15 @@ ensure_dir() {
 ensure_dir "$DATA_DIR"    755   # SQLite database (rw inside container)
 ensure_dir "$SECRETS_DIR" 700   # SSH keys (ro inside container; 700 = owner only)
 
-# ─── Generate SSH key ─────────────────────────────────────────────────────────
+# ─── Generate SSH key (optional — skip if you prefer SSH agent or UI-generated keys) ──
+# This creates a dedicated ed25519 key for Virtual Engineer at a known path.
+# Alternatives that do NOT require this step:
+#   • SSH Agent mode — forward your system SSH agent by keeping SSH_AUTH_SOCK set when running
+#     start-orchestrator.sh; the orchestrator will mount the socket automatically.
+#   • UI-generated key — open the Admin UI → Integrations → edit a Gerrit integration and click
+#     "Generate key" in the SSH Authentication section.
 if [[ ! -f "${SECRETS_DIR}/gerrit_id_ed25519" ]]; then
-  info "Generating SSH key for virtual-engineer..."
+  info "Generating SSH key for virtual-engineer (skip with Ctrl-C if using SSH agent or UI key gen)..."
   ssh-keygen -t ed25519 \
     -C "virtual-engineer@localhost" \
     -f "${SECRETS_DIR}/gerrit_id_ed25519" \
@@ -94,24 +100,47 @@ fi
 # ─── Display next steps ────────────────────────────────────────────────────────
 
 PUBLIC_KEY_PATH="${SECRETS_DIR}/gerrit_id_ed25519.pub"
-PUBLIC_KEY=$(cat "$PUBLIC_KEY_PATH")
-
-info ""
-info "╔══════════════════════════════════════════════════════════════════╗"
-info "║                    SSH Keys Generated                           ║"
-info "║                                                                  ║"
-info "║  Private key: ${SECRETS_DIR}/gerrit_id_ed25519                  ║"
-info "║  Public key:  ${PUBLIC_KEY_PATH}                               ║"
-info "║                                                                  ║"
-info "║  Next steps (manual):                                            ║"
-info "║  1. Create the 'virtual-engineer' account in Gerrit             ║"
-info "║  2. Add the SSH public key to the account:                      ║"
-info "║                                                                  ║"
-info "║     Public key content:                                          ║"
-info "║     ────────────────────────────────────────────────────────    ║"
-info "║     ${PUBLIC_KEY}                                               ║"
-info "║     ────────────────────────────────────────────────────────    ║"
-info "║                                                                  ║"
-info "║  3. Configure Virtual Engineer with your Gerrit/Redmine URLs  ║"
-info "║                                                                  ║"
-info "╚══════════════════════════════════════════════════════════════════╝"
+if [[ -f "$PUBLIC_KEY_PATH" ]]; then
+  PUBLIC_KEY=$(cat "$PUBLIC_KEY_PATH")
+  info ""
+  info "╔══════════════════════════════════════════════════════════════════╗"
+  info "║                    SSH Keys Generated                           ║"
+  info "║                                                                  ║"
+  info "║  Private key: ${SECRETS_DIR}/gerrit_id_ed25519                  ║"
+  info "║  Public key:  ${PUBLIC_KEY_PATH}                               ║"
+  info "║                                                                  ║"
+  info "║  Next steps (manual):                                            ║"
+  info "║  1. Create the 'virtual-engineer' account in Gerrit             ║"
+  info "║  2. Add the SSH public key to the account:                      ║"
+  info "║                                                                  ║"
+  info "║     Public key content:                                          ║"
+  info "║     ────────────────────────────────────────────────────────    ║"
+  info "║     ${PUBLIC_KEY}                                               ║"
+  info "║     ────────────────────────────────────────────────────────    ║"
+  info "║                                                                  ║"
+  info "║  3. Configure Virtual Engineer with your Gerrit/Redmine URLs  ║"
+  info "║                                                                  ║"
+  info "╚══════════════════════════════════════════════════════════════════╝"
+else
+  info ""
+  info "╔══════════════════════════════════════════════════════════════════╗"
+  info "║                    Infrastructure Ready                         ║"
+  info "║                                                                  ║"
+  info "║  No file-based SSH key was generated.  Choose one of:           ║"
+  info "║                                                                  ║"
+  info "║  Option A — SSH Agent (recommended):                            ║"
+  info "║    Keep SSH_AUTH_SOCK set when running start-orchestrator.sh.   ║"
+  info "║    The orchestrator will forward the agent socket automatically. ║"
+  info "║                                                                  ║"
+  info "║  Option B — UI-generated key:                                   ║"
+  info "║    Admin UI → Integrations → edit Gerrit → SSH Authentication   ║"
+  info "║    → 'Generated key' → click 'Generate key' → copy public key  ║"
+  info "║    → add it to Gerrit → Settings → SSH Keys.                    ║"
+  info "║                                                                  ║"
+  info "║  Option C — Custom path (legacy):                               ║"
+  info "║    Re-run init-infra.sh without Ctrl-C to generate a key, then  ║"
+  info "║    set 'Custom path' in the integration's SSH Authentication     ║"
+  info "║    section.                                                      ║"
+  info "║                                                                  ║"
+  info "╚══════════════════════════════════════════════════════════════════╝"
+fi

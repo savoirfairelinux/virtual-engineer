@@ -107,7 +107,7 @@ function createManager(
     return child as unknown as ReturnType<typeof import("node:child_process").spawn>;
   });
 
-  type SshQueryFnType = (args: string[], config: { sshHost: string; sshPort: number; sshUser: string; sshKeyPath: string }) => Promise<string>;
+  type SshQueryFnType = (args: string[], config: { sshHost: string; sshPort: number; sshUser: string; sshKeyPath?: string | undefined }) => Promise<string>;
 
   const manager = new GerritStreamEventsManager({
     orchestrator,
@@ -722,7 +722,7 @@ describe("GerritStreamEventsManager", () => {
       const sshQuery = makeSshReviewerQueryFn([], ["Iassigned"]);
       const child = new FakeChildProcess();
       const spawnProcess = vi.fn(() => child as unknown as ReturnType<typeof import("node:child_process").spawn>);
-      type SshQueryFnType = (args: string[], config: { sshHost: string; sshPort: number; sshUser: string; sshKeyPath: string }) => Promise<string>;
+      type SshQueryFnType = (args: string[], config: { sshHost: string; sshPort: number; sshUser: string; sshKeyPath?: string | undefined }) => Promise<string>;
       const manager = new GerritStreamEventsManager({
         orchestrator: { triggerFeedbackForChange: vi.fn(), markChangeMerged: vi.fn(), markChangeAbandoned: vi.fn() },
         getReviewTrigger: () => undefined,
