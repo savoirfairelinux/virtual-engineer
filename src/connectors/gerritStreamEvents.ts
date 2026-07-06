@@ -3,6 +3,7 @@ import { promisify } from "node:util";
 import type { Integration, ReviewComment } from "../interfaces.js";
 import { getLogger } from "../logger.js";
 import { buildSshHostKeyOptions, PREAMBLE_RE, COMMENTS_SUMMARY_RE } from "./gerritSshClient.js";
+import { SSH_RESOLVED_KEY_PATH, SSH_AGENT_PUBKEY_PATH } from "../utils/sshKeyResolver.js";
 import type {
   IntegrationEventStreamDependencies,
   IntegrationEventStreamManager,
@@ -599,14 +600,14 @@ function parseGerritStreamConfig(integration: Integration):
   const cfg = raw as Record<string, unknown>;
   const sshHost = typeof cfg["sshHost"] === "string" ? cfg["sshHost"].trim() : "";
   const sshUser = typeof cfg["sshUser"] === "string" ? cfg["sshUser"].trim() : "";
-  // Key path: _resolvedSshKeyPath (from preprocessConfig) > sshKeyPath > undefined (agent mode)
-  const sshKeyPath = typeof cfg["_resolvedSshKeyPath"] === "string" && cfg["_resolvedSshKeyPath"].trim() !== ""
-    ? cfg["_resolvedSshKeyPath"].trim()
+  // Key path: SSH_RESOLVED_KEY_PATH (from preprocessConfig) > sshKeyPath > undefined (agent mode)
+  const sshKeyPath = typeof cfg[SSH_RESOLVED_KEY_PATH] === "string" && cfg[SSH_RESOLVED_KEY_PATH].trim() !== ""
+    ? cfg[SSH_RESOLVED_KEY_PATH].trim()
     : typeof cfg["sshKeyPath"] === "string" && cfg["sshKeyPath"].trim() !== ""
       ? cfg["sshKeyPath"].trim()
       : undefined;
-  const sshAgentPubKeyPath = typeof cfg["_agentPubKeyPath"] === "string" && cfg["_agentPubKeyPath"].trim() !== ""
-    ? cfg["_agentPubKeyPath"].trim()
+  const sshAgentPubKeyPath = typeof cfg[SSH_AGENT_PUBKEY_PATH] === "string" && cfg[SSH_AGENT_PUBKEY_PATH].trim() !== ""
+    ? cfg[SSH_AGENT_PUBKEY_PATH].trim()
     : undefined;
   const sshPortValue = cfg["sshPort"];
   const sshPort = typeof sshPortValue === "number"

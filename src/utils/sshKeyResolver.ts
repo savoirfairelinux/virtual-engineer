@@ -20,6 +20,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { decryptToken } from "./encryption.js";
 
+/**
+ * Config key written by `preprocessConfig` to carry the resolved private-key
+ * temp-file path. All SSH-capable connectors read this key instead of
+ * duplicating the resolution logic.
+ */
+export const SSH_RESOLVED_KEY_PATH = "_resolvedSshKeyPath" as const;
+
+/**
+ * Config key written by `preprocessConfig` to carry the SSH agent identity
+ * public-key temp-file path (used for `-o IdentitiesOnly=yes` pinning).
+ */
+export const SSH_AGENT_PUBKEY_PATH = "_agentPubKeyPath" as const;
+
 const tempPaths = new Set<string>();
 let exitHandlerRegistered = false;
 
@@ -98,7 +111,7 @@ export function resolveEffectiveSshKeyPath(
   adminAuthSecret: string | undefined,
   integrationId: string | undefined
 ): string | undefined {
-  if (typeof cfg["_resolvedSshKeyPath"] === "string") return cfg["_resolvedSshKeyPath"];
+  if (typeof cfg[SSH_RESOLVED_KEY_PATH] === "string") return cfg[SSH_RESOLVED_KEY_PATH] as string;
   if (typeof cfg["sshKeyPath"] === "string" && cfg["sshKeyPath"].trim().length > 0) {
     return cfg["sshKeyPath"] as string;
   }
@@ -136,7 +149,7 @@ export function resolveAgentIdentityPath(
   cfg: Record<string, unknown>,
   integrationId: string | undefined
 ): string | undefined {
-  if (typeof cfg["_agentPubKeyPath"] === "string") return cfg["_agentPubKeyPath"];
+  if (typeof cfg[SSH_AGENT_PUBKEY_PATH] === "string") return cfg[SSH_AGENT_PUBKEY_PATH] as string;
   const pubKey = cfg["sshAgentPublicKey"];
   if (typeof pubKey === "string" && pubKey.trim().length > 0) {
     // Use a content-derived id when there is no real integrationId (e.g.

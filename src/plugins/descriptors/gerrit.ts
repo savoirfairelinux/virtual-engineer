@@ -12,30 +12,14 @@ export { GERRIT_SSH_PORT_DEFAULT } from "../../connectors/gerritStreamEvents.js"
 import { GerritSshReviewProvider } from "../../connectors/gerritSshReviewProvider.js";
 import { GerritVcsConnector } from "../../vcs/gerritVcsConnector.js";
 import { getLogger } from "../../logger.js";
-import { resolveEffectiveSshKeyPath, resolveAgentIdentityPath } from "../../utils/sshKeyResolver.js";
+import { resolveEffectiveSshKeyPath, resolveAgentIdentityPath, SSH_RESOLVED_KEY_PATH, SSH_AGENT_PUBKEY_PATH } from "../../utils/sshKeyResolver.js";
 import { generateSshKeyPair, type GeneratedSshKeyPair } from "../../utils/sshKeyGen.js";
+import { sshConnectionConfigSchema } from "../../utils/sshConfig.js";
 
 const log = getLogger("gerrit-descriptor");
 
-export const gerritConfigSchema = z.object({
-  sshHost: z.string().min(1),
+export const gerritConfigSchema = sshConnectionConfigSchema.extend({
   sshPort: z.coerce.number().int().positive().default(GERRIT_SSH_PORT_DEFAULT),
-  sshUser: z.string().min(1),
-  /** Explicit SSH private-key file path. Leave blank to use a generated key or SSH agent. */
-  sshKeyPath: z.string().trim().optional(),
-  /** Path to a known_hosts file on the orchestrator filesystem. When set, SSH operations use strict host key verification instead of accepting any fingerprint. */
-  sshKnownHostsPath: z.string().trim().optional(),
-  /** AES-256-GCM–encrypted ed25519 private key PEM (generated via the UI). Takes effect when sshKeyPath is absent. */
-  sshPrivateKeyEnc: z.string().optional(),
-  /** OpenSSH public key corresponding to sshPrivateKeyEnc. Stored plaintext so the UI can display it. */
-  sshPublicKey: z.string().optional(),
-  /**
-   * OpenSSH public key of the agent identity to use for this integration.
-   * When set (and sshKeyPath / sshPrivateKeyEnc are absent), SSH agent mode is
-   * used with `-o IdentitiesOnly=yes` so only this specific key is offered.
-   * Leave blank to try all keys loaded in the agent.
-   */
-  sshAgentPublicKey: z.string().optional(),
   /** Optional Gerrit web URL used only to build clickable review links. */
   baseUrl: z.string().url().optional(),
   /**
@@ -103,7 +87,7 @@ function buildSshArgs(cfg: Record<string, unknown>): {
 } {
   // Prefer the pre-resolved path set by preprocessConfig; fall back to the raw
   // sshKeyPath field for callers that bypass preprocessConfig (e.g. unit tests).
-  const resolvedKeyPath = cfg["_resolvedSshKeyPath"] as string | undefined;
+  const resolvedKeyPath = cfg[SSH_RESOLVED_KEY_PATH] as string | undefined;
   const rawKeyPath = cfg["sshKeyPath"] as string | undefined;
   const keyPath = resolvedKeyPath ?? (rawKeyPath && rawKeyPath.trim().length > 0 ? rawKeyPath.trim() : undefined);
   return {
@@ -111,7 +95,7 @@ function buildSshArgs(cfg: Record<string, unknown>): {
     user: cfg["sshUser"] as string,
     port: (cfg["sshPort"] as number | undefined) ?? GERRIT_SSH_PORT_DEFAULT,
     keyPath,
-    agentPubKeyPath: cfg["_agentPubKeyPath"] as string | undefined,
+    agentPubKeyPath: cfg[SSH_AGENT_PUBKEY_PATH] as string | undefined,
     knownHostsPath: (cfg["sshKnownHostsPath"] as string | undefined) ?? undefined,
   };
 }
@@ -154,11 +138,11 @@ export const gerritDescriptor: ProviderDescriptor = {
     const extra: Record<string, unknown> = {};
     const keyPath = resolveEffectiveSshKeyPath(config, adminAuthSecret, integrationId);
     if (keyPath !== undefined) {
-      extra["_resolvedSshKeyPath"] = keyPath;
+      extra[SSH_RESOLVED_KEY_PATH] = keyPath;
     } else {
       const agentPubKeyPath = resolveAgentIdentityPath(config, integrationId);
       if (agentPubKeyPath !== undefined) {
-        extra["_agentPubKeyPath"] = agentPubKeyPath;
+        extra[SSH_AGENT_PUBKEY_PATH] = agentPubKeyPath;
       }
     }
     return extra;
