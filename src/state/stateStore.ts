@@ -83,7 +83,9 @@ export class SqliteStateStore {
 
   /** Invoke all registered task-transition listeners, swallowing their errors. */
   private notifyTaskTransition(task: Task): void {
-    for (const listener of this.taskTransitionListeners) {
+    // Snapshot the list so listeners added or removed during iteration don't
+    // affect the current notification pass.
+    for (const listener of [...this.taskTransitionListeners]) {
       try {
         listener(task);
       } catch (err) {
@@ -100,9 +102,15 @@ export class SqliteStateStore {
    * affect the mutating call: their errors are caught and logged. Used to let
    * the runtime bootstrap react to state changes (e.g. reconcile the polling
    * loop) without every call site needing polling-loop plumbing.
+   *
+   * @returns An unsubscribe function that removes the listener when called.
    */
-  onTaskTransition(listener: (task: Task) => void): void {
+  onTaskTransition(listener: (task: Task) => void): () => void {
     this.taskTransitionListeners.push(listener);
+    return () => {
+      const idx = this.taskTransitionListeners.indexOf(listener);
+      if (idx !== -1) this.taskTransitionListeners.splice(idx, 1);
+    };
   }
 
   /** Create and initialise a store at `dbPath`. Creates the parent directory, runs migrations, and seeds built-in prompts. */

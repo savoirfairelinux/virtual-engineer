@@ -161,7 +161,7 @@ async function main(): Promise<void> {
 
   // Debounced reconcile trigger for task state changes. A single timer
   // coalesces bursts so we run one `pollingIsRequired()` re-check per window.
-  let pollingReconcileTimer: NodeJS.Timeout | null = null;
+  let pollingReconcileTimer: ReturnType<typeof setTimeout> | null = null;
   function schedulePollingReconcile(): void {
     if (pollingReconcileTimer) return;
     pollingReconcileTimer = setTimeout(() => {
