@@ -441,8 +441,13 @@ async function buildReviewBundle(
     return { integration: null, provider: null, orchestrator: null };
   }
 
-  // Extract the agent token from the active agent-execution integration for the review container.
-  const agentToken = getAgentTokenForReview(pluginManager);
+  // Resolve the agent-execution integration linked to an enabled review agent.
+  // Using a deterministic lookup avoids Map-insertion-order sensitivity when
+  // multiple agent_execution integrations (e.g. Copilot + Claude) are active.
+  const agentIntegration = await resolveAgentIntegrationForReview(pluginManager, store);
+
+  // Extract the agent token from the resolved agent-execution integration.
+  const agentToken = getAgentTokenForReview(pluginManager, agentIntegration);
   if (!agentToken) {
     bundleLog.warn(
       { integrationId: integration.id },
@@ -451,13 +456,12 @@ async function buildReviewBundle(
     return { integration: null, provider: null, orchestrator: null };
   }
 
-  // Resolve the model from the enabled agent linked to the active agent integration.
+  // Resolve the model from the enabled review agent linked to the selected integration.
   // This honours the model chosen in the agents library rather than the global default.
-  const agentIntegration = pluginManager.getActiveIntegrationsByCapability("agent_execution")[0];
   let model: string | undefined;
   if (agentIntegration) {
     try {
-      const agentList = await store.listAgents({ enabled: true });
+      const agentList = await store.listAgents({ type: "review", enabled: true });
       const agent = agentList.find((a) => a.integrationId === agentIntegration.id);
       if (agent) {
         const cfg = JSON.parse(agent.modelConfigJson) as Record<string, unknown>;
@@ -572,13 +576,40 @@ function buildReviewTrigger(
 }
 
 /**
- * Extract the agent token from the active agent-execution integration.
+ * Find the agent-execution integration most appropriate for the review flow.
+ * Prefers an integration explicitly linked to an enabled review agent (which
+ * is deterministic and semantically correct); falls back to any active
+ * agent_execution integration sorted by ID to avoid Map-insertion-order
+ * sensitivity when multiple integrations (e.g. Copilot + Claude) are active.
+ */
+async function resolveAgentIntegrationForReview(
+  pluginManager: PluginManager,
+  store: import("./interfaces.js").StateStore
+): Promise<Integration | null> {
+  try {
+    const reviewAgents = await store.listAgents({ type: "review", enabled: true });
+    for (const agent of reviewAgents) {
+      if (!agent.integrationId) continue;
+      const integration = pluginManager.getActiveIntegrationById(agent.integrationId);
+      if (integration) return integration;
+    }
+  } catch {
+    // non-fatal — fall through to stable fallback
+  }
+  // Stable fallback: sort by ID so the selection is reproducible across restarts.
+  const all = pluginManager
+    .getActiveIntegrationsByCapability("agent_execution")
+    .sort((a, b) => a.id.localeCompare(b.id));
+  return all[0] ?? null;
+}
+
+/**
+ * Extract the agent token from the provided agent-execution integration.
  * Provider-agnostic: works for Copilot (OAuth `sessionToken` or PAT `token`)
  * and Claude (OAuth `sessionToken` or `apiKey`).
- * Returns null when no agent integration is configured or has a valid token.
+ * Returns null when the integration is null or has no valid token.
  */
-function getAgentTokenForReview(pluginManager: PluginManager): string | null {
-  const agentIntegration = pluginManager.getActiveIntegrationsByCapability("agent_execution")[0];
+function getAgentTokenForReview(pluginManager: PluginManager, agentIntegration: Integration | null): string | null {
   if (!agentIntegration) return null;
 
   let agentConfig: Record<string, unknown>;
