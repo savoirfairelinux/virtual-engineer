@@ -5,7 +5,7 @@ import { ChangePasswordModal } from "./shell/ChangePasswordModal.tsx";
 import { TasksView } from "./views/TasksView/index.tsx";
 import { OverviewView } from "./views/OverviewView.tsx";
 import { ConfigView } from "./views/ConfigView/index.tsx";
-import { api, connectSse, getStoredToken, clearStoredToken, getMe, logout, onUnauthorized } from "./api.ts";
+import { api, connectSse, getStoredToken, clearStoredToken, getMe, logout, onUnauthorized, ApiError } from "./api.ts";
 import { CurrentUserProvider, type CurrentUserValue } from "./authContext.tsx";
 import { isActiveState } from "./states.ts";
 import type {
@@ -75,7 +75,13 @@ export function App() {
   useEffect(() => {
     if (!authenticated) return;
     if (currentUser) return;
-    void getMe().then(setCurrentUser).catch(() => { /* 401 handled globally */ });
+    void getMe().then(setCurrentUser).catch((err: unknown) => {
+      // 401 is already handled globally by onUnauthorized → handleLoggedOut.
+      // Any other error (503, network failure, etc.) is unexpected; log it so
+      // it is visible in the browser console rather than silently swallowed.
+      if (err instanceof ApiError && err.status === 401) return;
+      console.error("Failed to load current user", err);
+    });
   }, [authenticated, currentUser]);
 
   const currentUserValue = useMemo<CurrentUserValue>(() => ({

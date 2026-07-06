@@ -69,6 +69,8 @@ export interface AdminRuntimeConfig {
   maxRetryAttempts: number;
   pollingIntervalMs: number;
   adminAuthSecret?: string | undefined;
+  /** Mirror of `ADMIN_TRUST_PROXY`. When true, IP is read from X-Forwarded-For. */
+  adminTrustProxy?: boolean | undefined;
 }
 
 export interface AdminPollingStatusSource {
@@ -314,6 +316,7 @@ function buildApiRouter(dependencies: AdminServerDependencies, authRuntime: Admi
     auditStore,
     authService: authRuntime.authService ?? undefined,
     onUsersChanged: () => authRuntime.invalidateUsersExistCache(),
+    trustProxy: dependencies.config.adminTrustProxy,
   });
   registerAuditRoutes(router, { auditStore: extractAuditReadStore(dependencies.stateStore) ?? undefined });
   registerPromptRoutes(router, { promptStore: dependencies.promptStore, agentStore: dependencies.agentStore, auditStore });

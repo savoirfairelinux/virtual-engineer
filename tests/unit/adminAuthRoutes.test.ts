@@ -184,6 +184,18 @@ describe("adminAuthRoutes", () => {
       expect(entries[0]?.details).toEqual({ username: "root" });
     });
 
+    it("records an auth.login audit entry (without credentials) on successful login", async () => {
+      await runSetup(baseUrl);
+      await fetch(`${baseUrl}/api/admin/auth/login`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ username: "root", password: "Str0ng-Pass-1x" }),
+      });
+      const { entries } = await store.listAuditEntries({ action: "auth.login" });
+      expect(entries).toHaveLength(1);
+      expect(entries[0]?.details).toEqual({ username: "root" });
+    });
+
     it("normalizes usernames (case + whitespace) consistently on setup and login", async () => {
       await runSetup(baseUrl, "  Root  ", "Str0ng-Pass-1x");
       const login = await fetch(`${baseUrl}/api/admin/auth/login`, {
@@ -452,6 +464,68 @@ describe("adminAuthRoutes", () => {
 
       const { entries } = await store.listAuditEntries({ action: "user.delete" });
       expect(entries).toHaveLength(1);
+    });
+  });
+
+  describe("trustProxy: X-Forwarded-For IP extraction", () => {
+    let proxyServer: ReturnType<typeof createAdminServer>;
+    let proxyStore: SqliteStateStore;
+    let proxyUrl: string;
+
+    beforeEach(async () => {
+      proxyStore = await SqliteStateStore.create(tempDbPath());
+      proxyServer = createAdminServer({
+        stateStore: proxyStore,
+        config: {
+          nodeEnv: "test",
+          logLevel: "info",
+          maxAgentCycles: 3,
+          maxRetryAttempts: 5,
+          pollingIntervalMs: 30_000,
+          adminAuthSecret: SECRET,
+          adminTrustProxy: true,
+        },
+        polling: { isRunning: () => true, getIntervals: () => ({ intervalMs: 30_000 }) },
+        providers: [],
+      });
+      proxyUrl = await listen(proxyServer);
+    });
+
+    afterEach(async () => {
+      await closeServer(proxyServer);
+      proxyStore.close();
+    });
+
+    it("rate-limits by X-Forwarded-For IP when trustProxy=true, not by socket address", async () => {
+      await fetch(`${proxyUrl}/api/admin/auth/setup`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ username: "admin", password: "Str0ng-Pass-1x" }),
+      });
+      // Exhaust the IP rate limit for forwarded IP 1.2.3.4 with a distinct username so the username
+      // axis stays clean — this isolates the IP-axis lockout.
+      for (let i = 0; i < 5; i++) {
+        await fetch(`${proxyUrl}/api/admin/auth/login`, {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-forwarded-for": "1.2.3.4" },
+          body: JSON.stringify({ username: `nouser${i}`, password: "wrong" }),
+        });
+      }
+      // 1.2.3.4 is now IP-locked; a fresh username from that IP should be 429.
+      const fromLocked = await fetch(`${proxyUrl}/api/admin/auth/login`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-forwarded-for": "1.2.3.4" },
+        body: JSON.stringify({ username: "admin", password: "Str0ng-Pass-1x" }),
+      });
+      expect(fromLocked.status).toBe(429);
+
+      // A different forwarded IP must not be IP-locked and can authenticate.
+      const fromOther = await fetch(`${proxyUrl}/api/admin/auth/login`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-forwarded-for": "9.9.9.9" },
+        body: JSON.stringify({ username: "admin", password: "Str0ng-Pass-1x" }),
+      });
+      expect(fromOther.status).toBe(200);
     });
   });
 });

@@ -45,15 +45,20 @@ const SECRET_KEY_PATTERNS: readonly string[] = [
  * identifiers, not secrets: `repoKey(s)` / `ticketProjectKey` are VE project
  * identifiers and `publicKey` is public by definition. Anything ending in
  * `Path` (e.g. `sshKeyPath`) is a filesystem path, not the secret material.
+ *
+ * All entries are lower-cased so the `.has()` check can compare against
+ * `key.toLowerCase()` — SAFE_KEYS membership must be case-insensitive to
+ * avoid masking e.g. `RepoKey` when the secret check would catch it via
+ * the lowercased `"key"` pattern.
  */
-const SAFE_KEYS: ReadonlySet<string> = new Set(["repoKey", "repoKeys", "ticketProjectKey", "publicKey"]);
+const SAFE_KEYS: ReadonlySet<string> = new Set(["repokey", "repokeys", "ticketprojectkey", "publickey"]);
 const MASK = "***";
 const MAX_DEPTH = 8;
 
 /** Whether a key's value must be masked in the audit trail. */
 function isSecretKey(key: string): boolean {
-  if (SAFE_KEYS.has(key) || /Path$/.test(key)) return false;
   const lower = key.toLowerCase();
+  if (SAFE_KEYS.has(lower) || /Path$/.test(key)) return false;
   return SECRET_KEY_PATTERNS.some((pattern) => lower.includes(pattern));
 }
 
@@ -153,16 +158,17 @@ export function recordAudit(
   if (!store || typeof store.appendAuditEntry !== "function") return;
   const context = getAuthContext(req);
   const appendable = store as Required<Pick<AuditCapableStore, "appendAuditEntry">>;
-  try {
-    void appendAuditWithRetry(appendable, {
-      actorUserId: context?.userId ?? null,
-      actorName: context?.username ?? "unknown",
-      action: input.action,
-      targetType: input.targetType ?? null,
-      targetId: input.targetId ?? null,
-      details: maskAuditDetails(input.details ?? {}),
-    });
-  } catch (err: unknown) {
-    log.error({ err, action: input.action }, "audit append failed");
-  }
+  // appendAuditWithRetry never rejects (all errors are caught + logged internally),
+  // but attach .catch() as a safety net for any unexpected rejection so it is
+  // always visible in logs and never becomes an unhandled promise rejection.
+  appendAuditWithRetry(appendable, {
+    actorUserId: context?.userId ?? null,
+    actorName: context?.username ?? "unknown",
+    action: input.action,
+    targetType: input.targetType ?? null,
+    targetId: input.targetId ?? null,
+    details: maskAuditDetails(input.details ?? {}),
+  }).catch((err: unknown) => {
+    log.error({ err, action: input.action }, "audit append failed unexpectedly");
+  });
 }

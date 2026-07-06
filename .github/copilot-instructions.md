@@ -159,6 +159,7 @@ All env vars are optional. Only system/infra settings remain — provider creden
 | `ADMIN_API_ENABLED` | `true` | |
 | `ADMIN_API_HOST` / `ADMIN_API_PORT` | `127.0.0.1` / `3100` | |
 | `ADMIN_AUTH_SECRET` | — | HMAC secret for Bearer auth (`Bearer <hex-hmac>`) |
+| `ADMIN_TRUST_PROXY` | `false` | When `true`, extract client IP from `X-Forwarded-For` for rate-limiting. Only enable when a trusted reverse proxy fronts the admin server; default loopback binding makes this unnecessary in standard deployments. |
 | `POLLING_INTERVAL_MS` | `30000` | polling loop tick interval |
 | `MAX_AGENT_CYCLES` | `3` | per-task cap → FAILED |
 | `MAX_RETRY_ATTEMPTS` | `5` | per-ticket cap; polling skips ticket past cap |

@@ -36,7 +36,23 @@ function normalizeUsername(username: string): string {
   return username.normalize("NFC").trim().toLowerCase();
 }
 
-function requestIp(req: IncomingMessage): string | undefined {
+/**
+ * Extract the client IP for rate-limiting purposes.
+ *
+ * By default (`trustProxy = false`) uses the raw socket address — safe for
+ * the standard loopback-bound deployment (`ADMIN_API_HOST = 127.0.0.1`).
+ * When `trustProxy = true` the first entry of `X-Forwarded-For` is used so
+ * per-client rate-limiting works correctly behind a trusted reverse proxy.
+ * Only enable trust-proxy mode when you control the upstream proxy; a
+ * publicly reachable header lets clients spoof their IP and defeat limits.
+ */
+function requestIp(req: IncomingMessage, trustProxy: boolean): string | undefined {
+  if (trustProxy) {
+    const xff = req.headers["x-forwarded-for"];
+    const raw = Array.isArray(xff) ? xff[0] : xff;
+    const first = raw?.split(",")[0]?.trim();
+    if (first) return first;
+  }
   return req.socket.remoteAddress ?? undefined;
 }
 
@@ -76,6 +92,13 @@ export interface AuthRouteDeps {
   authService?: AdminAuthService | undefined;
   /** Invalidates the server-level users-exist cache after setup / user create / delete. */
   onUsersChanged?: (() => void) | undefined;
+  /**
+   * When `true`, extract the client IP from `X-Forwarded-For` (first entry)
+   * instead of the raw socket address. Safe only when a trusted reverse proxy
+   * sits in front of the admin server; leave `false` (default) for the
+   * standard loopback-bound deployment. Mirrors `ADMIN_TRUST_PROXY` in config.
+   */
+  trustProxy?: boolean | undefined;
 }
 
 function serializeUser(user: AdminUser): Record<string, unknown> {
@@ -115,6 +138,7 @@ export function registerAuthRoutes(router: Router, deps: AuthRouteDeps): void {
   // Scoped to this registration (one per running admin server) rather than module-level,
   // so distinct server instances (e.g. one per test) don't share brute-force lockout state.
   const loginRateLimiter = new LoginRateLimiter();
+  const trustProxy = deps.trustProxy ?? false;
 
   /**
    * Check the per-IP and per-username rate limits for an auth attempt. Returns
@@ -123,7 +147,7 @@ export function registerAuthRoutes(router: Router, deps: AuthRouteDeps): void {
    */
   function checkRateLimit(req: IncomingMessage, username: string): { retryAfterMs: number } | null {
     const now = Date.now();
-    const ipDecision = loginRateLimiter.check(clientIpKey(requestIp(req)), now);
+    const ipDecision = loginRateLimiter.check(clientIpKey(requestIp(req, trustProxy)), now);
     const userDecision = loginRateLimiter.check(usernameKey(username), now);
     const blocked = [ipDecision, userDecision].filter((d) => !d.allowed);
     if (blocked.length === 0) return null;
@@ -133,12 +157,12 @@ export function registerAuthRoutes(router: Router, deps: AuthRouteDeps): void {
 
   function recordAuthFailure(req: IncomingMessage, username: string): void {
     const now = Date.now();
-    loginRateLimiter.recordFailure(clientIpKey(requestIp(req)), now);
+    loginRateLimiter.recordFailure(clientIpKey(requestIp(req, trustProxy)), now);
     loginRateLimiter.recordFailure(usernameKey(username), now);
   }
 
   function recordAuthSuccess(req: IncomingMessage, username: string): void {
-    loginRateLimiter.recordSuccess(clientIpKey(requestIp(req)));
+    loginRateLimiter.recordSuccess(clientIpKey(requestIp(req, trustProxy)));
     loginRateLimiter.recordSuccess(usernameKey(username));
   }
 
@@ -225,6 +249,7 @@ export function registerAuthRoutes(router: Router, deps: AuthRouteDeps): void {
       return;
     }
     recordAuthSuccess(req, username);
+    recordAudit(deps.auditStore, req, { action: "auth.login", targetType: "user", details: { username } });
     writeJson(res, 200, session);
   });
 

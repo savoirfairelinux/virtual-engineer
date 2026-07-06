@@ -26,6 +26,7 @@ const baseConfig: AppConfig = {
   adminApiHost: "127.0.0.1",
   adminApiPort: 3100,
   adminAuthSecret: undefined,
+  adminTrustProxy: false,
   pollingIntervalMs: 30_000,
   maxAgentCycles: 3,
   maxRetryAttempts: 5,

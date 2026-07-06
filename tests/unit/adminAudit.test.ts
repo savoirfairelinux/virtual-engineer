@@ -52,6 +52,20 @@ describe("maskAuditDetails", () => {
     });
   });
 
+  it("safe-list check is case-insensitive (e.g. RepoKey / REPOKEY must not be masked)", () => {
+    expect(maskAuditDetails({
+      RepoKey: "group/repo",
+      REPOKEYS: ["a/b"],
+      TicketProjectKey: "proj",
+      PublicKey: "ssh-ed25519 AAAA...",
+    })).toEqual({
+      RepoKey: "group/repo",
+      REPOKEYS: ["a/b"],
+      TicketProjectKey: "proj",
+      PublicKey: "ssh-ed25519 AAAA...",
+    });
+  });
+
   it("leaves empty/null secret values untouched", () => {
     expect(maskAuditDetails({ token: "", secret: null })).toEqual({ token: "", secret: null });
   });
