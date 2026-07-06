@@ -461,6 +461,24 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
 
   // ─── SSH key management ───────────────────────────────────────────────────
 
+  // Stateless key generation — returns the pair without persisting.
+  // The frontend holds both values in form state and writes them on save.
+  router.add("POST", "/api/admin/ssh-key/generate", async (req, res, _params) => {
+    const body = asRecord(await readBody(req));
+    const provider = typeof body["provider"] === "string" ? body["provider"] as ProviderId : undefined;
+    const descriptor = provider ? getProviderDescriptor(provider) : undefined;
+    if (!descriptor?.generateSshKeyPair) {
+      writeJson(res, 400, { error: `Provider '${provider ?? ""}' does not support SSH key generation` }); return;
+    }
+    try {
+      const { sshPrivateKeyEnc, sshPublicKey } = descriptor.generateSshKeyPair(deps.adminAuthSecret);
+      writeJson(res, 200, { sshPrivateKeyEnc, sshPublicKey });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      writeJson(res, 500, { error: `SSH key generation failed: ${msg}` });
+    }
+  });
+
   router.add("POST", "/api/admin/integrations/:id/ssh-key/generate", async (_req, res, params) => {
     if (!deps.integrationStore) { writeJson(res, 501, { error: "Integration store not available" }); return; }
     const id = params["id"] ?? "";

@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { Modal, Field, FieldInput, FieldSelect, FormError, FormRow, FieldTextarea } from "../../components/Modal.tsx";
 import { Icon } from "../../components/Icon.tsx";
 import { ProviderGlyph } from "../../components/ProviderGlyph.tsx";
-import { api, generateSshKey, getSshPublicKey, listAgentKeys } from "../../api.ts";
+import { api, generateSshKeyPair, listAgentKeys } from "../../api.ts";
 import type { AgentKey } from "../../api.ts";
 import type { ApiIntegration, ApiPlugin, ApiPluginOAuth, PluginField } from "../../types.ts";
 
@@ -299,13 +299,11 @@ function DynamicField({
 type SshAuthMode = "agent" | "generated" | "custom";
 
 interface GerritSshSectionProps {
-  integrationId: string | undefined;
   config: Config;
   onConfigChange: (key: string, value: string) => void;
 }
 
-function GerritSshSection({ integrationId, config, onConfigChange }: GerritSshSectionProps) {
-  // Determine initial mode from stored config
+function GerritSshSection({ config, onConfigChange }: GerritSshSectionProps) {
   const detectMode = (): SshAuthMode => {
     if (config["sshPublicKey"]) return "generated";
     if (config["sshAgentPublicKey"] !== undefined) return "agent";
@@ -317,19 +315,12 @@ function GerritSshSection({ integrationId, config, onConfigChange }: GerritSshSe
   const [agentKeys, setAgentKeys] = useState<AgentKey[]>([]);
   const [agentAvailable, setAgentAvailable] = useState<boolean>(false);
   const [agentLoading, setAgentLoading] = useState(false);
-  const [pubKey, setPubKey] = useState<string>(config["sshPublicKey"] ?? "");
+  // pubKey comes from form state (config["sshPublicKey"]) so it survives re-renders.
+  // We only need local state as a mirror for display updates.
+  const pubKey = (config["sshPublicKey"] as string | undefined) ?? "";
   const [generating, setGenerating] = useState(false);
   const [genError, setGenError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
-
-  // Load public key when switching to generated mode (edit mode)
-  useEffect(() => {
-    if (mode === "generated" && integrationId && !pubKey) {
-      getSshPublicKey(integrationId).then((r) => {
-        if (r.publicKey) setPubKey(r.publicKey);
-      }).catch(() => { /* ignore */ });
-    }
-  }, [mode, integrationId]);
 
   // Load agent keys when switching to agent mode
   useEffect(() => {
@@ -346,11 +337,9 @@ function GerritSshSection({ integrationId, config, onConfigChange }: GerritSshSe
 
   const handleModeChange = (m: SshAuthMode) => {
     setMode(m);
-    // Clear conflicting stored values when switching modes
     if (m !== "generated") {
       onConfigChange("sshPrivateKeyEnc", "");
       onConfigChange("sshPublicKey", "");
-      setPubKey("");
     }
     if (m !== "agent") {
       onConfigChange("sshAgentPublicKey", "");
@@ -361,13 +350,12 @@ function GerritSshSection({ integrationId, config, onConfigChange }: GerritSshSe
   };
 
   const handleGenerate = async () => {
-    if (!integrationId) { setGenError("Save the integration first before generating a key."); return; }
     setGenerating(true);
     setGenError(null);
     try {
-      const { publicKey } = await generateSshKey(integrationId);
-      setPubKey(publicKey);
-      onConfigChange("sshPublicKey", publicKey);
+      const result = await generateSshKeyPair("gerrit");
+      onConfigChange("sshPrivateKeyEnc", result.sshPrivateKeyEnc);
+      onConfigChange("sshPublicKey", result.sshPublicKey);
     } catch (e) {
       setGenError(e instanceof Error ? e.message : "Key generation failed");
     } finally {
@@ -463,7 +451,7 @@ function GerritSshSection({ integrationId, config, onConfigChange }: GerritSshSe
         <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
           {pubKey ? (
             <>
-              <div style={{ fontSize: "12.5px", color: "var(--ok)", fontWeight: 500 }}>✓ Key configured</div>
+              <div style={{ fontSize: "12.5px", color: "var(--ok)", fontWeight: 500 }}>✓ Key configured — save the integration to persist it</div>
               <div style={{ position: "relative" }}>
                 <FieldTextarea
                   value={pubKey}
@@ -496,22 +484,15 @@ function GerritSshSection({ integrationId, config, onConfigChange }: GerritSshSe
           ) : (
             <>
               <div style={{ fontSize: "12.5px", color: "var(--text-dim)" }}>No key generated yet.</div>
-              {!integrationId && (
-                <div style={{ fontSize: "11.5px", color: "var(--warn)", padding: "6px 10px", background: "var(--warn-soft)", borderRadius: "6px" }}>
-                  Save the integration first, then come back to generate a key.
-                </div>
-              )}
-              {integrationId && (
-                <button
-                  type="button"
-                  className="btn sm secondary"
-                  onClick={() => { void handleGenerate(); }}
-                  disabled={generating}
-                  style={{ alignSelf: "flex-start" }}
-                >
-                  {generating ? "Generating…" : "Generate key"}
-                </button>
-              )}
+              <button
+                type="button"
+                className="btn sm secondary"
+                onClick={() => { void handleGenerate(); }}
+                disabled={generating}
+                style={{ alignSelf: "flex-start" }}
+              >
+                {generating ? "Generating…" : "Generate key"}
+              </button>
             </>
           )}
           {genError && <span style={{ fontSize: "12px", color: "var(--danger)" }}>{genError}</span>}
@@ -720,7 +701,6 @@ export function IntegrationFormModal({ integration, plugins, onClose, onSaved }:
         {/* Gerrit SSH Authentication section */}
         {selectedType === "gerrit" && (
           <GerritSshSection
-            integrationId={isEdit ? integration!.id : undefined}
             config={config}
             onConfigChange={setConfigField}
           />

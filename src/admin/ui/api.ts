@@ -95,6 +95,11 @@ export function generateSshKey(integrationId: string): Promise<{ publicKey: stri
   return request<{ publicKey: string }>("POST", `/api/admin/integrations/${integrationId}/ssh-key/generate`);
 }
 
+/** Generate a key pair without requiring an existing integration (returns both values for in-form state). */
+export function generateSshKeyPair(provider: string): Promise<{ sshPrivateKeyEnc: string; sshPublicKey: string }> {
+  return request<{ sshPrivateKeyEnc: string; sshPublicKey: string }>("POST", "/api/admin/ssh-key/generate", { provider });
+}
+
 export function getSshPublicKey(integrationId: string): Promise<{ publicKey: string | null }> {
   return request<{ publicKey: string | null }>("GET", `/api/admin/integrations/${integrationId}/ssh-key/public`);
 }
