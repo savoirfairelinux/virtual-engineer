@@ -164,6 +164,14 @@ async function importRuntime(
       const integration = getAllActiveIntegrations().find((i) => i.id === integrationId);
       return integration?.provider === "gerrit";
     }),
+    getIntegrationCapabilityIntake: vi.fn((integrationId: string, capability: DomainCapability) => {
+      const integration = getAllActiveIntegrations().find((i) => i.id === integrationId);
+      if (!integration) return [];
+      if (integration.provider === "gerrit" && capability === "code_review") return ["stream"];
+      if (integration.provider === "github" && capability === "code_review") return ["polling", "webhook"];
+      if (integration.provider === "gitlab" && capability === "code_review") return ["webhook"];
+      return [];
+    }),
     registerFactory: vi.fn(),
     registerConnectionTester: vi.fn(),
     reloadIntegration: vi.fn().mockResolvedValue(undefined),
@@ -915,7 +923,7 @@ describe("runtime bootstrap provider selection", () => {
     expect(pollingInstance.start).toHaveBeenCalledTimes(1);
   });
 
-  it("starts the polling loop for a polling-based (GitLab MR) review-only project", async () => {
+  it("does not start the polling loop for a webhook-only (GitLab MR) review project", async () => {
     const dbReview = { source: "db-review" } as unknown as ReviewConnector;
     const dbAgent = makeDbAgentAdapter("mock");
 
@@ -943,7 +951,7 @@ describe("runtime bootstrap provider selection", () => {
     );
 
     const pollingInstance = runtime.PollingLoop.mock.results[0]?.value as { start: ReturnType<typeof vi.fn> };
-    expect(pollingInstance.start).toHaveBeenCalledTimes(1);
+    expect(pollingInstance.start).not.toHaveBeenCalled();
   });
 
   it("starts the polling loop when an active IN_REVIEW task needs the fallback poll, even in a stream-only setup", async () => {

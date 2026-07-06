@@ -196,7 +196,7 @@ export const gitlabDescriptor: ProviderDescriptor = {
           },
         };
       },
-      intake: ["polling", "webhook"],
+      intake: ["webhook"],
     },
     source_control: {
       createVcsConnector: (cfg: Record<string, unknown>, _integration: Integration, context?: IntegrationBindingContext) => {

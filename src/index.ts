@@ -509,7 +509,15 @@ async function pollingIsRequired(
     } else if (project.type === "review") {
       const rc = await store.getProjectReviewConfig(project.id);
       if (!rc || !pluginManager.isIntegrationActive(rc.integrationId)) continue;
-      if (!pluginManager.integrationHasStreamEvents(rc.integrationId)) return true;
+      if (!pluginManager.integrationHasStreamEvents(rc.integrationId)) {
+        // Only start polling if the provider implements polling-based
+        // assignment discovery (e.g. GitHub).  Webhook-only providers
+        // (e.g. GitLab) do not implement getOpenReviewAssignments, so
+        // starting the loop would achieve nothing.
+        const intake = pluginManager.getIntegrationCapabilityIntake(rc.integrationId, "code_review");
+        if (intake.includes("polling")) return true;
+        continue;
+      }
       // Stream-backed (e.g. Gerrit): fall back to polling when the stream
       // connection is degraded so in-progress tasks are not stranded.
       if (streamEvents) {
