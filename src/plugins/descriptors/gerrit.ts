@@ -14,6 +14,7 @@ import { GerritVcsConnector } from "../../vcs/gerritVcsConnector.js";
 import { getLogger } from "../../logger.js";
 import { resolveEffectiveSshKeyPath, resolveAgentIdentityPath } from "../../utils/sshKeyResolver.js";
 import { encryptToken } from "../../utils/encryption.js";
+import { buildOpenSshEd25519PrivateKey } from "../../utils/opensshKeyFormat.js";
 import { generateKeyPairSync } from "node:crypto";
 
 const log = getLogger("gerrit-descriptor");
@@ -120,26 +121,35 @@ function buildSshArgs(cfg: Record<string, unknown>): {
 /**
  * Generate a helper object for SSH key generation used by the API endpoint.
  * Returns the encrypted private key and OpenSSH public key.
+ *
+ * The private key is encoded in the native "OpenSSH private key" format
+ * (`-----BEGIN OPENSSH PRIVATE KEY-----`), NOT PKCS#8 — OpenSSH's `ssh`
+ * client cannot load ed25519 keys from PKCS#8 PEM ("invalid format").
  */
 export function generateGerritSshKeyPair(adminAuthSecret: string | undefined): {
   sshPrivateKeyEnc: string;
   sshPublicKey: string;
 } {
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
-  const privatePem = privateKey.export({ type: "pkcs8", format: "pem" }) as string;
-  const spkiDer = publicKey.export({ type: "spki", format: "der" }) as Buffer;
-  const opensshPub = derEd25519ToOpenSsh(spkiDer);
+  // JWK export exposes the raw 32-byte seed ("d") and raw 32-byte public key
+  // ("x") directly, base64url-encoded — simpler and more robust than parsing
+  // DER structures by hand.
+  const jwkPriv = privateKey.export({ format: "jwk" }) as { d: string };
+  const jwkPub = publicKey.export({ format: "jwk" }) as { x: string };
+  const rawSeed = Buffer.from(jwkPriv.d, "base64url");
+  const rawPub = Buffer.from(jwkPub.x, "base64url");
+
+  const opensshPrivatePem = buildOpenSshEd25519PrivateKey(rawPub, rawSeed, "virtual-engineer");
+  const opensshPub = rawEd25519ToOpenSshPublic(rawPub);
 
   return {
-    sshPrivateKeyEnc: encryptToken(privatePem, adminAuthSecret),
+    sshPrivateKeyEnc: encryptToken(opensshPrivatePem, adminAuthSecret),
     sshPublicKey: opensshPub,
   };
 }
 
-/** Convert a SPKI DER-encoded ed25519 public key to OpenSSH authorized_keys format. */
-function derEd25519ToOpenSsh(spkiDer: Buffer): string {
-  // ed25519 SPKI DER: last 32 bytes are the raw public key.
-  const rawKey = spkiDer.subarray(spkiDer.length - 32);
+/** Convert a raw 32-byte ed25519 public key to OpenSSH authorized_keys format. */
+function rawEd25519ToOpenSshPublic(rawKey: Buffer): string {
   const typeStr = "ssh-ed25519";
   const typeBytes = Buffer.from(typeStr, "utf8");
   const typeLenBuf = Buffer.allocUnsafe(4);
