@@ -1228,6 +1228,14 @@ export interface StateStore {
     externalChangeId: string
   ): Promise<Task | null>;
 
+  /**
+   * Find the most recent code-review task for a given change+project that has
+   * already completed a review pass (reviewed_patchset IS NOT NULL). Used to
+   * prevent duplicate reviews when an integration is deleted and recreated with
+   * a new ID — the ticketId changes but the underlying change is the same.
+   */
+  findReviewedCodeReviewTask(changeId: string, projectId: ProjectId): Promise<Task | null>;
+
   /** Update status of a per-repo change record; changeId disambiguates multi-commit rows. */
   updateChangePerRepositoryStatus(
     taskId: TaskId,

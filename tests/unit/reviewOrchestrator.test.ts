@@ -173,6 +173,7 @@ function makeMocks(initialTask?: Task) {
     findProjectsByReviewTarget: vi.fn(async () => [makeProject()]),
     getProjectById: vi.fn(async () => makeProject()),
     setTaskProjectId: vi.fn(async () => undefined),
+    findReviewedCodeReviewTask: vi.fn(async () => null),
     updateExternalChangeId: vi.fn(async (_id: unknown, _changeId: unknown, patchset: number) => {
       if (store.task) {
         store.task = { ...store.task, currentPatchset: patchset };
@@ -419,6 +420,30 @@ describe("ReviewOrchestrator.startReviewTask", () => {
   it("creates a fresh review task when force is set and the prior review is terminal", async () => {
     const existing = makeTask({ state: "REVIEW_DONE", currentPatchset: 2, reviewedPatchset: 2 });
     mocks = makeMocks(existing);
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+    const tasks = await orch.startReviewTask({ changeId: CHANGE_ID, force: true });
+    expect(tasks).toHaveLength(1);
+    expect(mocks.store.createReviewTask).toHaveBeenCalledTimes(1);
+  });
+
+  it("does NOT create a new task when a prior integration already reviewed this patchset (integration delete+recreate)", async () => {
+    // Simulates: integration deleted+recreated with new UUID → getTaskByTicketId returns
+    // null (ticketId changed), but findReviewedCodeReviewTask finds the prior reviewed task.
+    mocks = makeMocks(undefined);
+    mocks.store.getTaskByTicketId = vi.fn(async () => null);
+    const priorTask = makeTask({ state: "REVIEW_DONE", currentPatchset: 2, reviewedPatchset: 2 });
+    mocks.store.findReviewedCodeReviewTask = vi.fn(async () => priorTask);
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+    const tasks = await orch.startReviewTask({ changeId: CHANGE_ID });
+    expect(tasks).toHaveLength(0);
+    expect(mocks.store.createReviewTask).not.toHaveBeenCalled();
+  });
+
+  it("creates a new task with force=true even when a prior integration already reviewed this patchset", async () => {
+    mocks = makeMocks(undefined);
+    mocks.store.getTaskByTicketId = vi.fn(async () => null);
+    const priorTask = makeTask({ state: "REVIEW_DONE", currentPatchset: 2, reviewedPatchset: 2 });
+    mocks.store.findReviewedCodeReviewTask = vi.fn(async () => priorTask);
     const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
     const tasks = await orch.startReviewTask({ changeId: CHANGE_ID, force: true });
     expect(tasks).toHaveLength(1);

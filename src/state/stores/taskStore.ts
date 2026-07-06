@@ -133,6 +133,7 @@ export interface TaskStoreApi {
   getChangesForTask(taskId: TaskId): Promise<ChangePerRepository[]>;
   getChangesForTasks(taskIds: TaskId[]): Promise<ChangePerRepository[]>;
   findTaskByExternalChangeId(integrationId: string | null, externalChangeId: string): Promise<Task | null>;
+  findReviewedCodeReviewTask(changeId: string, projectId: ProjectId): Promise<Task | null>;
   setTaskProjectId(taskId: TaskId, projectId: ProjectId): Promise<void>;
   setTaskPushRef(taskId: TaskId, pushRef: string): Promise<void>;
   updateChangePerRepositoryStatus(taskId: TaskId, repoKey: string, status: string, changeId?: string): Promise<void>;
@@ -1034,6 +1035,20 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
     return null;
   }
 
+  async function findReviewedCodeReviewTask(changeId: string, projectId: ProjectId): Promise<Task | null> {
+    if (!changeId) return null;
+    const row = raw
+      .prepare(
+        "SELECT * FROM tasks WHERE gerrit_change_id = ? AND project_id = ? AND task_type = 'code-review' AND reviewed_patchset IS NOT NULL ORDER BY created_at DESC LIMIT 1"
+      )
+      .get(changeId, projectId as string) as Record<string, unknown> | undefined;
+    if (!row) return null;
+    const orm = await db.query.tasks.findFirst({
+      where: eq(tasks.taskId, row["task_id"] as TaskId),
+    });
+    return orm ? rowToTask(orm) : null;
+  }
+
   async function setTaskProjectId(taskId: TaskId, projectId: ProjectId): Promise<void> {
     raw
       .prepare("UPDATE tasks SET project_id = ?, updated_at = ? WHERE task_id = ?")
@@ -1411,6 +1426,7 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
     getChangesForTask,
     getChangesForTasks,
     findTaskByExternalChangeId,
+    findReviewedCodeReviewTask,
     setTaskProjectId,
     setTaskPushRef,
     updateChangePerRepositoryStatus,
