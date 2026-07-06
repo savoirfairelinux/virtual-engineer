@@ -81,13 +81,18 @@ export class SqliteStateStore {
     );
   }
 
-  /** Invoke all registered task-transition listeners, swallowing their errors. */
+  /** Invoke all registered task-transition listeners, swallowing their errors (sync or async). */
   private notifyTaskTransition(task: Task): void {
     // Snapshot the list so listeners added or removed during iteration don't
     // affect the current notification pass.
     for (const listener of [...this.taskTransitionListeners]) {
       try {
-        listener(task);
+        const result = listener(task) as unknown;
+        if (result instanceof Promise) {
+          result.catch((err: unknown) => {
+            getLogger("state-store").warn({ err, taskId: task.taskId }, "task transition listener failed");
+          });
+        }
       } catch (err) {
         getLogger("state-store").warn({ err, taskId: task.taskId }, "task transition listener failed");
       }

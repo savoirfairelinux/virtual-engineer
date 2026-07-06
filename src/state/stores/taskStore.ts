@@ -159,11 +159,16 @@ interface TaskStoreContext {
 export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
   const { db, raw } = context;
 
-  /** Fire the state-change callback, swallowing listener errors. */
+  /** Fire the state-change callback, swallowing listener errors (sync or async). */
   function notifyStateChange(task: Task): void {
     if (!context.onTaskStateChange) return;
     try {
-      context.onTaskStateChange(task);
+      const result = context.onTaskStateChange(task) as unknown;
+      if (result instanceof Promise) {
+        result.catch((err: unknown) => {
+          getLogger("task-store").warn({ err, taskId: task.taskId }, "task state-change listener failed");
+        });
+      }
     } catch (err) {
       getLogger("task-store").warn({ err, taskId: task.taskId }, "task state-change listener failed");
     }
