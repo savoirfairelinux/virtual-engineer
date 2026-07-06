@@ -23,9 +23,9 @@ export const gerritConfigSchema = z.object({
   sshPort: z.coerce.number().int().positive().default(GERRIT_SSH_PORT_DEFAULT),
   sshUser: z.string().min(1),
   /** Explicit SSH private-key file path. Leave blank to use a generated key or SSH agent. */
-  sshKeyPath: z.string().trim().min(1).optional(),
+  sshKeyPath: z.string().trim().optional(),
   /** Path to a known_hosts file on the orchestrator filesystem. When set, SSH operations use strict host key verification instead of accepting any fingerprint. */
-  sshKnownHostsPath: z.string().trim().min(1).optional(),
+  sshKnownHostsPath: z.string().trim().optional(),
   /** AES-256-GCM–encrypted ed25519 private key PEM (generated via the UI). Takes effect when sshKeyPath is absent. */
   sshPrivateKeyEnc: z.string().optional(),
   /** OpenSSH public key corresponding to sshPrivateKeyEnc. Stored plaintext so the UI can display it. */
