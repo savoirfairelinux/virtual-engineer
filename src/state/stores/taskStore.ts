@@ -860,6 +860,9 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
     const task = await getTask(taskId);
     if (!task) throw new Error(`Task not found: ${taskId}`);
 
+    // Already abandoned — return current state without re-notifying listeners.
+    if (task.state === "ABANDONED") return task;
+
     const now = new Date();
     raw.transaction(() => {
       raw.prepare("UPDATE tasks SET state = ?, updated_at = ? WHERE task_id = ?").run("ABANDONED", Math.floor(now.getTime() / 1000), taskId);
