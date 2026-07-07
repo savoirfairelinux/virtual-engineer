@@ -773,6 +773,24 @@ export interface ReviewProvider {
   isReviewer?(changeId: ExternalChangeId): Promise<boolean>;
 
   /**
+   * Returns true when the VE reviewer account has already posted a review
+   * (vote and/or summary/comments) against the CURRENT patchset/revision of
+   * this change on the review server.
+   *
+   * This is the authoritative *cross-instance* duplicate-review signal: VE's
+   * local dedup state (task rows, posted_review_comments) is empty on a fresh
+   * instance, so this lets an automatic trigger (stream backfill, polling-loop
+   * discovery, webhook re-delivery) skip a change a previous instance already
+   * reviewed. Only the current patchset counts — a newer patchset returns false
+   * so it is still reviewed. Manual triggers (`StartReviewInput.force`) bypass
+   * this guard.
+   *
+   * Optional — providers that cannot determine this reliably omit it, in which
+   * case the review proceeds (no skip).
+   */
+  hasReviewedCurrentPatchset?(changeId: ExternalChangeId): Promise<boolean>;
+
+  /**
    * Fetch open discussion threads on the change so the review agent can reply.
    * Optional — providers that do not support thread fetching omit it, and the
    * orchestrator simply skips the reply flow.

@@ -384,6 +384,57 @@ describe("ReviewOrchestrator.startReviewTask", () => {
     expect(projectIds).toEqual(["proj-1", "proj-2"]);
   });
 
+  it("skips an automatic trigger when the review server reports VE already reviewed the current patchset (fresh instance)", async () => {
+    // Fresh instance: no local task row exists, so the per-task dedup guards
+    // cannot help. The provider's server-side check is the authoritative
+    // cross-instance signal that VE already reviewed this patchset.
+    mocks = makeMocks();
+    (mocks.provider as { hasReviewedCurrentPatchset?: unknown }).hasReviewedCurrentPatchset = vi.fn(
+      async () => true
+    );
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+    const tasks = await orch.startReviewTask({ changeId: CHANGE_ID });
+    expect(tasks).toHaveLength(0);
+    expect(mocks.store.createReviewTask).not.toHaveBeenCalled();
+    expect(mocks.store.findProjectsByReviewTarget).not.toHaveBeenCalled();
+  });
+
+  it("proceeds when the review server reports VE has NOT reviewed the current patchset", async () => {
+    mocks = makeMocks();
+    (mocks.provider as { hasReviewedCurrentPatchset?: unknown }).hasReviewedCurrentPatchset = vi.fn(
+      async () => false
+    );
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+    const tasks = await orch.startReviewTask({ changeId: CHANGE_ID });
+    expect(tasks).toHaveLength(1);
+    expect(mocks.store.createReviewTask).toHaveBeenCalledTimes(1);
+  });
+
+  it("bypasses the server-side already-reviewed guard when force is set (manual re-add)", async () => {
+    mocks = makeMocks();
+    const spy = vi.fn(async () => true);
+    (mocks.provider as { hasReviewedCurrentPatchset?: unknown }).hasReviewedCurrentPatchset = spy;
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+    const tasks = await orch.startReviewTask({ changeId: CHANGE_ID, force: true });
+    expect(tasks).toHaveLength(1);
+    expect(mocks.store.createReviewTask).toHaveBeenCalledTimes(1);
+    // Force path must not even consult the server-side guard.
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("proceeds (fail-open) when the server-side already-reviewed check throws", async () => {
+    mocks = makeMocks();
+    (mocks.provider as { hasReviewedCurrentPatchset?: unknown }).hasReviewedCurrentPatchset = vi.fn(
+      async () => {
+        throw new Error("ssh timeout");
+      }
+    );
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+    const tasks = await orch.startReviewTask({ changeId: CHANGE_ID });
+    expect(tasks).toHaveLength(1);
+    expect(mocks.store.createReviewTask).toHaveBeenCalledTimes(1);
+  });
+
   it("does NOT re-trigger when the current patchset was already reviewed (automatic resync)", async () => {
     // Resting state after a completed review: REVIEW_WATCHING with reviewedPatchset
     // == currentPatchset. An automatic resync (backfill / polling / webhook

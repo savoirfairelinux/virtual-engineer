@@ -73,6 +73,17 @@ const ProjectSchema = z.object({ path_with_namespace: z.string() });
 
 const CurrentUserSchema = z.object({ id: z.number(), username: z.string() });
 
+const MrCommitSchema = z.object({
+  created_at: z.string().nullable().optional(),
+  committed_date: z.string().nullable().optional(),
+});
+
+const MrNoteSchema = z.object({
+  system: z.boolean().optional().default(false),
+  created_at: z.string().nullable().optional(),
+  author: z.object({ username: z.string() }).nullable().optional(),
+});
+
 const DiscussionNoteSchema = z.object({
   id: z.number(),
   body: z.string().default(""),
@@ -173,6 +184,58 @@ export class GitLabMergeRequestReviewProvider implements ReviewProvider {
       targetBranch: mr.target_branch,
       url: mr.web_url,
     };
+  }
+
+  /**
+   * Returns true when VE has already posted a review note on the MR at or after
+   * the latest commit's timestamp. GitLab notes are not tagged with a revision,
+   * so we compare VE's newest non-system note against the MR head commit date:
+   * VE posts its summary note when it reviews, so a VE note dated at/after the
+   * head commit means the current revision was already reviewed. A subsequent
+   * push adds a newer commit → returns false → re-review.
+   */
+  async hasReviewedCurrentPatchset(changeId: ExternalChangeId): Promise<boolean> {
+    const { project, iid } = this.parseChange(changeId);
+    const me = await this.resolveCurrentUsername();
+    if (me === null) return false;
+
+    let latestCommitMs: number | null = null;
+    try {
+      const commits = z
+        .array(MrCommitSchema)
+        .parse(await this.http.fetchJson(`${this.mrUrl(project, iid)}/commits`));
+      for (const c of commits) {
+        const ts = c.committed_date ?? c.created_at;
+        if (!ts) continue;
+        const ms = Date.parse(ts);
+        if (!Number.isNaN(ms) && (latestCommitMs === null || ms > latestCommitMs)) latestCommitMs = ms;
+      }
+    } catch (err) {
+      log.warn({ project, iid, err }, "hasReviewedCurrentPatchset: failed to fetch MR commits — assuming not reviewed");
+      return false;
+    }
+    if (latestCommitMs === null) return false;
+    const commitMs = latestCommitMs;
+
+    try {
+      const notes = z
+        .array(MrNoteSchema)
+        .parse(
+          await this.http.fetchJson(
+            `${this.mrUrl(project, iid)}/notes?per_page=100&sort=desc&order_by=created_at`
+          )
+        );
+      return notes.some((n) => {
+        if (n.system) return false;
+        if (n.author?.username !== me) return false;
+        if (!n.created_at) return false;
+        const ms = Date.parse(n.created_at);
+        return !Number.isNaN(ms) && ms >= commitMs;
+      });
+    } catch (err) {
+      log.warn({ project, iid, err }, "hasReviewedCurrentPatchset: failed to fetch MR notes — assuming not reviewed");
+      return false;
+    }
   }
 
   async getChangeDiff(changeId: ExternalChangeId, patchset?: number): Promise<ReviewChangeDiff> {

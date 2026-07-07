@@ -56,6 +56,13 @@ const SshPatchSetSchema = z.object({
   ref: z.string(),
 });
 
+const SshApprovalSchema = z.object({
+  type: z.string().optional(),
+  description: z.string().optional(),
+  value: z.string().optional(),
+  by: SshAccountSchema.optional(),
+});
+
 const SshFileSchema = z.object({
   file: z.string(),
   fileOld: z.string().optional(),
@@ -76,6 +83,7 @@ const SshChangeSchema = z.object({
   owner: SshAccountSchema,
   currentPatchSet: SshPatchSetSchema.extend({
     files: z.array(SshFileSchema).optional(),
+    approvals: z.array(SshApprovalSchema).optional(),
   }).optional(),
   allReviewers: z.array(SshAccountSchema).optional(),
   createdOn: z.number().optional(),
@@ -197,6 +205,43 @@ export class GerritSshReviewProvider implements ReviewProvider {
       log.warn({ changeId }, "SSH isReviewer query failed — allowing review to proceed");
       return true;
     }
+  }
+
+  /**
+   * Returns true when the VE reviewer account has already voted on the current
+   * patch set of this change. Gerrit lists per-patch-set votes under
+   * `currentPatchSet.approvals`; VE always casts a Code-Review vote when it
+   * reviews, so an approval authored by VE is a reliable "already reviewed this
+   * patchset" signal. Matched by SSH username (SSH output carries no
+   * `_account_id`), falling back to the configured reviewer account id.
+   */
+  async hasReviewedCurrentPatchset(changeId: ExternalChangeId): Promise<boolean> {
+    let rows: unknown[];
+    try {
+      const raw = await this.sshClient.query([
+        "query", "--format", "JSON", "--current-patch-set",
+        `change:${changeId}`,
+      ]);
+      rows = parseSshNdjson(raw);
+    } catch (err) {
+      log.warn({ changeId, err }, "hasReviewedCurrentPatchset SSH query failed — assuming not reviewed");
+      return false;
+    }
+    if (rows.length === 0) return false;
+    const parsed = SshChangeSchema.safeParse(rows[0]);
+    if (!parsed.success) return false;
+    const approvals = parsed.data.currentPatchSet?.approvals ?? [];
+    if (approvals.length === 0) return false;
+
+    const ownAccountId = this.config.reviewerAccountId ? Number(this.config.reviewerAccountId) : undefined;
+    return approvals.some((a) => {
+      const by = a.by;
+      if (!by) return false;
+      if (ownAccountId !== undefined && !Number.isNaN(ownAccountId) && this.getAccountId(by) === ownAccountId) {
+        return true;
+      }
+      return by.username !== undefined && by.username === this.config.sshUser;
+    });
   }
 
   /** Clone the patchset ref via git and produce a per-file unified diff. */
