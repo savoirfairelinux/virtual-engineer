@@ -407,6 +407,41 @@ describe("ReviewOrchestrator.startReviewTask", () => {
     expect(mocks.store.createReviewTask).not.toHaveBeenCalled();
   });
 
+  it("does NOT create a duplicate task for a REVIEW_DONE row with an unrecorded (null) reviewedPatchset", async () => {
+    // Legacy / interrupted completed review: state is REVIEW_DONE but
+    // reviewedPatchset was never persisted. A startup backfill must still skip
+    // it rather than re-review a change VE already finished.
+    const existing = makeTask({ state: "REVIEW_DONE", currentPatchset: 2, reviewedPatchset: null });
+    mocks = makeMocks(existing);
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+    const tasks = await orch.startReviewTask({ changeId: CHANGE_ID });
+    expect(tasks).toHaveLength(0);
+    expect(mocks.store.createReviewTask).not.toHaveBeenCalled();
+  });
+
+  it("re-triggers a REVIEW_DONE row with a null reviewedPatchset when force is set (manual re-trigger)", async () => {
+    const existing = makeTask({ state: "REVIEW_DONE", currentPatchset: 2, reviewedPatchset: null });
+    mocks = makeMocks(existing);
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+    const tasks = await orch.startReviewTask({ changeId: CHANGE_ID, force: true });
+    expect(tasks).toHaveLength(1);
+    expect(mocks.store.createReviewTask).toHaveBeenCalledTimes(1);
+  });
+
+  it("creates a new review task for a REVIEW_DONE row with a null reviewedPatchset when the patchset advanced", async () => {
+    // Completed review with an unrecorded patchset, but Gerrit has since moved
+    // to a newer patchset — this is NOT a duplicate and must still be reviewed.
+    const existing = makeTask({ state: "REVIEW_DONE", currentPatchset: 2, reviewedPatchset: null });
+    mocks = makeMocks(existing);
+    (mocks.provider.getChangeDetails as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makeDetails({ currentPatchset: 3 })
+    );
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+    const tasks = await orch.startReviewTask({ changeId: CHANGE_ID });
+    expect(tasks).toHaveLength(1);
+    expect(mocks.store.createReviewTask).toHaveBeenCalledTimes(1);
+  });
+
   it("re-queues an already-reviewed REVIEW_WATCHING task when force is set (manual re-trigger)", async () => {
     const existing = makeTask({ state: "REVIEW_WATCHING", currentPatchset: 2, reviewedPatchset: 2 });
     mocks = makeMocks(existing);

@@ -1112,6 +1112,18 @@ export interface StateStore {
 
   /** Return the single active (non-terminal) task for a ticket, optionally scoped to a project. */
   getActiveTaskByTicketId(ticketId: TicketId, projectId?: ProjectId): Promise<Task | null>;
+
+  /**
+   * Return the newest task for a ticket matching a ticket-source snapshot
+   * (`ticket_source_integration_id` + `ticket_source_project_key`), regardless
+   * of `project_id`. Used to catch orphaned tasks whose owning project was
+   * deleted (project_id set NULL) and never re-adopted.
+   */
+  getLatestTaskByTicketSource(
+    ticketId: TicketId,
+    integrationId: string,
+    ticketProjectKey: string
+  ): Promise<Task | null>;
   getActiveTasks(): Promise<Task[]>;
   getAllTasks(): Promise<Task[]>;
 
