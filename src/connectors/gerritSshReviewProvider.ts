@@ -212,8 +212,8 @@ export class GerritSshReviewProvider implements ReviewProvider {
    * patch set of this change. Gerrit lists per-patch-set votes under
    * `currentPatchSet.approvals`; VE always casts a Code-Review vote when it
    * reviews, so an approval authored by VE is a reliable "already reviewed this
-   * patchset" signal. Matched by SSH username (SSH output carries no
-   * `_account_id`), falling back to the configured reviewer account id.
+   * patchset" signal. Approvals are matched by SSH username, since Gerrit's SSH
+   * `--format JSON` output carries no `_account_id`.
    */
   async hasReviewedCurrentPatchset(changeId: ExternalChangeId): Promise<boolean> {
     let rows: unknown[];
@@ -233,15 +233,7 @@ export class GerritSshReviewProvider implements ReviewProvider {
     const approvals = parsed.data.currentPatchSet?.approvals ?? [];
     if (approvals.length === 0) return false;
 
-    const ownAccountId = this.config.reviewerAccountId ? Number(this.config.reviewerAccountId) : undefined;
-    return approvals.some((a) => {
-      const by = a.by;
-      if (!by) return false;
-      if (ownAccountId !== undefined && !Number.isNaN(ownAccountId) && this.getAccountId(by) === ownAccountId) {
-        return true;
-      }
-      return by.username !== undefined && by.username === this.config.sshUser;
-    });
+    return approvals.some((a) => a.by?.username !== undefined && a.by.username === this.config.sshUser);
   }
 
   /** Clone the patchset ref via git and produce a per-file unified diff. */

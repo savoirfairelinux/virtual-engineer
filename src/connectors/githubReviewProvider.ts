@@ -180,15 +180,23 @@ export class GitHubReviewProvider implements ReviewProvider {
     const me = await this.resolveCurrentLogin();
     if (me === null) return false;
     try {
-      const reviews = GitHubReviewListSchema.parse(
-        await this.fetchJson(`${this.prUrl(owner, repo, prNumber)}/reviews?per_page=100`)
-      );
-      return reviews.some(
-        (r) =>
-          r.user?.login === me &&
-          r.commit_id === headSha &&
-          (r.state === "APPROVED" || r.state === "CHANGES_REQUESTED" || r.state === "COMMENTED")
-      );
+      const perPage = 100;
+      for (let page = 1; page <= 20; page++) {
+        const reviews = GitHubReviewListSchema.parse(
+          await this.fetchJson(
+            `${this.prUrl(owner, repo, prNumber)}/reviews?per_page=${perPage}&page=${page}`
+          )
+        );
+        const matched = reviews.some(
+          (r) =>
+            r.user?.login === me &&
+            r.commit_id === headSha &&
+            (r.state === "APPROVED" || r.state === "CHANGES_REQUESTED" || r.state === "COMMENTED")
+        );
+        if (matched) return true;
+        if (reviews.length < perPage) break;
+      }
+      return false;
     } catch (err) {
       log.warn({ owner, repo, prNumber, err }, "hasReviewedCurrentPatchset: failed to list PR reviews — assuming not reviewed");
       return false;

@@ -369,6 +369,20 @@ describe("GitHubReviewProvider", () => {
         ]));
       expect(await new GitHubReviewProvider(config).hasReviewedCurrentPatchset(cid)).toBe(false);
     });
+
+    it("paginates past a full first page to find VE's review on a later page", async () => {
+      const fullPage = Array.from({ length: 100 }, (_, i) => ({
+        user: { login: "alice" }, state: "COMMENTED", commit_id: `sha${i}`,
+      }));
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse(prBody("headsha123"))) // PR fetch
+        .mockResolvedValueOnce(jsonResponse({ data: { viewer: { login: "ve-bot" } } })) // viewer
+        .mockResolvedValueOnce(jsonResponse(fullPage)) // page 1 (full, no match)
+        .mockResolvedValueOnce(jsonResponse([
+          { user: { login: "ve-bot" }, state: "APPROVED", commit_id: "headsha123" },
+        ])); // page 2 (match)
+      expect(await new GitHubReviewProvider(config).hasReviewedCurrentPatchset(cid)).toBe(true);
+    });
   });
 });
 
