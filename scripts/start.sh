@@ -43,11 +43,6 @@ ensure_dir() {
 ensure_dir "$DATA_DIR"    755
 ensure_dir "$SECRETS_DIR" 700
 
-# ─── Agent workspace directory ────────────────────────────────────────────────
-WORKSPACES_DIR="/tmp/ve-workspaces"
-mkdir -p "$WORKSPACES_DIR"
-chmod 1777 "$WORKSPACES_DIR"
-
 # ─── Agent Docker network ─────────────────────────────────────────────────────
 AGENT_NETWORK="virtual-engineer_ve-agent-net"
 if ! docker network inspect "$AGENT_NETWORK" >/dev/null 2>&1; then
