@@ -600,12 +600,12 @@ function parseGerritStreamConfig(integration: Integration):
   const cfg = raw as Record<string, unknown>;
   const sshHost = typeof cfg["sshHost"] === "string" ? cfg["sshHost"].trim() : "";
   const sshUser = typeof cfg["sshUser"] === "string" ? cfg["sshUser"].trim() : "";
-  // Key path: SSH_RESOLVED_KEY_PATH (from preprocessConfig) > sshKeyPath > undefined (agent mode)
+  // Key path is resolved exclusively from SSH_RESOLVED_KEY_PATH, injected by
+  // preprocessConfig (generated-key mode). Raw user-provided key paths are no
+  // longer supported. Omit for SSH agent mode.
   const sshKeyPath = typeof cfg[SSH_RESOLVED_KEY_PATH] === "string" && cfg[SSH_RESOLVED_KEY_PATH].trim() !== ""
     ? cfg[SSH_RESOLVED_KEY_PATH].trim()
-    : typeof cfg["sshKeyPath"] === "string" && cfg["sshKeyPath"].trim() !== ""
-      ? cfg["sshKeyPath"].trim()
-      : undefined;
+    : undefined;
   const sshAgentPubKeyPath = typeof cfg[SSH_AGENT_PUBKEY_PATH] === "string" && cfg[SSH_AGENT_PUBKEY_PATH].trim() !== ""
     ? cfg[SSH_AGENT_PUBKEY_PATH].trim()
     : undefined;

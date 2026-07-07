@@ -62,7 +62,7 @@ COPY agent-worker/ ./agent-worker/
 COPY prompts/ ./prompts/
 COPY prompts/ ./dist/prompts/
 
-RUN mkdir -p /app/data /app/secrets /tmp/ve-workspaces
+RUN mkdir -p /app/data /app/secrets
 
 EXPOSE 3100
 
