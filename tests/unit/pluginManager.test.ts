@@ -681,4 +681,52 @@ describe("PluginManager", () => {
       expect(mgr.getConnectorForCapability<AgentAdapter>("claude-2", "agent_execution")).toBeNull();
     });
   });
+
+  describe("resolveConfigRuntimeExtras", () => {
+    it("resolves a generated-key Gerrit integration to a temp-file key path", () => {
+      const store = makeStore();
+      const mgr = new PluginManager(store);
+      const integration = makeIntegration({
+        id: "gerrit-gen",
+        provider: "gerrit",
+        configJson: JSON.stringify({
+          sshHost: "gerrit.test",
+          sshUser: "ve",
+          sshPort: 29418,
+          sshPrivateKeyEnc: "-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n-----END OPENSSH PRIVATE KEY-----\n",
+        }),
+      });
+
+      const extras = mgr.resolveConfigRuntimeExtras(integration);
+
+      expect(typeof extras["_resolvedSshKeyPath"]).toBe("string");
+      expect(extras["_resolvedSshKeyPath"]).toMatch(/ve-ssh-key-.*\.pem$/);
+    });
+
+    it("returns no key path for an agent-mode Gerrit integration (no private key)", () => {
+      const store = makeStore();
+      const mgr = new PluginManager(store);
+      const integration = makeIntegration({
+        id: "gerrit-agent",
+        provider: "gerrit",
+        configJson: JSON.stringify({ sshHost: "gerrit.test", sshUser: "ve", sshPort: 29418 }),
+      });
+
+      const extras = mgr.resolveConfigRuntimeExtras(integration);
+
+      expect(extras["_resolvedSshKeyPath"]).toBeUndefined();
+    });
+
+    it("returns an empty object for providers without preprocessConfig", () => {
+      const store = makeStore();
+      const mgr = new PluginManager(store);
+      const integration = makeIntegration({
+        id: "redmine-1",
+        provider: "redmine",
+        configJson: JSON.stringify({ baseUrl: "http://r:3000", apiKey: "k", virtualEngineerUserLogin: "ve" }),
+      });
+
+      expect(mgr.resolveConfigRuntimeExtras(integration)).toEqual({});
+    });
+  });
 });

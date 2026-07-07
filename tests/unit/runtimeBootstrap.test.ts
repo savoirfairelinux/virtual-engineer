@@ -179,6 +179,15 @@ async function importRuntime(
     decryptIntegrationConfig: vi.fn((integration: Integration) => {
       return JSON.parse(integration.configJson) as Record<string, unknown>;
     }),
+    // Mirror the real descriptor behaviour: only generated-key integrations
+    // (with sshPrivateKeyEnc) resolve to a temp-file key path.
+    resolveConfigRuntimeExtras: vi.fn((integration: Integration): Record<string, unknown> => {
+      const cfg = JSON.parse(integration.configJson) as Record<string, unknown>;
+      if (typeof cfg["sshPrivateKeyEnc"] === "string" && cfg["sshPrivateKeyEnc"] !== "") {
+        return { _resolvedSshKeyPath: `/tmp/ve-ssh-${integration.id}.pem` };
+      }
+      return {};
+    }),
   };
 
   const PluginManager = vi.fn().mockImplementation(function () { return pluginManagerInstance; });
@@ -551,6 +560,36 @@ describe("runtime bootstrap provider selection", () => {
 
     expect(runtime.PluginIntegrationStreamEventsManager).toHaveBeenCalledTimes(1);
     expect(runtime.integrationStreamEventsInstance.reconcile).toHaveBeenCalledWith([gerritA, gerritB]);
+  });
+
+  it("resolves generated-key SSH material into the stream-events integration config", async () => {
+    const gerritGenerated = makeIntegration({
+      id: "gerrit-generated-key",
+      provider: "gerrit",
+      configJson: JSON.stringify({
+        sshHost: "gerrit.test",
+        sshUser: "ve",
+        sshPort: 29418,
+        sshPrivateKeyEnc: "enc:BEGIN-PRIVATE-KEY",
+      }),
+    });
+
+    const runtime = await importRuntime(
+      {},
+      {},
+      {
+        activeIntegrationLists: {
+          gerrit: [gerritGenerated],
+        },
+      }
+    );
+
+    const reconcileArgs = runtime.integrationStreamEventsInstance.reconcile.mock.calls[0]?.[0] as Integration[];
+    expect(reconcileArgs).toHaveLength(1);
+    const resolvedConfig = JSON.parse(reconcileArgs[0]!.configJson) as Record<string, unknown>;
+    expect(resolvedConfig["_resolvedSshKeyPath"]).toBe("/tmp/ve-ssh-gerrit-generated-key.pem");
+    // Original fields are preserved.
+    expect(resolvedConfig["sshHost"]).toBe("gerrit.test");
   });
 
   it("propagates database-backed provider config into orchestrator and vcs wiring", async () => {
@@ -1331,7 +1370,6 @@ describe("runtime bootstrap provider selection", () => {
         sshHost: "gerrit.test",
         sshPort: 29418,
         sshUser: "ve-bot",
-        sshKeyPath: "/keys/id_rsa",
       }),
     });
 
@@ -1366,7 +1404,6 @@ describe("runtime bootstrap provider selection", () => {
         sshHost: "gerrit.test",
         sshPort: 29418,
         sshUser: "ve-bot",
-        sshKeyPath: "/keys/id_rsa",
       })
     );
   });

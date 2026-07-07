@@ -8,7 +8,8 @@
  * of truth for SSH config field names.
  *
  * Two authentication modes are supported (mutually exclusive by priority):
- *   1. Generated key — `sshPrivateKeyEnc` is set (AES-256-GCM encrypted PEM).
+ *   1. Generated key — `sshPrivateKeyEnc` is set (AES-256-GCM encrypted PEM),
+ *      resolved to a temp-file key path at runtime by `preprocessConfig`.
  *   2. SSH agent     — `sshPrivateKeyEnc` is not set; `SSH_AUTH_SOCK` is forwarded.
  *      Optional identity pinning via `sshAgentPublicKey`.
  *
@@ -24,14 +25,14 @@ export const sshConnectionConfigSchema = z.object({
   sshUser: z.string().min(1),
   /** Path to a known_hosts file. When set, SSH operations use strict host-key verification. */
   sshKnownHostsPath: z.string().trim().optional(),
-  /** AES-256-GCM–encrypted ed25519 private key PEM (generated via the UI). Used when sshKeyPath is absent. */
+  /** AES-256-GCM–encrypted ed25519 private key PEM (generated via the UI). Selects generated-key auth mode. */
   sshPrivateKeyEnc: z.string().optional(),
   /** OpenSSH public key corresponding to sshPrivateKeyEnc. Stored plaintext so the UI can display it. */
   sshPublicKey: z.string().optional(),
   /**
    * OpenSSH public key of the SSH agent identity to use for this integration.
-   * When set (and sshKeyPath / sshPrivateKeyEnc are absent), SSH agent mode is
-   * used with `-o IdentitiesOnly=yes` so only this specific key is offered.
+   * When set (and sshPrivateKeyEnc is absent), SSH agent mode is used with
+   * `-o IdentitiesOnly=yes` so only this specific key is offered.
    * Leave blank to try all keys loaded in the agent.
    */
   sshAgentPublicKey: z.string().optional(),

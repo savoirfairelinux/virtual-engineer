@@ -186,7 +186,34 @@ async function main(): Promise<void> {
     orchestrator,
     getReviewTrigger: (): import("./connectors/integrationStreamEvents.js").IntegrationEventStreamReviewTrigger | undefined => reviewTriggerHolder.current ?? undefined,
   });
-  await integrationStreamEvents.reconcile(pluginManager.getActiveIntegrations());
+
+  /**
+   * Return the active integrations with their `configJson` augmented by the
+   * SSH key-resolution extras (`_resolvedSshKeyPath` / `_agentPubKeyPath`) that
+   * `preprocessConfig` produces. The stream-events listeners parse `configJson`
+   * directly, so without this a generated-key (encrypted) or agent-identity
+   * integration would never resolve its key to a temp file and would silently
+   * fall back to plain SSH agent mode — matching the review/clone paths that
+   * already run `preprocessConfig`.
+   */
+  function resolveStreamIntegrations(): Integration[] {
+    return pluginManager.getActiveIntegrations().map((integration) => {
+      let extras: Record<string, unknown>;
+      try {
+        extras = pluginManager.resolveConfigRuntimeExtras(integration);
+      } catch (err) {
+        log.warn({ integrationId: integration.id, err }, "failed to resolve SSH key material for stream integration");
+        return integration;
+      }
+      if (Object.keys(extras).length === 0) {
+        return integration;
+      }
+      const merged = { ...(JSON.parse(integration.configJson) as Record<string, unknown>), ...extras };
+      return { ...integration, configJson: JSON.stringify(merged) };
+    });
+  }
+
+  await integrationStreamEvents.reconcile(resolveStreamIntegrations());
 
   const adminRuntimeConfig = {
     nodeEnv: config.nodeEnv,
@@ -214,7 +241,7 @@ async function main(): Promise<void> {
     });
     pollingLoop.resetBackoff();
     reviewTriggerHolder.current = buildReviewTrigger(pluginManager, config.workspaceBaseDir, workspaceRunner, stateStore);
-    await integrationStreamEvents.reconcile(pluginManager.getActiveIntegrations());
+    await integrationStreamEvents.reconcile(resolveStreamIntegrations());
     log.info("runtime dependencies refreshed");
     await reconcilePollingLoop();
   }

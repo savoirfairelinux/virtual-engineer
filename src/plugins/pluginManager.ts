@@ -308,6 +308,24 @@ export class PluginManager {
     return this.decryptPasswordFields(rawConfig, descriptor);
   }
 
+  /**
+   * Compute the runtime SSH-key-resolution extras (`_resolvedSshKeyPath`,
+   * `_agentPubKeyPath`) produced by a provider's `preprocessConfig`. The
+   * stream-events reconcile path parses `configJson` directly and never runs
+   * `preprocessConfig`, so without this it would never see generated-key or
+   * agent-identity material resolved to temp files and would silently fall
+   * back to plain SSH agent mode. Returns an empty object for providers that
+   * declare no `preprocessConfig`.
+   */
+  public resolveConfigRuntimeExtras(integration: Integration): Record<string, unknown> {
+    const descriptor = this.getDescriptor(integration.provider);
+    if (!descriptor.preprocessConfig) {
+      return {};
+    }
+    const config = this.decryptIntegrationConfig(integration);
+    return descriptor.preprocessConfig(config, this.options.adminAuthSecret, integration.id);
+  }
+
   /** Build and register all instance-producing capability connectors for an integration. */
   private activateIntegration(integration: Integration): void {
     const descriptor = this.getDescriptor(integration.provider);

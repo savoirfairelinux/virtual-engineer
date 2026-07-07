@@ -100,8 +100,8 @@ docker run -d \
   -e GH_CONFIG_DIR=/ve-gh \
   --security-opt label:disable \
   -v /etc/localtime:/etc/localtime:ro \
-  -v "$ROOT_DIR/data:/app/data:Z" \
-  -v "$ROOT_DIR/secrets:/app/secrets:ro,Z" \
+  -v "$DATA_DIR:/app/data:Z" \
+  -v "$SECRETS_DIR:/app/secrets:ro,Z" \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v "$HOME/.config/gh:/ve-gh:ro" \
   --tmpfs /tmp/ve-review-diffs:rw,size=512m \
