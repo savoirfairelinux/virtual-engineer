@@ -1,0 +1,18 @@
+# Code owners for virtual-engineer
+#
+# Every pull request that targets a protected branch requires an approving
+# review from one of the owners listed here (enforced by the branch ruleset
+# rule "require_code_owner_review").
+#
+# An approval only counts if its author has write access to the repository,
+# so the code owners below double as the list of allowed reviewers.
+#
+# To add another maintainer later:
+#   1. Give them "Write" access to the repo:
+#      Settings > Collaborators and teams > Add people  (role: Write)
+#      (or: gh api -X PUT repos/savoirfairelinux/virtual-engineer/collaborators/USERNAME -f permission=push)
+#   2. Add "@USERNAME" to the line below (space-separated), commit, and open a PR.
+#
+# To remove a maintainer: drop their "@USERNAME" here and revoke their write access.
+
+* @fshehadeh-sfl @Charles-Sevan @aberaud
