@@ -146,16 +146,6 @@ export async function runClaudeAgent(
         if (subtype === 'success' && typeof msg['result'] === 'string') {
           content = msg['result'];
         }
-        const usage = asRecord(msg['usage']);
-        if (usage) {
-          emitEvent('assistant.usage', {
-            inputTokens: numberOrNull(usage['input_tokens']),
-            outputTokens: numberOrNull(usage['output_tokens']),
-            cacheReadTokens: numberOrNull(usage['cache_read_input_tokens']),
-            cacheWriteTokens: numberOrNull(usage['cache_creation_input_tokens']),
-            model: modelLabel,
-          });
-        }
         const costUsd = numberOrNull(msg['total_cost_usd']);
         if (costUsd !== null) {
           emitEvent('cost.total', { costUsd, numTurns: numberOrNull(msg['num_turns']), model: modelLabel });

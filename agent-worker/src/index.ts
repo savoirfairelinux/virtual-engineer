@@ -408,12 +408,20 @@ function registerSessionEventHandlers(
     const outputTokens = deepFindNum(event, ['outputTokens', 'output_tokens', 'completionTokens', 'completion_tokens']);
     const cacheRead = deepFindNum(event, ['cacheReadTokens', 'cache_read_tokens', 'cacheReadInputTokens']);
     const cacheWrite = deepFindNum(event, ['cacheWriteTokens', 'cache_write_tokens', 'cacheCreationInputTokens']);
+    const apiCallId = deepFindStr(event, ['apiCallId', 'api_call_id']);
+    const providerCallId = deepFindStr(event, ['providerCallId', 'provider_call_id']);
+    const totalNanoAiu = deepFindNum(event, ['totalNanoAiu', 'total_nano_aiu']);
+    const cost = deepFindNum(event, ['cost']);
     emitEvent('assistant.usage', {
       inputTokens,
       outputTokens,
       cacheReadTokens: cacheRead,
       cacheWriteTokens: cacheWrite,
       model: deepFindStr(event, ['model']) ?? COPILOT_MODEL,
+      ...(apiCallId !== null ? { apiCallId } : {}),
+      ...(providerCallId !== null ? { providerCallId } : {}),
+      ...(totalNanoAiu !== null ? { totalNanoAiu } : {}),
+      ...(cost !== null ? { cost } : {}),
     });
   });
 
