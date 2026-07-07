@@ -32,7 +32,8 @@ Thank you for your interest in contributing! This document covers how to set up 
 |------|---------|-------|
 | Node.js | 20 LTS | Orchestrator runtime |
 | Docker | 24 | Agent container execution |
-| GitHub Copilot | — | Required for code-gen/review tasks |
+| GitHub Copilot | — | Required for code-gen/review tasks (Copilot subscription) |
+| Claude | — | Alternative agent engine — Anthropic API key or Claude Pro/Max subscription (optional) |
 
 ```bash
 npm install
@@ -40,6 +41,7 @@ cp .env.example .env         # fill in ADMIN_AUTH_SECRET if needed
 npm run db:migrate
 docker build -f Dockerfile.agent -t virtual-engineer-workspace:latest .
 npm run dev                  # starts orchestrator at http://127.0.0.1:3100/admin
+npm run build:ui             # build the admin React SPA (required for production)
 ```
 
 ---
@@ -50,9 +52,11 @@ This project follows **TDD practices** — add or update tests for every change.
 
 ```bash
 npm test                     # Vitest unit + integration tests — must pass
-npm run typecheck            # zero TypeScript errors
+npm run typecheck            # zero TypeScript errors (runs both tsconfig.json + tsconfig.agent.json)
 npm run lint                 # zero ESLint errors
 npm run dev                  # start orchestrator locally
+npm run build:ui             # build admin React SPA (Vite)
+npm run typecheck:ui         # TypeScript check for the admin UI (tsconfig.admin-ui.json)
 npm run db:migrate           # apply Drizzle migrations after schema changes
 ```
 
