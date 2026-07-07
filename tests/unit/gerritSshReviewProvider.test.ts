@@ -175,6 +175,48 @@ describe("GerritSshReviewProvider", () => {
     });
   });
 
+  describe("hasReviewedCurrentPatchset", () => {
+    it("returns true when VE's SSH username has an approval on the current patch set", async () => {
+      const change = {
+        ...SAMPLE_CHANGE,
+        currentPatchSet: {
+          ...SAMPLE_CHANGE.currentPatchSet,
+          approvals: [
+            { type: "Code-Review", value: "-1", by: { username: SSH_USER, email: "ve-bot@test.com" } },
+          ],
+        },
+      };
+      mockQuery.mockResolvedValueOnce(sshNdjson(change));
+
+      expect(await makeProvider().hasReviewedCurrentPatchset(CHANGE_ID)).toBe(true);
+    });
+
+    it("returns false when only other reviewers have voted on the current patch set", async () => {
+      const change = {
+        ...SAMPLE_CHANGE,
+        currentPatchSet: {
+          ...SAMPLE_CHANGE.currentPatchSet,
+          approvals: [
+            { type: "Code-Review", value: "+2", by: { username: "someone-else", email: "other@test.com" } },
+          ],
+        },
+      };
+      mockQuery.mockResolvedValueOnce(sshNdjson(change));
+
+      expect(await makeProvider().hasReviewedCurrentPatchset(CHANGE_ID)).toBe(false);
+    });
+
+    it("returns false when the current patch set has no approvals", async () => {
+      mockQuery.mockResolvedValueOnce(sshNdjson(SAMPLE_CHANGE));
+      expect(await makeProvider().hasReviewedCurrentPatchset(CHANGE_ID)).toBe(false);
+    });
+
+    it("returns false when the SSH query fails", async () => {
+      mockQuery.mockRejectedValueOnce(new Error("ssh timeout"));
+      expect(await makeProvider().hasReviewedCurrentPatchset(CHANGE_ID)).toBe(false);
+    });
+  });
+
   describe("getChangeDiff", () => {
     const DIFF_OUTPUT = [
       "diff --git a/src/main.ts b/src/main.ts",

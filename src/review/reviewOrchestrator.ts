@@ -140,6 +140,32 @@ export class ReviewOrchestrator {
       return [];
     }
 
+    // Cross-instance duplicate-review guard. VE's local dedup state (task rows,
+    // posted_review_comments) is empty on a fresh instance, so the per-task
+    // guards below cannot tell that a *previous* instance already reviewed this
+    // change. Ask the review server whether the VE account has already posted a
+    // review on the current patchset — the authoritative cross-instance signal.
+    // Only automatic triggers are gated; a manual reviewer re-add (input.force)
+    // still re-reviews an already-reviewed patchset.
+    if (input.force !== true && this.deps.reviewProvider.hasReviewedCurrentPatchset) {
+      let reviewedOnServer = false;
+      try {
+        reviewedOnServer = await this.deps.reviewProvider.hasReviewedCurrentPatchset(input.changeId);
+      } catch (err) {
+        log.warn(
+          { changeId: input.changeId, err },
+          "hasReviewedCurrentPatchset check failed — proceeding with review"
+        );
+      }
+      if (reviewedOnServer) {
+        log.info(
+          { changeId: input.changeId, patchset: details.currentPatchset },
+          "VE already reviewed the current patchset on the review server — skipping automatic re-trigger"
+        );
+        return [];
+      }
+    }
+
     const projects = await this.deps.stateStore.findProjectsByReviewTarget(
       this.deps.integrationId,
       details.project

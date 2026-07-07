@@ -272,5 +272,42 @@ describe("GitLabMergeRequestReviewProvider", () => {
       expect(body.body).toBe("Thanks, addressed.");
     });
   });
+
+  describe("hasReviewedCurrentPatchset", () => {
+    it("returns true when VE posted a note at/after the latest commit date", async () => {
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ id: 9, username: "ve-bot" })) // /api/v4/user
+        .mockResolvedValueOnce(jsonResponse([
+          { committed_date: "2026-01-01T10:00:00Z" },
+          { committed_date: "2026-01-02T10:00:00Z" },
+        ])) // /commits
+        .mockResolvedValueOnce(jsonResponse([
+          { system: false, created_at: "2026-01-02T11:00:00Z", author: { username: "ve-bot" } },
+          { system: false, created_at: "2026-01-01T09:00:00Z", author: { username: "alice" } },
+        ])); // /notes
+      expect(await new GitLabMergeRequestReviewProvider(config).hasReviewedCurrentPatchset(cid)).toBe(true);
+    });
+
+    it("returns false when VE's only note predates the latest commit (new push)", async () => {
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ id: 9, username: "ve-bot" }))
+        .mockResolvedValueOnce(jsonResponse([{ committed_date: "2026-01-03T10:00:00Z" }]))
+        .mockResolvedValueOnce(jsonResponse([
+          { system: false, created_at: "2026-01-02T10:00:00Z", author: { username: "ve-bot" } },
+        ]));
+      expect(await new GitLabMergeRequestReviewProvider(config).hasReviewedCurrentPatchset(cid)).toBe(false);
+    });
+
+    it("ignores system notes and notes from other users", async () => {
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ id: 9, username: "ve-bot" }))
+        .mockResolvedValueOnce(jsonResponse([{ committed_date: "2026-01-01T10:00:00Z" }]))
+        .mockResolvedValueOnce(jsonResponse([
+          { system: true, created_at: "2026-01-02T10:00:00Z", author: { username: "ve-bot" } },
+          { system: false, created_at: "2026-01-02T10:00:00Z", author: { username: "alice" } },
+        ]));
+      expect(await new GitLabMergeRequestReviewProvider(config).hasReviewedCurrentPatchset(cid)).toBe(false);
+    });
+  });
 });
 
