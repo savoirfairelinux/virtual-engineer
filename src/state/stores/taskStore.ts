@@ -67,6 +67,11 @@ export interface TaskStoreApi {
   getTask(taskId: TaskId): Promise<Task | null>;
   getTaskByTicketId(ticketId: TicketId, projectId?: ProjectId): Promise<Task | null>;
   getActiveTaskByTicketId(ticketId: TicketId, projectId?: ProjectId): Promise<Task | null>;
+  getLatestTaskByTicketSource(
+    ticketId: TicketId,
+    integrationId: string,
+    ticketProjectKey: string
+  ): Promise<Task | null>;
   getActiveTasks(): Promise<Task[]>;
   getAllTasks(): Promise<Task[]>;
   transition(taskId: TaskId, toState: TaskState, metadata?: Record<string, unknown>): Promise<Task>;
@@ -223,6 +228,28 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
         eq(tasks.ticketId, ticketId),
         notInArray(tasks.state, [...TERMINAL_STATES]),
         ...(projectId !== undefined ? [eq(tasks.projectId, projectId)] : [])
+      ),
+      orderBy: (t, { desc }) => [desc(t.createdAt)],
+    });
+    return row ? rowToTask(row) : null;
+  }
+
+  // Newest task for a ticket matching a ticket-source snapshot, regardless of
+  // project_id. Mirrors `adoptOrphanedTasksForProject`'s WHERE clause so it
+  // catches orphaned tasks (owning project deleted → project_id NULL) that the
+  // project-scoped `getTaskByTicketId` misses, while staying scoped to this
+  // exact (integration, projectKey) to avoid colliding with an identical bare
+  // ticket id owned by a different integration.
+  async function getLatestTaskByTicketSource(
+    ticketId: TicketId,
+    integrationId: string,
+    ticketProjectKey: string
+  ): Promise<Task | null> {
+    const row = await db.query.tasks.findFirst({
+      where: and(
+        eq(tasks.ticketId, ticketId),
+        eq(tasks.ticketSourceIntegrationId, integrationId),
+        eq(tasks.ticketSourceProjectKey, ticketProjectKey)
       ),
       orderBy: (t, { desc }) => [desc(t.createdAt)],
     });
@@ -1458,6 +1485,7 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
     getChangesForTasks,
     findTaskByExternalChangeId,
     findReviewedCodeReviewTask,
+    getLatestTaskByTicketSource,
     setTaskProjectId,
     setTaskPushRef,
     updateChangePerRepositoryStatus,

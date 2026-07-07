@@ -48,6 +48,7 @@ function makeStore(): StateStore {
     getActiveTasks: vi.fn().mockResolvedValue([]),
     getTaskByTicketId: vi.fn().mockResolvedValue(null),
     getActiveTaskByTicketId: vi.fn().mockResolvedValue(null),
+    getLatestTaskByTicketSource: vi.fn().mockResolvedValue(null),
     getFailedAttemptCount: vi.fn().mockResolvedValue(0),
     getChangesForTask: vi.fn().mockResolvedValue([]),
     isTaskPaused: vi.fn().mockResolvedValue(false),
@@ -120,6 +121,108 @@ describe("PollingLoop — Phase 4 project mode", () => {
     expect(args[0]).toMatchObject({ id: "1", subject: "T1" });
     expect(args[1]).toBe(projectA);
     expect(args[2]).toMatch(/^redmine:int-a$/);
+  });
+
+  it("does NOT start a task when an orphaned DONE task already exists for the ticket source", async () => {
+    // A former project completed this ticket, was deleted (project_id → NULL),
+    // and the orphan was never re-adopted. The project-scoped lookup misses it,
+    // but the ticket-source fallback finds it — so a fresh instance must not
+    // re-run the completed work.
+    const project = makeProject({ id: "p-a", type: "coding" });
+    const projectStore = {
+      listProjects: vi.fn(async (filter?: { type?: "coding" | "review"; enabled?: boolean }) =>
+        filter?.type === "coding" ? [project] : []
+      ),
+      getProjectTicketSource: vi.fn(async (id: ProjectId): Promise<ProjectTicketSourceRecord | null> => ({
+        id: 1,
+        projectId: id,
+        integrationId: "int-a",
+        ticketProjectKey: "platform",
+        createdAt: new Date(),
+      })),
+      getProjectReviewConfig: vi.fn(async () => null),
+    };
+
+    const connector = makeRedmine();
+    (connector.getAssignedTickets as ReturnType<typeof vi.fn>).mockImplementation(async () => [
+      { id: "42", subject: "T42", description: "", status: "open", assigneeId: 1, projectId: 1, customFields: {} },
+    ]);
+
+    const pluginManager = {
+      getConnectorForCapability: vi.fn(<T,>(id: string): T | null =>
+        id === "int-a" ? (connector as unknown as T) : null
+      ),
+    } as unknown as { getConnectorForCapability<T>(id: string): T | null };
+
+    const store = makeStore();
+    // Project-scoped lookup misses the orphan; the source-scoped fallback finds it.
+    (store.getTaskByTicketId as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+    (store.getLatestTaskByTicketSource as ReturnType<typeof vi.fn>).mockResolvedValue({
+      taskId: "orphan-task",
+      state: "DONE",
+    });
+
+    const orchestrator = makeOrchestrator();
+    const loop = new PollingLoop(
+      { ticketIntervalMs: 60000, maxRetryAttempts: 3 },
+      orchestrator,
+      store,
+      { projectStore, pluginManager }
+    );
+
+    await loop.pollProjectTickets();
+    await new Promise((r) => setImmediate(r));
+
+    expect(store.getLatestTaskByTicketSource).toHaveBeenCalledWith("42", "int-a", "platform");
+    expect(orchestrator.startTaskForProject).not.toHaveBeenCalled();
+  });
+
+  it("still starts a task when the orphaned task for the ticket source is FAILED (retry allowed)", async () => {
+    const project = makeProject({ id: "p-a", type: "coding" });
+    const projectStore = {
+      listProjects: vi.fn(async (filter?: { type?: "coding" | "review"; enabled?: boolean }) =>
+        filter?.type === "coding" ? [project] : []
+      ),
+      getProjectTicketSource: vi.fn(async (id: ProjectId): Promise<ProjectTicketSourceRecord | null> => ({
+        id: 1,
+        projectId: id,
+        integrationId: "int-a",
+        ticketProjectKey: "platform",
+        createdAt: new Date(),
+      })),
+      getProjectReviewConfig: vi.fn(async () => null),
+    };
+
+    const connector = makeRedmine();
+    (connector.getAssignedTickets as ReturnType<typeof vi.fn>).mockImplementation(async () => [
+      { id: "42", subject: "T42", description: "", status: "open", assigneeId: 1, projectId: 1, customFields: {} },
+    ]);
+
+    const pluginManager = {
+      getConnectorForCapability: vi.fn(<T,>(id: string): T | null =>
+        id === "int-a" ? (connector as unknown as T) : null
+      ),
+    } as unknown as { getConnectorForCapability<T>(id: string): T | null };
+
+    const store = makeStore();
+    (store.getTaskByTicketId as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+    (store.getLatestTaskByTicketSource as ReturnType<typeof vi.fn>).mockResolvedValue({
+      taskId: "orphan-task",
+      state: "FAILED",
+    });
+
+    const orchestrator = makeOrchestrator();
+    const loop = new PollingLoop(
+      { ticketIntervalMs: 60000, maxRetryAttempts: 3 },
+      orchestrator,
+      store,
+      { projectStore, pluginManager }
+    );
+
+    await loop.pollProjectTickets();
+    await new Promise((r) => setImmediate(r));
+
+    expect(orchestrator.startTaskForProject).toHaveBeenCalledTimes(1);
   });
 
   it("prefers a project-bound connector when the plugin manager can build one", async () => {

@@ -272,6 +272,23 @@ export class PollingLoop {
           if (existing && existing.state !== "FAILED") {
             continue;
           }
+          // Fallback for orphaned tasks: a task completed by a former project
+          // (project deleted → project_id set NULL) that was never re-adopted is
+          // invisible to the project-scoped lookup above, so a fresh instance
+          // would re-run work that is already DONE/ABANDONED. Match it by the
+          // ticket-source snapshot, scoped to this exact (integration,
+          // projectKey) to avoid colliding with an identical bare ticket id
+          // owned by a different integration. FAILED still falls through to retry.
+          if (!existing) {
+            const orphanExisting = await this.stateStore.getLatestTaskByTicketSource(
+              ticketId,
+              ticketSource.integrationId,
+              ticketSource.ticketProjectKey
+            );
+            if (orphanExisting && orphanExisting.state !== "FAILED") {
+              continue;
+            }
+          }
           const failedAttemptsCount = await this.stateStore.getFailedAttemptCount(ticketId, sourceLabel, project.id);
           if (failedAttemptsCount >= this.config.maxRetryAttempts) {
             log.warn(
