@@ -48,7 +48,8 @@ function makeIntegration(id: string, overrides: Partial<Integration> = {}): Inte
       sshHost: "gerrit.example.com",
       sshPort: 29418,
       sshUser: VE_SSH_USER,
-      sshKeyPath: "/tmp/id_rsa",
+      // Resolved key path injected by preprocessConfig (generated-key mode).
+      _resolvedSshKeyPath: "/tmp/id_rsa",
     }),
     enabled: true,
     createdAt: new Date(),

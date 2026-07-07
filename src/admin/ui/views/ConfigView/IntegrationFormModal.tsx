@@ -307,9 +307,14 @@ interface SshAuthSectionProps {
 
 function SshAuthSection({ provider, providerName, config, onConfigChange }: SshAuthSectionProps) {
   const detectMode = (): SshAuthMode => {
-    // Check for non-empty strings, not just presence of the key — an empty
-    // string (e.g. a cleared field) must not be mistaken for a configured value.
-    if (typeof config["sshPublicKey"] === "string" && config["sshPublicKey"].trim().length > 0) return "generated";
+    // Generated-key auth is selected by sshPrivateKeyEnc (the actual auth
+    // material, exposed as a masked placeholder on read); sshPublicKey is only
+    // for display. Check for non-empty strings, not just presence of the key —
+    // an empty string (e.g. a cleared field) must not be mistaken for a
+    // configured value.
+    const hasPrivateKey = typeof config["sshPrivateKeyEnc"] === "string" && config["sshPrivateKeyEnc"].trim().length > 0;
+    const hasPublicKey = typeof config["sshPublicKey"] === "string" && config["sshPublicKey"].trim().length > 0;
+    if (hasPrivateKey || hasPublicKey) return "generated";
     return "agent";
   };
 
