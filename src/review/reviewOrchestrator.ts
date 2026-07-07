@@ -170,12 +170,20 @@ export class ReviewOrchestrator {
           existing.reviewedPatchset !== null &&
           existing.reviewedPatchset === details.currentPatchset;
 
+        // Legacy or interrupted REVIEW_DONE rows may have never recorded
+        // reviewedPatchset (null). Treat a completed review with an unknown
+        // patchset as already-reviewed so a startup backfill does not spawn a
+        // duplicate review on a change VE has already finished. REVIEW_FAILED
+        // is intentionally excluded so failed reviews can still retry.
+        const doneWithUnknownPatchset =
+          existing.state === "REVIEW_DONE" && existing.reviewedPatchset === null;
+
         // Automatic re-triggers (stream backfill on (re)connect, polling-loop
         // discovery, webhook re-deliveries) must NOT re-review a patchset VE has
         // already reviewed — that is the duplicate-review bug seen when a project
         // is "resynced". Manual triggers set input.force (e.g. a human removed VE
         // then re-added it as a reviewer) and intentionally bypass this guard.
-        if (alreadyReviewedThisPatchset && input.force !== true) {
+        if ((alreadyReviewedThisPatchset || doneWithUnknownPatchset) && input.force !== true) {
           log.info(
             { taskId: existing.taskId, patchset: details.currentPatchset, state: existing.state },
             "patchset already reviewed — skipping automatic re-trigger"
