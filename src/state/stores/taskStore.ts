@@ -235,11 +235,13 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
   }
 
   // Newest task for a ticket matching a ticket-source snapshot, regardless of
-  // project_id. Mirrors `adoptOrphanedTasksForProject`'s WHERE clause so it
-  // catches orphaned tasks (owning project deleted → project_id NULL) that the
-  // project-scoped `getTaskByTicketId` misses, while staying scoped to this
-  // exact (integration, projectKey) to avoid colliding with an identical bare
-  // ticket id owned by a different integration.
+  // project_id. Uses the same (integration, projectKey) snapshot columns as
+  // `adoptOrphanedTasksForProject`, but deliberately omits that helper's
+  // `project_id IS NULL` filter so it also catches a completed task whether it
+  // is still orphaned (owning project deleted → project_id NULL) or already
+  // re-bound — cases the project-scoped `getTaskByTicketId` can miss. Scoped to
+  // this exact (integration, projectKey) to avoid colliding with an identical
+  // bare ticket id owned by a different integration.
   async function getLatestTaskByTicketSource(
     ticketId: TicketId,
     integrationId: string,

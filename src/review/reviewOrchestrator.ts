@@ -173,10 +173,15 @@ export class ReviewOrchestrator {
         // Legacy or interrupted REVIEW_DONE rows may have never recorded
         // reviewedPatchset (null). Treat a completed review with an unknown
         // patchset as already-reviewed so a startup backfill does not spawn a
-        // duplicate review on a change VE has already finished. REVIEW_FAILED
-        // is intentionally excluded so failed reviews can still retry.
+        // duplicate review on a change VE has already finished. Guarded on the
+        // stored currentPatchset still matching the change's current patchset so
+        // a NEW patchset (currentPatchset advanced) is still reviewed rather
+        // than silently skipped. REVIEW_FAILED is intentionally excluded so
+        // failed reviews can still retry.
         const doneWithUnknownPatchset =
-          existing.state === "REVIEW_DONE" && existing.reviewedPatchset === null;
+          existing.state === "REVIEW_DONE" &&
+          existing.reviewedPatchset === null &&
+          existing.currentPatchset === details.currentPatchset;
 
         // Automatic re-triggers (stream backfill on (re)connect, polling-loop
         // discovery, webhook re-deliveries) must NOT re-review a patchset VE has
