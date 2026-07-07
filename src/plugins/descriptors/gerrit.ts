@@ -61,7 +61,7 @@ export function parseGerritConfig(integration: Integration): GerritPluginConfig 
   }
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
   const n = raw as Record<string, unknown>;
-  for (const k of ["sshKeyPath", "sshKnownHostsPath", "sshPrivateKeyEnc", "sshPublicKey", "sshAgentPublicKey"] as const) {
+  for (const k of ["sshKnownHostsPath", "sshPrivateKeyEnc", "sshPublicKey", "sshAgentPublicKey"] as const) {
     if ((n[k] as string | undefined)?.trim() === "") delete n[k];
   }
   if ((n["sshPort"] as string | undefined) === "") delete n["sshPort"];
@@ -85,11 +85,9 @@ function buildSshArgs(cfg: Record<string, unknown>): {
   agentPubKeyPath: string | undefined;
   knownHostsPath: string | undefined;
 } {
-  // Prefer the pre-resolved path set by preprocessConfig; fall back to the raw
-  // sshKeyPath field for callers that bypass preprocessConfig (e.g. unit tests).
+  // Prefer the pre-resolved path set by preprocessConfig.
   const resolvedKeyPath = cfg[SSH_RESOLVED_KEY_PATH] as string | undefined;
-  const rawKeyPath = cfg["sshKeyPath"] as string | undefined;
-  const keyPath = resolvedKeyPath ?? (rawKeyPath && rawKeyPath.trim().length > 0 ? rawKeyPath.trim() : undefined);
+  const keyPath = resolvedKeyPath;
   return {
     host: cfg["sshHost"] as string,
     user: cfg["sshUser"] as string,
@@ -126,7 +124,6 @@ export const gerritDescriptor: ProviderDescriptor = {
     { key: "sshPrivateKeyEnc", label: "SSH Private Key (encrypted)", type: "password", required: false, hidden: true },
     { key: "sshPublicKey", label: "SSH Public Key", type: "text", required: false, hidden: true },
     { key: "sshAgentPublicKey", label: "SSH Agent Public Key", type: "text", required: false, hidden: true },
-    { key: "sshKeyPath", label: "SSH Key Path", type: "text", required: false, hidden: true },
   ],
 
   /**

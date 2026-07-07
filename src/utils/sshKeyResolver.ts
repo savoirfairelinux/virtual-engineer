@@ -7,11 +7,10 @@
  * on process exit.
  *
  * Three SSH authentication modes:
- *   1. Private-key file  — `sshKeyPath` is set in config  (legacy / custom path)
- *   2. Generated key     — `sshPrivateKeyEnc` is set; resolver decrypts + writes to temp file
- *   3. SSH agent         — neither key is set; SSH_AUTH_SOCK is forwarded
- *      3a. With identity pinning — `sshAgentPublicKey` stored in config; resolver writes .pub temp file
- *      3b. No pinning           — all agent keys tried
+ *   1. Private-key file  — `sshPrivateKeyEnc` is set; resolver decrypts + writes to temp file
+ *   2. SSH agent         — `sshPrivateKeyEnc` is absent; SSH_AUTH_SOCK is forwarded
+ *      2a. With identity pinning — `sshAgentPublicKey` stored in config; resolver writes .pub temp file
+ *      2b. No pinning           — all agent keys tried
  */
 
 import { writeFileSync, existsSync, readFileSync, unlinkSync } from "node:fs";
@@ -92,9 +91,8 @@ export function resolveAgentPubKeyPath(publicKey: string, integrationId: string)
  *
  * Priority:
  *   1. `_resolvedSshKeyPath` — already resolved by a prior `preprocessConfig` call
- *   2. `sshKeyPath`          — explicit file path from config
- *   3. `sshPrivateKeyEnc`    — decrypt and write to temp file
- *   4. `undefined`           — SSH agent mode (no file key)
+ *   2. `sshPrivateKeyEnc`    — decrypt and write to temp file
+ *   3. `undefined`           — SSH agent mode (no file key)
  *
  * Throws if `sshPrivateKeyEnc` is set but cannot be decrypted (e.g. wrong or
  * missing `ADMIN_AUTH_SECRET`), rather than silently falling back to agent
@@ -112,9 +110,6 @@ export function resolveEffectiveSshKeyPath(
   integrationId: string | undefined
 ): string | undefined {
   if (typeof cfg[SSH_RESOLVED_KEY_PATH] === "string") return cfg[SSH_RESOLVED_KEY_PATH] as string;
-  if (typeof cfg["sshKeyPath"] === "string" && cfg["sshKeyPath"].trim().length > 0) {
-    return cfg["sshKeyPath"] as string;
-  }
   const enc = cfg["sshPrivateKeyEnc"];
   if (typeof enc === "string" && enc.length > 0) {
     // When called from buildCapabilityInstance, decryptPasswordFields has already

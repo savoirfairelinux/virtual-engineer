@@ -68,7 +68,6 @@ import { rm } from "node:fs/promises";
 const SSH_HOST = "gerrit.test";
 const SSH_PORT = 29418;
 const SSH_USER = "ve-bot";
-const SSH_KEY = "/path/to/key";
 const REVIEWER_ACCOUNT_ID = "948";
 const CHANGE_ID = makeExternalChangeId(
   "jami-client-qt~master~I8473b95934b5732ac55d26311a706c9c2bde9940"
@@ -79,7 +78,6 @@ function makeProvider(overrides: Partial<GerritSshReviewProviderConfig> = {}): G
     sshHost: SSH_HOST,
     sshPort: SSH_PORT,
     sshUser: SSH_USER,
-    sshKeyPath: SSH_KEY,
     reviewerAccountId: REVIEWER_ACCOUNT_ID,
     workspaceBaseDir: "/tmp/test-diffs",
     ...overrides,
