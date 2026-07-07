@@ -40,9 +40,9 @@ interface GerritStreamConfig {
   sshHost: string;
   sshPort: number;
   sshUser: string;
-  /** Path to an SSH private-key file. Omit to use the system SSH agent. */
+  /** Resolved SSH private-key file path (temp file written by preprocessConfig). Omit to use the system SSH agent. */
   sshKeyPath?: string | undefined;
-  /** Path to an agent identity `.pub` file for identity pinning. Only used when sshKeyPath is absent. */
+  /** Path to an agent identity `.pub` file for identity pinning. Only used in agent mode. */
   sshAgentPubKeyPath?: string | undefined;
   sshKnownHostsPath?: string | undefined;
 }
