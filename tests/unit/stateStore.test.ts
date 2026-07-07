@@ -277,6 +277,51 @@ describe("SqliteStateStore", () => {
       await expect(store.transition(taskId, "DONE")).rejects.toThrow(InvalidTransitionError);
     });
 
+    it("notifies onTaskTransition listeners after a successful transition", async () => {
+      const taskId = makeTaskId(randomUUID());
+      await store.createTask(taskId, makeTicketId("3b"));
+      const seen: string[] = [];
+      store.onTaskTransition((task) => seen.push(task.state));
+      await store.transition(taskId, "CONTEXT_BUILDING");
+      expect(seen).toEqual(["CONTEXT_BUILDING"]);
+    });
+
+    it("does not propagate a listener error to the caller of transition", async () => {
+      const taskId = makeTaskId(randomUUID());
+      await store.createTask(taskId, makeTicketId("3c"));
+      store.onTaskTransition(() => {
+        throw new Error("listener boom");
+      });
+      const updated = await store.transition(taskId, "CONTEXT_BUILDING");
+      expect(updated.state).toBe("CONTEXT_BUILDING");
+    });
+
+    it("notifies onTaskTransition listeners from retryTask and abandonTask, not just transition()", async () => {
+      const retriedId = makeTaskId(randomUUID());
+      await store.createTask(retriedId, makeTicketId("3d"));
+      const retrySeen: string[] = [];
+      store.onTaskTransition((task) => retrySeen.push(task.state));
+      await store.retryTask(retriedId);
+      expect(retrySeen.length).toBe(1);
+
+      const abandonedId = makeTaskId(randomUUID());
+      await store.createTask(abandonedId, makeTicketId("3e"));
+      const abandonSeen: string[] = [];
+      store.onTaskTransition((task) => abandonSeen.push(task.state));
+      await store.abandonTask(abandonedId);
+      expect(abandonSeen).toEqual(["ABANDONED"]);
+    });
+
+    it("does not notify onTaskTransition listeners for pause/resume (same-state metadata rows)", async () => {
+      const taskId = makeTaskId(randomUUID());
+      await store.createTask(taskId, makeTicketId("3f"));
+      const seen: string[] = [];
+      store.onTaskTransition((task) => seen.push(task.state));
+      await store.pauseTask(taskId);
+      await store.resumeTask(taskId);
+      expect(seen).toEqual([]);
+    });
+
     it("persists transition history", async () => {
       const taskId = makeTaskId(randomUUID());
       await store.createTask(taskId, makeTicketId("4"));

@@ -36,6 +36,13 @@ import { buildTicketSourceLabel, parseIntegrationIdFromSourceLabel } from "./uti
 
 const log = getLogger("main");
 const SHUTDOWN_TIMEOUT_MS = 5_000;
+/**
+ * Debounce window for polling-loop reconciliation triggered by task state
+ * changes. Coalesces bursts of transitions (e.g. a task advancing through
+ * several states, or many tasks moving at once) into a single
+ * `pollingIsRequired()` re-check instead of querying the DB per transition.
+ */
+const POLLING_RECONCILE_DEBOUNCE_MS = 1_000;
 
 /** Bootstrap all runtime dependencies and start the Virtual Engineer main loop. */
 async function main(): Promise<void> {
@@ -137,6 +144,44 @@ async function main(): Promise<void> {
     { ...pollingProjectMode, reviewTrigger: pollingReviewTrigger }
   );
 
+  /**
+   * Start or stop the polling loop to match current need. Idempotent: only
+   * acts when the running state disagrees with `pollingIsRequired()`.
+   */
+  async function reconcilePollingLoop(): Promise<void> {
+    const required = await pollingIsRequired(stateStore, pluginManager, integrationStreamEvents);
+    if (required && !pollingLoop.isRunning()) {
+      log.info("polling required — starting polling loop");
+      pollingLoop.start();
+    } else if (!required && pollingLoop.isRunning()) {
+      log.info("polling no longer required — stopping polling loop");
+      pollingLoop.stop();
+    }
+  }
+
+  // Debounced reconcile trigger for task state changes. A single timer
+  // coalesces bursts so we run one `pollingIsRequired()` re-check per window.
+  let pollingReconcileTimer: ReturnType<typeof setTimeout> | null = null;
+  function schedulePollingReconcile(): void {
+    if (pollingReconcileTimer) return;
+    pollingReconcileTimer = setTimeout(() => {
+      pollingReconcileTimer = null;
+      reconcilePollingLoop().catch((err: unknown) => {
+        log.error({ err }, "polling loop reconcile failed");
+      });
+    }, POLLING_RECONCILE_DEBOUNCE_MS);
+  }
+
+  // Reconcile the polling loop whenever a task changes state. This starts the
+  // loop when a task enters a state whose only recovery path (on a missed
+  // stream event) is a fallback poller (`pollInReviewTasks` /
+  // `pollReviewWatchingTasks`) — even in an otherwise stream-only setup — and
+  // stops it again once no project or active task requires polling, so we
+  // don't leave background work running indefinitely.
+  stateStore.onTaskTransition(() => {
+    schedulePollingReconcile();
+  });
+
   const integrationStreamEvents = new PluginIntegrationStreamEventsManager({
     orchestrator,
     getReviewTrigger: (): import("./connectors/integrationStreamEvents.js").IntegrationEventStreamReviewTrigger | undefined => reviewTriggerHolder.current ?? undefined,
@@ -171,10 +216,7 @@ async function main(): Promise<void> {
     reviewTriggerHolder.current = buildReviewTrigger(pluginManager, config.workspaceBaseDir, workspaceRunner, stateStore);
     await integrationStreamEvents.reconcile(pluginManager.getActiveIntegrations());
     log.info("runtime dependencies refreshed");
-    if (!pollingLoop.isRunning() && await hasRunnableProject(stateStore, pluginManager)) {
-      log.info("runnable project detected — starting polling loop");
-      pollingLoop.start();
-    }
+    await reconcilePollingLoop();
   }
 
   if (typeof pluginManager.onPluginChange === "function") {
@@ -314,6 +356,10 @@ async function main(): Promise<void> {
 
     shuttingDown = true;
     log.info({ signal }, "shutting down");
+    if (pollingReconcileTimer) {
+      clearTimeout(pollingReconcileTimer);
+      pollingReconcileTimer = null;
+    }
     pollingLoop.stop();
 
     await closeAdminServer(adminServer, SHUTDOWN_TIMEOUT_MS);
@@ -336,12 +382,16 @@ async function main(): Promise<void> {
     void shutdown("SIGTERM");
   });
 
-  if (await hasRunnableProject(stateStore, pluginManager)) {
+  if (await pollingIsRequired(stateStore, pluginManager, integrationStreamEvents)) {
     pollingLoop.start();
   } else {
-    log.warn(
-      "Polling loop not started: no enabled project with all required integrations active. " +
-      "Create a complete project via the admin UI to begin processing tickets."
+    log.info(
+      "Polling loop not started: no enabled project currently requires polling. " +
+      "This only affects ticket-discovery polling (coding projects) and fallback " +
+      "polling for in-review tasks; stream-based review intake (e.g., Gerrit) " +
+      "continues to work. The loop will start automatically when a polling-based " +
+      "project is configured or a task needs the fallback poller, and stop again " +
+      "once neither is the case."
     );
   }
   log.info("Virtual Engineer running — press Ctrl+C to stop");
@@ -405,19 +455,48 @@ function resolveReviewIntegration(
 }
 
 /**
- * Returns true when at least one enabled project has all required integrations
- * active in the plugin manager. For coding projects: ticket source + at least
- * one push target. For review projects: review target.
+ * Returns true when polling is actually required.
+ *
+ * Polling is needed when:
+ * - There is at least one enabled coding project with active ticket source +
+ *   push target integrations (ticket discovery always relies on polling).
+ * - There is at least one enabled review project whose active review
+ *   integration does NOT deliver events via a stream (e.g. GitHub/GitLab
+ *   MRs need polling; Gerrit with stream-events does not).
+ * - There is at least one active task whose progression depends on the
+ *   polling-loop fallbacks (`pollInReviewTasks` / `pollReviewWatchingTasks`).
+ *   Those fallbacks compensate for missed stream events, so a stream-only
+ *   setup (e.g. Gerrit) that restarted with an `IN_REVIEW` code-gen or
+ *   `REVIEW_WATCHING` code-review task still needs polling to avoid
+ *   stranding it.
  */
-async function hasRunnableProject(
+interface StreamStatusChecker {
+  getStatus(integrationId: string): { state: string } | null;
+}
+
+async function pollingIsRequired(
   store: {
     listProjects(filter?: { enabled?: boolean }): Promise<ProjectRecord[]>;
     getProjectTicketSource(id: ProjectId): Promise<ProjectTicketSourceRecord | null>;
     listProjectPushTargets(id: ProjectId): Promise<ProjectPushTargetRecord[]>;
     getProjectReviewConfig(id: ProjectId): Promise<ProjectReviewConfig | null>;
+    getActiveTasks(): Promise<Task[]>;
   },
-  pluginManager: PluginManager
+  pluginManager: PluginManager,
+  streamEvents?: StreamStatusChecker
 ): Promise<boolean> {
+  // Active tasks whose only progression path (when their stream event is
+  // missed) is the polling-loop fallback keep polling alive regardless of
+  // project configuration.
+  const activeTasks = await store.getActiveTasks();
+  const needsFallbackPoll = activeTasks.some(
+    (t) =>
+      t.externalChangeId != null &&
+      ((t.taskType === "code-gen" && t.state === "IN_REVIEW") ||
+        (t.taskType === "code-review" && t.state === "REVIEW_WATCHING"))
+  );
+  if (needsFallbackPoll) return true;
+
   const projects = await store.listProjects({ enabled: true });
   for (const project of projects) {
     if (project.type === "coding") {
@@ -427,7 +506,22 @@ async function hasRunnableProject(
       if (pts.some(pt => pluginManager.isIntegrationActive(pt.integrationId))) return true;
     } else if (project.type === "review") {
       const rc = await store.getProjectReviewConfig(project.id);
-      if (rc && pluginManager.isIntegrationActive(rc.integrationId)) return true;
+      if (!rc || !pluginManager.isIntegrationActive(rc.integrationId)) continue;
+      if (!pluginManager.integrationHasStreamEvents(rc.integrationId)) {
+        // Only start polling if the provider implements polling-based
+        // assignment discovery (e.g. GitHub).  Webhook-only providers
+        // (e.g. GitLab) do not implement getOpenReviewAssignments, so
+        // starting the loop would achieve nothing.
+        const intake = pluginManager.getIntegrationCapabilityIntake(rc.integrationId, "code_review");
+        if (intake.includes("polling")) return true;
+        continue;
+      }
+      // Stream-backed (e.g. Gerrit): fall back to polling when the stream
+      // connection is degraded so in-progress tasks are not stranded.
+      if (streamEvents) {
+        const status = streamEvents.getStatus(rc.integrationId);
+        if (status?.state === "error" || status?.state === "stopped") return true;
+      }
     }
   }
   return false;
