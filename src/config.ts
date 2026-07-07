@@ -77,7 +77,7 @@ const ConfigSchema = z.object({
     workspaceBaseDir: z.string().default("/tmp/virtual-engineer/workspaces"),
     /**
      * Docker network for agent/review containers.
-     * The default `virtual-engineer_ve-agent-net` is created by scripts/init-infra.sh.
+     * The default `virtual-engineer_ve-agent-net` is created by scripts/start.sh.
      * When running the orchestrator directly on the host (dev), `bridge` also works.
      */
     agentDockerNetwork: z.string().default("virtual-engineer_ve-agent-net"),
