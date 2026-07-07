@@ -6,9 +6,9 @@
  * identity pinning are written to temp files exactly once and cleaned up
  * on process exit.
  *
- * Three SSH authentication modes:
- *   1. Private-key file  — `sshPrivateKeyEnc` is set; resolver decrypts + writes to temp file
- *   2. SSH agent         — `sshPrivateKeyEnc` is absent; SSH_AUTH_SOCK is forwarded
+ * Two SSH authentication modes:
+ *   1. Generated key — `sshPrivateKeyEnc` is set; resolver decrypts + writes to temp file
+ *   2. SSH agent     — `sshPrivateKeyEnc` is absent; SSH_AUTH_SOCK is forwarded
  *      2a. With identity pinning — `sshAgentPublicKey` stored in config; resolver writes .pub temp file
  *      2b. No pinning           — all agent keys tried
  */
