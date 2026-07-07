@@ -15,6 +15,13 @@ function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status });
 }
 
+function pagedResponse(body: unknown, nextPage: number | null): Response {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: nextPage !== null ? { "x-next-page": String(nextPage) } : {},
+  });
+}
+
 const cid = "42" as unknown as ExternalChangeId;
 
 const MR_BODY = {
@@ -307,6 +314,34 @@ describe("GitLabMergeRequestReviewProvider", () => {
           { system: false, created_at: "2026-01-02T10:00:00Z", author: { username: "alice" } },
         ]));
       expect(await new GitLabMergeRequestReviewProvider(config).hasReviewedCurrentPatchset(cid)).toBe(false);
+    });
+
+    it("paginates notes to find VE's review on a later page", async () => {
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ id: 9, username: "ve-bot" }))
+        .mockResolvedValueOnce(jsonResponse([{ committed_date: "2026-01-01T10:00:00Z" }]))
+        .mockResolvedValueOnce(pagedResponse(
+          [{ system: false, created_at: "2026-01-03T10:00:00Z", author: { username: "alice" } }],
+          2,
+        )) // page 1: newer than commit, but not VE
+        .mockResolvedValueOnce(pagedResponse(
+          [{ system: false, created_at: "2026-01-02T10:00:00Z", author: { username: "ve-bot" } }],
+          null,
+        )); // page 2: VE note at/after commit
+      expect(await new GitLabMergeRequestReviewProvider(config).hasReviewedCurrentPatchset(cid)).toBe(true);
+    });
+
+    it("stops paginating once notes predate the latest commit", async () => {
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ id: 9, username: "ve-bot" }))
+        .mockResolvedValueOnce(jsonResponse([{ committed_date: "2026-01-05T10:00:00Z" }]))
+        .mockResolvedValueOnce(pagedResponse(
+          [{ system: false, created_at: "2026-01-01T10:00:00Z", author: { username: "ve-bot" } }],
+          2,
+        )); // page 1 has an older VE note -> short-circuit, page 2 never fetched
+      expect(await new GitLabMergeRequestReviewProvider(config).hasReviewedCurrentPatchset(cid)).toBe(false);
+      // Only user + commits + one notes page = 3 fetch calls (no second notes page).
+      expect(fetchMock).toHaveBeenCalledTimes(3);
     });
   });
 });

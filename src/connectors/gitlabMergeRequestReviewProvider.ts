@@ -218,20 +218,25 @@ export class GitLabMergeRequestReviewProvider implements ReviewProvider {
     const commitMs = latestCommitMs;
 
     try {
-      const notes = z
-        .array(MrNoteSchema)
-        .parse(
-          await this.http.fetchJson(
-            `${this.mrUrl(project, iid)}/notes?per_page=100&sort=desc&order_by=created_at`
-          )
+      // Notes are returned newest-first; walk pages until we find VE's own note
+      // at/after the latest commit, or reach notes older than the commit (all
+      // remaining notes are older too, so we can stop early).
+      let page: number | null = 1;
+      for (let guard = 0; page !== null && guard < 50; guard++) {
+        const { body, nextPage } = await this.http.fetchPaginated(
+          `${this.mrUrl(project, iid)}/notes?per_page=100&sort=desc&order_by=created_at&page=${page}`
         );
-      return notes.some((n) => {
-        if (n.system) return false;
-        if (n.author?.username !== me) return false;
-        if (!n.created_at) return false;
-        const ms = Date.parse(n.created_at);
-        return !Number.isNaN(ms) && ms >= commitMs;
-      });
+        const notes = z.array(MrNoteSchema).parse(body);
+        for (const n of notes) {
+          if (n.system || !n.created_at) continue;
+          const ms = Date.parse(n.created_at);
+          if (Number.isNaN(ms)) continue;
+          if (ms < commitMs) return false;
+          if (n.author?.username === me) return true;
+        }
+        page = nextPage;
+      }
+      return false;
     } catch (err) {
       log.warn({ project, iid, err }, "hasReviewedCurrentPatchset: failed to fetch MR notes — assuming not reviewed");
       return false;
