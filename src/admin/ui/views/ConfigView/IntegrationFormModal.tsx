@@ -547,8 +547,16 @@ export function IntegrationFormModal({ integration, plugins, onClose, onSaved }:
   const [testResult, setTestResult] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [copiedCode, setCopiedCode] = useState(false);
 
   const plugin = plugins.find((p) => p.provider === selectedType);
+
+  const handleCopyUserCode = useCallback((code: string) => {
+    void navigator.clipboard.writeText(code).then(() => {
+      setCopiedCode(true);
+      setTimeout(() => setCopiedCode(false), 2000);
+    });
+  }, []);
 
   const setConfigField = (key: string, val: string) => {
     setConfig((prev) => ({ ...prev, [key]: val }));
@@ -767,20 +775,31 @@ export function IntegrationFormModal({ integration, plugins, onClose, onSaved }:
                   </a>{" "}
                   and enter code:
                 </div>
-                <div
-                  style={{
-                    fontFamily: "var(--font-mono)",
-                    fontSize: "20px",
-                    fontWeight: 700,
-                    letterSpacing: "0.15em",
-                    color: "var(--accent)",
-                    padding: "8px 12px",
-                    background: "var(--panel)",
-                    borderRadius: "var(--radius-sm)",
-                    display: "inline-block",
-                  }}
-                >
-                  {oauth.userCode}
+                <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                  <div
+                    style={{
+                      fontFamily: "var(--font-mono)",
+                      fontSize: "20px",
+                      fontWeight: 700,
+                      letterSpacing: "0.15em",
+                      color: "var(--accent)",
+                      padding: "8px 12px",
+                      background: "var(--panel)",
+                      borderRadius: "var(--radius-sm)",
+                      display: "inline-block",
+                    }}
+                  >
+                    {oauth.userCode}
+                  </div>
+                  <button
+                    type="button"
+                    className="btn sm"
+                    onClick={() => handleCopyUserCode(oauth.userCode ?? "")}
+                    style={{ gap: "6px" }}
+                  >
+                    {copiedCode && <Icon name="check" size={13} />}
+                    {copiedCode ? "Copied" : "Copy"}
+                  </button>
                 </div>
                 <div style={{ fontSize: "12.5px", color: "var(--text-dim)" }}>
                   {plugin.oauth.pendingLabel} — waiting for authorisation…
