@@ -33,12 +33,9 @@ All provider configuration (ticketing, VCS, agent) is stored in SQLite and manag
 ## Prod setup (orchestrator in Docker)
 
 ```bash
-cp .env.example .env                                                 # fill in HMAC-KEY
-./scripts/init-infra.sh                                              # prepare data/, secrets/, and the agent Docker network, 
-./scripts/start-orchestrator.sh
+cp .env.example .env        # fill in HMAC-KEY
+./scripts/start.sh
 ```
-
-> **Important:** always run `init-infra.sh` before the first `start-orchestrator.sh`. If Docker starts first it creates `data/` and `secrets/` as root, making them inaccessible. Fix retroactively with `sudo chown $USER:$USER data/ secrets/`.
 
 Admin UI: http://127.0.0.1:3100/admin  
 Logs: `docker logs -f ve-orchestrator`
@@ -161,7 +158,7 @@ Copy `.env.example` → `.env`. All provider credentials live in the DB (admin U
 | `MAX_RETRY_ATTEMPTS` | `5` | Max times a ticket can be retried across all tasks |
 | `AGENT_TIMEOUT_MS` | `1800000` | Host-side agent timeout (ms, 30 min) |
 | `AGENT_CONTAINER_IMAGE` | `virtual-engineer-workspace:latest` | |
-| `AGENT_DOCKER_NETWORK` | `virtual-engineer_ve-agent-net` | Bridge network for agent containers (created by `init-infra.sh`) |
+| `AGENT_DOCKER_NETWORK` | `virtual-engineer_ve-agent-net` | Bridge network for agent containers (created by `start.sh`) |
 
 ---
 
