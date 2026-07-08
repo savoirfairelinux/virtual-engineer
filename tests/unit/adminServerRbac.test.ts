@@ -177,8 +177,9 @@ describe("adminServer RBAC and session auth", () => {
       expect(response.status, `viewer GET ${path}`).toBe(200);
     }
 
-    // Forbidden: config-area reads now require operator.
-    for (const path of ["/api/admin/prompts", "/api/admin/integrations", "/api/admin/agents", "/api/admin/projects"]) {
+    // Forbidden: config-area reads still gated by the legacy operator role.
+    // (Projects are PBAC-gated and readable by viewers via the Viewer policy.)
+    for (const path of ["/api/admin/prompts", "/api/admin/integrations", "/api/admin/agents"]) {
       const response = await fetch(`${baseUrl}${path}`, { headers });
       expect(response.status, `viewer GET ${path}`).toBe(403);
     }
@@ -291,5 +292,150 @@ describe("adminServer RBAC and session auth", () => {
     } finally {
       await closeServer(legacyServer);
     }
+  });
+});
+
+describe("adminServer PBAC project scoping", () => {
+  let store: SqliteStateStore;
+  let server: ReturnType<typeof createAdminServer>;
+  let baseUrl: string;
+
+  beforeEach(async () => {
+    store = await SqliteStateStore.create(tempDbPath());
+    server = createAdminServer({
+      stateStore: store,
+      integrationStore: store,
+      promptStore: store,
+      projectStore: store,
+      agentStore: store,
+      config: {
+        nodeEnv: "test",
+        logLevel: "info",
+        maxAgentCycles: 3,
+        maxRetryAttempts: 5,
+        pollingIntervalMs: 30_000,
+        adminAuthSecret: SECRET,
+      },
+      polling: { isRunning: () => true, getIntervals: () => ({ intervalMs: 30_000 }) },
+      providers: [],
+    });
+    baseUrl = await listen(server);
+  });
+
+  afterEach(async () => {
+    await closeServer(server);
+    store.close();
+  });
+
+  async function setupAdmin(): Promise<SessionResponse> {
+    const setup = await fetch(`${baseUrl}/api/admin/auth/setup`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username: "root", password: "Str0ng-Pass-1x" }),
+    });
+    expect(setup.status).toBe(201);
+    return (await setup.json()) as SessionResponse;
+  }
+
+  async function createUserAndLogin(admin: SessionResponse, username: string, role: string): Promise<SessionResponse> {
+    const create = await fetch(`${baseUrl}/api/admin/users`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${admin.token}`, "content-type": "application/json" },
+      body: JSON.stringify({ username, password: "Str0ng-Pass-1x", role }),
+    });
+    expect(create.status).toBe(201);
+    const login = await fetch(`${baseUrl}/api/admin/auth/login`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username, password: "Str0ng-Pass-1x" }),
+    });
+    expect(login.status).toBe(200);
+    return (await login.json()) as SessionResponse;
+  }
+
+  async function seedTwoProjects(): Promise<{ a: string; b: string }> {
+    const agent = await store.createAgent({ name: "rev-agent", type: "review", modelConfigJson: "{}" });
+    const a = await store.createProject({ name: "Project A", type: "review", agentId: agent.id });
+    const b = await store.createProject({ name: "Project B", type: "review", agentId: agent.id });
+    return { a: a.id, b: b.id };
+  }
+
+  function authed(token: string): { headers: Record<string, string> } {
+    return { headers: { authorization: `Bearer ${token}` } };
+  }
+
+  it("auto-binds a new viewer to the Viewer policy (global project.read)", async () => {
+    const admin = await setupAdmin();
+    await seedTwoProjects();
+    const viewer = await createUserAndLogin(admin, "vera", "viewer");
+
+    const list = await fetch(`${baseUrl}/api/admin/projects`, authed(viewer.token));
+    expect(list.status).toBe(200);
+    const body = (await list.json()) as { projects: Array<{ id: string }> };
+    expect(body.projects).toHaveLength(2);
+  });
+
+  it("admin (superuser) sees every project", async () => {
+    const admin = await setupAdmin();
+    await seedTwoProjects();
+    const list = await fetch(`${baseUrl}/api/admin/projects`, authed(admin.token));
+    const body = (await list.json()) as { projects: Array<{ id: string }> };
+    expect(body.projects).toHaveLength(2);
+  });
+
+  it("scopes a user to a single project: list filtered, other project forbidden", async () => {
+    const admin = await setupAdmin();
+    const { a, b } = await seedTwoProjects();
+    const user = await createUserAndLogin(admin, "scoped", "viewer");
+
+    // Replace the auto-bound Viewer policy with a project-A-scoped read policy.
+    const viewerPolicy = (await store.listPolicies()).find((p) => p.name === "Viewer");
+    await store.deleteBinding(viewerPolicy!.id, "user", user.user.id);
+    const scoped = await store.createPolicy({ name: "Only-A" });
+    await store.setPolicyRules(scoped.id, [{ permission: "project.read", resourceId: a }]);
+    await store.createBinding({ policyId: scoped.id, principalType: "user", principalId: user.user.id });
+
+    // List shows only project A.
+    const list = await fetch(`${baseUrl}/api/admin/projects`, authed(user.token));
+    const body = (await list.json()) as { projects: Array<{ id: string }> };
+    expect(body.projects.map((p) => p.id)).toEqual([a]);
+
+    // Direct access to A is allowed, B is forbidden.
+    expect((await fetch(`${baseUrl}/api/admin/projects/${a}`, authed(user.token))).status).toBe(200);
+    expect((await fetch(`${baseUrl}/api/admin/projects/${b}`, authed(user.token))).status).toBe(403);
+  });
+
+  it("denies writes to a read-only scoped user", async () => {
+    const admin = await setupAdmin();
+    const { a } = await seedTwoProjects();
+    const user = await createUserAndLogin(admin, "ro", "viewer");
+    const viewerPolicy = (await store.listPolicies()).find((p) => p.name === "Viewer");
+    await store.deleteBinding(viewerPolicy!.id, "user", user.user.id);
+    const scoped = await store.createPolicy({ name: "RO-A" });
+    await store.setPolicyRules(scoped.id, [{ permission: "project.read", resourceId: a }]);
+    await store.createBinding({ policyId: scoped.id, principalType: "user", principalId: user.user.id });
+
+    // Deleting project A requires project.delete — not granted → 403.
+    const del = await fetch(`${baseUrl}/api/admin/projects/${a}`, { method: "DELETE", ...authed(user.token) });
+    expect(del.status).toBe(403);
+  });
+
+  it("grants project access via group membership", async () => {
+    const admin = await setupAdmin();
+    const { a, b } = await seedTwoProjects();
+    const user = await createUserAndLogin(admin, "grouped", "viewer");
+    const viewerPolicy = (await store.listPolicies()).find((p) => p.name === "Viewer");
+    await store.deleteBinding(viewerPolicy!.id, "user", user.user.id);
+
+    const group = await store.createGroup({ name: "Team-B" });
+    await store.addUserToGroup(group.id, user.user.id);
+    const policy = await store.createPolicy({ name: "Group-B-read" });
+    await store.setPolicyRules(policy.id, [{ permission: "project.read", resourceId: b }]);
+    await store.createBinding({ policyId: policy.id, principalType: "group", principalId: group.id });
+
+    const list = await fetch(`${baseUrl}/api/admin/projects`, authed(user.token));
+    const body = (await list.json()) as { projects: Array<{ id: string }> };
+    expect(body.projects.map((p) => p.id)).toEqual([b]);
+    expect((await fetch(`${baseUrl}/api/admin/projects/${a}`, authed(user.token))).status).toBe(403);
   });
 });

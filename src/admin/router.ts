@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { UserRole } from "../interfaces.js";
+import type { Permission, ResourceType, UserRole } from "../interfaces.js";
 import { writeJson } from "./adminRouteUtils.js";
 
 export type RouteParams = Record<string, string>;
@@ -9,9 +9,31 @@ export type RouteHandler = (
   params: RouteParams
 ) => Promise<void>;
 
-/** Per-route metadata. `role` is the minimum role required (default: {@link defaultRoleForMethod}). */
+/**
+ * Per-route authorization metadata.
+ *
+ * A route is authorized by **either** a PBAC `permission` (preferred) or a
+ * legacy minimum `role` (transitional fallback). When `permission` is set and
+ * the request has resolved PBAC permissions, the gate enforces it — scoping to a
+ * concrete resource id when `resourceParam` names a path parameter. When PBAC
+ * permissions are unavailable (mocks/older embedders) or no `permission` is
+ * declared, the gate falls back to the `role` check (default
+ * {@link defaultRoleForMethod}).
+ */
 export interface RouteMeta {
   role?: UserRole;
+  /** PBAC permission required to reach the route. */
+  permission?: Permission;
+  /** Resource type the permission scopes to (informational; derived from `permission` when omitted). */
+  resourceType?: ResourceType;
+  /** Path-parameter name holding the scoped resource id (e.g. `"id"`). Omit for global permissions. */
+  resourceParam?: string;
+  /**
+   * Marks a collection/list route: authorize when the caller holds the
+   * `permission` on **any** resource (scoped or global). The handler is then
+   * responsible for filtering the response to the caller's accessible ids.
+   */
+  collection?: boolean;
 }
 
 /**
@@ -76,13 +98,26 @@ export class Router {
 
   /**
    * Peek at the route that would handle a method + path (without dispatching).
-   * Returns the route's metadata, or null when no route matches.
+   * Returns the route's metadata and extracted path params, or null when no
+   * route matches. Malformed URL-encoded params are returned as empty strings.
    */
-  match(method: string, path: string): { meta: RouteMeta } | null {
+  match(method: string, path: string): { meta: RouteMeta; params: RouteParams } | null {
     const upperMethod = method.toUpperCase();
     for (const route of this.routes) {
       if (route.method !== upperMethod) continue;
-      if (route.regex.test(path)) return { meta: route.meta };
+      const m = route.regex.exec(path);
+      if (!m) continue;
+      const params: RouteParams = {};
+      for (let i = 0; i < route.keys.length; i++) {
+        const key = route.keys[i];
+        if (key === undefined) continue;
+        try {
+          params[key] = decodeURIComponent(m[i + 1] ?? "");
+        } catch {
+          params[key] = "";
+        }
+      }
+      return { meta: route.meta, params };
     }
     return null;
   }

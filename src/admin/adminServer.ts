@@ -28,9 +28,13 @@ import { registerIntegrationRoutes } from "./adminIntegrationRoutes.js";
 import { registerAuthRoutes, type AuthRouteAuditStore, type AuthRouteUserStore } from "./adminAuthRoutes.js";
 import { registerAuditRoutes, type AuditReadStore } from "./adminAuditRoutes.js";
 import { createAdminAuthService, type AdminAuthService, type AdminAuthStateStore } from "./adminAuthService.js";
-import { getAuthContext, setAuthContext } from "./authContext.js";
+import { getAuthContext, setAuthContext, getEffectivePermissions, setEffectivePermissions } from "./authContext.js";
 import { makeTaskId } from "../interfaces.js";
-import { Router, defaultRoleForMethod, roleSatisfies } from "./router.js";
+import { Router, defaultRoleForMethod, roleSatisfies, type RouteMeta, type RouteParams } from "./router.js";
+import { buildEffectivePermissions, can, accessibleResourceIds, type EffectivePermissions } from "./authorization/policyEngine.js";
+import { bindDefaultPolicyForRole, type DefaultPolicyBinderStore } from "./authorization/seedPolicies.js";
+import type { AuthContext } from "./adminAuthService.js";
+import type { PolicyRule, UserRole } from "../interfaces.js";
 
 export { getAuthContext } from "./authContext.js";
 export type { AuthContext } from "./adminAuthService.js";
@@ -243,17 +247,47 @@ function extractAuditReadStore(stateStore: unknown): AuditReadStore | null {
     : null;
 }
 
+/** PBAC rule-resolution surface used to build a user's effective permissions. */
+interface PbacRuleStore {
+  getEffectivePolicyRulesForUser(userId: string): Promise<PolicyRule[]>;
+}
+
+/** Feature-detect the PBAC rule-resolution method on the injected state store. */
+function extractPbacStore(stateStore: unknown): PbacRuleStore | null {
+  const candidate = stateStore as Partial<PbacRuleStore> | null | undefined;
+  return candidate && typeof candidate.getEffectivePolicyRulesForUser === "function"
+    ? (candidate as PbacRuleStore)
+    : null;
+}
+
+/** Feature-detect the policy-binding surface used to assign role-default policies. */
+function extractPolicyBinder(stateStore: unknown): DefaultPolicyBinderStore | null {
+  const candidate = stateStore as Partial<DefaultPolicyBinderStore> | null | undefined;
+  return candidate &&
+    typeof candidate.listPolicies === "function" &&
+    typeof candidate.createBinding === "function"
+    ? (candidate as DefaultPolicyBinderStore)
+    : null;
+}
+
 interface AdminAuthRuntime {
   authService: AdminAuthService | null;
   userStore: AdminUserCapableStore | null;
   /** Cached "≥1 user exists" check — false when the store lacks user methods. */
   usersExist(): Promise<boolean>;
   invalidateUsersExistCache(): void;
+  /**
+   * Resolve a request identity's effective permissions. Returns undefined when
+   * PBAC is unavailable (store lacks rule resolution) so the gate falls back to
+   * the legacy role check. Superusers (admin role / bootstrap) short-circuit.
+   */
+  resolvePermissions(ctx: AuthContext): Promise<EffectivePermissions | undefined>;
 }
 
 function createAuthRuntime(dependencies: AdminServerDependencies): AdminAuthRuntime {
   const userStore = extractUserStore(dependencies.stateStore);
   const authService = userStore ? createAdminAuthService({ stateStore: userStore }) : null;
+  const pbacStore = extractPbacStore(dependencies.stateStore);
   let usersExistCache: boolean | null = null;
   return {
     authService,
@@ -268,12 +302,21 @@ function createAuthRuntime(dependencies: AdminServerDependencies): AdminAuthRunt
     invalidateUsersExistCache(): void {
       usersExistCache = null;
     },
+    async resolvePermissions(ctx: AuthContext): Promise<EffectivePermissions | undefined> {
+      if (!pbacStore) return undefined;
+      if (ctx.role === "admin" || ctx.userId === null) {
+        return buildEffectivePermissions("admin", []);
+      }
+      const rules = await pbacStore.getEffectivePolicyRulesForUser(ctx.userId);
+      return buildEffectivePermissions(ctx.role, rules);
+    },
   };
 }
 
 /** Build the declarative API router for all /api/admin/* routes. */
 function buildApiRouter(dependencies: AdminServerDependencies, authRuntime: AdminAuthRuntime): Router {
   const router = new Router();
+  const policyBinder = extractPolicyBinder(dependencies.stateStore);
 
   // Status / Config / Providers
   router.add("GET", "/api/admin/status", async (_req, res, _params) => {
@@ -323,6 +366,9 @@ function buildApiRouter(dependencies: AdminServerDependencies, authRuntime: Admi
     auditStore,
     authService: authRuntime.authService ?? undefined,
     onUsersChanged: () => authRuntime.invalidateUsersExistCache(),
+    ...(policyBinder
+      ? { onUserCreated: (userId: string, role: UserRole): Promise<void> => bindDefaultPolicyForRole(policyBinder, userId, role) }
+      : {}),
     trustProxy: dependencies.config.adminTrustProxy,
   });
   registerAuditRoutes(router, { auditStore: extractAuditReadStore(dependencies.stateStore) ?? undefined });
@@ -526,16 +572,43 @@ async function handleRequest(
     return;
   }
 
-  // ─── RBAC gate ────────────────────────────────────────────────────────────
+  // Resolve the request's PBAC permissions once and cache them for the gate and
+  // for scope-aware list handlers. Undefined when PBAC is unavailable.
+  const authedContext = getAuthContext(request);
+  if (authedContext) {
+    const perms = await authRuntime.resolvePermissions(authedContext);
+    if (perms) setEffectivePermissions(request, perms);
+  }
+
+  // ─── Authorization gate (PBAC permission, or legacy role fallback) ──────────
 
   const matched = router.match(method, path);
   if (matched) {
     const context = getAuthContext(request);
     if (context) {
-      const requiredRole = matched.meta.role ?? defaultRoleForMethod(method);
-      if (!roleSatisfies(context.role, requiredRole)) {
-        writeJson(response, 403, { error: "forbidden", requiredRole });
-        return;
+      const meta = matched.meta;
+      const perms = getEffectivePermissions(request);
+      if (meta.permission && perms) {
+        if (meta.collection) {
+          // Collection routes authorize on any grant (scoped or global); the
+          // handler filters the response to accessible ids.
+          if (accessibleResourceIds(perms, meta.permission) === null) {
+            writeJson(response, 403, { error: "forbidden", permission: meta.permission });
+            return;
+          }
+        } else {
+          const resourceId = await resolveScopeResourceId(meta, matched.params, dependencies.stateStore);
+          if (!can(perms, meta.permission, resourceId)) {
+            writeJson(response, 403, { error: "forbidden", permission: meta.permission });
+            return;
+          }
+        }
+      } else {
+        const requiredRole = meta.role ?? defaultRoleForMethod(method);
+        if (!roleSatisfies(context.role, requiredRole)) {
+          writeJson(response, 403, { error: "forbidden", requiredRole });
+          return;
+        }
       }
     }
   }
@@ -561,6 +634,34 @@ function extractBearerToken(request: IncomingMessage): string | null {
   if (!authorization?.startsWith("Bearer ")) return null;
   const token = authorization.slice("Bearer ".length).trim();
   return token.length > 0 ? token : null;
+}
+
+/**
+ * Resolve the resource id a scoped permission check applies to.
+ *
+ * - Returns `undefined` for a global permission (no `resourceParam`) — the gate
+ *   then requires an unscoped (all-resources) grant.
+ * - For `task.*` permissions, resolves the owning **project** id (tasks inherit
+ *   their project's scope); returns null for orphaned/unknown tasks.
+ * - Otherwise returns the raw path-parameter value (project/integration/agent/prompt id).
+ */
+async function resolveScopeResourceId(
+  meta: RouteMeta,
+  params: RouteParams,
+  stateStore: AdminServerDependencies["stateStore"]
+): Promise<string | null | undefined> {
+  if (!meta.resourceParam) return undefined;
+  const raw = params[meta.resourceParam];
+  if (!raw) return null;
+  if (meta.permission?.startsWith("task.")) {
+    try {
+      const task = await stateStore.getTask(makeTaskId(raw));
+      return task?.projectId ?? null;
+    } catch {
+      return null;
+    }
+  }
+  return raw;
 }
 
 

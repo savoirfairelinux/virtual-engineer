@@ -123,3 +123,38 @@ export async function seedBuiltInPolicies(store: PolicySeedStore): Promise<void>
     }
   }
 }
+
+/** Store surface needed to bind a user's role-default policy. */
+export interface DefaultPolicyBinderStore {
+  listPolicies(): Promise<Policy[]>;
+  createBinding(input: { policyId: string; principalType: PrincipalType; principalId: string }): Promise<PolicyBinding>;
+}
+
+/**
+ * Bind a newly created user to the built-in policy matching their role, so the
+ * `role` chosen at creation acts as a sensible default access bundle. Admins are
+ * superusers and receive no binding. Idempotent and best-effort — a missing
+ * built-in policy or an existing binding is silently ignored.
+ */
+export async function bindDefaultPolicyForRole(
+  store: DefaultPolicyBinderStore,
+  userId: string,
+  role: UserRole
+): Promise<void> {
+  const roleToPolicyName: Partial<Record<UserRole, string>> = {
+    operator: BUILTIN_POLICY_OPERATOR,
+    viewer: BUILTIN_POLICY_VIEWER,
+  };
+  const policyName = roleToPolicyName[role];
+  if (!policyName) return; // admin (superuser) or unknown role
+
+  const policies = await store.listPolicies();
+  const policy = policies.find((p) => p.name === policyName);
+  if (!policy) return;
+
+  try {
+    await store.createBinding({ policyId: policy.id, principalType: "user", principalId: userId });
+  } catch {
+    // Idempotent: binding already exists.
+  }
+}

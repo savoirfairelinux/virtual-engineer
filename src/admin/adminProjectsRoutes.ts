@@ -20,6 +20,8 @@ import {
   type Task,
 } from "../interfaces.js";
 import type { Router } from "./router.js";
+import { getEffectivePermissions } from "./authContext.js";
+import { accessibleResourceIds, ALL_RESOURCES } from "./authorization/policyEngine.js";
 import { getProviderDescriptor, getProviderDomainCapabilities } from "../plugins/registry.js";
 
 const log = getLogger("admin-projects");
@@ -394,7 +396,7 @@ function isUniqueConflict(err: unknown): boolean {
 
 /** Register project routes on the given router. */
 export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): void {
-  router.add("GET", "/api/admin/projects", async (_req, res, _params) => {
+  router.add("GET", "/api/admin/projects", async (req, res, _params) => {
     if (!deps.projectStore) { writeJson(res, 501, { error: "Project store not available" }); return; }
     const store = deps.projectStore;
     const projects = await store.listProjects();
@@ -404,8 +406,16 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
     for (const p of projects) {
       summaries.push(await buildProjectSummary(p, store, integrations, agentsById));
     }
-    writeJson(res, 200, { projects: summaries });
-  });
+    // Scope-filter: a non-superuser sees only projects they may read.
+    const perms = getEffectivePermissions(req);
+    let visible = summaries;
+    if (perms) {
+      const scope = accessibleResourceIds(perms, "project.read");
+      if (scope === null) visible = [];
+      else if (scope !== ALL_RESOURCES) visible = summaries.filter((s) => scope.has(s.id));
+    }
+    writeJson(res, 200, { projects: visible });
+  }, { permission: "project.read", role: "viewer", collection: true });
 
   router.add("POST", "/api/admin/projects", async (req, res, _params) => {
     if (!deps.projectStore) { writeJson(res, 501, { error: "Project store not available" }); return; }
@@ -486,7 +496,7 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
     if (project.enabled) {
       await relaunchFailedTasksForProject(store, project.id, deps.taskControl);
     }
-  });
+  }, { permission: "project.write", role: "operator" });
 
   // Enable or disable a project by id.
   router.add("PATCH", "/api/admin/projects/:id/enable", async (req, res, params) => {
@@ -502,7 +512,7 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
     if (existing.enabled === false) {
       await relaunchFailedTasksForProject(store, id, deps.taskControl);
     }
-  });
+  }, { permission: "project.operate", role: "operator", resourceParam: "id" });
 
   router.add("PATCH", "/api/admin/projects/:id/disable", async (req, res, params) => {
     if (!deps.projectStore) { writeJson(res, 501, { error: "Project store not available" }); return; }
@@ -514,7 +524,7 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
     recordAudit(deps.auditStore, req, { action: "project.disable", targetType: "project", targetId: id, details: { name: existing.name } });
     res.statusCode = 204; res.end();
     deps.onProjectChange?.();
-  });
+  }, { permission: "project.operate", role: "operator", resourceParam: "id" });
 
   router.add("GET", "/api/admin/projects/:id", async (_req, res, params) => {
     if (!deps.projectStore) { writeJson(res, 501, { error: "Project store not available" }); return; }
@@ -525,7 +535,7 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
     const integrations = await loadIntegrationsLookup(deps.integrationStore);
     const detail = await buildProjectDetail(existing, store, integrations);
     writeJson(res, 200, { project: detail });
-  });
+  }, { permission: "project.read", role: "viewer", resourceParam: "id" });
 
   router.add("PUT", "/api/admin/projects/:id", async (req, res, params) => {
     if (!deps.projectStore) { writeJson(res, 501, { error: "Project store not available" }); return; }
@@ -602,7 +612,7 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
     if (reconfigured) {
       await relaunchFailedTasksForProject(store, id, deps.taskControl);
     }
-  });
+  }, { permission: "project.write", role: "operator", resourceParam: "id" });
 
   router.add("DELETE", "/api/admin/projects/:id", async (req, res, params) => {
     if (!deps.projectStore) { writeJson(res, 501, { error: "Project store not available" }); return; }
@@ -620,7 +630,7 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
       log.warn({ err, id }, "delete project failed");
       writeJson(res, 500, { error: msg });
     }
-  });
+  }, { permission: "project.delete", role: "operator", resourceParam: "id" });
 }
 
 // Re-export types for tests
