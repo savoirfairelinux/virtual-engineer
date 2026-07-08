@@ -5,7 +5,8 @@ import type { AdminUser, UserRole } from "../interfaces.js";
 import { writeJson, readBody, toIsoTimestamp, parseNonNegativeInt } from "./adminRouteUtils.js";
 import type { Router } from "./router.js";
 import { hashPassword, verifyPassword, type AdminAuthService } from "./adminAuthService.js";
-import { getAuthContext } from "./authContext.js";
+import { getAuthContext, getEffectivePermissions } from "./authContext.js";
+import { serializeEffectivePermissions } from "./authorization/policyEngine.js";
 import { recordAudit } from "./adminAudit.js";
 import { LoginRateLimiter, clientIpKey, usernameKey } from "./loginRateLimiter.js";
 import { isCommonPassword } from "./commonPasswords.js";
@@ -273,7 +274,13 @@ export function registerAuthRoutes(router: Router, deps: AuthRouteDeps): void {
       writeJson(res, 401, { error: "Unauthorized" });
       return;
     }
-    writeJson(res, 200, { id: context.userId, username: context.username, role: context.role });
+    const perms = getEffectivePermissions(req);
+    writeJson(res, 200, {
+      id: context.userId,
+      username: context.username,
+      role: context.role,
+      ...(perms ? { capabilities: serializeEffectivePermissions(perms) } : {}),
+    });
   }, { role: "viewer" });
 
   // ─── User management (admin only) ─────────────────────────────────────────

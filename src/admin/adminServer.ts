@@ -27,6 +27,7 @@ import { registerWebhookRoutes } from "./adminWebhookRoutes.js";
 import { registerIntegrationRoutes } from "./adminIntegrationRoutes.js";
 import { registerAuthRoutes, type AuthRouteAuditStore, type AuthRouteUserStore } from "./adminAuthRoutes.js";
 import { registerAuditRoutes, type AuditReadStore } from "./adminAuditRoutes.js";
+import { registerPolicyRoutes, type PolicyRoutesStore } from "./adminPoliciesRoutes.js";
 import { createAdminAuthService, type AdminAuthService, type AdminAuthStateStore } from "./adminAuthService.js";
 import { getAuthContext, setAuthContext, getEffectivePermissions, setEffectivePermissions } from "./authContext.js";
 import { makeTaskId } from "../interfaces.js";
@@ -270,6 +271,18 @@ function extractPolicyBinder(stateStore: unknown): DefaultPolicyBinderStore | nu
     : null;
 }
 
+/** Feature-detect the full policy/group management surface for the admin PBAC routes. */
+function extractPolicyRoutesStore(stateStore: unknown): PolicyRoutesStore | null {
+  const candidate = stateStore as Partial<PolicyRoutesStore> | null | undefined;
+  return candidate &&
+    typeof candidate.listPolicies === "function" &&
+    typeof candidate.createGroup === "function" &&
+    typeof candidate.setPolicyRules === "function" &&
+    typeof candidate.getUserById === "function"
+    ? (candidate as PolicyRoutesStore)
+    : null;
+}
+
 interface AdminAuthRuntime {
   authService: AdminAuthService | null;
   userStore: AdminUserCapableStore | null;
@@ -372,6 +385,7 @@ function buildApiRouter(dependencies: AdminServerDependencies, authRuntime: Admi
     trustProxy: dependencies.config.adminTrustProxy,
   });
   registerAuditRoutes(router, { auditStore: extractAuditReadStore(dependencies.stateStore) ?? undefined });
+  registerPolicyRoutes(router, { policyStore: extractPolicyRoutesStore(dependencies.stateStore) ?? undefined, auditStore });
   registerPromptRoutes(router, { promptStore: dependencies.promptStore, agentStore: dependencies.agentStore, auditStore });
   registerTaskRoutes(router, { stateStore: dependencies.stateStore, taskControl: dependencies.taskControl, auditStore });
   registerIntegrationRoutes(router, {

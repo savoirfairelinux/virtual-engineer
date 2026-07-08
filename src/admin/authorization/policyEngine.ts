@@ -81,3 +81,19 @@ export function accessibleResourceIds(
   const scope = perms.grants.get(permission);
   return scope ?? null;
 }
+
+/** JSON-serializable projection of a user's effective permissions (for `/auth/me`). */
+export interface SerializedPermissions {
+  superuser: boolean;
+  /** permission → `"*"` (all resources) or a sorted array of scoped resource ids. */
+  grants: Record<Permission, "*" | string[]>;
+}
+
+/** Project effective permissions to a JSON-friendly shape for the client. */
+export function serializeEffectivePermissions(perms: EffectivePermissions): SerializedPermissions {
+  const grants: Record<Permission, "*" | string[]> = {};
+  for (const [permission, scope] of perms.grants) {
+    grants[permission] = scope === ALL_RESOURCES ? "*" : [...scope].sort();
+  }
+  return { superuser: perms.isSuperuser, grants };
+}

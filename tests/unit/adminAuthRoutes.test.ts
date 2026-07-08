@@ -155,7 +155,7 @@ describe("adminAuthRoutes", () => {
         headers: { authorization: `Bearer ${session.token}` },
       });
       expect(me.status).toBe(200);
-      await expect(me.json()).resolves.toEqual({
+      await expect(me.json()).resolves.toMatchObject({
         id: session.user.id,
         username: "root",
         role: "admin",
