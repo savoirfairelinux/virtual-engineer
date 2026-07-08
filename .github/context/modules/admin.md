@@ -122,6 +122,16 @@ The admin server is a small HTTP service (default `127.0.0.1:3100`) that serves 
 | `GET` | `/api/admin/overview` | Dashboard summary: task stats, throughput sparkline, review-vote breakdown, runtime facts. |
 | `GET` | `/api/admin/cost-summary` | Aggregated AI execution cost: instance total + per-project breakdown (USD / AI credits / runs). Optional `?days=<n>` scopes to a trailing period (omitted = all-time). Legacy cycles without a cost snapshot are recomputed from their event log so historical runs are still counted. |
 | `GET` | `/api/admin/model-usage` | Model usage distribution by run count and cost (global `byModel` + `perProject`). Optional `?days=<n>` trailing-period filter; legacy cycles without a recorded model snapshot are recomputed from `agent_events`. |
+| `GET` | `/api/admin/permissions` | PBAC permission catalog (all valid `"<resourceType>.<action>"` strings) for policy-editor dropdowns. Requires `policy.manage`. |
+| `GET` / `POST` | `/api/admin/groups` | List / create user groups (`policy.manage`). |
+| `GET` / `PUT` / `DELETE` | `/api/admin/groups/:id` | Group detail (with members) / rename / delete. |
+| `POST` | `/api/admin/groups/:id/members` | Add a user (`{ userId }`) to the group. |
+| `DELETE` | `/api/admin/groups/:id/members/:userId` | Remove a user from the group. |
+| `GET` / `POST` | `/api/admin/policies` | List (with rule/binding counts) / create policies (`policy.manage`). |
+| `GET` / `PUT` / `DELETE` | `/api/admin/policies/:id` | Policy detail (rules + bindings) / rename / delete. Built-in policies return `409` on `PUT`/`DELETE`. |
+| `PUT` | `/api/admin/policies/:id/rules` | Replace the policy's rule set (`{ rules: [{ permission, resourceId? }] }`); unknown permissions → `400`; built-in → `409`. |
+| `POST` | `/api/admin/policies/:id/bindings` | Bind the policy to a principal (`{ principalType: "user"\|"group", principalId }`); duplicate → `409`, unknown principal → `404`. |
+| `DELETE` | `/api/admin/policies/:id/bindings/:principalType/:principalId` | Remove a binding. |
 
 ## Authentication
 
@@ -137,11 +147,20 @@ Two auth modes share the same route surface:
 
 | Role | May access |
 | --- | --- |
-| `viewer` | **Only** the general overview and tasks (read-only). Concretely: `GET /api/admin/status`, `GET /api/admin/config`, `GET /api/admin/overview`, `GET /api/admin/cost-summary`, `GET /api/admin/model-usage`, `GET /api/admin/tasks`, `GET /api/admin/tasks/:id`, `GET /api/admin/tasks/:id/cycles`, `GET /api/admin/tasks/:id/transitions`, the two SSE streams (`GET /api/admin/logs/stream`, `GET /api/admin/events/stream`), plus the always-allowed auth-self routes (`GET /api/admin/auth/me`, `POST /api/admin/auth/logout`, self password change `PUT /api/admin/users/:id/password`). Everything else → 403. These routes carry an explicit `{ role: "viewer" }` meta. |
-| `operator` | Everything **except** user management and the audit log — including integrations CRUD/test/enable/disable/discover, OAuth apps, webhook-secret rotation / allowed-IPs, and plugin OAuth actions (all demoted from admin to operator). |
-| `admin` | Everything operator can do, **plus** the admin-exclusive routes: user management (`/api/admin/users*`) and the audit log (`GET /api/admin/audit`). |
+| `viewer` | **Only** the general overview and tasks (read-only). Concretely: `GET /api/admin/status`, `GET /api/admin/config`, `GET /api/admin/overview`, `GET /api/admin/cost-summary`, `GET /api/admin/model-usage`, `GET /api/admin/tasks`, `GET /api/admin/tasks/:id`, `GET /api/admin/tasks/:id/cycles`, `GET /api/admin/tasks/:id/transitions`, the two SSE streams (`GET /api/admin/logs/stream`, `GET /api/admin/events/stream`), plus the always-allowed auth-self routes (`GET /api/admin/auth/me`, `POST /api/admin/auth/logout`, self password change `PUT /api/admin/users/:id/password`). Everything else → 403. These routes carry an explicit `{ role: "viewer" }` meta. Projects are now PBAC-gated (see below): viewers read them via the built-in `Viewer` policy. |
+| `operator` | Everything **except** user management, the audit log, and PBAC policy/group management — including integrations CRUD/test/enable/disable/discover, OAuth apps, webhook-secret rotation / allowed-IPs, and plugin OAuth actions (all demoted from admin to operator). |
+| `admin` | Everything operator can do, **plus** the admin-exclusive routes: user management (`/api/admin/users*`), the audit log (`GET /api/admin/audit`), and PBAC policy/group management (`/api/admin/policies*`, `/api/admin/groups*`, `/api/admin/permissions`). Also a **PBAC superuser** — bypasses all permission checks. |
 
 Insufficient role → 403 `{ error: "forbidden", requiredRole }`. The per-request identity is available to handlers via `getAuthContext(request)`.
+
+**PBAC (policy-based access control)** layers resource-scoped permissions over the role system for finer, ISO 27001-style least-privilege access. A route may declare `RouteMeta.permission` (a `"<resourceType>.<action>"` string) plus optional `resourceParam` (the path param holding the scoped resource id) and `collection` (list route). The gate resolves each request's **effective permissions** once (cached per request via `setEffectivePermissions`): the `admin` role and bootstrap are superusers; every other user's grants are the union of rules from policies bound directly to them and to their groups (`getEffectivePolicyRulesForUser` → `buildEffectivePermissions`). Enforcement (`src/admin/authorization/policyEngine.ts`):
+
+- **Scoped route** (`resourceParam` set): `can(perms, permission, resourceId)` — a `*` (all-resources) grant or a grant whose id set contains `resourceId` passes. `task.*` permissions resolve the owning **project** id (tasks inherit their project's scope).
+- **Global route** (no `resourceParam`): requires a `*` grant.
+- **Collection route** (`collection: true`): passes when the caller has the permission on **any** resource; the handler then scope-filters the response (e.g. `GET /api/admin/projects` returns only readable projects).
+- **Fallback**: when PBAC is unavailable (mock stores lacking `getEffectivePolicyRulesForUser`) or a route declares no `permission`, the legacy `role` gate applies. Migrated routes keep a `role` fallback for compatibility.
+
+Insufficient permission → 403 `{ error: "forbidden", permission }`. Built-in `Operator`/`Viewer` policies (seeded, `builtin = 1`, protected) reproduce the legacy roles; new `operator`/`viewer` users are auto-bound to the matching policy on creation (role = default access bundle), which an admin can then narrow (e.g. replace with a project-scoped policy). Currently the **project** routes are PBAC-scoped; other families remain role-gated via the fallback. `GET /api/admin/auth/me` returns the caller's serialized `capabilities` for client-side gating.
 
 The GitLab img-proxy `?t=` query token accepts a session token when users exist; in bootstrap mode (no users yet) the proxy is open, matching every other route.
 
@@ -165,6 +184,7 @@ Recorded actions:
 | Projects | `project.create`, `project.update`, `project.delete`, `project.enable`, `project.disable`, `project.ticket_source_set`, `project.push_targets_set`, `project.agent_assign` (the `_set`/`assign` sub-actions are emitted from `PUT /api/admin/projects/:id` when the corresponding payload fields are present) |
 | Prompts | `prompt.create`, `prompt.update`, `prompt.delete` |
 | Tasks | `task.delete`, `task.pause`, `task.resume`, `task.retry`, `task.abandon` |
+| Groups / Policies (PBAC) | `group.create`, `group.update`, `group.delete`, `group.member_add`, `group.member_remove`, `policy.create`, `policy.update`, `policy.delete`, `policy.rules_set`, `policy.binding_add`, `policy.binding_remove` |
 
 The log is readable through `GET /api/admin/audit` (admin only, see the endpoints table) and browsed in the SPA via the admin-only **Audit** tab in Configuration.
 
