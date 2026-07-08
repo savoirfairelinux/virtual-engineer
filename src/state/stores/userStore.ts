@@ -1,7 +1,7 @@
 import { and, eq, lte, sql } from "drizzle-orm";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import type { AdminUser, UserRole, UserSession } from "../../interfaces.js";
-import { users, userSessions } from "../schema.js";
+import { users, userSessions, policyBindings } from "../schema.js";
 import * as schema from "../schema.js";
 
 /**
@@ -151,6 +151,10 @@ export function createUserStore(context: UserStoreContext): UserStoreApi {
 
   async function deleteUser(id: string): Promise<boolean> {
     await db.delete(userSessions).where(eq(userSessions.userId, id));
+    // Remove policy bindings targeting this user (principal_id has no FK).
+    await db
+      .delete(policyBindings)
+      .where(and(eq(policyBindings.principalType, "user"), eq(policyBindings.principalId, id)));
     const result = await db.delete(users).where(eq(users.id, id));
     return result.changes > 0;
   }

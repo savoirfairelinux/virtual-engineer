@@ -129,6 +129,20 @@ describe("adminServer policy/group admin API", () => {
     expect(res.status).toBe(400);
   });
 
+  it("rejects a resourceId on a non-scopeable (global) permission", async () => {
+    const res = await fetch(`${baseUrl}/api/admin/policies`, authJson({
+      name: "BadScope",
+      rules: [{ permission: "overview.read", resourceId: "proj-1" }],
+    }));
+    expect(res.status).toBe(400);
+    // Integrations/agents/prompts are global-only too.
+    const res2 = await fetch(`${baseUrl}/api/admin/policies`, authJson({
+      name: "BadScope2",
+      rules: [{ permission: "integration.read", resourceId: "int-1" }],
+    }));
+    expect(res2.status).toBe(400);
+  });
+
   it("replaces policy rules and creates/removes bindings", async () => {
     const created = await fetch(`${baseUrl}/api/admin/policies`, authJson({ name: "Editable" }));
     const { policy } = (await created.json()) as { policy: { id: string } };

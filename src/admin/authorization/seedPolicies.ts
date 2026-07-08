@@ -118,8 +118,11 @@ export async function seedBuiltInPolicies(store: PolicySeedStore): Promise<void>
     try {
       await store.createBinding({ policyId, principalType: "user", principalId: user.id });
       log.info({ userId: user.id, role: user.role, policy: policyName }, "bound legacy user to built-in policy");
-    } catch {
-      // Idempotent: a concurrent seed may have created the binding already.
+    } catch (err) {
+      // Idempotent for an already-existing binding; surface anything else.
+      if (!(err instanceof Error && (err as { code?: unknown }).code === "DUPLICATE")) {
+        log.warn({ err, userId: user.id }, "failed to bind legacy user to built-in policy");
+      }
     }
   }
 }
@@ -154,7 +157,10 @@ export async function bindDefaultPolicyForRole(
 
   try {
     await store.createBinding({ policyId: policy.id, principalType: "user", principalId: userId });
-  } catch {
-    // Idempotent: binding already exists.
+  } catch (err) {
+    // Idempotent for an already-existing binding; surface anything else.
+    if (!(err instanceof Error && (err as { code?: unknown }).code === "DUPLICATE")) {
+      log.warn({ err, userId }, "failed to bind default policy for role");
+    }
   }
 }

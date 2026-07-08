@@ -56,12 +56,16 @@ export const ALL_PERMISSIONS: readonly Permission[] = Object.freeze(
 
 const ALL_PERMISSIONS_SET: ReadonlySet<Permission> = new Set(ALL_PERMISSIONS);
 
-/** Resource types whose rules may carry a concrete (non-null) `resourceId`. */
+/**
+ * Resource types whose rules may carry a concrete (non-null) `resourceId`.
+ *
+ * Only `project` (and `task`, scoped by its owning project's id) have an
+ * ownership boundary the admin API filters on. Integrations, agents and prompts
+ * are shared, library-style resources: their permissions are global (all-or-
+ * nothing) — a rule targeting them must use a null `resourceId`.
+ */
 export const SCOPEABLE_RESOURCE_TYPES: ReadonlySet<ResourceType> = new Set<ResourceType>([
   "project",
-  "integration",
-  "agent",
-  "prompt",
   "task",
 ]);
 
