@@ -56,5 +56,5 @@ export function registerAuditRoutes(router: Router, deps: AuditRouteDeps): void 
       limit: Math.max(limit, 1),
       offset,
     });
-  }, { role: "admin" });
+  }, { permission: "audit.read" });
 }

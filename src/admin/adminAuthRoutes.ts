@@ -266,7 +266,7 @@ export function registerAuthRoutes(router: Router, deps: AuthRouteDeps): void {
     }
     res.statusCode = 204;
     res.end();
-  }, { role: "viewer" });
+  }, { authenticated: true });
 
   router.add("GET", "/api/admin/auth/me", async (req, res, _params) => {
     const context = getAuthContext(req);
@@ -281,7 +281,7 @@ export function registerAuthRoutes(router: Router, deps: AuthRouteDeps): void {
       role: context.role,
       ...(perms ? { capabilities: serializeEffectivePermissions(perms) } : {}),
     });
-  }, { role: "viewer" });
+  }, { authenticated: true });
 
   // ─── User management (admin only) ─────────────────────────────────────────
 
@@ -296,7 +296,7 @@ export function registerAuthRoutes(router: Router, deps: AuthRouteDeps): void {
     const users = await deps.userStore.listUsers();
     const page = users.slice(offset, offset + limit);
     writeJson(res, 200, { users: page.map(serializeUser), total: users.length, limit, offset });
-  }, { role: "admin" });
+  }, { permission: "user.manage" });
 
   router.add("POST", "/api/admin/users", async (req, res, _params) => {
     if (!deps.userStore) { writeJson(res, 501, { error: "User store not available" }); return; }
@@ -334,7 +334,7 @@ export function registerAuthRoutes(router: Router, deps: AuthRouteDeps): void {
       }
       throw err;
     }
-  }, { role: "admin" });
+  }, { permission: "user.manage" });
 
   router.add("PUT", "/api/admin/users/:id", async (req, res, params) => {
     if (!deps.userStore) { writeJson(res, 501, { error: "User store not available" }); return; }
@@ -383,7 +383,7 @@ export function registerAuthRoutes(router: Router, deps: AuthRouteDeps): void {
       },
     });
     writeJson(res, 200, { user: serializeUser(updated) });
-  }, { role: "admin" });
+  }, { permission: "user.manage" });
 
   // Admin resets anyone; a non-admin may change their OWN password with currentPassword.
   router.add("PUT", "/api/admin/users/:id/password", async (req, res, params) => {
@@ -417,7 +417,7 @@ export function registerAuthRoutes(router: Router, deps: AuthRouteDeps): void {
     await deps.userStore.deleteSessionsForUser(id);
     recordAudit(deps.auditStore, req, { action: "user.password_change", targetType: "user", targetId: id, details: { username: target.username } });
     writeJson(res, 200, { ok: true });
-  }, { role: "viewer" });
+  }, { authenticated: true });
 
   router.add("DELETE", "/api/admin/users/:id", async (req, res, params) => {
     if (!deps.userStore) { writeJson(res, 501, { error: "User store not available" }); return; }
@@ -432,5 +432,5 @@ export function registerAuthRoutes(router: Router, deps: AuthRouteDeps): void {
     deps.onUsersChanged?.();
     recordAudit(deps.auditStore, req, { action: "user.delete", targetType: "user", targetId: id, details: { username: target.username } });
     writeJson(res, 200, { ok: true });
-  }, { role: "admin" });
+  }, { permission: "user.manage" });
 }

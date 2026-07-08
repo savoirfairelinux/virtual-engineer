@@ -31,7 +31,7 @@ import { registerPolicyRoutes, type PolicyRoutesStore } from "./adminPoliciesRou
 import { createAdminAuthService, type AdminAuthService, type AdminAuthStateStore } from "./adminAuthService.js";
 import { getAuthContext, setAuthContext, getEffectivePermissions, setEffectivePermissions } from "./authContext.js";
 import { makeTaskId } from "../interfaces.js";
-import { Router, defaultRoleForMethod, roleSatisfies, type RouteMeta, type RouteParams } from "./router.js";
+import { Router, type RouteMeta, type RouteParams } from "./router.js";
 import { buildEffectivePermissions, can, accessibleResourceIds, type EffectivePermissions } from "./authorization/policyEngine.js";
 import { bindDefaultPolicyForRole, type DefaultPolicyBinderStore } from "./authorization/seedPolicies.js";
 import type { AuthContext } from "./adminAuthService.js";
@@ -290,11 +290,12 @@ interface AdminAuthRuntime {
   usersExist(): Promise<boolean>;
   invalidateUsersExistCache(): void;
   /**
-   * Resolve a request identity's effective permissions. Returns undefined when
-   * PBAC is unavailable (store lacks rule resolution) so the gate falls back to
-   * the legacy role check. Superusers (admin role / bootstrap) short-circuit.
+   * Resolve a request identity's effective permissions. The `admin` role and
+   * bootstrap are superusers; every other user's grants come from their bound
+   * policies (empty — deny-all — when PBAC is unavailable). Always returns a
+   * value: there is no role fallback.
    */
-  resolvePermissions(ctx: AuthContext): Promise<EffectivePermissions | undefined>;
+  resolvePermissions(ctx: AuthContext): Promise<EffectivePermissions>;
 }
 
 function createAuthRuntime(dependencies: AdminServerDependencies): AdminAuthRuntime {
@@ -315,11 +316,11 @@ function createAuthRuntime(dependencies: AdminServerDependencies): AdminAuthRunt
     invalidateUsersExistCache(): void {
       usersExistCache = null;
     },
-    async resolvePermissions(ctx: AuthContext): Promise<EffectivePermissions | undefined> {
-      if (!pbacStore) return undefined;
+    async resolvePermissions(ctx: AuthContext): Promise<EffectivePermissions> {
       if (ctx.role === "admin" || ctx.userId === null) {
         return buildEffectivePermissions("admin", []);
       }
+      if (!pbacStore) return buildEffectivePermissions(ctx.role, []);
       const rules = await pbacStore.getEffectivePolicyRulesForUser(ctx.userId);
       return buildEffectivePermissions(ctx.role, rules);
     },
@@ -343,7 +344,7 @@ function buildApiRouter(dependencies: AdminServerDependencies, authRuntime: Admi
         maxRetryAttempts: dependencies.config.maxRetryAttempts,
       },
     });
-  }, { role: "viewer" });
+  }, { permission: "overview.read" });
 
   router.add("GET", "/api/admin/config", async (_req, res, _params) => {
     writeJson(res, 200, {
@@ -355,7 +356,7 @@ function buildApiRouter(dependencies: AdminServerDependencies, authRuntime: Admi
         pollingIntervalMs: dependencies.config.pollingIntervalMs,
       },
     });
-  }, { role: "viewer" });
+  }, { permission: "overview.read" });
 
   router.add("GET", "/api/admin/providers", async (_req, res, _params) => {
     const providersList = typeof dependencies.providers === "function" ? dependencies.providers() : dependencies.providers;
@@ -370,7 +371,7 @@ function buildApiRouter(dependencies: AdminServerDependencies, authRuntime: Admi
         details: provider.details,
       })),
     });
-  });
+  }, { permission: "integration.read" });
 
   registerStreamRoutes(router, { stateStore: dependencies.stateStore });
   const auditStore = extractAuditStore(dependencies.stateStore) ?? undefined;
@@ -587,14 +588,13 @@ async function handleRequest(
   }
 
   // Resolve the request's PBAC permissions once and cache them for the gate and
-  // for scope-aware list handlers. Undefined when PBAC is unavailable.
+  // for scope-aware list handlers.
   const authedContext = getAuthContext(request);
   if (authedContext) {
-    const perms = await authRuntime.resolvePermissions(authedContext);
-    if (perms) setEffectivePermissions(request, perms);
+    setEffectivePermissions(request, await authRuntime.resolvePermissions(authedContext));
   }
 
-  // ─── Authorization gate (PBAC permission, or legacy role fallback) ──────────
+  // ─── Authorization gate (pure PBAC — no role fallback) ──────────────────────
 
   const matched = router.match(method, path);
   if (matched) {
@@ -602,27 +602,24 @@ async function handleRequest(
     if (context) {
       const meta = matched.meta;
       const perms = getEffectivePermissions(request);
-      if (meta.permission && perms) {
-        if (meta.collection) {
-          // Collection routes authorize on any grant (scoped or global); the
-          // handler filters the response to accessible ids.
-          if (accessibleResourceIds(perms, meta.permission) === null) {
-            writeJson(response, 403, { error: "forbidden", permission: meta.permission });
-            return;
-          }
-        } else {
-          const resourceId = await resolveScopeResourceId(meta, matched.params, dependencies.stateStore);
-          if (!can(perms, meta.permission, resourceId)) {
-            writeJson(response, 403, { error: "forbidden", permission: meta.permission });
-            return;
-          }
-        }
-      } else {
-        const requiredRole = meta.role ?? defaultRoleForMethod(method);
-        if (!roleSatisfies(context.role, requiredRole)) {
-          writeJson(response, 403, { error: "forbidden", requiredRole });
+      if (!perms) {
+        writeJson(response, 403, { error: "forbidden" });
+        return;
+      }
+      if (meta.authenticated) {
+        // Auth-self routes: any authenticated identity may proceed.
+      } else if (meta.permission) {
+        const authorized = meta.collection
+          ? accessibleResourceIds(perms, meta.permission) !== null
+          : can(perms, meta.permission, await resolveScopeResourceId(meta, matched.params, dependencies.stateStore));
+        if (!authorized) {
+          writeJson(response, 403, { error: "forbidden", permission: meta.permission });
           return;
         }
+      } else if (!perms.isSuperuser) {
+        // Unannotated route → superuser only (fail-closed).
+        writeJson(response, 403, { error: "forbidden" });
+        return;
       }
     }
   }

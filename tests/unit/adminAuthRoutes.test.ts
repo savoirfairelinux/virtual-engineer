@@ -361,7 +361,7 @@ describe("adminAuthRoutes", () => {
         headers: { authorization: `Bearer ${bob.token}` },
       });
       expect(list.status).toBe(403);
-      await expect(list.json()).resolves.toEqual({ error: "forbidden", requiredRole: "admin" });
+      await expect(list.json()).resolves.toEqual({ error: "forbidden", permission: "user.manage" });
 
       const create = await fetch(`${baseUrl}/api/admin/users`, {
         method: "POST",

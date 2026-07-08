@@ -6,7 +6,6 @@ import type { AddressInfo } from "node:net";
 import type { StateStore } from "../../src/interfaces.js";
 import { SqliteStateStore } from "../../src/state/stateStore.js";
 import { createAdminServer } from "../../src/admin/adminServer.js";
-import { defaultRoleForMethod, roleSatisfies } from "../../src/admin/router.js";
 
 const SECRET = "rbac-test-secret";
 
@@ -60,26 +59,6 @@ interface SessionResponse {
   token: string;
   user: { id: string; username: string; role: string };
 }
-
-describe("role helpers", () => {
-  it("defaults every method to operator (fail-closed; viewer access is opt-in)", () => {
-    expect(defaultRoleForMethod("GET")).toBe("operator");
-    expect(defaultRoleForMethod("head")).toBe("operator");
-    expect(defaultRoleForMethod("POST")).toBe("operator");
-    expect(defaultRoleForMethod("PUT")).toBe("operator");
-    expect(defaultRoleForMethod("PATCH")).toBe("operator");
-    expect(defaultRoleForMethod("DELETE")).toBe("operator");
-  });
-
-  it("orders roles admin > operator > viewer", () => {
-    expect(roleSatisfies("admin", "admin")).toBe(true);
-    expect(roleSatisfies("admin", "viewer")).toBe(true);
-    expect(roleSatisfies("operator", "operator")).toBe(true);
-    expect(roleSatisfies("operator", "admin")).toBe(false);
-    expect(roleSatisfies("viewer", "operator")).toBe(false);
-    expect(roleSatisfies("viewer", "viewer")).toBe(true);
-  });
-});
 
 describe("adminServer RBAC and session auth", () => {
   let store: SqliteStateStore;
@@ -191,7 +170,7 @@ describe("adminServer RBAC and session auth", () => {
       body: JSON.stringify({ label: "Nope", content: "nope" }),
     });
     expect(mutate.status).toBe(403);
-    await expect(mutate.json()).resolves.toEqual({ error: "forbidden", requiredRole: "operator" });
+    await expect(mutate.json()).resolves.toEqual({ error: "forbidden", permission: "prompt.write" });
   });
 
   it("lets operators manage integrations/webhooks but 403s on user-management and audit", async () => {
@@ -228,13 +207,13 @@ describe("adminServer RBAC and session auth", () => {
       headers: { authorization: `Bearer ${operator.token}` },
     });
     expect(operatorUsers.status).toBe(403);
-    await expect(operatorUsers.json()).resolves.toEqual({ error: "forbidden", requiredRole: "admin" });
+    await expect(operatorUsers.json()).resolves.toEqual({ error: "forbidden", permission: "user.manage" });
 
     const operatorAudit = await fetch(`${baseUrl}/api/admin/audit`, {
       headers: { authorization: `Bearer ${operator.token}` },
     });
     expect(operatorAudit.status).toBe(403);
-    await expect(operatorAudit.json()).resolves.toEqual({ error: "forbidden", requiredRole: "admin" });
+    await expect(operatorAudit.json()).resolves.toEqual({ error: "forbidden", permission: "audit.read" });
 
     // The admin reaches user management + audit.
     const adminUsers = await fetch(`${baseUrl}/api/admin/users`, {
