@@ -329,6 +329,48 @@ export interface ApiModelUsageSummary {
   sinceEpochSeconds: number | null;
 }
 
+/* ─── Auth / users / audit ────────────────────────────────────────────── */
+
+export type UserRole = "admin" | "operator" | "viewer";
+
+/** Current identity from GET /api/admin/auth/me. `id` is null in bootstrap mode (no users yet — see adminServer.ts). */
+export interface ApiMe {
+  id: string | null;
+  username: string;
+  role: UserRole;
+}
+
+export interface SetupStatus {
+  needsSetup: boolean;
+}
+
+export interface ApiUser {
+  id: string;
+  username: string;
+  role: UserRole;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ApiAuditEntry {
+  id: number;
+  actorUserId: string | null;
+  actorName: string;
+  action: string;
+  targetType: string | null;
+  targetId: string | null;
+  details: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface ApiAuditPage {
+  entries: ApiAuditEntry[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
 /* ─── Bootstrap injected by the server ────────────────────────────────── */
 export interface VeAdminBootstrap {
   requiresAuth: boolean;

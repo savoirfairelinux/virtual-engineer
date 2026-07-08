@@ -1,15 +1,17 @@
-import { useEffect, useState, useCallback, Component, type ReactNode, type ErrorInfo } from "react";
+import { useEffect, useState, useCallback, useMemo, Component, type ReactNode, type ErrorInfo } from "react";
 import { TopBar } from "./shell/TopBar.tsx";
 import { AuthScreen } from "./shell/AuthScreen.tsx";
+import { ChangePasswordModal } from "./shell/ChangePasswordModal.tsx";
 import { TasksView } from "./views/TasksView/index.tsx";
 import { OverviewView } from "./views/OverviewView.tsx";
 import { ConfigView } from "./views/ConfigView/index.tsx";
-import { api, connectSse, getStoredToken, clearStoredToken } from "./api.ts";
+import { api, connectSse, getStoredToken, clearStoredToken, getMe, logout, onUnauthorized, ApiError } from "./api.ts";
+import { CurrentUserProvider, type CurrentUserValue } from "./authContext.tsx";
 import { isActiveState } from "./states.ts";
 import type {
   ApiTask, ApiIntegration, ApiPlugin, ApiAgent, ApiProject,
   ApiPrompt, ApiOAuthApp, ApiStatus, ApiConfig, ApiProvider, ApiOverview,
-  VeAdminBootstrap,
+  ApiMe, VeAdminBootstrap,
 } from "./types.ts";
 import "./theme/global.css";
 
@@ -53,6 +55,46 @@ export function App() {
   }, []);
 
   const [authenticated, setAuthenticated] = useState(() => !bootstrap.requiresAuth || !!getStoredToken());
+  const [currentUser, setCurrentUser] = useState<ApiMe | null>(null);
+  const [showChangePassword, setShowChangePassword] = useState(false);
+
+  const handleLoggedOut = useCallback(() => {
+    clearStoredToken();
+    setCurrentUser(null);
+    setShowChangePassword(false);
+    setAuthenticated(false);
+  }, []);
+
+  // Central 401 handling — any expired/revoked session drops back to the login screen.
+  useEffect(() => {
+    onUnauthorized(handleLoggedOut);
+    return () => onUnauthorized(null);
+  }, [handleLoggedOut]);
+
+  // Load the authenticated identity for role-aware UI gating.
+  useEffect(() => {
+    if (!authenticated) return;
+    if (currentUser) return;
+    void getMe().then(setCurrentUser).catch((err: unknown) => {
+      // 401 is already handled globally by onUnauthorized → handleLoggedOut.
+      // Any other error (503, network failure, etc.) is unexpected; log it so
+      // it is visible in the browser console rather than silently swallowed.
+      if (err instanceof ApiError && err.status === 401) return;
+      console.error("Failed to load current user", err);
+    });
+  }, [authenticated, currentUser]);
+
+  const currentUserValue = useMemo<CurrentUserValue>(() => ({
+    user: currentUser,
+    isAdmin: currentUser?.role === "admin",
+    canOperate: currentUser !== null && currentUser.role !== "viewer",
+  }), [currentUser]);
+
+  // Viewers may only read overview + tasks; the config area and its data
+  // (integrations, agents, projects, prompts, oauth apps, providers) require
+  // operator+. Until the identity resolves, treat the user as a viewer so we
+  // never fire a config request the server would 403.
+  const canOperate = currentUserValue.canOperate;
 
   // data state
   const [tasks,        setTasks]        = useState<ApiTask[]>([]);
@@ -68,8 +110,21 @@ export function App() {
   const [overview,     setOverview]     = useState<ApiOverview | null>(null);
 
   const loadAll = useCallback(async () => {
-    const results = await Promise.allSettled([
+    // Viewer-safe reads — always fetched.
+    const baseResults = await Promise.allSettled([
       api.get<{ tasks:    ApiTask[] }>("/api/admin/tasks"),
+      api.get<ApiStatus>("/api/admin/status"),
+      api.get<ApiConfig>("/api/admin/config"),
+      api.get<ApiOverview>("/api/admin/overview").catch(() => null),
+    ]);
+    if (baseResults[0].status === "fulfilled") setTasks(baseResults[0].value.tasks);
+    if (baseResults[1].status === "fulfilled") setStatus(baseResults[1].value);
+    if (baseResults[2].status === "fulfilled") setConfig(baseResults[2].value.config);
+    if (baseResults[3].status === "fulfilled" && baseResults[3].value) setOverview(baseResults[3].value);
+
+    // Operator+ config-area reads — skipped for viewers (would 403).
+    if (!canOperate) return;
+    const results = await Promise.allSettled([
       api.get<{ providers: ApiProvider[] }>("/api/admin/providers"),
       api.get<{ integrations: ApiIntegration[] }>("/api/admin/integrations"),
       api.get<{ plugins: ApiPlugin[] }>("/api/admin/plugins"),
@@ -77,23 +132,16 @@ export function App() {
       api.get<{ projects: ApiProject[] }>("/api/admin/projects"),
       api.get<{ prompts: ApiPrompt[] }>("/api/admin/prompts"),
       api.get<{ apps: ApiOAuthApp[] }>("/api/admin/oauth-apps"),
-      api.get<ApiStatus>("/api/admin/status"),
-      api.get<ApiConfig>("/api/admin/config"),
-      api.get<ApiOverview>("/api/admin/overview").catch(() => null),
     ]);
 
-    if (results[0].status === "fulfilled") setTasks(results[0].value.tasks);
-    if (results[1].status === "fulfilled") setProviders(results[1].value.providers);
-    if (results[2].status === "fulfilled") setIntegrations(results[2].value.integrations);
-    if (results[3].status === "fulfilled") setPlugins(results[3].value.plugins);
-    if (results[4].status === "fulfilled") setAgents(results[4].value.agents);
-    if (results[5].status === "fulfilled") setProjects(results[5].value.projects);
-    if (results[6].status === "fulfilled") setPrompts(results[6].value.prompts);
-    if (results[7].status === "fulfilled") setOauthApps(results[7].value.apps);
-    if (results[8].status === "fulfilled") setStatus(results[8].value);
-    if (results[9].status === "fulfilled") setConfig(results[9].value.config);
-    if (results[10].status === "fulfilled" && results[10].value) setOverview(results[10].value);
-  }, []);
+    if (results[0].status === "fulfilled") setProviders(results[0].value.providers);
+    if (results[1].status === "fulfilled") setIntegrations(results[1].value.integrations);
+    if (results[2].status === "fulfilled") setPlugins(results[2].value.plugins);
+    if (results[3].status === "fulfilled") setAgents(results[3].value.agents);
+    if (results[4].status === "fulfilled") setProjects(results[4].value.projects);
+    if (results[5].status === "fulfilled") setPrompts(results[5].value.prompts);
+    if (results[6].status === "fulfilled") setOauthApps(results[6].value.apps);
+  }, [canOperate]);
 
   useEffect(() => {
     if (!authenticated) return;
@@ -130,8 +178,7 @@ export function App() {
     return (
       <div className="app">
         <AuthScreen
-          authMode={bootstrap.authMode === "none" ? "bearer" : bootstrap.authMode}
-          onAuthenticated={() => { setAuthenticated(true); }}
+          onAuthenticated={(user) => { setCurrentUser(user); setAuthenticated(true); }}
         />
       </div>
     );
@@ -140,53 +187,69 @@ export function App() {
   const activeTasks   = tasks.filter((t) => isActiveState(t.state)).length;
   const enabledIntegrations = integrations.filter((i) => i.enabled).length;
 
+  // Viewers have no Config view — fall back to Overview if they deep-link to it.
+  const configDenied = currentUser !== null && !canOperate;
+  const effectiveView: ViewId = configDenied && view === "config" ? "overview" : view;
+
   function handleNavigate(v: "tasks" | "config") {
     setView(v);
     window.location.hash = v;
   }
 
   return (
-    <div className="app">
-      <TopBar
-        view={view}
-        setView={(v) => { setView(v); window.location.hash = v; }}
-        theme={theme}
-        toggleTheme={toggleTheme}
-        onLogout={() => { clearStoredToken(); setAuthenticated(false); }}
-        taskCount={tasks.length}
-        activeCount={activeTasks}
-        providerCount={enabledIntegrations}
-        pollingRunning={status?.polling.running ?? false}
-      />
-      <div style={{ flex: 1, overflow: "hidden", display: "flex" }}>
-        {view === "overview" && (
-          <OverviewView
-            overview={overview}
-            tasks={tasks}
-            providers={providers}
-            activeIntegrationCount={enabledIntegrations}
-            pollingIntervalMs={status?.polling.intervalMs ?? 30000}
-            onNavigate={handleNavigate}
-          />
-        )}
-        {view === "tasks" && (
-          <TasksView tasks={tasks} onRefresh={() => void loadAll()} />
-        )}
-        {view === "config" && (
-          <ConfigView
-            integrations={integrations}
-            plugins={plugins}
-            agents={agents}
-            projects={projects}
-            prompts={prompts}
-            oauthApps={oauthApps}
-            config={config}
-            status={status}
-            onRefresh={() => void loadAll()}
+    <CurrentUserProvider value={currentUserValue}>
+      <div className="app">
+        <TopBar
+          view={effectiveView}
+          setView={(v) => { setView(v); window.location.hash = v; }}
+          theme={theme}
+          toggleTheme={toggleTheme}
+          user={currentUser}
+          canOperate={canOperate}
+          onChangePassword={() => setShowChangePassword(true)}
+          onLogout={() => { void logout().finally(handleLoggedOut); }}
+          taskCount={tasks.length}
+          activeCount={activeTasks}
+          providerCount={enabledIntegrations}
+          pollingRunning={status?.polling.running ?? false}
+        />
+        <div style={{ flex: 1, overflow: "hidden", display: "flex" }}>
+          {effectiveView === "overview" && (
+            <OverviewView
+              overview={overview}
+              tasks={tasks}
+              providers={providers}
+              activeIntegrationCount={enabledIntegrations}
+              pollingIntervalMs={status?.polling.intervalMs ?? 30000}
+              onNavigate={handleNavigate}
+            />
+          )}
+          {effectiveView === "tasks" && (
+            <TasksView tasks={tasks} onRefresh={() => void loadAll()} />
+          )}
+          {effectiveView === "config" && (
+            <ConfigView
+              integrations={integrations}
+              plugins={plugins}
+              agents={agents}
+              projects={projects}
+              prompts={prompts}
+              oauthApps={oauthApps}
+              config={config}
+              status={status}
+              onRefresh={() => void loadAll()}
+            />
+          )}
+        </div>
+        {showChangePassword && currentUser && currentUser.id !== null && (
+          <ChangePasswordModal
+            user={currentUser}
+            onClose={() => setShowChangePassword(false)}
+            onChanged={handleLoggedOut}
           />
         )}
       </div>
-    </div>
+    </CurrentUserProvider>
   );
 }
 

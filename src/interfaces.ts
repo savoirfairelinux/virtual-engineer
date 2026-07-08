@@ -121,6 +121,48 @@ export interface ProjectReviewConfig {
   repos: string[];
 }
 
+// ─── Admin RBAC / audit types ─────────────────────────────────────────────────
+
+/** Role of an admin dashboard user account (admin > operator > viewer). */
+export type UserRole = "admin" | "operator" | "viewer";
+
+/** An admin dashboard user account. */
+export interface AdminUser {
+  id: string;
+  username: string;
+  /** Encoded password hash (never the plaintext password). */
+  passwordHash: string;
+  role: UserRole;
+  enabled: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+/** A DB-backed admin session. `tokenHash` is a hash of the opaque bearer token. */
+export interface UserSession {
+  id: number;
+  tokenHash: string;
+  userId: string;
+  createdAt: Date;
+  expiresAt: Date;
+  lastSeenAt: Date;
+}
+
+/** One append-only audit-trail entry recording an admin mutation. */
+export interface AuditEntry {
+  id: number;
+  /** User id of the actor, or null for non-user actors (e.g. bootstrap). */
+  actorUserId: string | null;
+  actorName: string;
+  /** Dotted action key, e.g. "integration.create", "task.pause". */
+  action: string;
+  targetType: string | null;
+  targetId: string | null;
+  /** Parsed details payload (secrets must be masked before append). */
+  details: Record<string, unknown>;
+  createdAt: Date;
+}
+
 /** A single PR/MR that VE has been requested to review. */
 export interface ReviewAssignmentDiscovery {
   /** Provider-specific change ID, e.g. `"owner/repo#42"` for GitHub. */

@@ -1,40 +1,69 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Icon } from "../components/Icon.tsx";
-import { deriveToken, storeToken, clearStoredToken } from "../api.ts";
+import { PasswordField } from "../components/PasswordField.tsx";
+import { fetchSetupStatus, login, setup, ApiError } from "../api.ts";
+import type { ApiMe } from "../types.ts";
 
 interface AuthScreenProps {
-  authMode: "bearer" | "hmac" | "mixed";
-  onAuthenticated: () => void;
+  onAuthenticated: (user: ApiMe) => void;
 }
 
-export function AuthScreen({ authMode, onAuthenticated }: AuthScreenProps) {
-  const [value, setValue] = useState("");
+type Mode = "loading" | "login" | "setup";
+
+const inputStyle: React.CSSProperties = {
+  width: "100%", marginBottom: "12px",
+  background: "var(--panel-2)", border: "1px solid var(--border)",
+  borderRadius: "var(--radius-sm)", color: "var(--text)",
+  fontFamily: "var(--font-mono)", fontSize: "13px",
+  padding: "9px 12px", outline: "none",
+};
+
+export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
+  const [mode, setMode] = useState<Mode>("loading");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
+  useEffect(() => {
+    let cancelled = false;
+    fetchSetupStatus()
+      .then((s) => { if (!cancelled) setMode(s.needsSetup ? "setup" : "login"); })
+      .catch(() => { if (!cancelled) setMode("login"); });
+    return () => { cancelled = true; };
+  }, []);
+
+  const canSubmit = mode === "setup"
+    ? username.trim().length > 0 && password.length >= 8 && confirm.length > 0
+    : username.trim().length > 0 && password.length > 0;
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!value.trim()) return;
-    setLoading(true);
+    if (!canSubmit || loading) return;
     setError(null);
+
+    if (mode === "setup" && password !== confirm) {
+      setError("Passwords do not match.");
+      return;
+    }
+
+    setLoading(true);
     try {
-      const rawSecret = value.trim();
-      storeToken(rawSecret);
-      // Derive a fresh token and verify against a protected endpoint
-      const token = (authMode === "hmac" || authMode === "mixed")
-        ? await deriveToken(rawSecret)
-        : rawSecret;
-      const res = await fetch("/api/admin/status", {
-        headers: { authorization: `Bearer ${token}` },
-      });
-      if (!res.ok) {
-        setError("Invalid secret — access denied.");
-        clearStoredToken();
+      const user = mode === "setup"
+        ? await setup(username.trim(), password)
+        : await login(username.trim(), password);
+      onAuthenticated(user);
+    } catch (err) {
+      if (err instanceof ApiError) {
+        if (mode === "login" && err.status === 401) {
+          setError("Invalid credentials.");
+        } else {
+          setError(err.message);
+        }
       } else {
-        onAuthenticated();
+        setError("Network error — could not reach the server.");
       }
-    } catch {
-      setError("Network error — could not reach the server.");
     } finally {
       setLoading(false);
     }
@@ -66,47 +95,74 @@ export function AuthScreen({ authMode, onAuthenticated }: AuthScreenProps) {
           </div>
         </div>
 
-        <div style={{ marginBottom: "20px", color: "var(--text-dim)", fontSize: "13.5px" }}>
-          Enter your <code style={{ fontFamily: "var(--font-mono)", fontSize: "12px" }}>ADMIN_AUTH_SECRET</code> to unlock the dashboard.
-        </div>
+        {mode === "loading" && (
+          <div style={{ color: "var(--text-faint)", fontSize: "13.5px", textAlign: "center", padding: "12px 0" }}>
+            Loading…
+          </div>
+        )}
 
-        <form onSubmit={(e) => void handleSubmit(e)}>
-          <input
-            type="password"
-            value={value}
-            onChange={(e) => setValue(e.target.value)}
-            placeholder="Auth secret…"
-            autoFocus
-            style={{
-              width: "100%", marginBottom: "12px",
-              background: "var(--panel-2)", border: "1px solid var(--border)",
-              borderRadius: "var(--radius-sm)", color: "var(--text)",
-              fontFamily: "var(--font-mono)", fontSize: "13px",
-              padding: "9px 12px", outline: "none",
-            }}
-          />
-
-          {error && (
-            <div
-              style={{
-                fontSize: "12.5px", color: "var(--danger)", marginBottom: "12px",
-                display: "flex", alignItems: "center", gap: "6px",
-              }}
-            >
-              <Icon name="alert" size={13} style={{ flex: "none" }} />
-              {error}
+        {mode !== "loading" && (
+          <>
+            <div style={{ marginBottom: "20px", color: "var(--text-dim)", fontSize: "13.5px" }}>
+              {mode === "setup" ? (
+                <>No users exist yet. Create the first admin account to get started.</>
+              ) : (
+                <>Sign in with your username and password.</>
+              )}
             </div>
-          )}
 
-          <button
-            type="submit"
-            disabled={loading || !value.trim()}
-            className="btn primary"
-            style={{ width: "100%", justifyContent: "center" }}
-          >
-            {loading ? "Verifying…" : "Unlock dashboard"}
-          </button>
-        </form>
+            <form onSubmit={(e) => void handleSubmit(e)}>
+              <input
+                type="text"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                placeholder="Username…"
+                autoComplete="username"
+                autoFocus={mode === "login"}
+                style={inputStyle}
+              />
+              <PasswordField
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder={mode === "setup" ? "Password (min 8 characters)…" : "Password…"}
+                autoComplete={mode === "setup" ? "new-password" : "current-password"}
+                style={inputStyle}
+              />
+              {mode === "setup" && (
+                <PasswordField
+                  value={confirm}
+                  onChange={(e) => setConfirm(e.target.value)}
+                  placeholder="Confirm password…"
+                  autoComplete="new-password"
+                  style={inputStyle}
+                />
+              )}
+
+              {error && (
+                <div
+                  style={{
+                    fontSize: "12.5px", color: "var(--danger)", marginBottom: "12px",
+                    display: "flex", alignItems: "center", gap: "6px",
+                  }}
+                >
+                  <Icon name="alert" size={13} style={{ flex: "none" }} />
+                  {error}
+                </div>
+              )}
+
+              <button
+                type="submit"
+                disabled={loading || !canSubmit}
+                className="btn primary"
+                style={{ width: "100%", justifyContent: "center" }}
+              >
+                {loading
+                  ? (mode === "setup" ? "Creating…" : "Signing in…")
+                  : (mode === "setup" ? "Create first admin" : "Sign in")}
+              </button>
+            </form>
+          </>
+        )}
       </div>
     </div>
   );

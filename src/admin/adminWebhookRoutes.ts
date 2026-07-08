@@ -2,19 +2,21 @@ import { getLogger } from "../logger.js";
 import type { IntegrationStore } from "../interfaces.js";
 import { generateWebhookSecret, listSupportedEvents } from "../webhooks/webhookServer.js";
 import { writeJson, readBody } from "./adminRouteUtils.js";
+import { recordAudit, type AuditCapableStore } from "./adminAudit.js";
 import type { Router } from "./router.js";
 
 const log = getLogger("admin-webhooks");
 
 export interface WebhookRouteDeps {
   integrationStore?: IntegrationStore | undefined;
+  auditStore?: AuditCapableStore | undefined;
   onIntegrationUpdated?: ((integrationId: string) => void) | undefined;
   webhookPublicBaseUrl?: string | undefined;
 }
 
 /** Register webhook-management routes on the given router. */
 export function registerWebhookRoutes(router: Router, deps: WebhookRouteDeps): void {
-  router.add("POST", "/api/admin/integrations/:id/webhook-secret/rotate", async (_req, res, params) => {
+  router.add("POST", "/api/admin/integrations/:id/webhook-secret/rotate", async (req, res, params) => {
     if (!deps.integrationStore) { writeJson(res, 501, { error: "Integration store not available" }); return; }
     const id = params["id"] ?? "";
     const integration = await deps.integrationStore.getIntegration(id);
@@ -45,8 +47,9 @@ export function registerWebhookRoutes(router: Router, deps: WebhookRouteDeps): v
       return;
     }
     deps.onIntegrationUpdated?.(id);
+    recordAudit(deps.auditStore, req, { action: "webhook.secret_rotate", targetType: "integration", targetId: id, details: { name: integration.name, provider: integration.provider } });
     writeJson(res, 200, { secret: newSecret });
-  });
+  }, { role: "operator" });
 
   router.add("PUT", "/api/admin/integrations/:id/webhook-allowed-ips", async (req, res, params) => {
     if (!deps.integrationStore) { writeJson(res, 501, { error: "Integration store not available" }); return; }
@@ -91,8 +94,9 @@ export function registerWebhookRoutes(router: Router, deps: WebhookRouteDeps): v
       return;
     }
     deps.onIntegrationUpdated?.(id);
+    recordAudit(deps.auditStore, req, { action: "webhook.allowed_ips_update", targetType: "integration", targetId: id, details: { name: integration.name, provider: integration.provider, allowedIps } });
     writeJson(res, 200, { allowedIps });
-  });
+  }, { role: "operator" });
 
   router.add("GET", "/api/admin/integrations/:id/webhook-allowed-ips", async (_req, res, params) => {
     if (!deps.integrationStore) { writeJson(res, 501, { error: "Integration store not available" }); return; }

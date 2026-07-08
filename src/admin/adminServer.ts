@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { readFileSync, existsSync } from "node:fs";
 import { join, extname, resolve } from "node:path";
 import { getLogger } from "../logger.js";
@@ -25,8 +25,15 @@ import { registerConcurrencyRoutes } from "./adminConcurrencyRoutes.js";
 import { registerSettingsRoutes, type SettingsController } from "./adminSettingsRoutes.js";
 import { registerWebhookRoutes } from "./adminWebhookRoutes.js";
 import { registerIntegrationRoutes } from "./adminIntegrationRoutes.js";
+import { registerAuthRoutes, type AuthRouteAuditStore, type AuthRouteUserStore } from "./adminAuthRoutes.js";
+import { registerAuditRoutes, type AuditReadStore } from "./adminAuditRoutes.js";
+import { createAdminAuthService, type AdminAuthService, type AdminAuthStateStore } from "./adminAuthService.js";
+import { getAuthContext, setAuthContext } from "./authContext.js";
 import { makeTaskId } from "../interfaces.js";
-import { Router } from "./router.js";
+import { Router, defaultRoleForMethod, roleSatisfies } from "./router.js";
+
+export { getAuthContext } from "./authContext.js";
+export type { AuthContext } from "./adminAuthService.js";
 
 // process.cwd() is the project root in both dev (tsx src/) and prod (node dist/src/index.js).
 const DIST_UI_DIR = resolve(process.cwd(), "dist/admin-ui");
@@ -49,7 +56,9 @@ const MIME_MAP: Record<string, string> = {
 
 /**
  * Admin HTTP server — REST API for orchestrator status, task control, prompts, integrations,
- * agents, projects, concurrency, and webhooks. Auth: HMAC-SHA256 Bearer (ADMIN_AUTH_SECRET).
+ * agents, projects, concurrency, and webhooks.
+ * Auth: DB-backed session tokens (user accounts); ADMIN_AUTH_SECRET is used only for
+ * OAuth token encryption at rest.
  */
 
 const log = getLogger("admin-server");
@@ -61,6 +70,8 @@ export interface AdminRuntimeConfig {
   maxRetryAttempts: number;
   pollingIntervalMs: number;
   adminAuthSecret?: string | undefined;
+  /** Mirror of `ADMIN_TRUST_PROXY`. When true, IP is read from X-Forwarded-For. */
+  adminTrustProxy?: boolean | undefined;
 }
 
 export interface AdminPollingStatusSource {
@@ -180,10 +191,11 @@ function getProviderUrls(pluginManager: PluginManager | undefined): {
 
 /** Create and return the admin HTTP server with all routes wired up. */
 export function createAdminServer(dependencies: AdminServerDependencies): Server {
-  const router = buildApiRouter(dependencies);
+  const authRuntime = createAuthRuntime(dependencies);
+  const router = buildApiRouter(dependencies, authRuntime);
   return createServer(async (request, response) => {
     try {
-      await handleRequest(request, response, dependencies, router);
+      await handleRequest(request, response, dependencies, router, authRuntime);
     } catch (err: unknown) {
       log.error({ err, method: request.method, url: request.url }, "admin request failed");
       writeJson(response, 500, { error: "Internal server error" });
@@ -191,8 +203,76 @@ export function createAdminServer(dependencies: AdminServerDependencies): Server
   });
 }
 
+// ─── Session auth runtime ────────────────────────────────────────────────────
+
+/** Combined user-store surface needed for session auth + user management. */
+type AdminUserCapableStore = AdminAuthStateStore & AuthRouteUserStore;
+
+/**
+ * Feature-detect the user-store methods on the injected state store. Mocks in
+ * tests (and older embedders) may omit them — session auth is then disabled
+ * and the admin API runs fully open (no HMAC fallback; see `handleRequest`'s
+ * auth gate).
+ */
+function extractUserStore(stateStore: unknown): AdminUserCapableStore | null {
+  const candidate = stateStore as Partial<AdminUserCapableStore> | null | undefined;
+  if (
+    candidate &&
+    typeof candidate.countUsers === "function" &&
+    typeof candidate.getUserByUsername === "function" &&
+    typeof candidate.createSession === "function"
+  ) {
+    return candidate as AdminUserCapableStore;
+  }
+  return null;
+}
+
+/** Feature-detect the audit-store append method on the injected state store. */
+function extractAuditStore(stateStore: unknown): AuthRouteAuditStore | null {
+  const candidate = stateStore as Partial<AuthRouteAuditStore> | null | undefined;
+  return candidate && typeof candidate.appendAuditEntry === "function"
+    ? (candidate as AuthRouteAuditStore)
+    : null;
+}
+
+/** Feature-detect the audit-store list method on the injected state store. */
+function extractAuditReadStore(stateStore: unknown): AuditReadStore | null {
+  const candidate = stateStore as Partial<AuditReadStore> | null | undefined;
+  return candidate && typeof candidate.listAuditEntries === "function"
+    ? (candidate as AuditReadStore)
+    : null;
+}
+
+interface AdminAuthRuntime {
+  authService: AdminAuthService | null;
+  userStore: AdminUserCapableStore | null;
+  /** Cached "≥1 user exists" check — false when the store lacks user methods. */
+  usersExist(): Promise<boolean>;
+  invalidateUsersExistCache(): void;
+}
+
+function createAuthRuntime(dependencies: AdminServerDependencies): AdminAuthRuntime {
+  const userStore = extractUserStore(dependencies.stateStore);
+  const authService = userStore ? createAdminAuthService({ stateStore: userStore }) : null;
+  let usersExistCache: boolean | null = null;
+  return {
+    authService,
+    userStore,
+    async usersExist(): Promise<boolean> {
+      if (!userStore) return false;
+      if (usersExistCache === null) {
+        usersExistCache = (await userStore.countUsers()) > 0;
+      }
+      return usersExistCache;
+    },
+    invalidateUsersExistCache(): void {
+      usersExistCache = null;
+    },
+  };
+}
+
 /** Build the declarative API router for all /api/admin/* routes. */
-function buildApiRouter(dependencies: AdminServerDependencies): Router {
+function buildApiRouter(dependencies: AdminServerDependencies, authRuntime: AdminAuthRuntime): Router {
   const router = new Router();
 
   // Status / Config / Providers
@@ -207,7 +287,7 @@ function buildApiRouter(dependencies: AdminServerDependencies): Router {
         maxRetryAttempts: dependencies.config.maxRetryAttempts,
       },
     });
-  });
+  }, { role: "viewer" });
 
   router.add("GET", "/api/admin/config", async (_req, res, _params) => {
     writeJson(res, 200, {
@@ -219,7 +299,7 @@ function buildApiRouter(dependencies: AdminServerDependencies): Router {
         pollingIntervalMs: dependencies.config.pollingIntervalMs,
       },
     });
-  });
+  }, { role: "viewer" });
 
   router.add("GET", "/api/admin/providers", async (_req, res, _params) => {
     const providersList = typeof dependencies.providers === "function" ? dependencies.providers() : dependencies.providers;
@@ -237,12 +317,22 @@ function buildApiRouter(dependencies: AdminServerDependencies): Router {
   });
 
   registerStreamRoutes(router, { stateStore: dependencies.stateStore });
-  registerPromptRoutes(router, { promptStore: dependencies.promptStore, agentStore: dependencies.agentStore });
-  registerTaskRoutes(router, { stateStore: dependencies.stateStore, taskControl: dependencies.taskControl });
+  const auditStore = extractAuditStore(dependencies.stateStore) ?? undefined;
+  registerAuthRoutes(router, {
+    userStore: authRuntime.userStore ?? undefined,
+    auditStore,
+    authService: authRuntime.authService ?? undefined,
+    onUsersChanged: () => authRuntime.invalidateUsersExistCache(),
+    trustProxy: dependencies.config.adminTrustProxy,
+  });
+  registerAuditRoutes(router, { auditStore: extractAuditReadStore(dependencies.stateStore) ?? undefined });
+  registerPromptRoutes(router, { promptStore: dependencies.promptStore, agentStore: dependencies.agentStore, auditStore });
+  registerTaskRoutes(router, { stateStore: dependencies.stateStore, taskControl: dependencies.taskControl, auditStore });
   registerIntegrationRoutes(router, {
     integrationStore: dependencies.integrationStore,
     pluginManager: dependencies.pluginManager,
     oAuthAppStore: dependencies.oAuthAppStore,
+    auditStore,
     integrationStreams: dependencies.integrationStreams,
     onIntegrationUpdated: dependencies.onIntegrationUpdated,
     adminAuthSecret: dependencies.config.adminAuthSecret,
@@ -251,12 +341,14 @@ function buildApiRouter(dependencies: AdminServerDependencies): Router {
     agentStore: dependencies.agentStore,
     integrationStore: dependencies.integrationStore,
     oAuthAppStore: dependencies.oAuthAppStore,
+    auditStore,
     adminAuthSecret: dependencies.config.adminAuthSecret,
     providerAuthService: dependencies.providerAuthService,
   });
   registerProjectRoutes(router, {
     projectStore: dependencies.projectStore,
     integrationStore: dependencies.integrationStore,
+    auditStore,
     onProjectChange: dependencies.onProjectChange,
     taskControl: dependencies.taskControl,
   });
@@ -264,6 +356,7 @@ function buildApiRouter(dependencies: AdminServerDependencies): Router {
   registerSettingsRoutes(router, { settings: dependencies.settings });
   registerWebhookRoutes(router, {
     integrationStore: dependencies.integrationStore,
+    auditStore,
     onIntegrationUpdated: dependencies.onIntegrationUpdated,
     webhookPublicBaseUrl: dependencies.webhooks?.publicBaseUrl,
   });
@@ -282,7 +375,8 @@ async function handleRequest(
   request: IncomingMessage,
   response: ServerResponse,
   dependencies: AdminServerDependencies,
-  router: Router
+  router: Router,
+  authRuntime: AdminAuthRuntime
 ): Promise<void> {
   const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
   const path = requestUrl.pathname;
@@ -331,10 +425,11 @@ async function handleRequest(
       writeJson(response, 405, { error: "Method not allowed" });
       return;
     }
-    const requiresAuth = Boolean(dependencies.config.adminAuthSecret);
+    // Auth is required when the user store is available (session-based).
+    // Without a user store (legacy embedders), the admin API is fully open.
+    const requiresAuth = authRuntime.authService !== null;
     writeHtml(response, 200, renderAdminDashboardHtml({
       requiresAuth,
-      authMode: getAdminAuthMode(dependencies.config),
       nonce,
       ...getProviderUrls(dependencies.pluginManager),
     }));
@@ -345,7 +440,9 @@ async function handleRequest(
   if (path === "/api/admin/img-proxy" && method === "GET") {
     const targetUrl = requestUrl.searchParams.get("url") ?? "";
     const queryToken = requestUrl.searchParams.get("t") ?? "";
-    const proxyAuthorized = isAuthorizedToken(queryToken, dependencies.config);
+    const proxyAuthorized = authRuntime.authService && (await authRuntime.usersExist())
+      ? (await authRuntime.authService.validateSession(queryToken)) !== null
+      : true; // bootstrap mode (no users yet): open
     if (!proxyAuthorized) { writeJson(response, 401, { error: "Unauthorized" }); return; }
     const { gitlabBaseUrl, gitlabToken: gitlabTokenVal } = getProviderUrls(dependencies.pluginManager);
     if (!gitlabBaseUrl || !targetUrl.startsWith(gitlabBaseUrl)) {
@@ -397,15 +494,50 @@ async function handleRequest(
 
   // ─── Auth gate ────────────────────────────────────────────────────────────
 
-  if (!isAuthorized(request, dependencies.config)) {
-    response.setHeader("www-authenticate", 'Bearer realm="virtual-engineer-admin"');
-    writeJson(response, 401, { error: "Unauthorized" });
-    return;
+  // Public auth endpoints — no credentials required.
+  const isPublicAuthRoute =
+    (method === "GET" && path === "/api/admin/auth/setup-status") ||
+    (method === "POST" && path === "/api/admin/auth/login");
+
+  if (!isPublicAuthRoute) {
+    if (method === "POST" && path === "/api/admin/auth/setup") {
+      // Bootstrap: setup is unauthenticated; the route handler enforces zero users exist.
+      setAuthContext(request, { userId: null, username: "bootstrap", role: "admin" });
+    } else if (authRuntime.authService && (await authRuntime.usersExist())) {
+      // ≥1 user exists → only DB-backed session tokens are accepted.
+      const token = extractBearerToken(request);
+      const context = token ? await authRuntime.authService.validateSession(token) : null;
+      if (!context) {
+        sendUnauthorized(response);
+        return;
+      }
+      setAuthContext(request, context);
+    } else {
+      // Bootstrap mode (no users yet, or no user store) — all admin routes open.
+      if (!authRuntime.userStore) {
+        log.warn("Admin user store is unavailable; admin API is running without authentication");
+      }
+      setAuthContext(request, { userId: null, username: "bootstrap", role: "admin" });
+    }
   }
 
   if (!["GET", "PATCH", "POST", "PUT", "DELETE"].includes(method)) {
     writeJson(response, 405, { error: "Method not allowed" });
     return;
+  }
+
+  // ─── RBAC gate ────────────────────────────────────────────────────────────
+
+  const matched = router.match(method, path);
+  if (matched) {
+    const context = getAuthContext(request);
+    if (context) {
+      const requiredRole = matched.meta.role ?? defaultRoleForMethod(method);
+      if (!roleSatisfies(context.role, requiredRole)) {
+        writeJson(response, 403, { error: "forbidden", requiredRole });
+        return;
+      }
+    }
   }
 
   // ─── Modular route dispatch ───────────────────────────────────────────────
@@ -417,74 +549,20 @@ async function handleRequest(
 
 // ─── Auth & Security ────────────────────────────────────────────────────────
 
-/** Derive the admin auth mode string from the runtime config. */
-function getAdminAuthMode(config: AdminRuntimeConfig): "none" | "hmac" {
-  if (config.adminAuthSecret) {
-    return "hmac";
-  }
-  return "none";
+/** Send a 401 with the WWW-Authenticate challenge header. */
+function sendUnauthorized(response: ServerResponse): void {
+  response.setHeader("www-authenticate", 'Bearer realm="virtual-engineer-admin"');
+  writeJson(response, 401, { error: "Unauthorized" });
 }
 
-/** Return true if the request carries a valid HMAC-SHA256 Bearer token. */
-function isAuthorized(
-  request: IncomingMessage,
-  config: AdminRuntimeConfig
-): boolean {
-  if (!config.adminAuthSecret) {
-    return true;
-  }
-
+/** Extract the raw Bearer token from the Authorization header, if any. */
+function extractBearerToken(request: IncomingMessage): string | null {
   const authorization = request.headers.authorization;
-  if (!authorization?.startsWith("Bearer ")) {
-    return false;
-  }
-
-  const token = authorization.slice("Bearer ".length);
-
-  const parts = token.split(".");
-  if (parts.length === 2) {
-    const timestampStr = parts[0];
-    const providedSignature = parts[1];
-    if (!timestampStr || !providedSignature) {
-      return false;
-    }
-    const timestamp = parseInt(timestampStr, 10);
-
-    if (!Number.isInteger(timestamp)) {
-      return false;
-    }
-
-    // Check if timestamp is recent (within 5 minutes = 300 seconds)
-    const now = Math.floor(Date.now() / 1000);
-    if (Math.abs(now - timestamp) > 300) {
-      return false;
-    }
-
-    // ⚠️ SECURITY: timingSafeEqual prevents timing attacks.
-    const expectedSignature = createHmac("sha256", config.adminAuthSecret)
-      .update(timestampStr)
-      .digest("hex");
-
-    const expectedBuf = Buffer.from(expectedSignature, "hex");
-    const providedBuf = Buffer.from(providedSignature, "hex");
-    if (
-      expectedBuf.length === providedBuf.length &&
-      timingSafeEqual(expectedBuf, providedBuf)
-    ) {
-      return true;
-    }
-  }
-
-  return false;
+  if (!authorization?.startsWith("Bearer ")) return null;
+  const token = authorization.slice("Bearer ".length).trim();
+  return token.length > 0 ? token : null;
 }
 
-/** Return true if the raw token string is valid (used for query-parameter auth on image-proxy routes). */
-function isAuthorizedToken(token: string, config: AdminRuntimeConfig): boolean {
-  if (!config.adminAuthSecret) return true;
-  if (!token) return false;
-  const fakeRequest = { headers: { authorization: "Bearer " + token } } as unknown as IncomingMessage;
-  return isAuthorized(fakeRequest, config);
-}
 
 /** Set security-oriented HTTP response headers on every admin response. */
 function applySecurityHeaders(response: ServerResponse, nonce: string): void {

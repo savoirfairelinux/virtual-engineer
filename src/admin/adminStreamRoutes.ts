@@ -85,7 +85,7 @@ export function registerStreamRoutes(router: Router, deps: StreamRouteDeps): voi
       clearInterval(heartbeatLogs);
     });
     // Do NOT call res.end() — keep connection open
-  });
+  }, { role: "viewer" });
 
   router.add("GET", "/api/admin/events/stream", async (_req, res, _params) => {
     res.statusCode = 200;
@@ -117,7 +117,7 @@ export function registerStreamRoutes(router: Router, deps: StreamRouteDeps): voi
       clearInterval(taskTimer);
       clearInterval(heartbeatGlobal);
     });
-  });
+  }, { role: "viewer" });
 }
 
 // ─── Serializers ────────────────────────────────────────────────────────────

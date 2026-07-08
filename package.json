@@ -5,6 +5,9 @@
   "license": "GPL-3.0-only",
   "type": "module",
   "main": "dist/index.js",
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "scripts": {
     "build": "npm run build:ui && tsc",
     "build:ui": "vite build --config vite.admin.config.ts",

@@ -5,11 +5,13 @@ import type { ApiPrompt } from "../../types.ts";
 
 interface Props {
   prompt?: ApiPrompt | undefined;
+  /** When true (viewer role), the form is read-only — no save button, disabled inputs. */
+  readOnly?: boolean | undefined;
   onClose: () => void;
   onSaved: () => void;
 }
 
-export function PromptFormModal({ prompt, onClose, onSaved }: Props) {
+export function PromptFormModal({ prompt, readOnly, onClose, onSaved }: Props) {
   const isEdit = !!prompt;
   const [label, setLabel] = useState(prompt?.label ?? "");
   const [content, setContent] = useState(prompt?.content ?? "");
@@ -37,7 +39,7 @@ export function PromptFormModal({ prompt, onClose, onSaved }: Props) {
 
   return (
     <Modal
-      title={isEdit ? `Edit Prompt — ${prompt!.label}` : "New Prompt"}
+      title={readOnly ? `Prompt — ${prompt!.label}` : isEdit ? `Edit Prompt — ${prompt!.label}` : "New Prompt"}
       onClose={onClose}
       width={700}
     >
@@ -46,6 +48,7 @@ export function PromptFormModal({ prompt, onClose, onSaved }: Props) {
           <FieldInput
             value={label}
             placeholder="my_prompt_label"
+            readOnly={readOnly}
             onChange={(e) => setLabel(e.target.value)}
           />
         </Field>
@@ -54,6 +57,7 @@ export function PromptFormModal({ prompt, onClose, onSaved }: Props) {
           <FieldTextarea
             value={content}
             placeholder="Enter prompt content…"
+            readOnly={readOnly}
             onChange={(e) => setContent(e.target.value)}
             style={{ minHeight: "360px" }}
           />
@@ -62,10 +66,12 @@ export function PromptFormModal({ prompt, onClose, onSaved }: Props) {
         <FormError msg={error} />
 
         <FormActions>
-          <button className="btn ghost" onClick={onClose}>Cancel</button>
-          <button className="btn primary" onClick={handleSave} disabled={saving}>
-            {saving ? "Saving…" : isEdit ? "Save changes" : "Create prompt"}
-          </button>
+          <button className="btn ghost" onClick={onClose}>{readOnly ? "Close" : "Cancel"}</button>
+          {!readOnly && (
+            <button className="btn primary" onClick={handleSave} disabled={saving}>
+              {saving ? "Saving…" : isEdit ? "Save changes" : "Create prompt"}
+            </button>
+          )}
         </FormActions>
       </FormRow>
     </Modal>

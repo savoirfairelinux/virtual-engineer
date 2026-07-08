@@ -4,6 +4,7 @@ import { Icon } from "../../components/Icon.tsx";
 import { RowCard } from "../../components/RowCard.tsx";
 import { api } from "../../api.ts";
 import { useState } from "react";
+import { useCurrentUser } from "../../authContext.tsx";
 import { ProjectFormModal } from "./ProjectFormModal.tsx";
 import { ProjectDrawer } from "./ConfigDrawers.tsx";
 import type { ApiProject } from "../../types.ts";
@@ -32,6 +33,7 @@ interface ApiProjectDetail extends ApiProject {
 }
 
 export function ProjectsSection({ projects, agents, integrations, onRefresh }: ConfigViewData) {
+  const { canOperate } = useCurrentUser();
   const [busy, setBusy] = useState<string | null>(null);
   const [showAdd, setShowAdd] = useState(false);
   const [editingProject, setEditingProject] = useState<ApiProjectDetail | null>(null);
@@ -88,9 +90,11 @@ export function ProjectsSection({ projects, agents, integrations, onRefresh }: C
             <h1 style={{ margin: 0, fontSize: "22px", fontWeight: 600, letterSpacing: "-0.01em" }}>Projects</h1>
             <p style={{ margin: "6px 0 0", color: "var(--text-faint)", fontSize: "13.5px" }}>Execution units binding an agent to ticket sources and push / review targets.</p>
           </div>
-          <button className="btn primary" onClick={() => setShowAdd(true)}>
-            <Icon name="plus" size={14} /> New project
-          </button>
+          {canOperate && (
+            <button className="btn primary" onClick={() => setShowAdd(true)}>
+              <Icon name="plus" size={14} /> New project
+            </button>
+          )}
         </div>
       </div>
 
@@ -120,28 +124,34 @@ export function ProjectsSection({ projects, agents, integrations, onRefresh }: C
               </div>
             </div>
             <div onClick={(e) => e.stopPropagation()}>
-              <Toggle
-                on={p.enabled}
-                disabled={busy === p.id}
-                onChange={() => void toggleEnabled(p.id, p.enabled)}
-              />
+              {canOperate && (
+                <Toggle
+                  on={p.enabled}
+                  disabled={busy === p.id}
+                  onChange={() => void toggleEnabled(p.id, p.enabled)}
+                />
+              )}
             </div>
-            <button
-              className="iconbtn"
-              title="Edit"
-              disabled={busy === p.id}
-              onClick={(e) => { e.stopPropagation(); void openEditProject(p.id); }}
-            >
-              <Icon name="edit" size={14} />
-            </button>
-            <button
-              className="iconbtn"
-              title="Delete"
-              disabled={busy === p.id}
-              onClick={(e) => { e.stopPropagation(); void deleteProject(p); }}
-            >
-              <Icon name="trash" size={14} />
-            </button>
+            {canOperate && (
+              <button
+                className="iconbtn"
+                title="Edit"
+                disabled={busy === p.id}
+                onClick={(e) => { e.stopPropagation(); void openEditProject(p.id); }}
+              >
+                <Icon name="edit" size={14} />
+              </button>
+            )}
+            {canOperate && (
+              <button
+                className="iconbtn"
+                title="Delete"
+                disabled={busy === p.id}
+                onClick={(e) => { e.stopPropagation(); void deleteProject(p); }}
+              >
+                <Icon name="trash" size={14} />
+              </button>
+            )}
           </RowCard>
         ))}
       </div>
@@ -152,13 +162,15 @@ export function ProjectsSection({ projects, agents, integrations, onRefresh }: C
           item={drawerItem}
           agents={agents}
           onClose={() => setDrawerId(null)}
-          onEdit={() => { setDrawerId(null); void openEditProject(drawerItem.id); }}
-          onToggle={() => { void toggleEnabled(drawerItem.id, drawerItem.enabled); setDrawerId(null); }}
-          onDelete={() => { void deleteProject(drawerItem); setDrawerId(null); }}
+          {...(canOperate ? {
+            onEdit: () => { setDrawerId(null); void openEditProject(drawerItem.id); },
+            onToggle: () => { void toggleEnabled(drawerItem.id, drawerItem.enabled); setDrawerId(null); },
+            onDelete: () => { void deleteProject(drawerItem); setDrawerId(null); },
+          } : {})}
         />
       )}
 
-      {showAdd && (
+      {canOperate && showAdd && (
         <ProjectFormModal
           agents={agents}
           integrations={integrations}
