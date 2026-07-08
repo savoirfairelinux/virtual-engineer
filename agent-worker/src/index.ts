@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Virtual Engineer — Agent Worker (TypeScript / Copilot SDK)
+ * Virtual Engineer — Agent Worker (TypeScript)
  *
  * Runs INSIDE the Docker container for each task cycle.
  * The repository is pre-cloned by the host orchestrator and mounted at /workspace.
@@ -8,23 +8,20 @@
  * It has no VCS credentials, does not clone, and never pushes.
  *
  * Receives task context via environment variables, then:
- *   1. Opens a GitHub Copilot SDK session against the pre-cloned repository
- *   2. Sends the task prompt — the CLI agent edits files autonomously
+ *   1. Opens an agent session (provider chosen via AGENT_PROVIDER) against the
+ *      pre-cloned repository — see `providers/` for the per-provider runners
+ *   2. Sends the task prompt — the agent edits files autonomously
  *   3. Collects agent-created commits
  *   4. Writes a JSON AgentResult object to stdout
  *
- * Authentication: GITHUB_TOKEN env var (for Copilot LLM calls only).
+ * Authentication: provider-specific env var (e.g. GITHUB_TOKEN for Copilot,
+ * ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN for Claude).
  */
 
-import { CopilotClient } from '@github/copilot-sdk';
-import type { CopilotSession, AssistantMessageEvent } from '@github/copilot-sdk';
-import { execFileSync, spawn } from 'child_process';
-import type { ChildProcess } from 'child_process';
-import { existsSync, readFileSync, statSync } from 'fs';
-import { createConnection } from 'net';
+import { execFileSync } from 'child_process';
+import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 
-type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
 import type { AgentLogEvent, AgentResult, CommitDescriptor, RepositoryMap } from '../../src/interfaces.js';
 import {
   collectCommits,
@@ -33,8 +30,9 @@ import {
   squashIntoBaseIfNeeded,
   groupFilesByRepo,
 } from './commitUtils.js';
-import { runClaudeAgent } from './claudeSession.js';
-import { restrictNetworkPermissionHandler } from './networkGuard.js';
+import { emitEvent } from './providers/events.js';
+import { resolveRunner } from './providers/registry.js';
+import type { AgentRun } from './providers/types.js';
 
 // ── Environment ────────────────────────────────────────────────────────────────
 const AGENT_PROVIDER = process.env['AGENT_PROVIDER'] ?? 'copilot';
@@ -82,12 +80,7 @@ if (!USER_PROMPT_FILE) {
   process.exit(1);
 }
 
-// ── Structured event emitter ──────────────────────────────────────────────────
-function emitEvent(type: string, data: Record<string, unknown>): void {
-  process.stderr.write(
-    JSON.stringify({ __ve_event: true, type, data, ts: new Date().toISOString() }) + '\n',
-  );
-}
+// ── Structured event emitter is imported from ./providers/events.js ──────────
 
 // ── Multi-repository context ──────────────────────────────────────────────────
 let REPOSITORY_MAP: RepositoryMap | undefined;
@@ -119,405 +112,31 @@ function git(args: string[], cwd: string = REPO_PATH): string {
   }
 }
 
-// ── Port readiness helper ─────────────────────────────────────────────────────
-function waitForPort(host: string, port: number, timeoutMs: number): Promise<void> {
-  return new Promise<void>((resolve, reject) => {
-    const deadline = Date.now() + timeoutMs;
-
-    const attempt = (): void => {
-      const socket = createConnection({ host, port });
-      socket.once('connect', () => {
-        socket.destroy();
-        resolve();
-      });
-      socket.once('error', () => {
-        socket.destroy();
-        if (Date.now() >= deadline) {
-          reject(new Error(`Timed out waiting for Copilot CLI server on ${host}:${port}`));
-          return;
-        }
-        setTimeout(attempt, 250);
-      });
-    };
-
-    attempt();
-  });
-}
-
-// ── Local headless CLI server ─────────────────────────────────────────────────
-interface LocalCliServer {
-  child: ChildProcess;
-  cliUrl: string;
-}
-
-async function startLocalCliServer(): Promise<LocalCliServer> {
-  const cliPath = '/agent-worker/node_modules/.bin/copilot';
-  const port = 3000;
-  const stdoutChunks: string[] = [];
-  const stderrChunks: string[] = [];
-
-  // Environment Variable Allowlist (Security):
-  // Subprocess has only whitelisted env vars to prevent secrets leakage.
-  const child = spawn(cliPath, ['--headless', '--port', String(port)], {
-    cwd: REPO_PATH,
-    env: {
-      GITHUB_TOKEN: process.env['GITHUB_TOKEN'] ?? '',
-      GIT_AUTHOR_NAME,
-      GIT_AUTHOR_EMAIL,
-      GIT_COMMITTER_NAME,
-      GIT_COMMITTER_EMAIL,
-      PATH: process.env['PATH'] ?? '',
-      HOME: process.env['HOME'] ?? '',
-      TMPDIR: process.env['TMPDIR'] ?? '',
-      TMP: process.env['TMP'] ?? '',
-      TEMP: process.env['TEMP'] ?? '',
-      USER: process.env['USER'] ?? '',
-      XDG_RUNTIME_DIR: process.env['XDG_RUNTIME_DIR'] ?? '',
-    },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-
-  child.stdout?.on('data', (chunk: unknown) => stdoutChunks.push(String(chunk)));
-  child.stderr?.on('data', (chunk: unknown) => stderrChunks.push(String(chunk)));
-
-  try {
-    await waitForPort('127.0.0.1', port, 30_000);
-  } catch (err) {
-    child.kill('SIGTERM');
-    const detail = `${stdoutChunks.join('')}\n${stderrChunks.join('')}`.trim();
-    const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(`Failed to start local Copilot CLI server: ${msg}${detail ? `\n${detail}` : ''}`);
-  }
-
-  return { child, cliUrl: `127.0.0.1:${port}` };
-}
-
-// ── Unified session runner ────────────────────────────────────────────────────
-async function runSession(
-  userPrompt: string,
-): Promise<{ session: CopilotSession; client: CopilotClient; localCliServer: LocalCliServer }> {
-  const localCliServer = await startLocalCliServer();
-  const client = new CopilotClient({ cliUrl: localCliServer.cliUrl });
-
-  // Opt-in: surface repo-defined skills to the agent without enabling MCP discovery.
-  // Guarded so a missing path — or a non-directory at that path — never aborts the session.
-  const skillsDir = join(WORKSPACE, '.github', 'skills');
-  let enableSkillDiscovery = false;
-  if (SKILL_DISCOVERY) {
-    try {
-      enableSkillDiscovery = statSync(skillsDir).isDirectory();
-    } catch {
-      enableSkillDiscovery = false;
-    }
-  }
-
-  try {
-    const session = await client.createSession({
-      model: COPILOT_MODEL,
-      ...(COPILOT_REASONING_EFFORT && COPILOT_REASONING_EFFORT !== 'none'
-        ? { reasoningEffort: COPILOT_REASONING_EFFORT as ReasoningEffort }
-        : {}),
-      ...(enableSkillDiscovery ? { skillDirectories: [skillsDir] } : {}),
-      systemMessage: { content: SYSTEM_PROMPT },
-      onPermissionRequest: restrictNetworkPermissionHandler,
-      workingDirectory: WORKSPACE,
-      infiniteSessions: { enabled: false },
-    });
-    // Suppress unused-variable warning: userPrompt is used by the caller via sendAndWait
-    void userPrompt;
-    return { session, client, localCliServer };
-  } catch (err) {
-    await client.stop().catch(() => { /* ignore */ });
-    localCliServer.child.kill('SIGTERM');
-    throw err;
-  }
-}
-
-// ── SDK event field extraction helpers ───────────────────────────────────────
-
-function deepFindStr(obj: unknown, keys: string[]): string | null {
-  const seen = new Set<object>();
-
-  function visit(value: unknown): string | null {
-    if (value === null || value === undefined || typeof value !== 'object') return null;
-    if (seen.has(value)) return null;
-    seen.add(value);
-
-    const record = value as Record<string, unknown>;
-    for (const k of keys) {
-      const val = record[k];
-      if (typeof val === 'string' && val.trim()) return val;
-    }
-
-    for (const nested of Object.values(record)) {
-      const found = visit(nested);
-      if (found !== null) return found;
-    }
-
-    return null;
-  }
-
-  return visit(obj);
-}
-
-function deepFindNum(obj: unknown, keys: string[]): number | null {
-  const seen = new Set<object>();
-
-  function visit(value: unknown): number | null {
-    if (value === null || value === undefined || typeof value !== 'object') return null;
-    if (seen.has(value)) return null;
-    seen.add(value);
-
-    const record = value as Record<string, unknown>;
-    for (const k of keys) {
-      const val = record[k];
-      if (typeof val === 'number' && Number.isFinite(val)) return val;
-    }
-
-    for (const nested of Object.values(record)) {
-      const found = visit(nested);
-      if (found !== null) return found;
-    }
-
-    return null;
-  }
-
-  return visit(obj);
-}
-
-function extractToolName(e: unknown): string {
-  return deepFindStr(e, ['name', 'toolName', 'tool_name']) ?? 'unknown_tool';
-}
-
-function parseToolInputValue(value: unknown): Record<string, unknown> {
-  if (!value) return {};
-  if (typeof value === 'object') return value as Record<string, unknown>;
-  if (typeof value !== 'string') return {};
-  const trimmed = value.trim();
-  if (!trimmed) return {};
-  try {
-    const parsed: unknown = JSON.parse(trimmed);
-    return (parsed && typeof parsed === 'object') ? (parsed as Record<string, unknown>) : { command: trimmed };
-  } catch {
-    return { command: trimmed };
-  }
-}
-
-function extractToolInput(e: unknown): Record<string, unknown> {
-  if (typeof e !== 'object' || e === null) return {};
-  const o = e as Record<string, unknown>;
-  const tool = o['tool'];
-  const tc = o['toolCall'];
-  const toolInput = (typeof tool === 'object' && tool !== null)
-    ? (tool as Record<string, unknown>)['input']
-    : undefined;
-  const tcInput = (typeof tc === 'object' && tc !== null)
-    ? (tc as Record<string, unknown>)['input']
-    : undefined;
-  const tcFnArgs = (typeof tc === 'object' && tc !== null)
-    ? ((): unknown => {
-        const fn = (tc as Record<string, unknown>)['function'];
-        return (typeof fn === 'object' && fn !== null)
-          ? (fn as Record<string, unknown>)['arguments']
-          : undefined;
-      })()
-    : undefined;
-  return parseToolInputValue(o['input'] ?? toolInput ?? tcInput ?? o['arguments'] ?? tcFnArgs ?? {});
-}
-
-function formatToolLabel(toolName: string, toolInput: Record<string, unknown>): string {
-  const filePath = toolInput['path'] ?? toolInput['file_path'] ?? toolInput['target_file'] ?? toolInput['filePath'];
-  if (typeof filePath === 'string' && filePath.trim()) {
-    return `${toolName}(${filePath.trim()})`;
-  }
-  const command = toolInput['command'] ?? toolInput['cmd'];
-  if (typeof command === 'string' && command.trim()) {
-    return `${toolName}(${command.trim()})`;
-  }
-  const pattern = toolInput['pattern'] ?? toolInput['query'] ?? toolInput['regex'];
-  if (typeof pattern === 'string' && pattern.trim()) {
-    return `${toolName}(${pattern.trim()})`;
-  }
-  return toolName;
-}
-
-// ── Session event handler registration ───────────────────────────────────────
-function registerSessionEventHandlers(
-  session: CopilotSession,
-): { toolCallCount: number; toolsByKind: Record<string, number> } {
-  const state = { toolCallCount: 0, toolsByKind: {} as Record<string, number> };
-  const toolTimers: Record<string, number> = {};
-
-  session.on('tool.execution_start', (e) => {
-    state.toolCallCount++;
-    const event = e as unknown;
-    const toolName = extractToolName(event);
-    const toolInput = extractToolInput(event);
-    const label = formatToolLabel(toolName, toolInput);
-    const callId = `${toolName}_${state.toolCallCount}`;
-    toolTimers[callId] = Date.now();
-    const prevCount = state.toolsByKind[toolName] ?? 0;
-    state.toolsByKind[toolName] = prevCount + 1;
-    process.stderr.write(`[tool] #${state.toolCallCount} ${label}\n`);
-    emitEvent('tool.execution_start', { name: toolName, input: toolInput, callId, callNumber: state.toolCallCount });
-  });
-
-  session.on('tool.execution_complete', (e) => {
-    const event = e as unknown;
-    const toolName = extractToolName(event);
-    const output = deepFindStr(event, ['output', 'result', 'content']);
-    let durationMs: number | null = null;
-    for (const [id, startTime] of Object.entries(toolTimers)) {
-      if (id.startsWith(toolName + '_')) {
-        durationMs = Date.now() - startTime;
-        delete toolTimers[id];
-        break;
-      }
-    }
-    emitEvent('tool.execution_complete', {
-      name: toolName,
-      durationMs,
-      output: output ? output.slice(0, 800) : null,
-      status: deepFindStr(event, ['status', 'result']) ?? 'success',
-    });
-  });
-
-  session.on('tool.execution_progress', (e) => {
-    const event = e as unknown;
-    const toolName = extractToolName(event);
-    emitEvent('tool.execution_progress', {
-      name: toolName,
-      message: deepFindStr(event, ['message', 'progress', 'text']),
-    });
-  });
-
-  session.on('assistant.streaming_delta', (e) => {
-    const event = e as unknown;
-    const delta = deepFindStr(event, ['delta', 'content', 'text']);
-    if (delta) emitEvent('assistant.streaming_delta', { delta });
-  });
-
-  session.on('assistant.message', (e) => {
-    const event = e as unknown;
-    const content = deepFindStr(event, ['content', 'text', 'message']);
-    emitEvent('assistant.message', { content: content ? content.slice(0, 3000) : null });
-  });
-
-  session.on('assistant.usage', (e) => {
-    const event = e as unknown;
-    const inputTokens = deepFindNum(event, ['inputTokens', 'input_tokens', 'promptTokens', 'prompt_tokens']);
-    const outputTokens = deepFindNum(event, ['outputTokens', 'output_tokens', 'completionTokens', 'completion_tokens']);
-    const cacheRead = deepFindNum(event, ['cacheReadTokens', 'cache_read_tokens', 'cacheReadInputTokens']);
-    const cacheWrite = deepFindNum(event, ['cacheWriteTokens', 'cache_write_tokens', 'cacheCreationInputTokens']);
-    const apiCallId = deepFindStr(event, ['apiCallId', 'api_call_id']);
-    const providerCallId = deepFindStr(event, ['providerCallId', 'provider_call_id']);
-    const totalNanoAiu = deepFindNum(event, ['totalNanoAiu', 'total_nano_aiu']);
-    const cost = deepFindNum(event, ['cost']);
-    emitEvent('assistant.usage', {
-      inputTokens,
-      outputTokens,
-      cacheReadTokens: cacheRead,
-      cacheWriteTokens: cacheWrite,
-      model: deepFindStr(event, ['model']) ?? COPILOT_MODEL,
-      ...(apiCallId !== null ? { apiCallId } : {}),
-      ...(providerCallId !== null ? { providerCallId } : {}),
-      ...(totalNanoAiu !== null ? { totalNanoAiu } : {}),
-      ...(cost !== null ? { cost } : {}),
-    });
-  });
-
-  session.on('session.usage_info', (e) => {
-    const event = e as unknown;
-    const tokenLimit = deepFindNum(event, ['tokenLimit']);
-    const currentTokens = deepFindNum(event, ['currentTokens']);
-    emitEvent('session.usage_info', {
-      tokenLimit,
-      currentTokens,
-      model: deepFindStr(event, ['model']) ?? COPILOT_MODEL,
-    });
-  });
-
-  session.on('session.error', (e) => {
-    const event = e as unknown;
-    const msg = deepFindStr(event, ['message', 'error', 'reason'])
-      ?? (typeof event === 'string' ? event : String(event));
-    emitEvent('session.error', { message: msg });
-  });
-
-  session.on('permission.requested', (e) => {
-    const event = e as unknown;
-    emitEvent('permission.requested', {
-      tool: deepFindStr(event, ['tool', 'name', 'toolName']),
-      reason: deepFindStr(event, ['reason', 'message']),
-    });
-  });
-
-  return state;
-}
-
 // ── Provider-agnostic agent driver ────────────────────────────────────────────
 
-/** Result of running one agent session, independent of the underlying provider. */
-interface AgentRun {
-  content: string;
-  toolCallCount: number;
-  toolsByKind: Record<string, number>;
-  cleanup: () => Promise<void>;
-}
-
-/** Run a Copilot SDK session (local headless CLI) and return the assistant text + tool stats. */
-async function runCopilotAgent(
-  prompt: string,
-  timeoutMs: number,
-  mode: 'codegen' | 'review',
-): Promise<AgentRun> {
-  const { session, client, localCliServer } = await runSession(prompt);
-  emitEvent('session.start', { model: COPILOT_MODEL, mode, workingDirectory: REPO_PATH });
-  const handlerState = registerSessionEventHandlers(session);
-  process.stderr.write(`sending ${mode} prompt\n`);
-
-  const heartbeat = setInterval(() => {
-    process.stderr.write(`agent working… (${handlerState.toolCallCount} tool call(s) so far)\n`);
-  }, 30_000);
-
-  let response: AssistantMessageEvent | undefined;
-  try {
-    response = await session.sendAndWait({ prompt }, timeoutMs);
-  } finally {
-    clearInterval(heartbeat);
-  }
-
-  const content = response?.data.content ?? 'Task completed';
-  await session.disconnect().catch(() => { /* ignore */ });
-
-  return {
-    content,
-    toolCallCount: handlerState.toolCallCount,
-    toolsByKind: handlerState.toolsByKind,
-    cleanup: async (): Promise<void> => {
-      await client.stop().catch(() => { /* ignore */ });
-      localCliServer.child.kill('SIGTERM');
-    },
-  };
-}
-
-/** Dispatch to the configured agent provider (`copilot` or `claude`). */
+/**
+ * Dispatch to the configured agent provider (`copilot` or `claude`).
+ *
+ * Provider selection and per-session behaviour live in `providers/`; this
+ * function only assembles the run options from the container environment and
+ * delegates to the runner resolved by the registry.
+ */
 async function runAgent(
   prompt: string,
   timeoutMs: number,
   mode: 'codegen' | 'review',
 ): Promise<AgentRun> {
-  if (AGENT_PROVIDER === 'claude') {
-    return runClaudeAgent(prompt, {
-      model: CLAUDE_MODEL,
-      systemPrompt: SYSTEM_PROMPT,
-      cwd: REPO_PATH,
-      timeoutMs,
-      mode,
-      skillDiscovery: SKILL_DISCOVERY,
-    });
-  }
-  return runCopilotAgent(prompt, timeoutMs, mode);
+  const runner = resolveRunner(AGENT_PROVIDER);
+  const model = AGENT_PROVIDER === 'claude' ? CLAUDE_MODEL : COPILOT_MODEL;
+  return runner(prompt, {
+    model,
+    systemPrompt: SYSTEM_PROMPT,
+    cwd: REPO_PATH,
+    timeoutMs,
+    mode,
+    skillDiscovery: SKILL_DISCOVERY,
+    ...(COPILOT_REASONING_EFFORT ? { reasoningEffort: COPILOT_REASONING_EFFORT } : {}),
+  });
 }
 
 // ── Review mode entry point ────────────────────────────────────────────────────
@@ -541,10 +160,7 @@ async function runReviewMode(): Promise<ReviewWorkerResult> {
   const agent = await runAgent(reviewPrompt, 9 * 60 * 1000, 'review');
   try {
     const rawOutput = agent.content ?? '';
-    // Claude's runner already emits session.end; only emit here for Copilot.
-    if (AGENT_PROVIDER !== 'claude') {
-      emitEvent('session.end', { mode: 'review', outputLength: rawOutput.length });
-    }
+    // session.end is emitted by the provider runner (see providers/).
     process.stderr.write(`review complete (${rawOutput.length} chars)\n`);
 
     return {
@@ -637,14 +253,7 @@ async function main(): Promise<AgentResult> {
 
   try {
     process.stderr.write('session idle — collecting changes\n');
-    // Claude's runner already emits session.end; only emit here for Copilot.
-    if (AGENT_PROVIDER !== 'claude') {
-      emitEvent('session.end', {
-        toolCallCount: handlerState.toolCallCount,
-        toolsByKind: handlerState.toolsByKind,
-        model: ACTIVE_MODEL,
-      });
-    }
+    // session.end is emitted by the provider runner (see providers/).
 
     // 3. Check for agent-created commits across ALL repos.
     const rootHeadSha = git(['rev-parse', 'HEAD']).trim();

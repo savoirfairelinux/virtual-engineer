@@ -64,7 +64,7 @@ src/
                         # copilotOAuthService, providerAuthService,
                         # copilotModelsService, cycleCost,
                         # claudeAdapter, claudeConnectionValidator,
-                        # claudeModelsService, claudeSession (worker),
+                        # claudeModelsService,
                         # mockAgentAdapter, agentEventTypes, agentEventBus
   connectors/           # redmineConnector, gerritConnector,
                         # gerritSshClient, gerritSshReviewProvider,
@@ -95,8 +95,11 @@ src/
                         # gitlab-merge-request,github-pull-request}
   workspace/            # dockerVolume (named-volume lifecycle + execInVolume)
                         # workspaceRunner (clone + container lifecycle)
-agent-worker/src/       # TS worker inside the agent container (index.ts,
-                        # commitUtils.ts, validate-copilot-connection.ts);
+agent-worker/src/       # TS worker inside the agent container: index.ts
+                        # (provider-agnostic orchestrator), providers/
+                        # {types,events,copilot,claude,registry}.ts (per-provider
+                        # runners + registry dispatch), commitUtils.ts,
+                        # networkGuard.ts, validate-copilot-connection.ts;
                         # built via tsconfig.agent.json / npm run build:agent
 ```
 
@@ -201,7 +204,7 @@ Implementation: `src/agents/copilotAdapter.ts`, `src/agents/copilotOAuthService.
 
 ## Claude Execution (`agent_execution` alternative to Copilot)
 
-The `claude` provider runs Anthropic **Claude Code** via the `@anthropic-ai/claude-agent-sdk` inside the same agent container. The host `ClaudeAdapter` (`src/agents/claudeAdapter.ts`) injects `AGENT_PROVIDER=claude`, exactly one auth env var, and `CLAUDE_MODEL` **only when a model is configured** (otherwise the Claude CLI picks its own default — no hardcoded default in VE). The worker (`agent-worker/src/claudeSession.ts`, dispatched from `agent-worker/src/index.ts` when `AGENT_PROVIDER=claude`) drives `query()` and maps its message stream onto the shared `__ve_event` / commit / `AgentResult` pipeline. Both coding and review flows are supported (review uses `REVIEW_MODE=1`).
+The `claude` provider runs Anthropic **Claude Code** via the `@anthropic-ai/claude-agent-sdk` inside the same agent container. The host `ClaudeAdapter` (`src/agents/claudeAdapter.ts`) injects `AGENT_PROVIDER=claude`, exactly one auth env var, and `CLAUDE_MODEL` **only when a model is configured** (otherwise the Claude CLI picks its own default — no hardcoded default in VE). The Claude runner (`agent-worker/src/providers/claude.ts`, resolved by the worker's provider registry when `AGENT_PROVIDER=claude`) drives `query()` and maps its message stream onto the shared `__ve_event` / commit / `AgentResult` pipeline. Both coding and review flows are supported (review uses `REVIEW_MODE=1`).
 
 Agent adapters are **descriptor-driven**: a provider that declares `capabilities.agent_execution.buildAdapter(context)` is instantiated by `PluginManager` from an `AgentAdapterContext` (`maxCommitsPerCycle`, `dockerNetwork`) supplied via constructor options. `index.ts` no longer registers per-provider adapter factories — adding a new agent backend is just a new descriptor. `PluginManager.registerFactory` still exists and takes precedence (used by tests).
 

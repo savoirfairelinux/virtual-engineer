@@ -1,10 +1,10 @@
 /**
  * Virtual Engineer — Claude Code session runner (agent worker).
  *
- * Runs INSIDE the Docker container when `AGENT_PROVIDER=claude`. Drives the
+ * Runs INSIDE the Docker container for the `claude` provider. Drives the
  * Anthropic Claude Agent SDK against the pre-cloned `/workspace` repository and
- * maps its streamed messages onto the same `__ve_event` stderr protocol used by
- * the Copilot path, so the host adapter's event/commit/result pipeline is
+ * maps its streamed messages onto the shared `__ve_event` stderr protocol used
+ * by every provider, so the host adapter's event / commit / result pipeline is
  * provider-agnostic.
  *
  * The agent edits files and creates git commits via the SDK's built-in Bash /
@@ -16,32 +16,9 @@
  * integrations). The host adapter injects exactly one of these.
  */
 import { query } from '@anthropic-ai/claude-agent-sdk';
-import { NETWORK_DISALLOWED_TOOLS } from './networkGuard.js';
-
-export interface ClaudeAgentRun {
-  content: string;
-  toolCallCount: number;
-  toolsByKind: Record<string, number>;
-  cleanup: () => Promise<void>;
-}
-
-export interface ClaudeAgentOptions {
-  /** Model override; when empty the Claude CLI selects its own default. */
-  model: string;
-  systemPrompt: string;
-  cwd: string;
-  timeoutMs: number;
-  mode: 'codegen' | 'review';
-  /** When true, load project (.claude) settings/skills. */
-  skillDiscovery?: boolean;
-}
-
-/** Emit a structured VE event on stderr (mirrors the copilot worker format). */
-function emitEvent(type: string, data: Record<string, unknown>): void {
-  process.stderr.write(
-    JSON.stringify({ __ve_event: true, type, data, ts: new Date().toISOString() }) + '\n',
-  );
-}
+import { NETWORK_DISALLOWED_TOOLS } from '../networkGuard.js';
+import { emitEvent } from './events.js';
+import type { AgentRun, AgentRunOptions } from './types.js';
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : null;
@@ -54,8 +31,8 @@ function numberOrNull(value: unknown): number | null {
 /** Run a Claude Code session and return the assistant's final text + tool stats. */
 export async function runClaudeAgent(
   prompt: string,
-  options: ClaudeAgentOptions,
-): Promise<ClaudeAgentRun> {
+  options: AgentRunOptions,
+): Promise<AgentRun> {
   const { model, systemPrompt, cwd, timeoutMs, mode, skillDiscovery } = options;
   const modelLabel = model || 'cli-default';
 
