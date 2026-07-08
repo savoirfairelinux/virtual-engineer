@@ -382,7 +382,7 @@ Builds the **Docker container spec** and parses the agent result.
              fallback to "feat: <subject>" if missing/invalid
 ```
 
-The agent container is placed on `virtual-engineer_ve-agent-net` — an isolated Docker bridge network with no direct route to the host gateway.
+The agent container is placed on `virtual-engineer_ve-agent-net` — a dedicated Docker bridge network that isolates it from the default bridge and other containers. The network is **not** `--internal`, so the container retains outbound access (required to reach the GitHub/Copilot APIs).
 
 ---
 
@@ -789,6 +789,6 @@ Runs inside the container. Two modes:
 | `--security-opt no-new-privileges:true` | Prevents privilege escalation |
 | `--security-opt label=disable` | Allows Copilot CLI's `mprotect(PROT_READ)` on SELinux hosts |
 | `--tmpfs /tmp:rw,nosuid,size=256m` | Ephemeral scratch space, no setuid |
-| `--network virtual-engineer_ve-agent-net` | Isolated bridge — no host gateway access |
+| `--network virtual-engineer_ve-agent-net` | Dedicated bridge — isolated from the default bridge and other containers (not `--internal`; outbound access retained for the GitHub/Copilot APIs) |
 
 The agent receives only: `GITHUB_TOKEN`, task context env vars (title, description, model), and git author metadata. System secrets (DB path, admin token, SSH keys) are never passed to the container.
