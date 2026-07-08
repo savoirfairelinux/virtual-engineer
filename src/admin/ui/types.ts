@@ -334,10 +334,67 @@ export interface ApiModelUsageSummary {
 export type UserRole = "admin" | "operator" | "viewer";
 
 /** Current identity from GET /api/admin/auth/me. `id` is null in bootstrap mode (no users yet — see adminServer.ts). */
+export interface SerializedCapabilities {
+  superuser: boolean;
+  /** permission → "*" (all) or a list of scoped resource ids. */
+  grants: Record<string, "*" | string[]>;
+}
+
 export interface ApiMe {
   id: string | null;
   username: string;
   role: UserRole;
+  capabilities?: SerializedCapabilities;
+}
+
+/* ─── PBAC: groups / policies ─────────────────────────────────────────── */
+
+export interface ApiGroup {
+  id: string;
+  name: string;
+  description: string;
+  createdAt: string;
+  updatedAt: string;
+  memberCount?: number;
+}
+
+export interface ApiGroupMember {
+  id: string;
+  username: string;
+  role: UserRole;
+}
+
+export interface ApiGroupDetail extends ApiGroup {
+  members: ApiGroupMember[];
+}
+
+export interface ApiPolicy {
+  id: string;
+  name: string;
+  description: string;
+  builtin: boolean;
+  createdAt: string;
+  updatedAt: string;
+  ruleCount?: number;
+  bindingCount?: number;
+}
+
+export interface ApiPolicyRule {
+  id?: string;
+  permission: string;
+  resourceId: string | null;
+}
+
+export interface ApiPolicyBinding {
+  id: string;
+  policyId: string;
+  principalType: "user" | "group";
+  principalId: string;
+}
+
+export interface ApiPolicyDetail extends ApiPolicy {
+  rules: ApiPolicyRule[];
+  bindings: ApiPolicyBinding[];
 }
 
 export interface SetupStatus {

@@ -11,6 +11,8 @@ import { PromptsSection }       from "./PromptsSection.tsx";
 import { OAuthSection }         from "./OAuthSection.tsx";
 import { SystemSection }        from "./SystemSection.tsx";
 import { UsersSection }         from "./UsersSection.tsx";
+import { GroupsSection }        from "./GroupsSection.tsx";
+import { PoliciesSection }      from "./PoliciesSection.tsx";
 import { AuditSection }         from "./AuditSection.tsx";
 import { useCurrentUser }       from "../../authContext.tsx";
 
@@ -23,6 +25,8 @@ const CONFIG_NAV = [
   { id: "projects",      label: "Projects",         sub: "Execution units",   icon: "box",    adminOnly: false },
   { id: "prompts",       label: "Prompts",          sub: "System & custom",   icon: "edit",   adminOnly: false },
   { id: "users",         label: "Users",            sub: "Accounts & roles",  icon: "user",   adminOnly: true },
+  { id: "groups",        label: "Groups",           sub: "User collections",  icon: "layers", adminOnly: true },
+  { id: "policies",      label: "Policies",         sub: "Access control",    icon: "config", adminOnly: true },
   { id: "audit",         label: "Audit",            sub: "Change history",    icon: "clock",  adminOnly: true },
   { id: "system",        label: "System Settings",  sub: "Runtime settings",  icon: "config", adminOnly: false },
 ] as const;
@@ -126,6 +130,8 @@ export function ConfigView(props: ConfigViewData) {
           {effectiveSec === "projects"     && <ProjectsSection {...props} />}
           {effectiveSec === "prompts"      && <PromptsSection {...props} />}
           {effectiveSec === "users"        && isAdmin && <UsersSection />}
+          {effectiveSec === "groups"       && isAdmin && <GroupsSection />}
+          {effectiveSec === "policies"     && isAdmin && <PoliciesSection />}
           {effectiveSec === "audit"        && isAdmin && <AuditSection />}
           {effectiveSec === "system"       && <SystemSection config={props.config} status={props.status} onRefresh={props.onRefresh} />}
         </div>

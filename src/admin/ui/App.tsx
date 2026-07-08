@@ -6,7 +6,7 @@ import { TasksView } from "./views/TasksView/index.tsx";
 import { OverviewView } from "./views/OverviewView.tsx";
 import { ConfigView } from "./views/ConfigView/index.tsx";
 import { api, connectSse, getStoredToken, clearStoredToken, getMe, logout, onUnauthorized, ApiError } from "./api.ts";
-import { CurrentUserProvider, type CurrentUserValue } from "./authContext.tsx";
+import { CurrentUserProvider, makeCan, type CurrentUserValue } from "./authContext.tsx";
 import { isActiveState } from "./states.ts";
 import type {
   ApiTask, ApiIntegration, ApiPlugin, ApiAgent, ApiProject,
@@ -88,6 +88,7 @@ export function App() {
     user: currentUser,
     isAdmin: currentUser?.role === "admin",
     canOperate: currentUser !== null && currentUser.role !== "viewer",
+    can: makeCan(currentUser),
   }), [currentUser]);
 
   // Viewers may only read overview + tasks; the config area and its data
