@@ -83,6 +83,7 @@ src/
     adminAgentsRoutes.ts  # /api/admin/agents CRUD + plugin OAuth
     adminProjectsRoutes.ts# /api/admin/projects CRUD
     adminConcurrencyRoutes.ts # /api/admin/concurrency
+    adminSettingsRoutes.ts# /api/admin/settings (editable runtime workflow settings)
     adminWebhookRoutes.ts # Webhook secret rotation, allowed-IPs, info
     adminOverviewRoutes.ts# Dashboard overview + cost-summary endpoints
     dashboard.ts          # Serves the Vite-built React SPA from dist/admin-ui
@@ -133,7 +134,7 @@ src/
     pluginManager.ts      # DB-driven instance lifecycle
     init.ts               # Registers built-in descriptors at startup
     descriptors/          # One unified descriptor per provider (+ index.ts,
-                          # githubOAuth/gitlabOAuth helpers)
+                          # githubOAuth/gitlabOAuth/claudeOAuth helpers)
 
   review/               # Code-review workflow
     reviewOrchestrator.ts # REVIEW_PENDING → REVIEW_DONE lifecycle
@@ -150,7 +151,8 @@ src/
     stateMachine.ts       # VALID_TRANSITIONS + validateTransition
     stateStore.ts         # SqliteStateStore facade — all DB access
     stores/               # Domain-scoped DB modules: task, integration,
-                          # project, prompt(+seeding), agent(+concurrency)
+                          # project, prompt(+seeding), agent(+concurrency),
+                          # settings (app_settings singleton)
     migrate.ts            # Runs Drizzle migrations on startup
 
   utils/
@@ -159,7 +161,11 @@ src/
     gitExec.ts
     githubAuth.ts
     gitlabAuth.ts
+    opensshKeyFormat.ts
     redactUrl.ts
+    sshConfig.ts
+    sshKeyGen.ts
+    sshKeyResolver.ts
     ticketFooterFormatter.ts
     ticketSourceLabel.ts
 
@@ -183,6 +189,7 @@ src/
 agent-worker/
   src/index.ts          # Runs INSIDE the agent container (Copilot SDK);
                         # built to dist/ via tsconfig.agent.json
+  src/claudeSession.ts  # Claude Code SDK driver (AGENT_PROVIDER=claude)
   src/commitUtils.ts
   src/validate-copilot-connection.ts
 ```
@@ -302,6 +309,7 @@ Plain Node.js `http.createServer` — no framework. The main file handles auth, 
 | `adminAgentsRoutes.ts` | `GET/POST /api/admin/agents`, `GET/PUT/DELETE .../agents/:id`, `PATCH .../{enable,disable}`, `POST /api/admin/plugins/:type/oauth/*` |
 | `adminProjectsRoutes.ts` | `GET/POST /api/admin/projects`, `GET/PUT/DELETE .../projects/:id`, `PATCH .../{enable,disable}` |
 | `adminConcurrencyRoutes.ts` | `GET/PUT /api/admin/concurrency` |
+| `adminSettingsRoutes.ts` | `GET/PUT /api/admin/settings` (editable runtime workflow settings) |
 | `adminWebhookRoutes.ts` | `POST .../webhook-secret/rotate`, `GET/PUT .../webhook-allowed-ips`, `GET .../webhook-info` |
 
 **Shared primitives** (`adminRouteUtils.ts`): `writeJson`, `writeHtml`, `readBody` (512 KB limit), `toIsoTimestamp`, `asRecord`, `SECRET_MASK`.
@@ -447,7 +455,7 @@ Drives the **code-review lifecycle** for a single change.
 
 Both operate entirely via `execInVolume` — no VCS tools run directly on the orchestrator process. SSH keys are injected as base64 env vars.
 
-`vcsFactory.ts` exports `createVcsConnectorForIntegration(integration)` which reads the integration's `configJson` and returns the appropriate connector.
+`vcsFactory.ts` exports `createVcsConnectorForIntegration(integration, context?)` which reads the integration's `configJson` and returns the appropriate connector.
 
 ---
 
@@ -629,7 +637,7 @@ integrations
   provider         TEXT  github | gitlab | gerrit | redmine | copilot | claude | mock
   name             TEXT
   config_json      TEXT  JSON (credentials + endpoints)
-  enabled          INTEGER  0|1  (default 0)
+  enabled          INTEGER  0|1  (default 1)
   discovered_resources_json TEXT | NULL
   discovered_at    INTEGER | NULL
   created_at / updated_at
@@ -657,6 +665,7 @@ projects
   agent_id → agents.id
   agent_override_json (partial model config override)
   post_clone_script (bash, runs on host after clone)
+  skill_discovery_enabled (default 0 — loads <repo>/.github/skills when 1)
   enabled (default 0)
 
 project_integration_bindings   ← one row per (project, capability)
@@ -680,6 +689,13 @@ change_per_repository          ← tracks per-repo change IDs
 
 app_concurrency                ← singleton
   id = "global" / max_concurrent (NULL = unlimited)
+
+app_settings                   ← singleton (editable runtime workflow settings)
+  id = "global"
+  polling_interval_ms / max_agent_cycles / max_retry_attempts  INTEGER | NULL
+    (NULL = fall back to the config.ts default; edited via admin UI →
+     System Settings, hot-applied without restart)
+  updated_at
 ```
 
 ---
