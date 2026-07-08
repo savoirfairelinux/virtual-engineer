@@ -163,6 +163,80 @@ export interface AuditEntry {
   createdAt: Date;
 }
 
+// ─── PBAC (policy-based access control) ───────────────────────────────────────
+
+/**
+ * Resource types that a policy rule can be scoped to. Scopeable resources
+ * (`project`, `integration`, `agent`, `prompt`) accept a concrete `resourceId`;
+ * `task` rules are scoped by the owning project's id. All other capabilities
+ * (`system`, `user`, `audit`, `policy`, `overview`, `concurrency`, `oauth`) are
+ * global — their rules carry a null `resourceId`.
+ */
+export type ResourceType =
+  | "project"
+  | "task"
+  | "integration"
+  | "agent"
+  | "prompt"
+  | "system"
+  | "user"
+  | "audit"
+  | "policy"
+  | "overview"
+  | "concurrency"
+  | "oauth";
+
+/**
+ * A permission is a `"<resourceType>.<action>"` string (e.g. `"project.read"`).
+ * The concrete catalog of valid permissions lives in
+ * `src/admin/authorization/permissions.ts`.
+ */
+export type Permission = string;
+
+/** A principal that a policy can be bound to. */
+export type PrincipalType = "user" | "group";
+
+/** A named collection of users; policies bound to a group apply to all members. */
+export interface Group {
+  id: string;
+  name: string;
+  description: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+/** A named, reusable set of grant rules. `builtin` policies are seeded and protected. */
+export interface Policy {
+  id: string;
+  name: string;
+  description: string;
+  builtin: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+/**
+ * A single grant inside a policy. Grant-only (there are no deny rules).
+ * `resourceId` null grants the permission on **all** resources of the
+ * permission's type; a concrete id scopes the grant to that resource.
+ */
+export interface PolicyRule {
+  id: string;
+  policyId: string;
+  permission: Permission;
+  resourceId: string | null;
+  createdAt: Date;
+}
+
+/** Attaches a policy to a principal (a user or a group). */
+export interface PolicyBinding {
+  id: string;
+  policyId: string;
+  principalType: PrincipalType;
+  principalId: string;
+  createdAt: Date;
+}
+
 /** A single PR/MR that VE has been requested to review. */
 export interface ReviewAssignmentDiscovery {
   /** Provider-specific change ID, e.g. `"owner/repo#42"` for GitHub. */

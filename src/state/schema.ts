@@ -1,7 +1,7 @@
 /** Drizzle ORM table definitions for the Virtual Engineer SQLite database. All timestamps are seconds since epoch (`mode: "timestamp"`). */
 import { sqliteTable, text, integer, real, index, unique, check, primaryKey } from "drizzle-orm/sqlite-core";
 import { sql } from "drizzle-orm";
-import type { TaskState, ProviderId, TaskType, AgentType, ProjectType, PushTargetRole, DomainCapability, UserRole } from "../interfaces.js";
+import type { TaskState, ProviderId, TaskType, AgentType, ProjectType, PushTargetRole, DomainCapability, UserRole, PrincipalType } from "../interfaces.js";
 
 export const tasks = sqliteTable("tasks", {
   taskId: text("task_id").primaryKey(),
@@ -456,5 +456,76 @@ export const auditLog = sqliteTable(
     // Support listAuditEntries filters without full-table scans as the log grows.
     idxAuditLogActionCreatedAt: index("idx_audit_log_action_created_at").on(table.action, table.createdAt),
     idxAuditLogActorCreatedAt: index("idx_audit_log_actor_created_at").on(table.actorName, table.createdAt),
+  })
+);
+
+// ─── PBAC: groups / policies / rules / bindings ───────────────────────────────
+
+/** A named collection of users. Policies bound to a group apply to every member. */
+export const groups = sqliteTable("groups", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull().unique(),
+  description: text("description").notNull().default(""),
+  createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
+});
+
+/** Membership join between users and groups. */
+export const groupMembers = sqliteTable(
+  "group_members",
+  {
+    groupId: text("group_id").notNull().references(() => groups.id, { onDelete: "cascade" }),
+    userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+  },
+  (table) => ({
+    pk: primaryKey({ columns: [table.groupId, table.userId] }),
+    idxGroupMembersUserId: index("idx_group_members_user_id").on(table.userId),
+  })
+);
+
+/** A named, reusable set of grant rules. `builtin` policies are seeded and protected. */
+export const policies = sqliteTable("policies", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull().unique(),
+  description: text("description").notNull().default(""),
+  builtin: integer("builtin").notNull().default(0),
+  createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
+});
+
+/**
+ * A single grant inside a policy (grant-only; no deny rules). `resource_id` NULL
+ * grants the permission on all resources of the permission's type; a concrete id
+ * scopes the grant to that resource.
+ */
+export const policyRules = sqliteTable(
+  "policy_rules",
+  {
+    id: text("id").primaryKey(),
+    policyId: text("policy_id").notNull().references(() => policies.id, { onDelete: "cascade" }),
+    permission: text("permission").notNull(),
+    resourceId: text("resource_id"),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+  },
+  (table) => ({
+    idxPolicyRulesPolicyId: index("idx_policy_rules_policy_id").on(table.policyId),
+    idxPolicyRulesPermission: index("idx_policy_rules_permission").on(table.permission),
+  })
+);
+
+/** Attaches a policy to a principal (a user or a group). */
+export const policyBindings = sqliteTable(
+  "policy_bindings",
+  {
+    id: text("id").primaryKey(),
+    policyId: text("policy_id").notNull().references(() => policies.id, { onDelete: "cascade" }),
+    principalType: text("principal_type").$type<PrincipalType>().notNull(),
+    principalId: text("principal_id").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+  },
+  (table) => ({
+    uqBinding: unique("uq_policy_bindings").on(table.policyId, table.principalType, table.principalId),
+    idxPolicyBindingsPrincipal: index("idx_policy_bindings_principal").on(table.principalType, table.principalId),
   })
 );

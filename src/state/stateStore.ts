@@ -4,6 +4,7 @@ import { drizzle } from "drizzle-orm/better-sqlite3";
 import { mkdir } from "fs/promises";
 import { dirname } from "path";
 import { getLogger } from "../logger.js";
+import { seedBuiltInPolicies } from "../admin/authorization/seedPolicies.js";
 import type {
   AgentRecord,
   ProjectRecord,
@@ -17,8 +18,12 @@ import type { AgentStoreApi } from "./stores/agentStore.js";
 import { createAgentStore } from "./stores/agentStore.js";
 import type { AuditStoreApi } from "./stores/auditStore.js";
 import { createAuditStore } from "./stores/auditStore.js";
+import type { GroupStoreApi } from "./stores/groupStore.js";
+import { createGroupStore } from "./stores/groupStore.js";
 import type { IntegrationStoreApi } from "./stores/integrationStore.js";
 import { createIntegrationStore } from "./stores/integrationStore.js";
+import type { PolicyStoreApi } from "./stores/policyStore.js";
+import { createPolicyStore } from "./stores/policyStore.js";
 import type { ProjectStoreApi } from "./stores/projectStore.js";
 import { createProjectStore } from "./stores/projectStore.js";
 import type { PromptStoreApi } from "./stores/promptStore.js";
@@ -39,7 +44,9 @@ type ComposedStoreApi =
   & AgentStoreApi
   & SettingsStoreApi
   & UserStoreApi
-  & AuditStoreApi;
+  & AuditStoreApi
+  & GroupStoreApi
+  & PolicyStoreApi;
 
 /** Facade class that composes domain-scoped store modules over one shared SQLite connection. */
 // eslint-disable-next-line @typescript-eslint/no-unsafe-declaration-merging
@@ -54,6 +61,8 @@ export class SqliteStateStore {
   private readonly settingsStore: SettingsStoreApi;
   private readonly userStore: UserStoreApi;
   private readonly auditStore: AuditStoreApi;
+  private readonly groupStore: GroupStoreApi;
+  private readonly policyStore: PolicyStoreApi;
   private readonly taskTransitionListeners: Array<(task: Task) => void> = [];
 
   constructor(private readonly raw: Database.Database) {
@@ -79,6 +88,8 @@ export class SqliteStateStore {
     this.settingsStore = createSettingsStore({ db: this.db });
     this.userStore = createUserStore({ db: this.db });
     this.auditStore = createAuditStore({ db: this.db });
+    this.groupStore = createGroupStore({ db: this.db });
+    this.policyStore = createPolicyStore({ db: this.db });
 
     Object.assign(
       this,
@@ -89,7 +100,9 @@ export class SqliteStateStore {
       this.agentStore,
       this.settingsStore,
       this.userStore,
-      this.auditStore
+      this.auditStore,
+      this.groupStore,
+      this.policyStore
     );
   }
 
@@ -139,6 +152,7 @@ export class SqliteStateStore {
     raw.pragma("foreign_keys = ON");
     const store = new SqliteStateStore(raw);
     await store.seedBuiltInPrompts();
+    await seedBuiltInPolicies(store);
     return store;
   }
 
@@ -387,6 +401,54 @@ export class SqliteStateStore {
       CREATE INDEX IF NOT EXISTS idx_audit_log_created_at ON audit_log(created_at);
       CREATE INDEX IF NOT EXISTS idx_audit_log_action_created_at ON audit_log(action, created_at);
       CREATE INDEX IF NOT EXISTS idx_audit_log_actor_created_at ON audit_log(actor_name, created_at);
+
+      -- ─── PBAC: groups / policies / rules / bindings ──────────────────────
+      CREATE TABLE IF NOT EXISTS groups (
+        id          TEXT    PRIMARY KEY,
+        name        TEXT    NOT NULL UNIQUE,
+        description TEXT    NOT NULL DEFAULT '',
+        created_at  INTEGER NOT NULL,
+        updated_at  INTEGER NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS group_members (
+        group_id   TEXT    NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+        user_id    TEXT    NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (group_id, user_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_group_members_user_id ON group_members(user_id);
+
+      CREATE TABLE IF NOT EXISTS policies (
+        id          TEXT    PRIMARY KEY,
+        name        TEXT    NOT NULL UNIQUE,
+        description TEXT    NOT NULL DEFAULT '',
+        builtin     INTEGER NOT NULL DEFAULT 0,
+        created_at  INTEGER NOT NULL,
+        updated_at  INTEGER NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS policy_rules (
+        id          TEXT    PRIMARY KEY,
+        policy_id   TEXT    NOT NULL REFERENCES policies(id) ON DELETE CASCADE,
+        permission  TEXT    NOT NULL,
+        resource_id TEXT,
+        created_at  INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_policy_rules_policy_id ON policy_rules(policy_id);
+      CREATE INDEX IF NOT EXISTS idx_policy_rules_permission ON policy_rules(permission);
+
+      CREATE TABLE IF NOT EXISTS policy_bindings (
+        id             TEXT    PRIMARY KEY,
+        policy_id      TEXT    NOT NULL REFERENCES policies(id) ON DELETE CASCADE,
+        principal_type TEXT    NOT NULL,
+        principal_id   TEXT    NOT NULL,
+        created_at     INTEGER NOT NULL
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_policy_bindings
+        ON policy_bindings(policy_id, principal_type, principal_id);
+      CREATE INDEX IF NOT EXISTS idx_policy_bindings_principal
+        ON policy_bindings(principal_type, principal_id);
     `);
 
     this.ensureColumn("tasks", "ticket_source_label", "TEXT NOT NULL DEFAULT 'redmine'");
