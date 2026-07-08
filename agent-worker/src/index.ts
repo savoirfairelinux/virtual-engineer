@@ -16,7 +16,7 @@
  * Authentication: GITHUB_TOKEN env var (for Copilot LLM calls only).
  */
 
-import { CopilotClient, approveAll } from '@github/copilot-sdk';
+import { CopilotClient } from '@github/copilot-sdk';
 import type { CopilotSession, AssistantMessageEvent } from '@github/copilot-sdk';
 import { execFileSync, spawn } from 'child_process';
 import type { ChildProcess } from 'child_process';
@@ -34,6 +34,7 @@ import {
   groupFilesByRepo,
 } from './commitUtils.js';
 import { runClaudeAgent } from './claudeSession.js';
+import { restrictNetworkPermissionHandler } from './networkGuard.js';
 
 // ── Environment ────────────────────────────────────────────────────────────────
 const AGENT_PROVIDER = process.env['AGENT_PROVIDER'] ?? 'copilot';
@@ -218,7 +219,7 @@ async function runSession(
         : {}),
       ...(enableSkillDiscovery ? { skillDirectories: [skillsDir] } : {}),
       systemMessage: { content: SYSTEM_PROMPT },
-      onPermissionRequest: approveAll,
+      onPermissionRequest: restrictNetworkPermissionHandler,
       workingDirectory: WORKSPACE,
       infiniteSessions: { enabled: false },
     });

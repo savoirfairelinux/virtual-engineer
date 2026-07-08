@@ -16,6 +16,7 @@
  * integrations). The host adapter injects exactly one of these.
  */
 import { query } from '@anthropic-ai/claude-agent-sdk';
+import { NETWORK_DISALLOWED_TOOLS } from './networkGuard.js';
 
 export interface ClaudeAgentRun {
   content: string;
@@ -89,6 +90,8 @@ export async function runClaudeAgent(
           : { type: 'preset', preset: 'claude_code', append: systemPrompt },
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
+      // Deny internet-reaching tools even under bypassPermissions.
+      disallowedTools: NETWORK_DISALLOWED_TOOLS,
       // Load only team-shared project settings/skills when discovery is enabled;
       // otherwise start from a clean slate (no user/local settings on disk).
       settingSources: skillDiscovery ? ['project'] : [],
