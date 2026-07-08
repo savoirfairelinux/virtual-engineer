@@ -187,10 +187,12 @@ src/
     workspaceRunner.ts    # DockerWorkspaceRunner — orchestrates clone+run+push
 
 agent-worker/
-  src/index.ts          # Runs INSIDE the agent container (Copilot SDK);
-                        # built to dist/ via tsconfig.agent.json
-  src/claudeSession.ts  # Claude Code SDK driver (AGENT_PROVIDER=claude)
+  src/index.ts          # Provider-agnostic orchestrator INSIDE the agent
+                        # container; built to dist/ via tsconfig.agent.json
+  src/providers/        # types, events, copilot, claude, registry
+                        # (per-provider runners + registry dispatch)
   src/commitUtils.ts
+  src/networkGuard.ts
   src/validate-copilot-connection.ts
 ```
 
@@ -393,7 +395,7 @@ The agent container is placed on `virtual-engineer_ve-agent-net` — a dedicated
 An alternative `agent_execution` adapter that runs Anthropic **Claude Code** via the `@anthropic-ai/claude-agent-sdk` inside the same hardened container. It mirrors `CopilotAdapter` (same security args, `/ve-home` HOME volume, `__ve_event` stderr protocol, commit collection, and `AgentResult` contract) but:
 
 - injects `AGENT_PROVIDER=claude` + `CLAUDE_MODEL` and exactly one auth env var — `ANTHROPIC_API_KEY` (api-key integrations, carried via the generic `apiKey`/`githubToken` field) or `CLAUDE_CODE_OAUTH_TOKEN` (subscription integrations, carried via `encryptedSessionToken`);
-- dispatches in the worker: `agent-worker/src/index.ts` routes to `claudeSession.runClaudeAgent()` when `AGENT_PROVIDER=claude`, which drives the SDK `query()` and maps its message stream onto the shared event/commit/result pipeline.
+- dispatches in the worker: `agent-worker/src/index.ts` resolves the runner via `providers/registry.ts` and calls `providers/claude.ts` `runClaudeAgent()` when `AGENT_PROVIDER=claude`, which drives the SDK `query()` and maps its message stream onto the shared event/commit/result pipeline.
 
 The adapter injects **no** default model: when the agent config leaves the model unset, `CLAUDE_MODEL` is omitted and the Claude CLI picks its own default. Adapters are registered generically — any descriptor that declares `capabilities.agent_execution.buildAdapter` is instantiated by the plugin manager from host runtime context (`AgentAdapterContext`), so `index.ts` special-cases no provider.
 
