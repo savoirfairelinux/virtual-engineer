@@ -28,12 +28,13 @@ describe("permissions catalog", () => {
     expect(resourceTypeOf(".read")).toBeNull();
   });
 
-  it("marks project/integration/agent/prompt/task as scopeable and globals as not", () => {
+  it("marks project/task as scopeable and shared/global resources as not", () => {
     expect(isScopeablePermission(PERMISSIONS.PROJECT_READ)).toBe(true);
-    expect(isScopeablePermission(PERMISSIONS.INTEGRATION_WRITE)).toBe(true);
-    expect(isScopeablePermission(PERMISSIONS.AGENT_READ)).toBe(true);
-    expect(isScopeablePermission(PERMISSIONS.PROMPT_WRITE)).toBe(true);
     expect(isScopeablePermission(PERMISSIONS.TASK_READ)).toBe(true);
+    // Integrations, agents and prompts are shared library resources → global only.
+    expect(isScopeablePermission(PERMISSIONS.INTEGRATION_WRITE)).toBe(false);
+    expect(isScopeablePermission(PERMISSIONS.AGENT_READ)).toBe(false);
+    expect(isScopeablePermission(PERMISSIONS.PROMPT_WRITE)).toBe(false);
     expect(isScopeablePermission(PERMISSIONS.USER_MANAGE)).toBe(false);
     expect(isScopeablePermission(PERMISSIONS.AUDIT_READ)).toBe(false);
     expect(isScopeablePermission(PERMISSIONS.POLICY_MANAGE)).toBe(false);

@@ -6,7 +6,7 @@ import { Modal, Field, FieldInput, FieldSelect, FormError, FormRow, FormActions 
 import { api } from "../../api.ts";
 import type { ApiGroup, ApiPolicy, ApiPolicyDetail, ApiPolicyRule, ApiUser } from "../../types.ts";
 
-const SCOPEABLE = new Set(["project", "integration", "agent", "prompt", "task"]);
+const SCOPEABLE = new Set(["project", "task"]);
 function isScopeable(permission: string): boolean {
   const type = permission.split(".")[0] ?? "";
   return SCOPEABLE.has(type);

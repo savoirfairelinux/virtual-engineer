@@ -1,11 +1,30 @@
 import { getLogger } from "../logger.js";
 import { makeTaskId } from "../interfaces.js";
 import type { AgentCycle, StateTransition, Task } from "../interfaces.js";
+import type { IncomingMessage } from "node:http";
 import { writeJson, toIsoTimestamp } from "./adminRouteUtils.js";
 import { recordAudit, type AuditCapableStore } from "./adminAudit.js";
+import { getEffectivePermissions } from "./authContext.js";
+import { ALL_RESOURCES, accessibleResourceIds } from "./authorization/policyEngine.js";
 import type { Router } from "./router.js";
 
 const log = getLogger("admin-tasks");
+
+/**
+ * Filter tasks to those the request may read under PBAC `task.read` scoping.
+ * A `*` grant (or superuser) sees all; a scoped grant sees only tasks whose
+ * owning `projectId` is in the grant; orphaned (null-project) tasks require the
+ * `*` grant. Falls back to the full list only when PBAC is unavailable (the gate
+ * has already authorized the request).
+ */
+export function filterTasksByReadScope(req: IncomingMessage, tasks: Task[]): Task[] {
+  const perms = getEffectivePermissions(req);
+  if (!perms) return tasks;
+  const scope = accessibleResourceIds(perms, "task.read");
+  if (scope === ALL_RESOURCES) return tasks;
+  if (scope === null) return [];
+  return tasks.filter((t) => t.projectId != null && scope.has(t.projectId));
+}
 
 /** Subset of state-store methods required by the task routes. */
 export interface TaskRouteStore {
@@ -34,9 +53,9 @@ export interface TaskRouteDeps {
 
 /** Register task routes on the given router. */
 export function registerTaskRoutes(router: Router, deps: TaskRouteDeps): void {
-  router.add("GET", "/api/admin/tasks", async (_req, res, _params) => {
+  router.add("GET", "/api/admin/tasks", async (req, res, _params) => {
     const tasks = await deps.stateStore.getAllTasks();
-    const deduplicated = deduplicateByTicket(tasks)
+    const deduplicated = filterTasksByReadScope(req, deduplicateByTicket(tasks))
       .sort((left, right) => right.updatedAt.getTime() - left.updatedAt.getTime());
     const allChanges = await deps.stateStore.getChangesForTasks(deduplicated.map((t) => t.taskId));
     const cprReviewUrlByTaskId = new Map<string, string>();

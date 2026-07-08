@@ -15,7 +15,8 @@ export interface CurrentUserValue {
    * PBAC capability check derived from the caller's effective permissions.
    * Superusers always pass. A scoped check (`resourceId` given) is satisfied by
    * a `*` grant or a matching id; an unscoped check requires a `*` grant.
-   * Falls back to `true` when capabilities are unavailable (legacy servers).
+   * When capabilities are unavailable (legacy servers), falls back to the
+   * `admin` role flag — the server enforces the real decision regardless.
    */
   can: (permission: string, resourceId?: string) => boolean;
 }

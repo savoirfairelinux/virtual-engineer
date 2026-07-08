@@ -166,11 +166,11 @@ export interface AuditEntry {
 // ─── PBAC (policy-based access control) ───────────────────────────────────────
 
 /**
- * Resource types that a policy rule can be scoped to. Scopeable resources
- * (`project`, `integration`, `agent`, `prompt`) accept a concrete `resourceId`;
- * `task` rules are scoped by the owning project's id. All other capabilities
- * (`system`, `user`, `audit`, `policy`, `overview`, `concurrency`, `oauth`) are
- * global — their rules carry a null `resourceId`.
+ * Resource types that a policy rule can be scoped to. Only `project` accepts a
+ * concrete `resourceId`, and `task` rules are scoped by the owning project's id.
+ * All other resource types (`integration`, `agent`, `prompt`, `system`, `user`,
+ * `audit`, `policy`, `overview`, `concurrency`, `oauth`) are global — their rules
+ * carry a null `resourceId` (they are shared, library-style resources).
  */
 export type ResourceType =
   | "project"

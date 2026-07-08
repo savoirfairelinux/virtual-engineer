@@ -2,7 +2,7 @@ import { randomUUID } from "crypto";
 import { and, eq, sql } from "drizzle-orm";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import type { Group } from "../../interfaces.js";
-import { groupMembers, groups } from "../schema.js";
+import { groupMembers, groups, policyBindings } from "../schema.js";
 import * as schema from "../schema.js";
 
 function isUniqueConstraintViolation(err: unknown): boolean {
@@ -101,8 +101,16 @@ export function createGroupStore(context: GroupStoreContext): GroupStoreApi {
     },
 
     async deleteGroup(id): Promise<boolean> {
-      const result = await db.delete(groups).where(eq(groups.id, id));
-      return result.changes > 0;
+      // Remove any policy bindings targeting this group (principal_id has no FK),
+      // then the group row (group_members cascade). Atomic so no orphans remain.
+      let changes = 0;
+      db.transaction((tx) => {
+        tx.delete(policyBindings)
+          .where(and(eq(policyBindings.principalType, "group"), eq(policyBindings.principalId, id)))
+          .run();
+        changes = tx.delete(groups).where(eq(groups.id, id)).run().changes;
+      });
+      return changes > 0;
     },
 
     async addUserToGroup(groupId, userId): Promise<void> {

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import type { StateStore } from "../../src/interfaces.js";
+import { makeTaskId, makeTicketId, makeProjectId } from "../../src/interfaces.js";
 import { SqliteStateStore } from "../../src/state/stateStore.js";
 import { createAdminServer } from "../../src/admin/adminServer.js";
 
@@ -416,5 +417,30 @@ describe("adminServer PBAC project scoping", () => {
     const body = (await list.json()) as { projects: Array<{ id: string }> };
     expect(body.projects.map((p) => p.id)).toEqual([b]);
     expect((await fetch(`${baseUrl}/api/admin/projects/${a}`, authed(user.token))).status).toBe(403);
+  });
+
+  it("scope-filters the task list and denies out-of-scope task detail", async () => {
+    const admin = await setupAdmin();
+    const { a, b } = await seedTwoProjects();
+    const taskA = randomUUID();
+    const taskB = randomUUID();
+    await store.createTask(makeTaskId(taskA), makeTicketId("T-A"), "Task A", "", "redmine", undefined, undefined, undefined, makeProjectId(a));
+    await store.createTask(makeTaskId(taskB), makeTicketId("T-B"), "Task B", "", "redmine", undefined, undefined, undefined, makeProjectId(b));
+
+    const user = await createUserAndLogin(admin, "taskscoped", "viewer");
+    const viewerPolicy = (await store.listPolicies()).find((p) => p.name === "Viewer");
+    await store.deleteBinding(viewerPolicy!.id, "user", user.user.id);
+    const scoped = await store.createPolicy({ name: "Task-A-read" });
+    await store.setPolicyRules(scoped.id, [{ permission: "task.read", resourceId: a }]);
+    await store.createBinding({ policyId: scoped.id, principalType: "user", principalId: user.user.id });
+
+    // Task list is filtered to project A only.
+    const list = await fetch(`${baseUrl}/api/admin/tasks`, authed(user.token));
+    const body = (await list.json()) as { tasks: Array<{ ticketId: string }> };
+    expect(body.tasks.map((t) => t.ticketId)).toEqual(["T-A"]);
+
+    // Detail for the out-of-scope task B is forbidden; A is allowed.
+    expect((await fetch(`${baseUrl}/api/admin/tasks/${taskA}`, authed(user.token))).status).toBe(200);
+    expect((await fetch(`${baseUrl}/api/admin/tasks/${taskB}`, authed(user.token))).status).toBe(403);
   });
 });

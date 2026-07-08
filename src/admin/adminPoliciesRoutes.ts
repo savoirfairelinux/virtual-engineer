@@ -3,7 +3,7 @@ import type { Group, Policy, PolicyBinding, PolicyRule, PrincipalType, UserRole 
 import type { PolicyRuleInput } from "../state/stores/policyStore.js";
 import { writeJson, readBody, zodErrorBody } from "./adminRouteUtils.js";
 import { recordAudit, type AuditCapableStore } from "./adminAudit.js";
-import { ALL_PERMISSIONS, PERMISSIONS, isKnownPermission } from "./authorization/permissions.js";
+import { ALL_PERMISSIONS, PERMISSIONS, isKnownPermission, isScopeablePermission } from "./authorization/permissions.js";
 import type { Router } from "./router.js";
 
 /** Minimal user shape the policy routes need for principal validation/display. */
@@ -79,7 +79,10 @@ const memberSchema = z.object({ userId: z.string().min(1) });
 const ruleSchema = z.object({
   permission: z.string().refine(isKnownPermission, "unknown permission"),
   resourceId: z.string().min(1).nullable().optional(),
-});
+}).refine(
+  (r) => r.resourceId == null || isScopeablePermission(r.permission),
+  { message: "resourceId is only allowed on scopeable permissions (project.* / task.*)", path: ["resourceId"] }
+);
 const policyCreateSchema = z.object({
   name: z.string().trim().min(1, "name is required").max(100),
   description: z.string().max(500).optional(),
