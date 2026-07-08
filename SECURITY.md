@@ -40,7 +40,9 @@ Skill discovery is a **per-project** setting (`projects.skill_discovery_enabled`
 
 ### Admin API Authentication
 
-The admin dashboard is protected by an HMAC-SHA256 bearer token derived from `ADMIN_AUTH_SECRET`. Tokens embed a timestamp and are validated server-side to prevent replay attacks. Bind the admin port to `127.0.0.1` in production.
+The admin dashboard is protected by account-based authentication (username/password, DB-backed sessions). Admin users are managed via the Users tab (admin role required). Session tokens are opaque random values stored as SHA-256 hashes in the database. Bind the admin port to `127.0.0.1` in production.
+
+`ADMIN_AUTH_SECRET` is an optional encryption key used to encrypt OAuth session tokens stored in the database. It is not used for admin authentication.
 
 ### Secrets Storage
 

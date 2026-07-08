@@ -467,12 +467,8 @@ describe("createAdminServer", () => {
     }
   });
 
-  it("protects API endpoints with HMAC-SHA256 authentication", async () => {
-    const crypto = await import("crypto");
+  it("bootstrap mode (no user store) allows unauthenticated API access", async () => {
     const secret = "top-secret";
-    const timestamp = Math.floor(Date.now() / 1000);
-    const signature = crypto.createHmac("sha256", secret).update(timestamp.toString()).digest("hex");
-    const token = `${timestamp}.${signature}`;
 
     const server = createAdminServer({
       stateStore: makeStateStore(),
@@ -494,14 +490,9 @@ describe("createAdminServer", () => {
     try {
       const baseUrl = await listen(server);
 
-      const unauthorizedResponse = await fetch(`${baseUrl}/api/admin/status`);
-      expect(unauthorizedResponse.status).toBe(401);
-      expect(unauthorizedResponse.headers.get("www-authenticate")).toContain("Bearer");
-
-      const authorizedResponse = await fetch(`${baseUrl}/api/admin/status`, {
-        headers: { authorization: `Bearer ${token}` },
-      });
-      expect(authorizedResponse.status).toBe(200);
+      // Bootstrap mode: mock store has no user methods → no session auth → all routes open.
+      const response = await fetch(`${baseUrl}/api/admin/status`);
+      expect(response.status).toBe(200);
 
       const dashboardResponse = await fetch(`${baseUrl}/admin`);
       expect(dashboardResponse.status).toBe(200);
@@ -773,122 +764,6 @@ describe("createAdminServer", () => {
     }
   });
 
-  it("requires auth for mutating endpoints when authToken is configured", async () => {
-    const task = makeTask();
-    const server = createAdminServer({
-      stateStore: makeStateStore({
-        pauseTask: async () => task,
-      }),
-      config: {
-        nodeEnv: "test",
-        logLevel: "info",
-        maxAgentCycles: 3,
-        maxRetryAttempts: 5,
-        pollingIntervalMs: 30_000,
-        adminAuthSecret: "my-secret",
-      },
-      polling: {
-        isRunning: () => true,
-        getIntervals: () => ({ intervalMs: 30_000 }),
-      },
-      providers: providerSummaries,
-    });
-
-    try {
-      const baseUrl = await listen(server);
-
-      const unauthorizedResponse = await fetch(`${baseUrl}/api/admin/tasks/${task.taskId}/pause`, {
-        method: "PATCH",
-      });
-
-      expect(unauthorizedResponse.status).toBe(401);
-    } finally {
-      await closeServer(server);
-    }
-  });
-
-  it("supports HMAC-SHA256 signature authentication", async () => {
-    const crypto = await import("crypto");
-    const secret = "my-secret";
-    const timestamp = Math.floor(Date.now() / 1000);
-    const signature = crypto
-      .createHmac("sha256", secret)
-      .update(timestamp.toString())
-      .digest("hex");
-    const token = `${timestamp}.${signature}`;
-
-    const server = createAdminServer({
-      stateStore: makeStateStore(),
-      config: {
-        nodeEnv: "test",
-        logLevel: "info",
-        maxAgentCycles: 3,
-        maxRetryAttempts: 5,
-        pollingIntervalMs: 30_000,
-        adminAuthSecret: secret,
-      },
-      polling: {
-        isRunning: () => true,
-        getIntervals: () => ({ intervalMs: 30_000 }),
-      },
-      providers: providerSummaries,
-    });
-
-    try {
-      const baseUrl = await listen(server);
-
-      const responseWithValidSignature = await fetch(`${baseUrl}/api/admin/status`, {
-        headers: { authorization: `Bearer ${token}` },
-      });
-      expect(responseWithValidSignature.status).toBe(200);
-
-      const responseWithInvalidSignature = await fetch(`${baseUrl}/api/admin/status`, {
-        headers: { authorization: `Bearer ${timestamp}.invalidsignature` },
-      });
-      expect(responseWithInvalidSignature.status).toBe(401);
-    } finally {
-      await closeServer(server);
-    }
-  });
-
-  it("rejects HMAC signatures older than 5 minutes", async () => {
-    const crypto = await import("crypto");
-    const secret = "my-secret";
-    const oldTimestamp = Math.floor(Date.now() / 1000) - 400; // 6+ minutes old
-    const signature = crypto
-      .createHmac("sha256", secret)
-      .update(oldTimestamp.toString())
-      .digest("hex");
-    const token = `${oldTimestamp}.${signature}`;
-
-    const server = createAdminServer({
-      stateStore: makeStateStore(),
-      config: {
-        nodeEnv: "test",
-        logLevel: "info",
-        maxAgentCycles: 3,
-        maxRetryAttempts: 5,
-        pollingIntervalMs: 30_000,
-        adminAuthSecret: secret,
-      },
-      polling: {
-        isRunning: () => true,
-        getIntervals: () => ({ intervalMs: 30_000 }),
-      },
-      providers: providerSummaries,
-    });
-
-    try {
-      const baseUrl = await listen(server);
-      const response = await fetch(`${baseUrl}/api/admin/status`, {
-        headers: { authorization: `Bearer ${token}` },
-      });
-      expect(response.status).toBe(401);
-    } finally {
-      await closeServer(server);
-    }
-  });
-
   it("streams logs as Server-Sent Events via GET /api/admin/logs/stream", async () => {
     const task = makeTask();
     const server = createAdminServer({
@@ -963,7 +838,7 @@ describe("createAdminServer", () => {
       const response = await fetch(`${baseUrl}/admin`);
 
       expect(response.status).toBe(200);
-      await expect(response.text()).resolves.toContain('"authMode":"hmac"');
+      await expect(response.text()).resolves.toContain('"authMode":"none"');
     } finally {
       await closeServer(server);
     }

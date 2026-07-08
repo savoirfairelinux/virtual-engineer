@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { tmpdir } from "os";
 import { join } from "path";
-import { createHmac, randomUUID } from "crypto";
+import { randomUUID } from "crypto";
 import type { Server } from "node:http";
 import { SqliteStateStore } from "../../src/state/stateStore.js";
 import { createAdminServer, type AdminServerDependencies } from "../../src/admin/adminServer.js";
@@ -23,10 +23,8 @@ async function rest(server: Server, path: string, opts: { method?: string; body?
   if (!addr || typeof addr === "string") throw new Error("Server not bound");
   const url = `http://127.0.0.1:${addr.port}${path}`;
   const init: RequestInit = { method: opts.method ?? "GET" };
-  init.headers = authHeaders("admin-secret");
   if (opts.body !== undefined) {
     init.headers = {
-      ...init.headers,
       "content-type": "application/json",
     };
     init.body = JSON.stringify(opts.body);
@@ -38,14 +36,6 @@ async function rest(server: Server, path: string, opts: { method?: string; body?
     try { parsed = JSON.parse(text) as Record<string, unknown>; } catch { /* leave null */ }
   }
   return { status: res.status, body: parsed };
-}
-
-function authHeaders(secret: string): Record<string, string> {
-  const timestamp = Math.floor(Date.now() / 1000).toString();
-  const signature = createHmac("sha256", secret).update(timestamp).digest("hex");
-  return {
-    authorization: `Bearer ${timestamp}.${signature}`,
-  };
 }
 
 function makeDeps(store: SqliteStateStore, overrides: Partial<AdminServerDependencies> = {}): AdminServerDependencies {

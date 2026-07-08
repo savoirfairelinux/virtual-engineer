@@ -68,12 +68,6 @@ describe("createAdminServer integration", () => {
         metadata: { suite: "admin-server.integration" },
       });
 
-      const crypto = await import("crypto");
-      const secret = "integration-secret";
-      const timestamp = Math.floor(Date.now() / 1000);
-      const signature = crypto.createHmac("sha256", secret).update(timestamp.toString()).digest("hex");
-      const authToken = `${timestamp}.${signature}`;
-
       const server = createAdminServer({
         stateStore,
         config: {
@@ -82,7 +76,6 @@ describe("createAdminServer integration", () => {
           maxAgentCycles: 3,
           maxRetryAttempts: 5,
           pollingIntervalMs: 30_000,
-          adminAuthSecret: secret,
         },
         polling: {
           isRunning: () => true,
@@ -106,20 +99,13 @@ describe("createAdminServer integration", () => {
       try {
         const baseUrl = await listen(server);
 
-        const unauthorized = await fetch(`${baseUrl}/api/admin/tasks`);
-        expect(unauthorized.status).toBe(401);
-
-        const tasksResponse = await fetch(`${baseUrl}/api/admin/tasks`, {
-          headers: { authorization: `Bearer ${authToken}` },
-        });
+        const tasksResponse = await fetch(`${baseUrl}/api/admin/tasks`);
         expect(tasksResponse.status).toBe(200);
         await expect(tasksResponse.json()).resolves.toEqual({
           tasks: [expect.objectContaining({ taskId, ticketId, state: "IN_REVIEW", ticketUrl: null, reviewUrl: null })],
         });
 
-        const transitionsResponse = await fetch(`${baseUrl}/api/admin/tasks/${taskId}/transitions`, {
-          headers: { authorization: `Bearer ${authToken}` },
-        });
+        const transitionsResponse = await fetch(`${baseUrl}/api/admin/tasks/${taskId}/transitions`);
         expect(transitionsResponse.status).toBe(200);
         await expect(transitionsResponse.json()).resolves.toEqual({
           transitions: [
@@ -129,9 +115,7 @@ describe("createAdminServer integration", () => {
           ],
         });
 
-        const cyclesResponse = await fetch(`${baseUrl}/api/admin/tasks/${taskId}/cycles`, {
-          headers: { authorization: `Bearer ${authToken}` },
-        });
+        const cyclesResponse = await fetch(`${baseUrl}/api/admin/tasks/${taskId}/cycles`);
         expect(cyclesResponse.status).toBe(200);
         await expect(cyclesResponse.json()).resolves.toEqual({
           cycles: [expect.objectContaining({ cycleNumber: 1 })],

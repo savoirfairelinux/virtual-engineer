@@ -11,6 +11,7 @@ import { StateTimeline } from "./StateTimeline.tsx";
 import { LiveLogs } from "./LiveLogs.tsx";
 import { sumCycleCosts, formatUsd } from "./costFormat.ts";
 import { api } from "../../api.ts";
+import { useCurrentUser } from "../../authContext.tsx";
 import { isActiveState, isTerminalState } from "../../states.ts";
 import type { ApiTask, ApiCycle, ApiTransition } from "../../types.ts";
 
@@ -23,6 +24,7 @@ interface TaskDetailProps {
 type TabId = "cycles" | "timeline" | "logs";
 
 export function TaskDetail({ task, onRefresh, onDeleted }: TaskDetailProps) {
+  const { canOperate } = useCurrentUser();
   const [tab, setTab] = useState<TabId>("cycles");
   const [taskDetails, setTaskDetails] = useState<ApiTask | null>(null);
   const [cycles, setCycles] = useState<ApiCycle[] | null>(null);
@@ -171,28 +173,30 @@ export function TaskDetail({ task, onRefresh, onDeleted }: TaskDetailProps) {
             <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "12px" }}>
               <StatePill state={taskWithDetails.state} />
               {/* action bar */}
-              <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
-                {running && (
-                  <button className="iconbtn danger" title="Abandon" onClick={() => void doAction(`/api/admin/tasks/${task.taskId}/abandon`, "POST")}><Icon name="x" size={15} /></button>
-                )}
-                {!terminal && !running && (
-                  <>
-                    <button className="iconbtn" title="Retry" onClick={() => void doAction(`/api/admin/tasks/${task.taskId}/retry`, "POST")}><Icon name="refresh" size={15} /></button>
+              {canOperate && (
+                <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
+                  {running && (
                     <button className="iconbtn danger" title="Abandon" onClick={() => void doAction(`/api/admin/tasks/${task.taskId}/abandon`, "POST")}><Icon name="x" size={15} /></button>
-                  </>
-                )}
-                {terminal && taskWithDetails.state !== "MERGED" && (
-                  <button className="iconbtn" title="Retry" onClick={() => void doAction(`/api/admin/tasks/${task.taskId}/retry`, "POST")}><Icon name="refresh" size={15} /></button>
-                )}
-                <div style={{ width: 1, height: 20, background: "var(--border-soft)", margin: "0 3px" }} />
-                <button
-                  className="iconbtn danger"
-                  title="Delete task"
-                  onClick={() => void doAction(`/api/admin/tasks/${task.taskId}`, "DELETE")}
-                >
-                  <Icon name="trash" size={15} />
-                </button>
-              </div>
+                  )}
+                  {!terminal && !running && (
+                    <>
+                      <button className="iconbtn" title="Retry" onClick={() => void doAction(`/api/admin/tasks/${task.taskId}/retry`, "POST")}><Icon name="refresh" size={15} /></button>
+                      <button className="iconbtn danger" title="Abandon" onClick={() => void doAction(`/api/admin/tasks/${task.taskId}/abandon`, "POST")}><Icon name="x" size={15} /></button>
+                    </>
+                  )}
+                  {terminal && taskWithDetails.state !== "MERGED" && (
+                    <button className="iconbtn" title="Retry" onClick={() => void doAction(`/api/admin/tasks/${task.taskId}/retry`, "POST")}><Icon name="refresh" size={15} /></button>
+                  )}
+                  <div style={{ width: 1, height: 20, background: "var(--border-soft)", margin: "0 3px" }} />
+                  <button
+                    className="iconbtn danger"
+                    title="Delete task"
+                    onClick={() => void doAction(`/api/admin/tasks/${task.taskId}`, "DELETE")}
+                  >
+                    <Icon name="trash" size={15} />
+                  </button>
+                </div>
+              )}
             </div>
           </div>
 

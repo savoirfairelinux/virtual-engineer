@@ -157,7 +157,7 @@ Copy `.env.example` → `.env`. All provider credentials live in the DB (admin U
 | `DATABASE_PATH` | `./data/virtual-engineer.db` | |
 | `ADMIN_API_HOST` | `127.0.0.1` | Loopback by default; set `0.0.0.0` to expose on the network (Docker mode) |
 | `ADMIN_API_PORT` | `3100` | |
-| `ADMIN_AUTH_SECRET` | — | HMAC-SHA256 Bearer secret — recommended for exposed instances |
+| `ADMIN_AUTH_SECRET` | — | Encrypts OAuth/session tokens at rest (AES-256-GCM); admin auth uses DB-backed accounts + session tokens |
 | `POLLING_INTERVAL_MS` | `30000` | **DB-managed** — seed only; edit at runtime via admin UI → System Settings |
 | `MAX_AGENT_CYCLES` | `3` | **DB-managed** — seed only; edit at runtime via admin UI → System Settings |
 | `MAX_RETRY_ATTEMPTS` | `5` | **DB-managed** — seed only; edit at runtime via admin UI → System Settings |

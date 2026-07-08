@@ -15,6 +15,8 @@ import type {
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import type { AgentStoreApi } from "./stores/agentStore.js";
 import { createAgentStore } from "./stores/agentStore.js";
+import type { AuditStoreApi } from "./stores/auditStore.js";
+import { createAuditStore } from "./stores/auditStore.js";
 import type { IntegrationStoreApi } from "./stores/integrationStore.js";
 import { createIntegrationStore } from "./stores/integrationStore.js";
 import type { ProjectStoreApi } from "./stores/projectStore.js";
@@ -25,6 +27,8 @@ import type { SettingsStoreApi } from "./stores/settingsStore.js";
 import { createSettingsStore } from "./stores/settingsStore.js";
 import type { TaskStoreApi } from "./stores/taskStore.js";
 import { createTaskStore } from "./stores/taskStore.js";
+import type { UserStoreApi } from "./stores/userStore.js";
+import { createUserStore } from "./stores/userStore.js";
 import * as schema from "./schema.js";
 
 type ComposedStoreApi =
@@ -33,7 +37,9 @@ type ComposedStoreApi =
   & ProjectStoreApi
   & PromptStoreApi
   & AgentStoreApi
-  & SettingsStoreApi;
+  & SettingsStoreApi
+  & UserStoreApi
+  & AuditStoreApi;
 
 /** Facade class that composes domain-scoped store modules over one shared SQLite connection. */
 // eslint-disable-next-line @typescript-eslint/no-unsafe-declaration-merging
@@ -46,6 +52,8 @@ export class SqliteStateStore {
   private readonly promptStore: PromptStoreApi;
   private readonly agentStore: AgentStoreApi;
   private readonly settingsStore: SettingsStoreApi;
+  private readonly userStore: UserStoreApi;
+  private readonly auditStore: AuditStoreApi;
   private readonly taskTransitionListeners: Array<(task: Task) => void> = [];
 
   constructor(private readonly raw: Database.Database) {
@@ -69,6 +77,8 @@ export class SqliteStateStore {
     this.promptStore = createPromptStore({ db: this.db, dbDir: this.dbDir });
     this.agentStore = createAgentStore({ db: this.db });
     this.settingsStore = createSettingsStore({ db: this.db });
+    this.userStore = createUserStore({ db: this.db });
+    this.auditStore = createAuditStore({ db: this.db });
 
     Object.assign(
       this,
@@ -77,7 +87,9 @@ export class SqliteStateStore {
       this.projectStore,
       this.promptStore,
       this.agentStore,
-      this.settingsStore
+      this.settingsStore,
+      this.userStore,
+      this.auditStore
     );
   }
 
@@ -340,6 +352,41 @@ export class SqliteStateStore {
         max_retry_attempts  INTEGER,
         updated_at          INTEGER NOT NULL
       );
+
+      -- ─── Users / Sessions / Audit (admin RBAC) ───────────────────────────
+      CREATE TABLE IF NOT EXISTS users (
+        id            TEXT    PRIMARY KEY,
+        username      TEXT    NOT NULL UNIQUE,
+        password_hash TEXT    NOT NULL,
+        role          TEXT    NOT NULL,
+        enabled       INTEGER NOT NULL DEFAULT 1,
+        created_at    INTEGER NOT NULL,
+        updated_at    INTEGER NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS user_sessions (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        token_hash   TEXT    NOT NULL UNIQUE,
+        user_id      TEXT    NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        created_at   INTEGER NOT NULL,
+        expires_at   INTEGER NOT NULL,
+        last_seen_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_user_sessions_user_id ON user_sessions(user_id);
+
+      CREATE TABLE IF NOT EXISTS audit_log (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        actor_user_id TEXT,
+        actor_name    TEXT    NOT NULL,
+        action        TEXT    NOT NULL,
+        target_type   TEXT,
+        target_id     TEXT,
+        details_json  TEXT    NOT NULL DEFAULT '{}',
+        created_at    INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_audit_log_created_at ON audit_log(created_at);
+      CREATE INDEX IF NOT EXISTS idx_audit_log_action_created_at ON audit_log(action, created_at);
+      CREATE INDEX IF NOT EXISTS idx_audit_log_actor_created_at ON audit_log(actor_name, created_at);
     `);
 
     this.ensureColumn("tasks", "ticket_source_label", "TEXT NOT NULL DEFAULT 'redmine'");

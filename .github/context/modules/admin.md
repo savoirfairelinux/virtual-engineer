@@ -10,8 +10,13 @@ The admin server is a small HTTP service (default `127.0.0.1:3100`) that serves 
 | --- | --- |
 | `startAdminServer.ts` | Bind/listen helper used by `src/index.ts` and tests. |
 | `closeAdminServer.ts` | Graceful shutdown helper. |
-| `router.ts` | Lightweight declarative micro-router (`Router.add()` / `Router.dispatch()`). Compiles `:param`-style patterns to anchored regexes, extracts and URL-decodes named parameters, and auto-returns 405 when a path matches but the HTTP method does not. |
-| `adminServer.ts` | Auth gate, security headers, and public endpoints (dashboard, health, img-proxy). Builds a single `Router` instance via `buildApiRouter()` at startup and dispatches every authenticated `/api/admin/*` request through it. |
+| `router.ts` | Lightweight declarative micro-router (`Router.add()` / `Router.dispatch()` / `Router.match()`). Compiles `:param`-style patterns to anchored regexes, extracts and URL-decodes named parameters, and auto-returns 405 when a path matches but the HTTP method does not. Routes carry optional `RouteMeta` (`{ role?: UserRole }`); `defaultRoleForMethod()` is fail-closed — it maps **every** method (including GET/HEAD) to `operator`, so viewer access is opt-in (a route must explicitly declare `{ role: "viewer" }`), and `roleSatisfies()` compares role rank (`viewer < operator < admin`). |
+| `adminServer.ts` | Auth gate (DB-backed session tokens, plus an open bootstrap mode while zero users exist), RBAC enforcement, security headers, and public endpoints (dashboard, health, img-proxy). Builds a single `Router` instance via `buildApiRouter()` at startup and dispatches every authenticated `/api/admin/*` request through it. Re-exports `getAuthContext` / `AuthContext`. |
+| `adminAuthService.ts` | Password hashing (`scrypt`, `scrypt:N:r:p:salt:hash` format), session-token hashing (sha256), and `createAdminAuthService()` (login / validateSession with sliding 12-hour expiry / logout). Exports `SESSION_TTL_MS`, `AuthContext`. |
+| `adminAuthRoutes.ts` | `/api/admin/auth/*` (setup-status, setup, login, logout, me) and `/api/admin/users/*` CRUD with last-admin guards, self password change, and audit logging. |
+| `adminAudit.ts` | Shared audit-trail helper: `recordAudit(store, req, { action, targetType?, targetId?, details? })` resolves the actor from `getAuthContext(req)` (fallback `"unknown"`), masks secret-like detail keys via `maskAuditDetails()`, and appends fire-and-forget (never throws or blocks the response; no-ops when the store lacks `appendAuditEntry`). |
+| `adminAuditRoutes.ts` | `GET /api/admin/audit` — admin-only, paginated audit-log read API. |
+| `authContext.ts` | Per-request `AuthContext` storage (`WeakMap<IncomingMessage, AuthContext>`): `setAuthContext()` / `getAuthContext()`. |
 | `adminRouteUtils.ts` | Shared HTTP primitives (`writeJson`, `writeHtml`, `readBody`, `toIsoTimestamp`, `asRecord`, `SECRET_MASK`). |
 | `adminTaskRoutes.ts` | `/api/admin/tasks/*` list, detail, cycles, transitions, pause/resume/retry/abandon/delete. |
 | `adminPromptRoutes.ts` | `/api/admin/prompts/*` CRUD + usage lookup. |
@@ -36,11 +41,21 @@ The admin server is a small HTTP service (default `127.0.0.1:3100`) that serves 
 | `GET` | `/` / `/admin` | Dashboard HTML shell. |
 | `GET` | `/health` | Unauthenticated health check. |
 | `POST` | `/webhooks/:integrationId/:event` | Mounted only when webhook deps are provided. Per-integration HMAC secret is the auth layer. Used by Redmine / GitLab; Gerrit review events use SSH `stream-events` instead. |
+| `GET` | `/api/admin/auth/setup-status` | Unauthenticated. `{ needsSetup: boolean }` — true when the store supports users and zero users exist. |
+| `POST` | `/api/admin/auth/login` | Unauthenticated. `{ username, password }` → `{ token, user }` session or 401. |
 
 ### Auth-protected routes
 
 | Method | Path | Notes |
 | --- | --- | --- |
+| `POST` | `/api/admin/auth/setup` | Unauthenticated bootstrap: only valid while zero users exist (403 otherwise). Rate-limited (per-IP and per-username) alongside `/auth/login`. Creates the first `admin` user, logs them in, returns 201 `{ token, user }`, audits `auth.setup`. |
+| `POST` | `/api/admin/auth/logout` | Revokes the presented session token (204). |
+| `GET` | `/api/admin/auth/me` | Current auth context `{ id, username, role }`. |
+| `GET` / `POST` | `/api/admin/users` | List / create users (admin only). Duplicate username → 409. |
+| `PUT` | `/api/admin/users/:id` | Update role/enabled (admin only). Demoting or disabling the last enabled admin → 409; disabling revokes the user's sessions. |
+| `PUT` | `/api/admin/users/:id/password` | Admins reset anyone; non-admins change their own with a verified `currentPassword` (403 otherwise). Revokes the target's sessions; audits `user.password_change`. |
+| `DELETE` | `/api/admin/users/:id` | Delete user (admin only); deleting the last enabled admin → 409. |
+| `GET` | `/api/admin/audit` | Audit-log read API (admin only). Query params: `limit` (default 50, cap 200), `offset`, `action` (exact match), `actor` (exact `actorName` match). Returns `{ entries, total, limit, offset }`; entries carry `id`, `actorUserId`, `actorName`, `action`, `targetType`, `targetId`, `details`, ISO `createdAt`, newest first. 501 when the store lacks `listAuditEntries`. |
 | `GET` | `/api/admin/status` | Runtime status and provider summary. |
 | `GET` | `/api/admin/config` | Sanitized runtime config view. |
 | `GET` | `/api/admin/providers` | Provider summaries, one entry per active integration plus the runtime admin API card. |
@@ -110,8 +125,50 @@ The admin server is a small HTTP service (default `127.0.0.1:3100`) that serves 
 
 ## Authentication
 
-- `ADMIN_AUTH_SECRET` enables HMAC-based Bearer auth with constant-time verification.
-- The dashboard stores the operator token client-side and sends it through the `Authorization` header.
+Two auth modes share the same route surface:
+
+- **Bootstrap (zero users)**: while no users exist yet, every `/api/admin/*` route is open with an implicit `admin`-role context (`{ userId: null, username: "bootstrap" }`) set in `adminServer.ts`. There is no token or secret involved in this mode — `ADMIN_AUTH_SECRET` is unrelated to auth; it is only used for OAuth token encryption at rest. `POST /api/admin/auth/setup` is the only route that matters here: it enforces that zero users exist, creates the first `admin` user, and logs them in. Stores without the user-store API (feature-detected via `countUsers`) stay in this open bootstrap mode permanently.
+- **DB sessions (≥1 user)**: once a user exists, `/api/admin/*` requires a Bearer session token from `POST /api/admin/auth/login` (opaque 64-hex token; sha256 hash stored in `user_sessions`; sliding 12-hour expiry, touch throttled to once per minute; the short window is XSS defense-in-depth since the SPA holds the token in sessionStorage). `POST /api/admin/auth/setup` then always returns 403.
+- **Brute-force protection**: `/api/admin/auth/login` and `/api/admin/auth/setup` share an in-memory rate limiter (`loginRateLimiter.ts`) keyed by client IP and by (normalized) username. After 5 failures in a 15-minute window the key is locked out with exponential backoff (30s doubling up to a 15-minute cap); requests during a lockout get 429 with `Retry-After`. Failed logins are also recorded in the audit log (`auth.login_failed`, no secrets).
+- **Username normalization**: usernames are normalized (Unicode NFC, trimmed, lower-cased) on both creation and login, so e.g. `Alice` and `alice` are always the same account.
+- **Password policy**: passwords must be ≥ 8 characters and are checked against a curated common-password denylist (`commonPasswords.ts`); this applies to `POST /api/admin/auth/setup`, user creation, and password changes.
+
+**RBAC**: every routed request resolves a required role — explicit `RouteMeta.role` or the fail-closed `defaultRoleForMethod` (every method, including GET/HEAD, defaults to `operator`). Role matrix:
+
+| Role | May access |
+| --- | --- |
+| `viewer` | **Only** the general overview and tasks (read-only). Concretely: `GET /api/admin/status`, `GET /api/admin/config`, `GET /api/admin/overview`, `GET /api/admin/cost-summary`, `GET /api/admin/model-usage`, `GET /api/admin/tasks`, `GET /api/admin/tasks/:id`, `GET /api/admin/tasks/:id/cycles`, `GET /api/admin/tasks/:id/transitions`, the two SSE streams (`GET /api/admin/logs/stream`, `GET /api/admin/events/stream`), plus the always-allowed auth-self routes (`GET /api/admin/auth/me`, `POST /api/admin/auth/logout`, self password change `PUT /api/admin/users/:id/password`). Everything else → 403. These routes carry an explicit `{ role: "viewer" }` meta. |
+| `operator` | Everything **except** user management and the audit log — including integrations CRUD/test/enable/disable/discover, OAuth apps, webhook-secret rotation / allowed-IPs, and plugin OAuth actions (all demoted from admin to operator). |
+| `admin` | Everything operator can do, **plus** the admin-exclusive routes: user management (`/api/admin/users*`) and the audit log (`GET /api/admin/audit`). |
+
+Insufficient role → 403 `{ error: "forbidden", requiredRole }`. The per-request identity is available to handlers via `getAuthContext(request)`.
+
+The GitLab img-proxy `?t=` query token accepts a session token when users exist; in bootstrap mode (no users yet) the proxy is open, matching every other route.
+
+## Audit trail
+
+All mutating admin routes append an `audit_log` row after a successful mutation via the shared `recordAudit()` helper ([adminAudit.ts](../../../src/admin/adminAudit.ts)):
+
+- **Actor** comes from `getAuthContext(req)` (`actorUserId` + `actorName`; bootstrap mode records `"bootstrap"`, missing context falls back to `"unknown"`).
+- **Details masking**: `maskAuditDetails()` recursively replaces values whose key contains a secret pattern (`token`, `secret`, `password`, `passwd`, `pwd`, `credential`, `key` — case-insensitive substring) with `"***"`. Matching is a deliberately fail-safe substring test (mirrors `SECRET_KEY_PATTERNS` in `adminAgentsRoutes.ts`) so separator-less compounds like `apikey` / `accesstoken` are still masked; the trade-off is that benign words containing a pattern may be over-masked. An explicit safe-key allowlist (`repoKey`, `repoKeys`, `ticketProjectKey`, `publicKey`) and any key ending in `Path` (e.g. `sshKeyPath`, a filesystem path) are never masked. Cyclic object graphs are detected (`WeakSet` of visited objects) and resolve to `"[Circular]"` instead of recursing forever. Secrets are never written to the audit log.
+- **Fire-and-forget with retry**: appends run in the background and never block or fail the API response. Transient append failures are retried with backoff (`appendAuditWithRetry`, delays 100ms/500ms/2s); after the final attempt the failure is logged at error level with the attempt count for monitoring. Stores without `appendAuditEntry` (feature-detected) are silently skipped, keeping mock-store tests working.
+
+Recorded actions:
+
+| Area | Actions |
+| --- | --- |
+| Auth / users | `auth.setup`, `user.create`, `user.update`, `user.password_change`, `user.delete` |
+| Integrations | `integration.create`, `integration.update`, `integration.delete`, `integration.enable`, `integration.disable`, `integration.discover` |
+| OAuth apps / plugins | `oauth_app.create`, `oauth_app.delete`, `plugin.oauth` |
+| Webhooks | `webhook.secret_rotate`, `webhook.allowed_ips_update` |
+| Agents | `agent.create`, `agent.update`, `agent.delete`, `agent.enable`, `agent.disable` |
+| Projects | `project.create`, `project.update`, `project.delete`, `project.enable`, `project.disable`, `project.ticket_source_set`, `project.push_targets_set`, `project.agent_assign` (the `_set`/`assign` sub-actions are emitted from `PUT /api/admin/projects/:id` when the corresponding payload fields are present) |
+| Prompts | `prompt.create`, `prompt.update`, `prompt.delete` |
+| Tasks | `task.delete`, `task.pause`, `task.resume`, `task.retry`, `task.abandon` |
+
+The log is readable through `GET /api/admin/audit` (admin only, see the endpoints table) and browsed in the SPA via the admin-only **Audit** tab in Configuration.
+
+The dashboard stores the session token client-side (sessionStorage `ve-admin-token`) and sends it through the `Authorization` header.
 
 ## Secret masking
 
@@ -120,6 +177,19 @@ The admin server never returns plaintext password-like fields. On `PUT`, values 
 ## Dashboard behavior
 
 [dashboard.ts](../../../src/admin/dashboard.ts) serves the shell for the Vite-built React SPA whose source lives in [src/admin/ui/](../../../src/admin/ui/); all client logic lives in the SPA, not inline in the shell.
+
+**Login / setup flow (SPA)**: on load, the auth screen (`shell/AuthScreen.tsx`) calls the public `GET /api/admin/auth/setup-status`. When `needsSetup` is true it renders a “Create first admin” form (username + password ≥ 8, not a common password, + confirm) that POSTs directly to `/api/admin/auth/setup` — unauthenticated bootstrap, no secret or derived token is involved — which returns a session token. Otherwise it renders a username/password login form backed by `POST /api/admin/auth/login`. The session token is kept in sessionStorage (`ve-admin-token`) and sent as a Bearer header on all API/SSE calls (plus the `?t=` query token for the log stream). `ui/api.ts` centralizes 401 handling: any 401 clears the token and fires an `onUnauthorized` callback that drops the app back to the login screen; 403 (insufficient role) never logs out — it surfaces as a normal error message.
+
+**Role-aware UI**: after auth, `App.tsx` loads `GET /api/admin/auth/me` and provides `{ user, isAdmin, canOperate }` through `ui/authContext.tsx` (`useCurrentUser()` hook; `canOperate` = role ≠ viewer). The top bar shows the username, a role badge, a change-password button (self password change via `PUT /api/admin/users/:id/password` with `currentPassword`; on success the user is told sessions were revoked and is routed back to login), and Logout (`POST /api/admin/auth/logout`). Nav + data loading are role-gated:
+- **viewer** sees **only** the Overview and Tasks top-level views — the Configuration nav entry is hidden (`TopBar` filters it on `canOperate`) and a deep link to `#config*` falls back to Overview (`App.tsx` `effectiveView`). `loadAll()` only fetches the viewer-safe endpoints (tasks/status/config/overview) and skips all config-area + providers requests so a viewer never triggers a now-forbidden call.
+- **operator** gets the full Configuration area, **including** the Integrations and OAuth Apps panels (add/edit/delete/enable/disable/test/discover, OAuth-app registration, plugin OAuth flows) — these are gated on `canOperate`, not `isAdmin`.
+- **admin** additionally sees the Users and Audit tabs (gated on `isAdmin`).
+
+**Password fields**: every password `<input>` (login + first-admin setup password/confirm in `shell/AuthScreen.tsx`, current/new/confirm in `shell/ChangePasswordModal.tsx`, create-user + reset-password in `views/ConfigView/UsersSection.tsx`) uses the reusable `components/PasswordField.tsx`, which renders an inline eye button (accessible `aria-label` “Show password” / “Hide password”) that toggles the input between `password` and `text`. It matches the native input styling (defaults to `FieldInput`; accepts a `style` override for the mono login form) and uses the `eye` / `eye-off` icons.
+
+**Users tab (admin only)**: Configuration → Users lists accounts (username, role badge, enabled toggle, created date), with a create-user modal (username/password/role), inline role select, reset-password modal, and delete-with-confirm. Server-side 409s (duplicate username, last-admin guard) surface as inline error banners.
+
+**Audit tab (admin only)**: Configuration → Audit renders the paginated audit table (local time, actor, action tag, target type/id, expandable pretty-printed details JSON) with debounced action/actor filter inputs and Newer/Older paging over `GET /api/admin/audit?limit&offset&action&actor`.
 
 - The configuration UI validates unsaved integration state through `POST /api/admin/integrations/test`.
 - The Providers view renders one card per active integration rather than collapsing everything into a single card per provider type.
@@ -164,5 +234,10 @@ The supported server-side model is `projects` / `project_*`. There are no `/api/
 - `tests/unit/closeAdminServer.test.ts`
 - `tests/unit/adminCostRoutes.test.ts`
 - `tests/unit/adminProjectsRoutes.relaunch.test.ts`
+- `tests/unit/adminAuthService.test.ts`
+- `tests/unit/adminAuthRoutes.test.ts`
+- `tests/unit/adminServerRbac.test.ts`
+- `tests/unit/adminAudit.test.ts`
+- `tests/unit/adminAuditRoutes.test.ts`
 - `tests/unit/dashboard.test.ts`
 - `tests/unit/dashboard.configurationTab.test.ts`

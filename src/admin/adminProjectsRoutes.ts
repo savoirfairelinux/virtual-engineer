@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { getLogger } from "../logger.js";
 import { writeJson, readBody, zodErrorBody } from "./adminRouteUtils.js";
+import { recordAudit, type AuditCapableStore } from "./adminAudit.js";
 import {
   makeAgentId,
   makeProjectId,
@@ -102,6 +103,7 @@ export interface ProjectsRouteStore {
 export interface ProjectsRouteDeps {
   projectStore?: ProjectsRouteStore | undefined;
   integrationStore?: IntegrationStore | undefined;
+  auditStore?: AuditCapableStore | undefined;
   onProjectChange?: (() => void) | undefined;
   taskControl?:
     | {
@@ -466,6 +468,19 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
     }
     const integrations = await loadIntegrationsLookup(deps.integrationStore);
     const detail = await buildProjectDetail(project, store, integrations);
+    recordAudit(deps.auditStore, req, {
+      action: "project.create",
+      targetType: "project",
+      targetId: project.id,
+      details: {
+        name: project.name,
+        type: project.type,
+        agentId: project.agentId,
+        ...(data.type === "coding"
+          ? { ticketProjectKey: data.ticketSource.ticketProjectKey, repoKeys: data.pushTargets.map((t) => t.repoKey) }
+          : { repoKeys: data.reviewConfig.repoKeys }),
+      },
+    });
     writeJson(res, 201, { project: detail });
     deps.onProjectChange?.();
     if (project.enabled) {
@@ -474,13 +489,14 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
   });
 
   // Enable or disable a project by id.
-  router.add("PATCH", "/api/admin/projects/:id/enable", async (_req, res, params) => {
+  router.add("PATCH", "/api/admin/projects/:id/enable", async (req, res, params) => {
     if (!deps.projectStore) { writeJson(res, 501, { error: "Project store not available" }); return; }
     const store = deps.projectStore;
     const id = makeProjectId(params["id"] ?? "");
     const existing = await store.getProjectById(id);
     if (!existing) { writeJson(res, 404, { error: "Project not found" }); return; }
     await store.setProjectEnabled(id, true);
+    recordAudit(deps.auditStore, req, { action: "project.enable", targetType: "project", targetId: id, details: { name: existing.name } });
     res.statusCode = 204; res.end();
     deps.onProjectChange?.();
     if (existing.enabled === false) {
@@ -488,13 +504,14 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
     }
   });
 
-  router.add("PATCH", "/api/admin/projects/:id/disable", async (_req, res, params) => {
+  router.add("PATCH", "/api/admin/projects/:id/disable", async (req, res, params) => {
     if (!deps.projectStore) { writeJson(res, 501, { error: "Project store not available" }); return; }
     const store = deps.projectStore;
     const id = makeProjectId(params["id"] ?? "");
     const existing = await store.getProjectById(id);
     if (!existing) { writeJson(res, 404, { error: "Project not found" }); return; }
     await store.setProjectEnabled(id, false);
+    recordAudit(deps.auditStore, req, { action: "project.disable", targetType: "project", targetId: id, details: { name: existing.name } });
     res.statusCode = 204; res.end();
     deps.onProjectChange?.();
   });
@@ -570,6 +587,16 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
     if (!refreshed) { writeJson(res, 500, { error: "Project disappeared after update" }); return; }
     const integrations = await loadIntegrationsLookup(deps.integrationStore);
     const detail = await buildProjectDetail(refreshed, store, integrations);
+    recordAudit(deps.auditStore, req, { action: "project.update", targetType: "project", targetId: id, details: { name: refreshed.name } });
+    if (data.ticketSource !== undefined) {
+      recordAudit(deps.auditStore, req, { action: "project.ticket_source_set", targetType: "project", targetId: id, details: { integrationId: data.ticketSource.integrationId, ticketProjectKey: data.ticketSource.ticketProjectKey } });
+    }
+    if (data.pushTargets !== undefined) {
+      recordAudit(deps.auditStore, req, { action: "project.push_targets_set", targetType: "project", targetId: id, details: { repoKeys: data.pushTargets.map((t) => t.repoKey) } });
+    }
+    if (data.agentId !== undefined) {
+      recordAudit(deps.auditStore, req, { action: "project.agent_assign", targetType: "project", targetId: id, details: { agentId: data.agentId } });
+    }
     writeJson(res, 200, { project: detail });
     deps.onProjectChange?.();
     if (reconfigured) {
@@ -577,7 +604,7 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
     }
   });
 
-  router.add("DELETE", "/api/admin/projects/:id", async (_req, res, params) => {
+  router.add("DELETE", "/api/admin/projects/:id", async (req, res, params) => {
     if (!deps.projectStore) { writeJson(res, 501, { error: "Project store not available" }); return; }
     const store = deps.projectStore;
     const id = makeProjectId(params["id"] ?? "");
@@ -585,6 +612,7 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
     if (!existing) { writeJson(res, 404, { error: "Project not found" }); return; }
     try {
       await store.deleteProject(id);
+      recordAudit(deps.auditStore, req, { action: "project.delete", targetType: "project", targetId: id, details: { name: existing.name, type: existing.type } });
       res.statusCode = 204; res.end();
       deps.onProjectChange?.();
     } catch (err: unknown) {
