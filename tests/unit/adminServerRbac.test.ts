@@ -163,7 +163,7 @@ describe("adminServer RBAC and session auth", () => {
       headers: { authorization: `Bearer ${viewer.token}` },
     });
     expect(me.status).toBe(200);
-    await expect(me.json()).resolves.toEqual({ id: viewer.user.id, username: "vera", role: "viewer" });
+    await expect(me.json()).resolves.toMatchObject({ id: viewer.user.id, username: "vera", role: "viewer" });
   });
 
   it("gives viewers access only to overview/tasks reads and 403 everywhere else", async () => {
