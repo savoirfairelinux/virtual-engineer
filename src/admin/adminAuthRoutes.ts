@@ -93,6 +93,11 @@ export interface AuthRouteDeps {
   /** Invalidates the server-level users-exist cache after setup / user create / delete. */
   onUsersChanged?: (() => void) | undefined;
   /**
+   * Called after a user is created via `POST /api/admin/users`, to bind the
+   * role's default PBAC policy bundle. No-op when PBAC is unavailable.
+   */
+  onUserCreated?: ((userId: string, role: UserRole) => Promise<void>) | undefined;
+  /**
    * When `true`, extract the client IP from `X-Forwarded-For` (first entry)
    * instead of the raw socket address. Safe only when a trusted reverse proxy
    * sits in front of the admin server; leave `false` (default) for the
@@ -308,6 +313,11 @@ export function registerAuthRoutes(router: Router, deps: AuthRouteDeps): void {
         role: role as UserRole,
       });
       deps.onUsersChanged?.();
+      try {
+        await deps.onUserCreated?.(user.id, user.role);
+      } catch {
+        // Default-policy binding is best-effort; user creation still succeeds.
+      }
       recordAudit(deps.auditStore, req, { action: "user.create", targetType: "user", targetId: user.id, details: { username: user.username, role: user.role } });
       writeJson(res, 201, { user: serializeUser(user) });
     } catch (err: unknown) {
