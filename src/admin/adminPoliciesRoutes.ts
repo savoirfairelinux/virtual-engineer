@@ -44,7 +44,7 @@ export interface PolicyRoutesDeps {
   auditStore?: AuditCapableStore | undefined;
 }
 
-const MANAGE = { permission: PERMISSIONS.POLICY_MANAGE, role: "admin" } as const;
+const MANAGE = { permission: PERMISSIONS.POLICY_MANAGE } as const;
 
 function isDuplicateError(err: unknown): boolean {
   return err instanceof Error && "code" in err && (err as { code?: unknown }).code === "DUPLICATE";

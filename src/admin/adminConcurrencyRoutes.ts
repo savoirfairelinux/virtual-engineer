@@ -16,5 +16,5 @@ export function registerConcurrencyRoutes(router: Router, deps: ConcurrencyRoute
       return;
     }
     writeJson(res, 200, { snapshot: deps.concurrency.snapshot() });
-  });
+  }, { permission: "concurrency.read" });
 }

@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { Permission, ResourceType, UserRole } from "../interfaces.js";
+import type { Permission, ResourceType } from "../interfaces.js";
 import { writeJson } from "./adminRouteUtils.js";
 
 export type RouteParams = Record<string, string>;
@@ -10,18 +10,19 @@ export type RouteHandler = (
 ) => Promise<void>;
 
 /**
- * Per-route authorization metadata.
+ * Per-route authorization metadata (pure PBAC — no role fallback).
  *
- * A route is authorized by **either** a PBAC `permission` (preferred) or a
- * legacy minimum `role` (transitional fallback). When `permission` is set and
- * the request has resolved PBAC permissions, the gate enforces it — scoping to a
- * concrete resource id when `resourceParam` names a path parameter. When PBAC
- * permissions are unavailable (mocks/older embedders) or no `permission` is
- * declared, the gate falls back to the `role` check (default
- * {@link defaultRoleForMethod}).
+ * Every non-public route MUST declare exactly one authorization mode:
+ * - `permission`: the PBAC permission required. When `resourceParam` names a path
+ *   parameter, the check is scoped to that resource id; `collection` marks a list
+ *   route (authorize on any grant, then the handler filters the response).
+ * - `authenticated`: any logged-in user may reach the route regardless of policy
+ *   (used for auth-self routes: `me`, `logout`, own password change).
+ *
+ * A route with neither is reachable only by the superuser (the `admin` role /
+ * bootstrap) — a fail-closed safety net for unannotated routes.
  */
 export interface RouteMeta {
-  role?: UserRole;
   /** PBAC permission required to reach the route. */
   permission?: Permission;
   /** Resource type the permission scopes to (informational; derived from `permission` when omitted). */
@@ -34,26 +35,8 @@ export interface RouteMeta {
    * responsible for filtering the response to the caller's accessible ids.
    */
   collection?: boolean;
-}
-
-/**
- * Minimum role for a route that declares no explicit `role` meta.
- *
- * Fail-closed: unannotated routes require `operator`, regardless of HTTP
- * method. Viewer access is opt-in — a route must explicitly declare
- * `{ role: "viewer" }` to be reachable by viewers (see the overview/tasks
- * read routes). This keeps any newly added route inaccessible to viewers
- * until someone deliberately widens it.
- */
-export function defaultRoleForMethod(_method: string): UserRole {
-  return "operator";
-}
-
-const ROLE_RANK: Record<UserRole, number> = { viewer: 0, operator: 1, admin: 2 };
-
-/** True when `actual` meets or exceeds `required` (admin > operator > viewer). */
-export function roleSatisfies(actual: UserRole, required: UserRole): boolean {
-  return ROLE_RANK[actual] >= ROLE_RANK[required];
+  /** Any authenticated user may reach the route (auth-self routes). */
+  authenticated?: boolean;
 }
 
 interface CompiledRoute {

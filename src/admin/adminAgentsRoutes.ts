@@ -396,7 +396,7 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
       log.warn({ err, pluginType }, "provider redirect completion failed");
       writeJson(res, 502, { error: msg });
     }
-  }, { role: "operator" });
+  }, { permission: "oauth.manage" });
 
   // ── Agent CRUD ─────────────────────────────────────────────────────────────
   router.add("GET", "/api/admin/agents", async (_req, res, _params) => {
@@ -407,7 +407,7 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
     const counts = new Map<string, number>();
     for (const p of projects) { counts.set(p.agentId, (counts.get(p.agentId) ?? 0) + 1); }
     writeJson(res, 200, { agents: agents.map((a) => toAgentSummary(a, counts.get(a.id) ?? 0)) });
-  });
+  }, { permission: "agent.read" });
 
   router.add("POST", "/api/admin/agents", async (req, res, _params) => {
     if (!deps.agentStore) { writeJson(res, 501, { error: "Agent store not available" }); return; }
@@ -436,7 +436,7 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
       log.warn({ err }, "create agent failed");
       writeJson(res, 500, { error: msg });
     }
-  });
+  }, { permission: "agent.write" });
 
   // /agents/:id/available-models has a distinct path shape from /agents/:id (anchored regex), so registration order does not matter here
   router.add("GET", "/api/admin/agents/:id/available-models", async (_req, res, params) => {
@@ -493,7 +493,7 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
       log.warn({ err }, "fetch available models failed");
       writeJson(res, 502, { error: msg });
     }
-  });
+  }, { permission: "agent.read", resourceParam: "id" });
 
   router.add("GET", "/api/admin/agents/:id", async (_req, res, params) => {
     if (!deps.agentStore) { writeJson(res, 501, { error: "Agent store not available" }); return; }
@@ -503,7 +503,7 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
     if (!existing) { writeJson(res, 404, { error: "Agent not found" }); return; }
     const count = await countProjectsForAgent(store, id);
     writeJson(res, 200, { agent: toAgentDetail(existing, count) });
-  });
+  }, { permission: "agent.read", resourceParam: "id" });
 
   router.add("PUT", "/api/admin/agents/:id", async (req, res, params) => {
     if (!deps.agentStore) { writeJson(res, 501, { error: "Agent store not available" }); return; }
@@ -538,7 +538,7 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
       log.warn({ err, id }, "update agent failed");
       writeJson(res, 500, { error: msg });
     }
-  });
+  }, { permission: "agent.write", resourceParam: "id" });
 
   router.add("DELETE", "/api/admin/agents/:id", async (req, res, params) => {
     if (!deps.agentStore) { writeJson(res, 501, { error: "Agent store not available" }); return; }
@@ -565,7 +565,7 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
       log.warn({ err, id }, "delete agent failed");
       writeJson(res, 500, { error: msg });
     }
-  });
+  }, { permission: "agent.delete", resourceParam: "id" });
 
   router.add("PATCH", "/api/admin/agents/:id/enable", async (req, res, params) => {
     if (!deps.agentStore) { writeJson(res, 501, { error: "Agent store not available" }); return; }
@@ -577,7 +577,7 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
     recordAudit(deps.auditStore, req, { action: "agent.enable", targetType: "agent", targetId: id, details: { name: existing.name } });
     res.statusCode = 204;
     res.end();
-  });
+  }, { permission: "agent.operate", resourceParam: "id" });
 
   router.add("PATCH", "/api/admin/agents/:id/disable", async (req, res, params) => {
     if (!deps.agentStore) { writeJson(res, 501, { error: "Agent store not available" }); return; }
@@ -589,5 +589,5 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
     recordAudit(deps.auditStore, req, { action: "agent.disable", targetType: "agent", targetId: id, details: { name: existing.name } });
     res.statusCode = 204;
     res.end();
-  });
+  }, { permission: "agent.operate", resourceParam: "id" });
 }

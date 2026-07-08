@@ -52,7 +52,7 @@ export function registerTaskRoutes(router: Router, deps: TaskRouteDeps): void {
         return s;
       }),
     });
-  }, { role: "viewer" });
+  }, { permission: "task.read", collection: true });
 
   router.add("GET", "/api/admin/tasks/:id", async (_req, res, params) => {
     const taskId = makeTaskId(params["id"] ?? "");
@@ -74,7 +74,7 @@ export function registerTaskRoutes(router: Router, deps: TaskRouteDeps): void {
       if (firstUrl) serialized["reviewUrl"] = firstUrl;
     }
     writeJson(res, 200, { task: serialized });
-  }, { role: "viewer" });
+  }, { permission: "task.read", resourceParam: "id" });
 
   router.add("DELETE", "/api/admin/tasks/:id", async (req, res, params) => {
     const taskId = makeTaskId(params["id"] ?? "");
@@ -90,7 +90,7 @@ export function registerTaskRoutes(router: Router, deps: TaskRouteDeps): void {
       const status = msg.includes("non-terminal") ? 409 : 400;
       writeJson(res, status, { error: msg });
     }
-  });
+  }, { permission: "task.delete", resourceParam: "id" });
 
   router.add("GET", "/api/admin/tasks/:id/cycles", async (_req, res, params) => {
     const taskId = makeTaskId(params["id"] ?? "");
@@ -98,7 +98,7 @@ export function registerTaskRoutes(router: Router, deps: TaskRouteDeps): void {
     if (!task) { writeJson(res, 404, { error: "Task not found" }); return; }
     const cycles = await deps.stateStore.getAgentCycles(taskId);
     writeJson(res, 200, { cycles: cycles.map(serializeCycle) });
-  }, { role: "viewer" });
+  }, { permission: "task.read", resourceParam: "id" });
 
   router.add("GET", "/api/admin/tasks/:id/transitions", async (_req, res, params) => {
     const taskId = makeTaskId(params["id"] ?? "");
@@ -106,7 +106,7 @@ export function registerTaskRoutes(router: Router, deps: TaskRouteDeps): void {
     if (!task) { writeJson(res, 404, { error: "Task not found" }); return; }
     const transitions = await deps.stateStore.getStateTransitions(taskId);
     writeJson(res, 200, { transitions: transitions.map(serializeTransition) });
-  }, { role: "viewer" });
+  }, { permission: "task.read", resourceParam: "id" });
 
   router.add("PATCH", "/api/admin/tasks/:id/pause", async (req, res, params) => {
     const taskId = makeTaskId(params["id"] ?? "");
@@ -118,7 +118,7 @@ export function registerTaskRoutes(router: Router, deps: TaskRouteDeps): void {
       log.warn({ err }, "pause task failed");
       writeJson(res, 400, { error: "Operation failed" });
     }
-  });
+  }, { permission: "task.operate", resourceParam: "id" });
 
   router.add("PATCH", "/api/admin/tasks/:id/resume", async (req, res, params) => {
     const taskId = makeTaskId(params["id"] ?? "");
@@ -133,7 +133,7 @@ export function registerTaskRoutes(router: Router, deps: TaskRouteDeps): void {
       log.warn({ err }, "resume task failed");
       writeJson(res, 400, { error: "Operation failed" });
     }
-  });
+  }, { permission: "task.operate", resourceParam: "id" });
 
   router.add("POST", "/api/admin/tasks/:id/retry", async (req, res, params) => {
     const taskId = makeTaskId(params["id"] ?? "");
@@ -148,7 +148,7 @@ export function registerTaskRoutes(router: Router, deps: TaskRouteDeps): void {
       log.warn({ err }, "retry task failed");
       writeJson(res, 400, { error: "Operation failed" });
     }
-  });
+  }, { permission: "task.operate", resourceParam: "id" });
 
   router.add("POST", "/api/admin/tasks/:id/abandon", async (req, res, params) => {
     const taskId = makeTaskId(params["id"] ?? "");
@@ -160,7 +160,7 @@ export function registerTaskRoutes(router: Router, deps: TaskRouteDeps): void {
       log.warn({ err }, "abandon task failed");
       writeJson(res, 400, { error: "Operation failed" });
     }
-  });
+  }, { permission: "task.operate", resourceParam: "id" });
 }
 
 // ─── Serializers & helpers (exported for SSE streams & events route) ────────

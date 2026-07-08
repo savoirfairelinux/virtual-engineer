@@ -23,7 +23,7 @@ export function registerPromptRoutes(router: Router, deps: PromptRouteDeps): voi
     if (!deps.promptStore) { writeJson(res, 501, { error: "Prompt store not available" }); return; }
     const prompts = await deps.promptStore.getPrompts();
     writeJson(res, 200, { prompts: prompts.map(serializePrompt) });
-  });
+  }, { permission: "prompt.read" });
 
   router.add("POST", "/api/admin/prompts", async (req, res, _params) => {
     if (!deps.promptStore) { writeJson(res, 501, { error: "Prompt store not available" }); return; }
@@ -49,7 +49,7 @@ export function registerPromptRoutes(router: Router, deps: PromptRouteDeps): voi
       if (msg.includes("Invalid prompt id")) { writeJson(res, 400, { error: msg }); return; }
       throw err;
     }
-  });
+  }, { permission: "prompt.write" });
 
   // Return the list of agents that reference the given prompt.
   router.add("GET", "/api/admin/prompts/:id/usage", async (_req, res, params) => {
@@ -62,7 +62,7 @@ export function registerPromptRoutes(router: Router, deps: PromptRouteDeps): voi
       .filter((a) => a.systemPromptId === promptId || a.instructionsPromptId === promptId || a.feedbackInstructionsPromptId === promptId)
       .map((a) => ({ id: a.id, name: a.name }));
     writeJson(res, 200, { promptId, agents: usedBy });
-  });
+  }, { permission: "prompt.read" });
 
   router.add("GET", "/api/admin/prompts/:id", async (_req, res, params) => {
     if (!deps.promptStore) { writeJson(res, 501, { error: "Prompt store not available" }); return; }
@@ -70,7 +70,7 @@ export function registerPromptRoutes(router: Router, deps: PromptRouteDeps): voi
     const prompt = await deps.promptStore.getPrompt(promptId);
     if (!prompt) { writeJson(res, 404, { error: "Prompt not found" }); return; }
     writeJson(res, 200, { prompt: serializePrompt(prompt) });
-  });
+  }, { permission: "prompt.read" });
 
   router.add("PUT", "/api/admin/prompts/:id", async (req, res, params) => {
     if (!deps.promptStore) { writeJson(res, 501, { error: "Prompt store not available" }); return; }
@@ -94,7 +94,7 @@ export function registerPromptRoutes(router: Router, deps: PromptRouteDeps): voi
     );
     recordAudit(deps.auditStore, req, { action: "prompt.update", targetType: "prompt", targetId: promptId, details: { label: existing.label } });
     writeJson(res, 200, { prompt: serializePrompt(prompt) });
-  });
+  }, { permission: "prompt.write" });
 
   router.add("DELETE", "/api/admin/prompts/:id", async (req, res, params) => {
     if (!deps.promptStore) { writeJson(res, 501, { error: "Prompt store not available" }); return; }
@@ -113,7 +113,7 @@ export function registerPromptRoutes(router: Router, deps: PromptRouteDeps): voi
       if (msg.includes("not found")) { writeJson(res, 404, { error: msg }); return; }
       throw err;
     }
-  });
+  }, { permission: "prompt.delete" });
 }
 
 /** Serialize a Prompt to the admin API response shape. */

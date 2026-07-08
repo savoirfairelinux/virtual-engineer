@@ -134,7 +134,7 @@ export function registerOverviewRoutes(router: Router, deps: OverviewRouteDeps):
       log.error({ err }, "overview route failed");
       writeJson(res, 500, { error: "Failed to compute overview" });
     }
-  }, { role: "viewer" });
+  }, { permission: "overview.read" });
 
   // Aggregated AI cost: per-project breakdown + instance total, optionally
   // scoped to a trailing period via `?days=<n>` (omitted = all-time).
@@ -155,7 +155,7 @@ export function registerOverviewRoutes(router: Router, deps: OverviewRouteDeps):
       log.error({ err }, "cost-summary route failed");
       writeJson(res, 500, { error: "Failed to compute cost summary" });
     }
-  }, { role: "viewer" });
+  }, { permission: "overview.read" });
 
   // Model usage distribution (run count + cost), global and per project,
   // optionally scoped to a trailing period via `?days=<n>`.
@@ -176,5 +176,5 @@ export function registerOverviewRoutes(router: Router, deps: OverviewRouteDeps):
       log.error({ err }, "model-usage route failed");
       writeJson(res, 500, { error: "Failed to compute model usage" });
     }
-  }, { role: "viewer" });
+  }, { permission: "overview.read" });
 }

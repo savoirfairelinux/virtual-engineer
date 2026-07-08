@@ -47,7 +47,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
         ...(d.oauth !== undefined ? { oauth: d.oauth } : {}),
       })),
     });
-  });
+  }, { permission: "integration.read" });
 
   // ─── OAuth Apps ────────────────────────────────────────────────────────────
   router.add("GET", "/api/admin/oauth-apps", async (req, res, _params) => {
@@ -56,7 +56,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
     const providerParam = requestUrl.searchParams.get("provider") ?? undefined;
     const apps = await deps.oAuthAppStore.listOAuthApps(providerParam);
     writeJson(res, 200, { apps: apps.map((app) => serializeOAuthApp(app)) });
-  });
+  }, { permission: "oauth.manage" });
 
   router.add("POST", "/api/admin/oauth-apps", async (req, res, _params) => {
     if (!deps.oAuthAppStore) { writeJson(res, 501, { error: "OAuth app registry is not available" }); return; }
@@ -68,7 +68,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
     const app = await deps.oAuthAppStore.upsertOAuthApp({ provider, baseUrl: normalizeGitLabBaseUrl(baseUrl), clientId });
     recordAudit(deps.auditStore, req, { action: "oauth_app.create", targetType: "oauth_app", targetId: `${app.provider}:${app.baseUrl}`, details: { provider: app.provider, baseUrl: app.baseUrl } });
     writeJson(res, 201, { app: serializeOAuthApp(app) });
-  }, { role: "operator" });
+  }, { permission: "oauth.manage" });
 
   router.add("DELETE", "/api/admin/oauth-apps", async (req, res, _params) => {
     if (!deps.oAuthAppStore) { writeJson(res, 501, { error: "OAuth app registry is not available" }); return; }
@@ -80,7 +80,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
     await deps.oAuthAppStore.deleteOAuthApp(provider, normalizedBase);
     recordAudit(deps.auditStore, req, { action: "oauth_app.delete", targetType: "oauth_app", targetId: `${provider}:${normalizedBase}`, details: { provider, baseUrl: normalizedBase } });
     writeJson(res, 200, { ok: true });
-  }, { role: "operator" });
+  }, { permission: "oauth.manage" });
 
   // Resolve a provider + base URL to its OAuth app registry entry.
   router.add("POST", "/api/admin/oauth-apps/resolve", async (req, res, _params) => {
@@ -96,14 +96,14 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
       return;
     }
     writeJson(res, 200, { app: serializeOAuthApp(app) });
-  }, { role: "operator" });
+  }, { permission: "oauth.manage" });
 
   // ─── Integrations CRUD (exact paths before :id pattern) ──────────────────
   router.add("GET", "/api/admin/integrations", async (_req, res, _params) => {
     if (!deps.integrationStore) { writeJson(res, 501, { error: "Integration store not available" }); return; }
     const list = await deps.integrationStore.getIntegrations();
     writeJson(res, 200, { integrations: list.map((i) => serializeIntegration(i, deps.pluginManager, deps.integrationStreams)) });
-  });
+  }, { permission: "integration.read" });
 
   router.add("GET", "/api/admin/integrations/by-category", async (_req, res, _params) => {
     if (!deps.integrationStore) { writeJson(res, 501, { error: "Integration store not available" }); return; }
@@ -116,7 +116,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
       codeSources: list.filter((i) => supports(i, "code_review") || supports(i, "source_control")).map((i) => serializeIntegration(i, deps.pluginManager, deps.integrationStreams)),
       ticketSources: list.filter((i) => supports(i, "issue_tracking")).map((i) => serializeIntegration(i, deps.pluginManager, deps.integrationStreams)),
     });
-  });
+  }, { permission: "integration.read" });
 
   router.add("POST", "/api/admin/integrations", async (req, res, _params) => {
     if (!deps.integrationStore) { writeJson(res, 501, { error: "Integration store not available" }); return; }
@@ -151,7 +151,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
       log.warn({ err }, "create integration failed");
       writeJson(res, 500, { error: msg });
     }
-  }, { role: "operator" });
+  }, { permission: "integration.write" });
 
   // test (exact path before :id)
   router.add("POST", "/api/admin/integrations/test", async (req, res, _params) => {
@@ -185,7 +185,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
       log.warn({ integrationId, requestedProvider, errorMessage }, "config test connection failed");
       writeJson(res, 400, { success: false, error: errorMessage, models: [] });
     }
-  }, { role: "operator" });
+  }, { permission: "integration.write" });
 
   // ─── Single integration by ID ─────────────────────────────────────────────
   router.add("GET", "/api/admin/integrations/:id", async (_req, res, params) => {
@@ -194,7 +194,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
     const integration = await deps.integrationStore.getIntegration(id);
     if (!integration) { writeJson(res, 404, { error: "Integration not found" }); return; }
     writeJson(res, 200, { integration: serializeIntegration(integration, deps.pluginManager, deps.integrationStreams) });
-  });
+  }, { permission: "integration.read" });
 
   router.add("PUT", "/api/admin/integrations/:id", async (req, res, params) => {
     if (!deps.integrationStore) { writeJson(res, 501, { error: "Integration store not available" }); return; }
@@ -244,7 +244,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
       log.warn({ err }, "update integration failed");
       writeJson(res, 500, { error: msg });
     }
-  }, { role: "operator" });
+  }, { permission: "integration.write", resourceParam: "id" });
 
   router.add("DELETE", "/api/admin/integrations/:id", async (req, res, params) => {
     if (!deps.integrationStore) { writeJson(res, 501, { error: "Integration store not available" }); return; }
@@ -272,7 +272,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
       log.warn({ err }, "delete integration failed");
       writeJson(res, 500, { error: msg });
     }
-  }, { role: "operator" });
+  }, { permission: "integration.delete", resourceParam: "id" });
 
   // ─── Enable / Disable ─────────────────────────────────────────────────────
   router.add("PATCH", "/api/admin/integrations/:id/enable", async (req, res, params) => {
@@ -287,7 +287,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
       log.warn({ err }, "enable plugin failed");
       writeJson(res, 400, { error: "Operation failed" });
     }
-  }, { role: "operator" });
+  }, { permission: "integration.operate", resourceParam: "id" });
 
   router.add("PATCH", "/api/admin/integrations/:id/disable", async (req, res, params) => {
     if (!deps.pluginManager) { writeJson(res, 501, { error: "Plugin manager not available" }); return; }
@@ -301,7 +301,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
       log.warn({ err }, "disable plugin failed");
       writeJson(res, 400, { error: "Operation failed" });
     }
-  }, { role: "operator" });
+  }, { permission: "integration.operate", resourceParam: "id" });
 
   // ─── Test (by ID) ─────────────────────────────────────────────────────────
   router.add("POST", "/api/admin/integrations/:id/test", async (_req, res, params) => {
@@ -320,7 +320,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
       log.warn({ id, errorMessage }, "test connection failed");
       writeJson(res, 400, { success: false, error: errorMessage, models: [] });
     }
-  }, { role: "operator" });
+  }, { permission: "integration.write", resourceParam: "id" });
 
   // ─── Models ───────────────────────────────────────────────────────────────
   router.add("GET", "/api/admin/integrations/:id/models", async (_req, res, params) => {
@@ -341,7 +341,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
       }
     }
     writeJson(res, 200, { models: [] });
-  });
+  }, { permission: "integration.read", resourceParam: "id" });
 
   // ─── Discover ─────────────────────────────────────────────────────────────
   router.add("POST", "/api/admin/integrations/:id/discover", async (req, res, params) => {
@@ -420,7 +420,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
       log.warn({ id, provider: integration.provider, errorMessage }, "resource discovery failed");
       writeJson(res, 502, { error: `Discovery failed: ${errorMessage}` });
     }
-  }, { role: "operator" });
+  }, { permission: "integration.operate", resourceParam: "id" });
 
   // ─── Branches (per-repository, on-demand) ───────────────────────────────────
   router.add("GET", "/api/admin/integrations/:id/branches", async (req, res, params) => {
@@ -472,7 +472,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
       log.warn({ id, provider: integration.provider, repoKey, errorMessage }, "branch discovery failed");
       writeJson(res, 502, { error: `Branch discovery failed: ${errorMessage}` });
     }
-  });
+  }, { permission: "integration.read", resourceParam: "id" });
 
   // ─── SSH key management ───────────────────────────────────────────────────
 
@@ -495,7 +495,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
       const status = msg.includes("ADMIN_AUTH_SECRET") ? 400 : 500;
       writeJson(res, status, { error: `SSH key generation failed: ${msg}` });
     }
-  });
+  }, { permission: "integration.write" });
 
   router.add("POST", "/api/admin/integrations/:id/ssh-key/generate", async (_req, res, params) => {
     if (!deps.integrationStore) { writeJson(res, 501, { error: "Integration store not available" }); return; }
@@ -522,7 +522,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
       const status = errorMessage.includes("ADMIN_AUTH_SECRET") ? 400 : 500;
       writeJson(res, status, { error: `SSH key generation failed: ${errorMessage}` });
     }
-  });
+  }, { permission: "integration.write", resourceParam: "id" });
 
   router.add("GET", "/api/admin/integrations/:id/ssh-key/public", async (_req, res, params) => {
     if (!deps.integrationStore) { writeJson(res, 501, { error: "Integration store not available" }); return; }
@@ -533,7 +533,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
     const config = getStoredIntegrationConfig(integration);
     const publicKey = typeof config["sshPublicKey"] === "string" ? config["sshPublicKey"] : null;
     writeJson(res, 200, { publicKey });
-  });
+  }, { permission: "integration.read", resourceParam: "id" });
 
   router.add("GET", "/api/admin/ssh-agent/keys", async (_req, res, _params) => {
     const sshAuthSock = process.env["SSH_AUTH_SOCK"];
@@ -573,7 +573,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
       log.warn({ error: msg }, "ssh-add -L failed");
       writeJson(res, 200, { keys: [], agentAvailable: false });
     }
-  });
+  }, { permission: "integration.read" });
 }
 
 // ─── Integration config helpers ─────────────────────────────────────────────

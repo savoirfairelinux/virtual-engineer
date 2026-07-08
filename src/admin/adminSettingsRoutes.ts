@@ -53,7 +53,7 @@ export function registerSettingsRoutes(router: Router, deps: SettingsRouteDeps):
       return;
     }
     writeJson(res, 200, { settings: deps.settings.get() });
-  });
+  }, { permission: "system.read" });
 
   router.add("PUT", "/api/admin/settings", async (req, res, _params) => {
     if (!deps.settings) {
@@ -82,5 +82,5 @@ export function registerSettingsRoutes(router: Router, deps: SettingsRouteDeps):
 
     const next = await deps.settings.update(patch);
     writeJson(res, 200, { settings: next });
-  });
+  }, { permission: "system.write" });
 }
