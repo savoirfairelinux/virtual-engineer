@@ -1,5 +1,7 @@
 /** Core domain types and interface contracts. */
 
+import type { RuntimeId } from "./runtime/runtimeProfile.js";
+
 // ─── Shared value types ───────────────────────────────────────────────────────
 
 export type TaskId = string & { readonly __brand: "TaskId" };
@@ -48,6 +50,8 @@ export interface AgentRecord {
   /** Optional override used on retry (feedback) cycles. Falls back to instructionsPromptId when null. */
   feedbackInstructionsPromptId: string | null;
   maxConcurrent: number;
+  /** Per-agent runtime override (`docker` | `openshell`). Null = inherit the global default. */
+  runtime: RuntimeId | null;
   enabled: boolean;
   createdAt: Date;
   updatedAt: Date;
@@ -64,6 +68,8 @@ export interface ProjectRecord {
   postCloneScript: string;
   /** When true, the agent container loads team-defined skills from `<repo>/.github/skills` (coding projects only). */
   skillDiscoveryEnabled: boolean;
+  /** Per-project runtime override (`docker` | `openshell`). Null = inherit the agent/global default. */
+  runtime: RuntimeId | null;
   enabled: boolean;
   createdAt: Date;
   updatedAt: Date;

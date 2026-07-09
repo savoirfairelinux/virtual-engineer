@@ -22,6 +22,7 @@ const project: ProjectRecord = {
   agentOverrideJson: null,
   postCloneScript: "",
   skillDiscoveryEnabled: false,
+  runtime: null,
   enabled: true,
   createdAt: new Date(),
   updatedAt: new Date(),

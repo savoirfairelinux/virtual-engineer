@@ -659,12 +659,12 @@ describe("runtime bootstrap provider selection", () => {
 
     expect(runtime.CopilotAdapter).not.toHaveBeenCalled();
 
-    const runnerInstance = runtime.DockerWorkspaceRunner.mock.results[0]?.value as {
-      runAgentInDocker: ReturnType<typeof vi.fn>;
-    };
+    // The agent adapter is now configured with the runtime-aware workspace runner
+    // facade (which delegates to the registry-resolved runner) rather than the raw
+    // DockerWorkspaceRunner instance.
     expect((dbAgent as unknown as { configure: ReturnType<typeof vi.fn> }).configure).toHaveBeenCalledTimes(1);
     expect((dbAgent as unknown as { configure: ReturnType<typeof vi.fn> }).configure).toHaveBeenCalledWith(
-      expect.objectContaining({ runner: runnerInstance })
+      expect.objectContaining({ runner: expect.anything() })
     );
   });
 

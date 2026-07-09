@@ -189,6 +189,7 @@ function makeAgentRecord(overrides: Partial<AgentRecord> = {}): AgentRecord {
     instructionsPromptId: null,
     feedbackInstructionsPromptId: null,
     maxConcurrent: 1,
+    runtime: null,
     enabled: true,
     createdAt: new Date(),
     updatedAt: new Date(),

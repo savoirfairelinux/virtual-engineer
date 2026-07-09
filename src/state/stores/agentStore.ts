@@ -6,6 +6,7 @@ import type {
   AgentRecord,
   AgentType,
 } from "../../interfaces.js";
+import type { RuntimeId } from "../../runtime/runtimeProfile.js";
 import {
   agents,
   appConcurrency,
@@ -24,13 +25,14 @@ export interface AgentStoreApi {
     instructionsPromptId?: string | null;
     feedbackInstructionsPromptId?: string | null;
     maxConcurrent?: number;
+    runtime?: RuntimeId | null;
     enabled?: boolean;
   }): Promise<AgentRecord>;
   getAgentById(id: AgentId): Promise<AgentRecord | null>;
   listAgents(filter?: { type?: AgentType; enabled?: boolean }): Promise<AgentRecord[]>;
   updateAgent(
     id: AgentId,
-    partial: Partial<Pick<AgentRecord, "name" | "type" | "modelConfigJson" | "integrationId" | "systemPromptId" | "instructionsPromptId" | "feedbackInstructionsPromptId" | "maxConcurrent" | "enabled">>
+    partial: Partial<Pick<AgentRecord, "name" | "type" | "modelConfigJson" | "integrationId" | "systemPromptId" | "instructionsPromptId" | "feedbackInstructionsPromptId" | "maxConcurrent" | "runtime" | "enabled">>
   ): Promise<AgentRecord>;
   deleteAgent(id: AgentId): Promise<void>;
   setAgentEnabled(id: AgentId, enabled: boolean): Promise<void>;
@@ -56,6 +58,7 @@ export function createAgentStore(context: AgentStoreContext): AgentStoreApi {
       instructionsPromptId: row.instructionsPromptId ?? null,
       feedbackInstructionsPromptId: row.feedbackInstructionsPromptId ?? null,
       maxConcurrent: row.maxConcurrent,
+      runtime: row.runtime ?? null,
       enabled: row.enabled === 1,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
@@ -72,6 +75,7 @@ export function createAgentStore(context: AgentStoreContext): AgentStoreApi {
     instructionsPromptId?: string | null;
     feedbackInstructionsPromptId?: string | null;
     maxConcurrent?: number;
+    runtime?: RuntimeId | null;
     enabled?: boolean;
   }): Promise<AgentRecord> {
     const now = new Date();
@@ -86,6 +90,7 @@ export function createAgentStore(context: AgentStoreContext): AgentStoreApi {
       instructionsPromptId: input.instructionsPromptId ?? null,
       feedbackInstructionsPromptId: input.feedbackInstructionsPromptId ?? null,
       maxConcurrent: input.maxConcurrent ?? 1,
+      runtime: input.runtime ?? null,
       enabled: input.enabled === false ? 0 : 1,
       createdAt: now,
       updatedAt: now,
@@ -112,7 +117,7 @@ export function createAgentStore(context: AgentStoreContext): AgentStoreApi {
 
   async function updateAgent(
     id: AgentId,
-    partial: Partial<Pick<AgentRecord, "name" | "type" | "modelConfigJson" | "integrationId" | "systemPromptId" | "instructionsPromptId" | "feedbackInstructionsPromptId" | "maxConcurrent" | "enabled">>
+    partial: Partial<Pick<AgentRecord, "name" | "type" | "modelConfigJson" | "integrationId" | "systemPromptId" | "instructionsPromptId" | "feedbackInstructionsPromptId" | "maxConcurrent" | "runtime" | "enabled">>
   ): Promise<AgentRecord> {
     const existing = await getAgentById(id);
     if (!existing) throw new Error(`Agent not found: ${id}`);
@@ -126,6 +131,7 @@ export function createAgentStore(context: AgentStoreContext): AgentStoreApi {
     if (partial.instructionsPromptId !== undefined) update["instructionsPromptId"] = partial.instructionsPromptId;
     if (partial.feedbackInstructionsPromptId !== undefined) update["feedbackInstructionsPromptId"] = partial.feedbackInstructionsPromptId;
     if (partial.maxConcurrent !== undefined) update["maxConcurrent"] = partial.maxConcurrent;
+    if (partial.runtime !== undefined) update["runtime"] = partial.runtime;
     if (partial.enabled !== undefined) update["enabled"] = partial.enabled ? 1 : 0;
     await db.update(agents).set(update).where(eq(agents.id, id));
     const updated = await getAgentById(id);

@@ -14,6 +14,12 @@ import { getLogger } from "./logger.js";
 import { SqliteStateStore } from "./state/stateStore.js";
 import { MockAgentAdapter } from "./agents/mockAgentAdapter.js";
 import { DockerWorkspaceRunner } from "./workspace/workspaceRunner.js";
+import { HostGitExecutor } from "./workspace/hostGitExecutor.js";
+import { OpenShellWorkspaceRunner } from "./workspace/openShellWorkspaceRunner.js";
+import { OpenShellClient } from "./openshell/openShellClient.js";
+import { RuntimeRegistry } from "./runtime/runtimeRegistry.js";
+import { RuntimeAwareWorkspaceRunner } from "./runtime/runtimeAwareWorkspaceRunner.js";
+import { normalizeRuntimeId, type RuntimeSelection } from "./runtime/runtimeProfile.js";
 import { Orchestrator } from "./orchestrator/orchestrator.js";
 import { PollingLoop } from "./orchestrator/pollingLoop.js";
 import { createConcurrencyTracker } from "./orchestrator/concurrencyTracker.js";
@@ -26,7 +32,7 @@ import { ReviewOrchestrator } from "./review/reviewOrchestrator.js";
 import { mkdir } from "fs/promises";
 import type { Server } from "node:http";
 import type { AdminProviderSummary } from "./admin/adminServer.js";
-import type { AgentAdapter, ConfigurableAdapter, DomainCapability, Integration, ProviderId, ProjectId, ProjectPushTargetRecord, ProjectRecord, ProjectReviewConfig, ProjectTicketSourceRecord, ReviewProvider, Task } from "./interfaces.js";
+import type { AgentAdapter, ConfigurableAdapter, DomainCapability, Integration, ProviderId, ProjectId, ProjectPushTargetRecord, ProjectRecord, ProjectReviewConfig, ProjectTicketSourceRecord, ReviewProvider, Task, TaskId, WorkspaceRunner } from "./interfaces.js";
 import { makeTaskId, makeExternalChangeId } from "./interfaces.js";
 import { registerBuiltinPlugins } from "./plugins/init.js";
 import { PluginManager } from "./plugins/pluginManager.js";
@@ -95,7 +101,44 @@ async function main(): Promise<void> {
     },
     runtimeDependencies.agentAdapter
   );
-  configureAgentAdapter(runtimeDependencies.agentAdapter, stateStore, workspaceRunner);
+
+  // ─── Pluggable runtime registry ──────────────────────────────────────────────
+  // Docker stays the default runtime. OpenShell is registered as an alternative
+  // backend selectable per project/agent; git plumbing stays host-side via
+  // HostGitExecutor so push credentials never enter the sandbox.
+  const openShellRunner = new OpenShellWorkspaceRunner({
+    git: new HostGitExecutor({ baseDir: config.workspaceBaseDir }),
+    client: new OpenShellClient(),
+    sandboxImage: config.agentContainerImage,
+  });
+  const runtimeRegistry = new RuntimeRegistry()
+    .register("docker", workspaceRunner)
+    .register("openshell", openShellRunner);
+  const bootSettings = await stateStore.getAppSettings();
+  const bootDefaultRuntime = normalizeRuntimeId(bootSettings.defaultRuntime);
+  if (bootDefaultRuntime) runtimeRegistry.setDefault(bootDefaultRuntime);
+
+  /** Resolve a task's runtime selection (project → agent → global default). */
+  async function resolveRuntimeSelection(taskId: TaskId): Promise<RuntimeSelection> {
+    const selection: RuntimeSelection = { default: runtimeRegistry.getDefaultId() };
+    try {
+      const task = await stateStore.getTask(taskId);
+      if (task?.projectId) {
+        const project = await stateStore.getProjectById(task.projectId);
+        if (project) {
+          selection.project = project.runtime;
+          const agent = await stateStore.getAgentById(project.agentId);
+          selection.agent = agent?.runtime ?? null;
+        }
+      }
+    } catch (err) {
+      log.warn({ err, taskId }, "runtime selection lookup failed; using default");
+    }
+    return selection;
+  }
+
+  const runtimeRunner = new RuntimeAwareWorkspaceRunner(runtimeRegistry, resolveRuntimeSelection);
+  configureAgentAdapter(runtimeDependencies.agentAdapter, stateStore, runtimeRunner);
 
   // ─── Orchestrator ────────────────────────────────────────────────────────────
   // Phase 6 — single in-process concurrency tracker shared by orchestrator and
@@ -114,7 +157,7 @@ async function main(): Promise<void> {
   const orchestrator = new Orchestrator(
     buildOrchestratorConfig(config, pluginManager),
     stateStore,
-    workspaceRunner,
+    runtimeRunner,
     undefined,
     stateStore,
     orchestratorProjectMode
@@ -124,7 +167,7 @@ async function main(): Promise<void> {
   // Mutable holder so the review trigger survives hot-reload of the review
   // integration without recreating the stream-events manager.
   const reviewTriggerHolder = {
-    current: buildReviewTrigger(pluginManager, config.workspaceBaseDir, workspaceRunner, stateStore),
+    current: buildReviewTrigger(pluginManager, config.workspaceBaseDir, runtimeRunner, stateStore),
   };
 
   /** Thin wrapper that forwards to the stream-events review trigger. Used by the polling loop. */
@@ -235,12 +278,12 @@ async function main(): Promise<void> {
     workspaceRunner.updateRuntime({
       agentAdapter: runtimeDependencies.agentAdapter,
     });
-    configureAgentAdapter(runtimeDependencies.agentAdapter, stateStore, workspaceRunner);
+    configureAgentAdapter(runtimeDependencies.agentAdapter, stateStore, runtimeRunner);
     orchestrator.updateRuntime({
       config: buildOrchestratorConfig(config, pluginManager),
     });
     pollingLoop.resetBackoff();
-    reviewTriggerHolder.current = buildReviewTrigger(pluginManager, config.workspaceBaseDir, workspaceRunner, stateStore);
+    reviewTriggerHolder.current = buildReviewTrigger(pluginManager, config.workspaceBaseDir, runtimeRunner, stateStore);
     await integrationStreamEvents.reconcile(resolveStreamIntegrations());
     log.info("runtime dependencies refreshed");
     await reconcilePollingLoop();
@@ -571,7 +614,7 @@ async function buildReviewBundle(
   pluginManager: PluginManager,
   _workspaceBaseDir: string,
   stateStore: import("./interfaces.js").StateStore & import("./interfaces.js").PromptStore,
-  workspaceRunner?: DockerWorkspaceRunner,
+  workspaceRunner?: WorkspaceRunner,
   target?: string | Task,
 ): Promise<ReviewBundle> {
   const bundleLog = getLogger("review-bundle");
@@ -701,7 +744,7 @@ async function buildReviewBundle(
 function buildReviewTrigger(
   pluginManager: PluginManager,
   workspaceBaseDir: string,
-  workspaceRunner: DockerWorkspaceRunner,
+  workspaceRunner: WorkspaceRunner,
   stateStore: import("./interfaces.js").StateStore & import("./interfaces.js").PromptStore
 ): import("./connectors/integrationStreamEvents.js").IntegrationEventStreamReviewTrigger | null {
   if (resolveReviewIntegration(pluginManager) === null) return null;
@@ -902,7 +945,7 @@ function asOptionalString(value: unknown): string | undefined {
 function configureAgentAdapter(
   agentAdapter: AgentAdapter,
   stateStore: SqliteStateStore,
-  workspaceRunner: DockerWorkspaceRunner
+  workspaceRunner: WorkspaceRunner
 ): void {
   if ("configure" in agentAdapter && typeof (agentAdapter as ConfigurableAdapter).configure === "function") {
     (agentAdapter as ConfigurableAdapter).configure({ store: stateStore, runner: workspaceRunner });

@@ -87,6 +87,7 @@ function makeProject(overrides: Partial<ProjectRecord> = {}): ProjectRecord {
     agentOverrideJson: null,
     postCloneScript: "",
     skillDiscoveryEnabled: false,
+    runtime: null,
     enabled: true,
     createdAt: new Date(),
     updatedAt: new Date(),
