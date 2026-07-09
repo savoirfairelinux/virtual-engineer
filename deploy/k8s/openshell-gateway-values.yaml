@@ -1,0 +1,33 @@
+# Helm values for the NVIDIA OpenShell gateway (control plane) running the
+# Kubernetes compute driver, so agent sandboxes are scheduled as Pods.
+#
+# Install (pin the chart + image by digest in production):
+#   helm install openshell oci://ghcr.io/nvidia/openshell/helm-chart \
+#     --namespace virtual-engineer --create-namespace \
+#     -f deploy/k8s/openshell-gateway-values.yaml
+#
+# NOTE: OpenShell's Kubernetes path is upstream-EXPERIMENTAL. Validate before
+# relying on it in production (see docs/adr/0001-openshell-agent-runtime.md).
+gateway:
+  # Single replica to start; the gateway is a control-plane SPOF in early
+  # OpenShell releases. Revisit HA once upstream stabilises.
+  replicaCount: 1
+  service:
+    type: ClusterIP
+    port: 8080
+  # Use the Kubernetes compute driver — sandboxes run as Pods. Do NOT mount the
+  # Docker socket; that is container-escape-equivalent for the agent.
+  driver: kubernetes
+  # Per-sandbox resource quotas prevent noisy-neighbour effects. VE keeps
+  # business admission (ConcurrencyTracker); K8s bin-packs these Pods.
+  sandbox:
+    resources:
+      requests:
+        cpu: "250m"
+        memory: "512Mi"
+      limits:
+        cpu: "1"
+        memory: "2Gi"
+  # Disable anonymous telemetry on the gateway (propagates to sandboxes).
+  telemetry:
+    enabled: false

@@ -49,6 +49,20 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends docker-ce-cli \
   && rm -rf /var/lib/apt/lists/*
 
+# ── Optional: pinned OpenShell CLI (agent runtime backend) ────────────────────
+# Off by default so standard/offline builds are unaffected. Enable for the
+# Kubernetes/OpenShell deployment with:
+#   docker build -f Dockerfile.orchestrator \
+#     --build-arg INSTALL_OPENSHELL=true --build-arg OPENSHELL_VERSION=v0.0.79 .
+ARG INSTALL_OPENSHELL=false
+ARG OPENSHELL_VERSION=v0.0.79
+RUN if [ "$INSTALL_OPENSHELL" = "true" ]; then \
+      set -eux; \
+      OPENSHELL_VERSION="$OPENSHELL_VERSION" \
+        sh -c 'curl -LsSf https://raw.githubusercontent.com/NVIDIA/OpenShell/main/install.sh | sh'; \
+      openshell --version || true; \
+    fi
+
 WORKDIR /app
 
 # Copy compiled native node_modules from builder (already includes better-sqlite3 .node binary)

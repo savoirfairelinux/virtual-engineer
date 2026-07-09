@@ -1,0 +1,86 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: virtual-engineer-orchestrator
+  namespace: virtual-engineer
+  labels:
+    app.kubernetes.io/name: virtual-engineer
+    app.kubernetes.io/component: orchestrator
+spec:
+  # Single replica: VE owns business admission (ConcurrencyTracker) and the
+  # SQLite store is RWO. Kubernetes bin-packs the OpenShell sandbox pods, not VE.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: virtual-engineer
+      app.kubernetes.io/component: orchestrator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: virtual-engineer
+        app.kubernetes.io/component: orchestrator
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: orchestrator
+          # Built with: --build-arg INSTALL_OPENSHELL=true --build-arg OPENSHELL_VERSION=v0.0.79
+          # Pin by digest in production (image@sha256:...).
+          image: virtual-engineer-orchestrator:latest
+          imagePullPolicy: IfNotPresent
+          command: ["node", "dist/src/index.js"]
+          envFrom:
+            - configMapRef:
+                name: virtual-engineer-config
+            - secretRef:
+                name: virtual-engineer-secret
+          ports:
+            - name: admin
+              containerPort: 3100
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: admin
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: admin
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+            - name: workspaces
+              mountPath: /workspaces
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: virtual-engineer-data
+        # Ephemeral git working directory (HostGitExecutor). Push credentials
+        # live only in this pod — never in the agent sandbox.
+        - name: workspaces
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
