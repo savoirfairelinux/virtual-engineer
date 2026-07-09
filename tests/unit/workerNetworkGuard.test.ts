@@ -36,8 +36,15 @@ describe("networkGuard.isBlockedNetworkCommand", () => {
     "sftp user@host",
     "ftp example.com",
     "aria2c https://example.com/big",
+    "lynx https://example.com",
+    "links http://example.com",
     "git push origin HEAD",
     "git push --force origin main",
+    "git fetch origin",
+    "git pull",
+    "git clone https://example.com/repo.git",
+    "git ls-remote https://example.com/repo.git",
+    "git remote-update",
   ])("blocks %s", (cmd) => {
     expect(isBlockedNetworkCommand(cmd)).toBe(true);
   });
@@ -113,9 +120,22 @@ describe("networkGuard.NETWORK_DISALLOWED_TOOLS (Claude)", () => {
       "Bash(curl:*)",
       "Bash(wget:*)",
       "Bash(nc:*)",
+      "Bash(ncat:*)",
+      "Bash(netcat:*)",
+      "Bash(telnet:*)",
       "Bash(ssh:*)",
       "Bash(scp:*)",
+      "Bash(sftp:*)",
+      "Bash(ftp:*)",
+      "Bash(lynx:*)",
+      "Bash(links:*)",
+      "Bash(aria2c:*)",
       "Bash(git push:*)",
+      "Bash(git fetch:*)",
+      "Bash(git pull:*)",
+      "Bash(git clone:*)",
+      "Bash(git ls-remote:*)",
+      "Bash(git remote-update:*)",
     ]) {
       expect(NETWORK_DISALLOWED_TOOLS).toContain(rule);
     }
