@@ -22,7 +22,7 @@ describe("Admin Dashboard - Configuration Shell", () => {
 
   it("uses icons for runtime policy actions", () => {
     const source = readFileSync(
-      new URL("../../src/admin/ui/views/ConfigView/PoliciesSection.tsx", import.meta.url),
+      new URL("../../src/admin/ui/views/ConfigView/RuntimePoliciesSection.tsx", import.meta.url),
       "utf8",
     );
 

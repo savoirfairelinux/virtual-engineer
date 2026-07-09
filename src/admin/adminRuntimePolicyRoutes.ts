@@ -1,12 +1,12 @@
 import { writeJson, readBody } from "./adminRouteUtils.js";
 import type { Router } from "./router.js";
-import type { PolicyStoreApi } from "../state/stores/policyStore.js";
+import type { RuntimePolicyStoreApi } from "../state/stores/runtimePolicyStore.js";
 import type { RuntimePolicyKind } from "../state/schema.js";
 
 const VALID_KINDS = new Set<RuntimePolicyKind>(["filesystem", "network", "process", "inference"]);
 
-export interface PolicyRouteDeps {
-  policyStore?: PolicyStoreApi | undefined;
+export interface RuntimePolicyRouteDeps {
+  runtimePolicyStore?: RuntimePolicyStoreApi | undefined;
 }
 
 function isKind(value: unknown): value is RuntimePolicyKind {
@@ -14,20 +14,20 @@ function isKind(value: unknown): value is RuntimePolicyKind {
 }
 
 /** Register runtime-policy CRUD + binding routes. */
-export function registerPolicyRoutes(router: Router, deps: PolicyRouteDeps): void {
-  const guard = (res: Parameters<Parameters<Router["add"]>[2]>[1]): PolicyStoreApi | null => {
-    if (!deps.policyStore) {
+export function registerRuntimePolicyRoutes(router: Router, deps: RuntimePolicyRouteDeps): void {
+  const guard = (res: Parameters<Parameters<Router["add"]>[2]>[1]): RuntimePolicyStoreApi | null => {
+    if (!deps.runtimePolicyStore) {
       writeJson(res, 501, { error: "Policy store not available" });
       return null;
     }
-    return deps.policyStore;
+    return deps.runtimePolicyStore;
   };
 
   router.add("GET", "/api/admin/runtime/policies", async (_req, res) => {
     const store = guard(res);
     if (!store) return;
     writeJson(res, 200, { policies: await store.listRuntimePolicies() });
-  });
+  }, { permission: "policy.manage" });
 
   router.add("POST", "/api/admin/runtime/policies", async (req, res) => {
     const store = guard(res);
@@ -44,7 +44,7 @@ export function registerPolicyRoutes(router: Router, deps: PolicyRouteDeps): voi
       ...(typeof body["description"] === "string" ? { description: body["description"] } : {}),
     });
     writeJson(res, 201, { policy: created });
-  });
+  }, { permission: "policy.manage" });
 
   router.add("PUT", "/api/admin/runtime/policies/:id", async (req, res, params) => {
     const store = guard(res);
@@ -67,14 +67,14 @@ export function registerPolicyRoutes(router: Router, deps: PolicyRouteDeps): voi
       ...(typeof body["description"] === "string" ? { description: body["description"] } : {}),
     });
     writeJson(res, 200, { policy: updated });
-  });
+  }, { permission: "policy.manage" });
 
   router.add("DELETE", "/api/admin/runtime/policies/:id", async (_req, res, params) => {
     const store = guard(res);
     if (!store) return;
     await store.deleteRuntimePolicy(params["id"] ?? "");
     writeJson(res, 204, {});
-  });
+  }, { permission: "policy.manage" });
 
   router.add("POST", "/api/admin/runtime/policies/:id/bindings", async (req, res, params) => {
     const store = guard(res);
@@ -84,17 +84,17 @@ export function registerPolicyRoutes(router: Router, deps: PolicyRouteDeps): voi
     const projectId = typeof body["projectId"] === "string" ? body["projectId"] : null;
     const agentId = typeof body["agentId"] === "string" ? body["agentId"] : null;
     try {
-      const binding = await store.bindPolicy({ policyId, projectId, agentId });
+      const binding = await store.bindRuntimePolicy({ policyId, projectId, agentId });
       writeJson(res, 201, { binding });
     } catch (err) {
       writeJson(res, 400, { error: err instanceof Error ? err.message : String(err) });
     }
-  });
+  }, { permission: "policy.manage" });
 
   router.add("DELETE", "/api/admin/runtime/policies/bindings/:bindingId", async (_req, res, params) => {
     const store = guard(res);
     if (!store) return;
-    await store.unbindPolicy(params["bindingId"] ?? "");
+    await store.unbindRuntimePolicy(params["bindingId"] ?? "");
     writeJson(res, 204, {});
-  });
+  }, { permission: "policy.manage" });
 }

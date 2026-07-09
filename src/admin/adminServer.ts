@@ -22,7 +22,7 @@ import { registerTaskRoutes } from "./adminTaskRoutes.js";
 import { registerPromptRoutes } from "./adminPromptRoutes.js";
 import { registerStreamRoutes } from "./adminStreamRoutes.js";
 import { registerConcurrencyRoutes } from "./adminConcurrencyRoutes.js";
-import { registerPolicyRoutes } from "./adminPolicyRoutes.js";
+import { registerRuntimePolicyRoutes } from "./adminRuntimePolicyRoutes.js";
 import { registerDenialRoutes } from "./adminDenialRoutes.js";
 import { registerRuntimeRoutes, type RuntimeController } from "./adminRuntimeRoutes.js";
 import { registerSettingsRoutes, type SettingsController } from "./adminSettingsRoutes.js";
@@ -157,7 +157,7 @@ export interface AdminServerDependencies {
    */
   settings?: SettingsController | undefined;
   /** When provided, mounts runtime-policy CRUD + binding routes. */
-  policyStore?: import("../state/stores/policyStore.js").PolicyStoreApi | undefined;
+  runtimePolicyStore?: import("../state/stores/runtimePolicyStore.js").RuntimePolicyStoreApi | undefined;
   /** When provided, mounts the policy-denial audit-log routes. */
   denialStore?: import("../state/stores/denialStore.js").DenialStoreApi | undefined;
   /** When provided, mounts runtime-selection + gateway-health routes. */
@@ -424,7 +424,7 @@ function buildApiRouter(dependencies: AdminServerDependencies, authRuntime: Admi
   });
   registerConcurrencyRoutes(router, { concurrency: dependencies.concurrency });
   registerSettingsRoutes(router, { settings: dependencies.settings });
-  registerPolicyRoutes(router, { policyStore: dependencies.policyStore });
+  registerRuntimePolicyRoutes(router, { runtimePolicyStore: dependencies.runtimePolicyStore });
   registerDenialRoutes(router, { denialStore: dependencies.denialStore });
   registerRuntimeRoutes(router, { runtime: dependencies.runtime });
   registerWebhookRoutes(router, {

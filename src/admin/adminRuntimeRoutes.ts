@@ -31,7 +31,7 @@ export function registerRuntimeRoutes(router: Router, deps: RuntimeRouteDeps): v
       supported: [...RUNTIME_IDS],
       gatewayHealthy: await deps.runtime.gatewayHealthy(),
     });
-  });
+  }, { permission: "system.read" });
 
   router.add("PUT", "/api/admin/runtime", async (req, res) => {
     if (!deps.runtime) {
@@ -50,5 +50,5 @@ export function registerRuntimeRoutes(router: Router, deps: RuntimeRouteDeps): v
     }
     await deps.runtime.setDefaultRuntime(next);
     writeJson(res, 200, { defaultRuntime: deps.runtime.getDefaultRuntime() });
-  });
+  }, { permission: "system.write" });
 }

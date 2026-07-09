@@ -409,7 +409,7 @@ async function main(): Promise<void> {
         snapshot: () => concurrencyTracker.snapshot(),
       },
       settings: settingsController,
-      policyStore: stateStore,
+      runtimePolicyStore: stateStore,
       denialStore: stateStore,
       runtime: {
         getDefaultRuntime: () => runtimeRegistry.getDefaultId(),

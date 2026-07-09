@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import type { Server } from "node:http";
 import { createAdminServer, type AdminServerDependencies } from "../../src/admin/adminServer.js";
-import type { PolicyStoreApi } from "../../src/state/stores/policyStore.js";
+import type { RuntimePolicyStoreApi } from "../../src/state/stores/runtimePolicyStore.js";
 import type { DenialStoreApi } from "../../src/state/stores/denialStore.js";
 import type { RuntimeId } from "../../src/runtime/runtimeProfile.js";
 
@@ -43,7 +43,7 @@ function baseStateStore(): AdminServerDependencies["stateStore"] {
   } as unknown as AdminServerDependencies["stateStore"];
 }
 
-function makeInMemoryPolicyStore(): PolicyStoreApi {
+function makeInMemoryPolicyStore(): RuntimePolicyStoreApi {
   const policies = new Map<string, { id: string; name: string; kind: string; yaml: string; description: string; createdAt: Date; updatedAt: Date }>();
   let seq = 0;
   return {
@@ -62,14 +62,14 @@ function makeInMemoryPolicyStore(): PolicyStoreApi {
       return rec;
     }),
     deleteRuntimePolicy: vi.fn(async (id: string) => { policies.delete(id); }),
-    bindPolicy: vi.fn(async (input) => {
+    bindRuntimePolicy: vi.fn(async (input) => {
       if ((input.projectId == null) === (input.agentId == null)) throw new Error("exactly one of projectId or agentId");
       return { id: "bind-1", policyId: input.policyId, projectId: input.projectId ?? null, agentId: input.agentId ?? null, createdAt: new Date(), updatedAt: new Date() };
     }),
-    unbindPolicy: vi.fn(async () => {}),
-    getPoliciesForProject: vi.fn(async () => []),
-    getPoliciesForAgent: vi.fn(async () => []),
-  } as unknown as PolicyStoreApi;
+    unbindRuntimePolicy: vi.fn(async () => {}),
+    getRuntimePoliciesForProject: vi.fn(async () => []),
+    getRuntimePoliciesForAgent: vi.fn(async () => []),
+  } as unknown as RuntimePolicyStoreApi;
 }
 
 function makeDenialStore(events: unknown[]): DenialStoreApi {
@@ -133,7 +133,7 @@ describe("Admin API — runtime/policy/denial routes", () => {
   });
 
   it("policy CRUD: create, list, bind, delete", async () => {
-    await start({ policyStore: makeInMemoryPolicyStore() });
+    await start({ runtimePolicyStore: makeInMemoryPolicyStore() });
     const created = await rest(server, "/api/admin/runtime/policies", { method: "POST", body: { name: "review-ro", kind: "network", yaml: "network:\n  default: deny\n" } });
     expect(created.status).toBe(201);
     const id = (created.body?.["policy"] as { id: string }).id;
@@ -151,7 +151,7 @@ describe("Admin API — runtime/policy/denial routes", () => {
   });
 
   it("POST policy rejects an invalid kind", async () => {
-    await start({ policyStore: makeInMemoryPolicyStore() });
+    await start({ runtimePolicyStore: makeInMemoryPolicyStore() });
     const r = await rest(server, "/api/admin/runtime/policies", { method: "POST", body: { name: "x", kind: "bogus" } });
     expect(r.status).toBe(400);
   });

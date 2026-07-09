@@ -1,52 +1,52 @@
 import { randomUUID } from "crypto";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, inArray, or } from "drizzle-orm";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
-import { policyBindings, runtimePolicies, type RuntimePolicyKind } from "../schema.js";
+import type { Permission, Policy, PolicyBinding, PolicyRule, PrincipalType } from "../../interfaces.js";
+import { groupMembers, policyBindings, policyRules, policies } from "../schema.js";
 import * as schema from "../schema.js";
 
-/** A declarative agent-runtime policy record. */
-export interface RuntimePolicyRecord {
-  id: string;
-  name: string;
-  kind: RuntimePolicyKind;
-  yaml: string;
-  description: string;
-  createdAt: Date;
-  updatedAt: Date;
+function isUniqueConstraintViolation(err: unknown): boolean {
+  return (
+    err instanceof Error &&
+    "code" in err &&
+    (err as { code?: unknown }).code === "SQLITE_CONSTRAINT_UNIQUE"
+  );
 }
 
-/** A binding of a policy to a project or an agent (exactly one is non-null). */
-export interface PolicyBindingRecord {
-  id: string;
-  policyId: string;
-  projectId: string | null;
-  agentId: string | null;
-  createdAt: Date;
-  updatedAt: Date;
+function duplicateError(message: string): Error & { code: string } {
+  return Object.assign(new Error(message), { code: "DUPLICATE" });
+}
+
+/** A rule to persist within a policy. */
+export interface PolicyRuleInput {
+  permission: Permission;
+  resourceId?: string | null;
 }
 
 export interface PolicyStoreApi {
-  createRuntimePolicy(input: {
-    id?: string;
-    name: string;
-    kind: RuntimePolicyKind;
-    yaml?: string;
-    description?: string;
-  }): Promise<RuntimePolicyRecord>;
-  getRuntimePolicyById(id: string): Promise<RuntimePolicyRecord | null>;
-  listRuntimePolicies(filter?: { kind?: RuntimePolicyKind }): Promise<RuntimePolicyRecord[]>;
-  updateRuntimePolicy(
-    id: string,
-    partial: Partial<Pick<RuntimePolicyRecord, "name" | "kind" | "yaml" | "description">>
-  ): Promise<RuntimePolicyRecord>;
-  deleteRuntimePolicy(id: string): Promise<void>;
-  /** Bind a policy to a project (`agentId` null) or an agent (`projectId` null). */
-  bindPolicy(input: { policyId: string; projectId?: string | null; agentId?: string | null }): Promise<PolicyBindingRecord>;
-  unbindPolicy(bindingId: string): Promise<void>;
-  /** Policies bound to a project. */
-  getPoliciesForProject(projectId: string): Promise<RuntimePolicyRecord[]>;
-  /** Policies bound to an agent. */
-  getPoliciesForAgent(agentId: string): Promise<RuntimePolicyRecord[]>;
+  createPolicy(input: { id?: string; name: string; description?: string; builtin?: boolean }): Promise<Policy>;
+  getPolicyById(id: string): Promise<Policy | null>;
+  listPolicies(): Promise<Policy[]>;
+  updatePolicy(id: string, partial: { name?: string; description?: string }): Promise<Policy | null>;
+  /** Delete a policy (cascades its rules and bindings). Returns false when absent. */
+  deletePolicy(id: string): Promise<boolean>;
+
+  /** Replace the full rule set of a policy atomically. */
+  setPolicyRules(policyId: string, rules: readonly PolicyRuleInput[]): Promise<PolicyRule[]>;
+  listPolicyRules(policyId: string): Promise<PolicyRule[]>;
+
+  /** Bind a policy to a principal. Throws `code = "DUPLICATE"` when already bound. */
+  createBinding(input: { id?: string; policyId: string; principalType: PrincipalType; principalId: string }): Promise<PolicyBinding>;
+  deleteBinding(policyId: string, principalType: PrincipalType, principalId: string): Promise<boolean>;
+  listBindingsForPolicy(policyId: string): Promise<PolicyBinding[]>;
+  listBindingsForPrincipal(principalType: PrincipalType, principalId: string): Promise<PolicyBinding[]>;
+
+  /**
+   * The union of every policy rule that applies to a user: rules of policies
+   * bound directly to the user plus rules of policies bound to any group the
+   * user belongs to. Drives {@link buildEffectivePermissions}.
+   */
+  getEffectivePolicyRulesForUser(userId: string): Promise<PolicyRule[]>;
 }
 
 interface PolicyStoreContext {
@@ -56,127 +56,185 @@ interface PolicyStoreContext {
 export function createPolicyStore(context: PolicyStoreContext): PolicyStoreApi {
   const { db } = context;
 
-  function rowToPolicy(row: typeof runtimePolicies.$inferSelect): RuntimePolicyRecord {
+  function rowToPolicy(row: typeof policies.$inferSelect): Policy {
     return {
       id: row.id,
       name: row.name,
-      kind: row.kind,
-      yaml: row.yaml,
       description: row.description,
+      builtin: row.builtin === 1,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     };
   }
 
-  async function getRuntimePolicyById(id: string): Promise<RuntimePolicyRecord | null> {
-    const row = await db.query.runtimePolicies.findFirst({ where: eq(runtimePolicies.id, id) });
-    return row ? rowToPolicy(row) : null;
+  function rowToRule(row: typeof policyRules.$inferSelect): PolicyRule {
+    return {
+      id: row.id,
+      policyId: row.policyId,
+      permission: row.permission,
+      resourceId: row.resourceId,
+      createdAt: row.createdAt,
+    };
   }
 
-  async function createRuntimePolicy(input: {
-    id?: string;
-    name: string;
-    kind: RuntimePolicyKind;
-    yaml?: string;
-    description?: string;
-  }): Promise<RuntimePolicyRecord> {
-    const now = new Date();
-    const id = input.id ?? randomUUID();
-    await db.insert(runtimePolicies).values({
-      id,
-      name: input.name,
-      kind: input.kind,
-      yaml: input.yaml ?? "",
-      description: input.description ?? "",
-      createdAt: now,
-      updatedAt: now,
-    });
-    const created = await getRuntimePolicyById(id);
-    if (!created) throw new Error(`Failed to create runtime policy '${id}'`);
-    return created;
-  }
-
-  async function listRuntimePolicies(filter?: { kind?: RuntimePolicyKind }): Promise<RuntimePolicyRecord[]> {
-    const rows = await db.query.runtimePolicies.findMany(
-      filter?.kind ? { where: eq(runtimePolicies.kind, filter.kind) } : undefined
-    );
-    return rows.map(rowToPolicy);
-  }
-
-  async function updateRuntimePolicy(
-    id: string,
-    partial: Partial<Pick<RuntimePolicyRecord, "name" | "kind" | "yaml" | "description">>
-  ): Promise<RuntimePolicyRecord> {
-    const set: Record<string, unknown> = { updatedAt: new Date() };
-    if (partial.name !== undefined) set["name"] = partial.name;
-    if (partial.kind !== undefined) set["kind"] = partial.kind;
-    if (partial.yaml !== undefined) set["yaml"] = partial.yaml;
-    if (partial.description !== undefined) set["description"] = partial.description;
-    await db.update(runtimePolicies).set(set).where(eq(runtimePolicies.id, id));
-    const updated = await getRuntimePolicyById(id);
-    if (!updated) throw new Error(`Runtime policy '${id}' not found`);
-    return updated;
-  }
-
-  async function deleteRuntimePolicy(id: string): Promise<void> {
-    await db.delete(policyBindings).where(eq(policyBindings.policyId, id));
-    await db.delete(runtimePolicies).where(eq(runtimePolicies.id, id));
-  }
-
-  async function bindPolicy(input: {
-    policyId: string;
-    projectId?: string | null;
-    agentId?: string | null;
-  }): Promise<PolicyBindingRecord> {
-    const projectId = input.projectId ?? null;
-    const agentId = input.agentId ?? null;
-    if ((projectId === null) === (agentId === null)) {
-      throw new Error("bindPolicy requires exactly one of projectId or agentId");
-    }
-    const now = new Date();
-    const id = randomUUID();
-    await db.insert(policyBindings).values({
-      id,
-      policyId: input.policyId,
-      projectId,
-      agentId,
-      createdAt: now,
-      updatedAt: now,
-    });
-    return { id, policyId: input.policyId, projectId, agentId, createdAt: now, updatedAt: now };
-  }
-
-  async function unbindPolicy(bindingId: string): Promise<void> {
-    await db.delete(policyBindings).where(eq(policyBindings.id, bindingId));
-  }
-
-  async function getPoliciesForProject(projectId: string): Promise<RuntimePolicyRecord[]> {
-    const rows = await db
-      .select({ policy: runtimePolicies })
-      .from(policyBindings)
-      .innerJoin(runtimePolicies, eq(policyBindings.policyId, runtimePolicies.id))
-      .where(and(eq(policyBindings.projectId, projectId), isNull(policyBindings.agentId)));
-    return rows.map((r) => rowToPolicy(r.policy));
-  }
-
-  async function getPoliciesForAgent(agentId: string): Promise<RuntimePolicyRecord[]> {
-    const rows = await db
-      .select({ policy: runtimePolicies })
-      .from(policyBindings)
-      .innerJoin(runtimePolicies, eq(policyBindings.policyId, runtimePolicies.id))
-      .where(and(eq(policyBindings.agentId, agentId), isNull(policyBindings.projectId)));
-    return rows.map((r) => rowToPolicy(r.policy));
+  function rowToBinding(row: typeof policyBindings.$inferSelect): PolicyBinding {
+    return {
+      id: row.id,
+      policyId: row.policyId,
+      principalType: row.principalType,
+      principalId: row.principalId,
+      createdAt: row.createdAt,
+    };
   }
 
   return {
-    createRuntimePolicy,
-    getRuntimePolicyById,
-    listRuntimePolicies,
-    updateRuntimePolicy,
-    deleteRuntimePolicy,
-    bindPolicy,
-    unbindPolicy,
-    getPoliciesForProject,
-    getPoliciesForAgent,
+    async createPolicy(input): Promise<Policy> {
+      const now = new Date();
+      const row = {
+        id: input.id ?? randomUUID(),
+        name: input.name,
+        description: input.description ?? "",
+        builtin: input.builtin ? 1 : 0,
+        createdAt: now,
+        updatedAt: now,
+      };
+      try {
+        await db.insert(policies).values(row);
+      } catch (err) {
+        if (isUniqueConstraintViolation(err)) {
+          throw duplicateError(`Policy name already exists: ${input.name}`);
+        }
+        throw err;
+      }
+      return rowToPolicy(row);
+    },
+
+    async getPolicyById(id): Promise<Policy | null> {
+      const row = await db.query.policies.findFirst({ where: eq(policies.id, id) });
+      return row ? rowToPolicy(row) : null;
+    },
+
+    async listPolicies(): Promise<Policy[]> {
+      const rows = await db.query.policies.findMany({ orderBy: policies.name });
+      return rows.map(rowToPolicy);
+    },
+
+    async updatePolicy(id, partial): Promise<Policy | null> {
+      const existing = await db.query.policies.findFirst({ where: eq(policies.id, id) });
+      if (!existing) return null;
+      const next = {
+        name: partial.name ?? existing.name,
+        description: partial.description ?? existing.description,
+        updatedAt: new Date(),
+      };
+      try {
+        await db.update(policies).set(next).where(eq(policies.id, id));
+      } catch (err) {
+        if (isUniqueConstraintViolation(err)) {
+          throw duplicateError(`Policy name already exists: ${partial.name ?? existing.name}`);
+        }
+        throw err;
+      }
+      return rowToPolicy({ ...existing, ...next });
+    },
+
+    async deletePolicy(id): Promise<boolean> {
+      const result = await db.delete(policies).where(eq(policies.id, id));
+      return result.changes > 0;
+    },
+
+    async setPolicyRules(policyId, rules): Promise<PolicyRule[]> {
+      const now = new Date();
+      const rows = rules.map((r) => ({
+        id: randomUUID(),
+        policyId,
+        permission: r.permission,
+        resourceId: r.resourceId ?? null,
+        createdAt: now,
+      }));
+      db.transaction((tx) => {
+        tx.delete(policyRules).where(eq(policyRules.policyId, policyId)).run();
+        if (rows.length > 0) tx.insert(policyRules).values(rows).run();
+      });
+      return rows.map(rowToRule);
+    },
+
+    async listPolicyRules(policyId): Promise<PolicyRule[]> {
+      const rows = await db.query.policyRules.findMany({ where: eq(policyRules.policyId, policyId) });
+      return rows.map(rowToRule);
+    },
+
+    async createBinding(input): Promise<PolicyBinding> {
+      const row = {
+        id: input.id ?? randomUUID(),
+        policyId: input.policyId,
+        principalType: input.principalType,
+        principalId: input.principalId,
+        createdAt: new Date(),
+      };
+      try {
+        await db.insert(policyBindings).values(row);
+      } catch (err) {
+        if (isUniqueConstraintViolation(err)) {
+          throw duplicateError("Policy is already bound to this principal");
+        }
+        throw err;
+      }
+      return rowToBinding(row);
+    },
+
+    async deleteBinding(policyId, principalType, principalId): Promise<boolean> {
+      const result = await db
+        .delete(policyBindings)
+        .where(
+          and(
+            eq(policyBindings.policyId, policyId),
+            eq(policyBindings.principalType, principalType),
+            eq(policyBindings.principalId, principalId)
+          )
+        );
+      return result.changes > 0;
+    },
+
+    async listBindingsForPolicy(policyId): Promise<PolicyBinding[]> {
+      const rows = await db.query.policyBindings.findMany({ where: eq(policyBindings.policyId, policyId) });
+      return rows.map(rowToBinding);
+    },
+
+    async listBindingsForPrincipal(principalType, principalId): Promise<PolicyBinding[]> {
+      const rows = await db.query.policyBindings.findMany({
+        where: and(
+          eq(policyBindings.principalType, principalType),
+          eq(policyBindings.principalId, principalId)
+        ),
+      });
+      return rows.map(rowToBinding);
+    },
+
+    async getEffectivePolicyRulesForUser(userId): Promise<PolicyRule[]> {
+      const memberships = await db.query.groupMembers.findMany({ where: eq(groupMembers.userId, userId) });
+      const groupIds = memberships.map((m) => m.groupId);
+
+      const principalMatch =
+        groupIds.length > 0
+          ? or(
+              and(eq(policyBindings.principalType, "user"), eq(policyBindings.principalId, userId)),
+              and(eq(policyBindings.principalType, "group"), inArray(policyBindings.principalId, groupIds))
+            )
+          : and(eq(policyBindings.principalType, "user"), eq(policyBindings.principalId, userId));
+
+      const boundPolicies = await db
+        .select({ policyId: policyBindings.policyId })
+        .from(policyBindings)
+        .where(principalMatch);
+
+      const policyIds = Array.from(new Set(boundPolicies.map((b) => b.policyId)));
+      if (policyIds.length === 0) return [];
+
+      const rows = await db.query.policyRules.findMany({
+        where: inArray(policyRules.policyId, policyIds),
+      });
+      return rows.map(rowToRule);
+    },
   };
 }

@@ -49,34 +49,34 @@ describe("SqliteStateStore — runtime policies", () => {
     });
     const policy = await store.createRuntimePolicy({ name: "p", kind: "network" });
 
-    const binding = await store.bindPolicy({ policyId: policy.id, agentId: agent.id });
+    const binding = await store.bindRuntimePolicy({ policyId: policy.id, agentId: agent.id });
     expect(binding.agentId).toBe(agent.id);
     expect(binding.projectId).toBeNull();
 
-    const forAgent = await store.getPoliciesForAgent(agent.id);
+    const forAgent = await store.getRuntimePoliciesForAgent(agent.id);
     expect(forAgent.map((p) => p.id)).toEqual([policy.id]);
-    expect(await store.getPoliciesForProject("nope")).toHaveLength(0);
+    expect(await store.getRuntimePoliciesForProject("nope")).toHaveLength(0);
 
-    await store.unbindPolicy(binding.id);
-    expect(await store.getPoliciesForAgent(agent.id)).toHaveLength(0);
+    await store.unbindRuntimePolicy(binding.id);
+    expect(await store.getRuntimePoliciesForAgent(agent.id)).toHaveLength(0);
   });
 
   it("rejects a binding that targets both or neither scope", async () => {
     const policy = await store.createRuntimePolicy({ name: "p", kind: "network" });
-    await expect(store.bindPolicy({ policyId: policy.id })).rejects.toThrow(/exactly one/i);
+    await expect(store.bindRuntimePolicy({ policyId: policy.id })).rejects.toThrow(/exactly one/i);
     await expect(
-      store.bindPolicy({ policyId: policy.id, projectId: "x", agentId: "y" })
+      store.bindRuntimePolicy({ policyId: policy.id, projectId: "x", agentId: "y" })
     ).rejects.toThrow(/exactly one/i);
   });
 
   it("deleting a policy removes its bindings", async () => {
     const agent = await store.createAgent({ name: "a", type: "coding", modelConfigJson: "{}" });
     const policy = await store.createRuntimePolicy({ name: "p", kind: "network" });
-    await store.bindPolicy({ policyId: policy.id, agentId: agent.id });
+    await store.bindRuntimePolicy({ policyId: policy.id, agentId: agent.id });
 
     await store.deleteRuntimePolicy(policy.id);
     expect(await store.getRuntimePolicyById(policy.id)).toBeNull();
-    expect(await store.getPoliciesForAgent(agent.id)).toHaveLength(0);
+    expect(await store.getRuntimePoliciesForAgent(agent.id)).toHaveLength(0);
   });
 });
 

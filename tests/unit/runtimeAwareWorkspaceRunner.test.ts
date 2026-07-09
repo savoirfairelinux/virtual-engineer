@@ -44,6 +44,23 @@ describe("RuntimeAwareWorkspaceRunner", () => {
     expect(out).toBe("openshell");
   });
 
+  it("pins a workspace to its creation runtime until cleanup", async () => {
+    const docker = runnerStub("docker");
+    const openshell = runnerStub("openshell");
+    const registry = new RuntimeRegistry().register("docker", docker).register("openshell", openshell);
+    let selected: "docker" | "openshell" = "openshell";
+    const facade = new RuntimeAwareWorkspaceRunner(registry, () => ({ project: selected }));
+
+    await facade.createWorkspace("t1" as TaskId);
+    selected = "docker";
+    await facade.execGitInVolume(handle, ["status"]);
+    await facade.destroyWorkspace(handle);
+
+    expect(openshell.execGitInVolume).toHaveBeenCalledWith(handle, ["status"], undefined);
+    expect(openshell.destroyWorkspace).toHaveBeenCalledWith(handle);
+    expect(docker.execGitInVolume).not.toHaveBeenCalled();
+  });
+
   it("throws when the resolved runtime lacks an optional capability", async () => {
     const minimal = {
       createWorkspace: vi.fn(),

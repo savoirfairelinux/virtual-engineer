@@ -29,18 +29,25 @@ import type { RuntimeSelection } from "./runtimeProfile.js";
 export type SelectionResolver = (taskId: TaskId) => RuntimeSelection | Promise<RuntimeSelection>;
 
 export class RuntimeAwareWorkspaceRunner implements WorkspaceRunner {
+  private readonly runnersByTask = new Map<string, WorkspaceRunner>();
+
   constructor(
     private readonly registry: RuntimeRegistry,
     private readonly resolveSelection: SelectionResolver
   ) {}
 
   private async runnerFor(taskId: TaskId): Promise<WorkspaceRunner> {
+    const pinned = this.runnersByTask.get(String(taskId));
+    if (pinned) return pinned;
     const selection = await this.resolveSelection(taskId);
     return this.registry.resolve(selection);
   }
 
   async createWorkspace(taskId: TaskId): Promise<WorkspaceHandle> {
-    return (await this.runnerFor(taskId)).createWorkspace(taskId);
+    const runner = await this.runnerFor(taskId);
+    const handle = await runner.createWorkspace(taskId);
+    this.runnersByTask.set(String(taskId), runner);
+    return handle;
   }
 
   async cloneRepo(
@@ -112,6 +119,12 @@ export class RuntimeAwareWorkspaceRunner implements WorkspaceRunner {
   }
 
   async destroyWorkspace(handle: WorkspaceHandle): Promise<void> {
-    return (await this.runnerFor(handle.taskId)).destroyWorkspace(handle);
+    const taskId = String(handle.taskId);
+    const runner = await this.runnerFor(handle.taskId);
+    try {
+      await runner.destroyWorkspace(handle);
+    } finally {
+      this.runnersByTask.delete(taskId);
+    }
   }
 }

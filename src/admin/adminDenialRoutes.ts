@@ -24,5 +24,5 @@ export function registerDenialRoutes(router: Router, deps: DenialRouteDeps): voi
       ...(limit ? { limit } : {}),
     });
     writeJson(res, 200, { denials });
-  });
+  }, { permission: "audit.read" });
 }

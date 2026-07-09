@@ -1,7 +1,7 @@
 /** Drizzle ORM table definitions for the Virtual Engineer SQLite database. All timestamps are seconds since epoch (`mode: "timestamp"`). */
 import { sqliteTable, text, integer, real, index, unique, check, primaryKey } from "drizzle-orm/sqlite-core";
 import { sql } from "drizzle-orm";
-import type { TaskState, ProviderId, TaskType, AgentType, ProjectType, PushTargetRole, DomainCapability } from "../interfaces.js";
+import type { TaskState, ProviderId, TaskType, AgentType, ProjectType, PushTargetRole, DomainCapability, UserRole, PrincipalType } from "../interfaces.js";
 import type { RuntimeId } from "../runtime/runtimeProfile.js";
 
 export const tasks = sqliteTable("tasks", {
@@ -278,7 +278,7 @@ export const agents = sqliteTable(
     /** Optional instructions prompt used on retry (feedback) cycles. Falls back to instructionsPromptId when null. */
     feedbackInstructionsPromptId: text("feedback_instructions_prompt_id").references(() => prompts.id),
     maxConcurrent: integer("max_concurrent").notNull().default(1),
-    /** Per-agent runtime override (`docker` | `openshell`). NULL = inherit the global default. */
+    /** Per-agent runtime override. NULL = inherit the global default. */
     runtime: text("runtime").$type<RuntimeId>(),
     enabled: integer("enabled").notNull().default(0),
     createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
@@ -307,7 +307,7 @@ export const projects = sqliteTable(
     postCloneScript: text("post_clone_script").notNull().default(""),
     /** When 1, the agent container loads team-defined skills from `<repo>/.github/skills` (coding and review projects). */
     skillDiscoveryEnabled: integer("skill_discovery_enabled").notNull().default(0),
-    /** Per-project runtime override (`docker` | `openshell`). NULL = inherit the agent/global default. */
+    /** Per-project runtime override. NULL = inherit the agent/global default. */
     runtime: text("runtime").$type<RuntimeId>(),
     enabled: integer("enabled").notNull().default(0),
     createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
@@ -401,7 +401,7 @@ export const appSettings = sqliteTable(
     pollingIntervalMs: integer("polling_interval_ms"),
     maxAgentCycles: integer("max_agent_cycles"),
     maxRetryAttempts: integer("max_retry_attempts"),
-    /** Global default agent runtime (`docker` | `openshell`). NULL = built-in default (`docker`). */
+    /** Global default agent runtime. NULL = built-in default (`docker`). */
     defaultRuntime: text("default_runtime").$type<RuntimeId>(),
     updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
   },
@@ -410,15 +410,10 @@ export const appSettings = sqliteTable(
   })
 );
 
-// ─── Runtime policies (agent sandbox governance) ─────────────────────────────
+// ─── Runtime policies (agent sandbox governance) ────────────────────────────
 
-/** Policy body scope. Mirrors OpenShell's four protection domains. */
 export type RuntimePolicyKind = "filesystem" | "network" | "process" | "inference";
 
-/**
- * Declarative agent-runtime policy (YAML body). Applied to a sandbox before the
- * agent runs. `kind` selects the protection domain the YAML governs.
- */
 export const runtimePolicies = sqliteTable(
   "runtime_policies",
   {
@@ -437,8 +432,8 @@ export const runtimePolicies = sqliteTable(
 );
 
 /** Binds a runtime policy to a project or an agent (exactly one is non-null). */
-export const policyBindings = sqliteTable(
-  "policy_bindings",
+export const runtimePolicyBindings = sqliteTable(
+  "runtime_policy_bindings",
   {
     id: text("id").primaryKey(),
     policyId: text("policy_id").notNull().references(() => runtimePolicies.id, { onDelete: "cascade" }),
@@ -448,13 +443,19 @@ export const policyBindings = sqliteTable(
     updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
   },
   (table) => ({
-    idxPolicyBindingsPolicy: index("idx_policy_bindings_policy").on(table.policyId),
-    idxPolicyBindingsProject: index("idx_policy_bindings_project").on(table.projectId),
-    idxPolicyBindingsAgent: index("idx_policy_bindings_agent").on(table.agentId),
+    idxRuntimePolicyBindingsPolicy: index("idx_runtime_policy_bindings_policy").on(table.policyId),
+    idxRuntimePolicyBindingsProject: index("idx_runtime_policy_bindings_project").on(table.projectId),
+    idxRuntimePolicyBindingsAgent: index("idx_runtime_policy_bindings_agent").on(table.agentId),
+    chkRuntimePolicyBindingTarget: check(
+      "chk_runtime_policy_binding_target",
+      sql`(${table.projectId} IS NOT NULL AND ${table.agentId} IS NULL) OR (${table.projectId} IS NULL AND ${table.agentId} IS NOT NULL)`
+    ),
+    uqRuntimePolicyBindingProject: unique("uq_runtime_policy_binding_project").on(table.policyId, table.projectId),
+    uqRuntimePolicyBindingAgent: unique("uq_runtime_policy_binding_agent").on(table.policyId, table.agentId),
   })
 );
 
-/** Audit log of runtime policy denials (deny-by-default egress / fs / process). */
+/** Audit log of runtime policy denials. */
 export const policyDenialEvents = sqliteTable(
   "policy_denial_events",
   {
@@ -474,5 +475,136 @@ export const policyDenialEvents = sqliteTable(
     idxPolicyDenialsTask: index("idx_policy_denials_task").on(table.taskId),
     idxPolicyDenialsProject: index("idx_policy_denials_project").on(table.projectId),
     idxPolicyDenialsCreated: index("idx_policy_denials_created").on(table.createdAt),
+  })
+);
+
+// ─── Users / Sessions / Audit (admin accounts) ───────────────────────────────
+
+/**
+ * Admin dashboard user accounts. Route access is enforced by PBAC permissions,
+ * not by `role`; `role` only selects the default policy bundle at user creation
+ * and marks the `admin` superuser (which bypasses the permission gate).
+ */
+export const users = sqliteTable("users", {
+  id: text("id").primaryKey(),
+  username: text("username").notNull().unique(),
+  passwordHash: text("password_hash").notNull(),
+  role: text("role").$type<UserRole>().notNull(),
+  enabled: integer("enabled").notNull().default(1),
+  createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
+});
+
+/**
+ * DB-backed opaque admin sessions. `token_hash` is a hash of the raw bearer
+ * token (the raw token is never stored). Sliding expiry via `touchSession`.
+ */
+export const userSessions = sqliteTable(
+  "user_sessions",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    tokenHash: text("token_hash").notNull().unique(),
+    userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+    expiresAt: integer("expires_at", { mode: "timestamp" }).notNull(),
+    lastSeenAt: integer("last_seen_at", { mode: "timestamp" }).notNull(),
+  },
+  (table) => ({
+    idxUserSessionsUserId: index("idx_user_sessions_user_id").on(table.userId),
+  })
+);
+
+/**
+ * Append-only audit trail of admin mutations. `actor_user_id` is NULL for
+ * non-user actors (e.g. bootstrap); `details_json` carries masked context.
+ */
+export const auditLog = sqliteTable(
+  "audit_log",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    actorUserId: text("actor_user_id"),
+    actorName: text("actor_name").notNull(),
+    action: text("action").notNull(),
+    targetType: text("target_type"),
+    targetId: text("target_id"),
+    detailsJson: text("details_json").notNull().default("{}"),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+  },
+  (table) => ({
+    idxAuditLogCreatedAt: index("idx_audit_log_created_at").on(table.createdAt),
+    // Support listAuditEntries filters without full-table scans as the log grows.
+    idxAuditLogActionCreatedAt: index("idx_audit_log_action_created_at").on(table.action, table.createdAt),
+    idxAuditLogActorCreatedAt: index("idx_audit_log_actor_created_at").on(table.actorName, table.createdAt),
+  })
+);
+
+// ─── PBAC: groups / policies / rules / bindings ───────────────────────────────
+
+/** A named collection of users. Policies bound to a group apply to every member. */
+export const groups = sqliteTable("groups", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull().unique(),
+  description: text("description").notNull().default(""),
+  createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
+});
+
+/** Membership join between users and groups. */
+export const groupMembers = sqliteTable(
+  "group_members",
+  {
+    groupId: text("group_id").notNull().references(() => groups.id, { onDelete: "cascade" }),
+    userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+  },
+  (table) => ({
+    pk: primaryKey({ columns: [table.groupId, table.userId] }),
+    idxGroupMembersUserId: index("idx_group_members_user_id").on(table.userId),
+  })
+);
+
+/** A named, reusable set of grant rules. `builtin` policies are seeded and protected. */
+export const policies = sqliteTable("policies", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull().unique(),
+  description: text("description").notNull().default(""),
+  builtin: integer("builtin").notNull().default(0),
+  createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
+});
+
+/**
+ * A single grant inside a policy (grant-only; no deny rules). `resource_id` NULL
+ * grants the permission on all resources of the permission's type; a concrete id
+ * scopes the grant to that resource.
+ */
+export const policyRules = sqliteTable(
+  "policy_rules",
+  {
+    id: text("id").primaryKey(),
+    policyId: text("policy_id").notNull().references(() => policies.id, { onDelete: "cascade" }),
+    permission: text("permission").notNull(),
+    resourceId: text("resource_id"),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+  },
+  (table) => ({
+    idxPolicyRulesPolicyId: index("idx_policy_rules_policy_id").on(table.policyId),
+    idxPolicyRulesPermission: index("idx_policy_rules_permission").on(table.permission),
+  })
+);
+
+/** Attaches a policy to a principal (a user or a group). */
+export const policyBindings = sqliteTable(
+  "policy_bindings",
+  {
+    id: text("id").primaryKey(),
+    policyId: text("policy_id").notNull().references(() => policies.id, { onDelete: "cascade" }),
+    principalType: text("principal_type").$type<PrincipalType>().notNull(),
+    principalId: text("principal_id").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+  },
+  (table) => ({
+    uqBinding: unique("uq_policy_bindings").on(table.policyId, table.principalType, table.principalId),
+    idxPolicyBindingsPrincipal: index("idx_policy_bindings_principal").on(table.principalType, table.principalId),
   })
 );

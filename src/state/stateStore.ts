@@ -24,16 +24,16 @@ import type { IntegrationStoreApi } from "./stores/integrationStore.js";
 import { createIntegrationStore } from "./stores/integrationStore.js";
 import type { PolicyStoreApi } from "./stores/policyStore.js";
 import { createPolicyStore } from "./stores/policyStore.js";
+import type { RuntimePolicyStoreApi } from "./stores/runtimePolicyStore.js";
+import { createRuntimePolicyStore } from "./stores/runtimePolicyStore.js";
+import type { DenialStoreApi } from "./stores/denialStore.js";
+import { createDenialStore } from "./stores/denialStore.js";
 import type { ProjectStoreApi } from "./stores/projectStore.js";
 import { createProjectStore } from "./stores/projectStore.js";
 import type { PromptStoreApi } from "./stores/promptStore.js";
 import { createPromptStore } from "./stores/promptStore.js";
 import type { SettingsStoreApi } from "./stores/settingsStore.js";
 import { createSettingsStore } from "./stores/settingsStore.js";
-import type { PolicyStoreApi } from "./stores/policyStore.js";
-import { createPolicyStore } from "./stores/policyStore.js";
-import type { DenialStoreApi } from "./stores/denialStore.js";
-import { createDenialStore } from "./stores/denialStore.js";
 import type { TaskStoreApi } from "./stores/taskStore.js";
 import { createTaskStore } from "./stores/taskStore.js";
 import type { UserStoreApi } from "./stores/userStore.js";
@@ -47,7 +47,11 @@ type ComposedStoreApi =
   & PromptStoreApi
   & AgentStoreApi
   & SettingsStoreApi
+  & UserStoreApi
+  & AuditStoreApi
+  & GroupStoreApi
   & PolicyStoreApi
+  & RuntimePolicyStoreApi
   & DenialStoreApi;
 
 /** Facade class that composes domain-scoped store modules over one shared SQLite connection. */
@@ -61,7 +65,11 @@ export class SqliteStateStore {
   private readonly promptStore: PromptStoreApi;
   private readonly agentStore: AgentStoreApi;
   private readonly settingsStore: SettingsStoreApi;
+  private readonly userStore: UserStoreApi;
+  private readonly auditStore: AuditStoreApi;
+  private readonly groupStore: GroupStoreApi;
   private readonly policyStore: PolicyStoreApi;
+  private readonly runtimePolicyStore: RuntimePolicyStoreApi;
   private readonly denialStore: DenialStoreApi;
   private readonly taskTransitionListeners: Array<(task: Task) => void> = [];
 
@@ -86,7 +94,11 @@ export class SqliteStateStore {
     this.promptStore = createPromptStore({ db: this.db, dbDir: this.dbDir });
     this.agentStore = createAgentStore({ db: this.db });
     this.settingsStore = createSettingsStore({ db: this.db });
+    this.userStore = createUserStore({ db: this.db });
+    this.auditStore = createAuditStore({ db: this.db });
+    this.groupStore = createGroupStore({ db: this.db });
     this.policyStore = createPolicyStore({ db: this.db });
+    this.runtimePolicyStore = createRuntimePolicyStore({ db: this.db });
     this.denialStore = createDenialStore({ db: this.db });
 
     Object.assign(
@@ -97,7 +109,11 @@ export class SqliteStateStore {
       this.promptStore,
       this.agentStore,
       this.settingsStore,
+      this.userStore,
+      this.auditStore,
+      this.groupStore,
       this.policyStore,
+      this.runtimePolicyStore,
       this.denialStore
     );
   }
@@ -154,6 +170,7 @@ export class SqliteStateStore {
 
   /** Apply the baseline DDL and all incremental ALTER TABLE migrations in one synchronous pass. */
   private applyMigrations(): void {
+    this.migrateLegacyRuntimePolicyBindings();
     this.raw.exec(`
       CREATE TABLE IF NOT EXISTS tasks (
         task_id         TEXT    PRIMARY KEY,
@@ -364,7 +381,6 @@ export class SqliteStateStore {
       );
 
       -- Declarative agent-runtime policies (OpenShell / future backends).
-      -- kind scopes the YAML body: filesystem | network | process | inference.
       CREATE TABLE IF NOT EXISTS runtime_policies (
         id           TEXT    PRIMARY KEY,
         name         TEXT    NOT NULL,
@@ -377,22 +393,24 @@ export class SqliteStateStore {
       CREATE INDEX IF NOT EXISTS idx_runtime_policies_name ON runtime_policies(name);
       CREATE INDEX IF NOT EXISTS idx_runtime_policies_kind ON runtime_policies(kind);
 
-      -- Links a runtime policy to a project or an agent. Exactly one of
-      -- (project_id, agent_id) is non-null per row.
-      CREATE TABLE IF NOT EXISTS policy_bindings (
+      CREATE TABLE IF NOT EXISTS runtime_policy_bindings (
         id          TEXT    PRIMARY KEY,
         policy_id   TEXT    NOT NULL REFERENCES runtime_policies(id) ON DELETE CASCADE,
         project_id  TEXT    REFERENCES projects(id) ON DELETE CASCADE,
         agent_id    TEXT    REFERENCES agents(id) ON DELETE CASCADE,
         created_at  INTEGER NOT NULL,
-        updated_at  INTEGER NOT NULL
+        updated_at  INTEGER NOT NULL,
+        CHECK ((project_id IS NOT NULL AND agent_id IS NULL)
+          OR (project_id IS NULL AND agent_id IS NOT NULL))
       );
-      CREATE INDEX IF NOT EXISTS idx_policy_bindings_policy ON policy_bindings(policy_id);
-      CREATE INDEX IF NOT EXISTS idx_policy_bindings_project ON policy_bindings(project_id);
-      CREATE INDEX IF NOT EXISTS idx_policy_bindings_agent ON policy_bindings(agent_id);
+      CREATE INDEX IF NOT EXISTS idx_runtime_policy_bindings_policy ON runtime_policy_bindings(policy_id);
+      CREATE INDEX IF NOT EXISTS idx_runtime_policy_bindings_project ON runtime_policy_bindings(project_id);
+      CREATE INDEX IF NOT EXISTS idx_runtime_policy_bindings_agent ON runtime_policy_bindings(agent_id);
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_runtime_policy_binding_project
+        ON runtime_policy_bindings(policy_id, project_id) WHERE project_id IS NOT NULL;
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_runtime_policy_binding_agent
+        ON runtime_policy_bindings(policy_id, agent_id) WHERE agent_id IS NOT NULL;
 
-      -- Audit log of runtime policy denials (deny-by-default egress, fs, process).
-      -- Secrets are scrubbed before insertion by the deny-event poller.
       CREATE TABLE IF NOT EXISTS policy_denial_events (
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
         task_id     TEXT    REFERENCES tasks(task_id),
@@ -409,6 +427,89 @@ export class SqliteStateStore {
       CREATE INDEX IF NOT EXISTS idx_policy_denials_task ON policy_denial_events(task_id);
       CREATE INDEX IF NOT EXISTS idx_policy_denials_project ON policy_denial_events(project_id);
       CREATE INDEX IF NOT EXISTS idx_policy_denials_created ON policy_denial_events(created_at);
+
+      -- ─── Users / Sessions / Audit (admin RBAC) ───────────────────────────
+      CREATE TABLE IF NOT EXISTS users (
+        id            TEXT    PRIMARY KEY,
+        username      TEXT    NOT NULL UNIQUE,
+        password_hash TEXT    NOT NULL,
+        role          TEXT    NOT NULL,
+        enabled       INTEGER NOT NULL DEFAULT 1,
+        created_at    INTEGER NOT NULL,
+        updated_at    INTEGER NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS user_sessions (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        token_hash   TEXT    NOT NULL UNIQUE,
+        user_id      TEXT    NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        created_at   INTEGER NOT NULL,
+        expires_at   INTEGER NOT NULL,
+        last_seen_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_user_sessions_user_id ON user_sessions(user_id);
+
+      CREATE TABLE IF NOT EXISTS audit_log (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        actor_user_id TEXT,
+        actor_name    TEXT    NOT NULL,
+        action        TEXT    NOT NULL,
+        target_type   TEXT,
+        target_id     TEXT,
+        details_json  TEXT    NOT NULL DEFAULT '{}',
+        created_at    INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_audit_log_created_at ON audit_log(created_at);
+      CREATE INDEX IF NOT EXISTS idx_audit_log_action_created_at ON audit_log(action, created_at);
+      CREATE INDEX IF NOT EXISTS idx_audit_log_actor_created_at ON audit_log(actor_name, created_at);
+
+      -- ─── PBAC: groups / policies / rules / bindings ──────────────────────
+      CREATE TABLE IF NOT EXISTS groups (
+        id          TEXT    PRIMARY KEY,
+        name        TEXT    NOT NULL UNIQUE,
+        description TEXT    NOT NULL DEFAULT '',
+        created_at  INTEGER NOT NULL,
+        updated_at  INTEGER NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS group_members (
+        group_id   TEXT    NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+        user_id    TEXT    NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (group_id, user_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_group_members_user_id ON group_members(user_id);
+
+      CREATE TABLE IF NOT EXISTS policies (
+        id          TEXT    PRIMARY KEY,
+        name        TEXT    NOT NULL UNIQUE,
+        description TEXT    NOT NULL DEFAULT '',
+        builtin     INTEGER NOT NULL DEFAULT 0,
+        created_at  INTEGER NOT NULL,
+        updated_at  INTEGER NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS policy_rules (
+        id          TEXT    PRIMARY KEY,
+        policy_id   TEXT    NOT NULL REFERENCES policies(id) ON DELETE CASCADE,
+        permission  TEXT    NOT NULL,
+        resource_id TEXT,
+        created_at  INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_policy_rules_policy_id ON policy_rules(policy_id);
+      CREATE INDEX IF NOT EXISTS idx_policy_rules_permission ON policy_rules(permission);
+
+      CREATE TABLE IF NOT EXISTS policy_bindings (
+        id             TEXT    PRIMARY KEY,
+        policy_id      TEXT    NOT NULL REFERENCES policies(id) ON DELETE CASCADE,
+        principal_type TEXT    NOT NULL,
+        principal_id   TEXT    NOT NULL,
+        created_at     INTEGER NOT NULL
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_policy_bindings
+        ON policy_bindings(policy_id, principal_type, principal_id);
+      CREATE INDEX IF NOT EXISTS idx_policy_bindings_principal
+        ON policy_bindings(principal_type, principal_id);
     `);
 
     this.ensureColumn("tasks", "ticket_source_label", "TEXT NOT NULL DEFAULT 'redmine'");
@@ -442,8 +543,6 @@ export class SqliteStateStore {
     this.ensureColumn("agents", "feedback_instructions_prompt_id", "TEXT REFERENCES prompts(id) ON DELETE SET NULL");
     this.ensureColumn("projects", "skill_discovery_enabled", "INTEGER NOT NULL DEFAULT 0");
     this.ensureColumn("prompts", "prompt_type", "TEXT NOT NULL DEFAULT 'user'");
-
-    // Pluggable agent runtime selection (docker | openshell). NULL = inherit next tier.
     this.ensureColumn("projects", "runtime", "TEXT");
     this.ensureColumn("agents", "runtime", "TEXT");
     this.ensureColumn("app_settings", "default_runtime", "TEXT");
@@ -475,6 +574,42 @@ export class SqliteStateStore {
         WHERE project_id IS NULL
           AND state NOT IN ('DONE', 'FAILED', 'ABANDONED', 'REVIEW_DONE', 'REVIEW_FAILED');
     `);
+  }
+
+  /** Move pre-PBAC runtime bindings away from the PBAC table name. */
+  private migrateLegacyRuntimePolicyBindings(): void {
+    const table = this.raw.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'policy_bindings'"
+    ).get() as { name: string } | undefined;
+    if (!table) return;
+
+    const columns = this.raw.prepare("PRAGMA table_info(`policy_bindings`)").all() as Array<{ name: string }>;
+    const names = new Set(columns.map((column) => column.name));
+    if (!names.has("project_id") || names.has("principal_type")) return;
+
+    const destination = this.raw.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'runtime_policy_bindings'"
+    ).get() as { name: string } | undefined;
+
+    const migrate = this.raw.transaction(() => {
+      this.raw.exec(`
+        DROP INDEX IF EXISTS idx_policy_bindings_policy;
+        DROP INDEX IF EXISTS idx_policy_bindings_project;
+        DROP INDEX IF EXISTS idx_policy_bindings_agent;
+      `);
+      if (destination) {
+        this.raw.exec(`
+          INSERT OR IGNORE INTO runtime_policy_bindings
+            (id, policy_id, project_id, agent_id, created_at, updated_at)
+          SELECT id, policy_id, project_id, agent_id, created_at, updated_at
+          FROM policy_bindings;
+          DROP TABLE policy_bindings;
+        `);
+      } else {
+        this.raw.exec("ALTER TABLE policy_bindings RENAME TO runtime_policy_bindings");
+      }
+    });
+    migrate();
   }
 
   /**

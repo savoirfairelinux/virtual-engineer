@@ -9,54 +9,50 @@ import { AgentsSection }        from "./AgentsSection.tsx";
 import { ProjectsSection }      from "./ProjectsSection.tsx";
 import { PromptsSection }       from "./PromptsSection.tsx";
 import { OAuthSection }         from "./OAuthSection.tsx";
-import { SystemSection }        from "./SystemSection.tsx";import { RuntimeSection }       from "./RuntimeSection.tsx";
+import { SystemSection }        from "./SystemSection.tsx";
+import { UsersSection }         from "./UsersSection.tsx";
+import { GroupsSection }        from "./GroupsSection.tsx";
 import { PoliciesSection }      from "./PoliciesSection.tsx";
+import { AuditSection }         from "./AuditSection.tsx";
+import { RuntimeSection }       from "./RuntimeSection.tsx";
+import { RuntimePoliciesSection } from "./RuntimePoliciesSection.tsx";
 import { DenialsSection }       from "./DenialsSection.tsx";
-/* ─── Nav groups ───────────────────────────────────────────────────────── */
-type SectionId = "overview" | "integrations" | "oauth" | "agents" | "projects" | "prompts" | "runtime" | "policies" | "denials" | "system";
+import { useCurrentUser }       from "../../authContext.tsx";
 
-interface NavItem { id: SectionId; label: string; sub: string; icon: string }
+type SectionId = "overview" | "integrations" | "oauth" | "agents" | "projects" | "prompts"
+  | "runtime" | "runtime-policies" | "denials" | "users" | "groups" | "policies" | "audit" | "system";
+
+interface NavItem { id: SectionId; label: string; sub: string; icon: string; adminOnly: boolean }
 interface NavGroup { label: string | null; items: NavItem[] }
 
 const CONFIG_GROUPS: NavGroup[] = [
-  {
-    label: null,
-    items: [
-      { id: "overview",     label: "Overview",        sub: "Summary",           icon: "grid" },
-    ],
-  },
-  {
-    label: "Providers",
-    items: [
-      { id: "integrations", label: "Integrations",    sub: "Providers",         icon: "server" },
-      { id: "oauth",        label: "OAuth Apps",      sub: "Provider registry", icon: "link" },
-    ],
-  },
-  {
-    label: "Execution",
-    items: [
-      { id: "agents",       label: "Agents Library",  sub: "Reusable agents",   icon: "spark" },
-      { id: "projects",     label: "Projects",        sub: "Execution units",   icon: "box" },
-      { id: "prompts",      label: "Prompts",         sub: "System & custom",   icon: "edit" },
-    ],
-  },
-  {
-    label: "Runtime & Security",
-    items: [
-      { id: "runtime",      label: "Runtime",         sub: "Execution backend", icon: "server" },
-      { id: "policies",     label: "Policies",        sub: "Sandbox governance", icon: "layers" },
-      { id: "denials",      label: "Policy Denials",  sub: "Audit log",         icon: "alert" },
-    ],
-  },
-  {
-    label: "System",
-    items: [
-      { id: "system",       label: "System Settings", sub: "Runtime settings",  icon: "config" },
-    ],
-  },
+  { label: null, items: [{ id: "overview", label: "Overview", sub: "Summary", icon: "grid", adminOnly: false }] },
+  { label: "Providers", items: [
+    { id: "integrations", label: "Integrations", sub: "Providers", icon: "server", adminOnly: false },
+    { id: "oauth", label: "OAuth Apps", sub: "Provider registry", icon: "link", adminOnly: false },
+  ] },
+  { label: "Execution", items: [
+    { id: "agents", label: "Agents Library", sub: "Reusable agents", icon: "spark", adminOnly: false },
+    { id: "projects", label: "Projects", sub: "Execution units", icon: "box", adminOnly: false },
+    { id: "prompts", label: "Prompts", sub: "System & custom", icon: "edit", adminOnly: false },
+  ] },
+  { label: "Runtime & Security", items: [
+    { id: "runtime", label: "Runtime", sub: "Execution backend", icon: "server", adminOnly: true },
+    { id: "runtime-policies", label: "Runtime Policies", sub: "Sandbox governance", icon: "layers", adminOnly: true },
+    { id: "denials", label: "Policy Denials", sub: "Audit log", icon: "alert", adminOnly: true },
+  ] },
+  { label: "Access Control", items: [
+    { id: "users", label: "Users", sub: "Accounts & roles", icon: "user", adminOnly: true },
+    { id: "groups", label: "Groups", sub: "User collections", icon: "layers", adminOnly: true },
+    { id: "policies", label: "Policies", sub: "Access control", icon: "config", adminOnly: true },
+    { id: "audit", label: "Audit", sub: "Change history", icon: "clock", adminOnly: true },
+  ] },
+  { label: "System", items: [
+    { id: "system", label: "System Settings", sub: "Runtime settings", icon: "config", adminOnly: false },
+  ] },
 ];
 
-const CONFIG_NAV: NavItem[] = CONFIG_GROUPS.flatMap((g) => g.items);
+const CONFIG_NAV: NavItem[] = CONFIG_GROUPS.flatMap((group) => group.items);
 
 export interface ConfigViewData {
   integrations: ApiIntegration[];
@@ -110,50 +106,44 @@ export function ConfigView(props: ConfigViewData) {
       >
         <div className="eyebrow" style={{ padding: "0 8px", marginBottom: "4px" }}>Admin</div>
         <div style={{ padding: "0 8px 16px", fontSize: "16px", fontWeight: 600 }}>Configuration</div>
-        <div style={{ display: "flex", flexDirection: "column", gap: "0" }}>
-          {CONFIG_GROUPS.map((group) => (
-            <div key={group.label ?? "__top"} style={{ marginBottom: "6px" }}>
-              {group.label && (
-                <div style={{
-                  padding: "10px 10px 4px",
-                  fontSize: "10px",
-                  fontWeight: 700,
-                  letterSpacing: "0.06em",
-                  textTransform: "uppercase",
-                  color: "var(--text-ghost)",
-                }}>
-                  {group.label}
-                </div>
-              )}
-              {group.items.map((n) => {
-                const active = sec === n.id;
+        <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
+          {CONFIG_GROUPS.map((group) => {
+            const items = group.items.filter((item) => visibleNav.includes(item));
+            if (items.length === 0) return null;
+            return <div key={group.label ?? "__top"} style={{ marginBottom: "6px" }}>
+              {group.label && <div style={{
+                padding: "10px 10px 4px", fontSize: "10px", fontWeight: 700,
+                letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--text-ghost)",
+              }}>{group.label}</div>}
+              {items.map((n) => {
+                const active = effectiveSec === n.id;
                 return (
-                  <button
-                    key={n.id}
-                    onClick={() => handleSectionChange(n.id)}
-                    style={{
-                      display: "flex", alignItems: "center", gap: "11px", padding: "9px 10px",
-                      borderRadius: "var(--radius-sm)",
-                      border: `1px solid ${active ? "var(--border-soft)" : "transparent"}`,
-                      background: active ? "var(--panel-2)" : "transparent",
-                      cursor: "pointer", textAlign: "left", width: "100%", color: "inherit",
-                      transition: "background 0.12s var(--ease)",
-                    }}
-                    onMouseEnter={(e) => { if (!active) e.currentTarget.style.background = "color-mix(in oklab,var(--panel-2) 55%, transparent)"; }}
-                    onMouseLeave={(e) => { if (!active) e.currentTarget.style.background = "transparent"; }}
-                  >
-                    <Icon name={n.icon} size={16} style={{ color: active ? "var(--accent-strong)" : "var(--text-faint)" }} />
-                    <div style={{ flex: 1 }}>
-                      <div style={{ fontSize: "13px", fontWeight: active ? 600 : 500, color: active ? "var(--text)" : "var(--text-dim)" }}>
-                        {n.label}
-                      </div>
-                      <div style={{ fontSize: "10.5px", color: "var(--text-ghost)" }}>{n.sub}</div>
-                    </div>
-                  </button>
+              <button
+                key={n.id}
+                onClick={() => handleSectionChange(n.id)}
+                style={{
+                  display: "flex", alignItems: "center", gap: "11px", padding: "9px 10px",
+                  borderRadius: "var(--radius-sm)",
+                  border: `1px solid ${active ? "var(--border-soft)" : "transparent"}`,
+                  background: active ? "var(--panel-2)" : "transparent",
+                  cursor: "pointer", textAlign: "left", width: "100%", color: "inherit",
+                  transition: "background 0.12s var(--ease)",
+                }}
+                onMouseEnter={(e) => { if (!active) e.currentTarget.style.background = "color-mix(in oklab,var(--panel-2) 55%, transparent)"; }}
+                onMouseLeave={(e) => { if (!active) e.currentTarget.style.background = "transparent"; }}
+              >
+                <Icon name={n.icon} size={16} style={{ color: active ? "var(--accent-strong)" : "var(--text-faint)" }} />
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: "13px", fontWeight: active ? 600 : 500, color: active ? "var(--text)" : "var(--text-dim)" }}>
+                    {n.label}
+                  </div>
+                  <div style={{ fontSize: "10.5px", color: "var(--text-ghost)" }}>{n.sub}</div>
+                </div>
+              </button>
                 );
               })}
-            </div>
-          ))}
+            </div>;
+          })}
         </div>
       </div>
 
@@ -164,16 +154,20 @@ export function ConfigView(props: ConfigViewData) {
           className="fade-up"
           style={{ maxWidth: "920px", margin: "0 auto", padding: "26px 28px 40px" }}
         >
-          {sec === "overview"     && <ConfigOverview {...props} />}
-          {sec === "integrations" && <IntegrationsSection {...props} />}
-          {sec === "oauth"        && <OAuthSection {...props} />}
-          {sec === "agents"       && <AgentsSection {...props} />}
-          {sec === "projects"     && <ProjectsSection {...props} />}
-          {sec === "prompts"      && <PromptsSection {...props} />}
-          {sec === "runtime"      && <RuntimeSection />}
-          {sec === "policies"     && <PoliciesSection />}
-          {sec === "denials"      && <DenialsSection />}
-          {sec === "system"       && <SystemSection config={props.config} status={props.status} onRefresh={props.onRefresh} />}
+          {effectiveSec === "overview"     && <ConfigOverview {...props} />}
+          {effectiveSec === "integrations" && <IntegrationsSection {...props} />}
+          {effectiveSec === "oauth"        && <OAuthSection {...props} />}
+          {effectiveSec === "agents"       && <AgentsSection {...props} />}
+          {effectiveSec === "projects"     && <ProjectsSection {...props} />}
+          {effectiveSec === "prompts"      && <PromptsSection {...props} />}
+          {effectiveSec === "runtime"      && isAdmin && <RuntimeSection />}
+          {effectiveSec === "runtime-policies" && isAdmin && <RuntimePoliciesSection />}
+          {effectiveSec === "denials"      && isAdmin && <DenialsSection />}
+          {effectiveSec === "users"        && isAdmin && <UsersSection />}
+          {effectiveSec === "groups"       && isAdmin && <GroupsSection />}
+          {effectiveSec === "policies"     && isAdmin && <PoliciesSection />}
+          {effectiveSec === "audit"        && isAdmin && <AuditSection />}
+          {effectiveSec === "system"       && <SystemSection config={props.config} status={props.status} onRefresh={props.onRefresh} />}
         </div>
       </div>
     </div>
