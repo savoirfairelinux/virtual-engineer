@@ -20,6 +20,7 @@ import { exchangeForSessionToken, fetchAvailableModels, fetchAvailableModelsWith
 import { decryptToken } from "../utils/encryption.js";
 import { getProviderDescriptor } from "../plugins/registry.js";
 import type { Router } from "./router.js";
+import type { RuntimeId } from "../runtime/runtimeProfile.js";
 
 const log = getLogger("admin-agents");
 
@@ -35,13 +36,14 @@ export interface AgentsRouteStore {
     instructionsPromptId?: string | null;
     feedbackInstructionsPromptId?: string | null;
     maxConcurrent?: number;
+    runtime?: RuntimeId | null;
     enabled?: boolean;
   }): Promise<AgentRecord>;
   getAgentById(id: AgentId): Promise<AgentRecord | null>;
   listAgents(filter?: { type?: AgentType; enabled?: boolean }): Promise<AgentRecord[]>;
   updateAgent(
     id: AgentId,
-    partial: Partial<Pick<AgentRecord, "name" | "type" | "modelConfigJson" | "integrationId" | "systemPromptId" | "instructionsPromptId" | "feedbackInstructionsPromptId" | "maxConcurrent" | "enabled">>
+    partial: Partial<Pick<AgentRecord, "name" | "type" | "modelConfigJson" | "integrationId" | "systemPromptId" | "instructionsPromptId" | "feedbackInstructionsPromptId" | "maxConcurrent" | "runtime" | "enabled">>
   ): Promise<AgentRecord>;
   deleteAgent(id: AgentId): Promise<void>;
   setAgentEnabled(id: AgentId, enabled: boolean): Promise<void>;
@@ -192,6 +194,7 @@ export interface AgentSummary {
   type: AgentType;
   enabled: boolean;
   maxConcurrent: number;
+  runtime: RuntimeId | null;
   model: string | null;
   integrationId: string | null;
   systemPromptId: string | null;
@@ -216,6 +219,7 @@ function toAgentSummary(agent: AgentRecord, projectCount: number): AgentSummary 
     type: agent.type,
     enabled: agent.enabled,
     maxConcurrent: agent.maxConcurrent,
+    runtime: agent.runtime,
     model,
     integrationId: agent.integrationId,
     systemPromptId: agent.systemPromptId,
@@ -248,6 +252,7 @@ const createSchema = z.object({
   instructionsPromptId: z.string().nullable().optional(),
   feedbackInstructionsPromptId: z.string().nullable().optional(),
   maxConcurrent: z.number({ invalid_type_error: "Max concurrent must be a number" }).int("Max concurrent must be an integer").min(1, "Max concurrent must be at least 1").optional(),
+  runtime: z.enum(["docker", "openshell"]).nullable().optional(),
   enabled: z.boolean().optional(),
 });
 
@@ -262,6 +267,7 @@ const updateSchema = z.object({
   instructionsPromptId: z.string().nullable().optional(),
   feedbackInstructionsPromptId: z.string().nullable().optional(),
   maxConcurrent: z.number({ invalid_type_error: "Max concurrent must be a number" }).int("Max concurrent must be an integer").min(1, "Max concurrent must be at least 1").optional(),
+  runtime: z.enum(["docker", "openshell"]).nullable().optional(),
   enabled: z.boolean().optional(),
 });
 
@@ -427,6 +433,7 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
         ...(parsed.data.instructionsPromptId !== undefined ? { instructionsPromptId: parsed.data.instructionsPromptId } : {}),
         ...(parsed.data.feedbackInstructionsPromptId !== undefined ? { feedbackInstructionsPromptId: parsed.data.feedbackInstructionsPromptId } : {}),
         ...(parsed.data.maxConcurrent !== undefined ? { maxConcurrent: parsed.data.maxConcurrent } : {}),
+        ...(parsed.data.runtime !== undefined ? { runtime: parsed.data.runtime } : {}),
         ...(parsed.data.enabled !== undefined ? { enabled: parsed.data.enabled } : {}),
       });
       recordAudit(deps.auditStore, req, { action: "agent.create", targetType: "agent", targetId: created.id, details: { name: created.name, type: created.type } });
@@ -527,6 +534,7 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
     if (parsed.data.instructionsPromptId !== undefined) updates.instructionsPromptId = parsed.data.instructionsPromptId;
     if (parsed.data.feedbackInstructionsPromptId !== undefined) updates.feedbackInstructionsPromptId = parsed.data.feedbackInstructionsPromptId;
     if (parsed.data.maxConcurrent !== undefined) updates.maxConcurrent = parsed.data.maxConcurrent;
+    if (parsed.data.runtime !== undefined) updates.runtime = parsed.data.runtime;
     if (parsed.data.enabled !== undefined) updates.enabled = parsed.data.enabled;
     try {
       const updated = await store.updateAgent(id, updates);

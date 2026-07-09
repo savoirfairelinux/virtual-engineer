@@ -22,6 +22,9 @@ import { registerTaskRoutes } from "./adminTaskRoutes.js";
 import { registerPromptRoutes } from "./adminPromptRoutes.js";
 import { registerStreamRoutes } from "./adminStreamRoutes.js";
 import { registerConcurrencyRoutes } from "./adminConcurrencyRoutes.js";
+import { registerPolicyRoutes } from "./adminPolicyRoutes.js";
+import { registerDenialRoutes } from "./adminDenialRoutes.js";
+import { registerRuntimeRoutes, type RuntimeController } from "./adminRuntimeRoutes.js";
 import { registerSettingsRoutes, type SettingsController } from "./adminSettingsRoutes.js";
 import { registerWebhookRoutes } from "./adminWebhookRoutes.js";
 import { registerIntegrationRoutes } from "./adminIntegrationRoutes.js";
@@ -153,6 +156,12 @@ export interface AdminServerDependencies {
    * persisted and hot-applied by the controller.
    */
   settings?: SettingsController | undefined;
+  /** When provided, mounts runtime-policy CRUD + binding routes. */
+  policyStore?: import("../state/stores/policyStore.js").PolicyStoreApi | undefined;
+  /** When provided, mounts the policy-denial audit-log routes. */
+  denialStore?: import("../state/stores/denialStore.js").DenialStoreApi | undefined;
+  /** When provided, mounts runtime-selection + gateway-health routes. */
+  runtime?: RuntimeController | undefined;
 }
 
 /** Derive provider-specific URLs from active plugin manager integrations. */
@@ -415,6 +424,9 @@ function buildApiRouter(dependencies: AdminServerDependencies, authRuntime: Admi
   });
   registerConcurrencyRoutes(router, { concurrency: dependencies.concurrency });
   registerSettingsRoutes(router, { settings: dependencies.settings });
+  registerPolicyRoutes(router, { policyStore: dependencies.policyStore });
+  registerDenialRoutes(router, { denialStore: dependencies.denialStore });
+  registerRuntimeRoutes(router, { runtime: dependencies.runtime });
   registerWebhookRoutes(router, {
     integrationStore: dependencies.integrationStore,
     auditStore,

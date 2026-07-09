@@ -23,6 +23,7 @@ import type { Router } from "./router.js";
 import { getEffectivePermissions } from "./authContext.js";
 import { accessibleResourceIds, ALL_RESOURCES } from "./authorization/policyEngine.js";
 import { getProviderDescriptor, getProviderDomainCapabilities } from "../plugins/registry.js";
+import type { RuntimeId } from "../runtime/runtimeProfile.js";
 
 const log = getLogger("admin-projects");
 
@@ -61,13 +62,14 @@ export interface ProjectsRouteStore {
     agentOverrideJson?: string | null;
     postCloneScript?: string;
     skillDiscoveryEnabled?: boolean;
+    runtime?: RuntimeId | null;
     enabled?: boolean;
   }): Promise<ProjectRecord>;
   getProjectById(id: ProjectId): Promise<ProjectRecord | null>;
   listProjects(filter?: { type?: ProjectType; enabled?: boolean }): Promise<ProjectRecord[]>;
   updateProject(
     id: ProjectId,
-    partial: Partial<Pick<ProjectRecord, "name" | "type" | "agentId" | "agentOverrideJson" | "postCloneScript" | "skillDiscoveryEnabled" | "enabled">>
+    partial: Partial<Pick<ProjectRecord, "name" | "type" | "agentId" | "agentOverrideJson" | "postCloneScript" | "skillDiscoveryEnabled" | "runtime" | "enabled">>
   ): Promise<ProjectRecord>;
   deleteProject(id: ProjectId): Promise<void>;
   setProjectEnabled(id: ProjectId, enabled: boolean): Promise<void>;
@@ -166,6 +168,7 @@ const codingProjectCreateSchema = z.object({
   agentOverrideJson: z.string().nullable().optional(),
   postCloneScript: z.string().optional(),
   skillDiscoveryEnabled: z.boolean().optional(),
+  runtime: z.enum(["docker", "openshell"]).nullable().optional(),
   enabled: z.boolean().optional(),
   ticketSource: ticketSourceSchema,
   pushTargets: pushTargetsArraySchema,
@@ -179,6 +182,7 @@ const reviewProjectCreateSchema = z.object({
   agentOverrideJson: z.string().nullable().optional(),
   postCloneScript: z.string().optional(),
   skillDiscoveryEnabled: z.boolean().optional(),
+  runtime: z.enum(["docker", "openshell"]).nullable().optional(),
   enabled: z.boolean().optional(),
   reviewConfig: reviewConfigSchema,
 });
@@ -194,6 +198,7 @@ const projectUpdateSchema = z.object({
   agentOverrideJson: z.string().nullable().optional(),
   postCloneScript: z.string().optional(),
   skillDiscoveryEnabled: z.boolean().optional(),
+  runtime: z.enum(["docker", "openshell"]).nullable().optional(),
   enabled: z.boolean().optional(),
   ticketSource: ticketSourceSchema.optional(),
   pushTargets: pushTargetsArraySchema.optional(),
@@ -256,6 +261,7 @@ interface ProjectSummary {
   agentName: string | null;
   enabled: boolean;
   skillDiscoveryEnabled: boolean;
+  runtime: RuntimeId | null;
   createdAt: string;
   updatedAt: string;
   ticketSource: { integration: { id: string; name: string; provider: string; domainCapabilities: string[] } | null; ticketProjectKey: string } | null;
@@ -318,6 +324,7 @@ async function buildProjectSummary(
     agentName: agent ? agent.name : null,
     enabled: project.enabled,
     skillDiscoveryEnabled: project.skillDiscoveryEnabled,
+    runtime: project.runtime,
     createdAt: project.createdAt.toISOString(),
     updatedAt: project.updatedAt.toISOString(),
     ticketSource,
@@ -376,6 +383,7 @@ async function buildProjectDetail(
     agentName: agent ? agent.name : null,
     enabled: project.enabled,
     skillDiscoveryEnabled: project.skillDiscoveryEnabled,
+    runtime: project.runtime,
     createdAt: project.createdAt.toISOString(),
     updatedAt: project.updatedAt.toISOString(),
     agentOverrideJson: project.agentOverrideJson,
@@ -449,6 +457,7 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
         ...(data.agentOverrideJson !== undefined ? { agentOverrideJson: data.agentOverrideJson } : {}),
         ...(data.postCloneScript !== undefined ? { postCloneScript: data.postCloneScript } : {}),
         ...(data.skillDiscoveryEnabled !== undefined ? { skillDiscoveryEnabled: data.skillDiscoveryEnabled } : {}),
+        ...(data.runtime !== undefined ? { runtime: data.runtime } : {}),
         ...(data.enabled !== undefined ? { enabled: data.enabled } : {}),
       });
     } catch (err: unknown) {
@@ -561,6 +570,7 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
     if (data.agentOverrideJson !== undefined) updates.agentOverrideJson = data.agentOverrideJson;
     if (data.postCloneScript !== undefined) updates.postCloneScript = data.postCloneScript;
     if (data.skillDiscoveryEnabled !== undefined) updates.skillDiscoveryEnabled = data.skillDiscoveryEnabled;
+    if (data.runtime !== undefined) updates.runtime = data.runtime;
     if (data.enabled !== undefined) updates.enabled = data.enabled;
     const reconfigured =
       data.ticketSource !== undefined ||

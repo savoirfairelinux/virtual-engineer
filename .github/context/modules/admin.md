@@ -26,6 +26,9 @@ The admin server is a small HTTP service (default `127.0.0.1:3100`) that serves 
 | `adminProjectsRoutes.ts` | `/api/admin/projects/*` CRUD, ticket/review target validation, atomic push-target replacement, automatic relaunch of FAILED/REVIEW_FAILED tasks on (re)configuration or re-enable. |
 | `adminConcurrencyRoutes.ts` | `/api/admin/concurrency` read/update global concurrency. |
 | `adminSettingsRoutes.ts` | `GET/PUT /api/admin/settings` — read/update editable runtime workflow settings (polling interval, max agent cycles, max retry attempts). Validates positive integers; delegates persistence + hot-apply to the `SettingsController` wired in `src/index.ts`. |
+| `adminRuntimeRoutes.ts` | `GET/PUT /api/admin/runtime` — read/set the global default agent runtime (`docker` \| `openshell`) and report registered runtimes + OpenShell gateway health. Delegates to a `RuntimeController` wired in `src/index.ts` (updates the `RuntimeRegistry` default and persists `app_settings.default_runtime`). |
+| `adminPolicyRoutes.ts` | `/api/admin/runtime/policies*` CRUD over runtime policies plus `POST /:id/bindings` / `DELETE /bindings/:bindingId` to bind a policy to a project or agent. Backed by the `PolicyStore`. |
+| `adminDenialRoutes.ts` | `GET /api/admin/runtime/denials` — policy-denial audit log (filter by `taskId` / `projectId` / `limit`). Backed by the `DenialStore`. |
 | `adminOverviewRoutes.ts` | `/api/admin/overview` dashboard stats/throughput/votes/runtime + `/api/admin/cost-summary` aggregated AI cost (per project & instance total, optional `?days=` period) + `/api/admin/model-usage` model distribution by run count & cost (global + per project, optional `?days=<n>` period filter). |
 | `adminWebhookRoutes.ts` | Webhook management: secret rotation, allowed-IPs, webhook-info. |
 | `dashboard.ts` | Serves the HTML shell for the Vite-built React SPA: reads the Vite manifest from `dist/admin-ui/.vite/manifest.json`, injects the hashed JS/CSS asset links plus a `window.__VE_ADMIN_BOOTSTRAP__` payload, and falls back to "Admin UI not built — run npm run build:ui" when the build output is missing. |
@@ -119,6 +122,12 @@ The admin server is a small HTTP service (default `127.0.0.1:3100`) that serves 
 | `PATCH` | `/api/admin/projects/:id/disable` | Disable project. |
 | `GET` / `PUT` | `/api/admin/concurrency` | Read/update global concurrency plus live in-memory snapshot. `PUT` accepts `{ global: number \| null }` (numeric strings are coerced server-side). |
 | `GET` / `PUT` | `/api/admin/settings` | Read/update editable runtime workflow settings. `PUT` accepts any subset of `{ pollingIntervalMs, maxAgentCycles, maxRetryAttempts }` (positive integers; interval in ms). Persists to `app_settings` and hot-applies to the polling loop, orchestrator, and admin runtime config. |
+| `GET` / `PUT` | `/api/admin/runtime` | Read/set the global default agent runtime (`docker` \| `openshell`). `GET` also returns registered + supported runtimes and OpenShell gateway health. `PUT` accepts `{ defaultRuntime }` and rejects runtimes without a registered runner. |
+| `GET` / `POST` | `/api/admin/runtime/policies` | List / create runtime policies (`kind` = `filesystem` \| `network` \| `process` \| `inference`). |
+| `PUT` / `DELETE` | `/api/admin/runtime/policies/:id` | Update / delete a runtime policy. |
+| `POST` | `/api/admin/runtime/policies/:id/bindings` | Bind a policy to exactly one of `{ projectId }` or `{ agentId }`. |
+| `DELETE` | `/api/admin/runtime/policies/bindings/:bindingId` | Remove a policy binding. |
+| `GET` | `/api/admin/runtime/denials` | Policy-denial audit log (query `taskId` / `projectId` / `limit`). |
 | `GET` | `/api/admin/overview` | Dashboard summary: task stats, throughput sparkline, review-vote breakdown, runtime facts. |
 | `GET` | `/api/admin/cost-summary` | Aggregated AI execution cost: instance total + per-project breakdown (USD / AI credits / runs). Optional `?days=<n>` scopes to a trailing period (omitted = all-time). Legacy cycles without a cost snapshot are recomputed from their event log so historical runs are still counted. |
 | `GET` | `/api/admin/model-usage` | Model usage distribution by run count and cost (global `byModel` + `perProject`). Optional `?days=<n>` trailing-period filter; legacy cycles without a recorded model snapshot are recomputed from `agent_events`. |
