@@ -9,26 +9,21 @@ import { AgentsSection }        from "./AgentsSection.tsx";
 import { ProjectsSection }      from "./ProjectsSection.tsx";
 import { PromptsSection }       from "./PromptsSection.tsx";
 import { OAuthSection }         from "./OAuthSection.tsx";
-import { SystemSection }        from "./SystemSection.tsx";
-import { UsersSection }         from "./UsersSection.tsx";
-import { GroupsSection }        from "./GroupsSection.tsx";
+import { SystemSection }        from "./SystemSection.tsx";import { RuntimeSection }       from "./RuntimeSection.tsx";
 import { PoliciesSection }      from "./PoliciesSection.tsx";
-import { AuditSection }         from "./AuditSection.tsx";
-import { useCurrentUser }       from "../../authContext.tsx";
-
+import { DenialsSection }       from "./DenialsSection.tsx";
 /* ─── Nav items ────────────────────────────────────────────────────────── */
 const CONFIG_NAV = [
-  { id: "overview",      label: "Overview",         sub: "Summary",           icon: "grid",   adminOnly: false },
-  { id: "integrations",  label: "Integrations",     sub: "Providers",         icon: "server", adminOnly: false },
-  { id: "oauth",         label: "OAuth Apps",       sub: "Provider registry", icon: "link",   adminOnly: false },
-  { id: "agents",        label: "Agents Library",   sub: "Reusable agents",   icon: "spark",  adminOnly: false },
-  { id: "projects",      label: "Projects",         sub: "Execution units",   icon: "box",    adminOnly: false },
-  { id: "prompts",       label: "Prompts",          sub: "System & custom",   icon: "edit",   adminOnly: false },
-  { id: "users",         label: "Users",            sub: "Accounts & roles",  icon: "user",   adminOnly: true },
-  { id: "groups",        label: "Groups",           sub: "User collections",  icon: "layers", adminOnly: true },
-  { id: "policies",      label: "Policies",         sub: "Access control",    icon: "config", adminOnly: true },
-  { id: "audit",         label: "Audit",            sub: "Change history",    icon: "clock",  adminOnly: true },
-  { id: "system",        label: "System Settings",  sub: "Runtime settings",  icon: "config", adminOnly: false },
+  { id: "overview",      label: "Overview",         sub: "Summary",           icon: "grid" },
+  { id: "integrations",  label: "Integrations",     sub: "Providers",         icon: "server" },
+  { id: "oauth",         label: "OAuth Apps",       sub: "Provider registry", icon: "link" },
+  { id: "agents",        label: "Agents Library",   sub: "Reusable agents",   icon: "spark" },
+  { id: "projects",      label: "Projects",         sub: "Execution units",   icon: "box" },
+  { id: "prompts",       label: "Prompts",          sub: "System & custom",   icon: "edit" },
+  { id: "runtime",       label: "Runtime",          sub: "Execution backend", icon: "server" },
+  { id: "policies",      label: "Policies",         sub: "Sandbox governance", icon: "layers" },
+  { id: "denials",       label: "Policy Denials",   sub: "Audit log",         icon: "alert" },
+  { id: "system",        label: "System Settings",  sub: "Runtime settings",  icon: "config" },
 ] as const;
 
 type SectionId = typeof CONFIG_NAV[number]["id"];
@@ -123,17 +118,16 @@ export function ConfigView(props: ConfigViewData) {
           className="fade-up"
           style={{ maxWidth: "920px", margin: "0 auto", padding: "26px 28px 40px" }}
         >
-          {effectiveSec === "overview"     && <ConfigOverview {...props} />}
-          {effectiveSec === "integrations" && <IntegrationsSection {...props} />}
-          {effectiveSec === "oauth"        && <OAuthSection {...props} />}
-          {effectiveSec === "agents"       && <AgentsSection {...props} />}
-          {effectiveSec === "projects"     && <ProjectsSection {...props} />}
-          {effectiveSec === "prompts"      && <PromptsSection {...props} />}
-          {effectiveSec === "users"        && isAdmin && <UsersSection />}
-          {effectiveSec === "groups"       && isAdmin && <GroupsSection />}
-          {effectiveSec === "policies"     && isAdmin && <PoliciesSection />}
-          {effectiveSec === "audit"        && isAdmin && <AuditSection />}
-          {effectiveSec === "system"       && <SystemSection config={props.config} status={props.status} onRefresh={props.onRefresh} />}
+          {sec === "overview"     && <ConfigOverview {...props} />}
+          {sec === "integrations" && <IntegrationsSection {...props} />}
+          {sec === "oauth"        && <OAuthSection {...props} />}
+          {sec === "agents"       && <AgentsSection {...props} />}
+          {sec === "projects"     && <ProjectsSection {...props} />}
+          {sec === "prompts"      && <PromptsSection {...props} />}
+          {sec === "runtime"      && <RuntimeSection />}
+          {sec === "policies"     && <PoliciesSection />}
+          {sec === "denials"      && <DenialsSection />}
+          {sec === "system"       && <SystemSection config={props.config} status={props.status} onRefresh={props.onRefresh} />}
         </div>
       </div>
     </div>

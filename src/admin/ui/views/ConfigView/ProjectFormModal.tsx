@@ -19,6 +19,7 @@ interface ProjectFormProject {
   agentId: string | null;
   postCloneScript?: string;
   skillDiscoveryEnabled?: boolean;
+  runtime?: string | null;
   ticketSource?: {
     integration: { id: string; name: string; type: string } | null;
     ticketProjectKey: string;
@@ -655,6 +656,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
   const [agentId, setAgentId] = useState("");
   const [postCloneScript, setPostCloneScript] = useState("");
   const [skillDiscoveryEnabled, setSkillDiscoveryEnabled] = useState(false);
+  const [runtime, setRuntime] = useState<string>("");
 
   // Coding-specific
   const [ticketSource, setTicketSource] = useState<TicketSource>({ integrationId: "", ticketProjectKey: "" });
@@ -674,6 +676,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
     setAgentId(project.agentId ?? "");
     setPostCloneScript(project.postCloneScript ?? "");
     setSkillDiscoveryEnabled(project.skillDiscoveryEnabled ?? false);
+    setRuntime(project.runtime ?? "");
 
     if (project.type === "coding") {
       setTicketSource({
@@ -732,6 +735,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
           agentId,
           postCloneScript: postCloneScript || undefined,
           skillDiscoveryEnabled,
+          runtime: runtime || null,
           ticketSource: { integrationId: ticketSource.integrationId, ticketProjectKey: ticketSource.ticketProjectKey },
           pushTargets: pushTargets.map((t) => ({
             integrationId: t.integrationId,
@@ -757,6 +761,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
           agentId,
           postCloneScript: postCloneScript || undefined,
           skillDiscoveryEnabled,
+          runtime: runtime || null,
           reviewConfig: { integrationId: reviewIntegrationId, repoKeys: reviewRepoKeys },
         };
         if (isEditMode && project) {
@@ -952,6 +957,14 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
             </label>
           </Field>
         )}
+
+        <Field label="Runtime" hint="Execution backend for this project. Inherit uses the global default.">
+          <FieldSelect value={runtime} onChange={(e) => setRuntime(e.target.value)}>
+            <option value="">Inherit (global default)</option>
+            <option value="docker">Docker</option>
+            <option value="openshell">OpenShell</option>
+          </FieldSelect>
+        </Field>
 
         <FormError msg={error} />
 

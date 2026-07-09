@@ -210,6 +210,7 @@ export interface ApiAgent {
   systemPromptId: string | null;
   instructionsPromptId: string | null;
   feedbackInstructionsPromptId: string | null;
+  runtime?: "docker" | "openshell" | null;
   modelConfig?: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
@@ -221,6 +222,7 @@ export interface ApiProject {
   type: "coding" | "review";
   enabled: boolean;
   agentId: string | null;
+  runtime?: "docker" | "openshell" | null;
   createdAt: string;
   updatedAt: string;
 }

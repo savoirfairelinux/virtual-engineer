@@ -30,6 +30,7 @@ interface AgentForm {
   systemPromptId: string;
   instructionsPromptId: string;
   feedbackInstructionsPromptId: string;
+  runtime: string;
 }
 
 export function AgentFormModal({ agent, integrations, prompts, onClose, onSaved }: Props) {
@@ -45,6 +46,7 @@ export function AgentFormModal({ agent, integrations, prompts, onClose, onSaved 
     systemPromptId: agent?.systemPromptId ?? "",
     instructionsPromptId: agent?.instructionsPromptId ?? "",
     feedbackInstructionsPromptId: agent?.feedbackInstructionsPromptId ?? "",
+    runtime: agent?.runtime ?? "",
   });
 
   const [saving, setSaving] = useState(false);
@@ -105,6 +107,7 @@ export function AgentFormModal({ agent, integrations, prompts, onClose, onSaved 
         systemPromptId: form.systemPromptId || null,
         instructionsPromptId: form.instructionsPromptId || null,
         feedbackInstructionsPromptId: form.feedbackInstructionsPromptId || null,
+        runtime: form.runtime || null,
       };
       if (isEdit) {
         await api.put(`/api/admin/agents/${agent!.id}`, payload);
@@ -162,6 +165,14 @@ export function AgentFormModal({ agent, integrations, prompts, onClose, onSaved 
 
         <Field label="Max Concurrent" hint="Maximum simultaneous agent cycles (≥1)">
           <FieldInput type="number" min={1} value={form.maxConcurrent} onChange={set("maxConcurrent")} />
+        </Field>
+
+        <Field label="Runtime" hint="Execution backend for this agent. Inherit uses the global default.">
+          <FieldSelect value={form.runtime} onChange={set("runtime")}>
+            <option value="">Inherit (global default)</option>
+            <option value="docker">Docker</option>
+            <option value="openshell">OpenShell</option>
+          </FieldSelect>
         </Field>
 
         <Field label="System Prompt">
