@@ -164,8 +164,12 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
 
   async runAgentInDocker(
     _adapter: AgentAdapter,
-    context: TaskContext
+    context: TaskContext,
+    _authEnv?: Record<string, string>
   ): Promise<{ stdout: string; stderr: string }> {
+    // NOTE: host `authEnv` (which may carry push/review-system credentials) is
+    // intentionally NOT forwarded into the sandbox. The agent only receives the
+    // provider credentials OpenShell injects; git/push stays host-side.
     const taskId = String(context.taskId);
     const name = `ve-${taskId}`;
     const agent = this.deps.agent;
