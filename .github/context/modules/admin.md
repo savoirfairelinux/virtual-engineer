@@ -237,6 +237,7 @@ The admin server never returns plaintext password-like fields. On `PUT`, values 
 - Project review-repository selection is discovery-driven and now includes client-side search plus `Select all` / `Unselect all` actions on the currently visible repository subset.
 - Projects can now be edited from both the Projects list row action and the Project detail drawer. The edit flow loads `/api/admin/projects/:id`, pre-fills project-specific fields, and persists changes through `PUT /api/admin/projects/:id`.
 - Prompts are managed under Configuration rather than a separate top-level page.
+- Runtime policy rows use visible kind-specific icons plus compact icon actions for assignment, editing, and deletion, with accessible labels and hover titles.
 - The Tasks view streams live agent events backed by `agent_cycles.agent_events` and the in-memory event bus; log filters are `All`, `Tools`, `Usage`, `Errors`.
 - Live log ingestion de-duplicates overlapping SSE replay sources (persisted cycle history, in-memory task buffer, and reconnect replays) so reconnects do not render duplicate rows.
 - Live log rows render structured `data` payloads as formatted JSON blocks (instead of single-line raw serialization) when the payload is object/array-shaped.

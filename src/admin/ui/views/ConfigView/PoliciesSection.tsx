@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../../api.ts";
+import { Icon } from "../../components/Icon.tsx";
 import { Modal, Field, FieldInput, FieldSelect, FieldTextarea } from "../../components/Modal.tsx";
 import type { ApiProject, ApiAgent } from "../../types.ts";
 
@@ -12,6 +13,18 @@ interface RuntimePolicy {
 }
 
 const KINDS: RuntimePolicy["kind"][] = ["network", "filesystem", "process", "inference"];
+const KIND_ICONS: Record<RuntimePolicy["kind"], string> = {
+  network: "link",
+  filesystem: "file",
+  process: "config",
+  inference: "spark",
+};
+
+const ACTION_ICON_STYLE = {
+  color: "var(--text-dim)",
+  background: "var(--panel-2)",
+  borderColor: "var(--border-soft)",
+} as const;
 
 const TEMPLATE = `network:
   default: deny
@@ -71,7 +84,9 @@ export function PoliciesSection() {
             Create a policy then <strong>assign</strong> it to a project or agent.
           </p>
         </div>
-        <button className="btn btn-primary" onClick={() => setCreating(true)}>New policy</button>
+        <button className="btn primary" onClick={() => setCreating(true)}>
+          <Icon name="plus" size={14} /> New policy
+        </button>
       </div>
 
       {error && <div className="card" style={{ padding: "12px 14px", marginBottom: "16px", color: "var(--danger, #f85149)" }}>{error}</div>}
@@ -88,14 +103,51 @@ export function PoliciesSection() {
                 borderTop: i === 0 ? "none" : "1px solid var(--border-soft)",
               }}
             >
-              <span className="tag" style={{ textTransform: "uppercase", fontSize: "10px" }}>{p.kind}</span>
+              <span
+                title={`${p.kind} policy`}
+                style={{
+                  width: 36, height: 36, borderRadius: "8px",
+                  display: "grid", placeItems: "center", flex: "none",
+                  color: "var(--accent-strong)", background: "var(--accent-soft)",
+                  border: "1px solid var(--border-soft)",
+                }}
+              >
+                <Icon name={KIND_ICONS[p.kind]} size={17} />
+              </span>
               <div style={{ flex: 1 }}>
-                <div style={{ fontWeight: 600, fontSize: "13.5px" }}>{p.name}</div>
+                <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                  <span style={{ fontWeight: 600, fontSize: "13.5px" }}>{p.name}</span>
+                  <span className="tag" style={{ textTransform: "uppercase", fontSize: "10px" }}>{p.kind}</span>
+                </div>
                 {p.description && <div style={{ fontSize: "11px", color: "var(--text-ghost)" }}>{p.description}</div>}
               </div>
-              <button className="btn" onClick={() => setAssigning(p)} title="Assign to a project or agent">Assign</button>
-              <button className="btn" onClick={() => setEditing(p)}>Edit</button>
-              <button className="btn" onClick={() => void handleDelete(p.id)}>Delete</button>
+              <button
+                className="iconbtn"
+                onClick={() => setAssigning(p)}
+                title="Assign to a project or agent"
+                aria-label={`Assign ${p.name} to a project or agent`}
+                style={ACTION_ICON_STYLE}
+              >
+                <Icon name="link" size={16} />
+              </button>
+              <button
+                className="iconbtn"
+                onClick={() => setEditing(p)}
+                title="Edit"
+                aria-label={`Edit ${p.name}`}
+                style={ACTION_ICON_STYLE}
+              >
+                <Icon name="edit" size={16} />
+              </button>
+              <button
+                className="iconbtn danger"
+                onClick={() => void handleDelete(p.id)}
+                title="Delete"
+                aria-label={`Delete ${p.name}`}
+                style={ACTION_ICON_STYLE}
+              >
+                <Icon name="trash" size={16} />
+              </button>
             </div>
           ))
         )}
