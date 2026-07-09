@@ -112,6 +112,11 @@ if [[ "$OPENSHELL" == "true" ]]; then
   OPENSHELL_GW_PORT=8080
   OPENSHELL_GATEWAY_URL="http://127.0.0.1:${OPENSHELL_GW_PORT}"
 
+  # The gateway image only publishes 'latest' and commit-SHA tags on GHCR —
+  # there are no semver/vX.Y.Z image tags. OPENSHELL_VERSION only applies to
+  # the CLI binary baked into the orchestrator image.
+  OPENSHELL_GW_IMAGE="ghcr.io/nvidia/openshell/gateway:latest"
+
   GW_RUNNING=$(docker inspect --format='{{.State.Running}}' "$OPENSHELL_GW_CONTAINER" 2>/dev/null || echo "false")
   if [[ "$GW_RUNNING" == "true" ]]; then
     info "OpenShell gateway already running."
@@ -119,9 +124,9 @@ if [[ "$OPENSHELL" == "true" ]]; then
     # Remove a stopped gateway container if it exists.
     docker rm -f "$OPENSHELL_GW_CONTAINER" 2>/dev/null || true
 
-    info "Starting OpenShell gateway (ghcr.io/nvidia/openshell/gateway:${OPENSHELL_VERSION})..."
-    docker pull "ghcr.io/nvidia/openshell/gateway:${OPENSHELL_VERSION}" || \
-      error "Could not pull OpenShell gateway image. Check connectivity or run: docker pull ghcr.io/nvidia/openshell/gateway:${OPENSHELL_VERSION}"
+    info "Starting OpenShell gateway (${OPENSHELL_GW_IMAGE})..."
+    docker pull "$OPENSHELL_GW_IMAGE" || \
+      error "Could not pull OpenShell gateway image. Check connectivity or run: docker pull ${OPENSHELL_GW_IMAGE}"
 
     docker run -d \
       --name "$OPENSHELL_GW_CONTAINER" \
@@ -130,7 +135,7 @@ if [[ "$OPENSHELL" == "true" ]]; then
       -v /var/run/docker.sock:/var/run/docker.sock \
       -e OPENSHELL_DRIVER=docker \
       -e OPENSHELL_TELEMETRY_ENABLED=false \
-      "ghcr.io/nvidia/openshell/gateway:${OPENSHELL_VERSION}"
+      "$OPENSHELL_GW_IMAGE"
 
     # Wait for the gateway to be ready.
     info "Waiting for OpenShell gateway to be ready..."
