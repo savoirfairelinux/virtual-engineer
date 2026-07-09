@@ -142,13 +142,18 @@ if [[ "$OPENSHELL" == "true" ]]; then
       -p "127.0.0.1:${OPENSHELL_GW_PORT}:8080" \
       -p "127.0.0.1:${OPENSHELL_GW_HEALTH_PORT}:8081" \
       -v /var/run/docker.sock:/var/run/docker.sock \
-      -v "${OPENSHELL_DATA_DIR}:/data" \
+      -v "${OPENSHELL_DATA_DIR}:/data:z" \
+      --group-add "$(stat -c '%g' /var/run/docker.sock)" \
+      --security-opt label:disable \
+      -e HOME=/data \
       -e OPENSHELL_TELEMETRY_ENABLED=false \
       "$OPENSHELL_GW_IMAGE" \
+      --bind-address 0.0.0.0 \
       --port 8080 \
       --health-port 8081 \
-      --db-url "sqlite:///data/gateway.db" \
-      --disable-tls
+      --db-url "sqlite:////data/gateway.db" \
+      --disable-tls \
+      --drivers docker
 
     # Wait for the gateway to be ready.
     info "Waiting for OpenShell gateway to be ready..."
