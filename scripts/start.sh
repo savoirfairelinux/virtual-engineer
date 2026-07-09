@@ -3,32 +3,50 @@
 #             Skips the container restart if it is already running the latest image.
 #
 # Usage:
-#   ./scripts/start.sh
-#
-# Useful follow-up commands:
-#   docker logs -f ve-orchestrator           # follow logs
-#   docker stop ve-orchestrator              # graceful stop (keeps data)
-#   docker rm -f ve-orchestrator             # force remove
+#   ./scripts/start.sh                   # Docker runtime (default)
+#   ./scripts/start.sh --openshell       # Docker runtime + OpenShell CLI baked in
+#                                        #   (sets default runtime to openshell via DB
+#                                        #    after the first boot)
+#   ./scripts/start.sh --openshell-version v0.0.79   # pin a specific version
 #
 # Optional environment variables:
 #   SECRETS_DIR    (default: ./secrets)
 #   DATA_DIR       (default: ./data)
+#   OPENSHELL_VERSION  (default: v0.0.79)  override when not using --openshell-version
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-info() { echo "[INFO]  $*"; }
-warn() { echo "[WARN]  $*" >&2; }
+info()  { echo "[INFO]  $*"; }
+warn()  { echo "[WARN]  $*" >&2; }
+error() { echo "[ERROR] $*" >&2; exit 1; }
 
 cd "$ROOT_DIR"
+
+# ─── Parse arguments ──────────────────────────────────────────────────────────
+OPENSHELL=false
+OPENSHELL_VERSION="${OPENSHELL_VERSION:-v0.0.79}"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --openshell)
+      OPENSHELL=true; shift ;;
+    --openshell-version)
+      [[ -n "${2:-}" ]] || error "--openshell-version requires a value (e.g. v0.0.79)"
+      OPENSHELL_VERSION="$2"; OPENSHELL=true; shift 2 ;;
+    --help|-h)
+      sed -n '2,18p' "$0"; exit 0 ;;
+    *)
+      error "Unknown argument: $1. Run ./scripts/start.sh --help" ;;
+  esac
+done
 
 SECRETS_DIR="${SECRETS_DIR:-$ROOT_DIR/secrets}"
 DATA_DIR="${DATA_DIR:-$ROOT_DIR/data}"
 
 # ─── Ensure a directory exists and is owned by the current user ───────────────
-# If Docker already created it as root, reclaim ownership with sudo.
 ensure_dir() {
   local dir="$1"
   local perms="${2:-755}"
@@ -53,11 +71,19 @@ fi
 info "Building agent image..."
 docker build -f Dockerfile.agent -t virtual-engineer-workspace:latest .
 
-info "Building orchestrator image..."
-docker build -f Dockerfile.orchestrator -t virtual-engineer:latest .
+# ─── Orchestrator image (with or without OpenShell CLI) ───────────────────────
+if [[ "$OPENSHELL" == "true" ]]; then
+  info "Building orchestrator image with OpenShell CLI (${OPENSHELL_VERSION})..."
+  docker build -f Dockerfile.orchestrator \
+    --build-arg INSTALL_OPENSHELL=true \
+    --build-arg OPENSHELL_VERSION="$OPENSHELL_VERSION" \
+    -t virtual-engineer:latest .
+else
+  info "Building orchestrator image (Docker runtime only)..."
+  docker build -f Dockerfile.orchestrator -t virtual-engineer:latest .
+fi
 
 # ─── Idempotent container restart ─────────────────────────────────────────────
-# Skip restart if the container is already running the image we just built.
 LATEST_ID=$(docker inspect --format='{{.Id}}' virtual-engineer:latest 2>/dev/null || true)
 RUNNING_ID=$(docker inspect --format='{{.Image}}' ve-orchestrator 2>/dev/null || true)
 IS_RUNNING=$(docker inspect --format='{{.State.Running}}' ve-orchestrator 2>/dev/null || true)
@@ -75,8 +101,6 @@ fi
 
 info "Starting ve-orchestrator..."
 
-# Forward SSH agent socket into the container using the same host path so that
-# nested Docker containers spawned by the orchestrator can reach it too (same-path trick).
 SSH_AGENT_ARGS=""
 if [ -n "${SSH_AUTH_SOCK:-}" ] && [ -S "$SSH_AUTH_SOCK" ]; then
   info "SSH agent detected at $SSH_AUTH_SOCK — forwarding into container."
@@ -106,3 +130,40 @@ docker run -d \
 info "ve-orchestrator started."
 info "Admin UI : http://127.0.0.1:3100/admin (binds per ADMIN_API_HOST in .env)"
 info "Logs     : docker logs -f ve-orchestrator"
+
+# ─── Post-start: configure OpenShell as the default runtime in the DB ─────────
+if [[ "$OPENSHELL" == "true" ]]; then
+  info "Waiting for orchestrator to be ready..."
+  RETRIES=20
+  until curl -sf http://127.0.0.1:3100/health >/dev/null 2>&1 || [[ $RETRIES -eq 0 ]]; do
+    sleep 1; ((RETRIES--))
+  done
+
+  if [[ $RETRIES -eq 0 ]]; then
+    warn "Orchestrator did not become healthy in time. Set the default runtime manually:"
+    warn "  Admin UI → Config → Runtime → select OpenShell → Save default"
+  else
+    # Derive the admin token from ADMIN_AUTH_SECRET in .env (same HMAC logic as the UI).
+    ADMIN_SECRET=$(grep -E '^ADMIN_AUTH_SECRET=' "$ROOT_DIR/.env" 2>/dev/null | cut -d= -f2- | tr -d '"' || true)
+    if [[ -z "$ADMIN_SECRET" ]]; then
+      warn "ADMIN_AUTH_SECRET not found in .env — set the default runtime manually:"
+      warn "  Admin UI → Config → Runtime → select OpenShell → Save default"
+    else
+      TS=$(date +%s)
+      HMAC=$(echo -n "$TS" | openssl dgst -sha256 -hmac "$ADMIN_SECRET" -hex 2>/dev/null | awk '{print $NF}')
+      TOKEN="${TS}.${HMAC}"
+      HTTP=$(curl -sf -o /dev/null -w "%{http_code}" \
+        -X PUT http://127.0.0.1:3100/api/admin/runtime \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer $TOKEN" \
+        -d '{"defaultRuntime":"openshell"}' 2>/dev/null || echo "000")
+      if [[ "$HTTP" == "200" ]]; then
+        info "Default runtime set to openshell in the DB."
+      else
+        warn "Could not set default runtime via API (HTTP $HTTP). Set it manually:"
+        warn "  Admin UI → Config → Runtime → select OpenShell → Save default"
+      fi
+    fi
+  fi
+fi
+
