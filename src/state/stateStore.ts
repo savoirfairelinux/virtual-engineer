@@ -30,6 +30,10 @@ import type { PromptStoreApi } from "./stores/promptStore.js";
 import { createPromptStore } from "./stores/promptStore.js";
 import type { SettingsStoreApi } from "./stores/settingsStore.js";
 import { createSettingsStore } from "./stores/settingsStore.js";
+import type { PolicyStoreApi } from "./stores/policyStore.js";
+import { createPolicyStore } from "./stores/policyStore.js";
+import type { DenialStoreApi } from "./stores/denialStore.js";
+import { createDenialStore } from "./stores/denialStore.js";
 import type { TaskStoreApi } from "./stores/taskStore.js";
 import { createTaskStore } from "./stores/taskStore.js";
 import type { UserStoreApi } from "./stores/userStore.js";
@@ -43,10 +47,8 @@ type ComposedStoreApi =
   & PromptStoreApi
   & AgentStoreApi
   & SettingsStoreApi
-  & UserStoreApi
-  & AuditStoreApi
-  & GroupStoreApi
-  & PolicyStoreApi;
+  & PolicyStoreApi
+  & DenialStoreApi;
 
 /** Facade class that composes domain-scoped store modules over one shared SQLite connection. */
 // eslint-disable-next-line @typescript-eslint/no-unsafe-declaration-merging
@@ -59,10 +61,8 @@ export class SqliteStateStore {
   private readonly promptStore: PromptStoreApi;
   private readonly agentStore: AgentStoreApi;
   private readonly settingsStore: SettingsStoreApi;
-  private readonly userStore: UserStoreApi;
-  private readonly auditStore: AuditStoreApi;
-  private readonly groupStore: GroupStoreApi;
   private readonly policyStore: PolicyStoreApi;
+  private readonly denialStore: DenialStoreApi;
   private readonly taskTransitionListeners: Array<(task: Task) => void> = [];
 
   constructor(private readonly raw: Database.Database) {
@@ -86,10 +86,8 @@ export class SqliteStateStore {
     this.promptStore = createPromptStore({ db: this.db, dbDir: this.dbDir });
     this.agentStore = createAgentStore({ db: this.db });
     this.settingsStore = createSettingsStore({ db: this.db });
-    this.userStore = createUserStore({ db: this.db });
-    this.auditStore = createAuditStore({ db: this.db });
-    this.groupStore = createGroupStore({ db: this.db });
     this.policyStore = createPolicyStore({ db: this.db });
+    this.denialStore = createDenialStore({ db: this.db });
 
     Object.assign(
       this,
@@ -99,10 +97,8 @@ export class SqliteStateStore {
       this.promptStore,
       this.agentStore,
       this.settingsStore,
-      this.userStore,
-      this.auditStore,
-      this.groupStore,
-      this.policyStore
+      this.policyStore,
+      this.denialStore
     );
   }
 

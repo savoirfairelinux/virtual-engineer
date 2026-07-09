@@ -2,6 +2,7 @@ import { eq } from "drizzle-orm";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import { appSettings } from "../schema.js";
 import * as schema from "../schema.js";
+import type { RuntimeId } from "../../runtime/runtimeProfile.js";
 
 /**
  * Editable workflow settings persisted in the `app_settings` singleton row.
@@ -11,6 +12,8 @@ export interface AppSettings {
   pollingIntervalMs: number | null;
   maxAgentCycles: number | null;
   maxRetryAttempts: number | null;
+  /** Global default agent runtime. `null` = built-in default (`docker`). */
+  defaultRuntime: RuntimeId | null;
 }
 
 export interface SettingsStoreApi {
@@ -32,6 +35,7 @@ const EMPTY: AppSettings = {
   pollingIntervalMs: null,
   maxAgentCycles: null,
   maxRetryAttempts: null,
+  defaultRuntime: null,
 };
 
 export function createSettingsStore(context: SettingsStoreContext): SettingsStoreApi {
@@ -44,6 +48,7 @@ export function createSettingsStore(context: SettingsStoreContext): SettingsStor
       pollingIntervalMs: row.pollingIntervalMs ?? null,
       maxAgentCycles: row.maxAgentCycles ?? null,
       maxRetryAttempts: row.maxRetryAttempts ?? null,
+      defaultRuntime: row.defaultRuntime ?? null,
     };
   }
 
@@ -57,6 +62,7 @@ export function createSettingsStore(context: SettingsStoreContext): SettingsStor
     if (patch.pollingIntervalMs !== undefined) conflictSet["pollingIntervalMs"] = patch.pollingIntervalMs;
     if (patch.maxAgentCycles !== undefined) conflictSet["maxAgentCycles"] = patch.maxAgentCycles;
     if (patch.maxRetryAttempts !== undefined) conflictSet["maxRetryAttempts"] = patch.maxRetryAttempts;
+    if (patch.defaultRuntime !== undefined) conflictSet["defaultRuntime"] = patch.defaultRuntime;
 
     await db
       .insert(appSettings)
@@ -65,6 +71,7 @@ export function createSettingsStore(context: SettingsStoreContext): SettingsStor
         pollingIntervalMs: patch.pollingIntervalMs ?? null,
         maxAgentCycles: patch.maxAgentCycles ?? null,
         maxRetryAttempts: patch.maxRetryAttempts ?? null,
+        defaultRuntime: patch.defaultRuntime ?? null,
         updatedAt: now,
       })
       .onConflictDoUpdate({ target: appSettings.id, set: conflictSet });

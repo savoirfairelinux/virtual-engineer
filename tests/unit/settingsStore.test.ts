@@ -25,6 +25,7 @@ describe("SqliteStateStore — app settings", () => {
       pollingIntervalMs: null,
       maxAgentCycles: null,
       maxRetryAttempts: null,
+      defaultRuntime: null,
     });
   });
 
@@ -34,16 +35,16 @@ describe("SqliteStateStore — app settings", () => {
       maxAgentCycles: 4,
       maxRetryAttempts: 8,
     });
-    expect(next).toEqual({ pollingIntervalMs: 15000, maxAgentCycles: 4, maxRetryAttempts: 8 });
+    expect(next).toEqual({ pollingIntervalMs: 15000, maxAgentCycles: 4, maxRetryAttempts: 8, defaultRuntime: null });
 
     const read = await store.getAppSettings();
-    expect(read).toEqual({ pollingIntervalMs: 15000, maxAgentCycles: 4, maxRetryAttempts: 8 });
+    expect(read).toEqual({ pollingIntervalMs: 15000, maxAgentCycles: 4, maxRetryAttempts: 8, defaultRuntime: null });
   });
 
   it("merges partial updates without clobbering unspecified fields", async () => {
     await store.updateAppSettings({ pollingIntervalMs: 15000, maxAgentCycles: 4, maxRetryAttempts: 8 });
     const merged = await store.updateAppSettings({ maxAgentCycles: 2 });
-    expect(merged).toEqual({ pollingIntervalMs: 15000, maxAgentCycles: 2, maxRetryAttempts: 8 });
+    expect(merged).toEqual({ pollingIntervalMs: 15000, maxAgentCycles: 2, maxRetryAttempts: 8, defaultRuntime: null });
   });
 
   it("clears a value when passed an explicit null", async () => {
