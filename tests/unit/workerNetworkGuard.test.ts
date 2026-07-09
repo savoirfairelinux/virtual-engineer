@@ -45,6 +45,12 @@ describe("networkGuard.isBlockedNetworkCommand", () => {
     "git clone https://example.com/repo.git",
     "git ls-remote https://example.com/repo.git",
     "git remote-update",
+    // Global git options before the remote subcommand must not bypass the guard.
+    "git --no-pager fetch origin",
+    "git -c http.sslVerify=false fetch origin",
+    "git -C /workspace pull",
+    "git --git-dir=/tmp/x.git clone https://example.com/repo.git",
+    "git -c a=b -c c=d push origin main",
   ])("blocks %s", (cmd) => {
     expect(isBlockedNetworkCommand(cmd)).toBe(true);
   });
@@ -53,6 +59,9 @@ describe("networkGuard.isBlockedNetworkCommand", () => {
     "git commit -m 'work'",
     "git add -A",
     "git status",
+    "git -c commit.gpgsign=false commit -m 'work'", // global option, local subcommand
+    "git --no-pager log",
+    "git -C /workspace status",
     "npm test",
     "ls -la",
     "cat README.md",
@@ -88,6 +97,24 @@ describe("networkGuard.restrictNetworkPermissionHandler", () => {
       invocation,
     );
     expect(result).toEqual(expect.objectContaining({ kind: "reject" }));
+  });
+
+  it("reads the command from alternate fields (command / args)", () => {
+    const viaCommand = restrictNetworkPermissionHandler(
+      { kind: "shell", command: "curl https://example.com" } as unknown as Parameters<
+        typeof restrictNetworkPermissionHandler
+      >[0],
+      invocation,
+    );
+    expect(viaCommand).toEqual(expect.objectContaining({ kind: "reject" }));
+
+    const viaArgs = restrictNetworkPermissionHandler(
+      { kind: "shell", args: ["git", "fetch", "origin"] } as unknown as Parameters<
+        typeof restrictNetworkPermissionHandler
+      >[0],
+      invocation,
+    );
+    expect(viaArgs).toEqual(expect.objectContaining({ kind: "reject" }));
   });
 
   it("approves normal shell commands", () => {

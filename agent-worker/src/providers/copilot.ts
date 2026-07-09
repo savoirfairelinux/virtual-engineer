@@ -395,6 +395,14 @@ export async function runCopilotAgent(
   let response: AssistantMessageEvent | undefined;
   try {
     response = await session.sendAndWait({ prompt }, timeoutMs);
+  } catch (err) {
+    // Tear down the session, client and local CLI on the error path — the
+    // returned `cleanup` closure only runs on success, so without this a failed
+    // cycle would leak the headless CLI process and its socket connection.
+    await session.disconnect().catch(() => { /* ignore */ });
+    await client.stop().catch(() => { /* ignore */ });
+    localCliServer.child.kill('SIGTERM');
+    throw err;
   } finally {
     clearInterval(heartbeat);
   }
