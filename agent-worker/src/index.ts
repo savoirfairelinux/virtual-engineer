@@ -31,11 +31,18 @@ import {
   groupFilesByRepo,
 } from './commitUtils.js';
 import { emitEvent } from './providers/events.js';
-import { resolveRunner } from './providers/registry.js';
+import { resolveRunner, isAgentProvider, AGENT_PROVIDER_IDS } from './providers/registry.js';
 import type { AgentRun } from './providers/types.js';
 
 // ── Environment ────────────────────────────────────────────────────────────────
 const AGENT_PROVIDER = process.env['AGENT_PROVIDER'] ?? 'copilot';
+if (!isAgentProvider(AGENT_PROVIDER)) {
+  process.stderr.write(
+    `FATAL: unknown AGENT_PROVIDER "${AGENT_PROVIDER}". ` +
+    `Supported providers: ${AGENT_PROVIDER_IDS.join(', ')}.\n`,
+  );
+  process.exit(1);
+}
 const GITHUB_TOKEN = process.env['GITHUB_TOKEN'] ?? '';
 const COPILOT_MODEL = process.env['COPILOT_MODEL'] ?? 'auto';
 /** Empty when unset — the Claude CLI then selects its own default model. */
