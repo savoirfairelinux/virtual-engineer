@@ -107,10 +107,12 @@ info "Starting ve-orchestrator..."
 OPENSHELL_GATEWAY_ARGS=""
 if [[ "$OPENSHELL" == "true" ]]; then
   OPENSHELL_GW_CONTAINER="ve-openshell-gateway"
-  # The gateway listens on 8080; we bind it to 127.0.0.1 (host-only).
-  # The orchestrator uses --network host so it reaches 127.0.0.1:8080 directly.
   OPENSHELL_GW_PORT=8080
-  OPENSHELL_GATEWAY_URL="http://127.0.0.1:${OPENSHELL_GW_PORT}"
+  OPENSHELL_GW_HEALTH_PORT=8081
+  # State directory for the gateway (SQLite DB etc). Mounted as a Docker volume
+  # so the container (uid 1000) can write to it without hitting /.local permission errors.
+  OPENSHELL_DATA_DIR="${DATA_DIR}/openshell-gateway"
+  OPENSHELL_GATEWAY_URL="http://127.0.0.1:${OPENSHELL_GW_HEALTH_PORT}"
 
   # The gateway image only publishes 'latest' and commit-SHA tags on GHCR —
   # there are no semver/vX.Y.Z image tags. OPENSHELL_VERSION only applies to
@@ -128,14 +130,25 @@ if [[ "$OPENSHELL" == "true" ]]; then
     docker pull "$OPENSHELL_GW_IMAGE" || \
       error "Could not pull OpenShell gateway image. Check connectivity or run: docker pull ${OPENSHELL_GW_IMAGE}"
 
+    # Ensure writable state dir owned by uid 1000 (gateway container user).
+    mkdir -p "$OPENSHELL_DATA_DIR"
+    if [[ "$(stat -c '%u' "$OPENSHELL_DATA_DIR")" != "1000" ]]; then
+      sudo chown 1000:1000 "$OPENSHELL_DATA_DIR" 2>/dev/null || chown "$(id -u):$(id -g)" "$OPENSHELL_DATA_DIR"
+    fi
+
     docker run -d \
       --name "$OPENSHELL_GW_CONTAINER" \
       --restart unless-stopped \
       -p "127.0.0.1:${OPENSHELL_GW_PORT}:8080" \
+      -p "127.0.0.1:${OPENSHELL_GW_HEALTH_PORT}:8081" \
       -v /var/run/docker.sock:/var/run/docker.sock \
-      -e OPENSHELL_DRIVER=docker \
+      -v "${OPENSHELL_DATA_DIR}:/data" \
       -e OPENSHELL_TELEMETRY_ENABLED=false \
-      "$OPENSHELL_GW_IMAGE"
+      "$OPENSHELL_GW_IMAGE" \
+      --port 8080 \
+      --health-port 8081 \
+      --db-url "sqlite:///data/gateway.db" \
+      --disable-tls
 
     # Wait for the gateway to be ready.
     info "Waiting for OpenShell gateway to be ready..."

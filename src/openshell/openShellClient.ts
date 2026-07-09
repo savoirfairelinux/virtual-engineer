@@ -116,7 +116,19 @@ export class OpenShellClient {
 
   /** Return true when the gateway responds healthy. */
   async gatewayHealthy(): Promise<boolean> {
-    const result = await this.exec(["gateway", "status", "--json"]);
-    return result.code === 0;
+    // Prefer an HTTP health probe (dedicated health port at /healthz) over a
+    // CLI subcommand — the `gateway status` subcommand does not exist in current
+    // OpenShell releases. The health port is separate from the gRPC/API port.
+    const base = this.gateway ? `http://${this.gateway.replace(/^https?:\/\//, "").replace(/:\d+$/, "")}` : "http://127.0.0.1";
+    // Try the dedicated health port (8081 by default), then fall back to the main port.
+    for (const url of [`${base}:8081/healthz`, `${base}:8080/healthz`, `${base}:8081/health`, `${base}:8080/health`]) {
+      try {
+        const res = await fetch(url, { signal: AbortSignal.timeout(3000) });
+        if (res.ok || res.status < 500) return true;
+      } catch {
+        // try next
+      }
+    }
+    return false;
   }
 }
