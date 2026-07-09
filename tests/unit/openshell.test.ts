@@ -119,7 +119,8 @@ describe("OpenShellClient", () => {
     const client = new OpenShellClient({ runner, gateway: "gw:1" });
     await client.createSandbox({ name: "task-1", agent: "claude", providers: ["anthropic"] });
     const args = calls[0]?.args ?? [];
-    expect(args).toEqual(["--gateway", "gw:1", "sandbox", "create", "--name", "task-1", "--provider", "anthropic", "--", "claude"]);
+    // No --gateway flag; gateway is passed via OPENSHELL_GATEWAY_ENDPOINT env.
+    expect(args).toEqual(["sandbox", "create", "--name", "task-1", "--provider", "anthropic", "--", "claude"]);
   });
 
   it("throws when sandbox create fails", async () => {
@@ -128,12 +129,16 @@ describe("OpenShellClient", () => {
     await expect(client.createSandbox({ name: "t" })).rejects.toThrow(/sandbox create failed/i);
   });
 
-  it("pipes policy yaml over stdin on setPolicy", async () => {
+  it("writes policy yaml to a temp file on setPolicy", async () => {
     const { runner, calls } = runnerReturning({ code: 0 });
     const client = new OpenShellClient({ runner });
     await client.setPolicy("demo", "network:\n  default: deny\n");
-    expect(calls[0]?.args).toEqual(["policy", "set", "demo", "--policy", "-"]);
-    expect(calls[0]?.input).toContain("default: deny");
+    // args: policy set --policy <tempfile> demo
+    expect(calls[0]?.args[0]).toBe("policy");
+    expect(calls[0]?.args[1]).toBe("set");
+    expect(calls[0]?.args[2]).toBe("--policy");
+    expect(calls[0]?.args[3]).toMatch(/\.yaml$/);
+    expect(calls[0]?.args[4]).toBe("demo");
   });
 
   it("removeSandbox never throws on failure", async () => {

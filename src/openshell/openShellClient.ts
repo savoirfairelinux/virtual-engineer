@@ -12,6 +12,10 @@
  */
 
 import { execFile } from "child_process";
+import { writeFile, unlink } from "fs/promises";
+import { tmpdir } from "os";
+import { join } from "path";
+import { randomUUID } from "node:crypto";
 import { getLogger } from "../logger.js";
 
 const log = getLogger("openshell-client");
@@ -72,12 +76,10 @@ export class OpenShellClient {
     this.run = options.runner ?? defaultRunner;
   }
 
-  private baseArgs(): string[] {
-    return this.gateway ? ["--gateway", this.gateway] : [];
-  }
-
   private async exec(args: string[], input?: string): Promise<CommandResult> {
-    const result = await this.run(this.bin, [...this.baseArgs(), ...args], input);
+    // OPENSHELL_GATEWAY is injected into the process environment by start.sh.
+    // The CLI picks it up automatically so no --gateway flag is needed here.
+    const result = await this.run(this.bin, args, input);
     if (result.code !== 0) {
       log.warn({ args, code: result.code, stderr: result.stderr.slice(0, 500) }, "openshell command failed");
     }
@@ -98,20 +100,30 @@ export class OpenShellClient {
 
   /** Run a command inside a sandbox and return its captured output. */
   async execInSandbox(input: ExecSandboxInput): Promise<CommandResult> {
-    return this.exec(["sandbox", "exec", input.name, "--", ...input.command]);
+    // exec requires --name <name> -- <command...> (not positional name)
+    return this.exec(["sandbox", "exec", "--name", input.name, "--", ...input.command]);
   }
 
   /** Apply (hot-reload) a policy YAML on a running sandbox. Throws on failure. */
   async setPolicy(name: string, policyYaml: string): Promise<void> {
-    const result = await this.exec(["policy", "set", name, "--policy", "-"], policyYaml);
-    if (result.code !== 0) {
-      throw new Error(`openshell policy set failed (${result.code}): ${result.stderr.slice(0, 500)}`);
+    // `policy set` requires a file path (no stdin support). Write to a temp file,
+    // apply, then clean up. Sandbox name is a positional arg after --policy.
+    const tmpPath = join(tmpdir(), `ve-policy-${randomUUID()}.yaml`);
+    try {
+      await writeFile(tmpPath, policyYaml, "utf8");
+      const result = await this.exec(["policy", "set", "--policy", tmpPath, name]);
+      if (result.code !== 0) {
+        throw new Error(`openshell policy set failed (${result.code}): ${result.stderr.slice(0, 500)}`);
+      }
+    } finally {
+      await unlink(tmpPath).catch(() => undefined);
     }
   }
 
   /** Destroy a sandbox. Never throws — cleanup is best-effort. */
   async removeSandbox(name: string): Promise<void> {
-    await this.exec(["sandbox", "rm", "--force", name]);
+    // `sandbox delete` takes sandbox name(s) as positional arguments.
+    await this.exec(["sandbox", "delete", name]);
   }
 
   /** Return true when the gateway responds healthy. */
