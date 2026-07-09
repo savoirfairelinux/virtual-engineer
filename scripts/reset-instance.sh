@@ -87,6 +87,12 @@ if command -v docker >/dev/null 2>&1; then
       warn "Could not remove ve-orchestrator container; continuing cleanup"
     fi
   fi
+  # Also stop the OpenShell gateway if it was started by start.sh --openshell.
+  if docker inspect ve-openshell-gateway >/dev/null 2>&1; then
+    if docker rm -f ve-openshell-gateway >/dev/null 2>&1; then
+      info "Stopped and removed ve-openshell-gateway container"
+    fi
+  fi
 else
   warn "docker is not installed; skipping container shutdown"
 fi

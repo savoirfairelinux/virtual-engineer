@@ -4,9 +4,11 @@
 #
 # Usage:
 #   ./scripts/start.sh                   # Docker runtime (default)
-#   ./scripts/start.sh --openshell       # Docker runtime + OpenShell CLI baked in
-#                                        #   (sets default runtime to openshell via DB
-#                                        #    after the first boot)
+#   ./scripts/start.sh --openshell       # OpenShell runtime:
+#                                        #   1. starts the OpenShell gateway container
+#                                        #   2. builds the orchestrator image with the pinned CLI
+#                                        #   3. wires the gateway address into the orchestrator
+#                                        #   4. sets the default runtime to openshell in the DB
 #   ./scripts/start.sh --openshell-version v0.0.79   # pin a specific version
 #
 # Optional environment variables:
@@ -101,6 +103,55 @@ fi
 
 info "Starting ve-orchestrator..."
 
+# ─── OpenShell gateway (local Docker mode, started before the orchestrator) ───
+OPENSHELL_GATEWAY_ARGS=""
+if [[ "$OPENSHELL" == "true" ]]; then
+  OPENSHELL_GW_CONTAINER="ve-openshell-gateway"
+  # The gateway listens on 8080; we bind it to 127.0.0.1 (host-only).
+  # The orchestrator uses --network host so it reaches 127.0.0.1:8080 directly.
+  OPENSHELL_GW_PORT=8080
+  OPENSHELL_GATEWAY_URL="http://127.0.0.1:${OPENSHELL_GW_PORT}"
+
+  GW_RUNNING=$(docker inspect --format='{{.State.Running}}' "$OPENSHELL_GW_CONTAINER" 2>/dev/null || echo "false")
+  if [[ "$GW_RUNNING" == "true" ]]; then
+    info "OpenShell gateway already running."
+  else
+    # Remove a stopped gateway container if it exists.
+    docker rm -f "$OPENSHELL_GW_CONTAINER" 2>/dev/null || true
+
+    info "Starting OpenShell gateway (ghcr.io/nvidia/openshell/gateway:${OPENSHELL_VERSION})..."
+    docker pull "ghcr.io/nvidia/openshell/gateway:${OPENSHELL_VERSION}" || \
+      error "Could not pull OpenShell gateway image. Check connectivity or run: docker pull ghcr.io/nvidia/openshell/gateway:${OPENSHELL_VERSION}"
+
+    docker run -d \
+      --name "$OPENSHELL_GW_CONTAINER" \
+      --restart unless-stopped \
+      -p "127.0.0.1:${OPENSHELL_GW_PORT}:8080" \
+      -v /var/run/docker.sock:/var/run/docker.sock \
+      -e OPENSHELL_DRIVER=docker \
+      -e OPENSHELL_TELEMETRY_ENABLED=false \
+      "ghcr.io/nvidia/openshell/gateway:${OPENSHELL_VERSION}"
+
+    # Wait for the gateway to be ready.
+    info "Waiting for OpenShell gateway to be ready..."
+    GW_RETRIES=30
+    until curl -sf "${OPENSHELL_GATEWAY_URL}/healthz" >/dev/null 2>&1 || \
+          curl -sf "${OPENSHELL_GATEWAY_URL}/health"  >/dev/null 2>&1 || \
+          [[ $GW_RETRIES -eq 0 ]]; do
+      sleep 1; ((GW_RETRIES--))
+    done
+    if [[ $GW_RETRIES -eq 0 ]]; then
+      warn "OpenShell gateway did not become healthy — sandbox creation will fail."
+      warn "Check logs: docker logs $OPENSHELL_GW_CONTAINER"
+    else
+      info "OpenShell gateway is healthy at ${OPENSHELL_GATEWAY_URL}."
+    fi
+  fi
+
+  # Pass the gateway address to the orchestrator so OpenShellClient uses it.
+  OPENSHELL_GATEWAY_ARGS="-e OPENSHELL_GATEWAY=127.0.0.1:${OPENSHELL_GW_PORT}"
+fi
+
 SSH_AGENT_ARGS=""
 if [ -n "${SSH_AUTH_SOCK:-}" ] && [ -S "$SSH_AUTH_SOCK" ]; then
   info "SSH agent detected at $SSH_AUTH_SOCK — forwarding into container."
@@ -109,7 +160,7 @@ else
   warn "No SSH agent socket found (SSH_AUTH_SOCK not set or not a socket). Agent-based SSH auth will not be available."
 fi
 
-# shellcheck disable=SC2086 — intentional word-splitting for SSH_AGENT_ARGS
+# shellcheck disable=SC2086 — intentional word-splitting for SSH_AGENT_ARGS / OPENSHELL_GATEWAY_ARGS
 docker run -d \
   --name ve-orchestrator \
   --restart unless-stopped \
@@ -125,6 +176,7 @@ docker run -d \
   -v "$HOME/.config/gh:/ve-gh:ro" \
   --tmpfs /tmp/ve-review-diffs:rw,size=512m \
   $SSH_AGENT_ARGS \
+  $OPENSHELL_GATEWAY_ARGS \
   virtual-engineer:latest
 
 info "ve-orchestrator started."

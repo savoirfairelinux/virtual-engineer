@@ -106,9 +106,14 @@ async function main(): Promise<void> {
   // Docker stays the default runtime. OpenShell is registered as an alternative
   // backend selectable per project/agent; git plumbing stays host-side via
   // HostGitExecutor so push credentials never enter the sandbox.
+  const openShellClient = new OpenShellClient({
+    // When the orchestrator is started with --openshell, OPENSHELL_GATEWAY is
+    // injected by start.sh (e.g. "127.0.0.1:8080"). Absent = CLI default.
+    gateway: process.env["OPENSHELL_GATEWAY"] ?? undefined,
+  });
   const openShellRunner = new OpenShellWorkspaceRunner({
     git: new HostGitExecutor({ baseDir: config.workspaceBaseDir }),
-    client: new OpenShellClient(),
+    client: openShellClient,
     sandboxImage: config.agentContainerImage,
   });
   const runtimeRegistry = new RuntimeRegistry()
@@ -404,6 +409,18 @@ async function main(): Promise<void> {
         snapshot: () => concurrencyTracker.snapshot(),
       },
       settings: settingsController,
+      policyStore: stateStore,
+      denialStore: stateStore,
+      runtime: {
+        getDefaultRuntime: () => runtimeRegistry.getDefaultId(),
+        setDefaultRuntime: async (id) => {
+          runtimeRegistry.setDefault(id);
+          await stateStore.updateAppSettings({ defaultRuntime: id });
+        },
+        listRuntimes: () => runtimeRegistry.list(),
+        gatewayHealthy: async () =>
+          runtimeRegistry.has("openshell") ? openShellClient.gatewayHealthy() : undefined,
+      },
     });
 
     await startAdminServer(adminServer, config.adminApiPort, config.adminApiHost);
