@@ -10,9 +10,13 @@
 import { approveAll } from '@github/copilot-sdk';
 import type { PermissionHandler, PermissionRequest } from '@github/copilot-sdk';
 
-/** Shell commands that reach the network or push to a remote. */
+/**
+ * Shell commands that reach the network. Covers standalone network clients and
+ * every git subcommand that talks to a remote — the workspace is pre-cloned, so
+ * the agent never needs any of these.
+ */
 export const NETWORK_TOOL_RE =
-  /\b(?:curl|wget|nc|ncat|netcat|telnet|ssh|scp|sftp|ftp|lynx|links|aria2c)\b|\bgit\s+push\b/i;
+  /\b(?:curl|wget|nc|ncat|netcat|telnet|ssh|scp|sftp|ftp|lynx|links|aria2c)\b|\bgit\s+(?:push|fetch|pull|clone|ls-remote|remote-update)\b/i;
 
 /**
  * Claude tool-deny list. Bare names remove the tool from the model's context;
@@ -32,7 +36,15 @@ export const NETWORK_DISALLOWED_TOOLS = [
   'Bash(scp:*)',
   'Bash(sftp:*)',
   'Bash(ftp:*)',
+  'Bash(lynx:*)',
+  'Bash(links:*)',
+  'Bash(aria2c:*)',
   'Bash(git push:*)',
+  'Bash(git fetch:*)',
+  'Bash(git pull:*)',
+  'Bash(git clone:*)',
+  'Bash(git ls-remote:*)',
+  'Bash(git remote-update:*)',
 ];
 
 /** True when a shell command reaches the network or pushes to a remote. */

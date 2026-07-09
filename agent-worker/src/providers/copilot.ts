@@ -67,8 +67,16 @@ interface LocalCliServer {
 async function startLocalCliServer(cwd: string): Promise<LocalCliServer> {
   const cliPath = '/agent-worker/node_modules/.bin/copilot';
   const port = 3000;
+  // These buffers only feed the startup-failure error detail, but the stream
+  // handlers stay attached for the whole session. Cap them to the most recent
+  // chunks so a chatty CLI can't grow memory unbounded over a long cycle.
+  const MAX_STARTUP_LOG_CHUNKS = 100;
   const stdoutChunks: string[] = [];
   const stderrChunks: string[] = [];
+  const pushCapped = (buf: string[], chunk: string): void => {
+    buf.push(chunk);
+    if (buf.length > MAX_STARTUP_LOG_CHUNKS) buf.shift();
+  };
 
   // Environment Variable Allowlist (Security):
   // Subprocess has only whitelisted env vars to prevent secrets leakage.
@@ -91,8 +99,8 @@ async function startLocalCliServer(cwd: string): Promise<LocalCliServer> {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 
-  child.stdout?.on('data', (chunk: unknown) => stdoutChunks.push(String(chunk)));
-  child.stderr?.on('data', (chunk: unknown) => stderrChunks.push(String(chunk)));
+  child.stdout?.on('data', (chunk: unknown) => pushCapped(stdoutChunks, String(chunk)));
+  child.stderr?.on('data', (chunk: unknown) => pushCapped(stderrChunks, String(chunk)));
 
   try {
     await waitForPort('127.0.0.1', port, 30_000);
