@@ -403,9 +403,13 @@ export const appSettings = sqliteTable(
   })
 );
 
-// ─── Users / Sessions / Audit (admin RBAC) ───────────────────────────────────
+// ─── Users / Sessions / Audit (admin accounts) ───────────────────────────────
 
-/** Admin dashboard user accounts. `role` gates route access (admin > operator > viewer). */
+/**
+ * Admin dashboard user accounts. Route access is enforced by PBAC permissions,
+ * not by `role`; `role` only selects the default policy bundle at user creation
+ * and marks the `admin` superuser (which bypasses the permission gate).
+ */
 export const users = sqliteTable("users", {
   id: text("id").primaryKey(),
   username: text("username").notNull().unique(),

@@ -6,11 +6,12 @@ import type { Permission, ResourceType } from "../../interfaces.js";
  * as route metadata. Grant-only: possessing a permission authorizes the action;
  * the absence of a grant denies it (default-deny).
  *
- * Scopeable resource types (`project`, `integration`, `agent`, `prompt`) accept a
- * concrete `resourceId` in a policy rule; a null `resourceId` grants the action on
- * every resource of that type. `task.*` permissions are evaluated against the id
- * of the task's owning **project** (tasks inherit their project's scope). The
- * remaining permissions are global and must be granted with a null `resourceId`.
+ * Scopeable resource types (`project`, and `task` via its owning project) accept
+ * a concrete `resourceId` in a policy rule; a null `resourceId` grants the action
+ * on every resource of that type. `task.*` permissions are evaluated against the
+ * id of the task's owning **project** (tasks inherit their project's scope). The
+ * remaining permissions (integrations, agents, prompts and global capabilities)
+ * are global and must be granted with a null `resourceId`.
  */
 export const PERMISSIONS = {
   // Projects (scopeable) — and the tasks they own.
@@ -21,17 +22,17 @@ export const PERMISSIONS = {
   TASK_READ: "task.read",
   TASK_OPERATE: "task.operate",
   TASK_DELETE: "task.delete",
-  // Integrations (scopeable).
+  // Integrations (global).
   INTEGRATION_READ: "integration.read",
   INTEGRATION_WRITE: "integration.write",
   INTEGRATION_DELETE: "integration.delete",
   INTEGRATION_OPERATE: "integration.operate",
-  // Agents (scopeable).
+  // Agents (global).
   AGENT_READ: "agent.read",
   AGENT_WRITE: "agent.write",
   AGENT_DELETE: "agent.delete",
   AGENT_OPERATE: "agent.operate",
-  // Prompts (scopeable).
+  // Prompts (global).
   PROMPT_READ: "prompt.read",
   PROMPT_WRITE: "prompt.write",
   PROMPT_DELETE: "prompt.delete",
