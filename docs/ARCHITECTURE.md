@@ -6,8 +6,8 @@
 
 Virtual Engineer is a **Node.js orchestrator** that runs on the host (or in a Docker container) and drives two autonomous workflows:
 
-- **Code generation** — picks up tickets, clones the repo into an ephemeral Docker container, lets Copilot implement the changes, then pushes for review.
-- **Code review** — receives review events (Gerrit SSH stream, GitLab/GitHub webhooks, or polling), runs Copilot on the diff inside a Docker container, and posts inline comments + a vote.
+- **Code generation** — picks up tickets, clones the repo host-side, runs Copilot in an ephemeral **OpenShell sandbox** (a k3s Pod), then pushes for review host-side.
+- **Code review** — receives review events (Gerrit SSH stream, GitLab/GitHub webhooks, or polling), runs Copilot on the diff inside an **OpenShell sandbox** (k3s Pod), and posts inline comments + a vote.
 
 ```
   ┌──────────────────────────────────────────────────────────────────────────┐
@@ -30,21 +30,21 @@ Virtual Engineer is a **Node.js orchestrator** that runs on the host (or in a Do
   │                                └──────────────┬────────────────────┘   │
   │                                               │                        │
   │                                ┌──────────────▼────────────────────┐   │
-  │                                │  WorkspaceRunner                  │   │
-  │                                │  1. docker volume create (×2)     │   │
-  │                                │  2. git clone (helper container)  │   │
-  │                                │  3. docker run  (agent container) │   │
-  │                                │  4. git commit + push (helper)    │   │
-  │                                │  5. docker volume rm  (×2)        │   │
+  │                                │  OpenShellWorkspaceRunner         │   │
+  │                                │  1. HostGitExecutor: clone (host) │   │
+  │                                │  2. sandbox create (k3s Pod)      │   │
+  │                                │  3. sandbox upload  → /workspace  │   │
+  │                                │  4. sandbox exec    (agent)       │   │
+  │                                │  5. sandbox download ← /workspace │   │
+  │                                │  6. git push (host)  + sandbox rm │   │
   │                                └──────────────┬────────────────────┘   │
   └──────────────────────────────────────────────-┼────────────────────────┘
-                git push SSH / HTTP                │ docker run --rm
+       git push SSH / HTTP (host-side)            │ OpenShell gateway (gRPC)
                         ▼                          ▼
   ┌──────────────────────────┐   ┌─────────────────────────────────────────┐
-  │  Gerrit / GitLab         │   │  Ephemeral Agent Container              │
+  │  Gerrit / GitLab / GitHub│   │  Ephemeral Agent Sandbox (k3s Pod)      │
   └──────────────────────────┘   │  virtual-engineer-workspace:latest      │
-                                 │  /workspace  → named volume (repo)      │
-                                 │  /ve-home    → named volume (CLI home)  │
+                                 │  /workspace  ← uploaded repo (incl .git)│
                                  │                                         │
                                  │  node /agent-worker/dist/index.js      │
                                  │    → copilot --headless                 │
@@ -56,8 +56,9 @@ Virtual Engineer is a **Node.js orchestrator** that runs on the host (or in a Do
 
 **Key design decisions:**
 
-- The host owns all credentials (SSH keys, API tokens). The agent container receives only a GitHub token for the Copilot LLM call.
-- Workspaces use Docker **named volumes** — not host-path bind mounts — so the orchestrator can itself run inside Docker without path-mapping issues.
+- The host owns all credentials (SSH keys, API tokens) and all git plumbing (clone, checkout, cherry-pick, **push**). The agent sandbox receives only the agent's own inference token (e.g. a GitHub token for the Copilot LLM call).
+- The workspace is moved between host and sandbox with OpenShell's **upload → exec → download** lifecycle (no shared filesystem), so it works on any k3s node. `HostGitExecutor` keeps the working directory (incl. `.git`) on the orchestrator.
+- OpenShell is the **sole** agent runtime; the gateway's `kubernetes` driver schedules each sandbox as an ephemeral Pod. Deny-by-default sandbox **policies** and **policy-denial** auditing are enforced by OpenShell.
 - Multiple integrations of the same type (e.g. two Gerrit servers) can be active simultaneously; runtime routing is by `integrationId`, not type.
 
 ---
@@ -183,8 +184,12 @@ src/
                           # github-pull-request (HMAC-validated)
 
   workspace/
-    dockerVolume.ts       # createVolume / removeVolume / execInVolume
-    workspaceRunner.ts    # DockerWorkspaceRunner — orchestrates clone+run+push
+    hostGitExecutor.ts        # native git clone/checkout/cherry-pick/diff (host-side)
+    openShellWorkspaceRunner.ts  # sole WorkspaceRunner — create/upload/exec/download
+  openshell/
+    openShellClient.ts        # `openshell` CLI wrapper (sandbox lifecycle + policy)
+    openShellPolicyBuilder.ts # deny-by-default policy YAML
+    denyEventPoller.ts        # scrubbed policy-denial events
 
 agent-worker/
   src/index.ts          # Provider-agnostic orchestrator INSIDE the agent
@@ -258,35 +263,33 @@ Tick-based polling with exponential backoff on consecutive failures.
 
 ### 3.3 WorkspaceRunner
 
-`src/workspace/workspaceRunner.ts` + `src/workspace/dockerVolume.ts`
+`src/workspace/openShellWorkspaceRunner.ts` + `src/workspace/hostGitExecutor.ts` + `src/openshell/openShellClient.ts`
 
-Manages the **Docker volume lifecycle** for each agent cycle. All VCS operations run inside temporary helper containers so the orchestrator itself never needs git on its PATH.
+The **sole** workspace runtime. Git plumbing runs natively on the orchestrator via
+`HostGitExecutor` (no git-in-container); agent execution runs in an ephemeral
+**OpenShell sandbox** (k3s Pod) through an **upload → exec → download** lifecycle.
 
 ```
   runCycle(task, project)
        │
-       ├─ createVolume("ve-ws-<taskId>-<rand>")   ← repo files
-       ├─ createVolume("ve-home-<taskId>-<rand>")  ← Copilot CLI native modules
+       ├─ HostGitExecutor.createWorkspace()   ← ephemeral dir under WORKSPACE_BASE_DIR
+       ├─ HostGitExecutor.cloneRepo(...)       ← git clone (host-side, SSH or HTTP)
        │
-       ├─ execInVolume(clone helper)   ← git clone via SSH or HTTP
+       ├─ client.createSandbox({ from: image, env: spec.env, policy })  ← k3s Pod
+       ├─ client.uploadToSandbox(dir → /workspace, --no-git-ignore)     ← incl. .git
+       ├─ client.execInSandbox({ workdir: /workspace,
+       │       command: [node, /agent-worker/dist/index.js], env })     ← agent runs
+       ├─ client.downloadFromSandbox(/workspace → dir)                  ← commits back
        │
-       ├─ runAgentInDocker(adapter, context)
-       │     └─ docker run --rm \
-       │           --read-only --cap-drop ALL \
-       │           --security-opt no-new-privileges:true \
-       │           --tmpfs /tmp:rw,nosuid,size=256m \
-       │           -v ve-ws:/workspace \
-       │           -v ve-home:/ve-home \
-       │           virtual-engineer-workspace:latest \
-       │           node /agent-worker/dist/index.js
+       ├─ vcsConnector.push(dir, ref, ...)     ← git push host-side (src/vcs)
        │
-       ├─ execInVolume(commit helper)  ← git add + git commit (with Change-Id)
-       ├─ execInVolume(push helper)    ← git push refs/for/<branch>
-       │
-       └─ removeVolume(ve-ws) + removeVolume(ve-home)
+       └─ client.removeSandbox()  +  HostGitExecutor.destroyWorkspace(dir)
 ```
 
-`execInVolume` injects SSH keys via a base64-encoded env var (decoded inside the helper and written to `/tmp/ssh-key`) to avoid host-path bind-mount issues when the orchestrator itself runs in Docker.
+Push/review-system credentials stay host-side (`src/vcs/` + `buildGitEnv`); only the
+agent's own inference token (from `buildContainerSpec`) is passed as sandbox env.
+The OpenShell gateway's `kubernetes` driver schedules the Pod and enforces the
+deny-by-default policy applied before the agent starts.
 
 ---
 
@@ -359,23 +362,21 @@ Enabling/disabling an integration via the admin API calls `enablePlugin` / `disa
 
 `src/agents/copilotAdapter.ts`
 
-Builds the **Docker container spec** and parses the agent result.
+Builds the **agent container spec** (image, env, command, prompts) and parses the
+agent result. The OpenShell runner executes that spec inside a k3s sandbox Pod
+(upload → exec → download); the adapter itself is runtime-agnostic.
 
 ```
   execute(context)
        │
        ├─ getGitHubOAuthToken(context)    ← OAuth or direct token from integration
        │
-       ├─ buildContainerSpec(context, authEnv)
-       │     env: GITHUB_TOKEN, COPILOT_MODEL, task context vars
-       │     additionalDockerArgs:
-       │       --read-only
-       │       --cap-drop ALL
-       │       --security-opt no-new-privileges:true
-       │       --security-opt label=disable    (SELinux compat)
-       │       --tmpfs /tmp:rw,nosuid,size=256m
+       ├─ buildContainerSpecWithPrompts(context, authEnv)
+       │     image:   virtual-engineer-workspace:latest
+       │     env:     GITHUB_TOKEN, COPILOT_MODEL, task context vars, SYSTEM_PROMPT
+       │     command: node /agent-worker/dist/index.js
        │
-       ├─ docker run → agent-worker/dist/index.js
+       ├─ (OpenShell runner) sandbox create → upload → exec → download
        │     stdout: JSON AgentResult
        │     stderr: structured __ve_event lines + plain logs
        │
@@ -384,7 +385,10 @@ Builds the **Docker container spec** and parses the agent result.
              fallback to "feat: <subject>" if missing/invalid
 ```
 
-The agent container is placed on `virtual-engineer_ve-agent-net` — a dedicated Docker bridge network that isolates it from the default bridge and other containers. The network is **not** `--internal`, so the container retains outbound access (required to reach the GitHub/Copilot APIs).
+Sandbox isolation and outbound network control are enforced by OpenShell's
+deny-by-default **policy engine** (filesystem / network / process / inference),
+not by Docker flags. The agent receives only its own inference token (e.g. the
+GitHub token for the Copilot LLM call); push credentials stay host-side.
 
 ---
 
@@ -418,12 +422,11 @@ Drives the **code-review lifecycle** for a single change.
        ▼
   REVIEW_RUNNING
        │
-       ├─ clone repo via execInVolume
-       ├─ git fetch refs/changes/<patchset>
+       ├─ clone repo host-side (HostGitExecutor) + git fetch refs/changes/<patchset>
        ├─ buildReviewPrompt(diff + "already reported" prior comments)
        │
-       ├─ docker run (agent container, REVIEW_MODE=1)
-       │     reads USER_PROMPT_FILE (/ve-home/user-prompt.txt)
+       ├─ sandbox create + upload workspace → exec agent (REVIEW_MODE=1)
+       │     reads USER_PROMPT_FILE (uploaded prompt)
        │     returns raw LLM text → stdout
        │
        ├─ parseReviewResult(output)  →  comments + vote
@@ -451,11 +454,14 @@ Drives the **code-review lifecycle** for a single change.
 
 | Connector | Transport | Push mechanism |
 |-----------|-----------|----------------|
-| `GerritVcsConnector` | SSH (via helper container) | `git push refs/for/<branch>` + Change-Id footer |
+| `GerritVcsConnector` | SSH (host-side git) | `git push refs/for/<branch>` + Change-Id footer |
 | `GitLabVcsConnector` | HTTP (token in `.git-credentials`) | `git push` + GitLab REST API MR creation |
 | `GitHubVcsConnector` | HTTP (token in `.git-credentials`) | `git push` + GitHub REST API PR creation |
 
-Both operate entirely via `execInVolume` — no VCS tools run directly on the orchestrator process. SSH keys are injected as base64 env vars.
+All push/checkout operations run **host-side** in the orchestrator (native `git`
+via `buildGitEnv`), never inside the agent sandbox — so push credentials never
+leave the host. Gerrit SSH auth uses `GIT_SSH_COMMAND` (explicit key) or the
+forwarded SSH agent.
 
 `vcsFactory.ts` exports `createVcsConnectorForIntegration(integration, context?)` which reads the integration's `configJson` and returns the appropriate connector.
 
@@ -750,21 +756,23 @@ Webhook secrets are per-integration (stored in `configJson.webhookSecret`), rota
 
 ---
 
-## 9. Agent container
+## 9. Agent sandbox
 
 ### Image (`Dockerfile.agent`)
 
-Base: `node:24-bookworm-slim`. Includes: `git`, `openssh-client`, `curl`, `jq`, GitHub CLI (`gh`).
+Base: `node:24-bookworm-slim`. Includes: `git`, `openssh-client`, `curl`, `jq`, `iproute2` (the `ip` binary the OpenShell supervisor needs for sandbox network-namespace isolation), GitHub CLI (`gh`).
 
 ```
 FROM node:24-bookworm-slim
-RUN apt-get install git openssh-client curl ca-certificates jq gh
+RUN apt-get install git openssh-client curl ca-certificates jq iproute2 gh
 COPY agent-worker/ /agent-worker/
 RUN npm --prefix /agent-worker ci --omit=dev
 WORKDIR /workspace
 ```
 
-The Copilot CLI native binary (`copilot-linux-x64`) is installed on first use into `/ve-home` (the persistent named volume), not into `/tmp`.
+This image is the `--from` for the OpenShell sandbox: the gateway's kubernetes
+driver schedules it as an ephemeral k3s Pod. The Copilot CLI native binary
+(`copilot-linux-x64`) is installed on first use into the sandbox HOME.
 
 ### Worker (`agent-worker/src/index.ts` → `dist/index.js`)
 
@@ -784,13 +792,11 @@ Runs inside the container. Two modes:
 
 ### Security constraints
 
-| Flag | Purpose |
-|------|---------|
-| `--read-only` | Rootfs immutable; writes only via tmpfs or volumes |
-| `--cap-drop ALL` | No Linux capabilities |
-| `--security-opt no-new-privileges:true` | Prevents privilege escalation |
-| `--security-opt label=disable` | Allows Copilot CLI's `mprotect(PROT_READ)` on SELinux hosts |
-| `--tmpfs /tmp:rw,nosuid,size=256m` | Ephemeral scratch space, no setuid |
-| `--network virtual-engineer_ve-agent-net` | Dedicated bridge — isolated from the default bridge and other containers (not `--internal`; outbound access retained for the GitHub/Copilot APIs) |
+The sandbox is a k3s Pod governed by OpenShell's deny-by-default **policy engine**
+across four domains — **filesystem** (writes restricted to `/workspace`),
+**network** (L7 egress allow-list, deny by default), **process** (no privilege
+escalation, dropped capabilities), and **inference** (model-endpoint routing).
+Policies are declarative YAML applied before the agent starts and surfaced/audited
+in the admin UI (Runtime Policies + Policy Denials).
 
-The agent receives only: `GITHUB_TOKEN`, task context env vars (title, description, model), and git author metadata. System secrets (DB path, admin token, SSH keys) are never passed to the container.
+The agent receives only: `GITHUB_TOKEN` (its own inference token), task context env vars (title, description, model), and git author metadata. System secrets (DB path, admin token, SSH keys) and push/review-system credentials are never passed to the sandbox — git clone/checkout/push run host-side in the orchestrator.

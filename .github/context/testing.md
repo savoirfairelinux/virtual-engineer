@@ -21,7 +21,7 @@ tests/
 |---|---|
 | Admin routes / server | `adminServer` (+ `.behavior`, `.integration`), `adminHealthEndpoint`, `adminPluginRoutes`, `adminPromptRoutes`, `adminAgentsRoutes`, `adminAgentsOAuthRoutes`, `adminProjectsRoutes` (+ `.relaunch`), `adminConcurrencyRoutes`, `adminSettingsRoutes`, `adminIntegrationsDiscover`, `adminWebhookSecretRoutes`, `adminCostRoutes`, `adminAuthService`, `adminAuthRoutes`, `adminServerRbac`, `adminPoliciesRoutes`, `adminAudit`, `adminAuditRoutes`, `commonPasswords`, `loginRateLimiter`, `closeAdminServer`, `dashboard` (+ `.configurationTab`) |
 | Orchestrator / polling | `orchestrator` (+ `.projectMode`, `.webhookEntryPoints`, `.concurrency`), `orchestratorCommitMessage`, `pollingLoop.projects`, `pollingLoop.concurrency`, `pollingLoop.reviewPolling`, `pollingLoop.updateConfig`, `concurrencyTracker`, `feedbackProcessor`, `pauseResumeFlow` |
-| State / stores | `stateMachine`, `stateStore` (+ `.projects`, `.cost`), `settingsStore`, `migrations.projects`, `integrationStore`, `promptStore`, `userStore`, `auditStore`, `pbacStores` |
+| State / stores | `stateMachine`, `stateStore` (+ `.projects`, `.cost`), `settingsStore`, `migrations.projects`, `integrationStore`, `promptStore`, `runtimePolicyStore` (runtime policies/denials), `userStore`, `auditStore`, `pbacStores` |
 | PBAC / authorization | `policyEngine`, `permissions`, `pbacStores`, `adminPoliciesRoutes`, `adminServerRbac` (project-scoping suite) |
 | Connectors — Redmine | `redmineConnector`, `redmineDiscovery`, `webhookHandlerRedmine` |
 | Connectors — Gerrit | `gerritConnector`, `gerritDiscovery`, `gerritSshDiscovery`, `gerritSshClient`, `gerritSshReviewProvider`, `gerritStreamEvents`, `gerritVcsConnector` |
@@ -31,9 +31,9 @@ tests/
 | Agents / Copilot | `copilotAdapter` (+ `.promptInjection`), `copilotConnectionValidator`, `copilotOAuthService`, `copilotModelsService`, `providerAuthService`, `mockAgentAdapter`, `agentEventTypes` (+ `.normalization`), `workerCommitProtocol` |
 | Review runtime | `copilotReviewAgent`, `reviewOrchestrator`, `reviewPromptBuilder`, `reviewResultParser`, `reviewLiveLogs`, `commentHash`, `commentSeverity`, `revisionPatchset` |
 | Cost tracking | `cycleCost`, `stateStore.cost`, `adminCostRoutes` |
-| Plugins / runtime wiring | `pluginManager` (+ `.multiInstance`), `registry`, `runtimeBootstrap` (historical name; covers bootstrap wiring in `src/index.ts`), `integrationStreamEvents` |
+| Plugins / runtime wiring | `pluginManager` (+ `.multiInstance`), `registry`, `openShellWorkspaceRunner`, `openshell`, `hostGitExecutor`, `runnerContract`, `integrationStreamEvents` |
 | Webhooks | `webhookServer`, `webhookHandlerRegistry` (+ the per-provider handlers listed above) |
-| Workspace / utils / misc | `workspaceRunner` (+ `.multiTarget`), `dockerVolume`, `buildRepositoryMap`, `config`, `logger`, `encryption`, `errorClassifier`, `gitExec`, `ticketFooterFormatter` |
+| Workspace / utils / misc | `buildRepositoryMap`, `config`, `logger`, `encryption`, `errorClassifier`, `gitExec`, `ticketFooterFormatter` |
 
 > **There are integration tests today.** Files ending in `.integration.test.ts` wire several modules together with mocked external I/O.
 
