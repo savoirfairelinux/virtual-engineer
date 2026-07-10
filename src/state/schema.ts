@@ -403,6 +403,74 @@ export const appSettings = sqliteTable(
   })
 );
 
+// ─── Runtime policies (agent sandbox governance) ────────────────────────────
+
+export type RuntimePolicyKind = "filesystem" | "network" | "process" | "inference";
+
+export const runtimePolicies = sqliteTable(
+  "runtime_policies",
+  {
+    id: text("id").primaryKey(),
+    name: text("name").notNull(),
+    kind: text("kind").$type<RuntimePolicyKind>().notNull(),
+    yaml: text("yaml").notNull().default(""),
+    description: text("description").notNull().default(""),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
+  },
+  (table) => ({
+    idxRuntimePoliciesName: index("idx_runtime_policies_name").on(table.name),
+    idxRuntimePoliciesKind: index("idx_runtime_policies_kind").on(table.kind),
+  })
+);
+
+/** Binds a runtime policy to a project or an agent (exactly one is non-null). */
+export const runtimePolicyBindings = sqliteTable(
+  "runtime_policy_bindings",
+  {
+    id: text("id").primaryKey(),
+    policyId: text("policy_id").notNull().references(() => runtimePolicies.id, { onDelete: "cascade" }),
+    projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
+    agentId: text("agent_id").references(() => agents.id, { onDelete: "cascade" }),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
+  },
+  (table) => ({
+    idxRuntimePolicyBindingsPolicy: index("idx_runtime_policy_bindings_policy").on(table.policyId),
+    idxRuntimePolicyBindingsProject: index("idx_runtime_policy_bindings_project").on(table.projectId),
+    idxRuntimePolicyBindingsAgent: index("idx_runtime_policy_bindings_agent").on(table.agentId),
+    chkRuntimePolicyBindingTarget: check(
+      "chk_runtime_policy_binding_target",
+      sql`(${table.projectId} IS NOT NULL AND ${table.agentId} IS NULL) OR (${table.projectId} IS NULL AND ${table.agentId} IS NOT NULL)`
+    ),
+    uqRuntimePolicyBindingProject: unique("uq_runtime_policy_binding_project").on(table.policyId, table.projectId),
+    uqRuntimePolicyBindingAgent: unique("uq_runtime_policy_binding_agent").on(table.policyId, table.agentId),
+  })
+);
+
+/** Audit log of runtime policy denials. */
+export const policyDenialEvents = sqliteTable(
+  "policy_denial_events",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    taskId: text("task_id").references(() => tasks.taskId),
+    projectId: text("project_id"),
+    runtime: text("runtime").notNull().default(""),
+    category: text("category").notNull().default(""),
+    host: text("host").notNull().default(""),
+    method: text("method").notNull().default(""),
+    path: text("path").notNull().default(""),
+    decision: text("decision").notNull().default("deny"),
+    reason: text("reason").notNull().default(""),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+  },
+  (table) => ({
+    idxPolicyDenialsTask: index("idx_policy_denials_task").on(table.taskId),
+    idxPolicyDenialsProject: index("idx_policy_denials_project").on(table.projectId),
+    idxPolicyDenialsCreated: index("idx_policy_denials_created").on(table.createdAt),
+  })
+);
+
 // ─── Users / Sessions / Audit (admin accounts) ───────────────────────────────
 
 /**
