@@ -14,24 +14,43 @@ import { UsersSection }         from "./UsersSection.tsx";
 import { GroupsSection }        from "./GroupsSection.tsx";
 import { PoliciesSection }      from "./PoliciesSection.tsx";
 import { AuditSection }         from "./AuditSection.tsx";
+import { RuntimePoliciesSection } from "./RuntimePoliciesSection.tsx";
+import { DenialsSection }       from "./DenialsSection.tsx";
 import { useCurrentUser }       from "../../authContext.tsx";
 
-/* ─── Nav items ────────────────────────────────────────────────────────── */
-const CONFIG_NAV = [
-  { id: "overview",      label: "Overview",         sub: "Summary",           icon: "grid",   adminOnly: false },
-  { id: "integrations",  label: "Integrations",     sub: "Providers",         icon: "server", adminOnly: false },
-  { id: "oauth",         label: "OAuth Apps",       sub: "Provider registry", icon: "link",   adminOnly: false },
-  { id: "agents",        label: "Agents Library",   sub: "Reusable agents",   icon: "spark",  adminOnly: false },
-  { id: "projects",      label: "Projects",         sub: "Execution units",   icon: "box",    adminOnly: false },
-  { id: "prompts",       label: "Prompts",          sub: "System & custom",   icon: "edit",   adminOnly: false },
-  { id: "users",         label: "Users",            sub: "Accounts & roles",  icon: "user",   adminOnly: true },
-  { id: "groups",        label: "Groups",           sub: "User collections",  icon: "layers", adminOnly: true },
-  { id: "policies",      label: "Policies",         sub: "Access control",    icon: "config", adminOnly: true },
-  { id: "audit",         label: "Audit",            sub: "Change history",    icon: "clock",  adminOnly: true },
-  { id: "system",        label: "System Settings",  sub: "Runtime settings",  icon: "config", adminOnly: false },
-] as const;
+type SectionId = "overview" | "integrations" | "oauth" | "agents" | "projects" | "prompts"
+  | "runtime-policies" | "denials" | "users" | "groups" | "policies" | "audit" | "system";
 
-type SectionId = typeof CONFIG_NAV[number]["id"];
+interface NavItem { id: SectionId; label: string; sub: string; icon: string; adminOnly: boolean }
+interface NavGroup { label: string | null; items: NavItem[] }
+
+const CONFIG_GROUPS: NavGroup[] = [
+  { label: null, items: [{ id: "overview", label: "Overview", sub: "Summary", icon: "grid", adminOnly: false }] },
+  { label: "Providers", items: [
+    { id: "integrations", label: "Integrations", sub: "Providers", icon: "server", adminOnly: false },
+    { id: "oauth", label: "OAuth Apps", sub: "Provider registry", icon: "link", adminOnly: false },
+  ] },
+  { label: "Execution", items: [
+    { id: "agents", label: "Agents Library", sub: "Reusable agents", icon: "spark", adminOnly: false },
+    { id: "projects", label: "Projects", sub: "Execution units", icon: "box", adminOnly: false },
+    { id: "prompts", label: "Prompts", sub: "System & custom", icon: "edit", adminOnly: false },
+  ] },
+  { label: "Runtime & Security", items: [
+    { id: "runtime-policies", label: "Runtime Policies", sub: "Sandbox governance", icon: "layers", adminOnly: true },
+    { id: "denials", label: "Policy Denials", sub: "Audit log", icon: "alert", adminOnly: true },
+  ] },
+  { label: "Access Control", items: [
+    { id: "users", label: "Users", sub: "Accounts & roles", icon: "user", adminOnly: true },
+    { id: "groups", label: "Groups", sub: "User collections", icon: "layers", adminOnly: true },
+    { id: "policies", label: "Policies", sub: "Access control", icon: "config", adminOnly: true },
+    { id: "audit", label: "Audit", sub: "Change history", icon: "clock", adminOnly: true },
+  ] },
+  { label: "System", items: [
+    { id: "system", label: "System Settings", sub: "Runtime settings", icon: "config", adminOnly: false },
+  ] },
+];
+
+const CONFIG_NAV: NavItem[] = CONFIG_GROUPS.flatMap((group) => group.items);
 
 export interface ConfigViewData {
   integrations: ApiIntegration[];
@@ -85,10 +104,18 @@ export function ConfigView(props: ConfigViewData) {
       >
         <div className="eyebrow" style={{ padding: "0 8px", marginBottom: "4px" }}>Admin</div>
         <div style={{ padding: "0 8px 16px", fontSize: "16px", fontWeight: 600 }}>Configuration</div>
-        <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
-          {visibleNav.map((n) => {
-            const active = effectiveSec === n.id;
-            return (
+        <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
+          {CONFIG_GROUPS.map((group) => {
+            const items = group.items.filter((item) => visibleNav.includes(item));
+            if (items.length === 0) return null;
+            return <div key={group.label ?? "__top"} style={{ marginBottom: "6px" }}>
+              {group.label && <div style={{
+                padding: "10px 10px 4px", fontSize: "10px", fontWeight: 700,
+                letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--text-ghost)",
+              }}>{group.label}</div>}
+              {items.map((n) => {
+                const active = effectiveSec === n.id;
+                return (
               <button
                 key={n.id}
                 onClick={() => handleSectionChange(n.id)}
@@ -111,7 +138,9 @@ export function ConfigView(props: ConfigViewData) {
                   <div style={{ fontSize: "10.5px", color: "var(--text-ghost)" }}>{n.sub}</div>
                 </div>
               </button>
-            );
+                );
+              })}
+            </div>;
           })}
         </div>
       </div>
@@ -129,6 +158,8 @@ export function ConfigView(props: ConfigViewData) {
           {effectiveSec === "agents"       && <AgentsSection {...props} />}
           {effectiveSec === "projects"     && <ProjectsSection {...props} />}
           {effectiveSec === "prompts"      && <PromptsSection {...props} />}
+          {effectiveSec === "runtime-policies" && isAdmin && <RuntimePoliciesSection />}
+          {effectiveSec === "denials"      && isAdmin && <DenialsSection />}
           {effectiveSec === "users"        && isAdmin && <UsersSection />}
           {effectiveSec === "groups"       && isAdmin && <GroupsSection />}
           {effectiveSec === "policies"     && isAdmin && <PoliciesSection />}
