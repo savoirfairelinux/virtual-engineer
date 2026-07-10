@@ -6,12 +6,11 @@
 import { execFileSync } from "child_process";
 import { getLogger } from "../logger.js";
 import { execGit } from "../utils/gitExec.js";
-import type { VcsConnector, VcsPushResult, VolumeExecOptions } from "./vcsConnector.js";
+import type { VcsConnector, VcsPushResult } from "./vcsConnector.js";
 import { buildFeatureBranchRef } from "./branchNaming.js";
 import type { ReviewComment } from "../interfaces.js";
 import { ReviewApiError } from "../interfaces.js";
 import { GitLabHttpClient } from "../connectors/gitlabHttpClient.js";
-import { execInVolume } from "../workspace/dockerVolume.js";
 import { redactUrls } from "../utils/redactUrl.js";
 
 const log = getLogger("gitlab-vcs");
@@ -73,13 +72,8 @@ export class GitLabVcsConnector implements VcsConnector {
     repoDir: string,
     ref: string,
     message: string,
-    changeId?: string,
-    volumeOpts?: VolumeExecOptions
+    changeId?: string
   ): Promise<VcsPushResult> {
-    if (volumeOpts) {
-      return this.pushInVolume(volumeOpts, ref, message);
-    }
-
     log.info(
       { repoDir, ref, changeId },
       "preparing to push to GitLab"
@@ -150,13 +144,8 @@ export class GitLabVcsConnector implements VcsConnector {
   async pushDirect(
     repoDir: string,
     ref: string,
-    _topic?: string,
-    volumeOpts?: VolumeExecOptions
+    _topic?: string
   ): Promise<VcsPushResult> {
-    if (volumeOpts) {
-      return this.pushDirectInVolume(volumeOpts, ref);
-    }
-
     log.info({ repoDir, ref }, "pushing HEAD directly to GitLab (agent-created commits)");
 
     try {
@@ -200,112 +189,6 @@ export class GitLabVcsConnector implements VcsConnector {
       const error = err instanceof Error ? err : new Error(String(err));
       throw new Error(`Failed to push directly to GitLab: ${redactUrls(error.message.slice(0, 500))}`);
     }
-  }
-
-  // ─── Volume-based push helpers ──────────────────────────────────────────────
-
-  /** Stage, commit and push to GitLab via a helper container that mounts the named Docker volume. */
-  private async pushInVolume(
-    volumeOpts: VolumeExecOptions,
-    ref: string,
-    message: string
-  ): Promise<VcsPushResult> {
-    log.info({ volumeName: volumeOpts.volumeName, ref }, "pushing to GitLab via volume container");
-
-    const encodedMsg = Buffer.from(message).toString("base64");
-    const cwd = volumeOpts.subPath && volumeOpts.subPath !== "."
-      ? `/workspace/${volumeOpts.subPath}`
-      : "/workspace";
-
-    const result = await execInVolume({
-      volumeName: volumeOpts.volumeName,
-      image: volumeOpts.image,
-      command: ["bash", "-c", [
-        `cd "${cwd}"`,
-        `git config user.name "$VE_GIT_NAME"`,
-        `git config user.email "$VE_GIT_EMAIL"`,
-        `git config credential.helper '!f() { echo "username=oauth2"; echo "password=$VE_GIT_TOKEN"; }; f'`,
-        `git add -A`,
-        `echo "$VE_COMMIT_MSG_B64" | base64 -d > /tmp/ve-commit-msg.txt`,
-        `git commit -F /tmp/ve-commit-msg.txt`,
-        `git push -u origin "$VE_PUSH_REF"`,
-      ].join(" && ")],
-      env: {
-        VE_GIT_NAME: this.config.gitAuthorName,
-        VE_GIT_EMAIL: this.config.gitAuthorEmail,
-        VE_COMMIT_MSG_B64: encodedMsg,
-        VE_PUSH_REF: ref,
-        VE_GIT_TOKEN: this.config.token,
-      },
-    });
-
-    if (result.exitCode !== 0) {
-      throw new Error(`Failed to push to GitLab (volume): ${redactUrls(result.stderr.slice(0, 500))}`);
-    }
-
-    // Create or find MR via REST API (host-side)
-    const mr = await this.createOrFindMergeRequest(
-      ref,
-      this.config.targetBranch ?? "main",
-      message.split("\n")[0] || `[VE] Feature branch ${ref}`
-    );
-
-    const mrIid = String(mr["iid"]);
-    const mrUrl = (mr["web_url"] as string)
-      || `${this.config.baseUrl}/project/${this.config.projectId}/-/merge_requests/${mrIid}`;
-
-    return { changeId: mrIid, url: mrUrl, status: "OPEN" };
-  }
-
-  /** Push HEAD directly to GitLab from inside the named Docker volume (no new commit created). */
-  private async pushDirectInVolume(
-    volumeOpts: VolumeExecOptions,
-    ref: string
-  ): Promise<VcsPushResult> {
-    log.info({ volumeName: volumeOpts.volumeName, ref }, "pushing HEAD directly to GitLab via volume container");
-
-    const cwd = volumeOpts.subPath && volumeOpts.subPath !== "."
-      ? `/workspace/${volumeOpts.subPath}`
-      : "/workspace";
-
-    const result = await execInVolume({
-      volumeName: volumeOpts.volumeName,
-      image: volumeOpts.image,
-      command: ["bash", "-c", [
-        `cd "${cwd}"`,
-        `git config credential.helper '!f() { echo "username=oauth2"; echo "password=$VE_GIT_TOKEN"; }; f'`,
-        `git checkout -B "$VE_PUSH_REF"`,
-        `git push --force -u origin "$VE_PUSH_REF"`,
-      ].join(" && ")],
-      env: {
-        VE_PUSH_REF: ref,
-        VE_GIT_TOKEN: this.config.token,
-      },
-    });
-
-    if (result.exitCode !== 0) {
-      throw new Error(`Failed to push directly to GitLab (volume): ${redactUrls(result.stderr.slice(0, 500))}`);
-    }
-
-    // Get HEAD subject for MR title
-    const logResult = await execInVolume({
-      volumeName: volumeOpts.volumeName,
-      image: volumeOpts.image,
-      command: ["bash", "-c", `cd "${cwd}" && git log -1 --format=%s`],
-    });
-
-    const headSubject = logResult.stdout.trim();
-    const mr = await this.createOrFindMergeRequest(
-      ref,
-      this.config.targetBranch ?? "main",
-      headSubject || `[VE] Feature branch ${ref}`
-    );
-
-    const mrIid = String(mr["iid"]);
-    const mrUrl = (mr["web_url"] as string)
-      || `${this.config.baseUrl}/project/${this.config.projectId}/-/merge_requests/${mrIid}`;
-
-    return { changeId: mrIid, url: mrUrl, status: "OPEN" };
   }
 
   /**

@@ -9,11 +9,10 @@
 import { execFileSync } from "child_process";
 import { getLogger } from "../logger.js";
 import { execGit } from "../utils/gitExec.js";
-import type { VcsConnector, VcsPushResult, VolumeExecOptions } from "./vcsConnector.js";
+import type { VcsConnector, VcsPushResult } from "./vcsConnector.js";
 import { buildFeatureBranchRef } from "./branchNaming.js";
 import type { ReviewComment } from "../interfaces.js";
 import { ReviewApiError } from "../interfaces.js";
-import { execInVolume } from "../workspace/dockerVolume.js";
 import { redactUrls } from "../utils/redactUrl.js";
 
 const log = getLogger("github-vcs");
@@ -68,8 +67,7 @@ export class GitHubVcsConnector implements VcsConnector {
     repoDir: string,
     ref: string,
     message: string,
-    _changeId?: string,
-    _volumeOpts?: VolumeExecOptions
+    _changeId?: string
   ): Promise<VcsPushResult> {
     try {
       execGit(["config", "user.name", this.config.gitAuthorName], repoDir);
@@ -121,13 +119,8 @@ export class GitHubVcsConnector implements VcsConnector {
   async pushDirect(
     repoDir: string,
     ref: string,
-    _topic?: string,
-    volumeOpts?: VolumeExecOptions
+    _topic?: string
   ): Promise<VcsPushResult> {
-    if (volumeOpts) {
-      return this.pushDirectInVolume(volumeOpts, ref);
-    }
-
     const remoteUrl = execGit(["remote", "get-url", "origin"], repoDir).trim();
     const authenticatedUrl = new URL(remoteUrl);
     authenticatedUrl.username = "x-access-token";
@@ -142,57 +135,6 @@ export class GitHubVcsConnector implements VcsConnector {
 
     const subject = execGit(["log", "-1", "--pretty=%s"], repoDir).trim();
     const body = execGit(["log", "-1", "--pretty=%b"], repoDir).trim();
-    const pr = await this.createOrFindPullRequest(
-      ref,
-      this.config.targetBranch ?? "main",
-      subject || `[VE] Push ${ref}`,
-      body
-    );
-
-    return {
-      changeId: String(pr.number),
-      url: pr.html_url,
-      status: pr.state === "closed" ? (pr.merged ? "MERGED" : "ABANDONED") : "OPEN",
-    };
-  }
-
-  private async pushDirectInVolume(volumeOpts: VolumeExecOptions, ref: string): Promise<VcsPushResult> {
-    log.info({ volumeName: volumeOpts.volumeName, ref }, "pushing HEAD directly to GitHub via volume container");
-
-    const cwd = volumeOpts.subPath && volumeOpts.subPath !== "."
-      ? `/workspace/${volumeOpts.subPath}`
-      : "/workspace";
-
-    const httpsRemote = `https://x-access-token:${this.config.token}@${this.config.host}/${this.config.owner}/${this.config.repo}.git`;
-
-    const pushResult = await execInVolume({
-      volumeName: volumeOpts.volumeName,
-      image: volumeOpts.image,
-      command: ["bash", "-c", [
-        `cd "${cwd}"`,
-        `git checkout -B "$VE_PUSH_REF"`,
-        `git push --force -u "$VE_PUSH_URL" "$VE_PUSH_REF"`,
-      ].join(" && ")],
-      env: {
-        VE_PUSH_REF: ref,
-        VE_PUSH_URL: httpsRemote,
-      },
-    });
-
-    if (pushResult.exitCode !== 0) {
-      throw new Error(`Failed to push directly to GitHub (volume): ${redactUrls(pushResult.stderr.slice(0, 500))}`);
-    }
-
-    const logResult = await execInVolume({
-      volumeName: volumeOpts.volumeName,
-      image: volumeOpts.image,
-      command: ["bash", "-c", `cd "${cwd}" && git log -1 --format=%s%n%b`],
-    });
-
-    const lines = logResult.stdout.split("\n");
-    const subject = (lines[0] ?? "").trim();
-    const body = lines.slice(1).join("\n").trim();
-
     const pr = await this.createOrFindPullRequest(
       ref,
       this.config.targetBranch ?? "main",

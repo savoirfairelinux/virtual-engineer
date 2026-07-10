@@ -1,5 +1,6 @@
 import pRetry from "p-retry";
 import { randomUUID, createHash } from "crypto";
+import { join } from "path";
 import { formatTicketFooter, hasTicketFooter } from "../utils/ticketFooterFormatter.js";
 import type {
   AgentAdapter,
@@ -882,7 +883,9 @@ export class Orchestrator {
 
     try {
       const patchsetOpts = await rootConnector.resolvePatchsetOptions(primaryChange.changeId);
-      await this.workspaceRunner.applyPriorPatchset(handle, patchsetOpts);
+      // The connector cannot know the repo path; supply the full clone URL
+      // (base + repo) so `git fetch` has a valid remote to pull refs/changes from.
+      await this.workspaceRunner.applyPriorPatchset(handle, { ...patchsetOpts, vcsBaseUrl: root.cloneUrl });
       log.info(
         { taskId: task.taskId, changeId: primaryChange.changeId, revisionNumber: patchsetOpts.revisionNumber, patchset: patchsetOpts.patchset },
         "checked out existing patchset for retry cycle"
@@ -895,7 +898,7 @@ export class Orchestrator {
         for (const change of secondaryChanges) {
           try {
             const secOpts = await rootConnector.resolvePatchsetOptions!(change.changeId);
-            await this.workspaceRunner.cherryPickPriorPatchset(handle, secOpts);
+            await this.workspaceRunner.cherryPickPriorPatchset(handle, { ...secOpts, vcsBaseUrl: root.cloneUrl });
             log.info(
               { taskId: task.taskId, changeId: change.changeId, commitIndex: change.commitIndex, revisionNumber: secOpts.revisionNumber, patchset: secOpts.patchset },
               "cherry-picked secondary patchset for retry cycle"
@@ -1414,16 +1417,19 @@ export class Orchestrator {
       const ref = await this.resolvePushRef(task, () => computedRef);
       const reviewSystemLabel = vcsConnector.reviewSystemLabel;
 
-      const volumeOpts = { volumeName: handle.volumeName, image: handle.containerImage, subPath: target.localPath };
+      // Push runs host-side against the repo's working directory. Multi-repo
+      // targets live in sub-directories of the workspace, so join the target's
+      // localPath ("." for the root repo) onto the host workspace path.
+      const repoDir = join(handle.hostWorkspacePath, target.localPath);
       try {
         const commitMsg = this.appendTicketFooter(fallbackCommitMessage, task.ticketId, ticketUrl, task.ticketSourceLabel);
         const subjectHash = createHash("sha1").update(fallbackCommitMessage.split("\n")[0] ?? "").digest("hex");
 
         let pushResult;
         if (vcsConnector.pushDirect) {
-          pushResult = await vcsConnector.pushDirect(handle.hostWorkspacePath, ref, topic, volumeOpts);
+          pushResult = await vcsConnector.pushDirect(repoDir, ref, topic);
         } else {
-          pushResult = await vcsConnector.push(handle.hostWorkspacePath, ref, commitMsg, undefined, volumeOpts);
+          pushResult = await vcsConnector.push(repoDir, ref, commitMsg, undefined);
         }
 
         // Use Change-Ids from agent commits when available — this is the source of truth
