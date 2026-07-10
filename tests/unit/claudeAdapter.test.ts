@@ -63,7 +63,6 @@ describe("ClaudeAdapter", () => {
       const spec = adapter.buildContainerSpec(makeContext(), { ANTHROPIC_API_KEY: "sk-ant-key" });
 
       expect(spec.command).toEqual(["node", "/agent-worker/dist/index.js"]);
-      expect(spec.networkMode).toBe("virtual-engineer_ve-agent-net");
       expect(spec.env).toMatchObject({
         AGENT_PROVIDER: "claude",
         CLAUDE_MODEL: "sonnet",

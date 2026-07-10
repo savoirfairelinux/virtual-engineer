@@ -143,14 +143,14 @@ describe("GerritVcsConnector", () => {
 
       const knownConnector = new GerritVcsConnector({
         ...mockConfig,
-        sshKnownHostsPath: "/app/secrets/gerrit_known_hosts",
+        sshKnownHostsPath: "/tmp/gerrit_known_hosts",
       });
       await knownConnector.clone("ssh://gerrit.example.com:29418/repo.git", "main", "/tmp/repo");
 
       const callArgs = mockExecFileSync.mock.calls[0];
       const env = (callArgs![2] as Record<string, unknown>)["env"] as Record<string, string>;
       expect(env["GIT_SSH_COMMAND"]).toContain("StrictHostKeyChecking=yes");
-      expect(env["GIT_SSH_COMMAND"]).toContain("UserKnownHostsFile=/app/secrets/gerrit_known_hosts");
+      expect(env["GIT_SSH_COMMAND"]).toContain("UserKnownHostsFile=/tmp/gerrit_known_hosts");
       expect(env["GIT_SSH_COMMAND"]).not.toContain("StrictHostKeyChecking=no");
     });
   });

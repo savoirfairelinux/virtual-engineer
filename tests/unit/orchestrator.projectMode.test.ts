@@ -6,13 +6,6 @@ vi.mock("child_process", () => ({
   spawn: vi.fn(),
 }));
 
-vi.mock("../../src/workspace/dockerVolume.js", () => ({
-  createVolume: vi.fn(),
-  removeVolume: vi.fn(),
-  execInVolume: vi.fn().mockResolvedValue({ stdout: "", stderr: "", exitCode: 0 }),
-  listVeVolumes: vi.fn().mockResolvedValue([]),
-}));
-
 import { Orchestrator } from "../../src/orchestrator/orchestrator.js";
 import type { ProjectModeDeps } from "../../src/orchestrator/orchestrator.js";
 import {

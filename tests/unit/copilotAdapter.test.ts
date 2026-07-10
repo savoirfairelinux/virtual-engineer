@@ -121,7 +121,6 @@ describe("CopilotAdapter", () => {
 
       expect(spec.image).toBe("virtual-engineer-workspace:latest");
       expect(spec.command).toEqual(["node", "/agent-worker/dist/index.js"]);
-      expect(spec.networkMode).toBe("virtual-engineer_ve-agent-net");
       expect(spec.env).toMatchObject({
         GITHUB_TOKEN: "ghp_spec_token",
         COPILOT_MODEL: "gpt-4o-mini",

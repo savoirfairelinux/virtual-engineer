@@ -10,6 +10,7 @@
  * served (the React app mounts into it at runtime).
  */
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import { renderAdminDashboardHtml } from "../../src/admin/dashboard.js";
 
 describe("Admin Dashboard - Configuration Shell", () => {
@@ -17,5 +18,24 @@ describe("Admin Dashboard - Configuration Shell", () => {
     const html = renderAdminDashboardHtml();
     expect(html).toContain("__VE_ADMIN_BOOTSTRAP__");
     expect(html).toContain('<div id="root">');
+  });
+
+  it("uses icons for runtime policy actions", () => {
+    const source = readFileSync(
+      new URL("../../src/admin/ui/views/ConfigView/RuntimePoliciesSection.tsx", import.meta.url),
+      "utf8",
+    );
+
+    expect(source).toContain('<Icon name="plus" size={14} /> New policy');
+    expect(source).toContain('<Icon name={KIND_ICONS[p.kind]} size={17} />');
+    expect(source).toContain('<Icon name="link" size={16} />');
+    expect(source).toContain('<Icon name="edit" size={16} />');
+    expect(source).toContain('<Icon name="trash" size={16} />');
+    expect(source).toContain('aria-label={`Assign ${p.name} to a project or agent`}');
+    expect(source).toContain('aria-label={`Edit ${p.name}`}');
+    expect(source).toContain('aria-label={`Delete ${p.name}`}');
+    expect(source).not.toContain('>Assign</button>');
+    expect(source).not.toContain('>Edit</button>');
+    expect(source).not.toContain('>Delete</button>');
   });
 });

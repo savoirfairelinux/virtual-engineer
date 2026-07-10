@@ -657,7 +657,7 @@ describe("PluginManager", () => {
         }),
       ]);
       const mgr = new PluginManager(store, {
-        agentAdapterContext: { maxCommitsPerCycle: 7, dockerNetwork: "ve-net" },
+        agentAdapterContext: { maxCommitsPerCycle: 7 },
       });
       await mgr.loadFromDatabase();
 
