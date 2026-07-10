@@ -1,34 +1,54 @@
 #!/usr/bin/env bash
-# start.sh — Build images and start the Virtual Engineer orchestrator container.
-#             Skips the container restart if it is already running the latest image.
+# start.sh — One-shot setup + launch for Virtual Engineer.
+#   Makes VE 100% functional from scratch: installs single-node k3s if missing,
+#   builds the agent + orchestrator images (orchestrator includes the OpenShell
+#   CLI), imports the agent image into k3s, starts the OpenShell gateway
+#   (kubernetes driver) on k3s, and runs the orchestrator.
+#   Agents run as ephemeral k3s Pods (upload -> exec -> download).
 #
 # Usage:
-#   ./scripts/start.sh
-#
-# Useful follow-up commands:
-#   docker logs -f ve-orchestrator           # follow logs
-#   docker stop ve-orchestrator              # graceful stop (keeps data)
-#   docker rm -f ve-orchestrator             # force remove
+#   ./scripts/start.sh                     # full setup + launch
+#   ./scripts/start.sh --no-k3s-install    # skip k3s auto-install (must already exist)
+#   ./scripts/start.sh --openshell-version v0.0.79   # pin the OpenShell CLI version
 #
 # Optional environment variables:
-#   SECRETS_DIR    (default: ./secrets)
 #   DATA_DIR       (default: ./data)
+#   K3S_KUBECONFIG (default: /etc/rancher/k3s/k3s.yaml)  k3s admin kubeconfig path
+#   OPENSHELL_VERSION  (default: v0.0.79)  OpenShell CLI version baked into the orchestrator
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-info() { echo "[INFO]  $*"; }
-warn() { echo "[WARN]  $*" >&2; }
+info()  { echo "[INFO]  $*"; }
+warn()  { echo "[WARN]  $*" >&2; }
+error() { echo "[ERROR] $*" >&2; exit 1; }
 
 cd "$ROOT_DIR"
 
-SECRETS_DIR="${SECRETS_DIR:-$ROOT_DIR/secrets}"
+# ─── Parse arguments ──────────────────────────────────────────────────────────
+K3S_INSTALL=true
+OPENSHELL_VERSION="${OPENSHELL_VERSION:-v0.0.79}"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --no-k3s-install)
+      K3S_INSTALL=false; shift ;;
+    --openshell-version)
+      [[ -n "${2:-}" ]] || error "--openshell-version requires a value (e.g. v0.0.79)"
+      OPENSHELL_VERSION="$2"; shift 2 ;;
+    --help|-h)
+      sed -n '2,17p' "$0"; exit 0 ;;
+    *)
+      error "Unknown argument: $1. Run ./scripts/start.sh --help" ;;
+  esac
+done
+
 DATA_DIR="${DATA_DIR:-$ROOT_DIR/data}"
+K3S_KUBECONFIG="${K3S_KUBECONFIG:-/etc/rancher/k3s/k3s.yaml}"
 
 # ─── Ensure a directory exists and is owned by the current user ───────────────
-# If Docker already created it as root, reclaim ownership with sudo.
 ensure_dir() {
   local dir="$1"
   local perms="${2:-755}"
@@ -41,23 +61,118 @@ ensure_dir() {
 }
 
 ensure_dir "$DATA_DIR"    755
-ensure_dir "$SECRETS_DIR" 700
 
-# ─── Agent Docker network ─────────────────────────────────────────────────────
-AGENT_NETWORK="virtual-engineer_ve-agent-net"
-if ! docker network inspect "$AGENT_NETWORK" >/dev/null 2>&1; then
-  info "Creating Docker network ${AGENT_NETWORK}..."
-  docker network create --driver bridge "$AGENT_NETWORK"
+# ─── Preflight: k3s setup needs root, so sudo must be able to escalate ────────
+# When 'no_new_privileges' is set on the current shell (e.g. some sandboxed
+# terminals or hardened environments), it is inherited and sticky, so sudo
+# (a setuid binary) can never gain root from here — no sudoers/NOPASSWD tweak
+# helps. Detect it up front and fail fast instead of dying mid-install.
+if [[ "$(id -u)" -ne 0 && "$(awk '/^NoNewPrivs:/{print $2}' /proc/self/status 2>/dev/null)" == "1" ]]; then
+  warn "Cannot escalate privileges: 'no_new_privileges' is set on this shell."
+  warn "sudo cannot gain root here, so k3s (which needs root) cannot be installed."
+  warn ""
+  warn "Run this script from a shell where privilege escalation works, e.g.:"
+  warn "  - a shell without 'no_new_privileges', or"
+  warn "  - directly as root (sudo -i, then re-run)."
+  error "Aborting: no_new_privileges prevents sudo from escalating."
 fi
 
-info "Building agent image..."
-docker build -f Dockerfile.agent -t virtual-engineer-workspace:latest .
+# ─── Ensure single-node k3s is installed and ready ────────────────────────────
+ensure_k3s() {
+  if command -v k3s >/dev/null 2>&1 && sudo k3s kubectl get nodes >/dev/null 2>&1; then
+    info "k3s already installed and running."
+    return
+  fi
+  if [[ "$K3S_INSTALL" != "true" ]]; then
+    error "k3s is not running and --no-k3s-install was set. Install it first: curl -sfL https://get.k3s.io | sh -"
+  fi
+  info "Installing single-node k3s (requires sudo)..."
+  curl -sfL https://get.k3s.io | sh - || error "k3s installation failed."
+  info "Waiting for the k3s node to become Ready..."
+  local retries=60
+  until sudo k3s kubectl get nodes 2>/dev/null | grep -q ' Ready' || [[ $retries -eq 0 ]]; do
+    sleep 2; ((retries--))
+  done
+  [[ $retries -gt 0 ]] || error "k3s did not become ready in time."
+  info "k3s is ready."
+}
+ensure_k3s
 
-info "Building orchestrator image..."
-docker build -f Dockerfile.orchestrator -t virtual-engineer:latest .
+# ─── User-accessible kubeconfig copy ─────────────────────────────────────────
+# /etc/rancher/k3s/k3s.yaml is root-owned. Copy it to DATA_DIR so helm and
+# kubectl can be called without sudo for non-cluster-admin operations.
+USER_KUBECONFIG="${DATA_DIR}/kubeconfig"
+if sudo cp "$K3S_KUBECONFIG" "$USER_KUBECONFIG" 2>/dev/null; then
+  sudo chown "$(id -u):$(id -g)" "$USER_KUBECONFIG" 2>/dev/null || true
+  chmod 600 "$USER_KUBECONFIG"
+  K3S_KUBECONFIG="$USER_KUBECONFIG"
+else
+  warn "Could not copy kubeconfig to ${USER_KUBECONFIG}; Helm will use sudo paths."
+fi
+
+# ─── Agent namespace + least-privilege RBAC on k3s ────────────────────────────
+info "Applying agent namespace + RBAC to k3s..."
+KUBECONFIG="$K3S_KUBECONFIG" kubectl apply -f "$ROOT_DIR/deploy/k8s/15-rbac-openshell.yaml" >/dev/null 2>&1 \
+  || sudo k3s kubectl apply -f "$ROOT_DIR/deploy/k8s/15-rbac-openshell.yaml" >/dev/null 2>&1 \
+  || warn "Could not apply deploy/k8s/15-rbac-openshell.yaml — continuing."
+
+# ─── Content hash of Docker build inputs (file contents, ignores mtime) ──────
+# Used to skip docker build / containerd import when nothing relevant changed.
+build_inputs_hash() {
+  find "$@" -type f \
+    -not -path '*/node_modules/*' -not -path '*/dist/*' \
+    -exec sha256sum {} + 2>/dev/null | sort | sha256sum | cut -d' ' -f1
+}
+
+# ─── Agent image: build + import into k3s containerd ─────────────────────────
+# k3s uses its own containerd (not the host Docker). kubelet resolves Pod images
+# from the `k8s.io` containerd namespace, so the image MUST be imported there
+# (combined with sandboxImagePullPolicy=IfNotPresent, sandbox Pods then use the
+# local image without any registry pull).
+#
+# Both the build AND the slow `docker save | ctr import` are skipped when the
+# agent build inputs are unchanged AND the image is present in host Docker and
+# in k3s containerd (verifies real state, so a stale marker never mis-skips).
+AGENT_HASH=$(build_inputs_hash Dockerfile.agent agent-worker)
+AGENT_MARKER="${DATA_DIR}/.agent-image-hash"
+if [[ "$(cat "$AGENT_MARKER" 2>/dev/null || true)" == "$AGENT_HASH" ]] \
+   && docker image inspect virtual-engineer-workspace:latest >/dev/null 2>&1 \
+   && sudo k3s ctr -n k8s.io images ls -q 2>/dev/null | grep -q 'virtual-engineer-workspace:latest'; then
+  info "Agent image up to date (sources unchanged, present in k3s) — skipping build + import."
+else
+  info "Building agent image..."
+  docker build -f Dockerfile.agent -t virtual-engineer-workspace:latest .
+  info "Importing agent image into k3s containerd (k8s.io namespace)..."
+  if docker save virtual-engineer-workspace:latest | sudo k3s ctr -n k8s.io images import - >/dev/null; then
+    echo "$AGENT_HASH" > "$AGENT_MARKER"
+  else
+    warn "Could not import agent image into k3s — sandbox Pods may fail to start."
+  fi
+fi
+
+# ─── Orchestrator image (always includes the OpenShell CLI) ───────────────────
+# Skip the build when its inputs (Dockerfile + src + agent-worker + prompts +
+# package/tsconfig/vite files + the pinned OpenShell version) are unchanged and
+# the image already exists. The build's own layer cache is a fallback, but
+# skipping the invocation avoids buildkit's metadata/context overhead.
+ORCH_HASH=$(printf '%s\n%s\n' "$OPENSHELL_VERSION" \
+  "$(build_inputs_hash Dockerfile.orchestrator src agent-worker prompts \
+      package.json package-lock.json tsconfig.json tsconfig.admin-ui.json vite.admin.config.ts)" \
+  | sha256sum | cut -d' ' -f1)
+ORCH_MARKER="${DATA_DIR}/.orchestrator-image-hash"
+if [[ "$(cat "$ORCH_MARKER" 2>/dev/null || true)" == "$ORCH_HASH" ]] \
+   && docker image inspect virtual-engineer:latest >/dev/null 2>&1; then
+  info "Orchestrator image up to date (sources unchanged) — skipping build."
+else
+  info "Building orchestrator image with OpenShell CLI (${OPENSHELL_VERSION})..."
+  docker build -f Dockerfile.orchestrator \
+    --build-arg INSTALL_OPENSHELL=true \
+    --build-arg OPENSHELL_VERSION="$OPENSHELL_VERSION" \
+    -t virtual-engineer:latest .
+  echo "$ORCH_HASH" > "$ORCH_MARKER"
+fi
 
 # ─── Idempotent container restart ─────────────────────────────────────────────
-# Skip restart if the container is already running the image we just built.
 LATEST_ID=$(docker inspect --format='{{.Id}}' virtual-engineer:latest 2>/dev/null || true)
 RUNNING_ID=$(docker inspect --format='{{.Image}}' ve-orchestrator 2>/dev/null || true)
 IS_RUNNING=$(docker inspect --format='{{.State.Running}}' ve-orchestrator 2>/dev/null || true)
@@ -75,8 +190,87 @@ fi
 
 info "Starting ve-orchestrator..."
 
-# Forward SSH agent socket into the container using the same host path so that
-# nested Docker containers spawned by the orchestrator can reach it too (same-path trick).
+# ─── Locate helm (user-local install or system) ──────────────────────────────
+HELM_BIN=""
+for _h in "$HOME/.local/bin/helm" /usr/local/bin/helm /usr/bin/helm; do
+  if [[ -x "$_h" ]]; then HELM_BIN="$_h"; break; fi
+done
+if [[ -z "$HELM_BIN" ]]; then
+  info "helm not found — downloading to ~/.local/bin/helm..."
+  mkdir -p "$HOME/.local/bin"
+  HELM_VER=v3.17.3
+  curl -fsSL "https://get.helm.sh/helm-${HELM_VER}-linux-amd64.tar.gz" \
+    | tar xz -C /tmp/ && cp /tmp/linux-amd64/helm "$HOME/.local/bin/helm"
+  HELM_BIN="$HOME/.local/bin/helm"
+  info "helm $(${HELM_BIN} version --short) installed."
+fi
+
+# ─── OpenShell gateway — deployed via Helm into k3s ──────────────────────────
+# NodePort 30808 is reachable from the host at 127.0.0.1:30808 (k3s iptables
+# rules forward the NodePort even for loopback).
+OPENSHELL_GW_NODEPORT=30808
+
+if [[ ! -f "$K3S_KUBECONFIG" ]]; then
+  error "k3s kubeconfig not found at ${K3S_KUBECONFIG}."
+fi
+
+# ─── Agent Sandbox CRDs + controller (prerequisite for the k8s driver) ───────
+# The OpenShell kubernetes driver reconciles `sandboxes.agents.x-k8s.io` custom
+# resources, which are defined by the upstream kubernetes-sigs/agent-sandbox
+# project. Install the CRDs + controller before deploying the gateway.
+# Skip when they are already present (idempotent, saves the download + wait).
+if KUBECONFIG="$K3S_KUBECONFIG" kubectl get crd sandboxes.agents.x-k8s.io >/dev/null 2>&1 \
+   && KUBECONFIG="$K3S_KUBECONFIG" kubectl get deployment agent-sandbox-controller -n agent-sandbox-system >/dev/null 2>&1; then
+  info "Agent Sandbox CRDs + controller already installed — skipping."
+else
+  info "Installing Kubernetes Agent Sandbox CRDs + controller..."
+  AGENT_SANDBOX_MANIFEST="https://github.com/kubernetes-sigs/agent-sandbox/releases/latest/download/manifest.yaml"
+  KUBECONFIG="$K3S_KUBECONFIG" kubectl apply -f "$AGENT_SANDBOX_MANIFEST" >/dev/null 2>&1 \
+    || warn "Could not apply Agent Sandbox manifest — sandbox creation will fail."
+  KUBECONFIG="$K3S_KUBECONFIG" kubectl wait \
+    --for=condition=available deployment/agent-sandbox-controller \
+    -n agent-sandbox-system --timeout=120s >/dev/null 2>&1 \
+    || warn "Agent Sandbox controller not ready — sandbox creation may fail."
+fi
+
+# ─── OpenShell gateway (Helm) ────────────────────────────────────────────────
+# Skip the Helm upgrade + readiness wait when the release is already deployed
+# with the current values file AND its pod is Ready (verifies real state, so a
+# stale marker never causes an incorrect skip).
+OPENSHELL_VALUES_FILE="$ROOT_DIR/deploy/k8s/openshell-gateway-values.yaml"
+OPENSHELL_VALUES_HASH=$(sha256sum "$OPENSHELL_VALUES_FILE" | cut -d' ' -f1)
+OPENSHELL_HELM_MARKER="${DATA_DIR}/.openshell-helm-values"
+if KUBECONFIG="$K3S_KUBECONFIG" "$HELM_BIN" status openshell -n virtual-engineer >/dev/null 2>&1 \
+   && [[ "$(cat "$OPENSHELL_HELM_MARKER" 2>/dev/null || true)" == "$OPENSHELL_VALUES_HASH" ]] \
+   && KUBECONFIG="$K3S_KUBECONFIG" kubectl wait --for=condition=ready pod \
+        -l 'app.kubernetes.io/name=openshell' -n virtual-engineer --timeout=5s >/dev/null 2>&1; then
+  info "OpenShell gateway already deployed with current values — skipping Helm upgrade."
+else
+  info "Deploying OpenShell gateway via Helm into k3s (namespace: virtual-engineer)..."
+  KUBECONFIG="$K3S_KUBECONFIG" "$HELM_BIN" upgrade --install openshell \
+    oci://ghcr.io/nvidia/openshell/helm-chart \
+    --namespace virtual-engineer --create-namespace \
+    --wait --timeout 180s \
+    -f "$OPENSHELL_VALUES_FILE" \
+    || error "Helm deployment of OpenShell gateway failed."
+  echo "$OPENSHELL_VALUES_HASH" > "$OPENSHELL_HELM_MARKER"
+
+  info "Waiting for OpenShell gateway pod to become Ready..."
+  if KUBECONFIG="$K3S_KUBECONFIG" kubectl wait \
+      --for=condition=ready pod \
+      -l 'app.kubernetes.io/name=openshell' \
+      -n virtual-engineer \
+      --timeout=120s 2>/dev/null; then
+    info "OpenShell gateway is running."
+  else
+    warn "Gateway pod did not become Ready in time — sandbox creation will fail."
+    warn "Check: KUBECONFIG=$K3S_KUBECONFIG kubectl -n virtual-engineer get pods"
+  fi
+fi
+
+# Pass the gateway NodePort endpoint directly.
+OPENSHELL_GATEWAY_ARGS="-e OPENSHELL_GATEWAY_ENDPOINT=http://127.0.0.1:${OPENSHELL_GW_NODEPORT}"
+
 SSH_AGENT_ARGS=""
 if [ -n "${SSH_AUTH_SOCK:-}" ] && [ -S "$SSH_AUTH_SOCK" ]; then
   info "SSH agent detected at $SSH_AUTH_SOCK — forwarding into container."
@@ -85,7 +279,7 @@ else
   warn "No SSH agent socket found (SSH_AUTH_SOCK not set or not a socket). Agent-based SSH auth will not be available."
 fi
 
-# shellcheck disable=SC2086 — intentional word-splitting for SSH_AGENT_ARGS
+# shellcheck disable=SC2086 — intentional word-splitting for SSH_AGENT_ARGS / OPENSHELL_GATEWAY_ARGS
 docker run -d \
   --name ve-orchestrator \
   --restart unless-stopped \
@@ -96,13 +290,14 @@ docker run -d \
   --security-opt label:disable \
   -v /etc/localtime:/etc/localtime:ro \
   -v "$DATA_DIR:/app/data:Z" \
-  -v "$SECRETS_DIR:/app/secrets:ro,Z" \
-  -v /var/run/docker.sock:/var/run/docker.sock \
   -v "$HOME/.config/gh:/ve-gh:ro" \
   --tmpfs /tmp/ve-review-diffs:rw,size=512m \
   $SSH_AGENT_ARGS \
+  $OPENSHELL_GATEWAY_ARGS \
   virtual-engineer:latest
 
 info "ve-orchestrator started."
+
 info "Admin UI : http://127.0.0.1:3100/admin (binds per ADMIN_API_HOST in .env)"
 info "Logs     : docker logs -f ve-orchestrator"
+

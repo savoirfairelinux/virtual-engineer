@@ -1,0 +1,61 @@
+# Helm values for the NVIDIA OpenShell gateway (control plane) running the
+# Kubernetes compute driver, so agent sandboxes are scheduled as k3s Pods.
+#
+# Single-node dev install:
+#   KUBECONFIG=/etc/rancher/k3s/k3s.yaml \
+#   helm upgrade --install openshell oci://ghcr.io/nvidia/openshell/helm-chart \
+#     --namespace virtual-engineer --create-namespace \
+#     --wait --timeout 120s \
+#     -f deploy/k8s/openshell-gateway-values.yaml
+#
+# NOTE: OpenShell's Kubernetes path is upstream-EXPERIMENTAL. Validate before
+# relying on it in production (see docs/adr/0001-openshell-agent-runtime.md).
+
+nameOverride: "openshell"
+
+server:
+  # TLS disabled — all traffic is on-host loopback or in-cluster.
+  # Remove in multi-host / production deployments and configure cert-manager.
+  disableTls: true
+
+  # Sandbox pods land in the ve-agents namespace (RBAC pre-applied by
+  # deploy/k8s/15-rbac-openshell.yaml).
+  sandboxNamespace: "ve-agents"
+
+  # Use the agent image already imported into the k3s containerd (k8s.io ns)
+  # instead of pulling from a registry — the image is built + imported locally
+  # by start.sh and never published.
+  sandboxImagePullPolicy: "IfNotPresent"
+
+  # UNSAFE — accept unauthenticated requests.
+  # Acceptable for a trusted single-host dev setup; remove for production.
+  auth:
+    allowUnauthenticatedUsers: true
+
+  # Per-sandbox resource quotas prevent noisy-neighbour effects.
+  sandbox:
+    resources:
+      requests:
+        cpu: "250m"
+        memory: "512Mi"
+      limits:
+        cpu: "1"
+        memory: "2Gi"
+
+supervisor:
+  # Force init-container sideload — avoids relying on ImageVolume feature-gate
+  # availability in the specific k3s build.
+  sideloadMethod: "init-container"
+
+service:
+  # NodePort so the orchestrator (Docker --network host) can reach the gateway
+  # at 127.0.0.1:<nodePort> without needing in-cluster DNS.
+  type: NodePort
+  port: 8080
+  # Fixed nodePort avoids having to discover the dynamically assigned port.
+  nodePort: 30808
+
+# pkiInitJob generates the gateway-minted sandbox JWT signing keys automatically
+# as a Helm pre-install/pre-upgrade Job.  No manual key generation required.
+pkiInitJob:
+  enabled: true

@@ -1,0 +1,21 @@
+# Non-secret runtime configuration for the Virtual Engineer orchestrator.
+# Secrets (ADMIN_AUTH_SECRET, provider credentials) live in a separate Secret —
+# see 20-orchestrator-secret.example.yaml. Provider credentials are managed in
+# the admin DB, NOT here.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: virtual-engineer-config
+  namespace: virtual-engineer
+data:
+  NODE_ENV: "production"
+  LOG_LEVEL: "info"
+  DATABASE_PATH: "/app/data/virtual-engineer.db"
+  ADMIN_API_ENABLED: "true"
+  ADMIN_API_HOST: "0.0.0.0"
+  ADMIN_API_PORT: "3100"
+  # Ephemeral git working directory for the OpenShell/HostGitExecutor runtime.
+  # Backed by an emptyDir volume (see the Deployment).
+  WORKSPACE_BASE_DIR: "/workspaces"
+  # The OpenShell gateway the in-pod `openshell` CLI talks to (ClusterIP service).
+  OPENSHELL_GATEWAY: "openshell-gateway.virtual-engineer.svc.cluster.local:8080"
