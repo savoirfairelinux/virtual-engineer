@@ -482,8 +482,6 @@ export interface AdapterContainerSpec {
   env: Record<string, string>;
   /** Command executed in the container */
   command: string[];
-  /** Optional network override for the container */
-  networkMode?: string | undefined;
   /** Optional extra docker args such as mounts or security options */
   additionalDockerArgs?: string[] | undefined;
   /** Written to home volume as `user-prompt.txt`; sets `USER_PROMPT_FILE` in container env. */

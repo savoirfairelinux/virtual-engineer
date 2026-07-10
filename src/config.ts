@@ -84,12 +84,6 @@ const ConfigSchema = z.object({
     // Docker
     agentContainerImage: z.string().default("virtual-engineer-workspace:latest"),
     workspaceBaseDir: z.string().default("/tmp/virtual-engineer/workspaces"),
-    /**
-     * Docker network for agent/review containers.
-     * The default `virtual-engineer_ve-agent-net` is created by scripts/start.sh.
-     * When running the orchestrator directly on the host (dev), `bridge` also works.
-     */
-    agentDockerNetwork: z.string().default("virtual-engineer_ve-agent-net"),
   });
 
 export type AppConfig = z.infer<typeof ConfigSchema>;
@@ -116,7 +110,6 @@ function fromEnv(): Record<string, string | undefined> {
     reviewMinSeverity: process.env["REVIEW_MIN_SEVERITY"],
     agentContainerImage: process.env["AGENT_CONTAINER_IMAGE"],
     workspaceBaseDir: process.env["WORKSPACE_BASE_DIR"],
-    agentDockerNetwork: process.env["AGENT_DOCKER_NETWORK"],
   };
 }
 

@@ -13,7 +13,9 @@ import { getConfig } from "./config.js";
 import { getLogger } from "./logger.js";
 import { SqliteStateStore } from "./state/stateStore.js";
 import { MockAgentAdapter } from "./agents/mockAgentAdapter.js";
-import { DockerWorkspaceRunner } from "./workspace/workspaceRunner.js";
+import { HostGitExecutor } from "./workspace/hostGitExecutor.js";
+import { OpenShellWorkspaceRunner, type OpenShellRunnerDeps } from "./workspace/openShellWorkspaceRunner.js";
+import { OpenShellClient } from "./openshell/openShellClient.js";
 import { Orchestrator } from "./orchestrator/orchestrator.js";
 import { PollingLoop } from "./orchestrator/pollingLoop.js";
 import { createConcurrencyTracker } from "./orchestrator/concurrencyTracker.js";
@@ -26,7 +28,7 @@ import { ReviewOrchestrator } from "./review/reviewOrchestrator.js";
 import { mkdir } from "fs/promises";
 import type { Server } from "node:http";
 import type { AdminProviderSummary } from "./admin/adminServer.js";
-import type { AgentAdapter, ConfigurableAdapter, DomainCapability, Integration, ProviderId, ProjectId, ProjectPushTargetRecord, ProjectRecord, ProjectReviewConfig, ProjectTicketSourceRecord, ReviewProvider, Task } from "./interfaces.js";
+import type { AgentAdapter, ConfigurableAdapter, DomainCapability, Integration, ProviderId, ProjectId, ProjectPushTargetRecord, ProjectRecord, ProjectReviewConfig, ProjectTicketSourceRecord, ReviewProvider, Task, WorkspaceRunner } from "./interfaces.js";
 import { makeTaskId, makeExternalChangeId } from "./interfaces.js";
 import { registerBuiltinPlugins } from "./plugins/init.js";
 import { PluginManager } from "./plugins/pluginManager.js";
@@ -79,7 +81,6 @@ async function main(): Promise<void> {
     ...(config.adminAuthSecret !== undefined ? { adminAuthSecret: config.adminAuthSecret } : {}),
     agentAdapterContext: {
       maxCommitsPerCycle: config.maxCommitsPerCycle,
-      dockerNetwork: config.agentDockerNetwork,
     },
   });
 
@@ -87,14 +88,24 @@ async function main(): Promise<void> {
 
   let runtimeDependencies = buildRuntimeDependencies(pluginManager);
 
-  // ─── Workspace runner ────────────────────────────────────────────────────────
-  const workspaceRunner = new DockerWorkspaceRunner(
-    {
-      agentContainerImage: config.agentContainerImage,
-      agentTimeoutMs: config.agentTimeoutMs,
-    },
-    runtimeDependencies.agentAdapter
-  );
+  // ─── Workspace runner (OpenShell — the sole agent runtime) ────────────────────
+  // Agents run in OpenShell sandboxes. Git plumbing (clone/checkout/cherry-pick/
+  // push) stays host-side via HostGitExecutor so push credentials never enter the
+  // sandbox. The runner's agent adapter is hot-swapped on integration reload by
+  // mutating `openShellRunnerDeps.agentAdapter` (see refreshRuntimeDependencies).
+  const openShellClient = new OpenShellClient({
+    // OPENSHELL_GATEWAY_ENDPOINT (preferred: direct URL, no registry lookup)
+    // or the legacy OPENSHELL_GATEWAY name are both accepted. start.sh injects
+    // OPENSHELL_GATEWAY_ENDPOINT=http://127.0.0.1:<port>.
+    gateway: process.env["OPENSHELL_GATEWAY_ENDPOINT"] ?? process.env["OPENSHELL_GATEWAY"] ?? undefined,
+  });
+  const openShellRunnerDeps: OpenShellRunnerDeps = {
+    git: new HostGitExecutor({ baseDir: config.workspaceBaseDir }),
+    client: openShellClient,
+    sandboxImage: config.agentContainerImage,
+    agentAdapter: runtimeDependencies.agentAdapter,
+  };
+  const workspaceRunner = new OpenShellWorkspaceRunner(openShellRunnerDeps);
   configureAgentAdapter(runtimeDependencies.agentAdapter, stateStore, workspaceRunner);
 
   // ─── Orchestrator ────────────────────────────────────────────────────────────
@@ -232,9 +243,8 @@ async function main(): Promise<void> {
    */
   async function refreshRuntimeDependencies(): Promise<void> {
     runtimeDependencies = buildRuntimeDependencies(pluginManager);
-    workspaceRunner.updateRuntime({
-      agentAdapter: runtimeDependencies.agentAdapter,
-    });
+    // Hot-swap the runner's agent adapter by mutating the shared deps object.
+    openShellRunnerDeps.agentAdapter = runtimeDependencies.agentAdapter;
     configureAgentAdapter(runtimeDependencies.agentAdapter, stateStore, workspaceRunner);
     orchestrator.updateRuntime({
       config: buildOrchestratorConfig(config, pluginManager),
@@ -361,6 +371,12 @@ async function main(): Promise<void> {
         snapshot: () => concurrencyTracker.snapshot(),
       },
       settings: settingsController,
+      runtimePolicyStore: stateStore,
+      denialStore: stateStore,
+      runtimeGateway: {
+        healthy: () => openShellClient.gatewayHealthy(),
+        address: process.env["OPENSHELL_GATEWAY_ENDPOINT"] ?? process.env["OPENSHELL_GATEWAY"] ?? undefined,
+      },
     });
 
     await startAdminServer(adminServer, config.adminApiPort, config.adminApiHost);
@@ -571,7 +587,7 @@ async function buildReviewBundle(
   pluginManager: PluginManager,
   _workspaceBaseDir: string,
   stateStore: import("./interfaces.js").StateStore & import("./interfaces.js").PromptStore,
-  workspaceRunner?: DockerWorkspaceRunner,
+  workspaceRunner?: WorkspaceRunner,
   target?: string | Task,
 ): Promise<ReviewBundle> {
   const bundleLog = getLogger("review-bundle");
@@ -618,7 +634,7 @@ async function buildReviewBundle(
   if (!workspaceRunner) {
     bundleLog.warn(
       { integrationId: integration.id },
-      "buildReviewBundle: no DockerWorkspaceRunner available"
+      "buildReviewBundle: no workspace runner available"
     );
     return { integration: null, provider: null, orchestrator: null };
   }
@@ -701,7 +717,7 @@ async function buildReviewBundle(
 function buildReviewTrigger(
   pluginManager: PluginManager,
   workspaceBaseDir: string,
-  workspaceRunner: DockerWorkspaceRunner,
+  workspaceRunner: WorkspaceRunner,
   stateStore: import("./interfaces.js").StateStore & import("./interfaces.js").PromptStore
 ): import("./connectors/integrationStreamEvents.js").IntegrationEventStreamReviewTrigger | null {
   if (resolveReviewIntegration(pluginManager) === null) return null;
@@ -902,7 +918,7 @@ function asOptionalString(value: unknown): string | undefined {
 function configureAgentAdapter(
   agentAdapter: AgentAdapter,
   stateStore: SqliteStateStore,
-  workspaceRunner: DockerWorkspaceRunner
+  workspaceRunner: WorkspaceRunner
 ): void {
   if ("configure" in agentAdapter && typeof (agentAdapter as ConfigurableAdapter).configure === "function") {
     (agentAdapter as ConfigurableAdapter).configure({ store: stateStore, runner: workspaceRunner });

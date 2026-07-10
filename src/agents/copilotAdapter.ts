@@ -31,8 +31,6 @@ export interface CopilotAdapterConfig {
   maxRepositoryContextBytes: number;
   maxCommitsPerCycle: number;
   promptsDir?: string | undefined;
-  /** Docker network for agent/review containers. Defaults to `virtual-engineer_ve-agent-net`. */
-  dockerNetwork?: string | undefined;
 }
 
 interface DockerInvocationResult {
@@ -296,7 +294,6 @@ export class CopilotAdapter implements AgentAdapter, ConfigurableAdapter {
       image: session.agentContainerImage,
       env,
       command: ["node", "/agent-worker/dist/index.js"],
-      networkMode: this.config.dockerNetwork ?? "virtual-engineer_ve-agent-net",
       additionalDockerArgs,
     };
   }
@@ -342,7 +339,6 @@ export class CopilotAdapter implements AgentAdapter, ConfigurableAdapter {
       image: input.containerImage ?? "virtual-engineer-workspace:latest",
       env,
       command: ["node", "/agent-worker/dist/index.js"],
-      networkMode: this.config.dockerNetwork ?? "virtual-engineer_ve-agent-net",
       additionalDockerArgs,
     };
   }

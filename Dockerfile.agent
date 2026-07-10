@@ -4,13 +4,17 @@ FROM node:24-bookworm-slim
 ENV DEBIAN_FRONTEND=noninteractive
 ENV NPM_CONFIG_UPDATE_NOTIFIER=false
 
-# Install required tools: git, SSH client, GitHub CLI, curl, jq
+# Install required tools: git, SSH client, GitHub CLI, curl, jq.
+# iproute2 provides the `ip` binary the OpenShell supervisor needs to create the
+# sandbox network namespace (proxy-mode isolation); without it the sandbox agent
+# container crash-loops with "trusted ip helper not found".
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     openssh-client \
     curl \
     ca-certificates \
     jq \
+    iproute2 \
   && rm -rf /var/lib/apt/lists/*
 # Default SSH config — accepts unknown host keys as a fallback for ephemeral
 # containers. When sshKnownHostsPath is configured on the Gerrit integration,

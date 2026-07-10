@@ -159,8 +159,6 @@ export interface SourceControlCapability {
 export interface AgentAdapterContext {
   /** Max atomic commits an agent may create per cycle. */
   maxCommitsPerCycle: number;
-  /** Docker network for agent / review containers. */
-  dockerNetwork: string;
 }
 
 /** `agent_execution` capability: run a coding agent inside a workspace. */

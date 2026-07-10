@@ -131,7 +131,6 @@ export function createCopilotDescriptor(adminAuthSecret?: string): ProviderDescr
           new CopilotAdapter({
             model: DEFAULT_COPILOT_MODEL,
             maxCommitsPerCycle: context.maxCommitsPerCycle,
-            dockerNetwork: context.dockerNetwork,
           }),
       },
     },
