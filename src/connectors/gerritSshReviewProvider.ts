@@ -302,12 +302,10 @@ export class GerritSshReviewProvider implements ReviewProvider {
    * what changed since VE last reviewed.
    */
   async getInterPatchsetDiff(
-    changeId: ExternalChangeId,
+    details: ReviewChangeDetails,
     fromPatchset: number,
     toPatchset: number
   ): Promise<ReviewChangeDiff> {
-    const details = await this.getChangeDetails(changeId);
-
     const baseDir = this.config.workspaceBaseDir ?? "/tmp/ve-review-diffs";
     await mkdir(baseDir, { recursive: true });
     const dir = await mkdtemp(join(baseDir, `delta-${details.changeNumber}-`));
@@ -338,10 +336,10 @@ export class GerritSshReviewProvider implements ReviewProvider {
 
       const files = parseDiffOutput(diffOutput);
       log.info(
-        { changeId, fromPatchset, toPatchset, fileCount: files.length },
+        { changeId: details.changeId, fromPatchset, toPatchset, fileCount: files.length },
         "computed inter-patchset diff from SSH fetch"
       );
-      return { changeId, patchset: toPatchset, files };
+      return { changeId: details.changeId, patchset: toPatchset, files };
     } finally {
       await rm(dir, { recursive: true, force: true }).catch(() => undefined);
     }
@@ -605,4 +603,3 @@ function groupCommentsByFile(
   }
   return grouped;
 }
-
