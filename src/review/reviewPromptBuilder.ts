@@ -8,8 +8,11 @@ import type { ReviewChangeDetails, ReviewChangeDiff, ReviewDiscussionThread } fr
 
 /** Default upper bound on diff size injected into the prompt to avoid token blow-ups. */
 const DEFAULT_MAX_DIFF_CHARS = 60_000;
+const DEFAULT_MAX_COMMIT_MESSAGE_CHARS = 8_000;
 const TRUNCATION_NOTE =
   "\n\n[... diff truncated to fit in the model context — review the rest from the repository if needed ...]";
+const COMMIT_MESSAGE_TRUNCATION_NOTE =
+  "\n\n[... commit message truncated to fit in the model context ...]";
 
 export interface ReviewPromptInput {
   details: ReviewChangeDetails;
@@ -90,7 +93,7 @@ export function buildReviewPrompt(input: ReviewPromptInput): string {
   // beyond its subject so we never inject an empty section.
   const description = details.description.trim();
   if (description.length > 0) {
-    sections.push(``, `## Commit message`, description);
+    sections.push(``, `## Commit message`, truncateCommitMessage(description));
   }
 
   sections.push(
@@ -194,6 +197,12 @@ function renderDiffSections(diff: ReviewChangeDiff, maxDiffChars: number): strin
     used += block.length;
   }
   return parts.join("\n\n");
+}
+
+function truncateCommitMessage(description: string): string {
+  if (description.length <= DEFAULT_MAX_COMMIT_MESSAGE_CHARS) return description;
+  const bodyLimit = DEFAULT_MAX_COMMIT_MESSAGE_CHARS - COMMIT_MESSAGE_TRUNCATION_NOTE.length;
+  return description.slice(0, bodyLimit) + COMMIT_MESSAGE_TRUNCATION_NOTE;
 }
 
 /**

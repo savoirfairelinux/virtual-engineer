@@ -160,6 +160,19 @@ describe("buildReviewPrompt commit message", () => {
     expect(prompt).toContain("Closes #42.");
   });
 
+  it("truncates very large commit message bodies", () => {
+    const prompt = buildReviewPrompt({
+      details: { ...details, description: "x".repeat(9_000) },
+      diff,
+      userPrompt: "Review this.",
+    });
+    expect(prompt).toContain("## Commit message");
+    expect(prompt).toContain("commit message truncated");
+    expect(prompt).not.toContain("x".repeat(8_500));
+    const commitMessageSection = prompt.split("\n## User Instructions")[0]!.split("## Commit message\n")[1]!.trimEnd();
+    expect(commitMessageSection.length).toBeLessThanOrEqual(8_000);
+  });
+
   it("omits the commit message section when the description is empty", () => {
     const prompt = buildReviewPrompt({
       details: { ...details, description: "" },
@@ -328,4 +341,3 @@ describe("buildReviewPrompt since-last-review delta", () => {
     expect(prompt).toContain("diff truncated");
   });
 });
-
