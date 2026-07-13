@@ -23,7 +23,7 @@ The admin server is a small HTTP service (default `127.0.0.1:3100`) that serves 
 | `adminStreamRoutes.ts` | SSE endpoints: `/api/admin/logs/stream` (live agent logs) and `/api/admin/events/stream` (task polling). |
 | `adminIntegrationRoutes.ts` | `/api/admin/integrations/*` CRUD, enable/disable, test, discover, models + `/api/admin/plugins` + `/api/admin/oauth-apps/*`. Integration config masking/merging/validation helpers. |
 | `adminAgentsRoutes.ts` | `/api/admin/agents/*` CRUD + enable/disable + masking + `/api/admin/plugins/:type/oauth/*`. |
-| `adminProjectsRoutes.ts` | `/api/admin/projects/*` CRUD, ticket/review target validation, atomic push-target replacement, automatic relaunch of FAILED/REVIEW_FAILED tasks on (re)configuration or re-enable. |
+| `adminProjectsRoutes.ts` | `/api/admin/projects/*` CRUD, ticket/review target validation, remote skill-source validation/serialization, atomic push-target replacement, automatic relaunch of FAILED/REVIEW_FAILED tasks on (re)configuration or re-enable. |
 | `adminConcurrencyRoutes.ts` | `/api/admin/concurrency` read/update global concurrency. |
 | `adminSettingsRoutes.ts` | `GET/PUT /api/admin/settings` — read/update editable runtime workflow settings (polling interval, max agent cycles, max retry attempts). Validates positive integers; delegates persistence + hot-apply to the `SettingsController` wired in `src/index.ts`. |
 | `adminOverviewRoutes.ts` | `/api/admin/overview` dashboard stats/throughput/votes/runtime + `/api/admin/cost-summary` aggregated AI cost (per project & instance total, optional `?days=` period) + `/api/admin/model-usage` model distribution by run count & cost (global + per project, optional `?days=<n>` period filter). |
@@ -31,6 +31,8 @@ The admin server is a small HTTP service (default `127.0.0.1:3100`) that serves 
 | `dashboard.ts` | Serves the HTML shell for the Vite-built React SPA: reads the Vite manifest from `dist/admin-ui/.vite/manifest.json`, injects the hashed JS/CSS asset links plus a `window.__VE_ADMIN_BOOTSTRAP__` payload, and falls back to "Admin UI not built — run npm run build:ui" when the build output is missing. |
 | `ui/` | Admin SPA source (React + TypeScript): `App.tsx`, `main.tsx`, `api.ts`, `states.ts`, `views/`, `components/`, `shell/`, `theme/`, `icons/`. Built with Vite (`vite.admin.config.ts`) into `dist/admin-ui`; `adminServer.ts` serves the hashed assets under `/admin-ui/*`. Commands: `npm run build:ui`, `npm run dev:ui` (watch), `npm run typecheck:ui`. |
 | `assets/` | Static assets bundled with the admin server. |
+
+The task live-log UI renders `skills.fetch_start`, `skills.fetch_complete`, and `skills.fetch_failed` payloads as human-readable skill fetch messages, including source repository, selected skills, and agent id when present.
 
 ## Route surface
 
@@ -111,9 +113,11 @@ The admin server is a small HTTP service (default `127.0.0.1:3100`) that serves 
 | `PATCH` | `/api/admin/agents/:id/enable` | Enable agent. |
 | `PATCH` | `/api/admin/agents/:id/disable` | Disable agent. |
 | `GET` | `/api/admin/projects` | Project list with resolved agent/integration names. |
-| `POST` | `/api/admin/projects` | Create coding or review project. Orphaned `FAILED`/`REVIEW_FAILED` tasks adopted via the new ticket-source binding are relaunched automatically, unless the project is created disabled. |
+| `POST` | `/api/admin/projects` | Create coding or review project. Supports `skillDiscoveryEnabled` and `skillSources` (`{ source, skills, installAll?, sshUser?, sshPort?, sshKeyPath? }`) for project-approved remote skills. Orphaned `FAILED`/`REVIEW_FAILED` tasks adopted via the new ticket-source binding are relaunched automatically, unless the project is created disabled. |
+| `POST` | `/api/admin/projects/skill-sources/list` | Runs `npx skills add -l <source>` with optional SSH hints to list available skills before saving a new project source row; requires unscoped `project.write`. |
+| `POST` | `/api/admin/projects/:id/skill-sources/list` | Same remote skill listing flow for an existing project, scoped through `resourceParam: "id"` so project editors with project-level `project.write` can use it. |
 | `GET` | `/api/admin/projects/:id` | Project detail. |
-| `PUT` | `/api/admin/projects/:id` | Update project; coding-project `pushTargets` replace atomically. When ticket source, push targets, review config, agent binding/override, post-clone script, or skill-discovery toggle change, or the project is enabled, every `FAILED`/`REVIEW_FAILED` task bound to the project is relaunched automatically (no manual retry click needed). |
+| `PUT` | `/api/admin/projects/:id` | Update project; coding-project `pushTargets` replace atomically. When ticket source, push targets, review config, agent binding/override, post-clone script, skill-discovery toggle, or remote skill sources change, or the project is enabled, every `FAILED`/`REVIEW_FAILED` task bound to the project is relaunched automatically (no manual retry click needed). |
 | `DELETE` | `/api/admin/projects/:id` | Delete project and linked child rows. |
 | `PATCH` | `/api/admin/projects/:id/enable` | Enable project. If it was previously disabled, its `FAILED`/`REVIEW_FAILED` tasks are relaunched automatically. |
 | `PATCH` | `/api/admin/projects/:id/disable` | Disable project. |

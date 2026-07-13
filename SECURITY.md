@@ -30,11 +30,14 @@ Each agent cycle runs in an ephemeral Docker container hardened with:
 
 The host owns all push/review credentials and orchestrates network operations; the agent container never holds provider secrets.
 
-### Repository Skill Discovery
+### Project Skill Discovery
 
-Skill discovery is a **per-project** setting (`projects.skill_discovery_enabled`, default **off**) available to both coding and review projects — chosen in the project-setup form, not an environment flag. When enabled, the in-container agent loads team-defined skills from `<repo>/.github/skills` in the cloned repository. Skills are repository-controlled instructions executed by the agent, so they are a **prompt-injection surface**: a malicious or compromised repo could steer the agent. Mitigations:
+Skill discovery is a **per-project** setting (`projects.skill_discovery_enabled`, default **off**) available to both coding and review projects — chosen in the project-setup form, not an environment flag. When enabled, the in-container agent loads team-defined skills from `<repo>/.github/skills` in the cloned repository and may fetch configured remote sources from `projects.skill_sources_json` with `npx skills` into `/ve-home`. Skills are project-approved instructions executed by the agent, so they are a **prompt-injection surface**: a malicious repository or remote skill source could steer the agent. Mitigations:
 
-- The setting is **disabled by default**; enable it only for repositories you trust.
+- The setting is **disabled by default**; enable it only for repositories and remote skill sources you trust.
+- Remote skill sources are explicit project configuration. They are ignored unless the per-project trust gate is enabled.
+- Remote skills install globally in the agent home volume (`/ve-home`), not into the cloned repository. This keeps review workspaces read-only.
+- SSH remote skill sources reuse the orchestrator process `SSH_AUTH_SOCK` only when such a source is configured; missing SSH agent access fails the run instead of silently skipping skills.
 - Only skills are loaded — MCP discovery (`enableConfigDiscovery`) stays off, so untrusted `.mcp.json` / `.vscode/mcp.json` files are never honoured.
 - The agent still runs inside the hardened, network-isolated container described above and never holds provider push/review credentials.
 
