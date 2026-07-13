@@ -26,6 +26,12 @@ import { getProviderDescriptor, getProviderDomainCapabilities } from "../plugins
 
 const log = getLogger("admin-projects");
 
+function isSkillSourceAuthError(message: string): boolean {
+  return message.startsWith("SSH skill sources require")
+    || message.startsWith("SSH private key path is not readable")
+    || message.startsWith("SSH known_hosts path is not readable");
+}
+
 async function relaunchFailedTasksForProject(
   store: ProjectsRouteStore,
   projectId: ProjectId,
@@ -157,6 +163,70 @@ const reviewConfigSchema = z.object({
   integrationId: z.string().min(1, "Review integration is required"),
   repoKeys: z.array(z.string()).min(1, "Select at least one repository to review"),
 });
+
+const skillSourceSchema = z.object({
+  source: z.string().trim().min(1, "Skill source is required"),
+  skills: z.array(z.string().trim().min(1, "Skill name is required")).optional(),
+  installAll: z.boolean().optional(),
+  sshUser: z.string().trim().optional(),
+  sshPort: z.number().int().positive().optional(),
+  sshKeyPath: z.string().trim().optional(),
+  sshKnownHostsPath: z.string().trim().optional(),
+}).superRefine((source, ctx) => {
+  if (source.installAll === true) return;
+  if ((source.skills ?? []).length > 0) return;
+  ctx.addIssue({
+    code: z.ZodIssueCode.custom,
+    message: "Select at least one skill, or enable Install all",
+    path: ["skills"],
+  });
+});
+
+const skillSourcesSchema = z.array(skillSourceSchema).max(20, "At most 20 skill sources are supported");
+
+const skillSourceDiscoverySchema = z.object({
+  source: z.string().trim().min(1, "Skill source is required"),
+  sshUser: z.string().trim().optional(),
+  sshPort: z.number().int().positive().optional(),
+  sshKeyPath: z.string().trim().optional(),
+  sshKnownHostsPath: z.string().trim().optional(),
+});
+
+interface SkillSource {
+  source: string;
+  skills: string[];
+  installAll?: boolean;
+  sshUser?: string;
+  sshPort?: number;
+  sshKeyPath?: string;
+  sshKnownHostsPath?: string;
+}
+
+function normalizeSkillSources(sources: z.infer<typeof skillSourcesSchema> | undefined): SkillSource[] {
+  if (!sources) return [];
+  return sources.map((source) => {
+    const ssh = {
+      ...(source.sshUser !== undefined && source.sshUser !== "" ? { sshUser: source.sshUser } : {}),
+      ...(source.sshPort !== undefined ? { sshPort: source.sshPort } : {}),
+      ...(source.sshKeyPath !== undefined && source.sshKeyPath !== "" ? { sshKeyPath: source.sshKeyPath } : {}),
+      ...(source.sshKnownHostsPath !== undefined && source.sshKnownHostsPath !== "" ? { sshKnownHostsPath: source.sshKnownHostsPath } : {}),
+    };
+    if (source.installAll === true) {
+      return { source: source.source, skills: [], installAll: true, ...ssh };
+    }
+    return { source: source.source, skills: Array.from(new Set(source.skills ?? [])), ...ssh };
+  });
+}
+
+function parseStoredSkillSources(project: ProjectRecord): SkillSource[] {
+  try {
+    const parsed: unknown = JSON.parse(project.skillSourcesJson || "[]");
+    const result = skillSourcesSchema.safeParse(parsed);
+    return result.success ? normalizeSkillSources(result.data) : [];
+  } catch {
+    return [];
+  }
+}
 
 const codingProjectCreateSchema = z.object({
   id: z.string().optional(),
@@ -396,6 +466,27 @@ function isUniqueConflict(err: unknown): boolean {
 
 /** Register project routes on the given router. */
 export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): void {
+  router.add("POST", "/api/admin/projects/skill-sources/list", async (req, res, _params) => {
+    const body = await readBody(req);
+    if (!body) { writeJson(res, 400, { error: "Request body required" }); return; }
+    const parsed = skillSourceDiscoverySchema.safeParse(body);
+    if (!parsed.success) { writeJson(res, 400, zodErrorBody(parsed.error, "Invalid skill source payload")); return; }
+    try {
+      const source = {
+        source: parsed.data.source,
+        ...(parsed.data.sshUser !== undefined ? { sshUser: parsed.data.sshUser } : {}),
+        ...(parsed.data.sshPort !== undefined ? { sshPort: parsed.data.sshPort } : {}),
+        ...(parsed.data.sshKeyPath !== undefined ? { sshKeyPath: parsed.data.sshKeyPath } : {}),
+        ...(parsed.data.sshKnownHostsPath !== undefined ? { sshKnownHostsPath: parsed.data.sshKnownHostsPath } : {}),
+      };
+      const result = await listSkillSourceSkills(source);
+      writeJson(res, 200, result);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      writeJson(res, isSkillSourceAuthError(message) ? 400 : 502, { error: `Failed to list skills: ${message}` });
+    }
+  }, { permission: "project.write" });
+
   router.add("GET", "/api/admin/projects", async (req, res, _params) => {
     if (!deps.projectStore) { writeJson(res, 501, { error: "Project store not available" }); return; }
     const store = deps.projectStore;
