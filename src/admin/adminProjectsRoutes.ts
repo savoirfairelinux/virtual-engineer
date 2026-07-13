@@ -170,14 +170,18 @@ const reviewConfigSchema = z.object({
   repoKeys: z.array(z.string()).min(1, "Select at least one repository to review"),
 });
 
+function optionalNonEmptyString(message: string): z.ZodOptional<z.ZodString> {
+  return z.string().trim().min(1, message).optional();
+}
+
 const skillSourceSchema = z.object({
   source: z.string().trim().min(1, "Skill source is required"),
   skills: z.array(z.string().trim().min(1, "Skill name is required")).optional(),
   installAll: z.boolean().optional(),
-  sshUser: z.string().trim().optional(),
+  sshUser: optionalNonEmptyString("SSH user must not be empty"),
   sshPort: z.number().int().positive().optional(),
-  sshKeyPath: z.string().trim().optional(),
-  sshKnownHostsPath: z.string().trim().optional(),
+  sshKeyPath: optionalNonEmptyString("SSH key path must not be empty"),
+  sshKnownHostsPath: optionalNonEmptyString("SSH known_hosts path must not be empty"),
 }).superRefine((source, ctx) => {
   if (source.installAll === true) return;
   if ((source.skills ?? []).length > 0) return;
@@ -192,10 +196,10 @@ const skillSourcesSchema = z.array(skillSourceSchema).max(20, "At most 20 skill 
 
 const skillSourceDiscoverySchema = z.object({
   source: z.string().trim().min(1, "Skill source is required"),
-  sshUser: z.string().trim().optional(),
+  sshUser: optionalNonEmptyString("SSH user must not be empty"),
   sshPort: z.number().int().positive().optional(),
-  sshKeyPath: z.string().trim().optional(),
-  sshKnownHostsPath: z.string().trim().optional(),
+  sshKeyPath: optionalNonEmptyString("SSH key path must not be empty"),
+  sshKnownHostsPath: optionalNonEmptyString("SSH known_hosts path must not be empty"),
 });
 
 interface SkillSource {
