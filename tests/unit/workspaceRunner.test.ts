@@ -77,6 +77,14 @@ function getSpawnCall(): { command: string; args: readonly string[] } {
   };
 }
 
+function restoreEnv(name: string, value: string | undefined): void {
+  if (value === undefined) {
+    delete process.env[name];
+    return;
+  }
+  process.env[name] = value;
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function makeAgentAdapter(result?: Partial<AgentResult>): AgentAdapter {
@@ -285,6 +293,175 @@ describe("DockerWorkspaceRunner", () => {
       expect(argsArray).toMatch(/-e\s+GIT_AUTHOR_NAME=Agent/);
     });
 
+    it("installs remote skills into the home volume before running the agent", async () => {
+      const savedSshAuthSock = process.env["SSH_AUTH_SOCK"];
+      process.env["SSH_AUTH_SOCK"] = "/tmp/ve-ssh.sock";
+      try {
+        const adapter = makeAgentAdapter();
+        const sources = JSON.stringify([{ source: "example-org/agent-skills", skills: ["skill-a"] }]);
+        (adapter.buildContainerSpec as ReturnType<typeof vi.fn>).mockReturnValue({
+          image: "my-image:latest",
+          env: { SKILL_DISCOVERY: "1" },
+          command: ["node", "/worker/index.js"],
+          networkMode: "virtual-engineer_ve-agent-net",
+        });
+        const runner = makeRunner(adapter);
+        const ctx = makeContext({
+          agentSession: {
+            ...makeContext().agentSession,
+            skillDiscoveryEnabled: true,
+            skillSourcesJson: sources,
+          },
+        });
+
+        mockSpawnWith((child) => {
+          process.nextTick(() => child.emit("close", 0));
+        });
+
+        await asDockerRunner(runner).runAgentInDocker(adapter, ctx, {});
+
+        expect(mockExecInVolume).toHaveBeenCalledWith(expect.objectContaining({
+          volumeName: ctx.homeVolumeName,
+          image: "virtual-engineer-workspace:latest",
+          command: [
+            "npx",
+            "--yes",
+            "skills@1.5.16",
+            "add",
+            "example-org/agent-skills",
+            "--skill",
+            "skill-a",
+            "-g",
+            "-a",
+            "github-copilot",
+            "--copy",
+            "-y",
+          ],
+          env: { HOME: "/workspace", NPM_CONFIG_UPDATE_NOTIFIER: "false" },
+          forwardSshAgent: false,
+          networkMode: "virtual-engineer_ve-agent-net",
+        }));
+        const { args } = getSpawnCall();
+        expect([...args].some((arg) => arg.includes("SKILL_SOURCES_JSON="))).toBe(false);
+        expect([...args].some((arg) => arg.includes("SSH_AUTH_SOCK="))).toBe(false);
+      } finally {
+        restoreEnv("SSH_AUTH_SOCK", savedSshAuthSock);
+      }
+    });
+
+    it("fails fast for SSH skill sources when SSH_AUTH_SOCK is unavailable", async () => {
+      const savedSshAuthSock = process.env["SSH_AUTH_SOCK"];
+      delete process.env["SSH_AUTH_SOCK"];
+      try {
+        const adapter = makeAgentAdapter();
+        const sources = JSON.stringify([{ source: "ssh://skills.example.com/org/agent-skills", skills: ["skill-a"] }]);
+        (adapter.buildContainerSpec as ReturnType<typeof vi.fn>).mockReturnValue({
+          image: "my-image:latest",
+          env: { SKILL_DISCOVERY: "1" },
+          command: ["node", "/worker/index.js"],
+        });
+        const runner = makeRunner(adapter);
+        const ctx = makeContext({
+          agentSession: {
+            ...makeContext().agentSession,
+            skillDiscoveryEnabled: true,
+            skillSourcesJson: sources,
+          },
+        });
+
+        await expect(asDockerRunner(runner).runAgentInDocker(adapter, ctx, {})).rejects.toThrow(
+          "Remote SSH skill source ssh://skills.example.com/org/agent-skills requires SSH_AUTH_SOCK or sshKeyPath to be configured"
+        );
+        expect(mockSpawn).not.toHaveBeenCalled();
+      } finally {
+        restoreEnv("SSH_AUTH_SOCK", savedSshAuthSock);
+      }
+    });
+
+    it("installs SSH skill sources with configured private keys before running the agent", async () => {
+      const savedSshAuthSock = process.env["SSH_AUTH_SOCK"];
+      delete process.env["SSH_AUTH_SOCK"];
+      try {
+        const adapter = makeAgentAdapter();
+        const sources = JSON.stringify([{ source: "ssh://skills.example.com/org/agent-skills", skills: ["skill-a"], sshKeyPath: "/host/id_ed25519", sshKnownHostsPath: "/host/known_hosts" }]);
+        (adapter.buildContainerSpec as ReturnType<typeof vi.fn>).mockReturnValue({
+          image: "my-image:latest",
+          env: { SKILL_DISCOVERY: "1" },
+          command: ["node", "/worker/index.js"],
+        });
+        const runner = makeRunner(adapter);
+        const ctx = makeContext({
+          agentSession: {
+            ...makeContext().agentSession,
+            skillDiscoveryEnabled: true,
+            skillSourcesJson: sources,
+          },
+        });
+
+        mockSpawnWith((child) => {
+          process.nextTick(() => child.emit("close", 0));
+        });
+
+        await asDockerRunner(runner).runAgentInDocker(adapter, ctx, {});
+
+        expect(mockExecInVolume).toHaveBeenCalledWith(expect.objectContaining({
+          volumeName: ctx.homeVolumeName,
+          sshKeyPath: "/host/id_ed25519",
+          sshKnownHostsPath: "/host/known_hosts",
+          forwardSshAgent: false,
+          command: expect.arrayContaining(["npx", "--yes", "skills@1.5.16", "add", "ssh://skills.example.com/org/agent-skills"]),
+        }));
+        const { args } = getSpawnCall();
+        const argsArray = [...args];
+        expect(argsArray.some((arg) => arg.includes("/host/id_ed25519"))).toBe(false);
+        expect(argsArray.some((arg) => arg.includes("SKILL_SOURCES_JSON="))).toBe(false);
+      } finally {
+        restoreEnv("SSH_AUTH_SOCK", savedSshAuthSock);
+      }
+    });
+
+    it("uses SSH_AUTH_SOCK only in the helper install container", async () => {
+      const savedSshAuthSock = process.env["SSH_AUTH_SOCK"];
+      process.env["SSH_AUTH_SOCK"] = "/tmp/ve-ssh.sock";
+      try {
+        const adapter = makeAgentAdapter();
+        const sources = JSON.stringify([{ source: "git@skills.example.com:org/agent-skills", skills: ["skill-a"] }]);
+        (adapter.buildContainerSpec as ReturnType<typeof vi.fn>).mockReturnValue({
+          image: "my-image:latest",
+          env: { SKILL_DISCOVERY: "1" },
+          command: ["node", "/worker/index.js"],
+        });
+        const runner = makeRunner(adapter);
+        const ctx = makeContext({
+          agentSession: {
+            ...makeContext().agentSession,
+            skillDiscoveryEnabled: true,
+            skillSourcesJson: sources,
+          },
+        });
+
+        mockSpawnWith((child) => {
+          process.nextTick(() => child.emit("close", 0));
+        });
+
+        await asDockerRunner(runner).runAgentInDocker(adapter, ctx, {});
+
+        expect(mockExecInVolume).toHaveBeenCalledWith(expect.objectContaining({
+          volumeName: ctx.homeVolumeName,
+          forwardSshAgent: true,
+          command: expect.arrayContaining(["npx", "--yes", "skills@1.5.16", "add", "git@skills.example.com:org/agent-skills"]),
+        }));
+        const { args } = getSpawnCall();
+        const argsArray = [...args];
+        expect(argsArray).not.toContain("/tmp/ve-ssh.sock:/ve-home/ssh-auth.sock");
+        expect(argsArray.some((arg) => arg.includes("SSH_AUTH_SOCK="))).toBe(false);
+        expect(argsArray.some((arg) => arg.includes("GIT_SSH_COMMAND="))).toBe(false);
+        expect(argsArray).not.toContain("--user");
+      } finally {
+        restoreEnv("SSH_AUTH_SOCK", savedSshAuthSock);
+      }
+    });
+
     it("includes network mode from spec", async () => {
       const adapter = makeAgentAdapter();
       (adapter.buildContainerSpec as ReturnType<typeof vi.fn>).mockReturnValue({
@@ -429,6 +606,64 @@ describe("DockerWorkspaceRunner", () => {
       });
 
       expect(chunks).toEqual(["first line\n", "second line\n"]);
+    });
+  });
+
+  describe("runReviewInDocker", () => {
+    it("uses the captured review adapter when installing remote skills", async () => {
+      let runner: DockerWorkspaceRunner;
+      const updatedAdapter = {
+        name: "claude",
+        buildContainerSpec: vi.fn(),
+        execute: vi.fn(),
+        buildReviewContainerSpec: vi.fn().mockReturnValue({
+          image: "virtual-engineer-workspace:latest",
+          env: {},
+          command: ["node", "/agent-worker/dist/index.js"],
+        }),
+      } as unknown as AgentAdapter;
+      const initialAdapter = {
+        name: "copilot",
+        buildContainerSpec: vi.fn(),
+        execute: vi.fn(),
+        buildReviewContainerSpec: vi.fn(() => {
+          runner.updateRuntime({ agentAdapter: updatedAdapter });
+          return {
+            image: "virtual-engineer-workspace:latest",
+            env: {},
+            command: ["node", "/agent-worker/dist/index.js"],
+          };
+        }),
+      } as unknown as AgentAdapter;
+      runner = makeRunner(initialAdapter);
+      const handle = await runner.createWorkspace(makeTaskId("task-1"));
+
+      mockSpawnWith((child) => {
+        process.nextTick(() => {
+          child.stdout.emit("data", Buffer.from(JSON.stringify({ rawOutput: "review text" })));
+          child.emit("close", 0);
+        });
+      });
+
+      await runner.runReviewInDocker(handle, {
+        changeId: makeExternalChangeId("Iabc123"),
+        revisionNumber: 1,
+        patchset: 1,
+        repositoryName: "repo",
+        prompt: "review this",
+        systemPrompt: "system",
+        agentToken: "token",
+        skillDiscoveryEnabled: true,
+        skillSourcesJson: JSON.stringify([{ source: "example-org/agent-skills", skills: ["skill-a"] }]),
+      });
+
+      expect(mockExecInVolume).toHaveBeenCalledWith(expect.objectContaining({
+        volumeName: handle.homeVolumeName,
+        command: expect.arrayContaining(["-a", "github-copilot"]),
+      }));
+      expect(mockExecInVolume).not.toHaveBeenCalledWith(expect.objectContaining({
+        command: expect.arrayContaining(["-a", "claude-code"]),
+      }));
     });
   });
 

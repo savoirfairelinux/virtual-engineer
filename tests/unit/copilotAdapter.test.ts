@@ -187,6 +187,17 @@ describe("CopilotAdapter", () => {
       expect(spec.env["SKILL_DISCOVERY"]).toBe("1");
     });
 
+    it("does not expose SKILL_SOURCES_JSON to the agent container", () => {
+      const adapter = new CopilotAdapter();
+      const context = makeContext();
+      context.agentSession.skillSourcesJson = "[{\"source\":\"ssh://skills.example.com/org/agent-skills\",\"skills\":[\"skill-a\"]}]";
+      expect(adapter.buildContainerSpec(context, { GITHUB_TOKEN: "ghp_tok" }).env["SKILL_SOURCES_JSON"]).toBeUndefined();
+
+      context.agentSession.skillDiscoveryEnabled = true;
+      const spec = adapter.buildContainerSpec(context, { GITHUB_TOKEN: "ghp_tok" });
+      expect(spec.env["SKILL_SOURCES_JSON"]).toBeUndefined();
+    });
+
     it("omits SKILL_DISCOVERY when the project did not enable skill discovery", () => {
       const adapter = new CopilotAdapter();
       const spec = adapter.buildContainerSpec(makeContext(), { GITHUB_TOKEN: "ghp_tok" });
@@ -223,6 +234,15 @@ describe("CopilotAdapter", () => {
       const spec = adapter.buildReviewContainerSpec(input, { GITHUB_TOKEN: "ghp_tok" });
 
       expect(spec.env["SKILL_DISCOVERY"]).toBe("1");
+    });
+
+    it("does not expose SKILL_SOURCES_JSON in review specs", () => {
+      const adapter = new CopilotAdapter();
+      const skillSourcesJson = "[{\"source\":\"ssh://skills.example.com/org/agent-skills\",\"skills\":[\"skill-a\"]}]";
+      const input = { ...makeReviewInput(), skillDiscoveryEnabled: true, skillSourcesJson };
+      const spec = adapter.buildReviewContainerSpec(input, { GITHUB_TOKEN: "ghp_tok" });
+
+      expect(spec.env["SKILL_SOURCES_JSON"]).toBeUndefined();
     });
   });
 
