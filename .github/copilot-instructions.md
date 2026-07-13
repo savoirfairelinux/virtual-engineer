@@ -32,6 +32,8 @@ npm run db:migrate  # apply Drizzle migrations
 
 Helper scripts: `npm run e2e:mock`, `npm run reset:instance`, `npm run build:agent` (agent-worker TS build), `npm run dev:ui` (Vite watch), `npm run typecheck:ui`, `npm run db:generate`.
 
+Keep the root `@github/copilot-sdk` dependency aligned with `agent-worker/package.json`; `npm run typecheck` compiles `agent-worker/src` from the root install and relies on the same permission-handler result types.
+
 ## Architecture (one screen)
 
 - **Orchestrator** normally runs on the **host** in development (Node.js, `tsx src/index.ts`). Optional Docker deployment uses `scripts/start-orchestrator.sh` (host networking, admin UI bound to `127.0.0.1:3100`).
