@@ -62,8 +62,10 @@ export interface ProjectRecord {
   agentOverrideJson: string | null;
   /** Bash script run on the host after cloning. Empty string means "no script". */
   postCloneScript: string;
-  /** When true, the agent container loads team-defined skills from `<repo>/.github/skills` (coding projects only). */
+  /** When true, the agent container loads project-approved skills. */
   skillDiscoveryEnabled: boolean;
+  /** JSON list of remote skill sources fetched with `npx skills` when discovery is enabled. */
+  skillSourcesJson: string;
   /** Optional literal Gerrit topic that overrides the ticket-derived topic (buildGerritTopic) for all pushes from this project. NULL = use the ticket-derived topic. */
   gerritTopicOverride: string | null;
   /** When true, agent commit messages use the full ticket URL in the footer instead of the short "#id" form. */
@@ -401,8 +403,10 @@ export interface AgentSession {
   copilotReasoningEffort?: string | undefined;
   /** Multi-repo workspace layout — when set, agent-worker uses it to group files/commits by repo. */
   repositoryMap?: RepositoryMap | undefined;
-  /** When true, the agent loads team-defined skills from `<repo>/.github/skills`. Sourced from the project's setting. */
+  /** When true, the agent loads team-defined local and remote skills. Sourced from the project's setting. */
   skillDiscoveryEnabled?: boolean | undefined;
+  /** Remote skills fetched by the worker before opening the agent session. */
+  skillSourcesJson?: string | undefined;
   /** Pre-formatted ticket-footer trailer line (e.g. "GitLab: https://…/issues/123") injected into every agent commit alongside its Change-Id. Sourced from the project's "full ticket URL in commits" setting. */
   ticketFooterLine?: string | undefined;
 }
@@ -568,8 +572,10 @@ export interface ReviewWorkspaceInput {
   reasoningEffort?: string | undefined;
   /** Container image (defaults to agentContainerImage from codegen config) */
   containerImage?: string | undefined;
-  /** When true, the agent container loads team-defined skills from <repo>/.github/skills. */
+  /** When true, the agent container loads team-defined local and remote skills. */
   skillDiscoveryEnabled?: boolean | undefined;
+  /** Remote skills fetched by the worker before opening the agent session. */
+  skillSourcesJson?: string | undefined;
 }
 
 /** Options for checking out a prior patchset/revision onto a cloned workspace. */

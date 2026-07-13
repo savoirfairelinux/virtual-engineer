@@ -32,6 +32,7 @@ export interface ProjectStoreApi {
     agentOverrideJson?: string | null;
     postCloneScript?: string;
     skillDiscoveryEnabled?: boolean;
+    skillSourcesJson?: string;
     gerritTopicOverride?: string | null;
     useFullTicketUrlInCommits?: boolean;
     postReviewLinkToTicket?: boolean;
@@ -42,7 +43,7 @@ export interface ProjectStoreApi {
   listProjects(filter?: { type?: ProjectType; enabled?: boolean }): Promise<ProjectRecord[]>;
   updateProject(
     id: ProjectId,
-    partial: Partial<Pick<ProjectRecord, "name" | "type" | "agentId" | "agentOverrideJson" | "postCloneScript" | "skillDiscoveryEnabled" | "gerritTopicOverride" | "useFullTicketUrlInCommits" | "postReviewLinkToTicket" | "reactToCiFailures" | "enabled">>
+    partial: Partial<Pick<ProjectRecord, "name" | "type" | "agentId" | "agentOverrideJson" | "postCloneScript" | "skillDiscoveryEnabled" | "skillSourcesJson" | "gerritTopicOverride" | "useFullTicketUrlInCommits" | "postReviewLinkToTicket" | "reactToCiFailures" | "enabled">>
   ): Promise<ProjectRecord>;
   deleteProject(id: ProjectId): Promise<void>;
   adoptOrphanedTasksForProject(projectId: ProjectId, integrationId: string, ticketProjectKey: string): number;
@@ -106,6 +107,7 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
       agentOverrideJson: row.agentOverrideJson ?? null,
       postCloneScript: row.postCloneScript,
       skillDiscoveryEnabled: row.skillDiscoveryEnabled === 1,
+      skillSourcesJson: row.skillSourcesJson,
       gerritTopicOverride: row.gerritTopicOverride ?? null,
       useFullTicketUrlInCommits: row.useFullTicketUrlInCommits === 1,
       postReviewLinkToTicket: row.postReviewLinkToTicket === 1,
@@ -167,6 +169,7 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
     agentOverrideJson?: string | null;
     postCloneScript?: string;
     skillDiscoveryEnabled?: boolean;
+    skillSourcesJson?: string;
     gerritTopicOverride?: string | null;
     useFullTicketUrlInCommits?: boolean;
     postReviewLinkToTicket?: boolean;
@@ -187,6 +190,7 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
       agentOverrideJson: input.agentOverrideJson ?? null,
       postCloneScript: input.postCloneScript ?? "",
       skillDiscoveryEnabled: input.skillDiscoveryEnabled === true ? 1 : 0,
+      skillSourcesJson: input.skillSourcesJson ?? "[]",
       gerritTopicOverride: input.gerritTopicOverride ?? null,
       useFullTicketUrlInCommits: input.useFullTicketUrlInCommits === true ? 1 : 0,
       postReviewLinkToTicket: input.postReviewLinkToTicket === true ? 1 : 0,
@@ -212,7 +216,7 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
 
   async function updateProject(
     id: ProjectId,
-    partial: Partial<Pick<ProjectRecord, "name" | "type" | "agentId" | "agentOverrideJson" | "postCloneScript" | "skillDiscoveryEnabled" | "gerritTopicOverride" | "useFullTicketUrlInCommits" | "postReviewLinkToTicket" | "reactToCiFailures" | "enabled">>
+    partial: Partial<Pick<ProjectRecord, "name" | "type" | "agentId" | "agentOverrideJson" | "postCloneScript" | "skillDiscoveryEnabled" | "skillSourcesJson" | "gerritTopicOverride" | "useFullTicketUrlInCommits" | "postReviewLinkToTicket" | "reactToCiFailures" | "enabled">>
   ): Promise<ProjectRecord> {
     const existing = await getProjectById(id);
     if (!existing) throw new Error(`Project not found: ${id}`);
@@ -230,6 +234,7 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
     if (partial.agentOverrideJson !== undefined) update["agentOverrideJson"] = partial.agentOverrideJson;
     if (partial.postCloneScript !== undefined) update["postCloneScript"] = partial.postCloneScript;
     if (partial.skillDiscoveryEnabled !== undefined) update["skillDiscoveryEnabled"] = partial.skillDiscoveryEnabled ? 1 : 0;
+    if (partial.skillSourcesJson !== undefined) update["skillSourcesJson"] = partial.skillSourcesJson;
     if (partial.gerritTopicOverride !== undefined) update["gerritTopicOverride"] = partial.gerritTopicOverride;
     if (partial.useFullTicketUrlInCommits !== undefined) update["useFullTicketUrlInCommits"] = partial.useFullTicketUrlInCommits ? 1 : 0;
     if (partial.postReviewLinkToTicket !== undefined) update["postReviewLinkToTicket"] = partial.postReviewLinkToTicket ? 1 : 0;

@@ -302,8 +302,10 @@ export const projects = sqliteTable(
     agentOverrideJson: text("agent_override_json"),
     /** Bash script run on the host after cloning. Empty string means "no script". */
     postCloneScript: text("post_clone_script").notNull().default(""),
-    /** When 1, the agent container loads team-defined skills from `<repo>/.github/skills` (coding and review projects). */
+    /** When 1, the agent container loads team-defined local and remote skills. */
     skillDiscoveryEnabled: integer("skill_discovery_enabled").notNull().default(0),
+    /** JSON array of remote skill sources consumed by the agent worker. */
+    skillSourcesJson: text("skill_sources_json").notNull().default("[]"),
     /** Optional literal Gerrit topic that overrides the ticket-derived topic (buildGerritTopic) for all pushes from this project. NULL = use the ticket-derived topic. */
     gerritTopicOverride: text("gerrit_topic_override"),
     /** When 1, agent commit messages use the full ticket URL in the footer instead of the short "#id" form. */
