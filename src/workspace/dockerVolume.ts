@@ -89,6 +89,8 @@ export interface ExecInVolumeOptions {
   networkMode?: string | undefined;
   /** Additional bind mounts (source:target:options) */
   additionalMounts?: string[] | undefined;
+  /** Forward host SSH_AUTH_SOCK for helper commands that need SSH agent auth. Defaults to true. */
+  forwardSshAgent?: boolean | undefined;
   /** Timeout in milliseconds (default 10 minutes) */
   timeout?: number | undefined;
   /** Mount the workspace as read-only */
@@ -157,7 +159,7 @@ export async function execInVolume(opts: ExecInVolumeOptions): Promise<ExecInVol
     // orchestrator mounts $SSH_AUTH_SOCK with its original host path, so when
     // it passes that path to the Docker daemon, the daemon resolves it on the
     // host and finds the socket.
-    const agentSock = process.env["SSH_AUTH_SOCK"];
+    const agentSock = opts.forwardSshAgent === false ? undefined : process.env["SSH_AUTH_SOCK"];
     if (opts.sshAgentPubKeyPath && !agentSock) {
       throw new Error(
         "SSH agent identity pinning is configured (sshAgentPubKeyPath) but " +
@@ -261,4 +263,3 @@ export async function execInVolume(opts: ExecInVolumeOptions): Promise<ExecInVol
     return { stdout: "", stderr: msg, exitCode: 1 };
   }
 }
-

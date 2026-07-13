@@ -14,8 +14,39 @@ import type {
 import type { AgentAdapter } from "../interfaces.js";
 import { createVolume, removeVolume, execInVolume, stopContainersUsingVolume } from "./dockerVolume.js";
 import { getLogger } from "../logger.js";
+import { buildSkillsCliArgs, isSshSkillSource, parseRemoteSkillSources, skillsAgentId } from "./skillSources.js";
+import type { AgentProvider } from "./skillSources.js";
 
 const log = getLogger("workspace-runner");
+
+interface SkillInstallSpec {
+  homeVolumeName: string;
+  image: string;
+  skillSourcesJson?: string | undefined;
+  provider: AgentProvider;
+  networkMode?: string | undefined;
+  taskId: TaskId;
+  onStderrChunk?: ((chunk: string) => void) | undefined;
+}
+
+function emitSkillFetchEvent(type: string, source: string, skills: string[] | "all", provider: AgentProvider, extra: Record<string, unknown> = {}): string {
+  return JSON.stringify({
+    __ve_event: true,
+    type,
+    data: { source, skills, agent: skillsAgentId(provider), ...extra },
+    ts: new Date().toISOString(),
+  });
+}
+
+function skillInstallError(result: { stdout: string; stderr: string; exitCode: number }): string {
+  const stderr = result.stderr.trim().slice(0, 1000);
+  const stdout = result.stdout.trim().slice(0, 1000);
+  return [
+    `exit code ${result.exitCode}`,
+    ...(stderr ? [`stderr: ${stderr}`] : []),
+    ...(stdout ? [`stdout: ${stdout}`] : []),
+  ].join("; ");
+}
 
 type PromptAwareAgentAdapter = AgentAdapter & {
   buildContainerSpecWithPrompts(
@@ -59,6 +90,46 @@ export class DockerWorkspaceRunner implements WorkspaceRunner {
     }
   }
 
+  private async installRemoteSkillsIntoHomeVolume(spec: SkillInstallSpec): Promise<void> {
+    if (!spec.skillSourcesJson) return;
+    const sources = parseRemoteSkillSources(spec.skillSourcesJson);
+    if (sources.length === 0) return;
+
+    for (const source of sources) {
+      const skills = source.installAll === true ? "all" : source.skills;
+      const needsSsh = isSshSkillSource(source);
+      if (needsSsh && !source.sshKeyPath && !process.env["SSH_AUTH_SOCK"]) {
+        throw new Error(`Remote SSH skill source ${source.source} requires SSH_AUTH_SOCK or sshKeyPath to be configured`);
+      }
+      log.info({ taskId: spec.taskId, source: source.source, skills }, "installing remote skills into agent home volume");
+      spec.onStderrChunk?.(`${emitSkillFetchEvent("skills.fetch_start", source.source, skills, spec.provider)}\n`);
+      const result = await execInVolume({
+        volumeName: spec.homeVolumeName,
+        image: spec.image,
+        command: ["npx", ...buildSkillsCliArgs(source, spec.provider)],
+        env: {
+          HOME: "/workspace",
+          NPM_CONFIG_UPDATE_NOTIFIER: "false",
+        },
+        ...(needsSsh ? {
+          ...(source.sshKeyPath ? { sshKeyPath: source.sshKeyPath } : {}),
+          ...(source.sshKnownHostsPath ? { sshKnownHostsPath: source.sshKnownHostsPath } : {}),
+          ...(source.sshPort !== undefined ? { sshPort: source.sshPort } : {}),
+        } : {}),
+        forwardSshAgent: needsSsh && !source.sshKeyPath,
+        networkMode: spec.networkMode,
+        timeout: 600_000,
+      });
+      if (result.exitCode !== 0) {
+        const detail = skillInstallError(result);
+        spec.onStderrChunk?.(`${emitSkillFetchEvent("skills.fetch_failed", source.source, skills, spec.provider, { message: detail })}\n`);
+        log.warn({ taskId: spec.taskId, source: source.source, err: detail.slice(0, 500) }, "remote skill installation failed");
+        throw new Error(`failed to fetch skills from ${source.source}: ${detail}`);
+      }
+      spec.onStderrChunk?.(`${emitSkillFetchEvent("skills.fetch_complete", source.source, skills, spec.provider)}\n`);
+    }
+  }
+
   /**
    * Spawn the adapter container and return raw stdout/stderr.
    * Security: only task-specific vars reach the container; agent-worker/src/index.ts further
@@ -90,6 +161,19 @@ export class DockerWorkspaceRunner implements WorkspaceRunner {
       });
       spec.env["USER_PROMPT_FILE"] = "/ve-home/user-prompt.txt";
     }
+
+    await this.installRemoteSkillsIntoHomeVolume({
+      homeVolumeName: context.homeVolumeName,
+      image: this.config.agentContainerImage,
+      skillSourcesJson: context.agentSession.skillDiscoveryEnabled ? context.agentSession.skillSourcesJson : undefined,
+      provider: adapter.name === "claude" ? "claude" : "copilot",
+      networkMode: spec.networkMode,
+      taskId: context.taskId,
+      onStderrChunk: callbacks.onStderrChunk,
+    });
+    delete spec.env["SKILL_SOURCES_JSON"];
+    delete spec.env["SSH_AUTH_SOCK"];
+    delete spec.env["GIT_SSH_COMMAND"];
 
     const dockerArgs = [
       "run",
@@ -531,6 +615,19 @@ export class DockerWorkspaceRunner implements WorkspaceRunner {
     } else {
       throw new Error("Agent adapter does not support buildReviewContainerSpec; cannot run review in Docker");
     }
+
+    await this.installRemoteSkillsIntoHomeVolume({
+      homeVolumeName: handle.homeVolumeName,
+      image: this.config.agentContainerImage,
+      skillSourcesJson: input.skillDiscoveryEnabled ? input.skillSourcesJson : undefined,
+      provider: adapter.name === "claude" ? "claude" : "copilot",
+      networkMode: spec.networkMode,
+      taskId: handle.taskId,
+      onStderrChunk: callbacks.onStderrChunk,
+    });
+    delete spec.env["SKILL_SOURCES_JSON"];
+    delete spec.env["SSH_AUTH_SOCK"];
+    delete spec.env["GIT_SSH_COMMAND"];
 
     const dockerArgs = [
       "run",
