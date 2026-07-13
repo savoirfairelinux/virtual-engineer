@@ -23,6 +23,7 @@ import type { Router } from "./router.js";
 import { getEffectivePermissions } from "./authContext.js";
 import { accessibleResourceIds, ALL_RESOURCES } from "./authorization/policyEngine.js";
 import { getProviderDescriptor, getProviderDomainCapabilities } from "../plugins/registry.js";
+import { listSkillSourceSkills } from "./skillSourceDiscovery.js";
 
 const log = getLogger("admin-projects");
 
@@ -67,13 +68,14 @@ export interface ProjectsRouteStore {
     agentOverrideJson?: string | null;
     postCloneScript?: string;
     skillDiscoveryEnabled?: boolean;
+    skillSourcesJson?: string;
     enabled?: boolean;
   }): Promise<ProjectRecord>;
   getProjectById(id: ProjectId): Promise<ProjectRecord | null>;
   listProjects(filter?: { type?: ProjectType; enabled?: boolean }): Promise<ProjectRecord[]>;
   updateProject(
     id: ProjectId,
-    partial: Partial<Pick<ProjectRecord, "name" | "type" | "agentId" | "agentOverrideJson" | "postCloneScript" | "skillDiscoveryEnabled" | "enabled">>
+    partial: Partial<Pick<ProjectRecord, "name" | "type" | "agentId" | "agentOverrideJson" | "postCloneScript" | "skillDiscoveryEnabled" | "skillSourcesJson" | "enabled">>
   ): Promise<ProjectRecord>;
   deleteProject(id: ProjectId): Promise<void>;
   setProjectEnabled(id: ProjectId, enabled: boolean): Promise<void>;
@@ -236,6 +238,7 @@ const codingProjectCreateSchema = z.object({
   agentOverrideJson: z.string().nullable().optional(),
   postCloneScript: z.string().optional(),
   skillDiscoveryEnabled: z.boolean().optional(),
+  skillSources: skillSourcesSchema.optional(),
   enabled: z.boolean().optional(),
   ticketSource: ticketSourceSchema,
   pushTargets: pushTargetsArraySchema,
@@ -249,6 +252,7 @@ const reviewProjectCreateSchema = z.object({
   agentOverrideJson: z.string().nullable().optional(),
   postCloneScript: z.string().optional(),
   skillDiscoveryEnabled: z.boolean().optional(),
+  skillSources: skillSourcesSchema.optional(),
   enabled: z.boolean().optional(),
   reviewConfig: reviewConfigSchema,
 });
@@ -264,6 +268,7 @@ const projectUpdateSchema = z.object({
   agentOverrideJson: z.string().nullable().optional(),
   postCloneScript: z.string().optional(),
   skillDiscoveryEnabled: z.boolean().optional(),
+  skillSources: skillSourcesSchema.optional(),
   enabled: z.boolean().optional(),
   ticketSource: ticketSourceSchema.optional(),
   pushTargets: pushTargetsArraySchema.optional(),
@@ -326,6 +331,7 @@ interface ProjectSummary {
   agentName: string | null;
   enabled: boolean;
   skillDiscoveryEnabled: boolean;
+  skillSources: SkillSource[];
   createdAt: string;
   updatedAt: string;
   ticketSource: { integration: { id: string; name: string; provider: string; domainCapabilities: string[] } | null; ticketProjectKey: string } | null;
@@ -388,6 +394,7 @@ async function buildProjectSummary(
     agentName: agent ? agent.name : null,
     enabled: project.enabled,
     skillDiscoveryEnabled: project.skillDiscoveryEnabled,
+    skillSources: parseStoredSkillSources(project),
     createdAt: project.createdAt.toISOString(),
     updatedAt: project.updatedAt.toISOString(),
     ticketSource,
@@ -446,6 +453,7 @@ async function buildProjectDetail(
     agentName: agent ? agent.name : null,
     enabled: project.enabled,
     skillDiscoveryEnabled: project.skillDiscoveryEnabled,
+    skillSources: parseStoredSkillSources(project),
     createdAt: project.createdAt.toISOString(),
     updatedAt: project.updatedAt.toISOString(),
     agentOverrideJson: project.agentOverrideJson,
@@ -466,7 +474,7 @@ function isUniqueConflict(err: unknown): boolean {
 
 /** Register project routes on the given router. */
 export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): void {
-  router.add("POST", "/api/admin/projects/skill-sources/list", async (req, res, _params) => {
+  const handleSkillSourceList: Parameters<Router["add"]>[2] = async (req, res, _params) => {
     const body = await readBody(req);
     if (!body) { writeJson(res, 400, { error: "Request body required" }); return; }
     const parsed = skillSourceDiscoverySchema.safeParse(body);
@@ -485,7 +493,10 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
       const message = err instanceof Error ? err.message : String(err);
       writeJson(res, isSkillSourceAuthError(message) ? 400 : 502, { error: `Failed to list skills: ${message}` });
     }
-  }, { permission: "project.write" });
+  };
+
+  router.add("POST", "/api/admin/projects/:id/skill-sources/list", handleSkillSourceList, { permission: "project.write", resourceParam: "id" });
+  router.add("POST", "/api/admin/projects/skill-sources/list", handleSkillSourceList, { permission: "project.write" });
 
   router.add("GET", "/api/admin/projects", async (req, res, _params) => {
     if (!deps.projectStore) { writeJson(res, 501, { error: "Project store not available" }); return; }
@@ -540,6 +551,7 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
         ...(data.agentOverrideJson !== undefined ? { agentOverrideJson: data.agentOverrideJson } : {}),
         ...(data.postCloneScript !== undefined ? { postCloneScript: data.postCloneScript } : {}),
         ...(data.skillDiscoveryEnabled !== undefined ? { skillDiscoveryEnabled: data.skillDiscoveryEnabled } : {}),
+        skillSourcesJson: JSON.stringify(normalizeSkillSources(data.skillSources)),
         ...(data.enabled !== undefined ? { enabled: data.enabled } : {}),
       });
     } catch (err: unknown) {
@@ -652,6 +664,7 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
     if (data.agentOverrideJson !== undefined) updates.agentOverrideJson = data.agentOverrideJson;
     if (data.postCloneScript !== undefined) updates.postCloneScript = data.postCloneScript;
     if (data.skillDiscoveryEnabled !== undefined) updates.skillDiscoveryEnabled = data.skillDiscoveryEnabled;
+    if (data.skillSources !== undefined) updates.skillSourcesJson = JSON.stringify(normalizeSkillSources(data.skillSources));
     if (data.enabled !== undefined) updates.enabled = data.enabled;
     const reconfigured =
       data.ticketSource !== undefined ||
@@ -661,6 +674,7 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
       updates.agentOverrideJson !== undefined ||
       updates.postCloneScript !== undefined ||
       updates.skillDiscoveryEnabled !== undefined ||
+      updates.skillSourcesJson !== undefined ||
       (updates.enabled === true && existing.enabled !== true);
     try {
       if (Object.keys(updates).length > 0) await store.updateProject(id, updates);
