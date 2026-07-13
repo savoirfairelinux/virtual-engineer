@@ -103,7 +103,6 @@ try {
 
 const WORKSPACE = '/workspace';
 const REPO_PATH = WORKSPACE;
-
 // ── Internal git helper ────────────────────────────────────────────────────────
 function git(args: string[], cwd: string = REPO_PATH): string {
   try {
