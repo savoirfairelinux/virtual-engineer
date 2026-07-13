@@ -667,7 +667,9 @@ projects
   agent_id → agents.id
   agent_override_json (partial model config override)
   post_clone_script (bash, runs on host after clone)
-  skill_discovery_enabled (default 0 — loads <repo>/.github/skills when 1)
+  skill_discovery_enabled (default 0 — trust gate for local skills)
+  local_skills_path (default '.github/skills' — workspace-relative local skills dir)
+  skill_sources_json (default '[]' — remote npx skills sources installed when configured)
   enabled (default 0)
 
 project_integration_bindings   ← one row per (project, capability)
