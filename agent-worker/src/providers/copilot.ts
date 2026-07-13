@@ -24,6 +24,7 @@ import { join } from 'path';
 import { restrictNetworkPermissionHandler } from '../networkGuard.js';
 import { emitEvent } from './events.js';
 import type { AgentRun, AgentRunOptions } from './types.js';
+import { copilotGlobalSkillsDir } from '../skills.js';
 
 type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
 
@@ -122,15 +123,15 @@ async function runSession(
   const localCliServer = await startLocalCliServer(cwd);
   const client = new CopilotClient({ cliUrl: localCliServer.cliUrl });
 
-  // Opt-in: surface repo-defined skills to the agent without enabling MCP discovery.
-  // Guarded so a missing path — or a non-directory at that path — never aborts the session.
-  const skillsDir = join(cwd, '.github', 'skills');
-  let enableSkillDiscovery = false;
+  // Opt-in: surface project-approved local and fetched skills without enabling MCP discovery.
+  const skillDirectories: string[] = [];
   if (skillDiscovery) {
-    try {
-      enableSkillDiscovery = statSync(skillsDir).isDirectory();
-    } catch {
-      enableSkillDiscovery = false;
+    for (const dir of [join(cwd, '.github', 'skills'), copilotGlobalSkillsDir()]) {
+      try {
+        if (statSync(dir).isDirectory()) skillDirectories.push(dir);
+      } catch {
+        // Missing skills directories are fine; discovery is still opt-in.
+      }
     }
   }
 
@@ -140,7 +141,7 @@ async function runSession(
       ...(reasoningEffort && reasoningEffort !== 'none'
         ? { reasoningEffort: reasoningEffort as ReasoningEffort }
         : {}),
-      ...(enableSkillDiscovery ? { skillDirectories: [skillsDir] } : {}),
+      ...(skillDirectories.length > 0 ? { skillDirectories } : {}),
       systemMessage: { content: systemPrompt },
       onPermissionRequest: restrictNetworkPermissionHandler,
       workingDirectory: cwd,
