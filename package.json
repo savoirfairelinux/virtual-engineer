@@ -28,7 +28,7 @@
     "reset:instance": "./scripts/reset-instance.sh"
   },
   "dependencies": {
-    "@github/copilot-sdk": "^0.2.2",
+    "@github/copilot-sdk": "^0.3.0",
     "better-sqlite3": "^12.10.0",
     "drizzle-orm": "^0.45.2",
     "p-retry": "^6.2.0",
