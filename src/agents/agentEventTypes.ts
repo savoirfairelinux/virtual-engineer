@@ -489,6 +489,15 @@ function buildEventMessage(type: string, data: Record<string, unknown> | null): 
       const tool = readStr(data, ["tool", "name", "toolName"]);
       return tool ? `🔐 Permission: ${tool}` : "🔐 Permission requested";
     }
+    case "skills.fetch_start":
+      return buildSkillFetchMessage("Fetching skills from", data);
+    case "skills.fetch_complete":
+      return buildSkillFetchMessage("Fetched skills from", data);
+    case "skills.fetch_failed": {
+      const message = buildSkillFetchMessage("Failed to fetch skills from", data);
+      const reason = readStr(data, ["message", "error", "reason"]);
+      return reason ? `${message}: ${reason}` : message;
+    }
     // ── Review lifecycle events ───────────────────────────────────────────
     case "review.started":
       return "📝 Review started";
@@ -525,6 +534,28 @@ function buildEventMessage(type: string, data: Record<string, unknown> | null): 
     default:
       return type;
   }
+}
+
+/** Build a human-readable message for remote skill fetch events. */
+function buildSkillFetchMessage(prefix: string, data: Record<string, unknown> | null): string {
+  const source = readStr(data, ["source", "repo", "repository", "url"]) ?? "unknown source";
+  const agent = readStr(data, ["agent", "agentName"]);
+  const skills = formatSkillSelection(data?.["skills"]);
+  const details = [`skills: ${skills}`];
+  if (agent) details.push(`agent: ${agent}`);
+  return `${prefix} ${source} (${details.join(" · ")})`;
+}
+
+/** Format the selected remote skill list from worker event payloads. */
+function formatSkillSelection(value: unknown): string {
+  if (value === "all") return "all skills";
+  if (Array.isArray(value)) {
+    const skills = value
+      .filter((skill): skill is string => typeof skill === "string" && skill.trim().length > 0)
+      .map((skill) => skill.trim());
+    return skills.length > 0 ? skills.join(", ") : "no explicit skills";
+  }
+  return "no explicit skills";
 }
 
 /** Extract a file path from a tool event's input for inline display in the event message. */
