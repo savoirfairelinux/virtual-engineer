@@ -3,6 +3,7 @@ import { Modal, Field, FieldInput, FieldSelect, FormError, FormRow, FormActions,
 import { Icon } from "../../components/Icon.tsx";
 import { api } from "../../api.ts";
 import type { ApiAgent, ApiIntegration } from "../../types.ts";
+import { ProjectSkillSourcesField, buildSkillSourcesPayload, skillSourceToRow, type SkillSource, type SkillSourceRow } from "./ProjectSkillSourcesField.tsx";
 
 interface Props {
   agents: ApiAgent[];
@@ -19,6 +20,7 @@ interface ProjectFormProject {
   agentId: string | null;
   postCloneScript?: string;
   skillDiscoveryEnabled?: boolean;
+  skillSources?: SkillSource[];
   ticketSource?: {
     integration: { id: string; name: string; type: string } | null;
     ticketProjectKey: string;
@@ -655,6 +657,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
   const [agentId, setAgentId] = useState("");
   const [postCloneScript, setPostCloneScript] = useState("");
   const [skillDiscoveryEnabled, setSkillDiscoveryEnabled] = useState(false);
+  const [skillSourceRows, setSkillSourceRows] = useState<SkillSourceRow[]>([]);
 
   // Coding-specific
   const [ticketSource, setTicketSource] = useState<TicketSource>({ integrationId: "", ticketProjectKey: "" });
@@ -674,6 +677,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
     setAgentId(project.agentId ?? "");
     setPostCloneScript(project.postCloneScript ?? "");
     setSkillDiscoveryEnabled(project.skillDiscoveryEnabled ?? false);
+    setSkillSourceRows((project.skillSources ?? []).map(skillSourceToRow));
 
     if (project.type === "coding") {
       setTicketSource({
@@ -722,6 +726,8 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
     setSaving(true);
     setError(null);
     try {
+      const skillSources = buildSkillSourcesPayload(skillSourceRows);
+      if (skillSources === null) { setError("Skill source rows require at least one skill or Install all, and SSH port must be a positive integer"); setSaving(false); return; }
       if (projectType === "coding") {
         if (!ticketSource.integrationId) { setError("Ticket source integration is required"); setSaving(false); return; }
         if (!ticketSource.ticketProjectKey.trim()) { setError("Ticket project key is required"); setSaving(false); return; }
@@ -732,6 +738,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
           agentId,
           postCloneScript: postCloneScript || undefined,
           skillDiscoveryEnabled,
+          skillSources,
           ticketSource: { integrationId: ticketSource.integrationId, ticketProjectKey: ticketSource.ticketProjectKey },
           pushTargets: pushTargets.map((t) => ({
             integrationId: t.integrationId,
@@ -757,6 +764,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
           agentId,
           postCloneScript: postCloneScript || undefined,
           skillDiscoveryEnabled,
+          skillSources,
           reviewConfig: { integrationId: reviewIntegrationId, repoKeys: reviewRepoKeys },
         };
         if (isEditMode && project) {
@@ -943,23 +951,6 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
             style={{ minHeight: "80px", fontFamily: "var(--font-mono)" }}
           />
         </Field>
-
-        {(
-          <Field
-            label="Skill Discovery"
-            hint="When enabled, the agent loads team-defined skills from <repo>/.github/skills. Only enable for trusted repositories."
-          >
-            <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: "13px", userSelect: "none" }}>
-              <input
-                type="checkbox"
-                checked={skillDiscoveryEnabled}
-                onChange={(e) => setSkillDiscoveryEnabled(e.target.checked)}
-                style={{ accentColor: "var(--accent)", cursor: "pointer", flexShrink: 0 }}
-              />
-              <span>Load repository skills from <code>.github/skills</code></span>
-            </label>
-          </Field>
-        )}
 
         <FormError msg={error} />
 

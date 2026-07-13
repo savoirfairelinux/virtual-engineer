@@ -30,6 +30,7 @@ interface ApiProjectDetail extends ApiProject {
   }>;
   postCloneScript?: string;
   skillDiscoveryEnabled?: boolean;
+  skillSources?: Array<{ source: string; skills: string[]; installAll?: boolean; sshUser?: string; sshPort?: number; sshKeyPath?: string; sshKnownHostsPath?: string }>;
 }
 
 export function ProjectsSection({ projects, agents, integrations, onRefresh }: ConfigViewData) {
