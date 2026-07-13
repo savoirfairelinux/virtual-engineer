@@ -797,6 +797,9 @@ export class Orchestrator {
             ? { repositoryMap: buildRepositoryMap(projectPushTargets) }
             : {}),
           ...(projectRecord.skillDiscoveryEnabled ? { skillDiscoveryEnabled: true } : {}),
+          ...(projectRecord.skillDiscoveryEnabled && projectRecord.skillSourcesJson !== "[]"
+            ? { skillSourcesJson: projectRecord.skillSourcesJson }
+            : {}),
           ...((): { ticketFooterLine?: string } => {
             if (!projectRecord.useFullTicketUrlInCommits) return {};
             const line = formatTicketFooter(task.ticketId, ticket.webUrl ?? "", task.ticketSourceLabel, true);
