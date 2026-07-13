@@ -116,6 +116,19 @@ const SAMPLE_CHANGE = {
   lastUpdated: Math.floor(Date.now() / 1000),
 };
 
+const SAMPLE_DETAILS = {
+  changeId: CHANGE_ID,
+  changeNumber: 42,
+  subject: "Add feature X",
+  description: "This is the commit body.",
+  ownerAccountId: "42",
+  currentPatchset: 3,
+  status: "OPEN" as const,
+  project: "jami-client-qt",
+  targetBranch: "master",
+  url: "https://gerrit.test/c/42",
+};
+
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 describe("GerritSshReviewProvider", () => {
@@ -299,11 +312,10 @@ describe("GerritSshReviewProvider", () => {
     ].join("\n");
 
     it("fetches both patchset refs and diffs their tips", async () => {
-      mockQuery.mockResolvedValueOnce(sshNdjson(SAMPLE_CHANGE));
       // init, remote add, fetch(from), rev-parse(from), fetch(to), rev-parse(to), diff
       setGitResults(["", "", "", "shaFrom\n", "", "shaTo\n", DELTA_OUTPUT]);
 
-      const result = await makeProvider().getInterPatchsetDiff(CHANGE_ID, 2, 3);
+      const result = await makeProvider().getInterPatchsetDiff(SAMPLE_DETAILS, 2, 3);
 
       expect(result.changeId).toBe(CHANGE_ID);
       expect(result.patchset).toBe(3);
@@ -321,32 +333,28 @@ describe("GerritSshReviewProvider", () => {
     });
 
     it("cleans up temp directory on error", async () => {
-      mockQuery.mockResolvedValueOnce(sshNdjson(SAMPLE_CHANGE));
       setGitResults([new Error("git init failed")]);
 
-      await expect(makeProvider().getInterPatchsetDiff(CHANGE_ID, 2, 3)).rejects.toThrow(
+      await expect(makeProvider().getInterPatchsetDiff(SAMPLE_DETAILS, 2, 3)).rejects.toThrow(
         "git init failed"
       );
       expect(rm).toHaveBeenCalledWith("/tmp/test-diffs/diff-42-abc", { recursive: true, force: true });
     });
 
     it("returns an empty file list when the two patchsets are identical (empty diff output)", async () => {
-      mockQuery.mockResolvedValueOnce(sshNdjson(SAMPLE_CHANGE));
       // init, remote add, fetch(from), rev-parse(from), fetch(to), rev-parse(to), diff → empty
       setGitResults(["", "", "", "shaA\n", "", "shaA\n", ""]);
 
-      const result = await makeProvider().getInterPatchsetDiff(CHANGE_ID, 3, 3);
+      const result = await makeProvider().getInterPatchsetDiff(SAMPLE_DETAILS, 3, 3);
 
       expect(result.patchset).toBe(3);
       expect(result.files).toHaveLength(0);
     });
 
     it("pads the two-digit shard correctly for a single-digit change number", async () => {
-      const singleDigitChange = { ...SAMPLE_CHANGE, number: 7 };
-      mockQuery.mockResolvedValueOnce(sshNdjson(singleDigitChange));
       setGitResults(["", "", "", "sha1\n", "", "sha2\n", ""]);
 
-      await makeProvider().getInterPatchsetDiff(CHANGE_ID, 1, 2);
+      await makeProvider().getInterPatchsetDiff({ ...SAMPLE_DETAILS, changeNumber: 7 }, 1, 2);
 
       const fetchRefs = gitFileCalls
         .filter((c) => c.args[0] === "fetch")

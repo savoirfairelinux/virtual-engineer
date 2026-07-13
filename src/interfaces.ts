@@ -849,7 +849,7 @@ export interface ReviewProvider {
    * omit it and the orchestrator falls back to the full diff only.
    */
   getInterPatchsetDiff?(
-    changeId: ExternalChangeId,
+    details: ReviewChangeDetails,
     fromPatchset: number,
     toPatchset: number
   ): Promise<ReviewChangeDiff>;

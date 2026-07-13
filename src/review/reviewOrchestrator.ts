@@ -20,7 +20,7 @@ import {
   makeTaskId,
   makeTicketId,
 } from "../interfaces.js";
-import { buildReviewPrompt } from "./reviewPromptBuilder.js";
+import { buildReviewPrompt, type SinceLastReviewDelta } from "./reviewPromptBuilder.js";
 import { computeVote, parseReviewResult } from "./reviewResultParser.js";
 import { filterCommentsByAllowedFiles } from "./commentFilter.js";
 import { computeCommentHash, computeThreadReplyHash } from "./commentHash.js";
@@ -457,9 +457,7 @@ export class ReviewOrchestrator {
       // reviewed so the agent focuses new findings on the delta. Guarded:
       // providers without inter-patchset diff support skip this entirely, and
       // empty deltas are dropped by the prompt builder.
-      let sinceLastReview:
-        | { fromPatchset: number; toPatchset: number; diff: ReviewChangeDiff }
-        | undefined;
+      let sinceLastReview: SinceLastReviewDelta | undefined;
       const previousReviewed = task.reviewedPatchset;
       if (
         previousReviewed !== null &&
@@ -468,7 +466,7 @@ export class ReviewOrchestrator {
       ) {
         try {
           const deltaDiff = await this.deps.reviewProvider.getInterPatchsetDiff(
-            changeId,
+            details,
             previousReviewed,
             details.currentPatchset
           );

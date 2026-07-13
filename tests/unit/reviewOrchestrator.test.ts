@@ -904,7 +904,11 @@ describe("ReviewOrchestrator.runReview - inter-patchset delta", () => {
     const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
     await orch.runReview(initial.taskId);
 
-    expect(getInterPatchsetDiff).toHaveBeenCalledWith(CHANGE_ID, 2, 3);
+    expect(getInterPatchsetDiff).toHaveBeenCalledWith(
+      expect.objectContaining({ changeId: CHANGE_ID, currentPatchset: 3 }),
+      2,
+      3
+    );
     const prompt = runner.runReviewInDocker.mock.calls[0]?.[1]?.prompt as string;
     expect(prompt).toContain("## Changes since last reviewed patchset (PS 2 \u2192 3)");
     expect(prompt).toContain("+delta-line");
