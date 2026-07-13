@@ -22,6 +22,7 @@ const project: ProjectRecord = {
   agentOverrideJson: null,
   postCloneScript: "",
   skillDiscoveryEnabled: false,
+  skillSourcesJson: "[]",
   gerritTopicOverride: null,
   useFullTicketUrlInCommits: false,
   postReviewLinkToTicket: false,

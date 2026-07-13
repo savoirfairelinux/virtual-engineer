@@ -127,6 +127,26 @@ describe("SqliteStateStore — Phase 2: projects", () => {
     expect((await store.getProjectById(on.id))?.skillDiscoveryEnabled).toBe(false);
   });
 
+  it("persists and updates skillSourcesJson (defaults to empty array)", async () => {
+    const a = await makeAgent(store);
+    const off = await store.createProject({ name: "Off", type: "coding", agentId: a.id });
+    expect(off.skillSourcesJson).toBe("[]");
+
+    const sources = JSON.stringify([{ source: "ssh://skills.example.com/org/agent-skills", skills: ["skill-a", "skill-b"] }]);
+    const on = await store.createProject({
+      name: "On",
+      type: "coding",
+      agentId: a.id,
+      skillSourcesJson: sources,
+    });
+    expect(on.skillSourcesJson).toBe(sources);
+    expect((await store.getProjectById(on.id))?.skillSourcesJson).toBe(sources);
+
+    const updated = await store.updateProject(on.id, { skillSourcesJson: "[]" });
+    expect(updated.skillSourcesJson).toBe("[]");
+    expect((await store.getProjectById(on.id))?.skillSourcesJson).toBe("[]");
+  });
+
   it("createProject throws when agent does not exist", async () => {
     await expect(
       store.createProject({ name: "Bad", type: "coding", agentId: makeAgentId("missing") })
@@ -504,6 +524,7 @@ describe("resolveAgentConfig — partial-merge semantics", () => {
       agentOverrideJson,
       postCloneScript: "",
       skillDiscoveryEnabled: false,
+      skillSourcesJson: "[]",
       gerritTopicOverride: null,
       useFullTicketUrlInCommits: false,
       postReviewLinkToTicket: false,
