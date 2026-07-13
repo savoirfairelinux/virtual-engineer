@@ -27,6 +27,7 @@ function makeProject(
     agentOverrideJson: over.agentOverrideJson ?? null,
     postCloneScript: over.postCloneScript ?? "",
     skillDiscoveryEnabled: over.skillDiscoveryEnabled ?? false,
+    skillSourcesJson: over.skillSourcesJson ?? "[]",
     gerritTopicOverride: over.gerritTopicOverride ?? null,
     useFullTicketUrlInCommits: over.useFullTicketUrlInCommits ?? false,
     postReviewLinkToTicket: over.postReviewLinkToTicket ?? false,
