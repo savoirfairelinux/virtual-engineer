@@ -927,6 +927,14 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
           </div>
         )}
 
+        <ProjectSkillSourcesField
+          enabled={skillDiscoveryEnabled}
+          onEnabledChange={setSkillDiscoveryEnabled}
+          rows={skillSourceRows}
+          setRows={setSkillSourceRows}
+          projectId={project?.id}
+        />
+
         <Field label="Post-Clone Script" hint="Optional shell script to run after repo clone (before agent runs)">
           <FieldTextarea
             value={postCloneScript}
