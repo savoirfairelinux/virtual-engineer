@@ -132,6 +132,12 @@ export class Orchestrator {
   private vcsConnector: VcsConnector | undefined;
   private readonly vcsConnectorFactory: VcsConnectorFactory;
   private projectMode: ProjectModeDeps | null = null;
+  /**
+   * Task ids whose `runWorkflow` is currently executing. Guards against
+   * concurrent re-entry when the same task is driven from multiple triggers
+   * (boot recovery, stalled-task polling, review events) at once.
+   */
+  private readonly inFlightTasks = new Set<string>();
   constructor(
     config: OrchestratorConfig,
     private readonly stateStore: StateStore,
@@ -235,6 +241,22 @@ export class Orchestrator {
         log.error({ taskId: task.taskId, err }, "unhandled error resuming task");
       });
     }
+  }
+
+  /**
+   * Resume a single code-gen task that stalled while waiting for an agent
+   * concurrency slot. Called by the polling loop for tasks left in
+   * `CONTEXT_BUILDING` or `RETRY_CYCLE`: `runAgentCycle` defers (without
+   * re-queuing) whenever the shared agent slot is busy, so without this poll
+   * these tasks would never advance until the next process restart. The
+   * in-flight guard in `runWorkflow` prevents double-driving a task whose
+   * previous resume is still executing.
+   */
+  async resumeStalledCodeGenTask(taskId: ReturnType<typeof makeTaskId>): Promise<void> {
+    const task = await this.stateStore.getTask(taskId);
+    if (!task || task.taskType === "code-review") return;
+    if (task.state !== "CONTEXT_BUILDING" && task.state !== "RETRY_CYCLE") return;
+    await this.runWorkflow(task);
   }
 
   /**
@@ -501,6 +523,16 @@ export class Orchestrator {
       log.debug({ taskId: task.taskId, state: task.state }, "skipping code-review task in ticket orchestrator");
       return;
     }
+    // Guard against concurrent re-entry: a task already being driven (e.g. still
+    // building context or mid-cycle) must not be picked up again by the
+    // stalled-task poll or a second trigger. runWorkflow is never called
+    // recursively — each step method calls the next step directly — so this
+    // set only ever holds externally-initiated drives.
+    if (this.inFlightTasks.has(task.taskId)) {
+      log.debug({ taskId: task.taskId, state: task.state }, "workflow already in flight; skipping re-entry");
+      return;
+    }
+    this.inFlightTasks.add(task.taskId);
     log.info({ taskId: task.taskId, state: task.state }, "running workflow from state");
 
     // The code-review early-return above guarantees task.state is a CodeGenState here.
@@ -538,6 +570,8 @@ export class Orchestrator {
       }
     } catch (err) {
       await this.handleFatalError(task, err);
+    } finally {
+      this.inFlightTasks.delete(task.taskId);
     }
   }
 
@@ -586,17 +620,18 @@ export class Orchestrator {
       }
     }
 
-    const ticketConnector = await this.resolveTicketConnector(task);
-    const ticket = await ticketConnector.getTicket(task.ticketId);
-    const priorFeedback = await this.buildPriorFeedback(task, reviewFeedback);
-    const cycleNumber = await this.stateStore.incrementCycle(task.taskId);
-
-    log.info({ taskId: task.taskId, cycleNumber }, "starting agent cycle");
-
-    task = await this.stateStore.transition(task.taskId, "AGENT_RUNNING");
-    const handle = await this.workspaceRunner.createWorkspace(task.taskId);
-
+    let handle: Awaited<ReturnType<typeof this.workspaceRunner.createWorkspace>> | undefined;
     try {
+      const ticketConnector = await this.resolveTicketConnector(task);
+      const ticket = await ticketConnector.getTicket(task.ticketId);
+      const priorFeedback = await this.buildPriorFeedback(task, reviewFeedback);
+      const cycleNumber = await this.stateStore.incrementCycle(task.taskId);
+
+      log.info({ taskId: task.taskId, cycleNumber }, "starting agent cycle");
+
+      task = await this.stateStore.transition(task.taskId, "AGENT_RUNNING");
+      handle = await this.workspaceRunner.createWorkspace(task.taskId);
+
       if (!task.projectId || !this.projectMode || !this.workspaceRunner.prepareProjectWorkspace) {
         throw new Error(
           `Task ${task.taskId} is not project-bound; project-mode is the only supported workflow.`
@@ -834,7 +869,9 @@ export class Orchestrator {
       await ticketConn.transitionToInReview(task.ticketId);
     } finally {
       try {
-        await this.workspaceRunner.destroyWorkspace(handle);
+        if (handle) {
+          await this.workspaceRunner.destroyWorkspace(handle);
+        }
       } catch (err) {
         log.warn(
           { taskId: task.taskId, err },
