@@ -27,6 +27,7 @@ import {
   collectCommits,
   validateCommits,
   injectChangeIds,
+  resolveExistingRootChange,
   squashIntoBaseIfNeeded,
   groupFilesByRepo,
 } from './commitUtils.js';
@@ -312,7 +313,20 @@ async function main(): Promise<AgentResult> {
       if (validation.valid) {
         if (TASK_ID) {
           if (hasRootCommits) {
-            const squashResult = squashIntoBaseIfNeeded(baseSha, REPO_PATH);
+            const rootExistingChange = resolveExistingRootChange(
+              ROOT_CHANGE_ID,
+              PER_REPO_CHANGE_IDS,
+              REPOSITORY_MAP,
+            );
+            // Only squash into the base commit when continuing VE's own
+            // existing patchset (retry/feedback cycle). On the first cycle the
+            // base is upstream (e.g. a Gerrit `master` tip that carries its own
+            // Change-Id); squashing there would amend an upstream commit whose
+            // parent is absent from the --depth 1 shallow clone, making
+            // diff-tree report the entire repo. See squashIntoBaseIfNeeded.
+            const isContinuation =
+              rootExistingChange.changeId != null || rootExistingChange.repoKey != null;
+            const squashResult = squashIntoBaseIfNeeded(baseSha, REPO_PATH, isContinuation);
             if (squashResult.squashed && squashResult.commits != null) {
               rootCommits = squashResult.commits;
               if (REPOSITORY_MAP?.superproject != null) {
@@ -323,51 +337,9 @@ async function main(): Promise<AgentResult> {
               }
             }
 
-            // Resolve the existing Change-Id for the root repo.
-            let rootExistingChangeId: string | null = ROOT_CHANGE_ID;
-            let rootRepoKey: string | null = null;
-
-            if (PER_REPO_CHANGE_IDS != null) {
-              const superprojectKey = REPOSITORY_MAP?.superproject?.repoKey;
-              if (superprojectKey != null) {
-                const entry = PER_REPO_CHANGE_IDS[superprojectKey];
-                if (entry != null) {
-                  rootRepoKey = superprojectKey;
-                  if (!rootExistingChangeId) {
-                    rootExistingChangeId = typeof entry === 'string' ? entry : (entry['0'] ?? null);
-                  }
-                } else if (!rootExistingChangeId) {
-                  // Fallback: try the sole key in PER_REPO_CHANGE_IDS
-                  const keys = Object.keys(PER_REPO_CHANGE_IDS);
-                  if (keys.length === 1) {
-                    const k0 = keys[0];
-                    if (k0 != null) {
-                      rootRepoKey = k0;
-                      const e0 = PER_REPO_CHANGE_IDS[k0];
-                      if (e0 != null) {
-                        rootExistingChangeId = typeof e0 === 'string' ? e0 : (e0['0'] ?? null);
-                      }
-                    }
-                  }
-                }
-              } else if (!rootExistingChangeId) {
-                const keys = Object.keys(PER_REPO_CHANGE_IDS);
-                if (keys.length === 1) {
-                  const k0 = keys[0];
-                  if (k0 != null) {
-                    rootRepoKey = k0;
-                    const e0 = PER_REPO_CHANGE_IDS[k0];
-                    if (e0 != null) {
-                      rootExistingChangeId = typeof e0 === 'string' ? e0 : (e0['0'] ?? null);
-                    }
-                  }
-                }
-              }
-            }
-
             rootCommits = injectChangeIds(baseSha, rootCommits, TASK_ID, REPO_PATH, {
-              existingChangeId: rootExistingChangeId,
-              repoKeyForLookup: rootRepoKey,
+              existingChangeId: rootExistingChange.changeId,
+              repoKeyForLookup: rootExistingChange.repoKey,
               perRepoChangeIds: PER_REPO_CHANGE_IDS,
               gitAuthorName: GIT_AUTHOR_NAME,
               gitAuthorEmail: GIT_AUTHOR_EMAIL,
