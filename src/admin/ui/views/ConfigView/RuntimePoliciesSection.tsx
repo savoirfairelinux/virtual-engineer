@@ -31,7 +31,7 @@ const TEMPLATE = `network:
   allow:
     - host: inference.local
 filesystem:
-  allow_write: [/workspace]
+  allow_write: [/sandbox]
 process:
   no_new_privileges: true
 `;

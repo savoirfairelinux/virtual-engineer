@@ -396,6 +396,7 @@ export class SqliteStateStore {
       CREATE TABLE IF NOT EXISTS runtime_policy_bindings (
         id          TEXT    PRIMARY KEY,
         policy_id   TEXT    NOT NULL REFERENCES runtime_policies(id) ON DELETE CASCADE,
+        kind        TEXT    NOT NULL,
         project_id  TEXT    REFERENCES projects(id) ON DELETE CASCADE,
         agent_id    TEXT    REFERENCES agents(id) ON DELETE CASCADE,
         created_at  INTEGER NOT NULL,
@@ -543,6 +544,31 @@ export class SqliteStateStore {
     this.ensureColumn("agents", "feedback_instructions_prompt_id", "TEXT REFERENCES prompts(id) ON DELETE SET NULL");
     this.ensureColumn("projects", "skill_discovery_enabled", "INTEGER NOT NULL DEFAULT 0");
     this.ensureColumn("prompts", "prompt_type", "TEXT NOT NULL DEFAULT 'user'");
+    this.ensureColumn("runtime_policy_bindings", "kind", "TEXT");
+    this.raw.exec(`
+      UPDATE runtime_policy_bindings
+      SET kind = (SELECT kind FROM runtime_policies WHERE runtime_policies.id = runtime_policy_bindings.policy_id)
+      WHERE kind IS NULL;
+    `);
+    const duplicateRuntimeBinding = this.raw.prepare(`
+      SELECT COALESCE(project_id, agent_id) AS target_id, kind, COUNT(*) AS count
+      FROM runtime_policy_bindings
+      WHERE kind IS NOT NULL
+      GROUP BY project_id, agent_id, kind
+      HAVING COUNT(*) > 1
+      LIMIT 1
+    `).get() as { target_id: string; kind: string; count: number } | undefined;
+    if (duplicateRuntimeBinding) {
+      throw new Error(
+        `Cannot migrate runtime policy bindings: ${duplicateRuntimeBinding.count} ${duplicateRuntimeBinding.kind} policies target ${duplicateRuntimeBinding.target_id}`,
+      );
+    }
+    this.raw.exec(`
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_runtime_policy_binding_project_kind
+        ON runtime_policy_bindings(project_id, kind) WHERE project_id IS NOT NULL;
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_runtime_policy_binding_agent_kind
+        ON runtime_policy_bindings(agent_id, kind) WHERE agent_id IS NOT NULL;
+    `);
 
     this.raw.exec(`
       UPDATE prompts SET prompt_type = 'system'
@@ -587,6 +613,10 @@ export class SqliteStateStore {
     const destination = this.raw.prepare(
       "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'runtime_policy_bindings'"
     ).get() as { name: string } | undefined;
+    const destinationColumns = destination
+      ? this.raw.prepare("PRAGMA table_info(`runtime_policy_bindings`)").all() as Array<{ name: string }>
+      : [];
+    const destinationHasKind = destinationColumns.some((column) => column.name === "kind");
 
     const migrate = this.raw.transaction(() => {
       this.raw.exec(`
@@ -595,13 +625,25 @@ export class SqliteStateStore {
         DROP INDEX IF EXISTS idx_policy_bindings_agent;
       `);
       if (destination) {
-        this.raw.exec(`
-          INSERT OR IGNORE INTO runtime_policy_bindings
-            (id, policy_id, project_id, agent_id, created_at, updated_at)
-          SELECT id, policy_id, project_id, agent_id, created_at, updated_at
-          FROM policy_bindings;
-          DROP TABLE policy_bindings;
-        `);
+        if (destinationHasKind) {
+          this.raw.exec(`
+            INSERT INTO runtime_policy_bindings
+              (id, policy_id, kind, project_id, agent_id, created_at, updated_at)
+            SELECT binding.id, binding.policy_id, policy.kind,
+              binding.project_id, binding.agent_id, binding.created_at, binding.updated_at
+            FROM policy_bindings AS binding
+            JOIN runtime_policies AS policy ON policy.id = binding.policy_id;
+            DROP TABLE policy_bindings;
+          `);
+        } else {
+          this.raw.exec(`
+            INSERT INTO runtime_policy_bindings
+              (id, policy_id, project_id, agent_id, created_at, updated_at)
+            SELECT id, policy_id, project_id, agent_id, created_at, updated_at
+            FROM policy_bindings;
+            DROP TABLE policy_bindings;
+          `);
+        }
       } else {
         this.raw.exec("ALTER TABLE policy_bindings RENAME TO runtime_policy_bindings");
       }

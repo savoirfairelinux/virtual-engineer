@@ -5,6 +5,7 @@ import type { RuntimePolicyKind } from "../state/schema.js";
 import { parse } from "yaml";
 
 const VALID_KINDS = new Set<RuntimePolicyKind>(["filesystem", "network", "process", "inference"]);
+const MAX_POLICY_YAML_BYTES = 64 * 1024;
 
 export interface RuntimePolicyRouteDeps {
   runtimePolicyStore?: RuntimePolicyStoreApi | undefined;
@@ -18,6 +19,12 @@ function isKind(value: unknown): value is RuntimePolicyKind {
 
 export function validateRuntimePolicyYaml(kind: RuntimePolicyKind, yaml: string): string | null {
   if (yaml.trim().length === 0) return "Runtime policy YAML must not be empty";
+  if (Buffer.byteLength(yaml, "utf8") > MAX_POLICY_YAML_BYTES) {
+    return "Runtime policy YAML is too large (maximum 64 KiB)";
+  }
+  if (/(^|[\s[{,])(?:&|\*)[A-Za-z0-9_-]+/.test(yaml)) {
+    return "Runtime policy YAML aliases and anchors are not allowed";
+  }
   let document: unknown;
   try {
     document = parse(yaml);
@@ -29,6 +36,10 @@ export function validateRuntimePolicyYaml(kind: RuntimePolicyKind, yaml: string)
   }
   if (!Object.hasOwn(document, kind)) {
     return `Runtime policy YAML must contain a '${kind}' section`;
+  }
+  const keys = Object.keys(document);
+  if (keys.length !== 1 || keys[0] !== kind) {
+    return `Runtime policy YAML may contain only the '${kind}' top-level section`;
   }
   const section = (document as Record<string, unknown>)[kind];
   if (typeof section !== "object" || section === null || Array.isArray(section)) {

@@ -32,12 +32,17 @@ export interface CommandCallbacks {
   onStderrChunk?: ((chunk: string) => void) | undefined;
 }
 
+export interface CommandControl {
+  signal?: AbortSignal | undefined;
+}
+
 /** Runs an argv against a binary and resolves the captured result (never rejects on non-zero). */
 export type CommandRunner = (
   bin: string,
   args: string[],
   input?: string,
-  callbacks?: CommandCallbacks
+  callbacks?: CommandCallbacks,
+  control?: CommandControl,
 ) => Promise<CommandResult>;
 
 const MAX_COMMAND_OUTPUT_BYTES = 32 * 1024 * 1024;
@@ -75,19 +80,40 @@ export function redactOpenShellText(text: string): string {
     .replace(/\b(Bearer\s+)[A-Za-z0-9._-]+/gi, "$1[REDACTED]");
 }
 
-const defaultRunner: CommandRunner = (bin, args, input, callbacks) =>
+const defaultRunner: CommandRunner = (bin, args, input, callbacks, control) =>
   new Promise<CommandResult>((resolve) => {
-    const child = spawn(bin, args, { stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(bin, args, { detached: true, stdio: ["pipe", "pipe", "pipe"] });
     const stdoutChunks: string[] = [];
     const stderrChunks: string[] = [];
     let outputBytes = 0;
     let outputLimitExceeded = false;
     let settled = false;
+    let killTimer: NodeJS.Timeout | undefined;
 
     const finish = (result: CommandResult): void => {
       if (settled) return;
       settled = true;
+      if (killTimer !== undefined) clearTimeout(killTimer);
+      control?.signal?.removeEventListener("abort", abort);
       resolve(result);
+    };
+    const abort = (): void => {
+      if (child.pid !== undefined) {
+        try {
+          process.kill(-child.pid, "SIGTERM");
+        } catch {
+          child.kill("SIGTERM");
+        }
+      }
+      killTimer = setTimeout(() => {
+        if (settled || child.pid === undefined) return;
+        try {
+          process.kill(-child.pid, "SIGKILL");
+        } catch {
+          child.kill("SIGKILL");
+        }
+      }, 2_000);
+      killTimer.unref();
     };
     const collect = (target: string[], chunk: Buffer, callback?: (value: string) => void): void => {
       const value = chunk.toString();
@@ -113,6 +139,8 @@ const defaultRunner: CommandRunner = (bin, args, input, callbacks) =>
         stderr: outputLimitExceeded ? `${stderr}\nopenshell command output exceeded 32 MiB` : stderr,
       });
     });
+    control?.signal?.addEventListener("abort", abort, { once: true });
+    if (control?.signal?.aborted === true) abort();
     if (input !== undefined) {
       child.stdin.end(input);
     } else {
@@ -128,6 +156,8 @@ export interface OpenShellClientOptions {
   runner?: CommandRunner;
   /** Base backoff (ms) between transient sandbox-create retries. Default 3000. */
   retryBaseDelayMs?: number | undefined;
+  /** Hard deadline for each local OpenShell CLI process. Default 60 seconds. */
+  commandTimeoutMs?: number | undefined;
 }
 
 export interface CreateSandboxInput {
@@ -143,6 +173,9 @@ export interface CreateSandboxInput {
   cpu?: string | undefined;
   /** Memory limit (e.g. `512Mi`, `4Gi`) mapped to the driver. */
   memory?: string | undefined;
+  /** Initial policy YAML applied at creation, including immutable filesystem/process rules. */
+  policyYaml?: string | undefined;
+  signal?: AbortSignal | undefined;
 }
 
 export interface UploadInput {
@@ -153,6 +186,7 @@ export interface UploadInput {
   dest: string;
   /** Upload everything, including files matched by `.gitignore` (needed for `.git`). */
   noGitIgnore?: boolean | undefined;
+  signal?: AbortSignal | undefined;
 }
 
 export interface DownloadInput {
@@ -161,6 +195,7 @@ export interface DownloadInput {
   sandboxPath: string;
   /** Local destination directory. */
   localDest: string;
+  signal?: AbortSignal | undefined;
 }
 
 export interface ExecSandboxInput {
@@ -176,6 +211,7 @@ export interface ExecSandboxInput {
   /** Incremental command output callbacks. The final result remains fully buffered. */
   onStdoutChunk?: ((chunk: string) => void) | undefined;
   onStderrChunk?: ((chunk: string) => void) | undefined;
+  signal?: AbortSignal | undefined;
 }
 
 /** Access level for an egress endpoint. Copilot needs `full` (POST completions). */
@@ -196,6 +232,7 @@ export class OpenShellClient {
   private readonly gateway: string | undefined;
   private readonly run: CommandRunner;
   private readonly retryBaseDelayMs: number;
+  private readonly commandTimeoutMs: number;
 
   /**
    * Gateway/SSH errors that are transient on a cold start: the sandbox Pod is
@@ -222,13 +259,29 @@ export class OpenShellClient {
     this.gateway = options.gateway;
     this.run = options.runner ?? defaultRunner;
     this.retryBaseDelayMs = options.retryBaseDelayMs ?? 4000;
+    this.commandTimeoutMs = options.commandTimeoutMs ?? 60_000;
   }
 
-  private async exec(args: string[], input?: string, callbacks?: CommandCallbacks): Promise<CommandResult> {
+  private async exec(
+    args: string[],
+    input?: string,
+    callbacks?: CommandCallbacks,
+    timeoutMs = this.commandTimeoutMs,
+    signal?: AbortSignal,
+  ): Promise<CommandResult> {
     // OPENSHELL_GATEWAY_ENDPOINT is injected by start.sh (e.g.
     // "http://127.0.0.1:8080"). The CLI reads it directly and connects without
     // any local gateway-registry lookup, so no 'gateway add' is required.
-    const result = await this.run(this.bin, args, input, callbacks);
+    const controller = new AbortController();
+    const abort = (): void => controller.abort();
+    signal?.addEventListener("abort", abort, { once: true });
+    if (signal?.aborted === true) controller.abort();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    const result = await this.run(this.bin, args, input, callbacks, { signal: controller.signal })
+      .finally(() => {
+        clearTimeout(timeout);
+        signal?.removeEventListener("abort", abort);
+      });
     if (result.code !== 0) {
       log.warn({ args: redactCommandArgs(args), code: result.code, stderr: redactOpenShellText(result.stderr).slice(0, 500) }, "openshell command failed");
     }
@@ -247,6 +300,12 @@ export class OpenShellClient {
     if (input.memory) args.push("--memory", input.memory);
     for (const provider of input.providers ?? []) args.push("--provider", provider);
     for (const [key, value] of Object.entries(input.env ?? {})) args.push("--env", `${key}=${value}`);
+    let policyPath: string | undefined;
+    if (input.policyYaml !== undefined) {
+      policyPath = join(tmpdir(), `ve-policy-${randomUUID()}.yaml`);
+      await writeFile(policyPath, input.policyYaml, "utf8");
+      args.push("--policy", policyPath);
+    }
     // Without a trailing command, `sandbox create` defaults to attaching an
     // interactive shell and blocks forever (there is no TTY to drive it), which
     // wedges the orchestrator since the command never exits. Run a no-op instead
@@ -254,22 +313,25 @@ export class OpenShellClient {
     // is omitted, kept alive for the subsequent upload/exec calls.
     args.push("--no-tty", "--", "true");
 
-    const maxAttempts = 6;
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      const result = await this.exec(args);
-      if (result.code === 0) return;
+    try {
+      const maxAttempts = 6;
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        const result = await this.exec(args, undefined, undefined, this.commandTimeoutMs, input.signal);
+        if (result.code === 0) return;
 
-      const transient =
-        attempt < maxAttempts &&
-        OpenShellClient.TRANSIENT_CREATE_PATTERNS.some((p) => result.stderr.toLowerCase().includes(p));
-      if (!transient) {
-        throw new Error(`openshell sandbox create failed (${result.code}): ${redactOpenShellText(result.stderr).slice(0, 500)}`);
+        const transient =
+          attempt < maxAttempts &&
+          OpenShellClient.TRANSIENT_CREATE_PATTERNS.some((p) => result.stderr.toLowerCase().includes(p));
+        if (!transient) {
+          throw new Error(`openshell sandbox create failed (${result.code}): ${redactOpenShellText(result.stderr).slice(0, 500)}`);
+        }
+
+        log.warn({ name: input.name, attempt }, "sandbox create hit a transient error — cleaning up and retrying");
+        await this.exec(["sandbox", "delete", input.name]);
+        await new Promise((resolve) => setTimeout(resolve, this.retryBaseDelayMs * attempt));
       }
-
-      log.warn({ name: input.name, attempt }, "sandbox create hit a transient error — cleaning up and retrying");
-      // A half-created sandbox keeps the name reserved; remove it before retrying.
-      await this.exec(["sandbox", "delete", input.name]);
-      await new Promise((resolve) => setTimeout(resolve, this.retryBaseDelayMs * attempt));
+    } finally {
+      if (policyPath !== undefined) await unlink(policyPath).catch(() => undefined);
     }
   }
 
@@ -278,7 +340,7 @@ export class OpenShellClient {
     const args = ["sandbox", "upload"];
     if (input.noGitIgnore) args.push("--no-git-ignore");
     args.push(input.name, input.localPath, input.dest);
-    const result = await this.exec(args);
+    const result = await this.exec(args, undefined, undefined, this.commandTimeoutMs, input.signal);
     if (result.code !== 0) {
       throw new Error(`openshell sandbox upload failed (${result.code}): ${redactOpenShellText(result.stderr).slice(0, 500)}`);
     }
@@ -286,7 +348,7 @@ export class OpenShellClient {
 
   /** Download a path from a sandbox to a local destination. Throws on failure. */
   async downloadFromSandbox(input: DownloadInput): Promise<void> {
-    const result = await this.exec(["sandbox", "download", input.name, input.sandboxPath, input.localDest]);
+    const result = await this.exec(["sandbox", "download", input.name, input.sandboxPath, input.localDest], undefined, undefined, this.commandTimeoutMs, input.signal);
     if (result.code !== 0) {
       throw new Error(`openshell sandbox download failed (${result.code}): ${redactOpenShellText(result.stderr).slice(0, 500)}`);
     }
@@ -302,7 +364,7 @@ export class OpenShellClient {
     return this.exec(args, undefined, {
       ...(input.onStdoutChunk !== undefined ? { onStdoutChunk: input.onStdoutChunk } : {}),
       ...(input.onStderrChunk !== undefined ? { onStderrChunk: input.onStderrChunk } : {}),
-    });
+    }, input.timeout !== undefined ? input.timeout * 1000 + 30_000 : this.commandTimeoutMs, input.signal);
   }
 
   /** Apply (hot-reload) a policy YAML on a running sandbox. Throws on failure. */
@@ -344,10 +406,20 @@ export class OpenShellClient {
     }
   }
 
-  /** Destroy a sandbox. Never throws — cleanup is best-effort. */
+  /** Destroy a sandbox, retrying transient gateway failures. */
   async removeSandbox(name: string): Promise<void> {
-    // `sandbox delete` takes sandbox name(s) as positional arguments.
-    await this.exec(["sandbox", "delete", name]);
+    let lastResult: CommandResult | undefined;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const result = await this.exec(["sandbox", "delete", name]);
+      if (result.code === 0) return;
+      lastResult = result;
+      if (attempt < 3) {
+        await new Promise((resolvePromise) => setTimeout(resolvePromise, this.retryBaseDelayMs * attempt));
+      }
+    }
+    throw new Error(
+      `openshell sandbox delete failed (${lastResult?.code ?? 1}): ${redactOpenShellText(lastResult?.stderr ?? "unknown error").slice(0, 500)}`,
+    );
   }
 
   /** Return true when the gateway responds healthy. */
@@ -361,7 +433,7 @@ export class OpenShellClient {
     for (const path of ["/healthz", "/health"]) {
       try {
         const res = await fetch(`${base}${path}`, { signal: AbortSignal.timeout(3000) });
-        if (res.ok || res.status < 500) return true;
+        if (res.ok) return true;
       } catch {
         // try next
       }

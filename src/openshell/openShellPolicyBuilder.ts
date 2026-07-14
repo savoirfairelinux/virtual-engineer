@@ -103,7 +103,7 @@ export function reviewReadonlyPolicy(input: {
         ...(input.apiHosts ?? []).map((host) => ({ host, methods: ["GET"] })),
       ],
     },
-    filesystem: { allowWrite: ["/workspace"] },
+    filesystem: { allowWrite: ["/sandbox"] },
     process: { noNewPrivileges: true },
   };
 }
@@ -123,7 +123,7 @@ export function codingRegistriesPolicy(input: {
       default: "deny",
       allow: [{ host: input.inferenceHost }, ...registries.map((host) => ({ host }))],
     },
-    filesystem: { allowWrite: ["/workspace"] },
+    filesystem: { allowWrite: ["/sandbox"] },
     process: { noNewPrivileges: true },
   };
 }
@@ -132,7 +132,7 @@ export function codingRegistriesPolicy(input: {
 export function denyStrictPolicy(input: { inferenceHost: string }): RuntimePolicySpec {
   return {
     network: { default: "deny", allow: [{ host: input.inferenceHost }] },
-    filesystem: { allowWrite: ["/workspace"] },
+    filesystem: { allowWrite: ["/sandbox"] },
     process: { noNewPrivileges: true, dropCaps: "all" },
   };
 }

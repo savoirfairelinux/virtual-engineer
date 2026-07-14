@@ -31,7 +31,7 @@ import type {
   WorkspaceRunner,
 } from "../interfaces.js";
 import { getLogger } from "../logger.js";
-import type { HostGitExecutor } from "./hostGitExecutor.js";
+import { credentialFreeUrl, type HostGitExecutor } from "./hostGitExecutor.js";
 import type { OpenShellClient } from "../openshell/openShellClient.js";
 import { redactOpenShellText } from "../openshell/openShellClient.js";
 import { decodeReviewWorkerOutput } from "./agentWorkerProtocol.js";
@@ -103,13 +103,16 @@ function changeRef(revisionNumber: number, patchset: number): string {
 
 export class OpenShellWorkspaceRunner implements WorkspaceRunner {
   private readonly dirs = new Map<string, string>();
+  private readonly sandboxNames = new Map<string, string>();
+  private readonly trustedRemotes = new Map<string, Map<string, string>>();
+  private readonly postCloneScripts = new Map<string, string>();
 
   constructor(private readonly deps: OpenShellRunnerDeps) {}
 
-  private handleFor(taskId: TaskId, dir: string): WorkspaceHandle {
+  private handleFor(taskId: TaskId, dir: string, sandboxName: string): WorkspaceHandle {
     return {
       taskId,
-      containerId: `openshell:${taskId}`,
+      containerId: `openshell:${sandboxName}`,
       volumeName: dir,
       homeVolumeName: dir,
       hostWorkspacePath: dir,
@@ -119,13 +122,25 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
 
   async createWorkspace(taskId: TaskId): Promise<WorkspaceHandle> {
     const ws = await this.deps.git.createWorkspace(String(taskId));
-    this.dirs.set(String(taskId), ws.dir);
-    return this.handleFor(taskId, ws.dir);
+    const sandboxName = `ve-${String(taskId)}-${randomUUID().slice(0, 8)}`;
+    const handle = this.handleFor(taskId, ws.dir, sandboxName);
+    this.dirs.set(handle.containerId, ws.dir);
+    this.sandboxNames.set(handle.containerId, sandboxName);
+    return handle;
+  }
+
+  private attemptKey(taskId: string, runtimeHandleId?: string): string {
+    return runtimeHandleId ?? `openshell:${taskId}`;
+  }
+
+  private sandboxName(taskId: string, runtimeHandleId?: string): string {
+    return this.sandboxNames.get(this.attemptKey(taskId, runtimeHandleId)) ?? `ve-${taskId}`;
   }
 
   async cloneRepo(handle: WorkspaceHandle, repoUrl: string, branch: string): Promise<CloneResult> {
     try {
       await this.deps.git.cloneRepo(handle.hostWorkspacePath, repoUrl, branch);
+      this.rememberTrustedRemote(handle.containerId, ".", repoUrl);
       return { success: true, localPath: handle.hostWorkspacePath };
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err);
@@ -136,7 +151,7 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
   async prepareProjectWorkspace(
     handle: WorkspaceHandle,
     pushTargets: ProjectPushTargetRecord[],
-    _postCloneScript?: string,
+    postCloneScript?: string,
     sshKnownHostsPath?: string,
   ): Promise<CloneResult> {
     const ordered = [...pushTargets].sort((a, b) => a.commitOrder - b.commitOrder);
@@ -153,6 +168,7 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
         root.sshKeyPath,
         sshKnownHostsPath,
       );
+      this.rememberTrustedRemote(handle.containerId, root.localPath, root.cloneUrl);
       for (const target of ordered) {
         if (target === root) continue;
         try {
@@ -164,16 +180,32 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
             target.sshKeyPath,
             sshKnownHostsPath,
           );
+          this.rememberTrustedRemote(handle.containerId, target.localPath, target.cloneUrl);
         } catch (err) {
           // Per-target failures are non-fatal (mirrors the Docker runner).
           log.warn({ repoKey: target.repoKey, err }, "secondary push-target clone failed");
         }
       }
+      if (postCloneScript?.trim()) this.postCloneScripts.set(handle.containerId, postCloneScript);
       return { success: true, localPath: handle.hostWorkspacePath };
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err);
       return { success: false, localPath: handle.hostWorkspacePath, error };
     }
+  }
+
+  private rememberTrustedRemote(taskId: string, localPath: string, cloneUrl: string): void {
+    const remotes = this.trustedRemotes.get(taskId) ?? new Map<string, string>();
+    remotes.set(localPath, credentialFreeUrl(cloneUrl));
+    this.trustedRemotes.set(taskId, remotes);
+  }
+
+  private async restoreTrustedRemotes(taskId: string, dir: string): Promise<void> {
+    const remotes = this.trustedRemotes.get(taskId);
+    if (!remotes || remotes.size === 0) {
+      throw new Error(`No trusted Git remotes recorded for task ${taskId}`);
+    }
+    await this.deps.git.rebuildTrustedMetadata(dir, remotes);
   }
 
   async applyPriorPatchset(handle: WorkspaceHandle, opts: PatchsetCheckoutOptions): Promise<void> {
@@ -202,12 +234,8 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
     return this.deps.git.execGit(handle.hostWorkspacePath, args, subPath);
   }
 
-  /** Apply the resolved policy (if any) to a freshly-created sandbox. */
-  private async applyPolicy(taskId: string, mode: "coding" | "review"): Promise<void> {
-    const yaml = await this.deps.resolvePolicy?.({ taskId, mode });
-    if (yaml) {
-      await this.deps.client.setPolicy(`ve-${taskId}`, yaml);
-    }
+  private resolvePolicy(taskId: string, mode: "coding" | "review"): Promise<string | undefined> {
+    return Promise.resolve(this.deps.resolvePolicy?.({ taskId, mode }));
   }
 
   /**
@@ -215,10 +243,10 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
    * OpenShell is deny-by-default; without this the agent's CLI cannot reach the
    * model API (CONNECT is rejected with 403). No-op when the spec declares none.
    */
-  private async applyEgress(taskId: string, egress: AgentSpec["egress"]): Promise<void> {
+  private async applyEgress(name: string, egress: AgentSpec["egress"]): Promise<void> {
     if (!egress || egress.hosts.length === 0) return;
     await this.deps.client.allowEgress({
-      name: `ve-${taskId}`,
+      name,
       hosts: egress.hosts,
       binaries: egress.binaries,
     });
@@ -259,23 +287,48 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
     }
   }
 
+  private async runPostCloneScript(
+    name: string,
+    attemptKey: string,
+    repoDir: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const postCloneScript = this.postCloneScripts.get(attemptKey);
+    if (postCloneScript === undefined) return;
+    const result = await this.deps.client.execInSandbox({
+      name,
+      command: ["sh", "-lc", postCloneScript],
+      workdir: repoDir,
+      ...this.execTimeout(),
+      ...(signal !== undefined ? { signal } : {}),
+    });
+    if (result.code !== 0) {
+      throw new Error(`OpenShell post-clone script failed with code ${result.code}: ${redactOpenShellText(result.stderr).slice(0, 500)}`);
+    }
+  }
+
   async runReviewInDocker(
     handle: WorkspaceHandle,
     input: ReviewWorkspaceInput,
     callbacks?: { onStderrChunk?: ((chunk: string) => void) | undefined } | undefined
   ): Promise<{ rawOutput: string }> {
     const taskId = String(handle.taskId);
-    const name = `ve-${taskId}`;
-    const dir = this.dirs.get(taskId) ?? handle.hostWorkspacePath;
+    const name = this.sandboxName(taskId, handle.containerId);
+    const dir = this.dirs.get(handle.containerId) ?? handle.hostWorkspacePath;
     const adapter = this.deps.agentAdapter;
     if (!adapter || !hasReviewSpec(adapter)) {
       throw new Error("OpenShellWorkspaceRunner.runReviewInDocker requires a review-capable agent adapter");
     }
     const spec = adapter.buildReviewContainerSpec(input);
 
-    await this.deps.client.createSandbox({ name, from: spec.image, env: spec.env });
-    await this.applyPolicy(taskId, "review");
-    await this.applyEgress(taskId, spec.egress);
+    const policyYaml = await this.resolvePolicy(taskId, "review");
+    await this.deps.client.createSandbox({
+      name,
+      from: spec.image,
+      env: spec.env,
+      ...(policyYaml !== undefined ? { policyYaml } : {}),
+    });
+    await this.applyEgress(name, spec.egress);
     // Read-only workspace: upload the repo so the review agent sees the diff. No download back.
     await this.deps.client.uploadToSandbox({
       name,
@@ -284,6 +337,7 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
       noGitIgnore: true,
     });
     const repoDir = this.sandboxRepoPath(dir);
+    await this.runPostCloneScript(name, handle.containerId, repoDir);
     const env = { USER_PROMPT_FILE: await this.uploadPrompt(name, input.prompt) };
     const result = await this.deps.client.execInSandbox({
       name,
@@ -311,23 +365,32 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
     // adapter spec env below. Push/review-system credentials are handled entirely
     // host-side in src/vcs and are never passed to this method.
     const taskId = String(context.taskId);
-    const name = `ve-${taskId}`;
-    const dir = this.dirs.get(taskId) ?? context.workspacePath;
+    const attemptKey = this.attemptKey(taskId, context.runtimeHandleId);
+    const name = this.sandboxName(taskId, context.runtimeHandleId);
+    const dir = this.dirs.get(attemptKey) ?? context.workspacePath;
     const spec = isPromptAware(adapter)
       ? await adapter.buildContainerSpecWithPrompts(context, authEnv)
       : adapter.buildContainerSpec(context, authEnv);
 
-    await this.deps.client.createSandbox({ name, from: spec.image, env: spec.env });
-    await this.applyPolicy(taskId, "coding");
-    await this.applyEgress(taskId, spec.egress);
+    const policyYaml = await this.resolvePolicy(taskId, "coding");
+    await this.deps.client.createSandbox({
+      name,
+      from: spec.image,
+      env: spec.env,
+      ...(policyYaml !== undefined ? { policyYaml } : {}),
+      ...(context.abortSignal !== undefined ? { signal: context.abortSignal } : {}),
+    });
+    await this.applyEgress(name, spec.egress);
     // Upload the full workspace (incl. .git) so the agent can commit inside the sandbox.
     await this.deps.client.uploadToSandbox({
       name,
       localPath: dir,
       dest: SANDBOX_WORKSPACE,
       noGitIgnore: true,
+      ...(context.abortSignal !== undefined ? { signal: context.abortSignal } : {}),
     });
     const repoDir = this.sandboxRepoPath(dir);
+    await this.runPostCloneScript(name, attemptKey, repoDir, context.abortSignal);
     const env: Record<string, string> = {};
     if (spec.userPromptContent !== undefined) {
       env["USER_PROMPT_FILE"] = await this.uploadPrompt(name, spec.userPromptContent);
@@ -340,6 +403,7 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
       ...this.execTimeout(),
       ...(callbacks?.onStdoutChunk !== undefined ? { onStdoutChunk: callbacks.onStdoutChunk } : {}),
       ...(callbacks?.onStderrChunk !== undefined ? { onStderrChunk: callbacks.onStderrChunk } : {}),
+      ...(context.abortSignal !== undefined ? { signal: context.abortSignal } : {}),
     });
     this.assertExecSucceeded(result);
     // Pull the agent's commits/changes back to the host for host-side push.
@@ -347,7 +411,9 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
       name,
       sandboxPath: repoDir,
       localDest: dir,
+      ...(context.abortSignal !== undefined ? { signal: context.abortSignal } : {}),
     });
+    await this.restoreTrustedRemotes(attemptKey, dir);
     return { stdout: result.stdout, stderr: result.stderr };
   }
 
@@ -360,12 +426,21 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
     // resolves auth, builds prompts, invokes the configured docker-invoker
     // (this runner's runAgentInDocker → sandbox upload/exec/download), and parses
     // the streamed output into an AgentResult (commits, cost, change-ids).
-    return resolved.execute(context);
+    return resolved.execute({ ...context, runtimeHandleId: _handle.containerId });
   }
 
   async destroyWorkspace(handle: WorkspaceHandle): Promise<void> {
-    await this.deps.client.removeSandbox(`ve-${String(handle.taskId)}`);
-    await this.deps.git.destroyWorkspace(handle.hostWorkspacePath);
-    this.dirs.delete(String(handle.taskId));
+    try {
+      const sandboxName = handle.containerId.startsWith("openshell:")
+        ? handle.containerId.slice("openshell:".length)
+        : this.sandboxName(String(handle.taskId));
+      await this.deps.client.removeSandbox(sandboxName.startsWith("ve-") ? sandboxName : `ve-${sandboxName}`);
+    } finally {
+      await this.deps.git.destroyWorkspace(handle.hostWorkspacePath);
+      this.dirs.delete(handle.containerId);
+      this.sandboxNames.delete(handle.containerId);
+      this.trustedRemotes.delete(handle.containerId);
+      this.postCloneScripts.delete(handle.containerId);
+    }
   }
 }

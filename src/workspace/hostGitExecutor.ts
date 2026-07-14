@@ -10,9 +10,10 @@
  */
 
 import { execFile } from "child_process";
-import { mkdtemp, rm } from "fs/promises";
+import { mkdtemp, readdir, rm, writeFile } from "fs/promises";
 import { lstatSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "path";
+import { trustedGitArgs, trustedGitEnv } from "../utils/gitExec.js";
 
 /** Runs a git argv in `cwd` with an optional explicit env; resolves stdout, rejects on non-zero exit. */
 export type GitRunner = (args: string[], cwd: string, env?: NodeJS.ProcessEnv) => Promise<string>;
@@ -21,8 +22,8 @@ const defaultGitRunner: GitRunner = (args, cwd, env) =>
   new Promise<string>((resolve, reject) => {
     execFile(
       "git",
-      args,
-      { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, env: env ?? process.env },
+      trustedGitArgs(args),
+      { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, env: trustedGitEnv(env) },
       (err, stdout, stderr) => {
         if (err) {
           reject(new Error(`git ${args[0]}: ${(stderr || err.message).slice(0, 500)}`));
@@ -62,18 +63,43 @@ function resolveWorkspacePath(dir: string, subPath: string): string {
   return target;
 }
 
-function credentialFreeUrl(repoUrl: string): string | null {
+async function assertNoSymlinks(path: string): Promise<void> {
+  const entries = await readdir(path, { withFileTypes: true });
+  for (const entry of entries) {
+    const entryPath = join(path, entry.name);
+    if (entry.isSymbolicLink()) {
+      throw new Error(`Untrusted Git metadata contains a symbolic link: ${entry.name}`);
+    }
+    if (entry.isDirectory()) await assertNoSymlinks(entryPath);
+  }
+}
+
+function trustedGitConfig(remoteUrl: string): string {
+  return [
+    "[core]",
+    "\trepositoryformatversion = 0",
+    "\tfilemode = true",
+    "\tbare = false",
+    "\tlogallrefupdates = true",
+    "[remote \"origin\"]",
+    `\turl = ${remoteUrl}`,
+    "\tfetch = +refs/heads/*:refs/remotes/origin/*",
+    "",
+  ].join("\n");
+}
+
+export function credentialFreeUrl(repoUrl: string): string {
   try {
     const parsed = new URL(repoUrl);
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return repoUrl;
     parsed.username = "";
     parsed.password = "";
     parsed.search = "";
     parsed.hash = "";
     const cleanUrl = parsed.toString();
-    return cleanUrl !== repoUrl ? cleanUrl : null;
+    return cleanUrl;
   } catch {
-    return null;
+    return repoUrl;
   }
 }
 
@@ -136,7 +162,7 @@ export class HostGitExecutor {
     const env = buildSshGitEnv(sshKeyPath, sshKnownHostsPath);
     await this.git(["clone", "--branch", branch, "--single-branch", repoUrl, subPath], dir, env);
     const cleanUrl = credentialFreeUrl(repoUrl);
-    if (cleanUrl) {
+    if (cleanUrl !== repoUrl) {
       try {
         await this.git(["remote", "set-url", "origin", cleanUrl], cloneDir);
       } catch (err) {
@@ -149,6 +175,26 @@ export class HostGitExecutor {
   /** Run an arbitrary git command in `dir` (optionally within a sub-path). */
   async execGit(dir: string, args: string[], subPath?: string): Promise<string> {
     return this.git(args, subPath ? resolveWorkspacePath(dir, subPath) : dir);
+  }
+
+  /** Replace sandbox-returned Git configuration with host-trusted metadata. */
+  async rebuildTrustedMetadata(dir: string, remotes: ReadonlyMap<string, string>): Promise<void> {
+    for (const [subPath, remoteUrl] of remotes) {
+      const repoDir = resolveWorkspacePath(dir, subPath);
+      const gitDir = join(repoDir, ".git");
+      if (!lstatSync(gitDir).isDirectory()) {
+        throw new Error(`Untrusted Git metadata is not a directory: ${subPath}`);
+      }
+      await assertNoSymlinks(gitDir);
+      await Promise.all([
+        rm(join(gitDir, "hooks"), { recursive: true, force: true }),
+        rm(join(gitDir, "objects", "info", "alternates"), { force: true }),
+        rm(join(gitDir, "config.worktree"), { force: true }),
+        rm(join(gitDir, "info", "attributes"), { force: true }),
+        rm(join(gitDir, "config"), { force: true }),
+      ]);
+      await writeFile(join(gitDir, "config"), trustedGitConfig(remoteUrl), { encoding: "utf8", mode: 0o600 });
+    }
   }
 
   /** Fetch a ref and check it out as detached HEAD. */

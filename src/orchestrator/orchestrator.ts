@@ -768,7 +768,11 @@ export class Orchestrator {
       };
 
       const agentResult = await this.withTimeout(
-        this.workspaceRunner.runAgent(handle, context, projectAgentRuntime?.adapter ?? undefined),
+        (abortSignal) => this.workspaceRunner.runAgent(
+          handle,
+          { ...context, abortSignal },
+          projectAgentRuntime?.adapter ?? undefined,
+        ),
         this.config.agentTimeoutMs,
         `Agent timed out after ${this.config.agentTimeoutMs}ms`
       );
@@ -1756,29 +1760,48 @@ export class Orchestrator {
       .map((line) => line.trim());
   }
 
-  /** Race a promise against a timeout, rejecting with `message` if it expires first. */
-  private withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
-    const wrappedPromise = new Promise<T>((resolve, reject) => {
+  /** Abort an operation at its deadline and await its termination before rejecting. */
+  private withTimeout<T>(
+    operation: Promise<T> | ((signal: AbortSignal) => Promise<T>),
+    timeoutMs: number,
+    message: string,
+  ): Promise<T> {
+    const controller = new AbortController();
+    if (typeof operation !== "function") {
+      const wrappedPromise = new Promise<T>((resolve, reject) => {
+        const legacyTimer = setTimeout(() => {
+          clearTimeout(legacyTimer);
+          reject(new Error(message));
+        }, timeoutMs);
+        operation.then(
+          (value) => {
+            clearTimeout(legacyTimer);
+            resolve(value);
+          },
+          (err: unknown) => {
+            clearTimeout(legacyTimer);
+            reject(err);
+          },
+        );
+      });
+      void wrappedPromise.catch(() => undefined);
+      return wrappedPromise;
+    }
+    return (async (): Promise<T> => {
+      let timedOut = false;
       const timer = setTimeout(() => {
-        clearTimeout(timer);
-        reject(new Error(message));
+        timedOut = true;
+        controller.abort();
       }, timeoutMs);
-
-      promise.then(
-        (value) => {
-          clearTimeout(timer);
-          resolve(value);
-        },
-        (err: unknown) => {
-          clearTimeout(timer);
-          reject(err);
-        }
-      );
-    });
-
-    void wrappedPromise.catch(() => undefined);
-
-    return wrappedPromise;
+      try {
+        return await operation(controller.signal);
+      } catch (err) {
+        if (timedOut) throw new Error(message);
+        throw err;
+      } finally {
+        clearTimeout(timer);
+      }
+    })();
   }
 
   /** Type guard: true when the error originates from a missing ticket. */

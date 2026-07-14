@@ -112,7 +112,15 @@ export function createRuntimePolicyStore(context: RuntimePolicyStoreContext): Ru
     if (partial.kind !== undefined) set["kind"] = partial.kind;
     if (partial.yaml !== undefined) set["yaml"] = partial.yaml;
     if (partial.description !== undefined) set["description"] = partial.description;
-    await db.update(runtimePolicies).set(set).where(eq(runtimePolicies.id, id));
+    db.transaction((transaction) => {
+      if (partial.kind !== undefined) {
+        transaction.update(runtimePolicyBindings)
+          .set({ kind: partial.kind, updatedAt: new Date() })
+          .where(eq(runtimePolicyBindings.policyId, id))
+          .run();
+      }
+      transaction.update(runtimePolicies).set(set).where(eq(runtimePolicies.id, id)).run();
+    });
     const updated = await getRuntimePolicyById(id);
     if (!updated) throw new Error(`Runtime policy '${id}' not found`);
     return updated;
@@ -133,11 +141,21 @@ export function createRuntimePolicyStore(context: RuntimePolicyStoreContext): Ru
     if ((projectId === null) === (agentId === null)) {
       throw new Error("bindRuntimePolicy requires exactly one of projectId or agentId");
     }
+    const policy = await getRuntimePolicyById(input.policyId);
+    if (!policy) throw new Error(`Runtime policy '${input.policyId}' not found`);
+    const boundPolicies = projectId !== null
+      ? await getRuntimePoliciesForProject(projectId)
+      : await getRuntimePoliciesForAgent(agentId!);
+    if (boundPolicies.some((bound) => bound.kind === policy.kind)) {
+      const target = projectId !== null ? `project ${projectId}` : `agent ${agentId}`;
+      throw new Error(`A ${policy.kind} runtime policy is already bound to ${target}`);
+    }
     const now = new Date();
     const id = randomUUID();
     await db.insert(runtimePolicyBindings).values({
       id,
       policyId: input.policyId,
+      kind: policy.kind,
       projectId,
       agentId,
       createdAt: now,

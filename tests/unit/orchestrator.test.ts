@@ -714,8 +714,14 @@ describe("Orchestrator", () => {
         "1. Close the ticket on merge",
       ]);
 
+      let aborted = false;
       const timeoutPromise = (orchestrator as any).withTimeout(
-        new Promise<string>(() => undefined),
+        (signal: AbortSignal) => new Promise<string>((_resolve, reject) => {
+          signal.addEventListener("abort", () => {
+            aborted = true;
+            reject(new Error("cancelled"));
+          }, { once: true });
+        }),
         25,
         "timed out"
       );
@@ -723,6 +729,7 @@ describe("Orchestrator", () => {
 
       await vi.advanceTimersByTimeAsync(25);
       await assertion;
+      expect(aborted).toBe(true);
     } finally {
       vi.useRealTimers();
     }

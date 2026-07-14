@@ -19,6 +19,7 @@ function fakeGit(overrides: Partial<HostGitExecutor> = {}): HostGitExecutor {
     fetchAndCheckout: vi.fn().mockResolvedValue(undefined),
     fetchAndCherryPick: vi.fn().mockResolvedValue(undefined),
     listModifiedFiles: vi.fn().mockResolvedValue([]),
+    rebuildTrustedMetadata: vi.fn().mockResolvedValue(undefined),
     destroyWorkspace: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   } as unknown as HostGitExecutor;
@@ -98,6 +99,23 @@ describe("OpenShellWorkspaceRunner", () => {
     expect(h.containerImage).toBe("base");
   });
 
+  it("uses a unique sandbox identity for each workspace attempt", async () => {
+    const git = fakeGit({
+      createWorkspace: vi.fn()
+        .mockResolvedValueOnce({ dir: "/tmp/ws-1" })
+        .mockResolvedValueOnce({ dir: "/tmp/ws-2" }),
+    });
+    const client = fakeClient();
+    const runner = new OpenShellWorkspaceRunner({ git, client, sandboxImage: "base" });
+
+    const first = await runner.createWorkspace("t1" as TaskId);
+    const second = await runner.createWorkspace("t1" as TaskId);
+    expect(first.containerId).not.toBe(second.containerId);
+
+    await runner.destroyWorkspace(first);
+    expect(client.removeSandbox).toHaveBeenCalledWith(first.containerId.replace("openshell:", ""));
+  });
+
   it("delegates clone to HostGitExecutor and reports success", async () => {
     const git = fakeGit();
     const runner = new OpenShellWorkspaceRunner({ git, client: fakeClient(), sandboxImage: "base" });
@@ -130,6 +148,35 @@ describe("OpenShellWorkspaceRunner", () => {
     expect((cloneRepo.mock.calls[0] ?? [])[1]).toBe("u1"); // root cloned first
   });
 
+  it("runs the configured post-clone script inside the sandbox", async () => {
+    const execInSandbox = vi.fn()
+      .mockResolvedValueOnce({ code: 0, stdout: "installed", stderr: "" })
+      .mockResolvedValueOnce({ code: 0, stdout: "ok", stderr: "" });
+    const runner = new OpenShellWorkspaceRunner({
+      git: fakeGit(),
+      client: fakeClient({ execInSandbox } as unknown as Partial<OpenShellClient>),
+      sandboxImage: "base",
+    });
+    const targets = [{
+      repoKey: "root", cloneUrl: "u1", targetBranch: "main", role: "primary",
+      commitOrder: 1, localPath: ".", integrationId: "i", sshKeyPath: null,
+    }] as unknown as ProjectPushTargetRecord[];
+
+    const result = await runner.prepareProjectWorkspace(handle, targets, "npm ci");
+    expect(result.success).toBe(true);
+    await runner.runAgentInDocker(
+      fakeCodingAdapter(),
+      { taskId: "t1", workspacePath: "/tmp/ws-1" } as unknown as TaskContext,
+    );
+    expect(execInSandbox.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
+      command: ["sh", "-lc", "npm ci"],
+      workdir: "/sandbox/ws-1",
+    }));
+    expect(execInSandbox.mock.calls[1]?.[0]).toEqual(expect.objectContaining({
+      command: ["node", "/agent-worker/dist/index.js"],
+    }));
+  });
+
   it("applies a resolved policy before running the review agent", async () => {
     const client = fakeClient({
       execInSandbox: vi.fn().mockResolvedValue({
@@ -151,8 +198,9 @@ describe("OpenShellWorkspaceRunner", () => {
       name: "ve-t1",
       from: "agent:img",
       env: { REVIEW_MODE: "1" },
+      policyYaml: expect.stringContaining("default: deny"),
     });
-    expect(client.setPolicy).toHaveBeenCalledWith("ve-t1", expect.stringContaining("default: deny"));
+    expect(client.setPolicy).not.toHaveBeenCalled();
     // Egress is opened for the review agent's model API.
     expect(client.allowEgress).toHaveBeenCalledWith(
       expect.objectContaining({ name: "ve-t1", hosts: ["api.githubcopilot.com"], binaries: ["/usr/local/bin/node"] })
@@ -217,9 +265,11 @@ describe("OpenShellWorkspaceRunner", () => {
 
   it("coding run uploads the workspace, execs the agent, and downloads results back", async () => {
     const client = fakeClient();
-    const runner = new OpenShellWorkspaceRunner({ git: fakeGit(), client, sandboxImage: "base" });
+    const git = fakeGit();
+    const runner = new OpenShellWorkspaceRunner({ git, client, sandboxImage: "base" });
     const ctx = { taskId: "t1", workspacePath: "/tmp/ws-1" } as unknown as TaskContext;
     const adapter = fakeCodingAdapter({ env: { GITHUB_TOKEN: "tok" }, userPromptContent: "do the task" });
+    await runner.cloneRepo(handle, "https://trusted.example/repo.git", "main");
     await runner.runAgentInDocker(adapter, ctx, { GITHUB_TOKEN: "tok" });
 
     expect(client.createSandbox).toHaveBeenCalledWith(
@@ -243,6 +293,10 @@ describe("OpenShellWorkspaceRunner", () => {
     expect(client.downloadFromSandbox).toHaveBeenCalledWith(
       expect.objectContaining({ name: "ve-t1", sandboxPath: "/sandbox/ws-1", localDest: "/tmp/ws-1" })
     );
+    expect(git.rebuildTrustedMetadata).toHaveBeenCalledWith(
+      "/tmp/ws-1",
+      new Map([[".", "https://trusted.example/repo.git"]]),
+    );
   });
 
   it("forwards coding output chunks and the OpenShell exec timeout", async () => {
@@ -262,6 +316,8 @@ describe("OpenShellWorkspaceRunner", () => {
       sandboxImage: "base",
       execTimeoutSec: 3600,
     });
+
+    await runner.cloneRepo(handle, "https://trusted.example/repo.git", "main");
 
     await runner.runAgentInDocker(
       fakeCodingAdapter(),
@@ -293,7 +349,7 @@ describe("OpenShellWorkspaceRunner", () => {
     const ctx = { taskId: "t1", workspacePath: "/tmp/ws-1" } as unknown as TaskContext;
     const adapter = fakeCodingAdapter({}, { status: "success", modifiedFiles: ["a.ts"], summary: "s", agentLogs: "", metadata: {} });
     const result = await runner.runAgent(handle, ctx, adapter);
-    expect(adapter.execute).toHaveBeenCalledWith(ctx);
+    expect(adapter.execute).toHaveBeenCalledWith({ ...ctx, runtimeHandleId: handle.containerId });
     expect(result.status).toBe("success");
     expect(result.modifiedFiles).toEqual(["a.ts"]);
   });

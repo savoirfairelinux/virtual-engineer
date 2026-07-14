@@ -428,6 +428,10 @@ export interface TaskContext {
   instructionsPromptId?: string | null | undefined;
   /** Connection/session material the agent uses directly */
   agentSession: AgentSession;
+  /** Cancels the in-flight sandbox lifecycle when the orchestrator deadline expires. */
+  abortSignal?: AbortSignal | undefined;
+  /** Immutable workspace-attempt identity used to route sandbox operations. */
+  runtimeHandleId?: string | undefined;
 }
 
 export interface AgentLogEvent {

@@ -69,6 +69,27 @@ describe("SqliteStateStore — runtime policies", () => {
     ).rejects.toThrow(/exactly one/i);
   });
 
+  it("rejects two policies of the same kind on one agent", async () => {
+    const agent = await store.createAgent({ name: "a", type: "coding", modelConfigJson: "{}" });
+    const first = await store.createRuntimePolicy({ name: "first", kind: "network" });
+    const second = await store.createRuntimePolicy({ name: "second", kind: "network" });
+    await store.bindRuntimePolicy({ policyId: first.id, agentId: agent.id });
+
+    await expect(store.bindRuntimePolicy({ policyId: second.id, agentId: agent.id }))
+      .rejects.toThrow(/network.*already bound/i);
+  });
+
+  it("enforces target-plus-kind uniqueness in SQLite", () => {
+    const raw = (store as unknown as { raw: {
+      prepare(sql: string): { all(): Array<{ name: string; unique: number }> };
+    } }).raw;
+    const indexes = raw.prepare("PRAGMA index_list('runtime_policy_bindings')").all();
+    expect(indexes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "uq_runtime_policy_binding_project_kind", unique: 1 }),
+      expect.objectContaining({ name: "uq_runtime_policy_binding_agent_kind", unique: 1 }),
+    ]));
+  });
+
   it("deleting a policy removes its bindings", async () => {
     const agent = await store.createAgent({ name: "a", type: "coding", modelConfigJson: "{}" });
     const policy = await store.createRuntimePolicy({ name: "p", kind: "network" });

@@ -100,8 +100,10 @@ describe("Security — push credentials never reach the OpenShell sandbox", () =
   it("agent run forwards the adapter spec env but not push/review-system secrets", async () => {
     const createSandbox = vi.fn().mockResolvedValue(undefined);
     const exec = vi.fn().mockResolvedValue({ code: 0, stdout: "", stderr: "" });
+    const git = new HostGitExecutor({ baseDir: "/tmp", git: vi.fn().mockResolvedValue("") });
+    vi.spyOn(git, "rebuildTrustedMetadata").mockResolvedValue(undefined);
     const runner = new OpenShellWorkspaceRunner({
-      git: new HostGitExecutor({ baseDir: "/tmp", git: vi.fn().mockResolvedValue("") }),
+      git,
       client: fakeClient({ createSandbox, exec }),
       sandboxImage: "img",
     });
@@ -117,6 +119,7 @@ describe("Security — push credentials never reach the OpenShell sandbox", () =
         command: ["node", "/agent-worker/dist/index.js"],
       }),
     } as unknown as AgentAdapter;
+    await runner.cloneRepo(handle, "https://trusted.example/repo.git", "main");
     await runner.runAgentInDocker(adapter, ctx, {});
 
     const args: string[] = [];

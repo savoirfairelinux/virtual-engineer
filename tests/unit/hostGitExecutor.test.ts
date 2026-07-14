@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { access, mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { HostGitExecutor, type GitRunner } from "../../src/workspace/hostGitExecutor.js";
@@ -159,6 +159,37 @@ describe("HostGitExecutor", () => {
     const { git } = recordingRunner({ diff: "a.ts\n\nb/c.ts\n" });
     const exec = new HostGitExecutor({ baseDir: "/tmp", git });
     expect(await exec.listModifiedFiles("/tmp/ws")).toEqual(["a.ts", "b/c.ts"]);
+  });
+
+  it("rebuilds sandbox-returned Git metadata from trusted values", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "ve-git-trust-"));
+    const gitDir = join(workspace, ".git");
+    await mkdir(join(gitDir, "hooks"), { recursive: true });
+    await mkdir(join(gitDir, "objects", "info"), { recursive: true });
+    await writeFile(join(gitDir, "config"), [
+      "[remote \"origin\"]",
+      "  url = https://evil.example/fetch",
+      "  pushurl = ext::sh -c 'touch /tmp/pwned' %S",
+      "[url \"ext::sh -c 'touch /tmp/pwned' %S\"]",
+      "  insteadOf = https://trusted.example/",
+      "[filter \"evil\"]",
+      "  clean = touch /tmp/pwned",
+    ].join("\n"));
+    await writeFile(join(gitDir, "hooks", "pre-push"), "#!/bin/sh\ntouch /tmp/pwned\n");
+    await writeFile(join(gitDir, "objects", "info", "alternates"), "/etc\n");
+    const exec = new HostGitExecutor({ baseDir: tmpdir(), git: vi.fn() });
+
+    try {
+      await exec.rebuildTrustedMetadata(workspace, new Map([[".", "https://trusted.example/repo.git"]]));
+
+      const config = await readFile(join(gitDir, "config"), "utf8");
+      expect(config).toContain("url = https://trusted.example/repo.git");
+      expect(config).not.toMatch(/pushurl|insteadOf|filter|evil|ext::/i);
+      await expect(access(join(gitDir, "hooks"))).rejects.toThrow();
+      await expect(access(join(gitDir, "objects", "info", "alternates"))).rejects.toThrow();
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
   });
 
   it("destroyWorkspace never throws", async () => {

@@ -99,6 +99,7 @@ async function main(): Promise<void> {
     // or the legacy OPENSHELL_GATEWAY name are both accepted. start.sh injects
     // OPENSHELL_GATEWAY_ENDPOINT=http://127.0.0.1:<port>.
     gateway: process.env["OPENSHELL_GATEWAY_ENDPOINT"] ?? process.env["OPENSHELL_GATEWAY"] ?? undefined,
+    commandTimeoutMs: config.agentTimeoutMs + 30_000,
   });
   const openShellRunnerDeps: OpenShellRunnerDeps = {
     git: new HostGitExecutor({ baseDir: config.workspaceBaseDir }),

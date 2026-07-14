@@ -9,10 +9,9 @@ interface RuntimePolicyResolverStore {
   getRuntimePoliciesForAgent(agentId: string): Promise<RuntimePolicyRecord[]>;
 }
 
-function selectPolicy(policies: RuntimePolicyRecord[], owner: string): string | undefined {
-  if (policies.length === 0) return undefined;
+function policySections(policies: RuntimePolicyRecord[], owner: string): Map<string, unknown> {
   const byKind = new Map<string, RuntimePolicyRecord>();
-  const document: Record<string, unknown> = {};
+  const sections = new Map<string, unknown>();
   for (const policy of policies) {
     if (byKind.has(policy.kind)) {
       throw new Error(`Multiple ${policy.kind} runtime policies are bound to ${owner}`);
@@ -29,9 +28,22 @@ function selectPolicy(policies: RuntimePolicyRecord[], owner: string): string | 
       throw new Error(`Runtime policy '${policy.name}' bound to ${owner} has no ${policy.kind} section`);
     }
     byKind.set(policy.kind, policy);
-    document[policy.kind] = section;
+    sections.set(policy.kind, section);
   }
-  return stringify(document);
+  return sections;
+}
+
+function composePolicies(
+  agentPolicies: RuntimePolicyRecord[],
+  projectPolicies: RuntimePolicyRecord[],
+  agentId: string,
+  projectId: string,
+): string | undefined {
+  const sections = policySections(agentPolicies, `agent ${agentId}`);
+  for (const [kind, section] of policySections(projectPolicies, `project ${projectId}`)) {
+    sections.set(kind, section);
+  }
+  return sections.size > 0 ? stringify(Object.fromEntries(sections)) : undefined;
 }
 
 export function createRuntimePolicyResolver(store: RuntimePolicyResolverStore): PolicyResolver {
@@ -39,13 +51,12 @@ export function createRuntimePolicyResolver(store: RuntimePolicyResolverStore): 
     const task = await store.getTask(taskId);
     if (!task?.projectId) return undefined;
 
-    const projectPolicies = await store.getRuntimePoliciesForProject(task.projectId);
-    const projectPolicy = selectPolicy(projectPolicies, `project ${task.projectId}`);
-    if (projectPolicy !== undefined) return projectPolicy;
-
     const project = await store.getProjectById(task.projectId);
     if (!project) return undefined;
-    const agentPolicies = await store.getRuntimePoliciesForAgent(project.agentId);
-    return selectPolicy(agentPolicies, `agent ${project.agentId}`);
+    const [agentPolicies, projectPolicies] = await Promise.all([
+      store.getRuntimePoliciesForAgent(project.agentId),
+      store.getRuntimePoliciesForProject(task.projectId),
+    ]);
+    return composePolicies(agentPolicies, projectPolicies, project.agentId, task.projectId);
   };
 }

@@ -5,7 +5,7 @@
 
 import { execFileSync } from "child_process";
 import { getLogger } from "../logger.js";
-import { execGit } from "../utils/gitExec.js";
+import { execGit, trustedGitArgs, trustedGitEnv } from "../utils/gitExec.js";
 import type { VcsConnector, VcsPushResult } from "./vcsConnector.js";
 import { buildFeatureBranchRef } from "./branchNaming.js";
 import type { ReviewComment } from "../interfaces.js";
@@ -50,10 +50,11 @@ export class GitLabVcsConnector implements VcsConnector {
     );
 
     try {
-      execFileSync("git", ["clone", "--branch", branch, "--depth", "1", repoUrl, targetDir], {
+      execFileSync("git", trustedGitArgs(["clone", "--branch", branch, "--depth", "1", repoUrl, targetDir]), {
         encoding: "utf8",
         stdio: ["ignore", "pipe", "pipe"],
         timeout: 300_000,
+        env: trustedGitEnv(),
       });
 
       log.info({ targetDir }, "repository cloned successfully");

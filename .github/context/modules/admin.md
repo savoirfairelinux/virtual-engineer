@@ -26,7 +26,7 @@ The admin server is a small HTTP service (default `127.0.0.1:3100`) that serves 
 | `adminProjectsRoutes.ts` | `/api/admin/projects/*` CRUD, ticket/review target validation (canonical workspace paths; HTTPS-only GitHub/GitLab clone URLs), atomic push-target replacement, automatic relaunch of FAILED/REVIEW_FAILED tasks on (re)configuration or re-enable. |
 | `adminConcurrencyRoutes.ts` | `/api/admin/concurrency` read/update global concurrency. |
 | `adminSettingsRoutes.ts` | `GET/PUT /api/admin/settings` — read/update editable runtime workflow settings (polling interval, max agent cycles, max retry attempts). Validates positive integers; delegates persistence + hot-apply to the `SettingsController` wired in `src/index.ts`. |
-| `adminRuntimePolicyRoutes.ts` | `/api/admin/runtime/policies*` CRUD over runtime policies plus `POST /:id/bindings` / `DELETE /bindings/:bindingId` to bind a policy to a project or agent. Creation requires parseable non-empty YAML with an object-valued section matching the policy kind. Backed by the dedicated `RuntimePolicyStore`. |
+| `adminRuntimePolicyRoutes.ts` | `/api/admin/runtime/policies*` CRUD over runtime policies plus `POST /:id/bindings` / `DELETE /bindings/:bindingId` to bind a policy to a project or agent. YAML is limited to 64 KiB, may not use aliases/anchors, and must contain exactly one object-valued top-level section matching the policy kind. Backed by the dedicated `RuntimePolicyStore`. |
 | `adminDenialRoutes.ts` | `GET /api/admin/runtime/denials` — policy-denial audit log (filter by `taskId` / `projectId` / `limit`). Backed by the `DenialStore`. |
 | `adminOverviewRoutes.ts` | `/api/admin/overview` dashboard stats/throughput/votes/runtime + `/api/admin/cost-summary` aggregated AI cost (per project & instance total, optional `?days=` period) + `/api/admin/model-usage` model distribution by run count & cost (global + per project, optional `?days=<n>` period filter). |
 | `adminWebhookRoutes.ts` | Webhook management: secret rotation, allowed-IPs, webhook-info. |
@@ -42,6 +42,7 @@ The admin server is a small HTTP service (default `127.0.0.1:3100`) that serves 
 | --- | --- | --- |
 | `GET` | `/` / `/admin` | Dashboard HTML shell. |
 | `GET` | `/health` | Unauthenticated health check. |
+| `GET` | `/ready` | Unauthenticated readiness check; returns 503 while the OpenShell gateway is unavailable. |
 | `POST` | `/webhooks/:integrationId/:event` | Mounted only when webhook deps are provided. Per-integration HMAC secret is the auth layer. Used by Redmine / GitLab; Gerrit review events use SSH `stream-events` instead. |
 | `GET` | `/api/admin/auth/setup-status` | Unauthenticated. `{ needsSetup: boolean }` — true when the store supports users and zero users exist. |
 | `POST` | `/api/admin/auth/login` | Unauthenticated. `{ username, password }` → `{ token, user }` session or 401. |

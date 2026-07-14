@@ -549,6 +549,17 @@ async function handleRequest(
     return;
   }
 
+  // Readiness includes the required agent runtime; liveness above stays process-only.
+  if (path === "/ready") {
+    if (method !== "GET") {
+      writeJson(response, 405, { error: "Method not allowed" });
+      return;
+    }
+    const ready = await dependencies.runtimeGateway?.healthy().catch(() => false) ?? false;
+    writeJson(response, ready ? 200 : 503, { status: ready ? "ready" : "not_ready" });
+    return;
+  }
+
   // Generic per-integration webhook receiver — HMAC secret is the auth.
   if (isWebhookPath(path)) {
     if (!dependencies.webhooks || !dependencies.integrationStore) {

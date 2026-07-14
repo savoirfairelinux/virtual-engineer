@@ -430,6 +430,7 @@ export const runtimePolicyBindings = sqliteTable(
   {
     id: text("id").primaryKey(),
     policyId: text("policy_id").notNull().references(() => runtimePolicies.id, { onDelete: "cascade" }),
+    kind: text("kind").notNull().$type<RuntimePolicyKind>(),
     projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
     agentId: text("agent_id").references(() => agents.id, { onDelete: "cascade" }),
     createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
@@ -445,6 +446,8 @@ export const runtimePolicyBindings = sqliteTable(
     ),
     uqRuntimePolicyBindingProject: unique("uq_runtime_policy_binding_project").on(table.policyId, table.projectId),
     uqRuntimePolicyBindingAgent: unique("uq_runtime_policy_binding_agent").on(table.policyId, table.agentId),
+    uqRuntimePolicyBindingProjectKind: unique("uq_runtime_policy_binding_project_kind").on(table.projectId, table.kind),
+    uqRuntimePolicyBindingAgentKind: unique("uq_runtime_policy_binding_agent_kind").on(table.agentId, table.kind),
   })
 );
 

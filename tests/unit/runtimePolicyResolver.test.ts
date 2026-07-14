@@ -17,6 +17,22 @@ describe("createRuntimePolicyResolver", () => {
     await expect(resolver({ taskId: "task-1", mode: "coding" })).resolves.toContain("default: deny");
   });
 
+  it("keeps agent policies for kinds not overridden by the project", async () => {
+    const filesystem = { ...policy("agent-fs", "filesystem:\n  allow_write: [/sandbox]"), kind: "filesystem" as const };
+    const resolver = createRuntimePolicyResolver({
+      getTask: vi.fn().mockResolvedValue({ projectId: "project-1" }),
+      getProjectById: vi.fn().mockResolvedValue({ agentId: "agent-1" }),
+      getRuntimePoliciesForProject: vi.fn().mockResolvedValue([
+        policy("project-network", "network:\n  default: deny"),
+      ]),
+      getRuntimePoliciesForAgent: vi.fn().mockResolvedValue([filesystem]),
+    });
+
+    const yaml = await resolver({ taskId: "task-1", mode: "coding" });
+    expect(yaml).toContain("network:");
+    expect(yaml).toContain("filesystem:");
+  });
+
   it("falls back to the agent-bound policy", async () => {
     const resolver = createRuntimePolicyResolver({
       getTask: vi.fn().mockResolvedValue({ projectId: "project-1" }),
@@ -54,7 +70,7 @@ describe("createRuntimePolicyResolver", () => {
   });
 
   it("composes project policies of distinct kinds", async () => {
-    const filesystem = { ...policy("fs", "filesystem:\n  allow_read: [/workspace]"), kind: "filesystem" as const };
+    const filesystem = { ...policy("fs", "filesystem:\n  allow_read: [/sandbox]"), kind: "filesystem" as const };
     const resolver = createRuntimePolicyResolver({
       getTask: vi.fn().mockResolvedValue({ projectId: "project-1" }),
       getProjectById: vi.fn().mockResolvedValue({ agentId: "agent-1" }),

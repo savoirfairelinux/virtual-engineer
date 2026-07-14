@@ -6,7 +6,7 @@
 import { execFileSync } from "child_process";
 import { createHash } from "crypto";
 import { getLogger } from "../logger.js";
-import { execGit } from "../utils/gitExec.js";
+import { execGit, trustedGitArgs, trustedGitEnv } from "../utils/gitExec.js";
 import type { VcsConnector, VcsPushResult } from "./vcsConnector.js";
 import type { PatchsetCheckoutOptions, ReviewComment } from "../interfaces.js";
 import { GerritSshClient, buildSshHostKeyOptions } from "../connectors/gerritSshClient.js";
@@ -81,10 +81,9 @@ function buildSshCommand(config: GerritVcsConnectorConfig, overrideSshKeyPath?: 
 
 /** Build the process env object that injects GIT_SSH_COMMAND for Gerrit operations. */
 function buildGitEnv(config: GerritVcsConnectorConfig, overrideSshKeyPath?: string): NodeJS.ProcessEnv {
-  return {
-    ...process.env,
+  return trustedGitEnv({
     GIT_SSH_COMMAND: buildSshCommand(config, overrideSshKeyPath),
-  };
+  });
 }
 
 export class GerritVcsConnector implements VcsConnector {
@@ -201,7 +200,7 @@ export class GerritVcsConnector implements VcsConnector {
       log.info({ repoDir }, "changes committed");
 
       // Push to Gerrit
-      execFileSync("git", ["push", "origin", `HEAD:${ref}`], {
+      execFileSync("git", trustedGitArgs(["push", "origin", `HEAD:${ref}`]), {
         cwd: repoDir,
         env: buildGitEnv(this.config),
         encoding: "utf8",
@@ -246,7 +245,7 @@ export class GerritVcsConnector implements VcsConnector {
         pushRef = `HEAD:${ref}%topic=${topic}`;
       }
 
-      execFileSync("git", ["push", "origin", pushRef], {
+      execFileSync("git", trustedGitArgs(["push", "origin", pushRef]), {
         cwd: repoDir,
         env: buildGitEnv(this.config),
         encoding: "utf8",

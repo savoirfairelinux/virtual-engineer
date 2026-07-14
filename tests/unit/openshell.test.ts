@@ -24,7 +24,7 @@ describe("openShellPolicyBuilder", () => {
     expect(yaml).toContain("- host: api.anthropic.com");
     expect(yaml).toContain("- host: api.github.com");
     expect(yaml).toContain("methods: [GET]");
-    expect(yaml).toContain("allow_write: [/workspace]");
+    expect(yaml).toContain("allow_write: [/sandbox]");
     expect(yaml).toContain("no_new_privileges: true");
   });
 
@@ -121,6 +121,18 @@ describe("OpenShellClient", () => {
       "sandbox", "create", "--env", "GITHUB_TOKEN=[REDACTED]", "--env=API_KEY=[REDACTED]", "--", "true",
     ]);
   });
+  it("terminates a command that exceeds the client deadline", async () => {
+    const runner: CommandRunner = async (_bin, _args, _input, _callbacks, control) =>
+      new Promise((resolve) => {
+        control?.signal?.addEventListener("abort", () => {
+          resolve({ code: 1, stdout: "", stderr: "openshell command timed out" });
+        }, { once: true });
+      });
+    const client = new OpenShellClient({ runner, commandTimeoutMs: 20 });
+
+    await expect(client.createSandbox({ name: "t" }))
+      .rejects.toThrow(/timed out/i);
+  });
 
   it("redacts credentials echoed in OpenShell stderr", () => {
     const text = "GITHUB_TOKEN=secret-token Authorization: Bearer abc123 https://user:pass@example.com/repo";
@@ -148,6 +160,20 @@ describe("OpenShellClient", () => {
       "--provider", "anthropic", "--env", "A=1",
       "--no-tty", "--", "true",
     ]);
+  });
+
+  it("passes the initial policy when creating a sandbox", async () => {
+    const { runner, calls } = runnerReturning({ code: 0 });
+    const client = new OpenShellClient({ runner });
+    await client.createSandbox({
+      name: "task-1",
+      policyYaml: "filesystem:\n  allow_write: [/sandbox]\n",
+    });
+
+    const args = calls[0]?.args ?? [];
+    const policyIndex = args.indexOf("--policy");
+    expect(policyIndex).toBeGreaterThan(0);
+    expect(args[policyIndex + 1]).toMatch(/ve-policy-.*\.yaml$/);
   });
 
   it("uploads with --no-git-ignore before positional NAME/LOCAL/DEST", async () => {
@@ -314,20 +340,24 @@ describe("OpenShellClient", () => {
     expect(calls[0]?.args[4]).toBe("demo");
   });
 
-  it("removeSandbox never throws on failure", async () => {
-    const { runner } = runnerReturning({ code: 1, stderr: "gone" });
-    const client = new OpenShellClient({ runner });
-    await expect(client.removeSandbox("t")).resolves.toBeUndefined();
+  it("removeSandbox retries and throws when deletion cannot be confirmed", async () => {
+    const calls: string[][] = [];
+    const runner: CommandRunner = async (_bin, args) => {
+      calls.push(args);
+      return { code: 1, stdout: "", stderr: "gateway unavailable" };
+    };
+    const client = new OpenShellClient({ runner, retryBaseDelayMs: 0 });
+
+    await expect(client.removeSandbox("t")).rejects.toThrow(/delete.*gateway unavailable/i);
+    expect(calls.filter((args) => args[1] === "delete")).toHaveLength(3);
   });
 
-  it("reports gateway health from http probe (not CLI)", async () => {
-    // gatewayHealthy() now probes the HTTP health endpoint directly,
-    // so the CLI runner is never called. We verify the method exists and
-    // returns a boolean (actual HTTP probes are integration-tested with a
-    // live gateway; unit test only asserts the contract shape).
+  it.each([401, 403, 404])("does not report HTTP %s as healthy", async (status) => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status });
+    vi.stubGlobal("fetch", fetchMock);
     const client = new OpenShellClient({ runner: runnerReturning({ code: 0 }).runner });
-    // Without a real server the probe will time out / fail → false.
-    const result = await client.gatewayHealthy();
-    expect(typeof result).toBe("boolean");
+
+    await expect(client.gatewayHealthy()).resolves.toBe(false);
+    vi.unstubAllGlobals();
   });
 });
