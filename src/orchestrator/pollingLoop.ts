@@ -213,7 +213,11 @@ export class PollingLoop {
   /** Dispatch to project-mode polling; a no-op when no project store is configured. */
   private async pollTickets(): Promise<void> {
     log.debug("polling all projects and active tasks");
-    const tasks: Array<Promise<void>> = [this.pollInReviewTasks(), this.pollReviewWatchingTasks()];
+    const tasks: Array<Promise<void>> = [
+      this.pollInReviewTasks(),
+      this.pollReviewWatchingTasks(),
+      this.pollStalledCodeGenTasks(),
+    ];
     if (this.projectStore && this.pluginManager) {
       tasks.push(this.pollProjectTickets(), this.pollReviewProjects());
     }
@@ -469,6 +473,34 @@ export class PollingLoop {
         .then(() => this.orchestrator.checkReviewWatchingTask(task.taskId))
         .catch((err: unknown) =>
           log.error({ taskId: task.taskId, changeId, err }, "failed to check review-watching task status")
+        );
+    }
+  }
+
+  // ─── Stalled code-gen task polling ─────────────────────────────────────────
+
+  /**
+   * Re-drive code-gen tasks that stalled in `CONTEXT_BUILDING` or `RETRY_CYCLE`
+   * while waiting for a free agent concurrency slot. `runAgentCycle` defers
+   * such tasks without re-queuing them, so absent this poll they would never
+   * advance until the next process restart. The orchestrator's in-flight guard
+   * makes re-driving an already-running task a no-op, so this is safe to run
+   * every tick.
+   */
+  async pollStalledCodeGenTasks(): Promise<void> {
+    const activeTasks = await this.stateStore.getActiveTasks();
+    const stalledTasks = activeTasks.filter(
+      (t) =>
+        t.taskType === "code-gen" &&
+        (t.state === "CONTEXT_BUILDING" || t.state === "RETRY_CYCLE")
+    );
+    log.debug({ count: stalledTasks.length }, "polling stalled code-gen tasks awaiting agent slot");
+
+    for (const task of stalledTasks) {
+      Promise.resolve()
+        .then(() => this.orchestrator.resumeStalledCodeGenTask(task.taskId))
+        .catch((err: unknown) =>
+          log.error({ taskId: task.taskId, state: task.state, err }, "failed to resume stalled code-gen task")
         );
     }
   }
