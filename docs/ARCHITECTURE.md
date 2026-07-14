@@ -46,7 +46,7 @@ Virtual Engineer is a **Node.js orchestrator** that runs on the host (or in a Do
   └──────────────────────────┘   │  virtual-engineer-workspace:latest      │
                                  │  /workspace  ← uploaded repo (incl .git)│
                                  │                                         │
-                                 │  node /agent-worker/dist/index.js      │
+                                 │  node /app/agent-worker/dist/index.js  │
                                  │    → copilot --headless                 │
                                  │    → edits files, git commit            │
                                  │    → AgentResult JSON → stdout          │
@@ -278,7 +278,7 @@ The **sole** workspace runtime. Git plumbing runs natively on the orchestrator v
        ├─ client.createSandbox({ from: image, env: spec.env, policy })  ← k3s Pod
        ├─ client.uploadToSandbox(dir → /workspace, --no-git-ignore)     ← incl. .git
        ├─ client.execInSandbox({ workdir: /workspace,
-       │       command: [node, /agent-worker/dist/index.js], env })     ← agent runs
+      │       command: [node, /app/agent-worker/dist/index.js], env }) ← agent runs
        ├─ client.downloadFromSandbox(/workspace → dir)                  ← commits back
        │
        ├─ vcsConnector.push(dir, ref, ...)     ← git push host-side (src/vcs)
@@ -374,7 +374,7 @@ agent result. The OpenShell runner executes that spec inside a k3s sandbox Pod
        ├─ buildContainerSpecWithPrompts(context, authEnv)
        │     image:   virtual-engineer-workspace:latest
        │     env:     GITHUB_TOKEN, COPILOT_MODEL, task context vars, SYSTEM_PROMPT
-       │     command: node /agent-worker/dist/index.js
+      │     command: node /app/agent-worker/dist/index.js
        │
        ├─ (OpenShell runner) sandbox create → upload → exec → download
        │     stdout: JSON AgentResult
@@ -765,8 +765,8 @@ Base: `node:24-bookworm-slim`. Includes: `git`, `openssh-client`, `curl`, `jq`, 
 ```
 FROM node:24-bookworm-slim
 RUN apt-get install git openssh-client curl ca-certificates jq iproute2 gh
-COPY agent-worker/ /agent-worker/
-RUN npm --prefix /agent-worker ci --omit=dev
+COPY agent-worker/ /app/agent-worker/
+RUN npm --prefix /app/agent-worker ci --omit=dev
 WORKDIR /workspace
 ```
 

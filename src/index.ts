@@ -104,6 +104,7 @@ async function main(): Promise<void> {
     client: openShellClient,
     sandboxImage: config.agentContainerImage,
     agentAdapter: runtimeDependencies.agentAdapter,
+    execTimeoutSec: Math.ceil(config.agentTimeoutMs / 1000),
   };
   const workspaceRunner = new OpenShellWorkspaceRunner(openShellRunnerDeps);
   configureAgentAdapter(runtimeDependencies.agentAdapter, stateStore, workspaceRunner);

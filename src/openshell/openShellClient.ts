@@ -11,7 +11,7 @@
  * - Policies are applied via `policySet` before the agent runs.
  */
 
-import { execFile } from "child_process";
+import { spawn } from "child_process";
 import { writeFile, unlink } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -26,17 +26,63 @@ export interface CommandResult {
   stderr: string;
 }
 
-/** Runs an argv against a binary and resolves the captured result (never rejects on non-zero). */
-export type CommandRunner = (bin: string, args: string[], input?: string) => Promise<CommandResult>;
+export interface CommandCallbacks {
+  onStdoutChunk?: ((chunk: string) => void) | undefined;
+  onStderrChunk?: ((chunk: string) => void) | undefined;
+}
 
-const defaultRunner: CommandRunner = (bin, args, input) =>
+/** Runs an argv against a binary and resolves the captured result (never rejects on non-zero). */
+export type CommandRunner = (
+  bin: string,
+  args: string[],
+  input?: string,
+  callbacks?: CommandCallbacks
+) => Promise<CommandResult>;
+
+const MAX_COMMAND_OUTPUT_BYTES = 32 * 1024 * 1024;
+
+const defaultRunner: CommandRunner = (bin, args, input, callbacks) =>
   new Promise<CommandResult>((resolve) => {
-    const child = execFile(bin, args, { maxBuffer: 32 * 1024 * 1024 }, (err, stdout, stderr) => {
-      const code = err && typeof (err as { code?: unknown }).code === "number" ? (err as { code: number }).code : err ? 1 : 0;
-      resolve({ code, stdout: stdout.toString(), stderr: stderr.toString() });
+    const child = spawn(bin, args, { stdio: ["pipe", "pipe", "pipe"] });
+    const stdoutChunks: string[] = [];
+    const stderrChunks: string[] = [];
+    let outputBytes = 0;
+    let outputLimitExceeded = false;
+    let settled = false;
+
+    const finish = (result: CommandResult): void => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    };
+    const collect = (target: string[], chunk: Buffer, callback?: (value: string) => void): void => {
+      const value = chunk.toString();
+      target.push(value);
+      outputBytes += chunk.byteLength;
+      callback?.(value);
+      if (outputBytes > MAX_COMMAND_OUTPUT_BYTES && !outputLimitExceeded) {
+        outputLimitExceeded = true;
+        child.kill("SIGTERM");
+      }
+    };
+
+    child.stdout.on("data", (chunk: Buffer) => collect(stdoutChunks, chunk, callbacks?.onStdoutChunk));
+    child.stderr.on("data", (chunk: Buffer) => collect(stderrChunks, chunk, callbacks?.onStderrChunk));
+    child.once("error", (err) => {
+      finish({ code: 1, stdout: stdoutChunks.join(""), stderr: `${stderrChunks.join("")}${err.message}` });
     });
-    if (input !== undefined && child.stdin) {
+    child.once("close", (code) => {
+      const stderr = stderrChunks.join("");
+      finish({
+        code: outputLimitExceeded ? 1 : code ?? 1,
+        stdout: stdoutChunks.join(""),
+        stderr: outputLimitExceeded ? `${stderr}\nopenshell command output exceeded 32 MiB` : stderr,
+      });
+    });
+    if (input !== undefined) {
       child.stdin.end(input);
+    } else {
+      child.stdin.end();
     }
   });
 
@@ -93,6 +139,22 @@ export interface ExecSandboxInput {
   workdir?: string | undefined;
   /** Timeout in seconds (0 = no timeout). */
   timeout?: number | undefined;
+  /** Incremental command output callbacks. The final result remains fully buffered. */
+  onStdoutChunk?: ((chunk: string) => void) | undefined;
+  onStderrChunk?: ((chunk: string) => void) | undefined;
+}
+
+/** Access level for an egress endpoint. Copilot needs `full` (POST completions). */
+export type EgressAccess = "read-only" | "read-write" | "full";
+
+export interface AllowEgressInput {
+  name: string;
+  /** Hostnames to allow on port 443. */
+  hosts: string[];
+  /** Absolute paths of the executables permitted to use the egress. */
+  binaries?: string[] | undefined;
+  /** Access level (default `full`). */
+  access?: EgressAccess | undefined;
 }
 
 export class OpenShellClient {
@@ -128,11 +190,11 @@ export class OpenShellClient {
     this.retryBaseDelayMs = options.retryBaseDelayMs ?? 4000;
   }
 
-  private async exec(args: string[], input?: string): Promise<CommandResult> {
+  private async exec(args: string[], input?: string, callbacks?: CommandCallbacks): Promise<CommandResult> {
     // OPENSHELL_GATEWAY_ENDPOINT is injected by start.sh (e.g.
     // "http://127.0.0.1:8080"). The CLI reads it directly and connects without
     // any local gateway-registry lookup, so no 'gateway add' is required.
-    const result = await this.run(this.bin, args, input);
+    const result = await this.run(this.bin, args, input, callbacks);
     if (result.code !== 0) {
       log.warn({ args, code: result.code, stderr: result.stderr.slice(0, 500) }, "openshell command failed");
     }
@@ -151,6 +213,12 @@ export class OpenShellClient {
     if (input.memory) args.push("--memory", input.memory);
     for (const provider of input.providers ?? []) args.push("--provider", provider);
     for (const [key, value] of Object.entries(input.env ?? {})) args.push("--env", `${key}=${value}`);
+    // Without a trailing command, `sandbox create` defaults to attaching an
+    // interactive shell and blocks forever (there is no TTY to drive it), which
+    // wedges the orchestrator since the command never exits. Run a no-op instead
+    // and disable PTY allocation: the sandbox is created and, because `--no-keep`
+    // is omitted, kept alive for the subsequent upload/exec calls.
+    args.push("--no-tty", "--", "true");
 
     const maxAttempts = 6;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -192,12 +260,15 @@ export class OpenShellClient {
 
   /** Run a command inside a sandbox and return its captured output. */
   async execInSandbox(input: ExecSandboxInput): Promise<CommandResult> {
-    const args = ["sandbox", "exec", "--name", input.name];
+    const args = ["sandbox", "exec", "--no-tty", "--name", input.name];
     if (input.workdir) args.push("--workdir", input.workdir);
     if (input.timeout !== undefined) args.push("--timeout", String(input.timeout));
     for (const [key, value] of Object.entries(input.env ?? {})) args.push("--env", `${key}=${value}`);
     args.push("--", ...input.command);
-    return this.exec(args);
+    return this.exec(args, undefined, {
+      ...(input.onStdoutChunk !== undefined ? { onStdoutChunk: input.onStdoutChunk } : {}),
+      ...(input.onStderrChunk !== undefined ? { onStderrChunk: input.onStderrChunk } : {}),
+    });
   }
 
   /** Apply (hot-reload) a policy YAML on a running sandbox. Throws on failure. */
@@ -213,6 +284,29 @@ export class OpenShellClient {
       }
     } finally {
       await unlink(tmpPath).catch(() => undefined);
+    }
+  }
+
+  /**
+   * Incrementally open egress to `hosts` (port 443) on a running sandbox, scoped
+   * to `binaries`. OpenShell is deny-by-default: without an allow rule the egress
+   * proxy rejects the CONNECT (403), and without `binaries` scoping the CONNECT is
+   * denied even for allowed hosts. Uses `policy update` (incremental) so the static
+   * filesystem/landlock sections — locked at sandbox creation — are left untouched.
+   * Throws on failure. No-op when `hosts` is empty.
+   */
+  async allowEgress(input: AllowEgressInput): Promise<void> {
+    if (input.hosts.length === 0) return;
+    const access = input.access ?? "full";
+    const args = ["policy", "update"];
+    // `host:port:access:protocol` — REST over TLS is the shape the proxy enforces.
+    for (const host of input.hosts) args.push("--add-endpoint", `${host}:443:${access}:rest`);
+    // `--binary` applies to every `--add-endpoint` rule in the same invocation.
+    for (const bin of input.binaries ?? []) args.push("--binary", bin);
+    args.push("--wait", input.name);
+    const result = await this.exec(args);
+    if (result.code !== 0) {
+      throw new Error(`openshell policy update (egress) failed (${result.code}): ${result.stderr.slice(0, 500)}`);
     }
   }
 

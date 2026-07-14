@@ -130,6 +130,7 @@ describe("OpenShellClient", () => {
       "sandbox", "create", "--name", "task-1",
       "--from", "img:latest", "--cpu", "1", "--memory", "2Gi",
       "--provider", "anthropic", "--env", "A=1",
+      "--no-tty", "--", "true",
     ]);
   });
 
@@ -152,14 +153,75 @@ describe("OpenShellClient", () => {
     const client = new OpenShellClient({ runner });
     await client.execInSandbox({ name: "t", command: ["node", "x.js"], env: { K: "V" }, workdir: "/workspace", timeout: 60 });
     expect(calls[0]?.args).toEqual([
-      "sandbox", "exec", "--name", "t", "--workdir", "/workspace", "--timeout", "60", "--env", "K=V", "--", "node", "x.js",
+      "sandbox", "exec", "--no-tty", "--name", "t", "--workdir", "/workspace", "--timeout", "60", "--env", "K=V", "--", "node", "x.js",
     ]);
+  });
+
+  it("exec streams stdout and stderr chunks while preserving the final result", async () => {
+    const observed: string[] = [];
+    const runner: CommandRunner = async (_bin, _args, _input, callbacks) => {
+      callbacks?.onStdoutChunk?.("out-1");
+      callbacks?.onStderrChunk?.("err-1");
+      callbacks?.onStdoutChunk?.("out-2");
+      return { code: 0, stdout: "out-1out-2", stderr: "err-1" };
+    };
+    const client = new OpenShellClient({ runner });
+
+    const result = await client.execInSandbox({
+      name: "t",
+      command: ["node", "x.js"],
+      onStdoutChunk: (chunk) => observed.push(`stdout:${chunk}`),
+      onStderrChunk: (chunk) => observed.push(`stderr:${chunk}`),
+    });
+
+    expect(observed).toEqual(["stdout:out-1", "stderr:err-1", "stdout:out-2"]);
+    expect(result).toEqual({ code: 0, stdout: "out-1out-2", stderr: "err-1" });
   });
 
   it("upload throws when the CLI reports failure", async () => {
     const { runner } = runnerReturning({ code: 1, stderr: "boom" });
     const client = new OpenShellClient({ runner });
     await expect(client.uploadToSandbox({ name: "t", localPath: "a", dest: "b" })).rejects.toThrow(/upload failed/i);
+  });
+
+  it("allowEgress adds endpoints and binaries via incremental policy update", async () => {
+    const { runner, calls } = runnerReturning({ code: 0 });
+    const client = new OpenShellClient({ runner });
+    await client.allowEgress({
+      name: "ve-t",
+      hosts: ["api.githubcopilot.com", "api.github.com"],
+      binaries: ["/usr/local/bin/node", "/agent-worker/node_modules/@github/copilot-linux-x64/copilot"],
+    });
+    expect(calls[0]?.args).toEqual([
+      "policy", "update",
+      "--add-endpoint", "api.githubcopilot.com:443:full:rest",
+      "--add-endpoint", "api.github.com:443:full:rest",
+      "--binary", "/usr/local/bin/node",
+      "--binary", "/agent-worker/node_modules/@github/copilot-linux-x64/copilot",
+      "--wait", "ve-t",
+    ]);
+  });
+
+  it("allowEgress honours a non-default access level", async () => {
+    const { runner, calls } = runnerReturning({ code: 0 });
+    const client = new OpenShellClient({ runner });
+    await client.allowEgress({ name: "ve-t", hosts: ["api.github.com"], access: "read-only" });
+    expect(calls[0]?.args).toEqual([
+      "policy", "update", "--add-endpoint", "api.github.com:443:read-only:rest", "--wait", "ve-t",
+    ]);
+  });
+
+  it("allowEgress is a no-op when no hosts are given", async () => {
+    const { runner, calls } = runnerReturning({ code: 0 });
+    const client = new OpenShellClient({ runner });
+    await client.allowEgress({ name: "ve-t", hosts: [] });
+    expect(calls).toHaveLength(0);
+  });
+
+  it("allowEgress throws when the CLI reports failure", async () => {
+    const { runner } = runnerReturning({ code: 1, stderr: "boom" });
+    const client = new OpenShellClient({ runner });
+    await expect(client.allowEgress({ name: "ve-t", hosts: ["api.github.com"] })).rejects.toThrow(/egress/i);
   });
 
   it("throws when sandbox create fails", async () => {

@@ -9,6 +9,7 @@ import type { CopilotSession } from '@github/copilot-sdk';
 import type { ChildProcess } from 'child_process';
 import { spawn } from 'child_process';
 import { createConnection } from 'net';
+import { buildCopilotCliArgs, buildCopilotNetworkEnvironment } from './copilotCliArgs.js';
 
 const GITHUB_TOKEN = (process.env['GITHUB_TOKEN'] ?? '').trim();
 const COPILOT_MODEL = (process.env['COPILOT_MODEL'] ?? '').trim();
@@ -70,12 +71,12 @@ function waitForPort(host: string, port: number, timeoutMs: number): Promise<voi
 }
 
 async function startLocalCliServer(): Promise<LocalCliServer> {
-  const cliPath = '/agent-worker/node_modules/.bin/copilot';
+  const cliPath = '/app/agent-worker/node_modules/.bin/copilot';
   const port = 3000;
   const stdoutChunks: string[] = [];
   const stderrChunks: string[] = [];
 
-  const child = spawn(cliPath, ['--headless', '--port', String(port)], {
+  const child = spawn(cliPath, buildCopilotCliArgs(port), {
     env: {
       GITHUB_TOKEN: process.env['GITHUB_TOKEN'] ?? '',
       PATH: process.env['PATH'] ?? '',
@@ -85,6 +86,7 @@ async function startLocalCliServer(): Promise<LocalCliServer> {
       TEMP: process.env['TEMP'] ?? '',
       USER: process.env['USER'] ?? '',
       XDG_RUNTIME_DIR: process.env['XDG_RUNTIME_DIR'] ?? '',
+      ...buildCopilotNetworkEnvironment(),
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });

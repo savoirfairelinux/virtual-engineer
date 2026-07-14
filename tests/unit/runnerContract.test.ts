@@ -56,7 +56,11 @@ describe("Security — push credentials never reach the OpenShell sandbox", () =
 
   it("review run does not pass agentToken/push secrets to createSandbox or exec", async () => {
     const createSandbox = vi.fn().mockResolvedValue(undefined);
-    const exec = vi.fn().mockResolvedValue({ code: 0, stdout: "ok", stderr: "" });
+    const exec = vi.fn().mockResolvedValue({
+      code: 0,
+      stdout: JSON.stringify({ status: "success", rawOutput: "ok" }),
+      stderr: "",
+    });
     const SECRET = "ghp_supersecretpushtoken0123456789";
     // Review adapter spec never includes the push/review-system token.
     const reviewAdapter = {

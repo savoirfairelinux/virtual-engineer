@@ -62,7 +62,7 @@ describe("ClaudeAdapter", () => {
       const adapter = new ClaudeAdapter({ model: "sonnet" });
       const spec = adapter.buildContainerSpec(makeContext(), { ANTHROPIC_API_KEY: "sk-ant-key" });
 
-      expect(spec.command).toEqual(["node", "/agent-worker/dist/index.js"]);
+      expect(spec.command).toEqual(["node", "/app/agent-worker/dist/index.js"]);
       expect(spec.env).toMatchObject({
         AGENT_PROVIDER: "claude",
         CLAUDE_MODEL: "sonnet",
@@ -112,6 +112,19 @@ describe("ClaudeAdapter", () => {
         SYSTEM_PROMPT: "review sys",
         CLAUDE_MODEL: "opus",
       });
+    });
+
+    it("encodes multiline system prompts for OpenShell environment transport", () => {
+      const adapter = new ClaudeAdapter();
+      const spec = adapter.buildReviewContainerSpec(
+        makeReviewInput({ systemPrompt: "Review carefully.\nReturn structured JSON." })
+      );
+
+      expect(spec.env["SYSTEM_PROMPT"]).toBeUndefined();
+      expect(spec.env["SYSTEM_PROMPT_BASE64"]).toBe(
+        Buffer.from("Review carefully.\nReturn structured JSON.", "utf8").toString("base64")
+      );
+      expect(Object.values(spec.env).every((value) => !/[\r\n]/u.test(value))).toBe(true);
     });
 
     it("maps an API-key agentToken to ANTHROPIC_API_KEY when no explicit authEnv is given", () => {

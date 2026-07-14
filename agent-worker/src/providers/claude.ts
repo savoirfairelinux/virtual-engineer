@@ -2,7 +2,7 @@
  * Virtual Engineer — Claude Code session runner (agent worker).
  *
  * Runs INSIDE the Docker container for the `claude` provider. Drives the
- * Anthropic Claude Agent SDK against the pre-cloned `/workspace` repository and
+ * Anthropic Claude Agent SDK against the pre-cloned `/sandbox` repository and
  * maps its streamed messages onto the shared `__ve_event` stderr protocol used
  * by every provider, so the host adapter's event / commit / result pipeline is
  * provider-agnostic.
@@ -26,6 +26,30 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 function numberOrNull(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+export function normalizeClaudeUsage(message: unknown, model: string): Record<string, unknown> | null {
+  const inner = asRecord(message);
+  if (!inner) return null;
+  const usage = asRecord(inner['usage']);
+  if (!usage) return null;
+  const providerCallId = typeof inner['id'] === 'string' && inner['id'].trim().length > 0
+    ? inner['id']
+    : null;
+  return {
+    inputTokens: numberOrNull(usage['input_tokens']),
+    outputTokens: numberOrNull(usage['output_tokens']),
+    cacheReadTokens: numberOrNull(usage['cache_read_input_tokens']),
+    cacheWriteTokens: numberOrNull(usage['cache_creation_input_tokens']),
+    model,
+    ...(providerCallId !== null ? { providerCallId } : {}),
+  };
+}
+
+export function extractClaudeToolName(block: Record<string, unknown>): string | null {
+  return typeof block['name'] === 'string' && block['name'].trim()
+    ? block['name'].trim()
+    : null;
 }
 
 /** Run a Claude Code session and return the assistant's final text + tool stats. */
@@ -90,8 +114,9 @@ export async function runClaudeAgent(
           const b = asRecord(block);
           if (!b) continue;
           if (b['type'] === 'tool_use') {
+            const toolName = extractClaudeToolName(b);
+            if (toolName === null) continue;
             state.toolCallCount++;
-            const toolName = typeof b['name'] === 'string' ? b['name'] : 'unknown_tool';
             state.toolsByKind[toolName] = (state.toolsByKind[toolName] ?? 0) + 1;
             const input = asRecord(b['input']) ?? {};
             process.stderr.write(`[tool] #${state.toolCallCount} ${toolName}\n`);
@@ -108,16 +133,8 @@ export async function runClaudeAgent(
             }
           }
         }
-        const usage = inner ? asRecord(inner['usage']) : null;
-        if (usage) {
-          emitEvent('assistant.usage', {
-            inputTokens: numberOrNull(usage['input_tokens']),
-            outputTokens: numberOrNull(usage['output_tokens']),
-            cacheReadTokens: numberOrNull(usage['cache_read_input_tokens']),
-            cacheWriteTokens: numberOrNull(usage['cache_creation_input_tokens']),
-            model: modelLabel,
-          });
-        }
+        const usage = normalizeClaudeUsage(inner, modelLabel);
+        if (usage) emitEvent('assistant.usage', usage);
         continue;
       }
 

@@ -16,7 +16,7 @@
 
 import { writeFile, unlink } from "fs/promises";
 import { tmpdir } from "os";
-import { join } from "path";
+import { join, basename } from "path";
 import { randomUUID } from "node:crypto";
 import type {
   AgentAdapter,
@@ -33,11 +33,15 @@ import type {
 import { getLogger } from "../logger.js";
 import type { HostGitExecutor } from "./hostGitExecutor.js";
 import type { OpenShellClient } from "../openshell/openShellClient.js";
+import { decodeReviewWorkerOutput } from "./agentWorkerProtocol.js";
 
 const log = getLogger("openshell-workspace-runner");
 
 /** Where the workspace is mounted inside the sandbox and where the prompt lands. */
-const SANDBOX_WORKSPACE = "/workspace";
+// OpenShell's default sandbox policy makes `/sandbox` the writable working
+// directory (read_write). `/workspace` is read-only under that policy, so the
+// repo upload/exec/download all target `/sandbox`.
+const SANDBOX_WORKSPACE = "/sandbox";
 const SANDBOX_PROMPT_FILE = "/tmp/user-prompt.txt";
 
 /** Adapter shape that resolves prompts (SYSTEM/USER) at container-spec build time. */
@@ -60,6 +64,7 @@ interface AgentSpec {
   networkMode?: string | undefined;
   additionalDockerArgs?: string[] | undefined;
   userPromptContent?: string | undefined;
+  egress?: { hosts: string[]; binaries: string[] } | undefined;
 }
 
 function isPromptAware(adapter: AgentAdapter): adapter is PromptAwareAgentAdapter {
@@ -204,6 +209,33 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
     }
   }
 
+  /**
+   * Open the agent's required network egress on a freshly-created sandbox.
+   * OpenShell is deny-by-default; without this the agent's CLI cannot reach the
+   * model API (CONNECT is rejected with 403). No-op when the spec declares none.
+   */
+  private async applyEgress(taskId: string, egress: AgentSpec["egress"]): Promise<void> {
+    if (!egress || egress.hosts.length === 0) return;
+    await this.deps.client.allowEgress({
+      name: `ve-${taskId}`,
+      hosts: egress.hosts,
+      binaries: egress.binaries,
+    });
+  }
+
+  /**
+   * `openshell sandbox upload <dir> /sandbox` nests the directory under
+   * `/sandbox/<basename(dir)>` (it always nests by basename — trailing `/` or
+   * `/.` do not change this, and there is no rename form). Rather than copy the
+   * (potentially large) repo back up to `/sandbox` — a slow cross-device move —
+   * the runner runs the agent with its working directory set to this nested repo
+   * path. `download` is contents-based (no nesting), so the coding flow downloads
+   * this path straight back onto the host workspace dir.
+   */
+  private sandboxRepoPath(localPath: string): string {
+    return `${SANDBOX_WORKSPACE}/${basename(localPath)}`;
+  }
+
   /** Write the prompt to a host temp file, upload it into the sandbox, return the sandbox path. */
   private async uploadPrompt(name: string, content: string): Promise<string> {
     const tmp = join(tmpdir(), `ve-prompt-${randomUUID()}.txt`);
@@ -222,7 +254,8 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
 
   async runReviewInDocker(
     handle: WorkspaceHandle,
-    input: ReviewWorkspaceInput
+    input: ReviewWorkspaceInput,
+    callbacks?: { onStderrChunk?: ((chunk: string) => void) | undefined } | undefined
   ): Promise<{ rawOutput: string }> {
     const taskId = String(handle.taskId);
     const name = `ve-${taskId}`;
@@ -233,8 +266,9 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
     }
     const spec = adapter.buildReviewContainerSpec(input);
 
-    await this.deps.client.createSandbox({ name, from: spec.image });
+    await this.deps.client.createSandbox({ name, from: spec.image, env: spec.env });
     await this.applyPolicy(taskId, "review");
+    await this.applyEgress(taskId, spec.egress);
     // Read-only workspace: upload the repo so the review agent sees the diff. No download back.
     await this.deps.client.uploadToSandbox({
       name,
@@ -242,21 +276,27 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
       dest: SANDBOX_WORKSPACE,
       noGitIgnore: true,
     });
-    const env = { ...spec.env, USER_PROMPT_FILE: await this.uploadPrompt(name, input.prompt) };
+    const repoDir = this.sandboxRepoPath(dir);
+    const env = { USER_PROMPT_FILE: await this.uploadPrompt(name, input.prompt) };
     const result = await this.deps.client.execInSandbox({
       name,
       command: spec.command,
       env,
-      workdir: SANDBOX_WORKSPACE,
+      workdir: repoDir,
       ...this.execTimeout(),
+      ...(callbacks?.onStderrChunk !== undefined ? { onStderrChunk: callbacks.onStderrChunk } : {}),
     });
-    return { rawOutput: result.stdout };
+    return { rawOutput: decodeReviewWorkerOutput(result.stdout) };
   }
 
   async runAgentInDocker(
     adapter: AgentAdapter,
     context: TaskContext,
-    authEnv: Record<string, string> = {}
+    authEnv: Record<string, string> = {},
+    callbacks?: {
+      onStdoutChunk?: ((chunk: string) => void) | undefined;
+      onStderrChunk?: ((chunk: string) => void) | undefined;
+    } | undefined
   ): Promise<{ stdout: string; stderr: string }> {
     // `authEnv` carries the agent's own inference credential (e.g. GITHUB_TOKEN
     // for Copilot), which the agent legitimately needs and is baked into the
@@ -271,6 +311,7 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
 
     await this.deps.client.createSandbox({ name, from: spec.image, env: spec.env });
     await this.applyPolicy(taskId, "coding");
+    await this.applyEgress(taskId, spec.egress);
     // Upload the full workspace (incl. .git) so the agent can commit inside the sandbox.
     await this.deps.client.uploadToSandbox({
       name,
@@ -278,7 +319,8 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
       dest: SANDBOX_WORKSPACE,
       noGitIgnore: true,
     });
-    const env = { ...spec.env };
+    const repoDir = this.sandboxRepoPath(dir);
+    const env: Record<string, string> = {};
     if (spec.userPromptContent !== undefined) {
       env["USER_PROMPT_FILE"] = await this.uploadPrompt(name, spec.userPromptContent);
     }
@@ -286,13 +328,15 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
       name,
       command: spec.command,
       env,
-      workdir: SANDBOX_WORKSPACE,
+      workdir: repoDir,
       ...this.execTimeout(),
+      ...(callbacks?.onStdoutChunk !== undefined ? { onStdoutChunk: callbacks.onStdoutChunk } : {}),
+      ...(callbacks?.onStderrChunk !== undefined ? { onStderrChunk: callbacks.onStderrChunk } : {}),
     });
     // Pull the agent's commits/changes back to the host for host-side push.
     await this.deps.client.downloadFromSandbox({
       name,
-      sandboxPath: SANDBOX_WORKSPACE,
+      sandboxPath: repoDir,
       localDest: dir,
     });
     return { stdout: result.stdout, stderr: result.stderr };

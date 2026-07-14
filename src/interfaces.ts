@@ -486,6 +486,21 @@ export interface AdapterContainerSpec {
   additionalDockerArgs?: string[] | undefined;
   /** Written to home volume as `user-prompt.txt`; sets `USER_PROMPT_FILE` in container env. */
   userPromptContent?: string | undefined;
+  /**
+   * Network egress the agent requires (inference / auth). The OpenShell runtime
+   * is deny-by-default; the runner opens these hosts (port 443) scoped to the
+   * listed binaries after the sandbox starts, so the agent's CLI can reach the
+   * model API. Omitted for runtimes that do not enforce egress policy.
+   */
+  egress?: AgentEgressSpec | undefined;
+}
+
+/** Network egress an agent needs: allowed hosts + the executables permitted to use them. */
+export interface AgentEgressSpec {
+  /** Hostnames the agent must reach on port 443 (e.g. `api.githubcopilot.com`). */
+  hosts: string[];
+  /** Absolute paths of the executables permitted to use the egress. */
+  binaries: string[];
 }
 
 /** AI engine adapter interface. Host owns clone, commit, and push. */
@@ -513,7 +528,7 @@ export interface WorkspaceHandle {
   volumeName: string;
   /** Named volume for the agent HOME directory (Copilot CLI native modules) */
   homeVolumeName: string;
-  /** In-container path (always /workspace for named-volume mode) */
+  /** In-container path (always /sandbox for the OpenShell sandbox) */
   hostWorkspacePath: string;
   /** Docker image used for helper containers (clone, push, scripts) */
   containerImage: string;
@@ -1082,7 +1097,7 @@ export interface AgentCycle {
   result: AgentResult;
   validationResult: ValidationResult | null;
   createdAt: Date;
-  /** GitHub-computed cost of this cycle, derived from Copilot `assistant.usage` events. */
+  /** Provider token usage and, when available, GitHub-computed execution cost. */
   cost?: CycleCost;
 }
 
@@ -1095,11 +1110,10 @@ export interface CycleCostTokens {
 }
 
 /**
- * Per-cycle execution cost derived from the Copilot SDK `assistant.usage`
- * events. The SDK reports cost per LLM request via `copilotUsage.totalNanoAiu`
- * (nano-AI-Units) and the `cost` model multiplier; `computeCycleCost`
- * deduplicates repeated emissions of a request and sums distinct requests.
- * 1 AI Unit = 1 AI credit = $0.01.
+ * Per-cycle provider usage derived from normalized `assistant.usage` events.
+ * Copilot additionally reports cost per LLM request via
+ * `copilotUsage.totalNanoAiu`; `computeCycleCost` deduplicates repeated
+ * emissions of a request and sums distinct requests.
  */
 export interface CycleCost {
   /** True when GitHub-computed cost (nano-AIU) was present in the usage events. */

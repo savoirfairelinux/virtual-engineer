@@ -31,6 +31,7 @@ function fakeClient(overrides: Partial<OpenShellClient> = {}): OpenShellClient {
     downloadFromSandbox: vi.fn().mockResolvedValue(undefined),
     execInSandbox: vi.fn().mockResolvedValue({ code: 0, stdout: "ok", stderr: "" }),
     setPolicy: vi.fn().mockResolvedValue(undefined),
+    allowEgress: vi.fn().mockResolvedValue(undefined),
     removeSandbox: vi.fn().mockResolvedValue(undefined),
     gatewayHealthy: vi.fn().mockResolvedValue(true),
     ...overrides,
@@ -46,6 +47,7 @@ function fakeCodingAdapter(spec: Partial<{ env: Record<string, string>; image: s
       image: spec.image ?? "agent:img",
       env: spec.env ?? { COPILOT_MODEL: "auto" },
       command: spec.command ?? ["node", "/agent-worker/dist/index.js"],
+      egress: { hosts: ["api.githubcopilot.com"], binaries: ["/usr/local/bin/node"] },
       ...(spec.userPromptContent !== undefined ? { userPromptContent: spec.userPromptContent } : {}),
     }),
     execute: vi.fn().mockResolvedValue(
@@ -62,8 +64,20 @@ function fakeReviewAdapter(spec: Partial<{ env: Record<string, string>; image: s
       image: spec.image ?? "agent:img",
       env: spec.env ?? { REVIEW_MODE: "1" },
       command: spec.command ?? ["node", "/agent-worker/dist/index.js"],
+      egress: { hosts: ["api.githubcopilot.com"], binaries: ["/usr/local/bin/node"] },
     }),
   } as unknown as AgentAdapter;
+}
+
+function reviewWorkerStdout(rawOutput: string): string {
+  return JSON.stringify({
+    status: "success",
+    modifiedFiles: [],
+    summary: rawOutput.slice(0, 500),
+    agentLogs: rawOutput,
+    rawOutput,
+    metadata: { reviewMode: true },
+  }) + "\n";
 }
 
 const handle: WorkspaceHandle = {
@@ -117,7 +131,13 @@ describe("OpenShellWorkspaceRunner", () => {
   });
 
   it("applies a resolved policy before running the review agent", async () => {
-    const client = fakeClient();
+    const client = fakeClient({
+      execInSandbox: vi.fn().mockResolvedValue({
+        code: 0,
+        stdout: reviewWorkerStdout("ok"),
+        stderr: "",
+      }),
+    } as unknown as Partial<OpenShellClient>);
     const runner = new OpenShellWorkspaceRunner({
       git: fakeGit(),
       client,
@@ -127,14 +147,51 @@ describe("OpenShellWorkspaceRunner", () => {
     });
     const input = { changeId: "Iabc", prompt: "review this diff" } as unknown as ReviewWorkspaceInput;
     const out = await runner.runReviewInDocker(handle, input);
-    expect(client.createSandbox).toHaveBeenCalledWith({ name: "ve-t1", from: "agent:img" });
+    expect(client.createSandbox).toHaveBeenCalledWith({
+      name: "ve-t1",
+      from: "agent:img",
+      env: { REVIEW_MODE: "1" },
+    });
     expect(client.setPolicy).toHaveBeenCalledWith("ve-t1", expect.stringContaining("default: deny"));
+    // Egress is opened for the review agent's model API.
+    expect(client.allowEgress).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "ve-t1", hosts: ["api.githubcopilot.com"], binaries: ["/usr/local/bin/node"] })
+    );
     // Review uploads the workspace (read-only) but never downloads it back.
     expect(client.uploadToSandbox).toHaveBeenCalledWith(
-      expect.objectContaining({ name: "ve-t1", dest: "/workspace", noGitIgnore: true })
+      expect.objectContaining({ name: "ve-t1", dest: "/sandbox", noGitIgnore: true })
+    );
+    expect(client.execInSandbox).toHaveBeenCalledWith(
+      expect.objectContaining({ env: { USER_PROMPT_FILE: expect.any(String) } })
     );
     expect(client.downloadFromSandbox).not.toHaveBeenCalled();
     expect(out.rawOutput).toBe("ok");
+  });
+
+  it("forwards review stderr chunks and the OpenShell exec timeout", async () => {
+    const onStderrChunk = vi.fn();
+    const execInSandbox = vi.fn().mockImplementation(async (input: {
+      onStderrChunk?: ((chunk: string) => void) | undefined;
+    }) => {
+      input.onStderrChunk?.("review-event\n");
+      return { code: 0, stdout: reviewWorkerStdout("ok"), stderr: "review-event\n" };
+    });
+    const runner = new OpenShellWorkspaceRunner({
+      git: fakeGit(),
+      client: fakeClient({ execInSandbox } as unknown as Partial<OpenShellClient>),
+      sandboxImage: "base",
+      agentAdapter: fakeReviewAdapter(),
+      execTimeoutSec: 3600,
+    });
+
+    await runner.runReviewInDocker(
+      handle,
+      { changeId: "Iabc", prompt: "review this diff" } as unknown as ReviewWorkspaceInput,
+      { onStderrChunk },
+    );
+
+    expect(onStderrChunk).toHaveBeenCalledWith("review-event\n");
+    expect(execInSandbox).toHaveBeenCalledWith(expect.objectContaining({ timeout: 3600 }));
   });
 
   it("coding run uploads the workspace, execs the agent, and downloads results back", async () => {
@@ -147,15 +204,54 @@ describe("OpenShellWorkspaceRunner", () => {
     expect(client.createSandbox).toHaveBeenCalledWith(
       expect.objectContaining({ name: "ve-t1", from: "agent:img", env: { GITHUB_TOKEN: "tok" } })
     );
-    // Workspace uploaded with .git, then agent exec in /workspace, then downloaded back.
+    // Egress is opened for the coding agent's model API.
+    expect(client.allowEgress).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "ve-t1", hosts: ["api.githubcopilot.com"], binaries: ["/usr/local/bin/node"] })
+    );
+    // Workspace uploaded with .git under /sandbox (openshell nests by basename),
+    // then the agent execs in the nested repo dir, then that dir is downloaded back.
     const uploadCalls = (client.uploadToSandbox as unknown as ReturnType<typeof vi.fn>).mock.calls;
-    expect(uploadCalls.some(([a]) => a.dest === "/workspace" && a.noGitIgnore === true)).toBe(true);
+    expect(uploadCalls.some(([a]) => a.dest === "/sandbox" && a.noGitIgnore === true)).toBe(true);
     expect(client.execInSandbox).toHaveBeenCalledWith(
-      expect.objectContaining({ name: "ve-t1", workdir: "/workspace" })
+      expect.objectContaining({
+        name: "ve-t1",
+        workdir: "/sandbox/ws-1",
+        env: { USER_PROMPT_FILE: expect.any(String) },
+      })
     );
     expect(client.downloadFromSandbox).toHaveBeenCalledWith(
-      expect.objectContaining({ name: "ve-t1", sandboxPath: "/workspace", localDest: "/tmp/ws-1" })
+      expect.objectContaining({ name: "ve-t1", sandboxPath: "/sandbox/ws-1", localDest: "/tmp/ws-1" })
     );
+  });
+
+  it("forwards coding output chunks and the OpenShell exec timeout", async () => {
+    const onStdoutChunk = vi.fn();
+    const onStderrChunk = vi.fn();
+    const execInSandbox = vi.fn().mockImplementation(async (input: {
+      onStdoutChunk?: ((chunk: string) => void) | undefined;
+      onStderrChunk?: ((chunk: string) => void) | undefined;
+    }) => {
+      input.onStdoutChunk?.("result");
+      input.onStderrChunk?.("agent-event\n");
+      return { code: 0, stdout: "result", stderr: "agent-event\n" };
+    });
+    const runner = new OpenShellWorkspaceRunner({
+      git: fakeGit(),
+      client: fakeClient({ execInSandbox } as unknown as Partial<OpenShellClient>),
+      sandboxImage: "base",
+      execTimeoutSec: 3600,
+    });
+
+    await runner.runAgentInDocker(
+      fakeCodingAdapter(),
+      { taskId: "t1", workspacePath: "/tmp/ws-1" } as unknown as TaskContext,
+      {},
+      { onStdoutChunk, onStderrChunk },
+    );
+
+    expect(onStdoutChunk).toHaveBeenCalledWith("result");
+    expect(onStderrChunk).toHaveBeenCalledWith("agent-event\n");
+    expect(execInSandbox).toHaveBeenCalledWith(expect.objectContaining({ timeout: 3600 }));
   });
 
   it("runAgent delegates to adapter.execute and returns its result", async () => {

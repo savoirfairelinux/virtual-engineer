@@ -3,7 +3,7 @@
  *
  * Runs INSIDE the Docker container for the default `copilot` provider. Spawns a
  * local headless Copilot CLI server, drives the GitHub Copilot SDK against the
- * pre-cloned `/workspace` repository, and maps the SDK's session events onto the
+ * pre-cloned `/sandbox` repository, and maps the SDK's session events onto the
  * shared `__ve_event` stderr protocol so the host adapter's event / commit /
  * result pipeline stays provider-agnostic.
  *
@@ -15,12 +15,13 @@
  * calls only). This runner never clones and never pushes.
  */
 import { CopilotClient } from '@github/copilot-sdk';
-import type { CopilotSession, AssistantMessageEvent } from '@github/copilot-sdk';
+import type { CopilotSession, AssistantMessageEvent, SessionConfig } from '@github/copilot-sdk';
 import { spawn } from 'child_process';
 import type { ChildProcess } from 'child_process';
 import { statSync } from 'fs';
 import { createConnection } from 'net';
 import { join } from 'path';
+import { buildCopilotCliArgs, buildCopilotNetworkEnvironment } from '../copilotCliArgs.js';
 import { restrictNetworkPermissionHandler } from '../networkGuard.js';
 import { emitEvent } from './events.js';
 import type { AgentRun, AgentRunOptions } from './types.js';
@@ -64,8 +65,46 @@ interface LocalCliServer {
   cliUrl: string;
 }
 
+export function buildCopilotSessionConfig(
+  options: AgentRunOptions,
+): SessionConfig {
+  const { model, systemPrompt, cwd, skillDiscovery, reasoningEffort } = options;
+  const skillsDir = join(cwd, '.github', 'skills');
+  let enableSkillDiscovery = false;
+  if (skillDiscovery) {
+    try {
+      enableSkillDiscovery = statSync(skillsDir).isDirectory();
+    } catch {
+      enableSkillDiscovery = false;
+    }
+  }
+
+  return {
+    model,
+    ...(reasoningEffort && reasoningEffort !== 'none'
+      ? { reasoningEffort: reasoningEffort as ReasoningEffort }
+      : {}),
+    ...(enableSkillDiscovery ? { skillDirectories: [skillsDir] } : {}),
+    systemMessage: { content: systemPrompt },
+    onPermissionRequest: restrictNetworkPermissionHandler,
+    workingDirectory: cwd,
+    infiniteSessions: { enabled: false },
+  };
+}
+
+export async function initializeCopilotClient(
+  client: Pick<CopilotClient, 'start' | 'getAuthStatus'>,
+): Promise<void> {
+  await client.start();
+  const authStatus = await client.getAuthStatus();
+  if (!authStatus.isAuthenticated) {
+    const detail = authStatus.statusMessage?.trim();
+    throw new Error(detail || 'GitHub Copilot authentication is not available.');
+  }
+}
+
 async function startLocalCliServer(cwd: string): Promise<LocalCliServer> {
-  const cliPath = '/agent-worker/node_modules/.bin/copilot';
+  const cliPath = '/app/agent-worker/node_modules/.bin/copilot';
   const port = 3000;
   // These buffers only feed the startup-failure error detail, but the stream
   // handlers stay attached for the whole session. Cap them to the most recent
@@ -80,7 +119,7 @@ async function startLocalCliServer(cwd: string): Promise<LocalCliServer> {
 
   // Environment Variable Allowlist (Security):
   // Subprocess has only whitelisted env vars to prevent secrets leakage.
-  const child = spawn(cliPath, ['--headless', '--port', String(port)], {
+  const child = spawn(cliPath, buildCopilotCliArgs(port), {
     cwd,
     env: {
       GITHUB_TOKEN: process.env['GITHUB_TOKEN'] ?? '',
@@ -95,6 +134,7 @@ async function startLocalCliServer(cwd: string): Promise<LocalCliServer> {
       TEMP: process.env['TEMP'] ?? '',
       USER: process.env['USER'] ?? '',
       XDG_RUNTIME_DIR: process.env['XDG_RUNTIME_DIR'] ?? '',
+      ...buildCopilotNetworkEnvironment(),
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -118,34 +158,15 @@ async function startLocalCliServer(cwd: string): Promise<LocalCliServer> {
 async function runSession(
   options: AgentRunOptions,
 ): Promise<{ session: CopilotSession; client: CopilotClient; localCliServer: LocalCliServer }> {
-  const { model, systemPrompt, cwd, skillDiscovery, reasoningEffort } = options;
+  const { cwd } = options;
   const localCliServer = await startLocalCliServer(cwd);
   const client = new CopilotClient({ cliUrl: localCliServer.cliUrl });
 
-  // Opt-in: surface repo-defined skills to the agent without enabling MCP discovery.
-  // Guarded so a missing path — or a non-directory at that path — never aborts the session.
-  const skillsDir = join(cwd, '.github', 'skills');
-  let enableSkillDiscovery = false;
-  if (skillDiscovery) {
-    try {
-      enableSkillDiscovery = statSync(skillsDir).isDirectory();
-    } catch {
-      enableSkillDiscovery = false;
-    }
-  }
-
   try {
-    const session = await client.createSession({
-      model,
-      ...(reasoningEffort && reasoningEffort !== 'none'
-        ? { reasoningEffort: reasoningEffort as ReasoningEffort }
-        : {}),
-      ...(enableSkillDiscovery ? { skillDirectories: [skillsDir] } : {}),
-      systemMessage: { content: systemPrompt },
-      onPermissionRequest: restrictNetworkPermissionHandler,
-      workingDirectory: cwd,
-      infiniteSessions: { enabled: false },
-    });
+    await initializeCopilotClient(client);
+    const session = await client.createSession(
+      buildCopilotSessionConfig(options),
+    );
     return { session, client, localCliServer };
   } catch (err) {
     await client.stop().catch(() => { /* ignore */ });
@@ -206,8 +227,12 @@ function deepFindNum(obj: unknown, keys: string[]): number | null {
   return visit(obj);
 }
 
-function extractToolName(e: unknown): string {
-  return deepFindStr(e, ['name', 'toolName', 'tool_name']) ?? 'unknown_tool';
+export function extractToolName(e: unknown): string | null {
+  return deepFindStr(e, ['name', 'toolName', 'tool_name', 'functionName', 'function_name']);
+}
+
+function extractToolCallId(e: unknown): string | null {
+  return deepFindStr(e, ['callId', 'toolCallId', 'tool_call_id']);
 }
 
 function parseToolInputValue(value: unknown): Record<string, unknown> {
@@ -268,16 +293,35 @@ function registerSessionEventHandlers(
   model: string,
 ): { toolCallCount: number; toolsByKind: Record<string, number> } {
   const state = { toolCallCount: 0, toolsByKind: {} as Record<string, number> };
-  const toolTimers: Record<string, number> = {};
+  const activeTools = new Map<string, { name: string; startedAt: number }>();
+
+  const resolveActiveTool = (event: unknown): { key: string | null; name: string } | null => {
+    const explicitName = extractToolName(event);
+    const providerCallId = extractToolCallId(event);
+    if (providerCallId !== null) {
+      const active = activeTools.get(providerCallId);
+      if (active !== undefined) return { key: providerCallId, name: active.name };
+    }
+    if (explicitName !== null) {
+      const matching = [...activeTools].find(([, active]) => active.name === explicitName);
+      return { key: matching?.[0] ?? null, name: explicitName };
+    }
+    if (activeTools.size === 1) {
+      const only = activeTools.entries().next().value as [string, { name: string }] | undefined;
+      if (only !== undefined) return { key: only[0], name: only[1].name };
+    }
+    return null;
+  };
 
   session.on('tool.execution_start', (e) => {
-    state.toolCallCount++;
     const event = e as unknown;
     const toolName = extractToolName(event);
+    if (toolName === null) return;
+    state.toolCallCount++;
     const toolInput = extractToolInput(event);
     const label = formatToolLabel(toolName, toolInput);
-    const callId = `${toolName}_${state.toolCallCount}`;
-    toolTimers[callId] = Date.now();
+    const callId = extractToolCallId(event) ?? `${toolName}_${state.toolCallCount}`;
+    activeTools.set(callId, { name: toolName, startedAt: Date.now() });
     const prevCount = state.toolsByKind[toolName] ?? 0;
     state.toolsByKind[toolName] = prevCount + 1;
     process.stderr.write(`[tool] #${state.toolCallCount} ${label}\n`);
@@ -286,16 +330,13 @@ function registerSessionEventHandlers(
 
   session.on('tool.execution_complete', (e) => {
     const event = e as unknown;
-    const toolName = extractToolName(event);
+    const activeTool = resolveActiveTool(event);
+    if (activeTool === null) return;
+    const toolName = activeTool.name;
     const output = deepFindStr(event, ['output', 'result', 'content']);
-    let durationMs: number | null = null;
-    for (const [id, startTime] of Object.entries(toolTimers)) {
-      if (id.startsWith(toolName + '_')) {
-        durationMs = Date.now() - startTime;
-        delete toolTimers[id];
-        break;
-      }
-    }
+    const startedAt = activeTool.key !== null ? activeTools.get(activeTool.key)?.startedAt : undefined;
+    const durationMs = startedAt !== undefined ? Date.now() - startedAt : null;
+    if (activeTool.key !== null) activeTools.delete(activeTool.key);
     emitEvent('tool.execution_complete', {
       name: toolName,
       durationMs,
@@ -306,9 +347,10 @@ function registerSessionEventHandlers(
 
   session.on('tool.execution_progress', (e) => {
     const event = e as unknown;
-    const toolName = extractToolName(event);
+    const activeTool = resolveActiveTool(event);
+    if (activeTool === null) return;
     emitEvent('tool.execution_progress', {
-      name: toolName,
+      name: activeTool.name,
       message: deepFindStr(event, ['message', 'progress', 'text']),
     });
   });

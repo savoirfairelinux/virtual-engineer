@@ -34,13 +34,16 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
   && apt-get update && apt-get install -y --no-install-recommends gh \
   && rm -rf /var/lib/apt/lists/*
 
-# Copy the agent worker, install all deps (including esbuild), build, then prune dev deps
-COPY agent-worker/ /agent-worker/
-RUN npm --prefix /agent-worker ci --no-fund \
-  && npm --prefix /agent-worker run build \
-  && npm --prefix /agent-worker prune --omit=dev --no-fund
+# Keep the runtime under /app, which OpenShell's default filesystem policy
+# permits as read-only executable content.
+COPY agent-worker/ /app/agent-worker/
+RUN npm --prefix /app/agent-worker ci --no-fund \
+  && npm --prefix /app/agent-worker run build \
+  && npm --prefix /app/agent-worker prune --omit=dev --no-fund
 
-# Set working directory
+# Set working directory. The OpenShell sandbox overrides the working directory
+# to `/sandbox` (its writable dir under the default policy); this WORKDIR is only
+# a fallback for non-OpenShell invocations.
 WORKDIR /workspace
 
 # Default shell
