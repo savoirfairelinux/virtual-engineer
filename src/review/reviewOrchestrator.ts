@@ -227,7 +227,7 @@ export class ReviewOrchestrator {
             // Manual relaunch of an already-reviewed, still-watched patchset:
             // re-queue so the caller re-runs the review (runReview is invoked
             // with force to re-post the vote + summary).
-            if (alreadyReviewedThisPatchset && input.force === true) {
+            if (existing.state === "REVIEW_WATCHING" && input.force === true) {
               log.info(
                 { taskId: existing.taskId, patchset: details.currentPatchset },
                 "manual re-trigger — re-running review on current patchset"

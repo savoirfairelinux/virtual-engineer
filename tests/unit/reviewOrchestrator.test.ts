@@ -503,6 +503,18 @@ describe("ReviewOrchestrator.startReviewTask", () => {
     expect(mocks.store.createReviewTask).not.toHaveBeenCalled();
   });
 
+  it("re-queues REVIEW_WATCHING with a null reviewedPatchset when force is set", async () => {
+    const existing = makeTask({ state: "REVIEW_WATCHING", currentPatchset: 2, reviewedPatchset: null });
+    mocks = makeMocks(existing);
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+
+    const tasks = await orch.startReviewTask({ changeId: CHANGE_ID, force: true });
+
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]?.taskId).toBe(existing.taskId);
+    expect(mocks.store.createReviewTask).not.toHaveBeenCalled();
+  });
+
   it("creates a fresh review task when force is set and the prior review is terminal", async () => {
     const existing = makeTask({ state: "REVIEW_DONE", currentPatchset: 2, reviewedPatchset: 2 });
     mocks = makeMocks(existing);
