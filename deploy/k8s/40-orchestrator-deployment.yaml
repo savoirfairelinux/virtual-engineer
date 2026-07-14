@@ -45,7 +45,7 @@ spec:
               containerPort: 3100
           readinessProbe:
             httpGet:
-              path: /health
+              path: /ready
               port: admin
             initialDelaySeconds: 10
             periodSeconds: 15

@@ -56,11 +56,15 @@ RUN apt-get update \
 #     --build-arg INSTALL_OPENSHELL=true --build-arg OPENSHELL_VERSION=v0.0.79 .
 ARG INSTALL_OPENSHELL=false
 ARG OPENSHELL_VERSION=v0.0.79
+ARG OPENSHELL_INSTALLER_SHA256=c15d6cb8090e1c7c8d79a320b5bcbdaf1c15c2363942d81e84b56e03b836249e
 RUN if [ "$INSTALL_OPENSHELL" = "true" ]; then \
       set -eux; \
-      OPENSHELL_VERSION="$OPENSHELL_VERSION" \
-        sh -c 'curl -LsSf https://raw.githubusercontent.com/NVIDIA/OpenShell/main/install.sh | sh'; \
-      openshell --version || true; \
+      curl -LsSf "https://raw.githubusercontent.com/NVIDIA/OpenShell/${OPENSHELL_VERSION}/install.sh" \
+        -o /tmp/install-openshell.sh; \
+      echo "${OPENSHELL_INSTALLER_SHA256}  /tmp/install-openshell.sh" | sha256sum --check --status; \
+      OPENSHELL_VERSION="$OPENSHELL_VERSION" sh /tmp/install-openshell.sh; \
+      rm -f /tmp/install-openshell.sh; \
+      openshell --version; \
     fi
 
 WORKDIR /app

@@ -15,6 +15,7 @@
 #   DATA_DIR       (default: ./data)
 #   K3S_KUBECONFIG (default: /etc/rancher/k3s/k3s.yaml)  k3s admin kubeconfig path
 #   OPENSHELL_VERSION  (default: v0.0.79)  OpenShell CLI version baked into the orchestrator
+#   K3S_VERSION (default: v1.32.3+k3s1) pinned k3s release
 #   AGENT_SANDBOX_VERSION (default: v0.5.1) pinned controller manifest version
 #   AGENT_SANDBOX_MANIFEST_SHA256 verified manifest digest for that version
 
@@ -32,6 +33,9 @@ cd "$ROOT_DIR"
 # ─── Parse arguments ──────────────────────────────────────────────────────────
 K3S_INSTALL=true
 OPENSHELL_VERSION="${OPENSHELL_VERSION:-v0.0.79}"
+OPENSHELL_INSTALLER_SHA256="${OPENSHELL_INSTALLER_SHA256:-c15d6cb8090e1c7c8d79a320b5bcbdaf1c15c2363942d81e84b56e03b836249e}"
+OPENSHELL_CHART_VERSION="${OPENSHELL_CHART_VERSION:-0.0.79}"
+K3S_VERSION="${K3S_VERSION:-v1.32.3+k3s1}"
 AGENT_SANDBOX_VERSION="${AGENT_SANDBOX_VERSION:-v0.5.1}"
 AGENT_SANDBOX_MANIFEST_SHA256="${AGENT_SANDBOX_MANIFEST_SHA256:-8cfdf0a878f66b91d2e7103e77859d1412d850ce3f5fe5c3fa134c36bd55504a}"
 
@@ -91,7 +95,14 @@ ensure_k3s() {
     error "k3s is not running and --no-k3s-install was set. Install it first: curl -sfL https://get.k3s.io | sh -"
   fi
   info "Installing single-node k3s (requires sudo)..."
-  curl -sfL https://get.k3s.io | sh - || error "k3s installation failed."
+  K3S_INSTALLER_SHA256=d264d4d43f7c5a27b44de0075513fb22dfb02d0b7cd33ba7a3838cb822f4729c
+  K3S_INSTALLER=$(mktemp)
+  curl -sfL -o "$K3S_INSTALLER" https://get.k3s.io
+  echo "$K3S_INSTALLER_SHA256  $K3S_INSTALLER" | sha256sum --check --status \
+    || error "k3s installer checksum verification failed."
+  INSTALL_K3S_VERSION="$K3S_VERSION" sh "$K3S_INSTALLER" \
+    || error "k3s installation failed."
+  rm -f "$K3S_INSTALLER"
   info "Waiting for the k3s node to become Ready..."
   local retries=60
   until sudo k3s kubectl get nodes 2>/dev/null | grep -q ' Ready' || [[ $retries -eq 0 ]]; do
@@ -116,9 +127,15 @@ fi
 
 # ─── Agent namespace + least-privilege RBAC on k3s ────────────────────────────
 info "Applying agent namespace + RBAC to k3s..."
+KUBECONFIG="$K3S_KUBECONFIG" kubectl apply -f "$ROOT_DIR/deploy/k8s/00-namespace.yaml" >/dev/null 2>&1 \
+  || sudo k3s kubectl apply -f "$ROOT_DIR/deploy/k8s/00-namespace.yaml" >/dev/null 2>&1 \
+  || error "Could not create the virtual-engineer namespace."
 KUBECONFIG="$K3S_KUBECONFIG" kubectl apply -f "$ROOT_DIR/deploy/k8s/15-rbac-openshell.yaml" >/dev/null 2>&1 \
   || sudo k3s kubectl apply -f "$ROOT_DIR/deploy/k8s/15-rbac-openshell.yaml" >/dev/null 2>&1 \
   || warn "Could not apply deploy/k8s/15-rbac-openshell.yaml — continuing."
+KUBECONFIG="$K3S_KUBECONFIG" kubectl apply -f "$ROOT_DIR/deploy/k8s/16-network-policy-openshell.yaml" >/dev/null 2>&1 \
+  || sudo k3s kubectl apply -f "$ROOT_DIR/deploy/k8s/16-network-policy-openshell.yaml" >/dev/null 2>&1 \
+  || error "Could not apply the OpenShell gateway NetworkPolicy."
 
 # ─── Content hash of Docker build inputs (file contents, ignores mtime) ──────
 # Used to skip docker build / containerd import when nothing relevant changed.
@@ -172,6 +189,7 @@ else
   docker build -f Dockerfile.orchestrator \
     --build-arg INSTALL_OPENSHELL=true \
     --build-arg OPENSHELL_VERSION="$OPENSHELL_VERSION" \
+    --build-arg OPENSHELL_INSTALLER_SHA256="$OPENSHELL_INSTALLER_SHA256" \
     -t virtual-engineer:latest .
   echo "$ORCH_HASH" > "$ORCH_MARKER"
 fi
@@ -185,8 +203,13 @@ if [[ -z "$HELM_BIN" ]]; then
   info "helm not found — downloading to ~/.local/bin/helm..."
   mkdir -p "$HOME/.local/bin"
   HELM_VER=v3.17.3
-  curl -fsSL "https://get.helm.sh/helm-${HELM_VER}-linux-amd64.tar.gz" \
-    | tar xz -C /tmp/ && cp /tmp/linux-amd64/helm "$HOME/.local/bin/helm"
+  HELM_SHA256=ee88b3c851ae6466a3de507f7be73fe94d54cbf2987cbaa3d1a3832ea331f2cd
+  HELM_ARCHIVE=$(mktemp)
+  curl -fsSL -o "$HELM_ARCHIVE" "https://get.helm.sh/helm-${HELM_VER}-linux-amd64.tar.gz"
+  echo "$HELM_SHA256  $HELM_ARCHIVE" | sha256sum --check --status \
+    || error "Helm archive checksum verification failed."
+  tar xzf "$HELM_ARCHIVE" -C /tmp/ && cp /tmp/linux-amd64/helm "$HOME/.local/bin/helm"
+  rm -f "$HELM_ARCHIVE"
   HELM_BIN="$HOME/.local/bin/helm"
   info "helm $(${HELM_BIN} version --short) installed."
 fi
@@ -232,7 +255,8 @@ fi
 # with the current values file AND its pod is Ready (verifies real state, so a
 # stale marker never causes an incorrect skip).
 OPENSHELL_VALUES_FILE="$ROOT_DIR/deploy/k8s/openshell-gateway-values.yaml"
-OPENSHELL_VALUES_HASH=$(sha256sum "$OPENSHELL_VALUES_FILE" | cut -d' ' -f1)
+OPENSHELL_VALUES_HASH=$(printf '%s\n%s\n' "$OPENSHELL_CHART_VERSION" \
+  "$(sha256sum "$OPENSHELL_VALUES_FILE" | cut -d' ' -f1)" | sha256sum | cut -d' ' -f1)
 OPENSHELL_HELM_MARKER="${DATA_DIR}/.openshell-helm-values"
 if KUBECONFIG="$K3S_KUBECONFIG" "$HELM_BIN" status openshell -n virtual-engineer >/dev/null 2>&1 \
    && [[ "$(cat "$OPENSHELL_HELM_MARKER" 2>/dev/null || true)" == "$OPENSHELL_VALUES_HASH" ]] \
@@ -243,6 +267,7 @@ else
   info "Deploying OpenShell gateway via Helm into k3s (namespace: virtual-engineer)..."
   KUBECONFIG="$K3S_KUBECONFIG" "$HELM_BIN" upgrade --install openshell \
     oci://ghcr.io/nvidia/openshell/helm-chart \
+    --version "$OPENSHELL_CHART_VERSION" \
     --namespace virtual-engineer --create-namespace \
     --wait --timeout 180s \
     -f "$OPENSHELL_VALUES_FILE" \
@@ -284,9 +309,9 @@ KUBECONFIG="$K3S_KUBECONFIG" kubectl port-forward \
 _port_forward_pid=$!
 echo "$_port_forward_pid" > "$OPENSHELL_PORT_FORWARD_PID"
 
-if ! curl --silent --show-error --output /dev/null \
+if ! curl --fail-with-body --silent --show-error --output /dev/null \
     --retry 20 --retry-delay 1 --retry-connrefused --connect-timeout 1 \
-    "http://127.0.0.1:${OPENSHELL_GW_LOCAL_PORT}/"; then
+  "http://127.0.0.1:${OPENSHELL_GW_LOCAL_PORT}/healthz"; then
   kill "$_port_forward_pid" 2>/dev/null || true
   rm -f "$OPENSHELL_PORT_FORWARD_PID"
   error "OpenShell gateway tunnel did not become reachable. See ${DATA_DIR}/openshell-port-forward.log"

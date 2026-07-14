@@ -4,6 +4,7 @@
 # Single-node dev install:
 #   KUBECONFIG=/etc/rancher/k3s/k3s.yaml \
 #   helm upgrade --install openshell oci://ghcr.io/nvidia/openshell/helm-chart \
+#     --version 0.0.79 \
 #     --namespace virtual-engineer --create-namespace \
 #     --wait --timeout 120s \
 #     -f deploy/k8s/openshell-gateway-values.yaml
@@ -12,6 +13,10 @@
 # relying on it in production (see docs/adr/0001-openshell-agent-runtime.md).
 
 nameOverride: "openshell"
+
+serviceAccount:
+  create: false
+  name: "ve-openshell-gateway"
 
 server:
   # TLS disabled — all traffic is on-host loopback or in-cluster.

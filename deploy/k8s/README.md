@@ -23,7 +23,8 @@ upload → exec → download lifecycle.
 
 The gateway Service is `ClusterIP` only. The local `scripts/start.sh` path
 creates a managed `kubectl port-forward` bound to `127.0.0.1`; no unauthenticated
-OpenShell NodePort is exposed on the k3s node.
+OpenShell NodePort is exposed on the k3s node. `16-network-policy-openshell.yaml`
+restricts gateway ingress to the VE orchestrator and sandbox namespace.
 
 ## 1. Build the orchestrator image with the OpenShell CLI
 
@@ -59,6 +60,7 @@ kubectl wait --for=condition=available deployment/agent-sandbox-controller \
 
 ```bash
 helm install openshell oci://ghcr.io/nvidia/openshell/helm-chart \
+  --version 0.0.79 \
   --namespace virtual-engineer --create-namespace \
   -f deploy/k8s/openshell-gateway-values.yaml
 ```
@@ -72,6 +74,8 @@ sed -i "s/REPLACE_ME/$(openssl rand -hex 32)/" /tmp/ve-secret.yaml
 kubectl apply -f /tmp/ve-secret.yaml
 
 kubectl apply -f deploy/k8s/00-namespace.yaml
+kubectl apply -f deploy/k8s/15-rbac-openshell.yaml
+kubectl apply -f deploy/k8s/16-network-policy-openshell.yaml
 kubectl apply -f deploy/k8s/10-orchestrator-configmap.yaml
 kubectl apply -f deploy/k8s/30-orchestrator-pvc.yaml
 kubectl apply -f deploy/k8s/40-orchestrator-deployment.yaml
