@@ -585,6 +585,48 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
     expect(mocks.store.setReviewedPatchset).toHaveBeenCalledWith(initial.taskId, 2);
   });
 
+  it("does not post review side effects after the task is abandoned", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+    const originalGetTask = mocks.store.getTask.getMockImplementation();
+    mocks.store.getTask.mockImplementation(async (...args: unknown[]) => {
+      const task = await originalGetTask?.(...args);
+      if (mocks.store.transition.mock.calls.some((call: [unknown, TaskState]) => call[1] === "REVIEW_RUNNING")) {
+        return task ? { ...task, state: "ABANDONED" } : null;
+      }
+      return task;
+    });
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+
+    await expect(orch.runReview(initial.taskId)).resolves.toBeUndefined();
+
+    expect(mocks.provider.postReviewComments).not.toHaveBeenCalled();
+    expect(mocks.provider.vote).not.toHaveBeenCalled();
+    expect(mocks.store.markReviewCommentsPosted).not.toHaveBeenCalled();
+    expect(mocks.store.setFailureReason).not.toHaveBeenCalled();
+    expect(mocks.store.transition).not.toHaveBeenCalledWith(initial.taskId, "REVIEW_FAILED");
+  });
+
+  it("does not vote when abandoned after fallback comments are posted", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+    const fallbackProvider = { ...mocks.provider };
+    delete fallbackProvider.postReviewWithComments;
+    const postReviewComments = vi.fn(async () => {
+      mocks.store.task = { ...mocks.store.task, state: "ABANDONED" };
+    });
+    mocks.provider = { ...fallbackProvider, postReviewComments };
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+
+    await expect(orch.runReview(initial.taskId)).resolves.toBeUndefined();
+
+    expect(postReviewComments).toHaveBeenCalledOnce();
+    expect(mocks.provider.vote).not.toHaveBeenCalled();
+    expect(mocks.store.setFailureReason).not.toHaveBeenCalled();
+  });
+
   it("does not re-post inline comments already posted on the change", async () => {
     const initial = makeTask({ state: "REVIEW_PENDING" });
     const mocks = makeMocks(initial);
@@ -858,6 +900,7 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
     expect(runner.runReviewInDocker).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
+        projectId: makeProjectId("proj-1"),
         changeId: CHANGE_ID,
         revisionNumber: 42,
         patchset: 2,

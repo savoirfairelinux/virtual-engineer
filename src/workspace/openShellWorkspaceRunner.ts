@@ -35,6 +35,7 @@ import { credentialFreeUrl, type HostGitExecutor } from "./hostGitExecutor.js";
 import type { OpenShellClient } from "../openshell/openShellClient.js";
 import { redactOpenShellText } from "../openshell/openShellClient.js";
 import { decodeReviewWorkerOutput } from "./agentWorkerProtocol.js";
+import { parseDenialEvent, type DenialSink } from "../openshell/denyEventPoller.js";
 
 const log = getLogger("openshell-workspace-runner");
 
@@ -93,6 +94,8 @@ export interface OpenShellRunnerDeps {
   resolvePolicy?: PolicyResolver | undefined;
   /** Exec timeout in seconds (0 = no timeout). */
   execTimeoutSec?: number | undefined;
+  /** Best-effort sink for policy denials observed in sandbox logs. */
+  recordDenial?: DenialSink | undefined;
 }
 
 /** Build the Gerrit-style change ref (`refs/changes/NN/NNNN/P`). */
@@ -287,6 +290,25 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
     }
   }
 
+  private async collectPolicyDenials(name: string, taskId: string, projectId?: string): Promise<void> {
+    if (this.deps.recordDenial === undefined) return;
+    try {
+      const logs = await this.deps.client.getSandboxLogs({ name, lines: 200, since: "2h" });
+      for (const line of logs.split(/\r?\n/)) {
+        const denial = parseDenialEvent(line);
+        if (denial !== null) {
+          await this.deps.recordDenial({
+            ...denial,
+            taskId,
+            ...(projectId !== undefined ? { projectId } : {}),
+          });
+        }
+      }
+    } catch (err) {
+      log.warn({ err, taskId, sandbox: name }, "failed to collect OpenShell policy denials");
+    }
+  }
+
   private async runPostCloneScript(
     name: string,
     attemptKey: string,
@@ -322,33 +344,38 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
     const spec = adapter.buildReviewContainerSpec(input);
 
     const policyYaml = await this.resolvePolicy(taskId, "review");
-    await this.deps.client.createSandbox({
-      name,
-      from: spec.image,
-      env: spec.env,
-      ...(policyYaml !== undefined ? { policyYaml } : {}),
-    });
-    await this.applyEgress(name, spec.egress);
-    // Read-only workspace: upload the repo so the review agent sees the diff. No download back.
-    await this.deps.client.uploadToSandbox({
-      name,
-      localPath: dir,
-      dest: SANDBOX_WORKSPACE,
-      noGitIgnore: true,
-    });
-    const repoDir = this.sandboxRepoPath(dir);
-    await this.runPostCloneScript(name, handle.containerId, repoDir);
-    const env = { USER_PROMPT_FILE: await this.uploadPrompt(name, input.prompt) };
-    const result = await this.deps.client.execInSandbox({
-      name,
-      command: spec.command,
-      env,
-      workdir: repoDir,
-      ...this.execTimeout(),
-      ...(callbacks?.onStderrChunk !== undefined ? { onStderrChunk: callbacks.onStderrChunk } : {}),
-    });
-    this.assertExecSucceeded(result);
-    return { rawOutput: decodeReviewWorkerOutput(result.stdout) };
+    try {
+      await this.deps.client.createSandbox({
+        name,
+        from: spec.image,
+        env: spec.env,
+        ...(policyYaml !== undefined ? { policyYaml } : {}),
+        beforeRetryCleanup: () => this.collectPolicyDenials(name, taskId, input.projectId),
+      });
+      await this.applyEgress(name, spec.egress);
+      // Read-only workspace: upload the repo so the review agent sees the diff. No download back.
+      await this.deps.client.uploadToSandbox({
+        name,
+        localPath: dir,
+        dest: SANDBOX_WORKSPACE,
+        noGitIgnore: true,
+      });
+      const repoDir = this.sandboxRepoPath(dir);
+      await this.runPostCloneScript(name, handle.containerId, repoDir);
+      const env = { USER_PROMPT_FILE: await this.uploadPrompt(name, input.prompt) };
+      const result = await this.deps.client.execInSandbox({
+        name,
+        command: spec.command,
+        env,
+        workdir: repoDir,
+        ...this.execTimeout(),
+        ...(callbacks?.onStderrChunk !== undefined ? { onStderrChunk: callbacks.onStderrChunk } : {}),
+      });
+      this.assertExecSucceeded(result);
+      return { rawOutput: decodeReviewWorkerOutput(result.stdout) };
+    } finally {
+      await this.collectPolicyDenials(name, taskId, input.projectId);
+    }
   }
 
   async runAgentInDocker(
@@ -373,48 +400,53 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
       : adapter.buildContainerSpec(context, authEnv);
 
     const policyYaml = await this.resolvePolicy(taskId, "coding");
-    await this.deps.client.createSandbox({
-      name,
-      from: spec.image,
-      env: spec.env,
-      ...(policyYaml !== undefined ? { policyYaml } : {}),
-      ...(context.abortSignal !== undefined ? { signal: context.abortSignal } : {}),
-    });
-    await this.applyEgress(name, spec.egress);
-    // Upload the full workspace (incl. .git) so the agent can commit inside the sandbox.
-    await this.deps.client.uploadToSandbox({
-      name,
-      localPath: dir,
-      dest: SANDBOX_WORKSPACE,
-      noGitIgnore: true,
-      ...(context.abortSignal !== undefined ? { signal: context.abortSignal } : {}),
-    });
-    const repoDir = this.sandboxRepoPath(dir);
-    await this.runPostCloneScript(name, attemptKey, repoDir, context.abortSignal);
-    const env: Record<string, string> = {};
-    if (spec.userPromptContent !== undefined) {
-      env["USER_PROMPT_FILE"] = await this.uploadPrompt(name, spec.userPromptContent);
+    try {
+      await this.deps.client.createSandbox({
+        name,
+        from: spec.image,
+        env: spec.env,
+        ...(policyYaml !== undefined ? { policyYaml } : {}),
+        beforeRetryCleanup: () => this.collectPolicyDenials(name, taskId, context.projectId),
+        ...(context.abortSignal !== undefined ? { signal: context.abortSignal } : {}),
+      });
+      await this.applyEgress(name, spec.egress);
+      // Upload the full workspace (incl. .git) so the agent can commit inside the sandbox.
+      await this.deps.client.uploadToSandbox({
+        name,
+        localPath: dir,
+        dest: SANDBOX_WORKSPACE,
+        noGitIgnore: true,
+        ...(context.abortSignal !== undefined ? { signal: context.abortSignal } : {}),
+      });
+      const repoDir = this.sandboxRepoPath(dir);
+      await this.runPostCloneScript(name, attemptKey, repoDir, context.abortSignal);
+      const env: Record<string, string> = {};
+      if (spec.userPromptContent !== undefined) {
+        env["USER_PROMPT_FILE"] = await this.uploadPrompt(name, spec.userPromptContent);
+      }
+      const result = await this.deps.client.execInSandbox({
+        name,
+        command: spec.command,
+        env,
+        workdir: repoDir,
+        ...this.execTimeout(),
+        ...(callbacks?.onStdoutChunk !== undefined ? { onStdoutChunk: callbacks.onStdoutChunk } : {}),
+        ...(callbacks?.onStderrChunk !== undefined ? { onStderrChunk: callbacks.onStderrChunk } : {}),
+        ...(context.abortSignal !== undefined ? { signal: context.abortSignal } : {}),
+      });
+      this.assertExecSucceeded(result);
+      // Pull the agent's commits/changes back to the host for host-side push.
+      await this.deps.client.downloadFromSandbox({
+        name,
+        sandboxPath: repoDir,
+        localDest: dir,
+        ...(context.abortSignal !== undefined ? { signal: context.abortSignal } : {}),
+      });
+      await this.restoreTrustedRemotes(attemptKey, dir);
+      return { stdout: result.stdout, stderr: result.stderr };
+    } finally {
+      await this.collectPolicyDenials(name, taskId, context.projectId);
     }
-    const result = await this.deps.client.execInSandbox({
-      name,
-      command: spec.command,
-      env,
-      workdir: repoDir,
-      ...this.execTimeout(),
-      ...(callbacks?.onStdoutChunk !== undefined ? { onStdoutChunk: callbacks.onStdoutChunk } : {}),
-      ...(callbacks?.onStderrChunk !== undefined ? { onStderrChunk: callbacks.onStderrChunk } : {}),
-      ...(context.abortSignal !== undefined ? { signal: context.abortSignal } : {}),
-    });
-    this.assertExecSucceeded(result);
-    // Pull the agent's commits/changes back to the host for host-side push.
-    await this.deps.client.downloadFromSandbox({
-      name,
-      sandboxPath: repoDir,
-      localDest: dir,
-      ...(context.abortSignal !== undefined ? { signal: context.abortSignal } : {}),
-    });
-    await this.restoreTrustedRemotes(attemptKey, dir);
-    return { stdout: result.stdout, stderr: result.stderr };
   }
 
   async runAgent(_handle: WorkspaceHandle, context: TaskContext, adapter?: AgentAdapter): Promise<AgentResult> {

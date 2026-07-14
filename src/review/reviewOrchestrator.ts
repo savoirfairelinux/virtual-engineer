@@ -29,6 +29,8 @@ import { agentLogBus, pushToTaskBuffer, clearTaskEventBuffer } from "../agents/a
 
 const log = getLogger("review-orchestrator");
 
+class ReviewCancelledError extends Error {}
+
 /** Legacy interface implemented by `CopilotReviewAgent`. Kept for backward compatibility. */
 export interface ReviewAgent {
   runReview(
@@ -508,6 +510,7 @@ export class ReviewOrchestrator {
 
         const stderrLineBuffer = { partial: "" };
         const reviewResult = await this.deps.workspaceRunner.runReviewInDocker(handle, {
+          projectId: project.id,
           changeId,
           revisionNumber: details.changeNumber,
           patchset: details.currentPatchset,
@@ -625,13 +628,16 @@ export class ReviewOrchestrator {
         summary: summary.slice(0, 200),
       });
 
+      await this.assertReviewStillActive(taskId);
+
       if (!skipPosting) {
-        await this.postReview(changeId, reviewPatchset, commentsToPost, summary, vote, diff);
+        await this.postReview(taskId, changeId, reviewPatchset, commentsToPost, summary, vote, diff);
       }
 
       // Persist all newly-handled comment hashes (posted inline AND folded) so
       // future re-reviews skip them — avoiding both inline and summary spam.
       if (newComments.length > 0) {
+        await this.assertReviewStillActive(taskId);
         await this.deps.stateStore.markReviewCommentsPosted(
           taskId,
           changeId,
@@ -652,6 +658,7 @@ export class ReviewOrchestrator {
       if (repliesToPost.length > 0 && this.deps.reviewProvider.postThreadReply !== undefined) {
         for (const r of repliesToPost) {
           try {
+            await this.assertReviewStillActive(taskId);
             await this.deps.reviewProvider.postThreadReply(changeId, reviewPatchset, r.threadId, r.message);
             postedReplies.push({
               threadId: r.threadId,
@@ -663,10 +670,12 @@ export class ReviewOrchestrator {
           }
         }
         if (postedReplies.length > 0) {
+          await this.assertReviewStillActive(taskId);
           await this.deps.stateStore.markThreadReplyPosted(taskId, changeId, postedReplies);
         }
       }
 
+      await this.assertReviewStillActive(taskId);
       await this.deps.stateStore.transition(taskId, "REVIEW_COMMENTING");
       await this.deps.stateStore.setReviewedPatchset(taskId, reviewPatchset);
 
@@ -708,6 +717,11 @@ export class ReviewOrchestrator {
         await this.deps.stateStore.transition(taskId, "REVIEW_DONE");
       }
     } catch (err) {
+      if (err instanceof ReviewCancelledError) {
+        clearTaskEventBuffer(taskId);
+        log.info({ taskId }, "review stopped because task is no longer active");
+        return;
+      }
       const message = (err as Error).message ?? "review failed";
       log.error({ err, taskId }, "code review failed");
       emitReviewEvent("review.failed", { message });
@@ -737,6 +751,13 @@ export class ReviewOrchestrator {
   }
 
   // ─── Internals ──────────────────────────────────────────────────────────────
+
+  private async assertReviewStillActive(taskId: TaskId): Promise<void> {
+    const current = await this.deps.stateStore.getTask(taskId);
+    if (current?.state !== "REVIEW_RUNNING" && current?.state !== "REVIEW_COMMENTING") {
+      throw new ReviewCancelledError(`Review task ${taskId} is no longer active`);
+    }
+  }
 
   /**
    * Parse a single stderr line from the review container.
@@ -798,6 +819,7 @@ export class ReviewOrchestrator {
 
   /** Post review comments and vote on the given change revision via the review provider. */
   private async postReview(
+    taskId: TaskId,
     changeId: ExternalChangeId,
     revision: number,
     comments: InlineReviewComment[],
@@ -833,6 +855,7 @@ export class ReviewOrchestrator {
         summary,
       );
     }
+    await this.assertReviewStillActive(taskId);
     await this.deps.reviewProvider.vote(changeId, revision, score, summary);
   }
 

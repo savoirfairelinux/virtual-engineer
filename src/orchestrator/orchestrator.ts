@@ -695,6 +695,7 @@ export class Orchestrator {
       const hasPriorPatchset = await this.checkoutPriorPatchset(task, cycleNumber, handle, root, rootConnector);
       const context: TaskContext = {
         taskId: task.taskId,
+        ...(task.projectId !== null ? { projectId: task.projectId } : {}),
         ticketTitle: ticket.subject,
         ticketDescription: ticket.description,
         acceptanceCriteria: this.extractAcceptanceCriteria(ticket.description),

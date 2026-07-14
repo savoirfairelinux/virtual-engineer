@@ -175,6 +175,8 @@ export interface CreateSandboxInput {
   memory?: string | undefined;
   /** Initial policy YAML applied at creation, including immutable filesystem/process rules. */
   policyYaml?: string | undefined;
+  /** Best-effort hook invoked before deleting a transient, ambiguously-created sandbox. */
+  beforeRetryCleanup?: (() => Promise<void>) | undefined;
   signal?: AbortSignal | undefined;
 }
 
@@ -214,6 +216,12 @@ export interface ExecSandboxInput {
   signal?: AbortSignal | undefined;
 }
 
+export interface SandboxLogsInput {
+  name: string;
+  lines?: number | undefined;
+  since?: string | undefined;
+}
+
 /** Access level for an egress endpoint. Copilot needs `full` (POST completions). */
 export type EgressAccess = "read-only" | "read-write" | "full";
 
@@ -229,7 +237,6 @@ export interface AllowEgressInput {
 
 export class OpenShellClient {
   private readonly bin: string;
-  private readonly gateway: string | undefined;
   private readonly run: CommandRunner;
   private readonly retryBaseDelayMs: number;
   private readonly commandTimeoutMs: number;
@@ -256,7 +263,6 @@ export class OpenShellClient {
 
   constructor(options: OpenShellClientOptions = {}) {
     this.bin = options.bin ?? "openshell";
-    this.gateway = options.gateway;
     this.run = options.runner ?? defaultRunner;
     this.retryBaseDelayMs = options.retryBaseDelayMs ?? 4000;
     this.commandTimeoutMs = options.commandTimeoutMs ?? 60_000;
@@ -327,6 +333,9 @@ export class OpenShellClient {
         }
 
         log.warn({ name: input.name, attempt }, "sandbox create hit a transient error — cleaning up and retrying");
+        await input.beforeRetryCleanup?.().catch((err: unknown) => {
+          log.warn({ err, name: input.name, attempt }, "sandbox create pre-cleanup hook failed");
+        });
         await this.exec(["sandbox", "delete", input.name]);
         await new Promise((resolve) => setTimeout(resolve, this.retryBaseDelayMs * attempt));
       }
@@ -365,6 +374,19 @@ export class OpenShellClient {
       ...(input.onStdoutChunk !== undefined ? { onStdoutChunk: input.onStdoutChunk } : {}),
       ...(input.onStderrChunk !== undefined ? { onStderrChunk: input.onStderrChunk } : {}),
     }, input.timeout !== undefined ? input.timeout * 1000 + 30_000 : this.commandTimeoutMs, input.signal);
+  }
+
+  /** Retrieve a bounded warning-level sandbox log snapshot for policy auditing. */
+  async getSandboxLogs(input: SandboxLogsInput): Promise<string> {
+    const lines = Math.max(1, Math.min(input.lines ?? 200, 1_000));
+    const args = ["logs", input.name, "-n", String(lines)];
+    if (input.since !== undefined) args.push("--since", input.since);
+    args.push("--source", "sandbox", "--level", "warn");
+    const result = await this.exec(args);
+    if (result.code !== 0) {
+      throw new Error(`openshell logs failed (${result.code}): ${redactOpenShellText(result.stderr).slice(0, 500)}`);
+    }
+    return result.stdout;
   }
 
   /** Apply (hot-reload) a policy YAML on a running sandbox. Throws on failure. */
@@ -424,20 +446,9 @@ export class OpenShellClient {
 
   /** Return true when the gateway responds healthy. */
   async gatewayHealthy(): Promise<boolean> {
-    // Probe the gateway URL directly — supports both a dedicated health port
-    // (e.g. http://127.0.0.1:8081) and a NodePort URL (http://127.0.0.1:30808).
-    // When gateway is unset fall back to localhost defaults.
-    const base = this.gateway
-      ? this.gateway.replace(/\/$/, "")
-      : "http://127.0.0.1:8081";
-    for (const path of ["/healthz", "/health"]) {
-      try {
-        const res = await fetch(`${base}${path}`, { signal: AbortSignal.timeout(3000) });
-        if (res.ok) return true;
-      } catch {
-        // try next
-      }
-    }
-    return false;
+    // Use the CLI so readiness exercises the same gateway profile, CA, client
+    // certificate, and authorization path as real sandbox commands.
+    const result = await this.exec(["status"], undefined, undefined, 3_000);
+    return result.code === 0;
   }
 }

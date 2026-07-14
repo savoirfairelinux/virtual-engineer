@@ -705,7 +705,7 @@ describe("createAdminServer", () => {
 
     const server = createAdminServer({
       stateStore: makeStateStore({
-        deleteTaskGroup: async (taskId) => {
+        deleteTask: async (taskId) => {
           deleteTested = true;
           expect(taskId).toBe(task.taskId);
         },
@@ -746,7 +746,7 @@ describe("createAdminServer", () => {
 
     const server = createAdminServer({
       stateStore: makeStateStore({
-        deleteTaskGroup: async (taskId) => {
+        deleteTask: async (taskId) => {
           deleteTested = true;
           expect(taskId).toBe(task.taskId);
         },

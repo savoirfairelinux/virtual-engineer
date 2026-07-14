@@ -370,14 +370,18 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
       (task.state === "FEEDBACK_PROCESSING" && toState === "IN_REVIEW");
 
     raw.transaction(() => {
+      let updateResult: Database.RunResult;
       if (isReviewPollingTransition) {
-        raw
-          .prepare("UPDATE tasks SET state = ? WHERE task_id = ?")
-          .run(toState, taskId);
+        updateResult = raw
+          .prepare("UPDATE tasks SET state = ? WHERE task_id = ? AND state = ?")
+          .run(toState, taskId, task.state);
       } else {
-        raw
-          .prepare("UPDATE tasks SET state = ?, updated_at = ? WHERE task_id = ?")
-          .run(toState, Math.floor(now.getTime() / 1000), taskId);
+        updateResult = raw
+          .prepare("UPDATE tasks SET state = ?, updated_at = ? WHERE task_id = ? AND state = ?")
+          .run(toState, Math.floor(now.getTime() / 1000), taskId, task.state);
+      }
+      if (updateResult.changes !== 1) {
+        throw new Error(`Task state changed concurrently: ${taskId}`);
       }
 
       raw
@@ -896,10 +900,18 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
 
     // Already abandoned — return current state without re-notifying listeners.
     if (task.state === "ABANDONED") return task;
+    if (TERMINAL_STATES.has(task.state)) {
+      throw new Error(`Cannot abandon terminal task ${taskId} in state ${task.state}`);
+    }
 
     const now = new Date();
     raw.transaction(() => {
-      raw.prepare("UPDATE tasks SET state = ?, updated_at = ? WHERE task_id = ?").run("ABANDONED", Math.floor(now.getTime() / 1000), taskId);
+      const updateResult = raw
+        .prepare("UPDATE tasks SET state = ?, updated_at = ? WHERE task_id = ? AND state = ?")
+        .run("ABANDONED", Math.floor(now.getTime() / 1000), taskId, task.state);
+      if (updateResult.changes !== 1) {
+        throw new Error(`Task state changed concurrently: ${taskId}`);
+      }
 
       raw
         .prepare(
@@ -920,9 +932,35 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
 
     const now = Math.floor(Date.now() / 1000);
 
+    if (task.state === "ABANDONED") {
+      const latestTransition = raw
+        .prepare("SELECT metadata FROM state_transitions WHERE task_id = ? ORDER BY id DESC LIMIT 1")
+        .get(taskId) as { metadata: string } | undefined;
+      if (latestTransition !== undefined) {
+        try {
+          const metadata = JSON.parse(latestTransition.metadata) as unknown;
+          if (
+            typeof metadata === "object" &&
+            metadata !== null &&
+            "action" in metadata &&
+            metadata.action === "delete"
+          ) {
+            return;
+          }
+        } catch {
+          // Malformed historical metadata must not prevent normal terminal cleanup.
+        }
+      }
+    }
+
     if (!TERMINAL_STATES.has(task.state)) {
       raw.transaction(() => {
-        raw.prepare("UPDATE tasks SET state = ?, updated_at = ? WHERE task_id = ?").run("ABANDONED", now, taskId);
+        const updateResult = raw
+          .prepare("UPDATE tasks SET state = ?, updated_at = ? WHERE task_id = ? AND state = ?")
+          .run("ABANDONED", now, taskId, task.state);
+        if (updateResult.changes !== 1) {
+          throw new Error(`Task state changed concurrently: ${taskId}`);
+        }
         raw
           .prepare(
             "INSERT INTO state_transitions (task_id, from_state, to_state, metadata, created_at) VALUES (?, ?, ?, ?, ?)"
@@ -939,6 +977,7 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
       raw.prepare("DELETE FROM processed_comments WHERE task_id = ?").run(taskId);
       raw.prepare("DELETE FROM posted_review_comments WHERE task_id = ?").run(taskId);
       raw.prepare("DELETE FROM review_thread_replies WHERE task_id = ?").run(taskId);
+      raw.prepare("UPDATE policy_denial_events SET task_id = NULL WHERE task_id = ?").run(taskId);
       raw.prepare("DELETE FROM agent_cycles WHERE task_id = ?").run(taskId);
       raw.prepare("DELETE FROM state_transitions WHERE task_id = ?").run(taskId);
       raw.prepare("DELETE FROM tasks WHERE task_id = ?").run(taskId);
@@ -947,38 +986,36 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
 
   async function deleteTaskGroup(taskId: TaskId): Promise<void> {
     const anchor = raw
-      .prepare("SELECT ticket_id, gerrit_change_id FROM tasks WHERE task_id = ?")
-      .get(taskId) as { ticket_id: string; gerrit_change_id: string | null } | undefined;
+      .prepare("SELECT ticket_id, ticket_source_integration_id, ticket_source_project_key, project_id, gerrit_change_id FROM tasks WHERE task_id = ?")
+      .get(taskId) as {
+        ticket_id: string;
+        ticket_source_integration_id: string | null;
+        ticket_source_project_key: string | null;
+        project_id: string | null;
+        gerrit_change_id: string | null;
+      } | undefined;
 
     if (!anchor) return;
 
-    const taskIds = new Set<string>();
+    const taskIds = new Set<TaskId>();
 
     const byTicket = raw
-      .prepare("SELECT task_id FROM tasks WHERE ticket_id = ?")
-      .all(anchor.ticket_id) as Array<Record<string, unknown>>;
-    for (const row of byTicket) taskIds.add(row["task_id"] as string);
-
-    if (anchor.gerrit_change_id) {
-      const byChange = raw
-        .prepare("SELECT task_id FROM tasks WHERE gerrit_change_id = ?")
-        .all(anchor.gerrit_change_id) as Array<Record<string, unknown>>;
-      for (const row of byChange) taskIds.add(row["task_id"] as string);
-    }
+      .prepare(`SELECT task_id FROM tasks
+        WHERE ticket_id = ?
+          AND project_id IS ?
+          AND ticket_source_integration_id IS ?
+          AND ticket_source_project_key IS ?`)
+      .all(
+        anchor.ticket_id,
+        anchor.project_id,
+        anchor.ticket_source_integration_id,
+        anchor.ticket_source_project_key,
+      ) as Array<Record<string, unknown>>;
+    for (const row of byTicket) taskIds.add(row["task_id"] as TaskId);
 
     if (taskIds.size === 0) return;
 
-    raw.transaction(() => {
-      for (const id of taskIds) {
-        raw.prepare("DELETE FROM change_per_repository WHERE task_id = ?").run(id);
-        raw.prepare("DELETE FROM processed_comments WHERE task_id = ?").run(id);
-        raw.prepare("DELETE FROM posted_review_comments WHERE task_id = ?").run(id);
-        raw.prepare("DELETE FROM review_thread_replies WHERE task_id = ?").run(id);
-        raw.prepare("DELETE FROM agent_cycles WHERE task_id = ?").run(id);
-        raw.prepare("DELETE FROM state_transitions WHERE task_id = ?").run(id);
-        raw.prepare("DELETE FROM tasks WHERE task_id = ?").run(id);
-      }
-    })();
+    for (const id of taskIds) await deleteTask(id);
   }
 
   async function saveChangePerRepository(

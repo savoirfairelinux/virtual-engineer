@@ -27,7 +27,7 @@ The admin server is a small HTTP service (default `127.0.0.1:3100`) that serves 
 | `adminConcurrencyRoutes.ts` | `/api/admin/concurrency` read/update global concurrency. |
 | `adminSettingsRoutes.ts` | `GET/PUT /api/admin/settings` — read/update editable runtime workflow settings (polling interval, max agent cycles, max retry attempts). Validates positive integers; delegates persistence + hot-apply to the `SettingsController` wired in `src/index.ts`. |
 | `adminRuntimePolicyRoutes.ts` | `/api/admin/runtime/policies*` CRUD over runtime policies plus `POST /:id/bindings` / `DELETE /bindings/:bindingId` to bind a policy to a project or agent. YAML is limited to 64 KiB, may not use aliases/anchors, and must contain exactly one object-valued top-level section matching the policy kind. Backed by the dedicated `RuntimePolicyStore`. |
-| `adminDenialRoutes.ts` | `GET /api/admin/runtime/denials` — policy-denial audit log (filter by `taskId` / `projectId` / `limit`). Backed by the `DenialStore`. |
+| `adminDenialRoutes.ts` | `GET /api/admin/runtime/denials` — policy-denial audit log (filter by `taskId` / `projectId` / `limit`). `OpenShellWorkspaceRunner` populates it best-effort from a bounded post-run `openshell logs` snapshot after secret scrubbing. Backed by the `DenialStore`. |
 | `adminOverviewRoutes.ts` | `/api/admin/overview` dashboard stats/throughput/votes/runtime + `/api/admin/cost-summary` aggregated AI cost (per project & instance total, optional `?days=` period) + `/api/admin/model-usage` model distribution by run count & cost (global + per project, optional `?days=<n>` period filter). |
 | `adminWebhookRoutes.ts` | Webhook management: secret rotation, allowed-IPs, webhook-info. |
 | `dashboard.ts` | Serves the HTML shell for the Vite-built React SPA: reads the Vite manifest from `dist/admin-ui/.vite/manifest.json`, injects the hashed JS/CSS asset links plus a `window.__VE_ADMIN_BOOTSTRAP__` payload, and falls back to "Admin UI not built — run npm run build:ui" when the build output is missing. |
@@ -77,6 +77,7 @@ The admin server is a small HTTP service (default `127.0.0.1:3100`) that serves 
 | `GET` | `/api/admin/tasks/:id` | Task detail. |
 | `GET` | `/api/admin/tasks/:id/cycles` | Stored agent cycles. |
 | `GET` | `/api/admin/tasks/:id/transitions` | Transition history. |
+| `DELETE` | `/api/admin/tasks/:id` | Deletes only the selected task. A non-terminal task becomes an idempotent `ABANDONED` tombstone so an in-flight execution cannot be hard-deleted. Tasks abandoned explicitly or already terminal are removed; policy-denial audit events are retained with a null `task_id`. |
 | `PATCH` | `/api/admin/tasks/:id/pause` | Writes a metadata-only pause row. |
 | `PATCH` | `/api/admin/tasks/:id/resume` | Writes a metadata-only resume row. |
 | `POST` | `/api/admin/tasks/:id/retry` | Retry task. |

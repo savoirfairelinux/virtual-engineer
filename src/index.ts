@@ -97,7 +97,8 @@ async function main(): Promise<void> {
   const openShellClient = new OpenShellClient({
     // OPENSHELL_GATEWAY_ENDPOINT (preferred: direct URL, no registry lookup)
     // or the legacy OPENSHELL_GATEWAY name are both accepted. start.sh injects
-    // OPENSHELL_GATEWAY_ENDPOINT=http://127.0.0.1:<port>.
+    // OPENSHELL_GATEWAY_ENDPOINT=https://127.0.0.1:<port> and mounts the
+    // chart-generated client mTLS bundle under XDG_CONFIG_HOME.
     gateway: process.env["OPENSHELL_GATEWAY_ENDPOINT"] ?? process.env["OPENSHELL_GATEWAY"] ?? undefined,
     commandTimeoutMs: config.agentTimeoutMs + 30_000,
   });
@@ -107,6 +108,9 @@ async function main(): Promise<void> {
     sandboxImage: config.agentContainerImage,
     agentAdapter: runtimeDependencies.agentAdapter,
     resolvePolicy: createRuntimePolicyResolver(stateStore),
+    recordDenial: async (denial) => {
+      await stateStore.recordPolicyDenial(denial);
+    },
     execTimeoutSec: Math.ceil(config.agentTimeoutMs / 1000),
   };
   const workspaceRunner = new OpenShellWorkspaceRunner(openShellRunnerDeps);

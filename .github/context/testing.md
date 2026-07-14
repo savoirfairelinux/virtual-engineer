@@ -39,6 +39,8 @@ tests/
 
 ## Conventions
 
+- OpenShell denial tests cover both OCSF shorthand and key-value log formats; runner tests inject `getSandboxLogs` and assert task/project-attributed persistence on success and setup failure without requiring a live gateway.
+
 - All external I/O is mocked: `fetch`, `node:fs`, `dockerode`, `child_process` SSH helpers, the GitHub Copilot SDK, Git network calls. Never hit real services.
 - OpenShell runner tests assert that agent credentials are attached at sandbox creation and omitted from exec-time environment arguments; only non-secret values such as prompt-file paths may be forwarded to `sandbox exec`.
 - Mock with `vi.mock("…/foo.js", () => …)` for module-level stubs, or `vi.spyOn(obj, "method")` for instance-level.

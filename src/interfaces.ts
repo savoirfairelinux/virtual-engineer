@@ -399,6 +399,8 @@ export interface AgentSession {
 
 export interface TaskContext {
   taskId: TaskId;
+  /** Owning VE project, used to attribute runtime audit events. */
+  projectId?: ProjectId | undefined;
   ticketTitle: string;
   ticketDescription: string;
   acceptanceCriteria: string[];
@@ -555,6 +557,8 @@ export interface CloneResult {
 
 /** Input for running the review agent container. Workspace must be pre-cloned and patched. */
 export interface ReviewWorkspaceInput {
+  /** Owning VE project, used to attribute runtime audit events. */
+  projectId?: ProjectId | undefined;
   /** Change-Id (opaque string, e.g. "Iabc123..." for Gerrit, PR node id for GitHub) */
   changeId: ExternalChangeId;
   /** Provider-specific numeric change identifier (e.g. Gerrit change number, PR number) */

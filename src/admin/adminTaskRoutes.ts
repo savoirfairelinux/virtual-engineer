@@ -100,7 +100,7 @@ export function registerTaskRoutes(router: Router, deps: TaskRouteDeps): void {
     try {
       const taskToDelete = await deps.stateStore.getTask(taskId);
       if (!taskToDelete) { writeJson(res, 404, { error: "Task not found" }); return; }
-      await deps.stateStore.deleteTaskGroup(taskId);
+      await deps.stateStore.deleteTask(taskId);
       recordAudit(deps.auditStore, req, { action: "task.delete", targetType: "task", targetId: taskId, details: { ticketId: taskToDelete.ticketId, state: taskToDelete.state } });
       writeJson(res, 200, { ok: true });
     } catch (err: unknown) {

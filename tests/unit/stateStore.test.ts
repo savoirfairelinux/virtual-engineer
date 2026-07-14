@@ -1012,6 +1012,40 @@ describe("SqliteStateStore", () => {
       expect(changes).toHaveLength(0);
     });
 
+    it("retains policy denials when deleting a terminal task", async () => {
+      const taskId = makeTaskId(randomUUID());
+      await store.createTask(taskId, makeTicketId("delete-denial"));
+      await store.recordPolicyDenial({ taskId, decision: "deny", reason: "blocked" });
+      await store.transition(taskId, "FAILED");
+
+      await expect(store.deleteTask(taskId)).resolves.not.toThrow();
+      expect(await store.listPolicyDenials({ taskId })).toHaveLength(0);
+      expect(await store.listPolicyDenials()).toEqual([
+        expect.objectContaining({ taskId: null, decision: "deny", reason: "blocked" }),
+      ]);
+    });
+
+    it("retains policy denials when deleting a related task group", async () => {
+      const ticketId = makeTicketId("delete-denial-group");
+      const firstTaskId = makeTaskId(randomUUID());
+      const secondTaskId = makeTaskId(randomUUID());
+      await store.createTask(firstTaskId, ticketId);
+      await store.transition(firstTaskId, "FAILED");
+      await store.createTask(secondTaskId, ticketId);
+      await store.recordPolicyDenial({ taskId: firstTaskId, decision: "deny", reason: "blocked" });
+      await store.recordPolicyDenial({ taskId: secondTaskId, decision: "deny", reason: "blocked" });
+
+      await expect(store.deleteTaskGroup(firstTaskId)).resolves.not.toThrow();
+      expect(await store.listPolicyDenials({ taskId: firstTaskId })).toHaveLength(0);
+      expect(await store.listPolicyDenials({ taskId: secondTaskId })).toEqual([
+        expect.objectContaining({ taskId: secondTaskId, decision: "deny" }),
+      ]);
+      expect((await store.getTask(secondTaskId))?.state).toBe("ABANDONED");
+      expect(await store.listPolicyDenials()).toContainEqual(
+        expect.objectContaining({ taskId: null, decision: "deny" }),
+      );
+    });
+
     it("saves and retrieves commitIndex and subjectHash", async () => {
       const taskId = makeTaskId(randomUUID());
       await store.createTask(taskId, makeTicketId("repo-5"));
@@ -1115,6 +1149,15 @@ describe("SqliteStateStore", () => {
     it("throws when the task does not exist", async () => {
       await expect(store.abandonTask(makeTaskId("no-such-task"))).rejects.toThrow(/Task not found/);
     });
+
+    it("rejects abandoning an already terminal task", async () => {
+      const taskId = makeTaskId(randomUUID());
+      await store.createTask(taskId, makeTicketId("abandon-terminal"));
+      await store.transition(taskId, "FAILED");
+
+      await expect(store.abandonTask(taskId)).rejects.toThrow(/terminal task/);
+      expect((await store.getTask(taskId))?.state).toBe("FAILED");
+    });
   });
 
   describe("deleteTask", () => {
@@ -1170,7 +1213,7 @@ describe("SqliteStateStore", () => {
       expect(fetched?.state).toBe("ABANDONED");
     });
 
-    it("fully removes a non-terminal-state task when delete is called twice", async () => {
+    it("keeps a delete-abandoned task as an idempotent tombstone", async () => {
       const taskId = makeTaskId(randomUUID());
       await store.createTask(taskId, makeTicketId("delete-3b"));
       await store.transition(taskId, "CONTEXT_BUILDING");
@@ -1180,9 +1223,9 @@ describe("SqliteStateStore", () => {
       await store.deleteTask(taskId);
       expect((await store.getTask(taskId))?.state).toBe("ABANDONED");
 
-      // Second delete: task is now terminal (ABANDONED) → fully removed
+      // Repeated delete must not remove a task whose execution may still be unwinding.
       await store.deleteTask(taskId);
-      expect(await store.getTask(taskId)).toBeNull();
+      expect((await store.getTask(taskId))?.state).toBe("ABANDONED");
     });
 
     it("throws when the task does not exist", async () => {

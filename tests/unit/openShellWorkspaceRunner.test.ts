@@ -35,6 +35,7 @@ function fakeClient(overrides: Partial<OpenShellClient> = {}): OpenShellClient {
     allowEgress: vi.fn().mockResolvedValue(undefined),
     removeSandbox: vi.fn().mockResolvedValue(undefined),
     gatewayHealthy: vi.fn().mockResolvedValue(true),
+    getSandboxLogs: vi.fn().mockResolvedValue(""),
     ...overrides,
   } as unknown as OpenShellClient;
 }
@@ -91,6 +92,79 @@ const handle: WorkspaceHandle = {
 };
 
 describe("OpenShellWorkspaceRunner", () => {
+  it("persists policy denials from the completed sandbox log snapshot", async () => {
+    const recordDenial = vi.fn().mockResolvedValue(undefined);
+    const client = fakeClient({
+      getSandboxLogs: vi.fn().mockResolvedValue(
+        "[1.0] [sandbox] [OCSF ] [ocsf] NET:OPEN [MED] DENIED /usr/bin/curl(64) -> blocked.example:443 [policy:- engine:opa]"
+      ),
+    } as unknown as Partial<OpenShellClient>);
+    const runner = new OpenShellWorkspaceRunner({
+      git: fakeGit(),
+      client,
+      sandboxImage: "base",
+      recordDenial,
+    });
+    await runner.prepareProjectWorkspace(handle, [{
+      repoKey: "root", cloneUrl: "https://example.test/repo.git", targetBranch: "main", role: "primary",
+      commitOrder: 1, localPath: ".", integrationId: "i", sshKeyPath: null,
+    }] as unknown as ProjectPushTargetRecord[]);
+
+    await runner.runAgentInDocker(
+      fakeCodingAdapter(),
+      { taskId: "t1", projectId: "p1", workspacePath: "/tmp/ws-1" } as unknown as TaskContext,
+    );
+
+    expect(recordDenial).toHaveBeenCalledWith(expect.objectContaining({
+      taskId: "t1",
+      projectId: "p1",
+      host: "blocked.example",
+      decision: "deny",
+    }));
+  });
+
+  it("collects policy denials when coding workspace upload fails", async () => {
+    const recordDenial = vi.fn().mockResolvedValue(undefined);
+    const client = fakeClient({
+      uploadToSandbox: vi.fn().mockRejectedValue(new Error("upload failed")),
+      getSandboxLogs: vi.fn().mockResolvedValue(
+        "[1.0] [sandbox] [OCSF ] [ocsf] NET:OPEN [MED] DENIED /usr/bin/curl(64) -> blocked.example:443 [policy:- engine:opa]"
+      ),
+    } as unknown as Partial<OpenShellClient>);
+    const runner = new OpenShellWorkspaceRunner({ git: fakeGit(), client, sandboxImage: "base", recordDenial });
+
+    await expect(runner.runAgentInDocker(
+      fakeCodingAdapter(),
+      { taskId: "t1", projectId: "p1", workspacePath: "/tmp/ws-1" } as unknown as TaskContext,
+    )).rejects.toThrow("upload failed");
+
+    expect(recordDenial).toHaveBeenCalledWith(expect.objectContaining({
+      taskId: "t1",
+      projectId: "p1",
+      decision: "deny",
+    }));
+  });
+
+  it("attempts denial collection when sandbox creation fails ambiguously", async () => {
+    const recordDenial = vi.fn().mockResolvedValue(undefined);
+    const getSandboxLogs = vi.fn().mockResolvedValue(
+      "[1.0] [sandbox] [OCSF ] [ocsf] NET:OPEN [MED] DENIED /usr/bin/curl(64) -> blocked.example:443 [policy:- engine:opa]"
+    );
+    const client = fakeClient({
+      createSandbox: vi.fn().mockRejectedValue(new Error("gateway timeout")),
+      getSandboxLogs,
+    } as unknown as Partial<OpenShellClient>);
+    const runner = new OpenShellWorkspaceRunner({ git: fakeGit(), client, sandboxImage: "base", recordDenial });
+
+    await expect(runner.runAgentInDocker(
+      fakeCodingAdapter(),
+      { taskId: "t1", projectId: "p1", workspacePath: "/tmp/ws-1" } as unknown as TaskContext,
+    )).rejects.toThrow("gateway timeout");
+
+    expect(getSandboxLogs).toHaveBeenCalledOnce();
+    expect(recordDenial).toHaveBeenCalledWith(expect.objectContaining({ taskId: "t1", projectId: "p1" }));
+  });
+
   it("createWorkspace returns a host-backed handle", async () => {
     const git = fakeGit();
     const runner = new OpenShellWorkspaceRunner({ git, client: fakeClient(), sandboxImage: "base" });
@@ -194,12 +268,13 @@ describe("OpenShellWorkspaceRunner", () => {
     });
     const input = { changeId: "Iabc", prompt: "review this diff" } as unknown as ReviewWorkspaceInput;
     const out = await runner.runReviewInDocker(handle, input);
-    expect(client.createSandbox).toHaveBeenCalledWith({
+    expect(client.createSandbox).toHaveBeenCalledWith(expect.objectContaining({
       name: "ve-t1",
       from: "agent:img",
       env: { REVIEW_MODE: "1" },
       policyYaml: expect.stringContaining("default: deny"),
-    });
+      beforeRetryCleanup: expect.any(Function),
+    }));
     expect(client.setPolicy).not.toHaveBeenCalled();
     // Egress is opened for the review agent's model API.
     expect(client.allowEgress).toHaveBeenCalledWith(

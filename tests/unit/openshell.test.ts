@@ -52,8 +52,14 @@ describe("openShellPolicyBuilder", () => {
 describe("denyEventPoller", () => {
   it("scrubs tokens from free text", () => {
     expect(scrubSecrets("GET /x?token=abc123&y=1")).toContain("token=[REDACTED]");
-    expect(scrubSecrets("Authorization: Bearer sk-abcdef123456")).toContain("Bearer [REDACTED]");
+    expect(scrubSecrets("Authorization: Bearer sk-abcdef123456")).toBe("Authorization: [REDACTED]");
     expect(scrubSecrets("uses ghp_abcdefghijklmnopqrstuvwxyz012345")).toContain("ghp_[REDACTED]");
+    expect(scrubSecrets("ANTHROPIC_API_KEY=sk-ant-secret GITHUB_TOKEN=github-secret")).toBe(
+      "ANTHROPIC_API_KEY=[REDACTED] GITHUB_TOKEN=[REDACTED]"
+    );
+    expect(scrubSecrets("Authorization: Basic dXNlcjpwYXNz Cookie: session=secret")).toBe(
+      "Authorization: [REDACTED] Cookie: [REDACTED]"
+    );
   });
 
   it("parses a structured deny event", () => {
@@ -77,6 +83,27 @@ describe("denyEventPoller", () => {
     });
     expect(d?.method).toBe("POST");
     expect(d?.path).toBe("/repos/octocat/hello-world/issues");
+  });
+
+  it("parses OpenShell OCSF shorthand denial lines", () => {
+    const d = parseDenialEvent(
+      "[1775014132.690] [sandbox] [OCSF ] [ocsf] HTTP:POST [MED] DENIED POST http://api.github.com:443/repos/x/issues [policy:readonly engine:l7]"
+    );
+    expect(d).toMatchObject({
+      category: "network",
+      host: "api.github.com",
+      method: "POST",
+      path: "/repos/x/issues",
+      decision: "deny",
+    });
+  });
+
+  it("parses OpenShell key-value denial lines", () => {
+    const d = parseDenialEvent(
+      'l7_decision=deny dst_host=api.github.com l7_action=PUT l7_target=/repos/x?token=secret l7_deny_reason="PUT denied by policy"'
+    );
+    expect(d).toMatchObject({ host: "api.github.com", method: "PUT", decision: "deny" });
+    expect(d?.path).toBe("/repos/x?token=[REDACTED]");
   });
 
   it("returns null for allow / non-denial events", () => {
@@ -190,6 +217,16 @@ describe("OpenShellClient", () => {
     expect(calls[0]?.args).toEqual(["sandbox", "download", "t", "/workspace", "/local"]);
   });
 
+  it("retrieves a bounded sandbox log snapshot for denial collection", async () => {
+    const { runner, calls } = runnerReturning({ code: 0, stdout: "DENIED" });
+    const client = new OpenShellClient({ runner });
+    const logs = await client.getSandboxLogs({ name: "t", lines: 200, since: "2h" });
+    expect(calls[0]?.args).toEqual([
+      "logs", "t", "-n", "200", "--since", "2h", "--source", "sandbox", "--level", "warn",
+    ]);
+    expect(logs).toBe("DENIED");
+  });
+
   it("exec forwards workdir, timeout, and env before the -- command", async () => {
     const { runner, calls } = runnerReturning({ code: 0, stdout: "ok" });
     const client = new OpenShellClient({ runner });
@@ -288,11 +325,15 @@ describe("OpenShellClient", () => {
       return { code: 0, stdout: "", stderr: "" };
     };
     const client = new OpenShellClient({ runner, retryBaseDelayMs: 0 });
-    await client.createSandbox({ name: "t", from: "img" });
+    const beforeRetryCleanup = vi.fn().mockResolvedValue(undefined);
+    await client.createSandbox({ name: "t", from: "img", beforeRetryCleanup });
     const createCalls = calls.filter((c) => c.args[1] === "create").length;
     const deleteCalls = calls.filter((c) => c.args[1] === "delete").length;
     expect(createCalls).toBe(2);
     expect(deleteCalls).toBe(1);
+    expect(beforeRetryCleanup).toHaveBeenCalledOnce();
+    const cleanupHookOrder = beforeRetryCleanup.mock.invocationCallOrder[0];
+    expect(cleanupHookOrder).toBeDefined();
   });
 
   it.each([
@@ -352,12 +393,15 @@ describe("OpenShellClient", () => {
     expect(calls.filter((args) => args[1] === "delete")).toHaveLength(3);
   });
 
-  it.each([401, 403, 404])("does not report HTTP %s as healthy", async (status) => {
-    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status });
-    vi.stubGlobal("fetch", fetchMock);
-    const client = new OpenShellClient({ runner: runnerReturning({ code: 0 }).runner });
+  it("checks gateway health through the authenticated OpenShell CLI profile", async () => {
+    const { runner, calls } = runnerReturning({ code: 0, stdout: "Gateway connected" });
+    const client = new OpenShellClient({ runner });
+    await expect(client.gatewayHealthy()).resolves.toBe(true);
+    expect(calls[0]?.args).toEqual(["status"]);
+  });
 
+  it("reports the gateway unhealthy when authenticated CLI status fails", async () => {
+    const client = new OpenShellClient({ runner: runnerReturning({ code: 1 }).runner });
     await expect(client.gatewayHealthy()).resolves.toBe(false);
-    vi.unstubAllGlobals();
   });
 });
