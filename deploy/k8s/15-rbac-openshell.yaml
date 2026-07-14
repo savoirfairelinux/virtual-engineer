@@ -1,6 +1,6 @@
 # OpenShell gateway RBAC for driving agent Pods on k3s.
 #
-# In the default single-node dev setup (scripts/start.sh --openshell) the gateway
+# In the default single-node dev setup (scripts/start.sh) the gateway
 # uses the k3s admin kubeconfig and this RBAC is not strictly required. It is the
 # least-privilege template for a production deployment where the gateway runs with
 # a dedicated ServiceAccount scoped to the ve-agents namespace.

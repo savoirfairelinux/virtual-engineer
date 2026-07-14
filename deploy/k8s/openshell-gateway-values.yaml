@@ -48,12 +48,10 @@ supervisor:
   sideloadMethod: "init-container"
 
 service:
-  # NodePort so the orchestrator (Docker --network host) can reach the gateway
-  # at 127.0.0.1:<nodePort> without needing in-cluster DNS.
-  type: NodePort
+  # Keep the unauthenticated development gateway inside the cluster. Local
+  # Docker deployments reach it through a loopback-only kubectl port-forward.
+  type: ClusterIP
   port: 8080
-  # Fixed nodePort avoids having to discover the dynamically assigned port.
-  nodePort: 30808
 
 # pkiInitJob generates the gateway-minted sandbox JWT signing keys automatically
 # as a Helm pre-install/pre-upgrade Job.  No manual key generation required.

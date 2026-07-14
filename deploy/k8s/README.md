@@ -7,7 +7,7 @@ sandbox**; OpenShell schedules agent sandboxes as Kubernetes Pods via an
 upload → exec → download lifecycle.
 
 > OpenShell + Kubernetes is the **sole** agent runtime (Docker agent execution has
-> been removed). For local single-node development use `scripts/start.sh --openshell`
+> been removed). For local single-node development use `scripts/start.sh`
 > against k3s; the manifests here are the multi-node/cluster deployment path. See
 > [`docs/adr/0001-openshell-agent-runtime.md`](../../docs/adr/0001-openshell-agent-runtime.md)
 > for the decision record. Least-privilege sandbox RBAC lives in
@@ -16,10 +16,14 @@ upload → exec → download lifecycle.
 ## Components
 
 | Piece | What it is |
-|---|---|
+| --- | --- |
 | `virtual-engineer-orchestrator` Deployment | VE control plane + admin UI (single replica; owns admission + SQLite state). |
 | `virtual-engineer-data` PVC | SQLite WAL state store. |
 | `openshell-gateway` (Helm) | OpenShell control plane using the Kubernetes driver; schedules sandbox Pods. |
+
+The gateway Service is `ClusterIP` only. The local `scripts/start.sh` path
+creates a managed `kubectl port-forward` bound to `127.0.0.1`; no unauthenticated
+OpenShell NodePort is exposed on the k3s node.
 
 ## 1. Build the orchestrator image with the OpenShell CLI
 
@@ -41,7 +45,12 @@ project. Install them **before** the gateway, or sandbox creation fails with
 `no supported Agent Sandbox API version is available`:
 
 ```bash
-kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/latest/download/manifest.yaml
+AGENT_SANDBOX_VERSION=v0.5.1
+AGENT_SANDBOX_MANIFEST_SHA256=8cfdf0a878f66b91d2e7103e77859d1412d850ce3f5fe5c3fa134c36bd55504a
+curl -fsSL -o /tmp/agent-sandbox-manifest.yaml \
+  "https://github.com/kubernetes-sigs/agent-sandbox/releases/download/${AGENT_SANDBOX_VERSION}/manifest.yaml"
+echo "${AGENT_SANDBOX_MANIFEST_SHA256}  /tmp/agent-sandbox-manifest.yaml" | sha256sum --check
+kubectl apply -f /tmp/agent-sandbox-manifest.yaml
 kubectl wait --for=condition=available deployment/agent-sandbox-controller \
   -n agent-sandbox-system --timeout=120s
 ```
@@ -69,7 +78,7 @@ kubectl apply -f deploy/k8s/40-orchestrator-deployment.yaml
 kubectl apply -f deploy/k8s/50-orchestrator-service.yaml
 ```
 
-## 4. Access the admin UI
+## 5. Access the admin UI
 
 ```bash
 kubectl -n virtual-engineer port-forward svc/virtual-engineer-admin 3100:3100

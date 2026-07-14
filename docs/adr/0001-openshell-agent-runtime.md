@@ -23,7 +23,7 @@ the sole agent runtime. Docker agent execution has been removed.**
 >
 > What is retained from the design below: OpenShell's **policy engine** (deny-by-default
 > YAML policies) and **policy-denial** audit surface remain, decoupled from runtime
-> selection. Local development uses single-node **k3s** (`scripts/start.sh --openshell`);
+> selection. Local development uses single-node **k3s** (`scripts/start.sh`);
 > the gateway runs on the host with `--drivers kubernetes` against the k3s API.
 >
 > The remainder of this ADR is preserved for historical context: it documents the

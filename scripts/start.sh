@@ -15,6 +15,8 @@
 #   DATA_DIR       (default: ./data)
 #   K3S_KUBECONFIG (default: /etc/rancher/k3s/k3s.yaml)  k3s admin kubeconfig path
 #   OPENSHELL_VERSION  (default: v0.0.79)  OpenShell CLI version baked into the orchestrator
+#   AGENT_SANDBOX_VERSION (default: v0.5.1) pinned controller manifest version
+#   AGENT_SANDBOX_MANIFEST_SHA256 verified manifest digest for that version
 
 set -euo pipefail
 
@@ -30,6 +32,8 @@ cd "$ROOT_DIR"
 # ─── Parse arguments ──────────────────────────────────────────────────────────
 K3S_INSTALL=true
 OPENSHELL_VERSION="${OPENSHELL_VERSION:-v0.0.79}"
+AGENT_SANDBOX_VERSION="${AGENT_SANDBOX_VERSION:-v0.5.1}"
+AGENT_SANDBOX_MANIFEST_SHA256="${AGENT_SANDBOX_MANIFEST_SHA256:-8cfdf0a878f66b91d2e7103e77859d1412d850ce3f5fe5c3fa134c36bd55504a}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -172,24 +176,6 @@ else
   echo "$ORCH_HASH" > "$ORCH_MARKER"
 fi
 
-# ─── Idempotent container restart ─────────────────────────────────────────────
-LATEST_ID=$(docker inspect --format='{{.Id}}' virtual-engineer:latest 2>/dev/null || true)
-RUNNING_ID=$(docker inspect --format='{{.Image}}' ve-orchestrator 2>/dev/null || true)
-IS_RUNNING=$(docker inspect --format='{{.State.Running}}' ve-orchestrator 2>/dev/null || true)
-
-if [[ "$IS_RUNNING" == "true" && "$RUNNING_ID" == "$LATEST_ID" ]]; then
-  info "ve-orchestrator is already running the latest image — nothing to do."
-  info "Logs : docker logs -f ve-orchestrator"
-  exit 0
-fi
-
-if [[ -n "$RUNNING_ID" ]]; then
-  info "Removing existing ve-orchestrator container..."
-  docker rm -f ve-orchestrator
-fi
-
-info "Starting ve-orchestrator..."
-
 # ─── Locate helm (user-local install or system) ──────────────────────────────
 HELM_BIN=""
 for _h in "$HOME/.local/bin/helm" /usr/local/bin/helm /usr/bin/helm; do
@@ -206,9 +192,9 @@ if [[ -z "$HELM_BIN" ]]; then
 fi
 
 # ─── OpenShell gateway — deployed via Helm into k3s ──────────────────────────
-# NodePort 30808 is reachable from the host at 127.0.0.1:30808 (k3s iptables
-# rules forward the NodePort even for loopback).
-OPENSHELL_GW_NODEPORT=30808
+# The gateway service is ClusterIP-only. A managed port-forward exposes it to
+# the host-side Docker orchestrator on loopback without opening a node port.
+OPENSHELL_GW_LOCAL_PORT=30808
 
 if [[ ! -f "$K3S_KUBECONFIG" ]]; then
   error "k3s kubeconfig not found at ${K3S_KUBECONFIG}."
@@ -224,9 +210,17 @@ if KUBECONFIG="$K3S_KUBECONFIG" kubectl get crd sandboxes.agents.x-k8s.io >/dev/
   info "Agent Sandbox CRDs + controller already installed — skipping."
 else
   info "Installing Kubernetes Agent Sandbox CRDs + controller..."
-  AGENT_SANDBOX_MANIFEST="https://github.com/kubernetes-sigs/agent-sandbox/releases/latest/download/manifest.yaml"
-  KUBECONFIG="$K3S_KUBECONFIG" kubectl apply -f "$AGENT_SANDBOX_MANIFEST" >/dev/null 2>&1 \
+  AGENT_SANDBOX_MANIFEST="https://github.com/kubernetes-sigs/agent-sandbox/releases/download/${AGENT_SANDBOX_VERSION}/manifest.yaml"
+  AGENT_SANDBOX_MANIFEST_FILE=$(mktemp)
+  trap 'rm -f "$AGENT_SANDBOX_MANIFEST_FILE"' EXIT
+  curl -fsSL "$AGENT_SANDBOX_MANIFEST" -o "$AGENT_SANDBOX_MANIFEST_FILE" \
+    || error "Could not download Agent Sandbox ${AGENT_SANDBOX_VERSION} manifest."
+  echo "${AGENT_SANDBOX_MANIFEST_SHA256}  ${AGENT_SANDBOX_MANIFEST_FILE}" | sha256sum --check --status \
+    || error "Agent Sandbox manifest checksum verification failed."
+  KUBECONFIG="$K3S_KUBECONFIG" kubectl apply -f "$AGENT_SANDBOX_MANIFEST_FILE" >/dev/null 2>&1 \
     || warn "Could not apply Agent Sandbox manifest — sandbox creation will fail."
+  rm -f "$AGENT_SANDBOX_MANIFEST_FILE"
+  trap - EXIT
   KUBECONFIG="$K3S_KUBECONFIG" kubectl wait \
     --for=condition=available deployment/agent-sandbox-controller \
     -n agent-sandbox-system --timeout=120s >/dev/null 2>&1 \
@@ -268,8 +262,57 @@ else
   fi
 fi
 
-# Pass the gateway NodePort endpoint directly.
-OPENSHELL_GATEWAY_ARGS="-e OPENSHELL_GATEWAY_ENDPOINT=http://127.0.0.1:${OPENSHELL_GW_NODEPORT}"
+# Refresh the loopback-only gateway tunnel used by the Docker orchestrator.
+OPENSHELL_PORT_FORWARD_PID="${DATA_DIR}/.openshell-port-forward.pid"
+if [[ -f "$OPENSHELL_PORT_FORWARD_PID" ]]; then
+  _old_pid=$(cat "$OPENSHELL_PORT_FORWARD_PID" 2>/dev/null || true)
+  _old_cmd=$(tr '\0' ' ' < "/proc/${_old_pid}/cmdline" 2>/dev/null || true)
+  if [[ "$_old_pid" =~ ^[0-9]+$ ]] && kill -0 "$_old_pid" 2>/dev/null \
+     && [[ "$_old_cmd" == *"kubectl port-forward"*"${OPENSHELL_GW_LOCAL_PORT}:8080"* ]]; then
+    kill "$_old_pid" 2>/dev/null || true
+  fi
+  rm -f "$OPENSHELL_PORT_FORWARD_PID"
+fi
+OPENSHELL_SERVICE=$(KUBECONFIG="$K3S_KUBECONFIG" kubectl get service \
+  -n virtual-engineer -l 'app.kubernetes.io/name=openshell' \
+  -o jsonpath='{.items[0].metadata.name}')
+[[ -n "$OPENSHELL_SERVICE" ]] || error "OpenShell gateway service not found."
+KUBECONFIG="$K3S_KUBECONFIG" kubectl port-forward \
+  -n virtual-engineer --address 127.0.0.1 \
+  "service/${OPENSHELL_SERVICE}" "${OPENSHELL_GW_LOCAL_PORT}:8080" \
+  >"${DATA_DIR}/openshell-port-forward.log" 2>&1 &
+_port_forward_pid=$!
+echo "$_port_forward_pid" > "$OPENSHELL_PORT_FORWARD_PID"
+
+if ! curl --silent --show-error --output /dev/null \
+    --retry 20 --retry-delay 1 --retry-connrefused --connect-timeout 1 \
+    "http://127.0.0.1:${OPENSHELL_GW_LOCAL_PORT}/"; then
+  kill "$_port_forward_pid" 2>/dev/null || true
+  rm -f "$OPENSHELL_PORT_FORWARD_PID"
+  error "OpenShell gateway tunnel did not become reachable. See ${DATA_DIR}/openshell-port-forward.log"
+fi
+
+OPENSHELL_GATEWAY_ARGS="-e OPENSHELL_GATEWAY_ENDPOINT=http://127.0.0.1:${OPENSHELL_GW_LOCAL_PORT}"
+
+# ─── Idempotent container restart ─────────────────────────────────────────────
+# The tunnel is reconciled first so rerunning this script repairs a dead
+# gateway connection even when the current orchestrator image is still running.
+LATEST_ID=$(docker inspect --format='{{.Id}}' virtual-engineer:latest 2>/dev/null || true)
+RUNNING_ID=$(docker inspect --format='{{.Image}}' ve-orchestrator 2>/dev/null || true)
+IS_RUNNING=$(docker inspect --format='{{.State.Running}}' ve-orchestrator 2>/dev/null || true)
+
+if [[ "$IS_RUNNING" == "true" && "$RUNNING_ID" == "$LATEST_ID" ]]; then
+  info "ve-orchestrator is already running the latest image; gateway tunnel refreshed."
+  info "Logs : docker logs -f ve-orchestrator"
+  exit 0
+fi
+
+if [[ -n "$RUNNING_ID" ]]; then
+  info "Removing existing ve-orchestrator container..."
+  docker rm -f ve-orchestrator
+fi
+
+info "Starting ve-orchestrator..."
 
 SSH_AGENT_ARGS=""
 if [ -n "${SSH_AUTH_SOCK:-}" ] && [ -S "$SSH_AUTH_SOCK" ]; then
