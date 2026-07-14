@@ -4,9 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import type { StateStore } from "../../src/interfaces.js";
-import { makeTaskId, makeTicketId, makeProjectId } from "../../src/interfaces.js";
+import { makeTaskId, makeTicketId, makeProjectId, type AgentLogEvent } from "../../src/interfaces.js";
 import { SqliteStateStore } from "../../src/state/stateStore.js";
 import { createAdminServer } from "../../src/admin/adminServer.js";
+import { agentLogBus } from "../../src/agents/agentEventBus.js";
 
 const SECRET = "rbac-test-secret";
 
@@ -442,5 +443,51 @@ describe("adminServer PBAC project scoping", () => {
     // Detail for the out-of-scope task B is forbidden; A is allowed.
     expect((await fetch(`${baseUrl}/api/admin/tasks/${taskA}`, authed(user.token))).status).toBe(200);
     expect((await fetch(`${baseUrl}/api/admin/tasks/${taskB}`, authed(user.token))).status).toBe(403);
+  });
+
+  it("scope-filters the global live-log stream by task project", async () => {
+    const admin = await setupAdmin();
+    const { a, b } = await seedTwoProjects();
+    const taskA = randomUUID();
+    const taskB = randomUUID();
+    await store.createTask(makeTaskId(taskA), makeTicketId("T-A"), "Task A", "", "redmine", undefined, undefined, undefined, makeProjectId(a));
+    await store.createTask(makeTaskId(taskB), makeTicketId("T-B"), "Task B", "", "redmine", undefined, undefined, undefined, makeProjectId(b));
+
+    const user = await createUserAndLogin(admin, "streamscoped", "viewer");
+    const viewerPolicy = (await store.listPolicies()).find((p) => p.name === "Viewer");
+    await store.deleteBinding(viewerPolicy!.id, "user", user.user.id);
+    const scoped = await store.createPolicy({ name: "Stream-A-read" });
+    await store.setPolicyRules(scoped.id, [{ permission: "task.read", resourceId: a }]);
+    await store.createBinding({ policyId: scoped.id, principalType: "user", principalId: user.user.id });
+
+    const abort = new AbortController();
+    const response = await fetch(`${baseUrl}/api/admin/logs/stream`, {
+      ...authed(user.token),
+      signal: abort.signal,
+    });
+    expect(response.status).toBe(200);
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let output = decoder.decode((await reader.read()).value, { stream: true });
+
+    const event = (taskId: string, marker: string): AgentLogEvent => ({
+      type: "assistant.message",
+      timestamp: new Date().toISOString(),
+      data: { content: marker },
+      taskId,
+      cycleNumber: 1,
+    });
+    agentLogBus.emit("event", event(taskB, "forbidden-project-marker"));
+    agentLogBus.emit("event", event(taskA, "allowed-project-marker"));
+
+    while (!output.includes("allowed-project-marker")) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      output += decoder.decode(chunk.value, { stream: true });
+    }
+    abort.abort();
+
+    expect(output).toContain("allowed-project-marker");
+    expect(output).not.toContain("forbidden-project-marker");
   });
 });

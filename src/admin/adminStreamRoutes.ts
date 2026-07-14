@@ -27,13 +27,32 @@ export function registerStreamRoutes(router: Router, deps: StreamRouteDeps): voi
     let streamEntries: Array<Record<string, unknown>> = [];
     const pendingLiveEvents: AgentLogEvent[] = [];
     let writeLiveEvent: ((event: AgentLogEvent) => void) | null = null;
+    let authorizationQueue = Promise.resolve();
+    const taskProjects = new Map<string, Task["projectId"] | null>();
     const eventListener = (event: AgentLogEvent): void => {
-      if (taskIdParam && event.taskId !== taskIdParam) return;
-      if (writeLiveEvent) {
-        writeLiveEvent(event);
-      } else {
-        pendingLiveEvents.push(event);
+      if (taskIdParam) {
+        if (event.taskId !== taskIdParam) return;
+        if (writeLiveEvent) {
+          writeLiveEvent(event);
+        } else {
+          pendingLiveEvents.push(event);
+        }
+        return;
       }
+
+      authorizationQueue = authorizationQueue.then(async () => {
+        if (!res.writable) return;
+        let projectId = taskProjects.get(event.taskId);
+        if (projectId === undefined) {
+          const task = await deps.stateStore.getTask(makeTaskId(event.taskId));
+          projectId = task?.projectId ?? null;
+          taskProjects.set(event.taskId, projectId);
+        }
+        if (projectId === null) return;
+        const perms = getEffectivePermissions(req);
+        if (perms && !can(perms, "task.read", projectId)) return;
+        writeLiveEvent?.(event);
+      }).catch(() => undefined);
     };
 
     if (taskIdParam) {
@@ -123,6 +142,7 @@ export function registerStreamRoutes(router: Router, deps: StreamRouteDeps): voi
 
     res.on("close", () => {
       agentLogBus.off("event", eventListener);
+      taskProjects.clear();
       clearInterval(heartbeatLogs);
     });
     // Do NOT call res.end() — keep connection open

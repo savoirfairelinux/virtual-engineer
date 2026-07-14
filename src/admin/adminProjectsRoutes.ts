@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { isAbsolute, normalize, sep } from "node:path";
 import { getLogger } from "../logger.js";
 import { writeJson, readBody, zodErrorBody } from "./adminRouteUtils.js";
 import { recordAudit, type AuditCapableStore } from "./adminAudit.js";
@@ -121,13 +122,20 @@ const pushTargetSchema = z.object({
   targetBranch: z.string().min(1, "Target branch is required"),
   role: z.enum(["primary", "submodule", "dependency", "related"]),
   commitOrder: z.number().int().min(1),
-  localPath: z.string().min(1),
+  localPath: z.string().min(1).refine(
+    (value) => {
+      if (isAbsolute(value)) return false;
+      const normalized = normalize(value);
+      return normalized !== ".." && !normalized.startsWith(`..${sep}`);
+    },
+    "localPath must stay within the project workspace",
+  ).transform((value) => normalize(value)),
   sshKeyPath: z.string().optional(),
 });
 
 /** Validate push-target arrays: unique localPaths, at most one root ("."). */
 const pushTargetsArraySchema = z.array(pushTargetSchema).min(1).superRefine((targets, ctx) => {
-  const paths = targets.map((t) => t.localPath);
+  const paths = targets.map((t) => normalize(t.localPath));
   const roots = paths.filter((p) => p === ".");
   if (roots.length > 1) {
     ctx.addIssue({
@@ -221,7 +229,7 @@ const HTTPS_ONLY_VCS_TYPES = new Set(["github", "gitlab"]);
 
 /**
  * Validate that push targets for HTTPS-based integrations (GitHub, GitLab) do
- * not use SSH clone URLs (`git@...`). Returns an error message or null.
+ * not use SSH clone URLs. Returns an error message or null.
  */
 async function validatePushTargetCloneUrls(
   targets: Array<{ integrationId: string; cloneUrl: string; repoKey: string }>,
@@ -229,7 +237,13 @@ async function validatePushTargetCloneUrls(
 ): Promise<string | null> {
   if (!integrationStore) return null;
   for (const target of targets) {
-    if (!target.cloneUrl.startsWith("git@")) continue;
+    let usesSsh = target.cloneUrl.startsWith("git@");
+    try {
+      usesSsh ||= new URL(target.cloneUrl).protocol === "ssh:";
+    } catch {
+      // Non-URL clone forms are handled by the explicit scp-style check.
+    }
+    if (!usesSsh) continue;
     const integration = await integrationStore.getIntegration(target.integrationId).catch(() => null);
     if (integration && HTTPS_ONLY_VCS_TYPES.has(integration.provider)) {
       return `Push target "${target.repoKey}" uses an SSH clone URL (${target.cloneUrl}) which is not supported for ${integration.provider} integrations. Use an HTTPS URL instead (e.g. https://github.com/owner/repo.git).`;

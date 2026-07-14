@@ -70,7 +70,7 @@ async function makeAgent(store: SqliteStateStore, type: AgentType = "coding"): P
   return store.createAgent({ name: `${type}-bot`, type, modelConfigJson: "{}", enabled: true });
 }
 
-async function seedIntegration(store: SqliteStateStore, id: string, provider: "redmine" | "gerrit" = "redmine"): Promise<void> {
+async function seedIntegration(store: SqliteStateStore, id: string, provider: "redmine" | "gerrit" | "github" = "redmine"): Promise<void> {
   await store.upsertIntegration({ id, provider, name: id, configJson: "{}", enabled: true });
 }
 
@@ -227,6 +227,69 @@ describe("Admin API — Project routes (/api/admin/projects)", () => {
       body: { type: "coding", name: "NoTicket", agentId: agent.id, pushTargets: [{ integrationId: "g", repoKey: "r", cloneUrl: "u", targetBranch: "main", role: "primary", commitOrder: 1, localPath: "." }] },
     });
     expect(noTicket.status).toBe(400);
+  });
+
+  it.each(["../outside", "/absolute/path", "libs/../../outside"])(
+    "POST / rejects push-target paths outside the workspace: %s",
+    async (localPath) => {
+      const agent = await makeAgent(store, "coding");
+      const r = await rest(server, "/api/admin/projects", {
+        method: "POST",
+        body: {
+          type: "coding",
+          name: "Unsafe path",
+          agentId: agent.id,
+          ticketSource: { integrationId: "tickets", ticketProjectKey: "P" },
+          pushTargets: [{
+            integrationId: "git",
+            repoKey: "repo",
+            cloneUrl: "https://host/repo.git",
+            targetBranch: "main",
+            role: "primary",
+            commitOrder: 1,
+            localPath,
+          }],
+        },
+      });
+      expect(r.status).toBe(400);
+      expect(JSON.stringify(r.body)).toMatch(/localPath|workspace/i);
+    },
+  );
+
+  it("POST / rejects push targets that normalize to the same workspace path", async () => {
+    const agent = await makeAgent(store, "coding");
+    const r = await rest(server, "/api/admin/projects", {
+      method: "POST",
+      body: {
+        type: "coding", name: "Duplicate paths", agentId: agent.id,
+        ticketSource: { integrationId: "tickets", ticketProjectKey: "P" },
+        pushTargets: [
+          { integrationId: "git", repoKey: "one", cloneUrl: "https://host/one.git", targetBranch: "main", role: "primary", commitOrder: 1, localPath: "repo" },
+          { integrationId: "git", repoKey: "two", cloneUrl: "https://host/two.git", targetBranch: "main", role: "related", commitOrder: 2, localPath: "libs/../repo" },
+        ],
+      },
+    });
+    expect(r.status).toBe(400);
+    expect(JSON.stringify(r.body)).toMatch(/duplicate localPath/i);
+  });
+
+  it("POST / rejects ssh protocol URLs for HTTPS-only integrations", async () => {
+    const agent = await makeAgent(store, "coding");
+    await seedIntegration(store, "github-1", "github");
+    const r = await rest(server, "/api/admin/projects", {
+      method: "POST",
+      body: {
+        type: "coding", name: "SSH GitHub", agentId: agent.id,
+        ticketSource: { integrationId: "tickets", ticketProjectKey: "P" },
+        pushTargets: [{
+          integrationId: "github-1", repoKey: "owner/repo",
+          cloneUrl: "ssh://git@github.com/owner/repo.git", targetBranch: "main",
+          role: "primary", commitOrder: 1, localPath: ".",
+        }],
+      },
+    });
+    expect(r.status).toBe(400);
+    expect(JSON.stringify(r.body)).toMatch(/SSH clone URL/i);
   });
 
   it("POST / review requires reviewConfig", async () => {

@@ -563,6 +563,7 @@ export class Orchestrator {
   /** Execute one agent cycle: build context, invoke the agent, push changes, and advance state. */
   private async runAgentCycle(task: Task, reviewFeedback: FeedbackItem[] = []): Promise<void> {
     let cycleSlot: { projectId: import("../interfaces.js").ProjectId; agentId: import("../interfaces.js").AgentId } | null = null;
+    let pendingRetry: Task | null = null;
     const projectIdForCycle = task.projectId ?? (await this.stateStore.getTask(task.taskId))?.projectId ?? null;
     if (!task.projectId && projectIdForCycle) {
       task.projectId = projectIdForCycle;
@@ -811,28 +812,26 @@ export class Orchestrator {
           return;
         }
 
-        const retryTask = await this.stateStore.transition(task.taskId, "RETRY_CYCLE");
-        await this.runAgentCycle(retryTask);
-        return;
+        pendingRetry = await this.stateStore.transition(task.taskId, "RETRY_CYCLE");
+      } else {
+        const hasAgentCommits = agentResult.commits != null && agentResult.commits.length > 0;
+
+        if (rootConnector.useChangeIdContinuity && !agentResult.externalChangeId && !hasAgentCommits) {
+          throw new Error("Agent reported success but did not return a Gerrit Change-Id or commits");
+        }
+
+        await this.stateStore.saveAgentCycle(task.taskId, cycleNumber, normalizedResult);
+
+        // For Gerrit: agent commits[] are pre-validated; each becomes a separate change (topic-grouped).
+        // For GitLab: all N commits land in one MR via force-push.
+        if (task.projectId && this.projectMode && projectPushTargets.length > 0) {
+          await this.pushProjectChanges(task, handle, projectPushTargets, commitMessage, context.ticketUrl ?? "", agentResult.commits);
+        }
+
+        task = await this.stateStore.transition(task.taskId, "IN_REVIEW");
+        const ticketConn = await this.resolveTicketConnector(task);
+        await ticketConn.transitionToInReview(task.ticketId);
       }
-
-      const hasAgentCommits = agentResult.commits != null && agentResult.commits.length > 0;
-
-      if (rootConnector.useChangeIdContinuity && !agentResult.externalChangeId && !hasAgentCommits) {
-        throw new Error("Agent reported success but did not return a Gerrit Change-Id or commits");
-      }
-
-      await this.stateStore.saveAgentCycle(task.taskId, cycleNumber, normalizedResult);
-
-      // For Gerrit: agent commits[] are pre-validated; each becomes a separate change (topic-grouped).
-      // For GitLab: all N commits land in one MR via force-push.
-      if (task.projectId && this.projectMode && projectPushTargets.length > 0) {
-        await this.pushProjectChanges(task, handle, projectPushTargets, commitMessage, context.ticketUrl ?? "", agentResult.commits);
-      }
-
-      task = await this.stateStore.transition(task.taskId, "IN_REVIEW");
-      const ticketConn = await this.resolveTicketConnector(task);
-      await ticketConn.transitionToInReview(task.ticketId);
     } finally {
       try {
         await this.workspaceRunner.destroyWorkspace(handle);
@@ -845,6 +844,9 @@ export class Orchestrator {
       if (cycleSlot && this.projectMode?.concurrencyTracker) {
         this.projectMode.concurrencyTracker.release(cycleSlot.projectId, cycleSlot.agentId);
       }
+    }
+    if (pendingRetry) {
+      await this.runAgentCycle(pendingRetry);
     }
   }
 

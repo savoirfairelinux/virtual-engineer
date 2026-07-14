@@ -413,6 +413,67 @@ describe("Orchestrator — Phase 4 project mode", () => {
     expect(ws.runAgent).toHaveBeenCalledWith(expect.any(Object), expect.any(Object), projectAgent);
   });
 
+  it("starts a failed-cycle retry only after workspace cleanup", async () => {
+    const task = makeTask({ cycleCount: 0 });
+    const stateStore = makeStateStore({
+      incrementCycle: vi.fn().mockResolvedValue(1),
+      transition: vi.fn().mockResolvedValue(makeTask({ state: "RETRY_CYCLE", cycleCount: 1 })),
+      getTask: vi.fn().mockResolvedValue(task),
+    });
+    let workspaceDestroyed = false;
+    const workspace = makeWorkspaceRunner({
+      runAgent: vi.fn().mockResolvedValue({
+        status: "failed",
+        modifiedFiles: [],
+        summary: "failed",
+        agentLogs: "",
+        metadata: {},
+      }),
+      destroyWorkspace: vi.fn().mockImplementation(async () => {
+        workspaceDestroyed = true;
+      }),
+    });
+    const projectMode: ProjectModeDeps = {
+      projectStore: {
+        getProjectById: vi.fn(async () => makeProject()),
+        listProjectPushTargets: vi.fn(async () => [
+          makePushTarget({ id: 1, commitOrder: 1, localPath: ".", integrationId: "vcs-root", repoKey: "root" }),
+        ]),
+        getProjectTicketSource: vi.fn().mockResolvedValue({ integrationId: "redmine-int" }),
+        getProjectReviewConfig: vi.fn().mockResolvedValue(null),
+        getAgentById: vi.fn().mockResolvedValue({
+          id: makeAgentId("a-1"),
+          integrationId: "agent-int",
+          modelConfigJson: "{}",
+          enabled: true,
+        }),
+      },
+      pluginManager: {
+        getConnectorForIntegration: vi.fn((id: string) => id === "redmine-int" ? makeRedmine() : null),
+        getAgentAdapter: vi.fn(() => ({ name: "agent", execute: vi.fn() })),
+      } as unknown as ProjectModeDeps["pluginManager"],
+      resolveVcsForIntegration: vi.fn().mockResolvedValue({
+        clone: vi.fn(),
+        push: vi.fn(),
+        getChangeStatus: vi.fn(),
+        buildPushSpec: vi.fn().mockReturnValue({ ref: "refs/for/main" }),
+        useChangeIdContinuity: false,
+        reviewSystemLabel: "gitlab",
+      } as unknown as VcsConnector),
+    };
+    const orch = new Orchestrator(baseConfig(), stateStore, workspace, undefined, undefined, projectMode);
+    const originalRunAgentCycle = (orch as unknown as { runAgentCycle: (current: Task) => Promise<void> }).runAgentCycle.bind(orch);
+    const runSpy = vi.spyOn(orch as unknown as { runAgentCycle: (current: Task) => Promise<void> }, "runAgentCycle");
+    runSpy.mockImplementationOnce(originalRunAgentCycle).mockImplementationOnce(async () => {
+      expect(workspaceDestroyed).toBe(true);
+    });
+
+    await runSpy(task);
+
+    expect(workspace.destroyWorkspace).toHaveBeenCalledTimes(1);
+    expect(runSpy).toHaveBeenCalledTimes(2);
+  });
+
   it("project-mode runAgentCycle applies resolved agent overrides to task context", async () => {
     const stateStore = makeStateStore();
     const ws = makeWorkspaceRunner();
