@@ -196,6 +196,46 @@ export function resolveExistingChangeId(
   return entry[String(commitIndex)] ?? null;
 }
 
+/** Resolve prior-change metadata for the workspace root repository. */
+export function resolveExistingRootChange(
+  rootChangeId: string | null,
+  perRepoChangeIds: Record<string, string | Record<string, string>> | null,
+  repositoryMap: RepositoryMap | undefined,
+): { changeId: string | null; repoKey: string | null } {
+  if (perRepoChangeIds == null) {
+    return { changeId: rootChangeId || null, repoKey: null };
+  }
+
+  const superprojectKey = repositoryMap?.superproject.repoKey;
+  if (superprojectKey != null) {
+    const entry = perRepoChangeIds[superprojectKey];
+    if (entry == null) {
+      return { changeId: rootChangeId || null, repoKey: null };
+    }
+    return {
+      changeId: rootChangeId || (typeof entry === 'string' ? entry : entry['0']) || null,
+      repoKey: superprojectKey,
+    };
+  }
+
+  const keys = Object.keys(perRepoChangeIds);
+  if (keys.length !== 1) {
+    return { changeId: rootChangeId || null, repoKey: null };
+  }
+  const repoKey = keys[0];
+  if (repoKey == null) {
+    return { changeId: rootChangeId || null, repoKey: null };
+  }
+  const entry = perRepoChangeIds[repoKey];
+  if (entry == null) {
+    return { changeId: rootChangeId || null, repoKey: null };
+  }
+  return {
+    changeId: rootChangeId || (typeof entry === 'string' ? entry : entry['0']) || null,
+    repoKey,
+  };
+}
+
 /** Options for injectChangeIds. */
 export interface InjectChangeIdsOptions {
   /** Legacy single Change-Id for the first commit (ROOT_CHANGE_ID compatibility). */
@@ -323,7 +363,18 @@ export function injectChangeIds(
 export function squashIntoBaseIfNeeded(
   baseSha: string,
   cwd: string,
+  isContinuation: boolean,
 ): { squashed: boolean; commits?: CommitDescriptor[] | undefined } {
+  // Squashing amends the base commit (reset --soft + commit --amend), which is
+  // only valid when the base IS VE's own prior patchset — i.e. a continuation
+  // (retry/feedback) cycle. On a first cycle the base is the upstream branch
+  // tip; on Gerrit repos that tip carries a Change-Id, but amending it would
+  // rewrite an upstream commit whose parent is missing from the --depth 1
+  // shallow clone, causing diff-tree to report the whole repository.
+  if (!isContinuation) {
+    return { squashed: false };
+  }
+
   const baseBody = git(['log', '-1', '--format=%b', baseSha], cwd);
   const baseChangeIdMatch = baseBody.match(/^Change-Id:\s*(\S+)/m);
   if (!baseChangeIdMatch) {
