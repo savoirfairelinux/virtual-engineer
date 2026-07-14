@@ -14,7 +14,9 @@
 # Optional environment variables:
 #   DATA_DIR       (default: ./data)
 #   K3S_KUBECONFIG (default: /etc/rancher/k3s/k3s.yaml)  k3s admin kubeconfig path
-#   OPENSHELL_VERSION  (default: v0.0.79)  OpenShell CLI version baked into the orchestrator
+#   OPENSHELL_VERSION  (default: v0.0.79)  Matching OpenShell CLI/chart release
+#   OPENSHELL_INSTALLER_SHA256 required when overriding OPENSHELL_VERSION
+#   OPENSHELL_CHART_VERSION optional chart-only override (default: CLI version without v)
 #   K3S_VERSION (default: v1.32.3+k3s1) pinned k3s release
 #   AGENT_SANDBOX_VERSION (default: v0.5.1) pinned controller manifest version
 #   AGENT_SANDBOX_MANIFEST_SHA256 verified manifest digest for that version
@@ -33,8 +35,7 @@ cd "$ROOT_DIR"
 # ─── Parse arguments ──────────────────────────────────────────────────────────
 K3S_INSTALL=true
 OPENSHELL_VERSION="${OPENSHELL_VERSION:-v0.0.79}"
-OPENSHELL_INSTALLER_SHA256="${OPENSHELL_INSTALLER_SHA256:-c15d6cb8090e1c7c8d79a320b5bcbdaf1c15c2363942d81e84b56e03b836249e}"
-OPENSHELL_CHART_VERSION="${OPENSHELL_CHART_VERSION:-0.0.79}"
+OPENSHELL_INSTALLER_SHA256="${OPENSHELL_INSTALLER_SHA256:-}"
 K3S_VERSION="${K3S_VERSION:-v1.32.3+k3s1}"
 AGENT_SANDBOX_VERSION="${AGENT_SANDBOX_VERSION:-v0.5.1}"
 AGENT_SANDBOX_MANIFEST_SHA256="${AGENT_SANDBOX_MANIFEST_SHA256:-8cfdf0a878f66b91d2e7103e77859d1412d850ce3f5fe5c3fa134c36bd55504a}"
@@ -53,6 +54,15 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ -z "$OPENSHELL_INSTALLER_SHA256" ]]; then
+  if [[ "$OPENSHELL_VERSION" == "v0.0.79" ]]; then
+    OPENSHELL_INSTALLER_SHA256="c15d6cb8090e1c7c8d79a320b5bcbdaf1c15c2363942d81e84b56e03b836249e"
+  else
+    error "OPENSHELL_INSTALLER_SHA256 is required when using OpenShell ${OPENSHELL_VERSION}."
+  fi
+fi
+OPENSHELL_CHART_VERSION="${OPENSHELL_CHART_VERSION:-${OPENSHELL_VERSION#v}}"
+
 DATA_DIR="${DATA_DIR:-$ROOT_DIR/data}"
 K3S_KUBECONFIG="${K3S_KUBECONFIG:-/etc/rancher/k3s/k3s.yaml}"
 
@@ -69,6 +79,8 @@ ensure_dir() {
 }
 
 ensure_dir "$DATA_DIR"    755
+OPENSHELL_CONFIG_DIR="${DATA_DIR}/openshell-cli-config"
+ensure_dir "$OPENSHELL_CONFIG_DIR" 700
 
 # ─── Preflight: k3s setup needs root, so sudo must be able to escalate ────────
 # When 'no_new_privileges' is set on the current shell (e.g. some sandboxed
@@ -88,7 +100,12 @@ fi
 # ─── Ensure single-node k3s is installed and ready ────────────────────────────
 ensure_k3s() {
   if command -v k3s >/dev/null 2>&1 && sudo k3s kubectl get nodes >/dev/null 2>&1; then
-    info "k3s already installed and running."
+    local installed_version
+    installed_version=$(k3s --version | awk 'NR == 1 { print $3 }')
+    if [[ "$installed_version" != "$K3S_VERSION" ]]; then
+      error "k3s ${installed_version} is running, but K3S_VERSION=${K3S_VERSION}. Align the pin or upgrade k3s explicitly before continuing."
+    fi
+    info "k3s ${installed_version} already installed and running."
     return
   fi
   if [[ "$K3S_INSTALL" != "true" ]]; then
@@ -132,7 +149,7 @@ KUBECONFIG="$K3S_KUBECONFIG" kubectl apply -f "$ROOT_DIR/deploy/k8s/00-namespace
   || error "Could not create the virtual-engineer namespace."
 KUBECONFIG="$K3S_KUBECONFIG" kubectl apply -f "$ROOT_DIR/deploy/k8s/15-rbac-openshell.yaml" >/dev/null 2>&1 \
   || sudo k3s kubectl apply -f "$ROOT_DIR/deploy/k8s/15-rbac-openshell.yaml" >/dev/null 2>&1 \
-  || warn "Could not apply deploy/k8s/15-rbac-openshell.yaml — continuing."
+  || error "Could not apply deploy/k8s/15-rbac-openshell.yaml."
 KUBECONFIG="$K3S_KUBECONFIG" kubectl apply -f "$ROOT_DIR/deploy/k8s/16-network-policy-openshell.yaml" >/dev/null 2>&1 \
   || sudo k3s kubectl apply -f "$ROOT_DIR/deploy/k8s/16-network-policy-openshell.yaml" >/dev/null 2>&1 \
   || error "Could not apply the OpenShell gateway NetworkPolicy."
@@ -167,7 +184,7 @@ else
   if docker save virtual-engineer-workspace:latest | sudo k3s ctr -n k8s.io images import - >/dev/null; then
     echo "$AGENT_HASH" > "$AGENT_MARKER"
   else
-    warn "Could not import agent image into k3s — sandbox Pods may fail to start."
+    error "Could not import agent image into k3s."
   fi
 fi
 
@@ -176,7 +193,7 @@ fi
 # package/tsconfig/vite files + the pinned OpenShell version) are unchanged and
 # the image already exists. The build's own layer cache is a fallback, but
 # skipping the invocation avoids buildkit's metadata/context overhead.
-ORCH_HASH=$(printf '%s\n%s\n' "$OPENSHELL_VERSION" \
+ORCH_HASH=$(printf '%s\n%s\n%s\n' "$OPENSHELL_VERSION" "$OPENSHELL_INSTALLER_SHA256" \
   "$(build_inputs_hash Dockerfile.orchestrator src agent-worker prompts \
       package.json package-lock.json tsconfig.json tsconfig.admin-ui.json vite.admin.config.ts)" \
   | sha256sum | cut -d' ' -f1)
@@ -228,9 +245,12 @@ fi
 # resources, which are defined by the upstream kubernetes-sigs/agent-sandbox
 # project. Install the CRDs + controller before deploying the gateway.
 # Skip when they are already present (idempotent, saves the download + wait).
+INSTALLED_AGENT_SANDBOX_IMAGE=$(KUBECONFIG="$K3S_KUBECONFIG" kubectl get deployment \
+  agent-sandbox-controller -n agent-sandbox-system \
+  -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || true)
 if KUBECONFIG="$K3S_KUBECONFIG" kubectl get crd sandboxes.agents.x-k8s.io >/dev/null 2>&1 \
-   && KUBECONFIG="$K3S_KUBECONFIG" kubectl get deployment agent-sandbox-controller -n agent-sandbox-system >/dev/null 2>&1; then
-  info "Agent Sandbox CRDs + controller already installed — skipping."
+   && [[ "$INSTALLED_AGENT_SANDBOX_IMAGE" == *":${AGENT_SANDBOX_VERSION}" ]]; then
+  info "Agent Sandbox ${AGENT_SANDBOX_VERSION} already installed — skipping."
 else
   info "Installing Kubernetes Agent Sandbox CRDs + controller..."
   AGENT_SANDBOX_MANIFEST="https://github.com/kubernetes-sigs/agent-sandbox/releases/download/${AGENT_SANDBOX_VERSION}/manifest.yaml"
@@ -241,13 +261,13 @@ else
   echo "${AGENT_SANDBOX_MANIFEST_SHA256}  ${AGENT_SANDBOX_MANIFEST_FILE}" | sha256sum --check --status \
     || error "Agent Sandbox manifest checksum verification failed."
   KUBECONFIG="$K3S_KUBECONFIG" kubectl apply -f "$AGENT_SANDBOX_MANIFEST_FILE" >/dev/null 2>&1 \
-    || warn "Could not apply Agent Sandbox manifest — sandbox creation will fail."
+    || error "Could not apply Agent Sandbox manifest."
   rm -f "$AGENT_SANDBOX_MANIFEST_FILE"
   trap - EXIT
   KUBECONFIG="$K3S_KUBECONFIG" kubectl wait \
     --for=condition=available deployment/agent-sandbox-controller \
     -n agent-sandbox-system --timeout=120s >/dev/null 2>&1 \
-    || warn "Agent Sandbox controller not ready — sandbox creation may fail."
+    || error "Agent Sandbox controller did not become ready."
 fi
 
 # ─── OpenShell gateway (Helm) ────────────────────────────────────────────────
@@ -309,15 +329,28 @@ KUBECONFIG="$K3S_KUBECONFIG" kubectl port-forward \
 _port_forward_pid=$!
 echo "$_port_forward_pid" > "$OPENSHELL_PORT_FORWARD_PID"
 
+OPENSHELL_MTLS_DIR="${OPENSHELL_CONFIG_DIR}/openshell/gateways/openshell/mtls"
+install -d -m 0700 "$OPENSHELL_MTLS_DIR"
+for _tls_key in ca.crt tls.crt tls.key; do
+  KUBECONFIG="$K3S_KUBECONFIG" kubectl get secret openshell-client-tls \
+    -n virtual-engineer -o "jsonpath={.data.${_tls_key//./\\.}}" \
+    | base64 --decode > "${OPENSHELL_MTLS_DIR}/${_tls_key}" \
+    || error "Could not export OpenShell client TLS ${_tls_key}."
+done
+chmod 0600 "${OPENSHELL_MTLS_DIR}/ca.crt" "${OPENSHELL_MTLS_DIR}/tls.crt" "${OPENSHELL_MTLS_DIR}/tls.key"
+
 if ! curl --fail-with-body --silent --show-error --output /dev/null \
     --retry 20 --retry-delay 1 --retry-connrefused --connect-timeout 1 \
-  "http://127.0.0.1:${OPENSHELL_GW_LOCAL_PORT}/healthz"; then
+    --cacert "${OPENSHELL_MTLS_DIR}/ca.crt" \
+    --cert "${OPENSHELL_MTLS_DIR}/tls.crt" \
+    --key "${OPENSHELL_MTLS_DIR}/tls.key" \
+  "https://127.0.0.1:${OPENSHELL_GW_LOCAL_PORT}/healthz"; then
   kill "$_port_forward_pid" 2>/dev/null || true
   rm -f "$OPENSHELL_PORT_FORWARD_PID"
   error "OpenShell gateway tunnel did not become reachable. See ${DATA_DIR}/openshell-port-forward.log"
 fi
 
-OPENSHELL_GATEWAY_ARGS="-e OPENSHELL_GATEWAY_ENDPOINT=http://127.0.0.1:${OPENSHELL_GW_LOCAL_PORT}"
+OPENSHELL_GATEWAY_ARGS="-e OPENSHELL_GATEWAY_ENDPOINT=https://127.0.0.1:${OPENSHELL_GW_LOCAL_PORT} -e XDG_CONFIG_HOME=/ve-openshell-config -v ${OPENSHELL_CONFIG_DIR}:/ve-openshell-config:ro,Z"
 
 # ─── Idempotent container restart ─────────────────────────────────────────────
 # The tunnel is reconciled first so rerunning this script repairs a dead
@@ -325,8 +358,11 @@ OPENSHELL_GATEWAY_ARGS="-e OPENSHELL_GATEWAY_ENDPOINT=http://127.0.0.1:${OPENSHE
 LATEST_ID=$(docker inspect --format='{{.Id}}' virtual-engineer:latest 2>/dev/null || true)
 RUNNING_ID=$(docker inspect --format='{{.Image}}' ve-orchestrator 2>/dev/null || true)
 IS_RUNNING=$(docker inspect --format='{{.State.Running}}' ve-orchestrator 2>/dev/null || true)
+RUN_CONFIG_HASH=$(printf '%s\n' "$OPENSHELL_GATEWAY_ARGS" | sha256sum | cut -d' ' -f1)
+RUN_CONFIG_MARKER="${DATA_DIR}/.orchestrator-run-config-hash"
 
-if [[ "$IS_RUNNING" == "true" && "$RUNNING_ID" == "$LATEST_ID" ]]; then
+if [[ "$IS_RUNNING" == "true" && "$RUNNING_ID" == "$LATEST_ID" \
+  && "$(cat "$RUN_CONFIG_MARKER" 2>/dev/null || true)" == "$RUN_CONFIG_HASH" ]]; then
   info "ve-orchestrator is already running the latest image; gateway tunnel refreshed."
   info "Logs : docker logs -f ve-orchestrator"
   exit 0
@@ -363,6 +399,7 @@ docker run -d \
   $SSH_AGENT_ARGS \
   $OPENSHELL_GATEWAY_ARGS \
   virtual-engineer:latest
+echo "$RUN_CONFIG_HASH" > "$RUN_CONFIG_MARKER"
 
 info "ve-orchestrator started."
 

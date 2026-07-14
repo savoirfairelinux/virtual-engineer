@@ -19,12 +19,14 @@ upload → exec → download lifecycle.
 | --- | --- |
 | `virtual-engineer-orchestrator` Deployment | VE control plane + admin UI (single replica; owns admission + SQLite state). |
 | `virtual-engineer-data` PVC | SQLite WAL state store. |
-| `openshell-gateway` (Helm) | OpenShell control plane using the Kubernetes driver; schedules sandbox Pods. |
+| `openshell-gateway` (Helm) | OpenShell control plane using the Kubernetes driver; schedules sandbox Pods over TLS. |
 
 The gateway Service is `ClusterIP` only. The local `scripts/start.sh` path
-creates a managed `kubectl port-forward` bound to `127.0.0.1`; no unauthenticated
-OpenShell NodePort is exposed on the k3s node. `16-network-policy-openshell.yaml`
-restricts gateway ingress to the VE orchestrator and sandbox namespace.
+creates a managed `kubectl port-forward` bound to `127.0.0.1` and exports the
+chart-generated client mTLS bundle with mode `0600`; no OpenShell NodePort is
+exposed on the k3s node. `16-network-policy-openshell.yaml` restricts gateway
+ingress to the VE orchestrator and OpenShell-managed supervisor Pods in the
+sandbox namespace.
 
 ## 1. Build the orchestrator image with the OpenShell CLI
 
@@ -58,6 +60,15 @@ kubectl wait --for=condition=available deployment/agent-sandbox-controller \
 
 ## 3. Install the OpenShell gateway
 
+Create the namespaces, gateway ServiceAccount, least-privilege RBAC, and gateway
+NetworkPolicy before Helm starts the gateway Pod:
+
+```bash
+kubectl apply -f deploy/k8s/00-namespace.yaml
+kubectl apply -f deploy/k8s/15-rbac-openshell.yaml
+kubectl apply -f deploy/k8s/16-network-policy-openshell.yaml
+```
+
 ```bash
 helm install openshell oci://ghcr.io/nvidia/openshell/helm-chart \
   --version 0.0.79 \
@@ -73,9 +84,6 @@ cp deploy/k8s/20-orchestrator-secret.example.yaml /tmp/ve-secret.yaml
 sed -i "s/REPLACE_ME/$(openssl rand -hex 32)/" /tmp/ve-secret.yaml
 kubectl apply -f /tmp/ve-secret.yaml
 
-kubectl apply -f deploy/k8s/00-namespace.yaml
-kubectl apply -f deploy/k8s/15-rbac-openshell.yaml
-kubectl apply -f deploy/k8s/16-network-policy-openshell.yaml
 kubectl apply -f deploy/k8s/10-orchestrator-configmap.yaml
 kubectl apply -f deploy/k8s/30-orchestrator-pvc.yaml
 kubectl apply -f deploy/k8s/40-orchestrator-deployment.yaml
@@ -86,8 +94,8 @@ kubectl apply -f deploy/k8s/50-orchestrator-service.yaml
 
 ```bash
 kubectl -n virtual-engineer port-forward svc/virtual-engineer-admin 3100:3100
-# open http://127.0.0.1:3100 — Config → Runtime to set the default runtime,
-# Config → Policies to author sandbox policies, Config → Policy Denials to audit.
+# open http://127.0.0.1:3100 — Config → Policies to author sandbox policies,
+# Config → Policy Denials to audit.
 ```
 
 ## Scheduling model
@@ -104,3 +112,14 @@ set per-sandbox CPU/RAM quotas in the gateway values, not VE-side pod limits.
 - Agent sandboxes get only agent-facing provider credentials (inference keys);
   push/review-system credentials stay in the orchestrator.
 - Network policies are deny-by-default and authored per project/agent in the UI.
+- Gateway transport is TLS with client certificates. Sandbox supervisors use
+  gateway-minted JWTs for identity. OpenShell 0.0.79 does not expose a
+  non-interactive CLI service identity, so CLI authorization remains constrained
+  by ClusterIP, NetworkPolicy, and loopback-only port-forward. The NetworkPolicy
+  admits only the orchestrator and Pods labeled `openshell.ai/managed-by=openshell`.
+  Enabling its
+  `mtls_auth` user mode on Kubernetes is unsafe because the chart intentionally
+  mounts the same client TLS secret into sandbox supervisors.
+- VE reads a bounded warning-level `openshell logs` snapshot after every
+  post-creation attempt, scrubs secrets, and persists policy denials under the
+  originating task and project.

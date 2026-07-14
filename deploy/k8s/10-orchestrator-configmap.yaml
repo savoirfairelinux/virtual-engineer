@@ -18,4 +18,5 @@ data:
   # Backed by an emptyDir volume (see the Deployment).
   WORKSPACE_BASE_DIR: "/workspaces"
   # The OpenShell gateway the in-pod `openshell` CLI talks to (ClusterIP service).
-  OPENSHELL_GATEWAY_ENDPOINT: "http://openshell.virtual-engineer.svc.cluster.local:8080"
+  OPENSHELL_GATEWAY_ENDPOINT: "https://openshell.virtual-engineer.svc.cluster.local:8080"
+  XDG_CONFIG_HOME: "/openshell-config"

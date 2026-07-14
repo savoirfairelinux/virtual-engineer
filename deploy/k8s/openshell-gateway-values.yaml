@@ -19,9 +19,10 @@ serviceAccount:
   name: "ve-openshell-gateway"
 
 server:
-  # TLS disabled — all traffic is on-host loopback or in-cluster.
-  # Remove in multi-host / production deployments and configure cert-manager.
-  disableTls: true
+  # The chart's PKI init job provisions server and client certificates. CLI
+  # traffic and sandbox callbacks are therefore encrypted and authenticated at
+  # the transport layer, including through the loopback port-forward.
+  disableTls: false
 
   # Sandbox pods land in the ve-agents namespace (RBAC pre-applied by
   # deploy/k8s/15-rbac-openshell.yaml).
@@ -32,8 +33,10 @@ server:
   # by start.sh and never published.
   sandboxImagePullPolicy: "IfNotPresent"
 
-  # UNSAFE — accept unauthenticated requests.
-  # Acceptable for a trusted single-host dev setup; remove for production.
+  # OpenShell 0.0.79 has no non-interactive CLI service identity. Keep user
+  # authorization network-scoped while mTLS protects transport; sandbox calls
+  # use gateway-minted JWTs. Do not enable gateway.mtls_auth on Kubernetes: the
+  # chart mounts the same client certificate into sandbox supervisors.
   auth:
     allowUnauthenticatedUsers: true
 
@@ -53,8 +56,8 @@ supervisor:
   sideloadMethod: "init-container"
 
 service:
-  # Keep the unauthenticated development gateway inside the cluster. Local
-  # Docker deployments reach it through a loopback-only kubectl port-forward.
+  # Keep the gateway inside the cluster. Local Docker deployments reach it
+  # through a loopback-only kubectl port-forward with verified mTLS.
   type: ClusterIP
   port: 8080
 

@@ -74,6 +74,9 @@ spec:
               mountPath: /workspaces
             - name: tmp
               mountPath: /tmp
+            - name: openshell-client-tls
+              mountPath: /openshell-config/openshell/gateways/openshell/mtls
+              readOnly: true
       volumes:
         - name: data
           persistentVolumeClaim:
@@ -84,3 +87,7 @@ spec:
           emptyDir: {}
         - name: tmp
           emptyDir: {}
+        - name: openshell-client-tls
+          secret:
+            secretName: openshell-client-tls
+            defaultMode: 0440

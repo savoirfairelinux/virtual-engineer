@@ -33,9 +33,9 @@ Virtual Engineer is a **Node.js orchestrator** that runs on the host (or in a Do
   │                                │  OpenShellWorkspaceRunner         │   │
   │                                │  1. HostGitExecutor: clone (host) │   │
   │                                │  2. sandbox create (k3s Pod)      │   │
-  │                                │  3. sandbox upload  → /workspace  │   │
+  │                                │  3. sandbox upload  → /sandbox/* │   │
   │                                │  4. sandbox exec    (agent)       │   │
-  │                                │  5. sandbox download ← /workspace │   │
+  │                                │  5. sandbox download ← /sandbox/*│   │
   │                                │  6. git push (host)  + sandbox rm │   │
   │                                └──────────────┬────────────────────┘   │
   └──────────────────────────────────────────────-┼────────────────────────┘
@@ -44,7 +44,7 @@ Virtual Engineer is a **Node.js orchestrator** that runs on the host (or in a Do
   ┌──────────────────────────┐   ┌─────────────────────────────────────────┐
   │  Gerrit / GitLab / GitHub│   │  Ephemeral Agent Sandbox (k3s Pod)      │
   └──────────────────────────┘   │  virtual-engineer-workspace:latest      │
-                                 │  /workspace  ← uploaded repo (incl .git)│
+                                 │  /sandbox/<workspace> ← repo + .git    │
                                  │                                         │
                                  │  node /app/agent-worker/dist/index.js  │
                                  │    → copilot --headless                 │
@@ -276,10 +276,10 @@ The **sole** workspace runtime. Git plumbing runs natively on the orchestrator v
        ├─ HostGitExecutor.cloneRepo(...)       ← git clone (host-side, SSH or HTTP)
        │
        ├─ client.createSandbox({ from: image, env: spec.env, policy })  ← k3s Pod
-       ├─ client.uploadToSandbox(dir → /workspace, --no-git-ignore)     ← incl. .git
-       ├─ client.execInSandbox({ workdir: /workspace,
+      ├─ client.uploadToSandbox(dir → /sandbox, --no-git-ignore)       ← incl. .git
+      ├─ client.execInSandbox({ workdir: /sandbox/<basename(dir)>,
       │       command: [node, /app/agent-worker/dist/index.js], env }) ← agent runs
-       ├─ client.downloadFromSandbox(/workspace → dir)                  ← commits back
+      ├─ client.downloadFromSandbox(/sandbox/<basename(dir)> → dir)    ← commits back
        │
        ├─ vcsConnector.push(dir, ref, ...)     ← git push host-side (src/vcs)
        │

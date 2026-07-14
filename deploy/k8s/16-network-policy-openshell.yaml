@@ -21,6 +21,9 @@ spec:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: ve-agents
+          podSelector:
+            matchLabels:
+              openshell.ai/managed-by: openshell
       ports:
         - protocol: TCP
           port: 8080
