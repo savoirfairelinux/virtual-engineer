@@ -237,6 +237,71 @@ describe("Review live logs and cycle persistence", () => {
     expect(types).not.toContain("review.failed");
   });
 
+  it("emits streamed agent events before review completion and persists them once", async () => {
+    const mocks = makeMocks(makeTask());
+    const runner = makeWorkspaceRunner();
+    let finishAgent: ((value: { rawOutput: string }) => void) | undefined;
+    runner.runReviewInDocker.mockImplementationOnce(async (
+      _handle: unknown,
+      _input: unknown,
+      callbacks?: { onStderrChunk?: ((chunk: string) => void) | undefined },
+    ) => {
+      for (const event of [
+        {
+          __ve_event: true,
+          type: "review.prompt_received",
+          ts: "2026-07-13T11:59:59.000Z",
+          data: {
+            userPromptLength: 1_024,
+            systemPromptLength: 256,
+            userPromptSource: "file",
+            systemPromptSource: "base64",
+          },
+        },
+        {
+          __ve_event: true,
+          type: "session.start",
+          ts: "2026-07-13T12:00:00.000Z",
+          data: { mode: "review" },
+        },
+        {
+          __ve_event: true,
+          type: "assistant.message",
+          ts: "2026-07-13T12:00:01.000Z",
+          data: { content: "Reviewing now" },
+        },
+      ]) {
+        callbacks?.onStderrChunk?.(`${JSON.stringify(event)}\n`);
+      }
+      return new Promise<{ rawOutput: string }>((resolve) => {
+        finishAgent = resolve;
+      });
+    });
+    const orch = makeOrch(mocks, runner);
+
+    const reviewPromise = orch.runReview(TASK_ID);
+    await vi.waitFor(() => {
+      expect(capturedEvents.some((event) => event.type === "assistant.message")).toBe(true);
+    });
+
+    expect(mocks.savedCycles).toHaveLength(0);
+    expect(capturedEvents.map((event) => event.type)).toEqual(expect.arrayContaining([
+      "review.prompt_received",
+      "session.start",
+      "assistant.message",
+    ]));
+    expect(capturedEvents.some((event) => event.type.startsWith("tool."))).toBe(false);
+    expect(getTaskEventBuffer(TASK_ID).some((event) => event.type === "assistant.message")).toBe(true);
+
+    expect(finishAgent).toBeDefined();
+    finishAgent?.({ rawOutput: GOOD_RAW_OUTPUT });
+    await reviewPromise;
+
+    const result = mocks.savedCycles[0]?.result as { agentEvents?: AgentLogEvent[] } | undefined;
+    expect(result?.agentEvents?.filter((event) => event.type === "assistant.message")).toHaveLength(1);
+    expect(result?.agentEvents?.filter((event) => event.type === "review.prompt_received")).toHaveLength(1);
+  });
+
   it("emits review.failed event when agent throws", async () => {
     const mocks = makeMocks(makeTask());
     const runner = makeWorkspaceRunner();

@@ -3,6 +3,7 @@ import { Icon } from "../../components/Icon.tsx";
 import { Tag } from "../../components/Tag.tsx";
 import { TONE } from "../../states.ts";
 import type { ApiCycle, CycleCost } from "../../types.ts";
+import { totalInputTokens, totalProcessedTokens } from "./liveMetrics.ts";
 import { formatUsd, formatCredits } from "./costFormat.ts";
 
 interface ReviewComment {
@@ -131,8 +132,18 @@ interface CostBadge {
   title: string;
 }
 
+function cycleTokenUsage(cost: CycleCost) {
+  return {
+    inputTokens: cost.tokens.input,
+    outputTokens: cost.tokens.output,
+    cacheRead: cost.tokens.cached,
+    cacheWrite: cost.tokens.cacheWrite,
+  };
+}
+
 function cycleCostBadge(cost: CycleCost): CostBadge | null {
-  const tokens = `in ${cost.tokens.input} · out ${cost.tokens.output} · cached ${cost.tokens.cached}`;
+  const usage = cycleTokenUsage(cost);
+  const tokens = `total ${totalProcessedTokens(usage)} · input ${totalInputTokens(usage)} (uncached ${cost.tokens.input}, cache read ${cost.tokens.cached}, cache write ${cost.tokens.cacheWrite}) · output ${cost.tokens.output}`;
   const model = cost.modelId ? ` · ${cost.modelId}` : "";
   if (cost.usd > 0) {
     const prefix = cost.priced ? "" : "~";
@@ -143,9 +154,9 @@ function cycleCostBadge(cost: CycleCost): CostBadge | null {
       title: `${prefix}${formatUsd(cost.usd)} USD${estimate}${credits}${model}\n${tokens}`,
     };
   }
-  if (cost.tokens.input > 0 || cost.tokens.output > 0) {
+  if (totalProcessedTokens(usage) > 0) {
     return {
-      label: `${(cost.tokens.input + cost.tokens.output).toLocaleString()} tok`,
+      label: `${totalProcessedTokens(usage).toLocaleString()} tok`,
       title: `${tokens}${model}`,
     };
   }
@@ -256,9 +267,11 @@ function CycleCard({ cycle, open, onToggle }: CycleCardProps) {
                     {cycle.cost.premiumRequests > 0 && (
                       <span><strong style={{ color: "var(--text)" }}>{cycle.cost.premiumRequests.toFixed(2)}</strong> premium req</span>
                     )}
-                    <span>in <span className="mono">{cycle.cost.tokens.input.toLocaleString()}</span></span>
+                    <span>total <span className="mono">{totalProcessedTokens(cycleTokenUsage(cycle.cost)).toLocaleString()}</span></span>
+                    <span>uncached in <span className="mono">{cycle.cost.tokens.input.toLocaleString()}</span></span>
                     <span>out <span className="mono">{cycle.cost.tokens.output.toLocaleString()}</span></span>
-                    <span>cached <span className="mono">{cycle.cost.tokens.cached.toLocaleString()}</span></span>
+                    <span>cache read <span className="mono">{cycle.cost.tokens.cached.toLocaleString()}</span></span>
+                    <span>cache write <span className="mono">{cycle.cost.tokens.cacheWrite.toLocaleString()}</span></span>
                     {cycle.cost.modelId && (
                       <span className="mono" style={{ color: "var(--text-faint)" }}>{cycle.cost.modelId}</span>
                     )}

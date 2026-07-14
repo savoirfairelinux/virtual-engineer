@@ -70,7 +70,7 @@ The admin server is a small HTTP service (default `127.0.0.1:3100`) that serves 
 | `POST` | `/api/admin/oauth-apps` | Create or update an OAuth app registry entry from `{ provider, baseUrl, clientId }`. |
 | `DELETE` | `/api/admin/oauth-apps` | Delete an OAuth app registry entry from `{ provider, baseUrl }`. |
 | `POST` | `/api/admin/oauth-apps/resolve` | Resolve a provider + base URL to the matching `{ baseUrl, clientId }` registry entry for the dashboard OAuth flow. |
-| `GET` | `/api/admin/logs/stream` | SSE server logs. |
+| `GET` | `/api/admin/logs/stream` | SSE agent logs. Subscribes before history replay, de-duplicates replay/live overlap, and begins with `stream.connected`. |
 | `GET` | `/api/admin/events/stream` | SSE agent-task events. |
 | `GET` | `/api/admin/tasks` | Task list. |
 | `GET` | `/api/admin/tasks/:id` | Task detail. |
@@ -237,7 +237,11 @@ The admin server never returns plaintext password-like fields. On `PUT`, values 
 - Prompts are managed under Configuration rather than a separate top-level page.
 - Runtime policy rows use visible kind-specific icons plus compact icon actions for assignment, editing, and deletion, with accessible labels and hover titles.
 - The Tasks view streams live agent events backed by `agent_cycles.agent_events` and the in-memory event bus; log filters are `All`, `Tools`, `Usage`, `Errors`.
+- Live and persisted cycle metrics use the same per-request deduplication contract. They show uncached input, cache reads, cache writes, and output separately; total input includes all three input classes, and total processed tokens adds output. This matches Anthropic's usage-field semantics and avoids presenting `input_tokens` alone as total input.
 - Live log ingestion de-duplicates overlapping SSE replay sources (persisted cycle history, in-memory task buffer, and reconnect replays) so reconnects do not render duplicate rows.
+- The log stream subscribes before loading persisted history, preventing events emitted during replay from being lost. The client shows `connecting`, `live`, `reconnecting`, `access denied`, or `closed`; HTTP 403 is terminal rather than silently retried.
+- Task details keep the live-log subscription mounted across tab switches and cycle-count refreshes, so opening the Logs tab reveals the feed accumulated since the detail view opened instead of reconnecting after the agent finishes. SSE responses disable proxy buffering and TCP coalescing.
+- Review prompt receipt, session, assistant, and usage events remain visible when an agent legitimately performs zero tool calls. `review.prompt_received` contains lengths and transport sources only, never prompt text.
 - Live log rows render structured `data` payloads as formatted JSON blocks (instead of single-line raw serialization) when the payload is object/array-shaped.
 - Task rows and task details expose a single primary ticket/review link on the source identifier; detail headers avoid duplicate secondary link controls, while per-repository review links are still shown from `changesPerRepo` when available.
 - Task detail footer badges now show compact task/review identifiers (`displayId` / `gerritChangeId`) instead of full internal task ids.

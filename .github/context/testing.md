@@ -19,7 +19,7 @@ tests/
 
 | Area | Families (file-name stems) |
 |---|---|
-| Admin routes / server | `adminServer` (+ `.behavior`, `.integration`), `adminHealthEndpoint`, `adminPluginRoutes`, `adminPromptRoutes`, `adminAgentsRoutes`, `adminAgentsOAuthRoutes`, `adminProjectsRoutes` (+ `.relaunch`), `adminConcurrencyRoutes`, `adminSettingsRoutes`, `adminIntegrationsDiscover`, `adminWebhookSecretRoutes`, `adminCostRoutes`, `adminAuthService`, `adminAuthRoutes`, `adminServerRbac`, `adminPoliciesRoutes`, `adminAudit`, `adminAuditRoutes`, `commonPasswords`, `loginRateLimiter`, `closeAdminServer`, `dashboard` (+ `.configurationTab`) |
+| Admin routes / server | `adminServer` (+ `.behavior`, `.integration`), `adminUiSse`, `adminHealthEndpoint`, `adminPluginRoutes`, `adminPromptRoutes`, `adminAgentsRoutes`, `adminAgentsOAuthRoutes`, `adminProjectsRoutes` (+ `.relaunch`), `adminConcurrencyRoutes`, `adminSettingsRoutes`, `adminIntegrationsDiscover`, `adminWebhookSecretRoutes`, `adminCostRoutes`, `adminAuthService`, `adminAuthRoutes`, `adminServerRbac`, `adminPoliciesRoutes`, `adminAudit`, `adminAuditRoutes`, `commonPasswords`, `loginRateLimiter`, `closeAdminServer`, `dashboard` (+ `.configurationTab`) |
 | Orchestrator / polling | `orchestrator` (+ `.projectMode`, `.webhookEntryPoints`, `.concurrency`), `orchestratorCommitMessage`, `pollingLoop.projects`, `pollingLoop.concurrency`, `pollingLoop.reviewPolling`, `pollingLoop.updateConfig`, `concurrencyTracker`, `feedbackProcessor`, `pauseResumeFlow` |
 | State / stores | `stateMachine`, `stateStore` (+ `.projects`, `.cost`), `settingsStore`, `migrations.projects`, `integrationStore`, `promptStore`, `runtimePolicyStore` (runtime policies/denials), `userStore`, `auditStore`, `pbacStores` |
 | PBAC / authorization | `policyEngine`, `permissions`, `pbacStores`, `adminPoliciesRoutes`, `adminServerRbac` (project-scoping suite) |
@@ -28,10 +28,10 @@ tests/
 | Connectors — GitLab | `gitlabHttpClient`, `gitlabIssueConnector`, `gitlabIssueDiscovery`, `gitlabMergeRequestConnector`, `gitlabMergeRequestDiscovery`, `gitlabMergeRequestReviewProvider`, `gitlabVcsConnector`, `gitlabAuth`, `webhookHandlerGitlabIssue`, `webhookHandlerGitlabMergeRequest` |
 | Connectors — GitHub | `githubIssueConnector`, `githubPullRequestReviewConnector`, `githubReviewProvider`, `githubVcsConnector`, `githubPluginDescriptors`, `githubOAuth`, `githubAuth`, `branchNaming`, `webhookHandlerGithubPullRequest` |
 | VCS (shared) | `vcsConnector`, `vcsFactory`, `baseTicketConnector` |
-| Agents / Copilot | `copilotAdapter` (+ `.promptInjection`), `copilotConnectionValidator`, `copilotOAuthService`, `copilotModelsService`, `providerAuthService`, `mockAgentAdapter`, `agentEventTypes` (+ `.normalization`), `workerCommitProtocol` |
+| Agents / Copilot | `copilotAdapter` (+ `.promptInjection`), `copilotConnectionValidator`, `copilotOAuthService`, `copilotModelsService`, `providerAuthService`, `mockAgentAdapter`, `agentEventTypes` (+ `.normalization`), `workerCommitProtocol`, `workerPromptLoader`, `workerCopilotProvider`, `workerClaudeProvider` |
 | Review runtime | `copilotReviewAgent`, `reviewOrchestrator`, `reviewPromptBuilder`, `reviewResultParser`, `reviewLiveLogs`, `commentHash`, `commentSeverity`, `revisionPatchset` |
-| Cost tracking | `cycleCost`, `stateStore.cost`, `adminCostRoutes` |
-| Plugins / runtime wiring | `pluginManager` (+ `.multiInstance`), `registry`, `openShellWorkspaceRunner`, `openshell`, `hostGitExecutor`, `runnerContract`, `integrationStreamEvents` |
+| Cost / token tracking | `cycleCost`, `stateStore.cost`, `adminCostRoutes`, `liveMetrics`, `workerClaudeProvider` |
+| Plugins / runtime wiring | `pluginManager` (+ `.multiInstance`), `registry`, `openShellWorkspaceRunner`, `agentWorkerProtocol`, `openshell`, `hostGitExecutor`, `runnerContract`, `integrationStreamEvents` |
 | Webhooks | `webhookServer`, `webhookHandlerRegistry` (+ the per-provider handlers listed above) |
 | Workspace / utils / misc | `buildRepositoryMap`, `config`, `logger`, `encryption`, `errorClassifier`, `gitExec`, `ticketFooterFormatter` |
 
@@ -40,6 +40,7 @@ tests/
 ## Conventions
 
 - All external I/O is mocked: `fetch`, `node:fs`, `dockerode`, `child_process` SSH helpers, the GitHub Copilot SDK, Git network calls. Never hit real services.
+- OpenShell runner tests assert that agent credentials are attached at sandbox creation and omitted from exec-time environment arguments; only non-secret values such as prompt-file paths may be forwarded to `sandbox exec`.
 - Mock with `vi.mock("…/foo.js", () => …)` for module-level stubs, or `vi.spyOn(obj, "method")` for instance-level.
 - Gerrit SSH tests mock `child_process.execFile` callbacks with `{ stdout, stderr }` objects because the connectors promisify that API.
 - Use `vi.useFakeTimers()` + `vi.runAllTimersAsync()` for the polling loop. **Always** call `loop.stop()` before `runAllTimersAsync` (Vitest aborts after 10 000 timer iterations otherwise).

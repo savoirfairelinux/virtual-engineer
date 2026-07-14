@@ -24,6 +24,23 @@ export interface Metrics {
   cacheWrite: number;
 }
 
+export interface TokenTotalsInput {
+  inputTokens: number;
+  outputTokens: number;
+  cacheRead: number;
+  cacheWrite: number;
+}
+
+/** Provider-reported total input, including uncached, cache-read, and cache-write tokens. */
+export function totalInputTokens(usage: TokenTotalsInput): number {
+  return usage.inputTokens + usage.cacheRead + usage.cacheWrite;
+}
+
+/** All tokens processed by the model: total input plus generated output. */
+export function totalProcessedTokens(usage: TokenTotalsInput): number {
+  return totalInputTokens(usage) + usage.outputTokens;
+}
+
 const USAGE_TYPES = new Set(["MODEL_USAGE", "assistant.usage", "session.usage_info"]);
 
 function isToolStart(type: string | undefined): boolean {

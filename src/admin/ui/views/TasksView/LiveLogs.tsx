@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { Icon } from "../../components/Icon.tsx";
 import { connectSse } from "../../api.ts";
+import type { SseConnectionState } from "../../api.ts";
 import type { AgentLogEvent } from "../../types.ts";
 import { TONE } from "../../states.ts";
 import type { ToneKey } from "../../states.ts";
-import { extractMetrics } from "./liveMetrics.ts";
+import { extractMetrics, totalInputTokens, totalProcessedTokens } from "./liveMetrics.ts";
 
 type StreamEntry = {
   id: number;
@@ -27,6 +28,27 @@ const LOG_TAG_TONE: Record<string, ToneKey> = {
   PARSING:       "warn",
   POSTING:       "warn",
   COMPLETED:     "ok",
+  "stream.connected": "ok",
+  "review.prompt_received": "info",
+  "session.start": "active",
+  "assistant.message": "active",
+  "assistant.streaming_delta": "active",
+};
+
+const CONNECTION_LABEL: Record<SseConnectionState, string> = {
+  connecting: "connecting",
+  open: "live",
+  retrying: "reconnecting",
+  forbidden: "access denied",
+  closed: "closed",
+};
+
+const CONNECTION_TONE: Record<SseConnectionState, ToneKey> = {
+  connecting: "warn",
+  open: "ok",
+  retrying: "warn",
+  forbidden: "danger",
+  closed: "muted",
 };
 
 const FILTER_CATS = ["All", "Tools", "Usage", "Errors"] as const;
@@ -93,6 +115,7 @@ interface LiveLogsProps {
 export function LiveLogs({ taskId, running }: LiveLogsProps) {
   const [entries, setEntries] = useState<StreamEntry[]>([]);
   const [filter, setFilter] = useState<FilterCat>("All");
+  const [connectionState, setConnectionState] = useState<SseConnectionState>("connecting");
   const scrollRef = useRef<HTMLDivElement>(null);
   const nextId = useRef(0);
   const seenEntryKeys = useRef<Set<string>>(new Set());
@@ -117,6 +140,7 @@ export function LiveLogs({ taskId, running }: LiveLogsProps) {
 
   useEffect(() => {
     setEntries([]);
+    setConnectionState("connecting");
     seenEntryKeys.current = new Set();
     const path = `/api/admin/logs/stream?taskId=${encodeURIComponent(taskId)}`;
     const cleanup = connectSse(path, (_evType, data) => {
@@ -135,17 +159,20 @@ export function LiveLogs({ taskId, running }: LiveLogsProps) {
           }
         });
       } catch { /* ignore malformed */ }
-    });
+    }, undefined, setConnectionState);
     return cleanup;
   }, [taskId]);
 
   const shown = entries.filter((e) => matchesFilter(e, filter));
   const metrics = extractMetrics(entries);
+  const connectionTone = TONE[CONNECTION_TONE[connectionState]];
 
   const metricRow = [
     { k: "Tool calls",     v: metrics.toolCalls.toLocaleString() },
-    { k: "Input tokens",   v: metrics.inputTokens.toLocaleString() },
-    { k: "Output tokens",  v: metrics.outputTokens.toLocaleString() },
+    { k: "Total tokens",   v: totalProcessedTokens(metrics).toLocaleString() },
+    { k: "Total input",    v: totalInputTokens(metrics).toLocaleString() },
+    { k: "Uncached input", v: metrics.inputTokens.toLocaleString() },
+    { k: "Output",         v: metrics.outputTokens.toLocaleString() },
     { k: "Cache read",     v: metrics.cacheRead.toLocaleString() },
     { k: "Cache write",    v: metrics.cacheWrite.toLocaleString() },
   ];
@@ -161,17 +188,20 @@ export function LiveLogs({ taskId, running }: LiveLogsProps) {
       >
         <Icon name="pulse" size={15} style={{ color: running ? "var(--ok)" : "var(--text-faint)" }} />
         <span style={{ fontSize: "13px", fontWeight: 600 }}>Live logs &amp; metrics</span>
-        {running && (
-          <span className="pill" style={{ color: "var(--ok)", background: "var(--ok-soft)", borderColor: "color-mix(in oklab,var(--ok) 30%, transparent)" }}>
-            <span className="dot live-dot" /> streaming
-          </span>
-        )}
+        <span
+          className="pill"
+          style={{ color: connectionTone.c, background: connectionTone.bg, borderColor: connectionTone.b }}
+          role="status"
+        >
+          {connectionState === "open" && <span className="dot live-dot" />}
+          {CONNECTION_LABEL[connectionState]}
+        </span>
         <div style={{ flex: 1 }} />
         <span className="mono" style={{ fontSize: "10.5px", color: "var(--text-ghost)" }}>SSE · /logs/stream</span>
       </div>
 
       {/* metric strip */}
-      <div style={{ display: "grid", gridTemplateColumns: `repeat(${metricRow.length}, 1fr)`, borderBottom: "1px solid var(--border-soft)" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(108px, 1fr))", borderBottom: "1px solid var(--border-soft)" }}>
         {metricRow.map((x, i) => (
           <div key={x.k} style={{ padding: "12px 14px", borderRight: i < metricRow.length - 1 ? "1px solid var(--border-soft)" : "none" }}>
             <div className="eyebrow" style={{ marginBottom: "6px", fontSize: "9.5px" }}>{x.k}</div>

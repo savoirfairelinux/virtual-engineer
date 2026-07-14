@@ -259,9 +259,9 @@ export function TaskDetail({ task, onRefresh, onDeleted }: TaskDetailProps) {
               ? <div style={{ color: "var(--text-faint)", fontSize: "13px" }}>Loading…</div>
               : <div className="card" style={{ padding: "16px 20px" }}><StateTimeline transitions={transitions} /></div>
           )}
-          {tab === "logs" && (
-            <LiveLogs key={effectiveCycleCount} taskId={task.taskId} running={running} />
-          )}
+          <div hidden={tab !== "logs"} aria-hidden={tab !== "logs"}>
+            <LiveLogs taskId={task.taskId} running={running} />
+          </div>
         </TabPanel>
 
         <Tag tone="info" mono={false}>

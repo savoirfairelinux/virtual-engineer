@@ -25,19 +25,29 @@ import type { ApiMe, SetupStatus } from "./types.ts";
 
 const TOKEN_KEY  = "ve-admin-token";
 
+interface SessionStorageLike {
+  getItem(key: string): string | null;
+  removeItem(key: string): void;
+  setItem(key: string, value: string): void;
+}
+
+function getSessionStorage(): SessionStorageLike {
+  return (globalThis as typeof globalThis & { sessionStorage: SessionStorageLike }).sessionStorage;
+}
+
 /* ─── Auth token management ───────────────────────────────────────────── */
 
 export function getStoredToken(): string | null {
-  return sessionStorage.getItem(TOKEN_KEY);
+  return getSessionStorage().getItem(TOKEN_KEY);
 }
 
 export function clearStoredToken(): void {
-  sessionStorage.removeItem(TOKEN_KEY);
+  getSessionStorage().removeItem(TOKEN_KEY);
 }
 
 /** Store a session token (used after successful login/setup). */
 export function storeToken(token: string): void {
-  sessionStorage.setItem(TOKEN_KEY, token);
+  getSessionStorage().setItem(TOKEN_KEY, token);
 }
 
 /* ─── Central 401 handling ────────────────────────────────────────────── */
@@ -200,6 +210,7 @@ export function listAgentKeys(): Promise<{ keys: AgentKey[]; agentAvailable: boo
 /* ─── SSE stream helpers ──────────────────────────────────────────────── */
 
 type SseHandler = (eventType: string, data: string) => void;
+export type SseConnectionState = "connecting" | "open" | "retrying" | "forbidden" | "closed";
 
 /**
  * Connect to an SSE stream using fetch (to pass auth headers).
@@ -208,7 +219,8 @@ type SseHandler = (eventType: string, data: string) => void;
 export function connectSse(
   path: string,
   onEvent: SseHandler,
-  onError?: (err: unknown) => void
+  onError?: ((err: unknown) => void) | undefined,
+  onStateChange?: ((state: SseConnectionState) => void) | undefined,
 ): () => void {
   let abort: AbortController | null = null;
   let stopped = false;
@@ -216,6 +228,7 @@ export function connectSse(
 
   async function connect(): Promise<void> {
     if (stopped) return;
+    onStateChange?.("connecting");
     abort = new AbortController();
     try {
       const res = await fetch(path, {
@@ -224,11 +237,19 @@ export function connectSse(
       });
       if (res.status === 401) {
         stopped = true;
+        onStateChange?.("closed");
         notifyUnauthorized();
+        return;
+      }
+      if (res.status === 403) {
+        stopped = true;
+        onStateChange?.("forbidden");
+        onError?.(new ApiError(403, "Forbidden"));
         return;
       }
       if (!res.ok || !res.body) throw new Error(`SSE error ${res.status}`);
       backoffMs = 1000; // reset on success
+      onStateChange?.("open");
 
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
@@ -259,6 +280,7 @@ export function connectSse(
     }
     // reconnect with backoff
     if (!stopped) {
+      onStateChange?.("retrying");
       setTimeout(() => void connect(), Math.min(backoffMs, 30_000));
       backoffMs = Math.min(backoffMs * 2, 30_000);
     }
@@ -268,6 +290,7 @@ export function connectSse(
   return () => {
     stopped = true;
     abort?.abort();
+    onStateChange?.("closed");
   };
 }
 

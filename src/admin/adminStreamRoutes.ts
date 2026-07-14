@@ -25,6 +25,16 @@ export function registerStreamRoutes(router: Router, deps: StreamRouteDeps): voi
     const requestUrl = new URL(req.url ?? "/", "http://127.0.0.1");
     const taskIdParam = requestUrl.searchParams.get("taskId");
     let streamEntries: Array<Record<string, unknown>> = [];
+    const pendingLiveEvents: AgentLogEvent[] = [];
+    let writeLiveEvent: ((event: AgentLogEvent) => void) | null = null;
+    const eventListener = (event: AgentLogEvent): void => {
+      if (taskIdParam && event.taskId !== taskIdParam) return;
+      if (writeLiveEvent) {
+        writeLiveEvent(event);
+      } else {
+        pendingLiveEvents.push(event);
+      }
+    };
 
     if (taskIdParam) {
       const taskId = makeTaskId(taskIdParam);
@@ -42,7 +52,14 @@ export function registerStreamRoutes(router: Router, deps: StreamRouteDeps): voi
         return;
       }
 
-      const cycles = await deps.stateStore.getAgentCycles(taskId);
+      agentLogBus.on("event", eventListener);
+      let cycles: AgentCycle[];
+      try {
+        cycles = await deps.stateStore.getAgentCycles(taskId);
+      } catch (err) {
+        agentLogBus.off("event", eventListener);
+        throw err;
+      }
       streamEntries = cycles.flatMap((cycle) => serializeAgentLogEntries(cycle));
     } else {
       streamEntries = [
@@ -55,6 +72,8 @@ export function registerStreamRoutes(router: Router, deps: StreamRouteDeps): voi
     res.setHeader("content-type", "text/event-stream");
     res.setHeader("cache-control", "no-cache");
     res.setHeader("connection", "keep-alive");
+    res.setHeader("x-accel-buffering", "no");
+    res.socket?.setNoDelay(true);
     res.flushHeaders();
 
     const emittedKeys = new Set<string>();
@@ -64,6 +83,15 @@ export function registerStreamRoutes(router: Router, deps: StreamRouteDeps): voi
       emittedKeys.add(key);
       res.write(`data: ${JSON.stringify(entry)}\n\n`);
     };
+
+    writeEntry({
+      timestamp: new Date().toISOString(),
+      taskId: taskIdParam,
+      level: "info",
+      message: "Live log stream connected",
+      source: "admin",
+      type: "stream.connected",
+    });
 
     for (const entry of streamEntries) {
       writeEntry(entry);
@@ -78,12 +106,15 @@ export function registerStreamRoutes(router: Router, deps: StreamRouteDeps): voi
       }
     }
 
-    const eventListener = (event: AgentLogEvent): void => {
-      if (taskIdParam && event.taskId !== taskIdParam) return;
+    writeLiveEvent = (event: AgentLogEvent): void => {
       if (!res.writable) return;
       writeEntry(serializeAgentEventEntry(event));
+    };
+    for (const event of pendingLiveEvents) {
+      writeLiveEvent(event);
     }
-    agentLogBus.on("event", eventListener);
+    pendingLiveEvents.length = 0;
+    if (!taskIdParam) agentLogBus.on("event", eventListener);
 
     const heartbeatLogs = setInterval(() => {
       if (!res.writable) { clearInterval(heartbeatLogs); return; }
