@@ -44,7 +44,6 @@ const COPILOT_EGRESS: AgentEgressSpec = {
     "telemetry.business.githubcopilot.com",
   ],
   binaries: [
-    "/usr/local/bin/node",
     "/app/agent-worker/node_modules/@github/copilot-linux-x64/copilot",
   ],
 };

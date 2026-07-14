@@ -17,6 +17,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { randomUUID } from "node:crypto";
 import { getLogger } from "../logger.js";
+import { redactUrls } from "../utils/redactUrl.js";
 
 const log = getLogger("openshell-client");
 
@@ -40,6 +41,39 @@ export type CommandRunner = (
 ) => Promise<CommandResult>;
 
 const MAX_COMMAND_OUTPUT_BYTES = 32 * 1024 * 1024;
+
+function redactEnvAssignment(value: string): string {
+  const separator = value.indexOf("=");
+  return separator >= 0 ? `${value.slice(0, separator)}=[REDACTED]` : "[REDACTED]";
+}
+
+export function redactCommandArgs(args: readonly string[]): string[] {
+  const redacted: string[] = [];
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index]!;
+    if (arg === "--env") {
+      redacted.push(arg);
+      const assignment = args[index + 1];
+      if (assignment !== undefined) {
+        redacted.push(redactEnvAssignment(assignment));
+        index++;
+      }
+      continue;
+    }
+    if (arg.startsWith("--env=")) {
+      redacted.push(`--env=${redactEnvAssignment(arg.slice("--env=".length))}`);
+      continue;
+    }
+    redacted.push(arg);
+  }
+  return redacted;
+}
+
+export function redactOpenShellText(text: string): string {
+  return redactUrls(text)
+    .replace(/\b([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY)[A-Z0-9_]*)=[^\s]+/gi, "$1=[REDACTED]")
+    .replace(/\b(Bearer\s+)[A-Za-z0-9._-]+/gi, "$1[REDACTED]");
+}
 
 const defaultRunner: CommandRunner = (bin, args, input, callbacks) =>
   new Promise<CommandResult>((resolve) => {
@@ -196,7 +230,7 @@ export class OpenShellClient {
     // any local gateway-registry lookup, so no 'gateway add' is required.
     const result = await this.run(this.bin, args, input, callbacks);
     if (result.code !== 0) {
-      log.warn({ args, code: result.code, stderr: result.stderr.slice(0, 500) }, "openshell command failed");
+      log.warn({ args: redactCommandArgs(args), code: result.code, stderr: redactOpenShellText(result.stderr).slice(0, 500) }, "openshell command failed");
     }
     return result;
   }
@@ -229,7 +263,7 @@ export class OpenShellClient {
         attempt < maxAttempts &&
         OpenShellClient.TRANSIENT_CREATE_PATTERNS.some((p) => result.stderr.toLowerCase().includes(p));
       if (!transient) {
-        throw new Error(`openshell sandbox create failed (${result.code}): ${result.stderr.slice(0, 500)}`);
+        throw new Error(`openshell sandbox create failed (${result.code}): ${redactOpenShellText(result.stderr).slice(0, 500)}`);
       }
 
       log.warn({ name: input.name, attempt }, "sandbox create hit a transient error — cleaning up and retrying");
@@ -246,7 +280,7 @@ export class OpenShellClient {
     args.push(input.name, input.localPath, input.dest);
     const result = await this.exec(args);
     if (result.code !== 0) {
-      throw new Error(`openshell sandbox upload failed (${result.code}): ${result.stderr.slice(0, 500)}`);
+      throw new Error(`openshell sandbox upload failed (${result.code}): ${redactOpenShellText(result.stderr).slice(0, 500)}`);
     }
   }
 
@@ -254,7 +288,7 @@ export class OpenShellClient {
   async downloadFromSandbox(input: DownloadInput): Promise<void> {
     const result = await this.exec(["sandbox", "download", input.name, input.sandboxPath, input.localDest]);
     if (result.code !== 0) {
-      throw new Error(`openshell sandbox download failed (${result.code}): ${result.stderr.slice(0, 500)}`);
+      throw new Error(`openshell sandbox download failed (${result.code}): ${redactOpenShellText(result.stderr).slice(0, 500)}`);
     }
   }
 
@@ -280,7 +314,7 @@ export class OpenShellClient {
       await writeFile(tmpPath, policyYaml, "utf8");
       const result = await this.exec(["policy", "set", "--policy", tmpPath, name]);
       if (result.code !== 0) {
-        throw new Error(`openshell policy set failed (${result.code}): ${result.stderr.slice(0, 500)}`);
+        throw new Error(`openshell policy set failed (${result.code}): ${redactOpenShellText(result.stderr).slice(0, 500)}`);
       }
     } finally {
       await unlink(tmpPath).catch(() => undefined);
@@ -306,7 +340,7 @@ export class OpenShellClient {
     args.push("--wait", input.name);
     const result = await this.exec(args);
     if (result.code !== 0) {
-      throw new Error(`openshell policy update (egress) failed (${result.code}): ${result.stderr.slice(0, 500)}`);
+      throw new Error(`openshell policy update (egress) failed (${result.code}): ${redactOpenShellText(result.stderr).slice(0, 500)}`);
     }
   }
 

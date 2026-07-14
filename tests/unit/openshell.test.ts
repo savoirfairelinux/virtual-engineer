@@ -12,7 +12,7 @@ import {
   type NormalizedDenial,
   type DenialContext,
 } from "../../src/openshell/denyEventPoller.js";
-import { OpenShellClient, type CommandRunner } from "../../src/openshell/openShellClient.js";
+import { OpenShellClient, redactCommandArgs, redactOpenShellText, type CommandRunner } from "../../src/openshell/openShellClient.js";
 
 describe("openShellPolicyBuilder", () => {
   it("emits deny-by-default network YAML with L7 methods", () => {
@@ -113,6 +113,22 @@ describe("OpenShellClient", () => {
     };
     return { runner, calls };
   }
+
+  it("redacts environment values from command arguments used in logs", () => {
+    expect(redactCommandArgs([
+      "sandbox", "create", "--env", "GITHUB_TOKEN=secret-token", "--env=API_KEY=other-secret", "--", "true",
+    ])).toEqual([
+      "sandbox", "create", "--env", "GITHUB_TOKEN=[REDACTED]", "--env=API_KEY=[REDACTED]", "--", "true",
+    ]);
+  });
+
+  it("redacts credentials echoed in OpenShell stderr", () => {
+    const text = "GITHUB_TOKEN=secret-token Authorization: Bearer abc123 https://user:pass@example.com/repo";
+    const redacted = redactOpenShellText(text);
+    expect(redacted).not.toContain("secret-token");
+    expect(redacted).not.toContain("abc123");
+    expect(redacted).not.toContain("user:pass");
+  });
 
   it("creates a sandbox with image, env, providers, and resource limits", async () => {
     const { runner, calls } = runnerReturning({ code: 0 });

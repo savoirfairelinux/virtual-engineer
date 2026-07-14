@@ -124,6 +124,7 @@ describe("CopilotAdapter", () => {
       expect(spec.egress?.binaries).toContain(
         "/app/agent-worker/node_modules/@github/copilot-linux-x64/copilot"
       );
+      expect(spec.egress?.binaries).not.toContain("/usr/local/bin/node");
       expect(spec.env).toMatchObject({
         GITHUB_TOKEN: "ghp_spec_token",
         COPILOT_MODEL: "gpt-4o-mini",

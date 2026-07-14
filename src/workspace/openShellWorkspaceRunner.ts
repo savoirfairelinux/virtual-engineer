@@ -33,6 +33,7 @@ import type {
 import { getLogger } from "../logger.js";
 import type { HostGitExecutor } from "./hostGitExecutor.js";
 import type { OpenShellClient } from "../openshell/openShellClient.js";
+import { redactOpenShellText } from "../openshell/openShellClient.js";
 import { decodeReviewWorkerOutput } from "./agentWorkerProtocol.js";
 
 const log = getLogger("openshell-workspace-runner");
@@ -79,7 +80,7 @@ function hasReviewSpec(adapter: AgentAdapter): adapter is ReviewAgentAdapter {
 export type PolicyResolver = (input: {
   taskId: string;
   mode: "coding" | "review";
-}) => string | undefined;
+}) => string | undefined | Promise<string | undefined>;
 
 export interface OpenShellRunnerDeps {
   git: HostGitExecutor;
@@ -203,7 +204,7 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
 
   /** Apply the resolved policy (if any) to a freshly-created sandbox. */
   private async applyPolicy(taskId: string, mode: "coding" | "review"): Promise<void> {
-    const yaml = this.deps.resolvePolicy?.({ taskId, mode });
+    const yaml = await this.deps.resolvePolicy?.({ taskId, mode });
     if (yaml) {
       await this.deps.client.setPolicy(`ve-${taskId}`, yaml);
     }
@@ -252,6 +253,12 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
     return this.deps.execTimeoutSec !== undefined ? { timeout: this.deps.execTimeoutSec } : {};
   }
 
+  private assertExecSucceeded(result: { code: number; stderr: string }): void {
+    if (result.code !== 0) {
+      throw new Error(`OpenShell agent exited with code ${result.code}: ${redactOpenShellText(result.stderr).slice(0, 500)}`);
+    }
+  }
+
   async runReviewInDocker(
     handle: WorkspaceHandle,
     input: ReviewWorkspaceInput,
@@ -286,6 +293,7 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
       ...this.execTimeout(),
       ...(callbacks?.onStderrChunk !== undefined ? { onStderrChunk: callbacks.onStderrChunk } : {}),
     });
+    this.assertExecSucceeded(result);
     return { rawOutput: decodeReviewWorkerOutput(result.stdout) };
   }
 
@@ -333,6 +341,7 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
       ...(callbacks?.onStdoutChunk !== undefined ? { onStdoutChunk: callbacks.onStdoutChunk } : {}),
       ...(callbacks?.onStderrChunk !== undefined ? { onStderrChunk: callbacks.onStderrChunk } : {}),
     });
+    this.assertExecSucceeded(result);
     // Pull the agent's commits/changes back to the host for host-side push.
     await this.deps.client.downloadFromSandbox({
       name,

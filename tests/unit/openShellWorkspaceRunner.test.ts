@@ -194,6 +194,27 @@ describe("OpenShellWorkspaceRunner", () => {
     expect(execInSandbox).toHaveBeenCalledWith(expect.objectContaining({ timeout: 3600 }));
   });
 
+  it("rejects review output when OpenShell exec exits non-zero", async () => {
+    const client = fakeClient({
+      execInSandbox: vi.fn().mockResolvedValue({
+        code: 124,
+        stdout: reviewWorkerStdout("partial result"),
+        stderr: "timed out",
+      }),
+    } as unknown as Partial<OpenShellClient>);
+    const runner = new OpenShellWorkspaceRunner({
+      git: fakeGit(),
+      client,
+      sandboxImage: "base",
+      agentAdapter: fakeReviewAdapter(),
+    });
+
+    await expect(runner.runReviewInDocker(
+      handle,
+      { changeId: "Iabc", prompt: "review this diff" } as unknown as ReviewWorkspaceInput,
+    )).rejects.toThrow(/exited with code 124.*timed out/i);
+  });
+
   it("coding run uploads the workspace, execs the agent, and downloads results back", async () => {
     const client = fakeClient();
     const runner = new OpenShellWorkspaceRunner({ git: fakeGit(), client, sandboxImage: "base" });
@@ -252,6 +273,19 @@ describe("OpenShellWorkspaceRunner", () => {
     expect(onStdoutChunk).toHaveBeenCalledWith("result");
     expect(onStderrChunk).toHaveBeenCalledWith("agent-event\n");
     expect(execInSandbox).toHaveBeenCalledWith(expect.objectContaining({ timeout: 3600 }));
+  });
+
+  it("rejects coding output and skips download when OpenShell exec exits non-zero", async () => {
+    const client = fakeClient({
+      execInSandbox: vi.fn().mockResolvedValue({ code: 137, stdout: "partial", stderr: "killed" }),
+    } as unknown as Partial<OpenShellClient>);
+    const runner = new OpenShellWorkspaceRunner({ git: fakeGit(), client, sandboxImage: "base" });
+
+    await expect(runner.runAgentInDocker(
+      fakeCodingAdapter(),
+      { taskId: "t1", workspacePath: "/tmp/ws-1" } as unknown as TaskContext,
+    )).rejects.toThrow(/exited with code 137.*killed/i);
+    expect(client.downloadFromSandbox).not.toHaveBeenCalled();
   });
 
   it("runAgent delegates to adapter.execute and returns its result", async () => {

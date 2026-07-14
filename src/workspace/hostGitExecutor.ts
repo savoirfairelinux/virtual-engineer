@@ -11,7 +11,8 @@
 
 import { execFile } from "child_process";
 import { mkdtemp, rm } from "fs/promises";
-import { join } from "path";
+import { lstatSync } from "node:fs";
+import { isAbsolute, join, relative, resolve, sep } from "path";
 
 /** Runs a git argv in `cwd` with an optional explicit env; resolves stdout, rejects on non-zero exit. */
 export type GitRunner = (args: string[], cwd: string, env?: NodeJS.ProcessEnv) => Promise<string>;
@@ -32,6 +33,50 @@ const defaultGitRunner: GitRunner = (args, cwd, env) =>
     );
   });
 
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'"'"'`)}'`;
+}
+
+function resolveWorkspacePath(dir: string, subPath: string): string {
+  if (isAbsolute(subPath)) {
+    throw new Error(`Path must stay within workspace: ${subPath}`);
+  }
+  const workspace = resolve(dir);
+  const target = resolve(workspace, subPath);
+  const relativePath = relative(workspace, target);
+  if (relativePath === ".." || relativePath.startsWith(`..${sep}`)) {
+    throw new Error(`Path must stay within workspace: ${subPath}`);
+  }
+  let current = workspace;
+  for (const component of relativePath.split(sep).filter(Boolean)) {
+    current = join(current, component);
+    try {
+      if (lstatSync(current).isSymbolicLink()) {
+        throw new Error(`Path must not traverse a symbolic link: ${subPath}`);
+      }
+    } catch (err) {
+      if (err instanceof Error && "code" in err && err.code === "ENOENT") break;
+      throw err;
+    }
+  }
+  return target;
+}
+
+function credentialFreeUrl(repoUrl: string): string | null {
+  try {
+    const parsed = new URL(repoUrl);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+    parsed.username = "";
+    parsed.password = "";
+    parsed.search = "";
+    parsed.hash = "";
+    const cleanUrl = parsed.toString();
+    return cleanUrl !== repoUrl ? cleanUrl : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Build a process env that injects GIT_SSH_COMMAND for a given key + known-hosts policy.
  * When no knownHostsPath is provided SSH falls back to StrictHostKeyChecking=no so that
@@ -43,10 +88,10 @@ function buildSshGitEnv(
   sshKnownHostsPath?: string | null,
 ): NodeJS.ProcessEnv {
   const keyPart = sshKeyPath
-    ? `-i "${sshKeyPath.replace(/"/g, '\\"')}" -o IdentitiesOnly=yes`
+    ? `-i ${shellQuote(sshKeyPath)} -o IdentitiesOnly=yes`
     : "";
   const hostKeyPart = sshKnownHostsPath
-    ? `-o StrictHostKeyChecking=yes -o UserKnownHostsFile=${sshKnownHostsPath}`
+    ? `-o StrictHostKeyChecking=yes -o UserKnownHostsFile=${shellQuote(sshKnownHostsPath)}`
     : "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null";
   const sshCmd = ["ssh", keyPart, hostKeyPart].filter(Boolean).join(" ");
   return { ...process.env, GIT_SSH_COMMAND: sshCmd };
@@ -87,13 +132,23 @@ export class HostGitExecutor {
     sshKeyPath?: string | null,
     sshKnownHostsPath?: string | null,
   ): Promise<void> {
+    const cloneDir = resolveWorkspacePath(dir, subPath);
     const env = buildSshGitEnv(sshKeyPath, sshKnownHostsPath);
     await this.git(["clone", "--branch", branch, "--single-branch", repoUrl, subPath], dir, env);
+    const cleanUrl = credentialFreeUrl(repoUrl);
+    if (cleanUrl) {
+      try {
+        await this.git(["remote", "set-url", "origin", cleanUrl], cloneDir);
+      } catch (err) {
+        await rm(cloneDir, { recursive: true, force: true });
+        throw err;
+      }
+    }
   }
 
   /** Run an arbitrary git command in `dir` (optionally within a sub-path). */
   async execGit(dir: string, args: string[], subPath?: string): Promise<string> {
-    return this.git(args, subPath ? join(dir, subPath) : dir);
+    return this.git(args, subPath ? resolveWorkspacePath(dir, subPath) : dir);
   }
 
   /** Fetch a ref and check it out as detached HEAD. */
@@ -105,7 +160,7 @@ export class HostGitExecutor {
     sshKeyPath?: string | null,
     sshKnownHostsPath?: string | null,
   ): Promise<void> {
-    const cwd = join(dir, subPath);
+    const cwd = resolveWorkspacePath(dir, subPath);
     const env = buildSshGitEnv(sshKeyPath, sshKnownHostsPath);
     await this.git(["fetch", remoteUrl, ref], cwd, env);
     await this.git(["checkout", "FETCH_HEAD"], cwd);
@@ -120,7 +175,7 @@ export class HostGitExecutor {
     sshKeyPath?: string | null,
     sshKnownHostsPath?: string | null,
   ): Promise<void> {
-    const cwd = join(dir, subPath);
+    const cwd = resolveWorkspacePath(dir, subPath);
     const env = buildSshGitEnv(sshKeyPath, sshKnownHostsPath);
     await this.git(["fetch", remoteUrl, ref], cwd, env);
     await this.git(["cherry-pick", "FETCH_HEAD"], cwd);
@@ -128,7 +183,7 @@ export class HostGitExecutor {
 
   /** List files changed relative to `baseRef` (default: staged+unstaged vs HEAD). */
   async listModifiedFiles(dir: string, baseRef = "HEAD", subPath = "."): Promise<string[]> {
-    const out = await this.git(["diff", "--name-only", baseRef], join(dir, subPath));
+    const out = await this.git(["diff", "--name-only", baseRef], resolveWorkspacePath(dir, subPath));
     return out.split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
   }
 
