@@ -36,6 +36,7 @@
     "pino-pretty": "^11.0.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
+    "yaml": "^2.9.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {

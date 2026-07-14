@@ -23,10 +23,10 @@ The admin server is a small HTTP service (default `127.0.0.1:3100`) that serves 
 | `adminStreamRoutes.ts` | SSE endpoints: `/api/admin/logs/stream` (live agent logs) and `/api/admin/events/stream` (task polling). |
 | `adminIntegrationRoutes.ts` | `/api/admin/integrations/*` CRUD, enable/disable, test, discover, models + `/api/admin/plugins` + `/api/admin/oauth-apps/*`. Integration config masking/merging/validation helpers. |
 | `adminAgentsRoutes.ts` | `/api/admin/agents/*` CRUD + enable/disable + masking + `/api/admin/plugins/:type/oauth/*`. |
-| `adminProjectsRoutes.ts` | `/api/admin/projects/*` CRUD, ticket/review target validation, atomic push-target replacement, automatic relaunch of FAILED/REVIEW_FAILED tasks on (re)configuration or re-enable. |
+| `adminProjectsRoutes.ts` | `/api/admin/projects/*` CRUD, ticket/review target validation (canonical workspace paths; HTTPS-only GitHub/GitLab clone URLs), atomic push-target replacement, automatic relaunch of FAILED/REVIEW_FAILED tasks on (re)configuration or re-enable. |
 | `adminConcurrencyRoutes.ts` | `/api/admin/concurrency` read/update global concurrency. |
 | `adminSettingsRoutes.ts` | `GET/PUT /api/admin/settings` — read/update editable runtime workflow settings (polling interval, max agent cycles, max retry attempts). Validates positive integers; delegates persistence + hot-apply to the `SettingsController` wired in `src/index.ts`. |
-| `adminRuntimePolicyRoutes.ts` | `/api/admin/runtime/policies*` CRUD over runtime policies plus `POST /:id/bindings` / `DELETE /bindings/:bindingId` to bind a policy to a project or agent. Backed by the dedicated `RuntimePolicyStore`. |
+| `adminRuntimePolicyRoutes.ts` | `/api/admin/runtime/policies*` CRUD over runtime policies plus `POST /:id/bindings` / `DELETE /bindings/:bindingId` to bind a policy to a project or agent. Creation requires parseable non-empty YAML with an object-valued section matching the policy kind. Backed by the dedicated `RuntimePolicyStore`. |
 | `adminDenialRoutes.ts` | `GET /api/admin/runtime/denials` — policy-denial audit log (filter by `taskId` / `projectId` / `limit`). Backed by the `DenialStore`. |
 | `adminOverviewRoutes.ts` | `/api/admin/overview` dashboard stats/throughput/votes/runtime + `/api/admin/cost-summary` aggregated AI cost (per project & instance total, optional `?days=` period) + `/api/admin/model-usage` model distribution by run count & cost (global + per project, optional `?days=<n>` period filter). |
 | `adminWebhookRoutes.ts` | Webhook management: secret rotation, allowed-IPs, webhook-info. |
@@ -70,7 +70,7 @@ The admin server is a small HTTP service (default `127.0.0.1:3100`) that serves 
 | `POST` | `/api/admin/oauth-apps` | Create or update an OAuth app registry entry from `{ provider, baseUrl, clientId }`. |
 | `DELETE` | `/api/admin/oauth-apps` | Delete an OAuth app registry entry from `{ provider, baseUrl }`. |
 | `POST` | `/api/admin/oauth-apps/resolve` | Resolve a provider + base URL to the matching `{ baseUrl, clientId }` registry entry for the dashboard OAuth flow. |
-| `GET` | `/api/admin/logs/stream` | SSE agent logs. Subscribes before history replay, de-duplicates replay/live overlap, and begins with `stream.connected`. |
+| `GET` | `/api/admin/logs/stream` | SSE agent logs. Subscribes before history replay, de-duplicates replay/live overlap, and begins with `stream.connected`. The global stream serializes project-scoped authorization checks and caches each task's project so live events remain ordered. |
 | `GET` | `/api/admin/events/stream` | SSE agent-task events. |
 | `GET` | `/api/admin/tasks` | Task list. |
 | `GET` | `/api/admin/tasks/:id` | Task detail. |
@@ -236,9 +236,11 @@ The admin server never returns plaintext password-like fields. On `PUT`, values 
 - Projects can now be edited from both the Projects list row action and the Project detail drawer. The edit flow loads `/api/admin/projects/:id`, pre-fills project-specific fields, and persists changes through `PUT /api/admin/projects/:id`.
 - Prompts are managed under Configuration rather than a separate top-level page.
 - Runtime policy rows use visible kind-specific icons plus compact icon actions for assignment, editing, and deletion, with accessible labels and hover titles.
+- Runtime policy create/update validates YAML syntax and requires the document to contain the section declared by its policy kind; invalid documents return HTTP 400 before persistence.
 - The Tasks view streams live agent events backed by `agent_cycles.agent_events` and the in-memory event bus; log filters are `All`, `Tools`, `Usage`, `Errors`.
 - Live and persisted cycle metrics use the same per-request deduplication contract. They show uncached input, cache reads, cache writes, and output separately; total input includes all three input classes, and total processed tokens adds output. This matches Anthropic's usage-field semantics and avoids presenting `input_tokens` alone as total input.
 - Live log ingestion de-duplicates overlapping SSE replay sources (persisted cycle history, in-memory task buffer, and reconnect replays) so reconnects do not render duplicate rows.
+- The unscoped live-log stream resolves every event's task and applies project-scoped `task.read`; events for missing or unauthorized tasks are dropped fail-closed.
 - The log stream subscribes before loading persisted history, preventing events emitted during replay from being lost. The client shows `connecting`, `live`, `reconnecting`, `access denied`, or `closed`; HTTP 403 is terminal rather than silently retried.
 - Task details keep the live-log subscription mounted across tab switches and cycle-count refreshes, so opening the Logs tab reveals the feed accumulated since the detail view opened instead of reconnecting after the agent finishes. SSE responses disable proxy buffering and TCP coalescing.
 - Review prompt receipt, session, assistant, and usage events remain visible when an agent legitimately performs zero tool calls. `review.prompt_received` contains lengths and transport sources only, never prompt text.

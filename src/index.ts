@@ -16,6 +16,7 @@ import { MockAgentAdapter } from "./agents/mockAgentAdapter.js";
 import { HostGitExecutor } from "./workspace/hostGitExecutor.js";
 import { OpenShellWorkspaceRunner, type OpenShellRunnerDeps } from "./workspace/openShellWorkspaceRunner.js";
 import { OpenShellClient } from "./openshell/openShellClient.js";
+import { createRuntimePolicyResolver } from "./openshell/runtimePolicyResolver.js";
 import { Orchestrator } from "./orchestrator/orchestrator.js";
 import { PollingLoop } from "./orchestrator/pollingLoop.js";
 import { createConcurrencyTracker } from "./orchestrator/concurrencyTracker.js";
@@ -104,6 +105,7 @@ async function main(): Promise<void> {
     client: openShellClient,
     sandboxImage: config.agentContainerImage,
     agentAdapter: runtimeDependencies.agentAdapter,
+    resolvePolicy: createRuntimePolicyResolver(stateStore),
     execTimeoutSec: Math.ceil(config.agentTimeoutMs / 1000),
   };
   const workspaceRunner = new OpenShellWorkspaceRunner(openShellRunnerDeps);
