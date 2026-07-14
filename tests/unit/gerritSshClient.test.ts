@@ -52,7 +52,7 @@ vi.mock("node:child_process", () => ({
   }),
 }));
 
-import { GerritSshClient, parseSshNdjson } from "../../src/connectors/gerritSshClient.js";
+import { GerritSshClient, parseSshNdjson, isNonActionableChangeMessage } from "../../src/connectors/gerritSshClient.js";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -91,6 +91,29 @@ describe("parseSshNdjson", () => {
   it("returns multiple records", () => {
     const raw = sshNdjson({ a: 1 }, { b: 2 });
     expect(parseSshNdjson(raw)).toHaveLength(2);
+  });
+});
+
+describe("isNonActionableChangeMessage", () => {
+  it.each([
+    ["Patch Set 1:  Build Started https://ci.test/job/x/1/ (1/4)", true],
+    ["Patch Set 2: Verified+1\n\nBuild Successful\n\nhttps://ci.test : SUCCESS", true],
+    ["Patch Set 2: Build Failed", true],
+    ["Patch Set 2: Code-Review+2", true],
+    ["Patch Set 1: Verified+1", true],
+    ["Code-Review-1", true],
+    ["Patch Set 2:\n\n", true],
+    ["", true],
+  ])("treats %j as non-actionable", (msg, expected) => {
+    expect(isNonActionableChangeMessage(msg)).toBe(expected);
+  });
+
+  it.each([
+    ["Patch Set 2:\n\nPlease guard against null here.", false],
+    ["Patch Set 2: Code-Review-1\n\nThe null guard is on the wrong line.", false],
+    ["This function leaks a file handle.", false],
+  ])("treats %j as actionable feedback", (msg, expected) => {
+    expect(isNonActionableChangeMessage(msg)).toBe(expected);
   });
 });
 
@@ -358,6 +381,58 @@ describe("GerritSshClient", () => {
       const comments = await makeClient().getUnresolvedComments("I8473");
 
       expect(comments).toHaveLength(0);
+    });
+
+    it("skips CI build-bot notifications (Jenkins) so they never become feedback", async () => {
+      // These regenerate on every patchset; treating them as feedback loops the
+      // agent forever (re-push → new "Build Started" → new "feedback" → re-push).
+      const buildMsgs = [
+        {
+          timestamp: 1710000300,
+          reviewer: { name: "jenkins", email: "jenkins@ci.test", username: "jenkins" },
+          message: "Patch Set 1:  Build Started https://jenkins.test/job/x/9756/ (1/4)",
+        },
+        {
+          timestamp: 1710000301,
+          reviewer: { name: "jenkins", email: "jenkins@ci.test", username: "jenkins" },
+          message: "Patch Set 1: Verified+1\n\nBuild Successful \n\nhttps://jenkins.test/job/x/9756/ : SUCCESS",
+        },
+      ];
+      const row = makeChangeRow([], buildMsgs);
+      execFileResults = [{ stdout: sshNdjson(row), stderr: "" }];
+
+      const comments = await makeClient().getUnresolvedComments("I8473");
+
+      expect(comments).toHaveLength(0);
+    });
+
+    it("skips single-line bare vote messages (no double newline)", async () => {
+      const bareVote = {
+        timestamp: 1710000400,
+        reviewer: { name: "Alice", email: "alice@example.com", username: "alice" },
+        message: "Patch Set 2: Code-Review+2",
+      };
+      const row = makeChangeRow([], [bareVote]);
+      execFileResults = [{ stdout: sshNdjson(row), stderr: "" }];
+
+      const comments = await makeClient().getUnresolvedComments("I8473");
+
+      expect(comments).toHaveLength(0);
+    });
+
+    it("keeps human prose even when accompanied by a vote", async () => {
+      const humanMsg = {
+        timestamp: 1710000500,
+        reviewer: { name: "Alice", email: "alice@example.com", username: "alice" },
+        message: "Patch Set 2: Code-Review-1\n\nThe null guard is on the wrong line.",
+      };
+      const row = makeChangeRow([], [humanMsg]);
+      execFileResults = [{ stdout: sshNdjson(row), stderr: "" }];
+
+      const comments = await makeClient().getUnresolvedComments("I8473");
+
+      expect(comments).toHaveLength(1);
+      expect(comments[0]!.message).toBe("The null guard is on the wrong line.");
     });
 
     it("deduplicates change messages with the same timestamp (id == timestamp)", async () => {

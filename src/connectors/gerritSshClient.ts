@@ -70,6 +70,28 @@ export const PREAMBLE_RE = /^Patch Set \d+:[^\n]*\n\n/;
 export const COMMENTS_SUMMARY_RE = /^\(\d+ comments?\)\n*/;
 /** Gerrit system messages that never contain user-authored content. */
 const SYSTEM_RE = /^(?:Uploaded patch set \d|Change has been successfully|Abandoned$|Restored$|Created a revert|Removed .+ by )/;
+/** CI/build-bot notifications (e.g. Jenkins "Build Started/Successful") — status noise, never code feedback. */
+const CI_BUILD_RE = /\bBuild (?:Started|Successful|Failed|Aborted|Unstable|Abandoned|is back to normal)\b/i;
+/** A change message whose content is only Gerrit label votes (e.g. "Code-Review+2", "Verified+1"). */
+const VOTE_ONLY_RE = /^(?:[A-Za-z][\w-]*[+-]\d+[ \t]*)+$/;
+/** Leading single-line "Patch Set N:" label prefix, stripped for content classification. */
+const LEAD_PATCHSET_RE = /^Patch Set \d+:\s*/;
+
+/**
+ * True when a top-level change message carries no actionable human feedback:
+ * a CI build notification (Jenkins) or a bare label vote ("Code-Review+2").
+ *
+ * These regenerate on every patchset, so treating them as review feedback loops
+ * the agent forever (re-push → new CI message → new "feedback" → re-push …) and
+ * makes VE post canned "Addressed in this patchset." replies to build bots.
+ */
+export function isNonActionableChangeMessage(message: string): boolean {
+  const core = message.replace(LEAD_PATCHSET_RE, "").trim();
+  if (!core) return true;
+  if (CI_BUILD_RE.test(core)) return true;
+  if (VOTE_ONLY_RE.test(core)) return true;
+  return false;
+}
 
 // ─── NDJSON parser ────────────────────────────────────────────────────────────
 
@@ -271,6 +293,7 @@ export class GerritSshClient {
           if (!msg.success) continue;
           if (sshUser && msg.data.reviewer?.username === sshUser) continue;
           if (SYSTEM_RE.test(msg.data.message)) continue;
+          if (isNonActionableChangeMessage(msg.data.message)) continue;
           const body = msg.data.message
             .replace(PREAMBLE_RE, "")
             .replace(COMMENTS_SUMMARY_RE, "")
