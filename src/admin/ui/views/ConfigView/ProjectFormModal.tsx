@@ -3,7 +3,7 @@ import { Modal, Field, FieldInput, FieldSelect, FormError, FormRow, FormActions,
 import { Icon } from "../../components/Icon.tsx";
 import { api } from "../../api.ts";
 import type { ApiAgent, ApiIntegration } from "../../types.ts";
-import { ProjectSkillSourcesField, buildSkillSourcesPayload, skillSourceToRow, type SkillSource, type SkillSourceRow } from "./ProjectSkillSourcesField.tsx";
+import { ProjectSkillSourcesField, buildSkillSourcesPayload, preloadedProjectSkillSourceRow, skillSourceToRow, type SkillSource, type SkillSourceRow } from "./ProjectSkillSourcesField.tsx";
 
 interface Props {
   agents: ApiAgent[];
@@ -660,8 +660,8 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
   const [name, setName] = useState("");
   const [agentId, setAgentId] = useState("");
   const [postCloneScript, setPostCloneScript] = useState("");
-  const [skillDiscoveryEnabled, setSkillDiscoveryEnabled] = useState(false);
-  const [skillSourceRows, setSkillSourceRows] = useState<SkillSourceRow[]>([]);
+  const [skillDiscoveryEnabled, setSkillDiscoveryEnabled] = useState(project === undefined);
+  const [skillSourceRows, setSkillSourceRows] = useState<SkillSourceRow[]>(() => project === undefined ? [preloadedProjectSkillSourceRow()] : []);
   const [gerritTopicOverride, setGerritTopicOverride] = useState("");
   const [useFullTicketUrlInCommits, setUseFullTicketUrlInCommits] = useState(false);
   const [postReviewLinkToTicket, setPostReviewLinkToTicket] = useState(false);
