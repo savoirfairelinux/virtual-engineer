@@ -6,6 +6,7 @@ import type { AgentLogEvent } from "../../types.ts";
 import { TONE } from "../../states.ts";
 import type { ToneKey } from "../../states.ts";
 import { extractMetrics, totalInputTokens, totalProcessedTokens } from "./liveMetrics.ts";
+import { renderPayload } from "./liveLogFormat.ts";
 
 type StreamEntry = {
   id: number;
@@ -91,20 +92,6 @@ function normalizeIncomingEntry(raw: unknown, id: number): StreamEntry | null {
     message,
     data: obj["data"],
   };
-}
-
-function renderPayload(entry: StreamEntry): string {
-  if (typeof entry.message === "string" && entry.message.trim().length > 0) {
-    return entry.message;
-  }
-  if (entry.data === null || entry.data === undefined) return "";
-  if (typeof entry.data === "string") return entry.data;
-  if (typeof entry.data === "number" || typeof entry.data === "boolean") return String(entry.data);
-  try {
-    return JSON.stringify(entry.data, null, 2);
-  } catch {
-    return String(entry.data);
-  }
 }
 
 interface LiveLogsProps {
@@ -241,7 +228,6 @@ export function LiveLogs({ taskId, running }: LiveLogsProps) {
           const tagTone = LOG_TAG_TONE[entry.type ?? ""] ?? (entry.level === "error" ? "danger" : "muted");
           const t = TONE[tagTone];
           const payload = renderPayload(entry);
-          const payloadLooksJson = payload.startsWith("{") || payload.startsWith("[");
           return (
             <div
               key={entry.id}
@@ -263,25 +249,13 @@ export function LiveLogs({ taskId, running }: LiveLogsProps) {
               >
                 {entry.type ?? entry.level ?? "LOG"}
               </span>
-              {payloadLooksJson ? (
-                <pre
-                  className="mono"
-                  style={{
-                    margin: 0,
-                    color: "var(--text-dim)",
-                    lineHeight: 1.45,
-                    whiteSpace: "pre-wrap",
-                    overflowWrap: "anywhere",
-                    fontSize: "11px",
-                  }}
-                >
-                  {payload}
-                </pre>
-              ) : (
-                <span className="mono" style={{ color: "var(--text-dim)", lineHeight: 1.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {payload}
-                </span>
-              )}
+              <span
+                className="mono"
+                title={payload}
+                style={{ color: "var(--text-dim)", lineHeight: 1.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+              >
+                {payload}
+              </span>
             </div>
           );
         })}

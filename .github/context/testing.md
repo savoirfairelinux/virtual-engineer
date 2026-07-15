@@ -29,7 +29,7 @@ tests/
 | Connectors — GitHub | `githubIssueConnector`, `githubPullRequestReviewConnector`, `githubReviewProvider`, `githubVcsConnector`, `githubPluginDescriptors`, `githubOAuth`, `githubAuth`, `branchNaming`, `webhookHandlerGithubPullRequest` |
 | VCS (shared) | `vcsConnector`, `vcsFactory`, `baseTicketConnector` |
 | Agents / Copilot | `copilotAdapter` (+ `.promptInjection`), `copilotConnectionValidator`, `copilotOAuthService`, `copilotModelsService`, `providerAuthService`, `mockAgentAdapter`, `agentEventTypes` (+ `.normalization`), `workerCommitProtocol`, `workerPromptLoader`, `workerCopilotProvider`, `workerClaudeProvider` |
-| Review runtime | `copilotReviewAgent`, `reviewOrchestrator`, `reviewPromptBuilder`, `reviewResultParser`, `reviewLiveLogs`, `commentHash`, `commentSeverity`, `revisionPatchset` |
+| Review runtime | `copilotReviewAgent`, `reviewOrchestrator`, `reviewPromptBuilder`, `reviewResultParser`, `reviewLiveLogs`, `liveLogFormat`, `commentHash`, `commentSeverity`, `revisionPatchset` |
 | Cost / token tracking | `cycleCost`, `stateStore.cost`, `adminCostRoutes`, `liveMetrics`, `workerClaudeProvider` |
 | Plugins / runtime wiring | `pluginManager` (+ `.multiInstance`), `registry`, `openShellWorkspaceRunner`, `runtimePolicyResolver`, `agentWorkerProtocol`, `openshell`, `hostGitExecutor`, `runnerContract`, `integrationStreamEvents` |
 | Webhooks | `webhookServer`, `webhookHandlerRegistry` (+ the per-provider handlers listed above) |
