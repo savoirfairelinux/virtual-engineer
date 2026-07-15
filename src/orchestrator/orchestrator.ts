@@ -24,7 +24,7 @@ import { makeTaskId, makeTicketId, TERMINAL_STATES, TicketApiError, TicketNotFou
 import type { CodeGenState } from "../interfaces.js";
 import type { IntegrationStore } from "../interfaces.js";
 import { getLogger } from "../logger.js";
-import { FeedbackProcessor } from "./feedbackProcessor.js";
+import { FeedbackProcessor, isCiFeedbackComment } from "./feedbackProcessor.js";
 import { clearTaskEventBuffer } from "../agents/agentEventBus.js";
 import { normalizeAgentResult, getModifiedFileCount } from "../agents/agentEventTypes.js";
 import type { VcsConnector } from "../vcs/vcsConnector.js";
@@ -1065,6 +1065,13 @@ export class Orchestrator {
   }
 
   /** Poll review system status; advance to MERGED, trigger a retry cycle, or stay IN_REVIEW. */
+  /** Whether this task's project opts in to treating CI build failures as actionable feedback (default off). */
+  private async projectReactsToCiFailures(task: Task): Promise<boolean> {
+    if (!task.projectId || !this.projectMode) return false;
+    const project = await this.projectMode.projectStore.getProjectById(task.projectId);
+    return project?.reactToCiFailures ?? false;
+  }
+
   private async checkReviewProgress(task: Task, streamChangeId?: string, streamComments?: import("../interfaces.js").ReviewComment[]): Promise<void> {
     // Check for per-repository changes first (multi-repo path)
     const perRepoChanges = await this.stateStore.getChangesForTask(task.taskId);
@@ -1118,12 +1125,15 @@ export class Orchestrator {
       : [];
     const baseComments = ciComments.length > 0 ? [...comments, ...ciComments] : comments;
     const allComments = streamComments && streamComments.length > 0 ? [...streamComments, ...baseComments] : baseComments;
+    const scopedComments = (await this.projectReactsToCiFailures(task))
+      ? allComments
+      : allComments.filter((c) => !isCiFeedbackComment(c));
 
     task = await this.stateStore.transition(task.taskId, "FEEDBACK_PROCESSING");
     const [feedbackItems, processedComments] = await this.feedbackProcessor.extractNewFeedback(
       task.taskId,
       changeId,
-      allComments
+      scopedComments
     );
 
     if (feedbackItems.length === 0) {
@@ -1186,6 +1196,8 @@ export class Orchestrator {
       }
       return _fallbackReviewConnector;
     };
+
+    const reactToCiFailures = await this.projectReactsToCiFailures(task);
 
     // Poll each repo's change status
     let allMerged = true;
@@ -1275,10 +1287,13 @@ export class Orchestrator {
               ...comments,
               ...ciComments,
             ];
+            const scopedComments = reactToCiFailures
+              ? allComments
+              : allComments.filter((c) => !isCiFeedbackComment(c));
             const [feedback, processed] = await this.feedbackProcessor.extractNewFeedback(
               task.taskId,
               change.changeId as ExternalChangeId,
-              allComments
+              scopedComments
             );
             // Tag feedback with repoKey for agent context
             for (const item of feedback) {

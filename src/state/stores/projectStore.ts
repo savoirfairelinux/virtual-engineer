@@ -35,13 +35,14 @@ export interface ProjectStoreApi {
     gerritTopicOverride?: string | null;
     useFullTicketUrlInCommits?: boolean;
     postReviewLinkToTicket?: boolean;
+    reactToCiFailures?: boolean;
     enabled?: boolean;
   }): Promise<ProjectRecord>;
   getProjectById(id: ProjectId): Promise<ProjectRecord | null>;
   listProjects(filter?: { type?: ProjectType; enabled?: boolean }): Promise<ProjectRecord[]>;
   updateProject(
     id: ProjectId,
-    partial: Partial<Pick<ProjectRecord, "name" | "type" | "agentId" | "agentOverrideJson" | "postCloneScript" | "skillDiscoveryEnabled" | "gerritTopicOverride" | "useFullTicketUrlInCommits" | "postReviewLinkToTicket" | "enabled">>
+    partial: Partial<Pick<ProjectRecord, "name" | "type" | "agentId" | "agentOverrideJson" | "postCloneScript" | "skillDiscoveryEnabled" | "gerritTopicOverride" | "useFullTicketUrlInCommits" | "postReviewLinkToTicket" | "reactToCiFailures" | "enabled">>
   ): Promise<ProjectRecord>;
   deleteProject(id: ProjectId): Promise<void>;
   adoptOrphanedTasksForProject(projectId: ProjectId, integrationId: string, ticketProjectKey: string): number;
@@ -108,6 +109,7 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
       gerritTopicOverride: row.gerritTopicOverride ?? null,
       useFullTicketUrlInCommits: row.useFullTicketUrlInCommits === 1,
       postReviewLinkToTicket: row.postReviewLinkToTicket === 1,
+      reactToCiFailures: row.reactToCiFailures === 1,
       enabled: row.enabled === 1,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
@@ -168,6 +170,7 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
     gerritTopicOverride?: string | null;
     useFullTicketUrlInCommits?: boolean;
     postReviewLinkToTicket?: boolean;
+    reactToCiFailures?: boolean;
     enabled?: boolean;
   }): Promise<ProjectRecord> {
     const now = new Date();
@@ -187,6 +190,7 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
       gerritTopicOverride: input.gerritTopicOverride ?? null,
       useFullTicketUrlInCommits: input.useFullTicketUrlInCommits === true ? 1 : 0,
       postReviewLinkToTicket: input.postReviewLinkToTicket === true ? 1 : 0,
+      reactToCiFailures: input.reactToCiFailures === true ? 1 : 0,
       enabled: input.enabled === false ? 0 : 1,
       createdAt: now,
       updatedAt: now,
@@ -208,7 +212,7 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
 
   async function updateProject(
     id: ProjectId,
-    partial: Partial<Pick<ProjectRecord, "name" | "type" | "agentId" | "agentOverrideJson" | "postCloneScript" | "skillDiscoveryEnabled" | "gerritTopicOverride" | "useFullTicketUrlInCommits" | "postReviewLinkToTicket" | "enabled">>
+    partial: Partial<Pick<ProjectRecord, "name" | "type" | "agentId" | "agentOverrideJson" | "postCloneScript" | "skillDiscoveryEnabled" | "gerritTopicOverride" | "useFullTicketUrlInCommits" | "postReviewLinkToTicket" | "reactToCiFailures" | "enabled">>
   ): Promise<ProjectRecord> {
     const existing = await getProjectById(id);
     if (!existing) throw new Error(`Project not found: ${id}`);
@@ -229,6 +233,7 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
     if (partial.gerritTopicOverride !== undefined) update["gerritTopicOverride"] = partial.gerritTopicOverride;
     if (partial.useFullTicketUrlInCommits !== undefined) update["useFullTicketUrlInCommits"] = partial.useFullTicketUrlInCommits ? 1 : 0;
     if (partial.postReviewLinkToTicket !== undefined) update["postReviewLinkToTicket"] = partial.postReviewLinkToTicket ? 1 : 0;
+    if (partial.reactToCiFailures !== undefined) update["reactToCiFailures"] = partial.reactToCiFailures ? 1 : 0;
     if (partial.enabled !== undefined) update["enabled"] = partial.enabled ? 1 : 0;
     await db.update(projects).set(update).where(eq(projects.id, id));
     const updated = await getProjectById(id);

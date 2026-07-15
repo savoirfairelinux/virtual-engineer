@@ -70,6 +70,8 @@ export interface ProjectRecord {
   useFullTicketUrlInCommits: boolean;
   /** When true, VE posts a note on the source ticket with the review URL(s) once the first cycle opens a review. Default off — most teams already surface this via standard VCS/ticket integrations. */
   postReviewLinkToTicket: boolean;
+  /** When true, CI build-failure notifications (e.g. Jenkins "Build Failed") count as actionable review feedback and trigger a retry cycle. Default off — some teams don't want VE auto-retrying on broken CI. Coding projects only. */
+  reactToCiFailures: boolean;
   enabled: boolean;
   createdAt: Date;
   updatedAt: Date;
