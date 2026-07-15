@@ -62,6 +62,13 @@ describe("admin skill source discovery", () => {
     })).toBe("ssh://git-user@skills.example.com:29418/org/agent-skills");
   });
 
+  it("rejects malformed SSH source URLs with context", () => {
+    expect(() => resolveSkillSourceUrl({
+      source: "ssh://",
+      sshPort: 29418,
+    })).toThrow('Invalid SSH skill source URL "ssh://"');
+  });
+
   it("builds SSH env for configured private keys", () => {
     const env = buildSkillListEnv({
       source: "ssh://skills.example.com/org/agent-skills",

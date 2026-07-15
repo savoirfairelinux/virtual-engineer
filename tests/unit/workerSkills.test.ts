@@ -96,6 +96,14 @@ describe("agent-worker remote skills", () => {
     })).toBe("ssh://git@skills.example.com:2222/org/agent-skills");
   });
 
+  it("rejects malformed SSH source URLs with context", () => {
+    expect(() => resolveSkillSourceUrl({
+      source: "ssh://",
+      skills: ["skill-a"],
+      sshUser: "git-user",
+    })).toThrow('Invalid SSH skill source URL "ssh://"');
+  });
+
   it("rejects invalid configured skill source entries", () => {
     expect(() => parseRemoteSkillSources(JSON.stringify([
       { source: "ssh://skills.example.com/org/agent-skills", skills: [] },
