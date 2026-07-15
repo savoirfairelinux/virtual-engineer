@@ -912,7 +912,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
             <Field label="Custom Gerrit Topic" hint="Overrides the ticket-derived topic (e.g. VE-<taskId>-<ticket-title>) for all changes pushed from this project. Leave blank to keep the default per-ticket topic.">
               <FieldInput
                 value={gerritTopicOverride}
-                placeholder="ve-crashfix"
+                placeholder="my-custom-topic"
                 onChange={(e) => setGerritTopicOverride(e.target.value)}
               />
             </Field>
