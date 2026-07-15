@@ -308,6 +308,8 @@ export const projects = sqliteTable(
     gerritTopicOverride: text("gerrit_topic_override"),
     /** When 1, agent commit messages use the full ticket URL in the footer instead of the short "#id" form. */
     useFullTicketUrlInCommits: integer("use_full_ticket_url_in_commits").notNull().default(0),
+    /** When 1, VE posts a note on the source ticket with the review URL(s) once the first cycle opens a review. Default off — most teams already surface this via standard VCS/ticket integrations. */
+    postReviewLinkToTicket: integer("post_review_link_to_ticket").notNull().default(0),
     enabled: integer("enabled").notNull().default(0),
     createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
     updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),

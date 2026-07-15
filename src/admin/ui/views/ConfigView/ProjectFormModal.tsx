@@ -21,6 +21,7 @@ interface ProjectFormProject {
   skillDiscoveryEnabled?: boolean;
   gerritTopicOverride?: string | null;
   useFullTicketUrlInCommits?: boolean;
+  postReviewLinkToTicket?: boolean;
   ticketSource?: {
     integration: { id: string; name: string; type: string } | null;
     ticketProjectKey: string;
@@ -659,6 +660,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
   const [skillDiscoveryEnabled, setSkillDiscoveryEnabled] = useState(false);
   const [gerritTopicOverride, setGerritTopicOverride] = useState("");
   const [useFullTicketUrlInCommits, setUseFullTicketUrlInCommits] = useState(false);
+  const [postReviewLinkToTicket, setPostReviewLinkToTicket] = useState(false);
 
   // Coding-specific
   const [ticketSource, setTicketSource] = useState<TicketSource>({ integrationId: "", ticketProjectKey: "" });
@@ -680,6 +682,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
     setSkillDiscoveryEnabled(project.skillDiscoveryEnabled ?? false);
     setGerritTopicOverride(project.gerritTopicOverride ?? "");
     setUseFullTicketUrlInCommits(project.useFullTicketUrlInCommits ?? false);
+    setPostReviewLinkToTicket(project.postReviewLinkToTicket ?? false);
 
     if (project.type === "coding") {
       setTicketSource({
@@ -740,6 +743,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
           skillDiscoveryEnabled,
           gerritTopicOverride: gerritTopicOverride.trim() || null,
           useFullTicketUrlInCommits,
+          postReviewLinkToTicket,
           ticketSource: { integrationId: ticketSource.integrationId, ticketProjectKey: ticketSource.ticketProjectKey },
           pushTargets: pushTargets.map((t) => ({
             integrationId: t.integrationId,
@@ -929,6 +933,21 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
                   style={{ accentColor: "var(--accent)", cursor: "pointer", flexShrink: 0 }}
                 />
                 <span>Include full ticket URL in commit message footers</span>
+              </label>
+            </Field>
+
+            <Field
+              label="Post Review Link to Ticket"
+              hint="When enabled, VE adds a note on the source ticket with the Gerrit/review URL(s) once the first cycle opens a review. Off by default — most teams already surface this via standard VCS/ticket integrations."
+            >
+              <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: "13px", userSelect: "none" }}>
+                <input
+                  type="checkbox"
+                  checked={postReviewLinkToTicket}
+                  onChange={(e) => setPostReviewLinkToTicket(e.target.checked)}
+                  style={{ accentColor: "var(--accent)", cursor: "pointer", flexShrink: 0 }}
+                />
+                <span>Post a ticket comment with the review link(s)</span>
               </label>
             </Field>
           </>

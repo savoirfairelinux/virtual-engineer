@@ -880,6 +880,23 @@ export class Orchestrator {
       task = await this.stateStore.transition(task.taskId, "IN_REVIEW");
       const ticketConn = await this.resolveTicketConnector(task);
       await ticketConn.transitionToInReview(task.ticketId);
+
+      // Opt-in (default off — most teams already surface this via standard VCS/ticket
+      // integrations): post the review URL(s) as a ticket note. Cross-project fix-up:
+      // the ticket lives in one repo/project, but the fix may land in a different one
+      // (e.g. jami-client-qt ticket, jami-daemon patch), so a bare "#123"-style reference
+      // wouldn't resolve to the right place — the full URL is unambiguous regardless of
+      // which repo(s) received commits. Only on cycle 1: later cycles just add patchsets
+      // to the same change/URL.
+      if (projectRecord?.postReviewLinkToTicket && cycleNumber === 1) {
+        const changes = await this.stateStore.getChangesForTask(task.taskId);
+        const links = changes
+          .filter((c) => c.status !== "NO_CHANGE" && c.status !== "ORPHANED" && c.reviewUrl)
+          .map((c) => `${c.repoKey}: ${c.reviewUrl}`);
+        if (links.length > 0) {
+          await this.addTicketNote(task, `Virtual Engineer opened a review:\n\n${links.join("\n")}`, false);
+        }
+      }
     } finally {
       try {
         if (handle) {
