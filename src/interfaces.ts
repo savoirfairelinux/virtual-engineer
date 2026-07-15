@@ -35,6 +35,8 @@ export type AgentType = "coding" | "review";
 export type ProjectType = "coding" | "review";
 export type PushTargetRole = "primary" | "submodule" | "dependency" | "related";
 
+export const DEFAULT_LOCAL_SKILLS_PATH = ".github/skills";
+
 export interface AgentRecord {
   id: AgentId;
   name: string;
@@ -62,9 +64,11 @@ export interface ProjectRecord {
   agentOverrideJson: string | null;
   /** Bash script run on the host after cloning. Empty string means "no script". */
   postCloneScript: string;
-  /** When true, the agent container loads project-approved skills. */
+  /** When true, the agent container loads local repository skills. */
   skillDiscoveryEnabled: boolean;
-  /** JSON list of remote skill sources fetched with `npx skills` when discovery is enabled. */
+  /** Workspace-relative path for local project skills. */
+  localSkillsPath: string;
+  /** JSON list of remote skill sources fetched with `npx skills` when configured. */
   skillSourcesJson: string;
   /** Optional literal Gerrit topic that overrides the ticket-derived topic (buildGerritTopic) for all pushes from this project. NULL = use the ticket-derived topic. */
   gerritTopicOverride: string | null;
@@ -403,8 +407,10 @@ export interface AgentSession {
   copilotReasoningEffort?: string | undefined;
   /** Multi-repo workspace layout — when set, agent-worker uses it to group files/commits by repo. */
   repositoryMap?: RepositoryMap | undefined;
-  /** When true, the agent loads team-defined local and remote skills. Sourced from the project's setting. */
+  /** When true, the agent loads local repository skills from `localSkillsPath`. */
   skillDiscoveryEnabled?: boolean | undefined;
+  /** Workspace-relative path used for local skills when local skill loading is enabled. */
+  localSkillsPath?: string | undefined;
   /** Remote skills fetched by the worker before opening the agent session. */
   skillSourcesJson?: string | undefined;
   /** Pre-formatted ticket-footer trailer line (e.g. "GitLab: https://…/issues/123") injected into every agent commit alongside its Change-Id. Sourced from the project's "full ticket URL in commits" setting. */
@@ -572,8 +578,10 @@ export interface ReviewWorkspaceInput {
   reasoningEffort?: string | undefined;
   /** Container image (defaults to agentContainerImage from codegen config) */
   containerImage?: string | undefined;
-  /** When true, the agent container loads team-defined local and remote skills. */
+  /** When true, the agent container loads local repository skills from `localSkillsPath`. */
   skillDiscoveryEnabled?: boolean | undefined;
+  /** Workspace-relative path used for local skills when skill discovery is enabled. */
+  localSkillsPath?: string | undefined;
   /** Remote skills fetched by the worker before opening the agent session. */
   skillSourcesJson?: string | undefined;
 }

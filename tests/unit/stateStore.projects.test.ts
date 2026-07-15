@@ -147,6 +147,25 @@ describe("SqliteStateStore — Phase 2: projects", () => {
     expect((await store.getProjectById(on.id))?.skillSourcesJson).toBe("[]");
   });
 
+  it("persists and updates localSkillsPath (defaults to .github/skills)", async () => {
+    const a = await makeAgent(store);
+    const defaulted = await store.createProject({ name: "DefaultLocalSkills", type: "coding", agentId: a.id });
+    expect(defaulted.localSkillsPath).toBe(".github/skills");
+
+    const custom = await store.createProject({
+      name: "CustomLocalSkills",
+      type: "coding",
+      agentId: a.id,
+      localSkillsPath: "team/skills",
+    });
+    expect(custom.localSkillsPath).toBe("team/skills");
+    expect((await store.getProjectById(custom.id))?.localSkillsPath).toBe("team/skills");
+
+    const updated = await store.updateProject(custom.id, { localSkillsPath: "repo-skills" });
+    expect(updated.localSkillsPath).toBe("repo-skills");
+    expect((await store.getProjectById(custom.id))?.localSkillsPath).toBe("repo-skills");
+  });
+
   it("createProject throws when agent does not exist", async () => {
     await expect(
       store.createProject({ name: "Bad", type: "coding", agentId: makeAgentId("missing") })
@@ -524,6 +543,7 @@ describe("resolveAgentConfig — partial-merge semantics", () => {
       agentOverrideJson,
       postCloneScript: "",
       skillDiscoveryEnabled: false,
+      localSkillsPath: ".github/skills",
       skillSourcesJson: "[]",
       gerritTopicOverride: null,
       useFullTicketUrlInCommits: false,

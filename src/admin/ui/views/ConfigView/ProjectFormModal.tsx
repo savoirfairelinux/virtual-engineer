@@ -5,6 +5,8 @@ import { api } from "../../api.ts";
 import type { ApiAgent, ApiIntegration } from "../../types.ts";
 import { ProjectSkillSourcesField, buildSkillSourcesPayload, preloadedProjectSkillSourceRow, skillSourceToRow, type SkillSource, type SkillSourceRow } from "./ProjectSkillSourcesField.tsx";
 
+const DEFAULT_LOCAL_SKILLS_PATH = ".github/skills";
+
 interface Props {
   agents: ApiAgent[];
   integrations: ApiIntegration[];
@@ -20,6 +22,7 @@ interface ProjectFormProject {
   agentId: string | null;
   postCloneScript?: string;
   skillDiscoveryEnabled?: boolean;
+  localSkillsPath?: string;
   skillSources?: SkillSource[];
   gerritTopicOverride?: string | null;
   useFullTicketUrlInCommits?: boolean;
@@ -705,6 +708,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
   const [agentId, setAgentId] = useState("");
   const [postCloneScript, setPostCloneScript] = useState("");
   const [skillDiscoveryEnabled, setSkillDiscoveryEnabled] = useState(false);
+  const [localSkillsPath, setLocalSkillsPath] = useState(DEFAULT_LOCAL_SKILLS_PATH);
   const [skillSourceRows, setSkillSourceRows] = useState<SkillSourceRow[]>(() => project === undefined ? [preloadedProjectSkillSourceRow()] : []);
   const [gerritTopicOverride, setGerritTopicOverride] = useState("");
   const [useFullTicketUrlInCommits, setUseFullTicketUrlInCommits] = useState(false);
@@ -731,6 +735,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
     setAgentId(project.agentId ?? "");
     setPostCloneScript(project.postCloneScript ?? "");
     setSkillDiscoveryEnabled(project.skillDiscoveryEnabled ?? false);
+    setLocalSkillsPath(project.localSkillsPath ?? DEFAULT_LOCAL_SKILLS_PATH);
     setSkillSourceRows((project.skillSources ?? []).map(skillSourceToRow));
     setGerritTopicOverride(project.gerritTopicOverride ?? "");
     setUseFullTicketUrlInCommits(project.useFullTicketUrlInCommits ?? false);
@@ -807,6 +812,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
           agentId,
           postCloneScript: postCloneScript || undefined,
           skillDiscoveryEnabled,
+          localSkillsPath: localSkillsPath.trim() || DEFAULT_LOCAL_SKILLS_PATH,
           skillSources,
           gerritTopicOverride: gerritTopicOverride.trim() || null,
           useFullTicketUrlInCommits,
@@ -838,6 +844,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
           agentId,
           postCloneScript: postCloneScript || undefined,
           skillDiscoveryEnabled,
+          localSkillsPath: localSkillsPath.trim() || DEFAULT_LOCAL_SKILLS_PATH,
           skillSources,
           reviewConfig: { integrationId: reviewIntegrationId, repoKeys: reviewRepoKeys },
         };
@@ -1071,6 +1078,8 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
         <ProjectSkillSourcesField
           enabled={skillDiscoveryEnabled}
           onEnabledChange={setSkillDiscoveryEnabled}
+          localSkillsPath={localSkillsPath}
+          onLocalSkillsPathChange={setLocalSkillsPath}
           rows={skillSourceRows}
           setRows={setSkillSourceRows}
           projectId={project?.id}

@@ -19,6 +19,7 @@ function makeProject(over: Omit<Partial<ProjectRecord>, "id" | "type"> & { id: s
     agentOverrideJson: over.agentOverrideJson ?? null,
     postCloneScript: over.postCloneScript ?? "",
     skillDiscoveryEnabled: over.skillDiscoveryEnabled ?? false,
+    localSkillsPath: over.localSkillsPath ?? ".github/skills",
     skillSourcesJson: over.skillSourcesJson ?? "[]",
     gerritTopicOverride: over.gerritTopicOverride ?? null,
     useFullTicketUrlInCommits: over.useFullTicketUrlInCommits ?? false,
