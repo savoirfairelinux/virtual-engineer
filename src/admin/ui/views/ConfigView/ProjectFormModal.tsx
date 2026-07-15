@@ -22,6 +22,7 @@ interface ProjectFormProject {
   gerritTopicOverride?: string | null;
   useFullTicketUrlInCommits?: boolean;
   postReviewLinkToTicket?: boolean;
+  reactToCiFailures?: boolean;
   ticketSource?: {
     integration: { id: string; name: string; type: string } | null;
     ticketProjectKey: string;
@@ -661,6 +662,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
   const [gerritTopicOverride, setGerritTopicOverride] = useState("");
   const [useFullTicketUrlInCommits, setUseFullTicketUrlInCommits] = useState(false);
   const [postReviewLinkToTicket, setPostReviewLinkToTicket] = useState(false);
+  const [reactToCiFailures, setReactToCiFailures] = useState(false);
 
   // Coding-specific
   const [ticketSource, setTicketSource] = useState<TicketSource>({ integrationId: "", ticketProjectKey: "" });
@@ -683,6 +685,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
     setGerritTopicOverride(project.gerritTopicOverride ?? "");
     setUseFullTicketUrlInCommits(project.useFullTicketUrlInCommits ?? false);
     setPostReviewLinkToTicket(project.postReviewLinkToTicket ?? false);
+    setReactToCiFailures(project.reactToCiFailures ?? false);
 
     if (project.type === "coding") {
       setTicketSource({
@@ -744,6 +747,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
           gerritTopicOverride: gerritTopicOverride.trim() || null,
           useFullTicketUrlInCommits,
           postReviewLinkToTicket,
+          reactToCiFailures,
           ticketSource: { integrationId: ticketSource.integrationId, ticketProjectKey: ticketSource.ticketProjectKey },
           pushTargets: pushTargets.map((t) => ({
             integrationId: t.integrationId,
@@ -948,6 +952,21 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
                   style={{ accentColor: "var(--accent)", cursor: "pointer", flexShrink: 0 }}
                 />
                 <span>Post a ticket comment with the review link(s)</span>
+              </label>
+            </Field>
+
+            <Field
+              label="React to CI Failures"
+              hint="When enabled, CI build-failure notifications (e.g. Jenkins 'Build Failed') count as actionable review feedback and trigger a retry cycle. Off by default — some teams don't want VE auto-retrying on broken CI."
+            >
+              <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: "13px", userSelect: "none" }}>
+                <input
+                  type="checkbox"
+                  checked={reactToCiFailures}
+                  onChange={(e) => setReactToCiFailures(e.target.checked)}
+                  style={{ accentColor: "var(--accent)", cursor: "pointer", flexShrink: 0 }}
+                />
+                <span>Retry a cycle when CI reports a build failure</span>
               </label>
             </Field>
           </>

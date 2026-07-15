@@ -29,6 +29,7 @@ function makeProject(id: string): ProjectRecord {
     gerritTopicOverride: null,
     useFullTicketUrlInCommits: false,
     postReviewLinkToTicket: false,
+    reactToCiFailures: false,
     enabled: true,
     createdAt: new Date(),
     updatedAt: new Date(),

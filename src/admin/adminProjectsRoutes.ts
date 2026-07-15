@@ -64,13 +64,14 @@ export interface ProjectsRouteStore {
     gerritTopicOverride?: string | null;
     useFullTicketUrlInCommits?: boolean;
     postReviewLinkToTicket?: boolean;
+    reactToCiFailures?: boolean;
     enabled?: boolean;
   }): Promise<ProjectRecord>;
   getProjectById(id: ProjectId): Promise<ProjectRecord | null>;
   listProjects(filter?: { type?: ProjectType; enabled?: boolean }): Promise<ProjectRecord[]>;
   updateProject(
     id: ProjectId,
-    partial: Partial<Pick<ProjectRecord, "name" | "type" | "agentId" | "agentOverrideJson" | "postCloneScript" | "skillDiscoveryEnabled" | "gerritTopicOverride" | "useFullTicketUrlInCommits" | "postReviewLinkToTicket" | "enabled">>
+    partial: Partial<Pick<ProjectRecord, "name" | "type" | "agentId" | "agentOverrideJson" | "postCloneScript" | "skillDiscoveryEnabled" | "gerritTopicOverride" | "useFullTicketUrlInCommits" | "postReviewLinkToTicket" | "reactToCiFailures" | "enabled">>
   ): Promise<ProjectRecord>;
   deleteProject(id: ProjectId): Promise<void>;
   setProjectEnabled(id: ProjectId, enabled: boolean): Promise<void>;
@@ -172,6 +173,7 @@ const codingProjectCreateSchema = z.object({
   gerritTopicOverride: z.string().nullable().optional(),
   useFullTicketUrlInCommits: z.boolean().optional(),
   postReviewLinkToTicket: z.boolean().optional(),
+  reactToCiFailures: z.boolean().optional(),
   enabled: z.boolean().optional(),
   ticketSource: ticketSourceSchema,
   pushTargets: pushTargetsArraySchema,
@@ -188,6 +190,7 @@ const reviewProjectCreateSchema = z.object({
   gerritTopicOverride: z.string().nullable().optional(),
   useFullTicketUrlInCommits: z.boolean().optional(),
   postReviewLinkToTicket: z.boolean().optional(),
+  reactToCiFailures: z.boolean().optional(),
   enabled: z.boolean().optional(),
   reviewConfig: reviewConfigSchema,
 });
@@ -206,6 +209,7 @@ const projectUpdateSchema = z.object({
   gerritTopicOverride: z.string().nullable().optional(),
   useFullTicketUrlInCommits: z.boolean().optional(),
   postReviewLinkToTicket: z.boolean().optional(),
+  reactToCiFailures: z.boolean().optional(),
   enabled: z.boolean().optional(),
   ticketSource: ticketSourceSchema.optional(),
   pushTargets: pushTargetsArraySchema.optional(),
@@ -281,6 +285,7 @@ interface ProjectDetail extends ProjectSummary {
   gerritTopicOverride: string | null;
   useFullTicketUrlInCommits: boolean;
   postReviewLinkToTicket: boolean;
+  reactToCiFailures: boolean;
   pushTargets: Array<{
     id: number;
     integration: { id: string; name: string; provider: string; domainCapabilities: string[] } | null;
@@ -398,6 +403,7 @@ async function buildProjectDetail(
     gerritTopicOverride: project.gerritTopicOverride,
     useFullTicketUrlInCommits: project.useFullTicketUrlInCommits,
     postReviewLinkToTicket: project.postReviewLinkToTicket,
+    reactToCiFailures: project.reactToCiFailures,
     ticketSource,
     reviewConfig,
     pushTargetCount,
@@ -470,6 +476,7 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
         ...(data.gerritTopicOverride !== undefined ? { gerritTopicOverride: data.gerritTopicOverride } : {}),
         ...(data.useFullTicketUrlInCommits !== undefined ? { useFullTicketUrlInCommits: data.useFullTicketUrlInCommits } : {}),
         ...(data.postReviewLinkToTicket !== undefined ? { postReviewLinkToTicket: data.postReviewLinkToTicket } : {}),
+        ...(data.reactToCiFailures !== undefined ? { reactToCiFailures: data.reactToCiFailures } : {}),
         ...(data.enabled !== undefined ? { enabled: data.enabled } : {}),
       });
     } catch (err: unknown) {
@@ -585,6 +592,7 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
     if (data.gerritTopicOverride !== undefined) updates.gerritTopicOverride = data.gerritTopicOverride;
     if (data.useFullTicketUrlInCommits !== undefined) updates.useFullTicketUrlInCommits = data.useFullTicketUrlInCommits;
     if (data.postReviewLinkToTicket !== undefined) updates.postReviewLinkToTicket = data.postReviewLinkToTicket;
+    if (data.reactToCiFailures !== undefined) updates.reactToCiFailures = data.reactToCiFailures;
     if (data.enabled !== undefined) updates.enabled = data.enabled;
     const reconfigured =
       data.ticketSource !== undefined ||

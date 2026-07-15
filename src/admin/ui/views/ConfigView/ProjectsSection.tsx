@@ -33,6 +33,7 @@ interface ApiProjectDetail extends ApiProject {
   gerritTopicOverride?: string | null;
   useFullTicketUrlInCommits?: boolean;
   postReviewLinkToTicket?: boolean;
+  reactToCiFailures?: boolean;
 }
 
 export function ProjectsSection({ projects, agents, integrations, onRefresh }: ConfigViewData) {

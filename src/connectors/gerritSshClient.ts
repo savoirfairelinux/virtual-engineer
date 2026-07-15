@@ -70,6 +70,49 @@ export const PREAMBLE_RE = /^Patch Set \d+:[^\n]*\n\n/;
 export const COMMENTS_SUMMARY_RE = /^\(\d+ comments?\)\n*/;
 /** Gerrit system messages that never contain user-authored content. */
 const SYSTEM_RE = /^(?:Uploaded patch set \d|Change has been successfully|Abandoned$|Restored$|Created a revert|Removed .+ by )/;
+/**
+ * CI/build-bot lifecycle notifications (e.g. Jenkins "Build Started/Successful") —
+ * status noise, never code feedback. Failure states (Failed/Aborted/Unstable) are
+ * deliberately excluded: they're actionable feedback the agent must fix.
+ */
+const CI_BUILD_RE = /\bBuild (?:Started|Successful|Abandoned|is back to normal)\b/i;
+/** CI/build-bot failure notifications — actionable, but gated behind the per-project `reactToCiFailures` toggle (see feedbackProcessor.ts). */
+const CI_FAILURE_RE = /\bBuild (?:Failed|Aborted|Unstable)\b/i;
+/** A change message whose content is only Gerrit label votes (e.g. "Code-Review+2", "Verified+1"). */
+const VOTE_ONLY_RE = /^(?:[A-Za-z][\w-]*[+-]\d+[ \t]*)+$/;
+/** Leading single-line "Patch Set N:" label prefix, stripped for content classification. */
+const LEAD_PATCHSET_RE = /^Patch Set \d+:\s*/;
+
+/**
+ * True when a top-level change message is a CI failure notification (e.g.
+ * Jenkins "Build Failed/Aborted/Unstable"). Used to tag such comments with a
+ * stable `ci-failure-` id prefix so orchestrator.ts can gate them behind the
+ * per-project `reactToCiFailures` toggle, same as GitHub's `ci-run-` comments.
+ */
+export function isCiFailureMessage(message: string): boolean {
+  const core = message.replace(LEAD_PATCHSET_RE, "").trim();
+  return CI_FAILURE_RE.test(core);
+}
+
+/**
+ * True when a top-level change message carries no actionable human feedback:
+ * a CI lifecycle notification (Jenkins "Started/Successful") or a bare label
+ * vote ("Code-Review+2"). CI *failure* notifications (Failed/Aborted/Unstable)
+ * are NOT filtered here — they're real feedback, tagged via isCiFailureMessage
+ * instead so callers can gate them per-project.
+ *
+ * Lifecycle/vote messages regenerate on every patchset, so treating them as
+ * review feedback loops the agent forever (re-push → new CI message → new
+ * "feedback" → re-push …) and makes VE post canned "Addressed in this
+ * patchset." replies to build bots.
+ */
+export function isNonActionableChangeMessage(message: string): boolean {
+  const core = message.replace(LEAD_PATCHSET_RE, "").trim();
+  if (!core) return true;
+  if (CI_BUILD_RE.test(core)) return true;
+  if (VOTE_ONLY_RE.test(core)) return true;
+  return false;
+}
 
 // ─── NDJSON parser ────────────────────────────────────────────────────────────
 
@@ -271,13 +314,14 @@ export class GerritSshClient {
           if (!msg.success) continue;
           if (sshUser && msg.data.reviewer?.username === sshUser) continue;
           if (SYSTEM_RE.test(msg.data.message)) continue;
+          if (isNonActionableChangeMessage(msg.data.message)) continue;
           const body = msg.data.message
             .replace(PREAMBLE_RE, "")
             .replace(COMMENTS_SUMMARY_RE, "")
             .trim();
           if (!body) continue;
           result.push({
-            id: `gerrit-msg-${msg.data.timestamp}`,
+            id: `${isCiFailureMessage(msg.data.message) ? "ci-failure" : "gerrit-msg"}-${msg.data.timestamp}`,
             author: msg.data.reviewer?.email ?? msg.data.reviewer?.name ?? "unknown",
             message: body,
             filePath: undefined,
