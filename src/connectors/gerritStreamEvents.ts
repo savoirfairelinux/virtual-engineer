@@ -2,7 +2,7 @@ import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child
 import { promisify } from "node:util";
 import type { Integration, ReviewComment } from "../interfaces.js";
 import { getLogger } from "../logger.js";
-import { buildSshHostKeyOptions, PREAMBLE_RE, COMMENTS_SUMMARY_RE, isNonActionableChangeMessage } from "./gerritSshClient.js";
+import { buildSshHostKeyOptions, PREAMBLE_RE, COMMENTS_SUMMARY_RE, isNonActionableChangeMessage, isCiFailureMessage } from "./gerritSshClient.js";
 import { SSH_RESOLVED_KEY_PATH, SSH_AGENT_PUBKEY_PATH } from "../utils/sshKeyResolver.js";
 import type {
   IntegrationEventStreamDependencies,
@@ -740,7 +740,7 @@ function extractStreamComment(payload: unknown, sshUser: string): ReviewComment 
     : "unknown";
 
   return {
-    id: `gerrit-msg-${ts}`,
+    id: `${isCiFailureMessage(raw) ? "ci-failure" : "gerrit-msg"}-${ts}`,
     author: authorEmail,
     message: body,
     filePath: undefined,

@@ -312,6 +312,7 @@ export class SqliteStateStore {
         gerrit_topic_override TEXT,
         use_full_ticket_url_in_commits INTEGER NOT NULL DEFAULT 0,
         post_review_link_to_ticket INTEGER NOT NULL DEFAULT 0,
+        react_to_ci_failures INTEGER NOT NULL DEFAULT 0,
         enabled             INTEGER NOT NULL DEFAULT 0,
         created_at          INTEGER NOT NULL,
         updated_at          INTEGER NOT NULL
@@ -487,6 +488,7 @@ export class SqliteStateStore {
     this.ensureColumn("projects", "gerrit_topic_override", "TEXT");
     this.ensureColumn("projects", "use_full_ticket_url_in_commits", "INTEGER NOT NULL DEFAULT 0");
     this.ensureColumn("projects", "post_review_link_to_ticket", "INTEGER NOT NULL DEFAULT 0");
+    this.ensureColumn("projects", "react_to_ci_failures", "INTEGER NOT NULL DEFAULT 0");
     this.ensureColumn("prompts", "prompt_type", "TEXT NOT NULL DEFAULT 'user'");
 
     this.raw.exec(`

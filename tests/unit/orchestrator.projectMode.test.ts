@@ -890,6 +890,120 @@ describe("Orchestrator — Phase 4 project mode", () => {
     expect(reviewConnector.getChangeStatus).toHaveBeenCalledWith("17");
   });
 
+  it("ignores a CI build-failure comment when reactToCiFailures is off (default) — no retry cycle", async () => {
+    const task = makeTask({ state: "IN_REVIEW" });
+    const stateStore = makeStateStore({
+      getChangesForTask: vi.fn().mockResolvedValue([
+        {
+          id: "chg-1",
+          taskId: task.taskId,
+          repoKey: "group/platform",
+          changeId: "17",
+          reviewUrl: "https://gitlab.local/group/platform/-/merge_requests/17",
+          status: "OPEN",
+          integrationId: "gitlab-int",
+          reviewSystem: "gitlab",
+          commitIndex: 1,
+          subjectHash: "abc",
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      ]),
+      transition: vi.fn()
+        .mockResolvedValueOnce(makeTask({ state: "FEEDBACK_PROCESSING" }))
+        .mockResolvedValueOnce(makeTask({ state: "IN_REVIEW" })),
+    });
+    const reviewConnector = {
+      clone: vi.fn(),
+      push: vi.fn(),
+      getChangeStatus: vi.fn().mockResolvedValue("OPEN"),
+      getUnresolvedComments: vi.fn().mockResolvedValue([
+        { id: "ci-failure-1710000000", author: "jenkins", message: "Build Failed", unresolved: true, patchset: 0, updatedAt: new Date() },
+      ]),
+      buildPushSpec: vi.fn().mockReturnValue({ ref: "feature-task", topic: undefined }),
+      useChangeIdContinuity: false,
+      reviewSystemLabel: "gitlab",
+    } as unknown as VcsConnector;
+
+    const projectMode: ProjectModeDeps = {
+      projectStore: {
+        getProjectById: vi.fn(async () => makeProject({ reactToCiFailures: false })),
+        listProjectPushTargets: vi.fn(async () => []),
+        getProjectTicketSource: vi.fn().mockResolvedValue({ integrationId: "redmine-int" }),
+        getProjectReviewConfig: vi.fn().mockResolvedValue(null),
+        getAgentById: vi.fn(),
+      },
+      pluginManager: { getConnectorForIntegration: vi.fn(() => null) } as unknown as ProjectModeDeps["pluginManager"],
+      resolveVcsForIntegration: vi.fn(async () => reviewConnector),
+    };
+
+    const orch = new Orchestrator(baseConfig(), stateStore, makeWorkspaceRunner(), undefined, undefined, projectMode);
+    const runAgentCycle = vi.spyOn(orch as unknown as { runAgentCycle: (task: Task) => Promise<void> }, "runAgentCycle").mockResolvedValue(undefined);
+
+    await (orch as unknown as { checkReviewProgress: (task: Task) => Promise<void> }).checkReviewProgress(task);
+
+    expect(stateStore.transition).toHaveBeenCalledWith(task.taskId, "IN_REVIEW");
+    expect(stateStore.transition).not.toHaveBeenCalledWith(task.taskId, "RETRY_CYCLE");
+    expect(runAgentCycle).not.toHaveBeenCalled();
+  });
+
+  it("triggers a retry cycle from a CI build-failure comment when reactToCiFailures is on", async () => {
+    const task = makeTask({ state: "IN_REVIEW" });
+    const stateStore = makeStateStore({
+      getChangesForTask: vi.fn().mockResolvedValue([
+        {
+          id: "chg-1",
+          taskId: task.taskId,
+          repoKey: "group/platform",
+          changeId: "17",
+          reviewUrl: "https://gitlab.local/group/platform/-/merge_requests/17",
+          status: "OPEN",
+          integrationId: "gitlab-int",
+          reviewSystem: "gitlab",
+          commitIndex: 1,
+          subjectHash: "abc",
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      ]),
+      transition: vi.fn()
+        .mockResolvedValueOnce(makeTask({ state: "FEEDBACK_PROCESSING" }))
+        .mockResolvedValueOnce(makeTask({ state: "RETRY_CYCLE" })),
+      getTask: vi.fn().mockResolvedValue(makeTask({ state: "IN_REVIEW" })),
+    });
+    const reviewConnector = {
+      clone: vi.fn(),
+      push: vi.fn(),
+      getChangeStatus: vi.fn().mockResolvedValue("OPEN"),
+      getUnresolvedComments: vi.fn().mockResolvedValue([
+        { id: "ci-failure-1710000000", author: "jenkins", message: "Build Failed", unresolved: true, patchset: 0, updatedAt: new Date() },
+      ]),
+      buildPushSpec: vi.fn().mockReturnValue({ ref: "feature-task", topic: undefined }),
+      useChangeIdContinuity: false,
+      reviewSystemLabel: "gitlab",
+    } as unknown as VcsConnector;
+
+    const projectMode: ProjectModeDeps = {
+      projectStore: {
+        getProjectById: vi.fn(async () => makeProject({ reactToCiFailures: true })),
+        listProjectPushTargets: vi.fn(async () => []),
+        getProjectTicketSource: vi.fn().mockResolvedValue({ integrationId: "redmine-int" }),
+        getProjectReviewConfig: vi.fn().mockResolvedValue(null),
+        getAgentById: vi.fn(),
+      },
+      pluginManager: { getConnectorForIntegration: vi.fn(() => null) } as unknown as ProjectModeDeps["pluginManager"],
+      resolveVcsForIntegration: vi.fn(async () => reviewConnector),
+    };
+
+    const orch = new Orchestrator(baseConfig(), stateStore, makeWorkspaceRunner(), undefined, undefined, projectMode);
+    const runAgentCycle = vi.spyOn(orch as unknown as { runAgentCycle: (task: Task) => Promise<void> }, "runAgentCycle").mockResolvedValue(undefined);
+
+    await (orch as unknown as { checkReviewProgress: (task: Task) => Promise<void> }).checkReviewProgress(task);
+
+    expect(stateStore.transition).toHaveBeenCalledWith(task.taskId, "RETRY_CYCLE");
+    expect(runAgentCycle).toHaveBeenCalled();
+  });
+
   it("project-mode review polling skips a repo when repo-bound connector resolution fails", async () => {
     const task = makeTask({ state: "IN_REVIEW" });
     const stateStore = makeStateStore({

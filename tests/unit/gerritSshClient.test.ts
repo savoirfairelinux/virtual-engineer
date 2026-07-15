@@ -52,7 +52,7 @@ vi.mock("node:child_process", () => ({
   }),
 }));
 
-import { GerritSshClient, parseSshNdjson, isNonActionableChangeMessage } from "../../src/connectors/gerritSshClient.js";
+import { GerritSshClient, parseSshNdjson, isNonActionableChangeMessage, isCiFailureMessage } from "../../src/connectors/gerritSshClient.js";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -98,7 +98,6 @@ describe("isNonActionableChangeMessage", () => {
   it.each([
     ["Patch Set 1:  Build Started https://ci.test/job/x/1/ (1/4)", true],
     ["Patch Set 2: Verified+1\n\nBuild Successful\n\nhttps://ci.test : SUCCESS", true],
-    ["Patch Set 2: Build Failed", true],
     ["Patch Set 2: Code-Review+2", true],
     ["Patch Set 1: Verified+1", true],
     ["Code-Review-1", true],
@@ -112,8 +111,28 @@ describe("isNonActionableChangeMessage", () => {
     ["Patch Set 2:\n\nPlease guard against null here.", false],
     ["Patch Set 2: Code-Review-1\n\nThe null guard is on the wrong line.", false],
     ["This function leaks a file handle.", false],
+    ["Patch Set 2: Verified-1\n\nBuild Failed\n\nhttps://ci.test : FAILURE", false],
+    ["Patch Set 2: Build Unstable", false],
   ])("treats %j as actionable feedback", (msg, expected) => {
     expect(isNonActionableChangeMessage(msg)).toBe(expected);
+  });
+});
+
+describe("isCiFailureMessage", () => {
+  it.each([
+    ["Patch Set 2: Verified-1\n\nBuild Failed\n\nhttps://ci.test : FAILURE", true],
+    ["Patch Set 2: Build Unstable", true],
+    ["Patch Set 2: Build Aborted", true],
+  ])("treats %j as a CI failure", (msg, expected) => {
+    expect(isCiFailureMessage(msg)).toBe(expected);
+  });
+
+  it.each([
+    ["Patch Set 1:  Build Started https://ci.test/job/x/1/ (1/4)", false],
+    ["Patch Set 2: Build Successful", false],
+    ["Patch Set 2:\n\nPlease guard against null here.", false],
+  ])("treats %j as not a CI failure", (msg, expected) => {
+    expect(isCiFailureMessage(msg)).toBe(expected);
   });
 });
 
@@ -295,6 +314,19 @@ describe("GerritSshClient", () => {
       expect(comments[0]!.line).toBeUndefined();
       expect(comments[0]!.unresolved).toBe(true);
       expect(comments[0]!.id).toMatch(/^gerrit-msg-/);
+    });
+
+    it("tags a Jenkins Build Failed change message with a ci-failure- id prefix", async () => {
+      const row = makeChangeRow([], [{
+        ...BASE_CHANGE_MESSAGE,
+        message: "Patch Set 1: Verified-1\n\nBuild Failed\n\nhttps://ci.test : FAILURE",
+      }]);
+      execFileResults = [{ stdout: sshNdjson(row), stderr: "" }];
+
+      const comments = await makeClient().getUnresolvedComments("I8473");
+
+      expect(comments).toHaveLength(1);
+      expect(comments[0]!.id).toMatch(/^ci-failure-/);
     });
 
     it("merges top-level change messages with inline currentPatchSet comments", async () => {

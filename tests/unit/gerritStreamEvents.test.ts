@@ -312,6 +312,31 @@ describe("GerritStreamEventsManager", () => {
     );
   });
 
+  it("comment-added: surfaces a Build Failed stream comment tagged with ci-failure- id (not dropped as noise)", async () => {
+    const child = new FakeChildProcess();
+    const { manager, orchestrator } = createManager([child]);
+
+    await manager.reconcile([makeIntegration("gerrit-a")]);
+    child.emit("spawn");
+
+    child.stdout.write(
+      JSON.stringify({
+        type: "comment-added",
+        change: { id: "Ifailed" },
+        author: { username: "jenkins", email: "jenkins@ci.test" },
+        comment: "Patch Set 1: Verified-1\n\nBuild Failed\n\nhttps://jenkins.test/job/x/1/ : FAILURE",
+        eventCreatedOn: 1710000900,
+      }) + "\n"
+    );
+    await flushAsyncWork();
+
+    expect(orchestrator.triggerFeedbackForChange).toHaveBeenCalledWith(
+      "gerrit-a",
+      "Ifailed",
+      [expect.objectContaining({ id: expect.stringMatching(/^ci-failure-/) })]
+    );
+  });
+
   it("starts and stops one listener per active Gerrit integration", async () => {
     const childA = new FakeChildProcess();
     const childB = new FakeChildProcess();
