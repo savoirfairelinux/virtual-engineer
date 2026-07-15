@@ -35,6 +35,8 @@ export type AgentType = "coding" | "review";
 export type ProjectType = "coding" | "review";
 export type PushTargetRole = "primary" | "submodule" | "dependency" | "related";
 
+export const DEFAULT_LOCAL_SKILLS_PATH = ".github/skills";
+
 export interface AgentRecord {
   id: AgentId;
   name: string;
@@ -64,6 +66,8 @@ export interface ProjectRecord {
   postCloneScript: string;
   /** When true, the agent container loads project-approved skills. */
   skillDiscoveryEnabled: boolean;
+  /** Workspace-relative path for local project skills. */
+  localSkillsPath: string;
   /** JSON list of remote skill sources fetched with `npx skills` when discovery is enabled. */
   skillSourcesJson: string;
   enabled: boolean;
@@ -397,6 +401,8 @@ export interface AgentSession {
   repositoryMap?: RepositoryMap | undefined;
   /** When true, the agent loads team-defined local and remote skills. Sourced from the project's setting. */
   skillDiscoveryEnabled?: boolean | undefined;
+  /** Workspace-relative path used for local skills when skill discovery is enabled. */
+  localSkillsPath?: string | undefined;
   /** Remote skills fetched by the worker before opening the agent session. */
   skillSourcesJson?: string | undefined;
 }
@@ -564,6 +570,8 @@ export interface ReviewWorkspaceInput {
   containerImage?: string | undefined;
   /** When true, the agent container loads team-defined local and remote skills. */
   skillDiscoveryEnabled?: boolean | undefined;
+  /** Workspace-relative path used for local skills when skill discovery is enabled. */
+  localSkillsPath?: string | undefined;
   /** Remote skills fetched by the worker before opening the agent session. */
   skillSourcesJson?: string | undefined;
 }

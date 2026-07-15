@@ -95,6 +95,7 @@ function makeProject(): ProjectRecord {  return {
     agentOverrideJson: null,
     postCloneScript: "",
     skillDiscoveryEnabled: false,
+    localSkillsPath: ".github/skills",
     skillSourcesJson: "[]",
     enabled: true,
     createdAt: new Date(),

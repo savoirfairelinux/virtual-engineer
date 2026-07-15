@@ -309,6 +309,7 @@ export class SqliteStateStore {
         agent_override_json TEXT,
         post_clone_script   TEXT    NOT NULL DEFAULT '',
         skill_discovery_enabled INTEGER NOT NULL DEFAULT 0,
+        local_skills_path   TEXT    NOT NULL DEFAULT '.github/skills',
         skill_sources_json  TEXT    NOT NULL DEFAULT '[]',
         enabled             INTEGER NOT NULL DEFAULT 0,
         created_at          INTEGER NOT NULL,
@@ -482,6 +483,7 @@ export class SqliteStateStore {
     this.ensureColumn("agents", "integration_id", "TEXT REFERENCES integrations(id) ON DELETE SET NULL");
     this.ensureColumn("agents", "feedback_instructions_prompt_id", "TEXT REFERENCES prompts(id) ON DELETE SET NULL");
     this.ensureColumn("projects", "skill_discovery_enabled", "INTEGER NOT NULL DEFAULT 0");
+    this.ensureColumn("projects", "local_skills_path", "TEXT NOT NULL DEFAULT '.github/skills'");
     this.ensureColumn("projects", "skill_sources_json", "TEXT NOT NULL DEFAULT '[]'");
     this.ensureColumn("prompts", "prompt_type", "TEXT NOT NULL DEFAULT 'user'");
 

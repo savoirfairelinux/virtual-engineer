@@ -302,9 +302,11 @@ export const projects = sqliteTable(
     agentOverrideJson: text("agent_override_json"),
     /** Bash script run on the host after cloning. Empty string means "no script". */
     postCloneScript: text("post_clone_script").notNull().default(""),
-    /** When 1, the agent container loads team-defined local and remote skills. */
+    /** When 1, the agent container loads team-defined project skills. */
     skillDiscoveryEnabled: integer("skill_discovery_enabled").notNull().default(0),
-    /** JSON array of remote skill sources consumed by the agent worker. */
+    /** Workspace-relative path for local skills. */
+    localSkillsPath: text("local_skills_path").notNull().default(".github/skills"),
+    /** JSON array of external skill sources installed before the agent starts. */
     skillSourcesJson: text("skill_sources_json").notNull().default("[]"),
     enabled: integer("enabled").notNull().default(0),
     createdAt: integer("created_at", { mode: "timestamp" }).notNull(),

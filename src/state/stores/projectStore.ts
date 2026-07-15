@@ -14,7 +14,7 @@ import type {
   ProjectType,
   PushTargetRole,
 } from "../../interfaces.js";
-import { TERMINAL_STATES } from "../../interfaces.js";
+import { DEFAULT_LOCAL_SKILLS_PATH, TERMINAL_STATES } from "../../interfaces.js";
 import {
   agents,
   projectIntegrationBindings,
@@ -32,6 +32,7 @@ export interface ProjectStoreApi {
     agentOverrideJson?: string | null;
     postCloneScript?: string;
     skillDiscoveryEnabled?: boolean;
+    localSkillsPath?: string;
     skillSourcesJson?: string;
     enabled?: boolean;
   }): Promise<ProjectRecord>;
@@ -39,7 +40,7 @@ export interface ProjectStoreApi {
   listProjects(filter?: { type?: ProjectType; enabled?: boolean }): Promise<ProjectRecord[]>;
   updateProject(
     id: ProjectId,
-    partial: Partial<Pick<ProjectRecord, "name" | "type" | "agentId" | "agentOverrideJson" | "postCloneScript" | "skillDiscoveryEnabled" | "skillSourcesJson" | "enabled">>
+    partial: Partial<Pick<ProjectRecord, "name" | "type" | "agentId" | "agentOverrideJson" | "postCloneScript" | "skillDiscoveryEnabled" | "localSkillsPath" | "skillSourcesJson" | "enabled">>
   ): Promise<ProjectRecord>;
   deleteProject(id: ProjectId): Promise<void>;
   adoptOrphanedTasksForProject(projectId: ProjectId, integrationId: string, ticketProjectKey: string): number;
@@ -103,6 +104,7 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
       agentOverrideJson: row.agentOverrideJson ?? null,
       postCloneScript: row.postCloneScript,
       skillDiscoveryEnabled: row.skillDiscoveryEnabled === 1,
+      localSkillsPath: row.localSkillsPath,
       skillSourcesJson: row.skillSourcesJson,
       enabled: row.enabled === 1,
       createdAt: row.createdAt,
@@ -161,6 +163,7 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
     agentOverrideJson?: string | null;
     postCloneScript?: string;
     skillDiscoveryEnabled?: boolean;
+    localSkillsPath?: string;
     skillSourcesJson?: string;
     enabled?: boolean;
   }): Promise<ProjectRecord> {
@@ -178,6 +181,7 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
       agentOverrideJson: input.agentOverrideJson ?? null,
       postCloneScript: input.postCloneScript ?? "",
       skillDiscoveryEnabled: input.skillDiscoveryEnabled === true ? 1 : 0,
+      localSkillsPath: input.localSkillsPath ?? DEFAULT_LOCAL_SKILLS_PATH,
       skillSourcesJson: input.skillSourcesJson ?? "[]",
       enabled: input.enabled === false ? 0 : 1,
       createdAt: now,
@@ -200,7 +204,7 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
 
   async function updateProject(
     id: ProjectId,
-    partial: Partial<Pick<ProjectRecord, "name" | "type" | "agentId" | "agentOverrideJson" | "postCloneScript" | "skillDiscoveryEnabled" | "skillSourcesJson" | "enabled">>
+    partial: Partial<Pick<ProjectRecord, "name" | "type" | "agentId" | "agentOverrideJson" | "postCloneScript" | "skillDiscoveryEnabled" | "localSkillsPath" | "skillSourcesJson" | "enabled">>
   ): Promise<ProjectRecord> {
     const existing = await getProjectById(id);
     if (!existing) throw new Error(`Project not found: ${id}`);
@@ -218,6 +222,7 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
     if (partial.agentOverrideJson !== undefined) update["agentOverrideJson"] = partial.agentOverrideJson;
     if (partial.postCloneScript !== undefined) update["postCloneScript"] = partial.postCloneScript;
     if (partial.skillDiscoveryEnabled !== undefined) update["skillDiscoveryEnabled"] = partial.skillDiscoveryEnabled ? 1 : 0;
+    if (partial.localSkillsPath !== undefined) update["localSkillsPath"] = partial.localSkillsPath;
     if (partial.skillSourcesJson !== undefined) update["skillSourcesJson"] = partial.skillSourcesJson;
     if (partial.enabled !== undefined) update["enabled"] = partial.enabled ? 1 : 0;
     await db.update(projects).set(update).where(eq(projects.id, id));

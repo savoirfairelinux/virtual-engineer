@@ -212,6 +212,7 @@ describe("Admin API — Project routes (/api/admin/projects)", () => {
     });
     expect(on.status).toBe(201);
     expect((on.body?.["project"] as Record<string, unknown>)["skillDiscoveryEnabled"]).toBe(true);
+    expect((on.body?.["project"] as Record<string, unknown>)["localSkillsPath"]).toBe(".github/skills");
 
     const off = await rest(server, "/api/admin/projects", {
       method: "POST",
@@ -219,6 +220,51 @@ describe("Admin API — Project routes (/api/admin/projects)", () => {
     });
     expect(off.status).toBe(201);
     expect((off.body?.["project"] as Record<string, unknown>)["skillDiscoveryEnabled"]).toBe(false);
+  });
+
+  it("POST / persists configured local skills path", async () => {
+    const agent = await makeAgent(store, "coding");
+    await seedIntegration(store, "redmine-1", "redmine");
+    await seedIntegration(store, "gerrit-1", "gerrit");
+
+    const r = await rest(server, "/api/admin/projects", {
+      method: "POST",
+      body: {
+        type: "coding",
+        name: "WithLocalSkillsPath",
+        agentId: agent.id,
+        skillDiscoveryEnabled: true,
+        localSkillsPath: "team/skills",
+        ticketSource: { integrationId: "redmine-1", ticketProjectKey: "LOCALSKILLS" },
+        pushTargets: [
+          { integrationId: "gerrit-1", repoKey: "superproject", cloneUrl: "ssh://g/super", targetBranch: "main", role: "primary", commitOrder: 1, localPath: "." },
+        ],
+      },
+    });
+
+    expect(r.status).toBe(201);
+    const project = r.body?.["project"] as Record<string, unknown>;
+    expect(project["localSkillsPath"]).toBe("team/skills");
+    const stored = await store.getProjectById(makeProjectId(String(project["id"])));
+    expect(stored?.localSkillsPath).toBe("team/skills");
+  });
+
+  it("POST / rejects local skills paths outside the workspace", async () => {
+    const agent = await makeAgent(store, "review");
+    await seedIntegration(store, "gerrit-1", "gerrit");
+    const r = await rest(server, "/api/admin/projects", {
+      method: "POST",
+      body: {
+        type: "review",
+        name: "BadLocalSkillsPath",
+        agentId: agent.id,
+        localSkillsPath: "../secrets",
+        reviewConfig: { integrationId: "gerrit-1", repoKeys: ["platform/api"] },
+      },
+    });
+
+    expect(r.status).toBe(400);
+    expect(JSON.stringify(r.body)).toMatch(/Local skills path must stay inside the workspace/);
   });
 
   it("POST / persists normalized remote skill sources", async () => {
