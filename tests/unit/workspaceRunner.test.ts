@@ -313,7 +313,7 @@ describe("DockerWorkspaceRunner", () => {
         const ctx = makeContext({
           agentSession: {
             ...makeContext().agentSession,
-            skillDiscoveryEnabled: true,
+            skillDiscoveryEnabled: false,
             skillSourcesJson: sources,
           },
         });
@@ -422,6 +422,71 @@ describe("DockerWorkspaceRunner", () => {
       } finally {
         restoreEnv("SSH_AUTH_SOCK", savedSshAuthSock);
       }
+    });
+
+    it("treats uppercase SSH skill source URLs as SSH sources", async () => {
+      const savedSshAuthSock = process.env["SSH_AUTH_SOCK"];
+      delete process.env["SSH_AUTH_SOCK"];
+      try {
+        const adapter = makeNamedAgentAdapter("copilot");
+        const sources = JSON.stringify([{ source: "SSH://skills.example.com/org/agent-skills", skills: ["skill-a"], sshPort: 29418, sshKeyPath: "/host/id_ed25519" }]);
+        (adapter.buildContainerSpec as ReturnType<typeof vi.fn>).mockReturnValue({
+          image: "my-image:latest",
+          env: { SKILL_DISCOVERY: "1" },
+          command: ["node", "/worker/index.js"],
+        });
+        const runner = makeRunner(adapter);
+        const ctx = makeContext({
+          agentSession: {
+            ...makeContext().agentSession,
+            skillDiscoveryEnabled: true,
+            skillSourcesJson: sources,
+          },
+        });
+
+        mockSpawnWith((child) => {
+          process.nextTick(() => child.emit("close", 0));
+        });
+
+        await asDockerRunner(runner).runAgentInDocker(adapter, ctx, {});
+
+        expect(mockExecInVolume).toHaveBeenCalledWith(expect.objectContaining({
+          sshKeyPath: "/host/id_ed25519",
+          sshPort: 29418,
+          forwardSshAgent: false,
+          command: expect.arrayContaining(["ssh://skills.example.com:29418/org/agent-skills"]),
+        }));
+      } finally {
+        restoreEnv("SSH_AUTH_SOCK", savedSshAuthSock);
+      }
+    });
+
+    it("emits fetch_failed when the remote skill helper throws", async () => {
+      const adapter = makeNamedAgentAdapter("copilot");
+      const sources = JSON.stringify([{ source: "example-org/agent-skills", skills: ["skill-a"] }]);
+      (adapter.buildContainerSpec as ReturnType<typeof vi.fn>).mockReturnValue({
+        image: "my-image:latest",
+        env: { SKILL_DISCOVERY: "1" },
+        command: ["node", "/worker/index.js"],
+      });
+      mockExecInVolume.mockRejectedValueOnce(new Error("network unavailable"));
+      const runner = makeRunner(adapter);
+      const ctx = makeContext({
+        agentSession: {
+          ...makeContext().agentSession,
+          skillDiscoveryEnabled: true,
+          skillSourcesJson: sources,
+        },
+      });
+      const stderrChunks: string[] = [];
+
+      await expect(asDockerRunner(runner).runAgentInDocker(adapter, ctx, {}, {
+        onStderrChunk: (chunk) => stderrChunks.push(chunk),
+      })).rejects.toThrow("failed to fetch skills from example-org/agent-skills: network unavailable");
+
+      expect(stderrChunks.some((chunk) => chunk.includes('"type":"skills.fetch_failed"'))).toBe(true);
+      expect(stderrChunks.join("\n")).toContain("network unavailable");
+      expect(mockSpawn).not.toHaveBeenCalled();
     });
 
     it("rejects helper installs with conflicting explicit SSH URL and fallback ports", async () => {
@@ -750,7 +815,7 @@ describe("DockerWorkspaceRunner", () => {
         prompt: "review this",
         systemPrompt: "system",
         agentToken: "token",
-        skillDiscoveryEnabled: true,
+        skillDiscoveryEnabled: false,
         skillSourcesJson: JSON.stringify([{ source: "example-org/agent-skills", skills: ["skill-a"] }]),
       });
 

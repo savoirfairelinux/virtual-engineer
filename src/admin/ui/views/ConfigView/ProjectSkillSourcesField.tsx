@@ -159,7 +159,7 @@ export function ProjectSkillSourcesField({
   return (
     <Field
       label="External Project skills"
-      hint="When enabled, the agent loads local repository skills and the remote sources below. Only enable trusted skills."
+      hint="Remote sources below are installed when configured. Enable the checkbox only to load local repository skills. Only use trusted skills."
     >
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: "13px", userSelect: "none" }}>
@@ -169,7 +169,7 @@ export function ProjectSkillSourcesField({
             onChange={(e) => onEnabledChange(e.target.checked)}
             style={{ accentColor: "var(--accent)", cursor: "pointer", flexShrink: 0 }}
           />
-          <span>Load local <code>.github/skills</code> and configured remote skills</span>
+          <span>Load local <code>.github/skills</code></span>
         </label>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <button type="button" className="btn ghost" style={{ fontSize: "12px", padding: "5px 10px" }} onClick={() => setRows((prev) => [...prev, emptySkillSourceRow()])}>
