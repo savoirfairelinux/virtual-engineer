@@ -9,6 +9,7 @@ const execFileAsync = promisify(execFile);
 const DEFAULT_SKILLS_CLI_PACKAGE = "skills@1.5.16";
 const OUTPUT_LIMIT = 4000;
 export const SKILL_LIST_TIMEOUT_MS = 30_000;
+export const SKILL_SSH_CONNECT_TIMEOUT_MS = 10_000;
 
 export interface SkillSourceDiscoveryInput {
   source: string;
@@ -86,6 +87,24 @@ function sshConnectionSpec(source: SkillSourceDiscoveryInput): { target: string;
   };
 }
 
+function sshConnectionSpec(source: SkillSourceDiscoveryInput): { target: string; port?: number } | undefined {
+  if (source.source.startsWith("ssh://")) {
+    const resolved = new URL(resolveSkillSourceUrl(source));
+    const user = resolved.username ? `${decodeURIComponent(resolved.username)}@` : "";
+    return {
+      target: `${user}${resolved.hostname}`,
+      ...(resolved.port ? { port: Number(resolved.port) } : {}),
+    };
+  }
+
+  const scpLike = /^([^@\s]+@[^:\s]+):/.exec(source.source);
+  if (!scpLike?.[1]) return undefined;
+  return {
+    target: scpLike[1],
+    ...(source.sshPort !== undefined ? { port: source.sshPort } : {}),
+  };
+}
+
 export function resolveSkillSourceUrl(source: SkillSourceDiscoveryInput): string {
   return resolveSshSkillSourceUrl(source);
 }
@@ -113,6 +132,22 @@ export function buildSkillListEnv(source: SkillSourceDiscoveryInput): NodeJS.Pro
   };
 }
 
+export function buildSshConnectionArgs(source: SkillSourceDiscoveryInput): string[] | undefined {
+  const spec = sshConnectionSpec(source);
+  if (!spec) return undefined;
+  return [
+    "-T",
+    "-o", "BatchMode=yes",
+    "-o", `ConnectTimeout=${Math.ceil(SKILL_SSH_CONNECT_TIMEOUT_MS / 1000)}`,
+    ...(source.sshKeyPath ? ["-i", source.sshKeyPath, "-o", "IdentitiesOnly=yes"] : []),
+    ...(source.sshKnownHostsPath
+      ? ["-o", "StrictHostKeyChecking=yes", "-o", `UserKnownHostsFile=${source.sshKnownHostsPath}`]
+      : ["-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null"]),
+    ...(spec.port !== undefined ? ["-p", String(spec.port)] : []),
+    spec.target,
+  ];
+}
+
 export async function validateSkillSourceSshAuth(source: SkillSourceDiscoveryInput): Promise<void> {
   if (!isSshSkillSource(source)) return;
   if (!source.sshKeyPath) {
@@ -131,6 +166,45 @@ export async function validateSkillSourceSshAuth(source: SkillSourceDiscoveryInp
       await access(source.sshKnownHostsPath, constants.R_OK);
     } catch {
       throw new Error(`SSH known_hosts path is not readable by the orchestrator process: ${source.sshKnownHostsPath}.`);
+    }
+  }
+}
+
+export async function validateSkillSourceSshConnection(source: SkillSourceDiscoveryInput): Promise<void> {
+  const args = buildSshConnectionArgs(source);
+  if (!args) return;
+  await validateSkillSourceSshAuth(source);
+  try {
+    await execFileAsync("ssh", args, {
+      env: buildSkillListEnv(source),
+      encoding: "utf8",
+      timeout: SKILL_SSH_CONNECT_TIMEOUT_MS,
+    });
+  } catch (err) {
+    const error = err as { stdout?: unknown; stderr?: unknown; message?: unknown; code?: unknown; signal?: unknown; killed?: unknown };
+    const stdout = typeof error.stdout === "string" ? error.stdout.trim() : "";
+    const stderr = typeof error.stderr === "string" ? error.stderr.trim() : "";
+    const output = `${stdout}\n${stderr}`;
+    if (error.code === 1 || /successfully connected over SSH/i.test(output)) return;
+    const message = typeof error.message === "string" ? error.message : "ssh connection check failed";
+    const details = [
+      ...(error.killed === true || error.signal === "SIGTERM" ? [`timed out after ${SKILL_SSH_CONNECT_TIMEOUT_MS / 1000}s`] : []),
+      ...(typeof error.code === "number" ? [`exit code ${error.code}`] : []),
+      ...(stderr ? [`stderr: ${stderr}`] : []),
+      ...(stdout ? [`stdout: ${stdout}`] : []),
+      ...(!stderr && !stdout ? [message] : []),
+    ].join("; ").slice(0, OUTPUT_LIMIT);
+    throw new Error(`SSH connection check failed for skill source "${source.source}": ${details || message}`);
+  }
+}
+
+export async function validateSkillSourcesConnection(sources: SkillSourceDiscoveryInput[]): Promise<void> {
+  for (const [index, source] of sources.entries()) {
+    try {
+      await validateSkillSourceSshConnection(source);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(`Skill source #${index + 1} "${source.source}": ${message}`);
     }
   }
 }

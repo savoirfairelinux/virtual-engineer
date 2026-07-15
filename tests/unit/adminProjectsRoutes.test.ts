@@ -6,7 +6,7 @@ import type { Server } from "node:http";
 import { SqliteStateStore } from "../../src/state/stateStore.js";
 import { createAdminServer, type AdminServerDependencies } from "../../src/admin/adminServer.js";
 import { Router } from "../../src/admin/router.js";
-import { registerProjectRoutes } from "../../src/admin/adminProjectsRoutes.js";
+import { registerProjectRoutes, type SkillSource } from "../../src/admin/adminProjectsRoutes.js";
 import { makeProjectId, type AgentRecord, type AgentType } from "../../src/interfaces.js";
 
 function tempDbPath(): string {
@@ -33,7 +33,10 @@ async function rest(server: Server, path: string, opts: { method?: string; body?
   return { status: res.status, body: parsed };
 }
 
-function makeDeps(store: SqliteStateStore): AdminServerDependencies {
+function makeDeps(
+  store: SqliteStateStore,
+  validateSkillSourcesConnection: (sources: SkillSource[]) => Promise<void> = async () => {}
+): AdminServerDependencies {
   return {
     stateStore: {
       getActiveTasks: vi.fn(async () => []),
@@ -65,6 +68,7 @@ function makeDeps(store: SqliteStateStore): AdminServerDependencies {
     },
     polling: { isRunning: () => false, getIntervals: () => ({ intervalMs: 30000 }) },
     providers: [],
+    projectRoutes: { validateSkillSourcesConnection },
   };
 }
 
@@ -150,6 +154,16 @@ describe("Admin API — Project routes (/api/admin/projects)", () => {
 
     expect(r.status).toBe(400);
     expect(JSON.stringify(r.body)).toMatch(/SSH user must not be empty/);
+  });
+
+  it("POST /skill-sources/list rejects SSH ports outside the TCP range", async () => {
+    const r = await rest(server, "/api/admin/projects/skill-sources/list", {
+      method: "POST",
+      body: { source: "ssh://skills.example.com/org/agent-skills", sshPort: 294193 },
+    });
+
+    expect(r.status).toBe(400);
+    expect(JSON.stringify(r.body)).toMatch(/SSH port must be between 1 and 65535/);
   });
 
   it("POST /skill-sources/list treats malformed SSH URLs as client errors", async () => {
@@ -356,6 +370,79 @@ describe("Admin API — Project routes (/api/admin/projects)", () => {
 
     expect(r.status).toBe(400);
     expect(JSON.stringify(r.body)).toMatch(/SSH key path must not be empty/);
+  });
+
+  it("POST / rejects remote skill source ports outside the TCP range", async () => {
+    const agent = await makeAgent(store, "review");
+    await seedIntegration(store, "gerrit-1", "gerrit");
+    const r = await rest(server, "/api/admin/projects", {
+      method: "POST",
+      body: {
+        type: "review",
+        name: "BadSshPort",
+        agentId: agent.id,
+        skillSources: [{ source: "ssh://skills.example.com/org/agent-skills", skills: ["skill-a"], sshPort: 294193 }],
+        reviewConfig: { integrationId: "gerrit-1", repoKeys: ["platform/api"] },
+      },
+    });
+
+    expect(r.status).toBe(400);
+    expect(JSON.stringify(r.body)).toMatch(/SSH port must be between 1 and 65535/);
+  });
+
+  it("POST / validates remote skill source connectivity before saving", async () => {
+    await new Promise<void>((resolve, reject) => server.close((err) => err ? reject(err) : resolve()));
+    const validateSkillSourcesConnection = vi.fn(async () => {});
+    server = createAdminServer(makeDeps(store, validateSkillSourcesConnection));
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+
+    const agent = await makeAgent(store, "review");
+    await seedIntegration(store, "gerrit-1", "gerrit");
+
+    const r = await rest(server, "/api/admin/projects", {
+      method: "POST",
+      body: {
+        type: "review",
+        name: "ValidateRemoteSkills",
+        agentId: agent.id,
+        skillSources: [{ source: "ssh://skills.example.com/org/agent-skills", skills: ["skill-a"], sshUser: "git-user", sshPort: 29418 }],
+        reviewConfig: { integrationId: "gerrit-1", repoKeys: ["platform/api"] },
+      },
+    });
+
+    expect(r.status).toBe(201);
+    expect(validateSkillSourcesConnection).toHaveBeenCalledWith([
+      { source: "ssh://skills.example.com/org/agent-skills", skills: ["skill-a"], sshUser: "git-user", sshPort: 29418 },
+    ]);
+  });
+
+  it("POST / reports the failing remote skill source when connectivity validation fails", async () => {
+    await new Promise<void>((resolve, reject) => server.close((err) => err ? reject(err) : resolve()));
+    const validateSkillSourcesConnection = vi.fn(async () => {
+      throw new Error('Skill source #1 "ssh://skills.example.com/org/agent-skills": SSH connection check failed for skill source "ssh://skills.example.com/org/agent-skills": exit code 255; stderr: Permission denied (publickey).');
+    });
+    server = createAdminServer(makeDeps(store, validateSkillSourcesConnection));
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+
+    const agent = await makeAgent(store, "review");
+    await seedIntegration(store, "gerrit-1", "gerrit");
+
+    const r = await rest(server, "/api/admin/projects", {
+      method: "POST",
+      body: {
+        type: "review",
+        name: "BadRemoteSkills",
+        agentId: agent.id,
+        skillSources: [{ source: "ssh://skills.example.com/org/agent-skills", skills: ["skill-a"] }],
+        reviewConfig: { integrationId: "gerrit-1", repoKeys: ["platform/api"] },
+      },
+    });
+
+    expect(r.status).toBe(400);
+    expect(r.body?.["error"]).toMatch(/Failed to validate skill sources before saving/);
+    expect(r.body?.["error"]).toMatch(/Skill source #1 "ssh:\/\/skills\.example\.com\/org\/agent-skills"/);
+    expect(r.body?.["error"]).toMatch(/Permission denied/);
+    expect(await store.listProjects()).toHaveLength(0);
   });
 
   it("POST / creates a review project with reviewConfig", async () => {

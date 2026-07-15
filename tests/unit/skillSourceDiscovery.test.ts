@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { promisify } from "node:util";
 import {
+  buildSshConnectionArgs,
   buildSkillListArgs,
   buildSkillListEnv,
   SKILL_LIST_TIMEOUT_MS,
+  SKILL_SSH_CONNECT_TIMEOUT_MS,
   parseSkillListOutput,
   resolveSkillSourceUrl,
   validateSkillSourceSshAuth,
@@ -27,6 +29,10 @@ describe("admin skill source discovery", () => {
 
   it("uses a bounded timeout for skill list commands", () => {
     expect(SKILL_LIST_TIMEOUT_MS).toBe(30_000);
+  });
+
+  it("uses a bounded timeout for SSH connection checks", () => {
+    expect(SKILL_SSH_CONNECT_TIMEOUT_MS).toBe(10_000);
   });
 
   it("passes the bounded timeout to npx skills list", async () => {
@@ -129,6 +135,26 @@ describe("admin skill source discovery", () => {
     expect(env["GIT_SSH_COMMAND"]).toBe("ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p 29418");
   });
 
+  it("builds ssh -T connection checks for resolved SSH sources", () => {
+    expect(buildSshConnectionArgs({
+      source: "ssh://skills.example.com/org/agent-skills",
+      sshUser: "git-user",
+      sshPort: 29418,
+      sshKeyPath: "/tmp/key",
+      sshKnownHostsPath: "/tmp/known_hosts",
+    })).toEqual([
+      "-T",
+      "-o", "BatchMode=yes",
+      "-o", "ConnectTimeout=10",
+      "-i", "/tmp/key",
+      "-o", "IdentitiesOnly=yes",
+      "-o", "StrictHostKeyChecking=yes",
+      "-o", "UserKnownHostsFile=/tmp/known_hosts",
+      "-p", "29418",
+      "git-user@skills.example.com",
+    ]);
+  });
+
   it("does not forward arbitrary orchestrator env vars to npx skills", () => {
     process.env["VE_TEST_SECRET"] = "secret-value";
 
@@ -170,6 +196,57 @@ describe("admin skill source discovery", () => {
         source: "ssh://skills.example.com/org/agent-skills",
         sshKeyPath: "/tmp/virtual-engineer-missing-key",
       })).rejects.toThrow("not readable");
+    } finally {
+      if (originalSshAuthSock === undefined) delete process.env["SSH_AUTH_SOCK"];
+      else process.env["SSH_AUTH_SOCK"] = originalSshAuthSock;
+    }
+  });
+
+  it("prefixes SSH connection failures with the failing source", async () => {
+    vi.resetModules();
+    const originalSshAuthSock = process.env["SSH_AUTH_SOCK"];
+    process.env["SSH_AUTH_SOCK"] = "/tmp/ve-test-ssh.sock";
+    const execFile = vi.fn();
+    Object.defineProperty(execFile, promisify.custom, {
+      value: vi.fn(async () => {
+        const error = Object.assign(new Error("ssh failed"), {
+          code: 255,
+          stderr: "Permission denied (publickey).",
+        });
+        throw error;
+      }),
+    });
+    vi.doMock("node:child_process", () => ({ execFile }));
+
+    try {
+      const { validateSkillSourcesConnection: validateConnection } = await import("../../src/admin/skillSourceDiscovery.js");
+      await expect(validateConnection([{ source: "ssh://skills.example.com/org/agent-skills" }]))
+        .rejects.toThrow('Skill source #1 "ssh://skills.example.com/org/agent-skills": SSH connection check failed');
+    } finally {
+      if (originalSshAuthSock === undefined) delete process.env["SSH_AUTH_SOCK"];
+      else process.env["SSH_AUTH_SOCK"] = originalSshAuthSock;
+    }
+  });
+
+  it("accepts Gerrit SSH success messages even when shells are disabled", async () => {
+    vi.resetModules();
+    const originalSshAuthSock = process.env["SSH_AUTH_SOCK"];
+    process.env["SSH_AUTH_SOCK"] = "/tmp/ve-test-ssh.sock";
+    const execFile = vi.fn();
+    Object.defineProperty(execFile, promisify.custom, {
+      value: vi.fn(async () => {
+        const error = Object.assign(new Error("ssh exited without shell"), {
+          code: 127,
+          stderr: "**** Welcome to Gerrit Code Review ****\nHi Charles Wenger, you have successfully connected over SSH.\nUnfortunately, interactive shells are disabled.",
+        });
+        throw error;
+      }),
+    });
+    vi.doMock("node:child_process", () => ({ execFile }));
+
+    try {
+      const { validateSkillSourcesConnection: validateConnection } = await import("../../src/admin/skillSourceDiscovery.js");
+      await expect(validateConnection([{ source: "ssh://g1.sfl.io/sfl/agent-skills", sshPort: 29419 }])).resolves.toBeUndefined();
     } finally {
       if (originalSshAuthSock === undefined) delete process.env["SSH_AUTH_SOCK"];
       else process.env["SSH_AUTH_SOCK"] = originalSshAuthSock;
