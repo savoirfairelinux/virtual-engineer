@@ -11,6 +11,7 @@ export interface RemoteSkillSource {
 }
 
 const DEFAULT_SKILLS_CLI_PACKAGE = "skills@1.5.16";
+const MAX_TCP_PORT = 65_535;
 
 function skillsCliPackage(): string {
   return process.env["SKILLS_CLI_PACKAGE"]?.trim() || DEFAULT_SKILLS_CLI_PACKAGE;
@@ -33,8 +34,8 @@ function parseRemoteSkillSource(value: unknown, index: number): RemoteSkillSourc
     throw new Error(`${prefix} sshUser must be a non-empty string`);
   }
   const sshPort = value["sshPort"];
-  if (sshPort !== undefined && (typeof sshPort !== "number" || !Number.isInteger(sshPort) || sshPort <= 0)) {
-    throw new Error(`${prefix} sshPort must be a positive integer`);
+  if (sshPort !== undefined && (typeof sshPort !== "number" || !Number.isInteger(sshPort) || sshPort <= 0 || sshPort > MAX_TCP_PORT)) {
+    throw new Error(`${prefix} sshPort must be between 1 and 65535`);
   }
   const sshKeyPath = value["sshKeyPath"];
   if (sshKeyPath !== undefined && (typeof sshKeyPath !== "string" || !sshKeyPath.trim())) {
@@ -88,10 +89,18 @@ export function skillsAgentId(provider: AgentProvider): string {
 }
 
 export function resolveSkillSourceUrl(source: RemoteSkillSource): string {
-  if (!source.source.startsWith("ssh://") || (source.sshUser === undefined && source.sshPort === undefined)) {
+  if (!source.source.startsWith("ssh://")) {
     return source.source;
   }
-  const url = new URL(source.source);
+  let url: URL;
+  try {
+    url = new URL(source.source);
+    if (!url.hostname) throw new Error("missing host");
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(`Invalid SSH skill source URL "${source.source}": ${message}`);
+  }
+  if (source.sshUser === undefined && source.sshPort === undefined) return source.source;
   if (!url.username && source.sshUser !== undefined) url.username = source.sshUser;
   if (!url.port && source.sshPort !== undefined) url.port = String(source.sshPort);
   return url.toString();
