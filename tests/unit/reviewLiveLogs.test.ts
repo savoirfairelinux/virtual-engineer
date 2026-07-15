@@ -97,6 +97,7 @@ function makeProject(): ProjectRecord {  return {
     skillDiscoveryEnabled: false,
     gerritTopicOverride: null,
     useFullTicketUrlInCommits: false,
+    postReviewLinkToTicket: false,
     enabled: true,
     createdAt: new Date(),
     updatedAt: new Date(),
