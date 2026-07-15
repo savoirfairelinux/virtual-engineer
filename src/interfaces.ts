@@ -64,6 +64,10 @@ export interface ProjectRecord {
   postCloneScript: string;
   /** When true, the agent container loads team-defined skills from `<repo>/.github/skills` (coding projects only). */
   skillDiscoveryEnabled: boolean;
+  /** Optional literal Gerrit topic that overrides the ticket-derived topic (buildGerritTopic) for all pushes from this project. NULL = use the ticket-derived topic. */
+  gerritTopicOverride: string | null;
+  /** When true, agent commit messages use the full ticket URL in the footer instead of the short "#id" form. */
+  useFullTicketUrlInCommits: boolean;
   enabled: boolean;
   createdAt: Date;
   updatedAt: Date;
@@ -395,6 +399,8 @@ export interface AgentSession {
   repositoryMap?: RepositoryMap | undefined;
   /** When true, the agent loads team-defined skills from `<repo>/.github/skills`. Sourced from the project's setting. */
   skillDiscoveryEnabled?: boolean | undefined;
+  /** Pre-formatted ticket-footer trailer line (e.g. "GitLab: https://…/issues/123") injected into every agent commit alongside its Change-Id. Sourced from the project's "full ticket URL in commits" setting. */
+  ticketFooterLine?: string | undefined;
 }
 
 export interface TaskContext {

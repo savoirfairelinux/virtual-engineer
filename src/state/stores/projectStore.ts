@@ -32,13 +32,15 @@ export interface ProjectStoreApi {
     agentOverrideJson?: string | null;
     postCloneScript?: string;
     skillDiscoveryEnabled?: boolean;
+    gerritTopicOverride?: string | null;
+    useFullTicketUrlInCommits?: boolean;
     enabled?: boolean;
   }): Promise<ProjectRecord>;
   getProjectById(id: ProjectId): Promise<ProjectRecord | null>;
   listProjects(filter?: { type?: ProjectType; enabled?: boolean }): Promise<ProjectRecord[]>;
   updateProject(
     id: ProjectId,
-    partial: Partial<Pick<ProjectRecord, "name" | "type" | "agentId" | "agentOverrideJson" | "postCloneScript" | "skillDiscoveryEnabled" | "enabled">>
+    partial: Partial<Pick<ProjectRecord, "name" | "type" | "agentId" | "agentOverrideJson" | "postCloneScript" | "skillDiscoveryEnabled" | "gerritTopicOverride" | "useFullTicketUrlInCommits" | "enabled">>
   ): Promise<ProjectRecord>;
   deleteProject(id: ProjectId): Promise<void>;
   adoptOrphanedTasksForProject(projectId: ProjectId, integrationId: string, ticketProjectKey: string): number;
@@ -102,6 +104,8 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
       agentOverrideJson: row.agentOverrideJson ?? null,
       postCloneScript: row.postCloneScript,
       skillDiscoveryEnabled: row.skillDiscoveryEnabled === 1,
+      gerritTopicOverride: row.gerritTopicOverride ?? null,
+      useFullTicketUrlInCommits: row.useFullTicketUrlInCommits === 1,
       enabled: row.enabled === 1,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
@@ -159,6 +163,8 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
     agentOverrideJson?: string | null;
     postCloneScript?: string;
     skillDiscoveryEnabled?: boolean;
+    gerritTopicOverride?: string | null;
+    useFullTicketUrlInCommits?: boolean;
     enabled?: boolean;
   }): Promise<ProjectRecord> {
     const now = new Date();
@@ -175,6 +181,8 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
       agentOverrideJson: input.agentOverrideJson ?? null,
       postCloneScript: input.postCloneScript ?? "",
       skillDiscoveryEnabled: input.skillDiscoveryEnabled === true ? 1 : 0,
+      gerritTopicOverride: input.gerritTopicOverride ?? null,
+      useFullTicketUrlInCommits: input.useFullTicketUrlInCommits === true ? 1 : 0,
       enabled: input.enabled === false ? 0 : 1,
       createdAt: now,
       updatedAt: now,
@@ -196,7 +204,7 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
 
   async function updateProject(
     id: ProjectId,
-    partial: Partial<Pick<ProjectRecord, "name" | "type" | "agentId" | "agentOverrideJson" | "postCloneScript" | "skillDiscoveryEnabled" | "enabled">>
+    partial: Partial<Pick<ProjectRecord, "name" | "type" | "agentId" | "agentOverrideJson" | "postCloneScript" | "skillDiscoveryEnabled" | "gerritTopicOverride" | "useFullTicketUrlInCommits" | "enabled">>
   ): Promise<ProjectRecord> {
     const existing = await getProjectById(id);
     if (!existing) throw new Error(`Project not found: ${id}`);
@@ -214,6 +222,8 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
     if (partial.agentOverrideJson !== undefined) update["agentOverrideJson"] = partial.agentOverrideJson;
     if (partial.postCloneScript !== undefined) update["postCloneScript"] = partial.postCloneScript;
     if (partial.skillDiscoveryEnabled !== undefined) update["skillDiscoveryEnabled"] = partial.skillDiscoveryEnabled ? 1 : 0;
+    if (partial.gerritTopicOverride !== undefined) update["gerritTopicOverride"] = partial.gerritTopicOverride;
+    if (partial.useFullTicketUrlInCommits !== undefined) update["useFullTicketUrlInCommits"] = partial.useFullTicketUrlInCommits ? 1 : 0;
     if (partial.enabled !== undefined) update["enabled"] = partial.enabled ? 1 : 0;
     await db.update(projects).set(update).where(eq(projects.id, id));
     const updated = await getProjectById(id);

@@ -367,6 +367,50 @@ describe("agent-worker multi-commit protocol", () => {
       expect(injected[1]!.changeId).toMatch(/^I[0-9a-f]{40}$/);
       expect(injected[0]!.changeId).not.toBe(injected[1]!.changeId);
     });
+
+    it("appends the ticketFooterLine to every commit alongside its Change-Id", () => {
+      const baseSha = git(["rev-parse", "HEAD"], repoDir).trim();
+      addCommit(repoDir, "a.ts", "a\n", "feat: add a");
+      addCommit(repoDir, "b.ts", "b\n", "fix: add b");
+
+      const rawCommits = collectCommits(baseSha, repoDir);
+      injectChangeIds(baseSha, rawCommits, "TASK-FOOTER", repoDir, {
+        ticketFooterLine: "GitLab: https://gitlab.example.com/issues/123",
+      });
+
+      const log = git(["log", "--format=%B%x01", baseSha + "..HEAD"], repoDir);
+      const messages = log.split("\x01").filter((m) => m.trim());
+      expect(messages).toHaveLength(2);
+      for (const msg of messages) {
+        expect(msg).toContain("GitLab: https://gitlab.example.com/issues/123");
+        expect(msg).toContain("Change-Id: I");
+      }
+    });
+
+    it("does not duplicate the ticketFooterLine when re-injected on already-footed commits", () => {
+      const baseSha = git(["rev-parse", "HEAD"], repoDir).trim();
+      addCommit(repoDir, "f.ts", "f\n", "feat: footer idempotent");
+
+      const rawCommits = collectCommits(baseSha, repoDir);
+      const footerOptions = { ticketFooterLine: "GitLab: https://gitlab.example.com/issues/7" };
+      const first = injectChangeIds(baseSha, rawCommits, "TASK-FOOTER-2", repoDir, footerOptions);
+      injectChangeIds(baseSha, first, "TASK-FOOTER-2", repoDir, footerOptions);
+
+      const msg = git(["log", "-1", "--format=%B"], repoDir);
+      const occurrences = msg.split("GitLab: https://gitlab.example.com/issues/7").length - 1;
+      expect(occurrences).toBe(1);
+    });
+
+    it("omits the footer line when ticketFooterLine is not provided", () => {
+      const baseSha = git(["rev-parse", "HEAD"], repoDir).trim();
+      addCommit(repoDir, "g.ts", "g\n", "feat: no footer");
+
+      const rawCommits = collectCommits(baseSha, repoDir);
+      injectChangeIds(baseSha, rawCommits, "TASK-NO-FOOTER", repoDir);
+
+      const msg = git(["log", "-1", "--format=%B"], repoDir);
+      expect(msg).not.toContain("GitLab:");
+    });
   });
 
   describe("squashIntoBaseIfNeeded", () => {
