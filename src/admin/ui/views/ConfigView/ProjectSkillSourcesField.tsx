@@ -102,12 +102,16 @@ export function buildSkillSourcesPayload(rows: SkillSourceRow[]): SkillSource[] 
 export function ProjectSkillSourcesField({
   enabled,
   onEnabledChange,
+  localSkillsPath,
+  onLocalSkillsPathChange,
   rows,
   setRows,
   projectId,
 }: {
   enabled: boolean;
   onEnabledChange: (enabled: boolean) => void;
+  localSkillsPath: string;
+  onLocalSkillsPathChange: (path: string) => void;
   rows: SkillSourceRow[];
   setRows: Dispatch<SetStateAction<SkillSourceRow[]>>;
   projectId?: string | undefined;
@@ -160,20 +164,31 @@ export function ProjectSkillSourcesField({
 
   return (
     <Field
-      label="External Project skills"
-      hint="Remote sources below are installed when configured. Enable the checkbox only to load local repository skills. Only use trusted skills."
+      label="Local Project Skill"
+      hint="Enable loading local repository skills from the configured workspace path. Remote sources below are installed when configured. Only use trusted skills."
     >
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-        <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: "13px", userSelect: "none" }}>
-          <input
-            type="checkbox"
-            checked={enabled}
-            onChange={(e) => onEnabledChange(e.target.checked)}
-            style={{ accentColor: "var(--accent)", cursor: "pointer", flexShrink: 0 }}
-          />
-          <span>Load local <code>.github/skills</code></span>
-        </label>
+        <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 160px) minmax(0, 1fr)", gap: 10, alignItems: "end" }}>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: "13px", userSelect: "none", paddingBottom: 8 }}>
+            <input
+              type="checkbox"
+              checked={enabled}
+              onChange={(e) => onEnabledChange(e.target.checked)}
+              style={{ accentColor: "var(--accent)", cursor: "pointer", flexShrink: 0 }}
+            />
+            <span>Enable</span>
+          </label>
+          <label style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: "11px", color: "var(--text-faint)" }}>
+            path
+            <FieldInput
+              value={localSkillsPath}
+              placeholder=".github/skills"
+              onChange={(e) => onLocalSkillsPathChange(e.target.value)}
+            />
+          </label>
+        </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <div style={{ fontSize: "12px", fontWeight: 600, color: "var(--text-dim)" }}>External skill sources</div>
           <button type="button" className="btn ghost" style={{ fontSize: "12px", padding: "5px 10px" }} onClick={() => setRows((prev) => [...prev, emptySkillSourceRow()])}>
             <Icon name="plus" size={12} /> Add source
           </button>
@@ -266,7 +281,7 @@ export function ProjectSkillSourcesField({
           </div>
         )}
         <div style={{ fontSize: "11.5px", color: "var(--text-faint)", lineHeight: 1.45 }}>
-          Remote skills are installed globally in the agent home volume with <code>npx skills</code>. SSH sources can use the orchestrator SSH agent or a configured private key path; set a <code>known_hosts</code> path to enforce host key verification.
+          Local skills are loaded from the configured workspace-relative path. External sources are installed globally in the agent home volume with <code>npx skills</code>. SSH sources can use the orchestrator SSH agent or a configured private key path; set a <code>known_hosts</code> path to enforce host key verification.
         </div>
       </div>
     </Field>

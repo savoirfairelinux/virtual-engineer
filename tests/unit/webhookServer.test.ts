@@ -55,6 +55,7 @@ function makeProjectRecord(): ProjectRecord {
     agentOverrideJson: null,
     postCloneScript: "",
     skillDiscoveryEnabled: false,
+    localSkillsPath: ".github/skills",
     skillSourcesJson: "[]",
     gerritTopicOverride: null,
     useFullTicketUrlInCommits: false,

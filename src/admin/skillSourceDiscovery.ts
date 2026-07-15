@@ -89,24 +89,6 @@ function sshConnectionSpec(source: SkillSourceDiscoveryInput): { target: string;
   };
 }
 
-function sshConnectionSpec(source: SkillSourceDiscoveryInput): { target: string; port?: number } | undefined {
-  if (source.source.startsWith("ssh://")) {
-    const resolved = new URL(resolveSkillSourceUrl(source));
-    const user = resolved.username ? `${decodeURIComponent(resolved.username)}@` : "";
-    return {
-      target: `${user}${resolved.hostname}`,
-      ...(resolved.port ? { port: Number(resolved.port) } : {}),
-    };
-  }
-
-  const scpLike = /^([^@\s]+@[^:\s]+):/.exec(source.source);
-  if (!scpLike?.[1]) return undefined;
-  return {
-    target: scpLike[1],
-    ...(source.sshPort !== undefined ? { port: source.sshPort } : {}),
-  };
-}
-
 export function resolveSkillSourceUrl(source: SkillSourceDiscoveryInput): string {
   return resolveSshSkillSourceUrl(source);
 }
