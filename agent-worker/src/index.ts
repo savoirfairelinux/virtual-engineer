@@ -59,6 +59,8 @@ const TASK_ID = process.env['TASK_ID'] ?? '';
 const MAX_COMMITS_PER_CYCLE = Number(process.env['MAX_COMMITS_PER_CYCLE']) || 10;
 /** Change-Id to reuse for the root-repo's first commit on retry cycles. */
 const ROOT_CHANGE_ID = process.env['ROOT_CHANGE_ID'] ?? null;
+/** Pre-formatted ticket-footer trailer line injected into every agent commit (host-computed). */
+const TICKET_FOOTER_LINE = process.env['TICKET_FOOTER_LINE'] || null;
 /** Per-repo Change-Ids to reuse on retry cycles (JSON object or null). */
 let PER_REPO_CHANGE_IDS: Record<string, string | Record<string, string>> | null = null;
 try {
@@ -373,6 +375,7 @@ async function main(): Promise<AgentResult> {
               gitAuthorEmail: GIT_AUTHOR_EMAIL,
               gitCommitterName: GIT_COMMITTER_NAME,
               gitCommitterEmail: GIT_COMMITTER_EMAIL,
+              ticketFooterLine: TICKET_FOOTER_LINE,
             });
           }
 
@@ -400,6 +403,7 @@ async function main(): Promise<AgentResult> {
                 gitAuthorEmail: GIT_AUTHOR_EMAIL,
                 gitCommitterName: GIT_COMMITTER_NAME,
                 gitCommitterEmail: GIT_COMMITTER_EMAIL,
+                ticketFooterLine: TICKET_FOOTER_LINE,
               });
               const repoKey = subMeta ? subMeta.repoKey : localPath;
               subRepoCommits = subRepoCommits.filter((c) => c.repoKey !== repoKey).concat(injected);

@@ -19,6 +19,8 @@ function makeProject(over: Omit<Partial<ProjectRecord>, "id" | "type"> & { id: s
     agentOverrideJson: over.agentOverrideJson ?? null,
     postCloneScript: over.postCloneScript ?? "",
     skillDiscoveryEnabled: over.skillDiscoveryEnabled ?? false,
+    gerritTopicOverride: over.gerritTopicOverride ?? null,
+    useFullTicketUrlInCommits: over.useFullTicketUrlInCommits ?? false,
     enabled: over.enabled ?? true,
     createdAt: over.createdAt ?? new Date(),
     updatedAt: over.updatedAt ?? new Date(),

@@ -63,12 +63,15 @@ const TICKET_SYSTEM_CONFIG: Record<string, TicketSystemConfig> = {
  * @param ticketId The ticket ID (e.g., "123", "PROJ-456")
  * @param ticketUrl The full ticket URL (used if system requires URL format)
  * @param ticketSourceLabel The source system label (e.g., "gitlab-issue", "redmine")
+ * @param forceUrlFormat When true, always uses the "System: ticketUrl" format regardless
+ *   of the system's default (used for the per-project "full ticket URL in commits" toggle).
  * @returns Formatted footer line, or null if system not configured or URL missing
  */
 export function formatTicketFooter(
   ticketId: string,
   ticketUrl: string,
-  ticketSourceLabel?: string
+  ticketSourceLabel?: string,
+  forceUrlFormat = false
 ): string | null {
   if (!ticketSourceLabel) return null;
 
@@ -77,7 +80,7 @@ export function formatTicketFooter(
   if (!config) return null;
 
   const systemName = config.displayName;
-  const isIdFormat = config.isTicketIdFormat;
+  const isIdFormat = config.isTicketIdFormat && !forceUrlFormat;
 
   // If system requires URL format but no URL available, skip footer
   if (!isIdFormat && !ticketUrl) {

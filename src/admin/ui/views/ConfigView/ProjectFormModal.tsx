@@ -19,6 +19,8 @@ interface ProjectFormProject {
   agentId: string | null;
   postCloneScript?: string;
   skillDiscoveryEnabled?: boolean;
+  gerritTopicOverride?: string | null;
+  useFullTicketUrlInCommits?: boolean;
   ticketSource?: {
     integration: { id: string; name: string; type: string } | null;
     ticketProjectKey: string;
@@ -655,6 +657,8 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
   const [agentId, setAgentId] = useState("");
   const [postCloneScript, setPostCloneScript] = useState("");
   const [skillDiscoveryEnabled, setSkillDiscoveryEnabled] = useState(false);
+  const [gerritTopicOverride, setGerritTopicOverride] = useState("");
+  const [useFullTicketUrlInCommits, setUseFullTicketUrlInCommits] = useState(false);
 
   // Coding-specific
   const [ticketSource, setTicketSource] = useState<TicketSource>({ integrationId: "", ticketProjectKey: "" });
@@ -674,6 +678,8 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
     setAgentId(project.agentId ?? "");
     setPostCloneScript(project.postCloneScript ?? "");
     setSkillDiscoveryEnabled(project.skillDiscoveryEnabled ?? false);
+    setGerritTopicOverride(project.gerritTopicOverride ?? "");
+    setUseFullTicketUrlInCommits(project.useFullTicketUrlInCommits ?? false);
 
     if (project.type === "coding") {
       setTicketSource({
@@ -732,6 +738,8 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
           agentId,
           postCloneScript: postCloneScript || undefined,
           skillDiscoveryEnabled,
+          gerritTopicOverride: gerritTopicOverride.trim() || null,
+          useFullTicketUrlInCommits,
           ticketSource: { integrationId: ticketSource.integrationId, ticketProjectKey: ticketSource.ticketProjectKey },
           pushTargets: pushTargets.map((t) => ({
             integrationId: t.integrationId,
@@ -900,6 +908,29 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
                 </div>
               ))}
             </div>
+
+            <Field label="Custom Gerrit Topic" hint="Overrides the ticket-derived topic (e.g. VE-<taskId>-<ticket-title>) for all changes pushed from this project. Leave blank to keep the default per-ticket topic.">
+              <FieldInput
+                value={gerritTopicOverride}
+                placeholder="ve-crashfix"
+                onChange={(e) => setGerritTopicOverride(e.target.value)}
+              />
+            </Field>
+
+            <Field
+              label="Ticket URL in Commits"
+              hint="When enabled, agent commit messages include the full ticket URL instead of the short #id form."
+            >
+              <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: "13px", userSelect: "none" }}>
+                <input
+                  type="checkbox"
+                  checked={useFullTicketUrlInCommits}
+                  onChange={(e) => setUseFullTicketUrlInCommits(e.target.checked)}
+                  style={{ accentColor: "var(--accent)", cursor: "pointer", flexShrink: 0 }}
+                />
+                <span>Include full ticket URL in commit message footers</span>
+              </label>
+            </Field>
           </>
         )}
 

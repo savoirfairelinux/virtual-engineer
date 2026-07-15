@@ -193,6 +193,22 @@ describe("CopilotAdapter", () => {
 
       expect(spec.env["SKILL_DISCOVERY"]).toBeUndefined();
     });
+
+    it("injects TICKET_FOOTER_LINE when the project enabled full-URL ticket footers", () => {
+      const adapter = new CopilotAdapter();
+      const context = makeContext();
+      context.agentSession.ticketFooterLine = "GitLab: https://gitlab.example.com/issues/123";
+      const spec = adapter.buildContainerSpec(context, { GITHUB_TOKEN: "ghp_tok" });
+
+      expect(spec.env["TICKET_FOOTER_LINE"]).toBe("GitLab: https://gitlab.example.com/issues/123");
+    });
+
+    it("omits TICKET_FOOTER_LINE when not set", () => {
+      const adapter = new CopilotAdapter();
+      const spec = adapter.buildContainerSpec(makeContext(), { GITHUB_TOKEN: "ghp_tok" });
+
+      expect(spec.env["TICKET_FOOTER_LINE"]).toBeUndefined();
+    });
   });
 
   describe("buildReviewContainerSpec", () => {

@@ -762,6 +762,11 @@ export class Orchestrator {
             ? { repositoryMap: buildRepositoryMap(projectPushTargets) }
             : {}),
           ...(projectRecord.skillDiscoveryEnabled ? { skillDiscoveryEnabled: true } : {}),
+          ...((): { ticketFooterLine?: string } => {
+            if (!projectRecord.useFullTicketUrlInCommits) return {};
+            const line = formatTicketFooter(task.ticketId, ticket.webUrl ?? "", task.ticketSourceLabel, true);
+            return line ? { ticketFooterLine: line } : {};
+          })(),
         },
       };
 
@@ -826,7 +831,15 @@ export class Orchestrator {
       // For Gerrit: agent commits[] are pre-validated; each becomes a separate change (topic-grouped).
       // For GitLab: all N commits land in one MR via force-push.
       if (task.projectId && this.projectMode && projectPushTargets.length > 0) {
-        await this.pushProjectChanges(task, handle, projectPushTargets, commitMessage, context.ticketUrl ?? "", agentResult.commits);
+        await this.pushProjectChanges(
+          task,
+          handle,
+          projectPushTargets,
+          commitMessage,
+          context.ticketUrl ?? "",
+          agentResult.commits,
+          projectRecord.gerritTopicOverride
+        );
       }
 
       task = await this.stateStore.transition(task.taskId, "IN_REVIEW");
@@ -1347,7 +1360,8 @@ export class Orchestrator {
     pushTargets: import("../interfaces.js").ProjectPushTargetRecord[],
     fallbackCommitMessage: string,
     ticketUrl: string,
-    agentCommits: CommitDescriptor[] | undefined = undefined
+    agentCommits: CommitDescriptor[] | undefined = undefined,
+    topicOverride: string | null = null
   ): Promise<void> {
     const sorted = [...pushTargets].sort((a, b) => a.commitOrder - b.commitOrder);
 
@@ -1406,12 +1420,13 @@ export class Orchestrator {
         pushErrors.push({ repoKey: target.repoKey, err });
         continue;
       }
-      const { ref: computedRef, topic } = vcsConnector.buildPushSpec(
+      const { ref: computedRef, topic: computedTopic } = vcsConnector.buildPushSpec(
         target.targetBranch,
         task.taskId,
         task.ticketTitle
       );
       const ref = await this.resolvePushRef(task, () => computedRef);
+      const topic = topicOverride?.trim() ? topicOverride.trim() : computedTopic;
       const reviewSystemLabel = vcsConnector.reviewSystemLabel;
 
       const volumeOpts = { volumeName: handle.volumeName, image: handle.containerImage, subPath: target.localPath };

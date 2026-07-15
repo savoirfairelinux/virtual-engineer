@@ -209,6 +209,12 @@ export interface InjectChangeIdsOptions {
   gitAuthorEmail?: string | undefined;
   gitCommitterName?: string | undefined;
   gitCommitterEmail?: string | undefined;
+  /**
+   * Optional pre-formatted ticket-footer trailer line (e.g. "GitLab: https://…/issues/123")
+   * appended to every commit alongside its Change-Id. Skipped if already present in the
+   * commit message (idempotent across retries).
+   */
+  ticketFooterLine?: string | null | undefined;
 }
 
 /**
@@ -241,6 +247,7 @@ export function injectChangeIds(
   const gitAuthorEmail = options?.gitAuthorEmail ?? process.env['GIT_AUTHOR_EMAIL'] ?? '';
   const gitCommitterName = options?.gitCommitterName ?? process.env['GIT_COMMITTER_NAME'] ?? gitAuthorName;
   const gitCommitterEmail = options?.gitCommitterEmail ?? process.env['GIT_COMMITTER_EMAIL'] ?? gitAuthorEmail;
+  const ticketFooterLine = options?.ticketFooterLine ?? null;
 
   // Map: commit index → desired Change-Id for commits that lack one.
   const changeIdByIndex: Record<number, string> = {};
@@ -281,13 +288,23 @@ export function injectChangeIds(
     for (let i = 0; i < commits.length; i++) {
       const desiredChangeId = changeIdByIndex[i] ?? null;
 
-      if (desiredChangeId) {
+      if (desiredChangeId || ticketFooterLine) {
         const currentMsg = git(['log', '-1', '--format=%B'], cwd).trim();
-        const hasTrailerBlock = /\n\n[A-Za-z][A-Za-z0-9-]*: /.test(currentMsg);
-        const newMsg = hasTrailerBlock
-          ? `${currentMsg}\nChange-Id: ${desiredChangeId}`
-          : `${currentMsg}\n\nChange-Id: ${desiredChangeId}`;
-        git(['commit', '--amend', '-m', newMsg], cwd);
+        let newMsg = currentMsg;
+
+        if (ticketFooterLine && !newMsg.includes(ticketFooterLine)) {
+          const hasTrailerBlock = /\n\n[A-Za-z][A-Za-z0-9-]*: /.test(newMsg);
+          newMsg = hasTrailerBlock ? `${newMsg}\n${ticketFooterLine}` : `${newMsg}\n\n${ticketFooterLine}`;
+        }
+
+        if (desiredChangeId) {
+          const hasTrailerBlock = /\n\n[A-Za-z][A-Za-z0-9-]*: /.test(newMsg);
+          newMsg = hasTrailerBlock ? `${newMsg}\nChange-Id: ${desiredChangeId}` : `${newMsg}\n\nChange-Id: ${desiredChangeId}`;
+        }
+
+        if (newMsg !== currentMsg) {
+          git(['commit', '--amend', '-m', newMsg], cwd);
+        }
       }
 
       if (i < commits.length - 1) {
