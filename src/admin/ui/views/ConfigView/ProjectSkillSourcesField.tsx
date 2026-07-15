@@ -51,6 +51,15 @@ export function skillSourceToRow(source: SkillSource): SkillSourceRow {
   };
 }
 
+export function preloadedProjectSkillSourceRow(): SkillSourceRow {
+  return skillSourceToRow({
+    source: "ssh://g1.sfl.io/sfl/agent-skills",
+    skills: [],
+    installAll: true,
+    sshPort: 29419,
+  });
+}
+
 function isSshSkillSource(source: string): boolean {
   const normalized = source.trimStart().toLowerCase();
   return normalized.startsWith("ssh://") || normalized.startsWith("git@");

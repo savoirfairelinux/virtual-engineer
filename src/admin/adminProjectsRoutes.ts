@@ -204,7 +204,7 @@ const skillSourceDiscoverySchema = z.object({
   sshKnownHostsPath: optionalNonEmptyString("SSH known_hosts path must not be empty"),
 });
 
-interface SkillSource {
+export interface SkillSource {
   source: string;
   skills: string[];
   installAll?: boolean;
@@ -228,6 +228,15 @@ function normalizeSkillSources(sources: z.infer<typeof skillSourcesSchema> | und
     }
     return { source: source.source, skills: Array.from(new Set(source.skills ?? [])), ...ssh };
   });
+}
+
+function skillSourcesForCreate(sources: z.infer<typeof skillSourcesSchema> | undefined): SkillSource[] {
+  return normalizeSkillSources(sources);
+}
+
+function skillDiscoveryEnabledForCreate(data: { skillDiscoveryEnabled?: boolean | undefined }, sources: SkillSource[]): boolean | undefined {
+  if (data.skillDiscoveryEnabled !== undefined) return data.skillDiscoveryEnabled;
+  return sources.length > 0 ? true : undefined;
 }
 
 function parseStoredSkillSources(project: ProjectRecord): SkillSource[] {
@@ -574,14 +583,16 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
     }
     let project: ProjectRecord;
     try {
+      const skillSources = skillSourcesForCreate(data.skillSources);
+      const skillDiscoveryEnabled = skillDiscoveryEnabledForCreate(data, skillSources);
       project = await store.createProject({
         ...(data.id !== undefined ? { id: data.id } : {}),
         name: data.name, type: data.type,
         agentId: makeAgentId(data.agentId),
         ...(data.agentOverrideJson !== undefined ? { agentOverrideJson: data.agentOverrideJson } : {}),
         ...(data.postCloneScript !== undefined ? { postCloneScript: data.postCloneScript } : {}),
-        ...(data.skillDiscoveryEnabled !== undefined ? { skillDiscoveryEnabled: data.skillDiscoveryEnabled } : {}),
-        skillSourcesJson: JSON.stringify(normalizeSkillSources(data.skillSources)),
+        ...(skillDiscoveryEnabled !== undefined ? { skillDiscoveryEnabled } : {}),
+        skillSourcesJson: JSON.stringify(skillSources),
         ...(data.gerritTopicOverride !== undefined ? { gerritTopicOverride: data.gerritTopicOverride } : {}),
         ...(data.useFullTicketUrlInCommits !== undefined ? { useFullTicketUrlInCommits: data.useFullTicketUrlInCommits } : {}),
         ...(data.postReviewLinkToTicket !== undefined ? { postReviewLinkToTicket: data.postReviewLinkToTicket } : {}),
@@ -698,7 +709,11 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
     if (data.agentOverrideJson !== undefined) updates.agentOverrideJson = data.agentOverrideJson;
     if (data.postCloneScript !== undefined) updates.postCloneScript = data.postCloneScript;
     if (data.skillDiscoveryEnabled !== undefined) updates.skillDiscoveryEnabled = data.skillDiscoveryEnabled;
-    if (data.skillSources !== undefined) updates.skillSourcesJson = JSON.stringify(normalizeSkillSources(data.skillSources));
+    if (data.skillSources !== undefined) {
+      const skillSources = normalizeSkillSources(data.skillSources);
+      updates.skillSourcesJson = JSON.stringify(skillSources);
+      if (data.skillDiscoveryEnabled === undefined && skillSources.length > 0) updates.skillDiscoveryEnabled = true;
+    }
     if (data.gerritTopicOverride !== undefined) updates.gerritTopicOverride = data.gerritTopicOverride;
     if (data.useFullTicketUrlInCommits !== undefined) updates.useFullTicketUrlInCommits = data.useFullTicketUrlInCommits;
     if (data.postReviewLinkToTicket !== undefined) updates.postReviewLinkToTicket = data.postReviewLinkToTicket;
