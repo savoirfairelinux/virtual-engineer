@@ -30,7 +30,8 @@ const log = getLogger("admin-projects");
 function isSkillSourceAuthError(message: string): boolean {
   return message.startsWith("SSH skill sources require")
     || message.startsWith("SSH private key path is not readable")
-    || message.startsWith("SSH known_hosts path is not readable");
+    || message.startsWith("SSH known_hosts path is not readable")
+    || message.startsWith("Invalid SSH skill source URL");
 }
 
 async function relaunchFailedTasksForProject(
