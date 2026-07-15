@@ -107,7 +107,8 @@ describe("Orchestrator — Phase 6 concurrency gating", () => {
       agentStore: { getAgentById: (id) => store.getAgentById(id) },
     });
     // Saturate the integration slot externally.
-    expect(await tracker.acquire(project.id, project.agentId)).toBe(true);
+    const externalLease = await tracker.acquire(project.id, project.agentId);
+    expect(externalLease).not.toBeNull();
 
     const orch = buildOrchestrator(store, tracker);
     await orch.startTaskForProject(
@@ -119,6 +120,7 @@ describe("Orchestrator — Phase 6 concurrency gating", () => {
     const existing = await store.getTaskByTicketId("ticket-1" as TicketId);
     expect(existing).not.toBeNull();
     expect(tracker.snapshot().global).toBeGreaterThanOrEqual(0);
+    tracker.release(externalLease!);
   });
 
   it("continueTask remains safe after a prior startTaskForProject run", async () => {
@@ -126,7 +128,8 @@ describe("Orchestrator — Phase 6 concurrency gating", () => {
     const tracker = createConcurrencyTracker({
       agentStore: { getAgentById: (id) => store.getAgentById(id) },
     });
-    expect(await tracker.acquire(project.id, project.agentId)).toBe(true);
+    const externalLease = await tracker.acquire(project.id, project.agentId);
+    expect(externalLease).not.toBeNull();
 
     const orch = buildOrchestrator(store, tracker);
     await orch.startTaskForProject(
@@ -138,7 +141,7 @@ describe("Orchestrator — Phase 6 concurrency gating", () => {
     const first = await store.getTaskByTicketId("ticket-2" as TicketId);
     expect(first).not.toBeNull();
 
-    tracker.release(project.id, project.agentId);
+    tracker.release(externalLease!);
     await orch.continueTask(first!.taskId);
 
     const task = await store.getTaskByTicketId("ticket-2" as TicketId);

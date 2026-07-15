@@ -37,6 +37,12 @@ export interface ConcurrencySnapshot {
   perAgent: Record<string, number>;
 }
 
+declare const concurrencyLeaseBrand: unique symbol;
+
+export interface ConcurrencyLease {
+  readonly [concurrencyLeaseBrand]: true;
+}
+
 export interface ConcurrencyTracker {
   /**
     * Returns true if a new task can start (all gating limits would still be
@@ -51,14 +57,14 @@ export interface ConcurrencyTracker {
    * the caller must not `await` between {@link canStart} and {@link acquire}
    * if it relies on the prior decision.
    */
-  acquire(projectId: ProjectId, agentId: AgentId): Promise<boolean>;
+  acquire(projectId: ProjectId, agentId: AgentId): Promise<ConcurrencyLease | null>;
 
   /**
    * Release a slot when a task reaches a terminal state. Idempotent: releasing
    * a never-acquired or already-released slot is a no-op (counters never go
    * negative).
    */
-  release(projectId: ProjectId, agentId: AgentId): void;
+  release(lease: ConcurrencyLease): void;
 
   /** Diagnostic snapshot of the live counters. */
   snapshot(): ConcurrencySnapshot;
@@ -73,6 +79,12 @@ export interface ConcurrencyTrackerDeps {
 interface CacheEntry<T> {
   value: T;
   expiresAt: number;
+}
+
+interface ActiveLease {
+  projectId: ProjectId;
+  agentId: AgentId;
+  integrationKey: string;
 }
 
 /**
@@ -113,7 +125,7 @@ export function createConcurrencyTracker(deps: ConcurrencyTrackerDeps): Concurre
   );
   const perProject = new Map<string, number>();
   const perIntegration = new Map<string, number>();
-  const agentToIntegration = new Map<string, string>();
+  const activeLeases = new WeakMap<ConcurrencyLease, ActiveLease>();
   let activeGlobal = 0;
 
   /** Fetch the current concurrency limits for an agent, using the TTL cache. */
@@ -143,39 +155,31 @@ export function createConcurrencyTracker(deps: ConcurrencyTrackerDeps): Concurre
     },
 
     /** Atomically claim a slot if limits allow, incrementing all three counters. */
-    async acquire(projectId, agentId): Promise<boolean> {
+    async acquire(projectId, agentId): Promise<ConcurrencyLease | null> {
       const limits = await loadLimits(projectId, agentId);
       if (!check(limits, projectId, agentId)) {
-        return false;
+        return null;
       }
       activeGlobal += 1;
       perProject.set(projectId, (perProject.get(projectId) ?? 0) + 1);
       perIntegration.set(limits.integrationKey, (perIntegration.get(limits.integrationKey) ?? 0) + 1);
-      agentToIntegration.set(agentId, limits.integrationKey);
+      const lease = Object.freeze({}) as ConcurrencyLease;
+      activeLeases.set(lease, { projectId, agentId, integrationKey: limits.integrationKey });
       log.debug({ projectId, agentId, activeGlobal, limits }, "acquired concurrency slot");
-      return true;
+      return lease;
     },
 
-    /** Decrement counters when a task ends; idempotent if counters are already zero. */
-    release(projectId, agentId): void {
-      let mutated = false;
-      const projCount = perProject.get(projectId) ?? 0;
-      if (projCount > 0) {
-        perProject.set(projectId, projCount - 1);
-        mutated = true;
-      }
-      const integrationKey = agentToIntegration.get(agentId) ?? `agent:${agentId}`;
-      const integrationCount = perIntegration.get(integrationKey) ?? 0;
-      if (integrationCount > 0) {
-        perIntegration.set(integrationKey, integrationCount - 1);
-        mutated = true;
-      }
-      if (activeGlobal > 0 && mutated) {
-        activeGlobal -= 1;
-      }
-      if (mutated) {
-        log.debug({ projectId, agentId, activeGlobal }, "released concurrency slot");
-      }
+    /** Consume a lease once and decrement exactly the counters it acquired. */
+    release(lease): void {
+      const active = activeLeases.get(lease);
+      if (active === undefined) return;
+      activeLeases.delete(lease);
+      const projectCount = perProject.get(active.projectId) ?? 0;
+      perProject.set(active.projectId, Math.max(0, projectCount - 1));
+      const integrationCount = perIntegration.get(active.integrationKey) ?? 0;
+      perIntegration.set(active.integrationKey, Math.max(0, integrationCount - 1));
+      activeGlobal = Math.max(0, activeGlobal - 1);
+      log.debug({ ...active, activeGlobal }, "released concurrency slot");
     },
 
     /** Return a copy of the current counter state for diagnostics. */

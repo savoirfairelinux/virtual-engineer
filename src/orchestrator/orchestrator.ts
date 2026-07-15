@@ -562,7 +562,7 @@ export class Orchestrator {
 
   /** Execute one agent cycle: build context, invoke the agent, push changes, and advance state. */
   private async runAgentCycle(task: Task, reviewFeedback: FeedbackItem[] = []): Promise<void> {
-    let cycleSlot: { projectId: import("../interfaces.js").ProjectId; agentId: import("../interfaces.js").AgentId } | null = null;
+    let cycleLease: import("./concurrencyTracker.js").ConcurrencyLease | null = null;
     let pendingRetry: Task | null = null;
     const projectIdForCycle = task.projectId ?? (await this.stateStore.getTask(task.taskId))?.projectId ?? null;
     if (!task.projectId && projectIdForCycle) {
@@ -571,8 +571,8 @@ export class Orchestrator {
     if (projectIdForCycle && this.projectMode?.concurrencyTracker) {
       const project = await this.projectMode.projectStore.getProjectById(projectIdForCycle);
       if (project) {
-        const acquired = await this.projectMode.concurrencyTracker.acquire(project.id, project.agentId);
-        if (!acquired) {
+        const acquiredLease = await this.projectMode.concurrencyTracker.acquire(project.id, project.agentId);
+        if (acquiredLease === null) {
           if (task.state === "AGENT_RUNNING") {
             task = await this.stateStore.transition(task.taskId, "RETRY_CYCLE", {
               reason: "waiting for available agent slot",
@@ -584,7 +584,7 @@ export class Orchestrator {
           );
           return;
         }
-        cycleSlot = { projectId: project.id, agentId: project.agentId };
+        cycleLease = acquiredLease;
       }
     }
 
@@ -846,8 +846,8 @@ export class Orchestrator {
           "workspace cleanup failed (non-fatal, task state unaffected)"
         );
       }
-      if (cycleSlot && this.projectMode?.concurrencyTracker) {
-        this.projectMode.concurrencyTracker.release(cycleSlot.projectId, cycleSlot.agentId);
+      if (cycleLease !== null && this.projectMode?.concurrencyTracker) {
+        this.projectMode.concurrencyTracker.release(cycleLease);
       }
     }
     if (pendingRetry) {
