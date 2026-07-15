@@ -517,6 +517,7 @@ export class ReviewOrchestrator {
           agentToken: this.deps.agentToken,
           model: this.deps.model,
           ...(project.skillDiscoveryEnabled ? { skillDiscoveryEnabled: true } : {}),
+          ...(project.skillDiscoveryEnabled ? { localSkillsPath: project.localSkillsPath } : {}),
           ...(project.skillDiscoveryEnabled && project.skillSourcesJson !== "[]"
             ? { skillSourcesJson: project.skillSourcesJson }
             : {}),

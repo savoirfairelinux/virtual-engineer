@@ -498,6 +498,8 @@ function buildEventMessage(type: string, data: Record<string, unknown> | null): 
       const reason = readStr(data, ["message", "error", "reason"]);
       return reason ? `${message}: ${reason}` : message;
     }
+    case "skills.local_loaded":
+      return buildLocalSkillsMessage(data);
     // ── Review lifecycle events ───────────────────────────────────────────
     case "review.started":
       return "📝 Review started";
@@ -544,6 +546,12 @@ function buildSkillFetchMessage(prefix: string, data: Record<string, unknown> | 
   const details = [`skills: ${skills}`];
   if (agent) details.push(`agent: ${agent}`);
   return `${prefix} ${source} (${details.join(" · ")})`;
+}
+
+/** Build a human-readable message for locally loaded project skills. */
+function buildLocalSkillsMessage(data: Record<string, unknown> | null): string {
+  const path = readStr(data, ["path", "localSkillsPath"]) ?? ".github/skills";
+  return `Loaded local skills from ${path} (skills: ${formatSkillSelection(data?.["skills"])})`;
 }
 
 /** Format the selected remote skill list from worker event payloads. */

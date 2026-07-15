@@ -20,11 +20,10 @@ import { spawn } from 'child_process';
 import type { ChildProcess } from 'child_process';
 import { statSync } from 'fs';
 import { createConnection } from 'net';
-import { join } from 'path';
 import { restrictNetworkPermissionHandler } from '../networkGuard.js';
 import { emitEvent } from './events.js';
 import type { AgentRun, AgentRunOptions } from './types.js';
-import { copilotGlobalSkillsDir } from '../skills.js';
+import { copilotGlobalSkillsDir, emitLocalSkillsLoaded, localSkillsDir } from '../skills.js';
 
 type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
 
@@ -126,7 +125,8 @@ async function runSession(
   // Opt-in: surface project-approved local and fetched skills without enabling MCP discovery.
   const skillDirectories: string[] = [];
   if (skillDiscovery) {
-    for (const dir of [join(cwd, '.github', 'skills'), copilotGlobalSkillsDir()]) {
+    emitLocalSkillsLoaded(cwd);
+    for (const dir of [localSkillsDir(cwd), copilotGlobalSkillsDir()]) {
       try {
         if (statSync(dir).isDirectory()) skillDirectories.push(dir);
       } catch {

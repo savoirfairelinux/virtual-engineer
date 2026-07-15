@@ -187,6 +187,17 @@ describe("CopilotAdapter", () => {
       expect(spec.env["SKILL_DISCOVERY"]).toBe("1");
     });
 
+    it("injects LOCAL_SKILLS_PATH only when skill discovery is enabled", () => {
+      const adapter = new CopilotAdapter();
+      const context = makeContext();
+      context.agentSession.localSkillsPath = "team/skills";
+      expect(adapter.buildContainerSpec(context, { GITHUB_TOKEN: "ghp_tok" }).env["LOCAL_SKILLS_PATH"]).toBeUndefined();
+
+      context.agentSession.skillDiscoveryEnabled = true;
+      const spec = adapter.buildContainerSpec(context, { GITHUB_TOKEN: "ghp_tok" });
+      expect(spec.env["LOCAL_SKILLS_PATH"]).toBe("team/skills");
+    });
+
     it("does not expose SKILL_SOURCES_JSON to the agent container", () => {
       const adapter = new CopilotAdapter();
       const context = makeContext();
@@ -234,6 +245,20 @@ describe("CopilotAdapter", () => {
       const spec = adapter.buildReviewContainerSpec(input, { GITHUB_TOKEN: "ghp_tok" });
 
       expect(spec.env["SKILL_DISCOVERY"]).toBe("1");
+    });
+
+    it("injects LOCAL_SKILLS_PATH in review specs only when skill discovery is enabled", () => {
+      const adapter = new CopilotAdapter();
+      expect(adapter.buildReviewContainerSpec({ ...makeReviewInput(), localSkillsPath: "team/skills" }, {
+        GITHUB_TOKEN: "ghp_tok",
+      }).env["LOCAL_SKILLS_PATH"]).toBeUndefined();
+
+      const spec = adapter.buildReviewContainerSpec({
+        ...makeReviewInput(),
+        skillDiscoveryEnabled: true,
+        localSkillsPath: "team/skills",
+      }, { GITHUB_TOKEN: "ghp_tok" });
+      expect(spec.env["LOCAL_SKILLS_PATH"]).toBe("team/skills");
     });
 
     it("does not expose SKILL_SOURCES_JSON in review specs", () => {
