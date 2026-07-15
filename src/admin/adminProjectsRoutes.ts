@@ -234,11 +234,6 @@ function skillSourcesForCreate(sources: z.infer<typeof skillSourcesSchema> | und
   return normalizeSkillSources(sources);
 }
 
-function skillDiscoveryEnabledForCreate(data: { skillDiscoveryEnabled?: boolean | undefined }, sources: SkillSource[]): boolean | undefined {
-  if (data.skillDiscoveryEnabled !== undefined) return data.skillDiscoveryEnabled;
-  return sources.length > 0 ? true : undefined;
-}
-
 function parseStoredSkillSources(project: ProjectRecord): SkillSource[] {
   try {
     const parsed: unknown = JSON.parse(project.skillSourcesJson || "[]");
@@ -584,14 +579,13 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
     let project: ProjectRecord;
     try {
       const skillSources = skillSourcesForCreate(data.skillSources);
-      const skillDiscoveryEnabled = skillDiscoveryEnabledForCreate(data, skillSources);
       project = await store.createProject({
         ...(data.id !== undefined ? { id: data.id } : {}),
         name: data.name, type: data.type,
         agentId: makeAgentId(data.agentId),
         ...(data.agentOverrideJson !== undefined ? { agentOverrideJson: data.agentOverrideJson } : {}),
         ...(data.postCloneScript !== undefined ? { postCloneScript: data.postCloneScript } : {}),
-        ...(skillDiscoveryEnabled !== undefined ? { skillDiscoveryEnabled } : {}),
+        ...(data.skillDiscoveryEnabled !== undefined ? { skillDiscoveryEnabled: data.skillDiscoveryEnabled } : {}),
         skillSourcesJson: JSON.stringify(skillSources),
         ...(data.gerritTopicOverride !== undefined ? { gerritTopicOverride: data.gerritTopicOverride } : {}),
         ...(data.useFullTicketUrlInCommits !== undefined ? { useFullTicketUrlInCommits: data.useFullTicketUrlInCommits } : {}),
@@ -712,7 +706,6 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
     if (data.skillSources !== undefined) {
       const skillSources = normalizeSkillSources(data.skillSources);
       updates.skillSourcesJson = JSON.stringify(skillSources);
-      if (data.skillDiscoveryEnabled === undefined && skillSources.length > 0) updates.skillDiscoveryEnabled = true;
     }
     if (data.gerritTopicOverride !== undefined) updates.gerritTopicOverride = data.gerritTopicOverride;
     if (data.useFullTicketUrlInCommits !== undefined) updates.useFullTicketUrlInCommits = data.useFullTicketUrlInCommits;

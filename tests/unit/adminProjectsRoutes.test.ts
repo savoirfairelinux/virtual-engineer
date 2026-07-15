@@ -269,7 +269,7 @@ describe("Admin API — Project routes (/api/admin/projects)", () => {
 
     expect(r.status).toBe(201);
     const project = r.body?.["project"] as Record<string, unknown>;
-    expect(project["skillDiscoveryEnabled"]).toBe(true);
+    expect(project["skillDiscoveryEnabled"]).toBe(false);
     expect(project["skillSources"]).toEqual([
       { source: "ssh://skills.example.com/org/agent-skills", skills: ["skill-a", "skill-b"], sshUser: "git-user", sshPort: 29418, sshKeyPath: "/home/ve/.ssh/id_ed25519", sshKnownHostsPath: "/home/ve/.ssh/known_hosts" },
     ]);
@@ -515,7 +515,7 @@ describe("Admin API — Project routes (/api/admin/projects)", () => {
     expect((r.body?.["project"] as Record<string, unknown>)["skillDiscoveryEnabled"]).toBe(true);
   });
 
-  it("PUT /:id enables skill discovery when remote skill sources are configured", async () => {
+  it("PUT /:id preserves local skill loading when remote skill sources are configured", async () => {
     const agent = await makeAgent(store, "review");
     await seedIntegration(store, "gerrit-1", "gerrit");
     const created = await rest(server, "/api/admin/projects", {
@@ -532,7 +532,7 @@ describe("Admin API — Project routes (/api/admin/projects)", () => {
 
     expect(r.status).toBe(200);
     const project = r.body?.["project"] as Record<string, unknown>;
-    expect(project["skillDiscoveryEnabled"]).toBe(true);
+    expect(project["skillDiscoveryEnabled"]).toBe(false);
     expect(project["skillSources"]).toEqual([{ source: "ssh://skills.example.com/org/agent-skills", skills: ["skill-a"] }]);
   });
 

@@ -113,23 +113,31 @@ export class DockerWorkspaceRunner implements WorkspaceRunner {
       }
       log.info({ taskId: spec.taskId, source: source.source, skills }, "installing remote skills into agent home volume");
       spec.onStderrChunk?.(`${emitSkillFetchEvent("skills.fetch_start", source.source, skills, spec.provider)}\n`);
-      const result = await execInVolume({
-        volumeName: spec.homeVolumeName,
-        image: spec.image,
-        command: ["npx", ...buildSkillsCliArgs(source, spec.provider)],
-        env: {
-          HOME: "/workspace",
-          NPM_CONFIG_UPDATE_NOTIFIER: "false",
-        },
-        ...(needsSsh ? {
-          ...(source.sshKeyPath ? { sshKeyPath: source.sshKeyPath } : {}),
-          ...(source.sshKnownHostsPath ? { sshKnownHostsPath: source.sshKnownHostsPath } : {}),
-          ...(sshPort !== undefined ? { sshPort } : {}),
-        } : {}),
-        forwardSshAgent: needsSsh && !source.sshKeyPath,
-        networkMode: spec.networkMode,
-        timeout: 600_000,
-      });
+      let result: Awaited<ReturnType<typeof execInVolume>>;
+      try {
+        result = await execInVolume({
+          volumeName: spec.homeVolumeName,
+          image: spec.image,
+          command: ["npx", ...buildSkillsCliArgs(source, spec.provider)],
+          env: {
+            HOME: "/workspace",
+            NPM_CONFIG_UPDATE_NOTIFIER: "false",
+          },
+          ...(needsSsh ? {
+            ...(source.sshKeyPath ? { sshKeyPath: source.sshKeyPath } : {}),
+            ...(source.sshKnownHostsPath ? { sshKnownHostsPath: source.sshKnownHostsPath } : {}),
+            ...(sshPort !== undefined ? { sshPort } : {}),
+          } : {}),
+          forwardSshAgent: needsSsh && !source.sshKeyPath,
+          networkMode: spec.networkMode,
+          timeout: 600_000,
+        });
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        spec.onStderrChunk?.(`${emitSkillFetchEvent("skills.fetch_failed", source.source, skills, spec.provider, { message: detail })}\n`);
+        log.warn({ taskId: spec.taskId, source: source.source, err: detail.slice(0, 500) }, "remote skill installation failed");
+        throw new Error(`failed to fetch skills from ${source.source}: ${detail}`);
+      }
       if (result.exitCode !== 0) {
         const detail = skillInstallError(result);
         spec.onStderrChunk?.(`${emitSkillFetchEvent("skills.fetch_failed", source.source, skills, spec.provider, { message: detail })}\n`);
@@ -176,7 +184,7 @@ export class DockerWorkspaceRunner implements WorkspaceRunner {
     await this.installRemoteSkillsIntoHomeVolume({
       homeVolumeName: context.homeVolumeName,
       image: this.config.agentContainerImage,
-      skillSourcesJson: context.agentSession.skillDiscoveryEnabled ? context.agentSession.skillSourcesJson : undefined,
+      skillSourcesJson: context.agentSession.skillSourcesJson,
       provider,
       adapterName: adapter.name,
       networkMode: spec.networkMode,
@@ -632,7 +640,7 @@ export class DockerWorkspaceRunner implements WorkspaceRunner {
     await this.installRemoteSkillsIntoHomeVolume({
       homeVolumeName: handle.homeVolumeName,
       image: this.config.agentContainerImage,
-      skillSourcesJson: input.skillDiscoveryEnabled ? input.skillSourcesJson : undefined,
+      skillSourcesJson: input.skillSourcesJson,
       provider,
       adapterName: adapter.name,
       networkMode: spec.networkMode,

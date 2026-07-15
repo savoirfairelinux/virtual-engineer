@@ -324,11 +324,21 @@ export class ClaudeAdapter implements AgentAdapter, ConfigurableAdapter {
       plainLogLines: [],
       agentEvents: [],
     };
-    const invocation = await this.invokeAgentContainer(context, authEnv, {
-      onStderrChunk: (chunk) => {
-        this.consumeStderrChunk(context, stderrState, chunk);
-      },
-    });
+    let invocation: DockerInvocationResult;
+    try {
+      invocation = await this.invokeAgentContainer(context, authEnv, {
+        onStderrChunk: (chunk) => {
+          this.consumeStderrChunk(context, stderrState, chunk);
+        },
+      });
+    } catch (err) {
+      this.flushStderrBuffer(context, stderrState);
+      if (stderrState.agentEvents.length === 0 && stderrState.plainLogLines.length === 0) {
+        throw err;
+      }
+      const message = err instanceof Error ? err.message : String(err);
+      return this.setupFailureResult(message, stderrState);
+    }
     this.flushStderrBuffer(context, stderrState);
 
     const result = this.parseAgentResult(context, invocation.stdout, stderrState);
@@ -349,6 +359,22 @@ export class ClaudeAdapter implements AgentAdapter, ConfigurableAdapter {
       result.externalChangeId = changeId;
     }
     return result;
+  }
+
+  private setupFailureResult(message: string, stderrState: StderrParseState): AgentResult {
+    const plainLogs = stderrState.plainLogLines.join("\n");
+    return {
+      status: "failed",
+      modifiedFiles: [],
+      summary: "Agent setup failed before container output",
+      agentLogs: [plainLogs, message].filter(Boolean).join("\n"),
+      agentEvents: stderrState.agentEvents,
+      metadata: {
+        adapter: "claude",
+        setupError: true,
+        error: message.slice(0, 300),
+      },
+    };
   }
 
   /** Delegate Docker invocation to the registered dockerInvoker, passing auth env. */

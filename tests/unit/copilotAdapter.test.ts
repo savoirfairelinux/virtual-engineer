@@ -711,6 +711,28 @@ describe("CopilotAdapter", () => {
       expect(result.agentLogs).not.toContain("__ve_event");
     });
 
+    it("returns a failed result with setup events when docker setup throws after stderr", async () => {
+      const adapter = new CopilotAdapter();
+      const veEvent = JSON.stringify({
+        __ve_event: true,
+        type: "skills.fetch_failed",
+        data: { source: "example-org/agent-skills", message: "network failed" },
+        ts: "2026-01-01T00:00:00.000Z",
+      });
+      adapter.setDockerInvoker(vi.fn().mockImplementation(async (_context, _authEnv, callbacks) => {
+        callbacks?.onStderrChunk?.(`${veEvent}\n`);
+        throw new Error("failed to fetch skills from example-org/agent-skills: network failed");
+      }));
+
+      const result = await adapter.execute(makeContext());
+
+      expect(result.status).toBe("failed");
+      expect(result.summary).toBe("Agent setup failed before container output");
+      expect(result.agentEvents).toHaveLength(1);
+      expect(result.agentEvents?.[0]?.type).toBe("skills.fetch_failed");
+      expect(result.metadata).toMatchObject({ adapter: "copilot", setupError: true });
+    });
+
     it("mixed stderr lines are correctly split", async () => {
       const veEvent = JSON.stringify({
         __ve_event: true,

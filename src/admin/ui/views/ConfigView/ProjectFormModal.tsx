@@ -660,7 +660,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
   const [name, setName] = useState("");
   const [agentId, setAgentId] = useState("");
   const [postCloneScript, setPostCloneScript] = useState("");
-  const [skillDiscoveryEnabled, setSkillDiscoveryEnabled] = useState(project === undefined);
+  const [skillDiscoveryEnabled, setSkillDiscoveryEnabled] = useState(false);
   const [skillSourceRows, setSkillSourceRows] = useState<SkillSourceRow[]>(() => project === undefined ? [preloadedProjectSkillSourceRow()] : []);
   const [gerritTopicOverride, setGerritTopicOverride] = useState("");
   const [useFullTicketUrlInCommits, setUseFullTicketUrlInCommits] = useState(false);
