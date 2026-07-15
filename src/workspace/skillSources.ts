@@ -102,14 +102,8 @@ export function resolveSshSkillSourceUrl(source: SkillSourceUrlInput): string {
   if (!isSshUrlSource(source.source)) {
     return source.source;
   }
-  let url: URL;
-  try {
-    url = new URL(source.source);
-    if (!url.hostname) throw new Error("missing host");
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    throw new Error(`Invalid SSH skill source URL "${source.source}": ${message}`);
-  }
+  const url = parseSshSkillSourceUrl(source.source);
+  rejectConflictingSshPorts(source, url);
   if (source.sshUser === undefined && source.sshPort === undefined) return source.source;
   if (!url.username && source.sshUser !== undefined) url.username = source.sshUser;
   if (!url.port && source.sshPort !== undefined) url.port = String(source.sshPort);

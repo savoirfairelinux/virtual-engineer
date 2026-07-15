@@ -92,6 +92,24 @@ describe("admin skill source discovery", () => {
     expect(env["GIT_SSH_COMMAND"]).toBe("ssh -i '/tmp/key with spaces' -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p 29418");
   });
 
+  it("rejects conflicting explicit SSH URL and fallback ports", () => {
+    expect(() => buildSkillListEnv({
+      source: "ssh://skills.example.com:2222/org/agent-skills",
+      sshPort: 29418,
+      sshKeyPath: "/tmp/key",
+    })).toThrow("URL uses port 2222 but sshPort is 29418");
+  });
+
+  it("allows matching explicit SSH URL and fallback ports", () => {
+    const env = buildSkillListEnv({
+      source: "ssh://skills.example.com:2222/org/agent-skills",
+      sshPort: 2222,
+      sshKeyPath: "/tmp/key",
+    });
+
+    expect(env["GIT_SSH_COMMAND"]).toBe("ssh -i '/tmp/key' -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null");
+  });
+
   it("builds SSH env with strict known_hosts checking when configured", () => {
     const env = buildSkillListEnv({
       source: "ssh://skills.example.com/org/agent-skills",
