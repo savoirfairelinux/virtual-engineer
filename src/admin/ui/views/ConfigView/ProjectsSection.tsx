@@ -29,7 +29,6 @@ interface ApiProjectDetail extends ApiProject {
     localPath: string;
   }>;
   postCloneScript?: string;
-  skillDiscoveryEnabled?: boolean;
   gerritTopicOverride?: string | null;
   useFullTicketUrlInCommits?: boolean;
   postReviewLinkToTicket?: boolean;

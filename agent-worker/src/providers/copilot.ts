@@ -20,11 +20,10 @@ import { spawn } from 'child_process';
 import type { ChildProcess } from 'child_process';
 import { statSync } from 'fs';
 import { createConnection } from 'net';
-import { join } from 'path';
 import { restrictNetworkPermissionHandler } from '../networkGuard.js';
 import { emitEvent } from './events.js';
 import type { AgentRun, AgentRunOptions } from './types.js';
-import { copilotGlobalSkillsDir } from '../skills.js';
+import { copilotGlobalSkillsDir, emitLocalSkillsLoaded, localSkillsDir } from '../skills.js';
 
 type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
 
@@ -116,6 +115,23 @@ async function startLocalCliServer(cwd: string): Promise<LocalCliServer> {
 }
 
 // ── Unified session runner ────────────────────────────────────────────────────
+export function copilotSkillDirectories(cwd: string, skillDiscovery: boolean): string[] {
+  const skillDirectories: string[] = [];
+  if (skillDiscovery) {
+    emitLocalSkillsLoaded(cwd);
+    skillDirectories.push(localSkillsDir(cwd));
+  }
+  skillDirectories.push(copilotGlobalSkillsDir());
+
+  return skillDirectories.filter((dir) => {
+    try {
+      return statSync(dir).isDirectory();
+    } catch {
+      return false;
+    }
+  });
+}
+
 async function runSession(
   options: AgentRunOptions,
 ): Promise<{ session: CopilotSession; client: CopilotClient; localCliServer: LocalCliServer }> {
@@ -123,17 +139,8 @@ async function runSession(
   const localCliServer = await startLocalCliServer(cwd);
   const client = new CopilotClient({ cliUrl: localCliServer.cliUrl });
 
-  // Opt-in: surface project-approved local and fetched skills without enabling MCP discovery.
-  const skillDirectories: string[] = [];
-  if (skillDiscovery) {
-    for (const dir of [join(cwd, '.github', 'skills'), copilotGlobalSkillsDir()]) {
-      try {
-        if (statSync(dir).isDirectory()) skillDirectories.push(dir);
-      } catch {
-        // Missing skills directories are fine; discovery is still opt-in.
-      }
-    }
-  }
+  // Local repo skills remain opt-in; fetched remote skills are already project-approved.
+  const skillDirectories = copilotSkillDirectories(cwd, skillDiscovery === true);
 
   try {
     const session = await client.createSession({
