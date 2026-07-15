@@ -34,9 +34,21 @@ All provider configuration (ticketing, VCS, agent) is stored in SQLite and manag
 ## Prod setup (one-shot: `start.sh` sets everything up)
 
 ```bash
-cp .env.example .env        # fill in HMAC-KEY
+cp .env.example .env        # fill in admin auth; local OIDC is automatic
 ./scripts/start.sh          # installs k3s if missing, then builds + starts everything
 ```
+
+By default, `start.sh` deploys an authenticated local Keycloak realm and keeps
+its generated credentials under `data/local-oidc/` with owner-only permissions.
+To use an existing external Keycloak instead, set both values in `.env`:
+
+```dotenv
+OPENSHELL_OIDC_ISSUER=https://keycloak.example.com/realms/openshell
+OPENSHELL_OIDC_CLIENT_SECRET=replace-with-the-confidential-client-secret
+```
+
+`start.sh` loads `.env` without evaluating it as shell code. Variables already
+exported by the calling shell take precedence over values in the file.
 
 A single command makes VE 100% functional:
 
@@ -180,6 +192,10 @@ Copy `.env.example` → `.env`. All provider credentials live in the DB (admin U
 | `REVIEW_MIN_SEVERITY` | `info` | Min severity to post inline (`nit` < `info` < `warning` < `error`) |
 | `AGENT_CONTAINER_IMAGE` | `virtual-engineer-workspace:latest` | Base image for the OpenShell agent sandbox |
 | `WORKSPACE_BASE_DIR` | `/tmp/virtual-engineer/workspaces` | Host-side scratch space for cloned workspaces + review diffs |
+| `OPENSHELL_OIDC_ISSUER` | managed local Keycloak | External Keycloak realm issuer URL; set together with the client secret |
+| `OPENSHELL_OIDC_CLIENT_ID` | `openshell-ci` | Keycloak confidential-client id used by the OpenShell CLI |
+| `OPENSHELL_OIDC_CLIENT_SECRET` | generated locally | External confidential-client secret; set together with the issuer |
+| `OPENSHELL_OIDC_AUDIENCE` | `openshell-cli` | Expected OpenShell OIDC audience |
 
 ---
 

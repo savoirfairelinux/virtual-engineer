@@ -22,15 +22,60 @@ spec:
         app.kubernetes.io/name: virtual-engineer
         app.kubernetes.io/component: orchestrator
     spec:
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
         fsGroup: 1000
         seccompProfile:
           type: RuntimeDefault
+      imagePullSecrets:
+        - name: ve-ghcr-pull
+      initContainers:
+        - name: initialize-openshell-profile
+          image: virtual-engineer-orchestrator:latest
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -ec
+            - |
+              profile_dir="${XDG_CONFIG_HOME}/openshell/gateways/${OPENSHELL_GATEWAY}"
+              install -d -m 0700 "${profile_dir}/mtls"
+              cp /openshell-client-tls/ca.crt "${profile_dir}/mtls/ca.crt"
+              cp /openshell-client-tls/tls.crt "${profile_dir}/mtls/tls.crt"
+              cp /openshell-client-tls/tls.key "${profile_dir}/mtls/tls.key"
+              chmod 0600 "${profile_dir}/mtls/"*
+              openshell gateway remove "${OPENSHELL_GATEWAY}" >/dev/null 2>&1 || true
+              openshell gateway add "${OPENSHELL_GATEWAY_ENDPOINT}" \
+                --name "${OPENSHELL_GATEWAY}" \
+                --oidc-issuer "${OPENSHELL_OIDC_ISSUER}" \
+                --oidc-client-id "${OPENSHELL_OIDC_CLIENT_ID}" \
+                --oidc-audience "${OPENSHELL_OIDC_AUDIENCE}"
+          envFrom:
+            - configMapRef:
+                name: virtual-engineer-config
+            - configMapRef:
+                name: virtual-engineer-oidc
+          env:
+            - name: OPENSHELL_OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: virtual-engineer-secret
+                  key: OPENSHELL_OIDC_CLIENT_SECRET
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: openshell-config
+              mountPath: /openshell-config
+            - name: openshell-client-tls
+              mountPath: /openshell-client-tls
+              readOnly: true
       containers:
         - name: orchestrator
-          # Built with: --build-arg INSTALL_OPENSHELL=true --build-arg OPENSHELL_VERSION=v0.0.79
+          # Built with: --build-arg INSTALL_OPENSHELL=true --build-arg OPENSHELL_VERSION=v0.0.83
           # Pin by digest in production (image@sha256:...).
           image: virtual-engineer-orchestrator:latest
           imagePullPolicy: IfNotPresent
@@ -74,9 +119,8 @@ spec:
               mountPath: /workspaces
             - name: tmp
               mountPath: /tmp
-            - name: openshell-client-tls
-              mountPath: /openshell-config/openshell/gateways/https___openshell.virtual-engineer.svc.cluster.local_8080/mtls
-              readOnly: true
+            - name: openshell-config
+              mountPath: /openshell-config
       volumes:
         - name: data
           persistentVolumeClaim:
@@ -86,6 +130,8 @@ spec:
         - name: workspaces
           emptyDir: {}
         - name: tmp
+          emptyDir: {}
+        - name: openshell-config
           emptyDir: {}
         - name: openshell-client-tls
           secret:

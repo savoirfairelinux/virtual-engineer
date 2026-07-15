@@ -1,11 +1,8 @@
-# OpenShell gateway RBAC for driving agent Pods on k3s.
+# OpenShell gateway identity for the Kubernetes driver.
 #
-# The gateway runs in virtual-engineer with a dedicated ServiceAccount. Its
-# cross-namespace RoleBinding grants access only to sandbox resources in
-# ve-agents.
-#
-# The gateway needs to create/inspect/delete ephemeral sandbox Pods and stream
-# their logs, plus exec/attach for the upload/exec/download lifecycle.
+# OpenShell 0.0.83's Helm chart binds this ServiceAccount to its CRD-scoped
+# `sandboxes` Role and grants only `get` on Pods for sandbox identity checks.
+# Do not add direct Pod lifecycle, exec, attach, ConfigMap, or Secret access.
 ---
 apiVersion: v1
 kind: Namespace
@@ -14,6 +11,12 @@ metadata:
   labels:
     app.kubernetes.io/part-of: virtual-engineer
     app.kubernetes.io/component: agent-sandboxes
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: latest
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -22,44 +25,3 @@ metadata:
   namespace: virtual-engineer
   labels:
     app.kubernetes.io/part-of: virtual-engineer
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: ve-agent-pod-manager
-  namespace: ve-agents
-  labels:
-    app.kubernetes.io/part-of: virtual-engineer
-rules:
-  # Sandbox Pod lifecycle.
-  - apiGroups: [""]
-    resources: ["pods"]
-    verbs: ["create", "get", "list", "watch", "delete"]
-  # Stream sandbox logs.
-  - apiGroups: [""]
-    resources: ["pods/log"]
-    verbs: ["get"]
-  # exec / upload / download go through the Pod exec+attach subresources.
-  - apiGroups: [""]
-    resources: ["pods/exec", "pods/attach"]
-    verbs: ["create", "get"]
-  # Ephemeral sandbox config/state (mounted secrets/configmaps for the agent).
-  - apiGroups: [""]
-    resources: ["configmaps", "secrets"]
-    verbs: ["create", "get", "delete"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: ve-openshell-gateway
-  namespace: ve-agents
-  labels:
-    app.kubernetes.io/part-of: virtual-engineer
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: Role
-  name: ve-agent-pod-manager
-subjects:
-  - kind: ServiceAccount
-    name: ve-openshell-gateway
-    namespace: virtual-engineer

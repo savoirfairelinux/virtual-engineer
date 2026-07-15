@@ -26,7 +26,12 @@ the sole agent runtime. Docker agent execution has been removed.**
 > selection. Local development uses single-node **k3s** (`scripts/start.sh`);
 > the gateway runs in k3s via Helm with the Kubernetes driver. Its Service is
 > ClusterIP-only; local orchestration reaches it through a loopback port-forward
-> protected by the chart-generated client TLS bundle.
+> protected by the chart-generated client TLS bundle. OpenShell is pinned to
+> 0.0.83. CLI/user identity is provided by a named Keycloak OIDC profile with
+> anonymous access disabled; sandbox supervisors retain their separate
+> gateway-minted JWT identity. The chart and upstream images are pinned by
+> digest, and production VE images must be private GHCR digest references with
+> pull secrets in both the gateway/orchestrator and sandbox namespaces.
 >
 > The remainder of this ADR is preserved for historical context: it documents the
 > original phased, feature-flagged rollout in which Docker stayed the default. The
