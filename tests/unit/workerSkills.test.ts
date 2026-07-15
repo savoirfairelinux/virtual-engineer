@@ -104,8 +104,16 @@ describe("agent-worker remote skills", () => {
       source: "ssh://git@skills.example.com:2222/org/agent-skills",
       skills: ["skill-a"],
       sshUser: "git-user",
-      sshPort: 29418,
+      sshPort: 2222,
     })).toBe("ssh://git@skills.example.com:2222/org/agent-skills");
+  });
+
+  it("rejects conflicting explicit SSH source and configured ports", () => {
+    expect(() => resolveSkillSourceUrl({
+      source: "ssh://git@skills.example.com:2222/org/agent-skills",
+      skills: ["skill-a"],
+      sshPort: 29418,
+    })).toThrow("URL uses port 2222 but sshPort is 29418");
   });
 
   it("rejects malformed SSH source URLs with context", () => {

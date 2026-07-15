@@ -420,6 +420,74 @@ describe("DockerWorkspaceRunner", () => {
       }
     });
 
+    it("rejects helper installs with conflicting explicit SSH URL and fallback ports", async () => {
+      const savedSshAuthSock = process.env["SSH_AUTH_SOCK"];
+      delete process.env["SSH_AUTH_SOCK"];
+      try {
+        const adapter = makeAgentAdapter();
+        const sources = JSON.stringify([{ source: "ssh://skills.example.com:2222/org/agent-skills", skills: ["skill-a"], sshPort: 29418, sshKeyPath: "/host/id_ed25519" }]);
+        (adapter.buildContainerSpec as ReturnType<typeof vi.fn>).mockReturnValue({
+          image: "my-image:latest",
+          env: { SKILL_DISCOVERY: "1" },
+          command: ["node", "/worker/index.js"],
+        });
+        const runner = makeRunner(adapter);
+        const ctx = makeContext({
+          agentSession: {
+            ...makeContext().agentSession,
+            skillDiscoveryEnabled: true,
+            skillSourcesJson: sources,
+          },
+        });
+
+        mockSpawnWith((child) => {
+          process.nextTick(() => child.emit("close", 0));
+        });
+
+        await expect(asDockerRunner(runner).runAgentInDocker(adapter, ctx, {})).rejects.toThrow("URL uses port 2222 but sshPort is 29418");
+        expect(mockExecInVolume).not.toHaveBeenCalled();
+      } finally {
+        restoreEnv("SSH_AUTH_SOCK", savedSshAuthSock);
+      }
+    });
+
+    it("does not pass sshPort to helper installs when the explicit SSH URL port matches", async () => {
+      const savedSshAuthSock = process.env["SSH_AUTH_SOCK"];
+      delete process.env["SSH_AUTH_SOCK"];
+      try {
+        const adapter = makeAgentAdapter();
+        const sources = JSON.stringify([{ source: "ssh://skills.example.com:2222/org/agent-skills", skills: ["skill-a"], sshPort: 2222, sshKeyPath: "/host/id_ed25519" }]);
+        (adapter.buildContainerSpec as ReturnType<typeof vi.fn>).mockReturnValue({
+          image: "my-image:latest",
+          env: { SKILL_DISCOVERY: "1" },
+          command: ["node", "/worker/index.js"],
+        });
+        const runner = makeRunner(adapter);
+        const ctx = makeContext({
+          agentSession: {
+            ...makeContext().agentSession,
+            skillDiscoveryEnabled: true,
+            skillSourcesJson: sources,
+          },
+        });
+
+        mockSpawnWith((child) => {
+          process.nextTick(() => child.emit("close", 0));
+        });
+
+        await asDockerRunner(runner).runAgentInDocker(adapter, ctx, {});
+
+        expect(mockExecInVolume).toHaveBeenCalledWith(expect.objectContaining({
+          volumeName: ctx.homeVolumeName,
+          sshKeyPath: "/host/id_ed25519",
+          command: expect.arrayContaining(["ssh://skills.example.com:2222/org/agent-skills"]),
+        }));
+        expect(mockExecInVolume).not.toHaveBeenCalledWith(expect.objectContaining({ sshPort: 2222 }));
+      } finally {
+        restoreEnv("SSH_AUTH_SOCK", savedSshAuthSock);
+      }
+    });
+
     it("uses SSH_AUTH_SOCK only in the helper install container", async () => {
       const savedSshAuthSock = process.env["SSH_AUTH_SOCK"];
       process.env["SSH_AUTH_SOCK"] = "/tmp/ve-ssh.sock";

@@ -169,6 +169,23 @@ describe("Admin API — Project routes (/api/admin/projects)", () => {
     }
   });
 
+  it("POST /skill-sources/list treats conflicting SSH ports as client errors", async () => {
+    const originalSshAuthSock = process.env["SSH_AUTH_SOCK"];
+    process.env["SSH_AUTH_SOCK"] = "/tmp/ve-test-ssh.sock";
+    try {
+      const r = await rest(server, "/api/admin/projects/skill-sources/list", {
+        method: "POST",
+        body: { source: "ssh://skills.example.com:2222/org/agent-skills", sshPort: 29418 },
+      });
+
+      expect(r.status).toBe(400);
+      expect(r.body?.["error"]).toMatch(/Conflicting SSH ports/);
+    } finally {
+      if (originalSshAuthSock === undefined) delete process.env["SSH_AUTH_SOCK"];
+      else process.env["SSH_AUTH_SOCK"] = originalSshAuthSock;
+    }
+  });
+
   it("GET / returns empty initially", async () => {
     const r = await rest(server, "/api/admin/projects");
     expect(r.status).toBe(200);
