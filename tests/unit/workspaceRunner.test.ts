@@ -108,6 +108,10 @@ function makeAgentAdapter(result?: Partial<AgentResult>): AgentAdapter {
   } as unknown as AgentAdapter;
 }
 
+function makeNamedAgentAdapter(name: string, result?: Partial<AgentResult>): AgentAdapter {
+  return { ...makeAgentAdapter(result), name } as unknown as AgentAdapter;
+}
+
 function makeContext(overrides?: Partial<TaskContext>): TaskContext {
   return {
     taskId: makeTaskId("task-1"),
@@ -297,7 +301,7 @@ describe("DockerWorkspaceRunner", () => {
       const savedSshAuthSock = process.env["SSH_AUTH_SOCK"];
       process.env["SSH_AUTH_SOCK"] = "/tmp/ve-ssh.sock";
       try {
-        const adapter = makeAgentAdapter();
+        const adapter = makeNamedAgentAdapter("copilot");
         const sources = JSON.stringify([{ source: "example-org/agent-skills", skills: ["skill-a"] }]);
         (adapter.buildContainerSpec as ReturnType<typeof vi.fn>).mockReturnValue({
           image: "my-image:latest",
@@ -353,7 +357,7 @@ describe("DockerWorkspaceRunner", () => {
       const savedSshAuthSock = process.env["SSH_AUTH_SOCK"];
       delete process.env["SSH_AUTH_SOCK"];
       try {
-        const adapter = makeAgentAdapter();
+        const adapter = makeNamedAgentAdapter("copilot");
         const sources = JSON.stringify([{ source: "ssh://skills.example.com/org/agent-skills", skills: ["skill-a"] }]);
         (adapter.buildContainerSpec as ReturnType<typeof vi.fn>).mockReturnValue({
           image: "my-image:latest",
@@ -382,7 +386,7 @@ describe("DockerWorkspaceRunner", () => {
       const savedSshAuthSock = process.env["SSH_AUTH_SOCK"];
       delete process.env["SSH_AUTH_SOCK"];
       try {
-        const adapter = makeAgentAdapter();
+        const adapter = makeNamedAgentAdapter("copilot");
         const sources = JSON.stringify([{ source: "ssh://skills.example.com/org/agent-skills", skills: ["skill-a"], sshKeyPath: "/host/id_ed25519", sshKnownHostsPath: "/host/known_hosts" }]);
         (adapter.buildContainerSpec as ReturnType<typeof vi.fn>).mockReturnValue({
           image: "my-image:latest",
@@ -424,7 +428,7 @@ describe("DockerWorkspaceRunner", () => {
       const savedSshAuthSock = process.env["SSH_AUTH_SOCK"];
       delete process.env["SSH_AUTH_SOCK"];
       try {
-        const adapter = makeAgentAdapter();
+        const adapter = makeNamedAgentAdapter("copilot");
         const sources = JSON.stringify([{ source: "ssh://skills.example.com:2222/org/agent-skills", skills: ["skill-a"], sshPort: 29418, sshKeyPath: "/host/id_ed25519" }]);
         (adapter.buildContainerSpec as ReturnType<typeof vi.fn>).mockReturnValue({
           image: "my-image:latest",
@@ -455,7 +459,7 @@ describe("DockerWorkspaceRunner", () => {
       const savedSshAuthSock = process.env["SSH_AUTH_SOCK"];
       delete process.env["SSH_AUTH_SOCK"];
       try {
-        const adapter = makeAgentAdapter();
+        const adapter = makeNamedAgentAdapter("copilot");
         const sources = JSON.stringify([{ source: "ssh://skills.example.com:2222/org/agent-skills", skills: ["skill-a"], sshPort: 2222, sshKeyPath: "/host/id_ed25519" }]);
         (adapter.buildContainerSpec as ReturnType<typeof vi.fn>).mockReturnValue({
           image: "my-image:latest",
@@ -492,7 +496,7 @@ describe("DockerWorkspaceRunner", () => {
       const savedSshAuthSock = process.env["SSH_AUTH_SOCK"];
       process.env["SSH_AUTH_SOCK"] = "/tmp/ve-ssh.sock";
       try {
-        const adapter = makeAgentAdapter();
+        const adapter = makeNamedAgentAdapter("copilot");
         const sources = JSON.stringify([{ source: "git@skills.example.com:org/agent-skills", skills: ["skill-a"] }]);
         (adapter.buildContainerSpec as ReturnType<typeof vi.fn>).mockReturnValue({
           image: "my-image:latest",
@@ -528,6 +532,31 @@ describe("DockerWorkspaceRunner", () => {
       } finally {
         restoreEnv("SSH_AUTH_SOCK", savedSshAuthSock);
       }
+    });
+
+    it("rejects remote skill installs for unknown agent providers", async () => {
+      const adapter = makeAgentAdapter();
+      const sources = JSON.stringify([{ source: "example-org/agent-skills", skills: ["skill-a"] }]);
+      (adapter.buildContainerSpec as ReturnType<typeof vi.fn>).mockReturnValue({
+        image: "my-image:latest",
+        env: { SKILL_DISCOVERY: "1", SKILL_SOURCES_JSON: sources },
+        command: ["node", "/worker/index.js"],
+      });
+      const runner = makeRunner(adapter);
+      const ctx = makeContext({
+        agentSession: {
+          ...makeContext().agentSession,
+          skillDiscoveryEnabled: true,
+          skillSourcesJson: sources,
+        },
+      });
+
+      await expect(asDockerRunner(runner).runAgentInDocker(adapter, ctx, {})).rejects.toThrow(
+        'Remote skill sources are not supported for agent provider "mock"'
+      );
+
+      expect(mockExecInVolume).not.toHaveBeenCalled();
+      expect(mockSpawn).not.toHaveBeenCalled();
     });
 
     it("includes network mode from spec", async () => {
@@ -732,6 +761,37 @@ describe("DockerWorkspaceRunner", () => {
       expect(mockExecInVolume).not.toHaveBeenCalledWith(expect.objectContaining({
         command: expect.arrayContaining(["-a", "claude-code"]),
       }));
+    });
+
+    it("rejects remote skill installs for unknown review agent providers", async () => {
+      const adapter = {
+        name: "mock",
+        buildContainerSpec: vi.fn(),
+        execute: vi.fn(),
+        buildReviewContainerSpec: vi.fn().mockReturnValue({
+          image: "virtual-engineer-workspace:latest",
+          env: { SKILL_SOURCES_JSON: "[]", SSH_AUTH_SOCK: "/tmp/ve-ssh.sock", GIT_SSH_COMMAND: "ssh" },
+          command: ["node", "/agent-worker/dist/index.js"],
+        }),
+      } as unknown as AgentAdapter;
+      const runner = makeRunner(adapter);
+      const handle = await runner.createWorkspace(makeTaskId("task-1"));
+
+      await expect(runner.runReviewInDocker(handle, {
+        changeId: makeExternalChangeId("Iabc123"),
+        revisionNumber: 1,
+        patchset: 1,
+        repositoryName: "repo",
+        prompt: "review this",
+        systemPrompt: "system",
+        agentToken: "token",
+        skillDiscoveryEnabled: true,
+        skillSourcesJson: JSON.stringify([{ source: "example-org/agent-skills", skills: ["skill-a"] }]),
+      })).rejects.toThrow('Remote skill sources are not supported for agent provider "mock"');
+
+      const commands = mockExecInVolume.mock.calls.map(([spec]) => spec.command);
+      expect(commands).not.toContainEqual(expect.arrayContaining(["npx", "skills@1.5.16"]));
+      expect(mockSpawn).not.toHaveBeenCalled();
     });
   });
 
