@@ -75,7 +75,7 @@ spec:
             - name: tmp
               mountPath: /tmp
             - name: openshell-client-tls
-              mountPath: /openshell-config/openshell/gateways/openshell/mtls
+              mountPath: /openshell-config/openshell/gateways/https___openshell.virtual-engineer.svc.cluster.local_8080/mtls
               readOnly: true
       volumes:
         - name: data

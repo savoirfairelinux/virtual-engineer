@@ -17,7 +17,7 @@
 #   OPENSHELL_VERSION  (default: v0.0.79)  Matching OpenShell CLI/chart release
 #   OPENSHELL_INSTALLER_SHA256 required when overriding OPENSHELL_VERSION
 #   OPENSHELL_CHART_VERSION optional chart-only override (default: CLI version without v)
-#   K3S_VERSION (default: v1.32.3+k3s1) pinned k3s release
+#   K3S_VERSION (default: v1.32.3+k3s1) fresh-install pin and minimum supported version
 #   AGENT_SANDBOX_VERSION (default: v0.5.1) pinned controller manifest version
 #   AGENT_SANDBOX_MANIFEST_SHA256 verified manifest digest for that version
 
@@ -102,10 +102,18 @@ ensure_k3s() {
   if command -v k3s >/dev/null 2>&1 && sudo k3s kubectl get nodes >/dev/null 2>&1; then
     local installed_version
     installed_version=$(k3s --version | awk 'NR == 1 { print $3 }')
-    if [[ "$installed_version" != "$K3S_VERSION" ]]; then
-      error "k3s ${installed_version} is running, but K3S_VERSION=${K3S_VERSION}. Align the pin or upgrade k3s explicitly before continuing."
+    local minimum_core="${K3S_VERSION%%+*}"
+    local installed_core="${installed_version%%+*}"
+    local oldest_version
+    oldest_version=$(printf '%s\n%s\n' "$minimum_core" "$installed_core" | sort -V | head -n 1)
+    if [[ "$oldest_version" != "$minimum_core" ]]; then
+      error "k3s ${installed_version} is older than the minimum supported ${K3S_VERSION}. Upgrade k3s before continuing."
     fi
-    info "k3s ${installed_version} already installed and running."
+    if [[ "$installed_version" != "$K3S_VERSION" ]]; then
+      info "k3s ${installed_version} is newer than the ${K3S_VERSION} baseline; continuing."
+    else
+      info "k3s ${installed_version} already installed and running."
+    fi
     return
   fi
   if [[ "$K3S_INSTALL" != "true" ]]; then
@@ -117,8 +125,13 @@ ensure_k3s() {
   curl -sfL -o "$K3S_INSTALLER" https://get.k3s.io
   echo "$K3S_INSTALLER_SHA256  $K3S_INSTALLER" | sha256sum --check --status \
     || error "k3s installer checksum verification failed."
-  INSTALL_K3S_VERSION="$K3S_VERSION" sh "$K3S_INSTALLER" \
-    || error "k3s installation failed."
+  if [[ "$(id -u)" -eq 0 ]]; then
+    INSTALL_K3S_VERSION="$K3S_VERSION" sh "$K3S_INSTALLER" \
+      || error "k3s installation failed."
+  else
+    sudo env INSTALL_K3S_VERSION="$K3S_VERSION" sh "$K3S_INSTALLER" \
+      || error "k3s installation failed."
+  fi
   rm -f "$K3S_INSTALLER"
   info "Waiting for the k3s node to become Ready..."
   local retries=60
@@ -311,10 +324,12 @@ fi
 OPENSHELL_PORT_FORWARD_PID="${DATA_DIR}/.openshell-port-forward.pid"
 if [[ -f "$OPENSHELL_PORT_FORWARD_PID" ]]; then
   _old_pid=$(cat "$OPENSHELL_PORT_FORWARD_PID" 2>/dev/null || true)
-  _old_cmd=$(tr '\0' ' ' < "/proc/${_old_pid}/cmdline" 2>/dev/null || true)
-  if [[ "$_old_pid" =~ ^[0-9]+$ ]] && kill -0 "$_old_pid" 2>/dev/null \
-     && [[ "$_old_cmd" == *"kubectl port-forward"*"${OPENSHELL_GW_LOCAL_PORT}:8080"* ]]; then
-    kill "$_old_pid" 2>/dev/null || true
+  if [[ "$_old_pid" =~ ^[0-9]+$ ]] && [[ -r "/proc/${_old_pid}/cmdline" ]]; then
+    _old_cmd=$(cat "/proc/${_old_pid}/cmdline" 2>/dev/null | tr '\0' ' ' || true)
+    if kill -0 "$_old_pid" 2>/dev/null \
+       && [[ "$_old_cmd" == *"kubectl port-forward"*"${OPENSHELL_GW_LOCAL_PORT}:8080"* ]]; then
+      kill "$_old_pid" 2>/dev/null || true
+    fi
   fi
   rm -f "$OPENSHELL_PORT_FORWARD_PID"
 fi
@@ -329,7 +344,9 @@ KUBECONFIG="$K3S_KUBECONFIG" kubectl port-forward \
 _port_forward_pid=$!
 echo "$_port_forward_pid" > "$OPENSHELL_PORT_FORWARD_PID"
 
-OPENSHELL_MTLS_DIR="${OPENSHELL_CONFIG_DIR}/openshell/gateways/openshell/mtls"
+OPENSHELL_GATEWAY_ENDPOINT="https://127.0.0.1:${OPENSHELL_GW_LOCAL_PORT}"
+OPENSHELL_GATEWAY_PROFILE="https___127.0.0.1_${OPENSHELL_GW_LOCAL_PORT}"
+OPENSHELL_MTLS_DIR="${OPENSHELL_CONFIG_DIR}/openshell/gateways/${OPENSHELL_GATEWAY_PROFILE}/mtls"
 install -d -m 0700 "$OPENSHELL_MTLS_DIR"
 for _tls_key in ca.crt tls.crt tls.key; do
   KUBECONFIG="$K3S_KUBECONFIG" kubectl get secret openshell-client-tls \
@@ -339,18 +356,31 @@ for _tls_key in ca.crt tls.crt tls.key; do
 done
 chmod 0600 "${OPENSHELL_MTLS_DIR}/ca.crt" "${OPENSHELL_MTLS_DIR}/tls.crt" "${OPENSHELL_MTLS_DIR}/tls.key"
 
-if ! curl --fail-with-body --silent --show-error --output /dev/null \
-    --retry 20 --retry-delay 1 --retry-connrefused --connect-timeout 1 \
-    --cacert "${OPENSHELL_MTLS_DIR}/ca.crt" \
-    --cert "${OPENSHELL_MTLS_DIR}/tls.crt" \
-    --key "${OPENSHELL_MTLS_DIR}/tls.key" \
-  "https://127.0.0.1:${OPENSHELL_GW_LOCAL_PORT}/healthz"; then
+# The Kubernetes driver mounts this client bundle into sandbox supervisors.
+# Secrets are namespace-scoped, so reconcile the Helm-generated bundle into
+# the sandbox namespace after every install or certificate rotation.
+KUBECONFIG="$K3S_KUBECONFIG" kubectl create secret generic openshell-client-tls \
+  -n ve-agents \
+  --type=kubernetes.io/tls \
+  --from-file="ca.crt=${OPENSHELL_MTLS_DIR}/ca.crt" \
+  --from-file="tls.crt=${OPENSHELL_MTLS_DIR}/tls.crt" \
+  --from-file="tls.key=${OPENSHELL_MTLS_DIR}/tls.key" \
+  --dry-run=client -o yaml \
+  | KUBECONFIG="$K3S_KUBECONFIG" kubectl apply -f - >/dev/null \
+  || error "Could not reconcile OpenShell client TLS into the ve-agents namespace."
+
+if ! docker run --rm --network host \
+    -e "OPENSHELL_GATEWAY_ENDPOINT=${OPENSHELL_GATEWAY_ENDPOINT}" \
+    -e XDG_CONFIG_HOME=/ve-openshell-config \
+    -v "${OPENSHELL_CONFIG_DIR}:/ve-openshell-config:ro,Z" \
+    virtual-engineer:latest sh -c \
+      'attempt=0; until output=$(openshell status 2>&1); do attempt=$((attempt + 1)); if [ "$attempt" -ge 20 ]; then printf "%s\n" "$output" >&2; exit 1; fi; sleep 1; done'; then
   kill "$_port_forward_pid" 2>/dev/null || true
   rm -f "$OPENSHELL_PORT_FORWARD_PID"
-  error "OpenShell gateway tunnel did not become reachable. See ${DATA_DIR}/openshell-port-forward.log"
+  error "OpenShell gateway tunnel or mTLS authentication failed. See ${DATA_DIR}/openshell-port-forward.log"
 fi
 
-OPENSHELL_GATEWAY_ARGS="-e OPENSHELL_GATEWAY_ENDPOINT=https://127.0.0.1:${OPENSHELL_GW_LOCAL_PORT} -e XDG_CONFIG_HOME=/ve-openshell-config -v ${OPENSHELL_CONFIG_DIR}:/ve-openshell-config:ro,Z"
+OPENSHELL_GATEWAY_ARGS="-e OPENSHELL_GATEWAY_ENDPOINT=${OPENSHELL_GATEWAY_ENDPOINT} -e XDG_CONFIG_HOME=/ve-openshell-config -v ${OPENSHELL_CONFIG_DIR}:/ve-openshell-config:ro,Z"
 
 # ─── Idempotent container restart ─────────────────────────────────────────────
 # The tunnel is reconciled first so rerunning this script repairs a dead

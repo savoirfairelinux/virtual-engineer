@@ -22,11 +22,14 @@ upload → exec → download lifecycle.
 | `openshell-gateway` (Helm) | OpenShell control plane using the Kubernetes driver; schedules sandbox Pods over TLS. |
 
 The gateway Service is `ClusterIP` only. The local `scripts/start.sh` path
-creates a managed `kubectl port-forward` bound to `127.0.0.1` and exports the
-chart-generated client mTLS bundle with mode `0600`; no OpenShell NodePort is
-exposed on the k3s node. `16-network-policy-openshell.yaml` restricts gateway
-ingress to the VE orchestrator and OpenShell-managed supervisor Pods in the
-sandbox namespace.
+creates a managed `kubectl port-forward` bound to `127.0.0.1`, exports the
+chart-generated client mTLS bundle into OpenShell's endpoint-derived profile
+directory with mode `0600`, and validates it with `openshell status`; no
+OpenShell NodePort is exposed on the k3s node. `16-network-policy-openshell.yaml`
+restricts gateway ingress to the VE orchestrator and Pods in the dedicated
+`ve-agents` sandbox namespace. The Agent Sandbox controller does not propagate
+OpenShell labels to generated Pods, so the namespace is the enforceable trust
+boundary.
 
 ## 1. Build the orchestrator image with the OpenShell CLI
 
@@ -76,6 +79,25 @@ helm install openshell oci://ghcr.io/nvidia/openshell/helm-chart \
   -f deploy/k8s/openshell-gateway-values.yaml
 ```
 
+The Kubernetes driver mounts the generated client bundle into sandbox
+supervisors. Because Secrets are namespace-scoped, mirror it after each Helm
+install or certificate rotation:
+
+```bash
+tmp_dir=$(mktemp -d)
+for key in ca.crt tls.crt tls.key; do
+  kubectl get secret openshell-client-tls -n virtual-engineer \
+    -o "jsonpath={.data.${key//./\\.}}" | base64 --decode > "$tmp_dir/$key"
+done
+kubectl create secret generic openshell-client-tls -n ve-agents \
+  --type=kubernetes.io/tls \
+  --from-file="$tmp_dir/ca.crt" \
+  --from-file="$tmp_dir/tls.crt" \
+  --from-file="$tmp_dir/tls.key" \
+  --dry-run=client -o yaml | kubectl apply -f -
+rm -rf "$tmp_dir"
+```
+
 ## 4. Deploy Virtual Engineer
 
 ```bash
@@ -116,7 +138,7 @@ set per-sandbox CPU/RAM quotas in the gateway values, not VE-side pod limits.
   gateway-minted JWTs for identity. OpenShell 0.0.79 does not expose a
   non-interactive CLI service identity, so CLI authorization remains constrained
   by ClusterIP, NetworkPolicy, and loopback-only port-forward. The NetworkPolicy
-  admits only the orchestrator and Pods labeled `openshell.ai/managed-by=openshell`.
+  admits only the orchestrator and Pods in the dedicated `ve-agents` namespace.
   Enabling its
   `mtls_auth` user mode on Kubernetes is unsafe because the chart intentionally
   mounts the same client TLS secret into sandbox supervisors.
