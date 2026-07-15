@@ -3,8 +3,10 @@ import { access } from "node:fs/promises";
 import { constants } from "node:fs";
 import { promisify } from "node:util";
 import { resolveSshSkillSourceUrl, sshSkillSourceCommandPort } from "../workspace/skillSources.js";
+import { getLogger } from "../logger.js";
 
 const execFileAsync = promisify(execFile);
+const log = getLogger("skill-source-discovery");
 
 const DEFAULT_SKILLS_CLI_PACKAGE = "skills@1.5.16";
 const OUTPUT_LIMIT = 4000;
@@ -170,10 +172,20 @@ export async function validateSkillSourceSshAuth(source: SkillSourceDiscoveryInp
   }
 }
 
-export async function validateSkillSourceSshConnection(source: SkillSourceDiscoveryInput): Promise<void> {
+export async function validateSkillSourceSshConnection(source: SkillSourceDiscoveryInput, index?: number): Promise<void> {
   const args = buildSshConnectionArgs(source);
   if (!args) return;
   await validateSkillSourceSshAuth(source);
+  const spec = sshConnectionSpec(source);
+  log.info(
+    {
+      ...(index !== undefined ? { skillSourceIndex: index + 1 } : {}),
+      skillSource: source.source,
+      ...(spec ? { sshTarget: spec.target } : {}),
+      ...(spec?.port !== undefined ? { sshPort: spec.port } : {}),
+    },
+    "checking SSH access for skill source"
+  );
   try {
     await execFileAsync("ssh", args, {
       env: buildSkillListEnv(source),
@@ -201,7 +213,7 @@ export async function validateSkillSourceSshConnection(source: SkillSourceDiscov
 export async function validateSkillSourcesConnection(sources: SkillSourceDiscoveryInput[]): Promise<void> {
   for (const [index, source] of sources.entries()) {
     try {
-      await validateSkillSourceSshConnection(source);
+      await validateSkillSourceSshConnection(source, index);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       throw new Error(`Skill source #${index + 1} "${source.source}": ${message}`);

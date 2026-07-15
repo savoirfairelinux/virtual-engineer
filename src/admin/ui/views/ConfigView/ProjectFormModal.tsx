@@ -59,6 +59,15 @@ interface PushTarget {
   localPath: string;
 }
 
+type SaveCheckStatus = "checking" | "checked" | "failed" | "cancelled" | "not_checked";
+
+interface SaveCheckSource {
+  source: string;
+  sshUser?: string;
+  sshPort?: number;
+  status: SaveCheckStatus;
+}
+
 interface RepositoryOption {
   key: string;
   name: string;
@@ -76,6 +85,41 @@ interface TicketProjectOption {
 
 function emptyPushTarget(order = 1): PushTarget {
   return { integrationId: "", repoKey: "", cloneUrl: "", targetBranch: "main", role: "primary", commitOrder: String(order), localPath: "." };
+}
+
+function saveCheckSourcesFromSkillSources(sources: SkillSource[], status: SaveCheckStatus): SaveCheckSource[] {
+  return sources.map((source) => ({
+    source: source.source,
+    status,
+    ...(source.sshUser !== undefined ? { sshUser: source.sshUser } : {}),
+    ...(source.sshPort !== undefined ? { sshPort: source.sshPort } : {}),
+  }));
+}
+
+function checkedSourcesAfterError(sources: SaveCheckSource[], message: string): SaveCheckSource[] {
+  const match = /Skill source #(\d+)/.exec(message);
+  if (!match) {
+    const checkFailed = message.includes("Failed to validate skill sources") || message.includes("SSH connection check failed");
+    return sources.map((source) => ({ ...source, status: checkFailed ? "failed" : "checked" }));
+  }
+  const failedIndex = Number.parseInt(match[1] ?? "", 10) - 1;
+  if (!Number.isInteger(failedIndex) || failedIndex < 0 || failedIndex >= sources.length) {
+    return sources.map((source) => ({ ...source, status: "failed" }));
+  }
+  return sources.map((source, index) => ({
+    ...source,
+    status: index < failedIndex ? "checked" : index === failedIndex ? "failed" : "not_checked",
+  }));
+}
+
+function saveCheckStatusLabel(status: SaveCheckStatus): string {
+  switch (status) {
+    case "checking": return "checking";
+    case "checked": return "checked";
+    case "failed": return "failed";
+    case "cancelled": return "cancelled";
+    case "not_checked": return "not checked";
+  }
 }
 
 function normalizeRepository(option: RepositoryOption | string | null | undefined): RepositoryOption | null {
@@ -677,6 +721,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [saveCheckSources, setSaveCheckSources] = useState<SaveCheckSource[]>([]);
   const saveAbortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
@@ -747,13 +792,15 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
     saveAbortRef.current = abort;
     setSaving(true);
     setError(null);
+    setSaveCheckSources([]);
     try {
       const skillSources = buildSkillSourcesPayload(skillSourceRows);
-      if (skillSources === null) { setError("Skill source rows require at least one skill or Install all, and SSH port must be between 1 and 65535"); return; }
+      if (skillSources === null) { setError("Skill source rows require at least one skill or Install all, and SSH port must be between 1 and 65535"); setSaveCheckSources([]); return; }
       if (projectType === "coding") {
-        if (!ticketSource.integrationId) { setError("Ticket source integration is required"); return; }
-        if (!ticketSource.ticketProjectKey.trim()) { setError("Ticket project key is required"); return; }
-        if (pushTargets.length === 0) { setError("At least one push target is required"); return; }
+        if (!ticketSource.integrationId) { setError("Ticket source integration is required"); setSaveCheckSources([]); return; }
+        if (!ticketSource.ticketProjectKey.trim()) { setError("Ticket project key is required"); setSaveCheckSources([]); return; }
+        if (pushTargets.length === 0) { setError("At least one push target is required"); setSaveCheckSources([]); return; }
+        setSaveCheckSources(saveCheckSourcesFromSkillSources(skillSources, "checking"));
         const payload = {
           type: "coding",
           name,
@@ -782,8 +829,9 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
           await api.post("/api/admin/projects", payload, { signal: abort.signal });
         }
       } else {
-        if (!reviewIntegrationId) { setError("Review integration is required"); return; }
-        if (reviewRepoKeys.length === 0) { setError("At least one repository key is required"); return; }
+        if (!reviewIntegrationId) { setError("Review integration is required"); setSaveCheckSources([]); return; }
+        if (reviewRepoKeys.length === 0) { setError("At least one repository key is required"); setSaveCheckSources([]); return; }
+        setSaveCheckSources(saveCheckSourcesFromSkillSources(skillSources, "checking"));
         const payload = {
           type: "review",
           name,
@@ -802,7 +850,9 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
       onSaved();
     } catch (e) {
       if (e instanceof DOMException && e.name === "AbortError") return;
-      setError(e instanceof Error ? e.message : "Save failed");
+      const message = e instanceof Error ? e.message : "Save failed";
+      setError(message);
+      setSaveCheckSources((sources) => checkedSourcesAfterError(sources, message));
     } finally {
       if (saveAbortRef.current === abort) {
         saveAbortRef.current = null;
@@ -1034,6 +1084,39 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
             style={{ minHeight: "80px", fontFamily: "var(--font-mono)" }}
           />
         </Field>
+
+        {saveCheckSources.length > 0 && (
+          <div style={{ padding: "10px 14px", background: "var(--panel-2)", border: "1px solid var(--border-soft)", borderRadius: "var(--radius-sm)", fontSize: "12.5px", color: "var(--text-dim)", display: "flex", flexDirection: "column", gap: 8 }}>
+            <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10 }}>
+              <div style={{ fontWeight: 600, color: "var(--text)" }}>External skill source check</div>
+              <div className="mono" style={{ fontSize: "10.5px", color: "var(--text-faint)" }}>
+                {saving ? "running" : "last attempt"}
+              </div>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "90px minmax(0, 1fr) 120px 80px", gap: "6px 10px", alignItems: "start" }}>
+              <div className="mono" style={{ fontSize: "10.5px", color: "var(--text-faint)", textTransform: "uppercase" }}>Status</div>
+              <div className="mono" style={{ fontSize: "10.5px", color: "var(--text-faint)", textTransform: "uppercase" }}>Source</div>
+              <div className="mono" style={{ fontSize: "10.5px", color: "var(--text-faint)", textTransform: "uppercase" }}>SSH user</div>
+              <div className="mono" style={{ fontSize: "10.5px", color: "var(--text-faint)", textTransform: "uppercase" }}>Port</div>
+              {saveCheckSources.map((source, index) => (
+                <div key={`${index}:${source.source}`} style={{ display: "contents" }}>
+                  <div className="mono" style={{ fontSize: "11.5px", color: source.status === "failed" ? "var(--danger)" : source.status === "checked" ? "var(--accent)" : "var(--text-faint)" }}>
+                    {saveCheckStatusLabel(source.status)}
+                  </div>
+                  <div className="mono" style={{ fontSize: "11.5px", color: "var(--text-faint)", overflowWrap: "anywhere", minWidth: 0 }}>
+                    #{index + 1} {source.source}
+                  </div>
+                  <div className="mono" style={{ fontSize: "11.5px", color: "var(--text-faint)", overflowWrap: "anywhere" }}>
+                    {source.sshUser ?? "—"}
+                  </div>
+                  <div className="mono" style={{ fontSize: "11.5px", color: "var(--text-faint)" }}>
+                    {source.sshPort ?? "—"}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         <FormError msg={error} />
 
