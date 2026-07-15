@@ -27,6 +27,8 @@ export interface SkillSourceRow {
   listError: string | null;
 }
 
+const MAX_TCP_PORT = 65_535;
+
 function newSkillSourceRowId(): string {
   return crypto.randomUUID();
 }
@@ -91,7 +93,7 @@ function skillsTextFromSet(skills: Set<string>): string {
 export function buildSkillSourcesPayload(rows: SkillSourceRow[]): SkillSource[] | null {
   const sources = rows.map(rowToSkillSource).filter((source): source is SkillSource => source !== null);
   const invalidRow = rows.some((row) => row.source.trim() && !row.installAll && row.skillsText.split(",").map((s) => s.trim()).filter(Boolean).length === 0);
-  const invalidSshPort = rows.some((row) => row.sshPort.trim() && (!Number.isInteger(Number(row.sshPort.trim())) || Number(row.sshPort.trim()) <= 0));
+  const invalidSshPort = rows.some((row) => row.sshPort.trim() && (!Number.isInteger(Number(row.sshPort.trim())) || Number(row.sshPort.trim()) <= 0 || Number(row.sshPort.trim()) > MAX_TCP_PORT));
   if (invalidRow) return null;
   if (invalidSshPort) return null;
   return sources;
@@ -121,8 +123,8 @@ export function ProjectSkillSourcesField({
       return;
     }
     const sshPort = row.sshPort.trim() ? Number(row.sshPort.trim()) : undefined;
-    if (sshPort !== undefined && (!Number.isInteger(sshPort) || sshPort <= 0)) {
-      updateRow(id, { listError: "SSH port must be a positive integer" });
+    if (sshPort !== undefined && (!Number.isInteger(sshPort) || sshPort <= 0 || sshPort > MAX_TCP_PORT)) {
+      updateRow(id, { listError: "SSH port must be between 1 and 65535" });
       return;
     }
     updateRow(id, { listing: true, listError: null, availableSkills: [] });

@@ -9,7 +9,7 @@ import { registerOverviewRoutes } from "./adminOverviewRoutes.js";
 import type { PluginManager } from "../plugins/pluginManager.js";
 import type { ProviderAuthService } from "../agents/providerAuthService.js";
 import { type AgentsRouteStore, registerAgentRoutes } from "./adminAgentsRoutes.js";
-import { type ProjectsRouteStore, registerProjectRoutes } from "./adminProjectsRoutes.js";
+import { type ProjectsRouteDeps, type ProjectsRouteStore, registerProjectRoutes } from "./adminProjectsRoutes.js";
 import {
   handleWebhookRequest,
   isWebhookPath,
@@ -110,6 +110,7 @@ export interface AdminServerDependencies {
   providerAuthService?: ProviderAuthService | undefined;
   /** Phase 3: store backing the /api/admin/projects routes. */
   projectStore?: ProjectsRouteStore;
+  projectRoutes?: Pick<ProjectsRouteDeps, "validateSkillSourcesConnection"> | undefined;
   integrationStore?: IntegrationStore;
   oAuthAppStore?: OAuthAppStore;
   promptStore?: PromptStore | undefined;
@@ -412,6 +413,7 @@ function buildApiRouter(dependencies: AdminServerDependencies, authRuntime: Admi
     auditStore,
     onProjectChange: dependencies.onProjectChange,
     taskControl: dependencies.taskControl,
+    ...dependencies.projectRoutes,
   });
   registerConcurrencyRoutes(router, { concurrency: dependencies.concurrency });
   registerSettingsRoutes(router, { settings: dependencies.settings });

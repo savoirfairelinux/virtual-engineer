@@ -23,16 +23,20 @@ import type { Router } from "./router.js";
 import { getEffectivePermissions } from "./authContext.js";
 import { accessibleResourceIds, ALL_RESOURCES } from "./authorization/policyEngine.js";
 import { getProviderDescriptor, getProviderDomainCapabilities } from "../plugins/registry.js";
-import { listSkillSourceSkills } from "./skillSourceDiscovery.js";
+import { listSkillSourceSkills, validateSkillSourcesConnection } from "./skillSourceDiscovery.js";
 
 const log = getLogger("admin-projects");
+const MAX_TCP_PORT = 65_535;
 
 function isSkillSourceAuthError(message: string): boolean {
   return message.startsWith("SSH skill sources require")
     || message.startsWith("SSH private key path is not readable")
     || message.startsWith("SSH known_hosts path is not readable")
     || message.startsWith("Invalid SSH skill source URL")
-    || message.startsWith("Conflicting SSH ports");
+    || message.startsWith("Conflicting SSH ports")
+    || message.startsWith("SSH connection check failed")
+    || message.startsWith("Skill source #")
+    || message.startsWith("Failed to validate skill sources before saving");
 }
 
 async function relaunchFailedTasksForProject(
@@ -126,6 +130,7 @@ export interface ProjectsRouteDeps {
         retryTask(taskId: ReturnType<typeof makeTaskId>): Promise<void>;
       }
     | undefined;
+  validateSkillSourcesConnection?: ((sources: SkillSource[]) => Promise<void>) | undefined;
 }
 
 const pushTargetSchema = z.object({
@@ -181,7 +186,7 @@ const skillSourceSchema = z.object({
   skills: z.array(z.string().trim().min(1, "Skill name is required")).optional(),
   installAll: z.boolean().optional(),
   sshUser: optionalNonEmptyString("SSH user must not be empty"),
-  sshPort: z.number().int().positive().optional(),
+  sshPort: z.number().int().positive().max(MAX_TCP_PORT, "SSH port must be between 1 and 65535").optional(),
   sshKeyPath: optionalNonEmptyString("SSH key path must not be empty"),
   sshKnownHostsPath: optionalNonEmptyString("SSH known_hosts path must not be empty"),
 }).superRefine((source, ctx) => {
@@ -199,7 +204,7 @@ const skillSourcesSchema = z.array(skillSourceSchema).max(20, "At most 20 skill 
 const skillSourceDiscoverySchema = z.object({
   source: z.string().trim().min(1, "Skill source is required"),
   sshUser: optionalNonEmptyString("SSH user must not be empty"),
-  sshPort: z.number().int().positive().optional(),
+  sshPort: z.number().int().positive().max(MAX_TCP_PORT, "SSH port must be between 1 and 65535").optional(),
   sshKeyPath: optionalNonEmptyString("SSH key path must not be empty"),
   sshKnownHostsPath: optionalNonEmptyString("SSH known_hosts path must not be empty"),
 });
@@ -232,6 +237,18 @@ function normalizeSkillSources(sources: z.infer<typeof skillSourcesSchema> | und
 
 function skillSourcesForCreate(sources: z.infer<typeof skillSourcesSchema> | undefined): SkillSource[] {
   return normalizeSkillSources(sources);
+}
+
+async function validateSkillSourcesForSave(
+  sources: SkillSource[],
+  validator: (sources: SkillSource[]) => Promise<void>
+): Promise<void> {
+  try {
+    await validator(sources);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(`Failed to validate skill sources before saving: ${message}`);
+  }
 }
 
 function parseStoredSkillSources(project: ProjectRecord): SkillSource[] {
@@ -508,6 +525,8 @@ function isUniqueConflict(err: unknown): boolean {
 
 /** Register project routes on the given router. */
 export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): void {
+  const skillSourceConnectionValidator = deps.validateSkillSourcesConnection ?? validateSkillSourcesConnection;
+
   const handleSkillSourceList: Parameters<Router["add"]>[2] = async (req, res, _params) => {
     const body = await readBody(req);
     if (!body) { writeJson(res, 400, { error: "Request body required" }); return; }
@@ -577,8 +596,14 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
       }
     }
     let project: ProjectRecord;
+    const skillSources = skillSourcesForCreate(data.skillSources);
     try {
-      const skillSources = skillSourcesForCreate(data.skillSources);
+      await validateSkillSourcesForSave(skillSources, skillSourceConnectionValidator);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      writeJson(res, 400, { error: msg }); return;
+    }
+    try {
       project = await store.createProject({
         ...(data.id !== undefined ? { id: data.id } : {}),
         name: data.name, type: data.type,
@@ -705,6 +730,12 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
     if (data.skillDiscoveryEnabled !== undefined) updates.skillDiscoveryEnabled = data.skillDiscoveryEnabled;
     if (data.skillSources !== undefined) {
       const skillSources = normalizeSkillSources(data.skillSources);
+      try {
+        await validateSkillSourcesForSave(skillSources, skillSourceConnectionValidator);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        writeJson(res, 400, { error: msg }); return;
+      }
       updates.skillSourcesJson = JSON.stringify(skillSources);
     }
     if (data.gerritTopicOverride !== undefined) updates.gerritTopicOverride = data.gerritTopicOverride;
