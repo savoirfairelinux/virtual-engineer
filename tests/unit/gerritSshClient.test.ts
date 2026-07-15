@@ -498,6 +498,58 @@ describe("GerritSshClient", () => {
       await makeClient().resolveComments("I8473", []);
       expect(execFileCalls).toHaveLength(0);
     });
+
+    it("replies into the original thread when an anonymous REST lookup resolves the comment id", async () => {
+      const rowWithUrl = { ...CHANGE_ROW, url: "https://review.example.com/c/proj/+/42" };
+      execFileResults = [
+        { stdout: sshNdjson(rowWithUrl), stderr: "" }, // queryChange
+      ];
+      spawnExitCode = 0;
+
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        text: async () => `)]}'\n${JSON.stringify({
+          "src/main.ts": [
+            { id: "abcd1234_ef56", line: 10, patch_set: 2, unresolved: true },
+          ],
+        })}`,
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      await makeClient().resolveComments("I8473", [
+        { id: "c1", author: "a@b.com", message: "Fix", filePath: "src/main.ts", line: 10, unresolved: true, patchset: 2, updatedAt: new Date() },
+      ]);
+
+      expect(fetchMock).toHaveBeenCalledWith("https://review.example.com/changes/42/comments", expect.anything());
+      const reviewCall = spawnCalls[0]!;
+      const input = JSON.parse(reviewCall.stdinData) as {
+        comments: Record<string, Array<{ in_reply_to?: string }>>;
+      };
+      expect(input.comments["src/main.ts"]?.[0]?.in_reply_to).toBe("abcd1234_ef56");
+
+      vi.unstubAllGlobals();
+    });
+
+    it("falls back to a fresh comment when the REST lookup fails", async () => {
+      const rowWithUrl = { ...CHANGE_ROW, url: "https://review.example.com/c/proj/+/42" };
+      execFileResults = [
+        { stdout: sshNdjson(rowWithUrl), stderr: "" }, // queryChange
+      ];
+      spawnExitCode = 0;
+      vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network down")));
+
+      await makeClient().resolveComments("I8473", [
+        { id: "c1", author: "a@b.com", message: "Fix", filePath: "src/main.ts", line: 10, unresolved: true, patchset: 2, updatedAt: new Date() },
+      ]);
+
+      const reviewCall = spawnCalls[0]!;
+      const input = JSON.parse(reviewCall.stdinData) as {
+        comments: Record<string, Array<{ in_reply_to?: string }>>;
+      };
+      expect(input.comments["src/main.ts"]?.[0]?.in_reply_to).toBeUndefined();
+
+      vi.unstubAllGlobals();
+    });
   });
 
   describe("reviewJson", () => {
