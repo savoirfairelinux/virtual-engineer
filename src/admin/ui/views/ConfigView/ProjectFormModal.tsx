@@ -677,6 +677,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const saveAbortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     if (!project) return;
@@ -712,6 +713,10 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
     }
   }, [project]);
 
+  useEffect(() => {
+    return () => saveAbortRef.current?.abort();
+  }, []);
+
   const codingAgents = agents.filter((a) => a.type === "coding");
   const reviewAgents = agents.filter((a) => a.type === "review");
   const currentAgents = projectType === "coding" ? codingAgents : reviewAgents;
@@ -733,17 +738,22 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
   };
 
   const handleSave = async () => {
+    if (saving) {
+      return;
+    }
     if (!name.trim()) { setError("Project name is required"); return; }
     if (!agentId) { setError("Select an agent"); return; }
+    const abort = new AbortController();
+    saveAbortRef.current = abort;
     setSaving(true);
     setError(null);
     try {
       const skillSources = buildSkillSourcesPayload(skillSourceRows);
-      if (skillSources === null) { setError("Skill source rows require at least one skill or Install all, and SSH port must be a positive integer"); setSaving(false); return; }
+      if (skillSources === null) { setError("Skill source rows require at least one skill or Install all, and SSH port must be between 1 and 65535"); return; }
       if (projectType === "coding") {
-        if (!ticketSource.integrationId) { setError("Ticket source integration is required"); setSaving(false); return; }
-        if (!ticketSource.ticketProjectKey.trim()) { setError("Ticket project key is required"); setSaving(false); return; }
-        if (pushTargets.length === 0) { setError("At least one push target is required"); setSaving(false); return; }
+        if (!ticketSource.integrationId) { setError("Ticket source integration is required"); return; }
+        if (!ticketSource.ticketProjectKey.trim()) { setError("Ticket project key is required"); return; }
+        if (pushTargets.length === 0) { setError("At least one push target is required"); return; }
         const payload = {
           type: "coding",
           name,
@@ -767,13 +777,13 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
           })),
         };
         if (isEditMode && project) {
-          await api.put(`/api/admin/projects/${project.id}`, payload);
+          await api.put(`/api/admin/projects/${project.id}`, payload, { signal: abort.signal });
         } else {
-          await api.post("/api/admin/projects", payload);
+          await api.post("/api/admin/projects", payload, { signal: abort.signal });
         }
       } else {
-        if (!reviewIntegrationId) { setError("Review integration is required"); setSaving(false); return; }
-        if (reviewRepoKeys.length === 0) { setError("At least one repository key is required"); setSaving(false); return; }
+        if (!reviewIntegrationId) { setError("Review integration is required"); return; }
+        if (reviewRepoKeys.length === 0) { setError("At least one repository key is required"); return; }
         const payload = {
           type: "review",
           name,
@@ -784,16 +794,20 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
           reviewConfig: { integrationId: reviewIntegrationId, repoKeys: reviewRepoKeys },
         };
         if (isEditMode && project) {
-          await api.put(`/api/admin/projects/${project.id}`, payload);
+          await api.put(`/api/admin/projects/${project.id}`, payload, { signal: abort.signal });
         } else {
-          await api.post("/api/admin/projects", payload);
+          await api.post("/api/admin/projects", payload, { signal: abort.signal });
         }
       }
       onSaved();
     } catch (e) {
+      if (e instanceof DOMException && e.name === "AbortError") return;
       setError(e instanceof Error ? e.message : "Save failed");
     } finally {
-      setSaving(false);
+      if (saveAbortRef.current === abort) {
+        saveAbortRef.current = null;
+        setSaving(false);
+      }
     }
   };
 
