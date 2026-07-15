@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events";
 import { describe, it, expect, vi } from "vitest";
 import {
   buildPolicyYaml,
@@ -12,7 +13,13 @@ import {
   type NormalizedDenial,
   type DenialContext,
 } from "../../src/openshell/denyEventPoller.js";
-import { OpenShellClient, redactCommandArgs, redactOpenShellText, type CommandRunner } from "../../src/openshell/openShellClient.js";
+import {
+  createCommandRunner,
+  OpenShellClient,
+  redactCommandArgs,
+  redactOpenShellText,
+  type CommandRunner,
+} from "../../src/openshell/openShellClient.js";
 
 describe("openShellPolicyBuilder", () => {
   it("emits deny-by-default network YAML with L7 methods", () => {
@@ -148,6 +155,47 @@ describe("OpenShellClient", () => {
       "sandbox", "create", "--env", "GITHUB_TOKEN=[REDACTED]", "--env=API_KEY=[REDACTED]", "--", "true",
     ]);
   });
+
+  it("bounds captured output and terminates the process group after overflow", async () => {
+    vi.useFakeTimers();
+    try {
+      const child = new EventEmitter() as EventEmitter & {
+        pid: number;
+        stdout: EventEmitter;
+        stderr: EventEmitter;
+        stdin: { end: ReturnType<typeof vi.fn> };
+        kill: ReturnType<typeof vi.fn>;
+      };
+      child.pid = 123;
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      child.stdin = { end: vi.fn() };
+      child.kill = vi.fn();
+      const spawnCommand = vi.fn().mockReturnValue(child);
+      const killProcess = vi.fn();
+      const onStdoutChunk = vi.fn();
+      const runner = createCommandRunner({ spawnCommand, killProcess });
+
+      const resultPromise = runner("openshell", ["status"], undefined, { onStdoutChunk });
+      const chunk = Buffer.alloc(17 * 1024 * 1024, "x");
+      child.stdout.emit("data", chunk);
+      child.stdout.emit("data", chunk);
+
+      expect(onStdoutChunk).toHaveBeenCalledTimes(2);
+      expect(killProcess).toHaveBeenCalledWith(-123, "SIGTERM");
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(killProcess).toHaveBeenCalledWith(-123, "SIGKILL");
+      child.emit("close", 0);
+
+      const result = await resultPromise;
+      expect(Buffer.byteLength(result.stdout)).toBe(32 * 1024 * 1024);
+      expect(result.stderr).toContain("openshell command output exceeded 32 MiB");
+      expect(result.code).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("terminates a command that exceeds the client deadline", async () => {
     const runner: CommandRunner = async (_bin, _args, _input, _callbacks, control) =>
       new Promise((resolve) => {
@@ -179,13 +227,211 @@ describe("OpenShellClient", () => {
       providers: ["anthropic"],
       cpu: "1",
       memory: "2Gi",
+      labels: { "app.kubernetes.io/managed-by": "virtual-engineer" },
     });
     const args = calls[0]?.args ?? [];
     expect(args).toEqual([
+      "--gateway", "gw:1",
       "sandbox", "create", "--name", "task-1",
       "--from", "img:latest", "--cpu", "1", "--memory", "2Gi",
       "--provider", "anthropic", "--env", "A=1",
+      "--label", "app.kubernetes.io/managed-by=virtual-engineer",
       "--no-tty", "--", "true",
+    ]);
+  });
+
+  it("creates a provider without exposing credential values in argv", async () => {
+    const calls: Array<{
+      args: string[];
+      environment?: Readonly<Record<string, string>> | undefined;
+    }> = [];
+    const runner: CommandRunner = async (_bin, args, _input, _callbacks, control) => {
+      calls.push({
+        args,
+        ...(control?.environment !== undefined ? { environment: control.environment } : {}),
+      });
+      return { code: 0, stdout: "", stderr: "" };
+    };
+    const client = new OpenShellClient({ runner, gateway: "virtual-engineer" });
+
+    await client.createProvider({
+      name: "ve-task-1-agent",
+      type: "copilot",
+      credentials: { GITHUB_TOKEN: "secret-token" },
+    });
+
+    expect(calls).toEqual([{
+      args: [
+        "--gateway", "virtual-engineer", "provider", "create",
+        "--name", "ve-task-1-agent", "--type", "copilot",
+        "--credential", "GITHUB_TOKEN",
+      ],
+      environment: { GITHUB_TOKEN: "secret-token" },
+    }]);
+    expect(calls[0]?.args.join(" ")).not.toContain("secret-token");
+  });
+
+  it.each([
+    "Unauthenticated: OIDC token expired",
+    "The request does not have valid authentication credentials: missing authorization header",
+  ])("reauthenticates and replays a named-profile operation after auth failure: %s", async (authError) => {
+    const calls: string[][] = [];
+    let listAttempts = 0;
+    const runner: CommandRunner = async (_bin, args) => {
+      calls.push(args);
+      if (args.includes("login")) return { code: 0, stdout: "", stderr: "" };
+      listAttempts++;
+      return listAttempts === 1
+        ? { code: 1, stdout: "", stderr: authError }
+        : { code: 0, stdout: "[]", stderr: "" };
+    };
+    const client = new OpenShellClient({
+      runner,
+      gateway: "virtual-engineer",
+      oidcClientCredentials: true,
+    });
+
+    await client.listSandboxes();
+
+    expect(calls).toEqual([
+      [
+        "--gateway", "virtual-engineer", "sandbox", "list",
+        "--limit", "100", "--offset", "0", "--output", "json",
+      ],
+      ["--gateway", "virtual-engineer", "gateway", "login", "virtual-engineer"],
+      [
+        "--gateway", "virtual-engineer", "sandbox", "list",
+        "--limit", "100", "--offset", "0", "--output", "json",
+      ],
+    ]);
+  });
+
+  it("shares an in-flight OIDC login across concurrent operations", async () => {
+    let releaseLogin: (() => void) | undefined;
+    const loginBlocked = new Promise<void>((resolve) => { releaseLogin = resolve; });
+    const calls: string[][] = [];
+    const runner: CommandRunner = async (_bin, args) => {
+      calls.push(args);
+      if (args.includes("login")) await loginBlocked;
+      return args.includes("login")
+        ? { code: 0, stdout: "", stderr: "" }
+        : calls.filter((call) => call.includes("list")).length <= 2
+          ? { code: 1, stdout: "", stderr: "Unauthenticated" }
+          : { code: 0, stdout: "[]", stderr: "" };
+    };
+    const client = new OpenShellClient({
+      runner,
+      gateway: "virtual-engineer",
+      oidcClientCredentials: true,
+    });
+
+    const first = client.listSandboxes();
+    const second = client.listSandboxes();
+    await vi.waitFor(() => {
+      expect(calls.filter((args) => args.includes("login"))).toHaveLength(1);
+    });
+    releaseLogin?.();
+    await Promise.all([first, second]);
+
+    expect(calls.filter((args) => args.includes("login"))).toHaveLength(1);
+    expect(calls.filter((args) => args.includes("list"))).toHaveLength(4);
+  });
+
+  it("does not cancel a shared OIDC login when the first caller aborts", async () => {
+    const firstController = new AbortController();
+    let releaseLogin: (() => void) | undefined;
+    const loginBlocked = new Promise<void>((resolve) => { releaseLogin = resolve; });
+    const failedSelectors = new Set<string>();
+    const runner: CommandRunner = async (_bin, args, _input, _callbacks, control) => {
+      if (args.includes("login")) {
+        await loginBlocked;
+        return control?.signal?.aborted === true
+          ? { code: 1, stdout: "", stderr: "login aborted" }
+          : { code: 0, stdout: "", stderr: "" };
+      }
+      const selectorIndex = args.indexOf("--selector");
+      const selector = selectorIndex >= 0 ? args[selectorIndex + 1]! : "missing";
+      if (failedSelectors.has(selector) && control?.signal?.aborted === true) {
+        return { code: 1, stdout: "", stderr: "command aborted" };
+      }
+      if (!failedSelectors.has(selector)) {
+        failedSelectors.add(selector);
+        return { code: 1, stdout: "", stderr: "Unauthenticated" };
+      }
+      return { code: 0, stdout: "[]", stderr: "" };
+    };
+    const client = new OpenShellClient({
+      runner,
+      gateway: "virtual-engineer",
+      oidcClientCredentials: true,
+    });
+
+    const first = client.listSandboxes({ selector: "caller=first", signal: firstController.signal });
+    const second = client.listSandboxes({ selector: "caller=second" });
+    await vi.waitFor(() => expect(failedSelectors.size).toBe(2));
+    firstController.abort();
+    releaseLogin?.();
+
+    await expect(first).rejects.toThrow(/command aborted/i);
+    await expect(second).resolves.toEqual([]);
+  });
+
+  it("targets a direct gateway URL without attempting OIDC profile login", async () => {
+    const { runner, calls } = runnerReturning({ code: 0, stdout: "[]" });
+    const client = new OpenShellClient({
+      runner,
+      gateway: "https://127.0.0.1:8080",
+      oidcClientCredentials: true,
+    });
+
+    await client.listSandboxes();
+
+    expect(calls.map(({ args }) => args)).toEqual([[
+      "--gateway-endpoint", "https://127.0.0.1:8080", "sandbox", "list",
+      "--limit", "100", "--offset", "0", "--output", "json",
+    ]]);
+  });
+
+  it("lists a bounded label-selected sandbox inventory from JSON output", async () => {
+    const { runner, calls } = runnerReturning({
+      code: 0,
+      stdout: JSON.stringify([
+        {
+          id: "sandbox-1",
+          name: "ve-task-1",
+          labels: {
+            "app.kubernetes.io/managed-by": "virtual-engineer",
+            "virtual-engineer/task-hash": "abc123",
+          },
+          created_at: "2026-07-15T10:00:00Z",
+          phase: "Ready",
+          resource_version: 2,
+          current_policy_version: 1,
+        },
+      ]),
+    });
+    const client = new OpenShellClient({ runner });
+
+    const sandboxes = await client.listSandboxes({
+      limit: 100,
+      selector: "app.kubernetes.io/managed-by=virtual-engineer",
+    });
+
+    expect(calls[0]?.args).toEqual([
+      "sandbox", "list", "--limit", "100", "--offset", "0",
+      "--selector", "app.kubernetes.io/managed-by=virtual-engineer", "--output", "json",
+    ]);
+    expect(sandboxes).toEqual([
+      {
+        id: "sandbox-1",
+        name: "ve-task-1",
+        labels: {
+          "app.kubernetes.io/managed-by": "virtual-engineer",
+          "virtual-engineer/task-hash": "abc123",
+        },
+        createdAt: new Date("2026-07-15T10:00:00Z"),
+        phase: "Ready",
+      },
     ]);
   });
 
@@ -391,6 +637,23 @@ describe("OpenShellClient", () => {
 
     await expect(client.removeSandbox("t")).rejects.toThrow(/delete.*gateway unavailable/i);
     expect(calls.filter((args) => args[1] === "delete")).toHaveLength(3);
+  });
+
+  it("removes a provider by name", async () => {
+    const { runner, calls } = runnerReturning({ code: 0 });
+    const client = new OpenShellClient({ runner });
+
+    await client.removeProvider("ve-task-1-agent");
+
+    expect(calls[0]?.args).toEqual(["provider", "delete", "ve-task-1-agent"]);
+  });
+
+  it("treats an already absent provider as successfully removed", async () => {
+    const client = new OpenShellClient({
+      runner: runnerReturning({ code: 1, stderr: "provider not found: ve-task-1-agent" }).runner,
+    });
+
+    await expect(client.removeProvider("ve-task-1-agent")).resolves.toBeUndefined();
   });
 
   it("checks gateway health through the authenticated OpenShell CLI profile", async () => {

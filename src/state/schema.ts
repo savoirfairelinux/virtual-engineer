@@ -474,6 +474,21 @@ export const policyDenialEvents = sqliteTable(
   })
 );
 
+/** Restart-safe ownership ledger for short-lived OpenShell credential providers. */
+export const managedOpenShellProviders = sqliteTable(
+  "managed_openshell_providers",
+  {
+    providerName: text("provider_name").primaryKey(),
+    sandboxName: text("sandbox_name").notNull(),
+    taskHash: text("task_hash").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+  },
+  (table) => ({
+    idxManagedOpenShellProvidersCreated: index("idx_managed_openshell_providers_created").on(table.createdAt),
+    idxManagedOpenShellProvidersSandbox: index("idx_managed_openshell_providers_sandbox").on(table.sandboxName),
+  })
+);
+
 // ─── Users / Sessions / Audit (admin accounts) ───────────────────────────────
 
 /**

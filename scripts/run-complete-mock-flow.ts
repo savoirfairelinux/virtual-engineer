@@ -133,6 +133,7 @@ Do not manually work on this ticket.`;
       client: new OpenShellClient({ gateway: process.env["OPENSHELL_GATEWAY"] ?? undefined }),
       sandboxImage: appConfig.agentContainerImage,
       agentAdapter: mockAgentAdapter,
+      managedProviderStore: stateStore,
     });
 
     // ─── Initialize orchestrator ─────────────────────────────────────────────

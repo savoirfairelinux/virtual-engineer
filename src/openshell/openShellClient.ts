@@ -34,6 +34,7 @@ export interface CommandCallbacks {
 
 export interface CommandControl {
   signal?: AbortSignal | undefined;
+  environment?: Readonly<Record<string, string>> | undefined;
 }
 
 /** Runs an argv against a binary and resolves the captured result (never rejects on non-zero). */
@@ -46,6 +47,29 @@ export type CommandRunner = (
 ) => Promise<CommandResult>;
 
 const MAX_COMMAND_OUTPUT_BYTES = 32 * 1024 * 1024;
+
+interface SpawnedCommand {
+  pid?: number | undefined;
+  stdout: { on(event: "data", listener: (chunk: Buffer) => void): unknown };
+  stderr: { on(event: "data", listener: (chunk: Buffer) => void): unknown };
+  stdin: { end(input?: string): void };
+  once(event: "error", listener: (err: Error) => void): unknown;
+  once(event: "close", listener: (code: number | null) => void): unknown;
+  kill(signal: NodeJS.Signals): unknown;
+}
+
+interface CommandRunnerDeps {
+  spawnCommand: (
+    bin: string,
+    args: string[],
+    options: {
+      detached: true;
+      stdio: ["pipe", "pipe", "pipe"];
+      env: NodeJS.ProcessEnv;
+    },
+  ) => SpawnedCommand;
+  killProcess: (pid: number, signal: NodeJS.Signals) => void;
+}
 
 function redactEnvAssignment(value: string): string {
   const separator = value.indexOf("=");
@@ -80,14 +104,19 @@ export function redactOpenShellText(text: string): string {
     .replace(/\b(Bearer\s+)[A-Za-z0-9._-]+/gi, "$1[REDACTED]");
 }
 
-const defaultRunner: CommandRunner = (bin, args, input, callbacks, control) =>
-  new Promise<CommandResult>((resolve) => {
-    const child = spawn(bin, args, { detached: true, stdio: ["pipe", "pipe", "pipe"] });
-    const stdoutChunks: string[] = [];
-    const stderrChunks: string[] = [];
-    let outputBytes = 0;
+export function createCommandRunner(deps: CommandRunnerDeps): CommandRunner {
+  return (bin, args, input, callbacks, control) => new Promise<CommandResult>((resolve) => {
+    const child = deps.spawnCommand(bin, args, {
+      detached: true,
+      stdio: ["pipe", "pipe", "pipe"],
+      env: { ...process.env, ...control?.environment },
+    });
+    const stdoutChunks: Buffer[] = [];
+    const stderrChunks: Buffer[] = [];
+    let capturedBytes = 0;
     let outputLimitExceeded = false;
     let settled = false;
+    let terminationStarted = false;
     let killTimer: NodeJS.Timeout | undefined;
 
     const finish = (result: CommandResult): void => {
@@ -97,10 +126,12 @@ const defaultRunner: CommandRunner = (bin, args, input, callbacks, control) =>
       control?.signal?.removeEventListener("abort", abort);
       resolve(result);
     };
-    const abort = (): void => {
+    const terminate = (): void => {
+      if (terminationStarted) return;
+      terminationStarted = true;
       if (child.pid !== undefined) {
         try {
-          process.kill(-child.pid, "SIGTERM");
+          deps.killProcess(-child.pid, "SIGTERM");
         } catch {
           child.kill("SIGTERM");
         }
@@ -108,34 +139,39 @@ const defaultRunner: CommandRunner = (bin, args, input, callbacks, control) =>
       killTimer = setTimeout(() => {
         if (settled || child.pid === undefined) return;
         try {
-          process.kill(-child.pid, "SIGKILL");
+          deps.killProcess(-child.pid, "SIGKILL");
         } catch {
           child.kill("SIGKILL");
         }
       }, 2_000);
       killTimer.unref();
     };
-    const collect = (target: string[], chunk: Buffer, callback?: (value: string) => void): void => {
+    const abort = (): void => terminate();
+    const collect = (target: Buffer[], chunk: Buffer, callback?: (value: string) => void): void => {
       const value = chunk.toString();
-      target.push(value);
-      outputBytes += chunk.byteLength;
       callback?.(value);
-      if (outputBytes > MAX_COMMAND_OUTPUT_BYTES && !outputLimitExceeded) {
+      const remaining = MAX_COMMAND_OUTPUT_BYTES - capturedBytes;
+      if (remaining > 0) {
+        const retained = chunk.byteLength <= remaining ? chunk : chunk.subarray(0, remaining);
+        target.push(retained);
+        capturedBytes += retained.byteLength;
+      }
+      if (chunk.byteLength > remaining && !outputLimitExceeded) {
         outputLimitExceeded = true;
-        child.kill("SIGTERM");
+        terminate();
       }
     };
 
     child.stdout.on("data", (chunk: Buffer) => collect(stdoutChunks, chunk, callbacks?.onStdoutChunk));
     child.stderr.on("data", (chunk: Buffer) => collect(stderrChunks, chunk, callbacks?.onStderrChunk));
     child.once("error", (err) => {
-      finish({ code: 1, stdout: stdoutChunks.join(""), stderr: `${stderrChunks.join("")}${err.message}` });
+      finish({ code: 1, stdout: Buffer.concat(stdoutChunks).toString(), stderr: `${Buffer.concat(stderrChunks).toString()}${err.message}` });
     });
     child.once("close", (code) => {
-      const stderr = stderrChunks.join("");
+      const stderr = Buffer.concat(stderrChunks).toString();
       finish({
         code: outputLimitExceeded ? 1 : code ?? 1,
-        stdout: stdoutChunks.join(""),
+        stdout: Buffer.concat(stdoutChunks).toString(),
         stderr: outputLimitExceeded ? `${stderr}\nopenshell command output exceeded 32 MiB` : stderr,
       });
     });
@@ -147,12 +183,22 @@ const defaultRunner: CommandRunner = (bin, args, input, callbacks, control) =>
       child.stdin.end();
     }
   });
+}
+
+const defaultRunner = createCommandRunner({
+  spawnCommand: (bin, args, options) => spawn(bin, args, options),
+  killProcess: (pid, signal) => {
+    process.kill(pid, signal);
+  },
+});
 
 export interface OpenShellClientOptions {
   /** Path to the `openshell` binary. */
   bin?: string;
-  /** Gateway address (`--gateway`), when not using the ambient default. */
+  /** Gateway profile name or direct HTTP(S) endpoint. */
   gateway?: string | undefined;
+  /** Renew the named OIDC profile with the ambient client secret before use. */
+  oidcClientCredentials?: boolean | undefined;
   runner?: CommandRunner;
   /** Base backoff (ms) between transient sandbox-create retries. Default 3000. */
   retryBaseDelayMs?: number | undefined;
@@ -175,8 +221,17 @@ export interface CreateSandboxInput {
   memory?: string | undefined;
   /** Initial policy YAML applied at creation, including immutable filesystem/process rules. */
   policyYaml?: string | undefined;
+  /** Non-sensitive ownership labels stored on the gateway sandbox object. */
+  labels?: Record<string, string> | undefined;
   /** Best-effort hook invoked before deleting a transient, ambiguously-created sandbox. */
   beforeRetryCleanup?: (() => Promise<void>) | undefined;
+  signal?: AbortSignal | undefined;
+}
+
+export interface CreateProviderInput {
+  name: string;
+  type: string;
+  credentials: Readonly<Record<string, string>>;
   signal?: AbortSignal | undefined;
 }
 
@@ -222,6 +277,21 @@ export interface SandboxLogsInput {
   since?: string | undefined;
 }
 
+export interface SandboxInventoryItem {
+  id: string;
+  name: string;
+  labels: Record<string, string>;
+  createdAt: Date;
+  phase: string;
+}
+
+export interface ListSandboxesInput {
+  limit?: number | undefined;
+  offset?: number | undefined;
+  selector?: string | undefined;
+  signal?: AbortSignal | undefined;
+}
+
 /** Access level for an egress endpoint. Copilot needs `full` (POST completions). */
 export type EgressAccess = "read-only" | "read-write" | "full";
 
@@ -233,13 +303,17 @@ export interface AllowEgressInput {
   binaries?: string[] | undefined;
   /** Access level (default `full`). */
   access?: EgressAccess | undefined;
+  signal?: AbortSignal | undefined;
 }
 
 export class OpenShellClient {
   private readonly bin: string;
+  private readonly gateway: string | undefined;
+  private readonly oidcClientCredentials: boolean;
   private readonly run: CommandRunner;
   private readonly retryBaseDelayMs: number;
   private readonly commandTimeoutMs: number;
+  private oidcLoginInFlight: Promise<CommandResult> | undefined;
 
   /**
    * Gateway/SSH errors that are transient on a cold start: the sandbox Pod is
@@ -263,6 +337,8 @@ export class OpenShellClient {
 
   constructor(options: OpenShellClientOptions = {}) {
     this.bin = options.bin ?? "openshell";
+    this.gateway = options.gateway;
+    this.oidcClientCredentials = options.oidcClientCredentials ?? false;
     this.run = options.runner ?? defaultRunner;
     this.retryBaseDelayMs = options.retryBaseDelayMs ?? 4000;
     this.commandTimeoutMs = options.commandTimeoutMs ?? 60_000;
@@ -274,24 +350,97 @@ export class OpenShellClient {
     callbacks?: CommandCallbacks,
     timeoutMs = this.commandTimeoutMs,
     signal?: AbortSignal,
+    environment?: Readonly<Record<string, string>>,
   ): Promise<CommandResult> {
-    // OPENSHELL_GATEWAY_ENDPOINT is injected by start.sh (e.g.
-    // "http://127.0.0.1:8080"). The CLI reads it directly and connects without
-    // any local gateway-registry lookup, so no 'gateway add' is required.
     const controller = new AbortController();
     const abort = (): void => controller.abort();
     signal?.addEventListener("abort", abort, { once: true });
     if (signal?.aborted === true) controller.abort();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
-    const result = await this.run(this.bin, args, input, callbacks, { signal: controller.signal })
-      .finally(() => {
-        clearTimeout(timeout);
-        signal?.removeEventListener("abort", abort);
-      });
+    const gatewayArgs = this.gatewayArgs();
+    const result = await (async (): Promise<CommandResult> => {
+      const commandArgs = [...gatewayArgs, ...args];
+      const commandControl: CommandControl = {
+        signal: controller.signal,
+        ...(environment !== undefined ? { environment } : {}),
+      };
+      const firstResult = await this.run(this.bin, commandArgs, input, callbacks, commandControl);
+      if (!this.shouldRefreshOidc(firstResult, gatewayArgs)) return firstResult;
+
+      const loginArgs = [...gatewayArgs, "gateway", "login", this.gateway!];
+      const loginResult = await this.loginOidc(loginArgs);
+      if (loginResult.code !== 0) {
+        log.warn({
+          args: loginArgs,
+          code: loginResult.code,
+          stderr: redactOpenShellText(loginResult.stderr).slice(0, 500),
+        }, "openshell OIDC login failed");
+        return loginResult;
+      }
+      return this.run(this.bin, commandArgs, input, callbacks, commandControl);
+    })().finally(() => {
+      clearTimeout(timeout);
+      signal?.removeEventListener("abort", abort);
+    });
     if (result.code !== 0) {
       log.warn({ args: redactCommandArgs(args), code: result.code, stderr: redactOpenShellText(result.stderr).slice(0, 500) }, "openshell command failed");
     }
     return result;
+  }
+
+  private gatewayArgs(): string[] {
+    if (this.gateway === undefined) return [];
+    return this.gateway.startsWith("http://") || this.gateway.startsWith("https://")
+      ? ["--gateway-endpoint", this.gateway]
+      : ["--gateway", this.gateway];
+  }
+
+  private shouldRefreshOidc(result: CommandResult, gatewayArgs: string[]): boolean {
+    if (!this.oidcClientCredentials || this.gateway === undefined || gatewayArgs[0] !== "--gateway") {
+      return false;
+    }
+    if (result.code === 0) return false;
+    return /unauthenticated|oidc token (?:expired|invalid)|token has expired|missing authorization header/i.test(result.stderr);
+  }
+
+  private loginOidc(args: string[]): Promise<CommandResult> {
+    if (this.oidcLoginInFlight !== undefined) return this.oidcLoginInFlight;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.commandTimeoutMs);
+    const login = this.run(this.bin, args, undefined, undefined, { signal: controller.signal })
+      .finally(() => clearTimeout(timeout));
+    this.oidcLoginInFlight = login;
+    void login.finally(() => {
+      if (this.oidcLoginInFlight === login) this.oidcLoginInFlight = undefined;
+    });
+    return login;
+  }
+
+  /** Create a gateway provider while reading credential values from the CLI process environment. */
+  async createProvider(input: CreateProviderInput): Promise<void> {
+    const credentialEntries = Object.entries(input.credentials).sort(([left], [right]) =>
+      left.localeCompare(right));
+    const args = ["provider", "create", "--name", input.name, "--type", input.type];
+    for (const [key] of credentialEntries) args.push("--credential", key);
+    const result = await this.exec(
+      args,
+      undefined,
+      undefined,
+      this.commandTimeoutMs,
+      input.signal,
+      Object.fromEntries(credentialEntries),
+    );
+    if (result.code !== 0) {
+      throw new Error(`openshell provider create failed (${result.code}): ${redactOpenShellText(result.stderr).slice(0, 500)}`);
+    }
+  }
+
+  /** Delete a gateway provider after every attached sandbox has been removed. */
+  async removeProvider(name: string): Promise<void> {
+    const result = await this.exec(["provider", "delete", name]);
+    if (result.code !== 0 && !/provider[^\n]*not found|not found[^\n]*provider/i.test(result.stderr)) {
+      throw new Error(`openshell provider delete failed (${result.code}): ${redactOpenShellText(result.stderr).slice(0, 500)}`);
+    }
   }
 
   /**
@@ -306,6 +455,9 @@ export class OpenShellClient {
     if (input.memory) args.push("--memory", input.memory);
     for (const provider of input.providers ?? []) args.push("--provider", provider);
     for (const [key, value] of Object.entries(input.env ?? {})) args.push("--env", `${key}=${value}`);
+    for (const [key, value] of Object.entries(input.labels ?? {}).sort(([a], [b]) => a.localeCompare(b))) {
+      args.push("--label", `${key}=${value}`);
+    }
     let policyPath: string | undefined;
     if (input.policyYaml !== undefined) {
       policyPath = join(tmpdir(), `ve-policy-${randomUUID()}.yaml`);
@@ -349,7 +501,7 @@ export class OpenShellClient {
     const args = ["sandbox", "upload"];
     if (input.noGitIgnore) args.push("--no-git-ignore");
     args.push(input.name, input.localPath, input.dest);
-    const result = await this.exec(args, undefined, undefined, this.commandTimeoutMs, input.signal);
+    const result = await this.exec(args);
     if (result.code !== 0) {
       throw new Error(`openshell sandbox upload failed (${result.code}): ${redactOpenShellText(result.stderr).slice(0, 500)}`);
     }
@@ -389,6 +541,69 @@ export class OpenShellClient {
     return result.stdout;
   }
 
+  /** List a bounded, optionally label-selected sandbox inventory. */
+  async listSandboxes(input: ListSandboxesInput = {}): Promise<SandboxInventoryItem[]> {
+    const limit = Math.max(1, Math.min(input.limit ?? 100, 100));
+    const offset = Math.max(0, input.offset ?? 0);
+    const args = [
+      "sandbox", "list", "--limit", String(limit), "--offset", String(offset),
+    ];
+    if (input.selector !== undefined) args.push("--selector", input.selector);
+    args.push("--output", "json");
+    const result = await this.exec(args, undefined, undefined, this.commandTimeoutMs, input.signal);
+    if (result.code !== 0) {
+      throw new Error(`openshell sandbox list failed (${result.code}): ${redactOpenShellText(result.stderr).slice(0, 500)}`);
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(result.stdout);
+    } catch {
+      throw new Error("openshell sandbox list returned invalid JSON");
+    }
+    if (!Array.isArray(parsed)) {
+      throw new Error("openshell sandbox list JSON must be an array");
+    }
+    return parsed.map((value, index) => this.parseSandboxInventoryItem(value, index));
+  }
+
+  private parseSandboxInventoryItem(value: unknown, index: number): SandboxInventoryItem {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+      throw new Error(`openshell sandbox list item ${index} must be an object`);
+    }
+    const record = value as Record<string, unknown>;
+    const labelsValue = record["labels"];
+    if (
+      typeof record["id"] !== "string" ||
+      typeof record["name"] !== "string" ||
+      typeof record["created_at"] !== "string" ||
+      typeof record["phase"] !== "string" ||
+      typeof labelsValue !== "object" ||
+      labelsValue === null ||
+      Array.isArray(labelsValue)
+    ) {
+      throw new Error(`openshell sandbox list item ${index} has an invalid shape`);
+    }
+    const labels: Record<string, string> = {};
+    for (const [key, labelValue] of Object.entries(labelsValue)) {
+      if (typeof labelValue !== "string") {
+        throw new Error(`openshell sandbox list item ${index} has a non-string label`);
+      }
+      labels[key] = labelValue;
+    }
+    const createdAt = new Date(record["created_at"]);
+    if (Number.isNaN(createdAt.getTime())) {
+      throw new Error(`openshell sandbox list item ${index} has an invalid created_at`);
+    }
+    return {
+      id: record["id"],
+      name: record["name"],
+      labels,
+      createdAt,
+      phase: record["phase"],
+    };
+  }
+
   /** Apply (hot-reload) a policy YAML on a running sandbox. Throws on failure. */
   async setPolicy(name: string, policyYaml: string): Promise<void> {
     // `policy set` requires a file path (no stdin support). Write to a temp file,
@@ -422,7 +637,7 @@ export class OpenShellClient {
     // `--binary` applies to every `--add-endpoint` rule in the same invocation.
     for (const bin of input.binaries ?? []) args.push("--binary", bin);
     args.push("--wait", input.name);
-    const result = await this.exec(args);
+    const result = await this.exec(args, undefined, undefined, this.commandTimeoutMs, input.signal);
     if (result.code !== 0) {
       throw new Error(`openshell policy update (egress) failed (${result.code}): ${redactOpenShellText(result.stderr).slice(0, 500)}`);
     }

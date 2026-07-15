@@ -28,8 +28,15 @@ import { applyVolumeAndSeverityGate, buildFoldedSummary } from "./commentSeverit
 import { agentLogBus, pushToTaskBuffer, clearTaskEventBuffer } from "../agents/agentEventBus.js";
 
 const log = getLogger("review-orchestrator");
+const MAX_SUPERSEDED_REVIEW_RETRIES = 3;
 
 class ReviewCancelledError extends Error {}
+
+class ReviewSupersededError extends Error {
+  constructor(readonly latestDetails: ReviewChangeDetails) {
+    super(`Review superseded by patchset ${latestDetails.currentPatchset}`);
+  }
+}
 
 /** Legacy interface implemented by `CopilotReviewAgent`. Kept for backward compatibility. */
 export interface ReviewAgent {
@@ -94,6 +101,8 @@ export interface ReviewOrchestratorDeps {
   maxReviewReplies?: number | undefined;
   /** Minimum severity for a comment to be posted inline. Defaults to "info". */
   reviewMinSeverity?: string | undefined;
+  /** Host-side deadline for one review-agent execution. */
+  agentTimeoutMs?: number | undefined;
 }
 
 export interface StartReviewInput {
@@ -331,6 +340,67 @@ export class ReviewOrchestrator {
    * REVIEW_PENDING → ... → REVIEW_WATCHING / REVIEW_DONE transition.
    */
   async runReview(taskId: TaskId, options?: { force?: boolean }): Promise<void> {
+    await this.runReviewPass(taskId, options, 0, false);
+  }
+
+  /** Recover an active code-review task after the host process restarts. */
+  async recoverReview(taskId: TaskId): Promise<void> {
+    const task = await this.deps.stateStore.getTask(taskId);
+    if (!task) throw new Error(`Review task not found: ${taskId}`);
+    if (task.taskType !== "code-review") {
+      throw new Error(`Task ${taskId} is not a code-review task`);
+    }
+
+    if (task.state === "REVIEW_PENDING") {
+      await this.runReview(taskId);
+      return;
+    }
+    if (task.state === "REVIEW_RUNNING") {
+      await this.runReviewPass(taskId, undefined, 0, true);
+      return;
+    }
+    if (task.state === "REVIEW_WATCHING") {
+      return;
+    }
+    if (task.state !== "REVIEW_COMMENTING") {
+      throw new Error(
+        `recoverReview called on task in non-recoverable state: ${task.state} (taskId: ${taskId})`
+      );
+    }
+
+    const cycles = await this.deps.stateStore.getAgentCycles(taskId);
+    const currentCycle = cycles.find((cycle) => cycle.cycleNumber === task.cycleCount);
+    const metadata = currentCycle?.result.metadata;
+    const completedCurrentPatchset =
+      currentCycle?.result.status === "success" &&
+      metadata?.["reviewMode"] === true &&
+      metadata["patchset"] === task.currentPatchset &&
+      task.reviewedPatchset === task.currentPatchset;
+
+    if (!completedCurrentPatchset) {
+      const reason =
+        "Review interrupted during provider posting; remote effects may be partial and require a controlled retry";
+      await this.deps.stateStore.setFailureReason(taskId, reason);
+      await this.deps.stateStore.transition(taskId, "REVIEW_FAILED");
+      return;
+    }
+
+    if (task.externalChangeId === null) {
+      throw new Error(`Review task ${taskId} has no change id`);
+    }
+    const details = await this.deps.reviewProvider.getChangeDetails(task.externalChangeId);
+    await this.deps.stateStore.transition(
+      taskId,
+      details.status === "OPEN" ? "REVIEW_WATCHING" : "REVIEW_DONE"
+    );
+  }
+
+  private async runReviewPass(
+    taskId: TaskId,
+    options: { force?: boolean } | undefined,
+    supersededRetries: number,
+    resumeRunning: boolean,
+  ): Promise<void> {
     const task = await this.deps.stateStore.getTask(taskId);
     if (!task) throw new Error(`Review task not found: ${taskId}`);
     if (task.taskType !== "code-review") {
@@ -351,7 +421,7 @@ export class ReviewOrchestrator {
       );
     }
 
-    if (task.state === "REVIEW_RUNNING") {
+    if (task.state === "REVIEW_RUNNING" && !resumeRunning) {
       log.warn(
         { taskId },
         "runReview: task already REVIEW_RUNNING — skipping concurrent invocation"
@@ -509,29 +579,36 @@ export class ReviewOrchestrator {
         emitReviewEvent("review.agent_started", { mode: "docker" });
 
         const stderrLineBuffer = { partial: "" };
-        const reviewResult = await this.deps.workspaceRunner.runReviewInDocker(handle, {
-          projectId: project.id,
-          changeId,
-          revisionNumber: details.changeNumber,
-          patchset: details.currentPatchset,
-          repositoryName: details.project,
-          prompt,
-          systemPrompt: this.deps.reviewSystemPrompt,
-          agentToken: this.deps.agentToken,
-          model: this.deps.model,
-          ...(project.skillDiscoveryEnabled ? { skillDiscoveryEnabled: true } : {}),
-        }, {
-          onStderrChunk: (chunk: string) => {
-            stderrLineBuffer.partial += chunk;
-            const lines = stderrLineBuffer.partial.split("\n");
-            stderrLineBuffer.partial = lines.pop() ?? "";
-            for (const line of lines) {
-              const trimmed = line.trim();
-              if (!trimmed) continue;
-              this.processReviewStderrLine(trimmed, taskId, cycleNumber, collectedEvents);
-            }
-          },
-        });
+        const timeoutMs = this.deps.agentTimeoutMs ?? 3_600_000;
+        const reviewHandle = handle;
+        const reviewResult = await this.withTimeout(
+          (abortSignal) => this.deps.workspaceRunner.runReviewInDocker!(reviewHandle, {
+            projectId: project.id,
+            changeId,
+            revisionNumber: details.changeNumber,
+            patchset: details.currentPatchset,
+            repositoryName: details.project,
+            prompt,
+            systemPrompt: this.deps.reviewSystemPrompt,
+            agentToken: this.deps.agentToken,
+            model: this.deps.model,
+            abortSignal,
+            ...(project.skillDiscoveryEnabled ? { skillDiscoveryEnabled: true } : {}),
+          }, {
+            onStderrChunk: (chunk: string) => {
+              stderrLineBuffer.partial += chunk;
+              const lines = stderrLineBuffer.partial.split("\n");
+              stderrLineBuffer.partial = lines.pop() ?? "";
+              for (const line of lines) {
+                const trimmed = line.trim();
+                if (!trimmed) continue;
+                this.processReviewStderrLine(trimmed, taskId, cycleNumber, collectedEvents);
+              }
+            },
+          }),
+          timeoutMs,
+          `Review timed out after ${timeoutMs}ms`,
+        );
         if (stderrLineBuffer.partial.trim()) {
           this.processReviewStderrLine(stderrLineBuffer.partial.trim(), taskId, cycleNumber, collectedEvents);
         }
@@ -562,12 +639,62 @@ export class ReviewOrchestrator {
         phase: "pre-dedup",
       });
 
-      // Fetch fresh details before posting to get the latest patchset.
-      // This ensures we post the review on the latest patchset if a new one
-      // was uploaded while the agent was running, preventing duplicate reviews
-      // on older patchsets.
+      // The result is valid only for the exact patchset used to build its diff,
+      // checkout and prompt. If a newer patchset arrived while the agent was
+      // running, archive this cycle without side effects and analyze the new
+      // revision before posting anything.
       const latestDetails = await this.deps.reviewProvider.getChangeDetails(changeId);
-      const reviewPatchset = latestDetails.currentPatchset;
+      if (latestDetails.status !== "OPEN") {
+        await this.assertReviewStillActive(taskId);
+        emitReviewEvent("review.closed", {
+          analyzedPatchset: details.currentPatchset,
+          status: latestDetails.status,
+        });
+        await this.deps.stateStore.saveAgentCycle(taskId, cycleNumber, {
+          status: "success",
+          modifiedFiles: [],
+          summary: `Review result discarded because the change became ${latestDetails.status}`,
+          agentLogs: rawOutput,
+          agentEvents: collectedEvents,
+          metadata: {
+            reviewMode: true,
+            superseded: true,
+            analyzedPatchset: details.currentPatchset,
+            changeStatus: latestDetails.status,
+          },
+        });
+        clearTaskEventBuffer(taskId);
+        await this.deps.stateStore.transition(taskId, "REVIEW_COMMENTING");
+        await this.deps.stateStore.transition(taskId, "REVIEW_DONE");
+        return;
+      }
+      if (latestDetails.currentPatchset !== details.currentPatchset) {
+        if (supersededRetries >= MAX_SUPERSEDED_REVIEW_RETRIES) {
+          throw new Error(
+            `Review superseded more than ${MAX_SUPERSEDED_REVIEW_RETRIES} times; latest patchset is ${latestDetails.currentPatchset}`
+          );
+        }
+        emitReviewEvent("review.superseded", {
+          analyzedPatchset: details.currentPatchset,
+          latestPatchset: latestDetails.currentPatchset,
+        });
+        await this.deps.stateStore.saveAgentCycle(taskId, cycleNumber, {
+          status: "success",
+          modifiedFiles: [],
+          summary: `Review result discarded because patchset ${latestDetails.currentPatchset} replaced ${details.currentPatchset}`,
+          agentLogs: rawOutput,
+          agentEvents: collectedEvents,
+          metadata: {
+            reviewMode: true,
+            superseded: true,
+            analyzedPatchset: details.currentPatchset,
+            latestPatchset: latestDetails.currentPatchset,
+          },
+        });
+        clearTaskEventBuffer(taskId);
+        throw new ReviewSupersededError(latestDetails);
+      }
+      const reviewPatchset = details.currentPatchset;
 
       // Deduplicate inline comments against ones VE already posted on
       // this change. Only newly-found issues are published; the overall vote and
@@ -629,6 +756,7 @@ export class ReviewOrchestrator {
       });
 
       await this.assertReviewStillActive(taskId);
+      await this.deps.stateStore.transition(taskId, "REVIEW_COMMENTING");
 
       if (!skipPosting) {
         await this.postReview(taskId, changeId, reviewPatchset, commentsToPost, summary, vote, diff);
@@ -676,7 +804,6 @@ export class ReviewOrchestrator {
       }
 
       await this.assertReviewStillActive(taskId);
-      await this.deps.stateStore.transition(taskId, "REVIEW_COMMENTING");
       await this.deps.stateStore.setReviewedPatchset(taskId, reviewPatchset);
 
       emitReviewEvent("review.completed", {
@@ -717,6 +844,31 @@ export class ReviewOrchestrator {
         await this.deps.stateStore.transition(taskId, "REVIEW_DONE");
       }
     } catch (err) {
+      if (err instanceof ReviewSupersededError) {
+        await this.deps.stateStore.updateExternalChangeId(
+          taskId,
+          changeId,
+          err.latestDetails.currentPatchset,
+          err.latestDetails.url,
+        );
+        const current = await this.deps.stateStore.getTask(taskId);
+        if (current?.state !== "REVIEW_RUNNING" && current?.state !== "REVIEW_COMMENTING") {
+          log.info(
+            { taskId, state: current?.state },
+            "review patchset changed, but the task is no longer active; skipping rerun",
+          );
+          return;
+        }
+        log.info(
+          {
+            taskId,
+            patchset: err.latestDetails.currentPatchset,
+            retry: supersededRetries + 1,
+          },
+          "review patchset changed during analysis; restarting with latest revision",
+        );
+        return this.runReviewPass(taskId, options, supersededRetries + 1, true);
+      }
       if (err instanceof ReviewCancelledError) {
         clearTaskEventBuffer(taskId);
         log.info({ taskId }, "review stopped because task is no longer active");
@@ -751,6 +903,27 @@ export class ReviewOrchestrator {
   }
 
   // ─── Internals ──────────────────────────────────────────────────────────────
+
+  private async withTimeout<T>(
+    operation: (signal: AbortSignal) => Promise<T>,
+    timeoutMs: number,
+    message: string,
+  ): Promise<T> {
+    const controller = new AbortController();
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
+    try {
+      return await operation(controller.signal);
+    } catch (err) {
+      if (timedOut) throw new Error(message);
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
 
   private async assertReviewStillActive(taskId: TaskId): Promise<void> {
     const current = await this.deps.stateStore.getTask(taskId);

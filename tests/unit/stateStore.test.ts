@@ -22,6 +22,39 @@ describe("SqliteStateStore", () => {
     store.close();
   });
 
+  describe("managed OpenShell providers", () => {
+    it("persists provider ownership across store restarts", async () => {
+      const dbPath = tempDbPath();
+      const first = await SqliteStateStore.create(dbPath);
+      const createdAt = new Date("2026-07-15T10:00:00Z");
+      try {
+        await first.recordManagedOpenShellProvider({
+          providerName: "ve-task-agent",
+          sandboxName: "ve-task",
+          taskHash: "task-hash",
+          createdAt,
+        });
+      } finally {
+        first.close();
+      }
+
+      const reopened = await SqliteStateStore.create(dbPath);
+      try {
+        await expect(reopened.listManagedOpenShellProviders()).resolves.toEqual([{
+          providerName: "ve-task-agent",
+          sandboxName: "ve-task",
+          taskHash: "task-hash",
+          createdAt,
+        }]);
+
+        await reopened.deleteManagedOpenShellProvider("ve-task-agent");
+        await expect(reopened.listManagedOpenShellProviders()).resolves.toEqual([]);
+      } finally {
+        reopened.close();
+      }
+    });
+  });
+
   describe("createTask", () => {
     it("creates a task in DETECTED state", async () => {
       const taskId = makeTaskId(randomUUID());

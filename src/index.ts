@@ -17,6 +17,8 @@ import { HostGitExecutor } from "./workspace/hostGitExecutor.js";
 import { OpenShellWorkspaceRunner, type OpenShellRunnerDeps } from "./workspace/openShellWorkspaceRunner.js";
 import { OpenShellClient } from "./openshell/openShellClient.js";
 import { createRuntimePolicyResolver } from "./openshell/runtimePolicyResolver.js";
+import { OpenShellSandboxReconciler } from "./openshell/openShellSandboxReconciler.js";
+import { resolveOpenShellGateway, startRuntimeRecovery } from "./runtime/runtimeStartup.js";
 import { Orchestrator } from "./orchestrator/orchestrator.js";
 import { PollingLoop } from "./orchestrator/pollingLoop.js";
 import { createConcurrencyTracker } from "./orchestrator/concurrencyTracker.js";
@@ -26,6 +28,7 @@ import { startAdminServer } from "./admin/startAdminServer.js";
 
 import { PluginIntegrationStreamEventsManager } from "./connectors/integrationStreamEvents.js";
 import { ReviewOrchestrator } from "./review/reviewOrchestrator.js";
+import { recoverActiveReviews } from "./review/reviewRecovery.js";
 import { mkdir } from "fs/promises";
 import type { Server } from "node:http";
 import type { AdminProviderSummary } from "./admin/adminServer.js";
@@ -50,6 +53,7 @@ const POLLING_RECONCILE_DEBOUNCE_MS = 1_000;
 /** Bootstrap all runtime dependencies and start the Virtual Engineer main loop. */
 async function main(): Promise<void> {
   const config = getConfig();
+  const openShellGateway = resolveOpenShellGateway(process.env);
 
   log.info({ nodeEnv: config.nodeEnv }, "Virtual Engineer starting");
 
@@ -95,11 +99,11 @@ async function main(): Promise<void> {
   // sandbox. The runner's agent adapter is hot-swapped on integration reload by
   // mutating `openShellRunnerDeps.agentAdapter` (see refreshRuntimeDependencies).
   const openShellClient = new OpenShellClient({
-    // OPENSHELL_GATEWAY_ENDPOINT (preferred: direct URL, no registry lookup)
-    // or the legacy OPENSHELL_GATEWAY name are both accepted. start.sh injects
-    // OPENSHELL_GATEWAY_ENDPOINT=https://127.0.0.1:<port> and mounts the
-    // chart-generated client mTLS bundle under XDG_CONFIG_HOME.
-    gateway: process.env["OPENSHELL_GATEWAY_ENDPOINT"] ?? process.env["OPENSHELL_GATEWAY"] ?? undefined,
+    // Prefer the named OPENSHELL_GATEWAY profile so the CLI can load its OIDC
+    // metadata and bearer token. OPENSHELL_GATEWAY_ENDPOINT remains a fallback
+    // for legacy direct-endpoint deployments.
+    gateway: openShellGateway,
+    oidcClientCredentials: process.env["OPENSHELL_OIDC_CLIENT_SECRET"] !== undefined,
     commandTimeoutMs: config.agentTimeoutMs + 30_000,
   });
   const openShellRunnerDeps: OpenShellRunnerDeps = {
@@ -111,6 +115,7 @@ async function main(): Promise<void> {
     recordDenial: async (denial) => {
       await stateStore.recordPolicyDenial(denial);
     },
+    managedProviderStore: stateStore,
     execTimeoutSec: Math.ceil(config.agentTimeoutMs / 1000),
   };
   const workspaceRunner = new OpenShellWorkspaceRunner(openShellRunnerDeps);
@@ -383,7 +388,7 @@ async function main(): Promise<void> {
       denialStore: stateStore,
       runtimeGateway: {
         healthy: () => openShellClient.gatewayHealthy(),
-        address: process.env["OPENSHELL_GATEWAY_ENDPOINT"] ?? process.env["OPENSHELL_GATEWAY"] ?? undefined,
+        address: openShellGateway,
       },
     });
 
@@ -394,7 +399,33 @@ async function main(): Promise<void> {
   // Resume any tasks that were in-flight before a restart.
   // Must run AFTER the admin server binds successfully so a port conflict
   // does not cause a partially-resumed orchestrator state.
-  await orchestrator.resumeActiveTasks();
+  const sandboxReconciler = new OpenShellSandboxReconciler({
+    client: openShellClient,
+    store: stateStore,
+  });
+  const runtimeRecovery = await startRuntimeRecovery({
+    recoverReviews: async () => {
+      const reviewRecovery = await recoverActiveReviews(stateStore, async (task) => {
+        const bundle = await buildReviewBundle(
+          pluginManager,
+          config.workspaceBaseDir,
+          stateStore,
+          workspaceRunner,
+          task
+        );
+        return bundle.orchestrator;
+      });
+      log.info(reviewRecovery, "active review recovery completed");
+    },
+    resumeCodeGeneration: () => orchestrator.resumeActiveTasks(),
+    reconcileSandboxes: async () => {
+      const result = await sandboxReconciler.run();
+      log.info(result, "initial sandbox reconciliation completed");
+    },
+    startSandboxReconciler: () => sandboxReconciler.start(),
+    stopSandboxReconciler: () => sandboxReconciler.stop(),
+    onInitialReconcileError: (err) => log.warn({ err }, "initial sandbox reconciliation failed"),
+  });
 
   // ─── Graceful shutdown ────────────────────────────────────────────────────────
   let shuttingDown = false;
@@ -412,6 +443,7 @@ async function main(): Promise<void> {
       pollingReconcileTimer = null;
     }
     pollingLoop.stop();
+    runtimeRecovery.stop();
 
     await closeAdminServer(adminServer, SHUTDOWN_TIMEOUT_MS);
 
@@ -705,6 +737,7 @@ async function buildReviewBundle(
     maxReviewComments: getConfig().maxReviewComments,
     maxReviewReplies: getConfig().maxReviewReplies,
     reviewMinSeverity: getConfig().reviewMinSeverity,
+    agentTimeoutMs: getConfig().agentTimeoutMs,
   });
   return { integration, provider: reviewer.provider, orchestrator };
 }

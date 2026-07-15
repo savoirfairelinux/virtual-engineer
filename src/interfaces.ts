@@ -581,6 +581,8 @@ export interface ReviewWorkspaceInput {
   containerImage?: string | undefined;
   /** When true, the agent container loads team-defined skills from <repo>/.github/skills. */
   skillDiscoveryEnabled?: boolean | undefined;
+  /** Cancels the in-flight sandbox lifecycle when the review deadline expires. */
+  abortSignal?: AbortSignal | undefined;
 }
 
 /** Options for checking out a prior patchset/revision onto a cloned workspace. */

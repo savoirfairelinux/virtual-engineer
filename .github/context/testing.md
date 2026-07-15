@@ -29,20 +29,29 @@ tests/
 | Connectors — GitHub | `githubIssueConnector`, `githubPullRequestReviewConnector`, `githubReviewProvider`, `githubVcsConnector`, `githubPluginDescriptors`, `githubOAuth`, `githubAuth`, `branchNaming`, `webhookHandlerGithubPullRequest` |
 | VCS (shared) | `vcsConnector`, `vcsFactory`, `baseTicketConnector` |
 | Agents / Copilot | `copilotAdapter` (+ `.promptInjection`), `copilotConnectionValidator`, `copilotOAuthService`, `copilotModelsService`, `providerAuthService`, `mockAgentAdapter`, `agentEventTypes` (+ `.normalization`), `workerCommitProtocol`, `workerPromptLoader`, `workerCopilotProvider`, `workerClaudeProvider` |
-| Review runtime | `copilotReviewAgent`, `reviewOrchestrator`, `reviewPromptBuilder`, `reviewResultParser`, `reviewLiveLogs`, `liveLogFormat`, `commentHash`, `commentSeverity`, `revisionPatchset` |
+| Review runtime | `copilotReviewAgent`, `reviewOrchestrator`, `reviewRecovery`, `reviewPromptBuilder`, `reviewResultParser`, `reviewLiveLogs`, `liveLogFormat`, `liveLogWindow`, `commentHash`, `commentSeverity`, `revisionPatchset` |
 | Cost / token tracking | `cycleCost`, `stateStore.cost`, `adminCostRoutes`, `liveMetrics`, `workerClaudeProvider` |
-| Plugins / runtime wiring | `pluginManager` (+ `.multiInstance`), `registry`, `openShellWorkspaceRunner`, `runtimePolicyResolver`, `agentWorkerProtocol`, `openshell`, `hostGitExecutor`, `runnerContract`, `integrationStreamEvents` |
+| Plugins / runtime wiring | `pluginManager` (+ `.multiInstance`), `registry`, `openShellWorkspaceRunner`, `openShellSandboxReconciler`, `runtimePolicyResolver`, `runtimeStartup`, `agentWorkerProtocol`, `openshell`, `hostGitExecutor`, `runnerContract`, `integrationStreamEvents` |
 | Webhooks | `webhookServer`, `webhookHandlerRegistry` (+ the per-provider handlers listed above) |
-| Workspace / utils / misc | `buildRepositoryMap`, `config`, `logger`, `encryption`, `errorClassifier`, `gitExec`, `ticketFooterFormatter` |
+| Workspace / utils / misc | `buildRepositoryMap`, `config`, `logger`, `encryption`, `errorClassifier`, `gitExec`, `startScript`, `ticketFooterFormatter` |
 
 > **There are integration tests today.** Files ending in `.integration.test.ts` wire several modules together with mocked external I/O.
 
 ## Conventions
 
-- OpenShell denial tests cover both OCSF shorthand and key-value log formats; runner tests inject `getSandboxLogs` and assert task/project-attributed persistence on success and setup failure without requiring a live gateway.
+- OpenShell denial tests cover both OCSF shorthand and key-value log formats; runner tests inject `getSandboxLogs` and assert task/project-attributed persistence on success and setup failure without requiring a live gateway. Overlapping snapshots must persist each raw event line once, preserve a later same-payload line with a distinct timestamp, and retry sink failures.
 
 - All external I/O is mocked: `fetch`, `node:fs`, `dockerode`, `child_process` SSH helpers, the GitHub Copilot SDK, Git network calls. Never hit real services.
 - OpenShell runner tests assert that agent credentials are attached at sandbox creation and omitted from exec-time environment arguments; only non-secret values such as prompt-file paths may be forwarded to `sandbox exec`.
+- OpenShell command-runner tests use a simulated detached child process to assert that output retained across stdout/stderr stops at 32 MiB, live callbacks continue, and overflow escalates process-group termination from `SIGTERM` to `SIGKILL`.
+- Live-log window tests keep React state updates pure and verify the 500-entry cap, matching dedup-key eviction, duplicate rejection inside the active window, and acceptance after eviction.
+- Runtime-startup tests cover named-profile precedence over direct OpenShell endpoints, ordered review/code-gen recovery, best-effort initial reconciliation, scheduler startup, and idempotent shutdown without importing or mocking all of `src/index.ts`.
+- Startup/deployment tests source `scripts/start-lib.sh` and `deploy/k8s/deploy-lib.sh`. They verify deterministic runtime hashing, strict private GHCR digest references, OpenShell 0.0.83/chart/image pins, fail-closed OIDC values, pull secrets in both namespaces, and named-profile registration without invoking Docker or k3s.
+- OpenShell client tests cover explicit profile/endpoint flags and lazy client-credentials renewal: an authentication failure triggers one shared login and one command replay, while direct endpoints never attempt profile login.
+- Review orchestrator race tests must model patchset changes during agent execution and assert that the stale pass has no provider or posting-ledger side effects; a newer patchset requires a fresh checkout, diff, and agent run before posting.
+- Review recovery tests keep code-gen dispatch separate and cover restart behavior for `REVIEW_PENDING`, `REVIEW_RUNNING`, `REVIEW_COMMENTING`, and `REVIEW_WATCHING`; cancellation tests assert that timeout reaches the OpenShell command before workspace cleanup and provider effects.
+- OpenShell cleanup tests assert that a failed sandbox delete retains attempt ownership for retry while host Git cleanup remains independent. Reconciler tests cover active, recent, foreign, orphaned, failed-delete, idempotent scheduling, and non-overlapping runs.
+- Concurrency tracker tests retain every acquired lease and release that same lease. Regression coverage includes overlapping acquisitions across an agent integration change and idempotent double release.
 - Mock with `vi.mock("…/foo.js", () => …)` for module-level stubs, or `vi.spyOn(obj, "method")` for instance-level.
 - Gerrit SSH tests mock `child_process.execFile` callbacks with `{ stdout, stderr }` objects because the connectors promisify that API.
 - Use `vi.useFakeTimers()` + `vi.runAllTimersAsync()` for the polling loop. **Always** call `loop.stop()` before `runAllTimersAsync` (Vitest aborts after 10 000 timer iterations otherwise).

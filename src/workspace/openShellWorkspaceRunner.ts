@@ -17,7 +17,7 @@
 import { writeFile, unlink } from "fs/promises";
 import { tmpdir } from "os";
 import { join, basename } from "path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type {
   AgentAdapter,
   AgentResult,
@@ -36,6 +36,8 @@ import type { OpenShellClient } from "../openshell/openShellClient.js";
 import { redactOpenShellText } from "../openshell/openShellClient.js";
 import { decodeReviewWorkerOutput } from "./agentWorkerProtocol.js";
 import { parseDenialEvent, type DenialSink } from "../openshell/denyEventPoller.js";
+import { sandboxOwnershipLabels, sandboxTaskHash } from "../openshell/sandboxOwnership.js";
+import type { ManagedOpenShellProviderRecord } from "../state/stores/openShellProviderStore.js";
 
 const log = getLogger("openshell-workspace-runner");
 
@@ -45,6 +47,42 @@ const log = getLogger("openshell-workspace-runner");
 // repo upload/exec/download all target `/sandbox`.
 const SANDBOX_WORKSPACE = "/sandbox";
 const SANDBOX_PROMPT_FILE = "/tmp/user-prompt.txt";
+const MAX_DENIAL_FINGERPRINTS_PER_SANDBOX = 1_000;
+const AGENT_CREDENTIAL_PROVIDER_TYPES = {
+  GITHUB_TOKEN: "copilot",
+  ANTHROPIC_API_KEY: "claude-code",
+  CLAUDE_CODE_OAUTH_TOKEN: "generic",
+} as const;
+
+interface ManagedProviderSpec {
+  name: string;
+  type: string;
+  credentials: Record<string, string>;
+}
+
+function splitManagedProviderEnv(
+  sandboxName: string,
+  source: Readonly<Record<string, string>>,
+): { env: Record<string, string>; provider?: ManagedProviderSpec | undefined } {
+  const env: Record<string, string> = {};
+  let provider: ManagedProviderSpec | undefined;
+  for (const [key, value] of Object.entries(source)) {
+    const type = AGENT_CREDENTIAL_PROVIDER_TYPES[key as keyof typeof AGENT_CREDENTIAL_PROVIDER_TYPES];
+    if (type === undefined) {
+      env[key] = value;
+      continue;
+    }
+    if (provider !== undefined) {
+      throw new Error("Agent sandbox spec contains multiple managed credentials");
+    }
+    provider = {
+      name: `${sandboxName}-agent`,
+      type,
+      credentials: { [key]: value },
+    };
+  }
+  return { env, ...(provider !== undefined ? { provider } : {}) };
+}
 
 /** Adapter shape that resolves prompts (SYSTEM/USER) at container-spec build time. */
 type PromptAwareAgentAdapter = AgentAdapter & {
@@ -96,6 +134,11 @@ export interface OpenShellRunnerDeps {
   execTimeoutSec?: number | undefined;
   /** Best-effort sink for policy denials observed in sandbox logs. */
   recordDenial?: DenialSink | undefined;
+  /** Restart-safe ownership ledger for temporary credential providers. */
+  managedProviderStore: {
+    recordManagedOpenShellProvider(record: ManagedOpenShellProviderRecord): Promise<void>;
+    deleteManagedOpenShellProvider(providerName: string): Promise<void>;
+  };
 }
 
 /** Build the Gerrit-style change ref (`refs/changes/NN/NNNN/P`). */
@@ -107,8 +150,11 @@ function changeRef(revisionNumber: number, patchset: number): string {
 export class OpenShellWorkspaceRunner implements WorkspaceRunner {
   private readonly dirs = new Map<string, string>();
   private readonly sandboxNames = new Map<string, string>();
+  private readonly providerNames = new Map<string, string>();
+  private readonly removedSandboxes = new Set<string>();
   private readonly trustedRemotes = new Map<string, Map<string, string>>();
   private readonly postCloneScripts = new Map<string, string>();
+  private readonly denialFingerprints = new Map<string, Set<string>>();
 
   constructor(private readonly deps: OpenShellRunnerDeps) {}
 
@@ -246,12 +292,17 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
    * OpenShell is deny-by-default; without this the agent's CLI cannot reach the
    * model API (CONNECT is rejected with 403). No-op when the spec declares none.
    */
-  private async applyEgress(name: string, egress: AgentSpec["egress"]): Promise<void> {
+  private async applyEgress(
+    name: string,
+    egress: AgentSpec["egress"],
+    signal?: AbortSignal,
+  ): Promise<void> {
     if (!egress || egress.hosts.length === 0) return;
     await this.deps.client.allowEgress({
       name,
       hosts: egress.hosts,
       binaries: egress.binaries,
+      ...(signal !== undefined ? { signal } : {}),
     });
   }
 
@@ -269,11 +320,16 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
   }
 
   /** Write the prompt to a host temp file, upload it into the sandbox, return the sandbox path. */
-  private async uploadPrompt(name: string, content: string): Promise<string> {
+  private async uploadPrompt(name: string, content: string, signal?: AbortSignal): Promise<string> {
     const tmp = join(tmpdir(), `ve-prompt-${randomUUID()}.txt`);
     await writeFile(tmp, content, "utf8");
     try {
-      await this.deps.client.uploadToSandbox({ name, localPath: tmp, dest: SANDBOX_PROMPT_FILE });
+      await this.deps.client.uploadToSandbox({
+        name,
+        localPath: tmp,
+        dest: SANDBOX_PROMPT_FILE,
+        ...(signal !== undefined ? { signal } : {}),
+      });
     } finally {
       await unlink(tmp).catch(() => undefined);
     }
@@ -293,15 +349,28 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
   private async collectPolicyDenials(name: string, taskId: string, projectId?: string): Promise<void> {
     if (this.deps.recordDenial === undefined) return;
     try {
-      const logs = await this.deps.client.getSandboxLogs({ name, lines: 200, since: "2h" });
+      const logs = await this.deps.client.getSandboxLogs({ name, lines: 200, since: "75m" });
+      const seen = this.denialFingerprints.get(name) ?? new Set<string>();
+      this.denialFingerprints.set(name, seen);
       for (const line of logs.split(/\r?\n/)) {
         const denial = parseDenialEvent(line);
-        if (denial !== null) {
+        if (denial === null) continue;
+        const fingerprint = createHash("sha256").update(line.trim().replace(/\s+/g, " ")).digest("hex");
+        if (seen.has(fingerprint)) continue;
+        seen.add(fingerprint);
+        if (seen.size > MAX_DENIAL_FINGERPRINTS_PER_SANDBOX) {
+          const oldest = seen.values().next().value;
+          if (oldest !== undefined) seen.delete(oldest);
+        }
+        try {
           await this.deps.recordDenial({
             ...denial,
             taskId,
             ...(projectId !== undefined ? { projectId } : {}),
           });
+        } catch (err) {
+          seen.delete(fingerprint);
+          throw err;
         }
       }
     } catch (err) {
@@ -342,27 +411,47 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
       throw new Error("OpenShellWorkspaceRunner.runReviewInDocker requires a review-capable agent adapter");
     }
     const spec = adapter.buildReviewContainerSpec(input);
+    const providerEnv = splitManagedProviderEnv(name, spec.env);
 
     const policyYaml = await this.resolvePolicy(taskId, "review");
     try {
+      if (providerEnv.provider !== undefined) {
+        this.providerNames.set(handle.containerId, providerEnv.provider.name);
+        await this.deps.managedProviderStore.recordManagedOpenShellProvider({
+          providerName: providerEnv.provider.name,
+          sandboxName: name,
+          taskHash: sandboxTaskHash(taskId),
+          createdAt: new Date(),
+        });
+        await this.deps.client.createProvider({
+          ...providerEnv.provider,
+          ...(input.abortSignal !== undefined ? { signal: input.abortSignal } : {}),
+        });
+      }
       await this.deps.client.createSandbox({
         name,
         from: spec.image,
-        env: spec.env,
+        env: providerEnv.env,
+        ...(providerEnv.provider !== undefined ? { providers: [providerEnv.provider.name] } : {}),
+        labels: sandboxOwnershipLabels(taskId),
         ...(policyYaml !== undefined ? { policyYaml } : {}),
         beforeRetryCleanup: () => this.collectPolicyDenials(name, taskId, input.projectId),
+        ...(input.abortSignal !== undefined ? { signal: input.abortSignal } : {}),
       });
-      await this.applyEgress(name, spec.egress);
+      await this.applyEgress(name, spec.egress, input.abortSignal);
       // Read-only workspace: upload the repo so the review agent sees the diff. No download back.
       await this.deps.client.uploadToSandbox({
         name,
         localPath: dir,
         dest: SANDBOX_WORKSPACE,
         noGitIgnore: true,
+        ...(input.abortSignal !== undefined ? { signal: input.abortSignal } : {}),
       });
       const repoDir = this.sandboxRepoPath(dir);
-      await this.runPostCloneScript(name, handle.containerId, repoDir);
-      const env = { USER_PROMPT_FILE: await this.uploadPrompt(name, input.prompt) };
+      await this.runPostCloneScript(name, handle.containerId, repoDir, input.abortSignal);
+      const env = {
+        USER_PROMPT_FILE: await this.uploadPrompt(name, input.prompt, input.abortSignal),
+      };
       const result = await this.deps.client.execInSandbox({
         name,
         command: spec.command,
@@ -370,6 +459,7 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
         workdir: repoDir,
         ...this.execTimeout(),
         ...(callbacks?.onStderrChunk !== undefined ? { onStderrChunk: callbacks.onStderrChunk } : {}),
+        ...(input.abortSignal !== undefined ? { signal: input.abortSignal } : {}),
       });
       this.assertExecSucceeded(result);
       return { rawOutput: decodeReviewWorkerOutput(result.stdout) };
@@ -398,18 +488,34 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
     const spec = isPromptAware(adapter)
       ? await adapter.buildContainerSpecWithPrompts(context, authEnv)
       : adapter.buildContainerSpec(context, authEnv);
+    const providerEnv = splitManagedProviderEnv(name, spec.env);
 
     const policyYaml = await this.resolvePolicy(taskId, "coding");
     try {
+      if (providerEnv.provider !== undefined) {
+        this.providerNames.set(attemptKey, providerEnv.provider.name);
+        await this.deps.managedProviderStore.recordManagedOpenShellProvider({
+          providerName: providerEnv.provider.name,
+          sandboxName: name,
+          taskHash: sandboxTaskHash(taskId),
+          createdAt: new Date(),
+        });
+        await this.deps.client.createProvider({
+          ...providerEnv.provider,
+          ...(context.abortSignal !== undefined ? { signal: context.abortSignal } : {}),
+        });
+      }
       await this.deps.client.createSandbox({
         name,
         from: spec.image,
-        env: spec.env,
+        env: providerEnv.env,
+        ...(providerEnv.provider !== undefined ? { providers: [providerEnv.provider.name] } : {}),
+        labels: sandboxOwnershipLabels(taskId),
         ...(policyYaml !== undefined ? { policyYaml } : {}),
         beforeRetryCleanup: () => this.collectPolicyDenials(name, taskId, context.projectId),
         ...(context.abortSignal !== undefined ? { signal: context.abortSignal } : {}),
       });
-      await this.applyEgress(name, spec.egress);
+      await this.applyEgress(name, spec.egress, context.abortSignal);
       // Upload the full workspace (incl. .git) so the agent can commit inside the sandbox.
       await this.deps.client.uploadToSandbox({
         name,
@@ -422,7 +528,7 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
       await this.runPostCloneScript(name, attemptKey, repoDir, context.abortSignal);
       const env: Record<string, string> = {};
       if (spec.userPromptContent !== undefined) {
-        env["USER_PROMPT_FILE"] = await this.uploadPrompt(name, spec.userPromptContent);
+        env["USER_PROMPT_FILE"] = await this.uploadPrompt(name, spec.userPromptContent, context.abortSignal);
       }
       const result = await this.deps.client.execInSandbox({
         name,
@@ -462,17 +568,35 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
   }
 
   async destroyWorkspace(handle: WorkspaceHandle): Promise<void> {
+    let sandboxRemoved = false;
+    let providerRemoved = false;
+    const sandboxName = handle.containerId.startsWith("openshell:")
+      ? handle.containerId.slice("openshell:".length)
+      : this.sandboxName(String(handle.taskId));
+    const managedSandboxName = sandboxName.startsWith("ve-") ? sandboxName : `ve-${sandboxName}`;
+    const providerName = this.providerNames.get(handle.containerId);
     try {
-      const sandboxName = handle.containerId.startsWith("openshell:")
-        ? handle.containerId.slice("openshell:".length)
-        : this.sandboxName(String(handle.taskId));
-      await this.deps.client.removeSandbox(sandboxName.startsWith("ve-") ? sandboxName : `ve-${sandboxName}`);
+      if (!this.removedSandboxes.has(handle.containerId)) {
+        await this.deps.client.removeSandbox(managedSandboxName);
+        this.removedSandboxes.add(handle.containerId);
+      }
+      sandboxRemoved = true;
+      if (providerName !== undefined) {
+        await this.deps.client.removeProvider(providerName);
+        await this.deps.managedProviderStore.deleteManagedOpenShellProvider(providerName);
+      }
+      providerRemoved = true;
     } finally {
       await this.deps.git.destroyWorkspace(handle.hostWorkspacePath);
       this.dirs.delete(handle.containerId);
-      this.sandboxNames.delete(handle.containerId);
-      this.trustedRemotes.delete(handle.containerId);
-      this.postCloneScripts.delete(handle.containerId);
+      if (sandboxRemoved && providerRemoved) {
+        this.sandboxNames.delete(handle.containerId);
+        this.providerNames.delete(handle.containerId);
+        this.removedSandboxes.delete(handle.containerId);
+        this.trustedRemotes.delete(handle.containerId);
+        this.postCloneScripts.delete(handle.containerId);
+        this.denialFingerprints.delete(sandboxName);
+      }
     }
   }
 }

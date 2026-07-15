@@ -1,5 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
-import { OpenShellWorkspaceRunner } from "../../src/workspace/openShellWorkspaceRunner.js";
+import {
+  OpenShellWorkspaceRunner as ProductionOpenShellWorkspaceRunner,
+  type OpenShellRunnerDeps,
+} from "../../src/workspace/openShellWorkspaceRunner.js";
 import { HostGitExecutor } from "../../src/workspace/hostGitExecutor.js";
 import type { OpenShellClient } from "../../src/openshell/openShellClient.js";
 import type { AgentAdapter, ReviewWorkspaceInput, TaskContext, TaskId, WorkspaceHandle, WorkspaceRunner } from "../../src/interfaces.js";
@@ -12,9 +15,15 @@ const REQUIRED_METHODS: (keyof WorkspaceRunner)[] = [
   "destroyWorkspace",
 ];
 
-function fakeClient(spy: { createSandbox: ReturnType<typeof vi.fn>; exec: ReturnType<typeof vi.fn> }): OpenShellClient {
+function fakeClient(spy: {
+  createSandbox: ReturnType<typeof vi.fn>;
+  exec: ReturnType<typeof vi.fn>;
+  createProvider?: ReturnType<typeof vi.fn>;
+}): OpenShellClient {
   return {
     createSandbox: spy.createSandbox,
+    createProvider: spy.createProvider ?? vi.fn().mockResolvedValue(undefined),
+    removeProvider: vi.fn().mockResolvedValue(undefined),
     uploadToSandbox: vi.fn().mockResolvedValue(undefined),
     downloadFromSandbox: vi.fn().mockResolvedValue(undefined),
     execInSandbox: spy.exec,
@@ -22,6 +31,19 @@ function fakeClient(spy: { createSandbox: ReturnType<typeof vi.fn>; exec: Return
     removeSandbox: vi.fn().mockResolvedValue(undefined),
     gatewayHealthy: vi.fn().mockResolvedValue(true),
   } as unknown as OpenShellClient;
+}
+
+type TestRunnerDeps = Omit<OpenShellRunnerDeps, "managedProviderStore"> &
+  Partial<Pick<OpenShellRunnerDeps, "managedProviderStore">>;
+
+class OpenShellWorkspaceRunner extends ProductionOpenShellWorkspaceRunner {
+  constructor(deps: TestRunnerDeps) {
+    const managedProviderStore = deps.managedProviderStore ?? {
+      recordManagedOpenShellProvider: vi.fn().mockResolvedValue(undefined),
+      deleteManagedOpenShellProvider: vi.fn().mockResolvedValue(undefined),
+    };
+    super({ ...deps, managedProviderStore });
+  }
 }
 
 describe("WorkspaceRunner contract — openshell (sole runtime)", () => {
@@ -97,20 +119,22 @@ describe("Security — push credentials never reach the OpenShell sandbox", () =
     expect(args.some((a) => a.includes(SECRET))).toBe(false);
   });
 
-  it("agent run forwards the adapter spec env but not push/review-system secrets", async () => {
+  it("agent run isolates inference credentials from sandbox and push secrets", async () => {
     const createSandbox = vi.fn().mockResolvedValue(undefined);
+    const createProvider = vi.fn().mockResolvedValue(undefined);
     const exec = vi.fn().mockResolvedValue({ code: 0, stdout: "", stderr: "" });
     const git = new HostGitExecutor({ baseDir: "/tmp", git: vi.fn().mockResolvedValue("") });
     vi.spyOn(git, "rebuildTrustedMetadata").mockResolvedValue(undefined);
     const runner = new OpenShellWorkspaceRunner({
       git,
-      client: fakeClient({ createSandbox, exec }),
+      client: fakeClient({ createSandbox, exec, createProvider }),
       sandboxImage: "img",
     });
     const ctx = { taskId: "t1", workspacePath: "/tmp/ws" } as unknown as TaskContext;
     const PUSH_SECRET = "GERRIT_HTTP_PASSWORD_value";
-    // The adapter spec is the ONLY source of sandbox env: it carries the agent's own
-    // inference token, never push/review-system credentials (those stay host-side in src/vcs).
+    // The adapter spec carries the agent's inference token, never push/review-system
+    // credentials (those stay host-side in src/vcs). The runner extracts supported
+    // agent credentials into an attached provider before sandbox creation.
     const adapter = {
       name: "copilot",
       buildContainerSpecWithPrompts: vi.fn().mockResolvedValue({
@@ -125,8 +149,12 @@ describe("Security — push credentials never reach the OpenShell sandbox", () =
     const args: string[] = [];
     createSandbox.mock.calls.forEach((c) => collectStrings(c, args));
     exec.mock.calls.forEach((c) => collectStrings(c, args));
-    // Push credential never appears; the agent's own inference token is forwarded.
+    // Neither secret reaches sandbox create/exec arguments. The inference credential
+    // is supplied only to provider creation's child-specific environment.
     expect(args.some((a) => a.includes(PUSH_SECRET))).toBe(false);
-    expect(args.some((a) => a.includes("agent-inference-tok"))).toBe(true);
+    expect(args.some((a) => a.includes("agent-inference-tok"))).toBe(false);
+    expect(createProvider).toHaveBeenCalledWith(expect.objectContaining({
+      credentials: { GITHUB_TOKEN: "agent-inference-tok" },
+    }));
   });
 });

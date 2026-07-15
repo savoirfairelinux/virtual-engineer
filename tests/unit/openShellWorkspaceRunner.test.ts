@@ -1,5 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
-import { OpenShellWorkspaceRunner } from "../../src/workspace/openShellWorkspaceRunner.js";
+import {
+  OpenShellWorkspaceRunner as ProductionOpenShellWorkspaceRunner,
+  type OpenShellRunnerDeps,
+} from "../../src/workspace/openShellWorkspaceRunner.js";
 import type { HostGitExecutor } from "../../src/workspace/hostGitExecutor.js";
 import type { OpenShellClient } from "../../src/openshell/openShellClient.js";
 import type {
@@ -10,6 +13,7 @@ import type {
   TaskId,
   WorkspaceHandle,
 } from "../../src/interfaces.js";
+import { sandboxTaskHash } from "../../src/openshell/sandboxOwnership.js";
 
 function fakeGit(overrides: Partial<HostGitExecutor> = {}): HostGitExecutor {
   return {
@@ -27,6 +31,8 @@ function fakeGit(overrides: Partial<HostGitExecutor> = {}): HostGitExecutor {
 
 function fakeClient(overrides: Partial<OpenShellClient> = {}): OpenShellClient {
   return {
+    createProvider: vi.fn().mockResolvedValue(undefined),
+    removeProvider: vi.fn().mockResolvedValue(undefined),
     createSandbox: vi.fn().mockResolvedValue(undefined),
     uploadToSandbox: vi.fn().mockResolvedValue(undefined),
     downloadFromSandbox: vi.fn().mockResolvedValue(undefined),
@@ -38,6 +44,19 @@ function fakeClient(overrides: Partial<OpenShellClient> = {}): OpenShellClient {
     getSandboxLogs: vi.fn().mockResolvedValue(""),
     ...overrides,
   } as unknown as OpenShellClient;
+}
+
+type TestRunnerDeps = Omit<OpenShellRunnerDeps, "managedProviderStore"> &
+  Partial<Pick<OpenShellRunnerDeps, "managedProviderStore">>;
+
+class OpenShellWorkspaceRunner extends ProductionOpenShellWorkspaceRunner {
+  constructor(deps: TestRunnerDeps) {
+    const managedProviderStore = deps.managedProviderStore ?? {
+      recordManagedOpenShellProvider: vi.fn().mockResolvedValue(undefined),
+      deleteManagedOpenShellProvider: vi.fn().mockResolvedValue(undefined),
+    };
+    super({ ...deps, managedProviderStore });
+  }
 }
 
 /** Minimal coding adapter that resolves prompts (prompt-aware). */
@@ -121,6 +140,70 @@ describe("OpenShellWorkspaceRunner", () => {
       host: "blocked.example",
       decision: "deny",
     }));
+  });
+
+  it("deduplicates overlapping denial snapshots but preserves later events", async () => {
+    const firstEvent = "[1.0] [sandbox] [OCSF ] [ocsf] NET:OPEN [MED] DENIED /usr/bin/curl(64) -> blocked.example:443 [policy:- engine:opa]";
+    const laterEvent = "[2.0] [sandbox] [OCSF ] [ocsf] NET:OPEN [MED] DENIED /usr/bin/curl(64) -> blocked.example:443 [policy:- engine:opa]";
+    const recordDenial = vi.fn().mockResolvedValue(undefined);
+    const getSandboxLogs = vi.fn()
+      .mockResolvedValueOnce(firstEvent)
+      .mockResolvedValueOnce(`${firstEvent}\n${laterEvent}`);
+    const createSandbox = vi.fn(async (input: Parameters<OpenShellClient["createSandbox"]>[0]) => {
+      await input.beforeRetryCleanup?.();
+    });
+    const runner = new OpenShellWorkspaceRunner({
+      git: fakeGit(),
+      client: fakeClient({ createSandbox, getSandboxLogs } as unknown as Partial<OpenShellClient>),
+      sandboxImage: "base",
+      recordDenial,
+    });
+    await runner.prepareProjectWorkspace(handle, [{
+      repoKey: "root", cloneUrl: "https://example.test/repo.git", targetBranch: "main", role: "primary",
+      commitOrder: 1, localPath: ".", integrationId: "i", sshKeyPath: null,
+    }] as unknown as ProjectPushTargetRecord[]);
+
+    await runner.runAgentInDocker(
+      fakeCodingAdapter(),
+      { taskId: "t1", projectId: "p1", workspacePath: "/tmp/ws-1" } as unknown as TaskContext,
+    );
+
+    expect(getSandboxLogs).toHaveBeenCalledTimes(2);
+    expect(recordDenial).toHaveBeenCalledTimes(2);
+    expect(recordDenial.mock.calls.map(([denial]) => denial.reason)).toEqual([
+      expect.stringContaining("[1.0]"),
+      expect.stringContaining("[2.0]"),
+    ]);
+  });
+
+  it("retries a denial after its first persistence attempt fails", async () => {
+    const event = "[1.0] [sandbox] [OCSF ] [ocsf] NET:OPEN [MED] DENIED /usr/bin/curl(64) -> blocked.example:443 [policy:- engine:opa]";
+    const recordDenial = vi.fn()
+      .mockRejectedValueOnce(new Error("database busy"))
+      .mockResolvedValueOnce(undefined);
+    const createSandbox = vi.fn(async (input: Parameters<OpenShellClient["createSandbox"]>[0]) => {
+      await input.beforeRetryCleanup?.();
+    });
+    const runner = new OpenShellWorkspaceRunner({
+      git: fakeGit(),
+      client: fakeClient({
+        createSandbox,
+        getSandboxLogs: vi.fn().mockResolvedValue(event),
+      } as unknown as Partial<OpenShellClient>),
+      sandboxImage: "base",
+      recordDenial,
+    });
+    await runner.prepareProjectWorkspace(handle, [{
+      repoKey: "root", cloneUrl: "https://example.test/repo.git", targetBranch: "main", role: "primary",
+      commitOrder: 1, localPath: ".", integrationId: "i", sshKeyPath: null,
+    }] as unknown as ProjectPushTargetRecord[]);
+
+    await runner.runAgentInDocker(
+      fakeCodingAdapter(),
+      { taskId: "t1", projectId: "p1", workspacePath: "/tmp/ws-1" } as unknown as TaskContext,
+    );
+
+    expect(recordDenial).toHaveBeenCalledTimes(2);
   });
 
   it("collects policy denials when coding workspace upload fails", async () => {
@@ -266,7 +349,12 @@ describe("OpenShellWorkspaceRunner", () => {
       agentAdapter: fakeReviewAdapter(),
       resolvePolicy: ({ mode }) => (mode === "review" ? "network:\n  default: deny\n" : undefined),
     });
-    const input = { changeId: "Iabc", prompt: "review this diff" } as unknown as ReviewWorkspaceInput;
+    const abortController = new AbortController();
+    const input = {
+      changeId: "Iabc",
+      prompt: "review this diff",
+      abortSignal: abortController.signal,
+    } as unknown as ReviewWorkspaceInput;
     const out = await runner.runReviewInDocker(handle, input);
     expect(client.createSandbox).toHaveBeenCalledWith(expect.objectContaining({
       name: "ve-t1",
@@ -274,18 +362,22 @@ describe("OpenShellWorkspaceRunner", () => {
       env: { REVIEW_MODE: "1" },
       policyYaml: expect.stringContaining("default: deny"),
       beforeRetryCleanup: expect.any(Function),
+      signal: abortController.signal,
     }));
     expect(client.setPolicy).not.toHaveBeenCalled();
     // Egress is opened for the review agent's model API.
     expect(client.allowEgress).toHaveBeenCalledWith(
-      expect.objectContaining({ name: "ve-t1", hosts: ["api.githubcopilot.com"], binaries: ["/usr/local/bin/node"] })
+      expect.objectContaining({ name: "ve-t1", hosts: ["api.githubcopilot.com"], binaries: ["/usr/local/bin/node"], signal: abortController.signal })
     );
     // Review uploads the workspace (read-only) but never downloads it back.
     expect(client.uploadToSandbox).toHaveBeenCalledWith(
-      expect.objectContaining({ name: "ve-t1", dest: "/sandbox", noGitIgnore: true })
+      expect.objectContaining({ name: "ve-t1", dest: "/sandbox", noGitIgnore: true, signal: abortController.signal })
+    );
+    expect(client.uploadToSandbox).toHaveBeenCalledWith(
+      expect.objectContaining({ dest: "/tmp/user-prompt.txt", signal: abortController.signal })
     );
     expect(client.execInSandbox).toHaveBeenCalledWith(
-      expect.objectContaining({ env: { USER_PROMPT_FILE: expect.any(String) } })
+      expect.objectContaining({ env: { USER_PROMPT_FILE: expect.any(String) }, signal: abortController.signal })
     );
     expect(client.downloadFromSandbox).not.toHaveBeenCalled();
     expect(out.rawOutput).toBe("ok");
@@ -317,6 +409,42 @@ describe("OpenShellWorkspaceRunner", () => {
     expect(execInSandbox).toHaveBeenCalledWith(expect.objectContaining({ timeout: 3600 }));
   });
 
+  it.each([
+    ["ANTHROPIC_API_KEY", "claude-code"],
+    ["CLAUDE_CODE_OAUTH_TOKEN", "generic"],
+  ])("moves %s into a %s provider while preserving review env", async (credentialKey, providerType) => {
+    const client = fakeClient({
+      execInSandbox: vi.fn().mockResolvedValue({
+        code: 0,
+        stdout: reviewWorkerStdout("ok"),
+        stderr: "",
+      }),
+    } as unknown as Partial<OpenShellClient>);
+    const runner = new OpenShellWorkspaceRunner({
+      git: fakeGit(),
+      client,
+      sandboxImage: "base",
+      agentAdapter: fakeReviewAdapter({
+        env: { REVIEW_MODE: "1", [credentialKey]: "secret" },
+      }),
+    });
+
+    await runner.runReviewInDocker(
+      handle,
+      { changeId: "Iabc", prompt: "review this diff" } as unknown as ReviewWorkspaceInput,
+    );
+
+    expect(client.createProvider).toHaveBeenCalledWith({
+      name: "ve-t1-agent",
+      type: providerType,
+      credentials: { [credentialKey]: "secret" },
+    });
+    expect(client.createSandbox).toHaveBeenCalledWith(expect.objectContaining({
+      env: { REVIEW_MODE: "1" },
+      providers: ["ve-t1-agent"],
+    }));
+  });
+
   it("rejects review output when OpenShell exec exits non-zero", async () => {
     const client = fakeClient({
       execInSandbox: vi.fn().mockResolvedValue({
@@ -338,18 +466,47 @@ describe("OpenShellWorkspaceRunner", () => {
     )).rejects.toThrow(/exited with code 124.*timed out/i);
   });
 
-  it("coding run uploads the workspace, execs the agent, and downloads results back", async () => {
+  it("moves the Copilot credential into an attached provider before a coding run", async () => {
     const client = fakeClient();
     const git = fakeGit();
-    const runner = new OpenShellWorkspaceRunner({ git, client, sandboxImage: "base" });
+    const recordManagedProvider = vi.fn().mockResolvedValue(undefined);
+    const runner = new OpenShellWorkspaceRunner({
+      git,
+      client,
+      sandboxImage: "base",
+      managedProviderStore: {
+        recordManagedOpenShellProvider: recordManagedProvider,
+        deleteManagedOpenShellProvider: vi.fn().mockResolvedValue(undefined),
+      },
+    });
     const ctx = { taskId: "t1", workspacePath: "/tmp/ws-1" } as unknown as TaskContext;
-    const adapter = fakeCodingAdapter({ env: { GITHUB_TOKEN: "tok" }, userPromptContent: "do the task" });
+    const adapter = fakeCodingAdapter({
+      env: { GITHUB_TOKEN: "tok", COPILOT_MODEL: "auto" },
+      userPromptContent: "do the task",
+    });
     await runner.cloneRepo(handle, "https://trusted.example/repo.git", "main");
     await runner.runAgentInDocker(adapter, ctx, { GITHUB_TOKEN: "tok" });
 
-    expect(client.createSandbox).toHaveBeenCalledWith(
-      expect.objectContaining({ name: "ve-t1", from: "agent:img", env: { GITHUB_TOKEN: "tok" } })
+    expect(client.createProvider).toHaveBeenCalledWith({
+      name: "ve-t1-agent",
+      type: "copilot",
+      credentials: { GITHUB_TOKEN: "tok" },
+    });
+    expect(recordManagedProvider).toHaveBeenCalledWith({
+      providerName: "ve-t1-agent",
+      sandboxName: "ve-t1",
+      taskHash: sandboxTaskHash("t1"),
+      createdAt: expect.any(Date),
+    });
+    expect(recordManagedProvider.mock.invocationCallOrder[0]).toBeLessThan(
+      (client.createProvider as unknown as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]!,
     );
+    expect(client.createSandbox).toHaveBeenCalledWith(expect.objectContaining({
+      name: "ve-t1",
+      from: "agent:img",
+      env: { COPILOT_MODEL: "auto" },
+      providers: ["ve-t1-agent"],
+    }));
     // Egress is opened for the coding agent's model API.
     expect(client.allowEgress).toHaveBeenCalledWith(
       expect.objectContaining({ name: "ve-t1", hosts: ["api.githubcopilot.com"], binaries: ["/usr/local/bin/node"] })
@@ -372,6 +529,29 @@ describe("OpenShellWorkspaceRunner", () => {
       "/tmp/ws-1",
       new Map([[".", "https://trusted.example/repo.git"]]),
     );
+  });
+
+  it("does not create remote resources when provider ownership cannot be persisted", async () => {
+    const client = fakeClient();
+    const runner = new OpenShellWorkspaceRunner({
+      git: fakeGit(),
+      client,
+      sandboxImage: "base",
+      managedProviderStore: {
+        recordManagedOpenShellProvider: vi.fn().mockRejectedValue(new Error("database unavailable")),
+        deleteManagedOpenShellProvider: vi.fn().mockResolvedValue(undefined),
+      },
+    });
+    const adapter = fakeCodingAdapter({ env: { GITHUB_TOKEN: "tok" } });
+
+    await expect(runner.runAgentInDocker(
+      adapter,
+      { taskId: "t1", workspacePath: "/tmp/ws-1" } as unknown as TaskContext,
+      { GITHUB_TOKEN: "tok" },
+    )).rejects.toThrow("database unavailable");
+
+    expect(client.createProvider).not.toHaveBeenCalled();
+    expect(client.createSandbox).not.toHaveBeenCalled();
   });
 
   it("forwards coding output chunks and the OpenShell exec timeout", async () => {
@@ -443,5 +623,65 @@ describe("OpenShellWorkspaceRunner", () => {
     await runner.destroyWorkspace(handle);
     expect(client.removeSandbox).toHaveBeenCalledWith("ve-t1");
     expect(git.destroyWorkspace).toHaveBeenCalledWith("/tmp/ws-1");
+  });
+
+  it("retains sandbox attempt ownership until a failed delete is retried successfully", async () => {
+    const git = fakeGit();
+    const removeSandbox = vi.fn()
+      .mockRejectedValueOnce(new Error("gateway unavailable"))
+      .mockResolvedValueOnce(undefined);
+    const runner = new OpenShellWorkspaceRunner({
+      git,
+      client: fakeClient({ removeSandbox } as unknown as Partial<OpenShellClient>),
+      sandboxImage: "base",
+    });
+    const created = await runner.createWorkspace("cleanup-task" as TaskId);
+
+    await expect(runner.destroyWorkspace(created)).rejects.toThrow("gateway unavailable");
+    const ownership = (runner as unknown as { sandboxNames: Map<string, string> }).sandboxNames;
+    expect(ownership.get(created.containerId)).toBe(created.containerId.replace("openshell:", ""));
+    await expect(runner.destroyWorkspace(created)).resolves.toBeUndefined();
+
+    expect(removeSandbox).toHaveBeenCalledTimes(2);
+    expect(removeSandbox.mock.calls[1]).toEqual(removeSandbox.mock.calls[0]);
+    expect(git.destroyWorkspace).toHaveBeenCalledTimes(2);
+    expect(ownership.has(created.containerId)).toBe(false);
+  });
+
+  it("deletes an attached provider after its sandbox and retries provider cleanup independently", async () => {
+    const removeSandbox = vi.fn().mockResolvedValue(undefined);
+    const removeProvider = vi.fn()
+      .mockRejectedValueOnce(new Error("provider cleanup unavailable"))
+      .mockResolvedValueOnce(undefined);
+    const client = fakeClient({ removeSandbox, removeProvider } as unknown as Partial<OpenShellClient>);
+    const deleteManagedProvider = vi.fn().mockResolvedValue(undefined);
+    const runner = new OpenShellWorkspaceRunner({
+      git: fakeGit(),
+      client,
+      sandboxImage: "base",
+      managedProviderStore: {
+        recordManagedOpenShellProvider: vi.fn().mockResolvedValue(undefined),
+        deleteManagedOpenShellProvider: deleteManagedProvider,
+      },
+    });
+    const adapter = fakeCodingAdapter({ env: { GITHUB_TOKEN: "tok" } });
+    await runner.cloneRepo(handle, "https://trusted.example/repo.git", "main");
+    await runner.runAgentInDocker(
+      adapter,
+      { taskId: "t1", workspacePath: "/tmp/ws-1", runtimeHandleId: handle.containerId } as unknown as TaskContext,
+      { GITHUB_TOKEN: "tok" },
+    );
+
+    await expect(runner.destroyWorkspace(handle)).rejects.toThrow("provider cleanup unavailable");
+    expect(removeSandbox).toHaveBeenCalledOnce();
+    expect(removeProvider).toHaveBeenCalledWith("ve-t1-agent");
+    expect(removeSandbox.mock.invocationCallOrder[0]).toBeLessThan(removeProvider.mock.invocationCallOrder[0]!);
+    expect(deleteManagedProvider).not.toHaveBeenCalled();
+
+    await expect(runner.destroyWorkspace(handle)).resolves.toBeUndefined();
+    expect(removeSandbox).toHaveBeenCalledOnce();
+    expect(removeProvider).toHaveBeenCalledTimes(2);
+    expect(deleteManagedProvider).toHaveBeenCalledWith("ve-t1-agent");
+    expect(removeProvider.mock.invocationCallOrder[1]).toBeLessThan(deleteManagedProvider.mock.invocationCallOrder[0]!);
   });
 });

@@ -28,6 +28,8 @@ import type { RuntimePolicyStoreApi } from "./stores/runtimePolicyStore.js";
 import { createRuntimePolicyStore } from "./stores/runtimePolicyStore.js";
 import type { DenialStoreApi } from "./stores/denialStore.js";
 import { createDenialStore } from "./stores/denialStore.js";
+import type { OpenShellProviderStoreApi } from "./stores/openShellProviderStore.js";
+import { createOpenShellProviderStore } from "./stores/openShellProviderStore.js";
 import type { ProjectStoreApi } from "./stores/projectStore.js";
 import { createProjectStore } from "./stores/projectStore.js";
 import type { PromptStoreApi } from "./stores/promptStore.js";
@@ -52,7 +54,8 @@ type ComposedStoreApi =
   & GroupStoreApi
   & PolicyStoreApi
   & RuntimePolicyStoreApi
-  & DenialStoreApi;
+  & DenialStoreApi
+  & OpenShellProviderStoreApi;
 
 /** Facade class that composes domain-scoped store modules over one shared SQLite connection. */
 // eslint-disable-next-line @typescript-eslint/no-unsafe-declaration-merging
@@ -71,6 +74,7 @@ export class SqliteStateStore {
   private readonly policyStore: PolicyStoreApi;
   private readonly runtimePolicyStore: RuntimePolicyStoreApi;
   private readonly denialStore: DenialStoreApi;
+  private readonly openShellProviderStore: OpenShellProviderStoreApi;
   private readonly taskTransitionListeners: Array<(task: Task) => void> = [];
 
   constructor(private readonly raw: Database.Database) {
@@ -100,6 +104,7 @@ export class SqliteStateStore {
     this.policyStore = createPolicyStore({ db: this.db });
     this.runtimePolicyStore = createRuntimePolicyStore({ db: this.db });
     this.denialStore = createDenialStore({ db: this.db });
+    this.openShellProviderStore = createOpenShellProviderStore({ db: this.db });
 
     Object.assign(
       this,
@@ -114,7 +119,8 @@ export class SqliteStateStore {
       this.groupStore,
       this.policyStore,
       this.runtimePolicyStore,
-      this.denialStore
+      this.denialStore,
+      this.openShellProviderStore
     );
   }
 
@@ -428,6 +434,17 @@ export class SqliteStateStore {
       CREATE INDEX IF NOT EXISTS idx_policy_denials_task ON policy_denial_events(task_id);
       CREATE INDEX IF NOT EXISTS idx_policy_denials_project ON policy_denial_events(project_id);
       CREATE INDEX IF NOT EXISTS idx_policy_denials_created ON policy_denial_events(created_at);
+
+      CREATE TABLE IF NOT EXISTS managed_openshell_providers (
+        provider_name TEXT    PRIMARY KEY,
+        sandbox_name  TEXT    NOT NULL,
+        task_hash     TEXT    NOT NULL,
+        created_at    INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_managed_openshell_providers_created
+        ON managed_openshell_providers(created_at);
+      CREATE INDEX IF NOT EXISTS idx_managed_openshell_providers_sandbox
+        ON managed_openshell_providers(sandbox_name);
 
       -- ─── Users / Sessions / Audit (admin RBAC) ───────────────────────────
       CREATE TABLE IF NOT EXISTS users (
