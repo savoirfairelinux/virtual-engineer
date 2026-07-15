@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { access } from "node:fs/promises";
 import { constants } from "node:fs";
 import { promisify } from "node:util";
-import { resolveSshSkillSourceUrl } from "../workspace/skillSources.js";
+import { resolveSshSkillSourceUrl, sshSkillSourceCommandPort } from "../workspace/skillSources.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -70,6 +70,7 @@ export function buildSkillListEnv(source: SkillSourceDiscoveryInput): NodeJS.Pro
   const env = skillListSubprocessEnv();
   if (!isSshSkillSource(source)) return env;
   if (!source.sshKeyPath) copyEnv(process.env, "SSH_AUTH_SOCK", env);
+  const sshPort = sshSkillSourceCommandPort(source);
   const hostKeyOpts = source.sshKnownHostsPath
     ? ["-o", "StrictHostKeyChecking=yes", "-o", `UserKnownHostsFile=${quoteSshArg(source.sshKnownHostsPath)}`]
     : ["-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null"];
@@ -79,7 +80,7 @@ export function buildSkillListEnv(source: SkillSourceDiscoveryInput): NodeJS.Pro
       "ssh",
       ...(source.sshKeyPath ? ["-i", quoteSshArg(source.sshKeyPath), "-o", "IdentitiesOnly=yes"] : []),
       ...hostKeyOpts,
-      ...(source.sshPort !== undefined ? ["-p", String(source.sshPort)] : []),
+      ...(sshPort !== undefined ? ["-p", String(sshPort)] : []),
     ].join(" "),
   };
 }

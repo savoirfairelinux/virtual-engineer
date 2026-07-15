@@ -97,18 +97,38 @@ export function resolveSshSkillSourceUrl(source: SkillSourceUrlInput): string {
   if (!source.source.startsWith("ssh://")) {
     return source.source;
   }
-  let url: URL;
-  try {
-    url = new URL(source.source);
-    if (!url.hostname) throw new Error("missing host");
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    throw new Error(`Invalid SSH skill source URL "${source.source}": ${message}`);
-  }
+  const url = parseSshSkillSourceUrl(source.source);
+  rejectConflictingSshPorts(source, url);
   if (source.sshUser === undefined && source.sshPort === undefined) return source.source;
   if (!url.username && source.sshUser !== undefined) url.username = source.sshUser;
   if (!url.port && source.sshPort !== undefined) url.port = String(source.sshPort);
   return url.toString();
+}
+
+export function sshSkillSourceCommandPort(source: SkillSourceUrlInput): number | undefined {
+  if (source.sshPort === undefined) return undefined;
+  if (!source.source.startsWith("ssh://")) return source.sshPort;
+  const url = parseSshSkillSourceUrl(source.source);
+  rejectConflictingSshPorts(source, url);
+  return url.port ? undefined : source.sshPort;
+}
+
+function parseSshSkillSourceUrl(source: string): URL {
+  try {
+    const url = new URL(source);
+    if (!url.hostname) throw new Error("missing host");
+    return url;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(`Invalid SSH skill source URL "${source}": ${message}`);
+  }
+}
+
+function rejectConflictingSshPorts(source: SkillSourceUrlInput, url: URL): void {
+  if (source.sshPort === undefined || !url.port || Number(url.port) === source.sshPort) return;
+  throw new Error(
+    `Conflicting SSH ports for skill source "${source.source}": URL uses port ${url.port} but sshPort is ${source.sshPort}. Remove sshPort or make both ports match.`
+  );
 }
 
 export function resolveSkillSourceUrl(source: RemoteSkillSource): string {

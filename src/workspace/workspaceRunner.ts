@@ -14,7 +14,7 @@ import type {
 import type { AgentAdapter } from "../interfaces.js";
 import { createVolume, removeVolume, execInVolume, stopContainersUsingVolume } from "./dockerVolume.js";
 import { getLogger } from "../logger.js";
-import { buildSkillsCliArgs, isSshSkillSource, parseRemoteSkillSources, skillsAgentId } from "./skillSources.js";
+import { buildSkillsCliArgs, isSshSkillSource, parseRemoteSkillSources, skillsAgentId, sshSkillSourceCommandPort } from "./skillSources.js";
 import type { AgentProvider } from "./skillSources.js";
 
 const log = getLogger("workspace-runner");
@@ -98,6 +98,7 @@ export class DockerWorkspaceRunner implements WorkspaceRunner {
     for (const source of sources) {
       const skills = source.installAll === true ? "all" : source.skills;
       const needsSsh = isSshSkillSource(source);
+      const sshPort = needsSsh ? sshSkillSourceCommandPort(source) : undefined;
       if (needsSsh && !source.sshKeyPath && !process.env["SSH_AUTH_SOCK"]) {
         throw new Error(`Remote SSH skill source ${source.source} requires SSH_AUTH_SOCK or sshKeyPath to be configured`);
       }
@@ -114,7 +115,7 @@ export class DockerWorkspaceRunner implements WorkspaceRunner {
         ...(needsSsh ? {
           ...(source.sshKeyPath ? { sshKeyPath: source.sshKeyPath } : {}),
           ...(source.sshKnownHostsPath ? { sshKnownHostsPath: source.sshKnownHostsPath } : {}),
-          ...(source.sshPort !== undefined ? { sshPort: source.sshPort } : {}),
+          ...(sshPort !== undefined ? { sshPort } : {}),
         } : {}),
         forwardSshAgent: needsSsh && !source.sshKeyPath,
         networkMode: spec.networkMode,
