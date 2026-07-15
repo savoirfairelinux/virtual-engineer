@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { access } from "node:fs/promises";
 import { constants } from "node:fs";
 import { promisify } from "node:util";
+import { resolveSshSkillSourceUrl } from "../workspace/skillSources.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -53,26 +54,40 @@ function skillListSubprocessEnv(): NodeJS.ProcessEnv {
   return env;
 }
 
+function normalizedSourcePrefix(source: string): string {
+  return source.trimStart().toLowerCase();
+}
+
+function isSshUrlSource(source: string): boolean {
+  return normalizedSourcePrefix(source).startsWith("ssh://");
+}
+
 function isSshSkillSource(source: SkillSourceDiscoveryInput): boolean {
-  return source.source.startsWith("ssh://") || source.source.startsWith("git@");
+  const normalized = normalizedSourcePrefix(source.source);
+  return normalized.startsWith("ssh://") || normalized.startsWith("git@");
+}
+
+function sshConnectionSpec(source: SkillSourceDiscoveryInput): { target: string; port?: number } | undefined {
+  const sourceValue = source.source.trimStart();
+  if (isSshUrlSource(sourceValue)) {
+    const resolved = new URL(resolveSkillSourceUrl(source));
+    const user = resolved.username ? `${decodeURIComponent(resolved.username)}@` : "";
+    return {
+      target: `${user}${resolved.hostname}`,
+      ...(resolved.port ? { port: Number(resolved.port) } : {}),
+    };
+  }
+
+  const scpLike = /^([^@\s]+@[^:\s]+):/.exec(sourceValue);
+  if (!scpLike?.[1]) return undefined;
+  return {
+    target: scpLike[1],
+    ...(source.sshPort !== undefined ? { port: source.sshPort } : {}),
+  };
 }
 
 export function resolveSkillSourceUrl(source: SkillSourceDiscoveryInput): string {
-  if (!source.source.startsWith("ssh://")) {
-    return source.source;
-  }
-  let url: URL;
-  try {
-    url = new URL(source.source);
-    if (!url.hostname) throw new Error("missing host");
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    throw new Error(`Invalid SSH skill source URL "${source.source}": ${message}`);
-  }
-  if (source.sshUser === undefined && source.sshPort === undefined) return source.source;
-  if (!url.username && source.sshUser !== undefined) url.username = source.sshUser;
-  if (!url.port && source.sshPort !== undefined) url.port = String(source.sshPort);
-  return url.toString();
+  return resolveSshSkillSourceUrl(source);
 }
 
 export function buildSkillListArgs(source: SkillSourceDiscoveryInput): string[] {
@@ -98,7 +113,7 @@ export function buildSkillListEnv(source: SkillSourceDiscoveryInput): NodeJS.Pro
 }
 
 export async function validateSkillSourceSshAuth(source: SkillSourceDiscoveryInput): Promise<void> {
-  if (!source.source.startsWith("ssh://") && !source.source.startsWith("git@")) return;
+  if (!isSshSkillSource(source)) return;
   if (!source.sshKeyPath) {
     if (!process.env["SSH_AUTH_SOCK"]) {
       throw new Error("SSH skill sources require the orchestrator to run with SSH_AUTH_SOCK, or an SSH private key path on the skill source.");
