@@ -23,7 +23,8 @@ interface SkillInstallSpec {
   homeVolumeName: string;
   image: string;
   skillSourcesJson?: string | undefined;
-  provider: AgentProvider;
+  provider: AgentProvider | undefined;
+  adapterName: string;
   networkMode?: string | undefined;
   taskId: TaskId;
   onStderrChunk?: ((chunk: string) => void) | undefined;
@@ -46,6 +47,11 @@ function skillInstallError(result: { stdout: string; stderr: string; exitCode: n
     ...(stderr ? [`stderr: ${stderr}`] : []),
     ...(stdout ? [`stdout: ${stdout}`] : []),
   ].join("; ");
+}
+
+function skillInstallProvider(adapter: AgentAdapter): AgentProvider | undefined {
+  if (adapter.name === "claude" || adapter.name === "copilot") return adapter.name;
+  return undefined;
 }
 
 type PromptAwareAgentAdapter = AgentAdapter & {
@@ -94,6 +100,9 @@ export class DockerWorkspaceRunner implements WorkspaceRunner {
     if (!spec.skillSourcesJson) return;
     const sources = parseRemoteSkillSources(spec.skillSourcesJson);
     if (sources.length === 0) return;
+    if (spec.provider === undefined) {
+      throw new Error(`Remote skill sources are not supported for agent provider "${spec.adapterName}"`);
+    }
 
     for (const source of sources) {
       const skills = source.installAll === true ? "all" : source.skills;
@@ -163,11 +172,13 @@ export class DockerWorkspaceRunner implements WorkspaceRunner {
       spec.env["USER_PROMPT_FILE"] = "/ve-home/user-prompt.txt";
     }
 
+    const provider = skillInstallProvider(adapter);
     await this.installRemoteSkillsIntoHomeVolume({
       homeVolumeName: context.homeVolumeName,
       image: this.config.agentContainerImage,
       skillSourcesJson: context.agentSession.skillDiscoveryEnabled ? context.agentSession.skillSourcesJson : undefined,
-      provider: adapter.name === "claude" ? "claude" : "copilot",
+      provider,
+      adapterName: adapter.name,
       networkMode: spec.networkMode,
       taskId: context.taskId,
       onStderrChunk: callbacks.onStderrChunk,
@@ -617,11 +628,13 @@ export class DockerWorkspaceRunner implements WorkspaceRunner {
       throw new Error("Agent adapter does not support buildReviewContainerSpec; cannot run review in Docker");
     }
 
+    const provider = skillInstallProvider(adapter);
     await this.installRemoteSkillsIntoHomeVolume({
       homeVolumeName: handle.homeVolumeName,
       image: this.config.agentContainerImage,
       skillSourcesJson: input.skillDiscoveryEnabled ? input.skillSourcesJson : undefined,
-      provider: adapter.name === "claude" ? "claude" : "copilot",
+      provider,
+      adapterName: adapter.name,
       networkMode: spec.networkMode,
       taskId: handle.taskId,
       onStderrChunk: callbacks.onStderrChunk,
