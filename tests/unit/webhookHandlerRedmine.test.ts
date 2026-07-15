@@ -24,6 +24,7 @@ const project: ProjectRecord = {
   skillDiscoveryEnabled: false,
   gerritTopicOverride: null,
   useFullTicketUrlInCommits: false,
+  postReviewLinkToTicket: false,
   enabled: true,
   createdAt: new Date(),
   updatedAt: new Date(),

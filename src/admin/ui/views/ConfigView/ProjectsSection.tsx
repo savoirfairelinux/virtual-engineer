@@ -32,6 +32,7 @@ interface ApiProjectDetail extends ApiProject {
   skillDiscoveryEnabled?: boolean;
   gerritTopicOverride?: string | null;
   useFullTicketUrlInCommits?: boolean;
+  postReviewLinkToTicket?: boolean;
 }
 
 export function ProjectsSection({ projects, agents, integrations, onRefresh }: ConfigViewData) {

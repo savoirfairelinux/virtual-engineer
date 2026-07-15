@@ -68,6 +68,8 @@ export interface ProjectRecord {
   gerritTopicOverride: string | null;
   /** When true, agent commit messages use the full ticket URL in the footer instead of the short "#id" form. */
   useFullTicketUrlInCommits: boolean;
+  /** When true, VE posts a note on the source ticket with the review URL(s) once the first cycle opens a review. Default off — most teams already surface this via standard VCS/ticket integrations. */
+  postReviewLinkToTicket: boolean;
   enabled: boolean;
   createdAt: Date;
   updatedAt: Date;

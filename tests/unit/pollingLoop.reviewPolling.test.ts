@@ -29,6 +29,7 @@ function makeProject(
     skillDiscoveryEnabled: over.skillDiscoveryEnabled ?? false,
     gerritTopicOverride: over.gerritTopicOverride ?? null,
     useFullTicketUrlInCommits: over.useFullTicketUrlInCommits ?? false,
+    postReviewLinkToTicket: over.postReviewLinkToTicket ?? false,
     enabled: over.enabled ?? true,
     createdAt: over.createdAt ?? new Date(),
     updatedAt: over.updatedAt ?? new Date(),
