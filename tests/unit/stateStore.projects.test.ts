@@ -504,6 +504,8 @@ describe("resolveAgentConfig — partial-merge semantics", () => {
       agentOverrideJson,
       postCloneScript: "",
       skillDiscoveryEnabled: false,
+      gerritTopicOverride: null,
+      useFullTicketUrlInCommits: false,
       enabled: true,
       createdAt: new Date(),
       updatedAt: new Date(),

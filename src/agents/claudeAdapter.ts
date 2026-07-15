@@ -170,6 +170,7 @@ export class ClaudeAdapter implements AgentAdapter, ConfigurableAdapter {
         ? { PER_REPO_CHANGE_IDS_JSON: JSON.stringify(session.perRepoChangeIds) }
         : {}),
       ...(session.skillDiscoveryEnabled ? { SKILL_DISCOVERY: "1" } : {}),
+      ...(session.ticketFooterLine ? { TICKET_FOOTER_LINE: session.ticketFooterLine } : {}),
     };
 
     const additionalDockerArgs = [...SECURITY_DOCKER_ARGS];

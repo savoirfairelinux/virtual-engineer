@@ -55,6 +55,8 @@ function makeProjectRecord(): ProjectRecord {
     agentOverrideJson: null,
     postCloneScript: "",
     skillDiscoveryEnabled: false,
+    gerritTopicOverride: null,
+    useFullTicketUrlInCommits: false,
     enabled: true,
     createdAt: new Date(),
     updatedAt: new Date(),

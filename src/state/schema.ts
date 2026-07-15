@@ -304,6 +304,10 @@ export const projects = sqliteTable(
     postCloneScript: text("post_clone_script").notNull().default(""),
     /** When 1, the agent container loads team-defined skills from `<repo>/.github/skills` (coding and review projects). */
     skillDiscoveryEnabled: integer("skill_discovery_enabled").notNull().default(0),
+    /** Optional literal Gerrit topic that overrides the ticket-derived topic (buildGerritTopic) for all pushes from this project. NULL = use the ticket-derived topic. */
+    gerritTopicOverride: text("gerrit_topic_override"),
+    /** When 1, agent commit messages use the full ticket URL in the footer instead of the short "#id" form. */
+    useFullTicketUrlInCommits: integer("use_full_ticket_url_in_commits").notNull().default(0),
     enabled: integer("enabled").notNull().default(0),
     createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
     updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),

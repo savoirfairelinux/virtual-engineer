@@ -56,7 +56,7 @@ function makeTask(over: Partial<Task> = {}): Task {
   } as Task;
 }
 
-function makeProject(): ProjectRecord {
+function makeProject(over: Partial<ProjectRecord> = {}): ProjectRecord {
   return {
     id: makeProjectId("p-1"),
     name: "P1",
@@ -67,6 +67,7 @@ function makeProject(): ProjectRecord {
     enabled: true,
     createdAt: new Date(),
     updatedAt: new Date(),
+    ...over,
   } as ProjectRecord;
 }
 
@@ -950,6 +951,122 @@ describe("Orchestrator — Phase 4 project mode", () => {
     expect(stateStore.saveChangePerRepository).toHaveBeenCalledWith(
       task.taskId, "root", "Ilast",
       "", "OPEN", "vcs-root", "gerrit", 1, expect.any(String)
+    );
+  });
+
+  it("uses the project's gerritTopicOverride instead of the ticket-derived topic when set", async () => {
+    const stateStore = makeStateStore();
+    const project = makeProject({ gerritTopicOverride: "ve-crashfix" });
+    const targets = [
+      makePushTarget({ id: 1, commitOrder: 1, localPath: ".", integrationId: "vcs-root", repoKey: "root" }),
+    ];
+    const vcsRoot: VcsConnector = {
+      clone: vi.fn(),
+      push: vi.fn(),
+      pushDirect: vi.fn().mockResolvedValue({ changeId: "Ilast", url: "http://gerrit/c/Ilast", status: "OPEN" }),
+      getChangeStatus: vi.fn(),
+      buildPushSpec: vi.fn().mockReturnValue({ ref: "refs/for/main", topic: "VE-derived-topic" }),
+      useChangeIdContinuity: true,
+      reviewSystemLabel: "gerrit",
+    } as unknown as VcsConnector;
+
+    const ws = makeWorkspaceRunner({
+      runAgent: vi.fn().mockResolvedValue({
+        status: "success",
+        modifiedFiles: ["src/a.ts"],
+        summary: "ok",
+        agentLogs: "",
+        commits: [
+          { subject: "feat: fix crash", repoKey: "root", changeId: "Ilast", body: "", sha: "aaa", files: ["src/a.ts"] },
+        ],
+        metadata: {},
+      }),
+    });
+
+    const projectMode: ProjectModeDeps = {
+      projectStore: {
+        getProjectById: vi.fn(async () => project),
+        listProjectPushTargets: vi.fn(async () => targets),
+        getProjectTicketSource: vi.fn().mockResolvedValue({ integrationId: "redmine-int" }),
+        getProjectReviewConfig: vi.fn().mockResolvedValue(null),
+        getAgentById: vi.fn(),
+      },
+      pluginManager: { getConnectorForIntegration: vi.fn().mockImplementation((id: string) => {
+        if (id === "redmine-int") return makeRedmine();
+        return null;
+      }) },
+      resolveVcsForIntegration: vi.fn(async () => vcsRoot),
+    };
+
+    const orch = new Orchestrator(baseConfig(), stateStore, ws, undefined, undefined, projectMode);
+    (ws.execGitInVolume as ReturnType<typeof vi.fn>).mockResolvedValue("1\n");
+
+    const task = makeTask({ state: "AGENT_RUNNING" });
+    await (orch as unknown as { runAgentCycle: (t: Task) => Promise<void> }).runAgentCycle(task);
+
+    expect(vcsRoot.pushDirect).toHaveBeenCalledWith(
+      expect.any(String),
+      "refs/for/main",
+      "ve-crashfix",
+      expect.anything()
+    );
+  });
+
+  it("falls back to the ticket-derived topic when gerritTopicOverride is not set", async () => {
+    const stateStore = makeStateStore();
+    const project = makeProject({ gerritTopicOverride: null });
+    const targets = [
+      makePushTarget({ id: 1, commitOrder: 1, localPath: ".", integrationId: "vcs-root", repoKey: "root" }),
+    ];
+    const vcsRoot: VcsConnector = {
+      clone: vi.fn(),
+      push: vi.fn(),
+      pushDirect: vi.fn().mockResolvedValue({ changeId: "Ilast", url: "http://gerrit/c/Ilast", status: "OPEN" }),
+      getChangeStatus: vi.fn(),
+      buildPushSpec: vi.fn().mockReturnValue({ ref: "refs/for/main", topic: "VE-derived-topic" }),
+      useChangeIdContinuity: true,
+      reviewSystemLabel: "gerrit",
+    } as unknown as VcsConnector;
+
+    const ws = makeWorkspaceRunner({
+      runAgent: vi.fn().mockResolvedValue({
+        status: "success",
+        modifiedFiles: ["src/a.ts"],
+        summary: "ok",
+        agentLogs: "",
+        commits: [
+          { subject: "feat: fix crash", repoKey: "root", changeId: "Ilast", body: "", sha: "aaa", files: ["src/a.ts"] },
+        ],
+        metadata: {},
+      }),
+    });
+
+    const projectMode: ProjectModeDeps = {
+      projectStore: {
+        getProjectById: vi.fn(async () => project),
+        listProjectPushTargets: vi.fn(async () => targets),
+        getProjectTicketSource: vi.fn().mockResolvedValue({ integrationId: "redmine-int" }),
+        getProjectReviewConfig: vi.fn().mockResolvedValue(null),
+        getAgentById: vi.fn(),
+      },
+      pluginManager: { getConnectorForIntegration: vi.fn().mockImplementation((id: string) => {
+        if (id === "redmine-int") return makeRedmine();
+        return null;
+      }) },
+      resolveVcsForIntegration: vi.fn(async () => vcsRoot),
+    };
+
+    const orch = new Orchestrator(baseConfig(), stateStore, ws, undefined, undefined, projectMode);
+    (ws.execGitInVolume as ReturnType<typeof vi.fn>).mockResolvedValue("1\n");
+
+    const task = makeTask({ state: "AGENT_RUNNING" });
+    await (orch as unknown as { runAgentCycle: (t: Task) => Promise<void> }).runAgentCycle(task);
+
+    expect(vcsRoot.pushDirect).toHaveBeenCalledWith(
+      expect.any(String),
+      "refs/for/main",
+      "VE-derived-topic",
+      expect.anything()
     );
   });
 
