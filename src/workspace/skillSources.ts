@@ -10,6 +10,12 @@ export interface RemoteSkillSource {
   sshKnownHostsPath?: string;
 }
 
+export interface SkillSourceUrlInput {
+  source: string;
+  sshUser?: string;
+  sshPort?: number;
+}
+
 const DEFAULT_SKILLS_CLI_PACKAGE = "skills@1.5.16";
 const MAX_TCP_PORT = 65_535;
 
@@ -88,8 +94,12 @@ export function skillsAgentId(provider: AgentProvider): string {
   return provider === "claude" ? "claude-code" : "github-copilot";
 }
 
-export function resolveSkillSourceUrl(source: RemoteSkillSource): string {
-  if (!source.source.startsWith("ssh://")) {
+function isSshUrlSource(source: string): boolean {
+  return source.trimStart().toLowerCase().startsWith("ssh://");
+}
+
+export function resolveSshSkillSourceUrl(source: SkillSourceUrlInput): string {
+  if (!isSshUrlSource(source.source)) {
     return source.source;
   }
   let url: URL;
@@ -106,6 +116,36 @@ export function resolveSkillSourceUrl(source: RemoteSkillSource): string {
   return url.toString();
 }
 
+export function sshSkillSourceCommandPort(source: SkillSourceUrlInput): number | undefined {
+  if (source.sshPort === undefined) return undefined;
+  if (!isSshUrlSource(source.source)) return source.sshPort;
+  const url = parseSshSkillSourceUrl(source.source);
+  rejectConflictingSshPorts(source, url);
+  return url.port ? undefined : source.sshPort;
+}
+
+function parseSshSkillSourceUrl(source: string): URL {
+  try {
+    const url = new URL(source);
+    if (!url.hostname) throw new Error("missing host");
+    return url;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(`Invalid SSH skill source URL "${source}": ${message}`);
+  }
+}
+
+function rejectConflictingSshPorts(source: SkillSourceUrlInput, url: URL): void {
+  if (source.sshPort === undefined || !url.port || Number(url.port) === source.sshPort) return;
+  throw new Error(
+    `Conflicting SSH ports for skill source "${source.source}": URL uses port ${url.port} but sshPort is ${source.sshPort}. Remove sshPort or make both ports match.`
+  );
+}
+
+export function resolveSkillSourceUrl(source: RemoteSkillSource): string {
+  return resolveSshSkillSourceUrl(source);
+}
+
 export function buildSkillsCliArgs(source: RemoteSkillSource, provider: AgentProvider): string[] {
   const args = ["--yes", skillsCliPackage(), "add", resolveSkillSourceUrl(source)];
   if (source.installAll !== true) {
@@ -118,5 +158,6 @@ export function buildSkillsCliArgs(source: RemoteSkillSource, provider: AgentPro
 }
 
 export function isSshSkillSource(source: RemoteSkillSource): boolean {
-  return source.source.startsWith("ssh://") || source.source.startsWith("git@");
+  const normalized = source.source.trimStart().toLowerCase();
+  return normalized.startsWith("ssh://") || normalized.startsWith("git@");
 }

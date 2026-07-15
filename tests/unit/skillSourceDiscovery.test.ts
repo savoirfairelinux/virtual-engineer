@@ -62,6 +62,19 @@ describe("admin skill source discovery", () => {
     })).toBe("ssh://git-user@skills.example.com:29418/org/agent-skills");
   });
 
+  it("detects uppercase SSH URLs for URL resolution and SSH env", () => {
+    const source = {
+      source: "SSH://skills.example.com/org/agent-skills",
+      sshUser: "git-user",
+      sshPort: 29418,
+      sshKeyPath: "/tmp/key",
+    };
+
+    expect(resolveSkillSourceUrl(source)).toBe("ssh://git-user@skills.example.com:29418/org/agent-skills");
+    expect(buildSkillListEnv(source)["GIT_SSH_COMMAND"]).toBe("ssh -i '/tmp/key' -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p 29418");
+    expect(buildSshConnectionArgs(source)).toContain("git-user@skills.example.com");
+  });
+
   it("rejects malformed SSH source URLs with context", () => {
     expect(() => resolveSkillSourceUrl({
       source: "ssh://",

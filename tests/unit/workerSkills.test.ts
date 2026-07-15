@@ -87,6 +87,18 @@ describe("agent-worker remote skills", () => {
     expect(buildSkillsCliArgs(source, "copilot")[3]).toBe("ssh://git-user@skills.example.com:29418/org/agent-skills");
   });
 
+  it("detects uppercase SSH source URLs", () => {
+    const source = {
+      source: "SSH://skills.example.com/org/agent-skills",
+      skills: ["skill-a"],
+      sshUser: "git-user",
+      sshPort: 29418,
+    };
+
+    expect(resolveSkillSourceUrl(source)).toBe("ssh://git-user@skills.example.com:29418/org/agent-skills");
+    expect(buildSkillsCliArgs(source, "copilot")[3]).toBe("ssh://git-user@skills.example.com:29418/org/agent-skills");
+  });
+
   it("keeps explicit SSH source user and port", () => {
     expect(resolveSkillSourceUrl({
       source: "ssh://git@skills.example.com:2222/org/agent-skills",

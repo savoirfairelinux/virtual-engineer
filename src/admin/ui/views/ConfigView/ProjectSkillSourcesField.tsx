@@ -52,8 +52,8 @@ export function skillSourceToRow(source: SkillSource): SkillSourceRow {
 }
 
 function isSshSkillSource(source: string): boolean {
-  const trimmed = source.trim();
-  return trimmed.startsWith("ssh://") || trimmed.startsWith("git@");
+  const normalized = source.trimStart().toLowerCase();
+  return normalized.startsWith("ssh://") || normalized.startsWith("git@");
 }
 
 function rowToSkillSource(row: SkillSourceRow): SkillSource | null {
