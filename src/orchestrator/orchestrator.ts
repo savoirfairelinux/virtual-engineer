@@ -797,6 +797,7 @@ export class Orchestrator {
             ? { repositoryMap: buildRepositoryMap(projectPushTargets) }
             : {}),
           ...(projectRecord.skillDiscoveryEnabled ? { skillDiscoveryEnabled: true } : {}),
+          ...(projectRecord.skillDiscoveryEnabled ? { localSkillsPath: projectRecord.localSkillsPath } : {}),
           ...(projectRecord.skillSourcesJson !== "[]"
             ? { skillSourcesJson: projectRecord.skillSourcesJson }
             : {}),

@@ -262,6 +262,9 @@ export class CopilotAdapter implements AgentAdapter, ConfigurableAdapter {
         ? { PER_REPO_CHANGE_IDS_JSON: JSON.stringify(session.perRepoChangeIds) }
         : {}),
       ...(session.skillDiscoveryEnabled ? { SKILL_DISCOVERY: "1" } : {}),
+      ...(session.skillDiscoveryEnabled && session.localSkillsPath !== undefined
+        ? { LOCAL_SKILLS_PATH: session.localSkillsPath }
+        : {}),
       ...(session.ticketFooterLine ? { TICKET_FOOTER_LINE: session.ticketFooterLine } : {}),
     };
 
@@ -320,6 +323,9 @@ export class CopilotAdapter implements AgentAdapter, ConfigurableAdapter {
       USER_PROMPT_FILE: "/ve-home/user-prompt.txt",
       SYSTEM_PROMPT: input.systemPrompt,
       ...(input.skillDiscoveryEnabled ? { SKILL_DISCOVERY: "1" } : {}),
+      ...(input.skillDiscoveryEnabled && input.localSkillsPath !== undefined
+        ? { LOCAL_SKILLS_PATH: input.localSkillsPath }
+        : {}),
     };
 
     const additionalDockerArgs = [

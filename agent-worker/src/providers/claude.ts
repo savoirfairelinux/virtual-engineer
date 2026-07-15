@@ -17,6 +17,7 @@
  */
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { NETWORK_DISALLOWED_TOOLS } from '../networkGuard.js';
+import { emitLocalSkillsLoaded } from '../skills.js';
 import { emitEvent } from './events.js';
 import type { AgentRun, AgentRunOptions } from './types.js';
 
@@ -37,6 +38,7 @@ export async function runClaudeAgent(
   const modelLabel = model || 'cli-default';
 
   emitEvent('session.start', { model: modelLabel, mode, workingDirectory: cwd });
+  if (skillDiscovery) emitLocalSkillsLoaded(cwd);
   process.stderr.write(`starting Claude Agent SDK (mode=${mode}, model=${modelLabel})\n`);
 
   const state = { toolCallCount: 0, toolsByKind: {} as Record<string, number> };
