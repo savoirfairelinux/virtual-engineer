@@ -340,7 +340,9 @@ export class GerritSshClient {
 
   /**
    * Mark Gerrit review comment threads as resolved via SSH `gerrit review --json`.
-   * Without `in_reply_to`, Gerrit creates new resolved follow-up comments.
+   * Replies into the original thread (in_reply_to) when the target comment's UUID
+   * can be resolved via an anonymous REST lookup; otherwise falls back to posting
+   * a fresh resolved comment (see lookupCommentIdsForReply).
    */
   async resolveComments(changeId: string, comments: ReviewComment[]): Promise<void> {
     if (comments.length === 0) return;
@@ -348,20 +350,81 @@ export class GerritSshClient {
     const info = await this.queryChange(changeId);
     const patchset = info.currentPatchSet?.number ?? 1;
 
-    const commentsByFile: Record<string, Array<{ message: string; line?: number; unresolved: boolean }>> = {};
+    // Gerrit's SSH review --json input is the same ReviewInput/CommentInput schema
+    // as the REST API, which does support in_reply_to. SSH's own `query --comments`
+    // just never returns the comment UUID needed to target it. Read-only Gerrit
+    // instances typically allow anonymous REST reads, so fetch the UUIDs that way
+    // (no credentials beyond the existing SSH identity are needed) and fall back to
+    // posting a fresh resolved comment if the lookup is unavailable or finds nothing.
+    const replyIds = await this.lookupCommentIdsForReply(info.url, info.number, patchset);
+
+    const commentsByFile: Record<string, Array<{ message: string; line?: number; unresolved: boolean; in_reply_to?: string }>> = {};
     for (const comment of comments) {
       const key = comment.filePath ?? "/PATCHSET_LEVEL";
       if (!commentsByFile[key]) commentsByFile[key] = [];
+      const inReplyTo = replyIds.get(`${key}:${comment.line ?? "file"}`);
       commentsByFile[key].push({
         message: "Addressed in this patchset.",
         ...(comment.line !== undefined ? { line: comment.line } : {}),
         unresolved: false,
+        ...(inReplyTo !== undefined ? { in_reply_to: inReplyTo } : {}),
       });
     }
 
     const reviewInput = JSON.stringify({ comments: commentsByFile });
     await this.reviewJson(`${info.number},${patchset}`, reviewInput);
     log.info({ changeId, count: comments.length }, "resolved Gerrit comment threads via SSH review --json");
+  }
+
+  /**
+   * Best-effort anonymous REST lookup of the latest unresolved comment id per
+   * file+line on the given patchset, so resolveComments can reply into the
+   * existing thread (in_reply_to) instead of always starting a new one.
+   * Returns an empty map on any failure — the caller degrades gracefully.
+   */
+  private async lookupCommentIdsForReply(
+    changeUrl: string | undefined,
+    changeNumber: number,
+    patchset: number,
+  ): Promise<Map<string, string>> {
+    const result = new Map<string, string>();
+    if (!changeUrl) return result;
+
+    let origin: string;
+    try {
+      origin = new URL(changeUrl).origin;
+    } catch {
+      return result;
+    }
+
+    try {
+      const res = await fetch(`${origin}/changes/${changeNumber}/comments`, {
+        signal: AbortSignal.timeout(SSH_TIMEOUT_MS),
+      });
+      if (!res.ok) return result;
+      // Gerrit prefixes JSON responses with a `)]}'` XSSI-protection line.
+      const text = (await res.text()).replace(/^\)\]\}'/, "");
+      const parsed = z.record(z.string(), z.array(z.object({
+        id: z.string(),
+        line: z.number().optional(),
+        patch_set: z.number().optional(),
+        unresolved: z.boolean().optional(),
+      }))).safeParse(JSON.parse(text));
+      if (!parsed.success) return result;
+
+      for (const [file, fileComments] of Object.entries(parsed.data)) {
+        for (const c of fileComments) {
+          if (c.patch_set !== undefined && c.patch_set !== patchset) continue;
+          if (c.unresolved === false) continue;
+          // Gerrit returns comments in chronological order; last one per
+          // file+line is the current head of that thread.
+          result.set(`${file}:${c.line ?? "file"}`, c.id);
+        }
+      }
+    } catch (err) {
+      log.debug({ err, changeNumber }, "anonymous Gerrit REST comment lookup failed; posting a fresh comment instead");
+    }
+    return result;
   }
 
   /**
