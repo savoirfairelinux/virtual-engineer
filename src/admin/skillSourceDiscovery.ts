@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { access } from "node:fs/promises";
 import { constants } from "node:fs";
 import { promisify } from "node:util";
+import { resolveSshSkillSourceUrl } from "../workspace/skillSources.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -58,21 +59,7 @@ function isSshSkillSource(source: SkillSourceDiscoveryInput): boolean {
 }
 
 export function resolveSkillSourceUrl(source: SkillSourceDiscoveryInput): string {
-  if (!source.source.startsWith("ssh://")) {
-    return source.source;
-  }
-  let url: URL;
-  try {
-    url = new URL(source.source);
-    if (!url.hostname) throw new Error("missing host");
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    throw new Error(`Invalid SSH skill source URL "${source.source}": ${message}`);
-  }
-  if (source.sshUser === undefined && source.sshPort === undefined) return source.source;
-  if (!url.username && source.sshUser !== undefined) url.username = source.sshUser;
-  if (!url.port && source.sshPort !== undefined) url.port = String(source.sshPort);
-  return url.toString();
+  return resolveSshSkillSourceUrl(source);
 }
 
 export function buildSkillListArgs(source: SkillSourceDiscoveryInput): string[] {

@@ -10,6 +10,12 @@ export interface RemoteSkillSource {
   sshKnownHostsPath?: string;
 }
 
+export interface SkillSourceUrlInput {
+  source: string;
+  sshUser?: string;
+  sshPort?: number;
+}
+
 const DEFAULT_SKILLS_CLI_PACKAGE = "skills@1.5.16";
 
 function skillsCliPackage(): string {
@@ -87,7 +93,7 @@ export function skillsAgentId(provider: AgentProvider): string {
   return provider === "claude" ? "claude-code" : "github-copilot";
 }
 
-export function resolveSkillSourceUrl(source: RemoteSkillSource): string {
+export function resolveSshSkillSourceUrl(source: SkillSourceUrlInput): string {
   if (!source.source.startsWith("ssh://")) {
     return source.source;
   }
@@ -103,6 +109,10 @@ export function resolveSkillSourceUrl(source: RemoteSkillSource): string {
   if (!url.username && source.sshUser !== undefined) url.username = source.sshUser;
   if (!url.port && source.sshPort !== undefined) url.port = String(source.sshPort);
   return url.toString();
+}
+
+export function resolveSkillSourceUrl(source: RemoteSkillSource): string {
+  return resolveSshSkillSourceUrl(source);
 }
 
 export function buildSkillsCliArgs(source: RemoteSkillSource, provider: AgentProvider): string[] {
