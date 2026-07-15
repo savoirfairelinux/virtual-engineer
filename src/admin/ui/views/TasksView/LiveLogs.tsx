@@ -7,16 +7,11 @@ import { TONE } from "../../states.ts";
 import type { ToneKey } from "../../states.ts";
 import { extractMetrics, totalInputTokens, totalProcessedTokens } from "./liveMetrics.ts";
 import { renderPayload } from "./liveLogFormat.ts";
-
-type StreamEntry = {
-  id: number;
-  timestamp: string;
-  type?: string | undefined;
-  category?: string | undefined;
-  level?: "info" | "warn" | "error" | "debug" | undefined;
-  message?: string | undefined;
-  data?: unknown;
-};
+import {
+  appendLiveLogEntry,
+  createLiveLogWindow,
+  type LiveLogEntry as StreamEntry,
+} from "./liveLogWindow.ts";
 
 const LOG_TAG_TONE: Record<string, ToneKey> = {
   CONTEXT_USAGE: "info",
@@ -100,45 +95,23 @@ interface LiveLogsProps {
 }
 
 export function LiveLogs({ taskId, running }: LiveLogsProps) {
-  const [entries, setEntries] = useState<StreamEntry[]>([]);
+  const [logWindow, setLogWindow] = useState(createLiveLogWindow);
   const [filter, setFilter] = useState<FilterCat>("All");
   const [connectionState, setConnectionState] = useState<SseConnectionState>("connecting");
   const scrollRef = useRef<HTMLDivElement>(null);
   const nextId = useRef(0);
-  const seenEntryKeys = useRef<Set<string>>(new Set());
-
-  const entryKey = (entry: StreamEntry): string => {
-    const parts = [
-      entry.timestamp,
-      String(entry.type ?? ""),
-      String(entry.category ?? ""),
-      String(entry.level ?? ""),
-      String(entry.message ?? ""),
-    ];
-    if (entry.data !== undefined) {
-      try {
-        parts.push(typeof entry.data === "string" ? entry.data : JSON.stringify(entry.data));
-      } catch {
-        parts.push(String(entry.data));
-      }
-    }
-    return parts.join("|");
-  };
+  const entries = logWindow.entries;
 
   useEffect(() => {
-    setEntries([]);
+    setLogWindow(createLiveLogWindow());
     setConnectionState("connecting");
-    seenEntryKeys.current = new Set();
     const path = `/api/admin/logs/stream?taskId=${encodeURIComponent(taskId)}`;
     const cleanup = connectSse(path, (_evType, data) => {
       try {
         const parsed = JSON.parse(data) as AgentLogEvent | Record<string, unknown>;
         const normalized = normalizeIncomingEntry(parsed, nextId.current++);
         if (!normalized) return;
-        const key = entryKey(normalized);
-        if (seenEntryKeys.current.has(key)) return;
-        seenEntryKeys.current.add(key);
-        setEntries((prev) => [...prev, normalized]);
+        setLogWindow((previous) => appendLiveLogEntry(previous, normalized));
         // auto-scroll
         requestAnimationFrame(() => {
           if (scrollRef.current) {

@@ -96,6 +96,8 @@ export function App() {
   // operator+. Until the identity resolves, treat the user as a viewer so we
   // never fire a config request the server would 403.
   const canOperate = currentUserValue.canOperate;
+  const canManageRuntimePolicies = currentUserValue.can("policy.manage");
+  const canConfigure = canOperate || canManageRuntimePolicies;
 
   // data state
   const [tasks,        setTasks]        = useState<ApiTask[]>([]);
@@ -189,7 +191,7 @@ export function App() {
   const enabledIntegrations = integrations.filter((i) => i.enabled).length;
 
   // Viewers have no Config view — fall back to Overview if they deep-link to it.
-  const configDenied = currentUser !== null && !canOperate;
+  const configDenied = currentUser !== null && !canConfigure;
   const effectiveView: ViewId = configDenied && view === "config" ? "overview" : view;
 
   function handleNavigate(v: "tasks" | "config") {
@@ -206,7 +208,7 @@ export function App() {
           theme={theme}
           toggleTheme={toggleTheme}
           user={currentUser}
-          canOperate={canOperate}
+          canConfigure={canConfigure}
           onChangePassword={() => setShowChangePassword(true)}
           onLogout={() => { void logout().finally(handleLoggedOut); }}
           taskCount={tasks.length}

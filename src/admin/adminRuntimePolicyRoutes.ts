@@ -157,6 +157,14 @@ export function registerRuntimePolicyRoutes(router: Router, deps: RuntimePolicyR
     }
   }, { permission: "policy.manage" });
 
+  router.add("GET", "/api/admin/runtime/policies/:id/bindings", async (_req, res, params) => {
+    const store = guard(res);
+    if (!store) return;
+    writeJson(res, 200, {
+      bindings: await store.listRuntimePolicyBindings(params["id"] ?? ""),
+    });
+  }, { permission: "policy.manage" });
+
   router.add("DELETE", "/api/admin/runtime/policies/bindings/:bindingId", async (_req, res, params) => {
     const store = guard(res);
     if (!store) return;

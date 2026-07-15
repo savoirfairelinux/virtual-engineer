@@ -65,8 +65,13 @@ export interface ConfigViewData {
 }
 
 export function ConfigView(props: ConfigViewData) {
-  const { isAdmin } = useCurrentUser();
-  const visibleNav = CONFIG_NAV.filter((n) => !n.adminOnly || isAdmin);
+  const { isAdmin, canOperate, can } = useCurrentUser();
+  const canManageRuntimePolicies = can("policy.manage");
+  const canAccess = (item: NavItem): boolean => {
+    if (item.id === "runtime-policies") return canManageRuntimePolicies;
+    return item.adminOnly ? isAdmin : canOperate;
+  };
+  const visibleNav = CONFIG_NAV.filter(canAccess);
 
   const [sec, setSec] = useState<SectionId>(() => {
     const part = window.location.hash.split("/")[1] ?? "";
@@ -84,8 +89,9 @@ export function ConfigView(props: ConfigViewData) {
   }, []);
 
   // Non-admins cannot land on admin-only sections (deep link / role change).
-  const effectiveSec: SectionId =
-    !isAdmin && CONFIG_NAV.some((n) => n.id === sec && n.adminOnly) ? "integrations" : sec;
+  const effectiveSec: SectionId = canAccess(CONFIG_NAV.find((item) => item.id === sec) ?? CONFIG_NAV[0]!)
+    ? sec
+    : canManageRuntimePolicies ? "runtime-policies" : "integrations";
 
   function handleSectionChange(id: SectionId) {
     setSec(id);
@@ -158,7 +164,7 @@ export function ConfigView(props: ConfigViewData) {
           {effectiveSec === "agents"       && <AgentsSection {...props} />}
           {effectiveSec === "projects"     && <ProjectsSection {...props} />}
           {effectiveSec === "prompts"      && <PromptsSection {...props} />}
-          {effectiveSec === "runtime-policies" && isAdmin && <RuntimePoliciesSection />}
+          {effectiveSec === "runtime-policies" && canManageRuntimePolicies && <RuntimePoliciesSection />}
           {effectiveSec === "denials"      && isAdmin && <DenialsSection />}
           {effectiveSec === "users"        && isAdmin && <UsersSection />}
           {effectiveSec === "groups"       && isAdmin && <GroupsSection />}

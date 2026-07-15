@@ -19,6 +19,7 @@ export interface RuntimePolicyRecord {
 export interface RuntimePolicyBindingRecord {
   id: string;
   policyId: string;
+  kind: RuntimePolicyKind;
   projectId: string | null;
   agentId: string | null;
   createdAt: Date;
@@ -42,6 +43,7 @@ export interface RuntimePolicyStoreApi {
   deleteRuntimePolicy(id: string): Promise<void>;
   /** Bind a policy to a project (`agentId` null) or an agent (`projectId` null). */
   bindRuntimePolicy(input: { policyId: string; projectId?: string | null; agentId?: string | null }): Promise<RuntimePolicyBindingRecord>;
+  listRuntimePolicyBindings(policyId: string): Promise<RuntimePolicyBindingRecord[]>;
   unbindRuntimePolicy(bindingId: string): Promise<void>;
   /** Policies bound to a project. */
   getRuntimePoliciesForProject(projectId: string): Promise<RuntimePolicyRecord[]>;
@@ -161,11 +163,21 @@ export function createRuntimePolicyStore(context: RuntimePolicyStoreContext): Ru
       createdAt: now,
       updatedAt: now,
     });
-    return { id, policyId: input.policyId, projectId, agentId, createdAt: now, updatedAt: now };
+    const binding = await db.query.runtimePolicyBindings.findFirst({
+      where: eq(runtimePolicyBindings.id, id),
+    });
+    if (!binding) throw new Error(`Failed to create runtime policy binding '${id}'`);
+    return binding;
   }
 
   async function unbindRuntimePolicy(bindingId: string): Promise<void> {
     await db.delete(runtimePolicyBindings).where(eq(runtimePolicyBindings.id, bindingId));
+  }
+
+  async function listRuntimePolicyBindings(policyId: string): Promise<RuntimePolicyBindingRecord[]> {
+    return db.query.runtimePolicyBindings.findMany({
+      where: eq(runtimePolicyBindings.policyId, policyId),
+    });
   }
 
   async function getRuntimePoliciesForProject(projectId: string): Promise<RuntimePolicyRecord[]> {
@@ -193,6 +205,7 @@ export function createRuntimePolicyStore(context: RuntimePolicyStoreContext): Ru
     updateRuntimePolicy,
     deleteRuntimePolicy,
     bindRuntimePolicy,
+    listRuntimePolicyBindings,
     unbindRuntimePolicy,
     getRuntimePoliciesForProject,
     getRuntimePoliciesForAgent,

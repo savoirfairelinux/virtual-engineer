@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api } from "../../api.ts";
 import { Icon } from "../../components/Icon.tsx";
 import { Modal, Field, FieldInput, FieldSelect, FieldTextarea } from "../../components/Modal.tsx";
@@ -10,6 +10,14 @@ interface RuntimePolicy {
   kind: "filesystem" | "network" | "process" | "inference";
   yaml: string;
   description: string;
+}
+
+interface RuntimePolicyBinding {
+  id: string;
+  policyId: string;
+  kind: RuntimePolicy["kind"];
+  projectId: string | null;
+  agentId: string | null;
 }
 
 const KINDS: RuntimePolicy["kind"][] = ["network", "filesystem", "process", "inference"];
@@ -26,15 +34,12 @@ const ACTION_ICON_STYLE = {
   borderColor: "var(--border-soft)",
 } as const;
 
-const TEMPLATE = `network:
-  default: deny
-  allow:
-    - host: inference.local
-filesystem:
-  allow_write: [/sandbox]
-process:
-  no_new_privileges: true
-`;
+export const RUNTIME_POLICY_TEMPLATES: Record<RuntimePolicy["kind"], string> = {
+  network: "network:\n  default: deny\n  allow: []\n",
+  filesystem: "filesystem:\n  allow_write: [/sandbox]\n",
+  process: "process:\n  no_new_privileges: true\n",
+  inference: "inference:\n  endpoint: inference.local\n",
+};
 
 export function RuntimePoliciesSection() {
   const [policies, setPolicies] = useState<RuntimePolicy[]>([]);
@@ -51,14 +56,14 @@ export function RuntimePoliciesSection() {
   async function load() {
     setError(null);
     try {
-      const [polData, prjData, agData] = await Promise.all([
-        api.get<{ policies: RuntimePolicy[] }>("/api/admin/runtime/policies"),
+      const polData = await api.get<{ policies: RuntimePolicy[] }>("/api/admin/runtime/policies");
+      setPolicies(polData.policies);
+      const [prjData, agData] = await Promise.allSettled([
         api.get<{ projects: ApiProject[] }>("/api/admin/projects"),
         api.get<{ agents: ApiAgent[] }>("/api/admin/agents"),
       ]);
-      setPolicies(polData.policies);
-      setProjects(prjData.projects);
-      setAgents(agData.agents);
+      setProjects(prjData.status === "fulfilled" ? prjData.value.projects : []);
+      setAgents(agData.status === "fulfilled" ? agData.value.agents : []);
       // Gateway status is best-effort — never block the policy list on it.
       api
         .get<{ driver: string; gatewayConfigured: boolean; gatewayAddress: string | null; gatewayHealthy: boolean }>(
@@ -219,8 +224,39 @@ function AssignModal({
   const [targetId, setTargetId] = useState(projects[0]?.id ?? "");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [bindings, setBindings] = useState<RuntimePolicyBinding[]>([]);
 
   const items = target === "project" ? projects : agents;
+
+  const loadBindings = useCallback(async () => {
+    try {
+      const data = await api.get<{ bindings: RuntimePolicyBinding[] }>(
+        `/api/admin/runtime/policies/${policy.id}/bindings`
+      );
+      setBindings(data.bindings);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load bindings");
+    }
+  }, [policy.id]);
+
+  useEffect(() => { void loadBindings(); }, [loadBindings]);
+
+  function targetName(binding: RuntimePolicyBinding): string {
+    if (binding.projectId !== null) {
+      return `Project: ${projects.find((project) => project.id === binding.projectId)?.name ?? binding.projectId}`;
+    }
+    return `Agent: ${agents.find((agent) => agent.id === binding.agentId)?.name ?? binding.agentId ?? "unknown"}`;
+  }
+
+  async function handleRemove(bindingId: string) {
+    setError(null);
+    try {
+      await api.delete(`/api/admin/runtime/policies/bindings/${bindingId}`);
+      await loadBindings();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Remove failed");
+    }
+  }
 
   async function handleAssign() {
     if (!targetId) { setError("Select a target"); return; }
@@ -253,6 +289,25 @@ function AssignModal({
       }
     >
       {error && <div style={{ marginBottom: "12px", color: "var(--danger, #f85149)", fontSize: "13px" }}>{error}</div>}
+      {bindings.length > 0 && (
+        <Field label="Current assignments">
+          <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+            {bindings.map((binding) => (
+              <div key={binding.id} style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <span style={{ flex: 1, fontSize: "13px", color: "var(--text-dim)" }}>{targetName(binding)}</span>
+                <button
+                  className="iconbtn danger"
+                  onClick={() => void handleRemove(binding.id)}
+                  title="Remove assignment"
+                  aria-label={`Remove ${targetName(binding)}`}
+                >
+                  <Icon name="trash" size={14} />
+                </button>
+              </div>
+            ))}
+          </div>
+        </Field>
+      )}
       <Field label="Target type">
         <FieldSelect value={target} onChange={(e) => {
           const v = e.target.value as "project" | "agent";
@@ -283,7 +338,7 @@ function PolicyEditor({ policy, onClose, onSaved }: { policy: RuntimePolicy | nu
   const [name, setName] = useState(policy?.name ?? "");
   const [kind, setKind] = useState<RuntimePolicy["kind"]>(policy?.kind ?? "network");
   const [description, setDescription] = useState(policy?.description ?? "");
-  const [yaml, setYaml] = useState(policy?.yaml ?? TEMPLATE);
+  const [yaml, setYaml] = useState(policy?.yaml ?? RUNTIME_POLICY_TEMPLATES.network);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -325,7 +380,13 @@ function PolicyEditor({ policy, onClose, onSaved }: { policy: RuntimePolicy | nu
         <FieldInput value={name} onChange={(e) => setName(e.target.value)} placeholder="review-readonly" />
       </Field>
       <Field label="Kind" required>
-        <FieldSelect value={kind} onChange={(e) => setKind(e.target.value as RuntimePolicy["kind"])}>
+        <FieldSelect value={kind} onChange={(e) => {
+          const nextKind = e.target.value as RuntimePolicy["kind"];
+          setYaml((current) => current === RUNTIME_POLICY_TEMPLATES[kind]
+            ? RUNTIME_POLICY_TEMPLATES[nextKind]
+            : current);
+          setKind(nextKind);
+        }}>
           {KINDS.map((k) => <option key={k} value={k}>{k}</option>)}
         </FieldSelect>
       </Field>

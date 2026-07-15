@@ -26,7 +26,7 @@ The admin server is a small HTTP service (default `127.0.0.1:3100`) that serves 
 | `adminProjectsRoutes.ts` | `/api/admin/projects/*` CRUD, ticket/review target validation (canonical workspace paths; HTTPS-only GitHub/GitLab clone URLs), atomic push-target replacement, automatic relaunch of FAILED/REVIEW_FAILED tasks on (re)configuration or re-enable. |
 | `adminConcurrencyRoutes.ts` | `/api/admin/concurrency` read/update global concurrency. |
 | `adminSettingsRoutes.ts` | `GET/PUT /api/admin/settings` — read/update editable runtime workflow settings (polling interval, max agent cycles, max retry attempts). Validates positive integers; delegates persistence + hot-apply to the `SettingsController` wired in `src/index.ts`. |
-| `adminRuntimePolicyRoutes.ts` | `/api/admin/runtime/policies*` CRUD over runtime policies plus `POST /:id/bindings` / `DELETE /bindings/:bindingId` to bind a policy to a project or agent. YAML is limited to 64 KiB, may not use aliases/anchors, and must contain exactly one object-valued top-level section matching the policy kind. Backed by the dedicated `RuntimePolicyStore`. |
+| `adminRuntimePolicyRoutes.ts` | `/api/admin/runtime/policies*` CRUD over runtime policies plus `GET` / `POST /:id/bindings` and `DELETE /bindings/:bindingId` to list, create, and remove project or agent bindings. YAML is limited to 64 KiB, may not use aliases/anchors, and must contain exactly one object-valued top-level section matching the policy kind. Backed by the dedicated `RuntimePolicyStore`. |
 | `adminDenialRoutes.ts` | `GET /api/admin/runtime/denials` — policy-denial audit log (filter by `taskId` / `projectId` / `limit`). `OpenShellWorkspaceRunner` populates it best-effort from a bounded post-run `openshell logs` snapshot after secret scrubbing. Backed by the `DenialStore`. |
 | `adminOverviewRoutes.ts` | `/api/admin/overview` dashboard stats/throughput/votes/runtime + `/api/admin/cost-summary` aggregated AI cost (per project & instance total, optional `?days=` period) + `/api/admin/model-usage` model distribution by run count & cost (global + per project, optional `?days=<n>` period filter). |
 | `adminWebhookRoutes.ts` | Webhook management: secret rotation, allowed-IPs, webhook-info. |
@@ -126,6 +126,7 @@ The admin server is a small HTTP service (default `127.0.0.1:3100`) that serves 
 | `GET` / `POST` | `/api/admin/runtime/policies` | List / create runtime policies (`kind` = `filesystem` \| `network` \| `process` \| `inference`). |
 | `PUT` / `DELETE` | `/api/admin/runtime/policies/:id` | Update / delete a runtime policy. |
 | `POST` | `/api/admin/runtime/policies/:id/bindings` | Bind a policy to exactly one of `{ projectId }` or `{ agentId }`. |
+| `GET` | `/api/admin/runtime/policies/:id/bindings` | List persisted project/agent bindings for a policy, including binding ids used for removal. |
 | `DELETE` | `/api/admin/runtime/policies/bindings/:bindingId` | Remove a policy binding. |
 | `GET` | `/api/admin/runtime/denials` | Policy-denial audit log (query `taskId` / `projectId` / `limit`). |
 | `GET` | `/api/admin/overview` | Dashboard summary: task stats, throughput sparkline, review-vote breakdown, runtime facts. |
@@ -200,7 +201,7 @@ Recorded actions:
 
 The log is readable through `GET /api/admin/audit` (admin only, see the endpoints table) and browsed in the SPA via the admin-only **Audit** tab in Configuration.
 
-The dashboard stores the session token client-side (sessionStorage `ve-admin-token`) and sends it through the `Authorization` header.
+The dashboard stores the session token client-side (sessionStorage `ve-admin-token`) and sends it through the `Authorization` header. Runtime Policies navigation follows the effective `policy.manage` capability rather than the stored role; the assignment dialog reloads persisted project/agent bindings and supports removing them by binding id.
 
 ## Secret masking
 
@@ -210,7 +211,7 @@ The admin server never returns plaintext password-like fields. On `PUT`, values 
 
 [dashboard.ts](../../../src/admin/dashboard.ts) serves the shell for the Vite-built React SPA whose source lives in [src/admin/ui/](../../../src/admin/ui/); all client logic lives in the SPA, not inline in the shell.
 
-The task-detail live-log feed keeps each SSE event in one row. Structured payloads are serialized as compact single-line JSON, truncated visually with an ellipsis when needed, and exposed in full through the row payload's hover tooltip.
+The task-detail live-log feed keeps each SSE event in one row. Structured payloads are serialized as compact single-line JSON, truncated visually with an ellipsis when needed, and exposed in full through the row payload's hover tooltip. Browser state retains only the latest 500 entries; filtering, metrics, and duplicate keys use that same window, and evicted keys are removed so a later replay remains eligible.
 
 **Login / setup flow (SPA)**: on load, the auth screen (`shell/AuthScreen.tsx`) calls the public `GET /api/admin/auth/setup-status`. When `needsSetup` is true it renders a “Create first admin” form (username + password ≥ 8, not a common password, + confirm) that POSTs directly to `/api/admin/auth/setup` — unauthenticated bootstrap, no secret or derived token is involved — which returns a session token. Otherwise it renders a username/password login form backed by `POST /api/admin/auth/login`. The session token is kept in sessionStorage (`ve-admin-token`) and sent as a Bearer header on all API/SSE calls (plus the `?t=` query token for the log stream). `ui/api.ts` centralizes 401 handling: any 401 clears the token and fires an `onUnauthorized` callback that drops the app back to the login screen; 403 (insufficient role) never logs out — it surfaces as a normal error message.
 

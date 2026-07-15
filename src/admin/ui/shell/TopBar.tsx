@@ -11,7 +11,7 @@ interface TopBarProps {
   theme: "dark" | "light";
   toggleTheme: () => void;
   user: ApiMe | null;
-  canOperate: boolean;
+  canConfigure: boolean;
   onChangePassword: () => void;
   onLogout: () => void;
   taskCount: number;
@@ -29,10 +29,10 @@ const NAV: { id: ViewId; label: string; icon: string; operatorOnly?: boolean }[]
 ];
 
 export function TopBar({
-  view, setView, theme, toggleTheme, user, canOperate, onChangePassword, onLogout,
+  view, setView, theme, toggleTheme, user, canConfigure, onChangePassword, onLogout,
   taskCount, activeCount, providerCount, pollingRunning,
 }: TopBarProps) {
-  const visibleNav = NAV.filter((n) => !n.operatorOnly || canOperate);
+  const visibleNav = NAV.filter((n) => !n.operatorOnly || canConfigure);
   return (
     <header
       style={{

@@ -52,12 +52,14 @@ describe("SqliteStateStore — runtime policies", () => {
     const binding = await store.bindRuntimePolicy({ policyId: policy.id, agentId: agent.id });
     expect(binding.agentId).toBe(agent.id);
     expect(binding.projectId).toBeNull();
+    expect(await store.listRuntimePolicyBindings(policy.id)).toEqual([binding]);
 
     const forAgent = await store.getRuntimePoliciesForAgent(agent.id);
     expect(forAgent.map((p) => p.id)).toEqual([policy.id]);
     expect(await store.getRuntimePoliciesForProject("nope")).toHaveLength(0);
 
     await store.unbindRuntimePolicy(binding.id);
+    expect(await store.listRuntimePolicyBindings(policy.id)).toEqual([]);
     expect(await store.getRuntimePoliciesForAgent(agent.id)).toHaveLength(0);
   });
 
