@@ -290,6 +290,7 @@ export interface SandboxLogsInput {
   name: string;
   lines?: number | undefined;
   since?: string | undefined;
+  signal?: AbortSignal | undefined;
 }
 
 export interface SandboxInventoryItem {
@@ -553,7 +554,7 @@ export class OpenShellClient {
     const args = ["logs", input.name, "-n", String(lines)];
     if (input.since !== undefined) args.push("--since", input.since);
     args.push("--source", "sandbox", "--level", "warn");
-    const result = await this.exec(args);
+    const result = await this.exec(args, undefined, undefined, this.commandTimeoutMs, input.signal);
     if (result.code !== 0) {
       throw new Error(`openshell logs failed (${result.code}): ${redactOpenShellText(result.stderr).slice(0, 500)}`);
     }
@@ -663,11 +664,12 @@ export class OpenShellClient {
   }
 
   /** Destroy a sandbox, retrying transient gateway failures. */
-  async removeSandbox(name: string): Promise<void> {
+  async removeSandbox(name: string, signal?: AbortSignal): Promise<void> {
     let lastResult: CommandResult | undefined;
     for (let attempt = 1; attempt <= 3; attempt++) {
-      const result = await this.exec(["sandbox", "delete", name]);
+      const result = await this.exec(["sandbox", "delete", name], undefined, undefined, this.commandTimeoutMs, signal);
       if (result.code === 0) return;
+      if (/sandbox[^\n]*not found|not found[^\n]*sandbox/i.test(result.stderr)) return;
       lastResult = result;
       if (attempt < 3) {
         await new Promise((resolvePromise) => setTimeout(resolvePromise, this.retryBaseDelayMs * attempt));
