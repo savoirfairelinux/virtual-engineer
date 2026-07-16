@@ -270,7 +270,7 @@ describe("OpenShellWorkspaceRunner", () => {
     expect(first.containerId).not.toBe(second.containerId);
 
     await runner.destroyWorkspace(first);
-    expect(client.removeSandbox).toHaveBeenCalledWith(first.containerId.replace("openshell:", ""));
+    expect(client.removeSandbox).toHaveBeenCalledWith(first.containerId.replace("openshell:", ""), undefined);
   });
 
   it("delegates clone to HostGitExecutor and reports success", async () => {
@@ -599,6 +599,151 @@ describe("OpenShellWorkspaceRunner", () => {
     expect(client.downloadFromSandbox).not.toHaveBeenCalled();
   });
 
+  it("destroyWorkspace cleans all 6 maps even when removeSandbox throws", async () => {
+    const removeSandbox = vi.fn().mockRejectedValue(new Error("delete failed"));
+    const runner = new OpenShellWorkspaceRunner({
+      git: fakeGit(),
+      client: fakeClient({ removeSandbox } as unknown as Partial<OpenShellClient>),
+      sandboxImage: "base",
+    });
+    const created = await runner.createWorkspace("t-clean" as TaskId);
+    const r = runner as unknown as {
+      sandboxNames: Map<string, string>;
+      providerNames: Map<string, string>;
+      removedSandboxes: Set<string>;
+      trustedRemotes: Map<string, unknown>;
+      postCloneScripts: Map<string, string>;
+      denialFingerprints: Map<string, Set<string>>;
+    };
+    // Seed extra maps so we can verify they are all cleared.
+    r.providerNames.set(created.containerId, "ve-t-clean-agent");
+    r.trustedRemotes.set(created.containerId, new Map());
+    r.postCloneScripts.set(created.containerId, "npm ci");
+    const sandboxRaw = created.containerId.replace("openshell:", "");
+    r.denialFingerprints.set(sandboxRaw, new Set(["fp1"]));
+
+    await expect(runner.destroyWorkspace(created)).rejects.toThrow("delete failed");
+
+    expect(r.sandboxNames.has(created.containerId)).toBe(false);
+    expect(r.providerNames.has(created.containerId)).toBe(false);
+    expect(r.removedSandboxes.has(created.containerId)).toBe(false);
+    expect(r.trustedRemotes.has(created.containerId)).toBe(false);
+    expect(r.postCloneScripts.has(created.containerId)).toBe(false);
+    expect(r.denialFingerprints.has(sandboxRaw)).toBe(false);
+  });
+
+  it("destroyWorkspace cleans all 6 maps even when removeProvider throws", async () => {
+    const removeProvider = vi.fn().mockRejectedValue(new Error("provider delete failed"));
+    const runner = new OpenShellWorkspaceRunner({
+      git: fakeGit(),
+      client: fakeClient({ removeProvider } as unknown as Partial<OpenShellClient>),
+      sandboxImage: "base",
+    });
+    const created = await runner.createWorkspace("t-prov-fail" as TaskId);
+    const r = runner as unknown as {
+      sandboxNames: Map<string, string>;
+      providerNames: Map<string, string>;
+      removedSandboxes: Set<string>;
+      trustedRemotes: Map<string, unknown>;
+      postCloneScripts: Map<string, string>;
+      denialFingerprints: Map<string, Set<string>>;
+    };
+    r.providerNames.set(created.containerId, "ve-t-prov-fail-agent");
+    r.trustedRemotes.set(created.containerId, new Map());
+    r.postCloneScripts.set(created.containerId, "npm ci");
+    const sandboxRaw = created.containerId.replace("openshell:", "");
+    r.denialFingerprints.set(sandboxRaw, new Set(["fp2"]));
+
+    await expect(runner.destroyWorkspace(created)).rejects.toThrow("provider delete failed");
+
+    expect(r.sandboxNames.has(created.containerId)).toBe(false);
+    expect(r.providerNames.has(created.containerId)).toBe(false);
+    expect(r.removedSandboxes.has(created.containerId)).toBe(false);
+    expect(r.trustedRemotes.has(created.containerId)).toBe(false);
+    expect(r.postCloneScripts.has(created.containerId)).toBe(false);
+    expect(r.denialFingerprints.has(sandboxRaw)).toBe(false);
+  });
+
+  it("collectPolicyDenials aborts getSandboxLogs after 30 seconds", async () => {
+    vi.useFakeTimers();
+    let capturedSignal: AbortSignal | undefined;
+    const getSandboxLogs = vi.fn().mockImplementation(
+      (input: { signal?: AbortSignal }) =>
+        new Promise<string>((_resolve, reject) => {
+          capturedSignal = input.signal;
+          input.signal?.addEventListener("abort", () => reject(input.signal?.reason ?? new Error("aborted")));
+        })
+    );
+    const runner = new OpenShellWorkspaceRunner({
+      git: fakeGit(),
+      client: fakeClient({ getSandboxLogs } as unknown as Partial<OpenShellClient>),
+      sandboxImage: "base",
+      recordDenial: vi.fn(),
+    });
+    // Set up trusted remotes so restoreTrustedRemotes does not throw.
+    await runner.cloneRepo(handle, "https://trusted.example/repo.git", "main");
+
+    // Kick off a coding run; collectPolicyDenials runs in the finally block.
+    const runPromise = runner.runAgentInDocker(
+      fakeCodingAdapter(),
+      { taskId: "t1", workspacePath: "/tmp/ws-1" } as unknown as TaskContext,
+    );
+
+    // Advance time past the 30-second cap.
+    await vi.advanceTimersByTimeAsync(31_000);
+
+    // The signal should have been aborted; the outer catch swallows the error.
+    await runPromise;
+    expect(capturedSignal?.aborted).toBe(true);
+    vi.useRealTimers();
+  });
+
+  it("runAgentInDocker applies deny-strict fallback policy when resolvePolicy returns undefined", async () => {
+    const client = fakeClient();
+    const runner = new OpenShellWorkspaceRunner({
+      git: fakeGit(),
+      client,
+      sandboxImage: "base",
+      resolvePolicy: () => undefined,
+    });
+
+    await runner.cloneRepo(handle, "https://trusted.example/repo.git", "main");
+    await runner.runAgentInDocker(
+      fakeCodingAdapter(),
+      { taskId: "t1", workspacePath: "/tmp/ws-1" } as unknown as TaskContext,
+    );
+
+    expect(client.createSandbox).toHaveBeenCalledWith(expect.objectContaining({
+      policyYaml: expect.stringContaining("default: deny"),
+    }));
+  });
+
+  it("runReviewInDocker applies deny-strict fallback policy when resolvePolicy returns undefined", async () => {
+    const client = fakeClient({
+      execInSandbox: vi.fn().mockResolvedValue({
+        code: 0,
+        stdout: reviewWorkerStdout("ok"),
+        stderr: "",
+      }),
+    } as unknown as Partial<OpenShellClient>);
+    const runner = new OpenShellWorkspaceRunner({
+      git: fakeGit(),
+      client,
+      sandboxImage: "base",
+      agentAdapter: fakeReviewAdapter(),
+      resolvePolicy: () => undefined,
+    });
+
+    await runner.runReviewInDocker(
+      handle,
+      { changeId: "Iabc", prompt: "review this diff" } as unknown as ReviewWorkspaceInput,
+    );
+
+    expect(client.createSandbox).toHaveBeenCalledWith(expect.objectContaining({
+      policyYaml: expect.stringContaining("default: deny"),
+    }));
+  });
+
   it("runAgent delegates to adapter.execute and returns its result", async () => {
     const runner = new OpenShellWorkspaceRunner({ git: fakeGit(), client: fakeClient(), sandboxImage: "base" });
     const ctx = { taskId: "t1", workspacePath: "/tmp/ws-1" } as unknown as TaskContext;
@@ -621,7 +766,7 @@ describe("OpenShellWorkspaceRunner", () => {
     const client = fakeClient();
     const runner = new OpenShellWorkspaceRunner({ git, client, sandboxImage: "base" });
     await runner.destroyWorkspace(handle);
-    expect(client.removeSandbox).toHaveBeenCalledWith("ve-t1");
+    expect(client.removeSandbox).toHaveBeenCalledWith("ve-t1", undefined);
     expect(git.destroyWorkspace).toHaveBeenCalledWith("/tmp/ws-1");
   });
 
@@ -637,9 +782,15 @@ describe("OpenShellWorkspaceRunner", () => {
     });
     const created = await runner.createWorkspace("cleanup-task" as TaskId);
 
+    // First attempt throws — maps are cleaned unconditionally by Fix 2.
     await expect(runner.destroyWorkspace(created)).rejects.toThrow("gateway unavailable");
     const ownership = (runner as unknown as { sandboxNames: Map<string, string> }).sandboxNames;
-    expect(ownership.get(created.containerId)).toBe(created.containerId.replace("openshell:", ""));
+    // Maps are now cleaned unconditionally, so the entry is gone after failure.
+    expect(ownership.has(created.containerId)).toBe(false);
+
+    // Second attempt still resolves: sandboxName is re-derived from containerId.
+    // removeSandbox is not guarded by removedSandboxes (it was also cleared), so
+    // the second attempt calls removeSandbox again; this time it succeeds.
     await expect(runner.destroyWorkspace(created)).resolves.toBeUndefined();
 
     expect(removeSandbox).toHaveBeenCalledTimes(2);
@@ -672,16 +823,22 @@ describe("OpenShellWorkspaceRunner", () => {
       { GITHUB_TOKEN: "tok" },
     );
 
+    // First destroyWorkspace: sandbox removal succeeds, provider removal fails.
+    // Maps are cleaned unconditionally (Fix 2), so providerName is lost from memory.
     await expect(runner.destroyWorkspace(handle)).rejects.toThrow("provider cleanup unavailable");
     expect(removeSandbox).toHaveBeenCalledOnce();
     expect(removeProvider).toHaveBeenCalledWith("ve-t1-agent");
     expect(removeSandbox.mock.invocationCallOrder[0]).toBeLessThan(removeProvider.mock.invocationCallOrder[0]!);
     expect(deleteManagedProvider).not.toHaveBeenCalled();
 
+    // Second destroyWorkspace: providerName cleared from memory by Fix 2.
+    // removeSandbox is called again (removedSandboxes was also cleared), but
+    // the sandbox is already gone — the "not found" guard (Fix 1) returns cleanly.
+    // providerName is undefined so no provider cleanup is attempted in-memory;
+    // the persistent managedProviderStore ledger handles retry on next startup.
     await expect(runner.destroyWorkspace(handle)).resolves.toBeUndefined();
-    expect(removeSandbox).toHaveBeenCalledOnce();
-    expect(removeProvider).toHaveBeenCalledTimes(2);
-    expect(deleteManagedProvider).toHaveBeenCalledWith("ve-t1-agent");
-    expect(removeProvider.mock.invocationCallOrder[1]).toBeLessThan(deleteManagedProvider.mock.invocationCallOrder[0]!);
+    expect(removeSandbox).toHaveBeenCalledTimes(2);
+    expect(removeProvider).toHaveBeenCalledOnce(); // not retried — name was cleared
+    expect(deleteManagedProvider).not.toHaveBeenCalled();
   });
 });

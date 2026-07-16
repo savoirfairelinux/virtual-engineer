@@ -724,6 +724,44 @@ describe("OpenShellClient", () => {
     expect(calls.filter((args) => args[1] === "delete")).toHaveLength(3);
   });
 
+  it("removeSandbox returns cleanly when the sandbox is already gone", async () => {
+    const client = new OpenShellClient({
+      runner: runnerReturning({ code: 1, stderr: "sandbox not found: ve-task-1" }).runner,
+      retryBaseDelayMs: 0,
+    });
+
+    await expect(client.removeSandbox("ve-task-1")).resolves.toBeUndefined();
+  });
+
+  it("removeSandbox returns cleanly for the reversed 'not found … sandbox' message shape", async () => {
+    const client = new OpenShellClient({
+      runner: runnerReturning({ code: 1, stderr: "not found: sandbox ve-task-1" }).runner,
+      retryBaseDelayMs: 0,
+    });
+
+    await expect(client.removeSandbox("ve-task-1")).resolves.toBeUndefined();
+  });
+
+  it("removeSandbox accepts an AbortSignal and forwards it to the CLI runner", async () => {
+    const controller = new AbortController();
+    let receivedSignal: AbortSignal | undefined;
+    const runner: CommandRunner = async (_bin, _args, _input, _callbacks, control) => {
+      receivedSignal = control?.signal;
+      return new Promise((resolve) => {
+        control?.signal?.addEventListener("abort", () => {
+          resolve({ code: 1, stdout: "", stderr: "aborted" });
+        }, { once: true });
+        // Resolve immediately for non-aborted calls.
+        if (!control?.signal?.aborted) {
+          resolve({ code: 0, stdout: "", stderr: "" });
+        }
+      });
+    };
+    const client = new OpenShellClient({ runner });
+    await client.removeSandbox("ve-task-1", controller.signal);
+    expect(receivedSignal).toBeDefined();
+  });
+
   it("removes a provider by name", async () => {
     const { runner, calls } = runnerReturning({ code: 0 });
     const client = new OpenShellClient({ runner });
