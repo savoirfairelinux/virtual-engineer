@@ -274,6 +274,7 @@ describe("OpenShellClient", () => {
   it.each([
     "Unauthenticated: OIDC token expired",
     "The request does not have valid authentication credentials: missing authorization header",
+    "The request does not have valid authentication credentials: invalid token: ExpiredSignature",
   ])("reauthenticates and replays a named-profile operation after auth failure: %s", async (authError) => {
     const calls: string[][] = [];
     let listAttempts = 0;
@@ -304,6 +305,28 @@ describe("OpenShellClient", () => {
         "--limit", "100", "--offset", "0", "--output", "json",
       ],
     ]);
+  });
+
+  it("does not replay sandbox exec when agent stderr resembles an OIDC failure", async () => {
+    const calls: string[][] = [];
+    const runner: CommandRunner = async (_bin, args) => {
+      calls.push(args);
+      return { code: 1, stdout: "", stderr: "Unauthenticated: upstream API rejected the agent" };
+    };
+    const client = new OpenShellClient({
+      runner,
+      gateway: "virtual-engineer",
+      oidcClientCredentials: true,
+    });
+
+    const result = await client.execInSandbox({
+      name: "ve-review-1",
+      command: ["npm", "test"],
+    });
+
+    expect(result.code).toBe(1);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toContain("exec");
   });
 
   it("shares an in-flight OIDC login across concurrent operations", async () => {

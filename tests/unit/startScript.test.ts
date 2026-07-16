@@ -213,7 +213,9 @@ describe("OpenShell deployment contract", () => {
     const dockerfile = readFileSync("Dockerfile.orchestrator", "utf8");
     const values = readFileSync("deploy/k8s/openshell-gateway-values.yaml", "utf8");
 
-    expect(script).toContain('OPENSHELL_VERSION="${OPENSHELL_VERSION:-v0.0.83}"');
+    expect(script).toContain('OPENSHELL_VERSION="v0.0.83"');
+    expect(script).not.toContain("--openshell-version");
+    expect(script).not.toContain("${OPENSHELL_VERSION:-");
     expect(script).toContain("sha256:583bcd4eecf7a255c6201ba3b571b5207ee0f643630dfa4835e981e62c754cc7");
     expect(script).toContain('oci://ghcr.io/nvidia/openshell/helm-chart@${OPENSHELL_CHART_DIGEST}');
     expect(dockerfile).toContain("ARG OPENSHELL_VERSION=v0.0.83");
@@ -267,5 +269,14 @@ describe("OpenShell deployment contract", () => {
     expect(deployScript).toContain('kubectl rollout restart deployment/virtual-engineer-orchestrator');
     expect(deployScript).toContain('kubectl rollout status deployment/virtual-engineer-orchestrator');
     expect(deployScript).not.toContain("REPLACE_ME");
+  });
+
+  it("allows OpenShell sandbox capabilities while auditing restricted violations", () => {
+    const rbacManifest = readFileSync("deploy/k8s/15-rbac-openshell.yaml", "utf8");
+
+    expect(rbacManifest).toContain("pod-security.kubernetes.io/enforce: privileged");
+    expect(rbacManifest).toContain("pod-security.kubernetes.io/audit: restricted");
+    expect(rbacManifest).toContain("pod-security.kubernetes.io/warn: restricted");
+    expect(rbacManifest).not.toContain("pod-security.kubernetes.io/enforce: baseline");
   });
 });

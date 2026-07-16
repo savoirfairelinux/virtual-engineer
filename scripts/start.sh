@@ -9,14 +9,10 @@
 # Usage:
 #   ./scripts/start.sh                     # full setup + launch
 #   ./scripts/start.sh --no-k3s-install    # skip k3s auto-install (must already exist)
-#   ./scripts/start.sh --openshell-version v0.0.83   # pin the OpenShell CLI version
 #
 # Optional environment variables:
 #   DATA_DIR       (default: ./data)
 #   K3S_KUBECONFIG (default: /etc/rancher/k3s/k3s.yaml)  k3s admin kubeconfig path
-#   OPENSHELL_VERSION  (default: v0.0.83)  Matching OpenShell CLI/chart release
-#   OPENSHELL_INSTALLER_SHA256 required when overriding OPENSHELL_VERSION
-#   OPENSHELL_CHART_DIGEST required when overriding OPENSHELL_VERSION
 #   OPENSHELL_OIDC_ISSUER external Keycloak realm issuer URL; omit with the
 #     client secret to use the managed local Keycloak
 #   OPENSHELL_OIDC_CLIENT_SECRET external confidential-client secret
@@ -41,9 +37,9 @@ load_dotenv "$ROOT_DIR/.env"
 
 # ─── Parse arguments ──────────────────────────────────────────────────────────
 K3S_INSTALL=true
-OPENSHELL_VERSION="${OPENSHELL_VERSION:-v0.0.83}"
-OPENSHELL_INSTALLER_SHA256="${OPENSHELL_INSTALLER_SHA256:-}"
-OPENSHELL_CHART_DIGEST="${OPENSHELL_CHART_DIGEST:-}"
+OPENSHELL_VERSION="v0.0.83"
+OPENSHELL_INSTALLER_SHA256="c15d6cb8090e1c7c8d79a320b5bcbdaf1c15c2363942d81e84b56e03b836249e"
+OPENSHELL_CHART_DIGEST="sha256:583bcd4eecf7a255c6201ba3b571b5207ee0f643630dfa4835e981e62c754cc7"
 OPENSHELL_GATEWAY_NAME="${OPENSHELL_GATEWAY_NAME:-virtual-engineer}"
 OPENSHELL_OIDC_ISSUER="${OPENSHELL_OIDC_ISSUER:-}"
 OPENSHELL_OIDC_CLIENT_ID="${OPENSHELL_OIDC_CLIENT_ID:-openshell-ci}"
@@ -60,30 +56,12 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --no-k3s-install)
       K3S_INSTALL=false; shift ;;
-    --openshell-version)
-      [[ -n "${2:-}" ]] || error "--openshell-version requires a value (e.g. v0.0.83)"
-      OPENSHELL_VERSION="$2"; shift 2 ;;
     --help|-h)
       sed -n '2,17p' "$0"; exit 0 ;;
     *)
       error "Unknown argument: $1. Run ./scripts/start.sh --help" ;;
   esac
 done
-
-if [[ -z "$OPENSHELL_INSTALLER_SHA256" ]]; then
-  if [[ "$OPENSHELL_VERSION" == "v0.0.83" ]]; then
-    OPENSHELL_INSTALLER_SHA256="c15d6cb8090e1c7c8d79a320b5bcbdaf1c15c2363942d81e84b56e03b836249e"
-  else
-    error "OPENSHELL_INSTALLER_SHA256 is required when using OpenShell ${OPENSHELL_VERSION}."
-  fi
-fi
-if [[ -z "$OPENSHELL_CHART_DIGEST" ]]; then
-  if [[ "$OPENSHELL_VERSION" == "v0.0.83" ]]; then
-    OPENSHELL_CHART_DIGEST="sha256:583bcd4eecf7a255c6201ba3b571b5207ee0f643630dfa4835e981e62c754cc7"
-  else
-    error "OPENSHELL_CHART_DIGEST is required when using OpenShell ${OPENSHELL_VERSION}."
-  fi
-fi
 DATA_DIR="${DATA_DIR:-$ROOT_DIR/data}"
 K3S_KUBECONFIG="${K3S_KUBECONFIG:-/etc/rancher/k3s/k3s.yaml}"
 

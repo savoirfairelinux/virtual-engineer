@@ -30,7 +30,12 @@ with `openshell status`; no OpenShell NodePort is exposed on the k3s node.
 restricts gateway ingress to the VE orchestrator and Pods in the dedicated
 `ve-agents` sandbox namespace. The Agent Sandbox controller does not propagate
 OpenShell labels to generated Pods, so the namespace is the enforceable trust
-boundary.
+boundary. OpenShell 0.0.83 supervisor Pods require an unconfined AppArmor
+profile plus Linux capabilities that Kubernetes Pod Security `baseline` rejects.
+The dedicated namespace therefore enforces `privileged`, while retaining
+`restricted` audit and warning labels; OpenShell runtime policies, namespace
+isolation, NetworkPolicy, and the gateway's narrow RBAC remain the sandbox
+security controls.
 
 Local reruns hash the contents of `.env` together with the exact effective
 `docker run` arguments and volume/env options. Unchanged sources and runtime
@@ -111,7 +116,10 @@ The script installs the chart by immutable OCI digest, pins the OpenShell 0.0.83
 gateway and supervisor images by digest, creates `ve-ghcr-pull` in both
 `virtual-engineer` and `ve-agents`, mirrors the generated client TLS bundle into
 `ve-agents`, and renders both orchestrator containers with the supplied private
-digest. The chart's sandbox image is the supplied `VE_AGENT_IMAGE` digest.
+digest. The chart's sandbox image is the supplied `VE_AGENT_IMAGE` digest. The
+local `scripts/start.sh` path intentionally has no OpenShell version override:
+the CLI installer, Helm chart, gateway, and supervisor pins form one verified
+release set and must be upgraded together.
 
 The raw Helm equivalent for inspection is:
 
@@ -189,8 +197,10 @@ set per-sandbox CPU/RAM quotas in the gateway values, not VE-side pod limits.
   authorization is strict Keycloak OIDC (`allowUnauthenticatedUsers: false`).
   The VE service account uses OAuth2 client credentials. The CLI stores the
   bearer token in the named profile, renews it on an authentication failure,
-  and replays the failed command once. Sandbox supervisors use gateway-minted
-  JWTs instead of the VE OIDC identity. The NetworkPolicy admits only the
+  and replays safe control-plane commands once. `sandbox exec` is never replayed
+  from stderr because that output belongs to the potentially side-effecting
+  workload. Sandbox supervisors use gateway-minted JWTs instead of the VE OIDC
+  identity. The NetworkPolicy admits only the
   orchestrator and Pods in the dedicated `ve-agents` namespace.
 - The chart, OpenShell gateway/supervisor images, and both private VE images are
   digest-pinned. Registry credentials are namespace-scoped and mirrored to the

@@ -351,6 +351,7 @@ export class OpenShellClient {
     timeoutMs = this.commandTimeoutMs,
     signal?: AbortSignal,
     environment?: Readonly<Record<string, string>>,
+    allowOidcReplay = true,
   ): Promise<CommandResult> {
     const controller = new AbortController();
     const abort = (): void => controller.abort();
@@ -365,7 +366,7 @@ export class OpenShellClient {
         ...(environment !== undefined ? { environment } : {}),
       };
       const firstResult = await this.run(this.bin, commandArgs, input, callbacks, commandControl);
-      if (!this.shouldRefreshOidc(firstResult, gatewayArgs)) return firstResult;
+      if (!allowOidcReplay || !this.shouldRefreshOidc(firstResult, gatewayArgs)) return firstResult;
 
       const loginArgs = [...gatewayArgs, "gateway", "login", this.gateway!];
       const loginResult = await this.loginOidc(loginArgs);
@@ -400,7 +401,7 @@ export class OpenShellClient {
       return false;
     }
     if (result.code === 0) return false;
-    return /unauthenticated|oidc token (?:expired|invalid)|token has expired|missing authorization header/i.test(result.stderr);
+    return /unauthenticated|oidc token (?:expired|invalid)|token has expired|missing authorization header|invalid token:\s*ExpiredSignature/i.test(result.stderr);
   }
 
   private loginOidc(args: string[]): Promise<CommandResult> {
@@ -525,7 +526,7 @@ export class OpenShellClient {
     return this.exec(args, undefined, {
       ...(input.onStdoutChunk !== undefined ? { onStdoutChunk: input.onStdoutChunk } : {}),
       ...(input.onStderrChunk !== undefined ? { onStderrChunk: input.onStderrChunk } : {}),
-    }, input.timeout !== undefined ? input.timeout * 1000 + 30_000 : this.commandTimeoutMs, input.signal);
+    }, input.timeout !== undefined ? input.timeout * 1000 + 30_000 : this.commandTimeoutMs, input.signal, undefined, false);
   }
 
   /** Retrieve a bounded warning-level sandbox log snapshot for policy auditing. */
