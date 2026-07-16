@@ -7,6 +7,17 @@ import { parse } from "yaml";
 const VALID_KINDS = new Set<RuntimePolicyKind>(["filesystem", "network", "process", "inference"]);
 const MAX_POLICY_YAML_BYTES = 64 * 1024;
 
+/**
+ * Maps the VE-internal `kind` (stored in the DB) to the top-level YAML key
+ * that the OpenShell gateway expects in the policy document.
+ */
+const KIND_TO_YAML_KEY: Readonly<Record<RuntimePolicyKind, string>> = {
+  network: "network_policies",
+  filesystem: "filesystem_policy",
+  process: "process",
+  inference: "inference",
+};
+
 export interface RuntimePolicyRouteDeps {
   runtimePolicyStore?: RuntimePolicyStoreApi | undefined;
   /** OpenShell gateway probe: reports whether the k8s-backed agent runtime is reachable. */
@@ -34,16 +45,17 @@ export function validateRuntimePolicyYaml(kind: RuntimePolicyKind, yaml: string)
   if (typeof document !== "object" || document === null || Array.isArray(document)) {
     return "Runtime policy YAML must be an object";
   }
-  if (!Object.hasOwn(document, kind)) {
-    return `Runtime policy YAML must contain a '${kind}' section`;
+  const expectedKey = KIND_TO_YAML_KEY[kind];
+  if (!Object.hasOwn(document, expectedKey)) {
+    return `Runtime policy YAML must contain a '${expectedKey}' section`;
   }
   const keys = Object.keys(document);
-  if (keys.length !== 1 || keys[0] !== kind) {
-    return `Runtime policy YAML may contain only the '${kind}' top-level section`;
+  if (keys.length !== 1 || keys[0] !== expectedKey) {
+    return `Runtime policy YAML may contain only the '${expectedKey}' top-level section`;
   }
-  const section = (document as Record<string, unknown>)[kind];
+  const section = (document as Record<string, unknown>)[expectedKey];
   if (typeof section !== "object" || section === null || Array.isArray(section)) {
-    return `Runtime policy '${kind}' section must be an object`;
+    return `Runtime policy '${expectedKey}' section must be an object`;
   }
   return null;
 }

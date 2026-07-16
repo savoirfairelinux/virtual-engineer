@@ -26,7 +26,7 @@ describe("openShellPolicyBuilder", () => {
     const yaml = buildPolicyYaml(
       reviewReadonlyPolicy({ inferenceHost: "api.anthropic.com", apiHosts: ["api.github.com"] })
     );
-    expect(yaml).toContain("network:");
+    expect(yaml).toContain("network_policies:");
     expect(yaml).toContain("default: deny");
     expect(yaml).toContain("- host: api.anthropic.com");
     expect(yaml).toContain("- host: api.github.com");
@@ -467,7 +467,7 @@ describe("OpenShellClient", () => {
     const client = new OpenShellClient({ runner });
     await client.createSandbox({
       name: "task-1",
-      policyYaml: "filesystem:\n  allow_write: [/sandbox]\n",
+      policyYaml: "filesystem_policy:\n  allow_write: [/sandbox]\n",
     });
 
     const args = calls[0]?.args ?? [];
@@ -703,7 +703,7 @@ describe("OpenShellClient", () => {
   it("writes policy yaml to a temp file on setPolicy", async () => {
     const { runner, calls } = runnerReturning({ code: 0 });
     const client = new OpenShellClient({ runner });
-    await client.setPolicy("demo", "network:\n  default: deny\n");
+    await client.setPolicy("demo", "network_policies:\n  default: deny\n");
     // args: policy set --policy <tempfile> demo
     expect(calls[0]?.args[0]).toBe("policy");
     expect(calls[0]?.args[1]).toBe("set");

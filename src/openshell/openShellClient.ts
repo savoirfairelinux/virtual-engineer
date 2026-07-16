@@ -556,6 +556,8 @@ export class OpenShellClient {
     args.push("--source", "sandbox", "--level", "warn");
     const result = await this.exec(args, undefined, undefined, this.commandTimeoutMs, input.signal);
     if (result.code !== 0) {
+      // Sandbox already removed — return empty log rather than breaking cleanup.
+      if (/sandbox[^\n]*not found|not found[^\n]*sandbox/i.test(result.stderr)) return "";
       throw new Error(`openshell logs failed (${result.code}): ${redactOpenShellText(result.stderr).slice(0, 500)}`);
     }
     return result.stdout;

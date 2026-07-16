@@ -51,7 +51,7 @@ export function buildPolicyYaml(spec: RuntimePolicySpec): string {
   const lines: string[] = [];
 
   if (spec.network) {
-    lines.push("network:");
+    lines.push("network_policies:");
     lines.push(`  default: ${spec.network.default}`);
     if (spec.network.allow.length > 0) {
       lines.push("  allow:");
@@ -67,7 +67,7 @@ export function buildPolicyYaml(spec: RuntimePolicySpec): string {
   }
 
   if (spec.filesystem) {
-    lines.push("filesystem:");
+    lines.push("filesystem_policy:");
     lines.push(`  allow_write: [${spec.filesystem.allowWrite.map(yamlString).join(", ")}]`);
   }
 

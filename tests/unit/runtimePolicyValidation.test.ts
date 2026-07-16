@@ -3,15 +3,15 @@ import { validateRuntimePolicyYaml } from "../../src/admin/adminRuntimePolicyRou
 
 describe("validateRuntimePolicyYaml", () => {
   it("accepts a policy document containing the declared kind", () => {
-    expect(validateRuntimePolicyYaml("network", "network:\n  default: deny\n")).toBeNull();
+    expect(validateRuntimePolicyYaml("network", "network_policies:\n  default: deny\n")).toBeNull();
   });
 
   it("rejects malformed YAML", () => {
-    expect(validateRuntimePolicyYaml("network", "network: [unterminated")).toMatch(/invalid YAML/i);
+    expect(validateRuntimePolicyYaml("network", "network_policies: [unterminated")).toMatch(/invalid YAML/i);
   });
 
   it("rejects a document without the declared policy section", () => {
-    expect(validateRuntimePolicyYaml("network", "filesystem:\n  default: deny\n")).toMatch(/network/i);
+    expect(validateRuntimePolicyYaml("network", "filesystem_policy:\n  default: deny\n")).toMatch(/network_policies/i);
   });
 
   it("rejects empty policy documents", () => {
@@ -19,25 +19,25 @@ describe("validateRuntimePolicyYaml", () => {
   });
 
   it("rejects scalar policy sections", () => {
-    expect(validateRuntimePolicyYaml("network", "network: true\n")).toMatch(/object/i);
+    expect(validateRuntimePolicyYaml("network", "network_policies: true\n")).toMatch(/object/i);
   });
 
   it("rejects additional top-level policy sections", () => {
     expect(validateRuntimePolicyYaml(
       "network",
-      "network:\n  default: deny\nfilesystem:\n  allow_write: [/sandbox]\n",
-    )).toMatch(/only.*network/i);
+      "network_policies:\n  default: deny\nfilesystem_policy:\n  allow_write: [/sandbox]\n",
+    )).toMatch(/only.*network_policies/i);
   });
 
   it("rejects YAML aliases", () => {
     expect(validateRuntimePolicyYaml(
       "network",
-      "network: &rules\n  default: deny\nextra: *rules\n",
+      "network_policies: &rules\n  default: deny\nextra: *rules\n",
     )).toMatch(/alias|only/i);
   });
 
   it("rejects oversized policy documents", () => {
-    expect(validateRuntimePolicyYaml("network", `network:\n  note: ${"x".repeat(70_000)}\n`))
+    expect(validateRuntimePolicyYaml("network", `network_policies:\n  note: ${"x".repeat(70_000)}\n`))
       .toMatch(/too large/i);
   });
 });
