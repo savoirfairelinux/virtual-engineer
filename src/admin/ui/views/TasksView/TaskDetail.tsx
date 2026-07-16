@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useState } from "react";
+import {
+  isCurrentTaskRequest,
+  isSameTaskRequest,
+  shouldStartTaskRequest,
+  type TaskRequestIdentity,
+} from "./taskDetailRequests.js";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Icon } from "../../components/Icon.tsx";
 import { StatePill } from "../../components/StatePill.tsx";
 import { Tag } from "../../components/Tag.tsx";
@@ -30,30 +36,88 @@ export function TaskDetail({ task, onRefresh, onDeleted }: TaskDetailProps) {
   const [cycles, setCycles] = useState<ApiCycle[] | null>(null);
   const [transitions, setTransitions] = useState<ApiTransition[] | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const currentTaskIdRef = useRef(task.taskId);
+  const cycleRequestSequence = useRef(0);
+  const cycleRequestInFlight = useRef<TaskRequestIdentity | null>(null);
+  const detailRequestSequence = useRef(0);
 
-  const loadDetails = useCallback((id: string, fallbackTask: ApiTask) => {
-    void api.get<{ task: ApiTask }>(`/api/admin/tasks/${id}`)
-      .then((r) => setTaskDetails(r.task))
-      .catch(() => setTaskDetails(fallbackTask));
+  const loadCycles = useCallback((id: string, clearOnError = false) => {
+    if (!shouldStartTaskRequest(id, cycleRequestInFlight.current)) return;
+    const requestSequence = ++cycleRequestSequence.current;
+    const requestIdentity = { taskId: id, requestSequence };
+    cycleRequestInFlight.current = requestIdentity;
     void api.get<{ cycles: ApiCycle[] }>(`/api/admin/tasks/${id}/cycles`)
-      .then((r) => setCycles(r.cycles))
-      .catch(() => setCycles([]));
-    void api.get<{ transitions: ApiTransition[] }>(`/api/admin/tasks/${id}/transitions`)
-      .then((r) => setTransitions(r.transitions))
-      .catch(() => setTransitions([]));
+      .then((r) => {
+        if (isCurrentTaskRequest(id, requestSequence, currentTaskIdRef.current, cycleRequestSequence.current)) {
+          setCycles(r.cycles);
+        }
+      })
+      .catch(() => {
+        if (
+          clearOnError &&
+          isCurrentTaskRequest(id, requestSequence, currentTaskIdRef.current, cycleRequestSequence.current)
+        ) {
+          setCycles([]);
+        }
+      })
+      .finally(() => {
+        if (isSameTaskRequest(cycleRequestInFlight.current, requestIdentity)) {
+          cycleRequestInFlight.current = null;
+        }
+      });
   }, []);
 
+  const loadDetails = useCallback((id: string, fallbackTask: ApiTask) => {
+    const requestSequence = ++detailRequestSequence.current;
+    void api.get<{ task: ApiTask }>(`/api/admin/tasks/${id}`)
+      .then((r) => {
+        if (isCurrentTaskRequest(id, requestSequence, currentTaskIdRef.current, detailRequestSequence.current)) {
+          setTaskDetails(r.task);
+        }
+      })
+      .catch(() => {
+        if (isCurrentTaskRequest(id, requestSequence, currentTaskIdRef.current, detailRequestSequence.current)) {
+          setTaskDetails(fallbackTask);
+        }
+      });
+    loadCycles(id, true);
+    void api.get<{ transitions: ApiTransition[] }>(`/api/admin/tasks/${id}/transitions`)
+      .then((r) => {
+        if (isCurrentTaskRequest(id, requestSequence, currentTaskIdRef.current, detailRequestSequence.current)) {
+          setTransitions(r.transitions);
+        }
+      })
+      .catch(() => {
+        if (isCurrentTaskRequest(id, requestSequence, currentTaskIdRef.current, detailRequestSequence.current)) {
+          setTransitions([]);
+        }
+      });
+  }, [loadCycles]);
+
   useEffect(() => {
+    currentTaskIdRef.current = task.taskId;
     setTaskDetails(null);
     setCycles(null);
     setTransitions(null);
+    return () => {
+      cycleRequestSequence.current += 1;
+      detailRequestSequence.current += 1;
+    };
   }, [task.taskId]);
 
   useEffect(() => {
+    cycleRequestSequence.current += 1;
+    cycleRequestInFlight.current = null;
     setCycles(null);
     setTransitions(null);
     loadDetails(task.taskId, task);
-  }, [task.taskId, task.state, task.updatedAt]); // eslint-disable-line react-hooks/exhaustive-deps -- loadDetails is stable
+  }, [loadDetails, task.taskId, task.state, task.updatedAt]); // eslint-disable-line react-hooks/exhaustive-deps -- selected task fields control full reloads
+
+  useEffect(() => {
+    if (tab !== "cycles" || !isActiveState(task.state)) return;
+    const intervalId = window.setInterval(() => loadCycles(task.taskId), 2000);
+    return () => window.clearInterval(intervalId);
+  }, [loadCycles, tab, task.state, task.taskId]);
 
   async function doAction(path: string, method: "PATCH" | "POST" | "DELETE") {
     setActionError(null);

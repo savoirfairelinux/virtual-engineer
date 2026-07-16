@@ -5,6 +5,7 @@ import { TONE } from "../../states.ts";
 import type { ApiCycle, CycleCost } from "../../types.ts";
 import { totalInputTokens, totalProcessedTokens } from "./liveMetrics.ts";
 import { formatUsd, formatCredits } from "./costFormat.ts";
+import { getCyclePresentation } from "./agentCyclePresentation.ts";
 
 interface ReviewComment {
   file: string;
@@ -170,8 +171,7 @@ interface CycleCardProps {
 }
 
 function CycleCard({ cycle, open, onToggle }: CycleCardProps) {
-  const running = cycle.result.status === "failed" && !cycle.result.agentLogs;
-  const tone = running ? "active" : cycle.result.status === "success" ? "ok" : cycle.result.status === "no_change" ? "warn" : "danger";
+  const presentation = getCyclePresentation(cycle);
   const reviewComments = extractReviewComments(cycle);
   const reviewSummary = extractReviewSummary(cycle, reviewComments.length);
   const costBadge = cycle.cost ? cycleCostBadge(cycle.cost) : null;
@@ -190,13 +190,7 @@ function CycleCard({ cycle, open, onToggle }: CycleCardProps) {
           style={{ color: "var(--text-faint)", transform: open ? "rotate(90deg)" : "none", transition: "transform 0.18s var(--ease)" }}
         />
         <span style={{ fontSize: "13.5px", fontWeight: 600 }}>Cycle {cycle.cycleNumber}</span>
-        {running ? (
-          <span className="pill" style={{ color: "var(--accent-strong)", background: "var(--accent-soft)", borderColor: "var(--accent-line)" }}>
-            <span className="dot live-dot" /> running
-          </span>
-        ) : (
-          <Tag tone={tone} mono={false}>{cycle.result.status}</Tag>
-        )}
+        <Tag tone={presentation.tone} mono={false}>{presentation.status}</Tag>
         <div style={{ flex: 1 }} />
         <div style={{ display: "flex", gap: "14px", alignItems: "center", fontSize: "11.5px", color: "var(--text-faint)" }}>
           {reviewSummary.commentCount > 0 && (
@@ -226,16 +220,26 @@ function CycleCard({ cycle, open, onToggle }: CycleCardProps) {
 
       {open && (
         <div className="fade-up" style={{ padding: "0 16px 18px 42px" }}>
-          {running ? (
-            <div style={{ display: "flex", alignItems: "center", gap: "10px", color: "var(--text-faint)", fontSize: "12.5px", padding: "8px 0" }}>
-              <span className="live-dot" style={{ width: 7, height: 7, borderRadius: 99, background: "var(--accent-strong)" }} />
-              Agent is running. Results will stream into the log below.
-            </div>
-          ) : (
-            <>
-              {cycle.result.summary && (
+          <>
+              {presentation.error && (
                 <>
-                  <div className="eyebrow" style={{ marginBottom: "8px" }}>Summary</div>
+                  <div className="eyebrow" style={{ marginBottom: "8px", color: "var(--danger)" }}>Error</div>
+                  <div
+                    className="mono"
+                    style={{
+                      fontSize: "12px", lineHeight: 1.6, color: "var(--danger)",
+                      background: "var(--danger-soft)", border: "1px solid color-mix(in oklab,var(--danger) 30%, transparent)",
+                      borderRadius: "var(--radius-sm)", padding: "12px 14px",
+                      whiteSpace: "pre-wrap", overflowWrap: "anywhere",
+                    }}
+                  >
+                    {presentation.error}
+                  </div>
+                </>
+              )}
+              {cycle.result.summary && cycle.result.summary !== presentation.error && (
+                <>
+                  <div className="eyebrow" style={{ margin: presentation.error ? "20px 0 8px" : "0 0 8px" }}>Summary</div>
                   <div
                     style={{
                       fontSize: "12.5px", lineHeight: 1.6, color: "var(--text-dim)",
@@ -303,7 +307,6 @@ function CycleCard({ cycle, open, onToggle }: CycleCardProps) {
                 </>
               )}
             </>
-          )}
         </div>
       )}
     </div>

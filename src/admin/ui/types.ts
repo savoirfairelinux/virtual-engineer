@@ -49,7 +49,7 @@ export interface AgentLogEvent {
 }
 
 export interface AgentResult {
-  status: "success" | "no_change" | "failed";
+  status: "running" | "success" | "no_change" | "failed";
   modifiedFiles: string[] | Record<string, string[]>;
   summary: string;
   agentLogs: string;
