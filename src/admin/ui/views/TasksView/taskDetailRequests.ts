@@ -25,3 +25,7 @@ export function isSameTaskRequest(
 ): boolean {
   return left?.taskId === right.taskId && left.requestSequence === right.requestSequence;
 }
+
+export function shouldClearDeletedTask(deletedTaskId: string, selectedTaskId: string): boolean {
+  return deletedTaskId === selectedTaskId;
+}

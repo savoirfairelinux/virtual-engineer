@@ -70,6 +70,24 @@ export interface ProjectsRouteStore {
     id: ProjectId,
     partial: Partial<Pick<ProjectRecord, "name" | "type" | "agentId" | "agentOverrideJson" | "postCloneScript" | "skillDiscoveryEnabled" | "enabled">>
   ): Promise<ProjectRecord>;
+  updateProjectConfiguration(
+    id: ProjectId,
+    input: {
+      project: Partial<Pick<ProjectRecord, "name" | "type" | "agentId" | "agentOverrideJson" | "postCloneScript" | "skillDiscoveryEnabled" | "enabled">>;
+      ticketSource?: { integrationId: string; ticketProjectKey: string } | undefined;
+      pushTargets?: Array<{
+        integrationId: string;
+        repoKey: string;
+        cloneUrl: string;
+        targetBranch: string;
+        role: PushTargetRole;
+        commitOrder: number;
+        localPath: string;
+        sshKeyPath?: string | null | undefined;
+      }> | undefined;
+      reviewConfig?: { integrationId: string; repoKeys: string[] } | undefined;
+    }
+  ): Promise<ProjectRecord>;
   deleteProject(id: ProjectId): Promise<void>;
   setProjectEnabled(id: ProjectId, enabled: boolean): Promise<void>;
   setProjectTicketSource(
@@ -111,6 +129,7 @@ export interface ProjectsRouteDeps {
   taskControl?:
     | {
         retryTask(taskId: ReturnType<typeof makeTaskId>): Promise<void>;
+        deleteProject?(projectId: ProjectId): Promise<void>;
       }
     | undefined;
 }
@@ -569,6 +588,17 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
         writeJson(res, 400, { error: `Agent type mismatch: agent is '${agent.type}', project is '${existing.type}'` }); return;
       }
     }
+    if (data.ticketSource !== undefined && existing.type !== "coding") {
+      writeJson(res, 400, { error: "ticketSource only valid for coding projects" }); return;
+    }
+    if (data.pushTargets !== undefined) {
+      if (existing.type !== "coding") { writeJson(res, 400, { error: "pushTargets only valid for coding projects" }); return; }
+      const cloneUrlError = await validatePushTargetCloneUrls(data.pushTargets, deps.integrationStore);
+      if (cloneUrlError) { writeJson(res, 400, { error: cloneUrlError }); return; }
+    }
+    if (data.reviewConfig !== undefined && existing.type !== "review") {
+      writeJson(res, 400, { error: "reviewConfig only valid for review projects" }); return;
+    }
     const updates: Parameters<ProjectsRouteStore["updateProject"]>[1] = {};
     if (data.name !== undefined) updates.name = data.name;
     if (data.agentId !== undefined) updates.agentId = makeAgentId(data.agentId);
@@ -586,23 +616,14 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
       updates.skillDiscoveryEnabled !== undefined ||
       (updates.enabled === true && existing.enabled !== true);
     try {
-      if (Object.keys(updates).length > 0) await store.updateProject(id, updates);
-      if (data.ticketSource !== undefined) {
-        if (existing.type !== "coding") { writeJson(res, 400, { error: "ticketSource only valid for coding projects" }); return; }
-        await store.setProjectTicketSource(id, data.ticketSource);
-      }
-      if (data.pushTargets !== undefined) {
-        if (existing.type !== "coding") { writeJson(res, 400, { error: "pushTargets only valid for coding projects" }); return; }
-        const cloneUrlError = await validatePushTargetCloneUrls(data.pushTargets, deps.integrationStore);
-        if (cloneUrlError) { writeJson(res, 400, { error: cloneUrlError }); return; }
-        await store.replaceProjectPushTargets(id, data.pushTargets);
-      }
-      if (data.reviewConfig !== undefined) {
-        if (existing.type !== "review") { writeJson(res, 400, { error: "reviewConfig only valid for review projects" }); return; }
-        await store.setProjectReviewConfig(id, data.reviewConfig.integrationId, data.reviewConfig.repoKeys);
-      }
+      await store.updateProjectConfiguration(id, {
+        project: updates,
+        ...(data.ticketSource !== undefined ? { ticketSource: data.ticketSource } : {}),
+        ...(data.pushTargets !== undefined ? { pushTargets: data.pushTargets } : {}),
+        ...(data.reviewConfig !== undefined ? { reviewConfig: data.reviewConfig } : {}),
+      });
     } catch (err: unknown) {
-      const status = isUniqueConflict(err) ? 409 : 500;
+      const status = isUniqueConflict(err) || (err as { code?: unknown }).code === "ACTIVE_TASKS" ? 409 : 500;
       const msg = err instanceof Error ? err.message : String(err);
       log.warn({ err, id }, "update project children failed");
       writeJson(res, status, { error: status === 409 ? "Conflict" : "Update failed", message: msg }); return;
@@ -635,7 +656,11 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
     const existing = await store.getProjectById(id);
     if (!existing) { writeJson(res, 404, { error: "Project not found" }); return; }
     try {
-      await store.deleteProject(id);
+      if (deps.taskControl?.deleteProject !== undefined) {
+        await deps.taskControl.deleteProject(id);
+      } else {
+        await store.deleteProject(id);
+      }
       recordAudit(deps.auditStore, req, { action: "project.delete", targetType: "project", targetId: id, details: { name: existing.name, type: existing.type } });
       res.statusCode = 204; res.end();
       deps.onProjectChange?.();

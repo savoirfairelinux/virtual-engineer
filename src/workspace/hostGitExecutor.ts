@@ -16,14 +16,14 @@ import { isAbsolute, join, relative, resolve, sep } from "path";
 import { trustedGitArgs, trustedGitEnv } from "../utils/gitExec.js";
 
 /** Runs a git argv in `cwd` with an optional explicit env; resolves stdout, rejects on non-zero exit. */
-export type GitRunner = (args: string[], cwd: string, env?: NodeJS.ProcessEnv) => Promise<string>;
+export type GitRunner = (args: string[], cwd: string, env?: NodeJS.ProcessEnv, signal?: AbortSignal) => Promise<string>;
 
-const defaultGitRunner: GitRunner = (args, cwd, env) =>
+const defaultGitRunner: GitRunner = (args, cwd, env, signal) =>
   new Promise<string>((resolve, reject) => {
     execFile(
       "git",
       trustedGitArgs(args),
-      { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, env: trustedGitEnv(env) },
+      { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, env: trustedGitEnv(env), signal },
       (err, stdout, stderr) => {
         if (err) {
           reject(new Error(`git ${args[0]}: ${(stderr || err.message).slice(0, 500)}`));
@@ -144,8 +144,13 @@ export class HostGitExecutor {
   }
 
   /** Create an ephemeral working directory. */
-  async createWorkspace(prefix: string): Promise<HostWorkspace> {
+  async createWorkspace(prefix: string, signal?: AbortSignal): Promise<HostWorkspace> {
+    signal?.throwIfAborted();
     const dir = await mkdtemp(join(this.baseDir, `${prefix}-`));
+    if (signal?.aborted === true) {
+      await rm(dir, { recursive: true, force: true });
+      signal.throwIfAborted();
+    }
     return { dir };
   }
 
@@ -157,14 +162,15 @@ export class HostGitExecutor {
     subPath = ".",
     sshKeyPath?: string | null,
     sshKnownHostsPath?: string | null,
+    signal?: AbortSignal,
   ): Promise<void> {
     const cloneDir = resolveWorkspacePath(dir, subPath);
     const env = buildSshGitEnv(sshKeyPath, sshKnownHostsPath);
-    await this.git(["clone", "--branch", branch, "--single-branch", repoUrl, subPath], dir, env);
+    await this.git(["clone", "--branch", branch, "--single-branch", repoUrl, subPath], dir, env, signal);
     const cleanUrl = credentialFreeUrl(repoUrl);
     if (cleanUrl !== repoUrl) {
       try {
-        await this.git(["remote", "set-url", "origin", cleanUrl], cloneDir);
+        await this.git(["remote", "set-url", "origin", cleanUrl], cloneDir, undefined, signal);
       } catch (err) {
         await rm(cloneDir, { recursive: true, force: true });
         throw err;
@@ -173,8 +179,8 @@ export class HostGitExecutor {
   }
 
   /** Run an arbitrary git command in `dir` (optionally within a sub-path). */
-  async execGit(dir: string, args: string[], subPath?: string): Promise<string> {
-    return this.git(args, subPath ? resolveWorkspacePath(dir, subPath) : dir);
+  async execGit(dir: string, args: string[], subPath?: string, signal?: AbortSignal): Promise<string> {
+    return this.git(args, subPath ? resolveWorkspacePath(dir, subPath) : dir, undefined, signal);
   }
 
   /** Replace sandbox-returned Git configuration with host-trusted metadata. */
@@ -205,11 +211,12 @@ export class HostGitExecutor {
     subPath = ".",
     sshKeyPath?: string | null,
     sshKnownHostsPath?: string | null,
+    signal?: AbortSignal,
   ): Promise<void> {
     const cwd = resolveWorkspacePath(dir, subPath);
     const env = buildSshGitEnv(sshKeyPath, sshKnownHostsPath);
-    await this.git(["fetch", remoteUrl, ref], cwd, env);
-    await this.git(["checkout", "FETCH_HEAD"], cwd);
+    await this.git(["fetch", remoteUrl, ref], cwd, env, signal);
+    await this.git(["checkout", "FETCH_HEAD"], cwd, undefined, signal);
   }
 
   /** Fetch a ref and cherry-pick it onto the current HEAD. */
@@ -220,11 +227,12 @@ export class HostGitExecutor {
     subPath = ".",
     sshKeyPath?: string | null,
     sshKnownHostsPath?: string | null,
+    signal?: AbortSignal,
   ): Promise<void> {
     const cwd = resolveWorkspacePath(dir, subPath);
     const env = buildSshGitEnv(sshKeyPath, sshKnownHostsPath);
-    await this.git(["fetch", remoteUrl, ref], cwd, env);
-    await this.git(["cherry-pick", "FETCH_HEAD"], cwd);
+    await this.git(["fetch", remoteUrl, ref], cwd, env, signal);
+    await this.git(["cherry-pick", "FETCH_HEAD"], cwd, undefined, signal);
   }
 
   /** List files changed relative to `baseRef` (default: staged+unstaged vs HEAD). */

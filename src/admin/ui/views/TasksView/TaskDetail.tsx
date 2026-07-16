@@ -24,7 +24,7 @@ import type { ApiTask, ApiCycle, ApiTransition } from "../../types.ts";
 interface TaskDetailProps {
   task: ApiTask;
   onRefresh: () => void;
-  onDeleted: () => void;
+  onDeleted: (taskId: string) => void;
 }
 
 type TabId = "cycles" | "timeline" | "logs";
@@ -96,6 +96,7 @@ export function TaskDetail({ task, onRefresh, onDeleted }: TaskDetailProps) {
 
   useEffect(() => {
     currentTaskIdRef.current = task.taskId;
+    setActionError(null);
     setTaskDetails(null);
     setCycles(null);
     setTransitions(null);
@@ -120,17 +121,20 @@ export function TaskDetail({ task, onRefresh, onDeleted }: TaskDetailProps) {
   }, [loadCycles, tab, task.state, task.taskId]);
 
   async function doAction(path: string, method: "PATCH" | "POST" | "DELETE") {
+    const actionTaskId = task.taskId;
     setActionError(null);
     try {
       await api[method === "PATCH" ? "patch" : method === "POST" ? "post" : "delete"](path);
       if (method === "DELETE") {
-        onDeleted();
+        onDeleted(task.taskId);
       } else {
         loadDetails(task.taskId, task);
       }
       onRefresh();
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : "Action failed");
+      if (currentTaskIdRef.current === actionTaskId) {
+        setActionError(err instanceof Error ? err.message : "Action failed");
+      }
     }
   }
 

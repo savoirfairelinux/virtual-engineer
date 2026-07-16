@@ -257,6 +257,7 @@ export function connectSse(
 
       while (true) {
         const { done, value } = await reader.read();
+        if (stopped) break;
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
 

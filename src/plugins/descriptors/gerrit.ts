@@ -267,7 +267,7 @@ export const gerritDescriptor: ProviderDescriptor = {
             sshAgentPubKeyPath: ssh.agentPubKeyPath ?? null,
             sshKnownHostsPath: ssh.knownHostsPath ?? null,
           }),
-          applyPatchset: async (handle, details): Promise<void> => {
+          applyPatchset: async (handle, details, signal): Promise<void> => {
             if (workspaceRunner.applyPriorPatchset !== undefined) {
               await workspaceRunner.applyPriorPatchset(handle, {
                 // Full repo URL (base + project) — `git fetch` needs the repo
@@ -281,6 +281,7 @@ export const gerritDescriptor: ProviderDescriptor = {
                 ...(ssh.knownHostsPath !== undefined ? { sshKnownHostsPath: ssh.knownHostsPath } : {}),
                 revisionNumber: details.changeNumber,
                 patchset: details.currentPatchset,
+                signal,
               });
             }
           },

@@ -5,7 +5,7 @@ import { randomUUID } from "crypto";
 import type { Server } from "node:http";
 import { SqliteStateStore } from "../../src/state/stateStore.js";
 import { createAdminServer, type AdminServerDependencies } from "../../src/admin/adminServer.js";
-import { type AgentRecord, type AgentType } from "../../src/interfaces.js";
+import { makeTaskId, makeTicketId, type AgentRecord, type AgentType } from "../../src/interfaces.js";
 
 function tempDbPath(): string {
   return join(tmpdir(), `ve-admin-projects-${randomUUID()}.db`);
@@ -34,7 +34,7 @@ async function rest(server: Server, path: string, opts: { method?: string; body?
 function makeDeps(store: SqliteStateStore): AdminServerDependencies {
   return {
     stateStore: {
-      getActiveTasks: vi.fn(async () => []),
+      getActiveTasks: vi.fn(() => store.getActiveTasks()),
       getAllTasks: vi.fn(async () => []),
       getTask: vi.fn(async () => null),
       getAgentCycles: vi.fn(async () => []),
@@ -352,6 +352,31 @@ describe("Admin API — Project routes (/api/admin/projects)", () => {
     });
     expect(r.status).toBe(200);
     expect((r.body?.["project"] as Record<string, unknown>)["skillDiscoveryEnabled"]).toBe(true);
+  });
+
+  it("PUT /:id rejects agent reassignment while the project has active tasks", async () => {
+    const originalAgent = await makeAgent(store, "coding");
+    const replacementAgent = await makeAgent(store, "coding");
+    await seedIntegration(store, "redmine-1");
+    await seedIntegration(store, "gerrit-1", "gerrit");
+    const created = await rest(server, "/api/admin/projects", {
+      method: "POST",
+      body: {
+        type: "coding", name: "Active", agentId: originalAgent.id,
+        ticketSource: { integrationId: "redmine-1", ticketProjectKey: "K" },
+        pushTargets: [{ integrationId: "gerrit-1", repoKey: "r", cloneUrl: "u", targetBranch: "main", role: "primary", commitOrder: 1, localPath: "." }],
+      },
+    });
+    const id = (created.body?.["project"] as Record<string, unknown>)["id"] as string;
+    await store.createTask(makeTaskId("active-agent-change"), makeTicketId("42"), undefined, undefined, undefined, undefined, undefined, undefined, id as import("../../src/interfaces.js").ProjectId);
+
+    const response = await rest(server, `/api/admin/projects/${id}`, {
+      method: "PUT",
+      body: { agentId: replacementAgent.id },
+    });
+
+    expect(response.status).toBe(409);
+    expect((await store.getProjectById(id as import("../../src/interfaces.js").ProjectId))?.agentId).toBe(originalAgent.id);
   });
 
   it("PUT /:id toggles skillDiscoveryEnabled on a review project", async () => {

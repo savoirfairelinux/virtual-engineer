@@ -609,11 +609,12 @@ export interface PatchsetCheckoutOptions {
   sshPort?: number | undefined;
   /** Gerrit SSH user */
   sshUser?: string | undefined;
+  signal?: AbortSignal | undefined;
 }
 
 export interface WorkspaceRunner {
   /** Create a fresh ephemeral workspace directory/container for the agent */
-  createWorkspace(taskId: TaskId): Promise<WorkspaceHandle>;
+  createWorkspace(taskId: TaskId, signal?: AbortSignal): Promise<WorkspaceHandle>;
   /** Clone repository into the workspace — runs inside a helper container */
   cloneRepo(
     handle: WorkspaceHandle,
@@ -630,7 +631,8 @@ export interface WorkspaceRunner {
     handle: WorkspaceHandle,
     pushTargets: ProjectPushTargetRecord[],
     postCloneScript?: string,
-    sshKnownHostsPath?: string
+    sshKnownHostsPath?: string,
+    signal?: AbortSignal,
   ): Promise<CloneResult>;
   /** Fetch and checkout a prior patchset ref as detached HEAD. */
   applyPriorPatchset?(
@@ -662,7 +664,8 @@ export interface WorkspaceRunner {
   execGitInVolume?(
     handle: WorkspaceHandle,
     args: string[],
-    subPath?: string
+    subPath?: string,
+    signal?: AbortSignal,
   ): Promise<string>;
   /** Destroy workspace/container — always call in finally block */
   destroyWorkspace(handle: WorkspaceHandle): Promise<void>;
@@ -865,10 +868,10 @@ export interface ReviewProvider {
   readonly kind: string;
 
   /** Fetch full details for one change (current patchset, owner, status). */
-  getChangeDetails(changeId: ExternalChangeId): Promise<ReviewChangeDetails>;
+  getChangeDetails(changeId: ExternalChangeId, signal?: AbortSignal): Promise<ReviewChangeDetails>;
 
   /** Fetch the diff for a specific patchset (defaults to current). */
-  getChangeDiff(changeId: ExternalChangeId, patchset?: number): Promise<ReviewChangeDiff>;
+  getChangeDiff(changeId: ExternalChangeId, patchset?: number, signal?: AbortSignal): Promise<ReviewChangeDiff>;
 
   /**
    * Post inline comments and a summary on the given revision.
@@ -883,7 +886,8 @@ export interface ReviewProvider {
     revision: number,
     comments: InlineReviewComment[],
     summary: string,
-    allowedFiles?: ReadonlySet<string>
+    allowedFiles?: ReadonlySet<string>,
+    signal?: AbortSignal,
   ): Promise<void>;
 
   /**
@@ -899,7 +903,8 @@ export interface ReviewProvider {
     comments: InlineReviewComment[],
     summary: string,
     score: -1 | 1,
-    allowedFiles?: ReadonlySet<string>
+    allowedFiles?: ReadonlySet<string>,
+    signal?: AbortSignal,
   ): Promise<void>;
 
   /** Cast a Code-Review-style vote (-1, 0, or +1). */
@@ -907,7 +912,8 @@ export interface ReviewProvider {
     changeId: ExternalChangeId,
     revision: number,
     score: number,
-    message?: string
+    message?: string,
+    signal?: AbortSignal,
   ): Promise<void>;
 
   /**
@@ -939,7 +945,7 @@ export interface ReviewProvider {
    * Optional — providers that do not support thread fetching omit it, and the
    * orchestrator simply skips the reply flow.
    */
-  getDiscussionThreads?(changeId: ExternalChangeId): Promise<ReviewDiscussionThread[]>;
+  getDiscussionThreads?(changeId: ExternalChangeId, signal?: AbortSignal): Promise<ReviewDiscussionThread[]>;
 
   /**
    * Post a reply to an existing discussion thread identified by `threadId`.
@@ -949,7 +955,8 @@ export interface ReviewProvider {
     changeId: ExternalChangeId,
     revision: number,
     threadId: string,
-    message: string
+    message: string,
+    signal?: AbortSignal,
   ): Promise<void>;
 }
 

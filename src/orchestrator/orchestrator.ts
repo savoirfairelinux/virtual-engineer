@@ -26,6 +26,7 @@ import type { CodeGenState } from "../interfaces.js";
 import type { IntegrationStore } from "../interfaces.js";
 import { getLogger } from "../logger.js";
 import { FeedbackProcessor } from "./feedbackProcessor.js";
+import { TaskLifecycleCoordinator } from "./taskLifecycleCoordinator.js";
 import { clearTaskEventBuffer } from "../agents/agentEventBus.js";
 import { normalizeAgentResult, getModifiedFileCount } from "../agents/agentEventTypes.js";
 import type { VcsConnector } from "../vcs/vcsConnector.js";
@@ -100,6 +101,7 @@ export interface ProjectModeDeps {
     getProjectTicketSource(id: import("../interfaces.js").ProjectId): Promise<import("../interfaces.js").ProjectTicketSourceRecord | null>;
     getProjectReviewConfig(id: import("../interfaces.js").ProjectId): Promise<import("../interfaces.js").ProjectReviewConfig | null>;
     getAgentById(id: import("../interfaces.js").AgentId): Promise<import("../interfaces.js").AgentRecord | null>;
+    deleteProject?(id: import("../interfaces.js").ProjectId): Promise<void>;
   };
   pluginManager: {
     getConnectorForIntegration<T>(integrationId: string): T | null;
@@ -129,6 +131,7 @@ interface ProjectAgentRuntime {
  */
 export class Orchestrator {
   private readonly feedbackProcessor: FeedbackProcessor;
+  private readonly activeWorkflows = new Map<string, Promise<void>>();
   private config: OrchestratorConfig;
   private vcsConnector: VcsConnector | undefined;
   private readonly vcsConnectorFactory: VcsConnectorFactory;
@@ -139,7 +142,8 @@ export class Orchestrator {
     private readonly workspaceRunner: WorkspaceRunner,
     vcsConnector?: VcsConnector,
     private readonly integrationStore?: IntegrationStore,
-    projectMode?: ProjectModeDeps
+    projectMode?: ProjectModeDeps,
+    private readonly lifecycleCoordinator = new TaskLifecycleCoordinator(),
   ) {
     this.config = config;
     this.vcsConnectorFactory = new VcsConnectorFactory({ adminAuthSecret: config.adminAuthSecret });
@@ -178,6 +182,13 @@ export class Orchestrator {
     project: ProjectRecord,
     ticketSourceLabel: string
   ): Promise<void> {
+    const projectLease = await this.lifecycleCoordinator.acquireProjectStart(project.id);
+    if (projectLease === null) {
+      log.info({ projectId: project.id, ticketId: ticket.id }, "project is being deleted; skipping task creation");
+      return;
+    }
+    let task: Task | undefined;
+    try {
     const ticketId = makeTicketId(ticket.id);
     // Active-task identity is scoped by (project, ticket): two projects bound to
     // different repos under the same integration may legitimately have tickets
@@ -204,7 +215,7 @@ export class Orchestrator {
     // project if this project is later deleted. project_id is written atomically
     // so the (project_id, ticket_id) active-uniqueness index applies at insert.
     const ticketSource = await this.projectMode?.projectStore.getProjectTicketSource(project.id);
-    const task = await this.stateStore.createTask(
+    task = await this.stateStore.createTask(
       taskId,
       ticketId,
       ticket.subject,
@@ -221,6 +232,10 @@ export class Orchestrator {
       { taskId: task.taskId, ticketId, projectId: project.id, source: ticketSourceLabel },
       "created project-mode task"
     );
+    } finally {
+      projectLease.release();
+    }
+    if (task === undefined) return;
     await this.runWorkflow(task);
   }
 
@@ -280,22 +295,22 @@ export class Orchestrator {
       return;
     }
 
-    log.debug(
-      { taskId: task.taskId, changeId, state: task.state, ticketId: task.ticketId },
-      "handling review event for task"
-    );
-
-    if (TERMINAL_STATES.has(task.state)) {
-      log.debug({ taskId: task.taskId, state: task.state }, "task already in terminal state, ignoring review event");
-      return;
-    }
-
-    if (task.state !== "IN_REVIEW") {
-      log.debug({ taskId: task.taskId, state: task.state }, "task not in IN_REVIEW, ignoring review event");
-      return;
-    }
-
-    await this.checkReviewProgress(task);
+    await this.runTaskLifecycle(task.taskId, async () => {
+      const current = await this.stateStore.getTask(task.taskId) ?? task;
+      log.debug(
+        { taskId: current.taskId, changeId, state: current.state, ticketId: current.ticketId },
+        "handling review event for task"
+      );
+      if (TERMINAL_STATES.has(current.state)) {
+        log.debug({ taskId: current.taskId, state: current.state }, "task already in terminal state, ignoring review event");
+        return;
+      }
+      if (current.state !== "IN_REVIEW") {
+        log.debug({ taskId: current.taskId, state: current.state }, "task not in IN_REVIEW, ignoring review event");
+        return;
+      }
+      await this.checkReviewProgress(current);
+    });
   }
 
   /** Gerrit-flavoured alias for handleReviewEvent. */
@@ -314,16 +329,16 @@ export class Orchestrator {
       log.info({ integrationId, externalChangeId }, "webhook feedback: no task for change (likely a human-authored change, ignoring)");
       return;
     }
-    if (TERMINAL_STATES.has(task.state)) {
-      log.info({ taskId: task.taskId, state: task.state, externalChangeId }, "webhook feedback: task terminal, ignoring");
-      return;
-    }
-    if (task.state !== "IN_REVIEW") {
-      log.info({ taskId: task.taskId, state: task.state, externalChangeId }, "webhook feedback: task not IN_REVIEW, ignoring");
-      return;
-    }
-    log.info({ taskId: task.taskId, integrationId, externalChangeId }, "webhook feedback: triggering review progress check");
-    await this.checkReviewProgress(task, externalChangeId, streamComments);
+    await this.runTaskLifecycle(task.taskId, async () => {
+      const current = await this.stateStore.getTask(task.taskId) ?? task;
+      if (TERMINAL_STATES.has(current.state)) return;
+      if (current.state !== "IN_REVIEW") {
+        log.info({ taskId: current.taskId, state: current.state, externalChangeId }, "webhook feedback: task not IN_REVIEW, ignoring");
+        return;
+      }
+      log.info({ taskId: current.taskId, integrationId, externalChangeId }, "webhook feedback: triggering review progress check");
+      await this.checkReviewProgress(current, externalChangeId, streamComments);
+    });
   }
 
   /** Webhook handler: mark the associated task's change as merged and close its ticket. */
@@ -333,27 +348,22 @@ export class Orchestrator {
       log.info({ integrationId, externalChangeId }, "webhook merged: no task for change, ignoring");
       return;
     }
-    if (TERMINAL_STATES.has(task.state)) {
-      log.info({ taskId: task.taskId, state: task.state }, "webhook merged: task terminal, ignoring");
-      return;
-    }
-
-    // Code-review tasks wait in REVIEW_WATCHING after posting comments.
-    // When the patchset merges, close the review task immediately.
-    if (task.state === "REVIEW_WATCHING") {
-      log.info({ taskId: task.taskId, externalChangeId }, "webhook merged: marking review task REVIEW_DONE");
-      await this.stateStore.transition(task.taskId, "REVIEW_DONE");
-      return;
-    }
-
-    if (task.state !== "IN_REVIEW") {
-      log.info({ taskId: task.taskId, state: task.state }, "webhook merged: task not IN_REVIEW/REVIEW_WATCHING, ignoring");
-      return;
-    }
-
-    log.info({ taskId: task.taskId, externalChangeId }, "webhook merged: closing ticket");
-    const merged = await this.stateStore.transition(task.taskId, "MERGED");
-    await this.closeTicket(merged);
+    await this.runTaskLifecycle(task.taskId, async () => {
+      const current = await this.stateStore.getTask(task.taskId) ?? task;
+      if (TERMINAL_STATES.has(current.state)) return;
+      if (current.state === "REVIEW_WATCHING") {
+        log.info({ taskId: current.taskId, externalChangeId }, "webhook merged: marking review task REVIEW_DONE");
+        await this.stateStore.transition(current.taskId, "REVIEW_DONE");
+        return;
+      }
+      if (current.state !== "IN_REVIEW") {
+        log.info({ taskId: current.taskId, state: current.state }, "webhook merged: task not IN_REVIEW/REVIEW_WATCHING, ignoring");
+        return;
+      }
+      log.info({ taskId: current.taskId, externalChangeId }, "webhook merged: closing ticket");
+      const merged = await this.stateStore.transition(current.taskId, "MERGED");
+      await this.closeTicket(merged);
+    });
   }
 
   /** Webhook handler: mark the associated task as abandoned when a change is externally abandoned. */
@@ -363,12 +373,12 @@ export class Orchestrator {
       log.info({ integrationId, externalChangeId }, "webhook abandoned: no task for change, ignoring");
       return;
     }
-    if (TERMINAL_STATES.has(task.state)) {
-      log.info({ taskId: task.taskId, state: task.state }, "webhook abandoned: task terminal, ignoring");
-      return;
-    }
-    log.info({ taskId: task.taskId, externalChangeId }, "webhook abandoned: marking task ABANDONED");
-    await this.handleAbandoned(task, "change was abandoned externally (webhook)");
+    await this.runTaskLifecycle(task.taskId, async () => {
+      const current = await this.stateStore.getTask(task.taskId) ?? task;
+      if (TERMINAL_STATES.has(current.state)) return;
+      log.info({ taskId: current.taskId, externalChangeId }, "webhook abandoned: marking task ABANDONED");
+      await this.handleAbandoned(current, "change was abandoned externally (webhook)");
+    });
   }
 
   /** Resume an existing task's workflow, typically after a manual retry. */
@@ -379,6 +389,31 @@ export class Orchestrator {
     }
 
     await this.runWorkflow(task);
+  }
+
+  async abandonTask(taskId: ReturnType<typeof makeTaskId>): Promise<Task> {
+    let abandoned: Task | undefined;
+    await this.lifecycleCoordinator.cancelTaskAndRun(taskId, async () => {
+      const current = await this.stateStore.getTask(taskId);
+      if (!current) throw new Error(`Task not found: ${taskId}`);
+      abandoned = TERMINAL_STATES.has(current.state)
+        ? current
+        : await this.stateStore.abandonTask(taskId);
+    });
+    if (!abandoned) throw new Error(`Task not found: ${taskId}`);
+    return abandoned;
+  }
+
+  async deleteProject(projectId: import("../interfaces.js").ProjectId): Promise<void> {
+    const deleteProject = this.projectMode?.projectStore.deleteProject;
+    if (!deleteProject) throw new Error("Project deletion is not configured");
+    await this.lifecycleCoordinator.deleteProject(
+      projectId,
+      async () => (await this.stateStore.getAllTasks())
+        .filter((task) => task.projectId === projectId)
+        .map((task) => task.taskId),
+      () => deleteProject(projectId),
+    );
   }
 
   /** Invalidate the cached VCS connector for an integration after a config update. */
@@ -502,6 +537,34 @@ export class Orchestrator {
       log.debug({ taskId: task.taskId, state: task.state }, "skipping code-review task in ticket orchestrator");
       return;
     }
+
+    const activeWorkflow = this.activeWorkflows.get(task.taskId);
+    if (activeWorkflow !== undefined) {
+      log.debug({ taskId: task.taskId }, "joining active task workflow");
+      await activeWorkflow;
+      return;
+    }
+
+    const workflow = this.runTaskLifecycle(task.taskId, async () => {
+      const current = await this.stateStore.getTask(task.taskId);
+      if (!current && this.lifecycleCoordinator.wasTaskDeleted(task.taskId)) return;
+      await this.executeWorkflow(current ?? task);
+    });
+    this.activeWorkflows.set(task.taskId, workflow);
+    try {
+      await workflow;
+    } finally {
+      if (this.activeWorkflows.get(task.taskId) === workflow) {
+        this.activeWorkflows.delete(task.taskId);
+      }
+    }
+  }
+
+  private async runTaskLifecycle(taskId: Task["taskId"], operation: () => Promise<void>): Promise<void> {
+    await this.lifecycleCoordinator.runTask(taskId, async () => operation());
+  }
+
+  private async executeWorkflow(task: Task): Promise<void> {
     log.info({ taskId: task.taskId, state: task.state }, "running workflow from state");
 
     // The code-review early-return above guarantees task.state is a CodeGenState here.

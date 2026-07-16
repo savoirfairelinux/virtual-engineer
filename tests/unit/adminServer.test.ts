@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { AddressInfo } from "node:net";
+import { request as httpRequest } from "node:http";
 import { makeExternalChangeId, makeTaskId, makeTicketId } from "../../src/interfaces.js";
 import type { AgentCycle, OAuthAppStore, IntegrationStore, StateStore, StateTransition, Task } from "../../src/interfaces.js";
 import { createAdminServer } from "../../src/admin/adminServer.js";
@@ -1369,7 +1370,7 @@ describe("SSE endpoints", () => {
   });
 
   it("GET /api/admin/logs/stream retains events emitted while history loads", async () => {
-    const { agentLogBus: bus } = await import("../../src/agents/copilotAdapter.js");
+    const { agentLogBus: bus } = await import("../../src/agents/agentEventBus.js");
     let releaseHistory: (() => void) | undefined;
     const historyGate = new Promise<void>((resolve) => { releaseHistory = resolve; });
     const server = createAdminServer({
@@ -1407,6 +1408,48 @@ describe("SSE endpoints", () => {
       expect(text).toContain("review.prompt_received");
     } finally {
       releaseHistory?.();
+      await closeServer(server);
+    }
+  });
+
+  it("GET /api/admin/logs/stream removes its listener when the client disconnects during history loading", async () => {
+    const { agentLogBus: bus } = await import("../../src/agents/agentEventBus.js");
+    let releaseHistory!: () => void;
+    let markHistoryStarted!: () => void;
+    const historyGate = new Promise<void>((resolve) => { releaseHistory = resolve; });
+    const historyStarted = new Promise<void>((resolve) => { markHistoryStarted = resolve; });
+    const server = createAdminServer({
+      stateStore: makeStateStore({
+        getAgentCycles: async () => {
+          markHistoryStarted();
+          await historyGate;
+          return [];
+        },
+      }),
+      config: {
+        nodeEnv: "test",
+        logLevel: "info",
+        maxAgentCycles: 3,
+        maxRetryAttempts: 5,
+        pollingIntervalMs: 30000,
+      },
+      polling: { isRunning: () => true, getIntervals: () => ({ intervalMs: 30000 }) },
+      providers: providerSummaries,
+    });
+    const base = await listen(server);
+    const initialListeners = new Set(bus.listeners("event"));
+    const request = httpRequest(`${base}/api/admin/logs/stream?taskId=task-1`, () => undefined);
+    request.on("error", () => undefined);
+    try {
+      request.end();
+      await historyStarted;
+      const requestListeners = bus.listeners("event").filter((listener) => !initialListeners.has(listener));
+      expect(requestListeners).toHaveLength(1);
+      request.destroy();
+      await vi.waitFor(() => expect(bus.listeners("event")).not.toContain(requestListeners[0]));
+    } finally {
+      request.destroy();
+      releaseHistory();
       await closeServer(server);
     }
   });

@@ -28,6 +28,7 @@ import { computeCommentHash, computeThreadReplyHash } from "./commentHash.js";
 import { applyVolumeAndSeverityGate, buildFoldedSummary } from "./commentSeverity.js";
 import { agentLogBus, pushToTaskBuffer, clearTaskEventBuffer } from "../agents/agentEventBus.js";
 import type { ConcurrencyLease, ConcurrencyTracker } from "../orchestrator/concurrencyTracker.js";
+import type { TaskLifecycleCoordinator } from "../orchestrator/taskLifecycleCoordinator.js";
 
 const log = getLogger("review-orchestrator");
 const MAX_SUPERSEDED_REVIEW_RETRIES = 3;
@@ -86,7 +87,7 @@ export interface ReviewOrchestratorDeps {
   /** Build the git clone URL and optional SSH key paths for the change's repository. */
   buildCloneTarget: (details: ReviewChangeDetails) => { cloneUrl: string; sshKeyPath: string | null; sshAgentPubKeyPath?: string | null; sshKnownHostsPath: string | null };
   /** Apply a provider-specific patchset onto the cloned workspace (e.g. Gerrit `refs/changes/…`). Omit for GitLab MR branches. */
-  applyPatchset?: (handle: WorkspaceHandle, details: ReviewChangeDetails) => Promise<void>;
+  applyPatchset?: (handle: WorkspaceHandle, details: ReviewChangeDetails, signal?: AbortSignal) => Promise<void>;
   /** Source label persisted on review tasks, typically `<provider>:<integrationId>`. */
   sourceLabel?: string | undefined;
   /** Reviewer instructions (content of the `code-review` prompt from the DB). */
@@ -106,6 +107,7 @@ export interface ReviewOrchestratorDeps {
   /** Host-side deadline for one review-agent execution. */
   agentTimeoutMs?: number | undefined;
   concurrencyTracker?: Pick<ConcurrencyTracker, "acquireWhenAvailable" | "release"> | undefined;
+  lifecycleCoordinator?: TaskLifecycleCoordinator | undefined;
   agentAdapter?: AgentAdapter | undefined;
 }
 
@@ -197,6 +199,9 @@ export class ReviewOrchestrator {
     const tasks: Task[] = [];
 
     for (const project of projects) {
+      const projectLease = await this.deps.lifecycleCoordinator?.acquireProjectStart(project.id);
+      if (projectLease === null) continue;
+      try {
       // Per-project ticketId prevents collisions when multiple projects cover the same change.
       const ticketId = makeTicketId(`${sourceLabel}:${details.changeNumber}:${project.id}`);
 
@@ -334,6 +339,9 @@ export class ReviewOrchestrator {
       });
       log.info({ taskId, changeId: input.changeId, patchset: details.currentPatchset, projectId: project.id }, "code-review task created");
       tasks.push({ ...task, projectId: project.id });
+      } finally {
+        projectLease?.release();
+      }
     }
 
     return tasks;
@@ -344,7 +352,7 @@ export class ReviewOrchestrator {
    * REVIEW_PENDING → ... → REVIEW_WATCHING / REVIEW_DONE transition.
    */
   async runReview(taskId: TaskId, options?: { force?: boolean }): Promise<void> {
-    await this.runReviewPass(taskId, options, 0, false);
+    await this.runCoordinatedReview(taskId, options, false);
   }
 
   /** Recover an active code-review task after the host process restarts. */
@@ -360,7 +368,7 @@ export class ReviewOrchestrator {
       return;
     }
     if (task.state === "REVIEW_RUNNING") {
-      await this.runReviewPass(taskId, undefined, 0, true);
+      await this.runCoordinatedReview(taskId, undefined, true);
       return;
     }
     if (task.state === "REVIEW_WATCHING") {
@@ -410,11 +418,27 @@ export class ReviewOrchestrator {
     );
   }
 
+  private async runCoordinatedReview(
+    taskId: TaskId,
+    options: { force?: boolean } | undefined,
+    resumeRunning: boolean,
+  ): Promise<void> {
+    if (this.deps.lifecycleCoordinator === undefined) {
+      await this.runReviewPass(taskId, options, 0, resumeRunning);
+      return;
+    }
+    await this.deps.lifecycleCoordinator.runTask(
+      taskId,
+      (signal) => this.runReviewPass(taskId, options, 0, resumeRunning, signal),
+    );
+  }
+
   private async runReviewPass(
     taskId: TaskId,
     options: { force?: boolean } | undefined,
     supersededRetries: number,
     resumeRunning: boolean,
+    lifecycleSignal?: AbortSignal,
   ): Promise<void> {
     let task = await this.deps.stateStore.getTask(taskId);
     if (!task) throw new Error(`Review task not found: ${taskId}`);
@@ -505,15 +529,38 @@ export class ReviewOrchestrator {
       agentLogBus.emit("event", event);
     };
 
+    const timeoutMs = this.deps.agentTimeoutMs ?? 3_600_000;
+    const timeoutError = new Error(`Review timed out after ${timeoutMs}ms`);
+    const deadlineController = new AbortController();
+    const cancelForLifecycle = (): void => {
+      deadlineController.abort(lifecycleSignal?.reason ?? new Error(`Review task ${taskId} was cancelled`));
+    };
+    lifecycleSignal?.addEventListener("abort", cancelForLifecycle, { once: true });
+    if (lifecycleSignal?.aborted === true) cancelForLifecycle();
+    const deadlineTimer = setTimeout(() => deadlineController.abort(timeoutError), timeoutMs);
+    let deadlineActive = true;
+    const clearDeadline = (): void => {
+      if (!deadlineActive) return;
+      deadlineActive = false;
+      clearTimeout(deadlineTimer);
+      lifecycleSignal?.removeEventListener("abort", cancelForLifecycle);
+    };
+    const withinDeadline = <T>(operation: Promise<T>): Promise<T> =>
+      this.withAbortSignal(operation, deadlineController.signal, timeoutError);
+
     try {
       emitReviewEvent("review.started", { changeId, patchset: task.currentPatchset, cycleNumber });
 
-      const details = await this.deps.reviewProvider.getChangeDetails(changeId);
-      const diff = await this.deps.reviewProvider.getChangeDiff(changeId, details.currentPatchset);
+      const details = await withinDeadline(
+        this.deps.reviewProvider.getChangeDetails(changeId, deadlineController.signal)
+      );
+      const diff = await withinDeadline(
+        this.deps.reviewProvider.getChangeDiff(changeId, details.currentPatchset, deadlineController.signal)
+      );
 
       // Resolve the VE project directly from the task (set by startReviewTask).
       const project = task.projectId
-        ? await this.deps.stateStore.getProjectById(task.projectId)
+        ? await withinDeadline(this.deps.stateStore.getProjectById(task.projectId))
         : null;
       if (!project) {
         throw new Error(
@@ -541,7 +588,7 @@ export class ReviewOrchestrator {
 
       // Feed comments VE already posted on this change back into the
       // prompt so the agent does not re-raise points it has already made.
-      const priorComments = await this.deps.stateStore.getPostedReviewComments(taskId);
+      const priorComments = await withinDeadline(this.deps.stateStore.getPostedReviewComments(taskId));
 
       // Fetch open human discussion threads so the agent can reply. Guarded:
       // providers without thread support skip this entirely. A thread is
@@ -555,8 +602,10 @@ export class ReviewOrchestrator {
         typeof this.deps.reviewProvider.postThreadReply === "function";
       if (threadsSupported && this.deps.reviewProvider.getDiscussionThreads !== undefined) {
         try {
-          const handledHashes = await this.deps.stateStore.getHandledThreadReplyHashes(taskId);
-          const allThreads = await this.deps.reviewProvider.getDiscussionThreads(changeId);
+          const handledHashes = await withinDeadline(this.deps.stateStore.getHandledThreadReplyHashes(taskId));
+          const allThreads = await withinDeadline(
+            this.deps.reviewProvider.getDiscussionThreads(changeId, deadlineController.signal)
+          );
           for (const thread of allThreads) {
             if (thread.resolved) continue;
             const lastHuman = [...thread.comments].reverse().find((c) => !c.isOwn);
@@ -571,6 +620,7 @@ export class ReviewOrchestrator {
             threadById.set(thread.threadId, { thread, handledHash });
           }
         } catch (err) {
+          if (deadlineController.signal.aborted) throw timeoutError;
           log.warn({ err, taskId }, "failed to fetch discussion threads; continuing without replies");
         }
       }
@@ -605,6 +655,8 @@ export class ReviewOrchestrator {
           "workspaceRunner does not support runReviewInDocker — Docker review execution is required."
         );
       }
+      const prepareProjectWorkspace = this.deps.workspaceRunner.prepareProjectWorkspace;
+      const runReviewInDocker = this.deps.workspaceRunner.runReviewInDocker;
 
       let handle: WorkspaceHandle | undefined;
       let cycleLease: ConcurrencyLease | undefined;
@@ -612,58 +664,74 @@ export class ReviewOrchestrator {
 
       try {
         if (this.deps.concurrencyTracker !== undefined) {
-          cycleLease = await this.deps.concurrencyTracker.acquireWhenAvailable(project.id, project.agentId);
-          await this.assertReviewStillActive(taskId);
+          cycleLease = await this.awaitSignalAware(
+            this.deps.concurrencyTracker.acquireWhenAvailable(
+              project.id,
+              project.agentId,
+              deadlineController.signal,
+            ),
+            deadlineController.signal,
+            timeoutError,
+          );
+          await withinDeadline(this.assertReviewStillActive(taskId));
         }
-        handle = await this.deps.workspaceRunner.createWorkspace(taskId);
+        handle = await this.awaitSignalAware(
+          this.deps.workspaceRunner.createWorkspace(taskId, deadlineController.signal),
+          deadlineController.signal,
+          timeoutError,
+        );
 
-        const cloneResult = await this.deps.workspaceRunner.prepareProjectWorkspace(
-          handle,
-          [cloneTarget],
-          project.postCloneScript || undefined,
-          sshKnownHostsPath ?? undefined
+        const cloneResult = await this.awaitSignalAware(
+          prepareProjectWorkspace(
+            handle,
+            [cloneTarget],
+            project.postCloneScript || undefined,
+            sshKnownHostsPath ?? undefined,
+            deadlineController.signal,
+          ),
+          deadlineController.signal,
+          timeoutError,
         );
         if (!cloneResult.success) {
           throw new Error(`Repository clone failed: ${cloneResult.error ?? "unknown error"}`);
         }
 
         if (this.deps.applyPatchset !== undefined) {
-          await this.deps.applyPatchset(handle, details);
+          await this.awaitSignalAware(
+            this.deps.applyPatchset(handle, details, deadlineController.signal),
+            deadlineController.signal,
+            timeoutError,
+          );
         }
 
         emitReviewEvent("review.agent_started", { mode: "docker" });
 
         const stderrLineBuffer = { partial: "" };
-        const timeoutMs = this.deps.agentTimeoutMs ?? 3_600_000;
         const reviewHandle = handle;
-        const reviewResult = await this.withTimeout(
-          (abortSignal) => this.deps.workspaceRunner.runReviewInDocker!(reviewHandle, {
-            projectId: project.id,
-            changeId,
-            revisionNumber: details.changeNumber,
-            patchset: details.currentPatchset,
-            repositoryName: details.project,
-            prompt,
-            systemPrompt: this.deps.reviewSystemPrompt,
-            agentToken: this.deps.agentToken,
-            model: this.deps.model,
-            abortSignal,
-            ...(project.skillDiscoveryEnabled ? { skillDiscoveryEnabled: true } : {}),
-          }, {
-            onStderrChunk: (chunk: string) => {
-              stderrLineBuffer.partial += chunk;
-              const lines = stderrLineBuffer.partial.split("\n");
-              stderrLineBuffer.partial = lines.pop() ?? "";
-              for (const line of lines) {
-                const trimmed = line.trim();
-                if (!trimmed) continue;
-                this.processReviewStderrLine(trimmed, taskId, cycleNumber, collectedEvents);
-              }
-            },
-          }, this.deps.agentAdapter),
-          timeoutMs,
-          `Review timed out after ${timeoutMs}ms`,
-        );
+        const reviewResult = await this.awaitSignalAware(runReviewInDocker(reviewHandle, {
+          projectId: project.id,
+          changeId,
+          revisionNumber: details.changeNumber,
+          patchset: details.currentPatchset,
+          repositoryName: details.project,
+          prompt,
+          systemPrompt: this.deps.reviewSystemPrompt,
+          agentToken: this.deps.agentToken,
+          model: this.deps.model,
+          abortSignal: deadlineController.signal,
+          ...(project.skillDiscoveryEnabled ? { skillDiscoveryEnabled: true } : {}),
+        }, {
+          onStderrChunk: (chunk: string) => {
+            stderrLineBuffer.partial += chunk;
+            const lines = stderrLineBuffer.partial.split("\n");
+            stderrLineBuffer.partial = lines.pop() ?? "";
+            for (const line of lines) {
+              const trimmed = line.trim();
+              if (!trimmed) continue;
+              this.processReviewStderrLine(trimmed, taskId, cycleNumber, collectedEvents);
+            }
+          },
+        }, this.deps.agentAdapter), deadlineController.signal, timeoutError);
         if (stderrLineBuffer.partial.trim()) {
           this.processReviewStderrLine(stderrLineBuffer.partial.trim(), taskId, cycleNumber, collectedEvents);
         }
@@ -699,7 +767,9 @@ export class ReviewOrchestrator {
       // checkout and prompt. If a newer patchset arrived while the agent was
       // running, archive this cycle without side effects and analyze the new
       // revision before posting anything.
-      const latestDetails = await this.deps.reviewProvider.getChangeDetails(changeId);
+      const latestDetails = await withinDeadline(
+        this.deps.reviewProvider.getChangeDetails(changeId, deadlineController.signal)
+      );
       if (latestDetails.status !== "OPEN") {
         await this.assertReviewStillActive(taskId);
         emitReviewEvent("review.closed", {
@@ -815,7 +885,16 @@ export class ReviewOrchestrator {
       await this.deps.stateStore.transition(taskId, "REVIEW_COMMENTING");
 
       if (!skipPosting) {
-        await this.postReview(taskId, changeId, reviewPatchset, commentsToPost, summary, vote, diff);
+        await withinDeadline(this.postReview(
+          taskId,
+          changeId,
+          reviewPatchset,
+          commentsToPost,
+          summary,
+          vote,
+          diff,
+          deadlineController.signal,
+        ));
       }
 
       // Persist all newly-handled comment hashes (posted inline AND folded) so
@@ -843,13 +922,20 @@ export class ReviewOrchestrator {
         for (const r of repliesToPost) {
           try {
             await this.assertReviewStillActive(taskId);
-            await this.deps.reviewProvider.postThreadReply(changeId, reviewPatchset, r.threadId, r.message);
+            await withinDeadline(this.deps.reviewProvider.postThreadReply(
+              changeId,
+              reviewPatchset,
+              r.threadId,
+              r.message,
+              deadlineController.signal,
+            ));
             postedReplies.push({
               threadId: r.threadId,
               handledCommentHash: r.handledHash,
               replyMessage: r.message,
             });
           } catch (err) {
+            if (deadlineController.signal.aborted) throw deadlineController.signal.reason ?? err;
             log.warn({ err, taskId, threadId: r.threadId }, "failed to post discussion reply");
           }
         }
@@ -893,7 +979,9 @@ export class ReviewOrchestrator {
       clearTaskEventBuffer(taskId);
 
       // After commenting we either keep watching (open) or finish.
-      const refreshed = await this.deps.reviewProvider.getChangeDetails(changeId);
+      const refreshed = await withinDeadline(
+        this.deps.reviewProvider.getChangeDetails(changeId, deadlineController.signal)
+      );
       if (refreshed.status === "OPEN") {
         await this.deps.stateStore.transition(taskId, "REVIEW_WATCHING");
       } else {
@@ -923,9 +1011,9 @@ export class ReviewOrchestrator {
           },
           "review patchset changed during analysis; restarting with latest revision",
         );
-        return this.runReviewPass(taskId, options, supersededRetries + 1, true);
+        return this.runReviewPass(taskId, options, supersededRetries + 1, true, lifecycleSignal);
       }
-      if (err instanceof ReviewCancelledError) {
+      if (err instanceof ReviewCancelledError || lifecycleSignal?.aborted === true) {
         const message = "Review stopped because task is no longer active";
         await this.deps.stateStore.saveAgentCycle(taskId, cycleNumber, {
           status: "failed",
@@ -961,34 +1049,36 @@ export class ReviewOrchestrator {
 
       try {
         await this.deps.stateStore.setFailureReason(taskId, message);
-        await this.deps.stateStore.transition(taskId, "REVIEW_FAILED");
+        const failedTask = await this.deps.stateStore.getTask(taskId);
+        if (failedTask?.state !== "REVIEW_COMMENTING") {
+          await this.deps.stateStore.transition(taskId, "REVIEW_FAILED");
+        }
       } catch (transitionErr) {
         log.error({ err: transitionErr, taskId }, "failed to mark review task as REVIEW_FAILED");
       }
       throw err;
+    } finally {
+      clearDeadline();
     }
   }
 
   // ─── Internals ──────────────────────────────────────────────────────────────
 
-  private async withTimeout<T>(
-    operation: (signal: AbortSignal) => Promise<T>,
-    timeoutMs: number,
-    message: string,
-  ): Promise<T> {
-    const controller = new AbortController();
-    let timedOut = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      controller.abort();
-    }, timeoutMs);
+  private withAbortSignal<T>(operation: Promise<T>, signal: AbortSignal, timeoutError: Error): Promise<T> {
+    if (signal.aborted) return Promise.reject(signal.reason ?? timeoutError);
+    return new Promise<T>((resolve, reject) => {
+      const onAbort = (): void => reject(signal.reason ?? timeoutError);
+      signal.addEventListener("abort", onAbort, { once: true });
+      void operation.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+    });
+  }
+
+  private async awaitSignalAware<T>(operation: Promise<T>, signal: AbortSignal, timeoutError: Error): Promise<T> {
     try {
-      return await operation(controller.signal);
+      return await operation;
     } catch (err) {
-      if (timedOut) throw new Error(message);
+      if (signal.aborted) throw signal.reason ?? timeoutError;
       throw err;
-    } finally {
-      clearTimeout(timer);
     }
   }
 
@@ -1065,7 +1155,8 @@ export class ReviewOrchestrator {
     comments: InlineReviewComment[],
     summary: string,
     score: -1 | 1,
-    diff: ReviewChangeDiff
+    diff: ReviewChangeDiff,
+    signal: AbortSignal,
   ): Promise<void> {
     // An empty diff (e.g. a transient fetch failure) must not silently drop every
     // comment: fall back to no filtering rather than an all-rejecting empty set.
@@ -1081,6 +1172,8 @@ export class ReviewOrchestrator {
         filteredComments,
         summary,
         score,
+        undefined,
+        signal,
       );
       return;
     }
@@ -1093,10 +1186,12 @@ export class ReviewOrchestrator {
         revision,
         filteredComments,
         summary,
+        undefined,
+        signal,
       );
     }
     await this.assertReviewStillActive(taskId);
-    await this.deps.reviewProvider.vote(changeId, revision, score, summary);
+    await this.deps.reviewProvider.vote(changeId, revision, score, summary, signal);
   }
 
 }

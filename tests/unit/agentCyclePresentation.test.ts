@@ -5,6 +5,7 @@ import { getCyclePresentation } from "../../src/admin/ui/views/TasksView/agentCy
 import {
   isCurrentTaskRequest,
   isSameTaskRequest,
+  shouldClearDeletedTask,
   shouldStartTaskRequest,
 } from "../../src/admin/ui/views/TasksView/taskDetailRequests.js";
 
@@ -43,6 +44,11 @@ describe("getCyclePresentation", () => {
     expect(shouldStartTaskRequest("task-a", null)).toBe(true);
     expect(isSameTaskRequest(pending, { ...pending })).toBe(true);
     expect(isSameTaskRequest(pending, { taskId: "task-a", requestSequence: 4 })).toBe(false);
+  });
+
+  it("clears selection only when the deleted task is still selected", () => {
+    expect(shouldClearDeletedTask("task-a", "task-a")).toBe(true);
+    expect(shouldClearDeletedTask("task-a", "task-b")).toBe(false);
   });
 
   it("shows an explicit running cycle with the active tone", () => {

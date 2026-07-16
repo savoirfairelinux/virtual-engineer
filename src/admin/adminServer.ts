@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import { readFileSync, existsSync } from "node:fs";
 import { join, extname, resolve } from "node:path";
 import { getLogger } from "../logger.js";
-import type { OAuthAppStore, IntegrationStore, PromptStore, StateStore, Integration, DomainCapability } from "../interfaces.js";
+import type { OAuthAppStore, IntegrationStore, PromptStore, StateStore, Integration, DomainCapability, ProjectId, Task } from "../interfaces.js";
 import { renderAdminDashboardHtml } from "./dashboard.js";
 import { registerOverviewRoutes } from "./adminOverviewRoutes.js";
 import type { PluginManager } from "../plugins/pluginManager.js";
@@ -122,6 +122,8 @@ export interface AdminServerDependencies {
   taskControl?: {
     resumeTask(taskId: ReturnType<typeof makeTaskId>): Promise<void>;
     retryTask(taskId: ReturnType<typeof makeTaskId>): Promise<void>;
+    abandonTask?(taskId: ReturnType<typeof makeTaskId>): Promise<Task>;
+    deleteProject?(projectId: ProjectId): Promise<void>;
   };
   /** Called after an integration config update — invalidates cached VCS connectors. */
   onIntegrationUpdated?: (integrationId: string) => void;

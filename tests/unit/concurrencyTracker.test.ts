@@ -74,6 +74,40 @@ describe("ConcurrencyTracker", () => {
     );
   });
 
+  it("removes an aborted waiter without consuming the next released slot", async () => {
+    const stubs = makeStubs({ perAgent: 1 });
+    const tracker = createConcurrencyTracker(stubs.deps);
+    const first = await tracker.acquire(pid("p1"), aid("a1"));
+    const controller = new AbortController();
+    const aborted = tracker.acquireWhenAvailable(pid("p1"), aid("a1"), controller.signal);
+    const next = tracker.acquireWhenAvailable(pid("p2"), aid("a1"));
+
+    controller.abort(new Error("review cancelled"));
+    await expect(aborted).rejects.toThrow("review cancelled");
+    tracker.release(first!);
+
+    const nextLease = await next;
+    expect(tracker.snapshot()).toEqual({ global: 1, perProject: { p2: 1 }, perAgent: { "agent:a1": 1 } });
+    tracker.release(nextLease);
+  });
+
+  it("does not strand the next waiter when the first aborts during release draining", async () => {
+    const stubs = makeStubs({ perAgent: 1 });
+    const tracker = createConcurrencyTracker(stubs.deps);
+    const first = await tracker.acquire(pid("p1"), aid("a1"));
+    const controller = new AbortController();
+    const aborted = tracker.acquireWhenAvailable(pid("p1"), aid("a1"), controller.signal);
+    const next = tracker.acquireWhenAvailable(pid("p2"), aid("a1"));
+
+    tracker.release(first!);
+    controller.abort(new Error("cancelled during drain"));
+
+    await expect(aborted).rejects.toThrow("cancelled during drain");
+    const nextLease = await next;
+    expect(tracker.snapshot().perProject).toEqual({ p2: 1 });
+    tracker.release(nextLease);
+  });
+
   it("acquire increments all 3 counters and release decrements", async () => {
     const stubs = makeStubs({ perAgent: 5, integrationId: "copilot-1" });
     const t = createConcurrencyTracker(stubs.deps);

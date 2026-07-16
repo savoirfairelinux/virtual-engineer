@@ -133,11 +133,11 @@ export class GerritSshReviewProvider implements ReviewProvider {
   }
 
   /** Fetch full change details including subject, owner, branch, and patchset metadata. */
-  async getChangeDetails(changeId: ExternalChangeId): Promise<ReviewChangeDetails> {
+  async getChangeDetails(changeId: ExternalChangeId, signal?: AbortSignal): Promise<ReviewChangeDetails> {
     const raw = await this.sshClient.query([
       "query", "--format", "JSON", "--current-patch-set", "--commit-message",
       `change:${changeId}`,
-    ]);
+    ], signal);
     const rows = parseSshNdjson(raw);
     if (rows.length === 0) throw new Error(`Gerrit SSH: change not found for id=${changeId}`);
     const entry = SshChangeSchema.parse(rows[0]);
@@ -239,10 +239,11 @@ export class GerritSshReviewProvider implements ReviewProvider {
   /** Clone the patchset ref via git and produce a per-file unified diff. */
   async getChangeDiff(
     changeId: ExternalChangeId,
-    patchset?: number
+    patchset?: number,
+    signal?: AbortSignal,
   ): Promise<ReviewChangeDiff> {
     // Get change details to know project, ref, and patchset
-    const details = await this.getChangeDetails(changeId);
+    const details = await this.getChangeDetails(changeId, signal);
     const ps = patchset ?? details.currentPatchset;
 
     // Compute the Gerrit change ref
@@ -268,20 +269,20 @@ export class GerritSshReviewProvider implements ReviewProvider {
       };
 
       // Init a bare repo and fetch just the patchset ref + its parent
-      await execFileAsync("git", ["init"], { cwd: dir, timeout: GIT_TIMEOUT_MS });
-      await execFileAsync("git", ["remote", "add", "origin", sshUrl], { cwd: dir, timeout: GIT_TIMEOUT_MS });
+      await execFileAsync("git", ["init"], { cwd: dir, timeout: GIT_TIMEOUT_MS, signal });
+      await execFileAsync("git", ["remote", "add", "origin", sshUrl], { cwd: dir, timeout: GIT_TIMEOUT_MS, signal });
       await execFileAsync(
         "git",
         ["fetch", "--depth=2", "origin", changeRef],
-        { cwd: dir, timeout: GIT_TIMEOUT_MS, env: gitEnv }
+        { cwd: dir, timeout: GIT_TIMEOUT_MS, env: gitEnv, signal }
       );
-      await execFileAsync("git", ["checkout", "FETCH_HEAD"], { cwd: dir, timeout: GIT_TIMEOUT_MS });
+      await execFileAsync("git", ["checkout", "FETCH_HEAD"], { cwd: dir, timeout: GIT_TIMEOUT_MS, signal });
 
       // Generate unified diff against parent
       const { stdout: diffOutput } = await execFileAsync(
         "git",
         ["diff", "HEAD~1..HEAD", "--no-color", "--unified=5"],
-        { cwd: dir, timeout: GIT_TIMEOUT_MS, maxBuffer: 10 * 1024 * 1024 }
+        { cwd: dir, timeout: GIT_TIMEOUT_MS, maxBuffer: 10 * 1024 * 1024, signal }
       );
 
       const files = parseDiffOutput(diffOutput);
@@ -302,9 +303,10 @@ export class GerritSshReviewProvider implements ReviewProvider {
     comments: InlineReviewComment[],
     summary: string,
     score: -1 | 1,
-    allowedFiles?: ReadonlySet<string>
+    allowedFiles?: ReadonlySet<string>,
+    signal?: AbortSignal,
   ): Promise<void> {
-    const details = await this.getChangeDetails(changeId);
+    const details = await this.getChangeDetails(changeId, signal);
     const changeSpec = `${details.changeNumber},${revision}`;
 
     const reviewInput: Record<string, unknown> = {
@@ -318,7 +320,7 @@ export class GerritSshReviewProvider implements ReviewProvider {
       reviewInput["comments"] = groupCommentsByFile(kept);
     }
 
-    await this.sshClient.reviewJson(changeSpec, JSON.stringify(reviewInput));
+    await this.sshClient.reviewJson(changeSpec, JSON.stringify(reviewInput), signal);
     log.info(
       { changeId, revision, comments: kept.length, score },
       "posted review comments and vote via SSH"
@@ -331,13 +333,14 @@ export class GerritSshReviewProvider implements ReviewProvider {
     revision: number,
     comments: InlineReviewComment[],
     summary: string,
-    allowedFiles?: ReadonlySet<string>
+    allowedFiles?: ReadonlySet<string>,
+    signal?: AbortSignal,
   ): Promise<void> {
     const trimmedSummary = summary.trim();
     const kept = filterCommentsByAllowedFiles(comments, allowedFiles, { changeId, revision });
     if (kept.length === 0 && trimmedSummary.length === 0) return;
 
-    const details = await this.getChangeDetails(changeId);
+    const details = await this.getChangeDetails(changeId, signal);
     const changeSpec = `${details.changeNumber},${revision}`;
 
     const reviewInput: Record<string, unknown> = {};
@@ -347,7 +350,7 @@ export class GerritSshReviewProvider implements ReviewProvider {
       reviewInput["comments"] = groupCommentsByFile(kept);
     }
 
-    await this.sshClient.reviewJson(changeSpec, JSON.stringify(reviewInput));
+    await this.sshClient.reviewJson(changeSpec, JSON.stringify(reviewInput), signal);
     log.info(
       { changeId, revision, comments: kept.length },
       "posted review comments via SSH"
@@ -359,9 +362,10 @@ export class GerritSshReviewProvider implements ReviewProvider {
     changeId: ExternalChangeId,
     revision: number,
     score: number,
-    message?: string
+    message?: string,
+    signal?: AbortSignal,
   ): Promise<void> {
-    const details = await this.getChangeDetails(changeId);
+    const details = await this.getChangeDetails(changeId, signal);
     const changeSpec = `${details.changeNumber},${revision}`;
 
     const reviewInput: Record<string, unknown> = {
@@ -371,7 +375,7 @@ export class GerritSshReviewProvider implements ReviewProvider {
       reviewInput["message"] = message;
     }
 
-    await this.sshClient.reviewJson(changeSpec, JSON.stringify(reviewInput));
+    await this.sshClient.reviewJson(changeSpec, JSON.stringify(reviewInput), signal);
     log.info({ changeId, revision, score }, "submitted Code-Review vote via SSH");
   }
 
@@ -383,8 +387,8 @@ export class GerritSshReviewProvider implements ReviewProvider {
    * (eligibility is deduped by the reply ledger), and replies are posted as a
    * fresh comment at the same location rather than a true in_reply_to thread.
    */
-  async getDiscussionThreads(changeId: ExternalChangeId): Promise<ReviewDiscussionThread[]> {
-    const comments = await this.sshClient.getDiscussionComments(String(changeId));
+  async getDiscussionThreads(changeId: ExternalChangeId, signal?: AbortSignal): Promise<ReviewDiscussionThread[]> {
+    const comments = await this.sshClient.getDiscussionComments(String(changeId), signal);
     const groups = new Map<string, GerritDiscussionComment[]>();
     for (const c of comments) {
       const key = c.file === null ? GERRIT_CHANGE_THREAD_ID : `${GERRIT_LINE_PREFIX}${c.file}:${c.line ?? 0}`;
@@ -418,9 +422,10 @@ export class GerritSshReviewProvider implements ReviewProvider {
     changeId: ExternalChangeId,
     revision: number,
     threadId: string,
-    message: string
+    message: string,
+    signal?: AbortSignal,
   ): Promise<void> {
-    const details = await this.getChangeDetails(changeId);
+    const details = await this.getChangeDetails(changeId, signal);
     const changeSpec = `${details.changeNumber},${revision}`;
 
     const reviewInput: Record<string, unknown> = {};
@@ -434,7 +439,7 @@ export class GerritSshReviewProvider implements ReviewProvider {
       reviewInput["comments"] = { [file]: [{ line, message, unresolved: false }] };
     }
 
-    await this.sshClient.reviewJson(changeSpec, JSON.stringify(reviewInput));
+    await this.sshClient.reviewJson(changeSpec, JSON.stringify(reviewInput), signal);
     log.info({ changeId, revision, threadId }, "posted discussion reply via SSH");
   }
 

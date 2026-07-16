@@ -169,8 +169,8 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
     };
   }
 
-  async createWorkspace(taskId: TaskId): Promise<WorkspaceHandle> {
-    const ws = await this.deps.git.createWorkspace(String(taskId));
+  async createWorkspace(taskId: TaskId, signal?: AbortSignal): Promise<WorkspaceHandle> {
+    const ws = await this.deps.git.createWorkspace(String(taskId), signal);
     const sandboxName = `ve-${String(taskId)}-${randomUUID().slice(0, 8)}`;
     const handle = this.handleFor(taskId, ws.dir, sandboxName);
     this.dirs.set(handle.containerId, ws.dir);
@@ -202,6 +202,7 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
     pushTargets: ProjectPushTargetRecord[],
     postCloneScript?: string,
     sshKnownHostsPath?: string,
+    signal?: AbortSignal,
   ): Promise<CloneResult> {
     const ordered = [...pushTargets].sort((a, b) => a.commitOrder - b.commitOrder);
     const root = ordered.find((t) => t.localPath === ".") ?? ordered[0];
@@ -216,6 +217,7 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
         root.localPath,
         root.sshKeyPath,
         sshKnownHostsPath,
+        signal,
       );
       this.rememberTrustedRemote(handle.containerId, root.localPath, root.cloneUrl);
       for (const target of ordered) {
@@ -228,9 +230,11 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
             target.localPath,
             target.sshKeyPath,
             sshKnownHostsPath,
+            signal,
           );
           this.rememberTrustedRemote(handle.containerId, target.localPath, target.cloneUrl);
         } catch (err) {
+          if (signal?.aborted === true) throw signal.reason ?? err;
           // Per-target failures are non-fatal (mirrors the Docker runner).
           log.warn({ repoKey: target.repoKey, err }, "secondary push-target clone failed");
         }
@@ -238,6 +242,7 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
       if (postCloneScript?.trim()) this.postCloneScripts.set(handle.containerId, postCloneScript);
       return { success: true, localPath: handle.hostWorkspacePath };
     } catch (err) {
+      if (signal?.aborted === true) throw signal.reason ?? err;
       const error = err instanceof Error ? err.message : String(err);
       return { success: false, localPath: handle.hostWorkspacePath, error };
     }
@@ -265,6 +270,7 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
       ".",
       opts.sshKeyPath ?? null,
       opts.sshKnownHostsPath ?? null,
+      opts.signal,
     );
   }
 
@@ -276,11 +282,12 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
       ".",
       opts.sshKeyPath ?? null,
       opts.sshKnownHostsPath ?? null,
+      opts.signal,
     );
   }
 
-  async execGitInVolume(handle: WorkspaceHandle, args: string[], subPath?: string): Promise<string> {
-    return this.deps.git.execGit(handle.hostWorkspacePath, args, subPath);
+  async execGitInVolume(handle: WorkspaceHandle, args: string[], subPath?: string, signal?: AbortSignal): Promise<string> {
+    return this.deps.git.execGit(handle.hostWorkspacePath, args, subPath, signal);
   }
 
   private resolvePolicy(taskId: string, mode: "coding" | "review"): Promise<string | undefined> {

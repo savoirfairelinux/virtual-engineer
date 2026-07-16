@@ -362,6 +362,7 @@ describe("OpenShellClient", () => {
 
   it("does not cancel a shared OIDC login when the first caller aborts", async () => {
     const firstController = new AbortController();
+    const workloadCalls = new Map<string, number>();
     let releaseLogin: (() => void) | undefined;
     const loginBlocked = new Promise<void>((resolve) => { releaseLogin = resolve; });
     const failedSelectors = new Set<string>();
@@ -374,6 +375,7 @@ describe("OpenShellClient", () => {
       }
       const selectorIndex = args.indexOf("--selector");
       const selector = selectorIndex >= 0 ? args[selectorIndex + 1]! : "missing";
+      workloadCalls.set(selector, (workloadCalls.get(selector) ?? 0) + 1);
       if (failedSelectors.has(selector) && control?.signal?.aborted === true) {
         return { code: 1, stdout: "", stderr: "command aborted" };
       }
@@ -395,8 +397,10 @@ describe("OpenShellClient", () => {
     firstController.abort();
     releaseLogin?.();
 
-    await expect(first).rejects.toThrow(/command aborted/i);
+    await expect(first).rejects.toThrow(/operation was aborted/i);
     await expect(second).resolves.toEqual([]);
+    expect(workloadCalls.get("caller=first")).toBe(1);
+    expect(workloadCalls.get("caller=second")).toBe(2);
   });
 
   it("targets a direct gateway URL without attempting OIDC profile login", async () => {
@@ -477,6 +481,43 @@ describe("OpenShellClient", () => {
     const client = new OpenShellClient({ runner });
     await client.uploadToSandbox({ name: "t", localPath: "/local", dest: "/workspace", noGitIgnore: true });
     expect(calls[0]?.args).toEqual(["sandbox", "upload", "--no-git-ignore", "t", "/local", "/workspace"]);
+  });
+
+  it("forwards cancellation to sandbox upload", async () => {
+    const controller = new AbortController();
+    let receivedSignal: AbortSignal | undefined;
+    const runner: CommandRunner = async (_bin, _args, _input, _callbacks, control) => {
+      receivedSignal = control?.signal;
+      return new Promise((resolve) => {
+        control?.signal?.addEventListener("abort", () => {
+          resolve({ code: 1, stdout: "", stderr: "upload aborted" });
+        }, { once: true });
+      });
+    };
+    const client = new OpenShellClient({ runner });
+
+    const upload = client.uploadToSandbox({ name: "t", localPath: "/local", dest: "/workspace", signal: controller.signal });
+    await Promise.resolve();
+    expect(receivedSignal?.aborted).toBe(false);
+    controller.abort();
+    expect(receivedSignal?.aborted).toBe(true);
+    await expect(upload).rejects.toThrow(/upload failed/i);
+  });
+
+  it("does not start an upload when its signal is already aborted", async () => {
+    const controller = new AbortController();
+    controller.abort(new Error("already cancelled"));
+    const runner = vi.fn<CommandRunner>();
+    const client = new OpenShellClient({ runner });
+
+    await expect(client.uploadToSandbox({
+      name: "t",
+      localPath: "/local",
+      dest: "/workspace",
+      signal: controller.signal,
+    })).rejects.toThrow("already cancelled");
+
+    expect(runner).not.toHaveBeenCalled();
   });
 
   it("downloads a sandbox path to a local destination", async () => {
@@ -603,6 +644,27 @@ describe("OpenShellClient", () => {
     expect(beforeRetryCleanup).toHaveBeenCalledOnce();
     const cleanupHookOrder = beforeRetryCleanup.mock.invocationCallOrder[0];
     expect(cleanupHookOrder).toBeDefined();
+  });
+
+  it("cleans up an ambiguous create but does not retry after cancellation", async () => {
+    const controller = new AbortController();
+    let creates = 0;
+    let deletes = 0;
+    const runner: CommandRunner = async (_bin, args) => {
+      if (args[1] === "create") {
+        creates += 1;
+        controller.abort(new Error("task cancelled"));
+        return { code: 1, stdout: "", stderr: "supervisor session not connected" };
+      }
+      if (args[1] === "delete") deletes += 1;
+      return { code: 0, stdout: "", stderr: "" };
+    };
+    const client = new OpenShellClient({ runner, retryBaseDelayMs: 0 });
+
+    await expect(client.createSandbox({ name: "t", signal: controller.signal })).rejects.toThrow("task cancelled");
+
+    expect(creates).toBe(1);
+    expect(deletes).toBe(1);
   });
 
   it.each([

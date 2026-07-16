@@ -60,7 +60,7 @@ export interface ConcurrencyTracker {
   acquire(projectId: ProjectId, agentId: AgentId): Promise<ConcurrencyLease | null>;
 
   /** Wait until a slot is available, then reserve and return it. */
-  acquireWhenAvailable(projectId: ProjectId, agentId: AgentId): Promise<ConcurrencyLease>;
+  acquireWhenAvailable(projectId: ProjectId, agentId: AgentId, signal?: AbortSignal): Promise<ConcurrencyLease>;
 
   /**
    * Release a slot when a task reaches a terminal state. Idempotent: releasing
@@ -93,6 +93,9 @@ interface ActiveLease {
 interface PendingAcquisition {
   projectId: ProjectId;
   agentId: AgentId;
+  signal: AbortSignal | undefined;
+  onAbort: (() => void) | undefined;
+  settled: boolean;
   resolve: (lease: ConcurrencyLease) => void;
   reject: (error: unknown) => void;
 }
@@ -172,6 +175,25 @@ export function createConcurrencyTracker(deps: ConcurrencyTrackerDeps): Concurre
     return lease;
   }
 
+  function releaseSlot(lease: ConcurrencyLease): void {
+    const active = activeLeases.get(lease);
+    if (active === undefined) return;
+    activeLeases.delete(lease);
+    const projectCount = perProject.get(active.projectId) ?? 0;
+    perProject.set(active.projectId, Math.max(0, projectCount - 1));
+    const integrationCount = perIntegration.get(active.integrationKey) ?? 0;
+    perIntegration.set(active.integrationKey, Math.max(0, integrationCount - 1));
+    activeGlobal = Math.max(0, activeGlobal - 1);
+    log.debug({ ...active, activeGlobal }, "released concurrency slot");
+  }
+
+  function settlePending(pending: PendingAcquisition): void {
+    pending.settled = true;
+    if (pending.signal !== undefined && pending.onAbort !== undefined) {
+      pending.signal.removeEventListener("abort", pending.onAbort);
+    }
+  }
+
   async function drainPendingAcquisitions(): Promise<void> {
     if (draining) {
       drainRequested = true;
@@ -184,19 +206,30 @@ export function createConcurrencyTracker(deps: ConcurrencyTrackerDeps): Concurre
         madeProgress = false;
         for (let index = 0; index < pendingAcquisitions.length; index += 1) {
           const pending = pendingAcquisitions[index]!;
+          if (pending.settled) {
+            pendingAcquisitions.splice(index, 1);
+            index -= 1;
+            continue;
+          }
           let lease: ConcurrencyLease | null;
           try {
             lease = await acquireSlot(pending.projectId, pending.agentId);
           } catch (err) {
             pendingAcquisitions.splice(index, 1);
             index -= 1;
+            settlePending(pending);
             pending.reject(err);
+            continue;
+          }
+          if (pending.settled) {
+            if (lease !== null) releaseSlot(lease);
             continue;
           }
           if (lease === null) continue;
           pendingAcquisitions.splice(index, 1);
           index -= 1;
           madeProgress = true;
+          settlePending(pending);
           pending.resolve(lease);
         }
       }
@@ -223,9 +256,33 @@ export function createConcurrencyTracker(deps: ConcurrencyTrackerDeps): Concurre
       return acquireSlot(projectId, agentId);
     },
 
-    async acquireWhenAvailable(projectId, agentId): Promise<ConcurrencyLease> {
+    async acquireWhenAvailable(projectId, agentId, signal): Promise<ConcurrencyLease> {
       return new Promise<ConcurrencyLease>((resolve, reject) => {
-        pendingAcquisitions.push({ projectId, agentId, resolve, reject });
+        if (signal?.aborted === true) {
+          reject(signal.reason);
+          return;
+        }
+        const pending: PendingAcquisition = {
+          projectId,
+          agentId,
+          signal,
+          onAbort: undefined,
+          settled: false,
+          resolve,
+          reject,
+        };
+        if (signal !== undefined) {
+          pending.onAbort = (): void => {
+            if (pending.settled) return;
+            settlePending(pending);
+            reject(signal.reason);
+            void drainPendingAcquisitions().catch((err: unknown) => {
+              log.error({ err, projectId, agentId }, "failed to drain concurrency waiters after abort");
+            });
+          };
+          signal.addEventListener("abort", pending.onAbort, { once: true });
+        }
+        pendingAcquisitions.push(pending);
         void drainPendingAcquisitions().catch((err: unknown) => {
           log.error({ err, projectId, agentId }, "failed to drain concurrency waiters");
         });
@@ -234,15 +291,7 @@ export function createConcurrencyTracker(deps: ConcurrencyTrackerDeps): Concurre
 
     /** Consume a lease once and decrement exactly the counters it acquired. */
     release(lease): void {
-      const active = activeLeases.get(lease);
-      if (active === undefined) return;
-      activeLeases.delete(lease);
-      const projectCount = perProject.get(active.projectId) ?? 0;
-      perProject.set(active.projectId, Math.max(0, projectCount - 1));
-      const integrationCount = perIntegration.get(active.integrationKey) ?? 0;
-      perIntegration.set(active.integrationKey, Math.max(0, integrationCount - 1));
-      activeGlobal = Math.max(0, activeGlobal - 1);
-      log.debug({ ...active, activeGlobal }, "released concurrency slot");
+      releaseSlot(lease);
       void drainPendingAcquisitions().catch((err: unknown) => {
         log.error({ err }, "failed to drain concurrency waiters after release");
       });

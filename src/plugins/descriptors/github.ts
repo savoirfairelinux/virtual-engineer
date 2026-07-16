@@ -237,14 +237,14 @@ export const githubDescriptor: ProviderDescriptor = {
             const cloneUrl = `https://x-access-token:${token}@${host}/${ownerSlug}/${repo}.git`;
             return { cloneUrl, sshKeyPath: null, sshKnownHostsPath: null };
           },
-          applyPatchset: async (handle, details): Promise<void> => {
+          applyPatchset: async (handle, details, signal): Promise<void> => {
             if (workspaceRunner.execGitInVolume === undefined) {
               throw new Error("workspaceRunner does not support execGitInVolume — cannot fetch GitHub PR ref");
             }
             const prRef = `pull/${details.changeNumber}/head`;
             const localBranch = `ve-review-pr-${details.changeNumber}`;
-            await workspaceRunner.execGitInVolume(handle, ["fetch", "--depth=1", "origin", `${prRef}:${localBranch}`]);
-            await workspaceRunner.execGitInVolume(handle, ["checkout", localBranch]);
+            await workspaceRunner.execGitInVolume(handle, ["fetch", "--depth=1", "origin", `${prRef}:${localBranch}`], undefined, signal);
+            await workspaceRunner.execGitInVolume(handle, ["checkout", localBranch], undefined, signal);
           },
         };
       },

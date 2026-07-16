@@ -22,6 +22,7 @@ import { resolveOpenShellGateway, startRuntimeRecovery } from "./runtime/runtime
 import { Orchestrator } from "./orchestrator/orchestrator.js";
 import { PollingLoop } from "./orchestrator/pollingLoop.js";
 import { createConcurrencyTracker, type ConcurrencyTracker } from "./orchestrator/concurrencyTracker.js";
+import { TaskLifecycleCoordinator } from "./orchestrator/taskLifecycleCoordinator.js";
 import { createAdminServer } from "./admin/adminServer.js";
 import { closeAdminServer } from "./admin/closeAdminServer.js";
 import { startAdminServer } from "./admin/startAdminServer.js";
@@ -127,6 +128,7 @@ async function main(): Promise<void> {
   const concurrencyTracker = createConcurrencyTracker({
     agentStore: { getAgentById: (id) => stateStore.getAgentById(id) },
   });
+  const taskLifecycleCoordinator = new TaskLifecycleCoordinator();
   const projectModeBase = {
     projectStore: stateStore,
     pluginManager,
@@ -141,14 +143,22 @@ async function main(): Promise<void> {
     workspaceRunner,
     undefined,
     stateStore,
-    orchestratorProjectMode
+    orchestratorProjectMode,
+    taskLifecycleCoordinator,
   );
 
   // ─── Polling loop ────────────────────────────────────────────────────────────
   // Mutable holder so the review trigger survives hot-reload of the review
   // integration without recreating the stream-events manager.
   const reviewTriggerHolder = {
-    current: buildReviewTrigger(pluginManager, config.workspaceBaseDir, workspaceRunner, stateStore, concurrencyTracker),
+    current: buildReviewTrigger(
+      pluginManager,
+      config.workspaceBaseDir,
+      workspaceRunner,
+      stateStore,
+      concurrencyTracker,
+      taskLifecycleCoordinator,
+    ),
   };
 
   /** Thin wrapper that forwards to the stream-events review trigger. Used by the polling loop. */
@@ -269,6 +279,7 @@ async function main(): Promise<void> {
       workspaceRunner,
       stateStore,
       concurrencyTracker,
+      taskLifecycleCoordinator,
     );
     await integrationStreamEvents.reconcile(resolveStreamIntegrations());
     log.info("runtime dependencies refreshed");
@@ -351,6 +362,7 @@ async function main(): Promise<void> {
               workspaceRunner,
               concurrencyTracker,
               task,
+              taskLifecycleCoordinator,
             );
             if (bundle.orchestrator) {
               await bundle.orchestrator.runReview(task.taskId);
@@ -369,6 +381,7 @@ async function main(): Promise<void> {
               workspaceRunner,
               concurrencyTracker,
               task,
+              taskLifecycleCoordinator,
             );
             if (bundle.orchestrator) {
               await bundle.orchestrator.runReview(task.taskId);
@@ -377,6 +390,8 @@ async function main(): Promise<void> {
           }
           await orchestrator.continueTask(taskId);
         },
+        abandonTask: (taskId) => orchestrator.abandonTask(taskId),
+        deleteProject: (projectId) => orchestrator.deleteProject(projectId),
       },
       onIntegrationUpdated: (id) => {
         orchestrator.invalidateVcsConnector(id);
@@ -432,7 +447,8 @@ async function main(): Promise<void> {
           stateStore,
           workspaceRunner,
           concurrencyTracker,
-          task
+          task,
+          taskLifecycleCoordinator,
         );
         return bundle.orchestrator;
       });
@@ -651,6 +667,7 @@ async function buildReviewBundle(
   workspaceRunner?: WorkspaceRunner,
   concurrencyTracker?: ConcurrencyTracker,
   target?: string | Task,
+  lifecycleCoordinator?: TaskLifecycleCoordinator,
 ): Promise<ReviewBundle> {
   const bundleLog = getLogger("review-bundle");
   const targetId = typeof target === "string" ? target : target?.taskId ?? "(none)";
@@ -784,6 +801,7 @@ async function buildReviewBundle(
     reviewMinSeverity: getConfig().reviewMinSeverity,
     agentTimeoutMs: getConfig().agentTimeoutMs,
     ...(concurrencyTracker !== undefined ? { concurrencyTracker } : {}),
+    ...(lifecycleCoordinator !== undefined ? { lifecycleCoordinator } : {}),
     agentAdapter,
   });
   return { integration, provider: reviewer.provider, orchestrator };
@@ -808,6 +826,7 @@ function buildReviewTrigger(
   workspaceRunner: WorkspaceRunner,
   stateStore: import("./interfaces.js").StateStore & import("./interfaces.js").PromptStore,
   concurrencyTracker: ConcurrencyTracker,
+  lifecycleCoordinator: TaskLifecycleCoordinator,
 ): import("./connectors/integrationStreamEvents.js").IntegrationEventStreamReviewTrigger | null {
   if (resolveReviewIntegration(pluginManager) === null) return null;
 
@@ -822,6 +841,7 @@ function buildReviewTrigger(
         workspaceRunner,
         concurrencyTracker,
         integrationId,
+        lifecycleCoordinator,
       );
       if (!bundle.orchestrator || !bundle.provider || !bundle.integration) {
         log.warn({ integrationId, changeId }, "review trigger: integration not configured for review routing");
@@ -868,6 +888,7 @@ function buildReviewTrigger(
           workspaceRunner,
           concurrencyTracker,
           task,
+          lifecycleCoordinator,
         ).then((taskBundle) => {
           if (taskBundle.orchestrator === null) {
             throw new Error(`No review runtime available for task ${task.taskId}`);

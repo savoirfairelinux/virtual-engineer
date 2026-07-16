@@ -21,6 +21,21 @@ import { redactUrls } from "../utils/redactUrl.js";
 
 const log = getLogger("openshell-client");
 
+async function abortableDelay(delayMs: number, signal: AbortSignal | undefined): Promise<void> {
+  signal?.throwIfAborted();
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, delayMs);
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      reject(signal?.reason);
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 export interface CommandResult {
   code: number;
   stdout: string;
@@ -353,6 +368,7 @@ export class OpenShellClient {
     environment?: Readonly<Record<string, string>>,
     allowOidcReplay = true,
   ): Promise<CommandResult> {
+    signal?.throwIfAborted();
     const controller = new AbortController();
     const abort = (): void => controller.abort();
     signal?.addEventListener("abort", abort, { once: true });
@@ -378,6 +394,7 @@ export class OpenShellClient {
         }, "openshell OIDC login failed");
         return loginResult;
       }
+      controller.signal.throwIfAborted();
       return this.run(this.bin, commandArgs, input, callbacks, commandControl);
     })().finally(() => {
       clearTimeout(timeout);
@@ -475,6 +492,7 @@ export class OpenShellClient {
     try {
       const maxAttempts = 6;
       for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        input.signal?.throwIfAborted();
         const result = await this.exec(args, undefined, undefined, this.commandTimeoutMs, input.signal);
         if (result.code === 0) return;
 
@@ -489,8 +507,8 @@ export class OpenShellClient {
         await input.beforeRetryCleanup?.().catch((err: unknown) => {
           log.warn({ err, name: input.name, attempt }, "sandbox create pre-cleanup hook failed");
         });
-        await this.exec(["sandbox", "delete", input.name]);
-        await new Promise((resolve) => setTimeout(resolve, this.retryBaseDelayMs * attempt));
+        await this.exec(["sandbox", "delete", input.name], undefined, undefined, this.commandTimeoutMs);
+        await abortableDelay(this.retryBaseDelayMs * attempt, input.signal);
       }
     } finally {
       if (policyPath !== undefined) await unlink(policyPath).catch(() => undefined);
@@ -502,7 +520,7 @@ export class OpenShellClient {
     const args = ["sandbox", "upload"];
     if (input.noGitIgnore) args.push("--no-git-ignore");
     args.push(input.name, input.localPath, input.dest);
-    const result = await this.exec(args);
+    const result = await this.exec(args, undefined, undefined, this.commandTimeoutMs, input.signal);
     if (result.code !== 0) {
       throw new Error(`openshell sandbox upload failed (${result.code}): ${redactOpenShellText(result.stderr).slice(0, 500)}`);
     }

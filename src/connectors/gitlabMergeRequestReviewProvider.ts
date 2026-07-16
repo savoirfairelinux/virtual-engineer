@@ -157,9 +157,12 @@ export class GitLabMergeRequestReviewProvider implements ReviewProvider {
     return `${this.config.baseUrl}/api/v4/projects/${this.projectRef(project)}/merge_requests/${iid}`;
   }
 
-  async getChangeDetails(changeId: ExternalChangeId): Promise<ReviewChangeDetails> {
+  async getChangeDetails(changeId: ExternalChangeId, signal?: AbortSignal): Promise<ReviewChangeDetails> {
     const { project, iid } = this.parseChange(changeId);
-    const mr = MrSchema.parse(await this.http.fetchJson(this.mrUrl(project, iid)));
+    const mr = MrSchema.parse(await this.http.fetchJson(
+      this.mrUrl(project, iid),
+      signal !== undefined ? { signal } : undefined,
+    ));
 
     const status: ReviewChangeDetails["status"] =
       mr.state === "merged"
@@ -168,7 +171,7 @@ export class GitLabMergeRequestReviewProvider implements ReviewProvider {
           ? "ABANDONED"
           : "OPEN";
 
-    const projectPath = await this.resolveProjectPath(project, mr);
+    const projectPath = await this.resolveProjectPath(project, mr, signal);
 
     return {
       changeId,
@@ -243,10 +246,13 @@ export class GitLabMergeRequestReviewProvider implements ReviewProvider {
     }
   }
 
-  async getChangeDiff(changeId: ExternalChangeId, patchset?: number): Promise<ReviewChangeDiff> {
+  async getChangeDiff(changeId: ExternalChangeId, patchset?: number, signal?: AbortSignal): Promise<ReviewChangeDiff> {
     const { project, iid } = this.parseChange(changeId);
     const res = MrChangesResponseSchema.parse(
-      await this.http.fetchJson(`${this.mrUrl(project, iid)}/changes`)
+      await this.http.fetchJson(
+        `${this.mrUrl(project, iid)}/changes`,
+        signal !== undefined ? { signal } : undefined,
+      )
     );
 
     return {
@@ -269,9 +275,10 @@ export class GitLabMergeRequestReviewProvider implements ReviewProvider {
     _revision: number,
     comments: InlineReviewComment[],
     summary: string,
-    allowedFiles?: ReadonlySet<string>
+    allowedFiles?: ReadonlySet<string>,
+    signal?: AbortSignal,
   ): Promise<void> {
-    await this.submitReview(changeId, comments, summary, undefined, allowedFiles);
+    await this.submitReview(changeId, comments, summary, undefined, allowedFiles, signal);
   }
 
   async postReviewWithComments(
@@ -280,18 +287,20 @@ export class GitLabMergeRequestReviewProvider implements ReviewProvider {
     comments: InlineReviewComment[],
     summary: string,
     score: -1 | 1,
-    allowedFiles?: ReadonlySet<string>
+    allowedFiles?: ReadonlySet<string>,
+    signal?: AbortSignal,
   ): Promise<void> {
-    await this.submitReview(changeId, comments, summary, score, allowedFiles);
+    await this.submitReview(changeId, comments, summary, score, allowedFiles, signal);
   }
 
   async vote(
     changeId: ExternalChangeId,
     _revision: number,
     score: number,
-    message?: string
+    message?: string,
+    signal?: AbortSignal,
   ): Promise<void> {
-    await this.submitReview(changeId, [], message ?? "", score < 0 ? -1 : score > 0 ? 1 : 0);
+    await this.submitReview(changeId, [], message ?? "", score < 0 ? -1 : score > 0 ? 1 : 0, undefined, signal);
   }
 
   /**
@@ -304,7 +313,8 @@ export class GitLabMergeRequestReviewProvider implements ReviewProvider {
     comments: InlineReviewComment[],
     summary: string,
     score: -1 | 0 | 1 | undefined,
-    allowedFiles?: ReadonlySet<string>
+    allowedFiles?: ReadonlySet<string>,
+    signal?: AbortSignal,
   ): Promise<void> {
     const { project, iid } = this.parseChange(changeId);
 
@@ -322,13 +332,17 @@ export class GitLabMergeRequestReviewProvider implements ReviewProvider {
     if (positiveLine.length > 0) {
       try {
         const res = MrChangesResponseSchema.parse(
-          await this.http.fetchJson(`${this.mrUrl(project, iid)}/changes`)
+          await this.http.fetchJson(
+            `${this.mrUrl(project, iid)}/changes`,
+            signal !== undefined ? { signal } : undefined,
+          )
         );
         diffRefs = res.diff_refs ?? null;
         for (const ch of res.changes) {
           if (ch.diff) validLinesByFile.set(ch.new_path || ch.old_path, parsePatchNewLineNumbers(ch.diff));
         }
       } catch (err) {
+        if (signal?.aborted === true) throw signal.reason ?? err;
         log.warn({ project, iid, err }, "failed to fetch MR changes for line validation; folding comments into summary");
       }
     }
@@ -363,8 +377,10 @@ export class GitLabMergeRequestReviewProvider implements ReviewProvider {
               old_path: c.file,
             },
           }),
+          ...(signal !== undefined ? { signal } : {}),
         });
       } catch (err) {
+        if (signal?.aborted === true) throw signal.reason ?? err;
         log.warn({ project, iid, file: c.file, line: c.line, err }, "inline discussion failed; folding into summary");
         outOfDiff.push(c);
       }
@@ -387,11 +403,12 @@ export class GitLabMergeRequestReviewProvider implements ReviewProvider {
       await this.http.fetchJsonVoid(`${this.mrUrl(project, iid)}/notes`, {
         method: "POST",
         body: JSON.stringify({ body: noteBody }),
+        ...(signal !== undefined ? { signal } : {}),
       });
     }
 
-    if (score === 1) await this.approve(project, iid, true);
-    else if (score === -1) await this.approve(project, iid, false);
+    if (score === 1) await this.approve(project, iid, true, signal);
+    else if (score === -1) await this.approve(project, iid, false, signal);
 
     log.info(
       { project, iid, inlineCount: inline.length, foldedCount: outOfDiff.length, score },
@@ -400,22 +417,32 @@ export class GitLabMergeRequestReviewProvider implements ReviewProvider {
   }
 
   /** Approve (or unapprove) the MR. Best-effort: approval may be unavailable on the GitLab tier. */
-  private async approve(project: string | number, iid: number, approve: boolean): Promise<void> {
+  private async approve(
+    project: string | number,
+    iid: number,
+    approve: boolean,
+    signal?: AbortSignal,
+  ): Promise<void> {
     try {
       await this.http.fetchJsonVoid(`${this.mrUrl(project, iid)}/${approve ? "approve" : "unapprove"}`, {
         method: "POST",
+        ...(signal !== undefined ? { signal } : {}),
       });
     } catch (err) {
+      if (signal?.aborted === true) throw signal.reason ?? err;
       log.warn({ project, iid, approve, err }, "GitLab MR approve/unapprove failed (non-fatal)");
     }
   }
 
-  async getDiscussionThreads(changeId: ExternalChangeId): Promise<ReviewDiscussionThread[]> {
+  async getDiscussionThreads(changeId: ExternalChangeId, signal?: AbortSignal): Promise<ReviewDiscussionThread[]> {
     const { project, iid } = this.parseChange(changeId);
-    const me = await this.resolveCurrentUsername();
+    const me = await this.resolveCurrentUsername(signal);
     const discussions = z
       .array(DiscussionSchema)
-      .parse(await this.http.fetchJson(`${this.mrUrl(project, iid)}/discussions`));
+      .parse(await this.http.fetchJson(
+        `${this.mrUrl(project, iid)}/discussions`,
+        signal !== undefined ? { signal } : undefined,
+      ));
 
     const threads: ReviewDiscussionThread[] = [];
     for (const d of discussions) {
@@ -452,7 +479,8 @@ export class GitLabMergeRequestReviewProvider implements ReviewProvider {
     changeId: ExternalChangeId,
     _revision: number,
     threadId: string,
-    message: string
+    message: string,
+    signal?: AbortSignal,
   ): Promise<void> {
     const { project, iid } = this.parseChange(changeId);
     await this.http.fetchJsonVoid(
@@ -460,21 +488,26 @@ export class GitLabMergeRequestReviewProvider implements ReviewProvider {
       {
         method: "POST",
         body: JSON.stringify({ body: message }),
+        ...(signal !== undefined ? { signal } : {}),
       }
     );
     log.info({ project, iid, threadId }, "posted GitLab MR discussion reply");
   }
 
   /** Resolve and cache VE's own GitLab username (used to tag `isOwn` comments). */
-  private async resolveCurrentUsername(): Promise<string | null> {
+  private async resolveCurrentUsername(signal?: AbortSignal): Promise<string | null> {
     if (this.currentUsername !== null) return this.currentUsername;
     try {
       const me = CurrentUserSchema.parse(
-        await this.http.fetchJson(`${this.config.baseUrl}/api/v4/user`)
+        await this.http.fetchJson(
+          `${this.config.baseUrl}/api/v4/user`,
+          signal !== undefined ? { signal } : undefined,
+        )
       );
       this.currentUsername = me.username;
       return this.currentUsername;
     } catch (err) {
+      if (signal?.aborted === true) throw signal.reason ?? err;
       log.warn({ err }, "failed to resolve GitLab current user; isOwn tagging disabled");
       return null;
     }
@@ -483,7 +516,8 @@ export class GitLabMergeRequestReviewProvider implements ReviewProvider {
   /** Resolve the project path-with-namespace for clone URL construction. */
   private async resolveProjectPath(
     project: string | number,
-    mr: z.infer<typeof MrSchema>
+    mr: z.infer<typeof MrSchema>,
+    signal?: AbortSignal,
   ): Promise<string> {
     const full = mr.references?.full;
     if (full && full.includes("!")) {
@@ -493,10 +527,14 @@ export class GitLabMergeRequestReviewProvider implements ReviewProvider {
     if (typeof project === "string" && project.includes("/")) return project;
     try {
       const proj = ProjectSchema.parse(
-        await this.http.fetchJson(`${this.config.baseUrl}/api/v4/projects/${this.projectRef(project)}`)
+        await this.http.fetchJson(
+          `${this.config.baseUrl}/api/v4/projects/${this.projectRef(project)}`,
+          signal !== undefined ? { signal } : undefined,
+        )
       );
       return proj.path_with_namespace;
     } catch (err) {
+      if (signal?.aborted === true) throw signal.reason ?? err;
       log.warn({ project, err }, "failed to resolve GitLab project path; using raw project ref");
       return String(project);
     }
