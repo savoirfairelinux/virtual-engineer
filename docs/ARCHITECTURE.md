@@ -190,6 +190,9 @@ src/
     openShellClient.ts        # `openshell` CLI wrapper (sandbox lifecycle + policy)
     openShellPolicyBuilder.ts # deny-by-default policy YAML
     denyEventPoller.ts        # scrubbed policy-denial events
+  runtime/
+    runtimeStartup.ts         # resolveOpenShellGateway + startRuntimeRecovery
+                              # (called from index.ts at boot)
 
 agent-worker/
   src/index.ts          # Provider-agnostic orchestrator INSIDE the agent
@@ -316,6 +319,8 @@ Plain Node.js `http.createServer` — no framework. The main file handles auth, 
 | `adminConcurrencyRoutes.ts` | `GET/PUT /api/admin/concurrency` |
 | `adminSettingsRoutes.ts` | `GET/PUT /api/admin/settings` (editable runtime workflow settings) |
 | `adminWebhookRoutes.ts` | `POST .../webhook-secret/rotate`, `GET/PUT .../webhook-allowed-ips`, `GET .../webhook-info` |
+| `adminRuntimePolicyRoutes.ts` | `GET/POST/PUT/DELETE /api/admin/runtime/policies`, bindings CRUD |
+| `adminDenialRoutes.ts` | `GET /api/admin/runtime/denials` (policy-denial audit log) |
 
 **Shared primitives** (`adminRouteUtils.ts`): `writeJson`, `writeHtml`, `readBody` (512 KB limit), `toIsoTimestamp`, `asRecord`, `SECRET_MASK`.
 
