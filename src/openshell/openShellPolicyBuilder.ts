@@ -38,8 +38,9 @@ export interface RuntimePolicySpec {
 }
 
 function yamlString(value: string): string {
-  // Quote values that could be misread as YAML tokens; keep simple hosts bare.
-  return /^[A-Za-z0-9._/-]+$/.test(value) ? value : JSON.stringify(value);
+  // Strip control characters before quoting to prevent policy injection.
+  const safe = value.replace(/[\x00-\x1f\x7f]/g, "");
+  return /^[A-Za-z0-9._/-]+$/.test(safe) ? safe : JSON.stringify(safe);
 }
 
 /**
