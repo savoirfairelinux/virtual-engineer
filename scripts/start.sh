@@ -551,9 +551,9 @@ DOCKER_RUN_ARGS=(
 LATEST_ID=$(docker inspect --format='{{.Id}}' virtual-engineer:latest 2>/dev/null || true)
 RUNNING_ID=$(docker inspect --format='{{.Image}}' ve-orchestrator 2>/dev/null || true)
 IS_RUNNING=$(docker inspect --format='{{.State.Running}}' ve-orchestrator 2>/dev/null || true)
-OPENSHELL_OIDC_SECRET_HASH=$(printf '%s' "$OPENSHELL_OIDC_CLIENT_SECRET" | sha256sum | cut -d' ' -f1)
+OIDC_SECRET_LEN=${#OPENSHELL_OIDC_CLIENT_SECRET}
 RUN_CONFIG_HASH=$(run_config_hash "$ROOT_DIR/.env" "${DOCKER_RUN_ARGS[@]}" \
-  "oidc-secret-sha256=${OPENSHELL_OIDC_SECRET_HASH}")
+  "oidc-secret-len=${OIDC_SECRET_LEN}")
 RUN_CONFIG_MARKER="${DATA_DIR}/.orchestrator-run-config-hash"
 STORED_RUN_CONFIG_HASH=$(cat "$RUN_CONFIG_MARKER" 2>/dev/null || true)
 
@@ -572,6 +572,7 @@ fi
 info "Starting ve-orchestrator..."
 docker run "${DOCKER_RUN_ARGS[@]}" virtual-engineer:latest
 echo "$RUN_CONFIG_HASH" > "$RUN_CONFIG_MARKER"
+chmod 600 "$RUN_CONFIG_MARKER"
 
 info "ve-orchestrator started."
 
