@@ -20,13 +20,13 @@ export interface RuntimeRecoveryLifecycle {
 export async function startRuntimeRecovery(
   deps: RuntimeRecoveryDeps,
 ): Promise<RuntimeRecoveryLifecycle> {
-  await deps.recoverReviews();
-  await deps.resumeCodeGeneration();
-  try {
-    await deps.reconcileSandboxes();
-  } catch (error) {
-    deps.onInitialReconcileError?.(error);
-  }
+  await Promise.all([
+    deps.recoverReviews(),
+    deps.resumeCodeGeneration(),
+    deps.reconcileSandboxes().catch((error: unknown) => {
+      deps.onInitialReconcileError?.(error);
+    }),
+  ]);
   deps.startSandboxReconciler();
 
   let stopped = false;

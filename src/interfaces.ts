@@ -481,6 +481,10 @@ export interface AgentResult {
   metadata: Record<string, unknown>;
 }
 
+export interface AgentCycleResult extends Omit<AgentResult, "status"> {
+  status: AgentResultStatus | "running";
+}
+
 export interface AdapterContainerSpec {
   /** Container image used to run the adapter workload */
   image: string;
@@ -642,7 +646,8 @@ export interface WorkspaceRunner {
   runReviewInDocker?(
     handle: WorkspaceHandle,
     input: ReviewWorkspaceInput,
-    callbacks?: { onStderrChunk?: ((chunk: string) => void) | undefined } | undefined
+    callbacks?: { onStderrChunk?: ((chunk: string) => void) | undefined } | undefined,
+    adapter?: AgentAdapter | undefined,
   ): Promise<{ rawOutput: string }>;
   /** Spawn the adapter container and return raw stdout/stderr. Used by ConfigurableAdapter.configure. */
   runAgentInDocker?(
@@ -1104,7 +1109,7 @@ export interface AgentCycle {
   id: number;
   taskId: TaskId;
   cycleNumber: number;
-  result: AgentResult;
+  result: AgentCycleResult;
   validationResult: ValidationResult | null;
   createdAt: Date;
   /** Provider token usage and, when available, GitHub-computed execution cost. */
@@ -1290,7 +1295,8 @@ export interface StateStore {
   transition(
     taskId: TaskId,
     toState: TaskState,
-    metadata?: Record<string, unknown>
+    metadata?: Record<string, unknown>,
+    expectedFromState?: TaskState,
   ): Promise<Task>;
 
   updateExternalChangeId(
@@ -1301,6 +1307,9 @@ export interface StateStore {
   ): Promise<void>;
 
   incrementCycle(taskId: TaskId): Promise<number>;
+
+  /** Atomically allocate a cycle number and persist its initial result. */
+  startAgentCycle(taskId: TaskId, result: AgentCycleResult): Promise<number>;
 
   setFailureReason(taskId: TaskId, reason: string): Promise<void>;
 
@@ -1329,7 +1338,7 @@ export interface StateStore {
   saveAgentCycle(
     taskId: TaskId,
     cycleNumber: number,
-    result: AgentResult,
+    result: AgentCycleResult,
     validationResult?: ValidationResult
   ): Promise<void>;
 

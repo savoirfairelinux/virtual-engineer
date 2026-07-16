@@ -206,7 +206,7 @@ describe("Orchestrator", () => {
       getFailedAttemptCount: vi.fn().mockResolvedValue(0),
       transition: vi.fn().mockImplementation(async (taskId, toState) => makeTask({ taskId, state: toState })),
       updateGerritChangeId: vi.fn().mockResolvedValue(undefined),
-      incrementCycle: vi.fn().mockResolvedValue(1),
+      startAgentCycle: vi.fn().mockResolvedValue(1),
       setFailureReason: vi.fn().mockResolvedValue(undefined),
       saveAgentCycle: vi.fn().mockResolvedValue(undefined),
       updateAgentCycleCommitMessages: vi.fn().mockResolvedValue(undefined),

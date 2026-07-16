@@ -568,6 +568,7 @@ export class Orchestrator {
     if (!task.projectId && projectIdForCycle) {
       task.projectId = projectIdForCycle;
     }
+    try {
     if (projectIdForCycle && this.projectMode?.concurrencyTracker) {
       const project = await this.projectMode.projectStore.getProjectById(projectIdForCycle);
       if (project) {
@@ -591,14 +592,33 @@ export class Orchestrator {
     const ticketConnector = await this.resolveTicketConnector(task);
     const ticket = await ticketConnector.getTicket(task.ticketId);
     const priorFeedback = await this.buildPriorFeedback(task, reviewFeedback);
-    const cycleNumber = await this.stateStore.incrementCycle(task.taskId);
+    const currentCycle = task.state === "AGENT_RUNNING" && task.cycleCount > 0
+      ? (await this.stateStore.getAgentCycles(task.taskId)).find(
+          (cycle) => cycle.cycleNumber === task.cycleCount && cycle.result.status === "running"
+        )
+      : undefined;
+    const runningResult = {
+      status: "running" as const,
+      modifiedFiles: [],
+      summary: "",
+      agentLogs: "",
+      metadata: {},
+    };
+    let cycleNumber: number;
+    if (currentCycle !== undefined) {
+      cycleNumber = currentCycle.cycleNumber;
+      await this.stateStore.saveAgentCycle(task.taskId, cycleNumber, runningResult);
+    } else {
+      task = await this.stateStore.transition(task.taskId, "AGENT_RUNNING");
+      cycleNumber = await this.stateStore.startAgentCycle(task.taskId, runningResult);
+    }
 
     log.info({ taskId: task.taskId, cycleNumber }, "starting agent cycle");
 
-    task = await this.stateStore.transition(task.taskId, "AGENT_RUNNING");
-    const handle = await this.workspaceRunner.createWorkspace(task.taskId);
-
+    let handle: WorkspaceHandle | undefined;
     try {
+      const activeHandle = await this.workspaceRunner.createWorkspace(task.taskId);
+      handle = activeHandle;
       if (!task.projectId || !this.projectMode || !this.workspaceRunner.prepareProjectWorkspace) {
         throw new Error(
           `Task ${task.taskId} is not project-bound; project-mode is the only supported workflow.`
@@ -665,7 +685,7 @@ export class Orchestrator {
       );
 
       const cloneResult = await this.workspaceRunner.prepareProjectWorkspace(
-        handle,
+        activeHandle,
         enrichedPushTargets,
         projectRecord.postCloneScript,
         cloneKnownHostsPath
@@ -692,7 +712,7 @@ export class Orchestrator {
         rootConnector.buildPushSpec(cloneBranch, task.taskId, ticket.subject).ref
       );
 
-      const hasPriorPatchset = await this.checkoutPriorPatchset(task, cycleNumber, handle, root, rootConnector);
+      const hasPriorPatchset = await this.checkoutPriorPatchset(task, cycleNumber, activeHandle, root, rootConnector);
       const context: TaskContext = {
         taskId: task.taskId,
         ...(task.projectId !== null ? { projectId: task.projectId } : {}),
@@ -700,9 +720,9 @@ export class Orchestrator {
         ticketDescription: ticket.description,
         acceptanceCriteria: this.extractAcceptanceCriteria(ticket.description),
         baseBranch: cloneBranch,
-        workspacePath: handle.hostWorkspacePath,
-        volumeName: handle.volumeName,
-        homeVolumeName: handle.homeVolumeName,
+        workspacePath: activeHandle.hostWorkspacePath,
+        volumeName: activeHandle.volumeName,
+        homeVolumeName: activeHandle.homeVolumeName,
         constraints: [],
         priorFeedback,
         cycleNumber,
@@ -770,7 +790,7 @@ export class Orchestrator {
 
       const agentResult = await this.withTimeout(
         (abortSignal) => this.workspaceRunner.runAgent(
-          handle,
+          activeHandle,
           { ...context, abortSignal },
           projectAgentRuntime?.adapter ?? undefined,
         ),
@@ -797,6 +817,14 @@ export class Orchestrator {
         return;
       }
       if (TERMINAL_STATES.has(freshTask.state)) {
+        const summary = `Agent result discarded because task reached ${freshTask.state}`;
+        await this.stateStore.saveAgentCycle(task.taskId, cycleNumber, {
+          status: "failed",
+          modifiedFiles: [],
+          summary,
+          agentLogs: "",
+          metadata: { error: summary, cancelled: true },
+        });
         log.warn(
           { taskId: task.taskId, state: freshTask.state },
           "task reached terminal state while agent was running; discarding result"
@@ -830,22 +858,39 @@ export class Orchestrator {
         // For Gerrit: agent commits[] are pre-validated; each becomes a separate change (topic-grouped).
         // For GitLab: all N commits land in one MR via force-push.
         if (task.projectId && this.projectMode && projectPushTargets.length > 0) {
-          await this.pushProjectChanges(task, handle, projectPushTargets, commitMessage, context.ticketUrl ?? "", agentResult.commits);
+          await this.pushProjectChanges(task, activeHandle, projectPushTargets, commitMessage, context.ticketUrl ?? "", agentResult.commits);
         }
 
         task = await this.stateStore.transition(task.taskId, "IN_REVIEW");
         const ticketConn = await this.resolveTicketConnector(task);
         await ticketConn.transitionToInReview(task.ticketId);
       }
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Agent cycle failed";
+      await this.stateStore.saveAgentCycle(task.taskId, cycleNumber, {
+        status: "failed",
+        modifiedFiles: [],
+        summary: message,
+        agentLogs: "",
+        metadata: { error: message },
+      }).catch((saveErr: unknown) => {
+        log.warn({ err: saveErr, taskId: task.taskId }, "failed to save agent failure cycle");
+      });
+      clearTaskEventBuffer(task.taskId);
+      throw err;
     } finally {
-      try {
-        await this.workspaceRunner.destroyWorkspace(handle);
-      } catch (err) {
-        log.warn(
-          { taskId: task.taskId, err },
-          "workspace cleanup failed (non-fatal, task state unaffected)"
-        );
+      if (handle !== undefined) {
+        try {
+          await this.workspaceRunner.destroyWorkspace(handle);
+        } catch (err) {
+          log.warn(
+            { taskId: task.taskId, err },
+            "workspace cleanup failed (non-fatal, task state unaffected)"
+          );
+        }
       }
+    }
+    } finally {
       if (cycleLease !== null && this.projectMode?.concurrencyTracker) {
         this.projectMode.concurrencyTracker.release(cycleLease);
       }

@@ -21,7 +21,7 @@ import { OpenShellSandboxReconciler } from "./openshell/openShellSandboxReconcil
 import { resolveOpenShellGateway, startRuntimeRecovery } from "./runtime/runtimeStartup.js";
 import { Orchestrator } from "./orchestrator/orchestrator.js";
 import { PollingLoop } from "./orchestrator/pollingLoop.js";
-import { createConcurrencyTracker } from "./orchestrator/concurrencyTracker.js";
+import { createConcurrencyTracker, type ConcurrencyTracker } from "./orchestrator/concurrencyTracker.js";
 import { createAdminServer } from "./admin/adminServer.js";
 import { closeAdminServer } from "./admin/closeAdminServer.js";
 import { startAdminServer } from "./admin/startAdminServer.js";
@@ -148,7 +148,7 @@ async function main(): Promise<void> {
   // Mutable holder so the review trigger survives hot-reload of the review
   // integration without recreating the stream-events manager.
   const reviewTriggerHolder = {
-    current: buildReviewTrigger(pluginManager, config.workspaceBaseDir, workspaceRunner, stateStore),
+    current: buildReviewTrigger(pluginManager, config.workspaceBaseDir, workspaceRunner, stateStore, concurrencyTracker),
   };
 
   /** Thin wrapper that forwards to the stream-events review trigger. Used by the polling loop. */
@@ -263,7 +263,13 @@ async function main(): Promise<void> {
       config: buildOrchestratorConfig(config, pluginManager),
     });
     pollingLoop.resetBackoff();
-    reviewTriggerHolder.current = buildReviewTrigger(pluginManager, config.workspaceBaseDir, workspaceRunner, stateStore);
+    reviewTriggerHolder.current = buildReviewTrigger(
+      pluginManager,
+      config.workspaceBaseDir,
+      workspaceRunner,
+      stateStore,
+      concurrencyTracker,
+    );
     await integrationStreamEvents.reconcile(resolveStreamIntegrations());
     log.info("runtime dependencies refreshed");
     await reconcilePollingLoop();
@@ -338,7 +344,14 @@ async function main(): Promise<void> {
         resumeTask: async (taskId) => {
           const task = await stateStore.getTask(makeTaskId(String(taskId)));
           if (task?.taskType === "code-review") {
-            const bundle = await buildReviewBundle(pluginManager, config.workspaceBaseDir, stateStore, workspaceRunner, task);
+            const bundle = await buildReviewBundle(
+              pluginManager,
+              config.workspaceBaseDir,
+              stateStore,
+              workspaceRunner,
+              concurrencyTracker,
+              task,
+            );
             if (bundle.orchestrator) {
               await bundle.orchestrator.runReview(task.taskId);
               return;
@@ -349,7 +362,14 @@ async function main(): Promise<void> {
         retryTask: async (taskId) => {
           const task = await stateStore.getTask(makeTaskId(String(taskId)));
           if (task?.taskType === "code-review") {
-            const bundle = await buildReviewBundle(pluginManager, config.workspaceBaseDir, stateStore, workspaceRunner, task);
+            const bundle = await buildReviewBundle(
+              pluginManager,
+              config.workspaceBaseDir,
+              stateStore,
+              workspaceRunner,
+              concurrencyTracker,
+              task,
+            );
             if (bundle.orchestrator) {
               await bundle.orchestrator.runReview(task.taskId);
               return;
@@ -411,6 +431,7 @@ async function main(): Promise<void> {
           config.workspaceBaseDir,
           stateStore,
           workspaceRunner,
+          concurrencyTracker,
           task
         );
         return bundle.orchestrator;
@@ -628,6 +649,7 @@ async function buildReviewBundle(
   _workspaceBaseDir: string,
   stateStore: import("./interfaces.js").StateStore & import("./interfaces.js").PromptStore,
   workspaceRunner?: WorkspaceRunner,
+  concurrencyTracker?: ConcurrencyTracker,
   target?: string | Task,
 ): Promise<ReviewBundle> {
   const bundleLog = getLogger("review-bundle");
@@ -679,10 +701,25 @@ async function buildReviewBundle(
     return { integration: null, provider: null, orchestrator: null };
   }
 
-  // Resolve the agent-execution integration linked to an enabled review agent.
-  // Using a deterministic lookup avoids Map-insertion-order sensitivity when
-  // multiple agent_execution integrations (e.g. Copilot + Claude) are active.
-  const agentIntegration = await resolveAgentIntegrationForReview(pluginManager, store);
+  const projectAgent = typeof target !== "string" && target?.projectId !== null && target?.projectId !== undefined
+    ? await store.getProjectById(target.projectId).then((project) =>
+        project === null
+          ? null
+          : store.listAgents().then((agents) => agents.find((agent) => agent.id === project.agentId) ?? null)
+      )
+    : null;
+  const agentIntegration = await resolveAgentIntegrationForReview(
+    pluginManager,
+    store,
+    projectAgent?.integrationId ?? undefined,
+  );
+  if (agentIntegration === null) {
+    bundleLog.warn(
+      { integrationId: integration.id, projectId: typeof target === "object" ? target.projectId : null },
+      "buildReviewBundle: no active agent integration for the selected review agent",
+    );
+    return { integration: null, provider: null, orchestrator: null };
+  }
 
   // Extract the agent token from the resolved agent-execution integration.
   const agentToken = getAgentTokenForReview(pluginManager, agentIntegration);
@@ -699,8 +736,8 @@ async function buildReviewBundle(
   let model: string | undefined;
   if (agentIntegration) {
     try {
-      const agentList = await store.listAgents({ type: "review", enabled: true });
-      const agent = agentList.find((a) => a.integrationId === agentIntegration.id);
+      const agent = projectAgent ?? (await store.listAgents({ type: "review", enabled: true }))
+        .find((candidate) => candidate.integrationId === agentIntegration.id);
       if (agent) {
         const cfg = JSON.parse(agent.modelConfigJson) as Record<string, unknown>;
         const m = typeof cfg["model"] === "string" ? cfg["model"].trim() : "";
@@ -712,6 +749,14 @@ async function buildReviewBundle(
   }
 
   const reviewer = createReviewer(rawConfig, integration, workspaceRunner);
+  const agentAdapter = pluginManager.getConnectorForIntegration<AgentAdapter>(agentIntegration.id);
+  if (agentAdapter === null) {
+    bundleLog.warn(
+      { integrationId: agentIntegration.id, projectId: typeof target === "object" ? target.projectId : null },
+      "buildReviewBundle: selected review agent integration has no active adapter",
+    );
+    return { integration: null, provider: null, orchestrator: null };
+  }
 
   const orchestrator = new ReviewOrchestrator({
     stateStore: store,
@@ -738,6 +783,8 @@ async function buildReviewBundle(
     maxReviewReplies: getConfig().maxReviewReplies,
     reviewMinSeverity: getConfig().reviewMinSeverity,
     agentTimeoutMs: getConfig().agentTimeoutMs,
+    ...(concurrencyTracker !== undefined ? { concurrencyTracker } : {}),
+    agentAdapter,
   });
   return { integration, provider: reviewer.provider, orchestrator };
 }
@@ -759,7 +806,8 @@ function buildReviewTrigger(
   pluginManager: PluginManager,
   workspaceBaseDir: string,
   workspaceRunner: WorkspaceRunner,
-  stateStore: import("./interfaces.js").StateStore & import("./interfaces.js").PromptStore
+  stateStore: import("./interfaces.js").StateStore & import("./interfaces.js").PromptStore,
+  concurrencyTracker: ConcurrencyTracker,
 ): import("./connectors/integrationStreamEvents.js").IntegrationEventStreamReviewTrigger | null {
   if (resolveReviewIntegration(pluginManager) === null) return null;
 
@@ -767,7 +815,14 @@ function buildReviewTrigger(
 
   return {
     async triggerReviewForChange(integrationId: string, changeId: string, options?: { force?: boolean }): Promise<void> {
-      const bundle = await buildReviewBundle(pluginManager, workspaceBaseDir, stateStore, workspaceRunner, integrationId);
+      const bundle = await buildReviewBundle(
+        pluginManager,
+        workspaceBaseDir,
+        stateStore,
+        workspaceRunner,
+        concurrencyTracker,
+        integrationId,
+      );
       if (!bundle.orchestrator || !bundle.provider || !bundle.integration) {
         log.warn({ integrationId, changeId }, "review trigger: integration not configured for review routing");
         return;
@@ -806,7 +861,19 @@ function buildReviewTrigger(
       // 3. Run each review immediately (fire-and-forget with error logging).
       for (const task of reviewTasks) {
         log.info({ integrationId, taskId: task.taskId, changeId, force }, "review trigger: task created, starting review");
-        bundle.orchestrator.runReview(task.taskId, force ? { force: true } : undefined).catch((err: unknown) => {
+        void buildReviewBundle(
+          pluginManager,
+          workspaceBaseDir,
+          stateStore,
+          workspaceRunner,
+          concurrencyTracker,
+          task,
+        ).then((taskBundle) => {
+          if (taskBundle.orchestrator === null) {
+            throw new Error(`No review runtime available for task ${task.taskId}`);
+          }
+          return taskBundle.orchestrator.runReview(task.taskId, force ? { force: true } : undefined);
+        }).catch((err: unknown) => {
           log.error({ err, integrationId, taskId: task.taskId, changeId }, "review trigger: review run failed");
         });
       }
@@ -823,8 +890,12 @@ function buildReviewTrigger(
  */
 async function resolveAgentIntegrationForReview(
   pluginManager: PluginManager,
-  store: import("./interfaces.js").StateStore
+  store: import("./interfaces.js").StateStore,
+  preferredIntegrationId?: string,
 ): Promise<Integration | null> {
+  if (preferredIntegrationId !== undefined) {
+    return pluginManager.getActiveIntegrationById(preferredIntegrationId);
+  }
   try {
     const reviewAgents = await store.listAgents({ type: "review", enabled: true });
     for (const agent of reviewAgents) {

@@ -155,10 +155,11 @@ function makeMocks(initialTask?: Task) {
       }
     }),
     setFailureReason: vi.fn(async () => undefined),
-    incrementCycle: vi.fn(async () => {
+    startAgentCycle: vi.fn(async (_id: unknown, result: unknown) => {
       if (store.task) {
         const next = store.task.cycleCount + 1;
         store.task = { ...store.task, cycleCount: next };
+        await store.saveAgentCycle(store.task.taskId, next, result);
         return next;
       }
       return 1;
@@ -576,7 +577,10 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
 
     await orch.runReview(initial.taskId);
 
-    expect(mocks.store.incrementCycle).toHaveBeenCalledWith(initial.taskId);
+    expect(mocks.store.startAgentCycle).toHaveBeenCalledWith(
+      initial.taskId,
+      expect.objectContaining({ status: "running" }),
+    );
     const transitions = mocks.store.transition.mock.calls.map((c: [unknown, unknown]) => c[1]);
     expect(transitions).toEqual(["REVIEW_RUNNING", "REVIEW_COMMENTING", "REVIEW_WATCHING"]);
 
@@ -980,7 +984,8 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
     const initial = makeTask({ state: "REVIEW_PENDING", projectId: makeProjectId("proj-1") });
     const mocks = makeMocks(initial);
     const { runner } = makeWorkspaceRunner();
-    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+    const agentAdapter = {} as import("../../src/interfaces.js").AgentAdapter;
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner, { agentAdapter }));
 
     await orch.runReview(initial.taskId);
 
@@ -1013,7 +1018,8 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
         prompt: expect.any(String),
         systemPrompt: "You are a code reviewer.",
       }),
-      expect.objectContaining({ onStderrChunk: expect.any(Function) })
+      expect.objectContaining({ onStderrChunk: expect.any(Function) }),
+      agentAdapter,
     );
     expect(runner.destroyWorkspace).toHaveBeenCalledOnce();
   });
@@ -1039,6 +1045,153 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
 });
 
 describe("ReviewOrchestrator.runReview â failure paths", () => {
+  it("marks a claimed review failed when cycle allocation fails", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    mocks.store.startAgentCycle.mockRejectedValue(new Error("disk full"));
+    const { runner } = makeWorkspaceRunner();
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+
+    await expect(orch.runReview(initial.taskId)).rejects.toThrow("disk full");
+
+    expect(mocks.store.setFailureReason).toHaveBeenCalledWith(initial.taskId, "disk full");
+    expect(mocks.store.transition).toHaveBeenCalledWith(initial.taskId, "REVIEW_FAILED");
+    expect(runner.createWorkspace).not.toHaveBeenCalled();
+  });
+
+  it("holds review agent capacity only around workspace execution", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+    const lease = {} as import("../../src/orchestrator/concurrencyTracker.js").ConcurrencyLease;
+    const concurrencyTracker = {
+      acquireWhenAvailable: vi.fn().mockResolvedValue(lease),
+      release: vi.fn(),
+    };
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner, {
+      concurrencyTracker: concurrencyTracker as never,
+    }));
+
+    await orch.runReview(initial.taskId);
+
+    expect(concurrencyTracker.acquireWhenAvailable).toHaveBeenCalledWith(
+      makeProjectId("proj-1"),
+      "agent-1",
+    );
+    expect(concurrencyTracker.release).toHaveBeenCalledOnce();
+    expect(concurrencyTracker.release).toHaveBeenCalledWith(lease);
+  });
+
+  it("treats a lost concurrent review claim as a benign duplicate invocation", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    mocks.store.getTask
+      .mockResolvedValueOnce(initial)
+      .mockResolvedValueOnce(initial)
+      .mockImplementation(async () => mocks.store.task ?? null);
+    mocks.store.transition.mockImplementation(async (
+      _id: unknown,
+      to: TaskState,
+      _metadata?: Record<string, unknown>,
+      expectedFromState?: TaskState,
+    ) => {
+      const current = mocks.store.task as Task;
+      if (expectedFromState !== undefined && current.state !== expectedFromState) {
+        throw new Error(`Task state changed concurrently: ${initial.taskId}`);
+      }
+      if (current.state !== to) mocks.store.task = { ...current, state: to };
+      return mocks.store.task as Task;
+    });
+    const { runner } = makeWorkspaceRunner();
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+
+    await expect(Promise.all([
+      orch.runReview(initial.taskId),
+      orch.runReview(initial.taskId),
+    ])).resolves.toEqual([undefined, undefined]);
+
+    expect(runner.runReviewInDocker).toHaveBeenCalledOnce();
+    expect(mocks.store.startAgentCycle).toHaveBeenCalledOnce();
+    expect(mocks.store.transition).not.toHaveBeenCalledWith(initial.taskId, "REVIEW_FAILED");
+  });
+
+  it("reuses the interrupted running cycle during recovery", async () => {
+    const initial = makeTask({ state: "REVIEW_RUNNING", cycleCount: 1 });
+    const mocks = makeMocks(initial);
+    mocks.store.getAgentCycles.mockResolvedValue([{
+      id: 7,
+      taskId: initial.taskId,
+      cycleNumber: 1,
+      result: { status: "running", modifiedFiles: [], summary: "", agentLogs: "", metadata: { reviewMode: true } },
+      validationResult: null,
+      createdAt: new Date(),
+      cost: null,
+    }]);
+    const { runner } = makeWorkspaceRunner();
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+
+    await orch.recoverReview(initial.taskId);
+
+    expect(mocks.store.startAgentCycle).not.toHaveBeenCalled();
+    expect(mocks.store.saveAgentCycle).toHaveBeenLastCalledWith(
+      initial.taskId,
+      1,
+      expect.objectContaining({ status: "success" }),
+    );
+  });
+
+  it("publishes the running cycle before the review container completes", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+    let completeReview: ((value: { rawOutput: string }) => void) | undefined;
+    runner.runReviewInDocker.mockImplementationOnce(
+      async () => new Promise<{ rawOutput: string }>((resolve) => {
+        completeReview = resolve;
+      }),
+    );
+
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+    const run = orch.runReview(initial.taskId);
+
+    await vi.waitFor(() => {
+      expect(mocks.store.saveAgentCycle).toHaveBeenCalledWith(
+        initial.taskId,
+        1,
+        expect.objectContaining({ status: "running" }),
+      );
+    });
+
+    completeReview?.({ rawOutput: GOOD_RAW_OUTPUT });
+    await run;
+    expect(mocks.store.saveAgentCycle).toHaveBeenLastCalledWith(
+      initial.taskId,
+      1,
+      expect.objectContaining({ status: "success" }),
+    );
+  });
+
+  it("finalizes the running cycle when the review becomes inactive", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    mocks.store.getTask
+      .mockResolvedValueOnce(initial)
+      .mockResolvedValue(makeTask({ state: "REVIEW_DONE" }));
+    const { runner } = makeWorkspaceRunner();
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+
+    await orch.runReview(initial.taskId);
+
+    expect(mocks.store.saveAgentCycle).toHaveBeenLastCalledWith(
+      initial.taskId,
+      1,
+      expect.objectContaining({
+        status: "failed",
+        summary: "Review stopped because task is no longer active",
+      }),
+    );
+  });
+
   it("marks task REVIEW_FAILED and rethrows on runReviewInDocker failure", async () => {
     const initial = makeTask({ state: "REVIEW_PENDING" });
     const mocks = makeMocks(initial);
@@ -1250,6 +1403,43 @@ describe("ReviewOrchestrator.recoverReview", () => {
       expect.stringContaining("interrupted during provider posting")
     );
     expect(mocks.store.transition).toHaveBeenCalledWith(initial.taskId, "REVIEW_FAILED");
+  });
+
+  it("finalizes a COMMENTING cycle archived because the change closed", async () => {
+    const initial = makeTask({
+      state: "REVIEW_COMMENTING",
+      cycleCount: 2,
+      currentPatchset: 2,
+      reviewedPatchset: null,
+    });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+    mocks.store.getAgentCycles.mockResolvedValue([{
+      id: 2,
+      taskId: initial.taskId,
+      cycleNumber: 2,
+      result: {
+        status: "success",
+        modifiedFiles: [],
+        summary: "Review result discarded because the change became MERGED",
+        agentLogs: "",
+        metadata: {
+          reviewMode: true,
+          superseded: true,
+          analyzedPatchset: 2,
+          changeStatus: "MERGED",
+        },
+      },
+      validationResult: null,
+      createdAt: new Date(),
+    }]);
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+
+    await orch.recoverReview(initial.taskId);
+
+    expect(mocks.store.setFailureReason).not.toHaveBeenCalled();
+    expect(mocks.provider.getChangeDetails).not.toHaveBeenCalled();
+    expect(mocks.store.transition).toHaveBeenCalledWith(initial.taskId, "REVIEW_DONE");
   });
 
   it("leaves REVIEW_WATCHING to the status poller", async () => {

@@ -142,18 +142,35 @@ function makeMocks(initialTask?: Task) {
       }
     }),
     setFailureReason: vi.fn(async () => undefined),
-    incrementCycle: vi.fn(async () => {
+    startAgentCycle: vi.fn(async (_id: unknown, result: unknown) => {
       if (store["task"]) {
         const current = (store["task"] as Task).cycleCount;
         const next = current + 1;
         store["task"] = { ...(store["task"] as Task), cycleCount: next };
+        await (store["saveAgentCycle"] as (
+          taskId: string,
+          cycleNumber: number,
+          result: unknown,
+        ) => Promise<void>)(
+          (store["task"] as Task).taskId,
+          next,
+          result,
+        );
         return next;
       }
       return 1;
     }),
     getAgentCycles: vi.fn(async () => []),
     saveAgentCycle: vi.fn(async (taskId: string, cycleNumber: number, result: unknown) => {
-      savedCycles.push({ taskId, cycleNumber, result });
+      const existingIndex = savedCycles.findIndex(
+        (cycle) => cycle.taskId === taskId && cycle.cycleNumber === cycleNumber,
+      );
+      const saved = { taskId, cycleNumber, result };
+      if (existingIndex >= 0) {
+        savedCycles[existingIndex] = saved;
+      } else {
+        savedCycles.push(saved);
+      }
     }),
     getPostedReviewCommentHashes: vi.fn(async () => new Set<string>()),
     getPostedReviewComments: vi.fn(async () => []),
@@ -284,7 +301,8 @@ describe("Review live logs and cycle persistence", () => {
       expect(capturedEvents.some((event) => event.type === "assistant.message")).toBe(true);
     });
 
-    expect(mocks.savedCycles).toHaveLength(0);
+    expect(mocks.savedCycles).toHaveLength(1);
+    expect((mocks.savedCycles[0]?.result as { status?: string }).status).toBe("running");
     expect(capturedEvents.map((event) => event.type)).toEqual(expect.arrayContaining([
       "review.prompt_received",
       "session.start",
@@ -322,7 +340,7 @@ describe("Review live logs and cycle persistence", () => {
 
     await orch.runReview(TASK_ID);
 
-    expect(mocks.store["saveAgentCycle"]).toHaveBeenCalledTimes(1);
+    expect(mocks.store["saveAgentCycle"]).toHaveBeenCalledTimes(2);
     expect(mocks.savedCycles).toHaveLength(1);
     const saved = mocks.savedCycles[0]!;
     expect(saved.taskId).toBe(TASK_ID);

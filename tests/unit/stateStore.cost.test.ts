@@ -50,6 +50,7 @@ function insertRawCycle(
     costUsd: number | null;
     costAiCredits: number | null;
     agentEvents: string | null;
+    cycleNumber?: number;
     /** When set, events are embedded in the serialized AgentResult (predates the agent_events column). */
     resultEvents?: unknown;
   }
@@ -65,7 +66,7 @@ function insertRawCycle(
        VALUES (?, ?, ?, NULL, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, ?)`
     ).run(
       row.taskId,
-      1,
+      row.cycleNumber ?? 1,
       JSON.stringify({
         status: "success",
         summary: "legacy",
@@ -187,6 +188,7 @@ describe("SqliteStateStore — getCostSummary", () => {
     insertRawCycle(dbPath, { taskId: t1, createdAtEpochSeconds: nowSec, costUsd: 0.1, costAiCredits: 10, agentEvents: null });
     insertRawCycle(dbPath, {
       taskId: t1,
+      cycleNumber: 2,
       createdAtEpochSeconds: nowSec - 60 * 24 * 60 * 60, // 60 days ago
       costUsd: 0.5,
       costAiCredits: 50,

@@ -94,6 +94,7 @@ export const agentCycles = sqliteTable("agent_cycles", {
 }, (table) => ({
   idxAgentCyclesTaskId: index("idx_agent_cycles_task_id").on(table.taskId),
   idxAgentCyclesCreatedAt: index("idx_agent_cycles_created_at").on(table.createdAt),
+  uqAgentCyclesTaskCycle: unique("uq_agent_cycles_task_cycle").on(table.taskId, table.cycleNumber),
 }));
 
 export const processedComments = sqliteTable("processed_comments", {

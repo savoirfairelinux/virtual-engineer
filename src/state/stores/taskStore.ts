@@ -1,8 +1,9 @@
 import type Database from "better-sqlite3";
-import { and, eq, inArray, isNull, notInArray } from "drizzle-orm";
+import { and, eq, inArray, isNull, notInArray, sql } from "drizzle-orm";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import type {
   AgentCycle,
+  AgentCycleResult,
   AgentLogEvent,
   AgentResult,
   ChangePerRepository,
@@ -74,7 +75,12 @@ export interface TaskStoreApi {
   ): Promise<Task | null>;
   getActiveTasks(): Promise<Task[]>;
   getAllTasks(): Promise<Task[]>;
-  transition(taskId: TaskId, toState: TaskState, metadata?: Record<string, unknown>): Promise<Task>;
+  transition(
+    taskId: TaskId,
+    toState: TaskState,
+    metadata?: Record<string, unknown>,
+    expectedFromState?: TaskState,
+  ): Promise<Task>;
   updateExternalChangeId(taskId: TaskId, changeId: ExternalChangeId, patchset: number, reviewUrl?: string): Promise<void>;
   createReviewTask(input: {
     taskId: TaskId;
@@ -90,11 +96,12 @@ export interface TaskStoreApi {
   }): Promise<Task>;
   setReviewedPatchset(taskId: TaskId, patchset: number): Promise<void>;
   incrementCycle(taskId: TaskId): Promise<number>;
+  startAgentCycle(taskId: TaskId, result: AgentCycleResult): Promise<number>;
   setFailureReason(taskId: TaskId, reason: string): Promise<void>;
   saveAgentCycle(
     taskId: TaskId,
     cycleNumber: number,
-    result: AgentResult,
+    result: AgentCycleResult,
     validationResult?: ValidationResult
   ): Promise<void>;
   getAgentCycles(taskId: TaskId): Promise<AgentCycle[]>;
@@ -356,10 +363,14 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
   async function transition(
     taskId: TaskId,
     toState: TaskState,
-    metadata: Record<string, unknown> = {}
+    metadata: Record<string, unknown> = {},
+    expectedFromState?: TaskState,
   ): Promise<Task> {
     const task = await getTask(taskId);
     if (!task) throw new Error(`Task not found: ${taskId}`);
+    if (expectedFromState !== undefined && task.state !== expectedFromState) {
+      throw new Error(`Task state changed concurrently: ${taskId}`);
+    }
 
     const result = validateTransition(task.state, toState);
     if (result === "idempotent") return task;
@@ -468,14 +479,52 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
   }
 
   async function incrementCycle(taskId: TaskId): Promise<number> {
-    const task = await getTask(taskId);
-    if (!task) throw new Error(`Task not found: ${taskId}`);
-    const newCount = task.cycleCount + 1;
-    await db
-      .update(tasks)
-      .set({ cycleCount: newCount, updatedAt: new Date() })
-      .where(eq(tasks.taskId, taskId));
-    return newCount;
+    const row = raw.prepare(
+      "UPDATE tasks SET cycle_count = cycle_count + 1, updated_at = ? WHERE task_id = ? RETURNING cycle_count"
+    ).get(Math.floor(Date.now() / 1000), taskId) as { cycle_count: number } | undefined;
+    if (row === undefined) throw new Error(`Task not found: ${taskId}`);
+    return row.cycle_count;
+  }
+
+  function agentCycleValues(
+    result: AgentCycleResult,
+    validationResult?: ValidationResult,
+  ): Omit<typeof agentCycles.$inferInsert, "id" | "taskId" | "cycleNumber" | "createdAt"> {
+    const cost = computeCycleCost(result.agentEvents);
+    return {
+      agentResult: JSON.stringify(result),
+      validationResult: validationResult ? JSON.stringify(validationResult) : null,
+      agentEvents: result.agentEvents ? JSON.stringify(result.agentEvents) : null,
+      costAiCredits: cost.priced ? cost.aiCredits : null,
+      costUsd: cost.usd > 0 ? cost.usd : null,
+      premiumRequests: cost.premiumRequests > 0 ? cost.premiumRequests : null,
+      costInputTokens: cost.tokens.input > 0 ? cost.tokens.input : null,
+      costOutputTokens: cost.tokens.output > 0 ? cost.tokens.output : null,
+      costCachedTokens: cost.tokens.cached > 0 ? cost.tokens.cached : null,
+      costCacheWriteTokens: cost.tokens.cacheWrite > 0 ? cost.tokens.cacheWrite : null,
+      costModelId: cost.modelId,
+    };
+  }
+
+  async function startAgentCycle(taskId: TaskId, result: AgentCycleResult): Promise<number> {
+    return db.transaction((tx) => {
+      const row = tx
+        .update(tasks)
+        .set({ cycleCount: sql`${tasks.cycleCount} + 1`, updatedAt: new Date() })
+        .where(eq(tasks.taskId, taskId))
+        .returning({ cycleCount: tasks.cycleCount })
+        .get();
+      if (row === undefined) throw new Error(`Task not found: ${taskId}`);
+      tx.insert(agentCycles)
+        .values({
+          taskId,
+          cycleNumber: row.cycleCount,
+          ...agentCycleValues(result),
+          createdAt: new Date(),
+        })
+        .run();
+      return row.cycleCount;
+    });
   }
 
   async function setFailureReason(taskId: TaskId, reason: string): Promise<void> {
@@ -488,37 +537,29 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
   async function saveAgentCycle(
     taskId: TaskId,
     cycleNumber: number,
-    result: AgentResult,
+    result: AgentCycleResult,
     validationResult?: ValidationResult
   ): Promise<void> {
-    const cost = computeCycleCost(result.agentEvents);
-    await db.insert(agentCycles).values({
-      taskId,
-      cycleNumber,
-      agentResult: JSON.stringify(result),
-      validationResult: validationResult ? JSON.stringify(validationResult) : null,
-      agentEvents: result.agentEvents ? JSON.stringify(result.agentEvents) : null,
-      costAiCredits: cost.priced ? cost.aiCredits : null,
-      costUsd: cost.usd > 0 ? cost.usd : null,
-      premiumRequests: cost.premiumRequests > 0 ? cost.premiumRequests : null,
-      costInputTokens: cost.tokens.input > 0 ? cost.tokens.input : null,
-      costOutputTokens: cost.tokens.output > 0 ? cost.tokens.output : null,
-      costCachedTokens: cost.tokens.cached > 0 ? cost.tokens.cached : null,
-      costCacheWriteTokens: cost.tokens.cacheWrite > 0 ? cost.tokens.cacheWrite : null,
-      costModelId: cost.modelId,
-      createdAt: new Date(),
-    });
+    const values = agentCycleValues(result, validationResult);
+    await db
+      .insert(agentCycles)
+      .values({ taskId, cycleNumber, ...values, createdAt: new Date() })
+      .onConflictDoUpdate({
+        target: [agentCycles.taskId, agentCycles.cycleNumber],
+        set: values,
+      });
   }
 
   async function getAgentCycles(taskId: TaskId): Promise<AgentCycle[]> {
     const rows = await db.query.agentCycles.findMany({
       where: eq(agentCycles.taskId, taskId),
+      orderBy: (table, { asc }) => [asc(table.cycleNumber), asc(table.id)],
     });
     return rows.map((row) => {
-      let result: AgentResult;
+      let result: AgentCycleResult;
       let validationResult: ValidationResult | null = null;
       try {
-        result = JSON.parse(row.agentResult) as AgentResult;
+        result = JSON.parse(row.agentResult) as AgentCycleResult;
       } catch {
         result = { status: "failed", summary: "[corrupt cycle data]", modifiedFiles: [], agentLogs: "", metadata: {} };
       }
@@ -1498,6 +1539,7 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
     createReviewTask,
     setReviewedPatchset,
     incrementCycle,
+    startAgentCycle,
     setFailureReason,
     saveAgentCycle,
     getAgentCycles,

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { getLogger } from "../logger.js";
 import {
   type AgentLogEvent,
+  type AgentAdapter,
   type AgentResult,
   type ExternalChangeId,
   type InlineReviewComment,
@@ -26,6 +27,7 @@ import { filterCommentsByAllowedFiles } from "./commentFilter.js";
 import { computeCommentHash, computeThreadReplyHash } from "./commentHash.js";
 import { applyVolumeAndSeverityGate, buildFoldedSummary } from "./commentSeverity.js";
 import { agentLogBus, pushToTaskBuffer, clearTaskEventBuffer } from "../agents/agentEventBus.js";
+import type { ConcurrencyLease, ConcurrencyTracker } from "../orchestrator/concurrencyTracker.js";
 
 const log = getLogger("review-orchestrator");
 const MAX_SUPERSEDED_REVIEW_RETRIES = 3;
@@ -61,7 +63,7 @@ export interface ReviewOrchestratorDeps {
     | "transition"
     | "setReviewedPatchset"
     | "setFailureReason"
-    | "incrementCycle"
+    | "startAgentCycle"
     | "saveAgentCycle"
     | "getAgentCycles"
     | "findProjectsByReviewTarget"
@@ -103,6 +105,8 @@ export interface ReviewOrchestratorDeps {
   reviewMinSeverity?: string | undefined;
   /** Host-side deadline for one review-agent execution. */
   agentTimeoutMs?: number | undefined;
+  concurrencyTracker?: Pick<ConcurrencyTracker, "acquireWhenAvailable" | "release"> | undefined;
+  agentAdapter?: AgentAdapter | undefined;
 }
 
 export interface StartReviewInput {
@@ -376,6 +380,17 @@ export class ReviewOrchestrator {
       metadata?.["reviewMode"] === true &&
       metadata["patchset"] === task.currentPatchset &&
       task.reviewedPatchset === task.currentPatchset;
+    const completedClosedChange =
+      currentCycle?.result.status === "success" &&
+      metadata?.["reviewMode"] === true &&
+      metadata["superseded"] === true &&
+      metadata["analyzedPatchset"] === task.currentPatchset &&
+      (metadata["changeStatus"] === "MERGED" || metadata["changeStatus"] === "ABANDONED");
+
+    if (completedClosedChange) {
+      await this.deps.stateStore.transition(taskId, "REVIEW_DONE");
+      return;
+    }
 
     if (!completedCurrentPatchset) {
       const reason =
@@ -401,7 +416,7 @@ export class ReviewOrchestrator {
     supersededRetries: number,
     resumeRunning: boolean,
   ): Promise<void> {
-    const task = await this.deps.stateStore.getTask(taskId);
+    let task = await this.deps.stateStore.getTask(taskId);
     if (!task) throw new Error(`Review task not found: ${taskId}`);
     if (task.taskType !== "code-review") {
       throw new Error(`Task ${taskId} is not a code-review task`);
@@ -409,6 +424,7 @@ export class ReviewOrchestrator {
     if (task.externalChangeId === null) {
       throw new Error(`Review task ${taskId} has no change id`);
     }
+    const changeId = task.externalChangeId;
 
     // Guard against calling runReview on terminal or otherwise non-resumable
     // states (e.g. REVIEW_DONE, REVIEW_FAILED, FAILED). Attempting transitions
@@ -429,10 +445,49 @@ export class ReviewOrchestrator {
       return;
     }
 
-    const changeId = task.externalChangeId;
+    if (task.state === "REVIEW_WATCHING" || task.state === "REVIEW_PENDING") {
+      try {
+        task = await this.deps.stateStore.transition(taskId, "REVIEW_RUNNING", {}, task.state);
+      } catch (err: unknown) {
+        const current = await this.deps.stateStore.getTask(taskId);
+        if (
+          err instanceof Error &&
+          err.message.startsWith("Task state changed concurrently:") &&
+          current !== null &&
+          current.state !== task.state
+        ) {
+          log.info({ taskId, state: current.state }, "review execution already claimed by another invocation");
+          return;
+        }
+        throw err;
+      }
+    }
 
-    // Keep task.cycleCount in sync with persisted review cycles.
-    const cycleNumber = await this.deps.stateStore.incrementCycle(taskId);
+    const runningResult = {
+      status: "running" as const,
+      modifiedFiles: [],
+      summary: "",
+      agentLogs: "",
+      metadata: { reviewMode: true },
+    };
+    let cycleNumber: number;
+    try {
+      const currentCycle = resumeRunning && task.cycleCount > 0
+        ? (await this.deps.stateStore.getAgentCycles(taskId)).find(
+            (cycle) => cycle.cycleNumber === task.cycleCount && cycle.result.status === "running"
+          )
+        : undefined;
+      cycleNumber = currentCycle?.cycleNumber
+        ?? await this.deps.stateStore.startAgentCycle(taskId, runningResult);
+      if (currentCycle !== undefined) {
+        await this.deps.stateStore.saveAgentCycle(taskId, cycleNumber, runningResult);
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to allocate review cycle";
+      await this.deps.stateStore.setFailureReason(taskId, message);
+      await this.deps.stateStore.transition(taskId, "REVIEW_FAILED");
+      throw err;
+    }
 
     // Collected agent log events for persistence.
     const collectedEvents: AgentLogEvent[] = [];
@@ -451,11 +506,6 @@ export class ReviewOrchestrator {
     };
 
     try {
-      // Allow re-runs from REVIEW_WATCHING by transitioning back to RUNNING.
-      if (task.state === "REVIEW_WATCHING" || task.state === "REVIEW_PENDING") {
-        await this.deps.stateStore.transition(taskId, "REVIEW_RUNNING");
-      }
-
       emitReviewEvent("review.started", { changeId, patchset: task.currentPatchset, cycleNumber });
 
       const details = await this.deps.reviewProvider.getChangeDetails(changeId);
@@ -557,9 +607,14 @@ export class ReviewOrchestrator {
       }
 
       let handle: WorkspaceHandle | undefined;
+      let cycleLease: ConcurrencyLease | undefined;
       let rawOutput: string;
 
       try {
+        if (this.deps.concurrencyTracker !== undefined) {
+          cycleLease = await this.deps.concurrencyTracker.acquireWhenAvailable(project.id, project.agentId);
+          await this.assertReviewStillActive(taskId);
+        }
         handle = await this.deps.workspaceRunner.createWorkspace(taskId);
 
         const cloneResult = await this.deps.workspaceRunner.prepareProjectWorkspace(
@@ -605,7 +660,7 @@ export class ReviewOrchestrator {
                 this.processReviewStderrLine(trimmed, taskId, cycleNumber, collectedEvents);
               }
             },
-          }),
+          }, this.deps.agentAdapter),
           timeoutMs,
           `Review timed out after ${timeoutMs}ms`,
         );
@@ -619,6 +674,7 @@ export class ReviewOrchestrator {
             log.warn({ err, taskId }, "failed to destroy review workspace")
           );
         }
+        if (cycleLease !== undefined) this.deps.concurrencyTracker?.release(cycleLease);
       }
 
       emitReviewEvent("review.agent_completed", { outputLength: rawOutput.length });
@@ -870,6 +926,17 @@ export class ReviewOrchestrator {
         return this.runReviewPass(taskId, options, supersededRetries + 1, true);
       }
       if (err instanceof ReviewCancelledError) {
+        const message = "Review stopped because task is no longer active";
+        await this.deps.stateStore.saveAgentCycle(taskId, cycleNumber, {
+          status: "failed",
+          modifiedFiles: [],
+          summary: message,
+          agentLogs: "",
+          agentEvents: collectedEvents,
+          metadata: { reviewMode: true, error: message, cancelled: true },
+        }).catch((saveErr: unknown) =>
+          log.warn({ err: saveErr, taskId }, "failed to save cancelled review cycle")
+        );
         clearTaskEventBuffer(taskId);
         log.info({ taskId }, "review stopped because task is no longer active");
         return;

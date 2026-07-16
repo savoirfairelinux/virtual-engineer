@@ -19,16 +19,15 @@ export async function recoverActiveReviews(
 ): Promise<ReviewRecoveryResult> {
   const result: ReviewRecoveryResult = { recovered: 0, failed: 0, unavailable: 0 };
   const activeTasks = await store.getActiveTasks();
+  const reviewTasks = activeTasks.filter((task) => task.taskType === "code-review");
 
-  for (const task of activeTasks) {
-    if (task.taskType !== "code-review") continue;
-
+  await Promise.all(reviewTasks.map(async (task) => {
     try {
       const orchestrator = await buildOrchestrator(task);
       if (orchestrator === null) {
         result.unavailable += 1;
         log.warn({ taskId: task.taskId }, "review recovery runtime unavailable");
-        continue;
+        return;
       }
       await orchestrator.recoverReview(task.taskId);
       result.recovered += 1;
@@ -36,7 +35,7 @@ export async function recoverActiveReviews(
       result.failed += 1;
       log.error({ err, taskId: task.taskId, state: task.state }, "review recovery failed");
     }
-  }
+  }));
 
   return result;
 }

@@ -401,12 +401,13 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
   async runReviewInDocker(
     handle: WorkspaceHandle,
     input: ReviewWorkspaceInput,
-    callbacks?: { onStderrChunk?: ((chunk: string) => void) | undefined } | undefined
+    callbacks?: { onStderrChunk?: ((chunk: string) => void) | undefined } | undefined,
+    adapterOverride?: AgentAdapter | undefined,
   ): Promise<{ rawOutput: string }> {
     const taskId = String(handle.taskId);
     const name = this.sandboxName(taskId, handle.containerId);
     const dir = this.dirs.get(handle.containerId) ?? handle.hostWorkspacePath;
-    const adapter = this.deps.agentAdapter;
+    const adapter = adapterOverride ?? this.deps.agentAdapter;
     if (!adapter || !hasReviewSpec(adapter)) {
       throw new Error("OpenShellWorkspaceRunner.runReviewInDocker requires a review-capable agent adapter");
     }

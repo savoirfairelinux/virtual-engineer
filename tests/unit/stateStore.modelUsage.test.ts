@@ -41,7 +41,7 @@ async function makeTaskForProject(store: SqliteStateStore, projectId?: ProjectId
 /** Insert an agent_cycles row directly with a null model snapshot but event log. */
 function insertLegacyCycle(
   dbPath: string,
-  row: { taskId: string; createdAtEpochSeconds: number; events: AgentLogEvent[] | null }
+  row: { taskId: string; createdAtEpochSeconds: number; events: AgentLogEvent[] | null; cycleNumber?: number }
 ): void {
   const db = new Database(dbPath);
   try {
@@ -54,7 +54,7 @@ function insertLegacyCycle(
        VALUES (?, ?, ?, NULL, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?)`
     ).run(
       row.taskId,
-      1,
+      row.cycleNumber ?? 1,
       JSON.stringify({ status: "success", summary: "legacy", modifiedFiles: [], agentLogs: "", metadata: {} }),
       row.events ? JSON.stringify(row.events) : null,
       row.createdAtEpochSeconds
@@ -138,6 +138,7 @@ describe("SqliteStateStore — getModelUsageSummary", () => {
     insertLegacyCycle(dbPath, { taskId: t1, createdAtEpochSeconds: nowSec, events: pricedResult(1, "claude-sonnet").agentEvents ?? null });
     insertLegacyCycle(dbPath, {
       taskId: t1,
+      cycleNumber: 2,
       createdAtEpochSeconds: nowSec - 60 * 24 * 60 * 60,
       events: pricedResult(1, "old-model").agentEvents ?? null,
     });

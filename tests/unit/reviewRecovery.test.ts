@@ -70,4 +70,23 @@ describe("recoverActiveReviews", () => {
     expect(recoverReview).toHaveBeenCalledWith(second.taskId);
     expect(result).toEqual({ recovered: 1, failed: 0, unavailable: 1 });
   });
+
+  it("starts review recoveries concurrently", async () => {
+    const first = makeTask({ taskId: makeTaskId("review-blocked") });
+    const second = makeTask({ taskId: makeTaskId("review-ready") });
+    let releaseFirst: (() => void) | undefined;
+    const firstBlocked = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const recoverReview = vi.fn(async (taskId: Task["taskId"]) => {
+      if (taskId === first.taskId) await firstBlocked;
+    });
+
+    const recovery = recoverActiveReviews(
+      { getActiveTasks: vi.fn(async () => [first, second]) },
+      vi.fn(async () => ({ recoverReview })),
+    );
+
+    await vi.waitFor(() => expect(recoverReview).toHaveBeenCalledWith(second.taskId));
+    releaseFirst?.();
+    await expect(recovery).resolves.toEqual({ recovered: 2, failed: 0, unavailable: 0 });
+  });
 });

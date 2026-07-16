@@ -550,6 +550,30 @@ export class SqliteStateStore {
     this.ensureColumn("agent_cycles", "cost_cached_tokens", "INTEGER");
     this.ensureColumn("agent_cycles", "cost_cache_write_tokens", "INTEGER");
     this.ensureColumn("agent_cycles", "cost_model_id", "TEXT");
+    this.raw.transaction(() => {
+      this.raw.exec(`
+        UPDATE agent_cycles
+        SET created_at = (
+          SELECT MIN(duplicate.created_at)
+          FROM agent_cycles AS duplicate
+          WHERE duplicate.task_id = agent_cycles.task_id
+            AND duplicate.cycle_number = agent_cycles.cycle_number
+        )
+        WHERE id IN (
+          SELECT MAX(id)
+          FROM agent_cycles
+          GROUP BY task_id, cycle_number
+        );
+        DELETE FROM agent_cycles
+        WHERE id NOT IN (
+          SELECT MAX(id)
+          FROM agent_cycles
+          GROUP BY task_id, cycle_number
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_agent_cycles_task_cycle
+          ON agent_cycles(task_id, cycle_number);
+      `);
+    })();
     this.ensureColumn("integrations", "discovered_resources_json", "TEXT");
     this.ensureColumn("integrations", "discovered_at", "INTEGER");
     this.ensureColumn("tasks", "project_id", "TEXT");

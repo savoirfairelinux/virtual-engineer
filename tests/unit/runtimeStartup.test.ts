@@ -48,4 +48,26 @@ describe("runtime startup", () => {
     expect(onInitialReconcileError).toHaveBeenCalledWith(expect.objectContaining({ message: "gateway unavailable" }));
     expect(startSandboxReconciler).toHaveBeenCalledOnce();
   });
+
+  it("does not block code-generation recovery or reconciliation on a slow review", async () => {
+    let releaseReviews: (() => void) | undefined;
+    const reviewsBlocked = new Promise<void>((resolve) => { releaseReviews = resolve; });
+    const resumeCodeGeneration = vi.fn().mockResolvedValue(undefined);
+    const reconcileSandboxes = vi.fn().mockResolvedValue(undefined);
+
+    const startup = startRuntimeRecovery({
+      recoverReviews: vi.fn(async () => reviewsBlocked),
+      resumeCodeGeneration,
+      reconcileSandboxes,
+      startSandboxReconciler: vi.fn(),
+      stopSandboxReconciler: vi.fn(),
+    });
+
+    await vi.waitFor(() => {
+      expect(resumeCodeGeneration).toHaveBeenCalledOnce();
+      expect(reconcileSandboxes).toHaveBeenCalledOnce();
+    });
+    releaseReviews?.();
+    await startup;
+  });
 });

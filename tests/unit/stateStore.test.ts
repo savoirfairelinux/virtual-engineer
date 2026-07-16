@@ -304,6 +304,22 @@ describe("SqliteStateStore", () => {
       expect(result.state).toBe("CONTEXT_BUILDING");
     });
 
+    it("rejects an idempotent target when the expected source state was already claimed", async () => {
+      const taskId = makeTaskId(randomUUID());
+      await store.createReviewTask({
+        taskId,
+        ticketId: makeTicketId("review-claim"),
+        subject: "Concurrent review",
+        changeId: makeExternalChangeId("123"),
+        patchset: 1,
+      });
+      await store.transition(taskId, "REVIEW_RUNNING");
+
+      await expect(
+        store.transition(taskId, "REVIEW_RUNNING", {}, "REVIEW_PENDING")
+      ).rejects.toThrow(`Task state changed concurrently: ${taskId}`);
+    });
+
     it("throws InvalidTransitionError for invalid transition", async () => {
       const taskId = makeTaskId(randomUUID());
       await store.createTask(taskId, makeTicketId("3"));
@@ -620,6 +636,51 @@ describe("SqliteStateStore", () => {
     });
   });
 
+  describe("startAgentCycle", () => {
+    const runningResult = {
+      status: "running" as const,
+      summary: "",
+      modifiedFiles: [],
+      agentLogs: "",
+      metadata: {},
+    };
+
+    it("allocates the cycle and persists its running row together", async () => {
+      const taskId = makeTaskId(randomUUID());
+      await store.createTask(taskId, makeTicketId("cycle-start"));
+
+      await expect(store.startAgentCycle(taskId, runningResult)).resolves.toBe(1);
+      await expect(store.getAgentCycles(taskId)).resolves.toMatchObject([
+        { cycleNumber: 1, result: { status: "running" } },
+      ]);
+      await expect(store.getTask(taskId)).resolves.toMatchObject({ cycleCount: 1 });
+    });
+
+    it("rolls back cycle allocation when the running row cannot be inserted", async () => {
+      const dbPath = tempDbPath();
+      const localStore = await SqliteStateStore.create(dbPath);
+      const taskId = makeTaskId(randomUUID());
+      const db = new Database(dbPath);
+      try {
+        await localStore.createTask(taskId, makeTicketId("cycle-rollback"));
+        db.exec(`
+          CREATE TRIGGER reject_cycle_start
+          BEFORE INSERT ON agent_cycles
+          BEGIN
+            SELECT RAISE(ABORT, 'cycle insert rejected');
+          END
+        `);
+
+        await expect(localStore.startAgentCycle(taskId, runningResult)).rejects.toThrow("cycle insert rejected");
+        await expect(localStore.getTask(taskId)).resolves.toMatchObject({ cycleCount: 0 });
+        await expect(localStore.getAgentCycles(taskId)).resolves.toEqual([]);
+      } finally {
+        db.close();
+        localStore.close();
+      }
+    });
+  });
+
   describe("setFailureReason and failed-attempt counting", () => {
     it("persists the failure reason and counts FAILED plus ABANDONED tasks", async () => {
       const ticketId = makeTicketId("failed-1");
@@ -770,6 +831,80 @@ describe("SqliteStateStore", () => {
   });
 
   describe("saveAgentCycle", () => {
+    it("deduplicates legacy cycle rows before enforcing task-cycle uniqueness", async () => {
+      const dbPath = tempDbPath();
+      const legacy = new Database(dbPath);
+      legacy.exec(`
+        CREATE TABLE tasks (
+          task_id TEXT PRIMARY KEY,
+          ticket_id TEXT NOT NULL,
+          state TEXT NOT NULL DEFAULT 'DETECTED',
+          cycle_count INTEGER NOT NULL DEFAULT 0,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+        CREATE TABLE agent_cycles (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          task_id TEXT NOT NULL REFERENCES tasks(task_id),
+          cycle_number INTEGER NOT NULL,
+          agent_result TEXT NOT NULL,
+          validation_result TEXT,
+          created_at INTEGER NOT NULL
+        );
+        INSERT INTO tasks (task_id, ticket_id, created_at, updated_at)
+          VALUES ('legacy-task', 'legacy-ticket', 100, 100);
+        INSERT INTO agent_cycles (task_id, cycle_number, agent_result, created_at)
+          VALUES ('legacy-task', 1, '{"status":"running"}', 100);
+        INSERT INTO agent_cycles (task_id, cycle_number, agent_result, created_at)
+          VALUES ('legacy-task', 1, '{"status":"success","summary":"latest"}', 200);
+      `);
+      legacy.close();
+
+      const migrated = await SqliteStateStore.create(dbPath);
+      try {
+        const rows = (migrated as unknown as { raw: Database.Database }).raw
+          .prepare("SELECT id, agent_result, created_at FROM agent_cycles WHERE task_id = ? AND cycle_number = ?")
+          .all("legacy-task", 1) as Array<{ id: number; agent_result: string; created_at: number }>;
+        expect(rows).toHaveLength(1);
+        expect(JSON.parse(rows[0]!.agent_result)).toMatchObject({ status: "success", summary: "latest" });
+        expect(rows[0]!.created_at).toBe(100);
+        expect(() => (migrated as unknown as { raw: Database.Database }).raw
+          .prepare("INSERT INTO agent_cycles (task_id, cycle_number, agent_result, created_at) VALUES (?, ?, ?, ?)")
+          .run("legacy-task", 1, "{}", 300)).toThrow(/UNIQUE/);
+      } finally {
+        migrated.close();
+      }
+    });
+
+    it("finalizes a running cycle in place", async () => {
+      const taskId = makeTaskId(randomUUID());
+      await store.createTask(taskId, makeTicketId("running-cycle"));
+
+      await store.saveAgentCycle(taskId, 1, {
+        status: "running",
+        modifiedFiles: [],
+        summary: "",
+        agentLogs: "",
+        metadata: {},
+      });
+      const started = await store.getAgentCycles(taskId);
+
+      await store.saveAgentCycle(taskId, 1, {
+        status: "success",
+        modifiedFiles: [],
+        summary: "done",
+        agentLogs: "complete",
+        metadata: {},
+      });
+      const completed = await store.getAgentCycles(taskId);
+
+      expect(started).toHaveLength(1);
+      expect(completed).toHaveLength(1);
+      expect(completed[0]?.id).toBe(started[0]?.id);
+      expect(completed[0]?.createdAt).toEqual(started[0]?.createdAt);
+      expect(completed[0]?.result.status).toBe("success");
+    });
+
     it("stores and retrieves agent cycle results", async () => {
       const taskId = makeTaskId(randomUUID());
       await store.createTask(taskId, makeTicketId("8"));

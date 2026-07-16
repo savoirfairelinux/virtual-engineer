@@ -41,6 +41,39 @@ function makeStubs(opts: {
 }
 
 describe("ConcurrencyTracker", () => {
+  it("queues an acquisition until the integration slot is released", async () => {
+    const stubs = makeStubs({ perAgent: 1 });
+    const tracker = createConcurrencyTracker(stubs.deps);
+    const first = await tracker.acquire(pid("p1"), aid("a1"));
+    expect(first).not.toBeNull();
+
+    let resolved = false;
+    const queued = tracker.acquireWhenAvailable(pid("p1"), aid("a1")).then((lease) => {
+      resolved = true;
+      return lease;
+    });
+    await Promise.resolve();
+    expect(resolved).toBe(false);
+
+    tracker.release(first!);
+    const second = await queued;
+    expect(tracker.snapshot().global).toBe(1);
+    tracker.release(second);
+    expect(tracker.snapshot().global).toBe(0);
+  });
+
+  it("rejects a queued acquisition when its limit lookup fails", async () => {
+    const tracker = createConcurrencyTracker({
+      agentStore: {
+        getAgentById: vi.fn().mockRejectedValue(new Error("database unavailable")),
+      },
+    });
+
+    await expect(tracker.acquireWhenAvailable(pid("p1"), aid("a1"))).rejects.toThrow(
+      "database unavailable",
+    );
+  });
+
   it("acquire increments all 3 counters and release decrements", async () => {
     const stubs = makeStubs({ perAgent: 5, integrationId: "copilot-1" });
     const t = createConcurrencyTracker(stubs.deps);
