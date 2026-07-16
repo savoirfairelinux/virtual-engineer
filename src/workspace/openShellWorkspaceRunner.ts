@@ -37,6 +37,7 @@ import { redactOpenShellText } from "../openshell/openShellClient.js";
 import { decodeReviewWorkerOutput } from "./agentWorkerProtocol.js";
 import { parseDenialEvent, type DenialSink } from "../openshell/denyEventPoller.js";
 import { sandboxOwnershipLabels, sandboxTaskHash } from "../openshell/sandboxOwnership.js";
+import { buildPolicyYaml, denyStrictPolicy } from "../openshell/openShellPolicyBuilder.js";
 import type { ManagedOpenShellProviderRecord } from "../state/stores/openShellProviderStore.js";
 
 const log = getLogger("openshell-workspace-runner");
@@ -356,7 +357,14 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
   private async collectPolicyDenials(name: string, taskId: string, projectId?: string): Promise<void> {
     if (this.deps.recordDenial === undefined) return;
     try {
-      const logs = await this.deps.client.getSandboxLogs({ name, lines: 200, since: "75m" });
+      const ac = new AbortController();
+      const timer = setTimeout(() => ac.abort(), 30_000);
+      let logs: string;
+      try {
+        logs = await this.deps.client.getSandboxLogs({ name, lines: 200, since: "75m", signal: ac.signal });
+      } finally {
+        clearTimeout(timer);
+      }
       const seen = this.denialFingerprints.get(name) ?? new Set<string>();
       this.denialFingerprints.set(name, seen);
       for (const line of logs.split(/\r?\n/)) {
@@ -421,7 +429,8 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
     const spec = adapter.buildReviewContainerSpec(input);
     const providerEnv = splitManagedProviderEnv(name, spec.env);
 
-    const policyYaml = await this.resolvePolicy(taskId, "review");
+    const policyYaml = (await this.resolvePolicy(taskId, "review"))
+      ?? buildPolicyYaml(denyStrictPolicy({ inferenceHost: "inference.local" }));
     try {
       if (providerEnv.provider !== undefined) {
         this.providerNames.set(handle.containerId, providerEnv.provider.name);
@@ -442,7 +451,7 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
         env: providerEnv.env,
         ...(providerEnv.provider !== undefined ? { providers: [providerEnv.provider.name] } : {}),
         labels: sandboxOwnershipLabels(taskId),
-        ...(policyYaml !== undefined ? { policyYaml } : {}),
+        policyYaml,
         beforeRetryCleanup: () => this.collectPolicyDenials(name, taskId, input.projectId),
         ...(input.abortSignal !== undefined ? { signal: input.abortSignal } : {}),
       });
@@ -498,7 +507,8 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
       : adapter.buildContainerSpec(context, authEnv);
     const providerEnv = splitManagedProviderEnv(name, spec.env);
 
-    const policyYaml = await this.resolvePolicy(taskId, "coding");
+    const policyYaml = (await this.resolvePolicy(taskId, "coding"))
+      ?? buildPolicyYaml(denyStrictPolicy({ inferenceHost: "inference.local" }));
     try {
       if (providerEnv.provider !== undefined) {
         this.providerNames.set(attemptKey, providerEnv.provider.name);
@@ -519,7 +529,7 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
         env: providerEnv.env,
         ...(providerEnv.provider !== undefined ? { providers: [providerEnv.provider.name] } : {}),
         labels: sandboxOwnershipLabels(taskId),
-        ...(policyYaml !== undefined ? { policyYaml } : {}),
+        policyYaml,
         beforeRetryCleanup: () => this.collectPolicyDenials(name, taskId, context.projectId),
         ...(context.abortSignal !== undefined ? { signal: context.abortSignal } : {}),
       });
@@ -575,9 +585,7 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
     return resolved.execute({ ...context, runtimeHandleId: _handle.containerId });
   }
 
-  async destroyWorkspace(handle: WorkspaceHandle): Promise<void> {
-    let sandboxRemoved = false;
-    let providerRemoved = false;
+  async destroyWorkspace(handle: WorkspaceHandle, signal?: AbortSignal): Promise<void> {
     const sandboxName = handle.containerId.startsWith("openshell:")
       ? handle.containerId.slice("openshell:".length)
       : this.sandboxName(String(handle.taskId));
@@ -585,26 +593,22 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
     const providerName = this.providerNames.get(handle.containerId);
     try {
       if (!this.removedSandboxes.has(handle.containerId)) {
-        await this.deps.client.removeSandbox(managedSandboxName);
+        await this.deps.client.removeSandbox(managedSandboxName, signal);
         this.removedSandboxes.add(handle.containerId);
       }
-      sandboxRemoved = true;
       if (providerName !== undefined) {
         await this.deps.client.removeProvider(providerName);
         await this.deps.managedProviderStore.deleteManagedOpenShellProvider(providerName);
       }
-      providerRemoved = true;
     } finally {
       await this.deps.git.destroyWorkspace(handle.hostWorkspacePath);
       this.dirs.delete(handle.containerId);
-      if (sandboxRemoved && providerRemoved) {
-        this.sandboxNames.delete(handle.containerId);
-        this.providerNames.delete(handle.containerId);
-        this.removedSandboxes.delete(handle.containerId);
-        this.trustedRemotes.delete(handle.containerId);
-        this.postCloneScripts.delete(handle.containerId);
-        this.denialFingerprints.delete(sandboxName);
-      }
+      this.sandboxNames.delete(handle.containerId);
+      this.providerNames.delete(handle.containerId);
+      this.removedSandboxes.delete(handle.containerId);
+      this.trustedRemotes.delete(handle.containerId);
+      this.postCloneScripts.delete(handle.containerId);
+      this.denialFingerprints.delete(sandboxName);
     }
   }
 }
