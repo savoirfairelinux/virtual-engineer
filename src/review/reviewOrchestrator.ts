@@ -655,8 +655,8 @@ export class ReviewOrchestrator {
           "workspaceRunner does not support runReviewInDocker — Docker review execution is required."
         );
       }
-      const prepareProjectWorkspace = this.deps.workspaceRunner.prepareProjectWorkspace;
-      const runReviewInDocker = this.deps.workspaceRunner.runReviewInDocker;
+      const prepareProjectWorkspace = this.deps.workspaceRunner.prepareProjectWorkspace.bind(this.deps.workspaceRunner);
+      const runReviewInDocker = this.deps.workspaceRunner.runReviewInDocker.bind(this.deps.workspaceRunner);
 
       let handle: WorkspaceHandle | undefined;
       let cycleLease: ConcurrencyLease | undefined;
