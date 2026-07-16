@@ -1,3 +1,7 @@
+import { getLogger } from "../logger.js";
+
+const log = getLogger("runtime-startup");
+
 export function resolveOpenShellGateway(
   env: Readonly<Record<string, string | undefined>>,
 ): string | undefined {
@@ -11,6 +15,7 @@ export interface RuntimeRecoveryDeps {
   startSandboxReconciler: () => void;
   stopSandboxReconciler: () => void;
   onInitialReconcileError?: ((error: unknown) => void) | undefined;
+  checkGatewayHealth?: (() => Promise<boolean>) | undefined;
 }
 
 export interface RuntimeRecoveryLifecycle {
@@ -20,6 +25,12 @@ export interface RuntimeRecoveryLifecycle {
 export async function startRuntimeRecovery(
   deps: RuntimeRecoveryDeps,
 ): Promise<RuntimeRecoveryLifecycle> {
+  if (deps.checkGatewayHealth !== undefined) {
+    const healthy = await deps.checkGatewayHealth().catch(() => false);
+    if (!healthy) {
+      log.warn("OpenShell gateway unreachable — sandbox execution will fail until connectivity is restored");
+    }
+  }
   await Promise.all([
     deps.recoverReviews(),
     deps.resumeCodeGeneration(),

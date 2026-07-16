@@ -462,6 +462,7 @@ async function main(): Promise<void> {
     startSandboxReconciler: () => sandboxReconciler.start(),
     stopSandboxReconciler: () => sandboxReconciler.stop(),
     onInitialReconcileError: (err) => log.warn({ err }, "initial sandbox reconciliation failed"),
+    checkGatewayHealth: () => openShellClient.gatewayHealthy(),
   });
 
   // ─── Graceful shutdown ────────────────────────────────────────────────────────
