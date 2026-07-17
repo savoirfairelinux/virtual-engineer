@@ -325,6 +325,23 @@ describe("agent-worker multi-commit protocol", () => {
       expect(injected[0]!.changeId).toBe(existingChangeId);
     });
 
+    it("appends a ticket footer when every commit already has a Change-Id", () => {
+      const baseSha = git(["rev-parse", "HEAD"], repoDir).trim();
+      const existingChangeId = "I1234567890abcdef1234567890abcdef12345678";
+      const ticketFooterLine = "GitLab: https://gitlab.example.com/issues/123";
+      writeFileSync(join(repoDir, "a.ts"), "a\n");
+      git(["add", "a.ts"], repoDir);
+      git(["commit", "-m", `feat: with id\n\nChange-Id: ${existingChangeId}`], repoDir);
+
+      const rawCommits = collectCommits(baseSha, repoDir);
+      const injected = injectChangeIds(baseSha, rawCommits, "TASK-1", repoDir, {
+        ticketFooterLine,
+      });
+
+      expect(injected[0]!.changeId).toBe(existingChangeId);
+      expect(git(["log", "-1", "--format=%B"], repoDir)).toContain(ticketFooterLine);
+    });
+
     it("returns empty array for empty commits", () => {
       const baseSha = git(["rev-parse", "HEAD"], repoDir).trim();
       const result = injectChangeIds(baseSha, [], "TASK-1", repoDir);

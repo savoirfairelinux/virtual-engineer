@@ -58,14 +58,16 @@ const TICKET_SYSTEM_CONFIG: Record<string, TicketSystemConfig> = {
  *
  * Examples:
  * - GitLab issue: "GitLab: #123"
- * - Redmine: "Redmine: http://redmine.local/issues/14"
+ * - Redmine issue: "Redmine: #14"
+ * - Redmine issue with forceUrlFormat: "Redmine: http://redmine.local/issues/14"
  *
  * @param ticketId The ticket ID (e.g., "123", "PROJ-456")
- * @param ticketUrl The full ticket URL (used if system requires URL format)
- * @param ticketSourceLabel The source system label (e.g., "gitlab-issue", "redmine")
+ * @param ticketUrl The full ticket URL used when URL formatting is requested
+ * @param ticketSourceLabel The canonical `<provider>:<integrationId>` source label
+ *   (e.g., "gitlab:gl-1", "redmine:rm-1")
  * @param forceUrlFormat When true, always uses the "System: ticketUrl" format regardless
  *   of the system's default (used for the per-project "full ticket URL in commits" toggle).
- * @returns Formatted footer line, or null if system not configured or URL missing
+ * @returns Formatted footer line, or null if the provider is unsupported or a required URL is missing
  */
 export function formatTicketFooter(
   ticketId: string,

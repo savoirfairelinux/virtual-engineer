@@ -23,7 +23,7 @@ The admin server is a small HTTP service (default `127.0.0.1:3100`) that serves 
 | `adminStreamRoutes.ts` | SSE endpoints: `/api/admin/logs/stream` (live agent logs) and `/api/admin/events/stream` (task polling). |
 | `adminIntegrationRoutes.ts` | `/api/admin/integrations/*` CRUD, enable/disable, test, discover, models + `/api/admin/plugins` + `/api/admin/oauth-apps/*`. Integration config masking/merging/validation helpers. |
 | `adminAgentsRoutes.ts` | `/api/admin/agents/*` CRUD + enable/disable + masking + `/api/admin/plugins/:type/oauth/*`. |
-| `adminProjectsRoutes.ts` | `/api/admin/projects/*` CRUD, ticket/review target validation, atomic push-target replacement, automatic relaunch of FAILED/REVIEW_FAILED tasks on (re)configuration or re-enable. |
+| `adminProjectsRoutes.ts` | `/api/admin/projects/*` CRUD, ticket/review target validation, atomic push-target replacement, coding controls for Gerrit topic/ticket trailers/review links/CI retries, and automatic relaunch of FAILED/REVIEW_FAILED tasks on (re)configuration or re-enable. |
 | `adminConcurrencyRoutes.ts` | `/api/admin/concurrency` read/update global concurrency. |
 | `adminSettingsRoutes.ts` | `GET/PUT /api/admin/settings` — read/update editable runtime workflow settings (polling interval, max agent cycles, max retry attempts). Validates positive integers; delegates persistence + hot-apply to the `SettingsController` wired in `src/index.ts`. |
 | `adminOverviewRoutes.ts` | `/api/admin/overview` dashboard stats/throughput/votes/runtime + `/api/admin/cost-summary` aggregated AI cost (per project & instance total, optional `?days=` period) + `/api/admin/model-usage` model distribution by run count & cost (global + per project, optional `?days=<n>` period filter). |
@@ -111,9 +111,9 @@ The admin server is a small HTTP service (default `127.0.0.1:3100`) that serves 
 | `PATCH` | `/api/admin/agents/:id/enable` | Enable agent. |
 | `PATCH` | `/api/admin/agents/:id/disable` | Disable agent. |
 | `GET` | `/api/admin/projects` | Project list with resolved agent/integration names. |
-| `POST` | `/api/admin/projects` | Create coding or review project. Orphaned `FAILED`/`REVIEW_FAILED` tasks adopted via the new ticket-source binding are relaunched automatically, unless the project is created disabled. |
+| `POST` | `/api/admin/projects` | Create coding or review project. Coding payloads may set `gerritTopicOverride`, `useFullTicketUrlInCommits`, `postReviewLinkToTicket`, and `reactToCiFailures` (all optional/off by default). Orphaned `FAILED`/`REVIEW_FAILED` tasks adopted via the new ticket-source binding are relaunched automatically, unless the project is created disabled. |
 | `GET` | `/api/admin/projects/:id` | Project detail. |
-| `PUT` | `/api/admin/projects/:id` | Update project; coding-project `pushTargets` replace atomically. When ticket source, push targets, review config, agent binding/override, post-clone script, or skill-discovery toggle change, or the project is enabled, every `FAILED`/`REVIEW_FAILED` task bound to the project is relaunched automatically (no manual retry click needed). |
+| `PUT` | `/api/admin/projects/:id` | Update project, including the optional Gerrit topic/ticket trailer/review-link/CI-retry controls; coding-project `pushTargets` replace atomically. When ticket source, push targets, review config, agent binding/override, post-clone script, or skill-discovery toggle change, or the project is enabled, every `FAILED`/`REVIEW_FAILED` task bound to the project is relaunched automatically (no manual retry click needed). |
 | `DELETE` | `/api/admin/projects/:id` | Delete project and linked child rows. |
 | `PATCH` | `/api/admin/projects/:id/enable` | Enable project. If it was previously disabled, its `FAILED`/`REVIEW_FAILED` tasks are relaunched automatically. |
 | `PATCH` | `/api/admin/projects/:id/disable` | Disable project. |
@@ -227,6 +227,7 @@ The admin server never returns plaintext password-like fields. On `PUT`, values 
 - Agent and project modals filter persisted integrations by derived `domainCapabilities`. Coding projects choose ticket sources from `issue_tracking` integrations and push targets from `source_control` integrations, while review projects choose review targets from `code_review` integrations. Project summaries serialize each bound integration as `{ id, name, provider, domainCapabilities }`.
 - Project review-repository selection is discovery-driven and now includes client-side search plus `Select all` / `Unselect all` actions on the currently visible repository subset.
 - Projects can now be edited from both the Projects list row action and the Project detail drawer. The edit flow loads `/api/admin/projects/:id`, pre-fills project-specific fields, and persists changes through `PUT /api/admin/projects/:id`.
+- Coding project forms expose optional controls for a literal Gerrit topic, full ticket URL commit trailers, posting first-cycle review links to the ticket, and reacting to CI failures; existing projects keep all four behaviors disabled unless explicitly enabled.
 - Prompts are managed under Configuration rather than a separate top-level page.
 - The Tasks view streams live agent events backed by `agent_cycles.agent_events` and the in-memory event bus; log filters are `All`, `Tools`, `Usage`, `Errors`.
 - Live log ingestion de-duplicates overlapping SSE replay sources (persisted cycle history, in-memory task buffer, and reconnect replays) so reconnects do not render duplicate rows.
