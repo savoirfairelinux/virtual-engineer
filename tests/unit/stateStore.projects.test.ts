@@ -1,8 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { tmpdir } from "os";
-import { join } from "path";
 import { randomUUID } from "crypto";
 import { SqliteStateStore, resolveAgentConfig } from "../../src/state/stateStore.js";
+import { tempDatabasePath } from "./helpers/tempDatabase.js";
 import {
   makeAgentId,
   makeProjectId,
@@ -13,7 +12,7 @@ import {
 } from "../../src/interfaces.js";
 
 function tempDbPath(): string {
-  return join(tmpdir(), `ve-projects-${randomUUID()}.db`);
+  return tempDatabasePath("ve-projects");
 }
 
 async function makeAgent(store: SqliteStateStore, overrides: Partial<Parameters<SqliteStateStore["createAgent"]>[0]> = {}) {

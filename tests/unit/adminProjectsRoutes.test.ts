@@ -1,16 +1,14 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { tmpdir } from "os";
-import { join } from "path";
-import { randomUUID } from "crypto";
 import type { Server } from "node:http";
 import { SqliteStateStore } from "../../src/state/stateStore.js";
 import { createAdminServer, type AdminServerDependencies } from "../../src/admin/adminServer.js";
 import { Router } from "../../src/admin/router.js";
 import { registerProjectRoutes, type SkillSource } from "../../src/admin/adminProjectsRoutes.js";
 import { makeProjectId, type AgentRecord, type AgentType } from "../../src/interfaces.js";
+import { tempDatabasePath } from "./helpers/tempDatabase.js";
 
 function tempDbPath(): string {
-  return join(tmpdir(), `ve-admin-projects-${randomUUID()}.db`);
+  return tempDatabasePath("ve-admin-projects");
 }
 
 interface FetchResult { status: number; body: Record<string, unknown> | null; }

@@ -1,11 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { tmpdir } from "os";
-import { join } from "path";
-import { randomUUID } from "crypto";
 import type { Server } from "node:http";
 import { SqliteStateStore } from "../../src/state/stateStore.js";
 import { createAdminServer, type AdminServerDependencies } from "../../src/admin/adminServer.js";
 import { fetchAvailableModelsWithPat } from "../../src/agents/copilotModelsService.js";
+import { tempDatabasePath } from "./helpers/tempDatabase.js";
 
 // Partially mock copilotModelsService: replace the SDK-based PAT function with
 // a vi.fn() to avoid spawning the copilot CLI process in unit tests.
@@ -15,7 +13,7 @@ vi.mock("../../src/agents/copilotModelsService.js", async (importActual) => {
 });
 
 function tempDbPath(): string {
-  return join(tmpdir(), `ve-admin-agents-${randomUUID()}.db`);
+  return tempDatabasePath("ve-admin-agents");
 }
 
 interface FetchResult {

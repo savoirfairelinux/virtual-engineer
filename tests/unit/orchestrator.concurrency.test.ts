@@ -9,17 +9,15 @@
  *  - legacy tasks (no projectId) are not gated.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { tmpdir } from "os";
-import { join } from "path";
 import { randomUUID } from "crypto";
-import * as fs from "fs/promises";
 import { Orchestrator, type ProjectModeDeps } from "../../src/orchestrator/orchestrator.js";
 import { SqliteStateStore } from "../../src/state/stateStore.js";
 import { createConcurrencyTracker, type ConcurrencyTracker } from "../../src/orchestrator/concurrencyTracker.js";
 import type { ProjectRecord, Task, TicketId } from "../../src/interfaces.js";
+import { tempDatabasePath } from "./helpers/tempDatabase.js";
 
 function tempDb(): string {
-  return join(tmpdir(), `ve-orch-conc-${randomUUID()}.db`);
+  return tempDatabasePath("ve-orch-conc");
 }
 
 const mockWorkspace = {
@@ -88,17 +86,14 @@ async function seedProjectAndAgent(store: SqliteStateStore, opts: {
 
 describe("Orchestrator — Phase 6 concurrency gating", () => {
   let store: SqliteStateStore;
-  let dbPath: string;
 
   beforeEach(async () => {
     vi.clearAllMocks();
-    dbPath = tempDb();
-    store = await SqliteStateStore.create(dbPath);
+    store = await SqliteStateStore.create(tempDb());
   });
 
-  afterEach(async () => {
+  afterEach(() => {
     store.close();
-    await fs.rm(dbPath, { force: true });
   });
 
   it("startTaskForProject still creates the task when tracker already has activity", async () => {
