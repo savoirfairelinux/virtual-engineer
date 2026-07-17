@@ -57,6 +57,39 @@ export async function removeVolume(name: string): Promise<void> {
   }
 }
 
+/**
+ * Remove any `ve-ws-*` / `ve-home-*` volumes left behind by a previous process
+ * crash or restart (VE never resumes a Docker workspace across a restart, so
+ * any such volume still on disk at startup is orphaned). Best-effort: only
+ * volumes not currently attached to a running container are removed.
+ */
+export async function pruneOrphanedWorkspaceVolumes(): Promise<void> {
+  let stdout: string;
+  try {
+    ({ stdout } = await execFileAsync(
+      "docker",
+      ["volume", "ls", "-q", "--filter", "name=^ve-ws-", "--filter", "name=^ve-home-"],
+      { timeout: DOCKER_TIMEOUT_MS }
+    ));
+  } catch (err) {
+    log.warn({ err }, "failed to list workspace volumes for startup cleanup");
+    return;
+  }
+  const names = stdout.split("\n").map((s) => s.trim()).filter(Boolean);
+  if (names.length === 0) return;
+
+  let removed = 0;
+  for (const name of names) {
+    try {
+      await execFileAsync("docker", ["volume", "rm", name], { timeout: DOCKER_TIMEOUT_MS });
+      removed++;
+    } catch {
+      // In use by a container, or already gone — leave it alone.
+    }
+  }
+  log.info({ found: names.length, removed }, "startup cleanup: pruned orphaned workspace volumes");
+}
+
 export interface ExecInVolumeOptions {
   /** Named volume to mount at /workspace */
   volumeName: string;

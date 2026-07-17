@@ -14,6 +14,7 @@ import { getLogger } from "./logger.js";
 import { SqliteStateStore } from "./state/stateStore.js";
 import { MockAgentAdapter } from "./agents/mockAgentAdapter.js";
 import { DockerWorkspaceRunner } from "./workspace/workspaceRunner.js";
+import { pruneOrphanedWorkspaceVolumes } from "./workspace/dockerVolume.js";
 import { Orchestrator } from "./orchestrator/orchestrator.js";
 import { PollingLoop } from "./orchestrator/pollingLoop.js";
 import { createConcurrencyTracker } from "./orchestrator/concurrencyTracker.js";
@@ -88,6 +89,14 @@ async function main(): Promise<void> {
   let runtimeDependencies = buildRuntimeDependencies(pluginManager);
 
   // ─── Workspace runner ────────────────────────────────────────────────────────
+  // A previous crash or forced restart can leave `ve-ws-*`/`ve-home-*` volumes
+  // behind — VE never resumes a Docker workspace across a restart, so anything
+  // still on disk at startup is orphaned. Fire-and-forget: cleanup shouldn't
+  // delay orchestrator startup.
+  pruneOrphanedWorkspaceVolumes().catch((err: unknown) => {
+    log.warn({ err }, "startup workspace volume cleanup failed (non-fatal)");
+  });
+
   const workspaceRunner = new DockerWorkspaceRunner(
     {
       agentContainerImage: config.agentContainerImage,
