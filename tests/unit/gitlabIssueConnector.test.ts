@@ -202,15 +202,35 @@ describe("GitLabIssueConnector", () => {
   // ─── transitionStatus ─────────────────────────────────────────────────────
 
   describe("transitionStatus", () => {
-    it("closes the issue when targetStatusId matches closedStatusId", async () => {
+    it("closes the issue and strips workflow labels when targetStatusId matches closedStatusId", async () => {
+      // First call: GET current issue labels
+      fetchMock.mockResolvedValueOnce(jsonResponse({ ...gitlabIssue, labels: [IN_REVIEW_LABEL, "backend"] }));
+      // Second call: PUT close + cleaned labels
       fetchMock.mockResolvedValueOnce(jsonResponse({ iid: 7, state: "closed" }));
 
       await makeConnector().transitionStatus(makeTicketId("7"), 0);
 
-      const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      const [url, init] = fetchMock.mock.calls[1] as [string, RequestInit];
       expect(url).toContain("/issues/7");
       expect(init.method).toBe("PUT");
-      expect(JSON.parse(init.body as string)).toMatchObject({ state_event: "close" });
+      const body = JSON.parse(init.body as string);
+      expect(body.state_event).toBe("close");
+      expect(body.labels.split(",")).not.toContain(IN_REVIEW_LABEL);
+      expect(body.labels.split(",")).toContain("backend");
+    });
+
+    it("strips legacy status::* labels on close as well as the configured labels", async () => {
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse({ ...gitlabIssue, labels: ["status::in-review", IN_PROGRESS_LABEL, "backend"] })
+      );
+      fetchMock.mockResolvedValueOnce(jsonResponse({ iid: 7, state: "closed" }));
+
+      await makeConnector().transitionStatus(makeTicketId("7"), 0);
+
+      const [, init] = fetchMock.mock.calls[1] as [string, RequestInit];
+      const body = JSON.parse(init.body as string);
+      expect(body.labels.split(",")).toEqual(["backend"]);
     });
 
     it("updates labels for in-progress status", async () => {
@@ -354,11 +374,12 @@ describe("GitLabIssueConnector", () => {
     });
 
     it("encodes project path slugs in project-scoped update URLs", async () => {
+      fetchMock.mockResolvedValueOnce(jsonResponse({ ...gitlabIssue, labels: [] }));
       fetchMock.mockResolvedValueOnce(jsonResponse({ iid: 7, state: "closed" }));
 
       await makeConnector({ projectId: PROJECT_PATH }).transitionStatus(makeTicketId("7"), 0);
 
-      const [url] = fetchMock.mock.calls[0] as [string];
+      const [url] = fetchMock.mock.calls[1] as [string];
       expect(url).toContain(`/projects/${ENCODED_PROJECT_PATH}/issues/7`);
     });
 
@@ -444,20 +465,24 @@ describe("GitLabIssueConnector", () => {
   // ─── closeTicket ──────────────────────────────────────────────────────────
 
   describe("closeTicket", () => {
-    it("adds a closing note then closes the issue", async () => {
+    it("adds a closing note then closes the issue and strips workflow labels", async () => {
       // addNote → POST /notes
       fetchMock.mockResolvedValueOnce(jsonResponse({ id: 1 }));
-      // transitionStatus → PUT /issues/7
+      // transitionStatus → GET /issues/7 (current labels)
+      fetchMock.mockResolvedValueOnce(jsonResponse({ ...gitlabIssue, labels: [IN_REVIEW_LABEL] }));
+      // transitionStatus → PUT /issues/7 (close + cleaned labels)
       fetchMock.mockResolvedValueOnce(jsonResponse({ iid: 7, state: "closed" }));
 
       await makeConnector().closeTicket(makeTicketId("7"), "Done!");
 
-      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(fetchMock).toHaveBeenCalledTimes(3);
       const [notesUrl] = fetchMock.mock.calls[0] as [string];
       expect(notesUrl).toContain("/notes");
-      const [closeUrl, closeInit] = fetchMock.mock.calls[1] as [string, RequestInit];
+      const [closeUrl, closeInit] = fetchMock.mock.calls[2] as [string, RequestInit];
       expect(closeUrl).toContain("/issues/7");
-      expect(JSON.parse(closeInit.body as string)).toMatchObject({ state_event: "close" });
+      const body = JSON.parse(closeInit.body as string);
+      expect(body.state_event).toBe("close");
+      expect(body.labels.split(",")).not.toContain(IN_REVIEW_LABEL);
     });
   });
 
