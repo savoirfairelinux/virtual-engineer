@@ -277,8 +277,11 @@ export function injectChangeIds(
 ): CommitDescriptor[] {
   if (commits.length === 0) return commits;
 
-  const needsInjection = commits.some((c) => !c.changeId);
-  if (!needsInjection) return commits;
+  const ticketFooterLine = options?.ticketFooterLine ?? null;
+  const needsRewrite = commits.some(
+    (commit) => !commit.changeId || (ticketFooterLine !== null && !commit.body.includes(ticketFooterLine)),
+  );
+  if (!needsRewrite) return commits;
 
   const existingChangeId = options?.existingChangeId ?? null;
   const repoKeyForLookup = options?.repoKeyForLookup ?? null;
@@ -287,7 +290,6 @@ export function injectChangeIds(
   const gitAuthorEmail = options?.gitAuthorEmail ?? process.env['GIT_AUTHOR_EMAIL'] ?? '';
   const gitCommitterName = options?.gitCommitterName ?? process.env['GIT_COMMITTER_NAME'] ?? gitAuthorName;
   const gitCommitterEmail = options?.gitCommitterEmail ?? process.env['GIT_COMMITTER_EMAIL'] ?? gitAuthorEmail;
-  const ticketFooterLine = options?.ticketFooterLine ?? null;
 
   // Map: commit index → desired Change-Id for commits that lack one.
   const changeIdByIndex: Record<number, string> = {};
