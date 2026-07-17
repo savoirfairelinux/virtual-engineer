@@ -43,6 +43,104 @@ oidc_mode() {
   return 1
 }
 
+normalize_openshell_compute_driver() {
+  local value="${1:-}"
+  case "$value" in
+    ""|docker)
+      printf 'docker\n'
+      ;;
+    kubernetes)
+      printf 'kubernetes\n'
+      ;;
+    *)
+      printf 'OPENSHELL_COMPUTE_DRIVER must be docker or kubernetes, got: %s\n' "$value" >&2
+      return 1
+      ;;
+  esac
+}
+
+toml_escape_string() {
+  local value="$1"
+  if [[ "$value" =~ [[:cntrl:]] ]]; then
+    printf 'OpenShell gateway configuration values must not contain control characters.\n' >&2
+    return 1
+  fi
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  printf '%s' "$value"
+}
+
+write_docker_gateway_config() {
+  local config_path="$1"
+  local oidc_issuer="$2"
+  local sandbox_image="$3"
+  local supervisor_image="$4"
+  local gateway_port="$5"
+  local jwt_dir="$6"
+  local health_port
+  local escaped_issuer escaped_sandbox_image escaped_supervisor_image escaped_jwt_dir
+
+  [[ -n "$config_path" ]] || return 1
+  [[ -n "$oidc_issuer" ]] || return 1
+  [[ -n "$sandbox_image" ]] || return 1
+  [[ -n "$supervisor_image" ]] || return 1
+  [[ -n "$jwt_dir" ]] || return 1
+  if [[ ! "$gateway_port" =~ ^[0-9]+$ ]] \
+    || (( gateway_port < 1 || gateway_port >= 65535 )); then
+    printf 'OpenShell gateway port must be an integer between 1 and 65534.\n' >&2
+    return 1
+  fi
+  health_port=$((gateway_port + 1))
+
+  escaped_issuer=$(toml_escape_string "$oidc_issuer") || return 1
+  escaped_sandbox_image=$(toml_escape_string "$sandbox_image") || return 1
+  escaped_supervisor_image=$(toml_escape_string "$supervisor_image") || return 1
+  escaped_jwt_dir=$(toml_escape_string "$jwt_dir") || return 1
+
+  mkdir -p "$(dirname "$config_path")"
+  cat > "$config_path" <<EOF
+[openshell]
+version = 1
+
+[openshell.gateway]
+bind_address = "0.0.0.0:${gateway_port}"
+health_bind_address = "0.0.0.0:${health_port}"
+log_level = "info"
+compute_drivers = ["docker"]
+disable_tls = true
+
+[openshell.gateway.auth]
+allow_unauthenticated_users = false
+
+[openshell.gateway.oidc]
+issuer = "${escaped_issuer}"
+audience = "openshell-cli"
+jwks_ttl_secs = 3600
+roles_claim = "realm_access.roles"
+admin_role = "openshell-admin"
+user_role = "openshell-user"
+scopes_claim = ""
+
+[openshell.gateway.gateway_jwt]
+signing_key_path = "${escaped_jwt_dir}/signing.pem"
+public_key_path = "${escaped_jwt_dir}/public.pem"
+kid_path = "${escaped_jwt_dir}/kid"
+gateway_id = "virtual-engineer"
+ttl_secs = 7200
+
+[openshell.drivers.docker]
+default_image = "${escaped_sandbox_image}"
+supervisor_image = "${escaped_supervisor_image}"
+image_pull_policy = "IfNotPresent"
+sandbox_namespace = "virtual-engineer"
+grpc_endpoint = "http://host.openshell.internal:${gateway_port}"
+network_name = "openshell-docker"
+enable_bind_mounts = false
+sandbox_pids_limit = 2048
+EOF
+  chmod 600 "$config_path"
+}
+
 load_or_create_secret() {
   local secret_file="$1"
   if [[ ! -s "$secret_file" ]]; then
@@ -103,6 +201,66 @@ wait_for_tcp_listener() {
     ((attempts--)) || true
   done
   return 1
+}
+
+wait_for_tcp_port() {
+  local host="$1"
+  local port="$2"
+  local attempts="${3:-30}"
+  while (( attempts > 0 )); do
+    if (exec 3<>"/dev/tcp/${host}/${port}") 2>/dev/null; then
+      exec 3>&-
+      exec 3<&-
+      return 0
+    fi
+    sleep 1
+    ((attempts--)) || true
+  done
+  return 1
+}
+
+is_managed_openshell_port_forward() {
+  local pid="$1"
+  local workspace="$2"
+  local process_uid process_name process_cwd
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
+  [[ -r "/proc/${pid}/status" && -r "/proc/${pid}/comm" ]] || return 1
+  process_uid=$(awk '$1 == "Uid:" { print $2; exit }' "/proc/${pid}/status")
+  process_name=$(cat "/proc/${pid}/comm")
+  process_cwd=$(readlink "/proc/${pid}/cwd" 2>/dev/null || true)
+  [[ "$process_uid" == "$(id -u)" ]] \
+    && [[ "$process_name" == "kubectl" ]] \
+    && [[ "$process_cwd" == "$workspace" ]]
+}
+
+stop_managed_openshell_port_forward() {
+  local pid_file="$1"
+  local port="$2"
+  local workspace="$3"
+  local pid pid_file_value listener_pids
+  local -A seen=()
+
+  pid_file_value=$(cat "$pid_file" 2>/dev/null || true)
+  listener_pids=""
+  if command -v fuser >/dev/null 2>&1; then
+    listener_pids=$(fuser -n tcp "$port" 2>/dev/null || true)
+  fi
+
+  for pid in $pid_file_value $listener_pids; do
+    [[ "$pid" =~ ^[1-9][0-9]*$ ]] || continue
+    [[ -z "${seen[$pid]:-}" ]] || continue
+    seen[$pid]=1
+    is_managed_openshell_port_forward "$pid" "$workspace" || continue
+    kill "$pid" 2>/dev/null || true
+    for _ in {1..20}; do
+      kill -0 "$pid" 2>/dev/null || break
+      sleep 0.1
+    done
+    if kill -0 "$pid" 2>/dev/null; then
+      kill -KILL "$pid" 2>/dev/null || return 1
+    fi
+  done
+  rm -f "$pid_file"
 }
 
 run_config_hash() {

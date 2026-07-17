@@ -7,39 +7,43 @@
 
 ## Status
 
-**Superseded by implementation (2026-07-10): OpenShell + Kubernetes (k3s) is now
-the sole agent runtime. Docker agent execution has been removed.**
+**Accepted, amended 2026-07-16: OpenShell remains the sole agent runtime. Its
+Docker compute driver is the default; Kubernetes remains experimental.**
 
-> **Update — the original "keep Docker as the permanent default" decision below has
-> been overtaken by a follow-up decision to commit fully to OpenShell.** The Docker
+> **Update — Virtual Engineer committed fully to OpenShell, but not to one
+> OpenShell compute backend.** The former direct Docker
 > `WorkspaceRunner`, the Docker named-volume plumbing, the pluggable
 > `RuntimeRegistry`, the per-project/agent/global runtime-selection columns, and the
 > runtime-selection admin API/UI have all been **removed**. Agents now run
-> exclusively as ephemeral **Kubernetes Pods** scheduled by the OpenShell gateway's
-> `kubernetes` driver, driven from the orchestrator through an
+> exclusively through `OpenShellWorkspaceRunner`; the gateway schedules ephemeral
+> Docker containers by default or Kubernetes Pods when the experimental
+> `kubernetes` driver is explicitly selected. Both paths use the same
 > **upload → exec → download** sandbox lifecycle. Git clone/checkout/cherry-pick and
 > **push remain host-side** in the orchestrator (`HostGitExecutor` + `src/vcs/`), so
 > push credentials never enter the sandbox — the original security invariant is kept.
 >
 > What is retained from the design below: OpenShell's **policy engine** (deny-by-default
 > YAML policies) and **policy-denial** audit surface remain, decoupled from runtime
-> selection. Local development uses single-node **k3s** (`scripts/start.sh`);
-> the gateway runs in k3s via Helm with the Kubernetes driver. Its Service is
+> selection. Local development uses OpenShell's Docker driver (`scripts/start.sh`).
+> `OPENSHELL_COMPUTE_DRIVER=kubernetes` opts into single-node k3s; the gateway
+> then runs in k3s via Helm. Its Service is
 > ClusterIP-only; local orchestration reaches it through a loopback port-forward
 > protected by the chart-generated client TLS bundle. OpenShell is pinned to
 > 0.0.83. CLI/user identity is provided by a named Keycloak OIDC profile with
 > anonymous access disabled; sandbox supervisors retain their separate
-> gateway-minted JWT identity. The chart and upstream images are pinned by
+> gateway-minted JWT identity. Docker mode generates those signing keys
+> idempotently in the same-path gateway state bind and exposes the callback
+> port only on loopback plus the private `openshell-docker` bridge. The chart and upstream images are pinned by
 > digest, and production VE images must be private GHCR digest references with
 > pull secrets in both the gateway/orchestrator and sandbox namespaces.
 >
-> The remainder of this ADR is preserved for historical context: it documents the
-> original phased, feature-flagged rollout in which Docker stayed the default. The
-> "Docker remains the default / fallback" statements below are **no longer accurate**.
+> The remainder of this ADR is preserved for historical context. References to a
+> direct `DockerWorkspaceRunner` fallback are no longer accurate: Docker is now a
+> compute driver behind OpenShell, not a separate application runtime.
 
-The pluggable runtime was originally built and merged with Docker as the seeded
-default; that scaffolding has since been removed in favour of a single OpenShell/k3s
-runtime as described above.
+The pluggable runtime was originally built and merged with a direct Docker runner
+as the seeded default. That scaffolding has since been removed in favour of one
+OpenShell runtime with selectable gateway compute drivers as described above.
 
 
 ## Context

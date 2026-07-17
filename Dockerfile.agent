@@ -16,6 +16,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     jq \
     iproute2 \
   && rm -rf /var/lib/apt/lists/*
+RUN groupadd --system sandbox \
+  && useradd --system --gid sandbox --create-home \
+    --home-dir /sandbox --shell /bin/bash sandbox
 # Default SSH config — accepts unknown host keys as a fallback for ephemeral
 # sandboxes. When sshKnownHostsPath is configured on the Gerrit integration,
 # host-side git (HostGitExecutor / buildGitEnv) overrides GIT_SSH_COMMAND with

@@ -6,9 +6,10 @@ orchestrator pod (`HostGitExecutor`) so **push credentials never enter the agent
 sandbox**; OpenShell schedules agent sandboxes as Kubernetes Pods via an
 upload → exec → download lifecycle.
 
-> OpenShell + Kubernetes is the **sole** agent runtime (Docker agent execution has
-> been removed). For local single-node development use `scripts/start.sh`
-> against k3s; the manifests here are the multi-node/cluster deployment path. See
+> OpenShell is the **sole** agent runtime. Its Docker compute driver is the
+> default; the Kubernetes driver documented here is experimental. For local
+> single-node evaluation, set `OPENSHELL_COMPUTE_DRIVER=kubernetes` before
+> running `scripts/start.sh`; the manifests here are the cluster deployment path. See
 > [`docs/adr/0001-openshell-agent-runtime.md`](../../docs/adr/0001-openshell-agent-runtime.md)
 > for the decision record. Least-privilege sandbox RBAC lives in
 > [`15-rbac-openshell.yaml`](15-rbac-openshell.yaml).
@@ -21,7 +22,7 @@ upload → exec → download lifecycle.
 | `virtual-engineer-data` PVC | SQLite WAL state store. |
 | `openshell-gateway` (Helm) | OpenShell control plane using the Kubernetes driver; schedules sandbox Pods over TLS. |
 
-The gateway Service is `ClusterIP` only. The local `scripts/start.sh` path
+The gateway Service is `ClusterIP` only. The Kubernetes mode of `scripts/start.sh`
 creates a managed `kubectl port-forward` bound to `127.0.0.1`, exports the
 chart-generated client mTLS bundle into the named `virtual-engineer` profile,
 authenticates that profile with Keycloak client credentials, and validates it

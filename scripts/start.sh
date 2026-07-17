@@ -1,10 +1,8 @@
 #!/usr/bin/env bash
 # start.sh — One-shot setup + launch for Virtual Engineer.
-#   Makes VE 100% functional from scratch: installs single-node k3s if missing,
-#   builds the agent + orchestrator images (orchestrator includes the OpenShell
-#   CLI), imports the agent image into k3s, starts the OpenShell gateway
-#   (kubernetes driver) on k3s, and runs the orchestrator.
-#   Agents run as ephemeral k3s Pods (upload -> exec -> download).
+#   Builds the agent + orchestrator images, starts an OpenShell gateway using
+#   its Docker compute driver by default, and runs the orchestrator. The
+#   experimental Kubernetes driver remains available as an explicit opt-in.
 #
 # Usage:
 #   ./scripts/start.sh                     # full setup + launch
@@ -12,6 +10,7 @@
 #
 # Optional environment variables:
 #   DATA_DIR       (default: ./data)
+#   OPENSHELL_COMPUTE_DRIVER (default: docker; kubernetes is experimental)
 #   K3S_KUBECONFIG (default: /etc/rancher/k3s/k3s.yaml)  k3s admin kubeconfig path
 #   OPENSHELL_OIDC_ISSUER external Keycloak realm issuer URL; omit with the
 #     client secret to use the managed local Keycloak
@@ -40,7 +39,12 @@ K3S_INSTALL=true
 OPENSHELL_VERSION="v0.0.83"
 OPENSHELL_INSTALLER_SHA256="c15d6cb8090e1c7c8d79a320b5bcbdaf1c15c2363942d81e84b56e03b836249e"
 OPENSHELL_CHART_DIGEST="sha256:583bcd4eecf7a255c6201ba3b571b5207ee0f643630dfa4835e981e62c754cc7"
+OPENSHELL_GATEWAY_IMAGE="ghcr.io/nvidia/openshell/gateway:0.0.83@sha256:80e898dc9ad46e4f40b8b0e8648658d0e51b83f1c2071cf4983ac6d52b9c95d6"
+OPENSHELL_SUPERVISOR_IMAGE="ghcr.io/nvidia/openshell/supervisor:0.0.83@sha256:9f5c14d914731f84ce38e61cba4cec425a59f0aad4be0c0906342c68ba65a86f"
+KEYCLOAK_IMAGE="quay.io/keycloak/keycloak@sha256:98fab020a3a490aba0978f237e2a06cd0ea42bf149c6cf10f11c0aaf27728ff2"
 OPENSHELL_GATEWAY_NAME="${OPENSHELL_GATEWAY_NAME:-virtual-engineer}"
+OPENSHELL_COMPUTE_DRIVER=$(normalize_openshell_compute_driver "${OPENSHELL_COMPUTE_DRIVER:-}") \
+  || error "Unsupported OpenShell compute driver."
 OPENSHELL_OIDC_ISSUER="${OPENSHELL_OIDC_ISSUER:-}"
 OPENSHELL_OIDC_CLIENT_ID="${OPENSHELL_OIDC_CLIENT_ID:-openshell-ci}"
 OPENSHELL_OIDC_AUDIENCE="${OPENSHELL_OIDC_AUDIENCE:-openshell-cli}"
@@ -64,6 +68,7 @@ while [[ $# -gt 0 ]]; do
 done
 DATA_DIR="${DATA_DIR:-$ROOT_DIR/data}"
 K3S_KUBECONFIG="${K3S_KUBECONFIG:-/etc/rancher/k3s/k3s.yaml}"
+OPENSHELL_GW_LOCAL_PORT="${OPENSHELL_GW_LOCAL_PORT:-30808}"
 
 # ─── Ensure a directory exists and is owned by the current user ───────────────
 ensure_dir() {
@@ -78,6 +83,8 @@ ensure_dir() {
 }
 
 ensure_dir "$DATA_DIR"    755
+DATA_DIR="$(cd "$DATA_DIR" && pwd)"
+OPENSHELL_PORT_FORWARD_PID="${DATA_DIR}/.openshell-port-forward.pid"
 OPENSHELL_CONFIG_DIR="${DATA_DIR}/openshell-cli-config"
 ensure_dir "$OPENSHELL_CONFIG_DIR" 700
 
@@ -91,10 +98,17 @@ OIDC_DOCKER_HOST_ARGS=()
 if [[ "$OIDC_MODE" == "local" ]]; then
   LOCAL_OIDC_DIR="${DATA_DIR}/local-oidc"
   ensure_dir "$LOCAL_OIDC_DIR" 700
-  OPENSHELL_OIDC_ISSUER="http://keycloak.virtual-engineer.svc.cluster.local:8080/realms/openshell"
+  if [[ "$OPENSHELL_COMPUTE_DRIVER" == "kubernetes" ]]; then
+    OPENSHELL_OIDC_ISSUER="http://keycloak.virtual-engineer.svc.cluster.local:8080/realms/openshell"
+  else
+    OPENSHELL_OIDC_ISSUER="http://keycloak.openshell.internal:18081/realms/openshell"
+    OIDC_DOCKER_HOST_ARGS=(--add-host "keycloak.openshell.internal:127.0.0.1")
+  fi
   info "No external OIDC configuration found; using managed local Keycloak."
 fi
 
+if [[ "$OPENSHELL_COMPUTE_DRIVER" == "kubernetes" ]]; then
+warn "The OpenShell Kubernetes compute driver is experimental."
 # ─── Preflight: k3s setup needs root, so sudo must be able to escalate ────────
 # When 'no_new_privileges' is set on the current shell (e.g. some sandboxed
 # terminals or hardened environments), it is inherited and sticky, so sudo
@@ -237,6 +251,55 @@ if [[ "$OIDC_MODE" == "local" ]]; then
     || error "Managed local Keycloak Service has no ClusterIP."
   OIDC_DOCKER_HOST_ARGS=(--add-host "keycloak.virtual-engineer.svc.cluster.local:${KEYCLOAK_CLUSTER_IP}")
 fi
+else
+  command -v docker >/dev/null 2>&1 || error "Docker is required for the default OpenShell compute driver."
+  docker info >/dev/null 2>&1 || error "The Docker daemon is not accessible."
+  if [[ "$OIDC_MODE" == "local" ]]; then
+    OPENSHELL_OIDC_CLIENT_SECRET=$(load_or_create_secret "${LOCAL_OIDC_DIR}/client-secret")
+    export OPENSHELL_OIDC_CLIENT_SECRET
+    KEYCLOAK_BOOTSTRAP_ADMIN_PASSWORD=$(load_or_create_secret "${LOCAL_OIDC_DIR}/admin-password")
+    docker network inspect ve-openshell-control >/dev/null 2>&1 \
+      || docker network create ve-openshell-control >/dev/null
+    docker volume inspect ve-local-keycloak-data >/dev/null 2>&1 \
+      || docker volume create ve-local-keycloak-data >/dev/null
+    docker rm -f ve-local-keycloak >/dev/null 2>&1 || true
+    info "Starting managed local Keycloak in Docker..."
+    docker run -d \
+      --name ve-local-keycloak \
+      --restart unless-stopped \
+      --network ve-openshell-control \
+      --network-alias keycloak.openshell.internal \
+      -p 127.0.0.1:18081:18081 \
+      -e KC_HTTP_PORT=18081 \
+      -e KC_HOSTNAME=http://keycloak.openshell.internal:18081 \
+      -e KC_HTTP_ENABLED=true \
+      -e KC_BOOTSTRAP_ADMIN_USERNAME=ve-bootstrap \
+      -e "KC_BOOTSTRAP_ADMIN_PASSWORD=${KEYCLOAK_BOOTSTRAP_ADMIN_PASSWORD}" \
+      -e OPENSHELL_OIDC_CLIENT_SECRET \
+      -v ve-local-keycloak-data:/opt/keycloak/data \
+      -v "$ROOT_DIR/deploy/docker/keycloak-realm.json:/opt/keycloak/data/import/openshell-realm.json:ro,Z" \
+      "$KEYCLOAK_IMAGE" start-dev --import-realm >/dev/null
+    _keycloak_ready=false
+    for _ in {1..80}; do
+      if curl -fsS "http://127.0.0.1:18081/realms/openshell/.well-known/openid-configuration" >/dev/null 2>&1; then
+        _keycloak_ready=true
+        break
+      fi
+      sleep 2
+    done
+    [[ "$_keycloak_ready" == "true" ]] \
+      || error "Managed local Keycloak did not become ready. Check: docker logs ve-local-keycloak"
+  else
+    docker network inspect ve-openshell-control >/dev/null 2>&1 \
+      || docker network create ve-openshell-control >/dev/null
+  fi
+  docker network inspect openshell-docker >/dev/null 2>&1 \
+    || docker network create openshell-docker >/dev/null
+  OPENSHELL_DOCKER_BRIDGE_IP=$(docker network inspect openshell-docker \
+    --format '{{(index .IPAM.Config 0).Gateway}}')
+  [[ "$OPENSHELL_DOCKER_BRIDGE_IP" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] \
+    || error "OpenShell Docker network has no IPv4 bridge gateway."
+fi
 
 # ─── Content hash of Docker build inputs (file contents, ignores mtime) ──────
 # Used to skip docker build / containerd import when nothing relevant changed.
@@ -282,16 +345,25 @@ agent_image_present_in_k3s() {
   image_ids_match "$docker_id" "$runtime_id"
 }
 
+agent_image_present_in_runtime() {
+  if [[ "$OPENSHELL_COMPUTE_DRIVER" == "docker" ]]; then
+    docker image inspect virtual-engineer-workspace:latest >/dev/null 2>&1
+  else
+    agent_image_present_in_k3s
+  fi
+}
+
 AGENT_HASH=$(build_inputs_hash Dockerfile.agent agent-worker)
 AGENT_MARKER="${DATA_DIR}/.agent-image-hash"
 if [[ "$(cat "$AGENT_MARKER" 2>/dev/null || true)" == "$AGENT_HASH" ]] \
-   && docker image inspect virtual-engineer-workspace:latest >/dev/null 2>&1 \
-   && agent_image_present_in_k3s; then
-  info "Agent image up to date (sources unchanged, present in k3s) — skipping build + import."
+   && agent_image_present_in_runtime; then
+  info "Agent image up to date (sources unchanged, present in ${OPENSHELL_COMPUTE_DRIVER}) — skipping build."
 else
   info "Building agent image..."
   docker build -f Dockerfile.agent -t virtual-engineer-workspace:latest .
-  if agent_image_present_in_k3s; then
+  if [[ "$OPENSHELL_COMPUTE_DRIVER" == "docker" ]]; then
+    echo "$AGENT_HASH" > "$AGENT_MARKER"
+  elif agent_image_present_in_k3s; then
     info "The exact agent image is already present in k3s; skipping import."
     echo "$AGENT_HASH" > "$AGENT_MARKER"
   else
@@ -327,6 +399,7 @@ else
   echo "$ORCH_HASH" > "$ORCH_MARKER"
 fi
 
+if [[ "$OPENSHELL_COMPUTE_DRIVER" == "kubernetes" ]]; then
 # ─── Locate helm (user-local install or system) ──────────────────────────────
 HELM_BIN=""
 for _h in "$HOME/.local/bin/helm" /usr/local/bin/helm /usr/bin/helm; do
@@ -350,8 +423,6 @@ fi
 # ─── OpenShell gateway — deployed via Helm into k3s ──────────────────────────
 # The gateway service is ClusterIP-only. A managed port-forward exposes it to
 # the host-side Docker orchestrator on loopback without opening a node port.
-OPENSHELL_GW_LOCAL_PORT=30808
-
 if [[ ! -f "$K3S_KUBECONFIG" ]]; then
   error "k3s kubeconfig not found at ${K3S_KUBECONFIG}."
 fi
@@ -429,22 +500,9 @@ else
 fi
 
 # Refresh the loopback-only gateway tunnel used by the Docker orchestrator.
-OPENSHELL_PORT_FORWARD_PID="${DATA_DIR}/.openshell-port-forward.pid"
-if [[ -f "$OPENSHELL_PORT_FORWARD_PID" ]]; then
-  _old_pid=$(cat "$OPENSHELL_PORT_FORWARD_PID" 2>/dev/null || true)
-  if [[ "$_old_pid" =~ ^[0-9]+$ ]] && [[ -r "/proc/${_old_pid}/cmdline" ]]; then
-    _old_cmd=$(cat "/proc/${_old_pid}/cmdline" 2>/dev/null | tr '\0' ' ' || true)
-    if kill -0 "$_old_pid" 2>/dev/null \
-       && [[ "$_old_cmd" == *"kubectl port-forward"*"${OPENSHELL_GW_LOCAL_PORT}:8080"* ]]; then
-      kill "$_old_pid" 2>/dev/null || true
-      for _ in {1..20}; do
-        kill -0 "$_old_pid" 2>/dev/null || break
-        sleep 0.1
-      done
-    fi
-  fi
-  rm -f "$OPENSHELL_PORT_FORWARD_PID"
-fi
+stop_managed_openshell_port_forward \
+  "$OPENSHELL_PORT_FORWARD_PID" "$OPENSHELL_GW_LOCAL_PORT" "$ROOT_DIR" \
+  || error "Could not stop the previous OpenShell gateway tunnel."
 OPENSHELL_SERVICE=$(KUBECONFIG="$K3S_KUBECONFIG" kubectl get service \
   -n virtual-engineer -l 'app.kubernetes.io/name=openshell' \
   -o jsonpath='{.items[0].metadata.name}')
@@ -509,6 +567,108 @@ if ! docker run --rm --network host \
   kill "$_port_forward_pid" 2>/dev/null || true
   rm -f "$OPENSHELL_PORT_FORWARD_PID"
   error "OpenShell gateway tunnel or mTLS authentication failed. See ${DATA_DIR}/openshell-port-forward.log"
+fi
+else
+  stop_managed_openshell_port_forward \
+    "$OPENSHELL_PORT_FORWARD_PID" "$OPENSHELL_GW_LOCAL_PORT" "$ROOT_DIR" \
+    || error "Could not stop the previous OpenShell gateway tunnel."
+  OPENSHELL_GATEWAY_CONFIG_DIR="${DATA_DIR}/openshell-gateway"
+  OPENSHELL_GATEWAY_STATE_DIR="${DATA_DIR}/openshell-gateway-state"
+  OPENSHELL_GATEWAY_PKI_DIR="${OPENSHELL_GATEWAY_STATE_DIR}/pki"
+  ensure_dir "$OPENSHELL_GATEWAY_CONFIG_DIR" 700
+  ensure_dir "$OPENSHELL_GATEWAY_STATE_DIR" 700
+  info "Reconciling OpenShell sandbox JWT signing keys..."
+  docker run --rm \
+    --user 0 \
+    --security-opt label=disable \
+    -v "${OPENSHELL_GATEWAY_STATE_DIR}:${OPENSHELL_GATEWAY_STATE_DIR}" \
+    -e "XDG_CONFIG_HOME=${OPENSHELL_GATEWAY_STATE_DIR}/certgen-config" \
+    -e "HOME=${OPENSHELL_GATEWAY_STATE_DIR}" \
+    "$OPENSHELL_GATEWAY_IMAGE" generate-certs --output-dir "$OPENSHELL_GATEWAY_PKI_DIR" >/dev/null \
+    || error "Could not generate OpenShell sandbox JWT signing keys."
+  OPENSHELL_GATEWAY_CONFIG_FILE="${OPENSHELL_GATEWAY_CONFIG_DIR}/gateway.toml"
+  write_docker_gateway_config \
+    "$OPENSHELL_GATEWAY_CONFIG_FILE" \
+    "$OPENSHELL_OIDC_ISSUER" \
+    "virtual-engineer-workspace:latest" \
+    "$OPENSHELL_SUPERVISOR_IMAGE" \
+    "$OPENSHELL_GW_LOCAL_PORT" \
+    "${OPENSHELL_GATEWAY_PKI_DIR}/jwt"
+
+  OPENSHELL_GATEWAY_JWT_HASH=$(docker run --rm \
+    --user 0 \
+    --security-opt label=disable \
+    -v "${OPENSHELL_GATEWAY_PKI_DIR}/jwt:/jwt:ro" \
+    --entrypoint sha256sum \
+    virtual-engineer:latest /jwt/public.pem /jwt/kid) \
+    || error "Could not hash OpenShell sandbox JWT public identity."
+  OPENSHELL_GATEWAY_CONFIG_HASH=$(printf '%s\n%s\n%s\n%s\n' \
+    "$OPENSHELL_GATEWAY_IMAGE" \
+    "$OPENSHELL_DOCKER_BRIDGE_IP" \
+    "$(sha256sum "$OPENSHELL_GATEWAY_CONFIG_FILE" | cut -d' ' -f1)" \
+    "$OPENSHELL_GATEWAY_JWT_HASH" \
+    | sha256sum | cut -d' ' -f1)
+  OPENSHELL_GATEWAY_CONFIG_MARKER="${DATA_DIR}/.openshell-docker-gateway-config"
+  _gateway_running=$(docker inspect --format='{{.State.Running}}' ve-openshell-gateway 2>/dev/null || true)
+  _gateway_image=$(docker inspect --format='{{.Config.Image}}' ve-openshell-gateway 2>/dev/null || true)
+  if [[ "$_gateway_running" == "true" ]] \
+     && [[ "$_gateway_image" == "$OPENSHELL_GATEWAY_IMAGE" ]] \
+     && [[ "$(cat "$OPENSHELL_GATEWAY_CONFIG_MARKER" 2>/dev/null || true)" == "$OPENSHELL_GATEWAY_CONFIG_HASH" ]]; then
+    info "OpenShell Docker gateway is already running with the current configuration."
+  else
+    docker rm -f ve-openshell-gateway >/dev/null 2>&1 || true
+    info "Starting OpenShell gateway with the Docker compute driver..."
+    docker run -d \
+      --name ve-openshell-gateway \
+      --restart unless-stopped \
+      --user 0 \
+      --security-opt label=disable \
+      --network ve-openshell-control \
+      --add-host host.openshell.internal:host-gateway \
+      -p "127.0.0.1:${OPENSHELL_GW_LOCAL_PORT}:${OPENSHELL_GW_LOCAL_PORT}" \
+      -p "${OPENSHELL_DOCKER_BRIDGE_IP}:${OPENSHELL_GW_LOCAL_PORT}:${OPENSHELL_GW_LOCAL_PORT}" \
+      -p "127.0.0.1:$((OPENSHELL_GW_LOCAL_PORT + 1)):$((OPENSHELL_GW_LOCAL_PORT + 1))" \
+      -v /var/run/docker.sock:/var/run/docker.sock \
+      -v "${OPENSHELL_GATEWAY_STATE_DIR}:${OPENSHELL_GATEWAY_STATE_DIR}" \
+      -v "${OPENSHELL_GATEWAY_CONFIG_FILE}:/etc/openshell/gateway.toml:ro" \
+      -e OPENSHELL_GATEWAY_CONFIG=/etc/openshell/gateway.toml \
+      -e "OPENSHELL_DB_URL=sqlite:${OPENSHELL_GATEWAY_STATE_DIR}/gateway.db?mode=rwc" \
+      -e "XDG_DATA_HOME=${OPENSHELL_GATEWAY_STATE_DIR}" \
+      -e "HOME=${OPENSHELL_GATEWAY_STATE_DIR}" \
+      "$OPENSHELL_GATEWAY_IMAGE" --config /etc/openshell/gateway.toml >/dev/null
+    echo "$OPENSHELL_GATEWAY_CONFIG_HASH" > "$OPENSHELL_GATEWAY_CONFIG_MARKER"
+    chmod 600 "$OPENSHELL_GATEWAY_CONFIG_MARKER"
+  fi
+
+  _gateway_pid=$(docker inspect --format='{{.State.Pid}}' ve-openshell-gateway 2>/dev/null || true)
+  if [[ ! "$_gateway_pid" =~ ^[1-9][0-9]*$ ]] \
+    || ! wait_for_tcp_port 127.0.0.1 "$OPENSHELL_GW_LOCAL_PORT" 30; then
+    docker logs ve-openshell-gateway >&2 2>/dev/null || true
+    error "OpenShell Docker gateway did not become ready."
+  fi
+
+  OPENSHELL_GATEWAY_ENDPOINT="http://127.0.0.1:${OPENSHELL_GW_LOCAL_PORT}"
+  if ! docker run --rm --network host \
+    "${OIDC_DOCKER_HOST_ARGS[@]}" \
+      -e OPENSHELL_OIDC_CLIENT_SECRET \
+      -e "OPENSHELL_GATEWAY_NAME=${OPENSHELL_GATEWAY_NAME}" \
+      -e "OPENSHELL_GATEWAY_ENDPOINT=${OPENSHELL_GATEWAY_ENDPOINT}" \
+      -e "OPENSHELL_OIDC_ISSUER=${OPENSHELL_OIDC_ISSUER}" \
+      -e "OPENSHELL_OIDC_CLIENT_ID=${OPENSHELL_OIDC_CLIENT_ID}" \
+      -e "OPENSHELL_OIDC_AUDIENCE=${OPENSHELL_OIDC_AUDIENCE}" \
+      -e XDG_CONFIG_HOME=/ve-openshell-config \
+      -v "${OPENSHELL_CONFIG_DIR}:/ve-openshell-config:rw,Z" \
+      virtual-engineer:latest sh -c \
+        'openshell gateway remove "$OPENSHELL_GATEWAY_NAME" >/dev/null 2>&1 || true
+         attempt=0
+         until output=$(openshell gateway add "$OPENSHELL_GATEWAY_ENDPOINT" --local \
+           --name "$OPENSHELL_GATEWAY_NAME" --oidc-issuer "$OPENSHELL_OIDC_ISSUER" \
+           --oidc-client-id "$OPENSHELL_OIDC_CLIENT_ID" --oidc-audience "$OPENSHELL_OIDC_AUDIENCE" 2>&1); do
+           attempt=$((attempt + 1)); if [ "$attempt" -ge 20 ]; then printf "%s\n" "$output" >&2; exit 1; fi; sleep 1
+         done
+         OPENSHELL_GATEWAY="$OPENSHELL_GATEWAY_NAME" openshell status'; then
+    error "OpenShell Docker gateway OIDC authentication failed. Check: docker logs ve-openshell-gateway"
+  fi
 fi
 
 OPENSHELL_GATEWAY_ARGS=(

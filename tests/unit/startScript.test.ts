@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -66,6 +66,51 @@ describe("start.sh helpers", () => {
       )).toBe("yes");
     } finally {
       server.kill();
+    }
+  });
+
+  it("waits for a TCP port without requiring access to the server process", async () => {
+    const server = spawn("node", [
+      "-e",
+      "const net=require('node:net');const s=net.createServer();s.listen(0,'127.0.0.1',()=>console.log(s.address().port));setTimeout(()=>{},10000)",
+    ], { stdio: ["ignore", "pipe", "ignore"] });
+    try {
+      const port = await new Promise<string>((resolve, reject) => {
+        server.stdout.once("data", (chunk) => resolve(String(chunk).trim()));
+        server.once("error", reject);
+      });
+      expect(runHelper(
+        'if wait_for_tcp_port 127.0.0.1 "$1" 5; then printf yes; else printf no; fi',
+        [port],
+      )).toBe("yes");
+    } finally {
+      server.kill();
+    }
+  });
+
+  it("recognizes a kubectl process owned by the current workspace", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ve-start-test-"));
+    tempDirs.push(dir);
+    const kubectlPath = join(dir, "kubectl");
+    copyFileSync("/bin/sleep", kubectlPath);
+    chmodSync(kubectlPath, 0o755);
+    const process = spawn(kubectlPath, ["10"], { cwd: dir, stdio: "ignore" });
+    await new Promise<void>((resolve, reject) => {
+      process.once("spawn", resolve);
+      process.once("error", reject);
+    });
+
+    try {
+      expect(runHelper(
+        'if is_managed_openshell_port_forward "$1" "$2"; then printf yes; else printf no; fi',
+        [String(process.pid), dir],
+      )).toBe("yes");
+      expect(runHelper(
+        'if is_managed_openshell_port_forward "$1" "$2"; then printf yes; else printf no; fi',
+        [String(process.pid), `${dir}-other`],
+      )).toBe("no");
+    } finally {
+      process.kill();
     }
   });
 
@@ -187,9 +232,122 @@ describe("start.sh helpers", () => {
     );
     expect(actual).toBe(expected);
   });
+
+  it.each([
+    { input: "", expected: "docker" },
+    { input: "docker", expected: "docker" },
+    { input: "kubernetes", expected: "kubernetes" },
+  ])("normalizes OpenShell compute driver $input to $expected", ({ input, expected }) => {
+    expect(runHelper('normalize_openshell_compute_driver "$1"', [input])).toBe(expected);
+  });
+
+  it("rejects unsupported OpenShell compute drivers", () => {
+    expect(() => runHelper('normalize_openshell_compute_driver "$1"', ["podman"])).toThrow();
+  });
+
+  it("writes an authenticated Docker-driver gateway configuration", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ve-start-test-"));
+    tempDirs.push(dir);
+    const configPath = join(dir, "gateway.toml");
+    const supervisorImage = "ghcr.io/nvidia/openshell/supervisor:0.0.83@sha256:9f5c14d914731f84ce38e61cba4cec425a59f0aad4be0c0906342c68ba65a86f";
+
+    runHelper(
+      'write_docker_gateway_config "$1" "$2" "$3" "$4" "$5" "$6"',
+      [
+        configPath,
+        "https://keycloak.example/realms/openshell",
+        "virtual-engineer-workspace:latest",
+        supervisorImage,
+        "30808",
+        "/var/lib/openshell/pki/jwt",
+      ],
+    );
+
+    const config = readFileSync(configPath, "utf8");
+    expect(config).toContain("[openshell]\nversion = 1");
+    expect(config).toContain('bind_address = "0.0.0.0:30808"');
+    expect(config).toContain('health_bind_address = "0.0.0.0:30809"');
+    expect(config).toContain('compute_drivers = ["docker"]');
+    expect(config).toContain("disable_tls = true");
+    expect(config).toContain("[openshell.gateway.auth]");
+    expect(config).toContain("allow_unauthenticated_users = false");
+    expect(config).toContain("[openshell.gateway.oidc]");
+    expect(config).toContain('issuer = "https://keycloak.example/realms/openshell"');
+    expect(config).toContain('audience = "openshell-cli"');
+    expect(config).toContain('roles_claim = "realm_access.roles"');
+    expect(config).toContain('admin_role = "openshell-admin"');
+    expect(config).toContain('user_role = "openshell-user"');
+    expect(config).toContain('scopes_claim = ""');
+    expect(config).toContain("[openshell.gateway.gateway_jwt]");
+    expect(config).toContain('signing_key_path = "/var/lib/openshell/pki/jwt/signing.pem"');
+    expect(config).toContain('public_key_path = "/var/lib/openshell/pki/jwt/public.pem"');
+    expect(config).toContain('kid_path = "/var/lib/openshell/pki/jwt/kid"');
+    expect(config).toContain('gateway_id = "virtual-engineer"');
+    expect(config).toContain("ttl_secs = 7200");
+    expect(config).toContain("[openshell.drivers.docker]");
+    expect(config).not.toContain("socket_path");
+    expect(config).toContain('default_image = "virtual-engineer-workspace:latest"');
+    expect(config).toContain(`supervisor_image = "${supervisorImage}"`);
+    expect(config).toContain('image_pull_policy = "IfNotPresent"');
+    expect(config).toContain('sandbox_namespace = "virtual-engineer"');
+    expect(config).toContain('grpc_endpoint = "http://host.openshell.internal:30808"');
+    expect(config).toContain('network_name = "openshell-docker"');
+    expect(config).toContain("enable_bind_mounts = false");
+    expect(config).toContain("sandbox_pids_limit = 2048");
+  });
 });
 
 describe("OpenShell deployment contract", () => {
+  it("excludes runtime data from Docker build contexts", () => {
+    const dockerignore = readFileSync(".dockerignore", "utf8");
+
+    expect(dockerignore).toMatch(/^data\/$/m);
+    expect(dockerignore).toMatch(/^node_modules\/$/m);
+    expect(dockerignore).toMatch(/^dist\/$/m);
+  });
+
+  it("uses the OpenShell Docker driver by default and keeps Kubernetes opt-in", () => {
+    const script = readFileSync("scripts/start.sh", "utf8");
+
+    expect(script).toContain('OPENSHELL_COMPUTE_DRIVER=$(normalize_openshell_compute_driver');
+    expect(script).toContain('if [[ "$OPENSHELL_COMPUTE_DRIVER" == "kubernetes" ]]');
+    expect(script).toContain('write_docker_gateway_config');
+    expect(script).toContain('OPENSHELL_GATEWAY_IMAGE="ghcr.io/nvidia/openshell/gateway:0.0.83@sha256:');
+    expect(script).toContain('OPENSHELL_SUPERVISOR_IMAGE="ghcr.io/nvidia/openshell/supervisor:0.0.83@sha256:');
+    expect(script).toContain('--name ve-openshell-gateway');
+    expect(script).toContain('--security-opt label=disable');
+    expect(script).toContain('-v /var/run/docker.sock:/var/run/docker.sock');
+    expect(script).toContain('OPENSHELL_GATEWAY_PKI_DIR=');
+    expect(script).toContain('generate-certs --output-dir "$OPENSHELL_GATEWAY_PKI_DIR"');
+    expect(script.match(/stop_managed_openshell_port_forward/g)).toHaveLength(2);
+    expect(script).toContain('OPENSHELL_GATEWAY_JWT_HASH=$(docker run --rm');
+    expect(script).not.toContain('sha256sum "${OPENSHELL_GATEWAY_PKI_DIR}/jwt/public.pem"');
+    expect(script).toContain("docker network inspect openshell-docker");
+    expect(script).toContain("OPENSHELL_DOCKER_BRIDGE_IP=");
+    expect(script).toContain('-p "${OPENSHELL_DOCKER_BRIDGE_IP}:${OPENSHELL_GW_LOCAL_PORT}:${OPENSHELL_GW_LOCAL_PORT}"');
+  });
+
+  it("provides a Docker-local Keycloak realm for the default driver", () => {
+    const script = readFileSync("scripts/start.sh", "utf8");
+    const realm = readFileSync("deploy/docker/keycloak-realm.json", "utf8");
+
+    expect(script).toContain('--name ve-local-keycloak');
+    expect(script).toContain('KC_HTTP_PORT=18081');
+    expect(script).toContain('deploy/docker/keycloak-realm.json');
+    expect(realm).toContain('"clientId": "openshell-ci"');
+    expect(realm).toContain('"serviceAccountsEnabled": true');
+    expect(realm).toContain('"openshell-admin"');
+    expect(realm).toContain('"openshell-user"');
+  });
+
+  it("builds the agent image with the account required by OpenShell", () => {
+    const dockerfile = readFileSync("Dockerfile.agent", "utf8");
+
+    expect(dockerfile).toContain("groupadd --system sandbox");
+    expect(dockerfile).toContain("useradd --system --gid sandbox");
+    expect(dockerfile).toContain("--home-dir /sandbox");
+  });
+
   it("provides an authenticated local Keycloak fallback", () => {
     const script = readFileSync("scripts/start.sh", "utf8");
     const manifest = readFileSync("deploy/k8s/17-keycloak-local.yaml", "utf8");
