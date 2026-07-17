@@ -208,16 +208,19 @@ function registerReviewEventHandlers(
   onEvent: (event: ReviewStreamEvent) => void,
 ): void {
   session.on("tool.execution_start", (e: unknown) => {
-    const name = deepFindStr(e, ["name", "toolName", "tool_name"]) ?? "unknown_tool";
+    const name = deepFindStr(e, ["name", "toolName", "tool_name"]);
+    if (name === null) return;
     onEvent({ type: "tool.execution_start", data: { name } });
   });
   session.on("tool.execution_complete", (e: unknown) => {
-    const name = deepFindStr(e, ["name", "toolName", "tool_name"]) ?? "unknown_tool";
+    const name = deepFindStr(e, ["name", "toolName", "tool_name"]);
+    if (name === null) return;
     const output = deepFindStr(e, ["output", "result", "content"]);
     onEvent({ type: "tool.execution_complete", data: { name, output: output ? output.slice(0, 800) : null } });
   });
   session.on("tool.execution_progress", (e: unknown) => {
-    const name = deepFindStr(e, ["name", "toolName", "tool_name"]) ?? "unknown_tool";
+    const name = deepFindStr(e, ["name", "toolName", "tool_name"]);
+    if (name === null) return;
     onEvent({ type: "tool.execution_progress", data: { name, message: deepFindStr(e, ["message", "progress", "text"]) } });
   });
   session.on("assistant.streaming_delta", (e: unknown) => {

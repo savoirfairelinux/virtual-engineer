@@ -185,14 +185,14 @@ export const gitlabDescriptor: ProviderDescriptor = {
             const cloneUrl = `https://oauth2:${token}@${host}/${details.project}.git`;
             return { cloneUrl, sshKeyPath: null, sshKnownHostsPath: null };
           },
-          applyPatchset: async (handle, details): Promise<void> => {
+          applyPatchset: async (handle, details, signal): Promise<void> => {
             if (workspaceRunner.execGitInVolume === undefined) {
               throw new Error("workspaceRunner does not support execGitInVolume — cannot fetch GitLab MR ref");
             }
             const mrRef = `merge-requests/${details.changeNumber}/head`;
             const localBranch = `ve-review-mr-${details.changeNumber}`;
-            await workspaceRunner.execGitInVolume(handle, ["fetch", "--depth=1", "origin", `${mrRef}:${localBranch}`]);
-            await workspaceRunner.execGitInVolume(handle, ["checkout", localBranch]);
+            await workspaceRunner.execGitInVolume(handle, ["fetch", "--depth=1", "origin", `${mrRef}:${localBranch}`], undefined, signal);
+            await workspaceRunner.execGitInVolume(handle, ["checkout", localBranch], undefined, signal);
           },
         };
       },

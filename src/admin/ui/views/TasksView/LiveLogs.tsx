@@ -1,20 +1,17 @@
 import { useEffect, useRef, useState } from "react";
 import { Icon } from "../../components/Icon.tsx";
 import { connectSse } from "../../api.ts";
+import type { SseConnectionState } from "../../api.ts";
 import type { AgentLogEvent } from "../../types.ts";
 import { TONE } from "../../states.ts";
 import type { ToneKey } from "../../states.ts";
-import { extractMetrics } from "./liveMetrics.ts";
-
-type StreamEntry = {
-  id: number;
-  timestamp: string;
-  type?: string | undefined;
-  category?: string | undefined;
-  level?: "info" | "warn" | "error" | "debug" | undefined;
-  message?: string | undefined;
-  data?: unknown;
-};
+import { extractMetrics, totalInputTokens, totalProcessedTokens } from "./liveMetrics.ts";
+import { renderPayload } from "./liveLogFormat.ts";
+import {
+  appendLiveLogEntry,
+  createLiveLogWindow,
+  type LiveLogEntry as StreamEntry,
+} from "./liveLogWindow.ts";
 
 const LOG_TAG_TONE: Record<string, ToneKey> = {
   CONTEXT_USAGE: "info",
@@ -27,6 +24,27 @@ const LOG_TAG_TONE: Record<string, ToneKey> = {
   PARSING:       "warn",
   POSTING:       "warn",
   COMPLETED:     "ok",
+  "stream.connected": "ok",
+  "review.prompt_received": "info",
+  "session.start": "active",
+  "assistant.message": "active",
+  "assistant.streaming_delta": "active",
+};
+
+const CONNECTION_LABEL: Record<SseConnectionState, string> = {
+  connecting: "connecting",
+  open: "live",
+  retrying: "reconnecting",
+  forbidden: "access denied",
+  closed: "closed",
+};
+
+const CONNECTION_TONE: Record<SseConnectionState, ToneKey> = {
+  connecting: "warn",
+  open: "ok",
+  retrying: "warn",
+  forbidden: "danger",
+  closed: "muted",
 };
 
 const FILTER_CATS = ["All", "Tools", "Usage", "Errors"] as const;
@@ -71,63 +89,29 @@ function normalizeIncomingEntry(raw: unknown, id: number): StreamEntry | null {
   };
 }
 
-function renderPayload(entry: StreamEntry): string {
-  if (typeof entry.message === "string" && entry.message.trim().length > 0) {
-    return entry.message;
-  }
-  if (entry.data === null || entry.data === undefined) return "";
-  if (typeof entry.data === "string") return entry.data;
-  if (typeof entry.data === "number" || typeof entry.data === "boolean") return String(entry.data);
-  try {
-    return JSON.stringify(entry.data, null, 2);
-  } catch {
-    return String(entry.data);
-  }
-}
-
 interface LiveLogsProps {
   taskId: string;
   running: boolean;
 }
 
 export function LiveLogs({ taskId, running }: LiveLogsProps) {
-  const [entries, setEntries] = useState<StreamEntry[]>([]);
+  const [logWindow, setLogWindow] = useState(createLiveLogWindow);
   const [filter, setFilter] = useState<FilterCat>("All");
+  const [connectionState, setConnectionState] = useState<SseConnectionState>("connecting");
   const scrollRef = useRef<HTMLDivElement>(null);
   const nextId = useRef(0);
-  const seenEntryKeys = useRef<Set<string>>(new Set());
-
-  const entryKey = (entry: StreamEntry): string => {
-    const parts = [
-      entry.timestamp,
-      String(entry.type ?? ""),
-      String(entry.category ?? ""),
-      String(entry.level ?? ""),
-      String(entry.message ?? ""),
-    ];
-    if (entry.data !== undefined) {
-      try {
-        parts.push(typeof entry.data === "string" ? entry.data : JSON.stringify(entry.data));
-      } catch {
-        parts.push(String(entry.data));
-      }
-    }
-    return parts.join("|");
-  };
+  const entries = logWindow.entries;
 
   useEffect(() => {
-    setEntries([]);
-    seenEntryKeys.current = new Set();
+    setLogWindow(createLiveLogWindow());
+    setConnectionState("connecting");
     const path = `/api/admin/logs/stream?taskId=${encodeURIComponent(taskId)}`;
     const cleanup = connectSse(path, (_evType, data) => {
       try {
         const parsed = JSON.parse(data) as AgentLogEvent | Record<string, unknown>;
         const normalized = normalizeIncomingEntry(parsed, nextId.current++);
         if (!normalized) return;
-        const key = entryKey(normalized);
-        if (seenEntryKeys.current.has(key)) return;
-        seenEntryKeys.current.add(key);
-        setEntries((prev) => [...prev, normalized]);
+        setLogWindow((previous) => appendLiveLogEntry(previous, normalized));
         // auto-scroll
         requestAnimationFrame(() => {
           if (scrollRef.current) {
@@ -135,17 +119,20 @@ export function LiveLogs({ taskId, running }: LiveLogsProps) {
           }
         });
       } catch { /* ignore malformed */ }
-    });
+    }, undefined, setConnectionState);
     return cleanup;
   }, [taskId]);
 
   const shown = entries.filter((e) => matchesFilter(e, filter));
   const metrics = extractMetrics(entries);
+  const connectionTone = TONE[CONNECTION_TONE[connectionState]];
 
   const metricRow = [
     { k: "Tool calls",     v: metrics.toolCalls.toLocaleString() },
-    { k: "Input tokens",   v: metrics.inputTokens.toLocaleString() },
-    { k: "Output tokens",  v: metrics.outputTokens.toLocaleString() },
+    { k: "Total tokens",   v: totalProcessedTokens(metrics).toLocaleString() },
+    { k: "Total input",    v: totalInputTokens(metrics).toLocaleString() },
+    { k: "Uncached input", v: metrics.inputTokens.toLocaleString() },
+    { k: "Output",         v: metrics.outputTokens.toLocaleString() },
     { k: "Cache read",     v: metrics.cacheRead.toLocaleString() },
     { k: "Cache write",    v: metrics.cacheWrite.toLocaleString() },
   ];
@@ -161,17 +148,20 @@ export function LiveLogs({ taskId, running }: LiveLogsProps) {
       >
         <Icon name="pulse" size={15} style={{ color: running ? "var(--ok)" : "var(--text-faint)" }} />
         <span style={{ fontSize: "13px", fontWeight: 600 }}>Live logs &amp; metrics</span>
-        {running && (
-          <span className="pill" style={{ color: "var(--ok)", background: "var(--ok-soft)", borderColor: "color-mix(in oklab,var(--ok) 30%, transparent)" }}>
-            <span className="dot live-dot" /> streaming
-          </span>
-        )}
+        <span
+          className="pill"
+          style={{ color: connectionTone.c, background: connectionTone.bg, borderColor: connectionTone.b }}
+          role="status"
+        >
+          {connectionState === "open" && <span className="dot live-dot" />}
+          {CONNECTION_LABEL[connectionState]}
+        </span>
         <div style={{ flex: 1 }} />
         <span className="mono" style={{ fontSize: "10.5px", color: "var(--text-ghost)" }}>SSE · /logs/stream</span>
       </div>
 
       {/* metric strip */}
-      <div style={{ display: "grid", gridTemplateColumns: `repeat(${metricRow.length}, 1fr)`, borderBottom: "1px solid var(--border-soft)" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(108px, 1fr))", borderBottom: "1px solid var(--border-soft)" }}>
         {metricRow.map((x, i) => (
           <div key={x.k} style={{ padding: "12px 14px", borderRight: i < metricRow.length - 1 ? "1px solid var(--border-soft)" : "none" }}>
             <div className="eyebrow" style={{ marginBottom: "6px", fontSize: "9.5px" }}>{x.k}</div>
@@ -211,7 +201,6 @@ export function LiveLogs({ taskId, running }: LiveLogsProps) {
           const tagTone = LOG_TAG_TONE[entry.type ?? ""] ?? (entry.level === "error" ? "danger" : "muted");
           const t = TONE[tagTone];
           const payload = renderPayload(entry);
-          const payloadLooksJson = payload.startsWith("{") || payload.startsWith("[");
           return (
             <div
               key={entry.id}
@@ -233,25 +222,13 @@ export function LiveLogs({ taskId, running }: LiveLogsProps) {
               >
                 {entry.type ?? entry.level ?? "LOG"}
               </span>
-              {payloadLooksJson ? (
-                <pre
-                  className="mono"
-                  style={{
-                    margin: 0,
-                    color: "var(--text-dim)",
-                    lineHeight: 1.45,
-                    whiteSpace: "pre-wrap",
-                    overflowWrap: "anywhere",
-                    fontSize: "11px",
-                  }}
-                >
-                  {payload}
-                </pre>
-              ) : (
-                <span className="mono" style={{ color: "var(--text-dim)", lineHeight: 1.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {payload}
-                </span>
-              )}
+              <span
+                className="mono"
+                title={payload}
+                style={{ color: "var(--text-dim)", lineHeight: 1.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+              >
+                {payload}
+              </span>
             </div>
           );
         })}

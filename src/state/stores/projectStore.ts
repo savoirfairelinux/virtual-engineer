@@ -40,6 +40,24 @@ export interface ProjectStoreApi {
     id: ProjectId,
     partial: Partial<Pick<ProjectRecord, "name" | "type" | "agentId" | "agentOverrideJson" | "postCloneScript" | "skillDiscoveryEnabled" | "enabled">>
   ): Promise<ProjectRecord>;
+  updateProjectConfiguration(
+    id: ProjectId,
+    input: {
+      project: Partial<Pick<ProjectRecord, "name" | "type" | "agentId" | "agentOverrideJson" | "postCloneScript" | "skillDiscoveryEnabled" | "enabled">>;
+      ticketSource?: { integrationId: string; ticketProjectKey: string } | undefined;
+      pushTargets?: Array<{
+        integrationId: string;
+        repoKey: string;
+        cloneUrl: string;
+        targetBranch: string;
+        role: PushTargetRole;
+        commitOrder: number;
+        localPath: string;
+        sshKeyPath?: string | null | undefined;
+      }> | undefined;
+      reviewConfig?: { integrationId: string; repoKeys: string[] } | undefined;
+    }
+  ): Promise<ProjectRecord>;
   deleteProject(id: ProjectId): Promise<void>;
   adoptOrphanedTasksForProject(projectId: ProjectId, integrationId: string, ticketProjectKey: string): number;
   setProjectEnabled(id: ProjectId, enabled: boolean): Promise<void>;
@@ -194,28 +212,229 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
     return result;
   }
 
+  function updateProjectRow(
+    id: ProjectId,
+    partial: Partial<Pick<ProjectRecord, "name" | "type" | "agentId" | "agentOverrideJson" | "postCloneScript" | "skillDiscoveryEnabled" | "enabled">>
+  ): void {
+    const existing = raw.prepare("SELECT agent_id FROM projects WHERE id = ?").get(id) as
+      | { agent_id: string }
+      | undefined;
+    if (!existing) throw new Error(`Project not found: ${id}`);
+
+    if (partial.agentId !== undefined) {
+      const agent = raw.prepare("SELECT 1 FROM agents WHERE id = ?").get(partial.agentId);
+      if (!agent) throw new Error(`Cannot update project: agent not found: ${partial.agentId}`);
+      if (partial.agentId !== existing.agent_id) {
+        const terminalPlaceholders = [...TERMINAL_STATES].map(() => "?").join(", ");
+        const activeTask = raw.prepare(
+          `SELECT 1 FROM tasks WHERE project_id = ? AND state NOT IN (${terminalPlaceholders}) LIMIT 1`
+        ).get(id, ...TERMINAL_STATES);
+        if (activeTask) {
+          const error = new Error("Cannot change the project agent while tasks are active") as Error & { code: string };
+          error.code = "ACTIVE_TASKS";
+          throw error;
+        }
+      }
+    }
+
+    const assignments = ["updated_at = ?"];
+    const values: unknown[] = [Math.floor(Date.now() / 1000)];
+    const add = (column: string, value: unknown): void => {
+      assignments.push(`${column} = ?`);
+      values.push(value);
+    };
+    if (partial.name !== undefined) add("name", partial.name);
+    if (partial.type !== undefined) add("type", partial.type);
+    if (partial.agentId !== undefined) add("agent_id", partial.agentId);
+    if (partial.agentOverrideJson !== undefined) add("agent_override_json", partial.agentOverrideJson);
+    if (partial.postCloneScript !== undefined) add("post_clone_script", partial.postCloneScript);
+    if (partial.skillDiscoveryEnabled !== undefined) add("skill_discovery_enabled", partial.skillDiscoveryEnabled ? 1 : 0);
+    if (partial.enabled !== undefined) add("enabled", partial.enabled ? 1 : 0);
+    raw.prepare(`UPDATE projects SET ${assignments.join(", ")} WHERE id = ?`).run(...values, id);
+  }
+
   async function updateProject(
     id: ProjectId,
     partial: Partial<Pick<ProjectRecord, "name" | "type" | "agentId" | "agentOverrideJson" | "postCloneScript" | "skillDiscoveryEnabled" | "enabled">>
   ): Promise<ProjectRecord> {
-    const existing = await getProjectById(id);
-    if (!existing) throw new Error(`Project not found: ${id}`);
-    const now = new Date();
-    const update: Record<string, unknown> = { updatedAt: now };
-    if (partial.name !== undefined) update["name"] = partial.name;
-    if (partial.type !== undefined) update["type"] = partial.type;
-    if (partial.agentId !== undefined) {
-      const agent = await db.query.agents.findFirst({
-        where: eq(agents.id, partial.agentId),
-      });
-      if (!agent) throw new Error(`Cannot update project: agent not found: ${partial.agentId}`);
-      update["agentId"] = partial.agentId;
-    }
-    if (partial.agentOverrideJson !== undefined) update["agentOverrideJson"] = partial.agentOverrideJson;
-    if (partial.postCloneScript !== undefined) update["postCloneScript"] = partial.postCloneScript;
-    if (partial.skillDiscoveryEnabled !== undefined) update["skillDiscoveryEnabled"] = partial.skillDiscoveryEnabled ? 1 : 0;
-    if (partial.enabled !== undefined) update["enabled"] = partial.enabled ? 1 : 0;
-    await db.update(projects).set(update).where(eq(projects.id, id));
+    raw.transaction(() => updateProjectRow(id, partial))();
+    const updated = await getProjectById(id);
+    if (!updated) throw new Error(`Project disappeared after update: ${id}`);
+    return updated;
+  }
+
+  async function updateProjectConfiguration(
+    id: ProjectId,
+    input: Parameters<ProjectStoreApi["updateProjectConfiguration"]>[1]
+  ): Promise<ProjectRecord> {
+    raw.transaction(() => {
+      const currentProject = raw.prepare(
+        "SELECT agent_id, agent_override_json, post_clone_script, skill_discovery_enabled FROM projects WHERE id = ?"
+      ).get(id) as {
+        agent_id: string;
+        agent_override_json: string | null;
+        post_clone_script: string;
+        skill_discovery_enabled: number;
+      } | undefined;
+      if (!currentProject) throw new Error(`Project not found: ${id}`);
+
+      const currentTicketSource = raw.prepare(
+        "SELECT integration_id, config_json FROM project_integration_bindings " +
+        "WHERE project_id = ? AND capability = 'issue_tracking'"
+      ).get(id) as { integration_id: string; config_json: string } | undefined;
+      const currentReviewConfig = raw.prepare(
+        "SELECT integration_id, config_json FROM project_integration_bindings " +
+        "WHERE project_id = ? AND capability = 'code_review'"
+      ).get(id) as { integration_id: string; config_json: string } | undefined;
+      const currentPushTargets = raw.prepare(
+        "SELECT integration_id, repo_key, clone_url, target_branch, role, commit_order, local_path, ssh_key_path " +
+        "FROM project_push_targets WHERE project_id = ? ORDER BY commit_order, local_path"
+      ).all(id) as Array<{
+        integration_id: string;
+        repo_key: string;
+        clone_url: string;
+        target_branch: string;
+        role: string;
+        commit_order: number;
+        local_path: string;
+        ssh_key_path: string | null;
+      }>;
+      const parseConfig = (value: string | undefined): Record<string, unknown> => {
+        if (value === undefined) return {};
+        try { return JSON.parse(value) as Record<string, unknown>; } catch { return {}; }
+      };
+      const ticketConfig = parseConfig(currentTicketSource?.config_json);
+      const reviewConfig = parseConfig(currentReviewConfig?.config_json);
+      const normalizePushTargets = (targets: typeof input.pushTargets): string => JSON.stringify(
+        (targets ?? []).map((target) => ({
+          integrationId: target.integrationId,
+          repoKey: target.repoKey,
+          cloneUrl: target.cloneUrl,
+          targetBranch: target.targetBranch,
+          role: target.role,
+          commitOrder: target.commitOrder,
+          localPath: target.localPath,
+          sshKeyPath: target.sshKeyPath ?? null,
+        })).sort((left, right) => left.commitOrder - right.commitOrder || left.localPath.localeCompare(right.localPath))
+      );
+      const persistedPushTargets = JSON.stringify(currentPushTargets.map((target) => ({
+        integrationId: target.integration_id,
+        repoKey: target.repo_key,
+        cloneUrl: target.clone_url,
+        targetBranch: target.target_branch,
+        role: target.role,
+        commitOrder: target.commit_order,
+        localPath: target.local_path,
+        sshKeyPath: target.ssh_key_path,
+      })));
+      const changesExecutionIdentity =
+        (input.project.agentId !== undefined && input.project.agentId !== currentProject.agent_id) ||
+        (input.project.agentOverrideJson !== undefined && input.project.agentOverrideJson !== currentProject.agent_override_json) ||
+        (input.project.postCloneScript !== undefined && input.project.postCloneScript !== currentProject.post_clone_script) ||
+        (input.project.skillDiscoveryEnabled !== undefined && input.project.skillDiscoveryEnabled !== (currentProject.skill_discovery_enabled === 1)) ||
+        (input.ticketSource !== undefined && (
+          input.ticketSource.integrationId !== currentTicketSource?.integration_id ||
+          input.ticketSource.ticketProjectKey !== ticketConfig["ticketProjectKey"]
+        )) ||
+        (input.pushTargets !== undefined && normalizePushTargets(input.pushTargets) !== persistedPushTargets) ||
+        (input.reviewConfig !== undefined && (
+          input.reviewConfig.integrationId !== currentReviewConfig?.integration_id ||
+          JSON.stringify([...input.reviewConfig.repoKeys].sort()) !==
+            JSON.stringify(Array.isArray(reviewConfig["repos"]) ? [...reviewConfig["repos"]].sort() : [])
+        ));
+      if (changesExecutionIdentity) {
+        const terminalPlaceholders = [...TERMINAL_STATES].map(() => "?").join(", ");
+        const activeTask = raw.prepare(
+          `SELECT 1 FROM tasks WHERE project_id = ? AND state NOT IN (${terminalPlaceholders}) LIMIT 1`
+        ).get(id, ...TERMINAL_STATES);
+        if (activeTask) {
+          const error = new Error("Cannot reconfigure a project while tasks are active") as Error & { code: string };
+          error.code = "ACTIVE_TASKS";
+          throw error;
+        }
+      }
+      updateProjectRow(id, input.project);
+      const nowSeconds = Math.floor(Date.now() / 1000);
+
+      if (input.ticketSource !== undefined) {
+        const conflict = raw
+          .prepare(
+            "SELECT project_id FROM project_integration_bindings " +
+            "WHERE capability = 'issue_tracking' AND integration_id = ? " +
+            "AND json_extract(config_json, '$.ticketProjectKey') = ? AND project_id != ?"
+          )
+          .get(input.ticketSource.integrationId, input.ticketSource.ticketProjectKey, id) as
+            | { project_id: string }
+            | undefined;
+        if (conflict) {
+          throw new Error(
+            `Ticket source (${input.ticketSource.integrationId}, ${input.ticketSource.ticketProjectKey}) ` +
+            `is already claimed by project ${conflict.project_id}`
+          );
+        }
+        raw
+          .prepare("DELETE FROM project_integration_bindings WHERE project_id = ? AND capability = 'issue_tracking'")
+          .run(id);
+        raw
+          .prepare(
+            "INSERT INTO project_integration_bindings (id, project_id, integration_id, capability, config_json, created_at, updated_at) " +
+            "VALUES (?, ?, ?, 'issue_tracking', ?, ?, ?)"
+          )
+          .run(
+            randomUUID(),
+            id,
+            input.ticketSource.integrationId,
+            JSON.stringify({ ticketProjectKey: input.ticketSource.ticketProjectKey }),
+            nowSeconds,
+            nowSeconds,
+          );
+        adoptOrphanedTasksForProject(id, input.ticketSource.integrationId, input.ticketSource.ticketProjectKey);
+      }
+
+      if (input.pushTargets !== undefined) {
+        raw.prepare("DELETE FROM project_push_targets WHERE project_id = ?").run(id);
+        const statement = raw.prepare(
+          `INSERT INTO project_push_targets
+           (project_id, integration_id, repo_key, clone_url, target_branch, role, commit_order, local_path, ssh_key_path, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        );
+        for (const target of input.pushTargets) {
+          statement.run(
+            id,
+            target.integrationId,
+            target.repoKey,
+            target.cloneUrl,
+            target.targetBranch,
+            target.role,
+            target.commitOrder,
+            target.localPath,
+            target.sshKeyPath ?? null,
+            nowSeconds,
+            nowSeconds,
+          );
+        }
+      }
+
+      if (input.reviewConfig !== undefined) {
+        raw
+          .prepare("DELETE FROM project_integration_bindings WHERE project_id = ? AND capability = 'code_review'")
+          .run(id);
+        raw
+          .prepare(
+            "INSERT INTO project_integration_bindings (id, project_id, integration_id, capability, config_json, created_at, updated_at) " +
+            "VALUES (?, ?, ?, 'code_review', ?, ?, ?)"
+          )
+          .run(
+            randomUUID(),
+            id,
+            input.reviewConfig.integrationId,
+            JSON.stringify({ repos: input.reviewConfig.repoKeys }),
+            nowSeconds,
+            nowSeconds,
+          );
+      }
+    })();
+
     const updated = await getProjectById(id);
     if (!updated) throw new Error(`Project disappeared after update: ${id}`);
     return updated;
@@ -530,6 +749,7 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
     getProjectById,
     listProjects,
     updateProject,
+    updateProjectConfiguration,
     deleteProject,
     adoptOrphanedTasksForProject,
     setProjectEnabled,

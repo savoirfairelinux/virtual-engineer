@@ -120,8 +120,11 @@ describe("CopilotAdapter", () => {
       });
 
       expect(spec.image).toBe("virtual-engineer-workspace:latest");
-      expect(spec.command).toEqual(["node", "/agent-worker/dist/index.js"]);
-      expect(spec.networkMode).toBe("virtual-engineer_ve-agent-net");
+      expect(spec.command).toEqual(["node", "/app/agent-worker/dist/index.js"]);
+      expect(spec.egress?.binaries).toContain(
+        "/app/agent-worker/node_modules/@github/copilot-linux-x64/copilot"
+      );
+      expect(spec.egress?.binaries).not.toContain("/usr/local/bin/node");
       expect(spec.env).toMatchObject({
         GITHUB_TOKEN: "ghp_spec_token",
         COPILOT_MODEL: "gpt-4o-mini",
@@ -224,6 +227,22 @@ describe("CopilotAdapter", () => {
 
       expect(spec.env["SKILL_DISCOVERY"]).toBe("1");
     });
+
+      it("encodes multiline system prompts for OpenShell environment transport", () => {
+        const adapter = new CopilotAdapter({});
+        const spec = adapter.buildReviewContainerSpec(
+          {
+            ...makeReviewInput(),
+            systemPrompt: "Review carefully.\nReturn structured JSON.",
+          }
+        );
+
+        expect(spec.env["SYSTEM_PROMPT"]).toBeUndefined();
+        expect(spec.env["SYSTEM_PROMPT_BASE64"]).toBe(
+          Buffer.from("Review carefully.\nReturn structured JSON.", "utf8").toString("base64")
+        );
+        expect(Object.values(spec.env).every((value) => !/[\r\n]/u.test(value))).toBe(true);
+      });
   });
 
   // ── native PTY failure detection ───────────────────────────────────────────
@@ -820,11 +839,11 @@ describe("CopilotAdapter", () => {
       expect(prompt).toContain("### Workspace Layout (multi-repository)");
       expect(prompt).toContain("**jami-client-qt** (root)");
       expect(prompt).toContain("**daemon**");
-      expect(prompt).toContain("`/workspace/daemon/`");
+      expect(prompt).toContain("`daemon/`");
       expect(prompt).toContain("cannot reach them");
-      expect(prompt).toContain("find /workspace/daemon/");
+      expect(prompt).toContain("find daemon/");
       expect(prompt).toContain("MUST `git add -A && git commit` **separately in each repository");
-      expect(prompt).toContain("cd /workspace/daemon && git add -A && git commit");
+      expect(prompt).toContain("cd daemon && git add -A && git commit");
       expect(prompt).toContain("Focus on implementation, not exploration");
     });
 
@@ -863,11 +882,11 @@ describe("CopilotAdapter", () => {
       const prompt = buildCodegenUserPrompt(ctx, "Do the work.");
 
       expect(prompt).toContain("**core-lib**");
-      expect(prompt).toContain("`/workspace/libs/core/`");
+      expect(prompt).toContain("`libs/core/`");
       expect(prompt).toContain("**utils**");
-      expect(prompt).toContain("`/workspace/libs/utils/`");
-      expect(prompt).toContain("cd /workspace/libs/core && git add -A && git commit");
-      expect(prompt).toContain("cd /workspace/libs/utils && git add -A && git commit");
+      expect(prompt).toContain("`libs/utils/`");
+      expect(prompt).toContain("cd libs/core && git add -A && git commit");
+      expect(prompt).toContain("cd libs/utils && git add -A && git commit");
     });
   });
 });

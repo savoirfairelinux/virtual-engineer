@@ -84,12 +84,30 @@ describe("parseReviewResult", () => {
     expect(() => parseReviewResult("no marker here")).toThrow(ReviewResultParseError);
   });
 
+  it("surfaces the summary from an agent-worker failure envelope", () => {
+    const raw = JSON.stringify({
+      status: "failed",
+      modifiedFiles: [],
+      summary: "Agent worker error: session authentication failed",
+      agentLogs: "Error: session authentication failed",
+    });
+
+    expect(() => parseReviewResult(raw)).toThrow(
+      "Agent worker error: session authentication failed"
+    );
+  });
+
   it("throws ReviewResultParseError when the end marker is missing", () => {
     expect(() => parseReviewResult("REVIEW_RESULT_START\n{}")).toThrow(ReviewResultParseError);
   });
 
   it("throws ReviewResultParseError on invalid JSON", () => {
     expect(() => parseReviewResult(wrap("not-json"))).toThrow(ReviewResultParseError);
+  });
+
+  it("rejects a string-escaped marker block from an undecoded worker envelope", () => {
+    const escaped = "REVIEW_RESULT_START\\n{\\\"comments\\\":[],\\\"summary\\\":\\\"ok\\\",\\\"score\\\":1}\\nREVIEW_RESULT_END";
+    expect(() => parseReviewResult(escaped)).toThrow(ReviewResultParseError);
   });
 
   it("accepts arbitrary severity values", () => {

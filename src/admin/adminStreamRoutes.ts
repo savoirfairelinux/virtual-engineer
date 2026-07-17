@@ -25,10 +25,51 @@ export function registerStreamRoutes(router: Router, deps: StreamRouteDeps): voi
     const requestUrl = new URL(req.url ?? "/", "http://127.0.0.1");
     const taskIdParam = requestUrl.searchParams.get("taskId");
     let streamEntries: Array<Record<string, unknown>> = [];
+    const pendingLiveEvents: AgentLogEvent[] = [];
+    let writeLiveEvent: ((event: AgentLogEvent) => void) | null = null;
+    let authorizationQueue = Promise.resolve();
+    const taskProjects = new Map<string, Task["projectId"] | null>();
+    let closed = false;
+    let heartbeatLogs: ReturnType<typeof setInterval> | undefined;
+    const cleanup = (): void => {
+      closed = true;
+      agentLogBus.off("event", eventListener);
+      taskProjects.clear();
+      if (heartbeatLogs !== undefined) clearInterval(heartbeatLogs);
+    };
+    const eventListener = (event: AgentLogEvent): void => {
+      if (closed) return;
+      if (taskIdParam) {
+        if (event.taskId !== taskIdParam) return;
+        if (writeLiveEvent) {
+          writeLiveEvent(event);
+        } else {
+          if (pendingLiveEvents.length >= 500) pendingLiveEvents.shift();
+          pendingLiveEvents.push(event);
+        }
+        return;
+      }
+
+      authorizationQueue = authorizationQueue.then(async () => {
+        if (!res.writable) return;
+        let projectId = taskProjects.get(event.taskId);
+        if (projectId === undefined) {
+          const task = await deps.stateStore.getTask(makeTaskId(event.taskId));
+          projectId = task?.projectId ?? null;
+          taskProjects.set(event.taskId, projectId);
+        }
+        if (projectId === null) return;
+        const perms = getEffectivePermissions(req);
+        if (perms && !can(perms, "task.read", projectId)) return;
+        writeLiveEvent?.(event);
+      }).catch(() => undefined);
+    };
+    res.once("close", cleanup);
 
     if (taskIdParam) {
       const taskId = makeTaskId(taskIdParam);
       const task = await deps.stateStore.getTask(taskId);
+      if (closed) return;
       if (!task) {
         writeJson(res, 404, { error: "Task not found" });
         return;
@@ -42,7 +83,15 @@ export function registerStreamRoutes(router: Router, deps: StreamRouteDeps): voi
         return;
       }
 
-      const cycles = await deps.stateStore.getAgentCycles(taskId);
+      agentLogBus.on("event", eventListener);
+      let cycles: AgentCycle[];
+      try {
+        cycles = await deps.stateStore.getAgentCycles(taskId);
+      } catch (err) {
+        cleanup();
+        throw err;
+      }
+      if (closed) return;
       streamEntries = cycles.flatMap((cycle) => serializeAgentLogEntries(cycle));
     } else {
       streamEntries = [
@@ -55,6 +104,8 @@ export function registerStreamRoutes(router: Router, deps: StreamRouteDeps): voi
     res.setHeader("content-type", "text/event-stream");
     res.setHeader("cache-control", "no-cache");
     res.setHeader("connection", "keep-alive");
+    res.setHeader("x-accel-buffering", "no");
+    res.socket?.setNoDelay(true);
     res.flushHeaders();
 
     const emittedKeys = new Set<string>();
@@ -64,6 +115,15 @@ export function registerStreamRoutes(router: Router, deps: StreamRouteDeps): voi
       emittedKeys.add(key);
       res.write(`data: ${JSON.stringify(entry)}\n\n`);
     };
+
+    writeEntry({
+      timestamp: new Date().toISOString(),
+      taskId: taskIdParam,
+      level: "info",
+      message: "Live log stream connected",
+      source: "admin",
+      type: "stream.connected",
+    });
 
     for (const entry of streamEntries) {
       writeEntry(entry);
@@ -78,26 +138,33 @@ export function registerStreamRoutes(router: Router, deps: StreamRouteDeps): voi
       }
     }
 
-    const eventListener = (event: AgentLogEvent): void => {
-      if (taskIdParam && event.taskId !== taskIdParam) return;
+    writeLiveEvent = (event: AgentLogEvent): void => {
       if (!res.writable) return;
       writeEntry(serializeAgentEventEntry(event));
+    };
+    for (const event of pendingLiveEvents) {
+      writeLiveEvent(event);
     }
-    agentLogBus.on("event", eventListener);
+    pendingLiveEvents.length = 0;
+    if (!taskIdParam) agentLogBus.on("event", eventListener);
 
-    const heartbeatLogs = setInterval(() => {
+    heartbeatLogs = setInterval(() => {
       if (!res.writable) { clearInterval(heartbeatLogs); return; }
       res.write(": heartbeat\n\n");
     }, 15_000);
-
-    res.on("close", () => {
-      agentLogBus.off("event", eventListener);
-      clearInterval(heartbeatLogs);
-    });
     // Do NOT call res.end() — keep connection open
   }, { permission: "task.read", collection: true });
 
   router.add("GET", "/api/admin/events/stream", async (req, res, _params) => {
+    let closed = false;
+    let taskTimer: ReturnType<typeof setInterval> | undefined;
+    let heartbeatGlobal: ReturnType<typeof setInterval> | undefined;
+    const cleanup = (): void => {
+      closed = true;
+      if (taskTimer !== undefined) clearInterval(taskTimer);
+      if (heartbeatGlobal !== undefined) clearInterval(heartbeatGlobal);
+    };
+    res.once("close", cleanup);
     res.statusCode = 200;
     res.setHeader("content-type", "text/event-stream");
     res.setHeader("cache-control", "no-cache");
@@ -105,9 +172,10 @@ export function registerStreamRoutes(router: Router, deps: StreamRouteDeps): voi
     res.flushHeaders();
 
     const sendTasks = async (): Promise<void> => {
-      if (!res.writable) return;
+      if (closed || !res.writable) return;
       try {
         const allTasks = await deps.stateStore.getAllTasks();
+        if (closed || !res.writable) return;
         const sorted = filterTasksByReadScope(req, deduplicateByTicket(allTasks))
           .sort((left, right) => right.updatedAt.getTime() - left.updatedAt.getTime());
         res.write(`event: tasks\ndata: ${JSON.stringify(sorted)}\n\n`);
@@ -115,18 +183,14 @@ export function registerStreamRoutes(router: Router, deps: StreamRouteDeps): voi
     };
 
     await sendTasks();
+    if (closed) return;
 
-    const taskTimer = setInterval(() => void sendTasks(), 5_000);
+    taskTimer = setInterval(() => void sendTasks(), 5_000);
 
-    const heartbeatGlobal = setInterval(() => {
+    heartbeatGlobal = setInterval(() => {
       if (!res.writable) { clearInterval(heartbeatGlobal); return; }
       res.write(": heartbeat\n\n");
     }, 15_000);
-
-    res.on("close", () => {
-      clearInterval(taskTimer);
-      clearInterval(heartbeatGlobal);
-    });
   }, { permission: "task.read", collection: true });
 }
 

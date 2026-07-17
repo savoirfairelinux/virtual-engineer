@@ -2,9 +2,9 @@
 
 AI-driven development system with two independent flows.
 
-**Coding agent** — Assign a ticket to the `virtual-engineer` account. The orchestrator clones the repo, runs the Copilot agent in an isolated Docker container, pushes the resulting commits for review, iterates on reviewer feedback, and closes the ticket once the change is merged.
+**Coding agent** — Assign a ticket to the `virtual-engineer` account. The orchestrator clones the repo, runs the Copilot agent in an isolated **OpenShell sandbox** (a Docker container by default), pushes the resulting commits for review, iterates on reviewer feedback, and closes the ticket once the change is merged.
 
-**Code review agent** — On every new or updated patchset (Gerrit stream-event, GitLab webhook, or GitHub webhook), the orchestrator fetches the diff, runs the agent in an isolated Docker container, and posts inline comments + a vote directly on the review system. No ticket required.
+**Code review agent** — On every new or updated patchset (Gerrit stream-event, GitLab webhook, or GitHub webhook), the orchestrator fetches the diff, runs the agent in an isolated **OpenShell sandbox**, and posts inline comments + a vote directly on the review system. No ticket required.
 
 All provider configuration (ticketing, VCS, agent) is stored in SQLite and managed through the admin UI — no env-var plumbing required.
 
@@ -24,23 +24,59 @@ All provider configuration (ticketing, VCS, agent) is stored in SQLite and manag
 | Tool | Minimum | Notes |
 |------|---------|-------|
 | **Node.js** | 20 LTS | Orchestrator runtime |
-| **Docker** | 24 | Agent container execution |
+| **Docker** | 24 | Runs the orchestrator, OpenShell gateway, and sandbox containers |
+| **k3s + kubectl** | current | Optional; only for the experimental Kubernetes compute driver |
 | **GitHub Copilot** | — | Subscription required for code-gen/review tasks; GitHub account required |
 | **Claude** | — | Alternative agent engine — Anthropic API key or a Claude Pro/Max subscription (optional) |
 
 ---
 
-## Prod setup (orchestrator in Docker)
+## Prod setup (one-shot: `start.sh` sets everything up)
 
 ```bash
-cp .env.example .env        # fill in HMAC-KEY
-./scripts/start.sh
+cp .env.example .env        # fill in admin auth; local OIDC is automatic
+./scripts/start.sh          # builds + starts OpenShell/Docker and the orchestrator
 ```
+
+By default, `start.sh` deploys an authenticated local Keycloak realm and keeps
+its generated credentials under `data/local-oidc/` with owner-only permissions.
+To use an existing external Keycloak instead, set both values in `.env`:
+
+```dotenv
+OPENSHELL_OIDC_ISSUER=https://keycloak.example.com/realms/openshell
+OPENSHELL_OIDC_CLIENT_SECRET=replace-with-the-confidential-client-secret
+```
+
+`start.sh` loads `.env` without evaluating it as shell code. Variables already
+exported by the calling shell take precedence over values in the file.
+
+A single command makes VE functional with the default OpenShell Docker driver:
+
+1. builds the agent + orchestrator images (the orchestrator embeds the OpenShell CLI),
+2. starts local Keycloak when external OIDC is not configured,
+3. generates persistent sandbox-JWT keys and starts the pinned **OpenShell gateway** with its Docker compute driver,
+4. starts the orchestrator (`ve-orchestrator`) wired to the gateway.
+
+Agents then run as ephemeral Docker containers managed by OpenShell (upload →
+exec → download). Git
+clone/checkout/push stay host-side in the orchestrator, so push credentials never
+enter the sandbox.
+
+The Docker gateway API and health ports are published on host loopback only.
+The control port is also published on the private `openshell-docker` bridge so
+sandbox supervisors can authenticate with their gateway-minted JWT and call
+back without exposing the gateway on a public host interface.
+
+To exercise the experimental Kubernetes path, set
+`OPENSHELL_COMPUTE_DRIVER=kubernetes`; `start.sh` then installs or reuses k3s,
+deploys the gateway through Helm, and schedules sandbox Pods. The application
+still uses the same `OpenShellWorkspaceRunner`; this setting only changes the
+gateway compute driver.
 
 Admin UI: http://127.0.0.1:3100/admin  
 Logs: `docker logs -f ve-orchestrator`
 
-> In Docker mode the orchestrator uses host networking, so external services on the same host are reachable via `http://localhost:<port>`.
+> The orchestrator uses host networking, so external services on the same host are reachable via `http://localhost:<port>`.
 
 ---
 
@@ -166,9 +202,13 @@ Copy `.env.example` → `.env`. All provider credentials live in the DB (admin U
 | `MAX_REVIEW_COMMENTS` | `20` | Max inline comments posted per review pass (excess folded into summary) |
 | `MAX_REVIEW_REPLIES` | `20` | Max discussion-thread replies posted per review pass |
 | `REVIEW_MIN_SEVERITY` | `info` | Min severity to post inline (`nit` < `info` < `warning` < `error`) |
-| `AGENT_CONTAINER_IMAGE` | `virtual-engineer-workspace:latest` | |
-| `WORKSPACE_BASE_DIR` | `/tmp/virtual-engineer/workspaces` | Scratch space for review diffs |
-| `AGENT_DOCKER_NETWORK` | `virtual-engineer_ve-agent-net` | Bridge network for agent containers (created by `start.sh`) |
+| `AGENT_CONTAINER_IMAGE` | `virtual-engineer-workspace:latest` | Base image for the OpenShell agent sandbox |
+| `WORKSPACE_BASE_DIR` | `/tmp/virtual-engineer/workspaces` | Host-side scratch space for cloned workspaces + review diffs |
+| `OPENSHELL_COMPUTE_DRIVER` | `docker` | Gateway compute backend; `kubernetes` is experimental and requires k3s |
+| `OPENSHELL_OIDC_ISSUER` | managed local Keycloak | External Keycloak realm issuer URL; set together with the client secret |
+| `OPENSHELL_OIDC_CLIENT_ID` | `openshell-ci` | Keycloak confidential-client id used by the OpenShell CLI |
+| `OPENSHELL_OIDC_CLIENT_SECRET` | generated locally | External confidential-client secret; set together with the issuer |
+| `OPENSHELL_OIDC_AUDIENCE` | `openshell-cli` | Expected OpenShell OIDC audience |
 
 ---
 

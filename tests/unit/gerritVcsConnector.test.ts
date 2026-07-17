@@ -5,6 +5,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { execFileSync } from "child_process";
+import { trustedGitArgs } from "../../src/utils/gitExec.js";
 import { GerritVcsConnector } from "../../src/vcs/gerritVcsConnector.js";
 import type { GerritVcsConnectorConfig } from "../../src/vcs/gerritVcsConnector.js";
 import type { SshChangeInfo } from "../../src/connectors/gerritSshClient.js";
@@ -143,14 +144,14 @@ describe("GerritVcsConnector", () => {
 
       const knownConnector = new GerritVcsConnector({
         ...mockConfig,
-        sshKnownHostsPath: "/app/secrets/gerrit_known_hosts",
+        sshKnownHostsPath: "/tmp/gerrit_known_hosts",
       });
       await knownConnector.clone("ssh://gerrit.example.com:29418/repo.git", "main", "/tmp/repo");
 
       const callArgs = mockExecFileSync.mock.calls[0];
       const env = (callArgs![2] as Record<string, unknown>)["env"] as Record<string, string>;
       expect(env["GIT_SSH_COMMAND"]).toContain("StrictHostKeyChecking=yes");
-      expect(env["GIT_SSH_COMMAND"]).toContain("UserKnownHostsFile=/app/secrets/gerrit_known_hosts");
+      expect(env["GIT_SSH_COMMAND"]).toContain("UserKnownHostsFile=/tmp/gerrit_known_hosts");
       expect(env["GIT_SSH_COMMAND"]).not.toContain("StrictHostKeyChecking=no");
     });
   });
@@ -169,12 +170,12 @@ describe("GerritVcsConnector", () => {
       // Verify git config calls
       expect(mockExecFileSync).toHaveBeenCalledWith(
         "git",
-        ["config", "user.name", mockConfig.gitAuthorName],
+        trustedGitArgs(["config", "user.name", mockConfig.gitAuthorName]),
         expect.any(Object)
       );
       expect(mockExecFileSync).toHaveBeenCalledWith(
         "git",
-        ["config", "user.email", mockConfig.gitAuthorEmail],
+        trustedGitArgs(["config", "user.email", mockConfig.gitAuthorEmail]),
         expect.any(Object)
       );
     });
@@ -192,12 +193,12 @@ describe("GerritVcsConnector", () => {
       // Verify git add and commit
       expect(mockExecFileSync).toHaveBeenCalledWith(
         "git",
-        ["add", "-A"],
+        trustedGitArgs(["add", "-A"]),
         expect.any(Object)
       );
       expect(mockExecFileSync).toHaveBeenCalledWith(
         "git",
-        ["commit", "-m", message],
+        trustedGitArgs(["commit", "-m", message]),
         expect.any(Object)
       );
     });
@@ -215,7 +216,7 @@ describe("GerritVcsConnector", () => {
       // Verify push command
       expect(mockExecFileSync).toHaveBeenCalledWith(
         "git",
-        ["push", "origin", `HEAD:${ref}`],
+        trustedGitArgs(["push", "origin", `HEAD:${ref}`]),
         expect.objectContaining({
           env: expect.objectContaining({
             GIT_SSH_COMMAND: expect.stringContaining(mockConfig.sshKeyPath!),
@@ -273,7 +274,7 @@ describe("GerritVcsConnector", () => {
     it("should throw on push failure", async () => {
       const mockExecFileSync = vi.mocked(execFileSync);
       mockExecFileSync.mockImplementation((command, args) => {
-        if (command === "git" && Array.isArray(args) && args[0] === "push") {
+        if (command === "git" && Array.isArray(args) && args.includes("push")) {
           throw new Error("Push rejected by Gerrit");
         }
         return "success";
@@ -298,7 +299,7 @@ describe("GerritVcsConnector", () => {
 
       expect(mockExecFileSync).toHaveBeenCalledWith(
         "git",
-        ["push", "origin", `HEAD:${ref}`],
+        trustedGitArgs(["push", "origin", `HEAD:${ref}`]),
         expect.any(Object)
       );
     });

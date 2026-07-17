@@ -6,13 +6,6 @@ vi.mock("child_process", () => ({
   spawn: vi.fn(),
 }));
 
-vi.mock("../../src/workspace/dockerVolume.js", () => ({
-  createVolume: vi.fn(),
-  removeVolume: vi.fn(),
-  execInVolume: vi.fn().mockResolvedValue({ stdout: "", stderr: "", exitCode: 0 }),
-  listVeVolumes: vi.fn().mockResolvedValue([]),
-}));
-
 import { Orchestrator } from "../../src/orchestrator/orchestrator.js";
 import type { ProjectModeDeps } from "../../src/orchestrator/orchestrator.js";
 import {
@@ -106,7 +99,7 @@ function makeStateStore(over: Partial<StateStore> = {}): StateStore {
     getActiveTasks: vi.fn().mockResolvedValue([]),
     getFailedAttemptCount: vi.fn().mockResolvedValue(0),
     transition: vi.fn(async (taskId, to) => makeTask({ taskId, state: to })),
-    incrementCycle: vi.fn().mockResolvedValue(1),
+    startAgentCycle: vi.fn().mockResolvedValue(1),
     setFailureReason: vi.fn(),
     saveAgentCycle: vi.fn(),
     updateAgentCycleCommitMessages: vi.fn(),
@@ -345,6 +338,15 @@ describe("Orchestrator — Phase 4 project mode", () => {
     const task = makeTask({ state: "AGENT_RUNNING" });
     await (orch as unknown as { runAgentCycle: (t: Task) => Promise<void> }).runAgentCycle(task);
 
+    expect(stateStore.startAgentCycle).toHaveBeenCalledWith(
+      task.taskId,
+      expect.objectContaining({ status: "running" }),
+    );
+    expect(stateStore.saveAgentCycle).toHaveBeenCalledWith(
+      task.taskId,
+      1,
+      expect.objectContaining({ status: "success" }),
+    );
     expect(ws.prepareProjectWorkspace).toHaveBeenCalledWith(expect.any(Object), targets, "", undefined);
     expect(projectMode.resolveVcsForIntegration).toHaveBeenCalledWith("vcs-root", { repoKey: "root" });
     expect(projectMode.resolveVcsForIntegration).toHaveBeenCalledWith("vcs-core", { repoKey: "core" });
@@ -371,6 +373,49 @@ describe("Orchestrator — Phase 4 project mode", () => {
       "gerrit",
       0,
       expect.any(String)
+    );
+  });
+
+  it("reuses the interrupted running cycle after restart", async () => {
+    const task = makeTask({ state: "AGENT_RUNNING", cycleCount: 1 });
+    const stateStore = makeStateStore({
+      getAgentCycles: vi.fn().mockResolvedValue([{
+        id: 9,
+        taskId: task.taskId,
+        cycleNumber: 1,
+        result: { status: "running", modifiedFiles: [], summary: "", agentLogs: "", metadata: {} },
+        validationResult: null,
+        createdAt: new Date(),
+        cost: null,
+      }]),
+    });
+    const project = makeProject();
+    const target = makePushTarget({ id: 1, commitOrder: 1, localPath: ".", integrationId: "vcs-root", repoKey: "root" });
+    const vcsRoot = {
+      clone: vi.fn(), push: vi.fn(), pushDirect: vi.fn().mockResolvedValue({ changeId: "Iabc", url: "u", status: "OPEN" }),
+      getChangeStatus: vi.fn(), buildPushSpec: vi.fn().mockReturnValue({ ref: "refs/for/main", topic: "VE-t-1" }),
+      useChangeIdContinuity: true, reviewSystemLabel: "gerrit",
+    } as unknown as VcsConnector;
+    const projectMode: ProjectModeDeps = {
+      projectStore: {
+        getProjectById: vi.fn(async () => project),
+        listProjectPushTargets: vi.fn(async () => [target]),
+        getProjectTicketSource: vi.fn().mockResolvedValue({ integrationId: "redmine-int" }),
+        getProjectReviewConfig: vi.fn().mockResolvedValue(null),
+        getAgentById: vi.fn(),
+      },
+      pluginManager: { getConnectorForIntegration: vi.fn().mockReturnValue(makeRedmine()) },
+      resolveVcsForIntegration: vi.fn(async () => vcsRoot),
+    };
+    const orch = new Orchestrator(baseConfig(), stateStore, makeWorkspaceRunner(), undefined, undefined, projectMode);
+
+    await (orch as unknown as { runAgentCycle: (current: Task) => Promise<void> }).runAgentCycle(task);
+
+    expect(stateStore.startAgentCycle).not.toHaveBeenCalled();
+    expect(stateStore.saveAgentCycle).toHaveBeenLastCalledWith(
+      task.taskId,
+      1,
+      expect.objectContaining({ status: "success" }),
     );
   });
 
@@ -418,6 +463,67 @@ describe("Orchestrator — Phase 4 project mode", () => {
     await (orch as unknown as { runAgentCycle: (t: Task) => Promise<void> }).runAgentCycle(task);
 
     expect(ws.runAgent).toHaveBeenCalledWith(expect.any(Object), expect.any(Object), projectAgent);
+  });
+
+  it("starts a failed-cycle retry only after workspace cleanup", async () => {
+    const task = makeTask({ cycleCount: 0 });
+    const stateStore = makeStateStore({
+      startAgentCycle: vi.fn().mockResolvedValue(1),
+      transition: vi.fn().mockResolvedValue(makeTask({ state: "RETRY_CYCLE", cycleCount: 1 })),
+      getTask: vi.fn().mockResolvedValue(task),
+    });
+    let workspaceDestroyed = false;
+    const workspace = makeWorkspaceRunner({
+      runAgent: vi.fn().mockResolvedValue({
+        status: "failed",
+        modifiedFiles: [],
+        summary: "failed",
+        agentLogs: "",
+        metadata: {},
+      }),
+      destroyWorkspace: vi.fn().mockImplementation(async () => {
+        workspaceDestroyed = true;
+      }),
+    });
+    const projectMode: ProjectModeDeps = {
+      projectStore: {
+        getProjectById: vi.fn(async () => makeProject()),
+        listProjectPushTargets: vi.fn(async () => [
+          makePushTarget({ id: 1, commitOrder: 1, localPath: ".", integrationId: "vcs-root", repoKey: "root" }),
+        ]),
+        getProjectTicketSource: vi.fn().mockResolvedValue({ integrationId: "redmine-int" }),
+        getProjectReviewConfig: vi.fn().mockResolvedValue(null),
+        getAgentById: vi.fn().mockResolvedValue({
+          id: makeAgentId("a-1"),
+          integrationId: "agent-int",
+          modelConfigJson: "{}",
+          enabled: true,
+        }),
+      },
+      pluginManager: {
+        getConnectorForIntegration: vi.fn((id: string) => id === "redmine-int" ? makeRedmine() : null),
+        getAgentAdapter: vi.fn(() => ({ name: "agent", execute: vi.fn() })),
+      } as unknown as ProjectModeDeps["pluginManager"],
+      resolveVcsForIntegration: vi.fn().mockResolvedValue({
+        clone: vi.fn(),
+        push: vi.fn(),
+        getChangeStatus: vi.fn(),
+        buildPushSpec: vi.fn().mockReturnValue({ ref: "refs/for/main" }),
+        useChangeIdContinuity: false,
+        reviewSystemLabel: "gitlab",
+      } as unknown as VcsConnector),
+    };
+    const orch = new Orchestrator(baseConfig(), stateStore, workspace, undefined, undefined, projectMode);
+    const originalRunAgentCycle = (orch as unknown as { runAgentCycle: (current: Task) => Promise<void> }).runAgentCycle.bind(orch);
+    const runSpy = vi.spyOn(orch as unknown as { runAgentCycle: (current: Task) => Promise<void> }, "runAgentCycle");
+    runSpy.mockImplementationOnce(originalRunAgentCycle).mockImplementationOnce(async () => {
+      expect(workspaceDestroyed).toBe(true);
+    });
+
+    await runSpy(task);
+
+    expect(workspace.destroyWorkspace).toHaveBeenCalledTimes(1);
+    expect(runSpy).toHaveBeenCalledTimes(2);
   });
 
   it("project-mode runAgentCycle applies resolved agent overrides to task context", async () => {
@@ -541,7 +647,7 @@ describe("Orchestrator — Phase 4 project mode", () => {
     vi.mocked(ws.runAgent).mockClear();
 
     // Retry cycle (cycleNumber=2): feedback instructions prompt swapped in.
-    vi.mocked(stateStore.incrementCycle).mockResolvedValueOnce(2);
+    vi.mocked(stateStore.startAgentCycle).mockResolvedValueOnce(2);
     const retryTask = makeTask({ state: "AGENT_RUNNING", cycleCount: 1 });
     await (orch as unknown as { runAgentCycle: (t: Task) => Promise<void> }).runAgentCycle(retryTask);
     const retryContext = vi.mocked(ws.runAgent).mock.calls[0]?.[1] as import("../../src/interfaces.js").TaskContext;
@@ -712,6 +818,14 @@ describe("Orchestrator — Phase 4 project mode", () => {
     const transitionCalls = vi.mocked(stateStore.transition).mock.calls.map((c) => c[1]);
     expect(transitionCalls).toContain("FAILED");
     expect(transitionCalls).not.toContain("IN_REVIEW");
+    expect(stateStore.saveAgentCycle).toHaveBeenLastCalledWith(
+      task.taskId,
+      1,
+      expect.objectContaining({
+        status: "failed",
+        summary: expect.stringContaining("email address ve@local is not registered"),
+      }),
+    );
   });
 
   it("project-mode review polling resolves per-repo change connectors with the repo binding", async () => {
@@ -1013,7 +1127,7 @@ describe("Orchestrator — Phase 4 project mode", () => {
       getChangesForTask: vi.fn().mockResolvedValue([
         { id: "t-1:root:0", taskId: "t-1", repoKey: "root", changeId: "Iabc123", reviewUrl: "", status: "OPEN", integrationId: "vcs-root", reviewSystem: "gerrit", commitIndex: 0, subjectHash: "", createdAt: new Date(), updatedAt: new Date() },
       ]),
-      incrementCycle: vi.fn().mockResolvedValue(2),
+      startAgentCycle: vi.fn().mockResolvedValue(2),
     });
 
     const resolvePatchsetOptions = vi.fn().mockResolvedValue({
@@ -1083,7 +1197,7 @@ describe("Orchestrator — Phase 4 project mode", () => {
       getChangesForTask: vi.fn().mockResolvedValue([
         { id: "t-1:root:0", taskId: "t-1", repoKey: "root", changeId: "Iabc123", reviewUrl: "", status: "OPEN", integrationId: "vcs-root", reviewSystem: "gerrit", commitIndex: 0, subjectHash: "", createdAt: new Date(), updatedAt: new Date() },
       ]),
-      incrementCycle: vi.fn().mockResolvedValue(2),
+      startAgentCycle: vi.fn().mockResolvedValue(2),
     });
 
     const resolvePatchsetOptions = vi.fn().mockRejectedValue(new Error("SSH connection failed"));
@@ -1191,7 +1305,7 @@ describe("Orchestrator — Phase 4 project mode", () => {
       getChangesForTask: vi.fn().mockResolvedValue([
         { id: "t-1:root:0", taskId: "t-1", repoKey: "root", changeId: "Iabc123", reviewUrl: "", status: "OPEN", integrationId: "vcs-root", reviewSystem: "gerrit", commitIndex: 0, subjectHash: "", createdAt: new Date(), updatedAt: new Date() },
       ]),
-      incrementCycle: vi.fn().mockResolvedValue(2),
+      startAgentCycle: vi.fn().mockResolvedValue(2),
     });
 
     const resolvePatchsetOptions = vi.fn().mockResolvedValue({
@@ -1252,7 +1366,7 @@ describe("Orchestrator — Phase 4 project mode", () => {
       getChangesForTask: vi.fn().mockResolvedValue([
         { id: "t-1:root:0", taskId: "t-1", repoKey: "root", changeId: "Iabc123", reviewUrl: "", status: "OPEN", integrationId: "vcs-root", reviewSystem: "gerrit", commitIndex: 0, subjectHash: "", createdAt: new Date(), updatedAt: new Date() },
       ]),
-      incrementCycle: vi.fn().mockResolvedValue(2),
+      startAgentCycle: vi.fn().mockResolvedValue(2),
     });
 
     const vcsRoot = {
@@ -1332,7 +1446,13 @@ describe("Orchestrator — Phase 4 project mode", () => {
     // Should not throw — the guard catches the deleted-task scenario
     await (orch as unknown as { runAgentCycle: (t: Task) => Promise<void> }).runAgentCycle(task);
 
-    // saveAgentCycle should NOT be called because the task no longer exists
+    // The running row was published before execution; deleting the task removes
+    // it through the database cascade, so no final write is attempted.
+    expect(stateStore.startAgentCycle).toHaveBeenCalledOnce();
+    expect(stateStore.startAgentCycle).toHaveBeenCalledWith(
+      task.taskId,
+      expect.objectContaining({ status: "running" }),
+    );
     expect(stateStore.saveAgentCycle).not.toHaveBeenCalled();
     // Only the initial AGENT_RUNNING transition should have been called, not IN_REVIEW
     const transitionArgs = vi.mocked(stateStore.transition).mock.calls.map((c) => c[1]);
@@ -1376,7 +1496,14 @@ describe("Orchestrator — Phase 4 project mode", () => {
 
     await (orch as unknown as { runAgentCycle: (t: Task) => Promise<void> }).runAgentCycle(task);
 
-    expect(stateStore.saveAgentCycle).not.toHaveBeenCalled();
+    expect(stateStore.saveAgentCycle).toHaveBeenLastCalledWith(
+      task.taskId,
+      1,
+      expect.objectContaining({
+        status: "failed",
+        summary: "Agent result discarded because task reached ABANDONED",
+      }),
+    );
     const transitionArgs2 = vi.mocked(stateStore.transition).mock.calls.map((c) => c[1]);
     expect(transitionArgs2).toContain("AGENT_RUNNING");
     expect(transitionArgs2).not.toContain("IN_REVIEW");

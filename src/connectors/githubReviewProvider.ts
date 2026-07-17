@@ -134,9 +134,12 @@ export class GitHubReviewProvider implements ReviewProvider {
     return { owner: this.config.owner, repo: this.config.repo, prNumber: n };
   }
 
-  async getChangeDetails(changeId: ExternalChangeId): Promise<ReviewChangeDetails> {
+  async getChangeDetails(changeId: ExternalChangeId, signal?: AbortSignal): Promise<ReviewChangeDetails> {
     const { owner, repo, prNumber } = this.parseChangeId(changeId);
-    const pr = GitHubPrSchema.parse(await this.fetchJson(this.prUrl(owner, repo, prNumber)));
+    const pr = GitHubPrSchema.parse(await this.fetchJson(
+      this.prUrl(owner, repo, prNumber),
+      signal !== undefined ? { signal } : undefined,
+    ));
 
     const status: ReviewChangeDetails["status"] = pr.merged
       ? "MERGED"
@@ -203,10 +206,13 @@ export class GitHubReviewProvider implements ReviewProvider {
     }
   }
 
-  async getChangeDiff(changeId: ExternalChangeId, patchset?: number): Promise<ReviewChangeDiff> {
+  async getChangeDiff(changeId: ExternalChangeId, patchset?: number, signal?: AbortSignal): Promise<ReviewChangeDiff> {
     const { owner, repo, prNumber } = this.parseChangeId(changeId);
     const files = GitHubPrFileListSchema.parse(
-      await this.fetchJson(`${this.prUrl(owner, repo, prNumber)}/files?per_page=300`)
+      await this.fetchJson(
+        `${this.prUrl(owner, repo, prNumber)}/files?per_page=300`,
+        signal !== undefined ? { signal } : undefined,
+      )
     );
 
     return {
@@ -227,9 +233,10 @@ export class GitHubReviewProvider implements ReviewProvider {
     _revision: number,
     comments: InlineReviewComment[],
     summary: string,
-    allowedFiles?: ReadonlySet<string>
+    allowedFiles?: ReadonlySet<string>,
+    signal?: AbortSignal,
   ): Promise<void> {
-    await this.submitReview(changeId, comments, summary, "COMMENT", allowedFiles);
+    await this.submitReview(changeId, comments, summary, "COMMENT", allowedFiles, signal);
   }
 
   async postReviewWithComments(
@@ -238,14 +245,16 @@ export class GitHubReviewProvider implements ReviewProvider {
     comments: InlineReviewComment[],
     summary: string,
     score: -1 | 1,
-    allowedFiles?: ReadonlySet<string>
+    allowedFiles?: ReadonlySet<string>,
+    signal?: AbortSignal,
   ): Promise<void> {
     await this.submitReview(
       changeId,
       comments,
       summary,
       score === -1 ? "REQUEST_CHANGES" : "APPROVE",
-      allowedFiles
+      allowedFiles,
+      signal,
     );
   }
 
@@ -253,10 +262,11 @@ export class GitHubReviewProvider implements ReviewProvider {
     changeId: ExternalChangeId,
     _revision: number,
     score: number,
-    message?: string
+    message?: string,
+    signal?: AbortSignal,
   ): Promise<void> {
     const event = score < 0 ? "REQUEST_CHANGES" : score > 0 ? "APPROVE" : "COMMENT";
-    await this.submitReview(changeId, [], message ?? "", event);
+    await this.submitReview(changeId, [], message ?? "", event, undefined, signal);
   }
 
   private async submitReview(
@@ -264,7 +274,8 @@ export class GitHubReviewProvider implements ReviewProvider {
     comments: InlineReviewComment[],
     summary: string,
     event: "APPROVE" | "REQUEST_CHANGES" | "COMMENT",
-    allowedFiles?: ReadonlySet<string>
+    allowedFiles?: ReadonlySet<string>,
+    signal?: AbortSignal,
   ): Promise<void> {
     const { owner, repo, prNumber } = this.parseChangeId(changeId);
 
@@ -282,7 +293,10 @@ export class GitHubReviewProvider implements ReviewProvider {
     if (positiveLineComments.length > 0) {
       try {
         const files = GitHubPrFileListSchema.parse(
-          await this.fetchJson(`${this.prUrl(owner, repo, prNumber)}/files?per_page=300`)
+          await this.fetchJson(
+            `${this.prUrl(owner, repo, prNumber)}/files?per_page=300`,
+            signal !== undefined ? { signal } : undefined,
+          )
         );
         for (const f of files) {
           if (f.patch) {
@@ -290,6 +304,7 @@ export class GitHubReviewProvider implements ReviewProvider {
           }
         }
       } catch (err) {
+        if (signal?.aborted === true) throw signal.reason ?? err;
         log.warn({ repo, prNumber, err }, "failed to fetch PR files for line validation; skipping inline comments");
       }
     }
@@ -347,6 +362,7 @@ export class GitHubReviewProvider implements ReviewProvider {
     await this.fetchJson(`${this.prUrl(owner, repo, prNumber)}/reviews`, {
       method: "POST",
       body: JSON.stringify(body),
+      ...(signal !== undefined ? { signal } : {}),
     });
     log.info(
       { repo, prNumber, event, inlineCount: apiComments.length, foldedCount: outOfDiffComments.length },
@@ -376,9 +392,9 @@ export class GitHubReviewProvider implements ReviewProvider {
     return response.json() as Promise<T>;
   }
 
-  async getDiscussionThreads(changeId: ExternalChangeId): Promise<ReviewDiscussionThread[]> {
+  async getDiscussionThreads(changeId: ExternalChangeId, signal?: AbortSignal): Promise<ReviewDiscussionThread[]> {
     const { owner, repo, prNumber } = this.parseChangeId(changeId);
-    const me = await this.resolveCurrentLogin();
+    const me = await this.resolveCurrentLogin(signal);
 
     const query = `
       query($owner:String!,$repo:String!,$number:Int!,$cursor:String){
@@ -402,7 +418,7 @@ export class GitHubReviewProvider implements ReviewProvider {
     let cursor: string | null = null;
     for (let page = 0; page < 20; page++) {
       const data = GraphQLThreadsResponseSchema.parse(
-        await this.graphql(query, { owner, repo, number: prNumber, cursor })
+        await this.graphql(query, { owner, repo, number: prNumber, cursor }, signal)
       );
       const reviewThreads = data.repository?.pullRequest?.reviewThreads;
       if (!reviewThreads) break;
@@ -434,7 +450,8 @@ export class GitHubReviewProvider implements ReviewProvider {
     _changeId: ExternalChangeId,
     _revision: number,
     threadId: string,
-    message: string
+    message: string,
+    signal?: AbortSignal,
   ): Promise<void> {
     const mutation = `
       mutation($threadId:ID!,$body:String!){
@@ -442,18 +459,19 @@ export class GitHubReviewProvider implements ReviewProvider {
           comment{ id }
         }
       }`;
-    await this.graphql(mutation, { threadId, body: message });
+    await this.graphql(mutation, { threadId, body: message }, signal);
     log.info({ threadId }, "posted GitHub PR review thread reply");
   }
 
   /** Resolve and cache VE's own GitHub login (used to tag `isOwn` comments). */
-  private async resolveCurrentLogin(): Promise<string | null> {
+  private async resolveCurrentLogin(signal?: AbortSignal): Promise<string | null> {
     if (this.currentLogin !== null) return this.currentLogin;
     try {
-      const data = GraphQLViewerSchema.parse(await this.graphql(`query{ viewer{ login } }`, {}));
+      const data = GraphQLViewerSchema.parse(await this.graphql(`query{ viewer{ login } }`, {}, signal));
       this.currentLogin = data.viewer.login;
       return this.currentLogin;
     } catch (err) {
+      if (signal?.aborted === true) throw signal.reason ?? err;
       log.warn({ err }, "failed to resolve GitHub viewer login; isOwn tagging disabled");
       return null;
     }
@@ -467,7 +485,11 @@ export class GitHubReviewProvider implements ReviewProvider {
     return `${base}/graphql`;
   }
 
-  private async graphql<T = unknown>(query: string, variables: Record<string, unknown>): Promise<T> {
+  private async graphql<T = unknown>(
+    query: string,
+    variables: Record<string, unknown>,
+    signal?: AbortSignal,
+  ): Promise<T> {
     const response = await globalThis.fetch(this.graphqlEndpoint(), {
       method: "POST",
       headers: {
@@ -477,6 +499,7 @@ export class GitHubReviewProvider implements ReviewProvider {
         "X-GitHub-Api-Version": "2022-11-28",
       },
       body: JSON.stringify({ query, variables }),
+      ...(signal !== undefined ? { signal } : {}),
     });
     if (!response.ok) {
       const text = await response.text().catch(() => "");

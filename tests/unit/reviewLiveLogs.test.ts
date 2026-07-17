@@ -142,18 +142,35 @@ function makeMocks(initialTask?: Task) {
       }
     }),
     setFailureReason: vi.fn(async () => undefined),
-    incrementCycle: vi.fn(async () => {
+    startAgentCycle: vi.fn(async (_id: unknown, result: unknown) => {
       if (store["task"]) {
         const current = (store["task"] as Task).cycleCount;
         const next = current + 1;
         store["task"] = { ...(store["task"] as Task), cycleCount: next };
+        await (store["saveAgentCycle"] as (
+          taskId: string,
+          cycleNumber: number,
+          result: unknown,
+        ) => Promise<void>)(
+          (store["task"] as Task).taskId,
+          next,
+          result,
+        );
         return next;
       }
       return 1;
     }),
     getAgentCycles: vi.fn(async () => []),
     saveAgentCycle: vi.fn(async (taskId: string, cycleNumber: number, result: unknown) => {
-      savedCycles.push({ taskId, cycleNumber, result });
+      const existingIndex = savedCycles.findIndex(
+        (cycle) => cycle.taskId === taskId && cycle.cycleNumber === cycleNumber,
+      );
+      const saved = { taskId, cycleNumber, result };
+      if (existingIndex >= 0) {
+        savedCycles[existingIndex] = saved;
+      } else {
+        savedCycles.push(saved);
+      }
     }),
     getPostedReviewCommentHashes: vi.fn(async () => new Set<string>()),
     getPostedReviewComments: vi.fn(async () => []),
@@ -237,6 +254,72 @@ describe("Review live logs and cycle persistence", () => {
     expect(types).not.toContain("review.failed");
   });
 
+  it("emits streamed agent events before review completion and persists them once", async () => {
+    const mocks = makeMocks(makeTask());
+    const runner = makeWorkspaceRunner();
+    let finishAgent: ((value: { rawOutput: string }) => void) | undefined;
+    runner.runReviewInDocker.mockImplementationOnce(async (
+      _handle: unknown,
+      _input: unknown,
+      callbacks?: { onStderrChunk?: ((chunk: string) => void) | undefined },
+    ) => {
+      for (const event of [
+        {
+          __ve_event: true,
+          type: "review.prompt_received",
+          ts: "2026-07-13T11:59:59.000Z",
+          data: {
+            userPromptLength: 1_024,
+            systemPromptLength: 256,
+            userPromptSource: "file",
+            systemPromptSource: "base64",
+          },
+        },
+        {
+          __ve_event: true,
+          type: "session.start",
+          ts: "2026-07-13T12:00:00.000Z",
+          data: { mode: "review" },
+        },
+        {
+          __ve_event: true,
+          type: "assistant.message",
+          ts: "2026-07-13T12:00:01.000Z",
+          data: { content: "Reviewing now" },
+        },
+      ]) {
+        callbacks?.onStderrChunk?.(`${JSON.stringify(event)}\n`);
+      }
+      return new Promise<{ rawOutput: string }>((resolve) => {
+        finishAgent = resolve;
+      });
+    });
+    const orch = makeOrch(mocks, runner);
+
+    const reviewPromise = orch.runReview(TASK_ID);
+    await vi.waitFor(() => {
+      expect(capturedEvents.some((event) => event.type === "assistant.message")).toBe(true);
+    });
+
+    expect(mocks.savedCycles).toHaveLength(1);
+    expect((mocks.savedCycles[0]?.result as { status?: string }).status).toBe("running");
+    expect(capturedEvents.map((event) => event.type)).toEqual(expect.arrayContaining([
+      "review.prompt_received",
+      "session.start",
+      "assistant.message",
+    ]));
+    expect(capturedEvents.some((event) => event.type.startsWith("tool."))).toBe(false);
+    expect(getTaskEventBuffer(TASK_ID).some((event) => event.type === "assistant.message")).toBe(true);
+
+    expect(finishAgent).toBeDefined();
+    finishAgent?.({ rawOutput: GOOD_RAW_OUTPUT });
+    await reviewPromise;
+
+    const result = mocks.savedCycles[0]?.result as { agentEvents?: AgentLogEvent[] } | undefined;
+    expect(result?.agentEvents?.filter((event) => event.type === "assistant.message")).toHaveLength(1);
+    expect(result?.agentEvents?.filter((event) => event.type === "review.prompt_received")).toHaveLength(1);
+  });
+
   it("emits review.failed event when agent throws", async () => {
     const mocks = makeMocks(makeTask());
     const runner = makeWorkspaceRunner();
@@ -257,7 +340,7 @@ describe("Review live logs and cycle persistence", () => {
 
     await orch.runReview(TASK_ID);
 
-    expect(mocks.store["saveAgentCycle"]).toHaveBeenCalledTimes(1);
+    expect(mocks.store["saveAgentCycle"]).toHaveBeenCalledTimes(2);
     expect(mocks.savedCycles).toHaveLength(1);
     const saved = mocks.savedCycles[0]!;
     expect(saved.taskId).toBe(TASK_ID);

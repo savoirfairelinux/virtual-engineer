@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { createAdminServer } from "../../src/admin/adminServer.js";
 import type { AdminRuntimeConfig } from "../../src/admin/adminServer.js";
 import type { StateStore, IntegrationStore } from "../../src/interfaces.js";
@@ -106,5 +106,27 @@ describe("Admin Server - Unauthenticated Health Endpoint", () => {
     // Test: POST /health should return 405
     const response = await fetch(`${baseUrl}/health`, { method: "POST" });
     expect(response.status).toBe(405);
+  });
+
+  it("reports readiness only when the OpenShell gateway is healthy", async () => {
+    const healthy = vi.fn().mockResolvedValue(false);
+    server = createAdminServer({
+      polling: { isRunning: () => true, getIntervals: () => ({ intervalMs: 30_000 }) },
+      stateStore: {} as unknown as StateStore,
+      integrationStore: {} as unknown as IntegrationStore,
+      config: {
+        nodeEnv: "test", logLevel: "error", maxAgentCycles: 3,
+        maxRetryAttempts: 5, pollingIntervalMs: 30_000, adminAuthSecret: undefined,
+      },
+      providers: [],
+      runtimeGateway: { healthy, address: "http://gateway" },
+    });
+    await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", resolve));
+    const addr = server.address() as AddressInfo;
+    const baseUrl = `http://${addr.address}:${addr.port}`;
+
+    expect((await fetch(`${baseUrl}/ready`)).status).toBe(503);
+    healthy.mockResolvedValue(true);
+    expect((await fetch(`${baseUrl}/ready`)).status).toBe(200);
   });
 });

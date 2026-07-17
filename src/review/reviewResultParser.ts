@@ -72,8 +72,22 @@ export function parseReviewResult(raw: string): ReviewAgentResult {
         // not valid JSON either — fall through to the original error
       }
       if (
+        typeof fallbackJson === "object" &&
+        fallbackJson !== null &&
+        (fallbackJson as Record<string, unknown>)["status"] === "failed"
+      ) {
+        const summary = (fallbackJson as Record<string, unknown>)["summary"];
+        throw new ReviewResultParseError(
+          typeof summary === "string" && summary.trim()
+            ? summary
+            : "Agent worker reported a failed review execution",
+          raw
+        );
+      }
+      if (
         fallbackJson !== undefined &&
-        (fallbackJson as Record<string, unknown>)["status"] !== "failed"
+        typeof fallbackJson === "object" &&
+        fallbackJson !== null
       ) {
         const fallbackParsed = PayloadSchema.safeParse(fallbackJson);
         if (fallbackParsed.success) {

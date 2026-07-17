@@ -14,7 +14,9 @@ import { getLogger } from "../src/logger.js";
 import { SqliteStateStore } from "../src/state/stateStore.js";
 import { HttpRedmineConnector } from "../src/connectors/redmineConnector.js";
 import { MockAgentAdapter } from "../src/agents/mockAgentAdapter.js";
-import { DockerWorkspaceRunner } from "../src/workspace/workspaceRunner.js";
+import { OpenShellWorkspaceRunner } from "../src/workspace/openShellWorkspaceRunner.js";
+import { HostGitExecutor } from "../src/workspace/hostGitExecutor.js";
+import { OpenShellClient } from "../src/openshell/openShellClient.js";
 import { Orchestrator } from "../src/orchestrator/orchestrator.js";
 import type { ProjectModeDeps } from "../src/orchestrator/orchestrator.js";
 import { makeTicketId, makeProjectId, makeAgentId } from "../src/interfaces.js";
@@ -126,13 +128,13 @@ Do not manually work on this ticket.`;
       simulateDelayMs: 500,
     });
 
-    const workspaceRunner = new DockerWorkspaceRunner(
-      {
-        agentContainerImage: appConfig.agentContainerImage,
-        agentTimeoutMs: appConfig.agentTimeoutMs,
-      },
-      mockAgentAdapter
-    );
+    const workspaceRunner = new OpenShellWorkspaceRunner({
+      git: new HostGitExecutor({ baseDir: appConfig.workspaceBaseDir }),
+      client: new OpenShellClient({ gateway: process.env["OPENSHELL_GATEWAY"] ?? undefined }),
+      sandboxImage: appConfig.agentContainerImage,
+      agentAdapter: mockAgentAdapter,
+      managedProviderStore: stateStore,
+    });
 
     // ─── Initialize orchestrator ─────────────────────────────────────────────
     log.info("initializing orchestrator");

@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import { readFileSync, existsSync } from "node:fs";
 import { join, extname, resolve } from "node:path";
 import { getLogger } from "../logger.js";
-import type { OAuthAppStore, IntegrationStore, PromptStore, StateStore, Integration, DomainCapability } from "../interfaces.js";
+import type { OAuthAppStore, IntegrationStore, PromptStore, StateStore, Integration, DomainCapability, ProjectId, Task } from "../interfaces.js";
 import { renderAdminDashboardHtml } from "./dashboard.js";
 import { registerOverviewRoutes } from "./adminOverviewRoutes.js";
 import type { PluginManager } from "../plugins/pluginManager.js";
@@ -22,6 +22,8 @@ import { registerTaskRoutes } from "./adminTaskRoutes.js";
 import { registerPromptRoutes } from "./adminPromptRoutes.js";
 import { registerStreamRoutes } from "./adminStreamRoutes.js";
 import { registerConcurrencyRoutes } from "./adminConcurrencyRoutes.js";
+import { registerRuntimePolicyRoutes } from "./adminRuntimePolicyRoutes.js";
+import { registerDenialRoutes } from "./adminDenialRoutes.js";
 import { registerSettingsRoutes, type SettingsController } from "./adminSettingsRoutes.js";
 import { registerWebhookRoutes } from "./adminWebhookRoutes.js";
 import { registerIntegrationRoutes } from "./adminIntegrationRoutes.js";
@@ -120,6 +122,8 @@ export interface AdminServerDependencies {
   taskControl?: {
     resumeTask(taskId: ReturnType<typeof makeTaskId>): Promise<void>;
     retryTask(taskId: ReturnType<typeof makeTaskId>): Promise<void>;
+    abandonTask?(taskId: ReturnType<typeof makeTaskId>): Promise<Task>;
+    deleteProject?(projectId: ProjectId): Promise<void>;
   };
   /** Called after an integration config update — invalidates cached VCS connectors. */
   onIntegrationUpdated?: (integrationId: string) => void;
@@ -153,6 +157,12 @@ export interface AdminServerDependencies {
    * persisted and hot-applied by the controller.
    */
   settings?: SettingsController | undefined;
+  /** When provided, mounts runtime-policy CRUD + binding routes. */
+  runtimePolicyStore?: import("../state/stores/runtimePolicyStore.js").RuntimePolicyStoreApi | undefined;
+  /** When provided, mounts the policy-denial audit-log routes. */
+  denialStore?: import("../state/stores/denialStore.js").DenialStoreApi | undefined;
+  /** OpenShell/Kubernetes gateway health probe surfaced at GET /api/admin/runtime/status. */
+  runtimeGateway?: { healthy(): Promise<boolean>; address: string | undefined } | undefined;
 }
 
 /** Derive provider-specific URLs from active plugin manager integrations. */
@@ -415,6 +425,8 @@ function buildApiRouter(dependencies: AdminServerDependencies, authRuntime: Admi
   });
   registerConcurrencyRoutes(router, { concurrency: dependencies.concurrency });
   registerSettingsRoutes(router, { settings: dependencies.settings });
+  registerRuntimePolicyRoutes(router, { runtimePolicyStore: dependencies.runtimePolicyStore, gateway: dependencies.runtimeGateway });
+  registerDenialRoutes(router, { denialStore: dependencies.denialStore });
   registerWebhookRoutes(router, {
     integrationStore: dependencies.integrationStore,
     auditStore,
@@ -536,6 +548,17 @@ async function handleRequest(
       status: "ok",
       timestamp: new Date().toISOString(),
     });
+    return;
+  }
+
+  // Readiness includes the required agent runtime; liveness above stays process-only.
+  if (path === "/ready") {
+    if (method !== "GET") {
+      writeJson(response, 405, { error: "Method not allowed" });
+      return;
+    }
+    const ready = await dependencies.runtimeGateway?.healthy().catch(() => false) ?? false;
+    writeJson(response, ready ? 200 : 503, { status: ready ? "ready" : "not_ready" });
     return;
   }
 

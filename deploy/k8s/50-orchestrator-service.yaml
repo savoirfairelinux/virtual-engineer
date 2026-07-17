@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: virtual-engineer-admin
+  namespace: virtual-engineer
+  labels:
+    app.kubernetes.io/name: virtual-engineer
+    app.kubernetes.io/component: orchestrator
+spec:
+  # ClusterIP: expose the admin UI via an Ingress/port-forward, not directly.
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: virtual-engineer
+    app.kubernetes.io/component: orchestrator
+  ports:
+    - name: admin
+      port: 3100
+      targetPort: admin

@@ -267,10 +267,12 @@ export const gerritDescriptor: ProviderDescriptor = {
             sshAgentPubKeyPath: ssh.agentPubKeyPath ?? null,
             sshKnownHostsPath: ssh.knownHostsPath ?? null,
           }),
-          applyPatchset: async (handle, details): Promise<void> => {
+          applyPatchset: async (handle, details, signal): Promise<void> => {
             if (workspaceRunner.applyPriorPatchset !== undefined) {
               await workspaceRunner.applyPriorPatchset(handle, {
-                vcsBaseUrl: baseUrl,
+                // Full repo URL (base + project) — `git fetch` needs the repo
+                // path, not just the SSH host:port. Matches buildCloneTarget.
+                vcsBaseUrl: `${baseUrl}/${details.project}`,
                 sshHost: ssh.host,
                 sshPort: ssh.port,
                 sshUser: ssh.user,
@@ -279,6 +281,7 @@ export const gerritDescriptor: ProviderDescriptor = {
                 ...(ssh.knownHostsPath !== undefined ? { sshKnownHostsPath: ssh.knownHostsPath } : {}),
                 revisionNumber: details.changeNumber,
                 patchset: details.currentPatchset,
+                signal,
               });
             }
           },
@@ -305,8 +308,4 @@ export const gerritDescriptor: ProviderDescriptor = {
   /** SSH key pair generation — called by the admin API endpoint. */
   generateSshKeyPair: generateGerritSshKeyPair,
 };
-
-// Re-export for compatibility — the default key path constant is no longer used
-// as a schema default but kept so callers that import it don't break.
-export const GERRIT_SSH_KEY_DEFAULT = "/app/secrets/gerrit_id_ed25519";
 

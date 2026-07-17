@@ -139,6 +139,20 @@ describe("CopilotAdapter — prompt injection", () => {
       expect(spec.env["SYSTEM_PROMPT"]).toBe("You are a strict TypeScript engineer.");
     });
 
+    it("encodes multiline system prompts from the store", async () => {
+      const content = "You are a strict engineer.\nReturn one focused change.";
+      const store = makePromptStore({ system_generic_code: content });
+      const adapter = new CopilotAdapter({});
+      adapter.setPromptStore(store);
+
+      const spec = await adapter.buildContainerSpecWithPrompts(makeContext(), {});
+
+      expect(spec.env["SYSTEM_PROMPT"]).toBeUndefined();
+      expect(spec.env["SYSTEM_PROMPT_BASE64"]).toBe(
+        Buffer.from(content, "utf8").toString("base64")
+      );
+    });
+
     it("sets userPromptContent on the spec from the store", async () => {
       const store = makePromptStore({ instructions_generic_code: "Follow these instructions carefully." });
       const adapter = new CopilotAdapter({});

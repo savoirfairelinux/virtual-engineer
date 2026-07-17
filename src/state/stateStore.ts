@@ -24,6 +24,12 @@ import type { IntegrationStoreApi } from "./stores/integrationStore.js";
 import { createIntegrationStore } from "./stores/integrationStore.js";
 import type { PolicyStoreApi } from "./stores/policyStore.js";
 import { createPolicyStore } from "./stores/policyStore.js";
+import type { RuntimePolicyStoreApi } from "./stores/runtimePolicyStore.js";
+import { createRuntimePolicyStore } from "./stores/runtimePolicyStore.js";
+import type { DenialStoreApi } from "./stores/denialStore.js";
+import { createDenialStore } from "./stores/denialStore.js";
+import type { OpenShellProviderStoreApi } from "./stores/openShellProviderStore.js";
+import { createOpenShellProviderStore } from "./stores/openShellProviderStore.js";
 import type { ProjectStoreApi } from "./stores/projectStore.js";
 import { createProjectStore } from "./stores/projectStore.js";
 import type { PromptStoreApi } from "./stores/promptStore.js";
@@ -46,7 +52,10 @@ type ComposedStoreApi =
   & UserStoreApi
   & AuditStoreApi
   & GroupStoreApi
-  & PolicyStoreApi;
+  & PolicyStoreApi
+  & RuntimePolicyStoreApi
+  & DenialStoreApi
+  & OpenShellProviderStoreApi;
 
 /** Facade class that composes domain-scoped store modules over one shared SQLite connection. */
 // eslint-disable-next-line @typescript-eslint/no-unsafe-declaration-merging
@@ -63,6 +72,9 @@ export class SqliteStateStore {
   private readonly auditStore: AuditStoreApi;
   private readonly groupStore: GroupStoreApi;
   private readonly policyStore: PolicyStoreApi;
+  private readonly runtimePolicyStore: RuntimePolicyStoreApi;
+  private readonly denialStore: DenialStoreApi;
+  private readonly openShellProviderStore: OpenShellProviderStoreApi;
   private readonly taskTransitionListeners: Array<(task: Task) => void> = [];
 
   constructor(private readonly raw: Database.Database) {
@@ -90,6 +102,9 @@ export class SqliteStateStore {
     this.auditStore = createAuditStore({ db: this.db });
     this.groupStore = createGroupStore({ db: this.db });
     this.policyStore = createPolicyStore({ db: this.db });
+    this.runtimePolicyStore = createRuntimePolicyStore({ db: this.db });
+    this.denialStore = createDenialStore({ db: this.db });
+    this.openShellProviderStore = createOpenShellProviderStore({ db: this.db });
 
     Object.assign(
       this,
@@ -102,7 +117,10 @@ export class SqliteStateStore {
       this.userStore,
       this.auditStore,
       this.groupStore,
-      this.policyStore
+      this.policyStore,
+      this.runtimePolicyStore,
+      this.denialStore,
+      this.openShellProviderStore
     );
   }
 
@@ -158,6 +176,7 @@ export class SqliteStateStore {
 
   /** Apply the baseline DDL and all incremental ALTER TABLE migrations in one synchronous pass. */
   private applyMigrations(): void {
+    this.migrateLegacyRuntimePolicyBindings();
     this.raw.exec(`
       CREATE TABLE IF NOT EXISTS tasks (
         task_id         TEXT    PRIMARY KEY,
@@ -367,6 +386,66 @@ export class SqliteStateStore {
         updated_at          INTEGER NOT NULL
       );
 
+      -- Declarative agent-runtime policies (OpenShell / future backends).
+      CREATE TABLE IF NOT EXISTS runtime_policies (
+        id           TEXT    PRIMARY KEY,
+        name         TEXT    NOT NULL,
+        kind         TEXT    NOT NULL,
+        yaml         TEXT    NOT NULL DEFAULT '',
+        description  TEXT    NOT NULL DEFAULT '',
+        created_at   INTEGER NOT NULL,
+        updated_at   INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_runtime_policies_name ON runtime_policies(name);
+      CREATE INDEX IF NOT EXISTS idx_runtime_policies_kind ON runtime_policies(kind);
+
+      CREATE TABLE IF NOT EXISTS runtime_policy_bindings (
+        id          TEXT    PRIMARY KEY,
+        policy_id   TEXT    NOT NULL REFERENCES runtime_policies(id) ON DELETE CASCADE,
+        kind        TEXT    NOT NULL,
+        project_id  TEXT    REFERENCES projects(id) ON DELETE CASCADE,
+        agent_id    TEXT    REFERENCES agents(id) ON DELETE CASCADE,
+        created_at  INTEGER NOT NULL,
+        updated_at  INTEGER NOT NULL,
+        CHECK ((project_id IS NOT NULL AND agent_id IS NULL)
+          OR (project_id IS NULL AND agent_id IS NOT NULL))
+      );
+      CREATE INDEX IF NOT EXISTS idx_runtime_policy_bindings_policy ON runtime_policy_bindings(policy_id);
+      CREATE INDEX IF NOT EXISTS idx_runtime_policy_bindings_project ON runtime_policy_bindings(project_id);
+      CREATE INDEX IF NOT EXISTS idx_runtime_policy_bindings_agent ON runtime_policy_bindings(agent_id);
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_runtime_policy_binding_project
+        ON runtime_policy_bindings(policy_id, project_id) WHERE project_id IS NOT NULL;
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_runtime_policy_binding_agent
+        ON runtime_policy_bindings(policy_id, agent_id) WHERE agent_id IS NOT NULL;
+
+      CREATE TABLE IF NOT EXISTS policy_denial_events (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        task_id     TEXT    REFERENCES tasks(task_id),
+        project_id  TEXT,
+        runtime     TEXT    NOT NULL DEFAULT '',
+        category    TEXT    NOT NULL DEFAULT '',
+        host        TEXT    NOT NULL DEFAULT '',
+        method      TEXT    NOT NULL DEFAULT '',
+        path        TEXT    NOT NULL DEFAULT '',
+        decision    TEXT    NOT NULL DEFAULT 'deny',
+        reason      TEXT    NOT NULL DEFAULT '',
+        created_at  INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_policy_denials_task ON policy_denial_events(task_id);
+      CREATE INDEX IF NOT EXISTS idx_policy_denials_project ON policy_denial_events(project_id);
+      CREATE INDEX IF NOT EXISTS idx_policy_denials_created ON policy_denial_events(created_at);
+
+      CREATE TABLE IF NOT EXISTS managed_openshell_providers (
+        provider_name TEXT    PRIMARY KEY,
+        sandbox_name  TEXT    NOT NULL,
+        task_hash     TEXT    NOT NULL,
+        created_at    INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_managed_openshell_providers_created
+        ON managed_openshell_providers(created_at);
+      CREATE INDEX IF NOT EXISTS idx_managed_openshell_providers_sandbox
+        ON managed_openshell_providers(sandbox_name);
+
       -- ─── Users / Sessions / Audit (admin RBAC) ───────────────────────────
       CREATE TABLE IF NOT EXISTS users (
         id            TEXT    PRIMARY KEY,
@@ -471,6 +550,30 @@ export class SqliteStateStore {
     this.ensureColumn("agent_cycles", "cost_cached_tokens", "INTEGER");
     this.ensureColumn("agent_cycles", "cost_cache_write_tokens", "INTEGER");
     this.ensureColumn("agent_cycles", "cost_model_id", "TEXT");
+    this.raw.transaction(() => {
+      this.raw.exec(`
+        UPDATE agent_cycles
+        SET created_at = (
+          SELECT MIN(duplicate.created_at)
+          FROM agent_cycles AS duplicate
+          WHERE duplicate.task_id = agent_cycles.task_id
+            AND duplicate.cycle_number = agent_cycles.cycle_number
+        )
+        WHERE id IN (
+          SELECT MAX(id)
+          FROM agent_cycles
+          GROUP BY task_id, cycle_number
+        );
+        DELETE FROM agent_cycles
+        WHERE id NOT IN (
+          SELECT MAX(id)
+          FROM agent_cycles
+          GROUP BY task_id, cycle_number
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_agent_cycles_task_cycle
+          ON agent_cycles(task_id, cycle_number);
+      `);
+    })();
     this.ensureColumn("integrations", "discovered_resources_json", "TEXT");
     this.ensureColumn("integrations", "discovered_at", "INTEGER");
     this.ensureColumn("tasks", "project_id", "TEXT");
@@ -482,6 +585,31 @@ export class SqliteStateStore {
     this.ensureColumn("agents", "feedback_instructions_prompt_id", "TEXT REFERENCES prompts(id) ON DELETE SET NULL");
     this.ensureColumn("projects", "skill_discovery_enabled", "INTEGER NOT NULL DEFAULT 0");
     this.ensureColumn("prompts", "prompt_type", "TEXT NOT NULL DEFAULT 'user'");
+    this.ensureColumn("runtime_policy_bindings", "kind", "TEXT");
+    this.raw.exec(`
+      UPDATE runtime_policy_bindings
+      SET kind = (SELECT kind FROM runtime_policies WHERE runtime_policies.id = runtime_policy_bindings.policy_id)
+      WHERE kind IS NULL;
+    `);
+    const duplicateRuntimeBinding = this.raw.prepare(`
+      SELECT COALESCE(project_id, agent_id) AS target_id, kind, COUNT(*) AS count
+      FROM runtime_policy_bindings
+      WHERE kind IS NOT NULL
+      GROUP BY project_id, agent_id, kind
+      HAVING COUNT(*) > 1
+      LIMIT 1
+    `).get() as { target_id: string; kind: string; count: number } | undefined;
+    if (duplicateRuntimeBinding) {
+      throw new Error(
+        `Cannot migrate runtime policy bindings: ${duplicateRuntimeBinding.count} ${duplicateRuntimeBinding.kind} policies target ${duplicateRuntimeBinding.target_id}`,
+      );
+    }
+    this.raw.exec(`
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_runtime_policy_binding_project_kind
+        ON runtime_policy_bindings(project_id, kind) WHERE project_id IS NOT NULL;
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_runtime_policy_binding_agent_kind
+        ON runtime_policy_bindings(agent_id, kind) WHERE agent_id IS NOT NULL;
+    `);
 
     this.raw.exec(`
       UPDATE prompts SET prompt_type = 'system'
@@ -510,6 +638,58 @@ export class SqliteStateStore {
         WHERE project_id IS NULL
           AND state NOT IN ('DONE', 'FAILED', 'ABANDONED', 'REVIEW_DONE', 'REVIEW_FAILED');
     `);
+  }
+
+  /** Move pre-PBAC runtime bindings away from the PBAC table name. */
+  private migrateLegacyRuntimePolicyBindings(): void {
+    const table = this.raw.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'policy_bindings'"
+    ).get() as { name: string } | undefined;
+    if (!table) return;
+
+    const columns = this.raw.prepare("PRAGMA table_info(`policy_bindings`)").all() as Array<{ name: string }>;
+    const names = new Set(columns.map((column) => column.name));
+    if (!names.has("project_id") || names.has("principal_type")) return;
+
+    const destination = this.raw.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'runtime_policy_bindings'"
+    ).get() as { name: string } | undefined;
+    const destinationColumns = destination
+      ? this.raw.prepare("PRAGMA table_info(`runtime_policy_bindings`)").all() as Array<{ name: string }>
+      : [];
+    const destinationHasKind = destinationColumns.some((column) => column.name === "kind");
+
+    const migrate = this.raw.transaction(() => {
+      this.raw.exec(`
+        DROP INDEX IF EXISTS idx_policy_bindings_policy;
+        DROP INDEX IF EXISTS idx_policy_bindings_project;
+        DROP INDEX IF EXISTS idx_policy_bindings_agent;
+      `);
+      if (destination) {
+        if (destinationHasKind) {
+          this.raw.exec(`
+            INSERT INTO runtime_policy_bindings
+              (id, policy_id, kind, project_id, agent_id, created_at, updated_at)
+            SELECT binding.id, binding.policy_id, policy.kind,
+              binding.project_id, binding.agent_id, binding.created_at, binding.updated_at
+            FROM policy_bindings AS binding
+            JOIN runtime_policies AS policy ON policy.id = binding.policy_id;
+            DROP TABLE policy_bindings;
+          `);
+        } else {
+          this.raw.exec(`
+            INSERT INTO runtime_policy_bindings
+              (id, policy_id, project_id, agent_id, created_at, updated_at)
+            SELECT id, policy_id, project_id, agent_id, created_at, updated_at
+            FROM policy_bindings;
+            DROP TABLE policy_bindings;
+          `);
+        }
+      } else {
+        this.raw.exec("ALTER TABLE policy_bindings RENAME TO runtime_policy_bindings");
+      }
+    });
+    migrate();
   }
 
   /**

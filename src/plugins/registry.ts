@@ -104,7 +104,7 @@ export interface PluginOAuthConfigResolverContext {
 export interface ReviewerBundle {
   provider: ReviewProvider;
   buildCloneTarget: (details: ReviewChangeDetails) => { cloneUrl: string; sshKeyPath: string | null; sshAgentPubKeyPath?: string | null; sshKnownHostsPath: string | null };
-  applyPatchset?: (handle: WorkspaceHandle, details: ReviewChangeDetails) => Promise<void>;
+  applyPatchset?: (handle: WorkspaceHandle, details: ReviewChangeDetails, signal?: AbortSignal) => Promise<void>;
   /** DB key for the system prompt passed to the review agent. */
   systemPromptId: string;
   /** DB key for the user instructions prompt injected into the review prompt. */
@@ -159,8 +159,6 @@ export interface SourceControlCapability {
 export interface AgentAdapterContext {
   /** Max atomic commits an agent may create per cycle. */
   maxCommitsPerCycle: number;
-  /** Docker network for agent / review containers. */
-  dockerNetwork: string;
 }
 
 /** `agent_execution` capability: run a coding agent inside a workspace. */

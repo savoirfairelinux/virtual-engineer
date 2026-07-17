@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { AddressInfo } from "node:net";
+import { request as httpRequest } from "node:http";
 import { makeExternalChangeId, makeTaskId, makeTicketId } from "../../src/interfaces.js";
 import type { AgentCycle, OAuthAppStore, IntegrationStore, StateStore, StateTransition, Task } from "../../src/interfaces.js";
 import { createAdminServer } from "../../src/admin/adminServer.js";
@@ -175,6 +176,23 @@ async function readFirstChunk(response: Response): Promise<string> {
   const chunk = new TextDecoder().decode(value);
   await reader.cancel();
   return chunk;
+}
+
+async function readUntil(response: Response, expected: string): Promise<string> {
+  const reader = response.body?.getReader();
+  if (!reader) {
+    throw new Error("Expected response body");
+  }
+
+  const decoder = new TextDecoder();
+  let text = "";
+  for (let index = 0; index < 10 && !text.includes(expected); index += 1) {
+    const { done, value } = await reader.read();
+    if (done || !value) break;
+    text += decoder.decode(value, { stream: true });
+  }
+  await reader.cancel();
+  return text;
 }
 
 describe("createAdminServer", () => {
@@ -688,7 +706,7 @@ describe("createAdminServer", () => {
 
     const server = createAdminServer({
       stateStore: makeStateStore({
-        deleteTaskGroup: async (taskId) => {
+        deleteTask: async (taskId) => {
           deleteTested = true;
           expect(taskId).toBe(task.taskId);
         },
@@ -729,7 +747,7 @@ describe("createAdminServer", () => {
 
     const server = createAdminServer({
       stateStore: makeStateStore({
-        deleteTaskGroup: async (taskId) => {
+        deleteTask: async (taskId) => {
           deleteTested = true;
           expect(taskId).toBe(task.taskId);
         },
@@ -1316,13 +1334,122 @@ describe("SSE endpoints", () => {
       providers: providerSummaries,
     });
     const base = await listen(server);
+    const ac = new AbortController();
     try {
-      const ac = new AbortController();
       const response = await fetch(`${base}/api/admin/logs/stream?taskId=task-1`, { signal: ac.signal });
       expect(response.status).toBe(200);
       expect(response.headers.get("content-type")).toContain("text/event-stream");
-      ac.abort();
+      expect(response.headers.get("x-accel-buffering")).toBe("no");
     } finally {
+      ac.abort();
+      await closeServer(server);
+    }
+  });
+
+  it("GET /api/admin/logs/stream announces the established stream", async () => {
+    const server = createAdminServer({
+      stateStore: makeStateStore({ getAgentCycles: async () => [] }),
+      config: {
+        nodeEnv: "test",
+        logLevel: "info",
+        maxAgentCycles: 3,
+        maxRetryAttempts: 5,
+        pollingIntervalMs: 30000,
+      },
+      polling: { isRunning: () => true, getIntervals: () => ({ intervalMs: 30000 }) },
+      providers: providerSummaries,
+    });
+    const base = await listen(server);
+    try {
+      const response = await fetch(`${base}/api/admin/logs/stream?taskId=task-1`);
+      const text = await readFirstChunk(response);
+      expect(text).toContain("stream.connected");
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it("GET /api/admin/logs/stream retains events emitted while history loads", async () => {
+    const { agentLogBus: bus } = await import("../../src/agents/agentEventBus.js");
+    let releaseHistory: (() => void) | undefined;
+    const historyGate = new Promise<void>((resolve) => { releaseHistory = resolve; });
+    const server = createAdminServer({
+      stateStore: makeStateStore({
+        getAgentCycles: async () => {
+          await historyGate;
+          return [];
+        },
+      }),
+      config: {
+        nodeEnv: "test",
+        logLevel: "info",
+        maxAgentCycles: 3,
+        maxRetryAttempts: 5,
+        pollingIntervalMs: 30000,
+      },
+      polling: { isRunning: () => true, getIntervals: () => ({ intervalMs: 30000 }) },
+      providers: providerSummaries,
+    });
+    const base = await listen(server);
+    try {
+      const responsePromise = fetch(`${base}/api/admin/logs/stream?taskId=task-1`);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      bus.emit("event", {
+        type: "review.prompt_received",
+        timestamp: new Date().toISOString(),
+        data: { userPromptLength: 120 },
+        taskId: "task-1",
+        cycleNumber: 1,
+      });
+      releaseHistory?.();
+
+      const response = await responsePromise;
+      const text = await readFirstChunk(response);
+      expect(text).toContain("review.prompt_received");
+    } finally {
+      releaseHistory?.();
+      await closeServer(server);
+    }
+  });
+
+  it("GET /api/admin/logs/stream removes its listener when the client disconnects during history loading", async () => {
+    const { agentLogBus: bus } = await import("../../src/agents/agentEventBus.js");
+    let releaseHistory!: () => void;
+    let markHistoryStarted!: () => void;
+    const historyGate = new Promise<void>((resolve) => { releaseHistory = resolve; });
+    const historyStarted = new Promise<void>((resolve) => { markHistoryStarted = resolve; });
+    const server = createAdminServer({
+      stateStore: makeStateStore({
+        getAgentCycles: async () => {
+          markHistoryStarted();
+          await historyGate;
+          return [];
+        },
+      }),
+      config: {
+        nodeEnv: "test",
+        logLevel: "info",
+        maxAgentCycles: 3,
+        maxRetryAttempts: 5,
+        pollingIntervalMs: 30000,
+      },
+      polling: { isRunning: () => true, getIntervals: () => ({ intervalMs: 30000 }) },
+      providers: providerSummaries,
+    });
+    const base = await listen(server);
+    const initialListeners = new Set(bus.listeners("event"));
+    const request = httpRequest(`${base}/api/admin/logs/stream?taskId=task-1`, () => undefined);
+    request.on("error", () => undefined);
+    try {
+      request.end();
+      await historyStarted;
+      const requestListeners = bus.listeners("event").filter((listener) => !initialListeners.has(listener));
+      expect(requestListeners).toHaveLength(1);
+      request.destroy();
+      await vi.waitFor(() => expect(bus.listeners("event")).not.toContain(requestListeners[0]));
+    } finally {
+      request.destroy();
+      releaseHistory();
       await closeServer(server);
     }
   });
@@ -1345,8 +1472,6 @@ describe("SSE endpoints", () => {
     try {
       const ac = new AbortController();
       const response = await fetch(`${base}/api/admin/logs/stream?taskId=task-1`, { signal: ac.signal });
-      const reader = response.body?.getReader();
-
       const event = {
         type: "tool.execution_start",
         timestamp: new Date().toISOString(),
@@ -1358,8 +1483,7 @@ describe("SSE endpoints", () => {
       await new Promise((r) => setTimeout(r, 10));
       bus.emit("event", event);
 
-      const { value } = await reader!.read();
-      const text = new TextDecoder().decode(value);
+      const text = await readUntil(response, "tool.execution_start");
       ac.abort();
       expect(text).toContain("tool.execution_start");
       expect(text).toContain("readFile");
@@ -1386,8 +1510,6 @@ describe("SSE endpoints", () => {
     try {
       const ac = new AbortController();
       const response = await fetch(`${base}/api/admin/logs/stream?taskId=task-1`, { signal: ac.signal });
-      const reader = response.body?.getReader();
-
       await new Promise((r) => setTimeout(r, 10));
       bus.emit("event", {
         type: "stderr.line",
@@ -1397,8 +1519,7 @@ describe("SSE endpoints", () => {
         cycleNumber: 1,
       });
 
-      const { value } = await reader!.read();
-      const text = new TextDecoder().decode(value);
+      const text = await readUntil(response, "worker started");
       ac.abort();
       expect(text).toContain("worker started");
     } finally {

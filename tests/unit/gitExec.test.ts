@@ -14,10 +14,18 @@ describe("execGit", () => {
   it("returns the output of execFileSync unchanged", () => {
     mockExecFileSync.mockReturnValue("abc\n");
     expect(execGit(["status"], "/repo")).toBe("abc\n");
-    expect(mockExecFileSync).toHaveBeenCalledWith("git", ["status"], {
+    expect(mockExecFileSync).toHaveBeenCalledWith("git", [
+      "-c", "core.hooksPath=/dev/null",
+      "-c", "include.path=/dev/null",
+      "status",
+    ], {
       cwd: "/repo",
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
+      env: expect.objectContaining({
+        GIT_CONFIG_GLOBAL: "/dev/null",
+        GIT_CONFIG_SYSTEM: "/dev/null",
+      }),
     });
   });
 

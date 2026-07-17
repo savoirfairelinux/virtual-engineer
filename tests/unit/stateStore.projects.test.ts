@@ -127,6 +127,125 @@ describe("SqliteStateStore — Phase 2: projects", () => {
     expect((await store.getProjectById(on.id))?.skillDiscoveryEnabled).toBe(false);
   });
 
+  it("atomically rejects agent reassignment and other parent updates while tasks are active", async () => {
+    const originalAgent = await makeAgent(store, { name: "Original" });
+    const replacementAgent = await makeAgent(store, { name: "Replacement" });
+    const project = await store.createProject({ name: "Before", type: "coding", agentId: originalAgent.id });
+    const task = await store.createTask(
+      makeTaskId("active-project-agent"),
+      makeTicketId("42"),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      project.id,
+    );
+
+    await expect(store.updateProject(project.id, {
+      agentId: replacementAgent.id,
+      name: "Must not persist",
+    })).rejects.toMatchObject({ code: "ACTIVE_TASKS" });
+    expect(await store.getProjectById(project.id)).toMatchObject({ agentId: originalAgent.id, name: "Before" });
+
+    await store.transition(task.taskId, "FAILED");
+    await expect(store.updateProject(project.id, { agentId: replacementAgent.id })).resolves.toMatchObject({
+      agentId: replacementAgent.id,
+    });
+  });
+
+  it("rolls back parent updates when a child configuration conflicts", async () => {
+    const agent = await makeAgent(store);
+    await makeIntegration(store, "redmine-atomic", "redmine");
+    const owner = await store.createProject({ name: "Owner", type: "coding", agentId: agent.id });
+    const candidate = await store.createProject({ name: "Before", type: "coding", agentId: agent.id });
+    await store.setProjectTicketSource(owner.id, {
+      integrationId: "redmine-atomic",
+      ticketProjectKey: "SHARED",
+    });
+
+    await expect(store.updateProjectConfiguration(candidate.id, {
+      project: { name: "Must roll back" },
+      ticketSource: { integrationId: "redmine-atomic", ticketProjectKey: "SHARED" },
+    })).rejects.toThrow("already claimed");
+
+    expect((await store.getProjectById(candidate.id))?.name).toBe("Before");
+    expect(await store.getProjectTicketSource(candidate.id)).toBeNull();
+  });
+
+  it("atomically rejects ticket-source changes while tasks are active", async () => {
+    const agent = await makeAgent(store);
+    await makeIntegration(store, "redmine-before", "redmine");
+    await makeIntegration(store, "redmine-after", "redmine");
+    const project = await store.createProject({ name: "Before", type: "coding", agentId: agent.id });
+    await store.setProjectTicketSource(project.id, {
+      integrationId: "redmine-before",
+      ticketProjectKey: "BEFORE",
+    });
+    await store.createTask(
+      makeTaskId("active-ticket-source"),
+      makeTicketId("43"),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      project.id,
+    );
+
+    await expect(store.updateProjectConfiguration(project.id, {
+      project: { name: "Must not persist" },
+      ticketSource: { integrationId: "redmine-after", ticketProjectKey: "AFTER" },
+    })).rejects.toMatchObject({ code: "ACTIVE_TASKS" });
+
+    expect((await store.getProjectById(project.id))?.name).toBe("Before");
+    expect(await store.getProjectTicketSource(project.id)).toMatchObject({
+      integrationId: "redmine-before",
+      ticketProjectKey: "BEFORE",
+    });
+  });
+
+  it("allows a name edit with an idempotent full execution payload while tasks are active", async () => {
+    const agent = await makeAgent(store);
+    await makeIntegration(store, "redmine-idempotent", "redmine");
+    const project = await store.createProject({
+      name: "Before",
+      type: "coding",
+      agentId: agent.id,
+      postCloneScript: "npm ci",
+      skillDiscoveryEnabled: true,
+    });
+    await store.setProjectTicketSource(project.id, {
+      integrationId: "redmine-idempotent",
+      ticketProjectKey: "SAME",
+    });
+    await store.createTask(
+      makeTaskId("active-idempotent-project"),
+      makeTicketId("44"),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      project.id,
+    );
+
+    await expect(store.updateProjectConfiguration(project.id, {
+      project: {
+        name: "After",
+        agentId: agent.id,
+        agentOverrideJson: null,
+        postCloneScript: "npm ci",
+        skillDiscoveryEnabled: true,
+      },
+      ticketSource: { integrationId: "redmine-idempotent", ticketProjectKey: "SAME" },
+      pushTargets: [],
+    })).resolves.toMatchObject({ name: "After" });
+  });
+
   it("createProject throws when agent does not exist", async () => {
     await expect(
       store.createProject({ name: "Bad", type: "coding", agentId: makeAgentId("missing") })

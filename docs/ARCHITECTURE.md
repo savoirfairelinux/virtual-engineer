@@ -6,8 +6,8 @@
 
 Virtual Engineer is a **Node.js orchestrator** that runs on the host (or in a Docker container) and drives two autonomous workflows:
 
-- **Code generation** — picks up tickets, clones the repo into an ephemeral Docker container, lets Copilot implement the changes, then pushes for review.
-- **Code review** — receives review events (Gerrit SSH stream, GitLab/GitHub webhooks, or polling), runs Copilot on the diff inside a Docker container, and posts inline comments + a vote.
+- **Code generation** — picks up tickets, clones the repo host-side, runs Copilot in an ephemeral **OpenShell sandbox**, then pushes for review host-side.
+- **Code review** — receives review events (Gerrit SSH stream, GitLab/GitHub webhooks, or polling), runs Copilot on the diff inside an **OpenShell sandbox**, and posts inline comments + a vote.
 
 ```
   ┌──────────────────────────────────────────────────────────────────────────┐
@@ -30,23 +30,23 @@ Virtual Engineer is a **Node.js orchestrator** that runs on the host (or in a Do
   │                                └──────────────┬────────────────────┘   │
   │                                               │                        │
   │                                ┌──────────────▼────────────────────┐   │
-  │                                │  WorkspaceRunner                  │   │
-  │                                │  1. docker volume create (×2)     │   │
-  │                                │  2. git clone (helper container)  │   │
-  │                                │  3. docker run  (agent container) │   │
-  │                                │  4. git commit + push (helper)    │   │
-  │                                │  5. docker volume rm  (×2)        │   │
+  │                                │  OpenShellWorkspaceRunner         │   │
+  │                                │  1. HostGitExecutor: clone (host) │   │
+  │                                │  2. sandbox create (container/Pod)│   │
+  │                                │  3. sandbox upload  → /sandbox/* │   │
+  │                                │  4. sandbox exec    (agent)       │   │
+  │                                │  5. sandbox download ← /sandbox/*│   │
+  │                                │  6. git push (host)  + sandbox rm │   │
   │                                └──────────────┬────────────────────┘   │
   └──────────────────────────────────────────────-┼────────────────────────┘
-                git push SSH / HTTP                │ docker run --rm
+       git push SSH / HTTP (host-side)            │ OpenShell gateway (gRPC)
                         ▼                          ▼
   ┌──────────────────────────┐   ┌─────────────────────────────────────────┐
-  │  Gerrit / GitLab         │   │  Ephemeral Agent Container              │
+  │  Gerrit / GitLab / GitHub│   │  Ephemeral OpenShell Agent Sandbox      │
   └──────────────────────────┘   │  virtual-engineer-workspace:latest      │
-                                 │  /workspace  → named volume (repo)      │
-                                 │  /ve-home    → named volume (CLI home)  │
+                                 │  /sandbox/<workspace> ← repo + .git    │
                                  │                                         │
-                                 │  node /agent-worker/dist/index.js      │
+                                 │  node /app/agent-worker/dist/index.js  │
                                  │    → copilot --headless                 │
                                  │    → edits files, git commit            │
                                  │    → AgentResult JSON → stdout          │
@@ -56,8 +56,9 @@ Virtual Engineer is a **Node.js orchestrator** that runs on the host (or in a Do
 
 **Key design decisions:**
 
-- The host owns all credentials (SSH keys, API tokens). The agent container receives only a GitHub token for the Copilot LLM call.
-- Workspaces use Docker **named volumes** — not host-path bind mounts — so the orchestrator can itself run inside Docker without path-mapping issues.
+- The host owns all credentials (SSH keys, API tokens) and all git plumbing (clone, checkout, cherry-pick, **push**). The agent sandbox receives only the agent's own inference token (e.g. a GitHub token for the Copilot LLM call).
+- The workspace is moved between host and sandbox with OpenShell's **upload → exec → download** lifecycle (no shared filesystem). `HostGitExecutor` keeps the working directory (incl. `.git`) on the orchestrator.
+- OpenShell is the **sole** agent runtime. Its gateway uses the `docker` compute driver by default and can use the experimental `kubernetes` driver without changing `OpenShellWorkspaceRunner`. Docker mode keeps the client API on host loopback, adds a publication restricted to the private `openshell-docker` bridge for supervisor callbacks, and persists gateway-minted sandbox JWT keys. Deny-by-default sandbox **policies** and **policy-denial** auditing are enforced by OpenShell in either mode.
 - Multiple integrations of the same type (e.g. two Gerrit servers) can be active simultaneously; runtime routing is by `integrationId`, not type.
 
 ---
@@ -183,8 +184,15 @@ src/
                           # github-pull-request (HMAC-validated)
 
   workspace/
-    dockerVolume.ts       # createVolume / removeVolume / execInVolume
-    workspaceRunner.ts    # DockerWorkspaceRunner — orchestrates clone+run+push
+    hostGitExecutor.ts        # native git clone/checkout/cherry-pick/diff (host-side)
+    openShellWorkspaceRunner.ts  # sole WorkspaceRunner — create/upload/exec/download
+  openshell/
+    openShellClient.ts        # `openshell` CLI wrapper (sandbox lifecycle + policy)
+    openShellPolicyBuilder.ts # deny-by-default policy YAML
+    denyEventPoller.ts        # scrubbed policy-denial events
+  runtime/
+    runtimeStartup.ts         # resolveOpenShellGateway + startRuntimeRecovery
+                              # (called from index.ts at boot)
 
 agent-worker/
   src/index.ts          # Provider-agnostic orchestrator INSIDE the agent
@@ -258,35 +266,34 @@ Tick-based polling with exponential backoff on consecutive failures.
 
 ### 3.3 WorkspaceRunner
 
-`src/workspace/workspaceRunner.ts` + `src/workspace/dockerVolume.ts`
+`src/workspace/openShellWorkspaceRunner.ts` + `src/workspace/hostGitExecutor.ts` + `src/openshell/openShellClient.ts`
 
-Manages the **Docker volume lifecycle** for each agent cycle. All VCS operations run inside temporary helper containers so the orchestrator itself never needs git on its PATH.
+The **sole** workspace runtime. Git plumbing runs natively on the orchestrator via
+`HostGitExecutor` (no git-in-container); agent execution runs in an ephemeral
+**OpenShell sandbox** through an **upload → exec → download** lifecycle.
 
 ```
   runCycle(task, project)
        │
-       ├─ createVolume("ve-ws-<taskId>-<rand>")   ← repo files
-       ├─ createVolume("ve-home-<taskId>-<rand>")  ← Copilot CLI native modules
+       ├─ HostGitExecutor.createWorkspace()   ← ephemeral dir under WORKSPACE_BASE_DIR
+       ├─ HostGitExecutor.cloneRepo(...)       ← git clone (host-side, SSH or HTTP)
        │
-       ├─ execInVolume(clone helper)   ← git clone via SSH or HTTP
+      ├─ client.createSandbox({ from: image, env: spec.env, policy })  ← container or Pod
+      ├─ client.uploadToSandbox(dir → /sandbox, --no-git-ignore)       ← incl. .git
+      ├─ client.execInSandbox({ workdir: /sandbox/<basename(dir)>,
+      │       command: [node, /app/agent-worker/dist/index.js], env }) ← agent runs
+      ├─ client.downloadFromSandbox(/sandbox/<basename(dir)> → dir)    ← commits back
        │
-       ├─ runAgentInDocker(adapter, context)
-       │     └─ docker run --rm \
-       │           --read-only --cap-drop ALL \
-       │           --security-opt no-new-privileges:true \
-       │           --tmpfs /tmp:rw,nosuid,size=256m \
-       │           -v ve-ws:/workspace \
-       │           -v ve-home:/ve-home \
-       │           virtual-engineer-workspace:latest \
-       │           node /agent-worker/dist/index.js
+       ├─ vcsConnector.push(dir, ref, ...)     ← git push host-side (src/vcs)
        │
-       ├─ execInVolume(commit helper)  ← git add + git commit (with Change-Id)
-       ├─ execInVolume(push helper)    ← git push refs/for/<branch>
-       │
-       └─ removeVolume(ve-ws) + removeVolume(ve-home)
+       └─ client.removeSandbox()  +  HostGitExecutor.destroyWorkspace(dir)
 ```
 
-`execInVolume` injects SSH keys via a base64-encoded env var (decoded inside the helper and written to `/tmp/ssh-key`) to avoid host-path bind-mount issues when the orchestrator itself runs in Docker.
+Push/review-system credentials stay host-side (`src/vcs/` + `buildGitEnv`); only the
+agent's own inference token (from `buildContainerSpec`) is passed as sandbox env.
+The OpenShell gateway's selected compute driver schedules the sandbox and
+enforces the deny-by-default policy applied before the agent starts. Docker is
+the default; Kubernetes is an explicit experimental deployment option.
 
 ---
 
@@ -313,6 +320,8 @@ Plain Node.js `http.createServer` — no framework. The main file handles auth, 
 | `adminConcurrencyRoutes.ts` | `GET/PUT /api/admin/concurrency` |
 | `adminSettingsRoutes.ts` | `GET/PUT /api/admin/settings` (editable runtime workflow settings) |
 | `adminWebhookRoutes.ts` | `POST .../webhook-secret/rotate`, `GET/PUT .../webhook-allowed-ips`, `GET .../webhook-info` |
+| `adminRuntimePolicyRoutes.ts` | `GET/POST/PUT/DELETE /api/admin/runtime/policies`, bindings CRUD |
+| `adminDenialRoutes.ts` | `GET /api/admin/runtime/denials` (policy-denial audit log) |
 
 **Shared primitives** (`adminRouteUtils.ts`): `writeJson`, `writeHtml`, `readBody` (512 KB limit), `toIsoTimestamp`, `asRecord`, `SECRET_MASK`.
 
@@ -359,23 +368,21 @@ Enabling/disabling an integration via the admin API calls `enablePlugin` / `disa
 
 `src/agents/copilotAdapter.ts`
 
-Builds the **Docker container spec** and parses the agent result.
+Builds the **agent container spec** (image, env, command, prompts) and parses the
+agent result. The OpenShell runner executes that spec inside a k3s sandbox Pod
+(upload → exec → download); the adapter itself is runtime-agnostic.
 
 ```
   execute(context)
        │
        ├─ getGitHubOAuthToken(context)    ← OAuth or direct token from integration
        │
-       ├─ buildContainerSpec(context, authEnv)
-       │     env: GITHUB_TOKEN, COPILOT_MODEL, task context vars
-       │     additionalDockerArgs:
-       │       --read-only
-       │       --cap-drop ALL
-       │       --security-opt no-new-privileges:true
-       │       --security-opt label=disable    (SELinux compat)
-       │       --tmpfs /tmp:rw,nosuid,size=256m
+       ├─ buildContainerSpecWithPrompts(context, authEnv)
+       │     image:   virtual-engineer-workspace:latest
+       │     env:     GITHUB_TOKEN, COPILOT_MODEL, task context vars, SYSTEM_PROMPT
+      │     command: node /app/agent-worker/dist/index.js
        │
-       ├─ docker run → agent-worker/dist/index.js
+       ├─ (OpenShell runner) sandbox create → upload → exec → download
        │     stdout: JSON AgentResult
        │     stderr: structured __ve_event lines + plain logs
        │
@@ -384,7 +391,10 @@ Builds the **Docker container spec** and parses the agent result.
              fallback to "feat: <subject>" if missing/invalid
 ```
 
-The agent container is placed on `virtual-engineer_ve-agent-net` — a dedicated Docker bridge network that isolates it from the default bridge and other containers. The network is **not** `--internal`, so the container retains outbound access (required to reach the GitHub/Copilot APIs).
+Sandbox isolation and outbound network control are enforced by OpenShell's
+deny-by-default **policy engine** (filesystem / network / process / inference),
+not by Docker flags. The agent receives only its own inference token (e.g. the
+GitHub token for the Copilot LLM call); push credentials stay host-side.
 
 ---
 
@@ -418,12 +428,11 @@ Drives the **code-review lifecycle** for a single change.
        ▼
   REVIEW_RUNNING
        │
-       ├─ clone repo via execInVolume
-       ├─ git fetch refs/changes/<patchset>
+       ├─ clone repo host-side (HostGitExecutor) + git fetch refs/changes/<patchset>
        ├─ buildReviewPrompt(diff + "already reported" prior comments)
        │
-       ├─ docker run (agent container, REVIEW_MODE=1)
-       │     reads USER_PROMPT_FILE (/ve-home/user-prompt.txt)
+       ├─ sandbox create + upload workspace → exec agent (REVIEW_MODE=1)
+       │     reads USER_PROMPT_FILE (uploaded prompt)
        │     returns raw LLM text → stdout
        │
        ├─ parseReviewResult(output)  →  comments + vote
@@ -451,11 +460,14 @@ Drives the **code-review lifecycle** for a single change.
 
 | Connector | Transport | Push mechanism |
 |-----------|-----------|----------------|
-| `GerritVcsConnector` | SSH (via helper container) | `git push refs/for/<branch>` + Change-Id footer |
+| `GerritVcsConnector` | SSH (host-side git) | `git push refs/for/<branch>` + Change-Id footer |
 | `GitLabVcsConnector` | HTTP (token in `.git-credentials`) | `git push` + GitLab REST API MR creation |
 | `GitHubVcsConnector` | HTTP (token in `.git-credentials`) | `git push` + GitHub REST API PR creation |
 
-Both operate entirely via `execInVolume` — no VCS tools run directly on the orchestrator process. SSH keys are injected as base64 env vars.
+All push/checkout operations run **host-side** in the orchestrator (native `git`
+via `buildGitEnv`), never inside the agent sandbox — so push credentials never
+leave the host. Gerrit SSH auth uses `GIT_SSH_COMMAND` (explicit key) or the
+forwarded SSH agent.
 
 `vcsFactory.ts` exports `createVcsConnectorForIntegration(integration, context?)` which reads the integration's `configJson` and returns the appropriate connector.
 
@@ -750,21 +762,25 @@ Webhook secrets are per-integration (stored in `configJson.webhookSecret`), rota
 
 ---
 
-## 9. Agent container
+## 9. Agent sandbox
 
 ### Image (`Dockerfile.agent`)
 
-Base: `node:24-bookworm-slim`. Includes: `git`, `openssh-client`, `curl`, `jq`, GitHub CLI (`gh`).
+Base: `node:24-bookworm-slim`. Includes: `git`, `openssh-client`, `curl`, `jq`, `iproute2` (the `ip` binary the OpenShell supervisor needs for sandbox network-namespace isolation), GitHub CLI (`gh`), and the required `sandbox` user/group whose home is the policy-writable `/sandbox` path.
 
 ```
 FROM node:24-bookworm-slim
-RUN apt-get install git openssh-client curl ca-certificates jq gh
-COPY agent-worker/ /agent-worker/
-RUN npm --prefix /agent-worker ci --omit=dev
+RUN apt-get install git openssh-client curl ca-certificates jq iproute2 gh
+RUN groupadd --system sandbox && useradd --system --gid sandbox --home-dir /sandbox sandbox
+COPY agent-worker/ /app/agent-worker/
+RUN npm --prefix /app/agent-worker ci --omit=dev
 WORKDIR /workspace
 ```
 
-The Copilot CLI native binary (`copilot-linux-x64`) is installed on first use into `/ve-home` (the persistent named volume), not into `/tmp`.
+This image is the `--from` for the OpenShell sandbox: the gateway schedules it
+as an ephemeral Docker container by default or a Kubernetes Pod in experimental
+mode. The Copilot CLI native binary
+(`copilot-linux-x64`) is installed on first use into the sandbox HOME.
 
 ### Worker (`agent-worker/src/index.ts` → `dist/index.js`)
 
@@ -784,13 +800,281 @@ Runs inside the container. Two modes:
 
 ### Security constraints
 
-| Flag | Purpose |
-|------|---------|
-| `--read-only` | Rootfs immutable; writes only via tmpfs or volumes |
-| `--cap-drop ALL` | No Linux capabilities |
-| `--security-opt no-new-privileges:true` | Prevents privilege escalation |
-| `--security-opt label=disable` | Allows Copilot CLI's `mprotect(PROT_READ)` on SELinux hosts |
-| `--tmpfs /tmp:rw,nosuid,size=256m` | Ephemeral scratch space, no setuid |
-| `--network virtual-engineer_ve-agent-net` | Dedicated bridge — isolated from the default bridge and other containers (not `--internal`; outbound access retained for the GitHub/Copilot APIs) |
+The sandbox is governed by OpenShell's deny-by-default **policy engine**
+across four domains — **filesystem** (writes restricted to `/workspace`),
+**network** (L7 egress allow-list, deny by default), **process** (no privilege
+escalation, dropped capabilities), and **inference** (model-endpoint routing).
+Policies are declarative YAML applied before the agent starts and surfaced/audited
+in the admin UI (Runtime Policies + Policy Denials).
 
-The agent receives only: `GITHUB_TOKEN`, task context env vars (title, description, model), and git author metadata. System secrets (DB path, admin token, SSH keys) are never passed to the container.
+The agent receives only: `GITHUB_TOKEN` (its own inference token), task context env vars (title, description, model), and git author metadata. System secrets (DB path, admin token, SSH keys) and push/review-system credentials are never passed to the sandbox — git clone/checkout/push run host-side in the orchestrator.
+
+---
+
+## 10. Admin features
+
+### 10.1 User accounts & authentication
+
+`src/admin/adminAuthRoutes.ts` · `src/admin/adminAuthService.ts` · `src/state/stores/userStore.ts`
+
+Users are stored in the `users` table (TEXT `id` PK). Each account has a `username` (UNIQUE), a bcrypt `password_hash`, a `role` (`admin | operator | viewer`), and an `enabled` flag.
+
+**Authentication flow:**
+
+```
+  POST /api/admin/auth/login   { username, password }
+       │
+       ├─ rate-limited per IP (loginRateLimiter.ts)
+       │
+       ├─ verify bcrypt hash
+       │
+       └─ create user_sessions row (token_hash = SHA-256 of random token,
+              expires_at = now + 30 days, sliding window reset on each request)
+              → return { token }
+
+  Every subsequent request:
+       Authorization: Bearer <token>
+       │
+       └─ getSessionByTokenHash → verify not expired, user enabled
+              → attach AuthContext to request → enforce PBAC gate
+```
+
+Sessions use sliding expiry: `last_seen_at` is bumped on every request; `expires_at` extends automatically. `getSessionByTokenHash` returns `null` when the session is expired or the user is disabled, forcing re-login.
+
+**First-run setup:** `GET /api/admin/auth/setup-status` returns whether the system has any users. If not, `POST /api/admin/auth/setup` creates the first `admin` account (only usable once — once any user exists, this endpoint is locked).
+
+**User management** (`user.manage` permission — admin only):
+
+| Route | Purpose |
+|-------|---------|
+| `GET /api/admin/users` | List all users |
+| `POST /api/admin/users` | Create user (role, username, password) |
+| `PUT /api/admin/users/:id` | Update username/role/enabled |
+| `PUT /api/admin/users/:id/password` | Change password |
+| `DELETE /api/admin/users/:id` | Delete user (cannot delete own account) |
+
+Password strength is validated against a common-password list (`commonPasswords.ts`) and minimum-length rules.
+
+---
+
+### 10.2 PBAC — Policy-Based Access Control
+
+`src/admin/authorization/` · `src/admin/adminPoliciesRoutes.ts` · `src/state/stores/{groupStore,policyStore}.ts`
+
+Authorization is **pure PBAC** — every admin route declares a `permission` in its `RouteMeta`; the route gate resolves the caller's effective permissions and returns 403 (with `{ error, permission }`) on denial. The `admin` role is the only superuser bypass; `operator` / `viewer` roles only select the default policy bundle at account creation.
+
+#### Permission catalog (`src/admin/authorization/permissions.ts`)
+
+Permissions follow the `"<resourceType>.<action>"` pattern. Scopeable types (`project`, `task`) accept a concrete `resourceId` in a rule; `null` grants the action on every resource of that type. All other permissions (`integration.*`, `agent.*`, `prompt.*`, `oauth.*`, `system.*`, `user.manage`, `audit.read`, `policy.manage`) are global and must be granted with a null `resourceId`. Task rules are scoped by the task's owning **project id**.
+
+| Category | Permissions |
+|----------|------------|
+| Projects | `project.read`, `project.write`, `project.delete`, `project.operate` |
+| Tasks | `task.read`, `task.operate`, `task.delete` |
+| Integrations | `integration.read`, `integration.write`, `integration.delete`, `integration.operate` |
+| Agents | `agent.read`, `agent.write`, `agent.delete`, `agent.operate` |
+| Prompts | `prompt.read`, `prompt.write`, `prompt.delete` |
+| Global | `oauth.manage`, `overview.read`, `concurrency.read`, `system.read`, `system.write`, `user.manage`, `audit.read`, `policy.manage` |
+
+#### Model
+
+```
+  groups            ← named sets of users (group_members FK cascade)
+  policies          ← named grant collections; builtin=1 for Operator/Viewer seeds
+  policy_rules      ← (policy_id, permission, resource_id nullable)
+  policy_bindings   ← (policy_id, principal_type user|group, principal_id)
+                        UNIQUE(policy_id, principal_type, principal_id)
+```
+
+A user's **effective permissions** = union of rules from every policy bound directly to that user plus every policy bound to any group they belong to. Resolution is performed by `policyEngine.buildEffectivePermissions(role, rules)`.
+
+#### Built-in policies (seeded at startup)
+
+| Policy | Access level |
+|--------|-------------|
+| `Operator` | Full read/write on projects, tasks, integrations, agents, prompts; no user/audit/policy administration |
+| `Viewer` | Read-only: overview, task list, project list, runtime status |
+
+Legacy `operator`/`viewer` users with no existing policy bindings or group memberships are automatically bound to their matching built-in policy at startup (one-time migration, idempotent).
+
+#### API (`policy.manage` permission)
+
+| Route | Purpose |
+|-------|---------|
+| `GET /api/admin/permissions` | List all known permissions |
+| `GET /api/admin/groups` | List groups |
+| `POST /api/admin/groups` | Create group |
+| `GET /api/admin/groups/:id` | Get group + members |
+| `PUT /api/admin/groups/:id` | Rename group |
+| `DELETE /api/admin/groups/:id` | Delete group |
+| `POST /api/admin/groups/:id/members` | Add user to group |
+| `DELETE /api/admin/groups/:id/members/:userId` | Remove user from group |
+| `GET /api/admin/policies` | List policies |
+| `POST /api/admin/policies` | Create policy |
+| `GET /api/admin/policies/:id` | Get policy + rules |
+| `PUT /api/admin/policies/:id` | Rename/describe policy |
+| `DELETE /api/admin/policies/:id` | Delete non-builtin policy |
+| `PUT /api/admin/policies/:id/rules` | Replace policy rules atomically |
+| `POST /api/admin/policies/:id/bindings` | Bind policy to user or group |
+| `DELETE /api/admin/policies/:id/bindings/:type/:principalId` | Remove binding |
+
+---
+
+### 10.3 Audit log
+
+`src/admin/adminAudit.ts` · `src/admin/adminAuditRoutes.ts` · `src/state/stores/auditStore.ts`
+
+The `audit_log` table is **append-only** (INTEGER `id` PK). Every mutation through the admin API (integration created/updated/deleted, user created, project enabled, task retried, etc.) writes one row.
+
+**Row structure:**
+
+| Column | Description |
+|--------|-------------|
+| `actor_user_id` | Nullable FK — null for system events |
+| `actor_name` | Display name of the actor (username or `"system"`) |
+| `action` | Dotted string, e.g. `integration.created`, `task.retried`, `user.created` |
+| `target_type` / `target_id` | What the action was applied to (nullable) |
+| `details_json` | Structured JSON payload of the change, with secrets masked |
+
+Secret masking is applied automatically by `maskAuditDetails()`: any key whose name contains `token`, `secret`, `password`, `key`, or `credential` (case-insensitive) has its value replaced with `***`. Known-safe identifiers (`repoKey`, `ticketProjectKey`, `publicKey`) and path fields (`sshKeyPath`) are exempted.
+
+Append retries with backoff (100 ms → 500 ms → 2 s) are applied transparently; after the final failure the error is logged but never propagated to the caller.
+
+**API** (`audit.read` permission):
+
+| Route | Purpose |
+|-------|---------|
+| `GET /api/admin/audit` | List entries newest-first (limit 50, cap 200; filter by `action` or `actorName`) |
+
+---
+
+### 10.4 Agents Library
+
+`src/admin/adminAgentsRoutes.ts` · `src/state/stores/agentStore.ts`
+
+The **Agents Library** is the catalogue of reusable agent configurations. Each project points to one agent via `projects.agent_id`. Multiple projects can share the same agent.
+
+**`agents` table fields:**
+
+| Field | Description |
+|-------|-------------|
+| `id` | TEXT PK |
+| `name` | Display name |
+| `type` | `coding` or `review` |
+| `integration_id` | FK → `integrations.id` (the Copilot/Claude/mock integration) |
+| `model_config_json` | Provider-specific model params (model id, temperature, etc.) |
+| `system_prompt_id` | FK → `prompts.id` (optional system prompt override) |
+| `instructions_prompt_id` | FK → `prompts.id` (main instructions prompt) |
+| `feedback_instructions_prompt_id` | FK → `prompts.id` (optional retry-cycle instructions override — used on `cycleNumber > 1`) |
+| `max_concurrent` | Max parallel agent cycles for this agent's integration (default `1`) |
+| `enabled` | 0/1 (default `0`) |
+
+Agents default to **disabled** — they must be explicitly enabled before a project can run them.
+
+**API** (`agent.read` / `agent.write` / `agent.delete` / `agent.operate`):
+
+| Route | Purpose |
+|-------|---------|
+| `GET /api/admin/agents` | List agents |
+| `POST /api/admin/agents` | Create agent |
+| `GET /api/admin/agents/:id` | Get agent |
+| `PUT /api/admin/agents/:id` | Update agent configuration |
+| `DELETE /api/admin/agents/:id` | Delete agent |
+| `PATCH /api/admin/agents/:id/enable` | Enable |
+| `PATCH /api/admin/agents/:id/disable` | Disable |
+| `POST /api/admin/plugins/:type/oauth/*` | Initiate / complete OAuth flows for agent integrations |
+
+---
+
+### 10.5 Runtime Policies (sandbox)
+
+`src/admin/adminRuntimePolicyRoutes.ts` · `src/openshell/openShellPolicyBuilder.ts` · `src/state/stores/runtimePolicyStore.ts`
+
+Runtime policies are the declarative YAML documents passed to the OpenShell gateway before each agent sandbox starts. They are distinct from PBAC policies: they govern **what the agent sandbox is permitted to do at the OS/network level**, not what admin users can do in the UI.
+
+**Policy kinds** (`RuntimePolicyKind`):
+
+| Kind | Controls |
+|------|---------|
+| `network` | L7 egress allow-list (hostnames/ports) — deny-by-default |
+| `filesystem` | Path-level read/write allow-list within the sandbox |
+| `process` | Allowed executables, capability drops, no-new-privileges |
+| `inference` | Model-endpoint routing and allow-list |
+
+Each `runtime_policies` row stores one YAML document of exactly one `kind`. A policy may be bound to a **project** or an **agent** via `runtime_policy_bindings`. Project-level bindings override agent-level bindings of the same kind; different kinds compose additively. Partial unique indexes enforce one binding per kind per target.
+
+The resolver composes bound sections onto OpenShell 0.0.83's canonical base
+(`version: 1`, sandbox filesystem paths, best-effort Landlock, and the
+`sandbox` user/group). Network access is denied when no rules exist.
+`network_policies` is a map of named rule objects, each containing `name`,
+`binaries`, and `endpoints`; the legacy `default: deny` / `allow: []` shape is
+invalid and is rejected by the admin API before persistence.
+
+**Policy denial events** (`policy_denial_events` table): after every sandbox exec attempt (in a `finally` block), VE reads a bounded `openshell logs` snapshot, parses OCSF/key-value denial records, scrubs secrets, and inserts denial rows tagged with `task_id` and `project_id`. Task deletion sets `task_id` to null but preserves the audit record. Denials are surfaced in the admin UI under **Runtime → Policy Denials**.
+
+**API** (`system.read` / `system.write`):
+
+| Route | Purpose |
+|-------|---------|
+| `GET /api/admin/runtime/status` | OpenShell gateway health |
+| `GET /api/admin/runtime/policies` | List runtime policies |
+| `POST /api/admin/runtime/policies` | Create runtime policy |
+| `PUT /api/admin/runtime/policies/:id` | Update policy name/kind/YAML |
+| `DELETE /api/admin/runtime/policies/:id` | Delete policy |
+| `POST /api/admin/runtime/policies/:id/bindings` | Bind to project or agent |
+| `GET /api/admin/runtime/policies/:id/bindings` | List project and agent bindings |
+| `DELETE /api/admin/runtime/policies/bindings/:bindingId` | Unbind |
+| `GET /api/admin/runtime/denials` | List policy denial events |
+
+---
+
+### 10.6 Prompts Library
+
+`src/admin/adminPromptRoutes.ts` · `src/state/stores/promptStore.ts`
+
+Prompts are reusable text snippets injected into agent containers. They are referenced by agents (`system_prompt_id`, `instructions_prompt_id`, `feedback_instructions_prompt_id`) and resolved at task execution time.
+
+**`prompts` table fields:**
+
+| Field | Description |
+|-------|-------------|
+| `id` | TEXT PK |
+| `label` | Human-readable name |
+| `content` | Full prompt text |
+| `prompt_type` | `system` (maps to `SYSTEM_PROMPT` env var) or `user` (maps to `USER_PROMPT_FILE`) |
+
+Default prompts are seeded at startup from `prompts/` directory (`instructions_generic_code.md`, `system_generic_code.md`, etc.). Seeded prompts can be overridden in the UI but cannot be deleted while in use.
+
+**API** (`prompt.read` / `prompt.write` / `prompt.delete`):
+
+| Route | Purpose |
+|-------|---------|
+| `GET /api/admin/prompts` | List prompts |
+| `POST /api/admin/prompts` | Create prompt |
+| `GET /api/admin/prompts/:id` | Get prompt |
+| `PUT /api/admin/prompts/:id` | Update label/content/type |
+| `DELETE /api/admin/prompts/:id` | Delete prompt |
+| `GET /api/admin/prompts/:id/usage` | List agents/projects referencing this prompt |
+
+---
+
+### 10.7 System settings
+
+`src/admin/adminSettingsRoutes.ts` · `src/state/stores/settingsStore.ts`
+
+Editable runtime workflow settings live in the `app_settings` singleton row (`id = 'global'`). They override the `.env` defaults at runtime without a restart.
+
+| Setting | Default (env) | Description |
+|---------|--------------|-------------|
+| `polling_interval_ms` | `30000` | Polling loop tick interval |
+| `max_agent_cycles` | `3` | Per-task cycle cap before FAILED |
+| `max_retry_attempts` | `5` | Per-ticket retry cap across FAILED/ABANDONED tasks |
+
+`NULL` in the DB means "fall back to the `config.ts` env-seeded default". On `PUT /api/admin/settings`, the new values are persisted and hot-applied to the running `PollingLoop` (`updateConfig`), `Orchestrator` (`updateRuntime`), and admin runtime config — no process restart required.
+
+**API** (`system.read` / `system.write`):
+
+| Route | Purpose |
+|-------|---------|
+| `GET /api/admin/settings` | Read current effective settings |
+| `PUT /api/admin/settings` | Persist and hot-apply setting overrides |

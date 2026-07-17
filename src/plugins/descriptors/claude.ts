@@ -111,7 +111,6 @@ export function createClaudeDescriptor(adminAuthSecret?: string): ProviderDescri
         buildAdapter: (context) =>
           new ClaudeAdapter({
             maxCommitsPerCycle: context.maxCommitsPerCycle,
-            dockerNetwork: context.dockerNetwork,
           }),
       },
     },

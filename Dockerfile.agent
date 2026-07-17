@@ -4,17 +4,25 @@ FROM node:24-bookworm-slim
 ENV DEBIAN_FRONTEND=noninteractive
 ENV NPM_CONFIG_UPDATE_NOTIFIER=false
 
-# Install required tools: git, SSH client, GitHub CLI, curl, jq
+# Install required tools: git, SSH client, GitHub CLI, curl, jq.
+# iproute2 provides the `ip` binary the OpenShell supervisor needs to create the
+# sandbox network namespace (proxy-mode isolation); without it the sandbox agent
+# container crash-loops with "trusted ip helper not found".
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     openssh-client \
     curl \
     ca-certificates \
     jq \
+    iproute2 \
   && rm -rf /var/lib/apt/lists/*
+RUN groupadd --system sandbox \
+  && useradd --system --gid sandbox --create-home \
+    --home-dir /sandbox --shell /bin/bash sandbox
 # Default SSH config — accepts unknown host keys as a fallback for ephemeral
-# containers. When sshKnownHostsPath is configured on the Gerrit integration,
-# dockerVolume.ts overrides GIT_SSH_COMMAND at runtime with strict checking.
+# sandboxes. When sshKnownHostsPath is configured on the Gerrit integration,
+# host-side git (HostGitExecutor / buildGitEnv) overrides GIT_SSH_COMMAND with
+# strict checking for the push that runs in the orchestrator.
 RUN mkdir -p ~/.ssh && echo "Host gerrit\n  StrictHostKeyChecking=no\n  UserKnownHostsFile=/dev/null" > ~/.ssh/config
 
 # Install GitHub CLI
@@ -29,13 +37,16 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
   && apt-get update && apt-get install -y --no-install-recommends gh \
   && rm -rf /var/lib/apt/lists/*
 
-# Copy the agent worker, install all deps (including esbuild), build, then prune dev deps
-COPY agent-worker/ /agent-worker/
-RUN npm --prefix /agent-worker ci --no-fund \
-  && npm --prefix /agent-worker run build \
-  && npm --prefix /agent-worker prune --omit=dev --no-fund
+# Keep the runtime under /app, which OpenShell's default filesystem policy
+# permits as read-only executable content.
+COPY agent-worker/ /app/agent-worker/
+RUN npm --prefix /app/agent-worker ci --no-fund \
+  && npm --prefix /app/agent-worker run build \
+  && npm --prefix /app/agent-worker prune --omit=dev --no-fund
 
-# Set working directory
+# Set working directory. The OpenShell sandbox overrides the working directory
+# to `/sandbox` (its writable dir under the default policy); this WORKDIR is only
+# a fallback for non-OpenShell invocations.
 WORKDIR /workspace
 
 # Default shell

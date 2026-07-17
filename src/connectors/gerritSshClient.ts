@@ -146,8 +146,11 @@ export class GerritSshClient {
   }
 
   /** Execute a Gerrit SSH command and return stdout. */
-  async query(args: string[]): Promise<string> {
-    const { stdout } = await execFileAsync("ssh", this.buildArgs(args), { timeout: SSH_TIMEOUT_MS });
+  async query(args: string[], signal?: AbortSignal): Promise<string> {
+    const { stdout } = await execFileAsync("ssh", this.buildArgs(args), {
+      timeout: SSH_TIMEOUT_MS,
+      ...(signal !== undefined ? { signal } : {}),
+    });
     return stdout;
   }
 
@@ -158,17 +161,26 @@ export class GerritSshClient {
    * process is ready, avoiding a race where execFile closes stdin before the
    * SSH channel forwards the data to the remote gerrit command.
    */
-  async reviewJson(changeSpec: string, input: string): Promise<void> {
+  async reviewJson(changeSpec: string, input: string, signal?: AbortSignal): Promise<void> {
     const args = this.buildArgs(["review", "--json", changeSpec]);
 
     await new Promise<void>((resolve, reject) => {
+      signal?.throwIfAborted();
       const child = spawn("ssh", args, { stdio: ["pipe", "pipe", "pipe"] });
       let stderr = "";
       let settled = false;
+      const onAbort = (): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        child.kill();
+        reject(signal?.reason ?? new Error("Gerrit review aborted"));
+      };
 
       const timer = setTimeout(() => {
         if (!settled) {
           settled = true;
+          signal?.removeEventListener("abort", onAbort);
           child.kill();
           reject(new Error(
             `SSH review timed out after ${SSH_REVIEW_TIMEOUT_MS}ms: ssh ${args.join(" ")}`
@@ -182,6 +194,7 @@ export class GerritSshClient {
         if (!settled) {
           settled = true;
           clearTimeout(timer);
+          signal?.removeEventListener("abort", onAbort);
           reject(err);
         }
       });
@@ -190,6 +203,7 @@ export class GerritSshClient {
         if (!settled) {
           settled = true;
           clearTimeout(timer);
+          signal?.removeEventListener("abort", onAbort);
           if (code === 0) {
             resolve();
           } else {
@@ -204,6 +218,7 @@ export class GerritSshClient {
       child.on("spawn", () => {
         child.stdin.end(input);
       });
+      signal?.addEventListener("abort", onAbort, { once: true });
     });
   }
 
@@ -330,10 +345,10 @@ export class GerritSshClient {
    * not expose comment UUIDs or a resolved flag, so `uuid` is always null and
    * resolution is left to the caller (deduped via the reply ledger).
    */
-  async getDiscussionComments(changeId: string): Promise<GerritDiscussionComment[]> {
+  async getDiscussionComments(changeId: string, signal?: AbortSignal): Promise<GerritDiscussionComment[]> {
     const out = await this.query([
       "query", "--format", "JSON", "--current-patch-set", "--comments", `change:${changeId}`,
-    ]);
+    ], signal);
     const rows = parseSshNdjson(out);
     const result: GerritDiscussionComment[] = [];
     for (const row of rows) {

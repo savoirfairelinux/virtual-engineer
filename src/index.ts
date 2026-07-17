@@ -13,20 +13,27 @@ import { getConfig } from "./config.js";
 import { getLogger } from "./logger.js";
 import { SqliteStateStore } from "./state/stateStore.js";
 import { MockAgentAdapter } from "./agents/mockAgentAdapter.js";
-import { DockerWorkspaceRunner } from "./workspace/workspaceRunner.js";
+import { HostGitExecutor } from "./workspace/hostGitExecutor.js";
+import { OpenShellWorkspaceRunner, type OpenShellRunnerDeps } from "./workspace/openShellWorkspaceRunner.js";
+import { OpenShellClient } from "./openshell/openShellClient.js";
+import { createRuntimePolicyResolver } from "./openshell/runtimePolicyResolver.js";
+import { OpenShellSandboxReconciler } from "./openshell/openShellSandboxReconciler.js";
+import { resolveOpenShellGateway, startRuntimeRecovery } from "./runtime/runtimeStartup.js";
 import { Orchestrator } from "./orchestrator/orchestrator.js";
 import { PollingLoop } from "./orchestrator/pollingLoop.js";
-import { createConcurrencyTracker } from "./orchestrator/concurrencyTracker.js";
+import { createConcurrencyTracker, type ConcurrencyTracker } from "./orchestrator/concurrencyTracker.js";
+import { TaskLifecycleCoordinator } from "./orchestrator/taskLifecycleCoordinator.js";
 import { createAdminServer } from "./admin/adminServer.js";
 import { closeAdminServer } from "./admin/closeAdminServer.js";
 import { startAdminServer } from "./admin/startAdminServer.js";
 
 import { PluginIntegrationStreamEventsManager } from "./connectors/integrationStreamEvents.js";
 import { ReviewOrchestrator } from "./review/reviewOrchestrator.js";
+import { recoverActiveReviews } from "./review/reviewRecovery.js";
 import { mkdir } from "fs/promises";
 import type { Server } from "node:http";
 import type { AdminProviderSummary } from "./admin/adminServer.js";
-import type { AgentAdapter, ConfigurableAdapter, DomainCapability, Integration, ProviderId, ProjectId, ProjectPushTargetRecord, ProjectRecord, ProjectReviewConfig, ProjectTicketSourceRecord, ReviewProvider, Task } from "./interfaces.js";
+import type { AgentAdapter, ConfigurableAdapter, DomainCapability, Integration, ProviderId, ProjectId, ProjectPushTargetRecord, ProjectRecord, ProjectReviewConfig, ProjectTicketSourceRecord, ReviewProvider, Task, WorkspaceRunner } from "./interfaces.js";
 import { makeTaskId, makeExternalChangeId } from "./interfaces.js";
 import { registerBuiltinPlugins } from "./plugins/init.js";
 import { PluginManager } from "./plugins/pluginManager.js";
@@ -47,6 +54,7 @@ const POLLING_RECONCILE_DEBOUNCE_MS = 1_000;
 /** Bootstrap all runtime dependencies and start the Virtual Engineer main loop. */
 async function main(): Promise<void> {
   const config = getConfig();
+  const openShellGateway = resolveOpenShellGateway(process.env);
 
   log.info({ nodeEnv: config.nodeEnv }, "Virtual Engineer starting");
 
@@ -79,7 +87,6 @@ async function main(): Promise<void> {
     ...(config.adminAuthSecret !== undefined ? { adminAuthSecret: config.adminAuthSecret } : {}),
     agentAdapterContext: {
       maxCommitsPerCycle: config.maxCommitsPerCycle,
-      dockerNetwork: config.agentDockerNetwork,
     },
   });
 
@@ -87,14 +94,32 @@ async function main(): Promise<void> {
 
   let runtimeDependencies = buildRuntimeDependencies(pluginManager);
 
-  // ─── Workspace runner ────────────────────────────────────────────────────────
-  const workspaceRunner = new DockerWorkspaceRunner(
-    {
-      agentContainerImage: config.agentContainerImage,
-      agentTimeoutMs: config.agentTimeoutMs,
+  // ─── Workspace runner (OpenShell — the sole agent runtime) ────────────────────
+  // Agents run in OpenShell sandboxes. Git plumbing (clone/checkout/cherry-pick/
+  // push) stays host-side via HostGitExecutor so push credentials never enter the
+  // sandbox. The runner's agent adapter is hot-swapped on integration reload by
+  // mutating `openShellRunnerDeps.agentAdapter` (see refreshRuntimeDependencies).
+  const openShellClient = new OpenShellClient({
+    // Prefer the named OPENSHELL_GATEWAY profile so the CLI can load its OIDC
+    // metadata and bearer token. OPENSHELL_GATEWAY_ENDPOINT remains a fallback
+    // for legacy direct-endpoint deployments.
+    gateway: openShellGateway,
+    oidcClientCredentials: process.env["OPENSHELL_OIDC_CLIENT_SECRET"] !== undefined,
+    commandTimeoutMs: config.agentTimeoutMs + 30_000,
+  });
+  const openShellRunnerDeps: OpenShellRunnerDeps = {
+    git: new HostGitExecutor({ baseDir: config.workspaceBaseDir }),
+    client: openShellClient,
+    sandboxImage: config.agentContainerImage,
+    agentAdapter: runtimeDependencies.agentAdapter,
+    resolvePolicy: createRuntimePolicyResolver(stateStore),
+    recordDenial: async (denial) => {
+      await stateStore.recordPolicyDenial(denial);
     },
-    runtimeDependencies.agentAdapter
-  );
+    managedProviderStore: stateStore,
+    execTimeoutSec: Math.ceil(config.agentTimeoutMs / 1000),
+  };
+  const workspaceRunner = new OpenShellWorkspaceRunner(openShellRunnerDeps);
   configureAgentAdapter(runtimeDependencies.agentAdapter, stateStore, workspaceRunner);
 
   // ─── Orchestrator ────────────────────────────────────────────────────────────
@@ -103,6 +128,7 @@ async function main(): Promise<void> {
   const concurrencyTracker = createConcurrencyTracker({
     agentStore: { getAgentById: (id) => stateStore.getAgentById(id) },
   });
+  const taskLifecycleCoordinator = new TaskLifecycleCoordinator();
   const projectModeBase = {
     projectStore: stateStore,
     pluginManager,
@@ -117,14 +143,22 @@ async function main(): Promise<void> {
     workspaceRunner,
     undefined,
     stateStore,
-    orchestratorProjectMode
+    orchestratorProjectMode,
+    taskLifecycleCoordinator,
   );
 
   // ─── Polling loop ────────────────────────────────────────────────────────────
   // Mutable holder so the review trigger survives hot-reload of the review
   // integration without recreating the stream-events manager.
   const reviewTriggerHolder = {
-    current: buildReviewTrigger(pluginManager, config.workspaceBaseDir, workspaceRunner, stateStore),
+    current: buildReviewTrigger(
+      pluginManager,
+      config.workspaceBaseDir,
+      workspaceRunner,
+      stateStore,
+      concurrencyTracker,
+      taskLifecycleCoordinator,
+    ),
   };
 
   /** Thin wrapper that forwards to the stream-events review trigger. Used by the polling loop. */
@@ -232,15 +266,21 @@ async function main(): Promise<void> {
    */
   async function refreshRuntimeDependencies(): Promise<void> {
     runtimeDependencies = buildRuntimeDependencies(pluginManager);
-    workspaceRunner.updateRuntime({
-      agentAdapter: runtimeDependencies.agentAdapter,
-    });
+    // Hot-swap the runner's agent adapter by mutating the shared deps object.
+    openShellRunnerDeps.agentAdapter = runtimeDependencies.agentAdapter;
     configureAgentAdapter(runtimeDependencies.agentAdapter, stateStore, workspaceRunner);
     orchestrator.updateRuntime({
       config: buildOrchestratorConfig(config, pluginManager),
     });
     pollingLoop.resetBackoff();
-    reviewTriggerHolder.current = buildReviewTrigger(pluginManager, config.workspaceBaseDir, workspaceRunner, stateStore);
+    reviewTriggerHolder.current = buildReviewTrigger(
+      pluginManager,
+      config.workspaceBaseDir,
+      workspaceRunner,
+      stateStore,
+      concurrencyTracker,
+      taskLifecycleCoordinator,
+    );
     await integrationStreamEvents.reconcile(resolveStreamIntegrations());
     log.info("runtime dependencies refreshed");
     await reconcilePollingLoop();
@@ -315,7 +355,15 @@ async function main(): Promise<void> {
         resumeTask: async (taskId) => {
           const task = await stateStore.getTask(makeTaskId(String(taskId)));
           if (task?.taskType === "code-review") {
-            const bundle = await buildReviewBundle(pluginManager, config.workspaceBaseDir, stateStore, workspaceRunner, task);
+            const bundle = await buildReviewBundle(
+              pluginManager,
+              config.workspaceBaseDir,
+              stateStore,
+              workspaceRunner,
+              concurrencyTracker,
+              task,
+              taskLifecycleCoordinator,
+            );
             if (bundle.orchestrator) {
               await bundle.orchestrator.runReview(task.taskId);
               return;
@@ -326,7 +374,15 @@ async function main(): Promise<void> {
         retryTask: async (taskId) => {
           const task = await stateStore.getTask(makeTaskId(String(taskId)));
           if (task?.taskType === "code-review") {
-            const bundle = await buildReviewBundle(pluginManager, config.workspaceBaseDir, stateStore, workspaceRunner, task);
+            const bundle = await buildReviewBundle(
+              pluginManager,
+              config.workspaceBaseDir,
+              stateStore,
+              workspaceRunner,
+              concurrencyTracker,
+              task,
+              taskLifecycleCoordinator,
+            );
             if (bundle.orchestrator) {
               await bundle.orchestrator.runReview(task.taskId);
               return;
@@ -334,6 +390,8 @@ async function main(): Promise<void> {
           }
           await orchestrator.continueTask(taskId);
         },
+        abandonTask: (taskId) => orchestrator.abandonTask(taskId),
+        deleteProject: (projectId) => orchestrator.deleteProject(projectId),
       },
       onIntegrationUpdated: (id) => {
         orchestrator.invalidateVcsConnector(id);
@@ -361,6 +419,12 @@ async function main(): Promise<void> {
         snapshot: () => concurrencyTracker.snapshot(),
       },
       settings: settingsController,
+      runtimePolicyStore: stateStore,
+      denialStore: stateStore,
+      runtimeGateway: {
+        healthy: () => openShellClient.gatewayHealthy(),
+        address: openShellGateway,
+      },
     });
 
     await startAdminServer(adminServer, config.adminApiPort, config.adminApiHost);
@@ -370,7 +434,36 @@ async function main(): Promise<void> {
   // Resume any tasks that were in-flight before a restart.
   // Must run AFTER the admin server binds successfully so a port conflict
   // does not cause a partially-resumed orchestrator state.
-  await orchestrator.resumeActiveTasks();
+  const sandboxReconciler = new OpenShellSandboxReconciler({
+    client: openShellClient,
+    store: stateStore,
+  });
+  const runtimeRecovery = await startRuntimeRecovery({
+    recoverReviews: async () => {
+      const reviewRecovery = await recoverActiveReviews(stateStore, async (task) => {
+        const bundle = await buildReviewBundle(
+          pluginManager,
+          config.workspaceBaseDir,
+          stateStore,
+          workspaceRunner,
+          concurrencyTracker,
+          task,
+          taskLifecycleCoordinator,
+        );
+        return bundle.orchestrator;
+      });
+      log.info(reviewRecovery, "active review recovery completed");
+    },
+    resumeCodeGeneration: () => orchestrator.resumeActiveTasks(),
+    reconcileSandboxes: async () => {
+      const result = await sandboxReconciler.run();
+      log.info(result, "initial sandbox reconciliation completed");
+    },
+    startSandboxReconciler: () => sandboxReconciler.start(),
+    stopSandboxReconciler: () => sandboxReconciler.stop(),
+    onInitialReconcileError: (err) => log.warn({ err }, "initial sandbox reconciliation failed"),
+    checkGatewayHealth: () => openShellClient.gatewayHealthy(),
+  });
 
   // ─── Graceful shutdown ────────────────────────────────────────────────────────
   let shuttingDown = false;
@@ -388,6 +481,7 @@ async function main(): Promise<void> {
       pollingReconcileTimer = null;
     }
     pollingLoop.stop();
+    runtimeRecovery.stop();
 
     await closeAdminServer(adminServer, SHUTDOWN_TIMEOUT_MS);
 
@@ -571,8 +665,10 @@ async function buildReviewBundle(
   pluginManager: PluginManager,
   _workspaceBaseDir: string,
   stateStore: import("./interfaces.js").StateStore & import("./interfaces.js").PromptStore,
-  workspaceRunner?: DockerWorkspaceRunner,
+  workspaceRunner?: WorkspaceRunner,
+  concurrencyTracker?: ConcurrencyTracker,
   target?: string | Task,
+  lifecycleCoordinator?: TaskLifecycleCoordinator,
 ): Promise<ReviewBundle> {
   const bundleLog = getLogger("review-bundle");
   const targetId = typeof target === "string" ? target : target?.taskId ?? "(none)";
@@ -618,15 +714,30 @@ async function buildReviewBundle(
   if (!workspaceRunner) {
     bundleLog.warn(
       { integrationId: integration.id },
-      "buildReviewBundle: no DockerWorkspaceRunner available"
+      "buildReviewBundle: no workspace runner available"
     );
     return { integration: null, provider: null, orchestrator: null };
   }
 
-  // Resolve the agent-execution integration linked to an enabled review agent.
-  // Using a deterministic lookup avoids Map-insertion-order sensitivity when
-  // multiple agent_execution integrations (e.g. Copilot + Claude) are active.
-  const agentIntegration = await resolveAgentIntegrationForReview(pluginManager, store);
+  const projectAgent = typeof target !== "string" && target?.projectId !== null && target?.projectId !== undefined
+    ? await store.getProjectById(target.projectId).then((project) =>
+        project === null
+          ? null
+          : store.listAgents().then((agents) => agents.find((agent) => agent.id === project.agentId) ?? null)
+      )
+    : null;
+  const agentIntegration = await resolveAgentIntegrationForReview(
+    pluginManager,
+    store,
+    projectAgent?.integrationId ?? undefined,
+  );
+  if (agentIntegration === null) {
+    bundleLog.warn(
+      { integrationId: integration.id, projectId: typeof target === "object" ? target.projectId : null },
+      "buildReviewBundle: no active agent integration for the selected review agent",
+    );
+    return { integration: null, provider: null, orchestrator: null };
+  }
 
   // Extract the agent token from the resolved agent-execution integration.
   const agentToken = getAgentTokenForReview(pluginManager, agentIntegration);
@@ -643,8 +754,8 @@ async function buildReviewBundle(
   let model: string | undefined;
   if (agentIntegration) {
     try {
-      const agentList = await store.listAgents({ type: "review", enabled: true });
-      const agent = agentList.find((a) => a.integrationId === agentIntegration.id);
+      const agent = projectAgent ?? (await store.listAgents({ type: "review", enabled: true }))
+        .find((candidate) => candidate.integrationId === agentIntegration.id);
       if (agent) {
         const cfg = JSON.parse(agent.modelConfigJson) as Record<string, unknown>;
         const m = typeof cfg["model"] === "string" ? cfg["model"].trim() : "";
@@ -656,6 +767,14 @@ async function buildReviewBundle(
   }
 
   const reviewer = createReviewer(rawConfig, integration, workspaceRunner);
+  const agentAdapter = pluginManager.getConnectorForIntegration<AgentAdapter>(agentIntegration.id);
+  if (agentAdapter === null) {
+    bundleLog.warn(
+      { integrationId: agentIntegration.id, projectId: typeof target === "object" ? target.projectId : null },
+      "buildReviewBundle: selected review agent integration has no active adapter",
+    );
+    return { integration: null, provider: null, orchestrator: null };
+  }
 
   const orchestrator = new ReviewOrchestrator({
     stateStore: store,
@@ -681,6 +800,10 @@ async function buildReviewBundle(
     maxReviewComments: getConfig().maxReviewComments,
     maxReviewReplies: getConfig().maxReviewReplies,
     reviewMinSeverity: getConfig().reviewMinSeverity,
+    agentTimeoutMs: getConfig().agentTimeoutMs,
+    ...(concurrencyTracker !== undefined ? { concurrencyTracker } : {}),
+    ...(lifecycleCoordinator !== undefined ? { lifecycleCoordinator } : {}),
+    agentAdapter,
   });
   return { integration, provider: reviewer.provider, orchestrator };
 }
@@ -701,8 +824,10 @@ async function buildReviewBundle(
 function buildReviewTrigger(
   pluginManager: PluginManager,
   workspaceBaseDir: string,
-  workspaceRunner: DockerWorkspaceRunner,
-  stateStore: import("./interfaces.js").StateStore & import("./interfaces.js").PromptStore
+  workspaceRunner: WorkspaceRunner,
+  stateStore: import("./interfaces.js").StateStore & import("./interfaces.js").PromptStore,
+  concurrencyTracker: ConcurrencyTracker,
+  lifecycleCoordinator: TaskLifecycleCoordinator,
 ): import("./connectors/integrationStreamEvents.js").IntegrationEventStreamReviewTrigger | null {
   if (resolveReviewIntegration(pluginManager) === null) return null;
 
@@ -710,7 +835,15 @@ function buildReviewTrigger(
 
   return {
     async triggerReviewForChange(integrationId: string, changeId: string, options?: { force?: boolean }): Promise<void> {
-      const bundle = await buildReviewBundle(pluginManager, workspaceBaseDir, stateStore, workspaceRunner, integrationId);
+      const bundle = await buildReviewBundle(
+        pluginManager,
+        workspaceBaseDir,
+        stateStore,
+        workspaceRunner,
+        concurrencyTracker,
+        integrationId,
+        lifecycleCoordinator,
+      );
       if (!bundle.orchestrator || !bundle.provider || !bundle.integration) {
         log.warn({ integrationId, changeId }, "review trigger: integration not configured for review routing");
         return;
@@ -749,7 +882,20 @@ function buildReviewTrigger(
       // 3. Run each review immediately (fire-and-forget with error logging).
       for (const task of reviewTasks) {
         log.info({ integrationId, taskId: task.taskId, changeId, force }, "review trigger: task created, starting review");
-        bundle.orchestrator.runReview(task.taskId, force ? { force: true } : undefined).catch((err: unknown) => {
+        void buildReviewBundle(
+          pluginManager,
+          workspaceBaseDir,
+          stateStore,
+          workspaceRunner,
+          concurrencyTracker,
+          task,
+          lifecycleCoordinator,
+        ).then((taskBundle) => {
+          if (taskBundle.orchestrator === null) {
+            throw new Error(`No review runtime available for task ${task.taskId}`);
+          }
+          return taskBundle.orchestrator.runReview(task.taskId, force ? { force: true } : undefined);
+        }).catch((err: unknown) => {
           log.error({ err, integrationId, taskId: task.taskId, changeId }, "review trigger: review run failed");
         });
       }
@@ -766,8 +912,12 @@ function buildReviewTrigger(
  */
 async function resolveAgentIntegrationForReview(
   pluginManager: PluginManager,
-  store: import("./interfaces.js").StateStore
+  store: import("./interfaces.js").StateStore,
+  preferredIntegrationId?: string,
 ): Promise<Integration | null> {
+  if (preferredIntegrationId !== undefined) {
+    return pluginManager.getActiveIntegrationById(preferredIntegrationId);
+  }
   try {
     const reviewAgents = await store.listAgents({ type: "review", enabled: true });
     for (const agent of reviewAgents) {
@@ -902,7 +1052,7 @@ function asOptionalString(value: unknown): string | undefined {
 function configureAgentAdapter(
   agentAdapter: AgentAdapter,
   stateStore: SqliteStateStore,
-  workspaceRunner: DockerWorkspaceRunner
+  workspaceRunner: WorkspaceRunner
 ): void {
   if ("configure" in agentAdapter && typeof (agentAdapter as ConfigurableAdapter).configure === "function") {
     (agentAdapter as ConfigurableAdapter).configure({ store: stateStore, runner: workspaceRunner });

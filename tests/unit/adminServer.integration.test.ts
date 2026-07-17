@@ -59,13 +59,11 @@ describe("createAdminServer integration", () => {
       await stateStore.transition(taskId, "IN_REVIEW", { reviewer: "gerrit" });
       await stateStore.updateExternalChangeId(taskId, makeExternalChangeId("Iintegration"), 3);
       await stateStore.saveAgentCycle(taskId, 1, {
-        status: "success",
-        modifiedFiles: ["src/admin/dashboard.ts"],
-        summary: "Rendered the dashboard shell",
-        agentLogs: "integration log",
-        externalChangeId: makeExternalChangeId("Iintegration"),
-        commitSha: "deadbeef",
-        metadata: { suite: "admin-server.integration" },
+        status: "running",
+        modifiedFiles: [],
+        summary: "",
+        agentLogs: "",
+        metadata: {},
       });
 
       const server = createAdminServer({
@@ -117,8 +115,28 @@ describe("createAdminServer integration", () => {
 
         const cyclesResponse = await fetch(`${baseUrl}/api/admin/tasks/${taskId}/cycles`);
         expect(cyclesResponse.status).toBe(200);
-        await expect(cyclesResponse.json()).resolves.toEqual({
-          cycles: [expect.objectContaining({ cycleNumber: 1 })],
+        const runningBody = await cyclesResponse.json() as { cycles: Array<{ id: number; result: { status: string } }> };
+        expect(runningBody).toEqual({
+          cycles: [expect.objectContaining({ cycleNumber: 1, result: expect.objectContaining({ status: "running" }) })],
+        });
+
+        await stateStore.saveAgentCycle(taskId, 1, {
+          status: "success",
+          modifiedFiles: ["src/admin/dashboard.ts"],
+          summary: "Rendered the dashboard shell",
+          agentLogs: "integration log",
+          externalChangeId: makeExternalChangeId("Iintegration"),
+          commitSha: "deadbeef",
+          metadata: { suite: "admin-server.integration" },
+        });
+        const finalizedResponse = await fetch(`${baseUrl}/api/admin/tasks/${taskId}/cycles`);
+        expect(finalizedResponse.status).toBe(200);
+        await expect(finalizedResponse.json()).resolves.toEqual({
+          cycles: [expect.objectContaining({
+            id: runningBody.cycles[0]?.id,
+            cycleNumber: 1,
+            result: expect.objectContaining({ status: "success" }),
+          })],
         });
       } finally {
         await closeServer(server);

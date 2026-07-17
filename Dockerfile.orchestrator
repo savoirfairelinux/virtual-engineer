@@ -49,6 +49,24 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends docker-ce-cli \
   && rm -rf /var/lib/apt/lists/*
 
+# ── Optional: pinned OpenShell CLI (agent runtime backend) ────────────────────
+# Off by default so standard/offline builds are unaffected. Enable for the
+# Kubernetes/OpenShell deployment with:
+#   docker build -f Dockerfile.orchestrator \
+#     --build-arg INSTALL_OPENSHELL=true --build-arg OPENSHELL_VERSION=v0.0.83 .
+ARG INSTALL_OPENSHELL=false
+ARG OPENSHELL_VERSION=v0.0.83
+ARG OPENSHELL_INSTALLER_SHA256=c15d6cb8090e1c7c8d79a320b5bcbdaf1c15c2363942d81e84b56e03b836249e
+RUN if [ "$INSTALL_OPENSHELL" = "true" ]; then \
+      set -eux; \
+      curl -LsSf "https://raw.githubusercontent.com/NVIDIA/OpenShell/${OPENSHELL_VERSION}/install.sh" \
+        -o /tmp/install-openshell.sh; \
+      echo "${OPENSHELL_INSTALLER_SHA256}  /tmp/install-openshell.sh" | sha256sum --check --status; \
+      OPENSHELL_VERSION="$OPENSHELL_VERSION" sh /tmp/install-openshell.sh; \
+      rm -f /tmp/install-openshell.sh; \
+      openshell --version; \
+    fi
+
 WORKDIR /app
 
 # Copy compiled native node_modules from builder (already includes better-sqlite3 .node binary)
@@ -62,7 +80,7 @@ COPY agent-worker/ ./agent-worker/
 COPY prompts/ ./prompts/
 COPY prompts/ ./dist/prompts/
 
-RUN mkdir -p /app/data /app/secrets
+RUN mkdir -p /app/data
 
 EXPOSE 3100
 

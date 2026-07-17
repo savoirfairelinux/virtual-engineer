@@ -97,7 +97,7 @@ describe("MockAgentAdapter", () => {
     const spec = adapter.buildContainerSpec(makeContext(workspacePath));
 
     expect(spec.image).toBe("virtual-engineer-workspace:latest");
-    expect(spec.command).toEqual(["node", "/agent-worker/dist/index.js"]);
+    expect(spec.command).toEqual(["node", "/app/agent-worker/dist/index.js"]);
     expect(spec.env).toEqual({});
     expect(spec.additionalDockerArgs).toEqual([]);
   });

@@ -206,7 +206,7 @@ describe("Orchestrator", () => {
       getFailedAttemptCount: vi.fn().mockResolvedValue(0),
       transition: vi.fn().mockImplementation(async (taskId, toState) => makeTask({ taskId, state: toState })),
       updateGerritChangeId: vi.fn().mockResolvedValue(undefined),
-      incrementCycle: vi.fn().mockResolvedValue(1),
+      startAgentCycle: vi.fn().mockResolvedValue(1),
       setFailureReason: vi.fn().mockResolvedValue(undefined),
       saveAgentCycle: vi.fn().mockResolvedValue(undefined),
       updateAgentCycleCommitMessages: vi.fn().mockResolvedValue(undefined),
@@ -393,6 +393,101 @@ describe("Orchestrator", () => {
     await new Promise((resolve) => setImmediate(resolve));
 
     expect(runWorkflow).toHaveBeenCalledTimes(2);
+  });
+
+  it("joins concurrent workflow requests for the same task", async () => {
+    const task = makeTask({ taskId: makeTaskId("single-flight"), state: "DETECTED" });
+    const orchestrator = makeOrchestrator();
+    let releaseWorkflow!: () => void;
+    const workflowBlocked = new Promise<void>((resolve) => { releaseWorkflow = resolve; });
+    const runFromDetected = vi.spyOn(orchestrator as any, "runFromDetected").mockReturnValue(workflowBlocked);
+
+    const first = (orchestrator as any).runWorkflow(task);
+    const second = (orchestrator as any).runWorkflow(task);
+    await vi.waitFor(() => expect(runFromDetected).toHaveBeenCalledTimes(1));
+
+    expect(runFromDetected).toHaveBeenCalledTimes(1);
+    releaseWorkflow();
+    await Promise.all([first, second]);
+  });
+
+  it("serializes admin abandonment behind the active workflow", async () => {
+    let current = makeTask({ taskId: makeTaskId("abandon-after-push"), state: "DETECTED" });
+    const abandonTask = vi.fn(async () => {
+      current = { ...current, state: "ABANDONED" };
+      return current;
+    });
+    const stateStore = makeStateStore({
+      getTask: vi.fn(async () => current),
+      abandonTask,
+    });
+    const orchestrator = makeOrchestrator({ stateStore });
+    let releaseWorkflow!: () => void;
+    const workflowBlocked = new Promise<void>((resolve) => { releaseWorkflow = resolve; });
+    vi.spyOn(orchestrator as any, "runFromDetected").mockReturnValue(workflowBlocked);
+
+    const workflow = (orchestrator as any).runWorkflow(current);
+    await Promise.resolve();
+    const abandonment = orchestrator.abandonTask(current.taskId);
+    await Promise.resolve();
+    expect(abandonTask).not.toHaveBeenCalled();
+
+    releaseWorkflow();
+    await Promise.all([workflow, abandonment]);
+    expect(abandonTask).toHaveBeenCalledOnce();
+  });
+
+  it("serializes project deletion and suppresses stale queued workflows", async () => {
+    const task = makeTask({ taskId: makeTaskId("delete-after-push"), state: "DETECTED" });
+    let taskExists = true;
+    const stateStore = makeStateStore({
+      getTask: vi.fn(async () => taskExists ? task : null),
+      getAllTasks: vi.fn(async () => taskExists ? [task] : []),
+    });
+    const orchestrator = makeOrchestrator({ stateStore });
+    const deleteProject = vi.fn(async () => { taskExists = false; });
+    (orchestrator as any).projectMode.projectStore.deleteProject = deleteProject;
+    let releaseWorkflow!: () => void;
+    const workflowBlocked = new Promise<void>((resolve) => { releaseWorkflow = resolve; });
+    const runFromDetected = vi.spyOn(orchestrator as any, "runFromDetected").mockReturnValue(workflowBlocked);
+
+    const workflow = (orchestrator as any).runWorkflow(task);
+    await Promise.resolve();
+    const deletion = orchestrator.deleteProject(task.projectId!);
+    await Promise.resolve();
+    expect(deleteProject).not.toHaveBeenCalled();
+
+    releaseWorkflow();
+    await Promise.all([workflow, deletion]);
+    await (orchestrator as any).runWorkflow(task);
+    expect(deleteProject).toHaveBeenCalledOnce();
+    expect(runFromDetected).toHaveBeenCalledOnce();
+  });
+
+  it("serializes a merge webhook behind an in-flight review poll and re-reads state", async () => {
+    const externalChangeId = makeExternalChangeId("Iserialized");
+    let current = makeTask({ state: "IN_REVIEW", externalChangeId });
+    const stateStore = makeStateStore({
+      getTask: vi.fn(async () => current),
+      findTaskByExternalChangeId: vi.fn(async () => current),
+    });
+    const orchestrator = makeOrchestrator({ stateStore });
+    let finishPoll!: () => void;
+    const pollBlocked = new Promise<void>((resolve) => { finishPoll = resolve; });
+    const checkReviewProgress = vi.spyOn(orchestrator as any, "checkReviewProgress").mockImplementation(async () => {
+      await pollBlocked;
+      current = makeTask({ ...current, state: "FEEDBACK_PROCESSING", externalChangeId });
+    });
+
+    const poll = (orchestrator as any).runWorkflow(current);
+    await vi.waitFor(() => expect(checkReviewProgress).toHaveBeenCalledOnce());
+    const webhook = orchestrator.markChangeMerged("gerrit-1", externalChangeId);
+    await Promise.resolve();
+    expect(stateStore.transition).not.toHaveBeenCalled();
+
+    finishPoll();
+    await Promise.all([poll, webhook]);
+    expect(stateStore.transition).not.toHaveBeenCalledWith(current.taskId, "MERGED");
   });
 
   it("dispatches workflow handlers for each non-terminal state", async () => {
@@ -714,8 +809,14 @@ describe("Orchestrator", () => {
         "1. Close the ticket on merge",
       ]);
 
+      let aborted = false;
       const timeoutPromise = (orchestrator as any).withTimeout(
-        new Promise<string>(() => undefined),
+        (signal: AbortSignal) => new Promise<string>((_resolve, reject) => {
+          signal.addEventListener("abort", () => {
+            aborted = true;
+            reject(new Error("cancelled"));
+          }, { once: true });
+        }),
         25,
         "timed out"
       );
@@ -723,6 +824,7 @@ describe("Orchestrator", () => {
 
       await vi.advanceTimersByTimeAsync(25);
       await assertion;
+      expect(aborted).toBe(true);
     } finally {
       vi.useRealTimers();
     }

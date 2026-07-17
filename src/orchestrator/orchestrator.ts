@@ -1,5 +1,6 @@
 import pRetry from "p-retry";
 import { randomUUID, createHash } from "crypto";
+import { join } from "path";
 import { formatTicketFooter, hasTicketFooter } from "../utils/ticketFooterFormatter.js";
 import type {
   AgentAdapter,
@@ -25,6 +26,7 @@ import type { CodeGenState } from "../interfaces.js";
 import type { IntegrationStore } from "../interfaces.js";
 import { getLogger } from "../logger.js";
 import { FeedbackProcessor } from "./feedbackProcessor.js";
+import { TaskLifecycleCoordinator } from "./taskLifecycleCoordinator.js";
 import { clearTaskEventBuffer } from "../agents/agentEventBus.js";
 import { normalizeAgentResult, getModifiedFileCount } from "../agents/agentEventTypes.js";
 import type { VcsConnector } from "../vcs/vcsConnector.js";
@@ -99,6 +101,7 @@ export interface ProjectModeDeps {
     getProjectTicketSource(id: import("../interfaces.js").ProjectId): Promise<import("../interfaces.js").ProjectTicketSourceRecord | null>;
     getProjectReviewConfig(id: import("../interfaces.js").ProjectId): Promise<import("../interfaces.js").ProjectReviewConfig | null>;
     getAgentById(id: import("../interfaces.js").AgentId): Promise<import("../interfaces.js").AgentRecord | null>;
+    deleteProject?(id: import("../interfaces.js").ProjectId): Promise<void>;
   };
   pluginManager: {
     getConnectorForIntegration<T>(integrationId: string): T | null;
@@ -128,6 +131,7 @@ interface ProjectAgentRuntime {
  */
 export class Orchestrator {
   private readonly feedbackProcessor: FeedbackProcessor;
+  private readonly activeWorkflows = new Map<string, Promise<void>>();
   private config: OrchestratorConfig;
   private vcsConnector: VcsConnector | undefined;
   private readonly vcsConnectorFactory: VcsConnectorFactory;
@@ -138,7 +142,8 @@ export class Orchestrator {
     private readonly workspaceRunner: WorkspaceRunner,
     vcsConnector?: VcsConnector,
     private readonly integrationStore?: IntegrationStore,
-    projectMode?: ProjectModeDeps
+    projectMode?: ProjectModeDeps,
+    private readonly lifecycleCoordinator = new TaskLifecycleCoordinator(),
   ) {
     this.config = config;
     this.vcsConnectorFactory = new VcsConnectorFactory({ adminAuthSecret: config.adminAuthSecret });
@@ -177,6 +182,13 @@ export class Orchestrator {
     project: ProjectRecord,
     ticketSourceLabel: string
   ): Promise<void> {
+    const projectLease = await this.lifecycleCoordinator.acquireProjectStart(project.id);
+    if (projectLease === null) {
+      log.info({ projectId: project.id, ticketId: ticket.id }, "project is being deleted; skipping task creation");
+      return;
+    }
+    let task: Task | undefined;
+    try {
     const ticketId = makeTicketId(ticket.id);
     // Active-task identity is scoped by (project, ticket): two projects bound to
     // different repos under the same integration may legitimately have tickets
@@ -203,7 +215,7 @@ export class Orchestrator {
     // project if this project is later deleted. project_id is written atomically
     // so the (project_id, ticket_id) active-uniqueness index applies at insert.
     const ticketSource = await this.projectMode?.projectStore.getProjectTicketSource(project.id);
-    const task = await this.stateStore.createTask(
+    task = await this.stateStore.createTask(
       taskId,
       ticketId,
       ticket.subject,
@@ -220,6 +232,10 @@ export class Orchestrator {
       { taskId: task.taskId, ticketId, projectId: project.id, source: ticketSourceLabel },
       "created project-mode task"
     );
+    } finally {
+      projectLease.release();
+    }
+    if (task === undefined) return;
     await this.runWorkflow(task);
   }
 
@@ -279,22 +295,22 @@ export class Orchestrator {
       return;
     }
 
-    log.debug(
-      { taskId: task.taskId, changeId, state: task.state, ticketId: task.ticketId },
-      "handling review event for task"
-    );
-
-    if (TERMINAL_STATES.has(task.state)) {
-      log.debug({ taskId: task.taskId, state: task.state }, "task already in terminal state, ignoring review event");
-      return;
-    }
-
-    if (task.state !== "IN_REVIEW") {
-      log.debug({ taskId: task.taskId, state: task.state }, "task not in IN_REVIEW, ignoring review event");
-      return;
-    }
-
-    await this.checkReviewProgress(task);
+    await this.runTaskLifecycle(task.taskId, async () => {
+      const current = await this.stateStore.getTask(task.taskId) ?? task;
+      log.debug(
+        { taskId: current.taskId, changeId, state: current.state, ticketId: current.ticketId },
+        "handling review event for task"
+      );
+      if (TERMINAL_STATES.has(current.state)) {
+        log.debug({ taskId: current.taskId, state: current.state }, "task already in terminal state, ignoring review event");
+        return;
+      }
+      if (current.state !== "IN_REVIEW") {
+        log.debug({ taskId: current.taskId, state: current.state }, "task not in IN_REVIEW, ignoring review event");
+        return;
+      }
+      await this.checkReviewProgress(current);
+    });
   }
 
   /** Gerrit-flavoured alias for handleReviewEvent. */
@@ -313,16 +329,16 @@ export class Orchestrator {
       log.info({ integrationId, externalChangeId }, "webhook feedback: no task for change (likely a human-authored change, ignoring)");
       return;
     }
-    if (TERMINAL_STATES.has(task.state)) {
-      log.info({ taskId: task.taskId, state: task.state, externalChangeId }, "webhook feedback: task terminal, ignoring");
-      return;
-    }
-    if (task.state !== "IN_REVIEW") {
-      log.info({ taskId: task.taskId, state: task.state, externalChangeId }, "webhook feedback: task not IN_REVIEW, ignoring");
-      return;
-    }
-    log.info({ taskId: task.taskId, integrationId, externalChangeId }, "webhook feedback: triggering review progress check");
-    await this.checkReviewProgress(task, externalChangeId, streamComments);
+    await this.runTaskLifecycle(task.taskId, async () => {
+      const current = await this.stateStore.getTask(task.taskId) ?? task;
+      if (TERMINAL_STATES.has(current.state)) return;
+      if (current.state !== "IN_REVIEW") {
+        log.info({ taskId: current.taskId, state: current.state, externalChangeId }, "webhook feedback: task not IN_REVIEW, ignoring");
+        return;
+      }
+      log.info({ taskId: current.taskId, integrationId, externalChangeId }, "webhook feedback: triggering review progress check");
+      await this.checkReviewProgress(current, externalChangeId, streamComments);
+    });
   }
 
   /** Webhook handler: mark the associated task's change as merged and close its ticket. */
@@ -332,27 +348,22 @@ export class Orchestrator {
       log.info({ integrationId, externalChangeId }, "webhook merged: no task for change, ignoring");
       return;
     }
-    if (TERMINAL_STATES.has(task.state)) {
-      log.info({ taskId: task.taskId, state: task.state }, "webhook merged: task terminal, ignoring");
-      return;
-    }
-
-    // Code-review tasks wait in REVIEW_WATCHING after posting comments.
-    // When the patchset merges, close the review task immediately.
-    if (task.state === "REVIEW_WATCHING") {
-      log.info({ taskId: task.taskId, externalChangeId }, "webhook merged: marking review task REVIEW_DONE");
-      await this.stateStore.transition(task.taskId, "REVIEW_DONE");
-      return;
-    }
-
-    if (task.state !== "IN_REVIEW") {
-      log.info({ taskId: task.taskId, state: task.state }, "webhook merged: task not IN_REVIEW/REVIEW_WATCHING, ignoring");
-      return;
-    }
-
-    log.info({ taskId: task.taskId, externalChangeId }, "webhook merged: closing ticket");
-    const merged = await this.stateStore.transition(task.taskId, "MERGED");
-    await this.closeTicket(merged);
+    await this.runTaskLifecycle(task.taskId, async () => {
+      const current = await this.stateStore.getTask(task.taskId) ?? task;
+      if (TERMINAL_STATES.has(current.state)) return;
+      if (current.state === "REVIEW_WATCHING") {
+        log.info({ taskId: current.taskId, externalChangeId }, "webhook merged: marking review task REVIEW_DONE");
+        await this.stateStore.transition(current.taskId, "REVIEW_DONE");
+        return;
+      }
+      if (current.state !== "IN_REVIEW") {
+        log.info({ taskId: current.taskId, state: current.state }, "webhook merged: task not IN_REVIEW/REVIEW_WATCHING, ignoring");
+        return;
+      }
+      log.info({ taskId: current.taskId, externalChangeId }, "webhook merged: closing ticket");
+      const merged = await this.stateStore.transition(current.taskId, "MERGED");
+      await this.closeTicket(merged);
+    });
   }
 
   /** Webhook handler: mark the associated task as abandoned when a change is externally abandoned. */
@@ -362,12 +373,12 @@ export class Orchestrator {
       log.info({ integrationId, externalChangeId }, "webhook abandoned: no task for change, ignoring");
       return;
     }
-    if (TERMINAL_STATES.has(task.state)) {
-      log.info({ taskId: task.taskId, state: task.state }, "webhook abandoned: task terminal, ignoring");
-      return;
-    }
-    log.info({ taskId: task.taskId, externalChangeId }, "webhook abandoned: marking task ABANDONED");
-    await this.handleAbandoned(task, "change was abandoned externally (webhook)");
+    await this.runTaskLifecycle(task.taskId, async () => {
+      const current = await this.stateStore.getTask(task.taskId) ?? task;
+      if (TERMINAL_STATES.has(current.state)) return;
+      log.info({ taskId: current.taskId, externalChangeId }, "webhook abandoned: marking task ABANDONED");
+      await this.handleAbandoned(current, "change was abandoned externally (webhook)");
+    });
   }
 
   /** Resume an existing task's workflow, typically after a manual retry. */
@@ -378,6 +389,31 @@ export class Orchestrator {
     }
 
     await this.runWorkflow(task);
+  }
+
+  async abandonTask(taskId: ReturnType<typeof makeTaskId>): Promise<Task> {
+    let abandoned: Task | undefined;
+    await this.lifecycleCoordinator.cancelTaskAndRun(taskId, async () => {
+      const current = await this.stateStore.getTask(taskId);
+      if (!current) throw new Error(`Task not found: ${taskId}`);
+      abandoned = TERMINAL_STATES.has(current.state)
+        ? current
+        : await this.stateStore.abandonTask(taskId);
+    });
+    if (!abandoned) throw new Error(`Task not found: ${taskId}`);
+    return abandoned;
+  }
+
+  async deleteProject(projectId: import("../interfaces.js").ProjectId): Promise<void> {
+    const deleteProject = this.projectMode?.projectStore.deleteProject;
+    if (!deleteProject) throw new Error("Project deletion is not configured");
+    await this.lifecycleCoordinator.deleteProject(
+      projectId,
+      async () => (await this.stateStore.getAllTasks())
+        .filter((task) => task.projectId === projectId)
+        .map((task) => task.taskId),
+      () => deleteProject(projectId),
+    );
   }
 
   /** Invalidate the cached VCS connector for an integration after a config update. */
@@ -501,6 +537,34 @@ export class Orchestrator {
       log.debug({ taskId: task.taskId, state: task.state }, "skipping code-review task in ticket orchestrator");
       return;
     }
+
+    const activeWorkflow = this.activeWorkflows.get(task.taskId);
+    if (activeWorkflow !== undefined) {
+      log.debug({ taskId: task.taskId }, "joining active task workflow");
+      await activeWorkflow;
+      return;
+    }
+
+    const workflow = this.runTaskLifecycle(task.taskId, async () => {
+      const current = await this.stateStore.getTask(task.taskId);
+      if (!current && this.lifecycleCoordinator.wasTaskDeleted(task.taskId)) return;
+      await this.executeWorkflow(current ?? task);
+    });
+    this.activeWorkflows.set(task.taskId, workflow);
+    try {
+      await workflow;
+    } finally {
+      if (this.activeWorkflows.get(task.taskId) === workflow) {
+        this.activeWorkflows.delete(task.taskId);
+      }
+    }
+  }
+
+  private async runTaskLifecycle(taskId: Task["taskId"], operation: () => Promise<void>): Promise<void> {
+    await this.lifecycleCoordinator.runTask(taskId, async () => operation());
+  }
+
+  private async executeWorkflow(task: Task): Promise<void> {
     log.info({ taskId: task.taskId, state: task.state }, "running workflow from state");
 
     // The code-review early-return above guarantees task.state is a CodeGenState here.
@@ -561,16 +625,18 @@ export class Orchestrator {
 
   /** Execute one agent cycle: build context, invoke the agent, push changes, and advance state. */
   private async runAgentCycle(task: Task, reviewFeedback: FeedbackItem[] = []): Promise<void> {
-    let cycleSlot: { projectId: import("../interfaces.js").ProjectId; agentId: import("../interfaces.js").AgentId } | null = null;
+    let cycleLease: import("./concurrencyTracker.js").ConcurrencyLease | null = null;
+    let pendingRetry: Task | null = null;
     const projectIdForCycle = task.projectId ?? (await this.stateStore.getTask(task.taskId))?.projectId ?? null;
     if (!task.projectId && projectIdForCycle) {
       task.projectId = projectIdForCycle;
     }
+    try {
     if (projectIdForCycle && this.projectMode?.concurrencyTracker) {
       const project = await this.projectMode.projectStore.getProjectById(projectIdForCycle);
       if (project) {
-        const acquired = await this.projectMode.concurrencyTracker.acquire(project.id, project.agentId);
-        if (!acquired) {
+        const acquiredLease = await this.projectMode.concurrencyTracker.acquire(project.id, project.agentId);
+        if (acquiredLease === null) {
           if (task.state === "AGENT_RUNNING") {
             task = await this.stateStore.transition(task.taskId, "RETRY_CYCLE", {
               reason: "waiting for available agent slot",
@@ -582,21 +648,40 @@ export class Orchestrator {
           );
           return;
         }
-        cycleSlot = { projectId: project.id, agentId: project.agentId };
+        cycleLease = acquiredLease;
       }
     }
 
     const ticketConnector = await this.resolveTicketConnector(task);
     const ticket = await ticketConnector.getTicket(task.ticketId);
     const priorFeedback = await this.buildPriorFeedback(task, reviewFeedback);
-    const cycleNumber = await this.stateStore.incrementCycle(task.taskId);
+    const currentCycle = task.state === "AGENT_RUNNING" && task.cycleCount > 0
+      ? (await this.stateStore.getAgentCycles(task.taskId)).find(
+          (cycle) => cycle.cycleNumber === task.cycleCount && cycle.result.status === "running"
+        )
+      : undefined;
+    const runningResult = {
+      status: "running" as const,
+      modifiedFiles: [],
+      summary: "",
+      agentLogs: "",
+      metadata: {},
+    };
+    let cycleNumber: number;
+    if (currentCycle !== undefined) {
+      cycleNumber = currentCycle.cycleNumber;
+      await this.stateStore.saveAgentCycle(task.taskId, cycleNumber, runningResult);
+    } else {
+      task = await this.stateStore.transition(task.taskId, "AGENT_RUNNING");
+      cycleNumber = await this.stateStore.startAgentCycle(task.taskId, runningResult);
+    }
 
     log.info({ taskId: task.taskId, cycleNumber }, "starting agent cycle");
 
-    task = await this.stateStore.transition(task.taskId, "AGENT_RUNNING");
-    const handle = await this.workspaceRunner.createWorkspace(task.taskId);
-
+    let handle: WorkspaceHandle | undefined;
     try {
+      const activeHandle = await this.workspaceRunner.createWorkspace(task.taskId);
+      handle = activeHandle;
       if (!task.projectId || !this.projectMode || !this.workspaceRunner.prepareProjectWorkspace) {
         throw new Error(
           `Task ${task.taskId} is not project-bound; project-mode is the only supported workflow.`
@@ -663,7 +748,7 @@ export class Orchestrator {
       );
 
       const cloneResult = await this.workspaceRunner.prepareProjectWorkspace(
-        handle,
+        activeHandle,
         enrichedPushTargets,
         projectRecord.postCloneScript,
         cloneKnownHostsPath
@@ -690,16 +775,17 @@ export class Orchestrator {
         rootConnector.buildPushSpec(cloneBranch, task.taskId, ticket.subject).ref
       );
 
-      const hasPriorPatchset = await this.checkoutPriorPatchset(task, cycleNumber, handle, root, rootConnector);
+      const hasPriorPatchset = await this.checkoutPriorPatchset(task, cycleNumber, activeHandle, root, rootConnector);
       const context: TaskContext = {
         taskId: task.taskId,
+        ...(task.projectId !== null ? { projectId: task.projectId } : {}),
         ticketTitle: ticket.subject,
         ticketDescription: ticket.description,
         acceptanceCriteria: this.extractAcceptanceCriteria(ticket.description),
         baseBranch: cloneBranch,
-        workspacePath: handle.hostWorkspacePath,
-        volumeName: handle.volumeName,
-        homeVolumeName: handle.homeVolumeName,
+        workspacePath: activeHandle.hostWorkspacePath,
+        volumeName: activeHandle.volumeName,
+        homeVolumeName: activeHandle.homeVolumeName,
         constraints: [],
         priorFeedback,
         cycleNumber,
@@ -766,7 +852,11 @@ export class Orchestrator {
       };
 
       const agentResult = await this.withTimeout(
-        this.workspaceRunner.runAgent(handle, context, projectAgentRuntime?.adapter ?? undefined),
+        (abortSignal) => this.workspaceRunner.runAgent(
+          activeHandle,
+          { ...context, abortSignal },
+          projectAgentRuntime?.adapter ?? undefined,
+        ),
         this.config.agentTimeoutMs,
         `Agent timed out after ${this.config.agentTimeoutMs}ms`
       );
@@ -790,6 +880,14 @@ export class Orchestrator {
         return;
       }
       if (TERMINAL_STATES.has(freshTask.state)) {
+        const summary = `Agent result discarded because task reached ${freshTask.state}`;
+        await this.stateStore.saveAgentCycle(task.taskId, cycleNumber, {
+          status: "failed",
+          modifiedFiles: [],
+          summary,
+          agentLogs: "",
+          metadata: { error: summary, cancelled: true },
+        });
         log.warn(
           { taskId: task.taskId, state: freshTask.state },
           "task reached terminal state while agent was running; discarding result"
@@ -810,40 +908,58 @@ export class Orchestrator {
           return;
         }
 
-        const retryTask = await this.stateStore.transition(task.taskId, "RETRY_CYCLE");
-        await this.runAgentCycle(retryTask);
-        return;
+        pendingRetry = await this.stateStore.transition(task.taskId, "RETRY_CYCLE");
+      } else {
+        const hasAgentCommits = agentResult.commits != null && agentResult.commits.length > 0;
+
+        if (rootConnector.useChangeIdContinuity && !agentResult.externalChangeId && !hasAgentCommits) {
+          throw new Error("Agent reported success but did not return a Gerrit Change-Id or commits");
+        }
+
+        await this.stateStore.saveAgentCycle(task.taskId, cycleNumber, normalizedResult);
+
+        // For Gerrit: agent commits[] are pre-validated; each becomes a separate change (topic-grouped).
+        // For GitLab: all N commits land in one MR via force-push.
+        if (task.projectId && this.projectMode && projectPushTargets.length > 0) {
+          await this.pushProjectChanges(task, activeHandle, projectPushTargets, commitMessage, context.ticketUrl ?? "", agentResult.commits);
+        }
+
+        task = await this.stateStore.transition(task.taskId, "IN_REVIEW");
+        const ticketConn = await this.resolveTicketConnector(task);
+        await ticketConn.transitionToInReview(task.ticketId);
       }
-
-      const hasAgentCommits = agentResult.commits != null && agentResult.commits.length > 0;
-
-      if (rootConnector.useChangeIdContinuity && !agentResult.externalChangeId && !hasAgentCommits) {
-        throw new Error("Agent reported success but did not return a Gerrit Change-Id or commits");
-      }
-
-      await this.stateStore.saveAgentCycle(task.taskId, cycleNumber, normalizedResult);
-
-      // For Gerrit: agent commits[] are pre-validated; each becomes a separate change (topic-grouped).
-      // For GitLab: all N commits land in one MR via force-push.
-      if (task.projectId && this.projectMode && projectPushTargets.length > 0) {
-        await this.pushProjectChanges(task, handle, projectPushTargets, commitMessage, context.ticketUrl ?? "", agentResult.commits);
-      }
-
-      task = await this.stateStore.transition(task.taskId, "IN_REVIEW");
-      const ticketConn = await this.resolveTicketConnector(task);
-      await ticketConn.transitionToInReview(task.ticketId);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Agent cycle failed";
+      await this.stateStore.saveAgentCycle(task.taskId, cycleNumber, {
+        status: "failed",
+        modifiedFiles: [],
+        summary: message,
+        agentLogs: "",
+        metadata: { error: message },
+      }).catch((saveErr: unknown) => {
+        log.warn({ err: saveErr, taskId: task.taskId }, "failed to save agent failure cycle");
+      });
+      clearTaskEventBuffer(task.taskId);
+      throw err;
     } finally {
-      try {
-        await this.workspaceRunner.destroyWorkspace(handle);
-      } catch (err) {
-        log.warn(
-          { taskId: task.taskId, err },
-          "workspace cleanup failed (non-fatal, task state unaffected)"
-        );
+      if (handle !== undefined) {
+        try {
+          await this.workspaceRunner.destroyWorkspace(handle);
+        } catch (err) {
+          log.warn(
+            { taskId: task.taskId, err },
+            "workspace cleanup failed (non-fatal, task state unaffected)"
+          );
+        }
       }
-      if (cycleSlot && this.projectMode?.concurrencyTracker) {
-        this.projectMode.concurrencyTracker.release(cycleSlot.projectId, cycleSlot.agentId);
+    }
+    } finally {
+      if (cycleLease !== null && this.projectMode?.concurrencyTracker) {
+        this.projectMode.concurrencyTracker.release(cycleLease);
       }
+    }
+    if (pendingRetry) {
+      await this.runAgentCycle(pendingRetry);
     }
   }
 
@@ -882,7 +998,9 @@ export class Orchestrator {
 
     try {
       const patchsetOpts = await rootConnector.resolvePatchsetOptions(primaryChange.changeId);
-      await this.workspaceRunner.applyPriorPatchset(handle, patchsetOpts);
+      // The connector cannot know the repo path; supply the full clone URL
+      // (base + repo) so `git fetch` has a valid remote to pull refs/changes from.
+      await this.workspaceRunner.applyPriorPatchset(handle, { ...patchsetOpts, vcsBaseUrl: root.cloneUrl });
       log.info(
         { taskId: task.taskId, changeId: primaryChange.changeId, revisionNumber: patchsetOpts.revisionNumber, patchset: patchsetOpts.patchset },
         "checked out existing patchset for retry cycle"
@@ -895,7 +1013,7 @@ export class Orchestrator {
         for (const change of secondaryChanges) {
           try {
             const secOpts = await rootConnector.resolvePatchsetOptions!(change.changeId);
-            await this.workspaceRunner.cherryPickPriorPatchset(handle, secOpts);
+            await this.workspaceRunner.cherryPickPriorPatchset(handle, { ...secOpts, vcsBaseUrl: root.cloneUrl });
             log.info(
               { taskId: task.taskId, changeId: change.changeId, commitIndex: change.commitIndex, revisionNumber: secOpts.revisionNumber, patchset: secOpts.patchset },
               "cherry-picked secondary patchset for retry cycle"
@@ -1414,16 +1532,19 @@ export class Orchestrator {
       const ref = await this.resolvePushRef(task, () => computedRef);
       const reviewSystemLabel = vcsConnector.reviewSystemLabel;
 
-      const volumeOpts = { volumeName: handle.volumeName, image: handle.containerImage, subPath: target.localPath };
+      // Push runs host-side against the repo's working directory. Multi-repo
+      // targets live in sub-directories of the workspace, so join the target's
+      // localPath ("." for the root repo) onto the host workspace path.
+      const repoDir = join(handle.hostWorkspacePath, target.localPath);
       try {
         const commitMsg = this.appendTicketFooter(fallbackCommitMessage, task.ticketId, ticketUrl, task.ticketSourceLabel);
         const subjectHash = createHash("sha1").update(fallbackCommitMessage.split("\n")[0] ?? "").digest("hex");
 
         let pushResult;
         if (vcsConnector.pushDirect) {
-          pushResult = await vcsConnector.pushDirect(handle.hostWorkspacePath, ref, topic, volumeOpts);
+          pushResult = await vcsConnector.pushDirect(repoDir, ref, topic);
         } else {
-          pushResult = await vcsConnector.push(handle.hostWorkspacePath, ref, commitMsg, undefined, volumeOpts);
+          pushResult = await vcsConnector.push(repoDir, ref, commitMsg, undefined);
         }
 
         // Use Change-Ids from agent commits when available — this is the source of truth
@@ -1748,29 +1869,48 @@ export class Orchestrator {
       .map((line) => line.trim());
   }
 
-  /** Race a promise against a timeout, rejecting with `message` if it expires first. */
-  private withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
-    const wrappedPromise = new Promise<T>((resolve, reject) => {
+  /** Abort an operation at its deadline and await its termination before rejecting. */
+  private withTimeout<T>(
+    operation: Promise<T> | ((signal: AbortSignal) => Promise<T>),
+    timeoutMs: number,
+    message: string,
+  ): Promise<T> {
+    const controller = new AbortController();
+    if (typeof operation !== "function") {
+      const wrappedPromise = new Promise<T>((resolve, reject) => {
+        const legacyTimer = setTimeout(() => {
+          clearTimeout(legacyTimer);
+          reject(new Error(message));
+        }, timeoutMs);
+        operation.then(
+          (value) => {
+            clearTimeout(legacyTimer);
+            resolve(value);
+          },
+          (err: unknown) => {
+            clearTimeout(legacyTimer);
+            reject(err);
+          },
+        );
+      });
+      void wrappedPromise.catch(() => undefined);
+      return wrappedPromise;
+    }
+    return (async (): Promise<T> => {
+      let timedOut = false;
       const timer = setTimeout(() => {
-        clearTimeout(timer);
-        reject(new Error(message));
+        timedOut = true;
+        controller.abort();
       }, timeoutMs);
-
-      promise.then(
-        (value) => {
-          clearTimeout(timer);
-          resolve(value);
-        },
-        (err: unknown) => {
-          clearTimeout(timer);
-          reject(err);
-        }
-      );
-    });
-
-    void wrappedPromise.catch(() => undefined);
-
-    return wrappedPromise;
+      try {
+        return await operation(controller.signal);
+      } catch (err) {
+        if (timedOut) throw new Error(message);
+        throw err;
+      } finally {
+        clearTimeout(timer);
+      }
+    })();
   }
 
   /** Type guard: true when the error originates from a missing ticket. */

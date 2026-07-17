@@ -48,6 +48,7 @@ export interface TaskRouteDeps {
   taskControl?: {
     resumeTask(taskId: ReturnType<typeof makeTaskId>): Promise<void>;
     retryTask(taskId: ReturnType<typeof makeTaskId>): Promise<void>;
+    abandonTask?(taskId: ReturnType<typeof makeTaskId>): Promise<Task>;
   } | undefined;
 }
 
@@ -100,7 +101,7 @@ export function registerTaskRoutes(router: Router, deps: TaskRouteDeps): void {
     try {
       const taskToDelete = await deps.stateStore.getTask(taskId);
       if (!taskToDelete) { writeJson(res, 404, { error: "Task not found" }); return; }
-      await deps.stateStore.deleteTaskGroup(taskId);
+      await deps.stateStore.deleteTask(taskId);
       recordAudit(deps.auditStore, req, { action: "task.delete", targetType: "task", targetId: taskId, details: { ticketId: taskToDelete.ticketId, state: taskToDelete.state } });
       writeJson(res, 200, { ok: true });
     } catch (err: unknown) {
@@ -172,7 +173,9 @@ export function registerTaskRoutes(router: Router, deps: TaskRouteDeps): void {
   router.add("POST", "/api/admin/tasks/:id/abandon", async (req, res, params) => {
     const taskId = makeTaskId(params["id"] ?? "");
     try {
-      const task = await deps.stateStore.abandonTask(taskId);
+      const task = deps.taskControl?.abandonTask
+        ? await deps.taskControl.abandonTask(taskId)
+        : await deps.stateStore.abandonTask(taskId);
       recordAudit(deps.auditStore, req, { action: "task.abandon", targetType: "task", targetId: taskId, details: { ticketId: task.ticketId, state: task.state } });
       writeJson(res, 200, { task: serializeTask(task) });
     } catch (err: unknown) {

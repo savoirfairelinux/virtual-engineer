@@ -3,7 +3,7 @@
  * Virtual Engineer — Agent Worker (TypeScript)
  *
  * Runs INSIDE the Docker container for each task cycle.
- * The repository is pre-cloned by the host orchestrator and mounted at /workspace.
+ * The repository is pre-cloned by the host orchestrator and mounted at /sandbox.
  * This worker is responsible ONLY for code generation.
  * It has no VCS credentials, does not clone, and never pushes.
  *
@@ -19,7 +19,6 @@
  */
 
 import { execFileSync } from 'child_process';
-import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 
 import type { AgentLogEvent, AgentResult, CommitDescriptor, RepositoryMap } from '../../src/interfaces.js';
@@ -31,6 +30,8 @@ import {
   groupFilesByRepo,
 } from './commitUtils.js';
 import { emitEvent } from './providers/events.js';
+import { loadWorkerPrompts } from './promptLoader.js';
+import type { WorkerPrompts } from './promptLoader.js';
 import { resolveRunner, isAgentProvider, AGENT_PROVIDER_IDS } from './providers/registry.js';
 import type { AgentRun } from './providers/types.js';
 
@@ -69,23 +70,18 @@ try {
 }
 const REVIEW_MODE = process.env['REVIEW_MODE'] === '1';
 const SKILL_DISCOVERY = process.env['SKILL_DISCOVERY'] === '1';
-const USER_PROMPT_FILE = process.env['USER_PROMPT_FILE'] ?? '';
-const SYSTEM_PROMPT = process.env['SYSTEM_PROMPT'] ?? '';
 
-if (!process.env['SYSTEM_PROMPT']) {
-  process.stderr.write(
-    'FATAL: SYSTEM_PROMPT env var is required but was not set. ' +
-    'Ensure the orchestrator injects a prompt before launching this container.\n',
-  );
-  process.exit(1);
+function loadPromptsOrExit(): WorkerPrompts {
+  try {
+    return loadWorkerPrompts();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`FATAL: ${message}. Ensure the orchestrator injects both prompts before launching this container.\n`);
+    process.exit(1);
+  }
 }
-if (!USER_PROMPT_FILE) {
-  process.stderr.write(
-    'FATAL: USER_PROMPT_FILE env var is required but was not set. ' +
-    'Ensure the orchestrator writes the prompt file before launching this container.\n',
-  );
-  process.exit(1);
-}
+
+const PROMPTS = loadPromptsOrExit();
 
 // ── Structured event emitter is imported from ./providers/events.js ──────────
 
@@ -101,7 +97,10 @@ try {
   process.stderr.write(`Warning: Failed to parse REPOSITORY_MAP_JSON: ${msg}\n`);
 }
 
-const WORKSPACE = '/workspace';
+// The host runs this worker with its working directory set to the uploaded repo
+// (OpenShell nests the upload under /sandbox/<name>, so the runner points
+// --workdir there). Derive the repo path from cwd rather than hardcoding it.
+const WORKSPACE = process.cwd();
 const REPO_PATH = WORKSPACE;
 
 // ── Internal git helper ────────────────────────────────────────────────────────
@@ -137,7 +136,7 @@ async function runAgent(
   const model = AGENT_PROVIDER === 'claude' ? CLAUDE_MODEL : COPILOT_MODEL;
   return runner(prompt, {
     model,
-    systemPrompt: SYSTEM_PROMPT,
+    systemPrompt: PROMPTS.systemPrompt,
     cwd: REPO_PATH,
     timeoutMs,
     mode,
@@ -154,17 +153,15 @@ interface ReviewWorkerResult extends AgentResult {
 }
 
 async function runReviewMode(): Promise<ReviewWorkerResult> {
-  if (!existsSync(USER_PROMPT_FILE)) {
-    throw new Error(`User prompt file not found: ${USER_PROMPT_FILE}`);
-  }
-  const reviewPrompt = readFileSync(USER_PROMPT_FILE, 'utf8').trim();
-  if (!reviewPrompt) {
-    throw new Error(`User prompt file is empty: ${USER_PROMPT_FILE}`);
-  }
-
   process.stderr.write(`review mode: provider=${AGENT_PROVIDER} model=${ACTIVE_MODEL}\n`);
+  emitEvent('review.prompt_received', {
+    userPromptLength: PROMPTS.userPrompt.length,
+    systemPromptLength: PROMPTS.systemPrompt.length,
+    userPromptSource: PROMPTS.userPromptSource,
+    systemPromptSource: PROMPTS.systemPromptSource,
+  });
 
-  const agent = await runAgent(reviewPrompt, 9 * 60 * 1000, 'review');
+  const agent = await runAgent(PROMPTS.userPrompt, 9 * 60 * 1000, 'review');
   try {
     const rawOutput = agent.content ?? '';
     // session.end is emitted by the provider runner (see providers/).
@@ -187,14 +184,6 @@ async function runReviewMode(): Promise<ReviewWorkerResult> {
 async function main(): Promise<AgentResult> {
   if (AGENT_PROVIDER === 'copilot' && !GITHUB_TOKEN) {
     throw new Error('GITHUB_TOKEN env var is required');
-  }
-
-  if (!existsSync(USER_PROMPT_FILE)) {
-    throw new Error(`User prompt file not found: ${USER_PROMPT_FILE}`);
-  }
-  const userPrompt = readFileSync(USER_PROMPT_FILE, 'utf8').trim();
-  if (!userPrompt) {
-    throw new Error(`User prompt file is empty: ${USER_PROMPT_FILE}`);
   }
 
   if (REVIEW_MODE) {
@@ -245,7 +234,7 @@ async function main(): Promise<AgentResult> {
 
   process.stderr.write(`starting agent (provider=${AGENT_PROVIDER}, model=${ACTIVE_MODEL})\n`);
 
-  const agent = await runAgent(userPrompt, 3_540_000, 'codegen');
+  const agent = await runAgent(PROMPTS.userPrompt, 3_540_000, 'codegen');
   const handlerState = { toolCallCount: agent.toolCallCount, toolsByKind: agent.toolsByKind };
   const rawContent = agent.content ?? 'Task completed';
   const summary = rawContent.trim().slice(0, 1000);

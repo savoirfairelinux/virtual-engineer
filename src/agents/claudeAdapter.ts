@@ -9,6 +9,7 @@ import type {
   TaskContext,
   ExternalChangeId,
   AdapterContainerSpec,
+  AgentEgressSpec,
   PromptStore,
   ReviewWorkspaceInput,
   WorkspaceRunner,
@@ -19,6 +20,16 @@ import { decryptToken } from "../utils/encryption.js";
 import { getConfig } from "../config.js";
 import { agentLogBus, pushToTaskBuffer } from "./agentEventBus.js";
 import { buildCodegenUserPrompt } from "./copilotAdapter.js";
+
+/**
+ * Network egress the Claude Code CLI needs under the OpenShell deny-by-default
+ * runtime. `api.anthropic.com` serves the model API. The Claude Code CLI runs
+ * under `node` (via the agent SDK), so `node` is the permitted binary.
+ */
+const CLAUDE_EGRESS: AgentEgressSpec = {
+  hosts: ["api.anthropic.com"],
+  binaries: ["/usr/local/bin/node"],
+};
 
 const log = getLogger("claude-adapter");
 
@@ -32,8 +43,6 @@ export interface ClaudeAdapterConfig {
   maxRepositoryContextBytes: number;
   maxCommitsPerCycle: number;
   promptsDir?: string | undefined;
-  /** Docker network for agent/review containers. Defaults to `virtual-engineer_ve-agent-net`. */
-  dockerNetwork?: string | undefined;
 }
 
 interface DockerInvocationResult {
@@ -185,9 +194,9 @@ export class ClaudeAdapter implements AgentAdapter, ConfigurableAdapter {
     return {
       image: session.agentContainerImage,
       env,
-      command: ["node", "/agent-worker/dist/index.js"],
-      networkMode: this.config.dockerNetwork ?? "virtual-engineer_ve-agent-net",
+      command: ["node", "/app/agent-worker/dist/index.js"],
       additionalDockerArgs,
+      egress: CLAUDE_EGRESS,
     };
   }
 
@@ -197,6 +206,9 @@ export class ClaudeAdapter implements AgentAdapter, ConfigurableAdapter {
     authEnv: Record<string, string> = {}
   ): AdapterContainerSpec {
     const reviewModel = input.model ?? this.config.model;
+    const systemPromptEnv = /[\r\n]/u.test(input.systemPrompt)
+      ? { SYSTEM_PROMPT_BASE64: Buffer.from(input.systemPrompt, "utf8").toString("base64") }
+      : { SYSTEM_PROMPT: input.systemPrompt };
     const env: Record<string, string> = {
       ...this.reviewAuthEnv(input.agentToken, authEnv),
       AGENT_PROVIDER: "claude",
@@ -205,16 +217,16 @@ export class ClaudeAdapter implements AgentAdapter, ConfigurableAdapter {
       ...(reviewModel ? { CLAUDE_MODEL: reviewModel } : {}),
       REVIEW_MODE: "1",
       USER_PROMPT_FILE: "/ve-home/user-prompt.txt",
-      SYSTEM_PROMPT: input.systemPrompt,
+      ...systemPromptEnv,
       ...(input.skillDiscoveryEnabled ? { SKILL_DISCOVERY: "1" } : {}),
     };
 
     return {
       image: input.containerImage ?? "virtual-engineer-workspace:latest",
       env,
-      command: ["node", "/agent-worker/dist/index.js"],
-      networkMode: this.config.dockerNetwork ?? "virtual-engineer_ve-agent-net",
+      command: ["node", "/app/agent-worker/dist/index.js"],
       additionalDockerArgs: [...SECURITY_DOCKER_ARGS],
+      egress: CLAUDE_EGRESS,
     };
   }
 
@@ -277,7 +289,12 @@ export class ClaudeAdapter implements AgentAdapter, ConfigurableAdapter {
         : null;
 
     if (systemPrompt) {
-      spec.env["SYSTEM_PROMPT"] = systemPrompt.content;
+      if (/[\r\n]/u.test(systemPrompt.content)) {
+        delete spec.env["SYSTEM_PROMPT"];
+        spec.env["SYSTEM_PROMPT_BASE64"] = Buffer.from(systemPrompt.content, "utf8").toString("base64");
+      } else {
+        spec.env["SYSTEM_PROMPT"] = systemPrompt.content;
+      }
     }
 
     if (instructionsPrompt) {

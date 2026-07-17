@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { ReviewOrchestrator } from "../../src/review/reviewOrchestrator.js";
+import { TaskLifecycleCoordinator } from "../../src/orchestrator/taskLifecycleCoordinator.js";
 import { computeCommentHash, computeThreadReplyHash } from "../../src/review/commentHash.js";
 import {
   makeExternalChangeId,
@@ -155,10 +156,11 @@ function makeMocks(initialTask?: Task) {
       }
     }),
     setFailureReason: vi.fn(async () => undefined),
-    incrementCycle: vi.fn(async () => {
+    startAgentCycle: vi.fn(async (_id: unknown, result: unknown) => {
       if (store.task) {
         const next = store.task.cycleCount + 1;
         store.task = { ...store.task, cycleCount: next };
+        await store.saveAgentCycle(store.task.taskId, next, result);
         return next;
       }
       return 1;
@@ -503,6 +505,18 @@ describe("ReviewOrchestrator.startReviewTask", () => {
     expect(mocks.store.createReviewTask).not.toHaveBeenCalled();
   });
 
+  it("re-queues REVIEW_WATCHING with a null reviewedPatchset when force is set", async () => {
+    const existing = makeTask({ state: "REVIEW_WATCHING", currentPatchset: 2, reviewedPatchset: null });
+    mocks = makeMocks(existing);
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+
+    const tasks = await orch.startReviewTask({ changeId: CHANGE_ID, force: true });
+
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]?.taskId).toBe(existing.taskId);
+    expect(mocks.store.createReviewTask).not.toHaveBeenCalled();
+  });
+
   it("creates a fresh review task when force is set and the prior review is terminal", async () => {
     const existing = makeTask({ state: "REVIEW_DONE", currentPatchset: 2, reviewedPatchset: 2 });
     mocks = makeMocks(existing);
@@ -555,11 +569,19 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
     const initial = makeTask({ state: "REVIEW_PENDING" });
     const mocks = makeMocks(initial);
     const { runner } = makeWorkspaceRunner();
+    (mocks.provider.postReviewComments as ReturnType<typeof vi.fn>).mockImplementation(
+      async () => {
+        expect(mocks.store.task.state).toBe("REVIEW_COMMENTING");
+      }
+    );
     const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
 
     await orch.runReview(initial.taskId);
 
-    expect(mocks.store.incrementCycle).toHaveBeenCalledWith(initial.taskId);
+    expect(mocks.store.startAgentCycle).toHaveBeenCalledWith(
+      initial.taskId,
+      expect.objectContaining({ status: "running" }),
+    );
     const transitions = mocks.store.transition.mock.calls.map((c: [unknown, unknown]) => c[1]);
     expect(transitions).toEqual(["REVIEW_RUNNING", "REVIEW_COMMENTING", "REVIEW_WATCHING"]);
 
@@ -567,10 +589,150 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
       CHANGE_ID,
       2,
       [{ file: "src/a.ts", line: 1, message: "Bug", severity: "error" }],
-      "blocking"
+      "blocking",
+      undefined,
+      expect.any(AbortSignal),
     );
-    expect(mocks.provider.vote).toHaveBeenCalledWith(CHANGE_ID, 2, -1, "blocking");
+    expect(mocks.provider.vote).toHaveBeenCalledWith(CHANGE_ID, 2, -1, "blocking", expect.any(AbortSignal));
     expect(mocks.store.setReviewedPatchset).toHaveBeenCalledWith(initial.taskId, 2);
+  });
+
+  it("discards a stale result and reviews the newest patchset before posting", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING", currentPatchset: 2 });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+    (mocks.provider.getChangeDetails as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(makeDetails({ currentPatchset: 2 }))
+      .mockResolvedValueOnce(makeDetails({ currentPatchset: 3 }))
+      .mockResolvedValue(makeDetails({ currentPatchset: 3 }));
+    (mocks.provider.getChangeDiff as ReturnType<typeof vi.fn>).mockImplementation(
+      async (_changeId: unknown, patchset: number) => makeDiff({ patchset })
+    );
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+
+    await orch.runReview(initial.taskId);
+
+    expect(mocks.provider.getChangeDiff).toHaveBeenNthCalledWith(1, CHANGE_ID, 2, expect.any(AbortSignal));
+    expect(mocks.provider.getChangeDiff).toHaveBeenNthCalledWith(2, CHANGE_ID, 3, expect.any(AbortSignal));
+    expect(runner.runReviewInDocker).toHaveBeenCalledTimes(2);
+    expect(mocks.provider.postReviewComments).toHaveBeenCalledTimes(1);
+    expect(mocks.provider.postReviewComments).toHaveBeenCalledWith(
+      CHANGE_ID,
+      3,
+      [{ file: "src/a.ts", line: 1, message: "Bug", severity: "error" }],
+      "blocking",
+      undefined,
+      expect.any(AbortSignal),
+    );
+    expect(mocks.provider.vote).toHaveBeenCalledOnce();
+    expect(mocks.store.setReviewedPatchset).toHaveBeenCalledTimes(1);
+    expect(mocks.store.setReviewedPatchset).toHaveBeenCalledWith(expect.any(String), 3);
+  });
+
+  it.each(["MERGED", "ABANDONED"] as const)(
+    "does not post when the change becomes %s during agent execution",
+    async (status) => {
+      const initial = makeTask({ state: "REVIEW_PENDING", currentPatchset: 2 });
+      const mocks = makeMocks(initial);
+      const { runner } = makeWorkspaceRunner();
+      (mocks.provider.getChangeDetails as ReturnType<typeof vi.fn>)
+        .mockResolvedValueOnce(makeDetails({ currentPatchset: 2 }))
+        .mockResolvedValue(makeDetails({ currentPatchset: 2, status }));
+      const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+
+      await orch.runReview(initial.taskId);
+
+      expect(mocks.provider.postReviewComments).not.toHaveBeenCalled();
+      expect(mocks.provider.vote).not.toHaveBeenCalled();
+      expect(mocks.store.markReviewCommentsPosted).not.toHaveBeenCalled();
+      expect(mocks.store.markThreadReplyPosted).not.toHaveBeenCalled();
+      expect(mocks.store.setReviewedPatchset).not.toHaveBeenCalled();
+      expect(mocks.store.transition).toHaveBeenLastCalledWith(initial.taskId, "REVIEW_DONE");
+    }
+  );
+
+  it("fails without posting when supersession retries are exhausted", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING", currentPatchset: 1 });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+    let patchset = 0;
+    (mocks.provider.getChangeDetails as ReturnType<typeof vi.fn>).mockImplementation(
+      async () => makeDetails({ currentPatchset: ++patchset })
+    );
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+
+    await expect(orch.runReview(initial.taskId)).rejects.toThrow(
+      "Review superseded more than 3 times"
+    );
+
+    expect(runner.runReviewInDocker).toHaveBeenCalledTimes(4);
+    expect(mocks.provider.postReviewComments).not.toHaveBeenCalled();
+    expect(mocks.provider.vote).not.toHaveBeenCalled();
+    expect(mocks.store.setReviewedPatchset).not.toHaveBeenCalled();
+    expect(mocks.store.transition).toHaveBeenLastCalledWith(initial.taskId, "REVIEW_FAILED");
+  });
+
+  it("stops a superseded rerun when the task is abandoned between passes", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING", currentPatchset: 2 });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+    (mocks.provider.getChangeDetails as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(makeDetails({ currentPatchset: 2 }))
+      .mockResolvedValue(makeDetails({ currentPatchset: 3 }));
+    mocks.store.updateExternalChangeId.mockImplementation(async () => {
+      mocks.store.task = { ...mocks.store.task, state: "ABANDONED", currentPatchset: 3 };
+    });
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+
+    await expect(orch.runReview(initial.taskId)).resolves.toBeUndefined();
+
+    expect(runner.runReviewInDocker).toHaveBeenCalledOnce();
+    expect(mocks.provider.postReviewComments).not.toHaveBeenCalled();
+    expect(mocks.provider.vote).not.toHaveBeenCalled();
+    expect(mocks.store.setFailureReason).not.toHaveBeenCalled();
+    expect(mocks.store.transition).not.toHaveBeenCalledWith(initial.taskId, "REVIEW_FAILED");
+  });
+
+  it("does not post review side effects after the task is abandoned", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+    const originalGetTask = mocks.store.getTask.getMockImplementation();
+    mocks.store.getTask.mockImplementation(async (...args: unknown[]) => {
+      const task = await originalGetTask?.(...args);
+      if (mocks.store.transition.mock.calls.some((call: [unknown, TaskState]) => call[1] === "REVIEW_RUNNING")) {
+        return task ? { ...task, state: "ABANDONED" } : null;
+      }
+      return task;
+    });
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+
+    await expect(orch.runReview(initial.taskId)).resolves.toBeUndefined();
+
+    expect(mocks.provider.postReviewComments).not.toHaveBeenCalled();
+    expect(mocks.provider.vote).not.toHaveBeenCalled();
+    expect(mocks.store.markReviewCommentsPosted).not.toHaveBeenCalled();
+    expect(mocks.store.setFailureReason).not.toHaveBeenCalled();
+    expect(mocks.store.transition).not.toHaveBeenCalledWith(initial.taskId, "REVIEW_FAILED");
+  });
+
+  it("does not vote when abandoned after fallback comments are posted", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+    const fallbackProvider = { ...mocks.provider };
+    delete fallbackProvider.postReviewWithComments;
+    const postReviewComments = vi.fn(async () => {
+      mocks.store.task = { ...mocks.store.task, state: "ABANDONED" };
+    });
+    mocks.provider = { ...fallbackProvider, postReviewComments };
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+
+    await expect(orch.runReview(initial.taskId)).resolves.toBeUndefined();
+
+    expect(postReviewComments).toHaveBeenCalledOnce();
+    expect(mocks.provider.vote).not.toHaveBeenCalled();
+    expect(mocks.store.setFailureReason).not.toHaveBeenCalled();
   });
 
   it("does not re-post inline comments already posted on the change", async () => {
@@ -654,7 +816,7 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
 
     // Force bypasses the skip gate: the vote + summary are re-posted even though
     // nothing changed. Inline comments stay deduped (no duplicate comments).
-    expect(mocks.provider.vote).toHaveBeenCalledWith(CHANGE_ID, 2, -1, "blocking");
+    expect(mocks.provider.vote).toHaveBeenCalledWith(CHANGE_ID, 2, -1, "blocking", expect.any(AbortSignal));
     const postedComments = (mocks.provider.postReviewComments as ReturnType<typeof vi.fn>).mock
       .calls[0]?.[2] as unknown[];
     expect(postedComments).toEqual([]);
@@ -727,32 +889,40 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
     expect(summaryArg).not.toContain("src/ghost.ts");
   });
 
-  it("posts the review on the LATEST patchset when a new one arrives during the agent run", async () => {
-    // The change is cloned/reviewed at patchset 2, but a new patchset 3 is
-    // uploaded while the agent runs. The review must be posted on 3 (the latest),
-    // not on the stale patchset 2 captured at clone time.
+  it("checks out and analyzes the latest patchset before posting a superseded review", async () => {
+    // The first pass uses patchset 2, but patchset 3 arrives while the agent
+    // runs. Patchset 3 must be checked out and analyzed by a second pass before
+    // any provider side effect is posted.
     const initial = makeTask({ state: "REVIEW_PENDING" });
     const mocks = makeMocks(initial);
     const { runner } = makeWorkspaceRunner();
     (mocks.provider.getChangeDetails as ReturnType<typeof vi.fn>)
       .mockResolvedValueOnce(makeDetails({ currentPatchset: 2 })) // clone/apply: reviewed patchset
       .mockResolvedValueOnce(makeDetails({ currentPatchset: 3 })) // fresh fetch before posting
-      .mockResolvedValueOnce(makeDetails({ currentPatchset: 3 })); // post-check: still OPEN
+      .mockResolvedValue(makeDetails({ currentPatchset: 3 })); // rerun + post-check: still OPEN
 
     const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
     await orch.runReview(initial.taskId);
 
-    expect(runner.applyPriorPatchset).toHaveBeenCalledWith(
+    expect(runner.applyPriorPatchset).toHaveBeenNthCalledWith(
+      1,
       expect.anything(),
       expect.objectContaining({ patchset: 2 })
+    );
+    expect(runner.applyPriorPatchset).toHaveBeenNthCalledWith(
+      2,
+      expect.anything(),
+      expect.objectContaining({ patchset: 3 })
     );
     expect(mocks.provider.postReviewComments).toHaveBeenCalledWith(
       CHANGE_ID,
       3,
       [{ file: "src/a.ts", line: 1, message: "Bug", severity: "error" }],
-      "blocking"
+      "blocking",
+      undefined,
+      expect.any(AbortSignal),
     );
-    expect(mocks.provider.vote).toHaveBeenCalledWith(CHANGE_ID, 3, -1, "blocking");
+    expect(mocks.provider.vote).toHaveBeenCalledWith(CHANGE_ID, 3, -1, "blocking", expect.any(AbortSignal));
     expect(mocks.store.setReviewedPatchset).toHaveBeenCalledWith(initial.taskId, 3);
     expect(mocks.provider.postReviewComments).not.toHaveBeenCalledWith(
       CHANGE_ID,
@@ -780,7 +950,13 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
     await orch.runReview(initial.taskId);
 
     expect(mocks.provider.postReviewComments).not.toHaveBeenCalled();
-    expect(mocks.provider.vote).toHaveBeenCalledWith(CHANGE_ID, 2, expect.any(Number), "");
+    expect(mocks.provider.vote).toHaveBeenCalledWith(
+      CHANGE_ID,
+      2,
+      expect.any(Number),
+      "",
+      expect.any(AbortSignal),
+    );
   });
 
   it("passes all comments through when diff has no files (no filtering applied)", async () => {
@@ -798,7 +974,9 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
       CHANGE_ID,
       2,
       [{ file: "src/a.ts", line: 1, message: "Bug", severity: "error" }],
-      "blocking"
+      "blocking",
+      undefined,
+      expect.any(AbortSignal),
     );
   });
 
@@ -821,7 +999,8 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
     const initial = makeTask({ state: "REVIEW_PENDING", projectId: makeProjectId("proj-1") });
     const mocks = makeMocks(initial);
     const { runner } = makeWorkspaceRunner();
-    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+    const agentAdapter = {} as import("../../src/interfaces.js").AgentAdapter;
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner, { agentAdapter }));
 
     await orch.runReview(initial.taskId);
 
@@ -837,7 +1016,8 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
         }),
       ]),
       undefined,
-      undefined
+      undefined,
+      expect.any(AbortSignal),
     );
     expect(runner.applyPriorPatchset).toHaveBeenCalledWith(
       expect.anything(),
@@ -846,6 +1026,7 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
     expect(runner.runReviewInDocker).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
+        projectId: makeProjectId("proj-1"),
         changeId: CHANGE_ID,
         revisionNumber: 42,
         patchset: 2,
@@ -853,7 +1034,8 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
         prompt: expect.any(String),
         systemPrompt: "You are a code reviewer.",
       }),
-      expect.objectContaining({ onStderrChunk: expect.any(Function) })
+      expect.objectContaining({ onStderrChunk: expect.any(Function) }),
+      agentAdapter,
     );
     expect(runner.destroyWorkspace).toHaveBeenCalledOnce();
   });
@@ -873,12 +1055,220 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
       expect.anything(),
       expect.any(Array),
       "npm ci",
-      undefined
+      undefined,
+      expect.any(AbortSignal),
     );
   });
 });
 
 describe("ReviewOrchestrator.runReview â failure paths", () => {
+  it("times out while loading change details before creating a workspace", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    vi.spyOn(mocks.provider, "getChangeDetails").mockReturnValue(new Promise(() => undefined));
+    const { runner } = makeWorkspaceRunner();
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner, { agentTimeoutMs: 1 }));
+
+    await expect(orch.runReview(initial.taskId)).rejects.toThrow("Review timed out after 1ms");
+
+    expect(runner.createWorkspace).not.toHaveBeenCalled();
+    expect(mocks.store.transition).toHaveBeenCalledWith(initial.taskId, "REVIEW_FAILED");
+  });
+
+  it("aborts a stalled workspace clone and still destroys the workspace", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+    let cloneSignal: AbortSignal | undefined;
+    runner.prepareProjectWorkspace.mockImplementation((_handle, _targets, _script, _knownHosts, signal) => {
+      cloneSignal = signal;
+      return new Promise<import("../../src/interfaces.js").CloneResult>((_resolve, reject) => {
+        signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+      });
+    });
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner, { agentTimeoutMs: 1 }));
+
+    await expect(orch.runReview(initial.taskId)).rejects.toThrow("Review timed out after 1ms");
+
+    expect(cloneSignal?.aborted).toBe(true);
+    expect(runner.destroyWorkspace).toHaveBeenCalledOnce();
+    expect(runner.runReviewInDocker).not.toHaveBeenCalled();
+  });
+
+  it("marks a claimed review failed when cycle allocation fails", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    mocks.store.startAgentCycle.mockRejectedValue(new Error("disk full"));
+    const { runner } = makeWorkspaceRunner();
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+
+    await expect(orch.runReview(initial.taskId)).rejects.toThrow("disk full");
+
+    expect(mocks.store.setFailureReason).toHaveBeenCalledWith(initial.taskId, "disk full");
+    expect(mocks.store.transition).toHaveBeenCalledWith(initial.taskId, "REVIEW_FAILED");
+    expect(runner.createWorkspace).not.toHaveBeenCalled();
+  });
+
+  it("holds review agent capacity only around workspace execution", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+    const lease = {} as import("../../src/orchestrator/concurrencyTracker.js").ConcurrencyLease;
+    const concurrencyTracker = {
+      acquireWhenAvailable: vi.fn().mockResolvedValue(lease),
+      release: vi.fn(),
+    };
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner, {
+      concurrencyTracker: concurrencyTracker as never,
+    }));
+
+    await orch.runReview(initial.taskId);
+
+    expect(concurrencyTracker.acquireWhenAvailable).toHaveBeenCalledWith(
+      makeProjectId("proj-1"),
+      "agent-1",
+      expect.any(AbortSignal),
+    );
+    expect(concurrencyTracker.release).toHaveBeenCalledOnce();
+    expect(concurrencyTracker.release).toHaveBeenCalledWith(lease);
+  });
+
+  it("times out and cancels a review while it waits for agent capacity", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+    let queueSignal: AbortSignal | undefined;
+    const concurrencyTracker = {
+      acquireWhenAvailable: vi.fn((_projectId, _agentId, signal: AbortSignal) => {
+        queueSignal = signal;
+        return new Promise((_resolve, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+        });
+      }),
+      release: vi.fn(),
+    };
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner, {
+      concurrencyTracker: concurrencyTracker as never,
+      agentTimeoutMs: 1,
+    }));
+
+    await expect(orch.runReview(initial.taskId)).rejects.toThrow("Review timed out after 1ms");
+
+    expect(queueSignal?.aborted).toBe(true);
+    expect(runner.createWorkspace).not.toHaveBeenCalled();
+    expect(concurrencyTracker.release).not.toHaveBeenCalled();
+  });
+
+  it("treats a lost concurrent review claim as a benign duplicate invocation", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    mocks.store.getTask
+      .mockResolvedValueOnce(initial)
+      .mockResolvedValueOnce(initial)
+      .mockImplementation(async () => mocks.store.task ?? null);
+    mocks.store.transition.mockImplementation(async (
+      _id: unknown,
+      to: TaskState,
+      _metadata?: Record<string, unknown>,
+      expectedFromState?: TaskState,
+    ) => {
+      const current = mocks.store.task as Task;
+      if (expectedFromState !== undefined && current.state !== expectedFromState) {
+        throw new Error(`Task state changed concurrently: ${initial.taskId}`);
+      }
+      if (current.state !== to) mocks.store.task = { ...current, state: to };
+      return mocks.store.task as Task;
+    });
+    const { runner } = makeWorkspaceRunner();
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+
+    await expect(Promise.all([
+      orch.runReview(initial.taskId),
+      orch.runReview(initial.taskId),
+    ])).resolves.toEqual([undefined, undefined]);
+
+    expect(runner.runReviewInDocker).toHaveBeenCalledOnce();
+    expect(mocks.store.startAgentCycle).toHaveBeenCalledOnce();
+    expect(mocks.store.transition).not.toHaveBeenCalledWith(initial.taskId, "REVIEW_FAILED");
+  });
+
+  it("reuses the interrupted running cycle during recovery", async () => {
+    const initial = makeTask({ state: "REVIEW_RUNNING", cycleCount: 1 });
+    const mocks = makeMocks(initial);
+    mocks.store.getAgentCycles.mockResolvedValue([{
+      id: 7,
+      taskId: initial.taskId,
+      cycleNumber: 1,
+      result: { status: "running", modifiedFiles: [], summary: "", agentLogs: "", metadata: { reviewMode: true } },
+      validationResult: null,
+      createdAt: new Date(),
+      cost: null,
+    }]);
+    const { runner } = makeWorkspaceRunner();
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+
+    await orch.recoverReview(initial.taskId);
+
+    expect(mocks.store.startAgentCycle).not.toHaveBeenCalled();
+    expect(mocks.store.saveAgentCycle).toHaveBeenLastCalledWith(
+      initial.taskId,
+      1,
+      expect.objectContaining({ status: "success" }),
+    );
+  });
+
+  it("publishes the running cycle before the review container completes", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+    let completeReview: ((value: { rawOutput: string }) => void) | undefined;
+    runner.runReviewInDocker.mockImplementationOnce(
+      async () => new Promise<{ rawOutput: string }>((resolve) => {
+        completeReview = resolve;
+      }),
+    );
+
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+    const run = orch.runReview(initial.taskId);
+
+    await vi.waitFor(() => {
+      expect(mocks.store.saveAgentCycle).toHaveBeenCalledWith(
+        initial.taskId,
+        1,
+        expect.objectContaining({ status: "running" }),
+      );
+    });
+
+    completeReview?.({ rawOutput: GOOD_RAW_OUTPUT });
+    await run;
+    expect(mocks.store.saveAgentCycle).toHaveBeenLastCalledWith(
+      initial.taskId,
+      1,
+      expect.objectContaining({ status: "success" }),
+    );
+  });
+
+  it("finalizes the running cycle when the review becomes inactive", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    mocks.store.getTask
+      .mockResolvedValueOnce(initial)
+      .mockResolvedValue(makeTask({ state: "REVIEW_DONE" }));
+    const { runner } = makeWorkspaceRunner();
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+
+    await orch.runReview(initial.taskId);
+
+    expect(mocks.store.saveAgentCycle).toHaveBeenLastCalledWith(
+      initial.taskId,
+      1,
+      expect.objectContaining({
+        status: "failed",
+        summary: "Review stopped because task is no longer active",
+      }),
+    );
+  });
+
   it("marks task REVIEW_FAILED and rethrows on runReviewInDocker failure", async () => {
     const initial = makeTask({ state: "REVIEW_PENDING" });
     const mocks = makeMocks(initial);
@@ -890,6 +1280,131 @@ describe("ReviewOrchestrator.runReview â failure paths", () => {
     expect(mocks.store.setFailureReason).toHaveBeenCalledWith(initial.taskId, "container crashed");
     const transitions = mocks.store.transition.mock.calls.map((c: [unknown, unknown]) => c[1]);
     expect(transitions).toContain("REVIEW_FAILED");
+  });
+
+  it("aborts a timed-out review before cleanup or provider effects", async () => {
+    vi.useFakeTimers();
+    try {
+      const initial = makeTask({ state: "REVIEW_PENDING" });
+      const mocks = makeMocks(initial);
+      const { runner } = makeWorkspaceRunner();
+      runner.runReviewInDocker.mockImplementation(
+        async (_handle: unknown, input: { abortSignal?: AbortSignal }) =>
+          new Promise((_resolve, reject) => {
+            expect(input.abortSignal).toBeDefined();
+            input.abortSignal?.addEventListener("abort", () => reject(new Error("aborted")), {
+              once: true,
+            });
+          })
+      );
+      const orch = new ReviewOrchestrator(
+        makeDeps(mocks, runner, { agentTimeoutMs: 100 })
+      );
+
+      const run = orch.runReview(initial.taskId);
+      const rejected = expect(run).rejects.toThrow("Review timed out after 100ms");
+      await vi.advanceTimersByTimeAsync(100);
+      await rejected;
+
+      expect(runner.destroyWorkspace).toHaveBeenCalledOnce();
+      expect(mocks.provider.postReviewComments).not.toHaveBeenCalled();
+      expect(mocks.provider.vote).not.toHaveBeenCalled();
+      expect(mocks.store.transition).toHaveBeenLastCalledWith(initial.taskId, "REVIEW_FAILED");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("applies the review deadline to the post-agent freshness check", async () => {
+    vi.useFakeTimers();
+    try {
+      const initial = makeTask({ state: "REVIEW_PENDING" });
+      const mocks = makeMocks(initial);
+      const { runner } = makeWorkspaceRunner();
+      let detailsCalls = 0;
+      vi.mocked(mocks.provider.getChangeDetails).mockImplementation(async (_changeId, signal) => {
+        detailsCalls += 1;
+        if (detailsCalls === 1) return makeDetails();
+        return new Promise((_resolve, reject) => {
+          signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+        });
+      });
+      const orch = new ReviewOrchestrator(makeDeps(mocks, runner, { agentTimeoutMs: 100 }));
+
+      const run = orch.runReview(initial.taskId);
+      const rejected = expect(run).rejects.toThrow("Review timed out after 100ms");
+      await vi.advanceTimersByTimeAsync(100);
+      await rejected;
+
+      expect(mocks.provider.postReviewComments).not.toHaveBeenCalled();
+      expect(mocks.store.transition).toHaveBeenLastCalledWith(initial.taskId, "REVIEW_FAILED");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps REVIEW_COMMENTING ambiguous when provider posting times out", async () => {
+    vi.useFakeTimers();
+    try {
+      const initial = makeTask({ state: "REVIEW_PENDING" });
+      const mocks = makeMocks(initial);
+      const { runner } = makeWorkspaceRunner();
+      vi.mocked(mocks.provider.postReviewComments).mockImplementation(async (
+        _changeId,
+        _revision,
+        _comments,
+        _summary,
+        _allowedFiles,
+        signal,
+      ) => new Promise((_resolve, reject) => {
+        signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+      }));
+      const orch = new ReviewOrchestrator(makeDeps(mocks, runner, { agentTimeoutMs: 100 }));
+
+      const run = orch.runReview(initial.taskId);
+      const rejected = expect(run).rejects.toThrow("Review timed out after 100ms");
+      await vi.advanceTimersByTimeAsync(100);
+      await rejected;
+
+      expect(mocks.store.task?.state).toBe("REVIEW_COMMENTING");
+      expect(mocks.store.transition).not.toHaveBeenCalledWith(initial.taskId, "REVIEW_FAILED");
+      expect(mocks.store.setReviewedPatchset).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("aborts and awaits provider posting before a shared lifecycle mutation", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+    const lifecycleCoordinator = new TaskLifecycleCoordinator();
+    let postingFinished = false;
+    vi.mocked(mocks.provider.postReviewComments).mockImplementation(async (
+      _changeId,
+      _revision,
+      _comments,
+      _summary,
+      _allowedFiles,
+      signal,
+    ) => new Promise<void>((resolve) => {
+      signal?.addEventListener("abort", () => {
+        postingFinished = true;
+        resolve();
+      }, { once: true });
+    }));
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner, { lifecycleCoordinator }));
+
+    const review = orch.runReview(initial.taskId);
+    await vi.waitFor(() => expect(mocks.provider.postReviewComments).toHaveBeenCalledOnce());
+    const mutate = lifecycleCoordinator.cancelTaskAndRun(initial.taskId, async () => {
+      expect(postingFinished).toBe(true);
+      mocks.store.task = makeTask({ ...mocks.store.task, state: "ABANDONED" });
+    });
+
+    await Promise.all([review, mutate]);
+    expect(mocks.store.task?.state).toBe("ABANDONED");
+    expect(mocks.store.setReviewedPatchset).not.toHaveBeenCalled();
   });
 
   it("destroys workspace even when runReviewInDocker throws", async () => {
@@ -985,6 +1500,130 @@ describe("ReviewOrchestrator.runReview â terminal state guard", () => {
   }
 });
 
+describe("ReviewOrchestrator.recoverReview", () => {
+  it.each(["REVIEW_PENDING", "REVIEW_RUNNING"] as const)(
+    "replays an interrupted %s review",
+    async (state) => {
+      const initial = makeTask({ state });
+      const mocks = makeMocks(initial);
+      const { runner } = makeWorkspaceRunner();
+      const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+
+      await orch.recoverReview(initial.taskId);
+
+      expect(runner.runReviewInDocker).toHaveBeenCalledOnce();
+      expect(mocks.store.transition).toHaveBeenLastCalledWith(initial.taskId, "REVIEW_WATCHING");
+    }
+  );
+
+  it("finalizes a completed COMMENTING review without replaying provider effects", async () => {
+    const initial = makeTask({
+      state: "REVIEW_COMMENTING",
+      cycleCount: 2,
+      currentPatchset: 2,
+      reviewedPatchset: 2,
+    });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+    mocks.store.getAgentCycles.mockResolvedValue([
+      {
+        id: 2,
+        taskId: initial.taskId,
+        cycleNumber: 2,
+        result: {
+          status: "success",
+          modifiedFiles: [],
+          summary: "done",
+          agentLogs: "",
+          metadata: { reviewMode: true, patchset: 2 },
+        },
+        validationResult: null,
+        createdAt: new Date(),
+      },
+    ]);
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+
+    await orch.recoverReview(initial.taskId);
+
+    expect(runner.runReviewInDocker).not.toHaveBeenCalled();
+    expect(mocks.provider.postReviewComments).not.toHaveBeenCalled();
+    expect(mocks.provider.vote).not.toHaveBeenCalled();
+    expect(mocks.store.transition).toHaveBeenCalledWith(initial.taskId, "REVIEW_WATCHING");
+  });
+
+  it("fails an ambiguous COMMENTING review instead of replaying provider effects", async () => {
+    const initial = makeTask({
+      state: "REVIEW_COMMENTING",
+      cycleCount: 2,
+      currentPatchset: 2,
+      reviewedPatchset: null,
+    });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+
+    await orch.recoverReview(initial.taskId);
+
+    expect(runner.runReviewInDocker).not.toHaveBeenCalled();
+    expect(mocks.provider.postReviewComments).not.toHaveBeenCalled();
+    expect(mocks.provider.vote).not.toHaveBeenCalled();
+    expect(mocks.store.setFailureReason).toHaveBeenCalledWith(
+      initial.taskId,
+      expect.stringContaining("interrupted during provider posting")
+    );
+    expect(mocks.store.transition).toHaveBeenCalledWith(initial.taskId, "REVIEW_FAILED");
+  });
+
+  it("finalizes a COMMENTING cycle archived because the change closed", async () => {
+    const initial = makeTask({
+      state: "REVIEW_COMMENTING",
+      cycleCount: 2,
+      currentPatchset: 2,
+      reviewedPatchset: null,
+    });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+    mocks.store.getAgentCycles.mockResolvedValue([{
+      id: 2,
+      taskId: initial.taskId,
+      cycleNumber: 2,
+      result: {
+        status: "success",
+        modifiedFiles: [],
+        summary: "Review result discarded because the change became MERGED",
+        agentLogs: "",
+        metadata: {
+          reviewMode: true,
+          superseded: true,
+          analyzedPatchset: 2,
+          changeStatus: "MERGED",
+        },
+      },
+      validationResult: null,
+      createdAt: new Date(),
+    }]);
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+
+    await orch.recoverReview(initial.taskId);
+
+    expect(mocks.store.setFailureReason).not.toHaveBeenCalled();
+    expect(mocks.provider.getChangeDetails).not.toHaveBeenCalled();
+    expect(mocks.store.transition).toHaveBeenCalledWith(initial.taskId, "REVIEW_DONE");
+  });
+
+  it("leaves REVIEW_WATCHING to the status poller", async () => {
+    const initial = makeTask({ state: "REVIEW_WATCHING", reviewedPatchset: 2 });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+
+    await orch.recoverReview(initial.taskId);
+
+    expect(runner.runReviewInDocker).not.toHaveBeenCalled();
+    expect(mocks.store.transition).not.toHaveBeenCalled();
+  });
+});
+
 describe("ReviewOrchestrator.runReview - discussion replies", () => {
   function makeThread(overrides: Partial<ReviewDiscussionThread> = {}): ReviewDiscussionThread {
     return {
@@ -1034,7 +1673,13 @@ describe("ReviewOrchestrator.runReview - discussion replies", () => {
 
     await orch.runReview(initial.taskId);
 
-    expect(postThreadReply).toHaveBeenCalledWith(CHANGE_ID, 2, "disc-1", "Good catch, fixed.");
+    expect(postThreadReply).toHaveBeenCalledWith(
+      CHANGE_ID,
+      2,
+      "disc-1",
+      "Good catch, fixed.",
+      expect.any(AbortSignal),
+    );
     const handledHash = computeThreadReplyHash({
       threadId: "disc-1",
       author: "alice",
@@ -1166,7 +1811,13 @@ describe("ReviewOrchestrator.runReview - discussion replies", () => {
 
     await orch.runReview(initial.taskId);
 
-    expect(postThreadReply).toHaveBeenCalledWith(CHANGE_ID, 2, "disc-1", "Replying here.");
+    expect(postThreadReply).toHaveBeenCalledWith(
+      CHANGE_ID,
+      2,
+      "disc-1",
+      "Replying here.",
+      expect.any(AbortSignal),
+    );
     expect(mocks.store.markThreadReplyPosted).toHaveBeenCalledOnce();
   });
 
