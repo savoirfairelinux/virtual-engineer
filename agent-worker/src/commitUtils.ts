@@ -358,6 +358,7 @@ export function injectChangeIds(
  *
  * @param baseSha - HEAD recorded before the agent ran.
  * @param cwd - Working directory for git operations.
+ * @param isContinuation - Whether the root repository continues a prior VE patchset.
  * @returns Squash result with flag and updated commits.
  */
 export function squashIntoBaseIfNeeded(
@@ -372,6 +373,12 @@ export function squashIntoBaseIfNeeded(
   // rewrite an upstream commit whose parent is missing from the --depth 1
   // shallow clone, causing diff-tree to report the whole repository.
   if (!isContinuation) {
+    return { squashed: false };
+  }
+
+  try {
+    git(['cat-file', '-e', `${baseSha}^`], cwd);
+  } catch {
     return { squashed: false };
   }
 

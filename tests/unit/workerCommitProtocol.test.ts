@@ -420,6 +420,32 @@ describe("agent-worker multi-commit protocol", () => {
       expect(commits[0]!.files).toEqual(["fix.ts"]);
     });
 
+    it("does not squash a continuation when the base parent is missing", () => {
+      const changeId = "Ieeee1234567890abcdef1234567890abcdef1234";
+      writeFileSync(join(repoDir, "base.ts"), "base\n");
+      git(["add", "base.ts"], repoDir);
+      git(["commit", "-m", `feat: prior patchset\n\nChange-Id: ${changeId}`], repoDir);
+
+      const shallowDir = mkdtempSync(join(tmpdir(), "ve-shallow-commit-test-"));
+      try {
+        git(["clone", "--depth", "1", `file://${repoDir}`, shallowDir], tmpdir());
+        git(["config", "user.name", "Test"], shallowDir);
+        git(["config", "user.email", "test@test.local"], shallowDir);
+        git(["config", "commit.gpgsign", "false"], shallowDir);
+        const baseSha = git(["rev-parse", "HEAD"], shallowDir).trim();
+        addCommit(shallowDir, "fix.ts", "fix\n", "fix: address feedback");
+
+        const result = squashIntoBaseIfNeeded(baseSha, shallowDir, true);
+
+        expect(result.squashed).toBe(false);
+        const commits = collectCommits(baseSha, shallowDir);
+        expect(commits).toHaveLength(1);
+        expect(commits[0]!.files).toEqual(["fix.ts"]);
+      } finally {
+        rmSync(shallowDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+      }
+    });
+
     it("does nothing when base has no Change-Id (cycle 1)", () => {
       const baseSha = git(["rev-parse", "HEAD"], repoDir).trim();
       addCommit(repoDir, "a.ts", "a\n", "feat: new file");
