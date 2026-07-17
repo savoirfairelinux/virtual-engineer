@@ -131,7 +131,7 @@ See [modules/admin.md](modules/admin.md).
 
 ### Workspace — `src/workspace/`
 
-- `dockerVolume.ts` manages the Docker **named-volume** lifecycle (`/workspace` repo volume + `/ve-home` agent-HOME volume) and `execInVolume()` for helper-container operations.
+- `dockerVolume.ts` manages the Docker **named-volume** lifecycle (`/workspace` repo volume + `/ve-home` agent-HOME volume) and `execInVolume()` for helper-container operations. On startup, the orchestrator best-effort prunes orphaned `ve-ws-*` / `ve-home-*` volumes left by an earlier process; attached volumes are skipped via non-forced removal.
 - `workspaceRunner.ts` clones each project push target into the `/workspace` volume via a helper container, using the SSH key, agent identity, and `known_hosts` file resolved for that target's integration. It installs any project remote skill sources into `/ve-home`, then spawns the ephemeral agent container and, on exit, destroys the container and volumes. Push operations run in helper containers against the volume; the host retains review-system credentials and push orchestration.
 - `skillSources.ts` parses external skill sources and builds the `npx skills` install arguments.
 - `dockerVolume.ts` opens SSH key, public-key, and known-hosts files with no-follow semantics, checks the opened regular-file descriptor and approved-root containment, then reads from that same descriptor. Configured paths are confined to orchestrator secret directories. Runtime-generated key material lives in one process-private `0700` temporary directory and is accepted only when its exact path was registered by `sshKeyResolver`; filename patterns do not grant trust.
