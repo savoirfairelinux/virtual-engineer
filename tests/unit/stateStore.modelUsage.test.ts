@@ -1,10 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { tmpdir } from "os";
-import { join } from "path";
 import { randomUUID } from "crypto";
 import Database from "better-sqlite3";
 import { SqliteStateStore } from "../../src/state/stateStore.js";
 import { NANO_AIU_PER_CREDIT } from "../../src/agents/cycleCost.js";
+import { tempDatabasePath } from "./helpers/tempDatabase.js";
 import {
   makeTaskId,
   makeTicketId,
@@ -15,7 +14,7 @@ import {
 } from "../../src/interfaces.js";
 
 function tempDbPath(): string {
-  return join(tmpdir(), `ve-model-${randomUUID()}.db`);
+  return tempDatabasePath("ve-model");
 }
 
 function pricedResult(credits: number, modelId: string): AgentResult {

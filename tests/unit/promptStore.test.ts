@@ -8,14 +8,12 @@
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { SqliteStateStore } from "../../src/state/stateStore.js";
-import { tmpdir } from "os";
-import { join } from "path";
-import { randomUUID } from "crypto";
+import { tempDatabasePath } from "./helpers/tempDatabase.js";
 
 function tempDbPath(): string {
   // Use a unique subdirectory per test so each store has its own prompt-override
   // directory and cannot interfere with other concurrent tests.
-  return join(tmpdir(), `ve-prompts-test-${randomUUID()}`, "ve.db");
+  return tempDatabasePath("ve-prompts-test", { directory: true });
 }
 
 describe("SqliteStateStore — PromptStore", () => {
