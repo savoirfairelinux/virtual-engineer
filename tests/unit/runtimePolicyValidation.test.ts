@@ -2,8 +2,28 @@ import { describe, expect, it } from "vitest";
 import { validateRuntimePolicyYaml } from "../../src/admin/adminRuntimePolicyRoutes.js";
 
 describe("validateRuntimePolicyYaml", () => {
-  it("accepts a policy document containing the declared kind", () => {
-    expect(validateRuntimePolicyYaml("network", "network_policies:\n  default: deny\n")).toBeNull();
+  const validNetworkPolicy = [
+    "network_policies:",
+    "  allow_api:",
+    "    name: allow_api",
+    "    binaries:",
+    "      - path: /usr/local/bin/node",
+    "    endpoints:",
+    "      - host: api.example.com",
+    "        port: 443",
+    "        access: full",
+    "        protocol: rest",
+    "        enforcement: enforce",
+    "",
+  ].join("\n");
+
+  it("accepts an OpenShell network rule map", () => {
+    expect(validateRuntimePolicyYaml("network", validNetworkPolicy)).toBeNull();
+  });
+
+  it("rejects the legacy default/allow network shape", () => {
+    expect(validateRuntimePolicyYaml("network", "network_policies:\n  default: deny\n  allow: []\n"))
+      .toMatch(/named rules|default.*unsupported/i);
   });
 
   it("rejects malformed YAML", () => {
@@ -25,14 +45,14 @@ describe("validateRuntimePolicyYaml", () => {
   it("rejects additional top-level policy sections", () => {
     expect(validateRuntimePolicyYaml(
       "network",
-      "network_policies:\n  default: deny\nfilesystem_policy:\n  allow_write: [/sandbox]\n",
+      `${validNetworkPolicy}filesystem_policy:\n  read_write: [/sandbox]\n`,
     )).toMatch(/only.*network_policies/i);
   });
 
   it("rejects YAML aliases", () => {
     expect(validateRuntimePolicyYaml(
       "network",
-      "network_policies: &rules\n  default: deny\nextra: *rules\n",
+      "network_policies: &rules\n  allow_api: {}\nextra: *rules\n",
     )).toMatch(/alias|only/i);
   });
 

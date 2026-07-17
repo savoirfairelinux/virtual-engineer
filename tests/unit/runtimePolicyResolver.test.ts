@@ -5,32 +5,45 @@ function policy(id: string, yaml: string) {
   return { id, name: id, kind: "network" as const, yaml, description: "", createdAt: new Date(), updatedAt: new Date() };
 }
 
+const denyNetwork = [
+  "network_policies:",
+  "  allow_api:",
+  "    name: allow_api",
+  "    binaries: [{ path: /usr/local/bin/node }]",
+  "    endpoints: [{ host: api.example.com, port: 443, access: full, protocol: rest, enforcement: enforce }]",
+  "",
+].join("\n");
+
 describe("createRuntimePolicyResolver", () => {
   it("prefers a project-bound policy over an agent-bound policy", async () => {
     const resolver = createRuntimePolicyResolver({
       getTask: vi.fn().mockResolvedValue({ projectId: "project-1" }),
       getProjectById: vi.fn().mockResolvedValue({ agentId: "agent-1" }),
-      getRuntimePoliciesForProject: vi.fn().mockResolvedValue([policy("project-policy", "network:\n  default: deny")]),
-      getRuntimePoliciesForAgent: vi.fn().mockResolvedValue([policy("agent-policy", "network:\n  default: allow")]),
+      getRuntimePoliciesForProject: vi.fn().mockResolvedValue([policy("project-policy", denyNetwork)]),
+      getRuntimePoliciesForAgent: vi.fn().mockResolvedValue([policy("agent-policy", "network_policies:\n  agent_rule: {}\n")]),
     });
 
-    await expect(resolver({ taskId: "task-1", mode: "coding" })).resolves.toContain("default: deny");
+    const yaml = await resolver({ taskId: "task-1", mode: "coding" });
+    expect(yaml).toContain("allow_api:");
+    expect(yaml).not.toContain("agent_rule:");
+    expect(yaml).toContain("version: 1");
+    expect(yaml).toContain("run_as_user: sandbox");
   });
 
   it("keeps agent policies for kinds not overridden by the project", async () => {
-    const filesystem = { ...policy("agent-fs", "filesystem:\n  allow_write: [/sandbox]"), kind: "filesystem" as const };
+    const filesystem = { ...policy("agent-fs", "filesystem_policy:\n  read_write: [/sandbox, /tmp]\n"), kind: "filesystem" as const };
     const resolver = createRuntimePolicyResolver({
       getTask: vi.fn().mockResolvedValue({ projectId: "project-1" }),
       getProjectById: vi.fn().mockResolvedValue({ agentId: "agent-1" }),
       getRuntimePoliciesForProject: vi.fn().mockResolvedValue([
-        policy("project-network", "network:\n  default: deny"),
+        policy("project-network", denyNetwork),
       ]),
       getRuntimePoliciesForAgent: vi.fn().mockResolvedValue([filesystem]),
     });
 
     const yaml = await resolver({ taskId: "task-1", mode: "coding" });
-    expect(yaml).toContain("network:");
-    expect(yaml).toContain("filesystem:");
+    expect(yaml).toContain("network_policies:");
+    expect(yaml).toContain("filesystem_policy:");
   });
 
   it("falls back to the agent-bound policy", async () => {
@@ -38,10 +51,10 @@ describe("createRuntimePolicyResolver", () => {
       getTask: vi.fn().mockResolvedValue({ projectId: "project-1" }),
       getProjectById: vi.fn().mockResolvedValue({ agentId: "agent-1" }),
       getRuntimePoliciesForProject: vi.fn().mockResolvedValue([]),
-      getRuntimePoliciesForAgent: vi.fn().mockResolvedValue([policy("agent-policy", "network:\n  default: allow")]),
+      getRuntimePoliciesForAgent: vi.fn().mockResolvedValue([policy("agent-policy", denyNetwork)]),
     });
 
-    await expect(resolver({ taskId: "task-1", mode: "review" })).resolves.toContain("default: allow");
+    await expect(resolver({ taskId: "task-1", mode: "review" })).resolves.toContain("allow_api:");
   });
 
   it("returns undefined when the task has no effective policy", async () => {
@@ -60,8 +73,8 @@ describe("createRuntimePolicyResolver", () => {
       getTask: vi.fn().mockResolvedValue({ projectId: "project-1" }),
       getProjectById: vi.fn().mockResolvedValue({ agentId: "agent-1" }),
       getRuntimePoliciesForProject: vi.fn().mockResolvedValue([
-        policy("one", "network:\n  default: deny"),
-        policy("two", "network:\n  default: allow"),
+        policy("one", denyNetwork),
+        policy("two", "network_policies:\n  other: {}\n"),
       ]),
       getRuntimePoliciesForAgent: vi.fn().mockResolvedValue([]),
     });
@@ -70,19 +83,19 @@ describe("createRuntimePolicyResolver", () => {
   });
 
   it("composes project policies of distinct kinds", async () => {
-    const filesystem = { ...policy("fs", "filesystem:\n  allow_read: [/sandbox]"), kind: "filesystem" as const };
+    const filesystem = { ...policy("fs", "filesystem_policy:\n  read_only: [/sandbox]"), kind: "filesystem" as const };
     const resolver = createRuntimePolicyResolver({
       getTask: vi.fn().mockResolvedValue({ projectId: "project-1" }),
       getProjectById: vi.fn().mockResolvedValue({ agentId: "agent-1" }),
       getRuntimePoliciesForProject: vi.fn().mockResolvedValue([
-        policy("net", "network:\n  default: deny"),
+        policy("net", denyNetwork),
         filesystem,
       ]),
       getRuntimePoliciesForAgent: vi.fn().mockResolvedValue([]),
     });
 
     const yaml = await resolver({ taskId: "task-1", mode: "coding" });
-    expect(yaml).toContain("network:");
-    expect(yaml).toContain("filesystem:");
+    expect(yaml).toContain("network_policies:");
+    expect(yaml).toContain("filesystem_policy:");
   });
 });

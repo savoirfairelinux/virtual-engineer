@@ -1,5 +1,6 @@
 import type { PolicyResolver } from "../workspace/openShellWorkspaceRunner.js";
 import type { RuntimePolicyRecord } from "../state/stores/runtimePolicyStore.js";
+import { createDefaultPolicyDocument, OPEN_SHELL_POLICY_KEYS } from "./openShellPolicyBuilder.js";
 import { parse, stringify } from "yaml";
 
 interface RuntimePolicyResolverStore {
@@ -23,12 +24,13 @@ function policySections(policies: RuntimePolicyRecord[], owner: string): Map<str
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
       throw new Error(`Runtime policy '${policy.name}' bound to ${owner} is not an object`);
     }
-    const section = (parsed as Record<string, unknown>)[policy.kind];
+    const yamlKey = OPEN_SHELL_POLICY_KEYS[policy.kind];
+    const section = (parsed as Record<string, unknown>)[yamlKey];
     if (section === undefined) {
-      throw new Error(`Runtime policy '${policy.name}' bound to ${owner} has no ${policy.kind} section`);
+      throw new Error(`Runtime policy '${policy.name}' bound to ${owner} has no ${yamlKey} section`);
     }
     byKind.set(policy.kind, policy);
-    sections.set(policy.kind, section);
+    sections.set(yamlKey, section);
   }
   return sections;
 }
@@ -43,7 +45,10 @@ function composePolicies(
   for (const [kind, section] of policySections(projectPolicies, `project ${projectId}`)) {
     sections.set(kind, section);
   }
-  return sections.size > 0 ? stringify(Object.fromEntries(sections)) : undefined;
+  if (sections.size === 0) return undefined;
+  const document = createDefaultPolicyDocument();
+  for (const [yamlKey, section] of sections) document[yamlKey] = section;
+  return stringify(document);
 }
 
 export function createRuntimePolicyResolver(store: RuntimePolicyResolverStore): PolicyResolver {

@@ -6,8 +6,8 @@
 
 Virtual Engineer is a **Node.js orchestrator** that runs on the host (or in a Docker container) and drives two autonomous workflows:
 
-- **Code generation** — picks up tickets, clones the repo host-side, runs Copilot in an ephemeral **OpenShell sandbox** (a k3s Pod), then pushes for review host-side.
-- **Code review** — receives review events (Gerrit SSH stream, GitLab/GitHub webhooks, or polling), runs Copilot on the diff inside an **OpenShell sandbox** (k3s Pod), and posts inline comments + a vote.
+- **Code generation** — picks up tickets, clones the repo host-side, runs Copilot in an ephemeral **OpenShell sandbox**, then pushes for review host-side.
+- **Code review** — receives review events (Gerrit SSH stream, GitLab/GitHub webhooks, or polling), runs Copilot on the diff inside an **OpenShell sandbox**, and posts inline comments + a vote.
 
 ```
   ┌──────────────────────────────────────────────────────────────────────────┐
@@ -32,7 +32,7 @@ Virtual Engineer is a **Node.js orchestrator** that runs on the host (or in a Do
   │                                ┌──────────────▼────────────────────┐   │
   │                                │  OpenShellWorkspaceRunner         │   │
   │                                │  1. HostGitExecutor: clone (host) │   │
-  │                                │  2. sandbox create (k3s Pod)      │   │
+  │                                │  2. sandbox create (container/Pod)│   │
   │                                │  3. sandbox upload  → /sandbox/* │   │
   │                                │  4. sandbox exec    (agent)       │   │
   │                                │  5. sandbox download ← /sandbox/*│   │
@@ -42,7 +42,7 @@ Virtual Engineer is a **Node.js orchestrator** that runs on the host (or in a Do
        git push SSH / HTTP (host-side)            │ OpenShell gateway (gRPC)
                         ▼                          ▼
   ┌──────────────────────────┐   ┌─────────────────────────────────────────┐
-  │  Gerrit / GitLab / GitHub│   │  Ephemeral Agent Sandbox (k3s Pod)      │
+  │  Gerrit / GitLab / GitHub│   │  Ephemeral OpenShell Agent Sandbox      │
   └──────────────────────────┘   │  virtual-engineer-workspace:latest      │
                                  │  /sandbox/<workspace> ← repo + .git    │
                                  │                                         │
@@ -57,8 +57,8 @@ Virtual Engineer is a **Node.js orchestrator** that runs on the host (or in a Do
 **Key design decisions:**
 
 - The host owns all credentials (SSH keys, API tokens) and all git plumbing (clone, checkout, cherry-pick, **push**). The agent sandbox receives only the agent's own inference token (e.g. a GitHub token for the Copilot LLM call).
-- The workspace is moved between host and sandbox with OpenShell's **upload → exec → download** lifecycle (no shared filesystem), so it works on any k3s node. `HostGitExecutor` keeps the working directory (incl. `.git`) on the orchestrator.
-- OpenShell is the **sole** agent runtime; the gateway's `kubernetes` driver schedules each sandbox as an ephemeral Pod. Deny-by-default sandbox **policies** and **policy-denial** auditing are enforced by OpenShell.
+- The workspace is moved between host and sandbox with OpenShell's **upload → exec → download** lifecycle (no shared filesystem). `HostGitExecutor` keeps the working directory (incl. `.git`) on the orchestrator.
+- OpenShell is the **sole** agent runtime. Its gateway uses the `docker` compute driver by default and can use the experimental `kubernetes` driver without changing `OpenShellWorkspaceRunner`. Docker mode keeps the client API on host loopback, adds a publication restricted to the private `openshell-docker` bridge for supervisor callbacks, and persists gateway-minted sandbox JWT keys. Deny-by-default sandbox **policies** and **policy-denial** auditing are enforced by OpenShell in either mode.
 - Multiple integrations of the same type (e.g. two Gerrit servers) can be active simultaneously; runtime routing is by `integrationId`, not type.
 
 ---
@@ -270,7 +270,7 @@ Tick-based polling with exponential backoff on consecutive failures.
 
 The **sole** workspace runtime. Git plumbing runs natively on the orchestrator via
 `HostGitExecutor` (no git-in-container); agent execution runs in an ephemeral
-**OpenShell sandbox** (k3s Pod) through an **upload → exec → download** lifecycle.
+**OpenShell sandbox** through an **upload → exec → download** lifecycle.
 
 ```
   runCycle(task, project)
@@ -278,7 +278,7 @@ The **sole** workspace runtime. Git plumbing runs natively on the orchestrator v
        ├─ HostGitExecutor.createWorkspace()   ← ephemeral dir under WORKSPACE_BASE_DIR
        ├─ HostGitExecutor.cloneRepo(...)       ← git clone (host-side, SSH or HTTP)
        │
-       ├─ client.createSandbox({ from: image, env: spec.env, policy })  ← k3s Pod
+      ├─ client.createSandbox({ from: image, env: spec.env, policy })  ← container or Pod
       ├─ client.uploadToSandbox(dir → /sandbox, --no-git-ignore)       ← incl. .git
       ├─ client.execInSandbox({ workdir: /sandbox/<basename(dir)>,
       │       command: [node, /app/agent-worker/dist/index.js], env }) ← agent runs
@@ -291,8 +291,9 @@ The **sole** workspace runtime. Git plumbing runs natively on the orchestrator v
 
 Push/review-system credentials stay host-side (`src/vcs/` + `buildGitEnv`); only the
 agent's own inference token (from `buildContainerSpec`) is passed as sandbox env.
-The OpenShell gateway's `kubernetes` driver schedules the Pod and enforces the
-deny-by-default policy applied before the agent starts.
+The OpenShell gateway's selected compute driver schedules the sandbox and
+enforces the deny-by-default policy applied before the agent starts. Docker is
+the default; Kubernetes is an explicit experimental deployment option.
 
 ---
 
@@ -765,18 +766,20 @@ Webhook secrets are per-integration (stored in `configJson.webhookSecret`), rota
 
 ### Image (`Dockerfile.agent`)
 
-Base: `node:24-bookworm-slim`. Includes: `git`, `openssh-client`, `curl`, `jq`, `iproute2` (the `ip` binary the OpenShell supervisor needs for sandbox network-namespace isolation), GitHub CLI (`gh`).
+Base: `node:24-bookworm-slim`. Includes: `git`, `openssh-client`, `curl`, `jq`, `iproute2` (the `ip` binary the OpenShell supervisor needs for sandbox network-namespace isolation), GitHub CLI (`gh`), and the required `sandbox` user/group whose home is the policy-writable `/sandbox` path.
 
 ```
 FROM node:24-bookworm-slim
 RUN apt-get install git openssh-client curl ca-certificates jq iproute2 gh
+RUN groupadd --system sandbox && useradd --system --gid sandbox --home-dir /sandbox sandbox
 COPY agent-worker/ /app/agent-worker/
 RUN npm --prefix /app/agent-worker ci --omit=dev
 WORKDIR /workspace
 ```
 
-This image is the `--from` for the OpenShell sandbox: the gateway's kubernetes
-driver schedules it as an ephemeral k3s Pod. The Copilot CLI native binary
+This image is the `--from` for the OpenShell sandbox: the gateway schedules it
+as an ephemeral Docker container by default or a Kubernetes Pod in experimental
+mode. The Copilot CLI native binary
 (`copilot-linux-x64`) is installed on first use into the sandbox HOME.
 
 ### Worker (`agent-worker/src/index.ts` → `dist/index.js`)
@@ -797,7 +800,7 @@ Runs inside the container. Two modes:
 
 ### Security constraints
 
-The sandbox is a k3s Pod governed by OpenShell's deny-by-default **policy engine**
+The sandbox is governed by OpenShell's deny-by-default **policy engine**
 across four domains — **filesystem** (writes restricted to `/workspace`),
 **network** (L7 egress allow-list, deny by default), **process** (no privilege
 escalation, dropped capabilities), and **inference** (model-endpoint routing).
@@ -999,6 +1002,13 @@ Runtime policies are the declarative YAML documents passed to the OpenShell gate
 | `inference` | Model-endpoint routing and allow-list |
 
 Each `runtime_policies` row stores one YAML document of exactly one `kind`. A policy may be bound to a **project** or an **agent** via `runtime_policy_bindings`. Project-level bindings override agent-level bindings of the same kind; different kinds compose additively. Partial unique indexes enforce one binding per kind per target.
+
+The resolver composes bound sections onto OpenShell 0.0.83's canonical base
+(`version: 1`, sandbox filesystem paths, best-effort Landlock, and the
+`sandbox` user/group). Network access is denied when no rules exist.
+`network_policies` is a map of named rule objects, each containing `name`,
+`binaries`, and `endpoints`; the legacy `default: deny` / `allow: []` shape is
+invalid and is rejected by the admin API before persistence.
 
 **Policy denial events** (`policy_denial_events` table): after every sandbox exec attempt (in a `finally` block), VE reads a bounded `openshell logs` snapshot, parses OCSF/key-value denial records, scrubs secrets, and inserts denial rows tagged with `task_id` and `project_id`. Task deletion sets `task_id` to null but preserves the audit record. Denials are surfaced in the admin UI under **Runtime → Policy Denials**.
 

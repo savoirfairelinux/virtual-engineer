@@ -35,9 +35,28 @@ const ACTION_ICON_STYLE = {
 } as const;
 
 export const RUNTIME_POLICY_TEMPLATES: Record<RuntimePolicy["kind"], string> = {
-  network: "network:\n  default: deny\n  allow: []\n",
-  filesystem: "filesystem:\n  allow_write: [/sandbox]\n",
-  process: "process:\n  no_new_privileges: true\n",
+  network: [
+    "network_policies:",
+    "  allow_api:",
+    "    name: allow_api",
+    "    binaries:",
+    "      - path: /usr/local/bin/node",
+    "    endpoints:",
+    "      - host: api.example.com",
+    "        port: 443",
+    "        access: full",
+    "        protocol: rest",
+    "        enforcement: enforce",
+    "",
+  ].join("\n"),
+  filesystem: [
+    "filesystem_policy:",
+    "  include_workdir: true",
+    "  read_only: [/usr, /lib, /proc, /dev/urandom, /app, /etc, /var/log]",
+    "  read_write: [/sandbox, /tmp, /dev/null]",
+    "",
+  ].join("\n"),
+  process: "process:\n  run_as_user: sandbox\n  run_as_group: sandbox\n",
   inference: "inference:\n  endpoint: inference.local\n",
 };
 

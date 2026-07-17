@@ -37,7 +37,7 @@ import { redactOpenShellText } from "../openshell/openShellClient.js";
 import { decodeReviewWorkerOutput } from "./agentWorkerProtocol.js";
 import { parseDenialEvent, type DenialSink } from "../openshell/denyEventPoller.js";
 import { sandboxOwnershipLabels, sandboxTaskHash } from "../openshell/sandboxOwnership.js";
-import { buildPolicyYaml, denyStrictPolicy } from "../openshell/openShellPolicyBuilder.js";
+import { buildDefaultPolicyYaml } from "../openshell/openShellPolicyBuilder.js";
 import type { ManagedOpenShellProviderRecord } from "../state/stores/openShellProviderStore.js";
 
 const log = getLogger("openshell-workspace-runner");
@@ -429,8 +429,7 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
     const spec = adapter.buildReviewContainerSpec(input);
     const providerEnv = splitManagedProviderEnv(name, spec.env);
 
-    const policyYaml = (await this.resolvePolicy(taskId, "review"))
-      ?? buildPolicyYaml(denyStrictPolicy({ inferenceHost: "inference.local" }));
+    const policyYaml = (await this.resolvePolicy(taskId, "review")) ?? buildDefaultPolicyYaml();
     try {
       if (providerEnv.provider !== undefined) {
         this.providerNames.set(handle.containerId, providerEnv.provider.name);
@@ -507,8 +506,7 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
       : adapter.buildContainerSpec(context, authEnv);
     const providerEnv = splitManagedProviderEnv(name, spec.env);
 
-    const policyYaml = (await this.resolvePolicy(taskId, "coding"))
-      ?? buildPolicyYaml(denyStrictPolicy({ inferenceHost: "inference.local" }));
+    const policyYaml = (await this.resolvePolicy(taskId, "coding")) ?? buildDefaultPolicyYaml();
     try {
       if (providerEnv.provider !== undefined) {
         this.providerNames.set(attemptKey, providerEnv.provider.name);

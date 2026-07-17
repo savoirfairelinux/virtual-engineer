@@ -2,21 +2,11 @@ import { writeJson, readBody } from "./adminRouteUtils.js";
 import type { Router } from "./router.js";
 import type { RuntimePolicyStoreApi } from "../state/stores/runtimePolicyStore.js";
 import type { RuntimePolicyKind } from "../state/schema.js";
+import { OPEN_SHELL_POLICY_KEYS } from "../openshell/openShellPolicyBuilder.js";
 import { parse } from "yaml";
 
 const VALID_KINDS = new Set<RuntimePolicyKind>(["filesystem", "network", "process", "inference"]);
 const MAX_POLICY_YAML_BYTES = 64 * 1024;
-
-/**
- * Maps the VE-internal `kind` (stored in the DB) to the top-level YAML key
- * that the OpenShell gateway expects in the policy document.
- */
-const KIND_TO_YAML_KEY: Readonly<Record<RuntimePolicyKind, string>> = {
-  network: "network_policies",
-  filesystem: "filesystem_policy",
-  process: "process",
-  inference: "inference",
-};
 
 export interface RuntimePolicyRouteDeps {
   runtimePolicyStore?: RuntimePolicyStoreApi | undefined;
@@ -26,6 +16,35 @@ export interface RuntimePolicyRouteDeps {
 
 function isKind(value: unknown): value is RuntimePolicyKind {
   return typeof value === "string" && VALID_KINDS.has(value as RuntimePolicyKind);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function validateNetworkPolicy(section: Record<string, unknown>): string | null {
+  if (Object.hasOwn(section, "default") || Object.hasOwn(section, "allow")) {
+    return "Runtime policy 'network_policies' must contain named rules; legacy default/allow fields are unsupported";
+  }
+  for (const [ruleName, rule] of Object.entries(section)) {
+    if (!isRecord(rule)) return `Network policy rule '${ruleName}' must be an object`;
+    if (typeof rule["name"] !== "string" || rule["name"] === "") {
+      return `Network policy rule '${ruleName}' must have a name`;
+    }
+    const binaries = rule["binaries"];
+    if (!Array.isArray(binaries) || binaries.length === 0
+      || binaries.some((binary) => !isRecord(binary) || typeof binary["path"] !== "string")) {
+      return `Network policy rule '${ruleName}' must have binaries with path values`;
+    }
+    const endpoints = rule["endpoints"];
+    if (!Array.isArray(endpoints) || endpoints.length === 0
+      || endpoints.some((endpoint) => !isRecord(endpoint)
+        || typeof endpoint["host"] !== "string"
+        || !Number.isInteger(endpoint["port"]))) {
+      return `Network policy rule '${ruleName}' must have endpoints with host and integer port values`;
+    }
+  }
+  return null;
 }
 
 export function validateRuntimePolicyYaml(kind: RuntimePolicyKind, yaml: string): string | null {
@@ -42,10 +61,10 @@ export function validateRuntimePolicyYaml(kind: RuntimePolicyKind, yaml: string)
   } catch (err) {
     return `Invalid YAML: ${err instanceof Error ? err.message : String(err)}`;
   }
-  if (typeof document !== "object" || document === null || Array.isArray(document)) {
+  if (!isRecord(document)) {
     return "Runtime policy YAML must be an object";
   }
-  const expectedKey = KIND_TO_YAML_KEY[kind];
+  const expectedKey = OPEN_SHELL_POLICY_KEYS[kind];
   if (!Object.hasOwn(document, expectedKey)) {
     return `Runtime policy YAML must contain a '${expectedKey}' section`;
   }
@@ -53,10 +72,11 @@ export function validateRuntimePolicyYaml(kind: RuntimePolicyKind, yaml: string)
   if (keys.length !== 1 || keys[0] !== expectedKey) {
     return `Runtime policy YAML may contain only the '${expectedKey}' top-level section`;
   }
-  const section = (document as Record<string, unknown>)[expectedKey];
-  if (typeof section !== "object" || section === null || Array.isArray(section)) {
+  const section = document[expectedKey];
+  if (!isRecord(section)) {
     return `Runtime policy '${expectedKey}' section must be an object`;
   }
+  if (kind === "network") return validateNetworkPolicy(section);
   return null;
 }
 

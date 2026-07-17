@@ -34,6 +34,10 @@ describe("Admin Dashboard - Configuration Shell", () => {
     expect(source).toContain('aria-label={`Assign ${p.name} to a project or agent`}');
     expect(source).toContain('aria-label={`Edit ${p.name}`}');
     expect(source).toContain('aria-label={`Delete ${p.name}`}');
+    expect(source).toContain('"network_policies:"');
+    expect(source).toContain('"    binaries:"');
+    expect(source).toContain('"    endpoints:"');
+    expect(source).not.toContain("default: deny");
     expect(source).not.toContain('>Assign</button>');
     expect(source).not.toContain('>Edit</button>');
     expect(source).not.toContain('>Delete</button>');

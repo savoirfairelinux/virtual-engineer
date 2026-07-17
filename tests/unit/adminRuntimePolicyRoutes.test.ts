@@ -49,7 +49,7 @@ describe("Admin API — runtime policy bindings", () => {
     const policy = await store.createRuntimePolicy({
       name: "network-deny",
       kind: "network",
-      yaml: "network:\n  default: deny\n",
+      yaml: "network_policies: {}\n",
     });
     const binding = await store.bindRuntimePolicy({ policyId: policy.id, agentId: agent.id });
 

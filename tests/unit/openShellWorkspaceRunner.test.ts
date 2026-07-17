@@ -347,7 +347,7 @@ describe("OpenShellWorkspaceRunner", () => {
       client,
       sandboxImage: "base",
       agentAdapter: fakeReviewAdapter(),
-      resolvePolicy: ({ mode }) => (mode === "review" ? "network:\n  default: deny\n" : undefined),
+      resolvePolicy: ({ mode }) => (mode === "review" ? "version: 1\nprocess:\n  run_as_user: sandbox\n  run_as_group: sandbox\n" : undefined),
     });
     const abortController = new AbortController();
     const input = {
@@ -360,7 +360,7 @@ describe("OpenShellWorkspaceRunner", () => {
       name: "ve-t1",
       from: "agent:img",
       env: { REVIEW_MODE: "1" },
-      policyYaml: expect.stringContaining("default: deny"),
+      policyYaml: expect.stringContaining("run_as_user: sandbox"),
       beforeRetryCleanup: expect.any(Function),
       signal: abortController.signal,
     }));
@@ -698,7 +698,7 @@ describe("OpenShellWorkspaceRunner", () => {
     vi.useRealTimers();
   });
 
-  it("runAgentInDocker applies deny-strict fallback policy when resolvePolicy returns undefined", async () => {
+  it("runAgentInDocker applies the canonical fallback policy when resolvePolicy returns undefined", async () => {
     const client = fakeClient();
     const runner = new OpenShellWorkspaceRunner({
       git: fakeGit(),
@@ -714,11 +714,11 @@ describe("OpenShellWorkspaceRunner", () => {
     );
 
     expect(client.createSandbox).toHaveBeenCalledWith(expect.objectContaining({
-      policyYaml: expect.stringContaining("default: deny"),
+      policyYaml: expect.stringContaining("run_as_user: sandbox"),
     }));
   });
 
-  it("runReviewInDocker applies deny-strict fallback policy when resolvePolicy returns undefined", async () => {
+  it("runReviewInDocker applies the canonical fallback policy when resolvePolicy returns undefined", async () => {
     const client = fakeClient({
       execInSandbox: vi.fn().mockResolvedValue({
         code: 0,
@@ -740,7 +740,7 @@ describe("OpenShellWorkspaceRunner", () => {
     );
 
     expect(client.createSandbox).toHaveBeenCalledWith(expect.objectContaining({
-      policyYaml: expect.stringContaining("default: deny"),
+      policyYaml: expect.stringContaining("run_as_user: sandbox"),
     }));
   });
 

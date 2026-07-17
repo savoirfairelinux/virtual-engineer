@@ -23,7 +23,7 @@ describe("SqliteStateStore — runtime policies", () => {
     const created = await store.createRuntimePolicy({
       name: "review-readonly",
       kind: "network",
-      yaml: "network:\n  default: deny\n",
+      yaml: "network_policies: {}\n",
       description: "read-only egress",
     });
     expect(created.id).toBeTruthy();
@@ -34,7 +34,7 @@ describe("SqliteStateStore — runtime policies", () => {
 
     const updated = await store.updateRuntimePolicy(created.id, { name: "review-ro" });
     expect(updated.name).toBe("review-ro");
-    expect(updated.yaml).toContain("default: deny");
+    expect(updated.yaml).toContain("network_policies");
 
     const listed = await store.listRuntimePolicies({ kind: "network" });
     expect(listed).toHaveLength(1);

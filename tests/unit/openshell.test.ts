@@ -1,10 +1,7 @@
 import { EventEmitter } from "node:events";
 import { describe, it, expect, vi } from "vitest";
 import {
-  buildPolicyYaml,
-  reviewReadonlyPolicy,
-  codingRegistriesPolicy,
-  denyStrictPolicy,
+  buildDefaultPolicyYaml,
 } from "../../src/openshell/openShellPolicyBuilder.js";
 import {
   parseDenialEvent,
@@ -22,37 +19,20 @@ import {
 } from "../../src/openshell/openShellClient.js";
 
 describe("openShellPolicyBuilder", () => {
-  it("emits deny-by-default network YAML with L7 methods", () => {
-    const yaml = buildPolicyYaml(
-      reviewReadonlyPolicy({ inferenceHost: "api.anthropic.com", apiHosts: ["api.github.com"] })
-    );
-    expect(yaml).toContain("network_policies:");
-    expect(yaml).toContain("default: deny");
-    expect(yaml).toContain("- host: api.anthropic.com");
-    expect(yaml).toContain("- host: api.github.com");
-    expect(yaml).toContain("methods: [GET]");
-    expect(yaml).toContain("allow_write: [/sandbox]");
-    expect(yaml).toContain("no_new_privileges: true");
-  });
+  it("emits the canonical OpenShell 0.0.83 deny-by-default base policy", () => {
+    const yaml = buildDefaultPolicyYaml();
 
-  it("coding policy allows registries and inference, not git egress", () => {
-    const yaml = buildPolicyYaml(codingRegistriesPolicy({ inferenceHost: "api.openai.com" }));
-    expect(yaml).toContain("registry.npmjs.org");
-    expect(yaml).toContain("pypi.org");
-    expect(yaml).toContain("api.openai.com");
-    expect(yaml).not.toContain("github.com");
-  });
-
-  it("strict policy allows only the inference endpoint and drops caps", () => {
-    const yaml = buildPolicyYaml(denyStrictPolicy({ inferenceHost: "inference.local" }));
-    expect(yaml).toContain("- host: inference.local");
-    expect(yaml).toContain("drop_caps: all");
-    expect((yaml.match(/- host:/g) ?? []).length).toBe(1);
-  });
-
-  it("is deterministic for identical specs", () => {
-    const spec = denyStrictPolicy({ inferenceHost: "inference.local" });
-    expect(buildPolicyYaml(spec)).toBe(buildPolicyYaml(spec));
+    expect(yaml).toContain("version: 1");
+    expect(yaml).toContain("filesystem_policy:");
+    expect(yaml).toContain("include_workdir: true");
+    expect(yaml).toContain("read_write:");
+    expect(yaml).toContain("- /sandbox");
+    expect(yaml).toContain("landlock:");
+    expect(yaml).toContain("compatibility: best_effort");
+    expect(yaml).toContain("run_as_user: sandbox");
+    expect(yaml).toContain("run_as_group: sandbox");
+    expect(yaml).not.toContain("network_policies:");
+    expect(yaml).not.toContain("default: deny");
   });
 });
 
@@ -467,7 +447,7 @@ describe("OpenShellClient", () => {
     const client = new OpenShellClient({ runner });
     await client.createSandbox({
       name: "task-1",
-      policyYaml: "filesystem_policy:\n  allow_write: [/sandbox]\n",
+      policyYaml: "filesystem_policy:\n  read_write: [/sandbox]\n",
     });
 
     const args = calls[0]?.args ?? [];
@@ -703,7 +683,7 @@ describe("OpenShellClient", () => {
   it("writes policy yaml to a temp file on setPolicy", async () => {
     const { runner, calls } = runnerReturning({ code: 0 });
     const client = new OpenShellClient({ runner });
-    await client.setPolicy("demo", "network_policies:\n  default: deny\n");
+    await client.setPolicy("demo", "version: 1\nnetwork_policies: {}\n");
     // args: policy set --policy <tempfile> demo
     expect(calls[0]?.args[0]).toBe("policy");
     expect(calls[0]?.args[1]).toBe("set");
