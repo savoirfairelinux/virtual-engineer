@@ -7,7 +7,7 @@
  */
 
 /** Supported agent execution providers. */
-export type AgentProvider = 'copilot' | 'claude';
+export type AgentProvider = 'copilot' | 'claude' | 'aider';
 
 /** Options passed to a provider runner for a single agent session. */
 export interface AgentRunOptions {
