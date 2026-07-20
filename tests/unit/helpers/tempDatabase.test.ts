@@ -1,4 +1,5 @@
 import { existsSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { describe, expect, it } from "vitest";
 import { cleanupTempDatabase, tempDatabasePath } from "./tempDatabase.js";
 
@@ -18,7 +19,7 @@ describe("temporary test databases", () => {
   it("removes a dedicated database directory", () => {
     const dbPath = tempDatabasePath("ve-cleanup-directory-test", { directory: true });
     writeFileSync(dbPath, "test");
-    const directory = dbPath.slice(0, dbPath.lastIndexOf("/"));
+    const directory = dirname(dbPath);
 
     cleanupTempDatabase(dbPath);
 
