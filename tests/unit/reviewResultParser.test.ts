@@ -84,8 +84,11 @@ describe("parseReviewResult", () => {
     expect(() => parseReviewResult("no marker here")).toThrow(ReviewResultParseError);
   });
 
-  it("throws ReviewResultParseError when the end marker is missing", () => {
-    expect(() => parseReviewResult("REVIEW_RESULT_START\n{}")).toThrow(ReviewResultParseError);
+  it("returns a fallback pass result when the end marker is missing (truncated output)", () => {
+    const result = parseReviewResult("REVIEW_RESULT_START\n{}");
+    expect(result.score).toBe(1);
+    expect(result.comments).toEqual([]);
+    expect(result.summary).toMatch(/truncated/i);
   });
 
   it("throws ReviewResultParseError on invalid JSON", () => {
