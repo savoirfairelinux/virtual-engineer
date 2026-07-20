@@ -365,7 +365,7 @@ function SshAuthSection({ provider, providerName, config, onConfigChange }: SshA
     setGenerating(true);
     setGenError(null);
     try {
-      const result = await generateSshKeyPair(provider);
+      const result = await generateSshKeyPair(provider, config["sshUser"] as string | undefined);
       onConfigChange("sshPrivateKeyEnc", result.sshPrivateKeyEnc);
       onConfigChange("sshPublicKey", result.sshPublicKey);
     } catch (e) {
