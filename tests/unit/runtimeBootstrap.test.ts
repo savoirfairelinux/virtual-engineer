@@ -94,6 +94,12 @@ async function importRuntime(
     activeTasks?: Task[];
     /** Agent rows returned by stateStore.listAgents. */
     agentRecords?: AgentRecord[];
+    /**
+     * Per-provider VcsConnector stub returned by the mocked
+     * createVcsConnectorForIntegration, so tests can exercise the
+     * queryAuthorIdentity() git-author-identity resolution path.
+     */
+    vcsConnectorsByProvider?: Partial<Record<ProviderId, { queryAuthorIdentity?: () => Promise<{ name: string; email: string } | undefined> }>>;
   } = {}
 ) {
   vi.resetModules();
@@ -236,7 +242,9 @@ async function importRuntime(
       updateRuntime: vi.fn(),
     };
   });
-  const createVcsConnectorForIntegration = vi.fn(() => ({ pushRepo: vi.fn() }));
+  const createVcsConnectorForIntegration = vi.fn((integration: Integration) => {
+    return options.vcsConnectorsByProvider?.[integration.provider] ?? { pushRepo: vi.fn() };
+  });
 
   const Orchestrator = vi.fn().mockImplementation(function () {
     return {
@@ -681,6 +689,69 @@ describe("runtime bootstrap provider selection", () => {
     expect((dbAgent as unknown as { configure: ReturnType<typeof vi.fn> }).configure).toHaveBeenCalledTimes(1);
     expect((dbAgent as unknown as { configure: ReturnType<typeof vi.fn> }).configure).toHaveBeenCalledWith(
       expect.objectContaining({ runner: runnerInstance })
+    );
+  });
+
+  it("derives gitAuthorName/gitAuthorEmail from the Gerrit account's own registered identity instead of stored config or the placeholder default", async () => {
+    const queryAuthorIdentity = vi.fn(async () => ({ name: "Virtual Engineer", email: "virtual-engineer@jami.net" }));
+
+    const runtime = await importRuntime(
+      {},
+      {
+        gerrit: makeIntegration({
+          id: "gerrit-db",
+          provider: "gerrit",
+          configJson: JSON.stringify({
+            sshHost: "db-gerrit-ssh.test",
+            sshUser: "virtual-engineer",
+            gitAuthorEmail: "stale-placeholder@example.com",
+          }),
+        }),
+      },
+      { vcsConnectorsByProvider: { gerrit: { queryAuthorIdentity } } }
+    );
+
+    expect(queryAuthorIdentity).toHaveBeenCalledTimes(1);
+    expect(runtime.Orchestrator).toHaveBeenCalledWith(
+      expect.objectContaining({
+        gitAuthorName: "Virtual Engineer",
+        gitAuthorEmail: "virtual-engineer@jami.net",
+      }),
+      expect.anything(),
+      expect.anything(),
+      undefined,
+      expect.anything(),
+      expect.anything()
+    );
+  });
+
+  it("falls back to the stored config value when the Gerrit identity lookup returns nothing", async () => {
+    const queryAuthorIdentity = vi.fn(async () => undefined);
+
+    const runtime = await importRuntime(
+      {},
+      {
+        gerrit: makeIntegration({
+          id: "gerrit-db",
+          provider: "gerrit",
+          configJson: JSON.stringify({
+            sshHost: "db-gerrit-ssh.test",
+            sshUser: "virtual-reviewer",
+            gitAuthorEmail: "configured@example.com",
+          }),
+        }),
+      },
+      { vcsConnectorsByProvider: { gerrit: { queryAuthorIdentity } } }
+    );
+
+    expect(queryAuthorIdentity).toHaveBeenCalledTimes(1);
+    expect(runtime.Orchestrator).toHaveBeenCalledWith(
+      expect.objectContaining({ gitAuthorEmail: "configured@example.com" }),
+      expect.anything(),
+      expect.anything(),
+      undefined,
+      expect.anything(),
+      expect.anything()
     );
   });
 

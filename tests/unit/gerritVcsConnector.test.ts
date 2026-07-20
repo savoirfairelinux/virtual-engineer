@@ -19,6 +19,7 @@ const mockQueryChange = vi.fn(async (_changeId: string): Promise<SshChangeInfo> 
 }));
 const mockGetUnresolvedComments = vi.fn();
 const mockResolveComments = vi.fn();
+const mockQueryOwnAccountIdentity = vi.fn();
 
 vi.mock("../../src/connectors/gerritSshClient.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/connectors/gerritSshClient.js")>();
@@ -29,6 +30,7 @@ vi.mock("../../src/connectors/gerritSshClient.js", async (importOriginal) => {
         queryChange: mockQueryChange,
         getUnresolvedComments: mockGetUnresolvedComments,
         resolveComments: mockResolveComments,
+        queryOwnAccountIdentity: mockQueryOwnAccountIdentity,
       };
     }),
   };
@@ -53,6 +55,7 @@ describe("GerritVcsConnector", () => {
     mockQueryChange.mockReset();
     mockGetUnresolvedComments.mockReset();
     mockResolveComments.mockReset();
+    mockQueryOwnAccountIdentity.mockReset();
   });
 
   afterEach(() => {
@@ -360,6 +363,22 @@ describe("GerritVcsConnector", () => {
     it("buildPushSpec falls back to VE-<taskId> when ticketTitle is empty", () => {
       const spec = connector.buildPushSpec("main", "task-1", "");
       expect(spec.topic).toBe("VE-task-1");
+    });
+  });
+
+  describe("queryAuthorIdentity", () => {
+    it("delegates to the underlying SSH client", async () => {
+      mockQueryOwnAccountIdentity.mockResolvedValue({ name: "Virtual Engineer", email: "virtual-engineer@jami.net" });
+
+      const identity = await connector.queryAuthorIdentity();
+
+      expect(identity).toEqual({ name: "Virtual Engineer", email: "virtual-engineer@jami.net" });
+      expect(mockQueryOwnAccountIdentity).toHaveBeenCalledTimes(1);
+    });
+
+    it("returns undefined when the SSH client can't resolve an identity", async () => {
+      mockQueryOwnAccountIdentity.mockResolvedValue(undefined);
+      await expect(connector.queryAuthorIdentity()).resolves.toBeUndefined();
     });
   });
 });

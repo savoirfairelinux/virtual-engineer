@@ -215,6 +215,43 @@ describe("GerritSshClient", () => {
     });
   });
 
+  describe("queryOwnAccountIdentity", () => {
+    it("returns the owner name/email from a change the account owns", async () => {
+      execFileResults = [{
+        stdout: sshNdjson({
+          number: 42,
+          owner: { name: "Virtual Engineer", email: "virtual-engineer@jami.net", username: "virtual-engineer" },
+        }),
+        stderr: "",
+      }];
+
+      const identity = await makeClient().queryOwnAccountIdentity();
+
+      expect(identity).toEqual({ name: "Virtual Engineer", email: "virtual-engineer@jami.net" });
+    });
+
+    it("falls back to email when owner name is absent", async () => {
+      execFileResults = [{
+        stdout: sshNdjson({ number: 1, owner: { email: "bot@example.com" } }),
+        stderr: "",
+      }];
+
+      const identity = await makeClient().queryOwnAccountIdentity();
+
+      expect(identity).toEqual({ name: "bot@example.com", email: "bot@example.com" });
+    });
+
+    it("returns undefined when the account owns no changes", async () => {
+      execFileResults = [{ stdout: sshNdjson(), stderr: "" }];
+      await expect(makeClient().queryOwnAccountIdentity()).resolves.toBeUndefined();
+    });
+
+    it("returns undefined (never throws) when the SSH query fails", async () => {
+      execFileResults = [new Error("SSH connection refused")];
+      await expect(makeClient().queryOwnAccountIdentity()).resolves.toBeUndefined();
+    });
+  });
+
   describe("getUnresolvedComments", () => {
     const BASE_COMMENT = {
       timestamp: 1710000000,
