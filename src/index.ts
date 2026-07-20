@@ -642,6 +642,8 @@ async function buildReviewBundle(
     reviewProvider: reviewer.provider,
     integrationId: integration.id,
     workspaceRunner,
+    ...(aiderBackend !== undefined ? { aiderBackend } : {}),
+    ...(aiderApiBase !== undefined ? { aiderApiBase } : {}),
     buildCloneTarget: reviewer.buildCloneTarget,
     ...(reviewer.applyPatchset !== undefined ? { applyPatchset: reviewer.applyPatchset } : {}),
     sourceLabel: buildIntegrationSourceLabel(integration),
@@ -886,13 +888,20 @@ function getAgentTokenFromIntegration(
     return decryptManagedSessionToken(agentIntegration, rawConfig, bundleLog);
   }
 
+  if (agentIntegration.provider === "aider") {
+    const aiderApiKey = getDecryptedPasswordField(pluginManager, agentIntegration, "aiderApiKey");
+    if (aiderApiKey) return aiderApiKey;
+    if (asOptionalString(rawConfig["aiderBackend"]) === "ollama") return "ollama-keyless";
+    return null;
+  }
+
   return null;
 }
 
 function getDecryptedPasswordField(
   pluginManager: PluginManager,
   integration: Integration,
-  field: "token" | "apiKey"
+  field: "token" | "apiKey" | "aiderApiKey"
 ): string | null {
   try {
     return asOptionalString(pluginManager.decryptIntegrationConfig(integration)[field]) ?? null;
