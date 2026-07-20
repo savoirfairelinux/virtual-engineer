@@ -34,6 +34,7 @@ import { PluginManager } from "./plugins/pluginManager.js";
 import type { AppConfig } from "./config.js";
 import { getProviderDescriptor, getProviderDomainCapabilities, getCapabilityIntake } from "./plugins/registry.js";
 import { buildTicketSourceLabel, parseIntegrationIdFromSourceLabel } from "./utils/ticketSourceLabel.js";
+import { createVcsConnectorForIntegration } from "./vcs/vcsFactory.js";
 
 const log = getLogger("main");
 const SHUTDOWN_TIMEOUT_MS = 5_000;
@@ -124,7 +125,7 @@ async function main(): Promise<void> {
   const orchestratorProjectMode: import("./orchestrator/orchestrator.js").ProjectModeDeps = projectModeBase;
   const pollingProjectMode: NonNullable<Parameters<PollingLoop["setProjectMode"]>[0]> = projectModeBase;
   const orchestrator = new Orchestrator(
-    buildOrchestratorConfig(config, pluginManager),
+    await buildOrchestratorConfig(config, pluginManager),
     stateStore,
     workspaceRunner,
     undefined,
@@ -249,7 +250,7 @@ async function main(): Promise<void> {
     });
     configureAgentAdapter(runtimeDependencies.agentAdapter, stateStore, workspaceRunner);
     orchestrator.updateRuntime({
-      config: buildOrchestratorConfig(config, pluginManager),
+      config: await buildOrchestratorConfig(config, pluginManager),
     });
     pollingLoop.resetBackoff();
     reviewTriggerHolder.current = buildReviewTrigger(pluginManager, config.workspaceBaseDir, workspaceRunner, stateStore);
@@ -290,7 +291,7 @@ async function main(): Promise<void> {
         ticketIntervalMs: config.pollingIntervalMs,
         maxRetryAttempts: config.maxRetryAttempts,
       });
-      orchestrator.updateRuntime({ config: buildOrchestratorConfig(config, pluginManager) });
+      orchestrator.updateRuntime({ config: await buildOrchestratorConfig(config, pluginManager) });
       adminRuntimeConfig.pollingIntervalMs = config.pollingIntervalMs;
       adminRuntimeConfig.maxAgentCycles = config.maxAgentCycles;
       adminRuntimeConfig.maxRetryAttempts = config.maxRetryAttempts;
@@ -965,10 +966,10 @@ function buildRuntimeDependencies(pluginManager: PluginManager): RuntimeDependen
 }
 
 /** Build the `OrchestratorConfig` by merging app config with VCS integration settings. */
-function buildOrchestratorConfig(
+async function buildOrchestratorConfig(
   config: AppConfig,
   pluginManager: PluginManager
-): import("./orchestrator/orchestrator.js").OrchestratorConfig {
+): Promise<import("./orchestrator/orchestrator.js").OrchestratorConfig> {
   // Resolve gitAuthorName/gitAuthorEmail through the descriptor Zod schemas so
   // that defaults declared in the schema apply even for DB rows that predate
   // this field (i.e. rows stored without the key).
@@ -978,8 +979,39 @@ function buildOrchestratorConfig(
   let gitAuthorName: string | undefined;
   let gitAuthorEmail: string | undefined;
 
+  // Prefer the real identity the pushing account is registered under in the
+  // VCS itself (e.g. Gerrit's own account DB, looked up over the SSH
+  // credentials already configured for the source_control capability) over
+  // any stored config value or hardcoded placeholder. This keeps commit
+  // authorship correct automatically, without a new credential type, a new
+  // admin-UI field, or manual per-integration DB edits.
+  //
+  // Try every active integration of each provider (not just the "primary"
+  // one) since the account whose commits actually need attribution may not
+  // be the most-recently-updated one — e.g. a review-only Gerrit account
+  // (virtual-reviewer) never owns a change, so its lookup always misses and
+  // the loop must still reach the coding account (virtual-engineer).
+  for (const provider of ["gitlab", "gerrit"] as const) {
+    if (gitAuthorName && gitAuthorEmail) break;
+    for (const integration of getActiveIntegrationsByType(pluginManager, provider)) {
+      let connector: import("./vcs/vcsConnector.js").VcsConnector | undefined;
+      try {
+        connector = createVcsConnectorForIntegration(integration, undefined, config.adminAuthSecret);
+      } catch {
+        continue;
+      }
+      const identity = await connector.queryAuthorIdentity?.().catch(() => undefined);
+      if (identity) {
+        gitAuthorName ??= identity.name;
+        gitAuthorEmail ??= identity.email;
+        break;
+      }
+    }
+  }
+
   for (const integration of [gitLabIntegration, gerritIntegration]) {
-    if (!integration || (gitAuthorName && gitAuthorEmail)) break;
+    if (gitAuthorName && gitAuthorEmail) break;
+    if (!integration) continue;
     const raw = parseIntegrationConfig(integration);
     const descriptor = getProviderDescriptor(integration.provider);
     const result = descriptor?.configSchema.safeParse(raw ?? {});

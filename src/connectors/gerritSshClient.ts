@@ -264,6 +264,31 @@ export class GerritSshClient {
   }
 
   /**
+   * Look up the real name/email Gerrit has registered for the account this
+   * client authenticates as, by querying any one change it owns (Gerrit's SSH
+   * protocol has no bare "whoami" command — the account identity only comes
+   * embedded in change results). Used so VE's git commit author/committer
+   * always matches the actual pushing account instead of a placeholder,
+   * without needing a second credential or manual per-integration config.
+   *
+   * Best-effort: returns `undefined` (never throws) when the account owns no
+   * changes yet, or the query/parse fails for any reason.
+   */
+  async queryOwnAccountIdentity(): Promise<{ name: string; email: string } | undefined> {
+    try {
+      const out = await this.query(["query", "--format", "JSON", "owner:self", "limit:1"]);
+      const rows = parseSshNdjson(out);
+      const owner = (rows[0] as { owner?: { name?: string; email?: string } } | undefined)?.owner;
+      if (!owner?.email) return undefined;
+      return { name: owner.name ?? owner.email, email: owner.email };
+    } catch (err) {
+      log.debug({ err }, "Gerrit SSH: could not resolve own account identity (owner:self)");
+      return undefined;
+    }
+  }
+
+
+  /**
    * Fetch review comments for a Gerrit change via SSH.
    *
    * Reads both `currentPatchSet.comments` (inline file comments, when present)

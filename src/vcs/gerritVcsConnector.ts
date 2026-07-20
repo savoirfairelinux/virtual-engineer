@@ -124,6 +124,16 @@ export class GerritVcsConnector implements VcsConnector {
     return { ref: `refs/for/${baseBranch}`, topic: buildGerritTopic(taskId, ticketTitle) };
   }
 
+  /**
+   * Look up the real name/email registered on the Gerrit account this
+   * connector's SSH credentials authenticate as (see
+   * `GerritSshClient.queryOwnAccountIdentity`). Used to derive commit
+   * author/committer identity automatically instead of a placeholder.
+   */
+  async queryAuthorIdentity(): Promise<{ name: string; email: string } | undefined> {
+    return this.sshClient.queryOwnAccountIdentity();
+  }
+
   /** Resolve a Change-Id to PatchsetCheckoutOptions by querying Gerrit via SSH. */
   async resolvePatchsetOptions(changeId: string): Promise<PatchsetCheckoutOptions> {
     const info = await this.sshClient.queryChange(changeId);
