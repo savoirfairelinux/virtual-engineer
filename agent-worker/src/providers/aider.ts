@@ -46,6 +46,11 @@ const CONVENTIONAL_COMMIT_PROMPT =
  * Environment Variable Allowlist (Security):
  * The subprocess receives only whitelisted env vars to prevent secrets leakage.
  * The backend auth vars are forwarded so litellm can reach the upstream LLM.
+ *
+ * The allowlist is deliberately scoped to the six supported Aider backends
+ * (openai, anthropic, ollama, openrouter, deepseek, openai_compat). Unrelated
+ * cloud credentials (Azure / AWS / Vertex / Gemini) are intentionally excluded
+ * to minimise the blast radius if such secrets ever leak into the host env.
  */
 function buildAiderEnv(): Record<string, string> {
   const allowlist = [
@@ -63,27 +68,15 @@ function buildAiderEnv(): Record<string, string> {
     'GIT_AUTHOR_EMAIL',
     'GIT_COMMITTER_NAME',
     'GIT_COMMITTER_EMAIL',
-    // Aider model + backend auth (litellm env vars).
+    // Aider model + backend auth (litellm env vars) — supported backends only.
     'AIDER_MODEL',
-    'OPENAI_API_KEY',
-    'ANTHROPIC_API_KEY',
-    'OLLAMA_API_BASE',
-    'OLLAMA_API_KEY',
-    'OPENROUTER_API_KEY',
-    'DEEPSEEK_API_KEY',
-    'OPENAI_API_BASE',
-    'OPENAI_API_TYPE',
-    'OPENAI_API_VERSION',
-    'OPENAI_API_DEPLOYMENT_ID',
-    'OPENAI_ORGANIZATION',
-    'GEMINI_API_KEY',
-    'AZURE_API_KEY',
-    'AWS_ACCESS_KEY_ID',
-    'AWS_SECRET_ACCESS_KEY',
-    'AWS_REGION',
-    'VERTEX_PROJECT',
-    'VERTEX_LOCATION',
-    'ANTHROPIC_BASE_URL',
+    'OPENAI_API_KEY',      // openai, openai_compat
+    'OPENAI_API_BASE',     // openai_compat
+    'ANTHROPIC_API_KEY',   // anthropic
+    'OLLAMA_API_BASE',     // ollama
+    'OLLAMA_API_KEY',      // ollama (optional auth)
+    'OPENROUTER_API_KEY',  // openrouter
+    'DEEPSEEK_API_KEY',    // deepseek
   ];
   const env: Record<string, string> = {};
   for (const key of allowlist) {
@@ -311,7 +304,8 @@ function processAiderLine(
   if (!line) return;
 
   // Aider announces edits like "Editing file: src/foo.ts" or "Applied edit to src/foo.ts".
-  const editMatch = line.match(/^(?:Editing|Applied edit to|Created) (.+)$/);
+  // The optional "file:" prefix is stripped so the captured path is the bare path.
+  const editMatch = line.match(/^(?:Editing|Applied edit to|Created)\s+(?:file:\s*)?(.+)$/);
   if (editMatch) {
     const filePath = editMatch[1]!.trim();
     state.toolCallCount++;

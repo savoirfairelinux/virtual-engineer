@@ -139,6 +139,15 @@ describe("AiderAdapter", () => {
       expect(spec.env["OPENAI_API_BASE"]).toBe("https://custom.example.com");
     });
 
+    it("throws when openai_compat backend is missing an API base URL", () => {
+      const adapter = new AiderAdapter();
+      const ctx = makeContext();
+      ctx.agentSession.aiderBackend = "openai_compat";
+      ctx.agentSession.aiderApiKey = "key";
+      ctx.agentSession.aiderApiBase = "";
+      expect(() => adapter.buildContainerSpec(ctx)).toThrow(/requires an API base URL/);
+    });
+
     it("injects LOCAL_SKILLS_PATH only when skill discovery is enabled", () => {
       const adapter = new AiderAdapter();
       const ctx = makeContext();

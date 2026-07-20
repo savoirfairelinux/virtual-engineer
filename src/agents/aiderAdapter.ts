@@ -533,6 +533,11 @@ function backendAuthEnv(
     case "deepseek":
       return { DEEPSEEK_API_KEY: apiKey };
     case "openai_compat":
+      if (!apiBase) {
+        throw new Error(
+          'Aider "openai_compat" backend requires an API base URL. Configure the base URL for the integration in the admin dashboard.'
+        );
+      }
       return { OPENAI_API_KEY: apiKey, OPENAI_API_BASE: apiBase };
     default: {
       // Exhaustiveness check — a new backend must be added here.
