@@ -74,6 +74,7 @@ export interface TaskStoreApi {
   ): Promise<Task | null>;
   getActiveTasks(): Promise<Task[]>;
   getAllTasks(): Promise<Task[]>;
+  reconcileOrphanedActiveTasks(): Promise<number>;
   transition(taskId: TaskId, toState: TaskState, metadata?: Record<string, unknown>): Promise<Task>;
   updateExternalChangeId(taskId: TaskId, changeId: ExternalChangeId, patchset: number, reviewUrl?: string): Promise<void>;
   createReviewTask(input: {
@@ -344,6 +345,24 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
       where: notInArray(tasks.state, [...TERMINAL_STATES]),
     });
     return rows.map((row) => rowToTask(row));
+  }
+
+  // ponytail: Docker workspaces never survive an orchestrator restart (both
+  // orchestrator.ts and reviewOrchestrator.ts destroy them in a `finally`, so
+  // a task can only be found in one of these "container actively executing"
+  // states if the process died mid-cycle). On boot there's no in-flight work
+  // to resume, so fail them outright — this lets normal retry/re-trigger
+  // logic pick them back up instead of leaving them stuck in RUNNING forever.
+  async function reconcileOrphanedActiveTasks(): Promise<number> {
+    const orphanable: TaskState[] = ["AGENT_RUNNING", "REVIEW_RUNNING", "REVIEW_COMMENTING"];
+    const rows = await db.query.tasks.findMany({ where: inArray(tasks.state, orphanable) });
+    for (const row of rows) {
+      const task = rowToTask(row);
+      const toState: TaskState = task.state === "AGENT_RUNNING" ? "FAILED" : "REVIEW_FAILED";
+      await setFailureReason(task.taskId, "orphaned by orchestrator restart mid-cycle");
+      await transition(task.taskId, toState, { reason: "orphaned-restart-reconciliation" });
+    }
+    return rows.length;
   }
 
   async function getAllTasks(): Promise<Task[]> {
@@ -1456,6 +1475,7 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
     getActiveTaskByTicketId,
     getActiveTasks,
     getAllTasks,
+    reconcileOrphanedActiveTasks,
     transition,
     updateExternalChangeId,
     createReviewTask,

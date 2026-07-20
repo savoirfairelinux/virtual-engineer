@@ -429,6 +429,66 @@ describe("SqliteStateStore", () => {
     });
   });
 
+  describe("reconcileOrphanedActiveTasks", () => {
+    it("fails tasks stuck in AGENT_RUNNING / REVIEW_RUNNING / REVIEW_COMMENTING and leaves other states alone", async () => {
+      const idAgentRunning = makeTaskId(randomUUID());
+      const idReviewRunning = makeTaskId(randomUUID());
+      const idReviewCommenting = makeTaskId(randomUUID());
+      const idContextBuilding = makeTaskId(randomUUID());
+      const idDone = makeTaskId(randomUUID());
+
+      await store.createTask(idAgentRunning, makeTicketId("ar"));
+      await store.transition(idAgentRunning, "CONTEXT_BUILDING");
+      await store.transition(idAgentRunning, "AGENT_RUNNING");
+
+      await store.createReviewTask({
+        taskId: idReviewRunning,
+        ticketId: makeTicketId("rr"),
+        subject: "review running",
+        changeId: makeExternalChangeId("I3"),
+        patchset: 1,
+      });
+      await store.transition(idReviewRunning, "REVIEW_RUNNING");
+
+      await store.createReviewTask({
+        taskId: idReviewCommenting,
+        ticketId: makeTicketId("rc"),
+        subject: "review commenting",
+        changeId: makeExternalChangeId("I4"),
+        patchset: 1,
+      });
+      await store.transition(idReviewCommenting, "REVIEW_RUNNING");
+      await store.transition(idReviewCommenting, "REVIEW_COMMENTING");
+
+      await store.createTask(idContextBuilding, makeTicketId("cb"));
+      await store.transition(idContextBuilding, "CONTEXT_BUILDING");
+
+      await store.createTask(idDone, makeTicketId("dn"));
+      await store.transition(idDone, "CONTEXT_BUILDING");
+      await store.transition(idDone, "AGENT_RUNNING");
+      await store.transition(idDone, "IN_REVIEW");
+      await store.transition(idDone, "MERGED");
+      await store.transition(idDone, "CLOSING");
+      await store.transition(idDone, "DONE");
+
+      const count = await store.reconcileOrphanedActiveTasks();
+      expect(count).toBe(3);
+
+      expect((await store.getTask(idAgentRunning))?.state).toBe("FAILED");
+      expect((await store.getTask(idReviewRunning))?.state).toBe("REVIEW_FAILED");
+      expect((await store.getTask(idReviewCommenting))?.state).toBe("REVIEW_FAILED");
+      // Not an "actively executing" state: left untouched.
+      expect((await store.getTask(idContextBuilding))?.state).toBe("CONTEXT_BUILDING");
+      // Already terminal: left untouched.
+      expect((await store.getTask(idDone))?.state).toBe("DONE");
+    });
+
+    it("is a no-op when nothing is orphaned", async () => {
+      const count = await store.reconcileOrphanedActiveTasks();
+      expect(count).toBe(0);
+    });
+  });
+
   describe("getFailedTasksForProject", () => {
     it("returns both FAILED and REVIEW_FAILED tasks bound to the project", async () => {
       const projectId = makeProjectId(randomUUID());
