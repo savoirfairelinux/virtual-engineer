@@ -11,6 +11,7 @@ const PROVIDER_CAPABILITY: Record<ProviderId, DomainCapability> = {
   mock: "agent_execution",
   copilot: "agent_execution",
   claude: "agent_execution",
+  aider: "agent_execution",
 };
 
 /** Resolve the first active connector for a provider via its primary capability. */
