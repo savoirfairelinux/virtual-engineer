@@ -606,7 +606,7 @@ export class DockerWorkspaceRunner implements WorkspaceRunner {
    */
   async runReviewInDocker(
     handle: WorkspaceHandle,
-    input: ReviewWorkspaceInput,
+    input: ReviewWorkspaceInput & { agentAdapter: AgentAdapter },
     callbacks: DockerStreamCallbacks = {}
   ): Promise<{ rawOutput: string }> {
     // Write prompt into the home volume (mounted at /workspace in this helper container).
@@ -626,7 +626,7 @@ export class DockerWorkspaceRunner implements WorkspaceRunner {
       "running review agent in Docker container"
     );
 
-    const adapter = this.agentAdapter;
+    const adapter = input.agentAdapter;
     let spec: { env: Record<string, string>; image: string; command: string[]; networkMode?: string; additionalDockerArgs?: string[] };
 
     if ("buildReviewContainerSpec" in adapter && typeof (adapter as Record<string, unknown>)["buildReviewContainerSpec"] === "function") {

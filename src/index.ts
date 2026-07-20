@@ -11,7 +11,8 @@
  */
 import { getConfig } from "./config.js";
 import { getLogger } from "./logger.js";
-import { SqliteStateStore } from "./state/stateStore.js";
+import { SqliteStateStore, resolveAgentConfig } from "./state/stateStore.js";
+import { decryptToken } from "./utils/encryption.js";
 import { MockAgentAdapter } from "./agents/mockAgentAdapter.js";
 import { DockerWorkspaceRunner } from "./workspace/workspaceRunner.js";
 import { Orchestrator } from "./orchestrator/orchestrator.js";
@@ -634,50 +635,23 @@ async function buildReviewBundle(
     return { integration: null, provider: null, orchestrator: null };
   }
 
-  // Resolve the agent-execution integration linked to an enabled review agent.
-  // Using a deterministic lookup avoids Map-insertion-order sensitivity when
-  // multiple agent_execution integrations (e.g. Copilot + Claude) are active.
-  const agentIntegration = await resolveAgentIntegrationForReview(pluginManager, store);
-
-  // Extract the agent token from the resolved agent-execution integration.
-  const agentToken = getAgentTokenForReview(pluginManager, agentIntegration);
-  if (!agentToken) {
-    bundleLog.warn(
-      { integrationId: integration.id },
-      "buildReviewBundle: no agent token available — ensure an agent integration (Copilot or Claude) is enabled with a configured token/key"
-    );
-    return { integration: null, provider: null, orchestrator: null };
-  }
-
-  // Resolve the model from the enabled review agent linked to the selected integration.
-  // This honours the model chosen in the agents library rather than the global default.
-  let model: string | undefined;
-  if (agentIntegration) {
-    try {
-      const agentList = await store.listAgents({ type: "review", enabled: true });
-      const agent = agentList.find((a) => a.integrationId === agentIntegration.id);
-      if (agent) {
-        const cfg = JSON.parse(agent.modelConfigJson) as Record<string, unknown>;
-        const m = typeof cfg["model"] === "string" ? cfg["model"].trim() : "";
-        if (m) model = m;
-      }
-    } catch {
-      // non-fatal — fall back to the adapter's default model
-    }
-  }
-
   const reviewer = createReviewer(rawConfig, integration, workspaceRunner);
 
   const orchestrator = new ReviewOrchestrator({
     stateStore: store,
     reviewProvider: reviewer.provider,
     integrationId: integration.id,
-    agentToken: agentToken,
     workspaceRunner,
     buildCloneTarget: reviewer.buildCloneTarget,
     ...(reviewer.applyPatchset !== undefined ? { applyPatchset: reviewer.applyPatchset } : {}),
     sourceLabel: buildIntegrationSourceLabel(integration),
-    ...(model !== undefined ? { model } : {}),
+    // Resolved per-task in runReview() — this orchestrator instance is shared
+    // across every VE project matching this review integration (a single
+    // webhook/stream trigger can spawn tasks for several projects at once via
+    // startReviewTask), so the project's own agent/model/token can only be
+    // determined once the task (and thus its project) is known.
+    resolveAgentForProject: (project: ProjectRecord): ReturnType<typeof resolveReviewAgentForProject> =>
+      resolveReviewAgentForProject(pluginManager, store, project, bundleLog),
     reviewInstructions: await (async (): Promise<string> => {
       const p = await store.getPrompt(reviewer.userPromptId);
       if (!p) throw new Error(`Required prompt '${reviewer.userPromptId}' not found in DB — run db:migrate to seed built-in prompts`);
@@ -694,6 +668,77 @@ async function buildReviewBundle(
     reviewMinSeverity: getConfig().reviewMinSeverity,
   });
   return { integration, provider: reviewer.provider, orchestrator };
+}
+
+/**
+ * Resolve the adapter/model/token bound to a specific VE project, for use by
+ * `ReviewOrchestrator.runReview()`. Returns `null` when the project has no
+ * bound agent, or when a token cannot be resolved for that agent — in either
+ * case `runReview()` throws and the task transitions to `REVIEW_FAILED`,
+ * rather than pairing the project's model with an unrelated integration's
+ * token (which caused unexpected model-selection failures).
+ */
+async function resolveReviewAgentForProject(
+  pluginManager: PluginManager,
+  store: import("./interfaces.js").StateStore & import("./interfaces.js").PromptStore,
+  project: ProjectRecord,
+  bundleLog: ReturnType<typeof getLogger>
+): Promise<{ adapter: AgentAdapter; model: string | undefined; token: string } | null> {
+  if (!project.agentId) return null;
+
+  try {
+    const agents = await store.listAgents({ type: "review", enabled: true });
+    const agent = agents.find((candidate) => candidate.id === project.agentId);
+    // agent is undefined when the project's agentId doesn't match any enabled
+    // review agent (not found, disabled, or wrong type — all filtered out above).
+    if (!agent?.integrationId) {
+      return null;
+    }
+
+    const agentIntegration = pluginManager.getActiveIntegrationById(agent.integrationId);
+    const adapter = pluginManager.getConnectorForIntegration<AgentAdapter>(agent.integrationId);
+    if (!agentIntegration || !adapter) {
+      bundleLog.warn(
+        { projectId: project.id, agentId: agent.id, integrationId: agent.integrationId },
+        "resolveReviewAgentForProject: project agent integration is not active"
+      );
+      return null;
+    }
+
+    // Merge the project's agentOverrideJson on top of the agent's own
+    // modelConfigJson so a per-project model override actually applies
+    // (same semantics as the coding-agent path in orchestrator.ts).
+    const resolved = resolveAgentConfig(agent, project);
+    const resolvedModel = resolved.model?.trim() || undefined;
+
+    // Agent-local credentials are accepted only when they match the active
+    // provider. This avoids carrying a stale Claude secret into Copilot (or
+    // vice versa) after an agent is rebound to another integration.
+    let localSessionToken: string | null = null;
+    if (resolved.encryptedSessionToken) {
+      try {
+        localSessionToken = decryptToken(resolved.encryptedSessionToken, getConfig().adminAuthSecret);
+      } catch (err) {
+        bundleLog.warn(
+          { err, projectId: project.id, agentId: agent.id, integrationId: agent.integrationId },
+          "resolveReviewAgentForProject: failed to decrypt the project agent token — falling back to the integration token"
+        );
+      }
+    }
+    const token = getProviderCompatibleAgentToken(
+      agentIntegration.provider,
+      localSessionToken,
+      resolved.apiKey
+    ) ?? getAgentTokenForReview(pluginManager, agentIntegration, bundleLog);
+
+    // No usable token for this exact agent means the task cannot run.
+    if (!token) return null;
+
+    return { adapter, model: resolvedModel, token };
+  } catch (err) {
+    bundleLog.warn({ err, projectId: project.id }, "resolveReviewAgentForProject: failed to resolve project agent");
+    return null;
+  }
 }
 
 /**
@@ -768,32 +813,27 @@ function buildReviewTrigger(
   };
 }
 
-/**
- * Find the agent-execution integration most appropriate for the review flow.
- * Prefers an integration explicitly linked to an enabled review agent (which
- * is deterministic and semantically correct); falls back to any active
- * agent_execution integration sorted by ID to avoid Map-insertion-order
- * sensitivity when multiple integrations (e.g. Copilot + Claude) are active.
- */
-async function resolveAgentIntegrationForReview(
-  pluginManager: PluginManager,
-  store: import("./interfaces.js").StateStore
-): Promise<Integration | null> {
-  try {
-    const reviewAgents = await store.listAgents({ type: "review", enabled: true });
-    for (const agent of reviewAgents) {
-      if (!agent.integrationId) continue;
-      const integration = pluginManager.getActiveIntegrationById(agent.integrationId);
-      if (integration) return integration;
-    }
-  } catch {
-    // non-fatal — fall through to stable fallback
+function getProviderCompatibleAgentToken(
+  provider: ProviderId,
+  sessionToken: string | null,
+  apiKey: string | undefined
+): string | null {
+  if (provider === "claude") {
+    const claudeSession = sessionToken?.trim();
+    if (claudeSession?.startsWith("sk-ant-oat")) return claudeSession;
+    const claudeApiKey = apiKey?.trim();
+    return claudeApiKey?.startsWith("sk-ant-api") ? claudeApiKey : null;
   }
-  // Stable fallback: sort by ID so the selection is reproducible across restarts.
-  const all = pluginManager
-    .getActiveIntegrationsByCapability("agent_execution")
-    .sort((a, b) => a.id.localeCompare(b.id));
-  return all[0] ?? null;
+  if (provider === "copilot") {
+    const copilotToken = sessionToken?.trim();
+    if (copilotToken && !copilotToken.startsWith("sk-ant-")) return copilotToken;
+    // `apiKey` carries a GitHub PAT when no OAuth session token is present
+    // (same convention as the coding path — resolveAgentConfig stores the PAT
+    // in the `apiKey` field, not in `sessionToken`/`encryptedSessionToken`).
+    const copilotApiKey = apiKey?.trim();
+    return copilotApiKey && !copilotApiKey.startsWith("sk-ant-") ? copilotApiKey : null;
+  }
+  return null;
 }
 
 /**
@@ -802,26 +842,81 @@ async function resolveAgentIntegrationForReview(
  * and Claude (OAuth `sessionToken` or `apiKey`).
  * Returns null when the integration is null or has no valid token.
  */
-function getAgentTokenForReview(pluginManager: PluginManager, agentIntegration: Integration | null): string | null {
+function getAgentTokenForReview(
+  pluginManager: PluginManager,
+  agentIntegration: Integration | null,
+  bundleLog?: ReturnType<typeof getLogger>
+): string | null {
   if (!agentIntegration) return null;
+  return getAgentTokenFromIntegration(pluginManager, agentIntegration, bundleLog);
+}
 
-  let agentConfig: Record<string, unknown>;
+/** Extract the agent token selected by provider + auth mode. */
+function getAgentTokenFromIntegration(
+  pluginManager: PluginManager,
+  agentIntegration: Integration,
+  bundleLog?: ReturnType<typeof getLogger>
+): string | null {
+  let rawConfig: Record<string, unknown>;
   try {
-    // decryptIntegrationConfig handles AES-256-GCM encrypted tokens (OAuth
-    // sessionToken) and plaintext fields, leaving unknown strings as-is.
-    agentConfig = pluginManager.decryptIntegrationConfig(agentIntegration);
-  } catch {
+    rawConfig = JSON.parse(agentIntegration.configJson) as Record<string, unknown>;
+  } catch (err) {
+    bundleLog?.warn(
+      { err, integrationId: agentIntegration.id, provider: agentIntegration.provider },
+      "getAgentTokenFromIntegration: invalid integration config"
+    );
     return null;
   }
 
-  // OAuth session token (Copilot OAuth, Claude subscription interactive flow).
-  const sessionToken = asOptionalString(agentConfig["sessionToken"]);
-  if (sessionToken) return sessionToken;
-  // Claude API key.
-  const apiKey = asOptionalString(agentConfig["apiKey"]);
-  if (apiKey) return apiKey;
-  // Copilot PAT (plaintext or decrypted).
-  return asOptionalString(agentConfig["token"]) ?? null;
+  if (agentIntegration.provider === "copilot") {
+    const authMode = asOptionalString(rawConfig["authMode"])
+      ?? (asOptionalString(rawConfig["token"]) ? "pat" : "oauth");
+    if (authMode === "pat") {
+      return getDecryptedPasswordField(pluginManager, agentIntegration, "token");
+    }
+    return decryptManagedSessionToken(agentIntegration, rawConfig, bundleLog);
+  }
+
+  if (agentIntegration.provider === "claude") {
+    const authMode = asOptionalString(rawConfig["authMode"])
+      ?? (asOptionalString(rawConfig["apiKey"]) ? "api_key" : "subscription");
+    if (authMode === "api_key") {
+      return getDecryptedPasswordField(pluginManager, agentIntegration, "apiKey");
+    }
+    return decryptManagedSessionToken(agentIntegration, rawConfig, bundleLog);
+  }
+
+  return null;
+}
+
+function getDecryptedPasswordField(
+  pluginManager: PluginManager,
+  integration: Integration,
+  field: "token" | "apiKey"
+): string | null {
+  try {
+    return asOptionalString(pluginManager.decryptIntegrationConfig(integration)[field]) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function decryptManagedSessionToken(
+  integration: Integration,
+  rawConfig: Record<string, unknown>,
+  bundleLog?: ReturnType<typeof getLogger>
+): string | null {
+  const encrypted = asOptionalString(rawConfig["sessionToken"]);
+  if (!encrypted) return null;
+  try {
+    return decryptToken(encrypted, getConfig().adminAuthSecret);
+  } catch (err) {
+    bundleLog?.warn(
+      { err, integrationId: integration.id, provider: integration.provider },
+      "getAgentTokenFromIntegration: failed to decrypt the integration session token"
+    );
+    return null;
+  }
 }
 
 /** Return the first active agent-adapter connector found in the plugin manager, or null. */

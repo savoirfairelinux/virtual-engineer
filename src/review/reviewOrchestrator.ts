@@ -1,11 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { getLogger } from "../logger.js";
 import {
+  type AgentAdapter,
   type AgentLogEvent,
   type AgentResult,
   type ExternalChangeId,
   type InlineReviewComment,
   type ProjectPushTargetRecord,
+  type ProjectRecord,
   type ReviewChangeDetails,
   type ReviewChangeDiff,
   type ReviewDiscussionThread,
@@ -68,8 +70,6 @@ export interface ReviewOrchestratorDeps {
   reviewProvider: ReviewProvider;
   /** Gerrit integration ID — used to look up the project via the review_target table. */
   integrationId: string;
-  /** Authentication token for the agent integration (e.g. GitHub token for Copilot). */
-  agentToken: string;
   /** Workspace runner — the review always runs in a Docker container. */
   workspaceRunner: WorkspaceRunner;
   /** Build the git clone URL and optional SSH key paths for the change's repository. */
@@ -82,8 +82,19 @@ export interface ReviewOrchestratorDeps {
   reviewInstructions: string;
   /** System prompt for the review agent (integration-specific, e.g. `review-system-gerrit`). */
   reviewSystemPrompt: string;
-  /** Model override for the agent. */
-  model?: string | undefined;
+  /**
+   * Per-project adapter+model+token resolver, invoked in `runReview()` once the task's
+   * own VE project is known. This orchestrator instance is shared across every
+   * project matching a given review integration (see `startReviewTask`), so model
+   * and token selection MUST happen per-task here rather than once at construction
+   * time. Returning `null` fails the task; review execution never falls back to
+   * an agent belonging to another project.
+   */
+  resolveAgentForProject: (project: ProjectRecord) => Promise<{
+    adapter: AgentAdapter;
+    model: string | undefined;
+    token: string;
+  } | null>;
   /** Maximum diff characters injected into the review prompt. Defaults to 60 000. */
   maxDiffChars?: number | undefined;
   /** Maximum number of inline comments posted per review pass. Defaults to 20. */
@@ -400,6 +411,15 @@ export class ReviewOrchestrator {
         );
       }
 
+      // Resolve the adapter/model/token to use for this project. This orchestrator instance
+      // may be shared across several projects (one per review integration), so the
+      // per-project agent must be resolved here — per task — rather than once when
+      // the orchestrator was built. A missing runtime is fatal for this task.
+      const projectAgentRuntime = await this.deps.resolveAgentForProject(project);
+      if (!projectAgentRuntime) {
+        throw new Error(`No runnable review agent configured for project ${project.id}`);
+      }
+
       const { cloneUrl, sshKeyPath, sshAgentPubKeyPath, sshKnownHostsPath } = this.deps.buildCloneTarget(details);
       const cloneTarget: ProjectPushTargetRecord = {
         id: -1,
@@ -514,8 +534,9 @@ export class ReviewOrchestrator {
           repositoryName: details.project,
           prompt,
           systemPrompt: this.deps.reviewSystemPrompt,
-          agentToken: this.deps.agentToken,
-          model: this.deps.model,
+          agentToken: projectAgentRuntime.token,
+          model: projectAgentRuntime.model,
+          agentAdapter: projectAgentRuntime.adapter,
           ...(project.skillDiscoveryEnabled ? { skillDiscoveryEnabled: true } : {}),
           ...(project.skillDiscoveryEnabled ? { localSkillsPath: project.localSkillsPath } : {}),
           ...(project.skillSourcesJson !== "[]"

@@ -5,6 +5,7 @@ import {
   makeProjectId,
   makeTaskId,
   makeTicketId,
+  type AgentAdapter,
   type AgentLogEvent,
   type ProjectRecord,
   type ReviewChangeDetails,
@@ -191,8 +192,12 @@ function makeOrch(mocks: ReturnType<typeof makeMocks>, runner: ReturnType<typeof
     stateStore: mocks.storeAsDep,
     reviewProvider: mocks.provider,
     integrationId: "gerrit-1",
-    agentToken: "gh_test_token",
     workspaceRunner: runner,
+    resolveAgentForProject: vi.fn(async () => ({
+      adapter: { name: "test-agent" } as AgentAdapter,
+      model: "test-model",
+      token: "gh_test_token",
+    })),
     buildCloneTarget: (details) => ({
       cloneUrl: `ssh://admin@gerrit.test:29418/${details.project}`,
       sshKeyPath: "/path/to/key",

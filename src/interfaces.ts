@@ -642,7 +642,7 @@ export interface WorkspaceRunner {
   /** Run the review agent container against the cloned+patched workspace. */
   runReviewInDocker?(
     handle: WorkspaceHandle,
-    input: ReviewWorkspaceInput,
+    input: ReviewWorkspaceInput & { agentAdapter: AgentAdapter },
     callbacks?: { onStderrChunk?: ((chunk: string) => void) | undefined } | undefined
   ): Promise<{ rawOutput: string }>;
   /** Spawn the adapter container and return raw stdout/stderr. Used by ConfigurableAdapter.configure. */

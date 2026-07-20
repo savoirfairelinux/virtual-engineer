@@ -708,11 +708,15 @@ export class Orchestrator {
       }
 
       const commitMessage = this.buildCommitMessage(task, ticket.subject);
-      const projectAgentRuntime = await this.resolveProjectAgentRuntime(projectRecord);
-      const resolvedCopilotModel = projectAgentRuntime
-        ? projectAgentRuntime.config.model?.trim() || undefined
-        : undefined;
-      const _rawReasoningEffort = projectAgentRuntime?.config.extra["reasoningEffort"];
+      let projectAgentRuntime: ProjectAgentRuntime;
+      try {
+        projectAgentRuntime = await this.resolveProjectAgentRuntime(projectRecord);
+      } catch (err) {
+        await this.handleFatalError(task, err);
+        return;
+      }
+      const resolvedCopilotModel = projectAgentRuntime.config.model?.trim() || undefined;
+      const _rawReasoningEffort = projectAgentRuntime.config.extra["reasoningEffort"];
       const resolvedReasoningEffort = typeof _rawReasoningEffort === "string" ? _rawReasoningEffort : undefined;
       if (!resolvedCopilotModel) {
         log.warn(
@@ -741,16 +745,12 @@ export class Orchestrator {
         hasPriorPatchset,
         commitMessage,
         ticketUrl: ticket.webUrl,
-        ...(projectAgentRuntime
-          ? {
-              systemPromptId: projectAgentRuntime.config.systemPromptId,
-              // On retry cycles, swap in the feedback-specific instructions prompt when one is configured.
-              instructionsPromptId:
-                cycleNumber > 1 && projectAgentRuntime.config.feedbackInstructionsPromptId
-                  ? projectAgentRuntime.config.feedbackInstructionsPromptId
-                  : projectAgentRuntime.config.instructionsPromptId,
-            }
-          : {}),
+        systemPromptId: projectAgentRuntime.config.systemPromptId,
+        // On retry cycles, swap in the feedback-specific instructions prompt when one is configured.
+        instructionsPromptId:
+          cycleNumber > 1 && projectAgentRuntime.config.feedbackInstructionsPromptId
+            ? projectAgentRuntime.config.feedbackInstructionsPromptId
+            : projectAgentRuntime.config.instructionsPromptId,
         agentSession: {
           agentContainerImage: this.config.agentContainerImage,
           repoCloneUrl: cloneUrl,
@@ -787,8 +787,8 @@ export class Orchestrator {
           })(),
           gitAuthorName: this.config.gitAuthorName,
           gitAuthorEmail: this.config.gitAuthorEmail,
-          githubToken: projectAgentRuntime?.config.apiKey,
-          ...(projectAgentRuntime?.config.encryptedSessionToken
+          githubToken: projectAgentRuntime.config.apiKey,
+          ...(projectAgentRuntime.config.encryptedSessionToken
             ? { encryptedSessionToken: projectAgentRuntime.config.encryptedSessionToken }
             : {}),
           ...(resolvedCopilotModel ? { copilotModel: resolvedCopilotModel } : {}),
@@ -810,7 +810,7 @@ export class Orchestrator {
       };
 
       const agentResult = await this.withTimeout(
-        this.workspaceRunner.runAgent(handle, context, projectAgentRuntime?.adapter ?? undefined),
+        this.workspaceRunner.runAgent(handle, context, projectAgentRuntime.adapter),
         this.config.agentTimeoutMs,
         `Agent timed out after ${this.config.agentTimeoutMs}ms`
       );
@@ -992,23 +992,28 @@ export class Orchestrator {
   }
 
   /** Resolve the per-project agent adapter and resolved config from the project's agent record. */
-  private async resolveProjectAgentRuntime(project: ProjectRecord | null): Promise<ProjectAgentRuntime | null> {
+  private async resolveProjectAgentRuntime(project: ProjectRecord | null): Promise<ProjectAgentRuntime> {
     if (!project || !this.projectMode) {
-      return null;
+      throw new Error("Project agent runtime cannot be resolved outside project mode");
     }
 
     const agent = await this.projectMode.projectStore.getAgentById(project.agentId);
-    if (!agent?.integrationId) {
-      return null;
+    if (!agent) {
+      throw new Error(`Project agent ${project.agentId} was not found for project ${project.id}`);
+    }
+    if (!agent.enabled || agent.type !== "coding") {
+      throw new Error(`Project agent ${agent.id} is not an enabled coding agent for project ${project.id}`);
+    }
+    if (!agent.integrationId) {
+      throw new Error(`Project agent ${agent.id} has no agent integration configured`);
     }
 
     const adapter = this.projectMode.pluginManager.getConnectorForIntegration<AgentAdapter>(agent.integrationId);
     if (!adapter) {
-      log.warn(
-        { projectId: project.id, agentId: agent.id, integrationId: agent.integrationId },
-        "project agent integration is not active; falling back to the runtime adapter"
+      throw new Error(
+        `Project agent adapter is unavailable for agent ${agent.id} ` +
+        `(integration ${agent.integrationId}, project ${project.id})`
       );
-      return null;
     }
 
     const resolvedConfig = resolveAgentConfig(agent, project);

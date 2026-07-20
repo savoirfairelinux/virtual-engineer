@@ -6,6 +6,7 @@ import {
   makeProjectId,
   makeTaskId,
   makeTicketId,
+  type AgentAdapter,
   type ProjectRecord,
   type ReviewChangeDetails,
   type ReviewChangeDiff,
@@ -211,8 +212,12 @@ function makeDeps(
     stateStore: mocks.storeAsDep,
     reviewProvider: mocks.provider,
     integrationId: "gerrit-1",
-    agentToken: "gh_test_token",
     workspaceRunner: runner,
+    resolveAgentForProject: vi.fn(async () => ({
+      adapter: { name: "test-agent" } as AgentAdapter,
+      model: "test-model",
+      token: "gh_test_token",
+    })),
     buildCloneTarget: (details) => ({
       cloneUrl: `${GERRIT_SSH_BASE}/${details.project}`,
       sshKeyPath: "/path/to/key",
@@ -880,6 +885,99 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
       expect.any(Array),
       "npm ci",
       undefined
+    );
+  });
+
+  it("uses the project-resolved adapter/model/token when it resolves", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING", projectId: makeProjectId("proj-1") });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+    const projectAdapter = { name: "project-agent" } as AgentAdapter;
+    const resolveAgentForProject = vi.fn(async () => ({
+      adapter: projectAdapter,
+      model: "gpt-5",
+      token: "project-specific-token",
+    }));
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner, { resolveAgentForProject }));
+
+    await orch.runReview(initial.taskId);
+
+    expect(resolveAgentForProject).toHaveBeenCalledWith(expect.objectContaining({ id: makeProjectId("proj-1") }));
+    expect(runner.runReviewInDocker).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        agentAdapter: projectAdapter,
+        agentToken: "project-specific-token",
+        model: "gpt-5",
+      }),
+      expect.anything()
+    );
+  });
+
+  it("fails the review when resolveAgentForProject returns null", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING", projectId: makeProjectId("proj-1") });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+    const resolveAgentForProject = vi.fn(async () => null);
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner, { resolveAgentForProject }));
+
+    await expect(orch.runReview(initial.taskId)).rejects.toThrow("No runnable review agent configured");
+
+    expect(mocks.store.setFailureReason).toHaveBeenCalledWith(
+      initial.taskId,
+      "No runnable review agent configured for project proj-1"
+    );
+    expect(mocks.store.transition).toHaveBeenCalledWith(initial.taskId, "REVIEW_FAILED");
+    expect(runner.runReviewInDocker).not.toHaveBeenCalled();
+  });
+
+  it("fails the review when resolveAgentForProject throws", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING", projectId: makeProjectId("proj-1") });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+    const resolveAgentForProject = vi.fn(async () => { throw new Error("boom"); });
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner, { resolveAgentForProject }));
+
+    await expect(orch.runReview(initial.taskId)).rejects.toThrow("boom");
+
+    expect(mocks.store.setFailureReason).toHaveBeenCalledWith(initial.taskId, "boom");
+    expect(mocks.store.transition).toHaveBeenCalledWith(initial.taskId, "REVIEW_FAILED");
+    expect(runner.runReviewInDocker).not.toHaveBeenCalled();
+  });
+
+  it("resolves a distinct adapter/model/token per task when projects share an orchestrator", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING", projectId: makeProjectId("proj-1") });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+    const adapterA = { name: "agent-a" } as AgentAdapter;
+    const adapterB = { name: "agent-b" } as AgentAdapter;
+    const resolveAgentForProject = vi.fn(async (project: ProjectRecord) =>
+      project.id === makeProjectId("proj-1")
+        ? { adapter: adapterA, model: "model-a", token: "token-a" }
+        : { adapter: adapterB, model: "model-b", token: "token-b" }
+    );
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner, { resolveAgentForProject }));
+
+    await orch.runReview(initial.taskId);
+    expect(runner.runReviewInDocker).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ agentAdapter: adapterA, agentToken: "token-a", model: "model-a" }),
+      expect.anything()
+    );
+
+    const secondTask = makeTask({
+      taskId: makeTaskId("review-43-efgh"),
+      projectId: makeProjectId("proj-2"),
+      state: "REVIEW_PENDING",
+    });
+    mocks.store.task = secondTask;
+    mocks.store.getProjectById.mockResolvedValue(makeProject({ id: makeProjectId("proj-2") }));
+
+    await orch.runReview(secondTask.taskId);
+    expect(runner.runReviewInDocker).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.objectContaining({ agentAdapter: adapterB, agentToken: "token-b", model: "model-b" }),
+      expect.anything()
     );
   });
 
