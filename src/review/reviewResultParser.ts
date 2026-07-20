@@ -91,14 +91,16 @@ export function parseReviewResult(raw: string): ReviewAgentResult {
     // The model output was truncated — likely a repetition loop that hit the
     // max-tokens cap, or a context-window overflow. Rather than throwing (which
     // causes the task to fail and retry, leading to the same loop), return a
-    // minimal pass result with a summary that explains the situation.
+    // result with a summary that explains the situation. The score is negative
+    // so a truncated/incomplete review is never treated as a passing (+1) vote —
+    // `computeVote()` maps any negative score to -1.
     return {
       comments: [],
       summary:
         "Review output was truncated (missing REVIEW_RESULT_END marker). " +
         "The model may have hit token limits or entered a repetition loop. " +
         "Re-run the review or switch to a model with better instruction-following.",
-      score: 1,
+      score: -1,
       replies: [],
     };
   }
