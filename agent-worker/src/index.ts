@@ -48,9 +48,21 @@ const GITHUB_TOKEN = process.env['GITHUB_TOKEN'] ?? '';
 const COPILOT_MODEL = process.env['COPILOT_MODEL'] ?? 'auto';
 /** Empty when unset — the Claude CLI then selects its own default model. */
 const CLAUDE_MODEL = process.env['CLAUDE_MODEL'] ?? '';
+/** Empty when unset — the Aider CLI then selects its own default model. */
+const AIDER_MODEL = process.env['AIDER_MODEL'] ?? '';
 /** Model + adapter label for the active provider (used in events and result metadata). */
-const ACTIVE_MODEL = AGENT_PROVIDER === 'claude' ? (CLAUDE_MODEL || 'cli-default') : COPILOT_MODEL;
-const ADAPTER_LABEL = AGENT_PROVIDER === 'claude' ? 'claude-agent-sdk' : 'copilot-sdk';
+const ACTIVE_MODEL =
+  AGENT_PROVIDER === 'claude'
+    ? (CLAUDE_MODEL || 'cli-default')
+    : AGENT_PROVIDER === 'aider'
+      ? (AIDER_MODEL || 'aider-default')
+      : COPILOT_MODEL;
+const ADAPTER_LABEL =
+  AGENT_PROVIDER === 'claude'
+    ? 'claude-agent-sdk'
+    : AGENT_PROVIDER === 'aider'
+      ? 'aider-cli'
+      : 'copilot-sdk';
 const COPILOT_REASONING_EFFORT = process.env['COPILOT_REASONING_EFFORT'];
 const GIT_AUTHOR_NAME = process.env['GIT_AUTHOR_NAME'] ?? 'Virtual Engineer';
 const GIT_AUTHOR_EMAIL = process.env['GIT_AUTHOR_EMAIL'] ?? 've@virtual-engineer.local';
@@ -136,7 +148,12 @@ async function runAgent(
   mode: 'codegen' | 'review',
 ): Promise<AgentRun> {
   const runner = resolveRunner(AGENT_PROVIDER);
-  const model = AGENT_PROVIDER === 'claude' ? CLAUDE_MODEL : COPILOT_MODEL;
+  const model =
+    AGENT_PROVIDER === 'claude'
+      ? CLAUDE_MODEL
+      : AGENT_PROVIDER === 'aider'
+        ? AIDER_MODEL
+        : COPILOT_MODEL;
   return runner(prompt, {
     model,
     systemPrompt: SYSTEM_PROMPT,
