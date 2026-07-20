@@ -102,11 +102,21 @@ function buildSshArgs(cfg: Record<string, unknown>): {
  * Generate a Gerrit SSH key pair for the UI-generated-key auth mode.
  * Thin wrapper around the shared `generateSshKeyPair` util (see
  * src/utils/sshKeyGen.ts) — kept here so the descriptor's `generateSshKeyPair`
- * hook can pass a Gerrit-specific comment. Throws if `adminAuthSecret` is
- * unset, since generated keys must always be stored encrypted.
+ * hook can pass a Gerrit-specific comment. The comment is tied to the actual
+ * configured SSH user (`<sshUser>-gerrit`) rather than a hardcoded name, so
+ * the generated public key is identifiable when registered under any Gerrit
+ * account, not just "virtual-engineer". Falls back to "virtual-engineer-gerrit"
+ * when no SSH user has been entered yet (e.g. new integration form).
+ * Throws if `adminAuthSecret` is unset, since generated keys must always be
+ * stored encrypted.
  */
-export function generateGerritSshKeyPair(adminAuthSecret: string | undefined): GeneratedSshKeyPair {
-  return generateSshKeyPair(adminAuthSecret, "virtual-engineer-gerrit");
+export function generateGerritSshKeyPair(
+  adminAuthSecret: string | undefined,
+  sshUser?: string
+): GeneratedSshKeyPair {
+  const trimmedUser = sshUser?.trim();
+  const comment = trimmedUser ? `${trimmedUser}-gerrit` : "virtual-engineer-gerrit";
+  return generateSshKeyPair(adminAuthSecret, comment);
 }
 
 export const gerritDescriptor: ProviderDescriptor = {

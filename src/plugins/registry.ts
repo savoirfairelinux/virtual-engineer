@@ -282,7 +282,10 @@ export interface ProviderDescriptor {
    * Optional SSH key pair generator for providers that support UI-generated keys.
    * Called by the admin API `POST /integrations/:id/ssh-key/generate` endpoint.
    */
-  generateSshKeyPair?: (adminAuthSecret: string | undefined) => { sshPrivateKeyEnc: string; sshPublicKey: string };
+  generateSshKeyPair?: (
+    adminAuthSecret: string | undefined,
+    sshUser?: string
+  ) => { sshPrivateKeyEnc: string; sshPublicKey: string };
   /**
    * Returns the provider-specific detail lines shown in the admin provider
    * summary panel.

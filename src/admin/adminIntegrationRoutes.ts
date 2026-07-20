@@ -481,12 +481,13 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
   router.add("POST", "/api/admin/ssh-key/generate", async (req, res, _params) => {
     const body = asRecord(await readBody(req));
     const provider = typeof body["provider"] === "string" ? body["provider"] as ProviderId : undefined;
+    const sshUser = typeof body["sshUser"] === "string" ? body["sshUser"] : undefined;
     const descriptor = provider ? getProviderDescriptor(provider) : undefined;
     if (!descriptor?.generateSshKeyPair) {
       writeJson(res, 400, { error: `Provider '${provider ?? ""}' does not support SSH key generation` }); return;
     }
     try {
-      const { sshPrivateKeyEnc, sshPublicKey } = descriptor.generateSshKeyPair(deps.adminAuthSecret);
+      const { sshPrivateKeyEnc, sshPublicKey } = descriptor.generateSshKeyPair(deps.adminAuthSecret, sshUser);
       writeJson(res, 200, { sshPrivateKeyEnc, sshPublicKey });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -509,8 +510,9 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
     }
 
     try {
-      const { sshPrivateKeyEnc, sshPublicKey } = descriptor.generateSshKeyPair(deps.adminAuthSecret);
       const existingConfig = getStoredIntegrationConfig(integration);
+      const sshUser = typeof existingConfig["sshUser"] === "string" ? existingConfig["sshUser"] : undefined;
+      const { sshPrivateKeyEnc, sshPublicKey } = descriptor.generateSshKeyPair(deps.adminAuthSecret, sshUser);
       const updatedConfig = { ...existingConfig, sshPrivateKeyEnc, sshPublicKey };
       const updatedConfigJson = JSON.stringify(updatedConfig);
       await deps.integrationStore.upsertIntegration({ ...integration, configJson: updatedConfigJson });
