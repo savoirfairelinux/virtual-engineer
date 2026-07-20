@@ -302,8 +302,20 @@ export const projects = sqliteTable(
     agentOverrideJson: text("agent_override_json"),
     /** Bash script run on the host after cloning. Empty string means "no script". */
     postCloneScript: text("post_clone_script").notNull().default(""),
-    /** When 1, the agent container loads team-defined skills from `<repo>/.github/skills` (coding and review projects). */
+    /** When 1, the agent container loads local repository skills. */
     skillDiscoveryEnabled: integer("skill_discovery_enabled").notNull().default(0),
+    /** Workspace-relative path for local skills. */
+    localSkillsPath: text("local_skills_path").notNull().default(".github/skills"),
+    /** JSON array of external skill sources installed before the agent starts. */
+    skillSourcesJson: text("skill_sources_json").notNull().default("[]"),
+    /** Optional literal Gerrit topic that overrides the ticket-derived topic (buildGerritTopic) for all pushes from this project. NULL = use the ticket-derived topic. */
+    gerritTopicOverride: text("gerrit_topic_override"),
+    /** When 1, agent commit messages use the full ticket URL in the footer instead of the short "#id" form. */
+    useFullTicketUrlInCommits: integer("use_full_ticket_url_in_commits").notNull().default(0),
+    /** When 1, VE posts a note on the source ticket with the review URL(s) once the first cycle opens a review. Default off — most teams already surface this via standard VCS/ticket integrations. */
+    postReviewLinkToTicket: integer("post_review_link_to_ticket").notNull().default(0),
+    /** When 1, CI build-failure notifications (e.g. Jenkins "Build Failed") count as actionable review feedback and trigger a retry cycle. Default off — some teams don't want VE auto-retrying on broken CI. Coding projects only. */
+    reactToCiFailures: integer("react_to_ci_failures").notNull().default(0),
     enabled: integer("enabled").notNull().default(0),
     createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
     updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),

@@ -56,7 +56,7 @@ function makeTask(over: Partial<Task> = {}): Task {
   } as Task;
 }
 
-function makeProject(): ProjectRecord {
+function makeProject(over: Partial<ProjectRecord> = {}): ProjectRecord {
   return {
     id: makeProjectId("p-1"),
     name: "P1",
@@ -67,6 +67,7 @@ function makeProject(): ProjectRecord {
     enabled: true,
     createdAt: new Date(),
     updatedAt: new Date(),
+    ...over,
   } as ProjectRecord;
 }
 
@@ -372,6 +373,126 @@ describe("Orchestrator — Phase 4 project mode", () => {
       0,
       expect.any(String)
     );
+  });
+
+  it("posts review URLs as a ticket note on cycle 1 (cross-project safe, no #-shorthand)", async () => {
+    const redmine = makeRedmine();
+    const stateStore = makeStateStore({
+      getChangesForTask: vi.fn().mockResolvedValue([
+        { repoKey: "root", reviewUrl: "u-root", status: "OPEN" },
+        { repoKey: "core", reviewUrl: "u-core", status: "OPEN" },
+        { repoKey: "skipped", reviewUrl: "", status: "NO_CHANGE" },
+      ]),
+    });
+    const ws = makeWorkspaceRunner();
+    const project = makeProject({ postReviewLinkToTicket: true });
+    const targets = [
+      makePushTarget({ id: 1, commitOrder: 1, localPath: ".", integrationId: "vcs-root", repoKey: "root" }),
+      makePushTarget({ id: 2, commitOrder: 2, localPath: "libs/core", integrationId: "vcs-core", repoKey: "core" }),
+    ];
+    const vcsRoot: VcsConnector = {
+      clone: vi.fn(),
+      push: vi.fn().mockResolvedValue({ changeId: "Iroot", url: "u-root", status: "OPEN" }),
+      pushDirect: vi.fn().mockResolvedValue({ changeId: "Iroot", url: "u-root", status: "OPEN" }),
+      getChangeStatus: vi.fn(),
+      buildPushSpec: vi.fn().mockReturnValue({ ref: "refs/for/main", topic: "VE-task-id" }),
+      useChangeIdContinuity: true,
+      reviewSystemLabel: "gerrit",
+    } as unknown as VcsConnector;
+    const vcsCore: VcsConnector = {
+      clone: vi.fn(),
+      push: vi.fn().mockResolvedValue({ changeId: "Icore", url: "u-core", status: "OPEN" }),
+      pushDirect: vi.fn().mockResolvedValue({ changeId: "Icore", url: "u-core", status: "OPEN" }),
+      getChangeStatus: vi.fn(),
+      buildPushSpec: vi.fn().mockReturnValue({ ref: "refs/for/main", topic: "VE-task-id" }),
+      useChangeIdContinuity: true,
+      reviewSystemLabel: "gerrit",
+    } as unknown as VcsConnector;
+
+    const projectMode: ProjectModeDeps = {
+      projectStore: {
+        getProjectById: vi.fn(async () => project),
+        listProjectPushTargets: vi.fn(async () => targets),
+        getProjectTicketSource: vi.fn().mockResolvedValue({ integrationId: "redmine-int" }),
+        getProjectReviewConfig: vi.fn().mockResolvedValue(null),
+        getAgentById: vi.fn(),
+      },
+      pluginManager: { getConnectorForIntegration: vi.fn().mockImplementation((id: string) => {
+        if (id === "redmine-int") return redmine;
+        return null;
+      }) },
+      resolveVcsForIntegration: vi.fn(async (id: string) => {
+        if (id === "vcs-root") return vcsRoot;
+        if (id === "vcs-core") return vcsCore;
+        return null;
+      }),
+    };
+
+    const orch = new Orchestrator(baseConfig(), stateStore, ws, undefined, undefined, projectMode);
+
+    const task = makeTask({ state: "AGENT_RUNNING" });
+    await (orch as unknown as { runAgentCycle: (t: Task) => Promise<void> }).runAgentCycle(task);
+
+    expect(redmine.addNote).toHaveBeenCalledWith(
+      task.ticketId,
+      expect.stringContaining("root: u-root"),
+      false
+    );
+    expect(redmine.addNote).toHaveBeenCalledWith(
+      task.ticketId,
+      expect.stringContaining("core: u-core"),
+      false
+    );
+    expect(redmine.addNote).toHaveBeenCalledWith(
+      task.ticketId,
+      expect.not.stringContaining("skipped"),
+      false
+    );
+  });
+
+  it("does NOT post a ticket note when postReviewLinkToTicket is off (default)", async () => {
+    const redmine = makeRedmine();
+    const stateStore = makeStateStore({
+      getChangesForTask: vi.fn().mockResolvedValue([
+        { repoKey: "root", reviewUrl: "u-root", status: "OPEN" },
+      ]),
+    });
+    const ws = makeWorkspaceRunner();
+    const project = makeProject(); // postReviewLinkToTicket left unset -> falsy
+    const targets = [
+      makePushTarget({ id: 1, commitOrder: 1, localPath: ".", integrationId: "vcs-root", repoKey: "root" }),
+    ];
+    const vcsRoot: VcsConnector = {
+      clone: vi.fn(),
+      push: vi.fn().mockResolvedValue({ changeId: "Iroot", url: "u-root", status: "OPEN" }),
+      pushDirect: vi.fn().mockResolvedValue({ changeId: "Iroot", url: "u-root", status: "OPEN" }),
+      getChangeStatus: vi.fn(),
+      buildPushSpec: vi.fn().mockReturnValue({ ref: "refs/for/main", topic: "VE-task-id" }),
+      useChangeIdContinuity: true,
+      reviewSystemLabel: "gerrit",
+    } as unknown as VcsConnector;
+
+    const projectMode: ProjectModeDeps = {
+      projectStore: {
+        getProjectById: vi.fn(async () => project),
+        listProjectPushTargets: vi.fn(async () => targets),
+        getProjectTicketSource: vi.fn().mockResolvedValue({ integrationId: "redmine-int" }),
+        getProjectReviewConfig: vi.fn().mockResolvedValue(null),
+        getAgentById: vi.fn(),
+      },
+      pluginManager: { getConnectorForIntegration: vi.fn().mockImplementation((id: string) => {
+        if (id === "redmine-int") return redmine;
+        return null;
+      }) },
+      resolveVcsForIntegration: vi.fn(async () => vcsRoot),
+    };
+
+    const orch = new Orchestrator(baseConfig(), stateStore, ws, undefined, undefined, projectMode);
+
+    const task = makeTask({ state: "AGENT_RUNNING" });
+    await (orch as unknown as { runAgentCycle: (t: Task) => Promise<void> }).runAgentCycle(task);
+
+    expect(redmine.addNote).not.toHaveBeenCalled();
   });
 
   it("project-mode runAgentCycle passes the project-linked agent adapter to the workspace runner", async () => {
@@ -769,6 +890,120 @@ describe("Orchestrator — Phase 4 project mode", () => {
     expect(reviewConnector.getChangeStatus).toHaveBeenCalledWith("17");
   });
 
+  it("ignores a CI build-failure comment when reactToCiFailures is off (default) — no retry cycle", async () => {
+    const task = makeTask({ state: "IN_REVIEW" });
+    const stateStore = makeStateStore({
+      getChangesForTask: vi.fn().mockResolvedValue([
+        {
+          id: "chg-1",
+          taskId: task.taskId,
+          repoKey: "group/platform",
+          changeId: "17",
+          reviewUrl: "https://gitlab.local/group/platform/-/merge_requests/17",
+          status: "OPEN",
+          integrationId: "gitlab-int",
+          reviewSystem: "gitlab",
+          commitIndex: 1,
+          subjectHash: "abc",
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      ]),
+      transition: vi.fn()
+        .mockResolvedValueOnce(makeTask({ state: "FEEDBACK_PROCESSING" }))
+        .mockResolvedValueOnce(makeTask({ state: "IN_REVIEW" })),
+    });
+    const reviewConnector = {
+      clone: vi.fn(),
+      push: vi.fn(),
+      getChangeStatus: vi.fn().mockResolvedValue("OPEN"),
+      getUnresolvedComments: vi.fn().mockResolvedValue([
+        { id: "ci-failure-1710000000", author: "jenkins", message: "Build Failed", unresolved: true, patchset: 0, updatedAt: new Date() },
+      ]),
+      buildPushSpec: vi.fn().mockReturnValue({ ref: "feature-task", topic: undefined }),
+      useChangeIdContinuity: false,
+      reviewSystemLabel: "gitlab",
+    } as unknown as VcsConnector;
+
+    const projectMode: ProjectModeDeps = {
+      projectStore: {
+        getProjectById: vi.fn(async () => makeProject({ reactToCiFailures: false })),
+        listProjectPushTargets: vi.fn(async () => []),
+        getProjectTicketSource: vi.fn().mockResolvedValue({ integrationId: "redmine-int" }),
+        getProjectReviewConfig: vi.fn().mockResolvedValue(null),
+        getAgentById: vi.fn(),
+      },
+      pluginManager: { getConnectorForIntegration: vi.fn(() => null) } as unknown as ProjectModeDeps["pluginManager"],
+      resolveVcsForIntegration: vi.fn(async () => reviewConnector),
+    };
+
+    const orch = new Orchestrator(baseConfig(), stateStore, makeWorkspaceRunner(), undefined, undefined, projectMode);
+    const runAgentCycle = vi.spyOn(orch as unknown as { runAgentCycle: (task: Task) => Promise<void> }, "runAgentCycle").mockResolvedValue(undefined);
+
+    await (orch as unknown as { checkReviewProgress: (task: Task) => Promise<void> }).checkReviewProgress(task);
+
+    expect(stateStore.transition).toHaveBeenCalledWith(task.taskId, "IN_REVIEW");
+    expect(stateStore.transition).not.toHaveBeenCalledWith(task.taskId, "RETRY_CYCLE");
+    expect(runAgentCycle).not.toHaveBeenCalled();
+  });
+
+  it("triggers a retry cycle from a CI build-failure comment when reactToCiFailures is on", async () => {
+    const task = makeTask({ state: "IN_REVIEW" });
+    const stateStore = makeStateStore({
+      getChangesForTask: vi.fn().mockResolvedValue([
+        {
+          id: "chg-1",
+          taskId: task.taskId,
+          repoKey: "group/platform",
+          changeId: "17",
+          reviewUrl: "https://gitlab.local/group/platform/-/merge_requests/17",
+          status: "OPEN",
+          integrationId: "gitlab-int",
+          reviewSystem: "gitlab",
+          commitIndex: 1,
+          subjectHash: "abc",
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      ]),
+      transition: vi.fn()
+        .mockResolvedValueOnce(makeTask({ state: "FEEDBACK_PROCESSING" }))
+        .mockResolvedValueOnce(makeTask({ state: "RETRY_CYCLE" })),
+      getTask: vi.fn().mockResolvedValue(makeTask({ state: "IN_REVIEW" })),
+    });
+    const reviewConnector = {
+      clone: vi.fn(),
+      push: vi.fn(),
+      getChangeStatus: vi.fn().mockResolvedValue("OPEN"),
+      getUnresolvedComments: vi.fn().mockResolvedValue([
+        { id: "ci-failure-1710000000", author: "jenkins", message: "Build Failed", unresolved: true, patchset: 0, updatedAt: new Date() },
+      ]),
+      buildPushSpec: vi.fn().mockReturnValue({ ref: "feature-task", topic: undefined }),
+      useChangeIdContinuity: false,
+      reviewSystemLabel: "gitlab",
+    } as unknown as VcsConnector;
+
+    const projectMode: ProjectModeDeps = {
+      projectStore: {
+        getProjectById: vi.fn(async () => makeProject({ reactToCiFailures: true })),
+        listProjectPushTargets: vi.fn(async () => []),
+        getProjectTicketSource: vi.fn().mockResolvedValue({ integrationId: "redmine-int" }),
+        getProjectReviewConfig: vi.fn().mockResolvedValue(null),
+        getAgentById: vi.fn(),
+      },
+      pluginManager: { getConnectorForIntegration: vi.fn(() => null) } as unknown as ProjectModeDeps["pluginManager"],
+      resolveVcsForIntegration: vi.fn(async () => reviewConnector),
+    };
+
+    const orch = new Orchestrator(baseConfig(), stateStore, makeWorkspaceRunner(), undefined, undefined, projectMode);
+    const runAgentCycle = vi.spyOn(orch as unknown as { runAgentCycle: (task: Task) => Promise<void> }, "runAgentCycle").mockResolvedValue(undefined);
+
+    await (orch as unknown as { checkReviewProgress: (task: Task) => Promise<void> }).checkReviewProgress(task);
+
+    expect(stateStore.transition).toHaveBeenCalledWith(task.taskId, "RETRY_CYCLE");
+    expect(runAgentCycle).toHaveBeenCalled();
+  });
+
   it("project-mode review polling skips a repo when repo-bound connector resolution fails", async () => {
     const task = makeTask({ state: "IN_REVIEW" });
     const stateStore = makeStateStore({
@@ -950,6 +1185,122 @@ describe("Orchestrator — Phase 4 project mode", () => {
     expect(stateStore.saveChangePerRepository).toHaveBeenCalledWith(
       task.taskId, "root", "Ilast",
       "", "OPEN", "vcs-root", "gerrit", 1, expect.any(String)
+    );
+  });
+
+  it("uses the project's gerritTopicOverride instead of the ticket-derived topic when set", async () => {
+    const stateStore = makeStateStore();
+    const project = makeProject({ gerritTopicOverride: "ve-crashfix" });
+    const targets = [
+      makePushTarget({ id: 1, commitOrder: 1, localPath: ".", integrationId: "vcs-root", repoKey: "root" }),
+    ];
+    const vcsRoot: VcsConnector = {
+      clone: vi.fn(),
+      push: vi.fn(),
+      pushDirect: vi.fn().mockResolvedValue({ changeId: "Ilast", url: "http://gerrit/c/Ilast", status: "OPEN" }),
+      getChangeStatus: vi.fn(),
+      buildPushSpec: vi.fn().mockReturnValue({ ref: "refs/for/main", topic: "VE-derived-topic" }),
+      useChangeIdContinuity: true,
+      reviewSystemLabel: "gerrit",
+    } as unknown as VcsConnector;
+
+    const ws = makeWorkspaceRunner({
+      runAgent: vi.fn().mockResolvedValue({
+        status: "success",
+        modifiedFiles: ["src/a.ts"],
+        summary: "ok",
+        agentLogs: "",
+        commits: [
+          { subject: "feat: fix crash", repoKey: "root", changeId: "Ilast", body: "", sha: "aaa", files: ["src/a.ts"] },
+        ],
+        metadata: {},
+      }),
+    });
+
+    const projectMode: ProjectModeDeps = {
+      projectStore: {
+        getProjectById: vi.fn(async () => project),
+        listProjectPushTargets: vi.fn(async () => targets),
+        getProjectTicketSource: vi.fn().mockResolvedValue({ integrationId: "redmine-int" }),
+        getProjectReviewConfig: vi.fn().mockResolvedValue(null),
+        getAgentById: vi.fn(),
+      },
+      pluginManager: { getConnectorForIntegration: vi.fn().mockImplementation((id: string) => {
+        if (id === "redmine-int") return makeRedmine();
+        return null;
+      }) },
+      resolveVcsForIntegration: vi.fn(async () => vcsRoot),
+    };
+
+    const orch = new Orchestrator(baseConfig(), stateStore, ws, undefined, undefined, projectMode);
+    (ws.execGitInVolume as ReturnType<typeof vi.fn>).mockResolvedValue("1\n");
+
+    const task = makeTask({ state: "AGENT_RUNNING" });
+    await (orch as unknown as { runAgentCycle: (t: Task) => Promise<void> }).runAgentCycle(task);
+
+    expect(vcsRoot.pushDirect).toHaveBeenCalledWith(
+      expect.any(String),
+      "refs/for/main",
+      "ve-crashfix",
+      expect.anything()
+    );
+  });
+
+  it("falls back to the ticket-derived topic when gerritTopicOverride is not set", async () => {
+    const stateStore = makeStateStore();
+    const project = makeProject({ gerritTopicOverride: null });
+    const targets = [
+      makePushTarget({ id: 1, commitOrder: 1, localPath: ".", integrationId: "vcs-root", repoKey: "root" }),
+    ];
+    const vcsRoot: VcsConnector = {
+      clone: vi.fn(),
+      push: vi.fn(),
+      pushDirect: vi.fn().mockResolvedValue({ changeId: "Ilast", url: "http://gerrit/c/Ilast", status: "OPEN" }),
+      getChangeStatus: vi.fn(),
+      buildPushSpec: vi.fn().mockReturnValue({ ref: "refs/for/main", topic: "VE-derived-topic" }),
+      useChangeIdContinuity: true,
+      reviewSystemLabel: "gerrit",
+    } as unknown as VcsConnector;
+
+    const ws = makeWorkspaceRunner({
+      runAgent: vi.fn().mockResolvedValue({
+        status: "success",
+        modifiedFiles: ["src/a.ts"],
+        summary: "ok",
+        agentLogs: "",
+        commits: [
+          { subject: "feat: fix crash", repoKey: "root", changeId: "Ilast", body: "", sha: "aaa", files: ["src/a.ts"] },
+        ],
+        metadata: {},
+      }),
+    });
+
+    const projectMode: ProjectModeDeps = {
+      projectStore: {
+        getProjectById: vi.fn(async () => project),
+        listProjectPushTargets: vi.fn(async () => targets),
+        getProjectTicketSource: vi.fn().mockResolvedValue({ integrationId: "redmine-int" }),
+        getProjectReviewConfig: vi.fn().mockResolvedValue(null),
+        getAgentById: vi.fn(),
+      },
+      pluginManager: { getConnectorForIntegration: vi.fn().mockImplementation((id: string) => {
+        if (id === "redmine-int") return makeRedmine();
+        return null;
+      }) },
+      resolveVcsForIntegration: vi.fn(async () => vcsRoot),
+    };
+
+    const orch = new Orchestrator(baseConfig(), stateStore, ws, undefined, undefined, projectMode);
+    (ws.execGitInVolume as ReturnType<typeof vi.fn>).mockResolvedValue("1\n");
+
+    const task = makeTask({ state: "AGENT_RUNNING" });
+    await (orch as unknown as { runAgentCycle: (t: Task) => Promise<void> }).runAgentCycle(task);
+
+    expect(vcsRoot.pushDirect).toHaveBeenCalledWith(
+      expect.any(String),
+      "refs/for/main",
+      "VE-derived-topic",
+      expect.anything()
     );
   });
 

@@ -9,6 +9,11 @@ import { getLogger } from "../logger.js";
 
 const log = getLogger("feedback-processor");
 
+/** True when a comment's id marks it as CI-failure-originated (`ci-run-*` from GitHub checks, `ci-failure-*` from Gerrit build messages). */
+export function isCiFeedbackComment(comment: ReviewComment): boolean {
+  return comment.id.startsWith("ci-run-") || comment.id.startsWith("ci-failure-");
+}
+
 /** Deduplicates review comments and formats them as FeedbackItems for the next agent cycle. */
 export class FeedbackProcessor {
   constructor(private readonly stateStore: StateStore) {}
@@ -52,7 +57,7 @@ export class FeedbackProcessor {
   /** Convert a ReviewComment to a FeedbackItem for agent consumption. */
   private toFeedbackItem(comment: ReviewComment): FeedbackItem {
     const source: FeedbackItem["source"] =
-      comment.id.startsWith("ci-run-") ? "ci_failure" :
+      isCiFeedbackComment(comment) ? "ci_failure" :
       comment.id.startsWith("issue-") || /^\d+$/.test(comment.id) ? "github_review" :
       "gerrit_review";
     return {

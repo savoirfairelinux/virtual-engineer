@@ -196,6 +196,46 @@ export function resolveExistingChangeId(
   return entry[String(commitIndex)] ?? null;
 }
 
+/** Resolve prior-change metadata for the workspace root repository. */
+export function resolveExistingRootChange(
+  rootChangeId: string | null,
+  perRepoChangeIds: Record<string, string | Record<string, string>> | null,
+  repositoryMap: RepositoryMap | undefined,
+): { changeId: string | null; repoKey: string | null } {
+  if (perRepoChangeIds == null) {
+    return { changeId: rootChangeId || null, repoKey: null };
+  }
+
+  const superprojectKey = repositoryMap?.superproject.repoKey;
+  if (superprojectKey != null) {
+    const entry = perRepoChangeIds[superprojectKey];
+    if (entry == null) {
+      return { changeId: rootChangeId || null, repoKey: null };
+    }
+    return {
+      changeId: rootChangeId || (typeof entry === 'string' ? entry : entry['0']) || null,
+      repoKey: superprojectKey,
+    };
+  }
+
+  const keys = Object.keys(perRepoChangeIds);
+  if (keys.length !== 1) {
+    return { changeId: rootChangeId || null, repoKey: null };
+  }
+  const repoKey = keys[0];
+  if (repoKey == null) {
+    return { changeId: rootChangeId || null, repoKey: null };
+  }
+  const entry = perRepoChangeIds[repoKey];
+  if (entry == null) {
+    return { changeId: rootChangeId || null, repoKey: null };
+  }
+  return {
+    changeId: rootChangeId || (typeof entry === 'string' ? entry : entry['0']) || null,
+    repoKey,
+  };
+}
+
 /** Options for injectChangeIds. */
 export interface InjectChangeIdsOptions {
   /** Legacy single Change-Id for the first commit (ROOT_CHANGE_ID compatibility). */
@@ -209,6 +249,12 @@ export interface InjectChangeIdsOptions {
   gitAuthorEmail?: string | undefined;
   gitCommitterName?: string | undefined;
   gitCommitterEmail?: string | undefined;
+  /**
+   * Optional pre-formatted ticket-footer trailer line (e.g. "GitLab: https://…/issues/123")
+   * appended to every commit alongside its Change-Id. Skipped if already present in the
+   * commit message (idempotent across retries).
+   */
+  ticketFooterLine?: string | null | undefined;
 }
 
 /**
@@ -231,8 +277,11 @@ export function injectChangeIds(
 ): CommitDescriptor[] {
   if (commits.length === 0) return commits;
 
-  const needsInjection = commits.some((c) => !c.changeId);
-  if (!needsInjection) return commits;
+  const ticketFooterLine = options?.ticketFooterLine ?? null;
+  const needsRewrite = commits.some(
+    (commit) => !commit.changeId || (ticketFooterLine !== null && !commit.body.includes(ticketFooterLine)),
+  );
+  if (!needsRewrite) return commits;
 
   const existingChangeId = options?.existingChangeId ?? null;
   const repoKeyForLookup = options?.repoKeyForLookup ?? null;
@@ -281,13 +330,23 @@ export function injectChangeIds(
     for (let i = 0; i < commits.length; i++) {
       const desiredChangeId = changeIdByIndex[i] ?? null;
 
-      if (desiredChangeId) {
+      if (desiredChangeId || ticketFooterLine) {
         const currentMsg = git(['log', '-1', '--format=%B'], cwd).trim();
-        const hasTrailerBlock = /\n\n[A-Za-z][A-Za-z0-9-]*: /.test(currentMsg);
-        const newMsg = hasTrailerBlock
-          ? `${currentMsg}\nChange-Id: ${desiredChangeId}`
-          : `${currentMsg}\n\nChange-Id: ${desiredChangeId}`;
-        git(['commit', '--amend', '-m', newMsg], cwd);
+        let newMsg = currentMsg;
+
+        if (ticketFooterLine && !newMsg.includes(ticketFooterLine)) {
+          const hasTrailerBlock = /\n\n[A-Za-z][A-Za-z0-9-]*: /.test(newMsg);
+          newMsg = hasTrailerBlock ? `${newMsg}\n${ticketFooterLine}` : `${newMsg}\n\n${ticketFooterLine}`;
+        }
+
+        if (desiredChangeId) {
+          const hasTrailerBlock = /\n\n[A-Za-z][A-Za-z0-9-]*: /.test(newMsg);
+          newMsg = hasTrailerBlock ? `${newMsg}\nChange-Id: ${desiredChangeId}` : `${newMsg}\n\nChange-Id: ${desiredChangeId}`;
+        }
+
+        if (newMsg !== currentMsg) {
+          git(['commit', '--amend', '-m', newMsg], cwd);
+        }
       }
 
       if (i < commits.length - 1) {
@@ -318,12 +377,30 @@ export function injectChangeIds(
  *
  * @param baseSha - HEAD recorded before the agent ran.
  * @param cwd - Working directory for git operations.
+ * @param isContinuation - Whether the root repository continues a prior VE patchset.
  * @returns Squash result with flag and updated commits.
  */
 export function squashIntoBaseIfNeeded(
   baseSha: string,
   cwd: string,
+  isContinuation: boolean,
 ): { squashed: boolean; commits?: CommitDescriptor[] | undefined } {
+  // Squashing amends the base commit (reset --soft + commit --amend), which is
+  // only valid when the base IS VE's own prior patchset — i.e. a continuation
+  // (retry/feedback) cycle. On a first cycle the base is the upstream branch
+  // tip; on Gerrit repos that tip carries a Change-Id, but amending it would
+  // rewrite an upstream commit whose parent is missing from the --depth 1
+  // shallow clone, causing diff-tree to report the whole repository.
+  if (!isContinuation) {
+    return { squashed: false };
+  }
+
+  try {
+    git(['cat-file', '-e', `${baseSha}^`], cwd);
+  } catch {
+    return { squashed: false };
+  }
+
   const baseBody = git(['log', '-1', '--format=%b', baseSha], cwd);
   const baseChangeIdMatch = baseBody.match(/^Change-Id:\s*(\S+)/m);
   if (!baseChangeIdMatch) {

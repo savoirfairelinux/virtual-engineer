@@ -262,6 +262,10 @@ export class CopilotAdapter implements AgentAdapter, ConfigurableAdapter {
         ? { PER_REPO_CHANGE_IDS_JSON: JSON.stringify(session.perRepoChangeIds) }
         : {}),
       ...(session.skillDiscoveryEnabled ? { SKILL_DISCOVERY: "1" } : {}),
+      ...(session.skillDiscoveryEnabled && session.localSkillsPath !== undefined
+        ? { LOCAL_SKILLS_PATH: session.localSkillsPath }
+        : {}),
+      ...(session.ticketFooterLine ? { TICKET_FOOTER_LINE: session.ticketFooterLine } : {}),
     };
 
     const additionalDockerArgs = [
@@ -319,6 +323,9 @@ export class CopilotAdapter implements AgentAdapter, ConfigurableAdapter {
       USER_PROMPT_FILE: "/ve-home/user-prompt.txt",
       SYSTEM_PROMPT: input.systemPrompt,
       ...(input.skillDiscoveryEnabled ? { SKILL_DISCOVERY: "1" } : {}),
+      ...(input.skillDiscoveryEnabled && input.localSkillsPath !== undefined
+        ? { LOCAL_SKILLS_PATH: input.localSkillsPath }
+        : {}),
     };
 
     const additionalDockerArgs = [
@@ -414,11 +421,21 @@ export class CopilotAdapter implements AgentAdapter, ConfigurableAdapter {
       plainLogLines: [],
       agentEvents: [],
     };
-    const invocation = await this.invokeAgentContainer(context, githubToken, {
-      onStderrChunk: (chunk) => {
-        this.consumeStderrChunk(context, stderrState, chunk);
-      },
-    });
+    let invocation: DockerInvocationResult;
+    try {
+      invocation = await this.invokeAgentContainer(context, githubToken, {
+        onStderrChunk: (chunk) => {
+          this.consumeStderrChunk(context, stderrState, chunk);
+        },
+      });
+    } catch (err) {
+      this.flushStderrBuffer(context, stderrState);
+      if (stderrState.agentEvents.length === 0 && stderrState.plainLogLines.length === 0) {
+        throw err;
+      }
+      const message = err instanceof Error ? err.message : String(err);
+      return this.setupFailureResult(message, stderrState);
+    }
     this.flushStderrBuffer(context, stderrState);
 
     const result = await this.parseAgentResult(
@@ -446,6 +463,22 @@ export class CopilotAdapter implements AgentAdapter, ConfigurableAdapter {
       result.externalChangeId = changeId;
     }
     return result;
+  }
+
+  private setupFailureResult(message: string, stderrState: StderrParseState): AgentResult {
+    const plainLogs = stderrState.plainLogLines.join("\n");
+    return {
+      status: "failed",
+      modifiedFiles: [],
+      summary: "Agent setup failed before container output",
+      agentLogs: [plainLogs, message].filter(Boolean).join("\n"),
+      agentEvents: stderrState.agentEvents,
+      metadata: {
+        adapter: "copilot",
+        setupError: true,
+        error: message.slice(0, 300),
+      },
+    };
   }
 
   /** Delegate Docker invocation to the registered dockerInvoker, passing auth env. */

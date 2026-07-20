@@ -1,14 +1,14 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { tmpdir } from "os";
-import { join } from "path";
-import { randomUUID } from "crypto";
 import type { Server } from "node:http";
 import { SqliteStateStore } from "../../src/state/stateStore.js";
 import { createAdminServer, type AdminServerDependencies } from "../../src/admin/adminServer.js";
-import { type AgentRecord, type AgentType } from "../../src/interfaces.js";
+import { Router } from "../../src/admin/router.js";
+import { registerProjectRoutes, type SkillSource } from "../../src/admin/adminProjectsRoutes.js";
+import { makeProjectId, type AgentRecord, type AgentType } from "../../src/interfaces.js";
+import { tempDatabasePath } from "./helpers/tempDatabase.js";
 
 function tempDbPath(): string {
-  return join(tmpdir(), `ve-admin-projects-${randomUUID()}.db`);
+  return tempDatabasePath("ve-admin-projects");
 }
 
 interface FetchResult { status: number; body: Record<string, unknown> | null; }
@@ -31,7 +31,10 @@ async function rest(server: Server, path: string, opts: { method?: string; body?
   return { status: res.status, body: parsed };
 }
 
-function makeDeps(store: SqliteStateStore): AdminServerDependencies {
+function makeDeps(
+  store: SqliteStateStore,
+  validateSkillSourcesConnection: (sources: SkillSource[]) => Promise<void> = async () => {}
+): AdminServerDependencies {
   return {
     stateStore: {
       getActiveTasks: vi.fn(async () => []),
@@ -63,6 +66,7 @@ function makeDeps(store: SqliteStateStore): AdminServerDependencies {
     },
     polling: { isRunning: () => false, getIntervals: () => ({ intervalMs: 30000 }) },
     providers: [],
+    projectRoutes: { validateSkillSourcesConnection },
   };
 }
 
@@ -88,6 +92,110 @@ describe("Admin API — Project routes (/api/admin/projects)", () => {
   afterEach(async () => {
     await new Promise<void>((resolve, reject) => server.close((err) => err ? reject(err) : resolve()));
     store.close();
+  });
+
+  it("registers project-scoped skill source listing for edits", () => {
+    const router = new Router();
+    registerProjectRoutes(router, {});
+
+    const scoped = router.match("POST", "/api/admin/projects/project-1/skill-sources/list");
+    const global = router.match("POST", "/api/admin/projects/skill-sources/list");
+
+    expect(scoped?.meta).toMatchObject({ permission: "project.write", resourceParam: "id" });
+    expect(scoped?.params["id"]).toBe("project-1");
+    expect(global?.meta).toMatchObject({ permission: "project.write" });
+    expect(global?.meta.resourceParam).toBeUndefined();
+  });
+
+  it("POST /skill-sources/list rejects SSH sources without SSH auth", async () => {
+    const originalSshAuthSock = process.env["SSH_AUTH_SOCK"];
+    delete process.env["SSH_AUTH_SOCK"];
+    try {
+      const r = await rest(server, "/api/admin/projects/skill-sources/list", {
+        method: "POST",
+        body: { source: "ssh://skills.example.com/org/agent-skills" },
+      });
+
+      expect(r.status).toBe(400);
+      expect(r.body?.["error"]).toMatch(/SSH_AUTH_SOCK/);
+    } finally {
+      if (originalSshAuthSock === undefined) delete process.env["SSH_AUTH_SOCK"];
+      else process.env["SSH_AUTH_SOCK"] = originalSshAuthSock;
+    }
+  });
+
+  it("POST /skill-sources/list treats unreadable known_hosts as a client error", async () => {
+    const originalSshAuthSock = process.env["SSH_AUTH_SOCK"];
+    process.env["SSH_AUTH_SOCK"] = "/tmp/ve-test-ssh.sock";
+    try {
+      const r = await rest(server, "/api/admin/projects/skill-sources/list", {
+        method: "POST",
+        body: {
+          source: "ssh://skills.example.com/org/agent-skills",
+          sshKnownHostsPath: "/tmp/virtual-engineer-missing-known-hosts",
+        },
+      });
+
+      expect(r.status).toBe(400);
+      expect(r.body?.["error"]).toMatch(/known_hosts path is not readable/);
+    } finally {
+      if (originalSshAuthSock === undefined) delete process.env["SSH_AUTH_SOCK"];
+      else process.env["SSH_AUTH_SOCK"] = originalSshAuthSock;
+    }
+  });
+
+  it("POST /skill-sources/list rejects empty SSH option strings", async () => {
+    const r = await rest(server, "/api/admin/projects/skill-sources/list", {
+      method: "POST",
+      body: { source: "ssh://skills.example.com/org/agent-skills", sshUser: "  " },
+    });
+
+    expect(r.status).toBe(400);
+    expect(JSON.stringify(r.body)).toMatch(/SSH user must not be empty/);
+  });
+
+  it("POST /skill-sources/list rejects SSH ports outside the TCP range", async () => {
+    const r = await rest(server, "/api/admin/projects/skill-sources/list", {
+      method: "POST",
+      body: { source: "ssh://skills.example.com/org/agent-skills", sshPort: 294193 },
+    });
+
+    expect(r.status).toBe(400);
+    expect(JSON.stringify(r.body)).toMatch(/SSH port must be between 1 and 65535/);
+  });
+
+  it("POST /skill-sources/list treats malformed SSH URLs as client errors", async () => {
+    const originalSshAuthSock = process.env["SSH_AUTH_SOCK"];
+    process.env["SSH_AUTH_SOCK"] = "/tmp/ve-test-ssh.sock";
+    try {
+      const r = await rest(server, "/api/admin/projects/skill-sources/list", {
+        method: "POST",
+        body: { source: "ssh://", sshPort: 29418 },
+      });
+
+      expect(r.status).toBe(400);
+      expect(r.body?.["error"]).toMatch(/Invalid SSH skill source URL/);
+    } finally {
+      if (originalSshAuthSock === undefined) delete process.env["SSH_AUTH_SOCK"];
+      else process.env["SSH_AUTH_SOCK"] = originalSshAuthSock;
+    }
+  });
+
+  it("POST /skill-sources/list treats conflicting SSH ports as client errors", async () => {
+    const originalSshAuthSock = process.env["SSH_AUTH_SOCK"];
+    process.env["SSH_AUTH_SOCK"] = "/tmp/ve-test-ssh.sock";
+    try {
+      const r = await rest(server, "/api/admin/projects/skill-sources/list", {
+        method: "POST",
+        body: { source: "ssh://skills.example.com:2222/org/agent-skills", sshPort: 29418 },
+      });
+
+      expect(r.status).toBe(400);
+      expect(r.body?.["error"]).toMatch(/Conflicting SSH ports/);
+    } finally {
+      if (originalSshAuthSock === undefined) delete process.env["SSH_AUTH_SOCK"];
+      else process.env["SSH_AUTH_SOCK"] = originalSshAuthSock;
+    }
   });
 
   it("GET / returns empty initially", async () => {
@@ -126,7 +234,7 @@ describe("Admin API — Project routes (/api/admin/projects)", () => {
     expect((ts["integration"] as Record<string, unknown>)["id"]).toBe("redmine-1");
   });
 
-  it("POST / persists skillDiscoveryEnabled for coding projects (defaults false)", async () => {
+  it("POST / persists skillDiscoveryEnabled for coding projects", async () => {
     const agent = await makeAgent(store, "coding");
     await seedIntegration(store, "redmine-1", "redmine");
     await seedIntegration(store, "gerrit-1", "gerrit");
@@ -143,13 +251,260 @@ describe("Admin API — Project routes (/api/admin/projects)", () => {
     });
     expect(on.status).toBe(201);
     expect((on.body?.["project"] as Record<string, unknown>)["skillDiscoveryEnabled"]).toBe(true);
+    expect((on.body?.["project"] as Record<string, unknown>)["localSkillsPath"]).toBe(".github/skills");
 
     const off = await rest(server, "/api/admin/projects", {
       method: "POST",
-      body: { ...base, name: "NoSkills", ticketSource: { integrationId: "redmine-1", ticketProjectKey: "B" } },
+      body: { ...base, name: "NoSkills", ticketSource: { integrationId: "redmine-1", ticketProjectKey: "B" }, skillSources: [] },
     });
     expect(off.status).toBe(201);
     expect((off.body?.["project"] as Record<string, unknown>)["skillDiscoveryEnabled"]).toBe(false);
+  });
+
+  it("POST / persists configured local skills path", async () => {
+    const agent = await makeAgent(store, "coding");
+    await seedIntegration(store, "redmine-1", "redmine");
+    await seedIntegration(store, "gerrit-1", "gerrit");
+
+    const r = await rest(server, "/api/admin/projects", {
+      method: "POST",
+      body: {
+        type: "coding",
+        name: "WithLocalSkillsPath",
+        agentId: agent.id,
+        skillDiscoveryEnabled: true,
+        localSkillsPath: "team/skills",
+        ticketSource: { integrationId: "redmine-1", ticketProjectKey: "LOCALSKILLS" },
+        pushTargets: [
+          { integrationId: "gerrit-1", repoKey: "superproject", cloneUrl: "ssh://g/super", targetBranch: "main", role: "primary", commitOrder: 1, localPath: "." },
+        ],
+      },
+    });
+
+    expect(r.status).toBe(201);
+    const project = r.body?.["project"] as Record<string, unknown>;
+    expect(project["localSkillsPath"]).toBe("team/skills");
+    const stored = await store.getProjectById(makeProjectId(String(project["id"])));
+    expect(stored?.localSkillsPath).toBe("team/skills");
+  });
+
+  it("POST / rejects local skills paths outside the workspace", async () => {
+    const agent = await makeAgent(store, "review");
+    await seedIntegration(store, "gerrit-1", "gerrit");
+    const r = await rest(server, "/api/admin/projects", {
+      method: "POST",
+      body: {
+        type: "review",
+        name: "BadLocalSkillsPath",
+        agentId: agent.id,
+        localSkillsPath: "../secrets",
+        reviewConfig: { integrationId: "gerrit-1", repoKeys: ["platform/api"] },
+      },
+    });
+
+    expect(r.status).toBe(400);
+    expect(JSON.stringify(r.body)).toMatch(/Local skills path must stay inside the workspace/);
+  });
+
+  it("POST / rejects the workspace root as local skills path", async () => {
+    const agent = await makeAgent(store, "review");
+    await seedIntegration(store, "gerrit-1", "gerrit");
+    const r = await rest(server, "/api/admin/projects", {
+      method: "POST",
+      body: {
+        type: "review",
+        name: "RootLocalSkillsPath",
+        agentId: agent.id,
+        localSkillsPath: ".",
+        reviewConfig: { integrationId: "gerrit-1", repoKeys: ["platform/api"] },
+      },
+    });
+
+    expect(r.status).toBe(400);
+    expect(JSON.stringify(r.body)).toMatch(/Local skills path must stay inside the workspace/);
+  });
+
+  it("POST / persists normalized remote skill sources", async () => {
+    const agent = await makeAgent(store, "coding");
+    await seedIntegration(store, "redmine-1", "redmine");
+    await seedIntegration(store, "gerrit-1", "gerrit");
+
+    const r = await rest(server, "/api/admin/projects", {
+      method: "POST",
+      body: {
+        type: "coding",
+        name: "WithRemoteSkills",
+        agentId: agent.id,
+        skillSources: [{ source: "ssh://skills.example.com/org/agent-skills", skills: ["skill-a", "skill-b", "skill-a"], sshUser: "git-user", sshPort: 29418, sshKeyPath: "/home/ve/.ssh/id_ed25519", sshKnownHostsPath: "/home/ve/.ssh/known_hosts" }],
+        ticketSource: { integrationId: "redmine-1", ticketProjectKey: "SKILLS" },
+        pushTargets: [
+          { integrationId: "gerrit-1", repoKey: "superproject", cloneUrl: "ssh://g/super", targetBranch: "main", role: "primary", commitOrder: 1, localPath: "." },
+        ],
+      },
+    });
+
+    expect(r.status).toBe(201);
+    const project = r.body?.["project"] as Record<string, unknown>;
+    expect(project["skillDiscoveryEnabled"]).toBe(false);
+    expect(project["skillSources"]).toEqual([
+      { source: "ssh://skills.example.com/org/agent-skills", skills: ["skill-a", "skill-b"], sshUser: "git-user", sshPort: 29418, sshKeyPath: "/home/ve/.ssh/id_ed25519", sshKnownHostsPath: "/home/ve/.ssh/known_hosts" },
+    ]);
+    const stored = await store.getProjectById(makeProjectId(String(project["id"])));
+    expect(stored?.skillSourcesJson).toBe(JSON.stringify(project["skillSources"]));
+  });
+
+  it("POST / defaults omitted remote skill sources to empty", async () => {
+    const agent = await makeAgent(store, "review");
+    await seedIntegration(store, "gerrit-1", "gerrit");
+
+    const r = await rest(server, "/api/admin/projects", {
+      method: "POST",
+      body: {
+        type: "review",
+        name: "DefaultEmptySkills",
+        agentId: agent.id,
+        reviewConfig: { integrationId: "gerrit-1", repoKeys: ["platform/api"] },
+      },
+    });
+
+    expect(r.status).toBe(201);
+    const project = r.body?.["project"] as Record<string, unknown>;
+    expect(project["skillDiscoveryEnabled"]).toBe(false);
+    expect(project["skillSources"]).toEqual([]);
+    const stored = await store.getProjectById(makeProjectId(String(project["id"])));
+    expect(stored?.skillSourcesJson).toBe(JSON.stringify(project["skillSources"]));
+  });
+
+  it("POST / preserves an explicit empty remote skill source list", async () => {
+    const agent = await makeAgent(store, "review");
+    await seedIntegration(store, "gerrit-1", "gerrit");
+
+    const r = await rest(server, "/api/admin/projects", {
+      method: "POST",
+      body: {
+        type: "review",
+        name: "NoPreloadedSkills",
+        agentId: agent.id,
+        skillSources: [],
+        reviewConfig: { integrationId: "gerrit-1", repoKeys: ["platform/api"] },
+      },
+    });
+
+    expect(r.status).toBe(201);
+    const project = r.body?.["project"] as Record<string, unknown>;
+    expect(project["skillDiscoveryEnabled"]).toBe(false);
+    expect(project["skillSources"]).toEqual([]);
+    const stored = await store.getProjectById(makeProjectId(String(project["id"])));
+    expect(stored?.skillSourcesJson).toBe("[]");
+  });
+
+  it("POST / rejects remote skill sources without skills or installAll", async () => {
+    const agent = await makeAgent(store, "review");
+    await seedIntegration(store, "gerrit-1", "gerrit");
+    const r = await rest(server, "/api/admin/projects", {
+      method: "POST",
+      body: {
+        type: "review",
+        name: "BadSkills",
+        agentId: agent.id,
+        skillSources: [{ source: "ssh://skills.example.com/org/agent-skills", skills: [] }],
+        reviewConfig: { integrationId: "gerrit-1", repoKeys: ["platform/api"] },
+      },
+    });
+
+    expect(r.status).toBe(400);
+    expect(JSON.stringify(r.body)).toMatch(/Select at least one skill/);
+  });
+
+  it("POST / rejects empty SSH option strings in remote skill sources", async () => {
+    const agent = await makeAgent(store, "review");
+    await seedIntegration(store, "gerrit-1", "gerrit");
+    const r = await rest(server, "/api/admin/projects", {
+      method: "POST",
+      body: {
+        type: "review",
+        name: "BadSshOptions",
+        agentId: agent.id,
+        skillSources: [{ source: "ssh://skills.example.com/org/agent-skills", skills: ["skill-a"], sshKeyPath: " " }],
+        reviewConfig: { integrationId: "gerrit-1", repoKeys: ["platform/api"] },
+      },
+    });
+
+    expect(r.status).toBe(400);
+    expect(JSON.stringify(r.body)).toMatch(/SSH key path must not be empty/);
+  });
+
+  it("POST / rejects remote skill source ports outside the TCP range", async () => {
+    const agent = await makeAgent(store, "review");
+    await seedIntegration(store, "gerrit-1", "gerrit");
+    const r = await rest(server, "/api/admin/projects", {
+      method: "POST",
+      body: {
+        type: "review",
+        name: "BadSshPort",
+        agentId: agent.id,
+        skillSources: [{ source: "ssh://skills.example.com/org/agent-skills", skills: ["skill-a"], sshPort: 294193 }],
+        reviewConfig: { integrationId: "gerrit-1", repoKeys: ["platform/api"] },
+      },
+    });
+
+    expect(r.status).toBe(400);
+    expect(JSON.stringify(r.body)).toMatch(/SSH port must be between 1 and 65535/);
+  });
+
+  it("POST / validates remote skill source connectivity before saving", async () => {
+    await new Promise<void>((resolve, reject) => server.close((err) => err ? reject(err) : resolve()));
+    const validateSkillSourcesConnection = vi.fn(async () => {});
+    server = createAdminServer(makeDeps(store, validateSkillSourcesConnection));
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+
+    const agent = await makeAgent(store, "review");
+    await seedIntegration(store, "gerrit-1", "gerrit");
+
+    const r = await rest(server, "/api/admin/projects", {
+      method: "POST",
+      body: {
+        type: "review",
+        name: "ValidateRemoteSkills",
+        agentId: agent.id,
+        skillSources: [{ source: "ssh://skills.example.com/org/agent-skills", skills: ["skill-a"], sshUser: "git-user", sshPort: 29418 }],
+        reviewConfig: { integrationId: "gerrit-1", repoKeys: ["platform/api"] },
+      },
+    });
+
+    expect(r.status).toBe(201);
+    expect(validateSkillSourcesConnection).toHaveBeenCalledWith([
+      { source: "ssh://skills.example.com/org/agent-skills", skills: ["skill-a"], sshUser: "git-user", sshPort: 29418 },
+    ]);
+  });
+
+  it("POST / reports the failing remote skill source when connectivity validation fails", async () => {
+    await new Promise<void>((resolve, reject) => server.close((err) => err ? reject(err) : resolve()));
+    const validateSkillSourcesConnection = vi.fn(async () => {
+      throw new Error('Skill source #1 "ssh://skills.example.com/org/agent-skills": SSH connection check failed for skill source "ssh://skills.example.com/org/agent-skills": exit code 255; stderr: Permission denied (publickey).');
+    });
+    server = createAdminServer(makeDeps(store, validateSkillSourcesConnection));
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+
+    const agent = await makeAgent(store, "review");
+    await seedIntegration(store, "gerrit-1", "gerrit");
+
+    const r = await rest(server, "/api/admin/projects", {
+      method: "POST",
+      body: {
+        type: "review",
+        name: "BadRemoteSkills",
+        agentId: agent.id,
+        skillSources: [{ source: "ssh://skills.example.com/org/agent-skills", skills: ["skill-a"] }],
+        reviewConfig: { integrationId: "gerrit-1", repoKeys: ["platform/api"] },
+      },
+    });
+
+    expect(r.status).toBe(400);
+    expect(r.body?.["error"]).toMatch(/Failed to validate skill sources before saving/);
+    expect(r.body?.["error"]).toMatch(/Skill source #1 "ssh:\/\/skills\.example\.com\/org\/agent-skills"/);
+    expect(r.body?.["error"]).toMatch(/Permission denied/);
+    expect(await store.listProjects()).toHaveLength(0);
   });
 
   it("POST / creates a review project with reviewConfig", async () => {
@@ -277,6 +632,7 @@ describe("Admin API — Project routes (/api/admin/projects)", () => {
       method: "POST",
       body: {
         type: "coding", name: "Toggle", agentId: agent.id,
+        skillSources: [],
         ticketSource: { integrationId: "redmine-1", ticketProjectKey: "K" },
         pushTargets: [{ integrationId: "gerrit-1", repoKey: "r", cloneUrl: "u", targetBranch: "main", role: "primary", commitOrder: 1, localPath: "." }],
       },
@@ -296,7 +652,7 @@ describe("Admin API — Project routes (/api/admin/projects)", () => {
     await seedIntegration(store, "gerrit-1", "gerrit");
     const created = await rest(server, "/api/admin/projects", {
       method: "POST",
-      body: { type: "review", name: "RevWithSkills", agentId: agent.id, reviewConfig: { integrationId: "gerrit-1", repoKeys: ["x"] } },
+      body: { type: "review", name: "RevWithSkills", agentId: agent.id, skillSources: [], reviewConfig: { integrationId: "gerrit-1", repoKeys: ["x"] } },
     });
     const id = (created.body?.["project"] as Record<string, unknown>)["id"] as string;
     expect((created.body?.["project"] as Record<string, unknown>)["skillDiscoveryEnabled"]).toBe(false);
@@ -306,6 +662,27 @@ describe("Admin API — Project routes (/api/admin/projects)", () => {
     });
     expect(r.status).toBe(200);
     expect((r.body?.["project"] as Record<string, unknown>)["skillDiscoveryEnabled"]).toBe(true);
+  });
+
+  it("PUT /:id preserves local skill loading when remote skill sources are configured", async () => {
+    const agent = await makeAgent(store, "review");
+    await seedIntegration(store, "gerrit-1", "gerrit");
+    const created = await rest(server, "/api/admin/projects", {
+      method: "POST",
+      body: { type: "review", name: "EnableViaSources", agentId: agent.id, skillSources: [], reviewConfig: { integrationId: "gerrit-1", repoKeys: ["x"] } },
+    });
+    const id = (created.body?.["project"] as Record<string, unknown>)["id"] as string;
+    expect((created.body?.["project"] as Record<string, unknown>)["skillDiscoveryEnabled"]).toBe(false);
+
+    const r = await rest(server, `/api/admin/projects/${id}`, {
+      method: "PUT",
+      body: { skillSources: [{ source: "ssh://skills.example.com/org/agent-skills", skills: ["skill-a"] }] },
+    });
+
+    expect(r.status).toBe(200);
+    const project = r.body?.["project"] as Record<string, unknown>;
+    expect(project["skillDiscoveryEnabled"]).toBe(false);
+    expect(project["skillSources"]).toEqual([{ source: "ssh://skills.example.com/org/agent-skills", skills: ["skill-a"] }]);
   });
 
   it("DELETE /:id removes the project (idempotent: 404 second time)", async () => {

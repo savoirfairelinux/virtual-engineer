@@ -187,11 +187,49 @@ describe("CopilotAdapter", () => {
       expect(spec.env["SKILL_DISCOVERY"]).toBe("1");
     });
 
+    it("injects LOCAL_SKILLS_PATH only when skill discovery is enabled", () => {
+      const adapter = new CopilotAdapter();
+      const context = makeContext();
+      context.agentSession.localSkillsPath = "team/skills";
+      expect(adapter.buildContainerSpec(context, { GITHUB_TOKEN: "ghp_tok" }).env["LOCAL_SKILLS_PATH"]).toBeUndefined();
+
+      context.agentSession.skillDiscoveryEnabled = true;
+      const spec = adapter.buildContainerSpec(context, { GITHUB_TOKEN: "ghp_tok" });
+      expect(spec.env["LOCAL_SKILLS_PATH"]).toBe("team/skills");
+    });
+
+    it("does not expose SKILL_SOURCES_JSON to the agent container", () => {
+      const adapter = new CopilotAdapter();
+      const context = makeContext();
+      context.agentSession.skillSourcesJson = "[{\"source\":\"ssh://skills.example.com/org/agent-skills\",\"skills\":[\"skill-a\"]}]";
+      expect(adapter.buildContainerSpec(context, { GITHUB_TOKEN: "ghp_tok" }).env["SKILL_SOURCES_JSON"]).toBeUndefined();
+
+      context.agentSession.skillDiscoveryEnabled = true;
+      const spec = adapter.buildContainerSpec(context, { GITHUB_TOKEN: "ghp_tok" });
+      expect(spec.env["SKILL_SOURCES_JSON"]).toBeUndefined();
+    });
+
     it("omits SKILL_DISCOVERY when the project did not enable skill discovery", () => {
       const adapter = new CopilotAdapter();
       const spec = adapter.buildContainerSpec(makeContext(), { GITHUB_TOKEN: "ghp_tok" });
 
       expect(spec.env["SKILL_DISCOVERY"]).toBeUndefined();
+    });
+
+    it("injects TICKET_FOOTER_LINE when the project enabled full-URL ticket footers", () => {
+      const adapter = new CopilotAdapter();
+      const context = makeContext();
+      context.agentSession.ticketFooterLine = "GitLab: https://gitlab.example.com/issues/123";
+      const spec = adapter.buildContainerSpec(context, { GITHUB_TOKEN: "ghp_tok" });
+
+      expect(spec.env["TICKET_FOOTER_LINE"]).toBe("GitLab: https://gitlab.example.com/issues/123");
+    });
+
+    it("omits TICKET_FOOTER_LINE when not set", () => {
+      const adapter = new CopilotAdapter();
+      const spec = adapter.buildContainerSpec(makeContext(), { GITHUB_TOKEN: "ghp_tok" });
+
+      expect(spec.env["TICKET_FOOTER_LINE"]).toBeUndefined();
     });
   });
 
@@ -223,6 +261,29 @@ describe("CopilotAdapter", () => {
       const spec = adapter.buildReviewContainerSpec(input, { GITHUB_TOKEN: "ghp_tok" });
 
       expect(spec.env["SKILL_DISCOVERY"]).toBe("1");
+    });
+
+    it("injects LOCAL_SKILLS_PATH in review specs only when skill discovery is enabled", () => {
+      const adapter = new CopilotAdapter();
+      expect(adapter.buildReviewContainerSpec({ ...makeReviewInput(), localSkillsPath: "team/skills" }, {
+        GITHUB_TOKEN: "ghp_tok",
+      }).env["LOCAL_SKILLS_PATH"]).toBeUndefined();
+
+      const spec = adapter.buildReviewContainerSpec({
+        ...makeReviewInput(),
+        skillDiscoveryEnabled: true,
+        localSkillsPath: "team/skills",
+      }, { GITHUB_TOKEN: "ghp_tok" });
+      expect(spec.env["LOCAL_SKILLS_PATH"]).toBe("team/skills");
+    });
+
+    it("does not expose SKILL_SOURCES_JSON in review specs", () => {
+      const adapter = new CopilotAdapter();
+      const skillSourcesJson = "[{\"source\":\"ssh://skills.example.com/org/agent-skills\",\"skills\":[\"skill-a\"]}]";
+      const input = { ...makeReviewInput(), skillDiscoveryEnabled: true, skillSourcesJson };
+      const spec = adapter.buildReviewContainerSpec(input, { GITHUB_TOKEN: "ghp_tok" });
+
+      expect(spec.env["SKILL_SOURCES_JSON"]).toBeUndefined();
     });
   });
 
@@ -673,6 +734,28 @@ describe("CopilotAdapter", () => {
       expect(evt?.taskId).toBe(ctx.taskId);
       expect(evt?.cycleNumber).toBe(2);
       expect(result.agentLogs).not.toContain("__ve_event");
+    });
+
+    it("returns a failed result with setup events when docker setup throws after stderr", async () => {
+      const adapter = new CopilotAdapter();
+      const veEvent = JSON.stringify({
+        __ve_event: true,
+        type: "skills.fetch_failed",
+        data: { source: "example-org/agent-skills", message: "network failed" },
+        ts: "2026-01-01T00:00:00.000Z",
+      });
+      adapter.setDockerInvoker(vi.fn().mockImplementation(async (_context, _authEnv, callbacks) => {
+        callbacks?.onStderrChunk?.(`${veEvent}\n`);
+        throw new Error("failed to fetch skills from example-org/agent-skills: network failed");
+      }));
+
+      const result = await adapter.execute(makeContext());
+
+      expect(result.status).toBe("failed");
+      expect(result.summary).toBe("Agent setup failed before container output");
+      expect(result.agentEvents).toHaveLength(1);
+      expect(result.agentEvents?.[0]?.type).toBe("skills.fetch_failed");
+      expect(result.metadata).toMatchObject({ adapter: "copilot", setupError: true });
     });
 
     it("mixed stderr lines are correctly split", async () => {

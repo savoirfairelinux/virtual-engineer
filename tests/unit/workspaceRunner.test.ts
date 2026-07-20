@@ -77,6 +77,14 @@ function getSpawnCall(): { command: string; args: readonly string[] } {
   };
 }
 
+function restoreEnv(name: string, value: string | undefined): void {
+  if (value === undefined) {
+    delete process.env[name];
+    return;
+  }
+  process.env[name] = value;
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function makeAgentAdapter(result?: Partial<AgentResult>): AgentAdapter {
@@ -98,6 +106,10 @@ function makeAgentAdapter(result?: Partial<AgentResult>): AgentAdapter {
     }),
     execute: vi.fn().mockResolvedValue({ ...defaultResult, ...result }),
   } as unknown as AgentAdapter;
+}
+
+function makeNamedAgentAdapter(name: string, result?: Partial<AgentResult>): AgentAdapter {
+  return { ...makeAgentAdapter(result), name } as unknown as AgentAdapter;
 }
 
 function makeContext(overrides?: Partial<TaskContext>): TaskContext {
@@ -285,6 +297,333 @@ describe("DockerWorkspaceRunner", () => {
       expect(argsArray).toMatch(/-e\s+GIT_AUTHOR_NAME=Agent/);
     });
 
+    it("installs remote skills into the home volume before running the agent", async () => {
+      const savedSshAuthSock = process.env["SSH_AUTH_SOCK"];
+      process.env["SSH_AUTH_SOCK"] = "/tmp/ve-ssh.sock";
+      try {
+        const adapter = makeNamedAgentAdapter("copilot");
+        const sources = JSON.stringify([{ source: "example-org/agent-skills", skills: ["skill-a"] }]);
+        (adapter.buildContainerSpec as ReturnType<typeof vi.fn>).mockReturnValue({
+          image: "my-image:latest",
+          env: { SKILL_DISCOVERY: "1" },
+          command: ["node", "/worker/index.js"],
+          networkMode: "virtual-engineer_ve-agent-net",
+        });
+        const runner = makeRunner(adapter);
+        const ctx = makeContext({
+          agentSession: {
+            ...makeContext().agentSession,
+            skillDiscoveryEnabled: false,
+            skillSourcesJson: sources,
+          },
+        });
+
+        mockSpawnWith((child) => {
+          process.nextTick(() => child.emit("close", 0));
+        });
+
+        await asDockerRunner(runner).runAgentInDocker(adapter, ctx, {});
+
+        expect(mockExecInVolume).toHaveBeenCalledWith(expect.objectContaining({
+          volumeName: ctx.homeVolumeName,
+          image: "virtual-engineer-workspace:latest",
+          command: [
+            "npx",
+            "--yes",
+            "skills@1.5.16",
+            "add",
+            "example-org/agent-skills",
+            "--skill",
+            "skill-a",
+            "-g",
+            "-a",
+            "github-copilot",
+            "--copy",
+            "-y",
+          ],
+          env: { HOME: "/workspace", NPM_CONFIG_UPDATE_NOTIFIER: "false" },
+          forwardSshAgent: false,
+          networkMode: "virtual-engineer_ve-agent-net",
+        }));
+        const { args } = getSpawnCall();
+        expect([...args].some((arg) => arg.includes("SKILL_SOURCES_JSON="))).toBe(false);
+        expect([...args].some((arg) => arg.includes("SSH_AUTH_SOCK="))).toBe(false);
+      } finally {
+        restoreEnv("SSH_AUTH_SOCK", savedSshAuthSock);
+      }
+    });
+
+    it("fails fast for SSH skill sources when SSH_AUTH_SOCK is unavailable", async () => {
+      const savedSshAuthSock = process.env["SSH_AUTH_SOCK"];
+      delete process.env["SSH_AUTH_SOCK"];
+      try {
+        const adapter = makeNamedAgentAdapter("copilot");
+        const sources = JSON.stringify([{ source: "ssh://skills.example.com/org/agent-skills", skills: ["skill-a"] }]);
+        (adapter.buildContainerSpec as ReturnType<typeof vi.fn>).mockReturnValue({
+          image: "my-image:latest",
+          env: { SKILL_DISCOVERY: "1" },
+          command: ["node", "/worker/index.js"],
+        });
+        const runner = makeRunner(adapter);
+        const ctx = makeContext({
+          agentSession: {
+            ...makeContext().agentSession,
+            skillDiscoveryEnabled: true,
+            skillSourcesJson: sources,
+          },
+        });
+
+        await expect(asDockerRunner(runner).runAgentInDocker(adapter, ctx, {})).rejects.toThrow(
+          "Remote SSH skill source ssh://skills.example.com/org/agent-skills requires SSH_AUTH_SOCK or sshKeyPath to be configured"
+        );
+        expect(mockSpawn).not.toHaveBeenCalled();
+      } finally {
+        restoreEnv("SSH_AUTH_SOCK", savedSshAuthSock);
+      }
+    });
+
+    it("installs SSH skill sources with configured private keys before running the agent", async () => {
+      const savedSshAuthSock = process.env["SSH_AUTH_SOCK"];
+      delete process.env["SSH_AUTH_SOCK"];
+      try {
+        const adapter = makeNamedAgentAdapter("copilot");
+        const sources = JSON.stringify([{ source: "ssh://skills.example.com/org/agent-skills", skills: ["skill-a"], sshKeyPath: "/host/id_ed25519", sshKnownHostsPath: "/host/known_hosts" }]);
+        (adapter.buildContainerSpec as ReturnType<typeof vi.fn>).mockReturnValue({
+          image: "my-image:latest",
+          env: { SKILL_DISCOVERY: "1" },
+          command: ["node", "/worker/index.js"],
+        });
+        const runner = makeRunner(adapter);
+        const ctx = makeContext({
+          agentSession: {
+            ...makeContext().agentSession,
+            skillDiscoveryEnabled: true,
+            skillSourcesJson: sources,
+          },
+        });
+
+        mockSpawnWith((child) => {
+          process.nextTick(() => child.emit("close", 0));
+        });
+
+        await asDockerRunner(runner).runAgentInDocker(adapter, ctx, {});
+
+        expect(mockExecInVolume).toHaveBeenCalledWith(expect.objectContaining({
+          volumeName: ctx.homeVolumeName,
+          sshKeyPath: "/host/id_ed25519",
+          sshKnownHostsPath: "/host/known_hosts",
+          forwardSshAgent: false,
+          command: expect.arrayContaining(["npx", "--yes", "skills@1.5.16", "add", "ssh://skills.example.com/org/agent-skills"]),
+        }));
+        const { args } = getSpawnCall();
+        const argsArray = [...args];
+        expect(argsArray.some((arg) => arg.includes("/host/id_ed25519"))).toBe(false);
+        expect(argsArray.some((arg) => arg.includes("SKILL_SOURCES_JSON="))).toBe(false);
+      } finally {
+        restoreEnv("SSH_AUTH_SOCK", savedSshAuthSock);
+      }
+    });
+
+    it("treats uppercase SSH skill source URLs as SSH sources", async () => {
+      const savedSshAuthSock = process.env["SSH_AUTH_SOCK"];
+      delete process.env["SSH_AUTH_SOCK"];
+      try {
+        const adapter = makeNamedAgentAdapter("copilot");
+        const sources = JSON.stringify([{ source: "SSH://skills.example.com/org/agent-skills", skills: ["skill-a"], sshPort: 29418, sshKeyPath: "/host/id_ed25519" }]);
+        (adapter.buildContainerSpec as ReturnType<typeof vi.fn>).mockReturnValue({
+          image: "my-image:latest",
+          env: { SKILL_DISCOVERY: "1" },
+          command: ["node", "/worker/index.js"],
+        });
+        const runner = makeRunner(adapter);
+        const ctx = makeContext({
+          agentSession: {
+            ...makeContext().agentSession,
+            skillDiscoveryEnabled: true,
+            skillSourcesJson: sources,
+          },
+        });
+
+        mockSpawnWith((child) => {
+          process.nextTick(() => child.emit("close", 0));
+        });
+
+        await asDockerRunner(runner).runAgentInDocker(adapter, ctx, {});
+
+        expect(mockExecInVolume).toHaveBeenCalledWith(expect.objectContaining({
+          sshKeyPath: "/host/id_ed25519",
+          sshPort: 29418,
+          forwardSshAgent: false,
+          command: expect.arrayContaining(["ssh://skills.example.com:29418/org/agent-skills"]),
+        }));
+      } finally {
+        restoreEnv("SSH_AUTH_SOCK", savedSshAuthSock);
+      }
+    });
+
+    it("emits fetch_failed when the remote skill helper throws", async () => {
+      const adapter = makeNamedAgentAdapter("copilot");
+      const sources = JSON.stringify([{ source: "example-org/agent-skills", skills: ["skill-a"] }]);
+      (adapter.buildContainerSpec as ReturnType<typeof vi.fn>).mockReturnValue({
+        image: "my-image:latest",
+        env: { SKILL_DISCOVERY: "1" },
+        command: ["node", "/worker/index.js"],
+      });
+      mockExecInVolume.mockRejectedValueOnce(new Error("network unavailable"));
+      const runner = makeRunner(adapter);
+      const ctx = makeContext({
+        agentSession: {
+          ...makeContext().agentSession,
+          skillDiscoveryEnabled: true,
+          skillSourcesJson: sources,
+        },
+      });
+      const stderrChunks: string[] = [];
+
+      await expect(asDockerRunner(runner).runAgentInDocker(adapter, ctx, {}, {
+        onStderrChunk: (chunk) => stderrChunks.push(chunk),
+      })).rejects.toThrow("failed to fetch skills from example-org/agent-skills: network unavailable");
+
+      expect(stderrChunks.some((chunk) => chunk.includes('"type":"skills.fetch_failed"'))).toBe(true);
+      expect(stderrChunks.join("\n")).toContain("network unavailable");
+      expect(mockSpawn).not.toHaveBeenCalled();
+    });
+
+    it("rejects helper installs with conflicting explicit SSH URL and fallback ports", async () => {
+      const savedSshAuthSock = process.env["SSH_AUTH_SOCK"];
+      delete process.env["SSH_AUTH_SOCK"];
+      try {
+        const adapter = makeNamedAgentAdapter("copilot");
+        const sources = JSON.stringify([{ source: "ssh://skills.example.com:2222/org/agent-skills", skills: ["skill-a"], sshPort: 29418, sshKeyPath: "/host/id_ed25519" }]);
+        (adapter.buildContainerSpec as ReturnType<typeof vi.fn>).mockReturnValue({
+          image: "my-image:latest",
+          env: { SKILL_DISCOVERY: "1" },
+          command: ["node", "/worker/index.js"],
+        });
+        const runner = makeRunner(adapter);
+        const ctx = makeContext({
+          agentSession: {
+            ...makeContext().agentSession,
+            skillDiscoveryEnabled: true,
+            skillSourcesJson: sources,
+          },
+        });
+
+        mockSpawnWith((child) => {
+          process.nextTick(() => child.emit("close", 0));
+        });
+
+        await expect(asDockerRunner(runner).runAgentInDocker(adapter, ctx, {})).rejects.toThrow("URL uses port 2222 but sshPort is 29418");
+        expect(mockExecInVolume).not.toHaveBeenCalled();
+      } finally {
+        restoreEnv("SSH_AUTH_SOCK", savedSshAuthSock);
+      }
+    });
+
+    it("does not pass sshPort to helper installs when the explicit SSH URL port matches", async () => {
+      const savedSshAuthSock = process.env["SSH_AUTH_SOCK"];
+      delete process.env["SSH_AUTH_SOCK"];
+      try {
+        const adapter = makeNamedAgentAdapter("copilot");
+        const sources = JSON.stringify([{ source: "ssh://skills.example.com:2222/org/agent-skills", skills: ["skill-a"], sshPort: 2222, sshKeyPath: "/host/id_ed25519" }]);
+        (adapter.buildContainerSpec as ReturnType<typeof vi.fn>).mockReturnValue({
+          image: "my-image:latest",
+          env: { SKILL_DISCOVERY: "1" },
+          command: ["node", "/worker/index.js"],
+        });
+        const runner = makeRunner(adapter);
+        const ctx = makeContext({
+          agentSession: {
+            ...makeContext().agentSession,
+            skillDiscoveryEnabled: true,
+            skillSourcesJson: sources,
+          },
+        });
+
+        mockSpawnWith((child) => {
+          process.nextTick(() => child.emit("close", 0));
+        });
+
+        await asDockerRunner(runner).runAgentInDocker(adapter, ctx, {});
+
+        expect(mockExecInVolume).toHaveBeenCalledWith(expect.objectContaining({
+          volumeName: ctx.homeVolumeName,
+          sshKeyPath: "/host/id_ed25519",
+          command: expect.arrayContaining(["ssh://skills.example.com:2222/org/agent-skills"]),
+        }));
+        expect(mockExecInVolume).not.toHaveBeenCalledWith(expect.objectContaining({ sshPort: 2222 }));
+      } finally {
+        restoreEnv("SSH_AUTH_SOCK", savedSshAuthSock);
+      }
+    });
+
+    it("uses SSH_AUTH_SOCK only in the helper install container", async () => {
+      const savedSshAuthSock = process.env["SSH_AUTH_SOCK"];
+      process.env["SSH_AUTH_SOCK"] = "/tmp/ve-ssh.sock";
+      try {
+        const adapter = makeNamedAgentAdapter("copilot");
+        const sources = JSON.stringify([{ source: "git@skills.example.com:org/agent-skills", skills: ["skill-a"] }]);
+        (adapter.buildContainerSpec as ReturnType<typeof vi.fn>).mockReturnValue({
+          image: "my-image:latest",
+          env: { SKILL_DISCOVERY: "1" },
+          command: ["node", "/worker/index.js"],
+        });
+        const runner = makeRunner(adapter);
+        const ctx = makeContext({
+          agentSession: {
+            ...makeContext().agentSession,
+            skillDiscoveryEnabled: true,
+            skillSourcesJson: sources,
+          },
+        });
+
+        mockSpawnWith((child) => {
+          process.nextTick(() => child.emit("close", 0));
+        });
+
+        await asDockerRunner(runner).runAgentInDocker(adapter, ctx, {});
+
+        expect(mockExecInVolume).toHaveBeenCalledWith(expect.objectContaining({
+          volumeName: ctx.homeVolumeName,
+          forwardSshAgent: true,
+          command: expect.arrayContaining(["npx", "--yes", "skills@1.5.16", "add", "git@skills.example.com:org/agent-skills"]),
+        }));
+        const { args } = getSpawnCall();
+        const argsArray = [...args];
+        expect(argsArray).not.toContain("/tmp/ve-ssh.sock:/ve-home/ssh-auth.sock");
+        expect(argsArray.some((arg) => arg.includes("SSH_AUTH_SOCK="))).toBe(false);
+        expect(argsArray.some((arg) => arg.includes("GIT_SSH_COMMAND="))).toBe(false);
+        expect(argsArray).not.toContain("--user");
+      } finally {
+        restoreEnv("SSH_AUTH_SOCK", savedSshAuthSock);
+      }
+    });
+
+    it("rejects remote skill installs for unknown agent providers", async () => {
+      const adapter = makeAgentAdapter();
+      const sources = JSON.stringify([{ source: "example-org/agent-skills", skills: ["skill-a"] }]);
+      (adapter.buildContainerSpec as ReturnType<typeof vi.fn>).mockReturnValue({
+        image: "my-image:latest",
+        env: { SKILL_DISCOVERY: "1", SKILL_SOURCES_JSON: sources },
+        command: ["node", "/worker/index.js"],
+      });
+      const runner = makeRunner(adapter);
+      const ctx = makeContext({
+        agentSession: {
+          ...makeContext().agentSession,
+          skillDiscoveryEnabled: true,
+          skillSourcesJson: sources,
+        },
+      });
+
+      await expect(asDockerRunner(runner).runAgentInDocker(adapter, ctx, {})).rejects.toThrow(
+        'Remote skill sources are not supported for agent provider "mock"'
+      );
+
+      expect(mockExecInVolume).not.toHaveBeenCalled();
+      expect(mockSpawn).not.toHaveBeenCalled();
+    });
+
     it("includes network mode from spec", async () => {
       const adapter = makeAgentAdapter();
       (adapter.buildContainerSpec as ReturnType<typeof vi.fn>).mockReturnValue({
@@ -429,6 +768,95 @@ describe("DockerWorkspaceRunner", () => {
       });
 
       expect(chunks).toEqual(["first line\n", "second line\n"]);
+    });
+  });
+
+  describe("runReviewInDocker", () => {
+    it("uses the captured review adapter when installing remote skills", async () => {
+      let runner: DockerWorkspaceRunner;
+      const updatedAdapter = {
+        name: "claude",
+        buildContainerSpec: vi.fn(),
+        execute: vi.fn(),
+        buildReviewContainerSpec: vi.fn().mockReturnValue({
+          image: "virtual-engineer-workspace:latest",
+          env: {},
+          command: ["node", "/agent-worker/dist/index.js"],
+        }),
+      } as unknown as AgentAdapter;
+      const initialAdapter = {
+        name: "copilot",
+        buildContainerSpec: vi.fn(),
+        execute: vi.fn(),
+        buildReviewContainerSpec: vi.fn(() => {
+          runner.updateRuntime({ agentAdapter: updatedAdapter });
+          return {
+            image: "virtual-engineer-workspace:latest",
+            env: {},
+            command: ["node", "/agent-worker/dist/index.js"],
+          };
+        }),
+      } as unknown as AgentAdapter;
+      runner = makeRunner(initialAdapter);
+      const handle = await runner.createWorkspace(makeTaskId("task-1"));
+
+      mockSpawnWith((child) => {
+        process.nextTick(() => {
+          child.stdout.emit("data", Buffer.from(JSON.stringify({ rawOutput: "review text" })));
+          child.emit("close", 0);
+        });
+      });
+
+      await runner.runReviewInDocker(handle, {
+        changeId: makeExternalChangeId("Iabc123"),
+        revisionNumber: 1,
+        patchset: 1,
+        repositoryName: "repo",
+        prompt: "review this",
+        systemPrompt: "system",
+        agentToken: "token",
+        skillDiscoveryEnabled: false,
+        skillSourcesJson: JSON.stringify([{ source: "example-org/agent-skills", skills: ["skill-a"] }]),
+      });
+
+      expect(mockExecInVolume).toHaveBeenCalledWith(expect.objectContaining({
+        volumeName: handle.homeVolumeName,
+        command: expect.arrayContaining(["-a", "github-copilot"]),
+      }));
+      expect(mockExecInVolume).not.toHaveBeenCalledWith(expect.objectContaining({
+        command: expect.arrayContaining(["-a", "claude-code"]),
+      }));
+    });
+
+    it("rejects remote skill installs for unknown review agent providers", async () => {
+      const adapter = {
+        name: "mock",
+        buildContainerSpec: vi.fn(),
+        execute: vi.fn(),
+        buildReviewContainerSpec: vi.fn().mockReturnValue({
+          image: "virtual-engineer-workspace:latest",
+          env: { SKILL_SOURCES_JSON: "[]", SSH_AUTH_SOCK: "/tmp/ve-ssh.sock", GIT_SSH_COMMAND: "ssh" },
+          command: ["node", "/agent-worker/dist/index.js"],
+        }),
+      } as unknown as AgentAdapter;
+      const runner = makeRunner(adapter);
+      const handle = await runner.createWorkspace(makeTaskId("task-1"));
+
+      await expect(runner.runReviewInDocker(handle, {
+        changeId: makeExternalChangeId("Iabc123"),
+        revisionNumber: 1,
+        patchset: 1,
+        repositoryName: "repo",
+        prompt: "review this",
+        systemPrompt: "system",
+        agentToken: "token",
+        skillDiscoveryEnabled: true,
+        skillSourcesJson: JSON.stringify([{ source: "example-org/agent-skills", skills: ["skill-a"] }]),
+      })).rejects.toThrow('Remote skill sources are not supported for agent provider "mock"');
+
+      const commands = mockExecInVolume.mock.calls.map(([spec]) => spec.command);
+      expect(commands).not.toContainEqual(expect.arrayContaining(["npx", "skills@1.5.16"]));
+      expect(mockSpawn).not.toHaveBeenCalled();
     });
   });
 

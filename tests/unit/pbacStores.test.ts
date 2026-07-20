@@ -1,12 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { tmpdir } from "os";
-import { join } from "path";
 import { randomUUID } from "crypto";
 import { SqliteStateStore } from "../../src/state/stateStore.js";
 import type { UserRole } from "../../src/interfaces.js";
+import { tempDatabasePath } from "./helpers/tempDatabase.js";
 
 function tempDbPath(): string {
-  return join(tmpdir(), `ve-pbac-${randomUUID()}.db`);
+  return tempDatabasePath("ve-pbac");
 }
 
 async function makeUser(store: SqliteStateStore, role: UserRole = "operator") {

@@ -87,6 +87,12 @@ function makeProject(overrides: Partial<ProjectRecord> = {}): ProjectRecord {
     agentOverrideJson: null,
     postCloneScript: "",
     skillDiscoveryEnabled: false,
+    localSkillsPath: ".github/skills",
+    skillSourcesJson: "[]",
+    gerritTopicOverride: null,
+    useFullTicketUrlInCommits: false,
+    postReviewLinkToTicket: false,
+    reactToCiFailures: false,
     enabled: true,
     createdAt: new Date(),
     updatedAt: new Date(),
@@ -874,6 +880,30 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
       expect.any(Array),
       "npm ci",
       undefined
+    );
+  });
+
+  it("passes remote skill sources even when local skill discovery is disabled", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING", projectId: makeProjectId("proj-1") });
+    const sources = JSON.stringify([{ source: "ssh://skills.example.com/org/agent-skills", skills: ["skill-a"] }]);
+    const mocks = makeMocks(initial);
+    mocks.store.getProjectById.mockResolvedValue(
+      makeProject({ skillDiscoveryEnabled: false, skillSourcesJson: sources })
+    );
+    const { runner } = makeWorkspaceRunner();
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+
+    await orch.runReview(initial.taskId);
+
+    expect(runner.runReviewInDocker).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ skillSourcesJson: sources }),
+      expect.anything()
+    );
+    expect(runner.runReviewInDocker).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ skillDiscoveryEnabled: true }),
+      expect.anything()
     );
   });
 });

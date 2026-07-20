@@ -199,6 +199,46 @@ describe("execInVolume", () => {
     });
   });
 
+  describe("with SSH agent forwarding disabled", () => {
+    let savedSshAuthSock: string | undefined;
+
+    beforeEach(() => {
+      savedSshAuthSock = process.env["SSH_AUTH_SOCK"];
+      process.env["SSH_AUTH_SOCK"] = "/tmp/ve-test-agent.sock";
+      mockReadFileSync.mockReturnValue(Buffer.from("example.com ssh-rsa AAAA..."));
+      mockExecFileSuccess();
+    });
+
+    afterEach(() => {
+      if (savedSshAuthSock !== undefined) {
+        process.env["SSH_AUTH_SOCK"] = savedSshAuthSock;
+      } else {
+        delete process.env["SSH_AUTH_SOCK"];
+      }
+    });
+
+    it("does not prepare agent-mode known_hosts when forwarding is disabled", async () => {
+      await execInVolume({
+        ...baseOpts,
+        sshKnownHostsPath: "/app/secrets/known_hosts",
+        forwardSshAgent: false,
+      });
+
+      const args = mockExecFile.mock.calls[0]![1] as string[];
+
+      expect(mockReadFileSync).not.toHaveBeenCalled();
+      expect(args).not.toContain("SSH_AUTH_SOCK=/tmp/ve-test-agent.sock");
+      expect(args).not.toContain("VE_SSH_KNOWN_HOSTS_B64=ZXhhbXBsZS5jb20gc3NoLXJzYSBBQUFBLi4u");
+      expect(args.find(a => a.startsWith("GIT_SSH_COMMAND="))).toBeUndefined();
+      expect(args).toEqual([
+        "run", "--rm",
+        "-v", "ve-ws-abc:/workspace",
+        "virtual-engineer-workspace:latest",
+        "git", "clone", "ssh://example.com/repo", "/workspace",
+      ]);
+    });
+  });
+
   // ─── execInVolume — with SSH key ──────────────────────────────────────────
 
   describe("with sshKeyPath", () => {

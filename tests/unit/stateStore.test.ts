@@ -3,12 +3,11 @@ import Database from "better-sqlite3";
 import { SqliteStateStore } from "../../src/state/stateStore.js";
 import { InvalidTransitionError } from "../../src/state/stateMachine.js";
 import { makeTaskId, makeTicketId, makeExternalChangeId, makeProjectId } from "../../src/interfaces.js";
-import { tmpdir } from "os";
-import { join } from "path";
 import { randomUUID } from "crypto";
+import { tempDatabasePath } from "./helpers/tempDatabase.js";
 
 function tempDbPath(): string {
-  return join(tmpdir(), `ve-test-${randomUUID()}.db`);
+  return tempDatabasePath("ve-test");
 }
 
 describe("SqliteStateStore", () => {
