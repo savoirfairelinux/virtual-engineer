@@ -772,6 +772,55 @@ describe("DockerWorkspaceRunner", () => {
   });
 
   describe("runReviewInDocker", () => {
+    it("uses the task-specific review adapter for the container and remote skills", async () => {
+      const defaultBuildReviewContainerSpec = vi.fn();
+      const defaultAdapter = {
+        name: "copilot",
+        buildContainerSpec: vi.fn(),
+        execute: vi.fn(),
+        buildReviewContainerSpec: defaultBuildReviewContainerSpec,
+      } as unknown as AgentAdapter;
+      const projectBuildReviewContainerSpec = vi.fn().mockReturnValue({
+        image: "virtual-engineer-workspace:latest",
+        env: {},
+        command: ["node", "/agent-worker/dist/index.js"],
+      });
+      const projectAdapter = {
+        name: "claude",
+        buildContainerSpec: vi.fn(),
+        execute: vi.fn(),
+        buildReviewContainerSpec: projectBuildReviewContainerSpec,
+      } as unknown as AgentAdapter;
+      const runner = makeRunner(defaultAdapter);
+      const handle = await runner.createWorkspace(makeTaskId("task-1"));
+
+      mockSpawnWith((child) => {
+        process.nextTick(() => {
+          child.stdout.emit("data", Buffer.from(JSON.stringify({ rawOutput: "review text" })));
+          child.emit("close", 0);
+        });
+      });
+
+      await runner.runReviewInDocker(handle, {
+        changeId: makeExternalChangeId("Iabc123"),
+        revisionNumber: 1,
+        patchset: 1,
+        repositoryName: "repo",
+        prompt: "review this",
+        systemPrompt: "system",
+        agentToken: "token",
+        agentAdapter: projectAdapter,
+        skillSourcesJson: JSON.stringify([{ source: "example-org/agent-skills", skills: ["skill-a"] }]),
+      });
+
+      expect(projectBuildReviewContainerSpec).toHaveBeenCalledOnce();
+      expect(defaultBuildReviewContainerSpec).not.toHaveBeenCalled();
+      expect(mockExecInVolume).toHaveBeenCalledWith(expect.objectContaining({
+        volumeName: handle.homeVolumeName,
+        command: expect.arrayContaining(["-a", "claude-code"]),
+      }));
+    });
+
     it("uses the captured review adapter when installing remote skills", async () => {
       let runner: DockerWorkspaceRunner;
       const updatedAdapter = {
@@ -815,6 +864,7 @@ describe("DockerWorkspaceRunner", () => {
         prompt: "review this",
         systemPrompt: "system",
         agentToken: "token",
+        agentAdapter: initialAdapter,
         skillDiscoveryEnabled: false,
         skillSourcesJson: JSON.stringify([{ source: "example-org/agent-skills", skills: ["skill-a"] }]),
       });
@@ -850,6 +900,7 @@ describe("DockerWorkspaceRunner", () => {
         prompt: "review this",
         systemPrompt: "system",
         agentToken: "token",
+        agentAdapter: adapter,
         skillDiscoveryEnabled: true,
         skillSourcesJson: JSON.stringify([{ source: "example-org/agent-skills", skills: ["skill-a"] }]),
       })).rejects.toThrow('Remote skill sources are not supported for agent provider "mock"');

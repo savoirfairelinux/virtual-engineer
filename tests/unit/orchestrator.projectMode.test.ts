@@ -197,6 +197,10 @@ function makeAgentRecord(overrides: Partial<AgentRecord> = {}): AgentRecord {
   };
 }
 
+function makeProjectAgentLookup() {
+  return vi.fn(async () => makeAgentRecord({ integrationId: "redmine-int" }));
+}
+
 function baseConfig() {
   return {
     maxAgentCycles: 3,
@@ -275,7 +279,7 @@ describe("Orchestrator — Phase 4 project mode", () => {
           createdAt: new Date(),
         })),
         getProjectReviewConfig: vi.fn().mockResolvedValue(null),
-        getAgentById: vi.fn(),
+        getAgentById: makeProjectAgentLookup(),
       },
       pluginManager: {
         getConnectorForIntegration: vi.fn(() => null),
@@ -328,7 +332,7 @@ describe("Orchestrator — Phase 4 project mode", () => {
         listProjectPushTargets: vi.fn(async () => targets),
         getProjectTicketSource: vi.fn().mockResolvedValue({ integrationId: "redmine-int" }),
         getProjectReviewConfig: vi.fn().mockResolvedValue(null),
-        getAgentById: vi.fn(),
+        getAgentById: makeProjectAgentLookup(),
       },
       pluginManager: { getConnectorForIntegration: vi.fn().mockImplementation((id: string) => {
         if (id === "redmine-int") return makeRedmine();
@@ -415,7 +419,7 @@ describe("Orchestrator — Phase 4 project mode", () => {
         listProjectPushTargets: vi.fn(async () => targets),
         getProjectTicketSource: vi.fn().mockResolvedValue({ integrationId: "redmine-int" }),
         getProjectReviewConfig: vi.fn().mockResolvedValue(null),
-        getAgentById: vi.fn(),
+        getAgentById: makeProjectAgentLookup(),
       },
       pluginManager: { getConnectorForIntegration: vi.fn().mockImplementation((id: string) => {
         if (id === "redmine-int") return redmine;
@@ -478,7 +482,7 @@ describe("Orchestrator — Phase 4 project mode", () => {
         listProjectPushTargets: vi.fn(async () => targets),
         getProjectTicketSource: vi.fn().mockResolvedValue({ integrationId: "redmine-int" }),
         getProjectReviewConfig: vi.fn().mockResolvedValue(null),
-        getAgentById: vi.fn(),
+        getAgentById: makeProjectAgentLookup(),
       },
       pluginManager: { getConnectorForIntegration: vi.fn().mockImplementation((id: string) => {
         if (id === "redmine-int") return redmine;
@@ -540,6 +544,73 @@ describe("Orchestrator — Phase 4 project mode", () => {
 
     expect(ws.runAgent).toHaveBeenCalledWith(expect.any(Object), expect.any(Object), projectAgent);
   });
+
+  it.each([
+    {
+      label: "agent record is missing",
+      agent: null,
+      expectedReason: "was not found",
+    },
+    {
+      label: "agent is disabled",
+      agent: makeAgentRecord({ enabled: false }),
+      expectedReason: "is not an enabled coding agent",
+    },
+    {
+      label: "agent adapter is unavailable",
+      agent: makeAgentRecord({ integrationId: "copilot-unavailable" }),
+      expectedReason: "Project agent adapter is unavailable",
+    },
+  ] satisfies Array<{ label: string; agent: AgentRecord | null; expectedReason: string }>)(
+    "fails the task without running an agent when $label",
+    async ({ agent, expectedReason }) => {
+    const task = makeTask({ state: "AGENT_RUNNING" });
+    const stateStore = makeStateStore({
+      getTask: vi.fn().mockResolvedValue(task),
+    });
+    const ws = makeWorkspaceRunner();
+    const project = makeProject();
+    const redmine = makeRedmine();
+    const projectMode: ProjectModeDeps = {
+      projectStore: {
+        getProjectById: vi.fn(async () => project),
+        listProjectPushTargets: vi.fn(async () => [
+          makePushTarget({ id: 1, commitOrder: 1, localPath: ".", integrationId: "vcs-1", repoKey: "root" }),
+        ]),
+        getProjectTicketSource: vi.fn().mockResolvedValue({ integrationId: "redmine-int" }),
+        getProjectReviewConfig: vi.fn().mockResolvedValue(null),
+        getAgentById: vi.fn(async () => agent),
+      },
+      pluginManager: {
+        getConnectorForIntegration: vi.fn((integrationId: string) =>
+          integrationId === "redmine-int" ? redmine : null
+        ),
+      } as unknown as ProjectModeDeps["pluginManager"],
+      resolveVcsForIntegration: vi.fn(async () => ({
+        clone: vi.fn(),
+        push: vi.fn(),
+        getChangeStatus: vi.fn(),
+        buildPushSpec: vi.fn().mockReturnValue({ ref: "refs/for/main", topic: "VE-task-id" }),
+        useChangeIdContinuity: true,
+        reviewSystemLabel: "gerrit",
+      }) as unknown as VcsConnector),
+    };
+    const orch = new Orchestrator(baseConfig(), stateStore, ws, undefined, undefined, projectMode);
+
+    await (orch as unknown as { runAgentCycle(input: Task): Promise<void> }).runAgentCycle(task);
+
+    expect(stateStore.setFailureReason).toHaveBeenCalledWith(
+      task.taskId,
+      expect.stringContaining(expectedReason)
+    );
+    expect(stateStore.transition).toHaveBeenCalledWith(
+      task.taskId,
+      "FAILED",
+      expect.objectContaining({ error: expect.stringContaining(expectedReason) })
+    );
+    expect(ws.runAgent).not.toHaveBeenCalled();
+    }
+  );
 
   it("project-mode runAgentCycle applies resolved agent overrides to task context", async () => {
     const stateStore = makeStateStore();
@@ -693,7 +764,7 @@ describe("Orchestrator — Phase 4 project mode", () => {
         listProjectPushTargets: vi.fn(async () => targets),
         getProjectTicketSource: vi.fn().mockResolvedValue({ integrationId: "redmine-int" }),
         getProjectReviewConfig: vi.fn().mockResolvedValue(null),
-        getAgentById: vi.fn(),
+        getAgentById: makeProjectAgentLookup(),
       },
       pluginManager: { getConnectorForIntegration: vi.fn().mockImplementation((id: string) => {
         if (id === "redmine-int") return makeRedmine();
@@ -752,7 +823,7 @@ describe("Orchestrator — Phase 4 project mode", () => {
         listProjectPushTargets: vi.fn(async () => targets),
         getProjectTicketSource: vi.fn().mockResolvedValue({ integrationId: "redmine-int" }),
         getProjectReviewConfig: vi.fn().mockResolvedValue(null),
-        getAgentById: vi.fn(),
+        getAgentById: makeProjectAgentLookup(),
       },
       pluginManager: { getConnectorForIntegration: vi.fn().mockImplementation((id: string) => {
         if (id === "redmine-int") return makeRedmine();
@@ -811,7 +882,7 @@ describe("Orchestrator — Phase 4 project mode", () => {
         listProjectPushTargets: vi.fn(async () => targets),
         getProjectTicketSource: vi.fn().mockResolvedValue({ integrationId: "redmine-int" }),
         getProjectReviewConfig: vi.fn().mockResolvedValue(null),
-        getAgentById: vi.fn(),
+        getAgentById: makeProjectAgentLookup(),
       },
       pluginManager: {
         getConnectorForIntegration: vi.fn().mockImplementation((id: string) => {
@@ -874,7 +945,7 @@ describe("Orchestrator — Phase 4 project mode", () => {
         listProjectPushTargets: vi.fn(async () => []),
         getProjectTicketSource: vi.fn().mockResolvedValue({ integrationId: "redmine-int" }),
         getProjectReviewConfig: vi.fn().mockResolvedValue(null),
-        getAgentById: vi.fn(),
+        getAgentById: makeProjectAgentLookup(),
       },
       pluginManager: { getConnectorForIntegration: vi.fn(() => null) } as unknown as ProjectModeDeps["pluginManager"],
       resolveVcsForIntegration: vi.fn(async () => reviewConnector),
@@ -931,7 +1002,7 @@ describe("Orchestrator — Phase 4 project mode", () => {
         listProjectPushTargets: vi.fn(async () => []),
         getProjectTicketSource: vi.fn().mockResolvedValue({ integrationId: "redmine-int" }),
         getProjectReviewConfig: vi.fn().mockResolvedValue(null),
-        getAgentById: vi.fn(),
+        getAgentById: makeProjectAgentLookup(),
       },
       pluginManager: { getConnectorForIntegration: vi.fn(() => null) } as unknown as ProjectModeDeps["pluginManager"],
       resolveVcsForIntegration: vi.fn(async () => reviewConnector),
@@ -989,7 +1060,7 @@ describe("Orchestrator — Phase 4 project mode", () => {
         listProjectPushTargets: vi.fn(async () => []),
         getProjectTicketSource: vi.fn().mockResolvedValue({ integrationId: "redmine-int" }),
         getProjectReviewConfig: vi.fn().mockResolvedValue(null),
-        getAgentById: vi.fn(),
+        getAgentById: makeProjectAgentLookup(),
       },
       pluginManager: { getConnectorForIntegration: vi.fn(() => null) } as unknown as ProjectModeDeps["pluginManager"],
       resolveVcsForIntegration: vi.fn(async () => reviewConnector),
@@ -1034,7 +1105,7 @@ describe("Orchestrator — Phase 4 project mode", () => {
         listProjectPushTargets: vi.fn(async () => []),
         getProjectTicketSource: vi.fn().mockResolvedValue({ integrationId: "redmine-int" }),
         getProjectReviewConfig: vi.fn().mockResolvedValue(null),
-        getAgentById: vi.fn(),
+        getAgentById: makeProjectAgentLookup(),
       },
       pluginManager: { getConnectorForIntegration: vi.fn(() => null) } as unknown as ProjectModeDeps["pluginManager"],
       resolveVcsForIntegration: vi.fn(async () => {
@@ -1100,7 +1171,7 @@ describe("Orchestrator — Phase 4 project mode", () => {
         listProjectPushTargets: vi.fn(async () => []),
         getProjectTicketSource: vi.fn().mockResolvedValue({ integrationId: "redmine-int" }),
         getProjectReviewConfig: vi.fn().mockResolvedValue(null),
-        getAgentById: vi.fn(),
+        getAgentById: makeProjectAgentLookup(),
       },
       pluginManager: { getConnectorForIntegration: vi.fn(() => null) } as unknown as ProjectModeDeps["pluginManager"],
       resolveVcsForIntegration: vi.fn()
@@ -1161,7 +1232,7 @@ describe("Orchestrator — Phase 4 project mode", () => {
         listProjectPushTargets: vi.fn(async () => targets),
         getProjectTicketSource: vi.fn().mockResolvedValue({ integrationId: "redmine-int" }),
         getProjectReviewConfig: vi.fn().mockResolvedValue(null),
-        getAgentById: vi.fn(),
+        getAgentById: makeProjectAgentLookup(),
       },
       pluginManager: { getConnectorForIntegration: vi.fn().mockImplementation((id: string) => {
         if (id === "redmine-int") return makeRedmine();
@@ -1223,7 +1294,7 @@ describe("Orchestrator — Phase 4 project mode", () => {
         listProjectPushTargets: vi.fn(async () => targets),
         getProjectTicketSource: vi.fn().mockResolvedValue({ integrationId: "redmine-int" }),
         getProjectReviewConfig: vi.fn().mockResolvedValue(null),
-        getAgentById: vi.fn(),
+        getAgentById: makeProjectAgentLookup(),
       },
       pluginManager: { getConnectorForIntegration: vi.fn().mockImplementation((id: string) => {
         if (id === "redmine-int") return makeRedmine();
@@ -1281,7 +1352,7 @@ describe("Orchestrator — Phase 4 project mode", () => {
         listProjectPushTargets: vi.fn(async () => targets),
         getProjectTicketSource: vi.fn().mockResolvedValue({ integrationId: "redmine-int" }),
         getProjectReviewConfig: vi.fn().mockResolvedValue(null),
-        getAgentById: vi.fn(),
+        getAgentById: makeProjectAgentLookup(),
       },
       pluginManager: { getConnectorForIntegration: vi.fn().mockImplementation((id: string) => {
         if (id === "redmine-int") return makeRedmine();
@@ -1334,7 +1405,7 @@ describe("Orchestrator — Phase 4 project mode", () => {
         ]),
         getProjectTicketSource: vi.fn().mockResolvedValue({ integrationId: "redmine-int" }),
         getProjectReviewConfig: vi.fn().mockResolvedValue(null),
-        getAgentById: vi.fn(),
+        getAgentById: makeProjectAgentLookup(),
       },
       pluginManager: { getConnectorForIntegration: vi.fn().mockImplementation((id: string) => {
         if (id === "redmine-int") return makeRedmine();
@@ -1401,7 +1472,7 @@ describe("Orchestrator — Phase 4 project mode", () => {
         ]),
         getProjectTicketSource: vi.fn().mockResolvedValue({ integrationId: "redmine-int" }),
         getProjectReviewConfig: vi.fn().mockResolvedValue(null),
-        getAgentById: vi.fn(),
+        getAgentById: makeProjectAgentLookup(),
       },
       pluginManager: { getConnectorForIntegration: vi.fn().mockImplementation((id: string) => {
         if (id === "redmine-int") return makeRedmine();
@@ -1462,7 +1533,7 @@ describe("Orchestrator — Phase 4 project mode", () => {
         ]),
         getProjectTicketSource: vi.fn().mockResolvedValue({ integrationId: "redmine-int" }),
         getProjectReviewConfig: vi.fn().mockResolvedValue(null),
-        getAgentById: vi.fn(),
+        getAgentById: makeProjectAgentLookup(),
       },
       pluginManager: { getConnectorForIntegration: vi.fn().mockImplementation((id: string) => {
         if (id === "redmine-int") return makeRedmine();
@@ -1511,7 +1582,7 @@ describe("Orchestrator — Phase 4 project mode", () => {
         ]),
         getProjectTicketSource: vi.fn().mockResolvedValue({ integrationId: "redmine-int" }),
         getProjectReviewConfig: vi.fn().mockResolvedValue(null),
-        getAgentById: vi.fn(),
+        getAgentById: makeProjectAgentLookup(),
       },
       pluginManager: { getConnectorForIntegration: vi.fn().mockImplementation((id: string) => {
         if (id === "redmine-int") return makeRedmine();
@@ -1576,7 +1647,7 @@ describe("Orchestrator — Phase 4 project mode", () => {
         ]),
         getProjectTicketSource: vi.fn().mockResolvedValue({ integrationId: "redmine-int" }),
         getProjectReviewConfig: vi.fn().mockResolvedValue(null),
-        getAgentById: vi.fn(),
+        getAgentById: makeProjectAgentLookup(),
       },
       pluginManager: { getConnectorForIntegration: vi.fn().mockImplementation((id: string) => {
         if (id === "redmine-int") return makeRedmine();
@@ -1627,7 +1698,7 @@ describe("Orchestrator — Phase 4 project mode", () => {
         ]),
         getProjectTicketSource: vi.fn().mockResolvedValue({ integrationId: "redmine-int" }),
         getProjectReviewConfig: vi.fn().mockResolvedValue(null),
-        getAgentById: vi.fn(),
+        getAgentById: makeProjectAgentLookup(),
       },
       pluginManager: { getConnectorForIntegration: vi.fn().mockImplementation((id: string) => {
         if (id === "redmine-int") return makeRedmine();
@@ -1672,7 +1743,7 @@ describe("Orchestrator — Phase 4 project mode", () => {
         listProjectPushTargets: vi.fn(async () => targets),
         getProjectTicketSource: vi.fn().mockResolvedValue({ integrationId: "redmine-int" }),
         getProjectReviewConfig: vi.fn().mockResolvedValue(null),
-        getAgentById: vi.fn(),
+        getAgentById: makeProjectAgentLookup(),
       },
       pluginManager: { getConnectorForIntegration: vi.fn().mockReturnValue(makeRedmine()) },
       resolveVcsForIntegration: vi.fn(async () => vcsRoot),
@@ -1717,7 +1788,7 @@ describe("Orchestrator — Phase 4 project mode", () => {
         listProjectPushTargets: vi.fn(async () => targets),
         getProjectTicketSource: vi.fn().mockResolvedValue({ integrationId: "redmine-int" }),
         getProjectReviewConfig: vi.fn().mockResolvedValue(null),
-        getAgentById: vi.fn(),
+        getAgentById: makeProjectAgentLookup(),
       },
       pluginManager: { getConnectorForIntegration: vi.fn().mockReturnValue(makeRedmine()) },
       resolveVcsForIntegration: vi.fn(async () => vcsRoot),
