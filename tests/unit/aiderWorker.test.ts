@@ -105,6 +105,73 @@ describe("runAiderAgent", () => {
     delete process.env["SECRET_LEAK"];
   });
 
+  it("does not forward unrelated cloud credentials (AWS/Azure/Vertex/Gemini)", async () => {
+    process.env["AWS_SECRET_ACCESS_KEY"] = "aws-secret";
+    process.env["AZURE_API_KEY"] = "azure-secret";
+    process.env["GEMINI_API_KEY"] = "gemini-secret";
+    process.env["VERTEX_PROJECT"] = "vertex-proj";
+    const fake = makeFakeChild();
+    spawnMock.mockReturnValue(fake);
+    const promise = runAiderAgent("hi", {
+      model: "gpt-4o",
+      systemPrompt: "sys",
+      cwd: "/workspace",
+      timeoutMs: 1000,
+      mode: "codegen",
+    });
+    await new Promise((r) => setImmediate(r));
+    fake.emit("close", 0);
+    await promise;
+
+    const env = spawnMock.mock.calls[0]![2] as { env: Record<string, string> };
+    expect(env.env["AWS_SECRET_ACCESS_KEY"]).toBeUndefined();
+    expect(env.env["AZURE_API_KEY"]).toBeUndefined();
+    expect(env.env["GEMINI_API_KEY"]).toBeUndefined();
+    expect(env.env["VERTEX_PROJECT"]).toBeUndefined();
+    delete process.env["AWS_SECRET_ACCESS_KEY"];
+    delete process.env["AZURE_API_KEY"];
+    delete process.env["GEMINI_API_KEY"];
+    delete process.env["VERTEX_PROJECT"];
+  });
+
+  it("emits an edit event with the bare path for an 'Editing file:' announcement", async () => {
+    const events: Array<Record<string, unknown>> = [];
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation((chunk: unknown) => {
+      const text = String(chunk);
+      for (const line of text.split("\n")) {
+        if (line.includes('"__ve_event"')) {
+          try {
+            events.push(JSON.parse(line) as Record<string, unknown>);
+          } catch {
+            /* ignore non-JSON stderr lines */
+          }
+        }
+      }
+      return true;
+    });
+    const fake = makeFakeChild();
+    spawnMock.mockReturnValue(fake);
+    const promise = runAiderAgent("edit please", {
+      model: "gpt-4o",
+      systemPrompt: "sys",
+      cwd: "/workspace",
+      timeoutMs: 1000,
+      mode: "codegen",
+    });
+    await new Promise((r) => setImmediate(r));
+    (fake.stdout as PassThrough).write("Editing file: src/foo.ts\n");
+    await new Promise((r) => setImmediate(r));
+    fake.emit("close", 0);
+    await promise;
+    stderrSpy.mockRestore();
+
+    const editEvent = events.find(
+      (e) => e["type"] === "tool.execution_start" && (e["data"] as Record<string, unknown>)?.["name"] === "edit"
+    );
+    expect(editEvent).toBeDefined();
+    expect((editEvent!["data"] as { input: { path: string } }).input.path).toBe("src/foo.ts");
+  });
+
   it("rejects when aider exits non-zero", async () => {
     const fake = makeFakeChild();
     spawnMock.mockReturnValue(fake);
