@@ -415,6 +415,14 @@ export interface AgentSession {
   skillSourcesJson?: string | undefined;
   /** Pre-formatted ticket-footer trailer line (e.g. "GitLab: https://…/issues/123") injected into every agent commit alongside its Change-Id. Sourced from the project's "full ticket URL in commits" setting. */
   ticketFooterLine?: string | undefined;
+
+  // ── Aider (agent_execution) ────────────────────────────────────────────────
+  /** Aider LLM backend selector (openai | anthropic | ollama | openrouter | deepseek | openai_compat). */
+  aiderBackend?: string | undefined;
+  /** API key for the selected Aider backend (plaintext at rest, like `githubToken`). */
+  aiderApiKey?: string | undefined;
+  /** Custom API base URL (required for `openai_compat`; optional override for `ollama`). */
+  aiderApiBase?: string | undefined;
 }
 
 export interface TaskContext {
@@ -584,9 +592,15 @@ export interface ReviewWorkspaceInput {
   localSkillsPath?: string | undefined;
   /** Remote skills fetched by the worker before opening the agent session. */
   skillSourcesJson?: string | undefined;
-}
 
-/** Options for checking out a prior patchset/revision onto a cloned workspace. */
+  // ── Aider (agent_execution) ────────────────────────────────────────────────
+  /** Aider LLM backend selector (openai | anthropic | ollama | openrouter | deepseek | openai_compat). */
+  aiderBackend?: string | undefined;
+  /** API key for the selected Aider backend (plaintext at rest, like `agentToken`). */
+  aiderApiKey?: string | undefined;
+  /** Custom API base URL (required for `openai_compat`; optional override for `ollama`). */
+  aiderApiBase?: string | undefined;
+}
 export interface PatchsetCheckoutOptions {
   /** VCS base URL (used to build the remote fetch URL) */
   vcsBaseUrl: string;
@@ -1497,7 +1511,16 @@ export interface DiscoveredResources {
 // ─── Plugin / Integration types ───────────────────────────────────────────────
 
 /** Identifiers for the external systems Virtual Engineer can connect to. */
-export const PROVIDER_IDS = ["github", "gitlab", "gerrit", "redmine", "copilot", "claude", "mock"] as const;
+export const PROVIDER_IDS = [
+  "github",
+  "gitlab",
+  "gerrit",
+  "redmine",
+  "copilot",
+  "claude",
+  "aider",
+  "mock",
+] as const;
 export type ProviderId = (typeof PROVIDER_IDS)[number];
 
 /**

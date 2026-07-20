@@ -793,6 +793,17 @@ export class Orchestrator {
             : {}),
           ...(resolvedCopilotModel ? { copilotModel: resolvedCopilotModel } : {}),
           ...(resolvedReasoningEffort !== undefined ? { copilotReasoningEffort: resolvedReasoningEffort } : {}),
+          // Aider backend credentials flow through `extra` (set by
+          // resolveProjectAgentRuntime from the integration config).
+          ...(typeof projectAgentRuntime?.config.extra["aiderBackend"] === "string"
+            ? { aiderBackend: projectAgentRuntime.config.extra["aiderBackend"] }
+            : {}),
+          ...(typeof projectAgentRuntime?.config.extra["aiderApiKey"] === "string"
+            ? { aiderApiKey: projectAgentRuntime.config.extra["aiderApiKey"] }
+            : {}),
+          ...(typeof projectAgentRuntime?.config.extra["aiderApiBase"] === "string"
+            ? { aiderApiBase: projectAgentRuntime.config.extra["aiderApiBase"] }
+            : {}),
           ...(projectPushTargets.length > 1 || projectPushTargets.some((t) => t.localPath !== ".")
             ? { repositoryMap: buildRepositoryMap(projectPushTargets) }
             : {}),
@@ -1030,7 +1041,10 @@ export class Orchestrator {
     // here before use.
     let encryptedSessionToken = resolvedConfig.encryptedSessionToken;
     let apiKey = resolvedConfig.apiKey;
-    if (!encryptedSessionToken || !apiKey) {
+    // Aider forwards backend credentials via `extra`; start from the resolved
+    // extras so we don't clobber agent-level overrides.
+    const extra: Record<string, unknown> = { ...resolvedConfig.extra };
+    if (!encryptedSessionToken || !apiKey || Object.keys(extra).length === 0) {
       const integration = this.projectMode.pluginManager.getActiveIntegrationById?.(agent.integrationId);
       if (integration) {
         try {
@@ -1057,6 +1071,16 @@ export class Orchestrator {
                 encryptedSessionToken = encryptToken(pat, this.config.adminAuthSecret);
               }
             }
+          } else if (integration.provider === "aider") {
+            // Aider carries a backend selector + that backend's API key / base
+            // URL on the integration config. Forward them via `extra` so the
+            // AiderAdapter can map them onto the litellm env vars.
+            const backend = integCfg["aiderBackend"];
+            const key = integCfg["aiderApiKey"];
+            const base = integCfg["aiderApiBase"];
+            if (typeof backend === "string" && backend) extra["aiderBackend"] = backend;
+            if (typeof key === "string" && key) extra["aiderApiKey"] = key;
+            if (typeof base === "string" && base) extra["aiderApiBase"] = base;
           }
         } catch { /* ignore */ }
       }
@@ -1064,11 +1088,12 @@ export class Orchestrator {
 
     const authChanged =
       encryptedSessionToken !== resolvedConfig.encryptedSessionToken ||
-      apiKey !== resolvedConfig.apiKey;
+      apiKey !== resolvedConfig.apiKey ||
+      Object.keys(extra).length > 0;
     return {
       adapter,
       config: authChanged
-        ? { ...resolvedConfig, encryptedSessionToken, apiKey }
+        ? { ...resolvedConfig, encryptedSessionToken, apiKey, extra }
         : resolvedConfig,
     };
   }

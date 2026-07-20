@@ -537,6 +537,8 @@ export class ReviewOrchestrator {
           agentToken: projectAgentRuntime.token,
           model: projectAgentRuntime.model,
           agentAdapter: projectAgentRuntime.adapter,
+          ...(projectAgentRuntime.aiderBackend !== undefined ? { aiderBackend: projectAgentRuntime.aiderBackend } : {}),
+          ...(projectAgentRuntime.aiderApiBase !== undefined ? { aiderApiBase: projectAgentRuntime.aiderApiBase } : {}),
           ...(project.skillDiscoveryEnabled ? { skillDiscoveryEnabled: true } : {}),
           ...(project.skillDiscoveryEnabled ? { localSkillsPath: project.localSkillsPath } : {}),
           ...(project.skillSourcesJson !== "[]"
