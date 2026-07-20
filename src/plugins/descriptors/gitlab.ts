@@ -75,6 +75,8 @@ export const gitlabDescriptor: ProviderDescriptor = {
       required: false,
       placeholder: "Auto-generated when empty",
     },
+    { key: "gitAuthorName", label: "Commit Author Name", type: "text", required: false, placeholder: "Virtual Engineer", advanced: true },
+    { key: "gitAuthorEmail", label: "Commit Author Email", type: "text", required: false, placeholder: "ve@virtual-engineer.local", advanced: true },
   ],
   oauth: createGitLabOAuthConfig("gitlab", "GitLab Authentication"),
   resolveOAuthConfig: resolveGitLabOAuthConfig,

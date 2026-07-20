@@ -129,6 +129,8 @@ export const gerritDescriptor: ProviderDescriptor = {
     { key: "sshPort", label: "SSH Port", type: "number", required: false, placeholder: "29418" },
     { key: "sshUser", label: "SSH User", type: "text", required: true, placeholder: "admin" },
     { key: "sshKnownHostsPath", label: "SSH Known Hosts Path", type: "text", required: false, placeholder: "/home/<user>/.ssh/known_hosts", advanced: true },
+    { key: "gitAuthorName", label: "Commit Author Name", type: "text", required: false, placeholder: "Virtual Engineer", advanced: true },
+    { key: "gitAuthorEmail", label: "Commit Author Email", type: "text", required: false, placeholder: "ve@virtual-engineer.local", advanced: true },
     // SSH key fields are managed via the dedicated SSH key UI section, not generic dynamic fields.
     // sshPrivateKeyEnc and sshPublicKey are hidden so the generic masking logic does not expose them.
     { key: "sshPrivateKeyEnc", label: "SSH Private Key (encrypted)", type: "password", required: false, hidden: true },
