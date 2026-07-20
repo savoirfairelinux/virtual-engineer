@@ -1061,6 +1061,19 @@ export class Orchestrator {
                 encryptedSessionToken = sess;
               }
             }
+          } else if (integration.provider === "aider") {
+            // Aider carries a backend selector + that backend's API key / base
+            // URL on the integration config. Forward them via `extra` so the
+            // AiderAdapter can map them onto the litellm env vars. This must be
+            // checked before the generic `!encryptedSessionToken` branch below,
+            // since Aider never populates `encryptedSessionToken` and would
+            // otherwise be swallowed by that branch and never forwarded.
+            const backend = integCfg["aiderBackend"];
+            const key = integCfg["aiderApiKey"];
+            const base = integCfg["aiderApiBase"];
+            if (typeof backend === "string" && backend) extra["aiderBackend"] = backend;
+            if (typeof key === "string" && key) extra["aiderApiKey"] = key;
+            if (typeof base === "string" && base) extra["aiderApiBase"] = base;
           } else if (!encryptedSessionToken) {
             const t = integCfg["sessionToken"];
             if (typeof t === "string" && t) {
@@ -1071,16 +1084,6 @@ export class Orchestrator {
                 encryptedSessionToken = encryptToken(pat, this.config.adminAuthSecret);
               }
             }
-          } else if (integration.provider === "aider") {
-            // Aider carries a backend selector + that backend's API key / base
-            // URL on the integration config. Forward them via `extra` so the
-            // AiderAdapter can map them onto the litellm env vars.
-            const backend = integCfg["aiderBackend"];
-            const key = integCfg["aiderApiKey"];
-            const base = integCfg["aiderApiBase"];
-            if (typeof backend === "string" && backend) extra["aiderBackend"] = backend;
-            if (typeof key === "string" && key) extra["aiderApiKey"] = key;
-            if (typeof base === "string" && base) extra["aiderApiBase"] = base;
           }
         } catch { /* ignore */ }
       }
