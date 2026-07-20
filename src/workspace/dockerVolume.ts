@@ -89,6 +89,8 @@ export interface ExecInVolumeOptions {
   networkMode?: string | undefined;
   /** Additional bind mounts (source:target:options) */
   additionalMounts?: string[] | undefined;
+  /** Forward host SSH_AUTH_SOCK for helper commands that need SSH agent auth. Defaults to true. */
+  forwardSshAgent?: boolean | undefined;
   /** Timeout in milliseconds (default 10 minutes) */
   timeout?: number | undefined;
   /** Mount the workspace as read-only */
@@ -124,6 +126,8 @@ export async function execInVolume(opts: ExecInVolumeOptions): Promise<ExecInVol
     dockerArgs.push("--user", opts.user);
   }
 
+  const agentSock = opts.sshKeyPath || opts.forwardSshAgent === false ? undefined : process.env["SSH_AUTH_SOCK"];
+
   if (opts.sshKeyPath) {
     // ── Private-key mode ────────────────────────────────────────────────────
     // SSH key is injected via base64 env var rather than bind-mount: when the
@@ -157,7 +161,6 @@ export async function execInVolume(opts: ExecInVolumeOptions): Promise<ExecInVol
     // orchestrator mounts $SSH_AUTH_SOCK with its original host path, so when
     // it passes that path to the Docker daemon, the daemon resolves it on the
     // host and finds the socket.
-    const agentSock = process.env["SSH_AUTH_SOCK"];
     if (opts.sshAgentPubKeyPath && !agentSock) {
       throw new Error(
         "SSH agent identity pinning is configured (sshAgentPubKeyPath) but " +
@@ -228,10 +231,10 @@ export async function execInVolume(opts: ExecInVolumeOptions): Promise<ExecInVol
   if (opts.sshKeyPath) {
     preambleParts.push(`echo "$VE_SSH_KEY_B64" | base64 -d > /tmp/ssh-key && chmod 600 /tmp/ssh-key && unset VE_SSH_KEY_B64`);
   }
-  if (opts.sshAgentPubKeyPath && process.env["SSH_AUTH_SOCK"]) {
+  if (opts.sshAgentPubKeyPath && agentSock) {
     preambleParts.push(`echo "$VE_SSH_AGENT_PUB_B64" | base64 -d > /tmp/agent-pub.pub && chmod 644 /tmp/agent-pub.pub && unset VE_SSH_AGENT_PUB_B64`);
   }
-  if (opts.sshKnownHostsPath && (opts.sshKeyPath || process.env["SSH_AUTH_SOCK"])) {
+  if (opts.sshKnownHostsPath && (opts.sshKeyPath || agentSock)) {
     preambleParts.push(`echo "$VE_SSH_KNOWN_HOSTS_B64" | base64 -d > /tmp/ssh-known-hosts && chmod 644 /tmp/ssh-known-hosts && unset VE_SSH_KNOWN_HOSTS_B64`);
   }
 
@@ -261,4 +264,3 @@ export async function execInVolume(opts: ExecInVolumeOptions): Promise<ExecInVol
     return { stdout: "", stderr: msg, exitCode: 1 };
   }
 }
-

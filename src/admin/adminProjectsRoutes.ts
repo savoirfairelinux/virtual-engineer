@@ -3,6 +3,7 @@ import { getLogger } from "../logger.js";
 import { writeJson, readBody, zodErrorBody } from "./adminRouteUtils.js";
 import { recordAudit, type AuditCapableStore } from "./adminAudit.js";
 import {
+  DEFAULT_LOCAL_SKILLS_PATH,
   makeAgentId,
   makeProjectId,
   makeTaskId,
@@ -23,8 +24,21 @@ import type { Router } from "./router.js";
 import { getEffectivePermissions } from "./authContext.js";
 import { accessibleResourceIds, ALL_RESOURCES } from "./authorization/policyEngine.js";
 import { getProviderDescriptor, getProviderDomainCapabilities } from "../plugins/registry.js";
+import { listSkillSourceSkills, validateSkillSourcesConnection } from "./skillSourceDiscovery.js";
 
 const log = getLogger("admin-projects");
+const MAX_TCP_PORT = 65_535;
+
+function isSkillSourceAuthError(message: string): boolean {
+  return message.startsWith("SSH skill sources require")
+    || message.startsWith("SSH private key path is not readable")
+    || message.startsWith("SSH known_hosts path is not readable")
+    || message.startsWith("Invalid SSH skill source URL")
+    || message.startsWith("Conflicting SSH ports")
+    || message.startsWith("SSH connection check failed")
+    || message.startsWith("Skill source #")
+    || message.startsWith("Failed to validate skill sources before saving");
+}
 
 async function relaunchFailedTasksForProject(
   store: ProjectsRouteStore,
@@ -61,13 +75,19 @@ export interface ProjectsRouteStore {
     agentOverrideJson?: string | null;
     postCloneScript?: string;
     skillDiscoveryEnabled?: boolean;
+    localSkillsPath?: string;
+    skillSourcesJson?: string;
+    gerritTopicOverride?: string | null;
+    useFullTicketUrlInCommits?: boolean;
+    postReviewLinkToTicket?: boolean;
+    reactToCiFailures?: boolean;
     enabled?: boolean;
   }): Promise<ProjectRecord>;
   getProjectById(id: ProjectId): Promise<ProjectRecord | null>;
   listProjects(filter?: { type?: ProjectType; enabled?: boolean }): Promise<ProjectRecord[]>;
   updateProject(
     id: ProjectId,
-    partial: Partial<Pick<ProjectRecord, "name" | "type" | "agentId" | "agentOverrideJson" | "postCloneScript" | "skillDiscoveryEnabled" | "enabled">>
+    partial: Partial<Pick<ProjectRecord, "name" | "type" | "agentId" | "agentOverrideJson" | "postCloneScript" | "skillDiscoveryEnabled" | "localSkillsPath" | "skillSourcesJson" | "gerritTopicOverride" | "useFullTicketUrlInCommits" | "postReviewLinkToTicket" | "reactToCiFailures" | "enabled">>
   ): Promise<ProjectRecord>;
   deleteProject(id: ProjectId): Promise<void>;
   setProjectEnabled(id: ProjectId, enabled: boolean): Promise<void>;
@@ -112,6 +132,7 @@ export interface ProjectsRouteDeps {
         retryTask(taskId: ReturnType<typeof makeTaskId>): Promise<void>;
       }
     | undefined;
+  validateSkillSourcesConnection?: ((sources: SkillSource[]) => Promise<void>) | undefined;
 }
 
 const pushTargetSchema = z.object({
@@ -158,6 +179,101 @@ const reviewConfigSchema = z.object({
   repoKeys: z.array(z.string()).min(1, "Select at least one repository to review"),
 });
 
+function optionalNonEmptyString(message: string): z.ZodOptional<z.ZodString> {
+  return z.string().trim().min(1, message).optional();
+}
+
+const skillSourceSchema = z.object({
+  source: z.string().trim().min(1, "Skill source is required"),
+  skills: z.array(z.string().trim().min(1, "Skill name is required")).optional(),
+  installAll: z.boolean().optional(),
+  sshUser: optionalNonEmptyString("SSH user must not be empty"),
+  sshPort: z.number().int().positive().max(MAX_TCP_PORT, "SSH port must be between 1 and 65535").optional(),
+  sshKeyPath: optionalNonEmptyString("SSH key path must not be empty"),
+  sshKnownHostsPath: optionalNonEmptyString("SSH known_hosts path must not be empty"),
+}).superRefine((source, ctx) => {
+  if (source.installAll === true) return;
+  if ((source.skills ?? []).length > 0) return;
+  ctx.addIssue({
+    code: z.ZodIssueCode.custom,
+    message: "Select at least one skill, or enable Install all",
+    path: ["skills"],
+  });
+});
+
+const skillSourcesSchema = z.array(skillSourceSchema).max(20, "At most 20 skill sources are supported");
+
+const localSkillsPathSchema = z.string().trim().min(1, "Local skills path is required").refine((path) => {
+  if (path.startsWith("/")) return false;
+  if (path === ".") return false;
+  return !path.split("/").some((part) => part === "..");
+}, "Local skills path must stay inside the workspace");
+
+const skillSourceDiscoverySchema = z.object({
+  source: z.string().trim().min(1, "Skill source is required"),
+  sshUser: optionalNonEmptyString("SSH user must not be empty"),
+  sshPort: z.number().int().positive().max(MAX_TCP_PORT, "SSH port must be between 1 and 65535").optional(),
+  sshKeyPath: optionalNonEmptyString("SSH key path must not be empty"),
+  sshKnownHostsPath: optionalNonEmptyString("SSH known_hosts path must not be empty"),
+});
+
+export interface SkillSource {
+  source: string;
+  skills: string[];
+  installAll?: boolean;
+  sshUser?: string;
+  sshPort?: number;
+  sshKeyPath?: string;
+  sshKnownHostsPath?: string;
+}
+
+function normalizeSkillSources(sources: z.infer<typeof skillSourcesSchema> | undefined): SkillSource[] {
+  if (!sources) return [];
+  return sources.map((source) => {
+    const ssh = {
+      ...(source.sshUser !== undefined && source.sshUser !== "" ? { sshUser: source.sshUser } : {}),
+      ...(source.sshPort !== undefined ? { sshPort: source.sshPort } : {}),
+      ...(source.sshKeyPath !== undefined && source.sshKeyPath !== "" ? { sshKeyPath: source.sshKeyPath } : {}),
+      ...(source.sshKnownHostsPath !== undefined && source.sshKnownHostsPath !== "" ? { sshKnownHostsPath: source.sshKnownHostsPath } : {}),
+    };
+    if (source.installAll === true) {
+      return { source: source.source, skills: [], installAll: true, ...ssh };
+    }
+    return { source: source.source, skills: Array.from(new Set(source.skills ?? [])), ...ssh };
+  });
+}
+
+function skillSourcesForCreate(sources: z.infer<typeof skillSourcesSchema> | undefined): SkillSource[] {
+  return normalizeSkillSources(sources);
+}
+
+async function validateSkillSourcesForSave(
+  sources: SkillSource[],
+  validator: (sources: SkillSource[]) => Promise<void>
+): Promise<void> {
+  try {
+    await validator(sources);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(`Failed to validate skill sources before saving: ${message}`);
+  }
+}
+
+function parseStoredSkillSources(project: ProjectRecord): SkillSource[] {
+  try {
+    const parsed: unknown = JSON.parse(project.skillSourcesJson || "[]");
+    const result = skillSourcesSchema.safeParse(parsed);
+    return result.success ? normalizeSkillSources(result.data) : [];
+  } catch {
+    return [];
+  }
+}
+
+function normalizeLocalSkillsPath(path: string | undefined): string {
+  const trimmed = path?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed : DEFAULT_LOCAL_SKILLS_PATH;
+}
+
 const codingProjectCreateSchema = z.object({
   id: z.string().optional(),
   type: z.literal("coding"),
@@ -166,6 +282,12 @@ const codingProjectCreateSchema = z.object({
   agentOverrideJson: z.string().nullable().optional(),
   postCloneScript: z.string().optional(),
   skillDiscoveryEnabled: z.boolean().optional(),
+  localSkillsPath: localSkillsPathSchema.optional(),
+  skillSources: skillSourcesSchema.optional(),
+  gerritTopicOverride: z.string().nullable().optional(),
+  useFullTicketUrlInCommits: z.boolean().optional(),
+  postReviewLinkToTicket: z.boolean().optional(),
+  reactToCiFailures: z.boolean().optional(),
   enabled: z.boolean().optional(),
   ticketSource: ticketSourceSchema,
   pushTargets: pushTargetsArraySchema,
@@ -179,6 +301,12 @@ const reviewProjectCreateSchema = z.object({
   agentOverrideJson: z.string().nullable().optional(),
   postCloneScript: z.string().optional(),
   skillDiscoveryEnabled: z.boolean().optional(),
+  localSkillsPath: localSkillsPathSchema.optional(),
+  skillSources: skillSourcesSchema.optional(),
+  gerritTopicOverride: z.string().nullable().optional(),
+  useFullTicketUrlInCommits: z.boolean().optional(),
+  postReviewLinkToTicket: z.boolean().optional(),
+  reactToCiFailures: z.boolean().optional(),
   enabled: z.boolean().optional(),
   reviewConfig: reviewConfigSchema,
 });
@@ -194,6 +322,12 @@ const projectUpdateSchema = z.object({
   agentOverrideJson: z.string().nullable().optional(),
   postCloneScript: z.string().optional(),
   skillDiscoveryEnabled: z.boolean().optional(),
+  localSkillsPath: localSkillsPathSchema.optional(),
+  skillSources: skillSourcesSchema.optional(),
+  gerritTopicOverride: z.string().nullable().optional(),
+  useFullTicketUrlInCommits: z.boolean().optional(),
+  postReviewLinkToTicket: z.boolean().optional(),
+  reactToCiFailures: z.boolean().optional(),
   enabled: z.boolean().optional(),
   ticketSource: ticketSourceSchema.optional(),
   pushTargets: pushTargetsArraySchema.optional(),
@@ -256,6 +390,8 @@ interface ProjectSummary {
   agentName: string | null;
   enabled: boolean;
   skillDiscoveryEnabled: boolean;
+  localSkillsPath: string;
+  skillSources: SkillSource[];
   createdAt: string;
   updatedAt: string;
   ticketSource: { integration: { id: string; name: string; provider: string; domainCapabilities: string[] } | null; ticketProjectKey: string } | null;
@@ -266,6 +402,10 @@ interface ProjectSummary {
 interface ProjectDetail extends ProjectSummary {
   agentOverrideJson: string | null;
   postCloneScript: string;
+  gerritTopicOverride: string | null;
+  useFullTicketUrlInCommits: boolean;
+  postReviewLinkToTicket: boolean;
+  reactToCiFailures: boolean;
   pushTargets: Array<{
     id: number;
     integration: { id: string; name: string; provider: string; domainCapabilities: string[] } | null;
@@ -318,6 +458,8 @@ async function buildProjectSummary(
     agentName: agent ? agent.name : null,
     enabled: project.enabled,
     skillDiscoveryEnabled: project.skillDiscoveryEnabled,
+    localSkillsPath: project.localSkillsPath,
+    skillSources: parseStoredSkillSources(project),
     createdAt: project.createdAt.toISOString(),
     updatedAt: project.updatedAt.toISOString(),
     ticketSource,
@@ -376,10 +518,16 @@ async function buildProjectDetail(
     agentName: agent ? agent.name : null,
     enabled: project.enabled,
     skillDiscoveryEnabled: project.skillDiscoveryEnabled,
+    localSkillsPath: project.localSkillsPath,
+    skillSources: parseStoredSkillSources(project),
     createdAt: project.createdAt.toISOString(),
     updatedAt: project.updatedAt.toISOString(),
     agentOverrideJson: project.agentOverrideJson,
     postCloneScript: project.postCloneScript,
+    gerritTopicOverride: project.gerritTopicOverride,
+    useFullTicketUrlInCommits: project.useFullTicketUrlInCommits,
+    postReviewLinkToTicket: project.postReviewLinkToTicket,
+    reactToCiFailures: project.reactToCiFailures,
     ticketSource,
     reviewConfig,
     pushTargetCount,
@@ -396,6 +544,32 @@ function isUniqueConflict(err: unknown): boolean {
 
 /** Register project routes on the given router. */
 export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): void {
+  const skillSourceConnectionValidator = deps.validateSkillSourcesConnection ?? validateSkillSourcesConnection;
+
+  const handleSkillSourceList: Parameters<Router["add"]>[2] = async (req, res, _params) => {
+    const body = await readBody(req);
+    if (!body) { writeJson(res, 400, { error: "Request body required" }); return; }
+    const parsed = skillSourceDiscoverySchema.safeParse(body);
+    if (!parsed.success) { writeJson(res, 400, zodErrorBody(parsed.error, "Invalid skill source payload")); return; }
+    try {
+      const source = {
+        source: parsed.data.source,
+        ...(parsed.data.sshUser !== undefined ? { sshUser: parsed.data.sshUser } : {}),
+        ...(parsed.data.sshPort !== undefined ? { sshPort: parsed.data.sshPort } : {}),
+        ...(parsed.data.sshKeyPath !== undefined ? { sshKeyPath: parsed.data.sshKeyPath } : {}),
+        ...(parsed.data.sshKnownHostsPath !== undefined ? { sshKnownHostsPath: parsed.data.sshKnownHostsPath } : {}),
+      };
+      const result = await listSkillSourceSkills(source);
+      writeJson(res, 200, result);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      writeJson(res, isSkillSourceAuthError(message) ? 400 : 502, { error: `Failed to list skills: ${message}` });
+    }
+  };
+
+  router.add("POST", "/api/admin/projects/:id/skill-sources/list", handleSkillSourceList, { permission: "project.write", resourceParam: "id" });
+  router.add("POST", "/api/admin/projects/skill-sources/list", handleSkillSourceList, { permission: "project.write" });
+
   router.add("GET", "/api/admin/projects", async (req, res, _params) => {
     if (!deps.projectStore) { writeJson(res, 501, { error: "Project store not available" }); return; }
     const store = deps.projectStore;
@@ -441,6 +615,13 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
       }
     }
     let project: ProjectRecord;
+    const skillSources = skillSourcesForCreate(data.skillSources);
+    try {
+      await validateSkillSourcesForSave(skillSources, skillSourceConnectionValidator);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      writeJson(res, 400, { error: msg }); return;
+    }
     try {
       project = await store.createProject({
         ...(data.id !== undefined ? { id: data.id } : {}),
@@ -449,6 +630,12 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
         ...(data.agentOverrideJson !== undefined ? { agentOverrideJson: data.agentOverrideJson } : {}),
         ...(data.postCloneScript !== undefined ? { postCloneScript: data.postCloneScript } : {}),
         ...(data.skillDiscoveryEnabled !== undefined ? { skillDiscoveryEnabled: data.skillDiscoveryEnabled } : {}),
+        localSkillsPath: normalizeLocalSkillsPath(data.localSkillsPath),
+        skillSourcesJson: JSON.stringify(skillSources),
+        ...(data.gerritTopicOverride !== undefined ? { gerritTopicOverride: data.gerritTopicOverride } : {}),
+        ...(data.useFullTicketUrlInCommits !== undefined ? { useFullTicketUrlInCommits: data.useFullTicketUrlInCommits } : {}),
+        ...(data.postReviewLinkToTicket !== undefined ? { postReviewLinkToTicket: data.postReviewLinkToTicket } : {}),
+        ...(data.reactToCiFailures !== undefined ? { reactToCiFailures: data.reactToCiFailures } : {}),
         ...(data.enabled !== undefined ? { enabled: data.enabled } : {}),
       });
     } catch (err: unknown) {
@@ -561,6 +748,21 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
     if (data.agentOverrideJson !== undefined) updates.agentOverrideJson = data.agentOverrideJson;
     if (data.postCloneScript !== undefined) updates.postCloneScript = data.postCloneScript;
     if (data.skillDiscoveryEnabled !== undefined) updates.skillDiscoveryEnabled = data.skillDiscoveryEnabled;
+    if (data.localSkillsPath !== undefined) updates.localSkillsPath = normalizeLocalSkillsPath(data.localSkillsPath);
+    if (data.skillSources !== undefined) {
+      const skillSources = normalizeSkillSources(data.skillSources);
+      try {
+        await validateSkillSourcesForSave(skillSources, skillSourceConnectionValidator);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        writeJson(res, 400, { error: msg }); return;
+      }
+      updates.skillSourcesJson = JSON.stringify(skillSources);
+    }
+    if (data.gerritTopicOverride !== undefined) updates.gerritTopicOverride = data.gerritTopicOverride;
+    if (data.useFullTicketUrlInCommits !== undefined) updates.useFullTicketUrlInCommits = data.useFullTicketUrlInCommits;
+    if (data.postReviewLinkToTicket !== undefined) updates.postReviewLinkToTicket = data.postReviewLinkToTicket;
+    if (data.reactToCiFailures !== undefined) updates.reactToCiFailures = data.reactToCiFailures;
     if (data.enabled !== undefined) updates.enabled = data.enabled;
     const reconfigured =
       data.ticketSource !== undefined ||
@@ -570,6 +772,8 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
       updates.agentOverrideJson !== undefined ||
       updates.postCloneScript !== undefined ||
       updates.skillDiscoveryEnabled !== undefined ||
+      updates.localSkillsPath !== undefined ||
+      updates.skillSourcesJson !== undefined ||
       (updates.enabled === true && existing.enabled !== true);
     try {
       if (Object.keys(updates).length > 0) await store.updateProject(id, updates);

@@ -89,6 +89,18 @@ describe("ClaudeAdapter", () => {
       expect(spec.env["AGENT_PROVIDER"]).toBe("claude");
       expect(spec.env["CLAUDE_MODEL"]).toBeUndefined();
     });
+
+    it("injects LOCAL_SKILLS_PATH only when skill discovery is enabled", () => {
+      const adapter = new ClaudeAdapter();
+      const ctx = makeContext();
+      ctx.agentSession.localSkillsPath = "team/skills";
+      expect(adapter.buildContainerSpec(ctx).env["LOCAL_SKILLS_PATH"]).toBeUndefined();
+
+      ctx.agentSession.skillDiscoveryEnabled = true;
+      const spec = adapter.buildContainerSpec(ctx);
+      expect(spec.env["SKILL_DISCOVERY"]).toBe("1");
+      expect(spec.env["LOCAL_SKILLS_PATH"]).toBe("team/skills");
+    });
   });
 
   describe("buildReviewContainerSpec", () => {
@@ -135,6 +147,18 @@ describe("ClaudeAdapter", () => {
       const adapter = new ClaudeAdapter();
       const spec = adapter.buildReviewContainerSpec(makeReviewInput({ agentToken: "sk-ant-api-1" }));
       expect(spec.env["CLAUDE_MODEL"]).toBeUndefined();
+    });
+
+    it("injects LOCAL_SKILLS_PATH in review specs only when skill discovery is enabled", () => {
+      const adapter = new ClaudeAdapter();
+      expect(adapter.buildReviewContainerSpec(makeReviewInput({ localSkillsPath: "team/skills" })).env["LOCAL_SKILLS_PATH"]).toBeUndefined();
+
+      const spec = adapter.buildReviewContainerSpec(makeReviewInput({
+        skillDiscoveryEnabled: true,
+        localSkillsPath: "team/skills",
+      }));
+      expect(spec.env["SKILL_DISCOVERY"]).toBe("1");
+      expect(spec.env["LOCAL_SKILLS_PATH"]).toBe("team/skills");
     });
   });
 
@@ -187,6 +211,28 @@ describe("ClaudeAdapter", () => {
       const result = await adapter.execute(makeContext());
       expect(result.status).toBe("failed");
       expect(result.metadata).toMatchObject({ adapter: "claude" });
+    });
+
+    it("returns a failed result with setup events when docker setup throws after stderr", async () => {
+      const adapter = new ClaudeAdapter();
+      const veEvent = JSON.stringify({
+        __ve_event: true,
+        type: "skills.fetch_failed",
+        data: { source: "example-org/agent-skills", message: "network failed" },
+        ts: "2026-01-01T00:00:00.000Z",
+      });
+      adapter.setDockerInvoker(vi.fn().mockImplementation(async (_ctx, _authEnv, callbacks) => {
+        callbacks?.onStderrChunk?.(`${veEvent}\n`);
+        throw new Error("failed to fetch skills from example-org/agent-skills: network failed");
+      }));
+
+      const result = await adapter.execute(makeContext());
+
+      expect(result.status).toBe("failed");
+      expect(result.summary).toBe("Agent setup failed before container output");
+      expect(result.agentEvents).toHaveLength(1);
+      expect(result.agentEvents?.[0]?.type).toBe("skills.fetch_failed");
+      expect(result.metadata).toMatchObject({ adapter: "claude", setupError: true });
     });
   });
 });

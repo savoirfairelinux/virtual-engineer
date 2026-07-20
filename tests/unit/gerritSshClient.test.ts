@@ -52,7 +52,7 @@ vi.mock("node:child_process", () => ({
   }),
 }));
 
-import { GerritSshClient, parseSshNdjson } from "../../src/connectors/gerritSshClient.js";
+import { GerritSshClient, parseSshNdjson, isNonActionableChangeMessage, isCiFailureMessage } from "../../src/connectors/gerritSshClient.js";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -91,6 +91,48 @@ describe("parseSshNdjson", () => {
   it("returns multiple records", () => {
     const raw = sshNdjson({ a: 1 }, { b: 2 });
     expect(parseSshNdjson(raw)).toHaveLength(2);
+  });
+});
+
+describe("isNonActionableChangeMessage", () => {
+  it.each([
+    ["Patch Set 1:  Build Started https://ci.test/job/x/1/ (1/4)", true],
+    ["Patch Set 2: Verified+1\n\nBuild Successful\n\nhttps://ci.test : SUCCESS", true],
+    ["Patch Set 2: Code-Review+2", true],
+    ["Patch Set 1: Verified+1", true],
+    ["Code-Review-1", true],
+    ["Patch Set 2:\n\n", true],
+    ["", true],
+  ])("treats %j as non-actionable", (msg, expected) => {
+    expect(isNonActionableChangeMessage(msg)).toBe(expected);
+  });
+
+  it.each([
+    ["Patch Set 2:\n\nPlease guard against null here.", false],
+    ["Patch Set 2: Code-Review-1\n\nThe null guard is on the wrong line.", false],
+    ["This function leaks a file handle.", false],
+    ["Patch Set 2: Verified-1\n\nBuild Failed\n\nhttps://ci.test : FAILURE", false],
+    ["Patch Set 2: Build Unstable", false],
+  ])("treats %j as actionable feedback", (msg, expected) => {
+    expect(isNonActionableChangeMessage(msg)).toBe(expected);
+  });
+});
+
+describe("isCiFailureMessage", () => {
+  it.each([
+    ["Patch Set 2: Verified-1\n\nBuild Failed\n\nhttps://ci.test : FAILURE", true],
+    ["Patch Set 2: Build Unstable", true],
+    ["Patch Set 2: Build Aborted", true],
+  ])("treats %j as a CI failure", (msg, expected) => {
+    expect(isCiFailureMessage(msg)).toBe(expected);
+  });
+
+  it.each([
+    ["Patch Set 1:  Build Started https://ci.test/job/x/1/ (1/4)", false],
+    ["Patch Set 2: Build Successful", false],
+    ["Patch Set 2:\n\nPlease guard against null here.", false],
+  ])("treats %j as not a CI failure", (msg, expected) => {
+    expect(isCiFailureMessage(msg)).toBe(expected);
   });
 });
 
@@ -274,6 +316,19 @@ describe("GerritSshClient", () => {
       expect(comments[0]!.id).toMatch(/^gerrit-msg-/);
     });
 
+    it("tags a Jenkins Build Failed change message with a ci-failure- id prefix", async () => {
+      const row = makeChangeRow([], [{
+        ...BASE_CHANGE_MESSAGE,
+        message: "Patch Set 1: Verified-1\n\nBuild Failed\n\nhttps://ci.test : FAILURE",
+      }]);
+      execFileResults = [{ stdout: sshNdjson(row), stderr: "" }];
+
+      const comments = await makeClient().getUnresolvedComments("I8473");
+
+      expect(comments).toHaveLength(1);
+      expect(comments[0]!.id).toMatch(/^ci-failure-/);
+    });
+
     it("merges top-level change messages with inline currentPatchSet comments", async () => {
       const row = makeChangeRow([BASE_COMMENT], [BASE_CHANGE_MESSAGE]);
       execFileResults = [{ stdout: sshNdjson(row), stderr: "" }];
@@ -358,6 +413,58 @@ describe("GerritSshClient", () => {
       const comments = await makeClient().getUnresolvedComments("I8473");
 
       expect(comments).toHaveLength(0);
+    });
+
+    it("skips CI build-bot notifications (Jenkins) so they never become feedback", async () => {
+      // These regenerate on every patchset; treating them as feedback loops the
+      // agent forever (re-push → new "Build Started" → new "feedback" → re-push).
+      const buildMsgs = [
+        {
+          timestamp: 1710000300,
+          reviewer: { name: "jenkins", email: "jenkins@ci.test", username: "jenkins" },
+          message: "Patch Set 1:  Build Started https://jenkins.test/job/x/9756/ (1/4)",
+        },
+        {
+          timestamp: 1710000301,
+          reviewer: { name: "jenkins", email: "jenkins@ci.test", username: "jenkins" },
+          message: "Patch Set 1: Verified+1\n\nBuild Successful \n\nhttps://jenkins.test/job/x/9756/ : SUCCESS",
+        },
+      ];
+      const row = makeChangeRow([], buildMsgs);
+      execFileResults = [{ stdout: sshNdjson(row), stderr: "" }];
+
+      const comments = await makeClient().getUnresolvedComments("I8473");
+
+      expect(comments).toHaveLength(0);
+    });
+
+    it("skips single-line bare vote messages (no double newline)", async () => {
+      const bareVote = {
+        timestamp: 1710000400,
+        reviewer: { name: "Alice", email: "alice@example.com", username: "alice" },
+        message: "Patch Set 2: Code-Review+2",
+      };
+      const row = makeChangeRow([], [bareVote]);
+      execFileResults = [{ stdout: sshNdjson(row), stderr: "" }];
+
+      const comments = await makeClient().getUnresolvedComments("I8473");
+
+      expect(comments).toHaveLength(0);
+    });
+
+    it("keeps human prose even when accompanied by a vote", async () => {
+      const humanMsg = {
+        timestamp: 1710000500,
+        reviewer: { name: "Alice", email: "alice@example.com", username: "alice" },
+        message: "Patch Set 2: Code-Review-1\n\nThe null guard is on the wrong line.",
+      };
+      const row = makeChangeRow([], [humanMsg]);
+      execFileResults = [{ stdout: sshNdjson(row), stderr: "" }];
+
+      const comments = await makeClient().getUnresolvedComments("I8473");
+
+      expect(comments).toHaveLength(1);
+      expect(comments[0]!.message).toBe("The null guard is on the wrong line.");
     });
 
     it("deduplicates change messages with the same timestamp (id == timestamp)", async () => {
@@ -497,6 +604,58 @@ describe("GerritSshClient", () => {
     it("is a no-op when comments array is empty", async () => {
       await makeClient().resolveComments("I8473", []);
       expect(execFileCalls).toHaveLength(0);
+    });
+
+    it("replies into the original thread when an anonymous REST lookup resolves the comment id", async () => {
+      const rowWithUrl = { ...CHANGE_ROW, url: "https://review.example.com/c/proj/+/42" };
+      execFileResults = [
+        { stdout: sshNdjson(rowWithUrl), stderr: "" }, // queryChange
+      ];
+      spawnExitCode = 0;
+
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        text: async () => `)]}'\n${JSON.stringify({
+          "src/main.ts": [
+            { id: "abcd1234_ef56", line: 10, patch_set: 2, unresolved: true },
+          ],
+        })}`,
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      await makeClient().resolveComments("I8473", [
+        { id: "c1", author: "a@b.com", message: "Fix", filePath: "src/main.ts", line: 10, unresolved: true, patchset: 2, updatedAt: new Date() },
+      ]);
+
+      expect(fetchMock).toHaveBeenCalledWith("https://review.example.com/changes/42/comments", expect.anything());
+      const reviewCall = spawnCalls[0]!;
+      const input = JSON.parse(reviewCall.stdinData) as {
+        comments: Record<string, Array<{ in_reply_to?: string }>>;
+      };
+      expect(input.comments["src/main.ts"]?.[0]?.in_reply_to).toBe("abcd1234_ef56");
+
+      vi.unstubAllGlobals();
+    });
+
+    it("falls back to a fresh comment when the REST lookup fails", async () => {
+      const rowWithUrl = { ...CHANGE_ROW, url: "https://review.example.com/c/proj/+/42" };
+      execFileResults = [
+        { stdout: sshNdjson(rowWithUrl), stderr: "" }, // queryChange
+      ];
+      spawnExitCode = 0;
+      vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network down")));
+
+      await makeClient().resolveComments("I8473", [
+        { id: "c1", author: "a@b.com", message: "Fix", filePath: "src/main.ts", line: 10, unresolved: true, patchset: 2, updatedAt: new Date() },
+      ]);
+
+      const reviewCall = spawnCalls[0]!;
+      const input = JSON.parse(reviewCall.stdinData) as {
+        comments: Record<string, Array<{ in_reply_to?: string }>>;
+      };
+      expect(input.comments["src/main.ts"]?.[0]?.in_reply_to).toBeUndefined();
+
+      vi.unstubAllGlobals();
     });
   });
 

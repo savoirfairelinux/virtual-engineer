@@ -75,6 +75,10 @@ function renderPayload(entry: StreamEntry): string {
   if (typeof entry.message === "string" && entry.message.trim().length > 0) {
     return entry.message;
   }
+
+  const skillPayload = renderSkillPayload(entry);
+  if (skillPayload) return skillPayload;
+
   if (entry.data === null || entry.data === undefined) return "";
   if (typeof entry.data === "string") return entry.data;
   if (typeof entry.data === "number" || typeof entry.data === "boolean") return String(entry.data);
@@ -83,6 +87,41 @@ function renderPayload(entry: StreamEntry): string {
   } catch {
     return String(entry.data);
   }
+}
+
+function objectData(data: unknown): Record<string, unknown> | null {
+  return data && typeof data === "object" && !Array.isArray(data) ? data as Record<string, unknown> : null;
+}
+
+function formatSkills(value: unknown): string | null {
+  if (value === "all") return "all skills";
+  if (!Array.isArray(value)) return null;
+  const skills = value
+    .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    .map((item) => item.trim());
+  if (skills.length === 0) return "no explicit skills";
+  return skills.join(", ");
+}
+
+function renderSkillPayload(entry: StreamEntry): string | null {
+  if (!entry.type?.startsWith("skills.fetch_")) return null;
+  const data = objectData(entry.data);
+  const source = typeof data?.["source"] === "string" ? data["source"] : "unknown source";
+  const skills = formatSkills(data?.["skills"]);
+  const agent = typeof data?.["agent"] === "string" ? data["agent"] : undefined;
+  const suffix = [
+    skills ? `skills: ${skills}` : undefined,
+    agent ? `agent: ${agent}` : undefined,
+  ].filter(Boolean).join(" · ");
+  const details = suffix ? ` (${suffix})` : "";
+
+  if (entry.type === "skills.fetch_start") return `Fetching skills from ${source}${details}`;
+  if (entry.type === "skills.fetch_complete") return `Fetched skills from ${source}${details}`;
+  if (entry.type === "skills.fetch_failed") {
+    const message = typeof data?.["message"] === "string" ? `: ${data["message"]}` : "";
+    return `Failed to fetch skills from ${source}${details}${message}`;
+  }
+  return null;
 }
 
 interface LiveLogsProps {

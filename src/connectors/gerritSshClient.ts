@@ -70,6 +70,49 @@ export const PREAMBLE_RE = /^Patch Set \d+:[^\n]*\n\n/;
 export const COMMENTS_SUMMARY_RE = /^\(\d+ comments?\)\n*/;
 /** Gerrit system messages that never contain user-authored content. */
 const SYSTEM_RE = /^(?:Uploaded patch set \d|Change has been successfully|Abandoned$|Restored$|Created a revert|Removed .+ by )/;
+/**
+ * CI/build-bot lifecycle notifications (e.g. Jenkins "Build Started/Successful") —
+ * status noise, never code feedback. Failure states (Failed/Aborted/Unstable) are
+ * deliberately excluded: they're actionable feedback the agent must fix.
+ */
+const CI_BUILD_RE = /\bBuild (?:Started|Successful|Abandoned|is back to normal)\b/i;
+/** CI/build-bot failure notifications — actionable, but gated behind the per-project `reactToCiFailures` toggle (see feedbackProcessor.ts). */
+const CI_FAILURE_RE = /\bBuild (?:Failed|Aborted|Unstable)\b/i;
+/** A change message whose content is only Gerrit label votes (e.g. "Code-Review+2", "Verified+1"). */
+const VOTE_ONLY_RE = /^(?:[A-Za-z][\w-]*[+-]\d+[ \t]*)+$/;
+/** Leading single-line "Patch Set N:" label prefix, stripped for content classification. */
+const LEAD_PATCHSET_RE = /^Patch Set \d+:\s*/;
+
+/**
+ * True when a top-level change message is a CI failure notification (e.g.
+ * Jenkins "Build Failed/Aborted/Unstable"). Used to tag such comments with a
+ * stable `ci-failure-` id prefix so orchestrator.ts can gate them behind the
+ * per-project `reactToCiFailures` toggle, same as GitHub's `ci-run-` comments.
+ */
+export function isCiFailureMessage(message: string): boolean {
+  const core = message.replace(LEAD_PATCHSET_RE, "").trim();
+  return CI_FAILURE_RE.test(core);
+}
+
+/**
+ * True when a top-level change message carries no actionable human feedback:
+ * a CI lifecycle notification (Jenkins "Started/Successful") or a bare label
+ * vote ("Code-Review+2"). CI *failure* notifications (Failed/Aborted/Unstable)
+ * are NOT filtered here — they're real feedback, tagged via isCiFailureMessage
+ * instead so callers can gate them per-project.
+ *
+ * Lifecycle/vote messages regenerate on every patchset, so treating them as
+ * review feedback loops the agent forever (re-push → new CI message → new
+ * "feedback" → re-push …) and makes VE post canned "Addressed in this
+ * patchset." replies to build bots.
+ */
+export function isNonActionableChangeMessage(message: string): boolean {
+  const core = message.replace(LEAD_PATCHSET_RE, "").trim();
+  if (!core) return true;
+  if (CI_BUILD_RE.test(core)) return true;
+  if (VOTE_ONLY_RE.test(core)) return true;
+  return false;
+}
 
 // ─── NDJSON parser ────────────────────────────────────────────────────────────
 
@@ -271,13 +314,14 @@ export class GerritSshClient {
           if (!msg.success) continue;
           if (sshUser && msg.data.reviewer?.username === sshUser) continue;
           if (SYSTEM_RE.test(msg.data.message)) continue;
+          if (isNonActionableChangeMessage(msg.data.message)) continue;
           const body = msg.data.message
             .replace(PREAMBLE_RE, "")
             .replace(COMMENTS_SUMMARY_RE, "")
             .trim();
           if (!body) continue;
           result.push({
-            id: `gerrit-msg-${msg.data.timestamp}`,
+            id: `${isCiFailureMessage(msg.data.message) ? "ci-failure" : "gerrit-msg"}-${msg.data.timestamp}`,
             author: msg.data.reviewer?.email ?? msg.data.reviewer?.name ?? "unknown",
             message: body,
             filePath: undefined,
@@ -296,7 +340,9 @@ export class GerritSshClient {
 
   /**
    * Mark Gerrit review comment threads as resolved via SSH `gerrit review --json`.
-   * Without `in_reply_to`, Gerrit creates new resolved follow-up comments.
+   * Replies into the original thread (in_reply_to) when the target comment's UUID
+   * can be resolved via an anonymous REST lookup; otherwise falls back to posting
+   * a fresh resolved comment (see lookupCommentIdsForReply).
    */
   async resolveComments(changeId: string, comments: ReviewComment[]): Promise<void> {
     if (comments.length === 0) return;
@@ -304,20 +350,81 @@ export class GerritSshClient {
     const info = await this.queryChange(changeId);
     const patchset = info.currentPatchSet?.number ?? 1;
 
-    const commentsByFile: Record<string, Array<{ message: string; line?: number; unresolved: boolean }>> = {};
+    // Gerrit's SSH review --json input is the same ReviewInput/CommentInput schema
+    // as the REST API, which does support in_reply_to. SSH's own `query --comments`
+    // just never returns the comment UUID needed to target it. Read-only Gerrit
+    // instances typically allow anonymous REST reads, so fetch the UUIDs that way
+    // (no credentials beyond the existing SSH identity are needed) and fall back to
+    // posting a fresh resolved comment if the lookup is unavailable or finds nothing.
+    const replyIds = await this.lookupCommentIdsForReply(info.url, info.number, patchset);
+
+    const commentsByFile: Record<string, Array<{ message: string; line?: number; unresolved: boolean; in_reply_to?: string }>> = {};
     for (const comment of comments) {
       const key = comment.filePath ?? "/PATCHSET_LEVEL";
       if (!commentsByFile[key]) commentsByFile[key] = [];
+      const inReplyTo = replyIds.get(`${key}:${comment.line ?? "file"}`);
       commentsByFile[key].push({
         message: "Addressed in this patchset.",
         ...(comment.line !== undefined ? { line: comment.line } : {}),
         unresolved: false,
+        ...(inReplyTo !== undefined ? { in_reply_to: inReplyTo } : {}),
       });
     }
 
     const reviewInput = JSON.stringify({ comments: commentsByFile });
     await this.reviewJson(`${info.number},${patchset}`, reviewInput);
     log.info({ changeId, count: comments.length }, "resolved Gerrit comment threads via SSH review --json");
+  }
+
+  /**
+   * Best-effort anonymous REST lookup of the latest unresolved comment id per
+   * file+line on the given patchset, so resolveComments can reply into the
+   * existing thread (in_reply_to) instead of always starting a new one.
+   * Returns an empty map on any failure — the caller degrades gracefully.
+   */
+  private async lookupCommentIdsForReply(
+    changeUrl: string | undefined,
+    changeNumber: number,
+    patchset: number,
+  ): Promise<Map<string, string>> {
+    const result = new Map<string, string>();
+    if (!changeUrl) return result;
+
+    let origin: string;
+    try {
+      origin = new URL(changeUrl).origin;
+    } catch {
+      return result;
+    }
+
+    try {
+      const res = await fetch(`${origin}/changes/${changeNumber}/comments`, {
+        signal: AbortSignal.timeout(SSH_TIMEOUT_MS),
+      });
+      if (!res.ok) return result;
+      // Gerrit prefixes JSON responses with a `)]}'` XSSI-protection line.
+      const text = (await res.text()).replace(/^\)\]\}'/, "");
+      const parsed = z.record(z.string(), z.array(z.object({
+        id: z.string(),
+        line: z.number().optional(),
+        patch_set: z.number().optional(),
+        unresolved: z.boolean().optional(),
+      }))).safeParse(JSON.parse(text));
+      if (!parsed.success) return result;
+
+      for (const [file, fileComments] of Object.entries(parsed.data)) {
+        for (const c of fileComments) {
+          if (c.patch_set !== undefined && c.patch_set !== patchset) continue;
+          if (c.unresolved === false) continue;
+          // Gerrit returns comments in chronological order; last one per
+          // file+line is the current head of that thread.
+          result.set(`${file}:${c.line ?? "file"}`, c.id);
+        }
+      }
+    } catch (err) {
+      log.debug({ err, changeNumber }, "anonymous Gerrit REST comment lookup failed; posting a fresh comment instead");
+    }
+    return result;
   }
 
   /**

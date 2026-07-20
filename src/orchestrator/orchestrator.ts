@@ -24,7 +24,7 @@ import { makeTaskId, makeTicketId, TERMINAL_STATES, TicketApiError, TicketNotFou
 import type { CodeGenState } from "../interfaces.js";
 import type { IntegrationStore } from "../interfaces.js";
 import { getLogger } from "../logger.js";
-import { FeedbackProcessor } from "./feedbackProcessor.js";
+import { FeedbackProcessor, isCiFeedbackComment } from "./feedbackProcessor.js";
 import { clearTaskEventBuffer } from "../agents/agentEventBus.js";
 import { normalizeAgentResult, getModifiedFileCount } from "../agents/agentEventTypes.js";
 import type { VcsConnector } from "../vcs/vcsConnector.js";
@@ -132,6 +132,12 @@ export class Orchestrator {
   private vcsConnector: VcsConnector | undefined;
   private readonly vcsConnectorFactory: VcsConnectorFactory;
   private projectMode: ProjectModeDeps | null = null;
+  /**
+   * Task ids whose `runWorkflow` is currently executing. Guards against
+   * concurrent re-entry when the same task is driven from multiple triggers
+   * (boot recovery, stalled-task polling, review events) at once.
+   */
+  private readonly inFlightTasks = new Set<string>();
   constructor(
     config: OrchestratorConfig,
     private readonly stateStore: StateStore,
@@ -235,6 +241,22 @@ export class Orchestrator {
         log.error({ taskId: task.taskId, err }, "unhandled error resuming task");
       });
     }
+  }
+
+  /**
+   * Resume a single code-gen task that stalled while waiting for an agent
+   * concurrency slot. Called by the polling loop for tasks left in
+   * `CONTEXT_BUILDING` or `RETRY_CYCLE`: `runAgentCycle` defers (without
+   * re-queuing) whenever the shared agent slot is busy, so without this poll
+   * these tasks would never advance until the next process restart. The
+   * in-flight guard in `runWorkflow` prevents double-driving a task whose
+   * previous resume is still executing.
+   */
+  async resumeStalledCodeGenTask(taskId: ReturnType<typeof makeTaskId>): Promise<void> {
+    const task = await this.stateStore.getTask(taskId);
+    if (!task || task.taskType === "code-review") return;
+    if (task.state !== "CONTEXT_BUILDING" && task.state !== "RETRY_CYCLE") return;
+    await this.runWorkflow(task);
   }
 
   /**
@@ -501,6 +523,16 @@ export class Orchestrator {
       log.debug({ taskId: task.taskId, state: task.state }, "skipping code-review task in ticket orchestrator");
       return;
     }
+    // Guard against concurrent re-entry: a task already being driven (e.g. still
+    // building context or mid-cycle) must not be picked up again by the
+    // stalled-task poll or a second trigger. runWorkflow is never called
+    // recursively — each step method calls the next step directly — so this
+    // set only ever holds externally-initiated drives.
+    if (this.inFlightTasks.has(task.taskId)) {
+      log.debug({ taskId: task.taskId, state: task.state }, "workflow already in flight; skipping re-entry");
+      return;
+    }
+    this.inFlightTasks.add(task.taskId);
     log.info({ taskId: task.taskId, state: task.state }, "running workflow from state");
 
     // The code-review early-return above guarantees task.state is a CodeGenState here.
@@ -538,6 +570,8 @@ export class Orchestrator {
       }
     } catch (err) {
       await this.handleFatalError(task, err);
+    } finally {
+      this.inFlightTasks.delete(task.taskId);
     }
   }
 
@@ -586,17 +620,18 @@ export class Orchestrator {
       }
     }
 
-    const ticketConnector = await this.resolveTicketConnector(task);
-    const ticket = await ticketConnector.getTicket(task.ticketId);
-    const priorFeedback = await this.buildPriorFeedback(task, reviewFeedback);
-    const cycleNumber = await this.stateStore.incrementCycle(task.taskId);
-
-    log.info({ taskId: task.taskId, cycleNumber }, "starting agent cycle");
-
-    task = await this.stateStore.transition(task.taskId, "AGENT_RUNNING");
-    const handle = await this.workspaceRunner.createWorkspace(task.taskId);
-
+    let handle: Awaited<ReturnType<typeof this.workspaceRunner.createWorkspace>> | undefined;
     try {
+      const ticketConnector = await this.resolveTicketConnector(task);
+      const ticket = await ticketConnector.getTicket(task.ticketId);
+      const priorFeedback = await this.buildPriorFeedback(task, reviewFeedback);
+      const cycleNumber = await this.stateStore.incrementCycle(task.taskId);
+
+      log.info({ taskId: task.taskId, cycleNumber }, "starting agent cycle");
+
+      task = await this.stateStore.transition(task.taskId, "AGENT_RUNNING");
+      handle = await this.workspaceRunner.createWorkspace(task.taskId);
+
       if (!task.projectId || !this.projectMode || !this.workspaceRunner.prepareProjectWorkspace) {
         throw new Error(
           `Task ${task.taskId} is not project-bound; project-mode is the only supported workflow.`
@@ -762,6 +797,15 @@ export class Orchestrator {
             ? { repositoryMap: buildRepositoryMap(projectPushTargets) }
             : {}),
           ...(projectRecord.skillDiscoveryEnabled ? { skillDiscoveryEnabled: true } : {}),
+          ...(projectRecord.skillDiscoveryEnabled ? { localSkillsPath: projectRecord.localSkillsPath } : {}),
+          ...(projectRecord.skillSourcesJson !== "[]"
+            ? { skillSourcesJson: projectRecord.skillSourcesJson }
+            : {}),
+          ...((): { ticketFooterLine?: string } => {
+            if (!projectRecord.useFullTicketUrlInCommits) return {};
+            const line = formatTicketFooter(task.ticketId, ticket.webUrl ?? "", task.ticketSourceLabel, true);
+            return line ? { ticketFooterLine: line } : {};
+          })(),
         },
       };
 
@@ -826,15 +870,42 @@ export class Orchestrator {
       // For Gerrit: agent commits[] are pre-validated; each becomes a separate change (topic-grouped).
       // For GitLab: all N commits land in one MR via force-push.
       if (task.projectId && this.projectMode && projectPushTargets.length > 0) {
-        await this.pushProjectChanges(task, handle, projectPushTargets, commitMessage, context.ticketUrl ?? "", agentResult.commits);
+        await this.pushProjectChanges(
+          task,
+          handle,
+          projectPushTargets,
+          commitMessage,
+          context.ticketUrl ?? "",
+          agentResult.commits,
+          projectRecord.gerritTopicOverride
+        );
       }
 
       task = await this.stateStore.transition(task.taskId, "IN_REVIEW");
       const ticketConn = await this.resolveTicketConnector(task);
       await ticketConn.transitionToInReview(task.ticketId);
+
+      // Opt-in (default off — most teams already surface this via standard VCS/ticket
+      // integrations): post the review URL(s) as a ticket note. Cross-project fix-up:
+      // the ticket lives in one repo/project, but the fix may land in a different one
+      // (e.g. jami-client-qt ticket, jami-daemon patch), so a bare "#123"-style reference
+      // wouldn't resolve to the right place — the full URL is unambiguous regardless of
+      // which repo(s) received commits. Only on cycle 1: later cycles just add patchsets
+      // to the same change/URL.
+      if (projectRecord?.postReviewLinkToTicket && cycleNumber === 1) {
+        const changes = await this.stateStore.getChangesForTask(task.taskId);
+        const links = changes
+          .filter((c) => c.status !== "NO_CHANGE" && c.status !== "ORPHANED" && c.reviewUrl)
+          .map((c) => `${c.repoKey}: ${c.reviewUrl}`);
+        if (links.length > 0) {
+          await this.addTicketNote(task, `Virtual Engineer opened a review:\n\n${links.join("\n")}`, false);
+        }
+      }
     } finally {
       try {
-        await this.workspaceRunner.destroyWorkspace(handle);
+        if (handle) {
+          await this.workspaceRunner.destroyWorkspace(handle);
+        }
       } catch (err) {
         log.warn(
           { taskId: task.taskId, err },
@@ -998,6 +1069,13 @@ export class Orchestrator {
   }
 
   /** Poll review system status; advance to MERGED, trigger a retry cycle, or stay IN_REVIEW. */
+  /** Whether this task's project opts in to treating CI build failures as actionable feedback (default off). */
+  private async projectReactsToCiFailures(task: Task): Promise<boolean> {
+    if (!task.projectId || !this.projectMode) return false;
+    const project = await this.projectMode.projectStore.getProjectById(task.projectId);
+    return project?.reactToCiFailures ?? false;
+  }
+
   private async checkReviewProgress(task: Task, streamChangeId?: string, streamComments?: import("../interfaces.js").ReviewComment[]): Promise<void> {
     // Check for per-repository changes first (multi-repo path)
     const perRepoChanges = await this.stateStore.getChangesForTask(task.taskId);
@@ -1051,12 +1129,15 @@ export class Orchestrator {
       : [];
     const baseComments = ciComments.length > 0 ? [...comments, ...ciComments] : comments;
     const allComments = streamComments && streamComments.length > 0 ? [...streamComments, ...baseComments] : baseComments;
+    const scopedComments = (await this.projectReactsToCiFailures(task))
+      ? allComments
+      : allComments.filter((c) => !isCiFeedbackComment(c));
 
     task = await this.stateStore.transition(task.taskId, "FEEDBACK_PROCESSING");
     const [feedbackItems, processedComments] = await this.feedbackProcessor.extractNewFeedback(
       task.taskId,
       changeId,
-      allComments
+      scopedComments
     );
 
     if (feedbackItems.length === 0) {
@@ -1119,6 +1200,8 @@ export class Orchestrator {
       }
       return _fallbackReviewConnector;
     };
+
+    const reactToCiFailures = await this.projectReactsToCiFailures(task);
 
     // Poll each repo's change status
     let allMerged = true;
@@ -1208,10 +1291,13 @@ export class Orchestrator {
               ...comments,
               ...ciComments,
             ];
+            const scopedComments = reactToCiFailures
+              ? allComments
+              : allComments.filter((c) => !isCiFeedbackComment(c));
             const [feedback, processed] = await this.feedbackProcessor.extractNewFeedback(
               task.taskId,
               change.changeId as ExternalChangeId,
-              allComments
+              scopedComments
             );
             // Tag feedback with repoKey for agent context
             for (const item of feedback) {
@@ -1347,7 +1433,8 @@ export class Orchestrator {
     pushTargets: import("../interfaces.js").ProjectPushTargetRecord[],
     fallbackCommitMessage: string,
     ticketUrl: string,
-    agentCommits: CommitDescriptor[] | undefined = undefined
+    agentCommits: CommitDescriptor[] | undefined = undefined,
+    topicOverride: string | null = null
   ): Promise<void> {
     const sorted = [...pushTargets].sort((a, b) => a.commitOrder - b.commitOrder);
 
@@ -1406,12 +1493,13 @@ export class Orchestrator {
         pushErrors.push({ repoKey: target.repoKey, err });
         continue;
       }
-      const { ref: computedRef, topic } = vcsConnector.buildPushSpec(
+      const { ref: computedRef, topic: computedTopic } = vcsConnector.buildPushSpec(
         target.targetBranch,
         task.taskId,
         task.ticketTitle
       );
       const ref = await this.resolvePushRef(task, () => computedRef);
+      const topic = topicOverride?.trim() ? topicOverride.trim() : computedTopic;
       const reviewSystemLabel = vcsConnector.reviewSystemLabel;
 
       const volumeOpts = { volumeName: handle.volumeName, image: handle.containerImage, subPath: target.localPath };

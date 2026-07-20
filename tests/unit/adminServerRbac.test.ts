@@ -1,12 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createHmac, randomUUID } from "node:crypto";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import type { StateStore } from "../../src/interfaces.js";
 import { makeTaskId, makeTicketId, makeProjectId } from "../../src/interfaces.js";
 import { SqliteStateStore } from "../../src/state/stateStore.js";
 import { createAdminServer } from "../../src/admin/adminServer.js";
+import { tempDatabasePath } from "./helpers/tempDatabase.js";
 
 const SECRET = "rbac-test-secret";
 
@@ -17,7 +16,7 @@ function hmacToken(secret: string = SECRET): string {
 }
 
 function tempDbPath(): string {
-  return join(tmpdir(), `ve-rbac-${randomUUID()}.db`);
+  return tempDatabasePath("ve-rbac");
 }
 
 function makeServer(store: SqliteStateStore): ReturnType<typeof createAdminServer> {

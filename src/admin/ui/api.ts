@@ -69,10 +69,15 @@ export class ApiError extends Error {
   }
 }
 
+interface RequestOptions {
+  signal?: AbortSignal;
+}
+
 async function request<T>(
   method: string,
   path: string,
-  body?: unknown
+  body?: unknown,
+  options: RequestOptions = {}
 ): Promise<T> {
   const headers: Record<string, string> = {
     ...authHeaders(),
@@ -81,6 +86,7 @@ async function request<T>(
   const res = await fetch(path, {
     method,
     headers,
+    ...(options.signal !== undefined ? { signal: options.signal } : {}),
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
   });
   if (!res.ok) {
@@ -99,11 +105,11 @@ async function request<T>(
 }
 
 export const api = {
-  get:    <T>(path: string) => request<T>("GET", path),
-  post:   <T>(path: string, body?: unknown) => request<T>("POST", path, body),
-  put:    <T>(path: string, body: unknown) => request<T>("PUT", path, body),
-  patch:  <T>(path: string, body?: unknown) => request<T>("PATCH", path, body ?? {}),
-  delete: <T>(path: string, body?: unknown) => request<T>("DELETE", path, body),
+  get:    <T>(path: string, options?: RequestOptions) => request<T>("GET", path, undefined, options),
+  post:   <T>(path: string, body?: unknown, options?: RequestOptions) => request<T>("POST", path, body, options),
+  put:    <T>(path: string, body: unknown, options?: RequestOptions) => request<T>("PUT", path, body, options),
+  patch:  <T>(path: string, body?: unknown, options?: RequestOptions) => request<T>("PATCH", path, body ?? {}, options),
+  delete: <T>(path: string, body?: unknown, options?: RequestOptions) => request<T>("DELETE", path, body, options),
 };
 
 /* ─── Auth flow ───────────────────────────────────────────────────────── */

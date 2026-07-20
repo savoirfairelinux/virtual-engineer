@@ -35,6 +35,8 @@ export type AgentType = "coding" | "review";
 export type ProjectType = "coding" | "review";
 export type PushTargetRole = "primary" | "submodule" | "dependency" | "related";
 
+export const DEFAULT_LOCAL_SKILLS_PATH = ".github/skills";
+
 export interface AgentRecord {
   id: AgentId;
   name: string;
@@ -62,8 +64,20 @@ export interface ProjectRecord {
   agentOverrideJson: string | null;
   /** Bash script run on the host after cloning. Empty string means "no script". */
   postCloneScript: string;
-  /** When true, the agent container loads team-defined skills from `<repo>/.github/skills` (coding projects only). */
+  /** When true, the agent container loads local repository skills. */
   skillDiscoveryEnabled: boolean;
+  /** Workspace-relative path for local project skills. */
+  localSkillsPath: string;
+  /** JSON list of remote skill sources fetched with `npx skills` when configured. */
+  skillSourcesJson: string;
+  /** Optional literal Gerrit topic that overrides the ticket-derived topic (buildGerritTopic) for all pushes from this project. NULL = use the ticket-derived topic. */
+  gerritTopicOverride: string | null;
+  /** When true, agent commit messages use the full ticket URL in the footer instead of the short "#id" form. */
+  useFullTicketUrlInCommits: boolean;
+  /** When true, VE posts a note on the source ticket with the review URL(s) once the first cycle opens a review. Default off — most teams already surface this via standard VCS/ticket integrations. */
+  postReviewLinkToTicket: boolean;
+  /** When true, CI build-failure notifications (e.g. Jenkins "Build Failed") count as actionable review feedback and trigger a retry cycle. Default off — some teams don't want VE auto-retrying on broken CI. Coding projects only. */
+  reactToCiFailures: boolean;
   enabled: boolean;
   createdAt: Date;
   updatedAt: Date;
@@ -393,8 +407,14 @@ export interface AgentSession {
   copilotReasoningEffort?: string | undefined;
   /** Multi-repo workspace layout — when set, agent-worker uses it to group files/commits by repo. */
   repositoryMap?: RepositoryMap | undefined;
-  /** When true, the agent loads team-defined skills from `<repo>/.github/skills`. Sourced from the project's setting. */
+  /** When true, the agent loads local repository skills from `localSkillsPath`. */
   skillDiscoveryEnabled?: boolean | undefined;
+  /** Workspace-relative path used for local skills when local skill loading is enabled. */
+  localSkillsPath?: string | undefined;
+  /** Remote skills fetched by the worker before opening the agent session. */
+  skillSourcesJson?: string | undefined;
+  /** Pre-formatted ticket-footer trailer line (e.g. "GitLab: https://…/issues/123") injected into every agent commit alongside its Change-Id. Sourced from the project's "full ticket URL in commits" setting. */
+  ticketFooterLine?: string | undefined;
 }
 
 export interface TaskContext {
@@ -558,8 +578,12 @@ export interface ReviewWorkspaceInput {
   reasoningEffort?: string | undefined;
   /** Container image (defaults to agentContainerImage from codegen config) */
   containerImage?: string | undefined;
-  /** When true, the agent container loads team-defined skills from <repo>/.github/skills. */
+  /** When true, the agent container loads local repository skills from `localSkillsPath`. */
   skillDiscoveryEnabled?: boolean | undefined;
+  /** Workspace-relative path used for local skills when skill discovery is enabled. */
+  localSkillsPath?: string | undefined;
+  /** Remote skills fetched by the worker before opening the agent session. */
+  skillSourcesJson?: string | undefined;
 }
 
 /** Options for checking out a prior patchset/revision onto a cloned workspace. */

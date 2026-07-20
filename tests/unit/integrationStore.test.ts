@@ -1,11 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { SqliteStateStore } from "../../src/state/stateStore.js";
-import { tmpdir } from "os";
-import { join } from "path";
-import { randomUUID } from "crypto";
+import { tempDatabasePath } from "./helpers/tempDatabase.js";
 
 function tempDbPath(): string {
-  return join(tmpdir(), `ve-test-${randomUUID()}.db`);
+  return tempDatabasePath("ve-test");
 }
 
 describe("SqliteStateStore — IntegrationStore", () => {
