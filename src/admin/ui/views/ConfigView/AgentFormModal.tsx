@@ -133,7 +133,7 @@ export function AgentFormModal({ agent, integrations, prompts, onClose, onSaved 
           </FieldSelect>
         </Field>
 
-        <Field label="Agent Integration" required hint="An enabled agent-execution integration (e.g. Copilot, Mock)">
+        <Field label="Agent Integration" required hint="An enabled agent-execution integration (e.g. Copilot, Claude, Aider, Mock)">
           <FieldSelect value={form.integrationId} onChange={set("integrationId")}>
             {agentIntegrations.length === 0 && <option value="">— no agent integrations —</option>}
             {agentIntegrations.map((i) => (
