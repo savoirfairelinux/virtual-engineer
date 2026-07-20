@@ -12,6 +12,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     jq \
   && rm -rf /var/lib/apt/lists/*
+
+# Install Python 3 + Aider (https://aider.chat) for the `aider` agent provider.
+# Aider wraps any LLM backend via litellm; it is installed as an isolated uv tool
+# so its dependencies don't clash with the Node toolchain. The binary is symlinked
+# onto /usr/local/bin so the agent-worker subprocess spawn resolves it on PATH.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 \
+    python3-venv \
+  && rm -rf /var/lib/apt/lists/* \
+  && curl -LsSf https://astral.sh/uv/install.sh | sh \
+  && /root/.local/bin/uv tool install --python python3.12 aider-chat \
+  && ln -s /root/.local/bin/aider /usr/local/bin/aider
+ENV PATH="/root/.local/bin:${PATH}"
 # Default SSH config — accepts unknown host keys as a fallback for ephemeral
 # containers. When sshKnownHostsPath is configured on the Gerrit integration,
 # dockerVolume.ts overrides GIT_SSH_COMMAND at runtime with strict checking.
