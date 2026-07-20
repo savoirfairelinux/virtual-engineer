@@ -141,7 +141,7 @@ export interface AdminServerDependencies {
     getStatus(integrationId: string): unknown | null;
   };
   /**
-   * When provided, mounts `GET/PUT /api/admin/concurrency` with live in-memory counters.
+   * When provided, mounts `GET /api/admin/concurrency` (read-only) with live in-memory counters.
    * `max_concurrent` NULL = unlimited.
    */
   concurrency?: {

@@ -138,7 +138,8 @@ src/
 
   review/               # Code-review workflow
     reviewOrchestrator.ts # REVIEW_PENDING → REVIEW_DONE lifecycle
-    copilotReviewAgent.ts # Host-side Copilot SDK client for reviews
+    copilotReviewAgent.ts # LEGACY host-side Copilot SDK client (unused; reviews
+                          # run in-container via REVIEW_MODE=1, see below)
     reviewPromptBuilder.ts
     reviewResultParser.ts
     commentFilter.ts      # Filters comments to lines present in the diff
@@ -310,7 +311,7 @@ Plain Node.js `http.createServer` — no framework. The main file handles auth, 
 | `adminIntegrationRoutes.ts` | `GET/POST /api/admin/integrations`, `GET/PUT/DELETE .../integrations/:id`, `POST .../test`, `PATCH .../{enable,disable}`, `POST .../discover`, `GET .../models`, `GET /api/admin/plugins`, `GET/POST/DELETE /api/admin/oauth-apps` |
 | `adminAgentsRoutes.ts` | `GET/POST /api/admin/agents`, `GET/PUT/DELETE .../agents/:id`, `PATCH .../{enable,disable}`, `POST /api/admin/plugins/:type/oauth/*` |
 | `adminProjectsRoutes.ts` | `GET/POST /api/admin/projects`, `GET/PUT/DELETE .../projects/:id`, `PATCH .../{enable,disable}` |
-| `adminConcurrencyRoutes.ts` | `GET/PUT /api/admin/concurrency` |
+| `adminConcurrencyRoutes.ts` | `GET /api/admin/concurrency` (read-only run-slot snapshot) |
 | `adminSettingsRoutes.ts` | `GET/PUT /api/admin/settings` (editable runtime workflow settings) |
 | `adminWebhookRoutes.ts` | `POST .../webhook-secret/rotate`, `GET/PUT .../webhook-allowed-ips`, `GET .../webhook-info` |
 

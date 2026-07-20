@@ -10,7 +10,7 @@ The admin server is a small HTTP service (default `127.0.0.1:3100`) that serves 
 | --- | --- |
 | `startAdminServer.ts` | Bind/listen helper used by `src/index.ts` and tests. |
 | `closeAdminServer.ts` | Graceful shutdown helper. |
-| `router.ts` | Lightweight declarative micro-router (`Router.add()` / `Router.dispatch()` / `Router.match()`). Compiles `:param`-style patterns to anchored regexes, extracts and URL-decodes named parameters, and auto-returns 405 when a path matches but the HTTP method does not. Routes carry optional `RouteMeta` (`{ role?: UserRole }`); `defaultRoleForMethod()` is fail-closed — it maps **every** method (including GET/HEAD) to `operator`, so viewer access is opt-in (a route must explicitly declare `{ role: "viewer" }`), and `roleSatisfies()` compares role rank (`viewer < operator < admin`). |
+| `router.ts` | Lightweight declarative micro-router (`Router.add()` / `Router.dispatch()` / `Router.match()`). Compiles `:param`-style patterns to anchored regexes, extracts and URL-decodes named parameters, and auto-returns 405 when a path matches but the HTTP method does not. Routes carry a `RouteMeta` authorization declaration used by the **pure-PBAC** gate: `permission` (a `"<resourceType>.<action>"` string, optional `resourceParam` for resource scoping / `collection` for list routes), or `authenticated: true` for auth-self routes. There is **no** role fallback — see the Authentication section. |
 | `adminServer.ts` | Auth gate (DB-backed session tokens, plus an open bootstrap mode while zero users exist), RBAC enforcement, security headers, and public endpoints (dashboard, health, img-proxy). Builds a single `Router` instance via `buildApiRouter()` at startup and dispatches every authenticated `/api/admin/*` request through it. Re-exports `getAuthContext` / `AuthContext`. |
 | `adminAuthService.ts` | Password hashing (`scrypt`, `scrypt:N:r:p:salt:hash` format), session-token hashing (sha256), and `createAdminAuthService()` (login / validateSession with sliding 12-hour expiry / logout). Exports `SESSION_TTL_MS`, `AuthContext`. |
 | `adminAuthRoutes.ts` | `/api/admin/auth/*` (setup-status, setup, login, logout, me) and `/api/admin/users/*` CRUD with last-admin guards, self password change, and audit logging. |
@@ -24,7 +24,8 @@ The admin server is a small HTTP service (default `127.0.0.1:3100`) that serves 
 | `adminIntegrationRoutes.ts` | `/api/admin/integrations/*` CRUD, enable/disable, test, discover, models + `/api/admin/plugins` + `/api/admin/oauth-apps/*`. Integration config masking/merging/validation helpers. |
 | `adminAgentsRoutes.ts` | `/api/admin/agents/*` CRUD + enable/disable + masking + `/api/admin/plugins/:type/oauth/*`. |
 | `adminProjectsRoutes.ts` | `/api/admin/projects/*` CRUD, ticket/review target validation, remote skill-source validation/serialization, atomic push-target replacement, coding controls for Gerrit topic/ticket trailers/review links/CI retries, and automatic relaunch of FAILED/REVIEW_FAILED tasks on (re)configuration or re-enable. |
-| `adminConcurrencyRoutes.ts` | `/api/admin/concurrency` read/update global concurrency. |
+| `adminConcurrencyRoutes.ts` | `GET /api/admin/concurrency` — read-only live in-memory run-slot snapshot (`{ global, perProject, perAgent }`); 501 when no tracker is wired. |
+| `adminPoliciesRoutes.ts` | PBAC management: `/api/admin/permissions` catalog, `/api/admin/groups` (+members), `/api/admin/policies` (+`/rules`, `/bindings`). All gated by `policy.manage`. |
 | `adminSettingsRoutes.ts` | `GET/PUT /api/admin/settings` — read/update editable runtime workflow settings (polling interval, max agent cycles, max retry attempts). Validates positive integers; delegates persistence + hot-apply to the `SettingsController` wired in `src/index.ts`. |
 | `adminOverviewRoutes.ts` | `/api/admin/overview` dashboard stats/throughput/votes/runtime + `/api/admin/cost-summary` aggregated AI cost (per project & instance total, optional `?days=` period) + `/api/admin/model-usage` model distribution by run count & cost (global + per project, optional `?days=<n>` period filter). |
 | `adminWebhookRoutes.ts` | Webhook management: secret rotation, allowed-IPs, webhook-info. |
@@ -38,106 +39,50 @@ The project form keeps remote skill-source validation on the normal save path. W
 
 ## Route surface
 
-### Public routes
+All `/api/admin/*` routes are declared in `buildApiRouter()` and its per-area route modules (see the **Files** table). This section summarizes them by **family**; for the exact method/path list read the owning route file, and for the authorization of each family see the **Route → permission map** in the Authentication section. Only the non-obvious per-route semantics are called out below.
+
+### Public routes (no auth)
 
 | Method | Path | Notes |
 | --- | --- | --- |
 | `GET` | `/` / `/admin` | Dashboard HTML shell. |
-| `GET` | `/health` | Unauthenticated health check. |
-| `POST` | `/webhooks/:integrationId/:event` | Mounted only when webhook deps are provided. Per-integration HMAC secret is the auth layer. Used by Redmine / GitLab; Gerrit review events use SSH `stream-events` instead. |
-| `GET` | `/api/admin/auth/setup-status` | Unauthenticated. `{ needsSetup: boolean }` — true when the store supports users and zero users exist. |
-| `POST` | `/api/admin/auth/login` | Unauthenticated. `{ username, password }` → `{ token, user }` session or 401. |
+| `GET` | `/health` | Health check. |
+| `POST` | `/webhooks/:integrationId/:event` | Mounted only when webhook deps are provided. Per-integration HMAC secret is the auth layer. Redmine / GitLab only; Gerrit uses SSH `stream-events`. |
+| `GET` | `/api/admin/auth/setup-status` | `{ needsSetup }` — true when the store supports users and zero exist. |
+| `POST` | `/api/admin/auth/login` | `{ username, password }` → `{ token, user }` or 401. |
+| `POST` | `/api/admin/auth/setup` | Bootstrap-only (403 once any user exists). Rate-limited with `/login`. Creates the first `admin`, logs in, 201, audits `auth.setup`. |
 
-### Auth-protected routes
+### Auth-protected route families
 
-| Method | Path | Notes |
-| --- | --- | --- |
-| `POST` | `/api/admin/auth/setup` | Unauthenticated bootstrap: only valid while zero users exist (403 otherwise). Rate-limited (per-IP and per-username) alongside `/auth/login`. Creates the first `admin` user, logs them in, returns 201 `{ token, user }`, audits `auth.setup`. |
-| `POST` | `/api/admin/auth/logout` | Revokes the presented session token (204). |
-| `GET` | `/api/admin/auth/me` | Current auth context `{ id, username, role }`. |
-| `GET` / `POST` | `/api/admin/users` | List / create users (admin only). Duplicate username → 409. |
-| `PUT` | `/api/admin/users/:id` | Update role/enabled (admin only). Demoting or disabling the last enabled admin → 409; disabling revokes the user's sessions. |
-| `PUT` | `/api/admin/users/:id/password` | Admins reset anyone; non-admins change their own with a verified `currentPassword` (403 otherwise). Revokes the target's sessions; audits `user.password_change`. |
-| `DELETE` | `/api/admin/users/:id` | Delete user (admin only); deleting the last enabled admin → 409. |
-| `GET` | `/api/admin/audit` | Audit-log read API (admin only). Query params: `limit` (default 50, cap 200), `offset`, `action` (exact match), `actor` (exact `actorName` match). Returns `{ entries, total, limit, offset }`; entries carry `id`, `actorUserId`, `actorName`, `action`, `targetType`, `targetId`, `details`, ISO `createdAt`, newest first. 501 when the store lacks `listAuditEntries`. |
-| `GET` | `/api/admin/status` | Runtime status and provider summary. |
-| `GET` | `/api/admin/config` | Sanitized runtime config view. |
-| `GET` | `/api/admin/providers` | Provider summaries, one entry per active integration plus the runtime admin API card. |
-| `GET` | `/api/admin/plugins` | Registered plugin descriptors, including field metadata, derived capabilities, and optional OAuth metadata used by the dashboard. |
-| `POST` | `/api/admin/plugins/:type/oauth/device-code` | Start a descriptor-driven device flow for integrations whose descriptor exposes `oauth.mode = device` plus `createOAuthHandler`. |
-| `POST` | `/api/admin/plugins/:type/oauth/token` | Complete the descriptor-driven device flow and return `{ encryptedToken, isPlaintext }`. |
-| `POST` | `/api/admin/plugins/:type/oauth/start` | Start a descriptor-driven redirect flow for integrations whose descriptor exposes `oauth.mode = redirect`; request body must include `redirectUri`, may include a client-generated `state`, optional PKCE `codeChallenge` / `codeChallengeMethod`, and may include visible draft config plus `integrationId` so masked stored secrets can be restored during edit flows. |
-| `POST` | `/api/admin/plugins/:type/oauth/complete` | Complete the descriptor-driven redirect flow from `{ code, redirectUri, state?, codeVerifier? }` and return `{ encryptedToken, isPlaintext }`; accepts the same optional `config` / `integrationId` merge inputs as `start`. |
-| `GET` | `/api/admin/oauth-apps` | List the admin-managed OAuth app registry used for URL-only connect flows (e.g. GitLab). |
-| `POST` | `/api/admin/oauth-apps` | Create or update an OAuth app registry entry from `{ provider, baseUrl, clientId }`. |
-| `DELETE` | `/api/admin/oauth-apps` | Delete an OAuth app registry entry from `{ provider, baseUrl }`. |
-| `POST` | `/api/admin/oauth-apps/resolve` | Resolve a provider + base URL to the matching `{ baseUrl, clientId }` registry entry for the dashboard OAuth flow. |
-| `GET` | `/api/admin/logs/stream` | SSE server logs. |
-| `GET` | `/api/admin/events/stream` | SSE agent-task events. |
-| `GET` | `/api/admin/tasks` | Task list. |
-| `GET` | `/api/admin/tasks/:id` | Task detail. |
-| `GET` | `/api/admin/tasks/:id/cycles` | Stored agent cycles. |
-| `GET` | `/api/admin/tasks/:id/transitions` | Transition history. |
-| `PATCH` | `/api/admin/tasks/:id/pause` | Writes a metadata-only pause row. |
-| `PATCH` | `/api/admin/tasks/:id/resume` | Writes a metadata-only resume row. |
-| `POST` | `/api/admin/tasks/:id/retry` | Retry task. |
-| `POST` | `/api/admin/tasks/:id/abandon` | Abandon task. |
-| `GET` | `/api/admin/prompts` | List prompts. |
-| `POST` | `/api/admin/prompts` | Create custom prompt. |
-| `PUT` | `/api/admin/prompts/:id` | Update prompt. |
-| `DELETE` | `/api/admin/prompts/:id` | Delete prompt (`system` / `instructions` are protected). |
-| `GET` | `/api/admin/integrations` | List integrations with masked secrets. Each row exposes `provider`, derived `capabilities`, and `domainCapabilities` (no `type` / `category`) for capability-driven dashboard selectors. Legacy GitLab rows created before `authMode` existed are serialized back to the dashboard as `authMode = "pat"` for edit-form compatibility. |
-| `GET` | `/api/admin/integrations/by-category` | Grouped integration view used by the dashboard; groups are now keyed by **domain capability** (resolved from each provider descriptor). |
-| `POST` | `/api/admin/integrations` | Create integration. OAuth-backed providers can be created as drafts with no token; the dashboard writes the hidden OAuth token field only after the configured OAuth flow completes. |
-| `GET` | `/api/admin/integrations/:id` | Integration detail. |
-| `PUT` | `/api/admin/integrations/:id` | Update integration; omitted/masked secrets are restored from the stored row. A changed config clears the discovery cache so stale repos/projects are re-fetched on next discover. |
-| `DELETE` | `/api/admin/integrations/:id` | Delete integration. |
-| `POST` | `/api/admin/integrations/test` | Validate unsaved integration config. |
-| `POST` | `/api/admin/integrations/:id/test` | Validate saved integration config. |
-| `POST` | `/api/admin/integrations/:id/discover` | Refresh discovery cache (repos, projects, models, etc.). GitHub repo discovery is token-centric (`/user/repos`, filtered to the configured owner) so only repos the token can actually access are listed. |
-| `GET` | `/api/admin/integrations/:id/branches?repoKey=…` | On-demand branch discovery for one repository (used by the project push-target / review forms). Requires a `repoKey` query param (URL-encoded, may contain `/`). Resolves the provider descriptor's `discoverBranches` hook (Gerrit / GitLab / GitHub); decrypts password config fields before invoking it. `400` when `repoKey` is missing or the provider has no `discoverBranches`, `404` for unknown integrations, `502` on upstream failure. Not cached. |
-| `GET` | `/api/admin/integrations/:id/models` | Return cached discovered models. |
-| `PATCH` | `/api/admin/integrations/:id/enable` | Enable integration. |
-| `PATCH` | `/api/admin/integrations/:id/disable` | Disable integration. |
-| `GET` | `/api/admin/integrations/:id/webhook-info` | Render URL template + supported events + secret status. |
-| `POST` | `/api/admin/integrations/:id/webhook-secret/rotate` | Generate and persist a new webhook secret. |
-| `GET` | `/api/admin/integrations/:id/webhook-allowed-ips` | Read allowed IP list. |
-| `PUT` | `/api/admin/integrations/:id/webhook-allowed-ips` | Replace allowed IP list. |
-| `POST` | `/api/admin/ssh-key/generate` | Stateless SSH key-pair generation (`{ provider }` → `{ sshPrivateKeyEnc, sshPublicKey }`) for any provider whose descriptor implements `generateSshKeyPair` (see `src/utils/sshKeyGen.ts`). Used by the in-form "Generate key" flow before the integration is saved; nothing is persisted. `400` when the provider is unknown/unsupported or `ADMIN_AUTH_SECRET` is unset (generated keys must always be stored encrypted). |
-| `POST` | `/api/admin/integrations/:id/ssh-key/generate` | Generate a new key pair and persist it onto an existing integration's config (`sshPrivateKeyEnc` + `sshPublicKey`), returning `{ publicKey }`. Same `400` cases as above; `404` for unknown integrations. |
-| `GET` | `/api/admin/integrations/:id/ssh-key/public` | Return the currently stored public key (if any) for display/copy in the dashboard. |
-| `GET` | `/api/admin/ssh-agent/keys` | List public keys currently loaded in the host's `ssh-agent` (via `ssh-add -L`), used by the "SSH Agent" auth mode's key picker. Returns `{ keys: [], agentAvailable: false }` when no agent socket is reachable or the agent has no identities loaded — never a 5xx, so the UI can render an actionable empty state. |
-| `GET` | `/api/admin/agents` | Agent library list. |
-| `POST` | `/api/admin/agents` | Create agent record. |
-| `GET` | `/api/admin/agents/:id` | Agent detail with masked secrets. |
-| `PUT` | `/api/admin/agents/:id` | Update agent. |
-| `DELETE` | `/api/admin/agents/:id` | Delete agent; returns `409` when referenced by projects. |
-| `PATCH` | `/api/admin/agents/:id/enable` | Enable agent. |
-| `PATCH` | `/api/admin/agents/:id/disable` | Disable agent. |
-| `GET` | `/api/admin/projects` | Project list with resolved agent/integration names. |
-| `POST` | `/api/admin/projects` | Create coding or review project. Supports `skillDiscoveryEnabled` for local repository skills and `skillSources` (`{ source, skills, installAll?, sshUser?, sshPort?, sshKeyPath?, sshKnownHostsPath? }`) for project-approved remote skills. The admin UI preloads a new-project row for `ssh://g1.sfl.io/sfl/agent-skills` with `sshPort: 29419` and `installAll: true`; API clients that omit `skillSources` persist an empty list, and explicit `skillSources: []` remains empty. Remote sources are used whenever configured, independent of `skillDiscoveryEnabled`. SSH skill sources are checked with a bounded `ssh -T` connection test before saving; failures return 400 with the source index, URL, and SSH stderr/exit details. Coding payloads may also set `gerritTopicOverride`, `useFullTicketUrlInCommits`, `postReviewLinkToTicket`, and `reactToCiFailures` (all optional/off by default). Orphaned `FAILED`/`REVIEW_FAILED` tasks adopted via the new ticket-source binding are relaunched automatically, unless the project is created disabled. |
-| `POST` | `/api/admin/projects/skill-sources/list` | Runs `npx skills add -l <source>` with optional SSH hints to list available skills before saving a new project source row; requires unscoped `project.write`. |
-| `POST` | `/api/admin/projects/:id/skill-sources/list` | Same remote skill listing flow for an existing project, scoped through `resourceParam: "id"` so project editors with project-level `project.write` can use it. |
-| `GET` | `/api/admin/projects/:id` | Project detail. |
-| `PUT` | `/api/admin/projects/:id` | Update project, including the optional Gerrit topic/ticket trailer/review-link/CI-retry controls; coding-project `pushTargets` replace atomically. When remote skill sources are replaced, SSH sources are checked with the same bounded `ssh -T` validation used on create and the update is rejected as 400 if any source is unreachable. When ticket source, push targets, review config, agent binding/override, post-clone script, skill-discovery toggle, or remote skill sources change, or the project is enabled, every `FAILED`/`REVIEW_FAILED` task bound to the project is relaunched automatically (no manual retry click needed). |
-| `DELETE` | `/api/admin/projects/:id` | Delete project and linked child rows. |
-| `PATCH` | `/api/admin/projects/:id/enable` | Enable project. If it was previously disabled, its `FAILED`/`REVIEW_FAILED` tasks are relaunched automatically. |
-| `PATCH` | `/api/admin/projects/:id/disable` | Disable project. |
-| `GET` / `PUT` | `/api/admin/concurrency` | Read/update global concurrency plus live in-memory snapshot. `PUT` accepts `{ global: number \| null }` (numeric strings are coerced server-side). |
-| `GET` / `PUT` | `/api/admin/settings` | Read/update editable runtime workflow settings. `PUT` accepts any subset of `{ pollingIntervalMs, maxAgentCycles, maxRetryAttempts }` (positive integers; interval in ms). Persists to `app_settings` and hot-applies to the polling loop, orchestrator, and admin runtime config. |
-| `GET` | `/api/admin/overview` | Dashboard summary: task stats, throughput sparkline, review-vote breakdown, runtime facts. |
-| `GET` | `/api/admin/cost-summary` | Aggregated AI execution cost: instance total + per-project breakdown (USD / AI credits / runs). Optional `?days=<n>` scopes to a trailing period (omitted = all-time). Legacy cycles without a cost snapshot are recomputed from their event log so historical runs are still counted. |
-| `GET` | `/api/admin/model-usage` | Model usage distribution by run count and cost (global `byModel` + `perProject`). Optional `?days=<n>` trailing-period filter; legacy cycles without a recorded model snapshot are recomputed from `agent_events`. |
-| `GET` | `/api/admin/permissions` | PBAC permission catalog (all valid `"<resourceType>.<action>"` strings) for policy-editor dropdowns. Requires `policy.manage`. |
-| `GET` / `POST` | `/api/admin/groups` | List / create user groups (`policy.manage`). |
-| `GET` / `PUT` / `DELETE` | `/api/admin/groups/:id` | Group detail (with members) / rename / delete. |
-| `POST` | `/api/admin/groups/:id/members` | Add a user (`{ userId }`) to the group. |
-| `DELETE` | `/api/admin/groups/:id/members/:userId` | Remove a user from the group. |
-| `GET` / `POST` | `/api/admin/policies` | List (with rule/binding counts) / create policies (`policy.manage`). |
-| `GET` / `PUT` / `DELETE` | `/api/admin/policies/:id` | Policy detail (rules + bindings) / rename / delete. Built-in policies return `409` on `PUT`/`DELETE`. |
-| `PUT` | `/api/admin/policies/:id/rules` | Replace the policy's rule set (`{ rules: [{ permission, resourceId? }] }`); unknown permissions → `400`; built-in → `409`. |
-| `POST` | `/api/admin/policies/:id/bindings` | Bind the policy to a principal (`{ principalType: "user"\|"group", principalId }`); duplicate → `409`, unknown principal → `404`. |
-| `DELETE` | `/api/admin/policies/:id/bindings/:principalType/:principalId` | Remove a binding. |
+| Family | Owning file | Endpoints (representative) | Permission |
+| --- | --- | --- | --- |
+| Auth-self | `adminAuthRoutes.ts` | `POST /auth/logout`, `GET /auth/me` | `authenticated` |
+| Users | `adminAuthRoutes.ts` | CRUD `/users`, `/users/:id`, `/users/:id/password` | `user.manage` (own password is `authenticated`) |
+| Audit | `adminAuditRoutes.ts` | `GET /audit` (`limit`≤200, `offset`, `action`, `actor`) | `audit.read` |
+| Overview / runtime | `adminOverviewRoutes.ts`, `adminServer.ts` | `/status`, `/config`, `/providers`, `/overview`, `/cost-summary`, `/model-usage` | `overview.read` |
+| Streams | `adminStreamRoutes.ts` | SSE `/logs/stream`, `/events/stream` | `task.read` |
+| Tasks | `adminTaskRoutes.ts` | list/detail/`cycles`/`transitions`, `pause`/`resume` (metadata rows), `retry`/`abandon` | `task.read` / `task.operate` / `task.delete` (scoped to owning project) |
+| Prompts | `adminPromptRoutes.ts` | CRUD `/prompts` (`system` / `instructions` protected) | `prompt.read` / `prompt.write` / `prompt.delete` |
+| Integrations | `adminIntegrationRoutes.ts` | CRUD, `/test`, `/:id/test`, `/:id/discover`, `/by-category` | `integration.read` / `integration.write` / `integration.delete` / `integration.operate` |
+| Integration branches / models | `adminIntegrationRoutes.ts` | `GET /:id/branches?repoKey=…` (descriptor `discoverBranches`; 400/404/502; uncached), `GET /:id/models` | `integration.read` |
+| Webhooks | `adminWebhookRoutes.ts` | `/:id/webhook-info`, `/:id/webhook-secret/rotate`, `/:id/webhook-allowed-ips` | `integration.operate` |
+| SSH keys | `adminIntegrationRoutes.ts` | `/ssh-key/generate` (stateless), `/:id/ssh-key/{generate,public}`, `/ssh-agent/keys` | `integration.write` / `integration.read` |
+| Plugins / OAuth | `adminIntegrationRoutes.ts` | `GET /plugins`, `/plugins/:type/oauth/{device-code,token,start,complete}`, `/oauth-apps` CRUD + `/resolve` | `integration.read` / `oauth.manage` |
+| Agents | `adminAgentsRoutes.ts` | CRUD `/agents` (delete → 409 if referenced), `enable`/`disable` | `agent.read` / `agent.write` / `agent.delete` / `agent.operate` |
+| Projects | `adminProjectsRoutes.ts` | CRUD `/projects`, `enable`/`disable`, `/skill-sources/list`, `/:id/skill-sources/list` | `project.read` / `project.write` / `project.delete` / `project.operate` (scoped, list-filtered) |
+| Concurrency | `adminConcurrencyRoutes.ts` | `GET /concurrency` (live `{ global, perProject, perAgent }` snapshot; read-only) | `concurrency.read` |
+| Settings | `adminSettingsRoutes.ts` | `GET`/`PUT /settings` (`pollingIntervalMs`, `maxAgentCycles`, `maxRetryAttempts`; hot-applied) | `system.read` / `system.write` |
+| PBAC | `adminPoliciesRoutes.ts` | `/permissions`, `/groups` (+members), `/policies` (+`/rules`, `/bindings`) | `policy.manage` |
+
+**Non-obvious per-route semantics** (not recoverable without reading source):
+
+- **Users**: demoting/disabling/deleting the last enabled admin → 409; disabling or password-change revokes the target's sessions; non-admin password change requires a verified `currentPassword`.
+- **Integrations**: `PUT` restores omitted/masked secrets from the stored row and clears the discovery cache on config change; GitHub repo discovery is token-centric (`/user/repos` filtered to the configured owner).
+- **SSH key generate**: 400 when the provider lacks `generateSshKeyPair` or `ADMIN_AUTH_SECRET` is unset (keys must be stored encrypted); the stateless variant persists nothing.
+- **`ssh-agent/keys`**: returns `{ keys: [], agentAvailable: false }` (never 5xx) when no agent socket / no identities.
+- **Projects create/update**: `skillSources` SSH entries are validated with a bounded `ssh -T` before save (400 with source index/URL/stderr on failure); coding payloads accept `gerritTopicOverride`, `useFullTicketUrlInCommits`, `postReviewLinkToTicket`, `reactToCiFailures` (off by default); `pushTargets` replace atomically; changing ticket source / push targets / review config / agent binding / post-clone script / skill toggle / skill sources — or enabling the project — auto-relaunches its `FAILED`/`REVIEW_FAILED` tasks (adopted orphan tasks included, unless created disabled).
+- **Cost / model-usage**: optional `?days=<n>` trailing window; legacy cycles without a cost/model snapshot are recomputed from `agent_events`.
+- **PBAC**: built-in policies return 409 on `PUT`/`DELETE`; `/rules` rejects unknown permissions (400); duplicate binding → 409, unknown principal → 404.
 
 ## Authentication
 
