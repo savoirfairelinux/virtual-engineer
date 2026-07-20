@@ -38,9 +38,9 @@ Keep the root `@github/copilot-sdk` dependency aligned with `agent-worker/packag
 
 - **Orchestrator** normally runs on the **host** in development (Node.js, `tsx src/index.ts`). Optional Docker deployment uses `scripts/start.sh` (host networking, admin UI bound to `127.0.0.1:3100`).
 - For each agent cycle the host creates Docker **named volumes**, clones the repo into a volume via a helper container, spawns an **ephemeral Docker container** (`virtual-engineer-workspace:latest`) that edits files and may create one or more local commits; push operations also run in helper containers against the volume. The **host still owns review-system credentials and push orchestration** through `src/vcs/`. Container and volumes are destroyed on exit.
-- **Container constraints** (set by `buildContainerSpec` / `buildReviewContainerSpec` in `src/agents/copilotAdapter.ts`): `--read-only` rootfs, `--cap-drop ALL`, `--security-opt no-new-privileges:true`, `--tmpfs /tmp:rw,nosuid,size=256m`, `/workspace` named-volume mount, `/ve-home` named-volume mount for agent HOME (native modules and global skills), optional `/ve-prompts` mount, `networkMode=virtual-engineer_ve-agent-net`. When the project has `skillDiscoveryEnabled` set, both coding and review containers receive `SKILL_DISCOVERY=1` plus `LOCAL_SKILLS_PATH` when configured (default `.github/skills`). Before the agent container starts, `src/workspace/workspaceRunner.ts` installs any project `skill_sources_json` external entries into the `/ve-home` volume with `npx --yes skills@1.5.16 add ... -g -a <agent> --copy -y`; the agent container receives only the installed skill files, never `SKILL_SOURCES_JSON`, `SSH_AUTH_SOCK`, `GIT_SSH_COMMAND`, or private-key paths. SSH skill sources can use the host `SSH_AUTH_SOCK` or a per-source `sshKeyPath` only in the short-lived helper install container, and can set `sshKnownHostsPath` to enforce strict host key checking. Per-source `sshUser`/`sshPort` can complete Gerrit-style URLs that omit user/port. Skills only; MCP discovery stays off; trusted repos/sources only.
+- **Container constraints** (set by `buildContainerSpec` / `buildReviewContainerSpec` in `src/agents/copilotAdapter.ts`, `claudeAdapter.ts`, and `aiderAdapter.ts`): `--read-only` rootfs, `--cap-drop ALL`, `--security-opt no-new-privileges:true`, `--tmpfs /tmp:rw,nosuid,size=256m`, `/workspace` named-volume mount, `/ve-home` named-volume mount for agent HOME (native modules and global skills), optional `/ve-prompts` mount, `networkMode=virtual-engineer_ve-agent-net`. The agent image (`Dockerfile.agent`) pre-installs Node 24, git, gh, and — for the `aider` provider — Python 3 + the Aider CLI (via `uv tool install aider-chat`, symlinked onto `/usr/local/bin/aider`). When the project has `skillDiscoveryEnabled` set, both coding and review containers receive `SKILL_DISCOVERY=1` plus `LOCAL_SKILLS_PATH` when configured (default `.github/skills`). Before the agent container starts, `src/workspace/workspaceRunner.ts` installs any project `skill_sources_json` external entries into the `/ve-home` volume with `npx --yes skills@1.5.16 add ... -g -a <agent> --copy -y`; the agent container receives only the installed skill files, never `SKILL_SOURCES_JSON`, `SSH_AUTH_SOCK`, `GIT_SSH_COMMAND`, or private-key paths. SSH skill sources can use the host `SSH_AUTH_SOCK` or a per-source `sshKeyPath` only in the short-lived helper install container, and can set `sshKnownHostsPath` to enforce strict host key checking. Per-source `sshUser`/`sshPort` can complete Gerrit-style URLs that omit user/port. Skills only; MCP discovery stays off; trusted repos/sources only.
 - **Persistence**: SQLite WAL via `better-sqlite3` (sync) + Drizzle ORM at `DATABASE_PATH` (default `./data/virtual-engineer.db`).
-- **Providers (per capability)**: issue_tracking = Redmine | GitLab Issues | GitHub Issues; code_review / source_control = Gerrit | GitLab Merge Requests | GitHub Pull Requests; agent_execution = Copilot | Claude | Mock. Provider credentials live on `integrations`, while GitLab project selection is VE-project-owned (`project_integration_bindings` issue_tracking `{ ticketProjectKey }`, `project_push_targets.repoKey`, code_review `{ repos }` bindings).
+- **Providers (per capability)**: issue_tracking = Redmine | GitLab Issues | GitHub Issues; code_review / source_control = Gerrit | GitLab Merge Requests | GitHub Pull Requests; agent_execution = Copilot | Claude | Aider | Mock. Provider credentials live on `integrations`, while GitLab project selection is VE-project-owned (`project_integration_bindings` issue_tracking `{ ticketProjectKey }`, `project_push_targets.repoKey`, code_review `{ repos }` bindings).
 - **Admin server** (`src/admin/`) exposes the dashboard plus integrations, agents, projects, prompts, concurrency, editable runtime settings (`GET/PUT /api/admin/settings`), webhook-secret operations, and PBAC management (groups/policies/bindings under `/api/admin/{groups,policies,permissions}`); secrets are masked on read and the runtime is hot-refreshed after integration changes. Authorization is **pure PBAC** (`src/admin/authorization/`) enforced at the route gate — every route is authorized by a declared permission, with `admin` as the only superuser bypass and role solely selecting the default policy bundle at user creation. The dashboard client is a **Vite-built React SPA** (`src/admin/ui/`, served from `dist/admin-ui`; build with `npm run build:ui`).
 
 ### Source layout
@@ -67,6 +67,8 @@ src/
                         # copilotModelsService, cycleCost,
                         # claudeAdapter, claudeConnectionValidator,
                         # claudeModelsService,
+                        # aiderAdapter, aiderConnectionValidator,
+                        # aiderModelsService,
                         # mockAgentAdapter, agentEventTypes, agentEventBus
   connectors/           # redmineConnector, gerritConnector,
                         # gerritSshClient, gerritSshReviewProvider,
@@ -79,7 +81,7 @@ src/
   orchestrator/         # orchestrator, pollingLoop, feedbackProcessor,
                         # concurrencyTracker
   plugins/              # registry, pluginManager, init, descriptors/{index,github,
-                        # gitlab,gerrit,redmine,copilot,claude,mock}.ts (unified
+                        # gitlab,gerrit,redmine,copilot,claude,aider,mock}.ts (unified
                         # provider descriptors; githubOAuth/gitlabOAuth helpers)
   review/               # reviewOrchestrator, copilotReviewAgent,
                         # reviewPromptBuilder, reviewResultParser,
@@ -99,7 +101,7 @@ src/
                         # workspaceRunner (clone + container lifecycle)
 agent-worker/src/       # TS worker inside the agent container: index.ts
                         # (provider-agnostic orchestrator), providers/
-                        # {types,events,copilot,claude,registry}.ts (per-provider
+                        # {types,events,copilot,claude,aider,registry}.ts (per-provider
                         # runners + registry dispatch), commitUtils.ts,
                         # networkGuard.ts, skills.ts, validate-copilot-connection.ts;
                         # built via tsconfig.agent.json / npm run build:agent
@@ -112,7 +114,7 @@ agent-worker/src/       # TS worker inside the agent container: index.ts
 - `review_thread_replies` (INTEGER `id` PK): dedup ledger for **discussion-thread replies** (VE answering human review comments). Columns: `task_id` (FK), `change_id`, `thread_id`, `handled_comment_hash` (`sha1(thread+"\n"+lower(author)+"\n"+normalized(message))` of the latest human comment), `reply_message`, `created_at`. Unique `(task_id, thread_id, handled_comment_hash)` drives `INSERT OR IGNORE`; VE replies once per new human message and never re-answers an already-handled thread across re-reviews. Integration-agnostic.
 - `agent_cycles.agent_events` (TEXT, JSON `AgentLogEvent[]`) records the streamed agent log.
 - `agent_cycles` cost columns (all nullable): `cost_ai_credits` (REAL), `cost_usd` (REAL), `premium_requests` (REAL), `cost_input_tokens` / `cost_output_tokens` / `cost_cached_tokens` / `cost_cache_write_tokens` (INTEGER), `cost_model_id` (TEXT). Derived by `computeCycleCost()` (`src/agents/cycleCost.ts`) from `assistant.usage` events (per-request: events are grouped by request identity — `apiCallId`/`providerCallId` or content signature — to drop duplicate emissions, then summed across distinct requests: `copilotUsage.totalNanoAiu` → `cost_usd`/`cost_ai_credits` where 1 AIU = 1 credit = $0.01). When `totalNanoAiu` is absent, `cost_usd` is **estimated** from `premium_requests` × $0.04 (GitHub overage rate) and `cost_ai_credits` stays null. Legacy rows are recomputed from `agent_events` on read.
-- `integrations` (TEXT `id` PK): `provider`, `name`, `config_json`, `enabled` (INTEGER), `discovered_resources_json`, `discovered_at`, timestamps. `provider` is one of `github | gitlab | gerrit | redmine | copilot | claude | mock` (the former `type` column and the `category` concept were removed).
+- `integrations` (TEXT `id` PK): `provider`, `name`, `config_json`, `enabled` (INTEGER), `discovered_resources_json`, `discovered_at`, timestamps. `provider` is one of `github | gitlab | gerrit | redmine | copilot | claude | aider | mock` (the former `type` column and the `category` concept were removed).
 - `prompts` (TEXT `id` PK): `label`, `content`, `prompt_type` (`system | user`, default `user`), timestamps. Used to inject `SYSTEM_PROMPT` / `INSTRUCTIONS_PROMPT` into the agent container.
 - `oauth_apps` (composite PK `(provider, base_url)`): `provider`, `base_url`, `client_id`, timestamps — stores per-host OAuth app registrations. A legacy `gitlab_oauth_apps` table also exists.
 - `change_per_repository` (TEXT `id` PK): `task_id`, `repo_key`, `change_id`, `review_url`, `status`, `integration_id`, `review_system`, `commit_index` (INTEGER NOT NULL DEFAULT 0), `subject_hash` (TEXT), timestamps. PK format: `${taskId}:${repoKey}:${commitIndex}` when commitIndex > 0, else `${taskId}:${repoKey}`. Status values: `OPEN`, `NEW`, `MERGED`, `ABANDONED`, `ORPHANED`, `NO_CHANGE`. The `review_system` column is **kept** (not renamed) and stores `gerrit | gitlab | github` via `VcsConnector.reviewSystemLabel`.
@@ -225,6 +227,24 @@ Two connection methods (descriptor `src/plugins/descriptors/claude.ts`, `authMod
 - `subscription` — Claude Pro/Max OAuth token → `CLAUDE_CODE_OAUTH_TOKEN` (carried via `encryptedSessionToken`); obtained through the interactive authorization-code + PKCE OAuth flow (`src/plugins/descriptors/claudeOAuth.ts`, stored encrypted in `sessionToken`). `orchestrator.resolveProjectAgentRuntime` maps these provider-specific fields onto the generic `ResolvedAgentConfig`.
 
 Cost: Claude has no AIU, so `agent_cycles` USD/credit columns stay null; token usage is still emitted as `assistant.usage` events. Claude OAuth client id/endpoints are fixed public Claude Code values (not overridable via config — intentionally hard-coded to prevent SSRF/credential redirection) — see `claudeOAuth.ts`.
+
+## Aider Execution (`agent_execution` alternative to Copilot/Claude)
+
+The `aider` provider runs the **Aider** CLI (https://aider.chat, a Python package that wraps any LLM backend via litellm) inside the same agent container. The host `AiderAdapter` (`src/agents/aiderAdapter.ts`) injects `AGENT_PROVIDER=aider`, the selected backend's litellm auth env var(s), and `AIDER_MODEL` **only when a model is configured** (otherwise the Aider CLI picks its own default — no hardcoded default in VE). The Aider runner (`agent-worker/src/providers/aider.ts`, resolved by the worker's provider registry when `AGENT_PROVIDER=aider`) spawns `aider --message-file <prompt> --yes --no-pretty --no-stream --commit-prompt <conventional-commits>` as a subprocess against `/workspace` and maps its streamed output onto the shared `__ve_event` / commit / `AgentResult` pipeline. Both coding and review flows are supported (review uses `REVIEW_MODE=1` with `--no-auto-commits --no-git`).
+
+Six LLM backends (descriptor `src/plugins/descriptors/aider.ts`, `aiderBackend` selector; the model lives on the `agents` table):
+- `openai` → `OPENAI_API_KEY`
+- `anthropic` → `ANTHROPIC_API_KEY`
+- `ollama` → `OLLAMA_API_BASE` (no key; default `http://127.0.0.1:11434`)
+- `openrouter` → `OPENROUTER_API_KEY`
+- `deepseek` → `DEEPSEEK_API_KEY`
+- `openai_compat` → `OPENAI_API_KEY` + `OPENAI_API_BASE` (any OpenAI-compatible endpoint)
+
+`orchestrator.resolveProjectAgentRuntime` reads `aiderBackend` / `aiderApiKey` / `aiderApiBase` from the integration config and forwards them onto `AgentSession` (and `ReviewWorkspaceInput`) via `ResolvedAgentConfig.extra`. Connection validation (`aiderConnectionValidator.ts`) and model discovery (`aiderModelsService.ts`) probe the upstream provider's `/models` (or Ollama `/api/tags`); Ollama model ids are prefixed with `ollama_chat/` per Aider's recommendation.
+
+The Aider CLI is installed in the agent image via `uv tool install aider-chat` (see `Dockerfile.agent`); the binary is symlinked onto `/usr/local/bin/aider`. Aider's `~/.aider*` cache lands on the `/ve-home` named volume. Aider needs outbound HTTPS to the upstream LLM API (and HTTP to Ollama); the `virtual-engineer_ve-agent-net` Docker network must allow that egress, and Ollama-on-host needs `host.docker.internal` reachability.
+
+Cost: Aider has no AIU, so `agent_cycles` USD/credit columns stay null; token usage is still emitted as `assistant.usage` events (parsed from Aider's `Tokens: … Cost: …` line when present).
 
 ## Test Layout
 - **Unit + integration tests**: `tests/unit/` (Vitest). All external I/O (fetch, fs, Docker, SDK) is mocked via `vi.mock`/`vi.spyOn`. Current project-mode and webhook-oriented scenarios live alongside unit specs (for example `orchestrator.projectMode.test.ts`, `orchestrator.webhookEntryPoints.test.ts`, `pollingLoop.projects.test.ts`).
