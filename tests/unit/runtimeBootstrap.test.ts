@@ -285,6 +285,7 @@ async function importRuntime(
         : null
     ),
     getActiveTasks: vi.fn(async (): Promise<Task[]> => options.activeTasks ?? []),
+    reconcileOrphanedActiveTasks: vi.fn(async () => 0),
     onTaskTransition: vi.fn(),
     upsertIntegration: vi.fn(async (inp: Omit<Integration, "createdAt" | "updatedAt">) => {
       const now = new Date();

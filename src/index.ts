@@ -56,6 +56,17 @@ async function main(): Promise<void> {
   // ─── State Store ────────────────────────────────────────────────────────────
   const stateStore = await SqliteStateStore.create(config.databasePath);
 
+  // A previous crash or forced restart can leave a task stuck in an "actively
+  // executing" state (AGENT_RUNNING / REVIEW_RUNNING / REVIEW_COMMENTING) even
+  // though its Docker workspace is long gone (workspaces never survive a
+  // restart). Left alone, the in-flight guards in orchestrator/reviewOrchestrator
+  // treat that state as still-running forever. Fail them at boot so normal
+  // retry/re-trigger logic picks them back up.
+  const orphanedTaskCount = await stateStore.reconcileOrphanedActiveTasks();
+  if (orphanedTaskCount > 0) {
+    log.warn({ orphanedTaskCount }, "failed tasks orphaned by a previous orchestrator restart");
+  }
+
   // ─── Editable workflow settings ───────────────────────────────────────────────
   // Env/config values are the fallback defaults; persisted overrides (edited from
   // the admin UI and stored in `app_settings`) take precedence and are applied here
