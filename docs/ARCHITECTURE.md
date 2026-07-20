@@ -102,6 +102,9 @@ src/
     claudeAdapter.ts      # Claude Code adapter (agent_execution)
     claudeConnectionValidator.ts
     claudeModelsService.ts
+    aiderAdapter.ts       # Aider adapter (agent_execution; wraps any litellm backend)
+    aiderConnectionValidator.ts
+    aiderModelsService.ts
     cycleCost.ts          # Derives per-cycle cost from assistant.usage events
     mockAgentAdapter.ts   # Deterministic mock, no Copilot needed
     agentEventBus.ts      # SSE event bus for live log streaming
@@ -134,7 +137,8 @@ src/
     pluginManager.ts      # DB-driven instance lifecycle
     init.ts               # Registers built-in descriptors at startup
     descriptors/          # One unified descriptor per provider (+ index.ts,
-                          # githubOAuth/gitlabOAuth/claudeOAuth helpers)
+                          # githubOAuth/gitlabOAuth/claudeOAuth helpers;
+                          # aider.ts for the Aider agent_execution provider)
 
   review/               # Code-review workflow
     reviewOrchestrator.ts # REVIEW_PENDING → REVIEW_DONE lifecycle
@@ -190,7 +194,7 @@ src/
 agent-worker/
   src/index.ts          # Provider-agnostic orchestrator INSIDE the agent
                         # container; built to dist/ via tsconfig.agent.json
-  src/providers/        # types, events, copilot, claude, registry
+  src/providers/        # types, events, copilot, claude, aider, registry
                         # (per-provider runners + registry dispatch)
   src/commitUtils.ts
   src/networkGuard.ts
@@ -404,6 +408,19 @@ Connection methods live on the `claude` descriptor (`src/plugins/descriptors/cla
 
 ---
 
+### 3.6.2 AiderAdapter
+
+`src/agents/aiderAdapter.ts`
+
+An alternative `agent_execution` adapter that runs the **Aider** CLI (https://aider.chat, a Python package wrapping any LLM backend via litellm) inside the same hardened container. It mirrors `CopilotAdapter`/`ClaudeAdapter` (same security args, `/ve-home` HOME volume, `__ve_event` stderr protocol, commit collection, and `AgentResult` contract) but:
+
+- injects `AGENT_PROVIDER=aider` + `AIDER_MODEL` (only when configured) and the selected backend's litellm auth env var(s);
+- dispatches in the worker: `agent-worker/src/index.ts` resolves the runner via `providers/registry.ts` and calls `providers/aider.ts` `runAiderAgent()` when `AGENT_PROVIDER=aider`, which spawns `aider --message-file <prompt> --yes --no-pretty --no-stream --commit-prompt <conventional-commits>` as a subprocess and maps its streamed output onto the shared event/commit/result pipeline. Coding cycles use `--auto-commits`; review cycles use `--no-auto-commits --no-git`.
+
+The adapter injects **no** default model: when the agent config leaves the model unset, `AIDER_MODEL` is omitted and the Aider CLI picks its own default. Six LLM backends are declared on the `aider` descriptor (`src/plugins/descriptors/aider.ts`, `aiderBackend` selector): `openai` → `OPENAI_API_KEY`; `anthropic` → `ANTHROPIC_API_KEY`; `ollama` → `OLLAMA_API_BASE` (no key); `openrouter` → `OPENROUTER_API_KEY`; `deepseek` → `DEEPSEEK_API_KEY`; `openai_compat` → `OPENAI_API_KEY` + `OPENAI_API_BASE`. `orchestrator.resolveProjectAgentRuntime` forwards these from the integration config onto `AgentSession` via `ResolvedAgentConfig.extra`. The Aider CLI is installed in the agent image via `uv tool install aider-chat` (see `Dockerfile.agent`). Cost columns stay null (Aider has no AIU); token usage is still emitted.
+
+---
+
 ### 3.7 ReviewOrchestrator
 
 `src/review/reviewOrchestrator.ts`
@@ -561,6 +578,7 @@ Pause and resume are **not boolean columns**. They are `state_transitions` rows 
 | `gerrit` | code_review, source_control |
 | `copilot` | agent_execution |
 | `claude` | agent_execution |
+| `aider` | agent_execution |
 | `mock` | agent_execution |
 
 Technical capabilities (`oauth`, `discovery`, `stream-events`, `reviewer`) are derived from descriptor hooks. Multiple integrations of the same provider can be active simultaneously. The orchestrator routes by `integrationId` in project mode, and may build a project-bound connector instance when the VE project owns part of the provider binding.
@@ -637,7 +655,7 @@ review_thread_replies            ← dedup ledger: VE replies to human threads
 ```
 integrations
   id               TEXT  PK
-  provider         TEXT  github | gitlab | gerrit | redmine | copilot | claude | mock
+  provider         TEXT  github | gitlab | gerrit | redmine | copilot | claude | aider | mock
   name             TEXT
   config_json      TEXT  JSON (credentials + endpoints)
   enabled          INTEGER  0|1  (default 1)
