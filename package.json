@@ -41,8 +41,6 @@
   "devDependencies": {
     "@fontsource/ibm-plex-mono": "^5.2.7",
     "@fontsource/ibm-plex-sans": "^5.2.8",
-    "@fontsource/material-icons": "^5.2.7",
-    "@material-icons/svg": "^1.0.33",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^20.19.41",
     "@types/react": "^19.2.17",
@@ -54,7 +52,6 @@
     "drizzle-kit": "^0.31.10",
     "eslint": "^9.5.0",
     "eslint-plugin-react-hooks": "^7.1.1",
-    "simple-icons": "^16.23.0",
     "tsx": "^4.15.6",
     "typescript": "^5.4.5",
     "vite": "^8.0.16",
