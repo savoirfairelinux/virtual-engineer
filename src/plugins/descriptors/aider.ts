@@ -74,7 +74,7 @@ export function createAiderDescriptor(_adminAuthSecret?: string): ProviderDescri
         label: "API Base URL",
         type: "url",
         required: false,
-        placeholder: "http://hostname:11434  — optional for Ollama (defaults to http://127.0.0.1:11434); required for OpenAI-compatible endpoints",
+        placeholder: "http://hostname:port  — base URL for the LLM backend (required for openai_compat; optional for others)",
       },
     ],
     testConnection: (config) =>

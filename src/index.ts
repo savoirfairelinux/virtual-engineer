@@ -642,8 +642,6 @@ async function buildReviewBundle(
     reviewProvider: reviewer.provider,
     integrationId: integration.id,
     workspaceRunner,
-    ...(aiderBackend !== undefined ? { aiderBackend } : {}),
-    ...(aiderApiBase !== undefined ? { aiderApiBase } : {}),
     buildCloneTarget: reviewer.buildCloneTarget,
     ...(reviewer.applyPatchset !== undefined ? { applyPatchset: reviewer.applyPatchset } : {}),
     sourceLabel: buildIntegrationSourceLabel(integration),
@@ -685,7 +683,7 @@ async function resolveReviewAgentForProject(
   store: import("./interfaces.js").StateStore & import("./interfaces.js").PromptStore,
   project: ProjectRecord,
   bundleLog: ReturnType<typeof getLogger>
-): Promise<{ adapter: AgentAdapter; model: string | undefined; token: string } | null> {
+): Promise<{ adapter: AgentAdapter; model: string | undefined; token: string; aiderBackend?: string | undefined; aiderApiBase?: string | undefined } | null> {
   if (!project.agentId) return null;
 
   try {
@@ -736,7 +734,20 @@ async function resolveReviewAgentForProject(
     // No usable token for this exact agent means the task cannot run.
     if (!token) return null;
 
-    return { adapter, model: resolvedModel, token };
+    // For Aider integrations, extract the backend selector and API base URL.
+    let aiderBackend: string | undefined;
+    let aiderApiBase: string | undefined;
+    if (agentIntegration.provider === "aider") {
+      try {
+        const aiderCfg = pluginManager.decryptIntegrationConfig(agentIntegration);
+        aiderBackend = asOptionalString(aiderCfg["aiderBackend"]);
+        aiderApiBase = asOptionalString(aiderCfg["aiderApiBase"]);
+      } catch {
+        // non-fatal — adapter falls back to defaults
+      }
+    }
+
+    return { adapter, model: resolvedModel, token, ...(aiderBackend !== undefined ? { aiderBackend } : {}), ...(aiderApiBase !== undefined ? { aiderApiBase } : {}) };
   } catch (err) {
     bundleLog.warn({ err, projectId: project.id }, "resolveReviewAgentForProject: failed to resolve project agent");
     return null;
