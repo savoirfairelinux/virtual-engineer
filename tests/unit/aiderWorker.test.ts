@@ -58,7 +58,7 @@ describe("runAiderAgent", () => {
     expect(args).not.toContain("--no-auto-commits");
   });
 
-  it("disables auto-commits but keeps git for review mode (repo-map)", async () => {
+  it("disables git and auto-commits for review mode (read-only workspace)", async () => {
     const fake = makeFakeChild();
     spawnMock.mockReturnValue(fake);
     const promise = runAiderAgent("review this", {
@@ -73,8 +73,10 @@ describe("runAiderAgent", () => {
     await promise;
 
     const args = spawnMock.mock.calls[0]![1] as string[];
+    // --no-git is required: the review container mounts /workspace read-only,
+    // and Aider's setup_git() would otherwise crash writing .git/config.lock.
+    expect(args).toContain("--no-git");
     expect(args).toContain("--no-auto-commits");
-    expect(args).not.toContain("--no-git");
     expect(args).toContain("--no-dirty-commits");
     expect(args).not.toContain("--auto-commits");
     // No --model arg when model is empty.
@@ -172,7 +174,24 @@ describe("runAiderAgent", () => {
     expect((editEvent!["data"] as { input: { path: string } }).input.path).toBe("src/foo.ts");
   });
 
-  it("rejects when aider exits non-zero", async () => {
+  it("rejects with exit code and last stderr error line when aider exits non-zero", async () => {
+    const fake = makeFakeChild();
+    spawnMock.mockReturnValue(fake);
+    const promise = runAiderAgent("hi", {
+      model: "gpt-4o",
+      systemPrompt: "sys",
+      cwd: "/workspace",
+      timeoutMs: 1000,
+      mode: "codegen",
+    });
+    await new Promise((r) => setImmediate(r));
+    (fake.stderr as PassThrough).write("Traceback (most recent call last):\n  File \"main.py\"\nOSError: [Errno 30] Read-only file system: '/workspace/.git/config.lock'\n");
+    await new Promise((r) => setImmediate(r));
+    fake.emit("close", 1);
+    await expect(promise).rejects.toThrow(/exited with code 1.*OSError.*Read-only file system/);
+  });
+
+  it("rejects with just the exit code when aider exits non-zero with no stderr", async () => {
     const fake = makeFakeChild();
     spawnMock.mockReturnValue(fake);
     const promise = runAiderAgent("hi", {
@@ -184,6 +203,8 @@ describe("runAiderAgent", () => {
     });
     await new Promise((r) => setImmediate(r));
     fake.emit("close", 2);
-    await expect(promise).rejects.toThrow(/exited with code 2/);
+    const err = await promise.catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toBe("Aider exited with code 2");
   });
 });

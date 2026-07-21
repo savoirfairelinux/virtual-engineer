@@ -121,6 +121,13 @@ function buildAiderArgs(promptFile: string, mode: 'codegen' | 'review'): string[
     // defaults to "whole edit format" and the LLM tries to output complete file
     // contents instead of the REVIEW_RESULT_START…END block we parse.
     //
+    // --no-git disables Aider's git integration entirely. This is required because
+    // the review container mounts /workspace read-only (`:ro`), and Aider's
+    // setup_git() unconditionally tries to write /workspace/.git/config.lock to
+    // set user.name/user.email even in ask mode, crashing with EROFS. No commits
+    // are made in review mode so git integration is not needed; Aider still scans
+    // the filesystem for its context window.
+    //
     // --no-stream is intentionally omitted here: thinking models (e.g. qwen3-coder,
     // DeepSeek-R1) generate long reasoning chains before the final answer. With
     // --no-stream, Aider blocks the entire HTTP response until reasoning completes,
@@ -132,6 +139,7 @@ function buildAiderArgs(promptFile: string, mode: 'codegen' | 'review'): string[
     // repetition loops without artificially truncating the response.
     return [
       ...baseArgs,
+      '--no-git',
       '--chat-mode', 'ask',
       '--no-auto-commits',
       '--no-dirty-commits',
@@ -193,6 +201,7 @@ export async function runAiderAgent(
   const state = { toolCallCount: 0, toolsByKind: {} as Record<string, number> };
   let content = '';
   let assistantText = '';
+  let stderrAccum = '';
 
   const child = spawn(resolveAiderBinary(), args, {
     cwd,
@@ -239,6 +248,7 @@ export async function runAiderAgent(
       });
       child.stderr?.on('data', (chunk: Buffer) => {
         const text = chunk.toString('utf8');
+        stderrAccum += text;
         processAiderStderr(text, state);
       });
       child.on('error', (err) => reject(err));
@@ -246,7 +256,7 @@ export async function runAiderAgent(
         // Flush any trailing output not terminated by a newline.
         if (stdoutBuf.trim()) flushStdoutLine(stdoutBuf);
         if (code !== null && code !== 0) {
-          reject(new Error(`Aider exited with code ${code}`));
+          reject(new Error(buildExitError(code, stderrAccum)));
           return;
         }
         resolve();
@@ -289,6 +299,39 @@ export async function runAiderAgent(
       }
     },
   };
+}
+
+/**
+ * Build a descriptive error message from an Aider non-zero exit code.
+ * Extracts the last error-class line from the accumulated stderr so the
+ * operator sees the actual exception rather than just the exit code.
+ */
+function buildExitError(code: number, stderr: string): string {
+  const base = `Aider exited with code ${code}`;
+  if (!stderr.trim()) return base;
+
+  // Walk lines from the end; prefer a line that names a Python exception.
+  const lines = stderr.split('\n');
+  let errorLine: string | undefined;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i]?.trim() ?? '';
+    if (!line) continue;
+    if (/Error:|Exception:|OSError:|IOError:|RuntimeError:|ValueError:/.test(line)) {
+      errorLine = line;
+      break;
+    }
+  }
+  // Fall back to the last non-empty line.
+  if (!errorLine) {
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i]?.trim() ?? '';
+      if (line) { errorLine = line; break; }
+    }
+  }
+  if (!errorLine) return base;
+  // Cap to 300 chars to keep the log readable.
+  const summary = errorLine.length > 300 ? errorLine.slice(0, 297) + '...' : errorLine;
+  return `${base}: ${summary}`;
 }
 
 /**
