@@ -74,7 +74,7 @@ export function createAiderDescriptor(_adminAuthSecret?: string): ProviderDescri
         label: "API Base URL",
         type: "url",
         required: false,
-        placeholder: "http://hostname:11434  — required for Ollama and OpenAI-compatible endpoints",
+        placeholder: "http://hostname:11434  — optional for Ollama (default: http://127.0.0.1:11434), required for openai_compat",
       },
     ],
     testConnection: (config) =>
