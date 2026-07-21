@@ -94,6 +94,8 @@ export interface ReviewOrchestratorDeps {
     adapter: AgentAdapter;
     model: string | undefined;
     token: string;
+    aiderBackend?: string | undefined;
+    aiderApiBase?: string | undefined;
   } | null>;
   /** Maximum diff characters injected into the review prompt. Defaults to 60 000. */
   maxDiffChars?: number | undefined;
