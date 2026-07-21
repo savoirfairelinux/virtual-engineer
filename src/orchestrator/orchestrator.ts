@@ -1,6 +1,6 @@
 import pRetry from "p-retry";
 import { randomUUID, createHash } from "crypto";
-import { formatTicketFooter, hasTicketFooter } from "../utils/ticketFooterFormatter.js";
+import { formatTicketFooter } from "../utils/ticketFooterFormatter.js";
 import type {
   AgentAdapter,
   CommitDescriptor,
@@ -317,11 +317,6 @@ export class Orchestrator {
     }
 
     await this.checkReviewProgress(task);
-  }
-
-  /** Gerrit-flavoured alias for handleReviewEvent. */
-  async handleGerritEvent(changeId: ExternalChangeId): Promise<void> {
-    await this.handleReviewEvent(changeId);
   }
 
   /**
@@ -886,7 +881,6 @@ export class Orchestrator {
           handle,
           projectPushTargets,
           commitMessage,
-          context.ticketUrl ?? "",
           agentResult.commits,
           projectRecord.gerritTopicOverride
         );
@@ -1465,7 +1459,6 @@ export class Orchestrator {
     handle: WorkspaceHandle,
     pushTargets: import("../interfaces.js").ProjectPushTargetRecord[],
     fallbackCommitMessage: string,
-    ticketUrl: string,
     agentCommits: CommitDescriptor[] | undefined = undefined,
     topicOverride: string | null = null
   ): Promise<void> {
@@ -1537,15 +1530,12 @@ export class Orchestrator {
 
       const volumeOpts = { volumeName: handle.volumeName, image: handle.containerImage, subPath: target.localPath };
       try {
-        const commitMsg = this.appendTicketFooter(fallbackCommitMessage, task.ticketId, ticketUrl, task.ticketSourceLabel);
         const subjectHash = createHash("sha1").update(fallbackCommitMessage.split("\n")[0] ?? "").digest("hex");
 
-        let pushResult;
-        if (vcsConnector.pushDirect) {
-          pushResult = await vcsConnector.pushDirect(handle.hostWorkspacePath, ref, topic, volumeOpts);
-        } else {
-          pushResult = await vcsConnector.push(handle.hostWorkspacePath, ref, commitMsg, undefined, volumeOpts);
+        if (!vcsConnector.pushDirect) {
+          throw new Error(`VCS connector for ${reviewSystemLabel} does not implement pushDirect`);
         }
+        const pushResult = await vcsConnector.pushDirect(handle.hostWorkspacePath, ref, topic, volumeOpts);
 
         // Use Change-Ids from agent commits when available — this is the source of truth
         // for multi-commit pushes where pushResult.changeId only reflects HEAD (the last commit).
@@ -1823,42 +1813,6 @@ export class Orchestrator {
   private buildCommitMessage(_task: Task, ticketSubject: string): string {
     const subject = ticketSubject.slice(0, 72).replace(/\.$/, "");
     return `feat: ${subject}`;
-  }
-
-  /**
-   * Appends a ticket reference footer to a conventional commit message.
-   *
-   * The footer is formatted using the modular ticketFooterFormatter utility,
-   * which supports any configured ticketing system in ID format: "System: #ticketId"
-   *
-   * Footer is skipped if the message already contains an existing footer
-   * (idempotent — safe to call multiple times).
-   */
-  private appendTicketFooter(message: string, ticketId: string, ticketUrl: string, ticketSourceLabel?: string): string {
-    if (hasTicketFooter(message, ticketSourceLabel)) {
-      return message;
-    }
-
-    const footer = this.buildTicketFooter(ticketId, ticketUrl, ticketSourceLabel);
-    if (!footer) return message;
-
-    return `${message.trimEnd()}\n\n${footer}\n`;
-  }
-
-  /**
-   * Builds the footer line using the modular ticketFooterFormatter utility.
-   * Returns null if no footer is applicable (unknown system or missing data).
-   *
-   * All supported systems use ID format: "System: #ticketId"
-   * This is simple, consistent, and works across all review systems (GitLab, Gerrit, etc.)
-   * and is future-proof for new ticketing systems.
-   *
-   * To add support for a new ticketing system:
-   * 1. Add configuration to TICKET_SYSTEM_CONFIG in ticketFooterFormatter.ts
-   * 2. No changes needed here — automatically supported.
-   */
-  private buildTicketFooter(ticketId: string, ticketUrl: string, ticketSourceLabel?: string): string | null {
-    return formatTicketFooter(ticketId, ticketUrl, ticketSourceLabel);
   }
 
   /** Extract acceptance-criteria lines (checklist or numbered items) from a ticket description. */

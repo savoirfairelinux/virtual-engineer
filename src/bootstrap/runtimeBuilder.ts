@@ -39,7 +39,7 @@ export function parseIntegrationConfig(integration: Integration | null): Record<
 }
 
 /** Return all active integrations of `provider`, sorted newest-first. */
-export function getActiveIntegrationsByType(pluginManager: PluginManager, provider: ProviderId): Integration[] {
+function getActiveIntegrationsByType(pluginManager: PluginManager, provider: ProviderId): Integration[] {
   return pluginManager
     .getActiveIntegrationsByProvider(provider)
     .slice()
@@ -47,7 +47,7 @@ export function getActiveIntegrationsByType(pluginManager: PluginManager, provid
 }
 
 /** Return the most-recently-updated active integration of `provider`, or null. */
-export function getPrimaryActiveIntegration(pluginManager: PluginManager, provider: ProviderId): Integration | null {
+function getPrimaryActiveIntegration(pluginManager: PluginManager, provider: ProviderId): Integration | null {
   return getActiveIntegrationsByType(pluginManager, provider)[0] ?? null;
 }
 
