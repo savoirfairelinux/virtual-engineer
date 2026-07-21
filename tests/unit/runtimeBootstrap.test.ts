@@ -406,8 +406,6 @@ async function importRuntime(
   vi.doMock("../../src/agents/copilotAdapter.js", () => ({
     CopilotAdapter,
   }));
-  const CopilotReviewAgent = vi.fn().mockImplementation(function () { return { runReview: vi.fn() }; });
-  vi.doMock("../../src/review/copilotReviewAgent.js", () => ({ CopilotReviewAgent }));
   const ReviewOrchestrator = vi.fn().mockImplementation(function () {
     return {
       startReviewTask: vi.fn().mockResolvedValue([]),
@@ -460,7 +458,6 @@ async function importRuntime(
     createAdminServer,
     stateStore,
     pluginManagerInstance,
-    CopilotReviewAgent,
     ReviewOrchestrator,
     GerritSshReviewProvider,
     PluginIntegrationStreamEventsManager,

@@ -186,17 +186,9 @@ export function getMe(): Promise<ApiMe> {
 
 export interface AgentKey { publicKey: string; keyType: string; comment: string }
 
-export function generateSshKey(integrationId: string): Promise<{ publicKey: string }> {
-  return request<{ publicKey: string }>("POST", `/api/admin/integrations/${integrationId}/ssh-key/generate`);
-}
-
 /** Generate a key pair without requiring an existing integration (returns both values for in-form state). */
 export function generateSshKeyPair(provider: string, sshUser?: string): Promise<{ sshPrivateKeyEnc: string; sshPublicKey: string }> {
   return request<{ sshPrivateKeyEnc: string; sshPublicKey: string }>("POST", "/api/admin/ssh-key/generate", { provider, sshUser });
-}
-
-export function getSshPublicKey(integrationId: string): Promise<{ publicKey: string | null }> {
-  return request<{ publicKey: string | null }>("GET", `/api/admin/integrations/${integrationId}/ssh-key/public`);
 }
 
 export function listAgentKeys(): Promise<{ keys: AgentKey[]; agentAvailable: boolean }> {

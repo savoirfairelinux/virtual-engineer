@@ -31,20 +31,6 @@ import { agentLogBus, pushToTaskBuffer, clearTaskEventBuffer } from "../agents/a
 
 const log = getLogger("review-orchestrator");
 
-/** Legacy interface implemented by `CopilotReviewAgent`. Kept for backward compatibility. */
-export interface ReviewAgent {
-  runReview(
-    input: {
-      changeId: ExternalChangeId;
-      patchset: number;
-      project: string;
-      prompt: string;
-      workingDirectory?: string | undefined;
-    },
-    onEvent?: ((event: { type: string; data?: unknown }) => void) | undefined,
-  ): Promise<{ rawOutput: string }>;
-}
-
 export interface ReviewOrchestratorDeps {
   stateStore: Pick<
     StateStore,

@@ -331,7 +331,7 @@ describe("Orchestrator", () => {
     const stateStore = makeStateStore({ findTaskByExternalChangeId: vi.fn().mockResolvedValue(null) });
     const orchestrator = makeOrchestrator({ stateStore });
 
-    await orchestrator.handleGerritEvent(makeExternalChangeId("Imissing"));
+    await orchestrator.handleReviewEvent(makeExternalChangeId("Imissing"));
 
     expect(stateStore.findTaskByExternalChangeId).toHaveBeenCalledWith(null, "Imissing");
   });
@@ -346,7 +346,7 @@ describe("Orchestrator", () => {
     const gerritConnector = makeGerritConnector();
     const orchestrator = makeOrchestrator({ stateStore, gerritConnector });
 
-    await orchestrator.handleGerritEvent(gerritChangeId);
+    await orchestrator.handleReviewEvent(gerritChangeId);
 
     expect(gerritConnector.getChangeStatus).not.toHaveBeenCalled();
   });
@@ -360,7 +360,7 @@ describe("Orchestrator", () => {
     const orchestrator = makeOrchestrator({ stateStore });
     const checkReviewProgress = vi.spyOn(orchestrator as any, "checkReviewProgress").mockResolvedValue(undefined);
 
-    await orchestrator.handleGerritEvent(gerritChangeId);
+    await orchestrator.handleReviewEvent(gerritChangeId);
 
     expect(checkReviewProgress).toHaveBeenCalledWith(task);
   });
@@ -375,7 +375,7 @@ describe("Orchestrator", () => {
     const orchestrator = makeOrchestrator({ stateStore });
     const checkReviewProgress = vi.spyOn(orchestrator as any, "checkReviewProgress").mockResolvedValue(undefined);
 
-    await orchestrator.handleGerritEvent(gerritChangeId);
+    await orchestrator.handleReviewEvent(gerritChangeId);
 
     expect(checkReviewProgress).not.toHaveBeenCalled();
   });
