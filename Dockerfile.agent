@@ -21,8 +21,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     python3-venv \
   && rm -rf /var/lib/apt/lists/* \
-  && curl -LsSf https://astral.sh/uv/install.sh | sh \
-  && /root/.local/bin/uv tool install --python python3 aider-chat \
+  && curl -LsSf https://astral.sh/uv/install.sh | UV_VERSION=0.11.30 sh \
+  && /root/.local/bin/uv tool install --python python3 aider-chat==0.86.2 \
   && ln -s /root/.local/bin/aider /usr/local/bin/aider
 ENV PATH="/root/.local/bin:${PATH}"
 # Default SSH config — accepts unknown host keys as a fallback for ephemeral
