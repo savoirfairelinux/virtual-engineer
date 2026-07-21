@@ -343,19 +343,19 @@ export class GitLabVcsConnector implements VcsConnector {
    */
   private async resolveReviewerIds(emails?: string[]): Promise<number[]> {
     if (!emails || emails.length === 0) return [];
-    const ids: number[] = [];
+    const ids = new Set<number>();
     for (const email of emails) {
       try {
         const url = `${this.config.baseUrl}/api/v4/users?search=${encodeURIComponent(email)}`;
         const users = await this.httpClient.fetchJson<Array<{ id: number; email?: string }>>(url);
-        const match = users.find((u) => u.email?.toLowerCase() === email.toLowerCase()) ?? users[0];
-        if (match) ids.push(match.id);
-        else log.warn({ email }, "no GitLab user found for reviewer email");
+        const match = users.find((u) => u.email?.toLowerCase() === email.toLowerCase());
+        if (match) ids.add(match.id);
+        else log.warn({ email }, "no exact GitLab user match for reviewer email — skipping");
       } catch (err: unknown) {
         log.warn({ email, err: err instanceof Error ? err.message : String(err) }, "failed to resolve reviewer email to GitLab user");
       }
     }
-    return ids;
+    return [...ids];
   }
 
   /**
