@@ -991,7 +991,7 @@ async function buildOrchestratorConfig(
   // be the most-recently-updated one — e.g. a review-only Gerrit account
   // (virtual-reviewer) never owns a change, so its lookup always misses and
   // the loop must still reach the coding account (virtual-engineer).
-  for (const provider of ["gitlab", "gerrit"] as const) {
+  for (const provider of ["gerrit"] as const) {
     if (gitAuthorName && gitAuthorEmail) break;
     for (const integration of getActiveIntegrationsByType(pluginManager, provider)) {
       let connector: import("./vcs/vcsConnector.js").VcsConnector | undefined;
