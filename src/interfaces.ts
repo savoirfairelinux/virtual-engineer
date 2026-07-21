@@ -124,6 +124,8 @@ export interface ProjectPushTargetRecord {
   sshKeyPath: string | null;
   /** SSH agent identity public-key path for identity pinning, or null when not pinning. */
   sshAgentPubKeyPath?: string | null | undefined;
+  /** Reviewer email addresses attached to every change pushed to this target. */
+  reviewerEmails: string[];
   createdAt: Date;
   updatedAt: Date;
 }

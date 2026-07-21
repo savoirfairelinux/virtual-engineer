@@ -1542,9 +1542,9 @@ export class Orchestrator {
 
         let pushResult;
         if (vcsConnector.pushDirect) {
-          pushResult = await vcsConnector.pushDirect(handle.hostWorkspacePath, ref, topic, volumeOpts);
+          pushResult = await vcsConnector.pushDirect(handle.hostWorkspacePath, ref, topic, volumeOpts, target.reviewerEmails);
         } else {
-          pushResult = await vcsConnector.push(handle.hostWorkspacePath, ref, commitMsg, undefined, volumeOpts);
+          pushResult = await vcsConnector.push(handle.hostWorkspacePath, ref, commitMsg, undefined, volumeOpts, target.reviewerEmails);
         }
 
         // Use Change-Ids from agent commits when available — this is the source of truth

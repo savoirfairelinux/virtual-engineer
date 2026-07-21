@@ -67,7 +67,8 @@ export interface VcsConnector {
     ref: string,
     message: string,
     changeId?: string,
-    volumeOpts?: VolumeExecOptions
+    volumeOpts?: VolumeExecOptions,
+    reviewerEmails?: string[]
   ): Promise<VcsPushResult>;
 
   /**
@@ -87,7 +88,8 @@ export interface VcsConnector {
     repoDir: string,
     ref: string,
     topic?: string,
-    volumeOpts?: VolumeExecOptions
+    volumeOpts?: VolumeExecOptions,
+    reviewerEmails?: string[]
   ): Promise<VcsPushResult>;
 
   /**

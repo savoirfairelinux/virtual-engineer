@@ -74,10 +74,11 @@ export class GitLabVcsConnector implements VcsConnector {
     ref: string,
     message: string,
     changeId?: string,
-    volumeOpts?: VolumeExecOptions
+    volumeOpts?: VolumeExecOptions,
+    reviewerEmails?: string[]
   ): Promise<VcsPushResult> {
     if (volumeOpts) {
-      return this.pushInVolume(volumeOpts, ref, message);
+      return this.pushInVolume(volumeOpts, ref, message, reviewerEmails);
     }
 
     log.info(
@@ -121,7 +122,8 @@ export class GitLabVcsConnector implements VcsConnector {
       const mr = await this.createOrFindMergeRequest(
         featureBranch,
         this.config.targetBranch ?? "main",
-        message.split("\n")[0] || `[VE] Feature branch ${featureBranch}`
+        message.split("\n")[0] || `[VE] Feature branch ${featureBranch}`,
+        reviewerEmails
       );
 
       const mrIid = String(mr["iid"]);
@@ -151,10 +153,11 @@ export class GitLabVcsConnector implements VcsConnector {
     repoDir: string,
     ref: string,
     _topic?: string,
-    volumeOpts?: VolumeExecOptions
+    volumeOpts?: VolumeExecOptions,
+    reviewerEmails?: string[]
   ): Promise<VcsPushResult> {
     if (volumeOpts) {
-      return this.pushDirectInVolume(volumeOpts, ref);
+      return this.pushDirectInVolume(volumeOpts, ref, reviewerEmails);
     }
 
     log.info({ repoDir, ref }, "pushing HEAD directly to GitLab (agent-created commits)");
@@ -184,7 +187,8 @@ export class GitLabVcsConnector implements VcsConnector {
       const mr = await this.createOrFindMergeRequest(
         featureBranch,
         this.config.targetBranch ?? "main",
-        headSubject || `[VE] Feature branch ${featureBranch}`
+        headSubject || `[VE] Feature branch ${featureBranch}`,
+        reviewerEmails
       );
 
       const mrIid = String(mr["iid"]);
@@ -208,7 +212,8 @@ export class GitLabVcsConnector implements VcsConnector {
   private async pushInVolume(
     volumeOpts: VolumeExecOptions,
     ref: string,
-    message: string
+    message: string,
+    reviewerEmails?: string[]
   ): Promise<VcsPushResult> {
     log.info({ volumeName: volumeOpts.volumeName, ref }, "pushing to GitLab via volume container");
 
@@ -247,7 +252,8 @@ export class GitLabVcsConnector implements VcsConnector {
     const mr = await this.createOrFindMergeRequest(
       ref,
       this.config.targetBranch ?? "main",
-      message.split("\n")[0] || `[VE] Feature branch ${ref}`
+      message.split("\n")[0] || `[VE] Feature branch ${ref}`,
+      reviewerEmails
     );
 
     const mrIid = String(mr["iid"]);
@@ -260,7 +266,8 @@ export class GitLabVcsConnector implements VcsConnector {
   /** Push HEAD directly to GitLab from inside the named Docker volume (no new commit created). */
   private async pushDirectInVolume(
     volumeOpts: VolumeExecOptions,
-    ref: string
+    ref: string,
+    reviewerEmails?: string[]
   ): Promise<VcsPushResult> {
     log.info({ volumeName: volumeOpts.volumeName, ref }, "pushing HEAD directly to GitLab via volume container");
 
@@ -298,7 +305,8 @@ export class GitLabVcsConnector implements VcsConnector {
     const mr = await this.createOrFindMergeRequest(
       ref,
       this.config.targetBranch ?? "main",
-      headSubject || `[VE] Feature branch ${ref}`
+      headSubject || `[VE] Feature branch ${ref}`,
+      reviewerEmails
     );
 
     const mrIid = String(mr["iid"]);
@@ -329,19 +337,44 @@ export class GitLabVcsConnector implements VcsConnector {
   }
 
   /**
+   * Resolve reviewer emails to GitLab user IDs via the Users API. Unmatched
+   * emails are skipped with a warning — GitLab's `reviewer_ids` field only
+   * accepts numeric user IDs, not emails.
+   */
+  private async resolveReviewerIds(emails?: string[]): Promise<number[]> {
+    if (!emails || emails.length === 0) return [];
+    const ids: number[] = [];
+    for (const email of emails) {
+      try {
+        const url = `${this.config.baseUrl}/api/v4/users?search=${encodeURIComponent(email)}`;
+        const users = await this.httpClient.fetchJson<Array<{ id: number; email?: string }>>(url);
+        const match = users.find((u) => u.email?.toLowerCase() === email.toLowerCase()) ?? users[0];
+        if (match) ids.push(match.id);
+        else log.warn({ email }, "no GitLab user found for reviewer email");
+      } catch (err: unknown) {
+        log.warn({ email, err: err instanceof Error ? err.message : String(err) }, "failed to resolve reviewer email to GitLab user");
+      }
+    }
+    return ids;
+  }
+
+  /**
    * Create a new MR or find existing one for the given branches.
    */
   private async createOrFindMergeRequest(
     sourceBranch: string,
     targetBranch: string,
-    title: string
+    title: string,
+    reviewerEmails?: string[]
   ): Promise<Record<string, unknown>> {
+    const reviewerIds = await this.resolveReviewerIds(reviewerEmails);
     const mrBody = {
       source_branch: sourceBranch,
       target_branch: targetBranch,
       title,
       description: `Automated MR created by Virtual Engineer`,
       remove_source_branch: false,
+      ...(reviewerIds.length > 0 ? { reviewer_ids: reviewerIds } : {}),
     };
 
     const createUrl = `${this.config.baseUrl}/api/v4/projects/${encodeURIComponent(String(this.config.projectId))}/merge_requests`;

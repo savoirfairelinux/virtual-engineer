@@ -44,6 +44,7 @@ interface ProjectFormProject {
     role: "primary" | "submodule" | "dependency" | "related";
     commitOrder: number;
     localPath: string;
+    reviewerEmails?: string[];
   }>;
 }
 
@@ -60,6 +61,8 @@ interface PushTarget {
   role: "primary" | "submodule" | "dependency" | "related";
   commitOrder: string;
   localPath: string;
+  /** Comma-separated reviewer emails, as typed in the form. */
+  reviewerEmails: string;
 }
 
 type SaveCheckStatus = "checking" | "checked" | "failed" | "cancelled" | "not_checked";
@@ -87,7 +90,7 @@ interface TicketProjectOption {
 }
 
 function emptyPushTarget(order = 1): PushTarget {
-  return { integrationId: "", repoKey: "", cloneUrl: "", targetBranch: "main", role: "primary", commitOrder: String(order), localPath: "." };
+  return { integrationId: "", repoKey: "", cloneUrl: "", targetBranch: "main", role: "primary", commitOrder: String(order), localPath: ".", reviewerEmails: "" };
 }
 
 function saveCheckSourcesFromSkillSources(sources: SkillSource[], status: SaveCheckStatus): SaveCheckSource[] {
@@ -755,6 +758,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
         role: t.role,
         commitOrder: String(t.commitOrder),
         localPath: t.localPath,
+        reviewerEmails: (t.reviewerEmails ?? []).join(", "),
       }));
       setPushTargets(nextTargets.length > 0 ? nextTargets : [emptyPushTarget(1)]);
     } else {
@@ -827,6 +831,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
             role: t.role,
             commitOrder: parseInt(t.commitOrder, 10) || 1,
             localPath: t.localPath,
+            reviewerEmails: t.reviewerEmails.split(",").map((e) => e.trim()).filter(Boolean),
           })),
         };
         if (isEditMode && project) {
@@ -992,6 +997,9 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
                       <FieldInput type="number" min={1} value={t.commitOrder} onChange={(e) => updatePushTarget(idx, "commitOrder", e.target.value)} />
                     </Field>
                   </div>
+                  <Field label="Reviewer Emails" hint="Comma-separated; added as reviewers on every change pushed to this repo">
+                    <FieldInput value={t.reviewerEmails} placeholder="alice@example.com, bob@example.com" onChange={(e) => updatePushTarget(idx, "reviewerEmails", e.target.value)} />
+                  </Field>
                 </div>
               ))}
             </div>
