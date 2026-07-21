@@ -30,6 +30,7 @@ The admin server is a small HTTP service (default `127.0.0.1:3100`) that serves 
 | `adminOverviewRoutes.ts` | `/api/admin/overview` dashboard stats/throughput/votes/runtime + `/api/admin/cost-summary` aggregated AI cost (per project & instance total, optional `?days=` period) + `/api/admin/model-usage` model distribution by run count & cost (global + per project, optional `?days=<n>` period filter). |
 | `adminWebhookRoutes.ts` | Webhook management: secret rotation, allowed-IPs, webhook-info. |
 | `dashboard.ts` | Serves the HTML shell for the Vite-built React SPA: reads the Vite manifest from `dist/admin-ui/.vite/manifest.json`, injects the hashed JS/CSS asset links plus a `window.__VE_ADMIN_BOOTSTRAP__` payload, and falls back to "Admin UI not built — run npm run build:ui" when the build output is missing. |
+| `providerSummary.ts` | Builds the `AdminProviderSummary[]` list shown in the admin UI's provider panel. Extracted from `src/index.ts`; exposes `buildAdminProviderSummaries(config, pluginManager?)`. |
 | `ui/` | Admin SPA source (React + TypeScript): `App.tsx`, `main.tsx`, `api.ts`, `states.ts`, `views/`, `components/`, `shell/`, `theme/`, `icons/`. Built with Vite (`vite.admin.config.ts`) into `dist/admin-ui`; `adminServer.ts` serves the hashed assets under `/admin-ui/*`. Commands: `npm run build:ui`, `npm run dev:ui` (watch), `npm run typecheck:ui`. |
 | `assets/` | Static assets bundled with the admin server. |
 
