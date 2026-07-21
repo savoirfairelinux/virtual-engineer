@@ -47,6 +47,9 @@ Keep the root `@github/copilot-sdk` dependency aligned with `agent-worker/packag
 ```
 src/
   index.ts              # process entry; boots admin + plugins + orchestrator
+  bootstrap/            # runtimeBuilder (agent adapter, orchestrator config,
+                        # shared helpers: asOptionalString, parseIntegrationConfig,
+                        # getActiveIntegrationsByType, getPrimaryActiveIntegration)
   config.ts             # Zod-validated AppConfig (loads .env)
   interfaces.ts         # branded IDs, TaskState, AgentSession, AgentResult, AgentLogEvent
   copilotModel.ts       # Copilot model defaults
@@ -58,6 +61,7 @@ src/
                         # adminProjectsRoutes, adminConcurrencyRoutes,
                         # adminSettingsRoutes, adminWebhookRoutes,
                         # adminOverviewRoutes,
+                        # providerSummary (AdminProviderSummary builder),
                         # dashboard (SPA shell), start/close helpers
     ui/                 # React SPA source (App.tsx, views/, components/,
                         # shell/, theme/, icons/, api.ts, states.ts)
@@ -84,6 +88,7 @@ src/
                         # gitlab,gerrit,redmine,copilot,claude,aider,mock}.ts (unified
                         # provider descriptors; githubOAuth/gitlabOAuth helpers)
   review/               # reviewOrchestrator, copilotReviewAgent,
+                        # reviewBootstrap (bundle + trigger factory),
                         # reviewPromptBuilder, reviewResultParser,
                         # commentFilter, commentHash, commentSeverity,
                         # revisionPatchset
