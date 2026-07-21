@@ -6,6 +6,7 @@ import { Drawer, DetailSection, DetailRow, StatusBanner } from "../../components
 import { ProviderGlyph } from "../../components/ProviderGlyph.tsx";
 import { Tag } from "../../components/Tag.tsx";
 import { Icon } from "../../components/Icon.tsx";
+import { api } from "../../api.ts";
 import type { ApiIntegration, ApiOAuthApp, ApiAgent, ApiProject, ApiPrompt } from "../../types.ts";
 
 /* ─── Shared footer ──────────────────────────────────────────────────── */
@@ -108,9 +109,20 @@ export function IntegrationDrawer({ item, onClose, onEdit, onToggle, onDelete }:
 interface OAuthDrawerProps {
   item: ApiOAuthApp;
   onClose: () => void;
+  onDeleted?: () => void;
 }
 
-export function OAuthDrawer({ item, onClose }: OAuthDrawerProps) {
+export function OAuthDrawer({ item, onClose, onDeleted }: OAuthDrawerProps) {
+  async function handleDelete() {
+    if (!window.confirm(`Delete OAuth app for ${item.provider} · ${item.baseUrl}? This cannot be undone.`)) return;
+    try {
+      await api.delete("/api/admin/oauth-apps", { provider: item.provider, baseUrl: item.baseUrl });
+      onDeleted?.();
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "Delete failed");
+    }
+  }
+
   return (
     <Drawer
       eyebrow="OAuth app"
@@ -131,6 +143,12 @@ export function OAuthDrawer({ item, onClose }: OAuthDrawerProps) {
       footer={
         <>
           <button className="btn" onClick={onClose}>Close</button>
+          <span className="spacer" />
+          {onDeleted && (
+            <button className="btn danger sm" onClick={handleDelete}>
+              <Icon name="trash" size={13} /> Delete
+            </button>
+          )}
         </>
       }
     >
