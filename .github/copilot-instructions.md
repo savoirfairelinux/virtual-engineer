@@ -87,7 +87,7 @@ src/
   plugins/              # registry, pluginManager, init, descriptors/{index,github,
                         # gitlab,gerrit,redmine,copilot,claude,aider,mock}.ts (unified
                         # provider descriptors; githubOAuth/gitlabOAuth helpers)
-  review/               # reviewOrchestrator, copilotReviewAgent,
+  review/               # reviewOrchestrator,
                         # reviewBootstrap (bundle + trigger factory),
                         # reviewPromptBuilder, reviewResultParser,
                         # commentFilter, commentHash, commentSeverity,
@@ -214,12 +214,12 @@ Empty strings in env are treated as `undefined` (helpful for env overrides).
 ## Copilot Execution
 
 1. **Worker-local headless CLI** — code-generation containers always spawn `copilot --headless` inside the container and connect the SDK to that local CLI server.
-2. **Docker review execution** — review tasks also run in the agent container (`REVIEW_MODE=1` via `workspaceRunner.runReviewInDocker`); the worker reads the prompt from `USER_PROMPT_FILE` (`/ve-home/user-prompt.txt`) and returns raw LLM text for the host to parse. `src/review/copilotReviewAgent.ts` (host-side SDK client) is **legacy** — never instantiated in `src/`.
+2. **Docker review execution** — review tasks also run in the agent container (`REVIEW_MODE=1` via `workspaceRunner.runReviewInDocker`); the worker reads the prompt from `USER_PROMPT_FILE` (`/ve-home/user-prompt.txt`) and returns raw LLM text for the host to parse.
 3. **Container validation fallback** — when the local Node runtime lacks `node:sqlite`, `copilotConnectionValidator` runs the validation script inside `AGENT_CONTAINER_IMAGE`, which also starts a local headless CLI in-container.
 
 Worker `sendAndWait` timeout ≈ 540s. Host agent timeout = `AGENT_TIMEOUT_MS` (default 60 min).
 
-Implementation: `src/agents/copilotAdapter.ts`, `src/agents/copilotOAuthService.ts`, `src/agents/copilotModelsService.ts`, `src/agents/copilotConnectionValidator.ts`, `src/review/copilotReviewAgent.ts`, `agent-worker/src/index.ts`.
+Implementation: `src/agents/copilotAdapter.ts`, `src/agents/copilotOAuthService.ts`, `src/agents/copilotModelsService.ts`, `src/agents/copilotConnectionValidator.ts`, `agent-worker/src/index.ts`.
 
 ## Claude Execution (`agent_execution` alternative to Copilot)
 
@@ -286,7 +286,7 @@ Body lines ≤72 chars. See `typescript-standard` skill.
 - **One provider, many capabilities**: there is no longer a `github-issue` vs `github-pull-request` (or `gitlab-issue` vs `gitlab-merge-request`) split. A single `github` / `gitlab` provider descriptor exposes multiple domain capabilities; resolve runtime dependencies by capability (`getConnectorForCapability`, `getActiveIntegrationsByCapability`) rather than by an integration type/role.
 - **Ticket-source uniqueness is app-enforced**: there is no DB unique index across projects for the issue_tracking binding. `projectStore` throws when a second project binds the same `(integrationId, ticketProjectKey)`; keep that check in application code.
 - **Multi-instance plugins**: all enabled integrations stay active in memory, including multiple rows of the same provider. Resolve runtime dependencies by `integrationId`, capability, or explicit integration lists; do not add new logic that assumes a single active integration per provider.
-- **Copilot execution path**: no host/external CLI server support remains. Containers and validation scripts always boot a local headless CLI; reviews run in the agent container with `REVIEW_MODE=1` (`CopilotReviewAgent` is legacy, unused).
+- **Copilot execution path**: no host/external CLI server support remains. Containers and validation scripts always boot a local headless CLI; reviews run in the agent container with `REVIEW_MODE=1`.
 - **Descriptor-driven event streams**: stream-capable integrations are reconciled through `descriptor.streamEvents` plus `PluginManager.getActiveIntegrations()`. Gerrit is the current stream-backed implementation, but the bootstrap is no longer Gerrit-specific.
 - **Descriptor-driven review backends**: generic review routing resolves active review integrations through `descriptor.createReviewer`; keep provider-specific clone/setup logic in the descriptor and out of `src/index.ts` / `src/review/reviewOrchestrator.ts`.
 - **Review tasks are integration-scoped**: webhook-triggered review flows must resolve the exact review integration by `integrationId`, and code-review tasks should preserve that integration in `ticketSourceLabel` / derived `ticketId` to avoid collisions between multiple active Gerrit instances.

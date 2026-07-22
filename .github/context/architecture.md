@@ -63,7 +63,6 @@ It builds `TaskContext`, launches agent cycles, persists agent output, manages r
 ### Review runtime — `src/review/`
 
 - `reviewOrchestrator.ts` drives `REVIEW_PENDING → ... → REVIEW_DONE/REVIEW_FAILED`; the agent runs in the workspace container via `workspaceRunner.runReviewInDocker()` (`REVIEW_MODE=1`, prompt read from `USER_PROMPT_FILE`)
-- `copilotReviewAgent.ts` (host-side SDK client) is **legacy** — never instantiated by the main bootstrap
 - `reviewPromptBuilder.ts` and `reviewResultParser.ts` build/parse the review prompt contract
 
 `src/index.ts` wires the Docker review path through `buildReviewBundle()` / `buildReviewTrigger()`, resolving the active review integration's `createReviewer()` descriptor hook.
