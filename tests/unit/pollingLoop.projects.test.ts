@@ -92,7 +92,7 @@ describe("PollingLoop — Phase 4 project mode", () => {
     const connectorB = makeRedmine();
     (connectorA.getAssignedTickets as ReturnType<typeof vi.fn>).mockImplementation(async (opts) => {
       connectorA.calls.push({ projectKey: opts?.projectKey });
-      return [{ id: "1", subject: "T1", description: "", status: "open", assigneeId: 1, projectId: 1, customFields: {} }];
+      return [{ id: "1", subject: "T1", description: "", status: "open", isClosed: false, assigneeId: 1, projectId: 1, customFields: {} }];
     });
 
     const pluginManager = {
@@ -149,7 +149,7 @@ describe("PollingLoop — Phase 4 project mode", () => {
 
     const connector = makeRedmine();
     (connector.getAssignedTickets as ReturnType<typeof vi.fn>).mockImplementation(async () => [
-      { id: "42", subject: "T42", description: "", status: "open", assigneeId: 1, projectId: 1, customFields: {} },
+      { id: "42", subject: "T42", description: "", status: "open", isClosed: false, assigneeId: 1, projectId: 1, customFields: {} },
     ]);
 
     const pluginManager = {
@@ -199,7 +199,7 @@ describe("PollingLoop — Phase 4 project mode", () => {
 
     const connector = makeRedmine();
     (connector.getAssignedTickets as ReturnType<typeof vi.fn>).mockImplementation(async () => [
-      { id: "42", subject: "T42", description: "", status: "open", assigneeId: 1, projectId: 1, customFields: {} },
+      { id: "42", subject: "T42", description: "", status: "open", isClosed: false, assigneeId: 1, projectId: 1, customFields: {} },
     ]);
 
     const pluginManager = {
@@ -304,7 +304,7 @@ describe("PollingLoop — Phase 4 project mode", () => {
     };
     const connector = makeRedmine();
     (connector.getAssignedTickets as ReturnType<typeof vi.fn>).mockResolvedValue([
-      { id: "42", subject: "X", description: "", status: "open", assigneeId: 1, projectId: 1, customFields: {} },
+      { id: "42", subject: "X", description: "", status: "open", isClosed: false, assigneeId: 1, projectId: 1, customFields: {} },
     ]);
     const pluginManager = { getConnectorForCapability: vi.fn(() => connector) } as unknown as { getConnectorForCapability<T>(id: string): T | null };
     const orchestrator = makeOrchestrator();
@@ -338,7 +338,7 @@ describe("PollingLoop — Phase 4 project mode", () => {
     };
     const connector = makeRedmine();
     (connector.getAssignedTickets as ReturnType<typeof vi.fn>).mockResolvedValue([
-      { id: "1993", subject: "X", description: "", status: "open", assigneeId: 1, projectId: 1, customFields: {} },
+      { id: "1993", subject: "X", description: "", status: "open", isClosed: false, assigneeId: 1, projectId: 1, customFields: {} },
     ]);
     const pluginManager = { getConnectorForCapability: vi.fn(() => connector) } as unknown as { getConnectorForCapability<T>(id: string): T | null };
     const orchestrator = makeOrchestrator();
@@ -374,7 +374,7 @@ describe("PollingLoop — Phase 4 project mode", () => {
     };
     const connector = makeRedmine();
     (connector.getAssignedTickets as ReturnType<typeof vi.fn>).mockResolvedValue([
-      { id: "42", subject: "Retry me", description: "", status: "open", assigneeId: 1, projectId: 1, customFields: {} },
+      { id: "42", subject: "Retry me", description: "", status: "open", isClosed: false, assigneeId: 1, projectId: 1, customFields: {} },
     ]);
     const pluginManager = { getConnectorForCapability: vi.fn(() => connector) } as unknown as { getConnectorForCapability<T>(id: string): T | null };
     const orchestrator = makeOrchestrator();
@@ -409,7 +409,7 @@ describe("PollingLoop — Phase 4 project mode", () => {
       };
       const connector = makeRedmine();
       (connector.getAssignedTickets as ReturnType<typeof vi.fn>).mockResolvedValue([
-        { id: "42", subject: "X", description: "", status: "open", assigneeId: 1, projectId: 1, customFields: {} },
+        { id: "42", subject: "X", description: "", status: "open", isClosed: false, assigneeId: 1, projectId: 1, customFields: {} },
       ]);
       const pluginManager = { getConnectorForCapability: vi.fn(() => connector) } as unknown as { getConnectorForCapability<T>(id: string): T | null };
       const orchestrator = makeOrchestrator();

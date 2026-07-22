@@ -39,7 +39,7 @@ function makeProject(id: string): ProjectRecord {
 function makeRedmine(): TicketConnector {
   return {
     getAssignedTickets: vi.fn(async () => [
-      { id: "1" as unknown as import("../../src/interfaces.js").TicketId, subject: "T1", description: "", status: "open", assigneeId: 1, projectId: 1, customFields: {} },
+      { id: "1" as unknown as import("../../src/interfaces.js").TicketId, subject: "T1", description: "", status: "open", isClosed: false, assigneeId: 1, projectId: 1, customFields: {} },
     ]),
     getTicket: vi.fn(),
     transitionStatus: vi.fn(),

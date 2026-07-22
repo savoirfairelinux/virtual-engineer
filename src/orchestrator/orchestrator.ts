@@ -9,6 +9,7 @@ import type {
   IntegrationBindingContext,
   ReviewConnector,
   TicketConnector,
+  Ticket,
   StateStore,
   WorkspaceRunner,
   WorkspaceHandle,
@@ -662,7 +663,8 @@ export class Orchestrator {
   /** Transition a detected ticket to context-building: mark in-progress and add a start note. */
   private async runFromDetected(task: Task): Promise<void> {
     const ticketConnector = await this.resolveTicketConnector(task);
-    await ticketConnector.getTicket(task.ticketId);
+    const ticket = await ticketConnector.getTicket(task.ticketId);
+    if (await this.abortIfTicketClosed(task, ticket)) return;
     await ticketConnector.transitionToInProgress(task.ticketId);
     await this.addTicketNote(
       task,
@@ -708,6 +710,7 @@ export class Orchestrator {
 
     const ticketConnector = await this.resolveTicketConnector(task);
     const ticket = await ticketConnector.getTicket(task.ticketId);
+    if (await this.abortIfTicketClosed(task, ticket)) return;
     const priorFeedback = await this.buildPriorFeedback(task, reviewFeedback);
     const currentCycle = task.state === "AGENT_RUNNING" && task.cycleCount > 0
       ? (await this.stateStore.getAgentCycles(task.taskId)).find(
@@ -1509,6 +1512,21 @@ export class Orchestrator {
     await this.stateStore.setFailureReason(task.taskId, reason);
     await this.stateStore.transition(task.taskId, "ABANDONED");
     await this.notifyTicketFailure(task, reason);
+  }
+
+  /**
+   * Stop work when the source ticket was closed externally (e.g. a human closed a
+   * mistaken ticket). FAILED is valid from every pre-review state (DETECTED,
+   * CONTEXT_BUILDING, AGENT_RUNNING, RETRY_CYCLE), matching the same convention used
+   * for a ticket that disappeared entirely (see handleFatalError's not-found branch).
+   */
+  private async abortIfTicketClosed(task: Task, ticket: Ticket): Promise<boolean> {
+    if (!ticket.isClosed) return false;
+    const reason = `Ticket ${task.ticketId} (${task.ticketSourceLabel}) is closed`;
+    log.info({ taskId: task.taskId, ticketId: task.ticketId }, "ticket closed externally; stopping task");
+    await this.stateStore.setFailureReason(task.taskId, reason);
+    await this.stateStore.transition(task.taskId, "FAILED", { error: reason });
+    return true;
   }
 
   /** Handle unexpected errors by persisting them and transitioning the task to FAILED. */

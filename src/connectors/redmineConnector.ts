@@ -70,6 +70,10 @@ const RedmineUserResponseSchema = z.object({
   user: RedmineUserSchema,
 });
 
+const RedmineIssueStatusesResponseSchema = z.object({
+  issue_statuses: z.array(z.object({ id: z.number(), is_closed: z.boolean().default(false) })),
+});
+
 // ─── Connector implementation ─────────────────────────────────────────────────
 
 export interface RedmineConnectorConfig {
@@ -90,6 +94,7 @@ export class HttpRedmineConnector extends AbstractTicketConnector implements Tic
   protected get inReviewStatusId(): number { return this.config.inReviewStatusId; }
 
   private resolvedUserId: number | undefined;
+  private closedStatusIds: Set<number> | undefined;
 
   constructor(private readonly config: RedmineConnectorConfig) { super(); }
 
@@ -109,7 +114,8 @@ export class HttpRedmineConnector extends AbstractTicketConnector implements Tic
     const parsed = RedmineIssuesResponseSchema.parse(await response.json());
 
     log.debug({ count: parsed.issues.length }, "fetched assigned tickets");
-    return parsed.issues.map((i) => this.mapIssue(i));
+    const closedStatusIds = await this.resolveClosedStatusIds();
+    return parsed.issues.map((i) => this.mapIssue(i, closedStatusIds));
   }
 
   /** Fetch a single Redmine issue by its numeric ID. */
@@ -118,7 +124,8 @@ export class HttpRedmineConnector extends AbstractTicketConnector implements Tic
       `${this.config.baseUrl}/issues/${ticketId}.json`
     );
     const parsed = RedmineIssueResponseSchema.parse(await response.json());
-    return this.mapIssue(parsed.issue);
+    const closedStatusIds = await this.resolveClosedStatusIds();
+    return this.mapIssue(parsed.issue, closedStatusIds);
   }
 
   /** Update the status of a Redmine issue via a PUT request. */
@@ -245,6 +252,15 @@ export class HttpRedmineConnector extends AbstractTicketConnector implements Tic
     return exact.id;
   }
 
+  /** Fetch and cache the set of Redmine status IDs flagged `is_closed` (e.g. Closed, Rejected). */
+  private async resolveClosedStatusIds(): Promise<Set<number>> {
+    if (this.closedStatusIds !== undefined) return this.closedStatusIds;
+    const response = await this.fetch(`${this.config.baseUrl}/issue_statuses.json`);
+    const parsed = RedmineIssueStatusesResponseSchema.parse(await response.json());
+    this.closedStatusIds = new Set(parsed.issue_statuses.filter((s) => s.is_closed).map((s) => s.id));
+    return this.closedStatusIds;
+  }
+
   /** Issue an authenticated HTTP request to the Redmine API, throwing a typed error on failure. */
   private async fetch(url: string, init?: RequestInit): Promise<Response> {
     const response = await globalThis.fetch(url, {
@@ -278,7 +294,8 @@ export class HttpRedmineConnector extends AbstractTicketConnector implements Tic
 
   /** Map a raw Redmine issue API object to the canonical Ticket shape. */
   private mapIssue(
-    i: z.infer<typeof RedmineIssueSchema>
+    i: z.infer<typeof RedmineIssueSchema>,
+    closedStatusIds: Set<number>
   ): Ticket {
     const customFields: Record<string, string> = {};
     for (const cf of i.custom_fields) {
@@ -290,6 +307,7 @@ export class HttpRedmineConnector extends AbstractTicketConnector implements Tic
       subject: i.subject,
       description: i.description,
       status: i.status.name,
+      isClosed: closedStatusIds.has(i.status.id),
       assigneeId: i.assigned_to?.id ?? 0,
       projectId: i.project.id,
       customFields,

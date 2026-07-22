@@ -192,6 +192,7 @@ describe("Orchestrator", () => {
         "1. Close the ticket on merge",
       ].join("\n"),
       status: "New",
+      isClosed: false,
       assigneeId: 5,
       projectId: 1,
       customFields: {},
@@ -1330,5 +1331,58 @@ describe("Orchestrator", () => {
     expect(result).toHaveLength(2);
     expect(result[0]).toMatchObject({ source: "lint_failure", content: "lint error" });
     expect(result[1]).toMatchObject({ source: "gerrit_review", content: "Please fix naming" });
+  });
+
+  describe("closed-ticket abort", () => {
+    it("runFromDetected fails the task and skips transitionToInProgress when the ticket is closed", async () => {
+      const task = makeTask({ state: "DETECTED" });
+      const redmineConnector = makeRedmineConnector({
+        getTicket: vi.fn().mockResolvedValue({ ...makeRedmineTicket(), isClosed: true }),
+      });
+      const stateStore = makeStateStore();
+      const orchestrator = makeOrchestrator({ stateStore, redmineConnector });
+
+      await (orchestrator as any).runFromDetected(task);
+
+      expect(redmineConnector.transitionToInProgress).not.toHaveBeenCalled();
+      expect(stateStore.setFailureReason).toHaveBeenCalledWith(
+        task.taskId,
+        expect.stringContaining("is closed")
+      );
+      expect(stateStore.transition).toHaveBeenCalledWith(task.taskId, "FAILED", expect.anything());
+    });
+
+    it("runAgentCycle fails the task and skips the workspace when the ticket is closed", async () => {
+      const task = makeTask({ state: "AGENT_RUNNING" });
+      const redmineConnector = makeRedmineConnector({
+        getTicket: vi.fn().mockResolvedValue({ ...makeRedmineTicket(), isClosed: true }),
+      });
+      const stateStore = makeStateStore();
+      const workspaceRunner = makeWorkspaceRunner();
+      const orchestrator = makeOrchestrator({ stateStore, workspaceRunner, redmineConnector });
+
+      await (orchestrator as any).runAgentCycle(task);
+
+      expect(workspaceRunner.createWorkspace).not.toHaveBeenCalled();
+      expect(stateStore.setFailureReason).toHaveBeenCalledWith(
+        task.taskId,
+        expect.stringContaining("is closed")
+      );
+      expect(stateStore.transition).toHaveBeenCalledWith(task.taskId, "FAILED", expect.anything());
+    });
+
+    it("proceeds normally when the ticket is open", async () => {
+      const task = makeTask({ state: "DETECTED" });
+      const redmineConnector = makeRedmineConnector();
+      const stateStore = makeStateStore();
+      const orchestrator = makeOrchestrator({ stateStore, redmineConnector });
+      const runFromContextBuilding = vi.spyOn(orchestrator as any, "runFromContextBuilding").mockResolvedValue(undefined);
+
+      await (orchestrator as any).runFromDetected(task);
+
+      expect(redmineConnector.transitionToInProgress).toHaveBeenCalledWith(task.ticketId);
+      expect(stateStore.transition).not.toHaveBeenCalledWith(task.taskId, "FAILED", expect.anything());
+      expect(runFromContextBuilding).toHaveBeenCalled();
+    });
   });
 });
