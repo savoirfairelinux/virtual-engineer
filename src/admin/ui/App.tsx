@@ -17,6 +17,12 @@ import "./theme/global.css";
 
 type ViewId = "overview" | "tasks" | "config";
 
+function viewFromHash(hash: string): ViewId {
+  if (hash.startsWith("#config")) return "config";
+  if (hash.startsWith("#tasks")) return "tasks";
+  return "overview";
+}
+
 const bootstrap: VeAdminBootstrap = window.__VE_ADMIN_BOOTSTRAP__ ?? {
   requiresAuth: false,
   authMode: "none",
@@ -39,16 +45,12 @@ function useTheme() {
 export function App() {
   const [theme, toggleTheme] = useTheme();
   const [view, setView] = useState<ViewId>(() => {
-    const hash = window.location.hash;
-    if (hash.startsWith("#config")) return "config";
-    if (hash === "#overview") return "overview";
-    return "tasks";
+    return viewFromHash(window.location.hash);
   });
 
   useEffect(() => {
     const onHashChange = () => {
-      const hash = window.location.hash;
-      setView(hash.startsWith("#config") ? "config" : hash === "#overview" ? "overview" : "tasks");
+      setView(viewFromHash(window.location.hash));
     };
     window.addEventListener("hashchange", onHashChange);
     return () => window.removeEventListener("hashchange", onHashChange);
