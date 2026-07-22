@@ -85,3 +85,11 @@ npm test            # unit + integration
 npm run typecheck   # zero TS errors
 npm run lint        # zero ESLint errors
 ```
+
+## Related docs
+
+- [INDEX.md](INDEX.md) — navigable context index
+- [configuration.md](configuration.md) — env-var stubbing and `resetConfig`
+- [modules/orchestrator.md](modules/orchestrator.md) — orchestrator test families
+- [modules/agents.md](modules/agents.md) — agent test families
+- [copilot-instructions.md](../copilot-instructions.md) — Build & Test block (always-loaded)

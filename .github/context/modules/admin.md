@@ -217,3 +217,11 @@ The supported server-side model is `projects` / `project_*`. There are no `/api/
 - `tests/unit/adminAuditRoutes.test.ts`
 - `tests/unit/dashboard.test.ts`
 - `tests/unit/dashboard.configurationTab.test.ts`
+
+## Related docs
+
+- [INDEX.md](../INDEX.md) — navigable context index
+- [architecture.md](../architecture.md) — layered architecture and data flow
+- [plugins.md](plugins.md) — PluginManager hot-refresh wired from the admin server
+- [configuration.md](../configuration.md) — admin env vars (`ADMIN_*`)
+- [testing.md](../testing.md) — admin test families

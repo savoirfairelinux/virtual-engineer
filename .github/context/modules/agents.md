@@ -39,3 +39,12 @@ The `agent_execution` capability has four engines: **Copilot** (`copilotAdapter.
 - Connection validation (`aiderConnectionValidator.ts`) and model discovery (`aiderModelsService.ts`) probe the upstream provider's `/models` (or Ollama `/api/tags`); Ollama model ids are prefixed with `ollama_chat/` per Aider's recommendation.
 - Cost: Aider has no AIU, so `agent_cycles` USD/credit columns stay null; token usage is still emitted as `assistant.usage` events (parsed from Aider's `Tokens: … Cost: …` line when present).
 - Network: Aider needs outbound HTTPS to the upstream LLM API (and HTTP to Ollama). The `virtual-engineer_ve-agent-net` Docker network must allow that egress; for Ollama running on the host, the container needs `host.docker.internal` reachability.
+
+## Related docs
+
+- [INDEX.md](../INDEX.md) — navigable context index
+- [architecture.md](../architecture.md) — layered architecture, container hardening, data flow
+- [plugins.md](plugins.md) — descriptor `agent_execution` capability that builds adapters
+- [orchestrator.md](orchestrator.md) — caller of the agent adapters
+- [configuration.md](../configuration.md) — `AGENT_*` env vars
+- [testing.md](../testing.md) — agent test families

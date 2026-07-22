@@ -11,3 +11,11 @@
 - Runtime migrations are handled by `SqliteStateStore.applyMigrations()` in `src/state/stateStore.ts` using `CREATE TABLE IF NOT EXISTS` and `ensureColumn(...)`.
 - Existing databases get `local_skills_path` through `ensureColumn("projects", "local_skills_path", "TEXT NOT NULL DEFAULT '.github/skills'")`.
 - `src/state/schema.ts` mirrors these columns for Drizzle typed queries.
+
+## Related docs
+
+- [INDEX.md](INDEX.md) — navigable context index
+- [state-machine.md](state-machine.md) — `state_transitions` rows and pause/resume
+- [configuration.md](configuration.md) — `app_settings` (DB-managed workflow settings)
+- [copilot-instructions.md](../copilot-instructions.md) — Critical Schema Facts (always-loaded, authoritative)
+- [ve-debug skill](../skills/ve-debug/SKILL.md) — SQLite query recipes for debugging
