@@ -358,6 +358,7 @@ async function main(): Promise<void> {
           }
           await orchestrator.continueTask(taskId);
         },
+        resyncProjectTasks: async (projectId) => orchestrator.resyncProjectTasks(projectId),
       },
       onIntegrationUpdated: (id) => {
         orchestrator.invalidateVcsConnector(id);

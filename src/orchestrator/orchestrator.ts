@@ -280,6 +280,25 @@ export class Orchestrator {
   }
 
   /**
+   * Admin-triggered resync: re-drive the workflow now (instead of waiting for the
+   * next poll tick) for every active code-gen task in a project. Reuses `runWorkflow`
+   * as-is — no new state-transition logic — so each task just gets its normal
+   * per-state check (ticket-closed, review-status, etc.) run immediately. The
+   * in-flight guard in `runWorkflow` makes this a no-op for tasks already mid-cycle.
+   */
+  async resyncProjectTasks(projectId: import("../interfaces.js").ProjectId): Promise<number> {
+    const activeTasks = await this.stateStore.getActiveTasks();
+    const projectTasks = activeTasks.filter((t) => t.projectId === projectId && t.taskType !== "code-review");
+    log.info({ projectId, count: projectTasks.length }, "resyncing project tasks");
+    for (const task of projectTasks) {
+      this.runWorkflow(task).catch((err: unknown) => {
+        log.error({ taskId: task.taskId, projectId, err }, "unhandled error resyncing task");
+      });
+    }
+    return projectTasks.length;
+  }
+
+  /**
    * Resume a single code-gen task that stalled while waiting for an agent
    * concurrency slot. Called by the polling loop for tasks left in
    * `CONTEXT_BUILDING` or `RETRY_CYCLE`: `runAgentCycle` defers (without
