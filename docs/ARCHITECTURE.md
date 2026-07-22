@@ -142,8 +142,6 @@ src/
 
   review/               # Code-review workflow
     reviewOrchestrator.ts # REVIEW_PENDING → REVIEW_DONE lifecycle
-    copilotReviewAgent.ts # LEGACY host-side Copilot SDK client (unused; reviews
-                          # run in-container via REVIEW_MODE=1, see below)
     reviewPromptBuilder.ts
     reviewResultParser.ts
     commentFilter.ts      # Filters comments to lines present in the diff
