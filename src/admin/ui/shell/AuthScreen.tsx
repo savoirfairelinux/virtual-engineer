@@ -37,6 +37,7 @@ const inputStyle: React.CSSProperties = {
 
 export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
   const [mode, setMode] = useState<Mode>("loading");
+  const [credentialEncryptionConfigured, setCredentialEncryptionConfigured] = useState(true);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -46,7 +47,12 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
   useEffect(() => {
     let cancelled = false;
     fetchSetupStatus()
-      .then((s) => { if (!cancelled) setMode(s.needsSetup ? "setup" : "login"); })
+      .then((status) => {
+        if (!cancelled) {
+          setCredentialEncryptionConfigured(status.credentialEncryptionConfigured);
+          setMode(status.needsSetup ? "setup" : "login");
+        }
+      })
       .catch(() => { if (!cancelled) setMode("login"); });
     return () => { cancelled = true; };
   }, []);
@@ -92,13 +98,17 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
   return (
     <div
       style={{
-        flex: 1, display: "flex", alignItems: "center", justifyContent: "center",
-        background: "var(--bg)",
+        flex: 1, minHeight: 0, display: "flex", alignItems: "flex-start", justifyContent: "center",
+        padding: "clamp(16px, 6vh, 64px) clamp(12px, 4vw, 28px)",
+        background: "var(--bg)", overflowY: "auto",
       }}
     >
       <div
         className="card"
-        style={{ width: "100%", maxWidth: "400px", padding: "32px 28px" }}
+        style={{
+          width: "100%", maxWidth: mode === "setup" ? "560px" : "400px",
+          margin: "auto", padding: "clamp(24px, 5vw, 32px) clamp(20px, 5vw, 28px)",
+        }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "24px" }}>
           <span
@@ -130,6 +140,34 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
                 <>Sign in with your username and password.</>
               )}
             </div>
+
+            {mode === "setup" && !credentialEncryptionConfigured && (
+              <div
+                role="status"
+                style={{
+                  marginBottom: "20px", padding: "14px 16px",
+                  background: "var(--warn-soft)",
+                  borderLeft: "3px solid var(--warn)",
+                  borderRadius: "var(--radius-sm)", color: "var(--text-dim)",
+                  fontSize: "12.5px", lineHeight: 1.55, overflowWrap: "anywhere",
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: "8px", color: "var(--text)", fontWeight: 700, marginBottom: "6px" }}>
+                  <Icon name="alert" size={15} style={{ color: "var(--warn)", flex: "none" }} />
+                  Credential encryption is not configured
+                </div>
+                <div style={{ marginBottom: "8px" }}>
+                  <code>ADMIN_AUTH_SECRET</code> encrypts provider credentials at rest. Without it, credential-backed
+                  integrations, OAuth, generated SSH keys, and related agent or review workflows are unavailable.
+                </div>
+                <div style={{ marginBottom: "8px" }}>
+                  For production, generate it with <code>openssl rand -hex 32</code>, add
+                  {" "}<code>ADMIN_AUTH_SECRET=&lt;generated value&gt;</code> to <code>.env</code>, then run
+                  {" "}<code>docker rm -f ve-orchestrator &amp;&amp; ./scripts/start.sh</code>.
+                </div>
+                <strong>Keep this value safe and unchanged; existing credentials require the original secret.</strong>
+              </div>
+            )}
 
             <form onSubmit={(e) => void handleSubmit(e)}>
               <input

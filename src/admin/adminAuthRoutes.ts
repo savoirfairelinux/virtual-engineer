@@ -92,6 +92,7 @@ export interface AuthRouteDeps {
   userStore?: AuthRouteUserStore | undefined;
   auditStore?: AuthRouteAuditStore | undefined;
   authService?: AdminAuthService | undefined;
+  credentialEncryptionConfigured: boolean;
   /** Invalidates the server-level users-exist cache after setup / user create / delete. */
   onUsersChanged?: (() => void) | undefined;
   /**
@@ -180,7 +181,10 @@ export function registerAuthRoutes(router: Router, deps: AuthRouteDeps): void {
   // Public — used by the SPA to decide between the setup screen and the login form.
   router.add("GET", "/api/admin/auth/setup-status", async (_req, res, _params) => {
     const needsSetup = deps.userStore ? (await deps.userStore.countUsers()) === 0 : false;
-    writeJson(res, 200, { needsSetup });
+    writeJson(res, 200, {
+      needsSetup,
+      credentialEncryptionConfigured: needsSetup && deps.credentialEncryptionConfigured,
+    });
   });
 
   // Bootstrap — unauthenticated while zero users exist; the route handler enforces that invariant.

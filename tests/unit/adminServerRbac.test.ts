@@ -268,7 +268,10 @@ describe("adminServer RBAC and session auth", () => {
 
       // Session auth is unavailable → setup-status reports no setup needed.
       const setupStatus = await fetch(`${legacyBase}/api/admin/auth/setup-status`);
-      await expect(setupStatus.json()).resolves.toEqual({ needsSetup: false });
+      await expect(setupStatus.json()).resolves.toEqual({
+        needsSetup: false,
+        credentialEncryptionConfigured: false,
+      });
     } finally {
       await closeServer(legacyServer);
     }

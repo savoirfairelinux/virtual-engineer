@@ -380,6 +380,7 @@ function buildApiRouter(dependencies: AdminServerDependencies, authRuntime: Admi
     userStore: authRuntime.userStore ?? undefined,
     auditStore,
     authService: authRuntime.authService ?? undefined,
+    credentialEncryptionConfigured: Boolean(dependencies.config.adminAuthSecret),
     onUsersChanged: () => authRuntime.invalidateUsersExistCache(),
     ...(policyBinder
       ? { onUserCreated: (userId: string, role: UserRole): Promise<void> => bindDefaultPolicyForRole(policyBinder, userId, role) }
