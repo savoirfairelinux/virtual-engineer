@@ -687,6 +687,15 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
           : { repoKeys: data.reviewConfig.repoKeys }),
       },
     });
+    log.info(
+      {
+        projectId: project.id,
+        name: project.name,
+        type: project.type,
+        agentId: project.agentId,
+      },
+      "project created"
+    );
     writeJson(res, 201, { project: detail });
     deps.onProjectChange?.();
     if (project.enabled) {

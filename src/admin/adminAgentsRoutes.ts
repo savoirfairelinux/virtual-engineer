@@ -432,6 +432,15 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
         ...(parsed.data.enabled !== undefined ? { enabled: parsed.data.enabled } : {}),
       });
       recordAudit(deps.auditStore, req, { action: "agent.create", targetType: "agent", targetId: created.id, details: { name: created.name, type: created.type } });
+      log.info(
+        {
+          agentId: created.id,
+          name: created.name,
+          type: created.type,
+          integrationId: created.integrationId,
+        },
+        "agent created"
+      );
       writeJson(res, 201, { agent: toAgentDetail(created, 0) });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
