@@ -107,6 +107,7 @@ export interface ProjectsRouteStore {
       commitOrder: number;
       localPath: string;
       sshKeyPath?: string | null | undefined;
+      reviewerEmails?: string[] | undefined;
     }>
   ): Promise<ProjectPushTargetRecord[]>;
   listProjectPushTargets(projectId: ProjectId): Promise<ProjectPushTargetRecord[]>;
@@ -144,6 +145,7 @@ const pushTargetSchema = z.object({
   commitOrder: z.number().int().min(1),
   localPath: z.string().min(1),
   sshKeyPath: z.string().optional(),
+  reviewerEmails: z.array(z.string().email()).optional(),
 });
 
 /** Validate push-target arrays: unique localPaths, at most one root ("."). */
@@ -417,6 +419,7 @@ interface ProjectDetail extends ProjectSummary {
     commitOrder: number;
     localPath: string;
     sshKeyPath: string | null;
+    reviewerEmails: string[];
   }>
 }
 
@@ -500,6 +503,7 @@ async function buildProjectDetail(
       commitOrder: p.commitOrder,
       localPath: p.localPath,
       sshKeyPath: p.sshKeyPath,
+      reviewerEmails: p.reviewerEmails,
     }));
   } else {
     const rc = await store.getProjectReviewConfig(project.id);

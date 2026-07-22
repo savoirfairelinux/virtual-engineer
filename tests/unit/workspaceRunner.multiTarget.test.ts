@@ -52,6 +52,7 @@ function makeTarget(over: Partial<ProjectPushTargetRecord> & { id: number; commi
     commitOrder: over.commitOrder,
     localPath: over.localPath,
     sshKeyPath: over.sshKeyPath ?? null,
+    reviewerEmails: over.reviewerEmails ?? [],
     createdAt: new Date(),
     updatedAt: new Date(),
   };

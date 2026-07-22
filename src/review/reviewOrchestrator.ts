@@ -435,6 +435,7 @@ export class ReviewOrchestrator {
         localPath: ".",
         sshKeyPath,
         ...(sshAgentPubKeyPath != null ? { sshAgentPubKeyPath } : {}),
+        reviewerEmails: [],
         createdAt: new Date(),
         updatedAt: new Date(),
       };

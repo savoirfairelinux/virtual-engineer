@@ -88,6 +88,14 @@ function buildGitEnv(config: GerritVcsConnectorConfig, overrideSshKeyPath?: stri
   };
 }
 
+/** Build Gerrit push-option suffix (e.g. "%topic=foo,r=a@b.com,r=c@d.com"). Empty when no options apply. */
+function buildGerritPushOptions(topic?: string, reviewerEmails?: string[]): string {
+  const opts: string[] = [];
+  if (topic) opts.push(`topic=${topic}`);
+  for (const email of reviewerEmails ?? []) opts.push(`r=${email}`);
+  return opts.length > 0 ? `%${opts.join(",")}` : "";
+}
+
 export class GerritVcsConnector implements VcsConnector {
   readonly useChangeIdContinuity = true;
   readonly reviewSystemLabel = "gerrit";
@@ -188,12 +196,13 @@ export class GerritVcsConnector implements VcsConnector {
     ref: string,
     message: string,
     changeId?: string,
-    volumeOpts?: VolumeExecOptions
+    volumeOpts?: VolumeExecOptions,
+    reviewerEmails?: string[]
   ): Promise<VcsPushResult> {
     const commitMessage = ensureChangeIdInFooter(message, changeId);
 
     if (volumeOpts) {
-      return this.pushInVolume(volumeOpts, ref, commitMessage);
+      return this.pushInVolume(volumeOpts, ref, commitMessage, reviewerEmails);
     }
 
     log.info(
@@ -214,7 +223,7 @@ export class GerritVcsConnector implements VcsConnector {
       log.info({ repoDir }, "changes committed");
 
       // Push to Gerrit
-      execFileSync("git", ["push", "origin", `HEAD:${ref}`], {
+      execFileSync("git", ["push", "origin", `HEAD:${ref}${buildGerritPushOptions(undefined, reviewerEmails)}`], {
         cwd: repoDir,
         env: buildGitEnv(this.config),
         encoding: "utf8",
@@ -250,19 +259,17 @@ export class GerritVcsConnector implements VcsConnector {
     repoDir: string,
     ref: string,
     topic?: string,
-    volumeOpts?: VolumeExecOptions
+    volumeOpts?: VolumeExecOptions,
+    reviewerEmails?: string[]
   ): Promise<VcsPushResult> {
     if (volumeOpts) {
-      return this.pushDirectInVolume(volumeOpts, ref, topic);
+      return this.pushDirectInVolume(volumeOpts, ref, topic, reviewerEmails);
     }
 
     log.info({ repoDir, ref, topic }, "pushing HEAD directly to Gerrit (agent-created commits)");
 
     try {
-      let pushRef = `HEAD:${ref}`;
-      if (topic) {
-        pushRef = `HEAD:${ref}%topic=${topic}`;
-      }
+      const pushRef = `HEAD:${ref}${buildGerritPushOptions(topic, reviewerEmails)}`;
 
       execFileSync("git", ["push", "origin", pushRef], {
         cwd: repoDir,
@@ -296,7 +303,8 @@ export class GerritVcsConnector implements VcsConnector {
   private async pushInVolume(
     volumeOpts: VolumeExecOptions,
     ref: string,
-    commitMessage: string
+    commitMessage: string,
+    reviewerEmails?: string[]
   ): Promise<VcsPushResult> {
     log.info({ volumeName: volumeOpts.volumeName, ref }, "pushing to Gerrit via volume container");
 
@@ -304,6 +312,7 @@ export class GerritVcsConnector implements VcsConnector {
     const cwd = volumeOpts.subPath && volumeOpts.subPath !== "."
       ? `/workspace/${volumeOpts.subPath}`
       : "/workspace";
+    const pushRef = `${ref}${buildGerritPushOptions(undefined, reviewerEmails)}`;
 
     const result = await execInVolume({
       volumeName: volumeOpts.volumeName,
@@ -323,7 +332,7 @@ export class GerritVcsConnector implements VcsConnector {
         VE_GIT_NAME: this.config.gitAuthorName,
         VE_GIT_EMAIL: this.config.gitAuthorEmail,
         VE_COMMIT_MSG_B64: encodedMsg,
-        VE_PUSH_REF: ref,
+        VE_PUSH_REF: pushRef,
       },
     });
 
@@ -342,14 +351,12 @@ export class GerritVcsConnector implements VcsConnector {
   private async pushDirectInVolume(
     volumeOpts: VolumeExecOptions,
     ref: string,
-    topic?: string
+    topic?: string,
+    reviewerEmails?: string[]
   ): Promise<VcsPushResult> {
     log.info({ volumeName: volumeOpts.volumeName, ref, topic }, "pushing HEAD directly to Gerrit via volume container");
 
-    let pushRef = `HEAD:${ref}`;
-    if (topic) {
-      pushRef = `HEAD:${ref}%topic=${topic}`;
-    }
+    const pushRef = `HEAD:${ref}${buildGerritPushOptions(topic, reviewerEmails)}`;
 
     const cwd = volumeOpts.subPath && volumeOpts.subPath !== "."
       ? `/workspace/${volumeOpts.subPath}`

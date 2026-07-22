@@ -246,6 +246,10 @@ export class GitHubVcsConnector implements VcsConnector {
     return (await response.json()) as GitHubPrShape;
   }
 
+  // ponytail: reviewerEmails from push targets aren't wired here — GitHub's
+  // request-reviewers API takes usernames, not emails, and there's no public
+  // API to resolve arbitrary emails to usernames. Add if GitHub reviewer
+  // support is needed (would require a username field instead/in addition).
   private async createOrFindPullRequest(
     head: string,
     base: string,

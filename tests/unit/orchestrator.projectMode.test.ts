@@ -1313,7 +1313,8 @@ describe("Orchestrator — Phase 4 project mode", () => {
       expect.any(String),
       "refs/for/main",
       "ve-crashfix",
-      expect.anything()
+      expect.anything(),
+      undefined
     );
   });
 
@@ -1371,7 +1372,8 @@ describe("Orchestrator — Phase 4 project mode", () => {
       expect.any(String),
       "refs/for/main",
       "VE-derived-topic",
-      expect.anything()
+      expect.anything(),
+      undefined
     );
   });
 
