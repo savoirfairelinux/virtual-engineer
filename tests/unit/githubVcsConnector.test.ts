@@ -1,6 +1,22 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { execFileSync } from "child_process";
 import { GitHubVcsConnector } from "../../src/vcs/githubVcsConnector.js";
 import { jsonResponse, errorResponse } from "./helpers/fixtures.js";
+
+const { logger } = vi.hoisted(() => ({
+  logger: {
+    trace: vi.fn(),
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    fatal: vi.fn(),
+  },
+}));
+
+vi.mock("../../src/logger.js", () => ({
+  getLogger: vi.fn(() => logger),
+}));
 
 const API_BASE_URL = "https://api.github.com";
 const HOST = "github.com";
@@ -74,6 +90,37 @@ describe("GitHubVcsConnector", () => {
     it("buildPushSpec falls back to legacy ref when ticketTitle is empty", () => {
       const spec = makeConnector().buildPushSpec("main", "task-123", "");
       expect(spec).toEqual({ ref: "feature-task-123" });
+    });
+  });
+
+  describe("clone", () => {
+    it("redacts credentials from logs without changing the Git command", async () => {
+      const repoUrl =
+        "https://x-access-token:ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345@github.com/octocat/hello-world.git";
+
+      await makeConnector().clone(repoUrl, "main", "/tmp/repo");
+
+      expect(vi.mocked(execFileSync)).toHaveBeenCalledWith(
+        "git",
+        ["clone", "--branch", "main", "--depth", "1", repoUrl, "/tmp/repo"],
+        expect.any(Object)
+      );
+      expect(logger.info).toHaveBeenCalledWith(
+        expect.objectContaining({ repoUrl: "https://<redacted>@github.com/octocat/hello-world.git" }),
+        "cloning repository from GitHub via HTTPS"
+      );
+    });
+
+    it("redacts credentials from clone failures", async () => {
+      const repoUrl =
+        "https://x-access-token:ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345@github.com/octocat/hello-world.git";
+      vi.mocked(execFileSync).mockImplementationOnce(() => {
+        throw new Error(`fatal: unable to access '${repoUrl}'`);
+      });
+
+      await expect(makeConnector().clone(repoUrl, "main", "/tmp/repo")).rejects.not.toThrow(
+        /ghp_/
+      );
     });
   });
 
