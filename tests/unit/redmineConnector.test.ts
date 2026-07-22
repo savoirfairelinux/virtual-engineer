@@ -42,7 +42,12 @@ describe("HttpRedmineConnector", () => {
   let fetchMock: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
-    fetchMock = vi.fn();
+    fetchMock = vi.fn(async (url: string) => {
+      if (url.endsWith("/issue_statuses.json")) {
+        return jsonResponse({ issue_statuses: [{ id: 5, is_closed: true }, { id: 2, is_closed: false }] });
+      }
+      throw new Error(`unexpected fetch call with no queued mock: ${url}`);
+    });
     vi.stubGlobal("fetch", fetchMock);
   });
 
@@ -153,6 +158,19 @@ describe("HttpRedmineConnector", () => {
 
       const [url] = fetchMock.mock.calls[0] as [string];
       expect(url).toBe(`${BASE_URL}/issues/101.json`);
+    });
+
+    it("isClosed is false for a status not flagged is_closed", async () => {
+      fetchMock.mockResolvedValueOnce(jsonResponse(redmineIssueResponse));
+      const ticket = await makeConnector().getTicket(makeTicketId("101"));
+      expect(ticket.isClosed).toBe(false);
+    });
+
+    it("isClosed is true for a status flagged is_closed", async () => {
+      const closedIssue = { ...redmineIssueResponse.issue, status: { id: 5, name: "Closed" } };
+      fetchMock.mockResolvedValueOnce(jsonResponse({ issue: closedIssue }));
+      const ticket = await makeConnector().getTicket(makeTicketId("101"));
+      expect(ticket.isClosed).toBe(true);
     });
 
     it("throws RedmineNotFoundError on 404", async () => {
