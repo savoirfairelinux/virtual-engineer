@@ -991,6 +991,8 @@ export interface Ticket {
   subject: string;
   description: string;
   status: string;
+  /** True when the ticket is in a closed/done workflow state on the source system. */
+  isClosed: boolean;
   assigneeId: number;
   projectId: number;
   customFields: Record<string, string>;

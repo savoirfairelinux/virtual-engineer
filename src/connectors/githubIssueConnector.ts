@@ -257,6 +257,7 @@ export class GitHubIssueConnector extends AbstractTicketConnector implements Tic
       subject: i.title,
       description: i.body ?? "",
       status: i.state,
+      isClosed: i.state === "closed",
       assigneeId: i.assignee?.id ?? 0,
       projectId: 0,
       customFields,
