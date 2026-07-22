@@ -424,6 +424,7 @@ async function main(): Promise<void> {
         },
         abandonTask: (taskId) => orchestrator.abandonTask(taskId),
         deleteProject: (projectId) => orchestrator.deleteProject(projectId),
+        resyncProjectTasks: async (projectId) => orchestrator.resyncProjectTasks(projectId),
       },
       onIntegrationUpdated: (id) => {
         orchestrator.invalidateVcsConnector(id);

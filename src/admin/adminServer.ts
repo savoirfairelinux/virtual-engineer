@@ -134,6 +134,7 @@ export interface AdminServerDependencies {
     retryTask(taskId: ReturnType<typeof makeTaskId>): Promise<void>;
     abandonTask?(taskId: ReturnType<typeof makeTaskId>): Promise<Task>;
     deleteProject?(projectId: ProjectId): Promise<void>;
+    resyncProjectTasks?(projectId: ProjectId): Promise<number>;
   };
   /** Called after an integration config update — invalidates cached VCS connectors. */
   onIntegrationUpdated?: (integrationId: string) => void;

@@ -1385,4 +1385,50 @@ describe("Orchestrator", () => {
       expect(runFromContextBuilding).toHaveBeenCalled();
     });
   });
+
+  describe("resyncProjectTasks", () => {
+    it("re-drives only active, non-code-review tasks belonging to the given project", async () => {
+      const projectA = makeProjectId("proj-a");
+      const projectB = makeProjectId("proj-b");
+      const taskInProject = makeTask({ taskId: makeTaskId("task-in"), projectId: projectA, state: "AGENT_RUNNING" });
+      const taskInOtherProject = makeTask({ taskId: makeTaskId("task-other"), projectId: projectB, state: "AGENT_RUNNING" });
+      const reviewTaskInProject = makeTask({
+        taskId: makeTaskId("review-in"),
+        projectId: projectA,
+        state: "REVIEW_PENDING" as any,
+        taskType: "code-review",
+      });
+      const stateStore = makeStateStore({
+        getActiveTasks: vi.fn().mockResolvedValue([taskInProject, taskInOtherProject, reviewTaskInProject]),
+      });
+      const orchestrator = makeOrchestrator({ stateStore });
+      const runWorkflow = vi.spyOn(orchestrator as any, "runWorkflow").mockResolvedValue(undefined);
+
+      const count = await orchestrator.resyncProjectTasks(projectA);
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(count).toBe(1);
+      expect(runWorkflow).toHaveBeenCalledTimes(1);
+      expect(runWorkflow).toHaveBeenCalledWith(expect.objectContaining({ taskId: taskInProject.taskId }));
+    });
+
+    it("continues resyncing remaining tasks when one re-driven workflow fails", async () => {
+      const projectA = makeProjectId("proj-a");
+      const taskA = makeTask({ taskId: makeTaskId("task-a"), projectId: projectA, state: "AGENT_RUNNING" });
+      const taskB = makeTask({ taskId: makeTaskId("task-b"), projectId: projectA, state: "IN_REVIEW" });
+      const stateStore = makeStateStore({
+        getActiveTasks: vi.fn().mockResolvedValue([taskA, taskB]),
+      });
+      const orchestrator = makeOrchestrator({ stateStore });
+      const runWorkflow = vi.spyOn(orchestrator as any, "runWorkflow")
+        .mockRejectedValueOnce(new Error("boom"))
+        .mockResolvedValueOnce(undefined);
+
+      const count = await orchestrator.resyncProjectTasks(projectA);
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(count).toBe(2);
+      expect(runWorkflow).toHaveBeenCalledTimes(2);
+    });
+  });
 });

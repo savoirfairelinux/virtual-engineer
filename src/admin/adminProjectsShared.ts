@@ -156,6 +156,7 @@ export interface ProjectsRouteDeps {
     | {
         retryTask(taskId: ReturnType<typeof makeTaskId>): Promise<void>;
         deleteProject?(projectId: ProjectId): Promise<void>;
+        resyncProjectTasks?(projectId: ProjectId): Promise<number>;
       }
     | undefined;
   validateSkillSourcesConnection?: ((sources: SkillSource[]) => Promise<void>) | undefined;

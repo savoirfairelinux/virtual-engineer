@@ -1621,4 +1621,49 @@ FetchContent_Declare(googletest
     expect((await rest(server, `/api/admin/projects/${id}/enable`, { method: "PATCH" })).status).toBe(204);
     expect((await rest(server, `/api/admin/projects/${id}/disable`, { method: "PATCH" })).status).toBe(204);
   });
+
+  it("POST /:id/resync re-drives active project tasks via taskControl and returns the count", async () => {
+    const agent = await makeAgent(store, "review");
+    await seedIntegration(store, "gerrit-1", "gerrit");
+    const created = await rest(server, "/api/admin/projects", {
+      method: "POST",
+      body: { type: "review", name: "Resync", agentId: agent.id, reviewConfig: { integrationId: "gerrit-1", repoKeys: ["x"] } },
+    });
+    const id = (created.body?.["project"] as Record<string, unknown>)["id"] as string;
+
+    await new Promise<void>((resolve, reject) => server.close((err) => err ? reject(err) : resolve()));
+    const resyncProjectTasks = vi.fn(async () => 3);
+    const deps = makeDeps(store);
+    deps.taskControl = {
+      resumeTask: async () => { throw new Error("not impl"); },
+      retryTask: async () => { throw new Error("not impl"); },
+      resyncProjectTasks,
+    };
+    server = createAdminServer(deps);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+
+    const r = await rest(server, `/api/admin/projects/${id}/resync`, { method: "POST" });
+
+    expect(r.status).toBe(200);
+    expect(r.body).toEqual({ resyncedCount: 3 });
+    expect(resyncProjectTasks).toHaveBeenCalledWith(id);
+  });
+
+  it("POST /:id/resync 404s for an unknown project", async () => {
+    const r = await rest(server, "/api/admin/projects/does-not-exist/resync", { method: "POST" });
+    expect(r.status).toBe(404);
+  });
+
+  it("POST /:id/resync 501s when taskControl.resyncProjectTasks is not wired", async () => {
+    const agent = await makeAgent(store, "review");
+    await seedIntegration(store, "gerrit-1", "gerrit");
+    const created = await rest(server, "/api/admin/projects", {
+      method: "POST",
+      body: { type: "review", name: "NoResync", agentId: agent.id, reviewConfig: { integrationId: "gerrit-1", repoKeys: ["x"] } },
+    });
+    const id = (created.body?.["project"] as Record<string, unknown>)["id"] as string;
+
+    const r = await rest(server, `/api/admin/projects/${id}/resync`, { method: "POST" });
+    expect(r.status).toBe(501);
+  });
 });

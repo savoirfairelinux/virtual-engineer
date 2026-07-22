@@ -206,6 +206,22 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
     deps.onProjectChange?.();
   }, { permission: "project.operate", resourceParam: "id" });
 
+  // Re-drive the workflow now (instead of waiting for the next poll tick) for every
+  // active code-gen task in the project — e.g. to pick up externally-closed tickets
+  // or merged/abandoned changes immediately. No new state logic: reuses the same
+  // per-task checks that already run every cycle.
+  router.add("POST", "/api/admin/projects/:id/resync", async (req, res, params) => {
+    if (!requireStore(deps.projectStore, res, "Project store not available")) return;
+    const store = deps.projectStore;
+    const id = makeProjectId(params["id"] ?? "");
+    const existing = await store.getProjectById(id);
+    if (!existing) { writeJson(res, 404, { error: "Project not found" }); return; }
+    if (!deps.taskControl?.resyncProjectTasks) { writeJson(res, 501, { error: "Task resync not available" }); return; }
+    const count = await deps.taskControl.resyncProjectTasks(id);
+    recordAudit(deps.auditStore, req, { action: "project.resync", targetType: "project", targetId: id, details: { name: existing.name, taskCount: count } });
+    writeJson(res, 200, { resyncedCount: count });
+  }, { permission: "project.operate", resourceParam: "id" });
+
   router.add("GET", "/api/admin/projects/:id", async (_req, res, params) => {
     if (!requireStore(deps.projectStore, res, "Project store not available")) return;
     const store = deps.projectStore;
