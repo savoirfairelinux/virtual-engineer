@@ -61,7 +61,7 @@ function buildAuthenticatedCloneUrl(
     // Backward-compatibility: older rows may still contain raw PAT strings.
     // Use the raw value as a last resort so private HTTPS clones keep working.
     token = encryptedToken;
-    log.warn({ integrationType, cloneUrl: rawCloneUrl, err }, "failed to decrypt token for authenticated clone URL; falling back to raw token value");
+    log.warn({ integrationType, cloneUrl: redactUrls(rawCloneUrl), err }, "failed to decrypt token for authenticated clone URL; falling back to raw token value");
   }
   if (/^\*{4,}$/.test(token)) return undefined;
   const usernamePrefix = integrationType === "github" ? "x-access-token" : "oauth2";

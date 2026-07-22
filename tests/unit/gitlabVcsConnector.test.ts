@@ -9,6 +9,21 @@ import { GitLabVcsConnector } from "../../src/vcs/gitlabVcsConnector.js";
 import type { GitLabVcsConnectorConfig } from "../../src/vcs/gitlabVcsConnector.js";
 import { ReviewApiError } from "../../src/interfaces.js";
 
+const { logger } = vi.hoisted(() => ({
+  logger: {
+    trace: vi.fn(),
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    fatal: vi.fn(),
+  },
+}));
+
+vi.mock("../../src/logger.js", () => ({
+  getLogger: vi.fn(() => logger),
+}));
+
 vi.mock("child_process");
 vi.mock("../../src/connectors/gitlabHttpClient.js", () => {
   const GitLabHttpClient = vi.fn().mockImplementation(function () {
@@ -59,6 +74,25 @@ describe("GitLabVcsConnector", () => {
       );
     });
 
+    it("redacts credentials from clone logs without changing the Git command", async () => {
+      const mockExecFileSync = vi.mocked(execFileSync);
+      mockExecFileSync.mockReturnValue("");
+      const repoUrl =
+        "https://oauth2:glpat-secret@gitlab.example.com/my-project.git";
+
+      await connector.clone(repoUrl, "main", "/tmp/repo");
+
+      expect(mockExecFileSync).toHaveBeenCalledWith(
+        "git",
+        ["clone", "--branch", "main", "--depth", "1", repoUrl, "/tmp/repo"],
+        expect.any(Object)
+      );
+      expect(logger.info).toHaveBeenCalledWith(
+        expect.objectContaining({ repoUrl: "https://<redacted>@gitlab.example.com/my-project.git" }),
+        "cloning repository from GitLab via HTTP"
+      );
+    });
+
     it("should throw on clone failure", async () => {
       const mockExecFileSync = vi.mocked(execFileSync);
       mockExecFileSync.mockImplementation(() => {
@@ -68,6 +102,17 @@ describe("GitLabVcsConnector", () => {
       await expect(
         connector.clone("https://invalid.com/repo.git", "main", "/tmp/repo")
       ).rejects.toThrow("Failed to clone GitLab repository");
+    });
+
+    it("redacts credentials echoed in clone failures", async () => {
+      const repoUrl = "https://oauth2:glpat-secret@gitlab.example.com/my-project.git";
+      vi.mocked(execFileSync).mockImplementationOnce(() => {
+        throw new Error(`fatal: unable to access '${repoUrl}'`);
+      });
+
+      await expect(connector.clone(repoUrl, "main", "/tmp/repo")).rejects.not.toThrow(
+        /glpat-secret/
+      );
     });
   });
 

@@ -1,5 +1,20 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
+const { logger } = vi.hoisted(() => ({
+  logger: {
+    trace: vi.fn(),
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    fatal: vi.fn(),
+  },
+}));
+
+vi.mock("../../src/logger.js", () => ({
+  getLogger: vi.fn(() => logger),
+}));
+
 vi.mock("child_process", () => ({
   spawn: vi.fn(),
 }));
@@ -106,6 +121,28 @@ describe("DockerWorkspaceRunner.prepareProjectWorkspace", () => {
     const result = await runner.prepareProjectWorkspace(handle, targets);
     expect(result.success).toBe(false);
     expect(result.error).toContain("root clone failed");
+  });
+
+  it("redacts credentials echoed by a failed root clone", async () => {
+    const repoUrl =
+      "https://x-access-token:ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345@github.com/org/root.git";
+    execInVolumeMock.mockResolvedValueOnce({
+      stdout: "",
+      stderr: `fatal: unable to access '${repoUrl}'`,
+      exitCode: 1,
+    });
+    const runner = new DockerWorkspaceRunner(
+      { agentContainerImage: "ve:latest", agentTimeoutMs: 1000 },
+      makeAdapter(),
+    );
+    const handle = await runner.createWorkspace(makeTaskId("t3-redaction"));
+
+    const result = await runner.prepareProjectWorkspace(handle, [
+      makeTarget({ id: 1, commitOrder: 1, localPath: ".", cloneUrl: repoUrl }),
+    ]);
+
+    expect(result.error).not.toContain("ghp_");
+    expect(JSON.stringify(logger.error.mock.calls)).not.toContain("ghp_");
   });
 
   it("continues when a non-root target fails (best-effort)", async () => {

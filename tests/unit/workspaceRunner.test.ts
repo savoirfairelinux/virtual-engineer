@@ -3,6 +3,21 @@ import { EventEmitter } from "events";
 
 // ─── Mocks ────────────────────────────────────────────────────────────────────
 
+const { logger } = vi.hoisted(() => ({
+  logger: {
+    trace: vi.fn(),
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    fatal: vi.fn(),
+  },
+}));
+
+vi.mock("../../src/logger.js", () => ({
+  getLogger: vi.fn(() => logger),
+}));
+
 vi.mock("child_process", () => {
   const spawn = vi.fn();
   return { spawn };
@@ -966,6 +981,23 @@ describe("DockerWorkspaceRunner", () => {
       expect(result.localPath).toBe("/workspace");
     });
 
+    it("redacts credentials from clone logs without changing the Git command", async () => {
+      const runner = makeRunner();
+      const handle = await runner.createWorkspace(makeTaskId("task-1"));
+      const repoUrl =
+        "https://x-access-token:ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345@github.com/org/repo.git";
+
+      await runner.cloneRepo(handle, repoUrl, "main");
+
+      expect(mockExecInVolume).toHaveBeenCalledWith(
+        expect.objectContaining({ command: expect.arrayContaining([repoUrl]) })
+      );
+      expect(logger.info).toHaveBeenCalledWith(
+        expect.objectContaining({ repoUrl: "https://<redacted>@github.com/org/repo.git" }),
+        "cloning repository into volume"
+      );
+    });
+
     it("returns a CloneResult with error details if clone fails", async () => {
       mockExecInVolume.mockResolvedValueOnce({ stdout: "", stderr: "Network error", exitCode: 1 });
       const runner = makeRunner();
@@ -976,6 +1008,23 @@ describe("DockerWorkspaceRunner", () => {
       expect(result.success).toBe(false);
       expect(result.error).toContain("Network error");
       expect(result.localPath).toBe("/workspace");
+    });
+
+    it("redacts credentials echoed in clone errors", async () => {
+      const repoUrl =
+        "https://x-access-token:ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345@github.com/org/repo.git";
+      mockExecInVolume.mockResolvedValueOnce({
+        stdout: "",
+        stderr: `fatal: unable to access '${repoUrl}'`,
+        exitCode: 1,
+      });
+      const runner = makeRunner();
+      const handle = await runner.createWorkspace(makeTaskId("task-1"));
+
+      const result = await runner.cloneRepo(handle, repoUrl, "main");
+
+      expect(result.error).not.toContain("ghp_");
+      expect(JSON.stringify(logger.error.mock.calls)).not.toContain("ghp_");
     });
   });
 });
