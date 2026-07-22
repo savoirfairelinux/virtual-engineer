@@ -5,7 +5,7 @@ import { ChangePasswordModal } from "./shell/ChangePasswordModal.tsx";
 import { TasksView } from "./views/TasksView/index.tsx";
 import { OverviewView } from "./views/OverviewView.tsx";
 import { ConfigView } from "./views/ConfigView/index.tsx";
-import { api, connectSse, getStoredToken, clearStoredToken, getMe, logout, onUnauthorized, ApiError } from "./api.ts";
+import { api, connectSse, getStoredToken, clearStoredToken, getMe, logout, onUnauthorized, fetchSetupStatus, ApiError } from "./api.ts";
 import { CurrentUserProvider, makeCan, type CurrentUserValue } from "./authContext.tsx";
 import { isActiveState } from "./states.ts";
 import type {
@@ -57,6 +57,16 @@ export function App() {
   const [authenticated, setAuthenticated] = useState(() => !bootstrap.requiresAuth || !!getStoredToken());
   const [currentUser, setCurrentUser] = useState<ApiMe | null>(null);
   const [showChangePassword, setShowChangePassword] = useState(false);
+  // When the server bootstrap data is unavailable (Vite dev mode), requiresAuth defaults to
+  // false and authenticated starts as true — skipping the setup screen. This effect catches
+  // that case: if the server reports no users exist, force the setup screen regardless.
+  const [forcedSetupScreen, setForcedSetupScreen] = useState(false);
+  useEffect(() => {
+    if (!authenticated || bootstrap.requiresAuth) return;
+    fetchSetupStatus()
+      .then((s) => { if (s.needsSetup) setForcedSetupScreen(true); })
+      .catch(() => { /* server unreachable — stay in open mode */ });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleLoggedOut = useCallback(() => {
     clearStoredToken();
@@ -175,11 +185,11 @@ export function App() {
     return () => clearInterval(id);
   }, [authenticated]);
 
-  if (!authenticated) {
+  if (!authenticated || forcedSetupScreen) {
     return (
       <div className="app">
         <AuthScreen
-          onAuthenticated={(user) => { setCurrentUser(user); setAuthenticated(true); }}
+          onAuthenticated={(user) => { setCurrentUser(user); setAuthenticated(true); setForcedSetupScreen(false); }}
         />
       </div>
     );

@@ -4,6 +4,23 @@ import { PasswordField } from "../components/PasswordField.tsx";
 import { fetchSetupStatus, login, setup, ApiError } from "../api.ts";
 import type { ApiMe } from "../types.ts";
 
+type StrengthLevel = 0 | 1 | 2 | 3;
+interface StrengthInfo { level: StrengthLevel; label: string; color: string }
+
+function measureStrength(pwd: string): StrengthInfo {
+  if (pwd.length === 0) return { level: 0, label: "", color: "" };
+  if (pwd.length < 8)   return { level: 0, label: "Too short", color: "#e05252" };
+  let classes = 0;
+  if (/[a-z]/.test(pwd)) classes++;
+  if (/[A-Z]/.test(pwd)) classes++;
+  if (/[0-9]/.test(pwd)) classes++;
+  if (/[^a-zA-Z0-9]/.test(pwd)) classes++;
+  if (classes <= 1)                                            return { level: 0, label: "Weak",        color: "#e05252" };
+  if (classes === 4)                                           return { level: 3, label: "Very strong",  color: "#4caf82" };
+  if (classes === 3 || (classes === 2 && pwd.length >= 16))   return { level: 2, label: "Strong",       color: "#7ec86e" };
+  return                                                              { level: 1, label: "Fair",         color: "#e0a840" };
+}
+
 interface AuthScreenProps {
   onAuthenticated: (user: ApiMe) => void;
 }
@@ -34,18 +51,21 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
     return () => { cancelled = true; };
   }, []);
 
-  const canSubmit = mode === "setup"
-    ? username.trim().length > 0 && password.length >= 8 && confirm.length > 0
-    : username.trim().length > 0 && password.length > 0;
+  const canSubmit = mode === "login"
+    ? username.trim().length > 0 && password.length > 0
+    : true; // setup: always submittable — validation errors shown inline on submit
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!canSubmit || loading) return;
+    if (loading) return;
     setError(null);
 
-    if (mode === "setup" && password !== confirm) {
-      setError("Passwords do not match.");
-      return;
+    if (mode === "setup") {
+      if (!username.trim()) { setError("Username is required."); return; }
+      if (password.length < 8) { setError("Password must be at least 8 characters."); return; }
+      if (measureStrength(password).level === 0) { setError("Password is too weak — mix uppercase letters, numbers, or symbols."); return; }
+      if (!confirm) { setError("Please confirm your password."); return; }
+      if (password !== confirm) { setError("Passwords do not match."); return; }
     }
 
     setLoading(true);
@@ -124,10 +144,29 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
               <PasswordField
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                placeholder={mode === "setup" ? "Password (min 8 characters)…" : "Password…"}
+                placeholder={mode === "setup" ? "Password (min. 8 characters)…" : "Password…"}
                 autoComplete={mode === "setup" ? "new-password" : "current-password"}
-                style={inputStyle}
+                style={{ ...inputStyle, marginBottom: mode === "setup" ? "6px" : "12px" }}
               />
+              {mode === "setup" && (() => {
+                const s = measureStrength(password);
+                if (!s.label) return null;
+                const segments = [0, 1, 2, 3] as const;
+                return (
+                  <div style={{ marginBottom: "12px" }}>
+                    <div style={{ display: "flex", gap: "4px", marginBottom: "4px" }}>
+                      {segments.map((i) => (
+                        <div key={i} style={{
+                          flex: 1, height: "3px", borderRadius: "2px",
+                          background: i <= s.level ? s.color : "var(--border)",
+                          transition: "background 0.2s",
+                        }} />
+                      ))}
+                    </div>
+                    <div style={{ fontSize: "11.5px", color: s.color }}>{s.label}</div>
+                  </div>
+                );
+              })()}
               {mode === "setup" && (
                 <PasswordField
                   value={confirm}

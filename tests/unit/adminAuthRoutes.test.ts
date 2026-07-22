@@ -116,6 +116,23 @@ describe("adminAuthRoutes", () => {
       expect(response.status).toBe(403);
     });
 
+    it("allows exactly one concurrent request to create the initial admin", async () => {
+      const setupRequest = (username: string): Promise<Response> => fetch(`${baseUrl}/api/admin/auth/setup`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ username, password: "Str0ng-Pass-1x" }),
+      });
+
+      const responses = await Promise.all([
+        setupRequest("first-admin"),
+        setupRequest("second-admin"),
+      ]);
+
+      expect(responses.map((response) => response.status).sort()).toEqual([201, 403]);
+      expect(await store.countUsers()).toBe(1);
+      expect(await store.countEnabledAdmins()).toBe(1);
+    });
+
     it("validates username and password", async () => {
       for (const body of [{ username: "", password: "Str0ng-Pass-1x" }, { username: "root", password: "short" }]) {
         const response = await fetch(`${baseUrl}/api/admin/auth/setup`, {
@@ -131,10 +148,10 @@ describe("adminAuthRoutes", () => {
       const response = await fetch(`${baseUrl}/api/admin/auth/setup`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ username: "root", password: "password123" }),
+        body: JSON.stringify({ username: "root", password: "alllowercase" }),
       });
       expect(response.status).toBe(400);
-      await expect(response.json()).resolves.toEqual({ error: expect.stringContaining("too common") });
+      await expect(response.json()).resolves.toEqual({ error: expect.stringContaining("too weak") });
     });
   });
 
