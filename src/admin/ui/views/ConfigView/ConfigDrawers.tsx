@@ -17,9 +17,10 @@ interface DrawerActionsProps {
   onToggle?: (() => void) | undefined;
   onDelete?: (() => void) | undefined;
   onEdit?: (() => void) | undefined;
+  onResync?: (() => void) | undefined;
 }
 
-function DrawerActions({ enabled, onClose, onToggle, onDelete, onEdit }: DrawerActionsProps) {
+function DrawerActions({ enabled, onClose, onToggle, onDelete, onEdit, onResync }: DrawerActionsProps) {
   return (
     <>
       <button className="btn" onClick={onClose}>Close</button>
@@ -27,6 +28,11 @@ function DrawerActions({ enabled, onClose, onToggle, onDelete, onEdit }: DrawerA
       {onDelete && (
         <button className="btn danger sm" onClick={onDelete}>
           <Icon name="trash" size={13} /> Delete
+        </button>
+      )}
+      {onResync && (
+        <button className="btn" onClick={onResync} title="Re-check active tasks now instead of waiting for the next poll">
+          <Icon name="refresh" size={13} /> Resync
         </button>
       )}
       {onToggle && (
@@ -255,9 +261,10 @@ interface ProjectDrawerProps {
   onEdit?: () => void;
   onToggle?: () => void;
   onDelete?: () => void;
+  onResync?: () => void;
 }
 
-export function ProjectDrawer({ item, agents, onClose, onEdit, onToggle, onDelete }: ProjectDrawerProps) {
+export function ProjectDrawer({ item, agents, onClose, onEdit, onToggle, onDelete, onResync }: ProjectDrawerProps) {
   const agentName = agents.find((a) => a.id === item.agentId)?.name ?? item.agentId ?? "—";
 
   const banner = item.enabled
@@ -293,6 +300,7 @@ export function ProjectDrawer({ item, agents, onClose, onEdit, onToggle, onDelet
           onEdit={onEdit}
           onToggle={onToggle}
           onDelete={onDelete}
+          onResync={item.type === "coding" ? onResync : undefined}
         />
       }
     >

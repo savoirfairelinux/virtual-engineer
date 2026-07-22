@@ -71,6 +71,19 @@ export function ProjectsSection({ projects, agents, integrations, onRefresh, rou
     }
   }
 
+  async function resyncProject(id: string) {
+    setBusy(id);
+    try {
+      const { resyncedCount } = await api.post<{ resyncedCount: number }>(`/api/admin/projects/${id}/resync`);
+      onRefresh();
+      alert(`Resynced ${resyncedCount} active task(s).`);
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "Resync failed");
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function deleteProject(p: ApiProject): Promise<boolean> {
     if (!window.confirm(`Delete project "${p.name}"? All tasks for this project will be orphaned.`)) return false;
     setBusy(p.id);
@@ -108,6 +121,7 @@ export function ProjectsSection({ projects, agents, integrations, onRefresh, rou
         onClose={() => navigate({ section: "projects", mode: "list" })}
         {...(can("project.write", detailItem.id) ? { onEdit: () => navigate({ section: "projects", mode: "edit", id: detailItem.id }) } : {})}
         {...(can("project.operate", detailItem.id) ? { onToggle: () => { void toggleEnabled(detailItem.id, detailItem.enabled); } } : {})}
+        {...(can("project.operate", detailItem.id) && detailItem.type === "coding" ? { onResync: () => { void resyncProject(detailItem.id); } } : {})}
         {...(can("project.delete", detailItem.id) ? { onDelete: () => { void deleteProject(detailItem).then((deleted) => { if (deleted) navigate({ section: "projects", mode: "list" }); }); } } : {})}
       />
     );
@@ -182,6 +196,16 @@ export function ProjectsSection({ projects, agents, integrations, onRefresh, rou
                 />
               )}
             </div>
+            {can("project.operate", p.id) && p.type === "coding" && (
+              <button
+                className="iconbtn"
+                title="Resync now (re-check active tasks instead of waiting for the next poll)"
+                disabled={busy === p.id}
+                onClick={(e) => { e.stopPropagation(); void resyncProject(p.id); }}
+              >
+                <Icon name="refresh" size={14} />
+              </button>
+            )}
             {can("project.write", p.id) && (
               <button
                 className="iconbtn"
