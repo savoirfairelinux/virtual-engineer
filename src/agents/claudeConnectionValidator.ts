@@ -101,7 +101,13 @@ async function callAnthropicModelsApi(
 
     if (response.status === 200) {
       log.info({ success: true, kind }, "Claude credentials are valid");
-      return { success: true, error: null, models: [] };
+      const body = await response.json().catch(() => ({})) as { data?: Array<{ id?: string }> };
+      const modelIds = Array.isArray(body.data)
+        ? (body.data.map((m) => m.id).filter((id): id is string => typeof id === "string"))
+        : [];
+      const logs: string[] = [`Authentication successful (${kind === "api_key" ? "API key" : "subscription"}).`];
+      if (modelIds.length > 0) logs.push(`Available models: ${modelIds.join(", ")}.`);
+      return { success: true, error: null, models: [], logs };
     }
 
     if (response.status === 401 || response.status === 403) {

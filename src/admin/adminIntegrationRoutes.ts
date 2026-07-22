@@ -18,6 +18,15 @@ import type { Router } from "./router.js";
 
 const log = getLogger("admin-integrations");
 
+function logConnectionTestResult(context: Record<string, string | undefined>, result: { logs?: string[] | undefined }): void {
+  if (!Array.isArray(result.logs) || result.logs.length === 0) {
+    return;
+  }
+  for (const line of result.logs) {
+    log.info(context, line);
+  }
+}
+
 export interface IntegrationRouteDeps {
   integrationStore?: IntegrationStore | undefined;
   pluginManager?: PluginManager | undefined;
@@ -169,6 +178,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
           writeJson(res, 400, { error: "Changing integration provider is not supported" }); return;
         }
         const result = await deps.pluginManager.testConnectionConfig(existing.provider, mergeIntegrationConfig(existing, config));
+        logConnectionTestResult({ integrationId, provider: existing.provider }, result);
         if (result.success && Array.isArray(result.models) && result.models.length > 0) {
           if (typeof deps.integrationStore.setIntegrationDiscoveredResources === "function") {
             await deps.integrationStore.setIntegrationDiscoveredResources(integrationId, JSON.stringify({ models: result.models }));
@@ -179,6 +189,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
       }
       if (!requestedProvider) { writeJson(res, 400, { error: "Provider is required" }); return; }
       const result = await deps.pluginManager.testConnectionConfig(requestedProvider, config);
+      logConnectionTestResult({ provider: requestedProvider }, result);
       writeJson(res, 200, result);
     } catch (err: unknown) {
       const errorMessage = err instanceof Error ? err.message : String(err);
@@ -309,6 +320,14 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
     const id = params["id"] ?? "";
     try {
       const result = await deps.pluginManager.testConnection(id);
+const integration = await deps.integrationStore?.getIntegration(id);
+      logConnectionTestResult(
+        {
+          integrationId: id,
+          provider: integration?.provider,
+        },
+        result
+      );
       if (result.success && Array.isArray(result.models) && result.models.length > 0) {
         if (deps.integrationStore && typeof deps.integrationStore.setIntegrationDiscoveredResources === "function") {
           await deps.integrationStore.setIntegrationDiscoveredResources(id, JSON.stringify({ models: result.models }));

@@ -20,6 +20,7 @@ import {
   createGitHubDeviceOAuthHandler,
   getGitHubAccessToken,
 } from "./githubOAuth.js";
+import { validateGitHubConnection } from "../../agents/githubConnectionValidator.js";
 
 /**
  * Unified GitHub provider configuration. The single GitHub provider can fulfil
@@ -172,6 +173,11 @@ export const githubDescriptor: ProviderDescriptor = {
       return [];
     }
     return listGitHubBranches(token, urls.apiBaseUrl, repoKey);
+  },
+  testConnection: async (config) => {
+    const parsed = githubConfigSchema.parse(config);
+    const urls = resolveGitHubUrls(parsed.mode as GitHubMode, parsed.baseUrl);
+    return validateGitHubConnection({ token: parsed.token, apiBaseUrl: urls.apiBaseUrl });
   },
   getSummaryDetails(config) {
     const mode = typeof config["mode"] === "string" ? config["mode"] : "github.com";

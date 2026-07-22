@@ -83,7 +83,9 @@ async function callGitHubUserApi(
 
     if (response.status === 200) {
       log.info({ success: true }, "Copilot session token is valid");
-      return { success: true, error: null, models: [] };
+      const body = await response.json?.().catch(() => ({})) as { login?: string } ?? {};
+      const logs: string[] = body.login ? [`Authenticated as @${body.login} on GitHub.`] : ["Authentication successful."];
+      return { success: true, error: null, models: [], logs };
     }
 
     if (response.status === 401 || response.status === 403) {

@@ -95,7 +95,7 @@ export function createGitLabOAuthConfig(
 
 export async function testGitLabConnection(
   config: Record<string, unknown>
-): Promise<{ success: boolean; error: string | null; models?: Array<{ id: string; name: string }> | undefined }> {
+): Promise<{ success: boolean; error: string | null; models?: Array<{ id: string; name: string }> | undefined; logs?: string[] | undefined }> {
   const token = getOptionalTrimmedString(config["token"]);
   const isOAuth = config["authMode"] === "oauth";
 
@@ -112,7 +112,8 @@ export async function testGitLabConnection(
   const enrichedConfig = explicitBaseUrl ? config : { ...config, baseUrl: GITLAB_COM_BASE_URL };
 
   try {
-    await fetchGitLabCurrentUser(enrichedConfig);
+    const user = await fetchGitLabCurrentUser(enrichedConfig);
+    const login = typeof user["username"] === "string" ? user["username"] : undefined;
     let models: Array<{ id: string; name: string }> | undefined;
     try {
       const projects = await listGitLabAccessibleProjects(enrichedConfig);
@@ -120,7 +121,9 @@ export async function testGitLabConnection(
     } catch {
       // Project listing is best-effort; connection test still succeeded
     }
-    return { success: true, error: null, ...(models !== undefined ? { models } : {}) };
+    const logs: string[] = [login ? `Authenticated as @${login} on GitLab.` : "Authentication successful."];
+    if (models !== undefined && models.length > 0) logs.push(`Found ${models.length} accessible project(s).`);
+    return { success: true, error: null, logs, ...(models !== undefined ? { models } : {}) };
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     return {

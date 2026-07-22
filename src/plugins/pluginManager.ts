@@ -29,6 +29,8 @@ export interface ConnectionTestResult {
   success: boolean;
   error: string | null;
   models?: ConnectionTestModel[] | undefined;
+  /** Human-readable log lines surfaced in the admin UI during a connection test. */
+  logs?: string[] | undefined;
 }
 
 export type ConnectionTester = (config: unknown) => Promise<ConnectionTestResult>;
@@ -466,6 +468,7 @@ export class PluginManager {
       success: result.success,
       error: result.error ?? null,
       models: result.models ?? [],
+      ...(result.logs !== undefined ? { logs: result.logs } : {}),
     };
   }
 

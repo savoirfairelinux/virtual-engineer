@@ -98,7 +98,12 @@ export async function validateAiderConnection(
 
     if (response.status === 200) {
       log.info({ backend }, "Aider connection is valid");
-      return { success: true, error: null, models: [] };
+      const body = await response.json().catch(() => ({})) as Record<string, unknown>;
+      const rawModels = backend === "ollama" ? body["models"] : body["data"];
+      const modelCount = Array.isArray(rawModels) ? rawModels.length : undefined;
+      const logs: string[] = [`Connected to ${backend} backend.`];
+      if (modelCount !== undefined) logs.push(`Found ${modelCount} available model(s).`);
+      return { success: true, error: null, models: [], logs };
     }
     if (response.status === 401 || response.status === 403) {
       const error = `Aider backend "${backend}" credentials are invalid or unauthorized.`;

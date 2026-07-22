@@ -23,7 +23,7 @@ describe("validateCopilotConnection", () => {
       { fetch: makeFetch(200), adminAuthSecret: TEST_SECRET }
     );
 
-    expect(result).toEqual({ success: true, error: null, models: [] });
+    expect(result).toEqual(expect.objectContaining({ success: true, error: null, models: [] }));
   });
 
   it("sends the decrypted token in the Authorization Bearer header", async () => {
@@ -160,7 +160,7 @@ describe("validateCopilotConnection", () => {
       { fetch: makeFetch(200) }
     );
 
-    expect(result).toEqual({ success: true, error: null, models: [] });
+    expect(result).toEqual(expect.objectContaining({ success: true, error: null, models: [] }));
   });
 
   it("PAT mode: sends the PAT directly in the Authorization Bearer header", async () => {
@@ -215,7 +215,7 @@ describe("validateCopilotConnection", () => {
       { fetch: makeFetch(200) }
     );
 
-    expect(result).toEqual({ success: true, error: null, models: [] });
+    expect(result).toEqual(expect.objectContaining({ success: true, error: null, models: [] }));
   });
 
   it("PAT mode: returns failure for 401 Unauthorized", async () => {
