@@ -20,6 +20,7 @@ import { exchangeForSessionToken, fetchAvailableModels, fetchAvailableModelsWith
 import { decryptToken } from "../utils/encryption.js";
 import { getProviderDescriptor } from "../plugins/registry.js";
 import type { Router } from "./router.js";
+import type { PluginManager } from "../plugins/pluginManager.js";
 
 const log = getLogger("admin-agents");
 
@@ -49,6 +50,7 @@ export interface AgentsRouteStore {
 }
 
 export interface AgentsRouteDeps {
+    pluginManager?: PluginManager | undefined;
   agentStore?: AgentsRouteStore | undefined;
   integrationStore?: Pick<IntegrationStore, "getIntegration"> | undefined;
   oAuthAppStore?: OAuthAppStore | undefined;
@@ -459,7 +461,11 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
       const integration = await deps.integrationStore.getIntegration(agent.integrationId);
       if (integration) {
         let integrationConfig: Record<string, unknown> = {};
-        try { integrationConfig = JSON.parse(integration.configJson) as Record<string, unknown>; } catch { /* ignore */ }
+        try {
+          integrationConfig = deps.pluginManager
+            ? deps.pluginManager.decryptIntegrationConfig(integration)
+            : JSON.parse(integration.configJson) as Record<string, unknown>;
+        } catch { /* ignore */ }
         if (integrationConfig["authMode"] === "pat") {
           const pat = typeof integrationConfig["token"] === "string" ? integrationConfig["token"].trim() : "";
           if (!pat) {

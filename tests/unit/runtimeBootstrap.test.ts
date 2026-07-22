@@ -185,6 +185,7 @@ async function importRuntime(
     registerFactory: vi.fn(),
     registerConnectionTester: vi.fn(),
     reloadIntegration: vi.fn().mockResolvedValue(undefined),
+    migrateEncryptCredentials: vi.fn().mockResolvedValue(undefined),
     onPluginChange: vi.fn(),
     decryptIntegrationConfig: vi.fn((integration: Integration) => {
       return JSON.parse(integration.configJson) as Record<string, unknown>;
@@ -491,6 +492,7 @@ describe("runtime bootstrap provider selection", () => {
 
     expect(runtime.registerBuiltinPlugins).toHaveBeenCalledTimes(1);
     expect(runtime.PluginManager).toHaveBeenCalledTimes(1);
+    expect(runtime.pluginManagerInstance.migrateEncryptCredentials).toHaveBeenCalledBefore(runtime.loadFromDatabase);
     expect(runtime.loadFromDatabase).toHaveBeenCalledTimes(1);
     expect(runtime.HttpRedmineConnector).not.toHaveBeenCalled();
     expect(runtime.GerritSshConnector).not.toHaveBeenCalled();

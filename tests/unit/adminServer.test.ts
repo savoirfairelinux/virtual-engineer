@@ -5,6 +5,8 @@ import type { AgentCycle, OAuthAppStore, IntegrationStore, StateStore, StateTran
 import { createAdminServer } from "../../src/admin/adminServer.js";
 import type { AdminProviderSummary } from "../../src/admin/adminServer.js";
 import { registerBuiltinPlugins } from "../../src/plugins/init.js";
+import { PluginManager } from "../../src/plugins/pluginManager.js";
+import { encryptToken } from "../../src/utils/encryption.js";
 
 registerBuiltinPlugins();
 
@@ -1161,35 +1163,39 @@ describe("createAdminServer", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    const pluginManager = {
-      getActiveIntegrationsByProvider(provider: string) {
-        if (provider === "gitlab") {
-          return [{
-            id: "gitlab-mr",
-            provider: "gitlab",
-            name: "GitLab MR",
-            configJson: JSON.stringify({
-              baseUrl: "https://gitlab.example.com",
-              token: "oauth-token",
-            }),
-            enabled: true,
-            createdAt: new Date(),
-            updatedAt: new Date(),
-          }];
-        }
-        return [];
-      },
+    const adminSecret = "image-proxy-admin-secret";
+    const integrationStore: IntegrationStore = {
+      getIntegrations: async () => [{
+        id: "gitlab-mr",
+        provider: "gitlab",
+        name: "GitLab MR",
+        configJson: JSON.stringify({
+          baseUrl: "https://gitlab.example.com",
+          token: encryptToken("oauth-token", adminSecret),
+        }),
+        enabled: true,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }],
+      getIntegration: async () => null,
+      upsertIntegration: async () => { throw new Error("not implemented"); },
+      deleteIntegration: async () => undefined,
+      setIntegrationEnabled: async () => { throw new Error("not implemented"); },
+      countIntegrationReferences: async () => 0,
     };
+    const pluginManager = new PluginManager(integrationStore, { adminAuthSecret: adminSecret });
+    await pluginManager.loadFromDatabase();
 
     const server = createAdminServer({
       stateStore: makeStateStore(),
-      pluginManager: pluginManager as never,
+      pluginManager,
       config: {
         nodeEnv: "test",
         logLevel: "info",
         maxAgentCycles: 3,
         maxRetryAttempts: 5,
         pollingIntervalMs: 30_000,
+        adminAuthSecret: adminSecret,
       },
       polling: {
         isRunning: () => true,

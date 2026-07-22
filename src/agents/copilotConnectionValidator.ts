@@ -1,5 +1,4 @@
 import type { ConnectionTestResult } from "../plugins/pluginManager.js";
-import { decryptToken } from "../utils/encryption.js";
 import { getLogger } from "../logger.js";
 
 const log = getLogger("copilot-connection-validator");
@@ -38,25 +37,12 @@ export async function validateCopilotConnection(
     return callGitHubUserApi(pat, dependencies);
   }
 
-  // ── OAuth mode (default): decrypt the stored session token ────────────────
-  const encrypted = config.sessionToken?.trim();
-  if (!encrypted) {
+  // ── OAuth mode (default): use the session token (decrypted by the caller) ─
+  const token = config.sessionToken?.trim();
+  if (!token) {
     return {
       success: false,
       error: "No session token configured. Use the OAuth device flow to authenticate.",
-      models: [],
-    };
-  }
-
-  const secret = dependencies.adminAuthSecret;
-
-  let token: string;
-  try {
-    token = decryptToken(encrypted, secret);
-  } catch (err) {
-    return {
-      success: false,
-      error: err instanceof Error ? err.message : String(err),
       models: [],
     };
   }

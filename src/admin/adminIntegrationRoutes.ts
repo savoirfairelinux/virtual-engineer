@@ -9,8 +9,9 @@ import {
   getProviderDescriptor,
   getProviderDomainCapabilities,
   ModelDiscoveryConfigError,
+  type ProviderDescriptor,
 } from "../plugins/registry.js";
-import { decryptToken } from "../utils/encryption.js";
+import { encryptToken, isEncryptedToken } from "../utils/encryption.js";
 import { normalizeGitLabBaseUrl } from "../utils/gitlabAuth.js";
 import { writeJson, readBody, asRecord, toIsoTimestamp, SECRET_MASK, parseConfig, formatZodError } from "./adminRouteUtils.js";
 import { recordAudit, type AuditCapableStore } from "./adminAudit.js";
@@ -144,7 +145,9 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
     const id = body["id"] as string || randomUUID();
     try {
       const integration = await deps.integrationStore.upsertIntegration({
-        id, provider, name: body["name"] as string, configJson: JSON.stringify(validatedConfig.data), enabled: true,
+        id, provider, name: body["name"] as string,
+        configJson: JSON.stringify(encryptPasswordFields(validatedConfig.data, descriptor, deps.adminAuthSecret)),
+        enabled: true,
       });
       if (deps.pluginManager) {
         try {
@@ -228,7 +231,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
     const validatedConfig = validateIntegrationConfig(descriptor.configSchema, mergedConfig, true);
     if (!validatedConfig.ok) { writeJson(res, 400, { error: validatedConfig.message || "Invalid integration config" }); return; }
     try {
-      const nextConfigJson = JSON.stringify(validatedConfig.data);
+      const nextConfigJson = JSON.stringify(encryptPasswordFields(validatedConfig.data, descriptor, deps.adminAuthSecret));
       const configChanged = nextConfig !== undefined && nextConfigJson !== existing.configJson;
       const updated = await deps.integrationStore.upsertIntegration({
         id,
@@ -320,7 +323,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
     const id = params["id"] ?? "";
     try {
       const result = await deps.pluginManager.testConnection(id);
-const integration = await deps.integrationStore?.getIntegration(id);
+      const integration = await deps.integrationStore?.getIntegration(id);
       logConnectionTestResult(
         {
           integrationId: id,
@@ -377,7 +380,9 @@ const integration = await deps.integrationStore?.getIntegration(id);
     if (descriptor && typeof descriptor.discoverModels === "function") {
       let parsedModelConfig: unknown;
       try {
-        parsedModelConfig = JSON.parse(integration.configJson);
+        parsedModelConfig = deps.pluginManager
+          ? deps.pluginManager.decryptIntegrationConfig(integration)
+          : JSON.parse(integration.configJson);
       } catch {
         writeJson(res, 500, { error: "Stored integration config is not valid JSON" }); return;
       }
@@ -402,25 +407,15 @@ const integration = await deps.integrationStore?.getIntegration(id);
     }
     let parsedConfig: unknown;
     try {
-      parsedConfig = JSON.parse(integration.configJson);
+      parsedConfig = deps.pluginManager
+        ? deps.pluginManager.decryptIntegrationConfig(integration)
+        : JSON.parse(integration.configJson);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       writeJson(res, 500, { error: `Stored integration config is not valid JSON: ${msg}` }); return;
     }
 
-    // Decrypt password fields and run preprocessConfig so discoverResources receives real credentials.
-    // Tokens are stored as encrypted (or plain:-prefixed) strings via encryptToken.
     const decryptedConfig = { ...(parsedConfig as Record<string, unknown>) };
-    for (const field of descriptor.requiredFields.filter((f) => f.type === "password")) {
-      const raw = decryptedConfig[field.key];
-      if (typeof raw === "string" && raw.length > 0) {
-        try {
-          decryptedConfig[field.key] = decryptToken(raw, deps.adminAuthSecret);
-        } catch {
-          // Not a managed encrypted token (e.g. a raw PAT) — leave as-is.
-        }
-      }
-    }
     if (descriptor.preprocessConfig) {
       Object.assign(decryptedConfig, descriptor.preprocessConfig(decryptedConfig, deps.adminAuthSecret, id));
     }
@@ -461,24 +456,15 @@ const integration = await deps.integrationStore?.getIntegration(id);
 
     let parsedConfig: unknown;
     try {
-      parsedConfig = JSON.parse(integration.configJson);
+      parsedConfig = deps.pluginManager
+        ? deps.pluginManager.decryptIntegrationConfig(integration)
+        : JSON.parse(integration.configJson);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       writeJson(res, 500, { error: `Stored integration config is not valid JSON: ${msg}` }); return;
     }
 
-    // Decrypt password fields and run preprocessConfig so discoverBranches receives real credentials.
     const decryptedConfig = { ...(parsedConfig as Record<string, unknown>) };
-    for (const field of descriptor.requiredFields.filter((f) => f.type === "password")) {
-      const raw = decryptedConfig[field.key];
-      if (typeof raw === "string" && raw.length > 0) {
-        try {
-          decryptedConfig[field.key] = decryptToken(raw, deps.adminAuthSecret);
-        } catch {
-          // Not a managed encrypted token (e.g. a raw PAT) — leave as-is.
-        }
-      }
-    }
     if (descriptor.preprocessConfig) {
       Object.assign(decryptedConfig, descriptor.preprocessConfig(decryptedConfig, deps.adminAuthSecret, id));
     }
@@ -682,6 +668,27 @@ function mergeIntegrationConfig(integration: Integration, updates: Record<string
 /** Return the integration's stored config with schema-unknown keys stripped. */
 function getStoredIntegrationConfig(integration: Integration): Record<string, unknown> {
   return stripUnknownIntegrationConfig(integration.provider, parseConfig(integration.configJson));
+}
+
+/**
+ * Encrypt all `type: "password"` fields in `config` before persisting to the database.
+ * Values that are already encrypted (unchanged round-trip from an existing integration)
+ * are left untouched to prevent double-encryption.
+ * Returns a new object — `config` is not mutated.
+ */
+function encryptPasswordFields(
+  config: Record<string, unknown>,
+  descriptor: ProviderDescriptor,
+  adminAuthSecret: string | undefined,
+): Record<string, unknown> {
+  const result: Record<string, unknown> = { ...config };
+  for (const field of descriptor.requiredFields.filter((f) => f.type === "password")) {
+    const raw = result[field.key];
+    if (typeof raw !== "string" || raw.length === 0) continue;
+    if (isEncryptedToken(raw, adminAuthSecret)) continue;
+    result[field.key] = encryptToken(raw, adminAuthSecret);
+  }
+  return result;
 }
 
 /** Remove any config keys not declared in the integration type's Zod schema. */

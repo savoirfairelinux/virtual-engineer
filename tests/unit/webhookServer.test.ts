@@ -8,9 +8,15 @@ import type {
   WebhookServerDependencies,
 } from "../../src/webhooks/webhookServer.js";
 import type { Integration, IntegrationStore, ProjectRecord, ProjectId, AgentId } from "../../src/interfaces.js";
+import { PluginManager } from "../../src/plugins/pluginManager.js";
+import { registerBuiltinPlugins } from "../../src/plugins/init.js";
+import { encryptToken } from "../../src/utils/encryption.js";
 
 const INTEGRATION_ID = "redmine-1";
 const SECRET = "s".repeat(64);
+const ADMIN_SECRET = "webhook-admin-secret";
+
+registerBuiltinPlugins();
 
 function makeIntegration(overrides: Partial<Integration> = {}): Integration {
   return {
@@ -161,6 +167,34 @@ describe("webhookServer", () => {
         body,
         headers: { "x-hub-signature-256": hmacSig(body, SECRET) },
       });
+      expect(res.status).toBe(202);
+      expect(orchestrator.startTaskForProject).toHaveBeenCalledTimes(1);
+    });
+
+    it("accepts webhook delivery when the DB secret is encrypted", async () => {
+      const encryptedIntegration = makeIntegration({
+        configJson: JSON.stringify({
+          webhookSecret: encryptToken(SECRET, ADMIN_SECRET),
+          baseUrl: "http://r/",
+          apiKey: encryptToken("x", ADMIN_SECRET),
+          virtualEngineerUserLogin: "ve",
+        }),
+      });
+      store = makeIntegrationStore([encryptedIntegration]);
+      await ctx.closeServer();
+      ctx = await startTestServer({
+        integrationStore: store,
+        pluginManager: new PluginManager(store, { adminAuthSecret: ADMIN_SECRET }),
+        orchestrator,
+        projectStore,
+      });
+      const body = JSON.stringify({ issue: { id: 42, subject: "hi", project: { identifier: "p" } } });
+
+      const res = await call(`/webhooks/${INTEGRATION_ID}/issue.created`, {
+        body,
+        headers: { "x-hub-signature-256": hmacSig(body, SECRET) },
+      });
+
       expect(res.status).toBe(202);
       expect(orchestrator.startTaskForProject).toHaveBeenCalledTimes(1);
     });

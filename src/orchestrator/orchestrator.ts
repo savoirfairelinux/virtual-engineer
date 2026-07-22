@@ -6,6 +6,7 @@ import type {
   CommitDescriptor,
   FeedbackItem,
   ExternalChangeId,
+  Integration,
   IntegrationBindingContext,
   ReviewConnector,
   TicketConnector,
@@ -30,7 +31,7 @@ import { normalizeAgentResult, getModifiedFileCount } from "../agents/agentEvent
 import type { VcsConnector } from "../vcs/vcsConnector.js";
 import { NO_REVIEW_SYSTEM } from "../vcs/vcsConnector.js";
 import { VcsConnectorFactory } from "../vcs/vcsFactory.js";
-import { decryptToken, encryptToken } from "../utils/encryption.js";
+import { encryptToken } from "../utils/encryption.js";
 import { redactUrls } from "../utils/redactUrl.js";
 import { isInfrastructureError } from "../utils/errorClassifier.js";
 import type { ConcurrencyTracker } from "./concurrencyTracker.js";
@@ -46,24 +47,14 @@ const HTTPS_VCS_TYPES = new Set(["github", "gitlab"]);
  * agent container can run `git clone` without interactive credential prompts.
  * Returns undefined for non-HTTPS integrations (Gerrit) or on any error.
  */
-function buildAuthenticatedCloneUrl(
+function buildAuthenticatedCloneUrlFromPlaintextToken(
   rawCloneUrl: string,
   integrationType: string,
-  encryptedToken: unknown,
-  adminAuthSecret: string | undefined
+  plaintextToken: unknown,
 ): string | undefined {
   if (!HTTPS_VCS_TYPES.has(integrationType)) return undefined;
-  if (typeof encryptedToken !== "string" || !encryptedToken) return undefined;
-  let token: string;
-  try {
-    token = decryptToken(encryptedToken, adminAuthSecret);
-  } catch (err) {
-    // Backward-compatibility: older rows may still contain raw PAT strings.
-    // Use the raw value as a last resort so private HTTPS clones keep working.
-    token = encryptedToken;
-    log.warn({ integrationType, cloneUrl: rawCloneUrl, err }, "failed to decrypt token for authenticated clone URL; falling back to raw token value");
-  }
-  if (/^\*{4,}$/.test(token)) return undefined;
+  if (typeof plaintextToken !== "string" || !plaintextToken) return undefined;
+  if (/^\*{4,}$/.test(plaintextToken)) return undefined;
   const usernamePrefix = integrationType === "github" ? "x-access-token" : "oauth2";
   try {
     const normalised = rawCloneUrl.startsWith("git@")
@@ -71,7 +62,7 @@ function buildAuthenticatedCloneUrl(
       : rawCloneUrl;
     const parsed = new URL(normalised);
     parsed.username = usernamePrefix;
-    parsed.password = token;
+    parsed.password = plaintextToken;
     return parsed.toString();
   } catch {
     return undefined;
@@ -106,6 +97,7 @@ export interface ProjectModeDeps {
     createConnectorForCapability?<T>(integrationId: string, capability: import("../interfaces.js").DomainCapability, context?: IntegrationBindingContext): Promise<T | null>;
     createConnectorForIntegration?<T>(integrationId: string, context?: IntegrationBindingContext): Promise<T | null>;
     getActiveIntegrationById?(integrationId: string): import("../interfaces.js").Integration | null;
+    decryptIntegrationConfig?(integration: import("../interfaces.js").Integration): Record<string, unknown>;
   };
   /** Inject a function to build a VcsConnector for a given integration id (host-side). */
   resolveVcsForIntegration?: (integrationId: string, context?: IntegrationBindingContext) => Promise<VcsConnector | null>;
@@ -675,8 +667,8 @@ export class Orchestrator {
             // Inject authenticated HTTPS clone URL for GitHub/GitLab targets
             const integration = await (this.integrationStore ?? (this.stateStore as unknown as IntegrationStore)).getIntegration(pt.integrationId);
             if (integration) {
-              const cfg = JSON.parse(integration.configJson) as Record<string, unknown>;
-              const authUrl = buildAuthenticatedCloneUrl(pt.cloneUrl, integration.provider, cfg["token"], this.config.adminAuthSecret);
+              const cfg = this.resolveIntegrationConfig(integration);
+              const authUrl = buildAuthenticatedCloneUrlFromPlaintextToken(pt.cloneUrl, integration.provider, cfg["token"]);
               if (authUrl !== undefined) return { ...pt, cloneUrl: authUrl };
             }
           } catch {
@@ -1035,10 +1027,6 @@ export class Orchestrator {
     // an `apiKey` (api_key mode) or an interactive-OAuth `sessionToken`
     // (subscription mode).
     //
-    // NOTE: `apiKey` is read from the RAW configJson (user-entered password
-    // fields are stored plaintext at rest; only the OAuth `sessionToken` is
-    // AES-encrypted). If password-at-rest encryption is ever added, decrypt it
-    // here before use.
     let encryptedSessionToken = resolvedConfig.encryptedSessionToken;
     let apiKey = resolvedConfig.apiKey;
     // Aider forwards backend credentials via `extra`; start from the resolved
@@ -1048,7 +1036,7 @@ export class Orchestrator {
       const integration = this.projectMode.pluginManager.getActiveIntegrationById?.(agent.integrationId);
       if (integration) {
         try {
-          const integCfg = JSON.parse(integration.configJson) as Record<string, unknown>;
+          const integCfg = this.resolveIntegrationConfig(integration);
           if (integration.provider === "claude") {
             if (integCfg["authMode"] === "api_key") {
               if (!apiKey) {
@@ -1099,6 +1087,11 @@ export class Orchestrator {
         ? { ...resolvedConfig, encryptedSessionToken, apiKey, extra }
         : resolvedConfig,
     };
+  }
+
+  private resolveIntegrationConfig(integration: Integration): Record<string, unknown> {
+    return this.projectMode?.pluginManager.decryptIntegrationConfig?.(integration)
+      ?? JSON.parse(integration.configJson) as Record<string, unknown>;
   }
 
   /** Poll review system status; advance to MERGED, trigger a retry cycle, or stay IN_REVIEW. */

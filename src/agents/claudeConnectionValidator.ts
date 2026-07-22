@@ -6,7 +6,6 @@
  * contract so the plugin descriptor `testConnection` hook stays uniform.
  */
 import type { ConnectionTestResult } from "../plugins/pluginManager.js";
-import { decryptToken } from "../utils/encryption.js";
 import { getLogger } from "../logger.js";
 
 const log = getLogger("claude-connection-validator");
@@ -54,19 +53,9 @@ export async function validateClaudeConnection(
   }
 
   // ── Subscription (OAuth) mode ───────────────────────────────────────────────
-  // Uses the encrypted token written by the interactive OAuth flow.
-  const encrypted = config.sessionToken?.trim();
-  if (encrypted) {
-    let token: string;
-    try {
-      token = decryptToken(encrypted, dependencies.adminAuthSecret);
-    } catch (err) {
-      return {
-        success: false,
-        error: err instanceof Error ? err.message : String(err),
-        models: [],
-      };
-    }
+  // Token is decrypted by the caller (testConnectionConfig / pluginManager).
+  const token = config.sessionToken?.trim();
+  if (token) {
     return callAnthropicModelsApi(token, "oauth", dependencies);
   }
 

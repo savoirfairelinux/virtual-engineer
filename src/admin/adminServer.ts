@@ -167,7 +167,7 @@ function getProviderUrls(pluginManager: PluginManager | undefined): {
   const parseConfig = (integration: Integration | undefined): Record<string, unknown> | null => {
     if (!integration) return null;
     try {
-      const parsed: unknown = JSON.parse(integration.configJson);
+      const parsed: unknown = pluginManager.decryptIntegrationConfig(integration);
       return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
         ? (parsed as Record<string, unknown>)
         : null;
@@ -400,6 +400,7 @@ function buildApiRouter(dependencies: AdminServerDependencies, authRuntime: Admi
     adminAuthSecret: dependencies.config.adminAuthSecret,
   });
   registerAgentRoutes(router, {
+      pluginManager: dependencies.pluginManager,
     agentStore: dependencies.agentStore,
     integrationStore: dependencies.integrationStore,
     oAuthAppStore: dependencies.oAuthAppStore,
@@ -419,6 +420,7 @@ function buildApiRouter(dependencies: AdminServerDependencies, authRuntime: Admi
   registerSettingsRoutes(router, { settings: dependencies.settings });
   registerWebhookRoutes(router, {
     integrationStore: dependencies.integrationStore,
+    pluginManager: dependencies.pluginManager,
     auditStore,
     onIntegrationUpdated: dependencies.onIntegrationUpdated,
     webhookPublicBaseUrl: dependencies.webhooks?.publicBaseUrl,
@@ -549,6 +551,7 @@ async function handleRequest(
     }
     await handleWebhookRequest(request, response, {
       integrationStore: dependencies.integrationStore,
+      pluginManager: dependencies.pluginManager,
       projectStore: dependencies.webhooks.projectStore,
       orchestrator: dependencies.webhooks.orchestrator,
     });

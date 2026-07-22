@@ -5,8 +5,11 @@ import type { AdminServerDependencies } from "../../src/admin/adminServer.js";
 import { registerBuiltinPlugins } from "../../src/plugins/init.js";
 import { PluginManager } from "../../src/plugins/pluginManager.js";
 import type { Integration, IntegrationStore } from "../../src/interfaces.js";
+import { decryptToken } from "../../src/utils/encryption.js";
+import { createHmac } from "node:crypto";
 
 const SECRET_MASK = "********";
+const ADMIN_SECRET = "webhook-route-admin-secret";
 
 function makeStore(initial: Integration[] = []): IntegrationStore {
   const data = new Map<string, Integration>();
@@ -57,11 +60,21 @@ function baseDeps(store: IntegrationStore, pm: PluginManager): AdminServerDepend
       maxAgentCycles: 3,
       maxRetryAttempts: 5,
       pollingIntervalMs: 30000,
+      adminAuthSecret: ADMIN_SECRET,
     },
     polling: { isRunning: () => false, getIntervals: () => ({ intervalMs: 30000 }) },
     providers: [],
     integrationStore: store,
     pluginManager: pm,
+    webhooks: {
+      projectStore: { findProjectByTicketSource: vi.fn(async () => null) },
+      orchestrator: {
+        startTaskForProject: vi.fn(async () => {}),
+        triggerFeedbackForChange: vi.fn(async () => {}),
+        markChangeMerged: vi.fn(async () => {}),
+        markChangeAbandoned: vi.fn(async () => {}),
+      },
+    },
   };
 }
 
@@ -100,7 +113,7 @@ describe("Admin /api/admin/integrations/:id/webhook-secret/rotate + /webhook-inf
       updatedAt: new Date(),
     };
     store = makeStore([integration]);
-    const pm = new PluginManager(store);
+    const pm = new PluginManager(store, { adminAuthSecret: ADMIN_SECRET });
     server = createAdminServer(baseDeps(store, pm));
     url = await start(server);
   });
@@ -109,7 +122,7 @@ describe("Admin /api/admin/integrations/:id/webhook-secret/rotate + /webhook-inf
     await new Promise<void>((resolve, reject) => server.close((err) => err ? reject(err) : resolve()));
   });
 
-  it("rotate returns a 64-hex secret and persists it", async () => {
+  it("rotate returns a usable secret and persists it encrypted", async () => {
     const r = await call(`${url}/api/admin/integrations/redmine-1/webhook-secret/rotate`, { method: "POST" });
     expect(r.status).toBe(200);
     const secret = r.body["secret"] as string;
@@ -118,7 +131,17 @@ describe("Admin /api/admin/integrations/:id/webhook-secret/rotate + /webhook-inf
     const stored = await store.getIntegration("redmine-1");
     expect(stored).not.toBeNull();
     const cfg = JSON.parse(stored!.configJson) as Record<string, unknown>;
-    expect(cfg["webhookSecret"]).toBe(secret);
+    expect(cfg["webhookSecret"]).toMatch(/^veenc:v1:/);
+    expect(decryptToken(String(cfg["webhookSecret"]), ADMIN_SECRET)).toBe(secret);
+
+    const body = JSON.stringify({ issue: { id: 42, project: { identifier: "p" } } });
+    const signature = `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
+    const delivery = await fetch(`${url}/webhooks/redmine-1/issue.created`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-hub-signature-256": signature },
+      body,
+    });
+    expect(delivery.status).toBe(202);
   });
 
   it("rotate returns 404 for unknown integration", async () => {

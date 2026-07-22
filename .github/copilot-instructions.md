@@ -181,7 +181,7 @@ All env vars are optional. Only system/infra settings remain — provider creden
 | `DATABASE_PATH` | `./data/virtual-engineer.db` | |
 | `ADMIN_API_ENABLED` | `true` | |
 | `ADMIN_API_HOST` / `ADMIN_API_PORT` | `127.0.0.1` / `3100` | |
-| `ADMIN_AUTH_SECRET` | — | Encryption key for OAuth/session tokens at rest (AES-256-GCM). Admin auth itself uses DB-backed user accounts + session tokens, not HMAC. |
+| `ADMIN_AUTH_SECRET` | — | Required when provider credentials are created or stored; encrypts them at rest with AES-256-GCM in a versioned `veenc:v1:` envelope. Startup fails closed when the secret is absent or cannot authenticate marked/probable legacy ciphertext; valid legacy values are migrated. Admin auth itself uses DB-backed user accounts + session tokens, not HMAC. |
 | `ADMIN_TRUST_PROXY` | `false` | When `true`, extract client IP from `X-Forwarded-For` for rate-limiting. Only enable when a trusted reverse proxy fronts the admin server; default loopback binding makes this unnecessary in standard deployments. |
 | `POLLING_INTERVAL_MS` | `30000` | **DB-managed** default seed — polling loop tick interval; runtime value lives in `app_settings` and is edited from admin UI → System Settings |
 | `MAX_AGENT_CYCLES` | `3` | **DB-managed** default seed — per-task cap → FAILED; runtime value in `app_settings` |
