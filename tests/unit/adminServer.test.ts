@@ -1327,6 +1327,34 @@ describe("SSE endpoints", () => {
     }
   });
 
+  it("GET /api/admin/logs/stream requires a taskId", async () => {
+    const server = createAdminServer({
+      stateStore: makeStateStore(),
+      config: {
+        nodeEnv: "test",
+        logLevel: "info",
+        maxAgentCycles: 3,
+        maxRetryAttempts: 5,
+        pollingIntervalMs: 30000,
+      },
+      polling: { isRunning: () => true, getIntervals: () => ({ intervalMs: 30000 }) },
+      providers: providerSummaries,
+    });
+    const base = await listen(server);
+    const ac = new AbortController();
+    try {
+      const response = await fetch(`${base}/api/admin/logs/stream`, { signal: ac.signal });
+
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toEqual({
+        error: expect.stringMatching(/taskId.*required/i),
+      });
+    } finally {
+      ac.abort();
+      await closeServer(server);
+    }
+  });
+
   it("GET /api/admin/logs/stream forwards agentLogBus events for matching taskId", async () => {
     const { agentLogBus: bus } = await import("../../src/agents/copilotAdapter.js");
     const server = createAdminServer({

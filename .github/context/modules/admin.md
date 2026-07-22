@@ -20,7 +20,7 @@ The admin server is a small HTTP service (default `127.0.0.1:3100`) that serves 
 | `adminRouteUtils.ts` | Shared HTTP primitives (`writeJson`, `writeHtml`, `readBody`, `toIsoTimestamp`, `asRecord`, `SECRET_MASK`). |
 | `adminTaskRoutes.ts` | `/api/admin/tasks/*` list, detail, cycles, transitions, pause/resume/retry/abandon/delete. |
 | `adminPromptRoutes.ts` | `/api/admin/prompts/*` CRUD + usage lookup. |
-| `adminStreamRoutes.ts` | SSE endpoints: `/api/admin/logs/stream` (live agent logs) and `/api/admin/events/stream` (task polling). |
+| `adminStreamRoutes.ts` | SSE endpoints: `/api/admin/logs/stream` (task-scoped live agent logs; requires `taskId`) and `/api/admin/events/stream` (task polling). |
 | `adminIntegrationRoutes.ts` | `/api/admin/integrations/*` CRUD, enable/disable, test, discover, models + `/api/admin/plugins` + `/api/admin/oauth-apps/*`. Integration config masking/merging/validation helpers. |
 | `adminAgentsRoutes.ts` | `/api/admin/agents/*` CRUD + enable/disable + masking + `/api/admin/plugins/:type/oauth/*`. |
 | `adminProjectsRoutes.ts` | `/api/admin/projects/*` CRUD, ticket/review target validation, remote skill-source validation/serialization, atomic push-target replacement, coding controls for Gerrit topic/ticket trailers/review links/CI retries, and automatic relaunch of FAILED/REVIEW_FAILED tasks on (re)configuration or re-enable. |
@@ -61,7 +61,7 @@ All `/api/admin/*` routes are declared in `buildApiRouter()` and its per-area ro
 | Users | `adminAuthRoutes.ts` | CRUD `/users`, `/users/:id`, `/users/:id/password` | `user.manage` (own password is `authenticated`) |
 | Audit | `adminAuditRoutes.ts` | `GET /audit` (`limit`≤200, `offset`, `action`, `actor`) | `audit.read` |
 | Overview / runtime | `adminOverviewRoutes.ts`, `adminServer.ts` | `/status`, `/config`, `/providers`, `/overview`, `/cost-summary`, `/model-usage` | `overview.read` |
-| Streams | `adminStreamRoutes.ts` | SSE `/logs/stream`, `/events/stream` | `task.read` |
+| Streams | `adminStreamRoutes.ts` | SSE `/logs/stream?taskId=<id>` (required), `/events/stream` | `task.read` |
 | Tasks | `adminTaskRoutes.ts` | list/detail/`cycles`/`transitions`, `pause`/`resume` (metadata rows), `retry`/`abandon` | `task.read` / `task.operate` / `task.delete` (scoped to owning project) |
 | Prompts | `adminPromptRoutes.ts` | CRUD `/prompts` (`system` / `instructions` protected) | `prompt.read` / `prompt.write` / `prompt.delete` |
 | Integrations | `adminIntegrationRoutes.ts` | CRUD, `/test`, `/:id/test`, `/:id/discover`, `/by-category` | `integration.read` / `integration.write` / `integration.delete` / `integration.operate` |

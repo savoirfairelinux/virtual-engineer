@@ -5,6 +5,7 @@ import type { StateStore } from "../../src/interfaces.js";
 import { makeTaskId, makeTicketId, makeProjectId } from "../../src/interfaces.js";
 import { SqliteStateStore } from "../../src/state/stateStore.js";
 import { createAdminServer } from "../../src/admin/adminServer.js";
+import { clearTaskEventBuffer, pushToTaskBuffer } from "../../src/agents/agentEventBus.js";
 import { tempDatabasePath } from "./helpers/tempDatabase.js";
 
 const SECRET = "rbac-test-secret";
@@ -441,5 +442,45 @@ describe("adminServer PBAC project scoping", () => {
     // Detail for the out-of-scope task B is forbidden; A is allowed.
     expect((await fetch(`${baseUrl}/api/admin/tasks/${taskA}`, authed(user.token))).status).toBe(200);
     expect((await fetch(`${baseUrl}/api/admin/tasks/${taskB}`, authed(user.token))).status).toBe(403);
+  });
+
+  it("denies project-scoped principals access to another project's log stream", async () => {
+    const admin = await setupAdmin();
+    const { a, b } = await seedTwoProjects();
+    const taskB = randomUUID();
+    const taskIdB = makeTaskId(taskB);
+    await store.createTask(taskIdB, makeTicketId("T-B-LOGS"), "Task B logs", "", "redmine", undefined, undefined, undefined, makeProjectId(b));
+    await store.saveAgentCycle(taskIdB, 1, {
+      status: "success",
+      modifiedFiles: [],
+      summary: "done",
+      agentLogs: "PROJECT_B_HISTORY_SECRET",
+      metadata: {},
+    });
+    pushToTaskBuffer({
+      type: "assistant.message",
+      timestamp: new Date().toISOString(),
+      data: { message: "PROJECT_B_LIVE_SECRET" },
+      taskId: taskB,
+      cycleNumber: 2,
+    });
+
+    try {
+      const user = await createUserAndLogin(admin, "logscoped", "viewer");
+      const viewerPolicy = (await store.listPolicies()).find((policy) => policy.name === "Viewer");
+      await store.deleteBinding(viewerPolicy!.id, "user", user.user.id);
+      const scoped = await store.createPolicy({ name: "Task-A-logs" });
+      await store.setPolicyRules(scoped.id, [{ permission: "task.read", resourceId: a }]);
+      await store.createBinding({ policyId: scoped.id, principalType: "user", principalId: user.user.id });
+
+      const response = await fetch(`${baseUrl}/api/admin/logs/stream?taskId=${encodeURIComponent(taskB)}`, authed(user.token));
+      const body = await response.text();
+
+      expect(response.status).toBe(403);
+      expect(body).not.toContain("PROJECT_B_HISTORY_SECRET");
+      expect(body).not.toContain("PROJECT_B_LIVE_SECRET");
+    } finally {
+      clearTaskEventBuffer(taskB);
+    }
   });
 });
