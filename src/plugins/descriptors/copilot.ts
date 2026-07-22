@@ -6,7 +6,6 @@ import { DEFAULT_COPILOT_MODEL } from "../../copilotModel.js";
 import { validateCopilotConnection, type CopilotConnectionValidationConfig } from "../../agents/copilotConnectionValidator.js";
 import { pollForAccessToken, startDeviceFlow } from "../../agents/copilotOAuthService.js";
 import { exchangeForSessionToken, fetchAvailableModels, fetchAvailableModelsWithPat } from "../../agents/copilotModelsService.js";
-import { decryptToken } from "../../utils/encryption.js";
 import type {
   DeviceProviderAuthHandler,
   ProviderAuthDeviceCompleteInput,
@@ -106,13 +105,13 @@ export function createCopilotDescriptor(adminAuthSecret?: string): ProviderDescr
         }
         githubToken = pat;
       } else {
-        const encryptedToken = typeof cfg["sessionToken"] === "string" ? cfg["sessionToken"] : undefined;
-        if (!encryptedToken) {
+        const sessionToken = typeof cfg["sessionToken"] === "string" ? cfg["sessionToken"].trim() : "";
+        if (!sessionToken) {
           throw new ModelDiscoveryConfigError(
             "No GitHub OAuth token stored. Connect via OAuth first (AI Adapters → Connect with GitHub)."
           );
         }
-        githubToken = decryptToken(encryptedToken, adminAuthSecret);
+        githubToken = sessionToken;
       }
       // PAT: use the @github/copilot-sdk CopilotClient which spawns the bundled
       //      CLI and handles its own token exchange internally.

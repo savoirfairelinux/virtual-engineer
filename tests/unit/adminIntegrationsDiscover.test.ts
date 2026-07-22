@@ -414,6 +414,43 @@ describe("Admin API — POST /api/admin/integrations/:id/discover", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("Copilot OAuth mode: discover resolves models from the decrypted session token", async () => {
+    await store.upsertIntegration({
+      id: "int-copilot-oauth",
+      provider: "copilot",
+      name: "Copilot OAuth",
+      configJson: JSON.stringify({
+        authMode: "oauth",
+        sessionToken: encryptToken("ghu_test123", TEST_ADMIN_AUTH_SECRET),
+      }),
+      enabled: false,
+    });
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ token: "copilot-session-token" }))
+      .mockResolvedValueOnce(jsonResponse({
+        data: [{
+          id: "gpt-4o",
+          name: "GPT-4o",
+          vendor: "OpenAI",
+          version: "gpt-4o",
+          model_picker_category: "versatile",
+          model_picker_enabled: true,
+          capabilities: { type: "chat" },
+          policy: { state: "enabled" },
+        }],
+      }));
+
+    const { status, body } = await postJson(baseUrl, "/api/admin/integrations/int-copilot-oauth/discover");
+    expect(status).toBe(200);
+    expect(body["ok"]).toBe(true);
+    expect(body["counts"]).toEqual({ models: 1 });
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "https://api.github.com/copilot_internal/v2/token",
+      expect.objectContaining({ headers: expect.objectContaining({ Authorization: "token ghu_test123" }) }),
+    );
+  });
+
   it("Copilot PAT mode: discover returns 400 when token is missing", async () => {
     await store.upsertIntegration({
       id: "int-copilot-no-token",
