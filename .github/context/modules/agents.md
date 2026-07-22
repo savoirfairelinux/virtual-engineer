@@ -14,7 +14,7 @@ The `agent_execution` capability has four engines: **Copilot** (`copilotAdapter.
 - `src/workspace/workspaceRunner.ts` installs remote skills before starting the agent container.
 - Installation runs in the `/ve-home` Docker volume through `execInVolume()` with `HOME=/workspace`, so global skills are visible to the later agent container at `/ve-home`.
 - Skill source parsing and `npx skills` argument construction live in `src/workspace/skillSources.ts`.
-- SSH skill sources use the short-lived helper install container only. The helper may use host `SSH_AUTH_SOCK` or a configured `sshKeyPath`, and `sshKnownHostsPath` enables strict host key checking. Credentials and SSH options are not mounted or exported into the agent container.
+- SSH skill sources use the short-lived helper install container only. The helper may use host `SSH_AUTH_SOCK` or a configured `sshKeyPath`, and `sshKnownHostsPath` enables strict host key checking. Both admin discovery and helper-container preparation require configured SSH files under `/app/secrets` in the orchestrator container or the repository `secrets/` directory during host development. Host validation opens files with no-follow semantics, requires regular files, and checks approved-root containment from the opened descriptor; runtime-generated files are accepted only by exact process registration. Credentials and SSH options are not mounted or exported into the agent container.
 
 ## Worker Skill Loading
 

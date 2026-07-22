@@ -1,9 +1,9 @@
 /** Docker named volume helpers for creating, removing, and running commands inside ephemeral workspaces. */
 import { execFile } from "node:child_process";
-import { readFileSync } from "node:fs";
 import { promisify } from "node:util";
 import { getLogger } from "../logger.js";
 import { redactUrls } from "../utils/redactUrl.js";
+import { readSshFileSecure } from "../utils/sshFilePath.js";
 
 const execFileAsync = promisify(execFile);
 const log = getLogger("docker-volume");
@@ -133,23 +133,13 @@ export async function execInVolume(opts: ExecInVolumeOptions): Promise<ExecInVol
     // SSH key is injected via base64 env var rather than bind-mount: when the
     // orchestrator runs inside Docker, the daemon resolves bind paths against
     // the HOST filesystem, so container-internal paths would fail.
-    let keyContent: Buffer;
-    try {
-      keyContent = readFileSync(opts.sshKeyPath);
-    } catch (err) {
-      throw new Error(`SSH key file not found or unreadable: ${opts.sshKeyPath}`, { cause: err });
-    }
+    const keyContent = readSshFileSecure(opts.sshKeyPath, "SSH key");
     const keyB64 = keyContent.toString("base64");
     dockerArgs.push("-e", `VE_SSH_KEY_B64=${keyB64}`);
     const portFlag = opts.sshPort ? ` -p ${opts.sshPort}` : "";
 
     if (opts.sshKnownHostsPath) {
-      let khContent: Buffer;
-      try {
-        khContent = readFileSync(opts.sshKnownHostsPath);
-      } catch (err) {
-        throw new Error(`SSH known_hosts file not found or unreadable: ${opts.sshKnownHostsPath}`, { cause: err });
-      }
+      const khContent = readSshFileSecure(opts.sshKnownHostsPath, "SSH known_hosts");
       dockerArgs.push("-e", `VE_SSH_KNOWN_HOSTS_B64=${khContent.toString("base64")}`);
       dockerArgs.push("-e", `GIT_SSH_COMMAND=ssh -i /tmp/ssh-key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/tmp/ssh-known-hosts${portFlag}`);
     } else {
@@ -182,12 +172,7 @@ export async function execInVolume(opts: ExecInVolumeOptions): Promise<ExecInVol
     if (opts.sshAgentPubKeyPath && agentSock) {
       // Agent identity pinning: inject the public key so the container can
       // instruct the agent to offer only the matching private key.
-      let pubContent: Buffer;
-      try {
-        pubContent = readFileSync(opts.sshAgentPubKeyPath);
-      } catch (err) {
-        throw new Error(`SSH agent public key file not found: ${opts.sshAgentPubKeyPath}`, { cause: err });
-      }
+      const pubContent = readSshFileSecure(opts.sshAgentPubKeyPath, "SSH agent public key");
       dockerArgs.push("-e", `VE_SSH_AGENT_PUB_B64=${pubContent.toString("base64")}`);
       dockerArgs.push("-e", `GIT_SSH_COMMAND=ssh -o IdentitiesOnly=yes -i /tmp/agent-pub.pub${portFlag} ${hostKeyOpts}`);
     } else if (agentSock) {
@@ -195,12 +180,7 @@ export async function execInVolume(opts: ExecInVolumeOptions): Promise<ExecInVol
     }
 
     if (opts.sshKnownHostsPath && agentSock) {
-      let khContent: Buffer;
-      try {
-        khContent = readFileSync(opts.sshKnownHostsPath);
-      } catch (err) {
-        throw new Error(`SSH known_hosts file not found or unreadable: ${opts.sshKnownHostsPath}`, { cause: err });
-      }
+      const khContent = readSshFileSecure(opts.sshKnownHostsPath, "SSH known_hosts");
       dockerArgs.push("-e", `VE_SSH_KNOWN_HOSTS_B64=${khContent.toString("base64")}`);
     }
   }

@@ -37,7 +37,7 @@ Skill discovery is a **per-project** setting (`projects.skill_discovery_enabled`
 - Local skill discovery is **disabled by default**; enable it only for repositories you trust.
 - Remote skill sources default to an empty list and must be configured explicitly; add only sources you trust.
 - Remote skills install globally in the agent home volume (`/ve-home`), not into the cloned repository. This keeps review workspaces read-only.
-- SSH remote skill sources reuse the orchestrator process `SSH_AUTH_SOCK` only when such a source is configured; missing SSH agent access fails the run instead of silently skipping skills.
+- SSH remote skill sources reuse the orchestrator process `SSH_AUTH_SOCK` only when such a source is configured; missing SSH agent access fails the run instead of silently skipping skills. Configured key and known-hosts files must live under `/app/secrets` (container deployment) or the repository `secrets/` directory (host development). Canonical-path validation blocks traversal and symlink escapes before host-file reads.
 - Only skills are loaded — MCP discovery (`enableConfigDiscovery`) stays off, so untrusted `.mcp.json` / `.vscode/mcp.json` files are never honoured.
 - The agent still runs inside the hardened, network-isolated container described above and never holds provider push/review credentials.
 

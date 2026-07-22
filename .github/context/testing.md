@@ -35,7 +35,7 @@ tests/
 | Cost tracking | `cycleCost`, `stateStore.cost`, `adminCostRoutes` |
 | Plugins / runtime wiring | `pluginManager` (+ `.multiInstance`), `registry`, `runtimeBootstrap` (historical name; covers bootstrap wiring in `src/index.ts`), `integrationStreamEvents` |
 | Webhooks | `webhookServer`, `webhookHandlerRegistry` (+ the per-provider handlers listed above) |
-| Workspace / utils / misc | `workspaceRunner` (+ `.multiTarget`), `dockerVolume`, `buildRepositoryMap`, `config`, `logger`, `encryption`, `errorClassifier`, `gitExec`, `ticketFooterFormatter` |
+| Workspace / utils / misc | `workspaceRunner` (+ `.multiTarget`), `dockerVolume`, `sshKeyResolver`, `sshFilePath`, `skillSourceDiscovery`, `buildRepositoryMap`, `config`, `logger`, `encryption`, `errorClassifier`, `gitExec`, `ticketFooterFormatter` |
 
 > **There are integration tests today.** Files ending in `.integration.test.ts` wire several modules together with mocked external I/O.
 

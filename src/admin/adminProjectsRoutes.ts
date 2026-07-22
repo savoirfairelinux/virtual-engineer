@@ -23,6 +23,7 @@ import {
 import type { Router } from "./router.js";
 import { getEffectivePermissions } from "./authContext.js";
 import { accessibleResourceIds, ALL_RESOURCES } from "./authorization/policyEngine.js";
+import { isConfiguredSshFilePathAllowed } from "../utils/sshFilePath.js";
 import { getProviderDescriptor, getProviderDomainCapabilities } from "../plugins/registry.js";
 import { listSkillSourceSkills, validateSkillSourcesConnection } from "./skillSourceDiscovery.js";
 
@@ -135,6 +136,14 @@ export interface ProjectsRouteDeps {
   validateSkillSourcesConnection?: ((sources: SkillSource[]) => Promise<void>) | undefined;
 }
 
+function optionalSshFilePath(label: string): z.ZodOptional<z.ZodEffects<z.ZodString, string, string>> {
+  return z.string()
+    .trim()
+    .min(1, `${label} must not be empty`)
+    .refine(isConfiguredSshFilePathAllowed, `${label} must be inside an approved secrets directory`)
+    .optional();
+}
+
 const pushTargetSchema = z.object({
   integrationId: z.string().min(1, "VCS integration is required for each repository"),
   repoKey: z.string().min(1, "Repository must be selected"),
@@ -143,7 +152,7 @@ const pushTargetSchema = z.object({
   role: z.enum(["primary", "submodule", "dependency", "related"]),
   commitOrder: z.number().int().min(1),
   localPath: z.string().min(1),
-  sshKeyPath: z.string().optional(),
+  sshKeyPath: optionalSshFilePath("SSH key path"),
 });
 
 /** Validate push-target arrays: unique localPaths, at most one root ("."). */
@@ -189,8 +198,8 @@ const skillSourceSchema = z.object({
   installAll: z.boolean().optional(),
   sshUser: optionalNonEmptyString("SSH user must not be empty"),
   sshPort: z.number().int().positive().max(MAX_TCP_PORT, "SSH port must be between 1 and 65535").optional(),
-  sshKeyPath: optionalNonEmptyString("SSH key path must not be empty"),
-  sshKnownHostsPath: optionalNonEmptyString("SSH known_hosts path must not be empty"),
+  sshKeyPath: optionalSshFilePath("SSH key path"),
+  sshKnownHostsPath: optionalSshFilePath("SSH known_hosts path"),
 }).superRefine((source, ctx) => {
   if (source.installAll === true) return;
   if ((source.skills ?? []).length > 0) return;
@@ -213,8 +222,8 @@ const skillSourceDiscoverySchema = z.object({
   source: z.string().trim().min(1, "Skill source is required"),
   sshUser: optionalNonEmptyString("SSH user must not be empty"),
   sshPort: z.number().int().positive().max(MAX_TCP_PORT, "SSH port must be between 1 and 65535").optional(),
-  sshKeyPath: optionalNonEmptyString("SSH key path must not be empty"),
-  sshKnownHostsPath: optionalNonEmptyString("SSH known_hosts path must not be empty"),
+  sshKeyPath: optionalSshFilePath("SSH key path"),
+  sshKnownHostsPath: optionalSshFilePath("SSH known_hosts path"),
 });
 
 export interface SkillSource {
