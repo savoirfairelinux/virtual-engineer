@@ -246,8 +246,8 @@ const createSchema = z.object({
   }),
   modelConfig: z.record(z.unknown()).default({}),
   integrationId: z.string().nullable().optional(),
-  systemPromptId: z.string().trim().min(1, "System prompt is required"),
-  instructionsPromptId: z.string().trim().min(1, "Instructions prompt is required"),
+  systemPromptId: z.string().trim().min(1, "Agent instructions are required"),
+  instructionsPromptId: z.string().trim().min(1, "Workflow instructions are required"),
   feedbackInstructionsPromptId: z.string().nullable().optional(),
   maxConcurrent: z.number({ invalid_type_error: "Max concurrent must be a number" }).int("Max concurrent must be an integer").min(1, "Max concurrent must be at least 1").optional(),
   enabled: z.boolean().optional(),
@@ -260,8 +260,8 @@ const updateSchema = z.object({
   }).optional(),
   modelConfig: z.record(z.unknown()).optional(),
   integrationId: z.string().nullable().optional(),
-  systemPromptId: z.string().trim().min(1, "System prompt cannot be empty").optional(),
-  instructionsPromptId: z.string().trim().min(1, "Instructions prompt cannot be empty").optional(),
+  systemPromptId: z.string().trim().min(1, "Agent instructions cannot be empty").optional(),
+  instructionsPromptId: z.string().trim().min(1, "Workflow instructions cannot be empty").optional(),
   feedbackInstructionsPromptId: z.string().nullable().optional(),
   maxConcurrent: z.number({ invalid_type_error: "Max concurrent must be a number" }).int("Max concurrent must be an integer").min(1, "Max concurrent must be at least 1").optional(),
   enabled: z.boolean().optional(),
@@ -284,8 +284,14 @@ async function validateRequiredPrompts(
     promptStore.getPrompt(systemPromptId),
     promptStore.getPrompt(instructionsPromptId),
   ]);
-  if (!systemPrompt) return `System prompt '${systemPromptId}' not found`;
-  if (!instructionsPrompt) return `Instructions prompt '${instructionsPromptId}' not found`;
+  if (!systemPrompt) return `Agent instructions '${systemPromptId}' not found`;
+  if (!instructionsPrompt) return `Workflow instructions '${instructionsPromptId}' not found`;
+  if (systemPrompt.promptType !== "system") {
+    return `Prompt '${systemPromptId}' is not agent instructions`;
+  }
+  if (instructionsPrompt.promptType !== "instructions") {
+    return `Prompt '${instructionsPromptId}' is not workflow instructions`;
+  }
   return null;
 }
 
@@ -542,7 +548,7 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
     const systemPromptId = parsed.data.systemPromptId ?? existing.systemPromptId;
     const instructionsPromptId = parsed.data.instructionsPromptId ?? existing.instructionsPromptId;
     if (!systemPromptId || !instructionsPromptId) {
-      writeJson(res, 400, { error: "System and instructions prompts are required" });
+      writeJson(res, 400, { error: "Agent and workflow instructions are required" });
       return;
     }
     const updates: Parameters<AgentsRouteStore["updateAgent"]>[1] = {};

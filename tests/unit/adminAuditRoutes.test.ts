@@ -224,7 +224,7 @@ describe("adminAuditRoutes + audit instrumentation", () => {
       const response = await fetch(`${baseUrl}/api/admin/prompts`, {
         method: "POST",
         headers: { authorization: `Bearer ${adminToken}`, "content-type": "application/json" },
-        body: JSON.stringify({ label: "Audit Prompt", content: "hello world" }),
+        body: JSON.stringify({ label: "Audit Prompt", content: "hello world", promptType: "instructions" }),
       });
       expect(response.status).toBe(201);
       const entries = await waitForAudit("prompt.create");

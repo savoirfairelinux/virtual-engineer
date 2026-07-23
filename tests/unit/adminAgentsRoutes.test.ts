@@ -176,6 +176,22 @@ describe("Admin API — Agent routes (/api/admin/agents)", () => {
     expect(r.body?.["error"]).toMatch(/missing-system.*not found/i);
   });
 
+  it("POST / returns 400 when selected prompts have the wrong roles", async () => {
+    const r = await rest(server, "/api/admin/agents", {
+      method: "POST",
+      body: {
+        name: "Swapped prompts",
+        type: "coding",
+        modelConfig: {},
+        systemPromptId: "instructions_generic_code",
+        instructionsPromptId: "system_generic_code",
+      },
+    });
+
+    expect(r.status).toBe(400);
+    expect(r.body?.["error"]).toMatch(/not agent instructions/i);
+  });
+
   it("GET /:id returns 404 for unknown agent", async () => {
     const r = await rest(server, "/api/admin/agents/nope");
     expect(r.status).toBe(404);

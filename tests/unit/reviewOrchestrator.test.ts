@@ -106,7 +106,7 @@ const GOOD_RAW_OUTPUT = [
   JSON.stringify({
     comments: [{ file: "src/a.ts", line: 1, message: "Bug", severity: "error" }],
     summary: "blocking",
-    score: -1,
+    vote: -1,
   }),
   "REVIEW_RESULT_END",
 ].join("\n");
@@ -682,7 +682,7 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
           { file: "src/ghost.ts", line: 9, message: "Hallucinated", severity: "error" },
         ],
         summary: "blocking",
-        score: -1,
+        vote: -1,
       }),
       "REVIEW_RESULT_END",
     ].join("\n");
@@ -722,7 +722,7 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
           { file: "src/ghost.ts", line: 9, message: "Hallucinated", severity: "nit" },
         ],
         summary: "blocking",
-        score: -1,
+        vote: -1,
       }),
       "REVIEW_RESULT_END",
     ].join("\n");
@@ -781,7 +781,7 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
       JSON.stringify({
         comments: [{ file: "src/ghost.ts", line: 9, message: "Hallucinated", severity: "error" }],
         summary: "",
-        score: -1,
+        vote: -1,
       }),
       "REVIEW_RESULT_END",
     ].join("\n");
@@ -1170,14 +1170,14 @@ describe("ReviewOrchestrator.runReview - discussion replies", () => {
 
   function rawWithReplies(
     replies: Array<{ threadId: string; message: string }>,
-    opts: { comments?: unknown[]; summary?: string; score?: number } = {}
+    opts: { comments?: unknown[]; summary?: string; vote?: number } = {}
   ): string {
     return [
       "REVIEW_RESULT_START",
       JSON.stringify({
         comments: opts.comments ?? [],
         summary: opts.summary ?? "",
-        score: opts.score ?? 0,
+        vote: opts.vote ?? 0,
         replies,
       }),
       "REVIEW_RESULT_END",
@@ -1330,7 +1330,7 @@ describe("ReviewOrchestrator.runReview - discussion replies", () => {
       rawWithReplies([{ threadId: "disc-1", message: "Replying here." }], {
         comments: [{ file: "src/a.ts", line: 1, message: "Bug", severity: "error" }],
         summary: "blocking",
-        score: -1,
+        vote: -1,
       })
     );
     const orch = new ReviewOrchestrator(makeDeps(mocks, runner));

@@ -493,22 +493,22 @@ export class SqliteStateStore {
     this.ensureColumn("projects", "use_full_ticket_url_in_commits", "INTEGER NOT NULL DEFAULT 0");
     this.ensureColumn("projects", "post_review_link_to_ticket", "INTEGER NOT NULL DEFAULT 0");
     this.ensureColumn("projects", "react_to_ci_failures", "INTEGER NOT NULL DEFAULT 0");
-    this.ensureColumn("prompts", "prompt_type", "TEXT NOT NULL DEFAULT 'user'");
+    this.ensureColumn("prompts", "prompt_type", "TEXT NOT NULL DEFAULT 'instructions'");
 
     this.raw.exec(`
       UPDATE prompts SET prompt_type = 'system'
         WHERE id IN (
-          'system_generic_code','instructions_generic_code',
+          'system_generic_code',
           'system_gerrit_code','system_gitlab_code',
-          'system_gerrit_review','system_gitlab_review','system_github_review',
+          'system_gerrit_review','system_gitlab_review','system_github_review'
+        );
+      UPDATE prompts SET prompt_type = 'instructions'
+        WHERE id IN (
+          'instructions_generic_code',
           'instructions_gerrit_code','instructions_gitlab_code',
           'instructions_feedback_code',
-          'user_gerrit_review','user_gitlab_review','user_github_review'
+          'instructions_gerrit_review','instructions_gitlab_review','instructions_github_review'
         );
-    `);
-
-    this.raw.exec(`
-      DELETE FROM prompts WHERE id IN ('system', 'instructions');
     `);
 
     this.raw.exec(`

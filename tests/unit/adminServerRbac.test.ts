@@ -111,7 +111,7 @@ describe("adminServer RBAC and session auth", () => {
     const create = await fetch(`${baseUrl}/api/admin/prompts`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ label: "Bootstrap Prompt", content: "hello" }),
+      body: JSON.stringify({ label: "Bootstrap Prompt", content: "hello", promptType: "instructions" }),
     });
     expect(create.status).toBe(201);
   });
@@ -181,7 +181,7 @@ describe("adminServer RBAC and session auth", () => {
     const promptCreate = await fetch(`${baseUrl}/api/admin/prompts`, {
       method: "POST",
       headers: { authorization: `Bearer ${operator.token}`, "content-type": "application/json" },
-      body: JSON.stringify({ label: "Operator Prompt", content: "hello" }),
+      body: JSON.stringify({ label: "Operator Prompt", content: "hello", promptType: "instructions" }),
     });
     expect(promptCreate.status).toBe(201);
 

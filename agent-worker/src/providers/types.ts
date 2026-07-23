@@ -6,15 +6,12 @@
  * provider through the registry without knowing provider-specific details.
  */
 
-/** Supported agent execution providers. */
-export type AgentProvider = 'copilot' | 'claude' | 'aider';
-
 /** Options passed to a provider runner for a single agent session. */
 export interface AgentRunOptions {
   /** Model override; when empty the provider selects its own default. */
   model: string;
-  /** System / instructions prompt injected into the session. */
-  systemPrompt: string;
+  /** Permanent agent instructions appended to the provider's native foundation. */
+  agentInstructions: string;
   /** Working directory — the pre-cloned repository root. */
   cwd: string;
   /** Hard timeout for the session, in milliseconds. */
@@ -23,8 +20,8 @@ export interface AgentRunOptions {
   mode: 'codegen' | 'review';
   /** When true, surface repo-defined skills to the agent. */
   skillDiscovery?: boolean;
-  /** Copilot only: reasoning effort forwarded to the SDK session. */
-  reasoningEffort?: string;
+  /** Review-only integration-owned JSON Schema for native structured output. */
+  reviewOutputSchema?: Record<string, unknown>;
 }
 
 /** Result of running one agent session, independent of the provider. */
@@ -37,3 +34,12 @@ export interface AgentRun {
 
 /** A provider runner: executes one session and returns its result. */
 export type AgentRunner = (prompt: string, options: AgentRunOptions) => Promise<AgentRun>;
+
+export interface AgentProviderDefinition {
+  id: string;
+  adapterLabel: string;
+  resolveModel: () => string;
+  defaultModelLabel: string;
+  validateEnvironment?: () => void;
+  runner: AgentRunner;
+}

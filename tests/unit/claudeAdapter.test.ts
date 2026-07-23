@@ -101,6 +101,26 @@ describe("ClaudeAdapter", () => {
       expect(spec.env["SKILL_DISCOVERY"]).toBe("1");
       expect(spec.env["LOCAL_SKILLS_PATH"]).toBe("team/skills");
     });
+
+    it("injects Claude native execution options", () => {
+      const adapter = new ClaudeAdapter();
+      const ctx = makeContext();
+      ctx.agentSession.providerOptions = {
+        effort: "high",
+        thinkingMode: "enabled",
+        thinkingBudgetTokens: 12000,
+        maxTurns: 30,
+        maxBudgetUsd: 8.5,
+      };
+
+      expect(adapter.buildContainerSpec(ctx).env).toMatchObject({
+        CLAUDE_EFFORT: "high",
+        CLAUDE_THINKING_MODE: "enabled",
+        CLAUDE_THINKING_BUDGET_TOKENS: "12000",
+        CLAUDE_MAX_TURNS: "30",
+        CLAUDE_MAX_BUDGET_USD: "8.5",
+      });
+    });
   });
 
   describe("buildReviewContainerSpec", () => {
@@ -159,6 +179,18 @@ describe("ClaudeAdapter", () => {
       }));
       expect(spec.env["SKILL_DISCOVERY"]).toBe("1");
       expect(spec.env["LOCAL_SKILLS_PATH"]).toBe("team/skills");
+    });
+
+    it("injects Claude native review options", () => {
+      const adapter = new ClaudeAdapter();
+      const spec = adapter.buildReviewContainerSpec(makeReviewInput({
+        providerOptions: { effort: "max", thinkingMode: "adaptive", maxTurns: 12 },
+      }));
+      expect(spec.env).toMatchObject({
+        CLAUDE_EFFORT: "max",
+        CLAUDE_THINKING_MODE: "adaptive",
+        CLAUDE_MAX_TURNS: "12",
+      });
     });
   });
 

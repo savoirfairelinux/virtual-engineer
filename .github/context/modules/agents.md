@@ -2,12 +2,20 @@
 
 The `agent_execution` capability has four engines: **Copilot** (`copilotAdapter.ts`), **Claude Code** (`claudeAdapter.ts`), **Aider** (`aiderAdapter.ts`), and **Mock** (`mockAgentAdapter.ts`). Both coding and review flows are supported by Copilot, Claude, and Aider; review uses `REVIEW_MODE=1`.
 
+## Provider ownership
+
+- `agent-worker/src/index.ts` owns only common orchestration: task/review mode, prompt-file loading, commit collection, and result serialization. `providers/registry.ts` resolves a complete `AgentProviderDefinition` containing the provider's runner, model lookup, display label, and environment validation.
+- Provider-specific agent settings are stored under `agents.model_config_json.providerOptions`. The orchestrator and review bootstrap transport that object without interpreting its keys; each host adapter validates its own values and maps them to provider environment variables.
+- Each `agent_execution` descriptor declares its own `configFields`, so `AgentFormModal.tsx` renders and serializes advanced settings without provider branches. Adding an engine requires its worker provider, host adapter/descriptor, and registry entries, but no branch in worker `index.ts` or the generic admin form.
+
 ## Review prompts
 
 - Review execution uses the same `ReviewWorkspaceInput` path for Copilot, Claude, and Aider. Prompt selection depends on the VE project and agent, not on the execution engine.
-- Every agent must explicitly select an existing `systemPromptId` and `instructionsPromptId`; the admin API and UI reject creation without them. Project `agentOverrideJson` may replace either ID, otherwise the agent's selection is used. There is no generic or integration-descriptor fallback.
-- System and instructions prompt content remains editable. `reviewOutputContract.ts` appends an immutable integration-specific output contract after the effective system prompt, so prompt edits cannot remove or alter the JSON protocol.
-- Copilot, Claude, and Aider fail execution when a required prompt ID is absent or no longer resolves, including for legacy database rows created before prompts became mandatory.
+- Every agent must explicitly select an existing `systemPromptId` and `instructionsPromptId` with matching roles; the admin API and UI reject missing or crossed selections. Project `agentOverrideJson` may replace either ID, otherwise the agent's selection is used. There is no generic or integration-descriptor fallback.
+- The user prompt is dynamic rather than selectable: coding cycles build it from the ticket, acceptance criteria, constraints, and feedback; review cycles build it from change metadata, discussion context, and the diff. The selected instructions prompt is embedded into that generated user prompt.
+- Agent Instructions (`system`) and Workflow Instructions (`instructions`) content remains editable. `reviewOutputContract.ts` appends an immutable integration-specific output contract after the effective agent instructions, so prompt edits cannot remove or alter the JSON protocol.
+- Copilot, Claude, Aider, and the review bootstrap fail execution when a required prompt ID is absent, no longer resolves, or resolves to the wrong `system` / `instructions` role. Startup does not migrate legacy prompt IDs, roles, references, or override files.
+- Review result parsing is integration-specific and strict: Gerrit requires `vote`, GitHub requires `reviewAction`, and GitLab requires `approvalAction`. The former generic `score` payload is rejected.
 - `feedbackInstructionsPromptId` remains coding-only; review reruns use the normal review instructions.
 
 ## Container Environment
@@ -36,6 +44,7 @@ The `agent_execution` capability has four engines: **Copilot** (`copilotAdapter.
 - `claudeAdapter.ts` injects `AGENT_PROVIDER=claude`, exactly one auth env var, and `CLAUDE_MODEL` **only when a model is configured** (no hardcoded default — the Claude CLI picks its own).
 - Auth modes (descriptor `src/plugins/descriptors/claude.ts`): `api_key` → `ANTHROPIC_API_KEY`; `subscription` → `CLAUDE_CODE_OAUTH_TOKEN` (Claude Pro/Max, obtained via the auth-code + PKCE flow in `claudeOAuth.ts`, stored encrypted).
 - The Claude runner (`agent-worker/src/providers/claude.ts`, selected by the worker's provider registry when `AGENT_PROVIDER=claude`) drives the Claude Agent SDK `query()` and maps its message stream onto the shared `__ve_event` / commit / `AgentResult` pipeline.
+- Claude keeps the native `claude_code` system preset and appends the selected Agent Instructions. Its descriptor exposes effort, thinking mode/budget, maximum turns, and maximum USD cost. Review mode supplies the immutable integration JSON Schema through the SDK's native `outputFormat` and consumes `structured_output`.
 - Cost: Claude has no AIU, so `agent_cycles` USD/credit columns stay null; token usage is still emitted as `assistant.usage` events.
 
 ## Aider engine specifics
@@ -43,6 +52,7 @@ The `agent_execution` capability has four engines: **Copilot** (`copilotAdapter.
 - `aiderAdapter.ts` injects `AGENT_PROVIDER=aider`, the selected backend's litellm auth env var(s), and `AIDER_MODEL` **only when a model is configured** (no hardcoded default — the Aider CLI picks its own).
 - Backends (descriptor `src/plugins/descriptors/aider.ts`, `aiderBackend` selector): `openai` → `OPENAI_API_KEY`; `anthropic` → `ANTHROPIC_API_KEY`; `ollama` → `OLLAMA_API_BASE` (no key); `openrouter` → `OPENROUTER_API_KEY`; `deepseek` → `DEEPSEEK_API_KEY`; `openai_compat` → `OPENAI_API_KEY` + `OPENAI_API_BASE`. The model lives on the `agents` table.
 - The Aider runner (`agent-worker/src/providers/aider.ts`, selected by the worker's provider registry when `AGENT_PROVIDER=aider`) spawns the `aider` CLI as a subprocess against `/workspace` and maps its output onto the shared `__ve_event` / commit / `AgentResult` pipeline. Coding cycles use `--no-stream --git --auto-commits --dirty-commits --commit-prompt <conventional-commits>`. Review cycles omit `--no-stream` and use `--no-git --chat-mode ask --no-auto-commits --no-dirty-commits`; `--no-git` prevents Aider from trying to write `.git/config.lock` in the read-only review workspace.
+- Aider keeps the generated workflow request in `--message-file` and loads permanent Agent Instructions from a separate file with native `--read`. Its descriptor exposes coding mode, reasoning effort, thinking tokens, repository-map tokens, automatic lint, and automatic tests.
 - The Aider CLI is a Python package installed in the agent image via `uv tool install aider-chat` (see `Dockerfile.agent`); the binary is symlinked onto `/usr/local/bin/aider`. Aider's `~/.aider*` cache lands on the `/ve-home` named volume.
 - Connection validation (`aiderConnectionValidator.ts`) and model discovery (`aiderModelsService.ts`) probe the upstream provider's `/models` (or Ollama `/api/tags`); Ollama model ids are prefixed with `ollama_chat/` per Aider's recommendation.
 - Cost: Aider has no AIU, so `agent_cycles` USD/credit columns stay null; token usage is still emitted as `assistant.usage` events (parsed from Aider's `Tokens: … Cost: …` line when present).

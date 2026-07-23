@@ -1,5 +1,5 @@
 import { getLogger } from "../logger.js";
-import type { AgentRecord, Prompt, PromptStore } from "../interfaces.js";
+import type { AgentRecord, Prompt, PromptStore, PromptType } from "../interfaces.js";
 import { writeJson, readBody, toIsoTimestamp } from "./adminRouteUtils.js";
 import { recordAudit, type AuditCapableStore } from "./adminAudit.js";
 import type { Router } from "./router.js";
@@ -30,6 +30,7 @@ export function registerPromptRoutes(router: Router, deps: PromptRouteDeps): voi
     const body = await readBody(req);
     const label = body?.["label"];
     const content = body?.["content"];
+    const promptType = body?.["promptType"];
     if (typeof label !== "string" || label.trim().length === 0) {
       writeJson(res, 400, { error: "Prompt label must be provided as a non-empty string" });
       return;
@@ -38,10 +39,14 @@ export function registerPromptRoutes(router: Router, deps: PromptRouteDeps): voi
       writeJson(res, 400, { error: "Prompt content must be provided as a non-empty string" });
       return;
     }
+    if (!isPromptType(promptType)) {
+      writeJson(res, 400, { error: "Prompt type must be either 'system' or 'instructions'" });
+      return;
+    }
     try {
-      const prompt = await deps.promptStore.createPrompt(label, content);
+      const prompt = await deps.promptStore.createPrompt(label, content, promptType);
       log.info({ promptId: prompt.id, label }, "new prompt created via admin API");
-      recordAudit(deps.auditStore, req, { action: "prompt.create", targetType: "prompt", targetId: prompt.id, details: { label } });
+      recordAudit(deps.auditStore, req, { action: "prompt.create", targetType: "prompt", targetId: prompt.id, details: { label, promptType } });
       writeJson(res, 201, { prompt: serializePrompt(prompt) });
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Unknown error";
@@ -114,6 +119,10 @@ export function registerPromptRoutes(router: Router, deps: PromptRouteDeps): voi
       throw err;
     }
   }, { permission: "prompt.delete" });
+}
+
+function isPromptType(value: unknown): value is PromptType {
+  return value === "system" || value === "instructions";
 }
 
 /** Serialize a Prompt to the admin API response shape. */

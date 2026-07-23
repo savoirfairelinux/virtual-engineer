@@ -20,7 +20,7 @@ import {
  *       {"file": "src/foo.ts", "line": 42, "message": "...", "severity": "error"}
  *     ],
  *     "summary": "Overall assessment...",
- *     "score": -1
+ *     "vote": -1
  *   }
  *   REVIEW_RESULT_END
  */

@@ -83,7 +83,7 @@ const GOOD_RAW_OUTPUT = [
   JSON.stringify({
     comments: [{ file: "src/a.ts", line: 1, message: "Bug", severity: "error" }],
     summary: "blocking issue",
-    score: -1,
+    vote: -1,
   }),
   "REVIEW_RESULT_END",
 ].join("\n");

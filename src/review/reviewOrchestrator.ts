@@ -24,7 +24,10 @@ import {
 } from "../interfaces.js";
 import { buildReviewPrompt } from "./reviewPromptBuilder.js";
 import { getReviewDecision, parseReviewResult } from "./reviewResultParser.js";
-import { appendReviewOutputContract } from "./reviewOutputContract.js";
+import {
+  appendReviewOutputContract,
+  getReviewOutputJsonSchema,
+} from "./reviewOutputContract.js";
 import { filterCommentsByAllowedFiles } from "./commentFilter.js";
 import { computeCommentHash, computeThreadReplyHash } from "./commentHash.js";
 import { applyVolumeAndSeverityGate, buildFoldedSummary } from "./commentSeverity.js";
@@ -79,6 +82,7 @@ export interface ReviewOrchestratorDeps {
     token: string;
     systemPrompt: string;
     instructionsPrompt: string;
+    providerOptions?: Record<string, unknown> | undefined;
     aiderBackend?: string | undefined;
     aiderApiBase?: string | undefined;
   } | null>;
@@ -468,7 +472,7 @@ export class ReviewOrchestrator {
       const prompt = buildReviewPrompt({
         details,
         diff,
-        userPrompt: reviewInstructions,
+        instructionsPrompt: reviewInstructions,
         ...(priorComments.length > 0
           ? {
               priorComments: priorComments.map((c) => ({
@@ -526,8 +530,12 @@ export class ReviewOrchestrator {
           repositoryName: details.project,
           prompt,
           systemPrompt: reviewSystemPrompt,
+          reviewOutputSchema: getReviewOutputJsonSchema(this.deps.reviewProvider.kind),
           agentToken: projectAgentRuntime.token,
           model: projectAgentRuntime.model,
+          ...(projectAgentRuntime.providerOptions !== undefined && Object.keys(projectAgentRuntime.providerOptions).length > 0
+            ? { providerOptions: projectAgentRuntime.providerOptions }
+            : {}),
           agentAdapter: projectAgentRuntime.adapter,
           ...(projectAgentRuntime.aiderBackend !== undefined ? { aiderBackend: projectAgentRuntime.aiderBackend } : {}),
           ...(projectAgentRuntime.aiderApiBase !== undefined ? { aiderApiBase: projectAgentRuntime.aiderApiBase } : {}),

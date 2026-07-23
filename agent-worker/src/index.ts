@@ -32,7 +32,7 @@ import {
   groupFilesByRepo,
 } from './commitUtils.js';
 import { emitEvent } from './providers/events.js';
-import { resolveRunner, isAgentProvider, AGENT_PROVIDER_IDS } from './providers/registry.js';
+import { resolveProvider, isAgentProvider, AGENT_PROVIDER_IDS } from './providers/registry.js';
 import type { AgentRun } from './providers/types.js';
 
 // ── Environment ────────────────────────────────────────────────────────────────
@@ -44,26 +44,10 @@ if (!isAgentProvider(AGENT_PROVIDER)) {
   );
   process.exit(1);
 }
-const GITHUB_TOKEN = process.env['GITHUB_TOKEN'] ?? '';
-const COPILOT_MODEL = process.env['COPILOT_MODEL'] ?? 'auto';
-/** Empty when unset — the Claude CLI then selects its own default model. */
-const CLAUDE_MODEL = process.env['CLAUDE_MODEL'] ?? '';
-/** Empty when unset — the Aider CLI then selects its own default model. */
-const AIDER_MODEL = process.env['AIDER_MODEL'] ?? '';
-/** Model + adapter label for the active provider (used in events and result metadata). */
-const ACTIVE_MODEL =
-  AGENT_PROVIDER === 'claude'
-    ? (CLAUDE_MODEL || 'cli-default')
-    : AGENT_PROVIDER === 'aider'
-      ? (AIDER_MODEL || 'aider-default')
-      : COPILOT_MODEL;
-const ADAPTER_LABEL =
-  AGENT_PROVIDER === 'claude'
-    ? 'claude-agent-sdk'
-    : AGENT_PROVIDER === 'aider'
-      ? 'aider-cli'
-      : 'copilot-sdk';
-const COPILOT_REASONING_EFFORT = process.env['COPILOT_REASONING_EFFORT'];
+const ACTIVE_PROVIDER = resolveProvider(AGENT_PROVIDER);
+const ACTIVE_MODEL = ACTIVE_PROVIDER.resolveModel();
+const ACTIVE_MODEL_LABEL = ACTIVE_MODEL || ACTIVE_PROVIDER.defaultModelLabel;
+const ADAPTER_LABEL = ACTIVE_PROVIDER.adapterLabel;
 const GIT_AUTHOR_NAME = process.env['GIT_AUTHOR_NAME'] ?? 'Virtual Engineer';
 const GIT_AUTHOR_EMAIL = process.env['GIT_AUTHOR_EMAIL'] ?? 've@virtual-engineer.local';
 const GIT_COMMITTER_NAME = process.env['GIT_COMMITTER_NAME'] ?? GIT_AUTHOR_NAME;
@@ -86,6 +70,21 @@ const REVIEW_MODE = process.env['REVIEW_MODE'] === '1';
 const SKILL_DISCOVERY = process.env['SKILL_DISCOVERY'] === '1';
 const USER_PROMPT_FILE = process.env['USER_PROMPT_FILE'] ?? '';
 const SYSTEM_PROMPT = process.env['SYSTEM_PROMPT'] ?? '';
+let REVIEW_OUTPUT_SCHEMA: Record<string, unknown> | undefined;
+try {
+  const rawReviewOutputSchema = process.env['REVIEW_OUTPUT_SCHEMA'] ?? '';
+  if (rawReviewOutputSchema) {
+    const parsed: unknown = JSON.parse(rawReviewOutputSchema);
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      throw new Error('schema must be a JSON object');
+    }
+    REVIEW_OUTPUT_SCHEMA = parsed as Record<string, unknown>;
+  }
+} catch (err) {
+  const message = err instanceof Error ? err.message : String(err);
+  process.stderr.write(`FATAL: invalid REVIEW_OUTPUT_SCHEMA: ${message}\n`);
+  process.exit(1);
+}
 
 if (!process.env['SYSTEM_PROMPT']) {
   process.stderr.write(
@@ -147,21 +146,16 @@ async function runAgent(
   timeoutMs: number,
   mode: 'codegen' | 'review',
 ): Promise<AgentRun> {
-  const runner = resolveRunner(AGENT_PROVIDER);
-  const model =
-    AGENT_PROVIDER === 'claude'
-      ? CLAUDE_MODEL
-      : AGENT_PROVIDER === 'aider'
-        ? AIDER_MODEL
-        : COPILOT_MODEL;
-  return runner(prompt, {
-    model,
-    systemPrompt: SYSTEM_PROMPT,
+  return ACTIVE_PROVIDER.runner(prompt, {
+    model: ACTIVE_MODEL,
+    agentInstructions: SYSTEM_PROMPT,
     cwd: REPO_PATH,
     timeoutMs,
     mode,
     skillDiscovery: SKILL_DISCOVERY,
-    ...(COPILOT_REASONING_EFFORT ? { reasoningEffort: COPILOT_REASONING_EFFORT } : {}),
+    ...(mode === 'review' && REVIEW_OUTPUT_SCHEMA !== undefined
+      ? { reviewOutputSchema: REVIEW_OUTPUT_SCHEMA }
+      : {}),
   });
 }
 
@@ -181,7 +175,7 @@ async function runReviewMode(): Promise<ReviewWorkerResult> {
     throw new Error(`User prompt file is empty: ${USER_PROMPT_FILE}`);
   }
 
-  process.stderr.write(`review mode: provider=${AGENT_PROVIDER} model=${ACTIVE_MODEL}\n`);
+  process.stderr.write(`review mode: provider=${AGENT_PROVIDER} model=${ACTIVE_MODEL_LABEL}\n`);
 
   const agent = await runAgent(reviewPrompt, 9 * 60 * 1000, 'review');
   try {
@@ -195,7 +189,7 @@ async function runReviewMode(): Promise<ReviewWorkerResult> {
       modifiedFiles: [],
       summary: rawOutput.slice(0, 500),
       agentLogs: rawOutput,
-      metadata: { adapter: ADAPTER_LABEL, model: ACTIVE_MODEL, reviewMode: true },
+      metadata: { adapter: ADAPTER_LABEL, model: ACTIVE_MODEL_LABEL, reviewMode: true },
     };
   } finally {
     await agent.cleanup();
@@ -204,9 +198,7 @@ async function runReviewMode(): Promise<ReviewWorkerResult> {
 
 // ── Main (code-generation mode) ───────────────────────────────────────────────
 async function main(): Promise<AgentResult> {
-  if (AGENT_PROVIDER === 'copilot' && !GITHUB_TOKEN) {
-    throw new Error('GITHUB_TOKEN env var is required');
-  }
+  ACTIVE_PROVIDER.validateEnvironment?.();
 
   if (!existsSync(USER_PROMPT_FILE)) {
     throw new Error(`User prompt file not found: ${USER_PROMPT_FILE}`);
@@ -262,7 +254,7 @@ async function main(): Promise<AgentResult> {
     }
   }
 
-  process.stderr.write(`starting agent (provider=${AGENT_PROVIDER}, model=${ACTIVE_MODEL})\n`);
+  process.stderr.write(`starting agent (provider=${AGENT_PROVIDER}, model=${ACTIVE_MODEL_LABEL})\n`);
 
   const agent = await runAgent(userPrompt, 3_540_000, 'codegen');
   const handlerState = { toolCallCount: agent.toolCallCount, toolsByKind: agent.toolsByKind };
@@ -274,7 +266,7 @@ async function main(): Promise<AgentResult> {
     modifiedFiles: [],
     summary: 'Internal error: result not set',
     agentLogs: '',
-    metadata: { adapter: ADAPTER_LABEL, model: ACTIVE_MODEL },
+    metadata: { adapter: ADAPTER_LABEL, model: ACTIVE_MODEL_LABEL },
   };
 
   try {
@@ -421,7 +413,7 @@ async function main(): Promise<AgentResult> {
           commits,
           summary,
           agentLogs: summary,
-          metadata: { adapter: 'copilot-sdk', model: COPILOT_MODEL, agentCommits: true },
+          metadata: { adapter: ADAPTER_LABEL, model: ACTIVE_MODEL_LABEL, agentCommits: true },
         };
       } else {
         process.stderr.write(`commit validation failed: ${validation.reason ?? ''}\n`);
@@ -437,7 +429,7 @@ async function main(): Promise<AgentResult> {
           agentLogs: summary,
           metadata: {
             adapter: 'copilot-sdk',
-            model: COPILOT_MODEL,
+            model: ACTIVE_MODEL_LABEL,
             commitValidationError: validation.reason ?? null,
           },
         };
@@ -480,7 +472,7 @@ async function main(): Promise<AgentResult> {
           modifiedFiles: (REPOSITORY_MAP != null) ? {} : [],
           summary,
           agentLogs: summary,
-          metadata: { adapter: 'copilot-sdk', model: COPILOT_MODEL },
+          metadata: { adapter: ADAPTER_LABEL, model: ACTIVE_MODEL_LABEL },
         };
       } else {
         const reason = 'agent edited files but created no commits; run git add/git commit before finishing';
@@ -504,7 +496,7 @@ async function main(): Promise<AgentResult> {
           agentLogs: summary,
           metadata: {
             adapter: 'copilot-sdk',
-            model: COPILOT_MODEL,
+            model: ACTIVE_MODEL_LABEL,
             missingCommits: true,
             toolCallCount: handlerState.toolCallCount,
             toolsByKind: handlerState.toolsByKind,
@@ -519,7 +511,7 @@ async function main(): Promise<AgentResult> {
   // Normalize provider identity in the result metadata (the commit-collection
   // block above builds several result objects with default labels).
   if (result.metadata) {
-    result.metadata = { ...result.metadata, adapter: ADAPTER_LABEL, model: ACTIVE_MODEL };
+    result.metadata = { ...result.metadata, adapter: ADAPTER_LABEL, model: ACTIVE_MODEL_LABEL };
   }
 
   return result;

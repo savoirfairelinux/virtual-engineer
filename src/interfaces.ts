@@ -403,8 +403,8 @@ export interface AgentSession {
   encryptedSessionToken?: string | undefined;
   /** Optional per-task Copilot model override resolved from agent/project config. */
   copilotModel?: string | undefined;
-  /** Optional reasoning effort level for models that support it (e.g. "low" | "medium" | "high" | "xhigh"). */
-  copilotReasoningEffort?: string | undefined;
+  /** Opaque provider-owned execution settings validated by the selected adapter. */
+  providerOptions?: Record<string, unknown> | undefined;
   /** Multi-repo workspace layout — when set, agent-worker uses it to group files/commits by repo. */
   repositoryMap?: RepositoryMap | undefined;
   /** When true, the agent loads local repository skills from `localSkillsPath`. */
@@ -578,12 +578,14 @@ export interface ReviewWorkspaceInput {
   prompt: string;
   /** System prompt passed as SYSTEM_PROMPT env var to the review container */
   systemPrompt: string;
+  /** Immutable integration-owned JSON Schema for the structured review result. */
+  reviewOutputSchema?: Record<string, unknown> | undefined;
   /** Authentication token for the agent integration (e.g. GitHub token for Copilot) */
   agentToken: string;
   /** Model override for the agent */
   model?: string | undefined;
-  /** Reasoning effort override for the agent (e.g. "low" | "medium" | "high" | "xhigh") */
-  reasoningEffort?: string | undefined;
+  /** Opaque provider-owned execution settings validated by the selected adapter. */
+  providerOptions?: Record<string, unknown> | undefined;
   /** Container image (defaults to agentContainerImage from codegen config) */
   containerImage?: string | undefined;
   /** When true, the agent container loads local repository skills from `localSkillsPath`. */
@@ -1227,12 +1229,14 @@ export interface ModelUsageSummary {
   sinceEpochSeconds: number | null;
 }
 
+export type PromptType = "system" | "instructions";
+
 export interface Prompt {
   id: string;
   label: string;
   content: string;
-  /** "system" = immutable format/integration-specific prompt; "user" = editable by admins. */
-  promptType: "system" | "user";
+  /** Role in the agent session. The user prompt is built dynamically from the ticket or review. */
+  promptType: PromptType;
   updatedAt: Date;
 }
 
@@ -1240,9 +1244,9 @@ export interface PromptStore {
   getPrompts(): Promise<Prompt[]>;
   getPrompt(id: string): Promise<Prompt | null>;
   upsertPrompt(id: string, content: string): Promise<Prompt>;
-  /** Create a prompt; id is derived from label. Rejects on duplicate (409) or bad label (400). */
-  createPrompt(label: string, content: string): Promise<Prompt>;
-  /** Delete a prompt. Rejects if not found (404) or if promptType === "system" (403). */
+  /** Create a prompt; id is derived from label. Rejects on duplicate (409) or bad input (400). */
+  createPrompt(label: string, content: string, promptType: PromptType): Promise<Prompt>;
+  /** Delete a prompt. Rejects if not found (404) or if it is built in (403). */
   deletePrompt(id: string): Promise<void>;
 }
 

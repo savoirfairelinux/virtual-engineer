@@ -45,11 +45,11 @@ const testPromptStore: PromptStore = {
     id,
     label: id,
     content: id === "test-system" ? "You are a test engineer." : "Follow the test instructions.",
-    promptType: "system",
+    promptType: id.includes("system") ? "system" : "instructions",
     updatedAt: new Date(),
   })),
-  upsertPrompt: vi.fn(async (id: string, content: string): Promise<Prompt> => ({ id, label: id, content, promptType: "system", updatedAt: new Date() })),
-  createPrompt: vi.fn(async (label: string, content: string): Promise<Prompt> => ({ id: label, label, content, promptType: "user", updatedAt: new Date() })),
+  upsertPrompt: vi.fn(async (id: string, content: string): Promise<Prompt> => ({ id, label: id, content, promptType: id.includes("system") ? "system" : "instructions", updatedAt: new Date() })),
+  createPrompt: vi.fn(async (label: string, content: string, promptType): Promise<Prompt> => ({ id: label, label, content, promptType, updatedAt: new Date() })),
   deletePrompt: vi.fn(async () => {}),
 };
 
@@ -185,7 +185,7 @@ describe("CopilotAdapter", () => {
     it("injects COPILOT_REASONING_EFFORT into container env when set", () => {
       const adapter = new CopilotAdapter({ model: "o3" });
       const context = makeContext();
-      context.agentSession.copilotReasoningEffort = "medium";
+      context.agentSession.providerOptions = { reasoningEffort: "medium" };
 
       const spec = adapter.buildContainerSpec(context, { GITHUB_TOKEN: "ghp_tok" });
 

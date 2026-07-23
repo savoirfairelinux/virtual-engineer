@@ -23,13 +23,42 @@ import { mkdtempSync, writeFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { emitEvent } from './events.js';
-import type { AgentRun, AgentRunOptions } from './types.js';
+import type { AgentProviderDefinition, AgentRun, AgentRunOptions } from './types.js';
 
 // Git identity forwarded into the aider subprocess environment.
 const GIT_AUTHOR_NAME = process.env['GIT_AUTHOR_NAME'] ?? 'Virtual Engineer';
 const GIT_AUTHOR_EMAIL = process.env['GIT_AUTHOR_EMAIL'] ?? 've@virtual-engineer.local';
 const GIT_COMMITTER_NAME = process.env['GIT_COMMITTER_NAME'] ?? GIT_AUTHOR_NAME;
 const GIT_COMMITTER_EMAIL = process.env['GIT_COMMITTER_EMAIL'] ?? GIT_AUTHOR_EMAIL;
+
+interface AiderNativeOptions {
+  chatMode?: 'code' | 'architect';
+  reasoningEffort?: string;
+  thinkingTokens?: number;
+  mapTokens?: number;
+  autoLint: boolean;
+  autoTest: boolean;
+}
+
+function positiveNumberFromEnv(name: string): number | undefined {
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+function resolveAiderNativeOptions(): AiderNativeOptions {
+  const chatMode = process.env['AIDER_CHAT_MODE'];
+  const reasoningEffort = process.env['AIDER_REASONING_EFFORT']?.trim();
+  const thinkingTokens = positiveNumberFromEnv('AIDER_THINKING_TOKENS');
+  const mapTokens = positiveNumberFromEnv('AIDER_MAP_TOKENS');
+  return {
+    ...(chatMode === 'code' || chatMode === 'architect' ? { chatMode } : {}),
+    ...(reasoningEffort ? { reasoningEffort } : {}),
+    ...(thinkingTokens !== undefined ? { thinkingTokens } : {}),
+    ...(mapTokens !== undefined ? { mapTokens } : {}),
+    autoLint: process.env['AIDER_AUTO_LINT'] === '1',
+    autoTest: process.env['AIDER_AUTO_TEST'] === '1',
+  };
+}
 
 /**
  * Conventional-commit commit-prompt injected via `--commit-prompt` so Aider's
@@ -100,13 +129,18 @@ function resolveAiderBinary(): string {
 }
 
 /** Build the aider argv for a single-message, non-interactive session. */
-function buildAiderArgs(promptFile: string, mode: 'codegen' | 'review'): string[] {
+function buildAiderArgs(
+  promptFile: string,
+  options: AgentRunOptions,
+  nativeOptions: AiderNativeOptions,
+): string[] {
+  const { mode } = options;
   const baseArgs = [
     '--message-file', promptFile,
     '--yes',
     '--no-pretty',
-    '--no-auto-lint',
-    '--no-auto-test',
+    nativeOptions.autoLint && mode === 'codegen' ? '--auto-lint' : '--no-auto-lint',
+    nativeOptions.autoTest && mode === 'codegen' ? '--auto-test' : '--no-auto-test',
     '--no-check-update',
     '--no-show-release-notes',
     '--no-analytics',
@@ -154,6 +188,7 @@ function buildAiderArgs(promptFile: string, mode: 'codegen' | 'review'): string[
     '--no-gitignore',
     '--auto-commits',
     '--dirty-commits',
+    ...(nativeOptions.chatMode ? ['--chat-mode', nativeOptions.chatMode] : []),
     '--commit-prompt', CONVENTIONAL_COMMIT_PROMPT,
   ];
 }
@@ -163,17 +198,19 @@ export async function runAiderAgent(
   prompt: string,
   options: AgentRunOptions,
 ): Promise<AgentRun> {
-  const { model, systemPrompt, cwd, timeoutMs, mode } = options;
+  const { model, agentInstructions, cwd, timeoutMs, mode } = options;
   const modelLabel = model || 'aider-default';
 
   emitEvent('session.start', { model: modelLabel, mode, workingDirectory: cwd });
   process.stderr.write(`starting Aider CLI (mode=${mode}, model=${modelLabel})\n`);
 
-  // Write the prompt to a temp file to avoid argv length limits. Prepend the
-  // system prompt so Aider's single-message mode receives both.
+  // Keep the workflow request separate from permanent agent instructions.
+  // Aider loads the latter as a read-only convention file.
   const tmpDir = mkdtempSync(join(tmpdir(), 've-aider-'));
   const promptFile = join(tmpDir, 'prompt.txt');
-  writeFileSync(promptFile, `${systemPrompt}\n\n${prompt}`, 'utf8');
+  const agentInstructionsFile = join(tmpDir, 'agent-instructions.md');
+  writeFileSync(promptFile, prompt, 'utf8');
+  writeFileSync(agentInstructionsFile, agentInstructions, 'utf8');
 
   // For Ollama backends, write a model-settings YAML so Aider forwards
   // repeat_penalty to the Ollama API. This prevents repetition loops where the
@@ -189,7 +226,18 @@ export async function runAiderAgent(
     );
   }
 
-  const args = buildAiderArgs(promptFile, mode);
+  const nativeOptions = resolveAiderNativeOptions();
+  const args = buildAiderArgs(promptFile, options, nativeOptions);
+  args.push('--read', agentInstructionsFile);
+  if (nativeOptions.reasoningEffort) {
+    args.push('--reasoning-effort', nativeOptions.reasoningEffort);
+  }
+  if (nativeOptions.thinkingTokens !== undefined) {
+    args.push('--thinking-tokens', String(nativeOptions.thinkingTokens));
+  }
+  if (nativeOptions.mapTokens !== undefined) {
+    args.push('--map-tokens', String(nativeOptions.mapTokens));
+  }
   if (modelSettingsFile) {
     args.push('--model-settings-file', modelSettingsFile);
   }
@@ -300,6 +348,14 @@ export async function runAiderAgent(
     },
   };
 }
+
+export const AIDER_PROVIDER: AgentProviderDefinition = {
+  id: 'aider',
+  adapterLabel: 'aider-cli',
+  resolveModel: () => process.env['AIDER_MODEL'] ?? '',
+  defaultModelLabel: 'aider-default',
+  runner: runAiderAgent,
+};
 
 /**
  * Build a descriptive error message from an Aider non-zero exit code.

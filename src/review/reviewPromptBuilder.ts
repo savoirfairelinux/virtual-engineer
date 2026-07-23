@@ -14,8 +14,8 @@ const TRUNCATION_NOTE =
 export interface ReviewPromptInput {
   details: ReviewChangeDetails;
   diff: ReviewChangeDiff;
-  /** User instructions/checklist for the review task. Required. */
-  userPrompt: string;
+  /** Instructions/checklist appended to the dynamic review user prompt. */
+  instructionsPrompt: string;
   /** Optional override for the max diff size in characters. Defaults to 60 000. */
   maxDiffChars?: number | undefined;
   /**
@@ -39,7 +39,7 @@ export interface PriorReviewComment {
 
 /** Build the full prompt sent to the review agent for a single change. */
 export function buildReviewPrompt(input: ReviewPromptInput): string {
-  const { details, diff, userPrompt, maxDiffChars, priorComments, discussionThreads } = input;
+  const { details, diff, instructionsPrompt, maxDiffChars, priorComments, discussionThreads } = input;
 
   const header = [
     `# Code Review Task`,
@@ -60,8 +60,8 @@ export function buildReviewPrompt(input: ReviewPromptInput): string {
   const sections = [
     header,
     ``,
-    `## User Instructions`,
-    userPrompt,
+    `## Review Instructions`,
+    instructionsPrompt,
   ];
 
   if (priorComments && priorComments.length > 0) {

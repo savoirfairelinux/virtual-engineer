@@ -335,10 +335,10 @@ async function importRuntime(
     getPrompts: vi.fn(async () => []),
     getPrompt: vi.fn(async (id: string) => {
       const content = id.startsWith("review-system") ? "You are a code reviewer." : "You are a software engineer.";
-      return { id, label: id, content, promptType: "user" as const, updatedAt: new Date() };
+      return { id, label: id, content, promptType: id.includes("system") ? "system" as const : "instructions" as const, updatedAt: new Date() };
     }),
-    upsertPrompt: vi.fn(async (id: string, content: string) => ({ id, label: id, content, promptType: "user" as const, updatedAt: new Date() })),
-    createPrompt: vi.fn(async (label: string, content: string) => ({ id: label, label, content, promptType: "user" as const, updatedAt: new Date() })),
+    upsertPrompt: vi.fn(async (id: string, content: string) => ({ id, label: id, content, promptType: "instructions" as const, updatedAt: new Date() })),
+    createPrompt: vi.fn(async (label: string, content: string, promptType: "system" | "instructions") => ({ id: label, label, content, promptType, updatedAt: new Date() })),
     deletePrompt: vi.fn(async (_id: string) => {}),
     getAppSettings: vi.fn(async () => ({ pollingIntervalMs: null, maxAgentCycles: null, maxRetryAttempts: null })),
     updateAppSettings: vi.fn(async (patch: { pollingIntervalMs?: number | null; maxAgentCycles?: number | null; maxRetryAttempts?: number | null }) => ({
@@ -1503,7 +1503,7 @@ describe("runtime bootstrap provider selection", () => {
       integrationId: "copilot-review-rewrite",
       modelConfigJson: "{}",
       systemPromptId: "system_gerrit_review",
-      instructionsPromptId: "user_gerrit_review",
+      instructionsPromptId: "instructions_gerrit_review",
       feedbackInstructionsPromptId: null,
       maxConcurrent: 1,
       enabled: true,
@@ -1610,7 +1610,7 @@ describe("runtime bootstrap provider selection", () => {
         "project-review-system": "Project-specific review role.",
         "agent-review-instructions": "Agent-specific review checklist.",
       }[id] ?? `fallback:${id}`,
-      promptType: "user" as const,
+      promptType: id.includes("system") ? "system" as const : "instructions" as const,
       updatedAt: new Date(),
     }));
 
@@ -1666,7 +1666,7 @@ describe("runtime bootstrap provider selection", () => {
       integrationId,
       modelConfigJson: JSON.stringify({ model: `${id}-model` }),
       systemPromptId: "system_gerrit_review",
-      instructionsPromptId: "user_gerrit_review",
+      instructionsPromptId: "instructions_gerrit_review",
       feedbackInstructionsPromptId: null,
       maxConcurrent: 1,
       enabled: true,

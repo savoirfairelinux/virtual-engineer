@@ -7,6 +7,10 @@
 import { getConfig } from "../config.js";
 import { getLogger } from "../logger.js";
 import { decryptToken } from "../utils/encryption.js";
+import { assertPromptRole } from "../utils/promptRole.js";
+import {
+  resolveProviderOptions,
+} from "../agents/providerOptions.js";
 import { PluginManager } from "../plugins/pluginManager.js";
 import { ReviewOrchestrator } from "./reviewOrchestrator.js";
 import { DockerWorkspaceRunner } from "../workspace/workspaceRunner.js";
@@ -209,6 +213,7 @@ async function resolveReviewAgentForProject(
   token: string;
   systemPrompt: string;
   instructionsPrompt: string;
+  providerOptions?: Record<string, unknown> | undefined;
   aiderBackend?: string | undefined;
   aiderApiBase?: string | undefined;
 } | null> {
@@ -237,6 +242,7 @@ async function resolveReviewAgentForProject(
     // modelConfigJson so a per-project model override actually applies
     // (same semantics as the coding-agent path in orchestrator.ts).
     const resolved = resolveAgentConfig(agent, project);
+    const providerOptions = resolveProviderOptions(resolved.extra);
     const resolvedModel = resolved.model?.trim() || undefined;
     const [resolvedSystemPrompt, resolvedInstructionsPrompt] = await Promise.all([
       resolved.systemPromptId ? store.getPrompt(resolved.systemPromptId) : Promise.resolve(null),
@@ -248,6 +254,8 @@ async function resolveReviewAgentForProject(
     if (!resolvedInstructionsPrompt) {
       throw new Error(`Instructions prompt '${resolved.instructionsPromptId}' not found`);
     }
+    assertPromptRole(resolvedSystemPrompt, "system");
+    assertPromptRole(resolvedInstructionsPrompt, "instructions");
 
     // Agent-local credentials are accepted only when they match the active
     // provider. This avoids carrying a stale Claude secret into Copilot (or
@@ -291,6 +299,7 @@ async function resolveReviewAgentForProject(
       token,
       systemPrompt: resolvedSystemPrompt.content,
       instructionsPrompt: resolvedInstructionsPrompt.content,
+      ...(Object.keys(providerOptions).length > 0 ? { providerOptions } : {}),
       ...(aiderBackend !== undefined ? { aiderBackend } : {}),
       ...(aiderApiBase !== undefined ? { aiderApiBase } : {}),
     };

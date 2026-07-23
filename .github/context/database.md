@@ -2,9 +2,11 @@
 
 ## Agent Prompt References
 
-- `agents.system_prompt_id` and `agents.instructions_prompt_id` remain nullable foreign keys for compatibility with databases containing legacy agents.
-- New agents cannot be created through the admin API without both references, and both IDs must resolve to existing `prompts` rows. Updates cannot clear either reference.
-- Runtime resolution is fail-closed: legacy agents missing either prompt, or agents referencing a prompt that no longer resolves, do not receive a generic or integration-specific fallback.
+- `agents.system_prompt_id` and `agents.instructions_prompt_id` are nullable foreign keys at the SQLite schema level, but the store and admin API require both for every create/update.
+- `prompts.prompt_type` is the prompt's runtime role: `system | instructions`, with `instructions` as the database default. The user prompt is generated per cycle from the ticket or review and is not a stored prompt type.
+- New agents cannot be created through the admin API without both references. Each ID must resolve to an existing `prompts` row with the matching role, and updates cannot clear either reference.
+- Runtime resolution is fail-closed: agents missing either prompt, referencing a missing prompt, or crossing the `system` / `instructions` roles do not receive a generic or integration-specific fallback.
+- Startup does not rename, convert, delete, or remap legacy prompt IDs, rows, or override files. Unknown prompt rows are preserved as-is; obsolete `user_*_review.md` files are ignored.
 
 ## Projects Skill Columns
 
@@ -16,6 +18,7 @@
 
 - Runtime migrations are handled by `SqliteStateStore.applyMigrations()` in `src/state/stateStore.ts` using `CREATE TABLE IF NOT EXISTS` and `ensureColumn(...)`.
 - Existing databases get `local_skills_path` through `ensureColumn("projects", "local_skills_path", "TEXT NOT NULL DEFAULT '.github/skills'")`.
+- Existing databases get `prompt_type` through `ensureColumn("prompts", "prompt_type", "TEXT NOT NULL DEFAULT 'instructions'")`; the current built-in `system_*` and `instructions_*` IDs are then assigned their declared roles. No legacy IDs or `prompt_type = user` rows are migrated.
 - `src/state/schema.ts` mirrors these columns for Drizzle typed queries.
 
 ## Related docs

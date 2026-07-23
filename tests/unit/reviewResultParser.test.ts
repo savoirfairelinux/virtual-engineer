@@ -4,7 +4,10 @@ import {
   getReviewDecision,
   parseReviewResult,
 } from "../../src/review/reviewResultParser.js";
-import { getReviewOutputContract } from "../../src/review/reviewOutputContract.js";
+import {
+  getReviewOutputContract,
+  getReviewOutputJsonSchema,
+} from "../../src/review/reviewOutputContract.js";
 import type { ReviewAgentResult } from "../../src/interfaces.js";
 
 function wrap(json: unknown): string {
@@ -35,6 +38,19 @@ describe("review output contracts", () => {
     expect(() => getReviewOutputContract("unknown")).toThrow(
       "Unsupported review output contract: unknown"
     );
+  });
+
+  it("exposes the same provider-native decision in the JSON schema", () => {
+    expect(getReviewOutputJsonSchema("gerrit")).toMatchObject({
+      required: ["comments", "summary", "replies", "vote"],
+      properties: { vote: { enum: [-1, 0, 1] } },
+    });
+    expect(getReviewOutputJsonSchema("github")).toMatchObject({
+      properties: { reviewAction: { enum: ["APPROVE", "REQUEST_CHANGES", "COMMENT"] } },
+    });
+    expect(getReviewOutputJsonSchema("gitlab")).toMatchObject({
+      properties: { approvalAction: { enum: ["APPROVE", "UNAPPROVE", "COMMENT"] } },
+    });
   });
 });
 
@@ -79,7 +95,7 @@ describe("parseReviewResult", () => {
           { file: "src/foo.ts", line: 10, message: "Possible NPE", severity: "error" },
         ],
         summary: "One blocking issue.",
-        score: -1,
+        vote: -1,
       })
     );
 
@@ -93,20 +109,21 @@ describe("parseReviewResult", () => {
     const raw = [
       "REVIEW_RESULT_START",
       "```json",
-      JSON.stringify({ comments: [], summary: "ok", score: 1 }),
+      JSON.stringify({ comments: [], summary: "ok", vote: 1 }),
       "```",
       "REVIEW_RESULT_END",
     ].join("\n");
     expect(parseReviewResult(raw).score).toBe(1);
   });
 
-  it("defaults missing score to 0", () => {
-    const result = parseReviewResult(wrap({ comments: [], summary: "ok" }));
-    expect(result.score).toBe(0);
+  it("rejects the legacy generic score contract", () => {
+    expect(() =>
+      parseReviewResult(wrap({ comments: [], summary: "ok", score: 1 }))
+    ).toThrow(ReviewResultParseError);
   });
 
   it("defaults missing replies to an empty array", () => {
-    const result = parseReviewResult(wrap({ comments: [], summary: "ok", score: 1 }));
+    const result = parseReviewResult(wrap({ comments: [], summary: "ok", vote: 1 }));
     expect(result.replies).toEqual([]);
   });
 
@@ -115,7 +132,7 @@ describe("parseReviewResult", () => {
       wrap({
         comments: [],
         summary: "ok",
-        score: 1,
+        vote: 1,
         replies: [
           { threadId: "disc-1", message: "Good point, fixed." },
           { threadId: "disc-2", message: "I disagree because X." },
@@ -130,7 +147,7 @@ describe("parseReviewResult", () => {
   it("drops replies with empty threadId or message via schema validation", () => {
     expect(() =>
       parseReviewResult(
-        wrap({ comments: [], summary: "ok", score: 1, replies: [{ threadId: "", message: "x" }] })
+        wrap({ comments: [], summary: "ok", vote: 1, replies: [{ threadId: "", message: "x" }] })
       )
     ).toThrow(ReviewResultParseError);
   });
@@ -156,7 +173,7 @@ describe("parseReviewResult", () => {
     const raw = wrap({
       comments: [{ file: "a.ts", line: 1, message: "x", severity: "Good" }],
       summary: "",
-      score: -1,
+      vote: -1,
     });
     expect(parseReviewResult(raw).comments[0]?.severity).toBe("Good");
   });
