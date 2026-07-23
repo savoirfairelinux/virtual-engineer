@@ -408,7 +408,7 @@ Connection methods live on the `claude` descriptor (`src/plugins/descriptors/cla
 
 ---
 
-### 3.6.2 AiderAdapter
+#### 3.6.2 AiderAdapter
 
 `src/agents/aiderAdapter.ts`
 
