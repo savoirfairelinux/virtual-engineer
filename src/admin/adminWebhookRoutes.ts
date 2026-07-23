@@ -10,7 +10,7 @@ const log = getLogger("admin-webhooks");
 
 export interface WebhookRouteDeps {
   integrationStore?: IntegrationStore | undefined;
-    pluginManager?: PluginManager | undefined;
+  pluginManager?: PluginManager | undefined;
   auditStore?: AuditCapableStore | undefined;
   onIntegrationUpdated?: ((integrationId: string) => void) | undefined;
   webhookPublicBaseUrl?: string | undefined;

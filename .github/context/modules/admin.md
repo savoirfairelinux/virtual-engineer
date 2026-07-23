@@ -80,7 +80,7 @@ All `/api/admin/*` routes are declared in `buildApiRouter()` and its per-area ro
 **Non-obvious per-route semantics** (not recoverable without reading source):
 
 - **Users**: demoting/disabling/deleting the last enabled admin → 409; disabling or password-change revokes the target's sessions; non-admin password change requires a verified `currentPassword`.
-- **Integrations**: `PUT` restores omitted/masked secrets from the stored row and clears the discovery cache on config change; GitHub repo discovery is token-centric (`/user/repos` filtered to the configured owner).
+- **Integrations**: `POST`/`PUT` encrypt descriptor password fields and internal credentials such as `webhookSecret`; credential writes return 400 with an actionable error when `ADMIN_AUTH_SECRET` is unset. `PUT` restores omitted/masked secrets from the stored row and clears the discovery cache on config change; GitHub repo discovery is token-centric (`/user/repos` filtered to the configured owner).
 - **SSH key generate**: 400 when the provider lacks `generateSshKeyPair` or `ADMIN_AUTH_SECRET` is unset (keys must be stored encrypted); the stateless variant persists nothing.
 - **`ssh-agent/keys`**: returns `{ keys: [], agentAvailable: false }` (never 5xx) when no agent socket / no identities.
 - **Projects create/update**: `skillSources` SSH entries are validated with a bounded `ssh -T` before save (400 with source index/URL/stderr on failure). User-configured `sshKeyPath` and `sshKnownHostsPath` values must resolve under `/app/secrets` (container deployment) or the repository `secrets/` directory (host development); traversal is rejected. Coding payloads accept `gerritTopicOverride`, `useFullTicketUrlInCommits`, `postReviewLinkToTicket`, `reactToCiFailures` (off by default); `pushTargets` replace atomically; changing ticket source / push targets / review config / agent binding / post-clone script / skill toggle / skill sources — or enabling the project — auto-relaunches its `FAILED`/`REVIEW_FAILED` tasks (adopted orphan tasks included, unless created disabled).
@@ -149,7 +149,7 @@ The dashboard stores the session token client-side (sessionStorage `ve-admin-tok
 
 ## Secret masking
 
-The admin server never returns plaintext password-like fields. On `PUT`, values equal to `"********"`, empty strings, or omitted properties are merged from the stored row before validation so partial edits do not erase secrets.
+The admin server never returns plaintext password-like fields. Descriptor password fields and internal credentials such as integration `webhookSecret` values use the same versioned encrypted storage path. Credential-bearing integration creates and updates return 400 when `ADMIN_AUTH_SECRET` is unavailable. On `PUT`, values equal to `"********"`, empty strings, or omitted properties are merged from the stored row before validation so partial edits do not erase secrets.
 
 ## Dashboard behavior
 

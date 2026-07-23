@@ -16,7 +16,6 @@ import { getLogger } from "../logger.js";
 import {
   decryptToken,
   encryptToken,
-  isEncryptedToken,
   isLegacyPlainToken,
   isProbableLegacyEncryptedToken,
   isVersionedEncryptedToken,
@@ -52,7 +51,7 @@ function instanceKey(integrationId: string, capability: DomainCapability): strin
   return `${integrationId}::${capability}`;
 }
 
-function credentialFieldKeys(descriptor: ProviderDescriptor): string[] {
+export function getCredentialFieldKeys(descriptor: ProviderDescriptor): string[] {
   return [
     ...descriptor.requiredFields.filter((field) => field.type === "password").map((field) => field.key),
     ...INTERNAL_CREDENTIAL_FIELDS,
@@ -318,8 +317,8 @@ export class PluginManager {
   }
 
   /**
-   * Encrypt all `type: "password"` fields in `config` for DB storage.
-   * Values already encrypted (detected via `isEncryptedToken`) or empty are skipped.
+  * Encrypt descriptor password fields and internal credentials for DB storage.
+  * Values in the current encryption envelope or empty values are skipped.
    * Returns a new object — `config` is not mutated.
    */
   public encryptPasswordFieldsForStorage(
@@ -328,10 +327,10 @@ export class PluginManager {
   ): Record<string, unknown> {
     const { adminAuthSecret } = this.options;
     const result: Record<string, unknown> = { ...config };
-    for (const fieldKey of credentialFieldKeys(descriptor)) {
+    for (const fieldKey of getCredentialFieldKeys(descriptor)) {
       const raw = result[fieldKey];
       if (typeof raw !== "string" || raw.length === 0) continue;
-      if (isEncryptedToken(raw, adminAuthSecret)) continue;
+      if (isVersionedEncryptedToken(raw)) continue;
       result[fieldKey] = encryptToken(raw, adminAuthSecret);
     }
     return result;
@@ -359,8 +358,17 @@ export class PluginManager {
       } catch {
         continue; // Unknown / not-yet-registered provider — skip safely
       }
-      const rawConfig = JSON.parse(integration.configJson) as Record<string, unknown>;
-      const credentialFields = credentialFieldKeys(descriptor);
+      let rawConfig: Record<string, unknown>;
+      try {
+        const parsedConfig = JSON.parse(integration.configJson) as unknown;
+        if (typeof parsedConfig !== "object" || parsedConfig === null || Array.isArray(parsedConfig)) {
+          throw new Error("Integration config must be a JSON object.");
+        }
+        rawConfig = parsedConfig as Record<string, unknown>;
+      } catch (error) {
+        throw new Error(`Unable to parse stored config for integration ${integration.id}.`, { cause: error });
+      }
+      const credentialFields = getCredentialFieldKeys(descriptor);
       const hasCredential = credentialFields.some((fieldKey) => {
         const value = rawConfig[fieldKey];
         return typeof value === "string" && value.length > 0;
@@ -540,7 +548,7 @@ export class PluginManager {
     descriptor: ProviderDescriptor
   ): Record<string, unknown> {
     const result: Record<string, unknown> = { ...config };
-    for (const fieldKey of credentialFieldKeys(descriptor)) {
+    for (const fieldKey of getCredentialFieldKeys(descriptor)) {
       const raw = result[fieldKey];
       if (typeof raw === "string" && raw.length > 0) {
         const isManagedCredential = raw.startsWith("veenc:") || isProbableLegacyEncryptedToken(raw);

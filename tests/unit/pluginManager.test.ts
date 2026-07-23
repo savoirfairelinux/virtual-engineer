@@ -87,6 +87,20 @@ describe("PluginManager", () => {
   });
 
   describe("credential migration", () => {
+    it("identifies integrations whose stored config is invalid JSON", async () => {
+      const store = makeStore([
+        makeIntegration({
+          id: "invalid-json",
+          provider: "redmine",
+          configJson: "{not-json",
+        }),
+      ]);
+      const mgr = new PluginManager(store, { adminAuthSecret: "migration-test-secret" });
+
+      await expect(mgr.migrateEncryptCredentials()).rejects.toThrow(/invalid-json/);
+      expect(store.upsertIntegration).not.toHaveBeenCalled();
+    });
+
     it("rejects startup credentials when ADMIN_AUTH_SECRET is missing", async () => {
       const store = makeStore([
         makeIntegration({

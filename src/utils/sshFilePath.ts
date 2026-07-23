@@ -12,6 +12,22 @@ function configuredSecretsRoots(): string[] {
   return Array.from(new Set([resolve(CONTAINER_SECRETS_ROOT), resolve(process.cwd(), "secrets")]));
 }
 
+function resolveOpenedFilePath(fd: number): string {
+  let procError: unknown;
+  try {
+    return String(realpathSync(`/proc/self/fd/${fd}`));
+  } catch (error) {
+    procError = error;
+  }
+  try {
+    return String(realpathSync(`/dev/fd/${fd}`));
+  } catch (devError) {
+    throw new Error("Unable to resolve the opened SSH file descriptor.", {
+      cause: new AggregateError([procError, devError]),
+    });
+  }
+}
+
 /** Return whether a user-configured SSH file path is contained in an approved secrets root. */
 export function isConfiguredSshFilePathAllowed(filePath: string): boolean {
   const candidate = resolve(filePath);
@@ -68,7 +84,7 @@ export function readSshFileSecure(filePath: string, label: string): Buffer {
         throw new Error(`${label} generated file is not owned by this process user: ${filePath}`);
       }
     } else if (configuredRoot !== undefined) {
-      const openedPath = String(realpathSync(`/proc/self/fd/${fd}`));
+      const openedPath = resolveOpenedFilePath(fd);
       const resolvedRoot = String(realpathSync(configuredRoot));
       if (!isInside(resolvedRoot, openedPath)) {
         throw new Error(`${label} path resolves outside its approved secrets directory: ${filePath}`);

@@ -109,7 +109,7 @@ export function isGeneratedSshFilePath(filePath: string): boolean {
 
 /**
  * Write PEM private key material to a deterministic temp file and return its path.
- * Idempotent — only writes when content differs from the existing file.
+ * Replaces the generated file atomically on every call.
  *
  * @param pem         Decrypted PEM private key string.
  * @param integrationId  Used to derive a stable temp path unique to this integration.
@@ -122,7 +122,7 @@ export function resolveKeyFromPem(pem: string, integrationId: string): string {
 /**
  * Write an OpenSSH public key to a deterministic temp file and return its path.
  * Used for SSH agent identity pinning (`-o IdentitiesOnly=yes -i <pub-key-file>`).
- * Idempotent — only writes when content differs from the existing file.
+ * Replaces the generated file atomically on every call.
  *
  * @param publicKey   OpenSSH-format public key string (from `ssh-add -L` or generated).
  * @param integrationId  Used to derive a stable temp path unique to this integration.

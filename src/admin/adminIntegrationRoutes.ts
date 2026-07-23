@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { getLogger } from "../logger.js";
 import type { Integration, IntegrationStore, OAuthApp, OAuthAppStore, ProviderId } from "../interfaces.js";
-import type { PluginManager } from "../plugins/pluginManager.js";
+import { getCredentialFieldKeys, type PluginManager } from "../plugins/pluginManager.js";
 import {
   getAllProviderDescriptors,
   getPluginCapabilities,
@@ -11,7 +11,7 @@ import {
   ModelDiscoveryConfigError,
   type ProviderDescriptor,
 } from "../plugins/registry.js";
-import { encryptToken, isEncryptedToken } from "../utils/encryption.js";
+import { encryptToken, isVersionedEncryptedToken } from "../utils/encryption.js";
 import { normalizeGitLabBaseUrl } from "../utils/gitlabAuth.js";
 import { writeJson, readBody, asRecord, toIsoTimestamp, SECRET_MASK, parseConfig, formatZodError } from "./adminRouteUtils.js";
 import { recordAudit, type AuditCapableStore } from "./adminAudit.js";
@@ -142,6 +142,10 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
       writeJson(res, 400, { error: validatedConfig.message || "Invalid integration config" });
       return;
     }
+    if (requiresCredentialEncryptionSecret(validatedConfig.data, descriptor, deps.adminAuthSecret)) {
+      writeJson(res, 400, { error: "ADMIN_AUTH_SECRET is required to encrypt credentials." });
+      return;
+    }
     const id = body["id"] as string || randomUUID();
     try {
       const integration = await deps.integrationStore.upsertIntegration({
@@ -230,6 +234,10 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
       : mergeIntegrationConfig(existing, asRecord(nextConfig));
     const validatedConfig = validateIntegrationConfig(descriptor.configSchema, mergedConfig, true);
     if (!validatedConfig.ok) { writeJson(res, 400, { error: validatedConfig.message || "Invalid integration config" }); return; }
+    if (requiresCredentialEncryptionSecret(validatedConfig.data, descriptor, deps.adminAuthSecret)) {
+      writeJson(res, 400, { error: "ADMIN_AUTH_SECRET is required to encrypt credentials." });
+      return;
+    }
     try {
       const nextConfigJson = JSON.stringify(encryptPasswordFields(validatedConfig.data, descriptor, deps.adminAuthSecret));
       const configChanged = nextConfig !== undefined && nextConfigJson !== existing.configJson;
@@ -671,9 +679,8 @@ function getStoredIntegrationConfig(integration: Integration): Record<string, un
 }
 
 /**
- * Encrypt all `type: "password"` fields in `config` before persisting to the database.
- * Values that are already encrypted (unchanged round-trip from an existing integration)
- * are left untouched to prevent double-encryption.
+ * Encrypt descriptor password fields and internal credentials before persistence.
+ * Values in the current encryption envelope are left untouched.
  * Returns a new object — `config` is not mutated.
  */
 function encryptPasswordFields(
@@ -682,13 +689,25 @@ function encryptPasswordFields(
   adminAuthSecret: string | undefined,
 ): Record<string, unknown> {
   const result: Record<string, unknown> = { ...config };
-  for (const field of descriptor.requiredFields.filter((f) => f.type === "password")) {
-    const raw = result[field.key];
+  for (const fieldKey of getCredentialFieldKeys(descriptor)) {
+    const raw = result[fieldKey];
     if (typeof raw !== "string" || raw.length === 0) continue;
-    if (isEncryptedToken(raw, adminAuthSecret)) continue;
-    result[field.key] = encryptToken(raw, adminAuthSecret);
+    if (isVersionedEncryptedToken(raw)) continue;
+    result[fieldKey] = encryptToken(raw, adminAuthSecret);
   }
   return result;
+}
+
+function requiresCredentialEncryptionSecret(
+  config: Record<string, unknown>,
+  descriptor: ProviderDescriptor,
+  adminAuthSecret: string | undefined,
+): boolean {
+  if (adminAuthSecret) return false;
+  return getCredentialFieldKeys(descriptor).some((fieldKey) => {
+    const value = config[fieldKey];
+    return typeof value === "string" && value.length > 0;
+  });
 }
 
 /** Remove any config keys not declared in the integration type's Zod schema. */
