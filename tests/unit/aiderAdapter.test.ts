@@ -160,6 +160,28 @@ describe("AiderAdapter", () => {
       expect(spec.env["LOCAL_SKILLS_PATH"]).toBe("team/skills");
     });
 
+    it("injects Aider native execution options", () => {
+      const adapter = new AiderAdapter();
+      const ctx = makeContext();
+      ctx.agentSession.providerOptions = {
+        chatMode: "architect",
+        reasoningEffort: "high",
+        thinkingTokens: 16000,
+        mapTokens: 4096,
+        autoLint: true,
+        autoTest: true,
+      };
+
+      expect(adapter.buildContainerSpec(ctx).env).toMatchObject({
+        AIDER_CHAT_MODE: "architect",
+        AIDER_REASONING_EFFORT: "high",
+        AIDER_THINKING_TOKENS: "16000",
+        AIDER_MAP_TOKENS: "4096",
+        AIDER_AUTO_LINT: "1",
+        AIDER_AUTO_TEST: "1",
+      });
+    });
+
     it("throws when no backend credentials are available", () => {
       const adapter = new AiderAdapter();
       const ctx = makeContext();

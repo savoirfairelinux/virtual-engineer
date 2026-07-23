@@ -17,6 +17,7 @@ vi.mock("fs", () => ({
 }));
 
 import { runAiderAgent } from "../../agent-worker/src/providers/aider.js";
+import { writeFileSync } from "fs";
 import type { ChildProcess } from "child_process";
 import { rmSync } from "fs";
 
@@ -31,6 +32,12 @@ function makeFakeChild(): ChildProcess {
 describe("runAiderAgent", () => {
   beforeEach(() => {
     spawnMock.mockReset();
+    delete process.env["AIDER_CHAT_MODE"];
+    delete process.env["AIDER_REASONING_EFFORT"];
+    delete process.env["AIDER_THINKING_TOKENS"];
+    delete process.env["AIDER_MAP_TOKENS"];
+    delete process.env["AIDER_AUTO_LINT"];
+    delete process.env["AIDER_AUTO_TEST"];
   });
 
   afterEach(() => {
@@ -42,7 +49,7 @@ describe("runAiderAgent", () => {
     spawnMock.mockReturnValue(fake);
     const promise = runAiderAgent("do the thing", {
       model: "gpt-4o",
-      systemPrompt: "sys",
+      agentInstructions: "sys",
       cwd: "/workspace",
       timeoutMs: 1000,
       mode: "codegen",
@@ -63,12 +70,75 @@ describe("runAiderAgent", () => {
     expect(args).not.toContain("--no-auto-commits");
   });
 
+  it("loads agent instructions as read-only conventions instead of merging them into the user message", async () => {
+    const fake = makeFakeChild();
+    spawnMock.mockReturnValue(fake);
+    const promise = runAiderAgent("workflow task", {
+      model: "gpt-4o",
+      agentInstructions: "permanent agent policy",
+      cwd: "/workspace",
+      timeoutMs: 1000,
+      mode: "codegen",
+    });
+    await new Promise((r) => setImmediate(r));
+    fake.emit("close", 0);
+    await promise;
+
+    const args = spawnMock.mock.calls[0]![1] as string[];
+    const writes = vi.mocked(writeFileSync).mock.calls;
+    expect(args).toContain("--read");
+    expect(args).toContain("/tmp/ve-aider-test/agent-instructions.md");
+    expect(writes).toContainEqual([
+      "/tmp/ve-aider-test/agent-instructions.md",
+      "permanent agent policy",
+      "utf8",
+    ]);
+    expect(writes).toContainEqual([
+      "/tmp/ve-aider-test/prompt.txt",
+      "workflow task",
+      "utf8",
+    ]);
+  });
+
+  it("maps advanced coding options to native Aider flags", async () => {
+    process.env["AIDER_CHAT_MODE"] = "architect";
+    process.env["AIDER_REASONING_EFFORT"] = "high";
+    process.env["AIDER_THINKING_TOKENS"] = "16000";
+    process.env["AIDER_MAP_TOKENS"] = "4096";
+    process.env["AIDER_AUTO_LINT"] = "1";
+    process.env["AIDER_AUTO_TEST"] = "1";
+    const fake = makeFakeChild();
+    spawnMock.mockReturnValue(fake);
+    const promise = runAiderAgent("workflow task", {
+      model: "o3",
+      agentInstructions: "policy",
+      cwd: "/workspace",
+      timeoutMs: 1000,
+      mode: "codegen",
+    });
+    await new Promise((r) => setImmediate(r));
+    fake.emit("close", 0);
+    await promise;
+
+    const args = spawnMock.mock.calls[0]![1] as string[];
+    expect(args).toEqual(expect.arrayContaining([
+      "--chat-mode", "architect",
+      "--reasoning-effort", "high",
+      "--thinking-tokens", "16000",
+      "--map-tokens", "4096",
+      "--auto-lint",
+      "--auto-test",
+    ]));
+    expect(args).not.toContain("--no-auto-lint");
+    expect(args).not.toContain("--no-auto-test");
+  });
+
   it("disables git and auto-commits for review mode (read-only workspace)", async () => {
     const fake = makeFakeChild();
     spawnMock.mockReturnValue(fake);
     const promise = runAiderAgent("review this", {
       model: "",
-      systemPrompt: "sys",
+      agentInstructions: "sys",
       cwd: "/workspace",
       timeoutMs: 1000,
       mode: "review",
@@ -95,7 +165,7 @@ describe("runAiderAgent", () => {
     spawnMock.mockReturnValue(fake);
     const promise = runAiderAgent("hi", {
       model: "gpt-4o",
-      systemPrompt: "sys",
+      agentInstructions: "sys",
       cwd: "/workspace",
       timeoutMs: 1000,
       mode: "codegen",
@@ -121,7 +191,7 @@ describe("runAiderAgent", () => {
     spawnMock.mockReturnValue(fake);
     const promise = runAiderAgent("hi", {
       model: "gpt-4o",
-      systemPrompt: "sys",
+      agentInstructions: "sys",
       cwd: "/workspace",
       timeoutMs: 1000,
       mode: "codegen",
@@ -160,7 +230,7 @@ describe("runAiderAgent", () => {
     spawnMock.mockReturnValue(fake);
     const promise = runAiderAgent("edit please", {
       model: "gpt-4o",
-      systemPrompt: "sys",
+      agentInstructions: "sys",
       cwd: "/workspace",
       timeoutMs: 1000,
       mode: "codegen",
@@ -184,7 +254,7 @@ describe("runAiderAgent", () => {
     spawnMock.mockReturnValue(fake);
     const promise = runAiderAgent("hi", {
       model: "gpt-4o",
-      systemPrompt: "sys",
+      agentInstructions: "sys",
       cwd: "/workspace",
       timeoutMs: 1000,
       mode: "codegen",
@@ -201,7 +271,7 @@ describe("runAiderAgent", () => {
     spawnMock.mockReturnValue(fake);
     const promise = runAiderAgent("hi", {
       model: "gpt-4o",
-      systemPrompt: "sys",
+      agentInstructions: "sys",
       cwd: "/workspace",
       timeoutMs: 1000,
       mode: "codegen",

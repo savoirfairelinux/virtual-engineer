@@ -1,37 +1,35 @@
 /**
  * Provider registry — maps an `AgentProvider` id to its runner implementation.
  *
- * Adding a new agent backend is a matter of implementing an `AgentRunner` and
- * registering it here; the orchestrator in `index.ts` dispatches purely through
- * `resolveRunner` and needs no provider-specific branching. An unknown provider
- * id is a hard error — there is no silent fallback.
+ * Adding a new agent backend is a matter of implementing an
+ * `AgentProviderDefinition` and registering it here; the orchestrator in
+ * `index.ts` dispatches through `resolveProvider` without provider-specific
+ * branching. An unknown provider id is a hard error — there is no silent fallback.
  */
-import { runClaudeAgent } from './claude.js';
-import { runCopilotAgent } from './copilot.js';
-import { runAiderAgent } from './aider.js';
-import type { AgentProvider, AgentRunner } from './types.js';
+import { CLAUDE_PROVIDER } from './claude.js';
+import { COPILOT_PROVIDER } from './copilot.js';
+import { AIDER_PROVIDER } from './aider.js';
+import type { AgentProviderDefinition } from './types.js';
 
-const AGENT_RUNNERS: Record<AgentProvider, AgentRunner> = {
-  copilot: runCopilotAgent,
-  claude: runClaudeAgent,
-  aider: runAiderAgent,
-};
+const AGENT_PROVIDERS = new Map<string, AgentProviderDefinition>(
+  [COPILOT_PROVIDER, CLAUDE_PROVIDER, AIDER_PROVIDER].map((provider) => [provider.id, provider])
+);
 
 /** The set of supported agent provider ids. */
-export const AGENT_PROVIDER_IDS = Object.keys(AGENT_RUNNERS) as AgentProvider[];
+export const AGENT_PROVIDER_IDS = [...AGENT_PROVIDERS.keys()];
 
 /** Type guard: true when `provider` is a supported agent provider id. */
-export function isAgentProvider(provider: string): provider is AgentProvider {
-  return Object.prototype.hasOwnProperty.call(AGENT_RUNNERS, provider);
+export function isAgentProvider(provider: string): boolean {
+  return AGENT_PROVIDERS.has(provider);
 }
 
-/** Resolve the runner for a provider id. Throws on an unknown provider. */
-export function resolveRunner(provider: string): AgentRunner {
-  const runner = AGENT_RUNNERS[provider as AgentProvider];
-  if (!runner) {
+/** Resolve the complete provider definition. Throws on an unknown provider. */
+export function resolveProvider(provider: string): AgentProviderDefinition {
+  const definition = AGENT_PROVIDERS.get(provider);
+  if (!definition) {
     throw new Error(
       `Unknown AGENT_PROVIDER "${provider}". Supported providers: ${AGENT_PROVIDER_IDS.join(', ')}.`,
     );
   }
-  return runner;
+  return definition;
 }

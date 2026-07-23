@@ -42,7 +42,7 @@ function makePrompt(id: string, content: string): Prompt {
         ? "Instructions Prompt"
         : id,
     content,
-    promptType: "user",
+    promptType: id.includes("system") ? "system" : "instructions",
     updatedAt: new Date(),
   };
 }
@@ -60,12 +60,12 @@ function makePromptStore(overrides: Record<string, string> = {}): PromptStore {
     getPrompt: vi.fn(async (id: string) => prompts[id] ?? null),
     upsertPrompt: vi.fn(async (id: string, content: string) => {
       const existing = prompts[id];
-      prompts[id] = { id, label: existing?.label ?? id, content, promptType: existing?.promptType ?? "user", updatedAt: new Date() };
+      prompts[id] = { id, label: existing?.label ?? id, content, promptType: existing?.promptType ?? "instructions", updatedAt: new Date() };
       return prompts[id]!;
     }),
-    createPrompt: vi.fn(async (label: string, content: string) => {
+    createPrompt: vi.fn(async (label: string, content: string, promptType) => {
       const id = label;
-      prompts[id] = { id, label, content, promptType: "user", updatedAt: new Date() };
+      prompts[id] = { id, label, content, promptType, updatedAt: new Date() };
       return prompts[id]!;
     }),
     deletePrompt: vi.fn(async (id: string) => {
@@ -254,6 +254,16 @@ describe("CopilotAdapter — prompt injection", () => {
 
       await expect(adapter.buildContainerSpecWithPrompts(makeContext(), {}))
         .rejects.toThrow(/system prompt 'system_generic_code' not found/i);
+    });
+
+    it("rejects configured prompts whose roles are crossed", async () => {
+      const adapter = new CopilotAdapter({});
+      adapter.setPromptStore(makePromptStore());
+
+      await expect(adapter.buildContainerSpecWithPrompts(makeContext({
+        systemPromptId: "instructions_generic_code",
+        instructionsPromptId: "system_generic_code",
+      }), {})).rejects.toThrow(/not a system prompt/i);
     });
 
     it("rejects task contexts that omit required prompt ids", async () => {

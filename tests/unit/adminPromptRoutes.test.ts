@@ -17,7 +17,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { createAdminServer } from "../../src/admin/adminServer.js";
 import type { AdminServerDependencies } from "../../src/admin/adminServer.js";
-import type { PromptStore, Prompt } from "../../src/interfaces.js";
+import type { PromptStore, Prompt, PromptType } from "../../src/interfaces.js";
 import type { Server } from "node:http";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -27,7 +27,7 @@ function makePrompt(overrides: Partial<Prompt> = {}): Prompt {
     id: "system",
     label: "System Prompt",
     content: "You are a software engineer.",
-    promptType: "user",
+    promptType: "instructions",
     updatedAt: new Date("2026-04-10T12:00:00.000Z"),
     ...overrides,
   };
@@ -45,12 +45,12 @@ function makePromptStore(initial: Prompt[] = []): PromptStore {
       const updated: Prompt = {
         id,
         label: existing?.label ?? id,
-        content,        promptType: existing?.promptType ?? "user",        updatedAt: new Date(),
+        content, promptType: existing?.promptType ?? "instructions", updatedAt: new Date(),
       };
       data.set(id, updated);
       return updated;
     }),
-    createPrompt: vi.fn(async (label: string, content: string) => {
+    createPrompt: vi.fn(async (label: string, content: string, promptType: PromptType) => {
       // Check for duplicates (case-insensitive)
       const normalized = label.toLowerCase().replace(/\s+/g, "-");
       for (const p of data.values()) {
@@ -66,7 +66,7 @@ function makePromptStore(initial: Prompt[] = []): PromptStore {
         throw err;
       }
       const id = normalized;
-      const prompt: Prompt = { id, label, content, promptType: "user", updatedAt: new Date() };
+      const prompt: Prompt = { id, label, content, promptType, updatedAt: new Date() };
       data.set(id, prompt);
       return prompt;
     }),
@@ -74,7 +74,7 @@ function makePromptStore(initial: Prompt[] = []): PromptStore {
       const BUILT_IN_IDS = new Set([
         'system_gerrit_code', 'system_gitlab_code',
         'system_gerrit_review', 'system_gitlab_review',
-        'user_gerrit_review', 'user_gitlab_review',
+        'instructions_gerrit_review', 'instructions_gitlab_review',
       ]);
       if (BUILT_IN_IDS.has(id)) {
         const err = new Error("Cannot delete built-in prompt");
@@ -161,8 +161,8 @@ describe("Admin API — Prompt routes", () => {
   let promptStore: PromptStore;
 
   const defaultPrompts: Prompt[] = [
-    makePrompt({ id: "system_gerrit_code", label: "System Prompt — Gerrit (code)", content: "You are a software engineer." }),
-    makePrompt({ id: "user_gerrit_review", label: "User Prompt — Gerrit (review)", content: "Use your file tools to implement the task." }),
+    makePrompt({ id: "system_gerrit_code", label: "System Prompt — Gerrit (code)", content: "You are a software engineer.", promptType: "system" }),
+    makePrompt({ id: "instructions_gerrit_review", label: "Instructions Prompt — Gerrit (review)", content: "Use your file tools to review the change." }),
   ];
 
   beforeEach(async () => {
@@ -248,12 +248,12 @@ describe("Admin API — Prompt routes", () => {
       expect(prompt["content"]).toBe("You are a software engineer.");
     });
 
-    it("returns 200 for the user_gerrit_review prompt", async () => {
-      const { status, body } = await fetchFromServer(server, "/api/admin/prompts/user_gerrit_review");
+    it("returns 200 for the Gerrit review instructions prompt", async () => {
+      const { status, body } = await fetchFromServer(server, "/api/admin/prompts/instructions_gerrit_review");
 
       expect(status).toBe(200);
       const prompt = body["prompt"] as Record<string, unknown>;
-      expect(prompt["id"]).toBe("user_gerrit_review");
+      expect(prompt["id"]).toBe("instructions_gerrit_review");
     });
 
     it("returns 404 for an unknown prompt id", async () => {
@@ -304,12 +304,12 @@ describe("Admin API — Prompt routes", () => {
     });
 
     it("persists the new content (subsequent GET returns updated value)", async () => {
-      await fetchFromServer(server, "/api/admin/prompts/user_gerrit_review", {
+      await fetchFromServer(server, "/api/admin/prompts/instructions_gerrit_review", {
         method: "PUT",
         body: { content: "Only write tests, never implementation." },
       });
 
-      const { body } = await fetchFromServer(server, "/api/admin/prompts/user_gerrit_review");
+      const { body } = await fetchFromServer(server, "/api/admin/prompts/instructions_gerrit_review");
       const prompt = body["prompt"] as Record<string, unknown>;
       expect(prompt["content"]).toBe("Only write tests, never implementation.");
     });
@@ -385,13 +385,13 @@ describe("Admin API — Prompt routes", () => {
     });
 
     it("calls promptStore.upsertPrompt with the correct id and content", async () => {
-      await fetchFromServer(server, "/api/admin/prompts/user_gerrit_review", {
+      await fetchFromServer(server, "/api/admin/prompts/instructions_gerrit_review", {
         method: "PUT",
         body: { content: "New instructions" },
       });
 
       expect(vi.mocked(promptStore.upsertPrompt)).toHaveBeenCalledWith(
-        "user_gerrit_review",
+        "instructions_gerrit_review",
         "New instructions"
       );
     });
@@ -403,26 +403,44 @@ describe("Admin API — Prompt routes", () => {
     it("returns 201 with the created prompt on success", async () => {
       const { status, body } = await fetchFromServer(server, "/api/admin/prompts", {
         method: "POST",
-        body: { label: "Test Prompt", content: "Test content" },
+        body: { label: "Test Prompt", content: "Test content", promptType: "instructions" },
       });
 
       expect(status).toBe(201);
       const prompt = body["prompt"] as Record<string, unknown>;
       expect(prompt["label"]).toBe("Test Prompt");
       expect(prompt["content"]).toBe("Test content");
+      expect(prompt["promptType"]).toBe("instructions");
       expect(typeof prompt["id"]).toBe("string");
     });
 
     it("calls promptStore.createPrompt with label and content", async () => {
       await fetchFromServer(server, "/api/admin/prompts", {
         method: "POST",
-        body: { label: "My New Prompt", content: "My content" },
+        body: { label: "My New Prompt", content: "My content", promptType: "system" },
       });
 
       expect(vi.mocked(promptStore.createPrompt)).toHaveBeenCalledWith(
         "My New Prompt",
-        "My content"
+        "My content",
+        "system"
       );
+    });
+
+    it("returns 400 when prompt type is missing or invalid", async () => {
+      const missing = await fetchFromServer(server, "/api/admin/prompts", {
+        method: "POST",
+        body: { label: "Missing Type", content: "content" },
+      });
+      const invalid = await fetchFromServer(server, "/api/admin/prompts", {
+        method: "POST",
+        body: { label: "Invalid Type", content: "content", promptType: "user" },
+      });
+
+      expect(missing.status).toBe(400);
+      expect(missing.body["error"]).toMatch(/type/i);
+      expect(invalid.status).toBe(400);
+      expect(invalid.body["error"]).toMatch(/system.*instructions/i);
     });
 
     it("returns 400 when label is missing", async () => {
@@ -467,13 +485,13 @@ describe("Admin API — Prompt routes", () => {
       // First create a prompt
       await fetchFromServer(server, "/api/admin/prompts", {
         method: "POST",
-        body: { label: "Unique Name", content: "content1" },
+        body: { label: "Unique Name", content: "content1", promptType: "instructions" },
       });
 
       // Try to create with the same label
       const { status, body } = await fetchFromServer(server, "/api/admin/prompts", {
         method: "POST",
-        body: { label: "Unique Name", content: "content2" },
+        body: { label: "Unique Name", content: "content2", promptType: "instructions" },
       });
 
       expect(status).toBe(409);
@@ -502,7 +520,7 @@ describe("Admin API — Prompt routes", () => {
     it("persists the created prompt (subsequent GET returns it)", async () => {
       const createRes = await fetchFromServer(server, "/api/admin/prompts", {
         method: "POST",
-        body: { label: "Persistent Prompt", content: "persistent content" },
+        body: { label: "Persistent Prompt", content: "persistent content", promptType: "instructions" },
       });
 
       const createdPrompt = createRes.body["prompt"] as Record<string, unknown>;
@@ -521,7 +539,7 @@ describe("Admin API — Prompt routes", () => {
     it("returns 204 on successful deletion", async () => {
       const createRes = await fetchFromServer(server, "/api/admin/prompts", {
         method: "POST",
-        body: { label: "To Delete", content: "content" },
+        body: { label: "To Delete", content: "content", promptType: "instructions" },
       });
 
       const id = (createRes.body["prompt"] as Record<string, unknown>)["id"] as string;
@@ -536,7 +554,7 @@ describe("Admin API — Prompt routes", () => {
     it("calls promptStore.deletePrompt with the correct id", async () => {
       const createRes = await fetchFromServer(server, "/api/admin/prompts", {
         method: "POST",
-        body: { label: "To Delete", content: "content" },
+        body: { label: "To Delete", content: "content", promptType: "instructions" },
       });
 
       const id = (createRes.body["prompt"] as Record<string, unknown>)["id"] as string;
@@ -551,7 +569,7 @@ describe("Admin API — Prompt routes", () => {
     it("removes the prompt from the database", async () => {
       const createRes = await fetchFromServer(server, "/api/admin/prompts", {
         method: "POST",
-        body: { label: "Delete Me", content: "content" },
+        body: { label: "Delete Me", content: "content", promptType: "instructions" },
       });
 
       const id = (createRes.body["prompt"] as Record<string, unknown>)["id"] as string;
@@ -573,8 +591,8 @@ describe("Admin API — Prompt routes", () => {
       expect(body["error"]).toMatch(/cannot delete|built-in/i);
     });
 
-    it("returns 409 when deleting the 'user_gerrit_review' built-in prompt", async () => {
-      const { status, body } = await fetchFromServer(server, "/api/admin/prompts/user_gerrit_review", {
+    it("returns 409 when deleting built-in review instructions", async () => {
+      const { status, body } = await fetchFromServer(server, "/api/admin/prompts/instructions_gerrit_review", {
         method: "DELETE",
       });
 
@@ -611,11 +629,11 @@ describe("Admin API — Prompt routes", () => {
     it("does not affect other prompts when one is deleted", async () => {
       const p1 = await fetchFromServer(server, "/api/admin/prompts", {
         method: "POST",
-        body: { label: "Prompt 1", content: "content1" },
+        body: { label: "Prompt 1", content: "content1", promptType: "instructions" },
       });
       const p2 = await fetchFromServer(server, "/api/admin/prompts", {
         method: "POST",
-        body: { label: "Prompt 2", content: "content2" },
+        body: { label: "Prompt 2", content: "content2", promptType: "instructions" },
       });
 
       const id1 = (p1.body["prompt"] as Record<string, unknown>)["id"] as string;

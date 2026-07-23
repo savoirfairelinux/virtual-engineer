@@ -14,6 +14,7 @@ import type {
 import { makeExternalChangeId } from "../interfaces.js";
 import { getLogger } from "../logger.js";
 import { decryptToken } from "../utils/encryption.js";
+import { assertPromptRole } from "../utils/promptRole.js";
 import { getConfig } from "../config.js";
 import { agentLogBus, pushToTaskBuffer } from "./agentEventBus.js";
 import { buildCodegenUserPrompt } from "./copilotAdapter.js";
@@ -23,6 +24,30 @@ import {
 } from "./containerSpecBuilders.js";
 
 const log = getLogger("claude-adapter");
+
+function claudeOptionEnv(options: Record<string, unknown> | undefined): Record<string, string> {
+  if (!options) return {};
+  const effort = options["effort"];
+  const thinkingMode = options["thinkingMode"];
+  const positiveNumber = (key: string): number | undefined => {
+    const value = options[key];
+    return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
+  };
+  const thinkingBudgetTokens = positiveNumber("thinkingBudgetTokens");
+  const maxTurns = positiveNumber("maxTurns");
+  const maxBudgetUsd = positiveNumber("maxBudgetUsd");
+  return {
+    ...(effort === "low" || effort === "medium" || effort === "high" || effort === "xhigh" || effort === "max"
+      ? { CLAUDE_EFFORT: effort }
+      : {}),
+    ...(thinkingMode === "adaptive" || thinkingMode === "enabled" || thinkingMode === "disabled"
+      ? { CLAUDE_THINKING_MODE: thinkingMode }
+      : {}),
+    ...(thinkingBudgetTokens !== undefined ? { CLAUDE_THINKING_BUDGET_TOKENS: String(thinkingBudgetTokens) } : {}),
+    ...(maxTurns !== undefined ? { CLAUDE_MAX_TURNS: String(maxTurns) } : {}),
+    ...(maxBudgetUsd !== undefined ? { CLAUDE_MAX_BUDGET_USD: String(maxBudgetUsd) } : {}),
+  };
+}
 
 export interface ClaudeAdapterConfig {
   /**
@@ -141,6 +166,7 @@ export class ClaudeAdapter implements AgentAdapter, ConfigurableAdapter {
       // sandboxed environment. Our container is a hardened, network-isolated sandbox.
       IS_SANDBOX: "1",
       ...(claudeModel ? { CLAUDE_MODEL: claudeModel } : {}),
+      ...claudeOptionEnv(session.providerOptions),
     };
 
     return buildCodegenContainerSpec(context, {
@@ -164,6 +190,10 @@ export class ClaudeAdapter implements AgentAdapter, ConfigurableAdapter {
       // Allow bypassPermissions as root inside the hardened sandbox container.
       IS_SANDBOX: "1",
       ...(reviewModel ? { CLAUDE_MODEL: reviewModel } : {}),
+      ...claudeOptionEnv(input.providerOptions),
+      ...(input.reviewOutputSchema !== undefined
+        ? { REVIEW_OUTPUT_SCHEMA: JSON.stringify(input.reviewOutputSchema) }
+        : {}),
     };
 
     return buildSharedReviewContainerSpec(input, {
@@ -230,6 +260,8 @@ export class ClaudeAdapter implements AgentAdapter, ConfigurableAdapter {
 
     if (!systemPrompt) throw new Error(`System prompt '${systemPromptId}' not found`);
     if (!instructionsPrompt) throw new Error(`Instructions prompt '${instructionsPromptId}' not found`);
+    assertPromptRole(systemPrompt, "system");
+    assertPromptRole(instructionsPrompt, "instructions");
 
     spec.env["SYSTEM_PROMPT"] = systemPrompt.content;
     spec.userPromptContent = buildCodegenUserPrompt(context, instructionsPrompt.content);

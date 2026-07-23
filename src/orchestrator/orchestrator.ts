@@ -39,6 +39,7 @@ import {
 } from "./reviewProgressService.js";
 import { clearTaskEventBuffer } from "../agents/agentEventBus.js";
 import { normalizeAgentResult, getModifiedFileCount } from "../agents/agentEventTypes.js";
+import { resolveProviderOptions } from "../agents/providerOptions.js";
 import type { VcsConnector } from "../vcs/vcsConnector.js";
 import { NO_REVIEW_SYSTEM } from "../vcs/vcsConnector.js";
 import { VcsConnectorFactory } from "../vcs/vcsFactory.js";
@@ -750,8 +751,7 @@ export class Orchestrator {
         return;
       }
       const resolvedCopilotModel = projectAgentRuntime.config.model?.trim() || undefined;
-      const _rawReasoningEffort = projectAgentRuntime.config.extra["reasoningEffort"];
-      const resolvedReasoningEffort = typeof _rawReasoningEffort === "string" ? _rawReasoningEffort : undefined;
+      const providerOptions = resolveProviderOptions(projectAgentRuntime.config.extra);
       if (!resolvedCopilotModel) {
         log.warn(
           { taskId: task.taskId, projectId: projectRecord?.id ?? null },
@@ -826,7 +826,7 @@ export class Orchestrator {
             ? { encryptedSessionToken: projectAgentRuntime.config.encryptedSessionToken }
             : {}),
           ...(resolvedCopilotModel ? { copilotModel: resolvedCopilotModel } : {}),
-          ...(resolvedReasoningEffort !== undefined ? { copilotReasoningEffort: resolvedReasoningEffort } : {}),
+          ...(Object.keys(providerOptions).length > 0 ? { providerOptions } : {}),
           // Aider backend credentials flow through `extra` (set by
           // resolveProjectAgentRuntime from the integration config).
           ...(typeof projectAgentRuntime?.config.extra["aiderBackend"] === "string"

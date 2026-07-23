@@ -19,7 +19,10 @@ vi.mock("../../agent-worker/src/skills.js", () => ({
   emitLocalSkillsLoaded: (...args: unknown[]) => mocks.emitLocalSkillsLoaded(...args),
 }));
 
-import { runClaudeAgent } from "../../agent-worker/src/providers/claude.js";
+import {
+  buildClaudeQueryOptions,
+  runClaudeAgent,
+} from "../../agent-worker/src/providers/claude.js";
 
 interface FakeStream extends AsyncIterable<unknown> {
   close: ReturnType<typeof vi.fn>;
@@ -37,7 +40,7 @@ function makeStream(messages: unknown[]): FakeStream {
 function makeOptions(overrides: Partial<AgentRunOptions> = {}): AgentRunOptions {
   return {
     model: "claude-sonnet",
-    systemPrompt: "Follow repository instructions",
+    agentInstructions: "Follow repository instructions",
     cwd: "/workspace",
     timeoutMs: 1_000,
     mode: "codegen",
@@ -148,7 +151,11 @@ describe("runClaudeAgent", () => {
       options: Record<string, unknown>;
     };
     expect(queryInput.options["model"]).toBeUndefined();
-    expect(queryInput.options["systemPrompt"]).toBe("Follow repository instructions");
+    expect(queryInput.options["systemPrompt"]).toEqual({
+      type: "preset",
+      preset: "claude_code",
+      append: "Follow repository instructions",
+    });
     expect(queryInput.options["settingSources"]).toEqual([]);
     expect(run.content).toBe("First finding\nSecond finding");
     expect(mocks.emitLocalSkillsLoaded).not.toHaveBeenCalled();
@@ -208,5 +215,57 @@ describe("runClaudeAgent", () => {
     expect(abortController?.signal.aborted).toBe(true);
     expect(stream.close).toHaveBeenCalledOnce();
     vi.useRealTimers();
+  });
+});
+
+describe("Claude worker native profile", () => {
+  it("preserves the Claude Code preset for review and requests structured output", () => {
+    const outputSchema = {
+      type: "object",
+      properties: { vote: { enum: [-1, 0, 1] } },
+      required: ["vote"],
+      additionalProperties: false,
+    };
+
+    const options = buildClaudeQueryOptions({
+      model: "claude-sonnet-4-6",
+      agentInstructions: "review policy",
+      cwd: "/workspace",
+      timeoutMs: 1000,
+      mode: "review",
+      reviewOutputSchema: outputSchema,
+    });
+
+    expect(options.systemPrompt).toEqual({
+      type: "preset",
+      preset: "claude_code",
+      append: "review policy",
+    });
+    expect(options.outputFormat).toEqual({ type: "json_schema", schema: outputSchema });
+    expect(options.tools).toEqual(["Read", "Glob", "Grep"]);
+    expect(options.permissionMode).toBe("dontAsk");
+  });
+
+  it("maps advanced effort, thinking, turn, and cost limits to the SDK", () => {
+    const options = buildClaudeQueryOptions({
+      model: "claude-opus-4-6",
+      agentInstructions: "policy",
+      cwd: "/workspace",
+      timeoutMs: 1000,
+      mode: "codegen",
+    }, {
+      effort: "max",
+      thinkingMode: "enabled",
+      thinkingBudgetTokens: 12_000,
+      maxTurns: 30,
+      maxBudgetUsd: 8.5,
+    });
+
+    expect(options).toMatchObject({
+      effort: "max",
+      thinking: { type: "enabled", budgetTokens: 12_000 },
+      maxTurns: 30,
+      maxBudgetUsd: 8.5,
+    });
   });
 });
