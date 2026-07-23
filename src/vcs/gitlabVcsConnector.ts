@@ -46,7 +46,7 @@ export class GitLabVcsConnector implements VcsConnector {
   /** Clone a GitLab repository via HTTP into the target directory. */
   async clone(repoUrl: string, branch: string, targetDir: string): Promise<void> {
     log.info(
-      { repoUrl, branch, targetDir },
+      { repoUrl: redactUrls(repoUrl), branch, targetDir },
       "cloning repository from GitLab via HTTP"
     );
 
@@ -61,7 +61,7 @@ export class GitLabVcsConnector implements VcsConnector {
     } catch (err: unknown) {
       const error = err instanceof Error ? err : new Error(String(err));
       throw new Error(
-        `Failed to clone GitLab repository: ${error.message.slice(0, 300)}`
+        redactUrls(`Failed to clone GitLab repository: ${error.message.slice(0, 300)}`)
       );
     }
   }

@@ -348,7 +348,7 @@ export function getCapabilityIntake(
 }
 
 /** Return the technical (non-domain) capabilities derived from descriptor hooks. */
-export function getProviderTechnicalCapabilities(descriptor: ProviderDescriptor): TechnicalCapability[] {
+function getProviderTechnicalCapabilities(descriptor: ProviderDescriptor): TechnicalCapability[] {
   const technical: TechnicalCapability[] = [];
   if (descriptor.oauth) technical.push("oauth");
   if (descriptor.discoverResources) technical.push("discovery");

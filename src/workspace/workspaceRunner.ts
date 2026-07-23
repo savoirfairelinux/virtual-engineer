@@ -14,6 +14,7 @@ import type {
 import type { AgentAdapter } from "../interfaces.js";
 import { createVolume, removeVolume, execInVolume, stopContainersUsingVolume } from "./dockerVolume.js";
 import { getLogger } from "../logger.js";
+import { redactUrls, redactDockerArgs } from "../utils/redactUrl.js";
 import { buildSkillsCliArgs, isSshSkillSource, parseRemoteSkillSources, skillsAgentId, sshSkillSourceCommandPort } from "./skillSources.js";
 import type { AgentProvider } from "./skillSources.js";
 
@@ -220,7 +221,7 @@ export class DockerWorkspaceRunner implements WorkspaceRunner {
 
     dockerArgs.push(spec.image, ...spec.command);
 
-    log.debug({ taskId: context.taskId, dockerArgs }, "agent container command");
+    log.debug({ taskId: context.taskId, dockerArgs: redactDockerArgs(dockerArgs) }, "agent container command");
 
     const stdoutChunks: string[] = [];
     const stderrChunks: string[] = [];
@@ -322,7 +323,7 @@ export class DockerWorkspaceRunner implements WorkspaceRunner {
   ): Promise<CloneResult> {
     try {
       log.info(
-        { taskId: handle.taskId, repoUrl, branch, volume: handle.volumeName },
+        { taskId: handle.taskId, repoUrl: redactUrls(repoUrl), branch, volume: handle.volumeName },
         "cloning repository into volume"
       );
       const result = await execInVolume({
@@ -337,9 +338,9 @@ export class DockerWorkspaceRunner implements WorkspaceRunner {
       }
       return { success: true, localPath: "/workspace" };
     } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : String(err);
+      const errorMsg = redactUrls(err instanceof Error ? err.message : String(err));
       log.error(
-        { taskId: handle.taskId, repoUrl, branch, error: errorMsg },
+        { taskId: handle.taskId, repoUrl: redactUrls(repoUrl), branch, error: errorMsg },
         "failed to clone repository"
       );
       return { success: false, localPath: "/workspace", error: errorMsg };
@@ -392,7 +393,7 @@ export class DockerWorkspaceRunner implements WorkspaceRunner {
         taskId: handle.taskId,
         targetCount: sorted.length,
         rootRepoKey: root.repoKey,
-        rootCloneUrl: root.cloneUrl,
+        rootCloneUrl: redactUrls(root.cloneUrl),
       },
       "preparing project workspace (multi push target via volume)"
     );
@@ -407,7 +408,7 @@ export class DockerWorkspaceRunner implements WorkspaceRunner {
       ...(sshKnownHostsPath !== undefined ? { sshKnownHostsPath } : {}),
     });
     if (rootResult.exitCode !== 0) {
-      const errorMsg = rootResult.stderr.slice(0, 500);
+      const errorMsg = redactUrls(rootResult.stderr.slice(0, 500));
       log.error(
         { taskId: handle.taskId, repoKey: root.repoKey, error: errorMsg },
         "root push target clone failed"
@@ -441,7 +442,7 @@ export class DockerWorkspaceRunner implements WorkspaceRunner {
         ...(sshKnownHostsPath !== undefined ? { sshKnownHostsPath } : {}),
       });
       if (cloneResult.exitCode !== 0) {
-        const errorMsg = cloneResult.stderr.slice(0, 300);
+        const errorMsg = redactUrls(cloneResult.stderr.slice(0, 300));
         log.warn(
           { taskId: handle.taskId, repoKey: target.repoKey, localPath: target.localPath, error: errorMsg },
           "push target clone failed; continuing with remaining targets"
@@ -677,7 +678,7 @@ export class DockerWorkspaceRunner implements WorkspaceRunner {
 
     dockerArgs.push(spec.image, ...spec.command);
 
-    log.debug({ taskId: handle.taskId, dockerArgs }, "review container command");
+    log.debug({ taskId: handle.taskId, dockerArgs: redactDockerArgs(dockerArgs) }, "review container command");
 
     const stdoutChunks: string[] = [];
     const stderrChunks: string[] = [];

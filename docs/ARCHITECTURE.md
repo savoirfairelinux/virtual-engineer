@@ -142,8 +142,6 @@ src/
 
   review/               # Code-review workflow
     reviewOrchestrator.ts # REVIEW_PENDING → REVIEW_DONE lifecycle
-    copilotReviewAgent.ts # LEGACY host-side Copilot SDK client (unused; reviews
-                          # run in-container via REVIEW_MODE=1, see below)
     reviewPromptBuilder.ts
     reviewResultParser.ts
     commentFilter.ts      # Filters comments to lines present in the diff
@@ -255,7 +253,7 @@ Tick-based polling with exponential backoff on consecutive failures.
 ```
 
 - Backoff: doubles each failure (capped), resets on success.
-- Concurrency: skips projects where `ConcurrencyTracker.canStart()` returns false; logs at most once per tick.
+- Concurrency: polling discovers eligible work without pre-gating whole projects. `Orchestrator.runAgentCycle()` acquires capacity around the Docker-heavy agent phase; tasks deferred in `CONTEXT_BUILDING` or `RETRY_CYCLE` are re-driven on later ticks.
 - Review polling: the same tick also drives `pollInReviewTasks()` (feedback on open changes), `pollReviewWatchingTasks()` (patchset / merge status), and `pollReviewProjects()` (review-assignment discovery via `ReviewAssignmentTrigger`), with per-change review-poll cooldowns.
 - Hot-reload: `setProjectMode()` refreshes the project store and plugin manager reference without a restart.
 
@@ -285,13 +283,15 @@ Manages the **Docker volume lifecycle** for each agent cycle. All VCS operations
        │           virtual-engineer-workspace:latest \
        │           node /agent-worker/dist/index.js
        │
-       ├─ execInVolume(commit helper)  ← git add + git commit (with Change-Id)
-       ├─ execInVolume(push helper)    ← git push refs/for/<branch>
+      ├─ worker normalizes commits    ← Change-Ids + configured ticket trailer
+      ├─ execInVolume(push helper)    ← push existing HEAD commit chain
        │
        └─ removeVolume(ve-ws) + removeVolume(ve-home)
 ```
 
 `execInVolume` injects SSH keys via a base64-encoded env var (decoded inside the helper and written to `/tmp/ssh-key`) to avoid host-path bind-mount issues when the orchestrator itself runs in Docker.
+
+The worker validates the commits created during the agent run and injects missing Change-Ids and configured ticket trailers before returning. Project pushes require `VcsConnector.pushDirect()`: the host owns credentials and push orchestration but does not synthesize another commit.
 
 ---
 
@@ -393,7 +393,7 @@ The agent container is placed on `virtual-engineer_ve-agent-net` — a dedicated
 
 ---
 
-### 3.6.1 ClaudeAdapter
+#### 3.6.1 ClaudeAdapter
 
 `src/agents/claudeAdapter.ts`
 
@@ -408,14 +408,14 @@ Connection methods live on the `claude` descriptor (`src/plugins/descriptors/cla
 
 ---
 
-### 3.6.2 AiderAdapter
+#### 3.6.2 AiderAdapter
 
 `src/agents/aiderAdapter.ts`
 
-An alternative `agent_execution` adapter that runs the **Aider** CLI (https://aider.chat, a Python package wrapping any LLM backend via litellm) inside the same hardened container. It mirrors `CopilotAdapter`/`ClaudeAdapter` (same security args, `/ve-home` HOME volume, `__ve_event` stderr protocol, commit collection, and `AgentResult` contract) but:
+An alternative `agent_execution` adapter that runs the [Aider CLI](https://aider.chat) (a Python package wrapping any LLM backend via litellm) inside the same hardened container. It mirrors `CopilotAdapter`/`ClaudeAdapter` (same security args, `/ve-home` HOME volume, `__ve_event` stderr protocol, commit collection, and `AgentResult` contract) but:
 
 - injects `AGENT_PROVIDER=aider` + `AIDER_MODEL` (only when configured) and the selected backend's litellm auth env var(s);
-- dispatches in the worker: `agent-worker/src/index.ts` resolves the runner via `providers/registry.ts` and calls `providers/aider.ts` `runAiderAgent()` when `AGENT_PROVIDER=aider`, which spawns `aider --message-file <prompt> --yes --no-pretty --no-stream --commit-prompt <conventional-commits>` as a subprocess and maps its streamed output onto the shared event/commit/result pipeline. Coding cycles use `--auto-commits`; review cycles use `--chat-mode ask --no-auto-commits --no-dirty-commits` (git stays enabled so Aider can build its repo-map).
+- dispatches in the worker: `agent-worker/src/index.ts` resolves the runner via `providers/registry.ts` and calls `providers/aider.ts` `runAiderAgent()` when `AGENT_PROVIDER=aider`. Coding cycles use `--no-stream --git --auto-commits --dirty-commits --commit-prompt <conventional-commits>`. Review cycles omit `--no-stream` and use `--no-git --chat-mode ask --no-auto-commits --no-dirty-commits`; disabling Git avoids `.git/config.lock` writes in the read-only review workspace.
 
 The adapter injects **no** default model: when the agent config leaves the model unset, `AIDER_MODEL` is omitted and the Aider CLI picks its own default. Six LLM backends are declared on the `aider` descriptor (`src/plugins/descriptors/aider.ts`, `aiderBackend` selector): `openai` → `OPENAI_API_KEY`; `anthropic` → `ANTHROPIC_API_KEY`; `ollama` → `OLLAMA_API_BASE` (no key); `openrouter` → `OPENROUTER_API_KEY`; `deepseek` → `DEEPSEEK_API_KEY`; `openai_compat` → `OPENAI_API_KEY` + `OPENAI_API_BASE`. `orchestrator.resolveProjectAgentRuntime` forwards these from the integration config onto `AgentSession` via `ResolvedAgentConfig.extra`. The Aider CLI is installed in the agent image via `uv tool install aider-chat` (see `Dockerfile.agent`). Cost columns stay null (Aider has no AIU); token usage is still emitted.
 
@@ -688,7 +688,8 @@ projects
   post_clone_script (bash, runs on host after clone)
   skill_discovery_enabled (default 0 — trust gate for local skills)
   local_skills_path (default '.github/skills' — workspace-relative local skills dir)
-  skill_sources_json (default '[]' — remote npx skills sources installed when configured)
+  skill_sources_json (DB/API default '[]' — remote npx skills sources installed when configured;
+                      the admin new-project form preloads the SFL agent-skills SSH source)
   enabled (default 0)
 
 project_integration_bindings   ← one row per (project, capability)
@@ -775,13 +776,19 @@ Webhook secrets are per-integration (stored in `configJson.webhookSecret`), rota
 
 ### Image (`Dockerfile.agent`)
 
-Base: `node:24-bookworm-slim`. Includes: `git`, `openssh-client`, `curl`, `jq`, GitHub CLI (`gh`).
+Base: `node:24-bookworm-slim`. Includes `git`, `openssh-client`, `curl`, `jq`, GitHub CLI (`gh`), Python 3, and Aider installed as an isolated `uv` tool.
 
-```
+```dockerfile
 FROM node:24-bookworm-slim
-RUN apt-get install git openssh-client curl ca-certificates jq gh
+RUN apt-get install git openssh-client curl ca-certificates jq python3 python3-venv
+RUN curl -LsSf https://astral.sh/uv/install.sh | UV_VERSION=0.11.30 sh \
+  && /root/.local/bin/uv tool install --python python3 aider-chat==0.86.2 \
+  && ln -s /root/.local/bin/aider /usr/local/bin/aider
+# GitHub CLI is installed from the official apt repository.
 COPY agent-worker/ /agent-worker/
-RUN npm --prefix /agent-worker ci --omit=dev
+RUN npm --prefix /agent-worker ci --no-fund \
+  && npm --prefix /agent-worker run build \
+  && npm --prefix /agent-worker prune --omit=dev --no-fund
 WORKDIR /workspace
 ```
 

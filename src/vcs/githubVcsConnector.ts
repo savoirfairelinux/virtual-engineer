@@ -49,7 +49,10 @@ export class GitHubVcsConnector implements VcsConnector {
 
   /** Clone a GitHub repository via HTTPS into the target directory. */
   async clone(repoUrl: string, branch: string, targetDir: string): Promise<void> {
-    log.info({ repoUrl, branch, targetDir }, "cloning repository from GitHub via HTTPS");
+    log.info(
+      { repoUrl: redactUrls(repoUrl), branch, targetDir },
+      "cloning repository from GitHub via HTTPS"
+    );
 
     try {
       execFileSync("git", ["clone", "--branch", branch, "--depth", "1", repoUrl, targetDir], {
@@ -60,7 +63,9 @@ export class GitHubVcsConnector implements VcsConnector {
       log.info({ targetDir }, "repository cloned successfully");
     } catch (err: unknown) {
       const error = err instanceof Error ? err : new Error(String(err));
-      throw new Error(`Failed to clone ${repoUrl}: ${error.message.slice(0, 500)}`);
+      throw new Error(
+        redactUrls(`Failed to clone ${repoUrl}: ${error.message.slice(0, 500)}`)
+      );
     }
   }
 

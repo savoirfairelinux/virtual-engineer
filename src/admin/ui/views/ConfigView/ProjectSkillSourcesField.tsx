@@ -164,7 +164,7 @@ export function ProjectSkillSourcesField({
 
   return (
     <Field
-      label="Local Project Skill"
+      label="Local Project Skills"
       hint="Enable loading local repository skills from the configured workspace path. Remote sources below are installed when configured. Only use trusted skills."
     >
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>

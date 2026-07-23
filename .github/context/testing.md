@@ -31,7 +31,7 @@ tests/
 | Agents / Copilot | `copilotAdapter` (+ `.promptInjection`), `copilotConnectionValidator`, `copilotOAuthService`, `copilotModelsService`, `providerAuthService`, `mockAgentAdapter`, `agentEventTypes` (+ `.normalization`), `workerCommitProtocol`, `workerNetworkGuard`, `workerSkills`, `workerLocalSkills` |
 | Agents / Claude | `claudeAdapter`, `claudeConnectionValidator`, `claudeModelsService` |
 | Agents / Aider | `aiderAdapter`, `aiderDescriptor`, `aiderConnectionValidator`, `aiderModelsService`, `aiderWorker` |
-| Review runtime | `copilotReviewAgent`, `reviewOrchestrator`, `reviewPromptBuilder`, `reviewResultParser`, `reviewLiveLogs`, `commentHash`, `commentSeverity`, `revisionPatchset` |
+| Review runtime | `reviewOrchestrator`, `reviewPromptBuilder`, `reviewResultParser`, `reviewLiveLogs`, `commentHash`, `commentSeverity`, `revisionPatchset` |
 | Cost tracking | `cycleCost`, `stateStore.cost`, `adminCostRoutes` |
 | Plugins / runtime wiring | `pluginManager` (+ `.multiInstance`), `registry`, `runtimeBootstrap` (historical name; covers bootstrap wiring in `src/index.ts`), `integrationStreamEvents` |
 | Webhooks | `webhookServer`, `webhookHandlerRegistry` (+ the per-provider handlers listed above) |
@@ -85,3 +85,11 @@ npm test            # unit + integration
 npm run typecheck   # zero TS errors
 npm run lint        # zero ESLint errors
 ```
+
+## Related docs
+
+- [INDEX.md](INDEX.md) — navigable context index
+- [configuration.md](configuration.md) — env-var stubbing and `resetConfig`
+- [modules/orchestrator.md](modules/orchestrator.md) — orchestrator test families
+- [modules/agents.md](modules/agents.md) — agent test families
+- [copilot-instructions.md](../copilot-instructions.md) — Build & Test block (always-loaded)
