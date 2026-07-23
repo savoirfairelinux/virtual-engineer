@@ -397,7 +397,7 @@ The agent container is placed on `virtual-engineer_ve-agent-net` — a dedicated
 
 `src/agents/claudeAdapter.ts`
 
-An alternative `agent_execution` adapter that runs Anthropic **Claude Code** via Anthropic's Claude tooling inside the same hardened container. It mirrors `CopilotAdapter` (same security args, `/ve-home` HOME volume, `__ve_event` stderr protocol, commit collection, and `AgentResult` contract) but:
+An alternative `agent_execution` adapter that runs Anthropic **Claude Code** via the `@anthropic-ai/claude-agent-sdk` inside the same hardened container. It mirrors `CopilotAdapter` (same security args, `/ve-home` HOME volume, `__ve_event` stderr protocol, commit collection, and `AgentResult` contract) but:
 
 - injects `AGENT_PROVIDER=claude` + `CLAUDE_MODEL` and exactly one auth env var — `ANTHROPIC_API_KEY` (api-key integrations, carried via the generic `apiKey`/`githubToken` field) or `CLAUDE_CODE_OAUTH_TOKEN` (subscription integrations, carried via `encryptedSessionToken`);
 - dispatches in the worker: `agent-worker/src/index.ts` resolves the runner via `providers/registry.ts` and calls `providers/claude.ts` `runClaudeAgent()` when `AGENT_PROVIDER=claude`, which drives the SDK `query()` and maps its message stream onto the shared event/commit/result pipeline.
@@ -781,7 +781,7 @@ Base: `node:24-bookworm-slim`. Includes `git`, `openssh-client`, `curl`, `jq`, G
 ```dockerfile
 FROM node:24-bookworm-slim
 RUN apt-get install git openssh-client curl ca-certificates jq python3 python3-venv
-RUN curl -LsSf https://astral.sh/uv/install.sh | UV_VERSION=0.6.0 sh \
+RUN curl -LsSf https://astral.sh/uv/install.sh | UV_VERSION=0.11.30 sh \
   && /root/.local/bin/uv tool install --python python3 aider-chat==0.86.2 \
   && ln -s /root/.local/bin/aider /usr/local/bin/aider
 # GitHub CLI is installed from the official apt repository.
