@@ -22,7 +22,7 @@ import {
   makeTaskId,
   makeTicketId,
 } from "../interfaces.js";
-import { buildReviewPrompt } from "./reviewPromptBuilder.js";
+import { buildReviewPrompt, type SinceLastReviewDelta } from "./reviewPromptBuilder.js";
 import { computeVote, parseReviewResult } from "./reviewResultParser.js";
 import { filterCommentsByAllowedFiles } from "./commentFilter.js";
 import { computeCommentHash, computeThreadReplyHash } from "./commentHash.js";
@@ -461,6 +461,36 @@ export class ReviewOrchestrator {
         }
       }
 
+      // On a re-review, surface what changed since the patchset VE last
+      // reviewed so the agent focuses new findings on the delta. Guarded:
+      // providers without inter-patchset diff support skip this entirely, and
+      // empty deltas are dropped by the prompt builder.
+      let sinceLastReview: SinceLastReviewDelta | undefined;
+      const previousReviewed = task.reviewedPatchset;
+      if (
+        previousReviewed !== null &&
+        previousReviewed < details.currentPatchset &&
+        typeof this.deps.reviewProvider.getInterPatchsetDiff === "function"
+      ) {
+        try {
+          const deltaDiff = await this.deps.reviewProvider.getInterPatchsetDiff(
+            details,
+            previousReviewed,
+            details.currentPatchset
+          );
+          sinceLastReview = {
+            fromPatchset: previousReviewed,
+            toPatchset: details.currentPatchset,
+            diff: deltaDiff,
+          };
+        } catch (err) {
+          log.warn(
+            { err, taskId, fromPatchset: previousReviewed, toPatchset: details.currentPatchset },
+            "failed to compute inter-patchset delta; continuing with full diff only"
+          );
+        }
+      }
+
       const prompt = buildReviewPrompt({
         details,
         diff,
@@ -476,6 +506,7 @@ export class ReviewOrchestrator {
           : {}),
         ...(eligibleThreads.length > 0 ? { discussionThreads: eligibleThreads } : {}),
         ...(this.deps.maxDiffChars !== undefined ? { maxDiffChars: this.deps.maxDiffChars } : {}),
+        ...(sinceLastReview !== undefined ? { sinceLastReview } : {}),
       });
 
       emitReviewEvent("review.prompt_built", { promptLength: prompt.length, patchset: details.currentPatchset });
@@ -616,10 +647,12 @@ export class ReviewOrchestrator {
         repliesToPost.push({ threadId: reply.threadId, message, handledHash: entry.handledHash });
       }
 
-      // Avoid re-posting an identical verdict on re-reviews. When a pass
-      // finds nothing new to say (no inline comments, no folded notes, no
-      // replies) and the overall vote matches the last review cycle, stay
-      // silent instead of spamming another summary + vote notification.
+      // Avoid re-posting an identical verdict on re-reviews. When a pass finds
+      // nothing new to say (no inline comments, no folded notes) and the overall
+      // vote matches the last review cycle, stay silent instead of spamming
+      // another summary + vote notification. This gate is decoupled from
+      // discussion replies: a pending reply is always delivered through its own
+      // path below and never forces the verdict to be re-posted.
       const hasNothingNew = commentsToPost.length === 0 && folded.length === 0;
       const previousVote = await this.getLastReviewVote(taskId);
       const skipPosting =
@@ -627,8 +660,7 @@ export class ReviewOrchestrator {
         cycleNumber > 1 &&
         hasNothingNew &&
         previousVote !== null &&
-        previousVote === vote &&
-        repliesToPost.length === 0;
+        previousVote === vote;
 
       emitReviewEvent("review.posting_comments", {
         commentCount: commentsToPost.length,

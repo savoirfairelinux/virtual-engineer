@@ -1006,6 +1006,152 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
   });
 });
 
+describe("ReviewOrchestrator.runReview - inter-patchset delta", () => {
+  it("fetches the delta and injects it into the prompt on a re-review", async () => {
+    const initial = makeTask({
+      state: "REVIEW_WATCHING",
+      cycleCount: 1,
+      reviewedPatchset: 2,
+      currentPatchset: 3,
+    });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+
+    (mocks.provider.getChangeDetails as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makeDetails({ currentPatchset: 3 })
+    );
+    const getInterPatchsetDiff = vi.fn(async () =>
+      makeDiff({
+        patchset: 3,
+        files: [{ path: "src/a.ts", status: "modified", patch: "+delta-line" }],
+      })
+    );
+    mocks.provider.getInterPatchsetDiff =
+      getInterPatchsetDiff as NonNullable<ReviewProvider["getInterPatchsetDiff"]>;
+
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+    await orch.runReview(initial.taskId);
+
+    expect(getInterPatchsetDiff).toHaveBeenCalledWith(
+      expect.objectContaining({ changeId: CHANGE_ID, currentPatchset: 3 }),
+      2,
+      3
+    );
+    const prompt = runner.runReviewInDocker.mock.calls[0]?.[1]?.prompt as string;
+    expect(prompt).toContain("## Changes since last reviewed patchset (PS 2 \u2192 3)");
+    expect(prompt).toContain("+delta-line");
+  });
+
+  it("does not fetch a delta on the first review (no prior reviewed patchset)", async () => {
+    const initial = makeTask({
+      state: "REVIEW_PENDING",
+      reviewedPatchset: null,
+      currentPatchset: 2,
+    });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+    const getInterPatchsetDiff = vi.fn(async () => makeDiff());
+    mocks.provider.getInterPatchsetDiff =
+      getInterPatchsetDiff as NonNullable<ReviewProvider["getInterPatchsetDiff"]>;
+
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+    await orch.runReview(initial.taskId);
+
+    expect(getInterPatchsetDiff).not.toHaveBeenCalled();
+    const prompt = runner.runReviewInDocker.mock.calls[0]?.[1]?.prompt as string;
+    expect(prompt).not.toContain("## Changes since last reviewed patchset");
+  });
+
+  it("does not fetch a delta when the provider lacks getInterPatchsetDiff", async () => {
+    const initial = makeTask({
+      state: "REVIEW_WATCHING",
+      cycleCount: 1,
+      reviewedPatchset: 2,
+      currentPatchset: 3,
+    });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+    (mocks.provider.getChangeDetails as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makeDetails({ currentPatchset: 3 })
+    );
+    // Provider has no getInterPatchsetDiff (default mock omits it).
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+    await orch.runReview(initial.taskId);
+
+    const prompt = runner.runReviewInDocker.mock.calls[0]?.[1]?.prompt as string;
+    expect(prompt).not.toContain("## Changes since last reviewed patchset");
+  });
+
+  it("degrades gracefully when the delta fetch fails", async () => {
+    const initial = makeTask({
+      state: "REVIEW_WATCHING",
+      cycleCount: 1,
+      reviewedPatchset: 2,
+      currentPatchset: 3,
+    });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+    (mocks.provider.getChangeDetails as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makeDetails({ currentPatchset: 3 })
+    );
+    mocks.provider.getInterPatchsetDiff = vi.fn(async () => {
+      throw new Error("fetch failed");
+    }) as NonNullable<ReviewProvider["getInterPatchsetDiff"]>;
+
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+    await expect(orch.runReview(initial.taskId)).resolves.toBeUndefined();
+    const prompt = runner.runReviewInDocker.mock.calls[0]?.[1]?.prompt as string;
+    expect(prompt).not.toContain("## Changes since last reviewed patchset");
+  });
+
+  it("does not fetch a delta when reviewedPatchset equals currentPatchset", async () => {
+    const initial = makeTask({
+      state: "REVIEW_WATCHING",
+      cycleCount: 1,
+      reviewedPatchset: 3,
+      currentPatchset: 3,
+    });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+    (mocks.provider.getChangeDetails as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makeDetails({ currentPatchset: 3 })
+    );
+    const getInterPatchsetDiff = vi.fn(async () => makeDiff());
+    mocks.provider.getInterPatchsetDiff =
+      getInterPatchsetDiff as NonNullable<ReviewProvider["getInterPatchsetDiff"]>;
+
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+    await orch.runReview(initial.taskId);
+
+    expect(getInterPatchsetDiff).not.toHaveBeenCalled();
+    const prompt = runner.runReviewInDocker.mock.calls[0]?.[1]?.prompt as string;
+    expect(prompt).not.toContain("## Changes since last reviewed patchset");
+  });
+
+  it("omits the delta section in the prompt when the delta contains no files", async () => {
+    const initial = makeTask({
+      state: "REVIEW_WATCHING",
+      cycleCount: 1,
+      reviewedPatchset: 2,
+      currentPatchset: 3,
+    });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+    (mocks.provider.getChangeDetails as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makeDetails({ currentPatchset: 3 })
+    );
+    mocks.provider.getInterPatchsetDiff = vi.fn(async () =>
+      makeDiff({ patchset: 3, files: [] })
+    ) as NonNullable<ReviewProvider["getInterPatchsetDiff"]>;
+
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+    await orch.runReview(initial.taskId);
+
+    const prompt = runner.runReviewInDocker.mock.calls[0]?.[1]?.prompt as string;
+    expect(prompt).not.toContain("## Changes since last reviewed patchset");
+  });
+});
+
 describe("ReviewOrchestrator.runReview â failure paths", () => {
   it("marks task REVIEW_FAILED and rethrows on runReviewInDocker failure", async () => {
     const initial = makeTask({ state: "REVIEW_PENDING" });
@@ -1296,6 +1442,35 @@ describe("ReviewOrchestrator.runReview - discussion replies", () => {
 
     expect(postThreadReply).toHaveBeenCalledWith(CHANGE_ID, 2, "disc-1", "Replying here.");
     expect(mocks.store.markThreadReplyPosted).toHaveBeenCalledOnce();
+    // The verdict (summary + vote) is unchanged, so it must NOT be re-posted just
+    // because a reply was delivered — replies and the verdict are decoupled.
+    expect(mocks.provider.postReviewComments).not.toHaveBeenCalled();
+    expect(mocks.provider.vote).not.toHaveBeenCalled();
+  });
+
+  it("re-posts the verdict alongside a reply when a genuinely new finding exists", async () => {
+    const initial = makeTask({ state: "REVIEW_WATCHING", cycleCount: 1 });
+    const mocks = makeMocks(initial);
+    // Prior vote was 0; this pass surfaces a new blocking comment, so the
+    // verdict genuinely changed and must be posted even though a reply also goes out.
+    (mocks.store.getAgentCycles as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { result: { metadata: { vote: 0 } } },
+    ]);
+    const postThreadReply = withThreads(mocks, [makeThread()]);
+    const { runner } = makeWorkspaceRunner(
+      rawWithReplies([{ threadId: "disc-1", message: "Replying here." }], {
+        comments: [{ file: "src/a.ts", line: 1, message: "Brand new bug", severity: "error" }],
+        summary: "blocking",
+        score: -1,
+      })
+    );
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+
+    await orch.runReview(initial.taskId);
+
+    expect(postThreadReply).toHaveBeenCalledOnce();
+    // A new finding → the verdict IS posted.
+    expect(mocks.provider.vote).toHaveBeenCalledWith(CHANGE_ID, 2, -1, "blocking");
   });
 
   it("ignores discussion threads when the provider lacks thread support", async () => {
