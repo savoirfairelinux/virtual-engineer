@@ -41,6 +41,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
         capabilities: getPluginCapabilities(d),
         domainCapabilities: getProviderDomainCapabilities(d),
         requiredFields: d.requiredFields,
+        agentConfigFields: d.capabilities.agent_execution?.configFields ?? [],
         // Any provider whose descriptor implements generateSshKeyPair supports
         // the generic SSH auth UI (agent / generated-key / custom-path selector).
         supportsSshAuth: typeof d.generateSshKeyPair === "function",

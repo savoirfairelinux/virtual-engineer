@@ -127,6 +127,20 @@ export function createCopilotDescriptor(adminAuthSecret?: string): ProviderDescr
     },
     capabilities: {
       agent_execution: {
+        configFields: [
+          {
+            key: "reasoningEffort",
+            label: "Reasoning Effort",
+            type: "select",
+            required: false,
+            options: [
+              { value: "low", label: "Low" },
+              { value: "medium", label: "Medium" },
+              { value: "high", label: "High" },
+              { value: "xhigh", label: "Extra high" },
+            ],
+          },
+        ],
         buildAdapter: (context) =>
           new CopilotAdapter({
             model: DEFAULT_COPILOT_MODEL,

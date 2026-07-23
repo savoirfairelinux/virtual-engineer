@@ -1,7 +1,8 @@
 import { useState, useEffect } from "react";
 import { Modal, Field, FieldInput, FieldSelect, FormError, FormRow, FormActions } from "../../components/Modal.tsx";
+import { Icon } from "../../components/Icon.tsx";
 import { api } from "../../api.ts";
-import type { ApiAgent, ApiIntegration, ApiPrompt } from "../../types.ts";
+import type { ApiAgent, ApiIntegration, ApiPlugin, ApiPrompt, PluginField } from "../../types.ts";
 
 interface AvailableModel {
   id: string;
@@ -16,6 +17,7 @@ interface AvailableModel {
 interface Props {
   agent?: ApiAgent | undefined;
   integrations: ApiIntegration[];
+  plugins: ApiPlugin[];
   prompts: ApiPrompt[];
   onClose: () => void;
   onSaved: () => void;
@@ -30,10 +32,41 @@ interface AgentForm {
   systemPromptId: string;
   instructionsPromptId: string;
   feedbackInstructionsPromptId: string;
+  providerOptions: Record<string, string>;
 }
 
-export function AgentFormModal({ agent, integrations, prompts, onClose, onSaved }: Props) {
+function initialProviderOptions(agent: ApiAgent | undefined): Record<string, string> {
+  const raw = agent?.modelConfig?.["providerOptions"];
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return {};
+  return Object.fromEntries(
+    Object.entries(raw as Record<string, unknown>).map(([key, value]) => [key, String(value)])
+  );
+}
+
+function serializeProviderOptions(
+  fields: PluginField[],
+  values: Record<string, string>,
+): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  for (const field of fields) {
+    const value = values[field.key]?.trim() ?? "";
+    if (!value) continue;
+    if (field.valueType === "number" || field.type === "number") {
+      const numberValue = Number(value);
+      if (Number.isFinite(numberValue) && numberValue > 0) result[field.key] = numberValue;
+    } else if (field.valueType === "boolean") {
+      result[field.key] = value === "true";
+    } else {
+      result[field.key] = value;
+    }
+  }
+  return result;
+}
+
+export function AgentFormModal({ agent, integrations, plugins, prompts, onClose, onSaved }: Props) {
   const isEdit = !!agent;
+  const systemPrompts = prompts.filter((prompt) => prompt.promptType === "system");
+  const instructionsPrompts = prompts.filter((prompt) => prompt.promptType === "instructions");
   const agentIntegrations = integrations.filter((i) => i.domainCapabilities.includes("agent_execution") && i.enabled);
 
   const [form, setForm] = useState<AgentForm>({
@@ -45,12 +78,16 @@ export function AgentFormModal({ agent, integrations, prompts, onClose, onSaved 
     systemPromptId: agent?.systemPromptId ?? "",
     instructionsPromptId: agent?.instructionsPromptId ?? "",
     feedbackInstructionsPromptId: agent?.feedbackInstructionsPromptId ?? "",
+    providerOptions: initialProviderOptions(agent),
   });
 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [availableModels, setAvailableModels] = useState<AvailableModel[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const selectedIntegration = agentIntegrations.find((integration) => integration.id === form.integrationId);
+  const agentConfigFields = plugins.find((plugin) => plugin.provider === selectedIntegration?.provider)?.agentConfigFields ?? [];
 
   // Fetch available models whenever the selected integration changes
   useEffect(() => {
@@ -89,20 +126,35 @@ export function AgentFormModal({ agent, integrations, prompts, onClose, onSaved 
     setForm((prev) => ({ ...prev, [k]: e.target.value }));
   };
 
+  const setIntegration = (event: React.ChangeEvent<HTMLSelectElement>) => {
+    setForm((prev) => ({ ...prev, integrationId: event.target.value, model: "", providerOptions: {} }));
+  };
+
+  const setProviderOption = (key: string, value: string) => {
+    setForm((prev) => ({
+      ...prev,
+      providerOptions: { ...prev.providerOptions, [key]: value },
+    }));
+  };
+
   const handleSave = async () => {
     if (!form.name.trim()) { setError("Agent name is required"); return; }
     if (!form.integrationId) { setError("Select an agent integration"); return; }
-    if (!form.systemPromptId) { setError("Select a system prompt"); return; }
-    if (!form.instructionsPromptId) { setError("Select an instructions prompt"); return; }
+    if (!form.systemPromptId) { setError("Select agent instructions"); return; }
+    if (!form.instructionsPromptId) { setError("Select workflow instructions"); return; }
     setSaving(true);
     setError(null);
     try {
       const maxConcurrent = parseInt(form.maxConcurrent, 10);
+      const providerOptions = serializeProviderOptions(agentConfigFields, form.providerOptions);
       const payload = {
         name: form.name,
         type: form.type,
         integrationId: form.integrationId || null,
-        modelConfig: form.model ? { model: form.model } : {},
+        modelConfig: {
+          ...(form.model ? { model: form.model } : {}),
+          ...(Object.keys(providerOptions).length > 0 ? { providerOptions } : {}),
+        },
         maxConcurrent: isNaN(maxConcurrent) ? 1 : maxConcurrent,
         systemPromptId: form.systemPromptId,
         instructionsPromptId: form.instructionsPromptId,
@@ -136,7 +188,7 @@ export function AgentFormModal({ agent, integrations, prompts, onClose, onSaved 
         </Field>
 
         <Field label="Agent Integration" required hint="An enabled agent-execution integration (e.g. Copilot, Claude, Aider, Mock)">
-          <FieldSelect value={form.integrationId} onChange={set("integrationId")}>
+          <FieldSelect value={form.integrationId} onChange={setIntegration}>
             {agentIntegrations.length === 0 && <option value="">— no agent integrations —</option>}
             {agentIntegrations.map((i) => (
               <option key={i.id} value={i.id}>{i.name} ({i.provider})</option>
@@ -166,32 +218,71 @@ export function AgentFormModal({ agent, integrations, prompts, onClose, onSaved 
           <FieldInput type="number" min={1} value={form.maxConcurrent} onChange={set("maxConcurrent")} />
         </Field>
 
-        <Field label="System Prompt" required>
+        <Field label="Agent Instructions" required hint="Permanent policy appended to the provider's native agent foundation">
           <FieldSelect value={form.systemPromptId} onChange={set("systemPromptId")}>
             <option value="">— select a prompt —</option>
-            {prompts.map((p) => (
+            {systemPrompts.map((p) => (
               <option key={p.id} value={p.id}>{p.label}</option>
             ))}
           </FieldSelect>
         </Field>
 
-        <Field label="Instructions Prompt" required>
+        <Field label="Workflow Instructions" required hint="Task-specific guidance included in the generated user request">
           <FieldSelect value={form.instructionsPromptId} onChange={set("instructionsPromptId")}>
             <option value="">— select a prompt —</option>
-            {prompts.map((p) => (
+            {instructionsPrompts.map((p) => (
               <option key={p.id} value={p.id}>{p.label}</option>
             ))}
           </FieldSelect>
         </Field>
 
-        <Field label="Feedback Instructions Prompt" hint="Used on retry cycles (cycleNumber > 1)">
+        <Field label="Feedback Workflow Instructions" hint="Replaces workflow instructions on retry cycles">
           <FieldSelect value={form.feedbackInstructionsPromptId} onChange={set("feedbackInstructionsPromptId")}>
             <option value="">— none —</option>
-            {prompts.map((p) => (
+            {instructionsPrompts.map((p) => (
               <option key={p.id} value={p.id}>{p.label}</option>
             ))}
           </FieldSelect>
         </Field>
+
+        {agentConfigFields.length > 0 && (
+          <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+            <button
+              type="button"
+              className="btn sm"
+              onClick={() => setShowAdvanced((previous) => !previous)}
+              style={{ alignSelf: "flex-start", gap: "6px" }}
+            >
+              <Icon name="config" size={13} />
+              Provider settings
+              <Icon name="chevdown" size={12} style={{ transform: showAdvanced ? "rotate(180deg)" : "none" }} />
+            </button>
+            {showAdvanced && agentConfigFields.map((field) => {
+              if (field.dependsOn && form.providerOptions[field.dependsOn.field] !== field.dependsOn.value) return null;
+              const value = form.providerOptions[field.key] ?? "";
+              return field.type === "select" ? (
+                <Field key={field.key} label={field.label} required={field.required} hint={field.description}>
+                  <FieldSelect value={value} onChange={(event) => setProviderOption(field.key, event.currentTarget.value)}>
+                    {!field.required && <option value="">— provider default —</option>}
+                    {field.options?.map((option) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </FieldSelect>
+                </Field>
+              ) : (
+                <Field key={field.key} label={field.label} required={field.required} hint={field.description}>
+                  <FieldInput
+                    type={field.type === "number" ? "number" : "text"}
+                    min={field.type === "number" ? 1 : undefined}
+                    value={value}
+                    placeholder={field.placeholder ?? "Provider default"}
+                    onChange={(event) => setProviderOption(field.key, event.currentTarget.value)}
+                  />
+                </Field>
+              );
+            })}
+          </div>
+        )}
 
         <FormError msg={error} />
 

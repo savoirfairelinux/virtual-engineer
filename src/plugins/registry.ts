@@ -41,6 +41,9 @@ export interface PluginField {
   type: "text" | "password" | "url" | "number" | "select";
   required: boolean;
   placeholder?: string;
+  description?: string | undefined;
+  /** How the admin agent form serializes the field into modelConfig.providerOptions. */
+  valueType?: "string" | "number" | "boolean" | undefined;
   /**
    * When `true` this field is not rendered in the admin UI but is still used
    * by the server for secret masking / preservation logic.
@@ -157,6 +160,8 @@ export interface AgentAdapterContext {
 
 /** `agent_execution` capability: run a coding agent inside a workspace. */
 export interface AgentExecutionCapability {
+  /** Provider-owned fields rendered generically in the agent form. */
+  configFields?: PluginField[] | undefined;
   /**
    * Factory for the runtime agent adapter, given host runtime context derived
    * from `AppConfig`. Declaring this makes a provider a fully self-describing

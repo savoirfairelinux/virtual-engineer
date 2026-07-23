@@ -166,6 +166,7 @@ export interface PluginField {
   required?: boolean;
   placeholder?: string;
   description?: string;
+  valueType?: "string" | "number" | "boolean";
   options?: Array<{ value: string; label: string }>;
   dependsOn?: { field: string; value: string };
   /** When true the field is not rendered in the UI (managed internally by OAuth flows etc.). */
@@ -194,6 +195,7 @@ export interface ApiPlugin {
   domainCapabilities: DomainCapability[];
   icon?: ProviderIcon | null;
   requiredFields: PluginField[];
+  agentConfigFields: PluginField[];
   /** True when the provider supports the generic SSH auth UI (agent / generated-key). */
   supportsSshAuth?: boolean;
   oauth?: ApiPluginOAuth;
@@ -232,6 +234,7 @@ export interface ApiPrompt {
   id: string;
   label: string;
   content: string;
+  promptType: "system" | "instructions";
   updatedAt: string;
   usedByCount?: number;
 }
