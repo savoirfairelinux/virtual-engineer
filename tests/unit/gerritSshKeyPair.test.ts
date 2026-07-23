@@ -18,6 +18,10 @@ describe("generateGerritSshKeyPair", () => {
     expect(sshPublicKey.endsWith(" virtual-reviewer-gerrit")).toBe(true);
   });
 
+  it("throws when adminAuthSecret is undefined", () => {
+    expect(() => generateGerritSshKeyPair(undefined, "virtual-reviewer")).toThrow();
+  });
+
   it("falls back to virtual-engineer-gerrit when no sshUser is provided", () => {
     const { sshPublicKey } = generateGerritSshKeyPair(process.env["ADMIN_AUTH_SECRET"], undefined);
     expect(sshPublicKey.endsWith(" virtual-engineer-gerrit")).toBe(true);
