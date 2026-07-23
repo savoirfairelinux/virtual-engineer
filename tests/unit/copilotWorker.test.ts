@@ -44,7 +44,10 @@ vi.mock("../../agent-worker/src/skills.js", () => ({
   localSkillsDir: (cwd: string) => `${cwd}/.github/skills`,
 }));
 
-import { runCopilotAgent } from "../../agent-worker/src/providers/copilot.js";
+import {
+  buildCopilotSystemMessage,
+  runCopilotAgent,
+} from "../../agent-worker/src/providers/copilot.js";
 import type { AgentRunOptions } from "../../agent-worker/src/providers/types.js";
 
 interface FakeSession {
@@ -77,7 +80,7 @@ function makeFakeSession(): FakeSession {
 function makeOptions(overrides: Partial<AgentRunOptions> = {}): AgentRunOptions {
   return {
     model: "gpt-4.1",
-    systemPrompt: "Follow the repository instructions",
+    agentInstructions: "Follow the repository instructions",
     cwd: "/workspace",
     timeoutMs: 1_000,
     mode: "codegen",
@@ -105,6 +108,7 @@ describe("runCopilotAgent", () => {
     });
     process.env["GITHUB_TOKEN"] = "secret-copilot-token";
     process.env["UNRELATED_SECRET"] = "must-not-leak";
+    delete process.env["COPILOT_REASONING_EFFORT"];
   });
 
   it("runs a headless CLI session, maps events, and cleans up", async () => {
@@ -112,9 +116,9 @@ describe("runCopilotAgent", () => {
     session.sendAndWait.mockImplementation(() => new Promise((resolve) => {
       resolveResponse = resolve;
     }));
+    process.env["COPILOT_REASONING_EFFORT"] = "high";
     const runPromise = runCopilotAgent("Implement the task", makeOptions({
       skillDiscovery: true,
-      reasoningEffort: "high",
     }));
     await vi.waitFor(() => expect(session.on).toHaveBeenCalled());
 
@@ -155,7 +159,10 @@ describe("runCopilotAgent", () => {
       model: "gpt-4.1",
       reasoningEffort: "high",
       skillDirectories: ["/workspace/.github/skills", "/home/ve/.copilot/skills"],
-      systemMessage: { content: "Follow the repository instructions" },
+      systemMessage: {
+        mode: "append",
+        content: "Follow the repository instructions",
+      },
       workingDirectory: "/workspace",
     }));
     expect(mocks.emitLocalSkillsLoaded).toHaveBeenCalledWith("/workspace");
@@ -179,9 +186,9 @@ describe("runCopilotAgent", () => {
   });
 
   it("uses review mode without optional reasoning or local skills", async () => {
+    process.env["COPILOT_REASONING_EFFORT"] = "none";
     const run = await runCopilotAgent("Review the patch", makeOptions({
       mode: "review",
-      reasoningEffort: "none",
       skillDiscovery: false,
     }));
 
@@ -215,5 +222,14 @@ describe("runCopilotAgent", () => {
 
     expect(mocks.clientStop).toHaveBeenCalledOnce();
     expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+  });
+});
+
+describe("Copilot worker native profile", () => {
+  it("appends agent instructions to the Copilot CLI foundation explicitly", () => {
+    expect(buildCopilotSystemMessage("permanent agent policy")).toEqual({
+      mode: "append",
+      content: "permanent agent policy",
+    });
   });
 });

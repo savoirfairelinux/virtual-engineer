@@ -16,6 +16,7 @@ import { makeExternalChangeId } from "../interfaces.js";
 import { getLogger } from "../logger.js";
 import { DEFAULT_COPILOT_MODEL } from "../copilotModel.js";
 import { decryptToken } from "../utils/encryption.js";
+import { assertPromptRole } from "../utils/promptRole.js";
 import { getConfig } from "../config.js";
 import { agentLogBus, pushToTaskBuffer } from "./agentEventBus.js";
 import {
@@ -240,12 +241,13 @@ export class CopilotAdapter implements AgentAdapter, ConfigurableAdapter {
     // filters to a minimal whitelist — DB credentials and API tokens are never exposed.
 
     const copilotModel = context.agentSession.copilotModel ?? this.config.model;
+    const reasoningEffort = session.providerOptions?.["reasoningEffort"];
 
     const providerEnv: Record<string, string> = {
       ...authEnv,
       COPILOT_MODEL: copilotModel,
-      ...(session.copilotReasoningEffort !== undefined
-        ? { COPILOT_REASONING_EFFORT: session.copilotReasoningEffort }
+      ...(typeof reasoningEffort === "string" && reasoningEffort.trim()
+        ? { COPILOT_REASONING_EFFORT: reasoningEffort.trim() }
         : {}),
     };
 
@@ -267,8 +269,11 @@ export class CopilotAdapter implements AgentAdapter, ConfigurableAdapter {
       ...authEnv,
       GITHUB_TOKEN: input.agentToken,
       COPILOT_MODEL: input.model ?? this.config.model,
-      ...(input.reasoningEffort !== undefined
-        ? { COPILOT_REASONING_EFFORT: input.reasoningEffort }
+      ...(typeof input.providerOptions?.["reasoningEffort"] === "string" && input.providerOptions["reasoningEffort"].trim()
+        ? { COPILOT_REASONING_EFFORT: input.providerOptions["reasoningEffort"].trim() }
+        : {}),
+      ...(input.reviewOutputSchema !== undefined
+        ? { REVIEW_OUTPUT_SCHEMA: JSON.stringify(input.reviewOutputSchema) }
         : {}),
     };
 
@@ -309,6 +314,8 @@ export class CopilotAdapter implements AgentAdapter, ConfigurableAdapter {
 
     if (!systemPrompt) throw new Error(`System prompt '${systemPromptId}' not found`);
     if (!instructionsPrompt) throw new Error(`Instructions prompt '${instructionsPromptId}' not found`);
+    assertPromptRole(systemPrompt, "system");
+    assertPromptRole(instructionsPrompt, "instructions");
 
     spec.env["SYSTEM_PROMPT"] = systemPrompt.content;
     spec.userPromptContent = buildCodegenUserPrompt(context, instructionsPrompt.content);

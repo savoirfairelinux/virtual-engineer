@@ -48,10 +48,65 @@ const GitLabPayloadSchema = z.object({
   approvalAction: z.enum(["APPROVE", "UNAPPROVE", "COMMENT"]),
 }).strict();
 
-export const LegacyReviewPayloadSchema = z.object({
-  ...SharedPayloadShape,
-  score: DecisionSchema.default(0),
-});
+const SHARED_JSON_SCHEMA_PROPERTIES: Record<string, unknown> = {
+  comments: {
+    type: "array",
+    items: {
+      type: "object",
+      properties: {
+        file: { type: "string", minLength: 1 },
+        line: { type: "integer", minimum: 0 },
+        message: { type: "string", minLength: 1 },
+        severity: { type: "string", minLength: 1 },
+      },
+      required: ["file", "line", "message", "severity"],
+      additionalProperties: false,
+    },
+  },
+  summary: { type: "string" },
+  replies: {
+    type: "array",
+    items: {
+      type: "object",
+      properties: {
+        threadId: { type: "string", minLength: 1 },
+        message: { type: "string", minLength: 1 },
+      },
+      required: ["threadId", "message"],
+      additionalProperties: false,
+    },
+  },
+};
+
+const REVIEW_OUTPUT_JSON_SCHEMAS: Record<ReviewOutputContractKind, Record<string, unknown>> = {
+  gerrit: {
+    type: "object",
+    properties: {
+      ...SHARED_JSON_SCHEMA_PROPERTIES,
+      vote: { type: "integer", enum: [-1, 0, 1] },
+    },
+    required: ["comments", "summary", "replies", "vote"],
+    additionalProperties: false,
+  },
+  github: {
+    type: "object",
+    properties: {
+      ...SHARED_JSON_SCHEMA_PROPERTIES,
+      reviewAction: { type: "string", enum: ["APPROVE", "REQUEST_CHANGES", "COMMENT"] },
+    },
+    required: ["comments", "summary", "replies", "reviewAction"],
+    additionalProperties: false,
+  },
+  gitlab: {
+    type: "object",
+    properties: {
+      ...SHARED_JSON_SCHEMA_PROPERTIES,
+      approvalAction: { type: "string", enum: ["APPROVE", "UNAPPROVE", "COMMENT"] },
+    },
+    required: ["comments", "summary", "replies", "approvalAction"],
+    additionalProperties: false,
+  },
+};
 
 const SHARED_FORMAT = `The JSON object must also contain:
 - "comments": an array of { "file", "line", "message", "severity" } objects.
@@ -120,6 +175,13 @@ export function getReviewOutputContract(kind: string): string {
   return CONTRACTS[kind];
 }
 
+export function getReviewOutputJsonSchema(kind: string): Record<string, unknown> {
+  if (!isReviewOutputContractKind(kind)) {
+    throw new Error(`Unsupported review output contract: ${kind}`);
+  }
+  return REVIEW_OUTPUT_JSON_SCHEMAS[kind];
+}
+
 export function appendReviewOutputContract(systemPrompt: string, kind: string): string {
   return `${systemPrompt.trim()}\n\n## Required output contract\n\n${getReviewOutputContract(kind)}`;
 }
@@ -151,17 +213,5 @@ export function parseReviewPayload(kind: string, value: unknown): ReviewAgentRes
     }
   }
 
-  if (typeof value === "object" && value !== null) {
-    const record = value as Record<string, unknown>;
-    if (
-      Object.hasOwn(record, "vote") ||
-      Object.hasOwn(record, "reviewAction") ||
-      Object.hasOwn(record, "approvalAction")
-    ) {
-      return null;
-    }
-  }
-
-  const legacy = LegacyReviewPayloadSchema.safeParse(value);
-  return legacy.success ? legacy.data : null;
+  return null;
 }

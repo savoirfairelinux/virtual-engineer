@@ -22,10 +22,17 @@ import { statSync } from 'fs';
 import { createConnection } from 'net';
 import { restrictNetworkPermissionHandler } from '../networkGuard.js';
 import { emitEvent } from './events.js';
-import type { AgentRun, AgentRunOptions } from './types.js';
+import type { AgentProviderDefinition, AgentRun, AgentRunOptions } from './types.js';
 import { copilotGlobalSkillsDir, emitLocalSkillsLoaded, localSkillsDir } from '../skills.js';
 
 type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
+
+export function buildCopilotSystemMessage(agentInstructions: string): {
+  mode: 'append';
+  content: string;
+} {
+  return { mode: 'append', content: agentInstructions };
+}
 
 // Git identity forwarded into the headless CLI subprocess environment.
 const GIT_AUTHOR_NAME = process.env['GIT_AUTHOR_NAME'] ?? 'Virtual Engineer';
@@ -135,7 +142,8 @@ export function copilotSkillDirectories(cwd: string, skillDiscovery: boolean): s
 async function runSession(
   options: AgentRunOptions,
 ): Promise<{ session: CopilotSession; client: CopilotClient; localCliServer: LocalCliServer }> {
-  const { model, systemPrompt, cwd, skillDiscovery, reasoningEffort } = options;
+  const { model, agentInstructions, cwd, skillDiscovery } = options;
+  const reasoningEffort = process.env['COPILOT_REASONING_EFFORT'];
   const localCliServer = await startLocalCliServer(cwd);
   const client = new CopilotClient({ cliUrl: localCliServer.cliUrl });
 
@@ -149,7 +157,7 @@ async function runSession(
         ? { reasoningEffort: reasoningEffort as ReasoningEffort }
         : {}),
       ...(skillDirectories.length > 0 ? { skillDirectories } : {}),
-      systemMessage: { content: systemPrompt },
+      systemMessage: buildCopilotSystemMessage(agentInstructions),
       onPermissionRequest: restrictNetworkPermissionHandler,
       workingDirectory: cwd,
       infiniteSessions: { enabled: false },
@@ -436,3 +444,14 @@ export async function runCopilotAgent(
     },
   };
 }
+
+export const COPILOT_PROVIDER: AgentProviderDefinition = {
+  id: 'copilot',
+  adapterLabel: 'copilot-sdk',
+  resolveModel: () => process.env['COPILOT_MODEL'] ?? 'auto',
+  defaultModelLabel: 'auto',
+  validateEnvironment: () => {
+    if (!process.env['GITHUB_TOKEN']) throw new Error('GITHUB_TOKEN env var is required');
+  },
+  runner: runCopilotAgent,
+};

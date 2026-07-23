@@ -63,7 +63,12 @@ export function PromptsSection({ prompts, onRefresh }: ConfigViewData) {
               <Icon name="edit" size={15} />
             </span>
             <div style={{ flex: 1, minWidth: 0 }}>
-              <span className="mono" style={{ fontSize: "13px", fontWeight: 600 }}>{p.label}</span>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <span className="mono" style={{ fontSize: "13px", fontWeight: 600 }}>{p.label}</span>
+                <span style={{ fontSize: "11px", color: "var(--text-faint)", textTransform: "capitalize" }}>
+                  {p.promptType}
+                </span>
+              </div>
               <div style={{ fontSize: "11.5px", color: "var(--text-faint)", marginTop: "2px" }}>
                 updated {new Date(p.updatedAt).toLocaleDateString()}
                 {p.usedByCount != null ? ` · used by ${p.usedByCount} agent${p.usedByCount !== 1 ? "s" : ""}` : ""}
