@@ -7,7 +7,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { makeTaskId, makeExternalChangeId } from "../../src/interfaces.js";
-import type { TaskContext, AgentLogEvent, RepositoryMap } from "../../src/interfaces.js";
+import type { TaskContext, AgentLogEvent, Prompt, PromptStore, RepositoryMap } from "../../src/interfaces.js";
 import { randomUUID } from "crypto";
 
 // ── Mock child_process BEFORE importing CopilotAdapter ────────────────────────
@@ -34,10 +34,31 @@ vi.mock("child_process", () => {
 });
 
 import { execFile } from "child_process";
-import { CopilotAdapter, agentLogBus } from "../../src/agents/copilotAdapter.js";
+import { CopilotAdapter as BaseCopilotAdapter, agentLogBus } from "../../src/agents/copilotAdapter.js";
 import { buildCodegenUserPrompt } from "../../src/agents/copilotAdapter.js";
 
 const mockExecFile = vi.mocked(execFile);
+
+const testPromptStore: PromptStore = {
+  getPrompts: vi.fn(async () => []),
+  getPrompt: vi.fn(async (id: string): Promise<Prompt> => ({
+    id,
+    label: id,
+    content: id === "test-system" ? "You are a test engineer." : "Follow the test instructions.",
+    promptType: "system",
+    updatedAt: new Date(),
+  })),
+  upsertPrompt: vi.fn(async (id: string, content: string): Promise<Prompt> => ({ id, label: id, content, promptType: "system", updatedAt: new Date() })),
+  createPrompt: vi.fn(async (label: string, content: string): Promise<Prompt> => ({ id: label, label, content, promptType: "user", updatedAt: new Date() })),
+  deletePrompt: vi.fn(async () => {}),
+};
+
+class CopilotAdapter extends BaseCopilotAdapter {
+  constructor(...args: ConstructorParameters<typeof BaseCopilotAdapter>) {
+    super(...args);
+    this.setPromptStore(testPromptStore);
+  }
+}
 
 // ── Test helpers ──────────────────────────────────────────────────────────────
 
@@ -56,6 +77,8 @@ function makeContext(overrides: Partial<TaskContext> = {}): TaskContext {
     cycleNumber: 1,
     commitMessage: "Add structured logging to user service",
     ticketUrl: "http://localhost:3000/issues/1",
+    systemPromptId: "test-system",
+    instructionsPromptId: "test-instructions",
     agentSession: {
       agentContainerImage: "virtual-engineer-workspace:latest",
       repoCloneUrl: "ssh://localhost:29418/demo-project",
