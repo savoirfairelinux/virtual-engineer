@@ -142,6 +142,23 @@ describe("GitLabMergeRequestReviewProvider", () => {
     expect(urls).toContain("https://gitlab.example.com/api/v4/projects/100/merge_requests/42/approve");
   });
 
+  it("posts a neutral review without changing MR approval", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ id: 1 }));
+
+    await new GitLabMergeRequestReviewProvider(config).postReviewWithComments(
+      cid,
+      1,
+      [],
+      "Notes only",
+      0
+    );
+
+    const urls = fetchMock.mock.calls.map((call: unknown[]) => String(call[0]));
+    expect(urls).toContain("https://gitlab.example.com/api/v4/projects/100/merge_requests/42/notes");
+    expect(urls.some((url: string) => url.endsWith("/approve"))).toBe(false);
+    expect(urls.some((url: string) => url.endsWith("/unapprove"))).toBe(false);
+  });
+
   it("folds out-of-diff comments into the summary note instead of posting them inline", async () => {
     fetchMock
       .mockResolvedValueOnce(jsonResponse(CHANGES_BODY)) // line 999 is not in the diff

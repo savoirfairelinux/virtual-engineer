@@ -237,14 +237,14 @@ export class GitHubReviewProvider implements ReviewProvider {
     _revision: number,
     comments: InlineReviewComment[],
     summary: string,
-    score: -1 | 1,
+    score: -1 | 0 | 1,
     allowedFiles?: ReadonlySet<string>
   ): Promise<void> {
     await this.submitReview(
       changeId,
       comments,
       summary,
-      score === -1 ? "REQUEST_CHANGES" : "APPROVE",
+      score < 0 ? "REQUEST_CHANGES" : score > 0 ? "APPROVE" : "COMMENT",
       allowedFiles
     );
   }
