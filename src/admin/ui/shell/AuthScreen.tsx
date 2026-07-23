@@ -4,6 +4,23 @@ import { PasswordField } from "../components/PasswordField.tsx";
 import { fetchSetupStatus, login, setup, ApiError } from "../api.ts";
 import type { ApiMe } from "../types.ts";
 
+type StrengthLevel = 0 | 1 | 2 | 3;
+interface StrengthInfo { level: StrengthLevel; label: string; color: string }
+
+function measureStrength(pwd: string): StrengthInfo {
+  if (pwd.length === 0) return { level: 0, label: "", color: "" };
+  if (pwd.length < 8)   return { level: 0, label: "Too short", color: "#e05252" };
+  let classes = 0;
+  if (/[a-z]/.test(pwd)) classes++;
+  if (/[A-Z]/.test(pwd)) classes++;
+  if (/[0-9]/.test(pwd)) classes++;
+  if (/[^a-zA-Z0-9]/.test(pwd)) classes++;
+  if (classes <= 1)                                            return { level: 0, label: "Weak",        color: "#e05252" };
+  if (classes === 4)                                           return { level: 3, label: "Very strong",  color: "#4caf82" };
+  if (classes === 3 || (classes === 2 && pwd.length >= 16))   return { level: 2, label: "Strong",       color: "#7ec86e" };
+  return                                                              { level: 1, label: "Fair",         color: "#e0a840" };
+}
+
 interface AuthScreenProps {
   onAuthenticated: (user: ApiMe) => void;
 }
@@ -20,6 +37,7 @@ const inputStyle: React.CSSProperties = {
 
 export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
   const [mode, setMode] = useState<Mode>("loading");
+  const [credentialEncryptionConfigured, setCredentialEncryptionConfigured] = useState(true);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -29,23 +47,31 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
   useEffect(() => {
     let cancelled = false;
     fetchSetupStatus()
-      .then((s) => { if (!cancelled) setMode(s.needsSetup ? "setup" : "login"); })
+      .then((status) => {
+        if (!cancelled) {
+          setCredentialEncryptionConfigured(status.credentialEncryptionConfigured);
+          setMode(status.needsSetup ? "setup" : "login");
+        }
+      })
       .catch(() => { if (!cancelled) setMode("login"); });
     return () => { cancelled = true; };
   }, []);
 
-  const canSubmit = mode === "setup"
-    ? username.trim().length > 0 && password.length >= 8 && confirm.length > 0
-    : username.trim().length > 0 && password.length > 0;
+  const canSubmit = mode === "login"
+    ? username.trim().length > 0 && password.length > 0
+    : true; // setup: always submittable — validation errors shown inline on submit
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!canSubmit || loading) return;
+    if (loading) return;
     setError(null);
 
-    if (mode === "setup" && password !== confirm) {
-      setError("Passwords do not match.");
-      return;
+    if (mode === "setup") {
+      if (!username.trim()) { setError("Username is required."); return; }
+      if (password.length < 8) { setError("Password must be at least 8 characters."); return; }
+      if (measureStrength(password).level === 0) { setError("Password is too weak — mix uppercase letters, numbers, or symbols."); return; }
+      if (!confirm) { setError("Please confirm your password."); return; }
+      if (password !== confirm) { setError("Passwords do not match."); return; }
     }
 
     setLoading(true);
@@ -72,13 +98,17 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
   return (
     <div
       style={{
-        flex: 1, display: "flex", alignItems: "center", justifyContent: "center",
-        background: "var(--bg)",
+        flex: 1, minHeight: 0, display: "flex", alignItems: "flex-start", justifyContent: "center",
+        padding: "clamp(16px, 6vh, 64px) clamp(12px, 4vw, 28px)",
+        background: "var(--bg)", overflowY: "auto",
       }}
     >
       <div
         className="card"
-        style={{ width: "100%", maxWidth: "400px", padding: "32px 28px" }}
+        style={{
+          width: "100%", maxWidth: mode === "setup" ? "560px" : "400px",
+          margin: "auto", padding: "clamp(24px, 5vw, 32px) clamp(20px, 5vw, 28px)",
+        }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "24px" }}>
           <span
@@ -111,6 +141,34 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
               )}
             </div>
 
+            {mode === "setup" && !credentialEncryptionConfigured && (
+              <div
+                role="status"
+                style={{
+                  marginBottom: "20px", padding: "14px 16px",
+                  background: "var(--warn-soft)",
+                  borderLeft: "3px solid var(--warn)",
+                  borderRadius: "var(--radius-sm)", color: "var(--text-dim)",
+                  fontSize: "12.5px", lineHeight: 1.55, overflowWrap: "anywhere",
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: "8px", color: "var(--text)", fontWeight: 700, marginBottom: "6px" }}>
+                  <Icon name="alert" size={15} style={{ color: "var(--warn)", flex: "none" }} />
+                  Credential encryption is not configured
+                </div>
+                <div style={{ marginBottom: "8px" }}>
+                  <code>ADMIN_AUTH_SECRET</code> encrypts provider credentials at rest. Without it, credential-backed
+                  integrations, OAuth, generated SSH keys, and related agent or review workflows are unavailable.
+                </div>
+                <div style={{ marginBottom: "8px" }}>
+                  For production, generate it with <code>openssl rand -hex 32</code>, add
+                  {" "}<code>ADMIN_AUTH_SECRET=&lt;generated value&gt;</code> to <code>.env</code>, then run
+                  {" "}<code>docker rm -f ve-orchestrator &amp;&amp; ./scripts/start.sh</code>.
+                </div>
+                <strong>Keep this value safe and unchanged; existing credentials require the original secret.</strong>
+              </div>
+            )}
+
             <form onSubmit={(e) => void handleSubmit(e)}>
               <input
                 type="text"
@@ -124,10 +182,29 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
               <PasswordField
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                placeholder={mode === "setup" ? "Password (min 8 characters)…" : "Password…"}
+                placeholder={mode === "setup" ? "Password (min. 8 characters)…" : "Password…"}
                 autoComplete={mode === "setup" ? "new-password" : "current-password"}
-                style={inputStyle}
+                style={{ ...inputStyle, marginBottom: mode === "setup" ? "6px" : "12px" }}
               />
+              {mode === "setup" && (() => {
+                const s = measureStrength(password);
+                if (!s.label) return null;
+                const segments = [0, 1, 2, 3] as const;
+                return (
+                  <div style={{ marginBottom: "12px" }}>
+                    <div style={{ display: "flex", gap: "4px", marginBottom: "4px" }}>
+                      {segments.map((i) => (
+                        <div key={i} style={{
+                          flex: 1, height: "3px", borderRadius: "2px",
+                          background: i <= s.level ? s.color : "var(--border)",
+                          transition: "background 0.2s",
+                        }} />
+                      ))}
+                    </div>
+                    <div style={{ fontSize: "11.5px", color: s.color }}>{s.label}</div>
+                  </div>
+                );
+              })()}
               {mode === "setup" && (
                 <PasswordField
                   value={confirm}

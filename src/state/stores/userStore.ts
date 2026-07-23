@@ -21,6 +21,13 @@ function duplicateError(message: string): Error & { code: string } {
   return Object.assign(new Error(message), { code: "DUPLICATE" });
 }
 
+/** Build a distinguishable error for an initial-admin setup race loser. */
+function setupAlreadyCompletedError(): Error & { code: string } {
+  return Object.assign(new Error("Initial admin setup already completed"), {
+    code: "SETUP_ALREADY_COMPLETED",
+  });
+}
+
 export interface UserStoreApi {
   /** Create a user. Throws an Error with `code = "DUPLICATE"` on duplicate username. */
   createUser(input: {
@@ -29,6 +36,12 @@ export interface UserStoreApi {
     passwordHash: string;
     role: UserRole;
     enabled?: boolean;
+  }): Promise<AdminUser>;
+  /** Atomically create the first admin, or throw with `code = "SETUP_ALREADY_COMPLETED"`. */
+  createInitialAdmin(input: {
+    id: string;
+    username: string;
+    passwordHash: string;
   }): Promise<AdminUser>;
   getUserById(id: string): Promise<AdminUser | null>;
   getUserByUsername(username: string): Promise<AdminUser | null>;
@@ -109,6 +122,32 @@ export function createUserStore(context: UserStoreContext): UserStoreApi {
     const created = await getUserById(input.id);
     if (!created) throw new Error(`Failed to create user ${input.id}`);
     return created;
+  }
+
+  async function createInitialAdmin(input: {
+    id: string;
+    username: string;
+    passwordHash: string;
+  }): Promise<AdminUser> {
+    const createdRow = db.transaction((tx) => {
+      const countRow = tx.select({ total: sql<number>`COUNT(*)` }).from(users).get();
+      if ((countRow?.total ?? 0) > 0) {
+        throw setupAlreadyCompletedError();
+      }
+
+      const now = new Date();
+      return tx.insert(users).values({
+        id: input.id,
+        username: input.username,
+        passwordHash: input.passwordHash,
+        role: "admin",
+        enabled: 1,
+        createdAt: now,
+        updatedAt: now,
+      }).returning().get();
+    }, { behavior: "immediate" });
+
+    return rowToUser(createdRow);
   }
 
   async function getUserById(id: string): Promise<AdminUser | null> {
@@ -232,6 +271,7 @@ export function createUserStore(context: UserStoreContext): UserStoreApi {
 
   return {
     createUser,
+    createInitialAdmin,
     getUserById,
     getUserByUsername,
     listUsers,

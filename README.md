@@ -33,7 +33,7 @@ All provider configuration (ticketing, VCS, agent) is stored in SQLite and manag
 ## Prod setup (orchestrator in Docker)
 
 ```bash
-cp .env.example .env        # fill in HMAC-KEY
+cp .env.example .env        # set ADMIN_AUTH_SECRET using: openssl rand -hex 32
 ./scripts/start.sh
 ```
 
@@ -157,7 +157,7 @@ Copy `.env.example` → `.env`. All provider credentials live in the DB (admin U
 | `DATABASE_PATH` | `./data/virtual-engineer.db` | |
 | `ADMIN_API_HOST` | `127.0.0.1` | Loopback by default; set `0.0.0.0` to expose on the network (Docker mode) |
 | `ADMIN_API_PORT` | `3100` | |
-| `ADMIN_AUTH_SECRET` | — | Encrypts OAuth/session tokens at rest (AES-256-GCM); admin auth uses DB-backed accounts + session tokens |
+| `ADMIN_AUTH_SECRET` | — | Required before creating or loading provider credentials; encrypts them at rest with an AES-256-GCM versioned envelope. Admin authentication is separate and uses DB-backed accounts + session tokens |
 | `POLLING_INTERVAL_MS` | `30000` | **DB-managed** — seed only; edit at runtime via admin UI → System Settings |
 | `MAX_AGENT_CYCLES` | `3` | **DB-managed** — seed only; edit at runtime via admin UI → System Settings |
 | `MAX_RETRY_ATTEMPTS` | `5` | **DB-managed** — seed only; edit at runtime via admin UI → System Settings |
@@ -169,6 +169,8 @@ Copy `.env.example` → `.env`. All provider credentials live in the DB (admin U
 | `AGENT_CONTAINER_IMAGE` | `virtual-engineer-workspace:latest` | |
 | `WORKSPACE_BASE_DIR` | `/tmp/virtual-engineer/workspaces` | Scratch space for review diffs |
 | `AGENT_DOCKER_NETWORK` | `virtual-engineer_ve-agent-net` | Bridge network for agent containers (created by `start.sh`) |
+
+Generate `ADMIN_AUTH_SECRET` once with `openssl rand -hex 32`, set it in `.env`, and retain that exact original secret securely; changing or losing it prevents existing credentials from being decrypted. Restart the orchestrator after setting it (`npm run dev` locally or `docker rm -f ve-orchestrator && ./scripts/start.sh` for Docker).
 
 ---
 

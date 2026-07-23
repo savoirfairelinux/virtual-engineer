@@ -402,6 +402,7 @@ export interface ApiPolicyDetail extends ApiPolicy {
 
 export interface SetupStatus {
   needsSetup: boolean;
+  credentialEncryptionConfigured: boolean;
 }
 
 export interface ApiUser {

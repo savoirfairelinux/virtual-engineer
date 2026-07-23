@@ -1,5 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
+const orchestratorLog = vi.hoisted(() => ({
+  debug: vi.fn(),
+  error: vi.fn(),
+  info: vi.fn(),
+  warn: vi.fn(),
+}));
+
+vi.mock("../../src/logger.js", () => ({
+  getLogger: vi.fn(() => orchestratorLog),
+}));
+
 vi.mock("child_process", () => ({
   execFileSync: vi.fn(),
   execFile: vi.fn(),
@@ -28,9 +39,15 @@ import {
   type AgentRecord,
   type ProjectRecord,
   type ProjectPushTargetRecord,
+  type ResolvedAgentConfig,
   type Task,
 } from "../../src/interfaces.js";
 import type { VcsConnector } from "../../src/vcs/vcsConnector.js";
+import { PluginManager } from "../../src/plugins/pluginManager.js";
+import { registerBuiltinPlugins } from "../../src/plugins/init.js";
+import { encryptToken } from "../../src/utils/encryption.js";
+
+registerBuiltinPlugins();
 
 function makeTask(over: Partial<Task> = {}): Task {
   return {
@@ -379,6 +396,82 @@ describe("Orchestrator — Phase 4 project mode", () => {
     );
   });
 
+  it.each([
+    ["github", "https://github.com/acme/app.git", "x-access-token"],
+    ["gitlab", "https://gitlab.example.com/acme/app.git", "oauth2"],
+  ] as const)("uses the decrypted %s token in the authenticated clone URL without warning", async (provider, cloneUrl, username) => {
+    const adminSecret = "authenticated-clone-test-secret";
+    const token = `${provider}-token`;
+    const integration = {
+      id: `${provider}-vcs`,
+      provider,
+      name: provider,
+      configJson: JSON.stringify({ token: encryptToken(token, adminSecret) }),
+      enabled: true,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    const integrationStore = {
+      getIntegrations: vi.fn(async () => [integration]),
+      getIntegration: vi.fn(async () => integration),
+      upsertIntegration: vi.fn(),
+      deleteIntegration: vi.fn(),
+      countIntegrationReferences: vi.fn(async () => 0),
+      setIntegrationEnabled: vi.fn(),
+    };
+    const pluginManager = new PluginManager(integrationStore, { adminAuthSecret: adminSecret });
+    const stateStore = makeStateStore();
+    const ws = makeWorkspaceRunner();
+    const target = makePushTarget({
+      id: 1,
+      commitOrder: 1,
+      localPath: ".",
+      integrationId: integration.id,
+      repoKey: "app",
+      cloneUrl,
+    });
+    const vcs = {
+      clone: vi.fn(),
+      push: vi.fn(),
+      pushDirect: vi.fn().mockResolvedValue({ changeId: "change-1", url: "review-url", status: "OPEN" }),
+      getChangeStatus: vi.fn(),
+      buildPushSpec: vi.fn().mockReturnValue({ ref: "refs/heads/main" }),
+      useChangeIdContinuity: false,
+      reviewSystemLabel: provider,
+    } as unknown as VcsConnector;
+    const projectMode: ProjectModeDeps = {
+      projectStore: {
+        getProjectById: vi.fn(async () => makeProject()),
+        listProjectPushTargets: vi.fn(async () => [target]),
+        getProjectTicketSource: vi.fn().mockResolvedValue({ integrationId: "redmine-int" }),
+        getProjectReviewConfig: vi.fn().mockResolvedValue(null),
+        getAgentById: makeProjectAgentLookup(),
+      },
+      pluginManager: {
+        getConnectorForIntegration: vi.fn((id: string) => id === "redmine-int" ? makeRedmine() : null),
+        decryptIntegrationConfig: (value: Parameters<PluginManager["decryptIntegrationConfig"]>[0]) => pluginManager.decryptIntegrationConfig(value),
+      } as unknown as ProjectModeDeps["pluginManager"],
+      resolveVcsForIntegration: vi.fn(async () => vcs),
+    };
+    const orchestrator = new Orchestrator(
+      { ...baseConfig(), adminAuthSecret: adminSecret },
+      stateStore,
+      ws,
+      undefined,
+      integrationStore,
+      projectMode,
+    );
+
+    await (orchestrator as unknown as { runAgentCycle(task: Task): Promise<void> }).runAgentCycle(makeTask());
+
+    const prepareProjectWorkspace = ws.prepareProjectWorkspace as ReturnType<typeof vi.fn>;
+    const preparedTargets = prepareProjectWorkspace.mock.calls[0]?.[1] as ProjectPushTargetRecord[] | undefined;
+    const authenticatedUrl = new URL(preparedTargets?.[0]?.cloneUrl ?? "");
+    expect(authenticatedUrl.username).toBe(username);
+    expect(authenticatedUrl.password).toBe(token);
+    expect(orchestratorLog.warn).not.toHaveBeenCalled();
+  });
+
   it("posts review URLs as a ticket note on cycle 1 (cross-project safe, no #-shorthand)", async () => {
     const redmine = makeRedmine();
     const stateStore = makeStateStore({
@@ -676,6 +769,81 @@ describe("Orchestrator — Phase 4 project mode", () => {
     expect(context.agentSession.copilotModel).toBe("gpt-4o");
     expect(context.systemPromptId).toBe("project-system");
     expect(context.instructionsPromptId).toBe("project-instructions");
+  });
+
+  it.each([
+    {
+      provider: "copilot" as const,
+      config: { authMode: "pat", token: "copilot-pat" },
+      assertResolved: (resolved: ResolvedAgentConfig) => {
+        expect(resolved.encryptedSessionToken).toMatch(/^veenc:v1:/);
+        expect(resolved.encryptedSessionToken).not.toContain("copilot-pat");
+      },
+    },
+    {
+      provider: "claude" as const,
+      config: { authMode: "api_key", apiKey: "claude-key" },
+      assertResolved: (resolved: ResolvedAgentConfig) => {
+        expect(resolved.apiKey).toBe("claude-key");
+      },
+    },
+    {
+      provider: "aider" as const,
+      config: { aiderBackend: "openai", aiderApiKey: "aider-key" },
+      assertResolved: (resolved: ResolvedAgentConfig) => {
+        expect(resolved.extra["aiderApiKey"]).toBe("aider-key");
+      },
+    },
+  ])("resolves encrypted $provider integration credentials for agent runtime", async ({ provider, config, assertResolved }) => {
+    const adminSecret = "orchestrator-runtime-admin-secret";
+    const credentialKey = provider === "copilot" ? "token" : provider === "claude" ? "apiKey" : "aiderApiKey";
+    const encryptedConfig = { ...config, [credentialKey]: encryptToken(String(config[credentialKey]), adminSecret) };
+    const integration = {
+      id: `${provider}-integration`,
+      provider,
+      name: provider,
+      configJson: JSON.stringify(encryptedConfig),
+      enabled: true,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    const integrationStore = {
+      getIntegrations: vi.fn(async () => [integration]),
+      getIntegration: vi.fn(async () => integration),
+      upsertIntegration: vi.fn(),
+      deleteIntegration: vi.fn(),
+      countIntegrationReferences: vi.fn(async () => 0),
+      setIntegrationEnabled: vi.fn(),
+    };
+    const pluginManager = new PluginManager(integrationStore, { adminAuthSecret: adminSecret });
+    const adapter = { name: provider, buildContainerSpec: vi.fn(), execute: vi.fn() } as unknown as AgentAdapter;
+    pluginManager.registerFactory(provider, () => adapter);
+    await pluginManager.loadFromDatabase();
+    const agent = makeAgentRecord({ integrationId: integration.id, modelConfigJson: "{}" });
+    const projectMode: ProjectModeDeps = {
+      projectStore: {
+        getProjectById: vi.fn(async () => makeProject()),
+        listProjectPushTargets: vi.fn(async () => []),
+        getProjectTicketSource: vi.fn(async () => null),
+        getProjectReviewConfig: vi.fn(async () => null),
+        getAgentById: vi.fn(async () => agent),
+      },
+      pluginManager,
+    };
+    const orchestrator = new Orchestrator(
+      { ...baseConfig(), adminAuthSecret: adminSecret },
+      makeStateStore(),
+      makeWorkspaceRunner(),
+      undefined,
+      integrationStore,
+      projectMode,
+    );
+
+    const runtime = await (orchestrator as unknown as {
+      resolveProjectAgentRuntime(project: ProjectRecord): Promise<{ config: ResolvedAgentConfig }>;
+    }).resolveProjectAgentRuntime(makeProject());
+
+    assertResolved(runtime.config);
   });
 
   it("project-mode runAgentCycle swaps in feedbackInstructionsPromptId on retry cycles", async () => {

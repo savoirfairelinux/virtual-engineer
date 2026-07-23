@@ -13,7 +13,13 @@ import type {
 import { getProviderDescriptor, getProviderDomainCapabilities, getCapabilityIntake } from "./registry.js";
 import type { ProviderDescriptor, IntakeMechanism, AgentAdapterContext } from "./registry.js";
 import { getLogger } from "../logger.js";
-import { decryptToken } from "../utils/encryption.js";
+import {
+  decryptToken,
+  encryptToken,
+  isLegacyPlainToken,
+  isProbableLegacyEncryptedToken,
+  isVersionedEncryptedToken,
+} from "../utils/encryption.js";
 
 const log = getLogger("plugin-manager");
 
@@ -29,6 +35,8 @@ export interface ConnectionTestResult {
   success: boolean;
   error: string | null;
   models?: ConnectionTestModel[] | undefined;
+  /** Human-readable log lines surfaced in the admin UI during a connection test. */
+  logs?: string[] | undefined;
 }
 
 export type ConnectionTester = (config: unknown) => Promise<ConnectionTestResult>;
@@ -37,9 +45,17 @@ export type PluginChangeCallback = () => void;
 
 /** Capabilities that produce a runtime `PluginInstance` (cached per integration). */
 const INSTANCE_CAPABILITIES: readonly DomainCapability[] = ["issue_tracking", "code_review", "agent_execution"];
+const INTERNAL_CREDENTIAL_FIELDS = ["webhookSecret"] as const;
 
 function instanceKey(integrationId: string, capability: DomainCapability): string {
   return `${integrationId}::${capability}`;
+}
+
+export function getCredentialFieldKeys(descriptor: ProviderDescriptor): string[] {
+  return [
+    ...descriptor.requiredFields.filter((field) => field.type === "password").map((field) => field.key),
+    ...INTERNAL_CREDENTIAL_FIELDS,
+  ];
 }
 
 /**
@@ -136,7 +152,7 @@ export class PluginManager {
     const integration = await this.integrationStore.getIntegration(id);
     if (!integration) throw new Error(`Integration not found: ${id}`);
 
-    return this.testConnectionConfig(integration.provider, JSON.parse(integration.configJson));
+    return this.testConnectionConfig(integration.provider, this.decryptIntegrationConfig(integration));
   }
 
   /** Validate and test an arbitrary config object without persisting it. */
@@ -160,9 +176,11 @@ export class PluginManager {
     // Fall back to the descriptor's own test hook.
     if (descriptor.testConnection) {
       const strippedRaw = this.stripSchemaDefaults(parsed.data, config) as Record<string, unknown>;
+      // Decrypt stored encrypted credential fields so validators receive plain-text values.
+      const decryptedRaw = this.decryptPasswordFields(strippedRaw, descriptor);
       const strippedConfig = descriptor.preprocessConfig
-        ? { ...strippedRaw, ...descriptor.preprocessConfig(strippedRaw, this.options.adminAuthSecret, undefined) }
-        : strippedRaw;
+        ? { ...decryptedRaw, ...descriptor.preprocessConfig(decryptedRaw, this.options.adminAuthSecret, undefined) }
+        : decryptedRaw;
       return this.normalizeConnectionTestResult(await descriptor.testConnection(strippedConfig));
     }
 
@@ -299,6 +317,108 @@ export class PluginManager {
   }
 
   /**
+  * Encrypt descriptor password fields and internal credentials for DB storage.
+  * Values in the current encryption envelope or empty values are skipped.
+   * Returns a new object — `config` is not mutated.
+   */
+  public encryptPasswordFieldsForStorage(
+    config: Record<string, unknown>,
+    descriptor: ProviderDescriptor,
+  ): Record<string, unknown> {
+    const { adminAuthSecret } = this.options;
+    const result: Record<string, unknown> = { ...config };
+    for (const fieldKey of getCredentialFieldKeys(descriptor)) {
+      const raw = result[fieldKey];
+      if (typeof raw !== "string" || raw.length === 0) continue;
+      if (isVersionedEncryptedToken(raw)) continue;
+      result[fieldKey] = encryptToken(raw, adminAuthSecret);
+    }
+    return result;
+  }
+
+  /** Encrypt an integration config's password fields for persistence. */
+  public encryptIntegrationConfigForStorage(
+    integration: Pick<Integration, "provider">,
+    config: Record<string, unknown>,
+  ): Record<string, unknown> {
+    return this.encryptPasswordFieldsForStorage(config, this.getDescriptor(integration.provider));
+  }
+
+  /**
+   * One-shot startup migration: encrypt raw or legacy `plain:` credential fields.
+   * Startup fails closed when stored credentials exist without `adminAuthSecret`.
+   */
+  async migrateEncryptCredentials(): Promise<void> {
+    const { adminAuthSecret } = this.options;
+    const integrations = await this.integrationStore.getIntegrations();
+    for (const integration of integrations) {
+      let descriptor: ProviderDescriptor;
+      try {
+        descriptor = this.getDescriptor(integration.provider);
+      } catch {
+        continue; // Unknown / not-yet-registered provider — skip safely
+      }
+      let rawConfig: Record<string, unknown>;
+      try {
+        const parsedConfig = JSON.parse(integration.configJson) as unknown;
+        if (typeof parsedConfig !== "object" || parsedConfig === null || Array.isArray(parsedConfig)) {
+          throw new Error("Integration config must be a JSON object.");
+        }
+        rawConfig = parsedConfig as Record<string, unknown>;
+      } catch (error) {
+        throw new Error(`Unable to parse stored config for integration ${integration.id}.`, { cause: error });
+      }
+      const credentialFields = getCredentialFieldKeys(descriptor);
+      const hasCredential = credentialFields.some((fieldKey) => {
+        const value = rawConfig[fieldKey];
+        return typeof value === "string" && value.length > 0;
+      });
+      if (hasCredential && !adminAuthSecret) {
+        throw new Error(`ADMIN_AUTH_SECRET is required for stored credentials in integration ${integration.id}.`);
+      }
+
+      const migrationConfig: Record<string, unknown> = { ...rawConfig };
+      for (const fieldKey of credentialFields) {
+        const value = migrationConfig[fieldKey];
+        if (typeof value !== "string" || value.length === 0) continue;
+        if (isLegacyPlainToken(value)) {
+          migrationConfig[fieldKey] = encryptToken(decryptToken(value, undefined), adminAuthSecret);
+          continue;
+        }
+        if (isVersionedEncryptedToken(value)) {
+          try {
+            decryptToken(value, adminAuthSecret);
+          } catch (error) {
+            throw new Error(`Unable to decrypt stored credentials in integration ${integration.id}.`, { cause: error });
+          }
+          continue;
+        }
+        if (isProbableLegacyEncryptedToken(value)) {
+          try {
+            migrationConfig[fieldKey] = encryptToken(decryptToken(value, adminAuthSecret), adminAuthSecret);
+          } catch (error) {
+            throw new Error(`Unable to decrypt probable legacy credentials in integration ${integration.id}.`, { cause: error });
+          }
+          continue;
+        }
+        migrationConfig[fieldKey] = encryptToken(value, adminAuthSecret);
+      }
+      if (JSON.stringify(migrationConfig) === JSON.stringify(rawConfig)) continue;
+      await this.integrationStore.upsertIntegration({
+        id: integration.id,
+        provider: integration.provider,
+        name: integration.name,
+        configJson: JSON.stringify(migrationConfig),
+        enabled: integration.enabled,
+      });
+      log.info(
+        { id: integration.id, provider: integration.provider },
+        "migrated: encrypted plain-text credential fields",
+      );
+    }
+  }
+
+  /**
    * Parse and decrypt an integration's configJson, returning a plain-object
    * record with all password-typed fields decrypted.
    */
@@ -329,6 +449,8 @@ export class PluginManager {
   /** Build and register all instance-producing capability connectors for an integration. */
   private activateIntegration(integration: Integration): void {
     const descriptor = this.getDescriptor(integration.provider);
+    const rawConfig = JSON.parse(integration.configJson) as Record<string, unknown>;
+    this.decryptPasswordFields(rawConfig, descriptor);
     this.activeIntegrationsById.set(integration.id, integration);
 
     for (const capability of getProviderDomainCapabilities(descriptor)) {
@@ -426,12 +548,16 @@ export class PluginManager {
     descriptor: ProviderDescriptor
   ): Record<string, unknown> {
     const result: Record<string, unknown> = { ...config };
-    for (const field of descriptor.requiredFields.filter((f) => f.type === "password")) {
-      const raw = result[field.key];
+    for (const fieldKey of getCredentialFieldKeys(descriptor)) {
+      const raw = result[fieldKey];
       if (typeof raw === "string" && raw.length > 0) {
+        const isManagedCredential = raw.startsWith("veenc:") || isProbableLegacyEncryptedToken(raw);
         try {
-          result[field.key] = decryptToken(raw, this.options.adminAuthSecret);
-        } catch {
+          result[fieldKey] = decryptToken(raw, this.options.adminAuthSecret);
+        } catch (error) {
+          if (isManagedCredential) {
+            throw new Error(`Unable to decrypt managed credential field ${fieldKey}.`, { cause: error });
+          }
           // Not a managed encrypted token (e.g. a raw PAT typed by the user) — leave as-is.
         }
       }
@@ -466,6 +592,7 @@ export class PluginManager {
       success: result.success,
       error: result.error ?? null,
       models: result.models ?? [],
+      ...(result.logs !== undefined ? { logs: result.logs } : {}),
     };
   }
 

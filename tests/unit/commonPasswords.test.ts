@@ -1,17 +1,33 @@
 import { describe, expect, it } from "vitest";
-import { isCommonPassword } from "../../src/admin/commonPasswords.js";
+import { getPasswordStrength } from "../../src/admin/commonPasswords.js";
 
-describe("isCommonPassword", () => {
-  it("flags well-known weak passwords (case-insensitive, trimmed)", () => {
-    expect(isCommonPassword("password123")).toBe(true);
-    expect(isCommonPassword("PASSWORD123")).toBe(true);
-    expect(isCommonPassword("  qwerty  ")).toBe(true);
-    expect(isCommonPassword("letmein")).toBe(true);
+describe("getPasswordStrength", () => {
+  it("returns weak for passwords shorter than 8 characters", () => {
+    expect(getPasswordStrength("abc")).toBe("weak");
+    expect(getPasswordStrength("abc12")).toBe("weak");
   });
 
-  it("allows strong, non-listed passwords", () => {
-    expect(isCommonPassword("Str0ng-Pass-1x")).toBe(false);
-    expect(isCommonPassword("correct horse battery staple")).toBe(false);
-    expect(isCommonPassword("9f3!kQ2#zLm")).toBe(false);
+  it("returns weak for single-class passwords (all lower-case)", () => {
+    expect(getPasswordStrength("abcdefgh")).toBe("weak");
+    expect(getPasswordStrength("alllowercase")).toBe("weak");
+  });
+
+  it("returns fair for two-class passwords under 16 chars", () => {
+    expect(getPasswordStrength("abcdef12")).toBe("fair");
+    expect(getPasswordStrength("admin123")).toBe("fair");
+  });
+
+  it("returns strong for three-class passwords", () => {
+    expect(getPasswordStrength("Admin1234")).toBe("strong");
+    expect(getPasswordStrength("abcDEF123")).toBe("strong");
+  });
+
+  it("returns strong for long two-class passwords (≥ 16 chars)", () => {
+    expect(getPasswordStrength("abcdefghijklmnop1")).toBe("strong");
+  });
+
+  it("returns very-strong for four-class passwords", () => {
+    expect(getPasswordStrength("Str0ng-Pass!")).toBe("very-strong");
+    expect(getPasswordStrength("9f3!kQ2#zLm")).toBe("very-strong");
   });
 });

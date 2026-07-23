@@ -2,21 +2,31 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { getLogger } from "../logger.js";
 import type { Integration, IntegrationStore, OAuthApp, OAuthAppStore, ProviderId } from "../interfaces.js";
-import type { PluginManager } from "../plugins/pluginManager.js";
+import { getCredentialFieldKeys, type PluginManager } from "../plugins/pluginManager.js";
 import {
   getAllProviderDescriptors,
   getPluginCapabilities,
   getProviderDescriptor,
   getProviderDomainCapabilities,
   ModelDiscoveryConfigError,
+  type ProviderDescriptor,
 } from "../plugins/registry.js";
-import { decryptToken } from "../utils/encryption.js";
+import { encryptToken, isVersionedEncryptedToken } from "../utils/encryption.js";
 import { normalizeGitLabBaseUrl } from "../utils/gitlabAuth.js";
 import { writeJson, readBody, asRecord, toIsoTimestamp, SECRET_MASK, parseConfig, formatZodError } from "./adminRouteUtils.js";
 import { recordAudit, type AuditCapableStore } from "./adminAudit.js";
 import type { Router } from "./router.js";
 
 const log = getLogger("admin-integrations");
+
+function logConnectionTestResult(context: Record<string, string | undefined>, result: { logs?: string[] | undefined }): void {
+  if (!Array.isArray(result.logs) || result.logs.length === 0) {
+    return;
+  }
+  for (const line of result.logs) {
+    log.info(context, line);
+  }
+}
 
 export interface IntegrationRouteDeps {
   integrationStore?: IntegrationStore | undefined;
@@ -132,10 +142,16 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
       writeJson(res, 400, { error: validatedConfig.message || "Invalid integration config" });
       return;
     }
+    if (requiresCredentialEncryptionSecret(validatedConfig.data, descriptor, deps.adminAuthSecret)) {
+      writeJson(res, 400, { error: "ADMIN_AUTH_SECRET is required to encrypt credentials." });
+      return;
+    }
     const id = body["id"] as string || randomUUID();
     try {
       const integration = await deps.integrationStore.upsertIntegration({
-        id, provider, name: body["name"] as string, configJson: JSON.stringify(validatedConfig.data), enabled: true,
+        id, provider, name: body["name"] as string,
+        configJson: JSON.stringify(encryptPasswordFields(validatedConfig.data, descriptor, deps.adminAuthSecret)),
+        enabled: true,
       });
       if (deps.pluginManager) {
         try {
@@ -169,6 +185,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
           writeJson(res, 400, { error: "Changing integration provider is not supported" }); return;
         }
         const result = await deps.pluginManager.testConnectionConfig(existing.provider, mergeIntegrationConfig(existing, config));
+        logConnectionTestResult({ integrationId, provider: existing.provider }, result);
         if (result.success && Array.isArray(result.models) && result.models.length > 0) {
           if (typeof deps.integrationStore.setIntegrationDiscoveredResources === "function") {
             await deps.integrationStore.setIntegrationDiscoveredResources(integrationId, JSON.stringify({ models: result.models }));
@@ -179,6 +196,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
       }
       if (!requestedProvider) { writeJson(res, 400, { error: "Provider is required" }); return; }
       const result = await deps.pluginManager.testConnectionConfig(requestedProvider, config);
+      logConnectionTestResult({ provider: requestedProvider }, result);
       writeJson(res, 200, result);
     } catch (err: unknown) {
       const errorMessage = err instanceof Error ? err.message : String(err);
@@ -216,8 +234,12 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
       : mergeIntegrationConfig(existing, asRecord(nextConfig));
     const validatedConfig = validateIntegrationConfig(descriptor.configSchema, mergedConfig, true);
     if (!validatedConfig.ok) { writeJson(res, 400, { error: validatedConfig.message || "Invalid integration config" }); return; }
+    if (requiresCredentialEncryptionSecret(validatedConfig.data, descriptor, deps.adminAuthSecret)) {
+      writeJson(res, 400, { error: "ADMIN_AUTH_SECRET is required to encrypt credentials." });
+      return;
+    }
     try {
-      const nextConfigJson = JSON.stringify(validatedConfig.data);
+      const nextConfigJson = JSON.stringify(encryptPasswordFields(validatedConfig.data, descriptor, deps.adminAuthSecret));
       const configChanged = nextConfig !== undefined && nextConfigJson !== existing.configJson;
       const updated = await deps.integrationStore.upsertIntegration({
         id,
@@ -309,6 +331,14 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
     const id = params["id"] ?? "";
     try {
       const result = await deps.pluginManager.testConnection(id);
+      const integration = await deps.integrationStore?.getIntegration(id);
+      logConnectionTestResult(
+        {
+          integrationId: id,
+          provider: integration?.provider,
+        },
+        result
+      );
       if (result.success && Array.isArray(result.models) && result.models.length > 0) {
         if (deps.integrationStore && typeof deps.integrationStore.setIntegrationDiscoveredResources === "function") {
           await deps.integrationStore.setIntegrationDiscoveredResources(id, JSON.stringify({ models: result.models }));
@@ -358,7 +388,9 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
     if (descriptor && typeof descriptor.discoverModels === "function") {
       let parsedModelConfig: unknown;
       try {
-        parsedModelConfig = JSON.parse(integration.configJson);
+        parsedModelConfig = deps.pluginManager
+          ? deps.pluginManager.decryptIntegrationConfig(integration)
+          : JSON.parse(integration.configJson);
       } catch {
         writeJson(res, 500, { error: "Stored integration config is not valid JSON" }); return;
       }
@@ -383,25 +415,15 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
     }
     let parsedConfig: unknown;
     try {
-      parsedConfig = JSON.parse(integration.configJson);
+      parsedConfig = deps.pluginManager
+        ? deps.pluginManager.decryptIntegrationConfig(integration)
+        : JSON.parse(integration.configJson);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       writeJson(res, 500, { error: `Stored integration config is not valid JSON: ${msg}` }); return;
     }
 
-    // Decrypt password fields and run preprocessConfig so discoverResources receives real credentials.
-    // Tokens are stored as encrypted (or plain:-prefixed) strings via encryptToken.
     const decryptedConfig = { ...(parsedConfig as Record<string, unknown>) };
-    for (const field of descriptor.requiredFields.filter((f) => f.type === "password")) {
-      const raw = decryptedConfig[field.key];
-      if (typeof raw === "string" && raw.length > 0) {
-        try {
-          decryptedConfig[field.key] = decryptToken(raw, deps.adminAuthSecret);
-        } catch {
-          // Not a managed encrypted token (e.g. a raw PAT) — leave as-is.
-        }
-      }
-    }
     if (descriptor.preprocessConfig) {
       Object.assign(decryptedConfig, descriptor.preprocessConfig(decryptedConfig, deps.adminAuthSecret, id));
     }
@@ -442,24 +464,15 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
 
     let parsedConfig: unknown;
     try {
-      parsedConfig = JSON.parse(integration.configJson);
+      parsedConfig = deps.pluginManager
+        ? deps.pluginManager.decryptIntegrationConfig(integration)
+        : JSON.parse(integration.configJson);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       writeJson(res, 500, { error: `Stored integration config is not valid JSON: ${msg}` }); return;
     }
 
-    // Decrypt password fields and run preprocessConfig so discoverBranches receives real credentials.
     const decryptedConfig = { ...(parsedConfig as Record<string, unknown>) };
-    for (const field of descriptor.requiredFields.filter((f) => f.type === "password")) {
-      const raw = decryptedConfig[field.key];
-      if (typeof raw === "string" && raw.length > 0) {
-        try {
-          decryptedConfig[field.key] = decryptToken(raw, deps.adminAuthSecret);
-        } catch {
-          // Not a managed encrypted token (e.g. a raw PAT) — leave as-is.
-        }
-      }
-    }
     if (descriptor.preprocessConfig) {
       Object.assign(decryptedConfig, descriptor.preprocessConfig(decryptedConfig, deps.adminAuthSecret, id));
     }
@@ -663,6 +676,38 @@ function mergeIntegrationConfig(integration: Integration, updates: Record<string
 /** Return the integration's stored config with schema-unknown keys stripped. */
 function getStoredIntegrationConfig(integration: Integration): Record<string, unknown> {
   return stripUnknownIntegrationConfig(integration.provider, parseConfig(integration.configJson));
+}
+
+/**
+ * Encrypt descriptor password fields and internal credentials before persistence.
+ * Values in the current encryption envelope are left untouched.
+ * Returns a new object — `config` is not mutated.
+ */
+function encryptPasswordFields(
+  config: Record<string, unknown>,
+  descriptor: ProviderDescriptor,
+  adminAuthSecret: string | undefined,
+): Record<string, unknown> {
+  const result: Record<string, unknown> = { ...config };
+  for (const fieldKey of getCredentialFieldKeys(descriptor)) {
+    const raw = result[fieldKey];
+    if (typeof raw !== "string" || raw.length === 0) continue;
+    if (isVersionedEncryptedToken(raw)) continue;
+    result[fieldKey] = encryptToken(raw, adminAuthSecret);
+  }
+  return result;
+}
+
+function requiresCredentialEncryptionSecret(
+  config: Record<string, unknown>,
+  descriptor: ProviderDescriptor,
+  adminAuthSecret: string | undefined,
+): boolean {
+  if (adminAuthSecret) return false;
+  return getCredentialFieldKeys(descriptor).some((fieldKey) => {
+    const value = config[fieldKey];
+    return typeof value === "string" && value.length > 0;
+  });
 }
 
 /** Remove any config keys not declared in the integration type's Zod schema. */

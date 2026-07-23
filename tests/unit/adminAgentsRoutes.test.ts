@@ -4,6 +4,13 @@ import { SqliteStateStore } from "../../src/state/stateStore.js";
 import { createAdminServer, type AdminServerDependencies } from "../../src/admin/adminServer.js";
 import { fetchAvailableModelsWithPat } from "../../src/agents/copilotModelsService.js";
 import { tempDatabasePath } from "./helpers/tempDatabase.js";
+import { PluginManager } from "../../src/plugins/pluginManager.js";
+import { registerBuiltinPlugins } from "../../src/plugins/init.js";
+import { encryptToken } from "../../src/utils/encryption.js";
+
+const ADMIN_SECRET = "agent-routes-admin-secret";
+
+registerBuiltinPlugins();
 
 // Partially mock copilotModelsService: replace the SDK-based PAT function with
 // a vi.fn() to avoid spawning the copilot CLI process in unit tests.
@@ -40,6 +47,7 @@ async function rest(server: Server, path: string, opts: { method?: string; body?
 }
 
 function makeDeps(store: SqliteStateStore): AdminServerDependencies {
+  const pluginManager = new PluginManager(store, { adminAuthSecret: ADMIN_SECRET });
   return {
     stateStore: {
       getActiveTasks: vi.fn(async () => []),
@@ -62,12 +70,14 @@ function makeDeps(store: SqliteStateStore): AdminServerDependencies {
     agentStore: store,
     projectStore: store,
     integrationStore: store,
+    pluginManager,
     config: {
       nodeEnv: "test",
       logLevel: "error",
       maxAgentCycles: 3,
       maxRetryAttempts: 5,
       pollingIntervalMs: 30000,
+      adminAuthSecret: ADMIN_SECRET,
     },
     polling: { isRunning: () => false, getIntervals: () => ({ intervalMs: 30000 }) },
     providers: [],
@@ -287,5 +297,28 @@ describe("Admin API — Agent routes (/api/admin/agents)", () => {
     } finally {
       vi.restoreAllMocks();
     }
+  });
+
+  it("GET /:id/available-models decrypts a PAT from the linked integration", async () => {
+    const encryptedPat = encryptToken("github_pat_encrypted123", ADMIN_SECRET);
+    await store.upsertIntegration({
+      id: "copilot-encrypted-pat",
+      provider: "copilot",
+      name: "Copilot encrypted PAT",
+      configJson: JSON.stringify({ authMode: "pat", token: encryptedPat }),
+      enabled: true,
+    });
+    const agent = await store.createAgent({
+      name: "Encrypted PAT Bot",
+      type: "coding",
+      modelConfigJson: "{}",
+      integrationId: "copilot-encrypted-pat",
+    });
+    vi.mocked(fetchAvailableModelsWithPat).mockResolvedValueOnce([]);
+
+    const response = await rest(server, `/api/admin/agents/${agent.id}/available-models`);
+
+    expect(response.status).toBe(200);
+    expect(fetchAvailableModelsWithPat).toHaveBeenCalledWith("github_pat_encrypted123");
   });
 });

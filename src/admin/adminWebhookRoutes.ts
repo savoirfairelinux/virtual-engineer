@@ -4,11 +4,13 @@ import { generateWebhookSecret, listSupportedEvents } from "../webhooks/webhookS
 import { writeJson, readBody } from "./adminRouteUtils.js";
 import { recordAudit, type AuditCapableStore } from "./adminAudit.js";
 import type { Router } from "./router.js";
+import type { PluginManager } from "../plugins/pluginManager.js";
 
 const log = getLogger("admin-webhooks");
 
 export interface WebhookRouteDeps {
   integrationStore?: IntegrationStore | undefined;
+  pluginManager?: PluginManager | undefined;
   auditStore?: AuditCapableStore | undefined;
   onIntegrationUpdated?: ((integrationId: string) => void) | undefined;
   webhookPublicBaseUrl?: string | undefined;
@@ -32,12 +34,15 @@ export function registerWebhookRoutes(router: Router, deps: WebhookRouteDeps): v
       parsed = {};
     }
     parsed["webhookSecret"] = newSecret;
+    const storedConfig = deps.pluginManager
+      ? deps.pluginManager.encryptIntegrationConfigForStorage(integration, parsed)
+      : parsed;
     try {
       await deps.integrationStore.upsertIntegration({
         id: integration.id,
         provider: integration.provider,
         name: integration.name,
-        configJson: JSON.stringify(parsed),
+        configJson: JSON.stringify(storedConfig),
         enabled: integration.enabled,
       });
     } catch (err) {

@@ -132,7 +132,7 @@ describe("Admin API — Project routes (/api/admin/projects)", () => {
         method: "POST",
         body: {
           source: "ssh://skills.example.com/org/agent-skills",
-          sshKnownHostsPath: "/tmp/virtual-engineer-missing-known-hosts",
+          sshKnownHostsPath: "/app/secrets/virtual-engineer-missing-known-hosts",
         },
       });
 
@@ -232,6 +232,28 @@ describe("Admin API — Project routes (/api/admin/projects)", () => {
     expect(pts[1]?.["commitOrder"]).toBe(2);
     const ts = project["ticketSource"] as Record<string, unknown>;
     expect((ts["integration"] as Record<string, unknown>)["id"]).toBe("redmine-1");
+  });
+
+  it("POST / rejects push-target SSH key paths outside approved secret directories", async () => {
+    const agent = await makeAgent(store, "coding");
+    await seedIntegration(store, "redmine-1", "redmine");
+    await seedIntegration(store, "gerrit-1", "gerrit");
+
+    const r = await rest(server, "/api/admin/projects", {
+      method: "POST",
+      body: {
+        type: "coding",
+        name: "UnsafeKeyPath",
+        agentId: agent.id,
+        ticketSource: { integrationId: "redmine-1", ticketProjectKey: "UNSAFE" },
+        pushTargets: [
+          { integrationId: "gerrit-1", repoKey: "superproject", cloneUrl: "ssh://g/super", targetBranch: "main", role: "primary", commitOrder: 1, localPath: ".", sshKeyPath: "/etc/passwd" },
+        ],
+      },
+    });
+
+    expect(r.status).toBe(400);
+    expect(JSON.stringify(r.body)).toMatch(/SSH key path must be inside an approved secrets directory/);
   });
 
   it("POST / persists skillDiscoveryEnabled for coding projects", async () => {
@@ -335,7 +357,7 @@ describe("Admin API — Project routes (/api/admin/projects)", () => {
         type: "coding",
         name: "WithRemoteSkills",
         agentId: agent.id,
-        skillSources: [{ source: "ssh://skills.example.com/org/agent-skills", skills: ["skill-a", "skill-b", "skill-a"], sshUser: "git-user", sshPort: 29418, sshKeyPath: "/home/ve/.ssh/id_ed25519", sshKnownHostsPath: "/home/ve/.ssh/known_hosts" }],
+        skillSources: [{ source: "ssh://skills.example.com/org/agent-skills", skills: ["skill-a", "skill-b", "skill-a"], sshUser: "git-user", sshPort: 29418, sshKeyPath: "/app/secrets/id_ed25519", sshKnownHostsPath: "/app/secrets/known_hosts" }],
         ticketSource: { integrationId: "redmine-1", ticketProjectKey: "SKILLS" },
         pushTargets: [
           { integrationId: "gerrit-1", repoKey: "superproject", cloneUrl: "ssh://g/super", targetBranch: "main", role: "primary", commitOrder: 1, localPath: "." },
@@ -347,7 +369,7 @@ describe("Admin API — Project routes (/api/admin/projects)", () => {
     const project = r.body?.["project"] as Record<string, unknown>;
     expect(project["skillDiscoveryEnabled"]).toBe(false);
     expect(project["skillSources"]).toEqual([
-      { source: "ssh://skills.example.com/org/agent-skills", skills: ["skill-a", "skill-b"], sshUser: "git-user", sshPort: 29418, sshKeyPath: "/home/ve/.ssh/id_ed25519", sshKnownHostsPath: "/home/ve/.ssh/known_hosts" },
+      { source: "ssh://skills.example.com/org/agent-skills", skills: ["skill-a", "skill-b"], sshUser: "git-user", sshPort: 29418, sshKeyPath: "/app/secrets/id_ed25519", sshKnownHostsPath: "/app/secrets/known_hosts" },
     ]);
     const stored = await store.getProjectById(makeProjectId(String(project["id"])));
     expect(stored?.skillSourcesJson).toBe(JSON.stringify(project["skillSources"]));
@@ -432,6 +454,24 @@ describe("Admin API — Project routes (/api/admin/projects)", () => {
 
     expect(r.status).toBe(400);
     expect(JSON.stringify(r.body)).toMatch(/SSH key path must not be empty/);
+  });
+
+  it("POST / rejects traversal in remote skill source SSH paths", async () => {
+    const agent = await makeAgent(store, "review");
+    await seedIntegration(store, "gerrit-1", "gerrit");
+    const r = await rest(server, "/api/admin/projects", {
+      method: "POST",
+      body: {
+        type: "review",
+        name: "UnsafeKnownHostsPath",
+        agentId: agent.id,
+        skillSources: [{ source: "ssh://skills.example.com/org/agent-skills", skills: ["skill-a"], sshKnownHostsPath: "/app/secrets/../../etc/passwd" }],
+        reviewConfig: { integrationId: "gerrit-1", repoKeys: ["platform/api"] },
+      },
+    });
+
+    expect(r.status).toBe(400);
+    expect(JSON.stringify(r.body)).toMatch(/SSH known_hosts path must be inside an approved secrets directory/);
   });
 
   it("POST / rejects remote skill source ports outside the TCP range", async () => {

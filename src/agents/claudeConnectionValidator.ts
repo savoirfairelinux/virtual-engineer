@@ -6,7 +6,6 @@
  * contract so the plugin descriptor `testConnection` hook stays uniform.
  */
 import type { ConnectionTestResult } from "../plugins/pluginManager.js";
-import { decryptToken } from "../utils/encryption.js";
 import { getLogger } from "../logger.js";
 
 const log = getLogger("claude-connection-validator");
@@ -54,19 +53,9 @@ export async function validateClaudeConnection(
   }
 
   // ── Subscription (OAuth) mode ───────────────────────────────────────────────
-  // Uses the encrypted token written by the interactive OAuth flow.
-  const encrypted = config.sessionToken?.trim();
-  if (encrypted) {
-    let token: string;
-    try {
-      token = decryptToken(encrypted, dependencies.adminAuthSecret);
-    } catch (err) {
-      return {
-        success: false,
-        error: err instanceof Error ? err.message : String(err),
-        models: [],
-      };
-    }
+  // Token is decrypted by the caller (testConnectionConfig / pluginManager).
+  const token = config.sessionToken?.trim();
+  if (token) {
     return callAnthropicModelsApi(token, "oauth", dependencies);
   }
 
@@ -101,7 +90,13 @@ async function callAnthropicModelsApi(
 
     if (response.status === 200) {
       log.info({ success: true, kind }, "Claude credentials are valid");
-      return { success: true, error: null, models: [] };
+      const body = await response.json().catch(() => ({})) as { data?: Array<{ id?: string }> };
+      const modelIds = Array.isArray(body.data)
+        ? (body.data.map((m) => m.id).filter((id): id is string => typeof id === "string"))
+        : [];
+      const logs: string[] = [`Authentication successful (${kind === "api_key" ? "API key" : "subscription"}).`];
+      if (modelIds.length > 0) logs.push(`Available models: ${modelIds.join(", ")}.`);
+      return { success: true, error: null, models: [], logs };
     }
 
     if (response.status === 401 || response.status === 403) {
