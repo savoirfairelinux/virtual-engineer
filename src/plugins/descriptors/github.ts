@@ -198,8 +198,6 @@ export const githubDescriptor: ProviderDescriptor = {
       intake: ["polling", "webhook"],
     },
     code_review: {
-      systemPromptId: "system_github_review",
-      userPromptId: "user_github_review",
       intake: ["polling", "webhook"],
       createConnector: (config: unknown, _integration: Integration, context?: IntegrationBindingContext) => {
         const parsed = githubConfigSchema.parse(config);
@@ -224,8 +222,6 @@ export const githubDescriptor: ProviderDescriptor = {
         const host = deriveHost(parsed.mode as GitHubMode, parsed.baseUrl);
 
         return {
-          systemPromptId: "system_github_review",
-          userPromptId: "user_github_review",
           provider: new GitHubReviewProvider({
             apiBaseUrl: urls.apiBaseUrl,
             token,

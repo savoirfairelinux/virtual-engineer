@@ -333,7 +333,10 @@ describe("adminServer PBAC project scoping", () => {
   }
 
   async function seedTwoProjects(): Promise<{ a: string; b: string }> {
-    const agent = await store.createAgent({ name: "rev-agent", type: "review", modelConfigJson: "{}" });
+    const agent = await store.createAgent({
+      name: "rev-agent", type: "review", modelConfigJson: "{}",
+      systemPromptId: "system_generic_code", instructionsPromptId: "instructions_generic_code",
+    });
     const a = await store.createProject({ name: "Project A", type: "review", agentId: agent.id });
     const b = await store.createProject({ name: "Project B", type: "review", agentId: agent.id });
     return { a: a.id, b: b.id };

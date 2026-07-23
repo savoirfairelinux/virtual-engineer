@@ -2,6 +2,14 @@
 
 The `agent_execution` capability has four engines: **Copilot** (`copilotAdapter.ts`), **Claude Code** (`claudeAdapter.ts`), **Aider** (`aiderAdapter.ts`), and **Mock** (`mockAgentAdapter.ts`). Both coding and review flows are supported by Copilot, Claude, and Aider; review uses `REVIEW_MODE=1`.
 
+## Review prompts
+
+- Review execution uses the same `ReviewWorkspaceInput` path for Copilot, Claude, and Aider. Prompt selection depends on the VE project and agent, not on the execution engine.
+- Every agent must explicitly select an existing `systemPromptId` and `instructionsPromptId`; the admin API and UI reject creation without them. Project `agentOverrideJson` may replace either ID, otherwise the agent's selection is used. There is no generic or integration-descriptor fallback.
+- System and instructions prompt content remains editable. `reviewOutputContract.ts` appends an immutable integration-specific output contract after the effective system prompt, so prompt edits cannot remove or alter the JSON protocol.
+- Copilot, Claude, and Aider fail execution when a required prompt ID is absent or no longer resolves, including for legacy database rows created before prompts became mandatory.
+- `feedbackInstructionsPromptId` remains coding-only; review reruns use the normal review instructions.
+
 ## Container Environment
 
 - Agent containers are built by `src/agents/copilotAdapter.ts`, `src/agents/claudeAdapter.ts`, and `src/agents/aiderAdapter.ts`.

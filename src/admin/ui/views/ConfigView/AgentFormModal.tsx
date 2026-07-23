@@ -92,6 +92,8 @@ export function AgentFormModal({ agent, integrations, prompts, onClose, onSaved 
   const handleSave = async () => {
     if (!form.name.trim()) { setError("Agent name is required"); return; }
     if (!form.integrationId) { setError("Select an agent integration"); return; }
+    if (!form.systemPromptId) { setError("Select a system prompt"); return; }
+    if (!form.instructionsPromptId) { setError("Select an instructions prompt"); return; }
     setSaving(true);
     setError(null);
     try {
@@ -102,8 +104,8 @@ export function AgentFormModal({ agent, integrations, prompts, onClose, onSaved 
         integrationId: form.integrationId || null,
         modelConfig: form.model ? { model: form.model } : {},
         maxConcurrent: isNaN(maxConcurrent) ? 1 : maxConcurrent,
-        systemPromptId: form.systemPromptId || null,
-        instructionsPromptId: form.instructionsPromptId || null,
+        systemPromptId: form.systemPromptId,
+        instructionsPromptId: form.instructionsPromptId,
         feedbackInstructionsPromptId: form.feedbackInstructionsPromptId || null,
       };
       if (isEdit) {
@@ -164,18 +166,18 @@ export function AgentFormModal({ agent, integrations, prompts, onClose, onSaved 
           <FieldInput type="number" min={1} value={form.maxConcurrent} onChange={set("maxConcurrent")} />
         </Field>
 
-        <Field label="System Prompt">
+        <Field label="System Prompt" required>
           <FieldSelect value={form.systemPromptId} onChange={set("systemPromptId")}>
-            <option value="">— none —</option>
+            <option value="">— select a prompt —</option>
             {prompts.map((p) => (
               <option key={p.id} value={p.id}>{p.label}</option>
             ))}
           </FieldSelect>
         </Field>
 
-        <Field label="Instructions Prompt">
+        <Field label="Instructions Prompt" required>
           <FieldSelect value={form.instructionsPromptId} onChange={set("instructionsPromptId")}>
-            <option value="">— none —</option>
+            <option value="">— select a prompt —</option>
             {prompts.map((p) => (
               <option key={p.id} value={p.id}>{p.label}</option>
             ))}

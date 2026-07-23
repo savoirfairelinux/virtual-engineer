@@ -20,6 +20,8 @@ async function makeAgent(store: SqliteStateStore, overrides: Partial<Parameters<
     name: "Default Coding Agent",
     type: "coding",
     modelConfigJson: JSON.stringify({ model: "gpt-4.1", apiKey: "tok" }),
+    systemPromptId: "system_generic_code",
+    instructionsPromptId: "instructions_generic_code",
     enabled: true,
     ...overrides,
   });
@@ -50,6 +52,16 @@ describe("SqliteStateStore — Phase 2: agents", () => {
     expect(fetched?.id).toBe(a.id);
   });
 
+  it("rejects creating an agent with an empty required prompt id", async () => {
+    await expect(store.createAgent({
+      name: "Invalid",
+      type: "coding",
+      modelConfigJson: "{}",
+      systemPromptId: "",
+      instructionsPromptId: "instructions_generic_code",
+    })).rejects.toThrow(/system prompt is required/i);
+  });
+
   it("listAgents filters by type and enabled", async () => {
     await makeAgent(store, { name: "C1", type: "coding", enabled: true });
     await makeAgent(store, { name: "C2", type: "coding", enabled: false });
@@ -68,6 +80,13 @@ describe("SqliteStateStore — Phase 2: agents", () => {
     await store.setAgentEnabled(a.id, true);
     const after = await store.getAgentById(a.id);
     expect(after?.enabled).toBe(true);
+  });
+
+  it("rejects clearing a required prompt during a direct update", async () => {
+    const agent = await makeAgent(store);
+
+    await expect(store.updateAgent(agent.id, { systemPromptId: null }))
+      .rejects.toThrow(/system prompt is required/i);
   });
 
   it("deleteAgent throws if a project still references it", async () => {
@@ -561,6 +580,17 @@ describe("resolveAgentConfig — partial-merge semantics", () => {
     expect(r.systemPromptId).toBe("system");
     expect(r.instructionsPromptId).toBe("instructions");
     expect(r.extra["customFlag"]).toBe(true);
+  });
+
+  it("rejects an agent without required prompts instead of using generic defaults", () => {
+    expect(() => resolveAgentConfig(
+      buildAgent({ systemPromptId: null }),
+      buildProject(null)
+    )).toThrow(/system prompt/i);
+    expect(() => resolveAgentConfig(
+      buildAgent({ instructionsPromptId: null }),
+      buildProject(null)
+    )).toThrow(/instructions prompt/i);
   });
 
   it("override of model only changes model; prompts inherit", () => {

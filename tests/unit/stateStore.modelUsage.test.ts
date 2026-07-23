@@ -81,6 +81,8 @@ describe("SqliteStateStore — getModelUsageSummary", () => {
       name: "A",
       type: "coding",
       modelConfigJson: JSON.stringify({ model: "gpt-4.1" }),
+      systemPromptId: "system_generic_code",
+      instructionsPromptId: "instructions_generic_code",
       enabled: true,
     });
     const p1 = await store.createProject({ name: "BACKEND", type: "coding", agentId: agent.id });
@@ -128,6 +130,8 @@ describe("SqliteStateStore — getModelUsageSummary", () => {
       name: "A",
       type: "coding",
       modelConfigJson: JSON.stringify({ model: "gpt-4.1" }),
+      systemPromptId: "system_generic_code",
+      instructionsPromptId: "instructions_generic_code",
       enabled: true,
     });
     const p1 = await store.createProject({ name: "BACKEND", type: "coding", agentId: agent.id });

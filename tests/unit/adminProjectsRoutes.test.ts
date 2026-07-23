@@ -71,7 +71,10 @@ function makeDeps(
 }
 
 async function makeAgent(store: SqliteStateStore, type: AgentType = "coding"): Promise<AgentRecord> {
-  return store.createAgent({ name: `${type}-bot`, type, modelConfigJson: "{}", enabled: true });
+  return store.createAgent({
+    name: `${type}-bot`, type, modelConfigJson: "{}", enabled: true,
+    systemPromptId: "system_generic_code", instructionsPromptId: "instructions_generic_code",
+  });
 }
 
 async function seedIntegration(store: SqliteStateStore, id: string, provider: "redmine" | "gerrit" = "redmine"): Promise<void> {

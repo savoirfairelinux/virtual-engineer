@@ -33,7 +33,7 @@ A descriptor (`ProviderDescriptor`) provides:
 - `provider` (the `ProviderId`) and `name`
 - a `capabilities` map keyed by **domain capability** (`DOMAIN_CAPABILITIES` = `issue_tracking`, `code_review`, `source_control`, `agent_execution`) with capability factories:
   - `capabilities.issue_tracking.{ createConnector(config, integration, context?), intake? }`
-  - `capabilities.code_review.{ createConnector?, createReviewer?, streamEvents?, systemPromptId?, userPromptId?, intake? }`
+  - `capabilities.code_review.{ createConnector?, createReviewer?, streamEvents?, intake? }`; prompt selection belongs to the configured agent, not the review integration descriptor
   - `capabilities.source_control.createVcsConnector(config, integration, context?)`
   - `capabilities.agent_execution.createAdapter?(config, integration, context?)` (optional). Agent adapters are **descriptor-driven**: a provider that declares `capabilities.agent_execution.buildAdapter(context)` is instantiated by `PluginManager` from an `AgentAdapterContext`. `PluginManager.registerFactory` remains as an explicit test/extension hook and takes precedence when used; production startup does not register overrides. Copilot, Claude, Aider, and Mock all expose this capability.
 - Zod `configSchema` plus `requiredFields` UI metadata (with conditional visibility via `dependsOn`)
@@ -121,7 +121,7 @@ The dashboard also collects only visible descriptor fields when testing, saving,
 ## Adding a descriptor
 
 1. Create `src/plugins/descriptors/<provider>.ts` declaring a `capabilities` map; implement the relevant capability factories (`issue_tracking.createConnector`, `code_review.createConnector` / `createReviewer`, `source_control.createVcsConnector`, `agent_execution.createAdapter`) plus `testConnection` and `getSummaryDetails`.
-2. If the provider can drive VE code review, set `capabilities.code_review.systemPromptId` / `userPromptId` and implement `createReviewer`.
+2. If the provider can drive VE code review, implement `capabilities.code_review.createReviewer`; provider-specific output semantics belong in `reviewOutputContract.ts`, while agents select their prompts explicitly.
 3. Register it in `registerBuiltinPlugins()` ([src/plugins/init.ts](../../../src/plugins/init.ts)).
 4. Add or update connection tests and admin discovery coverage.
 

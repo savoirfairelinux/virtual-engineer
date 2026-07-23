@@ -1,5 +1,11 @@
 # Database Context
 
+## Agent Prompt References
+
+- `agents.system_prompt_id` and `agents.instructions_prompt_id` remain nullable foreign keys for compatibility with databases containing legacy agents.
+- New agents cannot be created through the admin API without both references, and both IDs must resolve to existing `prompts` rows. Updates cannot clear either reference.
+- Runtime resolution is fail-closed: legacy agents missing either prompt, or agents referencing a prompt that no longer resolves, do not receive a generic or integration-specific fallback.
+
 ## Projects Skill Columns
 
 - `projects.skill_discovery_enabled` is an integer trust gate for local repository skills only. When enabled, the agent container receives `SKILL_DISCOVERY=1` and loads local skills from `local_skills_path`.

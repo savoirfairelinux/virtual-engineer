@@ -60,6 +60,7 @@ function makeDeps(store: SqliteStateStore): AdminServerDependencies {
       getModelUsageSummary: vi.fn(async () => ({ byModel: [], perProject: [], totalRuns: 0, totalUsd: 0, sinceEpochSeconds: null })),
     },
     agentStore: store,
+    promptStore: store,
     projectStore: store,
     integrationStore: store,
     config: {
@@ -103,6 +104,8 @@ describe("Admin API — Agent routes (/api/admin/agents)", () => {
         name: "Coding Bot",
         type: "coding",
         modelConfig: { model: "gpt-4.1", githubToken: "ghp_secret", apiKey: "sk-1" },
+        systemPromptId: "system_generic_code",
+        instructionsPromptId: "instructions_generic_code",
         maxConcurrent: 2,
         enabled: true,
       },
@@ -133,6 +136,46 @@ describe("Admin API — Agent routes (/api/admin/agents)", () => {
     expect(r.status).toBe(400);
   });
 
+  it("POST / returns 400 when either required prompt is missing", async () => {
+    const withoutSystem = await rest(server, "/api/admin/agents", {
+      method: "POST",
+      body: {
+        name: "Missing system prompt",
+        type: "coding",
+        modelConfig: {},
+        instructionsPromptId: "instructions_generic_code",
+      },
+    });
+    const withoutInstructions = await rest(server, "/api/admin/agents", {
+      method: "POST",
+      body: {
+        name: "Missing instructions prompt",
+        type: "review",
+        modelConfig: {},
+        systemPromptId: "system_github_review",
+      },
+    });
+
+    expect(withoutSystem.status).toBe(400);
+    expect(withoutInstructions.status).toBe(400);
+  });
+
+  it("POST / returns 400 when a selected prompt does not exist", async () => {
+    const r = await rest(server, "/api/admin/agents", {
+      method: "POST",
+      body: {
+        name: "Unknown prompt",
+        type: "coding",
+        modelConfig: {},
+        systemPromptId: "missing-system",
+        instructionsPromptId: "instructions_generic_code",
+      },
+    });
+
+    expect(r.status).toBe(400);
+    expect(r.body?.["error"]).toMatch(/missing-system.*not found/i);
+  });
+
   it("GET /:id returns 404 for unknown agent", async () => {
     const r = await rest(server, "/api/admin/agents/nope");
     expect(r.status).toBe(404);
@@ -143,6 +186,8 @@ describe("Admin API — Agent routes (/api/admin/agents)", () => {
       name: "Bot",
       type: "coding",
       modelConfigJson: JSON.stringify({ model: "gpt-4.1", githubToken: "tok" }),
+      systemPromptId: "system_generic_code",
+      instructionsPromptId: "instructions_generic_code",
     });
     const r = await rest(server, `/api/admin/agents/${created.id}`);
     expect(r.status).toBe(200);
@@ -156,6 +201,8 @@ describe("Admin API — Agent routes (/api/admin/agents)", () => {
       name: "Bot",
       type: "coding",
       modelConfigJson: JSON.stringify({ model: "gpt-4.1", githubToken: "real-token" }),
+      systemPromptId: "system_generic_code",
+      instructionsPromptId: "instructions_generic_code",
     });
     const r = await rest(server, `/api/admin/agents/${created.id}`, {
       method: "PUT",
@@ -173,6 +220,8 @@ describe("Admin API — Agent routes (/api/admin/agents)", () => {
       name: "Bot",
       type: "coding",
       modelConfigJson: JSON.stringify({ githubToken: "old" }),
+      systemPromptId: "system_generic_code",
+      instructionsPromptId: "instructions_generic_code",
     });
     await rest(server, `/api/admin/agents/${created.id}`, {
       method: "PUT",
@@ -183,15 +232,43 @@ describe("Admin API — Agent routes (/api/admin/agents)", () => {
     expect(cfg["githubToken"]).toBe("new-token");
   });
 
+  it("PUT /:id rejects clearing either required prompt", async () => {
+    const created = await store.createAgent({
+      name: "Bot",
+      type: "coding",
+      modelConfigJson: "{}",
+      systemPromptId: "system_generic_code",
+      instructionsPromptId: "instructions_generic_code",
+    });
+
+    const systemResult = await rest(server, `/api/admin/agents/${created.id}`, {
+      method: "PUT",
+      body: { systemPromptId: null },
+    });
+    const instructionsResult = await rest(server, `/api/admin/agents/${created.id}`, {
+      method: "PUT",
+      body: { instructionsPromptId: null },
+    });
+
+    expect(systemResult.status).toBe(400);
+    expect(instructionsResult.status).toBe(400);
+  });
+
   it("DELETE /:id returns 204 on success", async () => {
-    const a = await store.createAgent({ name: "X", type: "coding", modelConfigJson: "{}" });
+    const a = await store.createAgent({
+      name: "X", type: "coding", modelConfigJson: "{}",
+      systemPromptId: "system_generic_code", instructionsPromptId: "instructions_generic_code",
+    });
     const r = await rest(server, `/api/admin/agents/${a.id}`, { method: "DELETE" });
     expect(r.status).toBe(204);
     expect(await store.getAgentById(a.id)).toBeNull();
   });
 
   it("DELETE /:id returns 409 when a project still references the agent", async () => {
-    const a = await store.createAgent({ name: "X", type: "coding", modelConfigJson: "{}" });
+    const a = await store.createAgent({
+      name: "X", type: "coding", modelConfigJson: "{}",
+      systemPromptId: "system_generic_code", instructionsPromptId: "instructions_generic_code",
+    });
     await store.createProject({ name: "P", type: "coding", agentId: a.id });
     const r = await rest(server, `/api/admin/agents/${a.id}`, { method: "DELETE" });
     expect(r.status).toBe(409);
@@ -199,7 +276,10 @@ describe("Admin API — Agent routes (/api/admin/agents)", () => {
   });
 
   it("PATCH /:id/enable and /disable toggle the flag", async () => {
-    const a = await store.createAgent({ name: "X", type: "coding", modelConfigJson: "{}", enabled: false });
+    const a = await store.createAgent({
+      name: "X", type: "coding", modelConfigJson: "{}", enabled: false,
+      systemPromptId: "system_generic_code", instructionsPromptId: "instructions_generic_code",
+    });
     const r1 = await rest(server, `/api/admin/agents/${a.id}/enable`, { method: "PATCH" });
     expect(r1.status).toBe(204);
     expect((await store.getAgentById(a.id))?.enabled).toBe(true);
@@ -209,7 +289,10 @@ describe("Admin API — Agent routes (/api/admin/agents)", () => {
   });
 
   it("GET / includes projectCount per agent", async () => {
-    const a = await store.createAgent({ name: "X", type: "coding", modelConfigJson: "{}" });
+    const a = await store.createAgent({
+      name: "X", type: "coding", modelConfigJson: "{}",
+      systemPromptId: "system_generic_code", instructionsPromptId: "instructions_generic_code",
+    });
     await store.createProject({ name: "P1", type: "coding", agentId: a.id });
     await store.createProject({ name: "P2", type: "coding", agentId: a.id });
     const r = await rest(server, "/api/admin/agents");
@@ -233,6 +316,8 @@ describe("Admin API — Agent routes (/api/admin/agents)", () => {
         type: "coding",
         modelConfig: {},
         integrationId: "copilot-1",
+        systemPromptId: "system_generic_code",
+        instructionsPromptId: "instructions_generic_code",
       },
     });
     expect(r.status).toBe(201);
@@ -248,7 +333,13 @@ describe("Admin API — Agent routes (/api/admin/agents)", () => {
       configJson: JSON.stringify({ apiKey: "ghp_test" }),
       enabled: true,
     });
-    const a = await store.createAgent({ name: "Bot", type: "coding", modelConfigJson: "{}" });
+    const a = await store.createAgent({
+      name: "Bot",
+      type: "coding",
+      modelConfigJson: "{}",
+      systemPromptId: "system_generic_code",
+      instructionsPromptId: "instructions_generic_code",
+    });
     const r = await rest(server, `/api/admin/agents/${a.id}`, {
       method: "PUT",
       body: { integrationId: "copilot-2" },
@@ -271,6 +362,8 @@ describe("Admin API — Agent routes (/api/admin/agents)", () => {
       type: "coding",
       modelConfigJson: "{}",
       integrationId: "copilot-pat",
+      systemPromptId: "system_generic_code",
+      instructionsPromptId: "instructions_generic_code",
     });
 
     try {

@@ -288,8 +288,8 @@ export interface ResolvedAgentConfig {
   apiKey: string | undefined;
   /** Encrypted Copilot session token from OAuth device flow. */
   encryptedSessionToken: string | undefined;
-  systemPromptId: string | null;
-  instructionsPromptId: string | null;
+  systemPromptId: string;
+  instructionsPromptId: string;
   /** Optional override used on retry (feedback) cycles. Falls back to instructionsPromptId when null. */
   feedbackInstructionsPromptId: string | null;
   /** Any other model-related fields preserved from agent + override (override wins). */

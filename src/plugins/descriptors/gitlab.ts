@@ -157,8 +157,6 @@ export const gitlabDescriptor: ProviderDescriptor = {
       intake: ["polling", "webhook"],
     },
     code_review: {
-      systemPromptId: "system_gitlab_review",
-      userPromptId: "user_gitlab_review",
       createConnector: (config: unknown, _integration: Integration, context?: IntegrationBindingContext) => {
         const parsed = gitlabConfigSchema.parse(config);
         return new GitLabMergeRequestConnector({
@@ -174,8 +172,6 @@ export const gitlabDescriptor: ProviderDescriptor = {
         const host = new URL(baseUrl).host;
 
         return {
-          systemPromptId: "system_gitlab_review",
-          userPromptId: "user_gitlab_review",
           provider: new GitLabMergeRequestReviewProvider({
             baseUrl,
             projectId: UNBOUND_GITLAB_PROJECT_ID,

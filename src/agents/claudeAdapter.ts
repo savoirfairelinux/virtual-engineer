@@ -256,15 +256,13 @@ export class ClaudeAdapter implements AgentAdapter, ConfigurableAdapter {
     const promptStore = this.promptStore;
 
     if (!promptStore) {
-      return spec;
+      throw new Error("Prompt store is required for agent execution");
     }
 
-    const systemPromptId =
-      context.systemPromptId === undefined ? "system_generic_code" : context.systemPromptId;
-    const instructionsPromptId =
-      context.instructionsPromptId === undefined
-        ? "instructions_generic_code"
-        : context.instructionsPromptId;
+    const systemPromptId = context.systemPromptId;
+    const instructionsPromptId = context.instructionsPromptId;
+    if (!systemPromptId) throw new Error("System prompt is required for agent execution");
+    if (!instructionsPromptId) throw new Error("Instructions prompt is required for agent execution");
     const promptIds = [
       ...new Set(
         [systemPromptId, instructionsPromptId].filter(
@@ -283,13 +281,11 @@ export class ClaudeAdapter implements AgentAdapter, ConfigurableAdapter {
         ? promptsById.get(instructionsPromptId) ?? null
         : null;
 
-    if (systemPrompt) {
-      spec.env["SYSTEM_PROMPT"] = systemPrompt.content;
-    }
+    if (!systemPrompt) throw new Error(`System prompt '${systemPromptId}' not found`);
+    if (!instructionsPrompt) throw new Error(`Instructions prompt '${instructionsPromptId}' not found`);
 
-    if (instructionsPrompt) {
-      spec.userPromptContent = buildCodegenUserPrompt(context, instructionsPrompt.content);
-    }
+    spec.env["SYSTEM_PROMPT"] = systemPrompt.content;
+    spec.userPromptContent = buildCodegenUserPrompt(context, instructionsPrompt.content);
 
     return spec;
   }

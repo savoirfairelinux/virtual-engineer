@@ -588,6 +588,14 @@ export function resolveAgentConfig(agent: AgentRecord, project: ProjectRecord): 
   const sysOverride = typeof overridePrompts.systemPromptId === "string" ? overridePrompts.systemPromptId : null;
   const insOverride = typeof overridePrompts.instructionsPromptId === "string" ? overridePrompts.instructionsPromptId : null;
   const fbOverride = typeof overridePrompts.feedbackInstructionsPromptId === "string" ? overridePrompts.feedbackInstructionsPromptId : null;
+  const systemPromptId = sysOverride ?? agent.systemPromptId;
+  const instructionsPromptId = insOverride ?? agent.instructionsPromptId;
+  if (!systemPromptId) {
+    throw new Error(`Agent '${agent.id}' has no system prompt configured`);
+  }
+  if (!instructionsPromptId) {
+    throw new Error(`Agent '${agent.id}' has no instructions prompt configured`);
+  }
 
   const known = new Set(["model", "apiKey", "sessionToken", "systemPromptId", "instructionsPromptId", "feedbackInstructionsPromptId"]);
   const extra: Record<string, unknown> = {};
@@ -601,8 +609,8 @@ export function resolveAgentConfig(agent: AgentRecord, project: ProjectRecord): 
     encryptedSessionToken: typeof merged["sessionToken"] === "string"
       ? (merged["sessionToken"] as string)
       : undefined,
-    systemPromptId: sysOverride ?? agent.systemPromptId ?? "system_generic_code",
-    instructionsPromptId: insOverride ?? agent.instructionsPromptId ?? "instructions_generic_code",
+    systemPromptId,
+    instructionsPromptId,
     feedbackInstructionsPromptId: fbOverride ?? agent.feedbackInstructionsPromptId ?? null,
     extra,
   };
