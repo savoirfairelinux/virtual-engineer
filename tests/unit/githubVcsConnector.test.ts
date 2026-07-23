@@ -57,6 +57,13 @@ vi.mock("child_process", () => ({
   execFileSync: vi.fn(() => "https://github.com/octocat/hello-world.git\n"),
 }));
 
+vi.mock("../../src/workspace/dockerVolume.js", () => ({
+  execInVolume: vi.fn().mockResolvedValue({ stdout: "feat: subject\n\nbody", stderr: "", exitCode: 0 }),
+}));
+
+import { execInVolume } from "../../src/workspace/dockerVolume.js";
+const execInVolumeMock = vi.mocked(execInVolume);
+
 describe("GitHubVcsConnector", () => {
   let fetchMock: ReturnType<typeof vi.fn>;
 
@@ -237,6 +244,47 @@ describe("GitHubVcsConnector", () => {
       await expect(
         makeConnector().push("/tmp/repo", "feature-x", "Subject")
       ).rejects.toThrow();
+    });
+  });
+
+  describe("pushDirect (volume)", () => {
+    beforeEach(() => {
+      execInVolumeMock.mockReset();
+      execInVolumeMock.mockResolvedValue({ stdout: "feat: subject\n\nbody", stderr: "", exitCode: 0 });
+    });
+
+    it("clears any stale http.extraheader and disables credential.helper before pushing", async () => {
+      fetchMock.mockResolvedValueOnce(jsonResponse([])); // no existing PR
+      fetchMock.mockResolvedValueOnce(jsonResponse(PR_RESPONSE)); // create PR
+
+      await makeConnector().pushDirect("/unused", "feature-x", undefined, {
+        volumeName: "vol-1",
+        image: "ve:latest",
+      });
+
+      const pushCall = execInVolumeMock.mock.calls[0]![0];
+      const script = (pushCall.command as string[])[2]!;
+      expect(script).toContain('git config --unset-all "http.https://github.com/.extraheader"');
+      expect(script).toContain("git -c credential.helper= push --force");
+      expect(pushCall.env).toEqual({ VE_PUSH_REF: "feature-x", VE_PUSH_URL: `https://x-access-token:${TOKEN}@github.com/${OWNER}/${REPO}.git` });
+    });
+
+    it("throws a redacted error when the volume push fails", async () => {
+      execInVolumeMock.mockResolvedValueOnce({
+        stdout: "",
+        stderr: `remote: Invalid username or token.\nfatal: Authentication failed for 'https://x-access-token:${TOKEN}@github.com/${OWNER}/${REPO}.git/'\n`,
+        exitCode: 1,
+      });
+
+      try {
+        await makeConnector().pushDirect("/unused", "feature-x", undefined, { volumeName: "vol-1", image: "ve:latest" });
+        throw new Error("Expected pushDirect to throw");
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        expect(message).toMatch(/Failed to push directly to GitHub \(volume\)/);
+        expect(message).not.toContain(TOKEN);
+        expect(message).toContain("<redacted>@");
+      }
     });
   });
 });
