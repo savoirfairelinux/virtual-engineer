@@ -393,7 +393,7 @@ The agent container is placed on `virtual-engineer_ve-agent-net` — a dedicated
 
 ---
 
-### 3.6.1 ClaudeAdapter
+#### 3.6.1 ClaudeAdapter
 
 `src/agents/claudeAdapter.ts`
 
@@ -408,7 +408,7 @@ Connection methods live on the `claude` descriptor (`src/plugins/descriptors/cla
 
 ---
 
-### 3.6.2 AiderAdapter
+#### 3.6.2 AiderAdapter
 
 `src/agents/aiderAdapter.ts`
 
