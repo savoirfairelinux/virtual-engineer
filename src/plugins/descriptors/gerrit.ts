@@ -234,8 +234,6 @@ export const gerritDescriptor: ProviderDescriptor = {
   },
   capabilities: {
     code_review: {
-      systemPromptId: "system_gerrit_review",
-      userPromptId: "user_gerrit_review",
       intake: ["stream"],
       streamEvents: {
         createManager: (deps) => new GerritStreamEventsManager(deps),
@@ -259,8 +257,6 @@ export const gerritDescriptor: ProviderDescriptor = {
         const ssh = buildSshArgs(cfg);
         const baseUrl = `ssh://${ssh.user}@${ssh.host}:${ssh.port}`;
         return {
-          systemPromptId: "system_gerrit_review",
-          userPromptId: "user_gerrit_review",
           provider: new GerritSshReviewProvider({
             sshHost: ssh.host,
             sshPort: ssh.port,

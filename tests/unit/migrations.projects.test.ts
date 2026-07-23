@@ -63,6 +63,8 @@ describe("Phase 2 migrations", () => {
         name: "A",
         type: "coding",
         modelConfigJson: "{}",
+        systemPromptId: "system_generic_code",
+        instructionsPromptId: "instructions_generic_code",
         enabled: true,
       });
       await store.upsertIntegration({ id: "r1", provider: "redmine", name: "R", configJson: "{}", enabled: true });

@@ -73,6 +73,8 @@ async function seedProjectAndAgent(store: SqliteStateStore, opts: {
     name: "A",
     type: "coding",
     modelConfigJson: "{}",
+    systemPromptId: "system_generic_code",
+    instructionsPromptId: "instructions_generic_code",
     maxConcurrent: opts.agentMax ?? 5,
     enabled: true,
   });
