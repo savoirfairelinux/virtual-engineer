@@ -28,7 +28,7 @@ ENV PATH="/root/.local/bin:${PATH}"
 # Default SSH config — accepts unknown host keys as a fallback for ephemeral
 # containers. When sshKnownHostsPath is configured on the Gerrit integration,
 # dockerVolume.ts overrides GIT_SSH_COMMAND at runtime with strict checking.
-RUN mkdir -p ~/.ssh && echo "Host gerrit\n  StrictHostKeyChecking=no\n  UserKnownHostsFile=/dev/null" > ~/.ssh/config
+RUN mkdir -p ~/.ssh && printf '%s\n' "Host gerrit" "  StrictHostKeyChecking=no" "  UserKnownHostsFile=/dev/null" > ~/.ssh/config
 
 # Install GitHub CLI
 # Default GIT_SSH_COMMAND — overridden at runtime by dockerVolume.ts when
