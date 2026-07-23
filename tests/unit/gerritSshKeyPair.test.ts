@@ -19,7 +19,9 @@ describe("generateGerritSshKeyPair", () => {
   });
 
   it("throws when adminAuthSecret is undefined", () => {
-    expect(() => generateGerritSshKeyPair(undefined, "virtual-reviewer")).toThrow();
+    expect(() => generateGerritSshKeyPair(undefined, "virtual-reviewer")).toThrow(
+      "ADMIN_AUTH_SECRET must be configured to generate SSH keys"
+    );
   });
 
   it("falls back to virtual-engineer-gerrit when no sshUser is provided", () => {
