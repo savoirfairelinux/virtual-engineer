@@ -21,6 +21,7 @@ import {
   createVolume,
   removeVolume,
   execInVolume,
+  pruneOrphanedWorkspaceVolumes,
 } from "../../src/workspace/dockerVolume.js";
 
 const mockExecFile = vi.mocked(execFile);
@@ -83,6 +84,57 @@ describe("removeVolume", () => {
   it("rethrows other errors", async () => {
     mockExecFile.mockRejectedValue(new Error("permission denied") as never);
     await expect(removeVolume("ve-ws-old")).rejects.toThrow("permission denied");
+  });
+});
+
+// ─── pruneOrphanedWorkspaceVolumes ─────────────────────────────────────────────
+
+describe("pruneOrphanedWorkspaceVolumes", () => {
+  it("lists ve-ws-*/ve-home-* volumes and removes each", async () => {
+    mockExecFile
+      .mockResolvedValueOnce({ stdout: "ve-ws-abc-1\nve-home-abc-1\n", stderr: "" } as never)
+      .mockResolvedValueOnce({ stdout: "", stderr: "" } as never)
+      .mockResolvedValueOnce({ stdout: "", stderr: "" } as never);
+
+    await pruneOrphanedWorkspaceVolumes();
+
+    expect(mockExecFile).toHaveBeenNthCalledWith(
+      1,
+      "docker",
+      ["volume", "ls", "-q", "--filter", "name=^ve-ws-", "--filter", "name=^ve-home-"],
+      expect.objectContaining({ timeout: expect.any(Number) }),
+    );
+    expect(mockExecFile).toHaveBeenNthCalledWith(
+      2,
+      "docker",
+      ["volume", "rm", "ve-ws-abc-1"],
+      expect.objectContaining({ timeout: expect.any(Number) }),
+    );
+    expect(mockExecFile).toHaveBeenNthCalledWith(
+      3,
+      "docker",
+      ["volume", "rm", "ve-home-abc-1"],
+      expect.objectContaining({ timeout: expect.any(Number) }),
+    );
+  });
+
+  it("is a no-op when no volumes match", async () => {
+    mockExecFileSuccess("");
+    await pruneOrphanedWorkspaceVolumes();
+    expect(mockExecFile).toHaveBeenCalledTimes(1);
+  });
+
+  it("skips volumes still in use without throwing", async () => {
+    mockExecFile
+      .mockResolvedValueOnce({ stdout: "ve-ws-busy-1\n", stderr: "" } as never)
+      .mockRejectedValueOnce(new Error("volume is in use") as never);
+
+    await expect(pruneOrphanedWorkspaceVolumes()).resolves.toBeUndefined();
+  });
+
+  it("does not throw when the initial listing fails", async () => {
+    mockExecFile.mockRejectedValue(new Error("docker not available") as never);
+    await expect(pruneOrphanedWorkspaceVolumes()).resolves.toBeUndefined();
   });
 });
 
