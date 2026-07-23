@@ -397,7 +397,7 @@ The agent container is placed on `virtual-engineer_ve-agent-net` — a dedicated
 
 `src/agents/claudeAdapter.ts`
 
-An alternative `agent_execution` adapter that runs Anthropic **Claude Code** via the `@anthropic-ai/claude-agent-sdk` inside the same hardened container. It mirrors `CopilotAdapter` (same security args, `/ve-home` HOME volume, `__ve_event` stderr protocol, commit collection, and `AgentResult` contract) but:
+An alternative `agent_execution` adapter that runs Anthropic **Claude Code** via Anthropic's Claude tooling inside the same hardened container. It mirrors `CopilotAdapter` (same security args, `/ve-home` HOME volume, `__ve_event` stderr protocol, commit collection, and `AgentResult` contract) but:
 
 - injects `AGENT_PROVIDER=claude` + `CLAUDE_MODEL` and exactly one auth env var — `ANTHROPIC_API_KEY` (api-key integrations, carried via the generic `apiKey`/`githubToken` field) or `CLAUDE_CODE_OAUTH_TOKEN` (subscription integrations, carried via `encryptedSessionToken`);
 - dispatches in the worker: `agent-worker/src/index.ts` resolves the runner via `providers/registry.ts` and calls `providers/claude.ts` `runClaudeAgent()` when `AGENT_PROVIDER=claude`, which drives the SDK `query()` and maps its message stream onto the shared event/commit/result pipeline.
