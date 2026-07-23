@@ -174,7 +174,7 @@ describe("webhookServer", () => {
       expect(res.status).toBe(202);
     });
 
-    it("returns 200 with valid Authorization: Bearer", async () => {
+    it("returns 202 with valid Authorization: Bearer", async () => {
       const body = JSON.stringify({ issue: { id: 7, project: { identifier: "p" } } });
       const res = await call(`/webhooks/${INTEGRATION_ID}/issue.created`, {
         body,
