@@ -781,7 +781,7 @@ Base: `node:24-bookworm-slim`. Includes `git`, `openssh-client`, `curl`, `jq`, G
 ```dockerfile
 FROM node:24-bookworm-slim
 RUN apt-get install git openssh-client curl ca-certificates jq python3 python3-venv
-RUN curl -LsSf https://astral.sh/uv/install.sh | UV_VERSION=0.11.30 sh \
+RUN curl -LsSf https://astral.sh/uv/install.sh | UV_VERSION=0.6.0 sh \
   && /root/.local/bin/uv tool install --python python3 aider-chat==0.86.2 \
   && ln -s /root/.local/bin/aider /usr/local/bin/aider
 # GitHub CLI is installed from the official apt repository.
