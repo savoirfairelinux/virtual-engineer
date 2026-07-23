@@ -103,6 +103,37 @@ export function createAiderDescriptor(_adminAuthSecret?: string): ProviderDescri
     },
     capabilities: {
       agent_execution: {
+        configFields: [
+          {
+            key: "chatMode",
+            label: "Coding Mode",
+            type: "select",
+            required: false,
+            options: [
+              { value: "code", label: "Code" },
+              { value: "architect", label: "Architect" },
+            ],
+          },
+          { key: "reasoningEffort", label: "Reasoning Effort", type: "text", required: false },
+          { key: "thinkingTokens", label: "Thinking Tokens", type: "number", valueType: "number", required: false },
+          { key: "mapTokens", label: "Repository Map Tokens", type: "number", valueType: "number", required: false },
+          {
+            key: "autoLint",
+            label: "Automatic Lint",
+            type: "select",
+            valueType: "boolean",
+            required: false,
+            options: [{ value: "true", label: "Enabled" }, { value: "false", label: "Disabled" }],
+          },
+          {
+            key: "autoTest",
+            label: "Automatic Tests",
+            type: "select",
+            valueType: "boolean",
+            required: false,
+            options: [{ value: "true", label: "Enabled" }, { value: "false", label: "Disabled" }],
+          },
+        ],
         // No model default is passed: when the agent config leaves the model
         // unset, the Aider CLI selects its own default.
         buildAdapter: (context) =>

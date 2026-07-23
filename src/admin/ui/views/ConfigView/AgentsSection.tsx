@@ -10,7 +10,7 @@ import { AgentDrawer } from "./ConfigDrawers.tsx";
 import type { ApiAgent } from "../../types.ts";
 import type { ConfigViewData } from "./index.tsx";
 
-export function AgentsSection({ agents, integrations, prompts, onRefresh }: ConfigViewData) {
+export function AgentsSection({ agents, integrations, plugins, prompts, onRefresh }: ConfigViewData) {
   const { canOperate } = useCurrentUser();
   const [busy, setBusy] = useState<string | null>(null);
   const [showAdd, setShowAdd] = useState(false);
@@ -93,8 +93,8 @@ export function AgentsSection({ agents, integrations, prompts, onRefresh }: Conf
               </div>
             </div>
             <div style={{ display: "flex", gap: "8px" }}>
-              <Tag tone="info">sys: {promptLabel(a.systemPromptId)}</Tag>
-              <Tag tone="muted">instr: {promptLabel(a.instructionsPromptId)}</Tag>
+              <Tag tone="info">Agent instructions: {promptLabel(a.systemPromptId)}</Tag>
+              <Tag tone="muted">Workflow instructions: {promptLabel(a.instructionsPromptId)}</Tag>
             </div>
             <div style={{ textAlign: "right", minWidth: "70px" }}>
               <div className="eyebrow" style={{ fontSize: "9px" }}>Concurrency</div>
@@ -143,6 +143,7 @@ export function AgentsSection({ agents, integrations, prompts, onRefresh }: Conf
         <AgentFormModal
           agent={editingAgent}
           integrations={integrations}
+          plugins={plugins}
           prompts={prompts}
           onClose={() => { setShowAdd(false); setEditingId(null); }}
           onSaved={handleSaved}
