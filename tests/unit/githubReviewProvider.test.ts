@@ -139,6 +139,13 @@ describe("GitHubReviewProvider", () => {
     expect(body.comments).toBeUndefined();
   });
 
+  it("postReviewWithComments posts COMMENT for a neutral decision", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ id: 1 }));
+    await new GitHubReviewProvider(config).postReviewWithComments!(cid, 1, [], "Notes only", 0);
+    const body = JSON.parse((fetchMock.mock.calls[0]?.[1] as RequestInit).body as string);
+    expect(body.event).toBe("COMMENT");
+  });
+
   it("postReviewComments posts COMMENT event", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ id: 1 }));
     await new GitHubReviewProvider(config).postReviewComments(cid, 1, [], "FYI");

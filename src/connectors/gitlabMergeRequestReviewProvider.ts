@@ -279,7 +279,7 @@ export class GitLabMergeRequestReviewProvider implements ReviewProvider {
     _revision: number,
     comments: InlineReviewComment[],
     summary: string,
-    score: -1 | 1,
+    score: -1 | 0 | 1,
     allowedFiles?: ReadonlySet<string>
   ): Promise<void> {
     await this.submitReview(changeId, comments, summary, score, allowedFiles);
