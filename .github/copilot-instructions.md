@@ -89,7 +89,8 @@ src/
                         # provider descriptors; githubOAuth/gitlabOAuth helpers)
   review/               # reviewOrchestrator,
                         # reviewBootstrap (bundle + trigger factory),
-                        # reviewPromptBuilder, reviewResultParser,
+                        # reviewPromptBuilder, reviewOutputContract,
+                        # reviewResultParser,
                         # commentFilter, commentHash, commentSeverity,
                         # revisionPatchset
   state/                # schema (Drizzle), stateMachine, stateStore facade, migrate

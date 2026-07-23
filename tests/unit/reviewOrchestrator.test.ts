@@ -217,6 +217,8 @@ function makeDeps(
       adapter: { name: "test-agent" } as AgentAdapter,
       model: "test-model",
       token: "gh_test_token",
+      systemPrompt: "You are a code reviewer.",
+      instructionsPrompt: "Review the code changes.",
     })),
     buildCloneTarget: (details) => ({
       cloneUrl: `${GERRIT_SSH_BASE}/${details.project}`,
@@ -230,8 +232,6 @@ function makeDeps(
         patchset: details.currentPatchset,
       });
     },
-    reviewInstructions: "Review the code changes.",
-    reviewSystemPrompt: "You are a code reviewer.",
     ...overrides,
   };
 }
@@ -862,7 +862,9 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
         patchset: 2,
         agentToken: "gh_test_token",
         prompt: expect.any(String),
-        systemPrompt: "You are a code reviewer.",
+        systemPrompt: expect.stringMatching(
+          /You are a code reviewer\.[\s\S]*REVIEW_RESULT_START[\s\S]*REVIEW_RESULT_END/
+        ),
       }),
       expect.objectContaining({ onStderrChunk: expect.any(Function) })
     );
@@ -897,6 +899,8 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
       adapter: projectAdapter,
       model: "gpt-5",
       token: "project-specific-token",
+      systemPrompt: "You are the project reviewer.",
+      instructionsPrompt: "Review this project.",
     }));
     const orch = new ReviewOrchestrator(makeDeps(mocks, runner, { resolveAgentForProject }));
 
@@ -909,6 +913,33 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
         agentAdapter: projectAdapter,
         agentToken: "project-specific-token",
         model: "gpt-5",
+      }),
+      expect.anything()
+    );
+  });
+
+  it("uses project-resolved prompts and appends the immutable integration contract", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING", projectId: makeProjectId("proj-1") });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+    const resolveAgentForProject = vi.fn(async () => ({
+      adapter: { name: "project-agent" } as AgentAdapter,
+      model: "gpt-5",
+      token: "project-specific-token",
+      systemPrompt: "Custom review role.",
+      instructionsPrompt: "Focus on authorization boundaries.",
+    }));
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner, { resolveAgentForProject }));
+
+    await orch.runReview(initial.taskId);
+
+    expect(runner.runReviewInDocker).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        prompt: expect.stringContaining("Focus on authorization boundaries."),
+        systemPrompt: expect.stringMatching(
+          /Custom review role\.[\s\S]*REVIEW_RESULT_START[\s\S]*\"vote\"[\s\S]*REVIEW_RESULT_END/
+        ),
       }),
       expect.anything()
     );
@@ -953,8 +984,20 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
     const adapterB = { name: "agent-b" } as AgentAdapter;
     const resolveAgentForProject = vi.fn(async (project: ProjectRecord) =>
       project.id === makeProjectId("proj-1")
-        ? { adapter: adapterA, model: "model-a", token: "token-a" }
-        : { adapter: adapterB, model: "model-b", token: "token-b" }
+        ? {
+            adapter: adapterA,
+            model: "model-a",
+            token: "token-a",
+            systemPrompt: "System A",
+            instructionsPrompt: "Instructions A",
+          }
+        : {
+            adapter: adapterB,
+            model: "model-b",
+            token: "token-b",
+            systemPrompt: "System B",
+            instructionsPrompt: "Instructions B",
+          }
     );
     const orch = new ReviewOrchestrator(makeDeps(mocks, runner, { resolveAgentForProject }));
 

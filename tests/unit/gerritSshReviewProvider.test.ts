@@ -311,6 +311,17 @@ describe("GerritSshReviewProvider", () => {
       expect((fileComments[0] as Record<string, unknown>)["message"]).toBe("[warning] Line 10: Use const here");
       expect((fileComments[1] as Record<string, unknown>)["message"]).toBe("Line 20: Consider refactoring");
     });
+
+    it("posts a neutral review without a Code-Review label", async () => {
+      mockQuery.mockResolvedValueOnce(sshNdjson(SAMPLE_CHANGE));
+      mockReviewJson.mockResolvedValueOnce(undefined);
+
+      await makeProvider().postReviewWithComments(CHANGE_ID, 3, [], "Informational review", 0);
+
+      const input = JSON.parse(mockReviewJson.mock.calls[0]![1]) as Record<string, unknown>;
+      expect(input["message"]).toBe("Informational review");
+      expect(input["labels"]).toBeUndefined();
+    });
   });
 
   describe("postReviewComments", () => {

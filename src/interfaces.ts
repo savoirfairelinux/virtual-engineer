@@ -732,10 +732,7 @@ export type PluginInstance = TicketConnector | ReviewConnector | AgentAdapter;
 
 // ─── Code Review (Reviewer-side) interfaces ───────────────────────────────────
 
-/**
- * Severity from the review agent. Typed as `string` (not a strict union) because LLM output may use novel casing.
- * `computeVote` normalises: `'error'` → -1; `'warning'` → -1; `'suggestion'` → no vote change.
- */
+/** Severity from the review agent, normalized by the provider output contract. */
 export type ReviewSeverity = string;
 
 /** A single inline comment to post on a specific file/line of a change. */
@@ -786,7 +783,7 @@ export interface ReviewAgentResult {
   comments: InlineReviewComment[];
   /** High-level summary posted alongside the inline comments */
   summary: string;
-  /** Suggested vote score: -1, 0, or +1. */
+  /** Provider-neutral review decision: negative, neutral, or positive. */
   score: -1 | 0 | 1;
   /** Replies to existing human discussion threads (empty when none). */
   replies: ThreadReply[];
@@ -897,8 +894,8 @@ export interface ReviewProvider {
   ): Promise<void>;
 
   /**
-   * Post inline comments + vote atomically (optional; reviewOrchestrator falls back
-   * to separate postReviewComments + vote calls when absent).
+  * Post inline comments + a normalized review decision atomically. Providers
+  * translate -1/0/+1 to their native review action.
    *
    * `allowedFiles` semantics are the same as on `postReviewComments`. If all
    * comments are filtered out, the vote and summary are still submitted.
@@ -908,11 +905,11 @@ export interface ReviewProvider {
     revision: number,
     comments: InlineReviewComment[],
     summary: string,
-    score: -1 | 1,
+    score: -1 | 0 | 1,
     allowedFiles?: ReadonlySet<string>
   ): Promise<void>;
 
-  /** Cast a Code-Review-style vote (-1, 0, or +1). */
+  /** Apply a normalized review decision (-1, 0, or +1). */
   vote(
     changeId: ExternalChangeId,
     revision: number,

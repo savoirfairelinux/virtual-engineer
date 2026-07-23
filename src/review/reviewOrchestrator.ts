@@ -23,7 +23,8 @@ import {
   makeTicketId,
 } from "../interfaces.js";
 import { buildReviewPrompt } from "./reviewPromptBuilder.js";
-import { computeVote, parseReviewResult } from "./reviewResultParser.js";
+import { getReviewDecision, parseReviewResult } from "./reviewResultParser.js";
+import { appendReviewOutputContract } from "./reviewOutputContract.js";
 import { filterCommentsByAllowedFiles } from "./commentFilter.js";
 import { computeCommentHash, computeThreadReplyHash } from "./commentHash.js";
 import { applyVolumeAndSeverityGate, buildFoldedSummary } from "./commentSeverity.js";
@@ -64,10 +65,6 @@ export interface ReviewOrchestratorDeps {
   applyPatchset?: (handle: WorkspaceHandle, details: ReviewChangeDetails) => Promise<void>;
   /** Source label persisted on review tasks, typically `<provider>:<integrationId>`. */
   sourceLabel?: string | undefined;
-  /** Reviewer instructions (content of the `code-review` prompt from the DB). */
-  reviewInstructions: string;
-  /** System prompt for the review agent (integration-specific, e.g. `review-system-gerrit`). */
-  reviewSystemPrompt: string;
   /**
    * Per-project adapter+model+token resolver, invoked in `runReview()` once the task's
    * own VE project is known. This orchestrator instance is shared across every
@@ -80,6 +77,8 @@ export interface ReviewOrchestratorDeps {
     adapter: AgentAdapter;
     model: string | undefined;
     token: string;
+    systemPrompt: string;
+    instructionsPrompt: string;
     aiderBackend?: string | undefined;
     aiderApiBase?: string | undefined;
   } | null>;
@@ -407,6 +406,11 @@ export class ReviewOrchestrator {
       if (!projectAgentRuntime) {
         throw new Error(`No runnable review agent configured for project ${project.id}`);
       }
+      const reviewInstructions = projectAgentRuntime.instructionsPrompt;
+      const reviewSystemPrompt = appendReviewOutputContract(
+        projectAgentRuntime.systemPrompt,
+        this.deps.reviewProvider.kind,
+      );
 
       const { cloneUrl, sshKeyPath, sshAgentPubKeyPath, sshKnownHostsPath } = this.deps.buildCloneTarget(details);
       const cloneTarget: ProjectPushTargetRecord = {
@@ -464,7 +468,7 @@ export class ReviewOrchestrator {
       const prompt = buildReviewPrompt({
         details,
         diff,
-        userPrompt: this.deps.reviewInstructions,
+        userPrompt: reviewInstructions,
         ...(priorComments.length > 0
           ? {
               priorComments: priorComments.map((c) => ({
@@ -521,7 +525,7 @@ export class ReviewOrchestrator {
           patchset: details.currentPatchset,
           repositoryName: details.project,
           prompt,
-          systemPrompt: this.deps.reviewSystemPrompt,
+          systemPrompt: reviewSystemPrompt,
           agentToken: projectAgentRuntime.token,
           model: projectAgentRuntime.model,
           agentAdapter: projectAgentRuntime.adapter,
@@ -559,8 +563,8 @@ export class ReviewOrchestrator {
       emitReviewEvent("review.agent_completed", { outputLength: rawOutput.length });
       emitReviewEvent("review.parsing", {});
 
-      const result = parseReviewResult(rawOutput);
-      const vote = computeVote(result);
+      const result = parseReviewResult(rawOutput, this.deps.reviewProvider.kind);
+      const decision = getReviewDecision(result);
 
       // Drop comments referencing files outside the patchset diff before dedup,
       // gating, persistence and summary folding. Otherwise hallucinated-path
@@ -621,13 +625,13 @@ export class ReviewOrchestrator {
       // replies) and the overall vote matches the last review cycle, stay
       // silent instead of spamming another summary + vote notification.
       const hasNothingNew = commentsToPost.length === 0 && folded.length === 0;
-      const previousVote = await this.getLastReviewVote(taskId);
+      const previousDecision = await this.getLastReviewDecision(taskId);
       const skipPosting =
         options?.force !== true &&
         cycleNumber > 1 &&
         hasNothingNew &&
-        previousVote !== null &&
-        previousVote === vote &&
+        previousDecision !== null &&
+        previousDecision === decision &&
         repliesToPost.length === 0;
 
       emitReviewEvent("review.posting_comments", {
@@ -635,13 +639,13 @@ export class ReviewOrchestrator {
         foldedCount: folded.length,
         dedupedCount,
         replyCount: repliesToPost.length,
-        vote,
+        vote: decision,
         skipped: skipPosting,
         summary: summary.slice(0, 200),
       });
 
       if (!skipPosting) {
-        await this.postReview(changeId, reviewPatchset, commentsToPost, summary, vote, diff);
+        await this.postReview(changeId, reviewPatchset, commentsToPost, summary, decision, diff);
       }
 
       // Persist all newly-handled comment hashes (posted inline AND folded) so
@@ -690,7 +694,7 @@ export class ReviewOrchestrator {
         foldedCount: folded.length,
         dedupedCount,
         replyCount: postedReplies.length,
-        vote,
+        vote: decision,
         skipped: skipPosting,
         patchset: reviewPatchset,
       });
@@ -707,7 +711,7 @@ export class ReviewOrchestrator {
           patchset: reviewPatchset,
           commentCount: result.comments.length,
           replyCount: postedReplies.length,
-          vote,
+          vote: decision,
           comments: result.comments,
           score: result.score,
         },
@@ -797,11 +801,11 @@ export class ReviewOrchestrator {
   }
 
   /**
-   * Return the overall vote (-1/0/1) recorded on the most recent prior review
-   * cycle for this task, or null when there is no prior cycle / no vote stored.
-   * Used to suppress redundant re-votes when a re-review finds nothing new.
+  * Return the normalized decision (-1/0/1) recorded on the most recent prior
+  * review cycle, or null when there is no prior cycle / decision stored.
+  * Used to suppress redundant publication when a re-review finds nothing new.
    */
-  private async getLastReviewVote(taskId: TaskId): Promise<-1 | 0 | 1 | null> {
+  private async getLastReviewDecision(taskId: TaskId): Promise<-1 | 0 | 1 | null> {
     const cycles = await this.deps.stateStore.getAgentCycles(taskId);
     for (let i = cycles.length - 1; i >= 0; i--) {
       const meta = cycles[i]?.result?.metadata;
@@ -817,7 +821,7 @@ export class ReviewOrchestrator {
     revision: number,
     comments: InlineReviewComment[],
     summary: string,
-    score: -1 | 1,
+    score: -1 | 0 | 1,
     diff: ReviewChangeDiff
   ): Promise<void> {
     // An empty diff (e.g. a transient fetch failure) must not silently drop every

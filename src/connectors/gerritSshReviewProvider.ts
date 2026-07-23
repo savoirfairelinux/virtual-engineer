@@ -301,15 +301,16 @@ export class GerritSshReviewProvider implements ReviewProvider {
     revision: number,
     comments: InlineReviewComment[],
     summary: string,
-    score: -1 | 1,
+    score: -1 | 0 | 1,
     allowedFiles?: ReadonlySet<string>
   ): Promise<void> {
     const details = await this.getChangeDetails(changeId);
     const changeSpec = `${details.changeNumber},${revision}`;
 
-    const reviewInput: Record<string, unknown> = {
-      labels: { "Code-Review": score },
-    };
+    const reviewInput: Record<string, unknown> = {};
+    if (score !== 0) {
+      reviewInput["labels"] = { "Code-Review": score };
+    }
     const trimmedSummary = summary.trim();
     if (trimmedSummary.length > 0) reviewInput["message"] = trimmedSummary;
 

@@ -1502,8 +1502,8 @@ describe("runtime bootstrap provider selection", () => {
       type: "review",
       integrationId: "copilot-review-rewrite",
       modelConfigJson: "{}",
-      systemPromptId: null,
-      instructionsPromptId: null,
+      systemPromptId: "system_gerrit_review",
+      instructionsPromptId: "user_gerrit_review",
       feedbackInstructionsPromptId: null,
       maxConcurrent: 1,
       enabled: true,
@@ -1564,6 +1564,79 @@ describe("runtime bootstrap provider selection", () => {
     }));
   });
 
+  it("resolves review prompt contents from the project and agent configuration", async () => {
+    const dbAgent = makeDbAgentAdapter("copilot");
+    const reviewAgent: AgentRecord = {
+      id: "agent-review-prompts" as AgentRecord["id"],
+      name: "Review prompt agent",
+      type: "review",
+      integrationId: "copilot-review-prompts",
+      modelConfigJson: "{}",
+      systemPromptId: "agent-review-system",
+      instructionsPromptId: "agent-review-instructions",
+      feedbackInstructionsPromptId: null,
+      maxConcurrent: 1,
+      enabled: true,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    const runtime = await importRuntime(
+      { copilot: dbAgent },
+      {
+        copilot: makeIntegration({
+          id: "copilot-review-prompts",
+          provider: "copilot",
+          configJson: JSON.stringify({ token: "ghp-review-token" }),
+        }),
+      },
+      {
+        activeIntegrationLists: {
+          gerrit: [makeIntegration({
+            id: "gerrit-review-prompts",
+            provider: "gerrit",
+            configJson: JSON.stringify({ sshHost: "gerrit.test", sshUser: "ve-bot" }),
+          })],
+        },
+        agentRecords: [reviewAgent],
+        configOverrides: { adminApiEnabled: true },
+      }
+    );
+
+    runtime.stateStore.getPrompt.mockImplementation(async (id: string) => ({
+      id,
+      label: id,
+      content: {
+        "project-review-system": "Project-specific review role.",
+        "agent-review-instructions": "Agent-specific review checklist.",
+      }[id] ?? `fallback:${id}`,
+      promptType: "user" as const,
+      updatedAt: new Date(),
+    }));
+
+    const streamEventsCtorArgs = runtime.PluginIntegrationStreamEventsManager.mock.calls[0]?.[0] as {
+      getReviewTrigger(): { triggerReviewForChange(integrationId: string, changeId: string): Promise<void> } | undefined;
+    };
+    await streamEventsCtorArgs?.getReviewTrigger()?.triggerReviewForChange(
+      "gerrit-review-prompts",
+      "Iprompts123"
+    );
+
+    const deps = runtime.ReviewOrchestrator.mock.calls[0]?.[0] as {
+      resolveAgentForProject(project: ProjectRecord): Promise<unknown>;
+    };
+    const resolved = await deps.resolveAgentForProject({
+      id: "project-review-prompts" as ProjectRecord["id"],
+      agentId: reviewAgent.id,
+      agentOverrideJson: JSON.stringify({ systemPromptId: "project-review-system" }),
+    } as ProjectRecord);
+
+    expect(resolved).toEqual(expect.objectContaining({
+      systemPrompt: "Project-specific review role.",
+      instructionsPrompt: "Agent-specific review checklist.",
+    }));
+  });
+
   it("does not fall back to another review agent when the project agent token is invalid", async () => {
     const reviewIntegration = makeIntegration({
       id: "gerrit-review-fallback",
@@ -1592,8 +1665,8 @@ describe("runtime bootstrap provider selection", () => {
       type: "review",
       integrationId,
       modelConfigJson: JSON.stringify({ model: `${id}-model` }),
-      systemPromptId: null,
-      instructionsPromptId: null,
+      systemPromptId: "system_gerrit_review",
+      instructionsPromptId: "user_gerrit_review",
       feedbackInstructionsPromptId: null,
       maxConcurrent: 1,
       enabled: true,
