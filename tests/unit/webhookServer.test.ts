@@ -155,7 +155,7 @@ describe("webhookServer", () => {
       expect(res.status).toBe(401);
     });
 
-    it("returns 200 with valid X-Hub-Signature-256", async () => {
+    it("returns 202 with valid X-Hub-Signature-256", async () => {
       const body = JSON.stringify({ issue: { id: 42, subject: "hi", project: { identifier: "p" } } });
       const res = await call(`/webhooks/${INTEGRATION_ID}/issue.created`, {
         body,
@@ -165,7 +165,7 @@ describe("webhookServer", () => {
       expect(orchestrator.startTaskForProject).toHaveBeenCalledTimes(1);
     });
 
-    it("returns 200 with valid X-Gitlab-Token", async () => {
+    it("returns 202 with valid X-Gitlab-Token", async () => {
       const body = JSON.stringify({ issue: { id: 7, project: { identifier: "p" } } });
       const res = await call(`/webhooks/${INTEGRATION_ID}/issue.created`, {
         body,
