@@ -35,7 +35,7 @@ A descriptor (`ProviderDescriptor`) provides:
   - `capabilities.issue_tracking.{ createConnector(config, integration, context?), intake? }`
   - `capabilities.code_review.{ createConnector?, createReviewer?, streamEvents?, systemPromptId?, userPromptId?, intake? }`
   - `capabilities.source_control.createVcsConnector(config, integration, context?)`
-  - `capabilities.agent_execution.createAdapter?(config, integration, context?)` (optional). Agent adapters are **descriptor-driven**: a provider that declares `capabilities.agent_execution.buildAdapter(context)` is instantiated by `PluginManager` from an `AgentAdapterContext`. `PluginManager.registerFactory` in `index.ts` still exists and takes precedence (used by tests). Copilot, Claude, Aider, and Mock all expose this capability.
+  - `capabilities.agent_execution.createAdapter?(config, integration, context?)` (optional). Agent adapters are **descriptor-driven**: a provider that declares `capabilities.agent_execution.buildAdapter(context)` is instantiated by `PluginManager` from an `AgentAdapterContext`. `PluginManager.registerFactory` remains as an explicit test/extension hook and takes precedence when used; production startup does not register overrides. Copilot, Claude, Aider, and Mock all expose this capability.
 - Zod `configSchema` plus `requiredFields` UI metadata (with conditional visibility via `dependsOn`)
 - optional `oauth` metadata + `createOAuthHandler` / `resolveOAuthConfig` for dashboard-driven provider auth flows (`mode: "device" | "redirect"`)
 - optional `discoverResources(config)` discovery hook
@@ -49,7 +49,7 @@ The `context` argument on capability factories carries VE project-owned binding 
 
 GitLab descriptors treat project selection as VE-project-owned rather than integration-owned. Add Integration forms are provider-scoped (`baseUrl`, auth, webhook secret, Git author defaults), while coding/review project setup supplies the concrete GitLab binding through `ticketProjectKey` (issue_tracking `config_json`) or `repos` (code_review `config_json`). GitLab Issues use built-in workflow label defaults (`in-progress`, `in-review`) unless a legacy row still carries explicit overrides.
 
-Factories receive the stripped config (Zod defaults removed for keys absent in the raw DB row) plus the full `Integration` row. Explicit `registerFactory` / `registerConnectionTester` calls in `src/index.ts` take precedence over descriptor hooks and are used only when construction needs `AppConfig` values unavailable to a static descriptor (currently only the `copilot` provider needs this).
+Factories receive the stripped config (Zod defaults removed for keys absent in the raw DB row) plus the full `Integration` row. Descriptor hooks are the production construction and connection-testing path. Explicit `registerFactory` / `registerConnectionTester` hooks remain available for tests and embedders and take precedence when registered.
 
 ## Resolution rules
 
@@ -125,8 +125,7 @@ The dashboard also collects only visible descriptor fields when testing, saving,
 3. Register it in `registerBuiltinPlugins()` ([src/plugins/init.ts](../../../src/plugins/init.ts)).
 4. Add or update connection tests and admin discovery coverage.
 
-No changes to `src/index.ts`, `pluginManager.ts`, or `vcsFactory.ts` are needed
-unless the new provider requires runtime `AppConfig` values (e.g. Docker network, max commits) at construction time — in that case add a `registerFactory` / `registerConnectionTester` call in `src/index.ts` as an override.
+No changes to `src/index.ts`, `pluginManager.ts`, or `vcsFactory.ts` are needed. Agent providers that need host runtime values such as the Docker network or commit limit receive them through `AgentAdapterContext` in `buildAdapter(context)`.
 
 ## Related docs
 

@@ -41,7 +41,7 @@ Important behaviors:
 - webhook merge handling is dual-path: code-gen tasks in `IN_REVIEW` transition through `MERGED -> CLOSING -> DONE`, while review tasks in `REVIEW_WATCHING` transition directly to `REVIEW_DONE`
 - fatal ticket handling is provider-agnostic: missing resources are detected via `TicketNotFoundError`, and non-fatal ticket API failures are handled via `TicketApiError` from `src/interfaces.ts`
 - review feedback for code-gen tasks is deduplicated via `processed_comments`
-- when `AgentResult.commits[]` is present, the orchestrator uses the direct-push path rather than synthesizing a host commit
+- project pushes always require `VcsConnector.pushDirect()` and preserve the worker-normalized agent commit chain; `AgentResult.commits[]` supplies per-commit metadata for multi-change tracking
 - coding projects may override the ticket-derived Gerrit topic with `gerritTopicOverride`; otherwise the existing `VE-<task>-<title>` topic remains unchanged
 - `useFullTicketUrlInCommits` formats a full ticket URL trailer and passes it through `AgentSession.ticketFooterLine` so direct-pushed agent commits receive it inside the worker
 - `postReviewLinkToTicket` posts the first cycle's non-orphaned review URLs back to the source ticket; later cycles reuse those reviews and do not post another note

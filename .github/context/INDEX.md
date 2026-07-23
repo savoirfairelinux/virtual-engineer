@@ -26,7 +26,7 @@ The repo-wide entry point for Copilot is [.github/copilot-instructions.md](../co
 | [modules/orchestrator.md](modules/orchestrator.md) | `orchestrator.ts`, `pollingLoop.ts`, `feedbackProcessor.ts` |
 | [modules/agents.md](modules/agents.md) | `copilotAdapter`, `claudeAdapter`, `aiderAdapter`, `mockAgentAdapter`, agent worker, auth, validators, cycle cost |
 | [modules/connectors.md](modules/connectors.md) | Redmine, GitLab Issues, GitHub Issues, Gerrit, GitLab MR, GitHub PR connectors |
-| [modules/vcs.md](modules/vcs.md) | Host-side commit + push (Gerrit / GitLab / GitHub), branch naming |
+| [modules/vcs.md](modules/vcs.md) | Host-owned direct push (Gerrit / GitLab / GitHub), branch naming |
 | [modules/plugins.md](modules/plugins.md) | Descriptor registry, PluginManager, runtime bootstrap |
 | [modules/admin.md](modules/admin.md) | Admin HTTP server + dashboard, secret masking, integration test endpoint |
 
@@ -46,6 +46,6 @@ The repo-wide entry point for Copilot is [.github/copilot-instructions.md](../co
 - Timestamps are stored in **seconds**: use `datetime(col, 'unixepoch')`, never `col/1000`.
 - `tasks` PK = `task_id` (TEXT). No `id` column.
 - Pause/resume are `state_transitions` rows where `from_state == to_state`, with `metadata.action`.
-- The orchestrator runs on the **host**; the agent runs in an **ephemeral, hardened** Docker container; the host commits and pushes via `src/vcs/`.
+- The orchestrator runs on the **host**; the agent runs in an **ephemeral, hardened** Docker container. The worker creates or normalizes commits in-container; the host retains credentials and pushes those commits via `src/vcs/`.
 - Provider selection is per-integration via the `integrations` table; multiple integrations of the same provider can be active simultaneously.
 - Agent engines (`agent_execution`) are **Copilot**, **Claude**, **Aider**, or **Mock**. Copilot defaults to model `auto`; Claude and Aider have no hardcoded default (their CLIs pick one when no model is set).

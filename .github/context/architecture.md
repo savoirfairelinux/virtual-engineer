@@ -113,7 +113,7 @@ The agent may create local commits, but the host still owns the final push orche
 
 ### Plugin system — `src/plugins/`
 
-Static descriptor registry plus DB-backed `PluginManager`. `src/index.ts` registers concrete factories and testers, loads enabled integrations, and hot-refreshes runtime dependencies after admin mutations. Startup credential migration encrypts raw and legacy `plain:` password fields with AES-256-GCM; it fails closed when stored credentials exist but `ADMIN_AUTH_SECRET` is absent.
+Static descriptor registry plus DB-backed `PluginManager`. `src/index.ts` registers the built-in descriptors, supplies shared `AgentAdapterContext`, loads enabled integrations, and hot-refreshes runtime dependencies after admin mutations. Concrete connector, reviewer, adapter, and connection-test factories live on provider descriptors; explicit `PluginManager` override hooks remain available for tests and embedders. Startup credential migration encrypts raw and legacy `plain:` password fields with AES-256-GCM; it fails closed when stored credentials exist but `ADMIN_AUTH_SECRET` is absent.
 
 See [modules/plugins.md](modules/plugins.md).
 

@@ -8,26 +8,28 @@ The VCS layer is host-owned. The agent container may edit files and create local
 
 ```ts
 interface VcsConnector {
-  commitAndPush(opts: {
-    workspacePath: string;
-    branch: string;
-    commitMessage: string;     // includes Change-Id footer for Gerrit
-    authorName: string;
-    authorEmail: string;
-    existingChangeId?: string; // when retrying a cycle
-  }): Promise<{ changeRef: string; reviewUrl: string }>;
+  /** Legacy connector operation that may create a commit before pushing. */
+  push(
+    repoDir: string,
+    ref: string,
+    message: string,
+    changeId?: string,
+    volumeOpts?: VolumeExecOptions
+  ): Promise<VcsPushResult>;
 
-  /** Push agent-created commits directly (no host commit step). Optional. */
+  /** Push agent-created commits directly without a host commit step. */
   pushDirect?(
     repoDir: string,
-    ref: string,       // e.g. "refs/for/main" (Gerrit) or "feature-<taskId>" (GitLab)
-    topic?: string     // Gerrit topic grouping, ignored by GitLab
+    ref: string,
+    topic?: string,
+    volumeOpts?: VolumeExecOptions
   ): Promise<VcsPushResult>;
-  // VcsPushResult = { changeId: string; url: string; status: string }
 }
 ```
 
-`changeRef` is the Gerrit Change-Id or GitLab MR IID; the orchestrator stores it in `tasks.gerrit_change_id` (legacy column name; same field for both providers) and the URL in `tasks.review_url`.
+All built-in project push targets implement `pushDirect`, and `Orchestrator.pushProjectChanges()` requires it. The worker normalizes agent-created commits and injects missing Change-Ids and configured ticket trailers before returning; the host then pushes the existing commit chain through a credential-bearing helper container. It does not create another commit.
+
+`VcsPushResult.changeId` is the Gerrit Change-Id, GitLab MR IID, or GitHub PR identifier. Per-repository results are stored in `change_per_repository`; the legacy task-level `tasks.gerrit_change_id` and `tasks.review_url` fields retain the primary result.
 
 ## Implementations
 
@@ -74,7 +76,7 @@ interface VcsConnector {
 
 1. Implement `VcsConnector` in a new file under `src/vcs/`.
 2. Add `capabilities.source_control.createVcsConnector(config, integration, context?) → VcsConnector` to the integration's descriptor (e.g. `src/plugins/descriptors/<name>.ts`). `vcsFactory` will pick it up automatically.
-3. Add unit tests; mock `simple-git` rather than running real git commands.
+3. Add unit tests; mock `src/utils/gitExec.ts` and `src/workspace/dockerVolume.ts` as appropriate rather than running real Git or Docker operations.
 
 ## Related docs
 
@@ -82,4 +84,4 @@ interface VcsConnector {
 - [architecture.md](../architecture.md) — layered architecture and data flow
 - [plugins.md](plugins.md) — descriptor registry that produces VCS connectors via `source_control` capability
 - [connectors.md](connectors.md) — review-side connectors that pair with VCS push
-- [orchestrator.md](orchestrator.md) — caller of `commitAndPush` / `pushDirect`
+- [orchestrator.md](orchestrator.md) — caller of the required project-mode `pushDirect` path
