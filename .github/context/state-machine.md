@@ -1,6 +1,6 @@
 # State Machine Reference
 
-**Source of truth:** [src/state/stateMachine.ts](../../src/state/stateMachine.ts), [src/interfaces.ts](../../src/interfaces.ts), [src/state/stateStore.ts](../../src/state/stateStore.ts).
+**Source of truth:** [src/domain/tasks.ts](../../src/domain/tasks.ts), [src/state/stateMachine.ts](../../src/state/stateMachine.ts), [src/state/stateStore.ts](../../src/state/stateStore.ts). [src/interfaces.ts](../../src/interfaces.ts) re-exports the task-domain contract for compatibility.
 
 `TaskState` is shared by two task types:
 
@@ -121,7 +121,7 @@ ORDER BY id;
 
 ## Adding a new state
 
-1. Add it to `TASK_STATES` in [src/interfaces.ts](../../src/interfaces.ts).
+1. Add it to `TASK_STATES` in [src/domain/tasks.ts](../../src/domain/tasks.ts).
 2. Update `TERMINAL_STATES` if needed.
 3. Add edges in [src/state/stateMachine.ts](../../src/state/stateMachine.ts).
 4. Implement side effects in the owning runtime: [src/orchestrator/orchestrator.ts](../../src/orchestrator/orchestrator.ts) for code-gen, or [src/review/reviewOrchestrator.ts](../../src/review/reviewOrchestrator.ts) for code-review.
