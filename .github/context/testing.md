@@ -28,7 +28,7 @@ tests/
 | Connectors — GitLab | `gitlabHttpClient`, `gitlabIssueConnector`, `gitlabIssueDiscovery`, `gitlabMergeRequestConnector`, `gitlabMergeRequestDiscovery`, `gitlabMergeRequestReviewProvider`, `gitlabVcsConnector`, `gitlabAuth`, `webhookHandlerGitlabIssue`, `webhookHandlerGitlabMergeRequest` |
 | Connectors — GitHub | `githubIssueConnector`, `githubPullRequestReviewConnector`, `githubReviewProvider`, `githubVcsConnector`, `githubPluginDescriptors`, `githubOAuth`, `githubAuth`, `branchNaming`, `webhookHandlerGithubPullRequest` |
 | VCS (shared) | `vcsConnector`, `vcsFactory`, `baseTicketConnector` |
-| Agents / Copilot | `copilotAdapter` (+ `.promptInjection`), `copilotConnectionValidator`, `copilotOAuthService`, `copilotModelsService`, `providerAuthService`, `mockAgentAdapter`, `agentEventTypes` (+ `.normalization`), `workerCommitProtocol`, `workerNetworkGuard`, `workerSkills`, `workerLocalSkills` |
+| Agents / Copilot | `copilotAdapter` (+ `.promptInjection`), `containerSpecBuilders` (cross-provider contract), `copilotConnectionValidator`, `copilotOAuthService`, `copilotModelsService`, `providerAuthService`, `mockAgentAdapter`, `agentEventTypes` (+ `.normalization`), `workerCommitProtocol`, `workerNetworkGuard`, `workerSkills`, `workerLocalSkills` |
 | Agents / Claude | `claudeAdapter`, `claudeConnectionValidator`, `claudeModelsService` |
 | Agents / Aider | `aiderAdapter`, `aiderDescriptor`, `aiderConnectionValidator`, `aiderModelsService`, `aiderWorker` |
 | Review runtime | `reviewOrchestrator`, `reviewPromptBuilder`, `reviewResultParser`, `reviewLiveLogs`, `commentHash`, `commentSeverity`, `revisionPatchset` |
@@ -50,6 +50,7 @@ tests/
 - Admin route tests with a reduced `stateStore` that intentionally omit user/session or PBAC rule-resolution methods must set `allowUnauthenticatedAdmin: true`; production-style auth tests use the full store and leave the fail-closed default unchanged. The escape hatch is rejected when `nodeEnv` is `production`.
 - Remote skill source tests must mock Docker/child_process paths. `workspaceRunner` covers pre-agent skill installation into the home volume, fast failure for SSH sources without `SSH_AUTH_SOCK` or `sshKeyPath`, and verifies the agent container does not receive `SKILL_SOURCES_JSON`, `SSH_AUTH_SOCK`, private-key paths, or `GIT_SSH_COMMAND`.
 - Local skill tests cover `LOCAL_SKILLS_PATH` propagation, workspace-relative path fallback, the single `skills.local_loaded` timeline event containing the sorted local skill list, and Copilot's loading of fetched global skills independently from local skill discovery.
+- Container-spec contract tests run the shared builders and all three container-backed adapters against the same code-generation/review expectations. Common hardening, command, network, prompt, Git identity, and skill environment behavior must remain provider-aligned; auth and model fields remain provider-specific.
 - Create file-backed SQLite test databases with `tempDatabasePath()` from `tests/unit/helpers/tempDatabase.ts`; it removes the database, WAL/SHM sidecars, and optional dedicated directory after each test.
 - Vitest is silent in `NODE_ENV=test` thanks to `src/logger.ts`; raise `LOG_LEVEL` if you need diagnostic output during a single test.
 - Strict TypeScript applies to tests too (`exactOptionalPropertyTypes`, `noUncheckedIndexedAccess`, no `any`).

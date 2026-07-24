@@ -1,6 +1,4 @@
 import { randomUUID } from "crypto";
-import { homedir } from "os";
-import { join, resolve } from "path";
 import type {
   AgentAdapter,
   ConfigurableAdapter,
@@ -17,6 +15,10 @@ import { makeExternalChangeId } from "../interfaces.js";
 import { getLogger } from "../logger.js";
 import { agentLogBus, pushToTaskBuffer } from "./agentEventBus.js";
 import { buildCodegenUserPrompt } from "./copilotAdapter.js";
+import {
+  buildCodegenContainerSpec,
+  buildReviewContainerSpec as buildSharedReviewContainerSpec,
+} from "./containerSpecBuilders.js";
 
 const log = getLogger("aider-adapter");
 
@@ -60,18 +62,6 @@ const DEFAULT_CONFIG: AiderAdapterConfig = {
   maxRepositoryContextBytes: 120_000,
   maxCommitsPerCycle: 10,
 };
-
-const SECURITY_DOCKER_ARGS = [
-  "--read-only",
-  "--cap-drop",
-  "ALL",
-  "--security-opt",
-  "no-new-privileges:true",
-  "--security-opt",
-  "label=disable",
-  "--tmpfs",
-  "/tmp:rw,nosuid,size=256m",
-];
 
 /** Aider LLM backend selector values (mirrors the descriptor zod enum). */
 export type AiderBackend = "openai" | "anthropic" | "ollama" | "openrouter" | "deepseek" | "openai_compat";
@@ -151,50 +141,19 @@ export class AiderAdapter implements AgentAdapter, ConfigurableAdapter {
     const resolvedAuthEnv =
       Object.keys(authEnv).length > 0 ? authEnv : this.resolveAuthEnv(context);
 
-    const env: Record<string, string> = {
+    const providerEnv: Record<string, string> = {
       ...resolvedAuthEnv,
       AGENT_PROVIDER: "aider",
       ...(aiderModel ? { AIDER_MODEL: aiderModel } : {}),
-      GIT_AUTHOR_NAME: session.gitAuthorName,
-      GIT_AUTHOR_EMAIL: session.gitAuthorEmail,
-      GIT_COMMITTER_NAME: session.gitAuthorName,
-      GIT_COMMITTER_EMAIL: session.gitAuthorEmail,
-      TASK_ID: context.taskId,
-      MAX_CONTEXT_BYTES: String(this.config.maxRepositoryContextBytes),
-      MAX_COMMITS_PER_CYCLE: String(this.config.maxCommitsPerCycle ?? 10),
-      ...(session.repositoryMap !== undefined
-        ? { REPOSITORY_MAP_JSON: JSON.stringify(session.repositoryMap) }
-        : {}),
-      ...(session.existingChangeId !== undefined
-        ? { ROOT_CHANGE_ID: session.existingChangeId }
-        : {}),
-      ...(session.perRepoChangeIds !== undefined
-        ? { PER_REPO_CHANGE_IDS_JSON: JSON.stringify(session.perRepoChangeIds) }
-        : {}),
-      ...(session.skillDiscoveryEnabled ? { SKILL_DISCOVERY: "1" } : {}),
-      ...(session.skillDiscoveryEnabled && session.localSkillsPath !== undefined
-        ? { LOCAL_SKILLS_PATH: session.localSkillsPath }
-        : {}),
-      ...(session.ticketFooterLine ? { TICKET_FOOTER_LINE: session.ticketFooterLine } : {}),
     };
 
-    const additionalDockerArgs = [...SECURITY_DOCKER_ARGS];
-
-    const resolvedPromptsDir = this.config.promptsDir
-      ? this.resolvePath(this.config.promptsDir)
-      : null;
-    if (resolvedPromptsDir) {
-      additionalDockerArgs.push("-v", `${resolvedPromptsDir}:/ve-prompts:ro,Z`);
-      env["PROMPTS_DIR"] = "/ve-prompts";
-    }
-
-    return {
-      image: session.agentContainerImage,
-      env,
-      command: ["node", "/agent-worker/dist/index.js"],
-      networkMode: this.config.dockerNetwork ?? "virtual-engineer_ve-agent-net",
-      additionalDockerArgs,
-    };
+    return buildCodegenContainerSpec(context, {
+      providerEnv,
+      maxRepositoryContextBytes: this.config.maxRepositoryContextBytes,
+      maxCommitsPerCycle: this.config.maxCommitsPerCycle,
+      promptsDir: this.config.promptsDir,
+      dockerNetwork: this.config.dockerNetwork,
+    });
   }
 
   /** Builds a container spec for review mode (REVIEW_MODE=1). Reads prompt from /ve-home/user-prompt.txt. */
@@ -203,26 +162,16 @@ export class AiderAdapter implements AgentAdapter, ConfigurableAdapter {
     authEnv: Record<string, string> = {}
   ): AdapterContainerSpec {
     const reviewModel = input.model ?? this.config.model;
-    const env: Record<string, string> = {
+    const providerEnv: Record<string, string> = {
       ...this.reviewAuthEnv(input, authEnv),
       AGENT_PROVIDER: "aider",
       ...(reviewModel ? { AIDER_MODEL: reviewModel } : {}),
-      REVIEW_MODE: "1",
-      USER_PROMPT_FILE: "/ve-home/user-prompt.txt",
-      SYSTEM_PROMPT: input.systemPrompt,
-      ...(input.skillDiscoveryEnabled ? { SKILL_DISCOVERY: "1" } : {}),
-      ...(input.skillDiscoveryEnabled && input.localSkillsPath !== undefined
-        ? { LOCAL_SKILLS_PATH: input.localSkillsPath }
-        : {}),
     };
 
-    return {
-      image: input.containerImage ?? "virtual-engineer-workspace:latest",
-      env,
-      command: ["node", "/agent-worker/dist/index.js"],
-      networkMode: this.config.dockerNetwork ?? "virtual-engineer_ve-agent-net",
-      additionalDockerArgs: [...SECURITY_DOCKER_ARGS],
-    };
+    return buildSharedReviewContainerSpec(input, {
+      providerEnv,
+      dockerNetwork: this.config.dockerNetwork,
+    });
   }
 
   /**
@@ -504,12 +453,6 @@ export class AiderAdapter implements AgentAdapter, ConfigurableAdapter {
     return makeExternalChangeId(`I${uuid}${uuid.slice(0, 8)}`);
   }
 
-  /** Resolve a path string, expanding a leading `~/` to the current user's home directory. */
-  private resolvePath(value: string): string {
-    if (value.startsWith("~/")) return join(homedir(), value.slice(2));
-    if (value === "~") return homedir();
-    return resolve(value);
-  }
 }
 
 /**
