@@ -71,20 +71,10 @@ export function parseReviewResult(raw: string, providerKind = "gerrit"): ReviewA
     startIdx + REVIEW_RESULT_START_MARKER.length,
   );
   if (endIdx === -1) {
-    // The model output was truncated — likely a repetition loop that hit the
-    // max-tokens cap, or a context-window overflow. Rather than throwing (which
-    // causes the task to fail and retry, leading to the same loop), return a
-    // result with a summary that explains the situation. The score is negative
-    // so a truncated/incomplete review is never treated as a positive decision.
-    return {
-      comments: [],
-      summary:
-        "Review output was truncated (missing REVIEW_RESULT_END marker). " +
-        "The model may have hit token limits or entered a repetition loop. " +
-        "Re-run the review or switch to a model with better instruction-following.",
-      score: -1,
-      replies: [],
-    };
+    throw new ReviewResultParseError(
+      `Missing ${REVIEW_RESULT_END_MARKER} marker in agent output`,
+      raw,
+    );
   }
 
   const between = raw.slice(startIdx + REVIEW_RESULT_START_MARKER.length, endIdx).trim();
