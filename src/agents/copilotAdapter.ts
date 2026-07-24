@@ -1,6 +1,4 @@
 import { randomUUID } from "crypto";
-import { homedir } from "os";
-import { join, resolve } from "path";
 import type {
   AgentAdapter,
   ConfigurableAdapter,
@@ -20,6 +18,10 @@ import { DEFAULT_COPILOT_MODEL } from "../copilotModel.js";
 import { decryptToken } from "../utils/encryption.js";
 import { getConfig } from "../config.js";
 import { agentLogBus, pushToTaskBuffer } from "./agentEventBus.js";
+import {
+  buildCodegenContainerSpec,
+  buildReviewContainerSpec as buildSharedReviewContainerSpec,
+} from "./containerSpecBuilders.js";
 
 // Re-export for backward compatibility — callers that import from copilotAdapter continue to work.
 export { agentLogBus, getTaskEventBuffer, clearTaskEventBuffer } from "./agentEventBus.js";
@@ -239,70 +241,21 @@ export class CopilotAdapter implements AgentAdapter, ConfigurableAdapter {
 
     const copilotModel = context.agentSession.copilotModel ?? this.config.model;
 
-    const env: Record<string, string> = {
+    const providerEnv: Record<string, string> = {
       ...authEnv,
       COPILOT_MODEL: copilotModel,
       ...(session.copilotReasoningEffort !== undefined
         ? { COPILOT_REASONING_EFFORT: session.copilotReasoningEffort }
         : {}),
-      GIT_AUTHOR_NAME: session.gitAuthorName,
-      GIT_AUTHOR_EMAIL: session.gitAuthorEmail,
-      GIT_COMMITTER_NAME: session.gitAuthorName,
-      GIT_COMMITTER_EMAIL: session.gitAuthorEmail,
-      TASK_ID: context.taskId,
-      MAX_CONTEXT_BYTES: String(this.config.maxRepositoryContextBytes),
-      MAX_COMMITS_PER_CYCLE: String(this.config.maxCommitsPerCycle ?? 10),
-      ...(session.repositoryMap !== undefined
-        ? { REPOSITORY_MAP_JSON: JSON.stringify(session.repositoryMap) }
-        : {}),
-      ...(session.existingChangeId !== undefined
-        ? { ROOT_CHANGE_ID: session.existingChangeId }
-        : {}),
-      ...(session.perRepoChangeIds !== undefined
-        ? { PER_REPO_CHANGE_IDS_JSON: JSON.stringify(session.perRepoChangeIds) }
-        : {}),
-      ...(session.skillDiscoveryEnabled ? { SKILL_DISCOVERY: "1" } : {}),
-      ...(session.skillDiscoveryEnabled && session.localSkillsPath !== undefined
-        ? { LOCAL_SKILLS_PATH: session.localSkillsPath }
-        : {}),
-      ...(session.ticketFooterLine ? { TICKET_FOOTER_LINE: session.ticketFooterLine } : {}),
     };
 
-    const additionalDockerArgs = [
-      "--read-only",
-      "--cap-drop",
-      "ALL",
-      "--security-opt",
-      "no-new-privileges:true",
-      // On SELinux hosts (e.g. Fedora/RHEL) Docker applies the svirt_lxc_net_t
-      // confinement which denies mprotect(PROT_READ) during glibc RELRO for the
-      // Copilot CLI native binary (copilot-linux-x64). label=disable turns off
-      // SELinux confinement for this container only.
-      "--security-opt",
-      "label=disable",
-      "--tmpfs",
-      // noexec is intentionally omitted: the Copilot CLI dlopen's pty.node into
-      // /ve-home (a real bind-mount), not /tmp. /tmp is only ephemeral scratch space
-      // that never needs mmap(PROT_EXEC). Under SELinux, noexec on tmpfs also blocks
-      // mmap(PROT_EXEC), which is why /ve-home uses a bind-mount with the :Z label.
-      "/tmp:rw,nosuid,size=256m",
-    ];
-
-    const resolvedPromptsDir = this.config.promptsDir
-      ? this.resolvePath(this.config.promptsDir)
-      : null;
-    if (resolvedPromptsDir) {
-      additionalDockerArgs.push("-v", `${resolvedPromptsDir}:/ve-prompts:ro,Z`);
-      env["PROMPTS_DIR"] = "/ve-prompts";
-    }
-
-    return {
-      image: session.agentContainerImage,
-      env,
-      command: ["node", "/agent-worker/dist/index.js"],
-      networkMode: this.config.dockerNetwork ?? "virtual-engineer_ve-agent-net",
-      additionalDockerArgs,
-    };
+    return buildCodegenContainerSpec(context, {
+      providerEnv,
+      maxRepositoryContextBytes: this.config.maxRepositoryContextBytes,
+      maxCommitsPerCycle: this.config.maxCommitsPerCycle,
+      promptsDir: this.config.promptsDir,
+      dockerNetwork: this.config.dockerNetwork,
+    });
   }
 
   /** Builds a container spec for review mode (REVIEW_MODE=1). Reads prompt from /ve-home/user-prompt.txt. */
@@ -310,48 +263,19 @@ export class CopilotAdapter implements AgentAdapter, ConfigurableAdapter {
     input: ReviewWorkspaceInput,
     authEnv: Record<string, string> = {}
   ): AdapterContainerSpec {
-    const env: Record<string, string> = {
+    const providerEnv: Record<string, string> = {
       ...authEnv,
       GITHUB_TOKEN: input.agentToken,
       COPILOT_MODEL: input.model ?? this.config.model,
       ...(input.reasoningEffort !== undefined
         ? { COPILOT_REASONING_EFFORT: input.reasoningEffort }
         : {}),
-      REVIEW_MODE: "1",
-      // Prompt file is mounted at /ve-home to avoid conflicting with the
-      // --tmpfs /tmp mount (bind mounts under a tmpfs can be shadowed).
-      USER_PROMPT_FILE: "/ve-home/user-prompt.txt",
-      SYSTEM_PROMPT: input.systemPrompt,
-      ...(input.skillDiscoveryEnabled ? { SKILL_DISCOVERY: "1" } : {}),
-      ...(input.skillDiscoveryEnabled && input.localSkillsPath !== undefined
-        ? { LOCAL_SKILLS_PATH: input.localSkillsPath }
-        : {}),
     };
 
-    const additionalDockerArgs = [
-      "--read-only",
-      "--cap-drop",
-      "ALL",
-      "--security-opt",
-      "no-new-privileges:true",
-      // On SELinux hosts (e.g. Fedora/RHEL) Docker applies the svirt_lxc_net_t
-      // confinement which denies mprotect(PROT_READ) during glibc RELRO for the
-      // Copilot CLI native binary (copilot-linux-x64). label=disable turns off
-      // SELinux confinement for this container only. apparmor/seccomp are not
-      // needed here — the docker-default profiles already allow mprotect.
-      "--security-opt",
-      "label=disable",
-      "--tmpfs",
-      "/tmp:rw,nosuid,size=256m",
-    ];
-
-    return {
-      image: input.containerImage ?? "virtual-engineer-workspace:latest",
-      env,
-      command: ["node", "/agent-worker/dist/index.js"],
-      networkMode: this.config.dockerNetwork ?? "virtual-engineer_ve-agent-net",
-      additionalDockerArgs,
-    };
+    return buildSharedReviewContainerSpec(input, {
+      providerEnv,
+      dockerNetwork: this.config.dockerNetwork,
+    });
   }
 
   /** Extend buildContainerSpec with resolved system and instructions prompt content. */
@@ -677,10 +601,4 @@ export class CopilotAdapter implements AgentAdapter, ConfigurableAdapter {
     return makeExternalChangeId(`I${uuid}${uuid.slice(0, 8)}`);
   }
 
-  /** Resolve a path string, expanding a leading `~/` to the current user's home directory. */
-  private resolvePath(value: string): string {
-    if (value.startsWith("~/")) return join(homedir(), value.slice(2));
-    if (value === "~") return homedir();
-    return resolve(value);
-  }
 }

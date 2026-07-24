@@ -5,6 +5,7 @@ The `agent_execution` capability has four engines: **Copilot** (`copilotAdapter.
 ## Container Environment
 
 - Agent containers are built by `src/agents/copilotAdapter.ts`, `src/agents/claudeAdapter.ts`, and `src/agents/aiderAdapter.ts`.
+- `src/agents/containerSpecBuilders.ts` owns the common code-generation/review environment, command, network default, prompt mount, and hardened Docker arguments. Adapters pass only provider-specific auth, model, and runtime environment deltas.
 - `SKILL_DISCOVERY=1` enables local repository skills inside the worker.
 - `LOCAL_SKILLS_PATH` is injected only when skill discovery is enabled. It is workspace-relative and defaults to `.github/skills`.
 - Project remote skill source configuration is not passed into the agent container. `SKILL_SOURCES_JSON`, `SSH_AUTH_SOCK`, `GIT_SSH_COMMAND`, and private-key paths must stay outside the agent runtime.
