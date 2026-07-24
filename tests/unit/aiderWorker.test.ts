@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "events";
 import { PassThrough } from "stream";
 
@@ -18,6 +18,7 @@ vi.mock("fs", () => ({
 
 import { runAiderAgent } from "../../agent-worker/src/providers/aider.js";
 import type { ChildProcess } from "child_process";
+import { rmSync } from "fs";
 
 function makeFakeChild(): ChildProcess {
   const ee = new EventEmitter() as ChildProcess;
@@ -30,6 +31,10 @@ function makeFakeChild(): ChildProcess {
 describe("runAiderAgent", () => {
   beforeEach(() => {
     spawnMock.mockReset();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("spawns aider with conventional-commit, --yes, --no-pretty, --auto-commits for codegen", async () => {
@@ -206,5 +211,49 @@ describe("runAiderAgent", () => {
     const err = await promise.catch((e: unknown) => e);
     expect(err).toBeInstanceOf(Error);
     expect((err as Error).message).toBe("Aider exited with code 2");
+  });
+
+  it("cleans up and rejects when the aider subprocess fails to spawn", async () => {
+    const fake = makeFakeChild();
+    spawnMock.mockReturnValue(fake);
+    const promise = runAiderAgent("hi", {
+      model: "gpt-4o",
+      systemPrompt: "sys",
+      cwd: "/workspace",
+      timeoutMs: 1_000,
+      mode: "codegen",
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    fake.emit("error", new Error("spawn aider ENOENT"));
+
+    await expect(promise).rejects.toThrow("spawn aider ENOENT");
+    expect(fake.kill).toHaveBeenCalledWith("SIGTERM");
+    expect(rmSync).toHaveBeenCalledWith("/tmp/ve-aider-test", {
+      recursive: true,
+      force: true,
+    });
+  });
+
+  it("rejects and cleans up when the aider session times out", async () => {
+    vi.useFakeTimers();
+    const fake = makeFakeChild();
+    spawnMock.mockReturnValue(fake);
+    const rejection = expect(runAiderAgent("hi", {
+      model: "gpt-4o",
+      systemPrompt: "sys",
+      cwd: "/workspace",
+      timeoutMs: 50,
+      mode: "codegen",
+    })).rejects.toThrow("Aider session timed out after 50ms");
+
+    await vi.advanceTimersByTimeAsync(50);
+    expect(fake.kill).toHaveBeenCalledWith("SIGTERM");
+    fake.emit("close", null);
+
+    await rejection;
+    expect(rmSync).toHaveBeenCalledWith("/tmp/ve-aider-test", {
+      recursive: true,
+      force: true,
+    });
   });
 });

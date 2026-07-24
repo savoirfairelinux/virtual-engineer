@@ -249,6 +249,8 @@ Six LLM backends (descriptor `src/plugins/descriptors/aider.ts`, `aiderBackend` 
 
 The Aider CLI is installed in the agent image via `uv tool install aider-chat` (see `Dockerfile.agent`); the binary is symlinked onto `/usr/local/bin/aider`. Aider's `~/.aider*` cache lands on the `/ve-home` named volume. Aider needs outbound HTTPS to the upstream LLM API (and HTTP to Ollama); the `virtual-engineer_ve-agent-net` Docker network must allow that egress, and Ollama-on-host needs `host.docker.internal` reachability.
 
+Aider's worker timeout terminates the CLI, rejects with an explicit timeout error, removes the temporary prompt directory, and emits `session.error`; a null close code after timeout is not a successful run.
+
 Cost: Aider has no AIU, so `agent_cycles` USD/credit columns stay null; token usage is still emitted as `assistant.usage` events (parsed from Aider's `Tokens: … Cost: …` line when present).
 
 ## Test Layout
