@@ -119,7 +119,7 @@ Insufficient permission → 403 `{ error: "forbidden", permission }`. The per-re
 
 **Built-in policies** reproduce the former roles: the seeded `Operator` policy grants every non-administrative permission (project/task/integration/agent/prompt/oauth/overview/concurrency/system); `Viewer` grants `overview.read`, `system.read`, `concurrency.read`, `project.read`, `task.read`. Both are `builtin = 1` and protected from edit/delete. New `operator`/`viewer` users are auto-bound to the matching policy on creation (role = default access bundle) which an admin can then narrow (e.g. replace with a project-scoped policy).
 
-The GitLab img-proxy `?t=` query token accepts a session token when users exist; in bootstrap mode (no users yet) the proxy is open, matching every other route.
+The GitLab img-proxy `?t=` query token accepts a session token when users exist; in bootstrap mode (no users yet) the proxy is open, matching every other route. Proxy targets must be HTTP(S) GitLab upload URLs on the configured integration's exact origin (scheme, hostname, and port), without embedded credentials. The proxy attaches the GitLab bearer token only after this validation, accepts only PNG/JPEG/GIF/WebP/SVG responses, aborts upstream requests after 10 seconds, and rejects bodies larger than 5 MiB whether or not `Content-Length` is present.
 
 ## Audit trail
 

@@ -14,6 +14,21 @@ export function normalizeGitLabBaseUrl(baseUrl: string): string {
   return baseUrl.replace(/\/+$/, "");
 }
 
+/** Return true when a proxy target is an HTTP(S) URL on the configured GitLab origin. */
+export function isAllowedGitLabProxyTarget(targetUrl: string, baseUrl: string): boolean {
+  try {
+    const target = new URL(targetUrl);
+    const base = new URL(baseUrl);
+    return (target.protocol === "http:" || target.protocol === "https:") &&
+      target.origin === base.origin &&
+      target.username.length === 0 &&
+      target.password.length === 0 &&
+      /\/uploads\/[^/]+\/.+/.test(target.pathname);
+  } catch {
+    return false;
+  }
+}
+
 export function getGitLabBaseUrl(config: Record<string, unknown>): string {
   const baseUrl = getNonEmptyString(config["baseUrl"]);
   if (!baseUrl) {
