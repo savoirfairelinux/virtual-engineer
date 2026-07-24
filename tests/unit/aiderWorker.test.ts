@@ -288,7 +288,7 @@ describe("runAiderAgent", () => {
     spawnMock.mockReturnValue(fake);
     const promise = runAiderAgent("hi", {
       model: "gpt-4o",
-      systemPrompt: "sys",
+      agentInstructions: "sys",
       cwd: "/workspace",
       timeoutMs: 1_000,
       mode: "codegen",
@@ -310,7 +310,7 @@ describe("runAiderAgent", () => {
     spawnMock.mockReturnValue(fake);
     const rejection = expect(runAiderAgent("hi", {
       model: "gpt-4o",
-      systemPrompt: "sys",
+      agentInstructions: "sys",
       cwd: "/workspace",
       timeoutMs: 50,
       mode: "codegen",

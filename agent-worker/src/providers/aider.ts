@@ -301,9 +301,13 @@ export async function runAiderAgent(
         processAiderStderr(text, state);
       });
       child.on('error', (err) => reject(err));
-      child.on('close', (code) => {
+      child.on('close', (code, signal) => {
         // Flush any trailing output not terminated by a newline.
         if (stdoutBuf.trim()) flushStdoutLine(stdoutBuf);
+        if (typeof signal === 'string') {
+          reject(new Error(`Aider terminated by signal ${signal}`));
+          return;
+        }
         if (code !== null && code !== 0) {
           reject(new Error(buildExitError(code, stderrAccum)));
           return;

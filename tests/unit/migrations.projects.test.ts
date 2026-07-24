@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
+import Database from "better-sqlite3";
 import { SqliteStateStore } from "../../src/state/stateStore.js";
+import { makeAgentId } from "../../src/interfaces.js";
 import { tempDatabasePath } from "./helpers/tempDatabase.js";
 
 function tempDbPath(): string {
@@ -51,6 +53,92 @@ describe("Phase 2 migrations", () => {
       const taskCols = raw.prepare("PRAGMA table_info(tasks)").all() as ColumnInfoRow[];
       const taskColNames = new Set(taskCols.map((c) => c.name));
       expect(taskColNames.has("project_id")).toBe(true);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("preserves a custom system prompt role when upgrading a legacy database", async () => {
+    const dbPath = tempDbPath();
+    const legacy = new Database(dbPath);
+    const now = Math.floor(Date.now() / 1000);
+    legacy.exec(`
+      CREATE TABLE prompts (
+        id TEXT PRIMARY KEY,
+        label TEXT NOT NULL,
+        content TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE TABLE agents (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        type TEXT NOT NULL,
+        model_config_json TEXT NOT NULL DEFAULT '{}',
+        system_prompt_id TEXT REFERENCES prompts(id),
+        instructions_prompt_id TEXT REFERENCES prompts(id),
+        max_concurrent INTEGER NOT NULL DEFAULT 1,
+        enabled INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+    `);
+    legacy.prepare(
+      "INSERT INTO prompts (id, label, content, created_at, updated_at) VALUES (?, ?, ?, ?, ?)"
+    ).run("custom-system", "Custom system", "System policy", now, now);
+    legacy.prepare(
+      "INSERT INTO prompts (id, label, content, created_at, updated_at) VALUES (?, ?, ?, ?, ?)"
+    ).run("shared-prompt", "Shared prompt", "Shared policy", now, now);
+    legacy.prepare(`
+      INSERT INTO agents (
+        id, name, type, model_config_json, system_prompt_id,
+        instructions_prompt_id, enabled, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      "legacy-agent",
+      "Legacy agent",
+      "coding",
+      "{}",
+      "custom-system",
+      null,
+      1,
+      now,
+      now,
+    );
+    legacy.prepare(`
+      INSERT INTO agents (
+        id, name, type, model_config_json, system_prompt_id,
+        instructions_prompt_id, enabled, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      "dual-role-agent",
+      "Dual role agent",
+      "coding",
+      "{}",
+      "shared-prompt",
+      "shared-prompt",
+      1,
+      now,
+      now,
+    );
+    legacy.close();
+
+    const store = await SqliteStateStore.create(dbPath);
+    try {
+      const prompt = await store.getPrompt("custom-system");
+      const agent = await store.getAgentById(makeAgentId("legacy-agent"));
+      const dualRoleAgent = await store.getAgentById(makeAgentId("dual-role-agent"));
+      const sharedSystemPrompt = await store.getPrompt("shared-prompt");
+      const sharedInstructionsPrompt = dualRoleAgent?.instructionsPromptId
+        ? await store.getPrompt(dualRoleAgent.instructionsPromptId)
+        : null;
+      expect(prompt?.promptType).toBe("system");
+      expect(agent?.systemPromptId).toBe("custom-system");
+      expect(sharedSystemPrompt?.promptType).toBe("system");
+      expect(dualRoleAgent?.systemPromptId).toBe("shared-prompt");
+      expect(dualRoleAgent?.instructionsPromptId).not.toBe("shared-prompt");
+      expect(sharedInstructionsPrompt?.promptType).toBe("instructions");
+      expect(sharedInstructionsPrompt?.content).toBe("Shared policy");
     } finally {
       store.close();
     }
