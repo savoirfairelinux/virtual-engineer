@@ -77,7 +77,14 @@ describe("Orchestrator.startTask", () => {
 
 ## Coverage gates
 
-`npm run test:coverage` (V8 provider). Coverage thresholds, when configured, are enforced from [vitest.config.ts](../../vitest.config.ts). Do not lower them without justification.
+`npm run test:coverage` uses the V8 provider and is the test command enforced by CI. Global floors are 77% statements, 67% branches, 82% functions, and 81% lines. Security-critical per-file floors (statements / branches / functions / lines) are:
+
+- `src/admin/adminImageProxy.ts`: 90 / 75 / 100 / 91
+- `src/admin/adminServer.ts`: 84 / 85 / 96 / 84
+- `src/webhooks/webhookServer.ts`: 81 / 71 / 96 / 83
+- `src/utils/gitlabAuth.ts`: 63 / 63 / 61 / 66
+
+These are truthful non-regression ratchets based on the measured post-security baseline. Raise them as coverage improves; do not lower them merely to land a change. Threshold failure must fail CI.
 
 ## Pre-commit gate (mandatory)
 
