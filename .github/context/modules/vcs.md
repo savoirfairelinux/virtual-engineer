@@ -4,6 +4,13 @@
 
 The VCS layer is host-owned. The agent container may edit files and create local commits, but the host still controls the final push and keeps review-system credentials outside the container.
 
+## Asynchronous Git runner
+
+- `gitRunner.ts` defines the narrow `GitRunner.run(args, options)` contract and typed `GitCommandError`. The runner executes one Git command; clone/push/commit workflows remain connector-owned.
+- `nodeGitRunner.ts` uses `child_process.execFile` without a shell. Callers can set `cwd`, environment, timeout, `AbortSignal`, and output limit; the default output cap is 1 MiB.
+- Failures distinguish non-zero exit, timeout, cancellation, output-limit breach, and spawn errors. Captured stdout/stderr are bounded and passed through URL/token redaction before being returned or attached to errors; environment values and command arguments are never included in error messages.
+- Timeout policy is caller-owned. The runner accepts a per-command timeout or constructor default but imposes none when neither is set.
+
 ## Interface — `vcsConnector.ts`
 
 ```ts
@@ -71,12 +78,13 @@ All built-in project push targets implement `pushDirect`, and `Orchestrator.push
 - `tests/unit/gitlabVcsConnector.test.ts`
 - `tests/unit/githubVcsConnector.test.ts`
 - `tests/unit/branchNaming.test.ts`
+- `tests/unit/nodeGitRunner.test.ts`
 
 ## Adding a new VCS
 
 1. Implement `VcsConnector` in a new file under `src/vcs/`.
 2. Add `capabilities.source_control.createVcsConnector(config, integration, context?) → VcsConnector` to the integration's descriptor (e.g. `src/plugins/descriptors/<name>.ts`). `vcsFactory` will pick it up automatically.
-3. Add unit tests; mock `src/utils/gitExec.ts` and `src/workspace/dockerVolume.ts` as appropriate rather than running real Git or Docker operations.
+3. Add unit tests; inject a deterministic `GitRunner` and mock `src/workspace/dockerVolume.ts` as appropriate rather than running real Git or Docker operations.
 
 ## Related docs
 
