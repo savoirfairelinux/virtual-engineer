@@ -199,7 +199,7 @@ export const gitlabDescriptor: ProviderDescriptor = {
       intake: ["webhook"],
     },
     source_control: {
-      createVcsConnector: (cfg: Record<string, unknown>, _integration: Integration, context?: IntegrationBindingContext) => {
+      createVcsConnector: (cfg: Record<string, unknown>, _integration: Integration, context, runtime) => {
         const parsed = gitlabConfigSchema.parse(cfg);
         const targetBranch = context?.targetBranch ?? parsed.targetBranch;
         return new GitLabVcsConnector({
@@ -209,7 +209,7 @@ export const gitlabDescriptor: ProviderDescriptor = {
           gitAuthorName: parsed.gitAuthorName,
           gitAuthorEmail: parsed.gitAuthorEmail,
           ...(targetBranch !== undefined ? { targetBranch } : {}),
-        });
+        }, runtime?.gitRunner);
       },
     },
   },

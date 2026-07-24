@@ -296,7 +296,7 @@ export const gerritDescriptor: ProviderDescriptor = {
       },
     },
     source_control: {
-      createVcsConnector: (cfg, _integration) => {
+      createVcsConnector: (cfg, _integration, _context, runtime) => {
         const ssh = buildSshArgs(cfg);
         return new GerritVcsConnector({
           sshHost: ssh.host,
@@ -308,7 +308,7 @@ export const gerritDescriptor: ProviderDescriptor = {
           gitAuthorName: (cfg["gitAuthorName"] as string | undefined) ?? "Virtual Engineer",
           gitAuthorEmail: (cfg["gitAuthorEmail"] as string | undefined) ?? "ve@virtual-engineer.local",
           ...(typeof cfg["baseUrl"] === "string" ? { baseUrl: cfg["baseUrl"] } : {}),
-        });
+        }, runtime?.gitRunner);
       },
     },
   },

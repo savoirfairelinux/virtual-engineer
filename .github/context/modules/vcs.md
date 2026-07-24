@@ -10,6 +10,8 @@ The VCS layer is host-owned. The agent container may edit files and create local
 - `nodeGitRunner.ts` uses `child_process.execFile` without a shell. Callers can set `cwd`, environment, timeout, `AbortSignal`, and output limit; the default output cap is 1 MiB.
 - Failures distinguish non-zero exit, timeout, cancellation, output-limit breach, and spawn errors. Captured stdout/stderr are bounded and passed through URL/token redaction before being returned or attached to errors; environment values and command arguments are never included in error messages.
 - Timeout policy is caller-owned. The runner accepts a per-command timeout or constructor default but imposes none when neither is set.
+- `VcsConnectorFactory` owns one shared `NodeGitRunner` and injects it through `SourceControlRuntimeContext` into descriptor-created connectors. Tests can inject a deterministic runner through the factory constructor.
+- Gerrit, GitLab, and GitHub host workflows await the runner instead of blocking the Node event loop. Clone and push commands retain a five-minute timeout; command ordering, SSH environments, and authenticated-remote restoration remain connector-owned.
 
 ## Interface — `vcsConnector.ts`
 
@@ -68,6 +70,7 @@ All built-in project push targets implement `pushDirect`, and `Orchestrator.push
 - Fully generic: dispatches entirely via `capabilities.source_control.createVcsConnector` on the provider descriptor — no type-specific `if`/`switch` branches exist.
 - Checks VCS capability (`capabilities.source_control.createVcsConnector` presence) **before** schema validation, so non-VCS integration types get a clear `"not a VCS push target"` error rather than a schema-validation error.
 - Supports an optional project binding context (`ticketProjectKey` / `repoKey`) so project-mode runtime paths can specialize providers like GitLab without mutating integration rows.
+- Passes an optional `SourceControlRuntimeContext` as the fourth descriptor-factory argument. Its shared `gitRunner` is reused by cached integration-global connectors and project-bound connectors.
 - Used by `src/index.ts` and refreshed through `refreshRuntimeDependencies()`.
 
 ## Tests
@@ -83,8 +86,8 @@ All built-in project push targets implement `pushDirect`, and `Orchestrator.push
 ## Adding a new VCS
 
 1. Implement `VcsConnector` in a new file under `src/vcs/`.
-2. Add `capabilities.source_control.createVcsConnector(config, integration, context?) → VcsConnector` to the integration's descriptor (e.g. `src/plugins/descriptors/<name>.ts`). `vcsFactory` will pick it up automatically.
-3. Add unit tests; inject a deterministic `GitRunner` and mock `src/workspace/dockerVolume.ts` as appropriate rather than running real Git or Docker operations.
+2. Add `capabilities.source_control.createVcsConnector(config, integration, context?, runtime?) → VcsConnector` to the integration's descriptor (e.g. `src/plugins/descriptors/<name>.ts`). Pass `runtime?.gitRunner` into the connector; `vcsFactory` will pick it up automatically.
+3. Add unit tests; inject `RecordingGitRunner` from `tests/unit/helpers/recordingGitRunner.ts` and mock `src/workspace/dockerVolume.ts` as appropriate rather than running real Git or Docker operations.
 
 ## Related docs
 
