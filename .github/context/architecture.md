@@ -60,6 +60,8 @@ Owns the ticket-driven lifecycle. Key public entry points:
 
 It builds `TaskContext`, launches agent cycles, persists agent output, manages retry semantics, and delegates push operations to `src/vcs/`.
 
+`src/orchestrator/reviewProgressService.ts` owns code-generation review polling after a push: single/multi-repository convergence, feedback aggregation, CI-failure policy, retry dispatch, and comment resolution. `Orchestrator` supplies narrow lifecycle and connector callbacks and retains the state-machine side effects.
+
 ### Review runtime — `src/review/`
 
 - `reviewOrchestrator.ts` drives `REVIEW_PENDING → ... → REVIEW_DONE/REVIEW_FAILED`; the agent runs in the workspace container via `workspaceRunner.runReviewInDocker()` (`REVIEW_MODE=1`, prompt read from `USER_PROMPT_FILE`)

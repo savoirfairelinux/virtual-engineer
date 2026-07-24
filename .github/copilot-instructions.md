@@ -83,8 +83,8 @@ src/
                         # gitlabMergeRequestReviewProvider, baseTicketConnector,
                         # githubIssueConnector, githubPullRequestReviewConnector,
                         # githubReviewProvider
-  orchestrator/         # orchestrator, pollingLoop, feedbackProcessor,
-                        # concurrencyTracker
+  orchestrator/         # orchestrator, reviewProgressService, pollingLoop,
+                        # feedbackProcessor, concurrencyTracker
   plugins/              # registry, pluginManager, init, descriptors/{index,github,
                         # gitlab,gerrit,redmine,copilot,claude,aider,mock}.ts (unified
                         # provider descriptors; githubOAuth/gitlabOAuth helpers)
