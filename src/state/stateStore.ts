@@ -10,8 +10,8 @@ import type {
   ProjectRecord,
   ResolvedAgentConfig,
   StateStore,
-  Task,
 } from "../interfaces.js";
+import type { Task } from "../domain/tasks.js";
 
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import type { AgentStoreApi } from "./stores/agentStore.js";

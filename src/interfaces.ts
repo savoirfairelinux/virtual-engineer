@@ -1,33 +1,48 @@
 /** Core domain types and interface contracts. */
 
+import {
+  type AgentId,
+  type ExternalChangeId,
+  type ProjectId,
+  type TaskId,
+  type TicketId,
+} from "./domain/identifiers.js";
+import {
+  type ChangePerRepository,
+  type StateTransition,
+  type Task,
+  type TaskState,
+} from "./domain/tasks.js";
+
+export {
+  makeAgentId,
+  makeExternalChangeId,
+  makeProjectId,
+  makeTaskId,
+  makeTicketId,
+  type AgentId,
+  type ExternalChangeId,
+  type ProjectId,
+  type TaskId,
+  type TicketId,
+} from "./domain/identifiers.js";
+export {
+  CODE_GEN_STATES,
+  CODE_GEN_TERMINAL_STATES,
+  CODE_REVIEW_STATES,
+  CODE_REVIEW_TERMINAL_STATES,
+  TASK_STATES,
+  TERMINAL_STATES,
+  type ChangePerRepository,
+  type CodeGenState,
+  type CodeReviewState,
+  type StateTransition,
+  type Task,
+  type TaskState,
+  type TaskType,
+} from "./domain/tasks.js";
+
 // ─── Shared value types ───────────────────────────────────────────────────────
-
-export type TaskId = string & { readonly __brand: "TaskId" };
-export type TicketId = string & { readonly __brand: "TicketId" };
-export type ExternalChangeId = string & { readonly __brand: "ExternalChangeId" };
-export type AgentId = string & { readonly __brand: "AgentId" };
-export type ProjectId = string & { readonly __brand: "ProjectId" };
-
-/** Cast a plain string to the branded `TaskId` type. */
-export function makeTaskId(s: string): TaskId {
-  return s as TaskId;
-}
-/** Cast a plain string to the branded `TicketId` type. */
-export function makeTicketId(s: string): TicketId {
-  return s as TicketId;
-}
-/** Cast a plain string to the branded `ExternalChangeId` type. */
-export function makeExternalChangeId(s: string): ExternalChangeId {
-  return s as ExternalChangeId;
-}
-/** Cast a plain string to the branded `AgentId` type. */
-export function makeAgentId(s: string): AgentId {
-  return s as AgentId;
-}
-/** Cast a plain string to the branded `ProjectId` type. */
-export function makeProjectId(s: string): ProjectId {
-  return s as ProjectId;
-}
 
 // ─── Phase 2: Agents / Projects / Concurrency types ───────────────────────────
 
@@ -297,61 +312,6 @@ export interface ResolvedAgentConfig {
 }
 
 // ─── Task state machine ───────────────────────────────────────────────────────
-
-/** States belonging to the ticket-driven code-generation workflow. */
-export const CODE_GEN_STATES = [
-  "DETECTED",
-  "CONTEXT_BUILDING",
-  "AGENT_RUNNING",
-  "IN_REVIEW",
-  "FEEDBACK_PROCESSING",
-  "RETRY_CYCLE",
-  "MERGED",
-  "CLOSING",
-  "DONE",
-  "FAILED",
-  "ABANDONED",
-] as const;
-
-/** States belonging to the VE-as-reviewer code-review workflow. */
-export const CODE_REVIEW_STATES = [
-  "REVIEW_PENDING",
-  "REVIEW_RUNNING",
-  "REVIEW_COMMENTING",
-  "REVIEW_WATCHING",
-  "REVIEW_DONE",
-  "REVIEW_FAILED",
-] as const;
-
-export type CodeGenState = (typeof CODE_GEN_STATES)[number];
-export type CodeReviewState = (typeof CODE_REVIEW_STATES)[number];
-
-/** Union of all task states across both workflows. */
-export const TASK_STATES = [...CODE_GEN_STATES, ...CODE_REVIEW_STATES] as const;
-
-export type TaskState = CodeGenState | CodeReviewState;
-
-/** "code-gen" = ticket-driven flow; "code-review" = VE acts as reviewer. */
-export type TaskType = "code-gen" | "code-review";
-
-/** Terminal states for the code-generation workflow. */
-export const CODE_GEN_TERMINAL_STATES: ReadonlySet<CodeGenState> = new Set<CodeGenState>([
-  "DONE",
-  "FAILED",
-  "ABANDONED",
-]);
-
-/** Terminal states for the code-review workflow. */
-export const CODE_REVIEW_TERMINAL_STATES: ReadonlySet<CodeReviewState> = new Set<CodeReviewState>([
-  "REVIEW_DONE",
-  "REVIEW_FAILED",
-]);
-
-/** Terminal states across both workflows — no further transitions allowed. */
-export const TERMINAL_STATES: ReadonlySet<TaskState> = new Set<TaskState>([
-  ...CODE_GEN_TERMINAL_STATES,
-  ...CODE_REVIEW_TERMINAL_STATES,
-]);
 
 // ─── Agent interfaces ─────────────────────────────────────────────────────────
 
@@ -1058,62 +1018,6 @@ export class ReviewNotFoundError extends ReviewApiError {
 }
 
 // ─── State Store interfaces ───────────────────────────────────────────────────
-
-export interface Task {
-  taskId: TaskId;
-  ticketId: TicketId;
-  ticketSourceLabel: string;
-  ticketTitle: string;
-  ticketDescription: string;
-  state: TaskState;
-  /** Discriminator: "code-gen" (default) or "code-review". */
-  taskType: TaskType;
-  externalChangeId: ExternalChangeId | null;
-  currentPatchset: number;
-  /** For code-review tasks: last patchset reviewed by VE. NULL otherwise. */
-  reviewedPatchset: number | null;
-  cycleCount: number;
-  createdAt: Date;
-  updatedAt: Date;
-  failureReason: string | null;
-  ticketUrl: string | null;
-  reviewUrl: string | null;
-  /** Project ID (null for legacy tasks). */
-  projectId?: ProjectId | null | undefined;
-  /** Human-readable identifier for the UI (e.g. ticket number, Gerrit change number). */
-  displayId: string | null;
-  /** Persisted feature branch ref for the first push; null for legacy tasks (falls back to legacy naming on resume). */
-  pushRef?: string | null;
-}
-
-/** Per-repository change tracking (Gerrit Change-Id or GitLab MR IID) for multi-repo tasks. */
-export interface ChangePerRepository {
-  id: string;
-  taskId: TaskId;
-  repoKey: string;
-  changeId: string;
-  reviewUrl: string | null;
-  status: string;
-  /** Integration ID of the VCS connector used for this repo */
-  integrationId: string;
-  /** Review system type: "gerrit" or "gitlab" */
-  reviewSystem: string;
-  /** Position in the commit chain (0 = legacy single-commit, 1..N for multi-commit) */
-  commitIndex: number;
-  /** SHA-1 hash of the normalized commit subject — for deterministic Change-Id mapping */
-  subjectHash: string | null;
-  createdAt: Date;
-  updatedAt: Date;
-}
-
-export interface StateTransition {
-  id: number;
-  taskId: TaskId;
-  fromState: TaskState;
-  toState: TaskState;
-  metadata: Record<string, unknown>;
-  createdAt: Date;
-}
 
 export interface AgentCycle {
   id: number;

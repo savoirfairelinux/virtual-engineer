@@ -5,14 +5,11 @@ import type {
   AgentAdapter,
   CommitDescriptor,
   FeedbackItem,
-  ExternalChangeId,
   IntegrationBindingContext,
   ReviewConnector,
   TicketConnector,
   StateStore,
-  Task,
   TaskContext,
-  TicketId,
   WorkspaceRunner,
   WorkspaceHandle,
   ProjectRecord,
@@ -20,9 +17,19 @@ import type {
   RepositoryMap,
   ProjectPushTargetRecord,
 } from "../interfaces.js";
-import { makeTaskId, makeTicketId, TERMINAL_STATES, TicketApiError, TicketNotFoundError } from "../interfaces.js";
-import type { CodeGenState } from "../interfaces.js";
+import { TicketApiError, TicketNotFoundError } from "../interfaces.js";
 import type { IntegrationStore } from "../interfaces.js";
+import {
+  makeTaskId,
+  makeTicketId,
+  type ExternalChangeId,
+  type TicketId,
+} from "../domain/identifiers.js";
+import {
+  TERMINAL_STATES,
+  type CodeGenState,
+  type Task,
+} from "../domain/tasks.js";
 import { getLogger } from "../logger.js";
 import { FeedbackProcessor, isCiFeedbackComment } from "./feedbackProcessor.js";
 import { clearTaskEventBuffer } from "../agents/agentEventBus.js";

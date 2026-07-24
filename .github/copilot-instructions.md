@@ -51,7 +51,8 @@ src/
                         # shared helpers: asOptionalString, parseIntegrationConfig,
                         # getActiveIntegrationsByType, getPrimaryActiveIntegration)
   config.ts             # Zod-validated AppConfig (loads .env)
-  interfaces.ts         # branded IDs, TaskState, AgentSession, AgentResult, AgentLogEvent
+  domain/               # identifiers (branded IDs) + tasks (states/persisted task contracts)
+  interfaces.ts         # compatibility facade + AgentSession, AgentResult, AgentLogEvent
   copilotModel.ts       # Copilot model defaults
   logger.ts             # Pino (silent in NODE_ENV=test by default)
   admin/                # Node.js admin HTTP server; serves the Vite-built React SPA
