@@ -1,12 +1,19 @@
 import { describe, expect, it, vi } from "vitest";
+import { createHmac } from "node:crypto";
 import { AddressInfo } from "node:net";
 import { makeExternalChangeId, makeTaskId, makeTicketId } from "../../src/interfaces.js";
 import type { AgentCycle, OAuthAppStore, IntegrationStore, StateStore, StateTransition, Task } from "../../src/interfaces.js";
-import { createAdminServer } from "../../src/admin/adminServer.js";
+import { createAdminServer as createAdminServerImpl } from "../../src/admin/adminServer.js";
 import type { AdminProviderSummary } from "../../src/admin/adminServer.js";
 import { registerBuiltinPlugins } from "../../src/plugins/init.js";
 
 registerBuiltinPlugins();
+
+function createAdminServer(
+  dependencies: Parameters<typeof createAdminServerImpl>[0]
+): ReturnType<typeof createAdminServerImpl> {
+  return createAdminServerImpl({ ...dependencies, allowUnauthenticatedAdmin: true });
+}
 
 const providerSummaries: readonly AdminProviderSummary[] = [
   {
@@ -467,7 +474,7 @@ describe("createAdminServer", () => {
     }
   });
 
-  it("bootstrap mode (no user store) allows unauthenticated API access", async () => {
+  it("explicit open mode allows unauthenticated API access", async () => {
     const secret = "top-secret";
 
     const server = createAdminServer({
@@ -490,7 +497,7 @@ describe("createAdminServer", () => {
     try {
       const baseUrl = await listen(server);
 
-      // Bootstrap mode: mock store has no user methods → no session auth → all routes open.
+      // The local test-server wrapper opts lightweight stores into explicit open mode.
       const response = await fetch(`${baseUrl}/api/admin/status`);
       expect(response.status).toBe(200);
 
@@ -1215,6 +1222,139 @@ describe("createAdminServer", () => {
       );
     } finally {
       vi.unstubAllGlobals();
+      await closeServer(server);
+    }
+  });
+
+  it("rejects lookalike GitLab hosts without forwarding credentials", async () => {
+    const realFetch = globalThis.fetch;
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.toString()
+          : input.url;
+      if (url.startsWith("http://127.0.0.1:")) {
+        return realFetch(input, init);
+      }
+      return new Response("stolen", {
+        status: 200,
+        headers: { "content-type": "image/png" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const pluginManager = {
+      getActiveIntegrationsByProvider(provider: string) {
+        if (provider === "gitlab") {
+          return [{
+            id: "gitlab-mr",
+            provider: "gitlab",
+            name: "GitLab MR",
+            configJson: JSON.stringify({
+              baseUrl: "https://gitlab.example.com",
+              token: "oauth-token",
+            }),
+            enabled: true,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          }];
+        }
+        return [];
+      },
+    };
+
+    const server = createAdminServer({
+      stateStore: makeStateStore(),
+      pluginManager: pluginManager as never,
+      config: {
+        nodeEnv: "test",
+        logLevel: "info",
+        maxAgentCycles: 3,
+        maxRetryAttempts: 5,
+        pollingIntervalMs: 30_000,
+      },
+      polling: {
+        isRunning: () => true,
+        getIntervals: () => ({ intervalMs: 30_000 }),
+      },
+      providers: providerSummaries,
+    });
+
+    try {
+      const baseUrl = await listen(server);
+      const response = await fetch(
+        `${baseUrl}/api/admin/img-proxy?url=${encodeURIComponent("https://gitlab.example.com.attacker.test/uploads/abcdef1234567890/image.png")}`
+      );
+
+      expect(response.status).toBe(400);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllGlobals();
+      await closeServer(server);
+    }
+  });
+
+  it("uses ADMIN_TRUST_PROXY for webhook IP restrictions", async () => {
+    const webhookSecret = "s".repeat(64);
+    const body = JSON.stringify({ issue: { id: 1 } });
+    const integrationStore = {
+      getIntegration: vi.fn(async () => ({
+        id: "redmine-1",
+        provider: "redmine",
+        name: "Redmine",
+        configJson: JSON.stringify({
+          webhookSecret,
+          webhookAllowedIps: ["192.0.2.10"],
+        }),
+        enabled: true,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      })),
+    } as unknown as IntegrationStore;
+    const server = createAdminServer({
+      stateStore: makeStateStore(),
+      integrationStore,
+      webhooks: {
+        projectStore: { findProjectByTicketSource: vi.fn(async () => null) },
+        orchestrator: {
+          startTaskForProject: vi.fn(async () => undefined),
+          triggerFeedbackForChange: vi.fn(async () => undefined),
+          markChangeMerged: vi.fn(async () => undefined),
+          markChangeAbandoned: vi.fn(async () => undefined),
+        },
+      },
+      config: {
+        nodeEnv: "test",
+        logLevel: "info",
+        maxAgentCycles: 3,
+        maxRetryAttempts: 5,
+        pollingIntervalMs: 30_000,
+        adminTrustProxy: true,
+      },
+      polling: {
+        isRunning: () => true,
+        getIntervals: () => ({ intervalMs: 30_000 }),
+      },
+      providers: providerSummaries,
+    });
+
+    try {
+      const baseUrl = await listen(server);
+      const signature = createHmac("sha256", webhookSecret).update(body).digest("hex");
+      const response = await fetch(`${baseUrl}/webhooks/redmine-1/unknown`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-forwarded-for": "192.0.2.10",
+          "x-hub-signature-256": `sha256=${signature}`,
+        },
+        body,
+      });
+
+      expect(response.status).toBe(202);
+      expect(integrationStore.getIntegration).toHaveBeenCalledWith("redmine-1");
+    } finally {
       await closeServer(server);
     }
   });

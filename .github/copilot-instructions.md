@@ -51,7 +51,8 @@ src/
                         # shared helpers: asOptionalString, parseIntegrationConfig,
                         # getActiveIntegrationsByType, getPrimaryActiveIntegration)
   config.ts             # Zod-validated AppConfig (loads .env)
-  interfaces.ts         # branded IDs, TaskState, AgentSession, AgentResult, AgentLogEvent
+  domain/               # identifiers (branded IDs) + tasks (states/persisted task contracts)
+  interfaces.ts         # compatibility facade + AgentSession, AgentResult, AgentLogEvent
   copilotModel.ts       # Copilot model defaults
   logger.ts             # Pino (silent in NODE_ENV=test by default)
   admin/                # Node.js admin HTTP server; serves the Vite-built React SPA
@@ -82,8 +83,8 @@ src/
                         # gitlabMergeRequestReviewProvider, baseTicketConnector,
                         # githubIssueConnector, githubPullRequestReviewConnector,
                         # githubReviewProvider
-  orchestrator/         # orchestrator, pollingLoop, feedbackProcessor,
-                        # concurrencyTracker
+  orchestrator/         # orchestrator, reviewProgressService, pollingLoop,
+                        # feedbackProcessor, concurrencyTracker
   plugins/              # registry, pluginManager, init, descriptors/{index,github,
                         # gitlab,gerrit,redmine,copilot,claude,aider,mock}.ts (unified
                         # provider descriptors; githubOAuth/gitlabOAuth helpers)
@@ -99,7 +100,7 @@ src/
                         # errorClassifier, gitExec, githubAuth, gitlabAuth,
                         # redactUrl
   vcs/                  # vcsConnector + gerrit/gitlab/github VcsConnectors,
-                        # vcsFactory, branchNaming
+                        # vcsFactory, async gitRunner/nodeGitRunner, branchNaming
   webhooks/             # webhook server + handlers/{redmine,gitlab-issue,
                         # gitlab-merge-request,github-pull-request}
   workspace/            # dockerVolume (named-volume lifecycle + execInVolume)
@@ -182,7 +183,7 @@ All env vars are optional. Only system/infra settings remain — provider creden
 | `ADMIN_API_ENABLED` | `true` | |
 | `ADMIN_API_HOST` / `ADMIN_API_PORT` | `127.0.0.1` / `3100` | |
 | `ADMIN_AUTH_SECRET` | — | Encryption key for OAuth/session tokens at rest (AES-256-GCM). Admin auth itself uses DB-backed user accounts + session tokens, not HMAC. |
-| `ADMIN_TRUST_PROXY` | `false` | When `true`, extract client IP from `X-Forwarded-For` for rate-limiting. Only enable when a trusted reverse proxy fronts the admin server; default loopback binding makes this unnecessary in standard deployments. |
+| `ADMIN_TRUST_PROXY` | `false` | When `true`, extract the client IP from the first `X-Forwarded-For` value for login rate-limiting and webhook IP restrictions. Only enable behind a trusted reverse proxy that overwrites inbound forwarding headers. Webhook signatures remain mandatory. |
 | `POLLING_INTERVAL_MS` | `30000` | **DB-managed** default seed — polling loop tick interval; runtime value lives in `app_settings` and is edited from admin UI → System Settings |
 | `MAX_AGENT_CYCLES` | `3` | **DB-managed** default seed — per-task cap → FAILED; runtime value in `app_settings` |
 | `MAX_RETRY_ATTEMPTS` | `5` | **DB-managed** default seed — per-ticket cap; runtime value in `app_settings` |
@@ -248,6 +249,8 @@ Six LLM backends (descriptor `src/plugins/descriptors/aider.ts`, `aiderBackend` 
 `orchestrator.resolveProjectAgentRuntime` reads `aiderBackend` / `aiderApiKey` / `aiderApiBase` from the integration config and forwards them onto `AgentSession` (and `ReviewWorkspaceInput`) via `ResolvedAgentConfig.extra`. Connection validation (`aiderConnectionValidator.ts`) and model discovery (`aiderModelsService.ts`) probe the upstream provider's `/models` (or Ollama `/api/tags`); Ollama model ids are prefixed with `ollama_chat/` per Aider's recommendation.
 
 The Aider CLI is installed in the agent image via `uv tool install aider-chat` (see `Dockerfile.agent`); the binary is symlinked onto `/usr/local/bin/aider`. Aider's `~/.aider*` cache lands on the `/ve-home` named volume. Aider needs outbound HTTPS to the upstream LLM API (and HTTP to Ollama); the `virtual-engineer_ve-agent-net` Docker network must allow that egress, and Ollama-on-host needs `host.docker.internal` reachability.
+
+Aider's worker timeout terminates the CLI, rejects with an explicit timeout error, removes the temporary prompt directory, and emits `session.error`; a null close code after timeout is not a successful run.
 
 Cost: Aider has no AIU, so `agent_cycles` USD/credit columns stay null; token usage is still emitted as `assistant.usage` events (parsed from Aider's `Tokens: … Cost: …` line when present).
 

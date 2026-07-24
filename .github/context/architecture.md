@@ -60,6 +60,8 @@ Owns the ticket-driven lifecycle. Key public entry points:
 
 It builds `TaskContext`, launches agent cycles, persists agent output, manages retry semantics, and delegates push operations to `src/vcs/`.
 
+`src/orchestrator/reviewProgressService.ts` owns code-generation review polling after a push: single/multi-repository convergence, feedback aggregation, CI-failure policy, retry dispatch, and comment resolution. `Orchestrator` supplies narrow lifecycle and connector callbacks and retains the state-machine side effects.
+
 ### Review runtime — `src/review/`
 
 - `reviewOrchestrator.ts` drives `REVIEW_PENDING → ... → REVIEW_DONE/REVIEW_FAILED`; the agent runs in the workspace container via `workspaceRunner.runReviewInDocker()` (`REVIEW_MODE=1`, prompt read from `USER_PROMPT_FILE`)
@@ -69,6 +71,8 @@ It builds `TaskContext`, launches agent cycles, persists agent output, manages r
 
 ### State — `src/state/`
 
+- `src/domain/identifiers.ts` — branded task, ticket, change, agent, and project identifiers with maker functions
+- `src/domain/tasks.ts` — task state constants/types plus persisted task, per-repository change, and transition contracts
 - `stateMachine.ts` — pure transition map
 - `stateStore.ts` — typed SQLite store and index/bootstrap helper
 - `schema.ts` — `tasks`, `state_transitions`, `agent_cycles`, `processed_comments`, `posted_review_comments`, `review_thread_replies`, `integrations`, `oauth_apps`, `gitlab_oauth_apps`, `prompts`, `change_per_repository`, `agents`, `projects`, `project_integration_bindings`, `project_push_targets`, `app_concurrency`
@@ -77,6 +81,8 @@ It builds `TaskContext`, launches agent cycles, persists agent output, manages r
 The former `project_ticket_source` / `project_review_integration` / `project_review_repos` tables were **dropped** and replaced by `project_integration_bindings` (one row per `(project_id, capability)` with `capability ∈ issue_tracking | code_review | source_control | agent_execution`; `config_json` shapes: issue_tracking = `{ ticketProjectKey }`, code_review = `{ repos }`). Push targets stay in the dedicated `project_push_targets` table.
 
 See [state-machine.md](state-machine.md) and [database.md](database.md).
+
+`src/interfaces.ts` remains the compatibility facade for domain exports while new state/orchestrator code can depend directly on the narrower domain modules.
 
 ### Agents — `src/agents/`
 

@@ -116,9 +116,99 @@ async function closeServer(server: ReturnType<typeof createAdminServer>): Promis
 }
 
 describe("createAdminServer behavior", () => {
+  it("fails closed when the user store is unavailable", () => {
+    expect(() => createAdminServer({
+      stateStore: makeStateStore(),
+      config: {
+        nodeEnv: "test",
+        logLevel: "info",
+        maxAgentCycles: 3,
+        maxRetryAttempts: 5,
+        pollingIntervalMs: 30_000,
+      },
+      polling: {
+        isRunning: () => true,
+        getIntervals: () => ({ intervalMs: 30_000 }),
+      },
+      providers: [],
+    })).toThrow("Admin user store is required");
+  });
+
+  it("fails closed when PBAC rule resolution is unavailable", () => {
+    const stateStore = {
+      ...makeStateStore(),
+      countUsers: async () => 0,
+      getUserByUsername: async () => null,
+      createSession: async () => undefined,
+    } as unknown as StateStore;
+
+    expect(() => createAdminServer({
+      stateStore,
+      config: {
+        nodeEnv: "test",
+        logLevel: "info",
+        maxAgentCycles: 3,
+        maxRetryAttempts: 5,
+        pollingIntervalMs: 30_000,
+      },
+      polling: {
+        isRunning: () => true,
+        getIntervals: () => ({ intervalMs: 30_000 }),
+      },
+      providers: [],
+    })).toThrow("Admin PBAC store is required");
+  });
+
+  it("allows explicit unauthenticated mode outside production", async () => {
+    const server = createAdminServer({
+      stateStore: makeStateStore(),
+      allowUnauthenticatedAdmin: true,
+      config: {
+        nodeEnv: "test",
+        logLevel: "info",
+        maxAgentCycles: 3,
+        maxRetryAttempts: 5,
+        pollingIntervalMs: 30_000,
+      },
+      polling: {
+        isRunning: () => true,
+        getIntervals: () => ({ intervalMs: 30_000 }),
+      },
+      providers: [],
+    });
+
+    try {
+      const baseUrl = await listen(server);
+      const response = await fetch(`${baseUrl}/api/admin/status`);
+      expect(response.status).toBe(200);
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it("rejects explicit unauthenticated mode in production", () => {
+    expect(() => createAdminServer({
+      stateStore: makeStateStore(),
+      allowUnauthenticatedAdmin: true,
+      config: {
+        nodeEnv: "production",
+        logLevel: "info",
+        maxAgentCycles: 3,
+        maxRetryAttempts: 5,
+        pollingIntervalMs: 30_000,
+      },
+      polling: {
+        isRunning: () => true,
+        getIntervals: () => ({ intervalMs: 30_000 }),
+      },
+      providers: [],
+    })).toThrow("Unauthenticated admin mode is not allowed in production");
+  });
+
   it("returns 405 for unsupported methods", async () => {
     const server = createAdminServer({
       stateStore: makeStateStore(),
+      allowUnauthenticatedAdmin: true,
       config: {
         nodeEnv: "test",
         logLevel: "info",
@@ -146,6 +236,7 @@ describe("createAdminServer behavior", () => {
   it("returns 404 for unknown routes", async () => {
     const server = createAdminServer({
       stateStore: makeStateStore(),
+      allowUnauthenticatedAdmin: true,
       config: {
         nodeEnv: "test",
         logLevel: "info",
@@ -177,6 +268,7 @@ describe("createAdminServer behavior", () => {
           throw new Error("boom");
         },
       }),
+      allowUnauthenticatedAdmin: true,
       config: {
         nodeEnv: "test",
         logLevel: "info",
@@ -206,6 +298,7 @@ describe("createAdminServer behavior", () => {
 
     const server = createAdminServer({
       stateStore: makeStateStore(),
+      allowUnauthenticatedAdmin: true,
       integrationStore: makeIntegrationStore() as never,
       pluginManager: {
         isIntegrationActive: () => true,

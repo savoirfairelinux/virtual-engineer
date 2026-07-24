@@ -146,6 +146,108 @@ describe("webhookServer", () => {
       expect(res.body).toEqual({ error: "Unauthorized" });
     });
 
+    it("requires a signature even when the source IP is allowlisted", async () => {
+      store = makeIntegrationStore([makeIntegration({
+        configJson: JSON.stringify({
+          webhookSecret: SECRET,
+          webhookAllowedIps: ["127.0.0.1"],
+          baseUrl: "http://r/",
+          apiKey: "x",
+          virtualEngineerUserLogin: "ve",
+        }),
+      })]);
+      await ctx.closeServer();
+      ctx = await startTestServer({ integrationStore: store, orchestrator, projectStore });
+
+      const body = JSON.stringify({ issue: { id: 1, project: { identifier: "p" } } });
+      const res = await call(`/webhooks/${INTEGRATION_ID}/issue.created`, { body });
+
+      expect(res.status).toBe(401);
+      expect(res.body).toEqual({ error: "Unauthorized" });
+      expect(orchestrator.startTaskForProject).not.toHaveBeenCalled();
+    });
+
+    it("accepts a signed request from an allowlisted source IP", async () => {
+      store = makeIntegrationStore([makeIntegration({
+        configJson: JSON.stringify({ webhookSecret: SECRET, webhookAllowedIps: ["127.0.0.1"] }),
+      })]);
+      await ctx.closeServer();
+      ctx = await startTestServer({ integrationStore: store, orchestrator, projectStore });
+
+      const body = JSON.stringify({ issue: { id: 1, project: { identifier: "p" } } });
+      const res = await call(`/webhooks/${INTEGRATION_ID}/issue.created`, {
+        body,
+        headers: { "x-hub-signature-256": hmacSig(body, SECRET) },
+      });
+
+      expect(res.status).toBe(202);
+    });
+
+    it("rejects a signed request from a non-allowlisted source IP", async () => {
+      store = makeIntegrationStore([makeIntegration({
+        configJson: JSON.stringify({ webhookSecret: SECRET, webhookAllowedIps: ["192.0.2.10"] }),
+      })]);
+      await ctx.closeServer();
+      ctx = await startTestServer({ integrationStore: store, orchestrator, projectStore });
+
+      const body = JSON.stringify({ issue: { id: 1, project: { identifier: "p" } } });
+      const res = await call(`/webhooks/${INTEGRATION_ID}/issue.created`, {
+        body,
+        headers: { "x-hub-signature-256": hmacSig(body, SECRET) },
+      });
+
+      expect(res.status).toBe(401);
+      expect(res.body).toEqual({ error: "Unauthorized" });
+    });
+
+    it("ignores X-Forwarded-For when proxy trust is disabled", async () => {
+      store = makeIntegrationStore([makeIntegration({
+        configJson: JSON.stringify({ webhookSecret: SECRET, webhookAllowedIps: ["192.0.2.10"] }),
+      })]);
+      await ctx.closeServer();
+      ctx = await startTestServer({
+        integrationStore: store,
+        orchestrator,
+        projectStore,
+        trustProxy: false,
+      });
+
+      const body = JSON.stringify({ issue: { id: 1, project: { identifier: "p" } } });
+      const res = await call(`/webhooks/${INTEGRATION_ID}/issue.created`, {
+        body,
+        headers: {
+          "x-forwarded-for": "192.0.2.10",
+          "x-hub-signature-256": hmacSig(body, SECRET),
+        },
+      });
+
+      expect(res.status).toBe(401);
+    });
+
+    it("uses X-Forwarded-For when proxy trust is enabled", async () => {
+      store = makeIntegrationStore([makeIntegration({
+        configJson: JSON.stringify({ webhookSecret: SECRET, webhookAllowedIps: ["192.0.2.10"] }),
+      })]);
+      await ctx.closeServer();
+      ctx = await startTestServer({
+        integrationStore: store,
+        orchestrator,
+        projectStore,
+        trustProxy: true,
+      });
+
+      const body = JSON.stringify({ issue: { id: 1, project: { identifier: "p" } } });
+      const res = await call(`/webhooks/${INTEGRATION_ID}/issue.created`, {
+        body,
+        headers: {
+          "x-forwarded-for": "192.0.2.10, 198.51.100.5",
+          "x-hub-signature-256": hmacSig(body, SECRET),
+        },
+      });
+
+      expect(res.status).toBe(202);
+    });
+
     it("returns 401 with wrong signature", async () => {
       const body = JSON.stringify({ issue: { id: 1, project: { identifier: "p" } } });
       const res = await call(`/webhooks/${INTEGRATION_ID}/issue.created`, {

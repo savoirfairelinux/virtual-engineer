@@ -101,19 +101,25 @@ describe("adminServer RBAC and session auth", () => {
     return (await login.json()) as SessionResponse;
   }
 
-  it("allows unauthenticated requests while zero users exist (bootstrap mode)", async () => {
+  it("exposes only bootstrap auth routes while zero users exist", async () => {
+    const setupStatus = await fetch(`${baseUrl}/api/admin/auth/setup-status`);
+    expect(setupStatus.status).toBe(200);
+    await expect(setupStatus.json()).resolves.toEqual({ needsSetup: true });
+
     for (const path of ["/api/admin/status", "/api/admin/tasks", "/api/admin/prompts"]) {
       const response = await fetch(`${baseUrl}${path}`);
-      expect(response.status).toBe(200);
+      expect(response.status).toBe(401);
     }
 
-    // Mutations work too (bootstrap actor is treated as admin).
+    const imageProxy = await fetch(`${baseUrl}/api/admin/img-proxy?url=https://gitlab.example.com/uploads/id/image.png`);
+    expect(imageProxy.status).toBe(401);
+
     const create = await fetch(`${baseUrl}/api/admin/prompts`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ label: "Bootstrap Prompt", content: "hello" }),
     });
-    expect(create.status).toBe(201);
+    expect(create.status).toBe(401);
   });
 
   it("rejects unknown bearer tokens on normal routes once a user exists", async () => {
@@ -249,6 +255,7 @@ describe("adminServer RBAC and session auth", () => {
 
     const legacyServer = createAdminServer({
       stateStore: mockStore,
+      allowUnauthenticatedAdmin: true,
       config: {
         nodeEnv: "test",
         logLevel: "info",

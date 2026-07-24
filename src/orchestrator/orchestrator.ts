@@ -5,14 +5,11 @@ import type {
   AgentAdapter,
   CommitDescriptor,
   FeedbackItem,
-  ExternalChangeId,
   IntegrationBindingContext,
   ReviewConnector,
   TicketConnector,
   StateStore,
-  Task,
   TaskContext,
-  TicketId,
   WorkspaceRunner,
   WorkspaceHandle,
   ProjectRecord,
@@ -20,11 +17,25 @@ import type {
   RepositoryMap,
   ProjectPushTargetRecord,
 } from "../interfaces.js";
-import { makeTaskId, makeTicketId, TERMINAL_STATES, TicketApiError, TicketNotFoundError } from "../interfaces.js";
-import type { CodeGenState } from "../interfaces.js";
+import { TicketApiError, TicketNotFoundError } from "../interfaces.js";
 import type { IntegrationStore } from "../interfaces.js";
+import {
+  makeTaskId,
+  makeTicketId,
+  type ExternalChangeId,
+  type TicketId,
+} from "../domain/identifiers.js";
+import {
+  TERMINAL_STATES,
+  type CodeGenState,
+  type Task,
+} from "../domain/tasks.js";
 import { getLogger } from "../logger.js";
-import { FeedbackProcessor, isCiFeedbackComment } from "./feedbackProcessor.js";
+import { FeedbackProcessor } from "./feedbackProcessor.js";
+import {
+  ReviewProgressService,
+  type ReviewProgressDependencies,
+} from "./reviewProgressService.js";
 import { clearTaskEventBuffer } from "../agents/agentEventBus.js";
 import { normalizeAgentResult, getModifiedFileCount } from "../agents/agentEventTypes.js";
 import type { VcsConnector } from "../vcs/vcsConnector.js";
@@ -128,6 +139,7 @@ interface ProjectAgentRuntime {
  */
 export class Orchestrator {
   private readonly feedbackProcessor: FeedbackProcessor;
+  private readonly reviewProgressService: ReviewProgressService;
   private config: OrchestratorConfig;
   private vcsConnector: VcsConnector | undefined;
   private readonly vcsConnectorFactory: VcsConnectorFactory;
@@ -151,6 +163,34 @@ export class Orchestrator {
     this.vcsConnector = vcsConnector;
     this.feedbackProcessor = new FeedbackProcessor(stateStore);
     this.projectMode = projectMode ?? null;
+    this.reviewProgressService = new ReviewProgressService({
+      getChangesForTask: (taskId): ReturnType<ReviewProgressDependencies["getChangesForTask"]> =>
+        this.stateStore.getChangesForTask(taskId),
+      transition: (taskId, state): ReturnType<ReviewProgressDependencies["transition"]> =>
+        this.stateStore.transition(taskId, state),
+      updateChangeStatus: (taskId, repoKey, status, changeId): ReturnType<ReviewProgressDependencies["updateChangeStatus"]> =>
+        this.stateStore.updateChangePerRepositoryStatus(taskId, repoKey, status, changeId),
+      getTask: (taskId): ReturnType<ReviewProgressDependencies["getTask"]> =>
+        this.stateStore.getTask(taskId),
+      resolveReviewConnector: (task): ReturnType<ReviewProgressDependencies["resolveReviewConnector"]> =>
+        this.resolveReviewConnector(task),
+      resolveVcsConnector: (integrationId, context): ReturnType<ReviewProgressDependencies["resolveVcsConnector"]> =>
+        this.tryResolveVcsConnectorForTarget(integrationId, context),
+      getDefaultVcsConnector: (): ReturnType<ReviewProgressDependencies["getDefaultVcsConnector"]> =>
+        this.vcsConnector,
+      extractNewFeedback: (taskId, changeId, comments): ReturnType<ReviewProgressDependencies["extractNewFeedback"]> =>
+        this.feedbackProcessor.extractNewFeedback(taskId, changeId, comments),
+      reactsToCiFailures: (task): ReturnType<ReviewProgressDependencies["reactsToCiFailures"]> =>
+        this.projectReactsToCiFailures(task),
+      getMaxAgentCycles: (): ReturnType<ReviewProgressDependencies["getMaxAgentCycles"]> =>
+        this.config.maxAgentCycles,
+      runAgentCycle: (task, feedback): ReturnType<ReviewProgressDependencies["runAgentCycle"]> =>
+        this.runAgentCycle(task, feedback),
+      closeTicket: (task): ReturnType<ReviewProgressDependencies["closeTicket"]> =>
+        this.closeTicket(task),
+      abandonTask: (task, reason): ReturnType<ReviewProgressDependencies["abandonTask"]> =>
+        this.handleAbandoned(task, reason),
+    });
   }
 
   /** Enable or refresh project-mode dependencies at runtime without a restart. */
@@ -1104,337 +1144,7 @@ export class Orchestrator {
   }
 
   private async checkReviewProgress(task: Task, streamChangeId?: string, streamComments?: import("../interfaces.js").ReviewComment[]): Promise<void> {
-    // Check for per-repository changes first (multi-repo path)
-    const perRepoChanges = await this.stateStore.getChangesForTask(task.taskId);
-    if (perRepoChanges.length > 0) {
-      await this.checkMultiRepoReviewProgress(task, perRepoChanges, streamChangeId, streamComments);
-      return;
-    }
-
-    // Single-repo path (legacy)
-    const changeId = task.externalChangeId;
-    if (!changeId) {
-      log.warn({ taskId: task.taskId }, "IN_REVIEW but no gerritChangeId — waiting");
-      return;
-    }
-
-    const reviewConnector = await this.resolveReviewConnector(task);
-
-    let status: string;
-    try {
-      status = await reviewConnector.getChangeStatus(changeId);
-    } catch (err) {
-      log.warn({ taskId: task.taskId, changeId, err }, "failed to fetch Gerrit change status — staying IN_REVIEW");
-      return;
-    }
-
-    if (status === "MERGED") {
-      log.info({ taskId: task.taskId }, "change MERGED");
-      task = await this.stateStore.transition(task.taskId, "MERGED");
-      await this.closeTicket(task);
-      return;
-    }
-
-    if (status === "ABANDONED") {
-      await this.handleAbandoned(task, "change was abandoned externally");
-      return;
-    }
-
-    // Fetch unresolved comments on the latest patchset only. Anchoring the
-    // review to the current patchset (instead of the root) prevents VE from
-    // repeatedly acting on stale comments from earlier patchsets.
-    const comments = await reviewConnector.getUnresolvedComments(
-      changeId,
-      task.currentPatchset
-    );
-    // Also collect any failed CI check runs so the agent can fix them.
-    const ciComments = reviewConnector.getCICheckFailures
-      ? await reviewConnector.getCICheckFailures(changeId).catch((err: unknown) => {
-          log.warn({ taskId: task.taskId, changeId, err }, "failed to fetch CI check failures (non-fatal)");
-          return [] as import("../interfaces.js").ReviewComment[];
-        })
-      : [];
-    const baseComments = ciComments.length > 0 ? [...comments, ...ciComments] : comments;
-    const allComments = streamComments && streamComments.length > 0 ? [...streamComments, ...baseComments] : baseComments;
-    const scopedComments = (await this.projectReactsToCiFailures(task))
-      ? allComments
-      : allComments.filter((c) => !isCiFeedbackComment(c));
-
-    task = await this.stateStore.transition(task.taskId, "FEEDBACK_PROCESSING");
-    const [feedbackItems, processedComments] = await this.feedbackProcessor.extractNewFeedback(
-      task.taskId,
-      changeId,
-      scopedComments
-    );
-
-    if (feedbackItems.length === 0) {
-      log.debug({ taskId: task.taskId }, "no new actionable comments, back to IN_REVIEW");
-      task = await this.stateStore.transition(task.taskId, "IN_REVIEW");
-      return;
-    }
-
-    if (task.cycleCount > this.config.maxAgentCycles) {
-      await this.handleAbandoned(task, `Max cycles ${this.config.maxAgentCycles} reached during review`);
-      return;
-    }
-
-    log.info(
-      { taskId: task.taskId, feedbackCount: feedbackItems.length },
-      "actionable feedback found, starting retry cycle"
-    );
-    task = await this.stateStore.transition(task.taskId, "RETRY_CYCLE");
-    await this.runAgentCycle(task, feedbackItems);
-
-    const updatedTask = await this.stateStore.getTask(task.taskId);
-    if (updatedTask?.state !== "IN_REVIEW") {
-      return;
-    }
-
-    if (processedComments.length > 0) {
-      try {
-        await reviewConnector.resolveComments(changeId, processedComments);
-        log.info({ taskId: task.taskId, count: processedComments.length }, "resolved review comments");
-      } catch (err) {
-        log.warn({ taskId: task.taskId, err }, "failed to resolve Gerrit comments (non-fatal)");
-      }
-    }
-  }
-
-  /**
-   * Multi-repo review progress. Polls each per-repository change:
-   * transitions to MERGED when ALL repos are merged, ABANDONED if ANY is abandoned,
-   * or aggregates feedback and triggers a retry cycle.
-   */
-  private async checkMultiRepoReviewProgress(
-    task: Task,
-    perRepoChanges: import("../interfaces.js").ChangePerRepository[],
-    streamChangeId?: string,
-    streamComments?: import("../interfaces.js").ReviewComment[]
-  ): Promise<void> {
-    const activeChanges = perRepoChanges.filter((c) => c.status !== "NO_CHANGE" && c.status !== "ORPHANED");
-    if (activeChanges.length === 0) {
-      log.info({ taskId: task.taskId }, "all per-repo changes are NO_CHANGE, treating as merged");
-      task = await this.stateStore.transition(task.taskId, "MERGED");
-      await this.closeTicket(task);
-      return;
-    }
-
-    // Lazy fallback: only resolved if a change lacks its own integration connector.
-    let _fallbackReviewConnector: ReviewConnector | undefined;
-    const getFallbackReviewConnector = async (): Promise<ReviewConnector> => {
-      if (!_fallbackReviewConnector) {
-        _fallbackReviewConnector = await this.resolveReviewConnector(task);
-      }
-      return _fallbackReviewConnector;
-    };
-
-    const reactToCiFailures = await this.projectReactsToCiFailures(task);
-
-    // Poll each repo's change status
-    let allMerged = true;
-    let anyAbandoned = false;
-    const allFeedback: FeedbackItem[] = [];
-    const allProcessedComments: import("../interfaces.js").ReviewComment[] = [];
-
-    for (const change of activeChanges) {
-      // Use the non-throwing target resolver here — a transient factory failure
-      // should log and skip, not abort the whole task.
-      const changeConnector: VcsConnector | import("../interfaces.js").ReviewConnector | undefined =
-        (change.integrationId
-          ? await this.tryResolveVcsConnectorForTarget(change.integrationId, { repoKey: change.repoKey })
-          : this.vcsConnector ?? await getFallbackReviewConnector());
-      if (!changeConnector) {
-        log.warn(
-          { taskId: task.taskId, repoKey: change.repoKey, integrationId: change.integrationId },
-          "skipping per-repo review polling because the repo connector is unavailable"
-        );
-        allMerged = false;
-        continue;
-      }
-
-      try {
-        let currentStatus: string;
-        if (changeConnector && "getChangeStatus" in changeConnector) {
-          currentStatus = await (changeConnector as VcsConnector).getChangeStatus(change.changeId);
-        } else {
-          currentStatus = await (await getFallbackReviewConnector()).getChangeStatus(
-            change.changeId as ExternalChangeId
-          );
-        }
-
-        // Update stored status if changed
-        if (currentStatus !== change.status) {
-          await this.stateStore.updateChangePerRepositoryStatus(
-            task.taskId,
-            change.repoKey,
-            currentStatus,
-            change.changeId
-          );
-          log.info(
-            { taskId: task.taskId, repoKey: change.repoKey, oldStatus: change.status, newStatus: currentStatus },
-            "per-repo change status updated"
-          );
-        }
-
-        if (currentStatus === "ABANDONED") {
-          anyAbandoned = true;
-        } else if (currentStatus !== "MERGED") {
-          allMerged = false;
-        }
-
-        // Gather feedback for non-merged repos
-        if (currentStatus === "OPEN" || currentStatus === "NEW") {
-          try {
-            let comments: import("../interfaces.js").ReviewComment[];
-            if ("getUnresolvedComments" in changeConnector && typeof (changeConnector as VcsConnector).getUnresolvedComments === "function") {
-              comments = await (changeConnector as VcsConnector).getUnresolvedComments!(change.changeId);
-            } else {
-              comments = await (await getFallbackReviewConnector()).getUnresolvedComments(
-                change.changeId as ExternalChangeId
-              );
-            }
-            // Collect CI check failures via the fallback review connector (which may implement getCICheckFailures).
-            let ciComments: import("../interfaces.js").ReviewComment[] = [];
-            try {
-              const ciSource = await getFallbackReviewConnector();
-              if (ciSource.getCICheckFailures) {
-                ciComments = await ciSource.getCICheckFailures(change.changeId as ExternalChangeId);
-              }
-            } catch (ciErr) {
-              log.warn(
-                { taskId: task.taskId, repoKey: change.repoKey, err: ciErr },
-                "failed to fetch CI check failures for repo (non-fatal)"
-              );
-            }
-            // Prepend stream-event comment when it belongs to this specific change.
-            // Required because Gerrit's `gerrit query --comments` only returns inline file
-            // comments, not top-level change messages — the stream event payload is the
-            // only reliable source of general review feedback for Gerrit.
-            const extraComments = (streamChangeId === change.changeId && streamComments && streamComments.length > 0)
-              ? streamComments
-              : [];
-            const allComments = [
-              ...(extraComments.length > 0 ? extraComments : []),
-              ...comments,
-              ...ciComments,
-            ];
-            const scopedComments = reactToCiFailures
-              ? allComments
-              : allComments.filter((c) => !isCiFeedbackComment(c));
-            const [feedback, processed] = await this.feedbackProcessor.extractNewFeedback(
-              task.taskId,
-              change.changeId as ExternalChangeId,
-              scopedComments
-            );
-            // Tag feedback with repoKey for agent context
-            for (const item of feedback) {
-              allFeedback.push({
-                ...item,
-                content: `[${change.repoKey}] ${item.content}`,
-              });
-            }
-            allProcessedComments.push(...processed);
-          } catch (err) {
-            log.warn(
-              { taskId: task.taskId, repoKey: change.repoKey, err },
-              "failed to fetch feedback for repo (non-fatal)"
-            );
-          }
-        }
-      } catch (err) {
-        log.warn(
-          { taskId: task.taskId, repoKey: change.repoKey, changeId: change.changeId, err },
-          "failed to poll per-repo change status (non-fatal)"
-        );
-        allMerged = false;
-      }
-    }
-
-    // Convergence: if any repo is abandoned, abandon the whole task
-    if (anyAbandoned) {
-      const abandonedRepos = activeChanges
-        .filter((c) => c.status === "ABANDONED")
-        .map((c) => c.repoKey);
-      await this.handleAbandoned(
-        task,
-        `Change abandoned externally for repositories: ${abandonedRepos.join(", ")}`
-      );
-      return;
-    }
-
-    // Convergence: all repos merged → task is merged
-    if (allMerged) {
-      log.info(
-        { taskId: task.taskId, repoCount: activeChanges.length },
-        "all per-repo changes MERGED — task converged"
-      );
-      task = await this.stateStore.transition(task.taskId, "MERGED");
-      await this.closeTicket(task);
-      return;
-    }
-
-    // Process aggregated feedback
-    task = await this.stateStore.transition(task.taskId, "FEEDBACK_PROCESSING");
-
-    if (allFeedback.length === 0) {
-      log.debug({ taskId: task.taskId }, "no new multi-repo feedback, back to IN_REVIEW");
-      task = await this.stateStore.transition(task.taskId, "IN_REVIEW");
-      return;
-    }
-
-    if (task.cycleCount > this.config.maxAgentCycles) {
-      await this.handleAbandoned(task, `Max cycles ${this.config.maxAgentCycles} reached during multi-repo review`);
-      return;
-    }
-
-    log.info(
-      { taskId: task.taskId, feedbackCount: allFeedback.length },
-      "multi-repo feedback found, starting retry cycle"
-    );
-    task = await this.stateStore.transition(task.taskId, "RETRY_CYCLE");
-    await this.runAgentCycle(task, allFeedback);
-
-    const updatedTask = await this.stateStore.getTask(task.taskId);
-    if (updatedTask?.state !== "IN_REVIEW") {
-      return;
-    }
-
-    // Resolve processed comments per-repo using the correct connector for each change
-    for (const change of activeChanges) {
-      // Only resolve comments that belong to this repo's change (filter by repoKey in filePath)
-      const repoComments = allProcessedComments.filter(
-        (c) => !c.filePath || c.filePath.startsWith(change.repoKey + "/") || c.filePath === change.repoKey
-      );
-      if (repoComments.length === 0) continue;
-
-      const changeConnector: VcsConnector | import("../interfaces.js").ReviewConnector | undefined =
-        (change.integrationId
-          ? await this.tryResolveVcsConnectorForTarget(change.integrationId, { repoKey: change.repoKey })
-          : this.vcsConnector ?? await getFallbackReviewConnector());
-      if (!changeConnector) {
-        log.warn(
-          { taskId: task.taskId, repoKey: change.repoKey, integrationId: change.integrationId },
-          "skipping comment resolution because the repo connector is unavailable"
-        );
-        continue;
-      }
-
-      try {
-        if ("resolveComments" in changeConnector && typeof (changeConnector as VcsConnector).resolveComments === "function") {
-          await (changeConnector as VcsConnector).resolveComments!(change.changeId, repoComments);
-        } else {
-          await (await getFallbackReviewConnector()).resolveComments(
-            change.changeId as ExternalChangeId,
-            repoComments
-          );
-        }
-      } catch (err) {
-        log.warn(
-          { taskId: task.taskId, repoKey: change.repoKey, err },
-          "failed to resolve comments for repo (non-fatal)"
-        );
-      }
-    }
+    await this.reviewProgressService.check(task, streamChangeId, streamComments);
   }
 
   /**

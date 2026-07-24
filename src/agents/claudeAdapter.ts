@@ -1,6 +1,4 @@
 import { randomUUID } from "crypto";
-import { homedir } from "os";
-import { join, resolve } from "path";
 import type {
   AgentAdapter,
   ConfigurableAdapter,
@@ -19,6 +17,10 @@ import { decryptToken } from "../utils/encryption.js";
 import { getConfig } from "../config.js";
 import { agentLogBus, pushToTaskBuffer } from "./agentEventBus.js";
 import { buildCodegenUserPrompt } from "./copilotAdapter.js";
+import {
+  buildCodegenContainerSpec,
+  buildReviewContainerSpec as buildSharedReviewContainerSpec,
+} from "./containerSpecBuilders.js";
 
 const log = getLogger("claude-adapter");
 
@@ -62,20 +64,6 @@ const DEFAULT_CONFIG: ClaudeAdapterConfig = {
   maxRepositoryContextBytes: 120_000,
   maxCommitsPerCycle: 10,
 };
-
-const SECURITY_DOCKER_ARGS = [
-  "--read-only",
-  "--cap-drop",
-  "ALL",
-  "--security-opt",
-  "no-new-privileges:true",
-  // On SELinux hosts, label=disable turns off confinement for this container
-  // only so the bundled Claude Code native binary can load.
-  "--security-opt",
-  "label=disable",
-  "--tmpfs",
-  "/tmp:rw,nosuid,size=256m",
-];
 
 /**
  * Runs code-generation / review via a Docker agent container using the Anthropic
@@ -145,7 +133,7 @@ export class ClaudeAdapter implements AgentAdapter, ConfigurableAdapter {
     const session = context.agentSession;
     const claudeModel = session.copilotModel ?? this.config.model;
 
-    const env: Record<string, string> = {
+    const providerEnv: Record<string, string> = {
       ...authEnv,
       AGENT_PROVIDER: "claude",
       // The agent container runs as root; Claude Code refuses bypassPermissions
@@ -153,46 +141,15 @@ export class ClaudeAdapter implements AgentAdapter, ConfigurableAdapter {
       // sandboxed environment. Our container is a hardened, network-isolated sandbox.
       IS_SANDBOX: "1",
       ...(claudeModel ? { CLAUDE_MODEL: claudeModel } : {}),
-      GIT_AUTHOR_NAME: session.gitAuthorName,
-      GIT_AUTHOR_EMAIL: session.gitAuthorEmail,
-      GIT_COMMITTER_NAME: session.gitAuthorName,
-      GIT_COMMITTER_EMAIL: session.gitAuthorEmail,
-      TASK_ID: context.taskId,
-      MAX_CONTEXT_BYTES: String(this.config.maxRepositoryContextBytes),
-      MAX_COMMITS_PER_CYCLE: String(this.config.maxCommitsPerCycle ?? 10),
-      ...(session.repositoryMap !== undefined
-        ? { REPOSITORY_MAP_JSON: JSON.stringify(session.repositoryMap) }
-        : {}),
-      ...(session.existingChangeId !== undefined
-        ? { ROOT_CHANGE_ID: session.existingChangeId }
-        : {}),
-      ...(session.perRepoChangeIds !== undefined
-        ? { PER_REPO_CHANGE_IDS_JSON: JSON.stringify(session.perRepoChangeIds) }
-        : {}),
-      ...(session.skillDiscoveryEnabled ? { SKILL_DISCOVERY: "1" } : {}),
-      ...(session.skillDiscoveryEnabled && session.localSkillsPath !== undefined
-        ? { LOCAL_SKILLS_PATH: session.localSkillsPath }
-        : {}),
-      ...(session.ticketFooterLine ? { TICKET_FOOTER_LINE: session.ticketFooterLine } : {}),
     };
 
-    const additionalDockerArgs = [...SECURITY_DOCKER_ARGS];
-
-    const resolvedPromptsDir = this.config.promptsDir
-      ? this.resolvePath(this.config.promptsDir)
-      : null;
-    if (resolvedPromptsDir) {
-      additionalDockerArgs.push("-v", `${resolvedPromptsDir}:/ve-prompts:ro,Z`);
-      env["PROMPTS_DIR"] = "/ve-prompts";
-    }
-
-    return {
-      image: session.agentContainerImage,
-      env,
-      command: ["node", "/agent-worker/dist/index.js"],
-      networkMode: this.config.dockerNetwork ?? "virtual-engineer_ve-agent-net",
-      additionalDockerArgs,
-    };
+    return buildCodegenContainerSpec(context, {
+      providerEnv,
+      maxRepositoryContextBytes: this.config.maxRepositoryContextBytes,
+      maxCommitsPerCycle: this.config.maxCommitsPerCycle,
+      promptsDir: this.config.promptsDir,
+      dockerNetwork: this.config.dockerNetwork,
+    });
   }
 
   /** Builds a container spec for review mode (REVIEW_MODE=1). Reads prompt from /ve-home/user-prompt.txt. */
@@ -201,28 +158,18 @@ export class ClaudeAdapter implements AgentAdapter, ConfigurableAdapter {
     authEnv: Record<string, string> = {}
   ): AdapterContainerSpec {
     const reviewModel = input.model ?? this.config.model;
-    const env: Record<string, string> = {
+    const providerEnv: Record<string, string> = {
       ...this.reviewAuthEnv(input.agentToken, authEnv),
       AGENT_PROVIDER: "claude",
       // Allow bypassPermissions as root inside the hardened sandbox container.
       IS_SANDBOX: "1",
       ...(reviewModel ? { CLAUDE_MODEL: reviewModel } : {}),
-      REVIEW_MODE: "1",
-      USER_PROMPT_FILE: "/ve-home/user-prompt.txt",
-      SYSTEM_PROMPT: input.systemPrompt,
-      ...(input.skillDiscoveryEnabled ? { SKILL_DISCOVERY: "1" } : {}),
-      ...(input.skillDiscoveryEnabled && input.localSkillsPath !== undefined
-        ? { LOCAL_SKILLS_PATH: input.localSkillsPath }
-        : {}),
     };
 
-    return {
-      image: input.containerImage ?? "virtual-engineer-workspace:latest",
-      env,
-      command: ["node", "/agent-worker/dist/index.js"],
-      networkMode: this.config.dockerNetwork ?? "virtual-engineer_ve-agent-net",
-      additionalDockerArgs: [...SECURITY_DOCKER_ARGS],
-    };
+    return buildSharedReviewContainerSpec(input, {
+      providerEnv,
+      dockerNetwork: this.config.dockerNetwork,
+    });
   }
 
   /**
@@ -504,10 +451,4 @@ export class ClaudeAdapter implements AgentAdapter, ConfigurableAdapter {
     return makeExternalChangeId(`I${uuid}${uuid.slice(0, 8)}`);
   }
 
-  /** Resolve a path string, expanding a leading `~/` to the current user's home directory. */
-  private resolvePath(value: string): string {
-    if (value.startsWith("~/")) return join(homedir(), value.slice(2));
-    if (value === "~") return homedir();
-    return resolve(value);
-  }
 }

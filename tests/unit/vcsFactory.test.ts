@@ -14,10 +14,14 @@ vi.mock("node:fs", async () => {
 });
 
 import { registerBuiltinPlugins } from "../../src/plugins/init.js";
-import { createVcsConnectorForIntegration } from "../../src/vcs/vcsFactory.js";
+import {
+  createVcsConnectorForIntegration,
+  VcsConnectorFactory,
+} from "../../src/vcs/vcsFactory.js";
 import { GerritVcsConnector } from "../../src/vcs/gerritVcsConnector.js";
 import { GitLabVcsConnector } from "../../src/vcs/gitlabVcsConnector.js";
 import type { Integration } from "../../src/interfaces.js";
+import type { GitRunner } from "../../src/vcs/gitRunner.js";
 
 function makeIntegration(overrides: Partial<Integration> & { id: string; provider: Integration["provider"]; configJson: string }): Integration {
   return {
@@ -59,6 +63,21 @@ describe("createVcsConnectorForIntegration", () => {
     it("creates a GerritVcsConnector for a gerrit integration", () => {
       const connector = createVcsConnectorForIntegration(gerritIntegration);
       expect(connector).toBeInstanceOf(GerritVcsConnector);
+    });
+
+    it("injects the source-control runtime Git runner", () => {
+      const gitRunner: GitRunner = {
+        run: vi.fn().mockResolvedValue({ stdout: "", stderr: "" }),
+      };
+
+      const connector = createVcsConnectorForIntegration(
+        gerritIntegration,
+        undefined,
+        undefined,
+        { gitRunner }
+      );
+
+      expect((connector as unknown as { gitRunner: GitRunner }).gitRunner).toBe(gitRunner);
     });
 
     it("throws when sshHost is missing", () => {
@@ -221,6 +240,27 @@ describe("createVcsConnectorForIntegration", () => {
       });
       const connector = createVcsConnectorForIntegration(integration, { repoKey: "team/repo" });
       expect(connector).toBeInstanceOf(GitLabVcsConnector);
+    });
+
+    it("reuses one runner for cached and project-bound connectors", () => {
+      const gitRunner: GitRunner = {
+        run: vi.fn().mockResolvedValue({ stdout: "", stderr: "" }),
+      };
+      const factory = new VcsConnectorFactory({ gitRunner });
+      const cachedIntegration = makeIntegration({
+        id: "gerrit-cached",
+        provider: "gerrit",
+        configJson: JSON.stringify({
+          sshHost: "gerrit.local",
+          sshUser: "ve-bot",
+        }),
+      });
+
+      const cachedConnector = factory.getConnector(cachedIntegration);
+      const boundConnector = factory.getConnector(gitlabIntegration, { repoKey: "team/repo" });
+
+      expect((cachedConnector as unknown as { gitRunner: GitRunner }).gitRunner).toBe(gitRunner);
+      expect((boundConnector as unknown as { gitRunner: GitRunner }).gitRunner).toBe(gitRunner);
     });
   });
 

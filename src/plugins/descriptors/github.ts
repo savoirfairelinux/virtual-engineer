@@ -250,7 +250,7 @@ export const githubDescriptor: ProviderDescriptor = {
       },
     },
     source_control: {
-      createVcsConnector: (cfg: Record<string, unknown>, _integration: Integration, context?: IntegrationBindingContext) => {
+      createVcsConnector: (cfg: Record<string, unknown>, _integration: Integration, context, runtime) => {
         const parsed = githubConfigSchema.parse(cfg);
         const { owner, repo } = resolveRepo(context?.repoKey, "repoKey");
         const urls = resolveGitHubUrls(parsed.mode as GitHubMode, parsed.baseUrl);
@@ -265,7 +265,7 @@ export const githubDescriptor: ProviderDescriptor = {
           gitAuthorName: parsed.gitAuthorName,
           gitAuthorEmail: parsed.gitAuthorEmail,
           ...(targetBranch !== undefined ? { targetBranch } : {}),
-        });
+        }, runtime?.gitRunner);
       },
     },
   },

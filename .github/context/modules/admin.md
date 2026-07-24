@@ -50,7 +50,7 @@ All `/api/admin/*` routes are declared in `buildApiRouter()` and its per-area ro
 | --- | --- | --- |
 | `GET` | `/` / `/admin` | Dashboard HTML shell. |
 | `GET` | `/health` | Health check. |
-| `POST` | `/webhooks/:integrationId/:event` | Mounted only when webhook deps are provided. Per-integration HMAC secret is the auth layer. Redmine / GitLab only; Gerrit uses SSH `stream-events`. |
+| `POST` | `/webhooks/:integrationId/:event` | Mounted only when webhook deps are provided. Every request requires the configured per-integration secret via HMAC, `X-Gitlab-Token`, or Bearer auth. Redmine / GitLab only; Gerrit uses SSH `stream-events`. |
 | `GET` | `/api/admin/auth/setup-status` | `{ needsSetup }` — true when the store supports users and zero exist. |
 | `POST` | `/api/admin/auth/login` | `{ username, password }` → `{ token, user }` or 401. |
 | `POST` | `/api/admin/auth/setup` | Bootstrap-only (403 once any user exists). Rate-limited with `/login`. Creates the first `admin`, logs in, 201, audits `auth.setup`. |
@@ -86,13 +86,15 @@ All `/api/admin/*` routes are declared in `buildApiRouter()` and its per-area ro
 - **Projects create/update**: `skillSources` SSH entries are validated with a bounded `ssh -T` before save (400 with source index/URL/stderr on failure); coding payloads accept `gerritTopicOverride`, `useFullTicketUrlInCommits`, `postReviewLinkToTicket`, `reactToCiFailures` (off by default); `pushTargets` replace atomically; changing ticket source / push targets / review config / agent binding / post-clone script / skill toggle / skill sources — or enabling the project — auto-relaunches its `FAILED`/`REVIEW_FAILED` tasks (adopted orphan tasks included, unless created disabled).
 - **Cost / model-usage**: optional `?days=<n>` trailing window; legacy cycles without a cost/model snapshot are recomputed from `agent_events`.
 - **PBAC**: built-in policies return 409 on `PUT`/`DELETE`; `/rules` rejects unknown permissions (400); duplicate binding → 409, unknown principal → 404.
+- **Webhook intake**: signature/shared-secret authentication is mandatory. A non-empty `webhookAllowedIps` list is an additional source restriction, not an authentication bypass. The socket peer is checked by default; with `ADMIN_TRUST_PROXY=true`, the first `X-Forwarded-For` address is checked instead, so the trusted proxy must overwrite inbound forwarding headers.
 
 ## Authentication
 
-Two auth modes share the same route surface:
+Two authenticated deployment states plus one explicit test/embed mode share the route surface:
 
-- **Bootstrap (zero users)**: while no users exist yet, every `/api/admin/*` route is open with an implicit `admin`-role context (`{ userId: null, username: "bootstrap" }`) set in `adminServer.ts`. There is no token or secret involved in this mode — `ADMIN_AUTH_SECRET` is unrelated to auth; it is only used for OAuth token encryption at rest. `POST /api/admin/auth/setup` is the only route that matters here: it enforces that zero users exist, creates the first `admin` user, and logs them in. Stores without the user-store API (feature-detected via `countUsers`) stay in this open bootstrap mode permanently.
+- **Bootstrap (zero users)**: the dashboard, static assets, health check, webhooks, `GET /api/admin/auth/setup-status`, `POST /api/admin/auth/login`, and `POST /api/admin/auth/setup` remain public. Other `/api/admin/*` routes and the GitLab image proxy return 401 until the first admin is created. Setup enforces that zero users exist, creates the first `admin`, logs them in, and audits `auth.setup`. `ADMIN_AUTH_SECRET` is unrelated to login; it encrypts provider credentials at rest.
 - **DB sessions (≥1 user)**: once a user exists, `/api/admin/*` requires a Bearer session token from `POST /api/admin/auth/login` (opaque 64-hex token; sha256 hash stored in `user_sessions`; sliding 12-hour expiry, touch throttled to once per minute; the short window is XSS defense-in-depth since the SPA holds the token in sessionStorage). `POST /api/admin/auth/setup` then always returns 403.
+- **Explicit test/embed mode**: `createAdminServer({ allowUnauthenticatedAdmin: true, ... })` permits stores without the user/PBAC API and grants the legacy open-admin context only outside production. Missing user/session or PBAC rule-resolution support otherwise fails server creation, and `nodeEnv: "production"` always rejects the escape hatch.
 - **Brute-force protection**: `/api/admin/auth/login` and `/api/admin/auth/setup` share an in-memory rate limiter (`loginRateLimiter.ts`) keyed by client IP and by (normalized) username. After 5 failures in a 15-minute window the key is locked out with exponential backoff (30s doubling up to a 15-minute cap); requests during a lockout get 429 with `Retry-After`. Failed logins are also recorded in the audit log (`auth.login_failed`, no secrets).
 - **Username normalization**: usernames are normalized (Unicode NFC, trimmed, lower-cased) on both creation and login, so e.g. `Alice` and `alice` are always the same account.
 - **Password policy**: passwords must be ≥ 8 characters and are checked against a curated common-password denylist (`commonPasswords.ts`); this applies to `POST /api/admin/auth/setup`, user creation, and password changes.
@@ -119,7 +121,7 @@ Insufficient permission → 403 `{ error: "forbidden", permission }`. The per-re
 
 **Built-in policies** reproduce the former roles: the seeded `Operator` policy grants every non-administrative permission (project/task/integration/agent/prompt/oauth/overview/concurrency/system); `Viewer` grants `overview.read`, `system.read`, `concurrency.read`, `project.read`, `task.read`. Both are `builtin = 1` and protected from edit/delete. New `operator`/`viewer` users are auto-bound to the matching policy on creation (role = default access bundle) which an admin can then narrow (e.g. replace with a project-scoped policy).
 
-The GitLab img-proxy `?t=` query token accepts a session token when users exist; in bootstrap mode (no users yet) the proxy is open, matching every other route.
+The GitLab img-proxy `?t=` query token requires a valid session whenever admin authentication is enabled, including before first-user setup; only explicit non-production test/embed mode is open. Proxy targets must be HTTP(S) GitLab upload URLs on the configured integration's exact origin (scheme, hostname, and port), without embedded credentials. The proxy attaches the GitLab bearer token only after this validation, accepts only PNG/JPEG/GIF/WebP/SVG responses, aborts upstream requests after 10 seconds, and rejects bodies larger than 5 MiB whether or not `Content-Length` is present.
 
 ## Audit trail
 

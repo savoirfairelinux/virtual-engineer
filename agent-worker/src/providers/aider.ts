@@ -222,10 +222,6 @@ export async function runAiderAgent(
     }
   };
 
-  const timer = setTimeout(() => {
-    child.kill('SIGTERM');
-  }, timeoutMs);
-
   const heartbeat = setInterval(() => {
     process.stderr.write(`agent working… (${state.toolCallCount} edit(s) so far)\n`);
   }, 30_000);
@@ -238,8 +234,13 @@ export async function runAiderAgent(
     processAiderLine(line.trimEnd(), state, (chunk) => { assistantText += chunk; });
   };
 
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     await new Promise<void>((resolve, reject) => {
+      timer = setTimeout(() => {
+        child.kill('SIGTERM');
+        reject(new Error(`Aider session timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
       child.stdout?.on('data', (chunk: Buffer) => {
         stdoutBuf += chunk.toString('utf8');
         const lines = stdoutBuf.split('\n');
@@ -264,7 +265,7 @@ export async function runAiderAgent(
     });
   } catch (err) {
     clearInterval(heartbeat);
-    clearTimeout(timer);
+    if (timer) clearTimeout(timer);
     await cleanup();
     const message = err instanceof Error ? err.message : String(err);
     emitEvent('session.error', { message });
@@ -272,7 +273,7 @@ export async function runAiderAgent(
   }
 
   clearInterval(heartbeat);
-  clearTimeout(timer);
+  if (timer) clearTimeout(timer);
   await cleanup();
 
   // Aider's final assistant message is the last non-empty stdout block. For
