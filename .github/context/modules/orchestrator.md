@@ -7,6 +7,7 @@ This module set covers the **ticket-driven code-generation runtime**. The separa
 ## Review execution — `src/review/reviewOrchestrator.ts`
 
 - A review result is bound to the patchset used for checkout, diff construction, prompt construction, and agent execution. Immediately before provider effects, `runReview()` fetches fresh change details and posts only when both the patchset still matches and the change remains `OPEN`.
+- Copilot and Claude submit their typed result through the worker-owned `ve_submit_review` MCP tool; Aider retains the delimited JSON fallback. In both cases `parseReviewResult()` remains the host-side authority before filtering, deduplication, comments, replies, or votes. The MCP server never performs provider effects itself.
 - When a newer patchset arrives during analysis, the completed cycle is retained with `metadata.superseded = true`, while provider and posting-ledger effects are skipped. The task records the latest patchset and starts a fresh internal pass; repeated supersession is bounded to three retries before `REVIEW_FAILED`.
 - When the change becomes merged or abandoned during analysis, the discarded cycle is retained and the task finishes at `REVIEW_DONE` without comments, replies, vote, ledger writes, or `reviewedPatchset` advancement.
 - `REVIEW_COMMENTING` is entered before the first provider call. It therefore means remote effects may be partially applied and must not be blindly replayed after a restart; `reviewedPatchset` and the successful cycle metadata are the local completion signals.
@@ -42,6 +43,7 @@ Important behaviors:
 - fatal ticket handling is provider-agnostic: missing resources are detected via `TicketNotFoundError`, and non-fatal ticket API failures are handled via `TicketApiError` from `src/interfaces.ts`
 - review feedback for code-gen tasks is deduplicated via `processed_comments`
 - project pushes always require `VcsConnector.pushDirect()` and preserve the worker-normalized agent commit chain; `AgentResult.commits[]` supplies per-commit metadata for multi-change tracking
+- the worker-owned `ve_submit_changes` MCP tool is a typed completion intent, not a push API. Commit collection, validation, Change-Id injection, `pushDirect()`, `change_per_repository` persistence, and state transitions still occur only after the agent container exits
 - coding projects may override the ticket-derived Gerrit topic with `gerritTopicOverride`; otherwise the existing `VE-<task>-<title>` topic remains unchanged
 - `useFullTicketUrlInCommits` formats a full ticket URL trailer and passes it through `AgentSession.ticketFooterLine` so direct-pushed agent commits receive it inside the worker
 - `postReviewLinkToTicket` posts the first cycle's non-orphaned review URLs back to the source ticket; later cycles reuse those reviews and do not post another note

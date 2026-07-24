@@ -359,6 +359,7 @@ export const AIDER_PROVIDER: AgentProviderDefinition = {
   adapterLabel: 'aider-cli',
   resolveModel: () => process.env['AIDER_MODEL'] ?? '',
   defaultModelLabel: 'aider-default',
+  submissionTransport: 'text',
   runner: runAiderAgent,
 };
 
