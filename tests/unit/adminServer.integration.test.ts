@@ -70,6 +70,7 @@ describe("createAdminServer integration", () => {
 
       const server = createAdminServer({
         stateStore,
+        allowUnauthenticatedAdmin: true,
         config: {
           nodeEnv: "test",
           logLevel: "info",

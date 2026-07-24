@@ -106,6 +106,8 @@ export interface AdminProviderSummary {
 
 export interface AdminServerDependencies {
   stateStore: Pick<StateStore, "getActiveTasks" | "getAllTasks" | "getTask" | "getAgentCycles" | "getAgentCycleEvents" | "getStateTransitions" | "getChangesForTask" | "getChangesForTasks" | "pauseTask" | "resumeTask" | "retryTask" | "abandonTask" | "deleteTask" | "deleteTaskGroup" | "getCostSummary" | "getModelUsageSummary">;
+  /** Explicit test/embed escape hatch. Never accepted when nodeEnv is production. */
+  allowUnauthenticatedAdmin?: boolean | undefined;
   /** Phase 3: store backing the /api/admin/agents routes. */
   agentStore?: AgentsRouteStore;
   providerAuthService?: ProviderAuthService | undefined;
@@ -215,12 +217,7 @@ export function createAdminServer(dependencies: AdminServerDependencies): Server
 /** Combined user-store surface needed for session auth + user management. */
 type AdminUserCapableStore = AdminAuthStateStore & AuthRouteUserStore;
 
-/**
- * Feature-detect the user-store methods on the injected state store. Mocks in
- * tests (and older embedders) may omit them — session auth is then disabled
- * and the admin API runs fully open (no HMAC fallback; see `handleRequest`'s
- * auth gate).
- */
+/** Feature-detect the user-store methods required by admin session auth. */
 function extractUserStore(stateStore: unknown): AdminUserCapableStore | null {
   const candidate = stateStore as Partial<AdminUserCapableStore> | null | undefined;
   if (
@@ -302,8 +299,19 @@ interface AdminAuthRuntime {
 
 function createAuthRuntime(dependencies: AdminServerDependencies): AdminAuthRuntime {
   const userStore = extractUserStore(dependencies.stateStore);
-  const authService = userStore ? createAdminAuthService({ stateStore: userStore }) : null;
   const pbacStore = extractPbacStore(dependencies.stateStore);
+  if (dependencies.allowUnauthenticatedAdmin && dependencies.config.nodeEnv === "production") {
+    throw new Error("Unauthenticated admin mode is not allowed in production");
+  }
+  if (!userStore && !dependencies.allowUnauthenticatedAdmin) {
+    throw new Error("Admin user store is required unless allowUnauthenticatedAdmin is enabled");
+  }
+  if (!pbacStore && !dependencies.allowUnauthenticatedAdmin) {
+    throw new Error("Admin PBAC store is required unless allowUnauthenticatedAdmin is enabled");
+  }
+  const authService = userStore && !dependencies.allowUnauthenticatedAdmin
+    ? createAdminAuthService({ stateStore: userStore })
+    : null;
   let usersExistCache: boolean | null = null;
   return {
     authService,
@@ -489,8 +497,7 @@ async function handleRequest(
       writeJson(response, 405, { error: "Method not allowed" });
       return;
     }
-    // Auth is required when the user store is available (session-based).
-    // Without a user store (legacy embedders), the admin API is fully open.
+    // Explicit test/embed open mode has no auth service; normal deployments do.
     const requiresAuth = authRuntime.authService !== null;
     writeHtml(response, 200, renderAdminDashboardHtml({
       requiresAuth,
@@ -504,9 +511,9 @@ async function handleRequest(
   if (path === "/api/admin/img-proxy" && method === "GET") {
     const targetUrl = requestUrl.searchParams.get("url") ?? "";
     const queryToken = requestUrl.searchParams.get("t") ?? "";
-    const proxyAuthorized = authRuntime.authService && (await authRuntime.usersExist())
-      ? (await authRuntime.authService.validateSession(queryToken)) !== null
-      : true; // bootstrap mode (no users yet): open
+    const proxyAuthorized = authRuntime.authService
+      ? (await authRuntime.usersExist()) && (await authRuntime.authService.validateSession(queryToken)) !== null
+      : dependencies.allowUnauthenticatedAdmin === true;
     if (!proxyAuthorized) { writeJson(response, 401, { error: "Unauthorized" }); return; }
     const { gitlabBaseUrl, gitlabToken: gitlabTokenVal } = getProviderUrls(dependencies.pluginManager);
     if (!gitlabBaseUrl || !isAllowedGitLabProxyTarget(targetUrl, gitlabBaseUrl)) {
@@ -569,8 +576,11 @@ async function handleRequest(
     if (method === "POST" && path === "/api/admin/auth/setup") {
       // Bootstrap: setup is unauthenticated; the route handler enforces zero users exist.
       setAuthContext(request, { userId: null, username: "bootstrap", role: "admin" });
-    } else if (authRuntime.authService && (await authRuntime.usersExist())) {
-      // ≥1 user exists → only DB-backed session tokens are accepted.
+    } else if (authRuntime.authService) {
+      if (!(await authRuntime.usersExist())) {
+        sendUnauthorized(response);
+        return;
+      }
       const token = extractBearerToken(request);
       const context = token ? await authRuntime.authService.validateSession(token) : null;
       if (!context) {
@@ -579,10 +589,7 @@ async function handleRequest(
       }
       setAuthContext(request, context);
     } else {
-      // Bootstrap mode (no users yet, or no user store) — all admin routes open.
-      if (!authRuntime.userStore) {
-        log.warn("Admin user store is unavailable; admin API is running without authentication");
-      }
+      // Explicit non-production test/embed mode.
       setAuthContext(request, { userId: null, username: "bootstrap", role: "admin" });
     }
   }
