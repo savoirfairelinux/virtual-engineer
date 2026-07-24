@@ -54,6 +54,7 @@ function makeDeps(
       getCostSummary: vi.fn(async () => ({ totalUsd: 0, totalAiCredits: 0, totalPremiumRequests: 0, totalRuns: 0, perProject: [], sinceEpochSeconds: null })),
       getModelUsageSummary: vi.fn(async () => ({ byModel: [], perProject: [], totalRuns: 0, totalUsd: 0, sinceEpochSeconds: null })),
     },
+    allowUnauthenticatedAdmin: true,
     agentStore: store,
     projectStore: store,
     integrationStore: store,

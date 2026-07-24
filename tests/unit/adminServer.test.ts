@@ -3,11 +3,17 @@ import { createHmac } from "node:crypto";
 import { AddressInfo } from "node:net";
 import { makeExternalChangeId, makeTaskId, makeTicketId } from "../../src/interfaces.js";
 import type { AgentCycle, OAuthAppStore, IntegrationStore, StateStore, StateTransition, Task } from "../../src/interfaces.js";
-import { createAdminServer } from "../../src/admin/adminServer.js";
+import { createAdminServer as createAdminServerImpl } from "../../src/admin/adminServer.js";
 import type { AdminProviderSummary } from "../../src/admin/adminServer.js";
 import { registerBuiltinPlugins } from "../../src/plugins/init.js";
 
 registerBuiltinPlugins();
+
+function createAdminServer(
+  dependencies: Parameters<typeof createAdminServerImpl>[0]
+): ReturnType<typeof createAdminServerImpl> {
+  return createAdminServerImpl({ ...dependencies, allowUnauthenticatedAdmin: true });
+}
 
 const providerSummaries: readonly AdminProviderSummary[] = [
   {
@@ -468,7 +474,7 @@ describe("createAdminServer", () => {
     }
   });
 
-  it("bootstrap mode (no user store) allows unauthenticated API access", async () => {
+  it("explicit open mode allows unauthenticated API access", async () => {
     const secret = "top-secret";
 
     const server = createAdminServer({
@@ -491,7 +497,7 @@ describe("createAdminServer", () => {
     try {
       const baseUrl = await listen(server);
 
-      // Bootstrap mode: mock store has no user methods → no session auth → all routes open.
+      // The local test-server wrapper opts lightweight stores into explicit open mode.
       const response = await fetch(`${baseUrl}/api/admin/status`);
       expect(response.status).toBe(200);
 

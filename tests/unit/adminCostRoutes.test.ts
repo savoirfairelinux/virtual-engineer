@@ -53,6 +53,7 @@ function makeDeps(store: SqliteStateStore, getCostSummary: AdminServerDependenci
       getCostSummary,
       getModelUsageSummary: vi.fn(async () => ({ byModel: [], perProject: [], totalRuns: 0, totalUsd: 0, sinceEpochSeconds: null })),
     },
+    allowUnauthenticatedAdmin: true,
     agentStore: store,
     projectStore: store,
     integrationStore: store,
