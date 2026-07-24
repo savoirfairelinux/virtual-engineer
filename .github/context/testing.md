@@ -27,7 +27,7 @@ tests/
 | Connectors — Gerrit | `gerritConnector`, `gerritDiscovery`, `gerritSshDiscovery`, `gerritSshClient`, `gerritSshReviewProvider`, `gerritStreamEvents`, `gerritVcsConnector` |
 | Connectors — GitLab | `gitlabHttpClient`, `gitlabIssueConnector`, `gitlabIssueDiscovery`, `gitlabMergeRequestConnector`, `gitlabMergeRequestDiscovery`, `gitlabMergeRequestReviewProvider`, `gitlabVcsConnector`, `gitlabAuth`, `webhookHandlerGitlabIssue`, `webhookHandlerGitlabMergeRequest` |
 | Connectors — GitHub | `githubIssueConnector`, `githubPullRequestReviewConnector`, `githubReviewProvider`, `githubVcsConnector`, `githubPluginDescriptors`, `githubOAuth`, `githubAuth`, `branchNaming`, `webhookHandlerGithubPullRequest` |
-| VCS (shared) | `vcsConnector`, `vcsFactory`, `nodeGitRunner`, `baseTicketConnector` |
+| VCS (shared) | `vcsConnector`, `vcsFactory`, `gitRunner`, `nodeGitRunner`, `baseTicketConnector` |
 | Agents / Copilot | `copilotAdapter` (+ `.promptInjection`), `containerSpecBuilders` (cross-provider contract), `copilotWorker`, `copilotConnectionValidator`, `copilotOAuthService`, `copilotModelsService`, `providerAuthService`, `mockAgentAdapter`, `agentEventTypes` (+ `.normalization`), `workerCommitProtocol`, `workerNetworkGuard`, `workerSkills`, `workerLocalSkills` |
 | Agents / Claude | `claudeAdapter`, `claudeWorker`, `claudeConnectionValidator`, `claudeModelsService` |
 | Agents / Aider | `aiderAdapter`, `aiderDescriptor`, `aiderConnectionValidator`, `aiderModelsService`, `aiderWorker` |
@@ -82,14 +82,21 @@ describe("Orchestrator.startTask", () => {
 
 ## Coverage gates
 
-`npm run test:coverage` uses the V8 provider and is the test command enforced by CI. Global floors are 77% statements, 67% branches, 82% functions, and 81% lines. Security-critical per-file floors (statements / branches / functions / lines) are:
+`npm run test:coverage` uses the V8 provider and is the test command enforced by CI. Global floors are 79% statements, 68% branches, 84% functions, and 82% lines. Security-critical per-file floors (statements / branches / functions / lines) are:
 
 - `src/admin/adminImageProxy.ts`: 90 / 75 / 100 / 91
 - `src/admin/adminServer.ts`: 84 / 85 / 96 / 84
 - `src/webhooks/webhookServer.ts`: 81 / 71 / 96 / 83
 - `src/utils/gitlabAuth.ts`: 63 / 63 / 61 / 66
 
-These are truthful non-regression ratchets based on the measured post-security baseline. Raise them as coverage improves; do not lower them merely to land a change. Threshold failure must fail CI.
+Shared infrastructure and extracted workflow modules also have focused non-regression floors:
+
+- `src/agents/containerSpecBuilders.ts`: 100 / 96 / 100 / 100
+- `src/vcs/gitRunner.ts`: 100 / 50 / 100 / 100
+- `src/vcs/nodeGitRunner.ts`: 92 / 78 / 100 / 95
+- `src/orchestrator/reviewProgressService.ts`: 88 / 73 / 93 / 89
+
+These are truthful non-regression ratchets based on measured coverage. Raise them as coverage improves; do not lower them merely to land a change. Threshold failure must fail CI.
 
 ## Pre-commit gate (mandatory)
 
