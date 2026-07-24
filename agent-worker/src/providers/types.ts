@@ -40,6 +40,8 @@ export interface AgentProviderDefinition {
   adapterLabel: string;
   resolveModel: () => string;
   defaultModelLabel: string;
+  /** Native MCP submission or validated text fallback used by this provider. */
+  submissionTransport: 'mcp' | 'text';
   validateEnvironment?: () => void;
   runner: AgentRunner;
 }

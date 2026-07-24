@@ -219,7 +219,7 @@ Empty strings in env are treated as `undefined` (helpful for env overrides).
 2. **Docker review execution** — review tasks also run in the agent container (`REVIEW_MODE=1` via `workspaceRunner.runReviewInDocker`); the worker reads the prompt from `USER_PROMPT_FILE` (`/ve-home/user-prompt.txt`) and returns raw LLM text for the host to parse.
 3. **Container validation fallback** — when the local Node runtime lacks `node:sqlite`, `copilotConnectionValidator` runs the validation script inside `AGENT_CONTAINER_IMAGE`, which also starts a local headless CLI in-container.
 
-Copilot preserves its native CLI system foundation by sending the selected Agent Instructions with explicit SDK `systemMessage.mode = "append"`. Its descriptor exposes native reasoning effort through `modelConfig.providerOptions.reasoningEffort`.
+Copilot preserves its native CLI system foundation by sending the selected Agent Instructions with explicit SDK `systemMessage.mode = "append"`. Its descriptor exposes native reasoning effort through `modelConfig.providerOptions.reasoningEffort`. Coding and review sessions receive one explicit worker-owned stdio MCP server (`ve_submit_changes` or `ve_submit_review`); `enableConfigDiscovery` remains false, so repository MCP files are not loaded. The MCP call records a typed completion intent only; the host still owns validation, push/review effects, and state transitions.
 
 Worker `sendAndWait` timeout ≈ 540s. Host agent timeout = `AGENT_TIMEOUT_MS` (default 60 min).
 
@@ -239,7 +239,7 @@ Two connection methods (descriptor `src/plugins/descriptors/claude.ts`, `authMod
 
 Cost: Claude has no AIU, so `agent_cycles` USD/credit columns stay null; token usage is still emitted as `assistant.usage` events. Claude OAuth client id/endpoints are fixed public Claude Code values (not overridable via config — intentionally hard-coded to prevent SSRF/credential redirection) — see `claudeOAuth.ts`.
 
-Claude preserves the native `claude_code` preset and appends the selected Agent Instructions. Its descriptor exposes effort, thinking mode/budget, maximum turns, and maximum USD cost through `modelConfig.providerOptions`. Review execution passes the immutable integration-specific JSON Schema to the SDK's native `outputFormat` and reads `structured_output`; the generic `score` payload is not accepted.
+Claude preserves the native `claude_code` preset and appends the selected Agent Instructions. Its descriptor exposes effort, thinking mode/budget, maximum turns, and maximum USD cost through `modelConfig.providerOptions`. Coding and review sessions use the same worker-owned VE submission MCP server as Copilot with `strictMcpConfig=true`; review uses the immutable integration-specific JSON Schema as the `ve_submit_review` input contract. Claude `outputFormat` is not combined with MCP, and the generic `score` payload is not accepted.
 
 ## Aider Execution (`agent_execution` alternative to Copilot/Claude)
 

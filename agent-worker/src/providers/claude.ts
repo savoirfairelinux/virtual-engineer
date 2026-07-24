@@ -21,6 +21,11 @@ import { NETWORK_DISALLOWED_TOOLS } from '../networkGuard.js';
 import { emitLocalSkillsLoaded } from '../skills.js';
 import { emitEvent } from './events.js';
 import type { AgentProviderDefinition, AgentRun, AgentRunOptions } from './types.js';
+import {
+  CHANGE_SUBMISSION_JSON_SCHEMA,
+  appendSubmissionInstruction,
+  buildSubmissionMcpConfig,
+} from '../mcpSubmission.js';
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : null;
@@ -82,14 +87,37 @@ export function buildClaudeQueryOptions(
       : nativeOptions.thinkingMode === 'disabled'
         ? { type: 'disabled' as const }
         : undefined;
+  const submissionSchema = mode === 'review'
+    ? reviewOutputSchema
+    : CHANGE_SUBMISSION_JSON_SCHEMA;
+  const submission = submissionSchema !== undefined
+    ? buildSubmissionMcpConfig(mode, submissionSchema)
+    : null;
   return {
     ...(model ? { model } : {}),
     cwd,
-    systemPrompt: { type: 'preset', preset: 'claude_code', append: agentInstructions },
+    systemPrompt: {
+      type: 'preset',
+      preset: 'claude_code',
+      append: submission !== null
+        ? appendSubmissionInstruction(agentInstructions, submission.toolName)
+        : agentInstructions,
+    },
     ...(mode === 'review'
       ? {
           permissionMode: 'dontAsk' as const,
-          tools: ['Read', 'Glob', 'Grep'],
+          tools: [
+            'Read',
+            'Glob',
+            'Grep',
+            ...(submission !== null ? [`mcp__ve-submission__${submission.toolName}`] : []),
+          ],
+          allowedTools: [
+            'Read',
+            'Glob',
+            'Grep',
+            ...(submission !== null ? [`mcp__ve-submission__${submission.toolName}`] : []),
+          ],
         }
       : {
           permissionMode: 'bypassPermissions' as const,
@@ -97,19 +125,16 @@ export function buildClaudeQueryOptions(
         }),
     disallowedTools: NETWORK_DISALLOWED_TOOLS,
     settingSources: skillDiscovery ? ['project'] : [],
+    strictMcpConfig: true,
+    ...(submission !== null
+      ? { mcpServers: { 've-submission': submission.server } }
+      : {}),
     ...(nativeOptions.effort !== undefined ? { effort: nativeOptions.effort } : {}),
     ...(thinking !== undefined ? { thinking } : {}),
     ...(nativeOptions.maxTurns !== undefined ? { maxTurns: nativeOptions.maxTurns } : {}),
     ...(nativeOptions.maxBudgetUsd !== undefined ? { maxBudgetUsd: nativeOptions.maxBudgetUsd } : {}),
-    ...(mode === 'review' && reviewOutputSchema !== undefined
-      ? { outputFormat: { type: 'json_schema' as const, schema: reviewOutputSchema } }
-      : {}),
     ...runtime,
   };
-}
-
-function formatStructuredReviewOutput(value: unknown): string {
-  return `REVIEW_RESULT_START\n${JSON.stringify(value)}\nREVIEW_RESULT_END`;
 }
 
 /** Run a Claude Code session and return the assistant's final text + tool stats. */
@@ -117,7 +142,7 @@ export async function runClaudeAgent(
   prompt: string,
   options: AgentRunOptions,
 ): Promise<AgentRun> {
-  const { model, cwd, timeoutMs, mode, skillDiscovery, reviewOutputSchema } = options;
+  const { model, cwd, timeoutMs, mode, skillDiscovery } = options;
   const modelLabel = model || 'cli-default';
 
   emitEvent('session.start', { model: modelLabel, mode, workingDirectory: cwd });
@@ -192,9 +217,7 @@ export async function runClaudeAgent(
       if (type === 'result') {
         const subtype = typeof msg['subtype'] === 'string' ? msg['subtype'] : '';
         if (subtype === 'success') {
-          if (reviewOutputSchema !== undefined && Object.hasOwn(msg, 'structured_output')) {
-            content = formatStructuredReviewOutput(msg['structured_output']);
-          } else if (typeof msg['result'] === 'string') {
+          if (typeof msg['result'] === 'string') {
             content = msg['result'];
           }
         }
@@ -257,5 +280,6 @@ export const CLAUDE_PROVIDER: AgentProviderDefinition = {
   adapterLabel: 'claude-agent-sdk',
   resolveModel: () => process.env['CLAUDE_MODEL'] ?? '',
   defaultModelLabel: 'cli-default',
+  submissionTransport: 'mcp',
   runner: runClaudeAgent,
 };

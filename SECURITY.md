@@ -39,6 +39,7 @@ Skill discovery is a **per-project** setting (`projects.skill_discovery_enabled`
 - Remote skills install globally in the agent home volume (`/ve-home`), not into the cloned repository. This keeps review workspaces read-only.
 - SSH remote skill sources reuse the orchestrator process `SSH_AUTH_SOCK` only when such a source is configured; missing SSH agent access fails the run instead of silently skipping skills.
 - Only skills are loaded — MCP discovery (`enableConfigDiscovery`) stays off, so untrusted `.mcp.json` / `.vscode/mcp.json` files are never honoured.
+- Copilot and Claude are configured with one internal stdio MCP server implemented by VE. It exposes only `ve_submit_review` or `ve_submit_changes`, validates one bounded JSON payload, and writes it to the ephemeral agent-home volume with mode `0600`. It has no network tools, database access, Docker socket, push/review credentials, or task-state operations. This explicit server does not enable repository MCP discovery.
 - The agent still runs inside the hardened, network-isolated container described above and never holds provider push/review credentials.
 
 ### Admin API Authentication

@@ -15,7 +15,7 @@
  * calls only). This runner never clones and never pushes.
  */
 import { CopilotClient } from '@github/copilot-sdk';
-import type { CopilotSession, AssistantMessageEvent } from '@github/copilot-sdk';
+import type { CopilotSession, AssistantMessageEvent, SessionConfig } from '@github/copilot-sdk';
 import { spawn } from 'child_process';
 import type { ChildProcess } from 'child_process';
 import { statSync } from 'fs';
@@ -24,6 +24,11 @@ import { restrictNetworkPermissionHandler } from '../networkGuard.js';
 import { emitEvent } from './events.js';
 import type { AgentProviderDefinition, AgentRun, AgentRunOptions } from './types.js';
 import { copilotGlobalSkillsDir, emitLocalSkillsLoaded, localSkillsDir } from '../skills.js';
+import {
+  CHANGE_SUBMISSION_JSON_SCHEMA,
+  appendSubmissionInstruction,
+  buildSubmissionMcpConfig,
+} from '../mcpSubmission.js';
 
 type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
 
@@ -139,11 +144,51 @@ export function copilotSkillDirectories(cwd: string, skillDiscovery: boolean): s
   });
 }
 
+export function buildCopilotSessionConfig(
+  options: AgentRunOptions,
+  skillDirectories: string[],
+): SessionConfig {
+  const { model, agentInstructions, cwd, mode, reviewOutputSchema } = options;
+  const reasoningEffort = process.env['COPILOT_REASONING_EFFORT'];
+  const submissionSchema = mode === 'review'
+    ? reviewOutputSchema
+    : CHANGE_SUBMISSION_JSON_SCHEMA;
+  const submission = submissionSchema !== undefined
+    ? buildSubmissionMcpConfig(mode, submissionSchema)
+    : null;
+
+  return {
+    model,
+    ...(reasoningEffort && reasoningEffort !== 'none'
+      ? { reasoningEffort: reasoningEffort as ReasoningEffort }
+      : {}),
+    ...(skillDirectories.length > 0 ? { skillDirectories } : {}),
+    systemMessage: buildCopilotSystemMessage(
+      submission !== null
+        ? appendSubmissionInstruction(agentInstructions, submission.toolName)
+        : agentInstructions,
+    ),
+    onPermissionRequest: restrictNetworkPermissionHandler,
+    workingDirectory: cwd,
+    enableConfigDiscovery: false,
+    ...(submission !== null
+      ? {
+          mcpServers: {
+            've-submission': {
+              ...submission.server,
+              tools: [submission.toolName],
+            },
+          },
+        }
+      : {}),
+    infiniteSessions: { enabled: false },
+  };
+}
+
 async function runSession(
   options: AgentRunOptions,
 ): Promise<{ session: CopilotSession; client: CopilotClient; localCliServer: LocalCliServer }> {
-  const { model, agentInstructions, cwd, skillDiscovery } = options;
-  const reasoningEffort = process.env['COPILOT_REASONING_EFFORT'];
+  const { cwd, skillDiscovery } = options;
   const localCliServer = await startLocalCliServer(cwd);
   const client = new CopilotClient({ cliUrl: localCliServer.cliUrl });
 
@@ -151,17 +196,7 @@ async function runSession(
   const skillDirectories = copilotSkillDirectories(cwd, skillDiscovery === true);
 
   try {
-    const session = await client.createSession({
-      model,
-      ...(reasoningEffort && reasoningEffort !== 'none'
-        ? { reasoningEffort: reasoningEffort as ReasoningEffort }
-        : {}),
-      ...(skillDirectories.length > 0 ? { skillDirectories } : {}),
-      systemMessage: buildCopilotSystemMessage(agentInstructions),
-      onPermissionRequest: restrictNetworkPermissionHandler,
-      workingDirectory: cwd,
-      infiniteSessions: { enabled: false },
-    });
+    const session = await client.createSession(buildCopilotSessionConfig(options, skillDirectories));
     return { session, client, localCliServer };
   } catch (err) {
     await client.stop().catch(() => { /* ignore */ });
@@ -450,6 +485,7 @@ export const COPILOT_PROVIDER: AgentProviderDefinition = {
   adapterLabel: 'copilot-sdk',
   resolveModel: () => process.env['COPILOT_MODEL'] ?? 'auto',
   defaultModelLabel: 'auto',
+  submissionTransport: 'mcp',
   validateEnvironment: () => {
     if (!process.env['GITHUB_TOKEN']) throw new Error('GITHUB_TOKEN env var is required');
   },

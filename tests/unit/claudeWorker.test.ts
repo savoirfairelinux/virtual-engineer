@@ -19,14 +19,24 @@ describe("Claude worker native profile", () => {
       reviewOutputSchema: outputSchema,
     });
 
-    expect(options.systemPrompt).toEqual({
+    expect(options.systemPrompt).toEqual(expect.objectContaining({
       type: "preset",
       preset: "claude_code",
-      append: "review policy",
-    });
-    expect(options.outputFormat).toEqual({ type: "json_schema", schema: outputSchema });
-    expect(options.tools).toEqual(["Read", "Glob", "Grep"]);
+      append: expect.stringContaining("review policy"),
+    }));
+    expect(options.outputFormat).toBeUndefined();
+    expect(options.tools).toEqual(["Read", "Glob", "Grep", "mcp__ve-submission__ve_submit_review"]);
+    expect(options.allowedTools).toEqual([
+      "Read",
+      "Glob",
+      "Grep",
+      "mcp__ve-submission__ve_submit_review",
+    ]);
     expect(options.permissionMode).toBe("dontAsk");
+    expect(options.strictMcpConfig).toBe(true);
+    expect(options.mcpServers).toEqual({
+      "ve-submission": expect.objectContaining({ type: "stdio" }),
+    });
   });
 
   it("maps advanced effort, thinking, turn, and cost limits to the SDK", () => {
@@ -50,5 +60,12 @@ describe("Claude worker native profile", () => {
       maxTurns: 30,
       maxBudgetUsd: 8.5,
     });
+    expect(options.systemPrompt).toEqual(expect.objectContaining({
+      append: expect.stringContaining("ve_submit_changes"),
+    }));
+    expect(options.mcpServers).toEqual({
+      "ve-submission": expect.objectContaining({ type: "stdio" }),
+    });
+    expect(options.tools).toBeUndefined();
   });
 });

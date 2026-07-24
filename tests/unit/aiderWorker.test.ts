@@ -17,6 +17,7 @@ vi.mock("fs", () => ({
 }));
 
 import { runAiderAgent } from "../../agent-worker/src/providers/aider.js";
+import { AIDER_PROVIDER } from "../../agent-worker/src/providers/aider.js";
 import { writeFileSync } from "fs";
 import type { ChildProcess } from "child_process";
 
@@ -37,6 +38,10 @@ describe("runAiderAgent", () => {
     delete process.env["AIDER_MAP_TOKENS"];
     delete process.env["AIDER_AUTO_LINT"];
     delete process.env["AIDER_AUTO_TEST"];
+  });
+
+  it("declares the validated text submission fallback", () => {
+    expect(AIDER_PROVIDER.submissionTransport).toBe("text");
   });
 
   it("spawns aider with conventional-commit, --yes, --no-pretty, --auto-commits for codegen", async () => {

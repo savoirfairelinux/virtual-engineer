@@ -36,6 +36,16 @@ import { agentLogBus, pushToTaskBuffer, clearTaskEventBuffer } from "../agents/a
 const log = getLogger("review-orchestrator");
 const MAX_SUPERSESSION_RETRIES = 3;
 
+export function buildReviewSystemPrompt(
+  systemPrompt: string,
+  reviewProviderKind: string,
+  agentProvider: string,
+): string {
+  return agentProvider === "copilot" || agentProvider === "claude"
+    ? systemPrompt
+    : appendReviewOutputContract(systemPrompt, reviewProviderKind);
+}
+
 export interface ReviewOrchestratorDeps {
   stateStore: Pick<
     StateStore,
@@ -423,9 +433,10 @@ export class ReviewOrchestrator {
         throw new Error(`No runnable review agent configured for project ${project.id}`);
       }
       const reviewInstructions = projectAgentRuntime.instructionsPrompt;
-      const reviewSystemPrompt = appendReviewOutputContract(
+      const reviewSystemPrompt = buildReviewSystemPrompt(
         projectAgentRuntime.systemPrompt,
         this.deps.reviewProvider.kind,
+        projectAgentRuntime.adapter.name,
       );
 
       const { cloneUrl, sshKeyPath, sshAgentPubKeyPath, sshKnownHostsPath } = this.deps.buildCloneTarget(details);
