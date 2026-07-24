@@ -1219,6 +1219,75 @@ describe("createAdminServer", () => {
     }
   });
 
+  it("rejects lookalike GitLab hosts without forwarding credentials", async () => {
+    const realFetch = globalThis.fetch;
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.toString()
+          : input.url;
+      if (url.startsWith("http://127.0.0.1:")) {
+        return realFetch(input, init);
+      }
+      return new Response("stolen", {
+        status: 200,
+        headers: { "content-type": "image/png" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const pluginManager = {
+      getActiveIntegrationsByProvider(provider: string) {
+        if (provider === "gitlab") {
+          return [{
+            id: "gitlab-mr",
+            provider: "gitlab",
+            name: "GitLab MR",
+            configJson: JSON.stringify({
+              baseUrl: "https://gitlab.example.com",
+              token: "oauth-token",
+            }),
+            enabled: true,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          }];
+        }
+        return [];
+      },
+    };
+
+    const server = createAdminServer({
+      stateStore: makeStateStore(),
+      pluginManager: pluginManager as never,
+      config: {
+        nodeEnv: "test",
+        logLevel: "info",
+        maxAgentCycles: 3,
+        maxRetryAttempts: 5,
+        pollingIntervalMs: 30_000,
+      },
+      polling: {
+        isRunning: () => true,
+        getIntervals: () => ({ intervalMs: 30_000 }),
+      },
+      providers: providerSummaries,
+    });
+
+    try {
+      const baseUrl = await listen(server);
+      const response = await fetch(
+        `${baseUrl}/api/admin/img-proxy?url=${encodeURIComponent("https://gitlab.example.com.attacker.test/uploads/abcdef1234567890/image.png")}`
+      );
+
+      expect(response.status).toBe(400);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllGlobals();
+      await closeServer(server);
+    }
+  });
+
   it("marks integration activity by exact integration id", async () => {
     const integrationStore: IntegrationStore = {
       getIntegrations: async () => [

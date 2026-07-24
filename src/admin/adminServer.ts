@@ -16,8 +16,9 @@ import {
   type WebhookCapableOrchestrator,
   type ProjectLookupStore,
 } from "../webhooks/webhookServer.js";
-import { buildGitLabAuthHeaders, rewriteGitLabUploadUrl } from "../utils/gitlabAuth.js";
+import { isAllowedGitLabProxyTarget } from "../utils/gitlabAuth.js";
 import { writeJson, writeHtml } from "./adminRouteUtils.js";
+import { fetchGitLabProxyImage } from "./adminImageProxy.js";
 import { registerTaskRoutes } from "./adminTaskRoutes.js";
 import { registerPromptRoutes } from "./adminPromptRoutes.js";
 import { registerStreamRoutes } from "./adminStreamRoutes.js";
@@ -508,23 +509,24 @@ async function handleRequest(
       : true; // bootstrap mode (no users yet): open
     if (!proxyAuthorized) { writeJson(response, 401, { error: "Unauthorized" }); return; }
     const { gitlabBaseUrl, gitlabToken: gitlabTokenVal } = getProviderUrls(dependencies.pluginManager);
-    if (!gitlabBaseUrl || !targetUrl.startsWith(gitlabBaseUrl)) {
+    if (!gitlabBaseUrl || !isAllowedGitLabProxyTarget(targetUrl, gitlabBaseUrl)) {
       writeJson(response, 400, { error: "Invalid proxy target" }); return;
     }
-    try {
-      const gitlabToken = gitlabTokenVal ?? "";
-      const fetchUrl = rewriteGitLabUploadUrl(targetUrl, gitlabBaseUrl);
-      log.debug({ fetchUrl, hasToken: Boolean(gitlabToken) }, "img-proxy fetch");
-      const upstream = await fetch(fetchUrl, gitlabToken
-        ? { headers: buildGitLabAuthHeaders(gitlabToken) }
-        : undefined);
-      const ct = upstream.headers.get("content-type") ?? "application/octet-stream";
-      log.debug({ status: upstream.status, ct }, "img-proxy upstream response");
-      if (!upstream.ok || ct.startsWith("text/html")) { writeJson(response, 502, { error: "Upstream error" }); return; }
-      const buf = Buffer.from(await upstream.arrayBuffer());
-      response.writeHead(200, { "content-type": ct, "cache-control": "private, max-age=3600" });
-      response.end(buf);
-    } catch { writeJson(response, 502, { error: "Proxy fetch failed" }); }
+    const result = await fetchGitLabProxyImage({
+      targetUrl,
+      gitlabBaseUrl,
+      gitlabToken: gitlabTokenVal ?? "",
+    });
+    if (!result.ok) {
+      writeJson(response, result.statusCode, { error: result.error });
+      return;
+    }
+    response.writeHead(200, {
+      "content-type": result.contentType,
+      "cache-control": "private, max-age=3600",
+      "x-content-type-options": "nosniff",
+    });
+    response.end(result.body);
     return;
   }
 
