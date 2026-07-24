@@ -28,8 +28,8 @@ tests/
 | Connectors — GitLab | `gitlabHttpClient`, `gitlabIssueConnector`, `gitlabIssueDiscovery`, `gitlabMergeRequestConnector`, `gitlabMergeRequestDiscovery`, `gitlabMergeRequestReviewProvider`, `gitlabVcsConnector`, `gitlabAuth`, `webhookHandlerGitlabIssue`, `webhookHandlerGitlabMergeRequest` |
 | Connectors — GitHub | `githubIssueConnector`, `githubPullRequestReviewConnector`, `githubReviewProvider`, `githubVcsConnector`, `githubPluginDescriptors`, `githubOAuth`, `githubAuth`, `branchNaming`, `webhookHandlerGithubPullRequest` |
 | VCS (shared) | `vcsConnector`, `vcsFactory`, `baseTicketConnector` |
-| Agents / Copilot | `copilotAdapter` (+ `.promptInjection`), `containerSpecBuilders` (cross-provider contract), `copilotConnectionValidator`, `copilotOAuthService`, `copilotModelsService`, `providerAuthService`, `mockAgentAdapter`, `agentEventTypes` (+ `.normalization`), `workerCommitProtocol`, `workerNetworkGuard`, `workerSkills`, `workerLocalSkills` |
-| Agents / Claude | `claudeAdapter`, `claudeConnectionValidator`, `claudeModelsService` |
+| Agents / Copilot | `copilotAdapter` (+ `.promptInjection`), `containerSpecBuilders` (cross-provider contract), `copilotWorker`, `copilotConnectionValidator`, `copilotOAuthService`, `copilotModelsService`, `providerAuthService`, `mockAgentAdapter`, `agentEventTypes` (+ `.normalization`), `workerCommitProtocol`, `workerNetworkGuard`, `workerSkills`, `workerLocalSkills` |
+| Agents / Claude | `claudeAdapter`, `claudeWorker`, `claudeConnectionValidator`, `claudeModelsService` |
 | Agents / Aider | `aiderAdapter`, `aiderDescriptor`, `aiderConnectionValidator`, `aiderModelsService`, `aiderWorker` |
 | Review runtime | `reviewOrchestrator`, `reviewPromptBuilder`, `reviewResultParser`, `reviewLiveLogs`, `commentHash`, `commentSeverity`, `revisionPatchset` |
 | Cost tracking | `cycleCost`, `stateStore.cost`, `adminCostRoutes` |
@@ -52,6 +52,7 @@ tests/
 - Local skill tests cover `LOCAL_SKILLS_PATH` propagation, workspace-relative path fallback, the single `skills.local_loaded` timeline event containing the sorted local skill list, and Copilot's loading of fetched global skills independently from local skill discovery.
 - Container-spec contract tests run the shared builders and all three container-backed adapters against the same code-generation/review expectations. Common hardening, command, network, prompt, Git identity, and skill environment behavior must remain provider-aligned; auth and model fields remain provider-specific.
 - Aider worker lifecycle tests cover code-generation/review arguments, environment allowlisting, output/error parsing, spawn failure, and timeout rejection with subprocess and temporary-directory cleanup.
+- Copilot and Claude worker lifecycle tests mock their exact worker-resolved SDK entry points. They cover code-generation/review prompt setup, event/usage/result mapping, skill behavior, error/timeout teardown, subprocess environment allowlisting, and no-secret event output.
 - Create file-backed SQLite test databases with `tempDatabasePath()` from `tests/unit/helpers/tempDatabase.ts`; it removes the database, WAL/SHM sidecars, and optional dedicated directory after each test.
 - Vitest is silent in `NODE_ENV=test` thanks to `src/logger.ts`; raise `LOG_LEVEL` if you need diagnostic output during a single test.
 - Strict TypeScript applies to tests too (`exactOptionalPropertyTypes`, `noUncheckedIndexedAccess`, no `any`).
