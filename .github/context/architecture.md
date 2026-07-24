@@ -63,7 +63,8 @@ It builds `TaskContext`, launches agent cycles, persists agent output, manages r
 ### Review runtime — `src/review/`
 
 - `reviewOrchestrator.ts` drives `REVIEW_PENDING → ... → REVIEW_DONE/REVIEW_FAILED`; the agent runs in the workspace container via `workspaceRunner.runReviewInDocker()` (`REVIEW_MODE=1`, prompt read from `USER_PROMPT_FILE`)
-- `reviewPromptBuilder.ts` and `reviewResultParser.ts` build/parse the review prompt contract
+- `reviewPromptBuilder.ts` assembles task context and editable instructions; `reviewOutputContract.ts` owns the immutable Gerrit/GitHub/GitLab JSON contracts; `reviewResultParser.ts` parses and normalizes them
+- Review system/instructions prompts are resolved per task from the project override or its assigned agent. Both references are mandatory and must resolve; review integrations provide no prompt fallback.
 
 `src/index.ts` wires the Docker review path through `buildReviewBundle()` / `buildReviewTrigger()`, resolving the active review integration's `createReviewer()` descriptor hook.
 

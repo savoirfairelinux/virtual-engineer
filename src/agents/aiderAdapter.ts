@@ -15,10 +15,33 @@ import type {
 } from "../interfaces.js";
 import { makeExternalChangeId } from "../interfaces.js";
 import { getLogger } from "../logger.js";
+import { assertPromptRole } from "../utils/promptRole.js";
 import { agentLogBus, pushToTaskBuffer } from "./agentEventBus.js";
 import { buildCodegenUserPrompt } from "./copilotAdapter.js";
 
 const log = getLogger("aider-adapter");
+
+function aiderOptionEnv(options: Record<string, unknown> | undefined): Record<string, string> {
+  if (!options) return {};
+  const chatMode = options["chatMode"];
+  const reasoningEffort = options["reasoningEffort"];
+  const positiveNumber = (key: string): number | undefined => {
+    const value = options[key];
+    return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
+  };
+  const thinkingTokens = positiveNumber("thinkingTokens");
+  const mapTokens = positiveNumber("mapTokens");
+  return {
+    ...(chatMode === "code" || chatMode === "architect" ? { AIDER_CHAT_MODE: chatMode } : {}),
+    ...(typeof reasoningEffort === "string" && reasoningEffort.trim()
+      ? { AIDER_REASONING_EFFORT: reasoningEffort.trim() }
+      : {}),
+    ...(thinkingTokens !== undefined ? { AIDER_THINKING_TOKENS: String(thinkingTokens) } : {}),
+    ...(mapTokens !== undefined ? { AIDER_MAP_TOKENS: String(mapTokens) } : {}),
+    ...(options["autoLint"] === true ? { AIDER_AUTO_LINT: "1" } : {}),
+    ...(options["autoTest"] === true ? { AIDER_AUTO_TEST: "1" } : {}),
+  };
+}
 
 export interface AiderAdapterConfig {
   /**
@@ -155,6 +178,7 @@ export class AiderAdapter implements AgentAdapter, ConfigurableAdapter {
       ...resolvedAuthEnv,
       AGENT_PROVIDER: "aider",
       ...(aiderModel ? { AIDER_MODEL: aiderModel } : {}),
+      ...aiderOptionEnv(session.providerOptions),
       GIT_AUTHOR_NAME: session.gitAuthorName,
       GIT_AUTHOR_EMAIL: session.gitAuthorEmail,
       GIT_COMMITTER_NAME: session.gitAuthorName,
@@ -210,6 +234,10 @@ export class AiderAdapter implements AgentAdapter, ConfigurableAdapter {
       REVIEW_MODE: "1",
       USER_PROMPT_FILE: "/ve-home/user-prompt.txt",
       SYSTEM_PROMPT: input.systemPrompt,
+      ...aiderOptionEnv(input.providerOptions),
+      ...(input.reviewOutputSchema !== undefined
+        ? { REVIEW_OUTPUT_SCHEMA: JSON.stringify(input.reviewOutputSchema) }
+        : {}),
       ...(input.skillDiscoveryEnabled ? { SKILL_DISCOVERY: "1" } : {}),
       ...(input.skillDiscoveryEnabled && input.localSkillsPath !== undefined
         ? { LOCAL_SKILLS_PATH: input.localSkillsPath }
@@ -261,15 +289,13 @@ export class AiderAdapter implements AgentAdapter, ConfigurableAdapter {
     const promptStore = this.promptStore;
 
     if (!promptStore) {
-      return spec;
+      throw new Error("Prompt store is required for agent execution");
     }
 
-    const systemPromptId =
-      context.systemPromptId === undefined ? "system_generic_code" : context.systemPromptId;
-    const instructionsPromptId =
-      context.instructionsPromptId === undefined
-        ? "instructions_generic_code"
-        : context.instructionsPromptId;
+    const systemPromptId = context.systemPromptId;
+    const instructionsPromptId = context.instructionsPromptId;
+    if (!systemPromptId) throw new Error("System prompt is required for agent execution");
+    if (!instructionsPromptId) throw new Error("Instructions prompt is required for agent execution");
     const promptIds = [
       ...new Set(
         [systemPromptId, instructionsPromptId].filter(
@@ -288,13 +314,13 @@ export class AiderAdapter implements AgentAdapter, ConfigurableAdapter {
         ? promptsById.get(instructionsPromptId) ?? null
         : null;
 
-    if (systemPrompt) {
-      spec.env["SYSTEM_PROMPT"] = systemPrompt.content;
-    }
+    if (!systemPrompt) throw new Error(`System prompt '${systemPromptId}' not found`);
+    if (!instructionsPrompt) throw new Error(`Instructions prompt '${instructionsPromptId}' not found`);
+    assertPromptRole(systemPrompt, "system");
+    assertPromptRole(instructionsPrompt, "instructions");
 
-    if (instructionsPrompt) {
-      spec.userPromptContent = buildCodegenUserPrompt(context, instructionsPrompt.content);
-    }
+    spec.env["SYSTEM_PROMPT"] = systemPrompt.content;
+    spec.userPromptContent = buildCodegenUserPrompt(context, instructionsPrompt.content);
 
     return spec;
   }

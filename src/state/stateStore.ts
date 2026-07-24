@@ -493,23 +493,26 @@ export class SqliteStateStore {
     this.ensureColumn("projects", "use_full_ticket_url_in_commits", "INTEGER NOT NULL DEFAULT 0");
     this.ensureColumn("projects", "post_review_link_to_ticket", "INTEGER NOT NULL DEFAULT 0");
     this.ensureColumn("projects", "react_to_ci_failures", "INTEGER NOT NULL DEFAULT 0");
-    this.ensureColumn("prompts", "prompt_type", "TEXT NOT NULL DEFAULT 'user'");
+    this.ensureColumn("prompts", "prompt_type", "TEXT NOT NULL DEFAULT 'instructions'");
 
     this.raw.exec(`
+      UPDATE prompts SET prompt_type = 'instructions'
+        WHERE prompt_type IS NULL OR prompt_type NOT IN ('system', 'instructions');
       UPDATE prompts SET prompt_type = 'system'
         WHERE id IN (
-          'system_generic_code','instructions_generic_code',
+          'system_generic_code',
           'system_gerrit_code','system_gitlab_code',
-          'system_gerrit_review','system_gitlab_review','system_github_review',
+          'system_gerrit_review','system_gitlab_review','system_github_review'
+        );
+      UPDATE prompts SET prompt_type = 'instructions'
+        WHERE id IN (
+          'instructions_generic_code',
           'instructions_gerrit_code','instructions_gitlab_code',
           'instructions_feedback_code',
-          'user_gerrit_review','user_gitlab_review','user_github_review'
+          'instructions_gerrit_review','instructions_gitlab_review','instructions_github_review'
         );
     `);
-
-    this.raw.exec(`
-      DELETE FROM prompts WHERE id IN ('system', 'instructions');
-    `);
+    this.migrateReferencedPromptRoles();
 
     this.raw.exec(`
       DROP INDEX IF EXISTS idx_tasks_active_ticket_id;
@@ -522,6 +525,105 @@ export class SqliteStateStore {
         WHERE project_id IS NULL
           AND state NOT IN ('DONE', 'FAILED', 'ABANDONED', 'REVIEW_DONE', 'REVIEW_FAILED');
     `);
+  }
+
+  private migrateReferencedPromptRoles(): void {
+    interface AgentPromptReferences {
+      system_prompt_id: string | null;
+      instructions_prompt_id: string | null;
+      feedback_instructions_prompt_id: string | null;
+    }
+    interface ProjectPromptOverrides {
+      id: string;
+      agent_override_json: string | null;
+    }
+    interface PromptRow {
+      id: string;
+      label: string;
+      content: string;
+      created_at: number;
+      updated_at: number;
+    }
+
+    const systemPromptIds = new Set<string>();
+    const instructionsPromptIds = new Set<string>();
+    const agentReferences = this.raw.prepare(`
+      SELECT system_prompt_id, instructions_prompt_id, feedback_instructions_prompt_id
+      FROM agents
+    `).all() as AgentPromptReferences[];
+    for (const references of agentReferences) {
+      if (references.system_prompt_id !== null) systemPromptIds.add(references.system_prompt_id);
+      if (references.instructions_prompt_id !== null) instructionsPromptIds.add(references.instructions_prompt_id);
+      if (references.feedback_instructions_prompt_id !== null) {
+        instructionsPromptIds.add(references.feedback_instructions_prompt_id);
+      }
+    }
+
+    const projectOverrides = this.raw.prepare(`
+      SELECT id, agent_override_json FROM projects WHERE agent_override_json IS NOT NULL
+    `).all() as ProjectPromptOverrides[];
+    const parsedOverrides = new Map<string, Record<string, unknown>>();
+    for (const project of projectOverrides) {
+      const override = parseConfigJson(project.agent_override_json ?? "");
+      parsedOverrides.set(project.id, override);
+      if (typeof override["systemPromptId"] === "string") {
+        systemPromptIds.add(override["systemPromptId"]);
+      }
+      if (typeof override["instructionsPromptId"] === "string") {
+        instructionsPromptIds.add(override["instructionsPromptId"]);
+      }
+      if (typeof override["feedbackInstructionsPromptId"] === "string") {
+        instructionsPromptIds.add(override["feedbackInstructionsPromptId"]);
+      }
+    }
+
+    const migrate = this.raw.transaction(() => {
+      for (const promptId of systemPromptIds) {
+        if (!instructionsPromptIds.has(promptId)) continue;
+        const prompt = this.raw.prepare(`
+          SELECT id, label, content, created_at, updated_at FROM prompts WHERE id = ?
+        `).get(promptId) as PromptRow | undefined;
+        if (prompt === undefined) continue;
+
+        let cloneId = `${promptId}__instructions`;
+        let suffix = 2;
+        while (this.raw.prepare("SELECT 1 FROM prompts WHERE id = ?").get(cloneId) !== undefined) {
+          cloneId = `${promptId}__instructions_${suffix}`;
+          suffix += 1;
+        }
+        this.raw.prepare(`
+          INSERT INTO prompts (id, label, content, prompt_type, created_at, updated_at)
+          VALUES (?, ?, ?, 'instructions', ?, ?)
+        `).run(cloneId, `${prompt.label} (Instructions)`, prompt.content, prompt.created_at, prompt.updated_at);
+        this.raw.prepare(`
+          UPDATE agents SET instructions_prompt_id = ? WHERE instructions_prompt_id = ?
+        `).run(cloneId, promptId);
+        this.raw.prepare(`
+          UPDATE agents SET feedback_instructions_prompt_id = ? WHERE feedback_instructions_prompt_id = ?
+        `).run(cloneId, promptId);
+
+        for (const [projectId, override] of parsedOverrides) {
+          let changed = false;
+          for (const key of ["instructionsPromptId", "feedbackInstructionsPromptId"] as const) {
+            if (override[key] === promptId) {
+              override[key] = cloneId;
+              changed = true;
+            }
+          }
+          if (changed) {
+            this.raw.prepare("UPDATE projects SET agent_override_json = ? WHERE id = ?")
+              .run(JSON.stringify(override), projectId);
+          }
+        }
+        instructionsPromptIds.delete(promptId);
+        instructionsPromptIds.add(cloneId);
+      }
+
+      const updatePromptType = this.raw.prepare("UPDATE prompts SET prompt_type = ? WHERE id = ?");
+      for (const promptId of instructionsPromptIds) updatePromptType.run("instructions", promptId);
+      for (const promptId of systemPromptIds) updatePromptType.run("system", promptId);
+    });
+    migrate();
   }
 
   /**
@@ -588,6 +690,14 @@ export function resolveAgentConfig(agent: AgentRecord, project: ProjectRecord): 
   const sysOverride = typeof overridePrompts.systemPromptId === "string" ? overridePrompts.systemPromptId : null;
   const insOverride = typeof overridePrompts.instructionsPromptId === "string" ? overridePrompts.instructionsPromptId : null;
   const fbOverride = typeof overridePrompts.feedbackInstructionsPromptId === "string" ? overridePrompts.feedbackInstructionsPromptId : null;
+  const systemPromptId = (sysOverride ?? agent.systemPromptId)?.trim() || null;
+  const instructionsPromptId = (insOverride ?? agent.instructionsPromptId)?.trim() || null;
+  if (!systemPromptId) {
+    throw new Error(`Agent '${agent.id}' has no system prompt configured`);
+  }
+  if (!instructionsPromptId) {
+    throw new Error(`Agent '${agent.id}' has no instructions prompt configured`);
+  }
 
   const known = new Set(["model", "apiKey", "sessionToken", "systemPromptId", "instructionsPromptId", "feedbackInstructionsPromptId"]);
   const extra: Record<string, unknown> = {};
@@ -601,9 +711,10 @@ export function resolveAgentConfig(agent: AgentRecord, project: ProjectRecord): 
     encryptedSessionToken: typeof merged["sessionToken"] === "string"
       ? (merged["sessionToken"] as string)
       : undefined,
-    systemPromptId: sysOverride ?? agent.systemPromptId ?? "system_generic_code",
-    instructionsPromptId: insOverride ?? agent.instructionsPromptId ?? "instructions_generic_code",
-    feedbackInstructionsPromptId: fbOverride ?? agent.feedbackInstructionsPromptId ?? null,
+    systemPromptId,
+    instructionsPromptId,
+    feedbackInstructionsPromptId:
+      (fbOverride ?? agent.feedbackInstructionsPromptId)?.trim() || null,
     extra,
   };
 }

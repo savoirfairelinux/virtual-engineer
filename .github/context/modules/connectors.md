@@ -31,6 +31,8 @@ The `provider` ids are `github | gitlab | gerrit | redmine | copilot | claude | 
 
 Reviewer-side `ReviewProvider` reads and effects accept an optional `AbortSignal`. GitHub and GitLab forward it to `fetch`; Gerrit forwards it to SSH and temporary Git subprocesses. Multi-request best-effort fallbacks rethrow cancellation instead of folding or suppressing it, so the orchestrator's single review deadline can terminate freshness checks, comments, replies, and votes.
 
+Reviewer decisions are normalized internally as `-1 | 0 | 1`, then translated by each provider. Gerrit always submits the corresponding `Code-Review` label, including `0` to clear a prior vote; GitHub maps them to `REQUEST_CHANGES` / `COMMENT` / `APPROVE`; GitLab maps them to unapprove / no approval action / approve. The agent-facing JSON contract uses provider-native field names (`vote`, `reviewAction`, or `approvalAction`) and is selected from `reviewProvider.kind`.
+
 ## Ticketing contract (`TicketConnector`)
 
 Methods used by the orchestrator:

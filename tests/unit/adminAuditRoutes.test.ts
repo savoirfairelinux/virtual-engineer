@@ -224,7 +224,7 @@ describe("adminAuditRoutes + audit instrumentation", () => {
       const response = await fetch(`${baseUrl}/api/admin/prompts`, {
         method: "POST",
         headers: { authorization: `Bearer ${adminToken}`, "content-type": "application/json" },
-        body: JSON.stringify({ label: "Audit Prompt", content: "hello world" }),
+        body: JSON.stringify({ label: "Audit Prompt", content: "hello world", promptType: "instructions" }),
       });
       expect(response.status).toBe(201);
       const entries = await waitForAudit("prompt.create");
@@ -238,7 +238,10 @@ describe("adminAuditRoutes + audit instrumentation", () => {
     });
 
     it("records project.disable with the authenticated actor", async () => {
-      const agent = await store.createAgent({ name: "Coder", type: "coding", modelConfigJson: "{}" });
+      const agent = await store.createAgent({
+        name: "Coder", type: "coding", modelConfigJson: "{}",
+        systemPromptId: "system_generic_code", instructionsPromptId: "instructions_generic_code",
+      });
       const project = await store.createProject({ name: "Proj", type: "coding", agentId: makeAgentId(agent.id) });
       const response = await fetch(`${baseUrl}/api/admin/projects/${project.id}/disable`, {
         method: "PATCH",

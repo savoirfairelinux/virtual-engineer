@@ -664,7 +664,7 @@ integrations
   created_at / updated_at
 
 prompts
-  id / label / content / prompt_type ("system"|"user", default "user")
+  id / label / content / prompt_type ("system"|"instructions", default "instructions")
   created_at / updated_at
 
 oauth_apps                     ← per-host OAuth app registrations
@@ -799,16 +799,16 @@ The Copilot CLI native binary (`copilot-linux-x64`) is installed on first use in
 Runs inside the container. Two modes:
 
 **Code-generation mode** (default):
-1. Opens a GitHub Copilot SDK session against `/workspace` (local `copilot --headless` CLI booted in-container)
-2. Sends a prompt built from `TASK_TITLE`, `TASK_DESCRIPTION`, `PRIOR_FEEDBACK_JSON`, `SYSTEM_PROMPT` (required) and the user prompt read from `USER_PROMPT_FILE`
-3. Copilot edits files autonomously and may create up to `MAX_COMMITS_PER_CYCLE` local commits (Change-Ids reused on retry cycles via `ROOT_CHANGE_ID` / `PER_REPO_CHANGE_IDS_JSON`)
+1. Resolves the complete provider definition from `AGENT_PROVIDER`; `index.ts` contains no Copilot/Claude/Aider branch
+2. Sends required Agent Instructions plus the dynamic user prompt read from `USER_PROMPT_FILE`; the host builds that file from ticket context and selected Workflow Instructions
+3. The selected provider edits files autonomously and may create up to `MAX_COMMITS_PER_CYCLE` local commits (Change-Ids reused on retry cycles via `ROOT_CHANGE_ID` / `PER_REPO_CHANGE_IDS_JSON`)
 4. Worker collects modified files via `git status`
 5. Writes JSON `AgentResult` to stdout (status, modifiedFiles, summary, commitMessage)
 
 **Review mode** (`REVIEW_MODE=1`):
 1. Reads the prompt from `USER_PROMPT_FILE` (`/ve-home/user-prompt.txt`)
-2. Returns raw LLM response text to stdout (no git operations)
-3. Host `reviewResultParser.ts` parses inline comments and vote
+2. Uses the immutable review-system JSON Schema when the provider supports native structured output (Claude), otherwise returns the provider response text (no git operations)
+3. Host `reviewResultParser.ts` enforces the integration-specific Gerrit/GitHub/GitLab result contract
 
 ### Security constraints
 
@@ -821,4 +821,4 @@ Runs inside the container. Two modes:
 | `--tmpfs /tmp:rw,nosuid,size=256m` | Ephemeral scratch space, no setuid |
 | `--network virtual-engineer_ve-agent-net` | Dedicated bridge — isolated from the default bridge and other containers (not `--internal`; outbound access retained for the GitHub/Copilot APIs) |
 
-The agent receives only: `GITHUB_TOKEN`, task context env vars (title, description, model), and git author metadata. System secrets (DB path, admin token, SSH keys) are never passed to the container.
+The agent receives only the selected provider's authentication variables, task context/model/prompt variables, and git author metadata. System secrets (DB path, admin token, SSH keys) are never passed to the container.

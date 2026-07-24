@@ -83,7 +83,7 @@ const GOOD_RAW_OUTPUT = [
   JSON.stringify({
     comments: [{ file: "src/a.ts", line: 1, message: "Bug", severity: "error" }],
     summary: "blocking issue",
-    score: -1,
+    vote: -1,
   }),
   "REVIEW_RESULT_END",
 ].join("\n");
@@ -197,6 +197,8 @@ function makeOrch(mocks: ReturnType<typeof makeMocks>, runner: ReturnType<typeof
       adapter: { name: "test-agent" } as AgentAdapter,
       model: "test-model",
       token: "gh_test_token",
+      systemPrompt: "You are a code reviewer.",
+      instructionsPrompt: "Review the code changes.",
     })),
     buildCloneTarget: (details) => ({
       cloneUrl: `ssh://admin@gerrit.test:29418/${details.project}`,
@@ -209,8 +211,6 @@ function makeOrch(mocks: ReturnType<typeof makeMocks>, runner: ReturnType<typeof
         await r.applyPriorPatchset(handle, { ...PATCHSET_OPTIONS, revisionNumber: details.changeNumber, patchset: details.currentPatchset });
       }
     },
-    reviewInstructions: "Review the code changes.",
-    reviewSystemPrompt: "You are a code reviewer.",
   });
 }
 

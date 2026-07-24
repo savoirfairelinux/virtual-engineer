@@ -301,7 +301,7 @@ export class GerritSshReviewProvider implements ReviewProvider {
     revision: number,
     comments: InlineReviewComment[],
     summary: string,
-    score: -1 | 1,
+    score: -1 | 0 | 1,
     allowedFiles?: ReadonlySet<string>
   ): Promise<void> {
     const details = await this.getChangeDetails(changeId);

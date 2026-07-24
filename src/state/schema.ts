@@ -212,11 +212,8 @@ export const prompts = sqliteTable("prompts", {
   id: text("id").primaryKey(),
   label: text("label").notNull(),
   content: text("content").notNull(),
-  /**
-   * "system" = format/integration-specific contract prompt, immutable via UI.
-   * "user"   = task-customisation prompt, editable by admins.
-   */
-  promptType: text("prompt_type").$type<"system" | "user">().notNull().default("user"),
+  /** Role in the agent session; the user prompt is generated from the ticket or review. */
+  promptType: text("prompt_type").$type<"system" | "instructions">().notNull().default("instructions"),
   createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
   updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
 });

@@ -111,7 +111,7 @@ describe("adminServer RBAC and session auth", () => {
     const create = await fetch(`${baseUrl}/api/admin/prompts`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ label: "Bootstrap Prompt", content: "hello" }),
+      body: JSON.stringify({ label: "Bootstrap Prompt", content: "hello", promptType: "instructions" }),
     });
     expect(create.status).toBe(201);
   });
@@ -181,7 +181,7 @@ describe("adminServer RBAC and session auth", () => {
     const promptCreate = await fetch(`${baseUrl}/api/admin/prompts`, {
       method: "POST",
       headers: { authorization: `Bearer ${operator.token}`, "content-type": "application/json" },
-      body: JSON.stringify({ label: "Operator Prompt", content: "hello" }),
+      body: JSON.stringify({ label: "Operator Prompt", content: "hello", promptType: "instructions" }),
     });
     expect(promptCreate.status).toBe(201);
 
@@ -333,7 +333,10 @@ describe("adminServer PBAC project scoping", () => {
   }
 
   async function seedTwoProjects(): Promise<{ a: string; b: string }> {
-    const agent = await store.createAgent({ name: "rev-agent", type: "review", modelConfigJson: "{}" });
+    const agent = await store.createAgent({
+      name: "rev-agent", type: "review", modelConfigJson: "{}",
+      systemPromptId: "system_generic_code", instructionsPromptId: "instructions_generic_code",
+    });
     const a = await store.createProject({ name: "Project A", type: "review", agentId: agent.id });
     const b = await store.createProject({ name: "Project B", type: "review", agentId: agent.id });
     return { a: a.id, b: b.id };

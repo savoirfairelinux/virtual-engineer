@@ -42,7 +42,7 @@ function makePrompt(id: string, content: string): Prompt {
         ? "Instructions Prompt"
         : id,
     content,
-    promptType: "user",
+    promptType: id.includes("system") ? "system" : "instructions",
     updatedAt: new Date(),
   };
 }
@@ -60,12 +60,12 @@ function makePromptStore(overrides: Record<string, string> = {}): PromptStore {
     getPrompt: vi.fn(async (id: string) => prompts[id] ?? null),
     upsertPrompt: vi.fn(async (id: string, content: string) => {
       const existing = prompts[id];
-      prompts[id] = { id, label: existing?.label ?? id, content, promptType: existing?.promptType ?? "user", updatedAt: new Date() };
+      prompts[id] = { id, label: existing?.label ?? id, content, promptType: existing?.promptType ?? "instructions", updatedAt: new Date() };
       return prompts[id]!;
     }),
-    createPrompt: vi.fn(async (label: string, content: string) => {
+    createPrompt: vi.fn(async (label: string, content: string, promptType) => {
       const id = label;
-      prompts[id] = { id, label, content, promptType: "user", updatedAt: new Date() };
+      prompts[id] = { id, label, content, promptType, updatedAt: new Date() };
       return prompts[id]!;
     }),
     deletePrompt: vi.fn(async (id: string) => {
@@ -88,6 +88,8 @@ function makeContext(overrides: Partial<TaskContext> = {}): TaskContext {
     priorFeedback: [],
     cycleNumber: 1,
     commitMessage: "feat: implement feature X",
+    systemPromptId: "system_generic_code",
+    instructionsPromptId: "instructions_generic_code",
     agentSession: {
       agentContainerImage: "virtual-engineer-workspace:latest",
       repoCloneUrl: "ssh://localhost:29418/demo-project",
@@ -178,7 +180,7 @@ describe("CopilotAdapter — prompt injection", () => {
       expect(spec.env["GIT_AUTHOR_NAME"]).toBe("Virtual Engineer");
     });
 
-    it("calls promptStore.getPrompt for 'system_generic_code' and 'instructions_generic_code'", async () => {
+    it("loads both explicitly configured prompts", async () => {
       const store = makePromptStore();
       const adapter = new CopilotAdapter({});
       adapter.setPromptStore(store);
@@ -187,6 +189,17 @@ describe("CopilotAdapter — prompt injection", () => {
 
       expect(vi.mocked(store.getPrompt)).toHaveBeenCalledWith("system_generic_code");
       expect(vi.mocked(store.getPrompt)).toHaveBeenCalledWith("instructions_generic_code");
+    });
+
+    it("rejects missing or unknown required prompts", async () => {
+      const store = makePromptStore();
+      const adapter = new CopilotAdapter({});
+      adapter.setPromptStore(store);
+
+      await expect(adapter.buildContainerSpecWithPrompts(makeContext({ systemPromptId: null }), {}))
+        .rejects.toThrow(/system prompt is required/i);
+      await expect(adapter.buildContainerSpecWithPrompts(makeContext({ instructionsPromptId: "missing" }), {}))
+        .rejects.toThrow(/instructions prompt 'missing' not found/i);
     });
 
     it("uses task-specific prompt ids when provided", async () => {
@@ -226,7 +239,7 @@ describe("CopilotAdapter — prompt injection", () => {
   });
 
   describe("buildContainerSpec — with promptStore, missing prompts", () => {
-    it("omits SYSTEM_PROMPT when the store returns null for 'system'", async () => {
+    it("rejects configured prompt ids that do not exist", async () => {
       const store: PromptStore = {
         getPrompts: vi.fn(async () => []),
         getPrompt: vi.fn(async () => null),
@@ -239,24 +252,29 @@ describe("CopilotAdapter — prompt injection", () => {
       const adapter = new CopilotAdapter({});
       adapter.setPromptStore(store);
 
-      const spec = await adapter.buildContainerSpecWithPrompts(makeContext(), {});
-
-      expect(spec.env["SYSTEM_PROMPT"]).toBeUndefined();
-      expect(spec.userPromptContent).toBeUndefined();
+      await expect(adapter.buildContainerSpecWithPrompts(makeContext(), {}))
+        .rejects.toThrow(/system prompt 'system_generic_code' not found/i);
     });
 
-    it("omits userPromptContent when task context explicitly disables prompt ids", async () => {
+    it("rejects configured prompts whose roles are crossed", async () => {
+      const adapter = new CopilotAdapter({});
+      adapter.setPromptStore(makePromptStore());
+
+      await expect(adapter.buildContainerSpecWithPrompts(makeContext({
+        systemPromptId: "instructions_generic_code",
+        instructionsPromptId: "system_generic_code",
+      }), {})).rejects.toThrow(/not a system prompt/i);
+    });
+
+    it("rejects task contexts that omit required prompt ids", async () => {
       const store = makePromptStore();
       const adapter = new CopilotAdapter({});
       adapter.setPromptStore(store);
 
-      const spec = await adapter.buildContainerSpecWithPrompts(makeContext({
+      await expect(adapter.buildContainerSpecWithPrompts(makeContext({
         systemPromptId: null,
         instructionsPromptId: null,
-      }), {});
-
-      expect(spec.env["SYSTEM_PROMPT"]).toBeUndefined();
-      expect(spec.userPromptContent).toBeUndefined();
+      }), {})).rejects.toThrow(/system prompt is required/i);
       expect(vi.mocked(store.getPrompt)).not.toHaveBeenCalled();
     });
   });

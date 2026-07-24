@@ -9,6 +9,7 @@ import {
   type AgentType,
   type OAuthAppStore,
   type IntegrationStore,
+  type PromptStore,
   type ProviderId,
   type ProjectRecord,
 } from "../interfaces.js";
@@ -31,8 +32,8 @@ export interface AgentsRouteStore {
     type: AgentType;
     modelConfigJson: string;
     integrationId?: string | null;
-    systemPromptId?: string | null;
-    instructionsPromptId?: string | null;
+    systemPromptId: string;
+    instructionsPromptId: string;
     feedbackInstructionsPromptId?: string | null;
     maxConcurrent?: number;
     enabled?: boolean;
@@ -50,6 +51,7 @@ export interface AgentsRouteStore {
 
 export interface AgentsRouteDeps {
   agentStore?: AgentsRouteStore | undefined;
+  promptStore?: Pick<PromptStore, "getPrompt"> | undefined;
   integrationStore?: Pick<IntegrationStore, "getIntegration"> | undefined;
   oAuthAppStore?: OAuthAppStore | undefined;
   auditStore?: AuditCapableStore | undefined;
@@ -244,8 +246,8 @@ const createSchema = z.object({
   }),
   modelConfig: z.record(z.unknown()).default({}),
   integrationId: z.string().nullable().optional(),
-  systemPromptId: z.string().nullable().optional(),
-  instructionsPromptId: z.string().nullable().optional(),
+  systemPromptId: z.string().trim().min(1, "Agent instructions are required"),
+  instructionsPromptId: z.string().trim().min(1, "Workflow instructions are required"),
   feedbackInstructionsPromptId: z.string().nullable().optional(),
   maxConcurrent: z.number({ invalid_type_error: "Max concurrent must be a number" }).int("Max concurrent must be an integer").min(1, "Max concurrent must be at least 1").optional(),
   enabled: z.boolean().optional(),
@@ -258,8 +260,8 @@ const updateSchema = z.object({
   }).optional(),
   modelConfig: z.record(z.unknown()).optional(),
   integrationId: z.string().nullable().optional(),
-  systemPromptId: z.string().nullable().optional(),
-  instructionsPromptId: z.string().nullable().optional(),
+  systemPromptId: z.string().trim().min(1, "Agent instructions cannot be empty").optional(),
+  instructionsPromptId: z.string().trim().min(1, "Workflow instructions cannot be empty").optional(),
   feedbackInstructionsPromptId: z.string().nullable().optional(),
   maxConcurrent: z.number({ invalid_type_error: "Max concurrent must be a number" }).int("Max concurrent must be an integer").min(1, "Max concurrent must be at least 1").optional(),
   enabled: z.boolean().optional(),
@@ -271,6 +273,36 @@ const updateSchema = z.object({
 async function countProjectsForAgent(store: AgentsRouteStore, agentId: AgentId): Promise<number> {
   const all = await store.listProjects();
   return all.filter((p) => p.agentId === agentId).length;
+}
+
+async function validateRequiredPrompts(
+  promptStore: Pick<PromptStore, "getPrompt">,
+  systemPromptId: string,
+  instructionsPromptId: string,
+  feedbackInstructionsPromptId: string | null = null,
+): Promise<string | null> {
+  const [systemPrompt, instructionsPrompt, feedbackPrompt] = await Promise.all([
+    promptStore.getPrompt(systemPromptId),
+    promptStore.getPrompt(instructionsPromptId),
+    feedbackInstructionsPromptId === null
+      ? Promise.resolve(null)
+      : promptStore.getPrompt(feedbackInstructionsPromptId),
+  ]);
+  if (!systemPrompt) return `Agent instructions '${systemPromptId}' not found`;
+  if (!instructionsPrompt) return `Workflow instructions '${instructionsPromptId}' not found`;
+  if (feedbackInstructionsPromptId !== null && !feedbackPrompt) {
+    return `Feedback workflow instructions '${feedbackInstructionsPromptId}' not found`;
+  }
+  if (systemPrompt.promptType !== "system") {
+    return `Prompt '${systemPromptId}' is not agent instructions`;
+  }
+  if (instructionsPrompt.promptType !== "instructions") {
+    return `Prompt '${instructionsPromptId}' is not workflow instructions`;
+  }
+  if (feedbackPrompt !== null && feedbackPrompt.promptType !== "instructions") {
+    return `Feedback prompt '${feedbackInstructionsPromptId}' is not workflow instructions`;
+  }
+  return null;
 }
 
 /** Register agent and plugin OAuth routes on the given router. */
@@ -411,20 +443,28 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
 
   router.add("POST", "/api/admin/agents", async (req, res, _params) => {
     if (!deps.agentStore) { writeJson(res, 501, { error: "Agent store not available" }); return; }
+    if (!deps.promptStore) { writeJson(res, 501, { error: "Prompt store not available" }); return; }
     const store = deps.agentStore;
     const body = await readBody(req);
     if (!body) { writeJson(res, 400, { error: "Request body required" }); return; }
     const parsed = createSchema.safeParse(body);
     if (!parsed.success) { writeJson(res, 400, zodErrorBody(parsed.error, "Invalid agent payload")); return; }
     try {
+      const promptError = await validateRequiredPrompts(
+        deps.promptStore,
+        parsed.data.systemPromptId,
+        parsed.data.instructionsPromptId,
+        parsed.data.feedbackInstructionsPromptId ?? null,
+      );
+      if (promptError) { writeJson(res, 400, { error: promptError }); return; }
       const created = await store.createAgent({
         ...(parsed.data.id !== undefined ? { id: parsed.data.id } : {}),
         name: parsed.data.name,
         type: parsed.data.type,
         modelConfigJson: JSON.stringify(parsed.data.modelConfig ?? {}),
         ...(parsed.data.integrationId !== undefined ? { integrationId: parsed.data.integrationId } : {}),
-        ...(parsed.data.systemPromptId !== undefined ? { systemPromptId: parsed.data.systemPromptId } : {}),
-        ...(parsed.data.instructionsPromptId !== undefined ? { instructionsPromptId: parsed.data.instructionsPromptId } : {}),
+        systemPromptId: parsed.data.systemPromptId,
+        instructionsPromptId: parsed.data.instructionsPromptId,
         ...(parsed.data.feedbackInstructionsPromptId !== undefined ? { feedbackInstructionsPromptId: parsed.data.feedbackInstructionsPromptId } : {}),
         ...(parsed.data.maxConcurrent !== undefined ? { maxConcurrent: parsed.data.maxConcurrent } : {}),
         ...(parsed.data.enabled !== undefined ? { enabled: parsed.data.enabled } : {}),
@@ -507,6 +547,7 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
 
   router.add("PUT", "/api/admin/agents/:id", async (req, res, params) => {
     if (!deps.agentStore) { writeJson(res, 501, { error: "Agent store not available" }); return; }
+    if (!deps.promptStore) { writeJson(res, 501, { error: "Prompt store not available" }); return; }
     const store = deps.agentStore;
     const id = makeAgentId(params["id"] ?? "");
     const existing = await store.getAgentById(id);
@@ -515,6 +556,15 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
     if (!body) { writeJson(res, 400, { error: "Request body required" }); return; }
     const parsed = updateSchema.safeParse(body);
     if (!parsed.success) { writeJson(res, 400, zodErrorBody(parsed.error, "Invalid agent payload")); return; }
+    const systemPromptId = parsed.data.systemPromptId ?? existing.systemPromptId;
+    const instructionsPromptId = parsed.data.instructionsPromptId ?? existing.instructionsPromptId;
+    const feedbackInstructionsPromptId = parsed.data.feedbackInstructionsPromptId === undefined
+      ? existing.feedbackInstructionsPromptId
+      : parsed.data.feedbackInstructionsPromptId;
+    if (!systemPromptId || !instructionsPromptId) {
+      writeJson(res, 400, { error: "Agent and workflow instructions are required" });
+      return;
+    }
     const updates: Parameters<AgentsRouteStore["updateAgent"]>[1] = {};
     if (parsed.data.name !== undefined) updates.name = parsed.data.name;
     if (parsed.data.type !== undefined) updates.type = parsed.data.type;
@@ -529,6 +579,13 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
     if (parsed.data.maxConcurrent !== undefined) updates.maxConcurrent = parsed.data.maxConcurrent;
     if (parsed.data.enabled !== undefined) updates.enabled = parsed.data.enabled;
     try {
+      const promptError = await validateRequiredPrompts(
+        deps.promptStore,
+        systemPromptId,
+        instructionsPromptId,
+        feedbackInstructionsPromptId,
+      );
+      if (promptError) { writeJson(res, 400, { error: promptError }); return; }
       const updated = await store.updateAgent(id, updates);
       const count = await countProjectsForAgent(store, id);
       recordAudit(deps.auditStore, req, { action: "agent.update", targetType: "agent", targetId: id, details: { name: updated.name, type: updated.type } });

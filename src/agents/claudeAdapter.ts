@@ -16,11 +16,36 @@ import type {
 import { makeExternalChangeId } from "../interfaces.js";
 import { getLogger } from "../logger.js";
 import { decryptToken } from "../utils/encryption.js";
+import { assertPromptRole } from "../utils/promptRole.js";
 import { getConfig } from "../config.js";
 import { agentLogBus, pushToTaskBuffer } from "./agentEventBus.js";
 import { buildCodegenUserPrompt } from "./copilotAdapter.js";
 
 const log = getLogger("claude-adapter");
+
+function claudeOptionEnv(options: Record<string, unknown> | undefined): Record<string, string> {
+  if (!options) return {};
+  const effort = options["effort"];
+  const thinkingMode = options["thinkingMode"];
+  const positiveNumber = (key: string): number | undefined => {
+    const value = options[key];
+    return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
+  };
+  const thinkingBudgetTokens = positiveNumber("thinkingBudgetTokens");
+  const maxTurns = positiveNumber("maxTurns");
+  const maxBudgetUsd = positiveNumber("maxBudgetUsd");
+  return {
+    ...(effort === "low" || effort === "medium" || effort === "high" || effort === "xhigh" || effort === "max"
+      ? { CLAUDE_EFFORT: effort }
+      : {}),
+    ...(thinkingMode === "adaptive" || thinkingMode === "enabled" || thinkingMode === "disabled"
+      ? { CLAUDE_THINKING_MODE: thinkingMode }
+      : {}),
+    ...(thinkingBudgetTokens !== undefined ? { CLAUDE_THINKING_BUDGET_TOKENS: String(thinkingBudgetTokens) } : {}),
+    ...(maxTurns !== undefined ? { CLAUDE_MAX_TURNS: String(maxTurns) } : {}),
+    ...(maxBudgetUsd !== undefined ? { CLAUDE_MAX_BUDGET_USD: String(maxBudgetUsd) } : {}),
+  };
+}
 
 export interface ClaudeAdapterConfig {
   /**
@@ -153,6 +178,7 @@ export class ClaudeAdapter implements AgentAdapter, ConfigurableAdapter {
       // sandboxed environment. Our container is a hardened, network-isolated sandbox.
       IS_SANDBOX: "1",
       ...(claudeModel ? { CLAUDE_MODEL: claudeModel } : {}),
+      ...claudeOptionEnv(session.providerOptions),
       GIT_AUTHOR_NAME: session.gitAuthorName,
       GIT_AUTHOR_EMAIL: session.gitAuthorEmail,
       GIT_COMMITTER_NAME: session.gitAuthorName,
@@ -210,6 +236,10 @@ export class ClaudeAdapter implements AgentAdapter, ConfigurableAdapter {
       REVIEW_MODE: "1",
       USER_PROMPT_FILE: "/ve-home/user-prompt.txt",
       SYSTEM_PROMPT: input.systemPrompt,
+      ...claudeOptionEnv(input.providerOptions),
+      ...(input.reviewOutputSchema !== undefined
+        ? { REVIEW_OUTPUT_SCHEMA: JSON.stringify(input.reviewOutputSchema) }
+        : {}),
       ...(input.skillDiscoveryEnabled ? { SKILL_DISCOVERY: "1" } : {}),
       ...(input.skillDiscoveryEnabled && input.localSkillsPath !== undefined
         ? { LOCAL_SKILLS_PATH: input.localSkillsPath }
@@ -256,15 +286,13 @@ export class ClaudeAdapter implements AgentAdapter, ConfigurableAdapter {
     const promptStore = this.promptStore;
 
     if (!promptStore) {
-      return spec;
+      throw new Error("Prompt store is required for agent execution");
     }
 
-    const systemPromptId =
-      context.systemPromptId === undefined ? "system_generic_code" : context.systemPromptId;
-    const instructionsPromptId =
-      context.instructionsPromptId === undefined
-        ? "instructions_generic_code"
-        : context.instructionsPromptId;
+    const systemPromptId = context.systemPromptId;
+    const instructionsPromptId = context.instructionsPromptId;
+    if (!systemPromptId) throw new Error("System prompt is required for agent execution");
+    if (!instructionsPromptId) throw new Error("Instructions prompt is required for agent execution");
     const promptIds = [
       ...new Set(
         [systemPromptId, instructionsPromptId].filter(
@@ -283,13 +311,13 @@ export class ClaudeAdapter implements AgentAdapter, ConfigurableAdapter {
         ? promptsById.get(instructionsPromptId) ?? null
         : null;
 
-    if (systemPrompt) {
-      spec.env["SYSTEM_PROMPT"] = systemPrompt.content;
-    }
+    if (!systemPrompt) throw new Error(`System prompt '${systemPromptId}' not found`);
+    if (!instructionsPrompt) throw new Error(`Instructions prompt '${instructionsPromptId}' not found`);
+    assertPromptRole(systemPrompt, "system");
+    assertPromptRole(instructionsPrompt, "instructions");
 
-    if (instructionsPrompt) {
-      spec.userPromptContent = buildCodegenUserPrompt(context, instructionsPrompt.content);
-    }
+    spec.env["SYSTEM_PROMPT"] = systemPrompt.content;
+    spec.userPromptContent = buildCodegenUserPrompt(context, instructionsPrompt.content);
 
     return spec;
   }

@@ -1,5 +1,9 @@
-import { z } from "zod";
-import type { InlineReviewComment, ReviewAgentResult, ReviewSeverity, ThreadReply } from "../interfaces.js";
+import type { ReviewAgentResult } from "../interfaces.js";
+import {
+  REVIEW_RESULT_END_MARKER,
+  REVIEW_RESULT_START_MARKER,
+  parseReviewPayload,
+} from "./reviewOutputContract.js";
 
 /**
  * Parser for the structured block emitted by the code-review agent.
@@ -16,34 +20,10 @@ import type { InlineReviewComment, ReviewAgentResult, ReviewSeverity, ThreadRepl
  *       {"file": "src/foo.ts", "line": 42, "message": "...", "severity": "error"}
  *     ],
  *     "summary": "Overall assessment...",
- *     "score": -1
+ *     "vote": -1
  *   }
  *   REVIEW_RESULT_END
  */
-
-const START_MARKER = "REVIEW_RESULT_START";
-const END_MARKER = "REVIEW_RESULT_END";
-
-const SeveritySchema: z.ZodType<ReviewSeverity> = z.string().min(1);
-
-const InlineCommentSchema: z.ZodType<InlineReviewComment> = z.object({
-  file: z.string().min(1),
-  line: z.number().int().nonnegative(),
-  message: z.string().min(1),
-  severity: SeveritySchema,
-});
-
-const ReplySchema: z.ZodType<ThreadReply> = z.object({
-  threadId: z.string().min(1),
-  message: z.string().min(1),
-});
-
-const PayloadSchema = z.object({
-  comments: z.array(InlineCommentSchema).default([]),
-  summary: z.string().default(""),
-  score: z.union([z.literal(-1), z.literal(0), z.literal(1)]).default(0),
-  replies: z.array(ReplySchema).default([]),
-});
 
 export class ReviewResultParseError extends Error {
   constructor(message: string, public readonly raw?: string) {
@@ -56,8 +36,8 @@ export class ReviewResultParseError extends Error {
  * Extract and parse the REVIEW_RESULT_* block from the agent's output.
  * Throws ReviewResultParseError if no block is found or the JSON is invalid.
  */
-export function parseReviewResult(raw: string): ReviewAgentResult {
-  const startIdx = raw.indexOf(START_MARKER);
+export function parseReviewResult(raw: string, providerKind = "gerrit"): ReviewAgentResult {
+  const startIdx = raw.indexOf(REVIEW_RESULT_START_MARKER);
   if (startIdx === -1) {
     // Fallback: the model may have emitted bare JSON without markers.
     // Try to parse the entire output (or first JSON object) as a valid payload.
@@ -75,37 +55,29 @@ export function parseReviewResult(raw: string): ReviewAgentResult {
         fallbackJson !== undefined &&
         (fallbackJson as Record<string, unknown>)["status"] !== "failed"
       ) {
-        const fallbackParsed = PayloadSchema.safeParse(fallbackJson);
-        if (fallbackParsed.success) {
-          return fallbackParsed.data;
+        const fallbackParsed = parseReviewPayload(providerKind, fallbackJson);
+        if (fallbackParsed) {
+          return fallbackParsed;
         }
       }
     }
     throw new ReviewResultParseError(
-      `Missing ${START_MARKER} marker in agent output`,
+      `Missing ${REVIEW_RESULT_START_MARKER} marker in agent output`,
       raw
     );
   }
-  const endIdx = raw.indexOf(END_MARKER, startIdx + START_MARKER.length);
+  const endIdx = raw.indexOf(
+    REVIEW_RESULT_END_MARKER,
+    startIdx + REVIEW_RESULT_START_MARKER.length,
+  );
   if (endIdx === -1) {
-    // The model output was truncated — likely a repetition loop that hit the
-    // max-tokens cap, or a context-window overflow. Rather than throwing (which
-    // causes the task to fail and retry, leading to the same loop), return a
-    // result with a summary that explains the situation. The score is negative
-    // so a truncated/incomplete review is never treated as a passing (+1) vote —
-    // `computeVote()` maps any negative score to -1.
-    return {
-      comments: [],
-      summary:
-        "Review output was truncated (missing REVIEW_RESULT_END marker). " +
-        "The model may have hit token limits or entered a repetition loop. " +
-        "Re-run the review or switch to a model with better instruction-following.",
-      score: -1,
-      replies: [],
-    };
+    throw new ReviewResultParseError(
+      `Missing ${REVIEW_RESULT_END_MARKER} marker in agent output`,
+      raw,
+    );
   }
 
-  const between = raw.slice(startIdx + START_MARKER.length, endIdx).trim();
+  const between = raw.slice(startIdx + REVIEW_RESULT_START_MARKER.length, endIdx).trim();
   // Allow the agent to wrap the JSON in ```json ... ``` fences.
   const stripped = between
     .replace(/^```(?:json)?\s*/i, "")
@@ -122,35 +94,19 @@ export function parseReviewResult(raw: string): ReviewAgentResult {
     );
   }
 
-  const parsed = PayloadSchema.safeParse(json);
-  if (!parsed.success) {
+  const parsed = parseReviewPayload(providerKind, json);
+  if (!parsed) {
     throw new ReviewResultParseError(
-      `REVIEW_RESULT block does not match schema: ${parsed.error.message}`,
+      `REVIEW_RESULT block does not match the ${providerKind} review schema`,
       stripped
     );
   }
-  return parsed.data;
+  return parsed;
 }
 
 /**
- * Compute a Code-Review-style vote from the agent result.
- *
- * Rules:
- * - If the agent provided an explicit non-zero score, honour it.
- * - score=0: any `error` or `warning` → -1; otherwise → +1.
- * - Empty comments → +1.
+ * Return the provider-neutral decision normalized by the output contract.
  */
-export function computeVote(result: ReviewAgentResult): -1 | 1 {
-  if (result.score < 0) return -1;
-  if (result.score > 0) return 1;
-
-  let hasBlocking = false;
-  for (const c of result.comments) {
-    const severity = c.severity.trim().toLowerCase();
-    if (severity === "error" || severity === "warning") {
-      hasBlocking = true;
-      break;
-    }
-  }
-  return hasBlocking ? -1 : 1;
+export function getReviewDecision(result: ReviewAgentResult): -1 | 0 | 1 {
+  return result.score;
 }

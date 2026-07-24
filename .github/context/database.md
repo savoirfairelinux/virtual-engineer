@@ -1,5 +1,13 @@
 # Database Context
 
+## Agent Prompt References
+
+- `agents.system_prompt_id` and `agents.instructions_prompt_id` are nullable foreign keys at the SQLite schema level, but the store and admin API require both for every create/update.
+- `prompts.prompt_type` is the prompt's runtime role: `system | instructions`, with `instructions` as the database default. The user prompt is generated per cycle from the ticket or review and is not a stored prompt type.
+- New agents cannot be created through the admin API without both references. Each ID must resolve to an existing `prompts` row with the matching role, and updates cannot clear either reference.
+- Runtime resolution is fail-closed: agents missing either prompt, referencing a missing prompt, or crossing the `system` / `instructions` roles do not receive a generic or integration-specific fallback.
+- Startup preserves unknown prompt rows, normalizes unsupported stored roles to `instructions`, and derives referenced roles from existing agent and project-override references. A prompt referenced in both roles is cloned for the instructions side and those references are repointed without changing content; prompt hydration also defensively maps any unsupported role to `instructions`, and obsolete `user_*_review.md` files are ignored.
+
 ## Projects Skill Columns
 
 - `projects.skill_discovery_enabled` is an integer trust gate for local repository skills only. When enabled, the agent container receives `SKILL_DISCOVERY=1` and loads local skills from `local_skills_path`.
@@ -10,6 +18,7 @@
 
 - Runtime migrations are handled by `SqliteStateStore.applyMigrations()` in `src/state/stateStore.ts` using `CREATE TABLE IF NOT EXISTS` and `ensureColumn(...)`.
 - Existing databases get `local_skills_path` through `ensureColumn("projects", "local_skills_path", "TEXT NOT NULL DEFAULT '.github/skills'")`.
+- Existing databases get `prompt_type` through `ensureColumn("prompts", "prompt_type", "TEXT NOT NULL DEFAULT 'instructions'")`; null, `user`, and other unsupported values are normalized to `instructions`, built-in IDs are assigned their declared roles, then custom roles are derived from agent and project override references. Dual-role rows are cloned for instructions references. Missing built-in rows recreated through `upsertPrompt()` use their declared role.
 - `src/state/schema.ts` mirrors these columns for Drizzle typed queries.
 
 ## Related docs

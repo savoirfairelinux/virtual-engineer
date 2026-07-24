@@ -43,7 +43,7 @@ describe("buildReviewPrompt", () => {
     const prompt = buildReviewPrompt({
       details,
       diff,
-      userPrompt: "Review this.",
+      instructionsPrompt: "Review this.",
     });
     expect(prompt).toContain("Project: my-project");
     expect(prompt).toContain("Branch:  main");
@@ -56,7 +56,7 @@ describe("buildReviewPrompt", () => {
     const prompt = buildReviewPrompt({
       details,
       diff,
-      userPrompt: "Review this.",
+      instructionsPrompt: "Review this.",
     });
     expect(prompt).toMatch(/MODIFIED.*src\/foo\.ts/);
     expect(prompt).toMatch(/ADDED.*src\/bar\.ts/);
@@ -65,22 +65,22 @@ describe("buildReviewPrompt", () => {
     expect(prompt).toContain("+hello");
   });
 
-  it("includes user instructions section", () => {
+  it("includes review instructions in the dynamic user prompt", () => {
     const prompt = buildReviewPrompt({
       details,
       diff,
-      userPrompt: "Review this.",
+      instructionsPrompt: "Review this.",
     });
     expect(prompt).not.toContain("## System Prompt");
-    expect(prompt).toContain("## User Instructions");
+    expect(prompt).toContain("## Review Instructions");
     expect(prompt).toContain("Review this.");
   });
 
-  it("includes user prompt when provided", () => {
+  it("includes instructions when provided", () => {
     const prompt = buildReviewPrompt({
       details,
       diff,
-      userPrompt: "act as a senior software engineer",
+      instructionsPrompt: "act as a senior software engineer",
     });
     expect(prompt).toContain("senior software engineer");
   });
@@ -89,7 +89,7 @@ describe("buildReviewPrompt", () => {
     const prompt = buildReviewPrompt({
       details,
       diff,
-      userPrompt: "Focus exclusively on security issues.",
+      instructionsPrompt: "Focus exclusively on security issues.",
     });
     expect(prompt).toContain("Focus exclusively on security issues.");
   });
@@ -107,7 +107,7 @@ describe("buildReviewPrompt", () => {
     const prompt = buildReviewPrompt({
       details,
       diff: huge,
-      userPrompt: "Review this.",
+      instructionsPrompt: "Review this.",
     });
     expect(prompt).toContain("diff truncated");
   });
@@ -116,7 +116,7 @@ describe("buildReviewPrompt", () => {
     const prompt = buildReviewPrompt({
       details,
       diff,
-      userPrompt: "Review this.",
+      instructionsPrompt: "Review this.",
     });
     expect(prompt).not.toContain("Already reported");
   });
@@ -125,7 +125,7 @@ describe("buildReviewPrompt", () => {
     const prompt = buildReviewPrompt({
       details,
       diff,
-      userPrompt: "Review this.",
+      instructionsPrompt: "Review this.",
       priorComments: [],
     });
     expect(prompt).not.toContain("Already reported");
@@ -135,7 +135,7 @@ describe("buildReviewPrompt", () => {
     const prompt = buildReviewPrompt({
       details,
       diff,
-      userPrompt: "Review this.",
+      instructionsPrompt: "Review this.",
       priorComments: [
         { file: "src/foo.ts", line: 12, message: "Null check missing here." },
         { file: "src/bar.ts", line: 3, message: "Use   const\ninstead." },
@@ -150,7 +150,7 @@ describe("buildReviewPrompt", () => {
 
 describe("buildReviewPrompt discussion threads", () => {
   it("omits the open-threads section when none are provided", () => {
-    const prompt = buildReviewPrompt({ details, diff, userPrompt: "Review this." });
+    const prompt = buildReviewPrompt({ details, diff, instructionsPrompt: "Review this." });
     expect(prompt).not.toContain("## Open discussion threads");
   });
 
@@ -158,7 +158,7 @@ describe("buildReviewPrompt discussion threads", () => {
     const prompt = buildReviewPrompt({
       details,
       diff,
-      userPrompt: "Review this.",
+      instructionsPrompt: "Review this.",
       discussionThreads: [],
     });
     expect(prompt).not.toContain("## Open discussion threads");
@@ -168,7 +168,7 @@ describe("buildReviewPrompt discussion threads", () => {
     const prompt = buildReviewPrompt({
       details,
       diff,
-      userPrompt: "Review this.",
+      instructionsPrompt: "Review this.",
       discussionThreads: [
         {
           threadId: "disc-1",

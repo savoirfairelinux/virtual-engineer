@@ -178,6 +178,20 @@ describe("Admin API — Plugin & Integration routes", () => {
       });
       expect(redmine?.["oauth"]).toBeUndefined();
     });
+
+    it("exposes provider-owned agent configuration fields", async () => {
+      const { status, body } = await fetchFromServer(server, "/api/admin/plugins");
+      expect(status).toBe(200);
+      const plugins = body["plugins"] as Array<Record<string, unknown>>;
+      const claude = plugins.find((plugin) => plugin["provider"] === "claude");
+      const redmine = plugins.find((plugin) => plugin["provider"] === "redmine");
+
+      expect(claude?.["agentConfigFields"]).toEqual(expect.arrayContaining([
+        expect.objectContaining({ key: "effort", type: "select" }),
+        expect.objectContaining({ key: "maxTurns", type: "number", valueType: "number" }),
+      ]));
+      expect(redmine?.["agentConfigFields"]).toEqual([]);
+    });
   });
 
   describe("POST /api/admin/integrations", () => {

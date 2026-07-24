@@ -7,6 +7,10 @@
 import { getConfig } from "../config.js";
 import { getLogger } from "../logger.js";
 import { decryptToken } from "../utils/encryption.js";
+import { assertPromptRole } from "../utils/promptRole.js";
+import {
+  resolveProviderOptions,
+} from "../agents/providerOptions.js";
 import { PluginManager } from "../plugins/pluginManager.js";
 import { ReviewOrchestrator } from "./reviewOrchestrator.js";
 import { DockerWorkspaceRunner } from "../workspace/workspaceRunner.js";
@@ -202,8 +206,17 @@ async function resolveReviewAgentForProject(
   pluginManager: PluginManager,
   store: StateStore & PromptStore,
   project: ProjectRecord,
-  bundleLog: ReturnType<typeof getLogger>
-): Promise<{ adapter: AgentAdapter; model: string | undefined; token: string; aiderBackend?: string | undefined; aiderApiBase?: string | undefined } | null> {
+  bundleLog: ReturnType<typeof getLogger>,
+): Promise<{
+  adapter: AgentAdapter;
+  model: string | undefined;
+  token: string;
+  systemPrompt: string;
+  instructionsPrompt: string;
+  providerOptions?: Record<string, unknown> | undefined;
+  aiderBackend?: string | undefined;
+  aiderApiBase?: string | undefined;
+} | null> {
   if (!project.agentId) return null;
 
   try {
@@ -229,7 +242,20 @@ async function resolveReviewAgentForProject(
     // modelConfigJson so a per-project model override actually applies
     // (same semantics as the coding-agent path in orchestrator.ts).
     const resolved = resolveAgentConfig(agent, project);
+    const providerOptions = resolveProviderOptions(resolved.extra);
     const resolvedModel = resolved.model?.trim() || undefined;
+    const [resolvedSystemPrompt, resolvedInstructionsPrompt] = await Promise.all([
+      resolved.systemPromptId ? store.getPrompt(resolved.systemPromptId) : Promise.resolve(null),
+      resolved.instructionsPromptId ? store.getPrompt(resolved.instructionsPromptId) : Promise.resolve(null),
+    ]);
+    if (!resolvedSystemPrompt) {
+      throw new Error(`System prompt '${resolved.systemPromptId}' not found`);
+    }
+    if (!resolvedInstructionsPrompt) {
+      throw new Error(`Instructions prompt '${resolved.instructionsPromptId}' not found`);
+    }
+    assertPromptRole(resolvedSystemPrompt, "system");
+    assertPromptRole(resolvedInstructionsPrompt, "instructions");
 
     // Agent-local credentials are accepted only when they match the active
     // provider. This avoids carrying a stale Claude secret into Copilot (or
@@ -271,6 +297,9 @@ async function resolveReviewAgentForProject(
       adapter,
       model: resolvedModel,
       token,
+      systemPrompt: resolvedSystemPrompt.content,
+      instructionsPrompt: resolvedInstructionsPrompt.content,
+      ...(Object.keys(providerOptions).length > 0 ? { providerOptions } : {}),
       ...(aiderBackend !== undefined ? { aiderBackend } : {}),
       ...(aiderApiBase !== undefined ? { aiderApiBase } : {}),
     };
@@ -350,7 +379,6 @@ export async function buildReviewBundle(
   }
 
   const reviewer = createReviewer(rawConfig, integration, workspaceRunner);
-
   const orchestrator = new ReviewOrchestrator({
     stateStore,
     reviewProvider: reviewer.provider,
@@ -366,16 +394,6 @@ export async function buildReviewBundle(
     // determined once the task (and thus its project) is known.
     resolveAgentForProject: (project: ProjectRecord): ReturnType<typeof resolveReviewAgentForProject> =>
       resolveReviewAgentForProject(pluginManager, stateStore, project, bundleLog),
-    reviewInstructions: await (async (): Promise<string> => {
-      const p = await stateStore.getPrompt(reviewer.userPromptId);
-      if (!p) throw new Error(`Required prompt '${reviewer.userPromptId}' not found in DB — run db:migrate to seed built-in prompts`);
-      return p.content;
-    })(),
-    reviewSystemPrompt: await (async (): Promise<string> => {
-      const p = await stateStore.getPrompt(reviewer.systemPromptId);
-      if (!p) throw new Error(`Required prompt '${reviewer.systemPromptId}' not found in DB — run db:migrate to seed built-in prompts`);
-      return p.content;
-    })(),
     maxDiffChars: getConfig().maxReviewDiffChars,
     maxReviewComments: getConfig().maxReviewComments,
     maxReviewReplies: getConfig().maxReviewReplies,

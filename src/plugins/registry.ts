@@ -41,6 +41,9 @@ export interface PluginField {
   type: "text" | "password" | "url" | "number" | "select";
   required: boolean;
   placeholder?: string;
+  description?: string | undefined;
+  /** How the admin agent form serializes the field into modelConfig.providerOptions. */
+  valueType?: "string" | "number" | "boolean" | undefined;
   /**
    * When `true` this field is not rendered in the admin UI but is still used
    * by the server for secret masking / preservation logic.
@@ -105,10 +108,6 @@ export interface ReviewerBundle {
   provider: ReviewProvider;
   buildCloneTarget: (details: ReviewChangeDetails) => { cloneUrl: string; sshKeyPath: string | null; sshAgentPubKeyPath?: string | null; sshKnownHostsPath: string | null };
   applyPatchset?: (handle: WorkspaceHandle, details: ReviewChangeDetails) => Promise<void>;
-  /** DB key for the system prompt passed to the review agent. */
-  systemPromptId: string;
-  /** DB key for the user instructions prompt injected into the review prompt. */
-  userPromptId: string;
 }
 
 /**
@@ -134,10 +133,6 @@ export interface CodeReviewCapability {
   createConnector?: ((config: unknown, integration: Integration, context?: IntegrationBindingContext) => PluginInstance) | undefined;
   /** Optional live event-stream factory (e.g. Gerrit `stream-events`). */
   streamEvents?: IntegrationEventStreamFactory | undefined;
-  /** ID of the system prompt used when running code-review sessions. */
-  systemPromptId?: string | undefined;
-  /** ID of the user prompt (instructions) used when running code-review sessions. */
-  userPromptId?: string | undefined;
   /** Optional reviewer factory (VE reads diffs and posts comments). */
   createReviewer?: ((config: Record<string, unknown>, integration: Integration, workspaceRunner: WorkspaceRunner) => ReviewerBundle) | undefined;
   /** How review events reach VE for this provider. */
@@ -165,6 +160,8 @@ export interface AgentAdapterContext {
 
 /** `agent_execution` capability: run a coding agent inside a workspace. */
 export interface AgentExecutionCapability {
+  /** Provider-owned fields rendered generically in the agent form. */
+  configFields?: PluginField[] | undefined;
   /**
    * Factory for the runtime agent adapter, given host runtime context derived
    * from `AppConfig`. Declaring this makes a provider a fully self-describing

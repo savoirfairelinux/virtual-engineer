@@ -20,8 +20,8 @@ export interface AgentStoreApi {
     type: AgentType;
     modelConfigJson: string;
     integrationId?: string | null;
-    systemPromptId?: string | null;
-    instructionsPromptId?: string | null;
+    systemPromptId: string;
+    instructionsPromptId: string;
     feedbackInstructionsPromptId?: string | null;
     maxConcurrent?: number;
     enabled?: boolean;
@@ -68,12 +68,14 @@ export function createAgentStore(context: AgentStoreContext): AgentStoreApi {
     type: AgentType;
     modelConfigJson: string;
     integrationId?: string | null;
-    systemPromptId?: string | null;
-    instructionsPromptId?: string | null;
+    systemPromptId: string;
+    instructionsPromptId: string;
     feedbackInstructionsPromptId?: string | null;
     maxConcurrent?: number;
     enabled?: boolean;
   }): Promise<AgentRecord> {
+    if (!input.systemPromptId.trim()) throw new Error("System prompt is required");
+    if (!input.instructionsPromptId.trim()) throw new Error("Instructions prompt is required");
     const now = new Date();
     const id = input.id ?? randomUUID();
     await db.insert(agents).values({
@@ -82,8 +84,8 @@ export function createAgentStore(context: AgentStoreContext): AgentStoreApi {
       type: input.type,
       modelConfigJson: input.modelConfigJson,
       integrationId: input.integrationId ?? null,
-      systemPromptId: input.systemPromptId ?? null,
-      instructionsPromptId: input.instructionsPromptId ?? null,
+      systemPromptId: input.systemPromptId,
+      instructionsPromptId: input.instructionsPromptId,
       feedbackInstructionsPromptId: input.feedbackInstructionsPromptId ?? null,
       maxConcurrent: input.maxConcurrent ?? 1,
       enabled: input.enabled === false ? 0 : 1,
@@ -116,6 +118,14 @@ export function createAgentStore(context: AgentStoreContext): AgentStoreApi {
   ): Promise<AgentRecord> {
     const existing = await getAgentById(id);
     if (!existing) throw new Error(`Agent not found: ${id}`);
+    const systemPromptId = partial.systemPromptId !== undefined
+      ? partial.systemPromptId
+      : existing.systemPromptId;
+    const instructionsPromptId = partial.instructionsPromptId !== undefined
+      ? partial.instructionsPromptId
+      : existing.instructionsPromptId;
+    if (!systemPromptId?.trim()) throw new Error("System prompt is required");
+    if (!instructionsPromptId?.trim()) throw new Error("Instructions prompt is required");
     const now = new Date();
     const update: Record<string, unknown> = { updatedAt: now };
     if (partial.name !== undefined) update["name"] = partial.name;

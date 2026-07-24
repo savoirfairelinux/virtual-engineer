@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Modal, Field, FieldInput, FormError, FormRow, FormActions, FieldTextarea } from "../../components/Modal.tsx";
+import { Modal, Field, FieldInput, FieldSelect, FormError, FormRow, FormActions, FieldTextarea } from "../../components/Modal.tsx";
 import { api } from "../../api.ts";
 import type { ApiPrompt } from "../../types.ts";
 
@@ -15,6 +15,7 @@ export function PromptFormModal({ prompt, readOnly, onClose, onSaved }: Props) {
   const isEdit = !!prompt;
   const [label, setLabel] = useState(prompt?.label ?? "");
   const [content, setContent] = useState(prompt?.content ?? "");
+  const [promptType, setPromptType] = useState<"system" | "instructions">(prompt?.promptType ?? "instructions");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -27,7 +28,7 @@ export function PromptFormModal({ prompt, readOnly, onClose, onSaved }: Props) {
       if (isEdit) {
         await api.put(`/api/admin/prompts/${prompt!.id}`, { label, content });
       } else {
-        await api.post("/api/admin/prompts", { label, content });
+        await api.post("/api/admin/prompts", { label, content, promptType });
       }
       onSaved();
     } catch (e) {
@@ -51,6 +52,17 @@ export function PromptFormModal({ prompt, readOnly, onClose, onSaved }: Props) {
             readOnly={readOnly}
             onChange={(e) => setLabel(e.target.value)}
           />
+        </Field>
+
+        <Field label="Role" required hint="Agent instructions are permanent; workflow instructions guide a generated task request">
+          <FieldSelect
+            value={promptType}
+            disabled={isEdit || readOnly}
+            onChange={(event) => setPromptType(event.target.value as "system" | "instructions")}
+          >
+            <option value="system">Agent instructions</option>
+            <option value="instructions">Workflow instructions</option>
+          </FieldSelect>
         </Field>
 
         <Field label="Content" required hint={`${content.length} characters`}>

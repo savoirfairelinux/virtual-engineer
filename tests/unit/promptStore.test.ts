@@ -7,6 +7,9 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import Database from "better-sqlite3";
+import { mkdir, readFile, writeFile } from "fs/promises";
+import { dirname, join } from "path";
 import { SqliteStateStore } from "../../src/state/stateStore.js";
 import { tempDatabasePath } from "./helpers/tempDatabase.js";
 
@@ -18,9 +21,11 @@ function tempDbPath(): string {
 
 describe("SqliteStateStore — PromptStore", () => {
   let store: SqliteStateStore;
+  let dbPath: string;
 
   beforeEach(async () => {
-    store = await SqliteStateStore.create(tempDbPath());
+    dbPath = tempDbPath();
+    store = await SqliteStateStore.create(dbPath);
   });
 
   afterEach(() => {
@@ -30,13 +35,45 @@ describe("SqliteStateStore — PromptStore", () => {
   // ── getPrompts ─────────────────────────────────────────────────────────────
 
   describe("getPrompts", () => {
-    it("returns at least the two built-in prompts on a fresh database", async () => {
+    it("uses system and instructions roles for built-in prompts", async () => {
       const prompts = await store.getPrompts();
 
       expect(prompts.length).toBeGreaterThanOrEqual(6);
-      const ids = prompts.map((p) => p.id);
-      expect(ids).toContain("system_gerrit_code");
-      expect(ids).toContain("user_gerrit_review");
+      expect(prompts.find((prompt) => prompt.id === "system_gerrit_code")?.promptType).toBe("system");
+      expect(prompts.find((prompt) => prompt.id === "instructions_gerrit_review")?.promptType).toBe("instructions");
+      expect(prompts.some((prompt) => prompt.id === "user_gerrit_review")).toBe(false);
+    });
+
+    it("does not migrate obsolete review prompt override files", async () => {
+      store.close();
+
+      const promptsDir = join(dirname(dbPath), "prompts");
+      const obsoleteOverride = join(promptsDir, "user_gerrit_review.md");
+      await mkdir(promptsDir, { recursive: true });
+      await writeFile(obsoleteOverride, "Obsolete review instructions", "utf8");
+
+      store = await SqliteStateStore.create(dbPath);
+
+      expect((await store.getPrompt("instructions_gerrit_review"))?.content).not.toBe("Obsolete review instructions");
+      expect(await readFile(obsoleteOverride, "utf8")).toBe("Obsolete review instructions");
+    });
+
+    it("does not delete or migrate unknown legacy-named prompt rows", async () => {
+      store.close();
+      const raw = new Database(dbPath);
+      const now = Math.floor(Date.now() / 1000);
+      raw.prepare(
+        "INSERT INTO prompts (id, label, content, prompt_type, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)"
+      ).run("system", "Legacy prompt", "Preserve me", "instructions", now, now);
+      raw.close();
+
+      store = await SqliteStateStore.create(dbPath);
+
+      expect(await store.getPrompt("system")).toMatchObject({
+        id: "system",
+        content: "Preserve me",
+        promptType: "instructions",
+      });
     });
 
     it("each built-in prompt has a non-empty label and content", async () => {
@@ -52,17 +89,17 @@ describe("SqliteStateStore — PromptStore", () => {
     });
 
     it("returns custom prompts after upsert", async () => {
-      await store.upsertPrompt("user_gerrit_review", "Custom instructions content");
+      await store.upsertPrompt("instructions_gerrit_review", "Custom instructions content");
 
       const prompts = await store.getPrompts();
-      const instrPrompt = prompts.find((p) => p.id === "user_gerrit_review");
+      const instrPrompt = prompts.find((p) => p.id === "instructions_gerrit_review");
 
       expect(instrPrompt).toBeDefined();
       expect(instrPrompt!.content).toBe("Custom instructions content");
     });
 
     it("returns all prompts including newly upserted ones", async () => {
-      await store.upsertPrompt("user_gerrit_review", "Instructions v2");
+      await store.upsertPrompt("instructions_gerrit_review", "Instructions v2");
 
       const prompts = await store.getPrompts();
 
@@ -83,11 +120,11 @@ describe("SqliteStateStore — PromptStore", () => {
       expect(prompt!.updatedAt).toBeInstanceOf(Date);
     });
 
-    it("returns the built-in 'user_gerrit_review' prompt with default content", async () => {
-      const prompt = await store.getPrompt("user_gerrit_review");
+    it("returns the built-in review instructions prompt with default content", async () => {
+      const prompt = await store.getPrompt("instructions_gerrit_review");
 
       expect(prompt).not.toBeNull();
-      expect(prompt!.id).toBe("user_gerrit_review");
+      expect(prompt!.id).toBe("instructions_gerrit_review");
       expect(prompt!.label).toMatch(/gerrit/i);
       expect(prompt!.content.length).toBeGreaterThan(10);
     });
@@ -98,11 +135,22 @@ describe("SqliteStateStore — PromptStore", () => {
       expect(prompt).toBeNull();
     });
 
+    it("coerces unsupported stored prompt roles to instructions", async () => {
+      const raw = new Database(dbPath);
+      raw.prepare("UPDATE prompts SET prompt_type = 'user' WHERE id = ?")
+        .run("instructions_generic_code");
+      raw.close();
+
+      const prompt = await store.getPrompt("instructions_generic_code");
+
+      expect(prompt?.promptType).toBe("instructions");
+    });
+
     it("returns the updated content after upsert", async () => {
       const newContent = "You are a test engineer. Only write tests.";
-      await store.upsertPrompt("user_gerrit_review", newContent);
+      await store.upsertPrompt("instructions_gerrit_review", newContent);
 
-      const prompt = await store.getPrompt("user_gerrit_review");
+      const prompt = await store.getPrompt("instructions_gerrit_review");
 
       expect(prompt!.content).toBe(newContent);
     });
@@ -112,63 +160,73 @@ describe("SqliteStateStore — PromptStore", () => {
 
   describe("upsertPrompt", () => {
     it("creates a new prompt record when none exists", async () => {
-      const result = await store.upsertPrompt("user_gerrit_review", "New instructions content");
+      const result = await store.upsertPrompt("instructions_gerrit_review", "New instructions content");
 
-      expect(result.id).toBe("user_gerrit_review");
+      expect(result.id).toBe("instructions_gerrit_review");
       expect(result.content).toBe("New instructions content");
       expect(result.updatedAt).toBeInstanceOf(Date);
     });
 
-    it("updates an existing prompt when called again with the same id", async () => {
-      await store.upsertPrompt("user_gerrit_review", "First version");
-      const updated = await store.upsertPrompt("user_gerrit_review", "Second version");
+    it("recreates a missing built-in system prompt with its declared role", async () => {
+      const raw = new Database(dbPath);
+      raw.prepare("DELETE FROM prompts WHERE id = ?").run("system_gerrit_review");
+      raw.close();
 
-      expect(updated.id).toBe("user_gerrit_review");
+      const result = await store.upsertPrompt("system_gerrit_review", "Restored system prompt");
+
+      expect(result.promptType).toBe("system");
+    });
+
+    it("updates an existing prompt when called again with the same id", async () => {
+      await store.upsertPrompt("instructions_gerrit_review", "First version");
+      const updated = await store.upsertPrompt("instructions_gerrit_review", "Second version");
+
+      expect(updated.id).toBe("instructions_gerrit_review");
       expect(updated.content).toBe("Second version");
     });
 
     it("preserves the label field when updating content", async () => {
-      const initial = await store.getPrompt("user_gerrit_review");
+      const initial = await store.getPrompt("instructions_gerrit_review");
       const originalLabel = initial!.label;
 
-      await store.upsertPrompt("user_gerrit_review", "Updated content");
-      const afterUpdate = await store.getPrompt("user_gerrit_review");
+      await store.upsertPrompt("instructions_gerrit_review", "Updated content");
+      const afterUpdate = await store.getPrompt("instructions_gerrit_review");
 
       expect(afterUpdate!.label).toBe(originalLabel);
     });
 
     it("updates updatedAt timestamp on each upsert", async () => {
-      const before = await store.upsertPrompt("user_gerrit_review", "v1");
+      const before = await store.upsertPrompt("instructions_gerrit_review", "v1");
       // Small delay to ensure timestamps differ
       await new Promise<void>((resolve) => setTimeout(resolve, 5));
-      const after = await store.upsertPrompt("user_gerrit_review", "v2");
+      const after = await store.upsertPrompt("instructions_gerrit_review", "v2");
 
       expect(after.updatedAt.getTime()).toBeGreaterThanOrEqual(before.updatedAt.getTime());
     });
 
     it("returns the persisted prompt (verifiable via getPrompt)", async () => {
       const content = "You are a diligent software engineer.";
-      await store.upsertPrompt("user_gerrit_review", content);
+      await store.upsertPrompt("instructions_gerrit_review", content);
 
-      const retrieved = await store.getPrompt("user_gerrit_review");
+      const retrieved = await store.getPrompt("instructions_gerrit_review");
 
       expect(retrieved!.content).toBe(content);
     });
 
     it("stores multi-line content with newlines intact", async () => {
       const multilineContent = "Line 1\nLine 2\n\nLine 4 after blank";
-      await store.upsertPrompt("user_gerrit_review", multilineContent);
+      await store.upsertPrompt("instructions_gerrit_review", multilineContent);
 
-      const retrieved = await store.getPrompt("user_gerrit_review");
+      const retrieved = await store.getPrompt("instructions_gerrit_review");
 
       expect(retrieved!.content).toBe(multilineContent);
     });
 
     it("stores large content without truncation", async () => {
       const largeContent = "x".repeat(10_000);
-      await store.upsertPrompt("user_gerrit_review", largeContent);
+      await store.upsertPrompt("instructions_gerrit_review", largeContent);
 
-      const retrieved = await store.getPrompt("user_gerrit_review");
+      const retrieved = await store.getPrompt("instructions_gerrit_review");
 
       expect(retrieved!.content).toHaveLength(10_000);
     });
@@ -178,11 +236,11 @@ describe("SqliteStateStore — PromptStore", () => {
 
   describe("isolation across store instances", () => {
     it("changes in one store instance are not visible in a second store on a different db", async () => {
-      await store.upsertPrompt("user_gerrit_review", "store1 content");
+      await store.upsertPrompt("instructions_gerrit_review", "store1 content");
 
       const store2 = await SqliteStateStore.create(tempDbPath());
       try {
-        const prompt = await store2.getPrompt("user_gerrit_review");
+        const prompt = await store2.getPrompt("instructions_gerrit_review");
         // store2 has different db path — it should have the default, not "store1 content"
         expect(prompt!.content).not.toBe("store1 content");
       } finally {
@@ -195,7 +253,7 @@ describe("SqliteStateStore — PromptStore", () => {
 
   describe("createPrompt", () => {
     it("creates a new prompt with user-provided label and generated id", async () => {
-      const prompt = await store.createPrompt("My Custom Prompt", "This is custom content");
+      const prompt = await store.createPrompt("My Custom Prompt", "This is custom content", "instructions");
 
       expect(prompt.id).toBeDefined();
       expect(prompt.id).not.toBeNull();
@@ -204,27 +262,27 @@ describe("SqliteStateStore — PromptStore", () => {
     });
 
     it("normalizes label to id (lowercase, spaces to dashes)", async () => {
-      const prompt = await store.createPrompt("My Test Prompt", "content");
+      const prompt = await store.createPrompt("My Test Prompt", "content", "instructions");
 
       expect(prompt.id).toMatch(/^my-test-prompt/);
     });
 
     it("rejects duplicate label names with appropriate error", async () => {
-      await store.createPrompt("Test Prompt", "content1");
+      await store.createPrompt("Test Prompt", "content1", "instructions");
 
       await expect(
-        store.createPrompt("Test Prompt", "content2")
+        store.createPrompt("Test Prompt", "content2", "instructions")
       ).rejects.toThrow(/already exists|duplicate/i);
     });
 
     it("rejects invalid (empty) labels", async () => {
       await expect(
-        store.createPrompt("", "content")
+        store.createPrompt("", "content", "instructions")
       ).rejects.toThrow(/invalid|empty|label/i);
     });
 
     it("accepts special characters and normalizes them", async () => {
-      const prompt = await store.createPrompt("My@Test#Prompt!", "content");
+      const prompt = await store.createPrompt("My@Test#Prompt!", "content", "instructions");
 
       expect(prompt.id).toBeDefined();
       // id should be normalized (special chars removed/replaced)
@@ -234,7 +292,7 @@ describe("SqliteStateStore — PromptStore", () => {
 
     it("stores multi-line content correctly", async () => {
       const multilineContent = "Line 1\nLine 2\n\nLine 4";
-      const prompt = await store.createPrompt("Multiline Prompt", multilineContent);
+      const prompt = await store.createPrompt("Multiline Prompt", multilineContent, "instructions");
 
       expect(prompt.content).toBe(multilineContent);
 
@@ -244,7 +302,7 @@ describe("SqliteStateStore — PromptStore", () => {
 
     it("sets timestamps on creation", async () => {
       const before = Math.floor(Date.now() / 1000) - 1; // seconds, subtract 1 for safety
-      const prompt = await store.createPrompt("Timestamped Prompt", "content");
+      const prompt = await store.createPrompt("Timestamped Prompt", "content", "instructions");
       const after = Math.floor(Date.now() / 1000) + 1; // seconds, add 1 for safety
 
       expect(prompt.updatedAt).toBeInstanceOf(Date);
@@ -254,7 +312,7 @@ describe("SqliteStateStore — PromptStore", () => {
     });
 
     it("persists created prompt to database", async () => {
-      const prompt = await store.createPrompt("Persisted Prompt", "persistent content");
+      const prompt = await store.createPrompt("Persisted Prompt", "persistent content", "instructions");
 
       const retrieved = await store.getPrompt(prompt.id);
       expect(retrieved).not.toBeNull();
@@ -267,7 +325,7 @@ describe("SqliteStateStore — PromptStore", () => {
 
   describe("deletePrompt", () => {
     it("deletes a custom prompt successfully", async () => {
-      const prompt = await store.createPrompt("To Delete", "content");
+      const prompt = await store.createPrompt("To Delete", "content", "instructions");
       const id = prompt.id;
 
       await store.deletePrompt(id);
@@ -282,9 +340,9 @@ describe("SqliteStateStore — PromptStore", () => {
       ).rejects.toThrow(/cannot delete|built-in/i);
     });
 
-    it("rejects deletion of the built-in 'user_gerrit_review' prompt", async () => {
+    it("rejects deletion of the built-in review instructions prompt", async () => {
       await expect(
-        store.deletePrompt("user_gerrit_review")
+        store.deletePrompt("instructions_gerrit_review")
       ).rejects.toThrow(/cannot delete|built-in/i);
     });
 
@@ -295,17 +353,17 @@ describe("SqliteStateStore — PromptStore", () => {
     });
 
     it("allows re-creation after deletion of custom prompt", async () => {
-      const prompt1 = await store.createPrompt("Reusable Name", "v1");
+      const prompt1 = await store.createPrompt("Reusable Name", "v1", "instructions");
       await store.deletePrompt(prompt1.id);
 
-      const prompt2 = await store.createPrompt("Reusable Name", "v2");
+      const prompt2 = await store.createPrompt("Reusable Name", "v2", "instructions");
       expect(prompt2.label).toBe("Reusable Name");
       expect(prompt2.content).toBe("v2");
     });
 
     it("does not affect other prompts when one is deleted", async () => {
-      const p1 = await store.createPrompt("Prompt 1", "content 1");
-      const p2 = await store.createPrompt("Prompt 2", "content 2");
+      const p1 = await store.createPrompt("Prompt 1", "content 1", "instructions");
+      const p2 = await store.createPrompt("Prompt 2", "content 2", "instructions");
 
       await store.deletePrompt(p1.id);
 
@@ -322,28 +380,28 @@ describe("SqliteStateStore — PromptStore", () => {
     // Note: normalizePromptId is a private method; test indirectly via createPrompt
 
     it("converts spaces to dashes when generating id from label", async () => {
-      const prompt = await store.createPrompt("My Test Label", "content");
+      const prompt = await store.createPrompt("My Test Label", "content", "instructions");
       expect(prompt.id).toMatch(/^my-test-label/);
     });
 
     it("converts uppercase to lowercase in id", async () => {
-      const prompt = await store.createPrompt("UPPERCASE LABEL", "content");
+      const prompt = await store.createPrompt("UPPERCASE LABEL", "content", "instructions");
       expect(prompt.id).toMatch(/^uppercase-label/);
     });
 
     it("handles mixed case normalization", async () => {
-      const prompt = await store.createPrompt("Mixed Case Label", "content");
+      const prompt = await store.createPrompt("Mixed Case Label", "content", "instructions");
       expect(prompt.id).toMatch(/^mixed-case-label/);
     });
 
     it("truncates very long labels to reasonable length", async () => {
       const longLabel = "a".repeat(100);
-      const prompt = await store.createPrompt(longLabel, "content");
+      const prompt = await store.createPrompt(longLabel, "content", "instructions");
       expect(prompt.id.length).toBeLessThanOrEqual(100);
     });
 
     it("removes or replaces special characters", async () => {
-      const prompt = await store.createPrompt("Label@With#Special$Chars!", "content");
+      const prompt = await store.createPrompt("Label@With#Special$Chars!", "content", "instructions");
       // Should not throw, and id should be a valid string
       expect(typeof prompt.id).toBe("string");
       expect(prompt.id.length).toBeGreaterThan(0);
