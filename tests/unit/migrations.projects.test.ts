@@ -144,6 +144,37 @@ describe("Phase 2 migrations", () => {
     }
   });
 
+  it("normalizes unsupported legacy prompt roles during upgrade", async () => {
+    const dbPath = tempDbPath();
+    const legacy = new Database(dbPath);
+    const now = Math.floor(Date.now() / 1000);
+    legacy.exec(`
+      CREATE TABLE prompts (
+        id TEXT PRIMARY KEY,
+        label TEXT NOT NULL,
+        content TEXT NOT NULL,
+        prompt_type TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+    `);
+    legacy.prepare(
+      "INSERT INTO prompts (id, label, content, prompt_type, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)"
+    ).run("legacy-user", "Legacy user", "Legacy instructions", "user", now, now);
+    legacy.prepare(
+      "INSERT INTO prompts (id, label, content, prompt_type, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)"
+    ).run("legacy-null", "Legacy null", "Legacy instructions", null, now, now);
+    legacy.close();
+
+    const store = await SqliteStateStore.create(dbPath);
+    try {
+      expect((await store.getPrompt("legacy-user"))?.promptType).toBe("instructions");
+      expect((await store.getPrompt("legacy-null"))?.promptType).toBe("instructions");
+    } finally {
+      store.close();
+    }
+  });
+
   it("enforces UNIQUE (integration_id, ticket_project_key) on project_ticket_source", async () => {
     const store = await SqliteStateStore.create(tempDbPath());
     try {

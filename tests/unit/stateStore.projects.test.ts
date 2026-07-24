@@ -618,6 +618,23 @@ describe("resolveAgentConfig — partial-merge semantics", () => {
     expect(r.instructionsPromptId).toBe("custom-ins");
   });
 
+  it("trims prompt ids and rejects whitespace-only overrides", () => {
+    const resolved = resolveAgentConfig(
+      buildAgent(),
+      buildProject(JSON.stringify({
+        systemPromptId: "  custom-sys  ",
+        instructionsPromptId: "  custom-ins  ",
+      })),
+    );
+    expect(resolved.systemPromptId).toBe("custom-sys");
+    expect(resolved.instructionsPromptId).toBe("custom-ins");
+
+    expect(() => resolveAgentConfig(
+      buildAgent(),
+      buildProject(JSON.stringify({ systemPromptId: "   " })),
+    )).toThrow(/system prompt/i);
+  });
+
   it("preserves apiKey overrides from project config", () => {
     const r = resolveAgentConfig(
       buildAgent({

@@ -135,6 +135,17 @@ describe("SqliteStateStore — PromptStore", () => {
       expect(prompt).toBeNull();
     });
 
+    it("coerces unsupported stored prompt roles to instructions", async () => {
+      const raw = new Database(dbPath);
+      raw.prepare("UPDATE prompts SET prompt_type = 'user' WHERE id = ?")
+        .run("instructions_generic_code");
+      raw.close();
+
+      const prompt = await store.getPrompt("instructions_generic_code");
+
+      expect(prompt?.promptType).toBe("instructions");
+    });
+
     it("returns the updated content after upsert", async () => {
       const newContent = "You are a test engineer. Only write tests.";
       await store.upsertPrompt("instructions_gerrit_review", newContent);
@@ -154,6 +165,16 @@ describe("SqliteStateStore — PromptStore", () => {
       expect(result.id).toBe("instructions_gerrit_review");
       expect(result.content).toBe("New instructions content");
       expect(result.updatedAt).toBeInstanceOf(Date);
+    });
+
+    it("recreates a missing built-in system prompt with its declared role", async () => {
+      const raw = new Database(dbPath);
+      raw.prepare("DELETE FROM prompts WHERE id = ?").run("system_gerrit_review");
+      raw.close();
+
+      const result = await store.upsertPrompt("system_gerrit_review", "Restored system prompt");
+
+      expect(result.promptType).toBe("system");
     });
 
     it("updates an existing prompt when called again with the same id", async () => {

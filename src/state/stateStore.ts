@@ -496,6 +496,8 @@ export class SqliteStateStore {
     this.ensureColumn("prompts", "prompt_type", "TEXT NOT NULL DEFAULT 'instructions'");
 
     this.raw.exec(`
+      UPDATE prompts SET prompt_type = 'instructions'
+        WHERE prompt_type IS NULL OR prompt_type NOT IN ('system', 'instructions');
       UPDATE prompts SET prompt_type = 'system'
         WHERE id IN (
           'system_generic_code',
@@ -688,8 +690,8 @@ export function resolveAgentConfig(agent: AgentRecord, project: ProjectRecord): 
   const sysOverride = typeof overridePrompts.systemPromptId === "string" ? overridePrompts.systemPromptId : null;
   const insOverride = typeof overridePrompts.instructionsPromptId === "string" ? overridePrompts.instructionsPromptId : null;
   const fbOverride = typeof overridePrompts.feedbackInstructionsPromptId === "string" ? overridePrompts.feedbackInstructionsPromptId : null;
-  const systemPromptId = sysOverride ?? agent.systemPromptId;
-  const instructionsPromptId = insOverride ?? agent.instructionsPromptId;
+  const systemPromptId = (sysOverride ?? agent.systemPromptId)?.trim() || null;
+  const instructionsPromptId = (insOverride ?? agent.instructionsPromptId)?.trim() || null;
   if (!systemPromptId) {
     throw new Error(`Agent '${agent.id}' has no system prompt configured`);
   }
@@ -711,7 +713,8 @@ export function resolveAgentConfig(agent: AgentRecord, project: ProjectRecord): 
       : undefined,
     systemPromptId,
     instructionsPromptId,
-    feedbackInstructionsPromptId: fbOverride ?? agent.feedbackInstructionsPromptId ?? null,
+    feedbackInstructionsPromptId:
+      (fbOverride ?? agent.feedbackInstructionsPromptId)?.trim() || null,
     extra,
   };
 }

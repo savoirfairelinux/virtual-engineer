@@ -36,6 +36,19 @@ const BUILT_IN_PROMPT_IDS = new Set([
   "instructions_github_review",
 ]);
 
+const BUILT_IN_SYSTEM_PROMPT_IDS = new Set([
+  "system_generic_code",
+  "system_gerrit_code",
+  "system_gitlab_code",
+  "system_gerrit_review",
+  "system_gitlab_review",
+  "system_github_review",
+]);
+
+function builtInPromptType(id: string): PromptType {
+  return BUILT_IN_SYSTEM_PROMPT_IDS.has(id) ? "system" : "instructions";
+}
+
 export function createPromptStore(context: PromptStoreContext): PromptStoreApi {
   const { db, dbDir } = context;
 
@@ -44,7 +57,7 @@ export function createPromptStore(context: PromptStoreContext): PromptStoreApi {
       id: row.id,
       label: row.label,
       content: row.content,
-      promptType: (row.promptType ?? "instructions") as PromptType,
+      promptType: row.promptType === "system" ? "system" : "instructions",
       updatedAt: row.updatedAt,
     };
   }
@@ -178,7 +191,7 @@ export function createPromptStore(context: PromptStoreContext): PromptStoreApi {
         id,
         label: defaultPromptLabel(id),
         content,
-        promptType: "instructions",
+        promptType: builtInPromptType(id),
         createdAt: now,
         updatedAt: now,
       });
