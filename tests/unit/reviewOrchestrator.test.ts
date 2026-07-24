@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { ReviewOrchestrator } from "../../src/review/reviewOrchestrator.js";
+import {
+  ReviewOrchestrator,
+  buildReviewSystemPrompt,
+} from "../../src/review/reviewOrchestrator.js";
 import { computeCommentHash, computeThreadReplyHash } from "../../src/review/commentHash.js";
 import {
   makeExternalChangeId,
@@ -19,6 +22,18 @@ import {
 } from "../../src/interfaces.js";
 
 const CHANGE_ID = makeExternalChangeId("p~master~Iabc");
+
+describe("buildReviewSystemPrompt", () => {
+  it("keeps the output contract out of MCP-native agent prompts", () => {
+    expect(buildReviewSystemPrompt("Review policy", "gerrit", "copilot")).toBe("Review policy");
+    expect(buildReviewSystemPrompt("Review policy", "gerrit", "claude")).toBe("Review policy");
+  });
+
+  it("retains the text contract for Aider", () => {
+    expect(buildReviewSystemPrompt("Review policy", "gerrit", "aider"))
+      .toContain("REVIEW_RESULT_START");
+  });
+});
 
 const PATCHSET_OPTIONS: Omit<PatchsetCheckoutOptions, "revisionNumber" | "patchset"> = {
   vcsBaseUrl: "ssh://admin@gerrit.test:29418",
@@ -214,7 +229,7 @@ function makeDeps(
     integrationId: "gerrit-1",
     workspaceRunner: runner,
     resolveAgentForProject: vi.fn(async () => ({
-      adapter: { name: "test-agent" } as AgentAdapter,
+      adapter: { name: "copilot" } as AgentAdapter,
       model: "test-model",
       token: "gh_test_token",
       systemPrompt: "You are a code reviewer.",
@@ -875,9 +890,10 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
         patchset: 2,
         agentToken: "gh_test_token",
         prompt: expect.any(String),
-        systemPrompt: expect.stringMatching(
-          /You are a code reviewer\.[\s\S]*REVIEW_RESULT_START[\s\S]*REVIEW_RESULT_END/
-        ),
+        systemPrompt: "You are a code reviewer.",
+        reviewOutputSchema: expect.objectContaining({
+          required: expect.arrayContaining(["vote"]),
+        }),
       }),
       expect.objectContaining({ onStderrChunk: expect.any(Function) })
     );
@@ -907,7 +923,7 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
     const initial = makeTask({ state: "REVIEW_PENDING", projectId: makeProjectId("proj-1") });
     const mocks = makeMocks(initial);
     const { runner } = makeWorkspaceRunner();
-    const projectAdapter = { name: "project-agent" } as AgentAdapter;
+    const projectAdapter = { name: "copilot" } as AgentAdapter;
     const resolveAgentForProject = vi.fn(async () => ({
       adapter: projectAdapter,
       model: "gpt-5",
@@ -931,12 +947,12 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
     );
   });
 
-  it("uses project-resolved prompts and appends the immutable integration contract", async () => {
+  it("uses project-resolved prompts and passes the immutable integration schema", async () => {
     const initial = makeTask({ state: "REVIEW_PENDING", projectId: makeProjectId("proj-1") });
     const mocks = makeMocks(initial);
     const { runner } = makeWorkspaceRunner();
     const resolveAgentForProject = vi.fn(async () => ({
-      adapter: { name: "project-agent" } as AgentAdapter,
+      adapter: { name: "copilot" } as AgentAdapter,
       model: "gpt-5",
       token: "project-specific-token",
       systemPrompt: "Custom review role.",
@@ -950,9 +966,10 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
       expect.anything(),
       expect.objectContaining({
         prompt: expect.stringContaining("Focus on authorization boundaries."),
-        systemPrompt: expect.stringMatching(
-          /Custom review role\.[\s\S]*REVIEW_RESULT_START[\s\S]*\"vote\"[\s\S]*REVIEW_RESULT_END/
-        ),
+        systemPrompt: "Custom review role.",
+        reviewOutputSchema: expect.objectContaining({
+          required: expect.arrayContaining(["vote"]),
+        }),
       }),
       expect.anything()
     );

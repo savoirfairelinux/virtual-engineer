@@ -34,6 +34,7 @@ import {
 import { emitEvent } from './providers/events.js';
 import { resolveProvider, isAgentProvider, AGENT_PROVIDER_IDS } from './providers/registry.js';
 import type { AgentRun } from './providers/types.js';
+import { CHANGE_SUBMISSION_JSON_SCHEMA, readSubmission } from './mcpSubmission.js';
 
 // ── Environment ────────────────────────────────────────────────────────────────
 const AGENT_PROVIDER = process.env['AGENT_PROVIDER'] ?? 'copilot';
@@ -179,7 +180,13 @@ async function runReviewMode(): Promise<ReviewWorkerResult> {
 
   const agent = await runAgent(reviewPrompt, 9 * 60 * 1000, 'review');
   try {
-    const rawOutput = agent.content ?? '';
+    let rawOutput = agent.content ?? '';
+    if (ACTIVE_PROVIDER.submissionTransport === 'mcp') {
+      if (REVIEW_OUTPUT_SCHEMA === undefined) {
+        throw new Error('REVIEW_OUTPUT_SCHEMA is required for MCP review submissions');
+      }
+      rawOutput = JSON.stringify(readSubmission(undefined, REVIEW_OUTPUT_SCHEMA));
+    }
     // session.end is emitted by the provider runner (see providers/).
     process.stderr.write(`review complete (${rawOutput.length} chars)\n`);
 
@@ -259,7 +266,7 @@ async function main(): Promise<AgentResult> {
   const agent = await runAgent(userPrompt, 3_540_000, 'codegen');
   const handlerState = { toolCallCount: agent.toolCallCount, toolsByKind: agent.toolsByKind };
   const rawContent = agent.content ?? 'Task completed';
-  const summary = rawContent.trim().slice(0, 1000);
+  let summary = rawContent.trim().slice(0, 1000);
 
   let result: AgentResult = {
     status: 'failed',
@@ -270,6 +277,14 @@ async function main(): Promise<AgentResult> {
   };
 
   try {
+    const submission = ACTIVE_PROVIDER.submissionTransport === 'mcp'
+      ? readSubmission(undefined, CHANGE_SUBMISSION_JSON_SCHEMA)
+      : null;
+    const submittedSummary = submission?.['summary'];
+    if (typeof submittedSummary === 'string') {
+      summary = submittedSummary.trim().slice(0, 1000);
+    }
+
     process.stderr.write('session idle — collecting changes\n');
     // session.end is emitted by the provider runner (see providers/).
 
