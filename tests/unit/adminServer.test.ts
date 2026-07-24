@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { createHmac } from "node:crypto";
 import { AddressInfo } from "node:net";
 import { makeExternalChangeId, makeTaskId, makeTicketId } from "../../src/interfaces.js";
 import type { AgentCycle, OAuthAppStore, IntegrationStore, StateStore, StateTransition, Task } from "../../src/interfaces.js";
@@ -1284,6 +1285,70 @@ describe("createAdminServer", () => {
       expect(fetchMock).toHaveBeenCalledTimes(1);
     } finally {
       vi.unstubAllGlobals();
+      await closeServer(server);
+    }
+  });
+
+  it("uses ADMIN_TRUST_PROXY for webhook IP restrictions", async () => {
+    const webhookSecret = "s".repeat(64);
+    const body = JSON.stringify({ issue: { id: 1 } });
+    const integrationStore = {
+      getIntegration: vi.fn(async () => ({
+        id: "redmine-1",
+        provider: "redmine",
+        name: "Redmine",
+        configJson: JSON.stringify({
+          webhookSecret,
+          webhookAllowedIps: ["192.0.2.10"],
+        }),
+        enabled: true,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      })),
+    } as unknown as IntegrationStore;
+    const server = createAdminServer({
+      stateStore: makeStateStore(),
+      integrationStore,
+      webhooks: {
+        projectStore: { findProjectByTicketSource: vi.fn(async () => null) },
+        orchestrator: {
+          startTaskForProject: vi.fn(async () => undefined),
+          triggerFeedbackForChange: vi.fn(async () => undefined),
+          markChangeMerged: vi.fn(async () => undefined),
+          markChangeAbandoned: vi.fn(async () => undefined),
+        },
+      },
+      config: {
+        nodeEnv: "test",
+        logLevel: "info",
+        maxAgentCycles: 3,
+        maxRetryAttempts: 5,
+        pollingIntervalMs: 30_000,
+        adminTrustProxy: true,
+      },
+      polling: {
+        isRunning: () => true,
+        getIntervals: () => ({ intervalMs: 30_000 }),
+      },
+      providers: providerSummaries,
+    });
+
+    try {
+      const baseUrl = await listen(server);
+      const signature = createHmac("sha256", webhookSecret).update(body).digest("hex");
+      const response = await fetch(`${baseUrl}/webhooks/redmine-1/unknown`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-forwarded-for": "192.0.2.10",
+          "x-hub-signature-256": `sha256=${signature}`,
+        },
+        body,
+      });
+
+      expect(response.status).toBe(202);
+      expect(integrationStore.getIntegration).toHaveBeenCalledWith("redmine-1");
+    } finally {
       await closeServer(server);
     }
   });

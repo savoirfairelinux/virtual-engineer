@@ -182,7 +182,7 @@ All env vars are optional. Only system/infra settings remain — provider creden
 | `ADMIN_API_ENABLED` | `true` | |
 | `ADMIN_API_HOST` / `ADMIN_API_PORT` | `127.0.0.1` / `3100` | |
 | `ADMIN_AUTH_SECRET` | — | Encryption key for OAuth/session tokens at rest (AES-256-GCM). Admin auth itself uses DB-backed user accounts + session tokens, not HMAC. |
-| `ADMIN_TRUST_PROXY` | `false` | When `true`, extract client IP from `X-Forwarded-For` for rate-limiting. Only enable when a trusted reverse proxy fronts the admin server; default loopback binding makes this unnecessary in standard deployments. |
+| `ADMIN_TRUST_PROXY` | `false` | When `true`, extract the client IP from the first `X-Forwarded-For` value for login rate-limiting and webhook IP restrictions. Only enable behind a trusted reverse proxy that overwrites inbound forwarding headers. Webhook signatures remain mandatory. |
 | `POLLING_INTERVAL_MS` | `30000` | **DB-managed** default seed — polling loop tick interval; runtime value lives in `app_settings` and is edited from admin UI → System Settings |
 | `MAX_AGENT_CYCLES` | `3` | **DB-managed** default seed — per-task cap → FAILED; runtime value in `app_settings` |
 | `MAX_RETRY_ATTEMPTS` | `5` | **DB-managed** default seed — per-ticket cap; runtime value in `app_settings` |

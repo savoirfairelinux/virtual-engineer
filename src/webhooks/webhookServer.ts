@@ -34,6 +34,7 @@ export interface WebhookServerDependencies {
   integrationStore: IntegrationStore;
   projectStore: ProjectLookupStore;
   orchestrator: WebhookCapableOrchestrator;
+  trustProxy?: boolean | undefined;
 }
 
 export interface WebhookContext {
@@ -127,27 +128,24 @@ export async function handleWebhookRequest(
     return true;
   }
 
-  // Get the remote IP address for IP-based allowlisting (useful when webhook
-  // sender doesn't support auth headers, e.g., Gerrit 3.12 webhooks plugin)
-  const remoteIp = extractRemoteAddress(request);
+  const sigVerifyResult = verifySignatureWithDiags(request.headers, rawBody, secret);
+  if (!sigVerifyResult.valid) {
+    log.warn(
+      { integrationId, event, verification: sigVerifyResult.diagnostics },
+      "webhook rejected: signature mismatch"
+    );
+    writeUnauthorized(response);
+    return true;
+  }
 
-  // IP-based allowlisting: check if integration has allowed IPs configured,
-  // and if the request comes from one of them, skip signature verification.
+  // IP allowlists are an additional source restriction, never a substitute for
+  // authenticating the request body.
+  const remoteIp = extractRemoteAddress(request, deps.trustProxy ?? false);
   const allowedIps = extractAllowedIpsFromConfig(integration);
-  const isIpAllowed = allowedIps.length > 0 && remoteIp && allowedIps.includes(remoteIp);
-
-  if (!isIpAllowed) {
-    const sigVerifyResult = verifySignatureWithDiags(request.headers, rawBody, secret);
-    if (!sigVerifyResult.valid) {
-      log.warn(
-        { integrationId, event, remoteIp, verification: sigVerifyResult.diagnostics },
-        "webhook rejected: signature mismatch"
-      );
-      writeUnauthorized(response);
-      return true;
-    }
-  } else {
-    log.debug({ integrationId, remoteIp }, "webhook signature skipped: ip allowlisted");
+  if (allowedIps.length > 0 && (!remoteIp || !allowedIps.includes(remoteIp))) {
+    log.warn({ integrationId, event, remoteIp }, "webhook rejected: source IP not allowlisted");
+    writeUnauthorized(response);
+    return true;
   }
 
   let payload: unknown;
@@ -239,31 +237,26 @@ function extractWebhookSecret(integration: Integration | null): string | null {
 }
 
 /**
- * Extract the remote IP address from the request, handling X-Forwarded-For
- * and other proxy headers. Returns undefined if no IP could be determined.
+ * Extract the remote IP address from the socket, or from X-Forwarded-For when
+ * the deployment explicitly trusts its reverse proxy.
  */
-function extractRemoteAddress(request: IncomingMessage): string | undefined {
-  // Check X-Forwarded-For first (for proxied requests)
-  const forwarded = pickHeader(request.headers, "x-forwarded-for");
-  if (forwarded) {
-    // X-Forwarded-For can contain multiple IPs; the client is the first
-    return forwarded.split(",")[0]?.trim();
+function extractRemoteAddress(request: IncomingMessage, trustProxy: boolean): string | undefined {
+  if (trustProxy) {
+    const forwarded = pickHeader(request.headers, "x-forwarded-for");
+    const clientAddress = forwarded?.split(",")[0]?.trim();
+    if (clientAddress) return normalizeRemoteAddress(clientAddress);
   }
-  // Fall back to socket remote address
-  const addr = request.socket.remoteAddress;
-  if (addr) {
-    // Remove IPv6 prefix if present (::ffff:192.168.x.x → 192.168.x.x)
-    if (addr.startsWith("::ffff:")) {
-      return addr.substring(7);
-    }
-    return addr;
-  }
-  return undefined;
+  const socketAddress = request.socket.remoteAddress;
+  return socketAddress ? normalizeRemoteAddress(socketAddress) : undefined;
+}
+
+function normalizeRemoteAddress(address: string): string {
+  return address.startsWith("::ffff:") ? address.substring(7) : address;
 }
 
 /**
  * Extract the list of allowed IPs from the integration config.
- * These IPs are trusted for webhook delivery and will bypass signature verification.
+ * These IPs restrict which authenticated webhook senders are accepted.
  *
  * Format: { "webhookAllowedIps": ["192.168.48.60", "10.0.0.1"] }
  */

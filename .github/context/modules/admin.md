@@ -50,7 +50,7 @@ All `/api/admin/*` routes are declared in `buildApiRouter()` and its per-area ro
 | --- | --- | --- |
 | `GET` | `/` / `/admin` | Dashboard HTML shell. |
 | `GET` | `/health` | Health check. |
-| `POST` | `/webhooks/:integrationId/:event` | Mounted only when webhook deps are provided. Per-integration HMAC secret is the auth layer. Redmine / GitLab only; Gerrit uses SSH `stream-events`. |
+| `POST` | `/webhooks/:integrationId/:event` | Mounted only when webhook deps are provided. Every request requires the configured per-integration secret via HMAC, `X-Gitlab-Token`, or Bearer auth. Redmine / GitLab only; Gerrit uses SSH `stream-events`. |
 | `GET` | `/api/admin/auth/setup-status` | `{ needsSetup }` — true when the store supports users and zero exist. |
 | `POST` | `/api/admin/auth/login` | `{ username, password }` → `{ token, user }` or 401. |
 | `POST` | `/api/admin/auth/setup` | Bootstrap-only (403 once any user exists). Rate-limited with `/login`. Creates the first `admin`, logs in, 201, audits `auth.setup`. |
@@ -86,6 +86,7 @@ All `/api/admin/*` routes are declared in `buildApiRouter()` and its per-area ro
 - **Projects create/update**: `skillSources` SSH entries are validated with a bounded `ssh -T` before save (400 with source index/URL/stderr on failure); coding payloads accept `gerritTopicOverride`, `useFullTicketUrlInCommits`, `postReviewLinkToTicket`, `reactToCiFailures` (off by default); `pushTargets` replace atomically; changing ticket source / push targets / review config / agent binding / post-clone script / skill toggle / skill sources — or enabling the project — auto-relaunches its `FAILED`/`REVIEW_FAILED` tasks (adopted orphan tasks included, unless created disabled).
 - **Cost / model-usage**: optional `?days=<n>` trailing window; legacy cycles without a cost/model snapshot are recomputed from `agent_events`.
 - **PBAC**: built-in policies return 409 on `PUT`/`DELETE`; `/rules` rejects unknown permissions (400); duplicate binding → 409, unknown principal → 404.
+- **Webhook intake**: signature/shared-secret authentication is mandatory. A non-empty `webhookAllowedIps` list is an additional source restriction, not an authentication bypass. The socket peer is checked by default; with `ADMIN_TRUST_PROXY=true`, the first `X-Forwarded-For` address is checked instead, so the trusted proxy must overwrite inbound forwarding headers.
 
 ## Authentication
 

@@ -553,6 +553,7 @@ async function handleRequest(
       integrationStore: dependencies.integrationStore,
       projectStore: dependencies.webhooks.projectStore,
       orchestrator: dependencies.webhooks.orchestrator,
+      trustProxy: dependencies.config.adminTrustProxy ?? false,
     });
     return;
   }
