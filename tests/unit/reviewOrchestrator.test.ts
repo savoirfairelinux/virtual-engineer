@@ -738,25 +738,24 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
     expect(summaryArg).not.toContain("src/ghost.ts");
   });
 
-  it("posts the review on the LATEST patchset when a new one arrives during the agent run", async () => {
-    // The change is cloned/reviewed at patchset 2, but a new patchset 3 is
-    // uploaded while the agent runs. The review must be posted on 3 (the latest),
-    // not on the stale patchset 2 captured at clone time.
+  it("discards stale output and reviews a new patchset in a fresh pass", async () => {
     const initial = makeTask({ state: "REVIEW_PENDING" });
     const mocks = makeMocks(initial);
     const { runner } = makeWorkspaceRunner();
     (mocks.provider.getChangeDetails as ReturnType<typeof vi.fn>)
-      .mockResolvedValueOnce(makeDetails({ currentPatchset: 2 })) // clone/apply: reviewed patchset
-      .mockResolvedValueOnce(makeDetails({ currentPatchset: 3 })) // fresh fetch before posting
-      .mockResolvedValueOnce(makeDetails({ currentPatchset: 3 })); // post-check: still OPEN
+      .mockResolvedValueOnce(makeDetails({ currentPatchset: 2 }))
+      .mockResolvedValueOnce(makeDetails({ currentPatchset: 3 }))
+      .mockResolvedValue(makeDetails({ currentPatchset: 3 }));
+    (mocks.provider.getChangeDiff as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(makeDiff({ patchset: 2 }))
+      .mockResolvedValueOnce(makeDiff({ patchset: 3 }));
 
     const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
     await orch.runReview(initial.taskId);
 
-    expect(runner.applyPriorPatchset).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({ patchset: 2 })
-    );
+    expect(mocks.provider.getChangeDiff).toHaveBeenNthCalledWith(1, CHANGE_ID, 2);
+    expect(mocks.provider.getChangeDiff).toHaveBeenNthCalledWith(2, CHANGE_ID, 3);
+    expect(runner.runReviewInDocker).toHaveBeenCalledTimes(2);
     expect(mocks.provider.postReviewComments).toHaveBeenCalledWith(
       CHANGE_ID,
       3,
@@ -765,12 +764,26 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
     );
     expect(mocks.provider.vote).toHaveBeenCalledWith(CHANGE_ID, 3, -1, "blocking");
     expect(mocks.store.setReviewedPatchset).toHaveBeenCalledWith(initial.taskId, 3);
-    expect(mocks.provider.postReviewComments).not.toHaveBeenCalledWith(
-      CHANGE_ID,
-      2,
-      expect.anything(),
-      expect.anything()
-    );
+    expect(mocks.provider.postReviewComments).toHaveBeenCalledTimes(1);
+    expect(mocks.provider.vote).toHaveBeenCalledTimes(1);
+  });
+
+  it("discards output when the change closes before posting", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+    (mocks.provider.getChangeDetails as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(makeDetails({ currentPatchset: 2, status: "OPEN" }))
+      .mockResolvedValueOnce(makeDetails({ currentPatchset: 2, status: "MERGED" }));
+
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+    await orch.runReview(initial.taskId);
+
+    expect(mocks.provider.postReviewComments).not.toHaveBeenCalled();
+    expect(mocks.provider.vote).not.toHaveBeenCalled();
+    expect(mocks.store.markReviewCommentsPosted).not.toHaveBeenCalled();
+    expect(mocks.store.setReviewedPatchset).not.toHaveBeenCalled();
+    expect(mocks.store.task?.state).toBe("REVIEW_DONE");
   });
 
   it("skips postReviewComments when all comments are outside the diff and summary is empty", async () => {

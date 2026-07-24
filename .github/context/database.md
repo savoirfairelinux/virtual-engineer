@@ -6,7 +6,7 @@
 - `prompts.prompt_type` is the prompt's runtime role: `system | instructions`, with `instructions` as the database default. The user prompt is generated per cycle from the ticket or review and is not a stored prompt type.
 - New agents cannot be created through the admin API without both references. Each ID must resolve to an existing `prompts` row with the matching role, and updates cannot clear either reference.
 - Runtime resolution is fail-closed: agents missing either prompt, referencing a missing prompt, or crossing the `system` / `instructions` roles do not receive a generic or integration-specific fallback.
-- Startup does not rename, convert, delete, or remap legacy prompt IDs, rows, or override files. Unknown prompt rows are preserved as-is; obsolete `user_*_review.md` files are ignored.
+- Startup preserves unknown prompt rows and derives their roles from existing agent and project-override references. A prompt referenced in both roles is cloned for the instructions side and those references are repointed without changing content; obsolete `user_*_review.md` files are ignored.
 
 ## Projects Skill Columns
 
@@ -18,7 +18,7 @@
 
 - Runtime migrations are handled by `SqliteStateStore.applyMigrations()` in `src/state/stateStore.ts` using `CREATE TABLE IF NOT EXISTS` and `ensureColumn(...)`.
 - Existing databases get `local_skills_path` through `ensureColumn("projects", "local_skills_path", "TEXT NOT NULL DEFAULT '.github/skills'")`.
-- Existing databases get `prompt_type` through `ensureColumn("prompts", "prompt_type", "TEXT NOT NULL DEFAULT 'instructions'")`; the current built-in `system_*` and `instructions_*` IDs are then assigned their declared roles. No legacy IDs or `prompt_type = user` rows are migrated.
+- Existing databases get `prompt_type` through `ensureColumn("prompts", "prompt_type", "TEXT NOT NULL DEFAULT 'instructions'")`; built-in IDs are assigned their declared roles, then custom roles are derived from agent and project override references. Dual-role rows are cloned for instructions references. No `prompt_type = user` rows are created.
 - `src/state/schema.ts` mirrors these columns for Drizzle typed queries.
 
 ## Related docs

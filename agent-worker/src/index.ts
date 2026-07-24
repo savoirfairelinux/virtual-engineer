@@ -532,7 +532,7 @@ main()
         modifiedFiles: [],
         summary: `Agent worker error: ${msg}`,
         agentLogs: stack,
-        metadata: { adapter: 'copilot-sdk', error: msg },
+        metadata: { adapter: ADAPTER_LABEL, model: ACTIVE_MODEL_LABEL, error: msg },
       } satisfies AgentResult) + '\n',
     );
     process.exit(0); // always exit 0 so the host can read stdout

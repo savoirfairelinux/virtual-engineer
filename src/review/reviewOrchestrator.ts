@@ -34,6 +34,7 @@ import { applyVolumeAndSeverityGate, buildFoldedSummary } from "./commentSeverit
 import { agentLogBus, pushToTaskBuffer, clearTaskEventBuffer } from "../agents/agentEventBus.js";
 
 const log = getLogger("review-orchestrator");
+const MAX_SUPERSESSION_RETRIES = 3;
 
 export interface ReviewOrchestratorDeps {
   stateStore: Pick<
@@ -331,6 +332,17 @@ export class ReviewOrchestrator {
    * REVIEW_PENDING → ... → REVIEW_WATCHING / REVIEW_DONE transition.
    */
   async runReview(taskId: TaskId, options?: { force?: boolean }): Promise<void> {
+    let supersessionCount = 0;
+    while (await this.runReviewPass(taskId, options, supersessionCount)) {
+      supersessionCount += 1;
+    }
+  }
+
+  private async runReviewPass(
+    taskId: TaskId,
+    options: { force?: boolean } | undefined,
+    supersessionCount: number,
+  ): Promise<boolean> {
     const task = await this.deps.stateStore.getTask(taskId);
     if (!task) throw new Error(`Review task not found: ${taskId}`);
     if (task.taskType !== "code-review") {
@@ -356,7 +368,7 @@ export class ReviewOrchestrator {
         { taskId },
         "runReview: task already REVIEW_RUNNING — skipping concurrent invocation"
       );
-      return;
+      return false;
     }
 
     const changeId = task.externalChangeId;
@@ -586,11 +598,72 @@ export class ReviewOrchestrator {
         phase: "pre-dedup",
       });
 
-      // Fetch fresh details before posting to get the latest patchset.
-      // This ensures we post the review on the latest patchset if a new one
-      // was uploaded while the agent was running, preventing duplicate reviews
-      // on older patchsets.
+      // Never apply findings to code the agent did not inspect. If a new
+      // patchset arrived during the run, preserve this cycle for auditability
+      // and immediately start a fresh pass against the new revision.
       const latestDetails = await this.deps.reviewProvider.getChangeDetails(changeId);
+      if (latestDetails.status !== "OPEN") {
+        emitReviewEvent("review.closed_before_posting", {
+          patchset: details.currentPatchset,
+          status: latestDetails.status,
+        });
+        await this.deps.stateStore.transition(taskId, "REVIEW_COMMENTING");
+
+        const closedResult: AgentResult = {
+          status: "no_change",
+          modifiedFiles: [],
+          summary: `Review discarded because the change is ${latestDetails.status.toLowerCase()}`,
+          agentLogs: rawOutput,
+          agentEvents: collectedEvents,
+          metadata: {
+            reviewMode: true,
+            discarded: true,
+            patchset: details.currentPatchset,
+            changeStatus: latestDetails.status,
+          },
+        };
+        await this.deps.stateStore.saveAgentCycle(taskId, cycleNumber, closedResult);
+        clearTaskEventBuffer(taskId);
+        await this.deps.stateStore.transition(taskId, "REVIEW_DONE");
+        return false;
+      }
+      if (latestDetails.currentPatchset !== details.currentPatchset) {
+        if (supersessionCount >= MAX_SUPERSESSION_RETRIES) {
+          throw new Error(
+            `Review superseded more than ${MAX_SUPERSESSION_RETRIES} times; latest patchset is ${latestDetails.currentPatchset}`,
+          );
+        }
+        emitReviewEvent("review.superseded", {
+          reviewedPatchset: details.currentPatchset,
+          currentPatchset: latestDetails.currentPatchset,
+        });
+        await this.deps.stateStore.updateExternalChangeId(
+          taskId,
+          changeId,
+          latestDetails.currentPatchset,
+          latestDetails.url,
+        );
+        await this.deps.stateStore.transition(taskId, "REVIEW_COMMENTING");
+
+        const supersededResult: AgentResult = {
+          status: "no_change",
+          modifiedFiles: [],
+          summary: `Review superseded by patchset ${latestDetails.currentPatchset}`,
+          agentLogs: rawOutput,
+          agentEvents: collectedEvents,
+          metadata: {
+            reviewMode: true,
+            superseded: true,
+            patchset: details.currentPatchset,
+            currentPatchset: latestDetails.currentPatchset,
+          },
+        };
+        await this.deps.stateStore.saveAgentCycle(taskId, cycleNumber, supersededResult);
+        clearTaskEventBuffer(taskId);
+
+        await this.deps.stateStore.transition(taskId, "REVIEW_WATCHING");
+        return true;
+      }
       const reviewPatchset = latestDetails.currentPatchset;
 
       // Deduplicate inline comments against ones VE already posted on
@@ -734,6 +807,7 @@ export class ReviewOrchestrator {
       } else {
         await this.deps.stateStore.transition(taskId, "REVIEW_DONE");
       }
+      return false;
     } catch (err) {
       const message = (err as Error).message ?? "review failed";
       log.error({ err, taskId }, "code review failed");

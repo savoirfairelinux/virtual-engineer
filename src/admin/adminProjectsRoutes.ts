@@ -11,6 +11,7 @@ import {
   type AgentRecord,
   type Integration,
   type IntegrationStore,
+  type Prompt,
   type ProjectId,
   type ProjectPushTargetRecord,
   type ProjectRecord,
@@ -117,6 +118,7 @@ export interface ProjectsRouteStore {
   ): Promise<void>;
   getProjectReviewConfig(projectId: ProjectId): Promise<ProjectReviewConfig | null>;
   getAgentById(id: AgentId): Promise<AgentRecord | null>;
+  getPrompt(id: string): Promise<Prompt | null>;
   findProjectByTicketSource(integrationId: string, ticketProjectKey: string): Promise<ProjectRecord | null>;
   getFailedTasksForProject(projectId: ProjectId): Promise<Task[]>;
   retryTask(taskId: ReturnType<typeof makeTaskId>): Promise<Task>;
@@ -542,6 +544,43 @@ function isUniqueConflict(err: unknown): boolean {
   return m.includes("already claimed by project") || /UNIQUE constraint/i.test(m);
 }
 
+async function validateAgentOverrideJson(
+  store: Pick<ProjectsRouteStore, "getPrompt">,
+  json: string | null,
+): Promise<string | null> {
+  if (json === null) return null;
+
+  let override: Record<string, unknown>;
+  try {
+    const parsed: unknown = JSON.parse(json);
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return "Agent override must be a JSON object";
+    }
+    override = parsed as Record<string, unknown>;
+  } catch {
+    return "Agent override must be valid JSON";
+  }
+
+  const promptFields = [
+    ["systemPromptId", "system", "agent instructions"],
+    ["instructionsPromptId", "instructions", "workflow instructions"],
+    ["feedbackInstructionsPromptId", "instructions", "workflow instructions"],
+  ] as const;
+
+  for (const [field, role, label] of promptFields) {
+    const value = override[field];
+    if (value === undefined || value === null) continue;
+    if (typeof value !== "string" || value.trim().length === 0) {
+      return `Agent override '${field}' must be a non-empty prompt ID`;
+    }
+    const prompt = await store.getPrompt(value);
+    if (!prompt) return `Prompt '${value}' not found`;
+    if (prompt.promptType !== role) return `Prompt '${value}' is not ${label}`;
+  }
+
+  return null;
+}
+
 /** Register project routes on the given router. */
 export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): void {
   const skillSourceConnectionValidator = deps.validateSkillSourcesConnection ?? validateSkillSourcesConnection;
@@ -603,6 +642,10 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
     if (!agent) { writeJson(res, 400, { error: `Agent not found: ${data.agentId}` }); return; }
     if (agent.type !== data.type) {
       writeJson(res, 400, { error: `Agent type mismatch: agent is '${agent.type}', project is '${data.type}'` }); return;
+    }
+    if (data.agentOverrideJson !== undefined) {
+      const overrideError = await validateAgentOverrideJson(store, data.agentOverrideJson);
+      if (overrideError) { writeJson(res, 400, { error: overrideError }); return; }
     }
     if (data.type === "coding") {
       const conflict = await store.findProjectByTicketSource(data.ticketSource.integrationId, data.ticketSource.ticketProjectKey);
@@ -741,6 +784,10 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
       if (agent.type !== existing.type) {
         writeJson(res, 400, { error: `Agent type mismatch: agent is '${agent.type}', project is '${existing.type}'` }); return;
       }
+    }
+    if (data.agentOverrideJson !== undefined) {
+      const overrideError = await validateAgentOverrideJson(store, data.agentOverrideJson);
+      if (overrideError) { writeJson(res, 400, { error: overrideError }); return; }
     }
     const updates: Parameters<ProjectsRouteStore["updateProject"]>[1] = {};
     if (data.name !== undefined) updates.name = data.name;

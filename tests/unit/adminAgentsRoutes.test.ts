@@ -192,6 +192,23 @@ describe("Admin API — Agent routes (/api/admin/agents)", () => {
     expect(r.body?.["error"]).toMatch(/not agent instructions/i);
   });
 
+  it("POST / returns 400 when the feedback prompt has the wrong role", async () => {
+    const r = await rest(server, "/api/admin/agents", {
+      method: "POST",
+      body: {
+        name: "Wrong feedback prompt",
+        type: "coding",
+        modelConfig: {},
+        systemPromptId: "system_generic_code",
+        instructionsPromptId: "instructions_generic_code",
+        feedbackInstructionsPromptId: "system_generic_code",
+      },
+    });
+
+    expect(r.status).toBe(400);
+    expect(r.body?.["error"]).toMatch(/feedback.*not workflow instructions/i);
+  });
+
   it("GET /:id returns 404 for unknown agent", async () => {
     const r = await rest(server, "/api/admin/agents/nope");
     expect(r.status).toBe(404);
@@ -268,6 +285,24 @@ describe("Admin API — Agent routes (/api/admin/agents)", () => {
 
     expect(systemResult.status).toBe(400);
     expect(instructionsResult.status).toBe(400);
+  });
+
+  it("PUT /:id returns 400 when the feedback prompt does not exist", async () => {
+    const created = await store.createAgent({
+      name: "Bot",
+      type: "coding",
+      modelConfigJson: "{}",
+      systemPromptId: "system_generic_code",
+      instructionsPromptId: "instructions_generic_code",
+    });
+
+    const r = await rest(server, `/api/admin/agents/${created.id}`, {
+      method: "PUT",
+      body: { feedbackInstructionsPromptId: "missing-feedback" },
+    });
+
+    expect(r.status).toBe(400);
+    expect(r.body?.["error"]).toMatch(/missing-feedback.*not found/i);
   });
 
   it("DELETE /:id returns 204 on success", async () => {

@@ -278,19 +278,29 @@ async function countProjectsForAgent(store: AgentsRouteStore, agentId: AgentId):
 async function validateRequiredPrompts(
   promptStore: Pick<PromptStore, "getPrompt">,
   systemPromptId: string,
-  instructionsPromptId: string
+  instructionsPromptId: string,
+  feedbackInstructionsPromptId: string | null = null,
 ): Promise<string | null> {
-  const [systemPrompt, instructionsPrompt] = await Promise.all([
+  const [systemPrompt, instructionsPrompt, feedbackPrompt] = await Promise.all([
     promptStore.getPrompt(systemPromptId),
     promptStore.getPrompt(instructionsPromptId),
+    feedbackInstructionsPromptId === null
+      ? Promise.resolve(null)
+      : promptStore.getPrompt(feedbackInstructionsPromptId),
   ]);
   if (!systemPrompt) return `Agent instructions '${systemPromptId}' not found`;
   if (!instructionsPrompt) return `Workflow instructions '${instructionsPromptId}' not found`;
+  if (feedbackInstructionsPromptId !== null && !feedbackPrompt) {
+    return `Feedback workflow instructions '${feedbackInstructionsPromptId}' not found`;
+  }
   if (systemPrompt.promptType !== "system") {
     return `Prompt '${systemPromptId}' is not agent instructions`;
   }
   if (instructionsPrompt.promptType !== "instructions") {
     return `Prompt '${instructionsPromptId}' is not workflow instructions`;
+  }
+  if (feedbackPrompt !== null && feedbackPrompt.promptType !== "instructions") {
+    return `Feedback prompt '${feedbackInstructionsPromptId}' is not workflow instructions`;
   }
   return null;
 }
@@ -443,7 +453,8 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
       const promptError = await validateRequiredPrompts(
         deps.promptStore,
         parsed.data.systemPromptId,
-        parsed.data.instructionsPromptId
+        parsed.data.instructionsPromptId,
+        parsed.data.feedbackInstructionsPromptId ?? null,
       );
       if (promptError) { writeJson(res, 400, { error: promptError }); return; }
       const created = await store.createAgent({
@@ -547,6 +558,9 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
     if (!parsed.success) { writeJson(res, 400, zodErrorBody(parsed.error, "Invalid agent payload")); return; }
     const systemPromptId = parsed.data.systemPromptId ?? existing.systemPromptId;
     const instructionsPromptId = parsed.data.instructionsPromptId ?? existing.instructionsPromptId;
+    const feedbackInstructionsPromptId = parsed.data.feedbackInstructionsPromptId === undefined
+      ? existing.feedbackInstructionsPromptId
+      : parsed.data.feedbackInstructionsPromptId;
     if (!systemPromptId || !instructionsPromptId) {
       writeJson(res, 400, { error: "Agent and workflow instructions are required" });
       return;
@@ -565,7 +579,12 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
     if (parsed.data.maxConcurrent !== undefined) updates.maxConcurrent = parsed.data.maxConcurrent;
     if (parsed.data.enabled !== undefined) updates.enabled = parsed.data.enabled;
     try {
-      const promptError = await validateRequiredPrompts(deps.promptStore, systemPromptId, instructionsPromptId);
+      const promptError = await validateRequiredPrompts(
+        deps.promptStore,
+        systemPromptId,
+        instructionsPromptId,
+        feedbackInstructionsPromptId,
+      );
       if (promptError) { writeJson(res, 400, { error: promptError }); return; }
       const updated = await store.updateAgent(id, updates);
       const count = await countProjectsForAgent(store, id);

@@ -277,4 +277,24 @@ describe("runAiderAgent", () => {
     expect(err).toBeInstanceOf(Error);
     expect((err as Error).message).toBe("Aider exited with code 2");
   });
+
+  it("rejects when the configured timeout terminates aider", async () => {
+    vi.useFakeTimers();
+    const fake = makeFakeChild();
+    spawnMock.mockReturnValue(fake);
+    const promise = runAiderAgent("hi", {
+      model: "gpt-4o",
+      agentInstructions: "sys",
+      cwd: "/workspace",
+      timeoutMs: 1000,
+      mode: "codegen",
+    });
+
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(fake.kill).toHaveBeenCalledWith("SIGTERM");
+    fake.emit("close", null, "SIGTERM");
+
+    await expect(promise).rejects.toThrow("Aider timed out after 1000ms");
+    vi.useRealTimers();
+  });
 });

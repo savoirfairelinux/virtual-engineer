@@ -573,6 +573,47 @@ describe("Admin API — Project routes (/api/admin/projects)", () => {
     expect(r.body?.["error"]).toMatch(/mismatch/i);
   });
 
+  it("POST / rejects malformed agent override JSON", async () => {
+    const agent = await makeAgent(store, "review");
+    await seedIntegration(store, "gerrit-1", "gerrit");
+
+    const r = await rest(server, "/api/admin/projects", {
+      method: "POST",
+      body: {
+        type: "review",
+        name: "MalformedOverride",
+        agentId: agent.id,
+        agentOverrideJson: "{not-json",
+        reviewConfig: { integrationId: "gerrit-1", repoKeys: ["x"] },
+      },
+    });
+
+    expect(r.status).toBe(400);
+    expect(r.body?.["error"]).toMatch(/override.*JSON/i);
+  });
+
+  it("POST / rejects project prompt overrides with crossed roles", async () => {
+    const agent = await makeAgent(store, "review");
+    await seedIntegration(store, "gerrit-1", "gerrit");
+
+    const r = await rest(server, "/api/admin/projects", {
+      method: "POST",
+      body: {
+        type: "review",
+        name: "CrossedPrompts",
+        agentId: agent.id,
+        agentOverrideJson: JSON.stringify({
+          systemPromptId: "instructions_generic_code",
+          instructionsPromptId: "system_generic_code",
+        }),
+        reviewConfig: { integrationId: "gerrit-1", repoKeys: ["x"] },
+      },
+    });
+
+    expect(r.status).toBe(400);
+    expect(r.body?.["error"]).toMatch(/not agent instructions/i);
+  });
+
   it("POST / coding requires ticketSource and at least one pushTarget", async () => {
     const agent = await makeAgent(store, "coding");
     const noPush = await rest(server, "/api/admin/projects", {
