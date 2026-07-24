@@ -4,13 +4,10 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { execFileSync } from "child_process";
 import { GerritVcsConnector } from "../../src/vcs/gerritVcsConnector.js";
 import type { GerritVcsConnectorConfig } from "../../src/vcs/gerritVcsConnector.js";
 import type { SshChangeInfo } from "../../src/connectors/gerritSshClient.js";
-
-// Mock child_process.execFileSync (used for git operations)
-vi.mock("child_process");
+import { RecordingGitRunner } from "./helpers/recordingGitRunner.js";
 
 // Mock GerritSshClient (used for SSH Gerrit operations)
 const mockQueryChange = vi.fn(async (_changeId: string): Promise<SshChangeInfo> => ({
@@ -48,9 +45,11 @@ const mockConfig: GerritVcsConnectorConfig = {
 
 describe("GerritVcsConnector", () => {
   let connector: GerritVcsConnector;
+  let gitRunner: RecordingGitRunner;
 
   beforeEach(() => {
-    connector = new GerritVcsConnector(mockConfig);
+    gitRunner = new RecordingGitRunner();
+    connector = new GerritVcsConnector(mockConfig, gitRunner);
     vi.clearAllMocks();
     mockQueryChange.mockReset();
     mockGetUnresolvedComments.mockReset();
@@ -64,32 +63,25 @@ describe("GerritVcsConnector", () => {
 
   describe("clone", () => {
     it("should execute git clone with correct parameters", async () => {
-      const mockExecFileSync = vi.mocked(execFileSync);
-      mockExecFileSync.mockReturnValue("");
-
       const repoUrl = "ssh://gerrit.example.com:29418/my-repo.git";
       const branch = "main";
       const targetDir = "/tmp/workspace/repo";
 
       await connector.clone(repoUrl, branch, targetDir);
 
-      expect(mockExecFileSync).toHaveBeenCalledWith(
-        "git",
+      expect(gitRunner.run).toHaveBeenCalledWith(
         ["clone", "--branch", branch, "--depth", "1", repoUrl, targetDir],
         expect.objectContaining({
           env: expect.objectContaining({
             GIT_SSH_COMMAND: expect.stringContaining(mockConfig.sshKeyPath!),
           }),
-          stdio: ["ignore", "pipe", "pipe"],
+          timeoutMs: 300_000,
         })
       );
     });
 
     it("should throw on clone failure", async () => {
-      const mockExecFileSync = vi.mocked(execFileSync);
-      mockExecFileSync.mockImplementation(() => {
-        throw new Error("SSH connection refused");
-      });
+      gitRunner.run.mockRejectedValueOnce(new Error("SSH connection refused"));
 
       await expect(
         connector.clone("ssh://invalid.com/repo.git", "main", "/tmp/repo")
@@ -97,9 +89,6 @@ describe("GerritVcsConnector", () => {
     });
 
     it("should use override SSH key path when provided", async () => {
-      const mockExecFileSync = vi.mocked(execFileSync);
-      mockExecFileSync.mockReturnValue("");
-
       const repoUrl = "ssh://gerrit.example.com:29418/my-repo.git";
       const branch = "main";
       const targetDir = "/tmp/workspace/repo";
@@ -107,21 +96,17 @@ describe("GerritVcsConnector", () => {
 
       await connector.clone(repoUrl, branch, targetDir, overrideSshKeyPath);
 
-      expect(mockExecFileSync).toHaveBeenCalledWith(
-        "git",
+      expect(gitRunner.run).toHaveBeenCalledWith(
         ["clone", "--branch", branch, "--depth", "1", repoUrl, targetDir],
         expect.objectContaining({
           env: expect.objectContaining({
             GIT_SSH_COMMAND: expect.stringContaining(overrideSshKeyPath),
           }),
-          stdio: ["ignore", "pipe", "pipe"],
         })
       );
 
-      // Verify the override key is used, not the default
-      const callArgs = mockExecFileSync.mock.calls[0];
-      const envArg = callArgs![2] as Record<string, unknown>;
-      expect((envArg['env'] as Record<string, string>)['GIT_SSH_COMMAND']).not.toContain(
+      const cloneCall = gitRunner.calls[0];
+      expect(cloneCall?.options.env?.["GIT_SSH_COMMAND"]).not.toContain(
         mockConfig.sshKeyPath!
       );
     });
@@ -129,40 +114,29 @@ describe("GerritVcsConnector", () => {
 
   describe("GIT_SSH_COMMAND / known-hosts policy", () => {
     it("includes UserKnownHostsFile=/dev/null when sshKnownHostsPath is not set", async () => {
-      const mockExecFileSync = vi.mocked(execFileSync);
-      mockExecFileSync.mockReturnValue("");
-
       await connector.clone("ssh://gerrit.example.com:29418/repo.git", "main", "/tmp/repo");
 
-      const callArgs = mockExecFileSync.mock.calls[0];
-      const env = (callArgs![2] as Record<string, unknown>)["env"] as Record<string, string>;
-      expect(env["GIT_SSH_COMMAND"]).toContain("StrictHostKeyChecking=no");
-      expect(env["GIT_SSH_COMMAND"]).toContain("UserKnownHostsFile=/dev/null");
+      const sshCommand = gitRunner.calls[0]?.options.env?.["GIT_SSH_COMMAND"];
+      expect(sshCommand).toContain("StrictHostKeyChecking=no");
+      expect(sshCommand).toContain("UserKnownHostsFile=/dev/null");
     });
 
     it("uses strict host-key checking when sshKnownHostsPath is set", async () => {
-      const mockExecFileSync = vi.mocked(execFileSync);
-      mockExecFileSync.mockReturnValue("");
-
       const knownConnector = new GerritVcsConnector({
         ...mockConfig,
         sshKnownHostsPath: "/app/secrets/gerrit_known_hosts",
-      });
+      }, gitRunner);
       await knownConnector.clone("ssh://gerrit.example.com:29418/repo.git", "main", "/tmp/repo");
 
-      const callArgs = mockExecFileSync.mock.calls[0];
-      const env = (callArgs![2] as Record<string, unknown>)["env"] as Record<string, string>;
-      expect(env["GIT_SSH_COMMAND"]).toContain("StrictHostKeyChecking=yes");
-      expect(env["GIT_SSH_COMMAND"]).toContain("UserKnownHostsFile=/app/secrets/gerrit_known_hosts");
-      expect(env["GIT_SSH_COMMAND"]).not.toContain("StrictHostKeyChecking=no");
+      const sshCommand = gitRunner.calls[0]?.options.env?.["GIT_SSH_COMMAND"];
+      expect(sshCommand).toContain("StrictHostKeyChecking=yes");
+      expect(sshCommand).toContain("UserKnownHostsFile=/app/secrets/gerrit_known_hosts");
+      expect(sshCommand).not.toContain("StrictHostKeyChecking=no");
     });
   });
 
   describe("push", () => {
     it("should configure git identity", async () => {
-      const mockExecFileSync = vi.mocked(execFileSync);
-      mockExecFileSync.mockReturnValue("");
-
       const repoDir = "/tmp/workspace/repo";
       const message = "feat: add new feature\n\nChange-Id: I1234567890";
       const changeId = "I1234567890";
@@ -170,22 +144,17 @@ describe("GerritVcsConnector", () => {
       await connector.push(repoDir, "refs/for/main", message, changeId);
 
       // Verify git config calls
-      expect(mockExecFileSync).toHaveBeenCalledWith(
-        "git",
+      expect(gitRunner.run).toHaveBeenCalledWith(
         ["config", "user.name", mockConfig.gitAuthorName],
         expect.any(Object)
       );
-      expect(mockExecFileSync).toHaveBeenCalledWith(
-        "git",
+      expect(gitRunner.run).toHaveBeenCalledWith(
         ["config", "user.email", mockConfig.gitAuthorEmail],
         expect.any(Object)
       );
     });
 
     it("should add and commit changes", async () => {
-      const mockExecFileSync = vi.mocked(execFileSync);
-      mockExecFileSync.mockReturnValue("abc123def456");
-
       const repoDir = "/tmp/workspace/repo";
       const message = "feat: add feature\n\nChange-Id: I1234567890";
       const changeId = "I1234567890";
@@ -193,22 +162,17 @@ describe("GerritVcsConnector", () => {
       await connector.push(repoDir, "refs/for/main", message, changeId);
 
       // Verify git add and commit
-      expect(mockExecFileSync).toHaveBeenCalledWith(
-        "git",
+      expect(gitRunner.run).toHaveBeenCalledWith(
         ["add", "-A"],
         expect.any(Object)
       );
-      expect(mockExecFileSync).toHaveBeenCalledWith(
-        "git",
+      expect(gitRunner.run).toHaveBeenCalledWith(
         ["commit", "-m", message],
         expect.any(Object)
       );
     });
 
     it("should push to Gerrit refs/for ref", async () => {
-      const mockExecFileSync = vi.mocked(execFileSync);
-      mockExecFileSync.mockReturnValue("abc123def456");
-
       const repoDir = "/tmp/workspace/repo";
       const ref = "refs/for/main";
       const message = "feat: add feature\n\nChange-Id: I1234567890";
@@ -216,8 +180,7 @@ describe("GerritVcsConnector", () => {
       await connector.push(repoDir, ref, message);
 
       // Verify push command
-      expect(mockExecFileSync).toHaveBeenCalledWith(
-        "git",
+      expect(gitRunner.run).toHaveBeenCalledWith(
         ["push", "origin", `HEAD:${ref}`],
         expect.objectContaining({
           env: expect.objectContaining({
@@ -228,9 +191,6 @@ describe("GerritVcsConnector", () => {
     });
 
     it("should return VcsPushResult with changeId and URL", async () => {
-      const mockExecFileSync = vi.mocked(execFileSync);
-      mockExecFileSync.mockReturnValue("abc123def456");
-
       const repoDir = "/tmp/workspace/repo";
       const changeId = "I1234567890abcdef";
       const message = `feat: test\n\nChange-Id: ${changeId}`;
@@ -249,9 +209,6 @@ describe("GerritVcsConnector", () => {
     });
 
     it("should add Change-Id if not present in message", async () => {
-      const mockExecFileSync = vi.mocked(execFileSync);
-      mockExecFileSync.mockReturnValue("abc123def456");
-
       const repoDir = "/tmp/workspace/repo";
       const changeId = "I1234567890abcdef";
       const message = "feat: test feature";
@@ -262,9 +219,6 @@ describe("GerritVcsConnector", () => {
     });
 
     it("should auto-generate a Change-Id if none is provided in message or argument", async () => {
-      const mockExecFileSync = vi.mocked(execFileSync);
-      mockExecFileSync.mockReturnValue("abc123def456");
-
       const repoDir = "/tmp/workspace/repo";
       const message = "feat: test";
 
@@ -274,12 +228,11 @@ describe("GerritVcsConnector", () => {
     });
 
     it("should throw on push failure", async () => {
-      const mockExecFileSync = vi.mocked(execFileSync);
-      mockExecFileSync.mockImplementation((command, args) => {
-        if (command === "git" && Array.isArray(args) && args[0] === "push") {
+      gitRunner.run.mockImplementation(async (args) => {
+        if (args[0] === "push") {
           throw new Error("Push rejected by Gerrit");
         }
-        return "success";
+        return { stdout: "success", stderr: "" };
       });
 
       await expect(
@@ -293,14 +246,10 @@ describe("GerritVcsConnector", () => {
     });
 
     it("passes ref as a standalone git argument rather than interpolating shell command text", async () => {
-      const mockExecFileSync = vi.mocked(execFileSync);
-      mockExecFileSync.mockReturnValue("abc123def456");
-
       const ref = "refs/for/main%topic=test";
       await connector.push("/tmp/workspace/repo", ref, "feat: test\n\nChange-Id: I1234", "I1234");
 
-      expect(mockExecFileSync).toHaveBeenCalledWith(
-        "git",
+      expect(gitRunner.run).toHaveBeenCalledWith(
         ["push", "origin", `HEAD:${ref}`],
         expect.any(Object)
       );

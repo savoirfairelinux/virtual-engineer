@@ -47,6 +47,7 @@ tests/
 - Use `vi.useFakeTimers()` + `vi.runAllTimersAsync()` for the polling loop. **Always** call `loop.stop()` before `runAllTimersAsync` (Vitest aborts after 10 000 timer iterations otherwise).
 - Reset shared state in `beforeEach` (`vi.clearAllMocks()`, `resetConfig()` from `src/config.ts`, fresh in-memory SQLite).
 - Helper builders / fixtures live in `tests/unit/helpers/` — prefer extending them over inlining.
+- VCS connector tests inject `RecordingGitRunner` from `tests/unit/helpers/recordingGitRunner.ts` to record argument arrays/options and control async outputs or failures without spawning Git.
 - Admin route tests with a reduced `stateStore` that intentionally omit user/session or PBAC rule-resolution methods must set `allowUnauthenticatedAdmin: true`; production-style auth tests use the full store and leave the fail-closed default unchanged. The escape hatch is rejected when `nodeEnv` is `production`.
 - Remote skill source tests must mock Docker/child_process paths. `workspaceRunner` covers pre-agent skill installation into the home volume, fast failure for SSH sources without `SSH_AUTH_SOCK` or `sshKeyPath`, and verifies the agent container does not receive `SKILL_SOURCES_JSON`, `SSH_AUTH_SOCK`, private-key paths, or `GIT_SSH_COMMAND`.
 - Local skill tests cover `LOCAL_SKILLS_PATH` propagation, workspace-relative path fallback, the single `skills.local_loaded` timeline event containing the sorted local skill list, and Copilot's loading of fetched global skills independently from local skill discovery.

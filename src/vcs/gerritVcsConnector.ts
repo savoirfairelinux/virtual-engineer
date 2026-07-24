@@ -3,15 +3,15 @@
  * Pushes to `refs/for/<branch>` with a Change-Id trailer; all operations run inside Docker volumes.
  */
 
-import { execFileSync } from "child_process";
 import { createHash } from "crypto";
 import { getLogger } from "../logger.js";
-import { execGit } from "../utils/gitExec.js";
 import type { VcsConnector, VcsPushResult, VolumeExecOptions } from "./vcsConnector.js";
 import type { PatchsetCheckoutOptions, ReviewComment } from "../interfaces.js";
 import { execInVolume } from "../workspace/dockerVolume.js";
 import { GerritSshClient, buildSshHostKeyOptions } from "../connectors/gerritSshClient.js";
 import { buildGerritTopic } from "./branchNaming.js";
+import type { GitRunner } from "./gitRunner.js";
+import { NodeGitRunner } from "./nodeGitRunner.js";
 
 const log = getLogger("gerrit-vcs");
 
@@ -108,7 +108,10 @@ export class GerritVcsConnector implements VcsConnector {
     return this.config.sshAgentPubKeyPath;
   }
 
-  constructor(private readonly config: GerritVcsConnectorConfig) {
+  constructor(
+    private readonly config: GerritVcsConnectorConfig,
+    private readonly gitRunner: GitRunner = new NodeGitRunner()
+  ) {
     this.sshClient = new GerritSshClient({
       host: config.sshHost,
       port: config.sshPort,
@@ -164,13 +167,14 @@ export class GerritVcsConnector implements VcsConnector {
     );
 
     try {
-      // Execute git clone
-      execFileSync("git", ["clone", "--branch", branch, "--depth", "1", repoUrl, targetDir], {
-        env: buildGitEnv(this.config, sshKeyPath),
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "pipe"],
-        timeout: 300_000, // 5 minutes
-      });
+      await this.gitRunner.run(
+        ["clone", "--branch", branch, "--depth", "1", repoUrl, targetDir],
+        {
+          cwd: process.cwd(),
+          env: buildGitEnv(this.config, sshKeyPath),
+          timeoutMs: 300_000,
+        }
+      );
 
       log.info({ targetDir }, "repository cloned successfully");
     } catch (err: unknown) {
@@ -203,23 +207,21 @@ export class GerritVcsConnector implements VcsConnector {
 
     try {
       // Configure git identity
-      execGit(["config", "user.name", this.config.gitAuthorName], repoDir);
-      execGit(["config", "user.email", this.config.gitAuthorEmail], repoDir);
+      await this.gitRunner.run(["config", "user.name", this.config.gitAuthorName], { cwd: repoDir });
+      await this.gitRunner.run(["config", "user.email", this.config.gitAuthorEmail], { cwd: repoDir });
 
       // Stage all changes
-      execGit(["add", "-A"], repoDir);
+      await this.gitRunner.run(["add", "-A"], { cwd: repoDir });
 
       // Commit
-      execGit(["commit", "-m", commitMessage], repoDir);
+      await this.gitRunner.run(["commit", "-m", commitMessage], { cwd: repoDir });
       log.info({ repoDir }, "changes committed");
 
       // Push to Gerrit
-      execFileSync("git", ["push", "origin", `HEAD:${ref}`], {
+      await this.gitRunner.run(["push", "origin", `HEAD:${ref}`], {
         cwd: repoDir,
         env: buildGitEnv(this.config),
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "pipe"],
-        timeout: 300_000,
+        timeoutMs: 300_000,
       });
       log.info({ ref }, "pushed to Gerrit");
 
@@ -264,18 +266,19 @@ export class GerritVcsConnector implements VcsConnector {
         pushRef = `HEAD:${ref}%topic=${topic}`;
       }
 
-      execFileSync("git", ["push", "origin", pushRef], {
+      await this.gitRunner.run(["push", "origin", pushRef], {
         cwd: repoDir,
         env: buildGitEnv(this.config),
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "pipe"],
-        timeout: 300_000,
+        timeoutMs: 300_000,
       });
 
       log.info({ ref, topic }, "direct push to Gerrit completed");
 
       // Extract Change-Id from HEAD commit for backward-compat result
-      const headMsg = execGit(["log", "-1", "--format=%b"], repoDir);
+      const { stdout: headMsg } = await this.gitRunner.run(
+        ["log", "-1", "--format=%b"],
+        { cwd: repoDir }
+      );
       const changeIdMatch = headMsg.match(/^Change-Id:\s*(\S+)/m);
       const changeId = changeIdMatch?.[1] ?? "unknown";
 

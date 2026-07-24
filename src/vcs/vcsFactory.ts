@@ -11,6 +11,9 @@ import type { Integration, IntegrationBindingContext } from "../interfaces.js";
 import type { VcsConnector } from "./vcsConnector.js";
 import { getProviderDescriptor } from "../plugins/registry.js";
 import { decryptToken } from "../utils/encryption.js";
+import type { GitRunner } from "./gitRunner.js";
+import { NodeGitRunner } from "./nodeGitRunner.js";
+import type { SourceControlRuntimeContext } from "../plugins/registry.js";
 
 /**
  * Parse and fully validate an integration's configJson through its descriptor's
@@ -73,7 +76,12 @@ function parseConfig(integration: Integration, adminAuthSecret?: string): Record
  * @throws {Error} If the integration type has no `createVcsConnector` hook
  * @throws {Error} If configJson is not valid JSON or fails schema validation
  */
-export function createVcsConnectorForIntegration(integration: Integration, context?: IntegrationBindingContext, adminAuthSecret?: string): VcsConnector {
+export function createVcsConnectorForIntegration(
+  integration: Integration,
+  context?: IntegrationBindingContext,
+  adminAuthSecret?: string,
+  runtime?: SourceControlRuntimeContext
+): VcsConnector {
   const descriptor = getProviderDescriptor(integration.provider);
   const createVcsConnector = descriptor?.capabilities.source_control?.createVcsConnector;
 
@@ -84,7 +92,7 @@ export function createVcsConnectorForIntegration(integration: Integration, conte
   }
 
   const cfg = parseConfig(integration, adminAuthSecret);
-  return createVcsConnector(cfg, integration, context);
+  return createVcsConnector(cfg, integration, context, runtime);
 }
 
 /**
@@ -93,8 +101,14 @@ export function createVcsConnectorForIntegration(integration: Integration, conte
  */
 export class VcsConnectorFactory {
   private readonly cache = new Map<string, VcsConnector>();
+  private readonly gitRunner: GitRunner;
 
-  constructor(private readonly options: { adminAuthSecret?: string | undefined } = {}) {}
+  constructor(private readonly options: {
+    adminAuthSecret?: string | undefined;
+    gitRunner?: GitRunner | undefined;
+  } = {}) {
+    this.gitRunner = options.gitRunner ?? new NodeGitRunner();
+  }
 
   /**
    * Get (or create) a VcsConnector for the given Integration.
@@ -103,13 +117,23 @@ export class VcsConnectorFactory {
    */
   getConnector(integration: Integration, context?: IntegrationBindingContext): VcsConnector {
     if (context !== undefined) {
-      return createVcsConnectorForIntegration(integration, context, this.options.adminAuthSecret);
+      return createVcsConnectorForIntegration(
+        integration,
+        context,
+        this.options.adminAuthSecret,
+        { gitRunner: this.gitRunner }
+      );
     }
 
     const cached = this.cache.get(integration.id);
     if (cached) return cached;
 
-    const connector = createVcsConnectorForIntegration(integration, undefined, this.options.adminAuthSecret);
+    const connector = createVcsConnectorForIntegration(
+      integration,
+      undefined,
+      this.options.adminAuthSecret,
+      { gitRunner: this.gitRunner }
+    );
     this.cache.set(integration.id, connector);
     return connector;
   }

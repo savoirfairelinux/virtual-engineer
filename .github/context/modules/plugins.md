@@ -34,7 +34,7 @@ A descriptor (`ProviderDescriptor`) provides:
 - a `capabilities` map keyed by **domain capability** (`DOMAIN_CAPABILITIES` = `issue_tracking`, `code_review`, `source_control`, `agent_execution`) with capability factories:
   - `capabilities.issue_tracking.{ createConnector(config, integration, context?), intake? }`
   - `capabilities.code_review.{ createConnector?, createReviewer?, streamEvents?, systemPromptId?, userPromptId?, intake? }`
-  - `capabilities.source_control.createVcsConnector(config, integration, context?)`
+  - `capabilities.source_control.createVcsConnector(config, integration, context?, runtime?)`; `runtime.gitRunner` is the shared host-side async Git executor owned by `VcsConnectorFactory`
   - `capabilities.agent_execution.createAdapter?(config, integration, context?)` (optional). Agent adapters are **descriptor-driven**: a provider that declares `capabilities.agent_execution.buildAdapter(context)` is instantiated by `PluginManager` from an `AgentAdapterContext`. `PluginManager.registerFactory` remains as an explicit test/extension hook and takes precedence when used; production startup does not register overrides. Copilot, Claude, Aider, and Mock all expose this capability.
 - Zod `configSchema` plus `requiredFields` UI metadata (with conditional visibility via `dependsOn`)
 - optional `oauth` metadata + `createOAuthHandler` / `resolveOAuthConfig` for dashboard-driven provider auth flows (`mode: "device" | "redirect"`)
@@ -45,7 +45,7 @@ A descriptor (`ProviderDescriptor`) provides:
 
 Technical (non-domain) capabilities are **derived**, not declared: `getProviderTechnicalCapabilities(descriptor)` returns `oauth` (when `descriptor.oauth`), `discovery` (when `discoverResources`), `stream-events` (when `capabilities.code_review.streamEvents`), and `reviewer` (when `capabilities.code_review.createReviewer`). `getProviderDomainCapabilities(descriptor)` returns the keys of `capabilities`. `getPluginCapabilities(descriptor)` combines both for the admin UI.
 
-The `context` argument on capability factories carries VE project-owned binding data such as `ticketProjectKey` or `repoKey` when runtime code needs a project-scoped connector instead of the integration-global active instance.
+The `context` argument on capability factories carries VE project-owned binding data such as `ticketProjectKey` or `repoKey` when runtime code needs a project-scoped connector instead of the integration-global active instance. The separate optional `runtime` argument on source-control factories carries host execution dependencies such as the shared `GitRunner`; it does not contain provider configuration.
 
 GitLab descriptors treat project selection as VE-project-owned rather than integration-owned. Add Integration forms are provider-scoped (`baseUrl`, auth, webhook secret, Git author defaults), while coding/review project setup supplies the concrete GitLab binding through `ticketProjectKey` (issue_tracking `config_json`) or `repos` (code_review `config_json`). GitLab Issues use built-in workflow label defaults (`in-progress`, `in-review`) unless a legacy row still carries explicit overrides.
 

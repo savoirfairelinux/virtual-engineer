@@ -10,6 +10,7 @@ import type { DiscoveredResources, OAuthAppStore, Integration, IntegrationBindin
 import { DOMAIN_CAPABILITIES } from "../interfaces.js";
 import type { IntegrationEventStreamFactory } from "../connectors/integrationStreamEvents.js";
 import type { VcsConnector } from "../vcs/vcsConnector.js";
+import type { GitRunner } from "../vcs/gitRunner.js";
 import type { ProviderAuthHandler } from "../agents/providerAuthService.js";
 
 // ─── Plugin descriptor types ──────────────────────────────────────────────
@@ -145,8 +146,17 @@ export interface CodeReviewCapability {
 }
 
 /** `source_control` capability: clone, commit, and push to a repository. */
+export interface SourceControlRuntimeContext {
+  gitRunner: GitRunner;
+}
+
 export interface SourceControlCapability {
-  createVcsConnector: (config: Record<string, unknown>, integration: Integration, context?: IntegrationBindingContext) => VcsConnector;
+  createVcsConnector: (
+    config: Record<string, unknown>,
+    integration: Integration,
+    context?: IntegrationBindingContext,
+    runtime?: SourceControlRuntimeContext
+  ) => VcsConnector;
 }
 
 /**

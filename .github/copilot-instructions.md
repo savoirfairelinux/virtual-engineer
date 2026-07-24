@@ -99,7 +99,7 @@ src/
                         # errorClassifier, gitExec, githubAuth, gitlabAuth,
                         # redactUrl
   vcs/                  # vcsConnector + gerrit/gitlab/github VcsConnectors,
-                        # vcsFactory, branchNaming
+                        # vcsFactory, async gitRunner/nodeGitRunner, branchNaming
   webhooks/             # webhook server + handlers/{redmine,gitlab-issue,
                         # gitlab-merge-request,github-pull-request}
   workspace/            # dockerVolume (named-volume lifecycle + execInVolume)

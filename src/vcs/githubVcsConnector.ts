@@ -6,15 +6,15 @@
  * a feature branch, the orchestrator looks up the URL via the PR REST endpoint.
  */
 
-import { execFileSync } from "child_process";
 import { getLogger } from "../logger.js";
-import { execGit } from "../utils/gitExec.js";
 import type { VcsConnector, VcsPushResult, VolumeExecOptions } from "./vcsConnector.js";
 import { buildFeatureBranchRef } from "./branchNaming.js";
 import type { ReviewComment } from "../interfaces.js";
 import { ReviewApiError } from "../interfaces.js";
 import { execInVolume } from "../workspace/dockerVolume.js";
 import { redactUrls } from "../utils/redactUrl.js";
+import type { GitRunner } from "./gitRunner.js";
+import { NodeGitRunner } from "./nodeGitRunner.js";
 
 const log = getLogger("github-vcs");
 
@@ -41,7 +41,10 @@ export class GitHubVcsConnector implements VcsConnector {
   readonly useChangeIdContinuity = false;
   readonly reviewSystemLabel = "github" as const;
 
-  constructor(private readonly config: GitHubVcsConnectorConfig) {}
+  constructor(
+    private readonly config: GitHubVcsConnectorConfig,
+    private readonly gitRunner: GitRunner = new NodeGitRunner()
+  ) {}
 
   buildPushSpec(_baseBranch: string, taskId: string, ticketTitle?: string | null): { ref: string; topic?: string } {
     return { ref: buildFeatureBranchRef(taskId, ticketTitle ?? null) };
@@ -55,11 +58,10 @@ export class GitHubVcsConnector implements VcsConnector {
     );
 
     try {
-      execFileSync("git", ["clone", "--branch", branch, "--depth", "1", repoUrl, targetDir], {
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "pipe"],
-        timeout: 300_000,
-      });
+      await this.gitRunner.run(
+        ["clone", "--branch", branch, "--depth", "1", repoUrl, targetDir],
+        { cwd: process.cwd(), timeoutMs: 300_000 }
+      );
       log.info({ targetDir }, "repository cloned successfully");
     } catch (err: unknown) {
       const error = err instanceof Error ? err : new Error(String(err));
@@ -77,28 +79,36 @@ export class GitHubVcsConnector implements VcsConnector {
     _volumeOpts?: VolumeExecOptions
   ): Promise<VcsPushResult> {
     try {
-      execGit(["config", "user.name", this.config.gitAuthorName], repoDir);
-      execGit(["config", "user.email", this.config.gitAuthorEmail], repoDir);
+      await this.gitRunner.run(["config", "user.name", this.config.gitAuthorName], { cwd: repoDir });
+      await this.gitRunner.run(["config", "user.email", this.config.gitAuthorEmail], { cwd: repoDir });
 
       const featureBranch = ref;
 
       // Inject token-in-URL credentials for push (x-access-token works for both PAT and OAuth user tokens)
-      const remoteUrl = execGit(["remote", "get-url", "origin"], repoDir).trim();
+      const remoteUrl = (
+        await this.gitRunner.run(["remote", "get-url", "origin"], { cwd: repoDir })
+      ).stdout.trim();
       const authenticatedUrl = new URL(remoteUrl);
       authenticatedUrl.username = "x-access-token";
       authenticatedUrl.password = this.config.token;
 
-      execGit(["remote", "set-url", "origin", authenticatedUrl.toString()], repoDir);
+      await this.gitRunner.run(
+        ["remote", "set-url", "origin", authenticatedUrl.toString()],
+        { cwd: repoDir }
+      );
 
-      execGit(["add", "-A"], repoDir);
-      execGit(["commit", "-m", message], repoDir);
+      await this.gitRunner.run(["add", "-A"], { cwd: repoDir });
+      await this.gitRunner.run(["commit", "-m", message], { cwd: repoDir });
       log.info({ repoDir }, "changes committed");
 
       try {
-        execGit(["push", "-u", "origin", featureBranch], repoDir);
+        await this.gitRunner.run(["push", "-u", "origin", featureBranch], {
+          cwd: repoDir,
+          timeoutMs: 300_000,
+        });
         log.info({ featureBranch }, "pushed to GitHub");
       } finally {
-        execGit(["remote", "set-url", "origin", remoteUrl], repoDir);
+        await this.gitRunner.run(["remote", "set-url", "origin", remoteUrl], { cwd: repoDir });
       }
 
       const pr = await this.createOrFindPullRequest(
@@ -133,20 +143,32 @@ export class GitHubVcsConnector implements VcsConnector {
       return this.pushDirectInVolume(volumeOpts, ref);
     }
 
-    const remoteUrl = execGit(["remote", "get-url", "origin"], repoDir).trim();
+    const remoteUrl = (
+      await this.gitRunner.run(["remote", "get-url", "origin"], { cwd: repoDir })
+    ).stdout.trim();
     const authenticatedUrl = new URL(remoteUrl);
     authenticatedUrl.username = "x-access-token";
     authenticatedUrl.password = this.config.token;
-    execGit(["remote", "set-url", "origin", authenticatedUrl.toString()], repoDir);
+    await this.gitRunner.run(
+      ["remote", "set-url", "origin", authenticatedUrl.toString()],
+      { cwd: repoDir }
+    );
 
     try {
-      execGit(["push", "-u", "--force-with-lease", "origin", `HEAD:refs/heads/${ref}`], repoDir);
+      await this.gitRunner.run(
+        ["push", "-u", "--force-with-lease", "origin", `HEAD:refs/heads/${ref}`],
+        { cwd: repoDir, timeoutMs: 300_000 }
+      );
     } finally {
-      execGit(["remote", "set-url", "origin", remoteUrl], repoDir);
+      await this.gitRunner.run(["remote", "set-url", "origin", remoteUrl], { cwd: repoDir });
     }
 
-    const subject = execGit(["log", "-1", "--pretty=%s"], repoDir).trim();
-    const body = execGit(["log", "-1", "--pretty=%b"], repoDir).trim();
+    const subject = (
+      await this.gitRunner.run(["log", "-1", "--pretty=%s"], { cwd: repoDir })
+    ).stdout.trim();
+    const body = (
+      await this.gitRunner.run(["log", "-1", "--pretty=%b"], { cwd: repoDir })
+    ).stdout.trim();
     const pr = await this.createOrFindPullRequest(
       ref,
       this.config.targetBranch ?? "main",

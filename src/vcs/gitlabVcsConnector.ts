@@ -3,9 +3,7 @@
  * Clone uses token in `.git-credentials`; push creates or updates a merge request via the REST API.
  */
 
-import { execFileSync } from "child_process";
 import { getLogger } from "../logger.js";
-import { execGit } from "../utils/gitExec.js";
 import type { VcsConnector, VcsPushResult, VolumeExecOptions } from "./vcsConnector.js";
 import { buildFeatureBranchRef } from "./branchNaming.js";
 import type { ReviewComment } from "../interfaces.js";
@@ -13,6 +11,8 @@ import { ReviewApiError } from "../interfaces.js";
 import { GitLabHttpClient } from "../connectors/gitlabHttpClient.js";
 import { execInVolume } from "../workspace/dockerVolume.js";
 import { redactUrls } from "../utils/redactUrl.js";
+import type { GitRunner } from "./gitRunner.js";
+import { NodeGitRunner } from "./nodeGitRunner.js";
 
 const log = getLogger("gitlab-vcs");
 
@@ -32,7 +32,10 @@ export class GitLabVcsConnector implements VcsConnector {
 
   private readonly httpClient: GitLabHttpClient;
 
-  constructor(private readonly config: GitLabVcsConnectorConfig) {
+  constructor(
+    private readonly config: GitLabVcsConnectorConfig,
+    private readonly gitRunner: GitRunner = new NodeGitRunner()
+  ) {
     this.httpClient = new GitLabHttpClient(
       config.token,
       (statusCode, url, body) => new ReviewApiError(statusCode, url, body)
@@ -51,11 +54,10 @@ export class GitLabVcsConnector implements VcsConnector {
     );
 
     try {
-      execFileSync("git", ["clone", "--branch", branch, "--depth", "1", repoUrl, targetDir], {
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "pipe"],
-        timeout: 300_000,
-      });
+      await this.gitRunner.run(
+        ["clone", "--branch", branch, "--depth", "1", repoUrl, targetDir],
+        { cwd: process.cwd(), timeoutMs: 300_000 }
+      );
 
       log.info({ targetDir }, "repository cloned successfully");
     } catch (err: unknown) {
@@ -87,8 +89,8 @@ export class GitLabVcsConnector implements VcsConnector {
 
     try {
       // Configure git identity
-      execGit(["config", "user.name", this.config.gitAuthorName], repoDir);
-      execGit(["config", "user.email", this.config.gitAuthorEmail], repoDir);
+      await this.gitRunner.run(["config", "user.name", this.config.gitAuthorName], { cwd: repoDir });
+      await this.gitRunner.run(["config", "user.email", this.config.gitAuthorEmail], { cwd: repoDir });
 
       // The `ref` parameter is typically the feature branch name for GitLab
       // (unlike Gerrit's refs/for/main)
@@ -96,25 +98,33 @@ export class GitLabVcsConnector implements VcsConnector {
 
       // Configure HTTP credentials for push
       // GitLab expects oauth2:<token>@host URL credentials
-      const remoteUrl = execGit(["remote", "get-url", "origin"], repoDir).trim();
+      const remoteUrl = (
+        await this.gitRunner.run(["remote", "get-url", "origin"], { cwd: repoDir })
+      ).stdout.trim();
       const authenticatedUrl = new URL(remoteUrl);
       authenticatedUrl.username = "oauth2";
       authenticatedUrl.password = this.config.token;
 
-      execGit(["remote", "set-url", "origin", authenticatedUrl.toString()], repoDir);
+      await this.gitRunner.run(
+        ["remote", "set-url", "origin", authenticatedUrl.toString()],
+        { cwd: repoDir }
+      );
 
       // Stage and commit changes
-      execGit(["add", "-A"], repoDir);
-      execGit(["commit", "-m", message], repoDir);
+      await this.gitRunner.run(["add", "-A"], { cwd: repoDir });
+      await this.gitRunner.run(["commit", "-m", message], { cwd: repoDir });
       log.info({ repoDir }, "changes committed");
 
       try {
         // Push the feature branch
-        execGit(["push", "-u", "origin", featureBranch], repoDir);
+        await this.gitRunner.run(["push", "-u", "origin", featureBranch], {
+          cwd: repoDir,
+          timeoutMs: 300_000,
+        });
         log.info({ featureBranch }, "pushed to GitLab");
       } finally {
         // Always reset remote URL to original (avoid leaking token in logs or on failure)
-        execGit(["remote", "set-url", "origin", remoteUrl], repoDir);
+        await this.gitRunner.run(["remote", "set-url", "origin", remoteUrl], { cwd: repoDir });
       }
 
       // Create or find existing MR
@@ -163,24 +173,34 @@ export class GitLabVcsConnector implements VcsConnector {
       const featureBranch = ref;
 
       // Configure HTTP credentials for push
-      const remoteUrl = execGit(["remote", "get-url", "origin"], repoDir).trim();
+      const remoteUrl = (
+        await this.gitRunner.run(["remote", "get-url", "origin"], { cwd: repoDir })
+      ).stdout.trim();
       const authenticatedUrl = new URL(remoteUrl);
       authenticatedUrl.username = "oauth2";
       authenticatedUrl.password = this.config.token;
-      execGit(["remote", "set-url", "origin", authenticatedUrl.toString()], repoDir);
+      await this.gitRunner.run(
+        ["remote", "set-url", "origin", authenticatedUrl.toString()],
+        { cwd: repoDir }
+      );
 
       try {
         // Create the branch from HEAD and force-push (allows retry with amended commits)
-        execGit(["checkout", "-B", featureBranch], repoDir);
-        execGit(["push", "--force", "-u", "origin", featureBranch], repoDir);
+        await this.gitRunner.run(["checkout", "-B", featureBranch], { cwd: repoDir });
+        await this.gitRunner.run(["push", "--force", "-u", "origin", featureBranch], {
+          cwd: repoDir,
+          timeoutMs: 300_000,
+        });
         log.info({ featureBranch }, "direct push to GitLab completed");
       } finally {
         // Always reset remote URL to avoid leaking token on push failure
-        execGit(["remote", "set-url", "origin", remoteUrl], repoDir);
+        await this.gitRunner.run(["remote", "set-url", "origin", remoteUrl], { cwd: repoDir });
       }
 
       // Create or find existing MR
-      const headSubject = execGit(["log", "-1", "--format=%s"], repoDir).trim();
+      const headSubject = (
+        await this.gitRunner.run(["log", "-1", "--format=%s"], { cwd: repoDir })
+      ).stdout.trim();
       const mr = await this.createOrFindMergeRequest(
         featureBranch,
         this.config.targetBranch ?? "main",

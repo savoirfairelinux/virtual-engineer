@@ -4,10 +4,10 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { execFileSync } from "child_process";
 import { GitLabVcsConnector } from "../../src/vcs/gitlabVcsConnector.js";
 import type { GitLabVcsConnectorConfig } from "../../src/vcs/gitlabVcsConnector.js";
 import { ReviewApiError } from "../../src/interfaces.js";
+import { RecordingGitRunner } from "./helpers/recordingGitRunner.js";
 
 const { logger } = vi.hoisted(() => ({
   logger: {
@@ -24,7 +24,6 @@ vi.mock("../../src/logger.js", () => ({
   getLogger: vi.fn(() => logger),
 }));
 
-vi.mock("child_process");
 vi.mock("../../src/connectors/gitlabHttpClient.js", () => {
   const GitLabHttpClient = vi.fn().mockImplementation(function () {
     return {
@@ -50,40 +49,41 @@ function getHttpClient(c: GitLabVcsConnector) {
 
 describe("GitLabVcsConnector", () => {
   let connector: GitLabVcsConnector;
+  let gitRunner: RecordingGitRunner;
 
   beforeEach(() => {
-    connector = new GitLabVcsConnector(mockConfig);
+    gitRunner = new RecordingGitRunner();
+    gitRunner.run.mockImplementation(async (args) => ({
+      stdout: args[0] === "remote" && args[1] === "get-url"
+        ? "https://gitlab.example.com/my-project.git"
+        : "",
+      stderr: "",
+    }));
+    connector = new GitLabVcsConnector(mockConfig, gitRunner);
     vi.clearAllMocks();
   });
 
   describe("clone", () => {
     it("should execute git clone with correct parameters", async () => {
-      const mockExecFileSync = vi.mocked(execFileSync);
-      mockExecFileSync.mockReturnValue("");
-
       const repoUrl = "https://gitlab.example.com/my-project.git";
       const branch = "main";
       const targetDir = "/tmp/workspace/repo";
 
       await connector.clone(repoUrl, branch, targetDir);
 
-      expect(mockExecFileSync).toHaveBeenCalledWith(
-        "git",
+      expect(gitRunner.run).toHaveBeenCalledWith(
         ["clone", "--branch", branch, "--depth", "1", repoUrl, targetDir],
         expect.any(Object)
       );
     });
 
     it("redacts credentials from clone logs without changing the Git command", async () => {
-      const mockExecFileSync = vi.mocked(execFileSync);
-      mockExecFileSync.mockReturnValue("");
       const repoUrl =
         "https://oauth2:glpat-secret@gitlab.example.com/my-project.git";
 
       await connector.clone(repoUrl, "main", "/tmp/repo");
 
-      expect(mockExecFileSync).toHaveBeenCalledWith(
-        "git",
+      expect(gitRunner.run).toHaveBeenCalledWith(
         ["clone", "--branch", "main", "--depth", "1", repoUrl, "/tmp/repo"],
         expect.any(Object)
       );
@@ -94,10 +94,7 @@ describe("GitLabVcsConnector", () => {
     });
 
     it("should throw on clone failure", async () => {
-      const mockExecFileSync = vi.mocked(execFileSync);
-      mockExecFileSync.mockImplementation(() => {
-        throw new Error("Network error");
-      });
+      gitRunner.run.mockRejectedValueOnce(new Error("Network error"));
 
       await expect(
         connector.clone("https://invalid.com/repo.git", "main", "/tmp/repo")
@@ -106,9 +103,7 @@ describe("GitLabVcsConnector", () => {
 
     it("redacts credentials echoed in clone failures", async () => {
       const repoUrl = "https://oauth2:glpat-secret@gitlab.example.com/my-project.git";
-      vi.mocked(execFileSync).mockImplementationOnce(() => {
-        throw new Error(`fatal: unable to access '${repoUrl}'`);
-      });
+      gitRunner.run.mockRejectedValueOnce(new Error(`fatal: unable to access '${repoUrl}'`));
 
       await expect(connector.clone(repoUrl, "main", "/tmp/repo")).rejects.not.toThrow(
         /glpat-secret/
@@ -118,13 +113,6 @@ describe("GitLabVcsConnector", () => {
 
   describe("push", () => {
     it("should perform git operations in sequence and create MR", async () => {
-      const mockExecFileSync = vi.mocked(execFileSync);
-      mockExecFileSync.mockImplementation((command, args) => {
-        if (command === "git" && Array.isArray(args)) {
-          if (args[0] === "remote" && args[1] === "get-url") return "https://gitlab.example.com/my-project.git";
-        }
-        return "";
-      });
       const httpClient = getHttpClient(connector);
       httpClient.fetchJson.mockResolvedValue({ iid: 1, web_url: "https://gitlab.example.com/mr/1" });
 
@@ -134,7 +122,7 @@ describe("GitLabVcsConnector", () => {
 
       const result = await connector.push(repoDir, featureBranch, message);
 
-      const calls = mockExecFileSync.mock.calls.map((call) => call[1]);
+      const calls = gitRunner.run.mock.calls.map((call) => call[0]);
       expect(calls).toContainEqual(["config", "user.name", mockConfig.gitAuthorName]);
       expect(calls).toContainEqual(["config", "user.email", mockConfig.gitAuthorEmail]);
       expect(calls).toContainEqual(["add", "-A"]);
@@ -144,12 +132,16 @@ describe("GitLabVcsConnector", () => {
     });
 
     it("should handle push errors gracefully", async () => {
-      const mockExecFileSync = vi.mocked(execFileSync);
-      mockExecFileSync.mockImplementation((command, args) => {
-        if (command === "git" && Array.isArray(args) && args[0] === "push") {
+      gitRunner.run.mockImplementation(async (args) => {
+        if (args[0] === "push") {
           throw new Error("Permission denied");
         }
-        return "";
+        return {
+          stdout: args[0] === "remote" && args[1] === "get-url"
+            ? "https://gitlab.example.com/my-project.git"
+            : "",
+          stderr: "",
+        };
       });
 
       await expect(
@@ -158,20 +150,12 @@ describe("GitLabVcsConnector", () => {
     });
 
     it("passes branch names as standalone git arguments", async () => {
-      const mockExecFileSync = vi.mocked(execFileSync);
-      mockExecFileSync.mockImplementation((command, args) => {
-        if (command === "git" && Array.isArray(args) && args[0] === "remote" && args[1] === "get-url") {
-          return "https://gitlab.example.com/my-project.git";
-        }
-        return "";
-      });
       const httpClient = getHttpClient(connector);
       httpClient.fetchJson.mockResolvedValue({ iid: 2, web_url: "https://gitlab.example.com/mr/2" });
 
       await connector.push("/tmp/workspace/repo", "feature/test-123", "feat: add new feature");
 
-      expect(mockExecFileSync).toHaveBeenCalledWith(
-        "git",
+      expect(gitRunner.run).toHaveBeenCalledWith(
         ["push", "-u", "origin", "feature/test-123"],
         expect.any(Object)
       );
@@ -198,17 +182,13 @@ describe("GitLabVcsConnector", () => {
 
   describe("pushDirect", () => {
     it("force-pushes to feature branch and creates MR", async () => {
-      const mockExecFileSync = vi.mocked(execFileSync);
-      mockExecFileSync.mockImplementation((command, args) => {
-        if (command === "git" && Array.isArray(args)) {
-          if (args[0] === "remote" && args[1] === "get-url") {
-            return "https://gitlab.example.com/my-project.git";
-          }
-          if (args[0] === "log" && args[1] === "-1") {
-            return "feat: multi-commit feature";
-          }
-        }
-        return "";
+      gitRunner.run.mockImplementation(async (args) => {
+        const stdout = args[0] === "remote" && args[1] === "get-url"
+          ? "https://gitlab.example.com/my-project.git"
+          : args[0] === "log" && args[1] === "-1"
+            ? "feat: multi-commit feature"
+            : "";
+        return { stdout, stderr: "" };
       });
       const httpClient = getHttpClient(connector);
       httpClient.fetchJson.mockResolvedValue({ iid: 5, web_url: "https://gitlab.example.com/mr/5" });
@@ -216,13 +196,11 @@ describe("GitLabVcsConnector", () => {
       const result = await connector.pushDirect("/tmp/workspace/repo", "feature-TASK-1");
 
       // Verify git operations: checkout -B, push --force
-      expect(mockExecFileSync).toHaveBeenCalledWith(
-        "git",
+      expect(gitRunner.run).toHaveBeenCalledWith(
         ["checkout", "-B", "feature-TASK-1"],
         expect.any(Object)
       );
-      expect(mockExecFileSync).toHaveBeenCalledWith(
-        "git",
+      expect(gitRunner.run).toHaveBeenCalledWith(
         ["push", "--force", "-u", "origin", "feature-TASK-1"],
         expect.any(Object)
       );
@@ -230,23 +208,19 @@ describe("GitLabVcsConnector", () => {
     });
 
     it("resets remote URL after push to avoid token leak", async () => {
-      const mockExecFileSync = vi.mocked(execFileSync);
       const remoteUrl = "https://gitlab.example.com/my-project.git";
       const setUrlCalls: string[][] = [];
 
-      mockExecFileSync.mockImplementation((command, args) => {
-        if (command === "git" && Array.isArray(args)) {
-          if (args[0] === "remote" && args[1] === "get-url") {
-            return remoteUrl;
-          }
-          if (args[0] === "remote" && args[1] === "set-url") {
-            setUrlCalls.push(args as string[]);
-          }
-          if (args[0] === "log" && args[1] === "-1") {
-            return "feat: test";
-          }
+      gitRunner.run.mockImplementation(async (args) => {
+        if (args[0] === "remote" && args[1] === "set-url") {
+          setUrlCalls.push([...args]);
         }
-        return "";
+        const stdout = args[0] === "remote" && args[1] === "get-url"
+          ? remoteUrl
+          : args[0] === "log" && args[1] === "-1"
+            ? "feat: test"
+            : "";
+        return { stdout, stderr: "" };
       });
       const httpClient = getHttpClient(connector);
       httpClient.fetchJson.mockResolvedValue({ iid: 6, web_url: "https://gitlab.example.com/mr/6" });
@@ -259,15 +233,13 @@ describe("GitLabVcsConnector", () => {
     });
 
     it("ignores topic parameter (GitLab doesn't use Gerrit topics)", async () => {
-      const mockExecFileSync = vi.mocked(execFileSync);
-      mockExecFileSync.mockImplementation((command, args) => {
-        if (command === "git" && Array.isArray(args)) {
-          if (args[0] === "remote" && args[1] === "get-url") {
-            return "https://gitlab.example.com/my-project.git";
-          }
-          if (args[0] === "log") return "feat: test";
-        }
-        return "";
+      gitRunner.run.mockImplementation(async (args) => {
+        const stdout = args[0] === "remote" && args[1] === "get-url"
+          ? "https://gitlab.example.com/my-project.git"
+          : args[0] === "log"
+            ? "feat: test"
+            : "";
+        return { stdout, stderr: "" };
       });
       const httpClient = getHttpClient(connector);
       httpClient.fetchJson.mockResolvedValue({ iid: 7, web_url: "https://gitlab.example.com/mr/7" });
@@ -275,8 +247,7 @@ describe("GitLabVcsConnector", () => {
       await connector.pushDirect("/tmp/workspace/repo", "feature-TASK-3", "VE-TASK-3");
 
       // Should still push to the correct branch
-      expect(mockExecFileSync).toHaveBeenCalledWith(
-        "git",
+      expect(gitRunner.run).toHaveBeenCalledWith(
         ["push", "--force", "-u", "origin", "feature-TASK-3"],
         expect.any(Object)
       );
@@ -285,13 +256,6 @@ describe("GitLabVcsConnector", () => {
 
   describe("createOrFindMergeRequest (via push)", () => {
     it("falls back to finding existing MR on 409 conflict", async () => {
-      const mockExecFileSync = vi.mocked(execFileSync);
-      mockExecFileSync.mockImplementation((command, args) => {
-        if (command === "git" && Array.isArray(args) && args[0] === "remote" && args[1] === "get-url") {
-          return "https://gitlab.example.com/my-project.git";
-        }
-        return "";
-      });
       const httpClient = getHttpClient(connector);
       // First call (POST create) → 409; second call (GET list) → existing MR
       httpClient.fetchJson

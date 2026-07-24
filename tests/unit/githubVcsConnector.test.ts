@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { execFileSync } from "child_process";
 import { GitHubVcsConnector } from "../../src/vcs/githubVcsConnector.js";
 import { jsonResponse, errorResponse } from "./helpers/fixtures.js";
+import { RecordingGitRunner } from "./helpers/recordingGitRunner.js";
 
 const { logger } = vi.hoisted(() => ({
   logger: {
@@ -35,7 +35,8 @@ const PR_MERGED = { ...PR_RESPONSE, state: "closed", merged: true };
 const PR_CLOSED = { ...PR_RESPONSE, state: "closed", merged: false };
 
 function makeConnector(
-  overrides?: Partial<ConstructorParameters<typeof GitHubVcsConnector>[0]>
+  overrides?: Partial<ConstructorParameters<typeof GitHubVcsConnector>[0]>,
+  gitRunner: RecordingGitRunner = makeGitRunner()
 ) {
   return new GitHubVcsConnector({
     apiBaseUrl: API_BASE_URL,
@@ -46,16 +47,19 @@ function makeConnector(
     gitAuthorName: "Virtual Engineer",
     gitAuthorEmail: "ve@virtual-engineer.local",
     ...overrides,
-  });
+  }, gitRunner);
 }
 
-vi.mock("child_process", () => ({
-  execFile: vi.fn((_cmd, _args, _opts, cb) => {
-    const callback = typeof _opts === "function" ? _opts : cb;
-    if (callback) callback(null, "", "");
-  }),
-  execFileSync: vi.fn(() => "https://github.com/octocat/hello-world.git\n"),
-}));
+function makeGitRunner(): RecordingGitRunner {
+  const gitRunner = new RecordingGitRunner();
+  gitRunner.run.mockImplementation(async (args) => ({
+    stdout: args[0] === "remote" && args[1] === "get-url"
+      ? "https://github.com/octocat/hello-world.git\n"
+      : "",
+    stderr: "",
+  }));
+  return gitRunner;
+}
 
 describe("GitHubVcsConnector", () => {
   let fetchMock: ReturnType<typeof vi.fn>;
@@ -95,13 +99,13 @@ describe("GitHubVcsConnector", () => {
 
   describe("clone", () => {
     it("redacts credentials from logs without changing the Git command", async () => {
+      const gitRunner = makeGitRunner();
       const repoUrl =
         "https://x-access-token:ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345@github.com/octocat/hello-world.git";
 
-      await makeConnector().clone(repoUrl, "main", "/tmp/repo");
+      await makeConnector(undefined, gitRunner).clone(repoUrl, "main", "/tmp/repo");
 
-      expect(vi.mocked(execFileSync)).toHaveBeenCalledWith(
-        "git",
+      expect(gitRunner.run).toHaveBeenCalledWith(
         ["clone", "--branch", "main", "--depth", "1", repoUrl, "/tmp/repo"],
         expect.any(Object)
       );
@@ -112,13 +116,12 @@ describe("GitHubVcsConnector", () => {
     });
 
     it("redacts credentials from clone failures", async () => {
+      const gitRunner = makeGitRunner();
       const repoUrl =
         "https://x-access-token:ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345@github.com/octocat/hello-world.git";
-      vi.mocked(execFileSync).mockImplementationOnce(() => {
-        throw new Error(`fatal: unable to access '${repoUrl}'`);
-      });
+      gitRunner.run.mockRejectedValueOnce(new Error(`fatal: unable to access '${repoUrl}'`));
 
-      await expect(makeConnector().clone(repoUrl, "main", "/tmp/repo")).rejects.not.toThrow(
+      await expect(makeConnector(undefined, gitRunner).clone(repoUrl, "main", "/tmp/repo")).rejects.not.toThrow(
         /ghp_/
       );
     });
