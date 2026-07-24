@@ -46,6 +46,8 @@ Important behaviors:
 - `useFullTicketUrlInCommits` formats a full ticket URL trailer and passes it through `AgentSession.ticketFooterLine` so direct-pushed agent commits receive it inside the worker
 - `postReviewLinkToTicket` posts the first cycle's non-orphaned review URLs back to the source ticket; later cycles reuse those reviews and do not post another note
 - `reactToCiFailures` controls whether comments tagged as GitHub `ci-run-*` or Gerrit `ci-failure-*` become retry feedback; the default remains off
+- `checkReviewProgress()` delegates to a single `ReviewProgressService` instance; the service owns single- and multi-repository status convergence, feedback aggregation, CI filtering, retry limits, and post-retry comment resolution
+- review-progress dependencies are narrow callbacks for state access, connector resolution, feedback extraction, agent retry, ticket closure, and abandonment. They read the current project mode, VCS connector, and `maxAgentCycles`, so `setProjectMode()` and `updateRuntime()` remain effective without reconstructing the service
 - Gerrit push chains are tracked in `change_per_repository` with `commitIndex` and `subjectHash`
 - orphaned prior changes are marked `ORPHANED` and excluded from merge convergence; `orphanExcessChanges()` automatically marks rows with `commitIndex > newCommitCount - 1` after each push
 - **multi-commit Change-Id continuity**: on retry cycles, `perRepoChangeIds` now carries ALL commit indices per repo (single-commit repos get a flat string for backward compat; multi-commit repos get `{ "0": "I...", "1": "I..." }`). The agent-worker `resolveExistingChangeId()` looks up per-index entries so every commit reuses its prior Gerrit Change-Id
@@ -101,6 +103,13 @@ All review-side polls share a per-change **cooldown map** (`reviewPollCooldowns`
 - `markProcessed()` persists processed IDs once feedback has been consumed
 - used on the `IN_REVIEW → FEEDBACK_PROCESSING` path
 
+## `reviewProgressService.ts`
+
+- polls legacy single-repository changes and `change_per_repository` rows through provider-neutral review/VCS contracts
+- converges to `MERGED` when every active repository is merged (or all rows are `NO_CHANGE` / `ORPHANED`) and abandons the task when any active repository is abandoned
+- aggregates repository-tagged feedback, applies the project `reactToCiFailures` policy before deduplication, enforces the current runtime cycle limit, and invokes the orchestrator-owned retry callback
+- resolves processed comments only after the retry returns the task to `IN_REVIEW`; connector lookup, CI lookup, status polling, and comment-resolution failures remain non-fatal where they were before extraction
+
 ## Runtime wiring
 
 `src/index.ts` creates the orchestrator once, then refreshes its runtime dependencies in place through `refreshRuntimeDependencies()` when integrations change. This updates connectors, VCS behavior, and admin-facing runtime summaries without restarting the process.
@@ -134,6 +143,7 @@ All provider-specific credentials (SSH keys, GitLab tokens, Redmine URLs, status
 - `tests/unit/concurrencyTracker.test.ts`
 - `tests/unit/taskLifecycleCoordinator.test.ts`
 - `tests/unit/feedbackProcessor.test.ts`
+- `tests/unit/reviewProgressService.test.ts`
 
 ## Related docs
 
