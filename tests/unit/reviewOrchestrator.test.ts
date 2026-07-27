@@ -122,6 +122,7 @@ const GOOD_RAW_OUTPUT = [
     comments: [{ file: "src/a.ts", line: 1, message: "Bug", severity: "error" }],
     summary: "blocking",
     vote: -1,
+    replies: [],
   }),
   "REVIEW_RESULT_END",
 ].join("\n");
@@ -698,6 +699,7 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
         ],
         summary: "blocking",
         vote: -1,
+        replies: [],
       }),
       "REVIEW_RESULT_END",
     ].join("\n");
@@ -738,6 +740,7 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
         ],
         summary: "blocking",
         vote: -1,
+        replies: [],
       }),
       "REVIEW_RESULT_END",
     ].join("\n");
@@ -810,6 +813,7 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
         comments: [{ file: "src/ghost.ts", line: 9, message: "Hallucinated", severity: "error" }],
         summary: "",
         vote: -1,
+        replies: [],
       }),
       "REVIEW_RESULT_END",
     ].join("\n");

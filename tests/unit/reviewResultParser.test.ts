@@ -96,6 +96,7 @@ describe("parseReviewResult", () => {
         ],
         summary: "One blocking issue.",
         vote: -1,
+        replies: [],
       })
     );
 
@@ -109,7 +110,7 @@ describe("parseReviewResult", () => {
     const raw = [
       "REVIEW_RESULT_START",
       "```json",
-      JSON.stringify({ comments: [], summary: "ok", vote: 1 }),
+      JSON.stringify({ comments: [], summary: "ok", vote: 1, replies: [] }),
       "```",
       "REVIEW_RESULT_END",
     ].join("\n");
@@ -122,10 +123,20 @@ describe("parseReviewResult", () => {
     ).toThrow(ReviewResultParseError);
   });
 
-  it("defaults missing replies to an empty array", () => {
-    const result = parseReviewResult(wrap({ comments: [], summary: "ok", vote: 1 }));
-    expect(result.replies).toEqual([]);
-  });
+  it.each(["comments", "summary", "replies"])(
+    "rejects a payload missing required %s",
+    (missingField) => {
+      const payload: Record<string, unknown> = {
+        comments: [],
+        summary: "ok",
+        vote: 1,
+        replies: [],
+      };
+      delete payload[missingField];
+
+      expect(() => parseReviewResult(wrap(payload))).toThrow(ReviewResultParseError);
+    },
+  );
 
   it("parses thread replies", () => {
     const result = parseReviewResult(
@@ -170,6 +181,7 @@ describe("parseReviewResult", () => {
       comments: [{ file: "a.ts", line: 1, message: "x", severity: "Good" }],
       summary: "",
       vote: -1,
+      replies: [],
     });
     expect(parseReviewResult(raw).comments[0]?.severity).toBe("Good");
   });
