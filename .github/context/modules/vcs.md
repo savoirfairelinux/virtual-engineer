@@ -23,7 +23,8 @@ interface VcsConnector {
     ref: string,
     message: string,
     changeId?: string,
-    volumeOpts?: VolumeExecOptions
+    volumeOpts?: VolumeExecOptions,
+    reviewerEmails?: string[]
   ): Promise<VcsPushResult>;
 
   /** Push agent-created commits directly without a host commit step. */
@@ -31,7 +32,8 @@ interface VcsConnector {
     repoDir: string,
     ref: string,
     topic?: string,
-    volumeOpts?: VolumeExecOptions
+    volumeOpts?: VolumeExecOptions,
+    reviewerEmails?: string[]
   ): Promise<VcsPushResult>;
 }
 ```
@@ -48,19 +50,21 @@ All built-in project push targets implement `pushDirect`, and `Orchestrator.push
 - Uses SSH for change-status lookup and comment-thread follow-up (`gerrit query`, `gerrit review --json`) instead of Gerrit REST credentials.
 - `baseUrl` is optional and used only to build clickable review URLs.
 - Requires `gerrit_ssh_host`, `gerrit_ssh_port`, `gerrit_username`, `gerrit_ssh_key_path` from the resolved Gerrit integration.
-- `pushDirect(repoDir, ref, topic)`: pushes HEAD to `refs/for/<branch>%topic=<topic>` via SSH. Returns a `VcsPushResult` with the Change-Id parsed from the commit footer.
+- `pushDirect(repoDir, ref, topic, volumeOpts, reviewerEmails)`: pushes HEAD via SSH with one Gerrit option suffix containing the topic and one `r=<email>` entry per configured reviewer. Existing ref options are extended with commas rather than a second `%`. Returns a `VcsPushResult` with the Change-Id parsed from the commit footer.
 
 ### `gitlabVcsConnector.ts`
 - Pushes via HTTPS using the project access token.
 - Creates or updates a Merge Request via the REST API; reuses the same source branch when `existingChangeId` is set.
 - The target GitLab project can come either from legacy integration config (`projectId`) or from the VE project push-target binding (`repoKey`) passed through `vcsFactory`.
 - Returns the MR web URL.
-- `pushDirect(repoDir, ref, topic)`: force-pushes the feature branch and creates (or finds existing) MR. `topic` parameter is ignored (GitLab doesn’t use Gerrit topics). Resets remote URL after push to avoid token leak.
+- Reviewer emails are looked up through the Users API and matched exactly, case-insensitively, against visible `email` or `public_email` values. Matched IDs are included as `reviewer_ids`; unmatched or inaccessible addresses are logged and skipped. A 409 existing-MR path updates the existing MR when at least one reviewer resolves.
+- `pushDirect(repoDir, ref, topic, volumeOpts, reviewerEmails)`: force-pushes the feature branch and creates or updates the MR. `topic` is ignored because GitLab does not use Gerrit topics. Resets the remote URL after push to avoid token leakage.
 
 ### `githubVcsConnector.ts`
 - HTTP-based clone and push for GitHub, mirroring the GitLab design: clones via HTTPS with the token in the remote URL, pushes a feature branch, and creates or updates a Pull Request via the GitHub REST API (`apiBaseUrl` supports both `api.github.com` and GHE `/api/v3`).
 - `reviewSystemLabel = "github"`, `useChangeIdContinuity = false`.
 - `buildPushSpec(baseBranch, taskId, ticketTitle)` derives the branch ref via `buildFeatureBranchRef` (no Gerrit topic).
+- Reviewer-email configuration is not supported because GitHub's request-reviewers API requires usernames. The admin API rejects non-empty reviewer-email lists for GitHub push targets.
 - Config: `apiBaseUrl`, `host`, `owner`, `repo`, `token`, git author identity, optional `targetBranch` (default `main`).
 
 ### `branchNaming.ts`

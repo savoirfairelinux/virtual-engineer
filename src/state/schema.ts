@@ -368,6 +368,8 @@ export const projectPushTargets = sqliteTable(
     commitOrder: integer("commit_order").notNull(),
     localPath: text("local_path").notNull(),
     sshKeyPath: text("ssh_key_path"),
+    /** JSON array of reviewer email addresses to attach to every change pushed for this target. */
+    reviewerEmails: text("reviewer_emails").notNull().default("[]"),
     createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
     updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
   },

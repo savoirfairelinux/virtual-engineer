@@ -88,6 +88,15 @@ function buildGitEnv(config: GerritVcsConnectorConfig, overrideSshKeyPath?: stri
   };
 }
 
+/** Append Gerrit push options to a ref, preserving any options already present. */
+function appendGerritPushOptions(ref: string, topic?: string, reviewerEmails?: string[]): string {
+  const opts: string[] = [];
+  if (topic) opts.push(`topic=${topic}`);
+  for (const email of reviewerEmails ?? []) opts.push(`r=${email}`);
+  if (opts.length === 0) return ref;
+  return `${ref}${ref.includes("%") ? "," : "%"}${opts.join(",")}`;
+}
+
 export class GerritVcsConnector implements VcsConnector {
   readonly useChangeIdContinuity = true;
   readonly reviewSystemLabel = "gerrit";
@@ -192,12 +201,13 @@ export class GerritVcsConnector implements VcsConnector {
     ref: string,
     message: string,
     changeId?: string,
-    volumeOpts?: VolumeExecOptions
+    volumeOpts?: VolumeExecOptions,
+    reviewerEmails?: string[]
   ): Promise<VcsPushResult> {
     const commitMessage = ensureChangeIdInFooter(message, changeId);
 
     if (volumeOpts) {
-      return this.pushInVolume(volumeOpts, ref, commitMessage);
+      return this.pushInVolume(volumeOpts, ref, commitMessage, reviewerEmails);
     }
 
     log.info(
@@ -218,11 +228,14 @@ export class GerritVcsConnector implements VcsConnector {
       log.info({ repoDir }, "changes committed");
 
       // Push to Gerrit
-      await this.gitRunner.run(["push", "origin", `HEAD:${ref}`], {
-        cwd: repoDir,
-        env: buildGitEnv(this.config),
-        timeoutMs: 300_000,
-      });
+      await this.gitRunner.run(
+        ["push", "origin", `HEAD:${appendGerritPushOptions(ref, undefined, reviewerEmails)}`],
+        {
+          cwd: repoDir,
+          env: buildGitEnv(this.config),
+          timeoutMs: 300_000,
+        }
+      );
       log.info({ ref }, "pushed to Gerrit");
 
       // Extract Change-Id from the message
@@ -252,19 +265,17 @@ export class GerritVcsConnector implements VcsConnector {
     repoDir: string,
     ref: string,
     topic?: string,
-    volumeOpts?: VolumeExecOptions
+    volumeOpts?: VolumeExecOptions,
+    reviewerEmails?: string[]
   ): Promise<VcsPushResult> {
     if (volumeOpts) {
-      return this.pushDirectInVolume(volumeOpts, ref, topic);
+      return this.pushDirectInVolume(volumeOpts, ref, topic, reviewerEmails);
     }
 
     log.info({ repoDir, ref, topic }, "pushing HEAD directly to Gerrit (agent-created commits)");
 
     try {
-      let pushRef = `HEAD:${ref}`;
-      if (topic) {
-        pushRef = `HEAD:${ref}%topic=${topic}`;
-      }
+      const pushRef = `HEAD:${appendGerritPushOptions(ref, topic, reviewerEmails)}`;
 
       await this.gitRunner.run(["push", "origin", pushRef], {
         cwd: repoDir,
@@ -299,7 +310,8 @@ export class GerritVcsConnector implements VcsConnector {
   private async pushInVolume(
     volumeOpts: VolumeExecOptions,
     ref: string,
-    commitMessage: string
+    commitMessage: string,
+    reviewerEmails?: string[]
   ): Promise<VcsPushResult> {
     log.info({ volumeName: volumeOpts.volumeName, ref }, "pushing to Gerrit via volume container");
 
@@ -307,6 +319,7 @@ export class GerritVcsConnector implements VcsConnector {
     const cwd = volumeOpts.subPath && volumeOpts.subPath !== "."
       ? `/workspace/${volumeOpts.subPath}`
       : "/workspace";
+    const pushRef = appendGerritPushOptions(ref, undefined, reviewerEmails);
 
     const result = await execInVolume({
       volumeName: volumeOpts.volumeName,
@@ -326,7 +339,7 @@ export class GerritVcsConnector implements VcsConnector {
         VE_GIT_NAME: this.config.gitAuthorName,
         VE_GIT_EMAIL: this.config.gitAuthorEmail,
         VE_COMMIT_MSG_B64: encodedMsg,
-        VE_PUSH_REF: ref,
+        VE_PUSH_REF: pushRef,
       },
     });
 
@@ -345,14 +358,12 @@ export class GerritVcsConnector implements VcsConnector {
   private async pushDirectInVolume(
     volumeOpts: VolumeExecOptions,
     ref: string,
-    topic?: string
+    topic?: string,
+    reviewerEmails?: string[]
   ): Promise<VcsPushResult> {
     log.info({ volumeName: volumeOpts.volumeName, ref, topic }, "pushing HEAD directly to Gerrit via volume container");
 
-    let pushRef = `HEAD:${ref}`;
-    if (topic) {
-      pushRef = `HEAD:${ref}%topic=${topic}`;
-    }
+    const pushRef = `HEAD:${appendGerritPushOptions(ref, topic, reviewerEmails)}`;
 
     const cwd = volumeOpts.subPath && volumeOpts.subPath !== "."
       ? `/workspace/${volumeOpts.subPath}`

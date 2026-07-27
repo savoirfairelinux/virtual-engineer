@@ -255,6 +255,31 @@ describe("GitLabVcsConnector", () => {
   });
 
   describe("createOrFindMergeRequest (via push)", () => {
+    it("resolves reviewer IDs from public_email and includes them in MR creation", async () => {
+      const httpClient = getHttpClient(connector);
+      httpClient.fetchJson
+        .mockResolvedValueOnce([{ id: 42, public_email: "Alice@Example.com" }])
+        .mockResolvedValueOnce({ iid: 8, web_url: "https://gitlab.example.com/mr/8" });
+
+      await connector.push(
+        "/tmp/workspace/repo",
+        "feature-reviewers",
+        "feat: reviewers",
+        undefined,
+        undefined,
+        ["alice@example.com"]
+      );
+
+      expect(httpClient.fetchJson).toHaveBeenNthCalledWith(
+        2,
+        "https://gitlab.example.com/api/v4/projects/my-project/merge_requests",
+        expect.objectContaining({
+          method: "POST",
+          body: expect.stringContaining('"reviewer_ids":[42]'),
+        })
+      );
+    });
+
     it("falls back to finding existing MR on 409 conflict", async () => {
       const httpClient = getHttpClient(connector);
       // First call (POST create) → 409; second call (GET list) → existing MR
@@ -264,6 +289,33 @@ describe("GitLabVcsConnector", () => {
 
       const result = await connector.push("/tmp/workspace/repo", "feature-dup", "feat: dup");
       expect(result.changeId).toBe("3");
+    });
+
+    it("updates reviewers when the merge request already exists", async () => {
+      const httpClient = getHttpClient(connector);
+      httpClient.fetchJson
+        .mockResolvedValueOnce([{ id: 42, email: "alice@example.com" }])
+        .mockRejectedValueOnce(new ReviewApiError(409, "/api/v4/projects/my-project/merge_requests", "Already exists"))
+        .mockResolvedValueOnce([{ iid: 3, web_url: "https://gitlab.example.com/mr/3" }])
+        .mockResolvedValueOnce({ iid: 3, web_url: "https://gitlab.example.com/mr/3" });
+
+      await connector.push(
+        "/tmp/workspace/repo",
+        "feature-dup",
+        "feat: dup",
+        undefined,
+        undefined,
+        ["alice@example.com"]
+      );
+
+      expect(httpClient.fetchJson).toHaveBeenNthCalledWith(
+        4,
+        "https://gitlab.example.com/api/v4/projects/my-project/merge_requests/3",
+        {
+          method: "PUT",
+          body: JSON.stringify({ reviewer_ids: [42] }),
+        }
+      );
     });
   });
 

@@ -382,6 +382,25 @@ describe("SqliteStateStore — Phase 2: project push targets", () => {
     expect(targets.map((t) => t.repoKey)).toEqual(["main", "core"]);
   });
 
+  it("round-trips reviewer emails", async () => {
+    const a = await makeAgent(store);
+    const p = await store.createProject({ name: "P", type: "coding", agentId: a.id });
+    await makeIntegration(store, "g1", "gerrit");
+    await store.replaceProjectPushTargets(p.id, [{
+      integrationId: "g1",
+      repoKey: "main",
+      cloneUrl: "ssh://x/main",
+      targetBranch: "main",
+      role: "primary",
+      commitOrder: 1,
+      localPath: ".",
+      reviewerEmails: ["alice@example.com", "bob@example.com"],
+    }]);
+
+    const targets = await store.listProjectPushTargets(p.id);
+    expect(targets[0]?.reviewerEmails).toEqual(["alice@example.com", "bob@example.com"]);
+  });
+
   it("replaceProjectPushTargets is atomic — rolls back on commit_order conflict", async () => {
     const a = await makeAgent(store);
     const p = await store.createProject({ name: "P", type: "coding", agentId: a.id });

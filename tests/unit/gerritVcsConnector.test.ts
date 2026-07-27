@@ -254,6 +254,39 @@ describe("GerritVcsConnector", () => {
         expect.any(Object)
       );
     });
+
+    it("appends reviewer options to a ref that already has Gerrit push options", async () => {
+      await connector.push(
+        "/tmp/workspace/repo",
+        "refs/for/main%wip",
+        "feat: test\n\nChange-Id: I1234",
+        "I1234",
+        undefined,
+        ["alice@example.com", "bob@example.com"]
+      );
+
+      expect(gitRunner.run).toHaveBeenCalledWith(
+        ["push", "origin", "HEAD:refs/for/main%wip,r=alice@example.com,r=bob@example.com"],
+        expect.any(Object)
+      );
+    });
+  });
+
+  describe("pushDirect", () => {
+    it("combines the topic and reviewer options in one Gerrit suffix", async () => {
+      await connector.pushDirect(
+        "/tmp/workspace/repo",
+        "refs/for/main",
+        "VE-task-1",
+        undefined,
+        ["alice@example.com", "bob@example.com"]
+      );
+
+      expect(gitRunner.run).toHaveBeenCalledWith(
+        ["push", "origin", "HEAD:refs/for/main%topic=VE-task-1,r=alice@example.com,r=bob@example.com"],
+        expect.any(Object)
+      );
+    });
   });
 
   describe("getChangeStatus", () => {

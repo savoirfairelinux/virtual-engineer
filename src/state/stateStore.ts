@@ -349,6 +349,7 @@ export class SqliteStateStore {
         commit_order   INTEGER NOT NULL,
         local_path     TEXT    NOT NULL,
         ssh_key_path   TEXT,
+        reviewer_emails TEXT   NOT NULL DEFAULT '[]',
         created_at     INTEGER NOT NULL,
         updated_at     INTEGER NOT NULL
       );
@@ -493,6 +494,7 @@ export class SqliteStateStore {
     this.ensureColumn("projects", "use_full_ticket_url_in_commits", "INTEGER NOT NULL DEFAULT 0");
     this.ensureColumn("projects", "post_review_link_to_ticket", "INTEGER NOT NULL DEFAULT 0");
     this.ensureColumn("projects", "react_to_ci_failures", "INTEGER NOT NULL DEFAULT 0");
+    this.ensureColumn("project_push_targets", "reviewer_emails", "TEXT NOT NULL DEFAULT '[]'");
     this.ensureColumn("prompts", "prompt_type", "TEXT NOT NULL DEFAULT 'user'");
 
     this.raw.exec(`
