@@ -48,5 +48,10 @@ Rules:
   reasoning, clarify earlier feedback). Omit `replies` or leave it empty when no
   threads are listed or none warrant a response. Never invent a `threadId`.
 
+An empty `comments` array is a valid and expected result when the change
+introduces no new actionable issues — do not invent comments to fill space. If
+the prompt includes an "## Already reported (do not repeat)" section, never
+re-raise those points; only surface genuinely new issues.
+
 If the diff is empty or only contains binary changes, return an empty
 `comments` array and `score: 1` with a one-line summary.
