@@ -121,9 +121,19 @@ export class GitLabIssueConnector extends AbstractTicketConnector implements Tic
   /** Transition a GitLab issue to a new workflow state via state_event or label update. */
   async transitionStatus(ticketId: TicketId, targetStatusId: number): Promise<void> {
     if (targetStatusId === this.closedStatusId) {
+      // Closing must also strip the workflow labels (status::* legacy pattern + the
+      // configured in-progress/in-review labels) — otherwise a closed issue is left
+      // stuck showing "in review" forever.
+      const issue = GitLabIssueSchema.parse(
+        await this.http.fetchJson(this.buildProjectApiUrl(`issues/${ticketId}`))
+      );
+      const configuredLabels = new Set([this.inProgressLabel, this.inReviewLabel]);
+      const cleanedLabels = issue.labels.filter(
+        (l) => !l.startsWith("status::") && !configuredLabels.has(l)
+      );
       await this.http.fetchJsonVoid(this.buildProjectApiUrl(`issues/${ticketId}`), {
         method: "PUT",
-        body: JSON.stringify({ state_event: "close" }),
+        body: JSON.stringify({ state_event: "close", labels: cleanedLabels.join(",") }),
       });
       log.info({ ticketId, targetStatusId }, "closed GitLab issue via state transition");
       return;

@@ -265,6 +265,60 @@ describe("normalizeAgentEvent", () => {
     expect(result.message).toContain("shell_exec");
     expect(result.message).toContain("50% complete");
   });
+
+  it("builds human-readable messages for remote skill fetch events", () => {
+    const start = normalizeAgentEvent({
+      ...baseEvent,
+      type: "skills.fetch_start",
+      data: {
+        source: "ssh://g1.sfl.io/sfl/agent-skills",
+        skills: ["fix-reviews", "pdf-index"],
+        agent: "github-copilot",
+      },
+    });
+    expect(start.message).toBe(
+      "Fetching skills from ssh://g1.sfl.io/sfl/agent-skills (skills: fix-reviews, pdf-index · agent: github-copilot)"
+    );
+
+    const complete = normalizeAgentEvent({
+      ...baseEvent,
+      type: "skills.fetch_complete",
+      data: {
+        source: "git@github.com:vercel-labs/agent-skills.git",
+        skills: "all",
+        agent: "github-copilot",
+      },
+    });
+    expect(complete.message).toBe(
+      "Fetched skills from git@github.com:vercel-labs/agent-skills.git (skills: all skills · agent: github-copilot)"
+    );
+
+    const failed = normalizeAgentEvent({
+      ...baseEvent,
+      type: "skills.fetch_failed",
+      data: {
+        source: "ssh://g1.sfl.io/sfl/agent-skills",
+        skills: [" fix-reviews ", "  "],
+        message: "Authentication failed",
+      },
+    });
+    expect(failed.message).toBe(
+      "Failed to fetch skills from ssh://g1.sfl.io/sfl/agent-skills (skills: fix-reviews): Authentication failed"
+    );
+  });
+
+  it("builds a single human-readable message for loaded local skills", () => {
+    const result = normalizeAgentEvent({
+      ...baseEvent,
+      type: "skills.local_loaded",
+      data: {
+        path: "team/skills",
+        skills: ["review-gerrit", "pdf-index"],
+      },
+    });
+
+    expect(result.message).toBe("Loaded local skills from team/skills (skills: review-gerrit, pdf-index)");
+  });
 });
 
 // ── SessionMetrics ──────────────────────────────────────────────────────────
@@ -335,13 +389,52 @@ describe("SessionMetrics", () => {
     expect(metrics.usageEventCount).toBe(1);
   });
 
-  it("keeps the latest cumulative token totals across usage events", () => {
+  it("sums token usage across distinct requests", () => {
     updateSessionMetrics(metrics, makeNormEvent("assistant.usage", { inputTokens: 100, outputTokens: 50 }, "usage"));
     updateSessionMetrics(metrics, makeNormEvent("assistant.usage", { inputTokens: 200, outputTokens: 100 }, "usage"));
+    expect(metrics.tokenUsage.inputTokens).toBe(300);
+    expect(metrics.tokenUsage.outputTokens).toBe(150);
+    expect(metrics.tokenUsage.totalTokens).toBe(450);
+    expect(metrics.usageEventCount).toBe(2);
+  });
+
+  it("dedups duplicate usage emissions for the same request", () => {
+    updateSessionMetrics(metrics, makeNormEvent("assistant.usage", { inputTokens: 200, outputTokens: 100, apiCallId: "req-1" }, "usage"));
+    updateSessionMetrics(metrics, makeNormEvent("assistant.usage", { inputTokens: 200, outputTokens: 100, apiCallId: "req-1" }, "usage"));
     expect(metrics.tokenUsage.inputTokens).toBe(200);
     expect(metrics.tokenUsage.outputTokens).toBe(100);
     expect(metrics.tokenUsage.totalTokens).toBe(300);
     expect(metrics.usageEventCount).toBe(2);
+  });
+
+  it("applies delta on live-then-final usage pair (outputTokens starts at 0)", () => {
+    updateSessionMetrics(metrics, makeNormEvent("assistant.usage", { inputTokens: 100, outputTokens: 0, apiCallId: "req-live" }, "usage"));
+    updateSessionMetrics(metrics, makeNormEvent("assistant.usage", { inputTokens: 100, outputTokens: 60, apiCallId: "req-live" }, "usage"));
+    expect(metrics.tokenUsage.inputTokens).toBe(100);
+    expect(metrics.tokenUsage.outputTokens).toBe(60);
+    expect(metrics.tokenUsage.totalTokens).toBe(160);
+  });
+
+  it("treats identical token counts from different models as distinct requests", () => {
+    // Without apiCallId, requests from different models must not be collapsed.
+    updateSessionMetrics(metrics, makeNormEvent("assistant.usage", { inputTokens: 100, outputTokens: 50, model: "gpt-4o" }, "usage"));
+    updateSessionMetrics(metrics, makeNormEvent("assistant.usage", { inputTokens: 100, outputTokens: 50, model: "claude-3-5-sonnet" }, "usage"));
+    expect(metrics.tokenUsage.inputTokens).toBe(200);
+    expect(metrics.tokenUsage.outputTokens).toBe(100);
+  });
+
+  it("still dedups same-model identical emissions when apiCallId is absent", () => {
+    updateSessionMetrics(metrics, makeNormEvent("assistant.usage", { inputTokens: 80, outputTokens: 20, model: "gpt-4o" }, "usage"));
+    updateSessionMetrics(metrics, makeNormEvent("assistant.usage", { inputTokens: 80, outputTokens: 20, model: "gpt-4o" }, "usage"));
+    expect(metrics.tokenUsage.inputTokens).toBe(80);
+    expect(metrics.tokenUsage.outputTokens).toBe(20);
+  });
+
+  it("dedups duplicate tool.execution_start emissions by callId", () => {
+    updateSessionMetrics(metrics, makeNormEvent("tool.execution_start", { name: "read_file", callId: "read_file_1" }, "tools"));
+    updateSessionMetrics(metrics, makeNormEvent("tool.execution_start", { name: "read_file", callId: "read_file_1" }, "tools"));
+    expect(metrics.totalToolCalls).toBe(1);
+    expect(metrics.tools["read_file"]!.callCount).toBe(1);
   });
 
   it("does not double count assistant and session usage variants for the same turn", () => {
@@ -368,9 +461,11 @@ describe("SessionMetrics", () => {
     expect(metrics.usageEventCount).toBe(2);
   });
 
-  it("handles session.usage_info with totalTokens only", () => {
+  it("handles session.usage_info with totalTokens only (no input/output breakdown)", () => {
     updateSessionMetrics(metrics, makeNormEvent("session.usage_info", { totalTokens: 500 }, "usage"));
-    expect(metrics.tokenUsage.totalTokens).toBe(500);
+    // totalTokens is derived from inputTokens + outputTokens; without a
+    // breakdown this is 0, not the raw totalTokens field.
+    expect(metrics.tokenUsage.totalTokens).toBe(0);
   });
 
   it("tracks session start/end", () => {

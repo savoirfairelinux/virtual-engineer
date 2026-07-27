@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AppConfig } from "../../src/config.js";
-import type { AgentAdapter, AgentResult, ReviewConnector, Integration, ProviderId, DomainCapability, TicketConnector } from "../../src/interfaces.js";
+import type { AgentAdapter, AgentRecord, AgentResult, ReviewConnector, Integration, ProjectRecord, ProviderId, DomainCapability, TicketConnector, Task } from "../../src/interfaces.js";
 
 type ConnectorByType = Partial<Record<ProviderId, TicketConnector | ReviewConnector | AgentAdapter | null>>;
 
@@ -14,9 +14,11 @@ const PROVIDER_CAPABILITIES: Record<ProviderId, DomainCapability[]> = {
   gerrit: ["code_review", "source_control"],
   copilot: ["agent_execution"],
   mock: ["agent_execution"],
+  claude: ["agent_execution"],
+  aider: ["agent_execution"],
 };
 
-const ALL_PROVIDERS: ProviderId[] = ["redmine", "gitlab", "gerrit", "github", "copilot", "mock"];
+const ALL_PROVIDERS: ProviderId[] = ["redmine", "gitlab", "gerrit", "github", "copilot", "claude", "aider", "mock"];
 
 const baseConfig: AppConfig = {
   nodeEnv: "test" as const,
@@ -26,6 +28,7 @@ const baseConfig: AppConfig = {
   adminApiHost: "127.0.0.1",
   adminApiPort: 3100,
   adminAuthSecret: undefined,
+  adminTrustProxy: false,
   pollingIntervalMs: 30_000,
   maxAgentCycles: 3,
   maxRetryAttempts: 5,
@@ -46,7 +49,7 @@ function makeDbAgentAdapter(name: string): AgentAdapter {
     buildContainerSpec: vi.fn(() => ({
       image: "virtual-engineer-workspace:latest",
       env: {},
-      command: ["node", "/agent-worker/index.js"],
+      command: ["node", "/agent-worker/dist/index.js"],
     })),
     execute: vi.fn(async (): Promise<AgentResult> => ({
       status: "success",
@@ -87,6 +90,16 @@ async function importRuntime(
       pushTargetIntegrationId?: string;
       reviewTargetIntegrationId?: string;
     };
+    /** Active tasks returned by stateStore.getActiveTasks at boot. */
+    activeTasks?: Task[];
+    /** Agent rows returned by stateStore.listAgents. */
+    agentRecords?: AgentRecord[];
+    /**
+     * Per-provider VcsConnector stub returned by the mocked
+     * createVcsConnectorForIntegration, so tests can exercise the
+     * queryAuthorIdentity() git-author-identity resolution path.
+     */
+    vcsConnectorsByProvider?: Partial<Record<ProviderId, { queryAuthorIdentity?: () => Promise<{ name: string; email: string } | undefined> }>>;
   } = {}
 ) {
   vi.resetModules();
@@ -157,13 +170,34 @@ async function importRuntime(
     getActiveProviders: vi.fn(() => {
       return ALL_PROVIDERS.filter((provider) => getActiveIntegrationsByProvider(provider).length > 0);
     }),
-    integrationHasStreamEvents: vi.fn((_integrationId: string) => false),
+    integrationHasStreamEvents: vi.fn((integrationId: string) => {
+      const integration = getAllActiveIntegrations().find((i) => i.id === integrationId);
+      return integration?.provider === "gerrit";
+    }),
+    getIntegrationCapabilityIntake: vi.fn((integrationId: string, capability: DomainCapability) => {
+      const integration = getAllActiveIntegrations().find((i) => i.id === integrationId);
+      if (!integration) return [];
+      if (integration.provider === "gerrit" && capability === "code_review") return ["stream"];
+      if (integration.provider === "github" && capability === "code_review") return ["polling", "webhook"];
+      if (integration.provider === "gitlab" && capability === "code_review") return ["webhook"];
+      return [];
+    }),
     registerFactory: vi.fn(),
     registerConnectionTester: vi.fn(),
     reloadIntegration: vi.fn().mockResolvedValue(undefined),
+    migrateEncryptCredentials: vi.fn().mockResolvedValue(undefined),
     onPluginChange: vi.fn(),
     decryptIntegrationConfig: vi.fn((integration: Integration) => {
       return JSON.parse(integration.configJson) as Record<string, unknown>;
+    }),
+    // Mirror the real descriptor behaviour: only generated-key integrations
+    // (with sshPrivateKeyEnc) resolve to a temp-file key path.
+    resolveConfigRuntimeExtras: vi.fn((integration: Integration): Record<string, unknown> => {
+      const cfg = JSON.parse(integration.configJson) as Record<string, unknown>;
+      if (typeof cfg["sshPrivateKeyEnc"] === "string" && cfg["sshPrivateKeyEnc"] !== "") {
+        return { _resolvedSshKeyPath: `/tmp/ve-ssh-${integration.id}.pem` };
+      }
+      return {};
     }),
   };
 
@@ -209,7 +243,9 @@ async function importRuntime(
       updateRuntime: vi.fn(),
     };
   });
-  const createVcsConnectorForIntegration = vi.fn(() => ({ pushRepo: vi.fn() }));
+  const createVcsConnectorForIntegration = vi.fn((integration: Integration) => {
+    return options.vcsConnectorsByProvider?.[integration.provider] ?? { pushRepo: vi.fn() };
+  });
 
   const Orchestrator = vi.fn().mockImplementation(function () {
     return {
@@ -220,10 +256,11 @@ async function importRuntime(
     };
   });
   const PollingLoop = vi.fn().mockImplementation(function () {
+    let running = false;
     return {
-      start: vi.fn(),
-      stop: vi.fn(),
-      isRunning: () => false,
+      start: vi.fn(() => { running = true; }),
+      stop: vi.fn(() => { running = false; }),
+      isRunning: () => running,
       getIntervals: () => ({ intervalMs: 30_000 }),
       updateConnectors: vi.fn(),
       resetBackoff: vi.fn(),
@@ -259,6 +296,15 @@ async function importRuntime(
         ? { integrationId: runnableProject.reviewTargetIntegrationId, repos: ["test/repo"] }
         : null
     ),
+    getActiveTasks: vi.fn(async (): Promise<Task[]> => options.activeTasks ?? []),
+    reconcileOrphanedActiveTasks: vi.fn(async () => 0),
+    listAgents: vi.fn(async (filter?: { type?: string; enabled?: boolean }) => {
+      let records = options.agentRecords ?? [];
+      if (filter?.type !== undefined) records = records.filter((a) => a.type === filter.type);
+      if (filter?.enabled !== undefined) records = records.filter((a) => a.enabled === filter.enabled);
+      return records;
+    }),
+    onTaskTransition: vi.fn(),
     upsertIntegration: vi.fn(async (inp: Omit<Integration, "createdAt" | "updatedAt">) => {
       const now = new Date();
       const existing = integrationData.get(inp.id);
@@ -295,6 +341,12 @@ async function importRuntime(
     upsertPrompt: vi.fn(async (id: string, content: string) => ({ id, label: id, content, promptType: "user" as const, updatedAt: new Date() })),
     createPrompt: vi.fn(async (label: string, content: string) => ({ id: label, label, content, promptType: "user" as const, updatedAt: new Date() })),
     deletePrompt: vi.fn(async (_id: string) => {}),
+    getAppSettings: vi.fn(async () => ({ pollingIntervalMs: null, maxAgentCycles: null, maxRetryAttempts: null })),
+    updateAppSettings: vi.fn(async (patch: { pollingIntervalMs?: number | null; maxAgentCycles?: number | null; maxRetryAttempts?: number | null }) => ({
+      pollingIntervalMs: patch.pollingIntervalMs ?? null,
+      maxAgentCycles: patch.maxAgentCycles ?? null,
+      maxRetryAttempts: patch.maxRetryAttempts ?? null,
+    })),
   };
   const createAdminServer = vi.fn(() => ({
     once: vi.fn(),
@@ -318,11 +370,17 @@ async function importRuntime(
       fatal: vi.fn(),
     })),
   }));
-  vi.doMock("../../src/state/stateStore.js", () => ({
-    SqliteStateStore: {
-      create: vi.fn().mockResolvedValue(stateStore),
-    },
-  }));
+  vi.doMock("../../src/state/stateStore.js", async () => {
+    const actual = await vi.importActual<typeof import("../../src/state/stateStore.js")>(
+      "../../src/state/stateStore.js"
+    );
+    return {
+      ...actual,
+      SqliteStateStore: {
+        create: vi.fn().mockResolvedValue(stateStore),
+      },
+    };
+  });
   vi.doMock("../../src/plugins/init.js", async () => {
     // Call through to the real registerBuiltinPlugins so that plugin descriptors
     // (including gerritDescriptor.createReviewer) are registered.
@@ -349,8 +407,6 @@ async function importRuntime(
   vi.doMock("../../src/agents/copilotAdapter.js", () => ({
     CopilotAdapter,
   }));
-  const CopilotReviewAgent = vi.fn().mockImplementation(function () { return { runReview: vi.fn() }; });
-  vi.doMock("../../src/review/copilotReviewAgent.js", () => ({ CopilotReviewAgent }));
   const ReviewOrchestrator = vi.fn().mockImplementation(function () {
     return {
       startReviewTask: vi.fn().mockResolvedValue([]),
@@ -403,7 +459,6 @@ async function importRuntime(
     createAdminServer,
     stateStore,
     pluginManagerInstance,
-    CopilotReviewAgent,
     ReviewOrchestrator,
     GerritSshReviewProvider,
     PluginIntegrationStreamEventsManager,
@@ -434,6 +489,7 @@ describe("runtime bootstrap provider selection", () => {
 
     expect(runtime.registerBuiltinPlugins).toHaveBeenCalledTimes(1);
     expect(runtime.PluginManager).toHaveBeenCalledTimes(1);
+    expect(runtime.pluginManagerInstance.migrateEncryptCredentials).toHaveBeenCalledBefore(runtime.loadFromDatabase);
     expect(runtime.loadFromDatabase).toHaveBeenCalledTimes(1);
     expect(runtime.HttpRedmineConnector).not.toHaveBeenCalled();
     expect(runtime.GerritSshConnector).not.toHaveBeenCalled();
@@ -530,6 +586,36 @@ describe("runtime bootstrap provider selection", () => {
     expect(runtime.integrationStreamEventsInstance.reconcile).toHaveBeenCalledWith([gerritA, gerritB]);
   });
 
+  it("resolves generated-key SSH material into the stream-events integration config", async () => {
+    const gerritGenerated = makeIntegration({
+      id: "gerrit-generated-key",
+      provider: "gerrit",
+      configJson: JSON.stringify({
+        sshHost: "gerrit.test",
+        sshUser: "ve",
+        sshPort: 29418,
+        sshPrivateKeyEnc: "enc:BEGIN-PRIVATE-KEY",
+      }),
+    });
+
+    const runtime = await importRuntime(
+      {},
+      {},
+      {
+        activeIntegrationLists: {
+          gerrit: [gerritGenerated],
+        },
+      }
+    );
+
+    const reconcileArgs = runtime.integrationStreamEventsInstance.reconcile.mock.calls[0]?.[0] as Integration[];
+    expect(reconcileArgs).toHaveLength(1);
+    const resolvedConfig = JSON.parse(reconcileArgs[0]!.configJson) as Record<string, unknown>;
+    expect(resolvedConfig["_resolvedSshKeyPath"]).toBe("/tmp/ve-ssh-gerrit-generated-key.pem");
+    // Original fields are preserved.
+    expect(resolvedConfig["sshHost"]).toBe("gerrit.test");
+  });
+
   it("propagates database-backed provider config into orchestrator and vcs wiring", async () => {
     const dbTicketing = { source: "db-ticketing" } as unknown as TicketConnector;
     const dbReview = { source: "db-review" } as unknown as ReviewConnector;
@@ -602,6 +688,69 @@ describe("runtime bootstrap provider selection", () => {
     expect((dbAgent as unknown as { configure: ReturnType<typeof vi.fn> }).configure).toHaveBeenCalledTimes(1);
     expect((dbAgent as unknown as { configure: ReturnType<typeof vi.fn> }).configure).toHaveBeenCalledWith(
       expect.objectContaining({ runner: runnerInstance })
+    );
+  });
+
+  it("derives gitAuthorName/gitAuthorEmail from the Gerrit account's own registered identity instead of stored config or the placeholder default", async () => {
+    const queryAuthorIdentity = vi.fn(async () => ({ name: "Virtual Engineer", email: "virtual-engineer@jami.net" }));
+
+    const runtime = await importRuntime(
+      {},
+      {
+        gerrit: makeIntegration({
+          id: "gerrit-db",
+          provider: "gerrit",
+          configJson: JSON.stringify({
+            sshHost: "db-gerrit-ssh.test",
+            sshUser: "virtual-engineer",
+            gitAuthorEmail: "stale-placeholder@example.com",
+          }),
+        }),
+      },
+      { vcsConnectorsByProvider: { gerrit: { queryAuthorIdentity } } }
+    );
+
+    expect(queryAuthorIdentity).toHaveBeenCalledTimes(1);
+    expect(runtime.Orchestrator).toHaveBeenCalledWith(
+      expect.objectContaining({
+        gitAuthorName: "Virtual Engineer",
+        gitAuthorEmail: "virtual-engineer@jami.net",
+      }),
+      expect.anything(),
+      expect.anything(),
+      undefined,
+      expect.anything(),
+      expect.anything()
+    );
+  });
+
+  it("falls back to the stored config value when the Gerrit identity lookup returns nothing", async () => {
+    const queryAuthorIdentity = vi.fn(async () => undefined);
+
+    const runtime = await importRuntime(
+      {},
+      {
+        gerrit: makeIntegration({
+          id: "gerrit-db",
+          provider: "gerrit",
+          configJson: JSON.stringify({
+            sshHost: "db-gerrit-ssh.test",
+            sshUser: "virtual-reviewer",
+            gitAuthorEmail: "configured@example.com",
+          }),
+        }),
+      },
+      { vcsConnectorsByProvider: { gerrit: { queryAuthorIdentity } } }
+    );
+
+    expect(queryAuthorIdentity).toHaveBeenCalledTimes(1);
+    expect(runtime.Orchestrator).toHaveBeenCalledWith(
+      expect.objectContaining({ gitAuthorEmail: "configured@example.com" }),
+      expect.anything(),
+      expect.anything(),
+      undefined,
+      expect.anything(),
+      expect.anything()
     );
   });
 
@@ -807,7 +956,7 @@ describe("runtime bootstrap provider selection", () => {
     expect(pollingInstance.start).toHaveBeenCalledTimes(1);
   });
 
-  it("starts the polling loop in review-only mode with a review project", async () => {
+  it("does not start the polling loop for a stream-only (Gerrit) review project", async () => {
     const dbReview = { source: "db-review" } as unknown as ReviewConnector;
     const dbAgent = makeDbAgentAdapter("mock");
 
@@ -841,7 +990,340 @@ describe("runtime bootstrap provider selection", () => {
     );
 
     const pollingInstance = runtime.PollingLoop.mock.results[0]?.value as { start: ReturnType<typeof vi.fn> };
+    expect(pollingInstance.start).not.toHaveBeenCalled();
+  });
+
+  it("starts polling as fallback when the Gerrit stream-events connection is degraded", async () => {
+    const dbReview = { source: "db-review" } as unknown as ReviewConnector;
+    const dbAgent = makeDbAgentAdapter("mock");
+
+    const runtime = await importRuntime(
+      { gerrit: dbReview, copilot: dbAgent },
+      {
+        gerrit: makeIntegration({
+          id: "gerrit-review-only",
+          provider: "gerrit",
+          configJson: JSON.stringify({
+            baseUrl: "http://gerrit.test",
+            httpUsername: "admin",
+            httpPassword: "secret",
+            sshHost: "gerrit.test",
+            sshUser: "ve-bot",
+            sshKeyPath: "/keys/id_rsa",
+            repoCloneUrl: "ssh://gerrit.test/project",
+          }),
+        }),
+      },
+      {
+        withRunnableProject: {
+          projectId: "p1",
+          type: "review",
+          reviewTargetIntegrationId: "gerrit-review-only",
+        },
+      }
+    );
+
+    const pollingInstance = runtime.PollingLoop.mock.results[0]?.value as {
+      start: ReturnType<typeof vi.fn>;
+      isRunning: () => boolean;
+    };
+    // Stream healthy (null → not yet connected) — loop must NOT start.
+    expect(pollingInstance.start).not.toHaveBeenCalled();
+
+    // Simulate the stream going into an error state.
+    runtime.integrationStreamEventsInstance.getStatus.mockReturnValue({
+      integrationId: "gerrit-review-only",
+      state: "error",
+      message: "Connection refused",
+    });
+
+    // Plugin-change fires refreshRuntimeDependencies → reconcilePollingLoop.
+    const onPluginChangeCallback = runtime.pluginManagerInstance.onPluginChange.mock.calls[0]?.[0] as
+      (() => void) | undefined;
+    expect(onPluginChangeCallback).toBeTypeOf("function");
+    onPluginChangeCallback?.();
+
+    // Allow the async refreshRuntimeDependencies promise to settle.
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
     expect(pollingInstance.start).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not start the polling loop for a webhook-only (GitLab MR) review project", async () => {
+    const dbReview = { source: "db-review" } as unknown as ReviewConnector;
+    const dbAgent = makeDbAgentAdapter("mock");
+
+    const runtime = await importRuntime(
+      { gitlab: dbReview, mock: dbAgent },
+      {
+        gitlab: makeIntegration({
+          id: "gitlab-review-only",
+          provider: "gitlab",
+          configJson: JSON.stringify({
+            baseUrl: "http://gitlab.test",
+            token: "token",
+          }),
+        }),
+      },
+      {
+        configOverrides: {
+        },
+        withRunnableProject: {
+          projectId: "p1",
+          type: "review",
+          reviewTargetIntegrationId: "gitlab-review-only",
+        },
+      }
+    );
+
+    const pollingInstance = runtime.PollingLoop.mock.results[0]?.value as { start: ReturnType<typeof vi.fn> };
+    expect(pollingInstance.start).not.toHaveBeenCalled();
+  });
+
+  it("starts the polling loop when an active IN_REVIEW task needs the fallback poll, even in a stream-only setup", async () => {
+    const dbReview = { source: "db-review" } as unknown as ReviewConnector;
+    const dbAgent = makeDbAgentAdapter("mock");
+
+    const runtime = await importRuntime(
+      { gerrit: dbReview, mock: dbAgent },
+      {
+        gerrit: makeIntegration({
+          id: "gerrit-review-only",
+          provider: "gerrit",
+          configJson: JSON.stringify({
+            baseUrl: "http://gerrit.test",
+            httpUsername: "admin",
+            httpPassword: "secret",
+            sshHost: "gerrit.test",
+            sshUser: "ve-bot",
+            sshKeyPath: "/keys/id_rsa",
+            repoCloneUrl: "ssh://gerrit.test/project",
+          }),
+        }),
+      },
+      {
+        configOverrides: {
+        },
+      }
+    );
+
+    runtime.stateStore.getActiveTasks.mockResolvedValue([
+      {
+        taskId: "t1",
+        taskType: "code-gen",
+        state: "IN_REVIEW",
+        externalChangeId: "12345",
+      } as unknown as Task,
+    ]);
+
+    // Re-trigger the same startup check via onPluginChange to exercise pollingIsRequired again.
+    const onPluginChangeCallback = runtime.pluginManagerInstance.onPluginChange.mock.calls[0]?.[0] as (() => void) | undefined;
+    onPluginChangeCallback?.();
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+    const pollingInstance = runtime.PollingLoop.mock.results[0]?.value as { start: ReturnType<typeof vi.fn> };
+    expect(pollingInstance.start).toHaveBeenCalledTimes(1);
+  });
+
+  it("starts the polling loop live when a task requiring fallback polling appears, without a plugin change or restart", async () => {
+    const dbReview = { source: "db-review" } as unknown as ReviewConnector;
+    const dbAgent = makeDbAgentAdapter("mock");
+
+    // Stream-only setup (Gerrit review project): polling loop must not start at boot.
+    const runtime = await importRuntime(
+      { gerrit: dbReview, mock: dbAgent },
+      {
+        gerrit: makeIntegration({
+          id: "gerrit-review-only",
+          provider: "gerrit",
+          configJson: JSON.stringify({
+            baseUrl: "http://gerrit.test",
+            httpUsername: "admin",
+            httpPassword: "secret",
+            sshHost: "gerrit.test",
+            sshUser: "ve-bot",
+            sshKeyPath: "/keys/id_rsa",
+            repoCloneUrl: "ssh://gerrit.test/project",
+          }),
+        }),
+      },
+      {
+        configOverrides: {
+        },
+        withRunnableProject: {
+          projectId: "p1",
+          type: "review",
+          reviewTargetIntegrationId: "gerrit-review-only",
+        },
+      }
+    );
+
+    const pollingInstance = runtime.PollingLoop.mock.results[0]?.value as {
+      start: ReturnType<typeof vi.fn>;
+      isRunning: () => boolean;
+    };
+    expect(pollingInstance.start).not.toHaveBeenCalled();
+
+    // A code-gen task has entered IN_REVIEW (Gerrit push succeeded). The
+    // debounced reconcile re-queries active tasks, so reflect that here.
+    runtime.stateStore.getActiveTasks.mockResolvedValue([
+      {
+        taskId: "t1",
+        taskType: "code-gen",
+        state: "IN_REVIEW",
+        externalChangeId: "12345",
+      } as unknown as Task,
+    ]);
+
+    const onTaskTransitionCallback = runtime.stateStore.onTaskTransition.mock.calls[0]?.[0] as
+      ((task: Task) => void) | undefined;
+    expect(onTaskTransitionCallback).toBeTypeOf("function");
+
+    vi.useFakeTimers();
+    try {
+      onTaskTransitionCallback?.({
+        taskId: "t1",
+        taskType: "code-gen",
+        state: "IN_REVIEW",
+        externalChangeId: "12345",
+      } as unknown as Task);
+      // Flush the debounce window + the async reconcile.
+      await vi.advanceTimersByTimeAsync(1_500);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(pollingInstance.start).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops the polling loop live once no project or task requires polling", async () => {
+    const dbReview = { source: "db-review" } as unknown as ReviewConnector;
+    const dbAgent = makeDbAgentAdapter("mock");
+
+    // Stream-only Gerrit review project, but an active IN_REVIEW task means
+    // polling is required at boot (fallback poller) so the loop starts.
+    const runtime = await importRuntime(
+      { gerrit: dbReview, mock: dbAgent },
+      {
+        gerrit: makeIntegration({
+          id: "gerrit-review-only",
+          provider: "gerrit",
+          configJson: JSON.stringify({
+            baseUrl: "http://gerrit.test",
+            httpUsername: "admin",
+            httpPassword: "secret",
+            sshHost: "gerrit.test",
+            sshUser: "ve-bot",
+            sshKeyPath: "/keys/id_rsa",
+            repoCloneUrl: "ssh://gerrit.test/project",
+          }),
+        }),
+      },
+      {
+        configOverrides: {
+        },
+        withRunnableProject: {
+          projectId: "p1",
+          type: "review",
+          reviewTargetIntegrationId: "gerrit-review-only",
+        },
+        activeTasks: [
+          {
+            taskId: "t1",
+            taskType: "code-gen",
+            state: "IN_REVIEW",
+            externalChangeId: "12345",
+          } as unknown as Task,
+        ],
+      }
+    );
+
+    const pollingInstance = runtime.PollingLoop.mock.results[0]?.value as {
+      start: ReturnType<typeof vi.fn>;
+      stop: ReturnType<typeof vi.fn>;
+      isRunning: () => boolean;
+    };
+    expect(pollingInstance.start).toHaveBeenCalledTimes(1);
+    expect(pollingInstance.isRunning()).toBe(true);
+
+    // The task reached a terminal state — no active tasks and no polling-based
+    // project remain, so the reconcile should stop the loop.
+    runtime.stateStore.getActiveTasks.mockResolvedValue([]);
+
+    const onTaskTransitionCallback = runtime.stateStore.onTaskTransition.mock.calls[0]?.[0] as
+      ((task: Task) => void) | undefined;
+
+    vi.useFakeTimers();
+    try {
+      onTaskTransitionCallback?.({
+        taskId: "t1",
+        taskType: "code-gen",
+        state: "MERGED",
+        externalChangeId: "12345",
+      } as unknown as Task);
+      await vi.advanceTimersByTimeAsync(1_500);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(pollingInstance.stop).toHaveBeenCalledTimes(1);
+    expect(pollingInstance.isRunning()).toBe(false);
+  });
+
+  it("does not start the polling loop from a transition when nothing requires polling", async () => {
+    const dbReview = { source: "db-review" } as unknown as ReviewConnector;
+    const dbAgent = makeDbAgentAdapter("mock");
+
+    const runtime = await importRuntime(
+      { gerrit: dbReview, mock: dbAgent },
+      {
+        gerrit: makeIntegration({
+          id: "gerrit-review-only",
+          provider: "gerrit",
+          configJson: JSON.stringify({
+            baseUrl: "http://gerrit.test",
+            httpUsername: "admin",
+            httpPassword: "secret",
+            sshHost: "gerrit.test",
+            sshUser: "ve-bot",
+            sshKeyPath: "/keys/id_rsa",
+            repoCloneUrl: "ssh://gerrit.test/project",
+          }),
+        }),
+      },
+      {
+        configOverrides: {
+        },
+        withRunnableProject: {
+          projectId: "p1",
+          type: "review",
+          reviewTargetIntegrationId: "gerrit-review-only",
+        },
+      }
+    );
+
+    const pollingInstance = runtime.PollingLoop.mock.results[0]?.value as { start: ReturnType<typeof vi.fn> };
+    expect(pollingInstance.start).not.toHaveBeenCalled();
+
+    const onTaskTransitionCallback = runtime.stateStore.onTaskTransition.mock.calls[0]?.[0] as
+      ((task: Task) => void) | undefined;
+
+    vi.useFakeTimers();
+    try {
+      // AGENT_RUNNING code-gen task: doesn't rely on polling-loop fallbacks,
+      // and getActiveTasks stays empty, so the reconcile keeps polling off.
+      onTaskTransitionCallback?.({
+        taskId: "t2",
+        taskType: "code-gen",
+        state: "AGENT_RUNNING",
+        externalChangeId: "12345",
+      } as unknown as Task);
+      await vi.advanceTimersByTimeAsync(1_500);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(pollingInstance.start).not.toHaveBeenCalled();
   });
 
   it("routes stream-events-triggered reviews by exact Gerrit integration id", async () => {
@@ -873,7 +1355,7 @@ describe("runtime bootstrap provider selection", () => {
     });
 
     const runtime = await importRuntime(
-      {},
+      { copilot: makeDbAgentAdapter("copilot") },
       {
         copilot: makeIntegration({
           id: "copilot-review-routing",
@@ -931,7 +1413,7 @@ describe("runtime bootstrap provider selection", () => {
     });
 
     const runtime = await importRuntime(
-      {},
+      { copilot: makeDbAgentAdapter("copilot") },
       {
         copilot: makeIntegration({
           id: "copilot-review-membership",
@@ -975,12 +1457,11 @@ describe("runtime bootstrap provider selection", () => {
         sshHost: "gerrit.test",
         sshPort: 29418,
         sshUser: "ve-bot",
-        sshKeyPath: "/keys/id_rsa",
       }),
     });
 
     const runtime = await importRuntime(
-      {},
+      { copilot: makeDbAgentAdapter("copilot") },
       {
         copilot: makeIntegration({
           id: "copilot-review-ssh-only",
@@ -1010,7 +1491,6 @@ describe("runtime bootstrap provider selection", () => {
         sshHost: "gerrit.test",
         sshPort: 29418,
         sshUser: "ve-bot",
-        sshKeyPath: "/keys/id_rsa",
       })
     );
   });
@@ -1018,9 +1498,23 @@ describe("runtime bootstrap provider selection", () => {
   it("passes the agent token into the review orchestrator", async () => {
     const dbReview = { source: "db-review" } as unknown as ReviewConnector;
     const dbAgent = makeDbAgentAdapter("mock");
+    const reviewAgent: AgentRecord = {
+      id: "agent-review-rewrite" as AgentRecord["id"],
+      name: "Review agent",
+      type: "review",
+      integrationId: "copilot-review-rewrite",
+      modelConfigJson: "{}",
+      systemPromptId: null,
+      instructionsPromptId: null,
+      feedbackInstructionsPromptId: null,
+      maxConcurrent: 1,
+      enabled: true,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
 
     const runtime = await importRuntime(
-      { gerrit: dbReview, mock: dbAgent },
+      { gerrit: dbReview, copilot: dbAgent },
       {
         gerrit: makeIntegration({
           id: "gerrit-review-rewrite",
@@ -1038,10 +1532,15 @@ describe("runtime bootstrap provider selection", () => {
         copilot: makeIntegration({
           id: "copilot-review-rewrite",
           provider: "copilot",
-          configJson: JSON.stringify({ token: "ghp-review-token" }),
+          configJson: JSON.stringify({
+            authMode: "pat",
+            token: "ghp-review-token",
+            sessionToken: "stale-oauth-token",
+          }),
         }),
       },
       {
+        agentRecords: [reviewAgent],
         configOverrides: {
           adminApiEnabled: true,
         },
@@ -1053,11 +1552,154 @@ describe("runtime bootstrap provider selection", () => {
     };
     await streamEventsCtorArgs?.getReviewTrigger()?.triggerReviewForChange("gerrit-review-rewrite", "Irewrite123");
 
-    expect(runtime.ReviewOrchestrator).toHaveBeenCalledWith(
-      expect.objectContaining({ agentToken: "ghp-review-token" })
+    const deps = runtime.ReviewOrchestrator.mock.calls[0]?.[0] as {
+      resolveAgentForProject(project: ProjectRecord): Promise<unknown>;
+    };
+    const resolved = await deps.resolveAgentForProject({
+      id: "project-review-rewrite" as ProjectRecord["id"],
+      agentId: reviewAgent.id,
+    } as ProjectRecord);
+    expect(resolved).toEqual(expect.objectContaining({
+      adapter: dbAgent,
+      token: "ghp-review-token",
+      model: undefined,
+    }));
+  });
+
+  it("does not fall back to another review agent when the project agent token is invalid", async () => {
+    const reviewIntegration = makeIntegration({
+      id: "gerrit-review-fallback",
+      provider: "gerrit",
+      configJson: JSON.stringify({
+        sshHost: "gerrit.test",
+        sshUser: "ve-bot",
+      }),
+    });
+    const firstIntegration = makeIntegration({
+      id: "copilot-review-empty",
+      provider: "copilot",
+      configJson: JSON.stringify({
+        authMode: "oauth",
+        sessionToken: "undecryptable-session-token",
+      }),
+    });
+    const secondIntegration = makeIntegration({
+      id: "copilot-review-ready",
+      provider: "copilot",
+      configJson: JSON.stringify({ token: "ghp-ready-token" }),
+    });
+    const makeReviewAgent = (id: string, integrationId: string): AgentRecord => ({
+      id: id as AgentRecord["id"],
+      name: id,
+      type: "review",
+      integrationId,
+      modelConfigJson: JSON.stringify({ model: `${id}-model` }),
+      systemPromptId: null,
+      instructionsPromptId: null,
+      feedbackInstructionsPromptId: null,
+      maxConcurrent: 1,
+      enabled: true,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const runtime = await importRuntime(
+      { copilot: makeDbAgentAdapter("copilot") },
+      {},
+      {
+        activeIntegrationLists: {
+          gerrit: [reviewIntegration],
+          copilot: [firstIntegration, secondIntegration],
+        },
+        agentRecords: [
+          makeReviewAgent("agent-a", firstIntegration.id),
+          makeReviewAgent("agent-b", secondIntegration.id),
+        ],
+        configOverrides: {
+          adminApiEnabled: true,
+        },
+      }
     );
-    const calls = runtime.ReviewOrchestrator.mock.calls as Array<[{ agentToken: string; model?: string }]>;
-    expect(calls[0]?.[0]).not.toHaveProperty("model");
+
+    const streamEventsCtorArgs = runtime.PluginIntegrationStreamEventsManager.mock.calls[0]?.[0] as {
+      getReviewTrigger(): { triggerReviewForChange(integrationId: string, changeId: string): Promise<void> } | undefined;
+    };
+    await streamEventsCtorArgs?.getReviewTrigger()?.triggerReviewForChange(
+      reviewIntegration.id,
+      "Ifallback123"
+    );
+
+    const deps = runtime.ReviewOrchestrator.mock.calls[0]?.[0] as {
+      resolveAgentForProject(project: ProjectRecord): Promise<unknown>;
+    };
+    await expect(deps.resolveAgentForProject({
+      id: "project-a" as ProjectRecord["id"],
+      agentId: "agent-a" as AgentRecord["id"],
+    } as ProjectRecord)).resolves.toBeNull();
+    await expect(deps.resolveAgentForProject({
+      id: "project-b" as ProjectRecord["id"],
+      agentId: "agent-b" as AgentRecord["id"],
+    } as ProjectRecord)).resolves.toEqual(expect.objectContaining({
+      token: "ghp-ready-token",
+      model: "agent-b-model",
+    }));
+  });
+
+  it("does not resolve a disabled project review agent", async () => {
+    const reviewIntegration = makeIntegration({
+      id: "gerrit-review-disabled-agent",
+      provider: "gerrit",
+      configJson: JSON.stringify({ sshHost: "gerrit.test", sshUser: "ve-bot" }),
+    });
+    const agentIntegration = makeIntegration({
+      id: "copilot-review-disabled-agent",
+      provider: "copilot",
+      configJson: JSON.stringify({ authMode: "pat", token: "ghp-disabled-token" }),
+    });
+    const disabledAgent: AgentRecord = {
+      id: "agent-disabled" as AgentRecord["id"],
+      name: "Disabled reviewer",
+      type: "review",
+      integrationId: agentIntegration.id,
+      modelConfigJson: JSON.stringify({ model: "gpt-5" }),
+      systemPromptId: null,
+      instructionsPromptId: null,
+      feedbackInstructionsPromptId: null,
+      maxConcurrent: 1,
+      enabled: false,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    const runtime = await importRuntime(
+      { copilot: makeDbAgentAdapter("copilot") },
+      {},
+      {
+        activeIntegrationLists: {
+          gerrit: [reviewIntegration],
+          copilot: [agentIntegration],
+        },
+        agentRecords: [disabledAgent],
+        configOverrides: { adminApiEnabled: true },
+      }
+    );
+
+    const streamEventsCtorArgs = runtime.PluginIntegrationStreamEventsManager.mock.calls[0]?.[0] as {
+      getReviewTrigger(): { triggerReviewForChange(integrationId: string, changeId: string): Promise<void> } | undefined;
+    };
+    await streamEventsCtorArgs?.getReviewTrigger()?.triggerReviewForChange(
+      reviewIntegration.id,
+      "Idisabled123"
+    );
+
+    const deps = runtime.ReviewOrchestrator.mock.calls[0]?.[0] as {
+      resolveAgentForProject(project: ProjectRecord): Promise<unknown>;
+    } | undefined;
+    const project = {
+      id: "project-disabled" as ProjectRecord["id"],
+      agentId: disabledAgent.id,
+    } as ProjectRecord;
+    await expect(deps?.resolveAgentForProject(project)).resolves.toBeNull();
   });
 });
 

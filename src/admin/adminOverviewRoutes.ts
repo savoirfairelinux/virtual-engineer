@@ -2,7 +2,7 @@ import { statSync } from "node:fs";
 import { getLogger } from "../logger.js";
 import { writeJson } from "./adminRouteUtils.js";
 import type { Router } from "./router.js";
-import type { Task, AgentCycle } from "../interfaces.js";
+import type { Task, AgentCycle, CostSummary, ModelUsageSummary } from "../interfaces.js";
 import { makeTaskId } from "../interfaces.js";
 import type { AdminRuntimeConfig } from "./adminServer.js";
 
@@ -11,6 +11,8 @@ const log = getLogger("admin-overview");
 export interface OverviewRouteStore {
   getAllTasks(): Promise<Task[]>;
   getAgentCycles(taskId: ReturnType<typeof makeTaskId>): Promise<AgentCycle[]>;
+  getCostSummary(options?: { since?: Date }): Promise<CostSummary>;
+  getModelUsageSummary(options?: { since?: Date }): Promise<ModelUsageSummary>;
 }
 
 export interface OverviewRouteDeps {
@@ -132,5 +134,47 @@ export function registerOverviewRoutes(router: Router, deps: OverviewRouteDeps):
       log.error({ err }, "overview route failed");
       writeJson(res, 500, { error: "Failed to compute overview" });
     }
-  });
+  }, { permission: "overview.read" });
+
+  // Aggregated AI cost: per-project breakdown + instance total, optionally
+  // scoped to a trailing period via `?days=<n>` (omitted = all-time).
+  router.add("GET", "/api/admin/cost-summary", async (req, res, _params) => {
+    try {
+      const requestUrl = new URL(req.url ?? "/", "http://127.0.0.1");
+      const daysParam = requestUrl.searchParams.get("days");
+      let since: Date | undefined;
+      if (daysParam !== null) {
+        const days = Number(daysParam);
+        if (Number.isFinite(days) && days > 0) {
+          since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+        }
+      }
+      const summary = await deps.stateStore.getCostSummary(since ? { since } : undefined);
+      writeJson(res, 200, summary);
+    } catch (err) {
+      log.error({ err }, "cost-summary route failed");
+      writeJson(res, 500, { error: "Failed to compute cost summary" });
+    }
+  }, { permission: "overview.read" });
+
+  // Model usage distribution (run count + cost), global and per project,
+  // optionally scoped to a trailing period via `?days=<n>`.
+  router.add("GET", "/api/admin/model-usage", async (req, res, _params) => {
+    try {
+      const requestUrl = new URL(req.url ?? "/", "http://127.0.0.1");
+      const daysParam = requestUrl.searchParams.get("days");
+      let since: Date | undefined;
+      if (daysParam !== null) {
+        const days = Number(daysParam);
+        if (Number.isFinite(days) && days > 0) {
+          since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+        }
+      }
+      const summary = await deps.stateStore.getModelUsageSummary(since ? { since } : undefined);
+      writeJson(res, 200, summary);
+    } catch (err) {
+      log.error({ err }, "model-usage route failed");
+      writeJson(res, 500, { error: "Failed to compute model usage" });
+    }
+  }, { permission: "overview.read" });
 }

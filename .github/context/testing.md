@@ -2,7 +2,7 @@
 
 ## Frameworks
 
-- **Vitest** (`npm test`, `npm run test:watch`, `npm run test:coverage`) for all unit + integration specs in `tests/unit/`.
+- **Vitest** (`npm test`, `npm run test:watch`, `npm run test:coverage`) for all unit + integration specs in `tests/unit/`. Vitest is the **only** test framework — there is no Playwright setup and no `tests/e2e/` directory.
 
 ## Layout
 
@@ -13,21 +13,29 @@ tests/
     *.test.ts               # one file per source module + integration scenarios
 ```
 
-### Unit-test inventory (excerpt)
+### Test families by area
 
-State / DB: `stateMachine`, `stateStore`, `stateStore.projects`, `migrations.projects`, `integrationStore`, `promptStore`.
+`tests/unit/` currently holds ~100 test files. This table lists the families; run `ls tests/unit/` for the authoritative, always-current list.
 
-Connectors / VCS: `redmineConnector`, `redmineDiscovery`, `gerritConnector`, `gerritDiscovery`, `gerritSshDiscovery`, `gerritSshClient`, `gerritSshReviewProvider`, `gerritStreamEvents`, `gerritVcsConnector`, `integrationStreamEvents`, `gitlabHttpClient`, `gitlabIssueConnector`, `gitlabIssueDiscovery`, `gitlabMergeRequestConnector`, `gitlabMergeRequestReviewProvider`, `gitlabMergeRequestDiscovery`, `gitlabVcsConnector`, `vcsConnector`, `vcsFactory`, `baseTicketConnector`.
-
-Agents / review runtime: `copilotAdapter`, `copilotAdapter.promptInjection`, `copilotConnectionValidator`, `copilotOAuthService`, `providerAuthService`, `copilotModelsService`, `mockAgentAdapter`, `agentEventTypes`, `agentEventTypes.normalization`, `copilotReviewAgent`, `reviewPromptBuilder`, `reviewResultParser`, `reviewOrchestrator`, `reviewLiveLogs`, `commentHash`, `commentSeverity`, `workerCommitProtocol`.
-
-Orchestrator / polling / webhooks: `orchestrator`, `orchestrator.projectMode`, `orchestrator.webhookEntryPoints`, `orchestrator.concurrency`, `orchestratorCommitMessage`, `pollingLoop.projects`, `pollingLoop.concurrency`, `concurrencyTracker`, `feedbackProcessor`, `webhookServer`, `webhookHandlerRedmine`, `webhookHandlerGitlabIssue`, `webhookHandlerGitlabMergeRequest`.
-
-Plugins / runtime wiring: `pluginManager`, `pluginManager.multiInstance`, `registry`, `runtimeBootstrap` (historical test name covering bootstrap wiring in `src/index.ts`).
-
-Admin: `adminServer`, `adminServer.behavior`, `adminServer.integration`, `adminHealthEndpoint`, `adminPluginRoutes`, `adminPromptRoutes`, `adminAgentsRoutes`, `adminAgentsOAuthRoutes`, `adminProjectsRoutes`, `adminConcurrencyRoutes`, `adminIntegrationsDiscover`, `adminWebhookSecretRoutes`, `closeAdminServer`, `dashboard`, `dashboard.configurationTab`.
-
-Misc: `config`, `logger`, `encryption`, `ticketFooterFormatter`, `dockerVolume`, `workspaceRunner`, `workspaceRunner.multiTarget`, `pauseResumeFlow`.
+| Area | Families (file-name stems) |
+|---|---|
+| Admin routes / server | `adminServer` (+ `.behavior`, `.integration`), `adminImageProxy`, `adminHealthEndpoint`, `adminPluginRoutes`, `adminPromptRoutes`, `adminAgentsRoutes`, `adminAgentsOAuthRoutes`, `adminProjectsRoutes` (+ `.relaunch`), `adminConcurrencyRoutes`, `adminSettingsRoutes`, `adminIntegrationsDiscover`, `adminWebhookSecretRoutes`, `adminCostRoutes`, `adminAuthService`, `adminAuthRoutes`, `adminServerRbac`, `adminPoliciesRoutes`, `adminAudit`, `adminAuditRoutes`, `commonPasswords`, `loginRateLimiter`, `closeAdminServer`, `dashboard` (+ `.configurationTab`) |
+| Orchestrator / polling | `orchestrator` (+ `.projectMode`, `.webhookEntryPoints`, `.concurrency`), `orchestratorCommitMessage`, `pollingLoop.projects`, `pollingLoop.concurrency`, `pollingLoop.reviewPolling`, `pollingLoop.stalledTasks`, `pollingLoop.updateConfig`, `concurrencyTracker`, `feedbackProcessor`, `reviewProgressService`, `pauseResumeFlow` |
+| State / stores | `taskDomain`, `stateMachine`, `stateStore` (+ `.projects`, `.cost`), `settingsStore`, `migrations.projects`, `integrationStore`, `promptStore`, `userStore`, `auditStore`, `pbacStores` |
+| PBAC / authorization | `policyEngine`, `permissions`, `pbacStores`, `adminPoliciesRoutes`, `adminServerRbac` (project-scoping suite) |
+| Connectors — Redmine | `redmineConnector`, `redmineDiscovery`, `webhookHandlerRedmine` |
+| Connectors — Gerrit | `gerritConnector`, `gerritDiscovery`, `gerritSshDiscovery`, `gerritSshClient`, `gerritSshReviewProvider`, `gerritStreamEvents`, `gerritVcsConnector` |
+| Connectors — GitLab | `gitlabHttpClient`, `gitlabIssueConnector`, `gitlabIssueDiscovery`, `gitlabMergeRequestConnector`, `gitlabMergeRequestDiscovery`, `gitlabMergeRequestReviewProvider`, `gitlabVcsConnector`, `gitlabAuth`, `webhookHandlerGitlabIssue`, `webhookHandlerGitlabMergeRequest` |
+| Connectors — GitHub | `githubIssueConnector`, `githubPullRequestReviewConnector`, `githubReviewProvider`, `githubVcsConnector`, `githubPluginDescriptors`, `githubOAuth`, `githubAuth`, `githubConnectionValidator`, `branchNaming`, `webhookHandlerGithubPullRequest` |
+| VCS (shared) | `vcsConnector`, `vcsFactory`, `gitRunner`, `nodeGitRunner`, `baseTicketConnector` |
+| Agents / Copilot | `copilotAdapter` (+ `.promptInjection`), `containerSpecBuilders` (cross-provider contract), `copilotWorker`, `copilotConnectionValidator`, `copilotOAuthService`, `copilotModelsService`, `providerAuthService`, `mockAgentAdapter`, `agentEventTypes` (+ `.normalization`), `workerCommitProtocol`, `workerNetworkGuard`, `workerSkills`, `workerLocalSkills` |
+| Agents / Claude | `claudeAdapter`, `claudeWorker`, `claudeConnectionValidator`, `claudeModelsService` |
+| Agents / Aider | `aiderAdapter`, `aiderDescriptor`, `aiderConnectionValidator`, `aiderModelsService`, `aiderWorker` |
+| Review runtime | `reviewOrchestrator`, `reviewPromptBuilder`, `reviewResultParser`, `reviewLiveLogs`, `commentHash`, `commentSeverity`, `revisionPatchset` |
+| Cost tracking | `cycleCost`, `stateStore.cost`, `adminCostRoutes` |
+| Plugins / runtime wiring | `pluginManager` (+ `.multiInstance`), `registry`, `runtimeBootstrap` (historical name; covers bootstrap wiring in `src/index.ts`), `integrationStreamEvents` |
+| Webhooks | `webhookServer`, `webhookHandlerRegistry` (+ the per-provider handlers listed above) |
+| Workspace / utils / misc | `workspaceRunner` (+ `.multiTarget`), `dockerVolume`, `sshKeyResolver`, `sshFilePath`, `skillSourceDiscovery`, `buildRepositoryMap`, `config`, `logger`, `encryption`, `errorClassifier`, `gitExec`, `ticketFooterFormatter` |
 
 > **There are integration tests today.** Files ending in `.integration.test.ts` wire several modules together with mocked external I/O.
 
@@ -39,6 +47,15 @@ Misc: `config`, `logger`, `encryption`, `ticketFooterFormatter`, `dockerVolume`,
 - Use `vi.useFakeTimers()` + `vi.runAllTimersAsync()` for the polling loop. **Always** call `loop.stop()` before `runAllTimersAsync` (Vitest aborts after 10 000 timer iterations otherwise).
 - Reset shared state in `beforeEach` (`vi.clearAllMocks()`, `resetConfig()` from `src/config.ts`, fresh in-memory SQLite).
 - Helper builders / fixtures live in `tests/unit/helpers/` — prefer extending them over inlining.
+- VCS connector tests inject `RecordingGitRunner` from `tests/unit/helpers/recordingGitRunner.ts` to record argument arrays/options and control async outputs or failures without spawning Git.
+- Admin route tests with a reduced `stateStore` that intentionally omit user/session or PBAC rule-resolution methods must set `allowUnauthenticatedAdmin: true`; production-style auth tests use the full store and leave the fail-closed default unchanged. The escape hatch is rejected when `nodeEnv` is `production`.
+- Remote skill source tests must mock Docker/child_process paths. `workspaceRunner` covers pre-agent skill installation into the home volume, fast failure for SSH sources without `SSH_AUTH_SOCK` or `sshKeyPath`, and verifies the agent container does not receive `SKILL_SOURCES_JSON`, `SSH_AUTH_SOCK`, private-key paths, or `GIT_SSH_COMMAND`.
+- Local skill tests cover `LOCAL_SKILLS_PATH` propagation, workspace-relative path fallback, the single `skills.local_loaded` timeline event containing the sorted local skill list, and Copilot's loading of fetched global skills independently from local skill discovery.
+- Container-spec contract tests run the shared builders and all three container-backed adapters against the same code-generation/review expectations. Common hardening, command, network, prompt, Git identity, and skill environment behavior must remain provider-aligned; auth and model fields remain provider-specific.
+- Aider worker lifecycle tests cover code-generation/review arguments, environment allowlisting, output/error parsing, spawn failure, and timeout rejection with subprocess and temporary-directory cleanup.
+- Copilot and Claude worker lifecycle tests mock their exact worker-resolved SDK entry points. They cover code-generation/review prompt setup, event/usage/result mapping, skill behavior, error/timeout teardown, subprocess environment allowlisting, and no-secret event output.
+- `nodeGitRunner` tests use the Node executable as a deterministic child process to cover success, non-zero exit, timeout, cancellation, output caps, and credential redaction without invoking Git or a shell.
+- Create file-backed SQLite test databases with `tempDatabasePath()` from `tests/unit/helpers/tempDatabase.ts`; it removes the database, WAL/SHM sidecars, and optional dedicated directory after each test.
 - Vitest is silent in `NODE_ENV=test` thanks to `src/logger.ts`; raise `LOG_LEVEL` if you need diagnostic output during a single test.
 - Strict TypeScript applies to tests too (`exactOptionalPropertyTypes`, `noUncheckedIndexedAccess`, no `any`).
 
@@ -65,7 +82,21 @@ describe("Orchestrator.startTask", () => {
 
 ## Coverage gates
 
-`npm run test:coverage` (V8 provider). Coverage thresholds, when configured, are enforced from [vitest.config.ts](../../vitest.config.ts). Do not lower them without justification.
+`npm run test:coverage` uses the V8 provider and is the test command enforced by CI. Global floors are 79% statements, 68% branches, 84% functions, and 82% lines. Security-critical per-file floors (statements / branches / functions / lines) are:
+
+- `src/admin/adminImageProxy.ts`: 90 / 75 / 100 / 91
+- `src/admin/adminServer.ts`: 84 / 85 / 96 / 84
+- `src/webhooks/webhookServer.ts`: 81 / 71 / 96 / 83
+- `src/utils/gitlabAuth.ts`: 63 / 63 / 61 / 66
+
+Shared infrastructure and extracted workflow modules also have focused non-regression floors:
+
+- `src/agents/containerSpecBuilders.ts`: 100 / 96 / 100 / 100
+- `src/vcs/gitRunner.ts`: 100 / 50 / 100 / 100
+- `src/vcs/nodeGitRunner.ts`: 92 / 78 / 100 / 95
+- `src/orchestrator/reviewProgressService.ts`: 88 / 73 / 93 / 89
+
+These are truthful non-regression ratchets based on measured coverage. Raise them as coverage improves; do not lower them merely to land a change. Threshold failure must fail CI.
 
 ## Pre-commit gate (mandatory)
 
@@ -75,3 +106,10 @@ npm run typecheck   # zero TS errors
 npm run lint        # zero ESLint errors
 ```
 
+## Related docs
+
+- [INDEX.md](INDEX.md) — navigable context index
+- [configuration.md](configuration.md) — env-var stubbing and `resetConfig`
+- [modules/orchestrator.md](modules/orchestrator.md) — orchestrator test families
+- [modules/agents.md](modules/agents.md) — agent test families
+- [copilot-instructions.md](../copilot-instructions.md) — Build & Test block (always-loaded)

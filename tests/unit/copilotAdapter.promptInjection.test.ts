@@ -3,7 +3,7 @@
  *
  * Verifies that when a PromptStore is provided, the adapter injects
  * SYSTEM_PROMPT and INSTRUCTIONS_PROMPT into the container env vars
- * (picked up by agent-worker/index.js at runtime).
+ * (picked up by agent-worker/src/index.ts at runtime).
  *
  * When no store is provided (or prompts are not found), the adapter
  * must NOT set these env vars — agent-worker falls back to hardcoded defaults.

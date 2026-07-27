@@ -165,4 +165,18 @@ describe("FeedbackProcessor", () => {
     expect(items[0]?.source).toBe("ci_failure");
     expect(items[0]?.content).toBe("CI / test failed");
   });
+
+  it("uses ci_failure source for comments with ci-failure- id prefix (Gerrit build failures)", async () => {
+    const comment = makeComment({ id: "ci-failure-1700000000", message: "Build Failed" });
+    const store = makeStateStoreMock();
+    const processor = new FeedbackProcessor(store);
+
+    const [items] = await processor.extractNewFeedback(
+      makeTaskId(randomUUID()),
+      makeExternalChangeId("I000"),
+      [comment]
+    );
+
+    expect(items[0]?.source).toBe("ci_failure");
+  });
 });

@@ -6,10 +6,11 @@
  * `registerBuiltinPlugins()` and queried by the admin UI and `PluginManager`.
  */
 import { z } from "zod";
-import type { DiscoveredResources, OAuthAppStore, Integration, IntegrationBindingContext, ProviderId, DomainCapability, PluginInstance, ReviewChangeDetails, ReviewProvider, WorkspaceHandle, WorkspaceRunner } from "../interfaces.js";
+import type { DiscoveredResources, OAuthAppStore, Integration, IntegrationBindingContext, ProviderId, DomainCapability, PluginInstance, ReviewChangeDetails, ReviewProvider, WorkspaceHandle, WorkspaceRunner, AgentAdapter } from "../interfaces.js";
 import { DOMAIN_CAPABILITIES } from "../interfaces.js";
 import type { IntegrationEventStreamFactory } from "../connectors/integrationStreamEvents.js";
 import type { VcsConnector } from "../vcs/vcsConnector.js";
+import type { GitRunner } from "../vcs/gitRunner.js";
 import type { ProviderAuthHandler } from "../agents/providerAuthService.js";
 
 // ─── Plugin descriptor types ──────────────────────────────────────────────
@@ -103,7 +104,7 @@ export interface PluginOAuthConfigResolverContext {
 /** Reviewer factory result: the provider plus its workspace setup hooks. */
 export interface ReviewerBundle {
   provider: ReviewProvider;
-  buildCloneTarget: (details: ReviewChangeDetails) => { cloneUrl: string; sshKeyPath: string | null; sshKnownHostsPath: string | null };
+  buildCloneTarget: (details: ReviewChangeDetails) => { cloneUrl: string; sshKeyPath: string | null; sshAgentPubKeyPath?: string | null; sshKnownHostsPath: string | null };
   applyPatchset?: (handle: WorkspaceHandle, details: ReviewChangeDetails) => Promise<void>;
   /** DB key for the system prompt passed to the review agent. */
   systemPromptId: string;
@@ -145,16 +146,47 @@ export interface CodeReviewCapability {
 }
 
 /** `source_control` capability: clone, commit, and push to a repository. */
+export interface SourceControlRuntimeContext {
+  gitRunner: GitRunner;
+}
+
 export interface SourceControlCapability {
-  createVcsConnector: (config: Record<string, unknown>, integration: Integration, context?: IntegrationBindingContext) => VcsConnector;
+  createVcsConnector: (
+    config: Record<string, unknown>,
+    integration: Integration,
+    context?: IntegrationBindingContext,
+    runtime?: SourceControlRuntimeContext
+  ) => VcsConnector;
+}
+
+/**
+ * Host runtime context passed to an `agent_execution` adapter factory.
+ *
+ * These values come from `AppConfig` (not from the integration `config_json`),
+ * so they are injected by the plugin manager at instantiation time rather than
+ * baked into the descriptor.
+ */
+export interface AgentAdapterContext {
+  /** Max atomic commits an agent may create per cycle. */
+  maxCommitsPerCycle: number;
+  /** Docker network for agent / review containers. */
+  dockerNetwork: string;
 }
 
 /** `agent_execution` capability: run a coding agent inside a workspace. */
 export interface AgentExecutionCapability {
   /**
-   * Factory for the runtime agent adapter. Optional because some agents (e.g.
-   * Copilot) are registered via `PluginManager.registerFactory` in `index.ts`
-   * when construction needs `AppConfig` values.
+   * Factory for the runtime agent adapter, given host runtime context derived
+   * from `AppConfig`. Declaring this makes a provider a fully self-describing
+   * agent backend — no per-provider wiring is needed in `index.ts`; adding a
+   * new agent provider is just a new descriptor.
+   */
+  buildAdapter?: ((context: AgentAdapterContext) => AgentAdapter) | undefined;
+  /**
+   * Lower-level factory keyed to an integration + binding context. Optional;
+   * `buildAdapter` is preferred for agent backends that only need host runtime
+   * context. A test-registered factory (`PluginManager.registerFactory`) still
+   * takes precedence over both.
    */
   createAdapter?: ((config: unknown, integration: Integration, context?: IntegrationBindingContext) => PluginInstance) | undefined;
 }
@@ -231,12 +263,39 @@ export interface ProviderDescriptor {
    */
   discoverModels?: (config: unknown) => Promise<Array<{ id: string; name: string }>>;
   /**
+   * Optional config pre-processing hook called after password decryption and
+   * schema-default stripping, immediately before config is passed to connector
+   * factories (`createConnector`, `createVcsConnector`, `createReviewer`,
+   * `testConnection`, `discoverResources`, `discoverBranches`).
+   *
+   * Providers use this to resolve runtime key material — e.g. decrypt an
+   * encrypted SSH private key stored in `configJson` and write it to a temp
+   * file, returning `{ _resolvedSshKeyPath: path }` that connector factories
+   * then read.
+   *
+   * The returned object is **merged** into the config (shallow), so only
+   * return the extra fields you want to add. Return `{}` to make no changes.
+   */
+  preprocessConfig?: (
+    config: Record<string, unknown>,
+    adminAuthSecret: string | undefined,
+    integrationId: string | undefined
+  ) => Record<string, unknown>;
+  /**
    * Optional read-time config normalisation hook. When defined, the admin
    * routes call it with the masked config before returning it to the browser,
    * letting providers inject defaults or strip transport-only fields without
    * the route hardcoding provider checks.
    */
   normalizeConfigForRead?: (maskedConfig: Record<string, unknown>) => Record<string, unknown>;
+  /**
+   * Optional SSH key pair generator for providers that support UI-generated keys.
+   * Called by the admin API `POST /integrations/:id/ssh-key/generate` endpoint.
+   */
+  generateSshKeyPair?: (
+    adminAuthSecret: string | undefined,
+    sshUser?: string
+  ) => { sshPrivateKeyEnc: string; sshPublicKey: string };
   /**
    * Returns the provider-specific detail lines shown in the admin provider
    * summary panel.
@@ -299,7 +358,7 @@ export function getCapabilityIntake(
 }
 
 /** Return the technical (non-domain) capabilities derived from descriptor hooks. */
-export function getProviderTechnicalCapabilities(descriptor: ProviderDescriptor): TechnicalCapability[] {
+function getProviderTechnicalCapabilities(descriptor: ProviderDescriptor): TechnicalCapability[] {
   const technical: TechnicalCapability[] = [];
   if (descriptor.oauth) technical.push("oauth");
   if (descriptor.discoverResources) technical.push("discovery");

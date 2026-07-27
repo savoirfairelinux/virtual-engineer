@@ -7,7 +7,7 @@
  */
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
 import {
@@ -56,6 +56,13 @@ const SshPatchSetSchema = z.object({
   ref: z.string(),
 });
 
+const SshApprovalSchema = z.object({
+  type: z.string().optional(),
+  description: z.string().optional(),
+  value: z.string().optional(),
+  by: SshAccountSchema.optional(),
+});
+
 const SshFileSchema = z.object({
   file: z.string(),
   fileOld: z.string().optional(),
@@ -76,6 +83,7 @@ const SshChangeSchema = z.object({
   owner: SshAccountSchema,
   currentPatchSet: SshPatchSetSchema.extend({
     files: z.array(SshFileSchema).optional(),
+    approvals: z.array(SshApprovalSchema).optional(),
   }).optional(),
   allReviewers: z.array(SshAccountSchema).optional(),
   createdOn: z.number().optional(),
@@ -87,14 +95,17 @@ export interface GerritSshReviewProviderConfig {
   sshHost: string;
   sshPort: number;
   sshUser: string;
-  sshKeyPath: string;
+  /** Resolved SSH private-key file path (temp file written by preprocessConfig). Omit to use the system SSH agent. */
+  sshKeyPath?: string | undefined;
+  /** Path to an agent identity `.pub` file for identity pinning. Only used in agent mode. */
+  sshAgentPubKeyPath?: string | undefined;
   /** Path to a known_hosts file. When set, SSH uses strict host key verification. */
   sshKnownHostsPath?: string | undefined;
   /** Numeric Gerrit account id of the VE reviewer (as a string). Optional — when absent the self-review guard is skipped. */
   reviewerAccountId?: string | undefined;
   /**
    * Base directory for temporary git checkouts (used to compute diffs).
-   * Defaults to /tmp/virtual-engineer/review-diffs.
+   * Defaults to /tmp/ve-review-diffs.
    */
   workspaceBaseDir?: string | undefined;
 }
@@ -115,7 +126,8 @@ export class GerritSshReviewProvider implements ReviewProvider {
       host: config.sshHost,
       port: config.sshPort,
       user: config.sshUser,
-      keyPath: config.sshKeyPath,
+      ...(config.sshKeyPath !== undefined ? { keyPath: config.sshKeyPath } : {}),
+      ...(config.sshAgentPubKeyPath !== undefined ? { agentPubKeyPath: config.sshAgentPubKeyPath } : {}),
       ...(config.sshKnownHostsPath !== undefined ? { knownHostsPath: config.sshKnownHostsPath } : {}),
     });
   }
@@ -195,6 +207,35 @@ export class GerritSshReviewProvider implements ReviewProvider {
     }
   }
 
+  /**
+   * Returns true when the VE reviewer account has already voted on the current
+   * patch set of this change. Gerrit lists per-patch-set votes under
+   * `currentPatchSet.approvals`; VE always casts a Code-Review vote when it
+   * reviews, so an approval authored by VE is a reliable "already reviewed this
+   * patchset" signal. Approvals are matched by SSH username, since Gerrit's SSH
+   * `--format JSON` output carries no `_account_id`.
+   */
+  async hasReviewedCurrentPatchset(changeId: ExternalChangeId): Promise<boolean> {
+    let rows: unknown[];
+    try {
+      const raw = await this.sshClient.query([
+        "query", "--format", "JSON", "--current-patch-set",
+        `change:${changeId}`,
+      ]);
+      rows = parseSshNdjson(raw);
+    } catch (err) {
+      log.warn({ changeId, err }, "hasReviewedCurrentPatchset SSH query failed — assuming not reviewed");
+      return false;
+    }
+    if (rows.length === 0) return false;
+    const parsed = SshChangeSchema.safeParse(rows[0]);
+    if (!parsed.success) return false;
+    const approvals = parsed.data.currentPatchSet?.approvals ?? [];
+    if (approvals.length === 0) return false;
+
+    return approvals.some((a) => a.by?.username !== undefined && a.by.username === this.config.sshUser);
+  }
+
   /** Clone the patchset ref via git and produce a per-file unified diff. */
   async getChangeDiff(
     changeId: ExternalChangeId,
@@ -209,12 +250,18 @@ export class GerritSshReviewProvider implements ReviewProvider {
     const changeRef = `refs/changes/${nn}/${details.changeNumber}/${ps}`;
 
     const baseDir = this.config.workspaceBaseDir ?? "/tmp/ve-review-diffs";
+    await mkdir(baseDir, { recursive: true });
     const dir = await mkdtemp(join(baseDir, `diff-${details.changeNumber}-`));
 
     try {
       const sshUrl = `ssh://${this.config.sshUser}@${this.config.sshHost}:${this.config.sshPort}/${details.project}`;
       const hostKeyOpts = buildSshHostKeyOptions(this.config.sshKnownHostsPath).join(" ");
-      const sshCmd = `ssh -p ${this.config.sshPort} -i ${this.config.sshKeyPath} ${hostKeyOpts}`;
+      const identityPart = this.config.sshKeyPath
+        ? `-i ${this.config.sshKeyPath} -o IdentitiesOnly=yes`
+        : this.config.sshAgentPubKeyPath
+          ? `-o IdentitiesOnly=yes -i ${this.config.sshAgentPubKeyPath}`
+          : "";
+      const sshCmd = `ssh -p ${this.config.sshPort} ${identityPart} ${hostKeyOpts}`.replace(/\s+/g, " ").trim();
       const gitEnv = {
         ...process.env,
         GIT_TERMINAL_PROMPT: "0",
@@ -249,7 +296,76 @@ export class GerritSshReviewProvider implements ReviewProvider {
     }
   }
 
-  /** Post inline comments together with a Code-Review vote via SSH `gerrit review --json`. */
+  /**
+   * Diff two patchsets of the same change (`fromPatchset` → `toPatchset`) by
+   * fetching both refs and comparing their tips. Used on a re-review to surface
+   * what changed since VE last reviewed.
+   */
+  async getInterPatchsetDiff(
+    details: ReviewChangeDetails,
+    fromPatchset: number,
+    toPatchset: number
+  ): Promise<ReviewChangeDiff> {
+    const baseDir = this.config.workspaceBaseDir ?? "/tmp/ve-review-diffs";
+    await mkdir(baseDir, { recursive: true });
+    const dir = await mkdtemp(join(baseDir, `delta-${details.changeNumber}-`));
+
+    try {
+      const sshUrl = `ssh://${this.config.sshUser}@${this.config.sshHost}:${this.config.sshPort}/${details.project}`;
+      const hostKeyOpts = buildSshHostKeyOptions(this.config.sshKnownHostsPath).join(" ");
+      const sshCmd = `ssh -p ${this.config.sshPort} -i ${this.config.sshKeyPath} ${hostKeyOpts}`;
+      const gitEnv = {
+        ...process.env,
+        GIT_TERMINAL_PROMPT: "0",
+        GIT_SSH_COMMAND: sshCmd,
+      };
+
+      await execFileAsync("git", ["init"], { cwd: dir, timeout: GIT_TIMEOUT_MS });
+      await execFileAsync("git", ["remote", "add", "origin", sshUrl], { cwd: dir, timeout: GIT_TIMEOUT_MS });
+
+      const fromSha = await this.fetchPatchsetTip(dir, gitEnv, details.changeNumber, fromPatchset);
+      const toSha = await this.fetchPatchsetTip(dir, gitEnv, details.changeNumber, toPatchset);
+
+      // Tree-level comparison between the two patchset tips. This does not need
+      // shared history, so shallow (depth=1) fetches of each ref are sufficient.
+      const { stdout: diffOutput } = await execFileAsync(
+        "git",
+        ["diff", `${fromSha}..${toSha}`, "--no-color", "--unified=5"],
+        { cwd: dir, timeout: GIT_TIMEOUT_MS, maxBuffer: 10 * 1024 * 1024 }
+      );
+
+      const files = parseDiffOutput(diffOutput);
+      log.info(
+        { changeId: details.changeId, fromPatchset, toPatchset, fileCount: files.length },
+        "computed inter-patchset diff from SSH fetch"
+      );
+      return { changeId: details.changeId, patchset: toPatchset, files };
+    } finally {
+      await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    }
+  }
+
+  /** Shallow-fetch a single patchset ref and return its tip SHA. */
+  private async fetchPatchsetTip(
+    dir: string,
+    gitEnv: NodeJS.ProcessEnv,
+    changeNumber: number,
+    patchset: number
+  ): Promise<string> {
+    const nn = String(changeNumber % 100).padStart(2, "0");
+    const ref = `refs/changes/${nn}/${changeNumber}/${patchset}`;
+    await execFileAsync("git", ["fetch", "--depth=1", "origin", ref], {
+      cwd: dir,
+      timeout: GIT_TIMEOUT_MS,
+      env: gitEnv,
+    });
+    const { stdout } = await execFileAsync("git", ["rev-parse", "FETCH_HEAD"], {
+      cwd: dir,
+      timeout: GIT_TIMEOUT_MS,
+    });
+    return stdout.trim();
+  }
+
   async postReviewWithComments(
     changeId: ExternalChangeId,
     revision: number,
@@ -487,4 +603,3 @@ function groupCommentsByFile(
   }
   return grouped;
 }
-

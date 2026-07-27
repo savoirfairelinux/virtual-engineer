@@ -1,13 +1,29 @@
 /**
  * Admin API client — HTTP helpers + auth + SSE.
  *
- * Auth: HMAC-SHA256. The user stores an ADMIN_AUTH_SECRET in sessionStorage.
- * On each request we compute HMAC-SHA256(secret, canonical-string) and pass it
- * as a Bearer token, exactly matching the server's isAuthorized() check.
+ * Auth: DB-backed session tokens. `login()` exchanges username/password for an
+ * opaque session token that is sent as a Bearer token on every request.
+ *
+ * Token storage trade-off: the token is kept in sessionStorage (tab-scoped,
+ * cleared on tab close) rather than an httpOnly cookie, so it is readable by
+ * any script running on this origin (XSS risk). This is offset by:
+ *   - a strict, nonce-based CSP with no unsafe-inline/unsafe-eval and
+ *     connect-src 'self' (see applySecurityHeaders in adminServer.ts), which
+ *     blocks injected <script> tags and restricts the common data-exfiltration
+ *     channels (fetch/XHR/img to other origins) — though no CSP can close
+ *     every path (e.g. top-level navigation) once arbitrary JS is running;
+ *   - server-side session revocation (logout(), password change) that
+ *     invalidates the token immediately regardless of client-side storage;
+ *   - a short, sliding session TTL (SESSION_TTL_MS = 12h in adminAuthService.ts)
+ *     that bounds how long an exfiltrated token stays usable.
+ * Moving to httpOnly cookies would remove the injected-script read risk but
+ * requires CSRF defenses (SameSite alone is not sufficient for state-changing
+ * cross-origin requests) and is left as follow-up work.
  */
 
+import type { ApiMe, SetupStatus } from "./types.ts";
+
 const TOKEN_KEY  = "ve-admin-token";
-const SECRET_KEY = "ve-admin-secret";
 
 /* ─── Auth token management ───────────────────────────────────────────── */
 
@@ -17,25 +33,25 @@ export function getStoredToken(): string | null {
 
 export function clearStoredToken(): void {
   sessionStorage.removeItem(TOKEN_KEY);
-  sessionStorage.removeItem(SECRET_KEY);
 }
 
-/** Store a pre-computed token (used after successful unlock). */
+/** Store a session token (used after successful login/setup). */
 export function storeToken(token: string): void {
   sessionStorage.setItem(TOKEN_KEY, token);
 }
 
-/**
- * Derive a Bearer token from a raw ADMIN_AUTH_SECRET via Web Crypto HMAC-SHA256.
- * Matches the server-side computation in adminServer.ts isAuthorized().
- */
-export async function deriveToken(secret: string): Promise<string> {
-  const enc = new TextEncoder();
-  const key = await crypto.subtle.importKey(
-    "raw", enc.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]
-  );
-  const sig = await crypto.subtle.sign("HMAC", key, enc.encode(secret));
-  return Array.from(new Uint8Array(sig)).map((b) => b.toString(16).padStart(2, "0")).join("");
+/* ─── Central 401 handling ────────────────────────────────────────────── */
+
+let unauthorizedHandler: (() => void) | null = null;
+
+/** Register a callback invoked whenever any API call returns 401 (session expired/revoked). */
+export function onUnauthorized(handler: (() => void) | null): void {
+  unauthorizedHandler = handler;
+}
+
+function notifyUnauthorized(): void {
+  clearStoredToken();
+  unauthorizedHandler?.();
 }
 
 function authHeaders(): Record<string, string> {
@@ -53,10 +69,15 @@ export class ApiError extends Error {
   }
 }
 
+interface RequestOptions {
+  signal?: AbortSignal;
+}
+
 async function request<T>(
   method: string,
   path: string,
-  body?: unknown
+  body?: unknown,
+  options: RequestOptions = {}
 ): Promise<T> {
   const headers: Record<string, string> = {
     ...authHeaders(),
@@ -65,6 +86,7 @@ async function request<T>(
   const res = await fetch(path, {
     method,
     headers,
+    ...(options.signal !== undefined ? { signal: options.signal } : {}),
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
   });
   if (!res.ok) {
@@ -73,18 +95,105 @@ async function request<T>(
       const j = (await res.json()) as { error?: string };
       if (j.error) msg = j.error;
     } catch { /* ignore */ }
+    // 401 = session expired/revoked → drop to login. 403 (insufficient role)
+    // must NOT log out — it surfaces as a normal error message.
+    if (res.status === 401) notifyUnauthorized();
     throw new ApiError(res.status, msg);
   }
+  if (res.status === 204) return undefined as T;
   return res.json() as Promise<T>;
 }
 
 export const api = {
-  get:    <T>(path: string) => request<T>("GET", path),
-  post:   <T>(path: string, body?: unknown) => request<T>("POST", path, body),
-  put:    <T>(path: string, body: unknown) => request<T>("PUT", path, body),
-  patch:  <T>(path: string, body?: unknown) => request<T>("PATCH", path, body ?? {}),
-  delete: <T>(path: string, body?: unknown) => request<T>("DELETE", path, body),
+  get:    <T>(path: string, options?: RequestOptions) => request<T>("GET", path, undefined, options),
+  post:   <T>(path: string, body?: unknown, options?: RequestOptions) => request<T>("POST", path, body, options),
+  put:    <T>(path: string, body: unknown, options?: RequestOptions) => request<T>("PUT", path, body, options),
+  patch:  <T>(path: string, body?: unknown, options?: RequestOptions) => request<T>("PATCH", path, body ?? {}, options),
+  delete: <T>(path: string, body?: unknown, options?: RequestOptions) => request<T>("DELETE", path, body, options),
 };
+
+/* ─── Auth flow ───────────────────────────────────────────────────────── */
+
+interface LoginResponse {
+  token: string;
+  user: ApiMe;
+}
+
+async function parseAuthError(res: Response): Promise<string> {
+  let msg = res.statusText;
+  try {
+    const j = (await res.json()) as { error?: string };
+    if (j.error) msg = j.error;
+  } catch { /* ignore */ }
+  return msg;
+}
+
+/** Whether the first-admin setup screen should be shown (public endpoint). */
+export async function fetchSetupStatus(): Promise<SetupStatus> {
+  const res = await fetch("/api/admin/auth/setup-status");
+  if (!res.ok) throw new ApiError(res.status, await parseAuthError(res));
+  return res.json() as Promise<SetupStatus>;
+}
+
+/**
+ * Username/password login. Stores the returned session token on success.
+ * Uses a raw fetch (not request()) so a 401 here does NOT trigger the global
+ * unauthorized handler — it just means "invalid credentials".
+ */
+export async function login(username: string, password: string): Promise<ApiMe> {
+  const res = await fetch("/api/admin/auth/login", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ username, password }),
+  });
+  if (!res.ok) throw new ApiError(res.status, await parseAuthError(res));
+  const data = (await res.json()) as LoginResponse;
+  storeToken(data.token);
+  return data.user;
+}
+
+/**
+ * First-run setup: creates the first admin user and stores the returned session token.
+ */
+export async function setup(username: string, password: string): Promise<ApiMe> {
+  const res = await fetch("/api/admin/auth/setup", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ username, password }),
+  });
+  if (!res.ok) throw new ApiError(res.status, await parseAuthError(res));
+  const data = (await res.json()) as LoginResponse;
+  storeToken(data.token);
+  return data.user;
+}
+
+/** Revoke the current session server-side and clear the stored token. */
+export async function logout(): Promise<void> {
+  try {
+    await fetch("/api/admin/auth/logout", { method: "POST", headers: authHeaders() });
+  } catch { /* best-effort */ }
+  clearStoredToken();
+}
+
+/** Current authenticated identity. */
+export function getMe(): Promise<ApiMe> {
+  return api.get<ApiMe>("/api/admin/auth/me");
+}
+
+/* ─── SSH key management helpers ─────────────────────────────────────── */
+
+export interface AgentKey { publicKey: string; keyType: string; comment: string }
+
+/** Generate a key pair without requiring an existing integration (returns both values for in-form state). */
+export function generateSshKeyPair(provider: string, sshUser?: string): Promise<{ sshPrivateKeyEnc: string; sshPublicKey: string }> {
+  return request<{ sshPrivateKeyEnc: string; sshPublicKey: string }>("POST", "/api/admin/ssh-key/generate", { provider, sshUser });
+}
+
+export function listAgentKeys(): Promise<{ keys: AgentKey[]; agentAvailable: boolean }> {
+  return request<{ keys: AgentKey[]; agentAvailable: boolean }>("GET", "/api/admin/ssh-agent/keys");
+}
 
 /* ─── SSE stream helpers ──────────────────────────────────────────────── */
 
@@ -111,6 +220,11 @@ export function connectSse(
         headers: authHeaders(),
         signal: abort.signal,
       });
+      if (res.status === 401) {
+        stopped = true;
+        notifyUnauthorized();
+        return;
+      }
       if (!res.ok || !res.body) throw new Error(`SSE error ${res.status}`);
       backoffMs = 1000; // reset on success
 

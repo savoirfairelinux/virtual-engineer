@@ -5,6 +5,9 @@
   "license": "GPL-3.0-only",
   "type": "module",
   "main": "dist/index.js",
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "scripts": {
     "build": "npm run build:ui && tsc",
     "build:ui": "vite build --config vite.admin.config.ts",
@@ -14,9 +17,10 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "lint": "eslint src tests",
-    "typecheck": "tsc --noEmit",
+    "lint": "eslint src tests agent-worker/src",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.agent.json --noEmit",
     "typecheck:ui": "tsc -p tsconfig.admin-ui.json --noEmit",
+    "build:agent": "npm --prefix agent-worker run build",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/state/migrate.ts",
     "e2e:mock": "tsx scripts/run-complete-mock-flow.ts",
@@ -24,7 +28,7 @@
     "reset:instance": "./scripts/reset-instance.sh"
   },
   "dependencies": {
-    "@github/copilot-sdk": "^0.2.2",
+    "@github/copilot-sdk": "^0.3.0",
     "better-sqlite3": "^12.10.0",
     "drizzle-orm": "^0.45.2",
     "p-retry": "^6.2.0",
@@ -37,8 +41,6 @@
   "devDependencies": {
     "@fontsource/ibm-plex-mono": "^5.2.7",
     "@fontsource/ibm-plex-sans": "^5.2.8",
-    "@fontsource/material-icons": "^5.2.7",
-    "@material-icons/svg": "^1.0.33",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^20.19.41",
     "@types/react": "^19.2.17",
@@ -50,10 +52,14 @@
     "drizzle-kit": "^0.31.10",
     "eslint": "^9.5.0",
     "eslint-plugin-react-hooks": "^7.1.1",
-    "simple-icons": "^16.23.0",
-    "tsx": "^4.15.6",
+    "tsx": "^4.23.1",
     "typescript": "^5.4.5",
     "vite": "^8.0.16",
     "vitest": "^4.1.7"
+  },
+  "overrides": {
+    "@esbuild-kit/core-utils": {
+      "esbuild": "0.25.12"
+    }
   }
 }

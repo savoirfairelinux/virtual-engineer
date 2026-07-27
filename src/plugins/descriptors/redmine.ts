@@ -98,7 +98,9 @@ export const redmineDescriptor: ProviderDescriptor = {
       }
 
       log.info({ baseUrl }, "Redmine connection test passed");
-      return { success: true, error: null };
+      const logs: string[] = [currentLogin ? `Authenticated as: ${currentLogin}` : "Authentication successful."];
+      if (login && login === currentLogin) logs.push(`VE user '${login}' verified.`);
+      return { success: true, error: null, logs };
     } catch (err: unknown) {
       return { success: false, error: `Redmine connection test failed: ${err instanceof Error ? err.message : String(err)}` };
     }

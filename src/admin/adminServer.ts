@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { readFileSync, existsSync } from "node:fs";
 import { join, extname, resolve } from "node:path";
 import { getLogger } from "../logger.js";
@@ -9,23 +9,37 @@ import { registerOverviewRoutes } from "./adminOverviewRoutes.js";
 import type { PluginManager } from "../plugins/pluginManager.js";
 import type { ProviderAuthService } from "../agents/providerAuthService.js";
 import { type AgentsRouteStore, registerAgentRoutes } from "./adminAgentsRoutes.js";
-import { type ProjectsRouteStore, registerProjectRoutes } from "./adminProjectsRoutes.js";
+import { type ProjectsRouteDeps, type ProjectsRouteStore, registerProjectRoutes } from "./adminProjectsRoutes.js";
 import {
   handleWebhookRequest,
   isWebhookPath,
   type WebhookCapableOrchestrator,
   type ProjectLookupStore,
 } from "../webhooks/webhookServer.js";
-import { buildGitLabAuthHeaders, rewriteGitLabUploadUrl } from "../utils/gitlabAuth.js";
+import { isAllowedGitLabProxyTarget } from "../utils/gitlabAuth.js";
 import { writeJson, writeHtml } from "./adminRouteUtils.js";
+import { fetchGitLabProxyImage } from "./adminImageProxy.js";
 import { registerTaskRoutes } from "./adminTaskRoutes.js";
 import { registerPromptRoutes } from "./adminPromptRoutes.js";
 import { registerStreamRoutes } from "./adminStreamRoutes.js";
 import { registerConcurrencyRoutes } from "./adminConcurrencyRoutes.js";
+import { registerSettingsRoutes, type SettingsController } from "./adminSettingsRoutes.js";
 import { registerWebhookRoutes } from "./adminWebhookRoutes.js";
 import { registerIntegrationRoutes } from "./adminIntegrationRoutes.js";
+import { registerAuthRoutes, type AuthRouteAuditStore, type AuthRouteUserStore } from "./adminAuthRoutes.js";
+import { registerAuditRoutes, type AuditReadStore } from "./adminAuditRoutes.js";
+import { registerPolicyRoutes, type PolicyRoutesStore } from "./adminPoliciesRoutes.js";
+import { createAdminAuthService, type AdminAuthService, type AdminAuthStateStore } from "./adminAuthService.js";
+import { getAuthContext, setAuthContext, getEffectivePermissions, setEffectivePermissions } from "./authContext.js";
 import { makeTaskId } from "../interfaces.js";
-import { Router } from "./router.js";
+import { Router, type RouteMeta, type RouteParams } from "./router.js";
+import { buildEffectivePermissions, can, accessibleResourceIds, type EffectivePermissions } from "./authorization/policyEngine.js";
+import { bindDefaultPolicyForRole, type DefaultPolicyBinderStore } from "./authorization/seedPolicies.js";
+import type { AuthContext } from "./adminAuthService.js";
+import type { PolicyRule, UserRole } from "../interfaces.js";
+
+export { getAuthContext } from "./authContext.js";
+export type { AuthContext } from "./adminAuthService.js";
 
 // process.cwd() is the project root in both dev (tsx src/) and prod (node dist/src/index.js).
 const DIST_UI_DIR = resolve(process.cwd(), "dist/admin-ui");
@@ -48,7 +62,9 @@ const MIME_MAP: Record<string, string> = {
 
 /**
  * Admin HTTP server — REST API for orchestrator status, task control, prompts, integrations,
- * agents, projects, concurrency, and webhooks. Auth: HMAC-SHA256 Bearer (ADMIN_AUTH_SECRET).
+ * agents, projects, concurrency, and webhooks.
+ * Auth: DB-backed session tokens (user accounts); ADMIN_AUTH_SECRET is used only for
+ * OAuth token encryption at rest.
  */
 
 const log = getLogger("admin-server");
@@ -60,6 +76,8 @@ export interface AdminRuntimeConfig {
   maxRetryAttempts: number;
   pollingIntervalMs: number;
   adminAuthSecret?: string | undefined;
+  /** Mirror of `ADMIN_TRUST_PROXY`. When true, IP is read from X-Forwarded-For. */
+  adminTrustProxy?: boolean | undefined;
 }
 
 export interface AdminPollingStatusSource {
@@ -87,12 +105,15 @@ export interface AdminProviderSummary {
 }
 
 export interface AdminServerDependencies {
-  stateStore: Pick<StateStore, "getActiveTasks" | "getAllTasks" | "getTask" | "getAgentCycles" | "getAgentCycleEvents" | "getStateTransitions" | "getChangesForTask" | "getChangesForTasks" | "pauseTask" | "resumeTask" | "retryTask" | "abandonTask" | "deleteTask" | "deleteTaskGroup">;
+  stateStore: Pick<StateStore, "getActiveTasks" | "getAllTasks" | "getTask" | "getAgentCycles" | "getAgentCycleEvents" | "getStateTransitions" | "getChangesForTask" | "getChangesForTasks" | "pauseTask" | "resumeTask" | "retryTask" | "abandonTask" | "deleteTask" | "deleteTaskGroup" | "getCostSummary" | "getModelUsageSummary">;
+  /** Explicit test/embed escape hatch. Never accepted when nodeEnv is production. */
+  allowUnauthenticatedAdmin?: boolean | undefined;
   /** Phase 3: store backing the /api/admin/agents routes. */
   agentStore?: AgentsRouteStore;
   providerAuthService?: ProviderAuthService | undefined;
   /** Phase 3: store backing the /api/admin/projects routes. */
   projectStore?: ProjectsRouteStore;
+  projectRoutes?: Pick<ProjectsRouteDeps, "validateSkillSourcesConnection"> | undefined;
   integrationStore?: IntegrationStore;
   oAuthAppStore?: OAuthAppStore;
   promptStore?: PromptStore | undefined;
@@ -123,13 +144,19 @@ export interface AdminServerDependencies {
     getStatus(integrationId: string): unknown | null;
   };
   /**
-   * When provided, mounts `GET/PUT /api/admin/concurrency` with live in-memory counters.
+   * When provided, mounts `GET /api/admin/concurrency` (read-only) with live in-memory counters.
    * `max_concurrent` NULL = unlimited.
    */
   concurrency?: {
     /** Live in-memory run-slot counters from {@link ConcurrencyTracker}. */
     snapshot(): { global: number; perProject: Record<string, number>; perAgent: Record<string, number> };
   };
+  /**
+   * When provided, mounts `GET/PUT /api/admin/settings` for editing the runtime
+   * workflow settings (polling interval, max cycles, max retries). Changes are
+   * persisted and hot-applied by the controller.
+   */
+  settings?: SettingsController | undefined;
 }
 
 /** Derive provider-specific URLs from active plugin manager integrations. */
@@ -143,7 +170,7 @@ function getProviderUrls(pluginManager: PluginManager | undefined): {
   const parseConfig = (integration: Integration | undefined): Record<string, unknown> | null => {
     if (!integration) return null;
     try {
-      const parsed: unknown = JSON.parse(integration.configJson);
+      const parsed: unknown = pluginManager.decryptIntegrationConfig(integration);
       return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
         ? (parsed as Record<string, unknown>)
         : null;
@@ -173,10 +200,11 @@ function getProviderUrls(pluginManager: PluginManager | undefined): {
 
 /** Create and return the admin HTTP server with all routes wired up. */
 export function createAdminServer(dependencies: AdminServerDependencies): Server {
-  const router = buildApiRouter(dependencies);
+  const authRuntime = createAuthRuntime(dependencies);
+  const router = buildApiRouter(dependencies, authRuntime);
   return createServer(async (request, response) => {
     try {
-      await handleRequest(request, response, dependencies, router);
+      await handleRequest(request, response, dependencies, router, authRuntime);
     } catch (err: unknown) {
       log.error({ err, method: request.method, url: request.url }, "admin request failed");
       writeJson(response, 500, { error: "Internal server error" });
@@ -184,9 +212,135 @@ export function createAdminServer(dependencies: AdminServerDependencies): Server
   });
 }
 
+// ─── Session auth runtime ────────────────────────────────────────────────────
+
+/** Combined user-store surface needed for session auth + user management. */
+type AdminUserCapableStore = AdminAuthStateStore & AuthRouteUserStore;
+
+/** Feature-detect the user-store methods required by admin session auth. */
+function extractUserStore(stateStore: unknown): AdminUserCapableStore | null {
+  const candidate = stateStore as Partial<AdminUserCapableStore> | null | undefined;
+  if (
+    candidate &&
+    typeof candidate.countUsers === "function" &&
+    typeof candidate.getUserByUsername === "function" &&
+    typeof candidate.createSession === "function"
+  ) {
+    return candidate as AdminUserCapableStore;
+  }
+  return null;
+}
+
+/** Feature-detect the audit-store append method on the injected state store. */
+function extractAuditStore(stateStore: unknown): AuthRouteAuditStore | null {
+  const candidate = stateStore as Partial<AuthRouteAuditStore> | null | undefined;
+  return candidate && typeof candidate.appendAuditEntry === "function"
+    ? (candidate as AuthRouteAuditStore)
+    : null;
+}
+
+/** Feature-detect the audit-store list method on the injected state store. */
+function extractAuditReadStore(stateStore: unknown): AuditReadStore | null {
+  const candidate = stateStore as Partial<AuditReadStore> | null | undefined;
+  return candidate && typeof candidate.listAuditEntries === "function"
+    ? (candidate as AuditReadStore)
+    : null;
+}
+
+/** PBAC rule-resolution surface used to build a user's effective permissions. */
+interface PbacRuleStore {
+  getEffectivePolicyRulesForUser(userId: string): Promise<PolicyRule[]>;
+}
+
+/** Feature-detect the PBAC rule-resolution method on the injected state store. */
+function extractPbacStore(stateStore: unknown): PbacRuleStore | null {
+  const candidate = stateStore as Partial<PbacRuleStore> | null | undefined;
+  return candidate && typeof candidate.getEffectivePolicyRulesForUser === "function"
+    ? (candidate as PbacRuleStore)
+    : null;
+}
+
+/** Feature-detect the policy-binding surface used to assign role-default policies. */
+function extractPolicyBinder(stateStore: unknown): DefaultPolicyBinderStore | null {
+  const candidate = stateStore as Partial<DefaultPolicyBinderStore> | null | undefined;
+  return candidate &&
+    typeof candidate.listPolicies === "function" &&
+    typeof candidate.createBinding === "function"
+    ? (candidate as DefaultPolicyBinderStore)
+    : null;
+}
+
+/** Feature-detect the full policy/group management surface for the admin PBAC routes. */
+function extractPolicyRoutesStore(stateStore: unknown): PolicyRoutesStore | null {
+  const candidate = stateStore as Partial<PolicyRoutesStore> | null | undefined;
+  return candidate &&
+    typeof candidate.listPolicies === "function" &&
+    typeof candidate.createGroup === "function" &&
+    typeof candidate.setPolicyRules === "function" &&
+    typeof candidate.getUserById === "function"
+    ? (candidate as PolicyRoutesStore)
+    : null;
+}
+
+interface AdminAuthRuntime {
+  authService: AdminAuthService | null;
+  userStore: AdminUserCapableStore | null;
+  /** Cached "≥1 user exists" check — false when the store lacks user methods. */
+  usersExist(): Promise<boolean>;
+  invalidateUsersExistCache(): void;
+  /**
+   * Resolve a request identity's effective permissions. The `admin` role and
+   * bootstrap are superusers; every other user's grants come from their bound
+   * policies (empty — deny-all — when PBAC is unavailable). Always returns a
+   * value: there is no role fallback.
+   */
+  resolvePermissions(ctx: AuthContext): Promise<EffectivePermissions>;
+}
+
+function createAuthRuntime(dependencies: AdminServerDependencies): AdminAuthRuntime {
+  const userStore = extractUserStore(dependencies.stateStore);
+  const pbacStore = extractPbacStore(dependencies.stateStore);
+  if (dependencies.allowUnauthenticatedAdmin && dependencies.config.nodeEnv === "production") {
+    throw new Error("Unauthenticated admin mode is not allowed in production");
+  }
+  if (!userStore && !dependencies.allowUnauthenticatedAdmin) {
+    throw new Error("Admin user store is required unless allowUnauthenticatedAdmin is enabled");
+  }
+  if (!pbacStore && !dependencies.allowUnauthenticatedAdmin) {
+    throw new Error("Admin PBAC store is required unless allowUnauthenticatedAdmin is enabled");
+  }
+  const authService = userStore && !dependencies.allowUnauthenticatedAdmin
+    ? createAdminAuthService({ stateStore: userStore })
+    : null;
+  let usersExistCache: boolean | null = null;
+  return {
+    authService,
+    userStore,
+    async usersExist(): Promise<boolean> {
+      if (!userStore) return false;
+      if (usersExistCache === null) {
+        usersExistCache = (await userStore.countUsers()) > 0;
+      }
+      return usersExistCache;
+    },
+    invalidateUsersExistCache(): void {
+      usersExistCache = null;
+    },
+    async resolvePermissions(ctx: AuthContext): Promise<EffectivePermissions> {
+      if (ctx.role === "admin" || ctx.userId === null) {
+        return buildEffectivePermissions("admin", []);
+      }
+      if (!pbacStore) return buildEffectivePermissions(ctx.role, []);
+      const rules = await pbacStore.getEffectivePolicyRulesForUser(ctx.userId);
+      return buildEffectivePermissions(ctx.role, rules);
+    },
+  };
+}
+
 /** Build the declarative API router for all /api/admin/* routes. */
-function buildApiRouter(dependencies: AdminServerDependencies): Router {
+function buildApiRouter(dependencies: AdminServerDependencies, authRuntime: AdminAuthRuntime): Router {
   const router = new Router();
+  const policyBinder = extractPolicyBinder(dependencies.stateStore);
 
   // Status / Config / Providers
   router.add("GET", "/api/admin/status", async (_req, res, _params) => {
@@ -200,7 +354,7 @@ function buildApiRouter(dependencies: AdminServerDependencies): Router {
         maxRetryAttempts: dependencies.config.maxRetryAttempts,
       },
     });
-  });
+  }, { permission: "overview.read" });
 
   router.add("GET", "/api/admin/config", async (_req, res, _params) => {
     writeJson(res, 200, {
@@ -212,7 +366,7 @@ function buildApiRouter(dependencies: AdminServerDependencies): Router {
         pollingIntervalMs: dependencies.config.pollingIntervalMs,
       },
     });
-  });
+  }, { permission: "overview.read" });
 
   router.add("GET", "/api/admin/providers", async (_req, res, _params) => {
     const providersList = typeof dependencies.providers === "function" ? dependencies.providers() : dependencies.providers;
@@ -227,35 +381,57 @@ function buildApiRouter(dependencies: AdminServerDependencies): Router {
         details: provider.details,
       })),
     });
-  });
+  }, { permission: "integration.read" });
 
   registerStreamRoutes(router, { stateStore: dependencies.stateStore });
-  registerPromptRoutes(router, { promptStore: dependencies.promptStore, agentStore: dependencies.agentStore });
-  registerTaskRoutes(router, { stateStore: dependencies.stateStore, taskControl: dependencies.taskControl });
+  const auditStore = extractAuditStore(dependencies.stateStore) ?? undefined;
+  registerAuthRoutes(router, {
+    userStore: authRuntime.userStore ?? undefined,
+    auditStore,
+    authService: authRuntime.authService ?? undefined,
+    credentialEncryptionConfigured: Boolean(dependencies.config.adminAuthSecret),
+    onUsersChanged: () => authRuntime.invalidateUsersExistCache(),
+    ...(policyBinder
+      ? { onUserCreated: (userId: string, role: UserRole): Promise<void> => bindDefaultPolicyForRole(policyBinder, userId, role) }
+      : {}),
+    trustProxy: dependencies.config.adminTrustProxy,
+  });
+  registerAuditRoutes(router, { auditStore: extractAuditReadStore(dependencies.stateStore) ?? undefined });
+  registerPolicyRoutes(router, { policyStore: extractPolicyRoutesStore(dependencies.stateStore) ?? undefined, auditStore });
+  registerPromptRoutes(router, { promptStore: dependencies.promptStore, agentStore: dependencies.agentStore, auditStore });
+  registerTaskRoutes(router, { stateStore: dependencies.stateStore, taskControl: dependencies.taskControl, auditStore });
   registerIntegrationRoutes(router, {
     integrationStore: dependencies.integrationStore,
     pluginManager: dependencies.pluginManager,
     oAuthAppStore: dependencies.oAuthAppStore,
+    auditStore,
     integrationStreams: dependencies.integrationStreams,
     onIntegrationUpdated: dependencies.onIntegrationUpdated,
     adminAuthSecret: dependencies.config.adminAuthSecret,
   });
   registerAgentRoutes(router, {
+      pluginManager: dependencies.pluginManager,
     agentStore: dependencies.agentStore,
     integrationStore: dependencies.integrationStore,
     oAuthAppStore: dependencies.oAuthAppStore,
+    auditStore,
     adminAuthSecret: dependencies.config.adminAuthSecret,
     providerAuthService: dependencies.providerAuthService,
   });
   registerProjectRoutes(router, {
     projectStore: dependencies.projectStore,
     integrationStore: dependencies.integrationStore,
+    auditStore,
     onProjectChange: dependencies.onProjectChange,
     taskControl: dependencies.taskControl,
+    ...dependencies.projectRoutes,
   });
   registerConcurrencyRoutes(router, { concurrency: dependencies.concurrency });
+  registerSettingsRoutes(router, { settings: dependencies.settings });
   registerWebhookRoutes(router, {
     integrationStore: dependencies.integrationStore,
+    pluginManager: dependencies.pluginManager,
+    auditStore,
     onIntegrationUpdated: dependencies.onIntegrationUpdated,
     webhookPublicBaseUrl: dependencies.webhooks?.publicBaseUrl,
   });
@@ -274,7 +450,8 @@ async function handleRequest(
   request: IncomingMessage,
   response: ServerResponse,
   dependencies: AdminServerDependencies,
-  router: Router
+  router: Router,
+  authRuntime: AdminAuthRuntime
 ): Promise<void> {
   const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
   const path = requestUrl.pathname;
@@ -323,10 +500,10 @@ async function handleRequest(
       writeJson(response, 405, { error: "Method not allowed" });
       return;
     }
-    const requiresAuth = Boolean(dependencies.config.adminAuthSecret);
+    // Explicit test/embed open mode has no auth service; normal deployments do.
+    const requiresAuth = authRuntime.authService !== null;
     writeHtml(response, 200, renderAdminDashboardHtml({
       requiresAuth,
-      authMode: getAdminAuthMode(dependencies.config),
       nonce,
       ...getProviderUrls(dependencies.pluginManager),
     }));
@@ -337,26 +514,29 @@ async function handleRequest(
   if (path === "/api/admin/img-proxy" && method === "GET") {
     const targetUrl = requestUrl.searchParams.get("url") ?? "";
     const queryToken = requestUrl.searchParams.get("t") ?? "";
-    const proxyAuthorized = isAuthorizedToken(queryToken, dependencies.config);
+    const proxyAuthorized = authRuntime.authService
+      ? (await authRuntime.usersExist()) && (await authRuntime.authService.validateSession(queryToken)) !== null
+      : dependencies.allowUnauthenticatedAdmin === true;
     if (!proxyAuthorized) { writeJson(response, 401, { error: "Unauthorized" }); return; }
     const { gitlabBaseUrl, gitlabToken: gitlabTokenVal } = getProviderUrls(dependencies.pluginManager);
-    if (!gitlabBaseUrl || !targetUrl.startsWith(gitlabBaseUrl)) {
+    if (!gitlabBaseUrl || !isAllowedGitLabProxyTarget(targetUrl, gitlabBaseUrl)) {
       writeJson(response, 400, { error: "Invalid proxy target" }); return;
     }
-    try {
-      const gitlabToken = gitlabTokenVal ?? "";
-      const fetchUrl = rewriteGitLabUploadUrl(targetUrl, gitlabBaseUrl);
-      log.debug({ fetchUrl, hasToken: Boolean(gitlabToken) }, "img-proxy fetch");
-      const upstream = await fetch(fetchUrl, gitlabToken
-        ? { headers: buildGitLabAuthHeaders(gitlabToken) }
-        : undefined);
-      const ct = upstream.headers.get("content-type") ?? "application/octet-stream";
-      log.debug({ status: upstream.status, ct }, "img-proxy upstream response");
-      if (!upstream.ok || ct.startsWith("text/html")) { writeJson(response, 502, { error: "Upstream error" }); return; }
-      const buf = Buffer.from(await upstream.arrayBuffer());
-      response.writeHead(200, { "content-type": ct, "cache-control": "private, max-age=3600" });
-      response.end(buf);
-    } catch { writeJson(response, 502, { error: "Proxy fetch failed" }); }
+    const result = await fetchGitLabProxyImage({
+      targetUrl,
+      gitlabBaseUrl,
+      gitlabToken: gitlabTokenVal ?? "",
+    });
+    if (!result.ok) {
+      writeJson(response, result.statusCode, { error: result.error });
+      return;
+    }
+    response.writeHead(200, {
+      "content-type": result.contentType,
+      "cache-control": "private, max-age=3600",
+      "x-content-type-options": "nosniff",
+    });
+    response.end(result.body);
     return;
   }
 
@@ -381,23 +561,83 @@ async function handleRequest(
     }
     await handleWebhookRequest(request, response, {
       integrationStore: dependencies.integrationStore,
+      pluginManager: dependencies.pluginManager,
       projectStore: dependencies.webhooks.projectStore,
       orchestrator: dependencies.webhooks.orchestrator,
+      trustProxy: dependencies.config.adminTrustProxy ?? false,
     });
     return;
   }
 
   // ─── Auth gate ────────────────────────────────────────────────────────────
 
-  if (!isAuthorized(request, dependencies.config)) {
-    response.setHeader("www-authenticate", 'Bearer realm="virtual-engineer-admin"');
-    writeJson(response, 401, { error: "Unauthorized" });
-    return;
+  // Public auth endpoints — no credentials required.
+  const isPublicAuthRoute =
+    (method === "GET" && path === "/api/admin/auth/setup-status") ||
+    (method === "POST" && path === "/api/admin/auth/login");
+
+  if (!isPublicAuthRoute) {
+    if (method === "POST" && path === "/api/admin/auth/setup") {
+      // Bootstrap: setup is unauthenticated; the route handler enforces zero users exist.
+      setAuthContext(request, { userId: null, username: "bootstrap", role: "admin" });
+    } else if (authRuntime.authService) {
+      if (!(await authRuntime.usersExist())) {
+        sendUnauthorized(response);
+        return;
+      }
+      const token = extractBearerToken(request);
+      const context = token ? await authRuntime.authService.validateSession(token) : null;
+      if (!context) {
+        sendUnauthorized(response);
+        return;
+      }
+      setAuthContext(request, context);
+    } else {
+      // Explicit non-production test/embed mode.
+      setAuthContext(request, { userId: null, username: "bootstrap", role: "admin" });
+    }
   }
 
   if (!["GET", "PATCH", "POST", "PUT", "DELETE"].includes(method)) {
     writeJson(response, 405, { error: "Method not allowed" });
     return;
+  }
+
+  // Resolve the request's PBAC permissions once and cache them for the gate and
+  // for scope-aware list handlers.
+  const authedContext = getAuthContext(request);
+  if (authedContext) {
+    setEffectivePermissions(request, await authRuntime.resolvePermissions(authedContext));
+  }
+
+  // ─── Authorization gate (pure PBAC — no role fallback) ──────────────────────
+
+  const matched = router.match(method, path);
+  if (matched) {
+    const context = getAuthContext(request);
+    if (context) {
+      const meta = matched.meta;
+      const perms = getEffectivePermissions(request);
+      if (!perms) {
+        writeJson(response, 403, { error: "forbidden" });
+        return;
+      }
+      if (meta.authenticated) {
+        // Auth-self routes: any authenticated identity may proceed.
+      } else if (meta.permission) {
+        const authorized = meta.collection
+          ? accessibleResourceIds(perms, meta.permission) !== null
+          : can(perms, meta.permission, await resolveScopeResourceId(meta, matched.params, dependencies.stateStore));
+        if (!authorized) {
+          writeJson(response, 403, { error: "forbidden", permission: meta.permission });
+          return;
+        }
+      } else if (!perms.isSuperuser) {
+        // Unannotated route → superuser only (fail-closed).
+        writeJson(response, 403, { error: "forbidden" });
+        return;
+      }
+    }
   }
 
   // ─── Modular route dispatch ───────────────────────────────────────────────
@@ -409,74 +649,48 @@ async function handleRequest(
 
 // ─── Auth & Security ────────────────────────────────────────────────────────
 
-/** Derive the admin auth mode string from the runtime config. */
-function getAdminAuthMode(config: AdminRuntimeConfig): "none" | "hmac" {
-  if (config.adminAuthSecret) {
-    return "hmac";
-  }
-  return "none";
+/** Send a 401 with the WWW-Authenticate challenge header. */
+function sendUnauthorized(response: ServerResponse): void {
+  response.setHeader("www-authenticate", 'Bearer realm="virtual-engineer-admin"');
+  writeJson(response, 401, { error: "Unauthorized" });
 }
 
-/** Return true if the request carries a valid HMAC-SHA256 Bearer token. */
-function isAuthorized(
-  request: IncomingMessage,
-  config: AdminRuntimeConfig
-): boolean {
-  if (!config.adminAuthSecret) {
-    return true;
-  }
-
+/** Extract the raw Bearer token from the Authorization header, if any. */
+function extractBearerToken(request: IncomingMessage): string | null {
   const authorization = request.headers.authorization;
-  if (!authorization?.startsWith("Bearer ")) {
-    return false;
-  }
-
-  const token = authorization.slice("Bearer ".length);
-
-  const parts = token.split(".");
-  if (parts.length === 2) {
-    const timestampStr = parts[0];
-    const providedSignature = parts[1];
-    if (!timestampStr || !providedSignature) {
-      return false;
-    }
-    const timestamp = parseInt(timestampStr, 10);
-
-    if (!Number.isInteger(timestamp)) {
-      return false;
-    }
-
-    // Check if timestamp is recent (within 5 minutes = 300 seconds)
-    const now = Math.floor(Date.now() / 1000);
-    if (Math.abs(now - timestamp) > 300) {
-      return false;
-    }
-
-    // ⚠️ SECURITY: timingSafeEqual prevents timing attacks.
-    const expectedSignature = createHmac("sha256", config.adminAuthSecret)
-      .update(timestampStr)
-      .digest("hex");
-
-    const expectedBuf = Buffer.from(expectedSignature, "hex");
-    const providedBuf = Buffer.from(providedSignature, "hex");
-    if (
-      expectedBuf.length === providedBuf.length &&
-      timingSafeEqual(expectedBuf, providedBuf)
-    ) {
-      return true;
-    }
-  }
-
-  return false;
+  if (!authorization?.startsWith("Bearer ")) return null;
+  const token = authorization.slice("Bearer ".length).trim();
+  return token.length > 0 ? token : null;
 }
 
-/** Return true if the raw token string is valid (used for query-parameter auth on image-proxy routes). */
-function isAuthorizedToken(token: string, config: AdminRuntimeConfig): boolean {
-  if (!config.adminAuthSecret) return true;
-  if (!token) return false;
-  const fakeRequest = { headers: { authorization: "Bearer " + token } } as unknown as IncomingMessage;
-  return isAuthorized(fakeRequest, config);
+/**
+ * Resolve the resource id a scoped permission check applies to.
+ *
+ * - Returns `undefined` for a global permission (no `resourceParam`) — the gate
+ *   then requires an unscoped (all-resources) grant.
+ * - For `task.*` permissions, resolves the owning **project** id (tasks inherit
+ *   their project's scope); returns null for orphaned/unknown tasks.
+ * - Otherwise returns the raw path-parameter value (project/integration/agent/prompt id).
+ */
+async function resolveScopeResourceId(
+  meta: RouteMeta,
+  params: RouteParams,
+  stateStore: AdminServerDependencies["stateStore"]
+): Promise<string | null | undefined> {
+  if (!meta.resourceParam) return undefined;
+  const raw = params[meta.resourceParam];
+  if (!raw) return null;
+  if (meta.permission?.startsWith("task.")) {
+    try {
+      const task = await stateStore.getTask(makeTaskId(raw));
+      return task?.projectId ?? null;
+    } catch {
+      return null;
+    }
+  }
+  return raw;
 }
+
 
 /** Set security-oriented HTTP response headers on every admin response. */
 function applySecurityHeaders(response: ServerResponse, nonce: string): void {

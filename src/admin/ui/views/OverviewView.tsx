@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { Stat } from "../components/Stat.tsx";
 import { Bars } from "../components/Bars.tsx";
 import { Tag } from "../components/Tag.tsx";
@@ -5,7 +6,8 @@ import { StatePill } from "../components/StatePill.tsx";
 import { ProviderGlyph } from "../components/ProviderGlyph.tsx";
 import { Icon } from "../components/Icon.tsx";
 import { TONE, STATES, isActiveState } from "../states.ts";
-import type { ApiOverview, ApiTask, ApiProvider } from "../types.ts";
+import { api } from "../api.ts";
+import type { ApiOverview, ApiTask, ApiProvider, ApiCostSummary, ApiModelUsageSummary } from "../types.ts";
 
 interface OverviewViewProps {
   overview: ApiOverview | null;
@@ -103,6 +105,273 @@ function RuntimeFacts({ runtime }: { runtime: ApiOverview["runtime"] }) {
           <span className="mono" style={{ fontWeight: 600, color: "var(--text)", whiteSpace: "nowrap" }}>{v}</span>
         </div>
       ))}
+    </div>
+  );
+}
+
+const COST_PERIODS: { label: string; days: number | null }[] = [
+  { label: "24h", days: 1 },
+  { label: "7d", days: 7 },
+  { label: "30d", days: 30 },
+  { label: "All", days: null },
+];
+
+const MODEL_PERIODS: { label: string; days: number | null }[] = [
+  { label: "24h", days: 1 },
+  { label: "7d", days: 7 },
+  { label: "30d", days: 30 },
+  { label: "All", days: null },
+];
+
+function formatUsd(n: number): string {
+  if (n === 0) return "$0.00";
+  if (n < 0.01) return "<$0.01";
+  return `$${n.toFixed(2)}`;
+}
+
+const MODEL_BAR_COLORS = [
+  "var(--accent-strong)",
+  TONE.ok.c,
+  TONE.warn.c,
+  TONE.info.c,
+  TONE.danger.c,
+  TONE.muted.c,
+];
+
+function modelLabel(modelId: string | null): string {
+  return modelId ?? "unknown";
+}
+
+function CostSummaryCard() {
+  const [days, setDays] = useState<number | null>(30);
+  const [summary, setSummary] = useState<ApiCostSummary | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(false);
+    const path = days === null ? "/api/admin/cost-summary" : `/api/admin/cost-summary?days=${days}`;
+    api
+      .get<ApiCostSummary>(path)
+      .then((data) => {
+        if (!cancelled) setSummary(data);
+      })
+      .catch(() => {
+        if (!cancelled) setError(true);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [days]);
+
+  const projects = summary
+    ? summary.perProject.filter((p) => p.usd > 0 || p.runCount > 0)
+    : [];
+  const maxUsd = Math.max(...projects.map((p) => p.usd), 0.0001);
+
+  return (
+    <div className="card" style={{ padding: "18px 20px", flex: 1, minWidth: 0 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "16px", gap: "10px" }}>
+        <span className="eyebrow">AI cost</span>
+        <div style={{ display: "flex", gap: "4px" }}>
+          {COST_PERIODS.map((p) => (
+            <button
+              key={p.label}
+              onClick={() => setDays(p.days)}
+              className="mono"
+              style={{
+                cursor: "pointer",
+                fontSize: "11px",
+                fontWeight: 600,
+                padding: "3px 8px",
+                borderRadius: "6px",
+                border: "1px solid var(--border)",
+                background: days === p.days ? "var(--accent)" : "transparent",
+                color: days === p.days ? "var(--accent-fg, #fff)" : "var(--text-faint)",
+              }}
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {error ? (
+        <div style={{ fontSize: "12.5px", color: "var(--text-faint)" }}>Failed to load cost summary.</div>
+      ) : loading && !summary ? (
+        <div style={{ fontSize: "12.5px", color: "var(--text-faint)" }}>Loading…</div>
+      ) : summary ? (
+        <>
+          <div style={{ display: "flex", alignItems: "baseline", gap: "10px", marginBottom: "4px" }}>
+            <span className="mono" style={{ fontSize: "28px", fontWeight: 600, letterSpacing: "-0.02em" }}>
+              {formatUsd(summary.totalUsd)}
+            </span>
+            <span style={{ fontSize: "12px", color: "var(--text-faint)" }}>instance total</span>
+          </div>
+          <div style={{ fontSize: "11.5px", color: "var(--text-faint)", marginBottom: "16px" }}>
+            {summary.totalRuns} run{summary.totalRuns === 1 ? "" : "s"}
+            {summary.totalAiCredits > 0 ? ` · ${summary.totalAiCredits.toFixed(2)} credits` : ""}
+          </div>
+          {projects.length === 0 ? (
+            <div style={{ fontSize: "12.5px", color: "var(--text-faint)" }}>No recorded cost in this period.</div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: "11px" }}>
+              {projects.map((p) => (
+                <div key={p.projectId ?? "__unassigned__"} style={{ display: "flex", alignItems: "center", gap: "11px" }}>
+                  <span style={{ flex: "0 0 30%", fontSize: "12.5px", color: "var(--text-dim)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {p.projectName ?? (p.projectId ? p.projectId : "Unassigned")}
+                  </span>
+                  <div style={{ flex: 1, height: "8px", background: "var(--panel-2)", borderRadius: "99px", overflow: "hidden" }}>
+                    <div style={{ width: `${(p.usd / maxUsd) * 100}%`, height: "100%", background: TONE.active.c, opacity: 0.85, borderRadius: "99px" }} />
+                  </div>
+                  <span className="mono metric-val" style={{ flex: "none", width: "62px", textAlign: "right", fontSize: "12px", fontWeight: 600 }}>
+                    {formatUsd(p.usd)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+function ModelUsageCard() {
+  const [days, setDays] = useState<number | null>(30);
+  const [summary, setSummary] = useState<ApiModelUsageSummary | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(false);
+    const path = days === null ? "/api/admin/model-usage" : `/api/admin/model-usage?days=${days}`;
+    api
+      .get<ApiModelUsageSummary>(path)
+      .then((data) => {
+        if (!cancelled) setSummary(data);
+      })
+      .catch(() => {
+        if (!cancelled) setError(true);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [days]);
+
+  const models = summary ? summary.byModel : [];
+  const totalRuns = summary?.totalRuns ?? 0;
+  const colorFor = (i: number): string => MODEL_BAR_COLORS[i % MODEL_BAR_COLORS.length] as string;
+  const projects = summary
+    ? summary.perProject.filter((p) => p.models.some((m) => m.runCount > 0))
+    : [];
+
+  return (
+    <div className="card" style={{ padding: "18px 20px", flex: 1, minWidth: 0 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "16px", gap: "10px" }}>
+        <span className="eyebrow">Model usage</span>
+        <div style={{ display: "flex", gap: "4px" }}>
+          {MODEL_PERIODS.map((p) => (
+            <button
+              key={p.label}
+              onClick={() => setDays(p.days)}
+              className="mono"
+              style={{
+                cursor: "pointer",
+                fontSize: "11px",
+                fontWeight: 600,
+                padding: "3px 8px",
+                borderRadius: "6px",
+                border: "1px solid var(--border)",
+                background: days === p.days ? "var(--accent)" : "transparent",
+                color: days === p.days ? "var(--accent-fg, #fff)" : "var(--text-faint)",
+              }}
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {error ? (
+        <div style={{ fontSize: "12.5px", color: "var(--text-faint)" }}>Failed to load model usage.</div>
+      ) : loading && !summary ? (
+        <div style={{ fontSize: "12.5px", color: "var(--text-faint)" }}>Loading…</div>
+      ) : !summary || models.length === 0 ? (
+        <div style={{ fontSize: "12.5px", color: "var(--text-faint)" }}>No model usage in this period.</div>
+      ) : (
+        <>
+          <div style={{ display: "flex", height: "10px", borderRadius: "99px", overflow: "hidden", gap: "2px", marginBottom: "16px" }}>
+            {models.map((m, i) =>
+              m.runCount > 0 ? (
+                <div
+                  key={m.modelId ?? "\x00null"}
+                  title={`${modelLabel(m.modelId)} · ${m.runCount} runs`}
+                  style={{ flex: m.runCount, background: colorFor(i), opacity: 0.9 }}
+                />
+              ) : null
+            )}
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+            {models.map((m, i) => {
+              const pct = totalRuns > 0 ? Math.round((m.runCount / totalRuns) * 100) : 0;
+              return (
+                <div key={m.modelId ?? "\x00null"} style={{ display: "flex", alignItems: "center", gap: "9px" }}>
+                  <span style={{ width: 9, height: 9, borderRadius: 99, background: colorFor(i), flex: "none" }} />
+                  <span style={{ fontSize: "12.5px", color: "var(--text-dim)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {modelLabel(m.modelId)}
+                  </span>
+                  <span className="mono" style={{ fontSize: "11.5px", color: "var(--text-faint)" }}>{pct}%</span>
+                  <span className="mono metric-val" style={{ width: "44px", textAlign: "right", fontSize: "12px", fontWeight: 600 }}>{m.runCount}</span>
+                  <span className="mono" style={{ width: "58px", textAlign: "right", fontSize: "11.5px", color: "var(--text-faint)" }}>{formatUsd(m.usd)}</span>
+                </div>
+              );
+            })}
+          </div>
+
+          {projects.length > 0 && (
+            <div style={{ marginTop: "18px", borderTop: "1px solid var(--border)", paddingTop: "14px", display: "flex", flexDirection: "column", gap: "12px" }}>
+              <span className="eyebrow">By project</span>
+              {projects.map((p) => {
+                const projTotal = p.models.reduce((s, m) => s + m.runCount, 0);
+                return (
+                  <div key={p.projectId ?? "__unassigned__"} style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12px" }}>
+                      <span style={{ color: "var(--text-dim)", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {p.projectName ?? (p.projectId ? p.projectId : "Unassigned")}
+                      </span>
+                      <span className="mono" style={{ color: "var(--text-faint)" }}>{projTotal} runs</span>
+                    </div>
+                    <div style={{ display: "flex", height: "7px", borderRadius: "99px", overflow: "hidden", gap: "2px" }}>
+                      {p.models.map((m, i) => {
+                        if (m.runCount <= 0) return null;
+                        const globalIdx = models.findIndex((g) => g.modelId === m.modelId);
+                        return (
+                          <div
+                            key={m.modelId ?? "\x00null"}
+                            title={`${modelLabel(m.modelId)} · ${m.runCount} runs · ${formatUsd(m.usd)}`}
+                            style={{ flex: m.runCount, background: colorFor(globalIdx >= 0 ? globalIdx : i), opacity: 0.85 }}
+                          />
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }
@@ -243,6 +512,15 @@ export function OverviewView({ overview, tasks, providers, activeIntegrationCoun
           </div>
         )}
 
+        {/* cost row */}
+        <div style={{ display: "flex", gap: "14px", flexWrap: "wrap" }}>
+          <CostSummaryCard />
+        </div>
+
+        {/* model usage row */}
+        <div style={{ display: "flex", gap: "14px", flexWrap: "wrap" }}>
+          <ModelUsageCard />
+        </div>
         {/* bottom row */}
         <div style={{ display: "flex", gap: "14px", flexWrap: "wrap", alignItems: "flex-start" }}>
           <ActivityFeed tasks={tasks} onOpen={onNavigate} />

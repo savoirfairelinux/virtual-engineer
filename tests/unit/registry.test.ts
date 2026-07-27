@@ -494,13 +494,15 @@ describe("Plugin Registry", () => {
   });
 
   describe("buildBuiltinDescriptors", () => {
-    it("returns all six built-in descriptors in registration order", () => {
+    it("returns all built-in descriptors in registration order", () => {
       const descriptors = buildBuiltinDescriptors();
       expect(descriptors.map((d) => d.provider)).toEqual([
         "redmine",
         "gerrit",
         "gitlab",
         "copilot",
+        "claude",
+        "aider",
         "mock",
         "github",
       ]);

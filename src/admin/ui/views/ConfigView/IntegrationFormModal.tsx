@@ -1,8 +1,9 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { Modal, Field, FieldInput, FieldSelect, FormError, FormRow, FieldTextarea } from "../../components/Modal.tsx";
 import { Icon } from "../../components/Icon.tsx";
 import { ProviderGlyph } from "../../components/ProviderGlyph.tsx";
-import { api } from "../../api.ts";
+import { api, generateSshKeyPair, listAgentKeys } from "../../api.ts";
+import type { AgentKey } from "../../api.ts";
 import type { ApiIntegration, ApiPlugin, ApiPluginOAuth, PluginField } from "../../types.ts";
 
 interface Props {
@@ -78,6 +79,22 @@ function TypePicker({ plugins, onSelect }: { plugins: ApiPlugin[]; onSelect: (pr
   );
 }
 
+function base64UrlEncode(bytes: Uint8Array): string {
+  let s = "";
+  for (const b of bytes) s += String.fromCharCode(b);
+  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+/** Generate a PKCE verifier + S256 challenge pair using the Web Crypto API. */
+async function generatePkce(): Promise<{ verifier: string; challenge: string }> {
+  const randomBytes = new Uint8Array(32);
+  crypto.getRandomValues(randomBytes);
+  const verifier = base64UrlEncode(randomBytes);
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));
+  const challenge = base64UrlEncode(new Uint8Array(digest));
+  return { verifier, challenge };
+}
+
 function useOAuthFlow(
   oauth: ApiPluginOAuth | undefined,
   onToken: (token: string) => void
@@ -87,12 +104,46 @@ function useOAuthFlow(
   const [verificationUri, setVerificationUri] = useState<string | null>(null);
   const [deviceCode, setDeviceCode] = useState<string | null>(null);
   const [oauthError, setOauthError] = useState<string | null>(null);
+  // Redirect (manual-code) flow state.
+  const [authorizationUrl, setAuthorizationUrl] = useState<string | null>(null);
+  const [awaitingCode, setAwaitingCode] = useState(false);
+  const [code, setCode] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const pkceRef = useRef<{ verifier: string; state: string } | null>(null);
+
+  const reset = useCallback(() => {
+    setPending(false);
+    setUserCode(null);
+    setVerificationUri(null);
+    setDeviceCode(null);
+    setAuthorizationUrl(null);
+    setAwaitingCode(false);
+    setCode("");
+    setSubmitting(false);
+    pkceRef.current = null;
+  }, []);
 
   const start = useCallback(async () => {
     if (!oauth) return;
     setOauthError(null);
     setPending(true);
     try {
+      if (oauth.mode === "redirect") {
+        // Manual authorization-code flow: request an authorization URL, then the
+        // user pastes back the code shown on the provider's callback page.
+        const { verifier, challenge } = await generatePkce();
+        const state = base64UrlEncode(crypto.getRandomValues(new Uint8Array(32)));
+        pkceRef.current = { verifier, state };
+        const res = await api.post<{ authorizationUrl: string }>(oauth.startPath, {
+          redirectUri: window.location.origin,
+          state,
+          codeChallenge: challenge,
+          codeChallengeMethod: "S256",
+        });
+        setAuthorizationUrl(res.authorizationUrl);
+        setAwaitingCode(true);
+        return;
+      }
       const res = await api.post<{ userCode: string; verificationUri: string; deviceCode: string }>(
         oauth.startPath,
         {}
@@ -106,9 +157,38 @@ function useOAuthFlow(
     }
   }, [oauth]);
 
-  // Poll for completion
+  const submitCode = useCallback(async () => {
+    if (!oauth || !pkceRef.current) return;
+    const trimmed = code.trim();
+    if (!trimmed) { setOauthError("Paste the authorization code from the provider."); return; }
+    setOauthError(null);
+    setSubmitting(true);
+    try {
+      const res = await api.post<{ encryptedToken?: string; isPlaintext?: boolean }>(
+        oauth.completePath,
+        {
+          code: trimmed,
+          redirectUri: window.location.origin,
+          state: pkceRef.current.state,
+          codeVerifier: pkceRef.current.verifier,
+        }
+      );
+      if (res.encryptedToken) {
+        onToken(res.encryptedToken);
+        reset();
+      } else {
+        setOauthError("No token returned by the provider.");
+        setSubmitting(false);
+      }
+    } catch (e) {
+      setOauthError(e instanceof Error ? e.message : "Failed to exchange authorization code");
+      setSubmitting(false);
+    }
+  }, [oauth, code, onToken, reset]);
+
+  // Poll for completion (device flow only).
   useEffect(() => {
-    if (!oauth || !deviceCode) return;
+    if (!oauth || oauth.mode !== "device" || !deviceCode) return;
     let active = true;
     const poll = async () => {
       try {
@@ -123,10 +203,7 @@ function useOAuthFlow(
         const receivedToken = res.encryptedToken ?? (res[oauth.tokenField] as string | undefined);
         if (receivedToken) {
           onToken(receivedToken);
-          setPending(false);
-          setUserCode(null);
-          setVerificationUri(null);
-          setDeviceCode(null);
+          reset();
         } else {
           setTimeout(poll, 3000);
         }
@@ -136,16 +213,27 @@ function useOAuthFlow(
     };
     const t = setTimeout(poll, 3000);
     return () => { active = false; clearTimeout(t); };
-  }, [oauth, deviceCode, onToken]);
+  }, [oauth, deviceCode, onToken, reset]);
 
   const cancel = useCallback(() => {
-    setPending(false);
-    setUserCode(null);
-    setVerificationUri(null);
-    setDeviceCode(null);
-  }, []);
+    reset();
+  }, [reset]);
 
-  return { pending, userCode, verificationUri, oauthError, start, cancel };
+  return {
+    pending,
+    userCode,
+    verificationUri,
+    oauthError,
+    start,
+    cancel,
+    mode: oauth?.mode ?? "device",
+    authorizationUrl,
+    awaitingCode,
+    code,
+    setCode,
+    submitCode,
+    submitting,
+  };
 }
 
 function DynamicField({
@@ -206,6 +294,225 @@ function DynamicField({
   );
 }
 
+// ─── Generic SSH Authentication section (agent / generated key) ──────────────
+
+type SshAuthMode = "agent" | "generated";
+
+interface SshAuthSectionProps {
+  provider: string;
+  providerName: string;
+  config: Config;
+  onConfigChange: (key: string, value: string) => void;
+}
+
+function SshAuthSection({ provider, providerName, config, onConfigChange }: SshAuthSectionProps) {
+  const detectMode = (): SshAuthMode => {
+    // Generated-key auth is selected by sshPrivateKeyEnc (the actual auth
+    // material, exposed as a masked placeholder on read); sshPublicKey is only
+    // for display. Check for non-empty strings, not just presence of the key —
+    // an empty string (e.g. a cleared field) must not be mistaken for a
+    // configured value.
+    const hasPrivateKey = typeof config["sshPrivateKeyEnc"] === "string" && config["sshPrivateKeyEnc"].trim().length > 0;
+    const hasPublicKey = typeof config["sshPublicKey"] === "string" && config["sshPublicKey"].trim().length > 0;
+    if (hasPrivateKey || hasPublicKey) return "generated";
+    return "agent";
+  };
+
+  const [mode, setMode] = useState<SshAuthMode>(detectMode);
+  const [agentKeys, setAgentKeys] = useState<AgentKey[]>([]);
+  const [agentAvailable, setAgentAvailable] = useState<boolean>(false);
+  const [agentLoading, setAgentLoading] = useState(false);
+  // pubKey comes from form state (config["sshPublicKey"]) so it survives re-renders.
+  // We only need local state as a mirror for display updates.
+  const pubKey = (config["sshPublicKey"] as string | undefined) ?? "";
+  const [generating, setGenerating] = useState(false);
+  const [genError, setGenError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  // Load agent keys when switching to agent mode.
+  // The cleanup function sets a `cancelled` flag so that state setters are not
+  // called on an already-unmounted component (React warning prevention).
+  useEffect(() => {
+    if (mode === "agent") {
+      let cancelled = false;
+      setAgentLoading(true);
+      listAgentKeys().then((r) => {
+        if (!cancelled) {
+          setAgentKeys(r.keys);
+          setAgentAvailable(r.agentAvailable);
+        }
+      }).catch(() => {
+        if (!cancelled) setAgentAvailable(false);
+      }).finally(() => {
+        if (!cancelled) setAgentLoading(false);
+      });
+      return () => { cancelled = true; };
+    }
+  }, [mode]);
+
+  const handleModeChange = (m: SshAuthMode) => {
+    setMode(m);
+    if (m !== "generated") {
+      onConfigChange("sshPrivateKeyEnc", "");
+      onConfigChange("sshPublicKey", "");
+    }
+    if (m !== "agent") {
+      onConfigChange("sshAgentPublicKey", "");
+    }
+  };
+
+  const handleGenerate = async () => {
+    setGenerating(true);
+    setGenError(null);
+    try {
+      const result = await generateSshKeyPair(provider, config["sshUser"] as string | undefined);
+      onConfigChange("sshPrivateKeyEnc", result.sshPrivateKeyEnc);
+      onConfigChange("sshPublicKey", result.sshPublicKey);
+    } catch (e) {
+      setGenError(e instanceof Error ? e.message : "Key generation failed");
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  const handleCopy = () => {
+    if (!pubKey) return;
+    void navigator.clipboard.writeText(pubKey).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
+  const modeBtn = (m: SshAuthMode, label: string) => (
+    <button
+      type="button"
+      onClick={() => handleModeChange(m)}
+      style={{
+        flex: 1, padding: "7px 10px", fontSize: "12.5px", fontWeight: mode === m ? 600 : 400,
+        borderRadius: "6px", border: "none", cursor: "pointer",
+        background: mode === m ? "var(--accent)" : "transparent",
+        color: mode === m ? "#fff" : "var(--text-dim)",
+        transition: "background .12s, color .12s",
+      }}
+    >
+      {label}
+    </button>
+  );
+
+  return (
+    <div
+      style={{
+        display: "flex", flexDirection: "column", gap: "12px",
+        padding: "14px 16px",
+        background: "var(--panel-2)",
+        border: "1px solid var(--border-soft)",
+        borderRadius: "var(--radius-sm)",
+      }}
+    >
+      <div style={{ fontSize: "13px", fontWeight: 600, marginBottom: "2px" }}>SSH Authentication</div>
+
+      {/* Mode selector */}
+      <div
+        style={{
+          display: "flex", gap: "4px", padding: "4px",
+          background: "var(--panel)", borderRadius: "8px",
+          border: "1px solid var(--border-soft)",
+        }}
+      >
+        {modeBtn("agent", "SSH Agent")}
+        {modeBtn("generated", "Generated key")}
+      </div>
+
+      {/* SSH Agent panel */}
+      {mode === "agent" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+          {agentLoading && <span style={{ fontSize: "12px", color: "var(--text-dim)" }}>Checking SSH agent…</span>}
+          {!agentLoading && !agentAvailable && (
+            <div style={{ fontSize: "12.5px", color: "var(--warn)", padding: "6px 10px", background: "var(--warn-soft)", borderRadius: "6px" }}>
+              No SSH agent detected. Start an agent (<code>eval $(ssh-agent -s)</code>) and restart the orchestrator.
+            </div>
+          )}
+          {!agentLoading && agentAvailable && agentKeys.length === 0 && (
+            <div style={{ fontSize: "12.5px", color: "var(--text-dim)" }}>
+              SSH agent is available but has no loaded keys. Try <code>ssh-add ~/.ssh/id_ed25519</code>.
+            </div>
+          )}
+          {!agentLoading && agentKeys.length > 0 && (
+            <Field label="Agent key (optional — leave blank to try all loaded keys)">
+              <FieldSelect
+                value={config["sshAgentPublicKey"] ?? ""}
+                onChange={(e) => onConfigChange("sshAgentPublicKey", e.currentTarget.value)}
+              >
+                <option value="">(use any loaded key)</option>
+                {agentKeys.map((k) => (
+                  <option key={k.publicKey} value={k.publicKey}>{k.comment} [{k.keyType}]</option>
+                ))}
+              </FieldSelect>
+            </Field>
+          )}
+          <div style={{ fontSize: "11.5px", color: "var(--text-dim)", lineHeight: 1.5 }}>
+            The system SSH agent socket is forwarded into agent containers via the same-path trick.
+            Keys loaded in the agent are available to all git operations.
+          </div>
+        </div>
+      )}
+
+      {/* Generated key panel */}
+      {mode === "generated" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+          {pubKey ? (
+            <>
+              <div style={{ fontSize: "12.5px", color: "var(--ok)", fontWeight: 500 }}>✓ Key configured — save the integration to persist it</div>
+              <div style={{ position: "relative" }}>
+                <FieldTextarea
+                  value={pubKey}
+                  readOnly
+                  style={{ fontFamily: "var(--font-mono)", fontSize: "11px", minHeight: "60px", paddingRight: "64px" }}
+                  onChange={() => { /* read-only */ }}
+                />
+                <button
+                  type="button"
+                  className="btn sm ghost"
+                  onClick={handleCopy}
+                  style={{ position: "absolute", top: "6px", right: "6px", fontSize: "11.5px" }}
+                >
+                  {copied ? "Copied!" : "Copy"}
+                </button>
+              </div>
+              <div style={{ fontSize: "11.5px", color: "var(--text-dim)", lineHeight: 1.5 }}>
+                Add this public key to your {providerName} account: <strong>Settings → SSH Keys</strong>
+              </div>
+              <button
+                type="button"
+                className="btn sm ghost"
+                onClick={() => { void handleGenerate(); }}
+                disabled={generating}
+                style={{ alignSelf: "flex-start" }}
+              >
+                {generating ? "Generating…" : "Regenerate key"}
+              </button>
+            </>
+          ) : (
+            <>
+              <div style={{ fontSize: "12.5px", color: "var(--text-dim)" }}>No key generated yet.</div>
+              <button
+                type="button"
+                className="btn sm secondary"
+                onClick={() => { void handleGenerate(); }}
+                disabled={generating}
+                style={{ alignSelf: "flex-start" }}
+              >
+                {generating ? "Generating…" : "Generate key"}
+              </button>
+            </>
+          )}
+          {genError && <span style={{ fontSize: "12px", color: "var(--danger)" }}>{genError}</span>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function IntegrationFormModal({ integration, plugins, onClose, onSaved }: Props) {
   const isEdit = !!integration;
 
@@ -221,14 +528,24 @@ export function IntegrationFormModal({ integration, plugins, onClose, onSaved }:
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<string | null>(null);
+  const [testLogs, setTestLogs] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [copiedCode, setCopiedCode] = useState(false);
 
   const plugin = plugins.find((p) => p.provider === selectedType);
+
+  const handleCopyUserCode = useCallback((code: string) => {
+    void navigator.clipboard.writeText(code).then(() => {
+      setCopiedCode(true);
+      setTimeout(() => setCopiedCode(false), 2000);
+    });
+  }, []);
 
   const setConfigField = (key: string, val: string) => {
     setConfig((prev) => ({ ...prev, [key]: val }));
     setTestResult(null);
+    setTestLogs([]);
   };
 
   const handleOAuthToken = useCallback((token: string) => {
@@ -256,6 +573,7 @@ export function IntegrationFormModal({ integration, plugins, onClose, onSaved }:
     setSelectedType(type);
     setConfig(defaults);
     setTestResult(null);
+    setTestLogs([]);
     setError(null);
     setStep("form");
   };
@@ -265,20 +583,23 @@ export function IntegrationFormModal({ integration, plugins, onClose, onSaved }:
     setSelectedType("");
     setConfig({});
     setTestResult(null);
+    setTestLogs([]);
     setError(null);
   };
 
   const handleTest = async () => {
     setTesting(true);
     setTestResult(null);
+    setTestLogs([]);
     setError(null);
     try {
       const payload = { provider: selectedType, name: name || "test", config };
       const body = integration ? { ...payload, integrationId: integration.id } : payload;
-      const res = await api.post<{ success: boolean; message?: string; error?: string }>(
+      const res = await api.post<{ success: boolean; message?: string; error?: string; logs?: string[] }>(
         "/api/admin/integrations/test",
         body
       );
+      setTestLogs(res.logs ?? []);
       setTestResult(res.success ? (res.message ?? "Connection successful") : (res.error ?? "Test failed"));
     } catch (e) {
       setTestResult(e instanceof Error ? `Error: ${e.message}` : "Test failed");
@@ -385,6 +706,16 @@ export function IntegrationFormModal({ integration, plugins, onClose, onSaved }:
           />
         ))}
 
+        {/* SSH Authentication section — shown for any provider that supports SSH auth */}
+        {plugin?.supportsSshAuth && (
+          <SshAuthSection
+            provider={selectedType}
+            providerName={plugin.name}
+            config={config}
+            onConfigChange={setConfigField}
+          />
+        )}
+
         {/* Advanced settings (collapsed by default) */}
         {(plugin?.requiredFields.some((f) => f.advanced)) && (
           <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
@@ -433,20 +764,31 @@ export function IntegrationFormModal({ integration, plugins, onClose, onSaved }:
                   </a>{" "}
                   and enter code:
                 </div>
-                <div
-                  style={{
-                    fontFamily: "var(--font-mono)",
-                    fontSize: "20px",
-                    fontWeight: 700,
-                    letterSpacing: "0.15em",
-                    color: "var(--accent)",
-                    padding: "8px 12px",
-                    background: "var(--panel)",
-                    borderRadius: "var(--radius-sm)",
-                    display: "inline-block",
-                  }}
-                >
-                  {oauth.userCode}
+                <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                  <div
+                    style={{
+                      fontFamily: "var(--font-mono)",
+                      fontSize: "20px",
+                      fontWeight: 700,
+                      letterSpacing: "0.15em",
+                      color: "var(--accent)",
+                      padding: "8px 12px",
+                      background: "var(--panel)",
+                      borderRadius: "var(--radius-sm)",
+                      display: "inline-block",
+                    }}
+                  >
+                    {oauth.userCode}
+                  </div>
+                  <button
+                    type="button"
+                    className="btn sm"
+                    onClick={() => handleCopyUserCode(oauth.userCode ?? "")}
+                    style={{ gap: "6px" }}
+                  >
+                    {copiedCode && <Icon name="check" size={13} />}
+                    {copiedCode ? "Copied" : "Copy"}
+                  </button>
                 </div>
                 <div style={{ fontSize: "12.5px", color: "var(--text-dim)" }}>
                   {plugin.oauth.pendingLabel} — waiting for authorisation…
@@ -454,6 +796,42 @@ export function IntegrationFormModal({ integration, plugins, onClose, onSaved }:
                 <button className="btn ghost" onClick={oauth.cancel} style={{ alignSelf: "flex-start" }}>
                   Cancel
                 </button>
+              </div>
+            ) : oauth.awaitingCode ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                <div style={{ fontSize: "13px" }}>
+                  1. Open the authorization page, sign in, and approve access:
+                </div>
+                <a
+                  href={oauth.authorizationUrl ?? "#"}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="btn secondary"
+                  style={{ alignSelf: "flex-start", textDecoration: "none" }}
+                >
+                  Open {plugin.name} authorization page ↗
+                </a>
+                <div style={{ fontSize: "13px" }}>
+                  2. Copy the authorization code shown afterwards and paste it here:
+                </div>
+                <FieldInput
+                  type="text"
+                  value={oauth.code}
+                  onChange={(e) => oauth.setCode(e.currentTarget.value)}
+                  placeholder="Paste authorization code…"
+                />
+                <div style={{ display: "flex", gap: "8px" }}>
+                  <button
+                    className="btn secondary"
+                    onClick={oauth.submitCode}
+                    disabled={oauth.submitting || !oauth.code.trim()}
+                  >
+                    {oauth.submitting ? "Connecting…" : "Connect"}
+                  </button>
+                  <button className="btn ghost" onClick={oauth.cancel}>
+                    Cancel
+                  </button>
+                </div>
               </div>
             ) : (
               <button
@@ -481,9 +859,26 @@ export function IntegrationFormModal({ integration, plugins, onClose, onSaved }:
                 ? "var(--ok)"
                 : "var(--danger)",
               borderRadius: "var(--radius-sm)",
+              display: "flex",
+              flexDirection: "column",
+              gap: testLogs.length > 0 ? "6px" : "0px",
             }}
           >
-            {testResult}
+            <div>{testResult}</div>
+            {testLogs.length > 0 && (
+              <div
+                style={{
+                  fontSize: "12px",
+                  fontFamily: "var(--font-mono, monospace)",
+                  lineHeight: "1.6",
+                  opacity: 0.9,
+                }}
+              >
+                {testLogs.map((line, i) => (
+                  <div key={i}>{line}</div>
+                ))}
+              </div>
+            )}
           </div>
         )}
 

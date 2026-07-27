@@ -35,6 +35,14 @@ const GitHubPrFileSchema = z.object({
 });
 const GitHubPrFileListSchema = z.array(GitHubPrFileSchema);
 
+const GitHubReviewListSchema = z.array(
+  z.object({
+    user: z.object({ login: z.string() }).nullable().optional(),
+    state: z.string(),
+    commit_id: z.string().nullable().optional(),
+  })
+);
+
 const GraphQLThreadCommentSchema = z.object({
   body: z.string().default(""),
   author: z.object({ login: z.string() }).nullable().optional(),
@@ -150,6 +158,49 @@ export class GitHubReviewProvider implements ReviewProvider {
       targetBranch: pr.base.ref,
       url: pr.html_url,
     };
+  }
+
+  /**
+   * Returns true when VE has already submitted a PR review whose commit_id
+   * matches the PR's current head SHA. GitHub reviews are anchored to the exact
+   * commit reviewed, so this reliably detects a review of the *current*
+   * patchset — a new push advances head.sha, returning false so the PR is
+   * re-reviewed.
+   */
+  async hasReviewedCurrentPatchset(changeId: ExternalChangeId): Promise<boolean> {
+    const { owner, repo, prNumber } = this.parseChangeId(changeId);
+    let headSha: string;
+    try {
+      const pr = GitHubPrSchema.parse(await this.fetchJson(this.prUrl(owner, repo, prNumber)));
+      headSha = pr.head.sha;
+    } catch (err) {
+      log.warn({ owner, repo, prNumber, err }, "hasReviewedCurrentPatchset: failed to fetch PR — assuming not reviewed");
+      return false;
+    }
+    const me = await this.resolveCurrentLogin();
+    if (me === null) return false;
+    try {
+      const perPage = 100;
+      for (let page = 1; page <= 20; page++) {
+        const reviews = GitHubReviewListSchema.parse(
+          await this.fetchJson(
+            `${this.prUrl(owner, repo, prNumber)}/reviews?per_page=${perPage}&page=${page}`
+          )
+        );
+        const matched = reviews.some(
+          (r) =>
+            r.user?.login === me &&
+            r.commit_id === headSha &&
+            (r.state === "APPROVED" || r.state === "CHANGES_REQUESTED" || r.state === "COMMENTED")
+        );
+        if (matched) return true;
+        if (reviews.length < perPage) break;
+      }
+      return false;
+    } catch (err) {
+      log.warn({ owner, repo, prNumber, err }, "hasReviewedCurrentPatchset: failed to list PR reviews — assuming not reviewed");
+      return false;
+    }
   }
 
   async getChangeDiff(changeId: ExternalChangeId, patchset?: number): Promise<ReviewChangeDiff> {

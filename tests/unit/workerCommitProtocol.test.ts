@@ -1,116 +1,32 @@
 /**
  * Tests for the agent-worker multi-commit protocol (Phase 2).
  *
- * These tests validate the commit collection, validation, and grouping
- * logic added to agent-worker/index.js. Since the worker is a plain JS
- * module that runs inside Docker, we test the logic by replicating the
- * key functions (collectCommits, validateCommits, groupFilesByRepo) and
- * verifying them against controlled git repositories.
+ * These tests validate commit collection, validation, Change-Id injection,
+ * and squash-into-base functionality defined in agent-worker/src/commitUtils.ts.
+ * Functions are imported directly from source — no duplication.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { execFileSync } from "child_process";
-import { createHash } from "crypto";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "fs";
 import { join, dirname } from "path";
 import { tmpdir } from "os";
+import {
+  collectCommits,
+  validateCommits,
+  deriveChangeId,
+  injectChangeIds,
+  resolveExistingRootChange,
+  squashIntoBaseIfNeeded,
+} from "../../agent-worker/src/commitUtils.js";
 
-// ── Replicated worker functions for testability ───────────────────────────────
-// These mirror the functions in agent-worker/index.js exactly.
-
-const CONVENTIONAL_COMMIT_RE = /^(feat|fix|refactor|test|chore|docs|perf|ci|build)(\([^)]+\))?: .{1,72}$/;
-
+// ── Test-local git helper (used by initRepo / addCommit only) ─────────────────
 function git(args: string[], cwd: string): string {
   return execFileSync("git", args, {
     cwd,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   });
-}
-
-function collectCommits(baseSha: string, cwd: string): Array<{
-  repoKey: string;
-  sha: string;
-  subject: string;
-  body: string;
-  changeId: string;
-  files: string[];
-}> {
-  const logOutput = git(
-    ["log", "--reverse", "--format=%H%x00%s%x00%b%x00", `${baseSha}..HEAD`],
-    cwd
-  );
-
-  const commits: Array<{
-    repoKey: string;
-    sha: string;
-    subject: string;
-    body: string;
-    changeId: string;
-    files: string[];
-  }> = [];
-
-  const records = logOutput.split("\0\n").filter((r) => r.trim());
-
-  for (const record of records) {
-    const parts = record.split("\0");
-    if (parts.length < 3) continue;
-
-    const sha = (parts[0] ?? "").trim();
-    const subject = (parts[1] ?? "").trim();
-    const body = (parts[2] ?? "").trim();
-
-    if (!sha) continue;
-
-    const changeIdMatch = /^Change-Id:\s+(I[0-9a-f]{40})\s*$/m.exec(body);
-    const changeId = changeIdMatch ? (changeIdMatch[1] ?? "") : "";
-
-    const diffOutput = git(["diff-tree", "--no-commit-id", "--name-only", "-r", sha], cwd);
-    const files = diffOutput
-      .split("\n")
-      .map((f) => f.trim())
-      .filter(Boolean);
-
-    commits.push({ repoKey: "superproject", sha, subject, body, changeId, files });
-  }
-
-  return commits;
-}
-
-function validateCommits(
-  commits: Array<{ subject: string; sha: string; files: string[] }>,
-  maxCommits = 10
-): { valid: boolean; reason?: string } {
-  if (commits.length === 0) {
-    return { valid: false, reason: "no commits found in baseSha..HEAD range" };
-  }
-
-  if (commits.length > maxCommits) {
-    return {
-      valid: false,
-      reason: `too many commits: ${commits.length} exceeds MAX_COMMITS_PER_CYCLE (${maxCommits})`,
-    };
-  }
-
-  for (let i = 0; i < commits.length; i++) {
-    const c = commits[i]!;
-
-    if (!CONVENTIONAL_COMMIT_RE.test(c.subject)) {
-      return {
-        valid: false,
-        reason: `commit ${i + 1}/${commits.length} (${c.sha.slice(0, 8)}) has non-conventional subject: "${c.subject}"`,
-      };
-    }
-
-    if (c.files.length === 0) {
-      return {
-        valid: false,
-        reason: `commit ${i + 1}/${commits.length} (${c.sha.slice(0, 8)}) has empty diff`,
-      };
-    }
-  }
-
-  return { valid: true };
 }
 
 // ── Test helpers ──────────────────────────────────────────────────────────────
@@ -123,6 +39,9 @@ function initRepo(): string {
   git(["config", "user.name", "Test"], dir);
   git(["config", "user.email", "test@test.local"], dir);
   git(["config", "commit.gpgsign", "false"], dir);
+  const noHooksDir = join(dir, ".git", "no-hooks");
+  mkdirSync(noHooksDir, { recursive: true });
+  git(["config", "core.hooksPath", noHooksDir], dir);
   writeFileSync(join(dir, "README.md"), "# Test\n");
   git(["add", "README.md"], dir);
   git(["commit", "-m", "chore: initial commit"], dir);
@@ -145,7 +64,7 @@ describe("agent-worker multi-commit protocol", () => {
   });
 
   afterEach(() => {
-    rmSync(repoDir, { recursive: true, force: true });
+    rmSync(repoDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   });
 
   describe("collectCommits", () => {
@@ -297,13 +216,6 @@ describe("agent-worker multi-commit protocol", () => {
   // ── Phase 4: Deterministic Change-Id tests ─────────────────────────────────
 
   describe("deriveChangeId", () => {
-    function deriveChangeId(taskId: string, repoKey: string, index: number, subject: string): string {
-      const hash = createHash("sha1")
-        .update(`ve:${taskId}:${repoKey}:${index}:${subject}`)
-        .digest("hex");
-      return `I${hash}`;
-    }
-
     it("produces a valid Gerrit Change-Id format (I + 40 hex chars)", () => {
       const changeId = deriveChangeId("TASK-1", "superproject", 0, "feat: add api");
       expect(changeId).toMatch(/^I[0-9a-f]{40}$/);
@@ -340,84 +252,42 @@ describe("agent-worker multi-commit protocol", () => {
     });
   });
 
+  describe("resolveExistingRootChange", () => {
+    const repositoryMap = {
+      superproject: { repoKey: "root", localPath: "." },
+      submodules: [{ repoKey: "child", localPath: "child" }],
+    };
+
+    it("prefers the explicit root Change-Id", () => {
+      expect(resolveExistingRootChange("Iroot", { root: "Imapped" }, repositoryMap)).toEqual({
+        changeId: "Iroot",
+        repoKey: "root",
+      });
+    });
+
+    it("resolves the superproject entry from a multi-repo map", () => {
+      expect(resolveExistingRootChange(null, { root: { "0": "Iroot" }, child: "Ichild" }, repositoryMap)).toEqual({
+        changeId: "Iroot",
+        repoKey: "root",
+      });
+    });
+
+    it("does not treat a sole sub-repo entry as a root continuation", () => {
+      expect(resolveExistingRootChange(null, { child: "Ichild" }, repositoryMap)).toEqual({
+        changeId: null,
+        repoKey: null,
+      });
+    });
+
+    it("uses the sole map entry for a legacy single-repo workspace", () => {
+      expect(resolveExistingRootChange(null, { legacy: "Iroot" }, undefined)).toEqual({
+        changeId: "Iroot",
+        repoKey: "legacy",
+      });
+    });
+  });
+
   describe("injectChangeIds", () => {
-    function deriveChangeId(taskId: string, repoKey: string, index: number, subject: string): string {
-      const hash = createHash("sha1")
-        .update(`ve:${taskId}:${repoKey}:${index}:${subject}`)
-        .digest("hex");
-      return `I${hash}`;
-    }
-
-    function injectChangeIds(
-      baseSha: string,
-      commits: ReturnType<typeof collectCommits>,
-      taskId: string,
-      cwd: string,
-    ): ReturnType<typeof collectCommits> {
-      if (commits.length === 0) return commits;
-
-      const needsInjection = commits.some((c) => !c.changeId);
-      if (!needsInjection) return commits;
-
-      // Build Change-Id map by index (prevents duplicate-subject collisions)
-      const changeIdByIndex: Record<number, string> = {};
-      for (let i = 0; i < commits.length; i++) {
-        const c = commits[i]!;
-        if (!c.changeId) {
-          changeIdByIndex[i] = deriveChangeId(taskId, c.repoKey, i, c.subject);
-        }
-      }
-
-      // Use interactive rebase to amend each commit message
-      try {
-        execFileSync("git", ["rebase", "-i", baseSha], {
-          cwd,
-          encoding: "utf8",
-          stdio: ["ignore", "pipe", "pipe"],
-          env: {
-            ...process.env,
-            GIT_SEQUENCE_EDITOR: "sed -i 's/^pick /edit /g'",
-          },
-        });
-      } catch {
-        // rebase -i stops at first commit — expected
-      }
-
-      try {
-        for (let i = 0; i < commits.length; i++) {
-          const desiredChangeId = changeIdByIndex[i] ?? null;
-
-          if (desiredChangeId) {
-            const currentMsg = git(["log", "-1", "--format=%B"], cwd).trim();
-            const hasTrailerBlock = /\n\n[A-Za-z][A-Za-z0-9-]*: /.test(currentMsg);
-            const newMsg = hasTrailerBlock
-              ? `${currentMsg}\nChange-Id: ${desiredChangeId}`
-              : `${currentMsg}\n\nChange-Id: ${desiredChangeId}`;
-
-            git(["commit", "--amend", "-m", newMsg], cwd);
-          }
-
-          if (i < commits.length - 1) {
-            try {
-              git(["rebase", "--continue"], cwd);
-            } catch {
-              // stops at next commit
-            }
-          } else {
-            try {
-              git(["rebase", "--continue"], cwd);
-            } catch {
-              // rebase is done
-            }
-          }
-        }
-      } finally {
-        // abort any in-progress rebase (e.g. conflict during testing)
-      }
-
-      return collectCommits(baseSha, cwd);
-    }
-
     it("injects deterministic Change-Ids into commits without one", () => {
       const baseSha = git(["rev-parse", "HEAD"], repoDir).trim();
       addCommit(repoDir, "a.ts", "a\n", "feat: add a");
@@ -456,6 +326,23 @@ describe("agent-worker multi-commit protocol", () => {
 
       const injected = injectChangeIds(baseSha, rawCommits, "TASK-1", repoDir);
       expect(injected[0]!.changeId).toBe(existingChangeId);
+    });
+
+    it("appends a ticket footer when every commit already has a Change-Id", () => {
+      const baseSha = git(["rev-parse", "HEAD"], repoDir).trim();
+      const existingChangeId = "I1234567890abcdef1234567890abcdef12345678";
+      const ticketFooterLine = "GitLab: https://gitlab.example.com/issues/123";
+      writeFileSync(join(repoDir, "a.ts"), "a\n");
+      git(["add", "a.ts"], repoDir);
+      git(["commit", "-m", `feat: with id\n\nChange-Id: ${existingChangeId}`], repoDir);
+
+      const rawCommits = collectCommits(baseSha, repoDir);
+      const injected = injectChangeIds(baseSha, rawCommits, "TASK-1", repoDir, {
+        ticketFooterLine,
+      });
+
+      expect(injected[0]!.changeId).toBe(existingChangeId);
+      expect(git(["log", "-1", "--format=%B"], repoDir)).toContain(ticketFooterLine);
     });
 
     it("returns empty array for empty commits", () => {
@@ -500,36 +387,53 @@ describe("agent-worker multi-commit protocol", () => {
       expect(injected[1]!.changeId).toMatch(/^I[0-9a-f]{40}$/);
       expect(injected[0]!.changeId).not.toBe(injected[1]!.changeId);
     });
+
+    it("appends the ticketFooterLine to every commit alongside its Change-Id", () => {
+      const baseSha = git(["rev-parse", "HEAD"], repoDir).trim();
+      addCommit(repoDir, "a.ts", "a\n", "feat: add a");
+      addCommit(repoDir, "b.ts", "b\n", "fix: add b");
+
+      const rawCommits = collectCommits(baseSha, repoDir);
+      injectChangeIds(baseSha, rawCommits, "TASK-FOOTER", repoDir, {
+        ticketFooterLine: "GitLab: https://gitlab.example.com/issues/123",
+      });
+
+      const log = git(["log", "--format=%B%x01", baseSha + "..HEAD"], repoDir);
+      const messages = log.split("\x01").filter((m) => m.trim());
+      expect(messages).toHaveLength(2);
+      for (const msg of messages) {
+        expect(msg).toContain("GitLab: https://gitlab.example.com/issues/123");
+        expect(msg).toContain("Change-Id: I");
+      }
+    });
+
+    it("does not duplicate the ticketFooterLine when re-injected on already-footed commits", () => {
+      const baseSha = git(["rev-parse", "HEAD"], repoDir).trim();
+      addCommit(repoDir, "f.ts", "f\n", "feat: footer idempotent");
+
+      const rawCommits = collectCommits(baseSha, repoDir);
+      const footerOptions = { ticketFooterLine: "GitLab: https://gitlab.example.com/issues/7" };
+      const first = injectChangeIds(baseSha, rawCommits, "TASK-FOOTER-2", repoDir, footerOptions);
+      injectChangeIds(baseSha, first, "TASK-FOOTER-2", repoDir, footerOptions);
+
+      const msg = git(["log", "-1", "--format=%B"], repoDir);
+      const occurrences = msg.split("GitLab: https://gitlab.example.com/issues/7").length - 1;
+      expect(occurrences).toBe(1);
+    });
+
+    it("omits the footer line when ticketFooterLine is not provided", () => {
+      const baseSha = git(["rev-parse", "HEAD"], repoDir).trim();
+      addCommit(repoDir, "g.ts", "g\n", "feat: no footer");
+
+      const rawCommits = collectCommits(baseSha, repoDir);
+      injectChangeIds(baseSha, rawCommits, "TASK-NO-FOOTER", repoDir);
+
+      const msg = git(["log", "-1", "--format=%B"], repoDir);
+      expect(msg).not.toContain("GitLab:");
+    });
   });
 
   describe("squashIntoBaseIfNeeded", () => {
-    // Replicate the agent-worker function for testability
-    function squashIntoBaseIfNeeded(
-      baseSha: string,
-      cwd: string,
-    ): { squashed: boolean; commits?: ReturnType<typeof collectCommits> } {
-      const baseBody = git(["log", "-1", "--format=%b", baseSha], cwd);
-      const baseChangeIdMatch = baseBody.match(/^Change-Id:\s*(\S+)/m);
-      if (!baseChangeIdMatch) {
-        return { squashed: false };
-      }
-
-      const headBefore = git(["rev-parse", "HEAD"], cwd).trim();
-      if (headBefore === baseSha) {
-        return { squashed: false };
-      }
-
-      try {
-        git(["reset", "--soft", baseSha], cwd);
-        git(["commit", "--amend", "--no-edit"], cwd);
-      } catch {
-        try { git(["reset", "--hard", headBefore], cwd); } catch { /* ignore */ }
-        return { squashed: false };
-      }
-
-      return { squashed: true, commits: collectCommits(baseSha, cwd) };
-    }
-
     it("squashes agent commit into base when base already has a Change-Id", () => {
       // Simulate cycle 1: commit with a Change-Id (the patchset)
       const changeId = "Iaaaa1234567890abcdef1234567890abcdef1234";
@@ -548,8 +452,8 @@ describe("agent-worker multi-commit protocol", () => {
       expect(before).toHaveLength(1);
       expect(before[0]!.changeId).toBe("");
 
-      // Squash
-      const result = squashIntoBaseIfNeeded(baseSha, repoDir);
+      // Squash (continuation cycle: base is VE's own patchset)
+      const result = squashIntoBaseIfNeeded(baseSha, repoDir, true);
       expect(result.squashed).toBe(true);
       expect(result.commits).toHaveLength(1);
       // The squashed commit preserves the original Change-Id from baseSha
@@ -558,11 +462,59 @@ describe("agent-worker multi-commit protocol", () => {
       expect(result.commits![0]!.files).toContain("a.ts");
     });
 
+    it("does not squash on the first cycle even when base has a Change-Id", () => {
+      // Regression: a Gerrit `master` tip carries a Change-Id, but cycle 1 is
+      // not a continuation — squashing would amend an upstream commit whose
+      // parent is missing from the shallow clone, exploding the file list.
+      const changeId = "Idddd1234567890abcdef1234567890abcdef1234";
+      writeFileSync(join(repoDir, "m.ts"), "upstream\n");
+      git(["add", "m.ts"], repoDir);
+      git(["commit", "-m", `feat: upstream tip\n\nChange-Id: ${changeId}`], repoDir);
+      const baseSha = git(["rev-parse", "HEAD"], repoDir).trim();
+
+      addCommit(repoDir, "fix.ts", "fix\n", "fix: agent fix");
+
+      const result = squashIntoBaseIfNeeded(baseSha, repoDir, false);
+      expect(result.squashed).toBe(false);
+
+      // The agent commit stands on its own (becomes its own change).
+      const commits = collectCommits(baseSha, repoDir);
+      expect(commits).toHaveLength(1);
+      expect(commits[0]!.subject).toBe("fix: agent fix");
+      expect(commits[0]!.files).toEqual(["fix.ts"]);
+    });
+
+    it("does not squash a continuation when the base parent is missing", () => {
+      const changeId = "Ieeee1234567890abcdef1234567890abcdef1234";
+      writeFileSync(join(repoDir, "base.ts"), "base\n");
+      git(["add", "base.ts"], repoDir);
+      git(["commit", "-m", `feat: prior patchset\n\nChange-Id: ${changeId}`], repoDir);
+
+      const shallowDir = mkdtempSync(join(tmpdir(), "ve-shallow-commit-test-"));
+      try {
+        git(["clone", "--depth", "1", `file://${repoDir}`, shallowDir], tmpdir());
+        git(["config", "user.name", "Test"], shallowDir);
+        git(["config", "user.email", "test@test.local"], shallowDir);
+        git(["config", "commit.gpgsign", "false"], shallowDir);
+        const baseSha = git(["rev-parse", "HEAD"], shallowDir).trim();
+        addCommit(shallowDir, "fix.ts", "fix\n", "fix: address feedback");
+
+        const result = squashIntoBaseIfNeeded(baseSha, shallowDir, true);
+
+        expect(result.squashed).toBe(false);
+        const commits = collectCommits(baseSha, shallowDir);
+        expect(commits).toHaveLength(1);
+        expect(commits[0]!.files).toEqual(["fix.ts"]);
+      } finally {
+        rmSync(shallowDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+      }
+    });
+
     it("does nothing when base has no Change-Id (cycle 1)", () => {
       const baseSha = git(["rev-parse", "HEAD"], repoDir).trim();
       addCommit(repoDir, "a.ts", "a\n", "feat: new file");
 
-      const result = squashIntoBaseIfNeeded(baseSha, repoDir);
+      const result = squashIntoBaseIfNeeded(baseSha, repoDir, false);
       expect(result.squashed).toBe(false);
 
       // Commit is still there, unmodified
@@ -588,7 +540,7 @@ describe("agent-worker multi-commit protocol", () => {
       // The function checks headBefore !== baseSha — after amend, HEAD is a
       // different SHA, so it WILL squash. That's fine: the result is still
       // one commit with the original Change-Id.
-      const result = squashIntoBaseIfNeeded(baseSha, repoDir);
+      const result = squashIntoBaseIfNeeded(baseSha, repoDir, true);
       expect(result.squashed).toBe(true);
       expect(result.commits).toHaveLength(1);
       expect(result.commits![0]!.changeId).toBe(changeId);
@@ -608,7 +560,7 @@ describe("agent-worker multi-commit protocol", () => {
       const before = collectCommits(baseSha, repoDir);
       expect(before).toHaveLength(2);
 
-      const result = squashIntoBaseIfNeeded(baseSha, repoDir);
+      const result = squashIntoBaseIfNeeded(baseSha, repoDir, true);
       expect(result.squashed).toBe(true);
       expect(result.commits).toHaveLength(1);
       expect(result.commits![0]!.changeId).toBe(changeId);

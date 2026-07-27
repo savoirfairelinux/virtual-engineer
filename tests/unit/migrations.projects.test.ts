@@ -1,11 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { tmpdir } from "os";
-import { join } from "path";
-import { randomUUID } from "crypto";
 import { SqliteStateStore } from "../../src/state/stateStore.js";
+import { tempDatabasePath } from "./helpers/tempDatabase.js";
 
 function tempDbPath(): string {
-  return join(tmpdir(), `ve-migrations-${randomUUID()}.db`);
+  return tempDatabasePath("ve-migrations");
 }
 
 interface TableInfoRow {

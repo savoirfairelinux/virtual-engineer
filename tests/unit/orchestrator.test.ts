@@ -331,7 +331,7 @@ describe("Orchestrator", () => {
     const stateStore = makeStateStore({ findTaskByExternalChangeId: vi.fn().mockResolvedValue(null) });
     const orchestrator = makeOrchestrator({ stateStore });
 
-    await orchestrator.handleGerritEvent(makeExternalChangeId("Imissing"));
+    await orchestrator.handleReviewEvent(makeExternalChangeId("Imissing"));
 
     expect(stateStore.findTaskByExternalChangeId).toHaveBeenCalledWith(null, "Imissing");
   });
@@ -346,7 +346,7 @@ describe("Orchestrator", () => {
     const gerritConnector = makeGerritConnector();
     const orchestrator = makeOrchestrator({ stateStore, gerritConnector });
 
-    await orchestrator.handleGerritEvent(gerritChangeId);
+    await orchestrator.handleReviewEvent(gerritChangeId);
 
     expect(gerritConnector.getChangeStatus).not.toHaveBeenCalled();
   });
@@ -360,7 +360,7 @@ describe("Orchestrator", () => {
     const orchestrator = makeOrchestrator({ stateStore });
     const checkReviewProgress = vi.spyOn(orchestrator as any, "checkReviewProgress").mockResolvedValue(undefined);
 
-    await orchestrator.handleGerritEvent(gerritChangeId);
+    await orchestrator.handleReviewEvent(gerritChangeId);
 
     expect(checkReviewProgress).toHaveBeenCalledWith(task);
   });
@@ -375,7 +375,7 @@ describe("Orchestrator", () => {
     const orchestrator = makeOrchestrator({ stateStore });
     const checkReviewProgress = vi.spyOn(orchestrator as any, "checkReviewProgress").mockResolvedValue(undefined);
 
-    await orchestrator.handleGerritEvent(gerritChangeId);
+    await orchestrator.handleReviewEvent(gerritChangeId);
 
     expect(checkReviewProgress).not.toHaveBeenCalled();
   });
@@ -668,6 +668,40 @@ describe("Orchestrator", () => {
     const orchestrator = makeOrchestrator({ stateStore, redmineConnector });
 
     await expect((orchestrator as any).handleFatalError(task, new Error("boom"))).resolves.toBeUndefined();
+    expect(redmineConnector.addNote).not.toHaveBeenCalled();
+  });
+
+  it("posts a ticket note for genuine task failures", async () => {
+    const task = makeTask({ state: "AGENT_RUNNING" });
+    const stateStore = makeStateStore({ getTask: vi.fn().mockResolvedValue(task) });
+    const redmineConnector = makeRedmineConnector();
+    const orchestrator = makeOrchestrator({ stateStore, redmineConnector });
+
+    await (orchestrator as any).handleFatalError(task, new Error("merge conflict in src/index.ts"));
+
+    expect(stateStore.transition).toHaveBeenCalledWith(task.taskId, "FAILED", expect.any(Object));
+    expect(redmineConnector.addNote).toHaveBeenCalledWith(
+      task.ticketId,
+      expect.stringContaining("Virtual Engineer encountered an error"),
+      false
+    );
+  });
+
+  it("does not post infrastructure/connection errors to the ticket", async () => {
+    const task = makeTask({ state: "AGENT_RUNNING" });
+    const stateStore = makeStateStore({ getTask: vi.fn().mockResolvedValue(task) });
+    const redmineConnector = makeRedmineConnector();
+    const orchestrator = makeOrchestrator({ stateStore, redmineConnector });
+
+    await (orchestrator as any).handleFatalError(
+      task,
+      new Error("ssh: connect to host gerrit.example.com port 29418: Connection refused")
+    );
+
+    // Failure is still recorded for the admin UI…
+    expect(stateStore.setFailureReason).toHaveBeenCalled();
+    expect(stateStore.transition).toHaveBeenCalledWith(task.taskId, "FAILED", expect.any(Object));
+    // …but it is NOT echoed back to the ticket.
     expect(redmineConnector.addNote).not.toHaveBeenCalled();
   });
 

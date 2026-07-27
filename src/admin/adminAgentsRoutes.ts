@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { getLogger } from "../logger.js";
 import { writeJson, readBody, asRecord, SECRET_MASK, parseConfig, zodErrorBody } from "./adminRouteUtils.js";
+import { recordAudit, type AuditCapableStore } from "./adminAudit.js";
 import {
   makeAgentId,
   type AgentId,
@@ -19,6 +20,7 @@ import { exchangeForSessionToken, fetchAvailableModels, fetchAvailableModelsWith
 import { decryptToken } from "../utils/encryption.js";
 import { getProviderDescriptor } from "../plugins/registry.js";
 import type { Router } from "./router.js";
+import type { PluginManager } from "../plugins/pluginManager.js";
 
 const log = getLogger("admin-agents");
 
@@ -48,9 +50,11 @@ export interface AgentsRouteStore {
 }
 
 export interface AgentsRouteDeps {
+    pluginManager?: PluginManager | undefined;
   agentStore?: AgentsRouteStore | undefined;
   integrationStore?: Pick<IntegrationStore, "getIntegration"> | undefined;
   oAuthAppStore?: OAuthAppStore | undefined;
+  auditStore?: AuditCapableStore | undefined;
   adminAuthSecret?: string | undefined;
   providerAuthService?: ProviderAuthService | undefined;
 }
@@ -283,6 +287,12 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
       writeJson(res, 404, { error: "OAuth route not available" }); return;
     }
     const oauthAction = action as PluginOAuthRouteAction;
+    const auditOAuth = (): void => recordAudit(deps.auditStore, req, {
+      action: "plugin.oauth",
+      targetType: "plugin",
+      targetId: pluginType,
+      details: { provider: pluginType, action: oauthAction },
+    });
 
     const body = (await readBody(req)) ?? {};
     const descriptor = getProviderDescriptor(pluginType);
@@ -308,6 +318,7 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
       if (oauthAction === "device-code") {
         try {
           const result = await providerAuthService.startAuthFlow(handler);
+          auditOAuth();
           writeJson(res, 200, result);
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : String(err);
@@ -325,6 +336,7 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
         const { encryptedToken, isPlaintext } = await providerAuthService.completeAuthFlow(
           handler, { deviceCode }, { adminAuthSecret: deps.adminAuthSecret }
         );
+        auditOAuth();
         writeJson(res, 200, { encryptedToken, isPlaintext });
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -350,6 +362,7 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
           ...(codeChallenge !== undefined ? { codeChallenge } : {}),
           ...(codeChallengeMethod !== undefined ? { codeChallengeMethod } : {}),
         });
+        auditOAuth();
         writeJson(res, 200, result);
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -378,13 +391,14 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
         },
         { adminAuthSecret: deps.adminAuthSecret }
       );
+      auditOAuth();
       writeJson(res, 200, { encryptedToken, isPlaintext });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       log.warn({ err, pluginType }, "provider redirect completion failed");
       writeJson(res, 502, { error: msg });
     }
-  });
+  }, { permission: "oauth.manage" });
 
   // ── Agent CRUD ─────────────────────────────────────────────────────────────
   router.add("GET", "/api/admin/agents", async (_req, res, _params) => {
@@ -395,7 +409,7 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
     const counts = new Map<string, number>();
     for (const p of projects) { counts.set(p.agentId, (counts.get(p.agentId) ?? 0) + 1); }
     writeJson(res, 200, { agents: agents.map((a) => toAgentSummary(a, counts.get(a.id) ?? 0)) });
-  });
+  }, { permission: "agent.read" });
 
   router.add("POST", "/api/admin/agents", async (req, res, _params) => {
     if (!deps.agentStore) { writeJson(res, 501, { error: "Agent store not available" }); return; }
@@ -417,13 +431,23 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
         ...(parsed.data.maxConcurrent !== undefined ? { maxConcurrent: parsed.data.maxConcurrent } : {}),
         ...(parsed.data.enabled !== undefined ? { enabled: parsed.data.enabled } : {}),
       });
+      recordAudit(deps.auditStore, req, { action: "agent.create", targetType: "agent", targetId: created.id, details: { name: created.name, type: created.type } });
+      log.info(
+        {
+          agentId: created.id,
+          name: created.name,
+          type: created.type,
+          integrationId: created.integrationId,
+        },
+        "agent created"
+      );
       writeJson(res, 201, { agent: toAgentDetail(created, 0) });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       log.warn({ err }, "create agent failed");
       writeJson(res, 500, { error: msg });
     }
-  });
+  }, { permission: "agent.write" });
 
   // /agents/:id/available-models has a distinct path shape from /agents/:id (anchored regex), so registration order does not matter here
   router.add("GET", "/api/admin/agents/:id/available-models", async (_req, res, params) => {
@@ -446,7 +470,11 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
       const integration = await deps.integrationStore.getIntegration(agent.integrationId);
       if (integration) {
         let integrationConfig: Record<string, unknown> = {};
-        try { integrationConfig = JSON.parse(integration.configJson) as Record<string, unknown>; } catch { /* ignore */ }
+        try {
+          integrationConfig = deps.pluginManager
+            ? deps.pluginManager.decryptIntegrationConfig(integration)
+            : JSON.parse(integration.configJson) as Record<string, unknown>;
+        } catch { /* ignore */ }
         if (integrationConfig["authMode"] === "pat") {
           const pat = typeof integrationConfig["token"] === "string" ? integrationConfig["token"].trim() : "";
           if (!pat) {
@@ -480,7 +508,7 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
       log.warn({ err }, "fetch available models failed");
       writeJson(res, 502, { error: msg });
     }
-  });
+  }, { permission: "agent.read", resourceParam: "id" });
 
   router.add("GET", "/api/admin/agents/:id", async (_req, res, params) => {
     if (!deps.agentStore) { writeJson(res, 501, { error: "Agent store not available" }); return; }
@@ -490,7 +518,7 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
     if (!existing) { writeJson(res, 404, { error: "Agent not found" }); return; }
     const count = await countProjectsForAgent(store, id);
     writeJson(res, 200, { agent: toAgentDetail(existing, count) });
-  });
+  }, { permission: "agent.read", resourceParam: "id" });
 
   router.add("PUT", "/api/admin/agents/:id", async (req, res, params) => {
     if (!deps.agentStore) { writeJson(res, 501, { error: "Agent store not available" }); return; }
@@ -518,15 +546,16 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
     try {
       const updated = await store.updateAgent(id, updates);
       const count = await countProjectsForAgent(store, id);
+      recordAudit(deps.auditStore, req, { action: "agent.update", targetType: "agent", targetId: id, details: { name: updated.name, type: updated.type } });
       writeJson(res, 200, { agent: toAgentDetail(updated, count) });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       log.warn({ err, id }, "update agent failed");
       writeJson(res, 500, { error: msg });
     }
-  });
+  }, { permission: "agent.write", resourceParam: "id" });
 
-  router.add("DELETE", "/api/admin/agents/:id", async (_req, res, params) => {
+  router.add("DELETE", "/api/admin/agents/:id", async (req, res, params) => {
     if (!deps.agentStore) { writeJson(res, 501, { error: "Agent store not available" }); return; }
     const store = deps.agentStore;
     const id = makeAgentId(params["id"] ?? "");
@@ -543,6 +572,7 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
     }
     try {
       await store.deleteAgent(id);
+      recordAudit(deps.auditStore, req, { action: "agent.delete", targetType: "agent", targetId: id, details: { name: existing.name, type: existing.type } });
       res.statusCode = 204;
       res.end();
     } catch (err: unknown) {
@@ -550,27 +580,29 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
       log.warn({ err, id }, "delete agent failed");
       writeJson(res, 500, { error: msg });
     }
-  });
+  }, { permission: "agent.delete", resourceParam: "id" });
 
-  router.add("PATCH", "/api/admin/agents/:id/enable", async (_req, res, params) => {
+  router.add("PATCH", "/api/admin/agents/:id/enable", async (req, res, params) => {
     if (!deps.agentStore) { writeJson(res, 501, { error: "Agent store not available" }); return; }
     const store = deps.agentStore;
     const id = makeAgentId(params["id"] ?? "");
     const existing = await store.getAgentById(id);
     if (!existing) { writeJson(res, 404, { error: "Agent not found" }); return; }
     await store.setAgentEnabled(id, true);
+    recordAudit(deps.auditStore, req, { action: "agent.enable", targetType: "agent", targetId: id, details: { name: existing.name } });
     res.statusCode = 204;
     res.end();
-  });
+  }, { permission: "agent.operate", resourceParam: "id" });
 
-  router.add("PATCH", "/api/admin/agents/:id/disable", async (_req, res, params) => {
+  router.add("PATCH", "/api/admin/agents/:id/disable", async (req, res, params) => {
     if (!deps.agentStore) { writeJson(res, 501, { error: "Agent store not available" }); return; }
     const store = deps.agentStore;
     const id = makeAgentId(params["id"] ?? "");
     const existing = await store.getAgentById(id);
     if (!existing) { writeJson(res, 404, { error: "Agent not found" }); return; }
     await store.setAgentEnabled(id, false);
+    recordAudit(deps.auditStore, req, { action: "agent.disable", targetType: "agent", targetId: id, details: { name: existing.name } });
     res.statusCode = 204;
     res.end();
-  });
+  }, { permission: "agent.operate", resourceParam: "id" });
 }

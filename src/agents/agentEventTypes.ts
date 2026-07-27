@@ -117,7 +117,7 @@ export interface SessionMetrics {
   totalToolCalls: number;
   /** Currently running tool name, or null */
   activeToolName: string | null;
-  /** Cumulative token usage */
+  /** Cumulative token usage (summed across distinct requests) */
   tokenUsage: TokenUsage;
   /** Number of usage events received */
   usageEventCount: number;
@@ -129,6 +129,14 @@ export interface SessionMetrics {
   quotaAvailable: false;
   /** Explanation for unavailable quota */
   quotaMessage: string;
+  /**
+   * Internal: per-request token snapshots for dedup.
+   * Maps request key → last-seen {input, output, cacheRead, cacheWrite} so
+   * live-then-final pairs are handled via delta (not first-wins).
+   */
+  requestSnapshots: Map<string, { input: number; output: number; cacheRead: number; cacheWrite: number }>;
+  /** Internal: tool-call identities already counted (dedup). */
+  countedToolCallIds: Set<string>;
 }
 
 // ── Secret patterns for sanitization ────────────────────────────────────────
@@ -481,6 +489,17 @@ function buildEventMessage(type: string, data: Record<string, unknown> | null): 
       const tool = readStr(data, ["tool", "name", "toolName"]);
       return tool ? `🔐 Permission: ${tool}` : "🔐 Permission requested";
     }
+    case "skills.fetch_start":
+      return buildSkillFetchMessage("Fetching skills from", data);
+    case "skills.fetch_complete":
+      return buildSkillFetchMessage("Fetched skills from", data);
+    case "skills.fetch_failed": {
+      const message = buildSkillFetchMessage("Failed to fetch skills from", data);
+      const reason = readStr(data, ["message", "error", "reason"]);
+      return reason ? `${message}: ${reason}` : message;
+    }
+    case "skills.local_loaded":
+      return buildLocalSkillsMessage(data);
     // ── Review lifecycle events ───────────────────────────────────────────
     case "review.started":
       return "📝 Review started";
@@ -519,6 +538,34 @@ function buildEventMessage(type: string, data: Record<string, unknown> | null): 
   }
 }
 
+/** Build a human-readable message for remote skill fetch events. */
+function buildSkillFetchMessage(prefix: string, data: Record<string, unknown> | null): string {
+  const source = readStr(data, ["source", "repo", "repository", "url"]) ?? "unknown source";
+  const agent = readStr(data, ["agent", "agentName"]);
+  const skills = formatSkillSelection(data?.["skills"]);
+  const details = [`skills: ${skills}`];
+  if (agent) details.push(`agent: ${agent}`);
+  return `${prefix} ${source} (${details.join(" · ")})`;
+}
+
+/** Build a human-readable message for locally loaded project skills. */
+function buildLocalSkillsMessage(data: Record<string, unknown> | null): string {
+  const path = readStr(data, ["path", "localSkillsPath"]) ?? ".github/skills";
+  return `Loaded local skills from ${path} (skills: ${formatSkillSelection(data?.["skills"])})`;
+}
+
+/** Format the selected remote skill list from worker event payloads. */
+function formatSkillSelection(value: unknown): string {
+  if (value === "all") return "all skills";
+  if (Array.isArray(value)) {
+    const skills = value
+      .filter((skill): skill is string => typeof skill === "string" && skill.trim().length > 0)
+      .map((skill) => skill.trim());
+    return skills.length > 0 ? skills.join(", ") : "no explicit skills";
+  }
+  return "no explicit skills";
+}
+
 /** Extract a file path from a tool event's input for inline display in the event message. */
 function readToolFilePath(data: Record<string, unknown> | null): string | null {
   if (!data) return null;
@@ -537,26 +584,57 @@ function readToolFilePath(data: Record<string, unknown> | null): string | null {
   return null;
 }
 
-/** Update cumulative token counts using the max-seen strategy for monotonically increasing fields. */
-function updateCumulativeTokenUsage(
-  tokenUsage: TokenUsage,
+/**
+ * Accumulate per-request token usage, deduping duplicate SDK emissions.
+ *
+ * The Copilot SDK reports usage **per LLM request** and can emit the same
+ * request's usage more than once (a duplicate or a live-then-final pair where
+ * the first event has outputTokens=0 and the second has the real value). Events
+ * are grouped by request identity (`apiCallId`/`providerCallId`, falling back to
+ * a content signature); a per-request snapshot is maintained and deltas applied
+ * on subsequent emissions so later, more-complete snapshots are not discarded.
+ * `totalTokens` is always derived from `inputTokens + outputTokens` to avoid
+ * additive overcounting when the SDK includes a per-request `totalTokens` field.
+ */
+function accumulateRequestUsage(
+  metrics: SessionMetrics,
   data: Record<string, unknown> | null
 ): void {
-  const input = readNum(data, ["inputTokens", "input_tokens", "promptTokens"]);
-  const output = readNum(data, ["outputTokens", "output_tokens", "completionTokens"]);
-  const cacheRead = readNum(data, ["cacheReadTokens", "cache_read_tokens", "cacheReadInputTokens"]);
-  const cacheWrite = readNum(data, ["cacheWriteTokens", "cache_write_tokens", "cacheCreationInputTokens"]);
-  const total = readNum(data, ["totalTokens", "total_tokens", "tokens"]);
+  const i = readNum(data, ["inputTokens", "input_tokens", "promptTokens"]) ?? 0;
+  const o = readNum(data, ["outputTokens", "output_tokens", "completionTokens"]) ?? 0;
+  const cr = readNum(data, ["cacheReadTokens", "cache_read_tokens", "cacheReadInputTokens"]) ?? 0;
+  const cw = readNum(data, ["cacheWriteTokens", "cache_write_tokens", "cacheCreationInputTokens"]) ?? 0;
+  const model = readStr(data, ["model", "modelId"]);
+  const cost = readNum(data, ["cost"]);
+  const nanoAiu = readNum(data, ["totalNanoAiu"]);
 
-  if (input !== null) tokenUsage.inputTokens = Math.max(tokenUsage.inputTokens, input);
-  if (output !== null) tokenUsage.outputTokens = Math.max(tokenUsage.outputTokens, output);
-  if (cacheRead !== null) tokenUsage.cacheReadTokens = Math.max(tokenUsage.cacheReadTokens, cacheRead);
-  if (cacheWrite !== null) tokenUsage.cacheWriteTokens = Math.max(tokenUsage.cacheWriteTokens, cacheWrite);
+  const key =
+    readStr(data, ["apiCallId", "providerCallId"]) ??
+    `sig:${model ?? ""}|${i}|${o}|${cr}|${cw}|${cost ?? ""}|${nanoAiu ?? ""}`;
 
-  const derivedTotal = tokenUsage.inputTokens + tokenUsage.outputTokens;
-  tokenUsage.totalTokens = total !== null
-    ? Math.max(tokenUsage.totalTokens, total, derivedTotal)
-    : Math.max(tokenUsage.totalTokens, derivedTotal);
+  const usage = metrics.tokenUsage;
+  const existing = metrics.requestSnapshots.get(key);
+  if (existing) {
+    // Apply only the delta: later emissions in a live-then-final pair carry more
+    // complete token counts (e.g. outputTokens goes from 0 to the real value).
+    usage.inputTokens += Math.max(0, i - existing.input);
+    usage.outputTokens += Math.max(0, o - existing.output);
+    usage.cacheReadTokens += Math.max(0, cr - existing.cacheRead);
+    usage.cacheWriteTokens += Math.max(0, cw - existing.cacheWrite);
+    existing.input = Math.max(existing.input, i);
+    existing.output = Math.max(existing.output, o);
+    existing.cacheRead = Math.max(existing.cacheRead, cr);
+    existing.cacheWrite = Math.max(existing.cacheWrite, cw);
+  } else {
+    metrics.requestSnapshots.set(key, { input: i, output: o, cacheRead: cr, cacheWrite: cw });
+    usage.inputTokens += i;
+    usage.outputTokens += o;
+    usage.cacheReadTokens += cr;
+    usage.cacheWriteTokens += cw;
+  }
+
+  // Always derive from accumulated input/output to avoid additive overcounting.
+  usage.totalTokens = usage.inputTokens + usage.outputTokens;
 }
 
 // ── Session metrics aggregator ──────────────────────────────────────────────
@@ -581,6 +659,8 @@ export function createSessionMetrics(): SessionMetrics {
     sessionEndTime: null,
     quotaAvailable: false,
     quotaMessage: "Not exposed by current SDK/CLI",
+    requestSnapshots: new Map(),
+    countedToolCallIds: new Set<string>(),
   };
 }
 
@@ -604,6 +684,18 @@ export function updateSessionMetrics(
 
     case "tool.execution_start": {
       const name = readStr(event.data, ["name", "tool", "toolName"]) ?? "unknown";
+      // Dedup duplicate SDK emissions when an explicit call identity is present;
+      // without one, count each event (cannot prove it is a duplicate).
+      const callId = readStr(event.data, ["callId", "toolCallId", "id"]);
+      const callNumber = readNum(event.data, ["callNumber"]);
+      const callKey = callId ?? (callNumber !== null ? `${name}#${callNumber}` : null);
+      if (callKey !== null) {
+        if (metrics.countedToolCallIds.has(callKey)) {
+          metrics.activeToolName = name;
+          break;
+        }
+        metrics.countedToolCallIds.add(callKey);
+      }
       metrics.totalToolCalls++;
       metrics.activeToolName = name;
       if (!metrics.tools[name]) {
@@ -650,7 +742,7 @@ export function updateSessionMetrics(
     case "assistant.usage":
     case "session.usage_info": {
       metrics.usageEventCount++;
-      updateCumulativeTokenUsage(metrics.tokenUsage, event.data);
+      accumulateRequestUsage(metrics, event.data);
       break;
     }
 
@@ -676,4 +768,6 @@ export function resetSessionMetrics(metrics: SessionMetrics): void {
   metrics.usageEventCount = 0;
   metrics.sessionStartTime = null;
   metrics.sessionEndTime = null;
+  metrics.requestSnapshots = new Map();
+  metrics.countedToolCallIds = new Set<string>();
 }

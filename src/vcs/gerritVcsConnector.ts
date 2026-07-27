@@ -3,15 +3,15 @@
  * Pushes to `refs/for/<branch>` with a Change-Id trailer; all operations run inside Docker volumes.
  */
 
-import { execFileSync } from "child_process";
 import { createHash } from "crypto";
 import { getLogger } from "../logger.js";
-import { execGit } from "../utils/gitExec.js";
 import type { VcsConnector, VcsPushResult, VolumeExecOptions } from "./vcsConnector.js";
 import type { PatchsetCheckoutOptions, ReviewComment } from "../interfaces.js";
 import { execInVolume } from "../workspace/dockerVolume.js";
 import { GerritSshClient, buildSshHostKeyOptions } from "../connectors/gerritSshClient.js";
 import { buildGerritTopic } from "./branchNaming.js";
+import type { GitRunner } from "./gitRunner.js";
+import { NodeGitRunner } from "./nodeGitRunner.js";
 
 const log = getLogger("gerrit-vcs");
 
@@ -57,7 +57,10 @@ export interface GerritVcsConnectorConfig {
   sshHost: string;
   sshPort: number;
   sshUser: string;
-  sshKeyPath: string;
+  /** Path to an SSH private-key file. Omit to use the system SSH agent. */
+  sshKeyPath?: string | undefined;
+  /** Path to an agent identity `.pub` file for identity pinning. Only used when sshKeyPath is absent. */
+  sshAgentPubKeyPath?: string | undefined;
   /** Path to a known_hosts file. When set, SSH uses strict host key verification. */
   sshKnownHostsPath?: string | undefined;
   gitAuthorName: string;
@@ -66,15 +69,15 @@ export interface GerritVcsConnectorConfig {
 
 /** Build the GIT_SSH_COMMAND string for authenticating git over SSH with the given config. */
 function buildSshCommand(config: GerritVcsConnectorConfig, overrideSshKeyPath?: string): string {
-  const keyPath = overrideSshKeyPath || config.sshKeyPath;
-  const quotedKeyPath = keyPath.replace(/"/g, '\\"');
+  const keyPath = overrideSshKeyPath ?? config.sshKeyPath;
+  const agentPubKeyPath = config.sshAgentPubKeyPath;
   const hostKeyOpts = buildSshHostKeyOptions(config.sshKnownHostsPath).join(" ");
-  return [
-    "ssh",
-    `-i "${quotedKeyPath}"`,
-    "-o IdentitiesOnly=yes",
-    hostKeyOpts,
-  ].join(" ");
+  const identityPart = keyPath
+    ? `-i "${keyPath.replace(/"/g, '\\"')}" -o IdentitiesOnly=yes`
+    : agentPubKeyPath
+      ? `-o IdentitiesOnly=yes -i "${agentPubKeyPath.replace(/"/g, '\\"')}"`
+      : "";
+  return ["ssh", identityPart, hostKeyOpts].filter(Boolean).join(" ");
 }
 
 /** Build the process env object that injects GIT_SSH_COMMAND for Gerrit operations. */
@@ -83,6 +86,15 @@ function buildGitEnv(config: GerritVcsConnectorConfig, overrideSshKeyPath?: stri
     ...process.env,
     GIT_SSH_COMMAND: buildSshCommand(config, overrideSshKeyPath),
   };
+}
+
+/** Append Gerrit push options to a ref, preserving any options already present. */
+function appendGerritPushOptions(ref: string, topic?: string, reviewerEmails?: string[]): string {
+  const opts: string[] = [];
+  if (topic) opts.push(`topic=${topic}`);
+  for (const email of reviewerEmails ?? []) opts.push(`r=${email}`);
+  if (opts.length === 0) return ref;
+  return `${ref}${ref.includes("%") ? "," : "%"}${opts.join(",")}`;
 }
 
 export class GerritVcsConnector implements VcsConnector {
@@ -95,17 +107,26 @@ export class GerritVcsConnector implements VcsConnector {
     return this.config.sshKnownHostsPath;
   }
 
-  /** Returns the SSH private key path used by this connector. */
-  get sshKeyPath(): string {
+  /** Returns the SSH private key path used by this connector, if configured. */
+  get sshKeyPath(): string | undefined {
     return this.config.sshKeyPath;
   }
 
-  constructor(private readonly config: GerritVcsConnectorConfig) {
+  /** Returns the SSH agent public key path used for identity pinning, if configured. */
+  get sshAgentPubKeyPath(): string | undefined {
+    return this.config.sshAgentPubKeyPath;
+  }
+
+  constructor(
+    private readonly config: GerritVcsConnectorConfig,
+    private readonly gitRunner: GitRunner = new NodeGitRunner()
+  ) {
     this.sshClient = new GerritSshClient({
       host: config.sshHost,
       port: config.sshPort,
       user: config.sshUser,
-      keyPath: config.sshKeyPath,
+      ...(config.sshKeyPath !== undefined ? { keyPath: config.sshKeyPath } : {}),
+      ...(config.sshAgentPubKeyPath !== undefined ? { agentPubKeyPath: config.sshAgentPubKeyPath } : {}),
       ...(config.sshKnownHostsPath !== undefined ? { knownHostsPath: config.sshKnownHostsPath } : {}),
     });
   }
@@ -115,6 +136,16 @@ export class GerritVcsConnector implements VcsConnector {
     return { ref: `refs/for/${baseBranch}`, topic: buildGerritTopic(taskId, ticketTitle) };
   }
 
+  /**
+   * Look up the real name/email registered on the Gerrit account this
+   * connector's SSH credentials authenticate as (see
+   * `GerritSshClient.queryOwnAccountIdentity`). Used to derive commit
+   * author/committer identity automatically instead of a placeholder.
+   */
+  async queryAuthorIdentity(): Promise<{ name: string; email: string } | undefined> {
+    return this.sshClient.queryOwnAccountIdentity();
+  }
+
   /** Resolve a Change-Id to PatchsetCheckoutOptions by querying Gerrit via SSH. */
   async resolvePatchsetOptions(changeId: string): Promise<PatchsetCheckoutOptions> {
     const info = await this.sshClient.queryChange(changeId);
@@ -122,7 +153,8 @@ export class GerritVcsConnector implements VcsConnector {
       vcsBaseUrl: this.config.baseUrl ?? "",
       revisionNumber: info.number,
       patchset: info.currentPatchSet?.number ?? 1,
-      sshKeyPath: this.config.sshKeyPath,
+      ...(this.config.sshKeyPath !== undefined ? { sshKeyPath: this.config.sshKeyPath } : {}),
+      ...(this.config.sshAgentPubKeyPath !== undefined ? { sshAgentPubKeyPath: this.config.sshAgentPubKeyPath } : {}),
       ...(this.config.sshKnownHostsPath !== undefined ? { sshKnownHostsPath: this.config.sshKnownHostsPath } : {}),
       sshHost: this.config.sshHost,
       sshPort: this.config.sshPort,
@@ -144,13 +176,14 @@ export class GerritVcsConnector implements VcsConnector {
     );
 
     try {
-      // Execute git clone
-      execFileSync("git", ["clone", "--branch", branch, "--depth", "1", repoUrl, targetDir], {
-        env: buildGitEnv(this.config, sshKeyPath),
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "pipe"],
-        timeout: 300_000, // 5 minutes
-      });
+      await this.gitRunner.run(
+        ["clone", "--branch", branch, "--depth", "1", repoUrl, targetDir],
+        {
+          cwd: process.cwd(),
+          env: buildGitEnv(this.config, sshKeyPath),
+          timeoutMs: 300_000,
+        }
+      );
 
       log.info({ targetDir }, "repository cloned successfully");
     } catch (err: unknown) {
@@ -168,12 +201,13 @@ export class GerritVcsConnector implements VcsConnector {
     ref: string,
     message: string,
     changeId?: string,
-    volumeOpts?: VolumeExecOptions
+    volumeOpts?: VolumeExecOptions,
+    reviewerEmails?: string[]
   ): Promise<VcsPushResult> {
     const commitMessage = ensureChangeIdInFooter(message, changeId);
 
     if (volumeOpts) {
-      return this.pushInVolume(volumeOpts, ref, commitMessage);
+      return this.pushInVolume(volumeOpts, ref, commitMessage, reviewerEmails);
     }
 
     log.info(
@@ -183,24 +217,25 @@ export class GerritVcsConnector implements VcsConnector {
 
     try {
       // Configure git identity
-      execGit(["config", "user.name", this.config.gitAuthorName], repoDir);
-      execGit(["config", "user.email", this.config.gitAuthorEmail], repoDir);
+      await this.gitRunner.run(["config", "user.name", this.config.gitAuthorName], { cwd: repoDir });
+      await this.gitRunner.run(["config", "user.email", this.config.gitAuthorEmail], { cwd: repoDir });
 
       // Stage all changes
-      execGit(["add", "-A"], repoDir);
+      await this.gitRunner.run(["add", "-A"], { cwd: repoDir });
 
       // Commit
-      execGit(["commit", "-m", commitMessage], repoDir);
+      await this.gitRunner.run(["commit", "-m", commitMessage], { cwd: repoDir });
       log.info({ repoDir }, "changes committed");
 
       // Push to Gerrit
-      execFileSync("git", ["push", "origin", `HEAD:${ref}`], {
-        cwd: repoDir,
-        env: buildGitEnv(this.config),
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "pipe"],
-        timeout: 300_000,
-      });
+      await this.gitRunner.run(
+        ["push", "origin", `HEAD:${appendGerritPushOptions(ref, undefined, reviewerEmails)}`],
+        {
+          cwd: repoDir,
+          env: buildGitEnv(this.config),
+          timeoutMs: 300_000,
+        }
+      );
       log.info({ ref }, "pushed to Gerrit");
 
       // Extract Change-Id from the message
@@ -230,32 +265,31 @@ export class GerritVcsConnector implements VcsConnector {
     repoDir: string,
     ref: string,
     topic?: string,
-    volumeOpts?: VolumeExecOptions
+    volumeOpts?: VolumeExecOptions,
+    reviewerEmails?: string[]
   ): Promise<VcsPushResult> {
     if (volumeOpts) {
-      return this.pushDirectInVolume(volumeOpts, ref, topic);
+      return this.pushDirectInVolume(volumeOpts, ref, topic, reviewerEmails);
     }
 
     log.info({ repoDir, ref, topic }, "pushing HEAD directly to Gerrit (agent-created commits)");
 
     try {
-      let pushRef = `HEAD:${ref}`;
-      if (topic) {
-        pushRef = `HEAD:${ref}%topic=${topic}`;
-      }
+      const pushRef = `HEAD:${appendGerritPushOptions(ref, topic, reviewerEmails)}`;
 
-      execFileSync("git", ["push", "origin", pushRef], {
+      await this.gitRunner.run(["push", "origin", pushRef], {
         cwd: repoDir,
         env: buildGitEnv(this.config),
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "pipe"],
-        timeout: 300_000,
+        timeoutMs: 300_000,
       });
 
       log.info({ ref, topic }, "direct push to Gerrit completed");
 
       // Extract Change-Id from HEAD commit for backward-compat result
-      const headMsg = execGit(["log", "-1", "--format=%b"], repoDir);
+      const { stdout: headMsg } = await this.gitRunner.run(
+        ["log", "-1", "--format=%b"],
+        { cwd: repoDir }
+      );
       const changeIdMatch = headMsg.match(/^Change-Id:\s*(\S+)/m);
       const changeId = changeIdMatch?.[1] ?? "unknown";
 
@@ -276,7 +310,8 @@ export class GerritVcsConnector implements VcsConnector {
   private async pushInVolume(
     volumeOpts: VolumeExecOptions,
     ref: string,
-    commitMessage: string
+    commitMessage: string,
+    reviewerEmails?: string[]
   ): Promise<VcsPushResult> {
     log.info({ volumeName: volumeOpts.volumeName, ref }, "pushing to Gerrit via volume container");
 
@@ -284,6 +319,7 @@ export class GerritVcsConnector implements VcsConnector {
     const cwd = volumeOpts.subPath && volumeOpts.subPath !== "."
       ? `/workspace/${volumeOpts.subPath}`
       : "/workspace";
+    const pushRef = appendGerritPushOptions(ref, undefined, reviewerEmails);
 
     const result = await execInVolume({
       volumeName: volumeOpts.volumeName,
@@ -303,7 +339,7 @@ export class GerritVcsConnector implements VcsConnector {
         VE_GIT_NAME: this.config.gitAuthorName,
         VE_GIT_EMAIL: this.config.gitAuthorEmail,
         VE_COMMIT_MSG_B64: encodedMsg,
-        VE_PUSH_REF: ref,
+        VE_PUSH_REF: pushRef,
       },
     });
 
@@ -322,14 +358,12 @@ export class GerritVcsConnector implements VcsConnector {
   private async pushDirectInVolume(
     volumeOpts: VolumeExecOptions,
     ref: string,
-    topic?: string
+    topic?: string,
+    reviewerEmails?: string[]
   ): Promise<VcsPushResult> {
     log.info({ volumeName: volumeOpts.volumeName, ref, topic }, "pushing HEAD directly to Gerrit via volume container");
 
-    let pushRef = `HEAD:${ref}`;
-    if (topic) {
-      pushRef = `HEAD:${ref}%topic=${topic}`;
-    }
+    const pushRef = `HEAD:${appendGerritPushOptions(ref, topic, reviewerEmails)}`;
 
     const cwd = volumeOpts.subPath && volumeOpts.subPath !== "."
       ? `/workspace/${volumeOpts.subPath}`

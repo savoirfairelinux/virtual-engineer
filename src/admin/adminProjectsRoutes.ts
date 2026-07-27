@@ -1,7 +1,9 @@
 import { z } from "zod";
 import { getLogger } from "../logger.js";
 import { writeJson, readBody, zodErrorBody } from "./adminRouteUtils.js";
+import { recordAudit, type AuditCapableStore } from "./adminAudit.js";
 import {
+  DEFAULT_LOCAL_SKILLS_PATH,
   makeAgentId,
   makeProjectId,
   makeTaskId,
@@ -19,9 +21,25 @@ import {
   type Task,
 } from "../interfaces.js";
 import type { Router } from "./router.js";
+import { getEffectivePermissions } from "./authContext.js";
+import { accessibleResourceIds, ALL_RESOURCES } from "./authorization/policyEngine.js";
+import { isConfiguredSshFilePathAllowed } from "../utils/sshFilePath.js";
 import { getProviderDescriptor, getProviderDomainCapabilities } from "../plugins/registry.js";
+import { listSkillSourceSkills, validateSkillSourcesConnection } from "./skillSourceDiscovery.js";
 
 const log = getLogger("admin-projects");
+const MAX_TCP_PORT = 65_535;
+
+function isSkillSourceAuthError(message: string): boolean {
+  return message.startsWith("SSH skill sources require")
+    || message.startsWith("SSH private key path is not readable")
+    || message.startsWith("SSH known_hosts path is not readable")
+    || message.startsWith("Invalid SSH skill source URL")
+    || message.startsWith("Conflicting SSH ports")
+    || message.startsWith("SSH connection check failed")
+    || message.startsWith("Skill source #")
+    || message.startsWith("Failed to validate skill sources before saving");
+}
 
 async function relaunchFailedTasksForProject(
   store: ProjectsRouteStore,
@@ -57,13 +75,20 @@ export interface ProjectsRouteStore {
     agentId: AgentId;
     agentOverrideJson?: string | null;
     postCloneScript?: string;
+    skillDiscoveryEnabled?: boolean;
+    localSkillsPath?: string;
+    skillSourcesJson?: string;
+    gerritTopicOverride?: string | null;
+    useFullTicketUrlInCommits?: boolean;
+    postReviewLinkToTicket?: boolean;
+    reactToCiFailures?: boolean;
     enabled?: boolean;
   }): Promise<ProjectRecord>;
   getProjectById(id: ProjectId): Promise<ProjectRecord | null>;
   listProjects(filter?: { type?: ProjectType; enabled?: boolean }): Promise<ProjectRecord[]>;
   updateProject(
     id: ProjectId,
-    partial: Partial<Pick<ProjectRecord, "name" | "type" | "agentId" | "agentOverrideJson" | "postCloneScript" | "enabled">>
+    partial: Partial<Pick<ProjectRecord, "name" | "type" | "agentId" | "agentOverrideJson" | "postCloneScript" | "skillDiscoveryEnabled" | "localSkillsPath" | "skillSourcesJson" | "gerritTopicOverride" | "useFullTicketUrlInCommits" | "postReviewLinkToTicket" | "reactToCiFailures" | "enabled">>
   ): Promise<ProjectRecord>;
   deleteProject(id: ProjectId): Promise<void>;
   setProjectEnabled(id: ProjectId, enabled: boolean): Promise<void>;
@@ -83,6 +108,7 @@ export interface ProjectsRouteStore {
       commitOrder: number;
       localPath: string;
       sshKeyPath?: string | null | undefined;
+      reviewerEmails?: string[] | undefined;
     }>
   ): Promise<ProjectPushTargetRecord[]>;
   listProjectPushTargets(projectId: ProjectId): Promise<ProjectPushTargetRecord[]>;
@@ -101,12 +127,22 @@ export interface ProjectsRouteStore {
 export interface ProjectsRouteDeps {
   projectStore?: ProjectsRouteStore | undefined;
   integrationStore?: IntegrationStore | undefined;
+  auditStore?: AuditCapableStore | undefined;
   onProjectChange?: (() => void) | undefined;
   taskControl?:
     | {
         retryTask(taskId: ReturnType<typeof makeTaskId>): Promise<void>;
       }
     | undefined;
+  validateSkillSourcesConnection?: ((sources: SkillSource[]) => Promise<void>) | undefined;
+}
+
+function optionalSshFilePath(label: string): z.ZodOptional<z.ZodEffects<z.ZodString, string, string>> {
+  return z.string()
+    .trim()
+    .min(1, `${label} must not be empty`)
+    .refine(isConfiguredSshFilePathAllowed, `${label} must be inside an approved secrets directory`)
+    .optional();
 }
 
 const pushTargetSchema = z.object({
@@ -117,7 +153,11 @@ const pushTargetSchema = z.object({
   role: z.enum(["primary", "submodule", "dependency", "related"]),
   commitOrder: z.number().int().min(1),
   localPath: z.string().min(1),
-  sshKeyPath: z.string().optional(),
+  sshKeyPath: optionalSshFilePath("SSH key path"),
+  reviewerEmails: z.array(z.string().trim().email())
+    .max(20, "At most 20 reviewer emails may be configured per repository")
+    .transform((emails) => [...new Set(emails.map((email) => email.toLowerCase()))])
+    .optional(),
 });
 
 /** Validate push-target arrays: unique localPaths, at most one root ("."). */
@@ -153,6 +193,101 @@ const reviewConfigSchema = z.object({
   repoKeys: z.array(z.string()).min(1, "Select at least one repository to review"),
 });
 
+function optionalNonEmptyString(message: string): z.ZodOptional<z.ZodString> {
+  return z.string().trim().min(1, message).optional();
+}
+
+const skillSourceSchema = z.object({
+  source: z.string().trim().min(1, "Skill source is required"),
+  skills: z.array(z.string().trim().min(1, "Skill name is required")).optional(),
+  installAll: z.boolean().optional(),
+  sshUser: optionalNonEmptyString("SSH user must not be empty"),
+  sshPort: z.number().int().positive().max(MAX_TCP_PORT, "SSH port must be between 1 and 65535").optional(),
+  sshKeyPath: optionalSshFilePath("SSH key path"),
+  sshKnownHostsPath: optionalSshFilePath("SSH known_hosts path"),
+}).superRefine((source, ctx) => {
+  if (source.installAll === true) return;
+  if ((source.skills ?? []).length > 0) return;
+  ctx.addIssue({
+    code: z.ZodIssueCode.custom,
+    message: "Select at least one skill, or enable Install all",
+    path: ["skills"],
+  });
+});
+
+const skillSourcesSchema = z.array(skillSourceSchema).max(20, "At most 20 skill sources are supported");
+
+const localSkillsPathSchema = z.string().trim().min(1, "Local skills path is required").refine((path) => {
+  if (path.startsWith("/")) return false;
+  if (path === ".") return false;
+  return !path.split("/").some((part) => part === "..");
+}, "Local skills path must stay inside the workspace");
+
+const skillSourceDiscoverySchema = z.object({
+  source: z.string().trim().min(1, "Skill source is required"),
+  sshUser: optionalNonEmptyString("SSH user must not be empty"),
+  sshPort: z.number().int().positive().max(MAX_TCP_PORT, "SSH port must be between 1 and 65535").optional(),
+  sshKeyPath: optionalSshFilePath("SSH key path"),
+  sshKnownHostsPath: optionalSshFilePath("SSH known_hosts path"),
+});
+
+export interface SkillSource {
+  source: string;
+  skills: string[];
+  installAll?: boolean;
+  sshUser?: string;
+  sshPort?: number;
+  sshKeyPath?: string;
+  sshKnownHostsPath?: string;
+}
+
+function normalizeSkillSources(sources: z.infer<typeof skillSourcesSchema> | undefined): SkillSource[] {
+  if (!sources) return [];
+  return sources.map((source) => {
+    const ssh = {
+      ...(source.sshUser !== undefined && source.sshUser !== "" ? { sshUser: source.sshUser } : {}),
+      ...(source.sshPort !== undefined ? { sshPort: source.sshPort } : {}),
+      ...(source.sshKeyPath !== undefined && source.sshKeyPath !== "" ? { sshKeyPath: source.sshKeyPath } : {}),
+      ...(source.sshKnownHostsPath !== undefined && source.sshKnownHostsPath !== "" ? { sshKnownHostsPath: source.sshKnownHostsPath } : {}),
+    };
+    if (source.installAll === true) {
+      return { source: source.source, skills: [], installAll: true, ...ssh };
+    }
+    return { source: source.source, skills: Array.from(new Set(source.skills ?? [])), ...ssh };
+  });
+}
+
+function skillSourcesForCreate(sources: z.infer<typeof skillSourcesSchema> | undefined): SkillSource[] {
+  return normalizeSkillSources(sources);
+}
+
+async function validateSkillSourcesForSave(
+  sources: SkillSource[],
+  validator: (sources: SkillSource[]) => Promise<void>
+): Promise<void> {
+  try {
+    await validator(sources);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(`Failed to validate skill sources before saving: ${message}`);
+  }
+}
+
+function parseStoredSkillSources(project: ProjectRecord): SkillSource[] {
+  try {
+    const parsed: unknown = JSON.parse(project.skillSourcesJson || "[]");
+    const result = skillSourcesSchema.safeParse(parsed);
+    return result.success ? normalizeSkillSources(result.data) : [];
+  } catch {
+    return [];
+  }
+}
+
+function normalizeLocalSkillsPath(path: string | undefined): string {
+  const trimmed = path?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed : DEFAULT_LOCAL_SKILLS_PATH;
+}
+
 const codingProjectCreateSchema = z.object({
   id: z.string().optional(),
   type: z.literal("coding"),
@@ -160,6 +295,13 @@ const codingProjectCreateSchema = z.object({
   agentId: z.string().min(1, "Agent is required — create and enable a coding agent first (Agents tab)"),
   agentOverrideJson: z.string().nullable().optional(),
   postCloneScript: z.string().optional(),
+  skillDiscoveryEnabled: z.boolean().optional(),
+  localSkillsPath: localSkillsPathSchema.optional(),
+  skillSources: skillSourcesSchema.optional(),
+  gerritTopicOverride: z.string().nullable().optional(),
+  useFullTicketUrlInCommits: z.boolean().optional(),
+  postReviewLinkToTicket: z.boolean().optional(),
+  reactToCiFailures: z.boolean().optional(),
   enabled: z.boolean().optional(),
   ticketSource: ticketSourceSchema,
   pushTargets: pushTargetsArraySchema,
@@ -172,6 +314,13 @@ const reviewProjectCreateSchema = z.object({
   agentId: z.string().min(1, "Agent is required — create and enable a review agent first (Agents tab)"),
   agentOverrideJson: z.string().nullable().optional(),
   postCloneScript: z.string().optional(),
+  skillDiscoveryEnabled: z.boolean().optional(),
+  localSkillsPath: localSkillsPathSchema.optional(),
+  skillSources: skillSourcesSchema.optional(),
+  gerritTopicOverride: z.string().nullable().optional(),
+  useFullTicketUrlInCommits: z.boolean().optional(),
+  postReviewLinkToTicket: z.boolean().optional(),
+  reactToCiFailures: z.boolean().optional(),
   enabled: z.boolean().optional(),
   reviewConfig: reviewConfigSchema,
 });
@@ -186,6 +335,13 @@ const projectUpdateSchema = z.object({
   agentId: z.string().min(1, "Agent is required").optional(),
   agentOverrideJson: z.string().nullable().optional(),
   postCloneScript: z.string().optional(),
+  skillDiscoveryEnabled: z.boolean().optional(),
+  localSkillsPath: localSkillsPathSchema.optional(),
+  skillSources: skillSourcesSchema.optional(),
+  gerritTopicOverride: z.string().nullable().optional(),
+  useFullTicketUrlInCommits: z.boolean().optional(),
+  postReviewLinkToTicket: z.boolean().optional(),
+  reactToCiFailures: z.boolean().optional(),
   enabled: z.boolean().optional(),
   ticketSource: ticketSourceSchema.optional(),
   pushTargets: pushTargetsArraySchema.optional(),
@@ -210,6 +366,7 @@ async function loadIntegrationsLookup(store: IntegrationStore | undefined): Prom
 
 /** Integration types that use HTTPS for cloning — SSH URLs are invalid for these. */
 const HTTPS_ONLY_VCS_TYPES = new Set(["github", "gitlab"]);
+const REVIEWER_EMAIL_VCS_TYPES = new Set(["gerrit", "gitlab"]);
 
 /**
  * Validate that push targets for HTTPS-based integrations (GitHub, GitLab) do
@@ -225,6 +382,21 @@ async function validatePushTargetCloneUrls(
     const integration = await integrationStore.getIntegration(target.integrationId).catch(() => null);
     if (integration && HTTPS_ONLY_VCS_TYPES.has(integration.provider)) {
       return `Push target "${target.repoKey}" uses an SSH clone URL (${target.cloneUrl}) which is not supported for ${integration.provider} integrations. Use an HTTPS URL instead (e.g. https://github.com/owner/repo.git).`;
+    }
+  }
+  return null;
+}
+
+async function validatePushTargetReviewerEmails(
+  targets: Array<{ integrationId: string; repoKey: string; reviewerEmails?: string[] | undefined }>,
+  integrationStore: IntegrationStore | undefined
+): Promise<string | null> {
+  if (!integrationStore) return null;
+  for (const target of targets) {
+    if (!target.reviewerEmails || target.reviewerEmails.length === 0) continue;
+    const integration = await integrationStore.getIntegration(target.integrationId).catch(() => null);
+    if (integration && !REVIEWER_EMAIL_VCS_TYPES.has(integration.provider)) {
+      return `Reviewer emails are not supported for ${integration.provider} push target "${target.repoKey}"`;
     }
   }
   return null;
@@ -247,6 +419,9 @@ interface ProjectSummary {
   agentId: string;
   agentName: string | null;
   enabled: boolean;
+  skillDiscoveryEnabled: boolean;
+  localSkillsPath: string;
+  skillSources: SkillSource[];
   createdAt: string;
   updatedAt: string;
   ticketSource: { integration: { id: string; name: string; provider: string; domainCapabilities: string[] } | null; ticketProjectKey: string } | null;
@@ -257,6 +432,10 @@ interface ProjectSummary {
 interface ProjectDetail extends ProjectSummary {
   agentOverrideJson: string | null;
   postCloneScript: string;
+  gerritTopicOverride: string | null;
+  useFullTicketUrlInCommits: boolean;
+  postReviewLinkToTicket: boolean;
+  reactToCiFailures: boolean;
   pushTargets: Array<{
     id: number;
     integration: { id: string; name: string; provider: string; domainCapabilities: string[] } | null;
@@ -268,6 +447,7 @@ interface ProjectDetail extends ProjectSummary {
     commitOrder: number;
     localPath: string;
     sshKeyPath: string | null;
+    reviewerEmails: string[];
   }>
 }
 
@@ -308,6 +488,9 @@ async function buildProjectSummary(
     agentId: project.agentId,
     agentName: agent ? agent.name : null,
     enabled: project.enabled,
+    skillDiscoveryEnabled: project.skillDiscoveryEnabled,
+    localSkillsPath: project.localSkillsPath,
+    skillSources: parseStoredSkillSources(project),
     createdAt: project.createdAt.toISOString(),
     updatedAt: project.updatedAt.toISOString(),
     ticketSource,
@@ -348,6 +531,7 @@ async function buildProjectDetail(
       commitOrder: p.commitOrder,
       localPath: p.localPath,
       sshKeyPath: p.sshKeyPath,
+      reviewerEmails: p.reviewerEmails,
     }));
   } else {
     const rc = await store.getProjectReviewConfig(project.id);
@@ -365,10 +549,17 @@ async function buildProjectDetail(
     agentId: project.agentId,
     agentName: agent ? agent.name : null,
     enabled: project.enabled,
+    skillDiscoveryEnabled: project.skillDiscoveryEnabled,
+    localSkillsPath: project.localSkillsPath,
+    skillSources: parseStoredSkillSources(project),
     createdAt: project.createdAt.toISOString(),
     updatedAt: project.updatedAt.toISOString(),
     agentOverrideJson: project.agentOverrideJson,
     postCloneScript: project.postCloneScript,
+    gerritTopicOverride: project.gerritTopicOverride,
+    useFullTicketUrlInCommits: project.useFullTicketUrlInCommits,
+    postReviewLinkToTicket: project.postReviewLinkToTicket,
+    reactToCiFailures: project.reactToCiFailures,
     ticketSource,
     reviewConfig,
     pushTargetCount,
@@ -385,7 +576,33 @@ function isUniqueConflict(err: unknown): boolean {
 
 /** Register project routes on the given router. */
 export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): void {
-  router.add("GET", "/api/admin/projects", async (_req, res, _params) => {
+  const skillSourceConnectionValidator = deps.validateSkillSourcesConnection ?? validateSkillSourcesConnection;
+
+  const handleSkillSourceList: Parameters<Router["add"]>[2] = async (req, res, _params) => {
+    const body = await readBody(req);
+    if (!body) { writeJson(res, 400, { error: "Request body required" }); return; }
+    const parsed = skillSourceDiscoverySchema.safeParse(body);
+    if (!parsed.success) { writeJson(res, 400, zodErrorBody(parsed.error, "Invalid skill source payload")); return; }
+    try {
+      const source = {
+        source: parsed.data.source,
+        ...(parsed.data.sshUser !== undefined ? { sshUser: parsed.data.sshUser } : {}),
+        ...(parsed.data.sshPort !== undefined ? { sshPort: parsed.data.sshPort } : {}),
+        ...(parsed.data.sshKeyPath !== undefined ? { sshKeyPath: parsed.data.sshKeyPath } : {}),
+        ...(parsed.data.sshKnownHostsPath !== undefined ? { sshKnownHostsPath: parsed.data.sshKnownHostsPath } : {}),
+      };
+      const result = await listSkillSourceSkills(source);
+      writeJson(res, 200, result);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      writeJson(res, isSkillSourceAuthError(message) ? 400 : 502, { error: `Failed to list skills: ${message}` });
+    }
+  };
+
+  router.add("POST", "/api/admin/projects/:id/skill-sources/list", handleSkillSourceList, { permission: "project.write", resourceParam: "id" });
+  router.add("POST", "/api/admin/projects/skill-sources/list", handleSkillSourceList, { permission: "project.write" });
+
+  router.add("GET", "/api/admin/projects", async (req, res, _params) => {
     if (!deps.projectStore) { writeJson(res, 501, { error: "Project store not available" }); return; }
     const store = deps.projectStore;
     const projects = await store.listProjects();
@@ -395,8 +612,16 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
     for (const p of projects) {
       summaries.push(await buildProjectSummary(p, store, integrations, agentsById));
     }
-    writeJson(res, 200, { projects: summaries });
-  });
+    // Scope-filter: a non-superuser sees only projects they may read.
+    const perms = getEffectivePermissions(req);
+    let visible = summaries;
+    if (perms) {
+      const scope = accessibleResourceIds(perms, "project.read");
+      if (scope === null) visible = [];
+      else if (scope !== ALL_RESOURCES) visible = summaries.filter((s) => scope.has(s.id));
+    }
+    writeJson(res, 200, { projects: visible });
+  }, { permission: "project.read", collection: true });
 
   router.add("POST", "/api/admin/projects", async (req, res, _params) => {
     if (!deps.projectStore) { writeJson(res, 501, { error: "Project store not available" }); return; }
@@ -422,6 +647,13 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
       }
     }
     let project: ProjectRecord;
+    const skillSources = skillSourcesForCreate(data.skillSources);
+    try {
+      await validateSkillSourcesForSave(skillSources, skillSourceConnectionValidator);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      writeJson(res, 400, { error: msg }); return;
+    }
     try {
       project = await store.createProject({
         ...(data.id !== undefined ? { id: data.id } : {}),
@@ -429,6 +661,13 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
         agentId: makeAgentId(data.agentId),
         ...(data.agentOverrideJson !== undefined ? { agentOverrideJson: data.agentOverrideJson } : {}),
         ...(data.postCloneScript !== undefined ? { postCloneScript: data.postCloneScript } : {}),
+        ...(data.skillDiscoveryEnabled !== undefined ? { skillDiscoveryEnabled: data.skillDiscoveryEnabled } : {}),
+        localSkillsPath: normalizeLocalSkillsPath(data.localSkillsPath),
+        skillSourcesJson: JSON.stringify(skillSources),
+        ...(data.gerritTopicOverride !== undefined ? { gerritTopicOverride: data.gerritTopicOverride } : {}),
+        ...(data.useFullTicketUrlInCommits !== undefined ? { useFullTicketUrlInCommits: data.useFullTicketUrlInCommits } : {}),
+        ...(data.postReviewLinkToTicket !== undefined ? { postReviewLinkToTicket: data.postReviewLinkToTicket } : {}),
+        ...(data.reactToCiFailures !== undefined ? { reactToCiFailures: data.reactToCiFailures } : {}),
         ...(data.enabled !== undefined ? { enabled: data.enabled } : {}),
       });
     } catch (err: unknown) {
@@ -442,6 +681,12 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
         if (cloneUrlError) {
           try { await store.deleteProject(project.id); } catch { /* ignore */ }
           writeJson(res, 400, { error: cloneUrlError });
+          return;
+        }
+        const reviewerEmailError = await validatePushTargetReviewerEmails(data.pushTargets, deps.integrationStore);
+        if (reviewerEmailError) {
+          try { await store.deleteProject(project.id); } catch { /* ignore */ }
+          writeJson(res, 400, { error: reviewerEmailError });
           return;
         }
         await store.setProjectTicketSource(project.id, data.ticketSource);
@@ -458,38 +703,62 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
     }
     const integrations = await loadIntegrationsLookup(deps.integrationStore);
     const detail = await buildProjectDetail(project, store, integrations);
+    recordAudit(deps.auditStore, req, {
+      action: "project.create",
+      targetType: "project",
+      targetId: project.id,
+      details: {
+        name: project.name,
+        type: project.type,
+        agentId: project.agentId,
+        ...(data.type === "coding"
+          ? { ticketProjectKey: data.ticketSource.ticketProjectKey, repoKeys: data.pushTargets.map((t) => t.repoKey) }
+          : { repoKeys: data.reviewConfig.repoKeys }),
+      },
+    });
+    log.info(
+      {
+        projectId: project.id,
+        name: project.name,
+        type: project.type,
+        agentId: project.agentId,
+      },
+      "project created"
+    );
     writeJson(res, 201, { project: detail });
     deps.onProjectChange?.();
     if (project.enabled) {
       await relaunchFailedTasksForProject(store, project.id, deps.taskControl);
     }
-  });
+  }, { permission: "project.write" });
 
   // Enable or disable a project by id.
-  router.add("PATCH", "/api/admin/projects/:id/enable", async (_req, res, params) => {
+  router.add("PATCH", "/api/admin/projects/:id/enable", async (req, res, params) => {
     if (!deps.projectStore) { writeJson(res, 501, { error: "Project store not available" }); return; }
     const store = deps.projectStore;
     const id = makeProjectId(params["id"] ?? "");
     const existing = await store.getProjectById(id);
     if (!existing) { writeJson(res, 404, { error: "Project not found" }); return; }
     await store.setProjectEnabled(id, true);
+    recordAudit(deps.auditStore, req, { action: "project.enable", targetType: "project", targetId: id, details: { name: existing.name } });
     res.statusCode = 204; res.end();
     deps.onProjectChange?.();
     if (existing.enabled === false) {
       await relaunchFailedTasksForProject(store, id, deps.taskControl);
     }
-  });
+  }, { permission: "project.operate", resourceParam: "id" });
 
-  router.add("PATCH", "/api/admin/projects/:id/disable", async (_req, res, params) => {
+  router.add("PATCH", "/api/admin/projects/:id/disable", async (req, res, params) => {
     if (!deps.projectStore) { writeJson(res, 501, { error: "Project store not available" }); return; }
     const store = deps.projectStore;
     const id = makeProjectId(params["id"] ?? "");
     const existing = await store.getProjectById(id);
     if (!existing) { writeJson(res, 404, { error: "Project not found" }); return; }
     await store.setProjectEnabled(id, false);
+    recordAudit(deps.auditStore, req, { action: "project.disable", targetType: "project", targetId: id, details: { name: existing.name } });
     res.statusCode = 204; res.end();
     deps.onProjectChange?.();
-  });
+  }, { permission: "project.operate", resourceParam: "id" });
 
   router.add("GET", "/api/admin/projects/:id", async (_req, res, params) => {
     if (!deps.projectStore) { writeJson(res, 501, { error: "Project store not available" }); return; }
@@ -500,7 +769,7 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
     const integrations = await loadIntegrationsLookup(deps.integrationStore);
     const detail = await buildProjectDetail(existing, store, integrations);
     writeJson(res, 200, { project: detail });
-  });
+  }, { permission: "project.read", resourceParam: "id" });
 
   router.add("PUT", "/api/admin/projects/:id", async (req, res, params) => {
     if (!deps.projectStore) { writeJson(res, 501, { error: "Project store not available" }); return; }
@@ -525,6 +794,22 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
     if (data.agentId !== undefined) updates.agentId = makeAgentId(data.agentId);
     if (data.agentOverrideJson !== undefined) updates.agentOverrideJson = data.agentOverrideJson;
     if (data.postCloneScript !== undefined) updates.postCloneScript = data.postCloneScript;
+    if (data.skillDiscoveryEnabled !== undefined) updates.skillDiscoveryEnabled = data.skillDiscoveryEnabled;
+    if (data.localSkillsPath !== undefined) updates.localSkillsPath = normalizeLocalSkillsPath(data.localSkillsPath);
+    if (data.skillSources !== undefined) {
+      const skillSources = normalizeSkillSources(data.skillSources);
+      try {
+        await validateSkillSourcesForSave(skillSources, skillSourceConnectionValidator);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        writeJson(res, 400, { error: msg }); return;
+      }
+      updates.skillSourcesJson = JSON.stringify(skillSources);
+    }
+    if (data.gerritTopicOverride !== undefined) updates.gerritTopicOverride = data.gerritTopicOverride;
+    if (data.useFullTicketUrlInCommits !== undefined) updates.useFullTicketUrlInCommits = data.useFullTicketUrlInCommits;
+    if (data.postReviewLinkToTicket !== undefined) updates.postReviewLinkToTicket = data.postReviewLinkToTicket;
+    if (data.reactToCiFailures !== undefined) updates.reactToCiFailures = data.reactToCiFailures;
     if (data.enabled !== undefined) updates.enabled = data.enabled;
     const reconfigured =
       data.ticketSource !== undefined ||
@@ -533,6 +818,9 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
       updates.agentId !== undefined ||
       updates.agentOverrideJson !== undefined ||
       updates.postCloneScript !== undefined ||
+      updates.skillDiscoveryEnabled !== undefined ||
+      updates.localSkillsPath !== undefined ||
+      updates.skillSourcesJson !== undefined ||
       (updates.enabled === true && existing.enabled !== true);
     try {
       if (Object.keys(updates).length > 0) await store.updateProject(id, updates);
@@ -544,6 +832,8 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
         if (existing.type !== "coding") { writeJson(res, 400, { error: "pushTargets only valid for coding projects" }); return; }
         const cloneUrlError = await validatePushTargetCloneUrls(data.pushTargets, deps.integrationStore);
         if (cloneUrlError) { writeJson(res, 400, { error: cloneUrlError }); return; }
+        const reviewerEmailError = await validatePushTargetReviewerEmails(data.pushTargets, deps.integrationStore);
+        if (reviewerEmailError) { writeJson(res, 400, { error: reviewerEmailError }); return; }
         await store.replaceProjectPushTargets(id, data.pushTargets);
       }
       if (data.reviewConfig !== undefined) {
@@ -560,14 +850,24 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
     if (!refreshed) { writeJson(res, 500, { error: "Project disappeared after update" }); return; }
     const integrations = await loadIntegrationsLookup(deps.integrationStore);
     const detail = await buildProjectDetail(refreshed, store, integrations);
+    recordAudit(deps.auditStore, req, { action: "project.update", targetType: "project", targetId: id, details: { name: refreshed.name } });
+    if (data.ticketSource !== undefined) {
+      recordAudit(deps.auditStore, req, { action: "project.ticket_source_set", targetType: "project", targetId: id, details: { integrationId: data.ticketSource.integrationId, ticketProjectKey: data.ticketSource.ticketProjectKey } });
+    }
+    if (data.pushTargets !== undefined) {
+      recordAudit(deps.auditStore, req, { action: "project.push_targets_set", targetType: "project", targetId: id, details: { repoKeys: data.pushTargets.map((t) => t.repoKey) } });
+    }
+    if (data.agentId !== undefined) {
+      recordAudit(deps.auditStore, req, { action: "project.agent_assign", targetType: "project", targetId: id, details: { agentId: data.agentId } });
+    }
     writeJson(res, 200, { project: detail });
     deps.onProjectChange?.();
     if (reconfigured) {
       await relaunchFailedTasksForProject(store, id, deps.taskControl);
     }
-  });
+  }, { permission: "project.write", resourceParam: "id" });
 
-  router.add("DELETE", "/api/admin/projects/:id", async (_req, res, params) => {
+  router.add("DELETE", "/api/admin/projects/:id", async (req, res, params) => {
     if (!deps.projectStore) { writeJson(res, 501, { error: "Project store not available" }); return; }
     const store = deps.projectStore;
     const id = makeProjectId(params["id"] ?? "");
@@ -575,6 +875,7 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
     if (!existing) { writeJson(res, 404, { error: "Project not found" }); return; }
     try {
       await store.deleteProject(id);
+      recordAudit(deps.auditStore, req, { action: "project.delete", targetType: "project", targetId: id, details: { name: existing.name, type: existing.type } });
       res.statusCode = 204; res.end();
       deps.onProjectChange?.();
     } catch (err: unknown) {
@@ -582,7 +883,7 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
       log.warn({ err, id }, "delete project failed");
       writeJson(res, 500, { error: msg });
     }
-  });
+  }, { permission: "project.delete", resourceParam: "id" });
 }
 
 // Re-export types for tests

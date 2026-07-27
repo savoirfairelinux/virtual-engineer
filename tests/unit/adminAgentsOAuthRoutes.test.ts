@@ -1,16 +1,14 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { tmpdir } from "os";
-import { join } from "path";
-import { createHmac, randomUUID } from "crypto";
 import type { Server } from "node:http";
 import { SqliteStateStore } from "../../src/state/stateStore.js";
 import { createAdminServer, type AdminServerDependencies } from "../../src/admin/adminServer.js";
 import { registerBuiltinPlugins } from "../../src/plugins/init.js";
 import { registerPlugin } from "../../src/plugins/registry.js";
 import { z } from "zod";
+import { tempDatabasePath } from "./helpers/tempDatabase.js";
 
 function tempDbPath(): string {
-  return join(tmpdir(), `ve-admin-agents-oauth-${randomUUID()}.db`);
+  return tempDatabasePath("ve-admin-agents-oauth");
 }
 
 interface FetchResult {
@@ -23,10 +21,8 @@ async function rest(server: Server, path: string, opts: { method?: string; body?
   if (!addr || typeof addr === "string") throw new Error("Server not bound");
   const url = `http://127.0.0.1:${addr.port}${path}`;
   const init: RequestInit = { method: opts.method ?? "GET" };
-  init.headers = authHeaders("admin-secret");
   if (opts.body !== undefined) {
     init.headers = {
-      ...init.headers,
       "content-type": "application/json",
     };
     init.body = JSON.stringify(opts.body);
@@ -38,14 +34,6 @@ async function rest(server: Server, path: string, opts: { method?: string; body?
     try { parsed = JSON.parse(text) as Record<string, unknown>; } catch { /* leave null */ }
   }
   return { status: res.status, body: parsed };
-}
-
-function authHeaders(secret: string): Record<string, string> {
-  const timestamp = Math.floor(Date.now() / 1000).toString();
-  const signature = createHmac("sha256", secret).update(timestamp).digest("hex");
-  return {
-    authorization: `Bearer ${timestamp}.${signature}`,
-  };
 }
 
 function makeDeps(store: SqliteStateStore, overrides: Partial<AdminServerDependencies> = {}): AdminServerDependencies {
@@ -65,7 +53,10 @@ function makeDeps(store: SqliteStateStore, overrides: Partial<AdminServerDepende
       getChangesForTask: vi.fn(async () => []),
       getChangesForTasks: vi.fn(async () => []),
       deleteTaskGroup: vi.fn(async () => {}),
+      getCostSummary: vi.fn(async () => ({ totalUsd: 0, totalAiCredits: 0, totalPremiumRequests: 0, totalRuns: 0, perProject: [], sinceEpochSeconds: null })),
+      getModelUsageSummary: vi.fn(async () => ({ byModel: [], perProject: [], totalRuns: 0, totalUsd: 0, sinceEpochSeconds: null })),
     },
+    allowUnauthenticatedAdmin: true,
     agentStore: store,
     projectStore: store,
     integrationStore: store,
@@ -465,5 +456,78 @@ describe("Admin API — Copilot OAuth routes", () => {
     expect(result.status).toBe(404);
     expect(result.body).toEqual({ error: "Integration not found" });
     expect(createOAuthHandler).not.toHaveBeenCalled();
+  });
+});
+
+describe("Admin API — Claude subscription OAuth routes (redirect + PKCE)", () => {
+  let store: SqliteStateStore;
+  let server: Server;
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    if (server) {
+      await new Promise<void>((resolve, reject) => server.close((err) => err ? reject(err) : resolve()));
+    }
+    if (store) {
+      store.close();
+    }
+  });
+
+  beforeEach(async () => {
+    registerBuiltinPlugins();
+    store = await SqliteStateStore.create(tempDbPath());
+  });
+
+  it("POST /api/admin/plugins/claude/oauth/start returns a Claude authorization URL with PKCE params", async () => {
+    // Uses the real Claude descriptor + default provider auth service (no network).
+    server = createAdminServer(makeDeps(store));
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+
+    const result = await rest(server, "/api/admin/plugins/claude/oauth/start", {
+      method: "POST",
+      body: {
+        redirectUri: "http://127.0.0.1:3100/api/admin/plugins/claude/oauth/callback",
+        state: "oauth-state",
+        codeChallenge: "pkce-challenge",
+        codeChallengeMethod: "S256",
+        config: { authMode: "subscription" },
+      },
+    });
+
+    expect(result.status).toBe(200);
+    const authorizationUrl = String((result.body ?? {})["authorizationUrl"] ?? "");
+    const url = new URL(authorizationUrl);
+    expect(url.origin + url.pathname).toBe("https://claude.ai/oauth/authorize");
+    expect(url.searchParams.get("response_type")).toBe("code");
+    expect(url.searchParams.get("code_challenge")).toBe("pkce-challenge");
+    expect(url.searchParams.get("code_challenge_method")).toBe("S256");
+  });
+
+  it("POST /api/admin/plugins/claude/oauth/complete exchanges the code for an encrypted token", async () => {
+    // Only stub the Anthropic token exchange; let the test client's own fetch pass through.
+    const realFetch = globalThis.fetch;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("console.anthropic.com/v1/oauth/token")) {
+        return new Response(JSON.stringify({ access_token: "sk-ant-oat-xyz" }), { status: 200 });
+      }
+      return realFetch(input, init);
+    });
+    server = createAdminServer(makeDeps(store));
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+
+    const result = await rest(server, "/api/admin/plugins/claude/oauth/complete", {
+      method: "POST",
+      body: {
+        code: "auth-code",
+        redirectUri: "http://127.0.0.1:3100/api/admin/plugins/claude/oauth/callback",
+        codeVerifier: "pkce-verifier",
+        config: { authMode: "subscription" },
+      },
+    });
+
+    expect(result.status).toBe(200);
+    expect(typeof (result.body ?? {})["encryptedToken"]).toBe("string");
+    expect((result.body ?? {})["encryptedToken"]).not.toBe("");
   });
 });

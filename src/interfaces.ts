@@ -1,39 +1,56 @@
 /** Core domain types and interface contracts. */
 
+import {
+  type AgentId,
+  type ExternalChangeId,
+  type ProjectId,
+  type TaskId,
+  type TicketId,
+} from "./domain/identifiers.js";
+import {
+  type ChangePerRepository,
+  type StateTransition,
+  type Task,
+  type TaskState,
+} from "./domain/tasks.js";
+
+export {
+  makeAgentId,
+  makeExternalChangeId,
+  makeProjectId,
+  makeTaskId,
+  makeTicketId,
+  type AgentId,
+  type ExternalChangeId,
+  type ProjectId,
+  type TaskId,
+  type TicketId,
+} from "./domain/identifiers.js";
+export {
+  CODE_GEN_STATES,
+  CODE_GEN_TERMINAL_STATES,
+  CODE_REVIEW_STATES,
+  CODE_REVIEW_TERMINAL_STATES,
+  TASK_STATES,
+  TERMINAL_STATES,
+  type ChangePerRepository,
+  type CodeGenState,
+  type CodeReviewState,
+  type StateTransition,
+  type Task,
+  type TaskState,
+  type TaskType,
+} from "./domain/tasks.js";
+
 // ─── Shared value types ───────────────────────────────────────────────────────
-
-export type TaskId = string & { readonly __brand: "TaskId" };
-export type TicketId = string & { readonly __brand: "TicketId" };
-export type ExternalChangeId = string & { readonly __brand: "ExternalChangeId" };
-export type AgentId = string & { readonly __brand: "AgentId" };
-export type ProjectId = string & { readonly __brand: "ProjectId" };
-
-/** Cast a plain string to the branded `TaskId` type. */
-export function makeTaskId(s: string): TaskId {
-  return s as TaskId;
-}
-/** Cast a plain string to the branded `TicketId` type. */
-export function makeTicketId(s: string): TicketId {
-  return s as TicketId;
-}
-/** Cast a plain string to the branded `ExternalChangeId` type. */
-export function makeExternalChangeId(s: string): ExternalChangeId {
-  return s as ExternalChangeId;
-}
-/** Cast a plain string to the branded `AgentId` type. */
-export function makeAgentId(s: string): AgentId {
-  return s as AgentId;
-}
-/** Cast a plain string to the branded `ProjectId` type. */
-export function makeProjectId(s: string): ProjectId {
-  return s as ProjectId;
-}
 
 // ─── Phase 2: Agents / Projects / Concurrency types ───────────────────────────
 
 export type AgentType = "coding" | "review";
 export type ProjectType = "coding" | "review";
 export type PushTargetRole = "primary" | "submodule" | "dependency" | "related";
+
+export const DEFAULT_LOCAL_SKILLS_PATH = ".github/skills";
 
 export interface AgentRecord {
   id: AgentId;
@@ -62,6 +79,20 @@ export interface ProjectRecord {
   agentOverrideJson: string | null;
   /** Bash script run on the host after cloning. Empty string means "no script". */
   postCloneScript: string;
+  /** When true, the agent container loads local repository skills. */
+  skillDiscoveryEnabled: boolean;
+  /** Workspace-relative path for local project skills. */
+  localSkillsPath: string;
+  /** JSON list of remote skill sources fetched with `npx skills` when configured. */
+  skillSourcesJson: string;
+  /** Optional literal Gerrit topic that overrides the ticket-derived topic (buildGerritTopic) for all pushes from this project. NULL = use the ticket-derived topic. */
+  gerritTopicOverride: string | null;
+  /** When true, agent commit messages use the full ticket URL in the footer instead of the short "#id" form. */
+  useFullTicketUrlInCommits: boolean;
+  /** When true, VE posts a note on the source ticket with the review URL(s) once the first cycle opens a review. Default off — most teams already surface this via standard VCS/ticket integrations. */
+  postReviewLinkToTicket: boolean;
+  /** When true, CI build-failure notifications (e.g. Jenkins "Build Failed") count as actionable review feedback and trigger a retry cycle. Default off — some teams don't want VE auto-retrying on broken CI. Coding projects only. */
+  reactToCiFailures: boolean;
   enabled: boolean;
   createdAt: Date;
   updatedAt: Date;
@@ -104,7 +135,14 @@ export interface ProjectPushTargetRecord {
   commitOrder: number;
   /** Workspace-relative path (e.g. ".", "libs/core"). */
   localPath: string;
+  /** SSH private-key path, or null when using the SSH agent. */
   sshKeyPath: string | null;
+  /** SSH agent identity public-key path for identity pinning, or null when not pinning. */
+  sshAgentPubKeyPath?: string | null | undefined;
+  /** Reviewer email addresses attached to every change pushed to this target. */
+  reviewerEmails: string[];
+  /** Runtime-resolved known_hosts path for this target's SSH integration. */
+  sshKnownHostsPath?: string | undefined;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -114,6 +152,122 @@ export interface ProjectReviewConfig {
   integrationId: string;
   /** Inclusion list — all repos selected at project-creation time. */
   repos: string[];
+}
+
+// ─── Admin RBAC / audit types ─────────────────────────────────────────────────
+
+/** Role of an admin dashboard user account (admin > operator > viewer). */
+export type UserRole = "admin" | "operator" | "viewer";
+
+/** An admin dashboard user account. */
+export interface AdminUser {
+  id: string;
+  username: string;
+  /** Encoded password hash (never the plaintext password). */
+  passwordHash: string;
+  role: UserRole;
+  enabled: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+/** A DB-backed admin session. `tokenHash` is a hash of the opaque bearer token. */
+export interface UserSession {
+  id: number;
+  tokenHash: string;
+  userId: string;
+  createdAt: Date;
+  expiresAt: Date;
+  lastSeenAt: Date;
+}
+
+/** One append-only audit-trail entry recording an admin mutation. */
+export interface AuditEntry {
+  id: number;
+  /** User id of the actor, or null for non-user actors (e.g. bootstrap). */
+  actorUserId: string | null;
+  actorName: string;
+  /** Dotted action key, e.g. "integration.create", "task.pause". */
+  action: string;
+  targetType: string | null;
+  targetId: string | null;
+  /** Parsed details payload (secrets must be masked before append). */
+  details: Record<string, unknown>;
+  createdAt: Date;
+}
+
+// ─── PBAC (policy-based access control) ───────────────────────────────────────
+
+/**
+ * Resource types that a policy rule can be scoped to. Only `project` accepts a
+ * concrete `resourceId`, and `task` rules are scoped by the owning project's id.
+ * All other resource types (`integration`, `agent`, `prompt`, `system`, `user`,
+ * `audit`, `policy`, `overview`, `concurrency`, `oauth`) are global — their rules
+ * carry a null `resourceId` (they are shared, library-style resources).
+ */
+export type ResourceType =
+  | "project"
+  | "task"
+  | "integration"
+  | "agent"
+  | "prompt"
+  | "system"
+  | "user"
+  | "audit"
+  | "policy"
+  | "overview"
+  | "concurrency"
+  | "oauth";
+
+/**
+ * A permission is a `"<resourceType>.<action>"` string (e.g. `"project.read"`).
+ * The concrete catalog of valid permissions lives in
+ * `src/admin/authorization/permissions.ts`.
+ */
+export type Permission = string;
+
+/** A principal that a policy can be bound to. */
+export type PrincipalType = "user" | "group";
+
+/** A named collection of users; policies bound to a group apply to all members. */
+export interface Group {
+  id: string;
+  name: string;
+  description: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+/** A named, reusable set of grant rules. `builtin` policies are seeded and protected. */
+export interface Policy {
+  id: string;
+  name: string;
+  description: string;
+  builtin: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+/**
+ * A single grant inside a policy. Grant-only (there are no deny rules).
+ * `resourceId` null grants the permission on **all** resources of the
+ * permission's type; a concrete id scopes the grant to that resource.
+ */
+export interface PolicyRule {
+  id: string;
+  policyId: string;
+  permission: Permission;
+  resourceId: string | null;
+  createdAt: Date;
+}
+
+/** Attaches a policy to a principal (a user or a group). */
+export interface PolicyBinding {
+  id: string;
+  policyId: string;
+  principalType: PrincipalType;
+  principalId: string;
+  createdAt: Date;
 }
 
 /** A single PR/MR that VE has been requested to review. */
@@ -162,61 +316,6 @@ export interface ResolvedAgentConfig {
 }
 
 // ─── Task state machine ───────────────────────────────────────────────────────
-
-/** States belonging to the ticket-driven code-generation workflow. */
-export const CODE_GEN_STATES = [
-  "DETECTED",
-  "CONTEXT_BUILDING",
-  "AGENT_RUNNING",
-  "IN_REVIEW",
-  "FEEDBACK_PROCESSING",
-  "RETRY_CYCLE",
-  "MERGED",
-  "CLOSING",
-  "DONE",
-  "FAILED",
-  "ABANDONED",
-] as const;
-
-/** States belonging to the VE-as-reviewer code-review workflow. */
-export const CODE_REVIEW_STATES = [
-  "REVIEW_PENDING",
-  "REVIEW_RUNNING",
-  "REVIEW_COMMENTING",
-  "REVIEW_WATCHING",
-  "REVIEW_DONE",
-  "REVIEW_FAILED",
-] as const;
-
-export type CodeGenState = (typeof CODE_GEN_STATES)[number];
-export type CodeReviewState = (typeof CODE_REVIEW_STATES)[number];
-
-/** Union of all task states across both workflows. */
-export const TASK_STATES = [...CODE_GEN_STATES, ...CODE_REVIEW_STATES] as const;
-
-export type TaskState = CodeGenState | CodeReviewState;
-
-/** "code-gen" = ticket-driven flow; "code-review" = VE acts as reviewer. */
-export type TaskType = "code-gen" | "code-review";
-
-/** Terminal states for the code-generation workflow. */
-export const CODE_GEN_TERMINAL_STATES: ReadonlySet<CodeGenState> = new Set<CodeGenState>([
-  "DONE",
-  "FAILED",
-  "ABANDONED",
-]);
-
-/** Terminal states for the code-review workflow. */
-export const CODE_REVIEW_TERMINAL_STATES: ReadonlySet<CodeReviewState> = new Set<CodeReviewState>([
-  "REVIEW_DONE",
-  "REVIEW_FAILED",
-]);
-
-/** Terminal states across both workflows — no further transitions allowed. */
-export const TERMINAL_STATES: ReadonlySet<TaskState> = new Set<TaskState>([
-  ...CODE_GEN_TERMINAL_STATES,
-  ...CODE_REVIEW_TERMINAL_STATES,
-]);
 
 // ─── Agent interfaces ─────────────────────────────────────────────────────────
 
@@ -272,6 +371,22 @@ export interface AgentSession {
   copilotReasoningEffort?: string | undefined;
   /** Multi-repo workspace layout — when set, agent-worker uses it to group files/commits by repo. */
   repositoryMap?: RepositoryMap | undefined;
+  /** When true, the agent loads local repository skills from `localSkillsPath`. */
+  skillDiscoveryEnabled?: boolean | undefined;
+  /** Workspace-relative path used for local skills when local skill loading is enabled. */
+  localSkillsPath?: string | undefined;
+  /** Remote skills fetched by the worker before opening the agent session. */
+  skillSourcesJson?: string | undefined;
+  /** Pre-formatted ticket-footer trailer line (e.g. "GitLab: https://…/issues/123") injected into every agent commit alongside its Change-Id. Sourced from the project's "full ticket URL in commits" setting. */
+  ticketFooterLine?: string | undefined;
+
+  // ── Aider (agent_execution) ────────────────────────────────────────────────
+  /** Aider LLM backend selector (openai | anthropic | ollama | openrouter | deepseek | openai_compat). */
+  aiderBackend?: string | undefined;
+  /** API key for the selected Aider backend (plaintext at rest, like `githubToken`). */
+  aiderApiKey?: string | undefined;
+  /** Custom API base URL (required for `openai_compat`; optional override for `ollama`). */
+  aiderApiBase?: string | undefined;
 }
 
 export interface TaskContext {
@@ -290,6 +405,12 @@ export interface TaskContext {
   constraints: string[];
   priorFeedback: FeedbackItem[];
   cycleNumber: number;
+  /**
+   * True if a prior patchset was successfully checked out into the workspace
+   * volume before this cycle started. When true the agent should amend/extend
+   * existing commits rather than start from scratch.
+   */
+  hasPriorPatchset?: boolean;
   /** Commit message the agent must use for direct Gerrit submission */
   commitMessage: string;
   /** Optional link back to the originating ticket for traceability */
@@ -429,9 +550,21 @@ export interface ReviewWorkspaceInput {
   reasoningEffort?: string | undefined;
   /** Container image (defaults to agentContainerImage from codegen config) */
   containerImage?: string | undefined;
-}
+  /** When true, the agent container loads local repository skills from `localSkillsPath`. */
+  skillDiscoveryEnabled?: boolean | undefined;
+  /** Workspace-relative path used for local skills when skill discovery is enabled. */
+  localSkillsPath?: string | undefined;
+  /** Remote skills fetched by the worker before opening the agent session. */
+  skillSourcesJson?: string | undefined;
 
-/** Options for checking out a prior patchset/revision onto a cloned workspace. */
+  // ── Aider (agent_execution) ────────────────────────────────────────────────
+  /** Aider LLM backend selector (openai | anthropic | ollama | openrouter | deepseek | openai_compat). */
+  aiderBackend?: string | undefined;
+  /** API key for the selected Aider backend (plaintext at rest, like `agentToken`). */
+  aiderApiKey?: string | undefined;
+  /** Custom API base URL (required for `openai_compat`; optional override for `ollama`). */
+  aiderApiBase?: string | undefined;
+}
 export interface PatchsetCheckoutOptions {
   /** VCS base URL (used to build the remote fetch URL) */
   vcsBaseUrl: string;
@@ -441,6 +574,8 @@ export interface PatchsetCheckoutOptions {
   patchset: number;
   /** Optional SSH key path; uses default git credential chain if absent */
   sshKeyPath?: string | undefined;
+  /** Path to an agent identity `.pub` file for identity pinning. Only used when sshKeyPath is absent. */
+  sshAgentPubKeyPath?: string | undefined;
   /** Path to a known_hosts file. When set, SSH uses strict host key verification. */
   sshKnownHostsPath?: string | undefined;
   /** Gerrit SSH host (for SSH fetch; falls back to HTTP if absent) */
@@ -485,7 +620,7 @@ export interface WorkspaceRunner {
   /** Run the review agent container against the cloned+patched workspace. */
   runReviewInDocker?(
     handle: WorkspaceHandle,
-    input: ReviewWorkspaceInput,
+    input: ReviewWorkspaceInput & { agentAdapter: AgentAdapter },
     callbacks?: { onStderrChunk?: ((chunk: string) => void) | undefined } | undefined
   ): Promise<{ rawOutput: string }>;
   /** Spawn the adapter container and return raw stdout/stderr. Used by ConfigurableAdapter.configure. */
@@ -710,6 +845,18 @@ export interface ReviewProvider {
   getChangeDiff(changeId: ExternalChangeId, patchset?: number): Promise<ReviewChangeDiff>;
 
   /**
+   * Fetch the diff between two patchsets of the same change (`fromPatchset` →
+   * `toPatchset`). Used on a re-review to surface "what changed since my last
+   * review". Optional — providers that cannot compute an inter-patchset diff
+   * omit it and the orchestrator falls back to the full diff only.
+   */
+  getInterPatchsetDiff?(
+    details: ReviewChangeDetails,
+    fromPatchset: number,
+    toPatchset: number
+  ): Promise<ReviewChangeDiff>;
+
+  /**
    * Post inline comments and a summary on the given revision.
    *
    * `allowedFiles`, when provided, restricts the comments actually submitted to
@@ -754,6 +901,24 @@ export interface ReviewProvider {
    * Optional — omitting falls back to unconditional review creation.
    */
   isReviewer?(changeId: ExternalChangeId): Promise<boolean>;
+
+  /**
+   * Returns true when the VE reviewer account has already posted a review
+   * (vote and/or summary/comments) against the CURRENT patchset/revision of
+   * this change on the review server.
+   *
+   * This is the authoritative *cross-instance* duplicate-review signal: VE's
+   * local dedup state (task rows, posted_review_comments) is empty on a fresh
+   * instance, so this lets an automatic trigger (stream backfill, polling-loop
+   * discovery, webhook re-delivery) skip a change a previous instance already
+   * reviewed. Only the current patchset counts — a newer patchset returns false
+   * so it is still reviewed. Manual triggers (`StartReviewInput.force`) bypass
+   * this guard.
+   *
+   * Optional — providers that cannot determine this reliably omit it, in which
+   * case the review proceeds (no skip).
+   */
+  hasReviewedCurrentPatchset?(changeId: ExternalChangeId): Promise<boolean>;
 
   /**
    * Fetch open discussion threads on the change so the review agent can reply.
@@ -870,62 +1035,6 @@ export class ReviewNotFoundError extends ReviewApiError {
 
 // ─── State Store interfaces ───────────────────────────────────────────────────
 
-export interface Task {
-  taskId: TaskId;
-  ticketId: TicketId;
-  ticketSourceLabel: string;
-  ticketTitle: string;
-  ticketDescription: string;
-  state: TaskState;
-  /** Discriminator: "code-gen" (default) or "code-review". */
-  taskType: TaskType;
-  externalChangeId: ExternalChangeId | null;
-  currentPatchset: number;
-  /** For code-review tasks: last patchset reviewed by VE. NULL otherwise. */
-  reviewedPatchset: number | null;
-  cycleCount: number;
-  createdAt: Date;
-  updatedAt: Date;
-  failureReason: string | null;
-  ticketUrl: string | null;
-  reviewUrl: string | null;
-  /** Project ID (null for legacy tasks). */
-  projectId?: ProjectId | null | undefined;
-  /** Human-readable identifier for the UI (e.g. ticket number, Gerrit change number). */
-  displayId: string | null;
-  /** Persisted feature branch ref for the first push; null for legacy tasks (falls back to legacy naming on resume). */
-  pushRef?: string | null;
-}
-
-/** Per-repository change tracking (Gerrit Change-Id or GitLab MR IID) for multi-repo tasks. */
-export interface ChangePerRepository {
-  id: string;
-  taskId: TaskId;
-  repoKey: string;
-  changeId: string;
-  reviewUrl: string | null;
-  status: string;
-  /** Integration ID of the VCS connector used for this repo */
-  integrationId: string;
-  /** Review system type: "gerrit" or "gitlab" */
-  reviewSystem: string;
-  /** Position in the commit chain (0 = legacy single-commit, 1..N for multi-commit) */
-  commitIndex: number;
-  /** SHA-1 hash of the normalized commit subject — for deterministic Change-Id mapping */
-  subjectHash: string | null;
-  createdAt: Date;
-  updatedAt: Date;
-}
-
-export interface StateTransition {
-  id: number;
-  taskId: TaskId;
-  fromState: TaskState;
-  toState: TaskState;
-  metadata: Record<string, unknown>;
-  createdAt: Date;
-}
-
 export interface AgentCycle {
   id: number;
   taskId: TaskId;
@@ -965,6 +1074,80 @@ export interface CycleCost {
   tokens: CycleCostTokens;
   /** Model id resolved from the usage events, or null. */
   modelId: string | null;
+}
+
+/** Per-project (or unassigned) slice of an aggregated cost summary. */
+export interface CostSummaryProject {
+  /** Project id, or null for cycles whose task has no project (orphaned/legacy). */
+  projectId: string | null;
+  /** Project name, or null when the project no longer exists or is unassigned. */
+  projectName: string | null;
+  /** Total USD across the project's agent cycles in the period. */
+  usd: number;
+  /** Total GitHub AI credits across the project's agent cycles in the period. */
+  aiCredits: number;
+  /** Total premium-request multiplier across the period. */
+  premiumRequests: number;
+  /** Number of agent cycles (runs) counted for the project in the period. */
+  runCount: number;
+}
+
+/**
+ * Aggregated execution cost across all agent cycles, broken down per project and
+ * totalled instance-wide. Cycles without a recorded cost snapshot are recomputed
+ * from their captured event log so historical runs are still accounted for.
+ */
+export interface CostSummary {
+  /** Instance-wide total USD over the period. */
+  totalUsd: number;
+  /** Instance-wide total GitHub AI credits over the period. */
+  totalAiCredits: number;
+  /** Instance-wide total premium-request multiplier over the period. */
+  totalPremiumRequests: number;
+  /** Instance-wide total number of agent cycles (runs) over the period. */
+  totalRuns: number;
+  /** Per-project breakdown, sorted by descending USD. */
+  perProject: CostSummaryProject[];
+  /** Inclusive lower bound of the period in epoch seconds, or null for all-time. */
+  sinceEpochSeconds: number | null;
+}
+
+/** Run-count and cost for a single model. */
+export interface ModelUsageEntry {
+  /** Model id, or null when the model could not be resolved from the cycle. */
+  modelId: string | null;
+  /** Number of agent cycles (runs) executed with this model in the period. */
+  runCount: number;
+  /** Total USD attributed to this model in the period. */
+  usd: number;
+}
+
+/** Per-project model distribution slice. */
+export interface ModelUsageProject {
+  /** Project id, or null for cycles whose task has no project. */
+  projectId: string | null;
+  /** Project name, or null when unassigned / deleted. */
+  projectName: string | null;
+  /** Models used by the project, sorted by descending run count. */
+  models: ModelUsageEntry[];
+}
+
+/**
+ * Distribution of AI models across agent cycles, both globally and per project,
+ * by run count and by cost. Cycles whose model was not recorded in a snapshot
+ * are recomputed from their captured event log so historical runs are included.
+ */
+export interface ModelUsageSummary {
+  /** Global model distribution, sorted by descending run count. */
+  byModel: ModelUsageEntry[];
+  /** Per-project model distribution. */
+  perProject: ModelUsageProject[];
+  /** Instance-wide total number of agent cycles (runs) over the period. */
+  totalRuns: number;
+  /** Instance-wide total USD over the period. */
+  totalUsd: number;
+  /** Inclusive lower bound of the period in epoch seconds, or null for all-time. */
+  sinceEpochSeconds: number | null;
 }
 
 export interface Prompt {
@@ -1021,6 +1204,18 @@ export interface StateStore {
 
   /** Return the single active (non-terminal) task for a ticket, optionally scoped to a project. */
   getActiveTaskByTicketId(ticketId: TicketId, projectId?: ProjectId): Promise<Task | null>;
+
+  /**
+   * Return the newest task for a ticket matching a ticket-source snapshot
+   * (`ticket_source_integration_id` + `ticket_source_project_key`), regardless
+   * of `project_id`. Used to catch orphaned tasks whose owning project was
+   * deleted (project_id set NULL) and never re-adopted.
+   */
+  getLatestTaskByTicketSource(
+    ticketId: TicketId,
+    integrationId: string,
+    ticketProjectKey: string
+  ): Promise<Task | null>;
   getActiveTasks(): Promise<Task[]>;
   getAllTasks(): Promise<Task[]>;
 
@@ -1080,6 +1275,12 @@ export interface StateStore {
   getAgentCycles(taskId: TaskId): Promise<AgentCycle[]>;
   getAgentCycleEvents(taskId: TaskId, cycleNumber: number): Promise<AgentLogEvent[]>;
 
+  /** Aggregate agent-cycle execution cost per project and instance-wide. */
+  getCostSummary(options?: { since?: Date }): Promise<CostSummary>;
+
+  /** Aggregate AI-model usage distribution by run count and cost. */
+  getModelUsageSummary(options?: { since?: Date }): Promise<ModelUsageSummary>;
+
   getStateTransitions(taskId: TaskId): Promise<StateTransition[]>;
 
   // Comment deduplication
@@ -1135,6 +1336,14 @@ export interface StateStore {
     integrationId: string | null,
     externalChangeId: string
   ): Promise<Task | null>;
+
+  /**
+   * Find the most recent code-review task for a given change+project that has
+   * already completed a review pass (reviewed_patchset IS NOT NULL). Used to
+   * prevent duplicate reviews when an integration is deleted and recreated with
+   * a new ID — the ticketId changes but the underlying change is the same.
+   */
+  findReviewedCodeReviewTask(changeId: string, projectId: ProjectId): Promise<Task | null>;
 
   /** Update status of a per-repo change record; changeId disambiguates multi-commit rows. */
   updateChangePerRepositoryStatus(
@@ -1222,7 +1431,16 @@ export interface DiscoveredResources {
 // ─── Plugin / Integration types ───────────────────────────────────────────────
 
 /** Identifiers for the external systems Virtual Engineer can connect to. */
-export const PROVIDER_IDS = ["github", "gitlab", "gerrit", "redmine", "copilot", "mock"] as const;
+export const PROVIDER_IDS = [
+  "github",
+  "gitlab",
+  "gerrit",
+  "redmine",
+  "copilot",
+  "claude",
+  "aider",
+  "mock",
+] as const;
 export type ProviderId = (typeof PROVIDER_IDS)[number];
 
 /**

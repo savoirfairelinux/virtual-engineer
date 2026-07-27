@@ -175,7 +175,7 @@ export interface PluginField {
 }
 
 export interface ApiPluginOAuth {
-  mode: "device";
+  mode: "device" | "redirect";
   tokenField: string;
   dependsOn?: { field: string; value: string };
   providerName: string;
@@ -194,6 +194,8 @@ export interface ApiPlugin {
   domainCapabilities: DomainCapability[];
   icon?: ProviderIcon | null;
   requiredFields: PluginField[];
+  /** True when the provider supports the generic SSH auth UI (agent / generated-key). */
+  supportsSshAuth?: boolean;
   oauth?: ApiPluginOAuth;
 }
 
@@ -219,6 +221,9 @@ export interface ApiProject {
   type: "coding" | "review";
   enabled: boolean;
   agentId: string | null;
+  skillDiscoveryEnabled?: boolean;
+  localSkillsPath?: string;
+  skillSources?: Array<{ source: string; skills: string[]; installAll?: boolean; sshUser?: string; sshPort?: number; sshKeyPath?: string; sshKnownHostsPath?: string }>;
   createdAt: string;
   updatedAt: string;
 }
@@ -287,6 +292,144 @@ export interface ApiOverview {
     pollingInterval: string;
     logLevel: string;
   };
+}
+
+export interface ApiCostSummaryProject {
+  projectId: string | null;
+  projectName: string | null;
+  usd: number;
+  aiCredits: number;
+  premiumRequests: number;
+  runCount: number;
+}
+
+export interface ApiCostSummary {
+  totalUsd: number;
+  totalAiCredits: number;
+  totalPremiumRequests: number;
+  totalRuns: number;
+  perProject: ApiCostSummaryProject[];
+  sinceEpochSeconds: number | null;
+}
+
+export interface ApiModelUsageEntry {
+  modelId: string | null;
+  runCount: number;
+  usd: number;
+}
+
+export interface ApiModelUsageProject {
+  projectId: string | null;
+  projectName: string | null;
+  models: ApiModelUsageEntry[];
+}
+
+export interface ApiModelUsageSummary {
+  byModel: ApiModelUsageEntry[];
+  perProject: ApiModelUsageProject[];
+  totalRuns: number;
+  totalUsd: number;
+  sinceEpochSeconds: number | null;
+}
+
+/* ─── Auth / users / audit ────────────────────────────────────────────── */
+
+export type UserRole = "admin" | "operator" | "viewer";
+
+/** Current identity from GET /api/admin/auth/me. `id` is null in bootstrap mode (no users yet — see adminServer.ts). */
+export interface SerializedCapabilities {
+  superuser: boolean;
+  /** permission → "*" (all) or a list of scoped resource ids. */
+  grants: Record<string, "*" | string[]>;
+}
+
+export interface ApiMe {
+  id: string | null;
+  username: string;
+  role: UserRole;
+  capabilities?: SerializedCapabilities;
+}
+
+/* ─── PBAC: groups / policies ─────────────────────────────────────────── */
+
+export interface ApiGroup {
+  id: string;
+  name: string;
+  description: string;
+  createdAt: string;
+  updatedAt: string;
+  memberCount?: number;
+}
+
+export interface ApiGroupMember {
+  id: string;
+  username: string;
+  role: UserRole;
+}
+
+export interface ApiGroupDetail extends ApiGroup {
+  members: ApiGroupMember[];
+}
+
+export interface ApiPolicy {
+  id: string;
+  name: string;
+  description: string;
+  builtin: boolean;
+  createdAt: string;
+  updatedAt: string;
+  ruleCount?: number;
+  bindingCount?: number;
+}
+
+export interface ApiPolicyRule {
+  id?: string;
+  permission: string;
+  resourceId: string | null;
+}
+
+export interface ApiPolicyBinding {
+  id: string;
+  policyId: string;
+  principalType: "user" | "group";
+  principalId: string;
+}
+
+export interface ApiPolicyDetail extends ApiPolicy {
+  rules: ApiPolicyRule[];
+  bindings: ApiPolicyBinding[];
+}
+
+export interface SetupStatus {
+  needsSetup: boolean;
+  credentialEncryptionConfigured: boolean;
+}
+
+export interface ApiUser {
+  id: string;
+  username: string;
+  role: UserRole;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ApiAuditEntry {
+  id: number;
+  actorUserId: string | null;
+  actorName: string;
+  action: string;
+  targetType: string | null;
+  targetId: string | null;
+  details: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface ApiAuditPage {
+  entries: ApiAuditEntry[];
+  total: number;
+  limit: number;
+  offset: number;
 }
 
 /* ─── Bootstrap injected by the server ────────────────────────────────── */

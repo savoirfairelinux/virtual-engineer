@@ -56,6 +56,15 @@ const ConfigSchema = z.object({
     adminApiHost: z.string().min(1).default("127.0.0.1"),
     adminApiPort: z.coerce.number().int().positive().default(3100),
     adminAuthSecret: z.string().min(1).optional(),
+    /**
+     * When `true`, the admin auth layer extracts the client IP from the
+     * `X-Forwarded-For` header (first entry) instead of the raw socket address.
+     * Only enable this when the admin server sits behind a trusted reverse proxy
+     * you control — blindly trusting the header in a publicly reachable
+     * deployment lets clients spoof their IP and bypass rate-limiting.
+     * Default: `false` (safe for the standard loopback-bound deployment).
+     */
+    adminTrustProxy: booleanFromEnv.default(false),
 
     // Workflow
     pollingIntervalMs: z.coerce.number().int().positive().default(30_000),
@@ -77,7 +86,7 @@ const ConfigSchema = z.object({
     workspaceBaseDir: z.string().default("/tmp/virtual-engineer/workspaces"),
     /**
      * Docker network for agent/review containers.
-     * The default `virtual-engineer_ve-agent-net` is created by scripts/init-infra.sh.
+     * The default `virtual-engineer_ve-agent-net` is created by scripts/start.sh.
      * When running the orchestrator directly on the host (dev), `bridge` also works.
      */
     agentDockerNetwork: z.string().default("virtual-engineer_ve-agent-net"),
@@ -95,6 +104,7 @@ function fromEnv(): Record<string, string | undefined> {
     adminApiHost: process.env["ADMIN_API_HOST"],
     adminApiPort: process.env["ADMIN_API_PORT"],
     adminAuthSecret: process.env["ADMIN_AUTH_SECRET"],
+    adminTrustProxy: process.env["ADMIN_TRUST_PROXY"],
     pollingIntervalMs: process.env["POLLING_INTERVAL_MS"],
     maxAgentCycles: process.env["MAX_AGENT_CYCLES"],
     maxRetryAttempts: process.env["MAX_RETRY_ATTEMPTS"],

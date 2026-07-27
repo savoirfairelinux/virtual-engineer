@@ -148,6 +148,50 @@ describe("buildReviewPrompt", () => {
   });
 });
 
+describe("buildReviewPrompt commit message", () => {
+  it("renders the commit message body when the description is non-empty", () => {
+    const prompt = buildReviewPrompt({
+      details: { ...details, description: "Implements rate limiting.\n\nCloses #42." },
+      diff,
+      userPrompt: "Review this.",
+    });
+    expect(prompt).toContain("## Commit message");
+    expect(prompt).toContain("Implements rate limiting.");
+    expect(prompt).toContain("Closes #42.");
+  });
+
+  it("truncates very large commit message bodies", () => {
+    const prompt = buildReviewPrompt({
+      details: { ...details, description: "x".repeat(9_000) },
+      diff,
+      userPrompt: "Review this.",
+    });
+    expect(prompt).toContain("## Commit message");
+    expect(prompt).toContain("commit message truncated");
+    expect(prompt).not.toContain("x".repeat(8_500));
+    const commitMessageSection = prompt.split("\n## User Instructions")[0]!.split("## Commit message\n")[1]!.trimEnd();
+    expect(commitMessageSection.length).toBeLessThanOrEqual(8_000);
+  });
+
+  it("omits the commit message section when the description is empty", () => {
+    const prompt = buildReviewPrompt({
+      details: { ...details, description: "" },
+      diff,
+      userPrompt: "Review this.",
+    });
+    expect(prompt).not.toContain("## Commit message");
+  });
+
+  it("omits the commit message section when the description is whitespace only", () => {
+    const prompt = buildReviewPrompt({
+      details: { ...details, description: "   \n  \n" },
+      diff,
+      userPrompt: "Review this.",
+    });
+    expect(prompt).not.toContain("## Commit message");
+  });
+});
+
 describe("buildReviewPrompt discussion threads", () => {
   it("omits the open-threads section when none are provided", () => {
     const prompt = buildReviewPrompt({ details, diff, userPrompt: "Review this." });
@@ -198,3 +242,102 @@ describe("buildReviewPrompt discussion threads", () => {
   });
 });
 
+describe("buildReviewPrompt since-last-review delta", () => {
+  const deltaDiff: ReviewChangeDiff = {
+    changeId: CHANGE_ID,
+    patchset: 3,
+    files: [
+      {
+        path: "src/foo.ts",
+        status: "modified",
+        patch: "--- a/src/foo.ts\n+++ b/src/foo.ts\n@@ -1 +1 @@\n-new\n+newer",
+      },
+    ],
+  };
+
+  it("omits the delta section when sinceLastReview is not provided", () => {
+    const prompt = buildReviewPrompt({ details, diff, userPrompt: "Review this." });
+    expect(prompt).not.toContain("## Changes since last reviewed patchset");
+  });
+
+  it("omits the delta section when the delta has no files", () => {
+    const prompt = buildReviewPrompt({
+      details,
+      diff,
+      userPrompt: "Review this.",
+      sinceLastReview: { fromPatchset: 2, toPatchset: 3, diff: { ...deltaDiff, files: [] } },
+    });
+    expect(prompt).not.toContain("## Changes since last reviewed patchset");
+  });
+
+  it("renders the delta section with the PS range and the delta diff when provided", () => {
+    const prompt = buildReviewPrompt({
+      details,
+      diff,
+      userPrompt: "Review this.",
+      sinceLastReview: { fromPatchset: 2, toPatchset: 3, diff: deltaDiff },
+    });
+    expect(prompt).toContain("## Changes since last reviewed patchset (PS 2 → 3)");
+    expect(prompt).toContain("+newer");
+    // The full diff is still present alongside the delta.
+    expect(prompt).toContain("## Unified diffs");
+  });
+
+  it("delta and full diff share the maxDiffChars budget — at least one is truncated when both are large", () => {
+    // Each patch is ~600 chars. With maxDiffChars=1000, each fits individually
+    // (600 < 1000) but together they would exceed the budget (1200 > 1000).
+    // The fix: split the budget so the combined diff content stays within maxDiffChars.
+    // Without the fix both sections render fully → neither is truncated (bug).
+    const maxDiffChars = 1000;
+    const patch600 = "+" + "x".repeat(600);
+
+    const bigFullDiff: ReviewChangeDiff = {
+      changeId: CHANGE_ID,
+      patchset: 3,
+      files: [{ path: "src/full.ts", status: "modified" as const, patch: patch600 }],
+    };
+    const bigDeltaDiff: ReviewChangeDiff = {
+      changeId: CHANGE_ID,
+      patchset: 3,
+      files: [{ path: "src/delta.ts", status: "modified" as const, patch: patch600 }],
+    };
+
+    const prompt = buildReviewPrompt({
+      details,
+      diff: bigFullDiff,
+      userPrompt: "Review.",
+      maxDiffChars,
+      sinceLastReview: { fromPatchset: 2, toPatchset: 3, diff: bigDeltaDiff },
+    });
+
+    const deltaIdx = prompt.indexOf("## Changes since last reviewed patchset");
+    const fullDiffIdx = prompt.indexOf("## Unified diffs");
+    const deltaSection = prompt.slice(deltaIdx, fullDiffIdx);
+    const diffSection = prompt.slice(fullDiffIdx);
+
+    // At least one section must be truncated to respect the shared budget.
+    const atLeastOneTruncated =
+      deltaSection.includes("diff truncated") || diffSection.includes("diff truncated");
+    expect(atLeastOneTruncated).toBe(true);
+  });
+
+  it("truncates the delta diff when it exceeds maxDiffChars", () => {
+    const hugeDeltaDiff: ReviewChangeDiff = {
+      changeId: CHANGE_ID,
+      patchset: 3,
+      files: Array.from({ length: 5 }, (_, i) => ({
+        path: `src/delta-big-${i}.ts`,
+        status: "modified" as const,
+        patch: "+delta\n".repeat(20_000),
+      })),
+    };
+    const prompt = buildReviewPrompt({
+      details,
+      diff,
+      userPrompt: "Review this.",
+      sinceLastReview: { fromPatchset: 2, toPatchset: 3, diff: hugeDeltaDiff },
+    });
+    expect(prompt).toContain("## Changes since last reviewed patchset");
+    expect(prompt).toContain("diff truncated");
+  });
+});

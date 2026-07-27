@@ -4,12 +4,14 @@ import { Tag } from "../../components/Tag.tsx";
 import { Toggle } from "../../components/Toggle.tsx";
 import { Icon } from "../../components/Icon.tsx";
 import { api } from "../../api.ts";
+import { useCurrentUser } from "../../authContext.tsx";
 import { AgentFormModal } from "./AgentFormModal.tsx";
 import { AgentDrawer } from "./ConfigDrawers.tsx";
 import type { ApiAgent } from "../../types.ts";
 import type { ConfigViewData } from "./index.tsx";
 
 export function AgentsSection({ agents, integrations, prompts, onRefresh }: ConfigViewData) {
+  const { canOperate } = useCurrentUser();
   const [busy, setBusy] = useState<string | null>(null);
   const [showAdd, setShowAdd] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -61,9 +63,11 @@ export function AgentsSection({ agents, integrations, prompts, onRefresh }: Conf
             <h1 style={{ margin: 0, fontSize: "22px", fontWeight: 600, letterSpacing: "-0.01em" }}>Agents library</h1>
             <p style={{ margin: "6px 0 0", color: "var(--text-faint)", fontSize: "13.5px" }}>Reusable agent definitions — model config, concurrency, and bound prompts.</p>
           </div>
-          <button className="btn primary" onClick={() => setShowAdd(true)}>
-            <Icon name="plus" size={14} /> New agent
-          </button>
+          {canOperate && (
+            <button className="btn primary" onClick={() => setShowAdd(true)}>
+              <Icon name="plus" size={14} /> New agent
+            </button>
+          )}
         </div>
       </div>
 
@@ -99,20 +103,24 @@ export function AgentsSection({ agents, integrations, prompts, onRefresh }: Conf
               </div>
             </div>
             <div onClick={(ev) => ev.stopPropagation()}>
-              <Toggle
-                on={a.enabled}
-                disabled={busy === a.id}
-                onChange={() => void toggleEnabled(a.id, a.enabled)}
-              />
+              {canOperate && (
+                <Toggle
+                  on={a.enabled}
+                  disabled={busy === a.id}
+                  onChange={() => void toggleEnabled(a.id, a.enabled)}
+                />
+              )}
             </div>
-            <button
-              className="iconbtn"
-              title="Delete"
-              disabled={busy === a.id}
-              onClick={(ev) => { ev.stopPropagation(); void deleteAgent(a); }}
-            >
-              <Icon name="trash" size={14} />
-            </button>
+            {canOperate && (
+              <button
+                className="iconbtn"
+                title="Delete"
+                disabled={busy === a.id}
+                onClick={(ev) => { ev.stopPropagation(); void deleteAgent(a); }}
+              >
+                <Icon name="trash" size={14} />
+              </button>
+            )}
           </RowCard>
         ))}
       </div>
@@ -123,13 +131,15 @@ export function AgentsSection({ agents, integrations, prompts, onRefresh }: Conf
           item={drawerItem}
           prompts={prompts}
           onClose={() => setDrawerId(null)}
-          onEdit={() => { setDrawerId(null); setEditingId(drawerItem.id); }}
-          onToggle={() => { void toggleEnabled(drawerItem.id, drawerItem.enabled); setDrawerId(null); }}
-          onDelete={() => { void deleteAgent(drawerItem); setDrawerId(null); }}
+          {...(canOperate ? {
+            onEdit: () => { setDrawerId(null); setEditingId(drawerItem.id); },
+            onToggle: () => { void toggleEnabled(drawerItem.id, drawerItem.enabled); setDrawerId(null); },
+            onDelete: () => { void deleteAgent(drawerItem); setDrawerId(null); },
+          } : {})}
         />
       )}
 
-      {(showAdd || editingAgent) && (
+      {canOperate && (showAdd || editingAgent) && (
         <AgentFormModal
           agent={editingAgent}
           integrations={integrations}

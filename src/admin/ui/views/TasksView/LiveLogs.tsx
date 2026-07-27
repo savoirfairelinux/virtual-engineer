@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { Icon } from "../../components/Icon.tsx";
-import { connectSse, getStoredToken } from "../../api.ts";
+import { connectSse } from "../../api.ts";
 import type { AgentLogEvent } from "../../types.ts";
 import { TONE } from "../../states.ts";
 import type { ToneKey } from "../../states.ts";
+import { extractMetrics } from "./liveMetrics.ts";
 
 type StreamEntry = {
   id: number;
@@ -51,29 +52,6 @@ function matchesFilter(entry: StreamEntry, filter: FilterCat): boolean {
   return true;
 }
 
-interface Metrics {
-  toolCalls: number;
-  inputTokens: number;
-  outputTokens: number;
-  cacheRead: number;
-  cacheWrite: number;
-}
-
-function extractMetrics(events: StreamEntry[]): Metrics {
-  let toolCalls = 0, inputTokens = 0, outputTokens = 0, cacheRead = 0, cacheWrite = 0;
-  for (const ev of events) {
-    if (ev.type === "TOOL_CALL" || ev.type?.startsWith("tool.") === true) toolCalls++;
-    if ((ev.type === "MODEL_USAGE" || ev.type === "assistant.usage" || ev.type === "session.usage_info") && ev.data && typeof ev.data === "object") {
-      const d = ev.data as Record<string, number>;
-      inputTokens  += d["input_tokens"] ?? d["inputTokens"] ?? d["promptTokens"] ?? 0;
-      outputTokens += d["output_tokens"] ?? d["outputTokens"] ?? d["completionTokens"] ?? 0;
-      cacheRead    += d["cache_read"] ?? d["cacheReadTokens"] ?? d["cache_read_tokens"] ?? 0;
-      cacheWrite   += d["cache_write"] ?? d["cacheWriteTokens"] ?? d["cache_write_tokens"] ?? 0;
-    }
-  }
-  return { toolCalls, inputTokens, outputTokens, cacheRead, cacheWrite };
-}
-
 function normalizeIncomingEntry(raw: unknown, id: number): StreamEntry | null {
   if (!raw || typeof raw !== "object") return null;
   const obj = raw as Record<string, unknown>;
@@ -97,6 +75,10 @@ function renderPayload(entry: StreamEntry): string {
   if (typeof entry.message === "string" && entry.message.trim().length > 0) {
     return entry.message;
   }
+
+  const skillPayload = renderSkillPayload(entry);
+  if (skillPayload) return skillPayload;
+
   if (entry.data === null || entry.data === undefined) return "";
   if (typeof entry.data === "string") return entry.data;
   if (typeof entry.data === "number" || typeof entry.data === "boolean") return String(entry.data);
@@ -105,6 +87,41 @@ function renderPayload(entry: StreamEntry): string {
   } catch {
     return String(entry.data);
   }
+}
+
+function objectData(data: unknown): Record<string, unknown> | null {
+  return data && typeof data === "object" && !Array.isArray(data) ? data as Record<string, unknown> : null;
+}
+
+function formatSkills(value: unknown): string | null {
+  if (value === "all") return "all skills";
+  if (!Array.isArray(value)) return null;
+  const skills = value
+    .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    .map((item) => item.trim());
+  if (skills.length === 0) return "no explicit skills";
+  return skills.join(", ");
+}
+
+function renderSkillPayload(entry: StreamEntry): string | null {
+  if (!entry.type?.startsWith("skills.fetch_")) return null;
+  const data = objectData(entry.data);
+  const source = typeof data?.["source"] === "string" ? data["source"] : "unknown source";
+  const skills = formatSkills(data?.["skills"]);
+  const agent = typeof data?.["agent"] === "string" ? data["agent"] : undefined;
+  const suffix = [
+    skills ? `skills: ${skills}` : undefined,
+    agent ? `agent: ${agent}` : undefined,
+  ].filter(Boolean).join(" · ");
+  const details = suffix ? ` (${suffix})` : "";
+
+  if (entry.type === "skills.fetch_start") return `Fetching skills from ${source}${details}`;
+  if (entry.type === "skills.fetch_complete") return `Fetched skills from ${source}${details}`;
+  if (entry.type === "skills.fetch_failed") {
+    const message = typeof data?.["message"] === "string" ? `: ${data["message"]}` : "";
+    return `Failed to fetch skills from ${source}${details}${message}`;
+  }
+  return null;
 }
 
 interface LiveLogsProps {
@@ -140,8 +157,7 @@ export function LiveLogs({ taskId, running }: LiveLogsProps) {
   useEffect(() => {
     setEntries([]);
     seenEntryKeys.current = new Set();
-    const token = getStoredToken();
-    const path = `/api/admin/logs/stream?taskId=${encodeURIComponent(taskId)}${token ? `&t=${token}` : ""}`;
+    const path = `/api/admin/logs/stream?taskId=${encodeURIComponent(taskId)}`;
     const cleanup = connectSse(path, (_evType, data) => {
       try {
         const parsed = JSON.parse(data) as AgentLogEvent | Record<string, unknown>;

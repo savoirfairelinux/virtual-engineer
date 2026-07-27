@@ -48,7 +48,8 @@ function makeIntegration(id: string, overrides: Partial<Integration> = {}): Inte
       sshHost: "gerrit.example.com",
       sshPort: 29418,
       sshUser: VE_SSH_USER,
-      sshKeyPath: "/tmp/id_rsa",
+      // Resolved key path injected by preprocessConfig (generated-key mode).
+      _resolvedSshKeyPath: "/tmp/id_rsa",
     }),
     enabled: true,
     createdAt: new Date(),
@@ -107,7 +108,7 @@ function createManager(
     return child as unknown as ReturnType<typeof import("node:child_process").spawn>;
   });
 
-  type SshQueryFnType = (args: string[], config: { sshHost: string; sshPort: number; sshUser: string; sshKeyPath: string }) => Promise<string>;
+  type SshQueryFnType = (args: string[], config: { sshHost: string; sshPort: number; sshUser: string; sshKeyPath?: string | undefined }) => Promise<string>;
 
   const manager = new GerritStreamEventsManager({
     orchestrator,
@@ -272,6 +273,68 @@ describe("GerritStreamEventsManager", () => {
 
     // Falls through to 2-arg call (no stream comments injected)
     expect(orchestrator.triggerFeedbackForChange).toHaveBeenCalledWith("gerrit-a", "Iself");
+  });
+
+  it("comment-added: skips CI build-bot and vote-only stream comments", async () => {
+    const child = new FakeChildProcess();
+    const { manager, orchestrator } = createManager([child]);
+
+    await manager.reconcile([makeIntegration("gerrit-a")]);
+    child.emit("spawn");
+
+    child.stdout.write(
+      JSON.stringify({
+        type: "comment-added",
+        change: { id: "Ici" },
+        author: { username: "jenkins", email: "jenkins@ci.test" },
+        comment: "Patch Set 1:  Build Started https://jenkins.test/job/x/1/ (1/4)",
+        eventCreatedOn: 1710000700,
+      }) + "\n"
+    );
+    child.stdout.write(
+      JSON.stringify({
+        type: "comment-added",
+        change: { id: "Ivote" },
+        author: { username: "alice", email: "alice@example.com" },
+        comment: "Patch Set 2: Code-Review+2",
+        eventCreatedOn: 1710000800,
+      }) + "\n"
+    );
+    await flushAsyncWork();
+
+    // Both fall through to the 2-arg call: no stream comment injected → no feedback.
+    expect(orchestrator.triggerFeedbackForChange).toHaveBeenCalledWith("gerrit-a", "Ici");
+    expect(orchestrator.triggerFeedbackForChange).toHaveBeenCalledWith("gerrit-a", "Ivote");
+    expect(orchestrator.triggerFeedbackForChange).not.toHaveBeenCalledWith(
+      "gerrit-a",
+      expect.any(String),
+      expect.arrayContaining([expect.objectContaining({ author: "jenkins@ci.test" })])
+    );
+  });
+
+  it("comment-added: surfaces a Build Failed stream comment tagged with ci-failure- id (not dropped as noise)", async () => {
+    const child = new FakeChildProcess();
+    const { manager, orchestrator } = createManager([child]);
+
+    await manager.reconcile([makeIntegration("gerrit-a")]);
+    child.emit("spawn");
+
+    child.stdout.write(
+      JSON.stringify({
+        type: "comment-added",
+        change: { id: "Ifailed" },
+        author: { username: "jenkins", email: "jenkins@ci.test" },
+        comment: "Patch Set 1: Verified-1\n\nBuild Failed\n\nhttps://jenkins.test/job/x/1/ : FAILURE",
+        eventCreatedOn: 1710000900,
+      }) + "\n"
+    );
+    await flushAsyncWork();
+
+    expect(orchestrator.triggerFeedbackForChange).toHaveBeenCalledWith(
+      "gerrit-a",
+      "Ifailed",
+      [expect.objectContaining({ id: expect.stringMatching(/^ci-failure-/) })]
+    );
   });
 
   it("starts and stops one listener per active Gerrit integration", async () => {
@@ -722,7 +785,7 @@ describe("GerritStreamEventsManager", () => {
       const sshQuery = makeSshReviewerQueryFn([], ["Iassigned"]);
       const child = new FakeChildProcess();
       const spawnProcess = vi.fn(() => child as unknown as ReturnType<typeof import("node:child_process").spawn>);
-      type SshQueryFnType = (args: string[], config: { sshHost: string; sshPort: number; sshUser: string; sshKeyPath: string }) => Promise<string>;
+      type SshQueryFnType = (args: string[], config: { sshHost: string; sshPort: number; sshUser: string; sshKeyPath?: string | undefined }) => Promise<string>;
       const manager = new GerritStreamEventsManager({
         orchestrator: { triggerFeedbackForChange: vi.fn(), markChangeMerged: vi.fn(), markChangeAbandoned: vi.fn() },
         getReviewTrigger: () => undefined,

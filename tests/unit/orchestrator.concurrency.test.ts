@@ -9,17 +9,15 @@
  *  - legacy tasks (no projectId) are not gated.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { tmpdir } from "os";
-import { join } from "path";
 import { randomUUID } from "crypto";
-import * as fs from "fs/promises";
 import { Orchestrator, type ProjectModeDeps } from "../../src/orchestrator/orchestrator.js";
 import { SqliteStateStore } from "../../src/state/stateStore.js";
 import { createConcurrencyTracker, type ConcurrencyTracker } from "../../src/orchestrator/concurrencyTracker.js";
-import type { ProjectRecord, TicketId } from "../../src/interfaces.js";
+import type { ProjectRecord, Task, TicketId } from "../../src/interfaces.js";
+import { tempDatabasePath } from "./helpers/tempDatabase.js";
 
 function tempDb(): string {
-  return join(tmpdir(), `ve-orch-conc-${randomUUID()}.db`);
+  return tempDatabasePath("ve-orch-conc");
 }
 
 const mockWorkspace = {
@@ -88,17 +86,14 @@ async function seedProjectAndAgent(store: SqliteStateStore, opts: {
 
 describe("Orchestrator — Phase 6 concurrency gating", () => {
   let store: SqliteStateStore;
-  let dbPath: string;
 
   beforeEach(async () => {
     vi.clearAllMocks();
-    dbPath = tempDb();
-    store = await SqliteStateStore.create(dbPath);
+    store = await SqliteStateStore.create(tempDb());
   });
 
-  afterEach(async () => {
+  afterEach(() => {
     store.close();
-    await fs.rm(dbPath, { force: true });
   });
 
   it("startTaskForProject still creates the task when tracker already has activity", async () => {
@@ -187,5 +182,95 @@ describe("Orchestrator — Phase 6 concurrency gating", () => {
     const refreshed = await store.getTask(task.taskId);
     await (orch as unknown as { runWorkflow: (t: unknown) => Promise<void> }).runWorkflow(refreshed!);
     expect(tracker.snapshot()).toEqual({ global: 0, perProject: {}, perAgent: {} });
+  });
+
+  it("resumeStalledCodeGenTask advances a CONTEXT_BUILDING task once the slot frees up", async () => {
+    const project = await seedProjectAndAgent(store, { agentMax: 1 });
+    const tracker = createConcurrencyTracker({
+      agentStore: { getAgentById: (id) => store.getAgentById(id) },
+    });
+    const orch = buildOrchestrator(store, tracker);
+
+    const taskId = `task-${randomUUID()}`;
+    const task = await store.createTask(
+      taskId as never,
+      "stall-1" as TicketId,
+      "x",
+      "",
+      "redmine:int-1",
+      undefined
+    );
+    await store.setTaskProjectId(task.taskId, project.id);
+    await store.transition(task.taskId, "CONTEXT_BUILDING");
+
+    // Slot saturated externally → resume defers without advancing the task.
+    expect(await tracker.acquire(project.id, project.agentId)).toBe(true);
+    await orch.resumeStalledCodeGenTask(task.taskId);
+    expect((await store.getTask(task.taskId))!.state).toBe("CONTEXT_BUILDING");
+
+    // Free the slot → next resume drives the cycle to completion (FAILED here
+    // because the mock workspace cannot clone), and releases the slot.
+    tracker.release(project.id, project.agentId);
+    await orch.resumeStalledCodeGenTask(task.taskId);
+    expect((await store.getTask(task.taskId))!.state).toBe("FAILED");
+    expect(tracker.snapshot()).toEqual({ global: 0, perProject: {}, perAgent: {} });
+  });
+
+  it("does not drive the same stalled task concurrently", async () => {
+    const project = await seedProjectAndAgent(store);
+    const orch = buildOrchestrator(store, undefined);
+    const task = await store.createTask(
+      `task-${randomUUID()}` as never,
+      "stall-concurrent" as TicketId,
+      "x",
+      "",
+      "redmine:int-1",
+      undefined
+    );
+    await store.setTaskProjectId(task.taskId, project.id);
+    await store.transition(task.taskId, "CONTEXT_BUILDING");
+    const stalledTask = (await store.getTask(task.taskId))!;
+
+    let finishFirstRun: (() => void) | undefined;
+    const firstRunBlocked = new Promise<void>((resolve) => {
+      finishFirstRun = resolve;
+    });
+    const runFromContextBuilding = vi.fn().mockReturnValue(firstRunBlocked);
+    const internal = orch as unknown as {
+      runWorkflow(task: Task): Promise<void>;
+      runFromContextBuilding(task: Task): Promise<void>;
+    };
+    internal.runFromContextBuilding = runFromContextBuilding;
+
+    const firstRun = internal.runWorkflow(stalledTask);
+    await internal.runWorkflow(stalledTask);
+
+    expect(runFromContextBuilding).toHaveBeenCalledTimes(1);
+    finishFirstRun!();
+    await firstRun;
+  });
+
+  it("resumeStalledCodeGenTask is a no-op for non-stalled or code-review tasks", async () => {
+    const project = await seedProjectAndAgent(store);
+    const orch = buildOrchestrator(store, undefined);
+
+    // IN_REVIEW code-gen task must not be re-driven by the stalled poll.
+    const taskId = `task-${randomUUID()}`;
+    const task = await store.createTask(
+      taskId as never,
+      "noop-1" as TicketId,
+      "x",
+      "",
+      "redmine:int-1",
+      undefined
+    );
+    await store.setTaskProjectId(task.taskId, project.id);
+    await store.transition(task.taskId, "CONTEXT_BUILDING");
+    await store.transition(task.taskId, "AGENT_RUNNING");
+    await store.transition(task.taskId, "IN_REVIEW");
+
+    await orch.resumeStalledCodeGenTask(task.taskId);
+    // State is unchanged — the method returned early without running a cycle.
+    expect((await store.getTask(task.taskId))!.state).toBe("IN_REVIEW");
   });
 });

@@ -1,7 +1,7 @@
 /** Drizzle ORM table definitions for the Virtual Engineer SQLite database. All timestamps are seconds since epoch (`mode: "timestamp"`). */
 import { sqliteTable, text, integer, real, index, unique, check, primaryKey } from "drizzle-orm/sqlite-core";
 import { sql } from "drizzle-orm";
-import type { TaskState, ProviderId, TaskType, AgentType, ProjectType, PushTargetRole, DomainCapability } from "../interfaces.js";
+import type { TaskState, ProviderId, TaskType, AgentType, ProjectType, PushTargetRole, DomainCapability, UserRole, PrincipalType } from "../interfaces.js";
 
 export const tasks = sqliteTable("tasks", {
   taskId: text("task_id").primaryKey(),
@@ -91,7 +91,10 @@ export const agentCycles = sqliteTable("agent_cycles", {
   /** Model id resolved from the usage events. */
   costModelId: text("cost_model_id"),
   createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
-});
+}, (table) => ({
+  idxAgentCyclesTaskId: index("idx_agent_cycles_task_id").on(table.taskId),
+  idxAgentCyclesCreatedAt: index("idx_agent_cycles_created_at").on(table.createdAt),
+}));
 
 export const processedComments = sqliteTable("processed_comments", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -299,6 +302,20 @@ export const projects = sqliteTable(
     agentOverrideJson: text("agent_override_json"),
     /** Bash script run on the host after cloning. Empty string means "no script". */
     postCloneScript: text("post_clone_script").notNull().default(""),
+    /** When 1, the agent container loads local repository skills. */
+    skillDiscoveryEnabled: integer("skill_discovery_enabled").notNull().default(0),
+    /** Workspace-relative path for local skills. */
+    localSkillsPath: text("local_skills_path").notNull().default(".github/skills"),
+    /** JSON array of external skill sources installed before the agent starts. */
+    skillSourcesJson: text("skill_sources_json").notNull().default("[]"),
+    /** Optional literal Gerrit topic that overrides the ticket-derived topic (buildGerritTopic) for all pushes from this project. NULL = use the ticket-derived topic. */
+    gerritTopicOverride: text("gerrit_topic_override"),
+    /** When 1, agent commit messages use the full ticket URL in the footer instead of the short "#id" form. */
+    useFullTicketUrlInCommits: integer("use_full_ticket_url_in_commits").notNull().default(0),
+    /** When 1, VE posts a note on the source ticket with the review URL(s) once the first cycle opens a review. Default off — most teams already surface this via standard VCS/ticket integrations. */
+    postReviewLinkToTicket: integer("post_review_link_to_ticket").notNull().default(0),
+    /** When 1, CI build-failure notifications (e.g. Jenkins "Build Failed") count as actionable review feedback and trigger a retry cycle. Default off — some teams don't want VE auto-retrying on broken CI. Coding projects only. */
+    reactToCiFailures: integer("react_to_ci_failures").notNull().default(0),
     enabled: integer("enabled").notNull().default(0),
     createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
     updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
@@ -351,6 +368,8 @@ export const projectPushTargets = sqliteTable(
     commitOrder: integer("commit_order").notNull(),
     localPath: text("local_path").notNull(),
     sshKeyPath: text("ssh_key_path"),
+    /** JSON array of reviewer email addresses to attach to every change pushed for this target. */
+    reviewerEmails: text("reviewer_emails").notNull().default("[]"),
     createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
     updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
   },
@@ -376,5 +395,155 @@ export const appConcurrency = sqliteTable(
   },
   (table) => ({
     chkSingleton: check("chk_app_concurrency_singleton", sql`${table.id} = 'global'`),
+  })
+);
+
+/**
+ * Singleton table holding editable workflow settings that override the env/config
+ * defaults at runtime. `id` is constrained to the literal `'global'`. Each column is
+ * nullable — NULL means "fall back to the `config.ts` default".
+ */
+export const appSettings = sqliteTable(
+  "app_settings",
+  {
+    id: text("id").primaryKey(),
+    pollingIntervalMs: integer("polling_interval_ms"),
+    maxAgentCycles: integer("max_agent_cycles"),
+    maxRetryAttempts: integer("max_retry_attempts"),
+    updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
+  },
+  (table) => ({
+    chkSingleton: check("chk_app_settings_singleton", sql`${table.id} = 'global'`),
+  })
+);
+
+// ─── Users / Sessions / Audit (admin accounts) ───────────────────────────────
+
+/**
+ * Admin dashboard user accounts. Route access is enforced by PBAC permissions,
+ * not by `role`; `role` only selects the default policy bundle at user creation
+ * and marks the `admin` superuser (which bypasses the permission gate).
+ */
+export const users = sqliteTable("users", {
+  id: text("id").primaryKey(),
+  username: text("username").notNull().unique(),
+  passwordHash: text("password_hash").notNull(),
+  role: text("role").$type<UserRole>().notNull(),
+  enabled: integer("enabled").notNull().default(1),
+  createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
+});
+
+/**
+ * DB-backed opaque admin sessions. `token_hash` is a hash of the raw bearer
+ * token (the raw token is never stored). Sliding expiry via `touchSession`.
+ */
+export const userSessions = sqliteTable(
+  "user_sessions",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    tokenHash: text("token_hash").notNull().unique(),
+    userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+    expiresAt: integer("expires_at", { mode: "timestamp" }).notNull(),
+    lastSeenAt: integer("last_seen_at", { mode: "timestamp" }).notNull(),
+  },
+  (table) => ({
+    idxUserSessionsUserId: index("idx_user_sessions_user_id").on(table.userId),
+  })
+);
+
+/**
+ * Append-only audit trail of admin mutations. `actor_user_id` is NULL for
+ * non-user actors (e.g. bootstrap); `details_json` carries masked context.
+ */
+export const auditLog = sqliteTable(
+  "audit_log",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    actorUserId: text("actor_user_id"),
+    actorName: text("actor_name").notNull(),
+    action: text("action").notNull(),
+    targetType: text("target_type"),
+    targetId: text("target_id"),
+    detailsJson: text("details_json").notNull().default("{}"),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+  },
+  (table) => ({
+    idxAuditLogCreatedAt: index("idx_audit_log_created_at").on(table.createdAt),
+    // Support listAuditEntries filters without full-table scans as the log grows.
+    idxAuditLogActionCreatedAt: index("idx_audit_log_action_created_at").on(table.action, table.createdAt),
+    idxAuditLogActorCreatedAt: index("idx_audit_log_actor_created_at").on(table.actorName, table.createdAt),
+  })
+);
+
+// ─── PBAC: groups / policies / rules / bindings ───────────────────────────────
+
+/** A named collection of users. Policies bound to a group apply to every member. */
+export const groups = sqliteTable("groups", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull().unique(),
+  description: text("description").notNull().default(""),
+  createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
+});
+
+/** Membership join between users and groups. */
+export const groupMembers = sqliteTable(
+  "group_members",
+  {
+    groupId: text("group_id").notNull().references(() => groups.id, { onDelete: "cascade" }),
+    userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+  },
+  (table) => ({
+    pk: primaryKey({ columns: [table.groupId, table.userId] }),
+    idxGroupMembersUserId: index("idx_group_members_user_id").on(table.userId),
+  })
+);
+
+/** A named, reusable set of grant rules. `builtin` policies are seeded and protected. */
+export const policies = sqliteTable("policies", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull().unique(),
+  description: text("description").notNull().default(""),
+  builtin: integer("builtin").notNull().default(0),
+  createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
+});
+
+/**
+ * A single grant inside a policy (grant-only; no deny rules). `resource_id` NULL
+ * grants the permission on all resources of the permission's type; a concrete id
+ * scopes the grant to that resource.
+ */
+export const policyRules = sqliteTable(
+  "policy_rules",
+  {
+    id: text("id").primaryKey(),
+    policyId: text("policy_id").notNull().references(() => policies.id, { onDelete: "cascade" }),
+    permission: text("permission").notNull(),
+    resourceId: text("resource_id"),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+  },
+  (table) => ({
+    idxPolicyRulesPolicyId: index("idx_policy_rules_policy_id").on(table.policyId),
+    idxPolicyRulesPermission: index("idx_policy_rules_permission").on(table.permission),
+  })
+);
+
+/** Attaches a policy to a principal (a user or a group). */
+export const policyBindings = sqliteTable(
+  "policy_bindings",
+  {
+    id: text("id").primaryKey(),
+    policyId: text("policy_id").notNull().references(() => policies.id, { onDelete: "cascade" }),
+    principalType: text("principal_type").$type<PrincipalType>().notNull(),
+    principalId: text("principal_id").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+  },
+  (table) => ({
+    uqBinding: unique("uq_policy_bindings").on(table.policyId, table.principalType, table.principalId),
+    idxPolicyBindingsPrincipal: index("idx_policy_bindings_principal").on(table.principalType, table.principalId),
   })
 );

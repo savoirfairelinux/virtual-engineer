@@ -54,6 +54,7 @@ describe("Admin Server - Unauthenticated Health Endpoint", () => {
       polling,
       stateStore,
       integrationStore,
+      allowUnauthenticatedAdmin: true,
       config,
       providers: [],
     });
@@ -94,6 +95,7 @@ describe("Admin Server - Unauthenticated Health Endpoint", () => {
       polling,
       stateStore,
       integrationStore,
+      allowUnauthenticatedAdmin: true,
       config,
       providers: [],
     });

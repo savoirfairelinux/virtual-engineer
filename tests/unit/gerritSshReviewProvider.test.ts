@@ -53,6 +53,7 @@ vi.mock("node:child_process", () => ({
 }));
 
 vi.mock("node:fs/promises", () => ({
+  mkdir: vi.fn().mockResolvedValue(undefined),
   mkdtemp: vi.fn().mockResolvedValue("/tmp/test-diffs/diff-42-abc"),
   rm: vi.fn().mockReturnValue(Promise.resolve(undefined)),
 }));
@@ -68,7 +69,6 @@ import { rm } from "node:fs/promises";
 const SSH_HOST = "gerrit.test";
 const SSH_PORT = 29418;
 const SSH_USER = "ve-bot";
-const SSH_KEY = "/path/to/key";
 const REVIEWER_ACCOUNT_ID = "948";
 const CHANGE_ID = makeExternalChangeId(
   "jami-client-qt~master~I8473b95934b5732ac55d26311a706c9c2bde9940"
@@ -79,7 +79,6 @@ function makeProvider(overrides: Partial<GerritSshReviewProviderConfig> = {}): G
     sshHost: SSH_HOST,
     sshPort: SSH_PORT,
     sshUser: SSH_USER,
-    sshKeyPath: SSH_KEY,
     reviewerAccountId: REVIEWER_ACCOUNT_ID,
     workspaceBaseDir: "/tmp/test-diffs",
     ...overrides,
@@ -115,6 +114,19 @@ const SAMPLE_CHANGE = {
     ref: "refs/changes/42/42/3",
   },
   lastUpdated: Math.floor(Date.now() / 1000),
+};
+
+const SAMPLE_DETAILS = {
+  changeId: CHANGE_ID,
+  changeNumber: 42,
+  subject: "Add feature X",
+  description: "This is the commit body.",
+  ownerAccountId: "42",
+  currentPatchset: 3,
+  status: "OPEN" as const,
+  project: "jami-client-qt",
+  targetBranch: "master",
+  url: "https://gerrit.test/c/42",
 };
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -174,6 +186,48 @@ describe("GerritSshReviewProvider", () => {
     it("throws when change is not found", async () => {
       mockQuery.mockResolvedValueOnce(sshNdjson());
       await expect(makeProvider().getChangeDetails(CHANGE_ID)).rejects.toThrow(/change not found/);
+    });
+  });
+
+  describe("hasReviewedCurrentPatchset", () => {
+    it("returns true when VE's SSH username has an approval on the current patch set", async () => {
+      const change = {
+        ...SAMPLE_CHANGE,
+        currentPatchSet: {
+          ...SAMPLE_CHANGE.currentPatchSet,
+          approvals: [
+            { type: "Code-Review", value: "-1", by: { username: SSH_USER, email: "ve-bot@test.com" } },
+          ],
+        },
+      };
+      mockQuery.mockResolvedValueOnce(sshNdjson(change));
+
+      expect(await makeProvider().hasReviewedCurrentPatchset(CHANGE_ID)).toBe(true);
+    });
+
+    it("returns false when only other reviewers have voted on the current patch set", async () => {
+      const change = {
+        ...SAMPLE_CHANGE,
+        currentPatchSet: {
+          ...SAMPLE_CHANGE.currentPatchSet,
+          approvals: [
+            { type: "Code-Review", value: "+2", by: { username: "someone-else", email: "other@test.com" } },
+          ],
+        },
+      };
+      mockQuery.mockResolvedValueOnce(sshNdjson(change));
+
+      expect(await makeProvider().hasReviewedCurrentPatchset(CHANGE_ID)).toBe(false);
+    });
+
+    it("returns false when the current patch set has no approvals", async () => {
+      mockQuery.mockResolvedValueOnce(sshNdjson(SAMPLE_CHANGE));
+      expect(await makeProvider().hasReviewedCurrentPatchset(CHANGE_ID)).toBe(false);
+    });
+
+    it("returns false when the SSH query fails", async () => {
+      mockQuery.mockRejectedValueOnce(new Error("ssh timeout"));
+      expect(await makeProvider().hasReviewedCurrentPatchset(CHANGE_ID)).toBe(false);
     });
   });
 
@@ -242,6 +296,71 @@ describe("GerritSshReviewProvider", () => {
 
       await expect(makeProvider().getChangeDiff(CHANGE_ID)).rejects.toThrow("git init failed");
       expect(rm).toHaveBeenCalledWith("/tmp/test-diffs/diff-42-abc", { recursive: true, force: true });
+    });
+  });
+
+  describe("getInterPatchsetDiff", () => {
+    const DELTA_OUTPUT = [
+      "diff --git a/src/main.ts b/src/main.ts",
+      "--- a/src/main.ts",
+      "+++ b/src/main.ts",
+      "@@ -1,3 +1,4 @@",
+      " import { foo } from './foo';",
+      "+import { baz } from './baz';",
+      " ",
+      " console.log(foo);",
+    ].join("\n");
+
+    it("fetches both patchset refs and diffs their tips", async () => {
+      // init, remote add, fetch(from), rev-parse(from), fetch(to), rev-parse(to), diff
+      setGitResults(["", "", "", "shaFrom\n", "", "shaTo\n", DELTA_OUTPUT]);
+
+      const result = await makeProvider().getInterPatchsetDiff(SAMPLE_DETAILS, 2, 3);
+
+      expect(result.changeId).toBe(CHANGE_ID);
+      expect(result.patchset).toBe(3);
+      expect(result.files).toHaveLength(1);
+      expect(result.files[0]!.path).toBe("src/main.ts");
+      expect(result.files[0]!.patch).toContain("+import { baz }");
+
+      // Verify it fetched the from-ref, the to-ref, then diffed the resolved SHAs.
+      const fetchArgs = gitFileCalls.filter((c) => c.args[0] === "fetch").map((c) => c.args);
+      expect(fetchArgs).toHaveLength(2);
+      expect(fetchArgs[0]).toContain("refs/changes/42/42/2");
+      expect(fetchArgs[1]).toContain("refs/changes/42/42/3");
+      const diffCall = gitFileCalls.find((c) => c.args[0] === "diff");
+      expect(diffCall!.args).toContain("shaFrom..shaTo");
+    });
+
+    it("cleans up temp directory on error", async () => {
+      setGitResults([new Error("git init failed")]);
+
+      await expect(makeProvider().getInterPatchsetDiff(SAMPLE_DETAILS, 2, 3)).rejects.toThrow(
+        "git init failed"
+      );
+      expect(rm).toHaveBeenCalledWith("/tmp/test-diffs/diff-42-abc", { recursive: true, force: true });
+    });
+
+    it("returns an empty file list when the two patchsets are identical (empty diff output)", async () => {
+      // init, remote add, fetch(from), rev-parse(from), fetch(to), rev-parse(to), diff → empty
+      setGitResults(["", "", "", "shaA\n", "", "shaA\n", ""]);
+
+      const result = await makeProvider().getInterPatchsetDiff(SAMPLE_DETAILS, 3, 3);
+
+      expect(result.patchset).toBe(3);
+      expect(result.files).toHaveLength(0);
+    });
+
+    it("pads the two-digit shard correctly for a single-digit change number", async () => {
+      setGitResults(["", "", "", "sha1\n", "", "sha2\n", ""]);
+
+      await makeProvider().getInterPatchsetDiff({ ...SAMPLE_DETAILS, changeNumber: 7 }, 1, 2);
+
+      const fetchRefs = gitFileCalls
+        .filter((c) => c.args[0] === "fetch")
+        .map((c) => c.args.find((a) => a.startsWith("refs/changes/")));
+      expect(fetchRefs[0]).toBe("refs/changes/07/7/1");
+      expect(fetchRefs[1]).toBe("refs/changes/07/7/2");
     });
   });
 

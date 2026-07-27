@@ -1,10 +1,30 @@
 import { getLogger } from "../logger.js";
 import { makeTaskId } from "../interfaces.js";
 import type { AgentCycle, StateTransition, Task } from "../interfaces.js";
+import type { IncomingMessage } from "node:http";
 import { writeJson, toIsoTimestamp } from "./adminRouteUtils.js";
+import { recordAudit, type AuditCapableStore } from "./adminAudit.js";
+import { getEffectivePermissions } from "./authContext.js";
+import { ALL_RESOURCES, accessibleResourceIds } from "./authorization/policyEngine.js";
 import type { Router } from "./router.js";
 
 const log = getLogger("admin-tasks");
+
+/**
+ * Filter tasks to those the request may read under PBAC `task.read` scoping.
+ * A `*` grant (or superuser) sees all; a scoped grant sees only tasks whose
+ * owning `projectId` is in the grant; orphaned (null-project) tasks require the
+ * `*` grant. Falls back to the full list only when PBAC is unavailable (the gate
+ * has already authorized the request).
+ */
+export function filterTasksByReadScope(req: IncomingMessage, tasks: Task[]): Task[] {
+  const perms = getEffectivePermissions(req);
+  if (!perms) return tasks;
+  const scope = accessibleResourceIds(perms, "task.read");
+  if (scope === ALL_RESOURCES) return tasks;
+  if (scope === null) return [];
+  return tasks.filter((t) => t.projectId != null && scope.has(t.projectId));
+}
 
 /** Subset of state-store methods required by the task routes. */
 export interface TaskRouteStore {
@@ -24,6 +44,7 @@ export interface TaskRouteStore {
 
 export interface TaskRouteDeps {
   stateStore: TaskRouteStore;
+  auditStore?: AuditCapableStore | undefined;
   taskControl?: {
     resumeTask(taskId: ReturnType<typeof makeTaskId>): Promise<void>;
     retryTask(taskId: ReturnType<typeof makeTaskId>): Promise<void>;
@@ -32,9 +53,9 @@ export interface TaskRouteDeps {
 
 /** Register task routes on the given router. */
 export function registerTaskRoutes(router: Router, deps: TaskRouteDeps): void {
-  router.add("GET", "/api/admin/tasks", async (_req, res, _params) => {
+  router.add("GET", "/api/admin/tasks", async (req, res, _params) => {
     const tasks = await deps.stateStore.getAllTasks();
-    const deduplicated = deduplicateByTicket(tasks)
+    const deduplicated = filterTasksByReadScope(req, deduplicateByTicket(tasks))
       .sort((left, right) => right.updatedAt.getTime() - left.updatedAt.getTime());
     const allChanges = await deps.stateStore.getChangesForTasks(deduplicated.map((t) => t.taskId));
     const cprReviewUrlByTaskId = new Map<string, string>();
@@ -50,7 +71,7 @@ export function registerTaskRoutes(router: Router, deps: TaskRouteDeps): void {
         return s;
       }),
     });
-  });
+  }, { permission: "task.read", collection: true });
 
   router.add("GET", "/api/admin/tasks/:id", async (_req, res, params) => {
     const taskId = makeTaskId(params["id"] ?? "");
@@ -72,14 +93,15 @@ export function registerTaskRoutes(router: Router, deps: TaskRouteDeps): void {
       if (firstUrl) serialized["reviewUrl"] = firstUrl;
     }
     writeJson(res, 200, { task: serialized });
-  });
+  }, { permission: "task.read", resourceParam: "id" });
 
-  router.add("DELETE", "/api/admin/tasks/:id", async (_req, res, params) => {
+  router.add("DELETE", "/api/admin/tasks/:id", async (req, res, params) => {
     const taskId = makeTaskId(params["id"] ?? "");
     try {
       const taskToDelete = await deps.stateStore.getTask(taskId);
       if (!taskToDelete) { writeJson(res, 404, { error: "Task not found" }); return; }
       await deps.stateStore.deleteTaskGroup(taskId);
+      recordAudit(deps.auditStore, req, { action: "task.delete", targetType: "task", targetId: taskId, details: { ticketId: taskToDelete.ticketId, state: taskToDelete.state } });
       writeJson(res, 200, { ok: true });
     } catch (err: unknown) {
       log.warn({ err }, "delete task failed");
@@ -87,7 +109,7 @@ export function registerTaskRoutes(router: Router, deps: TaskRouteDeps): void {
       const status = msg.includes("non-terminal") ? 409 : 400;
       writeJson(res, status, { error: msg });
     }
-  });
+  }, { permission: "task.delete", resourceParam: "id" });
 
   router.add("GET", "/api/admin/tasks/:id/cycles", async (_req, res, params) => {
     const taskId = makeTaskId(params["id"] ?? "");
@@ -95,7 +117,7 @@ export function registerTaskRoutes(router: Router, deps: TaskRouteDeps): void {
     if (!task) { writeJson(res, 404, { error: "Task not found" }); return; }
     const cycles = await deps.stateStore.getAgentCycles(taskId);
     writeJson(res, 200, { cycles: cycles.map(serializeCycle) });
-  });
+  }, { permission: "task.read", resourceParam: "id" });
 
   router.add("GET", "/api/admin/tasks/:id/transitions", async (_req, res, params) => {
     const taskId = makeTaskId(params["id"] ?? "");
@@ -103,57 +125,61 @@ export function registerTaskRoutes(router: Router, deps: TaskRouteDeps): void {
     if (!task) { writeJson(res, 404, { error: "Task not found" }); return; }
     const transitions = await deps.stateStore.getStateTransitions(taskId);
     writeJson(res, 200, { transitions: transitions.map(serializeTransition) });
-  });
+  }, { permission: "task.read", resourceParam: "id" });
 
-  router.add("PATCH", "/api/admin/tasks/:id/pause", async (_req, res, params) => {
+  router.add("PATCH", "/api/admin/tasks/:id/pause", async (req, res, params) => {
     const taskId = makeTaskId(params["id"] ?? "");
     try {
       const task = await deps.stateStore.pauseTask(taskId);
+      recordAudit(deps.auditStore, req, { action: "task.pause", targetType: "task", targetId: taskId, details: { ticketId: task.ticketId, state: task.state } });
       writeJson(res, 200, { task: serializeTask(task) });
     } catch (err: unknown) {
       log.warn({ err }, "pause task failed");
       writeJson(res, 400, { error: "Operation failed" });
     }
-  });
+  }, { permission: "task.operate", resourceParam: "id" });
 
-  router.add("PATCH", "/api/admin/tasks/:id/resume", async (_req, res, params) => {
+  router.add("PATCH", "/api/admin/tasks/:id/resume", async (req, res, params) => {
     const taskId = makeTaskId(params["id"] ?? "");
     try {
       const task = await deps.stateStore.resumeTask(taskId);
       void deps.taskControl?.resumeTask(taskId).catch((err: unknown) => {
         log.error({ err, taskId }, "resume task workflow trigger failed");
       });
+      recordAudit(deps.auditStore, req, { action: "task.resume", targetType: "task", targetId: taskId, details: { ticketId: task.ticketId, state: task.state } });
       writeJson(res, 200, { task: serializeTask(task) });
     } catch (err: unknown) {
       log.warn({ err }, "resume task failed");
       writeJson(res, 400, { error: "Operation failed" });
     }
-  });
+  }, { permission: "task.operate", resourceParam: "id" });
 
-  router.add("POST", "/api/admin/tasks/:id/retry", async (_req, res, params) => {
+  router.add("POST", "/api/admin/tasks/:id/retry", async (req, res, params) => {
     const taskId = makeTaskId(params["id"] ?? "");
     try {
       const task = await deps.stateStore.retryTask(taskId);
       void deps.taskControl?.retryTask(taskId).catch((err: unknown) => {
         log.error({ err, taskId }, "retry task workflow trigger failed");
       });
+      recordAudit(deps.auditStore, req, { action: "task.retry", targetType: "task", targetId: taskId, details: { ticketId: task.ticketId, state: task.state } });
       writeJson(res, 200, { task: serializeTask(task) });
     } catch (err: unknown) {
       log.warn({ err }, "retry task failed");
       writeJson(res, 400, { error: "Operation failed" });
     }
-  });
+  }, { permission: "task.operate", resourceParam: "id" });
 
-  router.add("POST", "/api/admin/tasks/:id/abandon", async (_req, res, params) => {
+  router.add("POST", "/api/admin/tasks/:id/abandon", async (req, res, params) => {
     const taskId = makeTaskId(params["id"] ?? "");
     try {
       const task = await deps.stateStore.abandonTask(taskId);
+      recordAudit(deps.auditStore, req, { action: "task.abandon", targetType: "task", targetId: taskId, details: { ticketId: task.ticketId, state: task.state } });
       writeJson(res, 200, { task: serializeTask(task) });
     } catch (err: unknown) {
       log.warn({ err }, "abandon task failed");
       writeJson(res, 400, { error: "Operation failed" });
     }
-  });
+  }, { permission: "task.operate", resourceParam: "id" });
 }
 
 // ─── Serializers & helpers (exported for SSE streams & events route) ────────

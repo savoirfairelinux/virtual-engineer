@@ -1,11 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { getLogger } from "../logger.js";
 import {
+  type AgentAdapter,
   type AgentLogEvent,
   type AgentResult,
   type ExternalChangeId,
   type InlineReviewComment,
   type ProjectPushTargetRecord,
+  type ProjectRecord,
   type ReviewChangeDetails,
   type ReviewChangeDiff,
   type ReviewDiscussionThread,
@@ -20,7 +22,7 @@ import {
   makeTaskId,
   makeTicketId,
 } from "../interfaces.js";
-import { buildReviewPrompt } from "./reviewPromptBuilder.js";
+import { buildReviewPrompt, type SinceLastReviewDelta } from "./reviewPromptBuilder.js";
 import { computeVote, parseReviewResult } from "./reviewResultParser.js";
 import { filterCommentsByAllowedFiles } from "./commentFilter.js";
 import { computeCommentHash, computeThreadReplyHash } from "./commentHash.js";
@@ -28,20 +30,6 @@ import { applyVolumeAndSeverityGate, buildFoldedSummary } from "./commentSeverit
 import { agentLogBus, pushToTaskBuffer, clearTaskEventBuffer } from "../agents/agentEventBus.js";
 
 const log = getLogger("review-orchestrator");
-
-/** Legacy interface implemented by `CopilotReviewAgent`. Kept for backward compatibility. */
-export interface ReviewAgent {
-  runReview(
-    input: {
-      changeId: ExternalChangeId;
-      patchset: number;
-      project: string;
-      prompt: string;
-      workingDirectory?: string | undefined;
-    },
-    onEvent?: ((event: { type: string; data?: unknown }) => void) | undefined,
-  ): Promise<{ rawOutput: string }>;
-}
 
 export interface ReviewOrchestratorDeps {
   stateStore: Pick<
@@ -58,6 +46,7 @@ export interface ReviewOrchestratorDeps {
     | "findProjectsByReviewTarget"
     | "getProjectById"
     | "updateExternalChangeId"
+    | "findReviewedCodeReviewTask"
     | "getPostedReviewCommentHashes"
     | "getPostedReviewComments"
     | "markReviewCommentsPosted"
@@ -67,12 +56,10 @@ export interface ReviewOrchestratorDeps {
   reviewProvider: ReviewProvider;
   /** Gerrit integration ID — used to look up the project via the review_target table. */
   integrationId: string;
-  /** Authentication token for the agent integration (e.g. GitHub token for Copilot). */
-  agentToken: string;
   /** Workspace runner — the review always runs in a Docker container. */
   workspaceRunner: WorkspaceRunner;
   /** Build the git clone URL and optional SSH key paths for the change's repository. */
-  buildCloneTarget: (details: ReviewChangeDetails) => { cloneUrl: string; sshKeyPath: string | null; sshKnownHostsPath: string | null };
+  buildCloneTarget: (details: ReviewChangeDetails) => { cloneUrl: string; sshKeyPath: string | null; sshAgentPubKeyPath?: string | null; sshKnownHostsPath: string | null };
   /** Apply a provider-specific patchset onto the cloned workspace (e.g. Gerrit `refs/changes/…`). Omit for GitLab MR branches. */
   applyPatchset?: (handle: WorkspaceHandle, details: ReviewChangeDetails) => Promise<void>;
   /** Source label persisted on review tasks, typically `<provider>:<integrationId>`. */
@@ -81,8 +68,21 @@ export interface ReviewOrchestratorDeps {
   reviewInstructions: string;
   /** System prompt for the review agent (integration-specific, e.g. `review-system-gerrit`). */
   reviewSystemPrompt: string;
-  /** Model override for the agent. */
-  model?: string | undefined;
+  /**
+   * Per-project adapter+model+token resolver, invoked in `runReview()` once the task's
+   * own VE project is known. This orchestrator instance is shared across every
+   * project matching a given review integration (see `startReviewTask`), so model
+   * and token selection MUST happen per-task here rather than once at construction
+   * time. Returning `null` fails the task; review execution never falls back to
+   * an agent belonging to another project.
+   */
+  resolveAgentForProject: (project: ProjectRecord) => Promise<{
+    adapter: AgentAdapter;
+    model: string | undefined;
+    token: string;
+    aiderBackend?: string | undefined;
+    aiderApiBase?: string | undefined;
+  } | null>;
   /** Maximum diff characters injected into the review prompt. Defaults to 60 000. */
   maxDiffChars?: number | undefined;
   /** Maximum number of inline comments posted per review pass. Defaults to 20. */
@@ -139,6 +139,32 @@ export class ReviewOrchestrator {
       return [];
     }
 
+    // Cross-instance duplicate-review guard. VE's local dedup state (task rows,
+    // posted_review_comments) is empty on a fresh instance, so the per-task
+    // guards below cannot tell that a *previous* instance already reviewed this
+    // change. Ask the review server whether the VE account has already posted a
+    // review on the current patchset — the authoritative cross-instance signal.
+    // Only automatic triggers are gated; a manual reviewer re-add (input.force)
+    // still re-reviews an already-reviewed patchset.
+    if (input.force !== true && this.deps.reviewProvider.hasReviewedCurrentPatchset) {
+      let reviewedOnServer = false;
+      try {
+        reviewedOnServer = await this.deps.reviewProvider.hasReviewedCurrentPatchset(input.changeId);
+      } catch (err) {
+        log.warn(
+          { changeId: input.changeId, err },
+          "hasReviewedCurrentPatchset check failed — proceeding with review"
+        );
+      }
+      if (reviewedOnServer) {
+        log.info(
+          { changeId: input.changeId, patchset: details.currentPatchset },
+          "VE already reviewed the current patchset on the review server — skipping automatic re-trigger"
+        );
+        return [];
+      }
+    }
+
     const projects = await this.deps.stateStore.findProjectsByReviewTarget(
       this.deps.integrationId,
       details.project
@@ -169,12 +195,25 @@ export class ReviewOrchestrator {
           existing.reviewedPatchset !== null &&
           existing.reviewedPatchset === details.currentPatchset;
 
+        // Legacy or interrupted REVIEW_DONE rows may have never recorded
+        // reviewedPatchset (null). Treat a completed review with an unknown
+        // patchset as already-reviewed so a startup backfill does not spawn a
+        // duplicate review on a change VE has already finished. Guarded on the
+        // stored currentPatchset still matching the change's current patchset so
+        // a NEW patchset (currentPatchset advanced) is still reviewed rather
+        // than silently skipped. REVIEW_FAILED is intentionally excluded so
+        // failed reviews can still retry.
+        const doneWithUnknownPatchset =
+          existing.state === "REVIEW_DONE" &&
+          existing.reviewedPatchset === null &&
+          existing.currentPatchset === details.currentPatchset;
+
         // Automatic re-triggers (stream backfill on (re)connect, polling-loop
         // discovery, webhook re-deliveries) must NOT re-review a patchset VE has
         // already reviewed — that is the duplicate-review bug seen when a project
         // is "resynced". Manual triggers set input.force (e.g. a human removed VE
         // then re-added it as a reviewer) and intentionally bypass this guard.
-        if (alreadyReviewedThisPatchset && input.force !== true) {
+        if ((alreadyReviewedThisPatchset || doneWithUnknownPatchset) && input.force !== true) {
           log.info(
             { taskId: existing.taskId, patchset: details.currentPatchset, state: existing.state },
             "patchset already reviewed — skipping automatic re-trigger"
@@ -247,6 +286,23 @@ export class ReviewOrchestrator {
         // prior review is DONE): fall through to create a fresh review task.
       }
 
+      // Secondary guard: when the integration was deleted and recreated with a
+      // new UUID, getTaskByTicketId returns null (the ticketId changed), but a
+      // prior task may have already reviewed this patchset for this change+project.
+      // Automatic triggers (force !== true) must not create a duplicate in that case.
+      if (existing === null && input.force !== true) {
+        const priorReviewed = await this.deps.stateStore.findReviewedCodeReviewTask(
+          input.changeId, project.id
+        );
+        if (priorReviewed !== null && priorReviewed.reviewedPatchset === details.currentPatchset) {
+          log.info(
+            { changeId: input.changeId, patchset: details.currentPatchset, projectId: project.id, priorTaskId: priorReviewed.taskId },
+            "patchset already reviewed by prior integration instance — skipping automatic re-trigger"
+          );
+          continue;
+        }
+      }
+
       const taskId = makeTaskId(`review-${details.changeNumber}-${randomUUID().slice(0, 8)}`);
       const task = await this.deps.stateStore.createReviewTask({
         taskId,
@@ -292,6 +348,14 @@ export class ReviewOrchestrator {
       );
     }
 
+    if (task.state === "REVIEW_RUNNING") {
+      log.warn(
+        { taskId },
+        "runReview: task already REVIEW_RUNNING — skipping concurrent invocation"
+      );
+      return;
+    }
+
     const changeId = task.externalChangeId;
 
     // Keep task.cycleCount in sync with persisted review cycles.
@@ -335,7 +399,16 @@ export class ReviewOrchestrator {
         );
       }
 
-      const { cloneUrl, sshKeyPath, sshKnownHostsPath } = this.deps.buildCloneTarget(details);
+      // Resolve the adapter/model/token to use for this project. This orchestrator instance
+      // may be shared across several projects (one per review integration), so the
+      // per-project agent must be resolved here — per task — rather than once when
+      // the orchestrator was built. A missing runtime is fatal for this task.
+      const projectAgentRuntime = await this.deps.resolveAgentForProject(project);
+      if (!projectAgentRuntime) {
+        throw new Error(`No runnable review agent configured for project ${project.id}`);
+      }
+
+      const { cloneUrl, sshKeyPath, sshAgentPubKeyPath, sshKnownHostsPath } = this.deps.buildCloneTarget(details);
       const cloneTarget: ProjectPushTargetRecord = {
         id: -1,
         projectId: project.id,
@@ -347,6 +420,8 @@ export class ReviewOrchestrator {
         commitOrder: 1,
         localPath: ".",
         sshKeyPath,
+        ...(sshAgentPubKeyPath != null ? { sshAgentPubKeyPath } : {}),
+        reviewerEmails: [],
         createdAt: new Date(),
         updatedAt: new Date(),
       };
@@ -387,6 +462,36 @@ export class ReviewOrchestrator {
         }
       }
 
+      // On a re-review, surface what changed since the patchset VE last
+      // reviewed so the agent focuses new findings on the delta. Guarded:
+      // providers without inter-patchset diff support skip this entirely, and
+      // empty deltas are dropped by the prompt builder.
+      let sinceLastReview: SinceLastReviewDelta | undefined;
+      const previousReviewed = task.reviewedPatchset;
+      if (
+        previousReviewed !== null &&
+        previousReviewed < details.currentPatchset &&
+        typeof this.deps.reviewProvider.getInterPatchsetDiff === "function"
+      ) {
+        try {
+          const deltaDiff = await this.deps.reviewProvider.getInterPatchsetDiff(
+            details,
+            previousReviewed,
+            details.currentPatchset
+          );
+          sinceLastReview = {
+            fromPatchset: previousReviewed,
+            toPatchset: details.currentPatchset,
+            diff: deltaDiff,
+          };
+        } catch (err) {
+          log.warn(
+            { err, taskId, fromPatchset: previousReviewed, toPatchset: details.currentPatchset },
+            "failed to compute inter-patchset delta; continuing with full diff only"
+          );
+        }
+      }
+
       const prompt = buildReviewPrompt({
         details,
         diff,
@@ -402,6 +507,7 @@ export class ReviewOrchestrator {
           : {}),
         ...(eligibleThreads.length > 0 ? { discussionThreads: eligibleThreads } : {}),
         ...(this.deps.maxDiffChars !== undefined ? { maxDiffChars: this.deps.maxDiffChars } : {}),
+        ...(sinceLastReview !== undefined ? { sinceLastReview } : {}),
       });
 
       emitReviewEvent("review.prompt_built", { promptLength: prompt.length, patchset: details.currentPatchset });
@@ -448,8 +554,16 @@ export class ReviewOrchestrator {
           repositoryName: details.project,
           prompt,
           systemPrompt: this.deps.reviewSystemPrompt,
-          agentToken: this.deps.agentToken,
-          model: this.deps.model,
+          agentToken: projectAgentRuntime.token,
+          model: projectAgentRuntime.model,
+          agentAdapter: projectAgentRuntime.adapter,
+          ...(projectAgentRuntime.aiderBackend !== undefined ? { aiderBackend: projectAgentRuntime.aiderBackend } : {}),
+          ...(projectAgentRuntime.aiderApiBase !== undefined ? { aiderApiBase: projectAgentRuntime.aiderApiBase } : {}),
+          ...(project.skillDiscoveryEnabled ? { skillDiscoveryEnabled: true } : {}),
+          ...(project.skillDiscoveryEnabled ? { localSkillsPath: project.localSkillsPath } : {}),
+          ...(project.skillSourcesJson !== "[]"
+            ? { skillSourcesJson: project.skillSourcesJson }
+            : {}),
         }, {
           onStderrChunk: (chunk: string) => {
             stderrLineBuffer.partial += chunk;
@@ -534,10 +648,12 @@ export class ReviewOrchestrator {
         repliesToPost.push({ threadId: reply.threadId, message, handledHash: entry.handledHash });
       }
 
-      // Avoid re-posting an identical verdict on re-reviews. When a pass
-      // finds nothing new to say (no inline comments, no folded notes, no
-      // replies) and the overall vote matches the last review cycle, stay
-      // silent instead of spamming another summary + vote notification.
+      // Avoid re-posting an identical verdict on re-reviews. When a pass finds
+      // nothing new to say (no inline comments, no folded notes) and the overall
+      // vote matches the last review cycle, stay silent instead of spamming
+      // another summary + vote notification. This gate is decoupled from
+      // discussion replies: a pending reply is always delivered through its own
+      // path below and never forces the verdict to be re-posted.
       const hasNothingNew = commentsToPost.length === 0 && folded.length === 0;
       const previousVote = await this.getLastReviewVote(taskId);
       const skipPosting =
@@ -545,8 +661,7 @@ export class ReviewOrchestrator {
         cycleNumber > 1 &&
         hasNothingNew &&
         previousVote !== null &&
-        previousVote === vote &&
-        repliesToPost.length === 0;
+        previousVote === vote;
 
       emitReviewEvent("review.posting_comments", {
         commentCount: commentsToPost.length,

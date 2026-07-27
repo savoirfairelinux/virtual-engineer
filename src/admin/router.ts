@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import type { Permission, ResourceType } from "../interfaces.js";
 import { writeJson } from "./adminRouteUtils.js";
 
 export type RouteParams = Record<string, string>;
@@ -8,11 +9,42 @@ export type RouteHandler = (
   params: RouteParams
 ) => Promise<void>;
 
+/**
+ * Per-route authorization metadata (pure PBAC — no role fallback).
+ *
+ * Every non-public route MUST declare exactly one authorization mode:
+ * - `permission`: the PBAC permission required. When `resourceParam` names a path
+ *   parameter, the check is scoped to that resource id; `collection` marks a list
+ *   route (authorize on any grant, then the handler filters the response).
+ * - `authenticated`: any logged-in user may reach the route regardless of policy
+ *   (used for auth-self routes: `me`, `logout`, own password change).
+ *
+ * A route with neither is reachable only by the superuser (the `admin` role /
+ * bootstrap) — a fail-closed safety net for unannotated routes.
+ */
+export interface RouteMeta {
+  /** PBAC permission required to reach the route. */
+  permission?: Permission;
+  /** Resource type the permission scopes to (informational; derived from `permission` when omitted). */
+  resourceType?: ResourceType;
+  /** Path-parameter name holding the scoped resource id (e.g. `"id"`). Omit for global permissions. */
+  resourceParam?: string;
+  /**
+   * Marks a collection/list route: authorize when the caller holds the
+   * `permission` on **any** resource (scoped or global). The handler is then
+   * responsible for filtering the response to the caller's accessible ids.
+   */
+  collection?: boolean;
+  /** Any authenticated user may reach the route (auth-self routes). */
+  authenticated?: boolean;
+}
+
 interface CompiledRoute {
   method: string;
   regex: RegExp;
   keys: readonly string[];
   handler: RouteHandler;
+  meta: RouteMeta;
 }
 
 /** Compile a `:param`-style path pattern to a capturing regex. */
@@ -41,10 +73,36 @@ export class Router {
   private readonly routes: CompiledRoute[] = [];
 
   /** Register a handler for the given HTTP method and path pattern. */
-  add(method: string, pattern: string, handler: RouteHandler): this {
+  add(method: string, pattern: string, handler: RouteHandler, meta: RouteMeta = {}): this {
     const { regex, keys } = compilePattern(pattern);
-    this.routes.push({ method: method.toUpperCase(), regex, keys, handler });
+    this.routes.push({ method: method.toUpperCase(), regex, keys, handler, meta });
     return this;
+  }
+
+  /**
+   * Peek at the route that would handle a method + path (without dispatching).
+   * Returns the route's metadata and extracted path params, or null when no
+   * route matches. Malformed URL-encoded params are returned as empty strings.
+   */
+  match(method: string, path: string): { meta: RouteMeta; params: RouteParams } | null {
+    const upperMethod = method.toUpperCase();
+    for (const route of this.routes) {
+      if (route.method !== upperMethod) continue;
+      const m = route.regex.exec(path);
+      if (!m) continue;
+      const params: RouteParams = {};
+      for (let i = 0; i < route.keys.length; i++) {
+        const key = route.keys[i];
+        if (key === undefined) continue;
+        try {
+          params[key] = decodeURIComponent(m[i + 1] ?? "");
+        } catch {
+          params[key] = "";
+        }
+      }
+      return { meta: route.meta, params };
+    }
+    return null;
   }
 
   /**

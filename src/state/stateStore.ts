@@ -3,25 +3,37 @@ import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { mkdir } from "fs/promises";
 import { dirname } from "path";
+import { getLogger } from "../logger.js";
+import { seedBuiltInPolicies } from "../admin/authorization/seedPolicies.js";
 import type {
   AgentRecord,
   ProjectRecord,
   ResolvedAgentConfig,
   StateStore,
-  Task,
 } from "../interfaces.js";
+import type { Task } from "../domain/tasks.js";
 
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import type { AgentStoreApi } from "./stores/agentStore.js";
 import { createAgentStore } from "./stores/agentStore.js";
+import type { AuditStoreApi } from "./stores/auditStore.js";
+import { createAuditStore } from "./stores/auditStore.js";
+import type { GroupStoreApi } from "./stores/groupStore.js";
+import { createGroupStore } from "./stores/groupStore.js";
 import type { IntegrationStoreApi } from "./stores/integrationStore.js";
 import { createIntegrationStore } from "./stores/integrationStore.js";
+import type { PolicyStoreApi } from "./stores/policyStore.js";
+import { createPolicyStore } from "./stores/policyStore.js";
 import type { ProjectStoreApi } from "./stores/projectStore.js";
 import { createProjectStore } from "./stores/projectStore.js";
 import type { PromptStoreApi } from "./stores/promptStore.js";
 import { createPromptStore } from "./stores/promptStore.js";
+import type { SettingsStoreApi } from "./stores/settingsStore.js";
+import { createSettingsStore } from "./stores/settingsStore.js";
 import type { TaskStoreApi } from "./stores/taskStore.js";
 import { createTaskStore } from "./stores/taskStore.js";
+import type { UserStoreApi } from "./stores/userStore.js";
+import { createUserStore } from "./stores/userStore.js";
 import * as schema from "./schema.js";
 
 type ComposedStoreApi =
@@ -29,7 +41,12 @@ type ComposedStoreApi =
   & IntegrationStoreApi
   & ProjectStoreApi
   & PromptStoreApi
-  & AgentStoreApi;
+  & AgentStoreApi
+  & SettingsStoreApi
+  & UserStoreApi
+  & AuditStoreApi
+  & GroupStoreApi
+  & PolicyStoreApi;
 
 /** Facade class that composes domain-scoped store modules over one shared SQLite connection. */
 // eslint-disable-next-line @typescript-eslint/no-unsafe-declaration-merging
@@ -41,17 +58,38 @@ export class SqliteStateStore {
   private readonly projectStore: ProjectStoreApi;
   private readonly promptStore: PromptStoreApi;
   private readonly agentStore: AgentStoreApi;
+  private readonly settingsStore: SettingsStoreApi;
+  private readonly userStore: UserStoreApi;
+  private readonly auditStore: AuditStoreApi;
+  private readonly groupStore: GroupStoreApi;
+  private readonly policyStore: PolicyStoreApi;
+  private readonly taskTransitionListeners: Array<(task: Task) => void> = [];
 
   constructor(private readonly raw: Database.Database) {
     this.dbDir = dirname(this.raw.name);
     this.db = drizzle(this.raw, { schema });
     this.applyMigrations();
 
-    this.taskStore = createTaskStore({ db: this.db, raw: this.raw });
+    // Pass a state-change dispatcher into the task store so every method that
+    // mutates a task's state (transition, retry, abandon, and a delete that
+    // abandons a non-terminal task) notifies registered listeners uniformly —
+    // no call site needs to know about polling-loop lifecycle. The closure
+    // reads the (already-initialised) listener array so listeners can be added
+    // later.
+    this.taskStore = createTaskStore({
+      db: this.db,
+      raw: this.raw,
+      onTaskStateChange: (task) => this.notifyTaskTransition(task),
+    });
     this.integrationStore = createIntegrationStore({ db: this.db });
     this.projectStore = createProjectStore({ db: this.db, raw: this.raw });
     this.promptStore = createPromptStore({ db: this.db, dbDir: this.dbDir });
     this.agentStore = createAgentStore({ db: this.db });
+    this.settingsStore = createSettingsStore({ db: this.db });
+    this.userStore = createUserStore({ db: this.db });
+    this.auditStore = createAuditStore({ db: this.db });
+    this.groupStore = createGroupStore({ db: this.db });
+    this.policyStore = createPolicyStore({ db: this.db });
 
     Object.assign(
       this,
@@ -59,8 +97,50 @@ export class SqliteStateStore {
       this.integrationStore,
       this.projectStore,
       this.promptStore,
-      this.agentStore
+      this.agentStore,
+      this.settingsStore,
+      this.userStore,
+      this.auditStore,
+      this.groupStore,
+      this.policyStore
     );
+  }
+
+  /** Invoke all registered task-transition listeners, swallowing their errors (sync or async). */
+  private notifyTaskTransition(task: Task): void {
+    // Snapshot the list so listeners added or removed during iteration don't
+    // affect the current notification pass.
+    for (const listener of [...this.taskTransitionListeners]) {
+      try {
+        const result = listener(task) as unknown;
+        if (result instanceof Promise) {
+          result.catch((err: unknown) => {
+            getLogger("state-store").warn({ err, taskId: task.taskId }, "task transition listener failed");
+          });
+        }
+      } catch (err) {
+        getLogger("state-store").warn({ err, taskId: task.taskId }, "task transition listener failed");
+      }
+    }
+  }
+
+  /**
+   * Register a listener invoked after any task state change — via
+   * `transition()` or the dedicated mutators (`retryTask`, `abandonTask`, and
+   * `deleteTask` when it abandons a non-terminal task). Not fired for
+   * pause/resume, which only append same-state metadata rows. Listeners never
+   * affect the mutating call: their errors are caught and logged. Used to let
+   * the runtime bootstrap react to state changes (e.g. reconcile the polling
+   * loop) without every call site needing polling-loop plumbing.
+   *
+   * @returns An unsubscribe function that removes the listener when called.
+   */
+  onTaskTransition(listener: (task: Task) => void): () => void {
+    this.taskTransitionListeners.push(listener);
+    return () => {
+      const idx = this.taskTransitionListeners.indexOf(listener);
+      if (idx !== -1) this.taskTransitionListeners.splice(idx, 1);
+    };
   }
 
   /** Create and initialise a store at `dbPath`. Creates the parent directory, runs migrations, and seeds built-in prompts. */
@@ -72,6 +152,7 @@ export class SqliteStateStore {
     raw.pragma("foreign_keys = ON");
     const store = new SqliteStateStore(raw);
     await store.seedBuiltInPrompts();
+    await seedBuiltInPolicies(store);
     return store;
   }
 
@@ -152,6 +233,7 @@ export class SqliteStateStore {
         WHERE state NOT IN ('DONE', 'FAILED', 'ABANDONED', 'REVIEW_DONE', 'REVIEW_FAILED');
       CREATE INDEX IF NOT EXISTS idx_state_transitions_task_id ON state_transitions(task_id);
       CREATE INDEX IF NOT EXISTS idx_agent_cycles_task_id ON agent_cycles(task_id);
+      CREATE INDEX IF NOT EXISTS idx_agent_cycles_created_at ON agent_cycles(created_at);
       CREATE INDEX IF NOT EXISTS idx_processed_comments_task_id ON processed_comments(task_id);
 
       CREATE TABLE IF NOT EXISTS integrations (
@@ -226,6 +308,13 @@ export class SqliteStateStore {
         agent_id            TEXT    NOT NULL REFERENCES agents(id),
         agent_override_json TEXT,
         post_clone_script   TEXT    NOT NULL DEFAULT '',
+        skill_discovery_enabled INTEGER NOT NULL DEFAULT 0,
+        local_skills_path   TEXT    NOT NULL DEFAULT '.github/skills',
+        skill_sources_json  TEXT    NOT NULL DEFAULT '[]',
+        gerrit_topic_override TEXT,
+        use_full_ticket_url_in_commits INTEGER NOT NULL DEFAULT 0,
+        post_review_link_to_ticket INTEGER NOT NULL DEFAULT 0,
+        react_to_ci_failures INTEGER NOT NULL DEFAULT 0,
         enabled             INTEGER NOT NULL DEFAULT 0,
         created_at          INTEGER NOT NULL,
         updated_at          INTEGER NOT NULL
@@ -260,6 +349,7 @@ export class SqliteStateStore {
         commit_order   INTEGER NOT NULL,
         local_path     TEXT    NOT NULL,
         ssh_key_path   TEXT,
+        reviewer_emails TEXT   NOT NULL DEFAULT '[]',
         created_at     INTEGER NOT NULL,
         updated_at     INTEGER NOT NULL
       );
@@ -275,6 +365,97 @@ export class SqliteStateStore {
         max_concurrent INTEGER,
         updated_at     INTEGER NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS app_settings (
+        id                  TEXT    PRIMARY KEY CHECK (id = 'global'),
+        polling_interval_ms INTEGER,
+        max_agent_cycles    INTEGER,
+        max_retry_attempts  INTEGER,
+        updated_at          INTEGER NOT NULL
+      );
+
+      -- ─── Users / Sessions / Audit (admin RBAC) ───────────────────────────
+      CREATE TABLE IF NOT EXISTS users (
+        id            TEXT    PRIMARY KEY,
+        username      TEXT    NOT NULL UNIQUE,
+        password_hash TEXT    NOT NULL,
+        role          TEXT    NOT NULL,
+        enabled       INTEGER NOT NULL DEFAULT 1,
+        created_at    INTEGER NOT NULL,
+        updated_at    INTEGER NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS user_sessions (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        token_hash   TEXT    NOT NULL UNIQUE,
+        user_id      TEXT    NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        created_at   INTEGER NOT NULL,
+        expires_at   INTEGER NOT NULL,
+        last_seen_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_user_sessions_user_id ON user_sessions(user_id);
+
+      CREATE TABLE IF NOT EXISTS audit_log (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        actor_user_id TEXT,
+        actor_name    TEXT    NOT NULL,
+        action        TEXT    NOT NULL,
+        target_type   TEXT,
+        target_id     TEXT,
+        details_json  TEXT    NOT NULL DEFAULT '{}',
+        created_at    INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_audit_log_created_at ON audit_log(created_at);
+      CREATE INDEX IF NOT EXISTS idx_audit_log_action_created_at ON audit_log(action, created_at);
+      CREATE INDEX IF NOT EXISTS idx_audit_log_actor_created_at ON audit_log(actor_name, created_at);
+
+      -- ─── PBAC: groups / policies / rules / bindings ──────────────────────
+      CREATE TABLE IF NOT EXISTS groups (
+        id          TEXT    PRIMARY KEY,
+        name        TEXT    NOT NULL UNIQUE,
+        description TEXT    NOT NULL DEFAULT '',
+        created_at  INTEGER NOT NULL,
+        updated_at  INTEGER NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS group_members (
+        group_id   TEXT    NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+        user_id    TEXT    NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (group_id, user_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_group_members_user_id ON group_members(user_id);
+
+      CREATE TABLE IF NOT EXISTS policies (
+        id          TEXT    PRIMARY KEY,
+        name        TEXT    NOT NULL UNIQUE,
+        description TEXT    NOT NULL DEFAULT '',
+        builtin     INTEGER NOT NULL DEFAULT 0,
+        created_at  INTEGER NOT NULL,
+        updated_at  INTEGER NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS policy_rules (
+        id          TEXT    PRIMARY KEY,
+        policy_id   TEXT    NOT NULL REFERENCES policies(id) ON DELETE CASCADE,
+        permission  TEXT    NOT NULL,
+        resource_id TEXT,
+        created_at  INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_policy_rules_policy_id ON policy_rules(policy_id);
+      CREATE INDEX IF NOT EXISTS idx_policy_rules_permission ON policy_rules(permission);
+
+      CREATE TABLE IF NOT EXISTS policy_bindings (
+        id             TEXT    PRIMARY KEY,
+        policy_id      TEXT    NOT NULL REFERENCES policies(id) ON DELETE CASCADE,
+        principal_type TEXT    NOT NULL,
+        principal_id   TEXT    NOT NULL,
+        created_at     INTEGER NOT NULL
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_policy_bindings
+        ON policy_bindings(policy_id, principal_type, principal_id);
+      CREATE INDEX IF NOT EXISTS idx_policy_bindings_principal
+        ON policy_bindings(principal_type, principal_id);
     `);
 
     this.ensureColumn("tasks", "ticket_source_label", "TEXT NOT NULL DEFAULT 'redmine'");
@@ -306,6 +487,14 @@ export class SqliteStateStore {
     this.ensureColumn("tasks", "push_ref", "TEXT");
     this.ensureColumn("agents", "integration_id", "TEXT REFERENCES integrations(id) ON DELETE SET NULL");
     this.ensureColumn("agents", "feedback_instructions_prompt_id", "TEXT REFERENCES prompts(id) ON DELETE SET NULL");
+    this.ensureColumn("projects", "skill_discovery_enabled", "INTEGER NOT NULL DEFAULT 0");
+    this.ensureColumn("projects", "local_skills_path", "TEXT NOT NULL DEFAULT '.github/skills'");
+    this.ensureColumn("projects", "skill_sources_json", "TEXT NOT NULL DEFAULT '[]'");
+    this.ensureColumn("projects", "gerrit_topic_override", "TEXT");
+    this.ensureColumn("projects", "use_full_ticket_url_in_commits", "INTEGER NOT NULL DEFAULT 0");
+    this.ensureColumn("projects", "post_review_link_to_ticket", "INTEGER NOT NULL DEFAULT 0");
+    this.ensureColumn("projects", "react_to_ci_failures", "INTEGER NOT NULL DEFAULT 0");
+    this.ensureColumn("project_push_targets", "reviewer_emails", "TEXT NOT NULL DEFAULT '[]'");
     this.ensureColumn("prompts", "prompt_type", "TEXT NOT NULL DEFAULT 'user'");
 
     this.raw.exec(`

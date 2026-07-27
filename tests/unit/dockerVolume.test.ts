@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // ─── Mocks ────────────────────────────────────────────────────────────────────
 
@@ -7,24 +7,47 @@ vi.mock("node:child_process", () => {
   return { execFile };
 });
 
-vi.mock("node:fs", () => ({
-  readFileSync: vi.fn(),
-}));
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return {
+    ...actual,
+    closeSync: vi.fn(),
+    fstatSync: vi.fn(() => ({ isFile: () => true, uid: process.getuid?.() ?? 0 })),
+    openSync: vi.fn(() => 42),
+    readFileSync: vi.fn(),
+    realpathSync: vi.fn((path: string) => path === "/proc/self/fd/42" ? "/app/secrets/opened-file" : path),
+  };
+});
 
 vi.mock("node:util", () => ({
   promisify: (fn: unknown) => fn,
 }));
 
+const logger = vi.hoisted(() => ({
+  debug: vi.fn(),
+  info: vi.fn(),
+  warn: vi.fn(),
+}));
+
+vi.mock("../../src/logger.js", () => ({
+  getLogger: vi.fn(() => logger),
+}));
+
 import { execFile } from "node:child_process";
-import { readFileSync, type PathOrFileDescriptor } from "node:fs";
+import { openSync, readFileSync, realpathSync, type PathOrFileDescriptor } from "node:fs";
 import {
   createVolume,
   removeVolume,
   execInVolume,
+  pruneOrphanedWorkspaceVolumes,
 } from "../../src/workspace/dockerVolume.js";
 
 const mockExecFile = vi.mocked(execFile);
 const mockReadFileSync = vi.mocked(readFileSync);
+const mockRealpathSync = vi.mocked(realpathSync);
+const mockOpenSync = vi.mocked(openSync);
+const SSH_KEY_FD = 42;
+const KNOWN_HOSTS_FD = 43;
 
 // Helper: make mockExecFile resolve with stdout/stderr
 function mockExecFileSuccess(stdout = "", stderr = ""): void {
@@ -39,6 +62,12 @@ function mockExecFileFailure(code: number, stdout = "", stderr = ""): void {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockOpenSync.mockImplementation((path) => String(path).includes("known_hosts") ? KNOWN_HOSTS_FD : SSH_KEY_FD);
+  mockRealpathSync.mockImplementation((path) => {
+    if (String(path) === `/proc/self/fd/${SSH_KEY_FD}`) return "/app/secrets/opened-key";
+    if (String(path) === `/proc/self/fd/${KNOWN_HOSTS_FD}`) return "/app/secrets/opened-known-hosts";
+    return String(path);
+  });
 });
 
 // ─── createVolume ─────────────────────────────────────────────────────────────
@@ -86,6 +115,62 @@ describe("removeVolume", () => {
   });
 });
 
+// ─── pruneOrphanedWorkspaceVolumes ─────────────────────────────────────────────
+
+describe("pruneOrphanedWorkspaceVolumes", () => {
+  it("lists ve-ws-*/ve-home-* volumes and removes each", async () => {
+    mockExecFile
+      .mockResolvedValueOnce({ stdout: "ve-ws-abc-1\nve-home-abc-1\n", stderr: "" } as never)
+      .mockResolvedValueOnce({ stdout: "", stderr: "" } as never)
+      .mockResolvedValueOnce({ stdout: "", stderr: "" } as never);
+
+    await pruneOrphanedWorkspaceVolumes();
+
+    expect(mockExecFile).toHaveBeenNthCalledWith(
+      1,
+      "docker",
+      ["volume", "ls", "-q", "--filter", "name=^ve-(ws|home)-"],
+      expect.objectContaining({ timeout: expect.any(Number) }),
+    );
+    expect(mockExecFile).toHaveBeenNthCalledWith(
+      2,
+      "docker",
+      ["volume", "rm", "ve-ws-abc-1"],
+      expect.objectContaining({ timeout: expect.any(Number) }),
+    );
+    expect(mockExecFile).toHaveBeenNthCalledWith(
+      3,
+      "docker",
+      ["volume", "rm", "ve-home-abc-1"],
+      expect.objectContaining({ timeout: expect.any(Number) }),
+    );
+  });
+
+  it("is a no-op when no volumes match", async () => {
+    mockExecFileSuccess("");
+    await pruneOrphanedWorkspaceVolumes();
+    expect(mockExecFile).toHaveBeenCalledTimes(1);
+  });
+
+  it("skips volumes still in use without throwing", async () => {
+    const error = new Error("volume is in use");
+    mockExecFile
+      .mockResolvedValueOnce({ stdout: "ve-ws-busy-1\n", stderr: "" } as never)
+      .mockRejectedValueOnce(error as never);
+
+    await expect(pruneOrphanedWorkspaceVolumes()).resolves.toBeUndefined();
+    expect(logger.debug).toHaveBeenCalledWith(
+      { volume: "ve-ws-busy-1", err: error },
+      "startup cleanup: skipped workspace volume",
+    );
+  });
+
+  it("does not throw when the initial listing fails", async () => {
+    mockExecFile.mockRejectedValueOnce(new Error("docker not available") as never);
+    await expect(pruneOrphanedWorkspaceVolumes()).resolves.toBeUndefined();
+  });
+});
+
 // ─── execInVolume — basic (no SSH key) ────────────────────────────────────────
 
 describe("execInVolume", () => {
@@ -96,6 +181,18 @@ describe("execInVolume", () => {
   };
 
   describe("basic docker args (no sshKeyPath)", () => {
+    let savedSshAuthSock: string | undefined;
+    beforeEach(() => {
+      // Unset SSH_AUTH_SOCK so these tests verify behaviour without an agent socket.
+      savedSshAuthSock = process.env["SSH_AUTH_SOCK"];
+      delete process.env["SSH_AUTH_SOCK"];
+    });
+    afterEach(() => {
+      if (savedSshAuthSock !== undefined) {
+        process.env["SSH_AUTH_SOCK"] = savedSshAuthSock;
+      }
+    });
+
     it("mounts volume and runs the command directly", async () => {
       mockExecFileSuccess("ok\n");
 
@@ -187,6 +284,46 @@ describe("execInVolume", () => {
     });
   });
 
+  describe("with SSH agent forwarding disabled", () => {
+    let savedSshAuthSock: string | undefined;
+
+    beforeEach(() => {
+      savedSshAuthSock = process.env["SSH_AUTH_SOCK"];
+      process.env["SSH_AUTH_SOCK"] = "/tmp/ve-test-agent.sock";
+      mockReadFileSync.mockReturnValue(Buffer.from("example.com ssh-rsa AAAA..."));
+      mockExecFileSuccess();
+    });
+
+    afterEach(() => {
+      if (savedSshAuthSock !== undefined) {
+        process.env["SSH_AUTH_SOCK"] = savedSshAuthSock;
+      } else {
+        delete process.env["SSH_AUTH_SOCK"];
+      }
+    });
+
+    it("does not prepare agent-mode known_hosts when forwarding is disabled", async () => {
+      await execInVolume({
+        ...baseOpts,
+        sshKnownHostsPath: "/app/secrets/known_hosts",
+        forwardSshAgent: false,
+      });
+
+      const args = mockExecFile.mock.calls[0]![1] as string[];
+
+      expect(mockReadFileSync).not.toHaveBeenCalled();
+      expect(args).not.toContain("SSH_AUTH_SOCK=/tmp/ve-test-agent.sock");
+      expect(args).not.toContain("VE_SSH_KNOWN_HOSTS_B64=ZXhhbXBsZS5jb20gc3NoLXJzYSBBQUFBLi4u");
+      expect(args.find(a => a.startsWith("GIT_SSH_COMMAND="))).toBeUndefined();
+      expect(args).toEqual([
+        "run", "--rm",
+        "-v", "ve-ws-abc:/workspace",
+        "virtual-engineer-workspace:latest",
+        "git", "clone", "ssh://example.com/repo", "/workspace",
+      ]);
+    });
+  });
+
   // ─── execInVolume — with SSH key ──────────────────────────────────────────
 
   describe("with sshKeyPath", () => {
@@ -203,7 +340,8 @@ describe("execInVolume", () => {
     it("reads the SSH key file from disk", async () => {
       await execInVolume(sshOpts);
 
-      expect(mockReadFileSync).toHaveBeenCalledWith("/app/secrets/gerrit_id_ed25519");
+      expect(mockOpenSync).toHaveBeenCalledWith("/app/secrets/gerrit_id_ed25519", expect.any(Number));
+      expect(mockReadFileSync).toHaveBeenCalledWith(SSH_KEY_FD);
     });
 
     it("injects VE_SSH_KEY_B64 env var with base64-encoded key content", async () => {
@@ -274,11 +412,44 @@ describe("execInVolume", () => {
 
     it("throws descriptive error when SSH key file is unreadable", async () => {
       const enoent = Object.assign(new Error("ENOENT: no such file or directory"), { code: "ENOENT" });
-      mockReadFileSync.mockImplementation(() => { throw enoent; });
+      mockOpenSync.mockImplementation(() => { throw enoent; });
 
       await expect(execInVolume(sshOpts)).rejects.toThrow(
-        /SSH key file not found or unreadable.*gerrit_id_ed25519/
+        /SSH key file not found, unreadable, or a symbolic link.*gerrit_id_ed25519/
       );
+    });
+
+    it("rejects SSH key paths outside approved secret directories", async () => {
+      await expect(execInVolume({ ...baseOpts, sshKeyPath: "/etc/passwd" })).rejects.toThrow(
+        /SSH key path must be inside an approved secrets directory/
+      );
+
+      expect(mockReadFileSync).not.toHaveBeenCalled();
+      expect(mockExecFile).not.toHaveBeenCalled();
+    });
+
+    it("rejects SSH key symlinks that resolve outside approved secret directories", async () => {
+      mockRealpathSync.mockImplementation((path) => {
+        if (String(path) === `/proc/self/fd/${SSH_KEY_FD}`) return "/etc/passwd";
+        return String(path);
+      });
+
+      await expect(execInVolume({ ...baseOpts, sshKeyPath: "/app/secrets/key" })).rejects.toThrow(
+        /SSH key path resolves outside its approved secrets directory/
+      );
+
+      expect(mockReadFileSync).not.toHaveBeenCalled();
+      expect(mockExecFile).not.toHaveBeenCalled();
+    });
+
+    it("rejects filename-shaped temporary SSH key files not generated by this process", async () => {
+      await expect(execInVolume({
+        ...baseOpts,
+        sshKeyPath: "/tmp/ve-ssh-key-0123456789abcdef.pem",
+      })).rejects.toThrow(/approved secrets directory|generated by this process/);
+
+      expect(mockReadFileSync).not.toHaveBeenCalled();
+      expect(mockExecFile).not.toHaveBeenCalled();
     });
   });
 
@@ -293,7 +464,7 @@ describe("execInVolume", () => {
 
     beforeEach(() => {
       mockReadFileSync.mockImplementation((p: PathOrFileDescriptor) => {
-        if (String(p).includes("known_hosts")) return Buffer.from("example.com ssh-rsa AAAA...");
+        if (p === KNOWN_HOSTS_FD) return Buffer.from("example.com ssh-rsa AAAA...");
         return Buffer.from("FAKE-SSH-KEY-CONTENT");
       });
       mockExecFileSuccess();
@@ -302,7 +473,7 @@ describe("execInVolume", () => {
     it("reads the known_hosts file from disk", async () => {
       await execInVolume(knownHostsOpts);
 
-      expect(mockReadFileSync).toHaveBeenCalledWith("/app/secrets/known_hosts");
+      expect(mockOpenSync).toHaveBeenCalledWith("/app/secrets/known_hosts", expect.any(Number));
     });
 
     it("injects VE_SSH_KNOWN_HOSTS_B64 env var with base64-encoded content", async () => {
@@ -348,12 +519,12 @@ describe("execInVolume", () => {
     it("throws descriptive error when known_hosts file is unreadable", async () => {
       const enoent = Object.assign(new Error("ENOENT: no such file or directory"), { code: "ENOENT" });
       mockReadFileSync.mockImplementation((p: PathOrFileDescriptor) => {
-        if (String(p).includes("known_hosts")) throw enoent;
+        if (p === KNOWN_HOSTS_FD) throw enoent;
         return Buffer.from("FAKE-SSH-KEY-CONTENT");
       });
 
       await expect(execInVolume(knownHostsOpts)).rejects.toThrow(
-        /SSH known_hosts file not found or unreadable.*known_hosts/
+        /ENOENT/
       );
     });
 

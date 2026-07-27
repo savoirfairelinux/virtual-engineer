@@ -3,12 +3,11 @@ import Database from "better-sqlite3";
 import { SqliteStateStore } from "../../src/state/stateStore.js";
 import { InvalidTransitionError } from "../../src/state/stateMachine.js";
 import { makeTaskId, makeTicketId, makeExternalChangeId, makeProjectId } from "../../src/interfaces.js";
-import { tmpdir } from "os";
-import { join } from "path";
 import { randomUUID } from "crypto";
+import { tempDatabasePath } from "./helpers/tempDatabase.js";
 
 function tempDbPath(): string {
-  return join(tmpdir(), `ve-test-${randomUUID()}.db`);
+  return tempDatabasePath("ve-test");
 }
 
 describe("SqliteStateStore", () => {
@@ -277,6 +276,51 @@ describe("SqliteStateStore", () => {
       await expect(store.transition(taskId, "DONE")).rejects.toThrow(InvalidTransitionError);
     });
 
+    it("notifies onTaskTransition listeners after a successful transition", async () => {
+      const taskId = makeTaskId(randomUUID());
+      await store.createTask(taskId, makeTicketId("3b"));
+      const seen: string[] = [];
+      store.onTaskTransition((task) => seen.push(task.state));
+      await store.transition(taskId, "CONTEXT_BUILDING");
+      expect(seen).toEqual(["CONTEXT_BUILDING"]);
+    });
+
+    it("does not propagate a listener error to the caller of transition", async () => {
+      const taskId = makeTaskId(randomUUID());
+      await store.createTask(taskId, makeTicketId("3c"));
+      store.onTaskTransition(() => {
+        throw new Error("listener boom");
+      });
+      const updated = await store.transition(taskId, "CONTEXT_BUILDING");
+      expect(updated.state).toBe("CONTEXT_BUILDING");
+    });
+
+    it("notifies onTaskTransition listeners from retryTask and abandonTask, not just transition()", async () => {
+      const retriedId = makeTaskId(randomUUID());
+      await store.createTask(retriedId, makeTicketId("3d"));
+      const retrySeen: string[] = [];
+      store.onTaskTransition((task) => retrySeen.push(task.state));
+      await store.retryTask(retriedId);
+      expect(retrySeen.length).toBe(1);
+
+      const abandonedId = makeTaskId(randomUUID());
+      await store.createTask(abandonedId, makeTicketId("3e"));
+      const abandonSeen: string[] = [];
+      store.onTaskTransition((task) => abandonSeen.push(task.state));
+      await store.abandonTask(abandonedId);
+      expect(abandonSeen).toEqual(["ABANDONED"]);
+    });
+
+    it("does not notify onTaskTransition listeners for pause/resume (same-state metadata rows)", async () => {
+      const taskId = makeTaskId(randomUUID());
+      await store.createTask(taskId, makeTicketId("3f"));
+      const seen: string[] = [];
+      store.onTaskTransition((task) => seen.push(task.state));
+      await store.pauseTask(taskId);
+      await store.resumeTask(taskId);
+      expect(seen).toEqual([]);
+    });
+
     it("persists transition history", async () => {
       const taskId = makeTaskId(randomUUID());
       await store.createTask(taskId, makeTicketId("4"));
@@ -382,6 +426,66 @@ describe("SqliteStateStore", () => {
       expect(activeIds).not.toContain(idAbandoned);
       expect(activeIds).not.toContain(idReviewDone);
       expect(activeIds).not.toContain(idReviewFailed);
+    });
+  });
+
+  describe("reconcileOrphanedActiveTasks", () => {
+    it("fails tasks stuck in AGENT_RUNNING / REVIEW_RUNNING / REVIEW_COMMENTING and leaves other states alone", async () => {
+      const idAgentRunning = makeTaskId(randomUUID());
+      const idReviewRunning = makeTaskId(randomUUID());
+      const idReviewCommenting = makeTaskId(randomUUID());
+      const idContextBuilding = makeTaskId(randomUUID());
+      const idDone = makeTaskId(randomUUID());
+
+      await store.createTask(idAgentRunning, makeTicketId("ar"));
+      await store.transition(idAgentRunning, "CONTEXT_BUILDING");
+      await store.transition(idAgentRunning, "AGENT_RUNNING");
+
+      await store.createReviewTask({
+        taskId: idReviewRunning,
+        ticketId: makeTicketId("rr"),
+        subject: "review running",
+        changeId: makeExternalChangeId("I3"),
+        patchset: 1,
+      });
+      await store.transition(idReviewRunning, "REVIEW_RUNNING");
+
+      await store.createReviewTask({
+        taskId: idReviewCommenting,
+        ticketId: makeTicketId("rc"),
+        subject: "review commenting",
+        changeId: makeExternalChangeId("I4"),
+        patchset: 1,
+      });
+      await store.transition(idReviewCommenting, "REVIEW_RUNNING");
+      await store.transition(idReviewCommenting, "REVIEW_COMMENTING");
+
+      await store.createTask(idContextBuilding, makeTicketId("cb"));
+      await store.transition(idContextBuilding, "CONTEXT_BUILDING");
+
+      await store.createTask(idDone, makeTicketId("dn"));
+      await store.transition(idDone, "CONTEXT_BUILDING");
+      await store.transition(idDone, "AGENT_RUNNING");
+      await store.transition(idDone, "IN_REVIEW");
+      await store.transition(idDone, "MERGED");
+      await store.transition(idDone, "CLOSING");
+      await store.transition(idDone, "DONE");
+
+      const count = await store.reconcileOrphanedActiveTasks();
+      expect(count).toBe(3);
+
+      expect((await store.getTask(idAgentRunning))?.state).toBe("FAILED");
+      expect((await store.getTask(idReviewRunning))?.state).toBe("REVIEW_FAILED");
+      expect((await store.getTask(idReviewCommenting))?.state).toBe("REVIEW_FAILED");
+      // Not an "actively executing" state: left untouched.
+      expect((await store.getTask(idContextBuilding))?.state).toBe("CONTEXT_BUILDING");
+      // Already terminal: left untouched.
+      expect((await store.getTask(idDone))?.state).toBe("DONE");
+    });
+
+    it("is a no-op when nothing is orphaned", async () => {
+      const count = await store.reconcileOrphanedActiveTasks();
+      expect(count).toBe(0);
     });
   });
 
@@ -1303,5 +1407,25 @@ describe("SqliteStateStore — retryTask resets by task type", () => {
     const last = transitions[transitions.length - 1];
     expect(last?.fromState).toBe("FAILED");
     expect(last?.toState).toBe("DETECTED");
+  });
+
+  it("preserves cycle_count across retries so cycle numbers keep incrementing", async () => {
+    const taskId = makeTaskId(randomUUID());
+    await store.createTask(taskId, makeTicketId("cg2"), "title", "desc", "jira");
+    await store.transition(taskId, "CONTEXT_BUILDING");
+    await store.transition(taskId, "AGENT_RUNNING");
+    // Simulate two completed agent cycles
+    await store.incrementCycle(taskId); // cycleCount → 1
+    await store.incrementCycle(taskId); // cycleCount → 2
+    await store.transition(taskId, "FAILED");
+
+    const retried = await store.retryTask(taskId);
+
+    // cycle_count must NOT be reset to 0 — the next incrementCycle will yield 3.
+    expect(retried.state).toBe("DETECTED");
+    expect(retried.cycleCount).toBe(2);
+
+    const afterIncrement = await store.incrementCycle(taskId);
+    expect(afterIncrement).toBe(3);
   });
 });

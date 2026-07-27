@@ -83,7 +83,7 @@ export class PollingLoop {
   private readonly reviewPollCooldowns = new Map<string, number>();
 
   constructor(
-    private readonly config: PollingConfig,
+    private config: PollingConfig,
     private readonly orchestrator: Orchestrator,
     private readonly stateStore: StateStore,
     projectMode?: {
@@ -122,6 +122,30 @@ export class PollingLoop {
   resetBackoff(): void {
     this.ticketFailureCount = 0;
     this.ticketBackoffUntil = 0;
+  }
+
+  /**
+   * Apply updated polling configuration at runtime. When the polling interval
+   * changes while the loop is running, the timer is restarted so the new
+   * cadence takes effect immediately (without a process restart).
+   */
+  updateConfig(patch: Partial<PollingConfig>): void {
+    const prevInterval = this.config.ticketIntervalMs;
+    this.config = { ...this.config, ...patch };
+
+    const intervalChanged =
+      patch.ticketIntervalMs !== undefined && patch.ticketIntervalMs !== prevInterval;
+
+    if (intervalChanged && this.running && this.ticketTimer) {
+      clearInterval(this.ticketTimer);
+      this.ticketTimer = setInterval(() => {
+        this.runTicketPollCycle("ticket poll error");
+      }, this.config.ticketIntervalMs);
+      log.info(
+        { ticketIntervalMs: this.config.ticketIntervalMs },
+        "polling interval updated"
+      );
+    }
   }
 
   /** Begin polling: run immediately on start, then on the configured interval. */
@@ -189,7 +213,11 @@ export class PollingLoop {
   /** Dispatch to project-mode polling; a no-op when no project store is configured. */
   private async pollTickets(): Promise<void> {
     log.debug("polling all projects and active tasks");
-    const tasks: Array<Promise<void>> = [this.pollInReviewTasks(), this.pollReviewWatchingTasks()];
+    const tasks: Array<Promise<void>> = [
+      this.pollInReviewTasks(),
+      this.pollReviewWatchingTasks(),
+      this.pollStalledCodeGenTasks(),
+    ];
     if (this.projectStore && this.pluginManager) {
       tasks.push(this.pollProjectTickets(), this.pollReviewProjects());
     }
@@ -247,6 +275,23 @@ export class PollingLoop {
           // FAILED allows retry; all other terminal states skip without a new task.
           if (existing && existing.state !== "FAILED") {
             continue;
+          }
+          // Fallback for orphaned tasks: a task completed by a former project
+          // (project deleted → project_id set NULL) that was never re-adopted is
+          // invisible to the project-scoped lookup above, so a fresh instance
+          // would re-run work that is already DONE/ABANDONED. Match it by the
+          // ticket-source snapshot, scoped to this exact (integration,
+          // projectKey) to avoid colliding with an identical bare ticket id
+          // owned by a different integration. FAILED still falls through to retry.
+          if (!existing) {
+            const orphanExisting = await this.stateStore.getLatestTaskByTicketSource(
+              ticketId,
+              ticketSource.integrationId,
+              ticketSource.ticketProjectKey
+            );
+            if (orphanExisting && orphanExisting.state !== "FAILED") {
+              continue;
+            }
           }
           const failedAttemptsCount = await this.stateStore.getFailedAttemptCount(ticketId, sourceLabel, project.id);
           if (failedAttemptsCount >= this.config.maxRetryAttempts) {
@@ -428,6 +473,34 @@ export class PollingLoop {
         .then(() => this.orchestrator.checkReviewWatchingTask(task.taskId))
         .catch((err: unknown) =>
           log.error({ taskId: task.taskId, changeId, err }, "failed to check review-watching task status")
+        );
+    }
+  }
+
+  // ─── Stalled code-gen task polling ─────────────────────────────────────────
+
+  /**
+   * Re-drive code-gen tasks that stalled in `CONTEXT_BUILDING` or `RETRY_CYCLE`
+   * while waiting for a free agent concurrency slot. `runAgentCycle` defers
+   * such tasks without re-queuing them, so absent this poll they would never
+   * advance until the next process restart. The orchestrator's in-flight guard
+   * makes re-driving an already-running task a no-op, so this is safe to run
+   * every tick.
+   */
+  async pollStalledCodeGenTasks(): Promise<void> {
+    const activeTasks = await this.stateStore.getActiveTasks();
+    const stalledTasks = activeTasks.filter(
+      (t) =>
+        t.taskType === "code-gen" &&
+        (t.state === "CONTEXT_BUILDING" || t.state === "RETRY_CYCLE")
+    );
+    log.debug({ count: stalledTasks.length }, "polling stalled code-gen tasks awaiting agent slot");
+
+    for (const task of stalledTasks) {
+      Promise.resolve()
+        .then(() => this.orchestrator.resumeStalledCodeGenTask(task.taskId))
+        .catch((err: unknown) =>
+          log.error({ taskId: task.taskId, state: task.state, err }, "failed to resume stalled code-gen task")
         );
     }
   }

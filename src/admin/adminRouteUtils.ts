@@ -164,6 +164,13 @@ export function parseConfig(json: string): Record<string, unknown> {
   }
 }
 
+/** Parse a non-negative integer from a query-string value; returns undefined when absent/invalid. */
+export function parseNonNegativeInt(value: string | null): number | undefined {
+  if (value === null) return undefined;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isNaN(parsed) || parsed < 0 ? undefined : parsed;
+}
+
 /** Normalize a legacy timestamp value (Date | string | number) to an ISO-8601 string. */
 export function toIsoTimestamp(value: Date | string | number): string {
   if (value instanceof Date) {

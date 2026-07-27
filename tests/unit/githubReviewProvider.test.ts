@@ -332,6 +332,58 @@ describe("GitHubReviewProvider", () => {
       expect(fetchMock.mock.calls[0]?.[0]).toBe("https://ghe.example.com/api/graphql");
     });
   });
+
+  describe("hasReviewedCurrentPatchset", () => {
+    const prBody = (sha: string): unknown => ({
+      number: 42, state: "open", title: "t", html_url: "u", merged: false,
+      base: { ref: "main", repo: { full_name: "o/r" } }, head: { ref: "f", sha },
+    });
+
+    it("returns true when VE has a review whose commit_id matches the current head SHA", async () => {
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse(prBody("headsha123"))) // PR fetch
+        .mockResolvedValueOnce(jsonResponse({ data: { viewer: { login: "ve-bot" } } })) // viewer
+        .mockResolvedValueOnce(jsonResponse([
+          { user: { login: "alice" }, state: "APPROVED", commit_id: "headsha123" },
+          { user: { login: "ve-bot" }, state: "CHANGES_REQUESTED", commit_id: "headsha123" },
+        ])); // reviews
+      expect(await new GitHubReviewProvider(config).hasReviewedCurrentPatchset(cid)).toBe(true);
+    });
+
+    it("returns false when VE only reviewed an older commit (head advanced)", async () => {
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse(prBody("newsha")))
+        .mockResolvedValueOnce(jsonResponse({ data: { viewer: { login: "ve-bot" } } }))
+        .mockResolvedValueOnce(jsonResponse([
+          { user: { login: "ve-bot" }, state: "APPROVED", commit_id: "oldsha" },
+        ]));
+      expect(await new GitHubReviewProvider(config).hasReviewedCurrentPatchset(cid)).toBe(false);
+    });
+
+    it("returns false when only other reviewers reviewed the current head", async () => {
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse(prBody("headsha123")))
+        .mockResolvedValueOnce(jsonResponse({ data: { viewer: { login: "ve-bot" } } }))
+        .mockResolvedValueOnce(jsonResponse([
+          { user: { login: "someone" }, state: "APPROVED", commit_id: "headsha123" },
+        ]));
+      expect(await new GitHubReviewProvider(config).hasReviewedCurrentPatchset(cid)).toBe(false);
+    });
+
+    it("paginates past a full first page to find VE's review on a later page", async () => {
+      const fullPage = Array.from({ length: 100 }, (_, i) => ({
+        user: { login: "alice" }, state: "COMMENTED", commit_id: `sha${i}`,
+      }));
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse(prBody("headsha123"))) // PR fetch
+        .mockResolvedValueOnce(jsonResponse({ data: { viewer: { login: "ve-bot" } } })) // viewer
+        .mockResolvedValueOnce(jsonResponse(fullPage)) // page 1 (full, no match)
+        .mockResolvedValueOnce(jsonResponse([
+          { user: { login: "ve-bot" }, state: "APPROVED", commit_id: "headsha123" },
+        ])); // page 2 (match)
+      expect(await new GitHubReviewProvider(config).hasReviewedCurrentPatchset(cid)).toBe(true);
+    });
+  });
 });
 
 

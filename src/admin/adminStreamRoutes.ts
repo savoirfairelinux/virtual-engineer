@@ -3,7 +3,9 @@ import type { AgentCycle, AgentLogEvent, Task } from "../interfaces.js";
 import { agentLogBus, getTaskEventBuffer } from "../agents/agentEventBus.js";
 import { normalizeAgentEvent } from "../agents/agentEventTypes.js";
 import { writeJson, toIsoTimestamp } from "./adminRouteUtils.js";
-import { deduplicateByTicket } from "./adminTaskRoutes.js";
+import { deduplicateByTicket, filterTasksByReadScope } from "./adminTaskRoutes.js";
+import { getEffectivePermissions } from "./authContext.js";
+import { can } from "./authorization/policyEngine.js";
 import type { Router } from "./router.js";
 
 /** Subset of state-store methods required by the stream routes. */
@@ -22,24 +24,28 @@ export function registerStreamRoutes(router: Router, deps: StreamRouteDeps): voi
   router.add("GET", "/api/admin/logs/stream", async (req, res, _params) => {
     const requestUrl = new URL(req.url ?? "/", "http://127.0.0.1");
     const taskIdParam = requestUrl.searchParams.get("taskId");
-    let streamEntries: Array<Record<string, unknown>> = [];
-
-    if (taskIdParam) {
-      const taskId = makeTaskId(taskIdParam);
-      const task = await deps.stateStore.getTask(taskId);
-      if (!task) {
-        writeJson(res, 404, { error: "Task not found" });
-        return;
-      }
-
-      const cycles = await deps.stateStore.getAgentCycles(taskId);
-      streamEntries = cycles.flatMap((cycle) => serializeAgentLogEntries(cycle));
-    } else {
-      streamEntries = [
-        { timestamp: new Date().toISOString(), taskId: null, level: "info", message: "Admin API stream started", source: "admin" },
-        { timestamp: new Date().toISOString(), taskId: null, level: "info", message: "Listening for live logs...", source: "admin" },
-      ];
+    if (!taskIdParam) {
+      writeJson(res, 400, { error: "taskId is required" });
+      return;
     }
+
+    const taskId = makeTaskId(taskIdParam);
+    const task = await deps.stateStore.getTask(taskId);
+    if (!task) {
+      writeJson(res, 404, { error: "Task not found" });
+      return;
+    }
+
+    // Enforce project-scoped task.read: streaming a task's logs must respect
+    // the caller's scope (agent logs can contain cross-project source/secrets).
+    const perms = getEffectivePermissions(req);
+    if (perms && !can(perms, "task.read", task.projectId)) {
+      writeJson(res, 403, { error: "forbidden", permission: "task.read" });
+      return;
+    }
+
+    const cycles = await deps.stateStore.getAgentCycles(taskId);
+    const streamEntries = cycles.flatMap((cycle) => serializeAgentLogEntries(cycle));
 
     res.statusCode = 200;
     res.setHeader("content-type", "text/event-stream");
@@ -59,17 +65,15 @@ export function registerStreamRoutes(router: Router, deps: StreamRouteDeps): voi
       writeEntry(entry);
     }
 
-    if (taskIdParam) {
-      const buffered = getTaskEventBuffer(taskIdParam);
-      for (const event of buffered) {
-        if (res.writable) {
-          writeEntry(serializeAgentEventEntry(event));
-        }
+    const buffered = getTaskEventBuffer(taskIdParam);
+    for (const event of buffered) {
+      if (res.writable) {
+        writeEntry(serializeAgentEventEntry(event));
       }
     }
 
     const eventListener = (event: AgentLogEvent): void => {
-      if (taskIdParam && event.taskId !== taskIdParam) return;
+      if (event.taskId !== taskIdParam) return;
       if (!res.writable) return;
       writeEntry(serializeAgentEventEntry(event));
     }
@@ -85,9 +89,9 @@ export function registerStreamRoutes(router: Router, deps: StreamRouteDeps): voi
       clearInterval(heartbeatLogs);
     });
     // Do NOT call res.end() — keep connection open
-  });
+  }, { permission: "task.read", collection: true });
 
-  router.add("GET", "/api/admin/events/stream", async (_req, res, _params) => {
+  router.add("GET", "/api/admin/events/stream", async (req, res, _params) => {
     res.statusCode = 200;
     res.setHeader("content-type", "text/event-stream");
     res.setHeader("cache-control", "no-cache");
@@ -98,7 +102,7 @@ export function registerStreamRoutes(router: Router, deps: StreamRouteDeps): voi
       if (!res.writable) return;
       try {
         const allTasks = await deps.stateStore.getAllTasks();
-        const sorted = deduplicateByTicket(allTasks)
+        const sorted = filterTasksByReadScope(req, deduplicateByTicket(allTasks))
           .sort((left, right) => right.updatedAt.getTime() - left.updatedAt.getTime());
         res.write(`event: tasks\ndata: ${JSON.stringify(sorted)}\n\n`);
       } catch { /* ignore */ }
@@ -117,7 +121,7 @@ export function registerStreamRoutes(router: Router, deps: StreamRouteDeps): voi
       clearInterval(taskTimer);
       clearInterval(heartbeatGlobal);
     });
-  });
+  }, { permission: "task.read", collection: true });
 }
 
 // ─── Serializers ────────────────────────────────────────────────────────────

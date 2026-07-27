@@ -8,9 +8,28 @@ import type {
   WebhookServerDependencies,
 } from "../../src/webhooks/webhookServer.js";
 import type { Integration, IntegrationStore, ProjectRecord, ProjectId, AgentId } from "../../src/interfaces.js";
+import { PluginManager } from "../../src/plugins/pluginManager.js";
+import { registerBuiltinPlugins } from "../../src/plugins/init.js";
+import { encryptToken } from "../../src/utils/encryption.js";
+
+const webhookLog = vi.hoisted(() => ({
+  trace: vi.fn(),
+  debug: vi.fn(),
+  info: vi.fn(),
+  warn: vi.fn(),
+  error: vi.fn(),
+  fatal: vi.fn(),
+}));
+
+vi.mock("../../src/logger.js", () => ({
+  getLogger: vi.fn(() => webhookLog),
+}));
 
 const INTEGRATION_ID = "redmine-1";
 const SECRET = "s".repeat(64);
+const ADMIN_SECRET = "webhook-admin-secret";
+
+registerBuiltinPlugins();
 
 function makeIntegration(overrides: Partial<Integration> = {}): Integration {
   return {
@@ -54,6 +73,13 @@ function makeProjectRecord(): ProjectRecord {
     agentId: "agent-1" as AgentId,
     agentOverrideJson: null,
     postCloneScript: "",
+    skillDiscoveryEnabled: false,
+    localSkillsPath: ".github/skills",
+    skillSourcesJson: "[]",
+    gerritTopicOverride: null,
+    useFullTicketUrlInCommits: false,
+    postReviewLinkToTicket: false,
+    reactToCiFailures: false,
     enabled: true,
     createdAt: new Date(),
     updatedAt: new Date(),
@@ -110,6 +136,7 @@ describe("webhookServer", () => {
     let ctx: Awaited<ReturnType<typeof startTestServer>>;
 
     beforeEach(async () => {
+      vi.clearAllMocks();
       store = makeIntegrationStore();
       orchestrator = makeOrchestrator();
       projectStore = makeProjectStore({ project: makeProjectRecord() });
@@ -139,6 +166,108 @@ describe("webhookServer", () => {
       expect(res.body).toEqual({ error: "Unauthorized" });
     });
 
+    it("requires a signature even when the source IP is allowlisted", async () => {
+      store = makeIntegrationStore([makeIntegration({
+        configJson: JSON.stringify({
+          webhookSecret: SECRET,
+          webhookAllowedIps: ["127.0.0.1"],
+          baseUrl: "http://r/",
+          apiKey: "x",
+          virtualEngineerUserLogin: "ve",
+        }),
+      })]);
+      await ctx.closeServer();
+      ctx = await startTestServer({ integrationStore: store, orchestrator, projectStore });
+
+      const body = JSON.stringify({ issue: { id: 1, project: { identifier: "p" } } });
+      const res = await call(`/webhooks/${INTEGRATION_ID}/issue.created`, { body });
+
+      expect(res.status).toBe(401);
+      expect(res.body).toEqual({ error: "Unauthorized" });
+      expect(orchestrator.startTaskForProject).not.toHaveBeenCalled();
+    });
+
+    it("accepts a signed request from an allowlisted source IP", async () => {
+      store = makeIntegrationStore([makeIntegration({
+        configJson: JSON.stringify({ webhookSecret: SECRET, webhookAllowedIps: ["127.0.0.1"] }),
+      })]);
+      await ctx.closeServer();
+      ctx = await startTestServer({ integrationStore: store, orchestrator, projectStore });
+
+      const body = JSON.stringify({ issue: { id: 1, project: { identifier: "p" } } });
+      const res = await call(`/webhooks/${INTEGRATION_ID}/issue.created`, {
+        body,
+        headers: { "x-hub-signature-256": hmacSig(body, SECRET) },
+      });
+
+      expect(res.status).toBe(202);
+    });
+
+    it("rejects a signed request from a non-allowlisted source IP", async () => {
+      store = makeIntegrationStore([makeIntegration({
+        configJson: JSON.stringify({ webhookSecret: SECRET, webhookAllowedIps: ["192.0.2.10"] }),
+      })]);
+      await ctx.closeServer();
+      ctx = await startTestServer({ integrationStore: store, orchestrator, projectStore });
+
+      const body = JSON.stringify({ issue: { id: 1, project: { identifier: "p" } } });
+      const res = await call(`/webhooks/${INTEGRATION_ID}/issue.created`, {
+        body,
+        headers: { "x-hub-signature-256": hmacSig(body, SECRET) },
+      });
+
+      expect(res.status).toBe(401);
+      expect(res.body).toEqual({ error: "Unauthorized" });
+    });
+
+    it("ignores X-Forwarded-For when proxy trust is disabled", async () => {
+      store = makeIntegrationStore([makeIntegration({
+        configJson: JSON.stringify({ webhookSecret: SECRET, webhookAllowedIps: ["192.0.2.10"] }),
+      })]);
+      await ctx.closeServer();
+      ctx = await startTestServer({
+        integrationStore: store,
+        orchestrator,
+        projectStore,
+        trustProxy: false,
+      });
+
+      const body = JSON.stringify({ issue: { id: 1, project: { identifier: "p" } } });
+      const res = await call(`/webhooks/${INTEGRATION_ID}/issue.created`, {
+        body,
+        headers: {
+          "x-forwarded-for": "192.0.2.10",
+          "x-hub-signature-256": hmacSig(body, SECRET),
+        },
+      });
+
+      expect(res.status).toBe(401);
+    });
+
+    it("uses X-Forwarded-For when proxy trust is enabled", async () => {
+      store = makeIntegrationStore([makeIntegration({
+        configJson: JSON.stringify({ webhookSecret: SECRET, webhookAllowedIps: ["192.0.2.10"] }),
+      })]);
+      await ctx.closeServer();
+      ctx = await startTestServer({
+        integrationStore: store,
+        orchestrator,
+        projectStore,
+        trustProxy: true,
+      });
+
+      const body = JSON.stringify({ issue: { id: 1, project: { identifier: "p" } } });
+      const res = await call(`/webhooks/${INTEGRATION_ID}/issue.created`, {
+        body,
+        headers: {
+          "x-forwarded-for": "192.0.2.10, 198.51.100.5",
+          "x-hub-signature-256": hmacSig(body, SECRET),
+        },
+      });
+
+      expect(res.status).toBe(202);
+    });
+
     it("returns 401 with wrong signature", async () => {
       const body = JSON.stringify({ issue: { id: 1, project: { identifier: "p" } } });
       const res = await call(`/webhooks/${INTEGRATION_ID}/issue.created`, {
@@ -148,7 +277,7 @@ describe("webhookServer", () => {
       expect(res.status).toBe(401);
     });
 
-    it("returns 200 with valid X-Hub-Signature-256", async () => {
+    it("returns 202 with valid X-Hub-Signature-256", async () => {
       const body = JSON.stringify({ issue: { id: 42, subject: "hi", project: { identifier: "p" } } });
       const res = await call(`/webhooks/${INTEGRATION_ID}/issue.created`, {
         body,
@@ -158,7 +287,58 @@ describe("webhookServer", () => {
       expect(orchestrator.startTaskForProject).toHaveBeenCalledTimes(1);
     });
 
-    it("returns 200 with valid X-Gitlab-Token", async () => {
+    it("accepts webhook delivery when the DB secret is encrypted", async () => {
+      const encryptedIntegration = makeIntegration({
+        configJson: JSON.stringify({
+          webhookSecret: encryptToken(SECRET, ADMIN_SECRET),
+          baseUrl: "http://r/",
+          apiKey: encryptToken("x", ADMIN_SECRET),
+          virtualEngineerUserLogin: "ve",
+        }),
+      });
+      store = makeIntegrationStore([encryptedIntegration]);
+      await ctx.closeServer();
+      ctx = await startTestServer({
+        integrationStore: store,
+        pluginManager: new PluginManager(store, { adminAuthSecret: ADMIN_SECRET }),
+        orchestrator,
+        projectStore,
+      });
+      const body = JSON.stringify({ issue: { id: 42, subject: "hi", project: { identifier: "p" } } });
+
+      const res = await call(`/webhooks/${INTEGRATION_ID}/issue.created`, {
+        body,
+        headers: { "x-hub-signature-256": hmacSig(body, SECRET) },
+      });
+
+      expect(res.status).toBe(202);
+      expect(orchestrator.startTaskForProject).toHaveBeenCalledTimes(1);
+    });
+
+    it("logs credential decryption failures without exposing ciphertext", async () => {
+      const invalidCiphertext = "veenc:v1:not-valid-ciphertext";
+      store = makeIntegrationStore([makeIntegration({
+        configJson: JSON.stringify({ webhookSecret: invalidCiphertext }),
+      })]);
+      await ctx.closeServer();
+      ctx = await startTestServer({
+        integrationStore: store,
+        pluginManager: new PluginManager(store, { adminAuthSecret: ADMIN_SECRET }),
+        orchestrator,
+        projectStore,
+      });
+
+      const res = await call(`/webhooks/${INTEGRATION_ID}/issue.created`, { body: "{}" });
+
+      expect(res.status).toBe(401);
+      expect(webhookLog.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ integrationId: INTEGRATION_ID, err: expect.any(Error) }),
+        "failed to read webhook secret",
+      );
+      expect(JSON.stringify(webhookLog.warn.mock.calls)).not.toContain(invalidCiphertext);
+    });
+
+    it("returns 202 with valid X-Gitlab-Token", async () => {
       const body = JSON.stringify({ issue: { id: 7, project: { identifier: "p" } } });
       const res = await call(`/webhooks/${INTEGRATION_ID}/issue.created`, {
         body,
@@ -167,7 +347,7 @@ describe("webhookServer", () => {
       expect(res.status).toBe(202);
     });
 
-    it("returns 200 with valid Authorization: Bearer", async () => {
+    it("returns 202 with valid Authorization: Bearer", async () => {
       const body = JSON.stringify({ issue: { id: 7, project: { identifier: "p" } } });
       const res = await call(`/webhooks/${INTEGRATION_ID}/issue.created`, {
         body,
