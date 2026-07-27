@@ -87,6 +87,26 @@ describe("DockerWorkspaceRunner.prepareProjectWorkspace", () => {
     expect(rootCall.command).toContain("git@host:super.git");
   });
 
+  it("uses each push target's known_hosts file for its clone", async () => {
+    const runner = new DockerWorkspaceRunner(
+      { agentContainerImage: "ve:latest", agentTimeoutMs: 1000 },
+      makeAdapter(),
+    );
+    const handle = await runner.createWorkspace(makeTaskId("t-known-hosts"));
+    const targets = [
+      makeTarget({ id: 1, commitOrder: 1, localPath: ".", repoKey: "root" }),
+      makeTarget({ id: 2, commitOrder: 2, localPath: "libs/core", repoKey: "core" }),
+    ] as Array<ProjectPushTargetRecord & { sshKnownHostsPath?: string }>;
+    targets[0]!.sshKnownHostsPath = "/secrets/root_known_hosts";
+    targets[1]!.sshKnownHostsPath = "/secrets/core_known_hosts";
+
+    const result = await runner.prepareProjectWorkspace(handle, targets);
+
+    expect(result.success).toBe(true);
+    expect(execInVolumeMock.mock.calls[0]![0].sshKnownHostsPath).toBe("/secrets/root_known_hosts");
+    expect(execInVolumeMock.mock.calls[2]![0].sshKnownHostsPath).toBe("/secrets/core_known_hosts");
+  });
+
   it("treats lowest commitOrder as root when no '.' localPath exists", async () => {
     const runner = new DockerWorkspaceRunner(
       { agentContainerImage: "ve:latest", agentTimeoutMs: 1000 },

@@ -405,7 +405,7 @@ export class DockerWorkspaceRunner implements WorkspaceRunner {
       command: ["git", "clone", "--branch", root.targetBranch, "--depth", "1", root.cloneUrl, "/workspace"],
       sshKeyPath: root.sshKeyPath ?? undefined,
       ...(root.sshAgentPubKeyPath !== undefined && root.sshAgentPubKeyPath !== null ? { sshAgentPubKeyPath: root.sshAgentPubKeyPath } : {}),
-      ...(sshKnownHostsPath !== undefined ? { sshKnownHostsPath } : {}),
+      ...((root.sshKnownHostsPath ?? sshKnownHostsPath) !== undefined ? { sshKnownHostsPath: root.sshKnownHostsPath ?? sshKnownHostsPath } : {}),
     });
     if (rootResult.exitCode !== 0) {
       const errorMsg = redactUrls(rootResult.stderr.slice(0, 500));
@@ -439,7 +439,7 @@ export class DockerWorkspaceRunner implements WorkspaceRunner {
         command: ["git", "clone", "--branch", target.targetBranch, "--depth", "1", target.cloneUrl, `/workspace/${target.localPath}`],
         sshKeyPath: target.sshKeyPath ?? undefined,
         ...(target.sshAgentPubKeyPath !== undefined && target.sshAgentPubKeyPath !== null ? { sshAgentPubKeyPath: target.sshAgentPubKeyPath } : {}),
-        ...(sshKnownHostsPath !== undefined ? { sshKnownHostsPath } : {}),
+        ...((target.sshKnownHostsPath ?? sshKnownHostsPath) !== undefined ? { sshKnownHostsPath: target.sshKnownHostsPath ?? sshKnownHostsPath } : {}),
       });
       if (cloneResult.exitCode !== 0) {
         const errorMsg = redactUrls(cloneResult.stderr.slice(0, 300));
@@ -464,7 +464,7 @@ export class DockerWorkspaceRunner implements WorkspaceRunner {
         command: ["bash", "-c", postCloneScript],
         sshKeyPath: root.sshKeyPath ?? undefined,
         ...(root.sshAgentPubKeyPath !== undefined && root.sshAgentPubKeyPath !== null ? { sshAgentPubKeyPath: root.sshAgentPubKeyPath } : {}),
-        ...(sshKnownHostsPath !== undefined ? { sshKnownHostsPath } : {}),
+        ...((root.sshKnownHostsPath ?? sshKnownHostsPath) !== undefined ? { sshKnownHostsPath: root.sshKnownHostsPath ?? sshKnownHostsPath } : {}),
       });
       if (scriptResult.exitCode !== 0) {
         const errorMsg = scriptResult.stderr.slice(0, 500);

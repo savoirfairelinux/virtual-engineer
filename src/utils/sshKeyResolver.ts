@@ -13,10 +13,21 @@
  *      2b. No pinning           — all agent keys tried
  */
 
-import { writeFileSync, existsSync, readFileSync, unlinkSync } from "node:fs";
-import { createHash } from "node:crypto";
+import {
+  chmodSync,
+  closeSync,
+  constants,
+  fchmodSync,
+  fstatSync,
+  mkdtempSync,
+  openSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { decryptToken } from "./encryption.js";
 
 /**
@@ -32,7 +43,8 @@ export const SSH_RESOLVED_KEY_PATH = "_resolvedSshKeyPath" as const;
  */
 export const SSH_AGENT_PUBKEY_PATH = "_agentPubKeyPath" as const;
 
-const tempPaths = new Set<string>();
+const generatedPaths = new Set<string>();
+let tempDirectory: string | undefined;
 let exitHandlerRegistered = false;
 
 function stableId(input: string): string {
@@ -43,47 +55,81 @@ function registerExitHandlerOnce(): void {
   if (exitHandlerRegistered) return;
   exitHandlerRegistered = true;
   process.on("exit", () => {
-    for (const p of tempPaths) {
-      try { unlinkSync(p); } catch { /* best-effort */ }
+    if (tempDirectory !== undefined) {
+      try { rmSync(tempDirectory, { recursive: true, force: true }); } catch { /* best-effort */ }
     }
   });
 }
 
+function generatedDirectory(): string {
+  if (tempDirectory === undefined) {
+    tempDirectory = mkdtempSync(join(tmpdir(), "ve-ssh-"));
+    chmodSync(tempDirectory, 0o700);
+    registerExitHandlerOnce();
+  }
+  return tempDirectory;
+}
+
+function assertGeneratedFile(fd: number, path: string): void {
+  const stat = fstatSync(fd);
+  if (!stat.isFile() || stat.nlink !== 1) {
+    throw new Error(`Generated SSH path is not a regular file: ${path}`);
+  }
+  const uid = process.getuid?.();
+  if (uid !== undefined && stat.uid !== uid) {
+    throw new Error(`Generated SSH path is not owned by this process user: ${path}`);
+  }
+}
+
+function writeGeneratedFile(path: string, content: Buffer, mode: number): string {
+  const noFollow = constants.O_NOFOLLOW ?? 0;
+  const temporaryPath = `${path}.${randomUUID()}.tmp`;
+  let fd: number | undefined;
+  try {
+    fd = openSync(temporaryPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | noFollow, mode);
+    assertGeneratedFile(fd, temporaryPath);
+    writeFileSync(fd, content);
+    fchmodSync(fd, mode);
+    closeSync(fd);
+    fd = undefined;
+    renameSync(temporaryPath, path);
+  } catch (err) {
+    if (fd !== undefined) closeSync(fd);
+    rmSync(temporaryPath, { force: true });
+    throw err;
+  }
+  generatedPaths.add(path);
+  return path;
+}
+
+/** Return whether a path names SSH material generated and registered by this process. */
+export function isGeneratedSshFilePath(filePath: string): boolean {
+  return generatedPaths.has(resolve(filePath));
+}
+
 /**
  * Write PEM private key material to a deterministic temp file and return its path.
- * Idempotent — only writes when content differs from the existing file.
+ * Replaces the generated file atomically on every call.
  *
  * @param pem         Decrypted PEM private key string.
  * @param integrationId  Used to derive a stable temp path unique to this integration.
  */
 export function resolveKeyFromPem(pem: string, integrationId: string): string {
-  const path = join(tmpdir(), `ve-ssh-key-${stableId(integrationId)}.pem`);
-  const content = Buffer.from(pem, "utf8");
-  if (!existsSync(path) || !readFileSync(path).equals(content)) {
-    writeFileSync(path, content, { mode: 0o600 });
-  }
-  registerExitHandlerOnce();
-  tempPaths.add(path);
-  return path;
+  const path = join(generatedDirectory(), `key-${stableId(integrationId)}.pem`);
+  return writeGeneratedFile(path, Buffer.from(pem, "utf8"), 0o600);
 }
 
 /**
  * Write an OpenSSH public key to a deterministic temp file and return its path.
  * Used for SSH agent identity pinning (`-o IdentitiesOnly=yes -i <pub-key-file>`).
- * Idempotent — only writes when content differs from the existing file.
+ * Replaces the generated file atomically on every call.
  *
  * @param publicKey   OpenSSH-format public key string (from `ssh-add -L` or generated).
  * @param integrationId  Used to derive a stable temp path unique to this integration.
  */
 export function resolveAgentPubKeyPath(publicKey: string, integrationId: string): string {
-  const path = join(tmpdir(), `ve-ssh-agentid-${stableId(integrationId)}.pub`);
-  const content = Buffer.from(publicKey.trim() + "\n", "utf8");
-  if (!existsSync(path) || !readFileSync(path).equals(content)) {
-    writeFileSync(path, content, { mode: 0o644 });
-  }
-  registerExitHandlerOnce();
-  tempPaths.add(path);
-  return path;
+  const path = join(generatedDirectory(), `agent-${stableId(integrationId)}.pub`);
+  return writeGeneratedFile(path, Buffer.from(publicKey.trim() + "\n", "utf8"), 0o644);
 }
 
 /**

@@ -58,6 +58,7 @@ Important behaviors:
 - every workspace attempt receives a unique Docker container + named-volume name; stale cleanup from an earlier attempt cannot collide with a retry
 - `AGENT_TIMEOUT_MS` aborts the in-flight agent container process and waits for its termination before workspace/volume cleanup begins
 - **review-system identity is per-push-target**: each `VcsConnector` implementation declares `reviewSystemLabel` (`"gerrit"`, `"gitlab"`, or `"github"`) and `buildPushSpec(baseBranch, taskId)` — mixed Gerrit+GitLab+GitHub projects are fully supported; the orchestrator never inspects integration type strings
+- **SSH host identity is per-push-target**: workspace preparation enriches every target with its connector's `sshKnownHostsPath`, so mixed-host projects verify each clone against the correct host-key file instead of reusing the root repository's file
 - **ticket lifecycle transitions** (`transitionToInProgress`, `transitionToInReview`) are delegated to the `TicketConnector` implementation rather than driven from `OrchestratorConfig` status ID fields
 
 ## `pollingLoop.ts`

@@ -51,13 +51,13 @@ export function ConfigView(props: ConfigViewData) {
 
   const [sec, setSec] = useState<SectionId>(() => {
     const part = window.location.hash.split("/")[1] ?? "";
-    return (CONFIG_NAV.find((n) => n.id === part)?.id) ?? "integrations";
+    return (CONFIG_NAV.find((n) => n.id === part)?.id) ?? "overview";
   });
 
   useEffect(() => {
     const onHashChange = () => {
       const part = window.location.hash.split("/")[1] ?? "";
-      const id = CONFIG_NAV.find((n) => n.id === part)?.id ?? "integrations";
+      const id = CONFIG_NAV.find((n) => n.id === part)?.id ?? "overview";
       setSec(id);
     };
     window.addEventListener("hashchange", onHashChange);
@@ -66,7 +66,7 @@ export function ConfigView(props: ConfigViewData) {
 
   // Non-admins cannot land on admin-only sections (deep link / role change).
   const effectiveSec: SectionId =
-    !isAdmin && CONFIG_NAV.some((n) => n.id === sec && n.adminOnly) ? "integrations" : sec;
+    !isAdmin && CONFIG_NAV.some((n) => n.id === sec && n.adminOnly) ? "overview" : sec;
 
   function handleSectionChange(id: SectionId) {
     setSec(id);

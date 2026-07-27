@@ -208,7 +208,8 @@ export const gerritDescriptor: ProviderDescriptor = {
     try {
       const repositories = await listRepositoriesViaSsh(ssh);
       log.info({ sshHost: ssh.host, sshUser: ssh.user, sshPort: ssh.port, repositoryCount: repositories.length }, "Gerrit connection test passed");
-      return { success: true, error: null };
+      const logs = [`Connected as ${ssh.user}@${ssh.host}:${ssh.port} via SSH.`, `Found ${repositories.length} repositor${repositories.length === 1 ? "y" : "ies"}.`];
+      return { success: true, error: null, logs };
     } catch (err: unknown) {
       return { success: false, error: `Gerrit connection test failed: ${err instanceof Error ? err.message : String(err)}` };
     }

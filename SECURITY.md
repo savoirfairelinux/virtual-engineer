@@ -37,7 +37,7 @@ Skill discovery is a **per-project** setting (`projects.skill_discovery_enabled`
 - Local skill discovery is **disabled by default**; enable it only for repositories you trust.
 - Remote skill sources default to an empty list and must be configured explicitly; add only sources you trust.
 - Remote skills install globally in the agent home volume (`/ve-home`), not into the cloned repository. This keeps review workspaces read-only.
-- SSH remote skill sources reuse the orchestrator process `SSH_AUTH_SOCK` only when such a source is configured; missing SSH agent access fails the run instead of silently skipping skills.
+- SSH remote skill sources reuse the orchestrator process `SSH_AUTH_SOCK` only when such a source is configured; missing SSH agent access fails the run instead of silently skipping skills. Configured key and known-hosts files must live under `/app/secrets` (container deployment) or the repository `secrets/` directory (host development). Canonical-path validation blocks traversal and symlink escapes before host-file reads.
 - Only skills are loaded — MCP discovery (`enableConfigDiscovery`) stays off, so untrusted `.mcp.json` / `.vscode/mcp.json` files are never honoured.
 - The agent still runs inside the hardened, network-isolated container described above and never holds provider push/review credentials.
 
@@ -45,11 +45,11 @@ Skill discovery is a **per-project** setting (`projects.skill_discovery_enabled`
 
 The admin dashboard is protected by account-based authentication (username/password, DB-backed sessions). Admin users are managed via the Users tab (admin role required). Session tokens are opaque random values stored as SHA-256 hashes in the database. Bind the admin port to `127.0.0.1` in production.
 
-`ADMIN_AUTH_SECRET` is an optional encryption key used to encrypt OAuth session tokens stored in the database. It is not used for admin authentication.
+`ADMIN_AUTH_SECRET` is required before provider credentials can be created or loaded from the database. Credentials are encrypted with AES-256-GCM in a versioned `veenc:v1:` envelope. Startup fails closed if the secret is absent, if marked ciphertext cannot be authenticated, or if probable legacy unprefixed AES ciphertext cannot be decrypted with the configured secret. Legacy `plain:` and valid unprefixed AES values are rewritten into the versioned format during startup migration. `ADMIN_AUTH_SECRET` is not used for admin authentication.
 
 ### Secrets Storage
 
-Provider credentials are stored encrypted in SQLite and masked on all admin API reads. Webhook secrets support per-integration rotation and are never returned in plaintext after initial creation.
+Provider credentials are stored encrypted in SQLite and masked on all admin API reads. New plaintext credential writes are rejected. Webhook secrets support per-integration rotation and are never returned in plaintext after initial creation.
 
 ### Content Security Policy
 

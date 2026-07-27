@@ -119,7 +119,7 @@ The agent may create local commits, but the host still owns the final push orche
 
 ### Plugin system — `src/plugins/`
 
-Static descriptor registry plus DB-backed `PluginManager`. `src/index.ts` registers the built-in descriptors, supplies shared `AgentAdapterContext`, loads enabled integrations, and hot-refreshes runtime dependencies after admin mutations. Concrete connector, reviewer, adapter, and connection-test factories live on provider descriptors; explicit `PluginManager` override hooks remain available for tests and embedders. Startup credential migration encrypts raw and legacy `plain:` password fields with AES-256-GCM; it fails closed when stored credentials exist but `ADMIN_AUTH_SECRET` is absent.
+Static descriptor registry plus DB-backed `PluginManager`. `src/index.ts` registers the built-in descriptors, supplies shared `AgentAdapterContext`, loads enabled integrations, and hot-refreshes runtime dependencies after admin mutations. Concrete connector, reviewer, adapter, and connection-test factories live on provider descriptors; explicit `PluginManager` override hooks remain available for tests and embedders. Startup credential migration encrypts raw and legacy `plain:` password fields with AES-256-GCM; it fails closed when stored credentials exist but `ADMIN_AUTH_SECRET` is absent. Historical unprefixed AES-GCM detection applies only to `sessionToken` and `sshPrivateKeyEnc`, avoiding collisions with valid base64 provider credentials.
 
 See [modules/plugins.md](modules/plugins.md).
 
@@ -132,7 +132,7 @@ See [modules/admin.md](modules/admin.md).
 ### Workspace — `src/workspace/`
 
 - `dockerVolume.ts` manages the Docker **named-volume** lifecycle (`/workspace` repo volume + `/ve-home` agent-HOME volume) and `execInVolume()` for helper-container operations.
-- `workspaceRunner.ts` clones each project push target into the `/workspace` volume via a helper container, installs any project remote skill sources into `/ve-home`, then spawns the ephemeral agent container and, on exit, destroys the container and volumes. Push operations run in helper containers against the volume; the host retains review-system credentials and push orchestration.
+- `workspaceRunner.ts` clones each project push target into the `/workspace` volume via a helper container, using the SSH key, agent identity, and `known_hosts` file resolved for that target's integration. It installs any project remote skill sources into `/ve-home`, then spawns the ephemeral agent container and, on exit, destroys the container and volumes. Push operations run in helper containers against the volume; the host retains review-system credentials and push orchestration.
 - `skillSources.ts` parses external skill sources and builds the `npx skills` install arguments.
 - `dockerVolume.ts` opens SSH key, public-key, and known-hosts files with no-follow semantics, checks the opened regular-file descriptor and approved-root containment, then reads from that same descriptor. Configured paths are confined to orchestrator secret directories. Runtime-generated key material lives in one process-private `0700` temporary directory and is accepted only when its exact path was registered by `sshKeyResolver`; filename patterns do not grant trust.
 

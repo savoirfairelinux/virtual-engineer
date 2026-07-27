@@ -195,11 +195,18 @@ describe("admin skill source discovery", () => {
       await expect(validateSkillSourceSshAuth({
         source: "ssh://skills.example.com/org/agent-skills",
         sshKeyPath: "/tmp/virtual-engineer-missing-key",
-      })).rejects.toThrow("not readable");
+      })).rejects.toThrow("not readable as a regular file");
     } finally {
       if (originalSshAuthSock === undefined) delete process.env["SSH_AUTH_SOCK"];
       else process.env["SSH_AUTH_SOCK"] = originalSshAuthSock;
     }
+  });
+
+  it("rejects direct SSH discovery paths outside approved secrets roots", async () => {
+    await expect(validateSkillSourceSshAuth({
+      source: "ssh://skills.example.com/org/agent-skills",
+      sshKeyPath: "/etc/passwd",
+    })).rejects.toThrow(/approved secrets directory/);
   });
 
   it("prefixes SSH connection failures with the failing source", async () => {

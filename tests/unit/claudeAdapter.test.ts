@@ -3,7 +3,6 @@ import { randomUUID } from "crypto";
 import { makeTaskId } from "../../src/interfaces.js";
 import type { TaskContext, ReviewWorkspaceInput } from "../../src/interfaces.js";
 import { ClaudeAdapter } from "../../src/agents/claudeAdapter.js";
-import { encryptToken } from "../../src/utils/encryption.js";
 
 function makeContext(overrides: Partial<TaskContext> = {}): TaskContext {
   return {
@@ -179,7 +178,7 @@ describe("ClaudeAdapter", () => {
       const adapter = new ClaudeAdapter();
       const ctx = makeContext();
       delete ctx.agentSession.githubToken;
-      ctx.agentSession.encryptedSessionToken = encryptToken("sk-ant-oat-tok", undefined);
+      ctx.agentSession.encryptedSessionToken = `plain:${Buffer.from("sk-ant-oat-tok", "utf8").toString("base64")}`;
       const invoker = vi.fn().mockImplementation(async (_ctx, authEnv) => {
         expect(authEnv).toMatchObject({ CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat-tok" });
         return { stdout: agentResultJson(), stderr: "" };
