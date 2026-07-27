@@ -1245,7 +1245,13 @@ export class Orchestrator {
         if (!vcsConnector.pushDirect) {
           throw new Error(`VCS connector for ${reviewSystemLabel} does not implement pushDirect`);
         }
-        const pushResult = await vcsConnector.pushDirect(handle.hostWorkspacePath, ref, topic, volumeOpts);
+        const pushResult = await vcsConnector.pushDirect(
+          handle.hostWorkspacePath,
+          ref,
+          topic,
+          volumeOpts,
+          target.reviewerEmails
+        );
 
         // Use Change-Ids from agent commits when available — this is the source of truth
         // for multi-commit pushes where pushResult.changeId only reflects HEAD (the last commit).

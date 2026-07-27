@@ -75,7 +75,7 @@ async function makeAgent(store: SqliteStateStore, type: AgentType = "coding"): P
   return store.createAgent({ name: `${type}-bot`, type, modelConfigJson: "{}", enabled: true });
 }
 
-async function seedIntegration(store: SqliteStateStore, id: string, provider: "redmine" | "gerrit" = "redmine"): Promise<void> {
+async function seedIntegration(store: SqliteStateStore, id: string, provider: "redmine" | "gerrit" | "github" = "redmine"): Promise<void> {
   await store.upsertIntegration({ id, provider, name: id, configJson: "{}", enabled: true });
 }
 
@@ -233,6 +233,93 @@ describe("Admin API — Project routes (/api/admin/projects)", () => {
     expect(pts[1]?.["commitOrder"]).toBe(2);
     const ts = project["ticketSource"] as Record<string, unknown>;
     expect((ts["integration"] as Record<string, unknown>)["id"]).toBe("redmine-1");
+  });
+
+  it("POST / normalizes and deduplicates reviewer emails", async () => {
+    const agent = await makeAgent(store, "coding");
+    await seedIntegration(store, "redmine-1", "redmine");
+    await seedIntegration(store, "gerrit-1", "gerrit");
+
+    const r = await rest(server, "/api/admin/projects", {
+      method: "POST",
+      body: {
+        type: "coding",
+        name: "Reviewers",
+        agentId: agent.id,
+        ticketSource: { integrationId: "redmine-1", ticketProjectKey: "REVIEWERS" },
+        pushTargets: [{
+          integrationId: "gerrit-1",
+          repoKey: "app",
+          cloneUrl: "ssh://g/app",
+          targetBranch: "main",
+          role: "primary",
+          commitOrder: 1,
+          localPath: ".",
+          reviewerEmails: [" Alice@Example.com ", "alice@example.com", "BOB@example.com"],
+        }],
+      },
+    });
+
+    expect(r.status).toBe(201);
+    const project = r.body?.["project"] as Record<string, unknown>;
+    const targets = project["pushTargets"] as Array<Record<string, unknown>>;
+    expect(targets[0]?.["reviewerEmails"]).toEqual(["alice@example.com", "bob@example.com"]);
+  });
+
+  it("POST / rejects more than 20 reviewer emails per push target", async () => {
+    const agent = await makeAgent(store, "coding");
+
+    const r = await rest(server, "/api/admin/projects", {
+      method: "POST",
+      body: {
+        type: "coding",
+        name: "TooManyReviewers",
+        agentId: agent.id,
+        ticketSource: { integrationId: "redmine-1", ticketProjectKey: "TOO-MANY" },
+        pushTargets: [{
+          integrationId: "gerrit-1",
+          repoKey: "app",
+          cloneUrl: "ssh://g/app",
+          targetBranch: "main",
+          role: "primary",
+          commitOrder: 1,
+          localPath: ".",
+          reviewerEmails: Array.from({ length: 21 }, (_, index) => `reviewer${index}@example.com`),
+        }],
+      },
+    });
+
+    expect(r.status).toBe(400);
+    expect(JSON.stringify(r.body)).toMatch(/20/);
+  });
+
+  it("POST / rejects reviewer emails for GitHub push targets", async () => {
+    const agent = await makeAgent(store, "coding");
+    await seedIntegration(store, "redmine-1", "redmine");
+    await seedIntegration(store, "github-1", "github");
+
+    const r = await rest(server, "/api/admin/projects", {
+      method: "POST",
+      body: {
+        type: "coding",
+        name: "GitHubReviewers",
+        agentId: agent.id,
+        ticketSource: { integrationId: "redmine-1", ticketProjectKey: "GITHUB" },
+        pushTargets: [{
+          integrationId: "github-1",
+          repoKey: "org/app",
+          cloneUrl: "https://github.com/org/app.git",
+          targetBranch: "main",
+          role: "primary",
+          commitOrder: 1,
+          localPath: ".",
+          reviewerEmails: ["alice@example.com"],
+        }],
+      },
+    });
+
+    expect(r.status).toBe(400);
+    expect(JSON.stringify(r.body)).toMatch(/not supported for github/i);
   });
 
   it("POST / rejects push-target SSH key paths outside approved secret directories", async () => {

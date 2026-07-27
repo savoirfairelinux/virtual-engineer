@@ -108,6 +108,7 @@ export interface ProjectsRouteStore {
       commitOrder: number;
       localPath: string;
       sshKeyPath?: string | null | undefined;
+      reviewerEmails?: string[] | undefined;
     }>
   ): Promise<ProjectPushTargetRecord[]>;
   listProjectPushTargets(projectId: ProjectId): Promise<ProjectPushTargetRecord[]>;
@@ -153,6 +154,10 @@ const pushTargetSchema = z.object({
   commitOrder: z.number().int().min(1),
   localPath: z.string().min(1),
   sshKeyPath: optionalSshFilePath("SSH key path"),
+  reviewerEmails: z.array(z.string().trim().email())
+    .max(20, "At most 20 reviewer emails may be configured per repository")
+    .transform((emails) => [...new Set(emails.map((email) => email.toLowerCase()))])
+    .optional(),
 });
 
 /** Validate push-target arrays: unique localPaths, at most one root ("."). */
@@ -361,6 +366,7 @@ async function loadIntegrationsLookup(store: IntegrationStore | undefined): Prom
 
 /** Integration types that use HTTPS for cloning — SSH URLs are invalid for these. */
 const HTTPS_ONLY_VCS_TYPES = new Set(["github", "gitlab"]);
+const REVIEWER_EMAIL_VCS_TYPES = new Set(["gerrit", "gitlab"]);
 
 /**
  * Validate that push targets for HTTPS-based integrations (GitHub, GitLab) do
@@ -376,6 +382,21 @@ async function validatePushTargetCloneUrls(
     const integration = await integrationStore.getIntegration(target.integrationId).catch(() => null);
     if (integration && HTTPS_ONLY_VCS_TYPES.has(integration.provider)) {
       return `Push target "${target.repoKey}" uses an SSH clone URL (${target.cloneUrl}) which is not supported for ${integration.provider} integrations. Use an HTTPS URL instead (e.g. https://github.com/owner/repo.git).`;
+    }
+  }
+  return null;
+}
+
+async function validatePushTargetReviewerEmails(
+  targets: Array<{ integrationId: string; repoKey: string; reviewerEmails?: string[] | undefined }>,
+  integrationStore: IntegrationStore | undefined
+): Promise<string | null> {
+  if (!integrationStore) return null;
+  for (const target of targets) {
+    if (!target.reviewerEmails || target.reviewerEmails.length === 0) continue;
+    const integration = await integrationStore.getIntegration(target.integrationId).catch(() => null);
+    if (integration && !REVIEWER_EMAIL_VCS_TYPES.has(integration.provider)) {
+      return `Reviewer emails are not supported for ${integration.provider} push target "${target.repoKey}"`;
     }
   }
   return null;
@@ -426,6 +447,7 @@ interface ProjectDetail extends ProjectSummary {
     commitOrder: number;
     localPath: string;
     sshKeyPath: string | null;
+    reviewerEmails: string[];
   }>
 }
 
@@ -509,6 +531,7 @@ async function buildProjectDetail(
       commitOrder: p.commitOrder,
       localPath: p.localPath,
       sshKeyPath: p.sshKeyPath,
+      reviewerEmails: p.reviewerEmails,
     }));
   } else {
     const rc = await store.getProjectReviewConfig(project.id);
@@ -660,6 +683,12 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
           writeJson(res, 400, { error: cloneUrlError });
           return;
         }
+        const reviewerEmailError = await validatePushTargetReviewerEmails(data.pushTargets, deps.integrationStore);
+        if (reviewerEmailError) {
+          try { await store.deleteProject(project.id); } catch { /* ignore */ }
+          writeJson(res, 400, { error: reviewerEmailError });
+          return;
+        }
         await store.setProjectTicketSource(project.id, data.ticketSource);
         await store.replaceProjectPushTargets(project.id, data.pushTargets);
       } else {
@@ -803,6 +832,8 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
         if (existing.type !== "coding") { writeJson(res, 400, { error: "pushTargets only valid for coding projects" }); return; }
         const cloneUrlError = await validatePushTargetCloneUrls(data.pushTargets, deps.integrationStore);
         if (cloneUrlError) { writeJson(res, 400, { error: cloneUrlError }); return; }
+        const reviewerEmailError = await validatePushTargetReviewerEmails(data.pushTargets, deps.integrationStore);
+        if (reviewerEmailError) { writeJson(res, 400, { error: reviewerEmailError }); return; }
         await store.replaceProjectPushTargets(id, data.pushTargets);
       }
       if (data.reviewConfig !== undefined) {

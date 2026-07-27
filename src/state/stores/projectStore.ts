@@ -66,6 +66,7 @@ export interface ProjectStoreApi {
       commitOrder: number;
       localPath: string;
       sshKeyPath?: string | null;
+      reviewerEmails?: string[];
     }
   ): Promise<ProjectPushTargetRecord>;
   listProjectPushTargets(projectId: ProjectId): Promise<ProjectPushTargetRecord[]>;
@@ -81,6 +82,7 @@ export interface ProjectStoreApi {
       commitOrder: number;
       localPath: string;
       sshKeyPath?: string | null;
+      reviewerEmails?: string[];
     }>
   ): Promise<ProjectPushTargetRecord[]>;
   setProjectReviewConfig(projectId: ProjectId, integrationId: string, repoKeys: string[]): Promise<void>;
@@ -141,6 +143,17 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
     };
   }
 
+  /** Parse the JSON-encoded reviewer_emails column; malformed/missing data falls back to []. */
+  function parseReviewerEmails(raw: string | null | undefined): string[] {
+    if (!raw) return [];
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed.filter((e): e is string => typeof e === "string") : [];
+    } catch {
+      return [];
+    }
+  }
+
   function rowToProjectPushTarget(row: typeof projectPushTargets.$inferSelect): ProjectPushTargetRecord {
     return {
       id: row.id,
@@ -153,6 +166,7 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
       commitOrder: row.commitOrder,
       localPath: row.localPath,
       sshKeyPath: row.sshKeyPath ?? null,
+      reviewerEmails: parseReviewerEmails(row.reviewerEmails),
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     };
@@ -396,14 +410,15 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
       commitOrder: number;
       localPath: string;
       sshKeyPath?: string | null;
+      reviewerEmails?: string[];
     }
   ): Promise<ProjectPushTargetRecord> {
     const now = new Date();
     const result = raw
       .prepare(
         `INSERT INTO project_push_targets
-         (project_id, integration_id, repo_key, clone_url, target_branch, role, commit_order, local_path, ssh_key_path, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         (project_id, integration_id, repo_key, clone_url, target_branch, role, commit_order, local_path, ssh_key_path, reviewer_emails, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         projectId,
@@ -415,6 +430,7 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
         input.commitOrder,
         input.localPath,
         input.sshKeyPath ?? null,
+        JSON.stringify(input.reviewerEmails ?? []),
         Math.floor(now.getTime() / 1000),
         Math.floor(now.getTime() / 1000)
       );
@@ -449,6 +465,7 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
       commitOrder: number;
       localPath: string;
       sshKeyPath?: string | null;
+      reviewerEmails?: string[];
     }>
   ): Promise<ProjectPushTargetRecord[]> {
     const now = new Date();
@@ -456,8 +473,8 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
       raw.prepare("DELETE FROM project_push_targets WHERE project_id = ?").run(projectId);
       const statement = raw.prepare(
         `INSERT INTO project_push_targets
-         (project_id, integration_id, repo_key, clone_url, target_branch, role, commit_order, local_path, ssh_key_path, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         (project_id, integration_id, repo_key, clone_url, target_branch, role, commit_order, local_path, ssh_key_path, reviewer_emails, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       );
       for (const input of inputs) {
         statement.run(
@@ -470,6 +487,7 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
           input.commitOrder,
           input.localPath,
           input.sshKeyPath ?? null,
+          JSON.stringify(input.reviewerEmails ?? []),
           Math.floor(now.getTime() / 1000),
           Math.floor(now.getTime() / 1000)
         );
