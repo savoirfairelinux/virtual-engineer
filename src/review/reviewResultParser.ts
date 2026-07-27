@@ -32,6 +32,47 @@ export class ReviewResultParseError extends Error {
   }
 }
 
+function extractJsonObjects(raw: string): unknown[] {
+  const parsedObjects: unknown[] = [];
+  let start = -1;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let index = 0; index < raw.length; index++) {
+    const character = raw[index];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (character === "\\") {
+        escaped = true;
+      } else if (character === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (character === '"') {
+      inString = true;
+    } else if (character === "{") {
+      if (depth === 0) start = index;
+      depth++;
+    } else if (character === "}" && depth > 0) {
+      depth--;
+      if (depth === 0 && start !== -1) {
+        try {
+          parsedObjects.push(JSON.parse(raw.slice(start, index + 1)) as unknown);
+        } catch {
+          // Keep scanning for a later balanced object that matches the contract.
+        }
+        start = -1;
+      }
+    }
+  }
+
+  return parsedObjects;
+}
+
 /**
  * Extract and parse the REVIEW_RESULT_* block from the agent's output.
  * Throws ReviewResultParseError if no block is found or the JSON is invalid.
@@ -43,16 +84,11 @@ export function parseReviewResult(raw: string, providerKind = "gerrit"): ReviewA
     // Try to parse the entire output (or first JSON object) as a valid payload.
     // Guard: never accept agent-worker error envelopes (status: "failed") as
     // review results — those should have been caught by the caller already.
-    const jsonMatch = raw.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      let fallbackJson: unknown;
-      try {
-        fallbackJson = JSON.parse(jsonMatch[0]);
-      } catch {
-        // not valid JSON either — fall through to the original error
-      }
+    for (const fallbackJson of extractJsonObjects(raw)) {
       if (
-        fallbackJson !== undefined &&
+        typeof fallbackJson === "object" &&
+        fallbackJson !== null &&
+        !Array.isArray(fallbackJson) &&
         (fallbackJson as Record<string, unknown>)["status"] !== "failed"
       ) {
         const fallbackParsed = parseReviewPayload(providerKind, fallbackJson);

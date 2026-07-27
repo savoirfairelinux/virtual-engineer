@@ -50,6 +50,10 @@ import {
   runCopilotAgent,
 } from "../../agent-worker/src/providers/copilot.js";
 import type { AgentRunOptions } from "../../agent-worker/src/providers/types.js";
+import {
+  restrictNetworkPermissionHandler,
+  restrictReviewPermissionHandler,
+} from "../../agent-worker/src/networkGuard.js";
 
 interface FakeSession {
   disconnect: ReturnType<typeof vi.fn>;
@@ -280,5 +284,28 @@ describe("Copilot worker native profile", () => {
         tools: ["ve_submit_changes"],
       }),
     });
+  });
+
+  it("uses the read-only permission policy only for review sessions", () => {
+    const common = {
+      model: "gpt-5.1-codex",
+      agentInstructions: "policy",
+      cwd: "/workspace",
+      timeoutMs: 1000,
+    };
+    const reviewConfig = buildCopilotSessionConfig({
+      ...common,
+      mode: "review",
+      reviewOutputSchema: {
+        type: "object",
+        properties: { vote: { type: "integer", enum: [-1, 0, 1] } },
+        required: ["vote"],
+        additionalProperties: false,
+      },
+    }, []);
+    const codeConfig = buildCopilotSessionConfig({ ...common, mode: "codegen" }, []);
+
+    expect(reviewConfig.onPermissionRequest).toBe(restrictReviewPermissionHandler);
+    expect(codeConfig.onPermissionRequest).toBe(restrictNetworkPermissionHandler);
   });
 });

@@ -20,6 +20,13 @@ const SUBMISSION_SERVER_PATH = '/agent-worker/dist/mcpSubmissionServer.js';
 export const DEFAULT_SUBMISSION_PATH = '/ve-home/agent-submission.json';
 const MAX_SUBMISSION_BYTES = 256 * 1024;
 
+export const SUBMISSION_TOOL_ANNOTATIONS = {
+  readOnlyHint: false,
+  destructiveHint: false,
+  idempotentHint: false,
+  openWorldHint: false,
+} as const;
+
 export const CHANGE_SUBMISSION_JSON_SCHEMA: Record<string, unknown> = {
   type: 'object',
   properties: {
@@ -37,6 +44,20 @@ export function appendSubmissionInstruction(
   return `${agentInstructions.trim()}\n\n` +
     `Before ending, call the ${toolName} tool exactly once with your final structured result. ` +
     'The run fails if the tool is not called or is called more than once.';
+}
+
+export function assertSingleSubmissionToolCall(
+  mode: SubmissionMode,
+  toolsByKind: Record<string, number>,
+): void {
+  const toolName = mode === 'review' ? 've_submit_review' : 've_submit_changes';
+  const observedCalls = (toolsByKind[toolName] ?? 0) +
+    (toolsByKind[`mcp__ve-submission__${toolName}`] ?? 0);
+  if (observedCalls !== 1) {
+    throw new Error(
+      `Agent must call the ${toolName} MCP tool exactly once; observed ${observedCalls} calls`,
+    );
+  }
 }
 
 export function buildSubmissionMcpConfig(
