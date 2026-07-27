@@ -88,6 +88,39 @@ describe("SqliteStateStore — PromptStore", () => {
       }
     });
 
+    it("keeps built-in prompt layers provider-neutral and non-overlapping", async () => {
+      const prompts = await store.getPrompts();
+      const content = (id: string): string => {
+        const prompt = prompts.find((candidate) => candidate.id === id);
+        expect(prompt, `missing built-in prompt ${id}`).toBeDefined();
+        return prompt?.content ?? "";
+      };
+
+      expect(content("system_gerrit_code")).toBe(content("system_generic_code"));
+      expect(content("system_gitlab_code")).toBe(content("system_generic_code"));
+      expect(content("instructions_gerrit_code")).toBe(content("instructions_generic_code"));
+      expect(content("instructions_gitlab_code")).toBe(content("instructions_generic_code"));
+
+      const reviewSystem = content("system_gerrit_review");
+      expect(content("system_github_review")).toBe(reviewSystem);
+      expect(content("system_gitlab_review")).toBe(reviewSystem);
+      expect(reviewSystem).not.toMatch(/output text only|structured result|json|ve_submit_review/i);
+
+      const reviewInstructions = content("instructions_gerrit_review");
+      expect(content("instructions_github_review")).toBe(reviewInstructions);
+      expect(content("instructions_gitlab_review")).toBe(reviewInstructions);
+
+      for (const id of [
+        "instructions_generic_code",
+        "instructions_gerrit_code",
+        "instructions_gitlab_code",
+      ]) {
+        expect(content(id)).not.toMatch(
+          /git commit|conventional commits?|change-id|do not push|commit requirements/i
+        );
+      }
+    });
+
     it("returns custom prompts after upsert", async () => {
       await store.upsertPrompt("instructions_gerrit_review", "Custom instructions content");
 
