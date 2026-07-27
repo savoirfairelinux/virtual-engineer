@@ -123,17 +123,17 @@ export function createPromptStore(context: PromptStoreContext): PromptStoreApi {
     const entries: Array<{ id: string; label: string; promptType: PromptType; file: string }> = [
       { id: "system_generic_code", label: "System Prompt — Generic (code)", promptType: "system", file: "../../../prompts/system_generic_code.md" },
       { id: "instructions_generic_code", label: "Instructions Prompt — Generic (code)", promptType: "instructions", file: "../../../prompts/instructions_generic_code.md" },
-      { id: "system_gerrit_code", label: "System Prompt — Gerrit (code)", promptType: "system", file: "../../../prompts/system_gerrit_code.md" },
-      { id: "system_gitlab_code", label: "System Prompt — GitLab (code)", promptType: "system", file: "../../../prompts/system_gitlab_code.md" },
-      { id: "instructions_gerrit_code", label: "Instructions Prompt — Gerrit (code)", promptType: "instructions", file: "../../../prompts/instructions_gerrit_code.md" },
-      { id: "instructions_gitlab_code", label: "Instructions Prompt — GitLab (code)", promptType: "instructions", file: "../../../prompts/instructions_gitlab_code.md" },
+      { id: "system_gerrit_code", label: "System Prompt — Gerrit (code)", promptType: "system", file: "../../../prompts/system_generic_code.md" },
+      { id: "system_gitlab_code", label: "System Prompt — GitLab (code)", promptType: "system", file: "../../../prompts/system_generic_code.md" },
+      { id: "instructions_gerrit_code", label: "Instructions Prompt — Gerrit (code)", promptType: "instructions", file: "../../../prompts/instructions_generic_code.md" },
+      { id: "instructions_gitlab_code", label: "Instructions Prompt — GitLab (code)", promptType: "instructions", file: "../../../prompts/instructions_generic_code.md" },
       { id: "instructions_feedback_code", label: "Instructions Prompt — Feedback Cycle (code)", promptType: "instructions", file: "../../../prompts/instructions_feedback_code.md" },
-      { id: "system_gerrit_review", label: "System Prompt — Gerrit (review)", promptType: "system", file: "../../../prompts/system_gerrit_review.md" },
-      { id: "system_gitlab_review", label: "System Prompt — GitLab MR (review)", promptType: "system", file: "../../../prompts/system_gitlab_review.md" },
-      { id: "instructions_gerrit_review", label: "Instructions Prompt — Gerrit (review)", promptType: "instructions", file: "../../../prompts/instructions_gerrit_review.md" },
-      { id: "instructions_gitlab_review", label: "Instructions Prompt — GitLab MR (review)", promptType: "instructions", file: "../../../prompts/instructions_gitlab_review.md" },
-      { id: "system_github_review", label: "System Prompt — GitHub PR (review)", promptType: "system", file: "../../../prompts/system_github_review.md" },
-      { id: "instructions_github_review", label: "Instructions Prompt — GitHub PR (review)", promptType: "instructions", file: "../../../prompts/instructions_github_review.md" },
+      { id: "system_gerrit_review", label: "System Prompt — Gerrit (review)", promptType: "system", file: "../../../prompts/system_review.md" },
+      { id: "system_gitlab_review", label: "System Prompt — GitLab MR (review)", promptType: "system", file: "../../../prompts/system_review.md" },
+      { id: "instructions_gerrit_review", label: "Instructions Prompt — Gerrit (review)", promptType: "instructions", file: "../../../prompts/instructions_review.md" },
+      { id: "instructions_gitlab_review", label: "Instructions Prompt — GitLab MR (review)", promptType: "instructions", file: "../../../prompts/instructions_review.md" },
+      { id: "system_github_review", label: "System Prompt — GitHub PR (review)", promptType: "system", file: "../../../prompts/system_review.md" },
+      { id: "instructions_github_review", label: "Instructions Prompt — GitHub PR (review)", promptType: "instructions", file: "../../../prompts/instructions_review.md" },
     ];
 
     const results = await Promise.all(
