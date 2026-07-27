@@ -185,6 +185,7 @@ All env vars are optional. Only system/infra settings remain — provider creden
 | `ADMIN_API_HOST` / `ADMIN_API_PORT` | `127.0.0.1` / `3100` | |
 | `ADMIN_AUTH_SECRET` | — | Required when provider credentials are created or stored; encrypts them at rest with AES-256-GCM in a versioned `veenc:v1:` envelope. Startup fails closed when the secret is absent or cannot authenticate marked ciphertext; valid legacy values are migrated. Unprefixed legacy AES-GCM detection is limited to historically encrypted `sessionToken` / `sshPrivateKeyEnc` fields so other base64 credentials remain valid plaintext inputs. Admin auth itself uses DB-backed user accounts + session tokens, not HMAC. |
 | `ADMIN_TRUST_PROXY` | `false` | When `true`, extract the client IP from the first `X-Forwarded-For` value for login rate-limiting and webhook IP restrictions. Only enable behind a trusted reverse proxy that overwrites inbound forwarding headers. Webhook signatures remain mandatory. |
+| `PUBLIC_BASE_URL` | — | Optional externally reachable admin base URL; when set, posted review summaries include a link to the corresponding `#tasks/<taskId>` page. |
 | `POLLING_INTERVAL_MS` | `30000` | **DB-managed** default seed — polling loop tick interval; runtime value lives in `app_settings` and is edited from admin UI → System Settings |
 | `MAX_AGENT_CYCLES` | `3` | **DB-managed** default seed — per-task cap → FAILED; runtime value in `app_settings` |
 | `MAX_RETRY_ATTEMPTS` | `5` | **DB-managed** default seed — per-ticket cap; runtime value in `app_settings` |

@@ -29,8 +29,9 @@ All variables are optional. Only system/infra settings remain in the environment
 | `ADMIN_API_PORT` | `3100` | Port. |
 | `ADMIN_AUTH_SECRET` | — | Required whenever provider credentials are created or already stored. Encrypts OAuth/password fields at rest with AES-256-GCM; startup fails closed if credentials exist without it. Admin auth itself uses DB-backed user accounts + session tokens (opaque Bearer token, sha256-hashed in `user_sessions`), **not** HMAC. |
 | `ADMIN_TRUST_PROXY` | `false` | When `true`, derive the client IP from the first `X-Forwarded-For` value for login rate-limiting and webhook IP restrictions. Enable only behind a trusted reverse proxy that overwrites inbound forwarding headers. Webhook signatures remain mandatory. |
+| `PUBLIC_BASE_URL` | — | Optional externally reachable admin base URL. When set, posted review summaries link back to the corresponding `#tasks/<taskId>` page. Empty values omit the backlink. |
 
-There is no `PUBLIC_BASE_URL` env var in `ConfigSchema`; a `publicBaseUrl` value exists only as an optional dependency field wired into the admin server (used to render webhook URLs), not as configuration parsed by `src/config.ts`.
+The admin server also accepts a separate dependency-level webhook public base URL for rendering webhook endpoints; it is independent of `PUBLIC_BASE_URL`.
 
 ### Workflow
 
@@ -62,6 +63,7 @@ There is no `PUBLIC_BASE_URL` env var in `ConfigSchema`; a `publicBaseUrl` value
 Validation rules:
 - `NODE_ENV` must be `development`, `production`, or `test`.
 - `ADMIN_API_PORT` must be a positive integer.
+- `PUBLIC_BASE_URL`, when set, must be a valid URL.
 - All numeric fields must be positive integers.
 
 ## Testing patterns

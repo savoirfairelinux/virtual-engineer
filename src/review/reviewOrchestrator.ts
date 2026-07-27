@@ -28,6 +28,7 @@ import { filterCommentsByAllowedFiles } from "./commentFilter.js";
 import { computeCommentHash, computeThreadReplyHash } from "./commentHash.js";
 import { applyVolumeAndSeverityGate, buildFoldedSummary } from "./commentSeverity.js";
 import { agentLogBus, pushToTaskBuffer, clearTaskEventBuffer } from "../agents/agentEventBus.js";
+import { buildTaskPageUrl } from "../utils/taskPageUrl.js";
 
 const log = getLogger("review-orchestrator");
 
@@ -91,6 +92,8 @@ export interface ReviewOrchestratorDeps {
   maxReviewReplies?: number | undefined;
   /** Minimum severity for a comment to be posted inline. Defaults to "info". */
   reviewMinSeverity?: string | undefined;
+  /** Explicit public admin base URL used to link posted summaries back to the task. */
+  taskPageBaseUrl?: string | undefined;
 }
 
 export interface StartReviewInput {
@@ -630,6 +633,9 @@ export class ReviewOrchestrator {
         maxComments: this.deps.maxReviewComments ?? 20,
       });
       const summary = result.summary + buildFoldedSummary(folded);
+      const postedSummary = this.deps.taskPageBaseUrl === undefined
+        ? summary
+        : this.appendTaskPageLink(summary, taskId, this.deps.taskPageBaseUrl);
 
       // Validate the agent's replies against the eligible thread set: drop
       // hallucinated threadIds and duplicates, require a non-empty body, and
@@ -670,11 +676,11 @@ export class ReviewOrchestrator {
         replyCount: repliesToPost.length,
         vote,
         skipped: skipPosting,
-        summary: summary.slice(0, 200),
+        summary: postedSummary.slice(0, 200),
       });
 
       if (!skipPosting) {
-        await this.postReview(changeId, reviewPatchset, commentsToPost, summary, vote, diff);
+        await this.postReview(changeId, reviewPatchset, commentsToPost, postedSummary, vote, diff);
       }
 
       // Persist all newly-handled comment hashes (posted inline AND folded) so
@@ -842,6 +848,11 @@ export class ReviewOrchestrator {
       if (vote === -1 || vote === 0 || vote === 1) return vote;
     }
     return null;
+  }
+
+  private appendTaskPageLink(summary: string, taskId: TaskId, baseUrl: string): string {
+    const attribution = `Reviewed by Virtual Engineer: ${buildTaskPageUrl(baseUrl, taskId)}`;
+    return summary.trim().length > 0 ? `${summary}\n\n${attribution}` : attribution;
   }
 
   /** Post review comments and vote on the given change revision via the review provider. */

@@ -20,6 +20,11 @@ const booleanFromEnv = z.preprocess((value) => {
   return value;
 }, z.boolean());
 
+const optionalUrlFromEnv = z.preprocess(
+  (value) => typeof value === "string" && value.trim() === "" ? undefined : value,
+  z.string().url().optional(),
+);
+
 // ─── Load .env file if present ────────────────────────────────────────────────
 
 /** Load key=value pairs from a `.env` file into `process.env`, skipping keys that are already set. */
@@ -56,6 +61,7 @@ const ConfigSchema = z.object({
     adminApiHost: z.string().min(1).default("127.0.0.1"),
     adminApiPort: z.coerce.number().int().positive().default(3100),
     adminAuthSecret: z.string().min(1).optional(),
+    publicBaseUrl: optionalUrlFromEnv,
     /**
      * When `true`, the admin auth layer extracts the client IP from the
      * `X-Forwarded-For` header (first entry) instead of the raw socket address.
@@ -104,6 +110,7 @@ function fromEnv(): Record<string, string | undefined> {
     adminApiHost: process.env["ADMIN_API_HOST"],
     adminApiPort: process.env["ADMIN_API_PORT"],
     adminAuthSecret: process.env["ADMIN_AUTH_SECRET"],
+    publicBaseUrl: process.env["PUBLIC_BASE_URL"],
     adminTrustProxy: process.env["ADMIN_TRUST_PROXY"],
     pollingIntervalMs: process.env["POLLING_INTERVAL_MS"],
     maxAgentCycles: process.env["MAX_AGENT_CYCLES"],

@@ -13,6 +13,7 @@ import { sumCycleCosts, formatUsd } from "./costFormat.ts";
 import { api } from "../../api.ts";
 import { useCurrentUser } from "../../authContext.tsx";
 import { isActiveState, isTerminalState } from "../../states.ts";
+import { copyTaskPageLink } from "../../taskPageLink.ts";
 import type { ApiTask, ApiCycle, ApiTransition } from "../../types.ts";
 
 interface TaskDetailProps {
@@ -30,6 +31,7 @@ export function TaskDetail({ task, onRefresh, onDeleted }: TaskDetailProps) {
   const [cycles, setCycles] = useState<ApiCycle[] | null>(null);
   const [transitions, setTransitions] = useState<ApiTransition[] | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [linkCopied, setLinkCopied] = useState(false);
 
   const loadDetails = useCallback((id: string, fallbackTask: ApiTask) => {
     void api.get<{ task: ApiTask }>(`/api/admin/tasks/${id}`)
@@ -55,6 +57,12 @@ export function TaskDetail({ task, onRefresh, onDeleted }: TaskDetailProps) {
     loadDetails(task.taskId, task);
   }, [task.taskId, task.state, task.updatedAt]); // eslint-disable-line react-hooks/exhaustive-deps -- loadDetails is stable
 
+  useEffect(() => {
+    if (!linkCopied) return;
+    const timer = window.setTimeout(() => setLinkCopied(false), 1_600);
+    return () => window.clearTimeout(timer);
+  }, [linkCopied]);
+
   async function doAction(path: string, method: "PATCH" | "POST" | "DELETE") {
     setActionError(null);
     try {
@@ -67,6 +75,16 @@ export function TaskDetail({ task, onRefresh, onDeleted }: TaskDetailProps) {
       onRefresh();
     } catch (err) {
       setActionError(err instanceof Error ? err.message : "Action failed");
+    }
+  }
+
+  async function copyTaskLink(): Promise<void> {
+    setActionError(null);
+    try {
+      await copyTaskPageLink(window.location.href, navigator.clipboard);
+      setLinkCopied(true);
+    } catch {
+      setActionError("Failed to copy task link");
     }
   }
 
@@ -172,6 +190,15 @@ export function TaskDetail({ task, onRefresh, onDeleted }: TaskDetailProps) {
             </div>
             <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "12px" }}>
               <StatePill state={taskWithDetails.state} />
+              <button
+                type="button"
+                className="iconbtn"
+                title={linkCopied ? "Task link copied" : "Copy task link"}
+                aria-label="Copy task link"
+                onClick={() => void copyTaskLink()}
+              >
+                <Icon name={linkCopied ? "check" : "link"} size={15} />
+              </button>
               {/* action bar */}
               {canOperate && (
                 <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>

@@ -380,6 +380,9 @@ export async function buildReviewBundle(
     maxReviewComments: getConfig().maxReviewComments,
     maxReviewReplies: getConfig().maxReviewReplies,
     reviewMinSeverity: getConfig().reviewMinSeverity,
+    ...(getConfig().publicBaseUrl !== undefined
+      ? { taskPageBaseUrl: getConfig().publicBaseUrl }
+      : {}),
   });
   return { integration, provider: reviewer.provider, orchestrator };
 }

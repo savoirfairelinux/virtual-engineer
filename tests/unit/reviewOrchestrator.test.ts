@@ -584,6 +584,33 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
     expect(mocks.store.setReviewedPatchset).toHaveBeenCalledWith(initial.taskId, 2);
   });
 
+  it("appends a task-page link only to the posted review summary", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner, {
+      taskPageBaseUrl: "https://ve.example.test/admin",
+    }));
+
+    await orch.runReview(initial.taskId);
+
+    const postedSummary = [
+      "blocking",
+      "",
+      "Reviewed by Virtual Engineer: https://ve.example.test/admin/#tasks/review-42-abcd",
+    ].join("\n");
+    expect(mocks.provider.postReviewComments).toHaveBeenCalledWith(
+      CHANGE_ID,
+      2,
+      [{ file: "src/a.ts", line: 1, message: "Bug", severity: "error" }],
+      postedSummary,
+    );
+    expect(mocks.provider.vote).toHaveBeenCalledWith(CHANGE_ID, 2, -1, postedSummary);
+
+    const savedResult = mocks.store.saveAgentCycle.mock.calls[0]?.[2] as { summary: string };
+    expect(savedResult.summary).toBe("blocking");
+  });
+
   it("does not re-post inline comments already posted on the change", async () => {
     const initial = makeTask({ state: "REVIEW_PENDING" });
     const mocks = makeMocks(initial);

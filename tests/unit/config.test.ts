@@ -15,6 +15,7 @@ describe("getConfig", () => {
       "ADMIN_API_HOST",
       "ADMIN_API_PORT",
       "ADMIN_AUTH_SECRET",
+      "PUBLIC_BASE_URL",
       "POLLING_INTERVAL_MS",
       "MAX_AGENT_CYCLES",
       "MAX_RETRY_ATTEMPTS",
@@ -83,6 +84,10 @@ describe("getConfig", () => {
 
     it("adminApiPort defaults to 3100", () => {
       expect(getConfig().adminApiPort).toBe(3100);
+    });
+
+    it("publicBaseUrl defaults to undefined", () => {
+      expect(getConfig().publicBaseUrl).toBeUndefined();
     });
 
     it("maxAgentCycles defaults to 3", () => {
@@ -154,6 +159,18 @@ describe("getConfig", () => {
       resetConfig();
       expect(getConfig().agentDockerNetwork).toBe("bridge");
     });
+
+    it("reads PUBLIC_BASE_URL", () => {
+      process.env["PUBLIC_BASE_URL"] = "https://ve.example.test/admin";
+      resetConfig();
+      expect(getConfig().publicBaseUrl).toBe("https://ve.example.test/admin");
+    });
+
+    it("treats an empty PUBLIC_BASE_URL as undefined", () => {
+      process.env["PUBLIC_BASE_URL"] = "";
+      resetConfig();
+      expect(getConfig().publicBaseUrl).toBeUndefined();
+    });
   });
 
   // ─── Validation errors ─────────────────────────────────────────────────────
@@ -167,6 +184,12 @@ describe("getConfig", () => {
 
     it("throws when ADMIN_API_PORT is not a positive integer", () => {
       process.env["ADMIN_API_PORT"] = "0";
+      resetConfig();
+      expect(() => getConfig()).toThrow(/Invalid configuration/);
+    });
+
+    it("throws when PUBLIC_BASE_URL is not a URL", () => {
+      process.env["PUBLIC_BASE_URL"] = "not-a-url";
       resetConfig();
       expect(() => getConfig()).toThrow(/Invalid configuration/);
     });

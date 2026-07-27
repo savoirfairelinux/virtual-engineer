@@ -15,6 +15,7 @@ This module set covers the **ticket-driven code-generation runtime**. The separa
 - A review pass claims `REVIEW_RUNNING` before allocating a cycle or invoking the provider. Concurrent triggers that lose this claim return without side effects, so one patchset cannot create duplicate agent runs.
 - One review deadline starts before provider details/diff and remains active through capacity queueing, abortable workspace creation/clone/patch checkout, agent execution, freshness checks, comments/replies/vote, ledger persistence, and final provider status. Signal-aware workspace operations are awaited to termination before cleanup. A timeout after entering `REVIEW_COMMENTING` preserves that ambiguous state for restart recovery instead of claiming provider effects did not happen.
 - Each new review pass atomically allocates its cycle number and persists an explicit `running` row through `startAgentCycle`, then replaces that row with the final success/failure payload. Inactive-task cancellation also finalizes the row with a visible reason, so completed tasks cannot retain a stale running cycle.
+- When `PUBLIC_BASE_URL` is explicitly configured, the summary sent to the review provider includes a `Reviewed by Virtual Engineer` link to `#tasks/<taskId>`. The persisted agent summary remains the raw model result, and no link is emitted when the setting is absent.
 
 ## `Orchestrator` — `orchestrator.ts`
 
@@ -124,6 +125,7 @@ The module depends only on:
 - `MAX_AGENT_CYCLES`
 - `MAX_RETRY_ATTEMPTS`
 - `AGENT_TIMEOUT_MS`
+- `PUBLIC_BASE_URL` (optional review-summary backlink)
 - `gitAuthorName` / `gitAuthorEmail` (resolved from the active review integration's config at startup)
 - `agentContainerImage`
 

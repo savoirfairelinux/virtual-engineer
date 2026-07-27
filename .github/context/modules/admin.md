@@ -190,6 +190,7 @@ The admin server never returns plaintext password-like fields. Descriptor passwo
 - Live log ingestion de-duplicates overlapping SSE replay sources (persisted cycle history, in-memory task buffer, and reconnect replays) so reconnects do not render duplicate rows.
 - Live log rows render structured `data` payloads as formatted JSON blocks (instead of single-line raw serialization) when the payload is object/array-shaped.
 - Task rows and task details expose a single primary ticket/review link on the source identifier; detail headers avoid duplicate secondary link controls, while per-repository review links are still shown from `changesPerRepo` when available.
+- Task selection is encoded as `#tasks/<taskId>` for browser navigation and sharing. The task detail header exposes a copy-link command to every authenticated viewer and reports clipboard failures inline.
 - Task detail footer badges now show compact task/review identifiers (`displayId` / `gerritChangeId`) instead of full internal task ids.
 - Task origin badges in the Tasks list/details abbreviate GitHub pull-request sources as `GITHUB-PR` (instead of `GITHUB-PULL-REQUEST`) for compact readability.
 - Top-bar and overview provider counters are integration-driven (enabled integrations), avoiding the extra runtime-provider card count used by `/api/admin/providers`.
