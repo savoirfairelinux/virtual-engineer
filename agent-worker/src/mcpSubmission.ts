@@ -52,7 +52,8 @@ export function assertSingleSubmissionToolCall(
 ): void {
   const toolName = mode === 'review' ? 've_submit_review' : 've_submit_changes';
   const observedCalls = (toolsByKind[toolName] ?? 0) +
-    (toolsByKind[`mcp__ve-submission__${toolName}`] ?? 0);
+    (toolsByKind[`mcp__ve-submission__${toolName}`] ?? 0) +
+    (toolsByKind[`ve-submission-${toolName}`] ?? 0);
   if (observedCalls !== 1) {
     throw new Error(
       `Agent must call the ${toolName} MCP tool exactly once; observed ${observedCalls} calls`,

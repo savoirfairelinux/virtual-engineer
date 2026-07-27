@@ -78,6 +78,11 @@ describe("MCP submission contract", () => {
         "mcp__ve-submission__ve_submit_review": 1,
       })
     ).not.toThrow();
+    expect(() =>
+      assertSingleSubmissionToolCall("review", {
+        "ve-submission-ve_submit_review": 1,
+      })
+    ).not.toThrow();
   });
 
   it("marks the submission tool as mutating and non-idempotent", () => {
