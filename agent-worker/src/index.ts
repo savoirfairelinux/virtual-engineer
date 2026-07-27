@@ -34,7 +34,11 @@ import {
 import { emitEvent } from './providers/events.js';
 import { resolveProvider, isAgentProvider, AGENT_PROVIDER_IDS } from './providers/registry.js';
 import type { AgentRun } from './providers/types.js';
-import { CHANGE_SUBMISSION_JSON_SCHEMA, readSubmission } from './mcpSubmission.js';
+import {
+  CHANGE_SUBMISSION_JSON_SCHEMA,
+  assertSingleSubmissionToolCall,
+  readSubmission,
+} from './mcpSubmission.js';
 
 // ── Environment ────────────────────────────────────────────────────────────────
 const AGENT_PROVIDER = process.env['AGENT_PROVIDER'] ?? 'copilot';
@@ -185,6 +189,7 @@ async function runReviewMode(): Promise<ReviewWorkerResult> {
       if (REVIEW_OUTPUT_SCHEMA === undefined) {
         throw new Error('REVIEW_OUTPUT_SCHEMA is required for MCP review submissions');
       }
+      assertSingleSubmissionToolCall('review', agent.toolsByKind);
       rawOutput = JSON.stringify(readSubmission(undefined, REVIEW_OUTPUT_SCHEMA));
     }
     // session.end is emitted by the provider runner (see providers/).
@@ -277,9 +282,11 @@ async function main(): Promise<AgentResult> {
   };
 
   try {
-    const submission = ACTIVE_PROVIDER.submissionTransport === 'mcp'
-      ? readSubmission(undefined, CHANGE_SUBMISSION_JSON_SCHEMA)
-      : null;
+    let submission: Record<string, unknown> | null = null;
+    if (ACTIVE_PROVIDER.submissionTransport === 'mcp') {
+      assertSingleSubmissionToolCall('codegen', handlerState.toolsByKind);
+      submission = readSubmission(undefined, CHANGE_SUBMISSION_JSON_SCHEMA);
+    }
     const submittedSummary = submission?.['summary'];
     if (typeof submittedSummary === 'string') {
       summary = submittedSummary.trim().slice(0, 1000);

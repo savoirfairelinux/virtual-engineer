@@ -5,7 +5,11 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
-import { recordSubmission, validateSubmission } from './mcpSubmission.js';
+import {
+  SUBMISSION_TOOL_ANNOTATIONS,
+  recordSubmission,
+  validateSubmission,
+} from './mcpSubmission.js';
 
 function requiredEnv(name: string): string {
   const value = process.env[name]?.trim();
@@ -42,12 +46,7 @@ async function main(): Promise<void> {
         ? 'Submit the final structured review to Virtual Engineer exactly once.'
         : 'Submit the final change summary to Virtual Engineer exactly once.',
       inputSchema,
-      annotations: {
-        readOnlyHint: true,
-        destructiveHint: false,
-        idempotentHint: false,
-        openWorldHint: false,
-      },
+      annotations: SUBMISSION_TOOL_ANNOTATIONS,
     }],
   }));
 

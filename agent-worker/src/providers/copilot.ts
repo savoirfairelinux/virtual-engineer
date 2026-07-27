@@ -20,7 +20,10 @@ import { spawn } from 'child_process';
 import type { ChildProcess } from 'child_process';
 import { statSync } from 'fs';
 import { createConnection } from 'net';
-import { restrictNetworkPermissionHandler } from '../networkGuard.js';
+import {
+  restrictNetworkPermissionHandler,
+  restrictReviewPermissionHandler,
+} from '../networkGuard.js';
 import { emitEvent } from './events.js';
 import type { AgentProviderDefinition, AgentRun, AgentRunOptions } from './types.js';
 import { copilotGlobalSkillsDir, emitLocalSkillsLoaded, localSkillsDir } from '../skills.js';
@@ -168,7 +171,9 @@ export function buildCopilotSessionConfig(
         ? appendSubmissionInstruction(agentInstructions, submission.toolName)
         : agentInstructions,
     ),
-    onPermissionRequest: restrictNetworkPermissionHandler,
+    onPermissionRequest: mode === 'review'
+      ? restrictReviewPermissionHandler
+      : restrictNetworkPermissionHandler,
     workingDirectory: cwd,
     enableConfigDiscovery: false,
     ...(submission !== null

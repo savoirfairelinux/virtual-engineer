@@ -117,6 +117,24 @@ describe("parseReviewResult", () => {
     expect(parseReviewResult(raw).score).toBe(1);
   });
 
+  it("parses bare JSON after prose containing braces", () => {
+    const raw = [
+      "Checked configuration {foo} before producing the result.",
+      JSON.stringify({ comments: [], summary: "ok", vote: 1, replies: [] }),
+    ].join("\n");
+
+    expect(parseReviewResult(raw).score).toBe(1);
+  });
+
+  it("selects the valid review payload among balanced JSON objects", () => {
+    const raw = [
+      JSON.stringify({ diagnostic: "not a review" }),
+      JSON.stringify({ comments: [], summary: "ok", vote: 1, replies: [] }),
+    ].join("\n");
+
+    expect(parseReviewResult(raw).score).toBe(1);
+  });
+
   it("rejects the legacy generic score contract", () => {
     expect(() =>
       parseReviewResult(wrap({ comments: [], summary: "ok", score: 1 }))

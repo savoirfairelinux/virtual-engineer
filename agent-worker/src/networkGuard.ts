@@ -101,3 +101,24 @@ export const restrictNetworkPermissionHandler: PermissionHandler = (request, inv
   }
   return approveAll(request, invocation);
 };
+
+/**
+ * Copilot review sessions inspect untrusted changes and must not mutate the
+ * workspace or execute commands. Allow repository reads and the single VE
+ * review-submission tool; reject every other capability.
+ */
+export const restrictReviewPermissionHandler: PermissionHandler = (request, invocation) => {
+  if (request.kind === 'read') {
+    return approveAll(request, invocation);
+  }
+  if (request.kind === 'mcp') {
+    const details = request as unknown as Record<string, unknown>;
+    if (
+      details['serverName'] === 've-submission' &&
+      details['toolName'] === 've_submit_review'
+    ) {
+      return approveAll(request, invocation);
+    }
+  }
+  return rejectPermission('Review sessions may only read repository files and submit the final review.');
+};

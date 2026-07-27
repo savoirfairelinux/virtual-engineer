@@ -4,6 +4,8 @@ import { join } from "path";
 import { describe, expect, it } from "vitest";
 import {
   CHANGE_SUBMISSION_JSON_SCHEMA,
+  SUBMISSION_TOOL_ANNOTATIONS,
+  assertSingleSubmissionToolCall,
   buildSubmissionMcpConfig,
   readSubmission,
   recordSubmission,
@@ -58,6 +60,33 @@ describe("MCP submission contract", () => {
     expect(() => readSubmission(path)).toThrow("did not submit");
     recordSubmission(path, { status: "completed", summary: "Implemented tests" });
     expect(readSubmission(path)).toEqual({ status: "completed", summary: "Implemented tests" });
+  });
+
+  it("requires exactly one observed submission tool call", () => {
+    expect(() => assertSingleSubmissionToolCall("review", {})).toThrow(
+      "exactly once",
+    );
+    expect(() =>
+      assertSingleSubmissionToolCall("review", { ve_submit_review: 2 })
+    ).toThrow("exactly once");
+
+    expect(() =>
+      assertSingleSubmissionToolCall("review", { ve_submit_review: 1 })
+    ).not.toThrow();
+    expect(() =>
+      assertSingleSubmissionToolCall("review", {
+        "mcp__ve-submission__ve_submit_review": 1,
+      })
+    ).not.toThrow();
+  });
+
+  it("marks the submission tool as mutating and non-idempotent", () => {
+    expect(SUBMISSION_TOOL_ANNOTATIONS).toEqual({
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    });
   });
 
   it("defines a narrow coding completion contract", () => {

@@ -11,6 +11,7 @@ import { describe, it, expect } from "vitest";
 import {
   NETWORK_DISALLOWED_TOOLS,
   isBlockedNetworkCommand,
+  restrictReviewPermissionHandler,
   restrictNetworkPermissionHandler,
 } from "../../agent-worker/src/networkGuard.js";
 
@@ -133,6 +134,45 @@ describe("networkGuard.restrictNetworkPermissionHandler", () => {
       invocation,
     );
     expect(result).not.toEqual(expect.objectContaining({ kind: "reject" }));
+  });
+});
+
+describe("networkGuard.restrictReviewPermissionHandler", () => {
+  it.each(["shell", "write", "url", "memory", "hook", "custom-tool"])(
+    "rejects %s requests",
+    (kind) => {
+      const result = restrictReviewPermissionHandler(
+        { kind } as Parameters<typeof restrictReviewPermissionHandler>[0],
+        invocation,
+      );
+      expect(result).toEqual(expect.objectContaining({ kind: "reject" }));
+    },
+  );
+
+  it("approves repository reads", () => {
+    const result = restrictReviewPermissionHandler(
+      { kind: "read" } as Parameters<typeof restrictReviewPermissionHandler>[0],
+      invocation,
+    );
+    expect(result).not.toEqual(expect.objectContaining({ kind: "reject" }));
+  });
+
+  it("approves only the VE submission MCP server", () => {
+    const approved = restrictReviewPermissionHandler(
+      { kind: "mcp", serverName: "ve-submission", toolName: "ve_submit_review" } as unknown as Parameters<
+        typeof restrictReviewPermissionHandler
+      >[0],
+      invocation,
+    );
+    const rejected = restrictReviewPermissionHandler(
+      { kind: "mcp", serverName: "other", toolName: "write_file" } as unknown as Parameters<
+        typeof restrictReviewPermissionHandler
+      >[0],
+      invocation,
+    );
+
+    expect(approved).not.toEqual(expect.objectContaining({ kind: "reject" }));
+    expect(rejected).toEqual(expect.objectContaining({ kind: "reject" }));
   });
 });
 
