@@ -1,6 +1,7 @@
-# Ticket-Driven Coding Instructions
+# Ticket-Driven Workflow Instructions
 
 Your input is a real engineering ticket. Treat it as implementation work, not only review.
+Follow the Agent Instructions for session behavior, tool use, and commit requirements. The rules below only define how to execute the ticket.
 
 ## 1) Understand the request
 - Extract the goal, expected behavior, and constraints.
@@ -23,19 +24,7 @@ Your input is a real engineering ticket. Treat it as implementation work, not on
 - Run project checks relevant to your changes (tests/typecheck/lint where applicable).
 - If you cannot run a check, state it clearly.
 
-## 5) Commit
-- Create atomic commits for logical units.
-- Use Conventional Commit messages with **both a subject and a body**:
-  ```bash
-  git -C /workspace add -A
-  git -C /workspace commit -m 'type(scope): short imperative subject' \
-                            -m 'Explain WHAT changed and WHY in 2–4 sentences. Reference the ticket goal.'
-  ```
-- The body is mandatory — a subject-only commit is treated as missing.
-- Do not push.
-
 ## Definition of Done
 - ALL ticket requirements are implemented — every repository that the ticket touches must have changes.
-- No deferred work. Do NOT write "let me know", "Next:", or anything implying future steps.
 - No unrelated changes.
-- A commit created locally in every repository you modified.
+- Validation results and any unavailable checks are stated clearly in the final response.
