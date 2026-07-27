@@ -2,7 +2,8 @@ import { useState, useEffect } from "react";
 import { Modal, Field, FieldInput, FieldSelect, FormError, FormRow, FormActions } from "../../components/Modal.tsx";
 import { Icon } from "../../components/Icon.tsx";
 import { api } from "../../api.ts";
-import type { ApiAgent, ApiIntegration, ApiPlugin, ApiPrompt, PluginField } from "../../types.ts";
+import type { ApiAgent, ApiIntegration, ApiPlugin, ApiPrompt } from "../../types.ts";
+import { serializeProviderOptions } from "./agentFormProviderOptions.ts";
 
 interface AvailableModel {
   id: string;
@@ -41,26 +42,6 @@ function initialProviderOptions(agent: ApiAgent | undefined): Record<string, str
   return Object.fromEntries(
     Object.entries(raw as Record<string, unknown>).map(([key, value]) => [key, String(value)])
   );
-}
-
-function serializeProviderOptions(
-  fields: PluginField[],
-  values: Record<string, string>,
-): Record<string, unknown> {
-  const result: Record<string, unknown> = {};
-  for (const field of fields) {
-    const value = values[field.key]?.trim() ?? "";
-    if (!value) continue;
-    if (field.valueType === "number" || field.type === "number") {
-      const numberValue = Number(value);
-      if (Number.isFinite(numberValue) && numberValue > 0) result[field.key] = numberValue;
-    } else if (field.valueType === "boolean") {
-      result[field.key] = value === "true";
-    } else {
-      result[field.key] = value;
-    }
-  }
-  return result;
 }
 
 export function AgentFormModal({ agent, integrations, plugins, prompts, onClose, onSaved }: Props) {
@@ -146,7 +127,18 @@ export function AgentFormModal({ agent, integrations, plugins, prompts, onClose,
     setError(null);
     try {
       const maxConcurrent = parseInt(form.maxConcurrent, 10);
-      const providerOptions = serializeProviderOptions(agentConfigFields, form.providerOptions);
+      const rawExistingOptions = agent?.modelConfig?.["providerOptions"];
+      const existingProviderOptions = agent?.integrationId === form.integrationId
+        && typeof rawExistingOptions === "object"
+        && rawExistingOptions !== null
+        && !Array.isArray(rawExistingOptions)
+        ? rawExistingOptions as Record<string, unknown>
+        : {};
+      const providerOptions = serializeProviderOptions(
+        agentConfigFields,
+        form.providerOptions,
+        existingProviderOptions,
+      );
       const payload = {
         name: form.name,
         type: form.type,

@@ -264,6 +264,10 @@ describe("CopilotAdapter — prompt injection", () => {
         systemPromptId: "instructions_generic_code",
         instructionsPromptId: "system_generic_code",
       }), {})).rejects.toThrow(/not a system prompt/i);
+
+      await expect(adapter.buildContainerSpecWithPrompts(makeContext({
+        instructionsPromptId: "system_generic_code",
+      }), {})).rejects.toThrow("not an instructions prompt");
     });
 
     it("rejects task contexts that omit required prompt ids", async () => {

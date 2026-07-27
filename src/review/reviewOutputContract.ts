@@ -26,9 +26,9 @@ const ReplySchema: z.ZodType<ThreadReply> = z.object({
 });
 
 const SharedPayloadShape = {
-  comments: z.array(InlineCommentSchema).default([]),
-  summary: z.string().default(""),
-  replies: z.array(ReplySchema).default([]),
+  comments: z.array(InlineCommentSchema),
+  summary: z.string(),
+  replies: z.array(ReplySchema),
 };
 
 const DecisionSchema = z.union([z.literal(-1), z.literal(0), z.literal(1)]);

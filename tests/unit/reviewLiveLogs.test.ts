@@ -84,6 +84,7 @@ const GOOD_RAW_OUTPUT = [
     comments: [{ file: "src/a.ts", line: 1, message: "Bug", severity: "error" }],
     summary: "blocking issue",
     vote: -1,
+    replies: [],
   }),
   "REVIEW_RESULT_END",
 ].join("\n");
