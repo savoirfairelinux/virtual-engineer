@@ -8,6 +8,21 @@ import {
   type ReviewProgressDependencies,
 } from "../../src/orchestrator/reviewProgressService.js";
 
+const { logger } = vi.hoisted(() => ({
+  logger: {
+    trace: vi.fn(),
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    fatal: vi.fn(),
+  },
+}));
+
+vi.mock("../../src/logger.js", () => ({
+  getLogger: vi.fn(() => logger),
+}));
+
 function makeTask(overrides: Partial<Task> = {}): Task {
   return {
     taskId: makeTaskId("task-1"),
@@ -88,6 +103,34 @@ function makeDependencies(
 }
 
 describe("ReviewProgressService", () => {
+  it("uses provider-neutral warnings for missing changes and status failures", async () => {
+    const task = makeTask({ externalChangeId: null });
+    const dependencies = makeDependencies(task, {} as ReviewConnector);
+    const service = new ReviewProgressService(dependencies);
+
+    await service.check(task);
+
+    expect(logger.warn).toHaveBeenCalledWith(
+      { taskId: task.taskId },
+      "IN_REVIEW but no external change id - waiting"
+    );
+
+    logger.warn.mockClear();
+    const statusError = new Error("unavailable");
+    const failedTask = makeTask();
+    const failedConnector = {
+      getChangeStatus: vi.fn().mockRejectedValue(statusError),
+    } as unknown as ReviewConnector;
+    const failedService = new ReviewProgressService(makeDependencies(failedTask, failedConnector));
+
+    await failedService.check(failedTask);
+
+    expect(logger.warn).toHaveBeenCalledWith(
+      { taskId: failedTask.taskId, changeId: failedTask.externalChangeId, err: statusError },
+      "failed to fetch review change status - staying IN_REVIEW"
+    );
+  });
+
   it("converges a merged single-repository change and closes its ticket", async () => {
     const task = makeTask();
     const reviewConnector = {
