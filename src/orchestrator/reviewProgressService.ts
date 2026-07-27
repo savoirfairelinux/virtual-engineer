@@ -65,7 +65,7 @@ export class ReviewProgressService {
   ): Promise<void> {
     const changeId = task.externalChangeId;
     if (!changeId) {
-      log.warn({ taskId: task.taskId }, "IN_REVIEW but no gerritChangeId — waiting");
+      log.warn({ taskId: task.taskId }, "IN_REVIEW but no external change id - waiting");
       return;
     }
 
@@ -75,7 +75,7 @@ export class ReviewProgressService {
     try {
       status = await reviewConnector.getChangeStatus(changeId);
     } catch (err) {
-      log.warn({ taskId: task.taskId, changeId, err }, "failed to fetch Gerrit change status — staying IN_REVIEW");
+      log.warn({ taskId: task.taskId, changeId, err }, "failed to fetch review change status - staying IN_REVIEW");
       return;
     }
 
@@ -141,7 +141,7 @@ export class ReviewProgressService {
         await reviewConnector.resolveComments(changeId, processedComments);
         log.info({ taskId: task.taskId, count: processedComments.length }, "resolved review comments");
       } catch (err) {
-        log.warn({ taskId: task.taskId, err }, "failed to resolve Gerrit comments (non-fatal)");
+        log.warn({ taskId: task.taskId, err }, "failed to resolve review comments (non-fatal)");
       }
     }
   }
