@@ -50,6 +50,20 @@ describe("fetchGitLabProxyImage", () => {
     expect(result).toEqual({ ok: false, statusCode: 502, error: "Upstream did not return an image" });
   });
 
+  it("rejects SVG upstream content", async () => {
+    const result = await fetchGitLabProxyImage({
+      targetUrl: TARGET_URL,
+      gitlabBaseUrl: BASE_URL,
+      gitlabToken: "oauth-token",
+      fetchImpl: async () => new Response("<svg></svg>", {
+        status: 200,
+        headers: { "content-type": "image/svg+xml; charset=utf-8" },
+      }),
+    });
+
+    expect(result).toEqual({ ok: false, statusCode: 502, error: "Upstream did not return an image" });
+  });
+
   it("rejects an oversized declared content length before reading", async () => {
     const body = new ReadableStream<Uint8Array>({
       pull: vi.fn(),
