@@ -20,10 +20,10 @@ import { spawn } from 'child_process';
 import type { ChildProcess } from 'child_process';
 import { statSync } from 'fs';
 import { createConnection } from 'net';
-import { join } from 'path';
 import { restrictNetworkPermissionHandler } from '../networkGuard.js';
 import { emitEvent } from './events.js';
 import type { AgentRun, AgentRunOptions } from './types.js';
+import { copilotGlobalSkillsDir, emitLocalSkillsLoaded, localSkillsDir } from '../skills.js';
 
 type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
 
@@ -115,6 +115,23 @@ async function startLocalCliServer(cwd: string): Promise<LocalCliServer> {
 }
 
 // ── Unified session runner ────────────────────────────────────────────────────
+export function copilotSkillDirectories(cwd: string, skillDiscovery: boolean): string[] {
+  const skillDirectories: string[] = [];
+  if (skillDiscovery) {
+    emitLocalSkillsLoaded(cwd);
+    skillDirectories.push(localSkillsDir(cwd));
+  }
+  skillDirectories.push(copilotGlobalSkillsDir());
+
+  return skillDirectories.filter((dir) => {
+    try {
+      return statSync(dir).isDirectory();
+    } catch {
+      return false;
+    }
+  });
+}
+
 async function runSession(
   options: AgentRunOptions,
 ): Promise<{ session: CopilotSession; client: CopilotClient; localCliServer: LocalCliServer }> {
@@ -122,17 +139,8 @@ async function runSession(
   const localCliServer = await startLocalCliServer(cwd);
   const client = new CopilotClient({ cliUrl: localCliServer.cliUrl });
 
-  // Opt-in: surface repo-defined skills to the agent without enabling MCP discovery.
-  // Guarded so a missing path — or a non-directory at that path — never aborts the session.
-  const skillsDir = join(cwd, '.github', 'skills');
-  let enableSkillDiscovery = false;
-  if (skillDiscovery) {
-    try {
-      enableSkillDiscovery = statSync(skillsDir).isDirectory();
-    } catch {
-      enableSkillDiscovery = false;
-    }
-  }
+  // Local repo skills remain opt-in; fetched remote skills are already project-approved.
+  const skillDirectories = copilotSkillDirectories(cwd, skillDiscovery === true);
 
   try {
     const session = await client.createSession({
@@ -140,7 +148,7 @@ async function runSession(
       ...(reasoningEffort && reasoningEffort !== 'none'
         ? { reasoningEffort: reasoningEffort as ReasoningEffort }
         : {}),
-      ...(enableSkillDiscovery ? { skillDirectories: [skillsDir] } : {}),
+      ...(skillDirectories.length > 0 ? { skillDirectories } : {}),
       systemMessage: { content: systemPrompt },
       onPermissionRequest: restrictNetworkPermissionHandler,
       workingDirectory: cwd,

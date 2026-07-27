@@ -1,14 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { tmpdir } from "os";
-import { join } from "path";
-import { randomUUID } from "crypto";
 import type { Server } from "node:http";
 import { SqliteStateStore } from "../../src/state/stateStore.js";
 import { createAdminServer, type AdminServerDependencies } from "../../src/admin/adminServer.js";
 import type { CostSummary } from "../../src/interfaces.js";
+import { tempDatabasePath } from "./helpers/tempDatabase.js";
 
 function tempDbPath(): string {
-  return join(tmpdir(), `ve-admin-cost-${randomUUID()}.db`);
+  return tempDatabasePath("ve-admin-cost");
 }
 
 async function rest(server: Server, path: string): Promise<{ status: number; body: Record<string, unknown> | null }> {
@@ -55,6 +53,7 @@ function makeDeps(store: SqliteStateStore, getCostSummary: AdminServerDependenci
       getCostSummary,
       getModelUsageSummary: vi.fn(async () => ({ byModel: [], perProject: [], totalRuns: 0, totalUsd: 0, sinceEpochSeconds: null })),
     },
+    allowUnauthenticatedAdmin: true,
     agentStore: store,
     projectStore: store,
     integrationStore: store,

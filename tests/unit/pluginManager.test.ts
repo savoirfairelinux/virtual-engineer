@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { PluginManager } from "../../src/plugins/pluginManager.js";
 import { registerBuiltinPlugins } from "../../src/plugins/init.js";
+import { decryptToken, encryptToken } from "../../src/utils/encryption.js";
 import type { AgentAdapter, AgentResult, IntegrationStore, Integration, ProviderId, DomainCapability, TaskContext } from "../../src/interfaces.js";
 
 const PROVIDER_CAPABILITY: Record<ProviderId, DomainCapability> = {
@@ -11,6 +12,7 @@ const PROVIDER_CAPABILITY: Record<ProviderId, DomainCapability> = {
   mock: "agent_execution",
   copilot: "agent_execution",
   claude: "agent_execution",
+  aider: "agent_execution",
 };
 
 /** Resolve the first active connector for a provider via its primary capability. */
@@ -82,6 +84,128 @@ function makeMockPluginInstance(name: string): AgentAdapter {
 describe("PluginManager", () => {
   beforeEach(() => {
     registerBuiltinPlugins();
+  });
+
+  describe("credential migration", () => {
+    it("identifies integrations whose stored config is invalid JSON", async () => {
+      const store = makeStore([
+        makeIntegration({
+          id: "invalid-json",
+          provider: "redmine",
+          configJson: "{not-json",
+        }),
+      ]);
+      const mgr = new PluginManager(store, { adminAuthSecret: "migration-test-secret" });
+
+      await expect(mgr.migrateEncryptCredentials()).rejects.toThrow(/invalid-json/);
+      expect(store.upsertIntegration).not.toHaveBeenCalled();
+    });
+
+    it("rejects startup credentials when ADMIN_AUTH_SECRET is missing", async () => {
+      const store = makeStore([
+        makeIntegration({
+          id: "redmine-plain",
+          provider: "redmine",
+          configJson: JSON.stringify({ baseUrl: "https://redmine.example.com", apiKey: "raw-secret", virtualEngineerUserLogin: "ve" }),
+        }),
+      ]);
+      const mgr = new PluginManager(store);
+
+      await expect(mgr.migrateEncryptCredentials()).rejects.toThrow(/ADMIN_AUTH_SECRET.*redmine-plain/);
+      expect(store.upsertIntegration).not.toHaveBeenCalled();
+    });
+
+    it("migrates legacy plain:-prefixed credentials to AES encryption", async () => {
+      const secret = "migration-test-secret";
+      const legacy = `plain:${Buffer.from("raw-secret", "utf8").toString("base64")}`;
+      const store = makeStore([
+        makeIntegration({
+          id: "redmine-legacy",
+          provider: "redmine",
+          configJson: JSON.stringify({ baseUrl: "https://redmine.example.com", apiKey: legacy, virtualEngineerUserLogin: "ve" }),
+        }),
+      ]);
+      const mgr = new PluginManager(store, { adminAuthSecret: secret });
+
+      await mgr.migrateEncryptCredentials();
+
+      expect(store.upsertIntegration).toHaveBeenCalledTimes(1);
+      const updated = await store.getIntegration("redmine-legacy");
+      const config = JSON.parse(updated?.configJson ?? "{}") as Record<string, unknown>;
+      expect(config["apiKey"]).not.toBe(legacy);
+      expect(config["apiKey"]).toMatch(/^veenc:v1:/);
+      expect(decryptToken(String(config["apiKey"]), secret)).toBe("raw-secret");
+    });
+
+    it("rewrites valid unprefixed AES ciphertext into the versioned envelope", async () => {
+      const secret = "migration-test-secret";
+      const legacyCiphertext = encryptToken("raw-secret", secret).replace(/^veenc:v1:/, "");
+      const store = makeStore([
+        makeIntegration({
+          id: "copilot-aes-legacy",
+          provider: "copilot",
+          configJson: JSON.stringify({ authMode: "oauth", sessionToken: legacyCiphertext }),
+        }),
+      ]);
+      const mgr = new PluginManager(store, { adminAuthSecret: secret });
+
+      await mgr.migrateEncryptCredentials();
+
+      const updated = await store.getIntegration("copilot-aes-legacy");
+      const config = JSON.parse(updated?.configJson ?? "{}") as Record<string, unknown>;
+      expect(config["sessionToken"]).toMatch(/^veenc:v1:/);
+      expect(decryptToken(String(config["sessionToken"]), secret)).toBe("raw-secret");
+    });
+
+    it("encrypts canonical base64 API keys as plaintext credentials", async () => {
+      const secret = "migration-test-secret";
+      const base64ApiKey = Buffer.from("provider-api-key-with-more-than-28-bytes", "utf8").toString("base64");
+      const store = makeStore([
+        makeIntegration({
+          id: "redmine-base64-key",
+          provider: "redmine",
+          configJson: JSON.stringify({ baseUrl: "https://redmine.example.com", apiKey: base64ApiKey, virtualEngineerUserLogin: "ve" }),
+        }),
+      ]);
+      const mgr = new PluginManager(store, { adminAuthSecret: secret });
+
+      await mgr.migrateEncryptCredentials();
+
+      const updated = await store.getIntegration("redmine-base64-key");
+      const config = JSON.parse(updated?.configJson ?? "{}") as Record<string, unknown>;
+      expect(config["apiKey"]).toMatch(/^veenc:v1:/);
+      expect(decryptToken(String(config["apiKey"]), secret)).toBe(base64ApiKey);
+    });
+
+    it("fails closed for marked ciphertext encrypted with a different secret", async () => {
+      const encrypted = encryptToken("raw-secret", "old-secret");
+      const store = makeStore([
+        makeIntegration({
+          id: "redmine-marked-wrong-key",
+          provider: "redmine",
+          configJson: JSON.stringify({ baseUrl: "https://redmine.example.com", apiKey: encrypted, virtualEngineerUserLogin: "ve" }),
+        }),
+      ]);
+      const mgr = new PluginManager(store, { adminAuthSecret: "new-secret" });
+
+      await expect(mgr.migrateEncryptCredentials()).rejects.toThrow(/redmine-marked-wrong-key/);
+      expect(store.upsertIntegration).not.toHaveBeenCalled();
+    });
+
+    it("fails closed for probable unprefixed AES ciphertext encrypted with a different secret", async () => {
+      const legacyCiphertext = encryptToken("raw-secret", "old-secret").replace(/^veenc:v1:/, "");
+      const store = makeStore([
+        makeIntegration({
+          id: "copilot-aes-wrong-key",
+          provider: "copilot",
+          configJson: JSON.stringify({ authMode: "oauth", sessionToken: legacyCiphertext }),
+        }),
+      ]);
+      const mgr = new PluginManager(store, { adminAuthSecret: "new-secret" });
+
+      await expect(mgr.migrateEncryptCredentials()).rejects.toThrow(/copilot-aes-wrong-key/);
+      expect(store.upsertIntegration).not.toHaveBeenCalled();
+    });
   });
 
   describe("loadFromDatabase", () => {
@@ -157,6 +281,65 @@ describe("PluginManager", () => {
         })
       );
     });
+
+    it("fails closed when runtime config contains a malformed managed envelope", () => {
+      const integration = makeIntegration({
+        id: "redmine-managed-invalid",
+        provider: "redmine",
+        configJson: JSON.stringify({ baseUrl: "https://redmine.example.com", apiKey: "veenc:v1:not-valid-ciphertext", virtualEngineerUserLogin: "ve" }),
+      });
+      const mgr = new PluginManager(makeStore([integration]), { adminAuthSecret: "current-secret" });
+
+      expect(() => mgr.decryptIntegrationConfig(integration)).toThrow(/decrypt.*credential/i);
+    });
+
+    it("fails closed for undecryptable legacy ciphertext in historically encrypted fields", () => {
+      const integration = makeIntegration({
+        id: "copilot-legacy-invalid",
+        provider: "copilot",
+        configJson: JSON.stringify({
+          authMode: "oauth",
+          sessionToken: encryptToken("stored-secret", "old-secret").replace(/^veenc:v1:/, ""),
+        }),
+      });
+      const mgr = new PluginManager(makeStore([integration]), { adminAuthSecret: "current-secret" });
+
+      expect(() => mgr.decryptIntegrationConfig(integration)).toThrow(/decrypt.*credential/i);
+    });
+
+    it("preserves raw plaintext credentials for unsaved connection tests", async () => {
+      const mgr = new PluginManager(makeStore(), { adminAuthSecret: "current-secret" });
+      const tester = vi.fn(async () => ({ success: true, error: null }));
+      mgr.registerConnectionTester("redmine", tester);
+
+      await mgr.testConnectionConfig("redmine", {
+        baseUrl: "https://redmine.example.com",
+        apiKey: "raw-admin-form-token",
+        virtualEngineerUserLogin: "ve",
+      });
+
+      expect(tester).toHaveBeenCalledWith(expect.objectContaining({ apiKey: "raw-admin-form-token" }));
+    });
+
+    it("preserves stored canonical base64 credentials in non-legacy fields", async () => {
+      const base64ApiKey = Buffer.from("provider-api-key-with-more-than-28-bytes", "utf8").toString("base64");
+      const integration = makeIntegration({
+        id: "redmine-base64-runtime",
+        provider: "redmine",
+        configJson: JSON.stringify({
+          baseUrl: "https://redmine.example.com",
+          apiKey: base64ApiKey,
+          virtualEngineerUserLogin: "ve",
+        }),
+      });
+      const mgr = new PluginManager(makeStore([integration]), { adminAuthSecret: "current-secret" });
+      const tester = vi.fn(async () => ({ success: true, error: null }));
+      mgr.registerConnectionTester("redmine", tester);
+
+      await mgr.testConnection(integration.id);
+
+      expect(tester).toHaveBeenCalledWith(expect.objectContaining({ apiKey: base64ApiKey }));
+    });
   });
 
   describe("enablePlugin", () => {
@@ -224,6 +407,24 @@ describe("PluginManager", () => {
       const mgr = new PluginManager(store);
 
       await expect(mgr.enablePlugin("nonexistent")).rejects.toThrow("Integration not found");
+    });
+
+    it("fails closed when hot-enabling malformed managed credentials", async () => {
+      const store = makeStore([
+        makeIntegration({
+          id: "redmine-hot-malformed",
+          provider: "redmine",
+          configJson: JSON.stringify({
+            baseUrl: "https://redmine.example.com",
+            apiKey: "veenc:v1:not-valid-ciphertext",
+            virtualEngineerUserLogin: "ve",
+          }),
+        }),
+      ]);
+      const mgr = new PluginManager(store, { adminAuthSecret: "current-secret" });
+
+      await expect(mgr.enablePlugin("redmine-hot-malformed")).rejects.toThrow(/decrypt.*credential/i);
+      expect(store.setIntegrationEnabled).not.toHaveBeenCalled();
     });
 
     it("skips connector creation for invalid config without throwing", async () => {
@@ -700,7 +901,7 @@ describe("PluginManager", () => {
       const extras = mgr.resolveConfigRuntimeExtras(integration);
 
       expect(typeof extras["_resolvedSshKeyPath"]).toBe("string");
-      expect(extras["_resolvedSshKeyPath"]).toMatch(/ve-ssh-key-.*\.pem$/);
+      expect(extras["_resolvedSshKeyPath"]).toMatch(/ve-ssh-[^/]+\/key-[a-f0-9]{16}\.pem$/);
     });
 
     it("returns no key path for an agent-mode Gerrit integration (no private key)", () => {

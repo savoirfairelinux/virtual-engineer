@@ -10,6 +10,7 @@ import type { DiscoveredResources, OAuthAppStore, Integration, IntegrationBindin
 import { DOMAIN_CAPABILITIES } from "../interfaces.js";
 import type { IntegrationEventStreamFactory } from "../connectors/integrationStreamEvents.js";
 import type { VcsConnector } from "../vcs/vcsConnector.js";
+import type { GitRunner } from "../vcs/gitRunner.js";
 import type { ProviderAuthHandler } from "../agents/providerAuthService.js";
 
 // ─── Plugin descriptor types ──────────────────────────────────────────────
@@ -145,8 +146,17 @@ export interface CodeReviewCapability {
 }
 
 /** `source_control` capability: clone, commit, and push to a repository. */
+export interface SourceControlRuntimeContext {
+  gitRunner: GitRunner;
+}
+
 export interface SourceControlCapability {
-  createVcsConnector: (config: Record<string, unknown>, integration: Integration, context?: IntegrationBindingContext) => VcsConnector;
+  createVcsConnector: (
+    config: Record<string, unknown>,
+    integration: Integration,
+    context?: IntegrationBindingContext,
+    runtime?: SourceControlRuntimeContext
+  ) => VcsConnector;
 }
 
 /**
@@ -282,7 +292,10 @@ export interface ProviderDescriptor {
    * Optional SSH key pair generator for providers that support UI-generated keys.
    * Called by the admin API `POST /integrations/:id/ssh-key/generate` endpoint.
    */
-  generateSshKeyPair?: (adminAuthSecret: string | undefined) => { sshPrivateKeyEnc: string; sshPublicKey: string };
+  generateSshKeyPair?: (
+    adminAuthSecret: string | undefined,
+    sshUser?: string
+  ) => { sshPrivateKeyEnc: string; sshPublicKey: string };
   /**
    * Returns the provider-specific detail lines shown in the admin provider
    * summary panel.
@@ -345,7 +358,7 @@ export function getCapabilityIntake(
 }
 
 /** Return the technical (non-domain) capabilities derived from descriptor hooks. */
-export function getProviderTechnicalCapabilities(descriptor: ProviderDescriptor): TechnicalCapability[] {
+function getProviderTechnicalCapabilities(descriptor: ProviderDescriptor): TechnicalCapability[] {
   const technical: TechnicalCapability[] = [];
   if (descriptor.oauth) technical.push("oauth");
   if (descriptor.discoverResources) technical.push("discovery");

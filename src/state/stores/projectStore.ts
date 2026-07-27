@@ -14,7 +14,7 @@ import type {
   ProjectType,
   PushTargetRole,
 } from "../../interfaces.js";
-import { TERMINAL_STATES } from "../../interfaces.js";
+import { DEFAULT_LOCAL_SKILLS_PATH, TERMINAL_STATES } from "../../interfaces.js";
 import {
   agents,
   projectIntegrationBindings,
@@ -32,13 +32,19 @@ export interface ProjectStoreApi {
     agentOverrideJson?: string | null;
     postCloneScript?: string;
     skillDiscoveryEnabled?: boolean;
+    localSkillsPath?: string;
+    skillSourcesJson?: string;
+    gerritTopicOverride?: string | null;
+    useFullTicketUrlInCommits?: boolean;
+    postReviewLinkToTicket?: boolean;
+    reactToCiFailures?: boolean;
     enabled?: boolean;
   }): Promise<ProjectRecord>;
   getProjectById(id: ProjectId): Promise<ProjectRecord | null>;
   listProjects(filter?: { type?: ProjectType; enabled?: boolean }): Promise<ProjectRecord[]>;
   updateProject(
     id: ProjectId,
-    partial: Partial<Pick<ProjectRecord, "name" | "type" | "agentId" | "agentOverrideJson" | "postCloneScript" | "skillDiscoveryEnabled" | "enabled">>
+    partial: Partial<Pick<ProjectRecord, "name" | "type" | "agentId" | "agentOverrideJson" | "postCloneScript" | "skillDiscoveryEnabled" | "localSkillsPath" | "skillSourcesJson" | "gerritTopicOverride" | "useFullTicketUrlInCommits" | "postReviewLinkToTicket" | "reactToCiFailures" | "enabled">>
   ): Promise<ProjectRecord>;
   deleteProject(id: ProjectId): Promise<void>;
   adoptOrphanedTasksForProject(projectId: ProjectId, integrationId: string, ticketProjectKey: string): number;
@@ -60,6 +66,7 @@ export interface ProjectStoreApi {
       commitOrder: number;
       localPath: string;
       sshKeyPath?: string | null;
+      reviewerEmails?: string[];
     }
   ): Promise<ProjectPushTargetRecord>;
   listProjectPushTargets(projectId: ProjectId): Promise<ProjectPushTargetRecord[]>;
@@ -75,6 +82,7 @@ export interface ProjectStoreApi {
       commitOrder: number;
       localPath: string;
       sshKeyPath?: string | null;
+      reviewerEmails?: string[];
     }>
   ): Promise<ProjectPushTargetRecord[]>;
   setProjectReviewConfig(projectId: ProjectId, integrationId: string, repoKeys: string[]): Promise<void>;
@@ -102,6 +110,12 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
       agentOverrideJson: row.agentOverrideJson ?? null,
       postCloneScript: row.postCloneScript,
       skillDiscoveryEnabled: row.skillDiscoveryEnabled === 1,
+      localSkillsPath: row.localSkillsPath,
+      skillSourcesJson: row.skillSourcesJson,
+      gerritTopicOverride: row.gerritTopicOverride ?? null,
+      useFullTicketUrlInCommits: row.useFullTicketUrlInCommits === 1,
+      postReviewLinkToTicket: row.postReviewLinkToTicket === 1,
+      reactToCiFailures: row.reactToCiFailures === 1,
       enabled: row.enabled === 1,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
@@ -129,6 +143,17 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
     };
   }
 
+  /** Parse the JSON-encoded reviewer_emails column; malformed/missing data falls back to []. */
+  function parseReviewerEmails(raw: string | null | undefined): string[] {
+    if (!raw) return [];
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed.filter((e): e is string => typeof e === "string") : [];
+    } catch {
+      return [];
+    }
+  }
+
   function rowToProjectPushTarget(row: typeof projectPushTargets.$inferSelect): ProjectPushTargetRecord {
     return {
       id: row.id,
@@ -141,6 +166,7 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
       commitOrder: row.commitOrder,
       localPath: row.localPath,
       sshKeyPath: row.sshKeyPath ?? null,
+      reviewerEmails: parseReviewerEmails(row.reviewerEmails),
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     };
@@ -159,6 +185,12 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
     agentOverrideJson?: string | null;
     postCloneScript?: string;
     skillDiscoveryEnabled?: boolean;
+    localSkillsPath?: string;
+    skillSourcesJson?: string;
+    gerritTopicOverride?: string | null;
+    useFullTicketUrlInCommits?: boolean;
+    postReviewLinkToTicket?: boolean;
+    reactToCiFailures?: boolean;
     enabled?: boolean;
   }): Promise<ProjectRecord> {
     const now = new Date();
@@ -175,6 +207,12 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
       agentOverrideJson: input.agentOverrideJson ?? null,
       postCloneScript: input.postCloneScript ?? "",
       skillDiscoveryEnabled: input.skillDiscoveryEnabled === true ? 1 : 0,
+      localSkillsPath: input.localSkillsPath ?? DEFAULT_LOCAL_SKILLS_PATH,
+      skillSourcesJson: input.skillSourcesJson ?? "[]",
+      gerritTopicOverride: input.gerritTopicOverride ?? null,
+      useFullTicketUrlInCommits: input.useFullTicketUrlInCommits === true ? 1 : 0,
+      postReviewLinkToTicket: input.postReviewLinkToTicket === true ? 1 : 0,
+      reactToCiFailures: input.reactToCiFailures === true ? 1 : 0,
       enabled: input.enabled === false ? 0 : 1,
       createdAt: now,
       updatedAt: now,
@@ -196,7 +234,7 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
 
   async function updateProject(
     id: ProjectId,
-    partial: Partial<Pick<ProjectRecord, "name" | "type" | "agentId" | "agentOverrideJson" | "postCloneScript" | "skillDiscoveryEnabled" | "enabled">>
+    partial: Partial<Pick<ProjectRecord, "name" | "type" | "agentId" | "agentOverrideJson" | "postCloneScript" | "skillDiscoveryEnabled" | "localSkillsPath" | "skillSourcesJson" | "gerritTopicOverride" | "useFullTicketUrlInCommits" | "postReviewLinkToTicket" | "reactToCiFailures" | "enabled">>
   ): Promise<ProjectRecord> {
     const existing = await getProjectById(id);
     if (!existing) throw new Error(`Project not found: ${id}`);
@@ -214,6 +252,12 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
     if (partial.agentOverrideJson !== undefined) update["agentOverrideJson"] = partial.agentOverrideJson;
     if (partial.postCloneScript !== undefined) update["postCloneScript"] = partial.postCloneScript;
     if (partial.skillDiscoveryEnabled !== undefined) update["skillDiscoveryEnabled"] = partial.skillDiscoveryEnabled ? 1 : 0;
+    if (partial.localSkillsPath !== undefined) update["localSkillsPath"] = partial.localSkillsPath;
+    if (partial.skillSourcesJson !== undefined) update["skillSourcesJson"] = partial.skillSourcesJson;
+    if (partial.gerritTopicOverride !== undefined) update["gerritTopicOverride"] = partial.gerritTopicOverride;
+    if (partial.useFullTicketUrlInCommits !== undefined) update["useFullTicketUrlInCommits"] = partial.useFullTicketUrlInCommits ? 1 : 0;
+    if (partial.postReviewLinkToTicket !== undefined) update["postReviewLinkToTicket"] = partial.postReviewLinkToTicket ? 1 : 0;
+    if (partial.reactToCiFailures !== undefined) update["reactToCiFailures"] = partial.reactToCiFailures ? 1 : 0;
     if (partial.enabled !== undefined) update["enabled"] = partial.enabled ? 1 : 0;
     await db.update(projects).set(update).where(eq(projects.id, id));
     const updated = await getProjectById(id);
@@ -366,14 +410,15 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
       commitOrder: number;
       localPath: string;
       sshKeyPath?: string | null;
+      reviewerEmails?: string[];
     }
   ): Promise<ProjectPushTargetRecord> {
     const now = new Date();
     const result = raw
       .prepare(
         `INSERT INTO project_push_targets
-         (project_id, integration_id, repo_key, clone_url, target_branch, role, commit_order, local_path, ssh_key_path, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         (project_id, integration_id, repo_key, clone_url, target_branch, role, commit_order, local_path, ssh_key_path, reviewer_emails, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         projectId,
@@ -385,6 +430,7 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
         input.commitOrder,
         input.localPath,
         input.sshKeyPath ?? null,
+        JSON.stringify(input.reviewerEmails ?? []),
         Math.floor(now.getTime() / 1000),
         Math.floor(now.getTime() / 1000)
       );
@@ -419,6 +465,7 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
       commitOrder: number;
       localPath: string;
       sshKeyPath?: string | null;
+      reviewerEmails?: string[];
     }>
   ): Promise<ProjectPushTargetRecord[]> {
     const now = new Date();
@@ -426,8 +473,8 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
       raw.prepare("DELETE FROM project_push_targets WHERE project_id = ?").run(projectId);
       const statement = raw.prepare(
         `INSERT INTO project_push_targets
-         (project_id, integration_id, repo_key, clone_url, target_branch, role, commit_order, local_path, ssh_key_path, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         (project_id, integration_id, repo_key, clone_url, target_branch, role, commit_order, local_path, ssh_key_path, reviewer_emails, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       );
       for (const input of inputs) {
         statement.run(
@@ -440,6 +487,7 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
           input.commitOrder,
           input.localPath,
           input.sshKeyPath ?? null,
+          JSON.stringify(input.reviewerEmails ?? []),
           Math.floor(now.getTime() / 1000),
           Math.floor(now.getTime() / 1000)
         );

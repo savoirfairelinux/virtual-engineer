@@ -1,15 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { randomUUID } from "node:crypto";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import { SqliteStateStore } from "../../src/state/stateStore.js";
 import { createAdminServer } from "../../src/admin/adminServer.js";
+import { tempDatabasePath } from "./helpers/tempDatabase.js";
 
 const SECRET = "policy-test-secret";
 
 function tempDbPath(): string {
-  return join(tmpdir(), `ve-policies-${randomUUID()}.db`);
+  return tempDatabasePath("ve-policies");
 }
 
 function makeServer(store: SqliteStateStore): ReturnType<typeof createAdminServer> {

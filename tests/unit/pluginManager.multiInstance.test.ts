@@ -19,6 +19,7 @@ const PROVIDER_CAPABILITY: Record<ProviderId, DomainCapability> = {
   mock: "agent_execution",
   copilot: "agent_execution",
   claude: "agent_execution",
+  aider: "agent_execution",
 };
 
 function activeConnector<T>(mgr: PluginManager, provider: ProviderId): T | null {

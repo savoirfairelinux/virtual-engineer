@@ -502,6 +502,7 @@ describe("Plugin Registry", () => {
         "gitlab",
         "copilot",
         "claude",
+        "aider",
         "mock",
         "github",
       ]);

@@ -1,12 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { randomUUID } from "node:crypto";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import { makeAgentId, makeTaskId, makeTicketId, type AuditEntry } from "../../src/interfaces.js";
 import { SqliteStateStore } from "../../src/state/stateStore.js";
 import { createAdminServer } from "../../src/admin/adminServer.js";
 import { registerBuiltinPlugins } from "../../src/plugins/init.js";
+import { tempDatabasePath } from "./helpers/tempDatabase.js";
 
 registerBuiltinPlugins();
 
@@ -14,7 +12,7 @@ const SECRET = "audit-routes-secret";
 
 
 function tempDbPath(): string {
-  return join(tmpdir(), `ve-audit-routes-${randomUUID()}.db`);
+  return tempDatabasePath("ve-audit-routes");
 }
 
 function makeServer(store: SqliteStateStore): ReturnType<typeof createAdminServer> {

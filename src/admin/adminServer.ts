@@ -9,15 +9,16 @@ import { registerOverviewRoutes } from "./adminOverviewRoutes.js";
 import type { PluginManager } from "../plugins/pluginManager.js";
 import type { ProviderAuthService } from "../agents/providerAuthService.js";
 import { type AgentsRouteStore, registerAgentRoutes } from "./adminAgentsRoutes.js";
-import { type ProjectsRouteStore, registerProjectRoutes } from "./adminProjectsRoutes.js";
+import { type ProjectsRouteDeps, type ProjectsRouteStore, registerProjectRoutes } from "./adminProjectsRoutes.js";
 import {
   handleWebhookRequest,
   isWebhookPath,
   type WebhookCapableOrchestrator,
   type ProjectLookupStore,
 } from "../webhooks/webhookServer.js";
-import { buildGitLabAuthHeaders, rewriteGitLabUploadUrl } from "../utils/gitlabAuth.js";
+import { isAllowedGitLabProxyTarget } from "../utils/gitlabAuth.js";
 import { writeJson, writeHtml } from "./adminRouteUtils.js";
+import { fetchGitLabProxyImage } from "./adminImageProxy.js";
 import { registerTaskRoutes } from "./adminTaskRoutes.js";
 import { registerPromptRoutes } from "./adminPromptRoutes.js";
 import { registerStreamRoutes } from "./adminStreamRoutes.js";
@@ -105,11 +106,14 @@ export interface AdminProviderSummary {
 
 export interface AdminServerDependencies {
   stateStore: Pick<StateStore, "getActiveTasks" | "getAllTasks" | "getTask" | "getAgentCycles" | "getAgentCycleEvents" | "getStateTransitions" | "getChangesForTask" | "getChangesForTasks" | "pauseTask" | "resumeTask" | "retryTask" | "abandonTask" | "deleteTask" | "deleteTaskGroup" | "getCostSummary" | "getModelUsageSummary">;
+  /** Explicit test/embed escape hatch. Never accepted when nodeEnv is production. */
+  allowUnauthenticatedAdmin?: boolean | undefined;
   /** Phase 3: store backing the /api/admin/agents routes. */
   agentStore?: AgentsRouteStore;
   providerAuthService?: ProviderAuthService | undefined;
   /** Phase 3: store backing the /api/admin/projects routes. */
   projectStore?: ProjectsRouteStore;
+  projectRoutes?: Pick<ProjectsRouteDeps, "validateSkillSourcesConnection"> | undefined;
   integrationStore?: IntegrationStore;
   oAuthAppStore?: OAuthAppStore;
   promptStore?: PromptStore | undefined;
@@ -140,7 +144,7 @@ export interface AdminServerDependencies {
     getStatus(integrationId: string): unknown | null;
   };
   /**
-   * When provided, mounts `GET/PUT /api/admin/concurrency` with live in-memory counters.
+   * When provided, mounts `GET /api/admin/concurrency` (read-only) with live in-memory counters.
    * `max_concurrent` NULL = unlimited.
    */
   concurrency?: {
@@ -166,7 +170,7 @@ function getProviderUrls(pluginManager: PluginManager | undefined): {
   const parseConfig = (integration: Integration | undefined): Record<string, unknown> | null => {
     if (!integration) return null;
     try {
-      const parsed: unknown = JSON.parse(integration.configJson);
+      const parsed: unknown = pluginManager.decryptIntegrationConfig(integration);
       return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
         ? (parsed as Record<string, unknown>)
         : null;
@@ -213,12 +217,7 @@ export function createAdminServer(dependencies: AdminServerDependencies): Server
 /** Combined user-store surface needed for session auth + user management. */
 type AdminUserCapableStore = AdminAuthStateStore & AuthRouteUserStore;
 
-/**
- * Feature-detect the user-store methods on the injected state store. Mocks in
- * tests (and older embedders) may omit them — session auth is then disabled
- * and the admin API runs fully open (no HMAC fallback; see `handleRequest`'s
- * auth gate).
- */
+/** Feature-detect the user-store methods required by admin session auth. */
 function extractUserStore(stateStore: unknown): AdminUserCapableStore | null {
   const candidate = stateStore as Partial<AdminUserCapableStore> | null | undefined;
   if (
@@ -300,8 +299,19 @@ interface AdminAuthRuntime {
 
 function createAuthRuntime(dependencies: AdminServerDependencies): AdminAuthRuntime {
   const userStore = extractUserStore(dependencies.stateStore);
-  const authService = userStore ? createAdminAuthService({ stateStore: userStore }) : null;
   const pbacStore = extractPbacStore(dependencies.stateStore);
+  if (dependencies.allowUnauthenticatedAdmin && dependencies.config.nodeEnv === "production") {
+    throw new Error("Unauthenticated admin mode is not allowed in production");
+  }
+  if (!userStore && !dependencies.allowUnauthenticatedAdmin) {
+    throw new Error("Admin user store is required unless allowUnauthenticatedAdmin is enabled");
+  }
+  if (!pbacStore && !dependencies.allowUnauthenticatedAdmin) {
+    throw new Error("Admin PBAC store is required unless allowUnauthenticatedAdmin is enabled");
+  }
+  const authService = userStore && !dependencies.allowUnauthenticatedAdmin
+    ? createAdminAuthService({ stateStore: userStore })
+    : null;
   let usersExistCache: boolean | null = null;
   return {
     authService,
@@ -379,6 +389,7 @@ function buildApiRouter(dependencies: AdminServerDependencies, authRuntime: Admi
     userStore: authRuntime.userStore ?? undefined,
     auditStore,
     authService: authRuntime.authService ?? undefined,
+    credentialEncryptionConfigured: Boolean(dependencies.config.adminAuthSecret),
     onUsersChanged: () => authRuntime.invalidateUsersExistCache(),
     ...(policyBinder
       ? { onUserCreated: (userId: string, role: UserRole): Promise<void> => bindDefaultPolicyForRole(policyBinder, userId, role) }
@@ -399,6 +410,7 @@ function buildApiRouter(dependencies: AdminServerDependencies, authRuntime: Admi
     adminAuthSecret: dependencies.config.adminAuthSecret,
   });
   registerAgentRoutes(router, {
+      pluginManager: dependencies.pluginManager,
     agentStore: dependencies.agentStore,
     integrationStore: dependencies.integrationStore,
     oAuthAppStore: dependencies.oAuthAppStore,
@@ -412,11 +424,13 @@ function buildApiRouter(dependencies: AdminServerDependencies, authRuntime: Admi
     auditStore,
     onProjectChange: dependencies.onProjectChange,
     taskControl: dependencies.taskControl,
+    ...dependencies.projectRoutes,
   });
   registerConcurrencyRoutes(router, { concurrency: dependencies.concurrency });
   registerSettingsRoutes(router, { settings: dependencies.settings });
   registerWebhookRoutes(router, {
     integrationStore: dependencies.integrationStore,
+    pluginManager: dependencies.pluginManager,
     auditStore,
     onIntegrationUpdated: dependencies.onIntegrationUpdated,
     webhookPublicBaseUrl: dependencies.webhooks?.publicBaseUrl,
@@ -486,8 +500,7 @@ async function handleRequest(
       writeJson(response, 405, { error: "Method not allowed" });
       return;
     }
-    // Auth is required when the user store is available (session-based).
-    // Without a user store (legacy embedders), the admin API is fully open.
+    // Explicit test/embed open mode has no auth service; normal deployments do.
     const requiresAuth = authRuntime.authService !== null;
     writeHtml(response, 200, renderAdminDashboardHtml({
       requiresAuth,
@@ -501,28 +514,29 @@ async function handleRequest(
   if (path === "/api/admin/img-proxy" && method === "GET") {
     const targetUrl = requestUrl.searchParams.get("url") ?? "";
     const queryToken = requestUrl.searchParams.get("t") ?? "";
-    const proxyAuthorized = authRuntime.authService && (await authRuntime.usersExist())
-      ? (await authRuntime.authService.validateSession(queryToken)) !== null
-      : true; // bootstrap mode (no users yet): open
+    const proxyAuthorized = authRuntime.authService
+      ? (await authRuntime.usersExist()) && (await authRuntime.authService.validateSession(queryToken)) !== null
+      : dependencies.allowUnauthenticatedAdmin === true;
     if (!proxyAuthorized) { writeJson(response, 401, { error: "Unauthorized" }); return; }
     const { gitlabBaseUrl, gitlabToken: gitlabTokenVal } = getProviderUrls(dependencies.pluginManager);
-    if (!gitlabBaseUrl || !targetUrl.startsWith(gitlabBaseUrl)) {
+    if (!gitlabBaseUrl || !isAllowedGitLabProxyTarget(targetUrl, gitlabBaseUrl)) {
       writeJson(response, 400, { error: "Invalid proxy target" }); return;
     }
-    try {
-      const gitlabToken = gitlabTokenVal ?? "";
-      const fetchUrl = rewriteGitLabUploadUrl(targetUrl, gitlabBaseUrl);
-      log.debug({ fetchUrl, hasToken: Boolean(gitlabToken) }, "img-proxy fetch");
-      const upstream = await fetch(fetchUrl, gitlabToken
-        ? { headers: buildGitLabAuthHeaders(gitlabToken) }
-        : undefined);
-      const ct = upstream.headers.get("content-type") ?? "application/octet-stream";
-      log.debug({ status: upstream.status, ct }, "img-proxy upstream response");
-      if (!upstream.ok || ct.startsWith("text/html")) { writeJson(response, 502, { error: "Upstream error" }); return; }
-      const buf = Buffer.from(await upstream.arrayBuffer());
-      response.writeHead(200, { "content-type": ct, "cache-control": "private, max-age=3600" });
-      response.end(buf);
-    } catch { writeJson(response, 502, { error: "Proxy fetch failed" }); }
+    const result = await fetchGitLabProxyImage({
+      targetUrl,
+      gitlabBaseUrl,
+      gitlabToken: gitlabTokenVal ?? "",
+    });
+    if (!result.ok) {
+      writeJson(response, result.statusCode, { error: result.error });
+      return;
+    }
+    response.writeHead(200, {
+      "content-type": result.contentType,
+      "cache-control": "private, max-age=3600",
+      "x-content-type-options": "nosniff",
+    });
+    response.end(result.body);
     return;
   }
 
@@ -547,8 +561,10 @@ async function handleRequest(
     }
     await handleWebhookRequest(request, response, {
       integrationStore: dependencies.integrationStore,
+      pluginManager: dependencies.pluginManager,
       projectStore: dependencies.webhooks.projectStore,
       orchestrator: dependencies.webhooks.orchestrator,
+      trustProxy: dependencies.config.adminTrustProxy ?? false,
     });
     return;
   }
@@ -564,8 +580,11 @@ async function handleRequest(
     if (method === "POST" && path === "/api/admin/auth/setup") {
       // Bootstrap: setup is unauthenticated; the route handler enforces zero users exist.
       setAuthContext(request, { userId: null, username: "bootstrap", role: "admin" });
-    } else if (authRuntime.authService && (await authRuntime.usersExist())) {
-      // ≥1 user exists → only DB-backed session tokens are accepted.
+    } else if (authRuntime.authService) {
+      if (!(await authRuntime.usersExist())) {
+        sendUnauthorized(response);
+        return;
+      }
       const token = extractBearerToken(request);
       const context = token ? await authRuntime.authService.validateSession(token) : null;
       if (!context) {
@@ -574,10 +593,7 @@ async function handleRequest(
       }
       setAuthContext(request, context);
     } else {
-      // Bootstrap mode (no users yet, or no user store) — all admin routes open.
-      if (!authRuntime.userStore) {
-        log.warn("Admin user store is unavailable; admin API is running without authentication");
-      }
+      // Explicit non-production test/embed mode.
       setAuthContext(request, { userId: null, username: "bootstrap", role: "admin" });
     }
   }

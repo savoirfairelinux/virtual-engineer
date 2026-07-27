@@ -27,6 +27,7 @@ const TYPE_TO_BRAND: Record<string, string> = {
   redmine:                "redmine",
   copilot:                "copilot",
   claude:                 "claude",
+  aider:                  "aider",
   mock:                   "mock",
 };
 

@@ -1,16 +1,14 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { tmpdir } from "os";
-import { join } from "path";
-import { randomUUID } from "crypto";
 import type { Server } from "node:http";
 import { SqliteStateStore } from "../../src/state/stateStore.js";
 import { createAdminServer, type AdminServerDependencies } from "../../src/admin/adminServer.js";
 import { registerBuiltinPlugins } from "../../src/plugins/init.js";
 import { registerPlugin } from "../../src/plugins/registry.js";
 import { z } from "zod";
+import { tempDatabasePath } from "./helpers/tempDatabase.js";
 
 function tempDbPath(): string {
-  return join(tmpdir(), `ve-admin-agents-oauth-${randomUUID()}.db`);
+  return tempDatabasePath("ve-admin-agents-oauth");
 }
 
 interface FetchResult {
@@ -58,6 +56,7 @@ function makeDeps(store: SqliteStateStore, overrides: Partial<AdminServerDepende
       getCostSummary: vi.fn(async () => ({ totalUsd: 0, totalAiCredits: 0, totalPremiumRequests: 0, totalRuns: 0, perProject: [], sinceEpochSeconds: null })),
       getModelUsageSummary: vi.fn(async () => ({ byModel: [], perProject: [], totalRuns: 0, totalUsd: 0, sinceEpochSeconds: null })),
     },
+    allowUnauthenticatedAdmin: true,
     agentStore: store,
     projectStore: store,
     integrationStore: store,

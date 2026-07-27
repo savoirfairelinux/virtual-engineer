@@ -8,11 +8,13 @@
  */
 import { runClaudeAgent } from './claude.js';
 import { runCopilotAgent } from './copilot.js';
+import { runAiderAgent } from './aider.js';
 import type { AgentProvider, AgentRunner } from './types.js';
 
 const AGENT_RUNNERS: Record<AgentProvider, AgentRunner> = {
   copilot: runCopilotAgent,
   claude: runClaudeAgent,
+  aider: runAiderAgent,
 };
 
 /** The set of supported agent provider ids. */

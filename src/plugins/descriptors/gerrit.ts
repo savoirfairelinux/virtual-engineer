@@ -102,11 +102,21 @@ function buildSshArgs(cfg: Record<string, unknown>): {
  * Generate a Gerrit SSH key pair for the UI-generated-key auth mode.
  * Thin wrapper around the shared `generateSshKeyPair` util (see
  * src/utils/sshKeyGen.ts) — kept here so the descriptor's `generateSshKeyPair`
- * hook can pass a Gerrit-specific comment. Throws if `adminAuthSecret` is
- * unset, since generated keys must always be stored encrypted.
+ * hook can pass a Gerrit-specific comment. The comment is tied to the actual
+ * configured SSH user (`<sshUser>-gerrit`) rather than a hardcoded name, so
+ * the generated public key is identifiable when registered under any Gerrit
+ * account, not just "virtual-engineer". Falls back to "virtual-engineer-gerrit"
+ * when no SSH user has been entered yet (e.g. new integration form).
+ * Throws if `adminAuthSecret` is unset, since generated keys must always be
+ * stored encrypted.
  */
-export function generateGerritSshKeyPair(adminAuthSecret: string | undefined): GeneratedSshKeyPair {
-  return generateSshKeyPair(adminAuthSecret, "virtual-engineer-gerrit");
+export function generateGerritSshKeyPair(
+  adminAuthSecret: string | undefined,
+  sshUser?: string
+): GeneratedSshKeyPair {
+  const trimmedUser = sshUser?.trim();
+  const comment = trimmedUser ? `${trimmedUser}-gerrit` : "virtual-engineer-gerrit";
+  return generateSshKeyPair(adminAuthSecret, comment);
 }
 
 export const gerritDescriptor: ProviderDescriptor = {
@@ -198,7 +208,8 @@ export const gerritDescriptor: ProviderDescriptor = {
     try {
       const repositories = await listRepositoriesViaSsh(ssh);
       log.info({ sshHost: ssh.host, sshUser: ssh.user, sshPort: ssh.port, repositoryCount: repositories.length }, "Gerrit connection test passed");
-      return { success: true, error: null };
+      const logs = [`Connected as ${ssh.user}@${ssh.host}:${ssh.port} via SSH.`, `Found ${repositories.length} repositor${repositories.length === 1 ? "y" : "ies"}.`];
+      return { success: true, error: null, logs };
     } catch (err: unknown) {
       return { success: false, error: `Gerrit connection test failed: ${err instanceof Error ? err.message : String(err)}` };
     }
@@ -286,7 +297,7 @@ export const gerritDescriptor: ProviderDescriptor = {
       },
     },
     source_control: {
-      createVcsConnector: (cfg, _integration) => {
+      createVcsConnector: (cfg, _integration, _context, runtime) => {
         const ssh = buildSshArgs(cfg);
         return new GerritVcsConnector({
           sshHost: ssh.host,
@@ -298,7 +309,7 @@ export const gerritDescriptor: ProviderDescriptor = {
           gitAuthorName: (cfg["gitAuthorName"] as string | undefined) ?? "Virtual Engineer",
           gitAuthorEmail: (cfg["gitAuthorEmail"] as string | undefined) ?? "ve@virtual-engineer.local",
           ...(typeof cfg["baseUrl"] === "string" ? { baseUrl: cfg["baseUrl"] } : {}),
-        });
+        }, runtime?.gitRunner);
       },
     },
   },

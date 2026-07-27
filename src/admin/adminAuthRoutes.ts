@@ -9,7 +9,7 @@ import { getAuthContext, getEffectivePermissions } from "./authContext.js";
 import { serializeEffectivePermissions } from "./authorization/policyEngine.js";
 import { recordAudit } from "./adminAudit.js";
 import { LoginRateLimiter, clientIpKey, usernameKey } from "./loginRateLimiter.js";
-import { isCommonPassword } from "./commonPasswords.js";
+import { getPasswordStrength } from "./commonPasswords.js";
 
 const log = getLogger("admin-auth");
 
@@ -26,8 +26,8 @@ function validatePasswordStrength(password: string): string | null {
   if (password.length < MIN_PASSWORD_LENGTH) {
     return `password must be at least ${MIN_PASSWORD_LENGTH} characters`;
   }
-  if (isCommonPassword(password)) {
-    return "password is too common; choose a less predictable password";
+  if (getPasswordStrength(password) === "weak") {
+    return "password is too weak; mix uppercase letters, numbers, or symbols";
   }
   return null;
 }
@@ -65,6 +65,7 @@ function writeRateLimited(res: ServerResponse, retryAfterMs: number): void {
 /** Subset of user-store methods needed by the auth routes (satisfied by SqliteStateStore). */
 export interface AuthRouteUserStore {
   createUser(input: { id: string; username: string; passwordHash: string; role: UserRole; enabled?: boolean }): Promise<AdminUser>;
+  createInitialAdmin?: ((input: { id: string; username: string; passwordHash: string }) => Promise<AdminUser>) | undefined;
   getUserById(id: string): Promise<AdminUser | null>;
   listUsers(): Promise<AdminUser[]>;
   updateUser(id: string, partial: { role?: UserRole; enabled?: boolean }): Promise<AdminUser | null>;
@@ -91,6 +92,7 @@ export interface AuthRouteDeps {
   userStore?: AuthRouteUserStore | undefined;
   auditStore?: AuthRouteAuditStore | undefined;
   authService?: AdminAuthService | undefined;
+  credentialEncryptionConfigured: boolean;
   /** Invalidates the server-level users-exist cache after setup / user create / delete. */
   onUsersChanged?: (() => void) | undefined;
   /**
@@ -127,6 +129,10 @@ function extractBearerToken(req: IncomingMessage): string | null {
 
 function isDuplicateError(err: unknown): boolean {
   return err instanceof Error && "code" in err && (err as { code?: unknown }).code === "DUPLICATE";
+}
+
+function isSetupAlreadyCompletedError(err: unknown): boolean {
+  return err instanceof Error && "code" in err && (err as { code?: unknown }).code === "SETUP_ALREADY_COMPLETED";
 }
 
 function validateCredentials(body: Record<string, unknown> | null): { username: string; password: string } | { error: string } {
@@ -175,7 +181,10 @@ export function registerAuthRoutes(router: Router, deps: AuthRouteDeps): void {
   // Public — used by the SPA to decide between the setup screen and the login form.
   router.add("GET", "/api/admin/auth/setup-status", async (_req, res, _params) => {
     const needsSetup = deps.userStore ? (await deps.userStore.countUsers()) === 0 : false;
-    writeJson(res, 200, { needsSetup });
+    writeJson(res, 200, {
+      needsSetup,
+      credentialEncryptionConfigured: needsSetup && deps.credentialEncryptionConfigured,
+    });
   });
 
   // Bootstrap — unauthenticated while zero users exist; the route handler enforces that invariant.
@@ -202,13 +211,25 @@ export function registerAuthRoutes(router: Router, deps: AuthRouteDeps): void {
     const passwordHash = await hashPassword(credentials.password);
     let user: AdminUser;
     try {
-      user = await deps.userStore.createUser({
-        id: randomUUID(),
-        username: credentials.username,
-        passwordHash,
-        role: "admin",
-      });
+      user = deps.userStore.createInitialAdmin
+        ? await deps.userStore.createInitialAdmin({
+            id: randomUUID(),
+            username: credentials.username,
+            passwordHash,
+          })
+        // Compatibility for structural test doubles predating createInitialAdmin.
+        // SqliteStateStore always uses the atomic operation above.
+        : await deps.userStore.createUser({
+            id: randomUUID(),
+            username: credentials.username,
+            passwordHash,
+            role: "admin",
+          });
     } catch (err: unknown) {
+      if (isSetupAlreadyCompletedError(err)) {
+        writeJson(res, 403, { error: "Setup already completed" });
+        return;
+      }
       if (isDuplicateError(err)) {
         recordAuthFailure(req, credentials.username);
         writeJson(res, 409, { error: `Username "${credentials.username}" is already taken` });

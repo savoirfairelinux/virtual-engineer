@@ -265,6 +265,60 @@ describe("normalizeAgentEvent", () => {
     expect(result.message).toContain("shell_exec");
     expect(result.message).toContain("50% complete");
   });
+
+  it("builds human-readable messages for remote skill fetch events", () => {
+    const start = normalizeAgentEvent({
+      ...baseEvent,
+      type: "skills.fetch_start",
+      data: {
+        source: "ssh://g1.sfl.io/sfl/agent-skills",
+        skills: ["fix-reviews", "pdf-index"],
+        agent: "github-copilot",
+      },
+    });
+    expect(start.message).toBe(
+      "Fetching skills from ssh://g1.sfl.io/sfl/agent-skills (skills: fix-reviews, pdf-index · agent: github-copilot)"
+    );
+
+    const complete = normalizeAgentEvent({
+      ...baseEvent,
+      type: "skills.fetch_complete",
+      data: {
+        source: "git@github.com:vercel-labs/agent-skills.git",
+        skills: "all",
+        agent: "github-copilot",
+      },
+    });
+    expect(complete.message).toBe(
+      "Fetched skills from git@github.com:vercel-labs/agent-skills.git (skills: all skills · agent: github-copilot)"
+    );
+
+    const failed = normalizeAgentEvent({
+      ...baseEvent,
+      type: "skills.fetch_failed",
+      data: {
+        source: "ssh://g1.sfl.io/sfl/agent-skills",
+        skills: [" fix-reviews ", "  "],
+        message: "Authentication failed",
+      },
+    });
+    expect(failed.message).toBe(
+      "Failed to fetch skills from ssh://g1.sfl.io/sfl/agent-skills (skills: fix-reviews): Authentication failed"
+    );
+  });
+
+  it("builds a single human-readable message for loaded local skills", () => {
+    const result = normalizeAgentEvent({
+      ...baseEvent,
+      type: "skills.local_loaded",
+      data: {
+        path: "team/skills",
+        skills: ["review-gerrit", "pdf-index"],
+      },
+    });
+
+    expect(result.message).toBe("Loaded local skills from team/skills (skills: review-gerrit, pdf-index)");
+  });
 });
 
 // ── SessionMetrics ──────────────────────────────────────────────────────────

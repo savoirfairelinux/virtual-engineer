@@ -14,8 +14,46 @@ import type {
 import type { AgentAdapter } from "../interfaces.js";
 import { createVolume, removeVolume, execInVolume, stopContainersUsingVolume } from "./dockerVolume.js";
 import { getLogger } from "../logger.js";
+import { redactUrls, redactDockerArgs } from "../utils/redactUrl.js";
+import { buildSkillsCliArgs, isSshSkillSource, parseRemoteSkillSources, skillsAgentId, sshSkillSourceCommandPort } from "./skillSources.js";
+import type { AgentProvider } from "./skillSources.js";
 
 const log = getLogger("workspace-runner");
+
+interface SkillInstallSpec {
+  homeVolumeName: string;
+  image: string;
+  skillSourcesJson?: string | undefined;
+  provider: AgentProvider | undefined;
+  adapterName: string;
+  networkMode?: string | undefined;
+  taskId: TaskId;
+  onStderrChunk?: ((chunk: string) => void) | undefined;
+}
+
+function emitSkillFetchEvent(type: string, source: string, skills: string[] | "all", provider: AgentProvider, extra: Record<string, unknown> = {}): string {
+  return JSON.stringify({
+    __ve_event: true,
+    type,
+    data: { source, skills, agent: skillsAgentId(provider), ...extra },
+    ts: new Date().toISOString(),
+  });
+}
+
+function skillInstallError(result: { stdout: string; stderr: string; exitCode: number }): string {
+  const stderr = result.stderr.trim().slice(0, 1000);
+  const stdout = result.stdout.trim().slice(0, 1000);
+  return [
+    `exit code ${result.exitCode}`,
+    ...(stderr ? [`stderr: ${stderr}`] : []),
+    ...(stdout ? [`stdout: ${stdout}`] : []),
+  ].join("; ");
+}
+
+function skillInstallProvider(adapter: AgentAdapter): AgentProvider | undefined {
+  if (adapter.name === "claude" || adapter.name === "copilot") return adapter.name;
+  return undefined;
+}
 
 type PromptAwareAgentAdapter = AgentAdapter & {
   buildContainerSpecWithPrompts(
@@ -59,6 +97,58 @@ export class DockerWorkspaceRunner implements WorkspaceRunner {
     }
   }
 
+  private async installRemoteSkillsIntoHomeVolume(spec: SkillInstallSpec): Promise<void> {
+    if (!spec.skillSourcesJson) return;
+    const sources = parseRemoteSkillSources(spec.skillSourcesJson);
+    if (sources.length === 0) return;
+    if (spec.provider === undefined) {
+      throw new Error(`Remote skill sources are not supported for agent provider "${spec.adapterName}"`);
+    }
+
+    for (const source of sources) {
+      const skills = source.installAll === true ? "all" : source.skills;
+      const needsSsh = isSshSkillSource(source);
+      const sshPort = needsSsh ? sshSkillSourceCommandPort(source) : undefined;
+      if (needsSsh && !source.sshKeyPath && !process.env["SSH_AUTH_SOCK"]) {
+        throw new Error(`Remote SSH skill source ${source.source} requires SSH_AUTH_SOCK or sshKeyPath to be configured`);
+      }
+      log.info({ taskId: spec.taskId, source: source.source, skills }, "installing remote skills into agent home volume");
+      spec.onStderrChunk?.(`${emitSkillFetchEvent("skills.fetch_start", source.source, skills, spec.provider)}\n`);
+      let result: Awaited<ReturnType<typeof execInVolume>>;
+      try {
+        result = await execInVolume({
+          volumeName: spec.homeVolumeName,
+          image: spec.image,
+          command: ["npx", ...buildSkillsCliArgs(source, spec.provider)],
+          env: {
+            HOME: "/workspace",
+            NPM_CONFIG_UPDATE_NOTIFIER: "false",
+          },
+          ...(needsSsh ? {
+            ...(source.sshKeyPath ? { sshKeyPath: source.sshKeyPath } : {}),
+            ...(source.sshKnownHostsPath ? { sshKnownHostsPath: source.sshKnownHostsPath } : {}),
+            ...(sshPort !== undefined ? { sshPort } : {}),
+          } : {}),
+          forwardSshAgent: needsSsh && !source.sshKeyPath,
+          networkMode: spec.networkMode,
+          timeout: 600_000,
+        });
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        spec.onStderrChunk?.(`${emitSkillFetchEvent("skills.fetch_failed", source.source, skills, spec.provider, { message: detail })}\n`);
+        log.warn({ taskId: spec.taskId, source: source.source, err: detail.slice(0, 500) }, "remote skill installation failed");
+        throw new Error(`failed to fetch skills from ${source.source}: ${detail}`);
+      }
+      if (result.exitCode !== 0) {
+        const detail = skillInstallError(result);
+        spec.onStderrChunk?.(`${emitSkillFetchEvent("skills.fetch_failed", source.source, skills, spec.provider, { message: detail })}\n`);
+        log.warn({ taskId: spec.taskId, source: source.source, err: detail.slice(0, 500) }, "remote skill installation failed");
+        throw new Error(`failed to fetch skills from ${source.source}: ${detail}`);
+      }
+      spec.onStderrChunk?.(`${emitSkillFetchEvent("skills.fetch_complete", source.source, skills, spec.provider)}\n`);
+    }
+  }
+
   /**
    * Spawn the adapter container and return raw stdout/stderr.
    * Security: only task-specific vars reach the container; agent-worker/src/index.ts further
@@ -91,6 +181,21 @@ export class DockerWorkspaceRunner implements WorkspaceRunner {
       spec.env["USER_PROMPT_FILE"] = "/ve-home/user-prompt.txt";
     }
 
+    const provider = skillInstallProvider(adapter);
+    await this.installRemoteSkillsIntoHomeVolume({
+      homeVolumeName: context.homeVolumeName,
+      image: this.config.agentContainerImage,
+      skillSourcesJson: context.agentSession.skillSourcesJson,
+      provider,
+      adapterName: adapter.name,
+      networkMode: spec.networkMode,
+      taskId: context.taskId,
+      onStderrChunk: callbacks.onStderrChunk,
+    });
+    delete spec.env["SKILL_SOURCES_JSON"];
+    delete spec.env["SSH_AUTH_SOCK"];
+    delete spec.env["GIT_SSH_COMMAND"];
+
     const dockerArgs = [
       "run",
       "--rm",
@@ -116,7 +221,7 @@ export class DockerWorkspaceRunner implements WorkspaceRunner {
 
     dockerArgs.push(spec.image, ...spec.command);
 
-    log.debug({ taskId: context.taskId, dockerArgs }, "agent container command");
+    log.debug({ taskId: context.taskId, dockerArgs: redactDockerArgs(dockerArgs) }, "agent container command");
 
     const stdoutChunks: string[] = [];
     const stderrChunks: string[] = [];
@@ -218,7 +323,7 @@ export class DockerWorkspaceRunner implements WorkspaceRunner {
   ): Promise<CloneResult> {
     try {
       log.info(
-        { taskId: handle.taskId, repoUrl, branch, volume: handle.volumeName },
+        { taskId: handle.taskId, repoUrl: redactUrls(repoUrl), branch, volume: handle.volumeName },
         "cloning repository into volume"
       );
       const result = await execInVolume({
@@ -233,9 +338,9 @@ export class DockerWorkspaceRunner implements WorkspaceRunner {
       }
       return { success: true, localPath: "/workspace" };
     } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : String(err);
+      const errorMsg = redactUrls(err instanceof Error ? err.message : String(err));
       log.error(
-        { taskId: handle.taskId, repoUrl, branch, error: errorMsg },
+        { taskId: handle.taskId, repoUrl: redactUrls(repoUrl), branch, error: errorMsg },
         "failed to clone repository"
       );
       return { success: false, localPath: "/workspace", error: errorMsg };
@@ -288,7 +393,7 @@ export class DockerWorkspaceRunner implements WorkspaceRunner {
         taskId: handle.taskId,
         targetCount: sorted.length,
         rootRepoKey: root.repoKey,
-        rootCloneUrl: root.cloneUrl,
+        rootCloneUrl: redactUrls(root.cloneUrl),
       },
       "preparing project workspace (multi push target via volume)"
     );
@@ -300,10 +405,10 @@ export class DockerWorkspaceRunner implements WorkspaceRunner {
       command: ["git", "clone", "--branch", root.targetBranch, "--depth", "1", root.cloneUrl, "/workspace"],
       sshKeyPath: root.sshKeyPath ?? undefined,
       ...(root.sshAgentPubKeyPath !== undefined && root.sshAgentPubKeyPath !== null ? { sshAgentPubKeyPath: root.sshAgentPubKeyPath } : {}),
-      ...(sshKnownHostsPath !== undefined ? { sshKnownHostsPath } : {}),
+      ...((root.sshKnownHostsPath ?? sshKnownHostsPath) !== undefined ? { sshKnownHostsPath: root.sshKnownHostsPath ?? sshKnownHostsPath } : {}),
     });
     if (rootResult.exitCode !== 0) {
-      const errorMsg = rootResult.stderr.slice(0, 500);
+      const errorMsg = redactUrls(rootResult.stderr.slice(0, 500));
       log.error(
         { taskId: handle.taskId, repoKey: root.repoKey, error: errorMsg },
         "root push target clone failed"
@@ -334,10 +439,10 @@ export class DockerWorkspaceRunner implements WorkspaceRunner {
         command: ["git", "clone", "--branch", target.targetBranch, "--depth", "1", target.cloneUrl, `/workspace/${target.localPath}`],
         sshKeyPath: target.sshKeyPath ?? undefined,
         ...(target.sshAgentPubKeyPath !== undefined && target.sshAgentPubKeyPath !== null ? { sshAgentPubKeyPath: target.sshAgentPubKeyPath } : {}),
-        ...(sshKnownHostsPath !== undefined ? { sshKnownHostsPath } : {}),
+        ...((target.sshKnownHostsPath ?? sshKnownHostsPath) !== undefined ? { sshKnownHostsPath: target.sshKnownHostsPath ?? sshKnownHostsPath } : {}),
       });
       if (cloneResult.exitCode !== 0) {
-        const errorMsg = cloneResult.stderr.slice(0, 300);
+        const errorMsg = redactUrls(cloneResult.stderr.slice(0, 300));
         log.warn(
           { taskId: handle.taskId, repoKey: target.repoKey, localPath: target.localPath, error: errorMsg },
           "push target clone failed; continuing with remaining targets"
@@ -359,7 +464,7 @@ export class DockerWorkspaceRunner implements WorkspaceRunner {
         command: ["bash", "-c", postCloneScript],
         sshKeyPath: root.sshKeyPath ?? undefined,
         ...(root.sshAgentPubKeyPath !== undefined && root.sshAgentPubKeyPath !== null ? { sshAgentPubKeyPath: root.sshAgentPubKeyPath } : {}),
-        ...(sshKnownHostsPath !== undefined ? { sshKnownHostsPath } : {}),
+        ...((root.sshKnownHostsPath ?? sshKnownHostsPath) !== undefined ? { sshKnownHostsPath: root.sshKnownHostsPath ?? sshKnownHostsPath } : {}),
       });
       if (scriptResult.exitCode !== 0) {
         const errorMsg = scriptResult.stderr.slice(0, 500);
@@ -502,7 +607,7 @@ export class DockerWorkspaceRunner implements WorkspaceRunner {
    */
   async runReviewInDocker(
     handle: WorkspaceHandle,
-    input: ReviewWorkspaceInput,
+    input: ReviewWorkspaceInput & { agentAdapter: AgentAdapter },
     callbacks: DockerStreamCallbacks = {}
   ): Promise<{ rawOutput: string }> {
     // Write prompt into the home volume (mounted at /workspace in this helper container).
@@ -522,7 +627,7 @@ export class DockerWorkspaceRunner implements WorkspaceRunner {
       "running review agent in Docker container"
     );
 
-    const adapter = this.agentAdapter;
+    const adapter = input.agentAdapter;
     let spec: { env: Record<string, string>; image: string; command: string[]; networkMode?: string; additionalDockerArgs?: string[] };
 
     if ("buildReviewContainerSpec" in adapter && typeof (adapter as Record<string, unknown>)["buildReviewContainerSpec"] === "function") {
@@ -531,6 +636,21 @@ export class DockerWorkspaceRunner implements WorkspaceRunner {
     } else {
       throw new Error("Agent adapter does not support buildReviewContainerSpec; cannot run review in Docker");
     }
+
+    const provider = skillInstallProvider(adapter);
+    await this.installRemoteSkillsIntoHomeVolume({
+      homeVolumeName: handle.homeVolumeName,
+      image: this.config.agentContainerImage,
+      skillSourcesJson: input.skillSourcesJson,
+      provider,
+      adapterName: adapter.name,
+      networkMode: spec.networkMode,
+      taskId: handle.taskId,
+      onStderrChunk: callbacks.onStderrChunk,
+    });
+    delete spec.env["SKILL_SOURCES_JSON"];
+    delete spec.env["SSH_AUTH_SOCK"];
+    delete spec.env["GIT_SSH_COMMAND"];
 
     const dockerArgs = [
       "run",
@@ -558,7 +678,7 @@ export class DockerWorkspaceRunner implements WorkspaceRunner {
 
     dockerArgs.push(spec.image, ...spec.command);
 
-    log.debug({ taskId: handle.taskId, dockerArgs }, "review container command");
+    log.debug({ taskId: handle.taskId, dockerArgs: redactDockerArgs(dockerArgs) }, "review container command");
 
     const stdoutChunks: string[] = [];
     const stderrChunks: string[] = [];

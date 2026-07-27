@@ -5,7 +5,7 @@
   "main": "dist/index.js",
   "private": true,
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=20.0.0"
   },
   "scripts": {
     "build": "esbuild src/index.ts src/validate-copilot-connection.ts --platform=node --format=cjs --bundle --external:@github/copilot-sdk --external:@anthropic-ai/claude-agent-sdk --outdir=dist"
@@ -15,6 +15,11 @@
     "@github/copilot-sdk": "^0.3.0"
   },
   "devDependencies": {
-    "esbuild": "^0.24.0"
+    "esbuild": "^0.28.1"
+  },
+  "overrides": {
+    "@modelcontextprotocol/sdk": {
+      "@hono/node-server": "2.0.11"
+    }
   }
 }

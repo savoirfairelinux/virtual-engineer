@@ -1,5 +1,20 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
+const { logger } = vi.hoisted(() => ({
+  logger: {
+    trace: vi.fn(),
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    fatal: vi.fn(),
+  },
+}));
+
+vi.mock("../../src/logger.js", () => ({
+  getLogger: vi.fn(() => logger),
+}));
+
 vi.mock("child_process", () => ({
   spawn: vi.fn(),
 }));
@@ -37,6 +52,7 @@ function makeTarget(over: Partial<ProjectPushTargetRecord> & { id: number; commi
     commitOrder: over.commitOrder,
     localPath: over.localPath,
     sshKeyPath: over.sshKeyPath ?? null,
+    reviewerEmails: over.reviewerEmails ?? [],
     createdAt: new Date(),
     updatedAt: new Date(),
   };
@@ -70,6 +86,26 @@ describe("DockerWorkspaceRunner.prepareProjectWorkspace", () => {
     const rootCall = execInVolumeMock.mock.calls[0]![0];
     expect(rootCall.command).toContain("git");
     expect(rootCall.command).toContain("git@host:super.git");
+  });
+
+  it("uses each push target's known_hosts file for its clone", async () => {
+    const runner = new DockerWorkspaceRunner(
+      { agentContainerImage: "ve:latest", agentTimeoutMs: 1000 },
+      makeAdapter(),
+    );
+    const handle = await runner.createWorkspace(makeTaskId("t-known-hosts"));
+    const targets = [
+      makeTarget({ id: 1, commitOrder: 1, localPath: ".", repoKey: "root" }),
+      makeTarget({ id: 2, commitOrder: 2, localPath: "libs/core", repoKey: "core" }),
+    ] as Array<ProjectPushTargetRecord & { sshKnownHostsPath?: string }>;
+    targets[0]!.sshKnownHostsPath = "/secrets/root_known_hosts";
+    targets[1]!.sshKnownHostsPath = "/secrets/core_known_hosts";
+
+    const result = await runner.prepareProjectWorkspace(handle, targets);
+
+    expect(result.success).toBe(true);
+    expect(execInVolumeMock.mock.calls[0]![0].sshKnownHostsPath).toBe("/secrets/root_known_hosts");
+    expect(execInVolumeMock.mock.calls[2]![0].sshKnownHostsPath).toBe("/secrets/core_known_hosts");
   });
 
   it("treats lowest commitOrder as root when no '.' localPath exists", async () => {
@@ -106,6 +142,28 @@ describe("DockerWorkspaceRunner.prepareProjectWorkspace", () => {
     const result = await runner.prepareProjectWorkspace(handle, targets);
     expect(result.success).toBe(false);
     expect(result.error).toContain("root clone failed");
+  });
+
+  it("redacts credentials echoed by a failed root clone", async () => {
+    const repoUrl =
+      "https://x-access-token:ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345@github.com/org/root.git";
+    execInVolumeMock.mockResolvedValueOnce({
+      stdout: "",
+      stderr: `fatal: unable to access '${repoUrl}'`,
+      exitCode: 1,
+    });
+    const runner = new DockerWorkspaceRunner(
+      { agentContainerImage: "ve:latest", agentTimeoutMs: 1000 },
+      makeAdapter(),
+    );
+    const handle = await runner.createWorkspace(makeTaskId("t3-redaction"));
+
+    const result = await runner.prepareProjectWorkspace(handle, [
+      makeTarget({ id: 1, commitOrder: 1, localPath: ".", cloneUrl: repoUrl }),
+    ]);
+
+    expect(result.error).not.toContain("ghp_");
+    expect(JSON.stringify(logger.error.mock.calls)).not.toContain("ghp_");
   });
 
   it("continues when a non-root target fails (best-effort)", async () => {

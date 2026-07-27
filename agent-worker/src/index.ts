@@ -27,6 +27,7 @@ import {
   collectCommits,
   validateCommits,
   injectChangeIds,
+  resolveExistingRootChange,
   squashIntoBaseIfNeeded,
   groupFilesByRepo,
 } from './commitUtils.js';
@@ -47,9 +48,21 @@ const GITHUB_TOKEN = process.env['GITHUB_TOKEN'] ?? '';
 const COPILOT_MODEL = process.env['COPILOT_MODEL'] ?? 'auto';
 /** Empty when unset — the Claude CLI then selects its own default model. */
 const CLAUDE_MODEL = process.env['CLAUDE_MODEL'] ?? '';
+/** Empty when unset — the Aider CLI then selects its own default model. */
+const AIDER_MODEL = process.env['AIDER_MODEL'] ?? '';
 /** Model + adapter label for the active provider (used in events and result metadata). */
-const ACTIVE_MODEL = AGENT_PROVIDER === 'claude' ? (CLAUDE_MODEL || 'cli-default') : COPILOT_MODEL;
-const ADAPTER_LABEL = AGENT_PROVIDER === 'claude' ? 'claude-agent-sdk' : 'copilot-sdk';
+const ACTIVE_MODEL =
+  AGENT_PROVIDER === 'claude'
+    ? (CLAUDE_MODEL || 'cli-default')
+    : AGENT_PROVIDER === 'aider'
+      ? (AIDER_MODEL || 'aider-default')
+      : COPILOT_MODEL;
+const ADAPTER_LABEL =
+  AGENT_PROVIDER === 'claude'
+    ? 'claude-agent-sdk'
+    : AGENT_PROVIDER === 'aider'
+      ? 'aider-cli'
+      : 'copilot-sdk';
 const COPILOT_REASONING_EFFORT = process.env['COPILOT_REASONING_EFFORT'];
 const GIT_AUTHOR_NAME = process.env['GIT_AUTHOR_NAME'] ?? 'Virtual Engineer';
 const GIT_AUTHOR_EMAIL = process.env['GIT_AUTHOR_EMAIL'] ?? 've@virtual-engineer.local';
@@ -59,6 +72,8 @@ const TASK_ID = process.env['TASK_ID'] ?? '';
 const MAX_COMMITS_PER_CYCLE = Number(process.env['MAX_COMMITS_PER_CYCLE']) || 10;
 /** Change-Id to reuse for the root-repo's first commit on retry cycles. */
 const ROOT_CHANGE_ID = process.env['ROOT_CHANGE_ID'] ?? null;
+/** Pre-formatted ticket-footer trailer line injected into every agent commit (host-computed). */
+const TICKET_FOOTER_LINE = process.env['TICKET_FOOTER_LINE'] || null;
 /** Per-repo Change-Ids to reuse on retry cycles (JSON object or null). */
 let PER_REPO_CHANGE_IDS: Record<string, string | Record<string, string>> | null = null;
 try {
@@ -103,7 +118,6 @@ try {
 
 const WORKSPACE = '/workspace';
 const REPO_PATH = WORKSPACE;
-
 // ── Internal git helper ────────────────────────────────────────────────────────
 function git(args: string[], cwd: string = REPO_PATH): string {
   try {
@@ -134,7 +148,12 @@ async function runAgent(
   mode: 'codegen' | 'review',
 ): Promise<AgentRun> {
   const runner = resolveRunner(AGENT_PROVIDER);
-  const model = AGENT_PROVIDER === 'claude' ? CLAUDE_MODEL : COPILOT_MODEL;
+  const model =
+    AGENT_PROVIDER === 'claude'
+      ? CLAUDE_MODEL
+      : AGENT_PROVIDER === 'aider'
+        ? AIDER_MODEL
+        : COPILOT_MODEL;
   return runner(prompt, {
     model,
     systemPrompt: SYSTEM_PROMPT,
@@ -312,7 +331,20 @@ async function main(): Promise<AgentResult> {
       if (validation.valid) {
         if (TASK_ID) {
           if (hasRootCommits) {
-            const squashResult = squashIntoBaseIfNeeded(baseSha, REPO_PATH);
+            const rootExistingChange = resolveExistingRootChange(
+              ROOT_CHANGE_ID,
+              PER_REPO_CHANGE_IDS,
+              REPOSITORY_MAP,
+            );
+            // Only squash into the base commit when continuing VE's own
+            // existing patchset (retry/feedback cycle). On the first cycle the
+            // base is upstream (e.g. a Gerrit `master` tip that carries its own
+            // Change-Id); squashing there would amend an upstream commit whose
+            // parent is absent from the --depth 1 shallow clone, making
+            // diff-tree report the entire repo. See squashIntoBaseIfNeeded.
+            const isContinuation =
+              rootExistingChange.changeId != null || rootExistingChange.repoKey != null;
+            const squashResult = squashIntoBaseIfNeeded(baseSha, REPO_PATH, isContinuation);
             if (squashResult.squashed && squashResult.commits != null) {
               rootCommits = squashResult.commits;
               if (REPOSITORY_MAP?.superproject != null) {
@@ -323,56 +355,15 @@ async function main(): Promise<AgentResult> {
               }
             }
 
-            // Resolve the existing Change-Id for the root repo.
-            let rootExistingChangeId: string | null = ROOT_CHANGE_ID;
-            let rootRepoKey: string | null = null;
-
-            if (PER_REPO_CHANGE_IDS != null) {
-              const superprojectKey = REPOSITORY_MAP?.superproject?.repoKey;
-              if (superprojectKey != null) {
-                const entry = PER_REPO_CHANGE_IDS[superprojectKey];
-                if (entry != null) {
-                  rootRepoKey = superprojectKey;
-                  if (!rootExistingChangeId) {
-                    rootExistingChangeId = typeof entry === 'string' ? entry : (entry['0'] ?? null);
-                  }
-                } else if (!rootExistingChangeId) {
-                  // Fallback: try the sole key in PER_REPO_CHANGE_IDS
-                  const keys = Object.keys(PER_REPO_CHANGE_IDS);
-                  if (keys.length === 1) {
-                    const k0 = keys[0];
-                    if (k0 != null) {
-                      rootRepoKey = k0;
-                      const e0 = PER_REPO_CHANGE_IDS[k0];
-                      if (e0 != null) {
-                        rootExistingChangeId = typeof e0 === 'string' ? e0 : (e0['0'] ?? null);
-                      }
-                    }
-                  }
-                }
-              } else if (!rootExistingChangeId) {
-                const keys = Object.keys(PER_REPO_CHANGE_IDS);
-                if (keys.length === 1) {
-                  const k0 = keys[0];
-                  if (k0 != null) {
-                    rootRepoKey = k0;
-                    const e0 = PER_REPO_CHANGE_IDS[k0];
-                    if (e0 != null) {
-                      rootExistingChangeId = typeof e0 === 'string' ? e0 : (e0['0'] ?? null);
-                    }
-                  }
-                }
-              }
-            }
-
             rootCommits = injectChangeIds(baseSha, rootCommits, TASK_ID, REPO_PATH, {
-              existingChangeId: rootExistingChangeId,
-              repoKeyForLookup: rootRepoKey,
+              existingChangeId: rootExistingChange.changeId,
+              repoKeyForLookup: rootExistingChange.repoKey,
               perRepoChangeIds: PER_REPO_CHANGE_IDS,
               gitAuthorName: GIT_AUTHOR_NAME,
               gitAuthorEmail: GIT_AUTHOR_EMAIL,
               gitCommitterName: GIT_COMMITTER_NAME,
               gitCommitterEmail: GIT_COMMITTER_EMAIL,
+              ticketFooterLine: TICKET_FOOTER_LINE,
             });
           }
 
@@ -400,6 +391,7 @@ async function main(): Promise<AgentResult> {
                 gitAuthorEmail: GIT_AUTHOR_EMAIL,
                 gitCommitterName: GIT_COMMITTER_NAME,
                 gitCommitterEmail: GIT_COMMITTER_EMAIL,
+                ticketFooterLine: TICKET_FOOTER_LINE,
               });
               const repoKey = subMeta ? subMeta.repoKey : localPath;
               subRepoCommits = subRepoCommits.filter((c) => c.repoKey !== repoKey).concat(injected);

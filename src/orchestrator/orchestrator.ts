@@ -1,18 +1,16 @@
 import pRetry from "p-retry";
 import { randomUUID, createHash } from "crypto";
-import { formatTicketFooter, hasTicketFooter } from "../utils/ticketFooterFormatter.js";
+import { formatTicketFooter } from "../utils/ticketFooterFormatter.js";
 import type {
   AgentAdapter,
   CommitDescriptor,
   FeedbackItem,
-  ExternalChangeId,
+  Integration,
   IntegrationBindingContext,
   ReviewConnector,
   TicketConnector,
   StateStore,
-  Task,
   TaskContext,
-  TicketId,
   WorkspaceRunner,
   WorkspaceHandle,
   ProjectRecord,
@@ -20,17 +18,31 @@ import type {
   RepositoryMap,
   ProjectPushTargetRecord,
 } from "../interfaces.js";
-import { makeTaskId, makeTicketId, TERMINAL_STATES, TicketApiError, TicketNotFoundError } from "../interfaces.js";
-import type { CodeGenState } from "../interfaces.js";
+import { TicketApiError, TicketNotFoundError } from "../interfaces.js";
 import type { IntegrationStore } from "../interfaces.js";
+import {
+  makeTaskId,
+  makeTicketId,
+  type ExternalChangeId,
+  type TicketId,
+} from "../domain/identifiers.js";
+import {
+  TERMINAL_STATES,
+  type CodeGenState,
+  type Task,
+} from "../domain/tasks.js";
 import { getLogger } from "../logger.js";
 import { FeedbackProcessor } from "./feedbackProcessor.js";
+import {
+  ReviewProgressService,
+  type ReviewProgressDependencies,
+} from "./reviewProgressService.js";
 import { clearTaskEventBuffer } from "../agents/agentEventBus.js";
 import { normalizeAgentResult, getModifiedFileCount } from "../agents/agentEventTypes.js";
 import type { VcsConnector } from "../vcs/vcsConnector.js";
 import { NO_REVIEW_SYSTEM } from "../vcs/vcsConnector.js";
 import { VcsConnectorFactory } from "../vcs/vcsFactory.js";
-import { decryptToken, encryptToken } from "../utils/encryption.js";
+import { encryptToken } from "../utils/encryption.js";
 import { redactUrls } from "../utils/redactUrl.js";
 import { isInfrastructureError } from "../utils/errorClassifier.js";
 import type { ConcurrencyTracker } from "./concurrencyTracker.js";
@@ -46,32 +58,23 @@ const HTTPS_VCS_TYPES = new Set(["github", "gitlab"]);
  * agent container can run `git clone` without interactive credential prompts.
  * Returns undefined for non-HTTPS integrations (Gerrit) or on any error.
  */
-function buildAuthenticatedCloneUrl(
+function buildAuthenticatedCloneUrlFromPlaintextToken(
   rawCloneUrl: string,
   integrationType: string,
-  encryptedToken: unknown,
-  adminAuthSecret: string | undefined
+  plaintextToken: unknown,
 ): string | undefined {
   if (!HTTPS_VCS_TYPES.has(integrationType)) return undefined;
-  if (typeof encryptedToken !== "string" || !encryptedToken) return undefined;
-  let token: string;
-  try {
-    token = decryptToken(encryptedToken, adminAuthSecret);
-  } catch (err) {
-    // Backward-compatibility: older rows may still contain raw PAT strings.
-    // Use the raw value as a last resort so private HTTPS clones keep working.
-    token = encryptedToken;
-    log.warn({ integrationType, cloneUrl: rawCloneUrl, err }, "failed to decrypt token for authenticated clone URL; falling back to raw token value");
-  }
-  if (/^\*{4,}$/.test(token)) return undefined;
+  if (typeof plaintextToken !== "string" || !plaintextToken) return undefined;
+  if (/^\*{4,}$/.test(plaintextToken)) return undefined;
   const usernamePrefix = integrationType === "github" ? "x-access-token" : "oauth2";
   try {
     const normalised = rawCloneUrl.startsWith("git@")
       ? rawCloneUrl.replace(/^git@([^:]+):(.+?)(?:\.git)?$/, "https://$1/$2.git")
       : rawCloneUrl;
     const parsed = new URL(normalised);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return undefined;
     parsed.username = usernamePrefix;
-    parsed.password = token;
+    parsed.password = plaintextToken;
     return parsed.toString();
   } catch {
     return undefined;
@@ -106,6 +109,7 @@ export interface ProjectModeDeps {
     createConnectorForCapability?<T>(integrationId: string, capability: import("../interfaces.js").DomainCapability, context?: IntegrationBindingContext): Promise<T | null>;
     createConnectorForIntegration?<T>(integrationId: string, context?: IntegrationBindingContext): Promise<T | null>;
     getActiveIntegrationById?(integrationId: string): import("../interfaces.js").Integration | null;
+    decryptIntegrationConfig?(integration: import("../interfaces.js").Integration): Record<string, unknown>;
   };
   /** Inject a function to build a VcsConnector for a given integration id (host-side). */
   resolveVcsForIntegration?: (integrationId: string, context?: IntegrationBindingContext) => Promise<VcsConnector | null>;
@@ -128,10 +132,17 @@ interface ProjectAgentRuntime {
  */
 export class Orchestrator {
   private readonly feedbackProcessor: FeedbackProcessor;
+  private readonly reviewProgressService: ReviewProgressService;
   private config: OrchestratorConfig;
   private vcsConnector: VcsConnector | undefined;
   private readonly vcsConnectorFactory: VcsConnectorFactory;
   private projectMode: ProjectModeDeps | null = null;
+  /**
+   * Task ids whose `runWorkflow` is currently executing. Guards against
+   * concurrent re-entry when the same task is driven from multiple triggers
+   * (boot recovery, stalled-task polling, review events) at once.
+   */
+  private readonly inFlightTasks = new Set<string>();
   constructor(
     config: OrchestratorConfig,
     private readonly stateStore: StateStore,
@@ -145,6 +156,34 @@ export class Orchestrator {
     this.vcsConnector = vcsConnector;
     this.feedbackProcessor = new FeedbackProcessor(stateStore);
     this.projectMode = projectMode ?? null;
+    this.reviewProgressService = new ReviewProgressService({
+      getChangesForTask: (taskId): ReturnType<ReviewProgressDependencies["getChangesForTask"]> =>
+        this.stateStore.getChangesForTask(taskId),
+      transition: (taskId, state): ReturnType<ReviewProgressDependencies["transition"]> =>
+        this.stateStore.transition(taskId, state),
+      updateChangeStatus: (taskId, repoKey, status, changeId): ReturnType<ReviewProgressDependencies["updateChangeStatus"]> =>
+        this.stateStore.updateChangePerRepositoryStatus(taskId, repoKey, status, changeId),
+      getTask: (taskId): ReturnType<ReviewProgressDependencies["getTask"]> =>
+        this.stateStore.getTask(taskId),
+      resolveReviewConnector: (task): ReturnType<ReviewProgressDependencies["resolveReviewConnector"]> =>
+        this.resolveReviewConnector(task),
+      resolveVcsConnector: (integrationId, context): ReturnType<ReviewProgressDependencies["resolveVcsConnector"]> =>
+        this.tryResolveVcsConnectorForTarget(integrationId, context),
+      getDefaultVcsConnector: (): ReturnType<ReviewProgressDependencies["getDefaultVcsConnector"]> =>
+        this.vcsConnector,
+      extractNewFeedback: (taskId, changeId, comments): ReturnType<ReviewProgressDependencies["extractNewFeedback"]> =>
+        this.feedbackProcessor.extractNewFeedback(taskId, changeId, comments),
+      reactsToCiFailures: (task): ReturnType<ReviewProgressDependencies["reactsToCiFailures"]> =>
+        this.projectReactsToCiFailures(task),
+      getMaxAgentCycles: (): ReturnType<ReviewProgressDependencies["getMaxAgentCycles"]> =>
+        this.config.maxAgentCycles,
+      runAgentCycle: (task, feedback): ReturnType<ReviewProgressDependencies["runAgentCycle"]> =>
+        this.runAgentCycle(task, feedback),
+      closeTicket: (task): ReturnType<ReviewProgressDependencies["closeTicket"]> =>
+        this.closeTicket(task),
+      abandonTask: (task, reason): ReturnType<ReviewProgressDependencies["abandonTask"]> =>
+        this.handleAbandoned(task, reason),
+    });
   }
 
   /** Enable or refresh project-mode dependencies at runtime without a restart. */
@@ -238,6 +277,22 @@ export class Orchestrator {
   }
 
   /**
+   * Resume a single code-gen task that stalled while waiting for an agent
+   * concurrency slot. Called by the polling loop for tasks left in
+   * `CONTEXT_BUILDING` or `RETRY_CYCLE`: `runAgentCycle` defers (without
+   * re-queuing) whenever the shared agent slot is busy, so without this poll
+   * these tasks would never advance until the next process restart. The
+   * in-flight guard in `runWorkflow` prevents double-driving a task whose
+   * previous resume is still executing.
+   */
+  async resumeStalledCodeGenTask(taskId: ReturnType<typeof makeTaskId>): Promise<void> {
+    const task = await this.stateStore.getTask(taskId);
+    if (!task || task.taskType === "code-review") return;
+    if (task.state !== "CONTEXT_BUILDING" && task.state !== "RETRY_CYCLE") return;
+    await this.runWorkflow(task);
+  }
+
+  /**
    * Polling fallback for code-review tasks stuck in REVIEW_WATCHING.
    * Queries the review system for the current change status and transitions
    * to REVIEW_DONE (merged) or ABANDONED accordingly. This compensates for
@@ -295,11 +350,6 @@ export class Orchestrator {
     }
 
     await this.checkReviewProgress(task);
-  }
-
-  /** Gerrit-flavoured alias for handleReviewEvent. */
-  async handleGerritEvent(changeId: ExternalChangeId): Promise<void> {
-    await this.handleReviewEvent(changeId);
   }
 
   /**
@@ -501,6 +551,16 @@ export class Orchestrator {
       log.debug({ taskId: task.taskId, state: task.state }, "skipping code-review task in ticket orchestrator");
       return;
     }
+    // Guard against concurrent re-entry: a task already being driven (e.g. still
+    // building context or mid-cycle) must not be picked up again by the
+    // stalled-task poll or a second trigger. runWorkflow is never called
+    // recursively — each step method calls the next step directly — so this
+    // set only ever holds externally-initiated drives.
+    if (this.inFlightTasks.has(task.taskId)) {
+      log.debug({ taskId: task.taskId, state: task.state }, "workflow already in flight; skipping re-entry");
+      return;
+    }
+    this.inFlightTasks.add(task.taskId);
     log.info({ taskId: task.taskId, state: task.state }, "running workflow from state");
 
     // The code-review early-return above guarantees task.state is a CodeGenState here.
@@ -538,6 +598,8 @@ export class Orchestrator {
       }
     } catch (err) {
       await this.handleFatalError(task, err);
+    } finally {
+      this.inFlightTasks.delete(task.taskId);
     }
   }
 
@@ -586,17 +648,18 @@ export class Orchestrator {
       }
     }
 
-    const ticketConnector = await this.resolveTicketConnector(task);
-    const ticket = await ticketConnector.getTicket(task.ticketId);
-    const priorFeedback = await this.buildPriorFeedback(task, reviewFeedback);
-    const cycleNumber = await this.stateStore.incrementCycle(task.taskId);
-
-    log.info({ taskId: task.taskId, cycleNumber }, "starting agent cycle");
-
-    task = await this.stateStore.transition(task.taskId, "AGENT_RUNNING");
-    const handle = await this.workspaceRunner.createWorkspace(task.taskId);
-
+    let handle: Awaited<ReturnType<typeof this.workspaceRunner.createWorkspace>> | undefined;
     try {
+      const ticketConnector = await this.resolveTicketConnector(task);
+      const ticket = await ticketConnector.getTicket(task.ticketId);
+      const priorFeedback = await this.buildPriorFeedback(task, reviewFeedback);
+      const cycleNumber = await this.stateStore.incrementCycle(task.taskId);
+
+      log.info({ taskId: task.taskId, cycleNumber }, "starting agent cycle");
+
+      task = await this.stateStore.transition(task.taskId, "AGENT_RUNNING");
+      handle = await this.workspaceRunner.createWorkspace(task.taskId);
+
       if (!task.projectId || !this.projectMode || !this.workspaceRunner.prepareProjectWorkspace) {
         throw new Error(
           `Task ${task.taskId} is not project-bound; project-mode is the only supported workflow.`
@@ -636,28 +699,34 @@ export class Orchestrator {
 
       const enrichedPushTargets = await Promise.all(
         projectPushTargets.map(async (pt) => {
+          let enrichedTarget = pt;
           try {
             // Inject authenticated HTTPS clone URL for GitHub/GitLab targets
             const integration = await (this.integrationStore ?? (this.stateStore as unknown as IntegrationStore)).getIntegration(pt.integrationId);
             if (integration) {
-              const cfg = JSON.parse(integration.configJson) as Record<string, unknown>;
-              const authUrl = buildAuthenticatedCloneUrl(pt.cloneUrl, integration.provider, cfg["token"], this.config.adminAuthSecret);
-              if (authUrl !== undefined) return { ...pt, cloneUrl: authUrl };
+              const cfg = this.resolveIntegrationConfig(integration);
+              const authUrl = buildAuthenticatedCloneUrlFromPlaintextToken(pt.cloneUrl, integration.provider, cfg["token"]);
+              if (authUrl !== undefined) enrichedTarget = { ...enrichedTarget, cloneUrl: authUrl };
             }
           } catch {
             // Non-fatal — fall through to SSH key enrichment
           }
-          if (pt.sshKeyPath !== null) return pt;
           try {
             const connector = await this.resolveVcsConnectorForTarget(pt.integrationId, { repoKey: pt.repoKey, targetBranch: pt.targetBranch });
             const fallbackKey = connector.sshKeyPath ?? undefined;
             const fallbackAgentPub = (connector as { sshAgentPubKeyPath?: string | undefined }).sshAgentPubKeyPath ?? undefined;
-            if (fallbackKey !== undefined) return { ...pt, sshKeyPath: fallbackKey };
-            if (fallbackAgentPub !== undefined) return { ...pt, sshKeyPath: null, sshAgentPubKeyPath: fallbackAgentPub };
-            // SSH agent mode with no identity pinning — leave sshKeyPath null
-            return pt;
+            const knownHostsPath = connector.sshKnownHostsPath ?? undefined;
+            if (pt.sshKeyPath === null && fallbackKey !== undefined) {
+              enrichedTarget = { ...enrichedTarget, sshKeyPath: fallbackKey };
+            } else if (pt.sshKeyPath === null && fallbackAgentPub !== undefined) {
+              enrichedTarget = { ...enrichedTarget, sshKeyPath: null, sshAgentPubKeyPath: fallbackAgentPub };
+            }
+            return {
+              ...enrichedTarget,
+              ...(knownHostsPath !== undefined ? { sshKnownHostsPath: knownHostsPath } : {}),
+            };
           } catch {
-            return pt;
+            return enrichedTarget;
           }
         })
       );
@@ -673,11 +742,15 @@ export class Orchestrator {
       }
 
       const commitMessage = this.buildCommitMessage(task, ticket.subject);
-      const projectAgentRuntime = await this.resolveProjectAgentRuntime(projectRecord);
-      const resolvedCopilotModel = projectAgentRuntime
-        ? projectAgentRuntime.config.model?.trim() || undefined
-        : undefined;
-      const _rawReasoningEffort = projectAgentRuntime?.config.extra["reasoningEffort"];
+      let projectAgentRuntime: ProjectAgentRuntime;
+      try {
+        projectAgentRuntime = await this.resolveProjectAgentRuntime(projectRecord);
+      } catch (err) {
+        await this.handleFatalError(task, err);
+        return;
+      }
+      const resolvedCopilotModel = projectAgentRuntime.config.model?.trim() || undefined;
+      const _rawReasoningEffort = projectAgentRuntime.config.extra["reasoningEffort"];
       const resolvedReasoningEffort = typeof _rawReasoningEffort === "string" ? _rawReasoningEffort : undefined;
       if (!resolvedCopilotModel) {
         log.warn(
@@ -706,16 +779,12 @@ export class Orchestrator {
         hasPriorPatchset,
         commitMessage,
         ticketUrl: ticket.webUrl,
-        ...(projectAgentRuntime
-          ? {
-              systemPromptId: projectAgentRuntime.config.systemPromptId,
-              // On retry cycles, swap in the feedback-specific instructions prompt when one is configured.
-              instructionsPromptId:
-                cycleNumber > 1 && projectAgentRuntime.config.feedbackInstructionsPromptId
-                  ? projectAgentRuntime.config.feedbackInstructionsPromptId
-                  : projectAgentRuntime.config.instructionsPromptId,
-            }
-          : {}),
+        systemPromptId: projectAgentRuntime.config.systemPromptId,
+        // On retry cycles, swap in the feedback-specific instructions prompt when one is configured.
+        instructionsPromptId:
+          cycleNumber > 1 && projectAgentRuntime.config.feedbackInstructionsPromptId
+            ? projectAgentRuntime.config.feedbackInstructionsPromptId
+            : projectAgentRuntime.config.instructionsPromptId,
         agentSession: {
           agentContainerImage: this.config.agentContainerImage,
           repoCloneUrl: cloneUrl,
@@ -752,21 +821,41 @@ export class Orchestrator {
           })(),
           gitAuthorName: this.config.gitAuthorName,
           gitAuthorEmail: this.config.gitAuthorEmail,
-          githubToken: projectAgentRuntime?.config.apiKey,
-          ...(projectAgentRuntime?.config.encryptedSessionToken
+          githubToken: projectAgentRuntime.config.apiKey,
+          ...(projectAgentRuntime.config.encryptedSessionToken
             ? { encryptedSessionToken: projectAgentRuntime.config.encryptedSessionToken }
             : {}),
           ...(resolvedCopilotModel ? { copilotModel: resolvedCopilotModel } : {}),
           ...(resolvedReasoningEffort !== undefined ? { copilotReasoningEffort: resolvedReasoningEffort } : {}),
+          // Aider backend credentials flow through `extra` (set by
+          // resolveProjectAgentRuntime from the integration config).
+          ...(typeof projectAgentRuntime?.config.extra["aiderBackend"] === "string"
+            ? { aiderBackend: projectAgentRuntime.config.extra["aiderBackend"] }
+            : {}),
+          ...(typeof projectAgentRuntime?.config.extra["aiderApiKey"] === "string"
+            ? { aiderApiKey: projectAgentRuntime.config.extra["aiderApiKey"] }
+            : {}),
+          ...(typeof projectAgentRuntime?.config.extra["aiderApiBase"] === "string"
+            ? { aiderApiBase: projectAgentRuntime.config.extra["aiderApiBase"] }
+            : {}),
           ...(projectPushTargets.length > 1 || projectPushTargets.some((t) => t.localPath !== ".")
             ? { repositoryMap: buildRepositoryMap(projectPushTargets) }
             : {}),
           ...(projectRecord.skillDiscoveryEnabled ? { skillDiscoveryEnabled: true } : {}),
+          ...(projectRecord.skillDiscoveryEnabled ? { localSkillsPath: projectRecord.localSkillsPath } : {}),
+          ...(projectRecord.skillSourcesJson !== "[]"
+            ? { skillSourcesJson: projectRecord.skillSourcesJson }
+            : {}),
+          ...((): { ticketFooterLine?: string } => {
+            if (!projectRecord.useFullTicketUrlInCommits) return {};
+            const line = formatTicketFooter(task.ticketId, ticket.webUrl ?? "", task.ticketSourceLabel, true);
+            return line ? { ticketFooterLine: line } : {};
+          })(),
         },
       };
 
       const agentResult = await this.withTimeout(
-        this.workspaceRunner.runAgent(handle, context, projectAgentRuntime?.adapter ?? undefined),
+        this.workspaceRunner.runAgent(handle, context, projectAgentRuntime.adapter),
         this.config.agentTimeoutMs,
         `Agent timed out after ${this.config.agentTimeoutMs}ms`
       );
@@ -826,15 +915,41 @@ export class Orchestrator {
       // For Gerrit: agent commits[] are pre-validated; each becomes a separate change (topic-grouped).
       // For GitLab: all N commits land in one MR via force-push.
       if (task.projectId && this.projectMode && projectPushTargets.length > 0) {
-        await this.pushProjectChanges(task, handle, projectPushTargets, commitMessage, context.ticketUrl ?? "", agentResult.commits);
+        await this.pushProjectChanges(
+          task,
+          handle,
+          projectPushTargets,
+          commitMessage,
+          agentResult.commits,
+          projectRecord.gerritTopicOverride
+        );
       }
 
       task = await this.stateStore.transition(task.taskId, "IN_REVIEW");
       const ticketConn = await this.resolveTicketConnector(task);
       await ticketConn.transitionToInReview(task.ticketId);
+
+      // Opt-in (default off — most teams already surface this via standard VCS/ticket
+      // integrations): post the review URL(s) as a ticket note. Cross-project fix-up:
+      // the ticket lives in one repo/project, but the fix may land in a different one
+      // (e.g. jami-client-qt ticket, jami-daemon patch), so a bare "#123"-style reference
+      // wouldn't resolve to the right place — the full URL is unambiguous regardless of
+      // which repo(s) received commits. Only on cycle 1: later cycles just add patchsets
+      // to the same change/URL.
+      if (projectRecord?.postReviewLinkToTicket && cycleNumber === 1) {
+        const changes = await this.stateStore.getChangesForTask(task.taskId);
+        const links = changes
+          .filter((c) => c.status !== "NO_CHANGE" && c.status !== "ORPHANED" && c.reviewUrl)
+          .map((c) => `${c.repoKey}: ${c.reviewUrl}`);
+        if (links.length > 0) {
+          await this.addTicketNote(task, `Virtual Engineer opened a review:\n\n${links.join("\n")}`, false);
+        }
+      }
     } finally {
       try {
-        await this.workspaceRunner.destroyWorkspace(handle);
+        if (handle) {
+          await this.workspaceRunner.destroyWorkspace(handle);
+        }
       } catch (err) {
         log.warn(
           { taskId: task.taskId, err },
@@ -921,23 +1036,28 @@ export class Orchestrator {
   }
 
   /** Resolve the per-project agent adapter and resolved config from the project's agent record. */
-  private async resolveProjectAgentRuntime(project: ProjectRecord | null): Promise<ProjectAgentRuntime | null> {
+  private async resolveProjectAgentRuntime(project: ProjectRecord | null): Promise<ProjectAgentRuntime> {
     if (!project || !this.projectMode) {
-      return null;
+      throw new Error("Project agent runtime cannot be resolved outside project mode");
     }
 
     const agent = await this.projectMode.projectStore.getAgentById(project.agentId);
-    if (!agent?.integrationId) {
-      return null;
+    if (!agent) {
+      throw new Error(`Project agent ${project.agentId} was not found for project ${project.id}`);
+    }
+    if (!agent.enabled || agent.type !== "coding") {
+      throw new Error(`Project agent ${agent.id} is not an enabled coding agent for project ${project.id}`);
+    }
+    if (!agent.integrationId) {
+      throw new Error(`Project agent ${agent.id} has no agent integration configured`);
     }
 
     const adapter = this.projectMode.pluginManager.getConnectorForIntegration<AgentAdapter>(agent.integrationId);
     if (!adapter) {
-      log.warn(
-        { projectId: project.id, agentId: agent.id, integrationId: agent.integrationId },
-        "project agent integration is not active; falling back to the runtime adapter"
+      throw new Error(
+        `Project agent adapter is unavailable for agent ${agent.id} ` +
+        `(integration ${agent.integrationId}, project ${project.id})`
       );
-      return null;
     }
 
     const resolvedConfig = resolveAgentConfig(agent, project);
@@ -948,17 +1068,16 @@ export class Orchestrator {
     // an `apiKey` (api_key mode) or an interactive-OAuth `sessionToken`
     // (subscription mode).
     //
-    // NOTE: `apiKey` is read from the RAW configJson (user-entered password
-    // fields are stored plaintext at rest; only the OAuth `sessionToken` is
-    // AES-encrypted). If password-at-rest encryption is ever added, decrypt it
-    // here before use.
     let encryptedSessionToken = resolvedConfig.encryptedSessionToken;
     let apiKey = resolvedConfig.apiKey;
-    if (!encryptedSessionToken || !apiKey) {
+    // Aider forwards backend credentials via `extra`; start from the resolved
+    // extras so we don't clobber agent-level overrides.
+    const extra: Record<string, unknown> = { ...resolvedConfig.extra };
+    if (!encryptedSessionToken || !apiKey || Object.keys(extra).length === 0) {
       const integration = this.projectMode.pluginManager.getActiveIntegrationById?.(agent.integrationId);
       if (integration) {
         try {
-          const integCfg = JSON.parse(integration.configJson) as Record<string, unknown>;
+          const integCfg = this.resolveIntegrationConfig(integration);
           if (integration.provider === "claude") {
             if (integCfg["authMode"] === "api_key") {
               if (!apiKey) {
@@ -971,6 +1090,19 @@ export class Orchestrator {
                 encryptedSessionToken = sess;
               }
             }
+          } else if (integration.provider === "aider") {
+            // Aider carries a backend selector + that backend's API key / base
+            // URL on the integration config. Forward them via `extra` so the
+            // AiderAdapter can map them onto the litellm env vars. This must be
+            // checked before the generic `!encryptedSessionToken` branch below,
+            // since Aider never populates `encryptedSessionToken` and would
+            // otherwise be swallowed by that branch and never forwarded.
+            const backend = integCfg["aiderBackend"];
+            const key = integCfg["aiderApiKey"];
+            const base = integCfg["aiderApiBase"];
+            if (typeof backend === "string" && backend) extra["aiderBackend"] = backend;
+            if (typeof key === "string" && key) extra["aiderApiKey"] = key;
+            if (typeof base === "string" && base) extra["aiderApiBase"] = base;
           } else if (!encryptedSessionToken) {
             const t = integCfg["sessionToken"];
             if (typeof t === "string" && t) {
@@ -988,340 +1120,31 @@ export class Orchestrator {
 
     const authChanged =
       encryptedSessionToken !== resolvedConfig.encryptedSessionToken ||
-      apiKey !== resolvedConfig.apiKey;
+      apiKey !== resolvedConfig.apiKey ||
+      Object.keys(extra).length > 0;
     return {
       adapter,
       config: authChanged
-        ? { ...resolvedConfig, encryptedSessionToken, apiKey }
+        ? { ...resolvedConfig, encryptedSessionToken, apiKey, extra }
         : resolvedConfig,
     };
   }
 
-  /** Poll review system status; advance to MERGED, trigger a retry cycle, or stay IN_REVIEW. */
-  private async checkReviewProgress(task: Task, streamChangeId?: string, streamComments?: import("../interfaces.js").ReviewComment[]): Promise<void> {
-    // Check for per-repository changes first (multi-repo path)
-    const perRepoChanges = await this.stateStore.getChangesForTask(task.taskId);
-    if (perRepoChanges.length > 0) {
-      await this.checkMultiRepoReviewProgress(task, perRepoChanges, streamChangeId, streamComments);
-      return;
-    }
-
-    // Single-repo path (legacy)
-    const changeId = task.externalChangeId;
-    if (!changeId) {
-      log.warn({ taskId: task.taskId }, "IN_REVIEW but no gerritChangeId — waiting");
-      return;
-    }
-
-    const reviewConnector = await this.resolveReviewConnector(task);
-
-    let status: string;
-    try {
-      status = await reviewConnector.getChangeStatus(changeId);
-    } catch (err) {
-      log.warn({ taskId: task.taskId, changeId, err }, "failed to fetch Gerrit change status — staying IN_REVIEW");
-      return;
-    }
-
-    if (status === "MERGED") {
-      log.info({ taskId: task.taskId }, "change MERGED");
-      task = await this.stateStore.transition(task.taskId, "MERGED");
-      await this.closeTicket(task);
-      return;
-    }
-
-    if (status === "ABANDONED") {
-      await this.handleAbandoned(task, "change was abandoned externally");
-      return;
-    }
-
-    // Fetch unresolved comments on the latest patchset only. Anchoring the
-    // review to the current patchset (instead of the root) prevents VE from
-    // repeatedly acting on stale comments from earlier patchsets.
-    const comments = await reviewConnector.getUnresolvedComments(
-      changeId,
-      task.currentPatchset
-    );
-    // Also collect any failed CI check runs so the agent can fix them.
-    const ciComments = reviewConnector.getCICheckFailures
-      ? await reviewConnector.getCICheckFailures(changeId).catch((err: unknown) => {
-          log.warn({ taskId: task.taskId, changeId, err }, "failed to fetch CI check failures (non-fatal)");
-          return [] as import("../interfaces.js").ReviewComment[];
-        })
-      : [];
-    const baseComments = ciComments.length > 0 ? [...comments, ...ciComments] : comments;
-    const allComments = streamComments && streamComments.length > 0 ? [...streamComments, ...baseComments] : baseComments;
-
-    task = await this.stateStore.transition(task.taskId, "FEEDBACK_PROCESSING");
-    const [feedbackItems, processedComments] = await this.feedbackProcessor.extractNewFeedback(
-      task.taskId,
-      changeId,
-      allComments
-    );
-
-    if (feedbackItems.length === 0) {
-      log.debug({ taskId: task.taskId }, "no new actionable comments, back to IN_REVIEW");
-      task = await this.stateStore.transition(task.taskId, "IN_REVIEW");
-      return;
-    }
-
-    if (task.cycleCount > this.config.maxAgentCycles) {
-      await this.handleAbandoned(task, `Max cycles ${this.config.maxAgentCycles} reached during review`);
-      return;
-    }
-
-    log.info(
-      { taskId: task.taskId, feedbackCount: feedbackItems.length },
-      "actionable feedback found, starting retry cycle"
-    );
-    task = await this.stateStore.transition(task.taskId, "RETRY_CYCLE");
-    await this.runAgentCycle(task, feedbackItems);
-
-    const updatedTask = await this.stateStore.getTask(task.taskId);
-    if (updatedTask?.state !== "IN_REVIEW") {
-      return;
-    }
-
-    if (processedComments.length > 0) {
-      try {
-        await reviewConnector.resolveComments(changeId, processedComments);
-        log.info({ taskId: task.taskId, count: processedComments.length }, "resolved review comments");
-      } catch (err) {
-        log.warn({ taskId: task.taskId, err }, "failed to resolve Gerrit comments (non-fatal)");
-      }
-    }
+  private resolveIntegrationConfig(integration: Integration): Record<string, unknown> {
+    return this.projectMode?.pluginManager.decryptIntegrationConfig?.(integration)
+      ?? JSON.parse(integration.configJson) as Record<string, unknown>;
   }
 
-  /**
-   * Multi-repo review progress. Polls each per-repository change:
-   * transitions to MERGED when ALL repos are merged, ABANDONED if ANY is abandoned,
-   * or aggregates feedback and triggers a retry cycle.
-   */
-  private async checkMultiRepoReviewProgress(
-    task: Task,
-    perRepoChanges: import("../interfaces.js").ChangePerRepository[],
-    streamChangeId?: string,
-    streamComments?: import("../interfaces.js").ReviewComment[]
-  ): Promise<void> {
-    const activeChanges = perRepoChanges.filter((c) => c.status !== "NO_CHANGE" && c.status !== "ORPHANED");
-    if (activeChanges.length === 0) {
-      log.info({ taskId: task.taskId }, "all per-repo changes are NO_CHANGE, treating as merged");
-      task = await this.stateStore.transition(task.taskId, "MERGED");
-      await this.closeTicket(task);
-      return;
-    }
+  /** Poll review system status; advance to MERGED, trigger a retry cycle, or stay IN_REVIEW. */
+  /** Whether this task's project opts in to treating CI build failures as actionable feedback (default off). */
+  private async projectReactsToCiFailures(task: Task): Promise<boolean> {
+    if (!task.projectId || !this.projectMode) return false;
+    const project = await this.projectMode.projectStore.getProjectById(task.projectId);
+    return project?.reactToCiFailures ?? false;
+  }
 
-    // Lazy fallback: only resolved if a change lacks its own integration connector.
-    let _fallbackReviewConnector: ReviewConnector | undefined;
-    const getFallbackReviewConnector = async (): Promise<ReviewConnector> => {
-      if (!_fallbackReviewConnector) {
-        _fallbackReviewConnector = await this.resolveReviewConnector(task);
-      }
-      return _fallbackReviewConnector;
-    };
-
-    // Poll each repo's change status
-    let allMerged = true;
-    let anyAbandoned = false;
-    const allFeedback: FeedbackItem[] = [];
-    const allProcessedComments: import("../interfaces.js").ReviewComment[] = [];
-
-    for (const change of activeChanges) {
-      // Use the non-throwing target resolver here — a transient factory failure
-      // should log and skip, not abort the whole task.
-      const changeConnector: VcsConnector | import("../interfaces.js").ReviewConnector | undefined =
-        (change.integrationId
-          ? await this.tryResolveVcsConnectorForTarget(change.integrationId, { repoKey: change.repoKey })
-          : this.vcsConnector ?? await getFallbackReviewConnector());
-      if (!changeConnector) {
-        log.warn(
-          { taskId: task.taskId, repoKey: change.repoKey, integrationId: change.integrationId },
-          "skipping per-repo review polling because the repo connector is unavailable"
-        );
-        allMerged = false;
-        continue;
-      }
-
-      try {
-        let currentStatus: string;
-        if (changeConnector && "getChangeStatus" in changeConnector) {
-          currentStatus = await (changeConnector as VcsConnector).getChangeStatus(change.changeId);
-        } else {
-          currentStatus = await (await getFallbackReviewConnector()).getChangeStatus(
-            change.changeId as ExternalChangeId
-          );
-        }
-
-        // Update stored status if changed
-        if (currentStatus !== change.status) {
-          await this.stateStore.updateChangePerRepositoryStatus(
-            task.taskId,
-            change.repoKey,
-            currentStatus,
-            change.changeId
-          );
-          log.info(
-            { taskId: task.taskId, repoKey: change.repoKey, oldStatus: change.status, newStatus: currentStatus },
-            "per-repo change status updated"
-          );
-        }
-
-        if (currentStatus === "ABANDONED") {
-          anyAbandoned = true;
-        } else if (currentStatus !== "MERGED") {
-          allMerged = false;
-        }
-
-        // Gather feedback for non-merged repos
-        if (currentStatus === "OPEN" || currentStatus === "NEW") {
-          try {
-            let comments: import("../interfaces.js").ReviewComment[];
-            if ("getUnresolvedComments" in changeConnector && typeof (changeConnector as VcsConnector).getUnresolvedComments === "function") {
-              comments = await (changeConnector as VcsConnector).getUnresolvedComments!(change.changeId);
-            } else {
-              comments = await (await getFallbackReviewConnector()).getUnresolvedComments(
-                change.changeId as ExternalChangeId
-              );
-            }
-            // Collect CI check failures via the fallback review connector (which may implement getCICheckFailures).
-            let ciComments: import("../interfaces.js").ReviewComment[] = [];
-            try {
-              const ciSource = await getFallbackReviewConnector();
-              if (ciSource.getCICheckFailures) {
-                ciComments = await ciSource.getCICheckFailures(change.changeId as ExternalChangeId);
-              }
-            } catch (ciErr) {
-              log.warn(
-                { taskId: task.taskId, repoKey: change.repoKey, err: ciErr },
-                "failed to fetch CI check failures for repo (non-fatal)"
-              );
-            }
-            // Prepend stream-event comment when it belongs to this specific change.
-            // Required because Gerrit's `gerrit query --comments` only returns inline file
-            // comments, not top-level change messages — the stream event payload is the
-            // only reliable source of general review feedback for Gerrit.
-            const extraComments = (streamChangeId === change.changeId && streamComments && streamComments.length > 0)
-              ? streamComments
-              : [];
-            const allComments = [
-              ...(extraComments.length > 0 ? extraComments : []),
-              ...comments,
-              ...ciComments,
-            ];
-            const [feedback, processed] = await this.feedbackProcessor.extractNewFeedback(
-              task.taskId,
-              change.changeId as ExternalChangeId,
-              allComments
-            );
-            // Tag feedback with repoKey for agent context
-            for (const item of feedback) {
-              allFeedback.push({
-                ...item,
-                content: `[${change.repoKey}] ${item.content}`,
-              });
-            }
-            allProcessedComments.push(...processed);
-          } catch (err) {
-            log.warn(
-              { taskId: task.taskId, repoKey: change.repoKey, err },
-              "failed to fetch feedback for repo (non-fatal)"
-            );
-          }
-        }
-      } catch (err) {
-        log.warn(
-          { taskId: task.taskId, repoKey: change.repoKey, changeId: change.changeId, err },
-          "failed to poll per-repo change status (non-fatal)"
-        );
-        allMerged = false;
-      }
-    }
-
-    // Convergence: if any repo is abandoned, abandon the whole task
-    if (anyAbandoned) {
-      const abandonedRepos = activeChanges
-        .filter((c) => c.status === "ABANDONED")
-        .map((c) => c.repoKey);
-      await this.handleAbandoned(
-        task,
-        `Change abandoned externally for repositories: ${abandonedRepos.join(", ")}`
-      );
-      return;
-    }
-
-    // Convergence: all repos merged → task is merged
-    if (allMerged) {
-      log.info(
-        { taskId: task.taskId, repoCount: activeChanges.length },
-        "all per-repo changes MERGED — task converged"
-      );
-      task = await this.stateStore.transition(task.taskId, "MERGED");
-      await this.closeTicket(task);
-      return;
-    }
-
-    // Process aggregated feedback
-    task = await this.stateStore.transition(task.taskId, "FEEDBACK_PROCESSING");
-
-    if (allFeedback.length === 0) {
-      log.debug({ taskId: task.taskId }, "no new multi-repo feedback, back to IN_REVIEW");
-      task = await this.stateStore.transition(task.taskId, "IN_REVIEW");
-      return;
-    }
-
-    if (task.cycleCount > this.config.maxAgentCycles) {
-      await this.handleAbandoned(task, `Max cycles ${this.config.maxAgentCycles} reached during multi-repo review`);
-      return;
-    }
-
-    log.info(
-      { taskId: task.taskId, feedbackCount: allFeedback.length },
-      "multi-repo feedback found, starting retry cycle"
-    );
-    task = await this.stateStore.transition(task.taskId, "RETRY_CYCLE");
-    await this.runAgentCycle(task, allFeedback);
-
-    const updatedTask = await this.stateStore.getTask(task.taskId);
-    if (updatedTask?.state !== "IN_REVIEW") {
-      return;
-    }
-
-    // Resolve processed comments per-repo using the correct connector for each change
-    for (const change of activeChanges) {
-      // Only resolve comments that belong to this repo's change (filter by repoKey in filePath)
-      const repoComments = allProcessedComments.filter(
-        (c) => !c.filePath || c.filePath.startsWith(change.repoKey + "/") || c.filePath === change.repoKey
-      );
-      if (repoComments.length === 0) continue;
-
-      const changeConnector: VcsConnector | import("../interfaces.js").ReviewConnector | undefined =
-        (change.integrationId
-          ? await this.tryResolveVcsConnectorForTarget(change.integrationId, { repoKey: change.repoKey })
-          : this.vcsConnector ?? await getFallbackReviewConnector());
-      if (!changeConnector) {
-        log.warn(
-          { taskId: task.taskId, repoKey: change.repoKey, integrationId: change.integrationId },
-          "skipping comment resolution because the repo connector is unavailable"
-        );
-        continue;
-      }
-
-      try {
-        if ("resolveComments" in changeConnector && typeof (changeConnector as VcsConnector).resolveComments === "function") {
-          await (changeConnector as VcsConnector).resolveComments!(change.changeId, repoComments);
-        } else {
-          await (await getFallbackReviewConnector()).resolveComments(
-            change.changeId as ExternalChangeId,
-            repoComments
-          );
-        }
-      } catch (err) {
-        log.warn(
-          { taskId: task.taskId, repoKey: change.repoKey, err },
-          "failed to resolve comments for repo (non-fatal)"
-        );
-      }
-    }
+  private async checkReviewProgress(task: Task, streamChangeId?: string, streamComments?: import("../interfaces.js").ReviewComment[]): Promise<void> {
+    await this.reviewProgressService.check(task, streamChangeId, streamComments);
   }
 
   /**
@@ -1346,8 +1169,8 @@ export class Orchestrator {
     handle: WorkspaceHandle,
     pushTargets: import("../interfaces.js").ProjectPushTargetRecord[],
     fallbackCommitMessage: string,
-    ticketUrl: string,
-    agentCommits: CommitDescriptor[] | undefined = undefined
+    agentCommits: CommitDescriptor[] | undefined = undefined,
+    topicOverride: string | null = null
   ): Promise<void> {
     const sorted = [...pushTargets].sort((a, b) => a.commitOrder - b.commitOrder);
 
@@ -1406,25 +1229,29 @@ export class Orchestrator {
         pushErrors.push({ repoKey: target.repoKey, err });
         continue;
       }
-      const { ref: computedRef, topic } = vcsConnector.buildPushSpec(
+      const { ref: computedRef, topic: computedTopic } = vcsConnector.buildPushSpec(
         target.targetBranch,
         task.taskId,
         task.ticketTitle
       );
       const ref = await this.resolvePushRef(task, () => computedRef);
+      const topic = topicOverride?.trim() ? topicOverride.trim() : computedTopic;
       const reviewSystemLabel = vcsConnector.reviewSystemLabel;
 
       const volumeOpts = { volumeName: handle.volumeName, image: handle.containerImage, subPath: target.localPath };
       try {
-        const commitMsg = this.appendTicketFooter(fallbackCommitMessage, task.ticketId, ticketUrl, task.ticketSourceLabel);
         const subjectHash = createHash("sha1").update(fallbackCommitMessage.split("\n")[0] ?? "").digest("hex");
 
-        let pushResult;
-        if (vcsConnector.pushDirect) {
-          pushResult = await vcsConnector.pushDirect(handle.hostWorkspacePath, ref, topic, volumeOpts);
-        } else {
-          pushResult = await vcsConnector.push(handle.hostWorkspacePath, ref, commitMsg, undefined, volumeOpts);
+        if (!vcsConnector.pushDirect) {
+          throw new Error(`VCS connector for ${reviewSystemLabel} does not implement pushDirect`);
         }
+        const pushResult = await vcsConnector.pushDirect(
+          handle.hostWorkspacePath,
+          ref,
+          topic,
+          volumeOpts,
+          target.reviewerEmails
+        );
 
         // Use Change-Ids from agent commits when available — this is the source of truth
         // for multi-commit pushes where pushResult.changeId only reflects HEAD (the last commit).
@@ -1702,42 +1529,6 @@ export class Orchestrator {
   private buildCommitMessage(_task: Task, ticketSubject: string): string {
     const subject = ticketSubject.slice(0, 72).replace(/\.$/, "");
     return `feat: ${subject}`;
-  }
-
-  /**
-   * Appends a ticket reference footer to a conventional commit message.
-   *
-   * The footer is formatted using the modular ticketFooterFormatter utility,
-   * which supports any configured ticketing system in ID format: "System: #ticketId"
-   *
-   * Footer is skipped if the message already contains an existing footer
-   * (idempotent — safe to call multiple times).
-   */
-  private appendTicketFooter(message: string, ticketId: string, ticketUrl: string, ticketSourceLabel?: string): string {
-    if (hasTicketFooter(message, ticketSourceLabel)) {
-      return message;
-    }
-
-    const footer = this.buildTicketFooter(ticketId, ticketUrl, ticketSourceLabel);
-    if (!footer) return message;
-
-    return `${message.trimEnd()}\n\n${footer}\n`;
-  }
-
-  /**
-   * Builds the footer line using the modular ticketFooterFormatter utility.
-   * Returns null if no footer is applicable (unknown system or missing data).
-   *
-   * All supported systems use ID format: "System: #ticketId"
-   * This is simple, consistent, and works across all review systems (GitLab, Gerrit, etc.)
-   * and is future-proof for new ticketing systems.
-   *
-   * To add support for a new ticketing system:
-   * 1. Add configuration to TICKET_SYSTEM_CONFIG in ticketFooterFormatter.ts
-   * 2. No changes needed here — automatically supported.
-   */
-  private buildTicketFooter(ticketId: string, ticketUrl: string, ticketSourceLabel?: string): string | null {
-    return formatTicketFooter(ticketId, ticketUrl, ticketSourceLabel);
   }
 
   /** Extract acceptance-criteria lines (checklist or numbered items) from a ticket description. */

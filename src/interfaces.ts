@@ -1,39 +1,56 @@
 /** Core domain types and interface contracts. */
 
+import {
+  type AgentId,
+  type ExternalChangeId,
+  type ProjectId,
+  type TaskId,
+  type TicketId,
+} from "./domain/identifiers.js";
+import {
+  type ChangePerRepository,
+  type StateTransition,
+  type Task,
+  type TaskState,
+} from "./domain/tasks.js";
+
+export {
+  makeAgentId,
+  makeExternalChangeId,
+  makeProjectId,
+  makeTaskId,
+  makeTicketId,
+  type AgentId,
+  type ExternalChangeId,
+  type ProjectId,
+  type TaskId,
+  type TicketId,
+} from "./domain/identifiers.js";
+export {
+  CODE_GEN_STATES,
+  CODE_GEN_TERMINAL_STATES,
+  CODE_REVIEW_STATES,
+  CODE_REVIEW_TERMINAL_STATES,
+  TASK_STATES,
+  TERMINAL_STATES,
+  type ChangePerRepository,
+  type CodeGenState,
+  type CodeReviewState,
+  type StateTransition,
+  type Task,
+  type TaskState,
+  type TaskType,
+} from "./domain/tasks.js";
+
 // ─── Shared value types ───────────────────────────────────────────────────────
-
-export type TaskId = string & { readonly __brand: "TaskId" };
-export type TicketId = string & { readonly __brand: "TicketId" };
-export type ExternalChangeId = string & { readonly __brand: "ExternalChangeId" };
-export type AgentId = string & { readonly __brand: "AgentId" };
-export type ProjectId = string & { readonly __brand: "ProjectId" };
-
-/** Cast a plain string to the branded `TaskId` type. */
-export function makeTaskId(s: string): TaskId {
-  return s as TaskId;
-}
-/** Cast a plain string to the branded `TicketId` type. */
-export function makeTicketId(s: string): TicketId {
-  return s as TicketId;
-}
-/** Cast a plain string to the branded `ExternalChangeId` type. */
-export function makeExternalChangeId(s: string): ExternalChangeId {
-  return s as ExternalChangeId;
-}
-/** Cast a plain string to the branded `AgentId` type. */
-export function makeAgentId(s: string): AgentId {
-  return s as AgentId;
-}
-/** Cast a plain string to the branded `ProjectId` type. */
-export function makeProjectId(s: string): ProjectId {
-  return s as ProjectId;
-}
 
 // ─── Phase 2: Agents / Projects / Concurrency types ───────────────────────────
 
 export type AgentType = "coding" | "review";
 export type ProjectType = "coding" | "review";
 export type PushTargetRole = "primary" | "submodule" | "dependency" | "related";
+
+export const DEFAULT_LOCAL_SKILLS_PATH = ".github/skills";
 
 export interface AgentRecord {
   id: AgentId;
@@ -62,8 +79,20 @@ export interface ProjectRecord {
   agentOverrideJson: string | null;
   /** Bash script run on the host after cloning. Empty string means "no script". */
   postCloneScript: string;
-  /** When true, the agent container loads team-defined skills from `<repo>/.github/skills` (coding projects only). */
+  /** When true, the agent container loads local repository skills. */
   skillDiscoveryEnabled: boolean;
+  /** Workspace-relative path for local project skills. */
+  localSkillsPath: string;
+  /** JSON list of remote skill sources fetched with `npx skills` when configured. */
+  skillSourcesJson: string;
+  /** Optional literal Gerrit topic that overrides the ticket-derived topic (buildGerritTopic) for all pushes from this project. NULL = use the ticket-derived topic. */
+  gerritTopicOverride: string | null;
+  /** When true, agent commit messages use the full ticket URL in the footer instead of the short "#id" form. */
+  useFullTicketUrlInCommits: boolean;
+  /** When true, VE posts a note on the source ticket with the review URL(s) once the first cycle opens a review. Default off — most teams already surface this via standard VCS/ticket integrations. */
+  postReviewLinkToTicket: boolean;
+  /** When true, CI build-failure notifications (e.g. Jenkins "Build Failed") count as actionable review feedback and trigger a retry cycle. Default off — some teams don't want VE auto-retrying on broken CI. Coding projects only. */
+  reactToCiFailures: boolean;
   enabled: boolean;
   createdAt: Date;
   updatedAt: Date;
@@ -110,6 +139,10 @@ export interface ProjectPushTargetRecord {
   sshKeyPath: string | null;
   /** SSH agent identity public-key path for identity pinning, or null when not pinning. */
   sshAgentPubKeyPath?: string | null | undefined;
+  /** Reviewer email addresses attached to every change pushed to this target. */
+  reviewerEmails: string[];
+  /** Runtime-resolved known_hosts path for this target's SSH integration. */
+  sshKnownHostsPath?: string | undefined;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -284,61 +317,6 @@ export interface ResolvedAgentConfig {
 
 // ─── Task state machine ───────────────────────────────────────────────────────
 
-/** States belonging to the ticket-driven code-generation workflow. */
-export const CODE_GEN_STATES = [
-  "DETECTED",
-  "CONTEXT_BUILDING",
-  "AGENT_RUNNING",
-  "IN_REVIEW",
-  "FEEDBACK_PROCESSING",
-  "RETRY_CYCLE",
-  "MERGED",
-  "CLOSING",
-  "DONE",
-  "FAILED",
-  "ABANDONED",
-] as const;
-
-/** States belonging to the VE-as-reviewer code-review workflow. */
-export const CODE_REVIEW_STATES = [
-  "REVIEW_PENDING",
-  "REVIEW_RUNNING",
-  "REVIEW_COMMENTING",
-  "REVIEW_WATCHING",
-  "REVIEW_DONE",
-  "REVIEW_FAILED",
-] as const;
-
-export type CodeGenState = (typeof CODE_GEN_STATES)[number];
-export type CodeReviewState = (typeof CODE_REVIEW_STATES)[number];
-
-/** Union of all task states across both workflows. */
-export const TASK_STATES = [...CODE_GEN_STATES, ...CODE_REVIEW_STATES] as const;
-
-export type TaskState = CodeGenState | CodeReviewState;
-
-/** "code-gen" = ticket-driven flow; "code-review" = VE acts as reviewer. */
-export type TaskType = "code-gen" | "code-review";
-
-/** Terminal states for the code-generation workflow. */
-export const CODE_GEN_TERMINAL_STATES: ReadonlySet<CodeGenState> = new Set<CodeGenState>([
-  "DONE",
-  "FAILED",
-  "ABANDONED",
-]);
-
-/** Terminal states for the code-review workflow. */
-export const CODE_REVIEW_TERMINAL_STATES: ReadonlySet<CodeReviewState> = new Set<CodeReviewState>([
-  "REVIEW_DONE",
-  "REVIEW_FAILED",
-]);
-
-/** Terminal states across both workflows — no further transitions allowed. */
-export const TERMINAL_STATES: ReadonlySet<TaskState> = new Set<TaskState>([
-  ...CODE_GEN_TERMINAL_STATES,
-  ...CODE_REVIEW_TERMINAL_STATES,
-]);
-
 // ─── Agent interfaces ─────────────────────────────────────────────────────────
 
 export interface FeedbackItem {
@@ -393,8 +371,22 @@ export interface AgentSession {
   copilotReasoningEffort?: string | undefined;
   /** Multi-repo workspace layout — when set, agent-worker uses it to group files/commits by repo. */
   repositoryMap?: RepositoryMap | undefined;
-  /** When true, the agent loads team-defined skills from `<repo>/.github/skills`. Sourced from the project's setting. */
+  /** When true, the agent loads local repository skills from `localSkillsPath`. */
   skillDiscoveryEnabled?: boolean | undefined;
+  /** Workspace-relative path used for local skills when local skill loading is enabled. */
+  localSkillsPath?: string | undefined;
+  /** Remote skills fetched by the worker before opening the agent session. */
+  skillSourcesJson?: string | undefined;
+  /** Pre-formatted ticket-footer trailer line (e.g. "GitLab: https://…/issues/123") injected into every agent commit alongside its Change-Id. Sourced from the project's "full ticket URL in commits" setting. */
+  ticketFooterLine?: string | undefined;
+
+  // ── Aider (agent_execution) ────────────────────────────────────────────────
+  /** Aider LLM backend selector (openai | anthropic | ollama | openrouter | deepseek | openai_compat). */
+  aiderBackend?: string | undefined;
+  /** API key for the selected Aider backend (plaintext at rest, like `githubToken`). */
+  aiderApiKey?: string | undefined;
+  /** Custom API base URL (required for `openai_compat`; optional override for `ollama`). */
+  aiderApiBase?: string | undefined;
 }
 
 export interface TaskContext {
@@ -558,11 +550,21 @@ export interface ReviewWorkspaceInput {
   reasoningEffort?: string | undefined;
   /** Container image (defaults to agentContainerImage from codegen config) */
   containerImage?: string | undefined;
-  /** When true, the agent container loads team-defined skills from <repo>/.github/skills. */
+  /** When true, the agent container loads local repository skills from `localSkillsPath`. */
   skillDiscoveryEnabled?: boolean | undefined;
-}
+  /** Workspace-relative path used for local skills when skill discovery is enabled. */
+  localSkillsPath?: string | undefined;
+  /** Remote skills fetched by the worker before opening the agent session. */
+  skillSourcesJson?: string | undefined;
 
-/** Options for checking out a prior patchset/revision onto a cloned workspace. */
+  // ── Aider (agent_execution) ────────────────────────────────────────────────
+  /** Aider LLM backend selector (openai | anthropic | ollama | openrouter | deepseek | openai_compat). */
+  aiderBackend?: string | undefined;
+  /** API key for the selected Aider backend (plaintext at rest, like `agentToken`). */
+  aiderApiKey?: string | undefined;
+  /** Custom API base URL (required for `openai_compat`; optional override for `ollama`). */
+  aiderApiBase?: string | undefined;
+}
 export interface PatchsetCheckoutOptions {
   /** VCS base URL (used to build the remote fetch URL) */
   vcsBaseUrl: string;
@@ -618,7 +620,7 @@ export interface WorkspaceRunner {
   /** Run the review agent container against the cloned+patched workspace. */
   runReviewInDocker?(
     handle: WorkspaceHandle,
-    input: ReviewWorkspaceInput,
+    input: ReviewWorkspaceInput & { agentAdapter: AgentAdapter },
     callbacks?: { onStderrChunk?: ((chunk: string) => void) | undefined } | undefined
   ): Promise<{ rawOutput: string }>;
   /** Spawn the adapter container and return raw stdout/stderr. Used by ConfigurableAdapter.configure. */
@@ -1033,62 +1035,6 @@ export class ReviewNotFoundError extends ReviewApiError {
 
 // ─── State Store interfaces ───────────────────────────────────────────────────
 
-export interface Task {
-  taskId: TaskId;
-  ticketId: TicketId;
-  ticketSourceLabel: string;
-  ticketTitle: string;
-  ticketDescription: string;
-  state: TaskState;
-  /** Discriminator: "code-gen" (default) or "code-review". */
-  taskType: TaskType;
-  externalChangeId: ExternalChangeId | null;
-  currentPatchset: number;
-  /** For code-review tasks: last patchset reviewed by VE. NULL otherwise. */
-  reviewedPatchset: number | null;
-  cycleCount: number;
-  createdAt: Date;
-  updatedAt: Date;
-  failureReason: string | null;
-  ticketUrl: string | null;
-  reviewUrl: string | null;
-  /** Project ID (null for legacy tasks). */
-  projectId?: ProjectId | null | undefined;
-  /** Human-readable identifier for the UI (e.g. ticket number, Gerrit change number). */
-  displayId: string | null;
-  /** Persisted feature branch ref for the first push; null for legacy tasks (falls back to legacy naming on resume). */
-  pushRef?: string | null;
-}
-
-/** Per-repository change tracking (Gerrit Change-Id or GitLab MR IID) for multi-repo tasks. */
-export interface ChangePerRepository {
-  id: string;
-  taskId: TaskId;
-  repoKey: string;
-  changeId: string;
-  reviewUrl: string | null;
-  status: string;
-  /** Integration ID of the VCS connector used for this repo */
-  integrationId: string;
-  /** Review system type: "gerrit" or "gitlab" */
-  reviewSystem: string;
-  /** Position in the commit chain (0 = legacy single-commit, 1..N for multi-commit) */
-  commitIndex: number;
-  /** SHA-1 hash of the normalized commit subject — for deterministic Change-Id mapping */
-  subjectHash: string | null;
-  createdAt: Date;
-  updatedAt: Date;
-}
-
-export interface StateTransition {
-  id: number;
-  taskId: TaskId;
-  fromState: TaskState;
-  toState: TaskState;
-  metadata: Record<string, unknown>;
-  createdAt: Date;
-}
-
 export interface AgentCycle {
   id: number;
   taskId: TaskId;
@@ -1485,7 +1431,16 @@ export interface DiscoveredResources {
 // ─── Plugin / Integration types ───────────────────────────────────────────────
 
 /** Identifiers for the external systems Virtual Engineer can connect to. */
-export const PROVIDER_IDS = ["github", "gitlab", "gerrit", "redmine", "copilot", "claude", "mock"] as const;
+export const PROVIDER_IDS = [
+  "github",
+  "gitlab",
+  "gerrit",
+  "redmine",
+  "copilot",
+  "claude",
+  "aider",
+  "mock",
+] as const;
 export type ProviderId = (typeof PROVIDER_IDS)[number];
 
 /**

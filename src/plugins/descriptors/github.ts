@@ -20,6 +20,7 @@ import {
   createGitHubDeviceOAuthHandler,
   getGitHubAccessToken,
 } from "./githubOAuth.js";
+import { validateGitHubConnection } from "../../agents/githubConnectionValidator.js";
 
 /**
  * Unified GitHub provider configuration. The single GitHub provider can fulfil
@@ -173,6 +174,11 @@ export const githubDescriptor: ProviderDescriptor = {
     }
     return listGitHubBranches(token, urls.apiBaseUrl, repoKey);
   },
+  testConnection: async (config) => {
+    const parsed = githubConfigSchema.parse(config);
+    const urls = resolveGitHubUrls(parsed.mode as GitHubMode, parsed.baseUrl);
+    return validateGitHubConnection({ token: parsed.token, apiBaseUrl: urls.apiBaseUrl });
+  },
   getSummaryDetails(config) {
     const mode = typeof config["mode"] === "string" ? config["mode"] : "github.com";
     return [mode, "project-bound"];
@@ -250,7 +256,7 @@ export const githubDescriptor: ProviderDescriptor = {
       },
     },
     source_control: {
-      createVcsConnector: (cfg: Record<string, unknown>, _integration: Integration, context?: IntegrationBindingContext) => {
+      createVcsConnector: (cfg: Record<string, unknown>, _integration: Integration, context, runtime) => {
         const parsed = githubConfigSchema.parse(cfg);
         const { owner, repo } = resolveRepo(context?.repoKey, "repoKey");
         const urls = resolveGitHubUrls(parsed.mode as GitHubMode, parsed.baseUrl);
@@ -265,7 +271,7 @@ export const githubDescriptor: ProviderDescriptor = {
           gitAuthorName: parsed.gitAuthorName,
           gitAuthorEmail: parsed.gitAuthorEmail,
           ...(targetBranch !== undefined ? { targetBranch } : {}),
-        });
+        }, runtime?.gitRunner);
       },
     },
   },

@@ -1,8 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { tmpdir } from "os";
-import { join } from "path";
 import { randomUUID } from "crypto";
 import { SqliteStateStore, resolveAgentConfig } from "../../src/state/stateStore.js";
+import { tempDatabasePath } from "./helpers/tempDatabase.js";
 import {
   makeAgentId,
   makeProjectId,
@@ -13,7 +12,7 @@ import {
 } from "../../src/interfaces.js";
 
 function tempDbPath(): string {
-  return join(tmpdir(), `ve-projects-${randomUUID()}.db`);
+  return tempDatabasePath("ve-projects");
 }
 
 async function makeAgent(store: SqliteStateStore, overrides: Partial<Parameters<SqliteStateStore["createAgent"]>[0]> = {}) {
@@ -125,6 +124,45 @@ describe("SqliteStateStore — Phase 2: projects", () => {
     const toggled = await store.updateProject(on.id, { skillDiscoveryEnabled: false });
     expect(toggled.skillDiscoveryEnabled).toBe(false);
     expect((await store.getProjectById(on.id))?.skillDiscoveryEnabled).toBe(false);
+  });
+
+  it("persists and updates skillSourcesJson (defaults to empty array)", async () => {
+    const a = await makeAgent(store);
+    const off = await store.createProject({ name: "Off", type: "coding", agentId: a.id });
+    expect(off.skillSourcesJson).toBe("[]");
+
+    const sources = JSON.stringify([{ source: "ssh://skills.example.com/org/agent-skills", skills: ["skill-a", "skill-b"] }]);
+    const on = await store.createProject({
+      name: "On",
+      type: "coding",
+      agentId: a.id,
+      skillSourcesJson: sources,
+    });
+    expect(on.skillSourcesJson).toBe(sources);
+    expect((await store.getProjectById(on.id))?.skillSourcesJson).toBe(sources);
+
+    const updated = await store.updateProject(on.id, { skillSourcesJson: "[]" });
+    expect(updated.skillSourcesJson).toBe("[]");
+    expect((await store.getProjectById(on.id))?.skillSourcesJson).toBe("[]");
+  });
+
+  it("persists and updates localSkillsPath (defaults to .github/skills)", async () => {
+    const a = await makeAgent(store);
+    const defaulted = await store.createProject({ name: "DefaultLocalSkills", type: "coding", agentId: a.id });
+    expect(defaulted.localSkillsPath).toBe(".github/skills");
+
+    const custom = await store.createProject({
+      name: "CustomLocalSkills",
+      type: "coding",
+      agentId: a.id,
+      localSkillsPath: "team/skills",
+    });
+    expect(custom.localSkillsPath).toBe("team/skills");
+    expect((await store.getProjectById(custom.id))?.localSkillsPath).toBe("team/skills");
+
+    const updated = await store.updateProject(custom.id, { localSkillsPath: "repo-skills" });
+    expect(updated.localSkillsPath).toBe("repo-skills");
+    expect((await store.getProjectById(custom.id))?.localSkillsPath).toBe("repo-skills");
   });
 
   it("createProject throws when agent does not exist", async () => {
@@ -344,6 +382,25 @@ describe("SqliteStateStore — Phase 2: project push targets", () => {
     expect(targets.map((t) => t.repoKey)).toEqual(["main", "core"]);
   });
 
+  it("round-trips reviewer emails", async () => {
+    const a = await makeAgent(store);
+    const p = await store.createProject({ name: "P", type: "coding", agentId: a.id });
+    await makeIntegration(store, "g1", "gerrit");
+    await store.replaceProjectPushTargets(p.id, [{
+      integrationId: "g1",
+      repoKey: "main",
+      cloneUrl: "ssh://x/main",
+      targetBranch: "main",
+      role: "primary",
+      commitOrder: 1,
+      localPath: ".",
+      reviewerEmails: ["alice@example.com", "bob@example.com"],
+    }]);
+
+    const targets = await store.listProjectPushTargets(p.id);
+    expect(targets[0]?.reviewerEmails).toEqual(["alice@example.com", "bob@example.com"]);
+  });
+
   it("replaceProjectPushTargets is atomic — rolls back on commit_order conflict", async () => {
     const a = await makeAgent(store);
     const p = await store.createProject({ name: "P", type: "coding", agentId: a.id });
@@ -504,6 +561,12 @@ describe("resolveAgentConfig — partial-merge semantics", () => {
       agentOverrideJson,
       postCloneScript: "",
       skillDiscoveryEnabled: false,
+      localSkillsPath: ".github/skills",
+      skillSourcesJson: "[]",
+      gerritTopicOverride: null,
+      useFullTicketUrlInCommits: false,
+      postReviewLinkToTicket: false,
+      reactToCiFailures: false,
       enabled: true,
       createdAt: new Date(),
       updatedAt: new Date(),

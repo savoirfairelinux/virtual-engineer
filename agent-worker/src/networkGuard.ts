@@ -83,6 +83,10 @@ function readShellCommand(request: PermissionRequest): string {
   return parts.join(' ');
 }
 
+function rejectPermission(feedback: string): ReturnType<PermissionHandler> {
+  return { kind: 'reject', feedback };
+}
+
 /**
  * Copilot permission handler that denies internet access while approving
  * everything else. Denies the `url` (web fetch) tool outright and denies shell
@@ -90,10 +94,10 @@ function readShellCommand(request: PermissionRequest): string {
  */
 export const restrictNetworkPermissionHandler: PermissionHandler = (request, invocation) => {
   if (request.kind === 'url') {
-    return { kind: 'reject', feedback: 'Network access is disabled for this agent.' };
+    return rejectPermission('Network access is disabled for this agent.');
   }
   if (request.kind === 'shell' && isBlockedNetworkCommand(readShellCommand(request))) {
-    return { kind: 'reject', feedback: 'Network and remote commands are disabled for this agent.' };
+    return rejectPermission('Network and remote commands are disabled for this agent.');
   }
   return approveAll(request, invocation);
 };
