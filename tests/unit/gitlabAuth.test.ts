@@ -1,8 +1,21 @@
-import { describe, it, expect } from "vitest";
-import { isAllowedGitLabProxyTarget, rewriteGitLabUploadUrl } from "../../src/utils/gitlabAuth.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  buildGitLabApiHeaders,
+  buildGitLabAuthHeaders,
+  fetchGitLabCurrentUser,
+  getGitLabAccessToken,
+  getGitLabBaseUrl,
+  getGitLabRequiredConfigString,
+  isAllowedGitLabProxyTarget,
+  rewriteGitLabUploadUrl,
+} from "../../src/utils/gitlabAuth.js";
 
 const BASE = "https://gitlab.example.com";
 const SECRET = "0123456789abcdef0123456789abcdef";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 describe("rewriteGitLabUploadUrl", () => {
   it("rewrites a project upload URL to its REST API form", () => {
@@ -77,5 +90,67 @@ describe("isAllowedGitLabProxyTarget", () => {
     "not-a-url",
   ])("rejects unsafe target %s", (target) => {
     expect(isAllowedGitLabProxyTarget(target, BASE)).toBe(false);
+  });
+});
+
+describe("GitLab authentication helpers", () => {
+  it("normalizes required configuration strings", () => {
+    expect(getGitLabBaseUrl({ baseUrl: ` ${BASE}/ ` })).toBe(BASE);
+    expect(getGitLabAccessToken({ token: " token " })).toBe("token");
+    expect(getGitLabRequiredConfigString({ project: " group/project " }, "project", "Project"))
+      .toBe("group/project");
+  });
+
+  it("rejects missing required configuration strings", () => {
+    expect(() => getGitLabBaseUrl({ baseUrl: " " })).toThrow("GitLab baseUrl is required");
+    expect(() => getGitLabAccessToken({})).toThrow("GitLab access token is required");
+    expect(() => getGitLabRequiredConfigString({}, "project", "Project"))
+      .toThrow("Project is required");
+  });
+
+  it("replaces caller auth headers and normalizes API content type", () => {
+    expect(buildGitLabAuthHeaders("token", {
+      authorization: "Bearer stale",
+      "x-request-id": "request-1",
+    })).toEqual({
+      Authorization: "Bearer token",
+      "x-request-id": "request-1",
+    });
+    expect(buildGitLabApiHeaders("token", {
+      "content-type": "text/plain",
+    })).toEqual({
+      Authorization: "Bearer token",
+      "Content-Type": "application/json",
+    });
+  });
+
+  it("fetches the authenticated GitLab user", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ id: 42, username: "ve" }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchGitLabCurrentUser({ baseUrl: `${BASE}/`, token: "token" }))
+      .resolves.toEqual({ id: 42, username: "ve" });
+    expect(fetchMock).toHaveBeenCalledWith(`${BASE}/api/v4/user`, {
+      headers: {
+        Authorization: "Bearer token",
+        "Content-Type": "application/json",
+      },
+    });
+  });
+
+  it("surfaces authentication failures and malformed user responses", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("denied", { status: 401 })));
+    await expect(fetchGitLabCurrentUser({ baseUrl: BASE, token: "token" }))
+      .rejects.toThrow("GitLab authentication failed: denied");
+
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    })));
+    await expect(fetchGitLabCurrentUser({ baseUrl: BASE, token: "token" }))
+      .rejects.toThrow("Invalid GitLab response: missing user data");
   });
 });
