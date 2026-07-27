@@ -10,6 +10,7 @@ import {
 } from "./gitRunner.js";
 
 const DEFAULT_MAX_BUFFER_BYTES = 1024 * 1024;
+const MAX_ERROR_DETAIL_CHARS = 500;
 
 interface NodeGitRunnerOptions {
   executable?: string | undefined;
@@ -116,7 +117,7 @@ function buildErrorMessage(
   exitCode: number | null,
   stderr: string
 ): string {
-  const detail = stderr.trim();
+  const detail = stderr.trim().slice(0, MAX_ERROR_DETAIL_CHARS);
   switch (reason) {
     case "timeout":
       return "Git command timed out";

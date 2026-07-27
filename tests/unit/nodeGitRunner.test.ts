@@ -32,6 +32,21 @@ describe("NodeGitRunner", () => {
     expect((error as Error).message).not.toContain("super-secret");
   });
 
+  it("caps error message detail while preserving full stderr", async () => {
+    const stderr = "failure ".repeat(100);
+
+    const error = await runner.run([
+      "-e",
+      `process.stderr.write(${JSON.stringify(stderr)}); process.exit(7)`,
+    ], { cwd: process.cwd() }).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(GitCommandError);
+    expect(error).toMatchObject({ stderr });
+    expect((error as Error).message).toBe(
+      `Git command exited with code 7: ${stderr.slice(0, 500)}`
+    );
+  });
+
   it("terminates and reports commands that exceed their timeout", async () => {
     const error = await runner.run([
       "-e",
