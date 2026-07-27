@@ -59,6 +59,17 @@ describe("isAllowedGitLabProxyTarget", () => {
   });
 
   it.each([
+    `${BASE}/group/project/-/raw/main/uploads/${SECRET}/secret.txt`,
+    `${BASE}/group/project/%2D/raw/main/uploads/${SECRET}/secret.txt`,
+    `${BASE}/api/v4/projects/group%2Fproject/repository/files/uploads/${SECRET}/secret.txt`,
+    `${BASE}/group/project/uploads/not-a-secret/image.png`,
+    `${BASE}/project/uploads/${SECRET}/image.png`,
+    `${BASE}/group/project/uploads/${SECRET}/nested/image.png`,
+  ])("rejects upload-shaped non-upload target %s", (target) => {
+    expect(isAllowedGitLabProxyTarget(target, BASE)).toBe(false);
+  });
+
+  it.each([
     `https://gitlab.example.com.attacker.test/uploads/${SECRET}/image.png`,
     `http://gitlab.example.com/uploads/${SECRET}/image.png`,
     `https://gitlab.example.com:8443/uploads/${SECRET}/image.png`,

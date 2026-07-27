@@ -1208,12 +1208,12 @@ describe("createAdminServer", () => {
     try {
       const baseUrl = await listen(server);
       const response = await fetch(
-        `${baseUrl}/api/admin/img-proxy?url=${encodeURIComponent("https://gitlab.example.com/uploads/abcdef1234567890/image.png")}`
+        `${baseUrl}/api/admin/img-proxy?url=${encodeURIComponent("https://gitlab.example.com/uploads/0123456789abcdef0123456789abcdef/image.png")}`
       );
 
       expect(response.status).toBe(200);
       expect(fetchMock).toHaveBeenCalledWith(
-        "https://gitlab.example.com/uploads/abcdef1234567890/image.png",
+        "https://gitlab.example.com/uploads/0123456789abcdef0123456789abcdef/image.png",
         expect.objectContaining({
           headers: expect.objectContaining({
             Authorization: "Bearer oauth-token",

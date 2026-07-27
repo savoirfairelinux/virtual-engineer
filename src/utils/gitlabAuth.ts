@@ -2,6 +2,13 @@
 
 type GitLabHeaderInput = RequestInit["headers"];
 
+const GITLAB_UPLOAD_SUFFIX = "uploads/[0-9a-f]{32}/[^/]+";
+const GITLAB_UPLOAD_PATHS = [
+  new RegExp(`^/${GITLAB_UPLOAD_SUFFIX}$`, "i"),
+  new RegExp(`^/(?!api/)(?:[^/]+/){2,}${GITLAB_UPLOAD_SUFFIX}$`, "i"),
+  new RegExp(`^/api/v4/projects/[^/]+/${GITLAB_UPLOAD_SUFFIX}$`, "i"),
+];
+
 function getNonEmptyString(value: unknown): string | undefined {
   if (typeof value !== "string") {
     return undefined;
@@ -14,16 +21,18 @@ export function normalizeGitLabBaseUrl(baseUrl: string): string {
   return baseUrl.replace(/\/+$/, "");
 }
 
-/** Return true when a proxy target is an HTTP(S) URL on the configured GitLab origin. */
+/** Return true for an explicit GitLab upload URL on the configured HTTP(S) origin. */
 export function isAllowedGitLabProxyTarget(targetUrl: string, baseUrl: string): boolean {
   try {
     const target = new URL(targetUrl);
     const base = new URL(baseUrl);
+    const decodedPathname = decodeURIComponent(target.pathname);
     return (target.protocol === "http:" || target.protocol === "https:") &&
       target.origin === base.origin &&
       target.username.length === 0 &&
       target.password.length === 0 &&
-      /\/uploads\/[^/]+\/.+/.test(target.pathname);
+      !decodedPathname.split("/").includes("-") &&
+      GITLAB_UPLOAD_PATHS.some((pattern) => pattern.test(target.pathname));
   } catch {
     return false;
   }
