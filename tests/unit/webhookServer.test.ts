@@ -8,9 +8,28 @@ import type {
   WebhookServerDependencies,
 } from "../../src/webhooks/webhookServer.js";
 import type { Integration, IntegrationStore, ProjectRecord, ProjectId, AgentId } from "../../src/interfaces.js";
+import { PluginManager } from "../../src/plugins/pluginManager.js";
+import { registerBuiltinPlugins } from "../../src/plugins/init.js";
+import { encryptToken } from "../../src/utils/encryption.js";
+
+const webhookLog = vi.hoisted(() => ({
+  trace: vi.fn(),
+  debug: vi.fn(),
+  info: vi.fn(),
+  warn: vi.fn(),
+  error: vi.fn(),
+  fatal: vi.fn(),
+}));
+
+vi.mock("../../src/logger.js", () => ({
+  getLogger: vi.fn(() => webhookLog),
+}));
 
 const INTEGRATION_ID = "redmine-1";
 const SECRET = "s".repeat(64);
+const ADMIN_SECRET = "webhook-admin-secret";
+
+registerBuiltinPlugins();
 
 function makeIntegration(overrides: Partial<Integration> = {}): Integration {
   return {
@@ -117,6 +136,7 @@ describe("webhookServer", () => {
     let ctx: Awaited<ReturnType<typeof startTestServer>>;
 
     beforeEach(async () => {
+      vi.clearAllMocks();
       store = makeIntegrationStore();
       orchestrator = makeOrchestrator();
       projectStore = makeProjectStore({ project: makeProjectRecord() });
@@ -265,6 +285,57 @@ describe("webhookServer", () => {
       });
       expect(res.status).toBe(202);
       expect(orchestrator.startTaskForProject).toHaveBeenCalledTimes(1);
+    });
+
+    it("accepts webhook delivery when the DB secret is encrypted", async () => {
+      const encryptedIntegration = makeIntegration({
+        configJson: JSON.stringify({
+          webhookSecret: encryptToken(SECRET, ADMIN_SECRET),
+          baseUrl: "http://r/",
+          apiKey: encryptToken("x", ADMIN_SECRET),
+          virtualEngineerUserLogin: "ve",
+        }),
+      });
+      store = makeIntegrationStore([encryptedIntegration]);
+      await ctx.closeServer();
+      ctx = await startTestServer({
+        integrationStore: store,
+        pluginManager: new PluginManager(store, { adminAuthSecret: ADMIN_SECRET }),
+        orchestrator,
+        projectStore,
+      });
+      const body = JSON.stringify({ issue: { id: 42, subject: "hi", project: { identifier: "p" } } });
+
+      const res = await call(`/webhooks/${INTEGRATION_ID}/issue.created`, {
+        body,
+        headers: { "x-hub-signature-256": hmacSig(body, SECRET) },
+      });
+
+      expect(res.status).toBe(202);
+      expect(orchestrator.startTaskForProject).toHaveBeenCalledTimes(1);
+    });
+
+    it("logs credential decryption failures without exposing ciphertext", async () => {
+      const invalidCiphertext = "veenc:v1:not-valid-ciphertext";
+      store = makeIntegrationStore([makeIntegration({
+        configJson: JSON.stringify({ webhookSecret: invalidCiphertext }),
+      })]);
+      await ctx.closeServer();
+      ctx = await startTestServer({
+        integrationStore: store,
+        pluginManager: new PluginManager(store, { adminAuthSecret: ADMIN_SECRET }),
+        orchestrator,
+        projectStore,
+      });
+
+      const res = await call(`/webhooks/${INTEGRATION_ID}/issue.created`, { body: "{}" });
+
+      expect(res.status).toBe(401);
+      expect(webhookLog.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ integrationId: INTEGRATION_ID, err: expect.any(Error) }),
+        "failed to read webhook secret",
+      );
+      expect(JSON.stringify(webhookLog.warn.mock.calls)).not.toContain(invalidCiphertext);
     });
 
     it("returns 202 with valid X-Gitlab-Token", async () => {

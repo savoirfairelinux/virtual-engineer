@@ -139,6 +139,8 @@ export interface ProjectPushTargetRecord {
   sshKeyPath: string | null;
   /** SSH agent identity public-key path for identity pinning, or null when not pinning. */
   sshAgentPubKeyPath?: string | null | undefined;
+  /** Runtime-resolved known_hosts path for this target's SSH integration. */
+  sshKnownHostsPath?: string | undefined;
   createdAt: Date;
   updatedAt: Date;
 }

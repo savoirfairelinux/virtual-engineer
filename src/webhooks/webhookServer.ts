@@ -2,6 +2,7 @@ import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { getLogger } from "../logger.js";
 import type { Integration, IntegrationStore, ProjectRecord } from "../interfaces.js";
+import type { PluginManager } from "../plugins/pluginManager.js";
 import { getHandlerForProviderEvent, getSupportedEventsForProvider, providerHasWebhookHandler } from "./handlers/index.js";
 
 
@@ -32,6 +33,7 @@ export interface ProjectLookupStore {
 
 export interface WebhookServerDependencies {
   integrationStore: IntegrationStore;
+  pluginManager?: PluginManager | undefined;
   projectStore: ProjectLookupStore;
   orchestrator: WebhookCapableOrchestrator;
   trustProxy?: boolean | undefined;
@@ -121,7 +123,7 @@ export async function handleWebhookRequest(
     return true;
   }
 
-  const secret = extractWebhookSecret(integration);
+  const secret = extractWebhookSecret(integration, deps.pluginManager);
   if (!secret) {
     log.warn({ integrationId }, "webhook rejected: integration missing or no secret");
     writeUnauthorized(response);
@@ -222,12 +224,15 @@ export async function handleWebhookRequest(
 }
 
 /** Extract the plain-text `webhookSecret` from the integration's JSON config; returns null if absent. */
-function extractWebhookSecret(integration: Integration | null): string | null {
+function extractWebhookSecret(integration: Integration | null, pluginManager?: PluginManager): string | null {
   if (!integration) return null;
   let parsed: unknown;
   try {
-    parsed = JSON.parse(integration.configJson);
-  } catch {
+    parsed = pluginManager
+      ? pluginManager.decryptIntegrationConfig(integration)
+      : JSON.parse(integration.configJson);
+  } catch (err) {
+    log.warn({ integrationId: integration.id, err }, "failed to read webhook secret");
     return null;
   }
   if (typeof parsed !== "object" || parsed === null) return null;

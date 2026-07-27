@@ -1,6 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
 import { validateClaudeConnection } from "../../src/agents/claudeConnectionValidator.js";
-import { encryptToken } from "../../src/utils/encryption.js";
 
 function jsonResponse(status: number): Response {
   return new Response(status === 200 ? JSON.stringify({ data: [] }) : "err", { status });
@@ -42,11 +41,10 @@ describe("validateClaudeConnection", () => {
   });
 
   describe("subscription mode", () => {
-    it("decrypts the stored session token and uses a bearer + oauth beta header", async () => {
+    it("uses the session token as a bearer + oauth beta header", async () => {
       const fetch = vi.fn().mockResolvedValue(jsonResponse(200));
-      const encrypted = encryptToken("sk-ant-oat-123", undefined);
       const result = await validateClaudeConnection(
-        { authMode: "subscription", sessionToken: encrypted },
+        { authMode: "subscription", sessionToken: "sk-ant-oat-123" },
         { fetch: fetch as unknown as typeof globalThis.fetch }
       );
       expect(result.success).toBe(true);

@@ -90,6 +90,7 @@ async function main(): Promise<void> {
     },
   });
 
+  await pluginManager.migrateEncryptCredentials();
   await pluginManager.loadFromDatabase();
 
   let runtimeDependencies = buildRuntimeDependencies(pluginManager);

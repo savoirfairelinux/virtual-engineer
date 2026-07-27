@@ -4,9 +4,8 @@
  * Derives a 256-bit key from `ADMIN_AUTH_SECRET` via HMAC-SHA256 and uses it
  * to encrypt/decrypt OAuth session tokens stored in `agents.modelConfigJson`.
  *
- * When `adminAuthSecret` is not set the token is stored with a `plain:` prefix
- * (base64-encoded plaintext). This allows the OAuth flow to work without a
- * secret, but is insecure — users should set ADMIN_AUTH_SECRET in production.
+ * New credential writes require `ADMIN_AUTH_SECRET`. Legacy `plain:` values
+ * remain readable so startup migration can encrypt them after a secret is set.
  */
 
 import { createCipheriv, createDecipheriv, createHmac, randomBytes } from "crypto";
@@ -16,6 +15,7 @@ const IV_LENGTH = 12; // GCM standard
 const AUTH_TAG_LENGTH = 16;
 const KEY_DERIVATION_LABEL = "ve-copilot-token-encryption";
 const PLAIN_PREFIX = "plain:";
+const ENCRYPTED_PREFIX = "veenc:v1:";
 
 /** Derive a 256-bit AES key from `secret` using HMAC-SHA256 keyed on a fixed label. */
 function deriveKey(secret: string): Buffer {
@@ -24,14 +24,15 @@ function deriveKey(secret: string): Buffer {
 
 /**
  * Encrypt a token string with AES-256-GCM.
- * Returns a base64 string containing `iv + authTag + ciphertext`.
+ * Returns `veenc:v1:<base64>`, where the payload contains
+ * `iv + authTag + ciphertext`.
  *
- * If `adminAuthSecret` is not set, returns a `plain:`-prefixed base64 string
- * (unencrypted). Callers should warn the user when this path is taken.
+ * Throws when `adminAuthSecret` is not configured; plaintext credential writes
+ * are never permitted.
  */
 export function encryptToken(token: string, adminAuthSecret: string | undefined): string {
   if (!adminAuthSecret) {
-    return PLAIN_PREFIX + Buffer.from(token, "utf8").toString("base64");
+    throw new Error("ADMIN_AUTH_SECRET is required to encrypt credentials.");
   }
   const key = deriveKey(adminAuthSecret);
   const iv = randomBytes(IV_LENGTH);
@@ -41,7 +42,35 @@ export function encryptToken(token: string, adminAuthSecret: string | undefined)
   const authTag = cipher.getAuthTag();
 
   // iv (12) + authTag (16) + ciphertext
-  return Buffer.concat([iv, authTag, encrypted]).toString("base64");
+  return `${ENCRYPTED_PREFIX}${Buffer.concat([iv, authTag, encrypted]).toString("base64")}`;
+}
+
+/** Return whether a stored credential uses the deprecated plaintext encoding. */
+export function isLegacyPlainToken(value: string): boolean {
+  return value.startsWith(PLAIN_PREFIX);
+}
+
+/** Return whether a value has the current managed-encryption envelope. */
+export function isVersionedEncryptedToken(value: string): boolean {
+  return value.startsWith(ENCRYPTED_PREFIX);
+}
+
+/**
+ * Identify an unprefixed value shaped like the legacy AES-GCM payload.
+ * Canonical base64 and the minimum IV/tag length avoid classifying ordinary
+ * provider tokens as legacy ciphertext.
+ */
+export function isProbableLegacyEncryptedToken(value: string): boolean {
+  if (value.length === 0 || value.startsWith("veenc:") || isLegacyPlainToken(value)) {
+    return false;
+  }
+  try {
+    const decoded = Buffer.from(value, "base64");
+    return decoded.length >= IV_LENGTH + AUTH_TAG_LENGTH
+      && decoded.toString("base64") === value;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -54,11 +83,17 @@ export function decryptToken(encrypted: string, adminAuthSecret: string | undefi
   if (encrypted.startsWith(PLAIN_PREFIX)) {
     return Buffer.from(encrypted.slice(PLAIN_PREFIX.length), "base64").toString("utf8");
   }
+  if (encrypted.startsWith("veenc:") && !isVersionedEncryptedToken(encrypted)) {
+    throw new Error("Unsupported encrypted credential version.");
+  }
   if (!adminAuthSecret) {
     throw new Error("ADMIN_AUTH_SECRET is required to decrypt the session token.");
   }
   const key = deriveKey(adminAuthSecret);
-  const data = Buffer.from(encrypted, "base64");
+  const payload = isVersionedEncryptedToken(encrypted)
+    ? encrypted.slice(ENCRYPTED_PREFIX.length)
+    : encrypted;
+  const data = Buffer.from(payload, "base64");
 
   if (data.length < IV_LENGTH + AUTH_TAG_LENGTH) {
     throw new Error("Invalid encrypted token: too short");
@@ -72,4 +107,22 @@ export function decryptToken(encrypted: string, adminAuthSecret: string | undefi
   decipher.setAuthTag(authTag);
 
   return decipher.update(ciphertext) + decipher.final("utf8");
+}
+
+/**
+ * Returns true if `value` was produced by `encryptToken` — either a `plain:`-prefixed
+ * token (no secret configured) or a valid AES-256-GCM ciphertext for the current secret.
+ *
+ * Use this guard to prevent double-encrypting a credential that is already stored
+ * encrypted (e.g. when a `PUT` round-trips an unchanged password field).
+ */
+export function isEncryptedToken(value: string, adminAuthSecret: string | undefined): boolean {
+  if (isLegacyPlainToken(value) || isVersionedEncryptedToken(value)) return true;
+  if (!adminAuthSecret) return false;
+  try {
+    decryptToken(value, adminAuthSecret);
+    return true;
+  } catch {
+    return false;
+  }
 }

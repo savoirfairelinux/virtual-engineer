@@ -528,6 +528,7 @@ export function IntegrationFormModal({ integration, plugins, onClose, onSaved }:
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<string | null>(null);
+  const [testLogs, setTestLogs] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [copiedCode, setCopiedCode] = useState(false);
@@ -544,6 +545,7 @@ export function IntegrationFormModal({ integration, plugins, onClose, onSaved }:
   const setConfigField = (key: string, val: string) => {
     setConfig((prev) => ({ ...prev, [key]: val }));
     setTestResult(null);
+    setTestLogs([]);
   };
 
   const handleOAuthToken = useCallback((token: string) => {
@@ -571,6 +573,7 @@ export function IntegrationFormModal({ integration, plugins, onClose, onSaved }:
     setSelectedType(type);
     setConfig(defaults);
     setTestResult(null);
+    setTestLogs([]);
     setError(null);
     setStep("form");
   };
@@ -580,20 +583,23 @@ export function IntegrationFormModal({ integration, plugins, onClose, onSaved }:
     setSelectedType("");
     setConfig({});
     setTestResult(null);
+    setTestLogs([]);
     setError(null);
   };
 
   const handleTest = async () => {
     setTesting(true);
     setTestResult(null);
+    setTestLogs([]);
     setError(null);
     try {
       const payload = { provider: selectedType, name: name || "test", config };
       const body = integration ? { ...payload, integrationId: integration.id } : payload;
-      const res = await api.post<{ success: boolean; message?: string; error?: string }>(
+      const res = await api.post<{ success: boolean; message?: string; error?: string; logs?: string[] }>(
         "/api/admin/integrations/test",
         body
       );
+      setTestLogs(res.logs ?? []);
       setTestResult(res.success ? (res.message ?? "Connection successful") : (res.error ?? "Test failed"));
     } catch (e) {
       setTestResult(e instanceof Error ? `Error: ${e.message}` : "Test failed");
@@ -853,9 +859,26 @@ export function IntegrationFormModal({ integration, plugins, onClose, onSaved }:
                 ? "var(--ok)"
                 : "var(--danger)",
               borderRadius: "var(--radius-sm)",
+              display: "flex",
+              flexDirection: "column",
+              gap: testLogs.length > 0 ? "6px" : "0px",
             }}
           >
-            {testResult}
+            <div>{testResult}</div>
+            {testLogs.length > 0 && (
+              <div
+                style={{
+                  fontSize: "12px",
+                  fontFamily: "var(--font-mono, monospace)",
+                  lineHeight: "1.6",
+                  opacity: 0.9,
+                }}
+              >
+                {testLogs.map((line, i) => (
+                  <div key={i}>{line}</div>
+                ))}
+              </div>
+            )}
           </div>
         )}
 

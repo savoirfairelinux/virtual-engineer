@@ -10,7 +10,10 @@ function tempDbPath(): string {
   return tempDatabasePath("ve-auth-routes");
 }
 
-function makeServer(store: SqliteStateStore): ReturnType<typeof createAdminServer> {
+function makeServer(
+  store: SqliteStateStore,
+  adminAuthSecret: string | null = SECRET,
+): ReturnType<typeof createAdminServer> {
   return createAdminServer({
     stateStore: store,
     config: {
@@ -19,7 +22,7 @@ function makeServer(store: SqliteStateStore): ReturnType<typeof createAdminServe
       maxAgentCycles: 3,
       maxRetryAttempts: 5,
       pollingIntervalMs: 30_000,
-      adminAuthSecret: SECRET,
+      ...(adminAuthSecret !== null ? { adminAuthSecret } : {}),
     },
     polling: {
       isRunning: () => true,
@@ -79,7 +82,33 @@ describe("adminAuthRoutes", () => {
     it("reports needsSetup=true before any user exists (public route)", async () => {
       const response = await fetch(`${baseUrl}/api/admin/auth/setup-status`);
       expect(response.status).toBe(200);
-      await expect(response.json()).resolves.toEqual({ needsSetup: true });
+      await expect(response.json()).resolves.toEqual({
+        needsSetup: true,
+        credentialEncryptionConfigured: true,
+      });
+    });
+
+    it("reports missing credential encryption without blocking initial setup", async () => {
+      await closeServer(server);
+      server = makeServer(store, null);
+      baseUrl = await listen(server);
+
+      const response = await fetch(`${baseUrl}/api/admin/auth/setup-status`);
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toEqual({
+        needsSetup: true,
+        credentialEncryptionConfigured: false,
+      });
+
+      await expect(runSetup(baseUrl)).resolves.toMatchObject({
+        user: { username: "root", role: "admin" },
+      });
+
+      const completedStatus = await fetch(`${baseUrl}/api/admin/auth/setup-status`);
+      await expect(completedStatus.json()).resolves.toEqual({
+        needsSetup: false,
+        credentialEncryptionConfigured: false,
+      });
     });
 
     it("allows setup without any authorization header", async () => {
@@ -98,7 +127,10 @@ describe("adminAuthRoutes", () => {
       expect(session.user.role).toBe("admin");
 
       const status = await fetch(`${baseUrl}/api/admin/auth/setup-status`);
-      await expect(status.json()).resolves.toEqual({ needsSetup: false });
+      await expect(status.json()).resolves.toEqual({
+        needsSetup: false,
+        credentialEncryptionConfigured: false,
+      });
 
       const { entries } = await store.listAuditEntries({ action: "auth.setup" });
       expect(entries).toHaveLength(1);
@@ -116,6 +148,23 @@ describe("adminAuthRoutes", () => {
       expect(response.status).toBe(403);
     });
 
+    it("allows exactly one concurrent request to create the initial admin", async () => {
+      const setupRequest = (username: string): Promise<Response> => fetch(`${baseUrl}/api/admin/auth/setup`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ username, password: "Str0ng-Pass-1x" }),
+      });
+
+      const responses = await Promise.all([
+        setupRequest("first-admin"),
+        setupRequest("second-admin"),
+      ]);
+
+      expect(responses.map((response) => response.status).sort()).toEqual([201, 403]);
+      expect(await store.countUsers()).toBe(1);
+      expect(await store.countEnabledAdmins()).toBe(1);
+    });
+
     it("validates username and password", async () => {
       for (const body of [{ username: "", password: "Str0ng-Pass-1x" }, { username: "root", password: "short" }]) {
         const response = await fetch(`${baseUrl}/api/admin/auth/setup`, {
@@ -131,10 +180,10 @@ describe("adminAuthRoutes", () => {
       const response = await fetch(`${baseUrl}/api/admin/auth/setup`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ username: "root", password: "password123" }),
+        body: JSON.stringify({ username: "root", password: "alllowercase" }),
       });
       expect(response.status).toBe(400);
-      await expect(response.json()).resolves.toEqual({ error: expect.stringContaining("too common") });
+      await expect(response.json()).resolves.toEqual({ error: expect.stringContaining("too weak") });
     });
   });
 

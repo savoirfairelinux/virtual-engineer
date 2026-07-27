@@ -90,19 +90,19 @@ describe("DefaultProviderAuthService", () => {
     expect(result).toEqual({ encryptedToken: "enc_token", isPlaintext: false });
   });
 
-  it("marks the token response as plaintext when no admin secret is configured", async () => {
-    const encryptTokenFn = vi.fn(() => "plain:dGVzdA==");
+  it("rejects auth completion before token exchange when no admin secret is configured", async () => {
+    const encryptTokenFn = vi.fn(() => "enc_token");
     const handler = makeDeviceHandler();
     const service = new DefaultProviderAuthService({ encryptTokenFn });
 
-    const result = await service.completeAuthFlow(
+    await expect(service.completeAuthFlow(
       handler,
       { deviceCode: "dc_test" },
       { adminAuthSecret: undefined }
-    );
+    )).rejects.toThrow("ADMIN_AUTH_SECRET");
 
-    expect(encryptTokenFn).toHaveBeenCalledWith("ghu_test_token", undefined);
-    expect(result).toEqual({ encryptedToken: "plain:dGVzdA==", isPlaintext: true });
+    expect(handler.complete).not.toHaveBeenCalled();
+    expect(encryptTokenFn).not.toHaveBeenCalled();
   });
 
   it("encrypts the returned token when completing redirect auth", async () => {
