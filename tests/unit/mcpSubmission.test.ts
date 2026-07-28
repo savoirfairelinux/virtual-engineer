@@ -124,8 +124,9 @@ describe("MCP submission contract", () => {
   });
 
   it("tells the agent to correct rejected payloads without duplicating accepted submissions", () => {
-    expect(appendSubmissionInstruction("Review safely.", "ve_submit_review")).toContain(
-      "If an attempt is rejected before it is accepted, correct the arguments and retry"
+    expect(appendSubmissionInstruction("Review safely.", "ve_submit_review")).toBe(
+      "Review safely.\n\nSubmit the final structured result through ve_submit_review before ending. " +
+      "Exactly one submission must be accepted; correct and retry rejected attempts."
     );
   });
 
