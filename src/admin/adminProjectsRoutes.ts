@@ -27,7 +27,7 @@ import { accessibleResourceIds, ALL_RESOURCES } from "./authorization/policyEngi
 import { isConfiguredSshFilePathAllowed } from "../utils/sshFilePath.js";
 import { getProviderDescriptor, getProviderDomainCapabilities } from "../plugins/registry.js";
 import { listSkillSourceSkills, validateSkillSourcesConnection } from "./skillSourceDiscovery.js";
-import { resolveReviewStrategy } from "../agents/reviewStrategy.js";
+import { ReviewStrategyConfigError, resolveReviewStrategy } from "../agents/reviewStrategy.js";
 
 const log = getLogger("admin-projects");
 const MAX_TCP_PORT = 65_535;
@@ -604,7 +604,14 @@ async function validateAgentOverrideJson(
   } catch {
     // Existing malformed agent config remains a runtime validation concern.
   }
-  if (resolveReviewStrategy(agentConfig) === "copilot_native") {
+  let reviewStrategy;
+  try {
+    reviewStrategy = resolveReviewStrategy(agentConfig);
+  } catch (err: unknown) {
+    if (err instanceof ReviewStrategyConfigError) return err.message;
+    throw err;
+  }
+  if (reviewStrategy === "copilot_native") {
     const rawProviderOptions = override["providerOptions"];
     const providerOptions = rawProviderOptions !== null
       && typeof rawProviderOptions === "object"
