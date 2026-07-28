@@ -81,6 +81,15 @@ describe("MCP submission contract", () => {
     }])).not.toThrow();
   });
 
+  it("recognizes accepted submissions under the declared MCP server identity", () => {
+    expect(() => assertSuccessfulSubmissionToolCall("review", [{
+      callId: "submit-1",
+      name: "virtual-engineer-submission-ve_submit_review",
+      input: { comments: [], summary: "No issues", replies: [], vote: 1 },
+      success: true,
+    }])).not.toThrow();
+  });
+
   it("allows rejected payloads to be corrected before one accepted submission", () => {
     expect(() => assertSuccessfulSubmissionToolCall("review", [
       {
