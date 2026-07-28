@@ -48,11 +48,12 @@ export function buildNativeReviewPrompt(vePrompt: string): string {
     'Review the Virtual Engineer context and supplied diff below as the source of truth.',
     'For extra context, only read files under /workspace; do not execute commands, access the network, or edit files.',
     'Do not recompute the diff or compare branches.',
+    'Return findings to the parent; do not call submission tools.',
     '',
     vePrompt,
   ].join('\n');
 
-  return [
+  const parentPrompt = [
     'Delegate exactly one review with the task tool:',
     '- name: "ve-native-code-review"',
     '- description: "Review the VE-provided patch"',
@@ -65,6 +66,8 @@ export function buildNativeReviewPrompt(vePrompt: string): string {
     delegatedPrompt,
     'VE_DELEGATED_PROMPT_END',
   ].join('\n');
+
+  return appendSubmissionInstruction(parentPrompt, 've_submit_review');
 }
 
 // Git identity forwarded into the headless CLI subprocess environment.
@@ -184,6 +187,7 @@ export function buildCopilotSessionConfig(
   const submission = submissionSchema !== undefined
     ? buildSubmissionMcpConfig(mode, submissionSchema)
     : null;
+  const nativeReview = mode === 'review' && options.reviewStrategy === 'copilot_native';
 
   return {
     model,
@@ -192,7 +196,7 @@ export function buildCopilotSessionConfig(
       : {}),
     ...(skillDirectories.length > 0 ? { skillDirectories } : {}),
     systemMessage: buildCopilotSystemMessage(
-      submission !== null
+      submission !== null && !nativeReview
         ? appendSubmissionInstruction(agentInstructions, submission.toolName)
         : agentInstructions,
     ),
