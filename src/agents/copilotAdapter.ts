@@ -266,12 +266,13 @@ export class CopilotAdapter implements AgentAdapter, ConfigurableAdapter {
     authEnv: Record<string, string> = {}
   ): AdapterContainerSpec {
     const nativeReview = input.reviewStrategy === "copilot_native";
+    const reasoningEffort = input.providerOptions?.["reasoningEffort"];
     const providerEnv: Record<string, string> = {
       ...authEnv,
       GITHUB_TOKEN: input.agentToken,
       ...(!nativeReview ? { COPILOT_MODEL: input.model ?? this.config.model } : {}),
-      ...(!nativeReview && typeof input.providerOptions?.["reasoningEffort"] === "string" && input.providerOptions["reasoningEffort"].trim()
-        ? { COPILOT_REASONING_EFFORT: input.providerOptions["reasoningEffort"].trim() }
+      ...(!nativeReview && typeof reasoningEffort === "string" && reasoningEffort.trim()
+        ? { COPILOT_REASONING_EFFORT: reasoningEffort.trim() }
         : {}),
       ...(input.reviewOutputSchema !== undefined
         ? { REVIEW_OUTPUT_SCHEMA: JSON.stringify(input.reviewOutputSchema) }

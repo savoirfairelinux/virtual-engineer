@@ -57,6 +57,7 @@ export function assertSuccessfulSubmissionToolCall(
     toolName,
     `mcp__ve-submission__${toolName}`,
     `ve-submission-${toolName}`,
+    `virtual-engineer-submission-${toolName}`,
   ]);
   const calls = toolCalls.filter(({ name }) => submissionNames.has(name));
   const acceptedCalls = calls.filter(({ success }) => success === true);

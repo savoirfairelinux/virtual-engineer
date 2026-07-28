@@ -323,6 +323,16 @@ describe("CopilotAdapter", () => {
       expect(spec.env["COPILOT_MODEL"]).toBeUndefined();
       expect(spec.env["COPILOT_REASONING_EFFORT"]).toBeUndefined();
     });
+
+    it("ignores non-string reasoning effort in direct review mode", () => {
+      const adapter = new CopilotAdapter();
+      const spec = adapter.buildReviewContainerSpec({
+        ...makeReviewInput(),
+        providerOptions: { reasoningEffort: { invalid: true } },
+      }, { GITHUB_TOKEN: "ghp_tok" });
+
+      expect(spec.env["COPILOT_REASONING_EFFORT"]).toBeUndefined();
+    });
   });
 
   // ── native PTY failure detection ───────────────────────────────────────────
