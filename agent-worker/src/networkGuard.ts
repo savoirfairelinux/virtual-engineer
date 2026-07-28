@@ -9,6 +9,8 @@
  */
 import { approveAll } from '@github/copilot-sdk';
 import type { PermissionHandler, PermissionRequest } from '@github/copilot-sdk';
+import { realpathSync } from 'node:fs';
+import { isAbsolute, relative, resolve, sep } from 'node:path';
 
 /**
  * Shell commands that reach the network. Covers standalone network clients and
@@ -87,6 +89,33 @@ function rejectPermission(feedback: string): ReturnType<PermissionHandler> {
   return { kind: 'reject', feedback };
 }
 
+function isWithinDirectory(directory: string, candidate: string): boolean {
+  const relativePath = relative(directory, candidate);
+  return relativePath === '' || (
+    relativePath !== '..' &&
+    !relativePath.startsWith(`..${sep}`) &&
+    !isAbsolute(relativePath)
+  );
+}
+
+function isRepositoryRead(request: PermissionRequest, workspaceRoot: string): boolean {
+  const details = request as unknown as Record<string, unknown>;
+  const requestedPath = details['path'];
+  if (typeof requestedPath !== 'string' || requestedPath.trim() === '') return false;
+
+  try {
+    const resolvedRoot = resolve(workspaceRoot);
+    const resolvedPath = resolve(resolvedRoot, requestedPath);
+    if (!isWithinDirectory(resolvedRoot, resolvedPath)) return false;
+
+    const realRoot = realpathSync(resolvedRoot);
+    const realPath = realpathSync(resolvedPath);
+    return isWithinDirectory(realRoot, realPath);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Copilot permission handler that denies internet access while approving
  * everything else. Denies the `url` (web fetch) tool outright and denies shell
@@ -107,18 +136,22 @@ export const restrictNetworkPermissionHandler: PermissionHandler = (request, inv
  * workspace or execute commands. Allow repository reads and the single VE
  * review-submission tool; reject every other capability.
  */
-export const restrictReviewPermissionHandler: PermissionHandler = (request, invocation) => {
-  if (request.kind === 'read') {
-    return approveAll(request, invocation);
-  }
-  if (request.kind === 'mcp') {
-    const details = request as unknown as Record<string, unknown>;
-    if (
-      details['serverName'] === 've-submission' &&
-      details['toolName'] === 've_submit_review'
-    ) {
+export function createReviewPermissionHandler(workspaceRoot: string): PermissionHandler {
+  return (request, invocation) => {
+    if (request.kind === 'read' && isRepositoryRead(request, workspaceRoot)) {
       return approveAll(request, invocation);
     }
-  }
-  return rejectPermission('Review sessions may only read repository files and submit the final review.');
-};
+    if (request.kind === 'mcp') {
+      const details = request as unknown as Record<string, unknown>;
+      if (
+        details['serverName'] === 've-submission' &&
+        details['toolName'] === 've_submit_review'
+      ) {
+        return approveAll(request, invocation);
+      }
+    }
+    return rejectPermission('Review sessions may only read repository files and submit the final review.');
+  };
+}
+
+export const restrictReviewPermissionHandler = createReviewPermissionHandler('/workspace');
