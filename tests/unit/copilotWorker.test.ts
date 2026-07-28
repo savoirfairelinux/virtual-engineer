@@ -321,11 +321,36 @@ describe("Copilot worker native profile", () => {
       "Review the Virtual Engineer context and supplied diff below as the source of truth.",
       "For extra context, only read files under /workspace; do not execute commands, access the network, or edit files.",
       "Do not recompute the diff or compare branches.",
+      "Return findings to the parent; do not call submission tools.",
       "",
       "VE REVIEW CONTEXT",
       "DIFF CONTENT",
       "VE_DELEGATED_PROMPT_END",
+      "",
+      "Submit the final structured result through ve_submit_review before ending. Exactly one submission must be accepted; correct and retry rejected attempts.",
     ].join("\n"));
+  });
+
+  it("keeps native review submission guidance out of the delegated system message", () => {
+    const config = buildCopilotSessionConfig({
+      model: "gpt-5.1-codex",
+      agentInstructions: "read-only review policy",
+      cwd: "/workspace",
+      timeoutMs: 1000,
+      mode: "review",
+      reviewStrategy: "copilot_native",
+      reviewOutputSchema: {
+        type: "object",
+        properties: { vote: { type: "integer", enum: [-1, 0, 1] } },
+        required: ["vote"],
+        additionalProperties: false,
+      },
+    }, []);
+
+    expect(config.systemMessage).toEqual({
+      mode: "append",
+      content: "read-only review policy",
+    });
   });
 
   it("appends agent instructions to the Copilot CLI foundation explicitly", () => {
@@ -353,6 +378,9 @@ describe("Copilot worker native profile", () => {
     }, []);
 
     expect(config.enableConfigDiscovery).toBe(false);
+    expect(config.systemMessage).toEqual(expect.objectContaining({
+      content: expect.stringContaining("ve_submit_review"),
+    }));
     expect(config.mcpServers).toEqual({
       "ve-submission": expect.objectContaining({
         type: "stdio",
