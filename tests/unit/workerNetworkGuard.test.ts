@@ -7,9 +7,13 @@
  * disallow list covers the web tools and network/push shell commands.
  */
 
-import { describe, it, expect } from "vitest";
+import { afterEach, describe, it, expect } from "vitest";
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   NETWORK_DISALLOWED_TOOLS,
+  createReviewPermissionHandler,
   isBlockedNetworkCommand,
   restrictReviewPermissionHandler,
   restrictNetworkPermissionHandler,
@@ -138,6 +142,14 @@ describe("networkGuard.restrictNetworkPermissionHandler", () => {
 });
 
 describe("networkGuard.restrictReviewPermissionHandler", () => {
+  const tempDirectories: string[] = [];
+
+  afterEach(() => {
+    for (const directory of tempDirectories.splice(0)) {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it.each(["shell", "write", "url", "memory", "hook", "custom-tool"])(
     "rejects %s requests",
     (kind) => {
@@ -149,12 +161,79 @@ describe("networkGuard.restrictReviewPermissionHandler", () => {
     },
   );
 
-  it("approves repository reads", () => {
-    const result = restrictReviewPermissionHandler(
-      { kind: "read" } as Parameters<typeof restrictReviewPermissionHandler>[0],
+  it.each(["README.md", "src/index.ts"])("approves repository read %s", (requestedPath) => {
+    const workspace = mkdtempSync(join(tmpdir(), "ve-review-workspace-"));
+    tempDirectories.push(workspace);
+    mkdirSync(join(workspace, "src"));
+    writeFileSync(join(workspace, "README.md"), "read me");
+    writeFileSync(join(workspace, "src/index.ts"), "export {};");
+    const handler = createReviewPermissionHandler(workspace);
+
+    const result = handler(
+      { kind: "read", path: requestedPath } as unknown as Parameters<typeof handler>[0],
       invocation,
     );
     expect(result).not.toEqual(expect.objectContaining({ kind: "reject" }));
+  });
+
+  it("approves an absolute path inside the repository", () => {
+    const workspace = mkdtempSync(join(tmpdir(), "ve-review-workspace-"));
+    tempDirectories.push(workspace);
+    const file = join(workspace, "README.md");
+    writeFileSync(file, "read me");
+    const handler = createReviewPermissionHandler(workspace);
+
+    const result = handler(
+      { kind: "read", path: file } as unknown as Parameters<typeof handler>[0],
+      invocation,
+    );
+
+    expect(result).not.toEqual(expect.objectContaining({ kind: "reject" }));
+  });
+
+  it.each(["../outside.txt", "/proc/self/environ", "/workspace-escape/file"])(
+    "rejects read outside the repository: %s",
+    (requestedPath) => {
+      const workspace = mkdtempSync(join(tmpdir(), "ve-review-workspace-"));
+      tempDirectories.push(workspace);
+      const handler = createReviewPermissionHandler(workspace);
+
+      const result = handler(
+        { kind: "read", path: requestedPath } as unknown as Parameters<typeof handler>[0],
+        invocation,
+      );
+
+      expect(result).toEqual(expect.objectContaining({ kind: "reject" }));
+    },
+  );
+
+  it("rejects read requests without a path", () => {
+    const workspace = mkdtempSync(join(tmpdir(), "ve-review-workspace-"));
+    tempDirectories.push(workspace);
+    const handler = createReviewPermissionHandler(workspace);
+
+    const result = handler(
+      { kind: "read" } as Parameters<typeof handler>[0],
+      invocation,
+    );
+
+    expect(result).toEqual(expect.objectContaining({ kind: "reject" }));
+  });
+
+  it("rejects repository symlinks that resolve outside the repository", () => {
+    const workspace = mkdtempSync(join(tmpdir(), "ve-review-workspace-"));
+    const outside = mkdtempSync(join(tmpdir(), "ve-review-outside-"));
+    tempDirectories.push(workspace, outside);
+    writeFileSync(join(outside, "secret"), "sensitive");
+    symlinkSync(join(outside, "secret"), join(workspace, "linked-secret"));
+    const handler = createReviewPermissionHandler(workspace);
+
+    const result = handler(
+      { kind: "read", path: "linked-secret" } as unknown as Parameters<typeof handler>[0],
+      invocation,
+    );
+
+    expect(result).toEqual(expect.objectContaining({ kind: "reject" }));
   });
 
   it("approves only the VE submission MCP server", () => {

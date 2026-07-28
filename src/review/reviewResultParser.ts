@@ -6,23 +6,12 @@ import {
 } from "./reviewOutputContract.js";
 
 /**
- * Parser for the structured block emitted by the code-review agent.
+ * Parser for integration-specific structured review output.
  *
- * The agent is required to produce a single JSON block delimited by
- * `REVIEW_RESULT_START` and `REVIEW_RESULT_END` markers. Anything outside
- * the markers (chat-style preamble, tool traces, ...) is ignored.
- *
- * Example expected payload:
- *
- *   REVIEW_RESULT_START
- *   {
- *     "comments": [
- *       {"file": "src/foo.ts", "line": 42, "message": "...", "severity": "error"}
- *     ],
- *     "summary": "Overall assessment...",
- *     "vote": -1
- *   }
- *   REVIEW_RESULT_END
+ * Every payload requires comments, summary, and replies. The decision field is
+ * provider-specific: Gerrit uses vote, GitHub uses reviewAction, and GitLab uses
+ * approvalAction. Delimited output is preferred; balanced bare JSON remains an
+ * Aider transport fallback.
  */
 
 export class ReviewResultParseError extends Error {
