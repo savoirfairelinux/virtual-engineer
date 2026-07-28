@@ -231,6 +231,7 @@ function makeDeps(
     workspaceRunner: runner,
     resolveAgentForProject: vi.fn(async () => ({
       adapter: { name: "copilot" } as AgentAdapter,
+      reviewStrategy: "ve_direct" as const,
       model: "test-model",
       token: "gh_test_token",
       systemPrompt: "You are a code reviewer.",
@@ -904,6 +905,29 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
     expect(runner.destroyWorkspace).toHaveBeenCalledOnce();
   });
 
+  it("propagates native review strategy to the Docker workspace input", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING", projectId: makeProjectId("proj-1") });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+    const resolveAgentForProject = vi.fn(async () => ({
+      adapter: { name: "copilot" } as AgentAdapter,
+      reviewStrategy: "copilot_native" as const,
+      model: undefined,
+      token: "gh_test_token",
+      systemPrompt: "You are a code reviewer.",
+      instructionsPrompt: "Review the code changes.",
+    }));
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner, { resolveAgentForProject }));
+
+    await orch.runReview(initial.taskId);
+
+    expect(runner.runReviewInDocker).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ reviewStrategy: "copilot_native", model: undefined }),
+      expect.anything(),
+    );
+  });
+
   it("passes postCloneScript to prepareProjectWorkspace when non-empty", async () => {
     const initial = makeTask({ state: "REVIEW_PENDING", projectId: makeProjectId("proj-1") });
     const mocks = makeMocks(initial);
@@ -930,6 +954,7 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
     const projectAdapter = { name: "copilot" } as AgentAdapter;
     const resolveAgentForProject = vi.fn(async () => ({
       adapter: projectAdapter,
+      reviewStrategy: "ve_direct" as const,
       model: "gpt-5",
       token: "project-specific-token",
       systemPrompt: "You are the project reviewer.",
@@ -957,6 +982,7 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
     const { runner } = makeWorkspaceRunner();
     const resolveAgentForProject = vi.fn(async () => ({
       adapter: { name: "copilot" } as AgentAdapter,
+      reviewStrategy: "ve_direct" as const,
       model: "gpt-5",
       token: "project-specific-token",
       systemPrompt: "Custom review role.",
@@ -1020,6 +1046,7 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
       project.id === makeProjectId("proj-1")
         ? {
             adapter: adapterA,
+          reviewStrategy: "ve_direct" as const,
             model: "model-a",
             token: "token-a",
             systemPrompt: "System A",
@@ -1027,6 +1054,7 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
           }
         : {
             adapter: adapterB,
+          reviewStrategy: "ve_direct" as const,
             model: "model-b",
             token: "token-b",
             systemPrompt: "System B",

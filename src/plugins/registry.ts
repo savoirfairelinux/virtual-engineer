@@ -168,10 +168,23 @@ export interface AgentAdapterContext {
   dockerNetwork: string;
 }
 
+export type ReviewStrategyId = "copilot_native";
+
+export interface ReviewStrategyDescriptor {
+  id: ReviewStrategyId;
+  label: string;
+  description: string;
+  experimental: boolean;
+  modelSelection: "provider";
+  requiredSystemPromptId: string;
+}
+
 /** `agent_execution` capability: run a coding agent inside a workspace. */
 export interface AgentExecutionCapability {
   /** Provider-owned fields rendered generically in the agent form. */
   configFields?: PluginField[] | undefined;
+  /** Optional provider-owned review strategies exposed by the admin agent form. */
+  reviewStrategies?: ReviewStrategyDescriptor[] | undefined;
   /**
    * Factory for the runtime agent adapter, given host runtime context derived
    * from `AppConfig`. Declaring this makes a provider a fully self-describing

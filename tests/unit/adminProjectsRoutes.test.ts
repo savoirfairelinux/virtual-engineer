@@ -742,6 +742,56 @@ describe("Admin API — Project routes (/api/admin/projects)", () => {
     expect(r.body?.["error"]).toMatch(/not agent instructions/i);
   });
 
+  it("rejects conflicting project overrides for native review agents", async () => {
+    const agent = await store.createAgent({
+      name: "native-review-bot",
+      type: "review",
+      modelConfigJson: JSON.stringify({ providerOptions: { reviewStrategy: "copilot_native" } }),
+      enabled: true,
+      systemPromptId: "system_review",
+      instructionsPromptId: "instructions_review",
+    });
+    await seedIntegration(store, "gerrit-1", "gerrit");
+    const createResponse = await rest(server, "/api/admin/projects", {
+      method: "POST",
+      body: {
+        type: "review",
+        name: "NativeOverride",
+        agentId: agent.id,
+        agentOverrideJson: JSON.stringify({ model: "project-model" }),
+        reviewConfig: { integrationId: "gerrit-1", repoKeys: ["x"] },
+      },
+    });
+
+    expect(createResponse.status).toBe(400);
+    expect(createResponse.body?.["error"]).toMatch(/native review.*model/i);
+
+    const validCreate = await rest(server, "/api/admin/projects", {
+      method: "POST",
+      body: {
+        type: "review",
+        name: "NativeWorkflowOverride",
+        agentId: agent.id,
+        agentOverrideJson: JSON.stringify({ instructionsPromptId: "instructions_generic_code" }),
+        reviewConfig: { integrationId: "gerrit-1", repoKeys: ["x"] },
+      },
+    });
+    expect(validCreate.status).toBe(201);
+
+    const projectId = (validCreate.body?.["project"] as { id: string }).id;
+    const updateResponse = await rest(server, `/api/admin/projects/${projectId}`, {
+      method: "PUT",
+      body: {
+        agentOverrideJson: JSON.stringify({
+          systemPromptId: "system_generic_code",
+          providerOptions: { reviewStrategy: "ve_direct", reasoningEffort: "high" },
+        }),
+      },
+    });
+    expect(updateResponse.status).toBe(400);
+    expect(updateResponse.body?.["error"]).toMatch(/native review.*systemPromptId/i);
+  });
+
   it("POST / coding requires ticketSource and at least one pushTarget", async () => {
     const agent = await makeAgent(store, "coding");
     const noPush = await rest(server, "/api/admin/projects", {

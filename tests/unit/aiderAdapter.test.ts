@@ -34,6 +34,7 @@ function makeContext(overrides: Partial<TaskContext> = {}): TaskContext {
 
 function makeReviewInput(overrides: Partial<ReviewWorkspaceInput> = {}): ReviewWorkspaceInput {
   return {
+    reviewStrategy: "ve_direct",
     changeId: "Iabc" as ReviewWorkspaceInput["changeId"],
     revisionNumber: 1,
     patchset: 1,
@@ -195,6 +196,7 @@ describe("AiderAdapter", () => {
     it("sets review mode and prompt file", () => {
       const adapter = new AiderAdapter();
       const input: ReviewWorkspaceInput = {
+        reviewStrategy: "ve_direct",
         changeId: "Iabc" as ReviewWorkspaceInput["changeId"],
         revisionNumber: 1,
         patchset: 1,

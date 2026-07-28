@@ -387,6 +387,98 @@ describe("Admin API — Agent routes (/api/admin/agents)", () => {
     expect(agent["integrationId"]).toBe("copilot-1");
   });
 
+  it("POST / canonicalizes a Copilot native review agent", async () => {
+    await store.upsertIntegration({
+      id: "copilot-native",
+      provider: "copilot",
+      name: "Copilot Native",
+      configJson: "{}",
+      enabled: true,
+    });
+
+    const r = await rest(server, "/api/admin/agents", {
+      method: "POST",
+      body: {
+        name: "Native Reviewer",
+        type: "review",
+        integrationId: "copilot-native",
+        modelConfig: {
+          model: "gpt-4.1",
+          providerOptions: {
+            reviewStrategy: "copilot_native",
+            reasoningEffort: "high",
+            keepMe: true,
+          },
+        },
+        systemPromptId: "system_review",
+        instructionsPromptId: "instructions_review",
+        feedbackInstructionsPromptId: "instructions_feedback_code",
+      },
+    });
+
+    expect(r.status).toBe(201);
+    const agent = r.body?.["agent"] as Record<string, unknown>;
+    expect(agent["reviewStrategy"]).toBe("copilot_native");
+    expect(agent["model"]).toBeNull();
+    expect(agent["feedbackInstructionsPromptId"]).toBeNull();
+    expect(agent["modelConfig"]).toEqual({
+      providerOptions: {
+        reviewStrategy: "copilot_native",
+        keepMe: true,
+      },
+    });
+  });
+
+  it("POST / rejects Copilot native review for coding agents", async () => {
+    await store.upsertIntegration({
+      id: "copilot-coding",
+      provider: "copilot",
+      name: "Copilot",
+      configJson: "{}",
+      enabled: true,
+    });
+
+    const r = await rest(server, "/api/admin/agents", {
+      method: "POST",
+      body: {
+        name: "Invalid Native Agent",
+        type: "coding",
+        integrationId: "copilot-coding",
+        modelConfig: { providerOptions: { reviewStrategy: "copilot_native" } },
+        systemPromptId: "system_generic_code",
+        instructionsPromptId: "instructions_generic_code",
+      },
+    });
+
+    expect(r.status).toBe(400);
+    expect(r.body?.["error"]).toMatch(/only available for review agents/i);
+  });
+
+  it("POST / rejects native review when the linked provider does not support it", async () => {
+    await store.upsertIntegration({
+      id: "claude-native",
+      provider: "claude",
+      name: "Claude",
+      configJson: "{}",
+      enabled: true,
+    });
+
+    const r = await rest(server, "/api/admin/agents", {
+      method: "POST",
+      body: {
+        name: "Wrong Provider",
+        type: "review",
+        integrationId: "claude-native",
+        modelConfig: { providerOptions: { reviewStrategy: "copilot_native" } },
+        systemPromptId: "system_review",
+        instructionsPromptId: "instructions_review",
+      },
+    });
+
+    expect(r.status).toBe(400);
+    expect(r.body?.["error"]).toMatch(/does not support.*copilot_native/i);
+  });
+
   it("PUT /:id updates integrationId", async () => {
     await store.upsertIntegration({
       id: "copilot-2",
@@ -409,6 +501,50 @@ describe("Admin API — Agent routes (/api/admin/agents)", () => {
     expect(r.status).toBe(200);
     const stored = await store.getAgentById(a.id);
     expect(stored?.integrationId).toBe("copilot-2");
+  });
+
+  it("PUT /:id canonicalizes the complete agent state when enabling native review", async () => {
+    await store.upsertIntegration({
+      id: "copilot-edit-native",
+      provider: "copilot",
+      name: "Copilot",
+      configJson: "{}",
+      enabled: true,
+    });
+    const agent = await store.createAgent({
+      name: "Direct Reviewer",
+      type: "review",
+      integrationId: "copilot-edit-native",
+      modelConfigJson: JSON.stringify({
+        model: "gpt-4.1",
+        providerOptions: { reasoningEffort: "high", keepMe: true },
+      }),
+      systemPromptId: "system_review",
+      instructionsPromptId: "instructions_review",
+      feedbackInstructionsPromptId: "instructions_feedback_code",
+    });
+
+    const r = await rest(server, `/api/admin/agents/${agent.id}`, {
+      method: "PUT",
+      body: {
+        modelConfig: {
+          providerOptions: {
+            reviewStrategy: "copilot_native",
+            reasoningEffort: "low",
+            keepMe: true,
+          },
+        },
+      },
+    });
+
+    expect(r.status).toBe(200);
+    const updated = r.body?.["agent"] as Record<string, unknown>;
+    expect(updated["reviewStrategy"]).toBe("copilot_native");
+    expect(updated["model"]).toBeNull();
+    expect(updated["feedbackInstructionsPromptId"]).toBeNull();
+    expect(updated["modelConfig"]).toEqual({
+      providerOptions: { reviewStrategy: "copilot_native", keepMe: true },
+    });
   });
 
   it("GET /:id/available-models returns models for PAT-mode linked integration", async () => {

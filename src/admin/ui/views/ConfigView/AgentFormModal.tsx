@@ -2,8 +2,12 @@ import { useState, useEffect } from "react";
 import { Modal, Field, FieldInput, FieldSelect, FormError, FormRow, FormActions } from "../../components/Modal.tsx";
 import { Icon } from "../../components/Icon.tsx";
 import { api } from "../../api.ts";
-import type { ApiAgent, ApiIntegration, ApiPlugin, ApiPrompt } from "../../types.ts";
-import { serializeProviderOptions } from "./agentFormProviderOptions.ts";
+import type { ApiAgent, ApiIntegration, ApiPlugin, ApiPrompt, ReviewStrategy } from "../../types.ts";
+import {
+  buildAgentModelConfig,
+  normalizeAgentReviewForm,
+  serializeProviderOptions,
+} from "./agentFormProviderOptions.ts";
 
 interface AvailableModel {
   id: string;
@@ -27,6 +31,7 @@ interface Props {
 interface AgentForm {
   name: string;
   type: "coding" | "review";
+  reviewStrategy: ReviewStrategy;
   integrationId: string;
   model: string;
   maxConcurrent: string;
@@ -53,6 +58,7 @@ export function AgentFormModal({ agent, integrations, plugins, prompts, onClose,
   const [form, setForm] = useState<AgentForm>({
     name: agent?.name ?? "",
     type: agent?.type ?? "coding",
+    reviewStrategy: agent?.reviewStrategy ?? "ve_direct",
     integrationId: agent?.integrationId ?? (agentIntegrations[0]?.id ?? ""),
     model: (agent?.modelConfig as Record<string, string>)?.["model"] ?? "",
     maxConcurrent: agent?.maxConcurrent?.toString() ?? "1",
@@ -68,12 +74,19 @@ export function AgentFormModal({ agent, integrations, plugins, prompts, onClose,
   const [modelsLoading, setModelsLoading] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const selectedIntegration = agentIntegrations.find((integration) => integration.id === form.integrationId);
-  const agentConfigFields = plugins.find((plugin) => plugin.provider === selectedIntegration?.provider)?.agentConfigFields ?? [];
+  const selectedPlugin = plugins.find((plugin) => plugin.provider === selectedIntegration?.provider);
+  const agentConfigFields = selectedPlugin?.agentConfigFields ?? [];
+  const reviewStrategies = form.type === "review" ? selectedPlugin?.reviewStrategies ?? [] : [];
+  const nativeReview = form.reviewStrategy === "copilot_native";
 
   // Fetch available models whenever the selected integration changes
   useEffect(() => {
     const integrationId = form.integrationId;
-    if (!integrationId) { setAvailableModels([]); return; }
+    if (!integrationId || nativeReview) {
+      setAvailableModels([]);
+      setModelsLoading(false);
+      return;
+    }
 
     // Fast path: models already embedded in the loaded integration list
     const integration = agentIntegrations.find((i) => i.id === integrationId);
@@ -101,14 +114,36 @@ export function AgentFormModal({ agent, integrations, plugins, prompts, onClose,
       .catch(() => { if (!cancelled) setAvailableModels([]); })
       .finally(() => { if (!cancelled) setModelsLoading(false); });
     return () => { cancelled = true; };
-  }, [form.integrationId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [form.integrationId, nativeReview]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const set = (k: keyof AgentForm) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     setForm((prev) => ({ ...prev, [k]: e.target.value }));
   };
 
   const setIntegration = (event: React.ChangeEvent<HTMLSelectElement>) => {
-    setForm((prev) => ({ ...prev, integrationId: event.target.value, model: "", providerOptions: {} }));
+    const integrationId = event.target.value;
+    const integration = agentIntegrations.find((candidate) => candidate.id === integrationId);
+    const plugin = plugins.find((candidate) => candidate.provider === integration?.provider);
+    setForm((prev) => normalizeAgentReviewForm({
+      ...prev,
+      integrationId,
+      model: "",
+      providerOptions: {},
+    }, plugin));
+  };
+
+  const setType = (event: React.ChangeEvent<HTMLSelectElement>) => {
+    setForm((prev) => normalizeAgentReviewForm({
+      ...prev,
+      type: event.target.value as AgentForm["type"],
+    }, selectedPlugin));
+  };
+
+  const setReviewStrategy = (event: React.ChangeEvent<HTMLSelectElement>) => {
+    setForm((prev) => normalizeAgentReviewForm({
+      ...prev,
+      reviewStrategy: event.target.value as ReviewStrategy,
+    }, selectedPlugin));
   };
 
   const setProviderOption = (key: string, value: string) => {
@@ -139,18 +174,21 @@ export function AgentFormModal({ agent, integrations, plugins, prompts, onClose,
         form.providerOptions,
         existingProviderOptions,
       );
+      const normalizedForm = normalizeAgentReviewForm(form, selectedPlugin);
       const payload = {
-        name: form.name,
-        type: form.type,
-        integrationId: form.integrationId || null,
-        modelConfig: {
-          ...(form.model ? { model: form.model } : isEdit ? { model: null } : {}),
-          ...(Object.keys(providerOptions).length > 0 || isEdit ? { providerOptions } : {}),
-        },
+        name: normalizedForm.name,
+        type: normalizedForm.type,
+        integrationId: normalizedForm.integrationId || null,
+        modelConfig: buildAgentModelConfig({
+          reviewStrategy: normalizedForm.reviewStrategy,
+          model: normalizedForm.model,
+          providerOptions,
+          isEdit,
+        }),
         maxConcurrent: isNaN(maxConcurrent) ? 1 : maxConcurrent,
-        systemPromptId: form.systemPromptId,
-        instructionsPromptId: form.instructionsPromptId,
-        feedbackInstructionsPromptId: form.feedbackInstructionsPromptId || null,
+        systemPromptId: normalizedForm.systemPromptId,
+        instructionsPromptId: normalizedForm.instructionsPromptId,
+        feedbackInstructionsPromptId: normalizedForm.feedbackInstructionsPromptId || null,
       };
       if (isEdit) {
         await api.put(`/api/admin/agents/${agent!.id}`, payload);
@@ -173,11 +211,24 @@ export function AgentFormModal({ agent, integrations, plugins, prompts, onClose,
         </Field>
 
         <Field label="Type" required>
-          <FieldSelect value={form.type} onChange={set("type") as React.ChangeEventHandler<HTMLSelectElement>}>
+          <FieldSelect value={form.type} onChange={setType}>
             <option value="coding">Coding</option>
             <option value="review">Review</option>
           </FieldSelect>
         </Field>
+
+        {reviewStrategies.length > 0 && (
+          <Field label="Review strategy" required hint="Choose how this provider performs code review">
+            <FieldSelect value={form.reviewStrategy} onChange={setReviewStrategy}>
+              <option value="ve_direct">VE direct</option>
+              {reviewStrategies.map((strategy) => (
+                <option key={strategy.id} value={strategy.id}>
+                  {strategy.label}{strategy.experimental ? " (experimental)" : ""}
+                </option>
+              ))}
+            </FieldSelect>
+          </Field>
+        )}
 
         <Field label="Agent Integration" required hint="An enabled agent-execution integration (e.g. Copilot, Claude, Aider, Mock)">
           <FieldSelect value={form.integrationId} onChange={setIntegration}>
@@ -188,7 +239,7 @@ export function AgentFormModal({ agent, integrations, plugins, prompts, onClose,
           </FieldSelect>
         </Field>
 
-        <Field label="Model" hint={availableModels.length > 0 ? "Select a model or leave on default" : "Leave blank to use default (auto)"}>
+        {!nativeReview && <Field label="Model" hint={availableModels.length > 0 ? "Select a model or leave on default" : "Leave blank to use default (auto)"}>
           {availableModels.length > 0 ? (
             <FieldSelect value={form.model} onChange={set("model") as React.ChangeEventHandler<HTMLSelectElement>} disabled={modelsLoading}>
               <option value="">— default (auto) —</option>
@@ -204,14 +255,14 @@ export function AgentFormModal({ agent, integrations, plugins, prompts, onClose,
           ) : (
             <FieldInput value={form.model} placeholder={modelsLoading ? "Loading models…" : "auto"} onChange={set("model")} disabled={modelsLoading} />
           )}
-        </Field>
+        </Field>}
 
         <Field label="Max Concurrent" hint="Maximum simultaneous agent cycles (≥1)">
           <FieldInput type="number" min={1} value={form.maxConcurrent} onChange={set("maxConcurrent")} />
         </Field>
 
         <Field label="Agent Instructions" required hint="Permanent policy appended to the provider's native agent foundation">
-          <FieldSelect value={form.systemPromptId} onChange={set("systemPromptId")}>
+          <FieldSelect value={form.systemPromptId} onChange={set("systemPromptId")} disabled={nativeReview}>
             <option value="">— select a prompt —</option>
             {systemPrompts.map((p) => (
               <option key={p.id} value={p.id}>{p.label}</option>
@@ -228,14 +279,14 @@ export function AgentFormModal({ agent, integrations, plugins, prompts, onClose,
           </FieldSelect>
         </Field>
 
-        <Field label="Feedback Workflow Instructions" hint="Replaces workflow instructions on retry cycles">
+        {!nativeReview && <Field label="Feedback Workflow Instructions" hint="Replaces workflow instructions on retry cycles">
           <FieldSelect value={form.feedbackInstructionsPromptId} onChange={set("feedbackInstructionsPromptId")}>
             <option value="">— none —</option>
             {instructionsPrompts.map((p) => (
               <option key={p.id} value={p.id}>{p.label}</option>
             ))}
           </FieldSelect>
-        </Field>
+        </Field>}
 
         {agentConfigFields.length > 0 && (
           <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
@@ -250,6 +301,7 @@ export function AgentFormModal({ agent, integrations, plugins, prompts, onClose,
               <Icon name="chevdown" size={12} style={{ transform: showAdvanced ? "rotate(180deg)" : "none" }} />
             </button>
             {showAdvanced && agentConfigFields.map((field) => {
+              if (nativeReview && field.key === "reasoningEffort") return null;
               if (field.dependsOn && form.providerOptions[field.dependsOn.field] !== field.dependsOn.value) return null;
               const value = form.providerOptions[field.key] ?? "";
               return field.type === "select" ? (

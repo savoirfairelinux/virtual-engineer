@@ -11,6 +11,7 @@ import { assertPromptRole } from "../utils/promptRole.js";
 import {
   resolveProviderOptions,
 } from "../agents/providerOptions.js";
+import { resolveReviewStrategy } from "../agents/reviewStrategy.js";
 import { PluginManager } from "../plugins/pluginManager.js";
 import { ReviewOrchestrator } from "./reviewOrchestrator.js";
 import { DockerWorkspaceRunner } from "../workspace/workspaceRunner.js";
@@ -24,6 +25,7 @@ import type {
   Integration,
   ProviderId,
   ProjectRecord,
+  ReviewStrategy,
   Task,
   StateStore,
   PromptStore,
@@ -194,6 +196,42 @@ export function getAgentTokenForReview(
 
 // ─── Per-project agent resolution ────────────────────────────────────────────
 
+function parseConfigRecord(json: string | null | undefined): Record<string, unknown> {
+  if (!json) return {};
+  const parsed: unknown = JSON.parse(json);
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("Agent configuration must be a JSON object");
+  }
+  return parsed as Record<string, unknown>;
+}
+
+function resolveReviewProjectConfig(
+  agent: import("../interfaces.js").AgentRecord,
+  project: ProjectRecord,
+): { project: ProjectRecord; reviewStrategy: ReviewStrategy } {
+  const agentConfig = parseConfigRecord(agent.modelConfigJson);
+  const reviewStrategy = resolveReviewStrategy(agentConfig);
+  if (reviewStrategy === "ve_direct") return { project, reviewStrategy };
+
+  const override = parseConfigRecord(project.agentOverrideJson);
+  const providerOptions = {
+    ...resolveProviderOptions(agentConfig),
+    ...resolveProviderOptions(override),
+  };
+  delete providerOptions["reviewStrategy"];
+  delete providerOptions["reasoningEffort"];
+  delete override["model"];
+  delete override["systemPromptId"];
+  delete override["reviewStrategy"];
+  delete override["reasoningEffort"];
+  override["providerOptions"] = providerOptions;
+
+  return {
+    project: { ...project, agentOverrideJson: JSON.stringify(override) },
+    reviewStrategy,
+  };
+}
+
 /**
  * Resolve the adapter/model/token bound to a specific VE project, for use by
  * `ReviewOrchestrator.runReview()`. Returns `null` when the project has no
@@ -209,6 +247,7 @@ async function resolveReviewAgentForProject(
   bundleLog: ReturnType<typeof getLogger>,
 ): Promise<{
   adapter: AgentAdapter;
+  reviewStrategy: ReviewStrategy;
   model: string | undefined;
   token: string;
   systemPrompt: string;
@@ -238,18 +277,25 @@ async function resolveReviewAgentForProject(
       return null;
     }
 
-    // Merge the project's agentOverrideJson on top of the agent's own
-    // modelConfigJson so a per-project model override actually applies
-    // (same semantics as the coding-agent path in orchestrator.ts).
-    const resolved = resolveAgentConfig(agent, project);
+    const strategyConfig = resolveReviewProjectConfig(agent, project);
+    const resolved = resolveAgentConfig(agent, strategyConfig.project);
     const providerOptions = resolveProviderOptions(resolved.extra);
-    const resolvedModel = resolved.model?.trim() || undefined;
+    delete providerOptions["reviewStrategy"];
+    if (strategyConfig.reviewStrategy === "copilot_native") {
+      delete providerOptions["reasoningEffort"];
+    }
+    const resolvedModel = strategyConfig.reviewStrategy === "copilot_native"
+      ? undefined
+      : resolved.model?.trim() || undefined;
+    const systemPromptId = strategyConfig.reviewStrategy === "copilot_native"
+      ? agent.systemPromptId
+      : resolved.systemPromptId;
     const [resolvedSystemPrompt, resolvedInstructionsPrompt] = await Promise.all([
-      resolved.systemPromptId ? store.getPrompt(resolved.systemPromptId) : Promise.resolve(null),
+      systemPromptId ? store.getPrompt(systemPromptId) : Promise.resolve(null),
       resolved.instructionsPromptId ? store.getPrompt(resolved.instructionsPromptId) : Promise.resolve(null),
     ]);
     if (!resolvedSystemPrompt) {
-      throw new Error(`System prompt '${resolved.systemPromptId}' not found`);
+      throw new Error(`System prompt '${systemPromptId}' not found`);
     }
     if (!resolvedInstructionsPrompt) {
       throw new Error(`Instructions prompt '${resolved.instructionsPromptId}' not found`);
@@ -295,6 +341,7 @@ async function resolveReviewAgentForProject(
 
     return {
       adapter,
+      reviewStrategy: strategyConfig.reviewStrategy,
       model: resolvedModel,
       token,
       systemPrompt: resolvedSystemPrompt.content,

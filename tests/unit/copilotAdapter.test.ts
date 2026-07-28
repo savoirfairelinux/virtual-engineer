@@ -259,6 +259,7 @@ describe("CopilotAdapter", () => {
   describe("buildReviewContainerSpec", () => {
     function makeReviewInput() {
       return {
+        reviewStrategy: "ve_direct" as const,
         changeId: makeExternalChangeId("I1234567890abcdef1234567890abcdef12345678"),
         revisionNumber: 42,
         patchset: 1,
@@ -307,6 +308,20 @@ describe("CopilotAdapter", () => {
       const spec = adapter.buildReviewContainerSpec(input, { GITHUB_TOKEN: "ghp_tok" });
 
       expect(spec.env["SKILL_SOURCES_JSON"]).toBeUndefined();
+    });
+
+    it("uses CLI-managed models and omits reasoning effort in native review mode", () => {
+      const adapter = new CopilotAdapter({ model: "configured-model" });
+      const spec = adapter.buildReviewContainerSpec({
+        ...makeReviewInput(),
+        reviewStrategy: "copilot_native",
+        model: "project-model",
+        providerOptions: { reasoningEffort: "high" },
+      }, { GITHUB_TOKEN: "ghp_tok" });
+
+      expect(spec.env["REVIEW_STRATEGY"]).toBe("copilot_native");
+      expect(spec.env["COPILOT_MODEL"]).toBeUndefined();
+      expect(spec.env["COPILOT_REASONING_EFFORT"]).toBeUndefined();
     });
   });
 

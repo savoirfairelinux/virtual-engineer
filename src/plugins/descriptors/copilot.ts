@@ -126,6 +126,16 @@ export function createCopilotDescriptor(adminAuthSecret?: string): ProviderDescr
     },
     capabilities: {
       agent_execution: {
+        reviewStrategies: [
+          {
+            id: "copilot_native",
+            label: "Copilot native review",
+            description: "Use Copilot CLI's built-in code-review subagent.",
+            experimental: true,
+            modelSelection: "provider",
+            requiredSystemPromptId: "system_review",
+          },
+        ],
         configFields: [
           {
             key: "reasoningEffort",
