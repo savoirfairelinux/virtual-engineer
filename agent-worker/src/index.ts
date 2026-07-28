@@ -36,7 +36,8 @@ import { resolveProvider, isAgentProvider, AGENT_PROVIDER_IDS } from './provider
 import type { AgentRun } from './providers/types.js';
 import {
   CHANGE_SUBMISSION_JSON_SCHEMA,
-  assertSingleSubmissionToolCall,
+  assertSingleNativeReviewDelegation,
+  assertSuccessfulSubmissionToolCall,
   readSubmission,
 } from './mcpSubmission.js';
 
@@ -72,6 +73,18 @@ try {
   process.stderr.write('Warning: failed to parse PER_REPO_CHANGE_IDS_JSON\n');
 }
 const REVIEW_MODE = process.env['REVIEW_MODE'] === '1';
+const REVIEW_STRATEGY_RAW = process.env['REVIEW_STRATEGY'] ?? 've_direct';
+if (REVIEW_STRATEGY_RAW !== 've_direct' && REVIEW_STRATEGY_RAW !== 'copilot_native') {
+  process.stderr.write(`FATAL: unknown REVIEW_STRATEGY "${REVIEW_STRATEGY_RAW}".\n`);
+  process.exit(1);
+}
+const REVIEW_STRATEGY: 've_direct' | 'copilot_native' = REVIEW_STRATEGY_RAW === 'copilot_native'
+  ? 'copilot_native'
+  : 've_direct';
+if (REVIEW_STRATEGY === 'copilot_native' && (!REVIEW_MODE || AGENT_PROVIDER !== 'copilot')) {
+  process.stderr.write('FATAL: copilot_native review strategy requires Copilot review mode.\n');
+  process.exit(1);
+}
 const SKILL_DISCOVERY = process.env['SKILL_DISCOVERY'] === '1';
 const USER_PROMPT_FILE = process.env['USER_PROMPT_FILE'] ?? '';
 const SYSTEM_PROMPT = process.env['SYSTEM_PROMPT'] ?? '';
@@ -157,6 +170,7 @@ async function runAgent(
     cwd: REPO_PATH,
     timeoutMs,
     mode,
+    ...(mode === 'review' ? { reviewStrategy: REVIEW_STRATEGY } : {}),
     skillDiscovery: SKILL_DISCOVERY,
     ...(mode === 'review' && REVIEW_OUTPUT_SCHEMA !== undefined
       ? { reviewOutputSchema: REVIEW_OUTPUT_SCHEMA }
@@ -180,7 +194,11 @@ async function runReviewMode(): Promise<ReviewWorkerResult> {
     throw new Error(`User prompt file is empty: ${USER_PROMPT_FILE}`);
   }
 
-  process.stderr.write(`review mode: provider=${AGENT_PROVIDER} model=${ACTIVE_MODEL_LABEL}\n`);
+  process.stderr.write(
+    `review mode: provider=${AGENT_PROVIDER} strategy=${REVIEW_STRATEGY} ` +
+    `model=${REVIEW_STRATEGY === 'copilot_native' ? 'CLI-managed' : ACTIVE_MODEL_LABEL}\n`,
+  );
+  emitEvent('review.strategy_selected', { reviewStrategy: REVIEW_STRATEGY });
 
   const agent = await runAgent(reviewPrompt, 9 * 60 * 1000, 'review');
   try {
@@ -189,7 +207,12 @@ async function runReviewMode(): Promise<ReviewWorkerResult> {
       if (REVIEW_OUTPUT_SCHEMA === undefined) {
         throw new Error('REVIEW_OUTPUT_SCHEMA is required for MCP review submissions');
       }
-      assertSingleSubmissionToolCall('review', agent.toolsByKind);
+      if (REVIEW_STRATEGY === 'copilot_native') {
+        assertSingleNativeReviewDelegation(agent.toolCalls ?? []);
+      }
+      if (agent.toolCalls !== undefined) {
+        assertSuccessfulSubmissionToolCall('review', agent.toolCalls);
+      }
       rawOutput = JSON.stringify(readSubmission(undefined, REVIEW_OUTPUT_SCHEMA));
     }
     // session.end is emitted by the provider runner (see providers/).
@@ -201,7 +224,12 @@ async function runReviewMode(): Promise<ReviewWorkerResult> {
       modifiedFiles: [],
       summary: rawOutput.slice(0, 500),
       agentLogs: rawOutput,
-      metadata: { adapter: ADAPTER_LABEL, model: ACTIVE_MODEL_LABEL, reviewMode: true },
+      metadata: {
+        adapter: ADAPTER_LABEL,
+        model: REVIEW_STRATEGY === 'copilot_native' ? 'CLI-managed' : ACTIVE_MODEL_LABEL,
+        reviewMode: true,
+        reviewStrategy: REVIEW_STRATEGY,
+      },
     };
   } finally {
     await agent.cleanup();
@@ -284,7 +312,9 @@ async function main(): Promise<AgentResult> {
   try {
     let submission: Record<string, unknown> | null = null;
     if (ACTIVE_PROVIDER.submissionTransport === 'mcp') {
-      assertSingleSubmissionToolCall('codegen', handlerState.toolsByKind);
+      if (agent.toolCalls !== undefined) {
+        assertSuccessfulSubmissionToolCall('codegen', agent.toolCalls);
+      }
       submission = readSubmission(undefined, CHANGE_SUBMISSION_JSON_SCHEMA);
     }
     const submittedSummary = submission?.['summary'];

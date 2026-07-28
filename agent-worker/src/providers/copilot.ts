@@ -21,11 +21,12 @@ import type { ChildProcess } from 'child_process';
 import { statSync } from 'fs';
 import { createConnection } from 'net';
 import {
+  createNativeReviewPermissionHandler,
   restrictNetworkPermissionHandler,
   restrictReviewPermissionHandler,
 } from '../networkGuard.js';
 import { emitEvent } from './events.js';
-import type { AgentProviderDefinition, AgentRun, AgentRunOptions } from './types.js';
+import type { AgentProviderDefinition, AgentRun, AgentRunOptions, ObservedToolCall } from './types.js';
 import { copilotGlobalSkillsDir, emitLocalSkillsLoaded, localSkillsDir } from '../skills.js';
 import {
   CHANGE_SUBMISSION_JSON_SCHEMA,
@@ -40,6 +41,33 @@ export function buildCopilotSystemMessage(agentInstructions: string): {
   content: string;
 } {
   return { mode: 'append', content: agentInstructions };
+}
+
+export function buildNativeReviewPrompt(vePrompt: string): string {
+  const delegatedPrompt = [
+    'The following Virtual Engineer review context and diff are the source of truth.',
+    'Do not run shell commands, builds, tests, network requests, or edits.',
+    'You may only read files under /workspace for additional context.',
+    'Do not recompute the diff or compare branches; review the supplied diff exactly as provided.',
+    '',
+    vePrompt,
+  ].join('\n');
+
+  return [
+    'Perform this review through one Copilot CLI native code-review delegation.',
+    'Call the task tool exactly once with:',
+    '- name: "ve-native-code-review"',
+    '- description: "Review the VE-provided patch"',
+    '- agent_type: "code-review"',
+    '- mode: "sync"',
+    '- prompt: the complete content between VE_DELEGATED_PROMPT_START and VE_DELEGATED_PROMPT_END below',
+    'Do not perform a second delegation and do not replace the delegated analysis with your own review.',
+    'After the task returns, convert its findings to the advertised review schema and call ve_submit_review exactly once.',
+    '',
+    'VE_DELEGATED_PROMPT_START',
+    delegatedPrompt,
+    'VE_DELEGATED_PROMPT_END',
+  ].join('\n');
 }
 
 // Git identity forwarded into the headless CLI subprocess environment.
@@ -172,7 +200,9 @@ export function buildCopilotSessionConfig(
         : agentInstructions,
     ),
     onPermissionRequest: mode === 'review'
-      ? restrictReviewPermissionHandler
+      ? options.reviewStrategy === 'copilot_native'
+        ? createNativeReviewPermissionHandler(cwd)
+        : restrictReviewPermissionHandler
       : restrictNetworkPermissionHandler,
     workingDirectory: cwd,
     enableConfigDiscovery: false,
@@ -262,6 +292,60 @@ function deepFindNum(obj: unknown, keys: string[]): number | null {
   return visit(obj);
 }
 
+function deepFindBool(obj: unknown, keys: string[]): boolean | null {
+  const seen = new Set<object>();
+
+  function visit(value: unknown): boolean | null {
+    if (value === null || value === undefined || typeof value !== 'object') return null;
+    if (seen.has(value)) return null;
+    seen.add(value);
+
+    const record = value as Record<string, unknown>;
+    for (const key of keys) {
+      const candidate = record[key];
+      if (typeof candidate === 'boolean') return candidate;
+    }
+
+    for (const nested of Object.values(record)) {
+      const found = visit(nested);
+      if (found !== null) return found;
+    }
+
+    return null;
+  }
+
+  return visit(obj);
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === 'object' && value !== null
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function permissionRequestEventData(event: unknown): Record<string, unknown> {
+  const eventData = asRecord(asRecord(event)?.['data']);
+  const request = asRecord(eventData?.['permissionRequest']);
+  if (request === null) return { kind: 'unknown' };
+
+  const readString = (key: string): string | undefined => {
+    const value = request[key];
+    return typeof value === 'string' && value.trim() !== '' ? value : undefined;
+  };
+  const kind = readString('kind') ?? 'unknown';
+  const toolCallId = readString('toolCallId');
+  const serverName = readString('serverName');
+  const toolName = readString('toolName');
+  const path = readString('path');
+  return {
+    kind,
+    ...(toolCallId !== undefined ? { toolCallId } : {}),
+    ...(serverName !== undefined ? { serverName } : {}),
+    ...(toolName !== undefined ? { toolName } : {}),
+    ...(path !== undefined ? { path } : {}),
+  };
+}
+
 function extractToolName(e: unknown): string {
   return deepFindStr(e, ['name', 'toolName', 'tool_name']) ?? 'unknown_tool';
 }
@@ -299,7 +383,13 @@ function extractToolInput(e: unknown): Record<string, unknown> {
           : undefined;
       })()
     : undefined;
-  return parseToolInputValue(o['input'] ?? toolInput ?? tcInput ?? o['arguments'] ?? tcFnArgs ?? {});
+  const data = o['data'];
+  const dataArguments = typeof data === 'object' && data !== null
+    ? (data as Record<string, unknown>)['arguments']
+    : undefined;
+  return parseToolInputValue(
+    o['input'] ?? toolInput ?? tcInput ?? o['arguments'] ?? tcFnArgs ?? dataArguments ?? {}
+  );
 }
 
 function formatToolLabel(toolName: string, toolInput: Record<string, unknown>): string {
@@ -322,42 +412,74 @@ function formatToolLabel(toolName: string, toolInput: Record<string, unknown>): 
 function registerSessionEventHandlers(
   session: CopilotSession,
   model: string,
-): { toolCallCount: number; toolsByKind: Record<string, number> } {
-  const state = { toolCallCount: 0, toolsByKind: {} as Record<string, number> };
-  const toolTimers: Record<string, number> = {};
+): { toolCallCount: number; toolsByKind: Record<string, number>; toolCalls: ObservedToolCall[] } {
+  const state = {
+    toolCallCount: 0,
+    toolsByKind: {} as Record<string, number>,
+    toolCalls: [] as ObservedToolCall[],
+  };
+  const toolTimers = new Map<string, number>();
+  const toolCallsById = new Map<string, ObservedToolCall>();
 
   session.on('tool.execution_start', (e) => {
     state.toolCallCount++;
     const event = e as unknown;
     const toolName = extractToolName(event);
     const toolInput = extractToolInput(event);
+    const callId = deepFindStr(event, ['toolCallId']) ?? `${toolName}_${state.toolCallCount}`;
+    const toolCall: ObservedToolCall = { callId, name: toolName, input: toolInput };
+    state.toolCalls.push(toolCall);
+    toolCallsById.set(callId, toolCall);
     const label = formatToolLabel(toolName, toolInput);
-    const callId = `${toolName}_${state.toolCallCount}`;
-    toolTimers[callId] = Date.now();
+    toolTimers.set(callId, Date.now());
     const prevCount = state.toolsByKind[toolName] ?? 0;
     state.toolsByKind[toolName] = prevCount + 1;
     process.stderr.write(`[tool] #${state.toolCallCount} ${label}\n`);
     emitEvent('tool.execution_start', { name: toolName, input: toolInput, callId, callNumber: state.toolCallCount });
+    if (
+      toolName === 'task' &&
+      toolInput['agent_type'] === 'code-review' &&
+      toolInput['mode'] === 'sync'
+    ) {
+      emitEvent('review.native_delegation_started', { agentType: 'code-review', mode: 'sync' });
+    }
   });
 
   session.on('tool.execution_complete', (e) => {
     const event = e as unknown;
-    const toolName = extractToolName(event);
-    const output = deepFindStr(event, ['output', 'result', 'content']);
-    let durationMs: number | null = null;
-    for (const [id, startTime] of Object.entries(toolTimers)) {
-      if (id.startsWith(toolName + '_')) {
-        durationMs = Date.now() - startTime;
-        delete toolTimers[id];
-        break;
+    const callId = deepFindStr(event, ['toolCallId']);
+    const observedCall = callId === null ? undefined : toolCallsById.get(callId);
+    const toolName = observedCall?.name ?? extractToolName(event);
+    const output = deepFindStr(event, ['content', 'detailedContent', 'output']);
+    const success = deepFindBool(event, ['success']);
+    const error = deepFindStr(event, ['message']);
+    const startTime = callId === null ? undefined : toolTimers.get(callId);
+    const durationMs = startTime === undefined ? null : Date.now() - startTime;
+    if (callId !== null) {
+      toolTimers.delete(callId);
+    }
+    if (observedCall !== undefined && success !== null) {
+      observedCall.success = success;
+      if (!success && error !== null) {
+        observedCall.error = error;
       }
     }
     emitEvent('tool.execution_complete', {
       name: toolName,
       durationMs,
       output: output ? output.slice(0, 800) : null,
-      status: deepFindStr(event, ['status', 'result']) ?? 'success',
+      status: success === true ? 'success' : success === false ? 'failed' : 'unknown',
+      ...(error !== null ? { error } : {}),
     });
+    if (toolName === 'task' && success === true) {
+      emitEvent('review.native_delegation_completed', { agentType: 'code-review', mode: 'sync' });
+    } else if (toolName === 'task' && success === false) {
+      emitEvent('review.native_delegation_failed', {
+        agentType: 'code-review',
+        mode: 'sync',
+        message: error ?? 'Copilot native review delegation failed',
+      });
+    }
   });
 
   session.on('tool.execution_progress', (e) => {
@@ -423,11 +545,7 @@ function registerSessionEventHandlers(
   });
 
   session.on('permission.requested', (e) => {
-    const event = e as unknown;
-    emitEvent('permission.requested', {
-      tool: deepFindStr(event, ['tool', 'name', 'toolName']),
-      reason: deepFindStr(event, ['reason', 'message']),
-    });
+    emitEvent('permission.requested', permissionRequestEventData(e as unknown));
   });
 
   return state;
@@ -440,7 +558,12 @@ export async function runCopilotAgent(
 ): Promise<AgentRun> {
   const { model, cwd, timeoutMs, mode } = options;
   const { session, client, localCliServer } = await runSession(options);
-  emitEvent('session.start', { model, mode, workingDirectory: cwd });
+  emitEvent('session.start', {
+    model,
+    mode,
+    workingDirectory: cwd,
+    ...(mode === 'review' ? { reviewStrategy: options.reviewStrategy ?? 've_direct' } : {}),
+  });
   const handlerState = registerSessionEventHandlers(session, model);
   process.stderr.write(`sending ${mode} prompt\n`);
 
@@ -450,8 +573,16 @@ export async function runCopilotAgent(
 
   let response: AssistantMessageEvent | undefined;
   try {
-    response = await session.sendAndWait({ prompt }, timeoutMs);
+    const sessionPrompt = mode === 'review' && options.reviewStrategy === 'copilot_native'
+      ? buildNativeReviewPrompt(prompt)
+      : prompt;
+    response = await session.sendAndWait({ prompt: sessionPrompt }, timeoutMs);
   } catch (err) {
+    if (mode === 'review' && options.reviewStrategy === 'copilot_native') {
+      emitEvent('review.native_delegation_failed', {
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
     // Tear down the session, client and local CLI on the error path — the
     // returned `cleanup` closure only runs on success, so without this a failed
     // cycle would leak the headless CLI process and its socket connection.
@@ -478,6 +609,7 @@ export async function runCopilotAgent(
     content,
     toolCallCount: handlerState.toolCallCount,
     toolsByKind: handlerState.toolsByKind,
+    toolCalls: handlerState.toolCalls,
     cleanup: async (): Promise<void> => {
       await client.stop().catch(() => { /* ignore */ });
       localCliServer.child.kill('SIGTERM');

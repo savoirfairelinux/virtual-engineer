@@ -34,6 +34,8 @@ tests/
 | Review runtime | `reviewOrchestrator`, `reviewPromptBuilder`, `reviewOutputContract` (covered through parser/orchestrator suites), `reviewResultParser`, `reviewLiveLogs`, `commentHash`, `commentSeverity`, `revisionPatchset` |
 | Cost tracking | `cycleCost`, `stateStore.cost`, `adminCostRoutes` |
 | Plugins / runtime wiring | `pluginManager` (+ `.multiInstance`), `registry`, `runtimeBootstrap` (historical name; covers bootstrap wiring in `src/index.ts`), `integrationStreamEvents` |
+
+Experimental Copilot native review coverage spans `agentFormModal`, `adminPluginRoutes`, `adminAgentsRoutes`, `adminProjectsRoutes`, `runtimeBootstrap`, `reviewOrchestrator`, `containerSpecBuilders`, `copilotAdapter`, `copilotWorker`, `workerNetworkGuard`, and `mcpSubmission`. Unit tests prove descriptor-driven UI canonicalization, agent-owned override precedence, strategy env propagation, exact `task(code-review, sync)` permission/provenance, and exactly one accepted MCP submission. A real-token smoke test is intentionally opt-in and must run in the hardened image after Copilot SDK/CLI lockfile upgrades; it must verify one native delegation, one valid submission artifact, no workspace mutation, and no direct fallback.
 | Webhooks | `webhookServer`, `webhookHandlerRegistry` (+ the per-provider handlers listed above) |
 | Workspace / utils / misc | `workspaceRunner` (+ `.multiTarget`), `dockerVolume`, `sshKeyResolver`, `sshFilePath`, `skillSourceDiscovery`, `buildRepositoryMap`, `config`, `logger`, `encryption`, `errorClassifier`, `gitExec`, `ticketFooterFormatter` |
 
@@ -42,7 +44,7 @@ tests/
 ## Conventions
 
 - All external I/O is mocked: `fetch`, `node:fs`, `dockerode`, `child_process` SSH helpers, the GitHub Copilot SDK, Git network calls. Never hit real services.
-- MCP submission tests cover both the persisted artifact and provider-observed tool-call count; review permission tests keep Copilot reviews read-only except for the VE submission tool.
+- MCP submission tests cover the persisted artifact, SDK start/complete correlation, failed-payload error propagation, correction of rejected attempts, and exactly one accepted submission; review permission tests cover the configured and declared VE server identities, raw/CLI-qualified tool names, safe permission telemetry, and rejection of cross-alias or unrelated tools.
 - Mock with `vi.mock("…/foo.js", () => …)` for module-level stubs, or `vi.spyOn(obj, "method")` for instance-level.
 - Gerrit SSH tests mock `child_process.execFile` callbacks with `{ stdout, stderr }` objects because the connectors promisify that API.
 - Use `vi.useFakeTimers()` + `vi.runAllTimersAsync()` for the polling loop. **Always** call `loop.stop()` before `runAllTimersAsync` (Vitest aborts after 10 000 timer iterations otherwise).

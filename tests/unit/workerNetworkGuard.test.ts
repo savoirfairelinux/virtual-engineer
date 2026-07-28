@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   NETWORK_DISALLOWED_TOOLS,
+  createNativeReviewPermissionHandler,
   createReviewPermissionHandler,
   isBlockedNetworkCommand,
   restrictReviewPermissionHandler,
@@ -236,22 +237,76 @@ describe("networkGuard.restrictReviewPermissionHandler", () => {
     expect(result).toEqual(expect.objectContaining({ kind: "reject" }));
   });
 
-  it("approves only the VE submission MCP server", () => {
+  it.each([
+    ["ve-submission", "ve_submit_review"],
+    ["virtual-engineer-submission", "ve_submit_review"],
+    ["ve-submission", "ve-submission-ve_submit_review"],
+  ])("approves the VE submission MCP identity %s/%s", (serverName, toolName) => {
     const approved = restrictReviewPermissionHandler(
-      { kind: "mcp", serverName: "ve-submission", toolName: "ve_submit_review" } as unknown as Parameters<
-        typeof restrictReviewPermissionHandler
-      >[0],
-      invocation,
-    );
-    const rejected = restrictReviewPermissionHandler(
-      { kind: "mcp", serverName: "other", toolName: "write_file" } as unknown as Parameters<
+      { kind: "mcp", serverName, toolName } as unknown as Parameters<
         typeof restrictReviewPermissionHandler
       >[0],
       invocation,
     );
 
     expect(approved).not.toEqual(expect.objectContaining({ kind: "reject" }));
-    expect(rejected).toEqual(expect.objectContaining({ kind: "reject" }));
+  });
+
+  it.each([
+    ["other", "write_file"],
+    ["ve-submission", "virtual-engineer-submission-ve_submit_review"],
+    ["virtual-engineer-submission", "ve-submission-ve_submit_review"],
+  ])("rejects unrelated MCP identity %s/%s", (serverName, toolName) => {
+    const result = restrictReviewPermissionHandler(
+      { kind: "mcp", serverName, toolName } as unknown as Parameters<
+        typeof restrictReviewPermissionHandler
+      >[0],
+      invocation,
+    );
+
+    expect(result).toEqual(expect.objectContaining({ kind: "reject" }));
+  });
+});
+
+describe("networkGuard native review delegation", () => {
+  const handler = createNativeReviewPermissionHandler("/workspace");
+
+  it("approves only a synchronous task delegation to code-review", () => {
+    const approved = handler({
+      kind: "custom-tool",
+      toolName: "task",
+      toolDescription: "Delegate review",
+      args: { agent_type: "code-review", mode: "sync" },
+    } as unknown as Parameters<typeof handler>[0], invocation);
+    const wrongAgent = handler({
+      kind: "custom-tool",
+      toolName: "task",
+      toolDescription: "Delegate research",
+      args: { agent_type: "research", mode: "sync" },
+    } as unknown as Parameters<typeof handler>[0], invocation);
+    const background = handler({
+      kind: "custom-tool",
+      toolName: "task",
+      toolDescription: "Delegate review",
+      args: { agent_type: "code-review", mode: "background" },
+    } as unknown as Parameters<typeof handler>[0], invocation);
+
+    expect(approved).not.toEqual(expect.objectContaining({ kind: "reject" }));
+    expect(wrongAgent).toEqual(expect.objectContaining({ kind: "reject" }));
+    expect(background).toEqual(expect.objectContaining({ kind: "reject" }));
+  });
+
+  it("retains the review read and VE MCP restrictions", () => {
+    const shell = handler({ kind: "shell" } as Parameters<typeof handler>[0], invocation);
+    const otherTool = handler({
+      kind: "custom-tool",
+      toolName: "edit",
+      toolDescription: "Edit files",
+      args: {},
+    } as unknown as Parameters<typeof handler>[0], invocation);
+
+    expect(shell).toEqual(expect.objectContaining({ kind: "reject" }));
+    expect(otherTool).toEqual(expect.objectContaining({ kind: "reject" }));
   });
 });
 

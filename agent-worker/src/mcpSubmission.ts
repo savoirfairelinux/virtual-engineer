@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync } from 'fs';
 import { AjvJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/ajv';
 import type { JsonSchemaType } from '@modelcontextprotocol/sdk/validation';
+import type { ObservedToolCall } from './providers/types.js';
 
 export type SubmissionMode = 'codegen' | 'review';
 
@@ -42,21 +43,48 @@ export function appendSubmissionInstruction(
   toolName: SubmissionMcpConfig['toolName'],
 ): string {
   return `${agentInstructions.trim()}\n\n` +
-    `Before ending, call the ${toolName} tool exactly once with your final structured result. ` +
-    'The run fails if the tool is not called or is called more than once.';
+    `Before ending, submit your final structured result through ${toolName}. ` +
+    'Exactly one submission must be accepted. ' +
+    'If an attempt is rejected before it is accepted, correct the arguments and retry.';
 }
 
-export function assertSingleSubmissionToolCall(
+export function assertSuccessfulSubmissionToolCall(
   mode: SubmissionMode,
-  toolsByKind: Record<string, number>,
+  toolCalls: ObservedToolCall[],
 ): void {
   const toolName = mode === 'review' ? 've_submit_review' : 've_submit_changes';
-  const observedCalls = (toolsByKind[toolName] ?? 0) +
-    (toolsByKind[`mcp__ve-submission__${toolName}`] ?? 0) +
-    (toolsByKind[`ve-submission-${toolName}`] ?? 0);
+  const submissionNames = new Set([
+    toolName,
+    `mcp__ve-submission__${toolName}`,
+    `ve-submission-${toolName}`,
+  ]);
+  const calls = toolCalls.filter(({ name }) => submissionNames.has(name));
+  const acceptedCalls = calls.filter(({ success }) => success === true);
+  if (acceptedCalls.length === 1) return;
+  if (acceptedCalls.length > 1) {
+    throw new Error(
+      `${toolName} MCP submission must be accepted exactly once; observed ${acceptedCalls.length} accepted submissions`,
+    );
+  }
+
+  const lastFailedCall = [...calls].reverse().find(({ success }) => success === false);
+  if (lastFailedCall !== undefined) {
+    throw new Error(
+      `${toolName} MCP tool failed: ${lastFailedCall.error ?? 'unknown tool execution error'}`,
+    );
+  }
+  throw new Error(`${toolName} MCP submission was not accepted`);
+}
+
+export function assertSingleNativeReviewDelegation(toolCalls: ObservedToolCall[]): void {
+  const observedCalls = toolCalls.filter(({ name, input }) =>
+    name === 'task' &&
+    input['agent_type'] === 'code-review' &&
+    input['mode'] === 'sync'
+  ).length;
   if (observedCalls !== 1) {
     throw new Error(
-      `Agent must call the ${toolName} MCP tool exactly once; observed ${observedCalls} calls`,
+      `Copilot native review must delegate to task(agent_type=code-review, mode=sync) exactly once; observed ${observedCalls} calls`,
     );
   }
 }
