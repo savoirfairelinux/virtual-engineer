@@ -18,10 +18,20 @@ export interface AgentRunOptions {
   timeoutMs: number;
   /** Whether this is a code-generation or review session. */
   mode: 'codegen' | 'review';
+  /** Review-only execution strategy selected by the agent configuration. */
+  reviewStrategy?: 've_direct' | 'copilot_native';
   /** When true, surface repo-defined skills to the agent. */
   skillDiscovery?: boolean;
   /** Review-only integration-owned JSON Schema for native structured output. */
   reviewOutputSchema?: Record<string, unknown>;
+}
+
+export interface ObservedToolCall {
+  callId?: string;
+  name: string;
+  input: Record<string, unknown>;
+  success?: boolean;
+  error?: string;
 }
 
 /** Result of running one agent session, independent of the provider. */
@@ -29,6 +39,7 @@ export interface AgentRun {
   content: string;
   toolCallCount: number;
   toolsByKind: Record<string, number>;
+  toolCalls?: ObservedToolCall[];
   cleanup: () => Promise<void>;
 }
 

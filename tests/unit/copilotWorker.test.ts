@@ -47,6 +47,7 @@ vi.mock("../../agent-worker/src/skills.js", () => ({
 import {
   buildCopilotSessionConfig,
   buildCopilotSystemMessage,
+  buildNativeReviewPrompt,
   runCopilotAgent,
 } from "../../agent-worker/src/providers/copilot.js";
 import type { AgentRunOptions } from "../../agent-worker/src/providers/types.js";
@@ -128,11 +129,18 @@ describe("runCopilotAgent", () => {
     await vi.waitFor(() => expect(session.on).toHaveBeenCalled());
 
     session.handlers.get("tool.execution_start")?.({
-      toolCall: { name: "edit", input: JSON.stringify({ path: "src/index.ts" }) },
+      data: {
+        toolCallId: "edit-1",
+        toolName: "edit",
+        arguments: { path: "src/index.ts" },
+      },
     });
     session.handlers.get("tool.execution_complete")?.({
-      tool: { name: "edit" },
-      result: { content: "updated", status: "success" },
+      data: {
+        toolCallId: "edit-1",
+        success: true,
+        result: { content: "updated" },
+      },
     });
     session.handlers.get("assistant.message")?.({ message: { content: "Working" } });
     session.handlers.get("assistant.usage")?.({
@@ -144,6 +152,18 @@ describe("runCopilotAgent", () => {
         api_call_id: "call-1",
       },
     });
+    session.handlers.get("permission.requested")?.({
+      data: {
+        requestId: "permission-1",
+        permissionRequest: {
+          kind: "mcp",
+          toolCallId: "submit-1",
+          serverName: "virtual-engineer-submission",
+          toolName: "ve_submit_review",
+          args: { privateReviewPayload: "must-not-be-logged" },
+        },
+      },
+    });
     resolveResponse?.({ data: { content: "Implemented safely" } });
 
     const run = await runPromise;
@@ -151,6 +171,12 @@ describe("runCopilotAgent", () => {
       content: "Implemented safely",
       toolCallCount: 1,
       toolsByKind: { edit: 1 },
+      toolCalls: [{
+        callId: "edit-1",
+        name: "edit",
+        input: { path: "src/index.ts" },
+        success: true,
+      }],
     });
     expect(mocks.spawn).toHaveBeenCalledWith(
       "/agent-worker/node_modules/.bin/copilot",
@@ -184,12 +210,19 @@ describe("runCopilotAgent", () => {
       totalNanoAiu: 42,
       apiCallId: "call-1",
     }));
+    expect(mocks.emitEvent).toHaveBeenCalledWith("permission.requested", {
+      kind: "mcp",
+      toolCallId: "submit-1",
+      serverName: "virtual-engineer-submission",
+      toolName: "ve_submit_review",
+    });
     expect(session.disconnect).toHaveBeenCalledOnce();
 
     await run.cleanup();
     expect(mocks.clientStop).toHaveBeenCalledOnce();
     expect(child.kill).toHaveBeenCalledWith("SIGTERM");
     expect(JSON.stringify(mocks.emitEvent.mock.calls)).not.toContain("secret-copilot-token");
+    expect(JSON.stringify(mocks.emitEvent.mock.calls)).not.toContain("must-not-be-logged");
   });
 
   it("uses review mode without optional reasoning or local skills", async () => {
@@ -220,6 +253,45 @@ describe("runCopilotAgent", () => {
     expect(child.kill).toHaveBeenCalledWith("SIGTERM");
   });
 
+  it("retains the error from a failed MCP tool execution", async () => {
+    let resolveResponse: ((value: { data: { content: string } }) => void) | undefined;
+    session.sendAndWait.mockImplementation(() => new Promise((resolve) => {
+      resolveResponse = resolve;
+    }));
+    const runPromise = runCopilotAgent("Review the patch", makeOptions({ mode: "review" }));
+    await vi.waitFor(() => expect(session.on).toHaveBeenCalled());
+
+    session.handlers.get("tool.execution_start")?.({
+      data: {
+        toolCallId: "submit-1",
+        toolName: "ve-submission-ve_submit_review",
+        arguments: { comments: [] },
+      },
+    });
+    session.handlers.get("tool.execution_complete")?.({
+      data: {
+        toolCallId: "submit-1",
+        success: false,
+        error: { message: "MCP submission does not match its JSON Schema" },
+      },
+    });
+    resolveResponse?.({ data: { content: "Review complete" } });
+
+    const run = await runPromise;
+    expect(run.toolCalls).toEqual([{
+      callId: "submit-1",
+      name: "ve-submission-ve_submit_review",
+      input: { comments: [] },
+      success: false,
+      error: "MCP submission does not match its JSON Schema",
+    }]);
+    expect(mocks.emitEvent).toHaveBeenCalledWith("tool.execution_complete", expect.objectContaining({
+      name: "ve-submission-ve_submit_review",
+      status: "failed",
+      error: "MCP submission does not match its JSON Schema",
+    }));
+  });
+
   it("stops the client and CLI when session creation fails", async () => {
     mocks.createSession.mockRejectedValue(new Error("Cannot create session"));
 
@@ -233,6 +305,17 @@ describe("runCopilotAgent", () => {
 });
 
 describe("Copilot worker native profile", () => {
+  it("builds a parent prompt that delegates the VE prompt exactly once", () => {
+    const prompt = buildNativeReviewPrompt("VE REVIEW CONTEXT\nDIFF CONTENT");
+
+    expect(prompt).toContain('agent_type: "code-review"');
+    expect(prompt).toContain('mode: "sync"');
+    expect(prompt).toContain("VE REVIEW CONTEXT\nDIFF CONTENT");
+    expect(prompt).toContain("source of truth");
+    expect(prompt).toContain("ve_submit_review");
+    expect(prompt).not.toContain("/review");
+  });
+
   it("appends agent instructions to the Copilot CLI foundation explicitly", () => {
     expect(buildCopilotSystemMessage("permanent agent policy")).toEqual({
       mode: "append",

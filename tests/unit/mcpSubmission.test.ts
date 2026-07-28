@@ -5,7 +5,9 @@ import { describe, expect, it } from "vitest";
 import {
   CHANGE_SUBMISSION_JSON_SCHEMA,
   SUBMISSION_TOOL_ANNOTATIONS,
-  assertSingleSubmissionToolCall,
+  appendSubmissionInstruction,
+  assertSingleNativeReviewDelegation,
+  assertSuccessfulSubmissionToolCall,
   buildSubmissionMcpConfig,
   readSubmission,
   recordSubmission,
@@ -62,27 +64,74 @@ describe("MCP submission contract", () => {
     expect(readSubmission(path)).toEqual({ status: "completed", summary: "Implemented tests" });
   });
 
-  it("requires exactly one observed submission tool call", () => {
-    expect(() => assertSingleSubmissionToolCall("review", {})).toThrow(
-      "exactly once",
-    );
-    expect(() =>
-      assertSingleSubmissionToolCall("review", { ve_submit_review: 2 })
-    ).toThrow("exactly once");
+  it("surfaces a failed submission tool execution before reading the artifact", () => {
+    expect(() => assertSuccessfulSubmissionToolCall("review", [{
+      callId: "submit-1",
+      name: "ve-submission-ve_submit_review",
+      input: { comments: [] },
+      success: false,
+      error: "MCP submission does not match its JSON Schema",
+    }])).toThrow("MCP submission does not match its JSON Schema");
 
-    expect(() =>
-      assertSingleSubmissionToolCall("review", { ve_submit_review: 1 })
-    ).not.toThrow();
-    expect(() =>
-      assertSingleSubmissionToolCall("review", {
-        "mcp__ve-submission__ve_submit_review": 1,
-      })
-    ).not.toThrow();
-    expect(() =>
-      assertSingleSubmissionToolCall("review", {
-        "ve-submission-ve_submit_review": 1,
-      })
-    ).not.toThrow();
+    expect(() => assertSuccessfulSubmissionToolCall("review", [{
+      callId: "submit-1",
+      name: "ve-submission-ve_submit_review",
+      input: { comments: [], summary: "No issues", replies: [], vote: 1 },
+      success: true,
+    }])).not.toThrow();
+  });
+
+  it("allows rejected payloads to be corrected before one accepted submission", () => {
+    expect(() => assertSuccessfulSubmissionToolCall("review", [
+      {
+        callId: "submit-1",
+        name: "ve-submission-ve_submit_review",
+        input: { comments: [] },
+        success: false,
+        error: "MCP submission does not match its JSON Schema",
+      },
+      {
+        callId: "submit-2",
+        name: "ve-submission-ve_submit_review",
+        input: { comments: [], summary: "No issues", replies: [], vote: 1 },
+        success: true,
+      },
+    ])).not.toThrow();
+
+    expect(() => assertSuccessfulSubmissionToolCall("review", [
+      {
+        callId: "submit-1",
+        name: "ve-submission-ve_submit_review",
+        input: {},
+        success: true,
+      },
+      {
+        callId: "submit-2",
+        name: "ve-submission-ve_submit_review",
+        input: {},
+        success: true,
+      },
+    ])).toThrow("accepted exactly once");
+  });
+
+  it("tells the agent to correct rejected payloads without duplicating accepted submissions", () => {
+    expect(appendSubmissionInstruction("Review safely.", "ve_submit_review")).toContain(
+      "If an attempt is rejected before it is accepted, correct the arguments and retry"
+    );
+  });
+
+  it("requires exactly one synchronous code-review task delegation", () => {
+    expect(() => assertSingleNativeReviewDelegation([])).toThrow("exactly once");
+    expect(() => assertSingleNativeReviewDelegation([
+      { name: "task", input: { agent_type: "research", mode: "sync" } },
+    ])).toThrow("exactly once");
+    expect(() => assertSingleNativeReviewDelegation([
+      { name: "task", input: { agent_type: "code-review", mode: "sync" } },
+    ])).not.toThrow();
+    expect(() => assertSingleNativeReviewDelegation([
+      { name: "task", input: { agent_type: "code-review", mode: "sync" } },
+      { name: "task", input: { agent_type: "code-review", mode: "sync" } },
+    ])).toThrow("observed 2");
   });
 
   it("marks the submission tool as mutating and non-idempotent", () => {

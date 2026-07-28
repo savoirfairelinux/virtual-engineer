@@ -116,6 +116,21 @@ function isRepositoryRead(request: PermissionRequest, workspaceRoot: string): bo
   }
 }
 
+function isReviewSubmission(request: PermissionRequest): boolean {
+  if (request.kind !== 'mcp') return false;
+  const details = request as unknown as Record<string, unknown>;
+  const serverName = details['serverName'];
+  const toolName = details['toolName'];
+  if (serverName === 've-submission') {
+    return toolName === 've_submit_review' || toolName === 've-submission-ve_submit_review';
+  }
+  if (serverName === 'virtual-engineer-submission') {
+    return toolName === 've_submit_review' ||
+      toolName === 'virtual-engineer-submission-ve_submit_review';
+  }
+  return false;
+}
+
 /**
  * Copilot permission handler that denies internet access while approving
  * everything else. Denies the `url` (web fetch) tool outright and denies shell
@@ -141,16 +156,32 @@ export function createReviewPermissionHandler(workspaceRoot: string): Permission
     if (request.kind === 'read' && isRepositoryRead(request, workspaceRoot)) {
       return approveAll(request, invocation);
     }
-    if (request.kind === 'mcp') {
+    if (isReviewSubmission(request)) {
+      return approveAll(request, invocation);
+    }
+    return rejectPermission('Review sessions may only read repository files and submit the final review.');
+  };
+}
+
+export function createNativeReviewPermissionHandler(workspaceRoot: string): PermissionHandler {
+  const reviewHandler = createReviewPermissionHandler(workspaceRoot);
+  return (request, invocation) => {
+    if (request.kind === 'custom-tool') {
       const details = request as unknown as Record<string, unknown>;
+      const args = details['args'];
+      const toolArgs = typeof args === 'object' && args !== null
+        ? args as Record<string, unknown>
+        : {};
       if (
-        details['serverName'] === 've-submission' &&
-        details['toolName'] === 've_submit_review'
+        details['toolName'] === 'task' &&
+        toolArgs['agent_type'] === 'code-review' &&
+        toolArgs['mode'] === 'sync'
       ) {
         return approveAll(request, invocation);
       }
+      return rejectPermission('Native review may only delegate once to the synchronous code-review task.');
     }
-    return rejectPermission('Review sessions may only read repository files and submit the final review.');
+    return reviewHandler(request, invocation);
   };
 }
 
