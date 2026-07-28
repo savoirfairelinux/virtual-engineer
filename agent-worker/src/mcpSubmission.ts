@@ -43,9 +43,8 @@ export function appendSubmissionInstruction(
   toolName: SubmissionMcpConfig['toolName'],
 ): string {
   return `${agentInstructions.trim()}\n\n` +
-    `Before ending, submit your final structured result through ${toolName}. ` +
-    'Exactly one submission must be accepted. ' +
-    'If an attempt is rejected before it is accepted, correct the arguments and retry.';
+    `Submit the final structured result through ${toolName} before ending. ` +
+    'Exactly one submission must be accepted; correct and retry rejected attempts.';
 }
 
 export function assertSuccessfulSubmissionToolCall(

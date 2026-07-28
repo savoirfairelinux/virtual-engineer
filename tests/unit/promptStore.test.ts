@@ -101,8 +101,10 @@ describe("SqliteStateStore — PromptStore", () => {
 
       const reviewSystem = content("system_review");
       expect(reviewSystem).not.toMatch(/output text only|structured result|json|ve_submit_review/i);
+      expect(reviewSystem).not.toMatch(/actionable issues|introduced by the change/i);
 
-      content("instructions_review");
+      const reviewInstructions = content("instructions_review");
+      expect(reviewInstructions).toMatch(/actionable issues introduced by the change/i);
 
       for (const id of ["instructions_generic_code", "instructions_feedback_code"]) {
         expect(content(id)).not.toMatch(

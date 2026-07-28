@@ -43,8 +43,8 @@ async function main(): Promise<void> {
     tools: [{
       name: toolName,
       description: mode === 'review'
-        ? 'Submit the final structured review to Virtual Engineer exactly once.'
-        : 'Submit the final change summary to Virtual Engineer exactly once.',
+        ? 'Submit the final structured review to Virtual Engineer.'
+        : 'Submit the final change summary to Virtual Engineer.',
       inputSchema,
       annotations: SUBMISSION_TOOL_ANNOTATIONS,
     }],

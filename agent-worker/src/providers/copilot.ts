@@ -45,24 +45,21 @@ export function buildCopilotSystemMessage(agentInstructions: string): {
 
 export function buildNativeReviewPrompt(vePrompt: string): string {
   const delegatedPrompt = [
-    'The following Virtual Engineer review context and diff are the source of truth.',
-    'Do not run shell commands, builds, tests, network requests, or edits.',
-    'You may only read files under /workspace for additional context.',
-    'Do not recompute the diff or compare branches; review the supplied diff exactly as provided.',
+    'Review the Virtual Engineer context and supplied diff below as the source of truth.',
+    'For extra context, only read files under /workspace; do not execute commands, access the network, or edit files.',
+    'Do not recompute the diff or compare branches.',
     '',
     vePrompt,
   ].join('\n');
 
   return [
-    'Perform this review through one Copilot CLI native code-review delegation.',
-    'Call the task tool exactly once with:',
+    'Delegate exactly one review with the task tool:',
     '- name: "ve-native-code-review"',
     '- description: "Review the VE-provided patch"',
     '- agent_type: "code-review"',
     '- mode: "sync"',
-    '- prompt: the complete content between VE_DELEGATED_PROMPT_START and VE_DELEGATED_PROMPT_END below',
-    'Do not perform a second delegation and do not replace the delegated analysis with your own review.',
-    'After the task returns, convert its findings to the advertised review schema and call ve_submit_review exactly once.',
+    '- prompt: the content between VE_DELEGATED_PROMPT_START and VE_DELEGATED_PROMPT_END',
+    'Use the delegated findings as the sole review analysis.',
     '',
     'VE_DELEGATED_PROMPT_START',
     delegatedPrompt,

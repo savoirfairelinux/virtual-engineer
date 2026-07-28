@@ -308,12 +308,24 @@ describe("Copilot worker native profile", () => {
   it("builds a parent prompt that delegates the VE prompt exactly once", () => {
     const prompt = buildNativeReviewPrompt("VE REVIEW CONTEXT\nDIFF CONTENT");
 
-    expect(prompt).toContain('agent_type: "code-review"');
-    expect(prompt).toContain('mode: "sync"');
-    expect(prompt).toContain("VE REVIEW CONTEXT\nDIFF CONTENT");
-    expect(prompt).toContain("source of truth");
-    expect(prompt).toContain("ve_submit_review");
-    expect(prompt).not.toContain("/review");
+    expect(prompt).toBe([
+      "Delegate exactly one review with the task tool:",
+      '- name: "ve-native-code-review"',
+      '- description: "Review the VE-provided patch"',
+      '- agent_type: "code-review"',
+      '- mode: "sync"',
+      "- prompt: the content between VE_DELEGATED_PROMPT_START and VE_DELEGATED_PROMPT_END",
+      "Use the delegated findings as the sole review analysis.",
+      "",
+      "VE_DELEGATED_PROMPT_START",
+      "Review the Virtual Engineer context and supplied diff below as the source of truth.",
+      "For extra context, only read files under /workspace; do not execute commands, access the network, or edit files.",
+      "Do not recompute the diff or compare branches.",
+      "",
+      "VE REVIEW CONTEXT",
+      "DIFF CONTENT",
+      "VE_DELEGATED_PROMPT_END",
+    ].join("\n"));
   });
 
   it("appends agent instructions to the Copilot CLI foundation explicitly", () => {
