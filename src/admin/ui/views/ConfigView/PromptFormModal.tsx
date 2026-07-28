@@ -45,7 +45,7 @@ export function PromptFormModal({ prompt, readOnly, onClose, onSaved }: Props) {
       width={700}
     >
       <FormRow>
-        <Field label="Label" required hint="Short identifier (e.g. system_gerrit_code)">
+        <Field label="Label" required hint="Short name used to generate the prompt ID">
           <FieldInput
             value={label}
             placeholder="my_prompt_label"

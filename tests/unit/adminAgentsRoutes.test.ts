@@ -163,7 +163,7 @@ describe("Admin API — Agent routes (/api/admin/agents)", () => {
         name: "Missing instructions prompt",
         type: "review",
         modelConfig: {},
-        systemPromptId: "system_github_review",
+        systemPromptId: "system_review",
       },
     });
 

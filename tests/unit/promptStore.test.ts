@@ -35,13 +35,16 @@ describe("SqliteStateStore — PromptStore", () => {
   // ── getPrompts ─────────────────────────────────────────────────────────────
 
   describe("getPrompts", () => {
-    it("uses system and instructions roles for built-in prompts", async () => {
+    it("seeds only the five canonical built-in prompts with their declared roles", async () => {
       const prompts = await store.getPrompts();
 
-      expect(prompts.length).toBeGreaterThanOrEqual(6);
-      expect(prompts.find((prompt) => prompt.id === "system_gerrit_code")?.promptType).toBe("system");
-      expect(prompts.find((prompt) => prompt.id === "instructions_gerrit_review")?.promptType).toBe("instructions");
-      expect(prompts.some((prompt) => prompt.id === "user_gerrit_review")).toBe(false);
+      expect(prompts.map((prompt) => [prompt.id, prompt.promptType])).toEqual([
+        ["instructions_feedback_code", "instructions"],
+        ["instructions_generic_code", "instructions"],
+        ["instructions_review", "instructions"],
+        ["system_generic_code", "system"],
+        ["system_review", "system"],
+      ]);
     });
 
     it("does not migrate obsolete review prompt override files", async () => {
@@ -54,7 +57,7 @@ describe("SqliteStateStore — PromptStore", () => {
 
       store = await SqliteStateStore.create(dbPath);
 
-      expect((await store.getPrompt("instructions_gerrit_review"))?.content).not.toBe("Obsolete review instructions");
+      expect((await store.getPrompt("instructions_review"))?.content).not.toBe("Obsolete review instructions");
       expect(await readFile(obsoleteOverride, "utf8")).toBe("Obsolete review instructions");
     });
 
@@ -96,69 +99,59 @@ describe("SqliteStateStore — PromptStore", () => {
         return prompt?.content ?? "";
       };
 
-      expect(content("system_gerrit_code")).toBe(content("system_generic_code"));
-      expect(content("system_gitlab_code")).toBe(content("system_generic_code"));
-      expect(content("instructions_gerrit_code")).toBe(content("instructions_generic_code"));
-      expect(content("instructions_gitlab_code")).toBe(content("instructions_generic_code"));
-
-      const reviewSystem = content("system_gerrit_review");
-      expect(content("system_github_review")).toBe(reviewSystem);
-      expect(content("system_gitlab_review")).toBe(reviewSystem);
+      const reviewSystem = content("system_review");
       expect(reviewSystem).not.toMatch(/output text only|structured result|json|ve_submit_review/i);
 
-      const reviewInstructions = content("instructions_gerrit_review");
-      expect(content("instructions_github_review")).toBe(reviewInstructions);
-      expect(content("instructions_gitlab_review")).toBe(reviewInstructions);
+      content("instructions_review");
 
-      for (const id of [
-        "instructions_generic_code",
-        "instructions_gerrit_code",
-        "instructions_gitlab_code",
-      ]) {
+      for (const id of ["instructions_generic_code", "instructions_feedback_code"]) {
         expect(content(id)).not.toMatch(
           /git commit|conventional commits?|change-id|do not push|commit requirements/i
         );
       }
+
+      expect(await store.getPrompt("system_gerrit_review")).toBeNull();
+      expect(await store.getPrompt("instructions_github_review")).toBeNull();
     });
 
     it("returns custom prompts after upsert", async () => {
-      await store.upsertPrompt("instructions_gerrit_review", "Custom instructions content");
+      await store.upsertPrompt("instructions_review", "Custom instructions content");
 
       const prompts = await store.getPrompts();
-      const instrPrompt = prompts.find((p) => p.id === "instructions_gerrit_review");
+      const instrPrompt = prompts.find((p) => p.id === "instructions_review");
 
       expect(instrPrompt).toBeDefined();
       expect(instrPrompt!.content).toBe("Custom instructions content");
     });
 
     it("returns all prompts including newly upserted ones", async () => {
-      await store.upsertPrompt("instructions_gerrit_review", "Instructions v2");
+      await store.upsertPrompt("instructions_review", "Instructions v2");
 
       const prompts = await store.getPrompts();
 
-      expect(prompts.length).toBeGreaterThanOrEqual(6);
+      expect(prompts).toHaveLength(5);
     });
   });
 
   // ── getPrompt ──────────────────────────────────────────────────────────────
 
   describe("getPrompt", () => {
-    it("returns the built-in 'system_gerrit_code' prompt with default content", async () => {
-      const prompt = await store.getPrompt("system_gerrit_code");
+    it("returns the built-in code system prompt with default content", async () => {
+      const prompt = await store.getPrompt("system_generic_code");
 
       expect(prompt).not.toBeNull();
-      expect(prompt!.id).toBe("system_gerrit_code");
-      expect(prompt!.label).toMatch(/gerrit/i);
+      expect(prompt!.id).toBe("system_generic_code");
+      expect(prompt!.label).toMatch(/generic/i);
       expect(prompt!.content.length).toBeGreaterThan(10);
       expect(prompt!.updatedAt).toBeInstanceOf(Date);
     });
 
     it("returns the built-in review instructions prompt with default content", async () => {
-      const prompt = await store.getPrompt("instructions_gerrit_review");
+      const prompt = await store.getPrompt("instructions_review");
 
       expect(prompt).not.toBeNull();
-      expect(prompt!.id).toBe("instructions_gerrit_review");
-      expect(prompt!.label).toMatch(/gerrit/i);
+      expect(prompt!.id).toBe("instructions_review");
+      expect(prompt!.label).toMatch(/review/i);
       expect(prompt!.content.length).toBeGreaterThan(10);
     });
 
@@ -181,9 +174,9 @@ describe("SqliteStateStore — PromptStore", () => {
 
     it("returns the updated content after upsert", async () => {
       const newContent = "You are a test engineer. Only write tests.";
-      await store.upsertPrompt("instructions_gerrit_review", newContent);
+      await store.upsertPrompt("instructions_review", newContent);
 
-      const prompt = await store.getPrompt("instructions_gerrit_review");
+      const prompt = await store.getPrompt("instructions_review");
 
       expect(prompt!.content).toBe(newContent);
     });
@@ -193,73 +186,73 @@ describe("SqliteStateStore — PromptStore", () => {
 
   describe("upsertPrompt", () => {
     it("creates a new prompt record when none exists", async () => {
-      const result = await store.upsertPrompt("instructions_gerrit_review", "New instructions content");
+      const result = await store.upsertPrompt("custom-instructions", "New instructions content");
 
-      expect(result.id).toBe("instructions_gerrit_review");
+      expect(result.id).toBe("custom-instructions");
       expect(result.content).toBe("New instructions content");
       expect(result.updatedAt).toBeInstanceOf(Date);
     });
 
     it("recreates a missing built-in system prompt with its declared role", async () => {
       const raw = new Database(dbPath);
-      raw.prepare("DELETE FROM prompts WHERE id = ?").run("system_gerrit_review");
+      raw.prepare("DELETE FROM prompts WHERE id = ?").run("system_review");
       raw.close();
 
-      const result = await store.upsertPrompt("system_gerrit_review", "Restored system prompt");
+      const result = await store.upsertPrompt("system_review", "Restored system prompt");
 
       expect(result.promptType).toBe("system");
     });
 
     it("updates an existing prompt when called again with the same id", async () => {
-      await store.upsertPrompt("instructions_gerrit_review", "First version");
-      const updated = await store.upsertPrompt("instructions_gerrit_review", "Second version");
+      await store.upsertPrompt("instructions_review", "First version");
+      const updated = await store.upsertPrompt("instructions_review", "Second version");
 
-      expect(updated.id).toBe("instructions_gerrit_review");
+      expect(updated.id).toBe("instructions_review");
       expect(updated.content).toBe("Second version");
     });
 
     it("preserves the label field when updating content", async () => {
-      const initial = await store.getPrompt("instructions_gerrit_review");
+      const initial = await store.getPrompt("instructions_review");
       const originalLabel = initial!.label;
 
-      await store.upsertPrompt("instructions_gerrit_review", "Updated content");
-      const afterUpdate = await store.getPrompt("instructions_gerrit_review");
+      await store.upsertPrompt("instructions_review", "Updated content");
+      const afterUpdate = await store.getPrompt("instructions_review");
 
       expect(afterUpdate!.label).toBe(originalLabel);
     });
 
     it("updates updatedAt timestamp on each upsert", async () => {
-      const before = await store.upsertPrompt("instructions_gerrit_review", "v1");
+      const before = await store.upsertPrompt("instructions_review", "v1");
       // Small delay to ensure timestamps differ
       await new Promise<void>((resolve) => setTimeout(resolve, 5));
-      const after = await store.upsertPrompt("instructions_gerrit_review", "v2");
+      const after = await store.upsertPrompt("instructions_review", "v2");
 
       expect(after.updatedAt.getTime()).toBeGreaterThanOrEqual(before.updatedAt.getTime());
     });
 
     it("returns the persisted prompt (verifiable via getPrompt)", async () => {
       const content = "You are a diligent software engineer.";
-      await store.upsertPrompt("instructions_gerrit_review", content);
+      await store.upsertPrompt("instructions_review", content);
 
-      const retrieved = await store.getPrompt("instructions_gerrit_review");
+      const retrieved = await store.getPrompt("instructions_review");
 
       expect(retrieved!.content).toBe(content);
     });
 
     it("stores multi-line content with newlines intact", async () => {
       const multilineContent = "Line 1\nLine 2\n\nLine 4 after blank";
-      await store.upsertPrompt("instructions_gerrit_review", multilineContent);
+      await store.upsertPrompt("instructions_review", multilineContent);
 
-      const retrieved = await store.getPrompt("instructions_gerrit_review");
+      const retrieved = await store.getPrompt("instructions_review");
 
       expect(retrieved!.content).toBe(multilineContent);
     });
 
     it("stores large content without truncation", async () => {
       const largeContent = "x".repeat(10_000);
-      await store.upsertPrompt("instructions_gerrit_review", largeContent);
+      await store.upsertPrompt("instructions_review", largeContent);
 
-      const retrieved = await store.getPrompt("instructions_gerrit_review");
+      const retrieved = await store.getPrompt("instructions_review");
 
       expect(retrieved!.content).toHaveLength(10_000);
     });
@@ -269,11 +262,11 @@ describe("SqliteStateStore — PromptStore", () => {
 
   describe("isolation across store instances", () => {
     it("changes in one store instance are not visible in a second store on a different db", async () => {
-      await store.upsertPrompt("instructions_gerrit_review", "store1 content");
+      await store.upsertPrompt("instructions_review", "store1 content");
 
       const store2 = await SqliteStateStore.create(tempDbPath());
       try {
-        const prompt = await store2.getPrompt("instructions_gerrit_review");
+        const prompt = await store2.getPrompt("instructions_review");
         // store2 has different db path — it should have the default, not "store1 content"
         expect(prompt!.content).not.toBe("store1 content");
       } finally {
@@ -367,15 +360,15 @@ describe("SqliteStateStore — PromptStore", () => {
       expect(retrieved).toBeNull();
     });
 
-    it("rejects deletion of the built-in 'system_gerrit_code' prompt", async () => {
+    it("rejects deletion of the built-in code system prompt", async () => {
       await expect(
-        store.deletePrompt("system_gerrit_code")
+        store.deletePrompt("system_generic_code")
       ).rejects.toThrow(/cannot delete|built-in/i);
     });
 
     it("rejects deletion of the built-in review instructions prompt", async () => {
       await expect(
-        store.deletePrompt("instructions_gerrit_review")
+        store.deletePrompt("instructions_review")
       ).rejects.toThrow(/cannot delete|built-in/i);
     });
 
