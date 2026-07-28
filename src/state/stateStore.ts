@@ -502,16 +502,13 @@ export class SqliteStateStore {
         WHERE prompt_type IS NULL OR prompt_type NOT IN ('system', 'instructions');
       UPDATE prompts SET prompt_type = 'system'
         WHERE id IN (
-          'system_generic_code',
-          'system_gerrit_code','system_gitlab_code',
-          'system_gerrit_review','system_gitlab_review','system_github_review'
+          'system_generic_code','system_review'
         );
       UPDATE prompts SET prompt_type = 'instructions'
         WHERE id IN (
           'instructions_generic_code',
-          'instructions_gerrit_code','instructions_gitlab_code',
           'instructions_feedback_code',
-          'instructions_gerrit_review','instructions_gitlab_review','instructions_github_review'
+          'instructions_review'
         );
     `);
     this.migrateReferencedPromptRoles();

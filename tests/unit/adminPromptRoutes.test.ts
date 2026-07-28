@@ -72,9 +72,11 @@ function makePromptStore(initial: Prompt[] = []): PromptStore {
     }),
     deletePrompt: vi.fn(async (id: string) => {
       const BUILT_IN_IDS = new Set([
-        'system_gerrit_code', 'system_gitlab_code',
-        'system_gerrit_review', 'system_gitlab_review',
-        'instructions_gerrit_review', 'instructions_gitlab_review',
+        "system_generic_code",
+        "instructions_generic_code",
+        "instructions_feedback_code",
+        "system_review",
+        "instructions_review",
       ]);
       if (BUILT_IN_IDS.has(id)) {
         const err = new Error("Cannot delete built-in prompt");
@@ -161,8 +163,8 @@ describe("Admin API — Prompt routes", () => {
   let promptStore: PromptStore;
 
   const defaultPrompts: Prompt[] = [
-    makePrompt({ id: "system_gerrit_code", label: "System Prompt — Gerrit (code)", content: "You are a software engineer.", promptType: "system" }),
-    makePrompt({ id: "instructions_gerrit_review", label: "Instructions Prompt — Gerrit (review)", content: "Use your file tools to review the change." }),
+    makePrompt({ id: "system_generic_code", label: "System Prompt — Generic (code)", content: "You are a software engineer.", promptType: "system" }),
+    makePrompt({ id: "instructions_review", label: "Instructions Prompt — Review", content: "Use your file tools to review the change." }),
   ];
 
   beforeEach(async () => {
@@ -194,11 +196,11 @@ describe("Admin API — Prompt routes", () => {
       const { body } = await fetchFromServer(server, "/api/admin/prompts");
 
       const prompts = body["prompts"] as Array<Record<string, unknown>>;
-      const system = prompts.find((p) => p["id"] === "system_gerrit_code");
+      const system = prompts.find((p) => p["id"] === "system_generic_code");
 
       expect(system).toMatchObject({
-        id: "system_gerrit_code",
-        label: "System Prompt — Gerrit (code)",
+        id: "system_generic_code",
+        label: "System Prompt — Generic (code)",
         content: "You are a software engineer.",
       });
       expect(typeof system!["updatedAt"]).toBe("string");
@@ -240,20 +242,20 @@ describe("Admin API — Prompt routes", () => {
 
   describe("GET /api/admin/prompts/:id", () => {
     it("returns 200 with the prompt when found", async () => {
-      const { status, body } = await fetchFromServer(server, "/api/admin/prompts/system_gerrit_code");
+      const { status, body } = await fetchFromServer(server, "/api/admin/prompts/system_generic_code");
 
       expect(status).toBe(200);
       const prompt = body["prompt"] as Record<string, unknown>;
-      expect(prompt["id"]).toBe("system_gerrit_code");
+      expect(prompt["id"]).toBe("system_generic_code");
       expect(prompt["content"]).toBe("You are a software engineer.");
     });
 
-    it("returns 200 for the Gerrit review instructions prompt", async () => {
-      const { status, body } = await fetchFromServer(server, "/api/admin/prompts/instructions_gerrit_review");
+    it("returns 200 for the review instructions prompt", async () => {
+      const { status, body } = await fetchFromServer(server, "/api/admin/prompts/instructions_review");
 
       expect(status).toBe(200);
       const prompt = body["prompt"] as Record<string, unknown>;
-      expect(prompt["id"]).toBe("instructions_gerrit_review");
+      expect(prompt["id"]).toBe("instructions_review");
     });
 
     it("returns 404 for an unknown prompt id", async () => {
@@ -292,30 +294,30 @@ describe("Admin API — Prompt routes", () => {
 
   describe("PUT /api/admin/prompts/:id", () => {
     it("returns 200 with the updated prompt on success", async () => {
-      const { status, body } = await fetchFromServer(server, "/api/admin/prompts/system_gerrit_code", {
+      const { status, body } = await fetchFromServer(server, "/api/admin/prompts/system_generic_code", {
         method: "PUT",
         body: { content: "You are an expert TypeScript engineer." },
       });
 
       expect(status).toBe(200);
       const prompt = body["prompt"] as Record<string, unknown>;
-      expect(prompt["id"]).toBe("system_gerrit_code");
+      expect(prompt["id"]).toBe("system_generic_code");
       expect(prompt["content"]).toBe("You are an expert TypeScript engineer.");
     });
 
     it("persists the new content (subsequent GET returns updated value)", async () => {
-      await fetchFromServer(server, "/api/admin/prompts/instructions_gerrit_review", {
+      await fetchFromServer(server, "/api/admin/prompts/instructions_review", {
         method: "PUT",
         body: { content: "Only write tests, never implementation." },
       });
 
-      const { body } = await fetchFromServer(server, "/api/admin/prompts/instructions_gerrit_review");
+      const { body } = await fetchFromServer(server, "/api/admin/prompts/instructions_review");
       const prompt = body["prompt"] as Record<string, unknown>;
       expect(prompt["content"]).toBe("Only write tests, never implementation.");
     });
 
     it("returns 400 when content field is missing", async () => {
-      const { status, body } = await fetchFromServer(server, "/api/admin/prompts/system_gerrit_code", {
+      const { status, body } = await fetchFromServer(server, "/api/admin/prompts/system_generic_code", {
         method: "PUT",
         body: {},
       });
@@ -325,7 +327,7 @@ describe("Admin API — Prompt routes", () => {
     });
 
     it("returns 400 when content is not a string", async () => {
-      const { status, body } = await fetchFromServer(server, "/api/admin/prompts/system_gerrit_code", {
+      const { status, body } = await fetchFromServer(server, "/api/admin/prompts/system_generic_code", {
         method: "PUT",
         body: { content: 42 },
       });
@@ -336,7 +338,7 @@ describe("Admin API — Prompt routes", () => {
 
     it("returns 400 when body is missing entirely", async () => {
       const addr = server.address() as { port: number };
-      const res = await fetch(`http://127.0.0.1:${addr.port}/api/admin/prompts/system_gerrit_code`, {
+      const res = await fetch(`http://127.0.0.1:${addr.port}/api/admin/prompts/system_generic_code`, {
         method: "PUT",
       });
 
@@ -374,7 +376,7 @@ describe("Admin API — Prompt routes", () => {
 
     it("accepts multi-line content with newlines preserved in the response", async () => {
       const multiline = "Line 1\nLine 2\n\nLine 4";
-      const { status, body } = await fetchFromServer(server, "/api/admin/prompts/system_gerrit_code", {
+      const { status, body } = await fetchFromServer(server, "/api/admin/prompts/system_generic_code", {
         method: "PUT",
         body: { content: multiline },
       });
@@ -385,13 +387,13 @@ describe("Admin API — Prompt routes", () => {
     });
 
     it("calls promptStore.upsertPrompt with the correct id and content", async () => {
-      await fetchFromServer(server, "/api/admin/prompts/instructions_gerrit_review", {
+      await fetchFromServer(server, "/api/admin/prompts/instructions_review", {
         method: "PUT",
         body: { content: "New instructions" },
       });
 
       expect(vi.mocked(promptStore.upsertPrompt)).toHaveBeenCalledWith(
-        "instructions_gerrit_review",
+        "instructions_review",
         "New instructions"
       );
     });
@@ -582,8 +584,8 @@ describe("Admin API — Prompt routes", () => {
       expect(status).toBe(404);
     });
 
-    it("returns 409 when deleting the 'system_gerrit_code' built-in prompt", async () => {
-      const { status, body } = await fetchFromServer(server, "/api/admin/prompts/system_gerrit_code", {
+    it("returns 409 when deleting the built-in code system prompt", async () => {
+      const { status, body } = await fetchFromServer(server, "/api/admin/prompts/system_generic_code", {
         method: "DELETE",
       });
 
@@ -592,7 +594,7 @@ describe("Admin API — Prompt routes", () => {
     });
 
     it("returns 409 when deleting built-in review instructions", async () => {
-      const { status, body } = await fetchFromServer(server, "/api/admin/prompts/instructions_gerrit_review", {
+      const { status, body } = await fetchFromServer(server, "/api/admin/prompts/instructions_review", {
         method: "DELETE",
       });
 
