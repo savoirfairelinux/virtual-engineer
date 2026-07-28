@@ -1639,6 +1639,82 @@ describe("runtime bootstrap provider selection", () => {
     }));
   });
 
+  it("keeps native review agent-owned and neutralizes conflicting project overrides", async () => {
+    const dbAgent = makeDbAgentAdapter("copilot");
+    const reviewAgent: AgentRecord = {
+      id: "agent-native-review" as AgentRecord["id"],
+      name: "Native review agent",
+      type: "review",
+      integrationId: "copilot-native-review",
+      modelConfigJson: JSON.stringify({
+        model: "agent-model",
+        providerOptions: { reviewStrategy: "copilot_native", reasoningEffort: "high", futureFlag: true },
+      }),
+      systemPromptId: "system_review",
+      instructionsPromptId: "agent-review-instructions",
+      feedbackInstructionsPromptId: null,
+      maxConcurrent: 1,
+      enabled: true,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    const runtime = await importRuntime(
+      { copilot: dbAgent },
+      { copilot: makeIntegration({
+        id: "copilot-native-review",
+        provider: "copilot",
+        configJson: JSON.stringify({ token: "ghp-native-token" }),
+      }) },
+      {
+        activeIntegrationLists: {
+          gerrit: [makeIntegration({
+            id: "gerrit-native-review",
+            provider: "gerrit",
+            configJson: JSON.stringify({ sshHost: "gerrit.test", sshUser: "ve-bot" }),
+          })],
+        },
+        agentRecords: [reviewAgent],
+        configOverrides: { adminApiEnabled: true },
+      },
+    );
+    runtime.stateStore.getPrompt.mockImplementation(async (id: string) => ({
+      id,
+      label: id,
+      content: `content:${id}`,
+      promptType: id.includes("system") ? "system" as const : "instructions" as const,
+      updatedAt: new Date(),
+    }));
+    const streamEventsCtorArgs = runtime.PluginIntegrationStreamEventsManager.mock.calls[0]?.[0] as {
+      getReviewTrigger(): { triggerReviewForChange(integrationId: string, changeId: string): Promise<void> } | undefined;
+    };
+    await streamEventsCtorArgs.getReviewTrigger()?.triggerReviewForChange(
+      "gerrit-native-review",
+      "Inative123",
+    );
+    const deps = runtime.ReviewOrchestrator.mock.calls[0]?.[0] as {
+      resolveAgentForProject(project: ProjectRecord): Promise<unknown>;
+    };
+
+    const resolved = await deps.resolveAgentForProject({
+      id: "project-native-review" as ProjectRecord["id"],
+      agentId: reviewAgent.id,
+      agentOverrideJson: JSON.stringify({
+        model: "project-model",
+        systemPromptId: "project-review-system",
+        instructionsPromptId: "project-review-instructions",
+        providerOptions: { reviewStrategy: "ve_direct", reasoningEffort: "low", projectFlag: true },
+      }),
+    } as ProjectRecord);
+
+    expect(resolved).toEqual(expect.objectContaining({
+      reviewStrategy: "copilot_native",
+      model: undefined,
+      systemPrompt: "content:system_review",
+      instructionsPrompt: "content:project-review-instructions",
+      providerOptions: { futureFlag: true, projectFlag: true },
+    }));
+  });
+
   it("does not fall back to another review agent when the project agent token is invalid", async () => {
     const reviewIntegration = makeIntegration({
       id: "gerrit-review-fallback",

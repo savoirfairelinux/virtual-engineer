@@ -104,6 +104,16 @@ export interface ApiTransition {
 }
 
 export type DomainCapability = "issue_tracking" | "code_review" | "source_control" | "agent_execution";
+export type ReviewStrategy = "ve_direct" | "copilot_native";
+
+export interface ReviewStrategyDescriptor {
+  id: "copilot_native";
+  label: string;
+  description: string;
+  experimental: boolean;
+  modelSelection: "provider";
+  requiredSystemPromptId: string;
+}
 
 /**
  * Provider brand icon metadata as serialized by the admin API. `slug` is the
@@ -196,6 +206,7 @@ export interface ApiPlugin {
   icon?: ProviderIcon | null;
   requiredFields: PluginField[];
   agentConfigFields: PluginField[];
+  reviewStrategies?: ReviewStrategyDescriptor[];
   /** True when the provider supports the generic SSH auth UI (agent / generated-key). */
   supportsSshAuth?: boolean;
   oauth?: ApiPluginOAuth;
@@ -209,6 +220,7 @@ export interface ApiAgent {
   enabled: boolean;
   maxConcurrent: number | null;
   model: string | null;
+  reviewStrategy: ReviewStrategy;
   systemPromptId: string | null;
   instructionsPromptId: string | null;
   feedbackInstructionsPromptId: string | null;

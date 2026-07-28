@@ -89,6 +89,7 @@ export interface ReviewOrchestratorDeps {
    */
   resolveAgentForProject: (project: ProjectRecord) => Promise<{
     adapter: AgentAdapter;
+    reviewStrategy: import("../interfaces.js").ReviewStrategy;
     model: string | undefined;
     token: string;
     systemPrompt: string;
@@ -575,10 +576,14 @@ export class ReviewOrchestrator {
           await this.deps.applyPatchset(handle, details);
         }
 
-        emitReviewEvent("review.agent_started", { mode: "docker" });
+        emitReviewEvent("review.agent_started", {
+          mode: "docker",
+          reviewStrategy: projectAgentRuntime.reviewStrategy,
+        });
 
         const stderrLineBuffer = { partial: "" };
         const reviewResult = await this.deps.workspaceRunner.runReviewInDocker(handle, {
+          reviewStrategy: projectAgentRuntime.reviewStrategy,
           changeId,
           revisionNumber: details.changeNumber,
           patchset: details.currentPatchset,

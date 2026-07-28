@@ -215,6 +215,24 @@ describe("Admin API — Plugin & Integration routes", () => {
       ]));
       expect(redmine?.["agentConfigFields"]).toEqual([]);
     });
+
+    it("exposes Copilot native review as an experimental provider strategy", async () => {
+      const { status, body } = await fetchFromServer(server, "/api/admin/plugins");
+      expect(status).toBe(200);
+      const plugins = body["plugins"] as Array<Record<string, unknown>>;
+      const copilot = plugins.find((plugin) => plugin["provider"] === "copilot");
+
+      expect(copilot?.["reviewStrategies"]).toEqual([
+        {
+          id: "copilot_native",
+          label: "Copilot native review",
+          description: "Use Copilot CLI's built-in code-review subagent.",
+          experimental: true,
+          modelSelection: "provider",
+          requiredSystemPromptId: "system_review",
+        },
+      ]);
+    });
   });
 
   describe("POST /api/admin/integrations", () => {

@@ -47,6 +47,7 @@ export {
 // ─── Phase 2: Agents / Projects / Concurrency types ───────────────────────────
 
 export type AgentType = "coding" | "review";
+export type ReviewStrategy = "ve_direct" | "copilot_native";
 export type ProjectType = "coding" | "review";
 export type PushTargetRole = "primary" | "submodule" | "dependency" | "related";
 
@@ -530,6 +531,8 @@ export interface CloneResult {
 
 /** Input for running the review agent container. Workspace must be pre-cloned and patched. */
 export interface ReviewWorkspaceInput {
+  /** Agent-owned review execution strategy. */
+  reviewStrategy: ReviewStrategy;
   /** Change-Id (opaque string, e.g. "Iabc123..." for Gerrit, PR node id for GitHub) */
   changeId: ExternalChangeId;
   /** Provider-specific numeric change identifier (e.g. Gerrit change number, PR number) */

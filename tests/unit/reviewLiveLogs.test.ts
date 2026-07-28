@@ -196,6 +196,7 @@ function makeOrch(mocks: ReturnType<typeof makeMocks>, runner: ReturnType<typeof
     workspaceRunner: runner,
     resolveAgentForProject: vi.fn(async () => ({
       adapter: { name: "test-agent" } as AgentAdapter,
+      reviewStrategy: "ve_direct" as const,
       model: "test-model",
       token: "gh_test_token",
       systemPrompt: "You are a code reviewer.",

@@ -12,6 +12,7 @@ import {
   type PromptStore,
   type ProviderId,
   type ProjectRecord,
+  type ReviewStrategy,
 } from "../interfaces.js";
 import {
   defaultProviderAuthService,
@@ -22,6 +23,12 @@ import { decryptToken } from "../utils/encryption.js";
 import { getProviderDescriptor } from "../plugins/registry.js";
 import type { Router } from "./router.js";
 import type { PluginManager } from "../plugins/pluginManager.js";
+import {
+  normalizeReviewStrategyConfig,
+  ReviewStrategyConfigError,
+  resolveReviewStrategy,
+  type ReviewStrategyConfigResult,
+} from "../agents/reviewStrategy.js";
 
 const log = getLogger("admin-agents");
 
@@ -197,6 +204,7 @@ export interface AgentSummary {
   enabled: boolean;
   maxConcurrent: number;
   model: string | null;
+  reviewStrategy: ReviewStrategy;
   integrationId: string | null;
   systemPromptId: string | null;
   instructionsPromptId: string | null;
@@ -221,6 +229,7 @@ function toAgentSummary(agent: AgentRecord, projectCount: number): AgentSummary 
     enabled: agent.enabled,
     maxConcurrent: agent.maxConcurrent,
     model,
+    reviewStrategy: resolveReviewStrategy(config),
     integrationId: agent.integrationId,
     systemPromptId: agent.systemPromptId,
     instructionsPromptId: agent.instructionsPromptId,
@@ -268,6 +277,46 @@ const updateSchema = z.object({
   maxConcurrent: z.number({ invalid_type_error: "Max concurrent must be a number" }).int("Max concurrent must be an integer").min(1, "Max concurrent must be at least 1").optional(),
   enabled: z.boolean().optional(),
 });
+
+async function normalizeAgentStrategy(
+  deps: AgentsRouteDeps,
+  input: {
+    type: AgentType;
+    modelConfig: Record<string, unknown>;
+    integrationId: string | null;
+    systemPromptId: string;
+    feedbackInstructionsPromptId: string | null;
+  }
+): Promise<ReviewStrategyConfigResult> {
+  const strategy = resolveReviewStrategy(input.modelConfig);
+  if (strategy === "ve_direct") {
+    return normalizeReviewStrategyConfig({
+      agentType: input.type,
+      modelConfig: input.modelConfig,
+      systemPromptId: input.systemPromptId,
+      feedbackInstructionsPromptId: input.feedbackInstructionsPromptId,
+      providerName: null,
+      supportedStrategies: [],
+    });
+  }
+
+  if (!input.integrationId || !deps.integrationStore) {
+    throw new ReviewStrategyConfigError(`Review strategy '${strategy}' requires a linked agent integration`);
+  }
+  const integration = await deps.integrationStore.getIntegration(input.integrationId);
+  if (!integration) {
+    throw new ReviewStrategyConfigError(`Agent integration '${input.integrationId}' not found`);
+  }
+  const capability = getProviderDescriptor(integration.provider)?.capabilities.agent_execution;
+  return normalizeReviewStrategyConfig({
+    agentType: input.type,
+    modelConfig: input.modelConfig,
+    systemPromptId: input.systemPromptId,
+    feedbackInstructionsPromptId: input.feedbackInstructionsPromptId,
+    providerName: integration.provider,
+    supportedStrategies: capability?.reviewStrategies ?? [],
+  });
+}
 
 
 
@@ -452,26 +501,40 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
     const parsed = createSchema.safeParse(body);
     if (!parsed.success) { writeJson(res, 400, zodErrorBody(parsed.error, "Invalid agent payload")); return; }
     try {
+      const strategyConfig = await normalizeAgentStrategy(deps, {
+        type: parsed.data.type,
+        modelConfig: parsed.data.modelConfig,
+        integrationId: parsed.data.integrationId ?? null,
+        systemPromptId: parsed.data.systemPromptId,
+        feedbackInstructionsPromptId: parsed.data.feedbackInstructionsPromptId ?? null,
+      });
       const promptError = await validateRequiredPrompts(
         deps.promptStore,
         parsed.data.systemPromptId,
         parsed.data.instructionsPromptId,
-        parsed.data.feedbackInstructionsPromptId ?? null,
+        strategyConfig.feedbackInstructionsPromptId,
       );
       if (promptError) { writeJson(res, 400, { error: promptError }); return; }
       const created = await store.createAgent({
         ...(parsed.data.id !== undefined ? { id: parsed.data.id } : {}),
         name: parsed.data.name,
         type: parsed.data.type,
-        modelConfigJson: JSON.stringify(parsed.data.modelConfig ?? {}),
+        modelConfigJson: JSON.stringify(strategyConfig.modelConfig),
         ...(parsed.data.integrationId !== undefined ? { integrationId: parsed.data.integrationId } : {}),
         systemPromptId: parsed.data.systemPromptId,
         instructionsPromptId: parsed.data.instructionsPromptId,
-        ...(parsed.data.feedbackInstructionsPromptId !== undefined ? { feedbackInstructionsPromptId: parsed.data.feedbackInstructionsPromptId } : {}),
+        ...(strategyConfig.feedbackInstructionsPromptId !== null
+          ? { feedbackInstructionsPromptId: strategyConfig.feedbackInstructionsPromptId }
+          : {}),
         ...(parsed.data.maxConcurrent !== undefined ? { maxConcurrent: parsed.data.maxConcurrent } : {}),
         ...(parsed.data.enabled !== undefined ? { enabled: parsed.data.enabled } : {}),
       });
-      recordAudit(deps.auditStore, req, { action: "agent.create", targetType: "agent", targetId: created.id, details: { name: created.name, type: created.type } });
+      recordAudit(deps.auditStore, req, {
+        action: "agent.create",
+        targetType: "agent",
+        targetId: created.id,
+        details: { name: created.name, type: created.type, reviewStrategy: strategyConfig.reviewStrategy },
+      });
       log.info(
         {
           agentId: created.id,
@@ -484,6 +547,10 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
       writeJson(res, 201, { agent: toAgentDetail(created, 0) });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
+      if (err instanceof ReviewStrategyConfigError) {
+        writeJson(res, 400, { error: msg });
+        return;
+      }
       log.warn({ err }, "create agent failed");
       writeJson(res, 500, { error: msg });
     }
@@ -580,33 +647,55 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
       writeJson(res, 400, { error: "Agent and workflow instructions are required" });
       return;
     }
-    const updates: Parameters<AgentsRouteStore["updateAgent"]>[1] = {};
-    if (parsed.data.name !== undefined) updates.name = parsed.data.name;
-    if (parsed.data.type !== undefined) updates.type = parsed.data.type;
-    if (parsed.data.modelConfig !== undefined) {
-      const existingConfig = parseConfig(existing.modelConfigJson);
-      updates.modelConfigJson = JSON.stringify(mergeAgentConfig(existingConfig, parsed.data.modelConfig));
-    }
-    if (parsed.data.integrationId !== undefined) updates.integrationId = parsed.data.integrationId;
-    if (parsed.data.systemPromptId !== undefined) updates.systemPromptId = parsed.data.systemPromptId;
-    if (parsed.data.instructionsPromptId !== undefined) updates.instructionsPromptId = parsed.data.instructionsPromptId;
-    if (parsed.data.feedbackInstructionsPromptId !== undefined) updates.feedbackInstructionsPromptId = parsed.data.feedbackInstructionsPromptId;
-    if (parsed.data.maxConcurrent !== undefined) updates.maxConcurrent = parsed.data.maxConcurrent;
-    if (parsed.data.enabled !== undefined) updates.enabled = parsed.data.enabled;
+    const existingConfig = parseConfig(existing.modelConfigJson);
+    const prospectiveConfig = parsed.data.modelConfig === undefined
+      ? existingConfig
+      : mergeAgentConfig(existingConfig, parsed.data.modelConfig);
+    const prospectiveType = parsed.data.type ?? existing.type;
+    const prospectiveIntegrationId = parsed.data.integrationId === undefined
+      ? existing.integrationId
+      : parsed.data.integrationId;
     try {
+      const strategyConfig = await normalizeAgentStrategy(deps, {
+        type: prospectiveType,
+        modelConfig: prospectiveConfig,
+        integrationId: prospectiveIntegrationId,
+        systemPromptId,
+        feedbackInstructionsPromptId,
+      });
       const promptError = await validateRequiredPrompts(
         deps.promptStore,
         systemPromptId,
         instructionsPromptId,
-        feedbackInstructionsPromptId,
+        strategyConfig.feedbackInstructionsPromptId,
       );
       if (promptError) { writeJson(res, 400, { error: promptError }); return; }
+      const updates: Parameters<AgentsRouteStore["updateAgent"]>[1] = {
+        modelConfigJson: JSON.stringify(strategyConfig.modelConfig),
+        feedbackInstructionsPromptId: strategyConfig.feedbackInstructionsPromptId,
+      };
+      if (parsed.data.name !== undefined) updates.name = parsed.data.name;
+      if (parsed.data.type !== undefined) updates.type = parsed.data.type;
+      if (parsed.data.integrationId !== undefined) updates.integrationId = parsed.data.integrationId;
+      if (parsed.data.systemPromptId !== undefined) updates.systemPromptId = parsed.data.systemPromptId;
+      if (parsed.data.instructionsPromptId !== undefined) updates.instructionsPromptId = parsed.data.instructionsPromptId;
+      if (parsed.data.maxConcurrent !== undefined) updates.maxConcurrent = parsed.data.maxConcurrent;
+      if (parsed.data.enabled !== undefined) updates.enabled = parsed.data.enabled;
       const updated = await store.updateAgent(id, updates);
       const count = await countProjectsForAgent(store, id);
-      recordAudit(deps.auditStore, req, { action: "agent.update", targetType: "agent", targetId: id, details: { name: updated.name, type: updated.type } });
+      recordAudit(deps.auditStore, req, {
+        action: "agent.update",
+        targetType: "agent",
+        targetId: id,
+        details: { name: updated.name, type: updated.type, reviewStrategy: strategyConfig.reviewStrategy },
+      });
       writeJson(res, 200, { agent: toAgentDetail(updated, count) });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
+      if (err instanceof ReviewStrategyConfigError) {
+        writeJson(res, 400, { error: msg });
+        return;
+      }
       log.warn({ err, id }, "update agent failed");
       writeJson(res, 500, { error: msg });
     }

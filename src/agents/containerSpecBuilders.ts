@@ -87,6 +87,7 @@ export function buildReviewContainerSpec(
   const env: Record<string, string> = {
     ...options.providerEnv,
     REVIEW_MODE: "1",
+    REVIEW_STRATEGY: input.reviewStrategy,
     USER_PROMPT_FILE: "/ve-home/user-prompt.txt",
     SYSTEM_PROMPT: input.systemPrompt,
     ...(input.skillDiscoveryEnabled ? { SKILL_DISCOVERY: "1" } : {}),

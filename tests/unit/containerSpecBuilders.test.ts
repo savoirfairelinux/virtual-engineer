@@ -49,6 +49,7 @@ function makeContext(): TaskContext {
 
 function makeReviewInput(): ReviewWorkspaceInput {
   return {
+    reviewStrategy: "ve_direct",
     changeId: makeExternalChangeId("Ireview"),
     revisionNumber: 42,
     patchset: 3,
@@ -132,6 +133,7 @@ describe("containerSpecBuilders", () => {
       env: {
         AGENT_PROVIDER: "test",
         REVIEW_MODE: "1",
+        REVIEW_STRATEGY: "ve_direct",
         USER_PROMPT_FILE: "/ve-home/user-prompt.txt",
         SYSTEM_PROMPT: "Review carefully",
         SKILL_DISCOVERY: "1",
@@ -207,6 +209,7 @@ describe("containerSpecBuilders", () => {
       });
       expect(review.env).toMatchObject({
         REVIEW_MODE: "1",
+        REVIEW_STRATEGY: "ve_direct",
         USER_PROMPT_FILE: "/ve-home/user-prompt.txt",
         SYSTEM_PROMPT: "Review carefully",
         SKILL_DISCOVERY: "1",

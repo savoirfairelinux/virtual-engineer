@@ -817,6 +817,7 @@ describe("DockerWorkspaceRunner", () => {
       });
 
       await runner.runReviewInDocker(handle, {
+        reviewStrategy: "ve_direct",
         changeId: makeExternalChangeId("Iabc123"),
         revisionNumber: 1,
         patchset: 1,
@@ -872,6 +873,7 @@ describe("DockerWorkspaceRunner", () => {
       });
 
       await runner.runReviewInDocker(handle, {
+        reviewStrategy: "ve_direct",
         changeId: makeExternalChangeId("Iabc123"),
         revisionNumber: 1,
         patchset: 1,
@@ -908,6 +910,7 @@ describe("DockerWorkspaceRunner", () => {
       const handle = await runner.createWorkspace(makeTaskId("task-1"));
 
       await expect(runner.runReviewInDocker(handle, {
+        reviewStrategy: "ve_direct",
         changeId: makeExternalChangeId("Iabc123"),
         revisionNumber: 1,
         patchset: 1,

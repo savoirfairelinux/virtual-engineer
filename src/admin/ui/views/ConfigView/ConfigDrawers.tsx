@@ -219,7 +219,12 @@ export function AgentDrawer({ item, prompts, onClose, onEdit, onToggle, onDelete
 
       <DetailSection label="Runtime">
         <DetailRow k="Type">{item.type}</DetailRow>
-        <DetailRow k="Model" mono>{item.model ?? "auto"}</DetailRow>
+        <DetailRow k="Review strategy">
+          {item.reviewStrategy === "copilot_native" ? "Copilot native (experimental)" : "VE direct"}
+        </DetailRow>
+        <DetailRow k="Model" mono>
+          {item.reviewStrategy === "copilot_native" ? "CLI-managed models" : item.model ?? "auto"}
+        </DetailRow>
         <DetailRow k="Max concurrent" mono>{String(item.maxConcurrent ?? "∞")}</DetailRow>
         <DetailRow k="Agent ID" mono>{item.id}</DetailRow>
       </DetailSection>

@@ -27,6 +27,7 @@ import { accessibleResourceIds, ALL_RESOURCES } from "./authorization/policyEngi
 import { isConfiguredSshFilePathAllowed } from "../utils/sshFilePath.js";
 import { getProviderDescriptor, getProviderDomainCapabilities } from "../plugins/registry.js";
 import { listSkillSourceSkills, validateSkillSourcesConnection } from "./skillSourceDiscovery.js";
+import { resolveReviewStrategy } from "../agents/reviewStrategy.js";
 
 const log = getLogger("admin-projects");
 const MAX_TCP_PORT = 65_535;
@@ -579,6 +580,7 @@ function isUniqueConflict(err: unknown): boolean {
 async function validateAgentOverrideJson(
   store: Pick<ProjectsRouteStore, "getPrompt">,
   json: string | null,
+  agent: AgentRecord,
 ): Promise<string | null> {
   if (json === null) return null;
 
@@ -591,6 +593,30 @@ async function validateAgentOverrideJson(
     override = parsed as Record<string, unknown>;
   } catch {
     return "Agent override must be valid JSON";
+  }
+
+  let agentConfig: Record<string, unknown> = {};
+  try {
+    const parsed: unknown = JSON.parse(agent.modelConfigJson);
+    if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+      agentConfig = parsed as Record<string, unknown>;
+    }
+  } catch {
+    // Existing malformed agent config remains a runtime validation concern.
+  }
+  if (resolveReviewStrategy(agentConfig) === "copilot_native") {
+    const rawProviderOptions = override["providerOptions"];
+    const providerOptions = rawProviderOptions !== null
+      && typeof rawProviderOptions === "object"
+      && !Array.isArray(rawProviderOptions)
+      ? rawProviderOptions as Record<string, unknown>
+      : {};
+    const conflict = ["model", "systemPromptId", "reviewStrategy", "reasoningEffort"].find((field) =>
+      override[field] !== undefined || providerOptions[field] !== undefined
+    );
+    if (conflict !== undefined) {
+      return `Copilot native review does not allow project override '${conflict}'`;
+    }
   }
 
   const promptFields = [
@@ -676,7 +702,7 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
       writeJson(res, 400, { error: `Agent type mismatch: agent is '${agent.type}', project is '${data.type}'` }); return;
     }
     if (data.agentOverrideJson !== undefined) {
-      const overrideError = await validateAgentOverrideJson(store, data.agentOverrideJson);
+      const overrideError = await validateAgentOverrideJson(store, data.agentOverrideJson, agent);
       if (overrideError) { writeJson(res, 400, { error: overrideError }); return; }
     }
     if (data.type === "coding") {
@@ -825,15 +851,19 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
     const parsed = projectUpdateSchema.safeParse(body);
     if (!parsed.success) { writeJson(res, 400, zodErrorBody(parsed.error, "Invalid project payload")); return; }
     const data = parsed.data;
+    let prospectiveAgent: AgentRecord | null = null;
     if (data.agentId !== undefined) {
       const agent = await store.getAgentById(makeAgentId(data.agentId));
       if (!agent) { writeJson(res, 400, { error: `Agent not found: ${data.agentId}` }); return; }
       if (agent.type !== existing.type) {
         writeJson(res, 400, { error: `Agent type mismatch: agent is '${agent.type}', project is '${existing.type}'` }); return;
       }
+      prospectiveAgent = agent;
     }
     if (data.agentOverrideJson !== undefined) {
-      const overrideError = await validateAgentOverrideJson(store, data.agentOverrideJson);
+      prospectiveAgent ??= await store.getAgentById(existing.agentId);
+      if (!prospectiveAgent) { writeJson(res, 400, { error: `Agent not found: ${existing.agentId}` }); return; }
+      const overrideError = await validateAgentOverrideJson(store, data.agentOverrideJson, prospectiveAgent);
       if (overrideError) { writeJson(res, 400, { error: overrideError }); return; }
     }
     const updates: Parameters<ProjectsRouteStore["updateProject"]>[1] = {};

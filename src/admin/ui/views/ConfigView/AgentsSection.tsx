@@ -14,11 +14,22 @@ export function AgentsSection({ agents, integrations, plugins, prompts, onRefres
   const { canOperate } = useCurrentUser();
   const [busy, setBusy] = useState<string | null>(null);
   const [showAdd, setShowAdd] = useState(false);
-  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingAgent, setEditingAgent] = useState<ApiAgent | null>(null);
   const [drawerId, setDrawerId] = useState<string | null>(null);
 
-  const editingAgent = editingId ? agents.find((a) => a.id === editingId) : undefined;
   const drawerItem = drawerId ? agents.find((a) => a.id === drawerId) : undefined;
+
+  async function openEditAgent(id: string) {
+    setBusy(id);
+    try {
+      const response = await api.get<{ agent: ApiAgent }>(`/api/admin/agents/${id}`);
+      setEditingAgent(response.agent);
+    } catch (error) {
+      alert(error instanceof Error ? error.message : "Failed to load agent");
+    } finally {
+      setBusy(null);
+    }
+  }
 
   async function toggleEnabled(id: string, enabled: boolean) {
     setBusy(id);
@@ -45,7 +56,7 @@ export function AgentsSection({ agents, integrations, plugins, prompts, onRefres
 
   function handleSaved() {
     setShowAdd(false);
-    setEditingId(null);
+    setEditingAgent(null);
     onRefresh();
   }
 
@@ -89,10 +100,13 @@ export function AgentsSection({ agents, integrations, plugins, prompts, onRefres
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontSize: "13.5px", fontWeight: 600 }}>{a.name}</div>
               <div className="mono" style={{ fontSize: "11.5px", color: "var(--text-faint)", marginTop: "3px" }}>
-                {a.type} · {a.model ?? "auto"}
+                {a.type} · {a.reviewStrategy === "copilot_native" ? "CLI-managed models" : a.model ?? "auto"}
               </div>
             </div>
             <div style={{ display: "flex", gap: "8px" }}>
+              <Tag tone={a.reviewStrategy === "copilot_native" ? "warn" : "muted"}>
+                {a.reviewStrategy === "copilot_native" ? "Copilot native · experimental" : "VE direct"}
+              </Tag>
               <Tag tone="info">Agent instructions: {promptLabel(a.systemPromptId)}</Tag>
               <Tag tone="muted">Workflow instructions: {promptLabel(a.instructionsPromptId)}</Tag>
             </div>
@@ -132,7 +146,7 @@ export function AgentsSection({ agents, integrations, plugins, prompts, onRefres
           prompts={prompts}
           onClose={() => setDrawerId(null)}
           {...(canOperate ? {
-            onEdit: () => { setDrawerId(null); setEditingId(drawerItem.id); },
+            onEdit: () => { setDrawerId(null); void openEditAgent(drawerItem.id); },
             onToggle: () => { void toggleEnabled(drawerItem.id, drawerItem.enabled); setDrawerId(null); },
             onDelete: () => { void deleteAgent(drawerItem); setDrawerId(null); },
           } : {})}
@@ -141,11 +155,11 @@ export function AgentsSection({ agents, integrations, plugins, prompts, onRefres
 
       {canOperate && (showAdd || editingAgent) && (
         <AgentFormModal
-          agent={editingAgent}
+          agent={editingAgent ?? undefined}
           integrations={integrations}
           plugins={plugins}
           prompts={prompts}
-          onClose={() => { setShowAdd(false); setEditingId(null); }}
+          onClose={() => { setShowAdd(false); setEditingAgent(null); }}
           onSaved={handleSaved}
         />
       )}
