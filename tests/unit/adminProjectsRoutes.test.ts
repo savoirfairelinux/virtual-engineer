@@ -720,6 +720,58 @@ describe("Admin API — Project routes (/api/admin/projects)", () => {
     expect(r.body?.["error"]).toMatch(/override.*JSON/i);
   });
 
+  it("POST / returns 400 when the agent has an unknown review strategy", async () => {
+    const agent = await store.createAgent({
+      name: "invalid-review-bot",
+      type: "review",
+      modelConfigJson: JSON.stringify({ providerOptions: { reviewStrategy: "unknown" } }),
+      enabled: true,
+      systemPromptId: "system_review",
+      instructionsPromptId: "instructions_review",
+    });
+    await seedIntegration(store, "gerrit-1", "gerrit");
+
+    const r = await rest(server, "/api/admin/projects", {
+      method: "POST",
+      body: {
+        type: "review",
+        name: "InvalidAgentStrategy",
+        agentId: agent.id,
+        agentOverrideJson: "{}",
+        reviewConfig: { integrationId: "gerrit-1", repoKeys: ["x"] },
+      },
+    });
+
+    expect(r.status).toBe(400);
+    expect(r.body?.["error"]).toBe("Unknown review strategy 'unknown'");
+  });
+
+  it("PUT /:id returns 400 when the agent has an unknown review strategy", async () => {
+    const agent = await makeAgent(store, "review");
+    await seedIntegration(store, "gerrit-1", "gerrit");
+    const created = await rest(server, "/api/admin/projects", {
+      method: "POST",
+      body: {
+        type: "review",
+        name: "ExistingReviewProject",
+        agentId: agent.id,
+        reviewConfig: { integrationId: "gerrit-1", repoKeys: ["x"] },
+      },
+    });
+    const projectId = (created.body?.["project"] as { id: string }).id;
+    await store.updateAgent(agent.id, {
+      modelConfigJson: JSON.stringify({ providerOptions: { reviewStrategy: "unknown" } }),
+    });
+
+    const r = await rest(server, `/api/admin/projects/${projectId}`, {
+      method: "PUT",
+      body: { agentOverrideJson: "{}" },
+    });
+
+    expect(r.status).toBe(400);
+    expect(r.body?.["error"]).toBe("Unknown review strategy 'unknown'");
+  });
+
   it("POST / rejects project prompt overrides with crossed roles", async () => {
     const agent = await makeAgent(store, "review");
     await seedIntegration(store, "gerrit-1", "gerrit");
