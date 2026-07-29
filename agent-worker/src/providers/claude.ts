@@ -162,8 +162,7 @@ export async function runClaudeAgent(
     process.stderr.write(`agent working… (${state.toolCallCount} tool call(s) so far)\n`);
   }, 30_000);
 
-  let stream: ReturnType<typeof query>;
-  stream = query({
+  const stream = query({
     prompt,
     options: buildClaudeQueryOptions(options, resolveClaudeNativeOptions(), {
       abortController,
