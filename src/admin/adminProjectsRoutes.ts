@@ -277,6 +277,17 @@ function parseStoredSkillSources(project: ProjectRecord): SkillSource[] {
   }
 }
 
+function removedProjectField(fieldName: string): z.ZodOptional<z.ZodNever> {
+  return z.never({
+    errorMap: () => ({
+      message: `${fieldName} has been removed; omit it from project payloads`,
+    }),
+  }).optional();
+}
+
+const removedLocalSkillsPathSchema = removedProjectField("localSkillsPath");
+const removedSkillDiscoveryEnabledSchema = removedProjectField("skillDiscoveryEnabled");
+
 const codingProjectCreateSchema = z.object({
   id: z.string().optional(),
   type: z.literal("coding"),
@@ -284,9 +295,9 @@ const codingProjectCreateSchema = z.object({
   agentId: z.string().min(1, "Agent is required — create and enable a coding agent first (Agents tab)"),
   agentOverrideJson: z.string().nullable().optional(),
   postCloneScript: z.string().optional(),
-  localSkillsPath: z.never().optional(),
+  localSkillsPath: removedLocalSkillsPathSchema,
   skillSources: skillSourcesSchema.optional(),
-  skillDiscoveryEnabled: z.never().optional(),
+  skillDiscoveryEnabled: removedSkillDiscoveryEnabledSchema,
   gerritTopicOverride: z.string().nullable().optional(),
   useFullTicketUrlInCommits: z.boolean().optional(),
   postReviewLinkToTicket: z.boolean().optional(),
@@ -303,9 +314,9 @@ const reviewProjectCreateSchema = z.object({
   agentId: z.string().min(1, "Agent is required — create and enable a review agent first (Agents tab)"),
   agentOverrideJson: z.string().nullable().optional(),
   postCloneScript: z.string().optional(),
-  localSkillsPath: z.never().optional(),
+  localSkillsPath: removedLocalSkillsPathSchema,
   skillSources: skillSourcesSchema.optional(),
-  skillDiscoveryEnabled: z.never().optional(),
+  skillDiscoveryEnabled: removedSkillDiscoveryEnabledSchema,
   gerritTopicOverride: z.string().nullable().optional(),
   useFullTicketUrlInCommits: z.boolean().optional(),
   postReviewLinkToTicket: z.boolean().optional(),
@@ -324,9 +335,9 @@ const projectUpdateSchema = z.object({
   agentId: z.string().min(1, "Agent is required").optional(),
   agentOverrideJson: z.string().nullable().optional(),
   postCloneScript: z.string().optional(),
-  localSkillsPath: z.never().optional(),
+  localSkillsPath: removedLocalSkillsPathSchema,
   skillSources: skillSourcesSchema.optional(),
-  skillDiscoveryEnabled: z.never().optional(),
+  skillDiscoveryEnabled: removedSkillDiscoveryEnabledSchema,
   gerritTopicOverride: z.string().nullable().optional(),
   useFullTicketUrlInCommits: z.boolean().optional(),
   postReviewLinkToTicket: z.boolean().optional(),

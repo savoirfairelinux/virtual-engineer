@@ -389,6 +389,9 @@ describe("Admin API — Project routes (/api/admin/projects)", () => {
     });
 
     expect(response.status).toBe(400);
+    expect(response.body?.["error"]).toBe(
+      "skillDiscoveryEnabled has been removed; omit it from project payloads"
+    );
   });
 
   it("POST / rejects the removed localSkillsPath field", async () => {
@@ -411,6 +414,9 @@ describe("Admin API — Project routes (/api/admin/projects)", () => {
     });
 
     expect(r.status).toBe(400);
+    expect(r.body?.["error"]).toBe(
+      "localSkillsPath has been removed; omit it from project payloads"
+    );
   });
 
   it("POST / persists normalized remote skill sources", async () => {
@@ -890,6 +896,9 @@ describe("Admin API — Project routes (/api/admin/projects)", () => {
       body: { skillDiscoveryEnabled: false },
     });
     expect(r.status).toBe(400);
+    expect(r.body?.["error"]).toBe(
+      "skillDiscoveryEnabled has been removed; omit it from project payloads"
+    );
   });
 
   it("PUT /:id preserves local skill loading when remote skill sources are configured", async () => {
