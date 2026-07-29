@@ -347,34 +347,51 @@ describe("Admin API — Project routes (/api/admin/projects)", () => {
     expect(JSON.stringify(r.body)).toMatch(/SSH key path must be inside an approved secrets directory/);
   });
 
-  it("POST / persists skillDiscoveryEnabled for coding projects", async () => {
+  it("POST / omits the removed skillDiscoveryEnabled field", async () => {
     const agent = await makeAgent(store, "coding");
     await seedIntegration(store, "redmine-1", "redmine");
     await seedIntegration(store, "gerrit-1", "gerrit");
-    const base = {
-      type: "coding",
-      agentId: agent.id,
-      pushTargets: [
-        { integrationId: "gerrit-1", repoKey: "superproject", cloneUrl: "ssh://g/super", targetBranch: "main", role: "primary", commitOrder: 1, localPath: "." },
-      ],
-    };
-    const on = await rest(server, "/api/admin/projects", {
+    const response = await rest(server, "/api/admin/projects", {
       method: "POST",
-      body: { ...base, name: "WithSkills", ticketSource: { integrationId: "redmine-1", ticketProjectKey: "A" }, skillDiscoveryEnabled: true },
+      body: {
+        type: "coding",
+        name: "WithSkills",
+        agentId: agent.id,
+        ticketSource: { integrationId: "redmine-1", ticketProjectKey: "A" },
+        pushTargets: [
+          { integrationId: "gerrit-1", repoKey: "superproject", cloneUrl: "ssh://g/super", targetBranch: "main", role: "primary", commitOrder: 1, localPath: "." },
+        ],
+      },
     });
-    expect(on.status).toBe(201);
-    expect((on.body?.["project"] as Record<string, unknown>)["skillDiscoveryEnabled"]).toBe(true);
-    expect((on.body?.["project"] as Record<string, unknown>)["localSkillsPath"]).toBe(".github/skills");
 
-    const off = await rest(server, "/api/admin/projects", {
-      method: "POST",
-      body: { ...base, name: "NoSkills", ticketSource: { integrationId: "redmine-1", ticketProjectKey: "B" }, skillSources: [] },
-    });
-    expect(off.status).toBe(201);
-    expect((off.body?.["project"] as Record<string, unknown>)["skillDiscoveryEnabled"]).toBe(false);
+    expect(response.status).toBe(201);
+    const project = response.body?.["project"] as Record<string, unknown>;
+    expect(project).not.toHaveProperty("skillDiscoveryEnabled");
+    expect(project).not.toHaveProperty("localSkillsPath");
   });
 
-  it("POST / persists configured local skills path", async () => {
+  it("POST / rejects the removed skillDiscoveryEnabled field", async () => {
+    const agent = await makeAgent(store, "coding");
+    await seedIntegration(store, "redmine-1", "redmine");
+    await seedIntegration(store, "gerrit-1", "gerrit");
+    const response = await rest(server, "/api/admin/projects", {
+      method: "POST",
+      body: {
+        type: "coding",
+        name: "LegacySkillsFlag",
+        agentId: agent.id,
+        skillDiscoveryEnabled: false,
+        ticketSource: { integrationId: "redmine-1", ticketProjectKey: "B" },
+        pushTargets: [
+          { integrationId: "gerrit-1", repoKey: "superproject", cloneUrl: "ssh://g/super", targetBranch: "main", role: "primary", commitOrder: 1, localPath: "." },
+        ],
+      },
+    });
+
+    expect(response.status).toBe(400);
+  });
+
+  it("POST / rejects the removed localSkillsPath field", async () => {
     const agent = await makeAgent(store, "coding");
     await seedIntegration(store, "redmine-1", "redmine");
     await seedIntegration(store, "gerrit-1", "gerrit");
@@ -383,9 +400,8 @@ describe("Admin API — Project routes (/api/admin/projects)", () => {
       method: "POST",
       body: {
         type: "coding",
-        name: "WithLocalSkillsPath",
+        name: "LegacyLocalSkillsPath",
         agentId: agent.id,
-        skillDiscoveryEnabled: true,
         localSkillsPath: "team/skills",
         ticketSource: { integrationId: "redmine-1", ticketProjectKey: "LOCALSKILLS" },
         pushTargets: [
@@ -394,47 +410,7 @@ describe("Admin API — Project routes (/api/admin/projects)", () => {
       },
     });
 
-    expect(r.status).toBe(201);
-    const project = r.body?.["project"] as Record<string, unknown>;
-    expect(project["localSkillsPath"]).toBe("team/skills");
-    const stored = await store.getProjectById(makeProjectId(String(project["id"])));
-    expect(stored?.localSkillsPath).toBe("team/skills");
-  });
-
-  it("POST / rejects local skills paths outside the workspace", async () => {
-    const agent = await makeAgent(store, "review");
-    await seedIntegration(store, "gerrit-1", "gerrit");
-    const r = await rest(server, "/api/admin/projects", {
-      method: "POST",
-      body: {
-        type: "review",
-        name: "BadLocalSkillsPath",
-        agentId: agent.id,
-        localSkillsPath: "../secrets",
-        reviewConfig: { integrationId: "gerrit-1", repoKeys: ["platform/api"] },
-      },
-    });
-
     expect(r.status).toBe(400);
-    expect(JSON.stringify(r.body)).toMatch(/Local skills path must stay inside the workspace/);
-  });
-
-  it("POST / rejects the workspace root as local skills path", async () => {
-    const agent = await makeAgent(store, "review");
-    await seedIntegration(store, "gerrit-1", "gerrit");
-    const r = await rest(server, "/api/admin/projects", {
-      method: "POST",
-      body: {
-        type: "review",
-        name: "RootLocalSkillsPath",
-        agentId: agent.id,
-        localSkillsPath: ".",
-        reviewConfig: { integrationId: "gerrit-1", repoKeys: ["platform/api"] },
-      },
-    });
-
-    expect(r.status).toBe(400);
-    expect(JSON.stringify(r.body)).toMatch(/Local skills path must stay inside the workspace/);
   });
 
   it("POST / persists normalized remote skill sources", async () => {
@@ -458,7 +434,6 @@ describe("Admin API — Project routes (/api/admin/projects)", () => {
 
     expect(r.status).toBe(201);
     const project = r.body?.["project"] as Record<string, unknown>;
-    expect(project["skillDiscoveryEnabled"]).toBe(false);
     expect(project["skillSources"]).toEqual([
       { source: "ssh://skills.example.com/org/agent-skills", skills: ["skill-a", "skill-b"], sshUser: "git-user", sshPort: 29418, sshKeyPath: "/app/secrets/id_ed25519", sshKnownHostsPath: "/app/secrets/known_hosts" },
     ]);
@@ -482,7 +457,6 @@ describe("Admin API — Project routes (/api/admin/projects)", () => {
 
     expect(r.status).toBe(201);
     const project = r.body?.["project"] as Record<string, unknown>;
-    expect(project["skillDiscoveryEnabled"]).toBe(false);
     expect(project["skillSources"]).toEqual([]);
     const stored = await store.getProjectById(makeProjectId(String(project["id"])));
     expect(stored?.skillSourcesJson).toBe(JSON.stringify(project["skillSources"]));
@@ -505,7 +479,6 @@ describe("Admin API — Project routes (/api/admin/projects)", () => {
 
     expect(r.status).toBe(201);
     const project = r.body?.["project"] as Record<string, unknown>;
-    expect(project["skillDiscoveryEnabled"]).toBe(false);
     expect(project["skillSources"]).toEqual([]);
     const stored = await store.getProjectById(makeProjectId(String(project["id"])));
     expect(stored?.skillSourcesJson).toBe("[]");
@@ -898,7 +871,7 @@ describe("Admin API — Project routes (/api/admin/projects)", () => {
     expect(pts[0]?.["repoKey"]).toBe("new");
   });
 
-  it("PUT /:id toggles skillDiscoveryEnabled on a coding project", async () => {
+  it("PUT /:id rejects the removed skillDiscoveryEnabled field", async () => {
     const agent = await makeAgent(store, "coding");
     await seedIntegration(store, "redmine-1");
     await seedIntegration(store, "gerrit-1", "gerrit");
@@ -912,30 +885,11 @@ describe("Admin API — Project routes (/api/admin/projects)", () => {
       },
     });
     const id = (created.body?.["project"] as Record<string, unknown>)["id"] as string;
-    expect((created.body?.["project"] as Record<string, unknown>)["skillDiscoveryEnabled"]).toBe(false);
     const r = await rest(server, `/api/admin/projects/${id}`, {
       method: "PUT",
-      body: { skillDiscoveryEnabled: true },
+      body: { skillDiscoveryEnabled: false },
     });
-    expect(r.status).toBe(200);
-    expect((r.body?.["project"] as Record<string, unknown>)["skillDiscoveryEnabled"]).toBe(true);
-  });
-
-  it("PUT /:id toggles skillDiscoveryEnabled on a review project", async () => {
-    const agent = await makeAgent(store, "review");
-    await seedIntegration(store, "gerrit-1", "gerrit");
-    const created = await rest(server, "/api/admin/projects", {
-      method: "POST",
-      body: { type: "review", name: "RevWithSkills", agentId: agent.id, skillSources: [], reviewConfig: { integrationId: "gerrit-1", repoKeys: ["x"] } },
-    });
-    const id = (created.body?.["project"] as Record<string, unknown>)["id"] as string;
-    expect((created.body?.["project"] as Record<string, unknown>)["skillDiscoveryEnabled"]).toBe(false);
-    const r = await rest(server, `/api/admin/projects/${id}`, {
-      method: "PUT",
-      body: { skillDiscoveryEnabled: true },
-    });
-    expect(r.status).toBe(200);
-    expect((r.body?.["project"] as Record<string, unknown>)["skillDiscoveryEnabled"]).toBe(true);
+    expect(r.status).toBe(400);
   });
 
   it("PUT /:id preserves local skill loading when remote skill sources are configured", async () => {
@@ -946,16 +900,18 @@ describe("Admin API — Project routes (/api/admin/projects)", () => {
       body: { type: "review", name: "EnableViaSources", agentId: agent.id, skillSources: [], reviewConfig: { integrationId: "gerrit-1", repoKeys: ["x"] } },
     });
     const id = (created.body?.["project"] as Record<string, unknown>)["id"] as string;
-    expect((created.body?.["project"] as Record<string, unknown>)["skillDiscoveryEnabled"]).toBe(false);
 
     const r = await rest(server, `/api/admin/projects/${id}`, {
       method: "PUT",
-      body: { skillSources: [{ source: "ssh://skills.example.com/org/agent-skills", skills: ["skill-a"] }] },
+      body: {
+        type: "review",
+        skillSources: [{ source: "ssh://skills.example.com/org/agent-skills", skills: ["skill-a"] }],
+      },
     });
 
     expect(r.status).toBe(200);
     const project = r.body?.["project"] as Record<string, unknown>;
-    expect(project["skillDiscoveryEnabled"]).toBe(false);
+    expect(project).not.toHaveProperty("skillDiscoveryEnabled");
     expect(project["skillSources"]).toEqual([{ source: "ssh://skills.example.com/org/agent-skills", skills: ["skill-a"] }]);
   });
 

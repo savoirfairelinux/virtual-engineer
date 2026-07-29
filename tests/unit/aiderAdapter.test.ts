@@ -149,16 +149,13 @@ describe("AiderAdapter", () => {
       expect(() => adapter.buildContainerSpec(ctx)).toThrow(/requires an API base URL/);
     });
 
-    it("injects LOCAL_SKILLS_PATH only when skill discovery is enabled", () => {
+    it("does not expose removed local skill configuration", () => {
       const adapter = new AiderAdapter();
       const ctx = makeContext();
-      ctx.agentSession.localSkillsPath = "team/skills";
-      expect(adapter.buildContainerSpec(ctx).env["LOCAL_SKILLS_PATH"]).toBeUndefined();
-
-      ctx.agentSession.skillDiscoveryEnabled = true;
       const spec = adapter.buildContainerSpec(ctx);
-      expect(spec.env["SKILL_DISCOVERY"]).toBe("1");
-      expect(spec.env["LOCAL_SKILLS_PATH"]).toBe("team/skills");
+
+      expect(spec.env["LOCAL_SKILLS_PATH"]).toBeUndefined();
+      expect(spec.env["SKILL_DISCOVERY"]).toBeUndefined();
     });
 
     it("injects Aider native execution options", () => {
@@ -235,19 +232,14 @@ describe("AiderAdapter", () => {
       expect(spec.env["AIDER_MODEL"]).toBeUndefined();
     });
 
-    it("injects LOCAL_SKILLS_PATH in review specs only when skill discovery is enabled", () => {
+    it("does not expose removed local skill configuration in review specs", () => {
       const adapter = new AiderAdapter();
-      expect(
-        adapter.buildReviewContainerSpec(
-          makeReviewInput({ agentToken: "sk-key", aiderBackend: "openai", localSkillsPath: "team/skills" })
-        ).env["LOCAL_SKILLS_PATH"]
-      ).toBeUndefined();
-
       const spec = adapter.buildReviewContainerSpec(
-        makeReviewInput({ agentToken: "sk-key", aiderBackend: "openai", skillDiscoveryEnabled: true, localSkillsPath: "team/skills" })
+        makeReviewInput({ agentToken: "sk-key", aiderBackend: "openai" })
       );
-      expect(spec.env["SKILL_DISCOVERY"]).toBe("1");
-      expect(spec.env["LOCAL_SKILLS_PATH"]).toBe("team/skills");
+
+      expect(spec.env["LOCAL_SKILLS_PATH"]).toBeUndefined();
+      expect(spec.env["SKILL_DISCOVERY"]).toBeUndefined();
     });
   });
 

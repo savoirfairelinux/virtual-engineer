@@ -90,16 +90,13 @@ describe("ClaudeAdapter", () => {
       expect(spec.env["CLAUDE_MODEL"]).toBeUndefined();
     });
 
-    it("injects LOCAL_SKILLS_PATH only when skill discovery is enabled", () => {
+    it("does not expose removed local skill configuration", () => {
       const adapter = new ClaudeAdapter();
       const ctx = makeContext();
-      ctx.agentSession.localSkillsPath = "team/skills";
-      expect(adapter.buildContainerSpec(ctx).env["LOCAL_SKILLS_PATH"]).toBeUndefined();
-
-      ctx.agentSession.skillDiscoveryEnabled = true;
       const spec = adapter.buildContainerSpec(ctx);
-      expect(spec.env["SKILL_DISCOVERY"]).toBe("1");
-      expect(spec.env["LOCAL_SKILLS_PATH"]).toBe("team/skills");
+
+      expect(spec.env["LOCAL_SKILLS_PATH"]).toBeUndefined();
+      expect(spec.env["SKILL_DISCOVERY"]).toBeUndefined();
     });
 
     it("injects Claude native execution options", () => {
@@ -170,16 +167,12 @@ describe("ClaudeAdapter", () => {
       expect(spec.env["CLAUDE_MODEL"]).toBeUndefined();
     });
 
-    it("injects LOCAL_SKILLS_PATH in review specs only when skill discovery is enabled", () => {
+    it("does not expose removed local skill configuration in review specs", () => {
       const adapter = new ClaudeAdapter();
-      expect(adapter.buildReviewContainerSpec(makeReviewInput({ localSkillsPath: "team/skills" })).env["LOCAL_SKILLS_PATH"]).toBeUndefined();
+      const spec = adapter.buildReviewContainerSpec(makeReviewInput());
 
-      const spec = adapter.buildReviewContainerSpec(makeReviewInput({
-        skillDiscoveryEnabled: true,
-        localSkillsPath: "team/skills",
-      }));
-      expect(spec.env["SKILL_DISCOVERY"]).toBe("1");
-      expect(spec.env["LOCAL_SKILLS_PATH"]).toBe("team/skills");
+      expect(spec.env["LOCAL_SKILLS_PATH"]).toBeUndefined();
+      expect(spec.env["SKILL_DISCOVERY"]).toBeUndefined();
     });
 
     it("injects Claude native review options", () => {

@@ -32,9 +32,10 @@ The host owns all push/review credentials and orchestrates network operations; t
 
 ### Project Skill Discovery
 
-Skill discovery is a **per-project** setting (`projects.skill_discovery_enabled`, default **off**) available to both coding and review projects — chosen in the project-setup form, not an environment flag. When enabled, the in-container agent loads team-defined local skills from `projects.local_skills_path` (default `.github/skills`) in the cloned repository. Remote skill sources are separate explicit project configuration (`projects.skill_sources_json`) and are fetched with `npx skills` into `/ve-home` whenever configured. Skills are project-approved instructions executed by the agent, so they are a **prompt-injection surface**: a malicious repository or remote skill source could steer the agent. Mitigations:
+Every coding and review run loads team-defined local skills from the fixed `.github/skills` directory in the cloned repository. The path is not configurable and this behavior cannot be disabled. Remote skill sources are separate optional project configuration (`projects.skill_sources_json`) and are fetched with `npx skills` into `/ve-home` only when configured. Skills are instructions executed by the agent, so a malicious repository or remote skill source could steer the agent. Mitigations:
 
-- Local skill discovery is **disabled by default**; enable it only for repositories you trust.
+- Run Virtual Engineer only against repositories whose local skills and change-review trust boundary you accept.
+- The worker canonicalizes the local skills directory under `/workspace`, rejects symlink escapes, and loads only regular immediate-child `SKILL.md` manifests.
 - Remote skill sources default to an empty list and must be configured explicitly; add only sources you trust.
 - Remote skills install globally in the agent home volume (`/ve-home`), not into the cloned repository. This keeps review workspaces read-only.
 - SSH remote skill sources reuse the orchestrator process `SSH_AUTH_SOCK` only when such a source is configured; missing SSH agent access fails the run instead of silently skipping skills. Configured key and known-hosts files must live under `/app/secrets` (container deployment) or the repository `secrets/` directory (host development). Canonical-path validation blocks traversal and symlink escapes before host-file reads.

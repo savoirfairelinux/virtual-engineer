@@ -34,8 +34,6 @@ function makeContext(): TaskContext {
       perRepoChangeIds: { root: makeExternalChangeId("Irepo") },
       gitAuthorName: "Virtual Engineer",
       gitAuthorEmail: "ve@example.test",
-      skillDiscoveryEnabled: true,
-      localSkillsPath: "team/skills",
       ticketFooterLine: "GitLab: https://gitlab.example.test/issues/123",
       aiderBackend: "openai",
       aiderApiKey: "aider-token",
@@ -58,8 +56,6 @@ function makeReviewInput(): ReviewWorkspaceInput {
     systemPrompt: "Review carefully",
     agentToken: "token",
     containerImage: "review:test",
-    skillDiscoveryEnabled: true,
-    localSkillsPath: "team/skills",
   };
 }
 
@@ -89,8 +85,6 @@ describe("containerSpecBuilders", () => {
         REPOSITORY_MAP_JSON: JSON.stringify(context.agentSession.repositoryMap),
         ROOT_CHANGE_ID: "Iroot",
         PER_REPO_CHANGE_IDS_JSON: JSON.stringify(context.agentSession.perRepoChangeIds),
-        SKILL_DISCOVERY: "1",
-        LOCAL_SKILLS_PATH: "team/skills",
         TICKET_FOOTER_LINE: "GitLab: https://gitlab.example.test/issues/123",
         PROMPTS_DIR: "/ve-prompts",
       },
@@ -136,8 +130,6 @@ describe("containerSpecBuilders", () => {
         REVIEW_STRATEGY: "ve_direct",
         USER_PROMPT_FILE: "/ve-home/user-prompt.txt",
         SYSTEM_PROMPT: "Review carefully",
-        SKILL_DISCOVERY: "1",
-        LOCAL_SKILLS_PATH: "team/skills",
       },
       command: ["node", "/agent-worker/dist/index.js"],
       networkMode: "review-network",
@@ -198,8 +190,6 @@ describe("containerSpecBuilders", () => {
         TASK_ID: "task-123",
         MAX_CONTEXT_BYTES: "123456",
         MAX_COMMITS_PER_CYCLE: "7",
-        SKILL_DISCOVERY: "1",
-        LOCAL_SKILLS_PATH: "team/skills",
       });
       expect(review).toMatchObject({
         image: "review:test",
@@ -212,8 +202,6 @@ describe("containerSpecBuilders", () => {
         REVIEW_STRATEGY: "ve_direct",
         USER_PROMPT_FILE: "/ve-home/user-prompt.txt",
         SYSTEM_PROMPT: "Review carefully",
-        SKILL_DISCOVERY: "1",
-        LOCAL_SKILLS_PATH: "team/skills",
       });
     }
   });
