@@ -29,11 +29,10 @@ Thank you for your interest in contributing! This document covers how to set up 
 ### Prerequisites
 
 | Tool | Minimum | Notes |
-|------|---------|-------|
-| Node.js | 20 LTS | Orchestrator runtime |
+| --- | --- | --- |
+| Node.js | 22 | Orchestrator runtime |
 | Docker | 24 | Agent container execution |
-| GitHub Copilot | — | Required for code-gen/review tasks (Copilot subscription) |
-| Claude | — | Alternative agent engine — Anthropic API key or Claude Pro/Max subscription (optional) |
+| Agent engine | — | GitHub Copilot, Claude Code, or Aider credentials for live agent runs |
 
 ```bash
 npm install
@@ -88,7 +87,7 @@ All three gates (`npm test`, `npm run typecheck`, `npm run lint`) must pass befo
 
 This project uses **Conventional Commits** (Gerrit-friendly format):
 
-```
+```text
 <type>(<scope>): <subject ≤50 chars>
 
 <body lines ≤72 chars>

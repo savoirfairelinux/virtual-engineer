@@ -1,196 +1,129 @@
 # Virtual Engineer
 
-AI-driven development system with two independent flows.
+**Turn tickets and review events into isolated, traceable AI engineering workflows.**
 
-**Coding agent** — Assign a ticket to the `virtual-engineer` account. The orchestrator clones the repo, runs the Copilot agent in an isolated Docker container, pushes the resulting commits for review, iterates on reviewer feedback, and closes the ticket once the change is merged.
+Virtual Engineer is a self-hosted TypeScript orchestrator for two complementary jobs: implementing work from issue-tracker tickets and reviewing new code changes. It runs each agent cycle in a hardened, ephemeral Docker container, while the host retains source-control and review credentials.
 
-**Code review agent** — On every new or updated patchset (Gerrit stream-event, GitLab webhook, or GitHub webhook), the orchestrator fetches the diff, runs the agent in an isolated Docker container, and posts inline comments + a vote directly on the review system. No ticket required.
+Provider configuration, projects, agents, prompts, permissions, runtime settings, costs, and task history are managed from one authenticated Admin UI and persisted in SQLite.
 
-All provider configuration (ticketing, VCS, agent) is stored in SQLite and managed through the admin UI — no env-var plumbing required.
+## What It Does
 
-<p align="center">
-	<img src="https://cdn.simpleicons.org/github/181717" alt="GitHub" width="20" />
-	<img src="https://cdn.simpleicons.org/githubcopilot/000000" alt="GitHub Copilot" width="20" />
-	<img src="https://cdn.simpleicons.org/claude/D97757" alt="Claude" width="20" />
-	<img src="https://cdn.simpleicons.org/gitlab/FC6D26" alt="GitLab" width="20" />
-	<img src="https://cdn.simpleicons.org/gerrit/EE0000" alt="Gerrit" width="20" />
-	<img src="https://cdn.simpleicons.org/redmine/B32024" alt="Redmine" width="20" />
-</p>
+| Workflow | Trigger | Virtual Engineer | Result |
+| --- | --- | --- | --- |
+| **Coding agent** | An assigned issue-tracker ticket | Clones the repository, runs an agent, creates commits, pushes them for review, and processes reviewer feedback | A reviewable Gerrit change, GitLab merge request, or GitHub pull request |
+| **Review agent** | A new or updated patchset, merge request, or pull request | Fetches the diff, runs a focused review, filters and deduplicates findings, and responds to discussion threads | Inline comments, a summary, and a review vote or decision |
 
----
+Coding tasks progress from detection through implementation and review to completion. Review tasks run independently and do not require a ticket source. See the [state-machine reference](.github/context/state-machine.md) for the complete lifecycle.
 
-## Prerequisites
+## Key Capabilities
 
-| Tool | Minimum | Notes |
-|------|---------|-------|
-| **Node.js** | 20 LTS | Orchestrator runtime |
-| **Docker** | 24 | Agent container execution |
-| **GitHub Copilot** | — | Subscription required for code-gen/review tasks; GitHub account required |
-| **Claude** | — | Alternative agent engine — Anthropic API key or a Claude Pro/Max subscription (optional) |
+- **Isolated execution**: every coding and review run uses an ephemeral Docker container with a read-only root filesystem, dropped Linux capabilities, and dedicated named volumes.
+- **Host-owned credentials**: push and review credentials remain with the orchestrator; they are not placed in the agent workspace.
+- **Multiple agent engines**: use GitHub Copilot, Claude Code, or Aider. Aider supports OpenAI, Anthropic, Ollama, OpenRouter, DeepSeek, and OpenAI-compatible endpoints.
+- **Provider flexibility**: connect Redmine, GitLab, GitHub, or Gerrit, including multiple active instances of the same provider.
+- **Feedback-aware delivery**: coding agents can iterate on reviewer feedback and selected CI failures while preserving the review history.
+- **Automated review controls**: severity thresholds, comment limits, patchset-aware deduplication, and discussion-thread replies keep reviews useful and repeatable.
+- **Operational visibility**: follow task transitions, live agent events, model usage, and AI cost from the Admin UI.
+- **Policy-based access**: manage users, groups, policies, scoped project permissions, and an audit trail from the same interface.
 
----
+## Supported Integrations
 
-## Prod setup (orchestrator in Docker)
+| Capability | Providers |
+| --- | --- |
+| Agent execution | GitHub Copilot, Claude Code, Aider |
+| Issue tracking | Redmine, GitLab Issues, GitHub Issues |
+| Source control and code review | Gerrit, GitLab Merge Requests, GitHub Pull Requests |
+| Local development and workflow testing | Mock agent |
+
+Provider integrations are configured in the Admin UI and stored encrypted in SQLite. Runtime dependencies are refreshed after integration changes without restarting the orchestrator. For authentication methods, model options, and engine-specific behavior, see the [agent reference](.github/context/modules/agents.md).
+
+## Quick Start
+
+The standard deployment runs the orchestrator in Docker and launches agent containers through the host Docker daemon.
+
+### Requirements
+
+- Docker 24 or newer
+- OpenSSL for generating the credential-encryption secret
+- Credentials for the external systems you choose to connect
+
+### Start the Orchestrator
 
 ```bash
-cp .env.example .env        # set ADMIN_AUTH_SECRET using: openssl rand -hex 32
+cp .env.example .env
+printf '\nADMIN_AUTH_SECRET=%s\n' "$(openssl rand -hex 32)" >> .env
 ./scripts/start.sh
 ```
 
-Admin UI: http://127.0.0.1:3100/admin  
-Logs: `docker logs -f ve-orchestrator`
+Open [http://127.0.0.1:3100/admin](http://127.0.0.1:3100/admin), create the first admin account, then configure integrations and projects. Follow the container logs with:
 
-> In Docker mode the orchestrator uses host networking, so external services on the same host are reachable via `http://localhost:<port>`.
+```bash
+docker logs -f ve-orchestrator
+```
 
----
+Keep the generated `ADMIN_AUTH_SECRET` stable and stored securely. It encrypts provider credentials at rest; changing or losing it prevents existing credentials from being decrypted. It is separate from the Admin UI account password.
 
-## Dev setup (orchestrator on host)
+## Configure Your First Workflow
+
+Use the Admin UI to assemble a workflow from reusable integrations, agents, and projects:
+
+1. Add and test an **agent integration**: GitHub Copilot, Claude Code, or Aider.
+2. Add the external integration required by the workflow: an **issue tracker** for coding, or a **review system** for code review.
+3. Create a coding or review **agent**, select its model and prompts, and set its concurrency limit.
+4. Create a matching **project** and bind its repository, target branch, integrations, and agent.
+5. Enable the project. Assign a ticket for coding, or configure review-event delivery for review projects.
+
+Gerrit review events use SSH `stream-events`. GitLab and GitHub review projects use authenticated webhooks. A review project does not need an issue-tracker integration.
+
+The [Admin server reference](.github/context/modules/admin.md) describes the complete management surface, while the [configuration reference](.github/context/configuration.md) documents process-level settings.
+
+## Local Development
+
+Local development runs the orchestrator on the host while agent workloads still run in Docker.
+
+### Development Requirements
+
+- Node.js 22 or newer
+- Docker 24 or newer
+- npm 10 or newer
 
 ```bash
 npm install
 cp .env.example .env
+printf '\nADMIN_AUTH_SECRET=%s\n' "$(openssl rand -hex 32)" >> .env
 npm run db:migrate
+npm run build:ui
 docker build -f Dockerfile.agent -t virtual-engineer-workspace:latest .
 npm run dev
 ```
 
-Admin UI: http://127.0.0.1:3100/admin
+The Admin UI is available at [http://127.0.0.1:3100/admin](http://127.0.0.1:3100/admin). Rebuild the agent image after changing `Dockerfile.agent`, `agent-worker/`, or a host-side agent adapter.
 
----
-
-## Configure a project (Admin UI)
-
-Open **http://127.0.0.1:3100/admin** and follow the steps for your flow.
-
-### Coding agent flow
-
-The orchestrator picks up tickets, generates code, and pushes changes for review.
-
-**Step 1 — Add an agent integration**
-- Go to **Integrations** → **Add** → select **GitHub Copilot** or **Claude** (category: AI Agent)
-- *GitHub Copilot*: click **Authenticate with GitHub** → complete the OAuth device flow
-- *Claude*: choose `API Key` (enter Anthropic API key) or `Subscription` (OAuth device flow for Claude Pro/Max)
-- **Test** → **Save** → **Enable**
-
-**Step 2 — Add a ticket source integration**
-- Go to **Integrations** → **Add** → select **Redmine**, **GitLab Issues**, or **GitHub Issues**
-- *Redmine*: fill in `URL` and `API key`
-- *GitLab Issues*: fill in `Base URL`, choose `Authentication Mode`
-  - `OAuth` recommended: enter `OAuth Client ID` + `OAuth Client Secret`, click **Connect with GitLab**, then **Test**
-  - `Personal Access Token` fallback: enter the token manually
-- *GitHub Issues*: click **Authenticate with GitHub** → complete the OAuth device flow
-- **Test** → **Save** → **Enable**
-
-**Step 3 — Add a VCS / code review integration**
-- Go to **Integrations** → **Add** → select **Gerrit**, **GitLab Merge Requests**, or **GitHub Pull Requests**
-- *Gerrit*: fill in `URL` and **SSH credentials** (username and private key). HTTP credentials are not supported because Gerrit stream-events require an SSH connection
-- *GitLab Merge Requests*: fill in `Base URL`, choose `Authentication Mode`
-  - `OAuth` recommended: enter `OAuth Client ID` + `OAuth Client Secret`, click **Connect with GitLab**, then **Test**
-  - `Personal Access Token` fallback: enter the token manually
-- *GitHub Pull Requests*: click **Authenticate with GitHub** → complete the OAuth device flow
-- **Test** → **Save** → **Enable**
-
-**Step 4 — Create an agent in the Agents Library**
-- Go to **Agents Library** → **Add**
-- Name the agent, set type **Coding**, pick your agent integration (Copilot or Claude), choose model (`auto` recommended)
-- Set **Max concurrent** (e.g. `2`) → **Save**
-
-**Step 5 — Create a project**
-- Go to **Projects** → **Add** → set type **Coding**, select the agent from step 4
-- **Ticket source**: choose your ticket integration + project key (e.g. `PLATFORM`)
-- **Push targets**: add the VCS integration, set repo key, clone URL, and target branch
-- **Save** → **Enable**
-
-Assign a ticket to `virtual-engineer` in your ticket system. The orchestrator picks it up within one polling interval and runs: `DETECTED → CONTEXT_BUILDING → AGENT_RUNNING → IN_REVIEW → MERGED → DONE`.
-
----
-
-### Code review flow
-
-The orchestrator reviews every patchset and posts inline comments automatically — no ticket system needed.
-
-**Step 1 — Add an agent integration** *(same as coding step 1)*
-
-**Step 2 — Add a Gerrit, GitLab MR, or GitHub PR integration** *(same as coding step 3)*
-
-**Step 3 — Create an agent in the Agents Library**
-- Go to **Agents Library** → **Add**
-- Name the agent, set type **Review**, pick your agent integration (Copilot or Claude), choose model
-- **Save**
-
-**Step 4 — Create a project**
-- Go to **Projects** → **Add** → set type **Review**, select the agent from step 3
-- **Push targets**: add the Gerrit / GitLab MR / GitHub PR integration with the repo's clone URL
-- **Save** → **Enable**
-
-**Step 5 — Wire up event delivery**
-- *Gerrit*: the orchestrator connects via SSH stream-events automatically when the integration is enabled — no webhook needed.
-- *GitLab*: open the integration drawer → copy the webhook URL and secret → paste into the GitLab project's webhook settings.
-- *GitHub*: open the integration drawer → copy the webhook URL and secret → paste into the GitHub repository's webhook settings (subscribe to `Pull request` events).
-
-Every new or updated patchset triggers: `REVIEW_PENDING → REVIEW_RUNNING → REVIEW_COMMENTING → REVIEW_WATCHING → REVIEW_DONE`.
-
----
-
-## Useful commands
+Useful development commands:
 
 | Command | Purpose |
-|---------|---------|
-| `npm run dev` | Start orchestrator + admin server |
-| `npm test` | Run Vitest unit tests |
-| `npm run typecheck` | Zero TypeScript errors |
-| `npm run lint` | Zero ESLint errors |
-| `npm run db:migrate` | Apply Drizzle migrations |
-| `npm run reset:instance` | Full reset (tasks, integrations, agents, projects) |
-| `docker build -f Dockerfile.agent -t virtual-engineer-workspace:latest .` | Rebuild agent image after changes to `Dockerfile.agent` or `agent-worker/` |
+| --- | --- |
+| `npm test` | Run the Vitest test suite |
+| `npm run typecheck` | Type-check the orchestrator and agent worker |
+| `npm run typecheck:ui` | Type-check the Admin UI |
+| `npm run lint` | Run ESLint across source and tests |
+| `npm run build` | Build the Admin UI and TypeScript application |
+| `npm run reset:instance` | Reset local tasks, integrations, agents, and projects |
 
----
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development conventions, quality gates, and contribution guidance.
 
-## Configuration (`.env`)
+## Architecture
 
-Copy `.env.example` → `.env`. All provider credentials live in the DB (admin UI). The env file only contains process-level settings.
+The orchestrator runs on the host or in its own container. For each agent cycle it creates isolated Docker named volumes, clones the repository through a helper container, starts an ephemeral agent container, and then performs the push from the trusted host side. SQLite in WAL mode stores workflow state and allows interrupted tasks to resume after restart.
 
-| Variable | Default | Notes |
-|----------|---------|-------|
-| `NODE_ENV` | `development` | `test` silences the logger |
-| `LOG_LEVEL` | `info` | pino levels; `.env.example` sets `debug` for development |
-| `DATABASE_PATH` | `./data/virtual-engineer.db` | |
-| `ADMIN_API_HOST` | `127.0.0.1` | Loopback by default; set `0.0.0.0` to expose on the network (Docker mode) |
-| `ADMIN_API_PORT` | `3100` | |
-| `ADMIN_AUTH_SECRET` | — | Required before creating or loading provider credentials; encrypts them at rest with an AES-256-GCM versioned envelope. Admin authentication is separate and uses DB-backed accounts + session tokens |
-| `POLLING_INTERVAL_MS` | `30000` | **DB-managed** — seed only; edit at runtime via admin UI → System Settings |
-| `MAX_AGENT_CYCLES` | `3` | **DB-managed** — seed only; edit at runtime via admin UI → System Settings |
-| `MAX_RETRY_ATTEMPTS` | `5` | **DB-managed** — seed only; edit at runtime via admin UI → System Settings |
-| `AGENT_TIMEOUT_MS` | `3600000` | Host-side agent timeout (ms, 60 min) |
-| `MAX_REVIEW_DIFF_CHARS` | `60000` | Max diff characters injected into a review prompt |
-| `MAX_REVIEW_COMMENTS` | `20` | Max inline comments posted per review pass (excess folded into summary) |
-| `MAX_REVIEW_REPLIES` | `20` | Max discussion-thread replies posted per review pass |
-| `REVIEW_MIN_SEVERITY` | `info` | Min severity to post inline (`nit` < `info` < `warning` < `error`) |
-| `AGENT_CONTAINER_IMAGE` | `virtual-engineer-workspace:latest` | |
-| `WORKSPACE_BASE_DIR` | `/tmp/virtual-engineer/workspaces` | Scratch space for review diffs |
-| `AGENT_DOCKER_NETWORK` | `virtual-engineer_ve-agent-net` | Bridge network for agent containers (created by `start.sh`) |
+Read the [architecture guide](.github/context/architecture.md) for the full component and data-flow diagrams. The [documentation index](.github/context/INDEX.md) links to the database, plugins, connectors, VCS, state machine, testing, and module references.
 
-Generate `ADMIN_AUTH_SECRET` once with `openssl rand -hex 32`, set it in `.env`, and retain that exact original secret securely; changing or losing it prevents existing credentials from being decrypted. Restart the orchestrator after setting it (`npm run dev` locally or `docker rm -f ve-orchestrator && ./scripts/start.sh` for Docker).
+## Security
 
----
+Virtual Engineer handles source repositories, external credentials, and AI-generated changes. Review the trust boundaries before connecting production systems, keep the Admin UI on loopback or behind a trusted reverse proxy, and only run agents against repositories and external skill sources you trust.
 
-## Full reset
-
-```bash
-npm run reset:instance
-# or manually:
-rm -rf data/
-npm run db:migrate
-npm run dev
-```
-
----
+Report vulnerabilities privately according to [SECURITY.md](SECURITY.md).
 
 ## License
 
-This project is licensed under **GNU GPL v3.0 only**.
-See [LICENSE](LICENSE).
-
----
-
-For full architecture details, component diagrams, state machine, and database schema see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+Virtual Engineer is licensed under the [GNU General Public License v3.0 only](LICENSE).
