@@ -923,7 +923,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
             <div>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
                 <div style={{ fontSize: "13px", fontWeight: 600 }}>Push Targets ({pushTargets.length})</div>
-                <button className="btn ghost" style={{ fontSize: "12px", padding: "4px 10px" }} onClick={addPushTarget}>
+                <button data-config-dirty className="btn ghost" style={{ fontSize: "12px", padding: "4px 10px" }} onClick={addPushTarget}>
                   <Icon name="plus" size={12} /> Add repository
                 </button>
               </div>
@@ -935,7 +935,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                     <div style={{ fontSize: "12.5px", fontWeight: 600, color: "var(--text-dim)" }}>Repository #{idx + 1}</div>
                     {pushTargets.length > 1 && (
-                      <button className="iconbtn" onClick={() => removePushTarget(idx)}><Icon name="x" size={12} /></button>
+                      <button data-config-dirty className="iconbtn" onClick={() => removePushTarget(idx)}><Icon name="x" size={12} /></button>
                     )}
                   </div>
                   <Field label="VCS Integration" required>

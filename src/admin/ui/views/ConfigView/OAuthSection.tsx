@@ -1,26 +1,54 @@
-import { useState } from "react";
 import { RowCard } from "../../components/RowCard.tsx";
 import { Tag } from "../../components/Tag.tsx";
 import { Icon } from "../../components/Icon.tsx";
 import { OAuthDrawer } from "./ConfigDrawers.tsx";
 import { OAuthFormModal } from "./OAuthFormModal.tsx";
 import { useCurrentUser } from "../../authContext.tsx";
-import type { ConfigViewData } from "./index.tsx";
+import type { ConfigSectionProps } from "./index.tsx";
 
-export function OAuthSection({ oauthApps, onRefresh }: ConfigViewData) {
-  const { canOperate } = useCurrentUser();
-  const [drawerIdx, setDrawerIdx] = useState<number | null>(null);
-  const [showAdd, setShowAdd] = useState(false);
-  const drawerItem = drawerIdx !== null ? oauthApps[drawerIdx] : undefined;
+export function OAuthSection({ oauthApps, onRefresh, route, navigate, markClean }: ConfigSectionProps) {
+  const { can } = useCurrentUser();
+  const canManage = can("oauth.manage");
+  const detailItem = route.section === "oauth" && route.mode === "detail"
+    ? oauthApps.find((app) => app.provider === route.provider && app.baseUrl === route.baseUrl)
+    : undefined;
 
   function handleSaved() {
-    setShowAdd(false);
+    markClean();
     onRefresh();
+    navigate({ section: "oauth", mode: "list" });
   }
 
   function handleDeleted() {
-    setDrawerIdx(null);
     onRefresh();
+    navigate({ section: "oauth", mode: "list" });
+  }
+
+  if (route.mode === "detail") {
+    if (!detailItem) {
+      return (
+        <div className="config-missing">
+          <div className="placeholder">This OAuth app is unavailable.</div>
+          <button className="btn" onClick={() => navigate({ section: "oauth", mode: "list" })}>Back to OAuth apps</button>
+        </div>
+      );
+    }
+    return (
+      <OAuthDrawer
+        item={detailItem}
+        onClose={() => navigate({ section: "oauth", mode: "list" })}
+        {...(canManage ? { onDeleted: handleDeleted } : {})}
+      />
+    );
+  }
+
+  if (route.mode === "create") {
+    return (
+      <OAuthFormModal
+        onClose={() => navigate({ section: "oauth", mode: "list" })}
+        onSaved={handleSaved}
+      />
+    );
   }
 
   return (
@@ -32,7 +60,7 @@ export function OAuthSection({ oauthApps, onRefresh }: ConfigViewData) {
             <h1 style={{ margin: 0, fontSize: "22px", fontWeight: 600, letterSpacing: "-0.01em" }}>OAuth apps</h1>
             <p style={{ margin: "6px 0 0", color: "var(--text-faint)", fontSize: "13.5px" }}>Provider OAuth registrations used to mint short-lived agent tokens.</p>
           </div>
-          {canOperate && <button className="btn primary" onClick={() => setShowAdd(true)}><Icon name="plus" size={14} /> Register app</button>}
+          {canManage && <button className="btn primary" onClick={() => navigate({ section: "oauth", mode: "create" })}><Icon name="plus" size={14} /> Register app</button>}
         </div>
       </div>
 
@@ -41,7 +69,7 @@ export function OAuthSection({ oauthApps, onRefresh }: ConfigViewData) {
           <div className="placeholder" style={{ minHeight: "120px" }}>No OAuth apps registered.</div>
         )}
         {oauthApps.map((app, i) => (
-          <RowCard key={i} onClick={() => setDrawerIdx(i)}>
+          <RowCard key={i} ariaLabel={`Open ${app.provider} OAuth app`} onClick={() => navigate({ section: "oauth", mode: "detail", provider: app.provider, baseUrl: app.baseUrl })}>
             <span
               style={{
                 width: 34, height: 34, borderRadius: "8px",
@@ -51,7 +79,7 @@ export function OAuthSection({ oauthApps, onRefresh }: ConfigViewData) {
             >
               <Icon name="link" size={15} />
             </span>
-            <div style={{ flex: 1 }}>
+            <div className="row-card-copy" style={{ flex: 1 }}>
               <span className="mono" style={{ fontSize: "13px", fontWeight: 600 }}>
                 {app.provider} · {app.baseUrl}
               </span>
@@ -64,13 +92,6 @@ export function OAuthSection({ oauthApps, onRefresh }: ConfigViewData) {
         ))}
       </div>
 
-      {drawerItem && (
-        <OAuthDrawer item={drawerItem} onClose={() => setDrawerIdx(null)} onDeleted={handleDeleted} />
-      )}
-
-      {showAdd && (
-        <OAuthFormModal onClose={() => setShowAdd(false)} onSaved={handleSaved} />
-      )}
     </>
   );
 }

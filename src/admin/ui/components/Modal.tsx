@@ -1,6 +1,7 @@
-import { useEffect } from "react";
+import { cloneElement, isValidElement, useEffect, useId, type ReactElement } from "react";
 import { createPortal } from "react-dom";
 import { Icon } from "./Icon.tsx";
+import { useConfigPageSurface } from "../views/ConfigView/ConfigPageSurface.tsx";
 
 interface ModalProps {
   title: string;
@@ -14,8 +15,11 @@ interface ModalProps {
 }
 
 export function Modal({ title, sub, onClose, children, footer, wide, width }: ModalProps) {
+  const isPage = useConfigPageSurface();
+
   // Esc + scroll lock
   useEffect(() => {
+    if (isPage) return;
     const prev = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
@@ -24,9 +28,28 @@ export function Modal({ title, sub, onClose, children, footer, wide, width }: Mo
       document.body.style.overflow = prev;
       window.removeEventListener("keydown", handler);
     };
-  }, [onClose]);
+  }, [isPage, onClose]);
 
   const maxW = width ?? (wide ? 760 : 540);
+
+  if (isPage) {
+    return (
+      <article className="config-entity-page config-form-page" aria-labelledby="config-form-title">
+        <header className="config-entity-head">
+          <button className="btn config-back" onClick={onClose}>
+            <Icon name="chevron" size={14} style={{ transform: "rotate(180deg)" }} /> Back
+          </button>
+          <div className="titles">
+            <div className="eyebrow">Configuration</div>
+            <h1 id="config-form-title" className="config-entity-title" tabIndex={-1}>{title}</h1>
+            {sub && <p className="config-entity-sub">{sub}</p>}
+          </div>
+        </header>
+        <div className="config-entity-body">{children}</div>
+        {footer && <footer className="config-entity-foot">{footer}</footer>}
+      </article>
+    );
+  }
 
   return createPortal(
     <div
@@ -72,13 +95,23 @@ interface FieldProps {
 }
 
 export function Field({ label, required, children, hint }: FieldProps) {
+  const generatedId = useId();
+  const controlId = `field-${generatedId}`;
+  const hintId = hint ? `${controlId}-hint` : undefined;
+  const child = isValidElement(children)
+    ? cloneElement(children as ReactElement<{ id?: string; "aria-describedby"?: string }>, {
+        id: (children.props as { id?: string }).id ?? controlId,
+        ...(hintId ? { "aria-describedby": hintId } : {}),
+      })
+    : children;
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-      <label style={{ fontSize: "12.5px", fontWeight: 600, color: "var(--text-dim)" }}>
+      <label htmlFor={controlId} style={{ fontSize: "12.5px", fontWeight: 600, color: "var(--text-dim)" }}>
         {label}{required && <span style={{ color: "var(--danger)", marginLeft: 3 }}>*</span>}
       </label>
-      {children}
-      {hint && <span style={{ fontSize: "11.5px", color: "var(--text-ghost)" }}>{hint}</span>}
+      {child}
+      {hint && <span id={hintId} style={{ fontSize: "11.5px", color: "var(--text-ghost)" }}>{hint}</span>}
     </div>
   );
 }
@@ -157,6 +190,7 @@ export function FormError({ msg }: { msg: string | null }) {
   if (!msg) return null;
   return (
     <div
+      role="alert"
       style={{
         padding: "10px 14px",
         background: "var(--danger-soft)",
@@ -176,15 +210,5 @@ export function FormRow({ children }: { children: React.ReactNode }) {
 }
 
 export function FormActions({ children }: { children: React.ReactNode }) {
-  return (
-    <div
-      style={{
-        display: "flex", justifyContent: "flex-end", gap: "10px",
-        paddingTop: "16px", marginTop: "8px",
-        borderTop: "1px solid var(--border-soft)",
-      }}
-    >
-      {children}
-    </div>
-  );
+  return <div className="form-actions">{children}</div>;
 }

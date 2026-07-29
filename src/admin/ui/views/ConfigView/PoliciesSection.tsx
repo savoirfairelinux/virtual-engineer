@@ -5,6 +5,7 @@ import { Icon } from "../../components/Icon.tsx";
 import { Modal, Field, FieldInput, FieldSelect, FormError, FormRow, FormActions } from "../../components/Modal.tsx";
 import { api } from "../../api.ts";
 import type { ApiGroup, ApiPolicy, ApiPolicyDetail, ApiPolicyRule, ApiUser } from "../../types.ts";
+import type { ConfigSectionProps } from "./index.tsx";
 
 const SCOPEABLE = new Set(["project", "task"]);
 function isScopeable(permission: string): boolean {
@@ -56,18 +57,25 @@ function PolicyFormModal({ onClose, onSaved }: { onClose: () => void; onSaved: (
 
 /* ─── Policy detail (rules + bindings) modal ──────────────────────────── */
 
-function PolicyDetailModal({ policyId, onClose }: { policyId: string; onClose: () => void }) {
+function PolicyDetailModal({ policyId, forceReadOnly, onClose, onEdit, onPersisted }: {
+  policyId: string;
+  forceReadOnly: boolean;
+  onClose: () => void;
+  onEdit?: (() => void) | undefined;
+  onPersisted: () => void;
+}) {
   const [detail, setDetail] = useState<ApiPolicyDetail | null>(null);
   const [permissions, setPermissions] = useState<string[]>([]);
   const [users, setUsers] = useState<ApiUser[]>([]);
   const [groups, setGroups] = useState<ApiGroup[]>([]);
   const [rules, setRules] = useState<ApiPolicyRule[]>([]);
+  const [savedRules, setSavedRules] = useState<ApiPolicyRule[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [bindType, setBindType] = useState<"user" | "group">("user");
   const [bindId, setBindId] = useState("");
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (preserveRuleDraft = false) => {
     try {
       const [d, p, u, g] = await Promise.all([
         api.get<{ policy: ApiPolicyDetail }>(`/api/admin/policies/${policyId}`),
@@ -75,8 +83,10 @@ function PolicyDetailModal({ policyId, onClose }: { policyId: string; onClose: (
         api.get<{ users: ApiUser[] }>("/api/admin/users"),
         api.get<{ groups: ApiGroup[] }>("/api/admin/groups"),
       ]);
+      const loadedRules = d.policy.rules.map((r) => ({ permission: r.permission, resourceId: r.resourceId }));
       setDetail(d.policy);
-      setRules(d.policy.rules.map((r) => ({ permission: r.permission, resourceId: r.resourceId })));
+      if (!preserveRuleDraft) setRules(loadedRules);
+      setSavedRules(loadedRules);
       setPermissions(p.permissions);
       setUsers(u.users);
       setGroups(g.groups);
@@ -87,7 +97,8 @@ function PolicyDetailModal({ policyId, onClose }: { policyId: string; onClose: (
 
   useEffect(() => { void load(); }, [load]);
 
-  const readOnly = detail?.builtin ?? false;
+  const readOnly = forceReadOnly || (detail?.builtin ?? false);
+  const rulesDirty = JSON.stringify(rules) !== JSON.stringify(savedRules);
 
   function addRule() {
     setRules((rs) => [...rs, { permission: permissions[0] ?? "project.read", resourceId: null }]);
@@ -109,6 +120,7 @@ function PolicyDetailModal({ policyId, onClose }: { policyId: string; onClose: (
       }));
       await api.put(`/api/admin/policies/${policyId}/rules`, { rules: payload });
       await load();
+      onPersisted();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Save failed");
     } finally {
@@ -117,9 +129,14 @@ function PolicyDetailModal({ policyId, onClose }: { policyId: string; onClose: (
   }
 
   async function mutate(fn: () => Promise<unknown>) {
+    const preserveDirtyRules = rulesDirty;
     setBusy(true);
     setError(null);
-    try { await fn(); await load(); }
+    try {
+      await fn();
+      await load(preserveDirtyRules);
+      if (!preserveDirtyRules) onPersisted();
+    }
     catch (e) { setError(e instanceof Error ? e.message : "Update failed"); }
     finally { setBusy(false); }
   }
@@ -131,6 +148,15 @@ function PolicyDetailModal({ policyId, onClose }: { policyId: string; onClose: (
 
   const bindCandidates = bindType === "user" ? users.map((u) => ({ id: u.id, label: u.username })) : groups.map((g) => ({ id: g.id, label: g.name }));
 
+  if (error && !detail) {
+    return (
+      <Modal title="Policy unavailable" sub="The policy was removed or access was revoked" onClose={onClose}>
+        <FormError msg={error} />
+        <FormActions><button className="btn" onClick={onClose}>Back to policies</button></FormActions>
+      </Modal>
+    );
+  }
+
   return (
     <Modal title={detail?.name ?? "Policy"} sub={readOnly ? "Built-in policy (read-only)" : "Edit grants and assignments"} onClose={onClose}>
       <FormRow>
@@ -141,7 +167,7 @@ function PolicyDetailModal({ policyId, onClose }: { policyId: string; onClose: (
         <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginBottom: "10px" }}>
           {rules.length === 0 && <div className="placeholder" style={{ minHeight: "50px" }}>No grants — this policy grants nothing.</div>}
           {rules.map((r, i) => (
-            <div key={i} style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+            <div key={i} className="policy-rule-edit-row" style={{ display: "flex", gap: "8px", alignItems: "center" }}>
               <FieldSelect value={r.permission} disabled={readOnly} onChange={(e) => updateRule(i, { permission: e.target.value })}>
                 {permissions.map((p) => <option key={p} value={p}>{p}</option>)}
               </FieldSelect>
@@ -152,14 +178,14 @@ function PolicyDetailModal({ policyId, onClose }: { policyId: string; onClose: (
                 onChange={(e) => updateRule(i, { resourceId: e.target.value || null })}
               />
               {!readOnly && (
-                <button className="iconbtn" title="Remove" onClick={() => removeRule(i)}><Icon name="trash" size={14} /></button>
+                <button data-config-dirty className="iconbtn" title="Remove" onClick={() => removeRule(i)}><Icon name="trash" size={14} /></button>
               )}
             </div>
           ))}
         </div>
         {!readOnly && (
           <div style={{ display: "flex", gap: "8px", marginBottom: "16px" }}>
-            <button className="btn ghost" onClick={addRule}><Icon name="plus" size={13} /> Add rule</button>
+            <button data-config-dirty className="btn ghost" onClick={addRule}><Icon name="plus" size={13} /> Add rule</button>
             <button className="btn primary" disabled={busy} onClick={() => void saveRules()}>{busy ? "Saving…" : "Save rules"}</button>
           </div>
         )}
@@ -172,30 +198,35 @@ function PolicyDetailModal({ policyId, onClose }: { policyId: string; onClose: (
             <RowCard key={b.id}>
               <Tag tone={b.principalType === "group" ? "info" : "muted"} mono={false}>{b.principalType}</Tag>
               <div style={{ flex: 1, fontSize: "13px" }}>{principalLabel(b.principalType, b.principalId)}</div>
-              <button className="iconbtn" title="Unassign" disabled={busy}
-                onClick={() => void mutate(() => api.delete(`/api/admin/policies/${policyId}/bindings/${b.principalType}/${b.principalId}`))}>
-                <Icon name="trash" size={14} />
-              </button>
+              {!readOnly && (
+                <button className="iconbtn" title="Unassign" disabled={busy}
+                  onClick={() => void mutate(() => api.delete(`/api/admin/policies/${policyId}/bindings/${b.principalType}/${b.principalId}`))}>
+                  <Icon name="trash" size={14} />
+                </button>
+              )}
             </RowCard>
           ))}
         </div>
-        <div style={{ display: "flex", gap: "8px" }}>
-          <FieldSelect value={bindType} onChange={(e) => { setBindType(e.target.value as "user" | "group"); setBindId(""); }}>
-            <option value="user">User</option>
-            <option value="group">Group</option>
-          </FieldSelect>
-          <FieldSelect value={bindId} onChange={(e) => setBindId(e.target.value)}>
-            <option value="">Select…</option>
-            {bindCandidates.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
-          </FieldSelect>
-          <button className="btn primary" disabled={busy || !bindId}
-            onClick={() => void mutate(async () => { await api.post(`/api/admin/policies/${policyId}/bindings`, { principalType: bindType, principalId: bindId }); setBindId(""); })}>
-            Assign
-          </button>
-        </div>
+        {!readOnly && (
+          <div className="policy-assignment-controls" style={{ display: "flex", gap: "8px" }}>
+            <FieldSelect value={bindType} onChange={(e) => { setBindType(e.target.value as "user" | "group"); setBindId(""); }}>
+              <option value="user">User</option>
+              <option value="group">Group</option>
+            </FieldSelect>
+            <FieldSelect value={bindId} onChange={(e) => setBindId(e.target.value)}>
+              <option value="">Select…</option>
+              {bindCandidates.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
+            </FieldSelect>
+            <button className="btn primary" disabled={busy || !bindId}
+              onClick={() => void mutate(async () => { await api.post(`/api/admin/policies/${policyId}/bindings`, { principalType: bindType, principalId: bindId }); setBindId(""); })}>
+              Assign
+            </button>
+          </div>
+        )}
 
         <FormActions>
-          <button className="btn ghost" onClick={onClose}>Done</button>
+          <button className="btn ghost" onClick={onClose}>{forceReadOnly ? "Back" : "Done"}</button>
+          {forceReadOnly && onEdit && <button className="btn primary" onClick={onEdit}>Edit policy</button>}
         </FormActions>
       </FormRow>
     </Modal>
@@ -204,12 +235,10 @@ function PolicyDetailModal({ policyId, onClose }: { policyId: string; onClose: (
 
 /* ─── Policies section ────────────────────────────────────────────────── */
 
-export function PoliciesSection() {
+export function PoliciesSection({ route, navigate, markClean }: ConfigSectionProps) {
   const [policies, setPolicies] = useState<ApiPolicy[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
-  const [showAdd, setShowAdd] = useState(false);
-  const [openId, setOpenId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -228,6 +257,42 @@ export function PoliciesSection() {
     void api.delete(`/api/admin/policies/${p.id}`).then(load).catch((e: unknown) => setError(e instanceof Error ? e.message : "Delete failed")).finally(() => setBusy(null));
   }
 
+  const routeId = route.section === "policies" && (route.mode === "detail" || route.mode === "edit") ? route.id : null;
+  const routePolicy = routeId ? policies.find((policy) => policy.id === routeId) : undefined;
+
+  if (route.mode === "create") {
+    return (
+      <PolicyFormModal
+        onClose={() => navigate({ section: "policies", mode: "list" })}
+        onSaved={() => { markClean(); void load(); navigate({ section: "policies", mode: "list" }); }}
+      />
+    );
+  }
+
+  if ((route.mode === "detail" || route.mode === "edit") && routeId) {
+    if (route.mode === "edit" && routePolicy?.builtin) {
+      return (
+        <div className="config-missing">
+          <div className="placeholder">Built-in policies are read-only.</div>
+          <button className="btn" onClick={() => navigate({ section: "policies", mode: "detail", id: routeId })}>View policy</button>
+        </div>
+      );
+    }
+    return (
+      <PolicyDetailModal
+        policyId={routeId}
+        forceReadOnly={route.mode === "detail"}
+        onClose={() => { void load(); navigate(route.mode === "edit"
+          ? { section: "policies", mode: "detail", id: routeId }
+          : { section: "policies", mode: "list" }); }}
+        onEdit={route.mode === "detail" && !routePolicy?.builtin
+          ? () => navigate({ section: "policies", mode: "edit", id: routeId })
+          : undefined}
+        onPersisted={markClean}
+      />
+    );
+  }
+
   return (
     <>
       <div style={{ marginBottom: "22px" }}>
@@ -237,7 +302,7 @@ export function PoliciesSection() {
             <h1 style={{ margin: 0, fontSize: "22px", fontWeight: 600, letterSpacing: "-0.01em" }}>Policies</h1>
             <p style={{ margin: "6px 0 0", color: "var(--text-faint)", fontSize: "13.5px" }}>Grant permissions on specific resources, then assign policies to users or groups.</p>
           </div>
-          <button className="btn primary" onClick={() => setShowAdd(true)}>
+          <button className="btn primary" onClick={() => navigate({ section: "policies", mode: "create" })}>
             <Icon name="plus" size={14} /> New policy
           </button>
         </div>
@@ -250,12 +315,12 @@ export function PoliciesSection() {
       <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
         {policies.length === 0 && <div className="placeholder" style={{ minHeight: "120px" }}>No policies yet.</div>}
         {policies.map((p) => (
-          <RowCard key={p.id}>
+          <RowCard key={p.id} ariaLabel={`Open policy ${p.name}`} onClick={() => navigate({ section: "policies", mode: "detail", id: p.id })}>
             <span style={{ width: 36, height: 36, borderRadius: "8px", display: "grid", placeItems: "center", background: "var(--panel-2)", color: "var(--text-faint)", border: "1px solid var(--border-soft)", flex: "none" }}>
               <Icon name="config" size={17} />
             </span>
             <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: "9px" }}>
+              <div className="row-card-tags" style={{ display: "flex", alignItems: "center", gap: "9px" }}>
                 <span style={{ fontSize: "13.5px", fontWeight: 600 }}>{p.name}</span>
                 {p.builtin && <Tag tone="active" mono={false}>built-in</Tag>}
                 <Tag tone="muted" mono={false}>{p.ruleCount ?? 0} rules</Tag>
@@ -263,11 +328,11 @@ export function PoliciesSection() {
               </div>
               {p.description && <div style={{ fontSize: "12px", color: "var(--text-faint)", marginTop: "3px" }}>{p.description}</div>}
             </div>
-            <button className="btn ghost" disabled={busy === p.id} onClick={() => setOpenId(p.id)}>
+            <button className="btn ghost" disabled={busy === p.id} onClick={(event) => { event.stopPropagation(); navigate({ section: "policies", mode: p.builtin ? "detail" : "edit", id: p.id }); }}>
               {p.builtin ? "View" : "Edit"}
             </button>
             {!p.builtin && (
-              <button className="iconbtn" title="Delete" disabled={busy === p.id} onClick={() => deletePolicy(p)}>
+              <button className="iconbtn" title="Delete" disabled={busy === p.id} onClick={(event) => { event.stopPropagation(); deletePolicy(p); }}>
                 <Icon name="trash" size={14} />
               </button>
             )}
@@ -275,8 +340,6 @@ export function PoliciesSection() {
         ))}
       </div>
 
-      {showAdd && <PolicyFormModal onClose={() => setShowAdd(false)} onSaved={() => { setShowAdd(false); void load(); }} />}
-      {openId && <PolicyDetailModal policyId={openId} onClose={() => { setOpenId(null); void load(); }} />}
     </>
   );
 }

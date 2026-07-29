@@ -5,6 +5,7 @@ import { Icon } from "../../components/Icon.tsx";
 import { Modal, Field, FieldInput, FieldSelect, FormError, FormRow, FormActions } from "../../components/Modal.tsx";
 import { api } from "../../api.ts";
 import type { ApiGroup, ApiGroupDetail, ApiUser } from "../../types.ts";
+import type { ConfigSectionProps } from "./index.tsx";
 
 /* ─── Create-group modal ──────────────────────────────────────────────── */
 
@@ -50,7 +51,13 @@ function GroupFormModal({ onClose, onSaved }: { onClose: () => void; onSaved: ()
 
 /* ─── Members modal ───────────────────────────────────────────────────── */
 
-function MembersModal({ groupId, onClose }: { groupId: string; onClose: () => void }) {
+function MembersModal({ groupId, readOnly, onClose, onEdit, onPersisted }: {
+  groupId: string;
+  readOnly: boolean;
+  onClose: () => void;
+  onEdit?: (() => void) | undefined;
+  onPersisted: () => void;
+}) {
   const [detail, setDetail] = useState<ApiGroupDetail | null>(null);
   const [users, setUsers] = useState<ApiUser[]>([]);
   const [addUserId, setAddUserId] = useState("");
@@ -75,13 +82,22 @@ function MembersModal({ groupId, onClose }: { groupId: string; onClose: () => vo
   async function mutate(fn: () => Promise<unknown>) {
     setBusy(true);
     setError(null);
-    try { await fn(); await load(); }
+    try { await fn(); await load(); onPersisted(); }
     catch (e) { setError(e instanceof Error ? e.message : "Update failed"); }
     finally { setBusy(false); }
   }
 
   const memberIds = new Set((detail?.members ?? []).map((m) => m.id));
   const candidates = users.filter((u) => !memberIds.has(u.id));
+
+  if (error && !detail) {
+    return (
+      <Modal title="Group unavailable" sub="The group was removed or access was revoked" onClose={onClose}>
+        <FormError msg={error} />
+        <FormActions><button className="btn" onClick={onClose}>Back to groups</button></FormActions>
+      </Modal>
+    );
+  }
 
   return (
     <Modal title="Group members" sub={detail?.name ?? ""} onClose={onClose}>
@@ -97,27 +113,32 @@ function MembersModal({ groupId, onClose }: { groupId: string; onClose: () => vo
                 <span style={{ fontSize: "13px", fontWeight: 600 }}>{m.username}</span>{" "}
                 <Tag tone="muted" mono={false}>{m.role}</Tag>
               </div>
-              <button className="iconbtn" title="Remove" disabled={busy}
-                onClick={() => void mutate(() => api.delete(`/api/admin/groups/${groupId}/members/${m.id}`))}>
-                <Icon name="trash" size={14} />
-              </button>
+              {!readOnly && (
+                <button className="iconbtn" title="Remove" disabled={busy}
+                  onClick={() => void mutate(() => api.delete(`/api/admin/groups/${groupId}/members/${m.id}`))}>
+                  <Icon name="trash" size={14} />
+                </button>
+              )}
             </RowCard>
           ))}
         </div>
-        <Field label="Add member">
-          <div style={{ display: "flex", gap: "8px" }}>
-            <FieldSelect value={addUserId} onChange={(e) => setAddUserId(e.target.value)}>
-              <option value="">Select a user…</option>
-              {candidates.map((u) => <option key={u.id} value={u.id}>{u.username}</option>)}
-            </FieldSelect>
-            <button className="btn primary" disabled={busy || !addUserId}
-              onClick={() => void mutate(async () => { await api.post(`/api/admin/groups/${groupId}/members`, { userId: addUserId }); setAddUserId(""); })}>
-              Add
-            </button>
-          </div>
-        </Field>
+        {!readOnly && (
+          <Field label="Add member">
+            <div style={{ display: "flex", gap: "8px" }}>
+              <FieldSelect value={addUserId} onChange={(e) => setAddUserId(e.target.value)}>
+                <option value="">Select a user…</option>
+                {candidates.map((u) => <option key={u.id} value={u.id}>{u.username}</option>)}
+              </FieldSelect>
+              <button className="btn primary" disabled={busy || !addUserId}
+                onClick={() => void mutate(async () => { await api.post(`/api/admin/groups/${groupId}/members`, { userId: addUserId }); setAddUserId(""); })}>
+                Add
+              </button>
+            </div>
+          </Field>
+        )}
         <FormActions>
-          <button className="btn ghost" onClick={onClose}>Done</button>
+          <button className="btn ghost" onClick={onClose}>{readOnly ? "Back" : "Done"}</button>
+          {readOnly && onEdit && <button className="btn primary" onClick={onEdit}>Edit members</button>}
         </FormActions>
       </FormRow>
     </Modal>
@@ -126,12 +147,10 @@ function MembersModal({ groupId, onClose }: { groupId: string; onClose: () => vo
 
 /* ─── Groups section ──────────────────────────────────────────────────── */
 
-export function GroupsSection() {
+export function GroupsSection({ route, navigate, markClean }: ConfigSectionProps) {
   const [groups, setGroups] = useState<ApiGroup[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
-  const [showAdd, setShowAdd] = useState(false);
-  const [membersOf, setMembersOf] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -150,6 +169,31 @@ export function GroupsSection() {
     void api.delete(`/api/admin/groups/${g.id}`).then(load).catch((e: unknown) => setError(e instanceof Error ? e.message : "Delete failed")).finally(() => setBusy(null));
   }
 
+  const routeId = route.section === "groups" && (route.mode === "detail" || route.mode === "edit") ? route.id : null;
+
+  if (route.mode === "create") {
+    return (
+      <GroupFormModal
+        onClose={() => navigate({ section: "groups", mode: "list" })}
+        onSaved={() => { markClean(); void load(); navigate({ section: "groups", mode: "list" }); }}
+      />
+    );
+  }
+
+  if ((route.mode === "detail" || route.mode === "edit") && routeId) {
+    return (
+      <MembersModal
+        groupId={routeId}
+        readOnly={route.mode === "detail"}
+        onClose={() => { void load(); navigate(route.mode === "edit"
+          ? { section: "groups", mode: "detail", id: routeId }
+          : { section: "groups", mode: "list" }); }}
+        onEdit={route.mode === "detail" ? () => navigate({ section: "groups", mode: "edit", id: routeId }) : undefined}
+        onPersisted={markClean}
+      />
+    );
+  }
+
   return (
     <>
       <div style={{ marginBottom: "22px" }}>
@@ -159,7 +203,7 @@ export function GroupsSection() {
             <h1 style={{ margin: 0, fontSize: "22px", fontWeight: 600, letterSpacing: "-0.01em" }}>Groups</h1>
             <p style={{ margin: "6px 0 0", color: "var(--text-faint)", fontSize: "13.5px" }}>Collections of users. Bind a policy to a group to grant access to all its members.</p>
           </div>
-          <button className="btn primary" onClick={() => setShowAdd(true)}>
+          <button className="btn primary" onClick={() => navigate({ section: "groups", mode: "create" })}>
             <Icon name="plus" size={14} /> New group
           </button>
         </div>
@@ -172,7 +216,7 @@ export function GroupsSection() {
       <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
         {groups.length === 0 && <div className="placeholder" style={{ minHeight: "120px" }}>No groups yet.</div>}
         {groups.map((g) => (
-          <RowCard key={g.id}>
+          <RowCard key={g.id} ariaLabel={`Open group ${g.name}`} onClick={() => navigate({ section: "groups", mode: "detail", id: g.id })}>
             <span style={{ width: 36, height: 36, borderRadius: "8px", display: "grid", placeItems: "center", background: "var(--panel-2)", color: "var(--text-faint)", border: "1px solid var(--border-soft)", flex: "none" }}>
               <Icon name="user" size={17} />
             </span>
@@ -183,16 +227,14 @@ export function GroupsSection() {
               </div>
               {g.description && <div style={{ fontSize: "12px", color: "var(--text-faint)", marginTop: "3px" }}>{g.description}</div>}
             </div>
-            <button className="btn ghost" disabled={busy === g.id} onClick={() => setMembersOf(g.id)}>Members</button>
-            <button className="iconbtn" title="Delete" disabled={busy === g.id} onClick={() => deleteGroup(g)}>
+            <button className="btn ghost" disabled={busy === g.id} onClick={(event) => { event.stopPropagation(); navigate({ section: "groups", mode: "edit", id: g.id }); }}>Members</button>
+            <button className="iconbtn" title="Delete" disabled={busy === g.id} onClick={(event) => { event.stopPropagation(); deleteGroup(g); }}>
               <Icon name="trash" size={14} />
             </button>
           </RowCard>
         ))}
       </div>
 
-      {showAdd && <GroupFormModal onClose={() => setShowAdd(false)} onSaved={() => { setShowAdd(false); void load(); }} />}
-      {membersOf && <MembersModal groupId={membersOf} onClose={() => { setMembersOf(null); void load(); }} />}
     </>
   );
 }

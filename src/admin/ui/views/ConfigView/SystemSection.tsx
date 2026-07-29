@@ -1,12 +1,14 @@
 import { useEffect, useState } from "react";
 import { Field, FieldInput } from "../../components/Modal.tsx";
 import { api } from "../../api.ts";
+import { useCurrentUser } from "../../authContext.tsx";
 import type { ApiConfig, ApiStatus } from "../../types.ts";
 
 interface SystemSectionProps {
   config: ApiConfig["config"] | null;
   status: ApiStatus | null;
   onRefresh: () => void;
+  onDirtyChange: (dirty: boolean) => void;
 }
 
 interface EditableSettings {
@@ -15,7 +17,9 @@ interface EditableSettings {
   maxRetryAttempts: number;
 }
 
-export function SystemSection({ config, status, onRefresh }: SystemSectionProps) {
+export function SystemSection({ config, status, onRefresh, onDirtyChange }: SystemSectionProps) {
+  const { can } = useCurrentUser();
+  const canWrite = can("system.write");
   const runtime = status?.runtime;
   const polling = status?.polling;
 
@@ -29,6 +33,11 @@ export function SystemSection({ config, status, onRefresh }: SystemSectionProps)
   const [pollingSeconds, setPollingSeconds] = useState(String(initialPollingSeconds));
   const [maxCycles, setMaxCycles] = useState(String(initialCycles));
   const [maxRetries, setMaxRetries] = useState(String(initialRetries));
+  const [baseline, setBaseline] = useState<EditableSettings>({
+    pollingIntervalMs: initialPollingSeconds * 1000,
+    maxAgentCycles: initialCycles,
+    maxRetryAttempts: initialRetries,
+  });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
@@ -40,12 +49,22 @@ export function SystemSection({ config, status, onRefresh }: SystemSectionProps)
     setPollingSeconds(String(initialPollingSeconds));
     setMaxCycles(String(initialCycles));
     setMaxRetries(String(initialRetries));
+    setBaseline({
+      pollingIntervalMs: initialPollingSeconds * 1000,
+      maxAgentCycles: initialCycles,
+      maxRetryAttempts: initialRetries,
+    });
   }, [initialPollingSeconds, initialCycles, initialRetries]);
 
   const dirty =
-    Number(pollingSeconds) !== initialPollingSeconds ||
-    Number(maxCycles) !== initialCycles ||
-    Number(maxRetries) !== initialRetries;
+    Number(pollingSeconds) * 1000 !== baseline.pollingIntervalMs ||
+    Number(maxCycles) !== baseline.maxAgentCycles ||
+    Number(maxRetries) !== baseline.maxRetryAttempts;
+
+  useEffect(() => {
+    onDirtyChange(dirty);
+    return () => onDirtyChange(false);
+  }, [dirty, onDirtyChange]);
 
   function validate(): EditableSettings | string {
     const seconds = Number(pollingSeconds);
@@ -68,12 +87,14 @@ export function SystemSection({ config, status, onRefresh }: SystemSectionProps)
     // Build a partial patch with only the fields that actually changed so we
     // never accidentally overwrite a server-side value the user didn't touch.
     const patch: Partial<typeof result> = {};
-    if (result.pollingIntervalMs !== initialPollingSeconds * 1000) patch.pollingIntervalMs = result.pollingIntervalMs;
-    if (result.maxAgentCycles !== initialCycles) patch.maxAgentCycles = result.maxAgentCycles;
-    if (result.maxRetryAttempts !== initialRetries) patch.maxRetryAttempts = result.maxRetryAttempts;
+    if (result.pollingIntervalMs !== baseline.pollingIntervalMs) patch.pollingIntervalMs = result.pollingIntervalMs;
+    if (result.maxAgentCycles !== baseline.maxAgentCycles) patch.maxAgentCycles = result.maxAgentCycles;
+    if (result.maxRetryAttempts !== baseline.maxRetryAttempts) patch.maxRetryAttempts = result.maxRetryAttempts;
     setSaving(true);
     try {
       await api.put("/api/admin/settings", patch);
+      setBaseline(result);
+      onDirtyChange(false);
       setSaved(true);
       onRefresh();
     } catch (e) {
@@ -106,6 +127,7 @@ export function SystemSection({ config, status, onRefresh }: SystemSectionProps)
               type="number"
               min={1}
               step={1}
+              disabled={!canWrite}
               value={pollingSeconds}
               onChange={(e) => { setPollingSeconds(e.target.value); setSaved(false); }}
             />
@@ -116,6 +138,7 @@ export function SystemSection({ config, status, onRefresh }: SystemSectionProps)
               type="number"
               min={1}
               step={1}
+              disabled={!canWrite}
               value={maxCycles}
               onChange={(e) => { setMaxCycles(e.target.value); setSaved(false); }}
             />
@@ -126,6 +149,7 @@ export function SystemSection({ config, status, onRefresh }: SystemSectionProps)
               type="number"
               min={1}
               step={1}
+              disabled={!canWrite}
               value={maxRetries}
               onChange={(e) => { setMaxRetries(e.target.value); setSaved(false); }}
             />
@@ -134,11 +158,13 @@ export function SystemSection({ config, status, onRefresh }: SystemSectionProps)
           {error && <div style={{ color: "var(--danger)", fontSize: "12.5px" }}>{error}</div>}
           {saved && !dirty && <div style={{ color: "var(--accent-strong)", fontSize: "12.5px" }}>Settings saved.</div>}
 
-          <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
-            <button className="btn primary" onClick={() => void handleSave()} disabled={saving || !dirty}>
-              {saving ? "Saving…" : "Save changes"}
-            </button>
-          </div>
+          {canWrite && (
+            <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+              <button className="btn primary" onClick={() => void handleSave()} disabled={saving || !dirty}>
+                {saving ? "Saving…" : "Save changes"}
+              </button>
+            </div>
+          )}
         </div>
       </div>
 

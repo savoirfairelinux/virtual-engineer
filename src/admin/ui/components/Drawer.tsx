@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { createPortal } from "react-dom";
 import { Icon } from "./Icon.tsx";
 import { TONE, type ToneKey } from "../states.ts";
+import { useConfigPageSurface } from "../views/ConfigView/ConfigPageSurface.tsx";
 
 /* ─── Shell ──────────────────────────────────────────────────────────── */
 
@@ -15,8 +16,11 @@ interface DrawerProps {
 }
 
 export function Drawer({ eyebrow, title, glyph, onClose, footer, children }: DrawerProps) {
+  const isPage = useConfigPageSurface();
+
   // Esc key + scroll lock
   useEffect(() => {
+    if (isPage) return;
     const prev = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     document.body.classList.add("ve-drawer-open");
@@ -27,7 +31,26 @@ export function Drawer({ eyebrow, title, glyph, onClose, footer, children }: Dra
       document.body.classList.remove("ve-drawer-open");
       window.removeEventListener("keydown", onKey);
     };
-  }, [onClose]);
+  }, [isPage, onClose]);
+
+  if (isPage) {
+    return (
+      <article className="config-entity-page config-detail-page" aria-labelledby="config-detail-title">
+        <header className="config-entity-head">
+          <button className="btn config-back" onClick={onClose}>
+            <Icon name="chevron" size={14} style={{ transform: "rotate(180deg)" }} /> Back
+          </button>
+          {glyph && <div className="config-entity-glyph">{glyph}</div>}
+          <div className="titles">
+            {eyebrow && <div className="eyebrow">{eyebrow}</div>}
+            <h1 id="config-detail-title" className="config-entity-title" tabIndex={-1}>{title}</h1>
+          </div>
+        </header>
+        <div className="config-entity-body">{children}</div>
+        {footer && <footer className="config-entity-foot">{footer}</footer>}
+      </article>
+    );
+  }
 
   return createPortal(
     <div
