@@ -6,7 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { ConfigPageSurface } from "../../../src/admin/ui/views/ConfigView/ConfigPageSurface.js";
 import { IntegrationFormModal } from "../../../src/admin/ui/views/ConfigView/IntegrationFormModal.js";
-import { Modal } from "../../../src/admin/ui/components/Modal.js";
+import { Field, FieldInput, Modal } from "../../../src/admin/ui/components/Modal.js";
 import { Drawer } from "../../../src/admin/ui/components/Drawer.js";
 import { RowCard } from "../../../src/admin/ui/components/RowCard.js";
 import { Toggle } from "../../../src/admin/ui/components/Toggle.js";
@@ -167,5 +167,24 @@ describe("ConfigPageSurface", () => {
 
     expect(html).toContain('role="switch"');
     expect(html).toContain('aria-label="Enable Primary GitHub"');
+  });
+
+  it("associates a Field label and hint with a custom control id", () => {
+    render(createElement(
+      Field,
+      {
+        label: "Repository",
+        hint: "Choose the source repository",
+        children: createElement(FieldInput, {
+          id: "repository-input",
+          "aria-describedby": "external-description",
+        }),
+      },
+    ));
+
+    const input = screen.getByLabelText("Repository");
+    const hint = screen.getByText("Choose the source repository");
+    expect(input.id).toBe("repository-input");
+    expect(input.getAttribute("aria-describedby")).toBe(`external-description ${hint.id}`);
   });
 });

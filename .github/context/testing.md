@@ -16,11 +16,11 @@ tests/
 
 ### Test families by area
 
-`tests/unit/` currently holds ~100 test files. This table lists the families; run `ls tests/unit/` for the authoritative, always-current list.
+`tests/unit/` currently holds 150+ test files. This table lists the families; run `ls tests/unit/` for the authoritative, always-current list.
 
 | Area | Families (file-name stems) |
 |---|---|
-| Admin routes / server + UI | `adminServer` (+ `.behavior`, `.integration`), `adminImageProxy`, `adminHealthEndpoint`, `adminPluginRoutes`, `adminPromptRoutes`, `adminAgentsRoutes`, `adminAgentsOAuthRoutes`, `adminProjectsRoutes` (+ `.relaunch`), `adminConcurrencyRoutes`, `adminSettingsRoutes`, `adminIntegrationsDiscover`, `adminWebhookSecretRoutes`, `adminCostRoutes`, `adminAuthService`, `adminAuthRoutes`, `adminServerRbac`, `adminPoliciesRoutes`, `adminAudit`, `adminAuditRoutes`, `commonPasswords`, `loginRateLimiter`, `closeAdminServer`, `dashboard` (+ `.configurationTab`), `agentFormModal`, `apiIdentityBoundary`, `appIdentityHandoff`, `configRouting`, `configPageSurface`, `configNavigation`, `configPermissions`, `identityReset` |
+| Admin routes / server + UI | `adminServer` (+ `.behavior`, `.integration`), `adminImageProxy`, `adminHealthEndpoint`, `adminPluginRoutes`, `adminPromptRoutes`, `adminAgentsRoutes`, `adminAgentsOAuthRoutes`, `adminProjectsRoutes` (+ `.relaunch`), `adminConcurrencyRoutes`, `adminSettingsRoutes`, `adminIntegrationsDiscover`, `adminWebhookSecretRoutes`, `adminCostRoutes`, `adminAuthService`, `adminAuthRoutes`, `adminServerRbac`, `adminPoliciesRoutes`, `adminAudit`, `adminAuditRoutes`, `commonPasswords`, `loginRateLimiter`, `closeAdminServer`, `dashboard` (+ `.configurationTab`), `agentFormModal`, `apiIdentityBoundary`, `appIdentityHandoff`, `configDirtyRace`, `configRouting`, `configPageSurface`, `configNavigation`, `configPermissions`, `identityReset` |
 | Orchestrator / polling | `orchestrator` (+ `.projectMode`, `.webhookEntryPoints`, `.concurrency`), `orchestratorCommitMessage`, `pollingLoop.projects`, `pollingLoop.concurrency`, `pollingLoop.reviewPolling`, `pollingLoop.stalledTasks`, `pollingLoop.updateConfig`, `concurrencyTracker`, `feedbackProcessor`, `reviewProgressService`, `pauseResumeFlow` |
 | State / stores | `taskDomain`, `stateMachine`, `stateStore` (+ `.projects`, `.cost`), `settingsStore`, `migrations.projects`, `integrationStore`, `promptStore`, `userStore`, `auditStore`, `pbacStores` |
 | PBAC / authorization | `policyEngine`, `permissions`, `pbacStores`, `adminPoliciesRoutes`, `adminServerRbac` (project-scoping suite) |

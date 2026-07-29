@@ -288,16 +288,16 @@ export function ConfigView(props: ConfigViewData) {
           className="config-content fade-up"
           onChangeCapture={(event) => {
             if (event.target instanceof Element && event.target.closest("[data-config-ignore-dirty]")) return;
-            if (effectiveRoute.mode === "create" || effectiveRoute.mode === "edit" || effectiveRoute.mode === "password") setIsDirty(true);
+            if (effectiveRoute.mode === "create" || effectiveRoute.mode === "edit" || effectiveRoute.mode === "password") setDirty(true);
           }}
           onInputCapture={(event) => {
             if (event.target instanceof Element && event.target.closest("[data-config-ignore-dirty]")) return;
-            if (effectiveRoute.mode === "create" || effectiveRoute.mode === "edit" || effectiveRoute.mode === "password") setIsDirty(true);
+            if (effectiveRoute.mode === "create" || effectiveRoute.mode === "edit" || effectiveRoute.mode === "password") setDirty(true);
           }}
           onClickCapture={(event) => {
             if (effectiveRoute.mode !== "create" && effectiveRoute.mode !== "edit" && effectiveRoute.mode !== "password") return;
             const target = event.target;
-            if (target instanceof Element && target.closest("[data-config-dirty]")) setIsDirty(true);
+            if (target instanceof Element && target.closest("[data-config-dirty]")) setDirty(true);
           }}
         >
           {effectiveRoute.mode === "list" ? content : <ConfigPageSurface>{content}</ConfigPageSurface>}

@@ -96,12 +96,17 @@ interface FieldProps {
 
 export function Field({ label, required, children, hint }: FieldProps) {
   const generatedId = useId();
-  const controlId = `field-${generatedId}`;
+  const childProps = isValidElement(children)
+    ? children.props as { id?: string; "aria-describedby"?: string }
+    : undefined;
+  const controlId = childProps?.id ?? `field-${generatedId}`;
   const hintId = hint ? `${controlId}-hint` : undefined;
   const child = isValidElement(children)
     ? cloneElement(children as ReactElement<{ id?: string; "aria-describedby"?: string }>, {
-        id: (children.props as { id?: string }).id ?? controlId,
-        ...(hintId ? { "aria-describedby": hintId } : {}),
+        id: controlId,
+        ...(hintId ? {
+          "aria-describedby": [childProps?.["aria-describedby"], hintId].filter(Boolean).join(" "),
+        } : {}),
       })
     : children;
 
