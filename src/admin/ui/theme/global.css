@@ -55,12 +55,21 @@ body {
 /* ---------- app shell ---------- */
 .app {
   height: 100%;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   transition: padding-right 0.2s var(--ease);
   background:
     radial-gradient(1200px 600px at 80% -10%, var(--bg-grad), transparent 60%),
     var(--bg);
+}
+
+.topbar,
+.app-workspace {
+  width: 100%;
+  min-width: 0;
 }
 
 body.ve-drawer-open .app {
@@ -131,6 +140,32 @@ body.ve-drawer-open .app {
 .iconbtn:hover { color: var(--text); background: var(--panel-2); border-color: var(--border-soft); }
 .iconbtn.danger:hover { color: var(--danger); background: var(--danger-soft); }
 
+.row-card-clickable > :not(.row-card-open) {
+  position: relative;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.row-card-clickable button:not(.row-card-open),
+.row-card-clickable a {
+  pointer-events: auto;
+}
+
+.row-card-open {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  padding: 0;
+  border: 0;
+  border-radius: inherit;
+  background: transparent;
+  cursor: pointer;
+}
+
+.row-card-open:focus-visible {
+  outline-offset: -3px;
+}
+
 /* pills */
 .pill {
   display: inline-flex; align-items: center; gap: 6px;
@@ -182,6 +217,346 @@ body.ve-drawer-open .app {
   border: 1px dashed var(--border);
   border-radius: var(--radius);
   background: transparent;
+}
+
+/* ---------- configuration workspace ---------- */
+.config-view {
+  flex: 1;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  display: flex;
+  min-height: 0;
+}
+
+.config-nav {
+  width: 248px;
+  flex: none;
+  border-right: 1px solid var(--border-soft);
+  background: var(--rail);
+  padding: 20px 14px;
+  overflow-y: auto;
+}
+
+.config-main {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.config-content {
+  width: min(100%, 1280px);
+  margin: 0 auto;
+  padding: 26px 32px 48px;
+}
+
+.config-entity-page {
+  width: min(100%, 1040px);
+  margin: 0 auto;
+  min-height: calc(100vh - 150px);
+  display: flex;
+  flex-direction: column;
+}
+
+.config-entity-head {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding-bottom: 22px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.config-entity-head .titles {
+  flex: 1;
+  min-width: 0;
+}
+
+.config-entity-title {
+  margin: 3px 0 0;
+  font-size: 24px;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+.config-entity-sub {
+  max-width: 720px;
+  margin: 6px 0 0;
+  color: var(--text-faint);
+  font-size: 13.5px;
+}
+
+.config-entity-glyph {
+  flex: none;
+}
+
+.config-back {
+  align-self: flex-start;
+}
+
+.config-entity-body {
+  flex: 1;
+  min-width: 0;
+  padding: 26px 0 40px;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+
+.config-detail-page .config-entity-body {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-content: start;
+}
+
+.config-detail-page .detail-banner {
+  grid-column: 1 / -1;
+}
+
+.config-entity-foot {
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 0;
+  border-top: 1px solid var(--border-soft);
+  background: color-mix(in oklab, var(--bg) 94%, transparent);
+  backdrop-filter: blur(10px);
+}
+
+.config-entity-foot .spacer {
+  flex: 1;
+}
+
+.form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding-top: 16px;
+  margin-top: 8px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.config-form-page .form-actions {
+  position: sticky;
+  bottom: -40px;
+  z-index: 5;
+  padding: 14px 0;
+  margin-top: 16px;
+  background: color-mix(in oklab, var(--bg) 94%, transparent);
+  backdrop-filter: blur(10px);
+}
+
+.config-page-loading {
+  min-height: 240px;
+}
+
+.config-provider-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.config-provider-search {
+  position: relative;
+  width: min(100%, 480px);
+  display: flex;
+  align-items: center;
+}
+
+.config-provider-search > svg {
+  position: absolute;
+  left: 12px;
+  z-index: 1;
+  color: var(--text-faint);
+  pointer-events: none;
+}
+
+.config-provider-search > input {
+  width: 100%;
+  min-width: 0;
+  padding: 10px 42px 10px 38px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  outline: none;
+  background: var(--panel-2);
+  color: var(--text);
+  font: 13.5px var(--font-sans);
+}
+
+.config-provider-search > input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.config-provider-search > input::-webkit-search-cancel-button {
+  display: none;
+}
+
+.config-provider-search > .iconbtn {
+  position: absolute;
+  right: 5px;
+}
+
+.config-provider-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  padding: 4px 0 8px;
+}
+
+.config-provider-empty {
+  min-height: 180px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  color: var(--text-faint);
+}
+
+.config-missing {
+  min-height: 320px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+}
+
+.config-missing .placeholder {
+  width: min(100%, 560px);
+  min-height: 120px;
+}
+
+@media (max-width: 900px) {
+  .topbar {
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+  }
+
+  .topbar::-webkit-scrollbar { display: none; }
+
+  .config-view {
+    flex-direction: column;
+  }
+
+  .config-nav {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    width: 100%;
+    padding: 10px 12px;
+    border-right: 0;
+    border-bottom: 1px solid var(--border-soft);
+    overflow: hidden;
+  }
+
+  .config-nav > .eyebrow,
+  .config-nav > .eyebrow + div {
+    display: none;
+  }
+
+  .config-nav-items {
+    flex-direction: row !important;
+    overflow-x: auto;
+    padding: 2px;
+  }
+
+  .config-nav-items > button {
+    width: auto !important;
+    min-width: max-content;
+  }
+
+  .config-nav-items > button > div > div:last-child {
+    display: none;
+  }
+
+  .config-content {
+    padding: 22px 18px 40px;
+  }
+
+  .config-provider-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .config-entity-page {
+    min-height: calc(100vh - 190px);
+  }
+
+  .config-entity-head {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .config-entity-head .titles {
+    flex-basis: calc(100% - 110px);
+  }
+
+  .config-entity-title {
+    font-size: 21px;
+  }
+
+  .config-detail-page .config-entity-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .config-detail-page .detail-banner {
+    grid-column: auto;
+  }
+
+  .config-entity-foot,
+  .form-actions,
+  .config-form-page .form-actions {
+    flex-wrap: wrap;
+  }
+
+  .config-main .row-card-clickable {
+    flex-wrap: wrap;
+    align-items: center;
+  }
+
+  .config-main .row-card-clickable > div[style*="flex: 1"] {
+    flex-basis: calc(100% - 64px) !important;
+  }
+
+  .config-main .row-card-tags {
+    flex-basis: 100%;
+    flex-wrap: wrap;
+    min-width: 0;
+  }
+
+  .config-main .row-card-copy {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .policy-rule-edit-row,
+  .policy-assignment-controls {
+    flex-wrap: wrap;
+  }
+
+  .policy-rule-edit-row > select,
+  .policy-rule-edit-row > input,
+  .policy-assignment-controls > select {
+    flex: 1 1 100%;
+    width: 100%;
+    min-width: 0;
+  }
+
+  .policy-rule-edit-row > .iconbtn {
+    margin-left: auto;
+  }
+
+  .policy-assignment-controls > .btn {
+    flex: 1 1 100%;
+    justify-content: center;
+  }
 }
 
 /* prefers-reduced-motion */

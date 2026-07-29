@@ -49,13 +49,13 @@ export function onUnauthorized(handler: (() => void) | null): void {
   unauthorizedHandler = handler;
 }
 
-function notifyUnauthorized(): void {
+function notifyUnauthorized(requestToken: string | null): void {
+  if (requestToken !== getStoredToken()) return;
   clearStoredToken();
   unauthorizedHandler?.();
 }
 
-function authHeaders(): Record<string, string> {
-  const token = getStoredToken();
+function authHeaders(token = getStoredToken()): Record<string, string> {
   if (!token) return {};
   return { authorization: `Bearer ${token}` };
 }
@@ -79,8 +79,9 @@ async function request<T>(
   body?: unknown,
   options: RequestOptions = {}
 ): Promise<T> {
+  const requestToken = getStoredToken();
   const headers: Record<string, string> = {
-    ...authHeaders(),
+    ...authHeaders(requestToken),
     ...(body !== undefined ? { "content-type": "application/json" } : {}),
   };
   const res = await fetch(path, {
@@ -97,7 +98,7 @@ async function request<T>(
     } catch { /* ignore */ }
     // 401 = session expired/revoked → drop to login. 403 (insufficient role)
     // must NOT log out — it surfaces as a normal error message.
-    if (res.status === 401) notifyUnauthorized();
+    if (res.status === 401) notifyUnauthorized(requestToken);
     throw new ApiError(res.status, msg);
   }
   if (res.status === 204) return undefined as T;
@@ -169,12 +170,11 @@ export async function setup(username: string, password: string): Promise<ApiMe> 
   return data.user;
 }
 
-/** Revoke the current session server-side and clear the stored token. */
-export async function logout(): Promise<void> {
+/** Revoke a session server-side. Defaults to the current stored token. */
+export async function logout(token = getStoredToken()): Promise<void> {
   try {
-    await fetch("/api/admin/auth/logout", { method: "POST", headers: authHeaders() });
+    await fetch("/api/admin/auth/logout", { method: "POST", headers: authHeaders(token) });
   } catch { /* best-effort */ }
-  clearStoredToken();
 }
 
 /** Current authenticated identity. */
@@ -215,14 +215,15 @@ export function connectSse(
   async function connect(): Promise<void> {
     if (stopped) return;
     abort = new AbortController();
+    const requestToken = getStoredToken();
     try {
       const res = await fetch(path, {
-        headers: authHeaders(),
+        headers: authHeaders(requestToken),
         signal: abort.signal,
       });
       if (res.status === 401) {
         stopped = true;
-        notifyUnauthorized();
+        notifyUnauthorized(requestToken);
         return;
       }
       if (!res.ok || !res.body) throw new Error(`SSE error ${res.status}`);

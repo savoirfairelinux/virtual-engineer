@@ -1,6 +1,14 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "../../components/Icon.tsx";
 import type { ApiIntegration, ApiAgent, ApiProject, ApiPrompt, ApiOAuthApp, ApiConfig, ApiPlugin, ApiStatus } from "../../types.ts";
+import { ConfigPageSurface } from "./ConfigPageSurface.tsx";
+import {
+  formatConfigHash,
+  parseConfigHash,
+  type ConfigRoute,
+  type ConfigSectionId,
+} from "./configRouting.ts";
+import { canAccessConfigRoute, canAccessConfigSection } from "./configPermissions.ts";
 
 /* ─── Local sub-component imports ─────────────────────────────────────── */
 import { ConfigOverview }       from "./ConfigOverview.tsx";
@@ -14,24 +22,22 @@ import { UsersSection }         from "./UsersSection.tsx";
 import { GroupsSection }        from "./GroupsSection.tsx";
 import { PoliciesSection }      from "./PoliciesSection.tsx";
 import { AuditSection }         from "./AuditSection.tsx";
-import { useCurrentUser }       from "../../authContext.tsx";
+import { makeHasPermission, useCurrentUser } from "../../authContext.tsx";
 
 /* ─── Nav items ────────────────────────────────────────────────────────── */
 const CONFIG_NAV = [
-  { id: "overview",      label: "Overview",         sub: "Summary",           icon: "grid",   adminOnly: false },
-  { id: "integrations",  label: "Integrations",     sub: "Providers",         icon: "server", adminOnly: false },
-  { id: "oauth",         label: "OAuth Apps",       sub: "Provider registry", icon: "link",   adminOnly: false },
-  { id: "agents",        label: "Agents Library",   sub: "Reusable agents",   icon: "spark",  adminOnly: false },
-  { id: "projects",      label: "Projects",         sub: "Execution units",   icon: "box",    adminOnly: false },
-  { id: "prompts",       label: "Prompts",          sub: "System & custom",   icon: "edit",   adminOnly: false },
-  { id: "users",         label: "Users",            sub: "Accounts & roles",  icon: "user",   adminOnly: true },
-  { id: "groups",        label: "Groups",           sub: "User collections",  icon: "layers", adminOnly: true },
-  { id: "policies",      label: "Policies",         sub: "Access control",    icon: "config", adminOnly: true },
-  { id: "audit",         label: "Audit",            sub: "Change history",    icon: "clock",  adminOnly: true },
-  { id: "system",        label: "System Settings",  sub: "Runtime settings",  icon: "config", adminOnly: false },
+  { id: "overview",      label: "Overview",         sub: "Summary",           icon: "grid" },
+  { id: "integrations",  label: "Integrations",     sub: "Providers",         icon: "server" },
+  { id: "oauth",         label: "OAuth Apps",       sub: "Provider registry", icon: "link" },
+  { id: "agents",        label: "Agents Library",   sub: "Reusable agents",   icon: "spark" },
+  { id: "projects",      label: "Projects",         sub: "Execution units",   icon: "box" },
+  { id: "prompts",       label: "Prompts",          sub: "System & custom",   icon: "edit" },
+  { id: "users",         label: "Users",            sub: "Accounts & roles",  icon: "user" },
+  { id: "groups",        label: "Groups",           sub: "User collections",  icon: "layers" },
+  { id: "policies",      label: "Policies",         sub: "Access control",    icon: "config" },
+  { id: "audit",         label: "Audit",            sub: "Change history",    icon: "clock" },
+  { id: "system",        label: "System Settings",  sub: "Runtime settings",  icon: "config" },
 ] as const;
-
-type SectionId = typeof CONFIG_NAV[number]["id"];
 
 export interface ConfigViewData {
   integrations: ApiIntegration[];
@@ -43,54 +49,213 @@ export interface ConfigViewData {
   config: ApiConfig["config"] | null;
   status: ApiStatus | null;
   onRefresh: () => void;
+  onNavigationGuardChange?: ((guard: (() => boolean) | null) => void) | undefined;
 }
 
+export interface ConfigSectionRouting {
+  route: ConfigRoute;
+  navigate: (route: ConfigRoute) => void;
+  markClean: () => void;
+  setDirty: (dirty: boolean) => void;
+}
+
+export type ConfigSectionProps = ConfigViewData & ConfigSectionRouting;
+
 export function ConfigView(props: ConfigViewData) {
-  const { isAdmin } = useCurrentUser();
-  const visibleNav = CONFIG_NAV.filter((n) => !n.adminOnly || isAdmin);
+  const { onNavigationGuardChange } = props;
+  const { can, user } = useCurrentUser();
+  const hasPermission = useMemo(() => makeHasPermission(user), [user]);
+  const visibleNav = CONFIG_NAV.filter((item) => canAccessConfigSection(hasPermission, item.id));
 
-  const [sec, setSec] = useState<SectionId>(() => {
-    const part = window.location.hash.split("/")[1] ?? "";
-    return (CONFIG_NAV.find((n) => n.id === part)?.id) ?? "overview";
-  });
+  const [route, setRoute] = useState<ConfigRoute>(() => parseConfigHash(window.location.hash));
+  const [isDirty, setIsDirty] = useState(false);
+  const routeRef = useRef(route);
+  const dirtyRef = useRef(isDirty);
+  const historyIndexRef = useRef(0);
+  const restoringHistoryRef = useRef(false);
 
-  useEffect(() => {
-    const onHashChange = () => {
-      const part = window.location.hash.split("/")[1] ?? "";
-      const id = CONFIG_NAV.find((n) => n.id === part)?.id ?? "overview";
-      setSec(id);
-    };
-    window.addEventListener("hashchange", onHashChange);
-    return () => window.removeEventListener("hashchange", onHashChange);
+  const commitRoute = useCallback((nextRoute: ConfigRoute) => {
+    routeRef.current = nextRoute;
+    dirtyRef.current = false;
+    setIsDirty(false);
+    setRoute(nextRoute);
   }, []);
 
-  // Non-admins cannot land on admin-only sections (deep link / role change).
-  const effectiveSec: SectionId =
-    !isAdmin && CONFIG_NAV.some((n) => n.id === sec && n.adminOnly) ? "overview" : sec;
+  const confirmDiscard = useCallback((restoreUrl = true): boolean => {
+    if (!dirtyRef.current) return true;
+    if (!window.confirm("Discard unsaved changes?")) {
+      if (restoreUrl) {
+        window.history.replaceState(
+          { ...window.history.state, veConfigIndex: historyIndexRef.current },
+          "",
+          formatConfigHash(routeRef.current),
+        );
+      }
+      return false;
+    }
+    dirtyRef.current = false;
+    setIsDirty(false);
+    return true;
+  }, []);
 
-  function handleSectionChange(id: SectionId) {
-    setSec(id);
-    window.location.hash = `config/${id}`;
+  useEffect(() => {
+    const existingIndex = typeof window.history.state?.veConfigIndex === "number"
+      ? window.history.state.veConfigIndex as number
+      : 0;
+    historyIndexRef.current = existingIndex;
+    window.history.replaceState({ ...window.history.state, veConfigIndex: existingIndex }, "", window.location.href);
+
+    const onPopState = (event: PopStateEvent) => {
+      if (restoringHistoryRef.current) {
+        restoringHistoryRef.current = false;
+        return;
+      }
+      const nextRoute = parseConfigHash(window.location.hash);
+      const nextIndex = typeof event.state?.veConfigIndex === "number"
+        ? event.state.veConfigIndex as number
+        : historyIndexRef.current - 1;
+      if (!confirmDiscard(false)) {
+        const delta = historyIndexRef.current - nextIndex;
+        if (delta === 0) {
+          window.history.replaceState(
+            { ...window.history.state, veConfigIndex: historyIndexRef.current },
+            "",
+            formatConfigHash(routeRef.current),
+          );
+        } else {
+          restoringHistoryRef.current = true;
+          window.history.go(delta);
+        }
+        return;
+      }
+      historyIndexRef.current = nextIndex;
+      commitRoute(nextRoute);
+    };
+
+    const onHashChange = () => {
+      if (restoringHistoryRef.current || !window.location.hash.startsWith("#config")) return;
+      const nextRoute = parseConfigHash(window.location.hash);
+      if (formatConfigHash(nextRoute) === formatConfigHash(routeRef.current)) return;
+      if (!confirmDiscard()) return;
+      historyIndexRef.current += 1;
+      window.history.replaceState(
+        { ...window.history.state, veConfigIndex: historyIndexRef.current },
+        "",
+        window.location.href,
+      );
+      commitRoute(nextRoute);
+    };
+
+    window.addEventListener("popstate", onPopState);
+    window.addEventListener("hashchange", onHashChange);
+    return () => {
+      window.removeEventListener("popstate", onPopState);
+      window.removeEventListener("hashchange", onHashChange);
+    };
+  }, [commitRoute, confirmDiscard]);
+
+  useEffect(() => {
+    onNavigationGuardChange?.(confirmDiscard);
+    return () => onNavigationGuardChange?.(null);
+  }, [confirmDiscard, onNavigationGuardChange]);
+
+  useEffect(() => {
+    if (!isDirty) return;
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [isDirty]);
+
+  useEffect(() => {
+    routeRef.current = route;
+  }, [route]);
+
+  useEffect(() => {
+    dirtyRef.current = isDirty;
+  }, [isDirty]);
+
+  const effectiveRoute = useMemo<ConfigRoute>(() => {
+    if (canAccessConfigRoute(can, hasPermission, route)) return route;
+    return { section: visibleNav[0]?.id ?? "overview", mode: "list" };
+  }, [can, hasPermission, route, visibleNav]);
+
+  const effectiveSec = effectiveRoute.section;
+
+  const navigate = useCallback((nextRoute: ConfigRoute) => {
+    if (!confirmDiscard()) return;
+    commitRoute(nextRoute);
+    const nextHash = formatConfigHash(nextRoute);
+    if (window.location.hash !== nextHash) {
+      historyIndexRef.current += 1;
+      window.history.pushState(
+        { ...window.history.state, veConfigIndex: historyIndexRef.current },
+        "",
+        nextHash,
+      );
+    }
+  }, [commitRoute, confirmDiscard]);
+
+  const markClean = useCallback(() => {
+    dirtyRef.current = false;
+    setIsDirty(false);
+  }, []);
+
+  const setDirty = useCallback((dirty: boolean) => {
+    dirtyRef.current = dirty;
+    setIsDirty(dirty);
+  }, []);
+
+  function handleSectionChange(id: ConfigSectionId) {
+    navigate({ section: id, mode: "list" });
   }
 
+  const routedProps: ConfigSectionProps = {
+    ...props,
+    route: effectiveRoute,
+    navigate,
+    markClean,
+    setDirty,
+  };
+
+  useEffect(() => {
+    const heading = document.querySelector<HTMLElement>(".config-main h1");
+    if (!heading) return;
+    heading.tabIndex = -1;
+    heading.focus({ preventScroll: true });
+  }, [effectiveRoute]);
+
+  const content = (
+    <>
+      {effectiveSec === "overview"     && <ConfigOverview {...props} />}
+      {effectiveSec === "integrations" && <IntegrationsSection {...routedProps} />}
+      {effectiveSec === "oauth"        && <OAuthSection {...routedProps} />}
+      {effectiveSec === "agents"       && <AgentsSection {...routedProps} />}
+      {effectiveSec === "projects"     && <ProjectsSection {...routedProps} />}
+      {effectiveSec === "prompts"      && <PromptsSection {...routedProps} />}
+      {effectiveSec === "users"        && <UsersSection {...routedProps} />}
+      {effectiveSec === "groups"       && <GroupsSection {...routedProps} />}
+      {effectiveSec === "policies"     && <PoliciesSection {...routedProps} />}
+      {effectiveSec === "audit"        && <AuditSection />}
+      {effectiveSec === "system"       && <SystemSection config={props.config} status={props.status} onRefresh={props.onRefresh} onDirtyChange={routedProps.setDirty} />}
+    </>
+  );
+
   return (
-    <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
+    <div className="config-view">
       {/* sidebar nav */}
-      <div
-        style={{
-          width: "248px", flex: "none",
-          borderRight: "1px solid var(--border-soft)", background: "var(--rail)",
-          padding: "20px 14px", overflowY: "auto",
-        }}
-      >
+      <aside className="config-nav" aria-label="Configuration sections">
         <div className="eyebrow" style={{ padding: "0 8px", marginBottom: "4px" }}>Admin</div>
         <div style={{ padding: "0 8px 16px", fontSize: "16px", fontWeight: 600 }}>Configuration</div>
-        <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
+        <div className="config-nav-items" style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
           {visibleNav.map((n) => {
             const active = effectiveSec === n.id;
             return (
               <button
                 key={n.id}
+                aria-current={active ? "page" : undefined}
                 onClick={() => handleSectionChange(n.id)}
                 style={{
                   display: "flex", alignItems: "center", gap: "11px", padding: "9px 10px",
@@ -114,28 +279,30 @@ export function ConfigView(props: ConfigViewData) {
             );
           })}
         </div>
-      </div>
+      </aside>
 
       {/* main content */}
-      <div style={{ flex: 1, overflowY: "auto", minHeight: 0 }}>
+      <main className="config-main">
         <div
-          key={effectiveSec}
-          className="fade-up"
-          style={{ maxWidth: "920px", margin: "0 auto", padding: "26px 28px 40px" }}
+          key={`${effectiveSec}:${effectiveRoute.mode}`}
+          className="config-content fade-up"
+          onChangeCapture={(event) => {
+            if (event.target instanceof Element && event.target.closest("[data-config-ignore-dirty]")) return;
+            if (effectiveRoute.mode === "create" || effectiveRoute.mode === "edit" || effectiveRoute.mode === "password") setIsDirty(true);
+          }}
+          onInputCapture={(event) => {
+            if (event.target instanceof Element && event.target.closest("[data-config-ignore-dirty]")) return;
+            if (effectiveRoute.mode === "create" || effectiveRoute.mode === "edit" || effectiveRoute.mode === "password") setIsDirty(true);
+          }}
+          onClickCapture={(event) => {
+            if (effectiveRoute.mode !== "create" && effectiveRoute.mode !== "edit" && effectiveRoute.mode !== "password") return;
+            const target = event.target;
+            if (target instanceof Element && target.closest("[data-config-dirty]")) setIsDirty(true);
+          }}
         >
-          {effectiveSec === "overview"     && <ConfigOverview {...props} />}
-          {effectiveSec === "integrations" && <IntegrationsSection {...props} />}
-          {effectiveSec === "oauth"        && <OAuthSection {...props} />}
-          {effectiveSec === "agents"       && <AgentsSection {...props} />}
-          {effectiveSec === "projects"     && <ProjectsSection {...props} />}
-          {effectiveSec === "prompts"      && <PromptsSection {...props} />}
-          {effectiveSec === "users"        && isAdmin && <UsersSection />}
-          {effectiveSec === "groups"       && isAdmin && <GroupsSection />}
-          {effectiveSec === "policies"     && isAdmin && <PoliciesSection />}
-          {effectiveSec === "audit"        && isAdmin && <AuditSection />}
-          {effectiveSec === "system"       && <SystemSection config={props.config} status={props.status} onRefresh={props.onRefresh} />}
+          {effectiveRoute.mode === "list" ? content : <ConfigPageSurface>{content}</ConfigPageSurface>}
         </div>
-      </div>
+      </main>
     </div>
   );
 }

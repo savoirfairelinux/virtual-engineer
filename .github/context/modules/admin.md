@@ -31,7 +31,7 @@ The admin server is a small HTTP service (default `127.0.0.1:3100`) that serves 
 | `adminWebhookRoutes.ts` | Webhook management: secret rotation, allowed-IPs, webhook-info. |
 | `dashboard.ts` | Serves the HTML shell for the Vite-built React SPA: reads the Vite manifest from `dist/admin-ui/.vite/manifest.json`, injects the hashed JS/CSS asset links plus a `window.__VE_ADMIN_BOOTSTRAP__` payload, and falls back to "Admin UI not built — run npm run build:ui" when the build output is missing. |
 | `providerSummary.ts` | Builds the `AdminProviderSummary[]` list shown in the admin UI's provider panel. Extracted from `src/index.ts`; exposes `buildAdminProviderSummaries(config, pluginManager?)`. |
-| `ui/` | Admin SPA source (React + TypeScript): `App.tsx`, `main.tsx`, `api.ts`, `states.ts`, `views/`, `components/`, `shell/`, `theme/`, `icons/`. Built with Vite (`vite.admin.config.ts`) into `dist/admin-ui`; `adminServer.ts` serves the hashed assets under `/admin-ui/*`. Commands: `npm run build:ui`, `npm run dev:ui` (watch), `npm run typecheck:ui`. |
+| `ui/` | Admin SPA source (React + TypeScript): `App.tsx`, `main.tsx`, `api.ts`, `states.ts`, `views/`, `components/`, `shell/`, `theme/`, `icons/`. Configuration uses native hash routes parsed by `views/ConfigView/configRouting.ts`; `ConfigPageSurface.tsx` lets the existing form/detail primitives render as full pages instead of overlays, and Add Integration filters providers by name, provider id, or capability. Built with Vite (`vite.admin.config.ts`) into `dist/admin-ui`; `adminServer.ts` serves the hashed assets under `/admin-ui/*`. Commands: `npm run build:ui`, `npm run dev:ui` (watch), `npm run typecheck:ui`. |
 | `assets/` | Static assets bundled with the admin server. |
 
 The task live-log UI renders `skills.fetch_start`, `skills.fetch_complete`, and `skills.fetch_failed` payloads as human-readable skill fetch messages, including source repository, selected skills, and agent id when present.
@@ -68,7 +68,7 @@ All `/api/admin/*` routes are declared in `buildApiRouter()` and its per-area ro
 | Prompts | `adminPromptRoutes.ts` | CRUD `/prompts` (`system` / `instructions` roles; built-ins protected from deletion) | `prompt.read` / `prompt.write` / `prompt.delete` |
 | Integrations | `adminIntegrationRoutes.ts` | CRUD, `/test`, `/:id/test`, `/:id/discover`, `/by-category` | `integration.read` / `integration.write` / `integration.delete` / `integration.operate` |
 | Integration branches / models | `adminIntegrationRoutes.ts` | `GET /:id/branches?repoKey=…` (descriptor `discoverBranches`; 400/404/502; uncached), `GET /:id/models` | `integration.read` |
-| Webhooks | `adminWebhookRoutes.ts` | `/:id/webhook-info`, `/:id/webhook-secret/rotate`, `/:id/webhook-allowed-ips` | `integration.operate` |
+| Webhooks | `adminWebhookRoutes.ts` | `/:id/webhook-info`, `/:id/webhook-secret/rotate`, `/:id/webhook-allowed-ips` | `integration.read` for reads; `integration.write` for secret/IP updates |
 | SSH keys | `adminIntegrationRoutes.ts` | `/ssh-key/generate` (stateless), `/:id/ssh-key/{generate,public}`, `/ssh-agent/keys` | `integration.write` / `integration.read` |
 | Plugins / OAuth | `adminIntegrationRoutes.ts` | `GET /plugins`, `/plugins/:type/oauth/{device-code,token,start,complete}`, `/oauth-apps` CRUD + `/resolve` | `integration.read` / `oauth.manage` |
 | Agents | `adminAgentsRoutes.ts` | CRUD `/agents` (delete → 409 if referenced), `enable`/`disable` | `agent.read` / `agent.write` / `agent.delete` / `agent.operate` |
@@ -148,7 +148,7 @@ Recorded actions:
 | Tasks | `task.delete`, `task.pause`, `task.resume`, `task.retry`, `task.abandon` |
 | Groups / Policies (PBAC) | `group.create`, `group.update`, `group.delete`, `group.member_add`, `group.member_remove`, `policy.create`, `policy.update`, `policy.delete`, `policy.rules_set`, `policy.binding_add`, `policy.binding_remove` |
 
-The log is readable through `GET /api/admin/audit` (admin only, see the endpoints table) and browsed in the SPA via the admin-only **Audit** tab in Configuration.
+The log is readable through `GET /api/admin/audit` with `audit.read` and browsed in the SPA through the permission-gated **Audit** tab in Configuration.
 
 The dashboard stores the session token client-side (sessionStorage `ve-admin-token`) and sends it through the `Authorization` header.
 
@@ -160,18 +160,23 @@ The admin server never returns plaintext password-like fields. Descriptor passwo
 
 [dashboard.ts](../../../src/admin/dashboard.ts) serves the shell for the Vite-built React SPA whose source lives in [src/admin/ui/](../../../src/admin/ui/); all client logic lives in the SPA, not inline in the shell.
 
-**Login / setup flow (SPA)**: on load, the auth screen (`shell/AuthScreen.tsx`) calls the public `GET /api/admin/auth/setup-status`. When `needsSetup` is true it renders a “Create first admin” form (username + password ≥ 8, not a common password, + confirm) that POSTs directly to `/api/admin/auth/setup` — unauthenticated bootstrap, no secret or derived token is involved — which returns a session token. When `credentialEncryptionConfigured` is false, setup remains available but a warning explains that `ADMIN_AUTH_SECRET` encrypts provider credentials rather than the admin password, lists the unavailable credential-backed workflows, and gives `.env` generation plus local/Docker restart guidance (including why `docker restart` must not be used). Otherwise it renders a username/password login form backed by `POST /api/admin/auth/login`. The session token is kept in sessionStorage (`ve-admin-token`) and sent as a Bearer header on all API/SSE calls (plus the `?t=` query token for the log stream). `ui/api.ts` centralizes 401 handling: any 401 clears the token and fires an `onUnauthorized` callback that drops the app back to the login screen; 403 (insufficient role) never logs out — it surfaces as a normal error message.
+**Login / setup flow (SPA)**: on load, the auth screen (`shell/AuthScreen.tsx`) calls the public `GET /api/admin/auth/setup-status`. When `needsSetup` is true it renders a “Create first admin” form (username + password ≥ 8, not a common password, + confirm) that POSTs directly to `/api/admin/auth/setup` — unauthenticated bootstrap, no secret or derived token is involved — which returns a session token. When `credentialEncryptionConfigured` is false, setup remains available but a warning explains that `ADMIN_AUTH_SECRET` encrypts provider credentials rather than the admin password, lists the unavailable credential-backed workflows, and gives `.env` generation plus local/Docker restart guidance (including why `docker restart` must not be used). Otherwise it renders a username/password login form backed by `POST /api/admin/auth/login`. The session token is kept in sessionStorage (`ve-admin-token`) and sent as a Bearer header on all API/SSE calls (plus the `?t=` query token for the log stream). `ui/api.ts` centralizes 401 handling: a 401 clears the token and fires `onUnauthorized` only when the request's captured token is still current, so delayed responses from a previous account cannot log out its replacement; 403 (insufficient role) never logs out — it surfaces as a normal error message.
 
-**Role-aware UI**: after auth, `App.tsx` loads `GET /api/admin/auth/me` and provides `{ user, isAdmin, canOperate }` through `ui/authContext.tsx` (`useCurrentUser()` hook; `canOperate` = role ≠ viewer). The top bar shows the username, a role badge, a change-password button (self password change via `PUT /api/admin/users/:id/password` with `currentPassword`; on success the user is told sessions were revoked and is routed back to login), and Logout (`POST /api/admin/auth/logout`). Nav + data loading are role-gated:
-- **viewer** sees **only** the Overview and Tasks top-level views — the Configuration nav entry is hidden (`TopBar` filters it on `canOperate`) and a deep link to `#config*` falls back to Overview (`App.tsx` `effectiveView`). `loadAll()` only fetches the viewer-safe endpoints (tasks/status/config/overview) and skips all config-area + providers requests so a viewer never triggers a now-forbidden call.
-- **operator** gets the full Configuration area, **including** the Integrations and OAuth Apps panels (add/edit/delete/enable/disable/test/discover, OAuth-app registration, plugin OAuth flows) — these are gated on `canOperate`, not `isAdmin`.
-- **admin** additionally sees the Users and Audit tabs (gated on `isAdmin`).
+**Permission-aware UI**: after auth, `App.tsx` loads `GET /api/admin/auth/me` and provides the effective `can(permission, resourceId?)` checker through `ui/authContext.tsx`. The top bar shows the username, role badge, change-password button (self password change via `PUT /api/admin/users/:id/password` with `currentPassword`; on success the user is told sessions were revoked and is routed back to login), and Logout (`POST /api/admin/auth/logout`). Configuration is visible whenever the user has at least one Configuration permission, regardless of role; otherwise its top-level nav entry is hidden and `#config*` falls back to Overview. Configuration resources are fetched with `Promise.allSettled`, so denied endpoints do not suppress permitted sections.
+
+The Configuration rail and deep-link fallback use effective permissions per section: `overview.read`, `integration.read`, `oauth.manage`, `agent.read`, `project.read`, `prompt.read`, `user.manage`, `policy.manage` (Groups and Policies), `audit.read`, and `system.read`. Direct create/edit routes also require the corresponding `*.write` or `*.manage` permission. Mutation controls are independently gated by `integration|agent|project.write`, `.delete`, and `.operate`; project checks include the project resource ID where applicable. Prompt controls use `prompt.write`/`prompt.delete`, OAuth uses `oauth.manage`, and System Settings only exposes Save with `system.write`.
 
 **Password fields**: every password `<input>` (login + first-admin setup password/confirm in `shell/AuthScreen.tsx`, current/new/confirm in `shell/ChangePasswordModal.tsx`, create-user + reset-password in `views/ConfigView/UsersSection.tsx`) uses the reusable `components/PasswordField.tsx`, which renders an inline eye button (accessible `aria-label` “Show password” / “Hide password”) that toggles the input between `password` and `text`. It matches the native input styling (defaults to `FieldInput`; accepts a `style` override for the mono login form) and uses the `eye` / `eye-off` icons.
 
-**Users tab (admin only)**: Configuration → Users lists accounts (username, role badge, enabled toggle, created date), with a create-user modal (username/password/role), inline role select, reset-password modal, and delete-with-confirm. Server-side 409s (duplicate username, last-admin guard) surface as inline error banners.
+**Users tab (`user.manage`)**: Configuration → Users lists accounts (username, role badge, enabled toggle, created date), with a create-user modal (username/password/role), inline role select, reset-password modal, and delete-with-confirm. Server-side 409s (duplicate username, last-admin guard) surface as inline error banners.
 
-**Audit tab (admin only)**: Configuration → Audit renders the paginated audit table (local time, actor, action tag, target type/id, expandable pretty-printed details JSON) with debounced action/actor filter inputs and Newer/Older paging over `GET /api/admin/audit?limit&offset&action&actor`.
+**Audit tab (`audit.read`)**: Configuration → Audit renders the paginated audit table (local time, actor, action tag, target type/id, expandable pretty-printed details JSON) with debounced action/actor filter inputs and Newer/Older paging over `GET /api/admin/audit?limit&offset&action&actor`.
+
+**Configuration navigation**: configurable resources use addressable hash pages while the Configuration navigation remains visible. Lists use `#config/<section>`, creation uses `#config/<section>/new`, details use `#config/<section>/<encoded-id>`, and edits use `#config/<section>/<encoded-id>/edit`. OAuth details encode the composite key as `#config/oauth/<provider>/<base-url>`; user password reset uses `#config/users/<id>/password`. Integration, OAuth, agent, project, prompt, user, group, and policy forms/details render in the central page rather than in modal/drawer overlays. Existing API capabilities remain authoritative (for example OAuth apps have create/detail/delete but no invented edit operation), and built-in prompts/policies are read-only. Destructive confirmations remain short browser confirmations.
+
+Configuration forms register unsaved state with the parent app. Internal section navigation, top-level navigation, logout, browser Back/Forward, reload, and tab close warn before discarding changes. Accepted navigation clears the guard; successful saves return to the relevant detail/list page. The history controller uses indexed `pushState`/`popstate` entries so rejecting Back/Forward restores the current entry without overwriting history. System Settings participates in the same guard despite remaining an inline section form.
+
+On desktop, the 248px Configuration rail stays visible and the central workspace expands to 1280px (forms are constrained to a readable 1040px). Detail pages may use two columns and form actions remain visible near the viewport edge. At widths up to 900px, the rail becomes a sticky horizontal section selector, details collapse to one column, entity rows wrap, and actions remain reachable without an overlay.
 
 - The configuration UI validates unsaved integration state through `POST /api/admin/integrations/test`.
 - The Providers view renders one card per active integration rather than collapsing everything into a single card per provider type.
@@ -198,7 +203,7 @@ The admin server never returns plaintext password-like fields. Descriptor passwo
 - Top-bar and overview provider counters are integration-driven (enabled integrations), avoiding the extra runtime-provider card count used by `/api/admin/providers`.
 - Overview throughput labeling now includes the dynamic polling window (`last N ticks (~Xm)`), derived from the current polling interval.
 - System Settings is an **editable** form: polling interval (seconds), max agent cycles, and max retry attempts can be changed and saved (`PUT /api/admin/settings`), applied immediately without restart. Polling state, environment, and log level remain read-only runtime facts below the form.
-- Desktop drawers use a push layout that shifts the main app left so the right drawer does not cover the working content area.
+- Drawers outside Configuration still use a push layout that shifts the main app left; Configuration details are full pages and do not use a drawer overlay.
 
 The supported server-side model is `projects` / `project_*`. There are no `/api/admin/repository-sets` routes.
 
@@ -225,6 +230,9 @@ The supported server-side model is `projects` / `project_*`. There are no `/api/
 - `tests/unit/adminAuditRoutes.test.ts`
 - `tests/unit/dashboard.test.ts`
 - `tests/unit/dashboard.configurationTab.test.ts`
+- `tests/unit/configRouting.test.ts`
+- `tests/unit/configPageSurface.test.ts`
+- `tests/unit/configNavigation.test.tsx`
 
 ## Related docs
 

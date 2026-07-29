@@ -162,7 +162,7 @@ export function ProjectSkillSourcesField({
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <div style={{ fontSize: "12px", fontWeight: 600, color: "var(--text-dim)" }}>External skill sources</div>
-          <button type="button" className="btn ghost" style={{ fontSize: "12px", padding: "5px 10px" }} onClick={() => setRows((prev) => [...prev, emptySkillSourceRow()])}>
+          <button data-config-dirty type="button" className="btn ghost" style={{ fontSize: "12px", padding: "5px 10px" }} onClick={() => setRows((prev) => [...prev, emptySkillSourceRow()])}>
             <Icon name="plus" size={12} /> Add source
           </button>
         </div>
@@ -202,7 +202,7 @@ export function ProjectSkillSourcesField({
                     <button type="button" className="btn ghost" style={{ fontSize: "12px", padding: "5px 10px", marginBottom: 2 }} disabled={row.listing} onClick={() => void listRowSkills(row.id)}>
                       {row.listing ? "Listing…" : "List skills"}
                     </button>
-                    <button type="button" className="iconbtn" onClick={() => setRows((prev) => prev.filter((candidate) => candidate.id !== row.id))}>
+                    <button data-config-dirty type="button" className="iconbtn" onClick={() => setRows((prev) => prev.filter((candidate) => candidate.id !== row.id))}>
                       <Icon name="x" size={12} />
                     </button>
                   </div>
@@ -234,6 +234,7 @@ export function ProjectSkillSourcesField({
                           const selected = selectedSkillSet(row).has(skill);
                           return (
                             <button
+                              data-config-dirty
                               key={skill}
                               type="button"
                               className={selected ? "btn primary" : "btn ghost"}

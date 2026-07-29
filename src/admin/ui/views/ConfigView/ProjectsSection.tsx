@@ -3,12 +3,12 @@ import { Tag } from "../../components/Tag.tsx";
 import { Icon } from "../../components/Icon.tsx";
 import { RowCard } from "../../components/RowCard.tsx";
 import { api } from "../../api.ts";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useCurrentUser } from "../../authContext.tsx";
 import { ProjectFormModal } from "./ProjectFormModal.tsx";
 import { ProjectDrawer } from "./ConfigDrawers.tsx";
 import type { ApiProject } from "../../types.ts";
-import type { ConfigViewData } from "./index.tsx";
+import type { ConfigSectionProps } from "./index.tsx";
 
 interface ApiProjectDetail extends ApiProject {
   ticketSource?: {
@@ -35,14 +35,31 @@ interface ApiProjectDetail extends ApiProject {
   reactToCiFailures?: boolean;
 }
 
-export function ProjectsSection({ projects, agents, integrations, onRefresh }: ConfigViewData) {
-  const { canOperate } = useCurrentUser();
+export function ProjectsSection({ projects, agents, integrations, onRefresh, route, navigate, markClean }: ConfigSectionProps) {
+  const { can } = useCurrentUser();
   const [busy, setBusy] = useState<string | null>(null);
-  const [showAdd, setShowAdd] = useState(false);
   const [editingProject, setEditingProject] = useState<ApiProjectDetail | null>(null);
-  const [drawerId, setDrawerId] = useState<string | null>(null);
+  const detailId = route.section === "projects" && route.mode === "detail" ? route.id : null;
+  const editingId = route.section === "projects" && route.mode === "edit" ? route.id : null;
+  const detailItem = detailId ? projects.find((project) => project.id === detailId) : undefined;
 
-  const drawerItem = drawerId ? projects.find((p) => p.id === drawerId) : undefined;
+  useEffect(() => {
+    if (!editingId) {
+      setEditingProject(null);
+      return;
+    }
+    let cancelled = false;
+    setBusy(editingId);
+    void api.get<{ project: ApiProjectDetail }>(`/api/admin/projects/${editingId}`)
+      .then(({ project }) => { if (!cancelled) setEditingProject(project); })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        alert(error instanceof Error ? error.message : "Failed to load project details");
+        navigate({ section: "projects", mode: "list" });
+      })
+      .finally(() => { if (!cancelled) setBusy(null); });
+    return () => { cancelled = true; };
+  }, [editingId, navigate]);
 
   async function toggleEnabled(id: string, enabled: boolean) {
     setBusy(id);
@@ -54,26 +71,16 @@ export function ProjectsSection({ projects, agents, integrations, onRefresh }: C
     }
   }
 
-  async function deleteProject(p: ApiProject) {
-    if (!window.confirm(`Delete project "${p.name}"? All tasks for this project will be orphaned.`)) return;
+  async function deleteProject(p: ApiProject): Promise<boolean> {
+    if (!window.confirm(`Delete project "${p.name}"? All tasks for this project will be orphaned.`)) return false;
     setBusy(p.id);
     try {
       await api.delete(`/api/admin/projects/${p.id}`);
       onRefresh();
+      return true;
     } catch (e) {
       alert(e instanceof Error ? e.message : "Delete failed");
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  async function openEditProject(projectId: string) {
-    setBusy(projectId);
-    try {
-      const { project } = await api.get<{ project: ApiProjectDetail }>(`/api/admin/projects/${projectId}`);
-      setEditingProject(project);
-    } catch (e) {
-      alert(e instanceof Error ? e.message : "Failed to load project details");
+      return false;
     } finally {
       setBusy(null);
     }
@@ -82,6 +89,45 @@ export function ProjectsSection({ projects, agents, integrations, onRefresh }: C
   function agentName(id: string | null | undefined): string {
     if (!id) return "—";
     return agents.find((a) => a.id === id)?.name ?? id.slice(0, 12);
+  }
+
+  function handleSaved() {
+    markClean();
+    onRefresh();
+    navigate(editingId
+      ? { section: "projects", mode: "detail", id: editingId }
+      : { section: "projects", mode: "list" });
+  }
+
+  if (route.mode === "detail") {
+    if (!detailItem) return <ProjectMissing onBack={() => navigate({ section: "projects", mode: "list" })} />;
+    return (
+      <ProjectDrawer
+        item={detailItem}
+        agents={agents}
+        onClose={() => navigate({ section: "projects", mode: "list" })}
+        {...(can("project.write", detailItem.id) ? { onEdit: () => navigate({ section: "projects", mode: "edit", id: detailItem.id }) } : {})}
+        {...(can("project.operate", detailItem.id) ? { onToggle: () => { void toggleEnabled(detailItem.id, detailItem.enabled); } } : {})}
+        {...(can("project.delete", detailItem.id) ? { onDelete: () => { void deleteProject(detailItem).then((deleted) => { if (deleted) navigate({ section: "projects", mode: "list" }); }); } } : {})}
+      />
+    );
+  }
+
+  if (route.mode === "create" || route.mode === "edit") {
+    if (route.mode === "edit" && !editingProject) {
+      return <div className="placeholder config-page-loading">{busy ? "Loading project…" : "Project unavailable."}</div>;
+    }
+    return (
+      <ProjectFormModal
+        agents={agents}
+        integrations={integrations}
+        {...(route.mode === "edit" && editingProject ? { project: editingProject } : {})}
+        onClose={() => navigate(editingId
+          ? { section: "projects", mode: "detail", id: editingId }
+          : { section: "projects", mode: "list" })}
+        onSaved={handleSaved}
+      />
+    );
   }
 
   return (
@@ -93,8 +139,8 @@ export function ProjectsSection({ projects, agents, integrations, onRefresh }: C
             <h1 style={{ margin: 0, fontSize: "22px", fontWeight: 600, letterSpacing: "-0.01em" }}>Projects</h1>
             <p style={{ margin: "6px 0 0", color: "var(--text-faint)", fontSize: "13.5px" }}>Execution units binding an agent to ticket sources and push / review targets.</p>
           </div>
-          {canOperate && (
-            <button className="btn primary" onClick={() => setShowAdd(true)}>
+          {can("project.write") && (
+            <button className="btn primary" onClick={() => navigate({ section: "projects", mode: "create" })}>
               <Icon name="plus" size={14} /> New project
             </button>
           )}
@@ -106,7 +152,7 @@ export function ProjectsSection({ projects, agents, integrations, onRefresh }: C
           <div className="placeholder" style={{ minHeight: "120px" }}>No projects configured.</div>
         )}
         {projects.map((p) => (
-          <RowCard key={p.id} onClick={() => setDrawerId(p.id)}>
+          <RowCard key={p.id} ariaLabel={`Open project ${p.name}`} onClick={() => navigate({ section: "projects", mode: "detail", id: p.id })}>
             <span
               style={{
                 width: 36, height: 36, borderRadius: "8px",
@@ -127,25 +173,26 @@ export function ProjectsSection({ projects, agents, integrations, onRefresh }: C
               </div>
             </div>
             <div onClick={(e) => e.stopPropagation()}>
-              {canOperate && (
+              {can("project.operate", p.id) && (
                 <Toggle
                   on={p.enabled}
+                  label={`Project ${p.name} enabled`}
                   disabled={busy === p.id}
                   onChange={() => void toggleEnabled(p.id, p.enabled)}
                 />
               )}
             </div>
-            {canOperate && (
+            {can("project.write", p.id) && (
               <button
                 className="iconbtn"
                 title="Edit"
                 disabled={busy === p.id}
-                onClick={(e) => { e.stopPropagation(); void openEditProject(p.id); }}
+                onClick={(e) => { e.stopPropagation(); navigate({ section: "projects", mode: "edit", id: p.id }); }}
               >
                 <Icon name="edit" size={14} />
               </button>
             )}
-            {canOperate && (
+            {can("project.delete", p.id) && (
               <button
                 className="iconbtn"
                 title="Delete"
@@ -159,38 +206,15 @@ export function ProjectsSection({ projects, agents, integrations, onRefresh }: C
         ))}
       </div>
 
-      {/* Detail drawer */}
-      {drawerItem && (
-        <ProjectDrawer
-          item={drawerItem}
-          agents={agents}
-          onClose={() => setDrawerId(null)}
-          {...(canOperate ? {
-            onEdit: () => { setDrawerId(null); void openEditProject(drawerItem.id); },
-            onToggle: () => { void toggleEnabled(drawerItem.id, drawerItem.enabled); setDrawerId(null); },
-            onDelete: () => { void deleteProject(drawerItem); setDrawerId(null); },
-          } : {})}
-        />
-      )}
-
-      {canOperate && showAdd && (
-        <ProjectFormModal
-          agents={agents}
-          integrations={integrations}
-          onClose={() => setShowAdd(false)}
-          onSaved={() => { setShowAdd(false); onRefresh(); }}
-        />
-      )}
-
-      {editingProject && (
-        <ProjectFormModal
-          agents={agents}
-          integrations={integrations}
-          project={editingProject}
-          onClose={() => setEditingProject(null)}
-          onSaved={() => { setEditingProject(null); onRefresh(); }}
-        />
-      )}
     </>
+  );
+}
+
+function ProjectMissing({ onBack }: { onBack: () => void }) {
+  return (
+    <div className="config-missing">
+      <div className="placeholder">This project is unavailable or you do not have access.</div>
+      <button className="btn" onClick={onBack}>Back to projects</button>
+    </div>
   );
 }

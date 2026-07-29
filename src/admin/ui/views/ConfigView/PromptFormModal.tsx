@@ -7,11 +7,12 @@ interface Props {
   prompt?: ApiPrompt | undefined;
   /** When true (viewer role), the form is read-only — no save button, disabled inputs. */
   readOnly?: boolean | undefined;
+  onEdit?: (() => void) | undefined;
   onClose: () => void;
   onSaved: () => void;
 }
 
-export function PromptFormModal({ prompt, readOnly, onClose, onSaved }: Props) {
+export function PromptFormModal({ prompt, readOnly, onEdit, onClose, onSaved }: Props) {
   const isEdit = !!prompt;
   const [label, setLabel] = useState(prompt?.label ?? "");
   const [content, setContent] = useState(prompt?.content ?? "");
@@ -79,6 +80,9 @@ export function PromptFormModal({ prompt, readOnly, onClose, onSaved }: Props) {
 
         <FormActions>
           <button className="btn ghost" onClick={onClose}>{readOnly ? "Close" : "Cancel"}</button>
+          {readOnly && onEdit && (
+            <button className="btn primary" onClick={onEdit}>Edit prompt</button>
+          )}
           {!readOnly && (
             <button className="btn primary" onClick={handleSave} disabled={saving}>
               {saving ? "Saving…" : isEdit ? "Save changes" : "Create prompt"}

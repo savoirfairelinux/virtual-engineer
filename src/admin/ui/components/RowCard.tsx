@@ -1,18 +1,23 @@
 import { type ReactNode, useState } from "react";
 
-interface RowCardProps {
+type RowCardProps = {
   children: ReactNode;
-  onClick?: () => void;
-}
+  onClick?: undefined;
+  ariaLabel?: undefined;
+} | {
+  children: ReactNode;
+  onClick: () => void;
+  ariaLabel: string;
+};
 
-export function RowCard({ children, onClick }: RowCardProps) {
+export function RowCard({ children, onClick, ariaLabel }: RowCardProps) {
   const [hovered, setHovered] = useState(false);
   return (
     <div
-      onClick={onClick}
-      className="card"
+      className={`card${onClick ? " row-card-clickable" : ""}`}
       style={{
         padding: "14px 16px",
+        position: "relative",
         display: "flex", alignItems: "center", gap: "14px",
         cursor: onClick ? "pointer" : "default",
         transition: "border-color 0.13s var(--ease), background 0.13s var(--ease)",
@@ -24,6 +29,9 @@ export function RowCard({ children, onClick }: RowCardProps) {
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
+      {onClick && (
+        <button type="button" className="row-card-open" aria-label={ariaLabel} onClick={onClick} />
+      )}
       {children}
     </div>
   );
