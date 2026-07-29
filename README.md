@@ -1,4 +1,4 @@
-# Virtual Engineer
+# 🤖 Virtual Engineer
 
 **Turn tickets and review events into isolated, traceable AI engineering workflows.**
 
@@ -6,7 +6,7 @@ Virtual Engineer is a self-hosted TypeScript orchestrator for two complementary 
 
 Provider configuration, projects, agents, prompts, permissions, runtime settings, costs, and task history are managed from one authenticated Admin UI and persisted in SQLite.
 
-## What It Does
+## 🔄 What It Does
 
 | Workflow | Trigger | Virtual Engineer | Result |
 | --- | --- | --- | --- |
@@ -15,7 +15,7 @@ Provider configuration, projects, agents, prompts, permissions, runtime settings
 
 Coding tasks progress from detection through implementation and review to completion. Review tasks run independently and do not require a ticket source. See the [state-machine reference](.github/context/state-machine.md) for the complete lifecycle.
 
-## Key Capabilities
+## ✨ Key Capabilities
 
 - **Isolated execution**: every coding and review run uses an ephemeral Docker container with a read-only root filesystem, dropped Linux capabilities, and dedicated named volumes.
 - **Host-owned credentials**: push and review credentials remain with the orchestrator; they are not placed in the agent workspace.
@@ -26,7 +26,7 @@ Coding tasks progress from detection through implementation and review to comple
 - **Operational visibility**: follow task transitions, live agent events, model usage, and AI cost from the Admin UI.
 - **Policy-based access**: manage users, groups, policies, scoped project permissions, and an audit trail from the same interface.
 
-## Supported Integrations
+## 🔌 Supported Integrations
 
 | Capability | Providers |
 | --- | --- |
@@ -37,7 +37,7 @@ Coding tasks progress from detection through implementation and review to comple
 
 Provider integrations are configured in the Admin UI and stored encrypted in SQLite. Runtime dependencies are refreshed after integration changes without restarting the orchestrator. For authentication methods, model options, and engine-specific behavior, see the [agent reference](.github/context/modules/agents.md).
 
-## Quick Start
+## 🚀 Quick Start
 
 The standard deployment runs the orchestrator in Docker and launches agent containers through the host Docker daemon.
 
@@ -63,7 +63,7 @@ docker logs -f ve-orchestrator
 
 Keep the generated `ADMIN_AUTH_SECRET` stable and stored securely. It encrypts provider credentials at rest; changing or losing it prevents existing credentials from being decrypted. It is separate from the Admin UI account password.
 
-## Configure Your First Workflow
+## 🧭 Configure Your First Workflow
 
 Use the Admin UI to assemble a workflow from reusable integrations, agents, and projects:
 
@@ -77,7 +77,7 @@ Gerrit review events use SSH `stream-events`. GitLab and GitHub review projects 
 
 The [Admin server reference](.github/context/modules/admin.md) describes the complete management surface, while the [configuration reference](.github/context/configuration.md) documents process-level settings.
 
-## Local Development
+## 🛠️ Local Development
 
 Local development runs the orchestrator on the host while agent workloads still run in Docker.
 
@@ -112,18 +112,18 @@ Useful development commands:
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development conventions, quality gates, and contribution guidance.
 
-## Architecture
+## 🏗️ Architecture
 
 The orchestrator runs on the host or in its own container. For each agent cycle it creates isolated Docker named volumes, clones the repository through a helper container, starts an ephemeral agent container, and then performs the push from the trusted host side. SQLite in WAL mode stores workflow state and allows interrupted tasks to resume after restart.
 
 Read the [architecture guide](.github/context/architecture.md) for the full component and data-flow diagrams. The [documentation index](.github/context/INDEX.md) links to the database, plugins, connectors, VCS, state machine, testing, and module references.
 
-## Security
+## 🔒 Security
 
 Virtual Engineer handles source repositories, external credentials, and AI-generated changes. Review the trust boundaries before connecting production systems, keep the Admin UI on loopback or behind a trusted reverse proxy, and only run agents against repositories and external skill sources you trust.
 
 Report vulnerabilities privately according to [SECURITY.md](SECURITY.md).
 
-## License
+## 📄 License
 
 Virtual Engineer is licensed under the [GNU General Public License v3.0 only](LICENSE).
