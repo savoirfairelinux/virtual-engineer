@@ -21,8 +21,6 @@ const project: ProjectRecord = {
   agentId: "a-1" as AgentId,
   agentOverrideJson: null,
   postCloneScript: "",
-  skillDiscoveryEnabled: false,
-  localSkillsPath: ".github/skills",
   skillSourcesJson: "[]",
   gerritTopicOverride: null,
   useFullTicketUrlInCommits: false,

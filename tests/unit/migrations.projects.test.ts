@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import Database from "better-sqlite3";
 import { SqliteStateStore } from "../../src/state/stateStore.js";
-import { makeAgentId } from "../../src/interfaces.js";
+import { makeAgentId, makeProjectId } from "../../src/interfaces.js";
 import { tempDatabasePath } from "./helpers/tempDatabase.js";
 
 function tempDbPath(): string {
@@ -36,6 +36,63 @@ describe("Phase 2 migrations", () => {
       ]) {
         expect(names.has(expected), `missing table ${expected}`).toBe(true);
       }
+    } finally {
+      store.close();
+    }
+  });
+
+  it("does not create removed local skill configuration columns", async () => {
+    const store = await SqliteStateStore.create(tempDbPath());
+    try {
+      const raw = (store as unknown as { raw: { prepare: (s: string) => { all: () => unknown[] } } }).raw;
+      const projectColumns = raw.prepare("PRAGMA table_info(projects)").all() as ColumnInfoRow[];
+
+      expect(projectColumns.map((column) => column.name)).not.toContain("skill_discovery_enabled");
+      expect(projectColumns.map((column) => column.name)).not.toContain("local_skills_path");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("drops the legacy project skill discovery flag and preserves project data", async () => {
+    const dbPath = tempDbPath();
+    const legacy = new Database(dbPath);
+    const now = Math.floor(Date.now() / 1000);
+    legacy.exec(`
+      CREATE TABLE projects (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        type TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        agent_override_json TEXT,
+        post_clone_script TEXT NOT NULL DEFAULT '',
+        skill_discovery_enabled INTEGER NOT NULL DEFAULT 0,
+        local_skills_path TEXT NOT NULL DEFAULT '.github/skills',
+        enabled INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+    `);
+    legacy.prepare(`
+      INSERT INTO projects (
+        id, name, type, agent_id, skill_discovery_enabled, enabled, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run("legacy-project", "Legacy project", "coding", "legacy-agent", 1, 1, now, now);
+    legacy.close();
+
+    const store = await SqliteStateStore.create(dbPath);
+    try {
+      const raw = (store as unknown as { raw: { prepare: (s: string) => { all: () => unknown[] } } }).raw;
+      const projectColumns = raw.prepare("PRAGMA table_info(projects)").all() as ColumnInfoRow[];
+      expect(projectColumns.map((column) => column.name)).not.toContain("skill_discovery_enabled");
+      expect(projectColumns.map((column) => column.name)).not.toContain("local_skills_path");
+
+      const project = await store.getProjectById(makeProjectId("legacy-project"));
+      expect(project).toMatchObject({
+        id: "legacy-project",
+        name: "Legacy project",
+        enabled: true,
+      });
     } finally {
       store.close();
     }

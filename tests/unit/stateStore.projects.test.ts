@@ -126,25 +126,6 @@ describe("SqliteStateStore — Phase 2: projects", () => {
     expect(p.enabled).toBe(true);
   });
 
-  it("persists and updates skillDiscoveryEnabled (defaults to false)", async () => {
-    const a = await makeAgent(store);
-    const off = await store.createProject({ name: "Off", type: "coding", agentId: a.id });
-    expect(off.skillDiscoveryEnabled).toBe(false);
-
-    const on = await store.createProject({
-      name: "On",
-      type: "coding",
-      agentId: a.id,
-      skillDiscoveryEnabled: true,
-    });
-    expect(on.skillDiscoveryEnabled).toBe(true);
-    expect((await store.getProjectById(on.id))?.skillDiscoveryEnabled).toBe(true);
-
-    const toggled = await store.updateProject(on.id, { skillDiscoveryEnabled: false });
-    expect(toggled.skillDiscoveryEnabled).toBe(false);
-    expect((await store.getProjectById(on.id))?.skillDiscoveryEnabled).toBe(false);
-  });
-
   it("persists and updates skillSourcesJson (defaults to empty array)", async () => {
     const a = await makeAgent(store);
     const off = await store.createProject({ name: "Off", type: "coding", agentId: a.id });
@@ -163,25 +144,6 @@ describe("SqliteStateStore — Phase 2: projects", () => {
     const updated = await store.updateProject(on.id, { skillSourcesJson: "[]" });
     expect(updated.skillSourcesJson).toBe("[]");
     expect((await store.getProjectById(on.id))?.skillSourcesJson).toBe("[]");
-  });
-
-  it("persists and updates localSkillsPath (defaults to .github/skills)", async () => {
-    const a = await makeAgent(store);
-    const defaulted = await store.createProject({ name: "DefaultLocalSkills", type: "coding", agentId: a.id });
-    expect(defaulted.localSkillsPath).toBe(".github/skills");
-
-    const custom = await store.createProject({
-      name: "CustomLocalSkills",
-      type: "coding",
-      agentId: a.id,
-      localSkillsPath: "team/skills",
-    });
-    expect(custom.localSkillsPath).toBe("team/skills");
-    expect((await store.getProjectById(custom.id))?.localSkillsPath).toBe("team/skills");
-
-    const updated = await store.updateProject(custom.id, { localSkillsPath: "repo-skills" });
-    expect(updated.localSkillsPath).toBe("repo-skills");
-    expect((await store.getProjectById(custom.id))?.localSkillsPath).toBe("repo-skills");
   });
 
   it("createProject throws when agent does not exist", async () => {
@@ -579,8 +541,6 @@ describe("resolveAgentConfig — partial-merge semantics", () => {
       agentId: makeAgentId("a1"),
       agentOverrideJson,
       postCloneScript: "",
-      skillDiscoveryEnabled: false,
-      localSkillsPath: ".github/skills",
       skillSourcesJson: "[]",
       gerritTopicOverride: null,
       useFullTicketUrlInCommits: false,

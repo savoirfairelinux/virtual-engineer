@@ -320,7 +320,7 @@ describe("DockerWorkspaceRunner", () => {
         const sources = JSON.stringify([{ source: "example-org/agent-skills", skills: ["skill-a"] }]);
         (adapter.buildContainerSpec as ReturnType<typeof vi.fn>).mockReturnValue({
           image: "my-image:latest",
-          env: { SKILL_DISCOVERY: "1" },
+          env: {},
           command: ["node", "/worker/index.js"],
           networkMode: "virtual-engineer_ve-agent-net",
         });
@@ -328,7 +328,6 @@ describe("DockerWorkspaceRunner", () => {
         const ctx = makeContext({
           agentSession: {
             ...makeContext().agentSession,
-            skillDiscoveryEnabled: false,
             skillSourcesJson: sources,
           },
         });
@@ -376,14 +375,13 @@ describe("DockerWorkspaceRunner", () => {
         const sources = JSON.stringify([{ source: "ssh://skills.example.com/org/agent-skills", skills: ["skill-a"] }]);
         (adapter.buildContainerSpec as ReturnType<typeof vi.fn>).mockReturnValue({
           image: "my-image:latest",
-          env: { SKILL_DISCOVERY: "1" },
+          env: {},
           command: ["node", "/worker/index.js"],
         });
         const runner = makeRunner(adapter);
         const ctx = makeContext({
           agentSession: {
             ...makeContext().agentSession,
-            skillDiscoveryEnabled: true,
             skillSourcesJson: sources,
           },
         });
@@ -405,14 +403,13 @@ describe("DockerWorkspaceRunner", () => {
         const sources = JSON.stringify([{ source: "ssh://skills.example.com/org/agent-skills", skills: ["skill-a"], sshKeyPath: "/host/id_ed25519", sshKnownHostsPath: "/host/known_hosts" }]);
         (adapter.buildContainerSpec as ReturnType<typeof vi.fn>).mockReturnValue({
           image: "my-image:latest",
-          env: { SKILL_DISCOVERY: "1" },
+          env: {},
           command: ["node", "/worker/index.js"],
         });
         const runner = makeRunner(adapter);
         const ctx = makeContext({
           agentSession: {
             ...makeContext().agentSession,
-            skillDiscoveryEnabled: true,
             skillSourcesJson: sources,
           },
         });
@@ -447,14 +444,13 @@ describe("DockerWorkspaceRunner", () => {
         const sources = JSON.stringify([{ source: "SSH://skills.example.com/org/agent-skills", skills: ["skill-a"], sshPort: 29418, sshKeyPath: "/host/id_ed25519" }]);
         (adapter.buildContainerSpec as ReturnType<typeof vi.fn>).mockReturnValue({
           image: "my-image:latest",
-          env: { SKILL_DISCOVERY: "1" },
+          env: {},
           command: ["node", "/worker/index.js"],
         });
         const runner = makeRunner(adapter);
         const ctx = makeContext({
           agentSession: {
             ...makeContext().agentSession,
-            skillDiscoveryEnabled: true,
             skillSourcesJson: sources,
           },
         });
@@ -481,7 +477,7 @@ describe("DockerWorkspaceRunner", () => {
       const sources = JSON.stringify([{ source: "example-org/agent-skills", skills: ["skill-a"] }]);
       (adapter.buildContainerSpec as ReturnType<typeof vi.fn>).mockReturnValue({
         image: "my-image:latest",
-        env: { SKILL_DISCOVERY: "1" },
+        env: {},
         command: ["node", "/worker/index.js"],
       });
       mockExecInVolume.mockRejectedValueOnce(new Error("network unavailable"));
@@ -489,7 +485,6 @@ describe("DockerWorkspaceRunner", () => {
       const ctx = makeContext({
         agentSession: {
           ...makeContext().agentSession,
-          skillDiscoveryEnabled: true,
           skillSourcesJson: sources,
         },
       });
@@ -512,14 +507,13 @@ describe("DockerWorkspaceRunner", () => {
         const sources = JSON.stringify([{ source: "ssh://skills.example.com:2222/org/agent-skills", skills: ["skill-a"], sshPort: 29418, sshKeyPath: "/host/id_ed25519" }]);
         (adapter.buildContainerSpec as ReturnType<typeof vi.fn>).mockReturnValue({
           image: "my-image:latest",
-          env: { SKILL_DISCOVERY: "1" },
+          env: {},
           command: ["node", "/worker/index.js"],
         });
         const runner = makeRunner(adapter);
         const ctx = makeContext({
           agentSession: {
             ...makeContext().agentSession,
-            skillDiscoveryEnabled: true,
             skillSourcesJson: sources,
           },
         });
@@ -543,14 +537,13 @@ describe("DockerWorkspaceRunner", () => {
         const sources = JSON.stringify([{ source: "ssh://skills.example.com:2222/org/agent-skills", skills: ["skill-a"], sshPort: 2222, sshKeyPath: "/host/id_ed25519" }]);
         (adapter.buildContainerSpec as ReturnType<typeof vi.fn>).mockReturnValue({
           image: "my-image:latest",
-          env: { SKILL_DISCOVERY: "1" },
+          env: {},
           command: ["node", "/worker/index.js"],
         });
         const runner = makeRunner(adapter);
         const ctx = makeContext({
           agentSession: {
             ...makeContext().agentSession,
-            skillDiscoveryEnabled: true,
             skillSourcesJson: sources,
           },
         });
@@ -580,14 +573,13 @@ describe("DockerWorkspaceRunner", () => {
         const sources = JSON.stringify([{ source: "git@skills.example.com:org/agent-skills", skills: ["skill-a"] }]);
         (adapter.buildContainerSpec as ReturnType<typeof vi.fn>).mockReturnValue({
           image: "my-image:latest",
-          env: { SKILL_DISCOVERY: "1" },
+          env: {},
           command: ["node", "/worker/index.js"],
         });
         const runner = makeRunner(adapter);
         const ctx = makeContext({
           agentSession: {
             ...makeContext().agentSession,
-            skillDiscoveryEnabled: true,
             skillSourcesJson: sources,
           },
         });
@@ -619,14 +611,13 @@ describe("DockerWorkspaceRunner", () => {
       const sources = JSON.stringify([{ source: "example-org/agent-skills", skills: ["skill-a"] }]);
       (adapter.buildContainerSpec as ReturnType<typeof vi.fn>).mockReturnValue({
         image: "my-image:latest",
-        env: { SKILL_DISCOVERY: "1", SKILL_SOURCES_JSON: sources },
+        env: { SKILL_SOURCES_JSON: sources },
         command: ["node", "/worker/index.js"],
       });
       const runner = makeRunner(adapter);
       const ctx = makeContext({
         agentSession: {
           ...makeContext().agentSession,
-          skillDiscoveryEnabled: true,
           skillSourcesJson: sources,
         },
       });
@@ -882,7 +873,6 @@ describe("DockerWorkspaceRunner", () => {
         systemPrompt: "system",
         agentToken: "token",
         agentAdapter: initialAdapter,
-        skillDiscoveryEnabled: false,
         skillSourcesJson: JSON.stringify([{ source: "example-org/agent-skills", skills: ["skill-a"] }]),
       });
 
@@ -919,7 +909,6 @@ describe("DockerWorkspaceRunner", () => {
         systemPrompt: "system",
         agentToken: "token",
         agentAdapter: adapter,
-        skillDiscoveryEnabled: true,
         skillSourcesJson: JSON.stringify([{ source: "example-org/agent-skills", skills: ["skill-a"] }]),
       })).rejects.toThrow('Remote skill sources are not supported for agent provider "mock"');
 

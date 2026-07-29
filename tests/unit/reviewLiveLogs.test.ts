@@ -96,8 +96,6 @@ function makeProject(): ProjectRecord {  return {
     agentId: "agent-1" as import("../../src/interfaces.js").AgentId,
     agentOverrideJson: null,
     postCloneScript: "",
-    skillDiscoveryEnabled: false,
-    localSkillsPath: ".github/skills",
     skillSourcesJson: "[]",
     gerritTopicOverride: null,
     useFullTicketUrlInCommits: false,

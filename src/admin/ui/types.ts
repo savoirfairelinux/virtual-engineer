@@ -235,8 +235,6 @@ export interface ApiProject {
   type: "coding" | "review";
   enabled: boolean;
   agentId: string | null;
-  skillDiscoveryEnabled?: boolean;
-  localSkillsPath?: string;
   skillSources?: Array<{ source: string; skills: string[]; installAll?: boolean; sshUser?: string; sshPort?: number; sshKeyPath?: string; sshKnownHostsPath?: string }>;
   createdAt: string;
   updatedAt: string;

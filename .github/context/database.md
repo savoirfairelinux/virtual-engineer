@@ -11,9 +11,8 @@
 
 ## Projects Skill Columns
 
-- `projects.skill_discovery_enabled` is an integer trust gate for local repository skills only. When enabled, the agent container receives `SKILL_DISCOVERY=1` and loads local skills from `local_skills_path`.
-- `projects.local_skills_path` is a non-null text column with default `.github/skills`. It stores the workspace-relative directory used for local project skills. The admin API rejects absolute paths, `.`, and `..` segments; the worker also falls back to `.github/skills` if an invalid path reaches the container.
-- `projects.skill_sources_json` is a non-null text JSON column with default `[]`. It stores project-configured external skill sources installed into the agent home volume before the agent container starts whenever configured, independent of `skill_discovery_enabled`. The empty value is the database/API default; the admin UI's new-project form preloads the SFL `agent-skills` SSH source with `installAll: true`, so saving that untouched form persists a non-empty value.
+- `projects.skill_sources_json` is a non-null text JSON column with default `[]`. It stores optional project-configured external skill sources installed into the agent home volume before the agent container starts. The empty value is the database/API default; the admin UI's new-project form preloads the SFL `agent-skills` SSH source with `installAll: true`, so saving that untouched form persists a non-empty value.
+- Local repository skills are not project configuration. Every run discovers the fixed `.github/skills` directory; the former `projects.skill_discovery_enabled` and `projects.local_skills_path` columns are removed, and the admin API rejects both deleted request fields.
 
 ## Project Push Targets
 
@@ -24,7 +23,7 @@
 ## Migration Path
 
 - Runtime migrations are handled by `SqliteStateStore.applyMigrations()` in `src/state/stateStore.ts` using `CREATE TABLE IF NOT EXISTS` and `ensureColumn(...)`.
-- Existing databases get `local_skills_path` through `ensureColumn("projects", "local_skills_path", "TEXT NOT NULL DEFAULT '.github/skills'")`.
+- Existing databases drop `skill_discovery_enabled` and `local_skills_path` through `dropColumnIfExists(...)`; project rows and the remaining columns are preserved.
 - Existing databases get `reviewer_emails` through `ensureColumn("project_push_targets", "reviewer_emails", "TEXT NOT NULL DEFAULT '[]'")`.
 - Existing databases get `prompt_type` through `ensureColumn("prompts", "prompt_type", "TEXT NOT NULL DEFAULT 'instructions'")`; null, `user`, and other unsupported values are normalized to `instructions`, the five canonical built-ins are assigned their declared roles, then custom roles are derived from agent and project override references. Dual-role rows are cloned for instructions references. Missing built-in rows recreated through `upsertPrompt()` use their declared role. Old provider-specific rows are treated as ordinary data and are not translated; deployments adopting the canonical-only model must reset or edit those references explicitly.
 - `src/state/schema.ts` mirrors these columns for Drizzle typed queries.

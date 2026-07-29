@@ -686,8 +686,6 @@ projects
   agent_id → agents.id
   agent_override_json (partial model config override)
   post_clone_script (bash, runs on host after clone)
-  skill_discovery_enabled (default 0 — trust gate for local skills)
-  local_skills_path (default '.github/skills' — workspace-relative local skills dir)
   skill_sources_json (DB/API default '[]' — remote npx skills sources installed when configured;
                       the admin new-project form preloads the SFL agent-skills SSH source)
   enabled (default 0)
@@ -721,6 +719,8 @@ app_settings                   ← singleton (editable runtime workflow settings
      System Settings, hot-applied without restart)
   updated_at
 ```
+
+Repository-local skills are mandatory and discovered from the fixed `.github/skills` directory on every coding and review run. The path is not stored on projects or passed through container configuration.
 
 ---
 

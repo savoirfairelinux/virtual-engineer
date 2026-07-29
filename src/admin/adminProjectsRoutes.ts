@@ -3,7 +3,6 @@ import { getLogger } from "../logger.js";
 import { writeJson, readBody, zodErrorBody } from "./adminRouteUtils.js";
 import { recordAudit, type AuditCapableStore } from "./adminAudit.js";
 import {
-  DEFAULT_LOCAL_SKILLS_PATH,
   makeAgentId,
   makeProjectId,
   makeTaskId,
@@ -77,8 +76,6 @@ export interface ProjectsRouteStore {
     agentId: AgentId;
     agentOverrideJson?: string | null;
     postCloneScript?: string;
-    skillDiscoveryEnabled?: boolean;
-    localSkillsPath?: string;
     skillSourcesJson?: string;
     gerritTopicOverride?: string | null;
     useFullTicketUrlInCommits?: boolean;
@@ -90,7 +87,7 @@ export interface ProjectsRouteStore {
   listProjects(filter?: { type?: ProjectType; enabled?: boolean }): Promise<ProjectRecord[]>;
   updateProject(
     id: ProjectId,
-    partial: Partial<Pick<ProjectRecord, "name" | "type" | "agentId" | "agentOverrideJson" | "postCloneScript" | "skillDiscoveryEnabled" | "localSkillsPath" | "skillSourcesJson" | "gerritTopicOverride" | "useFullTicketUrlInCommits" | "postReviewLinkToTicket" | "reactToCiFailures" | "enabled">>
+    partial: Partial<Pick<ProjectRecord, "name" | "type" | "agentId" | "agentOverrideJson" | "postCloneScript" | "skillSourcesJson" | "gerritTopicOverride" | "useFullTicketUrlInCommits" | "postReviewLinkToTicket" | "reactToCiFailures" | "enabled">>
   ): Promise<ProjectRecord>;
   deleteProject(id: ProjectId): Promise<void>;
   setProjectEnabled(id: ProjectId, enabled: boolean): Promise<void>;
@@ -220,12 +217,6 @@ const skillSourceSchema = z.object({
 
 const skillSourcesSchema = z.array(skillSourceSchema).max(20, "At most 20 skill sources are supported");
 
-const localSkillsPathSchema = z.string().trim().min(1, "Local skills path is required").refine((path) => {
-  if (path.startsWith("/")) return false;
-  if (path === ".") return false;
-  return !path.split("/").some((part) => part === "..");
-}, "Local skills path must stay inside the workspace");
-
 const skillSourceDiscoverySchema = z.object({
   source: z.string().trim().min(1, "Skill source is required"),
   sshUser: optionalNonEmptyString("SSH user must not be empty"),
@@ -286,11 +277,6 @@ function parseStoredSkillSources(project: ProjectRecord): SkillSource[] {
   }
 }
 
-function normalizeLocalSkillsPath(path: string | undefined): string {
-  const trimmed = path?.trim();
-  return trimmed && trimmed.length > 0 ? trimmed : DEFAULT_LOCAL_SKILLS_PATH;
-}
-
 const codingProjectCreateSchema = z.object({
   id: z.string().optional(),
   type: z.literal("coding"),
@@ -298,9 +284,9 @@ const codingProjectCreateSchema = z.object({
   agentId: z.string().min(1, "Agent is required — create and enable a coding agent first (Agents tab)"),
   agentOverrideJson: z.string().nullable().optional(),
   postCloneScript: z.string().optional(),
-  skillDiscoveryEnabled: z.boolean().optional(),
-  localSkillsPath: localSkillsPathSchema.optional(),
+  localSkillsPath: z.never().optional(),
   skillSources: skillSourcesSchema.optional(),
+  skillDiscoveryEnabled: z.never().optional(),
   gerritTopicOverride: z.string().nullable().optional(),
   useFullTicketUrlInCommits: z.boolean().optional(),
   postReviewLinkToTicket: z.boolean().optional(),
@@ -317,9 +303,9 @@ const reviewProjectCreateSchema = z.object({
   agentId: z.string().min(1, "Agent is required — create and enable a review agent first (Agents tab)"),
   agentOverrideJson: z.string().nullable().optional(),
   postCloneScript: z.string().optional(),
-  skillDiscoveryEnabled: z.boolean().optional(),
-  localSkillsPath: localSkillsPathSchema.optional(),
+  localSkillsPath: z.never().optional(),
   skillSources: skillSourcesSchema.optional(),
+  skillDiscoveryEnabled: z.never().optional(),
   gerritTopicOverride: z.string().nullable().optional(),
   useFullTicketUrlInCommits: z.boolean().optional(),
   postReviewLinkToTicket: z.boolean().optional(),
@@ -338,9 +324,9 @@ const projectUpdateSchema = z.object({
   agentId: z.string().min(1, "Agent is required").optional(),
   agentOverrideJson: z.string().nullable().optional(),
   postCloneScript: z.string().optional(),
-  skillDiscoveryEnabled: z.boolean().optional(),
-  localSkillsPath: localSkillsPathSchema.optional(),
+  localSkillsPath: z.never().optional(),
   skillSources: skillSourcesSchema.optional(),
+  skillDiscoveryEnabled: z.never().optional(),
   gerritTopicOverride: z.string().nullable().optional(),
   useFullTicketUrlInCommits: z.boolean().optional(),
   postReviewLinkToTicket: z.boolean().optional(),
@@ -422,8 +408,6 @@ interface ProjectSummary {
   agentId: string;
   agentName: string | null;
   enabled: boolean;
-  skillDiscoveryEnabled: boolean;
-  localSkillsPath: string;
   skillSources: SkillSource[];
   createdAt: string;
   updatedAt: string;
@@ -491,8 +475,6 @@ async function buildProjectSummary(
     agentId: project.agentId,
     agentName: agent ? agent.name : null,
     enabled: project.enabled,
-    skillDiscoveryEnabled: project.skillDiscoveryEnabled,
-    localSkillsPath: project.localSkillsPath,
     skillSources: parseStoredSkillSources(project),
     createdAt: project.createdAt.toISOString(),
     updatedAt: project.updatedAt.toISOString(),
@@ -552,8 +534,6 @@ async function buildProjectDetail(
     agentId: project.agentId,
     agentName: agent ? agent.name : null,
     enabled: project.enabled,
-    skillDiscoveryEnabled: project.skillDiscoveryEnabled,
-    localSkillsPath: project.localSkillsPath,
     skillSources: parseStoredSkillSources(project),
     createdAt: project.createdAt.toISOString(),
     updatedAt: project.updatedAt.toISOString(),
@@ -737,8 +717,6 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
         agentId: makeAgentId(data.agentId),
         ...(data.agentOverrideJson !== undefined ? { agentOverrideJson: data.agentOverrideJson } : {}),
         ...(data.postCloneScript !== undefined ? { postCloneScript: data.postCloneScript } : {}),
-        ...(data.skillDiscoveryEnabled !== undefined ? { skillDiscoveryEnabled: data.skillDiscoveryEnabled } : {}),
-        localSkillsPath: normalizeLocalSkillsPath(data.localSkillsPath),
         skillSourcesJson: JSON.stringify(skillSources),
         ...(data.gerritTopicOverride !== undefined ? { gerritTopicOverride: data.gerritTopicOverride } : {}),
         ...(data.useFullTicketUrlInCommits !== undefined ? { useFullTicketUrlInCommits: data.useFullTicketUrlInCommits } : {}),
@@ -878,8 +856,6 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
     if (data.agentId !== undefined) updates.agentId = makeAgentId(data.agentId);
     if (data.agentOverrideJson !== undefined) updates.agentOverrideJson = data.agentOverrideJson;
     if (data.postCloneScript !== undefined) updates.postCloneScript = data.postCloneScript;
-    if (data.skillDiscoveryEnabled !== undefined) updates.skillDiscoveryEnabled = data.skillDiscoveryEnabled;
-    if (data.localSkillsPath !== undefined) updates.localSkillsPath = normalizeLocalSkillsPath(data.localSkillsPath);
     if (data.skillSources !== undefined) {
       const skillSources = normalizeSkillSources(data.skillSources);
       try {
@@ -902,8 +878,6 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
       updates.agentId !== undefined ||
       updates.agentOverrideJson !== undefined ||
       updates.postCloneScript !== undefined ||
-      updates.skillDiscoveryEnabled !== undefined ||
-      updates.localSkillsPath !== undefined ||
       updates.skillSourcesJson !== undefined ||
       (updates.enabled === true && existing.enabled !== true);
     try {

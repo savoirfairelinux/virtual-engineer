@@ -201,24 +201,13 @@ describe("CopilotAdapter", () => {
       expect(spec.env["COPILOT_REASONING_EFFORT"]).toBeUndefined();
     });
 
-    it("injects SKILL_DISCOVERY=1 when the project enabled skill discovery", () => {
+    it("does not expose removed local skill configuration", () => {
       const adapter = new CopilotAdapter();
       const context = makeContext();
-      context.agentSession.skillDiscoveryEnabled = true;
       const spec = adapter.buildContainerSpec(context, { GITHUB_TOKEN: "ghp_tok" });
 
-      expect(spec.env["SKILL_DISCOVERY"]).toBe("1");
-    });
-
-    it("injects LOCAL_SKILLS_PATH only when skill discovery is enabled", () => {
-      const adapter = new CopilotAdapter();
-      const context = makeContext();
-      context.agentSession.localSkillsPath = "team/skills";
-      expect(adapter.buildContainerSpec(context, { GITHUB_TOKEN: "ghp_tok" }).env["LOCAL_SKILLS_PATH"]).toBeUndefined();
-
-      context.agentSession.skillDiscoveryEnabled = true;
-      const spec = adapter.buildContainerSpec(context, { GITHUB_TOKEN: "ghp_tok" });
-      expect(spec.env["LOCAL_SKILLS_PATH"]).toBe("team/skills");
+      expect(spec.env["LOCAL_SKILLS_PATH"]).toBeUndefined();
+      expect(spec.env["SKILL_DISCOVERY"]).toBeUndefined();
     });
 
     it("does not expose SKILL_SOURCES_JSON to the agent container", () => {
@@ -226,17 +215,6 @@ describe("CopilotAdapter", () => {
       const context = makeContext();
       context.agentSession.skillSourcesJson = "[{\"source\":\"ssh://skills.example.com/org/agent-skills\",\"skills\":[\"skill-a\"]}]";
       expect(adapter.buildContainerSpec(context, { GITHUB_TOKEN: "ghp_tok" }).env["SKILL_SOURCES_JSON"]).toBeUndefined();
-
-      context.agentSession.skillDiscoveryEnabled = true;
-      const spec = adapter.buildContainerSpec(context, { GITHUB_TOKEN: "ghp_tok" });
-      expect(spec.env["SKILL_SOURCES_JSON"]).toBeUndefined();
-    });
-
-    it("omits SKILL_DISCOVERY when the project did not enable skill discovery", () => {
-      const adapter = new CopilotAdapter();
-      const spec = adapter.buildContainerSpec(makeContext(), { GITHUB_TOKEN: "ghp_tok" });
-
-      expect(spec.env["SKILL_DISCOVERY"]).toBeUndefined();
     });
 
     it("injects TICKET_FOOTER_LINE when the project enabled full-URL ticket footers", () => {
@@ -270,41 +248,18 @@ describe("CopilotAdapter", () => {
       };
     }
 
-    it("omits SKILL_DISCOVERY when skillDiscoveryEnabled is not set", () => {
+    it("does not expose removed local skill configuration in review specs", () => {
       const adapter = new CopilotAdapter();
-      const spec = adapter.buildReviewContainerSpec(makeReviewInput(), {
-        GITHUB_TOKEN: "ghp_tok",
-      });
+      const spec = adapter.buildReviewContainerSpec(makeReviewInput(), { GITHUB_TOKEN: "ghp_tok" });
 
+      expect(spec.env["LOCAL_SKILLS_PATH"]).toBeUndefined();
       expect(spec.env["SKILL_DISCOVERY"]).toBeUndefined();
-    });
-
-    it("injects SKILL_DISCOVERY=1 when skillDiscoveryEnabled is true", () => {
-      const adapter = new CopilotAdapter();
-      const input = { ...makeReviewInput(), skillDiscoveryEnabled: true };
-      const spec = adapter.buildReviewContainerSpec(input, { GITHUB_TOKEN: "ghp_tok" });
-
-      expect(spec.env["SKILL_DISCOVERY"]).toBe("1");
-    });
-
-    it("injects LOCAL_SKILLS_PATH in review specs only when skill discovery is enabled", () => {
-      const adapter = new CopilotAdapter();
-      expect(adapter.buildReviewContainerSpec({ ...makeReviewInput(), localSkillsPath: "team/skills" }, {
-        GITHUB_TOKEN: "ghp_tok",
-      }).env["LOCAL_SKILLS_PATH"]).toBeUndefined();
-
-      const spec = adapter.buildReviewContainerSpec({
-        ...makeReviewInput(),
-        skillDiscoveryEnabled: true,
-        localSkillsPath: "team/skills",
-      }, { GITHUB_TOKEN: "ghp_tok" });
-      expect(spec.env["LOCAL_SKILLS_PATH"]).toBe("team/skills");
     });
 
     it("does not expose SKILL_SOURCES_JSON in review specs", () => {
       const adapter = new CopilotAdapter();
       const skillSourcesJson = "[{\"source\":\"ssh://skills.example.com/org/agent-skills\",\"skills\":[\"skill-a\"]}]";
-      const input = { ...makeReviewInput(), skillDiscoveryEnabled: true, skillSourcesJson };
+      const input = { ...makeReviewInput(), skillSourcesJson };
       const spec = adapter.buildReviewContainerSpec(input, { GITHUB_TOKEN: "ghp_tok" });
 
       expect(spec.env["SKILL_SOURCES_JSON"]).toBeUndefined();
