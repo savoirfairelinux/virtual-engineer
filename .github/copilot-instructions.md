@@ -23,14 +23,14 @@ Updates land in the **same commit** as the code change. If a change is purely in
 ## Build & Test (gate every change)
 ```
 npm test            # Vitest — must pass
-npm run typecheck   # zero TS errors (two passes: tsconfig.json + tsconfig.agent.json)
+npm run typecheck   # zero TS errors (backend, agent worker, admin UI + UI tests)
 npm run lint        # zero ESLint errors (src, tests, agent-worker/src)
 npm run dev         # start orchestrator (tsx src/index.ts)
 npm run build:ui    # Vite build of the admin React SPA → dist/admin-ui
 npm run db:migrate  # apply Drizzle migrations
 ```
 
-Helper scripts: `npm run e2e:mock`, `npm run reset:instance`, `npm run build:agent` (agent-worker TS build), `npm run dev:ui` (Vite watch), `npm run typecheck:ui`, `npm run db:generate`, `npm run build` (`build:ui` + `tsc`, used by CI).
+Helper scripts: `npm run e2e:mock`, `npm run reset:instance`, `npm run build:agent` (agent-worker TS build), `npm run dev:ui` (Vite watch), `npm run typecheck:ui` (admin source + jsdom UI tests), `npm run db:generate`, `npm run build` (`build:ui` + `tsc`, used by CI).
 
 Keep the root `@github/copilot-sdk` dependency aligned with `agent-worker/package.json`; `npm run typecheck` compiles `agent-worker/src` from the root install and relies on the same permission-handler result types.
 

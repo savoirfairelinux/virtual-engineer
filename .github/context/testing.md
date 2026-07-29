@@ -2,15 +2,16 @@
 
 ## Frameworks
 
-- **Vitest** (`npm test`, `npm run test:watch`, `npm run test:coverage`) for all unit + integration specs in `tests/unit/`. Vitest is the **only** test framework — there is no Playwright setup and no `tests/e2e/` directory.
+- **Vitest** (`npm test`, `npm run test:watch`, `npm run test:coverage`) for all unit + integration specs in `tests/unit/`. Tests use the Node environment by default; targeted React behavior specs opt into jsdom with `@vitest-environment jsdom` and use Testing Library. Vitest is the **only** test runner — there is no Playwright setup and no `tests/e2e/` directory.
 
 ## Layout
 
 ```text
 tests/
   unit/
+    admin-ui/               # jsdom/server-rendered Configuration SPA specs
     helpers/                # fixtures + builders
-    *.test.ts               # one file per source module + integration scenarios
+    *.test.ts[x]            # one file per source module + integration scenarios
 ```
 
 ### Test families by area
@@ -19,7 +20,7 @@ tests/
 
 | Area | Families (file-name stems) |
 |---|---|
-| Admin routes / server | `adminServer` (+ `.behavior`, `.integration`), `adminImageProxy`, `adminHealthEndpoint`, `adminPluginRoutes`, `adminPromptRoutes`, `adminAgentsRoutes`, `adminAgentsOAuthRoutes`, `adminProjectsRoutes` (+ `.relaunch`), `adminConcurrencyRoutes`, `adminSettingsRoutes`, `adminIntegrationsDiscover`, `adminWebhookSecretRoutes`, `adminCostRoutes`, `adminAuthService`, `adminAuthRoutes`, `adminServerRbac`, `adminPoliciesRoutes`, `adminAudit`, `adminAuditRoutes`, `commonPasswords`, `loginRateLimiter`, `closeAdminServer`, `dashboard` (+ `.configurationTab`), `agentFormModal` |
+| Admin routes / server + UI | `adminServer` (+ `.behavior`, `.integration`), `adminImageProxy`, `adminHealthEndpoint`, `adminPluginRoutes`, `adminPromptRoutes`, `adminAgentsRoutes`, `adminAgentsOAuthRoutes`, `adminProjectsRoutes` (+ `.relaunch`), `adminConcurrencyRoutes`, `adminSettingsRoutes`, `adminIntegrationsDiscover`, `adminWebhookSecretRoutes`, `adminCostRoutes`, `adminAuthService`, `adminAuthRoutes`, `adminServerRbac`, `adminPoliciesRoutes`, `adminAudit`, `adminAuditRoutes`, `commonPasswords`, `loginRateLimiter`, `closeAdminServer`, `dashboard` (+ `.configurationTab`), `agentFormModal`, `apiIdentityBoundary`, `appIdentityHandoff`, `configRouting`, `configPageSurface`, `configNavigation`, `configPermissions`, `identityReset` |
 | Orchestrator / polling | `orchestrator` (+ `.projectMode`, `.webhookEntryPoints`, `.concurrency`), `orchestratorCommitMessage`, `pollingLoop.projects`, `pollingLoop.concurrency`, `pollingLoop.reviewPolling`, `pollingLoop.stalledTasks`, `pollingLoop.updateConfig`, `concurrencyTracker`, `feedbackProcessor`, `reviewProgressService`, `pauseResumeFlow` |
 | State / stores | `taskDomain`, `stateMachine`, `stateStore` (+ `.projects`, `.cost`), `settingsStore`, `migrations.projects`, `integrationStore`, `promptStore`, `userStore`, `auditStore`, `pbacStores` |
 | PBAC / authorization | `policyEngine`, `permissions`, `pbacStores`, `adminPoliciesRoutes`, `adminServerRbac` (project-scoping suite) |
@@ -44,6 +45,8 @@ Experimental Copilot native review coverage spans `agentFormModal`, `adminPlugin
 ## Conventions
 
 - All external I/O is mocked: `fetch`, `node:fs`, `dockerode`, `child_process` SSH helpers, the GitHub Copilot SDK, Git network calls. Never hit real services.
+- React component behavior tests use Testing Library under a per-file jsdom environment. Keep the global Vitest environment as Node so server suites retain their current runtime; pure UI serializers and server-rendered surfaces stay Node tests where possible.
+- `npm run typecheck:ui` runs both `tsconfig.admin-ui.json` (SPA source) and `tsconfig.admin-ui-tests.json` (jsdom/server-rendered Configuration specs under `tests/unit/admin-ui/`). Those tests are excluded from the Node-only root `tsconfig.json` pass; the same directory is also used by ESLint and `Dockerfile.orchestrator`, so adding another Configuration UI test requires no tooling inventory update.
 - MCP submission tests cover the persisted artifact, SDK start/complete correlation, failed-payload error propagation, correction of rejected attempts, and exactly one accepted submission; review permission tests cover the configured and declared VE server identities, raw/CLI-qualified tool names, safe permission telemetry, and rejection of cross-alias or unrelated tools.
 - Mock with `vi.mock("…/foo.js", () => …)` for module-level stubs, or `vi.spyOn(obj, "method")` for instance-level.
 - Gerrit SSH tests mock `child_process.execFile` callbacks with `{ stdout, stderr }` objects because the connectors promisify that API.

@@ -66,6 +66,27 @@ export default [
     },
   },
   {
+    files: ["tests/unit/admin-ui/**/*.test.ts*"],
+    languageOptions: {
+      parser: tsParser,
+      parserOptions: {
+        project: "./tsconfig.admin-ui-tests.json",
+        ecmaVersion: 2022,
+        sourceType: "module",
+      },
+    },
+    plugins: { "@typescript-eslint": tsPlugin, "react-hooks": reactHooksPlugin },
+    rules: {
+      ...tsPlugin.configs.recommended.rules,
+      "react-hooks/rules-of-hooks": "error",
+      "react-hooks/exhaustive-deps": "warn",
+      "@typescript-eslint/no-explicit-any": "off",
+      "@typescript-eslint/no-unused-vars": ["error", { argsIgnorePattern: "^_" }],
+      "@typescript-eslint/explicit-function-return-type": "off",
+      "no-console": "off",
+    },
+  },
+  {
     files: ["agent-worker/src/**/*.ts"],
     languageOptions: {
       parser: tsParser,
