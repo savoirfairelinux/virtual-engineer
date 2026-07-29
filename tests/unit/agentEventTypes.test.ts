@@ -307,18 +307,6 @@ describe("normalizeAgentEvent", () => {
     );
   });
 
-  it("builds a single human-readable message for loaded local skills", () => {
-    const result = normalizeAgentEvent({
-      ...baseEvent,
-      type: "skills.local_loaded",
-      data: {
-        path: "team/skills",
-        skills: ["review-gerrit", "pdf-index"],
-      },
-    });
-
-    expect(result.message).toBe("Loaded local skills from team/skills (skills: review-gerrit, pdf-index)");
-  });
 });
 
 // ── SessionMetrics ──────────────────────────────────────────────────────────

@@ -29,9 +29,9 @@ The `agent_execution` capability has four engines: **Copilot** (`copilotAdapter.
 - Agent containers are built by `src/agents/copilotAdapter.ts`, `src/agents/claudeAdapter.ts`, and `src/agents/aiderAdapter.ts`.
 - `src/agents/containerSpecBuilders.ts` owns the common code-generation/review environment, command, network default, prompt mount, and hardened Docker arguments. Adapters pass only provider-specific auth, model, and runtime environment deltas.
 - Review containers receive `REVIEW_STRATEGY=ve_direct|copilot_native`. In native mode the Copilot adapter omits `COPILOT_MODEL` and `COPILOT_REASONING_EFFORT`; the parent uses `auto` and the CLI owns the sub-agent model, displayed as CLI-managed.
-- Local repository skills use the fixed `.github/skills` convention. There is no project/session path field and no `LOCAL_SKILLS_PATH` or `SKILL_DISCOVERY` environment variable.
+- Repository skill discovery belongs to each provider. There is no project/session path or enable field and no `LOCAL_SKILLS_PATH` or `SKILL_DISCOVERY` environment variable.
 - Project remote skill source configuration is not passed into the agent container. `SKILL_SOURCES_JSON`, `SSH_AUTH_SOCK`, `GIT_SSH_COMMAND`, and private-key paths must stay outside the agent runtime.
-- Copilot sets `enableConfigDiscovery=false` and Claude sets `strictMcpConfig=true`; only the worker-defined `ve-submission` server is configured. Repository `.mcp.json` and `.vscode/mcp.json` files are never loaded.
+- Copilot sets `workingDirectory=/workspace` and `enableConfigDiscovery=true`, allowing the CLI to discover both repository skills and repository MCP configuration through its native coupled discovery behavior. Claude sets `cwd=/workspace`, loads user/project settings and all native skills, and keeps `strictMcpConfig=true`, so only VE-provided MCP servers are accepted by Claude.
 
 ## External Skills
 
@@ -40,13 +40,13 @@ The `agent_execution` capability has four engines: **Copilot** (`copilotAdapter.
 - Skill source parsing and `npx skills` argument construction live in `src/workspace/skillSources.ts`.
 - SSH skill sources use the short-lived helper install container only. The helper may use host `SSH_AUTH_SOCK` or a configured `sshKeyPath`, and `sshKnownHostsPath` enables strict host key checking. Both admin discovery and helper-container preparation require configured SSH files under `/app/secrets` in the orchestrator container or the repository `secrets/` directory during host development. Host validation opens files with no-follow semantics, requires regular files, and checks approved-root containment from the opened descriptor through `/proc/self/fd` or the portable `/dev/fd` fallback; runtime-generated files are accepted only by exact process registration. Credentials and SSH options are not mounted or exported into the agent container.
 
-## Worker Skill Loading
+## Provider-Native Skill Loading
 
-- `agent-worker/src/skills.ts` discovers `.github/skills` once per run, canonicalizes that directory under `/workspace`, accepts only regular immediate-child `SKILL.md` manifests, and emits one `skills.local_loaded` event containing the fixed path and sorted skill list.
-- `agent-worker/src/providers/copilot.ts` always supplies the valid local skills directory to native `skillDirectories` and also loads Copilot global skills from `$HOME/.copilot/skills` when that directory exists.
-- `agent-worker/src/providers/claude.ts` enables user/project settings and all skills for every run. A temporary local plugin manifest exposes `.github/skills` as the plugin's `skills/` directory and is removed when the session ends; review mode permits the native `Skill` tool.
-- `agent-worker/src/providers/aider.ts` passes every discovered local `SKILL.md` as a repeated native `--read` argument in both coding and review mode.
-- Remote skill fetching is intentionally host-side, not worker-side.
+- The worker does not scan repository skill directories, parse local manifests, or inject a repository convention into providers.
+- Copilot uses its working directory with `enableConfigDiscovery=true`; the pinned CLI owns repository skill and MCP configuration discovery. Repository MCP servers remain subject to VE permission handling, but their configuration may be initialized, so repositories must be trusted.
+- Claude uses its repository `cwd`, `settingSources: ['user', 'project']`, and `skills: 'all'`. Review mode permits the native `Skill` tool. `strictMcpConfig=true` remains enabled and is independent of native skill loading.
+- Aider receives the selected Agent Instructions through `--read` but no VE-discovered repository skill manifests. Its normal CLI repository behavior is unchanged.
+- Remote skill fetching is intentionally host-side, not worker-side. Configured sources are installed for Copilot and Claude; Aider rejects remote-source configuration explicitly rather than silently ignoring it.
 
 ## Copilot native review compatibility
 
@@ -67,7 +67,7 @@ The `agent_execution` capability has four engines: **Copilot** (`copilotAdapter.
 - Backends (descriptor `src/plugins/descriptors/aider.ts`, `aiderBackend` selector): `openai` → `OPENAI_API_KEY`; `anthropic` → `ANTHROPIC_API_KEY`; `ollama` → `OLLAMA_API_BASE` (no key); `openrouter` → `OPENROUTER_API_KEY`; `deepseek` → `DEEPSEEK_API_KEY`; `openai_compat` → `OPENAI_API_KEY` + `OPENAI_API_BASE`. The model lives on the `agents` table.
 - The Aider runner (`agent-worker/src/providers/aider.ts`, selected by the worker's provider registry when `AGENT_PROVIDER=aider`) spawns the `aider` CLI as a subprocess against `/workspace` and maps its output onto the shared `__ve_event` / commit / `AgentResult` pipeline. Coding cycles use `--no-stream --git --auto-commits --dirty-commits --commit-prompt <conventional-commits>`. Review cycles omit `--no-stream` and use `--no-git --chat-mode ask --no-auto-commits --no-dirty-commits`; `--no-git` prevents Aider from trying to write `.git/config.lock` in the read-only review workspace.
 - Aider's per-session timeout terminates the CLI, rejects the cycle with an explicit timeout error, removes its temporary prompt directory, and emits `session.error`; signal termination never returns partial output or commits as a successful `AgentResult`.
-- Aider keeps the generated workflow request in `--message-file` and loads permanent Agent Instructions plus each repository-local `SKILL.md` with repeated native `--read` arguments. Its descriptor exposes coding mode, reasoning effort, thinking tokens, repository-map tokens, automatic lint, and automatic tests.
+- Aider keeps the generated workflow request in `--message-file` and loads permanent Agent Instructions with `--read`. VE does not discover or inject repository skill manifests. Its descriptor exposes coding mode, reasoning effort, thinking tokens, repository-map tokens, automatic lint, and automatic tests.
 - Aider declares the `text` submission transport because the pinned CLI has no native MCP client. Review output continues to use the integration-specific delimited JSON contract; coding completion continues to use Aider's normal text plus the worker's commit validation.
 - The Aider CLI is a Python package installed in the agent image via `uv tool install aider-chat` (see `Dockerfile.agent`); the binary is symlinked onto `/usr/local/bin/aider`. Aider's `~/.aider*` cache lands on the `/ve-home` named volume.
 - Connection validation (`aiderConnectionValidator.ts`) and model discovery (`aiderModelsService.ts`) probe the upstream provider's `/models` (or Ollama `/api/tags`); Ollama model ids are prefixed with `ollama_chat/` per Aider's recommendation.

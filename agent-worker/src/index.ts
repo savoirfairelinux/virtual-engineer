@@ -85,7 +85,6 @@ if (REVIEW_STRATEGY === 'copilot_native' && (!REVIEW_MODE || AGENT_PROVIDER !== 
   process.stderr.write('FATAL: copilot_native review strategy requires Copilot review mode.\n');
   process.exit(1);
 }
-const SKILL_DISCOVERY = process.env['SKILL_DISCOVERY'] === '1';
 const USER_PROMPT_FILE = process.env['USER_PROMPT_FILE'] ?? '';
 const SYSTEM_PROMPT = process.env['SYSTEM_PROMPT'] ?? '';
 let REVIEW_OUTPUT_SCHEMA: Record<string, unknown> | undefined;
@@ -171,7 +170,6 @@ async function runAgent(
     timeoutMs,
     mode,
     ...(mode === 'review' ? { reviewStrategy: REVIEW_STRATEGY } : {}),
-    skillDiscovery: SKILL_DISCOVERY,
     ...(mode === 'review' && REVIEW_OUTPUT_SCHEMA !== undefined
       ? { reviewOutputSchema: REVIEW_OUTPUT_SCHEMA }
       : {}),

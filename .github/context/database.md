@@ -12,7 +12,7 @@
 ## Projects Skill Columns
 
 - `projects.skill_sources_json` is a non-null text JSON column with default `[]`. It stores optional project-configured external skill sources installed into the agent home volume before the agent container starts. The empty value is the database/API default; the admin UI's new-project form preloads the SFL `agent-skills` SSH source with `installAll: true`, so saving that untouched form persists a non-empty value.
-- Local repository skills are not project configuration. Every run discovers the fixed `.github/skills` directory; the former `projects.skill_discovery_enabled` and `projects.local_skills_path` columns are removed, and the admin API rejects both deleted request fields.
+- Repository skill discovery is provider-owned and is not project configuration. The former `projects.skill_discovery_enabled` and `projects.local_skills_path` columns are removed, and the admin API rejects both deleted request fields.
 
 ## Project Push Targets
 
