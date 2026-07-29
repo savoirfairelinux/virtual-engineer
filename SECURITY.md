@@ -32,15 +32,15 @@ The host owns all push/review credentials and orchestrates network operations; t
 
 ### Project Skill Discovery
 
-Every coding and review run loads team-defined local skills from the fixed `.github/skills` directory in the cloned repository. The path is not configurable and this behavior cannot be disabled. Remote skill sources are separate optional project configuration (`projects.skill_sources_json`) and are fetched with `npx skills` into `/ve-home` only when configured. Skills are instructions executed by the agent, so a malicious repository or remote skill source could steer the agent. Mitigations:
+Every coding and review run uses the selected agent's native repository behavior. VE does not define a local skill path, scan manifests, or provide a disable switch. Remote skill sources are separate optional project configuration (`projects.skill_sources_json`) and are fetched with `npx skills` into `/ve-home` only when configured. Skills are instructions executed by the agent, so a malicious repository or remote skill source could steer the agent. Mitigations:
 
-- Run Virtual Engineer only against repositories whose local skills and change-review trust boundary you accept.
-- The worker canonicalizes the local skills directory under `/workspace`, rejects symlink escapes, and loads only regular immediate-child `SKILL.md` manifests.
+- Run Virtual Engineer only against repositories whose agent configuration, skills, MCP files, and change-review trust boundary you accept.
 - Remote skill sources default to an empty list and must be configured explicitly; add only sources you trust.
 - Remote skills install globally in the agent home volume (`/ve-home`), not into the cloned repository. This keeps review workspaces read-only.
 - SSH remote skill sources reuse the orchestrator process `SSH_AUTH_SOCK` only when such a source is configured; missing SSH agent access fails the run instead of silently skipping skills. Configured key and known-hosts files must live under `/app/secrets` (container deployment) or the repository `secrets/` directory (host development). Canonical-path validation blocks traversal and symlink escapes before host-file reads.
-- Only skills are loaded — MCP discovery (`enableConfigDiscovery`) stays off, so untrusted `.mcp.json` / `.vscode/mcp.json` files are never honoured.
-- Copilot and Claude are configured with one internal stdio MCP server implemented by VE. It exposes only `ve_submit_review` or `ve_submit_changes`, validates one bounded JSON payload, and writes it to the ephemeral agent-home volume with mode `0600`. It has no network tools, database access, Docker socket, push/review credentials, or task-state operations. This explicit server does not enable repository MCP discovery.
+- Copilot enables native config discovery, which couples repository skill discovery with repository MCP configuration discovery. VE permission handlers still mediate requested tools, but repository MCP servers may be initialized; trust the repository before running it.
+- Claude enables native user/project settings and skills while retaining `strictMcpConfig=true`, so Claude ignores repository MCP server configuration and accepts only VE-provided MCP servers.
+- The internal VE stdio MCP server exposes only `ve_submit_review` or `ve_submit_changes`, validates one bounded JSON payload, and writes it to the ephemeral agent-home volume with mode `0600`. It has no network tools, database access, Docker socket, push/review credentials, or task-state operations.
 - The agent still runs inside the hardened, network-isolated container described above and never holds provider push/review credentials.
 
 ### Admin API Authentication

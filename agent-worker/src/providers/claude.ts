@@ -18,7 +18,6 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { Options } from '@anthropic-ai/claude-agent-sdk';
 import { NETWORK_DISALLOWED_TOOLS } from '../networkGuard.js';
-import { emitLocalSkillsLoaded } from '../skills.js';
 import { emitEvent } from './events.js';
 import type { AgentProviderDefinition, AgentRun, AgentRunOptions } from './types.js';
 import {
@@ -77,7 +76,6 @@ export function buildClaudeQueryOptions(
     agentInstructions,
     cwd,
     mode,
-    skillDiscovery,
     reviewOutputSchema,
   } = options;
   const thinking = nativeOptions.thinkingMode === 'enabled'
@@ -110,12 +108,14 @@ export function buildClaudeQueryOptions(
             'Read',
             'Glob',
             'Grep',
+            'Skill',
             ...(submission !== null ? [`mcp__ve-submission__${submission.toolName}`] : []),
           ],
           allowedTools: [
             'Read',
             'Glob',
             'Grep',
+            'Skill',
             ...(submission !== null ? [`mcp__ve-submission__${submission.toolName}`] : []),
           ],
         }
@@ -124,7 +124,8 @@ export function buildClaudeQueryOptions(
           allowDangerouslySkipPermissions: true,
         }),
     disallowedTools: NETWORK_DISALLOWED_TOOLS,
-    settingSources: skillDiscovery ? ['project'] : [],
+    settingSources: ['user', 'project'],
+    skills: 'all',
     strictMcpConfig: true,
     ...(submission !== null
       ? { mcpServers: { 've-submission': submission.server } }
@@ -142,11 +143,10 @@ export async function runClaudeAgent(
   prompt: string,
   options: AgentRunOptions,
 ): Promise<AgentRun> {
-  const { model, cwd, timeoutMs, mode, skillDiscovery } = options;
+  const { model, cwd, timeoutMs, mode } = options;
   const modelLabel = model || 'cli-default';
 
   emitEvent('session.start', { model: modelLabel, mode, workingDirectory: cwd });
-  if (skillDiscovery) emitLocalSkillsLoaded(cwd);
   process.stderr.write(`starting Claude Agent SDK (mode=${mode}, model=${modelLabel})\n`);
 
   const state = { toolCallCount: 0, toolsByKind: {} as Record<string, number> };
@@ -162,7 +162,8 @@ export async function runClaudeAgent(
     process.stderr.write(`agent working… (${state.toolCallCount} tool call(s) so far)\n`);
   }, 30_000);
 
-  const stream = query({
+  let stream: ReturnType<typeof query>;
+  stream = query({
     prompt,
     options: buildClaudeQueryOptions(options, resolveClaudeNativeOptions(), {
       abortController,

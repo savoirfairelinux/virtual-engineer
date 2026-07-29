@@ -3,7 +3,6 @@ import type { AgentRunOptions } from "../../agent-worker/src/providers/types.js"
 
 const mocks = vi.hoisted(() => ({
   emitEvent: vi.fn(),
-  emitLocalSkillsLoaded: vi.fn(),
   query: vi.fn(),
 }));
 
@@ -13,10 +12,6 @@ vi.mock("../../agent-worker/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs"
 
 vi.mock("../../agent-worker/src/providers/events.js", () => ({
   emitEvent: (...args: unknown[]) => mocks.emitEvent(...args),
-}));
-
-vi.mock("../../agent-worker/src/skills.js", () => ({
-  emitLocalSkillsLoaded: (...args: unknown[]) => mocks.emitLocalSkillsLoaded(...args),
 }));
 
 import {
@@ -80,7 +75,7 @@ describe("runClaudeAgent", () => {
     ]);
     mocks.query.mockReturnValue(stream);
 
-    const run = await runClaudeAgent("Implement the task", makeOptions({ skillDiscovery: true }));
+    const run = await runClaudeAgent("Implement the task", makeOptions());
 
     expect(run).toMatchObject({
       content: "Implemented safely",
@@ -101,10 +96,13 @@ describe("runClaudeAgent", () => {
         },
         permissionMode: "bypassPermissions",
         allowDangerouslySkipPermissions: true,
-        settingSources: ["project"],
+        settingSources: ["user", "project"],
+        skills: "all",
+        strictMcpConfig: true,
       }),
     });
-    expect(mocks.emitLocalSkillsLoaded).toHaveBeenCalledWith("/workspace");
+    expect((mocks.query.mock.calls[0]?.[0] as { options: Record<string, unknown> }).options)
+      .not.toHaveProperty("plugins");
     expect(mocks.emitEvent).toHaveBeenCalledWith("tool.execution_start", {
       name: "Edit",
       input: { file_path: "src/index.ts" },
@@ -146,7 +144,6 @@ describe("runClaudeAgent", () => {
     const run = await runClaudeAgent("Review", makeOptions({
       model: "",
       mode: "review",
-      skillDiscovery: false,
     }));
 
     const queryInput = mocks.query.mock.calls[0]?.[0] as {
@@ -158,9 +155,11 @@ describe("runClaudeAgent", () => {
       preset: "claude_code",
       append: "Follow repository instructions",
     });
-    expect(queryInput.options["settingSources"]).toEqual([]);
+    expect(queryInput.options["settingSources"]).toEqual(["user", "project"]);
+    expect(queryInput.options["skills"]).toBe("all");
+    expect(queryInput.options["tools"]).toEqual(expect.arrayContaining(["Skill"]));
+    expect(queryInput.options["allowedTools"]).toEqual(expect.arrayContaining(["Skill"]));
     expect(run.content).toBe("First finding\nSecond finding");
-    expect(mocks.emitLocalSkillsLoaded).not.toHaveBeenCalled();
     expect(mocks.emitEvent).toHaveBeenCalledWith("session.end", expect.objectContaining({
       mode: "review",
       model: "cli-default",
@@ -244,11 +243,12 @@ describe("Claude worker native profile", () => {
       append: expect.stringContaining("review policy"),
     }));
     expect(options.outputFormat).toBeUndefined();
-    expect(options.tools).toEqual(["Read", "Glob", "Grep", "mcp__ve-submission__ve_submit_review"]);
+    expect(options.tools).toEqual(["Read", "Glob", "Grep", "Skill", "mcp__ve-submission__ve_submit_review"]);
     expect(options.allowedTools).toEqual([
       "Read",
       "Glob",
       "Grep",
+      "Skill",
       "mcp__ve-submission__ve_submit_review",
     ]);
     expect(options.permissionMode).toBe("dontAsk");

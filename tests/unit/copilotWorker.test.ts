@@ -8,7 +8,6 @@ const mocks = vi.hoisted(() => ({
   clientStop: vi.fn(),
   createConnection: vi.fn(),
   emitEvent: vi.fn(),
-  emitLocalSkillsLoaded: vi.fn(),
   spawn: vi.fn(),
   statSync: vi.fn(),
 }));
@@ -40,8 +39,6 @@ vi.mock("../../agent-worker/src/providers/events.js", () => ({
 
 vi.mock("../../agent-worker/src/skills.js", () => ({
   copilotGlobalSkillsDir: () => "/home/ve/.copilot/skills",
-  emitLocalSkillsLoaded: (...args: unknown[]) => mocks.emitLocalSkillsLoaded(...args),
-  localSkillsDir: (cwd: string) => `${cwd}/.github/skills`,
 }));
 
 import {
@@ -123,9 +120,7 @@ describe("runCopilotAgent", () => {
       resolveResponse = resolve;
     }));
     process.env["COPILOT_REASONING_EFFORT"] = "high";
-    const runPromise = runCopilotAgent("Implement the task", makeOptions({
-      skillDiscovery: true,
-    }));
+    const runPromise = runCopilotAgent("Implement the task", makeOptions());
     await vi.waitFor(() => expect(session.on).toHaveBeenCalled());
 
     session.handlers.get("tool.execution_start")?.({
@@ -189,7 +184,7 @@ describe("runCopilotAgent", () => {
     expect(mocks.createSession).toHaveBeenCalledWith(expect.objectContaining({
       model: "gpt-4.1",
       reasoningEffort: "high",
-      skillDirectories: ["/workspace/.github/skills", "/home/ve/.copilot/skills"],
+      enableConfigDiscovery: true,
       systemMessage: {
         mode: "append",
         content: expect.stringMatching(
@@ -198,7 +193,7 @@ describe("runCopilotAgent", () => {
       },
       workingDirectory: "/workspace",
     }));
-    expect(mocks.emitLocalSkillsLoaded).toHaveBeenCalledWith("/workspace");
+    expect(mocks.createSession.mock.calls[0]?.[0]).not.toHaveProperty("skillDirectories");
     expect(mocks.emitEvent).toHaveBeenCalledWith("tool.execution_start", expect.objectContaining({
       name: "edit",
       input: { path: "src/index.ts" },
@@ -225,18 +220,17 @@ describe("runCopilotAgent", () => {
     expect(JSON.stringify(mocks.emitEvent.mock.calls)).not.toContain("must-not-be-logged");
   });
 
-  it("uses review mode without optional reasoning or local skills", async () => {
+  it("uses review mode without optional reasoning or injected skill directories", async () => {
     process.env["COPILOT_REASONING_EFFORT"] = "none";
     const run = await runCopilotAgent("Review the patch", makeOptions({
       mode: "review",
-      skillDiscovery: false,
     }));
 
     expect(session.sendAndWait).toHaveBeenCalledWith({ prompt: "Review the patch" }, 1_000);
     const sessionOptions = mocks.createSession.mock.calls[0]?.[0] as Record<string, unknown>;
     expect(sessionOptions["reasoningEffort"]).toBeUndefined();
-    expect(sessionOptions["skillDirectories"]).toEqual(["/home/ve/.copilot/skills"]);
-    expect(mocks.emitLocalSkillsLoaded).not.toHaveBeenCalled();
+    expect(sessionOptions["skillDirectories"]).toBeUndefined();
+    expect(sessionOptions["enableConfigDiscovery"]).toBe(true);
     expect(mocks.emitEvent).toHaveBeenCalledWith("session.start", expect.objectContaining({
       mode: "review",
     }));
@@ -345,7 +339,7 @@ describe("Copilot worker native profile", () => {
         required: ["vote"],
         additionalProperties: false,
       },
-    }, []);
+    });
 
     expect(config.systemMessage).toEqual({
       mode: "append",
@@ -360,7 +354,7 @@ describe("Copilot worker native profile", () => {
     });
   });
 
-  it("configures only the explicit VE submission MCP server for review", () => {
+  it("configures VE review submission alongside native repository discovery", () => {
     const outputSchema = {
       type: "object",
       properties: { vote: { type: "integer", enum: [-1, 0, 1] } },
@@ -375,9 +369,9 @@ describe("Copilot worker native profile", () => {
       timeoutMs: 1000,
       mode: "review",
       reviewOutputSchema: outputSchema,
-    }, []);
+    });
 
-    expect(config.enableConfigDiscovery).toBe(false);
+    expect(config.enableConfigDiscovery).toBe(true);
     expect(config.systemMessage).toEqual(expect.objectContaining({
       content: expect.stringContaining("ve_submit_review"),
     }));
@@ -389,16 +383,16 @@ describe("Copilot worker native profile", () => {
     });
   });
 
-  it("requires the coding completion tool without loading repository MCP config", () => {
+  it("requires the coding completion tool alongside native repository discovery", () => {
     const config = buildCopilotSessionConfig({
       model: "gpt-5.1-codex",
       agentInstructions: "coding policy",
       cwd: "/workspace",
       timeoutMs: 1000,
       mode: "codegen",
-    }, []);
+    });
 
-    expect(config.enableConfigDiscovery).toBe(false);
+    expect(config.enableConfigDiscovery).toBe(true);
     expect(config.systemMessage).toEqual(expect.objectContaining({
       content: expect.stringContaining("ve_submit_changes"),
     }));
@@ -425,8 +419,8 @@ describe("Copilot worker native profile", () => {
         required: ["vote"],
         additionalProperties: false,
       },
-    }, []);
-    const codeConfig = buildCopilotSessionConfig({ ...common, mode: "codegen" }, []);
+    });
+    const codeConfig = buildCopilotSessionConfig({ ...common, mode: "codegen" });
 
     expect(reviewConfig.onPermissionRequest).toBe(restrictReviewPermissionHandler);
     expect(codeConfig.onPermissionRequest).toBe(restrictNetworkPermissionHandler);

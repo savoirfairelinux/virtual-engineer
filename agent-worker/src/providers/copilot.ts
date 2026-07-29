@@ -18,7 +18,6 @@ import { CopilotClient } from '@github/copilot-sdk';
 import type { CopilotSession, AssistantMessageEvent, SessionConfig } from '@github/copilot-sdk';
 import { spawn } from 'child_process';
 import type { ChildProcess } from 'child_process';
-import { statSync } from 'fs';
 import { createConnection } from 'net';
 import {
   createNativeReviewPermissionHandler,
@@ -27,7 +26,6 @@ import {
 } from '../networkGuard.js';
 import { emitEvent } from './events.js';
 import type { AgentProviderDefinition, AgentRun, AgentRunOptions, ObservedToolCall } from './types.js';
-import { copilotGlobalSkillsDir, emitLocalSkillsLoaded, localSkillsDir } from '../skills.js';
 import {
   CHANGE_SUBMISSION_JSON_SCHEMA,
   appendSubmissionInstruction,
@@ -157,27 +155,8 @@ async function startLocalCliServer(cwd: string): Promise<LocalCliServer> {
   return { child, cliUrl: `127.0.0.1:${port}` };
 }
 
-// ── Unified session runner ────────────────────────────────────────────────────
-export function copilotSkillDirectories(cwd: string, skillDiscovery: boolean): string[] {
-  const skillDirectories: string[] = [];
-  if (skillDiscovery) {
-    emitLocalSkillsLoaded(cwd);
-    skillDirectories.push(localSkillsDir(cwd));
-  }
-  skillDirectories.push(copilotGlobalSkillsDir());
-
-  return skillDirectories.filter((dir) => {
-    try {
-      return statSync(dir).isDirectory();
-    } catch {
-      return false;
-    }
-  });
-}
-
 export function buildCopilotSessionConfig(
   options: AgentRunOptions,
-  skillDirectories: string[],
 ): SessionConfig {
   const { model, agentInstructions, cwd, mode, reviewOutputSchema } = options;
   const reasoningEffort = process.env['COPILOT_REASONING_EFFORT'];
@@ -194,7 +173,6 @@ export function buildCopilotSessionConfig(
     ...(reasoningEffort && reasoningEffort !== 'none'
       ? { reasoningEffort: reasoningEffort as ReasoningEffort }
       : {}),
-    ...(skillDirectories.length > 0 ? { skillDirectories } : {}),
     systemMessage: buildCopilotSystemMessage(
       submission !== null && !nativeReview
         ? appendSubmissionInstruction(agentInstructions, submission.toolName)
@@ -206,7 +184,7 @@ export function buildCopilotSessionConfig(
         : restrictReviewPermissionHandler
       : restrictNetworkPermissionHandler,
     workingDirectory: cwd,
-    enableConfigDiscovery: false,
+    enableConfigDiscovery: true,
     ...(submission !== null
       ? {
           mcpServers: {
@@ -224,15 +202,12 @@ export function buildCopilotSessionConfig(
 async function runSession(
   options: AgentRunOptions,
 ): Promise<{ session: CopilotSession; client: CopilotClient; localCliServer: LocalCliServer }> {
-  const { cwd, skillDiscovery } = options;
+  const { cwd } = options;
   const localCliServer = await startLocalCliServer(cwd);
   const client = new CopilotClient({ cliUrl: localCliServer.cliUrl });
 
-  // Local repo skills remain opt-in; fetched remote skills are already project-approved.
-  const skillDirectories = copilotSkillDirectories(cwd, skillDiscovery === true);
-
   try {
-    const session = await client.createSession(buildCopilotSessionConfig(options, skillDirectories));
+    const session = await client.createSession(buildCopilotSessionConfig(options));
     return { session, client, localCliServer };
   } catch (err) {
     await client.stop().catch(() => { /* ignore */ });

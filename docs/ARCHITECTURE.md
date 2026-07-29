@@ -720,7 +720,7 @@ app_settings                   ← singleton (editable runtime workflow settings
   updated_at
 ```
 
-Repository-local skills are mandatory and discovered from the fixed `.github/skills` directory on every coding and review run. The path is not stored on projects or passed through container configuration.
+Repository behavior is provider-native on every coding and review run: VE does not store a local skill path, scan manifests, or inject repository skills. Copilot enables its coupled repository skill/MCP config discovery, Claude loads native user/project skills with strict MCP configuration, and Aider keeps its normal CLI repository behavior. Optional remote skill sources remain project configuration and are installed into the agent home volume before supported providers start.
 
 ---
 

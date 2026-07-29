@@ -20,8 +20,6 @@ export interface AgentRunOptions {
   mode: 'codegen' | 'review';
   /** Review-only execution strategy selected by the agent configuration. */
   reviewStrategy?: 've_direct' | 'copilot_native';
-  /** When true, surface repo-defined skills to the agent. */
-  skillDiscovery?: boolean;
   /** Review-only integration-owned JSON Schema for native structured output. */
   reviewOutputSchema?: Record<string, unknown>;
 }
