@@ -112,6 +112,16 @@ describe("containerSpecBuilders", () => {
     expect(spec.additionalDockerArgs).toContain(`${expectedPath}:/ve-prompts:ro,Z`);
   });
 
+  it("uses the default commit limit when no override is configured", () => {
+    const spec = buildCodegenContainerSpec(makeContext(), {
+      providerEnv: {},
+      maxRepositoryContextBytes: 123_456,
+      maxCommitsPerCycle: undefined,
+    });
+
+    expect(spec.env["MAX_COMMITS_PER_CYCLE"]).toBe("10");
+  });
+
   it("builds the common review contract with isolated security args", () => {
     const first = buildReviewContainerSpec(makeReviewInput(), {
       providerEnv: { AGENT_PROVIDER: "test" },
@@ -138,6 +148,16 @@ describe("containerSpecBuilders", () => {
 
     first.additionalDockerArgs?.push("unsafe-mutation");
     expect(second.additionalDockerArgs).toEqual(SECURITY_DOCKER_ARGS);
+  });
+
+  it("uses the default image and network for review containers", () => {
+    const input = makeReviewInput();
+    delete input.containerImage;
+
+    const spec = buildReviewContainerSpec(input, { providerEnv: {} });
+
+    expect(spec.image).toBe("virtual-engineer-workspace:latest");
+    expect(spec.networkMode).toBe("virtual-engineer_ve-agent-net");
   });
 
   it("keeps common code-generation and review contracts aligned across providers", () => {
