@@ -451,7 +451,18 @@ function scanCodeWorkspace(file: WorkspaceManifestFile, result: MutableScanResul
     const name = asString(folder?.["name"]);
     if (folderPath === ".") continue;
     const cloneUrl = uri && isAbsoluteRepositoryUrl(uri) ? uri : null;
-    const localPath = folderPath ?? name ?? (cloneUrl ? path.posix.basename(new URL(cloneUrl).pathname).replace(/\.git$/i, "") : null);
+    let derivedLocalPath: string | null = null;
+    if (cloneUrl) {
+      try {
+        const remotePath = cloneUrl.includes("://")
+          ? new URL(cloneUrl).pathname
+          : cloneUrl.split(":", 2)[1] ?? "";
+        derivedLocalPath = path.posix.basename(remotePath).replace(/\.git$/i, "");
+      } catch {
+        derivedLocalPath = null;
+      }
+    }
+    const localPath = folderPath ?? name ?? derivedLocalPath;
     if (!localPath) continue;
     addRepository(result, file.path, {
       cloneUrl,
