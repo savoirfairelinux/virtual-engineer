@@ -6,6 +6,7 @@ export interface EffectiveWorkflowSettings {
   pollingIntervalMs: number;
   maxAgentCycles: number;
   maxRetryAttempts: number;
+  agentTimeoutMs: number;
 }
 
 /**
@@ -67,7 +68,7 @@ export function registerSettingsRoutes(router: Router, deps: SettingsRouteDeps):
     }
 
     const patch: WorkflowSettingsPatch = {};
-    const fields: (keyof EffectiveWorkflowSettings)[] = ["pollingIntervalMs", "maxAgentCycles", "maxRetryAttempts"];
+    const fields: (keyof EffectiveWorkflowSettings)[] = ["pollingIntervalMs", "maxAgentCycles", "maxRetryAttempts", "agentTimeoutMs"];
     for (const field of fields) {
       if (body[field] === undefined) continue;
       const parsed = parseSetting(body[field], field);

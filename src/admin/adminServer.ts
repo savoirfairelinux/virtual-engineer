@@ -75,6 +75,7 @@ export interface AdminRuntimeConfig {
   maxAgentCycles: number;
   maxRetryAttempts: number;
   pollingIntervalMs: number;
+  agentTimeoutMs?: number | undefined;
   adminAuthSecret?: string | undefined;
   /** Mirror of `ADMIN_TRUST_PROXY`. When true, IP is read from X-Forwarded-For. */
   adminTrustProxy?: boolean | undefined;
@@ -364,6 +365,7 @@ function buildApiRouter(dependencies: AdminServerDependencies, authRuntime: Admi
         maxAgentCycles: dependencies.config.maxAgentCycles,
         maxRetryAttempts: dependencies.config.maxRetryAttempts,
         pollingIntervalMs: dependencies.config.pollingIntervalMs,
+        agentTimeoutMs: dependencies.config.agentTimeoutMs,
       },
     });
   }, { permission: "overview.read" });

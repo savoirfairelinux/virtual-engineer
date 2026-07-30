@@ -263,6 +263,7 @@ async function importRuntime(
       isRunning: () => running,
       getIntervals: () => ({ intervalMs: 30_000 }),
       updateConnectors: vi.fn(),
+      updateConfig: vi.fn(),
       resetBackoff: vi.fn(),
     };
   });
@@ -341,11 +342,12 @@ async function importRuntime(
     upsertPrompt: vi.fn(async (id: string, content: string) => ({ id, label: id, content, promptType: "instructions" as const, updatedAt: new Date() })),
     createPrompt: vi.fn(async (label: string, content: string, promptType: "system" | "instructions") => ({ id: label, label, content, promptType, updatedAt: new Date() })),
     deletePrompt: vi.fn(async (_id: string) => {}),
-    getAppSettings: vi.fn(async () => ({ pollingIntervalMs: null, maxAgentCycles: null, maxRetryAttempts: null })),
-    updateAppSettings: vi.fn(async (patch: { pollingIntervalMs?: number | null; maxAgentCycles?: number | null; maxRetryAttempts?: number | null }) => ({
+    getAppSettings: vi.fn(async () => ({ pollingIntervalMs: null, maxAgentCycles: null, maxRetryAttempts: null, agentTimeoutMs: null })),
+    updateAppSettings: vi.fn(async (patch: { pollingIntervalMs?: number | null; maxAgentCycles?: number | null; maxRetryAttempts?: number | null; agentTimeoutMs?: number | null }) => ({
       pollingIntervalMs: patch.pollingIntervalMs ?? null,
       maxAgentCycles: patch.maxAgentCycles ?? null,
       maxRetryAttempts: patch.maxRetryAttempts ?? null,
+      agentTimeoutMs: patch.agentTimeoutMs ?? null,
     })),
   };
   const createAdminServer = vi.fn(() => ({
@@ -854,6 +856,24 @@ describe("runtime bootstrap provider selection", () => {
 
     const after = providerSupplier();
     expect(after.find((provider) => provider.id === "redmine-db")?.details[0]).toBe("http://db-redmine.updated");
+  });
+
+  it("hot-applies the saved agent timeout to the orchestrator", async () => {
+    const runtime = await importRuntime({}, {}, { configOverrides: { adminApiEnabled: true } });
+    const firstCreateAdminServerCall = runtime.createAdminServer.mock.calls[0] as unknown[] | undefined;
+    const adminDeps = firstCreateAdminServerCall?.[0] as {
+      settings: { update(patch: { agentTimeoutMs: number }): Promise<unknown> };
+    } | undefined;
+    const orchestratorInstance = runtime.Orchestrator.mock.results[0]?.value as {
+      updateRuntime: ReturnType<typeof vi.fn>;
+    };
+
+    await adminDeps?.settings.update({ agentTimeoutMs: 900000 });
+
+    expect(runtime.stateStore.updateAppSettings).toHaveBeenCalledWith({ agentTimeoutMs: 900000 });
+    expect(orchestratorInstance.updateRuntime).toHaveBeenCalledWith({
+      config: expect.objectContaining({ agentTimeoutMs: 900000 }),
+    });
   });
 
   it("does not start the polling loop when no runnable project exists", async () => {
