@@ -228,6 +228,43 @@ describe("createAdminServer", () => {
     }
   });
 
+  it("returns the default agent timeout from the config endpoint when unspecified", async () => {
+    const server = createAdminServer({
+      stateStore: makeStateStore(),
+      config: {
+        nodeEnv: "test",
+        logLevel: "info",
+        maxAgentCycles: 3,
+        maxRetryAttempts: 5,
+        pollingIntervalMs: 30_000,
+      },
+      polling: {
+        isRunning: () => true,
+        getIntervals: () => ({ intervalMs: 30_000 }),
+      },
+      providers: providerSummaries,
+    });
+
+    try {
+      const baseUrl = await listen(server);
+      const response = await fetch(`${baseUrl}/api/admin/config`);
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toEqual({
+        config: {
+          nodeEnv: "test",
+          logLevel: "info",
+          maxAgentCycles: 3,
+          maxRetryAttempts: 5,
+          pollingIntervalMs: 30_000,
+          agentTimeoutMs: 3_600_000,
+        },
+      });
+    } finally {
+      await closeServer(server);
+    }
+  });
+
   it("lists tasks and returns task details, cycles, transitions, and providers", async () => {
     const task = makeTask();
     const server = createAdminServer({
