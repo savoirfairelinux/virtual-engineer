@@ -58,7 +58,7 @@ Important behaviors:
 - an agent-reported failed cycle records `RETRY_CYCLE`, then destroys its workspace and releases its concurrency slot before invoking the next cycle; this prevents same-task container/volume-name collisions and nested slot consumption
 - each new code-generation attempt claims `AGENT_RUNNING`, then atomically allocates and persists its explicit `running` cycle through `startAgentCycle`; preparation/push exceptions and task cancellation replace that same row with a failed result carrying the error reason
 - every workspace attempt receives a unique Docker container + named-volume name; stale cleanup from an earlier attempt cannot collide with a retry
-- `AGENT_TIMEOUT_MS` aborts the in-flight agent container process and waits for its termination before workspace/volume cleanup begins
+- The DB-backed Agent Timeout setting (seeded by `AGENT_TIMEOUT_MS`) aborts the in-flight agent container process and waits for its termination before workspace/volume cleanup begins
 - **review-system identity is per-push-target**: each `VcsConnector` implementation declares `reviewSystemLabel` (`"gerrit"`, `"gitlab"`, or `"github"`) and `buildPushSpec(baseBranch, taskId)` — mixed Gerrit+GitLab+GitHub projects are fully supported; the orchestrator never inspects integration type strings
 - **SSH host identity is per-push-target**: workspace preparation enriches every target with its connector's `sshKnownHostsPath`, so mixed-host projects verify each clone against the correct host-key file instead of reusing the root repository's file
 - **ticket lifecycle transitions** (`transitionToInProgress`, `transitionToInReview`) are delegated to the `TicketConnector` implementation rather than driven from `OrchestratorConfig` status ID fields
@@ -125,7 +125,7 @@ The module depends only on:
 
 - `MAX_AGENT_CYCLES`
 - `MAX_RETRY_ATTEMPTS`
-- `AGENT_TIMEOUT_MS`
+- `AGENT_TIMEOUT_MS` (first-run default; `app_settings.agent_timeout_ms` overrides it at runtime)
 - `gitAuthorName` / `gitAuthorEmail` (resolved from the active review integration's config at startup)
 - `agentContainerImage`
 

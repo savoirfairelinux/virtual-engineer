@@ -6,6 +6,7 @@ export interface EffectiveWorkflowSettings {
   pollingIntervalMs: number;
   maxAgentCycles: number;
   maxRetryAttempts: number;
+  agentTimeoutMs: number;
 }
 
 /**
@@ -27,9 +28,9 @@ export interface SettingsRouteDeps {
 
 /**
  * Parse a settings value into a positive integer or `null` (which clears the
- * override), otherwise return an error message. `pollingIntervalMs` must also
- * be a whole number of seconds (multiple of 1000ms) to stay consistent with the
- * seconds-based UI editor.
+ * override), otherwise return an error message. `pollingIntervalMs` must be a
+ * whole number of seconds and `agentTimeoutMs` a whole number of minutes to
+ * stay consistent with the UI editors.
  */
 function parseSetting(value: unknown, field: keyof EffectiveWorkflowSettings): number | null | { error: string } {
   if (value === null) return null;
@@ -41,6 +42,9 @@ function parseSetting(value: unknown, field: keyof EffectiveWorkflowSettings): n
   }
   if (field === "pollingIntervalMs" && value % 1000 !== 0) {
     return { error: `${field} must be a multiple of 1000 (whole seconds)` };
+  }
+  if (field === "agentTimeoutMs" && value % 60_000 !== 0) {
+    return { error: `${field} must be a multiple of 60000 (whole minutes)` };
   }
   return value;
 }
@@ -67,7 +71,7 @@ export function registerSettingsRoutes(router: Router, deps: SettingsRouteDeps):
     }
 
     const patch: WorkflowSettingsPatch = {};
-    const fields: (keyof EffectiveWorkflowSettings)[] = ["pollingIntervalMs", "maxAgentCycles", "maxRetryAttempts"];
+    const fields: (keyof EffectiveWorkflowSettings)[] = ["pollingIntervalMs", "maxAgentCycles", "maxRetryAttempts", "agentTimeoutMs"];
     for (const field of fields) {
       if (body[field] === undefined) continue;
       const parsed = parseSetting(body[field], field);

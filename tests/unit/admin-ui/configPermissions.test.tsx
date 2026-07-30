@@ -66,6 +66,7 @@ const baseProps: ConfigViewData = {
     pollingIntervalMs: 30000,
     maxAgentCycles: 3,
     maxRetryAttempts: 5,
+    agentTimeoutMs: 3600000,
   },
   status: null,
   onRefresh: vi.fn(),

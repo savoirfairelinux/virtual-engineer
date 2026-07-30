@@ -272,6 +272,7 @@ export interface ApiConfig {
     maxAgentCycles: number;
     maxRetryAttempts: number;
     pollingIntervalMs: number;
+    agentTimeoutMs: number;
   };
 }
 

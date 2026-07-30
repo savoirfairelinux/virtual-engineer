@@ -26,7 +26,7 @@ The admin server is a small HTTP service (default `127.0.0.1:3100`) that serves 
 | `adminProjectsRoutes.ts` | `/api/admin/projects/*` CRUD, repository-to-integration resolution, ticket/review target validation, remote skill-source validation/serialization, atomic push-target replacement, coding controls for Gerrit topic/ticket trailers/review links/CI retries, and automatic relaunch of FAILED/REVIEW_FAILED tasks on (re)configuration or re-enable. |
 | `adminConcurrencyRoutes.ts` | `GET /api/admin/concurrency` — read-only live in-memory run-slot snapshot (`{ global, perProject, perAgent }`); 501 when no tracker is wired. |
 | `adminPoliciesRoutes.ts` | PBAC management: `/api/admin/permissions` catalog, `/api/admin/groups` (+members), `/api/admin/policies` (+`/rules`, `/bindings`). All gated by `policy.manage`. |
-| `adminSettingsRoutes.ts` | `GET/PUT /api/admin/settings` — read/update editable runtime workflow settings (polling interval, max agent cycles, max retry attempts). Validates positive integers; delegates persistence + hot-apply to the `SettingsController` wired in `src/index.ts`. |
+| `adminSettingsRoutes.ts` | `GET/PUT /api/admin/settings` — read/update editable runtime workflow settings (polling interval, max agent cycles, max retry attempts, agent timeout). Validates positive integers; polling intervals must be whole seconds and agent timeouts whole minutes. Delegates persistence + hot-apply to the `SettingsController` wired in `src/index.ts`. |
 | `adminOverviewRoutes.ts` | `/api/admin/overview` dashboard stats/throughput/votes/runtime + `/api/admin/cost-summary` aggregated AI cost (per project & instance total, optional `?days=` period) + `/api/admin/model-usage` model distribution by run count & cost (global + per project, optional `?days=<n>` period filter). |
 | `adminWebhookRoutes.ts` | Webhook management: secret rotation, allowed-IPs, webhook-info. |
 | `dashboard.ts` | Serves the HTML shell for the Vite-built React SPA: reads the Vite manifest from `dist/admin-ui/.vite/manifest.json`, injects the hashed JS/CSS asset links plus a `window.__VE_ADMIN_BOOTSTRAP__` payload, and falls back to "Admin UI not built — run npm run build:ui" when the build output is missing. |
@@ -74,7 +74,7 @@ All `/api/admin/*` routes are declared in `buildApiRouter()` and its per-area ro
 | Agents | `adminAgentsRoutes.ts` | CRUD `/agents` (delete → 409 if referenced), `enable`/`disable` | `agent.read` / `agent.write` / `agent.delete` / `agent.operate` |
 | Projects | `adminProjectsRoutes.ts` | CRUD `/projects`, `enable`/`disable`, `/skill-sources/list`, `/:id/skill-sources/list` | `project.read` / `project.write` / `project.delete` / `project.operate` (scoped, list-filtered) |
 | Concurrency | `adminConcurrencyRoutes.ts` | `GET /concurrency` (live `{ global, perProject, perAgent }` snapshot; read-only) | `concurrency.read` |
-| Settings | `adminSettingsRoutes.ts` | `GET`/`PUT /settings` (`pollingIntervalMs`, `maxAgentCycles`, `maxRetryAttempts`; hot-applied) | `system.read` / `system.write` |
+| Settings | `adminSettingsRoutes.ts` | `GET`/`PUT /settings` (`pollingIntervalMs`, `maxAgentCycles`, `maxRetryAttempts`, `agentTimeoutMs`; hot-applied) | `system.read` / `system.write` |
 | PBAC | `adminPoliciesRoutes.ts` | `/permissions`, `/groups` (+members), `/policies` (+`/rules`, `/bindings`) | `policy.manage` |
 
 **Non-obvious per-route semantics** (not recoverable without reading source):

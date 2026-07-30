@@ -369,6 +369,7 @@ export class SqliteStateStore {
         polling_interval_ms INTEGER,
         max_agent_cycles    INTEGER,
         max_retry_attempts  INTEGER,
+        agent_timeout_ms    INTEGER,
         updated_at          INTEGER NOT NULL
       );
 
@@ -494,6 +495,7 @@ export class SqliteStateStore {
     this.ensureColumn("projects", "react_to_ci_failures", "INTEGER NOT NULL DEFAULT 0");
     this.ensureColumn("project_push_targets", "reviewer_emails", "TEXT NOT NULL DEFAULT '[]'");
     this.ensureColumn("prompts", "prompt_type", "TEXT NOT NULL DEFAULT 'instructions'");
+    this.ensureColumn("app_settings", "agent_timeout_ms", "INTEGER");
 
     this.raw.exec(`
       UPDATE prompts SET prompt_type = 'instructions'
