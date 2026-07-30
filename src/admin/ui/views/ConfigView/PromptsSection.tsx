@@ -17,7 +17,7 @@ const BUILTIN_PROMPT_IDS = new Set([
   "instructions_review",
 ]);
 
-function formatPromptType(promptType: string): string {
+function formatPromptType(promptType: ApiPrompt["promptType"]): string {
   return promptType === "system" ? "System Prompt" : "Instructions Prompt";
 }
 

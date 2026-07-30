@@ -33,6 +33,7 @@ function humanizeFieldPath(path: ReadonlyArray<string | number>): string {
     maxConcurrent: "Max concurrent",
     systemPromptId: "System Prompt",
     instructionsPromptId: "Instructions Prompt",
+    feedbackInstructionsPromptId: "Feedback Instructions Prompt",
     postCloneScript: "Post-clone script",
     agentOverrideJson: "Agent override (JSON)",
     enabled: "Enabled",
