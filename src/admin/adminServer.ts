@@ -365,7 +365,7 @@ function buildApiRouter(dependencies: AdminServerDependencies, authRuntime: Admi
         maxAgentCycles: dependencies.config.maxAgentCycles,
         maxRetryAttempts: dependencies.config.maxRetryAttempts,
         pollingIntervalMs: dependencies.config.pollingIntervalMs,
-        agentTimeoutMs: dependencies.config.agentTimeoutMs,
+        agentTimeoutMs: dependencies.config.agentTimeoutMs ?? 3_600_000,
       },
     });
   }, { permission: "overview.read" });

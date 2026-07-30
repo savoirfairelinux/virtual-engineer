@@ -44,6 +44,7 @@ describe("Configuration navigation guard", () => {
             pollingIntervalMs: 30000,
             maxAgentCycles: 3,
             maxRetryAttempts: 5,
+            agentTimeoutMs: 3600000,
           }}
           status={null}
           onRefresh={vi.fn()}
@@ -118,6 +119,7 @@ describe("Configuration navigation guard", () => {
             pollingIntervalMs: 30000,
             maxAgentCycles: 3,
             maxRetryAttempts: 5,
+            agentTimeoutMs: 3600000,
           }}
           status={null}
           onRefresh={vi.fn()}
@@ -158,6 +160,7 @@ describe("Configuration navigation guard", () => {
             pollingIntervalMs: 30000,
             maxAgentCycles: 3,
             maxRetryAttempts: 5,
+            agentTimeoutMs: 3600000,
           }}
           status={null}
           onRefresh={onRefresh}
@@ -277,6 +280,7 @@ describe("Configuration navigation guard", () => {
             pollingIntervalMs: 30000,
             maxAgentCycles: 3,
             maxRetryAttempts: 5,
+            agentTimeoutMs: 3600000,
           }}
           status={null}
           onRefresh={vi.fn()}
