@@ -104,8 +104,10 @@ src/
                         # vcsFactory, async gitRunner/nodeGitRunner, branchNaming
   webhooks/             # webhook server + handlers/{redmine,gitlab-issue,
                         # gitlab-merge-request,github-pull-request}
-  workspace/            # dockerVolume (named-volume lifecycle + execInVolume)
-                        # workspaceRunner (clone + container lifecycle)
+  workspace/            # dockerVolume (named-volume lifecycle + execInVolume),
+                        # workspaceRunner (clone + container lifecycle),
+                        # repositoryManifestAccess + workspaceManifestScanner,
+                        # workspaceScanService (provider scan orchestration)
 agent-worker/src/       # TS worker inside the agent container: index.ts
                         # (provider-agnostic orchestrator), providers/
                         # {types,events,copilot,claude,aider,registry}.ts (complete

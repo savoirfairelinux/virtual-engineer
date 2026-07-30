@@ -5,6 +5,7 @@ import { createAdminServer, type AdminServerDependencies } from "../../src/admin
 import { Router } from "../../src/admin/router.js";
 import { registerProjectRoutes, type SkillSource } from "../../src/admin/adminProjectsRoutes.js";
 import { makeProjectId, type AgentRecord, type AgentType } from "../../src/interfaces.js";
+import { registerBuiltinPlugins } from "../../src/plugins/init.js";
 import { tempDatabasePath } from "./helpers/tempDatabase.js";
 
 function tempDbPath(): string {
@@ -87,6 +88,7 @@ describe("Admin API — Project routes (/api/admin/projects)", () => {
   let server: Server;
 
   beforeEach(async () => {
+    registerBuiltinPlugins();
     store = await SqliteStateStore.create(tempDbPath());
     const deps = makeDeps(store);
     server = createAdminServer(deps);
@@ -104,11 +106,273 @@ describe("Admin API — Project routes (/api/admin/projects)", () => {
 
     const scoped = router.match("POST", "/api/admin/projects/project-1/skill-sources/list");
     const global = router.match("POST", "/api/admin/projects/skill-sources/list");
+    const resolver = router.match("POST", "/api/admin/projects/resolve-repositories");
+    const scanner = router.match("POST", "/api/admin/projects/scan-push-targets");
 
     expect(scoped?.meta).toMatchObject({ permission: "project.write", resourceParam: "id" });
     expect(scoped?.params["id"]).toBe("project-1");
     expect(global?.meta).toMatchObject({ permission: "project.write" });
     expect(global?.meta.resourceParam).toBeUndefined();
+    expect(resolver?.meta).toMatchObject({ permission: "integration.read" });
+    expect(scanner?.meta).toMatchObject({ permission: "integration.read" });
+  });
+
+  it("POST /scan-push-targets reads manifests and resolves detected repositories", async () => {
+    await store.upsertIntegration({
+      id: "gitlab-1",
+      provider: "gitlab",
+      name: "Primary GitLab",
+      configJson: JSON.stringify({
+        baseUrl: "https://gitlab.test",
+        gitlabMode: "self-hosted",
+        authMode: "pat",
+        token: "test-token",
+      }),
+      enabled: true,
+    });
+    await store.setIntegrationDiscoveredResources("gitlab-1", JSON.stringify({
+      discoveredAt: new Date().toISOString(),
+      repositories: [
+        { key: "platform/root", name: "root", cloneUrlHttp: "https://gitlab.test/platform/root.git", defaultBranch: "main" },
+        { key: "platform/runtime", name: "runtime", cloneUrlHttp: "https://gitlab.test/platform/runtime.git", defaultBranch: "stable" },
+      ],
+    }));
+    const realFetch = globalThis.fetch.bind(globalThis);
+    const providerFetch = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify([
+        { path: ".gitmodules", type: "blob" },
+        { path: "README.md", type: "blob" },
+      ]), { status: 200, headers: { "content-type": "application/json" } }))
+      .mockResolvedValueOnce(new Response(`
+[submodule "runtime"]
+  path = libs/runtime
+  url = ../runtime.git
+  branch = stable
+`, { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([]), { status: 200, headers: { "content-type": "application/json" } }));
+    vi.stubGlobal("fetch", (input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      return url.startsWith("http://127.0.0.1:")
+        ? realFetch(input as Parameters<typeof fetch>[0], init)
+        : providerFetch(input, init);
+    });
+
+    try {
+      const result = await rest(server, "/api/admin/projects/scan-push-targets", {
+        method: "POST",
+        body: {
+          integrationId: "gitlab-1",
+          repoKey: "platform/root",
+          cloneUrl: "https://gitlab.test/platform/root.git",
+          revision: "main",
+        },
+      });
+
+      expect(result.status).toBe(200);
+      expect(result.body?.["manifestFiles"]).toEqual([".gitmodules"]);
+      expect(result.body?.["repositories"]).toEqual([{
+        cloneUrl: "https://gitlab.test/platform/runtime.git",
+        localPath: "libs/runtime",
+        revision: "stable",
+        relation: "gitlink",
+        sourcePath: ".gitmodules",
+        resolution: {
+          cloneUrl: "https://gitlab.test/platform/runtime.git",
+          localPath: "libs/runtime",
+          status: "matched",
+          match: {
+            integrationId: "gitlab-1",
+            integrationName: "Primary GitLab",
+            provider: "gitlab",
+            repoKey: "platform/runtime",
+            enabled: true,
+          },
+          candidates: [],
+        },
+      }]);
+      expect(providerFetch).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("POST /scan-push-targets follows matched gitlinks to discover Jami contrib dependencies", async () => {
+    await store.upsertIntegration({
+      id: "gitlab-1",
+      provider: "gitlab",
+      name: "Jami GitLab",
+      configJson: JSON.stringify({ baseUrl: "https://git.jami.net", gitlabMode: "self-hosted", authMode: "pat", token: "test-token" }),
+      enabled: true,
+    });
+    await store.upsertIntegration({
+      id: "github-1",
+      provider: "github",
+      name: "GitHub",
+      configJson: JSON.stringify({ mode: "github.com", token: "test-token" }),
+      enabled: true,
+    });
+    await store.setIntegrationDiscoveredResources("gitlab-1", JSON.stringify({
+      discoveredAt: new Date().toISOString(),
+      repositories: [
+        { key: "savoirfairelinux/jami-client-qt", name: "jami-client-qt", cloneUrlHttp: "https://git.jami.net/savoirfairelinux/jami-client-qt.git" },
+        { key: "savoirfairelinux/jami-daemon", name: "jami-daemon", cloneUrlHttp: "https://git.jami.net/savoirfairelinux/jami-daemon.git" },
+      ],
+    }));
+    await store.setIntegrationDiscoveredResources("github-1", JSON.stringify({
+      discoveredAt: new Date().toISOString(),
+      repositories: [
+        { key: "savoirfairelinux/opendht", name: "opendht", cloneUrlHttp: "https://github.com/savoirfairelinux/opendht.git" },
+        { key: "google/googletest", name: "googletest", cloneUrlHttp: "https://github.com/google/googletest.git" },
+      ],
+    }));
+    const realFetch = globalThis.fetch.bind(globalThis);
+    const providerFetch = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify([{ path: ".gitmodules", type: "blob" }]), { status: 200, headers: { "content-type": "application/json" } }))
+      .mockResolvedValueOnce(new Response(`
+[submodule "daemon"]
+  path = daemon
+  url = ../jami-daemon.git
+`, { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([
+        { path: "contrib/src/opendht/package.json", type: "blob" },
+        { path: "tests/CMakeLists.txt", type: "blob" },
+      ]), { status: 200, headers: { "content-type": "application/json" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        name: "opendht",
+        version: "4.2.0",
+        url: "https://github.com/savoirfairelinux/opendht/archive/v__VERSION__.tar.gz",
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(`
+FetchContent_Declare(googletest
+  URL https://github.com/google/googletest/archive/refs/tags/release-1.11.0.zip
+)
+`, { status: 200 }));
+    vi.stubGlobal("fetch", (input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      return url.startsWith("http://127.0.0.1:")
+        ? realFetch(input as Parameters<typeof fetch>[0], init)
+        : providerFetch(input, init);
+    });
+
+    try {
+      const result = await rest(server, "/api/admin/projects/scan-push-targets", {
+        method: "POST",
+        body: {
+          integrationId: "gitlab-1",
+          repoKey: "savoirfairelinux/jami-client-qt",
+          cloneUrl: "https://git.jami.net/savoirfairelinux/jami-client-qt.git",
+          revision: "main",
+        },
+      });
+
+      expect(result.status).toBe(200);
+      expect(result.body?.["manifestFiles"]).toEqual([
+        ".gitmodules",
+        "daemon/contrib/src/opendht/package.json",
+        "daemon/tests/CMakeLists.txt",
+      ]);
+      expect(result.body?.["repositories"]).toEqual(expect.arrayContaining([
+        expect.objectContaining({ localPath: "daemon", sourcePath: ".gitmodules" }),
+        expect.objectContaining({
+          cloneUrl: "https://github.com/savoirfairelinux/opendht.git",
+          localPath: "daemon/.ve-deps/opendht",
+          sourcePath: "daemon/contrib/src/opendht/package.json",
+          resolution: expect.objectContaining({ status: "matched" }),
+        }),
+        expect.objectContaining({
+          cloneUrl: "https://github.com/google/googletest.git",
+          localPath: "daemon/.ve-deps/googletest",
+          sourcePath: "daemon/tests/CMakeLists.txt",
+          resolution: expect.objectContaining({ status: "matched" }),
+        }),
+      ]));
+      expect(providerFetch).toHaveBeenCalledTimes(5);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("POST /resolve-repositories matches an existing integration by canonical clone URL", async () => {
+    await seedIntegration(store, "gerrit-1", "gerrit");
+    await store.setIntegrationDiscoveredResources("gerrit-1", JSON.stringify({
+      discoveredAt: new Date().toISOString(),
+      repositories: [{
+        key: "platform/runtime",
+        name: "runtime",
+        cloneUrlSsh: "ssh://git@gerrit.example.com:29418/platform/runtime.git",
+      }],
+    }));
+
+    const result = await rest(server, "/api/admin/projects/resolve-repositories", {
+      method: "POST",
+      body: {
+        repositories: [{
+          cloneUrl: "https://gerrit.example.com/platform/runtime",
+          localPath: "runtime",
+        }],
+      },
+    });
+
+    expect(result.status).toBe(200);
+    expect(result.body?.["repositories"]).toEqual([{
+      cloneUrl: "https://gerrit.example.com/platform/runtime",
+      localPath: "runtime",
+      status: "matched",
+      match: {
+        integrationId: "gerrit-1",
+        integrationName: "gerrit-1",
+        provider: "gerrit",
+        repoKey: "platform/runtime",
+        enabled: true,
+      },
+      candidates: [],
+    }]);
+  });
+
+  it("POST /resolve-repositories reports ambiguous matches without choosing an integration", async () => {
+    for (const integrationId of ["gerrit-a", "gerrit-b"]) {
+      await seedIntegration(store, integrationId, "gerrit");
+      await store.setIntegrationDiscoveredResources(integrationId, JSON.stringify({
+        discoveredAt: new Date().toISOString(),
+        repositories: [{
+          key: "platform/runtime",
+          name: "runtime",
+          cloneUrlSsh: "git@gerrit.example.com:platform/runtime.git",
+        }],
+      }));
+    }
+
+    const result = await rest(server, "/api/admin/projects/resolve-repositories", {
+      method: "POST",
+      body: { repositories: [{ cloneUrl: "https://gerrit.example.com/platform/runtime.git" }] },
+    });
+
+    expect(result.status).toBe(200);
+    const repositories = result.body?.["repositories"] as Array<Record<string, unknown>>;
+    expect(repositories[0]?.["status"]).toBe("ambiguous");
+    expect(repositories[0]?.["match"]).toBeNull();
+    expect(repositories[0]?.["candidates"]).toEqual([
+      expect.objectContaining({ integrationId: "gerrit-a", repoKey: "platform/runtime" }),
+      expect.objectContaining({ integrationId: "gerrit-b", repoKey: "platform/runtime" }),
+    ]);
+  });
+
+  it("POST /resolve-repositories preserves repositories without a known integration", async () => {
+    await seedIntegration(store, "gerrit-1", "gerrit");
+
+    const result = await rest(server, "/api/admin/projects/resolve-repositories", {
+      method: "POST",
+      body: { repositories: [{ cloneUrl: "https://unknown.example.com/team/api", localPath: "api" }] },
+    });
+
+    expect(result.status).toBe(200);
+    expect(result.body?.["repositories"]).toEqual([{
+      cloneUrl: "https://unknown.example.com/team/api",
+      localPath: "api",
+      status: "unmatched",
+      match: null,
+      candidates: [],
+    }]);
   });
 
   it("POST /skill-sources/list rejects SSH sources without SSH auth", async () => {

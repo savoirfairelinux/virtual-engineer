@@ -16,8 +16,15 @@ import { normalizeGitLabBaseUrl } from "../utils/gitlabAuth.js";
 import { writeJson, readBody, asRecord, toIsoTimestamp, SECRET_MASK, parseConfig, formatZodError } from "./adminRouteUtils.js";
 import { recordAudit, type AuditCapableStore } from "./adminAudit.js";
 import type { Router } from "./router.js";
+import { scanIntegrationWorkspace, WorkspaceScanError } from "../workspace/workspaceScanService.js";
 
 const log = getLogger("admin-integrations");
+
+const workspaceScanSchema = z.object({
+  repoKey: z.string().trim().min(1).max(512),
+  cloneUrl: z.string().trim().min(1).max(2048),
+  revision: z.string().trim().min(1).max(512).optional(),
+});
 
 function logConnectionTestResult(context: Record<string, string | undefined>, result: { logs?: string[] | undefined }): void {
   if (!Array.isArray(result.logs) || result.logs.length === 0) {
@@ -486,6 +493,46 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
       const errorMessage = err instanceof Error ? err.message : String(err);
       log.warn({ id, provider: integration.provider, repoKey, errorMessage }, "branch discovery failed");
       writeJson(res, 502, { error: `Branch discovery failed: ${errorMessage}` });
+    }
+  }, { permission: "integration.read", resourceParam: "id" });
+
+  // ─── Workspace manifests (per-repository, bounded preview) ────────────────
+  router.add("POST", "/api/admin/integrations/:id/workspace-scan", async (req, res, params) => {
+    if (!deps.integrationStore) { writeJson(res, 501, { error: "Integration store not available" }); return; }
+    const id = params["id"] ?? "";
+    const integration = await deps.integrationStore.getIntegration(id);
+    if (!integration) { writeJson(res, 404, { error: "Integration not found" }); return; }
+    const body = await readBody(req);
+    const parsedBody = workspaceScanSchema.safeParse(body);
+    if (!parsedBody.success) {
+      writeJson(res, 400, { error: formatZodError(parsedBody.error) });
+      return;
+    }
+
+    try {
+      const result = await scanIntegrationWorkspace({
+        integration,
+        pluginManager: deps.pluginManager,
+        adminAuthSecret: deps.adminAuthSecret,
+        repoKey: parsedBody.data.repoKey,
+        cloneUrl: parsedBody.data.cloneUrl,
+        revision: parsedBody.data.revision,
+      });
+      recordAudit(deps.auditStore, req, {
+        action: "integration.workspace_scan",
+        targetType: "integration",
+        targetId: id,
+        details: {
+          repoKey: parsedBody.data.repoKey,
+          manifestCount: result.manifestFiles.length,
+          repositoryCount: result.repositories.length,
+        },
+      });
+      writeJson(res, 200, result);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      log.warn({ id, provider: integration.provider, repoKey: parsedBody.data.repoKey, errorMessage }, "workspace scan failed");
+      writeJson(res, error instanceof WorkspaceScanError ? error.statusCode : 502, { error: errorMessage });
     }
   }, { permission: "integration.read", resourceParam: "id" });
 

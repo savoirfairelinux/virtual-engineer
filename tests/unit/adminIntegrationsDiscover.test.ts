@@ -133,8 +133,14 @@ async function listenServer(server: Server): Promise<string> {
   return `http://127.0.0.1:${addr.port}`;
 }
 
-async function postJson(baseUrl: string, path: string): Promise<{ status: number; body: Record<string, unknown> }> {
-  const res = await fetch(`${baseUrl}${path}`, { method: "POST" });
+async function postJson(baseUrl: string, path: string, payload?: Record<string, unknown>): Promise<{ status: number; body: Record<string, unknown> }> {
+  const res = await fetch(`${baseUrl}${path}`, {
+    method: "POST",
+    ...(payload !== undefined ? {
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    } : {}),
+  });
   const body = (await res.json()) as Record<string, unknown>;
   return { status: res.status, body };
 }
@@ -595,5 +601,69 @@ describe("Admin API — GET /api/admin/integrations/:id/branches", () => {
     );
     expect(status).toBe(502);
     expect(String(body["error"])).toContain("Branch discovery failed");
+  });
+});
+
+describe("Admin API — POST /api/admin/integrations/:id/workspace-scan", () => {
+  let server: Server;
+  let baseUrl: string;
+  let fetchMock: ReturnType<typeof vi.fn<(url: string | URL | Request, init?: RequestInit) => Promise<Response>>>;
+  let realFetch: typeof fetch;
+
+  beforeEach(async () => {
+    registerBuiltinPlugins();
+    const store = makeIntegrationStore([GITLAB_INTEGRATION]);
+    const pm = new PluginManager(store, { adminAuthSecret: TEST_ADMIN_AUTH_SECRET });
+    server = createAdminServer(makeBaseDeps({ integrationStore: store, pluginManager: pm }));
+    baseUrl = await listenServer(server);
+    realFetch = globalThis.fetch.bind(globalThis);
+    fetchMock = vi.fn<(url: string | URL | Request, init?: RequestInit) => Promise<Response>>();
+    vi.stubGlobal("fetch", (url: string | URL | Request, init?: RequestInit) => {
+      const value = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+      if (value.startsWith(baseUrl)) return realFetch(url as Parameters<typeof fetch>[0], init);
+      return fetchMock(url, init);
+    });
+  });
+
+  afterEach(async () => {
+    vi.unstubAllGlobals();
+    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  });
+
+  it("reads only supported root manifests and returns parsed repositories", async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse([
+        { path: ".gitmodules", type: "blob" },
+        { path: "README.md", type: "blob" },
+      ]))
+      .mockResolvedValueOnce(new Response(`
+[submodule "runtime"]
+  path = libs/runtime
+  url = ../runtime.git
+  branch = stable
+`, { status: 200 }));
+
+    const { status, body } = await postJson(
+      baseUrl,
+      "/api/admin/integrations/int-gitlab/workspace-scan",
+      {
+        repoKey: "platform/root",
+        cloneUrl: "https://gitlab.test/platform/root.git",
+        revision: "main",
+      },
+    );
+
+    expect(status).toBe(200);
+    expect(body["manifestFiles"]).toEqual([".gitmodules"]);
+    expect(body["repositories"]).toEqual([{
+      cloneUrl: "https://gitlab.test/platform/runtime.git",
+      localPath: "libs/runtime",
+      revision: "stable",
+      relation: "gitlink",
+      sourcePath: ".gitmodules",
+    }]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain("/repository/tree");
+    expect(String(fetchMock.mock.calls[1]?.[0])).toContain("/repository/files/.gitmodules/raw");
   });
 });

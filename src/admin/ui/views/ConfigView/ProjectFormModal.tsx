@@ -54,11 +54,84 @@ interface PushTarget {
   repoKey: string;
   cloneUrl: string;
   targetBranch: string;
-  role: "primary" | "submodule" | "dependency" | "related";
-  commitOrder: string;
   localPath: string;
+  localPathMode: "fixed" | "derived";
+  origin: "manual" | "workspace_scan";
+  relation?: WorkspaceScanRepository["relation"] | undefined;
   /** Comma-separated reviewer emails, as typed in the form. */
   reviewerEmails: string;
+}
+
+type EditablePushTargetField = "integrationId" | "cloneUrl" | "targetBranch" | "reviewerEmails";
+
+interface RepositoryBindingCandidate {
+  integrationId: string;
+  integrationName: string;
+  provider: string;
+  repoKey: string;
+  enabled: boolean;
+}
+
+interface RepositoryBindingResolutionBase {
+  cloneUrl: string;
+  localPath?: string;
+}
+
+type RepositoryBindingResolution = RepositoryBindingResolutionBase & (
+  | { status: "matched"; match: RepositoryBindingCandidate; candidates: [] }
+  | { status: "ambiguous"; match: null; candidates: RepositoryBindingCandidate[] }
+  | { status: "unmatched"; match: null; candidates: [] }
+);
+
+interface WorkspaceScanRepository {
+  cloneUrl: string | null;
+  localPath: string;
+  revision: string | null;
+  relation: "gitlink" | "manifest_member" | "contains";
+  sourcePath: string;
+}
+
+interface WorkspaceScanDiagnostic {
+  sourcePath: string;
+  severity: "info" | "warning" | "error";
+  message: string;
+}
+
+interface WorkspacePushTargetScanResponse {
+  manifestFiles: string[];
+  repositories: WorkspaceScanMember[];
+  diagnostics: WorkspaceScanDiagnostic[];
+}
+
+interface WorkspaceScanMember extends WorkspaceScanRepository {
+  resolution: RepositoryBindingResolution | null;
+}
+
+interface WorkspaceScanPreview {
+  manifestFiles: string[];
+  members: WorkspaceScanMember[];
+  diagnostics: WorkspaceScanDiagnostic[];
+}
+
+const WORKSPACE_MEMBER_ROW_HEIGHT = 52;
+const WORKSPACE_MEMBER_GAP = 4;
+const WORKSPACE_MEMBER_VISIBLE_ROWS = 5;
+const WORKSPACE_MEMBER_LIST_MAX_HEIGHT = WORKSPACE_MEMBER_ROW_HEIGHT * WORKSPACE_MEMBER_VISIBLE_ROWS
+  + WORKSPACE_MEMBER_GAP * (WORKSPACE_MEMBER_VISIBLE_ROWS - 1);
+
+function workspaceMemberSearchText(member: WorkspaceScanMember): string {
+  const resolution = member.resolution;
+  const resolutionText = resolution?.status === "matched"
+    ? `${resolution.status} ${resolution.match.integrationName} ${resolution.match.repoKey}`
+    : resolution?.status ?? "manual URL";
+  return [
+    member.localPath,
+    member.sourcePath,
+    member.relation,
+    member.cloneUrl,
+    member.revision,
+    resolutionText,
+  ].filter((value): value is string => typeof value === "string").join(" ").toLowerCase();
 }
 
 type SaveCheckStatus = "checking" | "checked" | "failed" | "cancelled" | "not_checked";
@@ -85,8 +158,36 @@ interface TicketProjectOption {
   url?: string;
 }
 
-function emptyPushTarget(order = 1): PushTarget {
-  return { integrationId: "", repoKey: "", cloneUrl: "", targetBranch: "main", role: "primary", commitOrder: String(order), localPath: ".", reviewerEmails: "" };
+function emptyPushTarget(): PushTarget {
+  return { integrationId: "", repoKey: "", cloneUrl: "", targetBranch: "main", localPath: ".", localPathMode: "fixed", origin: "manual", reviewerEmails: "" };
+}
+
+function manualLocalPath(repoKey: string, fallback: string, targets: PushTarget[], targetIndex: number): string {
+  const repositoryName = repoKey.trim().split("/").filter(Boolean).at(-1)?.replace(/\.git$/i, "") ?? "";
+  const normalized = repositoryName
+    .replace(/[^a-zA-Z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  const base = normalized && normalized !== "." && normalized !== ".." ? normalized : fallback;
+  const occupied = new Set(targets.flatMap((target, index) => index === targetIndex ? [] : [target.localPath]));
+  if (!occupied.has(base)) return base;
+  let suffix = 2;
+  while (occupied.has(`${base}-${suffix}`)) suffix += 1;
+  return `${base}-${suffix}`;
+}
+
+function legacyRoleForPushTarget(target: PushTarget): "primary" | "submodule" | "dependency" | "related" {
+  if (target.localPath === ".") return "primary";
+  if (target.relation === "gitlink") return "submodule";
+  if (target.relation === "contains") return "related";
+  return "dependency";
+}
+
+function firstTargetBranch(revision: string | null, defaultBranch: string | undefined): string {
+  const candidate = revision?.trim();
+  if (!candidate || candidate === "HEAD" || /^refs\/(?!heads\/)/.test(candidate) || /^[0-9a-f]{7,40}$/i.test(candidate)) {
+    return defaultBranch || "main";
+  }
+  return candidate.replace(/^refs\/heads\//, "");
 }
 
 function saveCheckSourcesFromSkillSources(sources: SkillSource[], status: SaveCheckStatus): SaveCheckSource[] {
@@ -399,6 +500,11 @@ function TargetBranchField({
 }) {
   const { branches, loading } = useBranchOptions(integrationId, repoKey);
   const options = useMemo<SelectOption[]>(() => branches.map((b) => ({ value: b, label: b })), [branches]);
+
+  useEffect(() => {
+    const firstBranch = branches[0];
+    if (firstBranch && !branches.includes(value)) onChange(firstBranch);
+  }, [branches, onChange, value]);
 
   const hint = loading
     ? "Loading branches…"
@@ -714,7 +820,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
 
   // Coding-specific
   const [ticketSource, setTicketSource] = useState<TicketSource>({ integrationId: "", ticketProjectKey: "" });
-  const [pushTargets, setPushTargets] = useState<PushTarget[]>([emptyPushTarget(1)]);
+  const [pushTargets, setPushTargets] = useState<PushTarget[]>([emptyPushTarget()]);
 
   // Review-specific
   const [reviewIntegrationId, setReviewIntegrationId] = useState("");
@@ -724,6 +830,12 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
   const [error, setError] = useState<string | null>(null);
   const [saveCheckSources, setSaveCheckSources] = useState<SaveCheckSource[]>([]);
   const saveAbortRef = useRef<AbortController | null>(null);
+  const [repositoryResolutionMessages, setRepositoryResolutionMessages] = useState<Record<string, string>>({});
+  const [workspaceScans, setWorkspaceScans] = useState<Record<string, WorkspaceScanPreview>>({});
+  const [workspaceScanQueries, setWorkspaceScanQueries] = useState<Record<string, string>>({});
+  const [scanningWorkspaceUrl, setScanningWorkspaceUrl] = useState<string | null>(null);
+  const [addingWorkspaceMember, setAddingWorkspaceMember] = useState<string | null>(null);
+  const [workspaceScanError, setWorkspaceScanError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!project) return;
@@ -747,12 +859,12 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
         repoKey: t.repoKey,
         cloneUrl: t.cloneUrl,
         targetBranch: t.targetBranch,
-        role: t.role,
-        commitOrder: String(t.commitOrder),
         localPath: t.localPath,
+        localPathMode: "fixed" as const,
+        origin: "manual" as const,
         reviewerEmails: (t.reviewerEmails ?? []).join(", "),
       }));
-      setPushTargets(nextTargets.length > 0 ? nextTargets : [emptyPushTarget(1)]);
+      setPushTargets(nextTargets.length > 0 ? nextTargets : [emptyPushTarget()]);
     } else {
       setReviewIntegrationId(project.reviewConfig?.integration?.id ?? "");
       setReviewRepoKeys(project.reviewConfig?.repos ?? []);
@@ -771,7 +883,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
   const vcsIntegrations = integrations.filter((i) => i.domainCapabilities.includes("source_control"));
   const reviewIntegrations = integrations.filter((i) => i.domainCapabilities.includes("code_review"));
 
-  const updatePushTarget = (idx: number, key: keyof PushTarget, val: string) => {
+  const updatePushTarget = (idx: number, key: EditablePushTargetField, val: string) => {
     setPushTargets((prev) => prev.map((t, i) => i === idx ? { ...t, [key]: val } : t));
   };
 
@@ -781,11 +893,149 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
   };
 
   const addPushTarget = () => {
-    setPushTargets((prev) => [...prev, emptyPushTarget(prev.length + 1)]);
+    setPushTargets((prev) => [...prev, { ...emptyPushTarget(), localPath: `repo-${prev.length + 1}`, localPathMode: "derived" }]);
+  };
+
+  const updatePushTargetRepoKey = (idx: number, repoKey: string) => {
+    setPushTargets((prev) => prev.map((target, targetIndex) => targetIndex !== idx ? target : {
+      ...target,
+      repoKey,
+      ...(target.localPathMode === "derived"
+        ? { localPath: manualLocalPath(repoKey, `repo-${idx + 1}`, prev, idx) }
+        : {}),
+    }));
   };
 
   const removePushTarget = (idx: number) => {
     setPushTargets((prev) => prev.filter((_, i) => i !== idx));
+  };
+
+  const resolvePushTarget = async (idx: number) => {
+    const target = pushTargets[idx];
+    const cloneUrl = target?.cloneUrl.trim() ?? "";
+    if (!target || !cloneUrl || target.integrationId || target.repoKey) return;
+
+    setRepositoryResolutionMessages((prev) => ({ ...prev, [cloneUrl]: "Checking existing integrations…" }));
+    try {
+      const response = await api.post<{ repositories: RepositoryBindingResolution[] }>(
+        "/api/admin/projects/resolve-repositories",
+        { repositories: [{ cloneUrl, localPath: target.localPath }] },
+      );
+      const resolution = response.repositories[0];
+      if (!resolution) {
+        setRepositoryResolutionMessages((prev) => ({ ...prev, [cloneUrl]: "No integration match returned" }));
+        return;
+      }
+      if (resolution.status === "matched" && resolution.match) {
+        const match = resolution.match;
+        if (!match.enabled) {
+          setRepositoryResolutionMessages((prev) => ({
+            ...prev,
+            [cloneUrl]: `Match found in disabled integration ${match.integrationName}; select it explicitly to continue`,
+          }));
+          return;
+        }
+        const integration = integrations.find((candidate) => candidate.id === match.integrationId);
+        const repository = integration?.discoveredResources?.repositories?.find((candidate) => candidate.key === match.repoKey);
+        setPushTargets((prev) => prev.map((candidate, candidateIdx) => {
+          if (candidateIdx !== idx || candidate.cloneUrl.trim() !== cloneUrl || candidate.integrationId || candidate.repoKey) {
+            return candidate;
+          }
+          return {
+            ...candidate,
+            integrationId: match.integrationId,
+            repoKey: match.repoKey,
+            ...(candidate.localPathMode === "derived"
+              ? { localPath: manualLocalPath(match.repoKey, `repo-${candidateIdx + 1}`, prev, candidateIdx) }
+              : {}),
+            targetBranch: (!candidate.targetBranch || candidate.targetBranch === "main")
+              ? (repository?.defaultBranch ?? "main")
+              : candidate.targetBranch,
+          };
+        }));
+        setRepositoryResolutionMessages((prev) => ({
+          ...prev,
+          [cloneUrl]: `Matched ${match.integrationName}${match.enabled ? "" : " (disabled)"}`,
+        }));
+        return;
+      }
+      if (resolution.status === "ambiguous") {
+        setRepositoryResolutionMessages((prev) => ({
+          ...prev,
+          [cloneUrl]: `Multiple integrations match: ${resolution.candidates.map((candidate) => candidate.integrationName).join(", ")}`,
+        }));
+        return;
+      }
+      setRepositoryResolutionMessages((prev) => ({ ...prev, [cloneUrl]: "No existing integration matches this repository" }));
+    } catch (resolutionError) {
+      setRepositoryResolutionMessages((prev) => ({
+        ...prev,
+        [cloneUrl]: resolutionError instanceof Error ? resolutionError.message : "Repository matching failed",
+      }));
+    }
+  };
+
+  const scanWorkspace = async (idx: number) => {
+    const target = pushTargets[idx];
+    if (!target?.integrationId || !target.repoKey || !target.cloneUrl.trim()) return;
+    const cloneUrl = target.cloneUrl.trim();
+    setScanningWorkspaceUrl(cloneUrl);
+    setWorkspaceScanError(null);
+    try {
+      const scan = await api.post<WorkspacePushTargetScanResponse>(
+        "/api/admin/projects/scan-push-targets",
+        {
+          integrationId: target.integrationId,
+          repoKey: target.repoKey,
+          cloneUrl,
+          ...(target.targetBranch.trim() ? { revision: target.targetBranch.trim() } : {}),
+        },
+      );
+      const members = scan.repositories;
+      setWorkspaceScans((prev) => ({
+        ...prev,
+        [cloneUrl]: {
+          manifestFiles: scan.manifestFiles,
+          members,
+          diagnostics: scan.diagnostics,
+        },
+      }));
+    } catch (scanError) {
+      setWorkspaceScanError(scanError instanceof Error ? scanError.message : "Workspace scan failed");
+    } finally {
+      setScanningWorkspaceUrl((current) => current === cloneUrl ? null : current);
+    }
+  };
+
+  const addWorkspaceMember = async (member: WorkspaceScanMember) => {
+    const match = member.resolution?.status === "matched" ? member.resolution.match : null;
+    if (!member.cloneUrl || !match?.enabled || pushTargets.some((target) => target.localPath === member.localPath)) return;
+    const memberKey = `${member.sourcePath}:${member.localPath}`;
+    setAddingWorkspaceMember(memberKey);
+    try {
+      let firstBranch: string | undefined;
+      try {
+        const response = await api.get<{ branches: string[] }>(`/api/admin/integrations/${match.integrationId}/branches?repoKey=${encodeURIComponent(match.repoKey)}`);
+        firstBranch = Array.isArray(response.branches) ? response.branches[0] : undefined;
+      } catch {
+        // Branch discovery is best-effort; the manifest/provider fallback remains usable.
+      }
+      const integration = integrations.find((candidate) => candidate.id === match.integrationId);
+      const repository = integration?.discoveredResources?.repositories?.find((candidate) => candidate.key === match.repoKey);
+      setPushTargets((prev) => prev.some((target) => target.localPath === member.localPath) ? prev : [...prev, {
+        integrationId: match.integrationId,
+        repoKey: match.repoKey,
+        cloneUrl: member.cloneUrl!,
+        targetBranch: firstBranch ?? firstTargetBranch(member.revision, repository?.defaultBranch),
+        localPath: member.localPath,
+        localPathMode: "fixed",
+        origin: "workspace_scan",
+        relation: member.relation,
+        reviewerEmails: "",
+      }]);
+    } finally {
+      setAddingWorkspaceMember((current) => current === memberKey ? null : current);
+    }
   };
 
   const handleSave = async () => {
@@ -818,13 +1068,13 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
           postReviewLinkToTicket,
           reactToCiFailures,
           ticketSource: { integrationId: ticketSource.integrationId, ticketProjectKey: ticketSource.ticketProjectKey },
-          pushTargets: pushTargets.map((t) => ({
+          pushTargets: pushTargets.map((t, index) => ({
             integrationId: t.integrationId,
             repoKey: t.repoKey,
             cloneUrl: t.cloneUrl,
             targetBranch: t.targetBranch,
-            role: t.role,
-            commitOrder: parseInt(t.commitOrder, 10) || 1,
+            role: legacyRoleForPushTarget(t),
+            commitOrder: index + 1,
             localPath: t.localPath,
             reviewerEmails: supportsReviewerEmails(t.integrationId)
               ? t.reviewerEmails.split(",").map((e) => e.trim()).filter(Boolean)
@@ -954,44 +1204,143 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
                     integrations={integrations}
                     value={t.repoKey}
                     placeholder="repo-name"
-                    onChange={(nextValue) => updatePushTarget(idx, "repoKey", nextValue)}
+                    onChange={(nextValue) => updatePushTargetRepoKey(idx, nextValue)}
                     onRepositorySelected={(repo) => {
                       setPushTargets((prev) => prev.map((t2, i) => i !== idx ? t2 : {
-                        ...t2,
-                        cloneUrl: t2.cloneUrl || (repo.cloneUrlHttp ?? repo.cloneUrlSsh ?? ""),
-                        targetBranch: (!t2.targetBranch || t2.targetBranch === "main")
-                          ? (repo.defaultBranch ?? "main")
-                          : t2.targetBranch,
-                      }));
+                          ...t2,
+                          cloneUrl: t2.cloneUrl || (repo.cloneUrlHttp ?? repo.cloneUrlSsh ?? ""),
+                          ...(t2.localPathMode === "derived"
+                            ? { localPath: manualLocalPath(repo.key, `repo-${idx + 1}`, prev, idx) }
+                            : {}),
+                          targetBranch: (!t2.targetBranch || t2.targetBranch === "main")
+                            ? (repo.defaultBranch ?? "main")
+                            : t2.targetBranch,
+                        }));
                     }}
                   />
-                  <Field label="Clone URL" required>
-                    <FieldInput value={t.cloneUrl} placeholder="https://github.com/org/repo.git" onChange={(e) => updatePushTarget(idx, "cloneUrl", e.target.value)} />
-                  </Field>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                    <TargetBranchField
-                      integrationId={t.integrationId}
-                      repoKey={t.repoKey}
-                      value={t.targetBranch}
-                      onChange={(v) => updatePushTarget(idx, "targetBranch", v)}
+                  <Field label="Clone URL" required hint={repositoryResolutionMessages[t.cloneUrl.trim()]}>
+                    <FieldInput
+                      value={t.cloneUrl}
+                      placeholder="https://github.com/org/repo.git"
+                      onChange={(e) => updatePushTarget(idx, "cloneUrl", e.target.value)}
+                      onBlur={() => { void resolvePushTarget(idx); }}
                     />
-                    <Field label="Local Path" required hint={`"." for root`}>
-                      <FieldInput value={t.localPath} placeholder="." onChange={(e) => updatePushTarget(idx, "localPath", e.target.value)} />
-                    </Field>
-                  </div>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                    <Field label="Role">
-                      <FieldSelect value={t.role} onChange={(e) => updatePushTarget(idx, "role", e.target.value)}>
-                        <option value="primary">Primary</option>
-                        <option value="submodule">Submodule</option>
-                        <option value="dependency">Dependency</option>
-                        <option value="related">Related</option>
-                      </FieldSelect>
-                    </Field>
-                    <Field label="Commit Order">
-                      <FieldInput type="number" min={1} value={t.commitOrder} onChange={(e) => updatePushTarget(idx, "commitOrder", e.target.value)} />
-                    </Field>
-                  </div>
+                  </Field>
+                  {t.localPath === "." && t.integrationId && t.repoKey && t.cloneUrl.trim() && (() => {
+                    const workspaceUrl = t.cloneUrl.trim();
+                    const preview = workspaceScans[workspaceUrl];
+                    const memberQuery = workspaceScanQueries[workspaceUrl] ?? "";
+                    const normalizedMemberQuery = memberQuery.trim().toLowerCase();
+                    const visibleMembers = preview?.members.filter((member) =>
+                      !normalizedMemberQuery || workspaceMemberSearchText(member).includes(normalizedMemberQuery)
+                    ) ?? [];
+                    return (
+                      <div style={{ display: "flex", flexDirection: "column", gap: 8, paddingTop: 10, borderTop: "1px solid var(--border-soft)" }}>
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+                          <div style={{ fontSize: "12px", fontWeight: 600, color: "var(--text-dim)" }}>Workspace manifests</div>
+                          <button
+                            data-config-dirty
+                            type="button"
+                            className="btn ghost"
+                            disabled={scanningWorkspaceUrl === t.cloneUrl.trim()}
+                            onClick={() => { void scanWorkspace(idx); }}
+                            style={{ fontSize: "12px", padding: "5px 10px" }}
+                          >
+                            <Icon
+                              name={scanningWorkspaceUrl === t.cloneUrl.trim() ? "refresh" : preview ? "refresh" : "search"}
+                              size={13}
+                              {...(scanningWorkspaceUrl === t.cloneUrl.trim() ? { className: "spin" } : {})}
+                            />
+                            {scanningWorkspaceUrl === t.cloneUrl.trim() ? "Scanning…" : preview ? "Scan again" : "Scan workspace"}
+                          </button>
+                        </div>
+                        {workspaceScanError && <div style={{ color: "var(--danger)", fontSize: "12px" }}>{workspaceScanError}</div>}
+                        {preview && (
+                          <>
+                            <div className="mono" style={{ fontSize: "10.5px", color: "var(--text-faint)" }}>
+                              {preview.manifestFiles.length} manifest{preview.manifestFiles.length === 1 ? "" : "s"} · {preview.members.length} member{preview.members.length === 1 ? "" : "s"} detected
+                            </div>
+                            {preview.members.length > 0 && (
+                              <>
+                                <div style={{ position: "relative" }}>
+                                  <Icon name="search" size={13} style={{ position: "absolute", left: 9, top: "50%", transform: "translateY(-50%)", color: "var(--text-faint)", pointerEvents: "none" }} />
+                                  <FieldInput
+                                    type="search"
+                                    aria-label="Search detected members"
+                                    placeholder="Search members…"
+                                    value={memberQuery}
+                                    onChange={(event) => setWorkspaceScanQueries((previous) => ({ ...previous, [workspaceUrl]: event.target.value }))}
+                                    style={{ padding: "6px 9px 6px 28px", fontSize: "12px" }}
+                                  />
+                                </div>
+                                {visibleMembers.length > 0 ? (
+                                  <div
+                                    data-testid="workspace-members-scroll"
+                                    style={{
+                                      display: "flex",
+                                      flexDirection: "column",
+                                      gap: WORKSPACE_MEMBER_GAP,
+                                      maxHeight: WORKSPACE_MEMBER_LIST_MAX_HEIGHT,
+                                      overflowY: "auto",
+                                      paddingRight: 3,
+                                    }}
+                                  >
+                                {visibleMembers.map((member) => {
+                                  const resolution = member.resolution;
+                                  const state = member.cloneUrl === null
+                                    ? "manual URL"
+                                    : resolution?.status === "matched"
+                                      ? resolution.match.enabled ? `matched · ${resolution.match.integrationName}` : `disabled · ${resolution.match.integrationName}`
+                                      : resolution?.status ?? "unmatched";
+                                      const memberKey = `${member.sourcePath}:${member.localPath}`;
+                                      const isAdded = pushTargets.some((target) => target.localPath === member.localPath);
+                                      const canAdd = resolution?.status === "matched" && resolution.match.enabled && member.cloneUrl !== null;
+                                  return (
+                                    <div key={`${member.sourcePath}:${member.localPath}`} style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto", gap: 8, alignItems: "center", minHeight: WORKSPACE_MEMBER_ROW_HEIGHT, boxSizing: "border-box", padding: "5px 7px", background: "var(--panel)", borderRadius: "var(--radius-sm)" }}>
+                                      <div style={{ minWidth: 0 }}>
+                                        <div className="mono" style={{ fontSize: "11.5px", color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis" }}>{member.localPath}</div>
+                                        <div className="mono" style={{ fontSize: "10px", color: "var(--text-faint)" }}>{member.sourcePath} · {member.relation}</div>
+                                      </div>
+                                      {canAdd ? (
+                                        <button
+                                          type="button"
+                                          className="btn ghost"
+                                          aria-label={isAdded ? `${member.localPath} added` : `Add ${member.localPath} as push target`}
+                                          disabled={isAdded || addingWorkspaceMember === memberKey}
+                                          onClick={() => { void addWorkspaceMember(member); }}
+                                          style={{ fontSize: "10px", padding: "4px 7px" }}
+                                        >
+                                          <Icon name={isAdded ? "check" : "plus"} size={11} />
+                                          {isAdded ? "Added" : state}
+                                        </button>
+                                      ) : (
+                                        <span className="mono" style={{ fontSize: "10px", color: "var(--text-faint)" }}>{state}</span>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                                  </div>
+                                ) : (
+                                  <div style={{ padding: "10px 7px", fontSize: "11.5px", color: "var(--text-faint)" }}>No detected members match this search.</div>
+                                )}
+                              </>
+                            )}
+                            {preview.diagnostics.map((diagnostic, diagnosticIdx) => (
+                              <div key={`${diagnostic.sourcePath}:${diagnosticIdx}`} style={{ fontSize: "11.5px", color: diagnostic.severity === "error" ? "var(--danger)" : "var(--text-ghost)" }}>
+                                {diagnostic.sourcePath}: {diagnostic.message}
+                              </div>
+                            ))}
+                          </>
+                        )}
+                      </div>
+                    );
+                  })()}
+                  <TargetBranchField
+                    integrationId={t.integrationId}
+                    repoKey={t.repoKey}
+                    value={t.targetBranch}
+                    onChange={(v) => updatePushTarget(idx, "targetBranch", v)}
+                  />
                   {supportsReviewerEmails(t.integrationId) && (
                     <Field label="Reviewer Emails" hint="Up to 20 comma-separated emails. Gerrit adds them directly; GitLab matches visible profile emails.">
                       <FieldInput value={t.reviewerEmails} placeholder="alice@example.com, bob@example.com" onChange={(e) => updatePushTarget(idx, "reviewerEmails", e.target.value)} />
