@@ -120,7 +120,7 @@ body.ve-drawer-open .app {
   white-space: nowrap;
 }
 .btn:hover { color: var(--text); border-color: var(--border-strong); background: var(--panel-2); }
-.btn.primary { color: white; background: var(--accent); border-color: transparent; }
+.btn.primary { color: var(--accent-fg); background: var(--accent); border-color: transparent; }
 .btn.primary:hover { background: var(--accent-strong); }
 .btn.danger:hover { color: var(--danger); border-color: var(--danger); background: var(--danger-soft); }
 .btn.sm { padding: 5px 9px; font-size: 12px; }
