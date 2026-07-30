@@ -351,7 +351,7 @@ async function validateRequiredPrompts(
     return `Prompt '${instructionsPromptId}' is not an Instructions Prompt`;
   }
   if (feedbackPrompt !== null && feedbackPrompt.promptType !== "instructions") {
-    return `Feedback prompt '${feedbackInstructionsPromptId}' is not an Instructions Prompt`;
+    return `Feedback Instructions Prompt '${feedbackInstructionsPromptId}' is not an Instructions Prompt`;
   }
   return null;
 }
