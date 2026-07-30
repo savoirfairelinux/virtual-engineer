@@ -404,4 +404,70 @@ describe("ProjectFormModal repository integration resolution", () => {
     expect(savedPushTargets.map((target) => target["localPath"])).toEqual([".", "runtime", "runtime-2"]);
     expect(savedPushTargets[0]?.["targetBranch"]).toBe("release/custom");
   });
+
+  it("does not show a workspace scan error after the target URL changes", async () => {
+    const integration: ApiIntegration = {
+      ...gerritIntegration("gerrit-1", "Primary Gerrit"),
+      discoveredResources: {
+        repositories: [{
+          key: "platform/root",
+          name: "Root",
+          cloneUrlHttp: "https://gerrit.example.com/platform/root.git",
+          defaultBranch: "main",
+        }],
+      },
+    };
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+      const requestPath = String(input);
+      if (requestPath.startsWith("/api/admin/integrations/gerrit-1/branches")) {
+        return new Response(JSON.stringify({ branches: ["main"] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (requestPath === "/api/admin/projects/scan-push-targets") {
+        return new Response(JSON.stringify({ error: "Original repository scan failed" }), {
+          status: 502,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      throw new Error(`Unexpected request: ${requestPath}`);
+    }));
+
+    render(
+      <ProjectFormModal
+        agents={[codingAgent]}
+        integrations={[integration]}
+        project={{
+          id: "project-1",
+          name: "Platform",
+          type: "coding",
+          agentId: codingAgent.id,
+          ticketSource: {
+            integration: { id: integration.id, name: integration.name, type: integration.provider },
+            ticketProjectKey: "platform",
+          },
+          pushTargets: [{
+            integrationId: integration.id,
+            repoKey: "platform/root",
+            cloneUrl: "https://gerrit.example.com/platform/root.git",
+            targetBranch: "main",
+            role: "primary",
+            commitOrder: 1,
+            localPath: ".",
+          }],
+        }}
+        onClose={vi.fn()}
+        onSaved={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Scan workspace" }));
+    expect(await screen.findByText("Original repository scan failed")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText(/Clone URL/), {
+      target: { value: "https://gerrit.example.com/platform/other.git" },
+    });
+
+    expect(screen.queryByText("Original repository scan failed")).toBeNull();
+  });
 });

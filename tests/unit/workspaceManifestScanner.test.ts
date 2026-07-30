@@ -259,6 +259,42 @@ FetchContent_Declare(dynamic_dep GIT_REPOSITORY \${DYNAMIC_URL})
     }));
   });
 
+  it("does not expose local or unsupported workspace URIs as clone URLs", () => {
+    const result = scanWorkspaceManifests({
+      rootCloneUrl: "https://git.example.com/platform/root.git",
+      files: [{
+        path: "platform.code-workspace",
+        content: JSON.stringify({
+          folders: [
+            { uri: "file:///home/user/private-project", name: "Local project" },
+            { uri: "vscode-remote://ssh-remote+host/home/user/remote-project", name: "Remote project" },
+          ],
+        }),
+      }],
+    });
+
+    expect(result.repositories).toEqual([
+      expect.objectContaining({ cloneUrl: null, localPath: "Local project" }),
+      expect.objectContaining({ cloneUrl: null, localPath: "Remote project" }),
+    ]);
+    expect(result.repositories.every((repository) => !repository.cloneUrl?.includes("/home/user/"))).toBe(true);
+  });
+
+  it("ignores submodules that use unsupported clone URL schemes", () => {
+    const result = scanWorkspaceManifests({
+      rootCloneUrl: "https://git.example.com/platform/root.git",
+      files: [{
+        path: ".gitmodules",
+        content: `[submodule "local"]\n  path = deps/local\n  url = file:///home/user/private.git\n`,
+      }],
+    });
+
+    expect(result.repositories).toEqual([]);
+    expect(result.diagnostics).toContainEqual(expect.objectContaining({
+      message: expect.stringContaining("unsupported repository URL"),
+    }));
+  });
+
   it("reports malformed manifests without throwing or returning partial garbage", () => {
     const result = scanWorkspaceManifests({
       rootCloneUrl: "https://git.example.com/platform/root.git",

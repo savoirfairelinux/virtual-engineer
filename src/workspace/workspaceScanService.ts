@@ -119,7 +119,7 @@ export async function scanProjectWorkspace(input: {
 
   while (queue.length > 0 && seen.size < MAX_SCANNED_REPOSITORIES) {
     const current = queue.shift()!;
-    const identity = `${current.integration.id}\n${current.repoKey}`;
+    const identity = `${current.integration.id}\n${current.repoKey}\n${current.revision?.trim() || "HEAD"}`;
     if (seen.has(identity)) continue;
     seen.add(identity);
 

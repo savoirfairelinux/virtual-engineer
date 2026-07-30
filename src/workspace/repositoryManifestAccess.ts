@@ -8,6 +8,7 @@ import { WORKSPACE_MANIFEST_MAX_BYTES, WORKSPACE_MANIFEST_MAX_FILES, type Worksp
 
 const execFileAsync = promisify(execFile);
 const REMOTE_READ_TIMEOUT_MS = 60_000;
+const REMOTE_READ_CONCURRENCY = 8;
 const MAX_ROOT_PAGES = 10;
 const MAX_MANIFEST_DIRECTORY_DEPTH = 4;
 const MAX_DEPENDENCY_FILE_DIRECTORY_DEPTH = 8;
@@ -59,6 +60,29 @@ async function withRemoteReadTimeout<T>(operation: (signal: AbortSignal) => Prom
   } finally {
     clearTimeout(timeout);
   }
+}
+
+async function readManifestFiles(
+  paths: string[],
+  readFile: (filePath: string) => Promise<WorkspaceManifestFile>,
+): Promise<WorkspaceManifestFile[]> {
+  const results: Array<WorkspaceManifestFile | undefined> = new Array(paths.length);
+  let nextIndex = 0;
+  const worker = async (): Promise<void> => {
+    while (nextIndex < paths.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await readFile(paths[index]!);
+    }
+  };
+  await Promise.all(Array.from(
+    { length: Math.min(REMOTE_READ_CONCURRENCY, paths.length) },
+    () => worker(),
+  ));
+  return results.map((result, index) => {
+    if (!result) throw new Error(`Workspace manifest read did not produce a result for '${paths[index]}'`);
+    return result;
+  });
 }
 
 async function responseText(response: Response, label: string): Promise<string> {
@@ -117,7 +141,7 @@ export async function readGitHubWorkspaceManifestFiles(input: {
   }).sort();
   assertManifestCount(paths);
 
-  return Promise.all(paths.map(async (filePath): Promise<WorkspaceManifestFile> => {
+  return readManifestFiles(paths, async (filePath): Promise<WorkspaceManifestFile> => {
     const fileUrl = `${input.apiBaseUrl}/repos/${repoPath}/contents/${encodeRepoKey(filePath)}${refQuery}`;
     const payload: unknown = await withRemoteReadTimeout(async (signal) => {
       const response = await globalThis.fetch(fileUrl, { headers: githubHeaders(input.token), signal });
@@ -134,7 +158,7 @@ export async function readGitHubWorkspaceManifestFiles(input: {
     const content = Buffer.from(value["content"].replace(/\s/g, ""), "base64").toString("utf8");
     assertManifestSize(filePath, content);
     return { path: filePath, content };
-  }));
+  });
 }
 
 function gitLabHeaders(token: string): Record<string, string> {
@@ -177,7 +201,7 @@ export async function readGitLabWorkspaceManifestFiles(input: {
 
   const sortedPaths = [...paths].sort();
   assertManifestCount(sortedPaths);
-  return Promise.all(sortedPaths.map(async (filePath): Promise<WorkspaceManifestFile> => {
+  return readManifestFiles(sortedPaths, async (filePath): Promise<WorkspaceManifestFile> => {
     const query = new URLSearchParams({ ref: input.revision ?? "HEAD" });
     const content = await withRemoteReadTimeout(async (signal) => {
       const response = await globalThis.fetch(
@@ -188,7 +212,7 @@ export async function readGitLabWorkspaceManifestFiles(input: {
       return responseText(response, filePath);
     });
     return { path: filePath, content };
-  }));
+  });
 }
 
 function quoteSshPath(value: string): string {
