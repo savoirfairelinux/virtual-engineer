@@ -47,7 +47,7 @@ export function PromptFormModal({ prompt, readOnly, onEdit, onClose, onSaved }: 
     setError(null);
     try {
       if (isEdit) {
-        await api.put(`/api/admin/prompts/${prompt!.id}`, { label, content });
+        await api.put(`/api/admin/prompts/${prompt!.id}`, { content });
       } else {
         await api.post("/api/admin/prompts", { label, content, promptType });
       }
@@ -70,7 +70,7 @@ export function PromptFormModal({ prompt, readOnly, onEdit, onClose, onSaved }: 
           <FieldInput
             value={label}
             placeholder="my_prompt_label"
-            readOnly={readOnly}
+            readOnly={readOnly || isEdit}
             onChange={(e) => setLabel(e.target.value)}
           />
         </Field>
