@@ -151,8 +151,8 @@ export function AgentsSection({ agents, integrations, plugins, prompts, onRefres
               <Tag tone={a.reviewStrategy === "copilot_native" ? "warn" : "muted"}>
                 {a.reviewStrategy === "copilot_native" ? "Copilot native · experimental" : "VE direct"}
               </Tag>
-              <Tag tone="info">Agent instructions: {promptLabel(a.systemPromptId)}</Tag>
-              <Tag tone="muted">Workflow instructions: {promptLabel(a.instructionsPromptId)}</Tag>
+              <Tag tone="info">System Prompt: {promptLabel(a.systemPromptId)}</Tag>
+              <Tag tone="muted">Instructions Prompt: {promptLabel(a.instructionsPromptId)}</Tag>
             </div>
             <div style={{ textAlign: "right", minWidth: "70px" }}>
               <div className="eyebrow" style={{ fontSize: "9px" }}>Concurrency</div>

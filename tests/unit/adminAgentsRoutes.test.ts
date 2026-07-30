@@ -200,7 +200,7 @@ describe("Admin API — Agent routes (/api/admin/agents)", () => {
     });
 
     expect(r.status).toBe(400);
-    expect(r.body?.["error"]).toMatch(/not agent instructions/i);
+    expect(r.body?.["error"]).toMatch(/not a System Prompt/i);
   });
 
   it("POST / returns 400 when the feedback prompt has the wrong role", async () => {
@@ -217,7 +217,7 @@ describe("Admin API — Agent routes (/api/admin/agents)", () => {
     });
 
     expect(r.status).toBe(400);
-    expect(r.body?.["error"]).toMatch(/feedback.*not workflow instructions/i);
+    expect(r.body?.["error"]).toMatch(/feedback.*not an Instructions Prompt/i);
   });
 
   it("GET /:id returns 404 for unknown agent", async () => {

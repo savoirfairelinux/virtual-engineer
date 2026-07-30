@@ -637,9 +637,9 @@ async function validateAgentOverrideJson(
   }
 
   const promptFields = [
-    ["systemPromptId", "system", "agent instructions"],
-    ["instructionsPromptId", "instructions", "workflow instructions"],
-    ["feedbackInstructionsPromptId", "instructions", "workflow instructions"],
+    ["systemPromptId", "system", "System Prompt"],
+    ["instructionsPromptId", "instructions", "Instructions Prompt"],
+    ["feedbackInstructionsPromptId", "instructions", "Instructions Prompt"],
   ] as const;
 
   for (const [field, role, label] of promptFields) {
