@@ -62,7 +62,7 @@ export async function scanIntegrationWorkspace(input: {
       : JSON.parse(input.integration.configJson);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    throw new WorkspaceScanError(`Stored integration config is not valid JSON: ${message}`, 500, { cause: error });
+    throw new WorkspaceScanError(`Unable to read stored integration config: ${message}`, 500, { cause: error });
   }
   if (parsedConfig === null || typeof parsedConfig !== "object" || Array.isArray(parsedConfig)) {
     throw new WorkspaceScanError("Stored integration config must be a JSON object", 500);
