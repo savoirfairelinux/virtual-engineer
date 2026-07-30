@@ -501,11 +501,6 @@ function TargetBranchField({
   const { branches, loading } = useBranchOptions(integrationId, repoKey);
   const options = useMemo<SelectOption[]>(() => branches.map((b) => ({ value: b, label: b })), [branches]);
 
-  useEffect(() => {
-    const firstBranch = branches[0];
-    if (firstBranch && !branches.includes(value)) onChange(firstBranch);
-  }, [branches, onChange, value]);
-
   const hint = loading
     ? "Loading branches…"
     : branches.length > 0

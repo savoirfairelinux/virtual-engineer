@@ -8,6 +8,7 @@ import { WORKSPACE_MANIFEST_MAX_BYTES } from "../../src/workspace/workspaceManif
 
 describe("repository manifest access", () => {
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
   });
 
@@ -78,6 +79,7 @@ describe("repository manifest access", () => {
     expect(String(fetchMock.mock.calls[0]?.[0])).toContain("/repos/platform/root/git/trees/stable?recursive=1");
     expect(String(fetchMock.mock.calls[1]?.[0])).toContain("/contents/.gitmodules?ref=stable");
     expect(String(fetchMock.mock.calls[2]?.[0])).toContain("/contents/contrib/workspace.repos?ref=stable");
+    expect(fetchMock.mock.calls.every((call) => call[1]?.signal instanceof AbortSignal)).toBe(true);
   });
 
   it("requests a recursive GitLab tree and reads nested manifests", async () => {
@@ -99,6 +101,31 @@ describe("repository manifest access", () => {
     expect(files).toEqual([{ path: "contrib/workspace.repos", content: "repositories: {}\n" }]);
     expect(String(fetchMock.mock.calls[0]?.[0])).toContain("recursive=true");
     expect(String(fetchMock.mock.calls[1]?.[0])).toContain("contrib%2Fworkspace.repos/raw");
+    expect(fetchMock.mock.calls.every((call) => call[1]?.signal instanceof AbortSignal)).toBe(true);
+  });
+
+  it("keeps the request timeout active while consuming a response body", async () => {
+    vi.useFakeTimers();
+    let requestSignal: AbortSignal | undefined;
+    vi.stubGlobal("fetch", vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      requestSignal = init?.signal ?? undefined;
+      return {
+        ok: true,
+        json: () => new Promise<unknown>((_resolve, reject) => {
+          requestSignal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
+        }),
+      } as Response;
+    }));
+
+    const request = readGitHubWorkspaceManifestFiles({
+      apiBaseUrl: "https://api.github.test",
+      token: "secret",
+      repoKey: "platform/root",
+    });
+    void request.catch(() => undefined);
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(requestSignal?.aborted).toBe(true);
   });
 
   it("rejects decoded manifests above the byte limit", async () => {

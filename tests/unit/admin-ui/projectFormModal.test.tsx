@@ -377,7 +377,7 @@ describe("ProjectFormModal repository integration resolution", () => {
             integrationId: integration.id,
             repoKey: "platform/root",
             cloneUrl: "https://gerrit.example.com/platform/root.git",
-            targetBranch: "main",
+            targetBranch: "release/custom",
             role: "primary",
             commitOrder: 1,
             localPath: ".",
@@ -402,5 +402,6 @@ describe("ProjectFormModal repository integration resolution", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
     await waitFor(() => expect(savedPushTargets).toHaveLength(3));
     expect(savedPushTargets.map((target) => target["localPath"])).toEqual([".", "runtime", "runtime-2"]);
+    expect(savedPushTargets[0]?.["targetBranch"]).toBe("release/custom");
   });
 });
