@@ -14,6 +14,10 @@ const BUILTIN_PROMPT_IDS = new Set([
   "instructions_review",
 ]);
 
+function formatPromptType(promptType: string): string {
+  return promptType === "system" ? "System Prompt" : "Instructions Prompt";
+}
+
 export function PromptsSection({ prompts, onRefresh, route, navigate, markClean }: ConfigSectionProps) {
   const { can } = useCurrentUser();
   const canWrite = can("prompt.write");
@@ -104,7 +108,7 @@ export function PromptsSection({ prompts, onRefresh, route, navigate, markClean 
               <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                 <span className="mono" style={{ fontSize: "13px", fontWeight: 600 }}>{p.label}</span>
                 <span style={{ fontSize: "11px", color: "var(--text-faint)", textTransform: "capitalize" }}>
-                  {p.promptType}
+                  {formatPromptType(p.promptType)}
                 </span>
               </div>
               <div style={{ fontSize: "11.5px", color: "var(--text-faint)", marginTop: "2px" }}>

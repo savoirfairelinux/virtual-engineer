@@ -6,6 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { ConfigPageSurface } from "../../../src/admin/ui/views/ConfigView/ConfigPageSurface.js";
 import { IntegrationFormModal } from "../../../src/admin/ui/views/ConfigView/IntegrationFormModal.js";
+import { PromptFormModal } from "../../../src/admin/ui/views/ConfigView/PromptFormModal.js";
 import { Field, FieldInput, Modal } from "../../../src/admin/ui/components/Modal.js";
 import { Drawer } from "../../../src/admin/ui/components/Drawer.js";
 import { RowCard } from "../../../src/admin/ui/components/RowCard.js";
@@ -186,5 +187,25 @@ describe("ConfigPageSurface", () => {
     const hint = screen.getByText("Choose the source repository");
     expect(input.id).toBe("repository-input");
     expect(input.getAttribute("aria-describedby")).toBe(`external-description ${hint.id}`);
+  });
+
+  it("labels prompt roles and shows role-specific content guidance", async () => {
+    const user = userEvent.setup();
+
+    render(createElement(PromptFormModal, {
+      onClose: vi.fn(),
+      onSaved: vi.fn(),
+    }));
+
+    const promptType = screen.getByRole("combobox", { name: /Prompt type/ });
+    expect(screen.getByRole("option", { name: "System Prompt" })).toBeDefined();
+    expect(screen.getByRole("option", { name: "Instructions Prompt" })).toBeDefined();
+    expect(screen.getByText("Task-specific guidance that is merged into each generated request.")).toBeDefined();
+    expect(screen.getByPlaceholderText("Example: Prefer small patches, explain trade-offs, and mention the files you changed.")).toBeDefined();
+
+    await user.selectOptions(promptType, "system");
+
+    expect(screen.getByText("Permanent instructions that shape the agent's base behavior.")).toBeDefined();
+    expect(screen.getByPlaceholderText("Example: You are a careful coding agent. Follow repository conventions and never commit secrets.")).toBeDefined();
   });
 });

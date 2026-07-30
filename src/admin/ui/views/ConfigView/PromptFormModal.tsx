@@ -3,6 +3,26 @@ import { Modal, Field, FieldInput, FieldSelect, FormError, FormRow, FormActions,
 import { api } from "../../api.ts";
 import type { ApiPrompt } from "../../types.ts";
 
+const PROMPT_TYPE_LABELS = {
+  system: "System Prompt",
+  instructions: "Instructions Prompt",
+} as const;
+
+const PROMPT_TYPE_HINTS = {
+  system: "Permanent instructions that shape the agent's base behavior.",
+  instructions: "Task-specific guidance that is merged into each generated request.",
+} as const;
+
+const PROMPT_CONTENT_HINTS = {
+  system: "Write the full prompt body. Example: You are a careful coding agent. Follow repository conventions and never commit secrets.",
+  instructions: "Write the full prompt body. Example: Prefer small patches, explain trade-offs, and mention the files you changed.",
+} as const;
+
+const PROMPT_TYPE_EXAMPLES = {
+  system: "Example: You are a careful coding agent. Follow repository conventions and never commit secrets.",
+  instructions: "Example: Prefer small patches, explain trade-offs, and mention the files you changed.",
+} as const;
+
 interface Props {
   prompt?: ApiPrompt | undefined;
   /** When true (viewer role), the form is read-only — no save button, disabled inputs. */
@@ -55,21 +75,21 @@ export function PromptFormModal({ prompt, readOnly, onEdit, onClose, onSaved }: 
           />
         </Field>
 
-        <Field label="Role" required hint="Agent instructions are permanent; workflow instructions guide a generated task request">
+        <Field label="Prompt type" required hint={PROMPT_TYPE_HINTS[promptType]}>
           <FieldSelect
             value={promptType}
             disabled={isEdit || readOnly}
             onChange={(event) => setPromptType(event.target.value as "system" | "instructions")}
           >
-            <option value="system">Agent instructions</option>
-            <option value="instructions">Workflow instructions</option>
+            <option value="system">{PROMPT_TYPE_LABELS.system}</option>
+            <option value="instructions">{PROMPT_TYPE_LABELS.instructions}</option>
           </FieldSelect>
         </Field>
 
-        <Field label="Content" required hint={`${content.length} characters`}>
+        <Field label="Content" required hint={PROMPT_CONTENT_HINTS[promptType]}>
           <FieldTextarea
             value={content}
-            placeholder="Enter prompt content…"
+            placeholder={PROMPT_TYPE_EXAMPLES[promptType]}
             readOnly={readOnly}
             onChange={(e) => setContent(e.target.value)}
             style={{ minHeight: "360px" }}
