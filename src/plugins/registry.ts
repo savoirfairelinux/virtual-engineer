@@ -12,6 +12,7 @@ import type { IntegrationEventStreamFactory } from "../connectors/integrationStr
 import type { VcsConnector } from "../vcs/vcsConnector.js";
 import type { GitRunner } from "../vcs/gitRunner.js";
 import type { ProviderAuthHandler } from "../agents/providerAuthService.js";
+import type { WorkspaceManifestFile } from "../workspace/workspaceManifestScanner.js";
 
 // ─── Plugin descriptor types ──────────────────────────────────────────────
 
@@ -260,6 +261,15 @@ export interface ProviderDescriptor {
    * names available for push-target selection.
    */
   discoverBranches?: (config: unknown, repoKey: string) => Promise<string[]>;
+  /**
+   * Read only supported root workspace manifests from a repository. Providers
+   * own credentialed transport; callers own parsing and never receive secrets.
+   */
+  readWorkspaceManifestFiles?: (
+    config: unknown,
+    repoKey: string,
+    revision?: string | undefined
+  ) => Promise<WorkspaceManifestFile[]>;
   /**
    * Optional connection tester used by `PluginManager.testConnectionConfig`.
    * `index.ts`-registered testers always take precedence.

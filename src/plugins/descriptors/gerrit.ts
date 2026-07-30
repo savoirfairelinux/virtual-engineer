@@ -15,6 +15,7 @@ import { getLogger } from "../../logger.js";
 import { resolveEffectiveSshKeyPath, resolveAgentIdentityPath, SSH_RESOLVED_KEY_PATH, SSH_AGENT_PUBKEY_PATH } from "../../utils/sshKeyResolver.js";
 import { generateSshKeyPair, type GeneratedSshKeyPair } from "../../utils/sshKeyGen.js";
 import { sshConnectionConfigSchema } from "../../utils/sshConfig.js";
+import { readGerritWorkspaceManifestFiles } from "../../workspace/repositoryManifestAccess.js";
 
 const log = getLogger("gerrit-descriptor");
 
@@ -180,6 +181,16 @@ export const gerritDescriptor: ProviderDescriptor = {
       ...(parsed.baseUrl !== undefined ? { baseUrl: parsed.baseUrl } : {}),
     });
     return connector.listBranches(repoKey);
+  },
+  readWorkspaceManifestFiles: async (config, repoKey, revision) => {
+    const cfg = config as Record<string, unknown>;
+    const parsed = gerritConfigSchema.parse(cfg);
+    const ssh = buildSshArgs({ ...(parsed as unknown as Record<string, unknown>), ...cfg });
+    return readGerritWorkspaceManifestFiles({
+      ssh,
+      repoKey,
+      ...(revision !== undefined ? { revision } : {}),
+    });
   },
   testConnection: async (config) => {
     const cfg = config as Record<string, unknown>;
