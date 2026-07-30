@@ -176,6 +176,42 @@ describe("Configuration navigation guard", () => {
     expect(onRefresh).toHaveBeenCalledOnce();
   });
 
+  it("saves the agent timeout in milliseconds", async () => {
+    const put = vi.spyOn(api, "put").mockResolvedValue(undefined);
+    render(
+      <CurrentUserProvider value={{
+        user: admin,
+        isAdmin: true,
+        canOperate: true,
+        can: makeCan(admin),
+      }}>
+        <ConfigView
+          integrations={[]}
+          plugins={[]}
+          agents={[]}
+          projects={[]}
+          prompts={[]}
+          oauthApps={[]}
+          config={{
+            nodeEnv: "test",
+            logLevel: "silent",
+            pollingIntervalMs: 30000,
+            maxAgentCycles: 3,
+            maxRetryAttempts: 5,
+            agentTimeoutMs: 3600000,
+          }}
+          status={null}
+          onRefresh={vi.fn()}
+        />
+      </CurrentUserProvider>,
+    );
+
+    fireEvent.change(screen.getByLabelText("Agent timeout (minutes)"), { target: { value: "15" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => expect(put).toHaveBeenCalledWith("/api/admin/settings", { agentTimeoutMs: 900000 }));
+  });
+
   it("marks provider selection dirty but ignores provider search text", () => {
     window.history.replaceState({}, "", "#config/integrations/new");
     const guardRef: { current: (() => boolean) | null } = { current: null };

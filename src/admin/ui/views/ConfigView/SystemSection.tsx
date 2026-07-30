@@ -15,6 +15,7 @@ interface EditableSettings {
   pollingIntervalMs: number;
   maxAgentCycles: number;
   maxRetryAttempts: number;
+  agentTimeoutMs: number;
 }
 
 export function SystemSection({ config, status, onRefresh, onDirtyChange }: SystemSectionProps) {
@@ -29,14 +30,17 @@ export function SystemSection({ config, status, onRefresh, onDirtyChange }: Syst
   );
   const initialCycles = config?.maxAgentCycles ?? runtime?.maxAgentCycles ?? 3;
   const initialRetries = config?.maxRetryAttempts ?? runtime?.maxRetryAttempts ?? 5;
+  const initialTimeoutMinutes = Math.max(1, Math.round((config?.agentTimeoutMs ?? 3_600_000) / 60_000));
 
   const [pollingSeconds, setPollingSeconds] = useState(String(initialPollingSeconds));
   const [maxCycles, setMaxCycles] = useState(String(initialCycles));
   const [maxRetries, setMaxRetries] = useState(String(initialRetries));
+  const [agentTimeoutMinutes, setAgentTimeoutMinutes] = useState(String(initialTimeoutMinutes));
   const [baseline, setBaseline] = useState<EditableSettings>({
     pollingIntervalMs: initialPollingSeconds * 1000,
     maxAgentCycles: initialCycles,
     maxRetryAttempts: initialRetries,
+    agentTimeoutMs: initialTimeoutMinutes * 60_000,
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -49,17 +53,20 @@ export function SystemSection({ config, status, onRefresh, onDirtyChange }: Syst
     setPollingSeconds(String(initialPollingSeconds));
     setMaxCycles(String(initialCycles));
     setMaxRetries(String(initialRetries));
+    setAgentTimeoutMinutes(String(initialTimeoutMinutes));
     setBaseline({
       pollingIntervalMs: initialPollingSeconds * 1000,
       maxAgentCycles: initialCycles,
       maxRetryAttempts: initialRetries,
+      agentTimeoutMs: initialTimeoutMinutes * 60_000,
     });
-  }, [initialPollingSeconds, initialCycles, initialRetries]);
+  }, [initialPollingSeconds, initialCycles, initialRetries, initialTimeoutMinutes]);
 
   const dirty =
     Number(pollingSeconds) * 1000 !== baseline.pollingIntervalMs ||
     Number(maxCycles) !== baseline.maxAgentCycles ||
-    Number(maxRetries) !== baseline.maxRetryAttempts;
+    Number(maxRetries) !== baseline.maxRetryAttempts ||
+    Number(agentTimeoutMinutes) * 60_000 !== baseline.agentTimeoutMs;
 
   useEffect(() => {
     onDirtyChange(dirty);
@@ -70,10 +77,17 @@ export function SystemSection({ config, status, onRefresh, onDirtyChange }: Syst
     const seconds = Number(pollingSeconds);
     const cycles = Number(maxCycles);
     const retries = Number(maxRetries);
+    const timeoutMinutes = Number(agentTimeoutMinutes);
     if (!Number.isInteger(seconds) || seconds <= 0) return "Polling interval must be a positive whole number of seconds.";
     if (!Number.isInteger(cycles) || cycles <= 0) return "Max cycles must be a positive whole number.";
     if (!Number.isInteger(retries) || retries <= 0) return "Max retries must be a positive whole number.";
-    return { pollingIntervalMs: seconds * 1000, maxAgentCycles: cycles, maxRetryAttempts: retries };
+    if (!Number.isInteger(timeoutMinutes) || timeoutMinutes <= 0) return "Agent timeout must be a positive whole number of minutes.";
+    return {
+      pollingIntervalMs: seconds * 1000,
+      maxAgentCycles: cycles,
+      maxRetryAttempts: retries,
+      agentTimeoutMs: timeoutMinutes * 60_000,
+    };
   }
 
   async function handleSave() {
@@ -90,6 +104,7 @@ export function SystemSection({ config, status, onRefresh, onDirtyChange }: Syst
     if (result.pollingIntervalMs !== baseline.pollingIntervalMs) patch.pollingIntervalMs = result.pollingIntervalMs;
     if (result.maxAgentCycles !== baseline.maxAgentCycles) patch.maxAgentCycles = result.maxAgentCycles;
     if (result.maxRetryAttempts !== baseline.maxRetryAttempts) patch.maxRetryAttempts = result.maxRetryAttempts;
+    if (result.agentTimeoutMs !== baseline.agentTimeoutMs) patch.agentTimeoutMs = result.agentTimeoutMs;
     setSaving(true);
     try {
       await api.put("/api/admin/settings", patch);
@@ -152,6 +167,17 @@ export function SystemSection({ config, status, onRefresh, onDirtyChange }: Syst
               disabled={!canWrite}
               value={maxRetries}
               onChange={(e) => { setMaxRetries(e.target.value); setSaved(false); }}
+            />
+          </Field>
+
+          <Field label="Agent timeout (minutes)" hint="Maximum time an agent cycle may run before it is stopped.">
+            <FieldInput
+              type="number"
+              min={1}
+              step={1}
+              disabled={!canWrite}
+              value={agentTimeoutMinutes}
+              onChange={(e) => { setAgentTimeoutMinutes(e.target.value); setSaved(false); }}
             />
           </Field>
 

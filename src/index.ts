@@ -72,11 +72,13 @@ async function main(): Promise<void> {
     pollingIntervalMs: config.pollingIntervalMs,
     maxAgentCycles: config.maxAgentCycles,
     maxRetryAttempts: config.maxRetryAttempts,
+    agentTimeoutMs: config.agentTimeoutMs,
   };
   const persistedSettings = await stateStore.getAppSettings();
   config.pollingIntervalMs = persistedSettings.pollingIntervalMs ?? settingsDefaults.pollingIntervalMs;
   config.maxAgentCycles = persistedSettings.maxAgentCycles ?? settingsDefaults.maxAgentCycles;
   config.maxRetryAttempts = persistedSettings.maxRetryAttempts ?? settingsDefaults.maxRetryAttempts;
+  config.agentTimeoutMs = persistedSettings.agentTimeoutMs ?? settingsDefaults.agentTimeoutMs;
 
   registerBuiltinPlugins(config.adminAuthSecret !== undefined ? { adminAuthSecret: config.adminAuthSecret } : undefined);
   // Agent adapters are self-describing: any provider whose descriptor declares
@@ -238,6 +240,7 @@ async function main(): Promise<void> {
     maxAgentCycles: config.maxAgentCycles,
     maxRetryAttempts: config.maxRetryAttempts,
     pollingIntervalMs: config.pollingIntervalMs,
+    agentTimeoutMs: config.agentTimeoutMs,
     adminAuthSecret: config.adminAuthSecret,
   };
 
@@ -281,6 +284,7 @@ async function main(): Promise<void> {
       pollingIntervalMs: config.pollingIntervalMs,
       maxAgentCycles: config.maxAgentCycles,
       maxRetryAttempts: config.maxRetryAttempts,
+      agentTimeoutMs: config.agentTimeoutMs,
     }),
     update: async (
       patch: import("./admin/adminSettingsRoutes.js").WorkflowSettingsPatch
@@ -289,6 +293,7 @@ async function main(): Promise<void> {
       config.pollingIntervalMs = persisted.pollingIntervalMs ?? settingsDefaults.pollingIntervalMs;
       config.maxAgentCycles = persisted.maxAgentCycles ?? settingsDefaults.maxAgentCycles;
       config.maxRetryAttempts = persisted.maxRetryAttempts ?? settingsDefaults.maxRetryAttempts;
+      config.agentTimeoutMs = persisted.agentTimeoutMs ?? settingsDefaults.agentTimeoutMs;
 
       // Hot-apply to running subsystems.
       pollingLoop.updateConfig({
@@ -299,12 +304,14 @@ async function main(): Promise<void> {
       adminRuntimeConfig.pollingIntervalMs = config.pollingIntervalMs;
       adminRuntimeConfig.maxAgentCycles = config.maxAgentCycles;
       adminRuntimeConfig.maxRetryAttempts = config.maxRetryAttempts;
+      adminRuntimeConfig.agentTimeoutMs = config.agentTimeoutMs;
 
       log.info(
         {
           pollingIntervalMs: config.pollingIntervalMs,
           maxAgentCycles: config.maxAgentCycles,
           maxRetryAttempts: config.maxRetryAttempts,
+          agentTimeoutMs: config.agentTimeoutMs,
         },
         "workflow settings updated"
       );

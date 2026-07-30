@@ -52,6 +52,7 @@ function makeDeps(settings?: SettingsController): AdminServerDependencies {
       maxAgentCycles: 3,
       maxRetryAttempts: 5,
       pollingIntervalMs: 30000,
+      agentTimeoutMs: 3600000,
     },
     polling: { isRunning: () => false, getIntervals: () => ({ intervalMs: 30000 }) },
     providers: [],
@@ -60,7 +61,7 @@ function makeDeps(settings?: SettingsController): AdminServerDependencies {
 }
 
 function makeController(): SettingsController & { current: EffectiveWorkflowSettings; update: ReturnType<typeof vi.fn> } {
-  const defaults: EffectiveWorkflowSettings = { pollingIntervalMs: 30000, maxAgentCycles: 3, maxRetryAttempts: 5 };
+  const defaults: EffectiveWorkflowSettings = { pollingIntervalMs: 30000, maxAgentCycles: 3, maxRetryAttempts: 5, agentTimeoutMs: 3600000 };
   const current: EffectiveWorkflowSettings = { ...defaults };
   const update = vi.fn(async (patch: WorkflowSettingsPatch) => {
     for (const [key, value] of Object.entries(patch) as [keyof EffectiveWorkflowSettings, number | null][]) {
@@ -89,7 +90,7 @@ describe("Admin API — Settings routes", () => {
   it("GET returns the current effective settings", async () => {
     const r = await rest(server, "/api/admin/settings");
     expect(r.status).toBe(200);
-    expect(r.body).toEqual({ settings: { pollingIntervalMs: 30000, maxAgentCycles: 3, maxRetryAttempts: 5 } });
+    expect(r.body).toEqual({ settings: { pollingIntervalMs: 30000, maxAgentCycles: 3, maxRetryAttempts: 5, agentTimeoutMs: 3600000 } });
   });
 
   it("PUT validates, persists, and returns updated settings", async () => {
@@ -99,7 +100,17 @@ describe("Admin API — Settings routes", () => {
     });
     expect(r.status).toBe(200);
     expect(controller.update).toHaveBeenCalledWith({ pollingIntervalMs: 15000, maxAgentCycles: 4, maxRetryAttempts: 8 });
-    expect(r.body).toEqual({ settings: { pollingIntervalMs: 15000, maxAgentCycles: 4, maxRetryAttempts: 8 } });
+    expect(r.body).toEqual({ settings: { pollingIntervalMs: 15000, maxAgentCycles: 4, maxRetryAttempts: 8, agentTimeoutMs: 3600000 } });
+  });
+
+  it("PUT persists and returns an agent timeout override", async () => {
+    const r = await rest(server, "/api/admin/settings", {
+      method: "PUT",
+      body: { agentTimeoutMs: 900000 },
+    });
+    expect(r.status).toBe(200);
+    expect(controller.update).toHaveBeenCalledWith({ agentTimeoutMs: 900000 });
+    expect(r.body).toEqual({ settings: { pollingIntervalMs: 30000, maxAgentCycles: 3, maxRetryAttempts: 5, agentTimeoutMs: 900000 } });
   });
 
   it("PUT accepts a partial update", async () => {
@@ -132,7 +143,7 @@ describe("Admin API — Settings routes", () => {
     const r = await rest(server, "/api/admin/settings", { method: "PUT", body: { maxAgentCycles: null } });
     expect(r.status).toBe(200);
     expect(controller.update).toHaveBeenLastCalledWith({ maxAgentCycles: null });
-    expect(r.body).toEqual({ settings: { pollingIntervalMs: 30000, maxAgentCycles: 3, maxRetryAttempts: 5 } });
+    expect(r.body).toEqual({ settings: { pollingIntervalMs: 30000, maxAgentCycles: 3, maxRetryAttempts: 5, agentTimeoutMs: 3600000 } });
   });
 
   it("PUT rejects an empty payload", async () => {

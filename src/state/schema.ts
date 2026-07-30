@@ -403,6 +403,7 @@ export const appSettings = sqliteTable(
     pollingIntervalMs: integer("polling_interval_ms"),
     maxAgentCycles: integer("max_agent_cycles"),
     maxRetryAttempts: integer("max_retry_attempts"),
+    agentTimeoutMs: integer("agent_timeout_ms"),
     updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
   },
   (table) => ({
