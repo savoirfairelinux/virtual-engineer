@@ -215,6 +215,41 @@ describe("Configuration navigation guard", () => {
     await waitFor(() => expect(put).toHaveBeenCalledWith("/api/admin/settings", { agentTimeoutMs: 900000 }));
   });
 
+  it("marks a non-minute timeout as changed before normalizing it", async () => {
+    const put = vi.spyOn(api, "put").mockResolvedValue(undefined);
+    render(
+      <CurrentUserProvider value={{
+        user: admin,
+        isAdmin: true,
+        canOperate: true,
+        can: makeCan(admin),
+      }}>
+        <ConfigView
+          integrations={[]}
+          plugins={[]}
+          agents={[]}
+          projects={[]}
+          prompts={[]}
+          oauthApps={[]}
+          config={{
+            nodeEnv: "test",
+            logLevel: "silent",
+            pollingIntervalMs: 30000,
+            maxAgentCycles: 3,
+            maxRetryAttempts: 5,
+            agentTimeoutMs: 900001,
+          }}
+          status={null}
+          onRefresh={vi.fn()}
+        />
+      </CurrentUserProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => expect(put).toHaveBeenCalledWith("/api/admin/settings", { agentTimeoutMs: 900000 }));
+  });
+
   it("marks provider selection dirty but ignores provider search text", () => {
     window.history.replaceState({}, "", "#config/integrations/new");
     const guardRef: { current: (() => boolean) | null } = { current: null };

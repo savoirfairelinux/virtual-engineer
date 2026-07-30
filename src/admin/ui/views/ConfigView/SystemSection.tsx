@@ -30,7 +30,8 @@ export function SystemSection({ config, status, onRefresh, onDirtyChange }: Syst
   );
   const initialCycles = config?.maxAgentCycles ?? runtime?.maxAgentCycles ?? 3;
   const initialRetries = config?.maxRetryAttempts ?? runtime?.maxRetryAttempts ?? 5;
-  const initialTimeoutMinutes = Math.max(1, Math.round((config?.agentTimeoutMs ?? 3_600_000) / 60_000));
+  const initialTimeoutMs = config?.agentTimeoutMs ?? 3_600_000;
+  const initialTimeoutMinutes = Math.max(1, Math.round(initialTimeoutMs / 60_000));
 
   const [pollingSeconds, setPollingSeconds] = useState(String(initialPollingSeconds));
   const [maxCycles, setMaxCycles] = useState(String(initialCycles));
@@ -40,7 +41,7 @@ export function SystemSection({ config, status, onRefresh, onDirtyChange }: Syst
     pollingIntervalMs: initialPollingSeconds * 1000,
     maxAgentCycles: initialCycles,
     maxRetryAttempts: initialRetries,
-    agentTimeoutMs: initialTimeoutMinutes * 60_000,
+    agentTimeoutMs: initialTimeoutMs,
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -58,9 +59,9 @@ export function SystemSection({ config, status, onRefresh, onDirtyChange }: Syst
       pollingIntervalMs: initialPollingSeconds * 1000,
       maxAgentCycles: initialCycles,
       maxRetryAttempts: initialRetries,
-      agentTimeoutMs: initialTimeoutMinutes * 60_000,
+      agentTimeoutMs: initialTimeoutMs,
     });
-  }, [initialPollingSeconds, initialCycles, initialRetries, initialTimeoutMinutes]);
+  }, [initialPollingSeconds, initialCycles, initialRetries, initialTimeoutMs, initialTimeoutMinutes]);
 
   const dirty =
     Number(pollingSeconds) * 1000 !== baseline.pollingIntervalMs ||
