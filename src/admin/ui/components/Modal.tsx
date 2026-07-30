@@ -135,6 +135,7 @@ export function FieldInput(props: React.InputHTMLAttributes<HTMLInputElement>) {
         color: "var(--text)",
         outline: "none",
         width: "100%",
+        ...(props.readOnly ? { caretColor: "transparent" } : {}),
         ...props.style,
       }}
       onFocus={(e) => { e.currentTarget.style.borderColor = "var(--accent)"; props.onFocus?.(e); }}
@@ -183,6 +184,7 @@ export function FieldTextarea(props: React.TextareaHTMLAttributes<HTMLTextAreaEl
         resize: "vertical",
         minHeight: "200px",
         lineHeight: 1.6,
+        ...(props.readOnly ? { caretColor: "transparent" } : {}),
         ...props.style,
       }}
       onFocus={(e) => { e.currentTarget.style.borderColor = "var(--accent)"; props.onFocus?.(e); }}

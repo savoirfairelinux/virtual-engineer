@@ -50,12 +50,11 @@ export function PromptsSection({ prompts, onRefresh, route, navigate, markClean 
 
   if (route.mode === "detail") {
     if (!routePrompt) return <PromptMissing onBack={() => navigate({ section: "prompts", mode: "list" })} />;
-    const builtin = BUILTIN_PROMPT_IDS.has(routePrompt.id);
     return (
       <PromptFormModal
         prompt={routePrompt}
         readOnly
-        onEdit={canWrite && !builtin ? () => navigate({ section: "prompts", mode: "edit", id: routePrompt.id }) : undefined}
+        onEdit={canWrite ? () => navigate({ section: "prompts", mode: "edit", id: routePrompt.id }) : undefined}
         onClose={() => navigate({ section: "prompts", mode: "list" })}
         onSaved={handleSaved}
       />
@@ -64,11 +63,10 @@ export function PromptsSection({ prompts, onRefresh, route, navigate, markClean 
 
   if (route.mode === "create" || route.mode === "edit") {
     if (route.mode === "edit" && !routePrompt) return <PromptMissing onBack={() => navigate({ section: "prompts", mode: "list" })} />;
-    const builtin = routePrompt ? BUILTIN_PROMPT_IDS.has(routePrompt.id) : false;
     return (
       <PromptFormModal
         prompt={route.mode === "edit" ? routePrompt : undefined}
-        readOnly={!canWrite || builtin}
+        readOnly={!canWrite}
         onClose={() => navigate(route.mode === "edit" && routeId
           ? { section: "prompts", mode: "detail", id: routeId }
           : { section: "prompts", mode: "list" })}
@@ -148,11 +146,10 @@ export function PromptsSection({ prompts, onRefresh, route, navigate, markClean 
             <span className="mono" style={{ fontSize: "11.5px", color: "var(--text-ghost)", minWidth: "70px", textAlign: "right" }}>
               {p.content.length.toLocaleString()} ch
             </span>
-            {canDelete && (
+            {canDelete && !BUILTIN_PROMPT_IDS.has(p.id) && (
               <button
                 className="iconbtn"
                 title="Delete"
-                disabled={BUILTIN_PROMPT_IDS.has(p.id)}
                 onClick={(e) => { e.stopPropagation(); void deletePrompt(p); }}
               >
                 <Icon name="trash" size={14} />
