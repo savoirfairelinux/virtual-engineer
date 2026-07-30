@@ -84,7 +84,14 @@ export async function readGitHubWorkspaceManifestFiles(input: {
   const refQuery = input.revision ? `?ref=${encodeURIComponent(input.revision)}` : "";
   const treeRef = encodeURIComponent(input.revision ?? "HEAD");
   const listingUrl = `${input.apiBaseUrl}/repos/${repoPath}/git/trees/${treeRef}?recursive=1`;
-  const listingResponse = await globalThis.fetch(listingUrl, { headers: githubHeaders(input.token) });
+  const listingController = new AbortController();
+  const listingTimeout = setTimeout(() => listingController.abort(), REMOTE_READ_TIMEOUT_MS);
+  let listingResponse: Response;
+  try {
+    listingResponse = await globalThis.fetch(listingUrl, { headers: githubHeaders(input.token), signal: listingController.signal });
+  } finally {
+    clearTimeout(listingTimeout);
+  }
   if (!listingResponse.ok) {
     throw new Error(`GitHub repository listing failed (${listingResponse.status})`);
   }
