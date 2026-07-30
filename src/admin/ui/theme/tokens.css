@@ -72,10 +72,10 @@
   --border-soft:   oklch(0.93 0.005 258);
   --border-strong: oklch(0.82 0.008 258);
   --text:          oklch(0.24 0.015 258);
-  --text-dim:      oklch(0.46 0.013 258);
-  --text-faint:    oklch(0.60 0.012 258);
-  --text-ghost:    oklch(0.72 0.01 258);
-  --accent-fg:     oklch(0.99 0 0);
+  --text-dim:      oklch(0.40 0.013 258);
+  --text-faint:    oklch(0.50 0.012 258);
+  --text-ghost:    oklch(0.58 0.01 258);
+  --accent-fg:     oklch(0.24 0.015 258);
   --accent-soft:   oklch(0.66 0.15 var(--accent-h) / 0.10);
   --shadow:        0 1px 2px oklch(0.5 0.02 258 / 0.06), 0 10px 30px oklch(0.5 0.02 258 / 0.08);
   --shadow-sm:     0 1px 2px oklch(0.5 0.02 258 / 0.07);
