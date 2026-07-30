@@ -279,7 +279,7 @@ export function AgentFormModal({ agent, integrations, plugins, prompts, onClose,
           </FieldSelect>
         </Field>
 
-        {form.type === "coding" && !nativeReview && <Field label="Feedback Instructions Prompt" hint="Replaces the Instructions Prompt on retry cycles">
+        {(form.type === "coding" || form.feedbackInstructionsPromptId) && !nativeReview && <Field label="Feedback Instructions Prompt" hint="Replaces the Instructions Prompt on retry cycles">
           <FieldSelect value={form.feedbackInstructionsPromptId} onChange={set("feedbackInstructionsPromptId")}>
             <option value="">— none —</option>
             {instructionsPrompts.map((p) => (

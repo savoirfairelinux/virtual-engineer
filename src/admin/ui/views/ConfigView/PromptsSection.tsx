@@ -91,7 +91,12 @@ export function PromptsSection({ prompts, onRefresh, route, navigate, markClean 
             <select
               id="prompt-filter"
               value={filter}
-              onChange={(e) => setFilter(e.target.value as PromptFilter)}
+              onChange={(e) => {
+                const value = e.target.value;
+                if (value === "all" || value === "system" || value === "instructions") {
+                  setFilter(value);
+                }
+              }}
               style={{
                 padding: "6px 10px", fontSize: "13px", fontFamily: "var(--font-sans)",
                 border: "1px solid var(--border)", borderRadius: "var(--radius-sm)",
