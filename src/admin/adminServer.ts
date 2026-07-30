@@ -422,6 +422,8 @@ function buildApiRouter(dependencies: AdminServerDependencies, authRuntime: Admi
   registerProjectRoutes(router, {
     projectStore: dependencies.projectStore,
     integrationStore: dependencies.integrationStore,
+    pluginManager: dependencies.pluginManager,
+    adminAuthSecret: dependencies.config.adminAuthSecret,
     auditStore,
     onProjectChange: dependencies.onProjectChange,
     taskControl: dependencies.taskControl,

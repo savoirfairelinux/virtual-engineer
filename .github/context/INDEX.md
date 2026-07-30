@@ -29,6 +29,7 @@ The repo-wide entry point for Copilot is [.github/copilot-instructions.md](../co
 | [modules/vcs.md](modules/vcs.md) | Host-owned direct push (Gerrit / GitLab / GitHub), branch naming |
 | [modules/plugins.md](modules/plugins.md) | Descriptor registry, PluginManager, runtime bootstrap |
 | [modules/admin.md](modules/admin.md) | Admin HTTP server + dashboard, secret masking, integration test endpoint |
+| [modules/workspace.md](modules/workspace.md) | Workspace manifest scanning, provider reads, limits, and current materialization boundary |
 
 ## Quick task → doc map
 
@@ -36,6 +37,7 @@ The repo-wide entry point for Copilot is [.github/copilot-instructions.md](../co
 - **Add a column or table** → [database.md](database.md), update `src/state/schema.ts`, run `npm run db:generate`.
 - **Add an env var** → [configuration.md](configuration.md), update `src/config.ts` (`ConfigSchema` + `fromEnv`).
 - **Add a new provider** → matching `modules/*.md` (connectors / vcs / plugins / agents).
+- **Change repository/workspace discovery** → [modules/workspace.md](modules/workspace.md) + [modules/plugins.md](modules/plugins.md).
 - **Add a new agent engine** → [modules/agents.md](modules/agents.md) + the descriptor's `agent_execution` capability (see [modules/plugins.md](modules/plugins.md)).
 - **Run tests** → [testing.md](testing.md).
 - **Debug a stuck task** → SQL queries in [database.md](database.md) + the [`ve-debug` skill](../skills/ve-debug/SKILL.md).
