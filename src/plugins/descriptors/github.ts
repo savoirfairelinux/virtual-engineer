@@ -21,6 +21,7 @@ import {
   getGitHubAccessToken,
 } from "./githubOAuth.js";
 import { validateGitHubConnection } from "../../agents/githubConnectionValidator.js";
+import { readGitHubWorkspaceManifestFiles } from "../../workspace/repositoryManifestAccess.js";
 
 /**
  * Unified GitHub provider configuration. The single GitHub provider can fulfil
@@ -173,6 +174,18 @@ export const githubDescriptor: ProviderDescriptor = {
       return [];
     }
     return listGitHubBranches(token, urls.apiBaseUrl, repoKey);
+  },
+  readWorkspaceManifestFiles: async (config, repoKey, revision) => {
+    const parsed = githubConfigSchema.parse(config);
+    const token = getGitHubAccessTokenSafe(parsed);
+    if (!token) throw new Error("GitHub workspace scan requires an access token");
+    const urls = resolveGitHubUrls(parsed.mode as GitHubMode, parsed.baseUrl);
+    return readGitHubWorkspaceManifestFiles({
+      apiBaseUrl: urls.apiBaseUrl,
+      token,
+      repoKey,
+      ...(revision !== undefined ? { revision } : {}),
+    });
   },
   testConnection: async (config) => {
     const parsed = githubConfigSchema.parse(config);

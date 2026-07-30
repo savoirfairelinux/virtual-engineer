@@ -24,6 +24,7 @@ import {
   GITLAB_COM_BASE_URL,
 } from "./gitlabOAuth.js";
 import { getGitLabAccessToken } from "../../utils/gitlabAuth.js";
+import { readGitLabWorkspaceManifestFiles } from "../../workspace/repositoryManifestAccess.js";
 
 const log = getLogger("gitlab-descriptor");
 
@@ -116,6 +117,15 @@ export const gitlabDescriptor: ProviderDescriptor = {
       token,
     });
     return mrConnector.listBranches(repoKey);
+  },
+  readWorkspaceManifestFiles: async (config, repoKey, revision) => {
+    const parsed = gitlabConfigSchema.parse(config);
+    return readGitLabWorkspaceManifestFiles({
+      baseUrl: parsed.baseUrl ?? GITLAB_COM_BASE_URL,
+      token: getGitLabAccessToken(parsed),
+      repoKey,
+      ...(revision !== undefined ? { revision } : {}),
+    });
   },
   testConnection: async (config) => {
     const cfg = config as Record<string, unknown>;
