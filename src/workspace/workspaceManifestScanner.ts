@@ -61,7 +61,9 @@ function normalizeLocalPath(value: string): string | null {
 }
 
 function isAbsoluteRepositoryUrl(value: string): boolean {
-  return /^[a-z][a-z\d+.-]*:\/\//i.test(value) || /^(?:[^@/\s]+@)?[^:/\s]+:.+/.test(value);
+  if (/^(?:https?|ssh|git):\/\//i.test(value)) return true;
+  if (/^[a-z][a-z\d+.-]*:/i.test(value)) return false;
+  return /^(?:[^@/\s]+@)?[^:/\s]+:.+/.test(value);
 }
 
 function appendRepositoryPath(base: string, repositoryPath: string): string {
@@ -72,22 +74,24 @@ function appendRepositoryPath(base: string, repositoryPath: string): string {
   return `${base.replace(/\/+$/, "")}/${suffix}`;
 }
 
-function resolveRelativeRepositoryUrl(rootCloneUrl: string, repositoryUrl: string): string {
+function resolveRelativeRepositoryUrl(rootCloneUrl: string, repositoryUrl: string): string | null {
   const value = repositoryUrl.trim();
   if (isAbsoluteRepositoryUrl(value)) return value;
+  if (/^[a-z][a-z\d+.-]*:/i.test(value)) return null;
 
   if (!rootCloneUrl.includes("://")) {
     const match = /^((?:[^@/\s]+@)?[^:/\s]+:)(.+)$/.exec(rootCloneUrl);
-    if (!match) return value;
+    if (!match) return null;
     const resolvedPath = path.posix.normalize(path.posix.join(match[2] ?? "", value));
     return `${match[1]}${resolvedPath}`;
   }
 
   try {
     const base = new URL(rootCloneUrl.endsWith("/") ? rootCloneUrl : `${rootCloneUrl}/`);
-    return new URL(value, base).toString();
+    const resolved = new URL(value, base).toString();
+    return isAbsoluteRepositoryUrl(resolved) ? resolved : null;
   } catch {
-    return value;
+    return null;
   }
 }
 
@@ -279,8 +283,17 @@ function scanGitmodules(
       });
       continue;
     }
+    const cloneUrl = resolveRelativeRepositoryUrl(rootCloneUrl, repositoryUrl);
+    if (!cloneUrl) {
+      result.diagnostics.push({
+        sourcePath: file.path,
+        severity: "warning",
+        message: `Ignored submodule '${localPath}' with unsupported repository URL.`,
+      });
+      continue;
+    }
     addRepository(result, file.path, {
-      cloneUrl: resolveRelativeRepositoryUrl(rootCloneUrl, repositoryUrl),
+      cloneUrl,
       localPath,
       revision: section["branch"] ?? null,
       relation: "gitlink",

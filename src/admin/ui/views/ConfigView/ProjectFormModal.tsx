@@ -830,7 +830,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
   const [workspaceScanQueries, setWorkspaceScanQueries] = useState<Record<string, string>>({});
   const [scanningWorkspaceUrl, setScanningWorkspaceUrl] = useState<string | null>(null);
   const [addingWorkspaceMember, setAddingWorkspaceMember] = useState<string | null>(null);
-  const [workspaceScanError, setWorkspaceScanError] = useState<string | null>(null);
+  const [workspaceScanErrors, setWorkspaceScanErrors] = useState<Record<string, string>>({});
 
   useEffect(() => {
     if (!project) return;
@@ -975,7 +975,11 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
     if (!target?.integrationId || !target.repoKey || !target.cloneUrl.trim()) return;
     const cloneUrl = target.cloneUrl.trim();
     setScanningWorkspaceUrl(cloneUrl);
-    setWorkspaceScanError(null);
+    setWorkspaceScanErrors((previous) => {
+      const next = { ...previous };
+      delete next[cloneUrl];
+      return next;
+    });
     try {
       const scan = await api.post<WorkspacePushTargetScanResponse>(
         "/api/admin/projects/scan-push-targets",
@@ -996,7 +1000,10 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
         },
       }));
     } catch (scanError) {
-      setWorkspaceScanError(scanError instanceof Error ? scanError.message : "Workspace scan failed");
+      setWorkspaceScanErrors((previous) => ({
+        ...previous,
+        [cloneUrl]: scanError instanceof Error ? scanError.message : "Workspace scan failed",
+      }));
     } finally {
       setScanningWorkspaceUrl((current) => current === cloneUrl ? null : current);
     }
@@ -1224,6 +1231,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
                   {t.localPath === "." && t.integrationId && t.repoKey && t.cloneUrl.trim() && (() => {
                     const workspaceUrl = t.cloneUrl.trim();
                     const preview = workspaceScans[workspaceUrl];
+                    const workspaceScanError = workspaceScanErrors[workspaceUrl];
                     const memberQuery = workspaceScanQueries[workspaceUrl] ?? "";
                     const normalizedMemberQuery = memberQuery.trim().toLowerCase();
                     const visibleMembers = preview?.members.filter((member) =>

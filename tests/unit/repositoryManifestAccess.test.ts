@@ -128,6 +128,37 @@ describe("repository manifest access", () => {
     expect(requestSignal?.aborted).toBe(true);
   });
 
+  it.each(["github", "gitlab"] as const)("bounds concurrent %s manifest reads", async (provider) => {
+    let activeReads = 0;
+    let maxActiveReads = 0;
+    const manifestPaths = Array.from({ length: 20 }, (_, index) => `deps-${index}.repos`);
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      const isListing = provider === "github" ? url.includes("/git/trees/") : url.includes("/repository/tree?");
+      if (isListing) {
+        return provider === "github"
+          ? new Response(JSON.stringify({ truncated: false, tree: manifestPaths.map((path) => ({ type: "blob", path })) }))
+          : new Response(JSON.stringify(manifestPaths.map((path) => ({ type: "blob", path }))));
+      }
+      activeReads += 1;
+      maxActiveReads = Math.max(maxActiveReads, activeReads);
+      await new Promise((resolve) => setTimeout(resolve, 2));
+      activeReads -= 1;
+      return provider === "github"
+        ? new Response(JSON.stringify({ encoding: "base64", content: Buffer.from("repositories: {}\n").toString("base64") }))
+        : new Response("repositories: {}\n");
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    if (provider === "github") {
+      await readGitHubWorkspaceManifestFiles({ apiBaseUrl: "https://api.github.test", token: "secret", repoKey: "platform/root" });
+    } else {
+      await readGitLabWorkspaceManifestFiles({ baseUrl: "https://gitlab.test", token: "secret", repoKey: "platform/root" });
+    }
+
+    expect(maxActiveReads).toBeLessThanOrEqual(8);
+  });
+
   it("rejects decoded manifests above the byte limit", async () => {
     vi.stubGlobal("fetch", vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({
