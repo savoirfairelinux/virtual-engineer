@@ -156,8 +156,8 @@ export function AgentFormModal({ agent, integrations, plugins, prompts, onClose,
   const handleSave = async () => {
     if (!form.name.trim()) { setError("Agent name is required"); return; }
     if (!form.integrationId) { setError("Select an agent integration"); return; }
-    if (!form.systemPromptId) { setError("Select agent instructions"); return; }
-    if (!form.instructionsPromptId) { setError("Select workflow instructions"); return; }
+    if (!form.systemPromptId) { setError("Select a System Prompt"); return; }
+    if (!form.instructionsPromptId) { setError("Select an Instructions Prompt"); return; }
     setSaving(true);
     setError(null);
     try {
@@ -261,7 +261,7 @@ export function AgentFormModal({ agent, integrations, plugins, prompts, onClose,
           <FieldInput type="number" min={1} value={form.maxConcurrent} onChange={set("maxConcurrent")} />
         </Field>
 
-        <Field label="Agent Instructions" required hint="Permanent policy appended to the provider's native agent foundation">
+        <Field label="System Prompt" required hint="Permanent policy appended to the provider's native agent foundation">
           <FieldSelect value={form.systemPromptId} onChange={set("systemPromptId")} disabled={nativeReview}>
             <option value="">— select a prompt —</option>
             {systemPrompts.map((p) => (
@@ -270,7 +270,7 @@ export function AgentFormModal({ agent, integrations, plugins, prompts, onClose,
           </FieldSelect>
         </Field>
 
-        <Field label="Workflow Instructions" required hint="Task-specific guidance included in the generated user request">
+        <Field label="Instructions Prompt" required hint="Task-specific guidance included in the generated user request">
           <FieldSelect value={form.instructionsPromptId} onChange={set("instructionsPromptId")}>
             <option value="">— select a prompt —</option>
             {instructionsPrompts.map((p) => (
@@ -279,7 +279,7 @@ export function AgentFormModal({ agent, integrations, plugins, prompts, onClose,
           </FieldSelect>
         </Field>
 
-        {!nativeReview && <Field label="Feedback Workflow Instructions" hint="Replaces workflow instructions on retry cycles">
+        {form.type === "coding" && !nativeReview && <Field label="Feedback Instructions Prompt" hint="Replaces the Instructions Prompt on retry cycles">
           <FieldSelect value={form.feedbackInstructionsPromptId} onChange={set("feedbackInstructionsPromptId")}>
             <option value="">— none —</option>
             {instructionsPrompts.map((p) => (

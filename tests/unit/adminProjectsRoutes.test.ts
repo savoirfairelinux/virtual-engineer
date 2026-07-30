@@ -1034,7 +1034,7 @@ FetchContent_Declare(googletest
     });
 
     expect(r.status).toBe(400);
-    expect(r.body?.["error"]).toMatch(/not agent instructions/i);
+    expect(r.body?.["error"]).toMatch(/not (?:a )?System Prompt/i);
   });
 
   it("rejects conflicting project overrides for native review agents", async () => {
