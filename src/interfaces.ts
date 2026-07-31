@@ -142,6 +142,41 @@ export interface ProjectPushTargetRecord {
   updatedAt: Date;
 }
 
+/**
+ * How a workspace-scanned repository relates to VE's push capability:
+ * `internal` lives inside the root repository, `fork_pushable` maps to an
+ * enabled integration VE can push to, `patch_required` is upstream-only, and
+ * `ambiguous` matches several integrations.
+ */
+export type VendorComponentOrigin = "internal" | "fork_pushable" | "patch_required" | "ambiguous";
+
+/** A vendored / external component of a coding project, as classified by a workspace scan. */
+export interface ProjectVendorComponentRecord {
+  id: number;
+  projectId: ProjectId;
+  /** Real manifest path in the checkout (e.g. "daemon/contrib/src/fmt/package.json"). */
+  sourcePath: string;
+  /** Declared checkout path, which may be synthetic and absent from disk. */
+  localPath: string | null;
+  cloneUrl: string | null;
+  revision: string | null;
+  origin: VendorComponentOrigin;
+  /** Free-form operator guidance (e.g. how to patch this component). */
+  note: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+/** Field set accepted when replacing a project's vendor components. */
+export interface ProjectVendorComponentInput {
+  sourcePath: string;
+  localPath?: string | null;
+  cloneUrl?: string | null;
+  revision?: string | null;
+  origin: VendorComponentOrigin;
+  note?: string;
+}
+
 /** Review-project configuration: integration + covered repos. */
 export interface ProjectReviewConfig {
   integrationId: string;

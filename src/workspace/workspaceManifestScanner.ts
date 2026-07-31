@@ -5,6 +5,7 @@ import { parse as parseYaml } from "yaml";
 
 export const WORKSPACE_MANIFEST_MAX_BYTES = 256 * 1024;
 export const WORKSPACE_MANIFEST_MAX_FILES = 200;
+export const WORKSPACE_RECIPE_MAX_FILES = 200;
 
 export type WorkspaceManifestRelation = "gitlink" | "manifest_member" | "contains";
 
@@ -445,6 +446,160 @@ function scanVcstool(file: WorkspaceManifestFile, result: MutableScanResult): vo
   }
 }
 
+/**
+ * kas configs have no conventional filename, so shape is confirmed from content:
+ * a `repos` map whose entries are all mappings (or empty). URL-less entries are
+ * layers that live inside the root repository itself.
+ *
+ * @returns whether this file declared at least one layer internal to the repository.
+ */
+function scanKasManifest(
+  file: WorkspaceManifestFile,
+  rootCloneUrl: string,
+  result: MutableScanResult
+): boolean {
+  let parsed: unknown;
+  try {
+    parsed = parseYaml(file.content);
+  } catch {
+    return false;
+  }
+  const root = asRecord(parsed);
+  const repos = asRecord(root?.["repos"]);
+  if (!root || !repos) return false;
+  const entries = Object.entries(repos);
+  const looksLikeKas = asRecord(root["header"]) !== null
+    || entries.every(([, value]) => value === null || value === undefined || asRecord(value) !== null);
+  if (!looksLikeKas) return false;
+
+  let hasInternalLayer = false;
+  for (const [name, value] of entries) {
+    const entry = asRecord(value);
+    const localPath = asString(entry?.["path"]) ?? name;
+    const revision = asString(entry?.["refspec"]) ?? asString(entry?.["commit"]) ?? asString(entry?.["branch"]);
+    const repositoryUrl = asString(entry?.["url"]);
+    if (!repositoryUrl) {
+      hasInternalLayer = true;
+      addWorkspaceRootRepository(result, file.path, {
+        cloneUrl: null,
+        localPath,
+        revision,
+        relation: "contains",
+      });
+      continue;
+    }
+    const cloneUrl = resolveRelativeRepositoryUrl(rootCloneUrl, repositoryUrl);
+    if (!cloneUrl) {
+      result.diagnostics.push({
+        sourcePath: file.path,
+        severity: "warning",
+        message: `Ignored kas repository '${name}' with unsupported repository URL.`,
+      });
+      continue;
+    }
+    addWorkspaceRootRepository(result, file.path, {
+      cloneUrl,
+      localPath,
+      revision,
+      relation: "manifest_member",
+    });
+  }
+  return hasInternalLayer;
+}
+
+function isBitbakeRecipePath(filePath: string): boolean {
+  return /\.bb(append)?$/i.test(filePath);
+}
+
+/** Same-file assignments plus the PN/BPN/PV a recipe derives from its own filename. */
+function bitbakeVariables(file: WorkspaceManifestFile): Map<string, string> {
+  const variables = new Map<string, string>();
+  const assignment = /^[ \t]*([A-Za-z_][A-Za-z0-9_]*)[ \t]*(\?\?=|\?=|:=|=)[ \t]*(["'])([\s\S]*?)\3/gm;
+  const joined = file.content.replace(/\\\r?\n/g, " ");
+  for (let match = assignment.exec(joined); match; match = assignment.exec(joined)) {
+    const name = match[1]!;
+    if (match[2]!.startsWith("?") && variables.has(name)) continue;
+    variables.set(name, match[4] ?? "");
+  }
+  const [baseName, version] = path.posix.basename(file.path).replace(/\.bb(append)?$/i, "").split("_");
+  if (baseName) {
+    if (!variables.has("PN")) variables.set("PN", baseName);
+    if (!variables.has("BPN")) variables.set("BPN", baseName);
+  }
+  if (version && !variables.has("PV")) variables.set("PV", version);
+  return variables;
+}
+
+function expandBitbakeValue(value: string, variables: Map<string, string>): string {
+  let current = value;
+  for (let pass = 0; pass < 5 && current.includes("${"); pass += 1) {
+    const next = current.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (whole, name: string) => variables.get(name) ?? whole);
+    if (next === current) break;
+    current = next;
+  }
+  return current;
+}
+
+function staticBitbakeValue(value: string | undefined, variables: Map<string, string>): string | null {
+  if (!value) return null;
+  const expanded = expandBitbakeValue(value, variables).trim();
+  return expanded.length === 0 || expanded.includes("${") ? null : expanded;
+}
+
+/** Values are expanded before splitting, so a URL held in a same-file variable still exposes its own fetcher parameters. */
+function bitbakeSrcUriEntries(content: string, variables: Map<string, string>): string[] {
+  const entries: string[] = [];
+  const assignment = /^[ \t]*[A-Za-z0-9_]*SRC_URI(?:[:_][A-Za-z0-9_${}:.-]+)?[ \t]*(?:\?\?=|\?=|\+=|=\+|:=|=)[ \t]*(["'])([\s\S]*?)\1/gm;
+  const joined = content.replace(/\\\r?\n/g, " ");
+  for (let match = assignment.exec(joined); match; match = assignment.exec(joined)) {
+    entries.push(...expandBitbakeValue(match[2] ?? "", variables).split(/\s+/).filter(Boolean));
+  }
+  return entries;
+}
+
+/** Turn one BitBake `scheme://host/path;key=value` git fetcher into a clone URL, or null when it is not statically resolvable. */
+function bitbakeGitFetcher(entry: string, variables: Map<string, string>): { cloneUrl: string; revision: string | null } | null {
+  const [url, ...rawParameters] = entry.split(";");
+  if (!url || url.includes("${") || !/^(?:git|gitsm):\/\//i.test(url)) return null;
+  const parameters = new Map<string, string>();
+  for (const parameter of rawParameters) {
+    const separator = parameter.indexOf("=");
+    if (separator > 0) parameters.set(parameter.slice(0, separator).trim().toLowerCase(), parameter.slice(separator + 1).trim());
+  }
+  const protocol = parameters.get("protocol")?.toLowerCase();
+  const scheme = protocol && ["http", "https", "ssh", "git"].includes(protocol) ? protocol : "git";
+  const revision = staticBitbakeValue(parameters.get("tag"), variables)
+    ?? staticBitbakeValue(variables.get("SRCREV"), variables)
+    ?? staticBitbakeValue(parameters.get("branch"), variables);
+  return {
+    cloneUrl: url.replace(/^(?:git|gitsm):\/\//i, `${scheme}://`),
+    revision: revision !== null && revision.includes("AUTOINC") ? null : revision,
+  };
+}
+
+function scanBitbakeRecipe(file: WorkspaceManifestFile, result: MutableScanResult): void {
+  const variables = bitbakeVariables(file);
+  const seen = new Set<string>();
+  for (const entry of bitbakeSrcUriEntries(file.content, variables)) {
+    const fetcher = bitbakeGitFetcher(entry, variables);
+    if (!fetcher || seen.has(fetcher.cloneUrl)) continue;
+    seen.add(fetcher.cloneUrl);
+    let repositoryName: string;
+    try {
+      repositoryName = path.posix.basename(new URL(fetcher.cloneUrl).pathname).replace(/\.git$/i, "");
+    } catch {
+      continue;
+    }
+    if (!repositoryName) continue;
+    addWorkspaceRootRepository(result, file.path, {
+      cloneUrl: fetcher.cloneUrl,
+      localPath: `.ve-deps/${repositoryName}`,
+      revision: fetcher.revision,
+      relation: "manifest_member",
+    });
+  }
+}
+
 function scanCodeWorkspace(file: WorkspaceManifestFile, result: MutableScanResult): void {
   const errors: ParseError[] = [];
   const parsed = parseJsonc(file.content, errors, { allowTrailingComma: true });
@@ -496,14 +651,17 @@ function scanCodeWorkspace(file: WorkspaceManifestFile, result: MutableScanResul
 /** Parse supported workspace manifests without network access or side effects. */
 export function scanWorkspaceManifests(input: WorkspaceManifestScanInput): WorkspaceManifestScanResult {
   const result: MutableScanResult = { repositories: [], diagnostics: [] };
-  if (input.files.length > WORKSPACE_MANIFEST_MAX_FILES) {
+  const manifestFiles = input.files.filter((file) => !isBitbakeRecipePath(file.path));
+  const recipeFiles = input.files.filter((file) => isBitbakeRecipePath(file.path));
+  if (manifestFiles.length > WORKSPACE_MANIFEST_MAX_FILES) {
     result.diagnostics.push({
       sourcePath: "workspace",
       severity: "error",
-      message: `Only the first ${WORKSPACE_MANIFEST_MAX_FILES} of ${input.files.length} manifests were scanned.`,
+      message: `Only the first ${WORKSPACE_MANIFEST_MAX_FILES} of ${manifestFiles.length} manifests were scanned.`,
     });
   }
-  for (const file of input.files.slice(0, WORKSPACE_MANIFEST_MAX_FILES)) {
+  let hasInternalLayers = false;
+  for (const file of manifestFiles.slice(0, WORKSPACE_MANIFEST_MAX_FILES)) {
     if (Buffer.byteLength(file.content, "utf8") > WORKSPACE_MANIFEST_MAX_BYTES) {
       result.diagnostics.push({ sourcePath: file.path, severity: "error", message: "Manifest exceeds the 256 KiB limit." });
       continue;
@@ -515,6 +673,16 @@ export function scanWorkspaceManifests(input: WorkspaceManifestScanInput): Works
     else if (file.path.endsWith(".code-workspace")) scanCodeWorkspace(file, result);
     else if (path.posix.basename(file.path) === "package.json" && file.path.split("/").includes("contrib")) scanContribPackage(file, result);
     else if (path.posix.basename(file.path) === "CMakeLists.txt") scanCmake(file, result);
+    else if (/\.ya?ml$/i.test(file.path)) hasInternalLayers = scanKasManifest(file, input.rootCloneUrl, result) || hasInternalLayers;
+  }
+  // Recipes describe upstream sources of layers VE owns; without an internal layer there is nothing it could patch.
+  if (!hasInternalLayers) return result;
+  for (const file of recipeFiles.slice(0, WORKSPACE_RECIPE_MAX_FILES)) {
+    if (Buffer.byteLength(file.content, "utf8") > WORKSPACE_MANIFEST_MAX_BYTES) {
+      result.diagnostics.push({ sourcePath: file.path, severity: "error", message: "Manifest exceeds the 256 KiB limit." });
+      continue;
+    }
+    scanBitbakeRecipe(file, result);
   }
   return result;
 }

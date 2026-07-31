@@ -1,10 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  isBitbakeRecipeCandidatePath,
+  isKasCandidatePath,
   isWorkspaceManifestPath,
   readGitHubWorkspaceManifestFiles,
   readGitLabWorkspaceManifestFiles,
+  WORKSPACE_KAS_CANDIDATE_MAX_FILES,
 } from "../../src/workspace/repositoryManifestAccess.js";
-import { WORKSPACE_MANIFEST_MAX_BYTES } from "../../src/workspace/workspaceManifestScanner.js";
+import { WORKSPACE_MANIFEST_MAX_BYTES, WORKSPACE_RECIPE_MAX_FILES } from "../../src/workspace/workspaceManifestScanner.js";
 
 describe("repository manifest access", () => {
   afterEach(() => {
@@ -36,6 +39,113 @@ describe("repository manifest access", () => {
       "build/_deps/googletest/CMakeLists.txt",
       "cmake-build-debug/generated/CMakeLists.txt",
     ].some(isWorkspaceManifestPath)).toBe(false);
+  });
+
+  it("accepts only bounded, plausibly named YAML files as kas candidates", () => {
+    expect([
+      "config.yaml",
+      "kas.yml",
+      "kas-base.yml",
+      "repo.yaml",
+      "repos.yml",
+      "project.yml",
+      "manifest.yaml",
+      "kas/my-config.yaml",
+      "ci/kas/base.yml",
+    ].every(isKasCandidatePath)).toBe(true);
+    expect([
+      ".gitlab-ci.yml",
+      "docker-compose.yml",
+      "values.yaml",
+      "west.yml",
+      "config.json",
+      "a/b/c/config.yaml",
+      "node_modules/pkg/config.yaml",
+      "../config.yaml",
+    ].some(isKasCandidatePath)).toBe(false);
+  });
+
+  it("accepts only bounded BitBake recipes inside layer directories", () => {
+    expect([
+      "meta-product/recipes-core/alpha/alpha_1.0.bb",
+      "meta/recipes-core/beta/beta_git.bbappend",
+      "layers/meta-bsp/recipes-kernel/linux/linux_6.6.bb",
+    ].every(isBitbakeRecipeCandidatePath)).toBe(true);
+    expect([
+      "recipes-core/alpha/alpha_1.0.bb",
+      "meta-product/recipes-core/alpha/alpha.conf",
+      "build/meta-product/recipes-core/alpha/alpha_1.0.bb",
+      "a/b/c/d/e/f/meta-product/alpha_1.0.bb",
+      "../meta-product/alpha_1.0.bb",
+    ].some(isBitbakeRecipeCandidatePath)).toBe(false);
+  });
+
+  it("reads bounded recipe candidates only when the tree also exposes a kas candidate", async () => {
+    const recipePaths = Array.from(
+      { length: WORKSPACE_RECIPE_MAX_FILES + 5 },
+      (_, index) => `meta-product/recipes-core/pkg${String(index).padStart(3, "0")}/pkg_1.0.bb`,
+    );
+    const listing = (paths: string[]): Response => new Response(
+      JSON.stringify({ truncated: false, tree: paths.map((path) => ({ type: "blob", path })) }),
+      { status: 200 },
+    );
+    const content = new Response(
+      JSON.stringify({ encoding: "base64", content: Buffer.from("repos: {}\n").toString("base64") }),
+      { status: 200 },
+    );
+
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => (
+      String(input).includes("/git/trees/") ? listing(["kas.yml", ...recipePaths]) : content.clone()
+    )));
+    const withKas = await readGitHubWorkspaceManifestFiles({
+      apiBaseUrl: "https://api.github.test",
+      token: "secret",
+      repoKey: "platform/root",
+    });
+    expect(withKas.map((file) => file.path)).toEqual(["kas.yml", ...recipePaths.slice(0, WORKSPACE_RECIPE_MAX_FILES)]);
+
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => (
+      String(input).includes("/git/trees/") ? listing([".gitmodules", ...recipePaths]) : content.clone()
+    )));
+    const withoutKas = await readGitHubWorkspaceManifestFiles({
+      apiBaseUrl: "https://api.github.test",
+      token: "secret",
+      repoKey: "platform/root",
+    });
+    expect(withoutKas.map((file) => file.path)).toEqual([".gitmodules"]);
+  });
+
+  it("keeps unrelated YAML files out of the manifest budget instead of failing the scan", async () => {
+    const manifestPaths = [".gitmodules"];
+    const unrelatedYamlPaths = Array.from({ length: 300 }, (_, index) => `charts/values-${index}.yaml`);
+    const kasCandidatePaths = Array.from(
+      { length: WORKSPACE_KAS_CANDIDATE_MAX_FILES + 10 },
+      (_, index) => `kas/config-${String(index).padStart(3, "0")}.yaml`,
+    );
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      if (String(input).includes("/git/trees/")) {
+        return new Response(JSON.stringify({
+          truncated: false,
+          tree: [...manifestPaths, ...unrelatedYamlPaths, ...kasCandidatePaths].map((path) => ({ type: "blob", path })),
+        }), { status: 200 });
+      }
+      return new Response(JSON.stringify({
+        encoding: "base64",
+        content: Buffer.from("repos: {}\n").toString("base64"),
+      }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const files = await readGitHubWorkspaceManifestFiles({
+      apiBaseUrl: "https://api.github.test",
+      token: "secret",
+      repoKey: "platform/root",
+    });
+
+    expect(files.map((file) => file.path)).toEqual([
+      ".gitmodules",
+      ...kasCandidatePaths.slice(0, WORKSPACE_KAS_CANDIDATE_MAX_FILES),
+    ]);
   });
 
   it("recursively lists, filters, and decodes GitHub manifests at the requested revision", async () => {

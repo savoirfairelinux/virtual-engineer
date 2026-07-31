@@ -1,5 +1,5 @@
 import path from "node:path";
-import type { Integration } from "../interfaces.js";
+import type { Integration, VendorComponentOrigin } from "../interfaces.js";
 import type { PluginManager } from "../plugins/pluginManager.js";
 import { getProviderDescriptor } from "../plugins/registry.js";
 import { resolveRepositoryBindings, type RepositoryBindingResolution } from "./integrationBindingResolver.js";
@@ -17,6 +17,18 @@ export interface IntegrationWorkspaceScanResult {
 
 export interface ProjectWorkspaceScanRepository extends WorkspaceManifestRepository {
   resolution: RepositoryBindingResolution | null;
+  origin: VendorComponentOrigin;
+}
+
+/** Whether VE can push to a scanned repository, or whether it must be patched instead. */
+export function classifyRepositoryOrigin(
+  cloneUrl: string | null,
+  resolution: RepositoryBindingResolution | null,
+): VendorComponentOrigin {
+  if (cloneUrl === null) return "internal";
+  if (resolution?.status === "matched" && resolution.match.enabled) return "fork_pushable";
+  if (resolution?.status === "ambiguous") return "ambiguous";
+  return "patch_required";
 }
 
 export interface ProjectWorkspaceScanResult {
@@ -165,7 +177,11 @@ export async function scanProjectWorkspace(input: {
     let resolutionIndex = 0;
     for (const repository of adjusted) {
       const resolution = repository.cloneUrl === null ? null : resolutions[resolutionIndex++] ?? null;
-      repositories.push({ ...repository, resolution });
+      repositories.push({
+        ...repository,
+        resolution,
+        origin: classifyRepositoryOrigin(repository.cloneUrl, resolution),
+      });
       if (
         repository.relation !== "gitlink"
         || current.depth >= MAX_RECURSIVE_SCAN_DEPTH
