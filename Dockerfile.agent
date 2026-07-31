@@ -25,6 +25,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   && /root/.local/bin/uv tool install --python python3 aider-chat==0.86.2 \
   && ln -s /root/.local/bin/aider /usr/local/bin/aider
 ENV PATH="/root/.local/bin:${PATH}"
+
+# Install Goose CLI (https://goose-docs.ai) for the `goose` agent provider.
+# Goose is a Rust CLI from the AAIF that wraps any LLM provider. It is installed
+# via the official installer with a pinned version for reproducible builds. The
+# binary lands in /usr/local/bin so the agent-worker subprocess spawn resolves it
+# on PATH. CONFIGURE=false skips the interactive `goose configure` flow; the
+# agent-worker writes the config.yaml into the HOME volume at runtime. bzip2 is
+# required because the installer downloads a .tar.bz2 release archive; libxcb1
+# provides libxcb.so.1, a shared library the goose binary links against.
+RUN apt-get update && apt-get install -y --no-install-recommends bzip2 libxcb1 \
+  && rm -rf /var/lib/apt/lists/* \
+  && curl -fsSL https://github.com/aaif-goose/goose/releases/download/stable/download_cli.sh \
+    | GOOSE_VERSION=1.21.1 CONFIGURE=false GOOSE_BIN_DIR=/usr/local/bin bash
 # Default SSH config — accepts unknown host keys as a fallback for ephemeral
 # containers. When sshKnownHostsPath is configured on the Gerrit integration,
 # dockerVolume.ts overrides GIT_SSH_COMMAND at runtime with strict checking.
