@@ -131,6 +131,31 @@ describe("runGooseAgent", () => {
     expect(configContent).toContain("GOOSE_MODE: chat");
   });
 
+  it("forces GOOSE_MODE=chat in review mode even when a user gooseMode is configured", async () => {
+    process.env["GOOSE_MODE"] = "auto";
+    const fake = makeFakeChild();
+    spawnMock.mockReturnValue(fake);
+    const promise = runGooseAgent("review the diff", {
+      model: "claude-sonnet-4-5",
+      agentInstructions: "review policy",
+      cwd: "/workspace",
+      timeoutMs: 1000,
+      mode: "review",
+      reviewOutputSchema: { type: "object", properties: { summary: { type: "string" } }, required: ["summary"] },
+    });
+    await new Promise((r) => setImmediate(r));
+    fake.emit("close", 0);
+    await promise;
+
+    const writes = vi.mocked(writeFileSync).mock.calls;
+    const configWrite = writes.find((w) => String(w[0]).endsWith("config.yaml"));
+    expect(configWrite).toBeDefined();
+    const configContent = String(configWrite![1]);
+    // User-configured GOOSE_MODE=auto is overridden to chat in review mode.
+    expect(configContent).toContain("GOOSE_MODE: chat");
+    expect(configContent).not.toContain("GOOSE_MODE: auto");
+  });
+
   it("appends the submission instruction to the agent instructions", async () => {
     const fake = makeFakeChild();
     spawnMock.mockReturnValue(fake);
