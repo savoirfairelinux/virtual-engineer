@@ -25,7 +25,7 @@ The workspace module currently owns Docker named-volume materialization for agen
 | Vendored contrib packages | `contrib/**/package.json` | Static `name` / `url` / `version` entries infer GitHub or GitLab repository URLs from archive URLs |
 | CMake FetchContent | `CMakeLists.txt` | Static `GIT_REPOSITORY` or inferable GitHub/GitLab archive `URL` declarations become members; variable-driven declarations remain diagnostic-only |
 | kas (Yocto) | any bounded candidate `*.yml` / `*.yaml`, confirmed by content | `repos` entries with a `url` become manifest members (`refspec`/`commit`/`branch` as revision, `path` or the entry key as local path); URL-less entries are layers living inside the root repository and become `contains` members with a null clone URL |
-| BitBake recipes | `*.bb` / `*.bbappend` under a `meta` / `meta-*` directory | static `git://` / `gitsm://` `SRC_URI` fetchers become manifest members under a synthetic `.ve-deps/<repository>` local path |
+| BitBake recipes | `*.bb` / `*.bbappend` / `*.inc` under a `meta` / `meta-*` directory | static `git://` / `gitsm://` `SRC_URI` fetchers become manifest members under a synthetic `.ve-deps/<repository>` local path. `.inc` files are scanned because recipes routinely `require` them and keep the `SRC_URI` there |
 
 kas configurations have no conventional filename, so candidates are name-prefiltered (`kas` / `repo` / `config` / `manifest` / `project` stems, or any file under a `kas/` directory) at most two directories deep, then confirmed from content: a `repos` mapping whose entries are all mappings, or an explicit `header`. Files that fail the content check are skipped silently and never produce diagnostics, because unrelated YAML is expected in the candidate set. kas `path` values are build-root-relative and are therefore not re-anchored under the manifest's directory.
 
@@ -52,7 +52,7 @@ Every member returned by the project-level scan carries an `origin` derived by `
 | `patch_required` | Upstream-only; must be patched locally instead of pushed | any other resolved/unresolved URL-backed member |
 | `ambiguous` | Several integrations match; a human must disambiguate | resolution `ambiguous` |
 
-Operators can persist selected members as **vendor components** (`project_vendor_components`), keyed by the member's real `sourcePath` (for example `daemon/contrib/src/fmt/package.json`) rather than its possibly synthetic `localPath` (`.ve-deps/fmt`), together with a free-form note describing how the component should be handled.
+Operators can persist selected members as **vendor components** (`project_vendor_components`), keyed by the member's real `sourcePath` (for example `daemon/contrib/src/fmt/package.json`) rather than its possibly synthetic `localPath` (`.ve-deps/fmt`), together with a free-form note describing how the component should be handled and an optional `integrationId` / `repoKey` binding naming the VE repository the component is actually developed in.
 
 ## Current boundary
 

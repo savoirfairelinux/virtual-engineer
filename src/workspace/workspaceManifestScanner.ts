@@ -507,8 +507,9 @@ function scanKasManifest(
   return hasInternalLayer;
 }
 
+// `.inc` files are included by recipes and routinely hold the SRC_URI, so they are scanned the same way.
 function isBitbakeRecipePath(filePath: string): boolean {
-  return /\.bb(append)?$/i.test(filePath);
+  return /\.(?:bb|bbappend|inc)$/i.test(filePath);
 }
 
 /** Same-file assignments plus the PN/BPN/PV a recipe derives from its own filename. */
@@ -521,7 +522,7 @@ function bitbakeVariables(file: WorkspaceManifestFile): Map<string, string> {
     if (match[2]!.startsWith("?") && variables.has(name)) continue;
     variables.set(name, match[4] ?? "");
   }
-  const [baseName, version] = path.posix.basename(file.path).replace(/\.bb(append)?$/i, "").split("_");
+  const [baseName, version] = path.posix.basename(file.path).replace(/\.(?:bb|bbappend|inc)$/i, "").split("_");
   if (baseName) {
     if (!variables.has("PN")) variables.set("PN", baseName);
     if (!variables.has("BPN")) variables.set("BPN", baseName);

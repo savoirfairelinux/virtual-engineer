@@ -70,6 +70,7 @@ describe("repository manifest access", () => {
       "meta-product/recipes-core/alpha/alpha_1.0.bb",
       "meta/recipes-core/beta/beta_git.bbappend",
       "layers/meta-bsp/recipes-kernel/linux/linux_6.6.bb",
+      "sources/meta-aura/recipes-app/aura-application/aura-application.inc",
     ].every(isBitbakeRecipeCandidatePath)).toBe(true);
     expect([
       "recipes-core/alpha/alpha_1.0.bb",
