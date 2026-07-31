@@ -100,6 +100,8 @@ interface VendorComponentRow {
   cloneUrl: string | null;
   revision: string | null;
   origin: VendorComponentOrigin;
+  integrationId: string | null;
+  repoKey: string | null;
   note: string;
 }
 
@@ -149,7 +151,7 @@ function workspaceMemberSearchText(member: WorkspaceScanMember): string {
   const resolution = member.resolution;
   const resolutionText = resolution?.status === "matched"
     ? `${resolution.status} ${resolution.match.integrationName} ${resolution.match.repoKey}`
-    : resolution?.status ?? "manual URL";
+    : resolution?.status ?? "in-repo layer";
   return [
     member.localPath,
     member.sourcePath,
@@ -870,6 +872,8 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
         cloneUrl: member.cloneUrl,
         revision: member.revision,
         origin: member.origin,
+        integrationId: null,
+        repoKey: null,
         note: "",
       }]);
   };
@@ -882,6 +886,22 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
   const updateVendorComponentNote = (sourcePath: string, note: string) => {
     setVendorComponentsDirty(true);
     setVendorComponents((prev) => prev.map((component) => component.sourcePath === sourcePath ? { ...component, note } : component));
+  };
+
+  // The API stores the integration and the repository key together, so clearing either clears both.
+  const updateVendorComponentBinding = (sourcePath: string, patch: { integrationId?: string; repoKey?: string }) => {
+    setVendorComponentsDirty(true);
+    setVendorComponents((prev) => prev.map((component) => {
+      if (component.sourcePath !== sourcePath) return component;
+      const integrationId = patch.integrationId !== undefined ? patch.integrationId : component.integrationId ?? "";
+      const repoKey = patch.repoKey !== undefined ? patch.repoKey : component.repoKey ?? "";
+      const bound = integrationId.trim() !== "" && repoKey.trim() !== "";
+      return {
+        ...component,
+        integrationId: integrationId.trim() === "" ? null : integrationId,
+        repoKey: bound ? repoKey : repoKey.trim() === "" ? null : repoKey,
+      };
+    }));
   };
 
   useEffect(() => {
@@ -1138,14 +1158,20 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
               : [],
           })),
         };
+        // A half-typed binding is meaningless to the agent, and the API rejects it, so drop it.
+        const vendorComponentsPayload = vendorComponents.map((component) => (
+          component.integrationId?.trim() && component.repoKey?.trim()
+            ? { ...component, integrationId: component.integrationId.trim(), repoKey: component.repoKey.trim() }
+            : { ...component, integrationId: null, repoKey: null }
+        ));
         if (isEditMode && project) {
           await api.put(`/api/admin/projects/${project.id}`, payload, { signal: abort.signal });
           if (vendorComponentsDirty) {
-            await api.put(`/api/admin/projects/${project.id}/vendor-components`, { components: vendorComponents }, { signal: abort.signal });
+            await api.put(`/api/admin/projects/${project.id}/vendor-components`, { components: vendorComponentsPayload }, { signal: abort.signal });
           }
         } else {
           // Created in one request so a failure rolls the project back instead of leaving it half-configured.
-          await api.post<{ project: { id: string } }>("/api/admin/projects", { ...payload, vendorComponents }, { signal: abort.signal });
+          await api.post<{ project: { id: string } }>("/api/admin/projects", { ...payload, vendorComponents: vendorComponentsPayload }, { signal: abort.signal });
         }
       } else {
         if (!reviewIntegrationId) { setError("Review integration is required"); setSaveCheckSources([]); return; }
@@ -1350,7 +1376,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
                                 {visibleMembers.map((member) => {
                                   const resolution = member.resolution;
                                   const state = member.cloneUrl === null
-                                    ? "manual URL"
+                                    ? "in-repo layer"
                                     : resolution?.status === "matched"
                                       ? resolution.match.enabled ? `matched · ${resolution.match.integrationName}` : `disabled · ${resolution.match.integrationName}`
                                       : resolution?.status ?? "unmatched";
@@ -1430,7 +1456,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
             {vendorComponents.length > 0 && (
               <Field
                 label="Vendor Components"
-                hint="Third-party components detected by the workspace scan that VE cannot push to. Notes are surfaced to the agent so it patches them locally instead of attempting a push."
+                hint="Third-party components detected by the workspace scan that VE cannot push to. Notes are surfaced to the agent so it patches them locally instead of attempting a push. If a component is actually developed in one of your repositories, declare it so the agent changes it there rather than patching."
               >
                 <div data-testid="vendor-components" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                   {vendorComponents.map((component) => (
@@ -1443,6 +1469,26 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
                           placeholder="How should the agent handle this component?"
                           onChange={(e) => updateVendorComponentNote(component.sourcePath, e.target.value)}
                         />
+                        <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gap: 6, marginTop: 4 }}>
+                          <select
+                            className="input"
+                            aria-label={`Maintained in integration for ${component.sourcePath}`}
+                            value={component.integrationId ?? ""}
+                            onChange={(e) => updateVendorComponentBinding(component.sourcePath, { integrationId: e.target.value })}
+                            style={{ fontSize: "11px" }}
+                          >
+                            <option value="">— not maintained by us —</option>
+                            {vcsIntegrations.map((i) => (
+                              <option key={i.id} value={i.id}>{i.name}</option>
+                            ))}
+                          </select>
+                          <FieldInput
+                            value={component.repoKey ?? ""}
+                            placeholder="repository key on that integration"
+                            aria-label={`Maintained in repository for ${component.sourcePath}`}
+                            onChange={(e) => updateVendorComponentBinding(component.sourcePath, { repoKey: e.target.value })}
+                          />
+                        </div>
                       </div>
                       <button
                         type="button"

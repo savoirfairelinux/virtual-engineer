@@ -22,7 +22,7 @@
 
 ## Project Vendor Components
 
-- `project_vendor_components` (INTEGER `id` PK) persists workspace-scanned third-party components of a coding project: `project_id` (FK → `projects.id`), `source_path` (NOT NULL, the real manifest path in the checkout), nullable `local_path` / `clone_url` / `revision`, `origin`, `note` (NOT NULL DEFAULT `''`), and timestamps. `replaceProjectVendorComponents()` deletes and reinserts the project's rows in one transaction but carries the previous `created_at` over for any `source_path` that survives the replace, so the column keeps meaning "first tracked".
+- `project_vendor_components` (INTEGER `id` PK) persists workspace-scanned third-party components of a coding project: `project_id` (FK → `projects.id`), `source_path` (NOT NULL, the real manifest path in the checkout), nullable `local_path` / `clone_url` / `revision`, `origin`, nullable `integration_id` / `repo_key`, `note` (NOT NULL DEFAULT `''`), and timestamps. `integration_id` / `repo_key` are the operator-declared VE repository the component is really developed in, used when the scanned clone URL is a mirror VE cannot push to; they are always set together or both NULL. `replaceProjectVendorComponents()` deletes and reinserts the project's rows in one transaction but carries the previous `created_at` over for any `source_path` that survives the replace, so the column keeps meaning "first tracked".
 - `origin` is one of `internal | fork_pushable | patch_required | ambiguous` (see `VendorComponentOrigin` in `src/interfaces.ts`) and records whether VE can push to the component or must patch it locally.
 - `UNIQUE(project_id, source_path)` (`uq_pvc_project_source_path`) is the identity: rows are keyed by the declaring manifest path, not by the possibly synthetic scan `local_path` (for example `.ve-deps/fmt`).
 - `replaceProjectVendorComponents` deletes and re-inserts in one transaction, so a rejected batch leaves the previous set intact; `listProjectVendorComponents` orders by `source_path`. `deleteProject` removes the project's rows.
@@ -30,7 +30,7 @@
 ## Migration Path
 
 - Runtime migrations are handled by `SqliteStateStore.applyMigrations()` in `src/state/stateStore.ts` using `CREATE TABLE IF NOT EXISTS` and `ensureColumn(...)`.
-- Existing databases get `project_vendor_components` through `CREATE TABLE IF NOT EXISTS`; the table starts empty and is populated only when an operator saves scanned components.
+- Existing databases get `project_vendor_components` through `CREATE TABLE IF NOT EXISTS`; the table starts empty and is populated only when an operator saves scanned components. Its `integration_id` / `repo_key` columns are added additively through `ensureColumn`.
 - Existing databases drop `skill_discovery_enabled` and `local_skills_path` through `dropColumnIfExists(...)`; project rows and the remaining columns are preserved.
 - Existing databases get `reviewer_emails` through `ensureColumn("project_push_targets", "reviewer_emails", "TEXT NOT NULL DEFAULT '[]'")`.
 - Existing databases get nullable `app_settings.agent_timeout_ms` through `ensureColumn(...)`; NULL falls back to the `AGENT_TIMEOUT_MS` config default.

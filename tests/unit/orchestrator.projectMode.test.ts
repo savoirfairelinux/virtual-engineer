@@ -816,6 +816,8 @@ describe("Orchestrator — Phase 4 project mode", () => {
           cloneUrl: "https://github.com/fmtlib/fmt.git",
           revision: "10.2.1",
           origin: "patch_required" as const,
+          integrationId: null,
+          repoKey: null,
           note: "Patch through contrib rules.",
           createdAt: new Date(),
           updatedAt: new Date(),
@@ -849,6 +851,7 @@ describe("Orchestrator — Phase 4 project mode", () => {
     expect(context.agentSession.vendorComponents).toEqual([{
       sourcePath: "daemon/contrib/src/fmt/package.json",
       origin: "patch_required",
+      repoKey: null,
       note: "Patch through contrib rules.",
     }]);
   });
