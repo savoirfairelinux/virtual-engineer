@@ -11,6 +11,7 @@ import { gitlabDescriptor } from "./gitlab.js";
 import { createCopilotDescriptor } from "./copilot.js";
 import { createClaudeDescriptor } from "./claude.js";
 import { createAiderDescriptor } from "./aider.js";
+import { createGooseDescriptor } from "./goose.js";
 import { mockDescriptor } from "./mock.js";
 import { githubDescriptor } from "./github.js";
 
@@ -23,6 +24,7 @@ export function buildBuiltinDescriptors(options?: { adminAuthSecret?: string }):
     createCopilotDescriptor(options?.adminAuthSecret),
     createClaudeDescriptor(options?.adminAuthSecret),
     createAiderDescriptor(options?.adminAuthSecret),
+    createGooseDescriptor(options?.adminAuthSecret),
     mockDescriptor,
     githubDescriptor,
   ];

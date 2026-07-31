@@ -169,7 +169,7 @@ export interface AgentAdapterContext {
   dockerNetwork: string;
 }
 
-export type ReviewStrategyId = "copilot_native";
+export type ReviewStrategyId = "copilot_native" | "goose_native";
 
 export interface ReviewStrategyDescriptor {
   id: ReviewStrategyId;
