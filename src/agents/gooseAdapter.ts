@@ -246,7 +246,7 @@ export class GooseAdapter implements AgentAdapter, ConfigurableAdapter {
       authEnv["DEEPSEEK_API_KEY"] ||
       authEnv["GROQ_API_KEY"] ||
       authEnv["GOOGLE_API_KEY"] ||
-      authEnv["OLLAMA_API_BASE"] ||
+      authEnv["OLLAMA_HOST"] ||
       authEnv["OPENAI_API_BASE"] ||
       authEnv["PERPLEXITY_API_KEY"] ||
       authEnv["MISTRAL_API_KEY"] ||
@@ -544,9 +544,10 @@ export function gooseProviderAuthEnv(
       return { AZURE_OPENAI_API_KEY: apiKey, ...(apiBase ? { AZURE_OPENAI_ENDPOINT: apiBase } : {}) };
     case "bedrock":
       // Bedrock uses AWS credential chains (AWS_PROFILE / AWS_ACCESS_KEY_ID / …)
-      // configured in the environment; VE forwards no key. The operator must set
-      // the AWS env vars on the host/container before the agent runs.
-      return {};
+      // configured in the host environment. The container only receives env vars
+      // explicitly listed in spec.env, so forward a minimal allowlist of AWS env
+      // vars from the host process so Goose can authenticate with Bedrock.
+      return forwardAwsEnv();
     case "perplexity":
       return { PERPLEXITY_API_KEY: apiKey };
     case "mistral":
@@ -568,4 +569,31 @@ export function gooseProviderAuthEnv(
       throw new Error(`Unsupported Goose provider: ${String(_exhaustive)}`);
     }
   }
+}
+
+/**
+ * Minimal allowlist of AWS env vars forwarded into the agent container for the
+ * Bedrock provider. The container only receives env vars explicitly listed in
+ * `spec.env`, so these must be read from the host process and forwarded. The
+ * worker's `buildGooseEnv()` allowlist already permits these vars on the
+ * subprocess side; this function ensures they reach the container at all.
+ */
+const AWS_ENV_ALLOWLIST = [
+  "AWS_PROFILE",
+  "AWS_ACCESS_KEY_ID",
+  "AWS_SECRET_ACCESS_KEY",
+  "AWS_REGION",
+  "AWS_DEFAULT_REGION",
+  "AWS_BEARER_TOKEN_BEDROCK",
+] as const;
+
+function forwardAwsEnv(): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const key of AWS_ENV_ALLOWLIST) {
+    const value = process.env[key];
+    if (value !== undefined && value !== "") {
+      env[key] = value;
+    }
+  }
+  return env;
 }

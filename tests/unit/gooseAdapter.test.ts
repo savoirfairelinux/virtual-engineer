@@ -147,14 +147,23 @@ describe("GooseAdapter", () => {
       expect(spec.env["GOOGLE_API_KEY"]).toBe("google-key");
     });
 
-    it("maps bedrock provider to no key (AWS env chain)", () => {
-      const adapter = new GooseAdapter();
-      const ctx = makeContext();
-      ctx.agentSession.gooseProvider = "bedrock";
-      delete ctx.agentSession.gooseApiKey;
-      const spec = adapter.buildContainerSpec(ctx);
-      expect(spec.env["ANTHROPIC_API_KEY"]).toBeUndefined();
-      expect(spec.env["OPENAI_API_KEY"]).toBeUndefined();
+    it("maps bedrock provider to no key but forwards AWS env vars from the host", () => {
+      process.env["AWS_ACCESS_KEY_ID"] = "AKIA-test";
+      process.env["AWS_REGION"] = "us-east-1";
+      try {
+        const adapter = new GooseAdapter();
+        const ctx = makeContext();
+        ctx.agentSession.gooseProvider = "bedrock";
+        delete ctx.agentSession.gooseApiKey;
+        const spec = adapter.buildContainerSpec(ctx);
+        expect(spec.env["ANTHROPIC_API_KEY"]).toBeUndefined();
+        expect(spec.env["OPENAI_API_KEY"]).toBeUndefined();
+        expect(spec.env["AWS_ACCESS_KEY_ID"]).toBe("AKIA-test");
+        expect(spec.env["AWS_REGION"]).toBe("us-east-1");
+      } finally {
+        delete process.env["AWS_ACCESS_KEY_ID"];
+        delete process.env["AWS_REGION"];
+      }
     });
 
     it("maps openai_compat provider to OPENAI_API_KEY + OPENAI_API_BASE", () => {
@@ -248,6 +257,24 @@ describe("GooseAdapter", () => {
       );
       expect(spec.env["OPENAI_API_KEY"]).toBe("sk-key");
       expect(spec.env["ANTHROPIC_API_KEY"]).toBeUndefined();
+    });
+
+    it("maps the review agentToken to OLLAMA_HOST for the ollama provider", () => {
+      const adapter = new GooseAdapter();
+      const spec = adapter.buildReviewContainerSpec(
+        makeReviewInput({ gooseProvider: "ollama", gooseApiBase: "http://host:11434" })
+      );
+      expect(spec.env["OLLAMA_HOST"]).toBe("http://host:11434");
+      expect(spec.env["OPENAI_API_KEY"]).toBeUndefined();
+    });
+
+    it("preserves an explicit OLLAMA_HOST authEnv in review mode", () => {
+      const adapter = new GooseAdapter();
+      const spec = adapter.buildReviewContainerSpec(
+        makeReviewInput({ gooseProvider: "ollama" }),
+        { OLLAMA_HOST: "http://explicit:11434" }
+      );
+      expect(spec.env["OLLAMA_HOST"]).toBe("http://explicit:11434");
     });
 
     it("omits GOOSE_MODEL in review mode when no model is configured", () => {
