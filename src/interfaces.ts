@@ -47,7 +47,7 @@ export {
 // ─── Phase 2: Agents / Projects / Concurrency types ───────────────────────────
 
 export type AgentType = "coding" | "review";
-export type ReviewStrategy = "ve_direct" | "copilot_native";
+export type ReviewStrategy = "ve_direct" | "copilot_native" | "goose_native";
 export type ProjectType = "coding" | "review";
 export type PushTargetRole = "primary" | "submodule" | "dependency" | "related";
 
@@ -378,6 +378,14 @@ export interface AgentSession {
   aiderApiKey?: string | undefined;
   /** Custom API base URL (required for `openai_compat`; optional override for `ollama`). */
   aiderApiBase?: string | undefined;
+
+  // ── Goose (agent_execution) ────────────────────────────────────────────────
+  /** Goose LLM provider selector (anthropic | openai | openrouter | ollama | deepseek | groq | gemini | azure_openai | bedrock | perplexity | mistral | xai | cerebras | openai_compat). */
+  gooseProvider?: string | undefined;
+  /** API key for the selected Goose provider (plaintext at rest, like `githubToken`). */
+  gooseApiKey?: string | undefined;
+  /** Custom API base URL (required for `openai_compat`; optional override for `ollama`). */
+  gooseApiBase?: string | undefined;
 }
 
 export interface TaskContext {
@@ -555,6 +563,14 @@ export interface ReviewWorkspaceInput {
   aiderApiKey?: string | undefined;
   /** Custom API base URL (required for `openai_compat`; optional override for `ollama`). */
   aiderApiBase?: string | undefined;
+
+  // ── Goose (agent_execution) ────────────────────────────────────────────────
+  /** Goose LLM provider selector (anthropic | openai | openrouter | ollama | deepseek | groq | gemini | azure_openai | bedrock | perplexity | mistral | xai | cerebras | openai_compat). */
+  gooseProvider?: string | undefined;
+  /** API key for the selected Goose provider (plaintext at rest, like `agentToken`). */
+  gooseApiKey?: string | undefined;
+  /** Custom API base URL (required for `openai_compat`; optional override for `ollama`). */
+  gooseApiBase?: string | undefined;
 }
 export interface PatchsetCheckoutOptions {
   /** VCS base URL (used to build the remote fetch URL) */
@@ -1429,6 +1445,7 @@ export const PROVIDER_IDS = [
   "copilot",
   "claude",
   "aider",
+  "goose",
   "mock",
 ] as const;
 export type ProviderId = (typeof PROVIDER_IDS)[number];
