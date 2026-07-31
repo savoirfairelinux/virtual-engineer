@@ -1,7 +1,7 @@
 /** Drizzle ORM table definitions for the Virtual Engineer SQLite database. All timestamps are seconds since epoch (`mode: "timestamp"`). */
 import { sqliteTable, text, integer, real, index, unique, check, primaryKey } from "drizzle-orm/sqlite-core";
 import { sql } from "drizzle-orm";
-import type { TaskState, ProviderId, TaskType, AgentType, ProjectType, PushTargetRole, DomainCapability, UserRole, PrincipalType } from "../interfaces.js";
+import type { TaskState, ProviderId, TaskType, AgentType, ProjectType, PushTargetRole, DomainCapability, UserRole, PrincipalType, VendorComponentOrigin } from "../interfaces.js";
 
 export const tasks = sqliteTable("tasks", {
   taskId: text("task_id").primaryKey(),
@@ -374,6 +374,32 @@ export const projectPushTargets = sqliteTable(
 );
 
 // (review-project bindings now live in project_integration_bindings above)
+
+/**
+ * Workspace-scanned third-party / vendored components of a coding project,
+ * classified by whether VE can push to them (`fork_pushable`) or must patch
+ * them locally (`patch_required` / `internal`). Keyed by the *real* manifest
+ * path so it stays meaningful to an agent working in the checkout.
+ */
+export const projectVendorComponents = sqliteTable(
+  "project_vendor_components",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    projectId: text("project_id").notNull().references(() => projects.id),
+    sourcePath: text("source_path").notNull(),
+    localPath: text("local_path"),
+    cloneUrl: text("clone_url"),
+    revision: text("revision"),
+    origin: text("origin").$type<VendorComponentOrigin>().notNull(),
+    note: text("note").notNull().default(""),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
+  },
+  (table) => ({
+    uqPvcProjectSourcePath: unique("uq_pvc_project_source_path").on(table.projectId, table.sourcePath),
+    idxPvcProjectId: index("idx_pvc_project_id").on(table.projectId),
+  })
+);
 
 /**
  * Singleton table holding the global concurrency limit. `id` is constrained to

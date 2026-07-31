@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { randomUUID } from "crypto";
 import { SqliteStateStore, resolveAgentConfig } from "../../src/state/stateStore.js";
 import { tempDatabasePath } from "./helpers/tempDatabase.js";
@@ -337,6 +337,87 @@ describe("SqliteStateStore — Phase 2: project ticket source", () => {
     const found = await store.findProjectByTicketSource("redmine-1", "PLAT");
     expect(found?.id).toBe(p.id);
     expect(await store.findProjectByTicketSource("redmine-1", "NOPE")).toBeNull();
+  });
+});
+
+describe("SqliteStateStore — project vendor components", () => {
+  let store: SqliteStateStore;
+
+  beforeEach(async () => {
+    store = await SqliteStateStore.create(tempDbPath());
+  });
+
+  afterEach(() => {
+    store.close();
+  });
+
+  it("replaces and lists vendor components ordered by source path", async () => {
+    const a = await makeAgent(store);
+    const p = await store.createProject({ name: "P", type: "coding", agentId: a.id });
+    await store.replaceProjectVendorComponents(p.id, [
+      { sourcePath: "daemon/contrib/src/gmp/package.json", localPath: ".ve-deps/gmp", cloneUrl: "https://example.com/gmp.git", revision: "6.2.1", origin: "patch_required" },
+      { sourcePath: "daemon/contrib/src/fmt/package.json", origin: "patch_required", note: "patch via contrib rules" },
+    ]);
+
+    const components = await store.listProjectVendorComponents(p.id);
+    expect(components.map((component) => component.sourcePath)).toEqual([
+      "daemon/contrib/src/fmt/package.json",
+      "daemon/contrib/src/gmp/package.json",
+    ]);
+    expect(components[0]).toMatchObject({ localPath: null, cloneUrl: null, revision: null, note: "patch via contrib rules" });
+    expect(components[1]).toMatchObject({ localPath: ".ve-deps/gmp", origin: "patch_required", note: "" });
+  });
+
+  it("replaceProjectVendorComponents is atomic — rolls back on duplicate source paths", async () => {
+    const a = await makeAgent(store);
+    const p = await store.createProject({ name: "P", type: "coding", agentId: a.id });
+    await store.replaceProjectVendorComponents(p.id, [
+      { sourcePath: "kas/config.yaml", origin: "internal" },
+    ]);
+
+    await expect(store.replaceProjectVendorComponents(p.id, [
+      { sourcePath: "dup.yaml", origin: "internal" },
+      { sourcePath: "dup.yaml", origin: "patch_required" },
+    ])).rejects.toThrow();
+
+    const after = await store.listProjectVendorComponents(p.id);
+    expect(after.map((component) => component.sourcePath)).toEqual(["kas/config.yaml"]);
+  });
+
+  it("keeps the original createdAt when a component is replaced", async () => {
+    const a = await makeAgent(store);
+    const p = await store.createProject({ name: "P", type: "coding", agentId: a.id });
+    vi.useFakeTimers({ now: new Date("2026-01-01T00:00:00Z") });
+    try {
+      await store.replaceProjectVendorComponents(p.id, [
+        { sourcePath: "kas/config.yaml", origin: "patch_required" },
+      ]);
+      const [initial] = await store.listProjectVendorComponents(p.id);
+      const firstTracked = initial?.createdAt.getTime();
+
+      vi.setSystemTime(new Date("2026-01-01T00:05:00Z"));
+      await store.replaceProjectVendorComponents(p.id, [
+        { sourcePath: "kas/config.yaml", origin: "patch_required", note: "edited later" },
+        { sourcePath: "kas/extra.yaml", origin: "internal" },
+      ]);
+
+      const [config, extra] = await store.listProjectVendorComponents(p.id);
+      expect(config?.note).toBe("edited later");
+      expect(config?.createdAt.getTime()).toBe(firstTracked);
+      expect(extra?.createdAt.getTime()).toBeGreaterThan(firstTracked ?? 0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("removes vendor components when the project is deleted", async () => {
+    const a = await makeAgent(store);
+    const p = await store.createProject({ name: "P", type: "coding", agentId: a.id });
+    await store.replaceProjectVendorComponents(p.id, [{ sourcePath: "kas/config.yaml", origin: "internal" }]);
+
+    await store.deleteProject(p.id);
+
+    expect(await store.listProjectVendorComponents(p.id)).toEqual([]);
   });
 });
 

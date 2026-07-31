@@ -358,6 +358,23 @@ export class SqliteStateStore {
       CREATE INDEX IF NOT EXISTS idx_ppt_project_id
         ON project_push_targets(project_id);
 
+      CREATE TABLE IF NOT EXISTS project_vendor_components (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id  TEXT    NOT NULL REFERENCES projects(id),
+        source_path TEXT    NOT NULL,
+        local_path  TEXT,
+        clone_url   TEXT,
+        revision    TEXT,
+        origin      TEXT    NOT NULL,
+        note        TEXT    NOT NULL DEFAULT '',
+        created_at  INTEGER NOT NULL,
+        updated_at  INTEGER NOT NULL
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_pvc_project_source_path
+        ON project_vendor_components(project_id, source_path);
+      CREATE INDEX IF NOT EXISTS idx_pvc_project_id
+        ON project_vendor_components(project_id);
+
       CREATE TABLE IF NOT EXISTS app_concurrency (
         id             TEXT    PRIMARY KEY CHECK (id = 'global'),
         max_concurrent INTEGER,
