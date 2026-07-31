@@ -81,4 +81,82 @@ describe("workspace scan service", () => {
       .filter((call) => call[1] === "platform/shared")
       .map((call) => call[2])).toEqual(["v1", "v2"]);
   });
+
+  it("classifies scanned repositories by whether VE can push to them", async () => {
+    const originalDescriptor = getProviderDescriptor("gitlab")!;
+    const readWorkspaceManifestFiles = vi.fn(async (_config: unknown, repoKey: string, _revision?: string) => {
+      if (repoKey !== "platform/root") return [];
+      return [{
+        path: "kas/config.yaml",
+        content: `
+header:
+  version: 14
+repos:
+  meta-product:
+  shared:
+    url: https://gitlab.test/platform/shared.git
+    refspec: main
+    path: layers/shared
+  upstream:
+    url: https://git.yoctoproject.org/git/poky
+    refspec: kirkstone
+    path: layers/poky
+`,
+      }];
+    });
+    registerPlugin({ ...originalDescriptor, readWorkspaceManifestFiles });
+    const discoveredResourcesJson = JSON.stringify({
+      repositories: [{
+        key: "platform/shared",
+        name: "Shared",
+        cloneUrlHttp: "https://gitlab.test/platform/shared.git",
+      }],
+    });
+
+    try {
+      const scan = await scanProjectWorkspace({
+        rootIntegration: { ...integration, discoveredResourcesJson },
+        integrations: [{ ...integration, discoveredResourcesJson }],
+        repoKey: "platform/root",
+        cloneUrl: "https://gitlab.test/platform/root.git",
+      });
+
+      expect(scan.repositories.map((repository) => [repository.localPath, repository.origin])).toEqual([
+        ["meta-product", "internal"],
+        ["layers/shared", "fork_pushable"],
+        ["layers/poky", "patch_required"],
+      ]);
+    } finally {
+      registerPlugin(originalDescriptor);
+    }
+  });
+
+  it("classifies repositories of disabled matching integrations as patch targets", async () => {
+    const originalDescriptor = getProviderDescriptor("gitlab")!;
+    const readWorkspaceManifestFiles = vi.fn(async () => [{
+      path: "kas/config.yaml",
+      content: "header:\n  version: 14\nrepos:\n  shared:\n    url: https://gitlab.test/platform/shared.git\n",
+    }]);
+    registerPlugin({ ...originalDescriptor, readWorkspaceManifestFiles });
+    const discoveredResourcesJson = JSON.stringify({
+      repositories: [{
+        key: "platform/shared",
+        name: "Shared",
+        cloneUrlHttp: "https://gitlab.test/platform/shared.git",
+      }],
+    });
+
+    try {
+      const scan = await scanProjectWorkspace({
+        rootIntegration: { ...integration, discoveredResourcesJson },
+        integrations: [{ ...integration, discoveredResourcesJson, enabled: false }],
+        repoKey: "platform/root",
+        cloneUrl: "https://gitlab.test/platform/root.git",
+      });
+
+      expect(scan.repositories.map((repository) => repository.origin)).toEqual(["patch_required"]);
+    } finally {
+      registerPlugin(originalDescriptor);
+    }
+  });
 });

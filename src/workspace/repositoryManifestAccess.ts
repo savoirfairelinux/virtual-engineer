@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { buildSshHostKeyOptions, type GerritSshConfig } from "../connectors/gerritSshClient.js";
-import { WORKSPACE_MANIFEST_MAX_BYTES, WORKSPACE_MANIFEST_MAX_FILES, type WorkspaceManifestFile } from "./workspaceManifestScanner.js";
+import { WORKSPACE_MANIFEST_MAX_BYTES, WORKSPACE_MANIFEST_MAX_FILES, WORKSPACE_RECIPE_MAX_FILES, type WorkspaceManifestFile } from "./workspaceManifestScanner.js";
 
 const execFileAsync = promisify(execFile);
 const REMOTE_READ_TIMEOUT_MS = 60_000;
@@ -12,15 +12,32 @@ const REMOTE_READ_CONCURRENCY = 8;
 const MAX_ROOT_PAGES = 10;
 const MAX_MANIFEST_DIRECTORY_DEPTH = 4;
 const MAX_DEPENDENCY_FILE_DIRECTORY_DEPTH = 8;
+const MAX_KAS_CANDIDATE_DIRECTORY_DEPTH = 2;
+const MAX_RECIPE_DIRECTORY_DEPTH = 6;
 const GENERATED_DIRECTORY_NAMES = new Set([".cache", ".git", ".venv", "build", "dist", "node_modules", "out", "_deps"]);
+/** kas configs have no conventional filename, so candidates are name-prefiltered and confirmed by content later. */
+const KAS_CANDIDATE_NAME_PATTERN = /(^|[-_.])(kas|repo|config|manifest|project)s?([-_.]|\.ya?ml$)/i;
+/** Yocto layer directories are conventionally named `meta` or `meta-<name>`. */
+const RECIPE_LAYER_DIRECTORY_PATTERN = /^meta(-.+)?$/i;
+
+/** Separate from the manifest budget so unrelated YAML can never fail an otherwise valid scan. */
+export const WORKSPACE_KAS_CANDIDATE_MAX_FILES = 25;
+
+function hasSafeSegments(filePath: string): boolean {
+  if (!filePath || filePath.startsWith("/") || filePath.includes("\\") || /[\0\r\n]/.test(filePath)) return false;
+  return !filePath.split("/").some((segment) => !segment || segment === "." || segment === "..");
+}
+
+function isGeneratedDirectory(segment: string): boolean {
+  return GENERATED_DIRECTORY_NAMES.has(segment) || segment.startsWith("cmake-build-");
+}
 
 export function isWorkspaceManifestPath(filePath: string): boolean {
-  if (!filePath || filePath.startsWith("/") || filePath.includes("\\") || /[\0\r\n]/.test(filePath)) return false;
+  if (!hasSafeSegments(filePath)) return false;
   const segments = filePath.split("/");
-  if (segments.some((segment) => !segment || segment === "." || segment === "..")) return false;
   const fileName = segments.at(-1) ?? "";
   const directorySegments = segments.slice(0, -1);
-  const generated = directorySegments.some((segment) => GENERATED_DIRECTORY_NAMES.has(segment) || segment.startsWith("cmake-build-"));
+  const generated = directorySegments.some(isGeneratedDirectory);
   if (fileName === "CMakeLists.txt" || (fileName === "package.json" && segments.includes("contrib"))) {
     return !generated && directorySegments.length <= MAX_DEPENDENCY_FILE_DIRECTORY_DEPTH;
   }
@@ -31,6 +48,50 @@ export function isWorkspaceManifestPath(filePath: string): boolean {
     || fileName === "default.xml"
     || fileName.endsWith(".repos")
     || fileName.endsWith(".code-workspace");
+}
+
+export function isKasCandidatePath(filePath: string): boolean {
+  if (!hasSafeSegments(filePath) || isWorkspaceManifestPath(filePath)) return false;
+  const segments = filePath.split("/");
+  const fileName = segments.at(-1) ?? "";
+  const directorySegments = segments.slice(0, -1);
+  if (directorySegments.length > MAX_KAS_CANDIDATE_DIRECTORY_DEPTH) return false;
+  if (directorySegments.some(isGeneratedDirectory)) return false;
+  if (!/\.ya?ml$/i.test(fileName)) return false;
+  return KAS_CANDIDATE_NAME_PATTERN.test(fileName)
+    || directorySegments.some((segment) => segment.toLowerCase() === "kas");
+}
+
+export function isBitbakeRecipeCandidatePath(filePath: string): boolean {
+  if (!hasSafeSegments(filePath)) return false;
+  const segments = filePath.split("/");
+  const directorySegments = segments.slice(0, -1);
+  if (!/\.bb(append)?$/i.test(segments.at(-1) ?? "")) return false;
+  if (directorySegments.length > MAX_RECIPE_DIRECTORY_DEPTH) return false;
+  if (directorySegments.some(isGeneratedDirectory)) return false;
+  return directorySegments.some((segment) => RECIPE_LAYER_DIRECTORY_PATTERN.test(segment));
+}
+
+/** Manifests keep the strict shared budget; kas and recipe candidates are capped separately and truncated, never fatal. */
+export function selectWorkspaceScanPaths(candidatePaths: Iterable<string>): string[] {
+  const manifestPaths: string[] = [];
+  const kasCandidatePaths: string[] = [];
+  const recipePaths: string[] = [];
+  for (const candidate of candidatePaths) {
+    if (isWorkspaceManifestPath(candidate)) manifestPaths.push(candidate);
+    else if (isKasCandidatePath(candidate)) kasCandidatePaths.push(candidate);
+    else if (isBitbakeRecipeCandidatePath(candidate)) recipePaths.push(candidate);
+  }
+  manifestPaths.sort();
+  assertManifestCount(manifestPaths);
+  kasCandidatePaths.sort();
+  recipePaths.sort();
+  return [
+    ...manifestPaths,
+    ...kasCandidatePaths.slice(0, WORKSPACE_KAS_CANDIDATE_MAX_FILES),
+    // Recipes are only interpretable once a kas config has declared which layers live in this repository.
+    ...(kasCandidatePaths.length === 0 ? [] : recipePaths.slice(0, WORKSPACE_RECIPE_MAX_FILES)),
+  ];
 }
 
 function assertRepositoryKey(repoKey: string): void {
@@ -132,14 +193,11 @@ export async function readGitHubWorkspaceManifestFiles(input: {
   }
   const tree = listingValue["tree"];
   if (!Array.isArray(tree)) throw new Error("GitHub repository listing returned an invalid response");
-  const paths = tree.flatMap((entry): string[] => {
+  const paths = selectWorkspaceScanPaths(tree.flatMap((entry): string[] => {
     if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return [];
     const value = entry as Record<string, unknown>;
-    return value["type"] === "blob" && typeof value["path"] === "string" && isWorkspaceManifestPath(value["path"])
-      ? [value["path"]]
-      : [];
-  }).sort();
-  assertManifestCount(paths);
+    return value["type"] === "blob" && typeof value["path"] === "string" ? [value["path"]] : [];
+  }));
 
   return readManifestFiles(paths, async (filePath): Promise<WorkspaceManifestFile> => {
     const fileUrl = `${input.apiBaseUrl}/repos/${repoPath}/contents/${encodeRepoKey(filePath)}${refQuery}`;
@@ -188,7 +246,7 @@ export async function readGitLabWorkspaceManifestFiles(input: {
     for (const entry of listing) {
       if (entry === null || typeof entry !== "object" || Array.isArray(entry)) continue;
       const value = entry as Record<string, unknown>;
-      if (value["type"] === "blob" && typeof value["path"] === "string" && isWorkspaceManifestPath(value["path"])) {
+      if (value["type"] === "blob" && typeof value["path"] === "string") {
         paths.add(value["path"]);
       }
     }
@@ -199,8 +257,7 @@ export async function readGitLabWorkspaceManifestFiles(input: {
     page = parsedPage;
   }
 
-  const sortedPaths = [...paths].sort();
-  assertManifestCount(sortedPaths);
+  const sortedPaths = selectWorkspaceScanPaths(paths);
   return readManifestFiles(sortedPaths, async (filePath): Promise<WorkspaceManifestFile> => {
     const query = new URLSearchParams({ ref: input.revision ?? "HEAD" });
     const content = await withRemoteReadTimeout(async (signal) => {
@@ -262,11 +319,9 @@ export async function readGerritWorkspaceManifestFiles(input: {
     } catch {
       await git(["fetch", "--quiet", "--depth=1", "origin", input.revision ?? "HEAD"]);
     }
-    const manifestPaths = (await git(["ls-tree", "-r", "--name-only", "FETCH_HEAD"]))
-      .split(/\r?\n/)
-      .filter(isWorkspaceManifestPath)
-      .sort();
-    assertManifestCount(manifestPaths);
+    const manifestPaths = selectWorkspaceScanPaths(
+      (await git(["ls-tree", "-r", "--name-only", "FETCH_HEAD"])).split(/\r?\n/),
+    );
     const files: WorkspaceManifestFile[] = [];
     for (const filePath of manifestPaths) {
       const content = await git(["show", `FETCH_HEAD:${filePath}`], WORKSPACE_MANIFEST_MAX_BYTES + 1024);

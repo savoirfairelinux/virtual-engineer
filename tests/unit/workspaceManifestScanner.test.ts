@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { scanWorkspaceManifests, WORKSPACE_MANIFEST_MAX_FILES } from "../../src/workspace/workspaceManifestScanner.js";
+import { scanWorkspaceManifests, WORKSPACE_MANIFEST_MAX_FILES, WORKSPACE_RECIPE_MAX_FILES } from "../../src/workspace/workspaceManifestScanner.js";
 
 describe("scanWorkspaceManifests", () => {
   it("parses Git submodules and resolves relative URLs", () => {
@@ -295,7 +295,201 @@ FetchContent_Declare(dynamic_dep GIT_REPOSITORY \${DYNAMIC_URL})
     }));
   });
 
+  it("parses kas configurations and marks URL-less layers as workspace-internal", () => {
+    const result = scanWorkspaceManifests({
+      rootCloneUrl: "https://git.example.com/platform/root.git",
+      files: [{
+        path: "kas/config.yaml",
+        content: `
+header:
+  version: 14
+repos:
+  meta-product:
+  meta-shared:
+    path: layers/meta-shared
+  poky:
+    url: https://git.yoctoproject.org/git/poky
+    refspec: kirkstone
+    path: layers/poky
+  meta-sibling:
+    url: ../sibling.git
+    refspec: main
+`,
+      }],
+    });
+
+    expect(result.repositories).toEqual([
+      {
+        cloneUrl: null,
+        localPath: "meta-product",
+        revision: null,
+        relation: "contains",
+        sourcePath: "kas/config.yaml",
+      },
+      {
+        cloneUrl: null,
+        localPath: "layers/meta-shared",
+        revision: null,
+        relation: "contains",
+        sourcePath: "kas/config.yaml",
+      },
+      {
+        cloneUrl: "https://git.yoctoproject.org/git/poky",
+        localPath: "layers/poky",
+        revision: "kirkstone",
+        relation: "manifest_member",
+        sourcePath: "kas/config.yaml",
+      },
+      {
+        cloneUrl: "https://git.example.com/platform/sibling.git",
+        localPath: "meta-sibling",
+        revision: "main",
+        relation: "manifest_member",
+        sourcePath: "kas/config.yaml",
+      },
+    ]);
+    expect(result.diagnostics).toEqual([]);
+  });
+
+  it("ignores YAML files that are not kas configurations without emitting noise", () => {
+    const result = scanWorkspaceManifests({
+      rootCloneUrl: "https://git.example.com/platform/root.git",
+      files: [
+        { path: "config.yaml", content: "server:\n  port: 8080\n" },
+        { path: "repos.yml", content: "repos:\n  - name: not-a-map\n" },
+        { path: "project.yaml", content: "repos:\n  alpha: plain-string\n" },
+        { path: "manifest.yml", content: "repos: [" },
+      ],
+    });
+
+    expect(result.repositories).toEqual([]);
+    expect(result.diagnostics).toEqual([]);
+  });
+
+  it("parses git SRC_URI fetchers from recipes once kas declares an internal layer", () => {
+    const result = scanWorkspaceManifests({
+      rootCloneUrl: "https://git.example.com/platform/root.git",
+      files: [
+        { path: "kas.yml", content: "header:\n  version: 14\nrepos:\n  meta-product:\n" },
+        {
+          path: "meta-product/recipes-core/alpha/alpha_1.2.bb",
+          content: [
+            'SRCREV = "9f1c2d3"',
+            'SRC_URI = "git://github.com/acme/${BPN}.git;protocol=https;branch=main \\',
+            '           file://0001-local.patch"',
+          ].join("\n"),
+        },
+        {
+          path: "meta-product/recipes-core/beta/beta_git.bbappend",
+          content: 'SRC_URI:append = " gitsm://git.example.com/vendor/beta;tag=v2.0"',
+        },
+        {
+          path: "meta-product/recipes-core/gamma/gamma_1.0.bb",
+          content: 'SRC_URI = "git://git.example.com/${UNKNOWN_VAR}/gamma;protocol=https"',
+        },
+        {
+          path: "meta-product/recipes-core/delta/delta_1.0.bb",
+          content: 'SRC_URI = "https://example.com/delta-1.0.tar.gz"',
+        },
+      ],
+    });
+
+    expect(result.repositories).toEqual([
+      {
+        cloneUrl: null,
+        localPath: "meta-product",
+        revision: null,
+        relation: "contains",
+        sourcePath: "kas.yml",
+      },
+      {
+        cloneUrl: "https://github.com/acme/alpha.git",
+        localPath: ".ve-deps/alpha",
+        revision: "9f1c2d3",
+        relation: "manifest_member",
+        sourcePath: "meta-product/recipes-core/alpha/alpha_1.2.bb",
+      },
+      {
+        cloneUrl: "git://git.example.com/vendor/beta",
+        localPath: ".ve-deps/beta",
+        revision: "v2.0",
+        relation: "manifest_member",
+        sourcePath: "meta-product/recipes-core/beta/beta_git.bbappend",
+      },
+    ]);
+    expect(result.diagnostics).toEqual([]);
+  });
+
+  it("resolves recipe URLs held in same-file variables and SRC_URI aliases", () => {
+    const result = scanWorkspaceManifests({
+      rootCloneUrl: "https://git.example.com/platform/root.git",
+      files: [
+        { path: "kas.yml", content: "header:\n  version: 14\nrepos:\n  meta-product:\n" },
+        {
+          path: "meta-product/recipes-core/smw/smw_5.3.bb",
+          content: [
+            'SMW_LIB_SRC ?= "git://github.com/acme/imx-smw.git;protocol=https"',
+            'SRCBRANCH = "release"',
+            'SRC_URI = "${SMW_LIB_SRC};branch=${SRCBRANCH}"',
+            'SRC_URI += "file://0001-fix.patch"',
+          ].join("\n"),
+        },
+        {
+          path: "meta-product/recipes-core/pendulum/python3-pendulum_3.2.0.bb",
+          content: 'PYPI_SRC_URI = "git://github.com/acme/pendulum;protocol=https;tag=${PV}"',
+        },
+      ],
+    });
+
+    expect(result.repositories).toEqual([
+      expect.objectContaining({ localPath: "meta-product" }),
+      expect.objectContaining({
+        cloneUrl: "https://github.com/acme/imx-smw.git",
+        revision: "release",
+        sourcePath: "meta-product/recipes-core/smw/smw_5.3.bb",
+      }),
+      expect.objectContaining({
+        cloneUrl: "https://github.com/acme/pendulum",
+        revision: "3.2.0",
+        sourcePath: "meta-product/recipes-core/pendulum/python3-pendulum_3.2.0.bb",
+      }),
+    ]);
+  });
+
+  it("ignores recipes when no kas configuration declares an internal layer", () => {
+    const result = scanWorkspaceManifests({
+      rootCloneUrl: "https://git.example.com/platform/root.git",
+      files: [
+        {
+          path: "kas.yml",
+          content: "header:\n  version: 14\nrepos:\n  poky:\n    url: https://git.yoctoproject.org/git/poky\n",
+        },
+        {
+          path: "meta-product/recipes-core/alpha/alpha_1.2.bb",
+          content: 'SRC_URI = "git://github.com/acme/alpha.git;protocol=https"',
+        },
+      ],
+    });
+
+    expect(result.repositories).toEqual([expect.objectContaining({ localPath: "poky" })]);
+  });
+
+  it("keeps recipes out of the manifest budget", () => {
+    const recipes = Array.from({ length: WORKSPACE_MANIFEST_MAX_FILES + 50 }, (_, index) => ({
+      path: `meta-product/recipes-core/pkg${index}/pkg${index}_1.0.bb`,
+      content: `SRC_URI = "git://git.example.com/vendor/pkg${index};protocol=https"`,
+    }));
+    const result = scanWorkspaceManifests({
+      rootCloneUrl: "https://git.example.com/platform/root.git",
+      files: [{ path: "kas.yml", content: "header:\n  version: 14\nrepos:\n  meta-product:\n" }, ...recipes],
+    });
+
+    expect(result.diagnostics).toEqual([]);
+    expect(result.repositories).toHaveLength(1 + WORKSPACE_RECIPE_MAX_FILES);
+  });
+
   it("reports malformed manifests without throwing or returning partial garbage", () => {
+
     const result = scanWorkspaceManifests({
       rootCloneUrl: "https://git.example.com/platform/root.git",
       files: [

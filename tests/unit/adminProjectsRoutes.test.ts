@@ -176,6 +176,7 @@ describe("Admin API — Project routes (/api/admin/projects)", () => {
         revision: "stable",
         relation: "gitlink",
         sourcePath: ".gitmodules",
+        origin: "fork_pushable",
         resolution: {
           cloneUrl: "https://gitlab.test/platform/runtime.git",
           localPath: "libs/runtime",
