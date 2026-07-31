@@ -89,7 +89,33 @@ interface WorkspaceScanRepository {
   revision: string | null;
   relation: "gitlink" | "manifest_member" | "contains";
   sourcePath: string;
+  origin: VendorComponentOrigin;
 }
+
+type VendorComponentOrigin = "internal" | "fork_pushable" | "patch_required" | "ambiguous";
+
+interface VendorComponentRow {
+  sourcePath: string;
+  localPath: string | null;
+  cloneUrl: string | null;
+  revision: string | null;
+  origin: VendorComponentOrigin;
+  note: string;
+}
+
+const VENDOR_ORIGIN_LABELS: Record<VendorComponentOrigin, string> = {
+  internal: "internal",
+  fork_pushable: "pushable",
+  patch_required: "patch only",
+  ambiguous: "ambiguous",
+};
+
+const VENDOR_ORIGIN_COLORS: Record<VendorComponentOrigin, string> = {
+  internal: "var(--text-faint)",
+  fork_pushable: "var(--success, #2e9e5b)",
+  patch_required: "var(--warning, #c98a1a)",
+  ambiguous: "var(--danger)",
+};
 
 interface WorkspaceScanDiagnostic {
   sourcePath: string;
@@ -831,6 +857,32 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
   const [scanningWorkspaceUrl, setScanningWorkspaceUrl] = useState<string | null>(null);
   const [addingWorkspaceMember, setAddingWorkspaceMember] = useState<string | null>(null);
   const [workspaceScanErrors, setWorkspaceScanErrors] = useState<Record<string, string>>({});
+  const [vendorComponents, setVendorComponents] = useState<VendorComponentRow[]>([]);
+  const [vendorComponentsDirty, setVendorComponentsDirty] = useState(false);
+
+  const trackVendorComponent = (member: WorkspaceScanMember) => {
+    setVendorComponentsDirty(true);
+    setVendorComponents((prev) => prev.some((component) => component.sourcePath === member.sourcePath)
+      ? prev
+      : [...prev, {
+        sourcePath: member.sourcePath,
+        localPath: member.localPath,
+        cloneUrl: member.cloneUrl,
+        revision: member.revision,
+        origin: member.origin,
+        note: "",
+      }]);
+  };
+
+  const removeVendorComponent = (sourcePath: string) => {
+    setVendorComponentsDirty(true);
+    setVendorComponents((prev) => prev.filter((component) => component.sourcePath !== sourcePath));
+  };
+
+  const updateVendorComponentNote = (sourcePath: string, note: string) => {
+    setVendorComponentsDirty(true);
+    setVendorComponents((prev) => prev.map((component) => component.sourcePath === sourcePath ? { ...component, note } : component));
+  };
 
   useEffect(() => {
     if (!project) return;
@@ -860,6 +912,9 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
         reviewerEmails: (t.reviewerEmails ?? []).join(", "),
       }));
       setPushTargets(nextTargets.length > 0 ? nextTargets : [emptyPushTarget()]);
+      void api.get<{ components: VendorComponentRow[] }>(`/api/admin/projects/${project.id}/vendor-components`)
+        .then((response) => setVendorComponents(response.components))
+        .catch(() => { /* vendor components are optional metadata */ });
     } else {
       setReviewIntegrationId(project.reviewConfig?.integration?.id ?? "");
       setReviewRepoKeys(project.reviewConfig?.repos ?? []);
@@ -1085,8 +1140,12 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
         };
         if (isEditMode && project) {
           await api.put(`/api/admin/projects/${project.id}`, payload, { signal: abort.signal });
+          if (vendorComponentsDirty) {
+            await api.put(`/api/admin/projects/${project.id}/vendor-components`, { components: vendorComponents }, { signal: abort.signal });
+          }
         } else {
-          await api.post("/api/admin/projects", payload, { signal: abort.signal });
+          // Created in one request so a failure rolls the project back instead of leaving it half-configured.
+          await api.post<{ project: { id: string } }>("/api/admin/projects", { ...payload, vendorComponents }, { signal: abort.signal });
         }
       } else {
         if (!reviewIntegrationId) { setError("Review integration is required"); setSaveCheckSources([]); return; }
@@ -1298,11 +1357,14 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
                                       const memberKey = `${member.sourcePath}:${member.localPath}`;
                                       const isAdded = pushTargets.some((target) => target.localPath === member.localPath);
                                       const canAdd = resolution?.status === "matched" && resolution.match.enabled && member.cloneUrl !== null;
+                                      const isTracked = vendorComponents.some((component) => component.sourcePath === member.sourcePath);
                                   return (
                                     <div key={`${member.sourcePath}:${member.localPath}`} style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto", gap: 8, alignItems: "center", minHeight: WORKSPACE_MEMBER_ROW_HEIGHT, boxSizing: "border-box", padding: "5px 7px", background: "var(--panel)", borderRadius: "var(--radius-sm)" }}>
                                       <div style={{ minWidth: 0 }}>
                                         <div className="mono" style={{ fontSize: "11.5px", color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis" }}>{member.localPath}</div>
-                                        <div className="mono" style={{ fontSize: "10px", color: "var(--text-faint)" }}>{member.sourcePath} · {member.relation}</div>
+                                        <div className="mono" style={{ fontSize: "10px", color: "var(--text-faint)" }}>
+                                          {member.sourcePath} · {member.relation} · <span style={{ color: VENDOR_ORIGIN_COLORS[member.origin] }}>{VENDOR_ORIGIN_LABELS[member.origin]}</span>
+                                        </div>
                                       </div>
                                       {canAdd ? (
                                         <button
@@ -1316,8 +1378,20 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
                                           <Icon name={isAdded ? "check" : "plus"} size={11} />
                                           {isAdded ? "Added" : state}
                                         </button>
-                                      ) : (
+                                      ) : member.origin === "internal" ? (
                                         <span className="mono" style={{ fontSize: "10px", color: "var(--text-faint)" }}>{state}</span>
+                                      ) : (
+                                        <button
+                                          type="button"
+                                          className="btn ghost"
+                                          aria-label={isTracked ? `${member.sourcePath} tracked as vendor component` : `Track ${member.sourcePath} as vendor component`}
+                                          disabled={isTracked}
+                                          onClick={() => trackVendorComponent(member)}
+                                          style={{ fontSize: "10px", padding: "4px 7px" }}
+                                        >
+                                          <Icon name={isTracked ? "check" : "plus"} size={11} />
+                                          {isTracked ? "Tracked" : `Track · ${state}`}
+                                        </button>
                                       )}
                                     </div>
                                   );
@@ -1352,6 +1426,38 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
                 </div>
               ))}
             </div>
+
+            {vendorComponents.length > 0 && (
+              <Field
+                label="Vendor Components"
+                hint="Third-party components detected by the workspace scan that VE cannot push to. Notes are surfaced to the agent so it patches them locally instead of attempting a push."
+              >
+                <div data-testid="vendor-components" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  {vendorComponents.map((component) => (
+                    <div key={component.sourcePath} style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto", gap: 8, alignItems: "center", padding: "6px 7px", background: "var(--panel)", borderRadius: "var(--radius-sm)" }}>
+                      <div style={{ minWidth: 0 }}>
+                        <div className="mono" style={{ fontSize: "11.5px", color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis" }}>{component.sourcePath}</div>
+                        <div className="mono" style={{ fontSize: "10px", color: VENDOR_ORIGIN_COLORS[component.origin] }}>{VENDOR_ORIGIN_LABELS[component.origin]}</div>
+                        <FieldInput
+                          value={component.note}
+                          placeholder="How should the agent handle this component?"
+                          onChange={(e) => updateVendorComponentNote(component.sourcePath, e.target.value)}
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        className="btn ghost"
+                        aria-label={`Remove vendor component ${component.sourcePath}`}
+                        onClick={() => removeVendorComponent(component.sourcePath)}
+                        style={{ fontSize: "10px", padding: "4px 7px" }}
+                      >
+                        <Icon name="trash" size={11} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </Field>
+            )}
 
             <Field label="Custom Gerrit Topic" hint="Overrides the ticket-derived topic (e.g. VE-<taskId>-<ticket-title>) for all changes pushed from this project. Leave blank to keep the default per-ticket topic.">
               <FieldInput
