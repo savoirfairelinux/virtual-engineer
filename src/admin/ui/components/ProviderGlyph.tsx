@@ -33,7 +33,7 @@ const TYPE_TO_BRAND: Record<string, string> = {
 };
 
 /** Logos that need `filter: invert(1)` in dark theme (dark fill on transparent bg) */
-const DARK_INVERT: ReadonlySet<string> = new Set(["github", "mock", "claude"]);
+const DARK_INVERT: ReadonlySet<string> = new Set(["github", "mock"]);
 /** Logos that need `filter: invert(1)` in light theme (light fill on transparent bg) */
 const LIGHT_INVERT: ReadonlySet<string> = new Set(["copilot", "gerrit"]);
 
