@@ -838,6 +838,17 @@ export class Orchestrator {
           ...(typeof projectAgentRuntime?.config.extra["aiderApiBase"] === "string"
             ? { aiderApiBase: projectAgentRuntime.config.extra["aiderApiBase"] }
             : {}),
+          // Goose provider credentials flow through `extra` (set by
+          // resolveProjectAgentRuntime from the integration config).
+          ...(typeof projectAgentRuntime?.config.extra["gooseProvider"] === "string"
+            ? { gooseProvider: projectAgentRuntime.config.extra["gooseProvider"] }
+            : {}),
+          ...(typeof projectAgentRuntime?.config.extra["gooseApiKey"] === "string"
+            ? { gooseApiKey: projectAgentRuntime.config.extra["gooseApiKey"] }
+            : {}),
+          ...(typeof projectAgentRuntime?.config.extra["gooseApiBase"] === "string"
+            ? { gooseApiBase: projectAgentRuntime.config.extra["gooseApiBase"] }
+            : {}),
           ...(projectPushTargets.length > 1 || projectPushTargets.some((t) => t.localPath !== ".")
             ? { repositoryMap: buildRepositoryMap(projectPushTargets) }
             : {}),
@@ -1101,6 +1112,19 @@ export class Orchestrator {
             if (typeof backend === "string" && backend) extra["aiderBackend"] = backend;
             if (typeof key === "string" && key) extra["aiderApiKey"] = key;
             if (typeof base === "string" && base) extra["aiderApiBase"] = base;
+          } else if (integration.provider === "goose") {
+            // Goose carries a provider selector + that provider's API key / base
+            // URL on the integration config. Forward them via `extra` so the
+            // GooseAdapter can map them onto the provider's auth env vars. This
+            // must be checked before the generic `!encryptedSessionToken` branch
+            // below, since Goose never populates `encryptedSessionToken` and
+            // would otherwise be swallowed by that branch and never forwarded.
+            const provider = integCfg["gooseProvider"];
+            const key = integCfg["gooseApiKey"];
+            const base = integCfg["gooseApiBase"];
+            if (typeof provider === "string" && provider) extra["gooseProvider"] = provider;
+            if (typeof key === "string" && key) extra["gooseApiKey"] = key;
+            if (typeof base === "string" && base) extra["gooseApiBase"] = base;
           } else if (!encryptedSessionToken) {
             const t = integCfg["sessionToken"];
             if (typeof t === "string" && t) {
