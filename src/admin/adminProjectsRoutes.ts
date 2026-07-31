@@ -257,11 +257,17 @@ const vendorComponentArraySchema = z.array(z.object({
   cloneUrl: z.string().trim().max(2048).nullish(),
   revision: z.string().trim().max(512).nullish(),
   origin: z.enum(["internal", "fork_pushable", "patch_required", "ambiguous"]),
+  integrationId: z.string().trim().min(1).max(128).nullish(),
+  repoKey: z.string().trim().min(1).max(512).nullish(),
   note: z.string().trim().max(2048).optional(),
 })).max(500, "At most 500 vendor components may be stored per project")
   .refine(
     (components) => new Set(components.map((component) => component.sourcePath)).size === components.length,
     { message: "Vendor component source paths must be unique" },
+  )
+  .refine(
+    (components) => components.every((component) => (component.integrationId == null) === (component.repoKey == null)),
+    { message: "A vendor component binding needs both an integration and a repository key" },
   );
 
 const vendorComponentsSchema = z.object({
@@ -277,6 +283,8 @@ function toVendorComponentInputs(
     cloneUrl: component.cloneUrl ?? null,
     revision: component.revision ?? null,
     origin: component.origin,
+    integrationId: component.integrationId ?? null,
+    repoKey: component.repoKey ?? null,
     note: component.note ?? "",
   }));
 }
@@ -454,6 +462,21 @@ async function validatePushTargetReviewerEmails(
     const integration = await integrationStore.getIntegration(target.integrationId).catch(() => null);
     if (integration && !REVIEWER_EMAIL_VCS_TYPES.has(integration.provider)) {
       return `Reviewer emails are not supported for ${integration.provider} push target "${target.repoKey}"`;
+    }
+  }
+  return null;
+}
+
+async function validateVendorComponentBindings(
+  components: ProjectVendorComponentInput[],
+  integrationStore: IntegrationStore | undefined
+): Promise<string | null> {
+  if (!integrationStore) return null;
+  for (const component of components) {
+    if (!component.integrationId) continue;
+    const integration = await integrationStore.getIntegration(component.integrationId).catch(() => null);
+    if (!integration) {
+      return `Vendor component "${component.sourcePath}" is bound to unknown integration "${component.integrationId}"`;
     }
   }
   return null;
@@ -874,7 +897,14 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
         await store.setProjectTicketSource(project.id, data.ticketSource);
         await store.replaceProjectPushTargets(project.id, data.pushTargets);
         if (data.vendorComponents !== undefined) {
-          await store.replaceProjectVendorComponents(project.id, toVendorComponentInputs(data.vendorComponents));
+          const components = toVendorComponentInputs(data.vendorComponents);
+          const bindingError = await validateVendorComponentBindings(components, deps.integrationStore);
+          if (bindingError) {
+            try { await store.deleteProject(project.id); } catch { /* ignore */ }
+            writeJson(res, 400, { error: bindingError });
+            return;
+          }
+          await store.replaceProjectVendorComponents(project.id, components);
         }
       } else {
         await store.setProjectReviewConfig(project.id, data.reviewConfig.integrationId, data.reviewConfig.repoKeys);
@@ -966,7 +996,10 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
       writeJson(res, 400, zodErrorBody(parsed.error, "Invalid vendor components payload"));
       return;
     }
-    const components = await store.replaceProjectVendorComponents(id, toVendorComponentInputs(parsed.data.components));
+    const inputs = toVendorComponentInputs(parsed.data.components);
+    const bindingError = await validateVendorComponentBindings(inputs, deps.integrationStore);
+    if (bindingError) { writeJson(res, 400, { error: bindingError }); return; }
+    const components = await store.replaceProjectVendorComponents(id, inputs);
     recordAudit(deps.auditStore, req, {
       action: "project.vendor_components_update",
       targetType: "project",

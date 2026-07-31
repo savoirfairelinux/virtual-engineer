@@ -682,7 +682,12 @@ export class Orchestrator {
       }
       const vendorComponents = (await this.projectMode.projectStore.listProjectVendorComponents?.(task.projectId) ?? [])
         // Only the real editable path reaches the agent; the synthetic scan localPath does not exist in the workspace.
-        .map((component) => ({ sourcePath: component.sourcePath, origin: component.origin, note: component.note }));
+        .map((component) => ({
+          sourcePath: component.sourcePath,
+          origin: component.origin,
+          repoKey: component.repoKey,
+          note: component.note,
+        }));
       const sortedTargets = [...projectPushTargets].sort((a, b) => a.commitOrder - b.commitOrder);
       const root = sortedTargets.find((t) => t.localPath === ".") ?? sortedTargets[0]!;
       cloneUrl = root.cloneUrl;

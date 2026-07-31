@@ -328,6 +328,58 @@ FetchContent_Declare(googletest
     expect(result.status).toBe(400);
   });
 
+  it("stores a manual integration binding on a vendor component", async () => {
+    const agent = await makeAgent(store);
+    await seedIntegration(store, "gerrit-1", "gerrit");
+    const project = await store.createProject({ name: "P", type: "coding", agentId: agent.id });
+
+    const saved = await rest(server, `/api/admin/projects/${project.id}/vendor-components`, {
+      method: "PUT",
+      body: {
+        components: [{
+          sourcePath: "meta-aura/recipes-app/aura-application/aura-application.bb",
+          cloneUrl: "https://github.com/gt/aura-application.git",
+          origin: "patch_required",
+          integrationId: "gerrit-1",
+          repoKey: "guardian-telecom/aura/Project-AURA-Application",
+        }],
+      },
+    });
+
+    expect(saved.status).toBe(200);
+    const [stored] = saved.body?.["components"] as Array<Record<string, unknown>>;
+    expect(stored?.["integrationId"]).toBe("gerrit-1");
+    expect(stored?.["repoKey"]).toBe("guardian-telecom/aura/Project-AURA-Application");
+  });
+
+  it("rejects a vendor component bound to an unknown integration", async () => {
+    const agent = await makeAgent(store);
+    const project = await store.createProject({ name: "P", type: "coding", agentId: agent.id });
+
+    const result = await rest(server, `/api/admin/projects/${project.id}/vendor-components`, {
+      method: "PUT",
+      body: {
+        components: [{ sourcePath: "a.bb", origin: "patch_required", integrationId: "ghost-1", repoKey: "some/repo" }],
+      },
+    });
+
+    expect(result.status).toBe(400);
+    expect(String(result.body?.["error"])).toContain("unknown integration");
+  });
+
+  it("rejects a vendor component binding missing its repository key", async () => {
+    const agent = await makeAgent(store);
+    await seedIntegration(store, "gerrit-1", "gerrit");
+    const project = await store.createProject({ name: "P", type: "coding", agentId: agent.id });
+
+    const result = await rest(server, `/api/admin/projects/${project.id}/vendor-components`, {
+      method: "PUT",
+      body: { components: [{ sourcePath: "a.bb", origin: "patch_required", integrationId: "gerrit-1" }] },
+    });
+
+    expect(result.status).toBe(400);
+  });
+
   it("POST /resolve-repositories matches an existing integration by canonical clone URL", async () => {
     await seedIntegration(store, "gerrit-1", "gerrit");
     await store.setIntegrationDiscoveredResources("gerrit-1", JSON.stringify({

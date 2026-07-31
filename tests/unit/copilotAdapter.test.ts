@@ -961,9 +961,9 @@ describe("CopilotAdapter", () => {
         agentSession: {
           ...makeContext().agentSession,
           vendorComponents: [
-            { sourcePath: "daemon/contrib/src/fmt/package.json", origin: "patch_required", note: "Bump via contrib rules.mak only." },
-            { sourcePath: "meta-product/recipes-core/alpha/alpha_1.2.bb", origin: "patch_required", note: "" },
-            { sourcePath: "meta-product/recipes-core/beta/beta_1.0.bb", origin: "ambiguous", note: "" },
+            { sourcePath: "daemon/contrib/src/fmt/package.json", origin: "patch_required", repoKey: null, note: "Bump via contrib rules.mak only." },
+            { sourcePath: "meta-product/recipes-core/alpha/alpha_1.2.bb", origin: "patch_required", repoKey: null, note: "" },
+            { sourcePath: "meta-product/recipes-core/beta/beta_1.0.bb", origin: "ambiguous", repoKey: null, note: "" },
           ],
         },
       });
@@ -977,6 +977,29 @@ describe("CopilotAdapter", () => {
       expect(prompt).not.toContain(".ve-deps");
     });
 
+    it("points the agent at the bound repository instead of a local patch", () => {
+      const ctx = makeContext({
+        agentSession: {
+          ...makeContext().agentSession,
+          vendorComponents: [
+            {
+              sourcePath: "meta-aura/recipes-app/aura-application/aura-application.bb",
+              origin: "patch_required",
+              repoKey: "guardian-telecom/aura/Project-AURA-Application",
+              note: "Mirrored to GitHub on release.",
+            },
+          ],
+        },
+      });
+
+      const prompt = buildCodegenUserPrompt(ctx, "Do the work.");
+
+      expect(prompt).toContain("maintained in guardian-telecom/aura/Project-AURA-Application");
+      expect(prompt).toContain("the change belongs in that repository, not in a local patch");
+      expect(prompt).toContain("Mirrored to GitHub on release.");
+      expect(prompt).not.toContain("aura-application.bb` (patch required)");
+    });
+
     it("omits the vendored components section when nothing is tracked or everything is directly writable", () => {
       expect(buildCodegenUserPrompt(makeContext(), "Do the work.")).not.toContain("Vendored / External Components");
 
@@ -984,8 +1007,8 @@ describe("CopilotAdapter", () => {
         agentSession: {
           ...makeContext().agentSession,
           vendorComponents: [
-            { sourcePath: "layers/meta-shared", origin: "internal", note: "" },
-            { sourcePath: "libs/core/CMakeLists.txt", origin: "fork_pushable", note: "" },
+            { sourcePath: "layers/meta-shared", origin: "internal", repoKey: null, note: "" },
+            { sourcePath: "libs/core/CMakeLists.txt", origin: "fork_pushable", repoKey: null, note: "" },
           ],
         },
       });
