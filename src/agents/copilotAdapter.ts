@@ -153,6 +153,19 @@ export function buildCodegenUserPrompt(
     lines.push("");
   }
 
+  // Only origins VE cannot push to need patch guidance; internal and forked components are edited normally.
+  const vendorComponents = (context.agentSession.vendorComponents ?? [])
+    .filter((entry) => entry.origin === "patch_required" || entry.origin === "ambiguous");
+  if (vendorComponents.length > 0) {
+    lines.push("### Vendored / External Components");
+    lines.push("These paths declare third-party sources that VE cannot push to. Do NOT edit the upstream source; add a patch through the mechanism the declaring file already uses (for example a `.bbappend` plus patch file, or the contrib rules).");
+    for (const entry of vendorComponents) {
+      const label = entry.origin === "ambiguous" ? "ambiguous — confirm before changing" : "patch required";
+      lines.push(`- \`${entry.sourcePath}\` (${label})${entry.note.trim() ? ` — ${entry.note.trim()}` : ""}`);
+    }
+    lines.push("");
+  }
+
   lines.push("### Instructions");
   lines.push(instructionsPromptContent);
   lines.push("");

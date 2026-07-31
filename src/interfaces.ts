@@ -369,6 +369,13 @@ export interface RepositoryMap {
   submodules: RepositoryMapEntry[];
 }
 
+/** Human-validated vendored component surfaced to the agent. Carries the real editable path only. */
+export interface VendorComponentPromptEntry {
+  sourcePath: string;
+  origin: VendorComponentOrigin;
+  note: string;
+}
+
 export interface AgentSession {
   /** Container image used for the ephemeral Git/GH agent session */
   agentContainerImage: string;
@@ -401,6 +408,8 @@ export interface AgentSession {
   providerOptions?: Record<string, unknown> | undefined;
   /** Multi-repo workspace layout — when set, agent-worker uses it to group files/commits by repo. */
   repositoryMap?: RepositoryMap | undefined;
+  /** Vendored components the agent must patch rather than edit upstream. Empty lists are omitted. */
+  vendorComponents?: VendorComponentPromptEntry[] | undefined;
   /** Remote skills fetched by the worker before opening the agent session. */
   skillSourcesJson?: string | undefined;
   /** Pre-formatted ticket-footer trailer line (e.g. "GitLab: https://…/issues/123") injected into every agent commit alongside its Change-Id. Sourced from the project's "full ticket URL in commits" setting. */
