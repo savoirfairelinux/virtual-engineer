@@ -16,6 +16,8 @@ import {
   type ProjectRecord,
   type ProjectReviewConfig,
   type ProjectTicketSourceRecord,
+  type ProjectVendorComponentInput,
+  type ProjectVendorComponentRecord,
   type ProjectType,
   type PushTargetRole,
   type Task,
@@ -114,6 +116,11 @@ export interface ProjectsRouteStore {
     }>
   ): Promise<ProjectPushTargetRecord[]>;
   listProjectPushTargets(projectId: ProjectId): Promise<ProjectPushTargetRecord[]>;
+  listProjectVendorComponents(projectId: ProjectId): Promise<ProjectVendorComponentRecord[]>;
+  replaceProjectVendorComponents(
+    projectId: ProjectId,
+    inputs: ProjectVendorComponentInput[]
+  ): Promise<ProjectVendorComponentRecord[]>;
   setProjectReviewConfig(
     projectId: ProjectId,
     integrationId: string,
@@ -244,6 +251,36 @@ const pushTargetScanSchema = z.object({
   revision: z.string().trim().min(1).max(512).optional(),
 });
 
+const vendorComponentArraySchema = z.array(z.object({
+  sourcePath: z.string().trim().min(1, "Source path is required").max(1024),
+  localPath: z.string().trim().max(1024).nullish(),
+  cloneUrl: z.string().trim().max(2048).nullish(),
+  revision: z.string().trim().max(512).nullish(),
+  origin: z.enum(["internal", "fork_pushable", "patch_required", "ambiguous"]),
+  note: z.string().trim().max(2048).optional(),
+})).max(500, "At most 500 vendor components may be stored per project")
+  .refine(
+    (components) => new Set(components.map((component) => component.sourcePath)).size === components.length,
+    { message: "Vendor component source paths must be unique" },
+  );
+
+const vendorComponentsSchema = z.object({
+  components: vendorComponentArraySchema,
+});
+
+function toVendorComponentInputs(
+  components: z.infer<typeof vendorComponentArraySchema>
+): ProjectVendorComponentInput[] {
+  return components.map((component) => ({
+    sourcePath: component.sourcePath,
+    localPath: component.localPath ?? null,
+    cloneUrl: component.cloneUrl ?? null,
+    revision: component.revision ?? null,
+    origin: component.origin,
+    note: component.note ?? "",
+  }));
+}
+
 export interface SkillSource {
   source: string;
   skills: string[];
@@ -324,6 +361,7 @@ const codingProjectCreateSchema = z.object({
   enabled: z.boolean().optional(),
   ticketSource: ticketSourceSchema,
   pushTargets: pushTargetsArraySchema,
+  vendorComponents: vendorComponentArraySchema.optional(),
 });
 
 const reviewProjectCreateSchema = z.object({
@@ -835,6 +873,9 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
         }
         await store.setProjectTicketSource(project.id, data.ticketSource);
         await store.replaceProjectPushTargets(project.id, data.pushTargets);
+        if (data.vendorComponents !== undefined) {
+          await store.replaceProjectVendorComponents(project.id, toVendorComponentInputs(data.vendorComponents));
+        }
       } else {
         await store.setProjectReviewConfig(project.id, data.reviewConfig.integrationId, data.reviewConfig.repoKeys);
       }
@@ -903,6 +944,37 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
     res.statusCode = 204; res.end();
     deps.onProjectChange?.();
   }, { permission: "project.operate", resourceParam: "id" });
+
+  router.add("GET", "/api/admin/projects/:id/vendor-components", async (_req, res, params) => {
+    if (!deps.projectStore) { writeJson(res, 501, { error: "Project store not available" }); return; }
+    const store = deps.projectStore;
+    const id = makeProjectId(params["id"] ?? "");
+    if (!await store.getProjectById(id)) { writeJson(res, 404, { error: "Project not found" }); return; }
+    writeJson(res, 200, { components: await store.listProjectVendorComponents(id) });
+  }, { permission: "project.read", resourceParam: "id" });
+
+  router.add("PUT", "/api/admin/projects/:id/vendor-components", async (req, res, params) => {
+    if (!deps.projectStore) { writeJson(res, 501, { error: "Project store not available" }); return; }
+    const store = deps.projectStore;
+    const id = makeProjectId(params["id"] ?? "");
+    const existing = await store.getProjectById(id);
+    if (!existing) { writeJson(res, 404, { error: "Project not found" }); return; }
+    const body = await readBody(req);
+    if (!body) { writeJson(res, 400, { error: "Request body required" }); return; }
+    const parsed = vendorComponentsSchema.safeParse(body);
+    if (!parsed.success) {
+      writeJson(res, 400, zodErrorBody(parsed.error, "Invalid vendor components payload"));
+      return;
+    }
+    const components = await store.replaceProjectVendorComponents(id, toVendorComponentInputs(parsed.data.components));
+    recordAudit(deps.auditStore, req, {
+      action: "project.vendor_components_update",
+      targetType: "project",
+      targetId: id,
+      details: { name: existing.name, componentCount: components.length },
+    });
+    writeJson(res, 200, { components });
+  }, { permission: "project.write", resourceParam: "id" });
 
   router.add("GET", "/api/admin/projects/:id", async (_req, res, params) => {
     if (!deps.projectStore) { writeJson(res, 501, { error: "Project store not available" }); return; }

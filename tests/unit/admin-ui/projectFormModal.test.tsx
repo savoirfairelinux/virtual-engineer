@@ -182,6 +182,164 @@ describe("ProjectFormModal repository integration resolution", () => {
     expect(screen.getByLabelText(/VCS Integration/)).toHaveProperty("value", "");
   });
 
+  it("tracks non-pushable scanned components as vendor components", async () => {
+    const integration: ApiIntegration = {
+      ...gerritIntegration("gerrit-1", "Primary Gerrit"),
+      discoveredResources: {
+        repositories: [{
+          key: "platform/root",
+          name: "Root",
+          cloneUrlHttp: "https://gerrit.example.com/platform/root.git",
+          defaultBranch: "main",
+        }],
+      },
+    };
+    let savedComponents: Array<Record<string, unknown>> | null = null;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const requestPath = typeof input === "string" ? input : input instanceof URL ? input.pathname : input.url;
+      if (requestPath === "/api/admin/projects/scan-push-targets") {
+        return new Response(JSON.stringify({
+          manifestFiles: ["kas/config.yaml"],
+          repositories: [{
+            cloneUrl: "https://git.yoctoproject.org/git/poky",
+            localPath: "layers/poky",
+            revision: "kirkstone",
+            relation: "manifest_member",
+            sourcePath: "kas/config.yaml",
+            origin: "patch_required",
+            resolution: null,
+          }],
+          diagnostics: [],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (requestPath === "/api/admin/projects/project-9" && init?.method === "PUT") {
+        return new Response(JSON.stringify({ project: { id: "project-9" } }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (requestPath === "/api/admin/projects/project-9/vendor-components") {
+        if (init?.method === "PUT") {
+          savedComponents = (JSON.parse(String(init.body)) as { components: Array<Record<string, unknown>> }).components;
+          return new Response(JSON.stringify({ components: savedComponents }), { status: 200, headers: { "content-type": "application/json" } });
+        }
+        return new Response(JSON.stringify({ components: [] }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      throw new Error(`Unexpected request: ${requestPath}`);
+    }));
+
+    render(
+      <ProjectFormModal
+        agents={[codingAgent]}
+        integrations={[integration]}
+        project={{
+          id: "project-9",
+          name: "Yocto",
+          type: "coding",
+          agentId: codingAgent.id,
+          ticketSource: {
+            integration: { id: integration.id, name: integration.name, type: integration.provider },
+            ticketProjectKey: "yocto",
+          },
+          pushTargets: [{
+            integrationId: integration.id,
+            repoKey: "platform/root",
+            cloneUrl: "https://gerrit.example.com/platform/root.git",
+            targetBranch: "main",
+            role: "primary",
+            commitOrder: 1,
+            localPath: ".",
+          }],
+        }}
+        onClose={vi.fn()}
+        onSaved={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Scan workspace" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Track kas/config.yaml as vendor component" }));
+
+    const notes = await screen.findByPlaceholderText("How should the agent handle this component?");
+    fireEvent.change(notes, { target: { value: "apply a .bbappend in the internal layer" } });
+
+    fireEvent.click(screen.getByRole("button", { name: /Save|Create Project/ }));
+
+    await waitFor(() => expect(savedComponents).toEqual([{
+      sourcePath: "kas/config.yaml",
+      localPath: "layers/poky",
+      cloneUrl: "https://git.yoctoproject.org/git/poky",
+      revision: "kirkstone",
+      origin: "patch_required",
+      note: "apply a .bbappend in the internal layer",
+    }]));
+  });
+
+  it("does not offer tracking for internal members, whose notes would never reach the agent", async () => {
+    const integration: ApiIntegration = {
+      ...gerritIntegration("gerrit-1", "Primary Gerrit"),
+      discoveredResources: {
+        repositories: [{
+          key: "platform/root",
+          name: "Root",
+          cloneUrlHttp: "https://gerrit.example.com/platform/root.git",
+          defaultBranch: "main",
+        }],
+      },
+    };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const requestPath = typeof input === "string" ? input : input instanceof URL ? input.pathname : input.url;
+      if (requestPath === "/api/admin/projects/scan-push-targets") {
+        return new Response(JSON.stringify({
+          manifestFiles: ["kas/config.yaml"],
+          repositories: [{
+            cloneUrl: null,
+            localPath: "meta-product",
+            revision: null,
+            relation: "contains",
+            sourcePath: "kas/config.yaml",
+            origin: "internal",
+            resolution: null,
+          }],
+          diagnostics: [],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (requestPath === "/api/admin/projects/project-9/vendor-components") {
+        return new Response(JSON.stringify({ components: [] }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      throw new Error(`Unexpected request: ${requestPath}`);
+    }));
+
+    render(
+      <ProjectFormModal
+        agents={[codingAgent]}
+        integrations={[integration]}
+        project={{
+          id: "project-9",
+          name: "Yocto",
+          type: "coding",
+          agentId: codingAgent.id,
+          ticketSource: {
+            integration: { id: integration.id, name: integration.name, type: integration.provider },
+            ticketProjectKey: "yocto",
+          },
+          pushTargets: [{
+            integrationId: integration.id,
+            repoKey: "platform/root",
+            cloneUrl: "https://gerrit.example.com/platform/root.git",
+            targetBranch: "main",
+            role: "primary",
+            commitOrder: 1,
+            localPath: ".",
+          }],
+        }}
+        onClose={vi.fn()}
+        onSaved={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Scan workspace" }));
+
+    expect(await screen.findByText("meta-product")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /as vendor component/ })).toBeNull();
+  });
+
   it("shows scan progress and adds a matched member only after explicit selection", async () => {
     const integration: ApiIntegration = {
       ...gerritIntegration("gerrit-1", "Primary Gerrit"),

@@ -293,6 +293,41 @@ FetchContent_Declare(googletest
     }
   });
 
+  it("stores and reads back project vendor components", async () => {
+    const agent = await makeAgent(store);
+    const project = await store.createProject({ name: "P", type: "coding", agentId: agent.id });
+
+    const saved = await rest(server, `/api/admin/projects/${project.id}/vendor-components`, {
+      method: "PUT",
+      body: {
+        components: [
+          { sourcePath: "kas/config.yaml", localPath: "layers/poky", cloneUrl: "https://git.yoctoproject.org/git/poky", origin: "patch_required", note: "apply .bbappend" },
+          { sourcePath: "daemon/contrib/src/fmt/package.json", origin: "internal" },
+        ],
+      },
+    });
+
+    expect(saved.status).toBe(200);
+    const read = await rest(server, `/api/admin/projects/${project.id}/vendor-components`);
+    expect(read.status).toBe(200);
+    expect((read.body?.["components"] as Array<Record<string, unknown>>).map((c) => [c["sourcePath"], c["origin"], c["note"]])).toEqual([
+      ["daemon/contrib/src/fmt/package.json", "internal", ""],
+      ["kas/config.yaml", "patch_required", "apply .bbappend"],
+    ]);
+  });
+
+  it("rejects duplicate vendor component source paths", async () => {
+    const agent = await makeAgent(store);
+    const project = await store.createProject({ name: "P", type: "coding", agentId: agent.id });
+
+    const result = await rest(server, `/api/admin/projects/${project.id}/vendor-components`, {
+      method: "PUT",
+      body: { components: [{ sourcePath: "a.yaml", origin: "internal" }, { sourcePath: "a.yaml", origin: "internal" }] },
+    });
+
+    expect(result.status).toBe(400);
+  });
+
   it("POST /resolve-repositories matches an existing integration by canonical clone URL", async () => {
     await seedIntegration(store, "gerrit-1", "gerrit");
     await store.setIntegrationDiscoveredResources("gerrit-1", JSON.stringify({
@@ -501,6 +536,59 @@ FetchContent_Declare(googletest
     expect(pts[1]?.["commitOrder"]).toBe(2);
     const ts = project["ticketSource"] as Record<string, unknown>;
     expect((ts["integration"] as Record<string, unknown>)["id"]).toBe("redmine-1");
+  });
+
+  it("POST / persists vendor components together with the project", async () => {
+    const agent = await makeAgent(store, "coding");
+    await seedIntegration(store, "redmine-1", "redmine");
+    await seedIntegration(store, "gerrit-1", "gerrit");
+    const r = await rest(server, "/api/admin/projects", {
+      method: "POST",
+      body: {
+        type: "coding",
+        name: "Yocto",
+        agentId: agent.id,
+        ticketSource: { integrationId: "redmine-1", ticketProjectKey: "PLATFORM" },
+        pushTargets: [
+          { integrationId: "gerrit-1", repoKey: "superproject", cloneUrl: "ssh://g/super", targetBranch: "main", role: "primary", commitOrder: 1, localPath: "." },
+        ],
+        vendorComponents: [
+          { sourcePath: "kas/config.yaml", localPath: "layers/poky", cloneUrl: "https://git.yoctoproject.org/git/poky", origin: "patch_required", note: "apply .bbappend" },
+        ],
+      },
+    });
+
+    expect(r.status).toBe(201);
+    const projectId = (r.body?.["project"] as Record<string, unknown>)["id"] as string;
+    const stored = await store.listProjectVendorComponents(makeProjectId(projectId));
+    expect(stored.map((c) => [c.sourcePath, c.origin, c.note])).toEqual([
+      ["kas/config.yaml", "patch_required", "apply .bbappend"],
+    ]);
+  });
+
+  it("POST / rolls back the project when vendor components are invalid", async () => {
+    const agent = await makeAgent(store, "coding");
+    await seedIntegration(store, "redmine-1", "redmine");
+    await seedIntegration(store, "gerrit-1", "gerrit");
+    const r = await rest(server, "/api/admin/projects", {
+      method: "POST",
+      body: {
+        type: "coding",
+        name: "Yocto",
+        agentId: agent.id,
+        ticketSource: { integrationId: "redmine-1", ticketProjectKey: "PLATFORM" },
+        pushTargets: [
+          { integrationId: "gerrit-1", repoKey: "superproject", cloneUrl: "ssh://g/super", targetBranch: "main", role: "primary", commitOrder: 1, localPath: "." },
+        ],
+        vendorComponents: [
+          { sourcePath: "dup.yaml", origin: "internal" },
+          { sourcePath: "dup.yaml", origin: "patch_required" },
+        ],
+      },
+    });
+
+    expect(r.status).toBe(400);
+    expect(await store.listProjects()).toEqual([]);
   });
 
   it("POST / normalizes and deduplicates reviewer emails", async () => {
