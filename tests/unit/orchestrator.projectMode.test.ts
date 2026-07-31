@@ -793,6 +793,66 @@ describe("Orchestrator — Phase 4 project mode", () => {
     expect(context.instructionsPromptId).toBe("project-instructions");
   });
 
+  it("project-mode runAgentCycle forwards vendor components without their synthetic local path", async () => {
+    const stateStore = makeStateStore();
+    const ws = makeWorkspaceRunner();
+    const projectAgent = {
+      name: "project-agent",
+      buildContainerSpec: vi.fn(() => ({ image: "x:latest", env: {}, command: [] })),
+      execute: vi.fn(),
+    } as unknown as AgentAdapter;
+
+    const projectMode: ProjectModeDeps = {
+      projectStore: {
+        getProjectById: vi.fn(async () => makeProject()),
+        listProjectPushTargets: vi.fn(async () => [
+          makePushTarget({ id: 1, commitOrder: 1, localPath: ".", integrationId: "vcs-1", repoKey: "root" }),
+        ]),
+        listProjectVendorComponents: vi.fn(async () => [{
+          id: 1,
+          projectId: makeProjectId("p-1"),
+          sourcePath: "daemon/contrib/src/fmt/package.json",
+          localPath: ".ve-deps/fmt",
+          cloneUrl: "https://github.com/fmtlib/fmt.git",
+          revision: "10.2.1",
+          origin: "patch_required" as const,
+          note: "Patch through contrib rules.",
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        }]),
+        getProjectTicketSource: vi.fn().mockResolvedValue({ integrationId: "redmine-int" }),
+        getProjectReviewConfig: vi.fn().mockResolvedValue(null),
+        getAgentById: vi.fn(async () => makeAgentRecord({ integrationId: "copilot-project" })),
+      },
+      pluginManager: {
+        getConnectorForIntegration: vi.fn((integrationId: string) => {
+          if (integrationId === "copilot-project") return projectAgent;
+          if (integrationId === "redmine-int") return makeRedmine();
+          return null;
+        }),
+      } as unknown as ProjectModeDeps["pluginManager"],
+      resolveVcsForIntegration: vi.fn(async () => ({
+        clone: vi.fn(),
+        push: vi.fn().mockResolvedValue({ changeId: "Iroot", url: "u-root", status: "OPEN" }),
+        pushDirect: vi.fn().mockResolvedValue({ changeId: "Iroot", url: "u-root", status: "OPEN" }),
+        getChangeStatus: vi.fn(),
+        buildPushSpec: vi.fn().mockReturnValue({ ref: "refs/for/main", topic: "VE-task-id" }),
+        useChangeIdContinuity: true,
+        reviewSystemLabel: "gerrit",
+      }) as unknown as VcsConnector),
+    };
+
+    const orch = new Orchestrator(baseConfig(), stateStore, ws, undefined, undefined, projectMode);
+    await (orch as unknown as { runAgentCycle: (t: Task) => Promise<void> }).runAgentCycle(makeTask({ state: "AGENT_RUNNING" }));
+
+    const context = vi.mocked(ws.runAgent).mock.calls[0]?.[1] as import("../../src/interfaces.js").TaskContext;
+    expect(context.agentSession.vendorComponents).toEqual([{
+      sourcePath: "daemon/contrib/src/fmt/package.json",
+      origin: "patch_required",
+      note: "Patch through contrib rules.",
+    }]);
+  });
+
   it.each([
     {
       provider: "copilot" as const,

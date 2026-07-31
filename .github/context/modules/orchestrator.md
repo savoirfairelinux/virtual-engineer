@@ -46,6 +46,7 @@ Important behaviors:
 - the worker-owned `ve_submit_changes` MCP tool is a typed completion intent, not a push API. Commit collection, validation, Change-Id injection, `pushDirect()`, `change_per_repository` persistence, and state transitions still occur only after the agent container exits
 - coding projects may override the ticket-derived Gerrit topic with `gerritTopicOverride`; otherwise the existing `VE-<task>-<title>` topic remains unchanged
 - `useFullTicketUrlInCommits` formats a full ticket URL trailer and passes it through `AgentSession.ticketFooterLine` so direct-pushed agent commits receive it inside the worker
+- Coding cycles load the project's human-curated `project_vendor_components` rows (`listProjectVendorComponents`, optional on `ProjectModeDeps.projectStore`) and forward them as `AgentSession.vendorComponents`, mapped down to `{ sourcePath, origin, note }`. The field is omitted when the project tracks none, and the synthetic scan `localPath` is never forwarded.
 - `postReviewLinkToTicket` posts the first cycle's non-orphaned review URLs back to the source ticket; later cycles reuse those reviews and do not post another note
 - `reactToCiFailures` controls whether comments tagged as GitHub `ci-run-*` or Gerrit `ci-failure-*` become retry feedback; the default remains off
 - `checkReviewProgress()` delegates to a single `ReviewProgressService` instance; the service owns single- and multi-repository status convergence, feedback aggregation, CI filtering, retry limits, and post-retry comment resolution

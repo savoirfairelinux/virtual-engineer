@@ -100,6 +100,7 @@ export interface ProjectModeDeps {
   projectStore: {
     getProjectById(id: import("../interfaces.js").ProjectId): Promise<ProjectRecord | null>;
     listProjectPushTargets(id: import("../interfaces.js").ProjectId): Promise<import("../interfaces.js").ProjectPushTargetRecord[]>;
+    listProjectVendorComponents?(id: import("../interfaces.js").ProjectId): Promise<import("../interfaces.js").ProjectVendorComponentRecord[]>;
     getProjectTicketSource(id: import("../interfaces.js").ProjectId): Promise<import("../interfaces.js").ProjectTicketSourceRecord | null>;
     getProjectReviewConfig(id: import("../interfaces.js").ProjectId): Promise<import("../interfaces.js").ProjectReviewConfig | null>;
     getAgentById(id: import("../interfaces.js").AgentId): Promise<import("../interfaces.js").AgentRecord | null>;
@@ -679,6 +680,9 @@ export class Orchestrator {
       if (projectPushTargets.length === 0) {
         throw new Error(`Project ${task.projectId} has no push targets configured`);
       }
+      const vendorComponents = (await this.projectMode.projectStore.listProjectVendorComponents?.(task.projectId) ?? [])
+        // Only the real editable path reaches the agent; the synthetic scan localPath does not exist in the workspace.
+        .map((component) => ({ sourcePath: component.sourcePath, origin: component.origin, note: component.note }));
       const sortedTargets = [...projectPushTargets].sort((a, b) => a.commitOrder - b.commitOrder);
       const root = sortedTargets.find((t) => t.localPath === ".") ?? sortedTargets[0]!;
       cloneUrl = root.cloneUrl;
@@ -852,6 +856,7 @@ export class Orchestrator {
           ...(projectPushTargets.length > 1 || projectPushTargets.some((t) => t.localPath !== ".")
             ? { repositoryMap: buildRepositoryMap(projectPushTargets) }
             : {}),
+          ...(vendorComponents.length > 0 ? { vendorComponents } : {}),
           ...(projectRecord.skillSourcesJson !== "[]"
             ? { skillSourcesJson: projectRecord.skillSourcesJson }
             : {}),

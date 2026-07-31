@@ -955,5 +955,41 @@ describe("CopilotAdapter", () => {
       expect(prompt).toContain("cd /workspace/libs/core && git add -A && git commit");
       expect(prompt).toContain("cd /workspace/libs/utils && git add -A && git commit");
     });
+
+    it("lists vendored components by their real source path", () => {
+      const ctx = makeContext({
+        agentSession: {
+          ...makeContext().agentSession,
+          vendorComponents: [
+            { sourcePath: "daemon/contrib/src/fmt/package.json", origin: "patch_required", note: "Bump via contrib rules.mak only." },
+            { sourcePath: "meta-product/recipes-core/alpha/alpha_1.2.bb", origin: "patch_required", note: "" },
+            { sourcePath: "meta-product/recipes-core/beta/beta_1.0.bb", origin: "ambiguous", note: "" },
+          ],
+        },
+      });
+
+      const prompt = buildCodegenUserPrompt(ctx, "Do the work.");
+
+      expect(prompt).toContain("### Vendored / External Components");
+      expect(prompt).toContain("`daemon/contrib/src/fmt/package.json` (patch required) — Bump via contrib rules.mak only.");
+      expect(prompt).toContain("`meta-product/recipes-core/alpha/alpha_1.2.bb` (patch required)");
+      expect(prompt).toContain("`meta-product/recipes-core/beta/beta_1.0.bb` (ambiguous — confirm before changing)");
+      expect(prompt).not.toContain(".ve-deps");
+    });
+
+    it("omits the vendored components section when nothing is tracked or everything is directly writable", () => {
+      expect(buildCodegenUserPrompt(makeContext(), "Do the work.")).not.toContain("Vendored / External Components");
+
+      const writableOnly = makeContext({
+        agentSession: {
+          ...makeContext().agentSession,
+          vendorComponents: [
+            { sourcePath: "layers/meta-shared", origin: "internal", note: "" },
+            { sourcePath: "libs/core/CMakeLists.txt", origin: "fork_pushable", note: "" },
+          ],
+        },
+      });
+      expect(buildCodegenUserPrompt(writableOnly, "Do the work.")).not.toContain("Vendored / External Components");
+    });
   });
 });
