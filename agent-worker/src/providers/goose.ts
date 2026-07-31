@@ -288,8 +288,10 @@ export async function runGooseAgent(
   writeFileSync(agentInstructionsFile, fullAgentInstructions, 'utf8');
 
   const nativeOptions = resolveGooseNativeOptions();
-  // For review mode, force GOOSE_MODE=chat so Goose does not execute tools.
-  if (mode === 'review' && !nativeOptions.gooseMode) {
+  // For review mode, unconditionally force GOOSE_MODE=chat so Goose does not
+  // execute tools. A user-configured gooseMode is ignored in review mode to
+  // preserve the read-only safety constraint.
+  if (mode === 'review') {
     nativeOptions.gooseMode = 'chat';
   }
   writeGooseConfig(options, nativeOptions, submission.server, submission.toolName);

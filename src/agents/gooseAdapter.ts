@@ -541,7 +541,12 @@ export function gooseProviderAuthEnv(
     case "gemini":
       return { GOOGLE_API_KEY: apiKey };
     case "azure_openai":
-      return { AZURE_OPENAI_API_KEY: apiKey, ...(apiBase ? { AZURE_OPENAI_ENDPOINT: apiBase } : {}) };
+      if (!apiBase) {
+        throw new Error(
+          'Goose "azure_openai" provider requires an Azure OpenAI endpoint. Configure the endpoint URL for the integration in the admin dashboard.'
+        );
+      }
+      return { AZURE_OPENAI_API_KEY: apiKey, AZURE_OPENAI_ENDPOINT: apiBase };
     case "bedrock":
       // Bedrock uses AWS credential chains (AWS_PROFILE / AWS_ACCESS_KEY_ID / …)
       // configured in the host environment. The container only receives env vars

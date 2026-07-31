@@ -166,6 +166,26 @@ describe("GooseAdapter", () => {
       }
     });
 
+    it("maps azure_openai provider to AZURE_OPENAI_API_KEY + AZURE_OPENAI_ENDPOINT", () => {
+      const adapter = new GooseAdapter();
+      const ctx = makeContext();
+      ctx.agentSession.gooseProvider = "azure_openai";
+      ctx.agentSession.gooseApiKey = "az-key";
+      ctx.agentSession.gooseApiBase = "https://my-endpoint.openai.azure.com";
+      const spec = adapter.buildContainerSpec(ctx);
+      expect(spec.env["AZURE_OPENAI_API_KEY"]).toBe("az-key");
+      expect(spec.env["AZURE_OPENAI_ENDPOINT"]).toBe("https://my-endpoint.openai.azure.com");
+    });
+
+    it("throws when azure_openai provider is missing an endpoint", () => {
+      const adapter = new GooseAdapter();
+      const ctx = makeContext();
+      ctx.agentSession.gooseProvider = "azure_openai";
+      ctx.agentSession.gooseApiKey = "az-key";
+      ctx.agentSession.gooseApiBase = "";
+      expect(() => adapter.buildContainerSpec(ctx)).toThrow(/requires an Azure OpenAI endpoint/);
+    });
+
     it("maps openai_compat provider to OPENAI_API_KEY + OPENAI_API_BASE", () => {
       const adapter = new GooseAdapter();
       const ctx = makeContext();
