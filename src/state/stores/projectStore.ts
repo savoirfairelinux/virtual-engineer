@@ -12,6 +12,8 @@ import type {
   ProjectReviewConfig,
   ProjectTicketSourceRecord,
   ProjectType,
+  ProjectVendorComponentInput,
+  ProjectVendorComponentRecord,
   PushTargetRole,
 } from "../../interfaces.js";
 import { TERMINAL_STATES } from "../../interfaces.js";
@@ -19,6 +21,7 @@ import {
   agents,
   projectIntegrationBindings,
   projectPushTargets,
+  projectVendorComponents,
   projects,
 } from "../schema.js";
 import * as schema from "../schema.js";
@@ -83,6 +86,11 @@ export interface ProjectStoreApi {
       reviewerEmails?: string[];
     }>
   ): Promise<ProjectPushTargetRecord[]>;
+  listProjectVendorComponents(projectId: ProjectId): Promise<ProjectVendorComponentRecord[]>;
+  replaceProjectVendorComponents(
+    projectId: ProjectId,
+    inputs: ProjectVendorComponentInput[]
+  ): Promise<ProjectVendorComponentRecord[]>;
   setProjectReviewConfig(projectId: ProjectId, integrationId: string, repoKeys: string[]): Promise<void>;
   getProjectReviewConfig(projectId: ProjectId): Promise<ProjectReviewConfig | null>;
   findProjectsByReviewTarget(integrationId: string, repoKey: string): Promise<ProjectRecord[]>;
@@ -292,6 +300,7 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
         .run(now, id);
       raw.prepare("DELETE FROM project_integration_bindings WHERE project_id = ?").run(id);
       raw.prepare("DELETE FROM project_push_targets WHERE project_id = ?").run(id);
+      raw.prepare("DELETE FROM project_vendor_components WHERE project_id = ?").run(id);
       raw.prepare("DELETE FROM projects WHERE id = ?").run(id);
     })();
   }
@@ -486,6 +495,61 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
     return listProjectPushTargets(projectId);
   }
 
+  async function listProjectVendorComponents(projectId: ProjectId): Promise<ProjectVendorComponentRecord[]> {
+    const rows = await db.query.projectVendorComponents.findMany({
+      where: eq(projectVendorComponents.projectId, projectId),
+      orderBy: (table, { asc }) => [asc(table.sourcePath)],
+    });
+    return rows.map((row) => ({
+      id: row.id,
+      projectId: row.projectId as ProjectId,
+      sourcePath: row.sourcePath,
+      localPath: row.localPath,
+      cloneUrl: row.cloneUrl,
+      revision: row.revision,
+      origin: row.origin,
+      note: row.note,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    }));
+  }
+
+  async function replaceProjectVendorComponents(
+    projectId: ProjectId,
+    inputs: ProjectVendorComponentInput[]
+  ): Promise<ProjectVendorComponentRecord[]> {
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    raw.transaction((): void => {
+      // created_at means "first tracked", so carry it over for paths that survive the replace.
+      const previous = new Map<string, number>();
+      for (const row of raw
+        .prepare("SELECT source_path, created_at FROM project_vendor_components WHERE project_id = ?")
+        .all(projectId) as Array<{ source_path: string; created_at: number }>) {
+        previous.set(row.source_path, row.created_at);
+      }
+      raw.prepare("DELETE FROM project_vendor_components WHERE project_id = ?").run(projectId);
+      const statement = raw.prepare(
+        `INSERT INTO project_vendor_components
+         (project_id, source_path, local_path, clone_url, revision, origin, note, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      );
+      for (const input of inputs) {
+        statement.run(
+          projectId,
+          input.sourcePath,
+          input.localPath ?? null,
+          input.cloneUrl ?? null,
+          input.revision ?? null,
+          input.origin,
+          input.note ?? "",
+          previous.get(input.sourcePath) ?? nowSeconds,
+          nowSeconds
+        );
+      }
+    })();
+    return listProjectVendorComponents(projectId);
+  }
+
   async function setProjectReviewConfig(
     projectId: ProjectId,
     integrationId: string,
@@ -578,6 +642,8 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
     listProjectPushTargets,
     removeProjectPushTarget,
     replaceProjectPushTargets,
+    listProjectVendorComponents,
+    replaceProjectVendorComponents,
     setProjectReviewConfig,
     getProjectReviewConfig,
     findProjectsByReviewTarget,
