@@ -66,7 +66,7 @@ export function isBitbakeRecipeCandidatePath(filePath: string): boolean {
   if (!hasSafeSegments(filePath)) return false;
   const segments = filePath.split("/");
   const directorySegments = segments.slice(0, -1);
-  if (!/\.bb(append)?$/i.test(segments.at(-1) ?? "")) return false;
+  if (!/\.(?:bb|bbappend|inc)$/i.test(segments.at(-1) ?? "")) return false;
   if (directorySegments.length > MAX_RECIPE_DIRECTORY_DEPTH) return false;
   if (directorySegments.some(isGeneratedDirectory)) return false;
   return directorySegments.some((segment) => RECIPE_LAYER_DIRECTORY_PATTERN.test(segment));

@@ -420,6 +420,44 @@ repos:
     expect(result.diagnostics).toEqual([]);
   });
 
+  it("parses git SRC_URI fetchers held in a recipe include file", () => {
+    const result = scanWorkspaceManifests({
+      rootCloneUrl: "https://git.example.com/platform/root.git",
+      files: [
+        { path: "kas.yml", content: "header:\n  version: 14\nrepos:\n  meta-aura:\n" },
+        {
+          path: "meta-aura/recipes-app/aura-application/aura-application.bb",
+          content: 'require aura-application.inc\nS = "${WORKDIR}/git"',
+        },
+        {
+          path: "meta-aura/recipes-app/aura-application/aura-application.inc",
+          content: [
+            'SRCREV = "abc1234"',
+            'SRC_URI = "git://github.com/guardian-telecom/aura-application.git;protocol=https;branch=main"',
+          ].join("\n"),
+        },
+      ],
+    });
+
+    expect(result.repositories).toEqual([
+      {
+        cloneUrl: null,
+        localPath: "meta-aura",
+        revision: null,
+        relation: "contains",
+        sourcePath: "kas.yml",
+      },
+      {
+        cloneUrl: "https://github.com/guardian-telecom/aura-application.git",
+        localPath: ".ve-deps/aura-application",
+        revision: "abc1234",
+        relation: "manifest_member",
+        sourcePath: "meta-aura/recipes-app/aura-application/aura-application.inc",
+      },
+    ]);
+    expect(result.diagnostics).toEqual([]);
+  });
+
   it("resolves recipe URLs held in same-file variables and SRC_URI aliases", () => {
     const result = scanWorkspaceManifests({
       rootCloneUrl: "https://git.example.com/platform/root.git",
