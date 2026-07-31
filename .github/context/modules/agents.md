@@ -1,6 +1,6 @@
 # Agents Module
 
-The `agent_execution` capability has four engines: **Copilot** (`copilotAdapter.ts`), **Claude Code** (`claudeAdapter.ts`), **Aider** (`aiderAdapter.ts`), and **Mock** (`mockAgentAdapter.ts`). Both coding and review flows are supported by Copilot, Claude, and Aider; review uses `REVIEW_MODE=1`.
+The `agent_execution` capability has five engines: **Copilot** (`copilotAdapter.ts`), **Claude Code** (`claudeAdapter.ts`), **Aider** (`aiderAdapter.ts`), **Goose** (`gooseAdapter.ts`), and **Mock** (`mockAgentAdapter.ts`). Both coding and review flows are supported by Copilot, Claude, Aider, and Goose; review uses `REVIEW_MODE=1`.
 
 ## Provider ownership
 
@@ -8,7 +8,7 @@ The `agent_execution` capability has four engines: **Copilot** (`copilotAdapter.
 - Worker success and failure results identify the selected provider through its registered adapter label and active model; top-level failures never fall back to Copilot metadata for Claude or Aider runs.
 - Provider-specific agent settings are stored under `agents.model_config_json.providerOptions`. The orchestrator and review bootstrap transport that object without interpreting its keys; each host adapter validates its own values and maps them to provider environment variables.
 - Each `agent_execution` descriptor declares its own `configFields`, so `AgentFormModal.tsx` renders and serializes advanced settings without provider branches. Adding an engine requires its worker provider, host adapter/descriptor, and registry entries, but no branch in worker `index.ts` or the generic admin form.
-- Review strategy is agent-owned under `modelConfig.providerOptions.reviewStrategy`; absence means `ve_direct`. Descriptors may advertise optional `reviewStrategies` metadata for the generic admin form. Copilot currently advertises experimental `copilot_native`; Claude and Aider remain direct-only.
+- Review strategy is agent-owned under `modelConfig.providerOptions.reviewStrategy`; absence means `ve_direct`. Descriptors may advertise optional `reviewStrategies` metadata for the generic admin form. Copilot currently advertises experimental `copilot_native`; Goose advertises experimental `goose_native`; Claude and Aider remain direct-only.
 
 ## Prompt layers
 
@@ -26,9 +26,9 @@ The `agent_execution` capability has four engines: **Copilot** (`copilotAdapter.
 
 ## Container Environment
 
-- Agent containers are built by `src/agents/copilotAdapter.ts`, `src/agents/claudeAdapter.ts`, and `src/agents/aiderAdapter.ts`.
+- Agent containers are built by `src/agents/copilotAdapter.ts`, `src/agents/claudeAdapter.ts`, `src/agents/aiderAdapter.ts`, and `src/agents/gooseAdapter.ts`.
 - `src/agents/containerSpecBuilders.ts` owns the common code-generation/review environment, command, network default, prompt mount, and hardened Docker arguments. Adapters pass only provider-specific auth, model, and runtime environment deltas.
-- Review containers receive `REVIEW_STRATEGY=ve_direct|copilot_native`. In native mode the Copilot adapter omits `COPILOT_MODEL` and `COPILOT_REASONING_EFFORT`; the parent uses `auto` and the CLI owns the sub-agent model, displayed as CLI-managed.
+- Review containers receive `REVIEW_STRATEGY=ve_direct|copilot_native|goose_native`. In `copilot_native` mode the Copilot adapter omits `COPILOT_MODEL` and `COPILOT_REASONING_EFFORT`; the parent uses `auto` and the CLI owns the sub-agent model, displayed as CLI-managed. In `goose_native` mode the Goose adapter omits `GOOSE_MODEL`; the Goose CLI manages model selection, displayed as CLI-managed.
 - Repository skill discovery belongs to each provider. There is no project/session path or enable field and no `LOCAL_SKILLS_PATH` or `SKILL_DISCOVERY` environment variable.
 - Project remote skill source configuration is not passed into the agent container. `SKILL_SOURCES_JSON`, `SSH_AUTH_SOCK`, `GIT_SSH_COMMAND`, and private-key paths must stay outside the agent runtime.
 - Copilot sets `workingDirectory=/workspace` and `enableConfigDiscovery=true`, allowing the CLI to discover both repository skills and repository MCP configuration through its native coupled discovery behavior. Claude sets `cwd=/workspace`, loads user/project settings and all native skills, and keeps `strictMcpConfig=true`, so only VE-provided MCP servers are accepted by Claude.
@@ -46,7 +46,8 @@ The `agent_execution` capability has four engines: **Copilot** (`copilotAdapter.
 - Copilot uses its working directory with `enableConfigDiscovery=true`; the pinned CLI owns repository skill and MCP configuration discovery. Repository MCP servers remain subject to VE permission handling, but their configuration may be initialized, so repositories must be trusted.
 - Claude uses its repository `cwd`, `settingSources: ['user', 'project']`, and `skills: 'all'`. Review mode permits the native `Skill` tool. `strictMcpConfig=true` remains enabled and is independent of native skill loading.
 - Aider receives the selected Agent Instructions through `--read` but no VE-discovered repository skill manifests. Its normal CLI repository behavior is unchanged.
-- Remote skill fetching is intentionally host-side, not worker-side. Configured sources are installed for Copilot and Claude; Aider rejects remote-source configuration explicitly rather than silently ignoring it.
+- Goose receives the selected Agent Instructions appended to the workflow prompt and loads the VE MCP submission server as a stdio extension via its `config.yaml`. Goose's native repository behavior (built-in Developer extension, `.goosehints` convention) is unchanged; VE does not inject repository skill manifests.
+- Remote skill fetching is intentionally host-side, not worker-side. Configured sources are installed for Copilot and Claude; Aider and Goose reject remote-source configuration explicitly rather than silently ignoring it.
 
 ## Copilot native review compatibility
 
@@ -73,6 +74,20 @@ The `agent_execution` capability has four engines: **Copilot** (`copilotAdapter.
 - Connection validation (`aiderConnectionValidator.ts`) and model discovery (`aiderModelsService.ts`) probe the upstream provider's `/models` (or Ollama `/api/tags`); Ollama model ids are prefixed with `ollama_chat/` per Aider's recommendation.
 - Cost: Aider has no AIU, so `agent_cycles` USD/credit columns stay null; token usage is still emitted as `assistant.usage` events (parsed from Aider's `Tokens: … Cost: …` line when present).
 - Network: Aider needs outbound HTTPS to the upstream LLM API (and HTTP to Ollama). The `virtual-engineer_ve-agent-net` Docker network must allow that egress; for Ollama running on the host, the container needs `host.docker.internal` reachability.
+
+## Goose engine specifics
+
+- `gooseAdapter.ts` injects `AGENT_PROVIDER=goose`, the selected provider's auth env var(s), and `GOOSE_MODEL` **only when a model is configured** (no hardcoded default — the Goose CLI picks its own).
+- Providers (descriptor `src/plugins/descriptors/goose.ts`, `gooseProvider` selector): `anthropic` → `ANTHROPIC_API_KEY`; `openai` → `OPENAI_API_KEY`; `openrouter` → `OPENROUTER_API_KEY`; `ollama` → `OLLAMA_HOST` (no key); `deepseek` → `DEEPSEEK_API_KEY`; `groq` → `GROQ_API_KEY`; `gemini` → `GOOGLE_API_KEY`; `azure_openai` → `AZURE_OPENAI_API_KEY` + `AZURE_OPENAI_ENDPOINT`; `bedrock` → AWS env credential chain (no key forwarded); `perplexity` → `PERPLEXITY_API_KEY`; `mistral` → `MISTRAL_API_KEY`; `xai` → `XAI_API_KEY`; `cerebras` → `CEREBRAS_API_KEY`; `openai_compat` → `OPENAI_API_KEY` + `OPENAI_API_BASE`. The model lives on the `agents` table.
+- The Goose runner (`agent-worker/src/providers/goose.ts`, selected by the worker's provider registry when `AGENT_PROVIDER=goose`) spawns the `goose` CLI as a subprocess against `/workspace` and maps its output onto the shared `__ve_event` / commit / `AgentResult` pipeline. Unlike Aider (text transport), Goose uses **MCP submission transport**: the runner writes a Goose `config.yaml` into `/ve-home/.config/goose/` that registers the VE MCP submission server (`/agent-worker/dist/mcpSubmissionServer.js`) as a stdio extension, so Goose calls `ve_submit_changes` / `ve_submit_review` to deliver the structured result. The worker then reads the submission file and asserts exactly one accepted tool call, exactly like Copilot/Claude.
+- Coding cycles enable the builtin `developer` extension (so Goose can edit files and commit) and run `goose run --instructions <prompt-file> --no-tui --no-session`. Review cycles disable all builtin extensions (read-only analysis), force `GOOSE_MODE=chat`, and submit via `ve_submit_review` with the integration's `REVIEW_OUTPUT_SCHEMA`. The `goose_native` review strategy omits `GOOSE_MODEL` (CLI-managed), parallel to `copilot_native`.
+- Goose's per-session timeout terminates the CLI, rejects the cycle with an explicit timeout error, removes its temporary prompt directory, and emits `session.error`; signal termination never returns partial output or commits as a successful `AgentResult`.
+- Goose reads provider API keys from the environment (never from `config.yaml`); the runner sets `GOOSE_DISABLE_KEYRING=true` so Goose does not attempt to use a desktop keyring inside the container. The subprocess env is allowlisted to the supported provider auth vars plus git identity and Goose global settings.
+- Goose declares the `mcp` submission transport. The worker observes MCP tool calls in Goose's stdout and normalizes the tool name to `mcp__ve-submission__<tool>` (Claude-style) for `assertSuccessfulSubmissionToolCall`; the submission file's existence (checked by `readSubmission`) is the source of truth for the single-submission invariant.
+- The Goose CLI is a Rust binary installed in the agent image via the official `download_cli.sh` installer with a pinned `GOOSE_VERSION` (see `Dockerfile.agent`); the binary lands in `/usr/local/bin/goose`. Goose's `~/.config/goose/` config lands on the `/ve-home` named volume.
+- Connection validation (`gooseConnectionValidator.ts`) and model discovery (`gooseModelsService.ts`) probe the upstream provider's `/models` (or Ollama `/api/tags`, Gemini `/v1/models`, Azure OpenAI `/openai/models`); Ollama model ids are prefixed with `ollama_chat/` (litellm convention). Bedrock model discovery is not supported (enter the model id manually); Bedrock validation checks AWS env var presence.
+- Cost: Goose has no AIU, so `agent_cycles` USD/credit columns stay null; token usage is still emitted as `assistant.usage` events (parsed from Goose's `Tokens: … Cost: …` line when present).
+- Network: Goose needs outbound HTTPS to the upstream LLM API (and HTTP to Ollama). The `virtual-engineer_ve-agent-net` Docker network must allow that egress; for Ollama running on the host, the container needs `host.docker.internal` reachability.
 
 ## Related docs
 
