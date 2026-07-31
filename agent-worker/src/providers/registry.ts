@@ -9,10 +9,11 @@
 import { CLAUDE_PROVIDER } from './claude.js';
 import { COPILOT_PROVIDER } from './copilot.js';
 import { AIDER_PROVIDER } from './aider.js';
+import { GOOSE_PROVIDER } from './goose.js';
 import type { AgentProviderDefinition } from './types.js';
 
 const AGENT_PROVIDERS = new Map<string, AgentProviderDefinition>(
-  [COPILOT_PROVIDER, CLAUDE_PROVIDER, AIDER_PROVIDER].map((provider) => [provider.id, provider])
+  [COPILOT_PROVIDER, CLAUDE_PROVIDER, AIDER_PROVIDER, GOOSE_PROVIDER].map((provider) => [provider.id, provider])
 );
 
 /** The set of supported agent provider ids. */
