@@ -6,6 +6,7 @@ import type { ReviewWorkspaceInput, TaskContext } from "../../src/interfaces.js"
 import { AiderAdapter } from "../../src/agents/aiderAdapter.js";
 import { ClaudeAdapter } from "../../src/agents/claudeAdapter.js";
 import { CopilotAdapter } from "../../src/agents/copilotAdapter.js";
+import { GooseAdapter } from "../../src/agents/gooseAdapter.js";
 import {
   buildCodegenContainerSpec,
   buildReviewContainerSpec,
@@ -191,6 +192,14 @@ describe("containerSpecBuilders", () => {
         }),
         review: new AiderAdapter(config).buildReviewContainerSpec(input, {
           OPENAI_API_KEY: "aider-token",
+        }),
+      },
+      {
+        codegen: new GooseAdapter(config).buildContainerSpec(context, {
+          ANTHROPIC_API_KEY: "goose-token",
+        }),
+        review: new GooseAdapter(config).buildReviewContainerSpec(input, {
+          ANTHROPIC_API_KEY: "goose-token",
         }),
       },
     ];
