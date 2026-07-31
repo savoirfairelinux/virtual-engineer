@@ -19,7 +19,7 @@ Coding tasks progress from detection through implementation and review to comple
 
 - **Isolated execution**: every coding and review run uses an ephemeral Docker container with a read-only root filesystem, dropped Linux capabilities, and dedicated named volumes.
 - **Host-owned credentials**: push and review credentials remain with the orchestrator; they are not placed in the agent workspace.
-- **Multiple agent engines**: use GitHub Copilot, Claude Code, or Aider. Aider supports OpenAI, Anthropic, Ollama, OpenRouter, DeepSeek, and OpenAI-compatible endpoints.
+- **Multiple agent engines**: use GitHub Copilot, Claude Code, Aider, or Goose. Aider and Goose each wrap many LLM backends — see [Agent Engines & LLM Providers](#-agent-engines--llm-providers) below.
 - **Provider flexibility**: connect Redmine, GitLab, GitHub, or Gerrit, including multiple active instances of the same provider.
 - **Feedback-aware delivery**: coding agents can iterate on reviewer feedback and selected CI failures while preserving the review history.
 - **Automated review controls**: severity thresholds, comment limits, patchset-aware deduplication, and discussion-thread replies keep reviews useful and repeatable.
@@ -30,12 +30,34 @@ Coding tasks progress from detection through implementation and review to comple
 
 | Capability | Providers |
 | --- | --- |
-| Agent execution | GitHub Copilot, Claude Code, Aider |
+| Agent execution | GitHub Copilot, Claude Code, Aider, Goose |
 | Issue tracking | Redmine, GitLab Issues, GitHub Issues |
 | Source control and code review | Gerrit, GitLab Merge Requests, GitHub Pull Requests |
 | Local development and workflow testing | Mock agent |
 
 Provider integrations are configured in the Admin UI and stored encrypted in SQLite. Runtime dependencies are refreshed after integration changes without restarting the orchestrator. For authentication methods, model options, and engine-specific behavior, see the [agent reference](.github/context/modules/agents.md).
+
+## 🧠 Agent Engines & LLM Providers
+
+Virtual Engineer supports five agent execution engines. The selected model lives on the `agents` table, not the integration config, so a single integration can serve many models.
+
+| Engine | Auth / connection |
+| --- | --- |
+| **GitHub Copilot** | GitHub OAuth device flow, or a Personal Access Token |
+| **Claude Code** | Anthropic API key, or Claude Pro/Max subscription via OAuth (auth-code + PKCE) |
+| **Aider** | Per-backend API key (Ollama needs none) |
+| **Goose** | Per-provider API key (Ollama/Bedrock need none) |
+| **Mock** | None |
+
+Each engine wraps one or more LLM backends:
+
+- **GitHub Copilot** — GitHub Copilot models (CLI-managed; `auto` default)
+- **Claude Code** — Anthropic Claude models
+- **Aider** — OpenAI, Anthropic, Ollama (local), OpenRouter, DeepSeek, OpenAI-compatible (custom base URL)
+- **Goose** — Anthropic, OpenAI, OpenRouter, Ollama (local), DeepSeek, Groq, Google Gemini, Azure OpenAI, Amazon Bedrock (AWS env), Perplexity, Mistral, xAI (Grok), Cerebras, OpenAI-compatible (custom base URL)
+- **Mock** — Local testing only (success / no_change / failed)
+
+Multiple active integrations of the same provider are supported in parallel. Credentials are stored encrypted in SQLite (Mock, Aider, and Goose store API keys plaintext at rest per their descriptors). For engine-specific behavior, native review strategies, and skill discovery, see the [agent reference](.github/context/modules/agents.md).
 
 ## 🚀 Quick Start
 
@@ -67,7 +89,7 @@ Keep the generated `ADMIN_AUTH_SECRET` stable and stored securely. It encrypts p
 
 Use the Admin UI to assemble a workflow from reusable integrations, agents, and projects:
 
-1. Add and test an **agent integration**: GitHub Copilot, Claude Code, or Aider.
+1. Add and test an **agent integration**: GitHub Copilot, Claude Code, Aider, or Goose.
 2. Add the external integration required by the workflow: an **issue tracker** for coding, or a **review system** for code review.
 3. Create a coding or review **agent**, select its model and prompts, and set its concurrency limit.
 4. Create a matching **project** and bind its repository, target branch, integrations, and agent.
