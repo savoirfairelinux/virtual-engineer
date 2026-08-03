@@ -102,8 +102,6 @@ interface VendorComponentRow {
   cloneUrl: string | null;
   revision: string | null;
   origin: VendorComponentOrigin;
-  integrationId: string | null;
-  repoKey: string | null;
   note: string;
 }
 
@@ -120,6 +118,9 @@ const VENDOR_ORIGIN_TONES: Record<VendorComponentOrigin, ToneKey> = {
   patch_required: "warn",
   ambiguous: "danger",
 };
+
+/** Sentinel for the "no repository of ours" answer, which tracks the member instead of pushing. */
+const PATCH_LOCALLY_CHOICE = "__patch_locally__";
 
 interface WorkspaceScanDiagnostic {
   sourcePath: string;
@@ -863,6 +864,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
   const [workspaceScanErrors, setWorkspaceScanErrors] = useState<Record<string, string>>({});
   const [vendorComponents, setVendorComponents] = useState<VendorComponentRow[]>([]);
   const [vendorComponentsDirty, setVendorComponentsDirty] = useState(false);
+  const [mappedMembers, setMappedMembers] = useState<Record<string, string>>({});
 
   const trackVendorComponent = (member: WorkspaceScanMember) => {
     setVendorComponentsDirty(true);
@@ -874,8 +876,6 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
         cloneUrl: member.cloneUrl,
         revision: member.revision,
         origin: member.origin,
-        integrationId: null,
-        repoKey: null,
         note: "",
       }]);
   };
@@ -888,22 +888,6 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
   const updateVendorComponentNote = (sourcePath: string, note: string) => {
     setVendorComponentsDirty(true);
     setVendorComponents((prev) => prev.map((component) => component.sourcePath === sourcePath ? { ...component, note } : component));
-  };
-
-  // The API stores the integration and the repository key together, so clearing either clears both.
-  const updateVendorComponentBinding = (sourcePath: string, patch: { integrationId?: string; repoKey?: string }) => {
-    setVendorComponentsDirty(true);
-    setVendorComponents((prev) => prev.map((component) => {
-      if (component.sourcePath !== sourcePath) return component;
-      const integrationId = patch.integrationId !== undefined ? patch.integrationId : component.integrationId ?? "";
-      const repoKey = patch.repoKey !== undefined ? patch.repoKey : component.repoKey ?? "";
-      const bound = integrationId.trim() !== "" && repoKey.trim() !== "";
-      return {
-        ...component,
-        integrationId: integrationId.trim() === "" ? null : integrationId,
-        repoKey: bound ? repoKey : repoKey.trim() === "" ? null : repoKey,
-      };
-    }));
   };
 
   useEffect(() => {
@@ -1154,6 +1138,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
           relation: member.relation,
           reviewerEmails: "",
         }]);
+      setMappedMembers((prev) => ({ ...prev, [memberKey]: repoKey }));
     } finally {
       setAddingWorkspaceMember((current) => current === memberKey ? null : current);
     }
@@ -1202,12 +1187,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
               : [],
           })),
         };
-        // A half-typed binding is meaningless to the agent, and the API rejects it, so drop it.
-        const vendorComponentsPayload = vendorComponents.map((component) => (
-          component.integrationId?.trim() && component.repoKey?.trim()
-            ? { ...component, integrationId: component.integrationId.trim(), repoKey: component.repoKey.trim() }
-            : { ...component, integrationId: null, repoKey: null }
-        ));
+        const vendorComponentsPayload = vendorComponents;
         if (isEditMode && project) {
           await api.put(`/api/admin/projects/${project.id}`, payload, { signal: abort.signal });
           if (vendorComponentsDirty) {
@@ -1452,36 +1432,36 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
                                         </button>
                                       ) : member.origin === "internal" ? (
                                         <Tag tone="muted">{state}</Tag>
+                                      ) : mappedMembers[memberKey] ? (
+                                        <Tag tone="ok">pushes to {mappedMembers[memberKey]}</Tag>
+                                      ) : isTracked ? (
+                                        <Tag tone="warn">patched locally</Tag>
                                       ) : (
-                                        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                                          <FieldSelect
-                                            aria-label={`Push ${member.sourcePath} to a repository`}
-                                            value=""
-                                            disabled={addingWorkspaceMember === memberKey}
-                                            onChange={(e) => {
-                                              const [integrationId, mappedRepoKey] = e.target.value.split("::");
-                                              if (integrationId && mappedRepoKey) void mapWorkspaceMemberToRepository(member, integrationId, mappedRepoKey);
-                                            }}
-                                            style={{ width: 170, fontSize: "12px", padding: "5px 8px" }}
-                                          >
-                                            <option value="">Push to…</option>
+                                        <FieldSelect
+                                          aria-label={`Where changes to ${member.sourcePath} go`}
+                                          value=""
+                                          disabled={addingWorkspaceMember === memberKey}
+                                          onChange={(e) => {
+                                            const choice = e.target.value;
+                                            if (choice === PATCH_LOCALLY_CHOICE) {
+                                              trackVendorComponent(member);
+                                              return;
+                                            }
+                                            const [integrationId, mappedRepoKey] = choice.split("::");
+                                            if (integrationId && mappedRepoKey) void mapWorkspaceMemberToRepository(member, integrationId, mappedRepoKey);
+                                          }}
+                                          style={{ width: 210, fontSize: "12px", padding: "5px 8px" }}
+                                        >
+                                          <option value="">Where do changes go?</option>
+                                          <option value={PATCH_LOCALLY_CHOICE}>Patch locally — upstream</option>
+                                          <optgroup label="Push to one of our repositories">
                                             {pushableRepositories.map((repository) => (
                                               <option key={`${repository.integrationId}::${repository.repoKey}`} value={`${repository.integrationId}::${repository.repoKey}`}>
                                                 {repository.repoKey}
                                               </option>
                                             ))}
-                                          </FieldSelect>
-                                          <button
-                                            type="button"
-                                            className="btn sm"
-                                            aria-label={isTracked ? `${member.sourcePath} tracked as vendor component` : `Track ${member.sourcePath} as vendor component`}
-                                            disabled={isTracked}
-                                            onClick={() => trackVendorComponent(member)}
-                                          >
-                                            <Icon name={isTracked ? "check" : "plus"} size={12} />
-                                            {isTracked ? "Tracked" : "Track"}
-                                          </button>
-                                        </div>
+                                          </optgroup>
+                                        </FieldSelect>
                                       )}
                                     </div>
                                   );
@@ -1520,7 +1500,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
             {vendorComponents.length > 0 && (
               <Field
                 label="Vendor Components"
-                hint="Third-party components detected by the workspace scan that VE cannot push to. Notes are surfaced to the agent so it patches them locally instead of attempting a push. If a component is actually developed in one of your repositories, declare it so the agent changes it there rather than patching."
+                hint="Components the scan found that no repository of ours owns. The agent is told to patch them in place — through a .bbappend or the contrib rules — instead of editing the upstream source. Your note is passed to the agent verbatim."
               >
                 <div data-testid="vendor-components" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                   {vendorComponents.map((component) => (
@@ -1544,26 +1524,6 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
                         onChange={(e) => updateVendorComponentNote(component.sourcePath, e.target.value)}
                         style={{ fontSize: "12.5px", padding: "6px 9px" }}
                       />
-                      <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gap: 8 }}>
-                        <FieldSelect
-                          aria-label={`Maintained in integration for ${component.sourcePath}`}
-                          value={component.integrationId ?? ""}
-                          onChange={(e) => updateVendorComponentBinding(component.sourcePath, { integrationId: e.target.value })}
-                          style={{ fontSize: "12.5px", padding: "6px 9px" }}
-                        >
-                          <option value="">— not maintained by us —</option>
-                          {vcsIntegrations.map((i) => (
-                            <option key={i.id} value={i.id}>{i.name}</option>
-                          ))}
-                        </FieldSelect>
-                        <FieldInput
-                          value={component.repoKey ?? ""}
-                          placeholder="repository key on that integration"
-                          aria-label={`Maintained in repository for ${component.sourcePath}`}
-                          onChange={(e) => updateVendorComponentBinding(component.sourcePath, { repoKey: e.target.value })}
-                          style={{ fontSize: "12.5px", padding: "6px 9px" }}
-                        />
-                      </div>
                     </div>
                   ))}
                 </div>

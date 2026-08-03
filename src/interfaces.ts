@@ -161,13 +161,6 @@ export interface ProjectVendorComponentRecord {
   cloneUrl: string | null;
   revision: string | null;
   origin: VendorComponentOrigin;
-  /**
-   * Operator-declared VE repository this component is really developed in, used when the
-   * declared clone URL is a mirror VE cannot push to (e.g. a recipe pointing at GitHub while
-   * review happens on Gerrit). Both fields are set together or both null.
-   */
-  integrationId: string | null;
-  repoKey: string | null;
   /** Free-form operator guidance (e.g. how to patch this component). */
   note: string;
   createdAt: Date;
@@ -181,8 +174,6 @@ export interface ProjectVendorComponentInput {
   cloneUrl?: string | null;
   revision?: string | null;
   origin: VendorComponentOrigin;
-  integrationId?: string | null;
-  repoKey?: string | null;
   note?: string;
 }
 
@@ -382,8 +373,6 @@ export interface RepositoryMap {
 export interface VendorComponentPromptEntry {
   sourcePath: string;
   origin: VendorComponentOrigin;
-  /** VE repository the component is really developed in, when the operator declared one. */
-  repoKey: string | null;
   note: string;
 }
 

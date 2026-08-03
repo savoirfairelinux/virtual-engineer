@@ -685,7 +685,6 @@ export class Orchestrator {
         .map((component) => ({
           sourcePath: component.sourcePath,
           origin: component.origin,
-          repoKey: component.repoKey,
           note: component.note,
         }));
       const sortedTargets = [...projectPushTargets].sort((a, b) => a.commitOrder - b.commitOrder);

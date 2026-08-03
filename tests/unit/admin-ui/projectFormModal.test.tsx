@@ -254,7 +254,10 @@ describe("ProjectFormModal repository integration resolution", () => {
     );
 
     fireEvent.click(await screen.findByRole("button", { name: "Scan workspace" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Track kas/config.yaml as vendor component" }));
+    fireEvent.change(
+      await screen.findByRole("combobox", { name: "Where changes to kas/config.yaml go" }),
+      { target: { value: "__patch_locally__" } },
+    );
 
     const notes = await screen.findByPlaceholderText("How should the agent handle this component?");
     fireEvent.change(notes, { target: { value: "apply a .bbappend in the internal layer" } });
@@ -267,190 +270,8 @@ describe("ProjectFormModal repository integration resolution", () => {
       cloneUrl: "https://git.yoctoproject.org/git/poky",
       revision: "kirkstone",
       origin: "patch_required",
-      integrationId: null,
-      repoKey: null,
       note: "apply a .bbappend in the internal layer",
     }]));
-  });
-
-  it("declares the repository a vendored component is really maintained in", async () => {
-    const integration: ApiIntegration = {
-      ...gerritIntegration("gerrit-1", "Primary Gerrit"),
-      discoveredResources: {
-        repositories: [{
-          key: "platform/root",
-          name: "Root",
-          cloneUrlHttp: "https://gerrit.example.com/platform/root.git",
-          defaultBranch: "main",
-        }],
-      },
-    };
-    let savedComponents: Array<Record<string, unknown>> | null = null;
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const requestPath = typeof input === "string" ? input : input instanceof URL ? input.pathname : input.url;
-      if (requestPath === "/api/admin/projects/scan-push-targets") {
-        return new Response(JSON.stringify({
-          manifestFiles: ["meta-aura/recipes-app/aura-application/aura-application.inc"],
-          repositories: [{
-            cloneUrl: "https://github.com/guardian-telecom/aura-application.git",
-            localPath: ".ve-deps/aura-application",
-            revision: "abc1234",
-            relation: "manifest_member",
-            sourcePath: "meta-aura/recipes-app/aura-application/aura-application.inc",
-            origin: "patch_required",
-            resolution: null,
-          }],
-          diagnostics: [],
-        }), { status: 200, headers: { "content-type": "application/json" } });
-      }
-      if (requestPath === "/api/admin/projects/project-9" && init?.method === "PUT") {
-        return new Response(JSON.stringify({ project: { id: "project-9" } }), { status: 200, headers: { "content-type": "application/json" } });
-      }
-      if (requestPath === "/api/admin/projects/project-9/vendor-components") {
-        if (init?.method === "PUT") {
-          savedComponents = (JSON.parse(String(init.body)) as { components: Array<Record<string, unknown>> }).components;
-          return new Response(JSON.stringify({ components: savedComponents }), { status: 200, headers: { "content-type": "application/json" } });
-        }
-        return new Response(JSON.stringify({ components: [] }), { status: 200, headers: { "content-type": "application/json" } });
-      }
-      throw new Error(`Unexpected request: ${requestPath}`);
-    }));
-
-    render(
-      <ProjectFormModal
-        agents={[codingAgent]}
-        integrations={[integration]}
-        project={{
-          id: "project-9",
-          name: "Yocto",
-          type: "coding",
-          agentId: codingAgent.id,
-          ticketSource: {
-            integration: { id: integration.id, name: integration.name, type: integration.provider },
-            ticketProjectKey: "yocto",
-          },
-          pushTargets: [{
-            integrationId: integration.id,
-            repoKey: "platform/root",
-            cloneUrl: "https://gerrit.example.com/platform/root.git",
-            targetBranch: "main",
-            role: "primary",
-            commitOrder: 1,
-            localPath: ".",
-          }],
-        }}
-        onClose={vi.fn()}
-        onSaved={vi.fn()}
-      />,
-    );
-
-    fireEvent.click(await screen.findByRole("button", { name: "Scan workspace" }));
-    const sourcePath = "meta-aura/recipes-app/aura-application/aura-application.inc";
-    fireEvent.click(await screen.findByRole("button", { name: `Track ${sourcePath} as vendor component` }));
-
-    fireEvent.change(
-      screen.getByRole("combobox", { name: `Maintained in integration for ${sourcePath}` }),
-      { target: { value: "gerrit-1" } },
-    );
-    fireEvent.change(
-      screen.getByRole("textbox", { name: `Maintained in repository for ${sourcePath}` }),
-      { target: { value: "guardian-telecom/aura/Project-AURA-Application" } },
-    );
-
-    fireEvent.click(screen.getByRole("button", { name: /Save|Create Project/ }));
-
-    await waitFor(() => expect(savedComponents).toEqual([expect.objectContaining({
-      sourcePath,
-      integrationId: "gerrit-1",
-      repoKey: "guardian-telecom/aura/Project-AURA-Application",
-    })]));
-  });
-
-  it("drops a half-declared maintenance repository the API would reject", async () => {
-    const integration: ApiIntegration = {
-      ...gerritIntegration("gerrit-1", "Primary Gerrit"),
-      discoveredResources: {
-        repositories: [{
-          key: "platform/root",
-          name: "Root",
-          cloneUrlHttp: "https://gerrit.example.com/platform/root.git",
-          defaultBranch: "main",
-        }],
-      },
-    };
-    let savedComponents: Array<Record<string, unknown>> | null = null;
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const requestPath = typeof input === "string" ? input : input instanceof URL ? input.pathname : input.url;
-      if (requestPath === "/api/admin/projects/scan-push-targets") {
-        return new Response(JSON.stringify({
-          manifestFiles: ["kas/config.yaml"],
-          repositories: [{
-            cloneUrl: "https://git.yoctoproject.org/git/poky",
-            localPath: "layers/poky",
-            revision: "kirkstone",
-            relation: "manifest_member",
-            sourcePath: "kas/config.yaml",
-            origin: "patch_required",
-            resolution: null,
-          }],
-          diagnostics: [],
-        }), { status: 200, headers: { "content-type": "application/json" } });
-      }
-      if (requestPath === "/api/admin/projects/project-9" && init?.method === "PUT") {
-        return new Response(JSON.stringify({ project: { id: "project-9" } }), { status: 200, headers: { "content-type": "application/json" } });
-      }
-      if (requestPath === "/api/admin/projects/project-9/vendor-components") {
-        if (init?.method === "PUT") {
-          savedComponents = (JSON.parse(String(init.body)) as { components: Array<Record<string, unknown>> }).components;
-          return new Response(JSON.stringify({ components: savedComponents }), { status: 200, headers: { "content-type": "application/json" } });
-        }
-        return new Response(JSON.stringify({ components: [] }), { status: 200, headers: { "content-type": "application/json" } });
-      }
-      throw new Error(`Unexpected request: ${requestPath}`);
-    }));
-
-    render(
-      <ProjectFormModal
-        agents={[codingAgent]}
-        integrations={[integration]}
-        project={{
-          id: "project-9",
-          name: "Yocto",
-          type: "coding",
-          agentId: codingAgent.id,
-          ticketSource: {
-            integration: { id: integration.id, name: integration.name, type: integration.provider },
-            ticketProjectKey: "yocto",
-          },
-          pushTargets: [{
-            integrationId: integration.id,
-            repoKey: "platform/root",
-            cloneUrl: "https://gerrit.example.com/platform/root.git",
-            targetBranch: "main",
-            role: "primary",
-            commitOrder: 1,
-            localPath: ".",
-          }],
-        }}
-        onClose={vi.fn()}
-        onSaved={vi.fn()}
-      />,
-    );
-
-    fireEvent.click(await screen.findByRole("button", { name: "Scan workspace" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Track kas/config.yaml as vendor component" }));
-
-    fireEvent.change(
-      screen.getByRole("combobox", { name: "Maintained in integration for kas/config.yaml" }),
-      { target: { value: "gerrit-1" } },
-    );
-
-    fireEvent.click(screen.getByRole("button", { name: /Save|Create Project/ }));
-
-    await waitFor(() => expect(savedComponents).toEqual([expect.objectContaining({
-      integrationId: null,
-      repoKey: null,
-    })]));
   });
 
   it("pushes a mirrored component to the repository the operator maps it to", async () => {
@@ -537,7 +358,7 @@ describe("ProjectFormModal repository integration resolution", () => {
 
     const sourcePath = "sources/meta-aura/recipes-app/aura-application/aura-application.bb";
     fireEvent.change(
-      await screen.findByRole("combobox", { name: `Push ${sourcePath} to a repository` }),
+      await screen.findByRole("combobox", { name: `Where changes to ${sourcePath} go` }),
       { target: { value: "gerrit-1::guardian-telecom/aura/Project-AURA-Application" } },
     );
 
@@ -622,7 +443,7 @@ describe("ProjectFormModal repository integration resolution", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Scan workspace" }));
 
     expect(await screen.findByText("meta-product")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: /as vendor component/ })).toBeNull();
+    expect(screen.queryByRole("combobox", { name: /^Where changes to / })).toBeNull();
   });
 
   it("shows scan progress and adds a matched member only after explicit selection", async () => {

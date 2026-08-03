@@ -160,9 +160,7 @@ export function buildCodegenUserPrompt(
     lines.push("### Vendored / External Components");
     lines.push("These paths declare third-party sources that VE cannot push to. Do NOT edit the upstream source; add a patch through the mechanism the declaring file already uses (for example a `.bbappend` plus patch file, or the contrib rules).");
     for (const entry of vendorComponents) {
-      const label = entry.repoKey !== null && entry.repoKey.trim()
-        ? `maintained in ${entry.repoKey.trim()} — the change belongs in that repository, not in a local patch`
-        : entry.origin === "ambiguous" ? "ambiguous — confirm before changing" : "patch required";
+      const label = entry.origin === "ambiguous" ? "ambiguous — confirm before changing" : "patch required";
       lines.push(`- \`${entry.sourcePath}\` (${label})${entry.note.trim() ? ` — ${entry.note.trim()}` : ""}`);
     }
     lines.push("");
