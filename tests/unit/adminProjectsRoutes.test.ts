@@ -316,6 +316,24 @@ FetchContent_Declare(googletest
     ]);
   });
 
+  it("stores blank vendor component metadata as absent rather than empty", async () => {
+    const agent = await makeAgent(store);
+    const project = await store.createProject({ name: "P", type: "coding", agentId: agent.id });
+
+    const saved = await rest(server, `/api/admin/projects/${project.id}/vendor-components`, {
+      method: "PUT",
+      body: { components: [{ sourcePath: "kas/config.yaml", localPath: "  ", cloneUrl: "", revision: "", origin: "patch_required" }] },
+    });
+
+    expect(saved.status).toBe(200);
+    const read = await rest(server, `/api/admin/projects/${project.id}/vendor-components`);
+    expect((read.body?.["components"] as Array<Record<string, unknown>>)[0]).toMatchObject({
+      localPath: null,
+      cloneUrl: null,
+      revision: null,
+    });
+  });
+
   it("rejects duplicate vendor component source paths", async () => {
     const agent = await makeAgent(store);
     const project = await store.createProject({ name: "P", type: "coding", agentId: agent.id });

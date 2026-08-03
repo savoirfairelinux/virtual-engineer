@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { buildSshHostKeyOptions, type GerritSshConfig } from "../connectors/gerritSshClient.js";
-import { WORKSPACE_MANIFEST_MAX_BYTES, WORKSPACE_MANIFEST_MAX_FILES, WORKSPACE_RECIPE_MAX_FILES, type WorkspaceManifestFile } from "./workspaceManifestScanner.js";
+import { WORKSPACE_KAS_CANDIDATE_MAX_FILES, WORKSPACE_MANIFEST_MAX_BYTES, WORKSPACE_MANIFEST_MAX_FILES, WORKSPACE_RECIPE_MAX_FILES, type WorkspaceManifestFile } from "./workspaceManifestScanner.js";
 
 const execFileAsync = promisify(execFile);
 const REMOTE_READ_TIMEOUT_MS = 60_000;
@@ -19,9 +19,6 @@ const GENERATED_DIRECTORY_NAMES = new Set([".cache", ".git", ".venv", "build", "
 const KAS_CANDIDATE_NAME_PATTERN = /(^|[-_.])(kas|repo|config|manifest|project)s?([-_.]|\.ya?ml$)/i;
 /** Yocto layer directories are conventionally named `meta` or `meta-<name>`. */
 const RECIPE_LAYER_DIRECTORY_PATTERN = /^meta(-.+)?$/i;
-
-/** Separate from the manifest budget so unrelated YAML can never fail an otherwise valid scan. */
-export const WORKSPACE_KAS_CANDIDATE_MAX_FILES = 25;
 
 function hasSafeSegments(filePath: string): boolean {
   if (!filePath || filePath.startsWith("/") || filePath.includes("\\") || /[\0\r\n]/.test(filePath)) return false;

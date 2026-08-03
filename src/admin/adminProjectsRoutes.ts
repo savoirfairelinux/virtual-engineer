@@ -271,11 +271,12 @@ const vendorComponentsSchema = z.object({
 function toVendorComponentInputs(
   components: z.infer<typeof vendorComponentArraySchema>
 ): ProjectVendorComponentInput[] {
+  const optional = (value: string | null | undefined): string | null => value?.trim() ? value : null;
   return components.map((component) => ({
     sourcePath: component.sourcePath,
-    localPath: component.localPath ?? null,
-    cloneUrl: component.cloneUrl ?? null,
-    revision: component.revision ?? null,
+    localPath: optional(component.localPath),
+    cloneUrl: optional(component.cloneUrl),
+    revision: optional(component.revision),
     origin: component.origin,
     note: component.note ?? "",
   }));

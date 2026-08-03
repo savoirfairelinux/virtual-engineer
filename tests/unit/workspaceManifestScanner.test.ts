@@ -358,6 +358,7 @@ repos:
         { path: "config.yaml", content: "server:\n  port: 8080\n" },
         { path: "repos.yml", content: "repos:\n  - name: not-a-map\n" },
         { path: "project.yaml", content: "repos:\n  alpha: plain-string\n" },
+        { path: "headed.yaml", content: "header:\n  version: 1\nrepos:\n  alpha: 1.2.3\n" },
         { path: "manifest.yml", content: "repos: [" },
       ],
     });
@@ -524,6 +525,30 @@ repos:
 
     expect(result.diagnostics).toEqual([]);
     expect(result.repositories).toHaveLength(1 + WORKSPACE_RECIPE_MAX_FILES);
+  });
+
+  it("keeps kas configurations out of the manifest budget", () => {
+    const manifests = Array.from({ length: WORKSPACE_MANIFEST_MAX_FILES }, (_, index) => ({
+      path: `sub${index}/west.yml`,
+      content: "manifest:\n  projects: []\n",
+    }));
+    const result = scanWorkspaceManifests({
+      rootCloneUrl: "https://git.example.com/platform/root.git",
+      files: [
+        ...manifests,
+        { path: "kas.yml", content: "header:\n  version: 14\nrepos:\n  meta-product:\n" },
+        {
+          path: "meta-product/recipes-core/alpha/alpha_1.0.bb",
+          content: 'SRC_URI = "git://git.example.com/vendor/alpha;protocol=https"',
+        },
+      ],
+    });
+
+    expect(result.diagnostics).toEqual([]);
+    expect(result.repositories).toEqual([
+      expect.objectContaining({ localPath: "meta-product", sourcePath: "kas.yml" }),
+      expect.objectContaining({ localPath: ".ve-deps/alpha" }),
+    ]);
   });
 
   it("reports malformed manifests without throwing or returning partial garbage", () => {

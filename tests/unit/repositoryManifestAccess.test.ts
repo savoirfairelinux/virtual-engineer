@@ -5,9 +5,8 @@ import {
   isWorkspaceManifestPath,
   readGitHubWorkspaceManifestFiles,
   readGitLabWorkspaceManifestFiles,
-  WORKSPACE_KAS_CANDIDATE_MAX_FILES,
 } from "../../src/workspace/repositoryManifestAccess.js";
-import { WORKSPACE_MANIFEST_MAX_BYTES, WORKSPACE_RECIPE_MAX_FILES } from "../../src/workspace/workspaceManifestScanner.js";
+import { WORKSPACE_KAS_CANDIDATE_MAX_FILES, WORKSPACE_MANIFEST_MAX_BYTES, WORKSPACE_RECIPE_MAX_FILES } from "../../src/workspace/workspaceManifestScanner.js";
 
 describe("repository manifest access", () => {
   afterEach(() => {

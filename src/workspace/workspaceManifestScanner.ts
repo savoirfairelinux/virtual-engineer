@@ -5,6 +5,7 @@ import { parse as parseYaml } from "yaml";
 
 export const WORKSPACE_MANIFEST_MAX_BYTES = 256 * 1024;
 export const WORKSPACE_MANIFEST_MAX_FILES = 200;
+export const WORKSPACE_KAS_CANDIDATE_MAX_FILES = 25;
 export const WORKSPACE_RECIPE_MAX_FILES = 200;
 
 export type WorkspaceManifestRelation = "gitlink" | "manifest_member" | "contains";
@@ -468,8 +469,7 @@ function scanKasManifest(
   const repos = asRecord(root?.["repos"]);
   if (!root || !repos) return false;
   const entries = Object.entries(repos);
-  const looksLikeKas = asRecord(root["header"]) !== null
-    || entries.every(([, value]) => value === null || value === undefined || asRecord(value) !== null);
+  const looksLikeKas = entries.every(([, value]) => value === null || value === undefined || asRecord(value) !== null);
   if (!looksLikeKas) return false;
 
   let hasInternalLayer = false;
@@ -649,11 +649,18 @@ function scanCodeWorkspace(file: WorkspaceManifestFile, result: MutableScanResul
   }
 }
 
+/** The dispatch fallback: any YAML no other manifest parser claims is offered to the kas reader. */
+function isKasScanPath(filePath: string): boolean {
+  return /\.ya?ml$/i.test(filePath) && path.posix.basename(filePath) !== "west.yml";
+}
+
 /** Parse supported workspace manifests without network access or side effects. */
 export function scanWorkspaceManifests(input: WorkspaceManifestScanInput): WorkspaceManifestScanResult {
   const result: MutableScanResult = { repositories: [], diagnostics: [] };
-  const manifestFiles = input.files.filter((file) => !isBitbakeRecipePath(file.path));
   const recipeFiles = input.files.filter((file) => isBitbakeRecipePath(file.path));
+  const nonRecipeFiles = input.files.filter((file) => !isBitbakeRecipePath(file.path));
+  const manifestFiles = nonRecipeFiles.filter((file) => !isKasScanPath(file.path));
+  const kasFiles = nonRecipeFiles.filter((file) => isKasScanPath(file.path));
   if (manifestFiles.length > WORKSPACE_MANIFEST_MAX_FILES) {
     result.diagnostics.push({
       sourcePath: "workspace",
@@ -661,8 +668,19 @@ export function scanWorkspaceManifests(input: WorkspaceManifestScanInput): Works
       message: `Only the first ${WORKSPACE_MANIFEST_MAX_FILES} of ${manifestFiles.length} manifests were scanned.`,
     });
   }
+  if (kasFiles.length > WORKSPACE_KAS_CANDIDATE_MAX_FILES) {
+    result.diagnostics.push({
+      sourcePath: "workspace",
+      severity: "warning",
+      message: `Only the first ${WORKSPACE_KAS_CANDIDATE_MAX_FILES} of ${kasFiles.length} kas candidates were scanned.`,
+    });
+  }
   let hasInternalLayers = false;
-  for (const file of manifestFiles.slice(0, WORKSPACE_MANIFEST_MAX_FILES)) {
+  const scannedFiles = [
+    ...manifestFiles.slice(0, WORKSPACE_MANIFEST_MAX_FILES),
+    ...kasFiles.slice(0, WORKSPACE_KAS_CANDIDATE_MAX_FILES),
+  ];
+  for (const file of scannedFiles) {
     if (Buffer.byteLength(file.content, "utf8") > WORKSPACE_MANIFEST_MAX_BYTES) {
       result.diagnostics.push({ sourcePath: file.path, severity: "error", message: "Manifest exceeds the 256 KiB limit." });
       continue;
