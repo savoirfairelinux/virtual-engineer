@@ -453,6 +453,109 @@ describe("ProjectFormModal repository integration resolution", () => {
     })]));
   });
 
+  it("pushes a mirrored component to the repository the operator maps it to", async () => {
+    const integration: ApiIntegration = {
+      ...gerritIntegration("gerrit-1", "g1.sfl.io"),
+      discoveredResources: {
+        repositories: [
+          {
+            key: "guardian-telecom/aura/yocto-build",
+            name: "yocto-build",
+            cloneUrlHttp: "https://g1.sfl.io/guardian-telecom/aura/yocto-build",
+            defaultBranch: "main",
+          },
+          {
+            key: "guardian-telecom/aura/Project-AURA-Application",
+            name: "Project-AURA-Application",
+            cloneUrlHttp: "https://g1.sfl.io/guardian-telecom/aura/Project-AURA-Application",
+            defaultBranch: "main",
+          },
+        ],
+      },
+    };
+    let savedPayload: Record<string, unknown> | null = null;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const requestPath = typeof input === "string" ? input : input instanceof URL ? input.pathname : input.url;
+      if (requestPath === "/api/admin/projects/scan-push-targets") {
+        return new Response(JSON.stringify({
+          manifestFiles: [".config.yaml"],
+          repositories: [{
+            // The recipe declares the GitHub mirror, which no VE integration owns.
+            cloneUrl: "ssh://github.com/Guardian-Telecom-Ltd/Project-AURA-Application.git",
+            localPath: ".ve-deps/Project-AURA-Application",
+            revision: "7ef2cb39d7087754c5b4d9389e2f89d9d3602d2a",
+            relation: "manifest_member",
+            sourcePath: "sources/meta-aura/recipes-app/aura-application/aura-application.bb",
+            origin: "patch_required",
+            resolution: null,
+          }],
+          diagnostics: [],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (requestPath.startsWith("/api/admin/integrations/gerrit-1/branches")) {
+        return new Response(JSON.stringify({ branches: ["sfl/main", "main"] }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (requestPath === "/api/admin/projects/project-9" && init?.method === "PUT") {
+        savedPayload = JSON.parse(String(init.body)) as Record<string, unknown>;
+        return new Response(JSON.stringify({ project: { id: "project-9" } }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (requestPath === "/api/admin/projects/project-9/vendor-components") {
+        return new Response(JSON.stringify({ components: [] }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      throw new Error(`Unexpected request: ${requestPath}`);
+    }));
+
+    render(
+      <ProjectFormModal
+        agents={[codingAgent]}
+        integrations={[integration]}
+        project={{
+          id: "project-9",
+          name: "AURA",
+          type: "coding",
+          agentId: codingAgent.id,
+          ticketSource: {
+            integration: { id: integration.id, name: integration.name, type: integration.provider },
+            ticketProjectKey: "aura",
+          },
+          pushTargets: [{
+            integrationId: integration.id,
+            repoKey: "guardian-telecom/aura/yocto-build",
+            cloneUrl: "https://g1.sfl.io/guardian-telecom/aura/yocto-build",
+            targetBranch: "sfl/main",
+            role: "primary",
+            commitOrder: 1,
+            localPath: ".",
+          }],
+        }}
+        onClose={vi.fn()}
+        onSaved={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Scan workspace" }));
+
+    const sourcePath = "sources/meta-aura/recipes-app/aura-application/aura-application.bb";
+    fireEvent.change(
+      await screen.findByRole("combobox", { name: `Push ${sourcePath} to a repository` }),
+      { target: { value: "gerrit-1::guardian-telecom/aura/Project-AURA-Application" } },
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: /Save|Create Project/ }));
+
+    await waitFor(() => expect(savedPayload).not.toBeNull());
+    const targets = (savedPayload as unknown as { pushTargets: Array<Record<string, unknown>> }).pushTargets;
+    expect(targets).toHaveLength(2);
+    expect(targets[1]).toMatchObject({
+      integrationId: "gerrit-1",
+      repoKey: "guardian-telecom/aura/Project-AURA-Application",
+      // The Gerrit clone URL replaces the GitHub mirror the recipe declared.
+      cloneUrl: "https://g1.sfl.io/guardian-telecom/aura/Project-AURA-Application",
+      targetBranch: "sfl/main",
+    });
+    expect(String(targets[1]?.["cloneUrl"])).not.toContain("github.com");
+  });
+
   it("does not offer tracking for internal members, whose notes would never reach the agent", async () => {
     const integration: ApiIntegration = {
       ...gerritIntegration("gerrit-1", "Primary Gerrit"),
