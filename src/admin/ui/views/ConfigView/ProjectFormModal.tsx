@@ -1401,7 +1401,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
                                         <Tag tone="warn">patched locally</Tag>
                                       ) : (
                                         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                                          {!isAdded && (
+                                          {!isAdded && (member.origin === "patch_required" || member.origin === "ambiguous") && (
                                             <button
                                               type="button"
                                               className="iconbtn"
