@@ -366,8 +366,6 @@ export class SqliteStateStore {
         clone_url   TEXT,
         revision    TEXT,
         origin      TEXT    NOT NULL,
-        integration_id TEXT,
-        repo_key    TEXT,
         note        TEXT    NOT NULL DEFAULT '',
         created_at  INTEGER NOT NULL,
         updated_at  INTEGER NOT NULL
@@ -513,8 +511,6 @@ export class SqliteStateStore {
     this.ensureColumn("projects", "post_review_link_to_ticket", "INTEGER NOT NULL DEFAULT 0");
     this.ensureColumn("projects", "react_to_ci_failures", "INTEGER NOT NULL DEFAULT 0");
     this.ensureColumn("project_push_targets", "reviewer_emails", "TEXT NOT NULL DEFAULT '[]'");
-    this.ensureColumn("project_vendor_components", "integration_id", "TEXT");
-    this.ensureColumn("project_vendor_components", "repo_key", "TEXT");
     this.ensureColumn("prompts", "prompt_type", "TEXT NOT NULL DEFAULT 'instructions'");
     this.ensureColumn("app_settings", "agent_timeout_ms", "INTEGER");
 

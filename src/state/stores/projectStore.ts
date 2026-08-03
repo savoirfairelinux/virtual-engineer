@@ -508,8 +508,6 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
       cloneUrl: row.cloneUrl,
       revision: row.revision,
       origin: row.origin,
-      integrationId: row.integrationId,
-      repoKey: row.repoKey,
       note: row.note,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
@@ -532,8 +530,8 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
       raw.prepare("DELETE FROM project_vendor_components WHERE project_id = ?").run(projectId);
       const statement = raw.prepare(
         `INSERT INTO project_vendor_components
-         (project_id, source_path, local_path, clone_url, revision, origin, integration_id, repo_key, note, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         (project_id, source_path, local_path, clone_url, revision, origin, note, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
       );
       for (const input of inputs) {
         statement.run(
@@ -543,8 +541,6 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
           input.cloneUrl ?? null,
           input.revision ?? null,
           input.origin,
-          input.integrationId ?? null,
-          input.repoKey ?? null,
           input.note ?? "",
           previous.get(input.sourcePath) ?? nowSeconds,
           nowSeconds

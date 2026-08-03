@@ -368,22 +368,6 @@ describe("SqliteStateStore — project vendor components", () => {
     expect(components[1]).toMatchObject({ localPath: ".ve-deps/gmp", origin: "patch_required", note: "" });
   });
 
-  it("persists the manual integration binding of a vendor component", async () => {
-    const a = await makeAgent(store);
-    const p = await store.createProject({ name: "P", type: "coding", agentId: a.id });
-    await store.replaceProjectVendorComponents(p.id, [
-      { sourcePath: "meta-aura/recipes-app/aura-application/aura-application.bb", cloneUrl: "https://github.com/gt/aura-application.git", origin: "patch_required", integrationId: "gerrit-1", repoKey: "guardian-telecom/aura/Project-AURA-Application" },
-      { sourcePath: "kas/config.yaml", origin: "patch_required" },
-    ]);
-
-    const [unbound, bound] = await store.listProjectVendorComponents(p.id);
-    expect(unbound).toMatchObject({ integrationId: null, repoKey: null });
-    expect(bound).toMatchObject({
-      integrationId: "gerrit-1",
-      repoKey: "guardian-telecom/aura/Project-AURA-Application",
-    });
-  });
-
   it("replaceProjectVendorComponents is atomic — rolls back on duplicate source paths", async () => {
     const a = await makeAgent(store);
     const p = await store.createProject({ name: "P", type: "coding", agentId: a.id });

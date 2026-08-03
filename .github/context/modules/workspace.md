@@ -52,7 +52,7 @@ Every member returned by the project-level scan carries an `origin` derived by `
 | `patch_required` | Upstream-only; must be patched locally instead of pushed | any other resolved/unresolved URL-backed member |
 | `ambiguous` | Several integrations match; a human must disambiguate | resolution `ambiguous` |
 
-Operators can persist selected members as **vendor components** (`project_vendor_components`), keyed by the member's real `sourcePath` (for example `daemon/contrib/src/fmt/package.json`) rather than its possibly synthetic `localPath` (`.ve-deps/fmt`), together with a free-form note describing how the component should be handled and an optional `integrationId` / `repoKey` binding naming the VE repository the component is actually developed in.
+Operators can persist selected members as **vendor components** (`project_vendor_components`), keyed by the member's real `sourcePath` (for example `daemon/contrib/src/fmt/package.json`) rather than its possibly synthetic `localPath` (`.ve-deps/fmt`), together with a free-form note describing how the component should be handled. A component that one of our repositories actually owns is not tracked here — it becomes a push target instead, so the agent edits and pushes it.
 
 ## Current boundary
 
