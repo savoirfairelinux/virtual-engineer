@@ -254,10 +254,7 @@ describe("ProjectFormModal repository integration resolution", () => {
     );
 
     fireEvent.click(await screen.findByRole("button", { name: "Scan workspace" }));
-    fireEvent.change(
-      await screen.findByRole("combobox", { name: "Where changes to kas/config.yaml go" }),
-      { target: { value: "__patch_locally__" } },
-    );
+    fireEvent.click(await screen.findByRole("button", { name: "Patch kas/config.yaml locally" }));
 
     const notes = await screen.findByPlaceholderText("How should the agent handle this component?");
     fireEvent.change(notes, { target: { value: "apply a .bbappend in the internal layer" } });
@@ -356,11 +353,14 @@ describe("ProjectFormModal repository integration resolution", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Scan workspace" }));
 
-    const sourcePath = "sources/meta-aura/recipes-app/aura-application/aura-application.bb";
-    fireEvent.change(
-      await screen.findByRole("combobox", { name: `Where changes to ${sourcePath} go` }),
-      { target: { value: "gerrit-1::guardian-telecom/aura/Project-AURA-Application" } },
-    );
+    fireEvent.click(await screen.findByRole("button", { name: "Add .ve-deps/Project-AURA-Application as push target" }));
+
+    const vcsSelects = screen.getAllByLabelText(/VCS Integration/);
+    fireEvent.change(vcsSelects[vcsSelects.length - 1]!, { target: { value: "gerrit-1" } });
+
+    const repositoryPickers = await screen.findAllByRole("button", { name: "— select —" });
+    fireEvent.click(repositoryPickers[repositoryPickers.length - 1]!);
+    fireEvent.click(await screen.findByRole("button", { name: /^Project-AURA-Application · main/ }));
 
     fireEvent.click(await screen.findByRole("button", { name: /Save|Create Project/ }));
 
@@ -372,7 +372,7 @@ describe("ProjectFormModal repository integration resolution", () => {
       repoKey: "guardian-telecom/aura/Project-AURA-Application",
       // The Gerrit clone URL replaces the GitHub mirror the recipe declared.
       cloneUrl: "https://g1.sfl.io/guardian-telecom/aura/Project-AURA-Application",
-      targetBranch: "sfl/main",
+      targetBranch: "main",
     });
     expect(String(targets[1]?.["cloneUrl"])).not.toContain("github.com");
   });
@@ -443,7 +443,7 @@ describe("ProjectFormModal repository integration resolution", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Scan workspace" }));
 
     expect(await screen.findByText("meta-product")).toBeTruthy();
-    expect(screen.queryByRole("combobox", { name: /^Where changes to / })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Patch .* locally$/ })).toBeNull();
   });
 
   it("shows scan progress and adds a matched member only after explicit selection", async () => {

@@ -119,9 +119,6 @@ const VENDOR_ORIGIN_TONES: Record<VendorComponentOrigin, ToneKey> = {
   ambiguous: "danger",
 };
 
-/** Sentinel for the "no repository of ours" answer, which tracks the member instead of pushing. */
-const PATCH_LOCALLY_CHOICE = "__patch_locally__";
-
 interface WorkspaceScanDiagnostic {
   sourcePath: string;
   severity: "info" | "warning" | "error";
@@ -864,7 +861,6 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
   const [workspaceScanErrors, setWorkspaceScanErrors] = useState<Record<string, string>>({});
   const [vendorComponents, setVendorComponents] = useState<VendorComponentRow[]>([]);
   const [vendorComponentsDirty, setVendorComponentsDirty] = useState(false);
-  const [mappedMembers, setMappedMembers] = useState<Record<string, string>>({});
 
   const trackVendorComponent = (member: WorkspaceScanMember) => {
     setVendorComponentsDirty(true);
@@ -938,12 +934,6 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
   const ticketingIntegrations = integrations.filter((i) => i.domainCapabilities.includes("issue_tracking"));
   const vcsIntegrations = integrations.filter((i) => i.domainCapabilities.includes("source_control"));
   const reviewIntegrations = integrations.filter((i) => i.domainCapabilities.includes("code_review"));
-  const pushableRepositories = vcsIntegrations.flatMap((integration) =>
-    (integration.discoveredResources?.repositories ?? []).map((repository) => ({
-      integrationId: integration.id,
-      integrationName: integration.name,
-      repoKey: repository.key,
-    })));
 
   const updatePushTarget = (idx: number, key: EditablePushTargetField, val: string) => {
     setPushTargets((prev) => prev.map((t, i) => i === idx ? { ...t, [key]: val } : t));
@@ -959,12 +949,22 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
   };
 
   const updatePushTargetRepoKey = (idx: number, repoKey: string) => {
-    setPushTargets((prev) => prev.map((target, targetIndex) => targetIndex !== idx ? target : {
-      ...target,
-      repoKey,
-      ...(target.localPathMode === "derived"
-        ? { localPath: manualLocalPath(repoKey, `repo-${idx + 1}`, prev, idx) }
-        : {}),
+    setPushTargets((prev) => prev.map((target, targetIndex) => {
+      if (targetIndex !== idx) return target;
+      // A scanned URL is often only a mirror, so the picked repository owns the clone URL instead.
+      const discovered = integrations.find((candidate) => candidate.id === target.integrationId)
+        ?.discoveredResources?.repositories?.find((candidate) => candidate.key === repoKey);
+      const cloneUrl = discovered && (target.origin === "workspace_scan" || !target.cloneUrl.trim())
+        ? discovered.cloneUrlHttp ?? discovered.cloneUrlSsh ?? target.cloneUrl
+        : target.cloneUrl;
+      return {
+        ...target,
+        repoKey,
+        cloneUrl,
+        ...(target.localPathMode === "derived"
+          ? { localPath: manualLocalPath(repoKey, `repo-${idx + 1}`, prev, idx) }
+          : {}),
+      };
     }));
   };
 
@@ -1076,25 +1076,30 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
     }
   };
 
+  // Unresolved members are added with whatever the scan knows; the operator then picks the repository
+  // that really receives the change in the push target row, which is where a mirror gets corrected.
   const addWorkspaceMember = async (member: WorkspaceScanMember) => {
-    const match = member.resolution?.status === "matched" ? member.resolution.match : null;
-    if (!member.cloneUrl || !match?.enabled || pushTargets.some((target) => target.localPath === member.localPath)) return;
+    if (pushTargets.some((target) => target.localPath === member.localPath)) return;
+    const resolution = member.resolution;
+    const match = resolution?.status === "matched" && resolution.match.enabled ? resolution.match : null;
     const memberKey = `${member.sourcePath}:${member.localPath}`;
     setAddingWorkspaceMember(memberKey);
     try {
       let firstBranch: string | undefined;
-      try {
-        const response = await api.get<{ branches: string[] }>(`/api/admin/integrations/${match.integrationId}/branches?repoKey=${encodeURIComponent(match.repoKey)}`);
-        firstBranch = Array.isArray(response.branches) ? response.branches[0] : undefined;
-      } catch {
-        // Branch discovery is best-effort; the manifest/provider fallback remains usable.
+      if (match) {
+        try {
+          const response = await api.get<{ branches: string[] }>(`/api/admin/integrations/${match.integrationId}/branches?repoKey=${encodeURIComponent(match.repoKey)}`);
+          firstBranch = Array.isArray(response.branches) ? response.branches[0] : undefined;
+        } catch {
+          // Branch discovery is best-effort; the manifest/provider fallback remains usable.
+        }
       }
-      const integration = integrations.find((candidate) => candidate.id === match.integrationId);
-      const repository = integration?.discoveredResources?.repositories?.find((candidate) => candidate.key === match.repoKey);
+      const integration = match ? integrations.find((candidate) => candidate.id === match.integrationId) : undefined;
+      const repository = match ? integration?.discoveredResources?.repositories?.find((candidate) => candidate.key === match.repoKey) : undefined;
       setPushTargets((prev) => prev.some((target) => target.localPath === member.localPath) ? prev : [...prev, {
-        integrationId: match.integrationId,
-        repoKey: match.repoKey,
-        cloneUrl: member.cloneUrl!,
+        integrationId: match?.integrationId ?? "",
+        repoKey: match?.repoKey ?? "",
+        cloneUrl: member.cloneUrl ?? "",
         targetBranch: firstBranch ?? firstTargetBranch(member.revision, repository?.defaultBranch),
         localPath: member.localPath,
         localPathMode: "fixed",
@@ -1102,43 +1107,6 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
         relation: member.relation,
         reviewerEmails: "",
       }]);
-    } finally {
-      setAddingWorkspaceMember((current) => current === memberKey ? null : current);
-    }
-  };
-
-  // A scanned component often declares a mirror VE cannot push to, so the operator maps it to the
-  // repository that really receives the change; the clone URL comes from that repository, not the scan.
-  const mapWorkspaceMemberToRepository = async (member: WorkspaceScanMember, integrationId: string, repoKey: string) => {
-    const integration = integrations.find((candidate) => candidate.id === integrationId);
-    const repository = integration?.discoveredResources?.repositories?.find((candidate) => candidate.key === repoKey);
-    const cloneUrl = repository?.cloneUrlHttp ?? repository?.cloneUrlSsh ?? "";
-    if (!cloneUrl) return;
-    const memberKey = `${member.sourcePath}:${member.localPath}`;
-    setAddingWorkspaceMember(memberKey);
-    try {
-      let firstBranch: string | undefined;
-      try {
-        const response = await api.get<{ branches: string[] }>(`/api/admin/integrations/${integrationId}/branches?repoKey=${encodeURIComponent(repoKey)}`);
-        firstBranch = Array.isArray(response.branches) ? response.branches[0] : undefined;
-      } catch {
-        // Branch discovery is best-effort; the provider default remains usable.
-      }
-      setPushTargets((prev) => prev.some((target) => target.integrationId === integrationId && target.repoKey === repoKey)
-        ? prev
-        : [...prev, {
-          integrationId,
-          repoKey,
-          cloneUrl,
-          // The member revision is the pinned SRCREV of the mirror, never a branch of the mapped repository.
-          targetBranch: firstBranch ?? repository?.defaultBranch ?? "main",
-          localPath: manualLocalPath(repoKey, `repo-${prev.length + 1}`, prev, prev.length),
-          localPathMode: "derived",
-          origin: "workspace_scan",
-          relation: member.relation,
-          reviewerEmails: "",
-        }]);
-      setMappedMembers((prev) => ({ ...prev, [memberKey]: repoKey }));
     } finally {
       setAddingWorkspaceMember((current) => current === memberKey ? null : current);
     }
@@ -1406,7 +1374,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
                                       : resolution?.status ?? "unmatched";
                                       const memberKey = `${member.sourcePath}:${member.localPath}`;
                                       const isAdded = pushTargets.some((target) => target.localPath === member.localPath);
-                                      const canAdd = resolution?.status === "matched" && resolution.match.enabled && member.cloneUrl !== null;
+                                      const isMatched = resolution?.status === "matched" && resolution.match.enabled;
                                       const isTracked = vendorComponents.some((component) => component.sourcePath === member.sourcePath);
                                   return (
                                     <div key={`${member.sourcePath}:${member.localPath}`} style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto", gap: 10, alignItems: "center", minHeight: WORKSPACE_MEMBER_ROW_HEIGHT, boxSizing: "border-box", padding: "7px 9px", background: "var(--panel)", border: "1px solid var(--border-soft)", borderRadius: "var(--radius-sm)" }}>
@@ -1419,49 +1387,34 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
                                           {member.sourcePath} · {member.relation}
                                         </div>
                                       </div>
-                                      {canAdd ? (
-                                        <button
-                                          type="button"
-                                          className="btn sm"
-                                          aria-label={isAdded ? `${member.localPath} added` : `Add ${member.localPath} as push target`}
-                                          disabled={isAdded || addingWorkspaceMember === memberKey}
-                                          onClick={() => { void addWorkspaceMember(member); }}
-                                        >
-                                          <Icon name={isAdded ? "check" : "plus"} size={12} />
-                                          {isAdded ? "Added" : state}
-                                        </button>
-                                      ) : member.origin === "internal" ? (
+                                      {member.origin === "internal" ? (
                                         <Tag tone="muted">{state}</Tag>
-                                      ) : mappedMembers[memberKey] ? (
-                                        <Tag tone="ok">pushes to {mappedMembers[memberKey]}</Tag>
                                       ) : isTracked ? (
                                         <Tag tone="warn">patched locally</Tag>
                                       ) : (
-                                        <FieldSelect
-                                          aria-label={`Where changes to ${member.sourcePath} go`}
-                                          value=""
-                                          disabled={addingWorkspaceMember === memberKey}
-                                          onChange={(e) => {
-                                            const choice = e.target.value;
-                                            if (choice === PATCH_LOCALLY_CHOICE) {
-                                              trackVendorComponent(member);
-                                              return;
-                                            }
-                                            const [integrationId, mappedRepoKey] = choice.split("::");
-                                            if (integrationId && mappedRepoKey) void mapWorkspaceMemberToRepository(member, integrationId, mappedRepoKey);
-                                          }}
-                                          style={{ width: 210, fontSize: "12px", padding: "5px 8px" }}
-                                        >
-                                          <option value="">Where do changes go?</option>
-                                          <option value={PATCH_LOCALLY_CHOICE}>Patch locally — upstream</option>
-                                          <optgroup label="Push to one of our repositories">
-                                            {pushableRepositories.map((repository) => (
-                                              <option key={`${repository.integrationId}::${repository.repoKey}`} value={`${repository.integrationId}::${repository.repoKey}`}>
-                                                {repository.repoKey}
-                                              </option>
-                                            ))}
-                                          </optgroup>
-                                        </FieldSelect>
+                                        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                                          {!isAdded && (
+                                            <button
+                                              type="button"
+                                              className="iconbtn"
+                                              title="No repository of ours owns this — the agent patches it in place"
+                                              aria-label={`Patch ${member.sourcePath} locally`}
+                                              onClick={() => trackVendorComponent(member)}
+                                            >
+                                              <Icon name="edit" size={12} />
+                                            </button>
+                                          )}
+                                          <button
+                                            type="button"
+                                            className="btn sm"
+                                            aria-label={isAdded ? `${member.localPath} added` : `Add ${member.localPath} as push target`}
+                                            disabled={isAdded || addingWorkspaceMember === memberKey}
+                                            onClick={() => { void addWorkspaceMember(member); }}
+                                          >
+                                            <Icon name={isAdded ? "check" : "plus"} size={12} />
+                                            {isAdded ? "Added" : isMatched ? state : "Add"}
+                                          </button>
+                                        </div>
                                       )}
                                     </div>
                                   );
