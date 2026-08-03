@@ -300,7 +300,7 @@ describe("ProjectFormModal repository integration resolution", () => {
           repositories: [{
             // The recipe declares the GitHub mirror, which no VE integration owns.
             cloneUrl: "ssh://github.com/Guardian-Telecom-Ltd/Project-AURA-Application.git",
-            localPath: ".ve-deps/Project-AURA-Application",
+            localPath: "Project-AURA-Application",
             revision: "7ef2cb39d7087754c5b4d9389e2f89d9d3602d2a",
             relation: "manifest_member",
             sourcePath: "sources/meta-aura/recipes-app/aura-application/aura-application.bb",
@@ -353,7 +353,7 @@ describe("ProjectFormModal repository integration resolution", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Scan workspace" }));
 
-    fireEvent.click(await screen.findByRole("button", { name: "Add .ve-deps/Project-AURA-Application as push target" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Add Project-AURA-Application as push target" }));
 
     const vcsSelects = screen.getAllByLabelText(/VCS Integration/);
     fireEvent.change(vcsSelects[vcsSelects.length - 1]!, { target: { value: "gerrit-1" } });

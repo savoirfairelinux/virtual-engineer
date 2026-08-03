@@ -22,10 +22,12 @@ The workspace module currently owns Docker named-volume materialization for agen
 | Google repo | `manifest.xml`, `default.xml` | remote/default/project attributes become manifest members |
 | vcstool | `*.repos` | Git entries become manifest members; non-Git entries are diagnostic-only |
 | VS Code multi-root | `*.code-workspace` JSONC | HTTP(S), SSH, Git, and SCP-style Git URIs can resolve; local and unsupported URI schemes remain manual and never become clone URLs |
-| Vendored contrib packages | `contrib/**/package.json` | Static `name` / `url` / `version` entries infer GitHub or GitLab repository URLs from archive URLs |
-| CMake FetchContent | `CMakeLists.txt` | Static `GIT_REPOSITORY` or inferable GitHub/GitLab archive `URL` declarations become members; variable-driven declarations remain diagnostic-only |
+| Vendored contrib packages | `contrib/**/package.json` | Static `name` / `url` / `version` entries infer GitHub or GitLab repository URLs from archive URLs; members are `fetched` |
+| CMake FetchContent | `CMakeLists.txt` | Static `GIT_REPOSITORY` or inferable GitHub/GitLab archive `URL` declarations become `fetched` members; variable-driven declarations remain diagnostic-only |
 | kas (Yocto) | any bounded candidate `*.yml` / `*.yaml`, confirmed by content | `repos` entries with a `url` become manifest members (`refspec`/`commit`/`branch` as revision, `path` or the entry key as local path); URL-less entries are layers living inside the root repository and become `contains` members with a null clone URL |
-| BitBake recipes | `*.bb` / `*.bbappend` / `*.inc` under a `meta` / `meta-*` directory | static `git://` / `gitsm://` `SRC_URI` fetchers become manifest members under a synthetic `.ve-deps/<repository>` local path. `.inc` files are scanned because recipes routinely `require` them and keep the `SRC_URI` there |
+| BitBake recipes | `*.bb` / `*.bbappend` / `*.inc` under a `meta` / `meta-*` directory | static `git://` / `gitsm://` `SRC_URI` fetchers become members with relation `fetched` and the repository name as `localPath`. `.inc` files are scanned because recipes routinely `require` them and keep the `SRC_URI` there |
+
+A `fetched` member is downloaded by the build (a contrib tarball, a CMake `FetchContent`, a BitBake `SRC_URI`) and is checked out nowhere in the source tree, so its `localPath` is only the repository name. The admin form treats that name as a suggestion and picks a free checkout directory when the member is added as a push target, instead of pinning it to a directory that does not exist.
 
 kas configurations have no conventional filename, so candidates are name-prefiltered (`kas` / `repo` / `config` / `manifest` / `project` stems, or any file under a `kas/` directory) at most two directories deep, then confirmed from content: a `repos` mapping whose entries are all mappings or empty. A `header` block is typical of kas but is never sufficient on its own, since a scalar-valued `repos` entry would otherwise be read as a layer internal to the repository and would unlock recipe scanning. Files that fail the content check are skipped silently and never produce diagnostics, because unrelated YAML is expected in the candidate set. kas `path` values are build-root-relative and are therefore not re-anchored under the manifest's directory.
 
@@ -52,7 +54,7 @@ Every member returned by the project-level scan carries an `origin` derived by `
 | `patch_required` | Upstream-only; must be patched locally instead of pushed | any other resolved/unresolved URL-backed member |
 | `ambiguous` | Several integrations match; a human must disambiguate | resolution `ambiguous` |
 
-Operators can persist selected members as **vendor components** (`project_vendor_components`), keyed by the member's real `sourcePath` (for example `daemon/contrib/src/fmt/package.json`) rather than its possibly synthetic `localPath` (`.ve-deps/fmt`), together with a free-form note describing how the component should be handled. A component that one of our repositories actually owns is not tracked here — it becomes a push target instead, so the agent edits and pushes it.
+Operators can persist selected members as **vendor components** (`project_vendor_components`), keyed by the member's real `sourcePath` (for example `daemon/contrib/src/fmt/package.json`) rather than its `localPath`, which for a `fetched` member is only the repository name because the dependency is downloaded at build time and exists nowhere in the source tree, together with a free-form note describing how the component should be handled. A component that one of our repositories actually owns is not tracked here — it becomes a push target instead, so the agent edits and pushes it.
 
 ## Current boundary
 

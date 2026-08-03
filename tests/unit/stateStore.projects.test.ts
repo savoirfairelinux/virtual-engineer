@@ -355,7 +355,7 @@ describe("SqliteStateStore — project vendor components", () => {
     const a = await makeAgent(store);
     const p = await store.createProject({ name: "P", type: "coding", agentId: a.id });
     await store.replaceProjectVendorComponents(p.id, [
-      { sourcePath: "daemon/contrib/src/gmp/package.json", localPath: ".ve-deps/gmp", cloneUrl: "https://example.com/gmp.git", revision: "6.2.1", origin: "patch_required" },
+      { sourcePath: "daemon/contrib/src/gmp/package.json", localPath: "gmp", cloneUrl: "https://example.com/gmp.git", revision: "6.2.1", origin: "patch_required" },
       { sourcePath: "daemon/contrib/src/fmt/package.json", origin: "patch_required", note: "patch via contrib rules" },
     ]);
 
@@ -365,7 +365,7 @@ describe("SqliteStateStore — project vendor components", () => {
       "daemon/contrib/src/gmp/package.json",
     ]);
     expect(components[0]).toMatchObject({ localPath: null, cloneUrl: null, revision: null, note: "patch via contrib rules" });
-    expect(components[1]).toMatchObject({ localPath: ".ve-deps/gmp", origin: "patch_required", note: "" });
+    expect(components[1]).toMatchObject({ localPath: "gmp", origin: "patch_required", note: "" });
   });
 
   it("replaceProjectVendorComponents is atomic — rolls back on duplicate source paths", async () => {

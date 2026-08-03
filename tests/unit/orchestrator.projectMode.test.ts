@@ -812,7 +812,7 @@ describe("Orchestrator — Phase 4 project mode", () => {
           id: 1,
           projectId: makeProjectId("p-1"),
           sourcePath: "daemon/contrib/src/fmt/package.json",
-          localPath: ".ve-deps/fmt",
+          localPath: "fmt",
           cloneUrl: "https://github.com/fmtlib/fmt.git",
           revision: "10.2.1",
           origin: "patch_required" as const,

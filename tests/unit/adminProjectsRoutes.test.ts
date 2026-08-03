@@ -276,13 +276,13 @@ FetchContent_Declare(googletest
         expect.objectContaining({ localPath: "daemon", sourcePath: ".gitmodules" }),
         expect.objectContaining({
           cloneUrl: "https://github.com/savoirfairelinux/opendht.git",
-          localPath: "daemon/.ve-deps/opendht",
+          localPath: "daemon/opendht",
           sourcePath: "daemon/contrib/src/opendht/package.json",
           resolution: expect.objectContaining({ status: "matched" }),
         }),
         expect.objectContaining({
           cloneUrl: "https://github.com/google/googletest.git",
-          localPath: "daemon/.ve-deps/googletest",
+          localPath: "daemon/googletest",
           sourcePath: "daemon/tests/CMakeLists.txt",
           resolution: expect.objectContaining({ status: "matched" }),
         }),
