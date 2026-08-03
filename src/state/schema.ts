@@ -1,5 +1,5 @@
 /** Drizzle ORM table definitions for the Virtual Engineer SQLite database. All timestamps are seconds since epoch (`mode: "timestamp"`). */
-import { sqliteTable, text, integer, real, index, unique, check, primaryKey } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, integer, real, index, uniqueIndex, unique, check, primaryKey } from "drizzle-orm/sqlite-core";
 import { sql } from "drizzle-orm";
 import type { TaskState, ProviderId, TaskType, AgentType, ProjectType, PushTargetRole, DomainCapability, UserRole, PrincipalType, VendorComponentOrigin } from "../interfaces.js";
 
@@ -396,7 +396,8 @@ export const projectVendorComponents = sqliteTable(
     updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
   },
   (table) => ({
-    uqPvcProjectSourcePath: unique("uq_pvc_project_source_path").on(table.projectId, table.sourcePath),
+    uqPvcProjectSourceLocal: uniqueIndex("uq_pvc_project_source_local")
+      .on(table.projectId, table.sourcePath, sql`coalesce(local_path, '')`),
     idxPvcProjectId: index("idx_pvc_project_id").on(table.projectId),
   })
 );

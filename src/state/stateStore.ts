@@ -370,8 +370,9 @@ export class SqliteStateStore {
         created_at  INTEGER NOT NULL,
         updated_at  INTEGER NOT NULL
       );
-      CREATE UNIQUE INDEX IF NOT EXISTS uq_pvc_project_source_path
-        ON project_vendor_components(project_id, source_path);
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_pvc_project_source_local
+        ON project_vendor_components(project_id, source_path, COALESCE(local_path, ''));
+      DROP INDEX IF EXISTS uq_pvc_project_source_path;
       CREATE INDEX IF NOT EXISTS idx_pvc_project_id
         ON project_vendor_components(project_id);
 

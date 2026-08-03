@@ -498,7 +498,7 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
   async function listProjectVendorComponents(projectId: ProjectId): Promise<ProjectVendorComponentRecord[]> {
     const rows = await db.query.projectVendorComponents.findMany({
       where: eq(projectVendorComponents.projectId, projectId),
-      orderBy: (table, { asc }) => [asc(table.sourcePath)],
+      orderBy: (table, { asc }) => [asc(table.sourcePath), asc(table.localPath)],
     });
     return rows.map((row) => ({
       id: row.id,
@@ -519,13 +519,14 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
     inputs: ProjectVendorComponentInput[]
   ): Promise<ProjectVendorComponentRecord[]> {
     const nowSeconds = Math.floor(Date.now() / 1000);
+    const identity = (sourcePath: string, localPath: string | null): string => `${sourcePath}\u0000${localPath ?? ""}`;
     raw.transaction((): void => {
-      // created_at means "first tracked", so carry it over for paths that survive the replace.
+      // created_at means "first tracked", so carry it over for components that survive the replace.
       const previous = new Map<string, number>();
       for (const row of raw
-        .prepare("SELECT source_path, created_at FROM project_vendor_components WHERE project_id = ?")
-        .all(projectId) as Array<{ source_path: string; created_at: number }>) {
-        previous.set(row.source_path, row.created_at);
+        .prepare("SELECT source_path, local_path, created_at FROM project_vendor_components WHERE project_id = ?")
+        .all(projectId) as Array<{ source_path: string; local_path: string | null; created_at: number }>) {
+        previous.set(identity(row.source_path, row.local_path), row.created_at);
       }
       raw.prepare("DELETE FROM project_vendor_components WHERE project_id = ?").run(projectId);
       const statement = raw.prepare(
@@ -542,7 +543,7 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
           input.revision ?? null,
           input.origin,
           input.note ?? "",
-          previous.get(input.sourcePath) ?? nowSeconds,
+          previous.get(identity(input.sourcePath, input.localPath ?? null)) ?? nowSeconds,
           nowSeconds
         );
       }

@@ -368,6 +368,21 @@ describe("SqliteStateStore — project vendor components", () => {
     expect(components[1]).toMatchObject({ localPath: "gmp", origin: "patch_required", note: "" });
   });
 
+  it("keeps two components declared by one manifest apart", async () => {
+    const a = await makeAgent(store);
+    const p = await store.createProject({ name: "P", type: "coding", agentId: a.id });
+    await store.replaceProjectVendorComponents(p.id, [
+      { sourcePath: ".config.yaml", localPath: "sources/meta-phytec", origin: "patch_required" },
+      { sourcePath: ".config.yaml", localPath: "sources/meta-freescale", origin: "patch_required" },
+    ]);
+
+    const components = await store.listProjectVendorComponents(p.id);
+    expect(components.map((component) => component.localPath)).toEqual([
+      "sources/meta-freescale",
+      "sources/meta-phytec",
+    ]);
+  });
+
   it("replaceProjectVendorComponents is atomic — rolls back on duplicate source paths", async () => {
     const a = await makeAgent(store);
     const p = await store.createProject({ name: "P", type: "coding", agentId: a.id });

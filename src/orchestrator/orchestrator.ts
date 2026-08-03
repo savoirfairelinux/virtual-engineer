@@ -681,9 +681,9 @@ export class Orchestrator {
         throw new Error(`Project ${task.projectId} has no push targets configured`);
       }
       const vendorComponents = (await this.projectMode.projectStore.listProjectVendorComponents?.(task.projectId) ?? [])
-        // Only the real editable path reaches the agent; the synthetic scan localPath does not exist in the workspace.
         .map((component) => ({
           sourcePath: component.sourcePath,
+          localPath: component.localPath,
           origin: component.origin,
           note: component.note,
         }));

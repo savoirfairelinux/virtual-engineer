@@ -208,6 +208,14 @@ describe("ProjectFormModal repository integration resolution", () => {
             sourcePath: "kas/config.yaml",
             origin: "patch_required",
             resolution: null,
+          }, {
+            cloneUrl: "https://github.com/phytec/meta-phytec",
+            localPath: "layers/meta-phytec",
+            revision: "kirkstone",
+            relation: "manifest_member",
+            sourcePath: "kas/config.yaml",
+            origin: "patch_required",
+            resolution: null,
           }],
           diagnostics: [],
         }), { status: 200, headers: { "content-type": "application/json" } });
@@ -254,9 +262,10 @@ describe("ProjectFormModal repository integration resolution", () => {
     );
 
     fireEvent.click(await screen.findByRole("button", { name: "Scan workspace" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Patch kas/config.yaml locally" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Patch layers/poky locally" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Patch layers/meta-phytec locally" }));
 
-    const notes = await screen.findByPlaceholderText("How should the agent handle this component?");
+    const notes = await screen.findByLabelText("Agent note for layers/poky");
     fireEvent.change(notes, { target: { value: "apply a .bbappend in the internal layer" } });
 
     fireEvent.click(screen.getByRole("button", { name: /Save|Create Project/ }));
@@ -268,6 +277,13 @@ describe("ProjectFormModal repository integration resolution", () => {
       revision: "kirkstone",
       origin: "patch_required",
       note: "apply a .bbappend in the internal layer",
+    }, {
+      sourcePath: "kas/config.yaml",
+      localPath: "layers/meta-phytec",
+      cloneUrl: "https://github.com/phytec/meta-phytec",
+      revision: "kirkstone",
+      origin: "patch_required",
+      note: "",
     }]));
   });
 

@@ -584,6 +584,33 @@ FetchContent_Declare(googletest
     ]);
   });
 
+  it("POST / accepts several components declared by one manifest", async () => {
+    const agent = await makeAgent(store, "coding");
+    await seedIntegration(store, "redmine-1", "redmine");
+    await seedIntegration(store, "gerrit-1", "gerrit");
+    const r = await rest(server, "/api/admin/projects", {
+      method: "POST",
+      body: {
+        type: "coding",
+        name: "Yocto",
+        agentId: agent.id,
+        ticketSource: { integrationId: "redmine-1", ticketProjectKey: "PLATFORM" },
+        pushTargets: [
+          { integrationId: "gerrit-1", repoKey: "superproject", cloneUrl: "ssh://g/super", targetBranch: "main", role: "primary", commitOrder: 1, localPath: "." },
+        ],
+        vendorComponents: [
+          { sourcePath: ".config.yaml", localPath: "sources/meta-phytec", origin: "patch_required" },
+          { sourcePath: ".config.yaml", localPath: "sources/meta-freescale", origin: "patch_required" },
+        ],
+      },
+    });
+
+    expect(r.status).toBe(201);
+    const projectId = (r.body?.["project"] as Record<string, unknown>)["id"] as string;
+    const stored = await store.listProjectVendorComponents(makeProjectId(projectId));
+    expect(stored.map((c) => c.localPath)).toEqual(["sources/meta-freescale", "sources/meta-phytec"]);
+  });
+
   it("POST / rolls back the project when vendor components are invalid", async () => {
     const agent = await makeAgent(store, "coding");
     await seedIntegration(store, "redmine-1", "redmine");

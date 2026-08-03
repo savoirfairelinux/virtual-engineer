@@ -260,8 +260,8 @@ const vendorComponentArraySchema = z.array(z.object({
   note: z.string().trim().max(2048).optional(),
 })).max(500, "At most 500 vendor components may be stored per project")
   .refine(
-    (components) => new Set(components.map((component) => component.sourcePath)).size === components.length,
-    { message: "Vendor component source paths must be unique" },
+    (components) => new Set(components.map((component) => `${component.sourcePath}\u0000${component.localPath ?? ""}`)).size === components.length,
+    { message: "Vendor components must be unique per source path and local path" },
   );
 
 const vendorComponentsSchema = z.object({
