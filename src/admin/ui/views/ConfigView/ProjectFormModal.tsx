@@ -89,7 +89,7 @@ interface WorkspaceScanRepository {
   cloneUrl: string | null;
   localPath: string;
   revision: string | null;
-  relation: "gitlink" | "manifest_member" | "contains";
+  relation: "gitlink" | "manifest_member" | "contains" | "fetched";
   sourcePath: string;
   origin: VendorComponentOrigin;
 }
@@ -1101,7 +1101,10 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
         repoKey: match?.repoKey ?? "",
         cloneUrl: member.cloneUrl ?? "",
         targetBranch: firstBranch ?? firstTargetBranch(member.revision, repository?.defaultBranch),
-        localPath: member.localPath,
+        // A fetched dependency has no place in the tree, so VE picks a free checkout directory for it.
+        localPath: member.relation === "fetched"
+          ? manualLocalPath(member.localPath, `repo-${prev.length + 1}`, prev, prev.length)
+          : member.localPath,
         localPathMode: "fixed",
         origin: "workspace_scan",
         relation: member.relation,

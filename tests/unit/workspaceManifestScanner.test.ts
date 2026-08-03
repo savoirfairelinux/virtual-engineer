@@ -172,9 +172,9 @@ repositories:
 
     expect(result.repositories).toEqual([{
       cloneUrl: "https://github.com/savoirfairelinux/opendht.git",
-      localPath: ".ve-deps/opendht",
+      localPath: "opendht",
       revision: "4.2.0",
-      relation: "manifest_member",
+      relation: "fetched",
       sourcePath: "contrib/src/opendht/package.json",
     }]);
   });
@@ -201,16 +201,16 @@ FetchContent_Declare(dynamic_dep GIT_REPOSITORY \${DYNAMIC_URL})
     expect(result.repositories).toEqual([
       {
         cloneUrl: "https://github.com/simdutf/simdutf.git",
-        localPath: ".ve-deps/simdutf",
+        localPath: "simdutf",
         revision: "v8.0.0",
-        relation: "manifest_member",
+        relation: "fetched",
         sourcePath: "tests/CMakeLists.txt",
       },
       {
         cloneUrl: "https://github.com/google/googletest.git",
-        localPath: ".ve-deps/googletest",
+        localPath: "googletest",
         revision: "release-1.11.0",
-        relation: "manifest_member",
+        relation: "fetched",
         sourcePath: "tests/CMakeLists.txt",
       },
     ]);
@@ -405,16 +405,16 @@ repos:
       },
       {
         cloneUrl: "https://github.com/acme/alpha.git",
-        localPath: ".ve-deps/alpha",
+        localPath: "alpha",
         revision: "9f1c2d3",
-        relation: "manifest_member",
+        relation: "fetched",
         sourcePath: "meta-product/recipes-core/alpha/alpha_1.2.bb",
       },
       {
         cloneUrl: "git://git.example.com/vendor/beta",
-        localPath: ".ve-deps/beta",
+        localPath: "beta",
         revision: "v2.0",
-        relation: "manifest_member",
+        relation: "fetched",
         sourcePath: "meta-product/recipes-core/beta/beta_git.bbappend",
       },
     ]);
@@ -450,9 +450,9 @@ repos:
       },
       {
         cloneUrl: "https://github.com/guardian-telecom/aura-application.git",
-        localPath: ".ve-deps/aura-application",
+        localPath: "aura-application",
         revision: "abc1234",
-        relation: "manifest_member",
+        relation: "fetched",
         sourcePath: "meta-aura/recipes-app/aura-application/aura-application.inc",
       },
     ]);
@@ -547,7 +547,7 @@ repos:
     expect(result.diagnostics).toEqual([]);
     expect(result.repositories).toEqual([
       expect.objectContaining({ localPath: "meta-product", sourcePath: "kas.yml" }),
-      expect.objectContaining({ localPath: ".ve-deps/alpha" }),
+      expect.objectContaining({ localPath: "alpha" }),
     ]);
   });
 

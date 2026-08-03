@@ -8,7 +8,7 @@ export const WORKSPACE_MANIFEST_MAX_FILES = 200;
 export const WORKSPACE_KAS_CANDIDATE_MAX_FILES = 25;
 export const WORKSPACE_RECIPE_MAX_FILES = 200;
 
-export type WorkspaceManifestRelation = "gitlink" | "manifest_member" | "contains";
+export type WorkspaceManifestRelation = "gitlink" | "manifest_member" | "contains" | "fetched";
 
 export interface WorkspaceManifestFile {
   path: string;
@@ -199,9 +199,9 @@ function scanContribPackage(file: WorkspaceManifestFile, result: MutableScanResu
   }
   addWorkspaceRootRepository(result, file.path, {
     cloneUrl: repository.cloneUrl,
-    localPath: `.ve-deps/${name}`,
+    localPath: name,
     revision: version,
-    relation: "manifest_member",
+    relation: "fetched",
   });
 }
 
@@ -247,9 +247,9 @@ function scanCmake(file: WorkspaceManifestFile, result: MutableScanResult): void
     }
     addWorkspaceRootRepository(result, file.path, {
       cloneUrl: repository.cloneUrl,
-      localPath: `.ve-deps/${name}`,
+      localPath: name,
       revision: valueAfter("GIT_TAG") ?? repository.revision,
-      relation: "manifest_member",
+      relation: "fetched",
     });
   }
 }
@@ -594,9 +594,9 @@ function scanBitbakeRecipe(file: WorkspaceManifestFile, result: MutableScanResul
     if (!repositoryName) continue;
     addWorkspaceRootRepository(result, file.path, {
       cloneUrl: fetcher.cloneUrl,
-      localPath: `.ve-deps/${repositoryName}`,
+      localPath: repositoryName,
       revision: fetcher.revision,
-      relation: "manifest_member",
+      relation: "fetched",
     });
   }
 }
