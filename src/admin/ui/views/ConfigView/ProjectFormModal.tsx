@@ -952,6 +952,12 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
   const ticketingIntegrations = integrations.filter((i) => i.domainCapabilities.includes("issue_tracking"));
   const vcsIntegrations = integrations.filter((i) => i.domainCapabilities.includes("source_control"));
   const reviewIntegrations = integrations.filter((i) => i.domainCapabilities.includes("code_review"));
+  const pushableRepositories = vcsIntegrations.flatMap((integration) =>
+    (integration.discoveredResources?.repositories ?? []).map((repository) => ({
+      integrationId: integration.id,
+      integrationName: integration.name,
+      repoKey: repository.key,
+    })));
 
   const updatePushTarget = (idx: number, key: EditablePushTargetField, val: string) => {
     setPushTargets((prev) => prev.map((t, i) => i === idx ? { ...t, [key]: val } : t));
@@ -1110,6 +1116,42 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
         relation: member.relation,
         reviewerEmails: "",
       }]);
+    } finally {
+      setAddingWorkspaceMember((current) => current === memberKey ? null : current);
+    }
+  };
+
+  // A scanned component often declares a mirror VE cannot push to, so the operator maps it to the
+  // repository that really receives the change; the clone URL comes from that repository, not the scan.
+  const mapWorkspaceMemberToRepository = async (member: WorkspaceScanMember, integrationId: string, repoKey: string) => {
+    const integration = integrations.find((candidate) => candidate.id === integrationId);
+    const repository = integration?.discoveredResources?.repositories?.find((candidate) => candidate.key === repoKey);
+    const cloneUrl = repository?.cloneUrlHttp ?? repository?.cloneUrlSsh ?? "";
+    if (!cloneUrl) return;
+    const memberKey = `${member.sourcePath}:${member.localPath}`;
+    setAddingWorkspaceMember(memberKey);
+    try {
+      let firstBranch: string | undefined;
+      try {
+        const response = await api.get<{ branches: string[] }>(`/api/admin/integrations/${integrationId}/branches?repoKey=${encodeURIComponent(repoKey)}`);
+        firstBranch = Array.isArray(response.branches) ? response.branches[0] : undefined;
+      } catch {
+        // Branch discovery is best-effort; the provider default remains usable.
+      }
+      setPushTargets((prev) => prev.some((target) => target.integrationId === integrationId && target.repoKey === repoKey)
+        ? prev
+        : [...prev, {
+          integrationId,
+          repoKey,
+          cloneUrl,
+          // The member revision is the pinned SRCREV of the mirror, never a branch of the mapped repository.
+          targetBranch: firstBranch ?? repository?.defaultBranch ?? "main",
+          localPath: manualLocalPath(repoKey, `repo-${prev.length + 1}`, prev, prev.length),
+          localPathMode: "derived",
+          origin: "workspace_scan",
+          relation: member.relation,
+          reviewerEmails: "",
+        }]);
     } finally {
       setAddingWorkspaceMember((current) => current === memberKey ? null : current);
     }
@@ -1407,17 +1449,37 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
                                       ) : member.origin === "internal" ? (
                                         <span className="mono" style={{ fontSize: "10px", color: "var(--text-faint)" }}>{state}</span>
                                       ) : (
-                                        <button
-                                          type="button"
-                                          className="btn ghost"
-                                          aria-label={isTracked ? `${member.sourcePath} tracked as vendor component` : `Track ${member.sourcePath} as vendor component`}
-                                          disabled={isTracked}
-                                          onClick={() => trackVendorComponent(member)}
-                                          style={{ fontSize: "10px", padding: "4px 7px" }}
-                                        >
-                                          <Icon name={isTracked ? "check" : "plus"} size={11} />
-                                          {isTracked ? "Tracked" : `Track · ${state}`}
-                                        </button>
+                                        <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                                          <select
+                                            className="input"
+                                            aria-label={`Push ${member.sourcePath} to a repository`}
+                                            value=""
+                                            disabled={addingWorkspaceMember === memberKey}
+                                            onChange={(e) => {
+                                              const [integrationId, mappedRepoKey] = e.target.value.split("::");
+                                              if (integrationId && mappedRepoKey) void mapWorkspaceMemberToRepository(member, integrationId, mappedRepoKey);
+                                            }}
+                                            style={{ fontSize: "10px", padding: "3px 5px", maxWidth: 150 }}
+                                          >
+                                            <option value="">Push to…</option>
+                                            {pushableRepositories.map((repository) => (
+                                              <option key={`${repository.integrationId}::${repository.repoKey}`} value={`${repository.integrationId}::${repository.repoKey}`}>
+                                                {repository.repoKey}
+                                              </option>
+                                            ))}
+                                          </select>
+                                          <button
+                                            type="button"
+                                            className="btn ghost"
+                                            aria-label={isTracked ? `${member.sourcePath} tracked as vendor component` : `Track ${member.sourcePath} as vendor component`}
+                                            disabled={isTracked}
+                                            onClick={() => trackVendorComponent(member)}
+                                            style={{ fontSize: "10px", padding: "4px 7px" }}
+                                          >
+                                            <Icon name={isTracked ? "check" : "plus"} size={11} />
+                                            {isTracked ? "Tracked" : `Track · ${state}`}
+                                          </button>
+                                        </div>
                                       )}
                                     </div>
                                   );
