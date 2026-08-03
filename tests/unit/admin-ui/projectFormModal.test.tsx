@@ -751,7 +751,7 @@ describe("ProjectFormModal repository integration resolution", () => {
 
     expect(await screen.findByText("2 manifests · 7 members detected")).toBeTruthy();
     const memberList = screen.getByTestId("workspace-members-scroll");
-    expect(memberList.style.maxHeight).toBe("276px");
+    expect(memberList.style.maxHeight).toBe("296px");
     expect(memberList.style.overflowY).toBe("auto");
     const memberSearch = screen.getByLabelText("Search detected members");
     fireEvent.change(memberSearch, { target: { value: "services/api" } });

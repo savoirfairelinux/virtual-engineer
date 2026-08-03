@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Modal, Field, FieldInput, FieldSelect, FormError, FormRow, FormActions, FieldTextarea } from "../../components/Modal.tsx";
 import { Icon } from "../../components/Icon.tsx";
+import { Tag } from "../../components/Tag.tsx";
+import type { ToneKey } from "../../states.ts";
 import { api } from "../../api.ts";
 import type { ApiAgent, ApiIntegration } from "../../types.ts";
 import { ProjectSkillSourcesField, buildSkillSourcesPayload, preloadedProjectSkillSourceRow, skillSourceToRow, type SkillSource, type SkillSourceRow } from "./ProjectSkillSourcesField.tsx";
@@ -112,11 +114,11 @@ const VENDOR_ORIGIN_LABELS: Record<VendorComponentOrigin, string> = {
   ambiguous: "ambiguous",
 };
 
-const VENDOR_ORIGIN_COLORS: Record<VendorComponentOrigin, string> = {
-  internal: "var(--text-faint)",
-  fork_pushable: "var(--success, #2e9e5b)",
-  patch_required: "var(--warning, #c98a1a)",
-  ambiguous: "var(--danger)",
+const VENDOR_ORIGIN_TONES: Record<VendorComponentOrigin, ToneKey> = {
+  internal: "muted",
+  fork_pushable: "ok",
+  patch_required: "warn",
+  ambiguous: "danger",
 };
 
 interface WorkspaceScanDiagnostic {
@@ -141,7 +143,7 @@ interface WorkspaceScanPreview {
   diagnostics: WorkspaceScanDiagnostic[];
 }
 
-const WORKSPACE_MEMBER_ROW_HEIGHT = 52;
+const WORKSPACE_MEMBER_ROW_HEIGHT = 56;
 const WORKSPACE_MEMBER_GAP = 4;
 const WORKSPACE_MEMBER_VISIBLE_ROWS = 5;
 const WORKSPACE_MEMBER_LIST_MAX_HEIGHT = WORKSPACE_MEMBER_ROW_HEIGHT * WORKSPACE_MEMBER_VISIBLE_ROWS
@@ -1427,31 +1429,32 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
                                       const canAdd = resolution?.status === "matched" && resolution.match.enabled && member.cloneUrl !== null;
                                       const isTracked = vendorComponents.some((component) => component.sourcePath === member.sourcePath);
                                   return (
-                                    <div key={`${member.sourcePath}:${member.localPath}`} style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto", gap: 8, alignItems: "center", minHeight: WORKSPACE_MEMBER_ROW_HEIGHT, boxSizing: "border-box", padding: "5px 7px", background: "var(--panel)", borderRadius: "var(--radius-sm)" }}>
-                                      <div style={{ minWidth: 0 }}>
-                                        <div className="mono" style={{ fontSize: "11.5px", color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis" }}>{member.localPath}</div>
-                                        <div className="mono" style={{ fontSize: "10px", color: "var(--text-faint)" }}>
-                                          {member.sourcePath} · {member.relation} · <span style={{ color: VENDOR_ORIGIN_COLORS[member.origin] }}>{VENDOR_ORIGIN_LABELS[member.origin]}</span>
+                                    <div key={`${member.sourcePath}:${member.localPath}`} style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto", gap: 10, alignItems: "center", minHeight: WORKSPACE_MEMBER_ROW_HEIGHT, boxSizing: "border-box", padding: "7px 9px", background: "var(--panel)", border: "1px solid var(--border-soft)", borderRadius: "var(--radius-sm)" }}>
+                                      <div style={{ minWidth: 0, display: "flex", flexDirection: "column", gap: 3 }}>
+                                        <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+                                          <span className="mono" style={{ fontSize: "11.5px", color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{member.localPath}</span>
+                                          <Tag tone={VENDOR_ORIGIN_TONES[member.origin]}>{VENDOR_ORIGIN_LABELS[member.origin]}</Tag>
+                                        </div>
+                                        <div className="mono" style={{ fontSize: "10px", color: "var(--text-faint)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                          {member.sourcePath} · {member.relation}
                                         </div>
                                       </div>
                                       {canAdd ? (
                                         <button
                                           type="button"
-                                          className="btn ghost"
+                                          className="btn sm"
                                           aria-label={isAdded ? `${member.localPath} added` : `Add ${member.localPath} as push target`}
                                           disabled={isAdded || addingWorkspaceMember === memberKey}
                                           onClick={() => { void addWorkspaceMember(member); }}
-                                          style={{ fontSize: "10px", padding: "4px 7px" }}
                                         >
-                                          <Icon name={isAdded ? "check" : "plus"} size={11} />
+                                          <Icon name={isAdded ? "check" : "plus"} size={12} />
                                           {isAdded ? "Added" : state}
                                         </button>
                                       ) : member.origin === "internal" ? (
-                                        <span className="mono" style={{ fontSize: "10px", color: "var(--text-faint)" }}>{state}</span>
+                                        <Tag tone="muted">{state}</Tag>
                                       ) : (
-                                        <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-                                          <select
-                                            className="input"
+                                        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                                          <FieldSelect
                                             aria-label={`Push ${member.sourcePath} to a repository`}
                                             value=""
                                             disabled={addingWorkspaceMember === memberKey}
@@ -1459,7 +1462,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
                                               const [integrationId, mappedRepoKey] = e.target.value.split("::");
                                               if (integrationId && mappedRepoKey) void mapWorkspaceMemberToRepository(member, integrationId, mappedRepoKey);
                                             }}
-                                            style={{ fontSize: "10px", padding: "3px 5px", maxWidth: 150 }}
+                                            style={{ width: 170, fontSize: "12px", padding: "5px 8px" }}
                                           >
                                             <option value="">Push to…</option>
                                             {pushableRepositories.map((repository) => (
@@ -1467,17 +1470,16 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
                                                 {repository.repoKey}
                                               </option>
                                             ))}
-                                          </select>
+                                          </FieldSelect>
                                           <button
                                             type="button"
-                                            className="btn ghost"
+                                            className="btn sm"
                                             aria-label={isTracked ? `${member.sourcePath} tracked as vendor component` : `Track ${member.sourcePath} as vendor component`}
                                             disabled={isTracked}
                                             onClick={() => trackVendorComponent(member)}
-                                            style={{ fontSize: "10px", padding: "4px 7px" }}
                                           >
-                                            <Icon name={isTracked ? "check" : "plus"} size={11} />
-                                            {isTracked ? "Tracked" : `Track · ${state}`}
+                                            <Icon name={isTracked ? "check" : "plus"} size={12} />
+                                            {isTracked ? "Tracked" : "Track"}
                                           </button>
                                         </div>
                                       )}
@@ -1520,47 +1522,48 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
                 label="Vendor Components"
                 hint="Third-party components detected by the workspace scan that VE cannot push to. Notes are surfaced to the agent so it patches them locally instead of attempting a push. If a component is actually developed in one of your repositories, declare it so the agent changes it there rather than patching."
               >
-                <div data-testid="vendor-components" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                <div data-testid="vendor-components" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                   {vendorComponents.map((component) => (
-                    <div key={component.sourcePath} style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto", gap: 8, alignItems: "center", padding: "6px 7px", background: "var(--panel)", borderRadius: "var(--radius-sm)" }}>
-                      <div style={{ minWidth: 0 }}>
-                        <div className="mono" style={{ fontSize: "11.5px", color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis" }}>{component.sourcePath}</div>
-                        <div className="mono" style={{ fontSize: "10px", color: VENDOR_ORIGIN_COLORS[component.origin] }}>{VENDOR_ORIGIN_LABELS[component.origin]}</div>
-                        <FieldInput
-                          value={component.note}
-                          placeholder="How should the agent handle this component?"
-                          onChange={(e) => updateVendorComponentNote(component.sourcePath, e.target.value)}
-                        />
-                        <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gap: 6, marginTop: 4 }}>
-                          <select
-                            className="input"
-                            aria-label={`Maintained in integration for ${component.sourcePath}`}
-                            value={component.integrationId ?? ""}
-                            onChange={(e) => updateVendorComponentBinding(component.sourcePath, { integrationId: e.target.value })}
-                            style={{ fontSize: "11px" }}
-                          >
-                            <option value="">— not maintained by us —</option>
-                            {vcsIntegrations.map((i) => (
-                              <option key={i.id} value={i.id}>{i.name}</option>
-                            ))}
-                          </select>
-                          <FieldInput
-                            value={component.repoKey ?? ""}
-                            placeholder="repository key on that integration"
-                            aria-label={`Maintained in repository for ${component.sourcePath}`}
-                            onChange={(e) => updateVendorComponentBinding(component.sourcePath, { repoKey: e.target.value })}
-                          />
-                        </div>
+                    <div key={component.sourcePath} className="card" style={{ padding: "10px 11px", display: "flex", flexDirection: "column", gap: 8 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                        <span className="mono" style={{ flex: 1, minWidth: 0, fontSize: "11.5px", color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{component.sourcePath}</span>
+                        <Tag tone={VENDOR_ORIGIN_TONES[component.origin]}>{VENDOR_ORIGIN_LABELS[component.origin]}</Tag>
+                        <button
+                          type="button"
+                          className="iconbtn danger"
+                          aria-label={`Remove vendor component ${component.sourcePath}`}
+                          onClick={() => removeVendorComponent(component.sourcePath)}
+                        >
+                          <Icon name="trash" size={13} />
+                        </button>
                       </div>
-                      <button
-                        type="button"
-                        className="btn ghost"
-                        aria-label={`Remove vendor component ${component.sourcePath}`}
-                        onClick={() => removeVendorComponent(component.sourcePath)}
-                        style={{ fontSize: "10px", padding: "4px 7px" }}
-                      >
-                        <Icon name="trash" size={11} />
-                      </button>
+                      <FieldInput
+                        value={component.note}
+                        placeholder="How should the agent handle this component?"
+                        aria-label={`Agent note for ${component.sourcePath}`}
+                        onChange={(e) => updateVendorComponentNote(component.sourcePath, e.target.value)}
+                        style={{ fontSize: "12.5px", padding: "6px 9px" }}
+                      />
+                      <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gap: 8 }}>
+                        <FieldSelect
+                          aria-label={`Maintained in integration for ${component.sourcePath}`}
+                          value={component.integrationId ?? ""}
+                          onChange={(e) => updateVendorComponentBinding(component.sourcePath, { integrationId: e.target.value })}
+                          style={{ fontSize: "12.5px", padding: "6px 9px" }}
+                        >
+                          <option value="">— not maintained by us —</option>
+                          {vcsIntegrations.map((i) => (
+                            <option key={i.id} value={i.id}>{i.name}</option>
+                          ))}
+                        </FieldSelect>
+                        <FieldInput
+                          value={component.repoKey ?? ""}
+                          placeholder="repository key on that integration"
+                          aria-label={`Maintained in repository for ${component.sourcePath}`}
+                          onChange={(e) => updateVendorComponentBinding(component.sourcePath, { repoKey: e.target.value })}
+                          style={{ fontSize: "12.5px", padding: "6px 9px" }}
+                        />
+                      </div>
                     </div>
                   ))}
                 </div>
