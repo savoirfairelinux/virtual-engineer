@@ -57,8 +57,11 @@ npm run lint                 # zero ESLint errors
 npm run dev                  # start orchestrator locally
 npm run build:ui             # build admin React SPA (Vite)
 npm run typecheck:ui         # TypeScript check for the admin UI (tsconfig.admin-ui.json)
-npm run db:migrate           # apply Drizzle migrations after schema changes
+npm run db:generate          # generate and commit a new migration after schema changes
+npm run db:migrate           # apply tracked migrations through the runtime runner
 ```
+
+Database changes start in `src/state/schema.ts`. Commit the newly generated SQL and metadata under `drizzle/` with the code change; never edit an already-applied migration.
 
 All three gates (`npm test`, `npm run typecheck`, `npm run lint`) must pass before opening a PR.
 

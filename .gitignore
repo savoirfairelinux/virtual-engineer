@@ -3,7 +3,6 @@ data/
 dist/
 node_modules/
 secrets/
-drizzle/
 coverage/
 test-results/
 *.db

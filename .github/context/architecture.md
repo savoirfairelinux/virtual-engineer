@@ -75,9 +75,10 @@ It builds `TaskContext`, launches agent cycles, persists agent output, manages r
 - `src/domain/identifiers.ts` — branded task, ticket, change, agent, and project identifiers with maker functions
 - `src/domain/tasks.ts` — task state constants/types plus persisted task, per-repository change, and transition contracts
 - `stateMachine.ts` — pure transition map
-- `stateStore.ts` — typed SQLite store and index/bootstrap helper
+- `stateStore.ts` — typed SQLite store facade and domain-store composition
 - `schema.ts` — `tasks`, `state_transitions`, `agent_cycles`, `processed_comments`, `posted_review_comments`, `review_thread_replies`, `integrations`, `oauth_apps`, `gitlab_oauth_apps`, `prompts`, `change_per_repository`, `agents`, `projects`, `project_integration_bindings`, `project_push_targets`, `app_concurrency`
-- `migrate.ts` — migration runner
+- `databaseMigrations.ts` — canonical tracked migration runner plus frozen pre-ledger adoption bridge
+- `migrate.ts` — explicit migration CLI entry; startup delegates to the same runner
 
 The former `project_ticket_source` / `project_review_integration` / `project_review_repos` tables were **dropped** and replaced by `project_integration_bindings` (one row per `(project_id, capability)` with `capability ∈ issue_tracking | code_review | source_control | agent_execution`; `config_json` shapes: issue_tracking = `{ ticketProjectKey }`, code_review = `{ repos }`). Push targets stay in the dedicated `project_push_targets` table.
 

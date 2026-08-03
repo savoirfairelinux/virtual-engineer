@@ -12,6 +12,10 @@ interface TableInfoRow {
   name: string;
 }
 
+interface CountRow {
+  count: number;
+}
+
 interface ColumnInfoRow {
   name: string;
   type: string;
@@ -21,6 +25,18 @@ interface ColumnInfoRow {
 }
 
 describe("Phase 2 migrations", () => {
+  it("records tracked migrations when creating a fresh database", async () => {
+    const store = await SqliteStateStore.create(tempDbPath());
+    try {
+      const raw = (store as unknown as { raw: { prepare: (s: string) => { get: () => unknown } } }).raw;
+      const row = raw.prepare("SELECT COUNT(*) AS count FROM __drizzle_migrations").get() as CountRow;
+
+      expect(row.count).toBe(1);
+    } finally {
+      store.close();
+    }
+  });
+
   it("creates the new tables on a fresh DB", async () => {
     const store = await SqliteStateStore.create(tempDbPath());
     try {
@@ -59,11 +75,30 @@ describe("Phase 2 migrations", () => {
     const legacy = new Database(dbPath);
     const now = Math.floor(Date.now() / 1000);
     legacy.exec(`
+      CREATE TABLE prompts (
+        id TEXT PRIMARY KEY,
+        label TEXT NOT NULL,
+        content TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE TABLE agents (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        type TEXT NOT NULL,
+        model_config_json TEXT NOT NULL DEFAULT '{}',
+        system_prompt_id TEXT REFERENCES prompts(id),
+        instructions_prompt_id TEXT REFERENCES prompts(id),
+        max_concurrent INTEGER NOT NULL DEFAULT 1,
+        enabled INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
       CREATE TABLE projects (
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
         type TEXT NOT NULL,
-        agent_id TEXT NOT NULL,
+        agent_id TEXT NOT NULL REFERENCES agents(id),
         agent_override_json TEXT,
         post_clone_script TEXT NOT NULL DEFAULT '',
         skill_discovery_enabled INTEGER NOT NULL DEFAULT 0,
@@ -73,6 +108,11 @@ describe("Phase 2 migrations", () => {
         updated_at INTEGER NOT NULL
       );
     `);
+    legacy.prepare(`
+      INSERT INTO agents (
+        id, name, type, model_config_json, enabled, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run("legacy-agent", "Legacy agent", "coding", "{}", 1, now, now);
     legacy.prepare(`
       INSERT INTO projects (
         id, name, type, agent_id, skill_discovery_enabled, enabled, created_at, updated_at
