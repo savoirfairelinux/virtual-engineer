@@ -257,7 +257,6 @@ const vendorComponentArraySchema = z.array(z.object({
   cloneUrl: z.string().trim().max(2048).nullish(),
   revision: z.string().trim().max(512).nullish(),
   origin: z.enum(["internal", "fork_pushable", "patch_required", "ambiguous"]),
-  note: z.string().trim().max(2048).optional(),
 })).max(500, "At most 500 vendor components may be stored per project")
   .refine(
     (components) => new Set(components.map((component) => `${component.sourcePath}\u0000${component.localPath ?? ""}`)).size === components.length,
@@ -278,7 +277,6 @@ function toVendorComponentInputs(
     cloneUrl: optional(component.cloneUrl),
     revision: optional(component.revision),
     origin: component.origin,
-    note: component.note ?? "",
   }));
 }
 

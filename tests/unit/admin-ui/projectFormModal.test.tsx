@@ -1,5 +1,5 @@
 /** @vitest-environment jsdom */
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ProjectFormModal } from "../../../src/admin/ui/views/ConfigView/ProjectFormModal.js";
 import type { ApiAgent, ApiIntegration } from "../../../src/admin/ui/types.js";
@@ -265,8 +265,103 @@ describe("ProjectFormModal repository integration resolution", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Patch layers/poky locally" }));
     fireEvent.click(await screen.findByRole("button", { name: "Patch layers/meta-phytec locally" }));
 
-    const notes = await screen.findByLabelText("Agent note for layers/poky");
-    fireEvent.change(notes, { target: { value: "apply a .bbappend in the internal layer" } });
+    fireEvent.click(screen.getByRole("button", { name: /Save|Create Project/ }));
+
+    await waitFor(() => expect(savedComponents).toEqual([{
+      sourcePath: "kas/config.yaml",
+      localPath: "layers/poky",
+      cloneUrl: "https://git.yoctoproject.org/git/poky",
+      revision: "kirkstone",
+      origin: "patch_required",
+    }, {
+      sourcePath: "kas/config.yaml",
+      localPath: "layers/meta-phytec",
+      cloneUrl: "https://github.com/phytec/meta-phytec",
+      revision: "kirkstone",
+      origin: "patch_required",
+    }]));
+  });
+
+  it("keeps a component tracked while the initial load is still in flight", async () => {
+    const integration: ApiIntegration = {
+      ...gerritIntegration("gerrit-1", "Primary Gerrit"),
+      discoveredResources: {
+        repositories: [{
+          key: "platform/root",
+          name: "Root",
+          cloneUrlHttp: "https://gerrit.example.com/platform/root.git",
+          defaultBranch: "main",
+        }],
+      },
+    };
+    let releaseLoad = (): void => {};
+    const loadGate = new Promise<void>((resolve) => { releaseLoad = resolve; });
+    let savedComponents: Array<Record<string, unknown>> | null = null;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const requestPath = typeof input === "string" ? input : input instanceof URL ? input.pathname : input.url;
+      if (requestPath === "/api/admin/projects/scan-push-targets") {
+        return new Response(JSON.stringify({
+          manifestFiles: ["kas/config.yaml"],
+          repositories: [{
+            cloneUrl: "https://git.yoctoproject.org/git/poky",
+            localPath: "layers/poky",
+            revision: "kirkstone",
+            relation: "manifest_member",
+            sourcePath: "kas/config.yaml",
+            origin: "patch_required",
+            resolution: null,
+          }],
+          diagnostics: [],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (requestPath === "/api/admin/projects/project-9" && init?.method === "PUT") {
+        return new Response(JSON.stringify({ project: { id: "project-9" } }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (requestPath === "/api/admin/projects/project-9/vendor-components") {
+        if (init?.method === "PUT") {
+          savedComponents = (JSON.parse(String(init.body)) as { components: Array<Record<string, unknown>> }).components;
+          return new Response(JSON.stringify({ components: savedComponents }), { status: 200, headers: { "content-type": "application/json" } });
+        }
+        await loadGate;
+        return new Response(JSON.stringify({ components: [] }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      throw new Error(`Unexpected request: ${requestPath}`);
+    }));
+
+    render(
+      <ProjectFormModal
+        agents={[codingAgent]}
+        integrations={[integration]}
+        project={{
+          id: "project-9",
+          name: "Yocto",
+          type: "coding",
+          agentId: codingAgent.id,
+          ticketSource: {
+            integration: { id: integration.id, name: integration.name, type: integration.provider },
+            ticketProjectKey: "yocto",
+          },
+          pushTargets: [{
+            integrationId: integration.id,
+            repoKey: "platform/root",
+            cloneUrl: "https://gerrit.example.com/platform/root.git",
+            targetBranch: "main",
+            role: "primary",
+            commitOrder: 1,
+            localPath: ".",
+          }],
+        }}
+        onClose={vi.fn()}
+        onSaved={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Scan workspace" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Patch layers/poky locally" }));
+    await act(async () => {
+      releaseLoad();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
 
     fireEvent.click(screen.getByRole("button", { name: /Save|Create Project/ }));
 
@@ -276,14 +371,6 @@ describe("ProjectFormModal repository integration resolution", () => {
       cloneUrl: "https://git.yoctoproject.org/git/poky",
       revision: "kirkstone",
       origin: "patch_required",
-      note: "apply a .bbappend in the internal layer",
-    }, {
-      sourcePath: "kas/config.yaml",
-      localPath: "layers/meta-phytec",
-      cloneUrl: "https://github.com/phytec/meta-phytec",
-      revision: "kirkstone",
-      origin: "patch_required",
-      note: "",
     }]));
   });
 

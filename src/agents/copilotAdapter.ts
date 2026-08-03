@@ -165,7 +165,7 @@ export function buildCodegenUserPrompt(
       const subject = entry.localPath && entry.localPath !== entry.sourcePath
         ? `\`${entry.localPath}\` (declared in \`${entry.sourcePath}\`)`
         : `\`${entry.sourcePath}\``;
-      lines.push(`- ${subject} (${label})${entry.note.trim() ? ` — ${entry.note.trim()}` : ""}`);
+      lines.push(`- ${subject} (${label})`);
     }
     lines.push("");
   }

@@ -961,9 +961,9 @@ describe("CopilotAdapter", () => {
         agentSession: {
           ...makeContext().agentSession,
           vendorComponents: [
-            { sourcePath: "daemon/contrib/src/fmt/package.json", localPath: null, origin: "patch_required", note: "Bump via contrib rules.mak only." },
-            { sourcePath: "meta-product/recipes-core/alpha/alpha_1.2.bb", localPath: null, origin: "patch_required", note: "" },
-            { sourcePath: "meta-product/recipes-core/beta/beta_1.0.bb", localPath: null, origin: "ambiguous", note: "" },
+            { sourcePath: "daemon/contrib/src/fmt/package.json", localPath: null, origin: "patch_required" },
+            { sourcePath: "meta-product/recipes-core/alpha/alpha_1.2.bb", localPath: null, origin: "patch_required" },
+            { sourcePath: "meta-product/recipes-core/beta/beta_1.0.bb", localPath: null, origin: "ambiguous" },
           ],
         },
       });
@@ -971,7 +971,7 @@ describe("CopilotAdapter", () => {
       const prompt = buildCodegenUserPrompt(ctx, "Do the work.");
 
       expect(prompt).toContain("### Vendored / External Components");
-      expect(prompt).toContain("`daemon/contrib/src/fmt/package.json` (patch required) — Bump via contrib rules.mak only.");
+      expect(prompt).toContain("`daemon/contrib/src/fmt/package.json` (patch required)");
       expect(prompt).toContain("`meta-product/recipes-core/alpha/alpha_1.2.bb` (patch required)");
       expect(prompt).toContain("`meta-product/recipes-core/beta/beta_1.0.bb` (ambiguous — confirm before changing)");
       expect(prompt).not.toContain(".ve-deps");
@@ -982,8 +982,8 @@ describe("CopilotAdapter", () => {
         agentSession: {
           ...makeContext().agentSession,
           vendorComponents: [
-            { sourcePath: ".config.yaml", localPath: "sources/meta-phytec", origin: "patch_required", note: "" },
-            { sourcePath: ".config.yaml", localPath: "sources/meta-freescale", origin: "patch_required", note: "" },
+            { sourcePath: ".config.yaml", localPath: "sources/meta-phytec", origin: "patch_required" },
+            { sourcePath: ".config.yaml", localPath: "sources/meta-freescale", origin: "patch_required" },
           ],
         },
       });
@@ -1001,8 +1001,8 @@ describe("CopilotAdapter", () => {
         agentSession: {
           ...makeContext().agentSession,
           vendorComponents: [
-            { sourcePath: "layers/meta-shared", localPath: null, origin: "internal", note: "" },
-            { sourcePath: "libs/core/CMakeLists.txt", localPath: null, origin: "fork_pushable", note: "" },
+            { sourcePath: "layers/meta-shared", localPath: null, origin: "internal" },
+            { sourcePath: "libs/core/CMakeLists.txt", localPath: null, origin: "fork_pushable" },
           ],
         },
       });

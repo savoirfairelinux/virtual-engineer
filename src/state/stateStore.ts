@@ -366,7 +366,6 @@ export class SqliteStateStore {
         clone_url   TEXT,
         revision    TEXT,
         origin      TEXT    NOT NULL,
-        note        TEXT    NOT NULL DEFAULT '',
         created_at  INTEGER NOT NULL,
         updated_at  INTEGER NOT NULL
       );

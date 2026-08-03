@@ -356,7 +356,7 @@ describe("SqliteStateStore — project vendor components", () => {
     const p = await store.createProject({ name: "P", type: "coding", agentId: a.id });
     await store.replaceProjectVendorComponents(p.id, [
       { sourcePath: "daemon/contrib/src/gmp/package.json", localPath: "gmp", cloneUrl: "https://example.com/gmp.git", revision: "6.2.1", origin: "patch_required" },
-      { sourcePath: "daemon/contrib/src/fmt/package.json", origin: "patch_required", note: "patch via contrib rules" },
+      { sourcePath: "daemon/contrib/src/fmt/package.json", origin: "patch_required" },
     ]);
 
     const components = await store.listProjectVendorComponents(p.id);
@@ -364,8 +364,8 @@ describe("SqliteStateStore — project vendor components", () => {
       "daemon/contrib/src/fmt/package.json",
       "daemon/contrib/src/gmp/package.json",
     ]);
-    expect(components[0]).toMatchObject({ localPath: null, cloneUrl: null, revision: null, note: "patch via contrib rules" });
-    expect(components[1]).toMatchObject({ localPath: "gmp", origin: "patch_required", note: "" });
+    expect(components[0]).toMatchObject({ localPath: null, cloneUrl: null, revision: null });
+    expect(components[1]).toMatchObject({ localPath: "gmp", origin: "patch_required" });
   });
 
   it("keeps two components declared by one manifest apart", async () => {
@@ -412,12 +412,11 @@ describe("SqliteStateStore — project vendor components", () => {
 
       vi.setSystemTime(new Date("2026-01-01T00:05:00Z"));
       await store.replaceProjectVendorComponents(p.id, [
-        { sourcePath: "kas/config.yaml", origin: "patch_required", note: "edited later" },
+        { sourcePath: "kas/config.yaml", origin: "patch_required" },
         { sourcePath: "kas/extra.yaml", origin: "internal" },
       ]);
 
       const [config, extra] = await store.listProjectVendorComponents(p.id);
-      expect(config?.note).toBe("edited later");
       expect(config?.createdAt.getTime()).toBe(firstTracked);
       expect(extra?.createdAt.getTime()).toBeGreaterThan(firstTracked ?? 0);
     } finally {

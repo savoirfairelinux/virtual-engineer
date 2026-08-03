@@ -102,7 +102,6 @@ interface VendorComponentRow {
   cloneUrl: string | null;
   revision: string | null;
   origin: VendorComponentOrigin;
-  note: string;
 }
 
 const VENDOR_ORIGIN_LABELS: Record<VendorComponentOrigin, string> = {
@@ -869,10 +868,10 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
   const [addingWorkspaceMember, setAddingWorkspaceMember] = useState<string | null>(null);
   const [workspaceScanErrors, setWorkspaceScanErrors] = useState<Record<string, string>>({});
   const [vendorComponents, setVendorComponents] = useState<VendorComponentRow[]>([]);
-  const [vendorComponentsDirty, setVendorComponentsDirty] = useState(false);
+  const vendorComponentsDirtyRef = useRef(false);
 
   const trackVendorComponent = (member: WorkspaceScanMember) => {
-    setVendorComponentsDirty(true);
+    vendorComponentsDirtyRef.current = true;
     setVendorComponents((prev) => prev.some((component) => vendorComponentKey(component) === vendorComponentKey(member))
       ? prev
       : [...prev, {
@@ -881,18 +880,12 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
         cloneUrl: member.cloneUrl,
         revision: member.revision,
         origin: member.origin,
-        note: "",
       }]);
   };
 
   const removeVendorComponent = (key: string) => {
-    setVendorComponentsDirty(true);
+    vendorComponentsDirtyRef.current = true;
     setVendorComponents((prev) => prev.filter((component) => vendorComponentKey(component) !== key));
-  };
-
-  const updateVendorComponentNote = (key: string, note: string) => {
-    setVendorComponentsDirty(true);
-    setVendorComponents((prev) => prev.map((component) => vendorComponentKey(component) === key ? { ...component, note } : component));
   };
 
   useEffect(() => {
@@ -923,8 +916,11 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
         reviewerEmails: (t.reviewerEmails ?? []).join(", "),
       }));
       setPushTargets(nextTargets.length > 0 ? nextTargets : [emptyPushTarget()]);
+      setVendorComponents([]);
+      vendorComponentsDirtyRef.current = false;
       void api.get<{ components: VendorComponentRow[] }>(`/api/admin/projects/${project.id}/vendor-components`)
-        .then((response) => setVendorComponents(response.components))
+        // A slow GET must not undo what the operator tracked while it was in flight.
+        .then((response) => { if (!vendorComponentsDirtyRef.current) setVendorComponents(response.components); })
         .catch(() => { /* vendor components are optional metadata */ });
     } else {
       setReviewIntegrationId(project.reviewConfig?.integration?.id ?? "");
@@ -1170,7 +1166,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
         const vendorComponentsPayload = vendorComponents;
         if (isEditMode && project) {
           await api.put(`/api/admin/projects/${project.id}`, payload, { signal: abort.signal });
-          if (vendorComponentsDirty) {
+          if (vendorComponentsDirtyRef.current) {
             await api.put(`/api/admin/projects/${project.id}/vendor-components`, { components: vendorComponentsPayload }, { signal: abort.signal });
           }
         } else {
@@ -1465,35 +1461,26 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
             {vendorComponents.length > 0 && (
               <Field
                 label="Vendor Components"
-                hint="Components the scan found that no repository of ours owns. The agent is told to patch them in place — through a .bbappend or the contrib rules — instead of editing the upstream source. A note is optional and is passed to the agent verbatim."
+                hint="Components the scan found that no repository of ours owns. The agent is told not to edit them and to patch them in place instead — through a .bbappend or the contrib rules."
               >
                 <div data-testid="vendor-components" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                   {vendorComponents.map((component) => (
-                    <div key={vendorComponentKey(component)} className="card" style={{ padding: "10px 11px", display: "flex", flexDirection: "column", gap: 8 }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-                        <span className="mono" style={{ flex: 1, minWidth: 0, fontSize: "11.5px", color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                          {vendorComponentName(component)}
-                          {component.localPath && component.localPath !== component.sourcePath && (
-                            <span style={{ color: "var(--text-dim)" }}> · {component.sourcePath}</span>
-                          )}
-                        </span>
-                        <Tag tone={VENDOR_ORIGIN_TONES[component.origin]}>{VENDOR_ORIGIN_LABELS[component.origin]}</Tag>
-                        <button
-                          type="button"
-                          className="iconbtn danger"
-                          aria-label={`Remove vendor component ${vendorComponentName(component)}`}
-                          onClick={() => removeVendorComponent(vendorComponentKey(component))}
-                        >
-                          <Icon name="trash" size={13} />
-                        </button>
-                      </div>
-                      <FieldInput
-                        value={component.note}
-                        placeholder="Optional — how should the agent patch this?"
-                        aria-label={`Agent note for ${vendorComponentName(component)}`}
-                        onChange={(e) => updateVendorComponentNote(vendorComponentKey(component), e.target.value)}
-                        style={{ fontSize: "12.5px", padding: "6px 9px" }}
-                      />
+                    <div key={vendorComponentKey(component)} className="card" style={{ padding: "8px 11px", display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                      <span className="mono" style={{ flex: 1, minWidth: 0, fontSize: "11.5px", color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {vendorComponentName(component)}
+                        {component.localPath && component.localPath !== component.sourcePath && (
+                          <span style={{ color: "var(--text-dim)" }}> · {component.sourcePath}</span>
+                        )}
+                      </span>
+                      <Tag tone={VENDOR_ORIGIN_TONES[component.origin]}>{VENDOR_ORIGIN_LABELS[component.origin]}</Tag>
+                      <button
+                        type="button"
+                        className="iconbtn danger"
+                        aria-label={`Remove vendor component ${vendorComponentName(component)}`}
+                        onClick={() => removeVendorComponent(vendorComponentKey(component))}
+                      >
+                        <Icon name="trash" size={13} />
+                      </button>
                     </div>
                   ))}
                 </div>

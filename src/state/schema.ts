@@ -391,7 +391,6 @@ export const projectVendorComponents = sqliteTable(
     cloneUrl: text("clone_url"),
     revision: text("revision"),
     origin: text("origin").$type<VendorComponentOrigin>().notNull(),
-    note: text("note").notNull().default(""),
     createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
     updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
   },
