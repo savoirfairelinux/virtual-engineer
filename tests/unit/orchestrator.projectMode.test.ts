@@ -816,7 +816,6 @@ describe("Orchestrator — Phase 4 project mode", () => {
           cloneUrl: "https://github.com/fmtlib/fmt.git",
           revision: "10.2.1",
           origin: "patch_required" as const,
-          note: "Patch through contrib rules.",
           createdAt: new Date(),
           updatedAt: new Date(),
         }]),
@@ -850,7 +849,6 @@ describe("Orchestrator — Phase 4 project mode", () => {
       sourcePath: "daemon/contrib/src/fmt/package.json",
       localPath: "fmt",
       origin: "patch_required",
-      note: "Patch through contrib rules.",
     }]);
   });
 

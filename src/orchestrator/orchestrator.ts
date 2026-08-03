@@ -685,7 +685,6 @@ export class Orchestrator {
           sourcePath: component.sourcePath,
           localPath: component.localPath,
           origin: component.origin,
-          note: component.note,
         }));
       const sortedTargets = [...projectPushTargets].sort((a, b) => a.commitOrder - b.commitOrder);
       const root = sortedTargets.find((t) => t.localPath === ".") ?? sortedTargets[0]!;

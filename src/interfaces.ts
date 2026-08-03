@@ -161,8 +161,6 @@ export interface ProjectVendorComponentRecord {
   cloneUrl: string | null;
   revision: string | null;
   origin: VendorComponentOrigin;
-  /** Free-form operator guidance (e.g. how to patch this component). */
-  note: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -174,7 +172,6 @@ export interface ProjectVendorComponentInput {
   cloneUrl?: string | null;
   revision?: string | null;
   origin: VendorComponentOrigin;
-  note?: string;
 }
 
 /** Review-project configuration: integration + covered repos. */
@@ -374,7 +371,6 @@ export interface VendorComponentPromptEntry {
   sourcePath: string;
   localPath: string | null;
   origin: VendorComponentOrigin;
-  note: string;
 }
 
 export interface AgentSession {

@@ -301,7 +301,7 @@ FetchContent_Declare(googletest
       method: "PUT",
       body: {
         components: [
-          { sourcePath: "kas/config.yaml", localPath: "layers/poky", cloneUrl: "https://git.yoctoproject.org/git/poky", origin: "patch_required", note: "apply .bbappend" },
+          { sourcePath: "kas/config.yaml", localPath: "layers/poky", cloneUrl: "https://git.yoctoproject.org/git/poky", origin: "patch_required" },
           { sourcePath: "daemon/contrib/src/fmt/package.json", origin: "internal" },
         ],
       },
@@ -310,9 +310,9 @@ FetchContent_Declare(googletest
     expect(saved.status).toBe(200);
     const read = await rest(server, `/api/admin/projects/${project.id}/vendor-components`);
     expect(read.status).toBe(200);
-    expect((read.body?.["components"] as Array<Record<string, unknown>>).map((c) => [c["sourcePath"], c["origin"], c["note"]])).toEqual([
-      ["daemon/contrib/src/fmt/package.json", "internal", ""],
-      ["kas/config.yaml", "patch_required", "apply .bbappend"],
+    expect((read.body?.["components"] as Array<Record<string, unknown>>).map((c) => [c["sourcePath"], c["origin"]])).toEqual([
+      ["daemon/contrib/src/fmt/package.json", "internal"],
+      ["kas/config.yaml", "patch_required"],
     ]);
   });
 
@@ -571,7 +571,7 @@ FetchContent_Declare(googletest
           { integrationId: "gerrit-1", repoKey: "superproject", cloneUrl: "ssh://g/super", targetBranch: "main", role: "primary", commitOrder: 1, localPath: "." },
         ],
         vendorComponents: [
-          { sourcePath: "kas/config.yaml", localPath: "layers/poky", cloneUrl: "https://git.yoctoproject.org/git/poky", origin: "patch_required", note: "apply .bbappend" },
+          { sourcePath: "kas/config.yaml", localPath: "layers/poky", cloneUrl: "https://git.yoctoproject.org/git/poky", origin: "patch_required" },
         ],
       },
     });
@@ -579,8 +579,8 @@ FetchContent_Declare(googletest
     expect(r.status).toBe(201);
     const projectId = (r.body?.["project"] as Record<string, unknown>)["id"] as string;
     const stored = await store.listProjectVendorComponents(makeProjectId(projectId));
-    expect(stored.map((c) => [c.sourcePath, c.origin, c.note])).toEqual([
-      ["kas/config.yaml", "patch_required", "apply .bbappend"],
+    expect(stored.map((c) => [c.sourcePath, c.origin])).toEqual([
+      ["kas/config.yaml", "patch_required"],
     ]);
   });
 
