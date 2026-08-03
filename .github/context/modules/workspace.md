@@ -54,7 +54,7 @@ Every member returned by the project-level scan carries an `origin` derived by `
 | `patch_required` | Upstream-only; must be patched locally instead of pushed | any other resolved/unresolved URL-backed member |
 | `ambiguous` | Several integrations match; a human must disambiguate | resolution `ambiguous` |
 
-Operators can persist selected members as **vendor components** (`project_vendor_components`), keyed by the member's real `sourcePath` (for example `daemon/contrib/src/fmt/package.json`) rather than its `localPath`, which for a `fetched` member is only the repository name because the dependency is downloaded at build time and exists nowhere in the source tree, together with a free-form note describing how the component should be handled. A component that one of our repositories actually owns is not tracked here — it becomes a push target instead, so the agent edits and pushes it.
+Operators can persist selected members as **vendor components** (`project_vendor_components`), identified by the pair `(sourcePath, localPath)` — one manifest routinely declares several components, so the declaring path alone is not an identity. `sourcePath` is the member's real manifest path (for example `daemon/contrib/src/fmt/package.json`), while `localPath` for a `fetched` member is only the repository name because the dependency is downloaded at build time and exists nowhere in the source tree. Tracking takes no further configuration: the entry alone tells the agent to patch the component in place. A component that one of our repositories actually owns is not tracked here — it becomes a push target instead, so the agent edits and pushes it.
 
 ## Current boundary
 

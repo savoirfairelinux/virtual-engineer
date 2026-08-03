@@ -374,6 +374,83 @@ describe("ProjectFormModal repository integration resolution", () => {
     }]));
   });
 
+  it("offers local patching only for components no repository of ours owns", async () => {
+    const integration: ApiIntegration = {
+      ...gerritIntegration("gerrit-1", "Primary Gerrit"),
+      discoveredResources: {
+        repositories: [{
+          key: "platform/root",
+          name: "Root",
+          cloneUrlHttp: "https://gerrit.example.com/platform/root.git",
+          defaultBranch: "main",
+        }],
+      },
+    };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const requestPath = typeof input === "string" ? input : input instanceof URL ? input.pathname : input.url;
+      if (requestPath === "/api/admin/projects/scan-push-targets") {
+        return new Response(JSON.stringify({
+          manifestFiles: ["kas/config.yaml"],
+          repositories: [{
+            cloneUrl: "https://git.yoctoproject.org/git/poky",
+            localPath: "layers/poky",
+            revision: "kirkstone",
+            relation: "manifest_member",
+            sourcePath: "kas/config.yaml",
+            origin: "patch_required",
+            resolution: null,
+          }, {
+            cloneUrl: "https://gerrit.example.com/platform/vendored-fork.git",
+            localPath: "layers/vendored-fork",
+            revision: "kirkstone",
+            relation: "manifest_member",
+            sourcePath: "kas/config.yaml",
+            origin: "fork_pushable",
+            resolution: null,
+          }],
+          diagnostics: [],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (requestPath === "/api/admin/projects/project-9/vendor-components") {
+        return new Response(JSON.stringify({ components: [] }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      throw new Error(`Unexpected request: ${requestPath}`);
+    }));
+
+    render(
+      <ProjectFormModal
+        agents={[codingAgent]}
+        integrations={[integration]}
+        project={{
+          id: "project-9",
+          name: "Yocto",
+          type: "coding",
+          agentId: codingAgent.id,
+          ticketSource: {
+            integration: { id: integration.id, name: integration.name, type: integration.provider },
+            ticketProjectKey: "yocto",
+          },
+          pushTargets: [{
+            integrationId: integration.id,
+            repoKey: "platform/root",
+            cloneUrl: "https://gerrit.example.com/platform/root.git",
+            targetBranch: "main",
+            role: "primary",
+            commitOrder: 1,
+            localPath: ".",
+          }],
+        }}
+        onClose={vi.fn()}
+        onSaved={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Scan workspace" }));
+
+    expect(await screen.findByRole("button", { name: "Patch layers/poky locally" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Patch layers/vendored-fork locally" })).toBeNull();
+  });
+
   it("pushes a mirrored component to the repository the operator maps it to", async () => {
     const integration: ApiIntegration = {
       ...gerritIntegration("gerrit-1", "g1.sfl.io"),
