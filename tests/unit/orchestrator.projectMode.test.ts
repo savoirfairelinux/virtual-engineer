@@ -793,7 +793,7 @@ describe("Orchestrator — Phase 4 project mode", () => {
     expect(context.instructionsPromptId).toBe("project-instructions");
   });
 
-  it("project-mode runAgentCycle forwards vendor components without their synthetic local path", async () => {
+  it("project-mode runAgentCycle forwards vendor components with their local path", async () => {
     const stateStore = makeStateStore();
     const ws = makeWorkspaceRunner();
     const projectAgent = {
@@ -848,6 +848,7 @@ describe("Orchestrator — Phase 4 project mode", () => {
     const context = vi.mocked(ws.runAgent).mock.calls[0]?.[1] as import("../../src/interfaces.js").TaskContext;
     expect(context.agentSession.vendorComponents).toEqual([{
       sourcePath: "daemon/contrib/src/fmt/package.json",
+      localPath: "fmt",
       origin: "patch_required",
       note: "Patch through contrib rules.",
     }]);

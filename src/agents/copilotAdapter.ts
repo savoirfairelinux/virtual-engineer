@@ -161,7 +161,11 @@ export function buildCodegenUserPrompt(
     lines.push("These paths declare third-party sources that VE cannot push to. Do NOT edit the upstream source; add a patch through the mechanism the declaring file already uses (for example a `.bbappend` plus patch file, or the contrib rules).");
     for (const entry of vendorComponents) {
       const label = entry.origin === "ambiguous" ? "ambiguous — confirm before changing" : "patch required";
-      lines.push(`- \`${entry.sourcePath}\` (${label})${entry.note.trim() ? ` — ${entry.note.trim()}` : ""}`);
+      // One manifest often declares many components, so name the component and keep the manifest as context.
+      const subject = entry.localPath && entry.localPath !== entry.sourcePath
+        ? `\`${entry.localPath}\` (declared in \`${entry.sourcePath}\`)`
+        : `\`${entry.sourcePath}\``;
+      lines.push(`- ${subject} (${label})${entry.note.trim() ? ` — ${entry.note.trim()}` : ""}`);
     }
     lines.push("");
   }

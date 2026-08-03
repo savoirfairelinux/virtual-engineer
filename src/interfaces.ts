@@ -372,6 +372,7 @@ export interface RepositoryMap {
 /** Human-validated vendored component surfaced to the agent. Carries the real editable path only. */
 export interface VendorComponentPromptEntry {
   sourcePath: string;
+  localPath: string | null;
   origin: VendorComponentOrigin;
   note: string;
 }

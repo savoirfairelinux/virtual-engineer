@@ -119,6 +119,15 @@ const VENDOR_ORIGIN_TONES: Record<VendorComponentOrigin, ToneKey> = {
   ambiguous: "danger",
 };
 
+/** One manifest declares many components, so identity is the pair, not the manifest. */
+function vendorComponentKey(component: { sourcePath: string; localPath: string | null }): string {
+  return `${component.sourcePath}\u0000${component.localPath ?? ""}`;
+}
+
+function vendorComponentName(component: { sourcePath: string; localPath: string | null }): string {
+  return component.localPath ?? component.sourcePath;
+}
+
 interface WorkspaceScanDiagnostic {
   sourcePath: string;
   severity: "info" | "warning" | "error";
@@ -864,7 +873,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
 
   const trackVendorComponent = (member: WorkspaceScanMember) => {
     setVendorComponentsDirty(true);
-    setVendorComponents((prev) => prev.some((component) => component.sourcePath === member.sourcePath)
+    setVendorComponents((prev) => prev.some((component) => vendorComponentKey(component) === vendorComponentKey(member))
       ? prev
       : [...prev, {
         sourcePath: member.sourcePath,
@@ -876,14 +885,14 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
       }]);
   };
 
-  const removeVendorComponent = (sourcePath: string) => {
+  const removeVendorComponent = (key: string) => {
     setVendorComponentsDirty(true);
-    setVendorComponents((prev) => prev.filter((component) => component.sourcePath !== sourcePath));
+    setVendorComponents((prev) => prev.filter((component) => vendorComponentKey(component) !== key));
   };
 
-  const updateVendorComponentNote = (sourcePath: string, note: string) => {
+  const updateVendorComponentNote = (key: string, note: string) => {
     setVendorComponentsDirty(true);
-    setVendorComponents((prev) => prev.map((component) => component.sourcePath === sourcePath ? { ...component, note } : component));
+    setVendorComponents((prev) => prev.map((component) => vendorComponentKey(component) === key ? { ...component, note } : component));
   };
 
   useEffect(() => {
@@ -1378,7 +1387,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
                                       const memberKey = `${member.sourcePath}:${member.localPath}`;
                                       const isAdded = pushTargets.some((target) => target.localPath === member.localPath);
                                       const isMatched = resolution?.status === "matched" && resolution.match.enabled;
-                                      const isTracked = vendorComponents.some((component) => component.sourcePath === member.sourcePath);
+                                      const isTracked = vendorComponents.some((component) => vendorComponentKey(component) === vendorComponentKey(member));
                                   return (
                                     <div key={`${member.sourcePath}:${member.localPath}`} style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto", gap: 10, alignItems: "center", minHeight: WORKSPACE_MEMBER_ROW_HEIGHT, boxSizing: "border-box", padding: "7px 9px", background: "var(--panel)", border: "1px solid var(--border-soft)", borderRadius: "var(--radius-sm)" }}>
                                       <div style={{ minWidth: 0, display: "flex", flexDirection: "column", gap: 3 }}>
@@ -1401,7 +1410,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
                                               type="button"
                                               className="iconbtn"
                                               title="No repository of ours owns this — the agent patches it in place"
-                                              aria-label={`Patch ${member.sourcePath} locally`}
+                                              aria-label={`Patch ${vendorComponentName(member)} locally`}
                                               onClick={() => trackVendorComponent(member)}
                                             >
                                               <Icon name="edit" size={12} />
@@ -1456,28 +1465,33 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
             {vendorComponents.length > 0 && (
               <Field
                 label="Vendor Components"
-                hint="Components the scan found that no repository of ours owns. The agent is told to patch them in place — through a .bbappend or the contrib rules — instead of editing the upstream source. Your note is passed to the agent verbatim."
+                hint="Components the scan found that no repository of ours owns. The agent is told to patch them in place — through a .bbappend or the contrib rules — instead of editing the upstream source. A note is optional and is passed to the agent verbatim."
               >
                 <div data-testid="vendor-components" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                   {vendorComponents.map((component) => (
-                    <div key={component.sourcePath} className="card" style={{ padding: "10px 11px", display: "flex", flexDirection: "column", gap: 8 }}>
+                    <div key={vendorComponentKey(component)} className="card" style={{ padding: "10px 11px", display: "flex", flexDirection: "column", gap: 8 }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-                        <span className="mono" style={{ flex: 1, minWidth: 0, fontSize: "11.5px", color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{component.sourcePath}</span>
+                        <span className="mono" style={{ flex: 1, minWidth: 0, fontSize: "11.5px", color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {vendorComponentName(component)}
+                          {component.localPath && component.localPath !== component.sourcePath && (
+                            <span style={{ color: "var(--text-dim)" }}> · {component.sourcePath}</span>
+                          )}
+                        </span>
                         <Tag tone={VENDOR_ORIGIN_TONES[component.origin]}>{VENDOR_ORIGIN_LABELS[component.origin]}</Tag>
                         <button
                           type="button"
                           className="iconbtn danger"
-                          aria-label={`Remove vendor component ${component.sourcePath}`}
-                          onClick={() => removeVendorComponent(component.sourcePath)}
+                          aria-label={`Remove vendor component ${vendorComponentName(component)}`}
+                          onClick={() => removeVendorComponent(vendorComponentKey(component))}
                         >
                           <Icon name="trash" size={13} />
                         </button>
                       </div>
                       <FieldInput
                         value={component.note}
-                        placeholder="How should the agent handle this component?"
-                        aria-label={`Agent note for ${component.sourcePath}`}
-                        onChange={(e) => updateVendorComponentNote(component.sourcePath, e.target.value)}
+                        placeholder="Optional — how should the agent patch this?"
+                        aria-label={`Agent note for ${vendorComponentName(component)}`}
+                        onChange={(e) => updateVendorComponentNote(vendorComponentKey(component), e.target.value)}
                         style={{ fontSize: "12.5px", padding: "6px 9px" }}
                       />
                     </div>
