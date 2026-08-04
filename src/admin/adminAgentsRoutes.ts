@@ -29,6 +29,10 @@ import {
   resolveReviewStrategy,
   type ReviewStrategyConfigResult,
 } from "../agents/reviewStrategy.js";
+import {
+  normalizeModelConfigToolAuthorization,
+  ToolAuthorizationConfigError,
+} from "../agents/toolAuthorizationValidation.js";
 
 const log = getLogger("admin-agents");
 
@@ -318,6 +322,18 @@ async function normalizeAgentStrategy(
   });
 }
 
+/** Resolve the provider id for an agent from its linked integration.
+ * Returns `null` when the agent has no integration or the integration cannot
+ * be found (the toolAuthorization validator treats null as "no provider"). */
+async function resolveAgentProvider(
+  deps: AgentsRouteDeps,
+  integrationId: string | null | undefined,
+): Promise<string | null> {
+  if (!integrationId || !deps.integrationStore) return null;
+  const integration = await deps.integrationStore.getIntegration(integrationId);
+  return integration ? integration.provider : null;
+}
+
 
 
 /** Count the number of projects that reference the given agent id. */
@@ -508,6 +524,8 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
         systemPromptId: parsed.data.systemPromptId,
         feedbackInstructionsPromptId: parsed.data.feedbackInstructionsPromptId ?? null,
       });
+      const provider = await resolveAgentProvider(deps, parsed.data.integrationId ?? null);
+      normalizeModelConfigToolAuthorization(provider, parsed.data.type, strategyConfig.modelConfig);
       const promptError = await validateRequiredPrompts(
         deps.promptStore,
         parsed.data.systemPromptId,
@@ -547,7 +565,7 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
       writeJson(res, 201, { agent: toAgentDetail(created, 0) });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      if (err instanceof ReviewStrategyConfigError) {
+      if (err instanceof ReviewStrategyConfigError || err instanceof ToolAuthorizationConfigError) {
         writeJson(res, 400, { error: msg });
         return;
       }
@@ -663,6 +681,8 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
         systemPromptId,
         feedbackInstructionsPromptId,
       });
+      const provider = await resolveAgentProvider(deps, prospectiveIntegrationId);
+      normalizeModelConfigToolAuthorization(provider, prospectiveType, strategyConfig.modelConfig);
       const promptError = await validateRequiredPrompts(
         deps.promptStore,
         systemPromptId,
@@ -692,7 +712,7 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
       writeJson(res, 200, { agent: toAgentDetail(updated, count) });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      if (err instanceof ReviewStrategyConfigError) {
+      if (err instanceof ReviewStrategyConfigError || err instanceof ToolAuthorizationConfigError) {
         writeJson(res, 400, { error: msg });
         return;
       }

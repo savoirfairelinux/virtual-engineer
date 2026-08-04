@@ -479,6 +479,127 @@ describe("Admin API — Agent routes (/api/admin/agents)", () => {
     expect(r.body?.["error"]).toMatch(/does not support.*copilot_native/i);
   });
 
+  it("POST / accepts a valid Claude toolAuthorization", async () => {
+    await store.upsertIntegration({
+      id: "claude-toolauth",
+      provider: "claude",
+      name: "Claude",
+      configJson: "{}",
+      enabled: true,
+    });
+
+    const r = await rest(server, "/api/admin/agents", {
+      method: "POST",
+      body: {
+        name: "Locked-down Claude",
+        type: "coding",
+        integrationId: "claude-toolauth",
+        modelConfig: {
+          providerOptions: {
+            toolAuthorization: { blockedTools: ["Bash"] },
+          },
+        },
+        systemPromptId: "system_generic_code",
+        instructionsPromptId: "instructions_generic_code",
+      },
+    });
+
+    expect(r.status).toBe(201);
+    const agent = r.body?.["agent"] as Record<string, unknown>;
+    expect(agent["modelConfig"]).toEqual({
+      providerOptions: {
+        toolAuthorization: { blockedTools: ["Bash"] },
+      },
+    });
+  });
+
+  it("POST / rejects allowedTools (no longer supported)", async () => {
+    await store.upsertIntegration({
+      id: "claude-floor",
+      provider: "claude",
+      name: "Claude",
+      configJson: "{}",
+      enabled: true,
+    });
+
+    const r = await rest(server, "/api/admin/agents", {
+      method: "POST",
+      body: {
+        name: "Bad Floor",
+        type: "coding",
+        integrationId: "claude-floor",
+        modelConfig: {
+          providerOptions: {
+            toolAuthorization: { allowedTools: ["WebFetch"] },
+          },
+        },
+        systemPromptId: "system_generic_code",
+        instructionsPromptId: "instructions_generic_code",
+      },
+    });
+
+    expect(r.status).toBe(400);
+    expect(r.body?.["error"]).toMatch(/allowedTools is not supported/i);
+  });
+
+  it("POST / rejects blocking a review-floor tool for a review agent", async () => {
+    await store.upsertIntegration({
+      id: "claude-review-floor",
+      provider: "claude",
+      name: "Claude",
+      configJson: "{}",
+      enabled: true,
+    });
+
+    const r = await rest(server, "/api/admin/agents", {
+      method: "POST",
+      body: {
+        name: "Bad Review Floor",
+        type: "review",
+        integrationId: "claude-review-floor",
+        modelConfig: {
+          providerOptions: {
+            toolAuthorization: { blockedTools: ["Read"] },
+          },
+        },
+        systemPromptId: "system_review",
+        instructionsPromptId: "instructions_review",
+      },
+    });
+
+    expect(r.status).toBe(400);
+    expect(r.body?.["error"]).toMatch(/required for review/i);
+  });
+
+  it("POST / rejects toolAuthorization for an unsupported provider", async () => {
+    await store.upsertIntegration({
+      id: "mock-unsupported",
+      provider: "mock",
+      name: "Mock",
+      configJson: "{}",
+      enabled: true,
+    });
+
+    const r = await rest(server, "/api/admin/agents", {
+      method: "POST",
+      body: {
+        name: "Mock Toolauth",
+        type: "coding",
+        integrationId: "mock-unsupported",
+        modelConfig: {
+          providerOptions: {
+            toolAuthorization: { blockedTools: ["Read"] },
+          },
+        },
+        systemPromptId: "system_generic_code",
+        instructionsPromptId: "instructions_generic_code",
+      },
+    });
+
+    expect(r.status).toBe(400);
+    expect(r.body?.["error"]).toMatch(/not supported by provider 'mock'/i);
+  });
+
   it("PUT /:id updates integrationId", async () => {
     await store.upsertIntegration({
       id: "copilot-2",
