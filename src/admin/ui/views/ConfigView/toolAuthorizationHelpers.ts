@@ -59,7 +59,6 @@ export interface ToolAuthorizationState {
   git: boolean;
   /** Goose. */
   developerExtension: boolean;
-  gooseMode: string;
 }
 
 export function emptyToolAuthorization(): ToolAuthorizationState {
@@ -71,7 +70,6 @@ export function emptyToolAuthorization(): ToolAuthorizationState {
     playwright: false,
     git: true,
     developerExtension: true,
-    gooseMode: "",
   };
 }
 
@@ -98,7 +96,6 @@ export function loadToolAuthorization(
   }
   if (provider === "goose") {
     state.developerExtension = asBoolean(auth["developerExtension"], true);
-    state.gooseMode = typeof auth["gooseMode"] === "string" ? auth["gooseMode"] : "";
   }
   return state;
 }
@@ -123,11 +120,7 @@ export function serializeToolAuthorization(
     };
   }
   if (provider === "goose") {
-    const result: Record<string, unknown> = {
-      developerExtension: state.developerExtension,
-    };
-    if (state.gooseMode) result["gooseMode"] = state.gooseMode;
-    return result;
+    return { developerExtension: state.developerExtension };
   }
   return undefined;
 }

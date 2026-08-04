@@ -1,13 +1,13 @@
 /**
  * Per-agent tool authorization section for the agent form.
  *
- * Renders provider-specific controls:
- * - Claude/Copilot: allowedTools / blockedTools as a checklist of known tools
- *   plus a small free-text field for custom patterns (Bash(prefix:*),
- *   mcp__server__tool).
+ * Renders provider-specific controls (blocklist-only model — everything is
+ * allowed by default):
+ * - Claude/Copilot: blockedTools as a checklist of known tools plus a small
+ *   free-text field for custom patterns (Bash(prefix:*), mcp__server__tool).
  * - Aider: capability toggles (suggestShellCommands, detectUrls, playwright,
- *   git) + chatMode select.
- * - Goose: developerExtension toggle + gooseMode select.
+ *   git).
+ * - Goose: developerExtension toggle.
  *
  * The section is hidden for providers that don't support tool authorization
  * (mock) and for unsupported review strategies.
@@ -107,29 +107,15 @@ export function ToolAuthorizationSection({ state, onChange, provider }: ToolAuth
       )}
 
       {provider === "goose" && (
-        <>
-          <Field label="Developer extension" hint="When on (codegen only), Goose can edit files and run shell via the builtin developer extension. Review always disables it (read-only).">
-            <FieldSelect
-              value={state.developerExtension ? "true" : "false"}
-              onChange={(e) => update({ developerExtension: e.currentTarget.value === "true" })}
-            >
-              <option value="true">Enabled (default)</option>
-              <option value="false">Disabled</option>
-            </FieldSelect>
-          </Field>
-          <Field label="Goose mode" hint="Tool execution behaviour. 'auto' executes automatically; 'chat' is read-only. Review always forces 'chat'.">
-            <FieldSelect
-              value={state.gooseMode}
-              onChange={(e) => update({ gooseMode: e.currentTarget.value })}
-            >
-              <option value="">— provider default —</option>
-              <option value="auto">Auto</option>
-              <option value="approve">Approve</option>
-              <option value="chat">Chat (read-only)</option>
-              <option value="smart_approve">Smart approve</option>
-            </FieldSelect>
-          </Field>
-        </>
+        <Field label="Developer extension" hint="When on (codegen only), Goose can edit files and run shell via the builtin developer extension. Review always disables it (read-only).">
+          <FieldSelect
+            value={state.developerExtension ? "true" : "false"}
+            onChange={(e) => update({ developerExtension: e.currentTarget.value === "true" })}
+          >
+            <option value="true">Enabled (default)</option>
+            <option value="false">Disabled</option>
+          </FieldSelect>
+        </Field>
       )}
     </div>
   );
