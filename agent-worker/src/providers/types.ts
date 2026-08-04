@@ -22,6 +22,19 @@ export interface AgentRunOptions {
   reviewStrategy?: 've_direct' | 'copilot_native' | 'goose_native';
   /** Review-only integration-owned JSON Schema for native structured output. */
   reviewOutputSchema?: Record<string, unknown>;
+  /**
+   * Per-agent blocked tool list (Claude/Copilot). Everything is allowed by
+   * default; a tool here is rejected. Patterns follow the provider's native
+   * syntax (bare names, `Bash(prefix:*)`, `mcp__server__tool`). Merges with
+   * VE's built-in network restrictions — the floor cannot be relaxed.
+   */
+  blockedTools?: string[];
+  /**
+   * Provider-specific tooling toggles for providers without native per-tool
+   * lists (Aider capability flags, Goose extension/mode). Opaque to the
+   * shared runner; each provider interprets its own shape.
+   */
+  toolAuthorization?: Record<string, unknown>;
 }
 
 export interface ObservedToolCall {
