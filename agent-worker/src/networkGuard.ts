@@ -11,6 +11,7 @@ import { approveAll } from '@github/copilot-sdk';
 import type { PermissionHandler, PermissionRequest } from '@github/copilot-sdk';
 import { realpathSync } from 'node:fs';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
+import { emitEvent } from './providers/events.js';
 
 /**
  * Shell commands that reach the network. Covers standalone network clients and
@@ -86,6 +87,7 @@ function readShellCommand(request: PermissionRequest): string {
 }
 
 function rejectPermission(feedback: string): ReturnType<PermissionHandler> {
+  emitEvent('permission.denied', { reason: feedback });
   return { kind: 'reject', feedback };
 }
 
@@ -186,3 +188,113 @@ export function createNativeReviewPermissionHandler(workspaceRoot: string): Perm
 }
 
 export const restrictReviewPermissionHandler = createReviewPermissionHandler('/workspace');
+
+/**
+ * Parse a newline-separated tool-list env var into a trimmed, de-duplicated,
+ * empty-dropped string array. Returns `[]` for undefined / blank input so
+ * callers can treat "unset" and "empty" identically.
+ */
+export function parseToolList(raw: string | undefined): string[] {
+  if (raw === undefined) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const entry of raw.split('\n')) {
+    const trimmed = entry.trim();
+    if (trimmed === '' || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    out.push(trimmed);
+  }
+  return out;
+}
+
+/** Extract a tool identity from a Copilot `PermissionRequest` for matching. */
+function requestToolIdentity(request: PermissionRequest): { toolName: string; rawCommand?: string } {
+  const details = request as unknown as Record<string, unknown>;
+  switch (request.kind) {
+    case 'shell':
+      return { toolName: 'Bash', rawCommand: readShellCommand(request) };
+    case 'url':
+      return { toolName: 'WebFetch' };
+    case 'read':
+      return { toolName: 'Read' };
+    case 'write':
+      return { toolName: 'Write' };
+    case 'mcp': {
+      const server = typeof details['serverName'] === 'string' ? details['serverName'] : '';
+      const tool = typeof details['toolName'] === 'string' ? details['toolName'] : '';
+      return { toolName: tool ? `mcp__${server}__${tool}` : `mcp__${server}` };
+    }
+    case 'custom-tool': {
+      const tool = typeof details['toolName'] === 'string' ? details['toolName'] : '';
+      return { toolName: tool };
+    }
+    default:
+      return { toolName: request.kind };
+  }
+}
+
+/** Match a tool identity against a list of patterns (bare names + scoped). */
+function matchesToolPattern(identity: { toolName: string; rawCommand?: string }, patterns: string[]): boolean {
+  const { toolName, rawCommand } = identity;
+  for (const pattern of patterns) {
+    const open = pattern.indexOf('(');
+    if (open === -1) {
+      // Bare name: exact match.
+      if (pattern === toolName) return true;
+      continue;
+    }
+    const patTool = pattern.slice(0, open);
+    const specRaw = pattern.slice(open + 1, pattern.endsWith(')') ? -1 : undefined);
+    if (patTool !== toolName) continue;
+    // Scoped pattern `Tool(prefix:*)` — prefix-glob match on the shell command.
+    if (patTool === 'Bash' && rawCommand !== undefined) {
+      const prefix = specRaw.endsWith(':*') ? specRaw.slice(0, -2) : specRaw;
+      if (prefix === '' || rawCommand.trimStart().startsWith(prefix)) return true;
+      continue;
+    }
+    // Non-Bash scoped patterns: exact specifier match (best-effort).
+    if (specRaw === '*' || specRaw === rawCommand) return true;
+  }
+  return false;
+}
+
+/**
+ * Wrap a Copilot permission handler with a per-agent blocked-tool list.
+ *
+ * Everything is allowed by default. Decision order:
+ * 1. If the tool matches `blockedTools`, reject and emit `permission.denied`.
+ * 2. Delegate to `inner`; if it rejects, emit `permission.denied`; if it
+ *    approves, emit `permission.approved`.
+ *
+ * The inner handler (e.g. {@link restrictNetworkPermissionHandler}) enforces
+ * VE's network floor, so the user blocklist can only tighten it — never relax
+ * it. A blocked network tool stays blocked even if the user never lists it.
+ */
+export function createToolAuthorizingPermissionHandler(
+  inner: PermissionHandler,
+  opts: { blockedTools?: string[] },
+): PermissionHandler {
+  const blocked = opts.blockedTools ?? [];
+  return async (request, invocation) => {
+    const identity = requestToolIdentity(request);
+    if (matchesToolPattern(identity, blocked)) {
+      emitEvent('permission.denied', {
+        toolName: identity.toolName,
+        reason: `Tool '${identity.toolName}' is blocked for this agent.`,
+      });
+      return { kind: 'reject', feedback: `Tool '${identity.toolName}' is blocked for this agent.` };
+    }
+    const result = await inner(request, invocation);
+    if (result.kind === 'reject') {
+      // inner already emitted permission.denied via rejectPermission, but if it
+      // returned a reject without going through rejectPermission, emit here.
+      const feedback = typeof (result as { feedback?: unknown }).feedback === 'string'
+        ? (result as { feedback: string }).feedback
+        : 'rejected by provider permission policy';
+      emitEvent('permission.denied', { toolName: identity.toolName, reason: feedback });
+    } else {
+      emitEvent('permission.approved', { toolName: identity.toolName });
+    }
+    return result;
+  };
+}

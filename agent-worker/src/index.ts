@@ -32,6 +32,7 @@ import {
   groupFilesByRepo,
 } from './commitUtils.js';
 import { emitEvent } from './providers/events.js';
+import { parseToolList } from './networkGuard.js';
 import { resolveProvider, isAgentProvider, AGENT_PROVIDER_IDS } from './providers/registry.js';
 import type { AgentRun } from './providers/types.js';
 import {
@@ -94,6 +95,29 @@ if (REVIEW_STRATEGY === 'goose_native' && (!REVIEW_MODE || AGENT_PROVIDER !== 'g
 }
 const USER_PROMPT_FILE = process.env['USER_PROMPT_FILE'] ?? '';
 const SYSTEM_PROMPT = process.env['SYSTEM_PROMPT'] ?? '';
+
+// ── Per-agent tool authorization (Claude/Copilot) ────────────────────────────
+// Newline-separated blocked-tool list injected by the host adapter from
+// `modelConfig.providerOptions.toolAuthorization`. Empty/unset = everything
+// allowed (modulo VE's network floor).
+const BLOCKED_TOOLS = parseToolList(
+  AGENT_PROVIDER === 'claude'
+    ? process.env['CLAUDE_BLOCKED_TOOLS']
+    : process.env['COPILOT_BLOCKED_TOOLS'],
+);
+// Provider-specific tooling toggles (Aider/Goose) — opaque JSON object.
+let TOOL_AUTHORIZATION: Record<string, unknown> | undefined;
+try {
+  const rawToolAuth = process.env['TOOL_AUTHORIZATION_JSON'] ?? '';
+  if (rawToolAuth) {
+    const parsed: unknown = JSON.parse(rawToolAuth);
+    if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+      TOOL_AUTHORIZATION = parsed as Record<string, unknown>;
+    }
+  }
+} catch {
+  process.stderr.write('Warning: failed to parse TOOL_AUTHORIZATION_JSON\n');
+}
 let REVIEW_OUTPUT_SCHEMA: Record<string, unknown> | undefined;
 try {
   const rawReviewOutputSchema = process.env['REVIEW_OUTPUT_SCHEMA'] ?? '';
@@ -180,6 +204,8 @@ async function runAgent(
     ...(mode === 'review' && REVIEW_OUTPUT_SCHEMA !== undefined
       ? { reviewOutputSchema: REVIEW_OUTPUT_SCHEMA }
       : {}),
+    ...(BLOCKED_TOOLS.length > 0 ? { blockedTools: BLOCKED_TOOLS } : {}),
+    ...(TOOL_AUTHORIZATION !== undefined ? { toolAuthorization: TOOL_AUTHORIZATION } : {}),
   });
 }
 
