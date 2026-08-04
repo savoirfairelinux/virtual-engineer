@@ -20,6 +20,10 @@ import { assertPromptRole } from "../utils/promptRole.js";
 import { getConfig } from "../config.js";
 import { agentLogBus, pushToTaskBuffer } from "./agentEventBus.js";
 import {
+  extractToolAuthorization,
+  toolListEnv,
+} from "./toolAuthorization.js";
+import {
   buildCodegenContainerSpec,
   buildReviewContainerSpec as buildSharedReviewContainerSpec,
 } from "./containerSpecBuilders.js";
@@ -266,6 +270,7 @@ export class CopilotAdapter implements AgentAdapter, ConfigurableAdapter {
       ...(typeof reasoningEffort === "string" && reasoningEffort.trim()
         ? { COPILOT_REASONING_EFFORT: reasoningEffort.trim() }
         : {}),
+      ...toolListEnv("copilot", extractToolAuthorization(session.providerOptions)),
     };
 
     return buildCodegenContainerSpec(context, {
@@ -291,6 +296,7 @@ export class CopilotAdapter implements AgentAdapter, ConfigurableAdapter {
       ...(!nativeReview && typeof reasoningEffort === "string" && reasoningEffort.trim()
         ? { COPILOT_REASONING_EFFORT: reasoningEffort.trim() }
         : {}),
+      ...toolListEnv("copilot", extractToolAuthorization(input.providerOptions)),
       ...(input.reviewOutputSchema !== undefined
         ? { REVIEW_OUTPUT_SCHEMA: JSON.stringify(input.reviewOutputSchema) }
         : {}),

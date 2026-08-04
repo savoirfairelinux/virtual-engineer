@@ -19,6 +19,10 @@ import { getConfig } from "../config.js";
 import { agentLogBus, pushToTaskBuffer } from "./agentEventBus.js";
 import { buildCodegenUserPrompt } from "./copilotAdapter.js";
 import {
+  extractToolAuthorization,
+  toolListEnv,
+} from "./toolAuthorization.js";
+import {
   buildCodegenContainerSpec,
   buildReviewContainerSpec as buildSharedReviewContainerSpec,
 } from "./containerSpecBuilders.js";
@@ -167,6 +171,7 @@ export class ClaudeAdapter implements AgentAdapter, ConfigurableAdapter {
       IS_SANDBOX: "1",
       ...(claudeModel ? { CLAUDE_MODEL: claudeModel } : {}),
       ...claudeOptionEnv(session.providerOptions),
+      ...toolListEnv("claude", extractToolAuthorization(session.providerOptions)),
     };
 
     return buildCodegenContainerSpec(context, {
@@ -191,6 +196,7 @@ export class ClaudeAdapter implements AgentAdapter, ConfigurableAdapter {
       IS_SANDBOX: "1",
       ...(reviewModel ? { CLAUDE_MODEL: reviewModel } : {}),
       ...claudeOptionEnv(input.providerOptions),
+      ...toolListEnv("claude", extractToolAuthorization(input.providerOptions)),
       ...(input.reviewOutputSchema !== undefined
         ? { REVIEW_OUTPUT_SCHEMA: JSON.stringify(input.reviewOutputSchema) }
         : {}),

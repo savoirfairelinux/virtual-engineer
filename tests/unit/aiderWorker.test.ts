@@ -332,3 +332,85 @@ describe("runAiderAgent", () => {
     });
   });
 });
+
+describe("runAiderAgent tool authorization toggles", () => {
+  beforeEach(() => {
+    spawnMock.mockReset();
+    delete process.env["AIDER_CHAT_MODE"];
+    delete process.env["AIDER_REASONING_EFFORT"];
+    delete process.env["AIDER_THINKING_TOKENS"];
+    delete process.env["AIDER_MAP_TOKENS"];
+    delete process.env["AIDER_AUTO_LINT"];
+    delete process.env["AIDER_AUTO_TEST"];
+    delete process.env["TOOL_AUTHORIZATION_JSON"];
+  });
+
+  it("defaults to VE hardening: --no-suggest-shell-commands, --no-detect-urls, --disable-playwright, --git", async () => {
+    const fake = makeFakeChild();
+    spawnMock.mockReturnValue(fake);
+    const promise = runAiderAgent("task", {
+      model: "gpt-4o",
+      agentInstructions: "sys",
+      cwd: "/workspace",
+      timeoutMs: 1000,
+      mode: "codegen",
+    });
+    await new Promise((r) => setImmediate(r));
+    fake.emit("close", 0);
+    await promise;
+
+    const args = spawnMock.mock.calls[0]![1] as string[];
+    expect(args).toContain("--no-suggest-shell-commands");
+    expect(args).toContain("--no-detect-urls");
+    expect(args).toContain("--disable-playwright");
+    expect(args).toContain("--git");
+  });
+
+  it("flips toggles on when toolAuthorization enables them", async () => {
+    process.env["TOOL_AUTHORIZATION_JSON"] = JSON.stringify({
+      suggestShellCommands: true,
+      detectUrls: true,
+      playwright: true,
+      git: false,
+    });
+    const fake = makeFakeChild();
+    spawnMock.mockReturnValue(fake);
+    const promise = runAiderAgent("task", {
+      model: "gpt-4o",
+      agentInstructions: "sys",
+      cwd: "/workspace",
+      timeoutMs: 1000,
+      mode: "codegen",
+    });
+    await new Promise((r) => setImmediate(r));
+    fake.emit("close", 0);
+    await promise;
+
+    const args = spawnMock.mock.calls[0]![1] as string[];
+    expect(args).toContain("--suggest-shell-commands");
+    expect(args).toContain("--detect-urls");
+    expect(args).not.toContain("--disable-playwright");
+    expect(args).toContain("--no-git");
+  });
+
+  it("review mode always uses --no-git regardless of the git toggle", async () => {
+    process.env["TOOL_AUTHORIZATION_JSON"] = JSON.stringify({ git: true });
+    const fake = makeFakeChild();
+    spawnMock.mockReturnValue(fake);
+    const promise = runAiderAgent("review", {
+      model: "gpt-4o",
+      agentInstructions: "sys",
+      cwd: "/workspace",
+      timeoutMs: 1000,
+      mode: "review",
+    });
+    await new Promise((r) => setImmediate(r));
+    fake.emit("close", 0);
+    await promise;
+
+    const args = spawnMock.mock.calls[0]![1] as string[];
+    expect(args).toContain("--no-git");
+    expect(args).toContain("--chat-mode");
+    expect(args).toContain("ask");
+  });
+});

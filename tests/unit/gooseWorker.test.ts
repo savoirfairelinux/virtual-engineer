@@ -290,3 +290,57 @@ describe("runGooseAgent", () => {
     ).rejects.toThrow(/REVIEW_OUTPUT_SCHEMA is required/);
   });
 });
+
+describe("runGooseAgent tool authorization toggles", () => {
+  beforeEach(() => {
+    spawnMock.mockReset();
+    delete process.env["GOOSE_MODE"];
+    delete process.env["TOOL_AUTHORIZATION_JSON"];
+    vi.mocked(writeFileSync).mockReset();
+    vi.mocked(mkdirSync).mockReset();
+  });
+
+  it("defaults to enabling the developer extension for codegen", async () => {
+    const fake = makeFakeChild();
+    spawnMock.mockReturnValue(fake);
+    const promise = runGooseAgent("task", {
+      model: "claude-sonnet-4-5",
+      agentInstructions: "sys",
+      cwd: "/workspace",
+      timeoutMs: 1000,
+      mode: "codegen",
+    });
+    await new Promise((r) => setImmediate(r));
+    fake.emit("close", 0);
+    await promise;
+
+    const writes = vi.mocked(writeFileSync).mock.calls;
+    const configWrite = writes.find((w) => String(w[0]).endsWith("config.yaml"));
+    const configContent = String(configWrite![1]);
+    expect(configContent).toContain("developer:");
+    expect(configContent).toContain("name: developer");
+  });
+
+  it("omits the developer extension when toolAuthorization.developerExtension is false", async () => {
+    process.env["TOOL_AUTHORIZATION_JSON"] = JSON.stringify({ developerExtension: false });
+    const fake = makeFakeChild();
+    spawnMock.mockReturnValue(fake);
+    const promise = runGooseAgent("task", {
+      model: "claude-sonnet-4-5",
+      agentInstructions: "sys",
+      cwd: "/workspace",
+      timeoutMs: 1000,
+      mode: "codegen",
+    });
+    await new Promise((r) => setImmediate(r));
+    fake.emit("close", 0);
+    await promise;
+
+    const writes = vi.mocked(writeFileSync).mock.calls;
+    const configWrite = writes.find((w) => String(w[0]).endsWith("config.yaml"));
+    const configContent = String(configWrite![1]);
+    expect(configContent).not.toContain("name: developer");
+    // ve-submission stays regardless.
+    expect(configContent).toContain("ve-submission");
+  });
+});

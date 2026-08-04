@@ -21,6 +21,7 @@ import type { ChildProcess } from 'child_process';
 import { createConnection } from 'net';
 import {
   createNativeReviewPermissionHandler,
+  createToolAuthorizingPermissionHandler,
   restrictNetworkPermissionHandler,
   restrictReviewPermissionHandler,
 } from '../networkGuard.js';
@@ -168,6 +169,19 @@ export function buildCopilotSessionConfig(
     : null;
   const nativeReview = mode === 'review' && options.reviewStrategy === 'copilot_native';
 
+  // Per-agent tool authorization: wrap the selected permission handler with
+  // the user blocked-tool list. Everything is allowed by default; the wrapper
+  // rejects blocked tools and cannot relax VE's network floor (the inner
+  // handler still rejects network tools).
+  const baseHandler = mode === 'review'
+    ? (nativeReview
+      ? createNativeReviewPermissionHandler(cwd)
+      : restrictReviewPermissionHandler)
+    : restrictNetworkPermissionHandler;
+  const onPermissionRequest = createToolAuthorizingPermissionHandler(baseHandler, {
+    ...(options.blockedTools !== undefined ? { blockedTools: options.blockedTools } : {}),
+  });
+
   return {
     model,
     ...(reasoningEffort && reasoningEffort !== 'none'
@@ -178,11 +192,7 @@ export function buildCopilotSessionConfig(
         ? appendSubmissionInstruction(agentInstructions, submission.toolName)
         : agentInstructions,
     ),
-    onPermissionRequest: mode === 'review'
-      ? options.reviewStrategy === 'copilot_native'
-        ? createNativeReviewPermissionHandler(cwd)
-        : restrictReviewPermissionHandler
-      : restrictNetworkPermissionHandler,
+    onPermissionRequest,
     workingDirectory: cwd,
     enableConfigDiscovery: true,
     ...(submission !== null

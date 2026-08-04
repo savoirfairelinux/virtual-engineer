@@ -17,6 +17,10 @@ import { assertPromptRole } from "../utils/promptRole.js";
 import { agentLogBus, pushToTaskBuffer } from "./agentEventBus.js";
 import { buildCodegenUserPrompt } from "./copilotAdapter.js";
 import {
+  extractToolAuthorization,
+  toolAuthorizationJsonEnv,
+} from "./toolAuthorization.js";
+import {
   buildCodegenContainerSpec,
   buildReviewContainerSpec as buildSharedReviewContainerSpec,
 } from "./containerSpecBuilders.js";
@@ -169,6 +173,7 @@ export class AiderAdapter implements AgentAdapter, ConfigurableAdapter {
       AGENT_PROVIDER: "aider",
       ...(aiderModel ? { AIDER_MODEL: aiderModel } : {}),
       ...aiderOptionEnv(session.providerOptions),
+      ...toolAuthorizationJsonEnv(extractToolAuthorization(session.providerOptions)),
     };
 
     return buildCodegenContainerSpec(context, {
@@ -191,6 +196,7 @@ export class AiderAdapter implements AgentAdapter, ConfigurableAdapter {
       AGENT_PROVIDER: "aider",
       ...(reviewModel ? { AIDER_MODEL: reviewModel } : {}),
       ...aiderOptionEnv(input.providerOptions),
+      ...toolAuthorizationJsonEnv(extractToolAuthorization(input.providerOptions)),
       ...(input.reviewOutputSchema !== undefined
         ? { REVIEW_OUTPUT_SCHEMA: JSON.stringify(input.reviewOutputSchema) }
         : {}),
