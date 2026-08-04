@@ -67,9 +67,8 @@ function resolveAiderNativeOptions(): AiderNativeOptions {
   const reasoningEffort = process.env['AIDER_REASONING_EFFORT']?.trim();
   const thinkingTokens = positiveNumberFromEnv('AIDER_THINKING_TOKENS');
   const mapTokens = positiveNumberFromEnv('AIDER_MAP_TOKENS');
-  // Per-agent tooling toggles arrive as TOOL_AUTHORIZATION_JSON (parsed in
-  // index.ts and forwarded on AgentRunOptions.toolAuthorization). Defaults
-  // preserve VE's existing hardening.
+  // Per-agent tooling toggles arrive as TOOL_AUTHORIZATION_JSON (parsed here
+  // directly from the environment). Defaults preserve VE's existing hardening.
   let toolAuth: Record<string, unknown> | undefined;
   try {
     const raw = process.env['TOOL_AUTHORIZATION_JSON'] ?? '';

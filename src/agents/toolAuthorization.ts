@@ -8,8 +8,9 @@
  * - Aider/Goose: provider-specific toggles forwarded as a single
  *   `TOOL_AUTHORIZATION_JSON` env var (parsed by the worker).
  *
- * The host never interprets the Aider/Goose toggles — it only serializes them
- * — so each provider can evolve its own shape without a host change.
+ * The host validates the Aider/Goose toggle shapes (toolAuthorizationValidation.ts)
+ * but forwards the toggles verbatim to the worker as TOOL_AUTHORIZATION_JSON —
+ * each provider interprets its own values, so the host doesn't transform them.
  */
 
 /** Extract the `toolAuthorization` sub-object from provider options. */

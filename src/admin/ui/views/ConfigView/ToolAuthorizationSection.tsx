@@ -10,7 +10,7 @@
  * - Goose: developerExtension toggle.
  *
  * The section is hidden for providers that don't support tool authorization
- * (mock) and for unsupported review strategies.
+ * (mock, or provider not yet resolved).
  */
 import { Field, FieldSelect, FieldTextarea } from "../../components/Modal.tsx";
 import {
