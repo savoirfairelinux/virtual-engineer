@@ -58,6 +58,7 @@ export function summarizeToolUsage(events: AgentLogEvent[] | undefined): ToolUsa
         row.denialCount++;
         const reason = typeof data["reason"] === "string" ? data["reason"]
           : typeof data["message"] === "string" ? data["message"]
+          : typeof data["feedback"] === "string" ? data["feedback"]
           : null;
         row.lastDenialReason = reason;
         tools.set(name, row);

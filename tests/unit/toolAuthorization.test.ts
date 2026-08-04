@@ -31,8 +31,8 @@ describe("toolListEnv", () => {
   });
 
   it("maps to COPILOT_BLOCKED_TOOLS for the copilot provider", () => {
-    expect(toolListEnv("copilot", { blockedTools: ["shell"] }))
-      .toEqual({ COPILOT_BLOCKED_TOOLS: "shell" });
+    expect(toolListEnv("copilot", { blockedTools: ["Bash"] }))
+      .toEqual({ COPILOT_BLOCKED_TOOLS: "Bash" });
   });
 
   it("omits empty arrays and missing keys", () => {

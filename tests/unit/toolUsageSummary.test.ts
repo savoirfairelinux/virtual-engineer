@@ -63,4 +63,11 @@ describe("summarizeToolUsage", () => {
     // Edit (2 calls) first, then Bash (1 denial), then Read (1 call)
     expect(summary.tools.map((t) => t.name)).toEqual(["Edit", "Bash", "Read"]);
   });
+
+  it("reads denial reason from feedback key as a fallback", () => {
+    const summary = summarizeToolUsage([
+      ev("permission.denied", { toolName: "Bash", feedback: "blocked by policy" }),
+    ]);
+    expect(summary.tools[0]?.lastDenialReason).toBe("blocked by policy");
+  });
 });
