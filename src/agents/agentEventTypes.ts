@@ -100,6 +100,10 @@ export interface ToolMetrics {
   lastDurationMs: number | null;
   /** Total duration in ms across all calls */
   totalDurationMs: number;
+  /** Number of times a call to this tool was denied by the permission layer. */
+  denialCount: number;
+  /** Reason from the most recent denial, or null. */
+  lastDenialReason: string | null;
 }
 
 export interface TokenUsage {
@@ -117,6 +121,8 @@ export interface SessionMetrics {
   totalToolCalls: number;
   /** Currently running tool name, or null */
   activeToolName: string | null;
+  /** Total number of tool calls denied by the permission layer. */
+  totalDenials: number;
   /** Cumulative token usage (summed across distinct requests) */
   tokenUsage: TokenUsage;
   /** Number of usage events received */
@@ -262,7 +268,9 @@ function categorizeEvent(type: string, data: Record<string, unknown> | null): Ag
   if (
     type === "session.start" ||
     type === "session.end" ||
-    type === "permission.requested"
+    type === "permission.requested" ||
+    type === "permission.denied" ||
+    type === "permission.approved"
   ) {
     return "session";
   }
@@ -273,7 +281,8 @@ function categorizeEvent(type: string, data: Record<string, unknown> | null): Ag
 /** Map an event type string to its display log level. */
 function eventLevel(type: string): "info" | "warn" | "error" | "debug" {
   if (type === "session.error" || type === "review.failed") return "error";
-  if (type === "permission.requested") return "warn";
+  if (type === "permission.requested" || type === "permission.denied") return "warn";
+  if (type === "permission.approved") return "info";
   if (type === "assistant.streaming_delta") return "debug";
   return "info";
 }
@@ -489,6 +498,16 @@ function buildEventMessage(type: string, data: Record<string, unknown> | null): 
       const tool = readStr(data, ["tool", "name", "toolName"]);
       return tool ? `🔐 Permission: ${tool}` : "🔐 Permission requested";
     }
+    case "permission.denied": {
+      const tool = readStr(data, ["toolName", "tool", "name"]);
+      const reason = readStr(data, ["reason", "message", "feedback"]);
+      const prefix = tool ? `🚫 Denied: ${tool}` : "🚫 Permission denied";
+      return reason ? `${prefix} — ${reason}` : prefix;
+    }
+    case "permission.approved": {
+      const tool = readStr(data, ["toolName", "tool", "name"]);
+      return tool ? `✅ Approved: ${tool}` : "✅ Permission approved";
+    }
     case "skills.fetch_start":
       return buildSkillFetchMessage("Fetching skills from", data);
     case "skills.fetch_complete":
@@ -639,6 +658,7 @@ export function createSessionMetrics(): SessionMetrics {
     tools: {},
     totalToolCalls: 0,
     activeToolName: null,
+    totalDenials: 0,
     tokenUsage: {
       inputTokens: 0,
       outputTokens: 0,
@@ -699,6 +719,8 @@ export function updateSessionMetrics(
           lastEndTime: null,
           lastDurationMs: null,
           totalDurationMs: 0,
+          denialCount: 0,
+          lastDenialReason: null,
         };
       }
       const tool = metrics.tools[name]!;
@@ -738,6 +760,36 @@ export function updateSessionMetrics(
       break;
     }
 
+    case "permission.denied": {
+      metrics.totalDenials++;
+      const deniedName = readStr(event.data, ["toolName", "tool", "name"]);
+      if (deniedName) {
+        if (!metrics.tools[deniedName]) {
+          metrics.tools[deniedName] = {
+            name: deniedName,
+            callCount: 0,
+            lastStatus: "unknown",
+            lastStartTime: null,
+            lastEndTime: null,
+            lastDurationMs: null,
+            totalDurationMs: 0,
+            denialCount: 0,
+            lastDenialReason: null,
+          };
+        }
+        const deniedTool = metrics.tools[deniedName]!;
+        deniedTool.denialCount++;
+        const reason = readStr(event.data, ["reason", "message", "feedback"]);
+        deniedTool.lastDenialReason = reason ?? null;
+      }
+      break;
+    }
+
+    case "permission.approved":
+      // No metric to update — approvals are the normal path. Tracked only as
+      // an event for the live log stream.
+      break;
+
     default:
       break;
   }
@@ -750,6 +802,7 @@ export function resetSessionMetrics(metrics: SessionMetrics): void {
   metrics.tools = {};
   metrics.totalToolCalls = 0;
   metrics.activeToolName = null;
+  metrics.totalDenials = 0;
   metrics.tokenUsage = {
     inputTokens: 0,
     outputTokens: 0,

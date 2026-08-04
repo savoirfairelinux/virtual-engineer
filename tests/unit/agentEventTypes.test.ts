@@ -505,6 +505,50 @@ describe("SessionMetrics", () => {
     updateSessionMetrics(metrics, makeNormEvent("assistant.usage", { inputTokens: 100 }, "usage"));
     expect(metrics.quotaAvailable).toBe(false);
   });
+
+  it("tracks permission.denied per tool with denial count and reason", () => {
+    updateSessionMetrics(metrics, makeNormEvent(
+      "permission.denied",
+      { toolName: "Bash", reason: "Tool 'Bash' is blocked for this agent." },
+      "session",
+    ));
+    updateSessionMetrics(metrics, makeNormEvent(
+      "permission.denied",
+      { toolName: "Bash", reason: "blocked" },
+      "session",
+    ));
+    updateSessionMetrics(metrics, makeNormEvent(
+      "permission.denied",
+      { toolName: "WebFetch", reason: "Network access is disabled" },
+      "session",
+    ));
+    expect(metrics.totalDenials).toBe(3);
+    expect(metrics.tools["Bash"]).toBeDefined();
+    expect(metrics.tools["Bash"]!.denialCount).toBe(2);
+    expect(metrics.tools["Bash"]!.lastDenialReason).toBe("blocked");
+    expect(metrics.tools["WebFetch"]).toBeDefined();
+    expect(metrics.tools["WebFetch"]!.denialCount).toBe(1);
+  });
+
+  it("permission.denied without a toolName increments totalDenials only", () => {
+    updateSessionMetrics(metrics, makeNormEvent(
+      "permission.denied",
+      { reason: "rejected" },
+      "session",
+    ));
+    expect(metrics.totalDenials).toBe(1);
+    expect(Object.keys(metrics.tools)).toHaveLength(0);
+  });
+
+  it("permission.approved does not change denial counters", () => {
+    updateSessionMetrics(metrics, makeNormEvent(
+      "permission.approved",
+      { toolName: "Read" },
+      "session",
+    ));
+    expect(metrics.totalDenials).toBe(0);
+    expect(Object.keys(metrics.tools)).toHaveLength(0);
+  });
 });
 
 // ── Deep-search in SDK event structures ─────────────────────────────────────
