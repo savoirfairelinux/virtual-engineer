@@ -118,6 +118,24 @@ describe("ClaudeAdapter", () => {
         CLAUDE_MAX_BUDGET_USD: "8.5",
       });
     });
+
+    it("injects CLAUDE_BLOCKED_TOOLS from toolAuthorization", () => {
+      const adapter = new ClaudeAdapter();
+      const ctx = makeContext();
+      ctx.agentSession.providerOptions = {
+        toolAuthorization: {
+          blockedTools: ["Bash"],
+        },
+      };
+      const env = adapter.buildContainerSpec(ctx).env;
+      expect(env["CLAUDE_BLOCKED_TOOLS"]).toBe("Bash");
+    });
+
+    it("omits tool-list env vars when toolAuthorization is absent", () => {
+      const adapter = new ClaudeAdapter();
+      const env = adapter.buildContainerSpec(makeContext()).env;
+      expect(env["CLAUDE_BLOCKED_TOOLS"]).toBeUndefined();
+    });
   });
 
   describe("buildReviewContainerSpec", () => {

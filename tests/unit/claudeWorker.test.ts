@@ -288,3 +288,60 @@ describe("Claude worker native profile", () => {
     expect(options.tools).toBeUndefined();
   });
 });
+
+describe("buildClaudeQueryOptions tool authorization", () => {
+  it("merges user blockedTools into disallowedTools (codegen)", () => {
+    const options = buildClaudeQueryOptions({
+      model: "claude-sonnet",
+      agentInstructions: "policy",
+      cwd: "/workspace",
+      timeoutMs: 1000,
+      mode: "codegen",
+      blockedTools: ["Bash(rm:*)", "WebFetch"],
+    });
+    expect(options.disallowedTools).toEqual(expect.arrayContaining([
+      "WebFetch", "WebSearch", "Bash(curl:*)", "Bash(rm:*)",
+    ]));
+    // codegen stays bypassPermissions (everything allowed by default).
+    expect(options.permissionMode).toBe("bypassPermissions");
+    expect(options.allowDangerouslySkipPermissions).toBe(true);
+  });
+
+  it("a tool in blockedTools is denied (codegen)", () => {
+    const options = buildClaudeQueryOptions({
+      model: "claude-sonnet",
+      agentInstructions: "policy",
+      cwd: "/workspace",
+      timeoutMs: 1000,
+      mode: "codegen",
+      blockedTools: ["Bash"],
+    });
+    expect(options.disallowedTools).toEqual(expect.arrayContaining(["Bash"]));
+    expect(options.permissionMode).toBe("bypassPermissions");
+  });
+
+  it("cannot relax the network floor: blocked network tools stay blocked even without a user list", () => {
+    const options = buildClaudeQueryOptions({
+      model: "claude-sonnet",
+      agentInstructions: "policy",
+      cwd: "/workspace",
+      timeoutMs: 1000,
+      mode: "codegen",
+    });
+    // WebFetch and Bash(curl:*) stay in disallowedTools (floor immutable).
+    expect(options.disallowedTools).toEqual(expect.arrayContaining(["WebFetch", "Bash(curl:*)"]));
+  });
+
+  it("review: keeps the full floor and applies user blockedTools", () => {
+    const options = buildClaudeQueryOptions({
+      model: "claude-sonnet",
+      agentInstructions: "policy",
+      cwd: "/workspace",
+      timeoutMs: 1000,
+      mode: "review",
+      blockedTools: ["Bash(rm:*)"],
+    });
+    expect(options.tools).toEqual(expect.arrayContaining(["Read", "Glob", "Grep", "Skill"]));
+    expect(options.disallowedTools).toEqual(expect.arrayContaining(["Bash(rm:*)"]));
+  });
+});

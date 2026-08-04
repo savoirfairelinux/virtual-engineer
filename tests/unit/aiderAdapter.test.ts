@@ -187,6 +187,25 @@ describe("AiderAdapter", () => {
       delete ctx.agentSession.aiderApiKey;
       expect(() => adapter.buildContainerSpec(ctx)).toThrow(/No Aider credentials/);
     });
+
+    it("injects TOOL_AUTHORIZATION_JSON from toolAuthorization toggles", () => {
+      const adapter = new AiderAdapter();
+      const ctx = makeContext();
+      ctx.agentSession.aiderBackend = "openai";
+      ctx.agentSession.aiderApiKey = "sk-key";
+      ctx.agentSession.providerOptions = {
+        toolAuthorization: {
+          suggestShellCommands: true,
+          detectUrls: false,
+          playwright: false,
+          git: false,
+        },
+      };
+      const env = adapter.buildContainerSpec(ctx).env;
+      expect(env["TOOL_AUTHORIZATION_JSON"]).toBe(
+        JSON.stringify({ suggestShellCommands: true, detectUrls: false, playwright: false, git: false }),
+      );
+    });
   });
 
   describe("buildReviewContainerSpec", () => {

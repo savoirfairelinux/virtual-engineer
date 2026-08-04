@@ -48,10 +48,6 @@ import {
   runCopilotAgent,
 } from "../../agent-worker/src/providers/copilot.js";
 import type { AgentRunOptions } from "../../agent-worker/src/providers/types.js";
-import {
-  restrictNetworkPermissionHandler,
-  restrictReviewPermissionHandler,
-} from "../../agent-worker/src/networkGuard.js";
 
 interface FakeSession {
   disconnect: ReturnType<typeof vi.fn>;
@@ -403,7 +399,7 @@ describe("Copilot worker native profile", () => {
     });
   });
 
-  it("uses the read-only permission policy only for review sessions", () => {
+  it("uses the read-only permission policy only for review sessions", async () => {
     const common = {
       model: "gpt-5.1-codex",
       agentInstructions: "policy",
@@ -422,7 +418,20 @@ describe("Copilot worker native profile", () => {
     });
     const codeConfig = buildCopilotSessionConfig({ ...common, mode: "codegen" });
 
-    expect(reviewConfig.onPermissionRequest).toBe(restrictReviewPermissionHandler);
-    expect(codeConfig.onPermissionRequest).toBe(restrictNetworkPermissionHandler);
+    // The handlers are now wrapped with the per-agent tool-authorization
+    // layer, so verify behaviour rather than identity: codegen rejects network
+    // commands but approves normal work; review rejects writes.
+    const invocation = { sessionId: "test" };
+    const codeResult = await codeConfig.onPermissionRequest(
+      { kind: "shell", fullCommandText: "curl https://example.com" } as never,
+      invocation,
+    );
+    expect(codeResult).toEqual(expect.objectContaining({ kind: "reject" }));
+
+    const reviewResult = await reviewConfig.onPermissionRequest(
+      { kind: "write", fileName: "x.ts" } as never,
+      invocation,
+    );
+    expect(reviewResult).toEqual(expect.objectContaining({ kind: "reject" }));
   });
 });

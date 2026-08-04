@@ -49,6 +49,20 @@ interface GooseNativeOptions {
   gooseMaxTokens?: number;
   gooseTemperature?: number;
   gooseAutoCompactThreshold?: number;
+  /** Per-agent toggle (from `toolAuthorization.developerExtension`): whether to
+   * enable the builtin `developer` extension for codegen. Defaults to true.
+   * Review mode always omits the developer extension (read-only). */
+  developerExtension: boolean;
+}
+
+/** Read a boolean from `toolAuthorization` with a fallback default. */
+function boolToggle(
+  auth: Record<string, unknown> | undefined,
+  key: string,
+  fallback: boolean,
+): boolean {
+  const value = auth?.[key];
+  return typeof value === 'boolean' ? value : fallback;
 }
 
 function positiveNumberFromEnv(name: string): number | undefined {
@@ -67,6 +81,18 @@ function resolveGooseNativeOptions(): GooseNativeOptions {
   const gooseMaxTokens = positiveNumberFromEnv('GOOSE_MAX_TOKENS');
   const gooseTemperature = finiteNumberFromEnv('GOOSE_TEMPERATURE');
   const gooseAutoCompactThreshold = finiteNumberFromEnv('GOOSE_AUTO_COMPACT_THRESHOLD');
+  let toolAuth: Record<string, unknown> | undefined;
+  try {
+    const raw = process.env['TOOL_AUTHORIZATION_JSON'] ?? '';
+    if (raw) {
+      const parsed: unknown = JSON.parse(raw);
+      if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+        toolAuth = parsed as Record<string, unknown>;
+      }
+    }
+  } catch {
+    // ignore — defaults apply
+  }
   return {
     ...(gooseMode === 'auto' || gooseMode === 'approve' || gooseMode === 'chat' || gooseMode === 'smart_approve'
       ? { gooseMode }
@@ -75,6 +101,7 @@ function resolveGooseNativeOptions(): GooseNativeOptions {
     ...(gooseMaxTokens !== undefined ? { gooseMaxTokens } : {}),
     ...(gooseTemperature !== undefined ? { gooseTemperature } : {}),
     ...(gooseAutoCompactThreshold !== undefined ? { gooseAutoCompactThreshold } : {}),
+    developerExtension: boolToggle(toolAuth, 'developerExtension', true),
   };
 }
 
@@ -210,9 +237,11 @@ function writeGooseConfig(
   }
   lines.push('    timeout: 300');
 
-  if (options.mode === 'codegen') {
+  if (options.mode === 'codegen' && nativeOptions.developerExtension) {
     // Enable the builtin Developer extension so Goose can edit files and run
-    // shell commands inside the workspace. It is bundled with Goose.
+    // shell commands inside the workspace. It is bundled with Goose. A user
+    // can disable it via `toolAuthorization.developerExtension: false` to run
+    // Goose in a read-only/edit-less mode even for codegen.
     lines.push('  developer:');
     lines.push('    type: builtin');
     lines.push('    name: developer');
@@ -220,7 +249,8 @@ function writeGooseConfig(
     lines.push('    bundled: true');
     lines.push('    timeout: 300');
   }
-  // For review mode, no builtin extensions are enabled — Goose runs read-only.
+  // For review mode (or codegen with developerExtension disabled), no builtin
+  // extensions are enabled — Goose runs read-only.
 
   writeFileSync(configPath, lines.join('\n') + '\n', 'utf8');
   process.stderr.write(`goose config written to ${configPath} (tool=${submissionToolName}, mode=${options.mode})\n`);

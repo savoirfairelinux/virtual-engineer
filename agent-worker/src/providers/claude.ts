@@ -91,6 +91,18 @@ export function buildClaudeQueryOptions(
   const submission = submissionSchema !== undefined
     ? buildSubmissionMcpConfig(mode, submissionSchema)
     : null;
+
+  // Per-agent tool authorization (blocklist-only, network floor immutable).
+  // disallowedTools = VE network floor + user blockedTools. The floor can
+  // never be relaxed: user blockedTools only add to it. Everything else is
+  // allowed — codegen stays bypassPermissions, review keeps its read-only
+  // floor.
+  const userBlocked = options.blockedTools ?? [];
+  const disallowedTools = [...NETWORK_DISALLOWED_TOOLS, ...userBlocked];
+
+  const submissionTool = submission !== null ? `mcp__ve-submission__${submission.toolName}` : null;
+  const reviewFloor = ['Read', 'Glob', 'Grep', 'Skill', ...(submissionTool !== null ? [submissionTool] : [])];
+
   return {
     ...(model ? { model } : {}),
     cwd,
@@ -104,26 +116,14 @@ export function buildClaudeQueryOptions(
     ...(mode === 'review'
       ? {
           permissionMode: 'dontAsk' as const,
-          tools: [
-            'Read',
-            'Glob',
-            'Grep',
-            'Skill',
-            ...(submission !== null ? [`mcp__ve-submission__${submission.toolName}`] : []),
-          ],
-          allowedTools: [
-            'Read',
-            'Glob',
-            'Grep',
-            'Skill',
-            ...(submission !== null ? [`mcp__ve-submission__${submission.toolName}`] : []),
-          ],
+          tools: reviewFloor,
+          allowedTools: reviewFloor,
         }
       : {
           permissionMode: 'bypassPermissions' as const,
           allowDangerouslySkipPermissions: true,
         }),
-    disallowedTools: NETWORK_DISALLOWED_TOOLS,
+    disallowedTools,
     settingSources: ['user', 'project'],
     skills: 'all',
     strictMcpConfig: true,

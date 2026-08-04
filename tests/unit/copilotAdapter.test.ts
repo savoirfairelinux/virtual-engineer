@@ -201,6 +201,18 @@ describe("CopilotAdapter", () => {
       expect(spec.env["COPILOT_REASONING_EFFORT"]).toBeUndefined();
     });
 
+    it("injects COPILOT_BLOCKED_TOOLS from toolAuthorization", () => {
+      const adapter = new CopilotAdapter({ model: "o3" });
+      const context = makeContext();
+      context.agentSession.providerOptions = {
+        toolAuthorization: {
+          blockedTools: ["Bash"],
+        },
+      };
+      const spec = adapter.buildContainerSpec(context, { GITHUB_TOKEN: "ghp_tok" });
+      expect(spec.env["COPILOT_BLOCKED_TOOLS"]).toBe("Bash");
+    });
+
     it("does not expose removed local skill configuration", () => {
       const adapter = new CopilotAdapter();
       const context = makeContext();

@@ -38,6 +38,23 @@ interface AiderNativeOptions {
   mapTokens?: number;
   autoLint: boolean;
   autoTest: boolean;
+  /** Per-agent tooling toggles (from `toolAuthorization`). Defaults keep VE's
+   * current hardening: shell suggestions off, URL detection off, playwright off,
+   * git on (codegen) / off (review). */
+  suggestShellCommands: boolean;
+  detectUrls: boolean;
+  playwright: boolean;
+  git: boolean;
+}
+
+/** Read a boolean from `toolAuthorization` with a fallback default. */
+function boolToggle(
+  auth: Record<string, unknown> | undefined,
+  key: string,
+  fallback: boolean,
+): boolean {
+  const value = auth?.[key];
+  return typeof value === 'boolean' ? value : fallback;
 }
 
 function positiveNumberFromEnv(name: string): number | undefined {
@@ -50,6 +67,21 @@ function resolveAiderNativeOptions(): AiderNativeOptions {
   const reasoningEffort = process.env['AIDER_REASONING_EFFORT']?.trim();
   const thinkingTokens = positiveNumberFromEnv('AIDER_THINKING_TOKENS');
   const mapTokens = positiveNumberFromEnv('AIDER_MAP_TOKENS');
+  // Per-agent tooling toggles arrive as TOOL_AUTHORIZATION_JSON (parsed in
+  // index.ts and forwarded on AgentRunOptions.toolAuthorization). Defaults
+  // preserve VE's existing hardening.
+  let toolAuth: Record<string, unknown> | undefined;
+  try {
+    const raw = process.env['TOOL_AUTHORIZATION_JSON'] ?? '';
+    if (raw) {
+      const parsed: unknown = JSON.parse(raw);
+      if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+        toolAuth = parsed as Record<string, unknown>;
+      }
+    }
+  } catch {
+    // ignore — defaults apply
+  }
   return {
     ...(chatMode === 'code' || chatMode === 'architect' ? { chatMode } : {}),
     ...(reasoningEffort ? { reasoningEffort } : {}),
@@ -57,6 +89,10 @@ function resolveAiderNativeOptions(): AiderNativeOptions {
     ...(mapTokens !== undefined ? { mapTokens } : {}),
     autoLint: process.env['AIDER_AUTO_LINT'] === '1',
     autoTest: process.env['AIDER_AUTO_TEST'] === '1',
+    suggestShellCommands: boolToggle(toolAuth, 'suggestShellCommands', false),
+    detectUrls: boolToggle(toolAuth, 'detectUrls', false),
+    playwright: boolToggle(toolAuth, 'playwright', false),
+    git: boolToggle(toolAuth, 'git', true),
   };
 }
 
@@ -144,11 +180,14 @@ function buildAiderArgs(
     '--no-check-update',
     '--no-show-release-notes',
     '--no-analytics',
-    '--no-suggest-shell-commands',
+    nativeOptions.suggestShellCommands ? '--suggest-shell-commands' : '--no-suggest-shell-commands',
     '--no-fancy-input',
-    '--no-detect-urls',
+    nativeOptions.detectUrls ? '--detect-urls' : '--no-detect-urls',
     '--no-attribute-co-authored-by',
   ];
+  if (!nativeOptions.playwright) {
+    baseArgs.push('--disable-playwright');
+  }
 
   if (mode === 'review') {
     // --chat-mode ask keeps Aider in pure text-response mode. Without it, Aider
@@ -184,7 +223,7 @@ function buildAiderArgs(
   return [
     ...baseArgs,
     '--no-stream',
-    '--git',
+    nativeOptions.git ? '--git' : '--no-git',
     '--no-gitignore',
     '--auto-commits',
     '--dirty-commits',

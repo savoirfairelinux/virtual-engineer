@@ -17,6 +17,10 @@ import { assertPromptRole } from "../utils/promptRole.js";
 import { agentLogBus, pushToTaskBuffer } from "./agentEventBus.js";
 import { buildCodegenUserPrompt } from "./copilotAdapter.js";
 import {
+  extractToolAuthorization,
+  toolAuthorizationJsonEnv,
+} from "./toolAuthorization.js";
+import {
   buildCodegenContainerSpec,
   buildReviewContainerSpec as buildSharedReviewContainerSpec,
 } from "./containerSpecBuilders.js";
@@ -196,6 +200,7 @@ export class GooseAdapter implements AgentAdapter, ConfigurableAdapter {
       AGENT_PROVIDER: "goose",
       ...(gooseModel ? { GOOSE_MODEL: gooseModel } : {}),
       ...gooseOptionEnv(session.providerOptions),
+      ...toolAuthorizationJsonEnv(extractToolAuthorization(session.providerOptions)),
     };
 
     return buildCodegenContainerSpec(context, {
@@ -219,6 +224,7 @@ export class GooseAdapter implements AgentAdapter, ConfigurableAdapter {
       AGENT_PROVIDER: "goose",
       ...(!nativeReview && reviewModel ? { GOOSE_MODEL: reviewModel } : {}),
       ...gooseOptionEnv(input.providerOptions),
+      ...toolAuthorizationJsonEnv(extractToolAuthorization(input.providerOptions)),
       ...(input.reviewOutputSchema !== undefined
         ? { REVIEW_OUTPUT_SCHEMA: JSON.stringify(input.reviewOutputSchema) }
         : {}),

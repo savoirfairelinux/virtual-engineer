@@ -233,6 +233,21 @@ describe("GooseAdapter", () => {
       delete ctx.agentSession.gooseApiKey;
       expect(() => adapter.buildContainerSpec(ctx)).toThrow(/No Goose credentials/);
     });
+
+    it("injects TOOL_AUTHORIZATION_JSON from toolAuthorization toggles", () => {
+      const adapter = new GooseAdapter();
+      const ctx = makeContext();
+      ctx.agentSession.providerOptions = {
+        toolAuthorization: {
+          developerExtension: false,
+          gooseMode: "chat",
+        },
+      };
+      const env = adapter.buildContainerSpec(ctx).env;
+      expect(env["TOOL_AUTHORIZATION_JSON"]).toBe(
+        JSON.stringify({ developerExtension: false, gooseMode: "chat" }),
+      );
+    });
   });
 
   describe("buildReviewContainerSpec", () => {
