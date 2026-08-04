@@ -19,6 +19,7 @@ import {
 import { isAllowedGitLabProxyTarget } from "../utils/gitlabAuth.js";
 import { writeJson, writeHtml } from "./adminRouteUtils.js";
 import { fetchGitLabProxyImage } from "./adminImageProxy.js";
+import { mintImageProxyToken, consumeImageProxyToken } from "./imageProxyTokenStore.js";
 import { registerTaskRoutes } from "./adminTaskRoutes.js";
 import { registerPromptRoutes } from "./adminPromptRoutes.js";
 import { registerStreamRoutes } from "./adminStreamRoutes.js";
@@ -370,6 +371,13 @@ function buildApiRouter(dependencies: AdminServerDependencies, authRuntime: Admi
     });
   }, { permission: "overview.read" });
 
+  // Mints a short-lived, single-use token for the /api/admin/img-proxy query
+  // string; any authenticated user may call this (auth-self, no PBAC scope).
+  router.add("GET", "/api/admin/img-proxy/token", async (_req, res, _params) => {
+    const { token, expiresAt } = mintImageProxyToken();
+    writeJson(res, 200, { token, expiresAt });
+  }, { authenticated: true });
+
   router.add("GET", "/api/admin/providers", async (_req, res, _params) => {
     const providersList = typeof dependencies.providers === "function" ? dependencies.providers() : dependencies.providers;
     writeJson(res, 200, {
@@ -515,12 +523,14 @@ async function handleRequest(
     return;
   }
 
-  // Image proxy — auth via query param ?t= so <img> tags can use it
+  // Image proxy — auth via query param ?t= so <img> tags can use it. The
+  // token is a short-lived, single-use image-proxy token (see
+  // imageProxyTokenStore.ts), never the long-lived session bearer token.
   if (path === "/api/admin/img-proxy" && method === "GET") {
     const targetUrl = requestUrl.searchParams.get("url") ?? "";
     const queryToken = requestUrl.searchParams.get("t") ?? "";
     const proxyAuthorized = authRuntime.authService
-      ? (await authRuntime.usersExist()) && (await authRuntime.authService.validateSession(queryToken)) !== null
+      ? (await authRuntime.usersExist()) && consumeImageProxyToken(queryToken)
       : dependencies.allowUnauthenticatedAdmin === true;
     if (!proxyAuthorized) { writeJson(response, 401, { error: "Unauthorized" }); return; }
     const { gitlabBaseUrl, gitlabToken: gitlabTokenVal } = getProviderUrls(dependencies.pluginManager);
