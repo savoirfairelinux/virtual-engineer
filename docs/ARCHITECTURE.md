@@ -307,7 +307,7 @@ Plain Node.js `http.createServer` — no framework. The main file handles auth, 
 
 | Module | Route group |
 |--------|-------------|
-| `adminServer.ts` | Dashboard (`GET /admin`), health (`GET /health`), img-proxy, status, config, providers |
+| `adminServer.ts` | Dashboard (`GET /admin`), health (`GET /health`), img-proxy, img-proxy/token (mints the short-lived image-proxy token), status, config, providers |
 | `adminOverviewRoutes.ts` | Dashboard overview aggregates + cost summary |
 | `adminTaskRoutes.ts` | `GET/DELETE /api/admin/tasks`, `GET /api/admin/tasks/:id`, `GET .../cycles`, `GET .../transitions`, `PATCH .../pause`, `PATCH .../resume`, `POST .../retry`, `POST .../abandon` |
 | `adminPromptRoutes.ts` | `GET/POST /api/admin/prompts`, `GET/PUT/DELETE /api/admin/prompts/:id`, `GET .../usage` |

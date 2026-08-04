@@ -144,6 +144,44 @@ describe("adminServer RBAC and session auth", () => {
     expect(noToken.status).toBe(401);
   });
 
+  it("rejects the raw session bearer token as the img-proxy ?t= query token", async () => {
+    const admin = await setupAndLogin("root", "Str0ng-Pass-1x", "admin");
+
+    const imageProxy = await fetch(
+      `${baseUrl}/api/admin/img-proxy?url=https://gitlab.example.com/uploads/id/image.png&t=${admin.token}`
+    );
+    expect(imageProxy.status).toBe(401);
+  });
+
+  it("requires authentication to mint an image-proxy token", async () => {
+    const noToken = await fetch(`${baseUrl}/api/admin/img-proxy/token`);
+    expect(noToken.status).toBe(401);
+  });
+
+  it("mints a single-use image-proxy token that authorizes img-proxy exactly once", async () => {
+    const admin = await setupAndLogin("root", "Str0ng-Pass-1x", "admin");
+
+    const mint = await fetch(`${baseUrl}/api/admin/img-proxy/token`, {
+      headers: { authorization: `Bearer ${admin.token}` },
+    });
+    expect(mint.status).toBe(200);
+    const { token } = (await mint.json()) as { token: string; expiresAt: number };
+    expect(token).not.toBe(admin.token);
+
+    // No GitLab integration is configured in this test server, so a request
+    // that passes auth still fails proxy-target validation (400) rather than
+    // being rejected for auth (401) — this distinguishes the two failure modes.
+    const firstUse = await fetch(
+      `${baseUrl}/api/admin/img-proxy?url=https://gitlab.example.com/uploads/id/image.png&t=${token}`
+    );
+    expect(firstUse.status).toBe(400);
+
+    const reuse = await fetch(
+      `${baseUrl}/api/admin/img-proxy?url=https://gitlab.example.com/uploads/id/image.png&t=${token}`
+    );
+    expect(reuse.status).toBe(401);
+  });
+
   it("populates the auth context for session-authenticated requests", async () => {
     const admin = await setupAndLogin("root", "Str0ng-Pass-1x", "admin");
     const viewer = await setupAndLogin("vera", "Str0ng-Pass-1x", "viewer", admin);
