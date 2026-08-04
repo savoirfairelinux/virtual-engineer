@@ -40,18 +40,18 @@ export type PluginVisibilityCondition =
 export interface PluginField {
   key: string;
   label: string;
-  type: "text" | "password" | "url" | "number" | "select" | "multiselect";
+  type: "text" | "password" | "url" | "number" | "select";
   required: boolean;
   placeholder?: string;
   description?: string | undefined;
   /** How the admin agent form serializes the field into modelConfig.providerOptions. */
-  valueType?: "string" | "number" | "boolean" | "string[]" | undefined;
+  valueType?: "string" | "number" | "boolean" | undefined;
   /**
    * When `true` this field is not rendered in the admin UI but is still used
    * by the server for secret masking / preservation logic.
    */
   hidden?: boolean | undefined;
-  /** Options for `type: "select"` and `type: "multiselect"` fields. */
+  /** Options for `type: "select"` fields. */
   options?: Array<{ value: string; label: string }>;
   /**
    * When set, this field is only shown when the field named `field` has the

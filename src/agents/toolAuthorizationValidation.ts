@@ -130,9 +130,11 @@ function validateToolListAuthorization(
   if ("blockedTools" in auth) {
     result["blockedTools"] = asStringArray(auth["blockedTools"], "blockedTools");
   }
+  rejectUnknownKeys(auth, ["blockedTools"], "claude/copilot");
   // Review-type agents cannot block review-floor tools (would break review).
-  // This includes the VE submission MCP tool (mcp__ve-submission__*), which
-  // the review agent must be able to call to submit its verdict.
+  // This includes the VE submission MCP tool, which the review agent must be
+  // able to call to submit its verdict. The submission server may be named
+  // either `ve-submission` or `virtual-engineer-submission`.
   if (agentType === "review") {
     const blocked = (result["blockedTools"] as string[] | undefined) ?? [];
     for (const tool of blocked) {
@@ -142,7 +144,10 @@ function validateToolListAuthorization(
           `toolAuthorization.blockedTools cannot include '${tool}' for a review agent — it is required for review.`,
         );
       }
-      if (tool.startsWith("mcp__ve-submission__")) {
+      if (
+        tool.startsWith("mcp__ve-submission__") ||
+        tool.startsWith("mcp__virtual-engineer-submission__")
+      ) {
         throw new ToolAuthorizationConfigError(
           `toolAuthorization.blockedTools cannot include '${tool}' for a review agent — the VE submission tool is required to submit the review verdict.`,
         );

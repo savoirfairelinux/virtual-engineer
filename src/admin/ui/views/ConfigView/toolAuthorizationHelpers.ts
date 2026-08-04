@@ -29,15 +29,14 @@ export const CLAUDE_TOOL_CATALOG: ToolCatalogEntry[] = [
   { value: "WebSearch", label: "WebSearch", hint: "Search the web (blocked by network floor)" },
 ];
 
-/** Copilot's first-party tools use different names than Claude's. */
+/** Copilot's first-party tools, identified by the names the worker permission
+ * wrapper uses (networkGuard.ts requestToolIdentity maps request.kind to these
+ * Claude-style names: shell→Bash, url→WebFetch, read→Read, write→Write). */
 export const COPILOT_TOOL_CATALOG: ToolCatalogEntry[] = [
-  { value: "read_file", label: "Read file", hint: "Read a file from the workspace" },
-  { value: "write_file", label: "Write file", hint: "Create or overwrite a file" },
-  { value: "edit_file", label: "Edit file", hint: "Edit an existing file" },
-  { value: "shell", label: "Shell", hint: "Run a shell command" },
-  { value: "list_directory", label: "List directory", hint: "List directory contents" },
-  { value: "search_files", label: "Search files", hint: "Search file contents" },
-  { value: "url", label: "URL fetch", hint: "Fetch a URL (blocked by network floor)" },
+  { value: "Read", label: "Read", hint: "Read files from the workspace" },
+  { value: "Write", label: "Write", hint: "Create or overwrite files" },
+  { value: "Bash", label: "Bash", hint: "Run shell commands" },
+  { value: "WebFetch", label: "WebFetch", hint: "Fetch a URL (blocked by network floor)" },
 ];
 
 /** Get the curated tool catalog for a provider (empty for non-list providers). */

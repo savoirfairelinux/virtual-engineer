@@ -49,11 +49,12 @@ describe("toolListEnv", () => {
 
 describe("toolAuthorizationJsonEnv", () => {
   it("serializes the toggles to TOOL_AUTHORIZATION_JSON", () => {
-    expect(toolAuthorizationJsonEnv({ developerExtension: false, gooseMode: "chat" }))
-      .toEqual({ TOOL_AUTHORIZATION_JSON: JSON.stringify({ developerExtension: false, gooseMode: "chat" }) });
+    expect(toolAuthorizationJsonEnv({ developerExtension: false }))
+      .toEqual({ TOOL_AUTHORIZATION_JSON: JSON.stringify({ developerExtension: false }) });
   });
 
   it("returns {} for undefined/empty", () => {
     expect(toolAuthorizationJsonEnv(undefined)).toEqual({});
+    expect(toolAuthorizationJsonEnv({})).toEqual({});
   });
 });
