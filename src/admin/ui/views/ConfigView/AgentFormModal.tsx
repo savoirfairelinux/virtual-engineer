@@ -4,6 +4,13 @@ import { Icon } from "../../components/Icon.tsx";
 import { api } from "../../api.ts";
 import type { ApiAgent, ApiIntegration, ApiPlugin, ApiPrompt, ReviewStrategy } from "../../types.ts";
 import {
+  loadToolAuthorization,
+  serializeToolAuthorization,
+  supportsToolAuthorization,
+  type ToolAuthorizationState,
+} from "./toolAuthorizationHelpers.ts";
+import { ToolAuthorizationSection } from "./ToolAuthorizationSection.tsx";
+import {
   buildAgentModelConfig,
   normalizeAgentReviewForm,
   serializeProviderOptions,
@@ -73,6 +80,14 @@ export function AgentFormModal({ agent, integrations, plugins, prompts, onClose,
   const [availableModels, setAvailableModels] = useState<AvailableModel[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [toolAuth, setToolAuth] = useState<ToolAuthorizationState>(() =>
+    loadToolAuthorization(
+      (agent?.modelConfig?.["providerOptions"] as Record<string, unknown> | undefined)?.["toolAuthorization"],
+      agent?.integrationId
+        ? integrations.find((i) => i.id === agent.integrationId)?.provider
+        : undefined,
+    ),
+  );
   const selectedIntegration = agentIntegrations.find((integration) => integration.id === form.integrationId);
   const selectedPlugin = plugins.find((plugin) => plugin.provider === selectedIntegration?.provider);
   const agentConfigFields = selectedPlugin?.agentConfigFields ?? [];
@@ -174,6 +189,12 @@ export function AgentFormModal({ agent, integrations, plugins, prompts, onClose,
         form.providerOptions,
         existingProviderOptions,
       );
+      const toolAuthorization = serializeToolAuthorization(toolAuth, selectedIntegration?.provider);
+      if (toolAuthorization !== undefined) {
+        providerOptions["toolAuthorization"] = toolAuthorization;
+      } else {
+        delete providerOptions["toolAuthorization"];
+      }
       const normalizedForm = normalizeAgentReviewForm(form, selectedPlugin);
       const payload = {
         name: normalizedForm.name,
@@ -326,6 +347,15 @@ export function AgentFormModal({ agent, integrations, plugins, prompts, onClose,
               );
             })}
           </div>
+        )}
+
+        {supportsToolAuthorization(selectedIntegration?.provider) && (
+          <ToolAuthorizationSection
+            state={toolAuth}
+            onChange={setToolAuth}
+            provider={selectedIntegration?.provider}
+            plugin={selectedPlugin}
+          />
         )}
 
         <FormError msg={error} />

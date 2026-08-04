@@ -172,11 +172,11 @@ export interface ApiIntegration {
 export interface PluginField {
   key: string;
   label: string;
-  type: "text" | "url" | "password" | "number" | "select" | "textarea";
+  type: "text" | "url" | "password" | "number" | "select" | "textarea" | "multiselect";
   required?: boolean;
   placeholder?: string;
   description?: string;
-  valueType?: "string" | "number" | "boolean";
+  valueType?: "string" | "number" | "boolean" | "string[]";
   options?: Array<{ value: string; label: string }>;
   dependsOn?: { field: string; value: string };
   /** When true the field is not rendered in the UI (managed internally by OAuth flows etc.). */
