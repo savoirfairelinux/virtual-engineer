@@ -94,6 +94,18 @@ export function AgentFormModal({ agent, integrations, plugins, prompts, onClose,
   const reviewStrategies = form.type === "review" ? selectedPlugin?.reviewStrategies ?? [] : [];
   const nativeReview = form.reviewStrategy === "copilot_native";
 
+  // Rehydrate toolAuth when the selected integration's provider changes, so
+  // switching integration resets the tool-authorization form for the new
+  // provider instead of serializing the wrong shape.
+  const selectedProvider = selectedIntegration?.provider;
+  const initialProvider = agent?.integrationId
+    ? integrations.find((i) => i.id === agent.integrationId)?.provider
+    : undefined;
+  useEffect(() => {
+    if (selectedProvider === initialProvider) return;
+    setToolAuth(loadToolAuthorization(undefined, selectedProvider));
+  }, [selectedProvider, initialProvider]);
+
   // Fetch available models whenever the selected integration changes
   useEffect(() => {
     const integrationId = form.integrationId;
