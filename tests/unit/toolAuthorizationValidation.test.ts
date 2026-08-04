@@ -40,6 +40,16 @@ describe("validateToolAuthorization (Claude/Copilot)", () => {
       .toThrow(/required for review/i);
   });
 
+  it("rejects blocking the VE submission MCP tool for review-type agents", () => {
+    expect(() => validateToolAuthorization("claude", "review", { blockedTools: ["mcp__ve-submission__ve_submit_review"] }))
+      .toThrow(/VE submission tool is required/i);
+  });
+
+  it("allows blocking the VE submission MCP tool for coding agents", () => {
+    const result = validateToolAuthorization("claude", "coding", { blockedTools: ["mcp__ve-submission__ve_submit_changes"] });
+    expect(result).toEqual({ blockedTools: ["mcp__ve-submission__ve_submit_changes"] });
+  });
+
   it("allows blocking a review-floor tool for coding agents", () => {
     const result = validateToolAuthorization("claude", "coding", { blockedTools: ["Read"] });
     expect(result).toEqual({ blockedTools: ["Read"] });
@@ -68,35 +78,31 @@ describe("validateToolAuthorization (Claude/Copilot)", () => {
 });
 
 describe("validateToolAuthorization (Aider)", () => {
-  it("accepts boolean toggles and chatMode", () => {
+  it("accepts capability toggles", () => {
     const result = validateToolAuthorization("aider", "coding", {
       suggestShellCommands: true,
       detectUrls: false,
       playwright: false,
       git: true,
-      autoLint: true,
-      autoTest: false,
-      chatMode: "architect",
     });
     expect(result).toEqual({
       suggestShellCommands: true,
       detectUrls: false,
       playwright: false,
       git: true,
-      autoLint: true,
-      autoTest: false,
-      chatMode: "architect",
     });
+  });
+
+  it("rejects autoLint/autoTest/chatMode (existing providerOptions, not toolAuthorization)", () => {
+    expect(() => validateToolAuthorization("aider", "coding", { autoLint: true }))
+      .toThrow(/not supported by the 'aider'/i);
+    expect(() => validateToolAuthorization("aider", "coding", { chatMode: "code" }))
+      .toThrow(/not supported by the 'aider'/i);
   });
 
   it("rejects unknown keys", () => {
     expect(() => validateToolAuthorization("aider", "coding", { unknownToggle: true }))
       .toThrow(/not supported by the 'aider'/i);
-  });
-
-  it("rejects invalid chatMode", () => {
-    expect(() => validateToolAuthorization("aider", "coding", { chatMode: "invalid" }))
-      .toThrow(/chatMode must be/);
   });
 
   it("rejects non-boolean toggles", () => {
@@ -106,17 +112,16 @@ describe("validateToolAuthorization (Aider)", () => {
 });
 
 describe("validateToolAuthorization (Goose)", () => {
-  it("accepts developerExtension and gooseMode", () => {
+  it("accepts developerExtension", () => {
     const result = validateToolAuthorization("goose", "coding", {
       developerExtension: false,
-      gooseMode: "chat",
     });
-    expect(result).toEqual({ developerExtension: false, gooseMode: "chat" });
+    expect(result).toEqual({ developerExtension: false });
   });
 
-  it("rejects invalid gooseMode", () => {
-    expect(() => validateToolAuthorization("goose", "coding", { gooseMode: "invalid" }))
-      .toThrow(/gooseMode must be one of/);
+  it("rejects gooseMode (existing providerOption, not toolAuthorization)", () => {
+    expect(() => validateToolAuthorization("goose", "coding", { gooseMode: "chat" }))
+      .toThrow(/not supported by the 'goose'/i);
   });
 
   it("rejects unknown keys", () => {

@@ -123,9 +123,9 @@ describe("createToolAuthorizingPermissionHandler", () => {
       );
       expect(result).toEqual(expect.objectContaining({ kind: "reject" }));
       expect(inner).not.toHaveBeenCalled();
-      const denied = sink.events.find((e) => e.type === "permission.denied");
-      expect(denied).toBeDefined();
-      expect(denied?.data["toolName"]).toBe("Bash");
+      const denials = sink.events.filter((e) => e.type === "permission.denied");
+      expect(denials).toHaveLength(1);
+      expect(denials[0]?.data["toolName"]).toBe("Bash");
     } finally {
       sink.restore();
     }
@@ -184,20 +184,23 @@ describe("createToolAuthorizingPermissionHandler", () => {
         invocation,
       );
       expect(result).toEqual(expect.objectContaining({ kind: "reject" }));
-      expect(sink.events.some((e) => e.type === "permission.denied")).toBe(true);
+      const denials = sink.events.filter((e) => e.type === "permission.denied");
+      expect(denials).toHaveLength(1);
     } finally {
       sink.restore();
     }
   });
 
-  it("emits permission.denied when the inner handler rejects", async () => {
+  it("emits exactly one permission.denied when the inner handler rejects (no double-emission)", async () => {
     const inner = vi.fn(() => ({ kind: "reject" as const, feedback: "no" }));
     const sink = captureEvents();
     try {
       const handler = createToolAuthorizingPermissionHandler(inner as never, {});
       const result = await handler({ kind: "url" } as never, invocation);
       expect(result).toEqual(expect.objectContaining({ kind: "reject" }));
-      expect(sink.events.some((e) => e.type === "permission.denied")).toBe(true);
+      const denials = sink.events.filter((e) => e.type === "permission.denied");
+      expect(denials).toHaveLength(1);
+      expect(denials[0]?.data["toolName"]).toBe("WebFetch");
     } finally {
       sink.restore();
     }

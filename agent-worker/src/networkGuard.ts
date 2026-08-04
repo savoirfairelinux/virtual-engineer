@@ -87,7 +87,6 @@ function readShellCommand(request: PermissionRequest): string {
 }
 
 function rejectPermission(feedback: string): ReturnType<PermissionHandler> {
-  emitEvent('permission.denied', { reason: feedback });
   return { kind: 'reject', feedback };
 }
 
@@ -286,8 +285,9 @@ export function createToolAuthorizingPermissionHandler(
     }
     const result = await inner(request, invocation);
     if (result.kind === 'reject') {
-      // inner already emitted permission.denied via rejectPermission, but if it
-      // returned a reject without going through rejectPermission, emit here.
+      // The inner handler rejected (network floor, review floor, etc.). The
+      // wrapper is the single emission point for permission events, so emit
+      // the denial here with the tool identity extracted from the request.
       const feedback = typeof (result as { feedback?: unknown }).feedback === 'string'
         ? (result as { feedback: string }).feedback
         : 'rejected by provider permission policy';

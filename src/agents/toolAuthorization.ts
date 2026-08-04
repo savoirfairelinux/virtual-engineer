@@ -3,8 +3,8 @@
  * the env vars the agent worker reads.
  *
  * Storage shape (in `agents.modelConfigJson` → `providerOptions.toolAuthorization`):
- * - Claude/Copilot: `{ allowedTools: string[], blockedTools: string[] }` —
- *   newline-separated when forwarded to the worker.
+ * - Claude/Copilot: `{ blockedTools: string[] }` — newline-separated when
+ *   forwarded to the worker. Everything is allowed by default (blocklist-only).
  * - Aider/Goose: provider-specific toggles forwarded as a single
  *   `TOOL_AUTHORIZATION_JSON` env var (parsed by the worker).
  *

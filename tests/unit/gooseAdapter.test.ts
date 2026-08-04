@@ -240,12 +240,11 @@ describe("GooseAdapter", () => {
       ctx.agentSession.providerOptions = {
         toolAuthorization: {
           developerExtension: false,
-          gooseMode: "chat",
         },
       };
       const env = adapter.buildContainerSpec(ctx).env;
       expect(env["TOOL_AUTHORIZATION_JSON"]).toBe(
-        JSON.stringify({ developerExtension: false, gooseMode: "chat" }),
+        JSON.stringify({ developerExtension: false }),
       );
     });
   });

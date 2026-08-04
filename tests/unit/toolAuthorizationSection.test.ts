@@ -73,13 +73,12 @@ describe("loadToolAuthorization", () => {
     expect(state.git).toBe(true);
   });
 
-  it("loads Goose developerExtension + gooseMode", () => {
+  it("loads Goose developerExtension", () => {
     const state = loadToolAuthorization(
-      { developerExtension: false, gooseMode: "chat" },
+      { developerExtension: false },
       "goose",
     );
     expect(state.developerExtension).toBe(false);
-    expect(state.gooseMode).toBe("chat");
   });
 
   it("returns empty state for non-object input", () => {
@@ -117,17 +116,11 @@ describe("serializeToolAuthorization", () => {
     });
   });
 
-  it("serializes Goose toggles + gooseMode", () => {
+  it("serializes Goose developerExtension", () => {
     expect(serializeToolAuthorization(
-      { ...emptyToolAuthorization(), developerExtension: false, gooseMode: "chat" },
+      { ...emptyToolAuthorization(), developerExtension: false },
       "goose",
-    )).toEqual({ developerExtension: false, gooseMode: "chat" });
-
-    // gooseMode omitted when empty
-    expect(serializeToolAuthorization(
-      { ...emptyToolAuthorization(), developerExtension: true },
-      "goose",
-    )).toEqual({ developerExtension: true });
+    )).toEqual({ developerExtension: false });
   });
 
   it("returns undefined for unsupported providers", () => {

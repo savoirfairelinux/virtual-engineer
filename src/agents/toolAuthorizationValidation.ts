@@ -4,21 +4,21 @@
  *
  * Each provider's toolAuthorization shape is validated, and patterns that would
  * relax VE's network floor are rejected — the floor is immutable and user lists
- * can only tighten it.
+ * can only tighten it. `allowedTools` is rejected (blocklist-only model).
  *
  * Storage shape (in `agents.modelConfigJson` → `providerOptions.toolAuthorization`):
- * - Claude/Copilot: `{ allowedTools: string[], blockedTools: string[] }`
- *   (bare names, `Bash(prefix:*)`, `mcp__server__tool`).
- * - Aider: `{ suggestShellCommands, detectUrls, playwright, git }` (booleans) +
- *   `chatMode` (`code` | `architect`).
- * - Goose: `{ developerExtension: boolean, gooseMode }` (`gooseMode` optional,
- *   one of `auto` | `approve` | `chat` | `smart_approve`).
+ * - Claude/Copilot: `{ blockedTools: string[] }` (bare names, `Bash(prefix:*)`,
+ *   `mcp__server__tool`). Everything is allowed by default.
+ * - Aider: `{ suggestShellCommands, detectUrls, playwright, git }` (booleans).
+ *   `autoLint`/`autoTest`/`chatMode` are existing providerOptions, not part of
+ *   toolAuthorization.
+ * - Goose: `{ developerExtension: boolean }`. `gooseMode` is an existing
+ *   providerOption, not part of toolAuthorization.
  */
 
 /** VE's immutable network floor — user `blockedTools` can only add to this,
- * never remove. A user `allowedTools` entry that names one of these tools is
- * stripped at enforcement time, so the API rejects it up front with a clear
- * error. Mirrors `agent-worker/src/networkGuard.ts` `NETWORK_DISALLOWED_TOOLS`. */
+ * never remove. Mirrors `agent-worker/src/networkGuard.ts`
+ * `NETWORK_DISALLOWED_TOOLS`. */
 export const NETWORK_FLOOR_TOOLS = new Set([
   "WebFetch",
   "WebSearch",
@@ -131,6 +131,8 @@ function validateToolListAuthorization(
     result["blockedTools"] = asStringArray(auth["blockedTools"], "blockedTools");
   }
   // Review-type agents cannot block review-floor tools (would break review).
+  // This includes the VE submission MCP tool (mcp__ve-submission__*), which
+  // the review agent must be able to call to submit its verdict.
   if (agentType === "review") {
     const blocked = (result["blockedTools"] as string[] | undefined) ?? [];
     for (const tool of blocked) {
@@ -138,6 +140,11 @@ function validateToolListAuthorization(
       if (REVIEW_FLOOR_TOOLS.has(bareName)) {
         throw new ToolAuthorizationConfigError(
           `toolAuthorization.blockedTools cannot include '${tool}' for a review agent — it is required for review.`,
+        );
+      }
+      if (tool.startsWith("mcp__ve-submission__")) {
+        throw new ToolAuthorizationConfigError(
+          `toolAuthorization.blockedTools cannot include '${tool}' for a review agent — the VE submission tool is required to submit the review verdict.`,
         );
       }
     }
@@ -154,36 +161,25 @@ function asBoolean(value: unknown, key: string): boolean {
 
 function validateAiderToolAuthorization(auth: Record<string, unknown>): Record<string, unknown> {
   const result: Record<string, unknown> = {};
-  const knownBooleans = ["suggestShellCommands", "detectUrls", "playwright", "git", "autoLint", "autoTest"];
+  // autoLint/autoTest/chatMode are existing providerOptions (forwarded as
+  // AIDER_AUTO_LINT / AIDER_AUTO_TEST / AIDER_CHAT_MODE env vars), not part
+  // of toolAuthorization. Only the capability toggles below belong here.
+  const knownBooleans = ["suggestShellCommands", "detectUrls", "playwright", "git"];
   for (const key of knownBooleans) {
     if (key in auth) result[key] = asBoolean(auth[key], key);
   }
-  if ("chatMode" in auth) {
-    const cm = auth["chatMode"];
-    if (cm !== "code" && cm !== "architect" && cm !== "ask") {
-      throw new ToolAuthorizationConfigError("toolAuthorization.chatMode must be 'code', 'architect', or 'ask'");
-    }
-    result["chatMode"] = cm;
-  }
-  rejectUnknownKeys(auth, ["suggestShellCommands", "detectUrls", "playwright", "git", "autoLint", "autoTest", "chatMode"], "aider");
+  rejectUnknownKeys(auth, knownBooleans, "aider");
   return result;
 }
 
 function validateGooseToolAuthorization(auth: Record<string, unknown>): Record<string, unknown> {
   const result: Record<string, unknown> = {};
+  // gooseMode is an existing providerOption (forwarded as GOOSE_MODE env var),
+  // not part of toolAuthorization. Only developerExtension belongs here.
   if ("developerExtension" in auth) {
     result["developerExtension"] = asBoolean(auth["developerExtension"], "developerExtension");
   }
-  if ("gooseMode" in auth) {
-    const gm = auth["gooseMode"];
-    if (gm !== "auto" && gm !== "approve" && gm !== "chat" && gm !== "smart_approve") {
-      throw new ToolAuthorizationConfigError(
-        "toolAuthorization.gooseMode must be one of 'auto', 'approve', 'chat', 'smart_approve'",
-      );
-    }
-    result["gooseMode"] = gm;
-  }
-  rejectUnknownKeys(auth, ["developerExtension", "gooseMode"], "goose");
+  rejectUnknownKeys(auth, ["developerExtension"], "goose");
   return result;
 }
 
