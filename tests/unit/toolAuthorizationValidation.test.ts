@@ -45,6 +45,16 @@ describe("validateToolAuthorization (Claude/Copilot)", () => {
       .toThrow(/VE submission tool is required/i);
   });
 
+  it("rejects blocking the VE submission MCP tool under the alternate server name for review agents", () => {
+    expect(() => validateToolAuthorization("claude", "review", { blockedTools: ["mcp__virtual-engineer-submission__ve_submit_review"] }))
+      .toThrow(/VE submission tool is required/i);
+  });
+
+  it("rejects unknown keys in Claude/Copilot toolAuthorization (e.g. typos)", () => {
+    expect(() => validateToolAuthorization("claude", "coding", { blockTools: ["Read"] }))
+      .toThrow(/not supported by the 'claude\/copilot'/i);
+  });
+
   it("allows blocking the VE submission MCP tool for coding agents", () => {
     const result = validateToolAuthorization("claude", "coding", { blockedTools: ["mcp__ve-submission__ve_submit_changes"] });
     expect(result).toEqual({ blockedTools: ["mcp__ve-submission__ve_submit_changes"] });

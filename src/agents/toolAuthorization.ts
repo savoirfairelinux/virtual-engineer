@@ -54,11 +54,13 @@ export function toolListEnv(
 
 /**
  * Build the `TOOL_AUTHORIZATION_JSON` env var for Aider/Goose, carrying the
- * provider-specific toggles verbatim. Returns `{}` when no toggles are set.
+ * provider-specific toggles verbatim. Returns `{}` when no toggles are set
+ * (empty object or undefined).
  */
 export function toolAuthorizationJsonEnv(
   toolAuthorization: Record<string, unknown> | undefined,
 ): Record<string, string> {
   if (!toolAuthorization) return {};
+  if (Object.keys(toolAuthorization).length === 0) return {};
   return { TOOL_AUTHORIZATION_JSON: JSON.stringify(toolAuthorization) };
 }

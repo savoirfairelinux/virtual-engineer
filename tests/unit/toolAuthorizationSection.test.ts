@@ -34,10 +34,10 @@ describe("getToolCatalog", () => {
     expect(CLAUDE_TOOL_CATALOG.map((t) => t.value)).toContain("Bash");
   });
 
-  it("returns the Copilot catalog for copilot", () => {
+  it("returns the Copilot catalog for copilot (uses wrapper tool names)", () => {
     expect(getToolCatalog("copilot")).toBe(COPILOT_TOOL_CATALOG);
-    expect(COPILOT_TOOL_CATALOG.map((t) => t.value)).toContain("shell");
-    expect(COPILOT_TOOL_CATALOG.map((t) => t.value)).toContain("read_file");
+    expect(COPILOT_TOOL_CATALOG.map((t) => t.value)).toContain("Bash");
+    expect(COPILOT_TOOL_CATALOG.map((t) => t.value)).toContain("Read");
   });
 
   it("returns an empty catalog for non-list providers", () => {
@@ -57,12 +57,12 @@ describe("loadToolAuthorization", () => {
     expect(state.blockedToolsCustom).toBe("Bash(curl:*)");
   });
 
-  it("loads Copilot blocked tools using the Copilot catalog", () => {
+  it("loads Copilot blocked tools using the Copilot catalog (wrapper names)", () => {
     const state = loadToolAuthorization(
-      { blockedTools: ["write_file", "shell"] },
+      { blockedTools: ["Write", "Bash"] },
       "copilot",
     );
-    expect(state.blockedTools).toEqual(["write_file", "shell"]);
+    expect(state.blockedTools).toEqual(["Write", "Bash"]);
     expect(state.blockedToolsCustom).toBe("");
   });
 
