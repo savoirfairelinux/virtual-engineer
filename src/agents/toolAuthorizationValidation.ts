@@ -46,8 +46,11 @@ export const NETWORK_FLOOR_TOOLS = new Set([
 /** Review-floor tools that a review-type agent cannot block (would break review). */
 export const REVIEW_FLOOR_TOOLS = new Set(["Read", "Glob", "Grep", "Skill"]);
 
-/** Pattern regex for tool-list entries: bare names, `Bash(prefix:*)`, `mcp__server__tool`. */
-const TOOL_PATTERN_RE = /^[A-Za-z0-9_\-]+(?:\([A-Za-z0-9_\-.*: ]*\))?$/;
+/** Pattern regex for tool-list entries: bare names, `Bash(prefix:*)`,
+ * `mcp__server__tool`. Aligned with the worker-side `matchesToolPattern()` —
+ * any non-newline, non-`)` characters are allowed inside the parentheses so
+ * patterns like `Bash(git push:*)` are accepted at the API. */
+const TOOL_PATTERN_RE = /^[A-Za-z0-9_\-]+(?:\([^)\n]*\))?$/;
 
 export class ToolAuthorizationConfigError extends Error {
   constructor(message: string) {
@@ -85,13 +88,16 @@ export function validateToolAuthorization(
     return validateGooseToolAuthorization(auth);
   }
   // Unknown / unsupported provider: reject toolAuthorization so users don't
-  // silently configure something that has no effect.
+  // silently configure something that has no effect. Fail closed when the
+  // provider cannot be resolved (null/undefined) but toolAuthorization is set.
   if (provider !== undefined && provider !== null) {
     throw new ToolAuthorizationConfigError(
       `Tool authorization is not supported by provider '${provider}'.`,
     );
   }
-  return undefined;
+  throw new ToolAuthorizationConfigError(
+    "Tool authorization requires a linked agent integration to resolve the provider.",
+  );
 }
 
 function asStringArray(value: unknown, key: string): string[] {
@@ -215,7 +221,7 @@ export function normalizeModelConfigToolAuthorization(
   const opts = providerOptions as Record<string, unknown>;
   if (!("toolAuthorization" in opts)) return;
   const normalized = validateToolAuthorization(provider, agentType, opts["toolAuthorization"]);
-  if (normalized === undefined) {
+  if (normalized === undefined || Object.keys(normalized).length === 0) {
     delete opts["toolAuthorization"];
   } else {
     opts["toolAuthorization"] = normalized;

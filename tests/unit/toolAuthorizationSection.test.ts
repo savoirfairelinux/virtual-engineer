@@ -104,7 +104,7 @@ describe("serializeToolAuthorization", () => {
     )).toEqual({ blockedTools: ["Bash(rm:*)", "Bash(curl:*)"] });
   });
 
-  it("serializes Aider toggles", () => {
+  it("serializes Aider toggles when changed from defaults", () => {
     expect(serializeToolAuthorization(
       { ...emptyToolAuthorization(), suggestShellCommands: true, git: false },
       "aider",
@@ -116,11 +116,19 @@ describe("serializeToolAuthorization", () => {
     });
   });
 
-  it("serializes Goose developerExtension", () => {
+  it("returns undefined for Aider when all values match defaults (no config churn)", () => {
+    expect(serializeToolAuthorization(emptyToolAuthorization(), "aider")).toBeUndefined();
+  });
+
+  it("serializes Goose developerExtension when changed from default", () => {
     expect(serializeToolAuthorization(
       { ...emptyToolAuthorization(), developerExtension: false },
       "goose",
     )).toEqual({ developerExtension: false });
+  });
+
+  it("returns undefined for Goose when developerExtension matches default", () => {
+    expect(serializeToolAuthorization(emptyToolAuthorization(), "goose")).toBeUndefined();
   });
 
   it("returns undefined for unsupported providers", () => {

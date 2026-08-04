@@ -111,6 +111,17 @@ export function serializeToolAuthorization(
     return { blockedTools: blocked };
   }
   if (provider === "aider") {
+    // Only persist when the user changed something from the defaults, to avoid
+    // config churn and "freezing" defaults per-agent.
+    const defaults = emptyToolAuthorization();
+    if (
+      state.suggestShellCommands === defaults.suggestShellCommands &&
+      state.detectUrls === defaults.detectUrls &&
+      state.playwright === defaults.playwright &&
+      state.git === defaults.git
+    ) {
+      return undefined;
+    }
     return {
       suggestShellCommands: state.suggestShellCommands,
       detectUrls: state.detectUrls,
@@ -119,6 +130,9 @@ export function serializeToolAuthorization(
     };
   }
   if (provider === "goose") {
+    if (state.developerExtension === emptyToolAuthorization().developerExtension) {
+      return undefined;
+    }
     return { developerExtension: state.developerExtension };
   }
   return undefined;

@@ -99,12 +99,13 @@ const SYSTEM_PROMPT = process.env['SYSTEM_PROMPT'] ?? '';
 // ── Per-agent tool authorization (Claude/Copilot) ────────────────────────────
 // Newline-separated blocked-tool list injected by the host adapter from
 // `modelConfig.providerOptions.toolAuthorization`. Empty/unset = everything
-// allowed (modulo VE's network floor).
-const BLOCKED_TOOLS = parseToolList(
-  AGENT_PROVIDER === 'claude'
-    ? process.env['CLAUDE_BLOCKED_TOOLS']
-    : process.env['COPILOT_BLOCKED_TOOLS'],
-);
+// allowed (modulo VE's network floor). Only read for providers that support
+// per-tool blocklists (claude/copilot); aider/goose use TOOL_AUTHORIZATION_JSON.
+const BLOCKED_TOOLS = AGENT_PROVIDER === 'claude'
+  ? parseToolList(process.env['CLAUDE_BLOCKED_TOOLS'])
+  : AGENT_PROVIDER === 'copilot'
+    ? parseToolList(process.env['COPILOT_BLOCKED_TOOLS'])
+    : [];
 // Provider-specific tooling toggles (Aider/Goose) — opaque JSON object.
 let TOOL_AUTHORIZATION: Record<string, unknown> | undefined;
 try {

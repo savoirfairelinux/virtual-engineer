@@ -85,6 +85,13 @@ describe("validateToolAuthorization (Claude/Copilot)", () => {
     expect(validateToolAuthorization("claude", "coding", undefined)).toBeUndefined();
     expect(validateToolAuthorization("claude", "coding", null)).toBeUndefined();
   });
+
+  it("accepts patterns with spaces inside Bash(...) (aligned with worker matcher)", () => {
+    const result = validateToolAuthorization("claude", "coding", {
+      blockedTools: ["Bash(git push:*)", "Bash(git -c x=y fetch:*)"],
+    });
+    expect(result).toEqual({ blockedTools: ["Bash(git push:*)", "Bash(git -c x=y fetch:*)"] });
+  });
 });
 
 describe("validateToolAuthorization (Aider)", () => {
@@ -146,9 +153,16 @@ describe("validateToolAuthorization (unsupported providers)", () => {
       .toThrow(/not supported by provider 'mock'/i);
   });
 
-  it("returns undefined when provider is null/undefined", () => {
-    expect(validateToolAuthorization(null, "coding", { blockedTools: ["Read"] })).toBeUndefined();
-    expect(validateToolAuthorization(undefined, "coding", {})).toBeUndefined();
+  it("fails closed when provider is null/undefined but toolAuthorization is set", () => {
+    expect(() => validateToolAuthorization(null, "coding", { blockedTools: ["Read"] }))
+      .toThrow(/requires a linked agent integration/i);
+    expect(() => validateToolAuthorization(undefined, "coding", {}))
+      .toThrow(/requires a linked agent integration/i);
+  });
+
+  it("returns undefined when toolAuthorization is absent (null/undefined)", () => {
+    expect(validateToolAuthorization("claude", "coding", undefined)).toBeUndefined();
+    expect(validateToolAuthorization("claude", "coding", null)).toBeUndefined();
   });
 });
 
@@ -167,6 +181,12 @@ describe("normalizeModelConfigToolAuthorization", () => {
 
   it("removes toolAuthorization when it normalizes to undefined", () => {
     const modelConfig = { providerOptions: { toolAuthorization: null } };
+    normalizeModelConfigToolAuthorization("claude", "coding", modelConfig);
+    expect(modelConfig.providerOptions).not.toHaveProperty("toolAuthorization");
+  });
+
+  it("removes toolAuthorization when it normalizes to an empty object", () => {
+    const modelConfig = { providerOptions: { toolAuthorization: {} } };
     normalizeModelConfigToolAuthorization("claude", "coding", modelConfig);
     expect(modelConfig.providerOptions).not.toHaveProperty("toolAuthorization");
   });
