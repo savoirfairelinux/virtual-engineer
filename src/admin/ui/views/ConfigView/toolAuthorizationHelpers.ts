@@ -86,6 +86,10 @@ export function loadToolAuthorization(
     // Split known catalog tools (checkboxes) from custom patterns (free text).
     state.blockedTools = blocked.filter((t) => catalogValues.has(t));
     state.blockedToolsCustom = blocked.filter((t) => !catalogValues.has(t)).join("\n");
+  } else if (provider === undefined && Array.isArray(auth["blockedTools"])) {
+    // Provider not yet resolved (e.g. integrations still loading): preserve
+    // saved blockedTools as custom patterns so the config isn't lost on edit.
+    state.blockedToolsCustom = asStringArray(auth["blockedTools"]).join("\n");
   }
   if (provider === "aider") {
     state.suggestShellCommands = asBoolean(auth["suggestShellCommands"], false);

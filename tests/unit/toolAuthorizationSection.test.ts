@@ -73,6 +73,17 @@ describe("loadToolAuthorization", () => {
     expect(state.git).toBe(true);
   });
 
+  it("preserves blockedTools as custom patterns when provider is undefined", () => {
+    const state = loadToolAuthorization(
+      { blockedTools: ["Read", "Bash(rm:*)"] },
+      undefined,
+    );
+    // Provider not yet resolved: all blocked tools go into custom patterns so
+    // the config isn't lost on edit.
+    expect(state.blockedTools).toEqual([]);
+    expect(state.blockedToolsCustom).toBe("Read\nBash(rm:*)");
+  });
+
   it("loads Goose developerExtension", () => {
     const state = loadToolAuthorization(
       { developerExtension: false },
