@@ -33,7 +33,7 @@ tests/
 | Agents / Claude | `claudeAdapter`, `claudeWorker`, `claudeConnectionValidator`, `claudeModelsService` |
 | Agents / Aider | `aiderAdapter`, `aiderDescriptor`, `aiderConnectionValidator`, `aiderModelsService`, `aiderWorker` |
 | Agents / Goose | `gooseAdapter`, `gooseDescriptor`, `gooseConnectionValidator`, `gooseModelsService`, `gooseWorker` |
-| Review runtime | `reviewOrchestrator`, `reviewPromptBuilder`, `reviewOutputContract` (covered through parser/orchestrator suites), `reviewResultParser`, `reviewLiveLogs`, `liveMetrics`, `commentHash`, `commentSeverity`, `revisionPatchset` |
+| Review runtime | `reviewOrchestrator`, `reviewRetriggerGuard`, `reviewStderrEvents`, `reviewPostingGate`, `reviewPromptBuilder`, `reviewOutputContract` (covered through parser/orchestrator suites), `reviewResultParser`, `reviewLiveLogs`, `liveMetrics`, `commentHash`, `commentSeverity`, `revisionPatchset` |
 | Cost tracking | `cycleCost`, `stateStore.cost`, `adminCostRoutes` |
 | Plugins / runtime wiring | `pluginManager` (+ `.multiInstance`), `registry`, `runtimeBootstrap` (historical name; covers bootstrap wiring in `src/index.ts`), `integrationStreamEvents` |
 
