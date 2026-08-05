@@ -375,6 +375,9 @@ function buildApiRouter(dependencies: AdminServerDependencies, authRuntime: Admi
   // string; any authenticated user may call this (auth-self, no PBAC scope).
   router.add("GET", "/api/admin/img-proxy/token", async (_req, res, _params) => {
     const { token, expiresAt } = mintImageProxyToken();
+    // Prevent intermediary/shared caches from retaining this bearer-like token.
+    res.setHeader("Cache-Control", "no-store");
+    res.setHeader("Pragma", "no-cache");
     writeJson(res, 200, { token, expiresAt });
   }, { authenticated: true });
 
