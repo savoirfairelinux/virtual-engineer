@@ -3,7 +3,6 @@ import type {
   AgentAdapter,
   ConfigurableAdapter,
   AgentResult,
-  AgentLogEvent,
   TaskContext,
   ExternalChangeId,
   AdapterContainerSpec,
@@ -14,7 +13,6 @@ import type {
 import { makeExternalChangeId } from "../interfaces.js";
 import { getLogger } from "../logger.js";
 import { assertPromptRole } from "../utils/promptRole.js";
-import { agentLogBus, pushToTaskBuffer } from "./agentEventBus.js";
 import { buildCodegenUserPrompt } from "./copilotAdapter.js";
 import {
   extractToolAuthorization,
@@ -24,6 +22,8 @@ import {
   buildCodegenContainerSpec,
   buildReviewContainerSpec as buildSharedReviewContainerSpec,
 } from "./containerSpecBuilders.js";
+import { createStderrPipeline } from "./agentStderrPipeline.js";
+import type { StderrParseState } from "./agentStderrPipeline.js";
 
 const log = getLogger("goose-adapter");
 
@@ -84,12 +84,6 @@ interface DockerInvocationResult {
 interface DockerInvocationCallbacks {
   onStdoutChunk?: ((chunk: string) => void) | undefined;
   onStderrChunk?: ((chunk: string) => void) | undefined;
-}
-
-interface StderrParseState {
-  buffer: string;
-  plainLogLines: string[];
-  agentEvents: AgentLogEvent[];
 }
 
 type DockerInvoker = (
@@ -341,29 +335,25 @@ export class GooseAdapter implements AgentAdapter, ConfigurableAdapter {
     authEnv: Record<string, string>,
     changeId: ExternalChangeId
   ): Promise<AgentResult> {
-    const stderrState: StderrParseState = {
-      buffer: "",
-      plainLogLines: [],
-      agentEvents: [],
-    };
+    const stderrPipeline = createStderrPipeline(context, { adapterName: "goose", log });
     let invocation: DockerInvocationResult;
     try {
       invocation = await this.invokeAgentContainer(context, authEnv, {
         onStderrChunk: (chunk) => {
-          this.consumeStderrChunk(context, stderrState, chunk);
+          stderrPipeline.consumeChunk(chunk);
         },
       });
     } catch (err) {
-      this.flushStderrBuffer(context, stderrState);
-      if (stderrState.agentEvents.length === 0 && stderrState.plainLogLines.length === 0) {
+      stderrPipeline.flush();
+      if (stderrPipeline.state.agentEvents.length === 0 && stderrPipeline.state.plainLogLines.length === 0) {
         throw err;
       }
       const message = err instanceof Error ? err.message : String(err);
-      return this.setupFailureResult(message, stderrState);
+      return this.setupFailureResult(message, stderrPipeline.state);
     }
-    this.flushStderrBuffer(context, stderrState);
+    stderrPipeline.flush();
 
-    const result = this.parseAgentResult(context, invocation.stdout, stderrState);
+    const result = this.parseAgentResult(context, invocation.stdout, stderrPipeline.state);
 
     if (result.commits && result.commits.length > 0) {
       log.info(
@@ -449,66 +439,6 @@ export class GooseAdapter implements AgentAdapter, ConfigurableAdapter {
         metadata: { adapter: "goose", parseError: true },
       };
     }
-  }
-
-  /** Accumulate a stderr chunk into the line buffer and flush complete lines for processing. */
-  private consumeStderrChunk(context: TaskContext, state: StderrParseState, chunk: string): void {
-    state.buffer += chunk;
-    const lines = state.buffer.split(/\r?\n/);
-    state.buffer = lines.pop() ?? "";
-    for (const line of lines) {
-      this.processStderrLine(context, state, line);
-    }
-  }
-
-  /** Flush any remaining buffered stderr content as a final line. */
-  private flushStderrBuffer(context: TaskContext, state: StderrParseState): void {
-    if (!state.buffer) {
-      return;
-    }
-    this.processStderrLine(context, state, state.buffer);
-    state.buffer = "";
-  }
-
-  /** Parse one stderr line as a VE event JSON or plain log, emitting to the live event bus. */
-  private processStderrLine(context: TaskContext, state: StderrParseState, line: string): void {
-    if (!line) {
-      return;
-    }
-
-    try {
-      const parsed = JSON.parse(line) as Record<string, unknown>;
-      if (parsed["__ve_event"] === true) {
-        const event: AgentLogEvent = {
-          type: typeof parsed["type"] === "string" ? parsed["type"] : "unknown",
-          timestamp: typeof parsed["ts"] === "string" ? parsed["ts"] : new Date().toISOString(),
-          data: parsed["data"],
-          taskId: context.taskId,
-          cycleNumber: context.cycleNumber,
-        };
-        state.agentEvents.push(event);
-        pushToTaskBuffer(event);
-        agentLogBus.emit("event", event);
-        return;
-      }
-    } catch {
-      // plain stderr line
-    }
-
-    state.plainLogLines.push(line);
-    const stderrEvent: AgentLogEvent = {
-      type: "stderr.line",
-      timestamp: new Date().toISOString(),
-      data: { line },
-      taskId: context.taskId,
-      cycleNumber: context.cycleNumber,
-    };
-    pushToTaskBuffer(stderrEvent);
-    agentLogBus.emit("event", stderrEvent);
-    log.info(
-      { taskId: context.taskId, cycle: context.cycleNumber, line },
-      "goose adapter: live stderr"
-    );
   }
 
   // ── helpers ───────────────────────────────────────────────────────────────
