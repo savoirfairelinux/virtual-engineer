@@ -165,6 +165,7 @@ describe("adminServer RBAC and session auth", () => {
       headers: { authorization: `Bearer ${admin.token}` },
     });
     expect(mint.status).toBe(200);
+    expect(mint.headers.get("cache-control")).toBe("no-store");
     const { token } = (await mint.json()) as { token: string; expiresAt: number };
     expect(token).not.toBe(admin.token);
 
