@@ -59,7 +59,8 @@ src/
                         # adminServer (multiplexer/auth), router, adminRouteUtils,
                         # adminTaskRoutes, adminPromptRoutes, adminStreamRoutes,
                         # adminIntegrationRoutes, adminAgentsRoutes,
-                        # adminProjectsRoutes, adminConcurrencyRoutes,
+                        # adminProjectsRoutes(+Shared, +WorkspaceRoutes,
+                        # +VendorComponentsRoutes), adminConcurrencyRoutes,
                         # adminSettingsRoutes, adminWebhookRoutes,
                         # adminOverviewRoutes,
                         # providerSummary (AdminProviderSummary builder),
@@ -92,6 +93,7 @@ src/
                         # gitlab,gerrit,redmine,copilot,claude,aider,mock}.ts (unified
                         # provider descriptors; githubOAuth/gitlabOAuth helpers)
   review/               # reviewOrchestrator,
+                        # reviewRetriggerGuard, reviewStderrEvents, reviewPostingGate,
                         # reviewBootstrap (bundle + trigger factory),
                         # reviewPromptBuilder, reviewOutputContract,
                         # reviewResultParser,
