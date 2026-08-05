@@ -2,7 +2,7 @@
 
 **Source:** [src/workspace/](../../../src/workspace/).
 
-The workspace module currently owns Docker named-volume materialization for agent runs and the bounded, read-only discovery path used to preview multi-repository manifests before project configuration is changed.
+The workspace module currently owns Docker named-volume materialization for agent runs and the bounded, read-only discovery path used to preview multi-repository manifests before project configuration is changed. `integrationBindingResolver.ts` implements the repository-URL-to-integration matching used by `POST /api/admin/projects/resolve-repositories` (normalized by host, optional port, and path) so a scanned manifest member can be linked back to an existing enabled integration.
 
 ## Manifest scan pipeline
 
