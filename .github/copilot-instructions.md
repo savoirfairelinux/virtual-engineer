@@ -100,8 +100,8 @@ src/
                         # commentFilter, commentHash, commentSeverity,
                         # revisionPatchset
   state/                # schema (Drizzle), stateMachine, stateStore facade, migrate
-    stores/             # domain-scoped DB modules: task, integration, project,
-                        # prompt(+seeding), and agent(+concurrency)
+    stores/             # domain-scoped DB modules: task, reviewDedup, cost,
+                        # integration, project, prompt(+seeding), and agent(+concurrency)
   utils/                # ticketFooterFormatter, ticketSourceLabel, encryption,
                         # errorClassifier, gitExec, githubAuth, gitlabAuth,
                         # redactUrl

@@ -18,6 +18,8 @@ import type { AgentStoreApi } from "./stores/agentStore.js";
 import { createAgentStore } from "./stores/agentStore.js";
 import type { AuditStoreApi } from "./stores/auditStore.js";
 import { createAuditStore } from "./stores/auditStore.js";
+import type { CostStoreApi } from "./stores/costStore.js";
+import { createCostStore } from "./stores/costStore.js";
 import type { GroupStoreApi } from "./stores/groupStore.js";
 import { createGroupStore } from "./stores/groupStore.js";
 import type { IntegrationStoreApi } from "./stores/integrationStore.js";
@@ -28,6 +30,8 @@ import type { ProjectStoreApi } from "./stores/projectStore.js";
 import { createProjectStore } from "./stores/projectStore.js";
 import type { PromptStoreApi } from "./stores/promptStore.js";
 import { createPromptStore } from "./stores/promptStore.js";
+import type { ReviewDedupStoreApi } from "./stores/reviewDedupStore.js";
+import { createReviewDedupStore } from "./stores/reviewDedupStore.js";
 import type { SettingsStoreApi } from "./stores/settingsStore.js";
 import { createSettingsStore } from "./stores/settingsStore.js";
 import type { TaskStoreApi } from "./stores/taskStore.js";
@@ -38,6 +42,8 @@ import * as schema from "./schema.js";
 
 type ComposedStoreApi =
   & TaskStoreApi
+  & ReviewDedupStoreApi
+  & CostStoreApi
   & IntegrationStoreApi
   & ProjectStoreApi
   & PromptStoreApi
@@ -54,6 +60,8 @@ export class SqliteStateStore {
   private readonly db: BetterSQLite3Database<typeof schema>;
   private readonly dbDir: string;
   private readonly taskStore: TaskStoreApi;
+  private readonly reviewDedupStore: ReviewDedupStoreApi;
+  private readonly costStore: CostStoreApi;
   private readonly integrationStore: IntegrationStoreApi;
   private readonly projectStore: ProjectStoreApi;
   private readonly promptStore: PromptStoreApi;
@@ -81,6 +89,8 @@ export class SqliteStateStore {
       raw: this.raw,
       onTaskStateChange: (task) => this.notifyTaskTransition(task),
     });
+    this.reviewDedupStore = createReviewDedupStore({ db: this.db, raw: this.raw });
+    this.costStore = createCostStore({ raw: this.raw });
     this.integrationStore = createIntegrationStore({ db: this.db });
     this.projectStore = createProjectStore({ db: this.db, raw: this.raw });
     this.promptStore = createPromptStore({ db: this.db, dbDir: this.dbDir });
@@ -94,6 +104,8 @@ export class SqliteStateStore {
     Object.assign(
       this,
       this.taskStore,
+      this.reviewDedupStore,
+      this.costStore,
       this.integrationStore,
       this.projectStore,
       this.promptStore,
