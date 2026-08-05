@@ -99,7 +99,7 @@ export function registerProjectWorkspaceRoutes(router: Router, deps: ProjectsRou
         repositories: scan.repositories,
         diagnostics: scan.diagnostics,
       });
-    } catch (error) {
+    } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       log.warn({ integrationId: parsed.data.integrationId, repoKey: parsed.data.repoKey, errorMessage }, "push-target workspace scan failed");
       writeJson(res, error instanceof WorkspaceScanError ? error.statusCode : 502, { error: errorMessage });
