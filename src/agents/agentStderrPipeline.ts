@@ -41,20 +41,23 @@ export function createStderrPipeline(
     }
 
     try {
-      const parsed = JSON.parse(line) as Record<string, unknown>;
-      if (parsed["__ve_event"] === true) {
-        const event: AgentLogEvent = {
-          type: typeof parsed["type"] === "string" ? parsed["type"] : "unknown",
-          timestamp: typeof parsed["ts"] === "string" ? parsed["ts"] : new Date().toISOString(),
-          data: parsed["data"],
-          taskId: context.taskId,
-          cycleNumber: context.cycleNumber,
-        };
-        state.agentEvents.push(event);
-        options.onEvent?.(event);
-        pushToTaskBuffer(event);
-        agentLogBus.emit("event", event);
-        return;
+      const parsed: unknown = JSON.parse(line);
+      if (typeof parsed === "object" && parsed !== null) {
+        const record = parsed as Record<string, unknown>;
+        if (record["__ve_event"] === true) {
+          const event: AgentLogEvent = {
+            type: typeof record["type"] === "string" ? record["type"] : "unknown",
+            timestamp: typeof record["ts"] === "string" ? record["ts"] : new Date().toISOString(),
+            data: record["data"],
+            taskId: context.taskId,
+            cycleNumber: context.cycleNumber,
+          };
+          state.agentEvents.push(event);
+          options.onEvent?.(event);
+          pushToTaskBuffer(event);
+          agentLogBus.emit("event", event);
+          return;
+        }
       }
     } catch {
       // plain stderr line
