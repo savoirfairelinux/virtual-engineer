@@ -37,7 +37,7 @@ export function mintImageProxyToken(): { token: string; expiresAt: number } {
 
 /** Consume a token (single-use). Returns true only if it existed and had not expired. */
 export function consumeImageProxyToken(rawToken: string): boolean {
-  if (!rawToken) return false;
+  if (!rawToken || !/^[0-9a-f]{64}$/.test(rawToken)) return false;
   const hash = hashToken(rawToken);
   const entry = tokens.get(hash);
   tokens.delete(hash);
