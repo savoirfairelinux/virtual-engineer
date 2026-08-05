@@ -90,8 +90,11 @@ export async function enrichPushTargets(
       }
       try {
         const connector = await deps.resolveVcsConnectorForTarget(pt.integrationId, { repoKey: pt.repoKey, targetBranch: pt.targetBranch });
+        const hasSshAgentPubKeyPath = (
+          c: VcsConnector,
+        ): c is VcsConnector & { sshAgentPubKeyPath?: string | undefined } => "sshAgentPubKeyPath" in c;
         const fallbackKey = connector.sshKeyPath ?? undefined;
-        const fallbackAgentPub = (connector as { sshAgentPubKeyPath?: string | undefined }).sshAgentPubKeyPath ?? undefined;
+        const fallbackAgentPub = hasSshAgentPubKeyPath(connector) ? connector.sshAgentPubKeyPath ?? undefined : undefined;
         const knownHostsPath = connector.sshKnownHostsPath ?? undefined;
         if (pt.sshKeyPath === null && fallbackKey !== undefined) {
           enrichedTarget = { ...enrichedTarget, sshKeyPath: fallbackKey };
