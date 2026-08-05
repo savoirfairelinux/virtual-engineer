@@ -40,7 +40,7 @@ npm run build:ui    # Vite build of the admin React SPA → dist/admin-ui
 npm run db:migrate  # apply Drizzle migrations
 ```
 
-Helper scripts: `npm run e2e:mock`, `npm run reset:instance`, `npm run build:agent` (agent-worker TS build), `npm run dev:ui` (Vite watch), `npm run typecheck:ui` (admin source + jsdom UI tests), `npm run db:generate`, `npm run build` (`build:ui` + `tsc`, used by CI).
+Helper scripts: `npm run e2e:mock`, `npm run reset:instance`, `npm run build:agent` (agent-worker TS build), `npm run dev:ui` (Vite watch), `npm run typecheck:ui` (admin source + jsdom UI tests), `npm run db:generate`, `npm run build` (`build:ui` + `tsc` + `copy:prompts`, used by CI). `npm run copy:prompts` copies `prompts/*.md` into `dist/prompts` — required for `npm start` (`node dist/src/index.js`) to seed built-in prompts outside Docker, since `promptStore.ts`'s compiled path resolves prompts relative to `dist/`; `Dockerfile.orchestrator` copies them independently and is unaffected.
 
 Keep the root `@github/copilot-sdk` dependency aligned with `agent-worker/package.json`; `npm run typecheck` compiles `agent-worker/src` from the root install and relies on the same permission-handler result types.
 

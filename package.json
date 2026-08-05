@@ -9,8 +9,9 @@
     "node": ">=22.0.0"
   },
   "scripts": {
-    "build": "npm run build:ui && tsc",
+    "build": "npm run build:ui && tsc && npm run copy:prompts",
     "build:ui": "vite build --config vite.admin.config.ts",
+    "copy:prompts": "mkdir -p dist/prompts && cp prompts/*.md dist/prompts/",
     "dev:ui": "vite build --config vite.admin.config.ts --watch",
     "start": "node dist/src/index.js",
     "dev": "tsx src/index.ts",
