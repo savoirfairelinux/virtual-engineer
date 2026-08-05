@@ -18,7 +18,6 @@ import { DEFAULT_COPILOT_MODEL } from "../copilotModel.js";
 import { decryptToken } from "../utils/encryption.js";
 import { assertPromptRole } from "../utils/promptRole.js";
 import { getConfig } from "../config.js";
-import { agentLogBus, pushToTaskBuffer } from "./agentEventBus.js";
 import {
   extractToolAuthorization,
   toolListEnv,
@@ -27,6 +26,8 @@ import {
   buildCodegenContainerSpec,
   buildReviewContainerSpec as buildSharedReviewContainerSpec,
 } from "./containerSpecBuilders.js";
+import { createStderrPipeline } from "./agentStderrPipeline.js";
+import type { StderrParseState } from "./agentStderrPipeline.js";
 
 // Re-export for backward compatibility — callers that import from copilotAdapter continue to work.
 export { agentLogBus, getTaskEventBuffer, clearTaskEventBuffer } from "./agentEventBus.js";
@@ -50,12 +51,6 @@ interface DockerInvocationResult {
 interface DockerInvocationCallbacks {
   onStdoutChunk?: ((chunk: string) => void) | undefined;
   onStderrChunk?: ((chunk: string) => void) | undefined;
-}
-
-interface StderrParseState {
-  buffer: string;
-  plainLogLines: string[];
-  agentEvents: AgentLogEvent[];
 }
 
 type DockerInvoker = (
@@ -370,33 +365,33 @@ export class CopilotAdapter implements AgentAdapter, ConfigurableAdapter {
     githubToken: string,
     changeId: ExternalChangeId
   ): Promise<AgentResult> {
-    const stderrState: StderrParseState = {
-      buffer: "",
-      plainLogLines: [],
-      agentEvents: [],
-    };
+    const stderrPipeline = createStderrPipeline(context, {
+      adapterName: "copilot",
+      log,
+      onEvent: (event) => this.logLiveAgentEvent(context, event),
+    });
     let invocation: DockerInvocationResult;
     try {
       invocation = await this.invokeAgentContainer(context, githubToken, {
         onStderrChunk: (chunk) => {
-          this.consumeStderrChunk(context, stderrState, chunk);
+          stderrPipeline.consumeChunk(chunk);
         },
       });
     } catch (err) {
-      this.flushStderrBuffer(context, stderrState);
-      if (stderrState.agentEvents.length === 0 && stderrState.plainLogLines.length === 0) {
+      stderrPipeline.flush();
+      if (stderrPipeline.state.agentEvents.length === 0 && stderrPipeline.state.plainLogLines.length === 0) {
         throw err;
       }
       const message = err instanceof Error ? err.message : String(err);
-      return this.setupFailureResult(message, stderrState);
+      return this.setupFailureResult(message, stderrPipeline.state);
     }
-    this.flushStderrBuffer(context, stderrState);
+    stderrPipeline.flush();
 
     const result = await this.parseAgentResult(
       context,
       invocation.stdout,
       invocation.stderr,
-      stderrState
+      stderrPipeline.state
     );
 
     // Agent-created commits (multi-commit protocol): skip host commit processing.
@@ -455,14 +450,18 @@ export class CopilotAdapter implements AgentAdapter, ConfigurableAdapter {
     stderr: string,
     stderrState?: StderrParseState
   ): Promise<AgentResult> | AgentResult {
-    const parseState = stderrState ?? {
-      buffer: "",
-      plainLogLines: [],
-      agentEvents: [],
-    };
-    if (!stderrState) {
-      this.consumeStderrChunk(context, parseState, stderr);
-      this.flushStderrBuffer(context, parseState);
+    let parseState: StderrParseState;
+    if (stderrState) {
+      parseState = stderrState;
+    } else {
+      const fallbackPipeline = createStderrPipeline(context, {
+        adapterName: "copilot",
+        log,
+        onEvent: (event) => this.logLiveAgentEvent(context, event),
+      });
+      fallbackPipeline.consumeChunk(stderr);
+      fallbackPipeline.flush();
+      parseState = fallbackPipeline.state;
     }
 
     const plainLogs = parseState.plainLogLines.join("\n");
@@ -535,76 +534,6 @@ export class CopilotAdapter implements AgentAdapter, ConfigurableAdapter {
     return output.includes("cannot apply additional memory protection after relocation")
       || output.includes("ERR_DLOPEN_FAILED")
       || output.includes("Failed to load native module: pty.node");
-  }
-
-  /** Accumulate a stderr chunk into the line buffer and flush complete lines for processing. */
-  private consumeStderrChunk(
-    context: TaskContext,
-    state: StderrParseState,
-    chunk: string
-  ): void {
-    state.buffer += chunk;
-    const lines = state.buffer.split(/\r?\n/);
-    state.buffer = lines.pop() ?? "";
-    for (const line of lines) {
-      this.processStderrLine(context, state, line);
-    }
-  }
-
-  /** Flush any remaining buffered stderr content as a final line. */
-  private flushStderrBuffer(context: TaskContext, state: StderrParseState): void {
-    if (!state.buffer) {
-      return;
-    }
-
-    this.processStderrLine(context, state, state.buffer);
-    state.buffer = "";
-  }
-
-  /** Parse one stderr line as a VE event JSON or plain log, emitting to the live event bus. */
-  private processStderrLine(
-    context: TaskContext,
-    state: StderrParseState,
-    line: string
-  ): void {
-    if (!line) {
-      return;
-    }
-
-    try {
-      const parsed = JSON.parse(line) as Record<string, unknown>;
-      if (parsed["__ve_event"] === true) {
-        const event: AgentLogEvent = {
-          type: typeof parsed["type"] === "string" ? parsed["type"] : "unknown",
-          timestamp: typeof parsed["ts"] === "string" ? parsed["ts"] : new Date().toISOString(),
-          data: parsed["data"],
-          taskId: context.taskId,
-          cycleNumber: context.cycleNumber,
-        };
-        state.agentEvents.push(event);
-        this.logLiveAgentEvent(context, event);
-        pushToTaskBuffer(event);
-        agentLogBus.emit("event", event);
-        return;
-      }
-    } catch {
-      // plain stderr line
-    }
-
-    state.plainLogLines.push(line);
-    const stderrEvent: AgentLogEvent = {
-      type: "stderr.line",
-      timestamp: new Date().toISOString(),
-      data: { line },
-      taskId: context.taskId,
-      cycleNumber: context.cycleNumber,
-    };
-    pushToTaskBuffer(stderrEvent);
-    agentLogBus.emit("event", stderrEvent);
-    log.info(
-      { taskId: context.taskId, cycle: context.cycleNumber, line },
-      "copilot adapter: live stderr"
-    );
   }
 
   /** Log a structured agent event at debug level for high-frequency types, info for others. */
