@@ -105,6 +105,9 @@ src/
     aiderAdapter.ts       # Aider adapter (agent_execution; wraps any litellm backend)
     aiderConnectionValidator.ts
     aiderModelsService.ts
+    gooseAdapter.ts       # Goose adapter (agent_execution; wraps any of 13 LLM providers)
+    gooseConnectionValidator.ts
+    gooseModelsService.ts
     cycleCost.ts          # Derives per-cycle cost from assistant.usage events
     mockAgentAdapter.ts   # Deterministic mock, no Copilot needed
     agentEventBus.ts      # SSE event bus for live log streaming
@@ -421,6 +424,19 @@ The adapter injects **no** default model: when the agent config leaves the model
 
 ---
 
+#### 3.6.3 GooseAdapter
+
+`src/agents/gooseAdapter.ts`
+
+An alternative `agent_execution` adapter that runs the [Goose CLI](https://goose-docs.ai) (a Rust agent from the AAIF that wraps any of 13 LLM providers) inside the same hardened container. It mirrors `CopilotAdapter`/`ClaudeAdapter`/`AiderAdapter` (same security args, `/ve-home` HOME volume, `__ve_event` stderr protocol, commit collection, and `AgentResult` contract) but:
+
+- injects `AGENT_PROVIDER=goose` + `GOOSE_MODEL` (only when configured) and the selected provider's auth env var(s);
+- dispatches in the worker: `agent-worker/src/index.ts` resolves the runner via `providers/registry.ts` and calls `providers/goose.ts` `runGooseAgent()` when `AGENT_PROVIDER=goose`.
+
+The adapter injects **no** default model: when the agent config leaves the model unset, `GOOSE_MODEL` is omitted and the Goose CLI picks its own default. Thirteen LLM providers are declared on the `goose` descriptor (`src/plugins/descriptors/goose.ts`, `gooseProvider` selector): `anthropic` → `ANTHROPIC_API_KEY`; `openai` → `OPENAI_API_KEY`; `openrouter` → `OPENROUTER_API_KEY`; `ollama` → `OLLAMA_HOST` (no key); `deepseek` → `DEEPSEEK_API_KEY`; `groq` → `GROQ_API_KEY`; `gemini` → `GOOGLE_API_KEY`; `azure_openai` → `AZURE_OPENAI_API_KEY` + `AZURE_OPENAI_ENDPOINT`; `bedrock` → AWS env credential chain (no key forwarded); `perplexity` → `PERPLEXITY_API_KEY`; `mistral` → `MISTRAL_API_KEY`; `xai` → `XAI_API_KEY`; `cerebras` → `CEREBRAS_API_KEY`; `openai_compat` → `OPENAI_API_KEY` + `OPENAI_API_BASE`. Goose reads these directly from the environment, never from config.yaml. Cost columns stay null (Goose has no AIU); token usage is still emitted.
+
+---
+
 ### 3.7 ReviewOrchestrator
 
 `src/review/reviewOrchestrator.ts`
@@ -579,6 +595,7 @@ Pause and resume are **not boolean columns**. They are `state_transitions` rows 
 | `copilot` | agent_execution |
 | `claude` | agent_execution |
 | `aider` | agent_execution |
+| `goose` | agent_execution |
 | `mock` | agent_execution |
 
 Technical capabilities (`oauth`, `discovery`, `stream-events`, `reviewer`) are derived from descriptor hooks. Multiple integrations of the same provider can be active simultaneously. The orchestrator routes by `integrationId` in project mode, and may build a project-bound connector instance when the VE project owns part of the provider binding.

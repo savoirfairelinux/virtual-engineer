@@ -27,7 +27,7 @@ Connectors are unchanged in shape, but they are now produced by **capability fac
 | `issue_tracking` | `redmineConnector`, `gitlabIssueConnector`, `githubIssueConnector` | `capabilities.issue_tracking.createConnector` |
 | `code_review` | `gerritConnector`, `gerritSshReviewProvider`, `integrationStreamEvents`, `gerritStreamEvents`, `gitlabMergeRequestConnector`, `gitlabMergeRequestReviewProvider`, `githubPullRequestReviewConnector`, `githubReviewProvider` | `capabilities.code_review.{ createConnector, createReviewer, streamEvents }` |
 
-The `provider` ids are `github | gitlab | gerrit | redmine | copilot | claude | aider | mock`. Repository push/commit lives in [src/vcs/](../../../src/vcs/) via `capabilities.source_control.createVcsConnector` — see [vcs.md](vcs.md). The `copilot`, `claude`, `aider`, and `mock` providers expose only `agent_execution` and have no connectors here.
+The `provider` ids are `github | gitlab | gerrit | redmine | copilot | claude | aider | goose | mock`. Repository push/commit lives in [src/vcs/](../../../src/vcs/) via `capabilities.source_control.createVcsConnector` — see [vcs.md](vcs.md). The `copilot`, `claude`, `aider`, `goose`, and `mock` providers expose only `agent_execution` and have no connectors here.
 
 Reviewer-side `ReviewProvider` reads and effects accept an optional `AbortSignal`. GitHub and GitLab forward it to `fetch`; Gerrit forwards it to SSH and temporary Git subprocesses. Multi-request best-effort fallbacks rethrow cancellation instead of folding or suppressing it, so the orchestrator's single review deadline can terminate freshness checks, comments, replies, and votes.
 
@@ -57,6 +57,13 @@ Methods used by the orchestrator:
 - Reuses the same `in-progress / in-review / closed` workflow semantics.
 - The GitLab project selector can come from the VE project ticket binding (`ticketProjectKey`) rather than from the integration row.
 - Workflow label names default to `in-progress` / `in-review`; legacy integration rows may still override them with `inProgressLabel` / `inReviewLabel`.
+
+### `GitHubIssueConnector` — [src/connectors/githubIssueConnector.ts](../../../src/connectors/githubIssueConnector.ts)
+
+- Token auth through `Authorization: Bearer` (GitHub PAT or OAuth token).
+- Maps the same orchestrator-facing contract onto GitHub Issues REST endpoints (`GET /repos/:owner/:repo/issues`, paginated).
+- Reuses the same `in-progress / in-review / closed` workflow semantics via a single configurable `inProgressLabel` (default `in-progress`); GitHub Issues has no built-in status field, so labels double as workflow state.
+- The GitHub owner/repo selector can come from the VE project ticket binding (`ticketProjectKey`) rather than from the integration row.
 
 ## Review contract (`ReviewConnector`)
 
@@ -111,6 +118,18 @@ Methods used by the orchestrator:
 - `changeId` accepts `project#iid` or a legacy bare `iid` (which falls back to the bound project).
 - `getChangeDetails` / `getChangeDiff` read the MR and its `/changes`; `postReviewComments` / `postReviewWithComments` / `vote` all funnel through one `submitReview` that posts inline `/discussions` (using the MR `diff_refs` for line positioning), folds out-of-diff or overflow findings into a summary `/notes`, and approves/unapproves best-effort via `/approve` / `/unapprove`.
 - Inline lines are validated against the new-file line numbers parsed from each hunk; comments that don't land on an added line are folded into the summary.
+
+### `GitHubPullRequestReviewConnector` — [src/connectors/githubPullRequestReviewConnector.ts](../../../src/connectors/githubPullRequestReviewConnector.ts)
+
+- Implements `ReviewConnector` (feedback/status/merge polling) and `ReviewDiscoveryConnector` (open-PR review-assignment discovery for `pollReviewProjects()`).
+- Reads PR state/merge status, unresolved review comments, and GitHub Checks API run/annotation data so `react_to_ci_failures` can classify `ci-run-*` / CI failure events the same way Gerrit does.
+- Token auth through `Authorization: Bearer` (GitHub PAT or OAuth token); `apiBaseUrl` supports both `api.github.com` and GitHub Enterprise `/api/v3` hosts.
+
+### `GitHubReviewProvider` — [src/connectors/githubReviewProvider.ts](../../../src/connectors/githubReviewProvider.ts)
+
+- Reviewer-side `ReviewProvider` (`kind = "github"`) that lets VE act as a reviewer on GitHub Pull Requests, mirroring the Gerrit/GitLab providers.
+- `getChangeDetails` / `getChangeDiff` read the PR and its file list (`/pulls/:number/files`, unified `patch` per file); `postReviewComments` / `postReviewWithComments` / `vote` submit through the PR Reviews API, mapping normalized `-1 | 0 | 1` decisions to `REQUEST_CHANGES` / `COMMENT` / `APPROVE`.
+- Discussion-thread replies use the GraphQL API (`reviewThreads { isResolved, comments }` for fetch, `addPullRequestReviewThreadReply` mutation for replies); the GraphQL endpoint is derived from the REST `apiBaseUrl`.
 
 ### Discussion-thread replies (all review providers)
 

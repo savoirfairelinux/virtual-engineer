@@ -23,3 +23,9 @@ ds-bundle/
 .design-sync/.cache/
 .design-sync/learnings/
 .design-sync/node_modules
+
+# Claude Code local config/tooling (not shared with the team)
+.claude/
+
+# graphify knowledge-graph output (generated, regenerate with /graphify)
+graphify-out/

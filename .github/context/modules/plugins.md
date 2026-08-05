@@ -17,6 +17,7 @@ src/plugins/
     claude.ts          # Claude Code agent_execution provider
     claudeOAuth.ts     # Claude Pro/Max subscription OAuth (auth-code + PKCE)
     aider.ts           # Aider agent_execution provider (wraps any litellm backend)
+    goose.ts           # Goose agent_execution provider (MCP submission transport, 14 LLM providers)
     gerrit.ts
     github.ts          # github-issue + github-pull-request merged
     githubOAuth.ts     # GitHub OAuth device-flow helper
@@ -26,7 +27,7 @@ src/plugins/
     redmine.ts
 ```
 
-Provider ids are `github | gitlab | gerrit | redmine | copilot | claude | aider | mock` (`PROVIDER_IDS` in `src/interfaces.ts`). The former split descriptors (`github-issue` + `github-pull-request`, `gitlab-issue` + `gitlab-merge-request`) were merged into single `github` / `gitlab` descriptors. `PLUGIN_CATEGORIES` / `category` no longer exist.
+Provider ids are `github | gitlab | gerrit | redmine | copilot | claude | aider | goose | mock` (`PROVIDER_IDS` in `src/interfaces.ts`). The former split descriptors (`github-issue` + `github-pull-request`, `gitlab-issue` + `gitlab-merge-request`) were merged into single `github` / `gitlab` descriptors. `PLUGIN_CATEGORIES` / `category` no longer exist.
 
 A descriptor (`ProviderDescriptor`) provides:
 
@@ -35,7 +36,7 @@ A descriptor (`ProviderDescriptor`) provides:
   - `capabilities.issue_tracking.{ createConnector(config, integration, context?), intake? }`
   - `capabilities.code_review.{ createConnector?, createReviewer?, streamEvents?, intake? }`; prompt selection belongs to the configured agent, not the review integration descriptor
   - `capabilities.source_control.createVcsConnector(config, integration, context?, runtime?)`; `runtime.gitRunner` is the shared host-side async Git executor owned by `VcsConnectorFactory`
-  - `capabilities.agent_execution.{ buildAdapter(context), configFields? }` (optional). Agent adapters are **descriptor-driven** and receive an `AgentAdapterContext`. `configFields` defines provider-owned controls persisted under `modelConfig.providerOptions`; the generic admin form renders text, number, boolean-select, and ordinary select values without provider branches. `PluginManager.registerFactory` remains as an explicit test/extension hook and takes precedence when used; production startup does not register overrides. Copilot, Claude, Aider, and Mock expose this capability.
+  - `capabilities.agent_execution.{ buildAdapter(context), configFields? }` (optional). Agent adapters are **descriptor-driven** and receive an `AgentAdapterContext`. `configFields` defines provider-owned controls persisted under `modelConfig.providerOptions`; the generic admin form renders text, number, boolean-select, and ordinary select values without provider branches. `PluginManager.registerFactory` remains as an explicit test/extension hook and takes precedence when used; production startup does not register overrides. Copilot, Claude, Aider, Goose, and Mock expose this capability.
 - Zod `configSchema` plus `requiredFields` UI metadata (with conditional visibility via `dependsOn`)
 - optional `oauth` metadata + `createOAuthHandler` / `resolveOAuthConfig` for dashboard-driven provider auth flows (`mode: "device" | "redirect"`)
 - optional `discoverResources(config)` discovery hook
@@ -90,7 +91,7 @@ Per-provider intake:
 | gitlab | polling + webhook | polling + webhook (+ reviewer) |
 | github | polling + webhook | polling + webhook (+ reviewer) |
 | gerrit | — | stream |
-| copilot / claude / aider / mock | — (agent_execution only) | — |
+| copilot / claude / aider / goose / mock | — (agent_execution only) | — |
 
 All provider configuration lives in `integrations` database rows managed via the admin UI. Copilot integrations currently persist an OAuth session token on the integration row; per-agent model choice still lives on the `agents` table. The unified GitLab descriptor exposes a shared `authMode = oauth | pat` surface: PAT keeps using the visible `token` password field, while OAuth writes the same hidden `token` field only after the device flow completes. GitLab OAuth uses Device Authorization Grant (RFC 8628): the dashboard renders the user code and verification URI returned by `POST /api/admin/plugins/:type/oauth/device-code`, polls `POST /api/admin/plugins/:type/oauth/token` until the user authorises the app, and writes the resulting access token to the `token` field. Two GitLab modes are supported: **gitlab.com** uses the pre-configured VE OAuth app client ID (`GITLAB_COM_VE_CLIENT_ID` constant in `gitlabOAuth.ts`; empty string disables this mode until populated); **self-hosted** requires both `baseUrl` and `oauthClientId` to be supplied in the form. User-facing GitLab integration forms therefore no longer expose OAuth app credentials, GitLab project IDs, or GitLab workflow label fields; those bindings now come from the VE project configuration (`ticketProjectKey`, push-target `repoKey`, code_review `repos`). Legacy GitLab rows created before `authMode` existed are surfaced back to the dashboard as `pat` so edit forms remain backward-compatible. Descriptor-driven OAuth flows are mounted under `/api/admin/plugins/:type/oauth/*`, with `device-code`/`token` reserved for device flows and `start`/`complete` reserved for redirect flows, so the dashboard and admin server no longer special-case Copilot routes.
 

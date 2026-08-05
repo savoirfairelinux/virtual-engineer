@@ -5,7 +5,7 @@ Virtual Engineer is a host-side Node.js orchestrator with two runtime flows:
 - **Ticket-driven code generation**: poll enabled coding projects for assigned work, run an agent cycle in a hardened, ephemeral Docker container, then push the resulting review objects through the host VCS layer.
 - **VE-as-reviewer**: accept review events (webhook, Gerrit stream-event, or review-assignment poll), create `code-review` tasks, and run the agent in the same hardened Docker container with `REVIEW_MODE=1` against the patchset diff.
 
-The orchestrator always runs **on the host**. Agent containers are **ephemeral** and are destroyed after each cycle. The pluggable agent engine is **Copilot**, **Claude**, **Aider**, or **Mock**.
+The orchestrator always runs **on the host**. Agent containers are **ephemeral** and are destroyed after each cycle. The pluggable agent engine is **Copilot**, **Claude**, **Aider**, **Goose**, or **Mock**.
 
 ## High-level flows
 
@@ -16,7 +16,7 @@ ticket source integration
    → PollingLoop.pollProjectTickets()
    → Orchestrator.startTaskForProject()
    → WorkspaceRunner.clone + post-clone hook
-   → CopilotAdapter / ClaudeAdapter / AiderAdapter / MockAgentAdapter
+   → CopilotAdapter / ClaudeAdapter / AiderAdapter / GooseAdapter / MockAgentAdapter
    → agent-worker (node /agent-worker/dist/index.js) in Docker
    → AgentResult (+ optional commit chain)
    → host-side VCS push
@@ -90,8 +90,9 @@ See [state-machine.md](state-machine.md) and [database.md](database.md).
 - `copilotAdapter.ts` builds the hardened container spec (Copilot engine)
 - `claudeAdapter.ts` builds the container spec for the Claude Code engine (`AGENT_PROVIDER=claude`)
 - `aiderAdapter.ts` builds the container spec for the Aider engine (`AGENT_PROVIDER=aider`, wraps any litellm backend)
+- `gooseAdapter.ts` builds the container spec for the Goose engine (`AGENT_PROVIDER=goose`, MCP submission transport like Copilot/Claude)
 - `copilotOAuthService.ts` / `copilotModelsService.ts` / `copilotConnectionValidator.ts` handle GitHub OAuth Device Flow, model discovery, and `POST /api/admin/integrations/test`
-- `claudeConnectionValidator.ts` / `claudeModelsService.ts` provide the Claude equivalents; `aiderConnectionValidator.ts` / `aiderModelsService.ts` provide the Aider equivalents; `providerAuthService.ts` is the shared auth surface
+- `claudeConnectionValidator.ts` / `claudeModelsService.ts` provide the Claude equivalents; `aiderConnectionValidator.ts` / `aiderModelsService.ts` provide the Aider equivalents; `gooseConnectionValidator.ts` / `gooseModelsService.ts` provide the Goose equivalents; `providerAuthService.ts` is the shared auth surface
 - `mockAgentAdapter.ts` provides deterministic test behavior
 - `cycleCost.ts` derives per-cycle cost from `assistant.usage` events
 - `agentEventTypes.ts` normalizes persisted `AgentLogEvent` frames; `agentEventBus.ts` is the shared event bus for live agent log streaming
@@ -102,9 +103,9 @@ See [modules/agents.md](modules/agents.md).
 
 Provider-facing clients selected through the plugin system.
 
-- Ticketing: `redmineConnector.ts`, `gitlabIssueConnector.ts`
+- Ticketing: `redmineConnector.ts`, `gitlabIssueConnector.ts`, `githubIssueConnector.ts`
 - Shared infrastructure: `baseTicketConnector.ts`, `gerritSshClient.ts`, `gitlabHttpClient.ts`
-- Review / review-discovery: `gerritConnector.ts`, `integrationStreamEvents.ts`, `gerritStreamEvents.ts`, `gerritSshReviewProvider.ts`, `gitlabMergeRequestConnector.ts`
+- Review / review-discovery: `gerritConnector.ts`, `integrationStreamEvents.ts`, `gerritStreamEvents.ts`, `gerritSshReviewProvider.ts`, `gitlabMergeRequestConnector.ts`, `githubPullRequestReviewConnector.ts`, `githubReviewProvider.ts`
 
 See [modules/connectors.md](modules/connectors.md).
 

@@ -2,6 +2,16 @@
 
 Concise, accurate facts Copilot must rely on when working in this repo. For deeper context see [.github/context/INDEX.md](./context/INDEX.md).
 
+## graphify
+
+This project has a knowledge graph at `graphify-out/` with god nodes, community structure, and cross-file relationships.
+
+Rules:
+- For codebase questions, first run `graphify query "<question>"` when `graphify-out/graph.json` exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than `GRAPH_REPORT.md` or raw grep output.
+- If `graphify-out/wiki/index.md` exists, use it for broad navigation instead of raw source browsing.
+- Read `graphify-out/GRAPH_REPORT.md` only for broad architecture review or when query/path/explain do not surface enough context.
+- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
+
 ## Documentation auto-sync
 
 Whenever you modify code, also update the matching docs in `.github/`. Per-area rules live in [`.github/instructions/*.instructions.md`](./instructions/) and are loaded automatically by Copilot via their `applyTo` globs:
@@ -67,7 +77,6 @@ src/
                         # dashboard (SPA shell), start/close helpers
     ui/                 # React SPA source (App.tsx, views/, components/,
                         # shell/, theme/, icons/, api.ts, states.ts)
-    assets/             # static assets bundled by Vite
   agents/               # copilotAdapter, copilotConnectionValidator,
                         # copilotOAuthService, providerAuthService,
                         # copilotModelsService, cycleCost,
@@ -90,7 +99,7 @@ src/
                         # feedbackProcessor, concurrencyTracker,
                         # agentContextBuilder, pushTargetEnrichment
   plugins/              # registry, pluginManager, init, descriptors/{index,github,
-                        # gitlab,gerrit,redmine,copilot,claude,aider,mock}.ts (unified
+                        # gitlab,gerrit,redmine,copilot,claude,aider,goose,mock}.ts (unified
                         # provider descriptors; githubOAuth/gitlabOAuth helpers)
   review/               # reviewOrchestrator,
                         # reviewRetriggerGuard, reviewStderrEvents, reviewPostingGate,
@@ -101,7 +110,8 @@ src/
                         # revisionPatchset
   state/                # schema (Drizzle), stateMachine, stateStore facade, migrate
     stores/             # domain-scoped DB modules: task, reviewDedup, cost,
-                        # integration, project, prompt(+seeding), and agent(+concurrency)
+                        # integration, project, prompt(+seeding), agent(+concurrency),
+                        # user, audit, group, policy (RBAC/PBAC)
   utils/                # ticketFooterFormatter, ticketSourceLabel, encryption,
                         # errorClassifier, gitExec, githubAuth, gitlabAuth,
                         # redactUrl
@@ -112,7 +122,9 @@ src/
   workspace/            # dockerVolume (named-volume lifecycle + execInVolume),
                         # workspaceRunner (clone + container lifecycle),
                         # repositoryManifestAccess + workspaceManifestScanner,
-                        # workspaceScanService (provider scan orchestration)
+                        # workspaceScanService (provider scan orchestration),
+                        # integrationBindingResolver (repo URL → integration match),
+                        # skillSources (external skill-source install into /ve-home)
 agent-worker/src/       # TS worker inside the agent container: index.ts
                         # (provider-agnostic orchestrator), providers/
                         # {types,events,copilot,claude,aider,registry}.ts (complete
@@ -219,7 +231,7 @@ Empty strings in env are treated as `undefined` (helpful for env overrides).
 
 
 ## Plugin System (`src/plugins/`)
-- Static **registry** (`registry.ts`) defines one unified **provider descriptor** per `provider` in `src/plugins/descriptors/{github,gitlab,gerrit,redmine,copilot,claude,aider,mock}.ts`. The former split descriptors were merged: `github-issue` + `github-pull-request` → `github`; `gitlab-issue` + `gitlab-merge-request` → `gitlab`. `PLUGIN_CATEGORIES` / `category` no longer exist.
+- Static **registry** (`registry.ts`) defines one unified **provider descriptor** per `provider` in `src/plugins/descriptors/{github,gitlab,gerrit,redmine,copilot,claude,aider,goose,mock}.ts`. The former split descriptors were merged: `github-issue` + `github-pull-request` → `github`; `gitlab-issue` + `gitlab-merge-request` → `gitlab`. `PLUGIN_CATEGORIES` / `category` no longer exist.
 - Descriptors declare a `capabilities` map keyed by **domain capability** (`issue_tracking`, `code_review`, `source_control`, `agent_execution`) with capability factories: `capabilities.issue_tracking.createConnector`, `capabilities.code_review.{createConnector,createReviewer,streamEvents}`, `capabilities.source_control.createVcsConnector`, `capabilities.agent_execution.{buildAdapter,configFields,reviewStrategies}`. Agent `configFields` and optional review-strategy metadata are rendered generically; provider settings and the agent-owned strategy are persisted under `modelConfig.providerOptions`. Technical capabilities (`oauth`, `discovery`, `stream-events`, `reviewer`) are derived from descriptor hooks via `getProviderTechnicalCapabilities(descriptor)`; domain ones via `getProviderDomainCapabilities(descriptor)`.
 - **PluginManager** loads every enabled row from `integrations`, keeps multiple active integrations in parallel even for the same provider, resolves by `integrationId` (`getConnectorForIntegration`, `getActiveIntegrationById`, `isIntegrationActive`) or by capability/provider (`getConnectorForCapability(integrationId, capability)`, `getActiveIntegrationsByCapability(capability)`, `getActiveIntegrationsByProvider(provider)`, `providerSupportsCapability(provider, capability)`). `integrationHasStreamEvents` checks `capabilities.code_review.streamEvents`. It can also build project-bound connector instances via `createConnectorForIntegration(integrationId, context)` when a VE project owns part of the provider binding.
 - Admin dashboard / API can hot-add or toggle integrations; `src/index.ts` refreshes runtime dependencies without restart.

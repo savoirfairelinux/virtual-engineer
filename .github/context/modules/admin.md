@@ -35,8 +35,14 @@ The admin server is a small HTTP service (default `127.0.0.1:3100`) that serves 
 | `adminWebhookRoutes.ts` | Webhook management: secret rotation, allowed-IPs, webhook-info. |
 | `dashboard.ts` | Serves the HTML shell for the Vite-built React SPA: reads the Vite manifest from `dist/admin-ui/.vite/manifest.json`, injects the hashed JS/CSS asset links plus a `window.__VE_ADMIN_BOOTSTRAP__` payload, and falls back to "Admin UI not built — run npm run build:ui" when the build output is missing. |
 | `providerSummary.ts` | Builds the `AdminProviderSummary[]` list shown in the admin UI's provider panel. Extracted from `src/index.ts`; exposes `buildAdminProviderSummaries(config, pluginManager?)`. |
+| `adminImageProxy.ts` | Handles `GET /api/admin/img-proxy` requests: fetches a remote image server-side (validating the token minted by `imageProxyTokenStore.ts`) and streams it back, so the browser never sends third-party cookies/credentials directly. |
+| `commonPasswords.ts` | Denylist check used by user creation/password-change to reject common/breached passwords. |
+| `loginRateLimiter.ts` | In-memory login attempt limiter keyed by username/IP; backs the `/api/admin/auth/login` brute-force guard. |
+| `skillSourceDiscovery.ts` | Backs `adminProjectWorkspaceRoutes.ts`'s skill-source list/validate endpoints — runs `npx skills add -l` against a configured remote source to discover installable skill names. |
+| `authorization/permissions.ts` | The `PERMISSIONS` catalog (`"<resourceType>.<action>"` strings) consumed by the router's `RouteMeta.permission` gate and the `/api/admin/permissions` endpoint. |
+| `authorization/policyEngine.ts` | Computes a user's effective policy rules (union of policies bound to the user + their groups) and enforces `project.*`/`task.*` resource scoping. |
+| `authorization/seedPolicies.ts` | Seeds the built-in `Operator`/`Viewer` policies and auto-binds legacy/new operator/viewer users on startup. |
 | `ui/` | Admin SPA source (React + TypeScript): `App.tsx`, `main.tsx`, `api.ts`, `states.ts`, `views/`, `components/`, `shell/`, `theme/`, `icons/`. Configuration uses native hash routes parsed by `views/ConfigView/configRouting.ts`; `ConfigPageSurface.tsx` lets the existing form/detail primitives render as full pages instead of overlays, and Add Integration filters providers by name, provider id, or capability. Built with Vite (`vite.admin.config.ts`) into `dist/admin-ui`; `adminServer.ts` serves the hashed assets under `/admin-ui/*`. Commands: `npm run build:ui`, `npm run dev:ui` (watch), `npm run typecheck:ui`. |
-| `assets/` | Static assets bundled with the admin server. |
 
 The task live-log UI renders `skills.fetch_start`, `skills.fetch_complete`, and `skills.fetch_failed` payloads as human-readable skill fetch messages, including source repository, selected skills, and agent id when present.
 
