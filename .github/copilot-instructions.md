@@ -92,6 +92,7 @@ src/
                         # gitlab,gerrit,redmine,copilot,claude,aider,mock}.ts (unified
                         # provider descriptors; githubOAuth/gitlabOAuth helpers)
   review/               # reviewOrchestrator,
+                        # reviewRetriggerGuard, reviewStderrEvents, reviewPostingGate,
                         # reviewBootstrap (bundle + trigger factory),
                         # reviewPromptBuilder, reviewOutputContract,
                         # reviewResultParser,
