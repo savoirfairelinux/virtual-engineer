@@ -261,7 +261,7 @@ export const vendorComponentsSchema = z.object({
 export function toVendorComponentInputs(
   components: z.infer<typeof vendorComponentArraySchema>
 ): ProjectVendorComponentInput[] {
-  const optional = (value: string | null | undefined): string | null => value?.trim() ? value : null;
+  const optional = (value: string | null | undefined): string | null => (value?.trim() ? value.trim() : null);
   return components.map((component) => ({
     sourcePath: component.sourcePath,
     localPath: optional(component.localPath),
