@@ -86,7 +86,8 @@ src/
                         # githubIssueConnector, githubPullRequestReviewConnector,
                         # githubReviewProvider
   orchestrator/         # orchestrator, reviewProgressService, pollingLoop,
-                        # feedbackProcessor, concurrencyTracker
+                        # feedbackProcessor, concurrencyTracker,
+                        # agentContextBuilder, pushTargetEnrichment
   plugins/              # registry, pluginManager, init, descriptors/{index,github,
                         # gitlab,gerrit,redmine,copilot,claude,aider,mock}.ts (unified
                         # provider descriptors; githubOAuth/gitlabOAuth helpers)

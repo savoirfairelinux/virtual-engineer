@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildRepositoryMap } from "../../src/orchestrator/orchestrator.js";
+import { buildRepositoryMap } from "../../src/orchestrator/agentContextBuilder.js";
 import { makeProjectId } from "../../src/interfaces.js";
 import type { ProjectPushTargetRecord } from "../../src/interfaces.js";
 
