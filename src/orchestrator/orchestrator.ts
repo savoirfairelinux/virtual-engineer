@@ -1,6 +1,5 @@
 import pRetry from "p-retry";
 import { randomUUID, createHash } from "crypto";
-import { formatTicketFooter } from "../utils/ticketFooterFormatter.js";
 import type {
   AgentAdapter,
   CommitDescriptor,
@@ -10,12 +9,9 @@ import type {
   ReviewConnector,
   TicketConnector,
   StateStore,
-  TaskContext,
   WorkspaceRunner,
   WorkspaceHandle,
   ProjectRecord,
-  ResolvedAgentConfig,
-  RepositoryMap,
   ProjectPushTargetRecord,
 } from "../interfaces.js";
 import { TicketApiError, TicketNotFoundError } from "../interfaces.js";
@@ -48,39 +44,16 @@ import { redactUrls } from "../utils/redactUrl.js";
 import { isInfrastructureError } from "../utils/errorClassifier.js";
 import type { ConcurrencyTracker } from "./concurrencyTracker.js";
 import { resolveAgentConfig } from "../state/stateStore.js";
+import {
+  buildAgentTaskContext,
+  type ProjectAgentRuntime,
+} from "./agentContextBuilder.js";
+import {
+  enrichPushTargets,
+  resolveCloneKnownHostsPath,
+} from "./pushTargetEnrichment.js";
 
 const log = getLogger("orchestrator");
-
-/** Integration types that clone via HTTPS and need a token injected into the clone URL. */
-const HTTPS_VCS_TYPES = new Set(["github", "gitlab"]);
-
-/**
- * Build an authenticated HTTPS clone URL for GitHub/GitLab push targets so the
- * agent container can run `git clone` without interactive credential prompts.
- * Returns undefined for non-HTTPS integrations (Gerrit) or on any error.
- */
-function buildAuthenticatedCloneUrlFromPlaintextToken(
-  rawCloneUrl: string,
-  integrationType: string,
-  plaintextToken: unknown,
-): string | undefined {
-  if (!HTTPS_VCS_TYPES.has(integrationType)) return undefined;
-  if (typeof plaintextToken !== "string" || !plaintextToken) return undefined;
-  if (/^\*{4,}$/.test(plaintextToken)) return undefined;
-  const usernamePrefix = integrationType === "github" ? "x-access-token" : "oauth2";
-  try {
-    const normalised = rawCloneUrl.startsWith("git@")
-      ? rawCloneUrl.replace(/^git@([^:]+):(.+?)(?:\.git)?$/, "https://$1/$2.git")
-      : rawCloneUrl;
-    const parsed = new URL(normalised);
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return undefined;
-    parsed.username = usernamePrefix;
-    parsed.password = plaintextToken;
-    return parsed.toString();
-  } catch {
-    return undefined;
-  }
-}
 
 export interface OrchestratorConfig {
   maxAgentCycles: number;
@@ -121,11 +94,6 @@ export interface ProjectModeDeps {
    * states. Legacy tasks (no projectId) are not gated.
    */
   concurrencyTracker?: ConcurrencyTracker;
-}
-
-interface ProjectAgentRuntime {
-  adapter: AgentAdapter;
-  config: ResolvedAgentConfig;
 }
 
 /**
@@ -697,47 +665,16 @@ export class Orchestrator {
 
       // Resolve sshKnownHostsPath from root target's VCS connector (if available).
       // Also enrich any push target whose sshKeyPath is null with the key from its linked connector.
-      let cloneKnownHostsPath: string | undefined;
-      try {
-        const rootConnectorForClone = await this.resolveVcsConnectorForTarget(root.integrationId, { repoKey: root.repoKey, targetBranch: root.targetBranch });
-        cloneKnownHostsPath = rootConnectorForClone.sshKnownHostsPath ?? undefined;
-      } catch {
-        // Non-fatal — clone proceeds without strict host key checking
-      }
-
-      const enrichedPushTargets = await Promise.all(
-        projectPushTargets.map(async (pt) => {
-          let enrichedTarget = pt;
-          try {
-            // Inject authenticated HTTPS clone URL for GitHub/GitLab targets
-            const integration = await (this.integrationStore ?? (this.stateStore as unknown as IntegrationStore)).getIntegration(pt.integrationId);
-            if (integration) {
-              const cfg = this.resolveIntegrationConfig(integration);
-              const authUrl = buildAuthenticatedCloneUrlFromPlaintextToken(pt.cloneUrl, integration.provider, cfg["token"]);
-              if (authUrl !== undefined) enrichedTarget = { ...enrichedTarget, cloneUrl: authUrl };
-            }
-          } catch {
-            // Non-fatal — fall through to SSH key enrichment
-          }
-          try {
-            const connector = await this.resolveVcsConnectorForTarget(pt.integrationId, { repoKey: pt.repoKey, targetBranch: pt.targetBranch });
-            const fallbackKey = connector.sshKeyPath ?? undefined;
-            const fallbackAgentPub = (connector as { sshAgentPubKeyPath?: string | undefined }).sshAgentPubKeyPath ?? undefined;
-            const knownHostsPath = connector.sshKnownHostsPath ?? undefined;
-            if (pt.sshKeyPath === null && fallbackKey !== undefined) {
-              enrichedTarget = { ...enrichedTarget, sshKeyPath: fallbackKey };
-            } else if (pt.sshKeyPath === null && fallbackAgentPub !== undefined) {
-              enrichedTarget = { ...enrichedTarget, sshKeyPath: null, sshAgentPubKeyPath: fallbackAgentPub };
-            }
-            return {
-              ...enrichedTarget,
-              ...(knownHostsPath !== undefined ? { sshKnownHostsPath: knownHostsPath } : {}),
-            };
-          } catch {
-            return enrichedTarget;
-          }
-        })
+      const cloneKnownHostsPath = await resolveCloneKnownHostsPath(root, (integrationId, context) =>
+        this.resolveVcsConnectorForTarget(integrationId, context)
       );
+
+      const enrichedPushTargets = await enrichPushTargets(projectPushTargets, {
+        getIntegration: (integrationId) =>
+          (this.integrationStore ?? (this.stateStore as unknown as IntegrationStore)).getIntegration(integrationId),
+        resolveIntegrationConfig: (integration) => this.resolveIntegrationConfig(integration),
+        resolveVcsConnectorForTarget: (integrationId, context) => this.resolveVcsConnectorForTarget(integrationId, context),
+      });
 
       const cloneResult = await this.workspaceRunner.prepareProjectWorkspace(
         handle,
@@ -771,105 +708,29 @@ export class Orchestrator {
       );
 
       const hasPriorPatchset = await this.checkoutPriorPatchset(task, cycleNumber, handle, root, rootConnector);
-      const context: TaskContext = {
-        taskId: task.taskId,
-        ticketTitle: ticket.subject,
-        ticketDescription: ticket.description,
-        acceptanceCriteria: this.extractAcceptanceCriteria(ticket.description),
-        baseBranch: cloneBranch,
-        workspacePath: handle.hostWorkspacePath,
-        volumeName: handle.volumeName,
-        homeVolumeName: handle.homeVolumeName,
-        constraints: [],
-        priorFeedback,
+      const context = await buildAgentTaskContext({
+        task,
+        ticket,
         cycleNumber,
         hasPriorPatchset,
         commitMessage,
-        ticketUrl: ticket.webUrl,
-        systemPromptId: projectAgentRuntime.config.systemPromptId,
-        // On retry cycles, swap in the feedback-specific instructions prompt when one is configured.
-        instructionsPromptId:
-          cycleNumber > 1 && projectAgentRuntime.config.feedbackInstructionsPromptId
-            ? projectAgentRuntime.config.feedbackInstructionsPromptId
-            : projectAgentRuntime.config.instructionsPromptId,
-        agentSession: {
-          agentContainerImage: this.config.agentContainerImage,
-          repoCloneUrl: cloneUrl,
-          pushRef,
-          existingChangeId: rootConnector.useChangeIdContinuity ? (task.externalChangeId ?? undefined) : undefined,
-          perRepoChangeIds: await (async (): Promise<Record<string, string | Record<string, string>> | undefined> => {
-            if (!rootConnector.useChangeIdContinuity) return undefined;
-            const storedChanges = await this.stateStore.getChangesForTask(task.taskId);
-            if (storedChanges.length === 0) return undefined;
-            // Pass ALL commit Change-Ids per repo, keyed by commit index.
-            // Single-commit repos produce a flat string (backward compat).
-            // Multi-commit repos produce { "0": "I...", "1": "I..." }.
-            const validChanges = storedChanges.filter(
-              (c) => c.status !== "NO_CHANGE" && c.changeId !== ""
-            );
-            if (validChanges.length === 0) return undefined;
-            const byRepo = new Map<string, Map<number, string>>();
-            for (const c of validChanges) {
-              let m = byRepo.get(c.repoKey);
-              if (!m) { m = new Map(); byRepo.set(c.repoKey, m); }
-              m.set(c.commitIndex, c.changeId);
-            }
-            const result: Record<string, string | Record<string, string>> = {};
-            for (const [repoKey, indexMap] of byRepo) {
-              if (indexMap.size === 1 && indexMap.has(0)) {
-                result[repoKey] = indexMap.get(0)!;
-              } else {
-                const obj: Record<string, string> = {};
-                for (const [idx, cid] of indexMap) obj[String(idx)] = cid;
-                result[repoKey] = obj;
-              }
-            }
-            return Object.keys(result).length > 0 ? result : undefined;
-          })(),
-          gitAuthorName: this.config.gitAuthorName,
-          gitAuthorEmail: this.config.gitAuthorEmail,
-          githubToken: projectAgentRuntime.config.apiKey,
-          ...(projectAgentRuntime.config.encryptedSessionToken
-            ? { encryptedSessionToken: projectAgentRuntime.config.encryptedSessionToken }
-            : {}),
-          ...(resolvedCopilotModel ? { copilotModel: resolvedCopilotModel } : {}),
-          ...(Object.keys(providerOptions).length > 0 ? { providerOptions } : {}),
-          // Aider backend credentials flow through `extra` (set by
-          // resolveProjectAgentRuntime from the integration config).
-          ...(typeof projectAgentRuntime?.config.extra["aiderBackend"] === "string"
-            ? { aiderBackend: projectAgentRuntime.config.extra["aiderBackend"] }
-            : {}),
-          ...(typeof projectAgentRuntime?.config.extra["aiderApiKey"] === "string"
-            ? { aiderApiKey: projectAgentRuntime.config.extra["aiderApiKey"] }
-            : {}),
-          ...(typeof projectAgentRuntime?.config.extra["aiderApiBase"] === "string"
-            ? { aiderApiBase: projectAgentRuntime.config.extra["aiderApiBase"] }
-            : {}),
-          // Goose provider credentials flow through `extra` (set by
-          // resolveProjectAgentRuntime from the integration config).
-          ...(typeof projectAgentRuntime?.config.extra["gooseProvider"] === "string"
-            ? { gooseProvider: projectAgentRuntime.config.extra["gooseProvider"] }
-            : {}),
-          ...(typeof projectAgentRuntime?.config.extra["gooseApiKey"] === "string"
-            ? { gooseApiKey: projectAgentRuntime.config.extra["gooseApiKey"] }
-            : {}),
-          ...(typeof projectAgentRuntime?.config.extra["gooseApiBase"] === "string"
-            ? { gooseApiBase: projectAgentRuntime.config.extra["gooseApiBase"] }
-            : {}),
-          ...(projectPushTargets.length > 1 || projectPushTargets.some((t) => t.localPath !== ".")
-            ? { repositoryMap: buildRepositoryMap(projectPushTargets) }
-            : {}),
-          ...(vendorComponents.length > 0 ? { vendorComponents } : {}),
-          ...(projectRecord.skillSourcesJson !== "[]"
-            ? { skillSourcesJson: projectRecord.skillSourcesJson }
-            : {}),
-          ...((): { ticketFooterLine?: string } => {
-            if (!projectRecord.useFullTicketUrlInCommits) return {};
-            const line = formatTicketFooter(task.ticketId, ticket.webUrl ?? "", task.ticketSourceLabel, true);
-            return line ? { ticketFooterLine: line } : {};
-          })(),
-        },
-      };
+        cloneBranch,
+        cloneUrl,
+        pushRef,
+        handle,
+        priorFeedback,
+        projectAgentRuntime,
+        resolvedCopilotModel,
+        providerOptions,
+        useChangeIdContinuity: rootConnector.useChangeIdContinuity,
+        projectPushTargets,
+        vendorComponents,
+        projectRecord,
+        agentContainerImage: this.config.agentContainerImage,
+        gitAuthorName: this.config.gitAuthorName,
+        gitAuthorEmail: this.config.gitAuthorEmail,
+        getChangesForTask: (taskId) => this.stateStore.getChangesForTask(taskId),
+      });
 
       const agentResult = await this.withTimeout(
         this.workspaceRunner.runAgent(handle, context, projectAgentRuntime.adapter),
@@ -1561,14 +1422,6 @@ export class Orchestrator {
     return `feat: ${subject}`;
   }
 
-  /** Extract acceptance-criteria lines (checklist or numbered items) from a ticket description. */
-  private extractAcceptanceCriteria(description: string): string[] {
-    return description
-      .split("\n")
-      .filter((line) => /^\s*[-*]\s+\[[ x]\]/.test(line) || /^\s*\d+\.\s+/.test(line))
-      .map((line) => line.trim());
-  }
-
   /** Race a promise against a timeout, rejecting with `message` if it expires first. */
   private withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
     const wrappedPromise = new Promise<T>((resolve, reject) => {
@@ -1603,25 +1456,4 @@ export class Orchestrator {
   private isTicketApiError(err: unknown): err is TicketApiError {
     return err instanceof TicketApiError;
   }
-}
-
-// ── helpers ─────────────────────────────────────────────────────────────────
-
-/**
- * Build a {@link RepositoryMap} from a project's push targets so the agent
- * container knows which subdirectories map to which repositories.
- *
- * The target with `localPath === "."` (or the lowest `commitOrder` if none) is
- * treated as the superproject; all others become submodules.
- */
-export function buildRepositoryMap(pushTargets: ProjectPushTargetRecord[]): RepositoryMap {
-  const sorted = [...pushTargets].sort((a, b) => a.commitOrder - b.commitOrder);
-  const rootIdx = sorted.findIndex((t) => t.localPath === ".");
-  const root = rootIdx >= 0 ? sorted[rootIdx]! : sorted[0]!;
-  const rest = sorted.filter((t) => t !== root);
-
-  return {
-    superproject: { repoKey: root.repoKey, localPath: root.localPath },
-    submodules: rest.map((t) => ({ repoKey: t.repoKey, localPath: t.localPath })),
-  };
 }

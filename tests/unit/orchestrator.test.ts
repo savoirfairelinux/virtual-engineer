@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { Orchestrator } from "../../src/orchestrator/orchestrator.js";
+import { extractAcceptanceCriteria } from "../../src/orchestrator/agentContextBuilder.js";
 import type {
   StateStore,
   WorkspaceRunner,
@@ -705,15 +706,17 @@ describe("Orchestrator", () => {
     expect(redmineConnector.addNote).not.toHaveBeenCalled();
   });
 
-  it("extracts acceptance criteria and enforces timeouts", async () => {
+  it("extracts acceptance criteria from a ticket description", () => {
+    expect(extractAcceptanceCriteria(makeRedmineTicket().description)).toEqual([
+      "- [ ] Preserve Change-Id",
+      "1. Close the ticket on merge",
+    ]);
+  });
+
+  it("enforces timeouts", async () => {
     vi.useFakeTimers();
     try {
       const orchestrator = makeOrchestrator();
-      expect((orchestrator as any).extractAcceptanceCriteria(makeRedmineTicket().description)).toEqual([
-        "- [ ] Preserve Change-Id",
-        "1. Close the ticket on merge",
-      ]);
-
       const timeoutPromise = (orchestrator as any).withTimeout(
         new Promise<string>(() => undefined),
         25,
