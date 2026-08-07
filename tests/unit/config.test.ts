@@ -192,6 +192,24 @@ describe("getConfig", () => {
       resetConfig();
       expect(() => getConfig()).toThrow(/Invalid configuration/);
     });
+
+    it("throws when ADMIN_AUTH_SECRET is shorter than 32 characters", () => {
+      process.env["ADMIN_AUTH_SECRET"] = "short-secret";
+      resetConfig();
+      expect(() => getConfig()).toThrow(/ADMIN_AUTH_SECRET must be at least 32 characters/);
+    });
+
+    it("accepts an ADMIN_AUTH_SECRET of 32 or more characters", () => {
+      process.env["ADMIN_AUTH_SECRET"] = "a".repeat(32);
+      resetConfig();
+      expect(getConfig().adminAuthSecret).toBe("a".repeat(32));
+    });
+
+    it("treats an empty ADMIN_AUTH_SECRET as unset instead of failing the min-length check", () => {
+      process.env["ADMIN_AUTH_SECRET"] = "";
+      resetConfig();
+      expect(getConfig().adminAuthSecret).toBeUndefined();
+    });
   });
 });
 
