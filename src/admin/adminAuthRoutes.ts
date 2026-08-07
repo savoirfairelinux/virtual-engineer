@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { getLogger } from "../logger.js";
 import type { AdminUser, UserRole } from "../interfaces.js";
-import { writeJson, readBody, toIsoTimestamp, parseNonNegativeInt } from "./adminRouteUtils.js";
+import { writeJson, readBody, toIsoTimestamp, parseNonNegativeInt, requireStore } from "./adminRouteUtils.js";
 import type { Router } from "./router.js";
 import { hashPassword, verifyPassword, type AdminAuthService } from "./adminAuthService.js";
 import { getAuthContext, getEffectivePermissions } from "./authContext.js";
@@ -189,10 +189,8 @@ export function registerAuthRoutes(router: Router, deps: AuthRouteDeps): void {
 
   // Bootstrap — unauthenticated while zero users exist; the route handler enforces that invariant.
   router.add("POST", "/api/admin/auth/setup", async (req, res, _params) => {
-    if (!deps.userStore || !deps.authService) {
-      writeJson(res, 501, { error: "User store not available" });
-      return;
-    }
+    if (!requireStore(deps.userStore, res, "User store not available")) return;
+    if (!requireStore(deps.authService, res, "Auth service not available")) return;
     if ((await deps.userStore.countUsers()) > 0) {
       writeJson(res, 403, { error: "Setup already completed" });
       return;
@@ -251,10 +249,7 @@ export function registerAuthRoutes(router: Router, deps: AuthRouteDeps): void {
 
   // Public — username + password login.
   router.add("POST", "/api/admin/auth/login", async (req, res, _params) => {
-    if (!deps.authService) {
-      writeJson(res, 501, { error: "Auth service not available" });
-      return;
-    }
+    if (!requireStore(deps.authService, res, "Auth service not available")) return;
     const body = await readBody(req);
     const rawUsername = typeof body?.["username"] === "string" ? body["username"] : "";
     const username = normalizeUsername(rawUsername);
@@ -308,7 +303,7 @@ export function registerAuthRoutes(router: Router, deps: AuthRouteDeps): void {
   // ─── User management (admin only) ─────────────────────────────────────────
 
   router.add("GET", "/api/admin/users", async (req, res, _params) => {
-    if (!deps.userStore) { writeJson(res, 501, { error: "User store not available" }); return; }
+    if (!requireStore(deps.userStore, res, "User store not available")) return;
     const requestUrl = new URL(req.url ?? "/", "http://127.0.0.1");
     const limit = Math.min(
       Math.max(parseNonNegativeInt(requestUrl.searchParams.get("limit")) ?? DEFAULT_USERS_LIMIT, 1),
@@ -321,7 +316,7 @@ export function registerAuthRoutes(router: Router, deps: AuthRouteDeps): void {
   }, { permission: "user.manage" });
 
   router.add("POST", "/api/admin/users", async (req, res, _params) => {
-    if (!deps.userStore) { writeJson(res, 501, { error: "User store not available" }); return; }
+    if (!requireStore(deps.userStore, res, "User store not available")) return;
     const body = await readBody(req);
     const credentials = validateCredentials(body);
     if ("error" in credentials) {
@@ -359,7 +354,7 @@ export function registerAuthRoutes(router: Router, deps: AuthRouteDeps): void {
   }, { permission: "user.manage" });
 
   router.add("PUT", "/api/admin/users/:id", async (req, res, params) => {
-    if (!deps.userStore) { writeJson(res, 501, { error: "User store not available" }); return; }
+    if (!requireStore(deps.userStore, res, "User store not available")) return;
     const id = params["id"] ?? "";
     const target = await deps.userStore.getUserById(id);
     if (!target) { writeJson(res, 404, { error: "User not found" }); return; }
@@ -409,7 +404,7 @@ export function registerAuthRoutes(router: Router, deps: AuthRouteDeps): void {
 
   // Admin resets anyone; a non-admin may change their OWN password with currentPassword.
   router.add("PUT", "/api/admin/users/:id/password", async (req, res, params) => {
-    if (!deps.userStore) { writeJson(res, 501, { error: "User store not available" }); return; }
+    if (!requireStore(deps.userStore, res, "User store not available")) return;
     const id = params["id"] ?? "";
     const context = getAuthContext(req);
     if (!context) { writeJson(res, 401, { error: "Unauthorized" }); return; }
@@ -442,7 +437,7 @@ export function registerAuthRoutes(router: Router, deps: AuthRouteDeps): void {
   }, { authenticated: true });
 
   router.add("DELETE", "/api/admin/users/:id", async (req, res, params) => {
-    if (!deps.userStore) { writeJson(res, 501, { error: "User store not available" }); return; }
+    if (!requireStore(deps.userStore, res, "User store not available")) return;
     const id = params["id"] ?? "";
     const target = await deps.userStore.getUserById(id);
     if (!target) { writeJson(res, 404, { error: "User not found" }); return; }
