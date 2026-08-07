@@ -1,14 +1,11 @@
 import type Database from "better-sqlite3";
 import type {
-  AgentLogEvent,
-  AgentResult,
   CostSummary,
   CostSummaryProject,
   ModelUsageEntry,
   ModelUsageProject,
   ModelUsageSummary,
 } from "../../interfaces.js";
-import { computeCycleCost, hasCostData } from "../../agents/cycleCost.js";
 
 export interface CostStoreApi {
   getCostSummary(options?: { since?: Date }): Promise<CostSummary>;
@@ -24,9 +21,9 @@ export function createCostStore(context: CostStoreContext): CostStoreApi {
 
   /**
    * Aggregate agent-cycle execution cost across all tasks, broken down per
-   * project and totalled instance-wide. Cycles that were persisted before the
-   * cost columns existed (or that never recorded a USD snapshot) are recomputed
-   * from their captured event log, so historical runs are still accounted for.
+   * project and totalled instance-wide. Relies solely on the cost_* snapshot
+   * columns, which the startup migration (backfillLegacyCycleCosts) backfills
+   * for every pre-existing row, so no per-read recompute is needed here.
    */
   async function getCostSummary(options?: { since?: Date }): Promise<CostSummary> {
     const sinceEpochSeconds =
@@ -57,7 +54,7 @@ export function createCostStore(context: CostStoreContext): CostStoreApi {
     const periodClause = sinceEpochSeconds !== null ? "WHERE c.created_at >= ?" : "";
     const periodArgs = sinceEpochSeconds !== null ? [sinceEpochSeconds] : [];
 
-    // Pass 1: SQL aggregation of recorded snapshot costs + run counts per project.
+    // SQL aggregation of recorded snapshot costs + run counts per project.
     const aggregateRows = raw
       .prepare(
         `SELECT t.project_id AS projectId, p.name AS projectName,
@@ -87,52 +84,6 @@ export function createCostStore(context: CostStoreContext): CostStoreApi {
       bucket.runCount += row.runCount;
     }
 
-    // Pass 2: recompute cost for legacy cycles that have no USD snapshot but do
-    // carry a captured event log (run counts already tallied in pass 1).
-    const legacyRows = raw
-      .prepare(
-        `SELECT t.project_id AS projectId, p.name AS projectName,
-                c.agent_events AS agentEvents, c.agent_result AS agentResult
-         FROM agent_cycles c
-         JOIN tasks t ON t.task_id = c.task_id
-         LEFT JOIN projects p ON p.id = t.project_id
-         WHERE c.cost_usd IS NULL
-         ${sinceEpochSeconds !== null ? "AND c.created_at >= ?" : ""}`
-      )
-      .all(...periodArgs) as Array<{
-        projectId: string | null;
-        projectName: string | null;
-        agentEvents: string | null;
-        agentResult: string | null;
-      }>;
-    for (const row of legacyRows) {
-      // Prefer the canonical `agent_events` column, but fall back to events
-      // embedded in the serialized AgentResult for rows persisted before that
-      // column existed (mirrors getAgentCycles' recompute-on-read behavior).
-      let events: AgentLogEvent[] | undefined;
-      if (row.agentEvents) {
-        try {
-          events = JSON.parse(row.agentEvents) as AgentLogEvent[];
-        } catch {
-          events = undefined;
-        }
-      }
-      if (!events && row.agentResult) {
-        try {
-          events = (JSON.parse(row.agentResult) as AgentResult).agentEvents;
-        } catch {
-          events = undefined;
-        }
-      }
-      if (!events) continue;
-      const cost = computeCycleCost(events);
-      if (!hasCostData(cost)) continue;
-      const bucket = bucketFor(row.projectId, row.projectName);
-      bucket.usd += cost.usd;
-      bucket.aiCredits += cost.priced ? cost.aiCredits : 0;
-      bucket.premiumRequests += cost.premiumRequests;
-    }
-
     const perProject: CostSummaryProject[] = [...buckets.values()]
       .map((b) => ({
         projectId: b.projectId,
@@ -156,9 +107,8 @@ export function createCostStore(context: CostStoreContext): CostStoreApi {
 
   /**
    * Aggregate AI-model usage (run count + USD) across all agent cycles, both
-   * globally and per project. Cycles whose model id was not captured in a cost
-   * snapshot but that carry an event log are recomputed so historical runs are
-   * still attributed to the correct model.
+   * globally and per project. Relies solely on cost_model_id/cost_usd, which
+   * the startup migration backfills for every pre-existing row.
    */
   async function getModelUsageSummary(options?: { since?: Date }): Promise<ModelUsageSummary> {
     const sinceEpochSeconds =
@@ -200,9 +150,7 @@ export function createCostStore(context: CostStoreContext): CostStoreApi {
 
     const periodArgs = sinceEpochSeconds !== null ? [sinceEpochSeconds] : [];
 
-    // Pass 1: rows whose model is recorded (or that have no event log to
-    // recompute from). Rows with a NULL model id but a captured event log are
-    // deferred to pass 2 so they are attributed to their recomputed model.
+    // SQL aggregation of recorded model snapshots + run counts per project.
     const aggregateRows = raw
       .prepare(
         `SELECT t.project_id AS projectId, p.name AS projectName,
@@ -212,8 +160,7 @@ export function createCostStore(context: CostStoreContext): CostStoreApi {
          FROM agent_cycles c
          JOIN tasks t ON t.task_id = c.task_id
          LEFT JOIN projects p ON p.id = t.project_id
-         WHERE NOT (c.cost_model_id IS NULL AND COALESCE(c.agent_events, json_extract(c.agent_result, '$.agentEvents')) IS NOT NULL)
-         ${sinceEpochSeconds !== null ? "AND c.created_at >= ?" : ""}
+         ${sinceEpochSeconds !== null ? "WHERE c.created_at >= ?" : ""}
          GROUP BY t.project_id, p.name, c.cost_model_id`
       )
       .all(...periodArgs) as Array<{
@@ -226,38 +173,6 @@ export function createCostStore(context: CostStoreContext): CostStoreApi {
     for (const row of aggregateRows) {
       const project = projectAggFor(row.projectId, row.projectName);
       addModel(project, row.modelId, row.runCount, row.usd);
-    }
-
-    // Pass 2: recompute model + USD for cycles missing a model snapshot.
-    const legacyRows = raw
-      .prepare(
-        `SELECT t.project_id AS projectId, p.name AS projectName,
-                COALESCE(c.agent_events, json_extract(c.agent_result, '$.agentEvents')) AS agentEvents
-         FROM agent_cycles c
-         JOIN tasks t ON t.task_id = c.task_id
-         LEFT JOIN projects p ON p.id = t.project_id
-         WHERE c.cost_model_id IS NULL AND COALESCE(c.agent_events, json_extract(c.agent_result, '$.agentEvents')) IS NOT NULL
-         ${sinceEpochSeconds !== null ? "AND c.created_at >= ?" : ""}`
-      )
-      .all(...periodArgs) as Array<{
-        projectId: string | null;
-        projectName: string | null;
-        agentEvents: string | null;
-      }>;
-    for (const row of legacyRows) {
-      let modelId: string | null = null;
-      let usd = 0;
-      if (row.agentEvents) {
-        try {
-          const cost = computeCycleCost(JSON.parse(row.agentEvents) as AgentLogEvent[]);
-          modelId = cost.modelId;
-          usd = cost.usd;
-        } catch {
-          // Fall back to unknown model with zero cost.
-        }
-      }
-      const project = projectAggFor(row.projectId, row.projectName);
-      addModel(project, modelId, 1, usd);
     }
 
     // Build per-project view + fold into the global distribution.
