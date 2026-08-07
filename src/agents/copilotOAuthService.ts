@@ -135,7 +135,7 @@ export async function pollForAccessToken(
       throw new DeviceFlowDeniedError("User denied the authorization request");
     }
     if (error) {
-      throw new Error(`GitHub OAuth error: ${String(error)}`);
+      throw new Error(`GitHub OAuth error: ${typeof error === "string" ? error : JSON.stringify(error)}`);
     }
 
     const accessToken = data["access_token"];

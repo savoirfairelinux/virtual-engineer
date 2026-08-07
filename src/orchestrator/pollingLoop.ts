@@ -306,7 +306,7 @@ export class PollingLoop {
             Promise.resolve()
               .then(() =>
                 orchestratorWithProjectMode.startTaskForProject!(
-                  { id: ticket.id as string, subject: ticket.subject, description: ticket.description, webUrl: ticket.webUrl },
+                  { id: ticket.id, subject: ticket.subject, description: ticket.description, webUrl: ticket.webUrl },
                   project,
                   sourceLabel
                 )
@@ -357,7 +357,7 @@ export class PollingLoop {
         reviewConfig.integrationId,
         "code_review"
       );
-      if (!connector || typeof (connector as ReviewDiscoveryConnector).getOpenReviewAssignments !== "function") {
+      if (!connector || typeof (connector).getOpenReviewAssignments !== "function") {
         log.debug(
           { projectId: project.id, integrationId: reviewConfig.integrationId },
           "skipping review project: connector does not support review discovery"

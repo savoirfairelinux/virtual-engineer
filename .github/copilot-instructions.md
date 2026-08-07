@@ -338,6 +338,7 @@ Use the `ve-tdd` skill. Gate every commit on the three checks above. Reuse the `
 - No `any` in `src/` — use `unknown` + type guards.
 - Optional props: declare `T | undefined` explicitly.
 - Unused locals/params must be `_`-prefixed.
+- `src/**/*.ts` (excluding `src/admin/ui/**`) and `agent-worker/src/**/*.ts` lint with `@typescript-eslint`'s type-aware `recommended-type-checked` preset (`eslint.config.js`), so `no-floating-promises`/`no-misused-promises`/`no-unsafe-*`/`require-await` etc. are enforced by `npm run lint`, not just convention. `tests/**`, `tests/unit/admin-ui/**`, and `src/admin/ui/**` still use the non-type-checked `recommended` preset. A function converted from `async` to a plain `Promise`-returning function must keep throwing as a **rejected promise** (wrap the body in `try { ... } catch (err) { return Promise.reject(...); }`), not a synchronous throw — dropping `async` loses the automatic sync-throw-to-rejection conversion.
 
 ## Commit Messages (Conventional Commits, Gerrit-friendly)
 `<type>(<scope>): <≤50-char subject>`

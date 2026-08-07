@@ -531,7 +531,7 @@ function registerSessionEventHandlers(
   });
 
   session.on('permission.requested', (e) => {
-    emitEvent('permission.requested', permissionRequestEventData(e as unknown));
+    emitEvent('permission.requested', permissionRequestEventData(e));
   });
 
   return state;

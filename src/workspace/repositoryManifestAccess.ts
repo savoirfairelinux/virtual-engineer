@@ -124,7 +124,7 @@ async function readManifestFiles(
   paths: string[],
   readFile: (filePath: string) => Promise<WorkspaceManifestFile>,
 ): Promise<WorkspaceManifestFile[]> {
-  const results: Array<WorkspaceManifestFile | undefined> = new Array(paths.length);
+  const results: Array<WorkspaceManifestFile | undefined> = new Array<WorkspaceManifestFile | undefined>(paths.length);
   let nextIndex = 0;
   const worker = async (): Promise<void> => {
     while (nextIndex < paths.length) {
@@ -179,7 +179,7 @@ export async function readGitHubWorkspaceManifestFiles(input: {
   const listing: unknown = await withRemoteReadTimeout(async (signal) => {
     const response = await globalThis.fetch(listingUrl, { headers: githubHeaders(input.token), signal });
     if (!response.ok) throw new Error(`GitHub repository listing failed (${response.status})`);
-    return await response.json() as unknown;
+    return await response.json();
   });
   if (listing === null || typeof listing !== "object" || Array.isArray(listing)) {
     throw new Error("GitHub repository listing returned an invalid response");
@@ -201,7 +201,7 @@ export async function readGitHubWorkspaceManifestFiles(input: {
     const payload: unknown = await withRemoteReadTimeout(async (signal) => {
       const response = await globalThis.fetch(fileUrl, { headers: githubHeaders(input.token), signal });
       if (!response.ok) throw new Error(`GitHub manifest read failed for '${filePath}' (${response.status})`);
-      return await response.json() as unknown;
+      return await response.json();
     });
     if (payload === null || typeof payload !== "object" || Array.isArray(payload)) {
       throw new Error(`GitHub manifest '${filePath}' returned an invalid response`);
@@ -235,9 +235,9 @@ export async function readGitLabWorkspaceManifestFiles(input: {
     const query = new URLSearchParams({ per_page: "100", page: String(page), recursive: "true" });
     if (input.revision) query.set("ref", input.revision);
     const { response, listing } = await withRemoteReadTimeout(async (signal) => {
-      const response = await globalThis.fetch(`${apiBase}/repository/tree?${query}`, { headers: gitLabHeaders(input.token), signal });
+      const response = await globalThis.fetch(`${apiBase}/repository/tree?${query.toString()}`, { headers: gitLabHeaders(input.token), signal });
       if (!response.ok) throw new Error(`GitLab repository listing failed (${response.status})`);
-      return { response, listing: await response.json() as unknown };
+      return { response, listing: await response.json() };
     });
     if (!Array.isArray(listing)) throw new Error("GitLab repository listing returned an invalid response");
     for (const entry of listing) {
@@ -259,7 +259,7 @@ export async function readGitLabWorkspaceManifestFiles(input: {
     const query = new URLSearchParams({ ref: input.revision ?? "HEAD" });
     const content = await withRemoteReadTimeout(async (signal) => {
       const response = await globalThis.fetch(
-        `${apiBase}/repository/files/${encodeURIComponent(filePath)}/raw?${query}`,
+        `${apiBase}/repository/files/${encodeURIComponent(filePath)}/raw?${query.toString()}`,
         { headers: gitLabHeaders(input.token), signal },
       );
       if (!response.ok) throw new Error(`GitLab manifest read failed for '${filePath}' (${response.status})`);

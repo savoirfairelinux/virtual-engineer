@@ -34,7 +34,7 @@ export type GitHubMode = "github.com" | "github-enterprise";
 
 export function resolveGitHubUrls(
   mode: GitHubMode,
-  customBaseUrl?: string | undefined
+  customBaseUrl?: string
 ): GitHubUrls {
   if (mode === "github.com") {
     return {

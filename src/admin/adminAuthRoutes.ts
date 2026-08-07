@@ -289,11 +289,11 @@ export function registerAuthRoutes(router: Router, deps: AuthRouteDeps): void {
     res.end();
   }, { authenticated: true });
 
-  router.add("GET", "/api/admin/auth/me", async (req, res, _params) => {
+  router.add("GET", "/api/admin/auth/me", (req, res, _params) => {
     const context = getAuthContext(req);
     if (!context) {
       writeJson(res, 401, { error: "Unauthorized" });
-      return;
+      return Promise.resolve();
     }
     const perms = getEffectivePermissions(req);
     writeJson(res, 200, {
@@ -302,6 +302,7 @@ export function registerAuthRoutes(router: Router, deps: AuthRouteDeps): void {
       role: context.role,
       ...(perms ? { capabilities: serializeEffectivePermissions(perms) } : {}),
     });
+    return Promise.resolve();
   }, { authenticated: true });
 
   // ─── User management (admin only) ─────────────────────────────────────────

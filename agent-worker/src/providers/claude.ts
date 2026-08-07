@@ -265,12 +265,13 @@ export async function runClaudeAgent(
     content: finalContent || 'Task completed',
     toolCallCount: state.toolCallCount,
     toolsByKind: state.toolsByKind,
-    cleanup: async (): Promise<void> => {
+    cleanup: (): Promise<void> => {
       try {
         stream.close();
       } catch {
         /* ignore */
       }
+      return Promise.resolve();
     },
   };
 }

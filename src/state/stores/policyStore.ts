@@ -143,7 +143,7 @@ export function createPolicyStore(context: PolicyStoreContext): PolicyStoreApi {
       return result.changes > 0;
     },
 
-    async setPolicyRules(policyId, rules): Promise<PolicyRule[]> {
+    setPolicyRules(policyId, rules): Promise<PolicyRule[]> {
       const now = new Date();
       const rows = rules.map((r) => ({
         id: randomUUID(),
@@ -156,7 +156,7 @@ export function createPolicyStore(context: PolicyStoreContext): PolicyStoreApi {
         tx.delete(policyRules).where(eq(policyRules.policyId, policyId)).run();
         if (rows.length > 0) tx.insert(policyRules).values(rows).run();
       });
-      return rows.map(rowToRule);
+      return Promise.resolve(rows.map(rowToRule));
     },
 
     async listPolicyRules(policyId): Promise<PolicyRule[]> {

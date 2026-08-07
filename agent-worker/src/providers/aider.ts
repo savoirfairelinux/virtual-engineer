@@ -295,7 +295,7 @@ export async function runAiderAgent(
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 
-  const cleanup = async (): Promise<void> => {
+  const cleanup = (): Promise<void> => {
     try {
       child.kill('SIGTERM');
     } catch {
@@ -306,6 +306,7 @@ export async function runAiderAgent(
     } catch {
       /* ignore */
     }
+    return Promise.resolve();
   };
 
   const heartbeat = setInterval(() => {
@@ -382,12 +383,13 @@ export async function runAiderAgent(
     content: content || 'Task completed',
     toolCallCount: state.toolCallCount,
     toolsByKind: state.toolsByKind,
-    cleanup: async (): Promise<void> => {
+    cleanup: (): Promise<void> => {
       try {
         child.kill('SIGTERM');
       } catch {
         /* ignore */
       }
+      return Promise.resolve();
     },
   };
 }

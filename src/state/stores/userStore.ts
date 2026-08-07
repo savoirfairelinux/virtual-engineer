@@ -124,30 +124,36 @@ export function createUserStore(context: UserStoreContext): UserStoreApi {
     return created;
   }
 
-  async function createInitialAdmin(input: {
+  function createInitialAdmin(input: {
     id: string;
     username: string;
     passwordHash: string;
   }): Promise<AdminUser> {
-    const createdRow = db.transaction((tx) => {
-      const countRow = tx.select({ total: sql<number>`COUNT(*)` }).from(users).get();
-      if ((countRow?.total ?? 0) > 0) {
-        throw setupAlreadyCompletedError();
-      }
+    // Not async: setupAlreadyCompletedError() below must surface as a rejected
+    // promise, not a synchronous throw, for await/`.catch()` callers.
+    try {
+      const createdRow = db.transaction((tx) => {
+        const countRow = tx.select({ total: sql<number>`COUNT(*)` }).from(users).get();
+        if ((countRow?.total ?? 0) > 0) {
+          throw setupAlreadyCompletedError();
+        }
 
-      const now = new Date();
-      return tx.insert(users).values({
-        id: input.id,
-        username: input.username,
-        passwordHash: input.passwordHash,
-        role: "admin",
-        enabled: 1,
-        createdAt: now,
-        updatedAt: now,
-      }).returning().get();
-    }, { behavior: "immediate" });
+        const now = new Date();
+        return tx.insert(users).values({
+          id: input.id,
+          username: input.username,
+          passwordHash: input.passwordHash,
+          role: "admin",
+          enabled: 1,
+          createdAt: now,
+          updatedAt: now,
+        }).returning().get();
+      }, { behavior: "immediate" });
 
-    return rowToUser(createdRow);
+      return Promise.resolve(rowToUser(createdRow));
+    } catch (err) {
+      return Promise.reject(err instanceof Error ? err : new Error(typeof err === "string" ? err : JSON.stringify(err)));
+    }
   }
 
   async function getUserById(id: string): Promise<AdminUser | null> {

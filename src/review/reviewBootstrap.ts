@@ -371,7 +371,7 @@ export interface ReviewBundle {
  * then falls back to the next active review integration that declares
  * `createReviewer` in its descriptor.
  */
-export async function buildReviewBundle(
+export function buildReviewBundle(
   pluginManager: PluginManager,
   _workspaceBaseDir: string,
   stateStore: StateStore & PromptStore,
@@ -387,7 +387,7 @@ export async function buildReviewBundle(
       { target: targetId },
       "buildReviewBundle: no active review integration with createReviewer — ensure a Gerrit/GitHub/GitLab review integration is enabled"
     );
-    return { integration: null, provider: null, orchestrator: null };
+    return Promise.resolve({ integration: null, provider: null, orchestrator: null });
   }
 
   const descriptor = getProviderDescriptor(integration.provider);
@@ -397,7 +397,7 @@ export async function buildReviewBundle(
       { integrationId: integration.id, type: integration.provider },
       "buildReviewBundle: plugin descriptor for provider does not implement createReviewer"
     );
-    return { integration: null, provider: null, orchestrator: null };
+    return Promise.resolve({ integration: null, provider: null, orchestrator: null });
   }
 
   let rawConfig: Record<string, unknown>;
@@ -414,7 +414,7 @@ export async function buildReviewBundle(
       { integrationId: integration.id, err },
       "buildReviewBundle: failed to decrypt integration config — check ADMIN_AUTH_SECRET and integration credentials"
     );
-    return { integration: null, provider: null, orchestrator: null };
+    return Promise.resolve({ integration: null, provider: null, orchestrator: null });
   }
 
   if (!workspaceRunner) {
@@ -422,7 +422,7 @@ export async function buildReviewBundle(
       { integrationId: integration.id },
       "buildReviewBundle: no DockerWorkspaceRunner available"
     );
-    return { integration: null, provider: null, orchestrator: null };
+    return Promise.resolve({ integration: null, provider: null, orchestrator: null });
   }
 
   const reviewer = createReviewer(rawConfig, integration, workspaceRunner);
@@ -446,7 +446,7 @@ export async function buildReviewBundle(
     maxReviewReplies: getConfig().maxReviewReplies,
     reviewMinSeverity: getConfig().reviewMinSeverity,
   });
-  return { integration, provider: reviewer.provider, orchestrator };
+  return Promise.resolve({ integration, provider: reviewer.provider, orchestrator });
 }
 
 // ─── Review trigger ───────────────────────────────────────────────────────────

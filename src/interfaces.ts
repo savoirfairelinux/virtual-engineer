@@ -669,14 +669,14 @@ export interface WorkspaceRunner {
   runReviewInDocker?(
     handle: WorkspaceHandle,
     input: ReviewWorkspaceInput & { agentAdapter: AgentAdapter },
-    callbacks?: { onStderrChunk?: ((chunk: string) => void) | undefined } | undefined
+    callbacks?: { onStderrChunk?: ((chunk: string) => void) | undefined }
   ): Promise<{ rawOutput: string }>;
   /** Spawn the adapter container and return raw stdout/stderr. Used by ConfigurableAdapter.configure. */
   runAgentInDocker?(
     adapter: AgentAdapter,
     context: TaskContext,
     authEnv?: Record<string, string>,
-    callbacks?: { onStdoutChunk?: ((chunk: string) => void) | undefined; onStderrChunk?: ((chunk: string) => void) | undefined } | undefined
+    callbacks?: { onStdoutChunk?: ((chunk: string) => void) | undefined; onStderrChunk?: ((chunk: string) => void) | undefined }
   ): Promise<{ stdout: string; stderr: string }>;
   /** Run agent adapter inside the ephemeral execution context. */
   runAgent(handle: WorkspaceHandle, context: TaskContext, adapter?: AgentAdapter): Promise<AgentResult>;

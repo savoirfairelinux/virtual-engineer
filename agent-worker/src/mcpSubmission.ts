@@ -1,6 +1,5 @@
 import { readFileSync, writeFileSync } from 'fs';
 import { AjvJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/ajv';
-import type { JsonSchemaType } from '@modelcontextprotocol/sdk/validation';
 import type { ObservedToolCall } from './providers/types.js';
 
 export type SubmissionMode = 'codegen' | 'review';
@@ -142,7 +141,7 @@ export function validateSubmission(
   value: unknown,
 ): Record<string, unknown> {
   const validator = new AjvJsonSchemaValidator().getValidator<Record<string, unknown>>(
-    schema as JsonSchemaType,
+    schema,
   );
   const result = validator(value);
   if (!result.valid) {

@@ -2,7 +2,6 @@ import { and, eq } from "drizzle-orm";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import type {
   Integration,
-  ProviderId,
   OAuthApp,
 } from "../../interfaces.js";
 import { normalizeGitLabBaseUrl } from "../../utils/gitlabAuth.js";
@@ -41,7 +40,7 @@ export function createIntegrationStore(context: IntegrationStoreContext): Integr
   function rowToIntegration(row: typeof integrations.$inferSelect): Integration {
     return {
       id: row.id,
-      provider: row.provider as ProviderId,
+      provider: row.provider,
       name: row.name,
       configJson: row.configJson,
       enabled: row.enabled === 1,

@@ -80,12 +80,12 @@ export function createReviewDedupStore(context: ReviewDedupStoreContext): Review
     }));
   }
 
-  async function markReviewCommentsPosted(
+  function markReviewCommentsPosted(
     taskId: TaskId,
     changeId: ExternalChangeId,
     comments: PostedReviewCommentInput[]
   ): Promise<void> {
-    if (comments.length === 0) return;
+    if (comments.length === 0) return Promise.resolve();
     const now = Math.floor(Date.now() / 1000);
     // INSERT OR IGNORE so a duplicate (task_id, comment_hash) is silently skipped
     // rather than aborting the whole batch on the unique index.
@@ -110,10 +110,12 @@ export function createReviewDedupStore(context: ReviewDedupStoreContext): Review
       }
     });
     insertMany(comments);
+    return Promise.resolve();
   }
 
-  async function markReviewCommentResolved(id: number): Promise<void> {
+  function markReviewCommentResolved(id: number): Promise<void> {
     raw.prepare("UPDATE posted_review_comments SET resolved = 1 WHERE id = ?").run(id);
+    return Promise.resolve();
   }
 
   async function getHandledThreadReplyHashes(taskId: TaskId): Promise<Set<string>> {
@@ -123,12 +125,12 @@ export function createReviewDedupStore(context: ReviewDedupStoreContext): Review
     return new Set(rows.map((row) => row.handledCommentHash));
   }
 
-  async function markThreadReplyPosted(
+  function markThreadReplyPosted(
     taskId: TaskId,
     changeId: ExternalChangeId,
     replies: ThreadReplyRecordInput[]
   ): Promise<void> {
-    if (replies.length === 0) return;
+    if (replies.length === 0) return Promise.resolve();
     const now = Math.floor(Date.now() / 1000);
     // INSERT OR IGNORE so a duplicate (task_id, thread_id, handled_comment_hash)
     // is silently skipped rather than aborting the whole batch.
@@ -143,6 +145,7 @@ export function createReviewDedupStore(context: ReviewDedupStoreContext): Review
       }
     });
     insertMany(replies);
+    return Promise.resolve();
   }
 
   return {

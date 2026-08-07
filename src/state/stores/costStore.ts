@@ -28,7 +28,7 @@ export function createCostStore(context: CostStoreContext): CostStoreApi {
    * cost columns existed (or that never recorded a USD snapshot) are recomputed
    * from their captured event log, so historical runs are still accounted for.
    */
-  async function getCostSummary(options?: { since?: Date }): Promise<CostSummary> {
+  function getCostSummary(options?: { since?: Date }): Promise<CostSummary> {
     const sinceEpochSeconds =
       options?.since !== undefined ? Math.floor(options.since.getTime() / 1000) : null;
 
@@ -144,14 +144,14 @@ export function createCostStore(context: CostStoreContext): CostStoreApi {
       }))
       .sort((a, b) => b.usd - a.usd || b.runCount - a.runCount);
 
-    return {
+    return Promise.resolve({
       totalUsd: perProject.reduce((sum, p) => sum + p.usd, 0),
       totalAiCredits: perProject.reduce((sum, p) => sum + p.aiCredits, 0),
       totalPremiumRequests: perProject.reduce((sum, p) => sum + p.premiumRequests, 0),
       totalRuns: perProject.reduce((sum, p) => sum + p.runCount, 0),
       perProject,
       sinceEpochSeconds,
-    };
+    });
   }
 
   /**
@@ -160,7 +160,7 @@ export function createCostStore(context: CostStoreContext): CostStoreApi {
    * snapshot but that carry an event log are recomputed so historical runs are
    * still attributed to the correct model.
    */
-  async function getModelUsageSummary(options?: { since?: Date }): Promise<ModelUsageSummary> {
+  function getModelUsageSummary(options?: { since?: Date }): Promise<ModelUsageSummary> {
     const sinceEpochSeconds =
       options?.since !== undefined ? Math.floor(options.since.getTime() / 1000) : null;
 
@@ -289,13 +289,13 @@ export function createCostStore(context: CostStoreContext): CostStoreApi {
         b.models.reduce((s, m) => s + m.runCount, 0) - a.models.reduce((s, m) => s + m.runCount, 0)
     );
 
-    return {
+    return Promise.resolve({
       byModel,
       perProject,
       totalRuns: byModel.reduce((s, m) => s + m.runCount, 0),
       totalUsd: byModel.reduce((s, m) => s + m.usd, 0),
       sinceEpochSeconds,
-    };
+    });
   }
 
   return { getCostSummary, getModelUsageSummary };

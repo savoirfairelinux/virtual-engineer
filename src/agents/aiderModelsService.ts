@@ -64,7 +64,7 @@ export async function fetchAiderModels(
       return fetchOpenAIStyleModels(`${base}/v1/models`, apiKey, deps);
     }
     default:
-      throw new Error(`Unknown Aider backend "${backend}".`);
+      throw new Error(`Unknown Aider backend "${String(backend)}".`);
   }
 }
 
