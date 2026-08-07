@@ -96,7 +96,7 @@ describe("SqliteStateStore — getCostSummary", () => {
     store.close();
   });
 
-  it("aggregates cost per project and instance-wide, including legacy runs", async () => {
+  it("aggregates cost per project and instance-wide, including backfilled legacy runs", async () => {
     const agent = await store.createAgent({
       name: "A",
       type: "coding",
@@ -116,6 +116,7 @@ describe("SqliteStateStore — getCostSummary", () => {
     await store.saveAgentCycle(t2, 1, pricedResult(3));
 
     // Legacy run on an unassigned task: no cost snapshot, but priced events.
+    // The next store creation backfills its cost columns before this reads them.
     const t3 = await makeTaskForProject(store);
     insertRawCycle(dbPath, {
       taskId: t3,
@@ -124,6 +125,8 @@ describe("SqliteStateStore — getCostSummary", () => {
       costAiCredits: null,
       agentEvents: JSON.stringify(pricedResult(5).agentEvents),
     });
+    store.close();
+    store = await SqliteStateStore.create(dbPath);
 
     const summary = await store.getCostSummary();
 
@@ -147,7 +150,7 @@ describe("SqliteStateStore — getCostSummary", () => {
     expect(summary.perProject[0]?.projectId).toBeNull();
   });
 
-  it("recomputes legacy cost from agent_result when the agent_events column is null", async () => {
+  it("backfills legacy cost from agent_result when the agent_events column is null", async () => {
     const agent = await store.createAgent({
       name: "A",
       type: "coding",
@@ -168,6 +171,8 @@ describe("SqliteStateStore — getCostSummary", () => {
       agentEvents: null,
       resultEvents: pricedResult(4).agentEvents,
     });
+    store.close();
+    store = await SqliteStateStore.create(dbPath);
 
     const summary = await store.getCostSummary();
     expect(summary.totalRuns).toBe(1);
@@ -213,5 +218,49 @@ describe("SqliteStateStore — getCostSummary", () => {
     expect(summary.totalRuns).toBe(0);
     expect(summary.totalUsd).toBe(0);
     expect(summary.perProject).toEqual([]);
+  });
+
+  it("reopening the store backfills legacy rows before getCostSummary counts their cost", async () => {
+    const agent = await store.createAgent({
+      name: "A",
+      type: "coding",
+      modelConfigJson: JSON.stringify({ model: "gpt-4.1" }),
+      systemPromptId: "system_generic_code",
+      instructionsPromptId: "instructions_generic_code",
+      enabled: true,
+    });
+    const p1 = await store.createProject({ name: "PLATFORM", type: "coding", agentId: agent.id });
+    const t1 = await makeTaskForProject(store, p1.id);
+
+    insertRawCycle(dbPath, {
+      taskId: t1,
+      createdAtEpochSeconds: Math.floor(Date.now() / 1000),
+      costUsd: null,
+      costAiCredits: null,
+      agentEvents: JSON.stringify(pricedResult(5).agentEvents),
+    });
+
+    // Before reopening: no cost snapshot exists yet, so the run counts but
+    // contributes zero cost (there is no per-read recompute anymore).
+    const before = await store.getCostSummary();
+    expect(before.totalRuns).toBe(1);
+    expect(before.totalUsd).toBe(0);
+
+    store.close();
+    store = await SqliteStateStore.create(dbPath);
+
+    // The row's cost columns are now populated by the migration itself.
+    const raw = new Database(dbPath);
+    const row = raw
+      .prepare("SELECT cost_usd, cost_ai_credits FROM agent_cycles WHERE task_id = ?")
+      .get(t1) as { cost_usd: number; cost_ai_credits: number };
+    raw.close();
+    expect(row.cost_usd).toBeCloseTo(0.05, 6);
+    expect(row.cost_ai_credits).toBe(5);
+
+    // getCostSummary still returns the same total, now from the snapshot alone.
+    const after = await store.getCostSummary();
+    expect(after.totalUsd).toBeCloseTo(0.05, 6);
+    expect(after.totalRuns).toBe(1);
   });
 });

@@ -17,7 +17,7 @@ import type {
   ValidationResult,
 } from "../../interfaces.js";
 import { makeExternalChangeId, TERMINAL_STATES } from "../../interfaces.js";
-import { computeCycleCost, hasCostData } from "../../agents/cycleCost.js";
+import { computeCycleCost } from "../../agents/cycleCost.js";
 import { getLogger } from "../../logger.js";
 import { validateTransition } from "../stateMachine.js";
 import { agentCycles, changePerRepository, stateTransitions, tasks } from "../schema.js";
@@ -510,6 +510,9 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
           validationResult = null;
         }
       }
+      // cost_* columns are always populated at write time (saveAgentCycle) or
+      // by the startup backfill migration (backfillLegacyCycleCosts); a row with
+      // no snapshot genuinely has no recoverable cost data.
       const hasSnapshot =
         row.costUsd !== null ||
         row.costAiCredits !== null ||
@@ -519,37 +522,21 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
         row.costCachedTokens !== null ||
         row.costCacheWriteTokens !== null ||
         row.costModelId !== null;
-      let cost: CycleCost | undefined;
-      if (hasSnapshot) {
-        cost = {
-          priced: row.costAiCredits !== null,
-          aiCredits: row.costAiCredits ?? 0,
-          usd: row.costUsd ?? 0,
-          premiumRequests: row.premiumRequests ?? 0,
-          tokens: {
-            input: row.costInputTokens ?? 0,
-            output: row.costOutputTokens ?? 0,
-            cached: row.costCachedTokens ?? 0,
-            cacheWrite: row.costCacheWriteTokens ?? 0,
-          },
-          modelId: row.costModelId,
-        };
-      } else {
-        // Legacy cycle (persisted before cost columns): recompute from the
-        // streamed event log. Prefer the canonical `agent_events` column over
-        // the larger agentResult JSON, which is more prone to truncation or
-        // corruption (and is replaced by a placeholder when parsing fails above).
-        let events = result.agentEvents;
-        if (row.agentEvents) {
-          try {
-            events = JSON.parse(row.agentEvents) as AgentLogEvent[];
-          } catch {
-            // Fall back to events embedded in the parsed result.
+      const cost: CycleCost | undefined = hasSnapshot
+        ? {
+            priced: row.costAiCredits !== null,
+            aiCredits: row.costAiCredits ?? 0,
+            usd: row.costUsd ?? 0,
+            premiumRequests: row.premiumRequests ?? 0,
+            tokens: {
+              input: row.costInputTokens ?? 0,
+              output: row.costOutputTokens ?? 0,
+              cached: row.costCachedTokens ?? 0,
+              cacheWrite: row.costCacheWriteTokens ?? 0,
+            },
+            modelId: row.costModelId,
           }
-        }
-        const recomputed = computeCycleCost(events);
-        if (hasCostData(recomputed)) cost = recomputed;
-      }
+        : undefined;
       return {
         id: row.id,
         taskId: row.taskId as TaskId,
