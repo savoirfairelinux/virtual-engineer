@@ -1,5 +1,5 @@
 import { getLogger } from "../logger.js";
-import { writeJson, readBody, zodErrorBody } from "./adminRouteUtils.js";
+import { writeJson, readBody, zodErrorBody, requireStore } from "./adminRouteUtils.js";
 import { makeAgentId, makeProjectId, type AgentRecord, type ProjectRecord } from "../interfaces.js";
 import type { Router } from "./router.js";
 import { getEffectivePermissions } from "./authContext.js";
@@ -42,7 +42,7 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
   registerProjectVendorComponentsRoutes(router, deps);
 
   router.add("GET", "/api/admin/projects", async (req, res, _params) => {
-    if (!deps.projectStore) { writeJson(res, 501, { error: "Project store not available" }); return; }
+    if (!requireStore(deps.projectStore, res, "Project store not available")) return;
     const store = deps.projectStore;
     const projects = await store.listProjects();
     const integrations = await loadIntegrationsLookup(deps.integrationStore);
@@ -63,7 +63,7 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
   }, { permission: "project.read", collection: true });
 
   router.add("POST", "/api/admin/projects", async (req, res, _params) => {
-    if (!deps.projectStore) { writeJson(res, 501, { error: "Project store not available" }); return; }
+    if (!requireStore(deps.projectStore, res, "Project store not available")) return;
     const store = deps.projectStore;
     const body = await readBody(req);
     if (!body) { writeJson(res, 400, { error: "Request body required" }); return; }
@@ -178,7 +178,7 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
 
   // Enable or disable a project by id.
   router.add("PATCH", "/api/admin/projects/:id/enable", async (req, res, params) => {
-    if (!deps.projectStore) { writeJson(res, 501, { error: "Project store not available" }); return; }
+    if (!requireStore(deps.projectStore, res, "Project store not available")) return;
     const store = deps.projectStore;
     const id = makeProjectId(params["id"] ?? "");
     const existing = await store.getProjectById(id);
@@ -193,7 +193,7 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
   }, { permission: "project.operate", resourceParam: "id" });
 
   router.add("PATCH", "/api/admin/projects/:id/disable", async (req, res, params) => {
-    if (!deps.projectStore) { writeJson(res, 501, { error: "Project store not available" }); return; }
+    if (!requireStore(deps.projectStore, res, "Project store not available")) return;
     const store = deps.projectStore;
     const id = makeProjectId(params["id"] ?? "");
     const existing = await store.getProjectById(id);
@@ -205,7 +205,7 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
   }, { permission: "project.operate", resourceParam: "id" });
 
   router.add("GET", "/api/admin/projects/:id", async (_req, res, params) => {
-    if (!deps.projectStore) { writeJson(res, 501, { error: "Project store not available" }); return; }
+    if (!requireStore(deps.projectStore, res, "Project store not available")) return;
     const store = deps.projectStore;
     const id = makeProjectId(params["id"] ?? "");
     const existing = await store.getProjectById(id);
@@ -216,7 +216,7 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
   }, { permission: "project.read", resourceParam: "id" });
 
   router.add("PUT", "/api/admin/projects/:id", async (req, res, params) => {
-    if (!deps.projectStore) { writeJson(res, 501, { error: "Project store not available" }); return; }
+    if (!requireStore(deps.projectStore, res, "Project store not available")) return;
     const store = deps.projectStore;
     const id = makeProjectId(params["id"] ?? "");
     const existing = await store.getProjectById(id);
@@ -316,7 +316,7 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
   }, { permission: "project.write", resourceParam: "id" });
 
   router.add("DELETE", "/api/admin/projects/:id", async (req, res, params) => {
-    if (!deps.projectStore) { writeJson(res, 501, { error: "Project store not available" }); return; }
+    if (!requireStore(deps.projectStore, res, "Project store not available")) return;
     const store = deps.projectStore;
     const id = makeProjectId(params["id"] ?? "");
     const existing = await store.getProjectById(id);

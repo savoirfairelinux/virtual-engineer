@@ -13,7 +13,7 @@ import {
 } from "../plugins/registry.js";
 import { encryptToken, isVersionedEncryptedToken } from "../utils/encryption.js";
 import { normalizeGitLabBaseUrl } from "../utils/gitlabAuth.js";
-import { writeJson, readBody, asRecord, toIsoTimestamp, SECRET_MASK, parseConfig, formatZodError } from "./adminRouteUtils.js";
+import { writeJson, readBody, asRecord, toIsoTimestamp, SECRET_MASK, parseConfig, formatZodError, requireStore } from "./adminRouteUtils.js";
 import { recordAudit, type AuditCapableStore } from "./adminAudit.js";
 import type { Router } from "./router.js";
 import { scanIntegrationWorkspace, WorkspaceScanError } from "../workspace/workspaceScanService.js";
@@ -71,7 +71,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
 
   // ─── OAuth Apps ────────────────────────────────────────────────────────────
   router.add("GET", "/api/admin/oauth-apps", async (req, res, _params) => {
-    if (!deps.oAuthAppStore) { writeJson(res, 501, { error: "OAuth app registry is not available" }); return; }
+    if (!requireStore(deps.oAuthAppStore, res, "OAuth app registry is not available")) return;
     const requestUrl = new URL(req.url ?? "/", "http://127.0.0.1");
     const providerParam = requestUrl.searchParams.get("provider") ?? undefined;
     const apps = await deps.oAuthAppStore.listOAuthApps(providerParam);
@@ -79,7 +79,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
   }, { permission: "oauth.manage" });
 
   router.add("POST", "/api/admin/oauth-apps", async (req, res, _params) => {
-    if (!deps.oAuthAppStore) { writeJson(res, 501, { error: "OAuth app registry is not available" }); return; }
+    if (!requireStore(deps.oAuthAppStore, res, "OAuth app registry is not available")) return;
     const body = await readBody(req);
     const provider = typeof body?.["provider"] === "string" ? body["provider"] : "gitlab";
     const baseUrl = typeof body?.["baseUrl"] === "string" ? body["baseUrl"] : "";
@@ -91,7 +91,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
   }, { permission: "oauth.manage" });
 
   router.add("DELETE", "/api/admin/oauth-apps", async (req, res, _params) => {
-    if (!deps.oAuthAppStore) { writeJson(res, 501, { error: "OAuth app registry is not available" }); return; }
+    if (!requireStore(deps.oAuthAppStore, res, "OAuth app registry is not available")) return;
     const body = await readBody(req);
     const provider = typeof body?.["provider"] === "string" ? body["provider"] : "gitlab";
     const baseUrl = typeof body?.["baseUrl"] === "string" ? body["baseUrl"] : "";
@@ -104,7 +104,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
 
   // Resolve a provider + base URL to its OAuth app registry entry.
   router.add("POST", "/api/admin/oauth-apps/resolve", async (req, res, _params) => {
-    if (!deps.oAuthAppStore) { writeJson(res, 501, { error: "OAuth app registry is not available" }); return; }
+    if (!requireStore(deps.oAuthAppStore, res, "OAuth app registry is not available")) return;
     const body = await readBody(req);
     const provider = typeof body?.["provider"] === "string" ? body["provider"] : "gitlab";
     const baseUrl = typeof body?.["baseUrl"] === "string" ? body["baseUrl"] : "";
@@ -120,13 +120,13 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
 
   // ─── Integrations CRUD (exact paths before :id pattern) ──────────────────
   router.add("GET", "/api/admin/integrations", async (_req, res, _params) => {
-    if (!deps.integrationStore) { writeJson(res, 501, { error: "Integration store not available" }); return; }
+    if (!requireStore(deps.integrationStore, res, "Integration store not available")) return;
     const list = await deps.integrationStore.getIntegrations();
     writeJson(res, 200, { integrations: list.map((i) => serializeIntegration(i, deps.pluginManager, deps.integrationStreams)) });
   }, { permission: "integration.read" });
 
   router.add("GET", "/api/admin/integrations/by-category", async (_req, res, _params) => {
-    if (!deps.integrationStore) { writeJson(res, 501, { error: "Integration store not available" }); return; }
+    if (!requireStore(deps.integrationStore, res, "Integration store not available")) return;
     const supports = (integration: Integration, capability: string): boolean => {
       const descriptor = getProviderDescriptor(integration.provider);
       return descriptor ? (getProviderDomainCapabilities(descriptor) as string[]).includes(capability) : false;
@@ -139,7 +139,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
   }, { permission: "integration.read" });
 
   router.add("POST", "/api/admin/integrations", async (req, res, _params) => {
-    if (!deps.integrationStore) { writeJson(res, 501, { error: "Integration store not available" }); return; }
+    if (!requireStore(deps.integrationStore, res, "Integration store not available")) return;
     const body = await readBody(req);
     if (!body || !body["provider"] || !body["name"]) {
       writeJson(res, 400, { error: "Missing required fields: provider, name" }); return;
@@ -181,14 +181,14 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
 
   // test (exact path before :id)
   router.add("POST", "/api/admin/integrations/test", async (req, res, _params) => {
-    if (!deps.pluginManager) { writeJson(res, 501, { error: "Plugin manager not available" }); return; }
+    if (!requireStore(deps.pluginManager, res, "Plugin manager not available")) return;
     const body = (await readBody(req)) ?? {};
     const integrationId = typeof body["integrationId"] === "string" ? body["integrationId"] : undefined;
     const requestedProvider = typeof body["provider"] === "string" ? body["provider"] as ProviderId : undefined;
     const config = asRecord(body["config"]);
     try {
       if (integrationId) {
-        if (!deps.integrationStore) { writeJson(res, 501, { error: "Integration store not available" }); return; }
+        if (!requireStore(deps.integrationStore, res, "Integration store not available")) return;
         const existing = await deps.integrationStore.getIntegration(integrationId);
         if (!existing) { writeJson(res, 404, { error: "Integration not found" }); return; }
         if (requestedProvider !== undefined && requestedProvider !== existing.provider) {
@@ -217,7 +217,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
 
   // ─── Single integration by ID ─────────────────────────────────────────────
   router.add("GET", "/api/admin/integrations/:id", async (_req, res, params) => {
-    if (!deps.integrationStore) { writeJson(res, 501, { error: "Integration store not available" }); return; }
+    if (!requireStore(deps.integrationStore, res, "Integration store not available")) return;
     const id = params["id"] ?? "";
     const integration = await deps.integrationStore.getIntegration(id);
     if (!integration) { writeJson(res, 404, { error: "Integration not found" }); return; }
@@ -225,7 +225,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
   }, { permission: "integration.read" });
 
   router.add("PUT", "/api/admin/integrations/:id", async (req, res, params) => {
-    if (!deps.integrationStore) { writeJson(res, 501, { error: "Integration store not available" }); return; }
+    if (!requireStore(deps.integrationStore, res, "Integration store not available")) return;
     const id = params["id"] ?? "";
     const existing = await deps.integrationStore.getIntegration(id);
     if (!existing) { writeJson(res, 404, { error: "Integration not found" }); return; }
@@ -279,7 +279,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
   }, { permission: "integration.write", resourceParam: "id" });
 
   router.add("DELETE", "/api/admin/integrations/:id", async (req, res, params) => {
-    if (!deps.integrationStore) { writeJson(res, 501, { error: "Integration store not available" }); return; }
+    if (!requireStore(deps.integrationStore, res, "Integration store not available")) return;
     const id = params["id"] ?? "";
     const existing = await deps.integrationStore.getIntegration(id);
     if (!existing) { writeJson(res, 404, { error: "Integration not found" }); return; }
@@ -308,7 +308,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
 
   // ─── Enable / Disable ─────────────────────────────────────────────────────
   router.add("PATCH", "/api/admin/integrations/:id/enable", async (req, res, params) => {
-    if (!deps.pluginManager) { writeJson(res, 501, { error: "Plugin manager not available" }); return; }
+    if (!requireStore(deps.pluginManager, res, "Plugin manager not available")) return;
     const id = params["id"] ?? "";
     try {
       await deps.pluginManager.enablePlugin(id);
@@ -322,7 +322,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
   }, { permission: "integration.operate", resourceParam: "id" });
 
   router.add("PATCH", "/api/admin/integrations/:id/disable", async (req, res, params) => {
-    if (!deps.pluginManager) { writeJson(res, 501, { error: "Plugin manager not available" }); return; }
+    if (!requireStore(deps.pluginManager, res, "Plugin manager not available")) return;
     const id = params["id"] ?? "";
     try {
       await deps.pluginManager.disablePlugin(id);
@@ -337,7 +337,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
 
   // ─── Test (by ID) ─────────────────────────────────────────────────────────
   router.add("POST", "/api/admin/integrations/:id/test", async (_req, res, params) => {
-    if (!deps.pluginManager) { writeJson(res, 501, { error: "Plugin manager not available" }); return; }
+    if (!requireStore(deps.pluginManager, res, "Plugin manager not available")) return;
     const id = params["id"] ?? "";
     try {
       const result = await deps.pluginManager.testConnection(id);
@@ -364,7 +364,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
 
   // ─── Models ───────────────────────────────────────────────────────────────
   router.add("GET", "/api/admin/integrations/:id/models", async (_req, res, params) => {
-    if (!deps.integrationStore) { writeJson(res, 501, { error: "Integration store not available" }); return; }
+    if (!requireStore(deps.integrationStore, res, "Integration store not available")) return;
     const id = params["id"] ?? "";
     const integration = await deps.integrationStore.getIntegration(id);
     if (!integration) { writeJson(res, 404, { error: "Integration not found" }); return; }
@@ -385,7 +385,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
 
   // ─── Discover ─────────────────────────────────────────────────────────────
   router.add("POST", "/api/admin/integrations/:id/discover", async (req, res, params) => {
-    if (!deps.integrationStore) { writeJson(res, 501, { error: "Integration store not available" }); return; }
+    if (!requireStore(deps.integrationStore, res, "Integration store not available")) return;
     if (typeof deps.integrationStore.setIntegrationDiscoveredResources !== "function") {
       writeJson(res, 501, { error: "Integration store does not support discovery persistence" }); return;
     }
@@ -456,7 +456,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
 
   // ─── Branches (per-repository, on-demand) ───────────────────────────────────
   router.add("GET", "/api/admin/integrations/:id/branches", async (req, res, params) => {
-    if (!deps.integrationStore) { writeJson(res, 501, { error: "Integration store not available" }); return; }
+    if (!requireStore(deps.integrationStore, res, "Integration store not available")) return;
     const id = params["id"] ?? "";
     const integration = await deps.integrationStore.getIntegration(id);
     if (!integration) { writeJson(res, 404, { error: "Integration not found" }); return; }
@@ -499,7 +499,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
 
   // ─── Workspace manifests (per-repository, bounded preview) ────────────────
   router.add("POST", "/api/admin/integrations/:id/workspace-scan", async (req, res, params) => {
-    if (!deps.integrationStore) { writeJson(res, 501, { error: "Integration store not available" }); return; }
+    if (!requireStore(deps.integrationStore, res, "Integration store not available")) return;
     const id = params["id"] ?? "";
     const integration = await deps.integrationStore.getIntegration(id);
     if (!integration) { writeJson(res, 404, { error: "Integration not found" }); return; }
@@ -562,7 +562,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
   }, { permission: "integration.write" });
 
   router.add("POST", "/api/admin/integrations/:id/ssh-key/generate", async (_req, res, params) => {
-    if (!deps.integrationStore) { writeJson(res, 501, { error: "Integration store not available" }); return; }
+    if (!requireStore(deps.integrationStore, res, "Integration store not available")) return;
     const id = params["id"] ?? "";
     const integration = await deps.integrationStore.getIntegration(id);
     if (!integration) { writeJson(res, 404, { error: "Integration not found" }); return; }
@@ -590,7 +590,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
   }, { permission: "integration.write", resourceParam: "id" });
 
   router.add("GET", "/api/admin/integrations/:id/ssh-key/public", async (_req, res, params) => {
-    if (!deps.integrationStore) { writeJson(res, 501, { error: "Integration store not available" }); return; }
+    if (!requireStore(deps.integrationStore, res, "Integration store not available")) return;
     const id = params["id"] ?? "";
     const integration = await deps.integrationStore.getIntegration(id);
     if (!integration) { writeJson(res, 404, { error: "Integration not found" }); return; }
