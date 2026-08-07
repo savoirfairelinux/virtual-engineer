@@ -55,10 +55,15 @@ const ConfigSchema = z.object({
     adminApiEnabled: booleanFromEnv.default(true),
     adminApiHost: z.string().min(1).default("127.0.0.1"),
     adminApiPort: z.coerce.number().int().positive().default(3100),
-    adminAuthSecret: z
-      .string()
-      .min(32, "ADMIN_AUTH_SECRET must be at least 32 characters. Generate one with: openssl rand -hex 32")
-      .optional(),
+    // An empty string (e.g. `ADMIN_AUTH_SECRET=` with no value) is treated as unset,
+    // consistent with how other optional env vars behave, rather than failing the min-length check.
+    adminAuthSecret: z.preprocess(
+      (value) => (value === "" ? undefined : value),
+      z
+        .string()
+        .min(32, "ADMIN_AUTH_SECRET must be at least 32 characters. Generate one with: openssl rand -hex 32")
+        .optional(),
+    ),
     /**
      * When `true`, the admin auth layer extracts the client IP from the
      * `X-Forwarded-For` header (first entry) instead of the raw socket address.

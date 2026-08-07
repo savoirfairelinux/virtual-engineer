@@ -182,6 +182,12 @@ describe("getConfig", () => {
       resetConfig();
       expect(getConfig().adminAuthSecret).toBe("a".repeat(32));
     });
+
+    it("treats an empty ADMIN_AUTH_SECRET as unset instead of failing the min-length check", () => {
+      process.env["ADMIN_AUTH_SECRET"] = "";
+      resetConfig();
+      expect(getConfig().adminAuthSecret).toBeUndefined();
+    });
   });
 });
 
