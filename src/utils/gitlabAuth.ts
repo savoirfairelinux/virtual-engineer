@@ -145,5 +145,5 @@ export async function fetchGitLabCurrentUser(config: Record<string, unknown>): P
   if (!user || typeof user !== "object" || !("id" in user)) {
     throw new Error("Invalid GitLab response: missing user data");
   }
-  return user as Record<string, unknown>;
+  return user;
 }

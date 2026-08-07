@@ -147,7 +147,7 @@ export interface AdminServerDependencies {
   };
   /** Optional live integration stream runtime state, keyed by integration id. */
   integrationStreams?: {
-    getStatus(integrationId: string): unknown | null;
+    getStatus(integrationId: string): unknown;
   };
   /**
    * When provided, mounts `GET /api/admin/concurrency` (read-only) with live in-memory counters.
@@ -208,13 +208,16 @@ function getProviderUrls(pluginManager: PluginManager | undefined): {
 export function createAdminServer(dependencies: AdminServerDependencies): Server {
   const authRuntime = createAuthRuntime(dependencies);
   const router = buildApiRouter(dependencies, authRuntime);
-  return createServer(async (request, response) => {
-    try {
-      await handleRequest(request, response, dependencies, router, authRuntime);
-    } catch (err: unknown) {
-      log.error({ err, method: request.method, url: request.url }, "admin request failed");
-      writeJson(response, 500, { error: "Internal server error" });
-    }
+  return createServer((request, response) => {
+    // handleRequest never rejects (errors are caught below), so this is a safe fire-and-forget.
+    void (async (): Promise<void> => {
+      try {
+        await handleRequest(request, response, dependencies, router, authRuntime);
+      } catch (err: unknown) {
+        log.error({ err, method: request.method, url: request.url }, "admin request failed");
+        writeJson(response, 500, { error: "Internal server error" });
+      }
+    })();
   });
 }
 
@@ -349,7 +352,7 @@ function buildApiRouter(dependencies: AdminServerDependencies, authRuntime: Admi
   const policyBinder = extractPolicyBinder(dependencies.stateStore);
 
   // Status / Config / Providers
-  router.add("GET", "/api/admin/status", async (_req, res, _params) => {
+  router.add("GET", "/api/admin/status", (_req, res, _params) => {
     const intervals = dependencies.polling.getIntervals();
     writeJson(res, 200, {
       polling: { running: dependencies.polling.isRunning(), intervalMs: intervals.intervalMs },
@@ -360,9 +363,10 @@ function buildApiRouter(dependencies: AdminServerDependencies, authRuntime: Admi
         maxRetryAttempts: dependencies.config.maxRetryAttempts,
       },
     });
+    return Promise.resolve();
   }, { permission: "overview.read" });
 
-  router.add("GET", "/api/admin/config", async (_req, res, _params) => {
+  router.add("GET", "/api/admin/config", (_req, res, _params) => {
     writeJson(res, 200, {
       config: {
         nodeEnv: dependencies.config.nodeEnv,
@@ -375,19 +379,21 @@ function buildApiRouter(dependencies: AdminServerDependencies, authRuntime: Admi
         ticketCloseRetryMinTimeoutMs: dependencies.config.ticketCloseRetryMinTimeoutMs ?? 5000,
       },
     });
+    return Promise.resolve();
   }, { permission: "overview.read" });
 
   // Mints a short-lived, single-use token for the /api/admin/img-proxy query
   // string; any authenticated user may call this (auth-self, no PBAC scope).
-  router.add("GET", "/api/admin/img-proxy/token", async (_req, res, _params) => {
+  router.add("GET", "/api/admin/img-proxy/token", (_req, res, _params) => {
     const { token, expiresAt } = mintImageProxyToken();
     // Prevent intermediary/shared caches from retaining this bearer-like token.
     res.setHeader("Cache-Control", "no-store");
     res.setHeader("Pragma", "no-cache");
     writeJson(res, 200, { token, expiresAt });
+    return Promise.resolve();
   }, { authenticated: true });
 
-  router.add("GET", "/api/admin/providers", async (_req, res, _params) => {
+  router.add("GET", "/api/admin/providers", (_req, res, _params) => {
     const providersList = typeof dependencies.providers === "function" ? dependencies.providers() : dependencies.providers;
     writeJson(res, 200, {
       providers: providersList.map((provider) => ({
@@ -400,6 +406,7 @@ function buildApiRouter(dependencies: AdminServerDependencies, authRuntime: Admi
         details: provider.details,
       })),
     });
+    return Promise.resolve();
   }, { permission: "integration.read" });
 
   registerStreamRoutes(router, { stateStore: dependencies.stateStore });

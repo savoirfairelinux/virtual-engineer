@@ -263,7 +263,7 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
     return updated;
   }
 
-  async function deleteProject(id: ProjectId): Promise<void> {
+  function deleteProject(id: ProjectId): Promise<void> {
     const now = Math.floor(Date.now() / 1000);
     const reason = `project ${id} deleted while tasks were still active`;
     const placeholders = [...TERMINAL_STATES].map(() => "?").join(", ");
@@ -303,6 +303,7 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
       raw.prepare("DELETE FROM project_vendor_components WHERE project_id = ?").run(id);
       raw.prepare("DELETE FROM projects WHERE id = ?").run(id);
     })();
+    return Promise.resolve();
   }
 
   function adoptOrphanedTasksForProject(
@@ -318,7 +319,7 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
         "AND ticket_source_integration_id = ? " +
         "AND ticket_source_project_key = ?"
       )
-      .run(projectId as string, now, integrationId, ticketProjectKey);
+      .run(projectId, now, integrationId, ticketProjectKey);
     return Number(result.changes ?? 0);
   }
 
@@ -331,51 +332,57 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
       .where(eq(projects.id, id));
   }
 
-  async function setProjectTicketSource(
+  function setProjectTicketSource(
     projectId: ProjectId,
     input: { integrationId: string; ticketProjectKey: string }
   ): Promise<ProjectTicketSourceRecord> {
     const now = new Date();
     const nowSeconds = Math.floor(now.getTime() / 1000);
-    return raw.transaction((): ProjectTicketSourceRecord => {
-      const conflict = raw
-        .prepare(
-          "SELECT project_id FROM project_integration_bindings " +
-          "WHERE capability = 'issue_tracking' AND integration_id = ? " +
-          "AND json_extract(config_json, '$.ticketProjectKey') = ? AND project_id != ?"
-        )
-        .get(input.integrationId, input.ticketProjectKey, projectId) as { project_id: string } | undefined;
-      if (conflict) {
-        throw new Error(
-          `Ticket source (${input.integrationId}, ${input.ticketProjectKey}) is already claimed by project ${conflict.project_id}`
-        );
-      }
-      raw
-        .prepare("DELETE FROM project_integration_bindings WHERE project_id = ? AND capability = 'issue_tracking'")
-        .run(projectId);
-      const configJson = JSON.stringify({ ticketProjectKey: input.ticketProjectKey });
-      raw
-        .prepare(
-          "INSERT INTO project_integration_bindings (id, project_id, integration_id, capability, config_json, created_at, updated_at) " +
-          "VALUES (?, ?, ?, 'issue_tracking', ?, ?, ?)"
-        )
-        .run(randomUUID(), projectId, input.integrationId, configJson, nowSeconds, nowSeconds);
-      adoptOrphanedTasksForProject(projectId, input.integrationId, input.ticketProjectKey);
-      return {
-        id: 0,
-        projectId,
-        integrationId: input.integrationId,
-        ticketProjectKey: input.ticketProjectKey,
-        createdAt: now,
-      };
-    })();
+    // Not async: the conflict check below must surface as a rejected promise,
+    // not a synchronous throw, for await/`.catch()` callers.
+    try {
+      return Promise.resolve(raw.transaction((): ProjectTicketSourceRecord => {
+        const conflict = raw
+          .prepare(
+            "SELECT project_id FROM project_integration_bindings " +
+            "WHERE capability = 'issue_tracking' AND integration_id = ? " +
+            "AND json_extract(config_json, '$.ticketProjectKey') = ? AND project_id != ?"
+          )
+          .get(input.integrationId, input.ticketProjectKey, projectId) as { project_id: string } | undefined;
+        if (conflict) {
+          throw new Error(
+            `Ticket source (${input.integrationId}, ${input.ticketProjectKey}) is already claimed by project ${conflict.project_id}`
+          );
+        }
+        raw
+          .prepare("DELETE FROM project_integration_bindings WHERE project_id = ? AND capability = 'issue_tracking'")
+          .run(projectId);
+        const configJson = JSON.stringify({ ticketProjectKey: input.ticketProjectKey });
+        raw
+          .prepare(
+            "INSERT INTO project_integration_bindings (id, project_id, integration_id, capability, config_json, created_at, updated_at) " +
+            "VALUES (?, ?, ?, 'issue_tracking', ?, ?, ?)"
+          )
+          .run(randomUUID(), projectId, input.integrationId, configJson, nowSeconds, nowSeconds);
+        adoptOrphanedTasksForProject(projectId, input.integrationId, input.ticketProjectKey);
+        return {
+          id: 0,
+          projectId,
+          integrationId: input.integrationId,
+          ticketProjectKey: input.ticketProjectKey,
+          createdAt: now,
+        };
+      })());
+    } catch (err) {
+      return Promise.reject(err instanceof Error ? err : new Error(typeof err === "string" ? err : JSON.stringify(err)));
+    }
   }
 
   async function getProjectTicketSource(projectId: ProjectId): Promise<ProjectTicketSourceRecord | null> {
     const binding = await getProjectBinding(projectId, "issue_tracking");
     if (!binding) return null;
     const ticketProjectKey = typeof binding.config["ticketProjectKey"] === "string"
-      ? (binding.config["ticketProjectKey"] as string)
+      ? (binding.config["ticketProjectKey"])
       : "";
     return {
       id: 0,
@@ -549,7 +556,7 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
     return listProjectVendorComponents(projectId);
   }
 
-  async function setProjectReviewConfig(
+  function setProjectReviewConfig(
     projectId: ProjectId,
     integrationId: string,
     repoKeys: string[]
@@ -567,6 +574,7 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
         )
         .run(randomUUID(), projectId, integrationId, configJson, nowSeconds, nowSeconds);
     })();
+    return Promise.resolve();
   }
 
   async function getProjectReviewConfig(projectId: ProjectId): Promise<ProjectReviewConfig | null> {
@@ -620,10 +628,11 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
     return rows.map((row) => rowToBinding(row));
   }
 
-  async function deleteProjectBinding(projectId: ProjectId, capability: DomainCapability): Promise<void> {
+  function deleteProjectBinding(projectId: ProjectId, capability: DomainCapability): Promise<void> {
     raw
       .prepare("DELETE FROM project_integration_bindings WHERE project_id = ? AND capability = ?")
       .run(projectId, capability);
+    return Promise.resolve();
   }
 
   return {

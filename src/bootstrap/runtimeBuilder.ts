@@ -28,7 +28,7 @@ export function parseIntegrationConfig(integration: Integration | null): Record<
   }
 
   try {
-    const parsed = JSON.parse(integration.configJson);
+    const parsed: unknown = JSON.parse(integration.configJson);
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
       return null;
     }

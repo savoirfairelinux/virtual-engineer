@@ -747,10 +747,10 @@ export function resolveAgentConfig(agent: AgentRecord, project: ProjectRecord): 
   }
 
   return {
-    model: typeof merged["model"] === "string" ? (merged["model"] as string) : undefined,
-    apiKey: typeof merged["apiKey"] === "string" ? (merged["apiKey"] as string) : undefined,
+    model: typeof merged["model"] === "string" ? (merged["model"]) : undefined,
+    apiKey: typeof merged["apiKey"] === "string" ? (merged["apiKey"]) : undefined,
     encryptedSessionToken: typeof merged["sessionToken"] === "string"
-      ? (merged["sessionToken"] as string)
+      ? (merged["sessionToken"])
       : undefined,
     systemPromptId,
     instructionsPromptId,

@@ -155,7 +155,7 @@ export function resolveEffectiveSshKeyPath(
   adminAuthSecret: string | undefined,
   integrationId: string | undefined
 ): string | undefined {
-  if (typeof cfg[SSH_RESOLVED_KEY_PATH] === "string") return cfg[SSH_RESOLVED_KEY_PATH] as string;
+  if (typeof cfg[SSH_RESOLVED_KEY_PATH] === "string") return cfg[SSH_RESOLVED_KEY_PATH];
   const enc = cfg["sshPrivateKeyEnc"];
   if (typeof enc === "string" && enc.length > 0) {
     // When called from buildCapabilityInstance, decryptPasswordFields has already
@@ -190,13 +190,13 @@ export function resolveAgentIdentityPath(
   cfg: Record<string, unknown>,
   integrationId: string | undefined
 ): string | undefined {
-  if (typeof cfg[SSH_AGENT_PUBKEY_PATH] === "string") return cfg[SSH_AGENT_PUBKEY_PATH] as string;
+  if (typeof cfg[SSH_AGENT_PUBKEY_PATH] === "string") return cfg[SSH_AGENT_PUBKEY_PATH];
   const pubKey = cfg["sshAgentPublicKey"];
   if (typeof pubKey === "string" && pubKey.trim().length > 0) {
     // Use a content-derived id when there is no real integrationId (e.g.
     // unsaved connection tests) so concurrent callers with different public
     // keys get distinct temp files and cannot overwrite each other.
-    return resolveAgentPubKeyPath(pubKey as string, integrationId ?? stableId(pubKey));
+    return resolveAgentPubKeyPath(pubKey, integrationId ?? stableId(pubKey));
   }
   return undefined;
 }

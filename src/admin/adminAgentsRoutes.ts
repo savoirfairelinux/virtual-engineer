@@ -141,7 +141,7 @@ function mergePluginOAuthConfig(
 async function resolvePluginOAuthConfig(
   pluginType: ProviderId,
   body: Record<string, unknown>,
-  integrationStore?: Pick<IntegrationStore, "getIntegration"> | undefined
+  integrationStore?: Pick<IntegrationStore, "getIntegration">
 ): Promise<Record<string, unknown>> {
   const updates = asRecord(body["config"]);
   const integrationId = body["integrationId"];
@@ -225,7 +225,7 @@ export interface AgentDetail extends AgentSummary {
 /** Convert an AgentRecord to its summary API shape. */
 function toAgentSummary(agent: AgentRecord, projectCount: number): AgentSummary {
   const config = parseConfig(agent.modelConfigJson);
-  const model = typeof config["model"] === "string" ? (config["model"] as string) : null;
+  const model = typeof config["model"] === "string" ? (config["model"]) : null;
   return {
     id: agent.id,
     name: agent.name,

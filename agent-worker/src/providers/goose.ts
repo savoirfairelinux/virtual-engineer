@@ -344,7 +344,7 @@ export async function runGooseAgent(
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 
-  const cleanup = async (): Promise<void> => {
+  const cleanup = (): Promise<void> => {
     try {
       child.kill('SIGTERM');
     } catch {
@@ -355,6 +355,7 @@ export async function runGooseAgent(
     } catch {
       /* ignore */
     }
+    return Promise.resolve();
   };
 
   const heartbeat = setInterval(() => {
@@ -438,12 +439,13 @@ export async function runGooseAgent(
     toolCallCount: state.toolCallCount,
     toolsByKind: state.toolsByKind,
     toolCalls: state.toolCalls,
-    cleanup: async (): Promise<void> => {
+    cleanup: (): Promise<void> => {
       try {
         child.kill('SIGTERM');
       } catch {
         /* ignore */
       }
+      return Promise.resolve();
     },
   };
 }
@@ -526,7 +528,7 @@ function processGooseLine(
   // can validate exactly one accepted submission.
   const submissionMatch = line.match(/(?:ve_submit_changes|ve_submit_review|mcp__ve-submission__ve_submit_(?:changes|review)|ve-submission-ve_submit_(?:changes|review))/i);
   if (submissionMatch) {
-    const rawName = submissionMatch[0]!;
+    const rawName = submissionMatch[0];
     // Normalize to the mcp__ve-submission__<tool> form that assertSuccessfulSubmissionToolCall accepts.
     const toolName = rawName.includes('review') ? 've_submit_review' : 've_submit_changes';
     const normalizedName = `mcp__ve-submission__${toolName}`;

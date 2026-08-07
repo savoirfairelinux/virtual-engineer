@@ -100,7 +100,7 @@ export function createGroupStore(context: GroupStoreContext): GroupStoreApi {
       return rowToGroup({ ...existing, ...next });
     },
 
-    async deleteGroup(id): Promise<boolean> {
+    deleteGroup(id): Promise<boolean> {
       // Remove any policy bindings targeting this group (principal_id has no FK),
       // then the group row (group_members cascade). Atomic so no orphans remain.
       let changes = 0;
@@ -110,7 +110,7 @@ export function createGroupStore(context: GroupStoreContext): GroupStoreApi {
           .run();
         changes = tx.delete(groups).where(eq(groups.id, id)).run().changes;
       });
-      return changes > 0;
+      return Promise.resolve(changes > 0);
     },
 
     async addUserToGroup(groupId, userId): Promise<void> {

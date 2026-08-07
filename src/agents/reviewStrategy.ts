@@ -28,7 +28,7 @@ export function resolveReviewStrategy(modelConfig: Record<string, unknown>): Rev
   const value = resolveProviderOptions(modelConfig)["reviewStrategy"];
   if (value === undefined || value === "ve_direct") return "ve_direct";
   if (value === "copilot_native") return "copilot_native";
-  throw new ReviewStrategyConfigError(`Unknown review strategy '${String(value)}'`);
+  throw new ReviewStrategyConfigError(`Unknown review strategy '${typeof value === "string" ? value : JSON.stringify(value)}'`);
 }
 
 export function normalizeReviewStrategyConfig(

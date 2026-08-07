@@ -152,7 +152,7 @@ export interface GerritSshConfig {
  * Export: consumed by GerritStreamEventsManager, GerritVcsConnector, and
  * GerritSshReviewProvider so all SSH callers share a single source of truth.
  */
-export function buildSshHostKeyOptions(knownHostsPath?: string | undefined): string[] {
+export function buildSshHostKeyOptions(knownHostsPath?: string): string[] {
   return knownHostsPath
     ? ["-o", "StrictHostKeyChecking=yes", "-o", `UserKnownHostsFile=${knownHostsPath}`]
     : ["-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null"];

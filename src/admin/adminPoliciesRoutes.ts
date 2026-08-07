@@ -101,8 +101,9 @@ const bindingSchema = z.object({
 /** Register group + policy management routes (all require `policy.manage`). */
 export function registerPolicyRoutes(router: Router, deps: PolicyRoutesDeps): void {
   // ─── Permission catalog (for UI dropdowns) ────────────────────────────────
-  router.add("GET", "/api/admin/permissions", async (_req, res, _params) => {
+  router.add("GET", "/api/admin/permissions", (_req, res, _params) => {
     writeJson(res, 200, { permissions: ALL_PERMISSIONS });
+    return Promise.resolve();
   }, MANAGE);
 
   // ─── Groups ───────────────────────────────────────────────────────────────

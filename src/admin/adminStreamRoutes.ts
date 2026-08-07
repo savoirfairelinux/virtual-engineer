@@ -169,22 +169,35 @@ function serializeAgentEventEntry(event: AgentLogEvent): Record<string, unknown>
   };
 }
 
+/** Stringify an unknown log-entry field without risking `[object Object]` output. */
+function toKeyPart(value: unknown): string {
+  if (value === undefined || value === null) return "";
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return "";
+  }
+}
+
 /** Build a deterministic key used to deduplicate SSE entries. */
 function streamEntryKey(entry: Record<string, unknown>): string {
   const parts = [
-    String(entry["timestamp"] ?? ""),
-    String(entry["taskId"] ?? ""),
-    String(entry["cycleNumber"] ?? ""),
-    String(entry["type"] ?? ""),
-    String(entry["level"] ?? ""),
-    String(entry["message"] ?? ""),
+    toKeyPart(entry["timestamp"]),
+    toKeyPart(entry["taskId"]),
+    toKeyPart(entry["cycleNumber"]),
+    toKeyPart(entry["type"]),
+    toKeyPart(entry["level"]),
+    toKeyPart(entry["message"]),
   ];
   const data = entry["data"];
   if (data !== undefined) {
     try {
       parts.push(typeof data === "string" ? data : JSON.stringify(data));
     } catch {
-      parts.push(String(data));
+      parts.push(toKeyPart(data));
     }
   }
   return parts.join("|");

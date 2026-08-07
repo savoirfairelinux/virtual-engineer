@@ -249,11 +249,11 @@ export class GitHubVcsConnector implements VcsConnector {
     return "OPEN";
   }
 
-  async getUnresolvedComments(_changeId: string): Promise<ReviewComment[]> {
+  getUnresolvedComments(_changeId: string): Promise<ReviewComment[]> {
     // VE reads PR review comments via the dedicated ReviewConnector
     // (GitHubPullRequestReviewConnector). The VCS connector intentionally
     // returns no comments to avoid duplicate fetching.
-    return [];
+    return Promise.resolve([]);
   }
 
   async resolveComments(_changeId: string, _comments: ReviewComment[]): Promise<void> {

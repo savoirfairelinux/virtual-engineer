@@ -57,12 +57,13 @@ function parseSetting(value: unknown, field: keyof EffectiveWorkflowSettings): n
 
 /** Register the editable-workflow-settings routes on the given router. */
 export function registerSettingsRoutes(router: Router, deps: SettingsRouteDeps): void {
-  router.add("GET", "/api/admin/settings", async (_req, res, _params) => {
+  router.add("GET", "/api/admin/settings", (_req, res, _params) => {
     if (!deps.settings) {
       writeJson(res, 501, { error: "Settings controller not available" });
-      return;
+      return Promise.resolve();
     }
     writeJson(res, 200, { settings: deps.settings.get() });
+    return Promise.resolve();
   }, { permission: "system.read" });
 
   router.add("PUT", "/api/admin/settings", async (req, res, _params) => {

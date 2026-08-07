@@ -34,6 +34,35 @@ async function fetchUser(id: string): Promise<Result<User, ApiError>> {
 }
 ```
 
+### Removing `async` from a function that never awaits (`require-await`)
+
+An `async` function with no `await` trips the type-checked lint preset's `require-await` rule. Don't silence it with a fake `await Promise.resolve()` — drop `async` instead. But an `async` function automatically converts a synchronous `throw` into a promise rejection; a plain function does not. If the body can throw (directly or via a called function), wrap it so the contract is preserved:
+
+```typescript
+// BAD: dropping `async` turns this throw into a synchronous exception instead
+// of a rejected promise — breaks every `await`/`.catch()`/`.rejects` caller.
+function getToken(session: Session): Promise<string> {
+  if (!session.token) {
+    throw new Error("No token available");
+  }
+  return Promise.resolve(session.token);
+}
+
+// GOOD: try/catch restores the original async-function semantics exactly.
+function getToken(session: Session): Promise<string> {
+  try {
+    if (!session.token) {
+      throw new Error("No token available");
+    }
+    return Promise.resolve(session.token);
+  } catch (err) {
+    return Promise.reject(err instanceof Error ? err : new Error(String(err)));
+  }
+}
+```
+
+If the function never throws (pure computation, or every risky call is already inside its own try/catch), the plain `return Promise.resolve(value);` form is sufficient — no wrapping needed.
+
 ## Concurrent Execution
 
 ### Promise.all for independent operations

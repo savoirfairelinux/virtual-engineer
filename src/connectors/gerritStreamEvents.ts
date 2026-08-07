@@ -89,7 +89,7 @@ export class GerritStreamEventsManager implements IntegrationEventStreamManager 
   }
 
   /** Sync the set of running stream-events listeners to match the provided integration list. */
-  async reconcile(integrations: Integration[]): Promise<void> {
+  reconcile(integrations: Integration[]): Promise<void> {
     this.desiredIntegrations.clear();
     for (const integration of integrations) {
       this.desiredIntegrations.set(integration.id, integration);
@@ -139,6 +139,7 @@ export class GerritStreamEventsManager implements IntegrationEventStreamManager 
         status.integrationName = integration.name;
       }
     }
+    return Promise.resolve();
   }
 
   /** Return a snapshot of the current stream status for a single integration, or null if unknown. */
@@ -155,12 +156,13 @@ export class GerritStreamEventsManager implements IntegrationEventStreamManager 
   }
 
   /** Terminate all active stream-events SSH processes and clear state. */
-  async stopAll(): Promise<void> {
+  stopAll(): Promise<void> {
     this.desiredIntegrations.clear();
     this.backfilledIntegrations.clear();
     for (const integrationId of [...this.handles.keys()]) {
       this.stopHandle(integrationId, { removeStatus: true });
     }
+    return Promise.resolve();
   }
 
   /** Spawn a new SSH `gerrit stream-events` process for an integration and register its event handlers. */
@@ -734,10 +736,10 @@ function extractStreamComment(payload: unknown, sshUser: string): ReviewComment 
   const body = raw.replace(PREAMBLE_RE, "").replace(COMMENTS_SUMMARY_RE, "").trim();
   if (!body) return null;
 
-  const ts = typeof p["eventCreatedOn"] === "number" ? (p["eventCreatedOn"] as number) : Math.floor(Date.now() / 1000);
-  const authorEmail = (typeof author === "object" && author !== null)
-    ? String((author as Record<string, unknown>)["email"] ?? (author as Record<string, unknown>)["username"] ?? "unknown")
-    : "unknown";
+  const ts = typeof p["eventCreatedOn"] === "number" ? (p["eventCreatedOn"]) : Math.floor(Date.now() / 1000);
+  const authorRecord = (typeof author === "object" && author !== null) ? (author as Record<string, unknown>) : null;
+  const authorIdentifier = authorRecord?.["email"] ?? authorRecord?.["username"];
+  const authorEmail = typeof authorIdentifier === "string" ? authorIdentifier : "unknown";
 
   return {
     id: `${isCiFailureMessage(raw) ? "ci-failure" : "gerrit-msg"}-${ts}`,

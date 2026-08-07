@@ -91,7 +91,7 @@ export function registerPromptRoutes(router: Router, deps: PromptRouteDeps): voi
       writeJson(res, 400, { error: "Prompt content must be provided as a string" });
       return;
     }
-    const newContent = body["content"] as string;
+    const newContent = body["content"];
     const prompt = await deps.promptStore.upsertPrompt(promptId, newContent);
     log.warn(
       { promptId, prevLength: existing.content.length, newLength: newContent.length },
