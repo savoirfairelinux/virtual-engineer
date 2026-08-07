@@ -20,6 +20,8 @@ describe("getConfig", () => {
       "MAX_RETRY_ATTEMPTS",
       "MAX_COMMITS_PER_CYCLE",
       "AGENT_TIMEOUT_MS",
+      "TICKET_CLOSE_MAX_RETRIES",
+      "TICKET_CLOSE_RETRY_MIN_TIMEOUT_MS",
       "AGENT_CONTAINER_IMAGE",
       "WORKSPACE_BASE_DIR",
       "AGENT_DOCKER_NETWORK",
@@ -105,6 +107,14 @@ describe("getConfig", () => {
       expect(getConfig().agentTimeoutMs).toBe(3_600_000);
     });
 
+    it("ticketCloseMaxRetries defaults to 5", () => {
+      expect(getConfig().ticketCloseMaxRetries).toBe(5);
+    });
+
+    it("ticketCloseRetryMinTimeoutMs defaults to 5000", () => {
+      expect(getConfig().ticketCloseRetryMinTimeoutMs).toBe(5_000);
+    });
+
     it("databasePath defaults to ./data/virtual-engineer.db", () => {
       expect(getConfig().databasePath).toBe("./data/virtual-engineer.db");
     });
@@ -153,6 +163,18 @@ describe("getConfig", () => {
       process.env["AGENT_DOCKER_NETWORK"] = "bridge";
       resetConfig();
       expect(getConfig().agentDockerNetwork).toBe("bridge");
+    });
+
+    it("reads TICKET_CLOSE_MAX_RETRIES", () => {
+      process.env["TICKET_CLOSE_MAX_RETRIES"] = "8";
+      resetConfig();
+      expect(getConfig().ticketCloseMaxRetries).toBe(8);
+    });
+
+    it("reads TICKET_CLOSE_RETRY_MIN_TIMEOUT_MS", () => {
+      process.env["TICKET_CLOSE_RETRY_MIN_TIMEOUT_MS"] = "10000";
+      resetConfig();
+      expect(getConfig().ticketCloseRetryMinTimeoutMs).toBe(10_000);
     });
   });
 

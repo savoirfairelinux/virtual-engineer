@@ -307,6 +307,7 @@ describe("Orchestrator", () => {
     workspaceRunner?: WorkspaceRunner;
     gerritConnector?: ReviewConnector;
     redmineConnector?: TicketConnector;
+    config?: Partial<{ ticketCloseMaxRetries: number; ticketCloseRetryMinTimeoutMs: number }>;
   } = {}) {
     return new Orchestrator(
       {
@@ -316,6 +317,7 @@ describe("Orchestrator", () => {
         gitAuthorName: "Virtual Engineer",
         gitAuthorEmail: "ve@example.com",
         agentContainerImage: "virtual-engineer-workspace:latest",
+        ...overrides.config,
       },
       overrides.stateStore ?? makeStateStore(),
       overrides.workspaceRunner ?? makeWorkspaceRunner(),
@@ -478,6 +480,35 @@ describe("Orchestrator", () => {
         task.taskId,
         expect.stringContaining("Ticket close failed (change is merged): redmine down")
       );
+      expect(stateStore.transition).toHaveBeenCalledWith(task.taskId, "FAILED");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("honors a configured ticket-close retry policy instead of the hardcoded default", async () => {
+    vi.useFakeTimers();
+    try {
+      const task = makeTask({ state: "MERGED" });
+      const stateStore = makeStateStore({
+        transition: vi.fn()
+          .mockResolvedValueOnce(makeTask({ state: "CLOSING" }))
+          .mockResolvedValueOnce(makeTask({ state: "FAILED" })),
+      });
+      const closeTicket = vi.fn().mockRejectedValue(new Error("redmine down"));
+      const redmineConnector = makeRedmineConnector({ closeTicket });
+      const orchestrator = makeOrchestrator({
+        stateStore,
+        redmineConnector,
+        config: { ticketCloseMaxRetries: 2, ticketCloseRetryMinTimeoutMs: 100 },
+      });
+
+      const promise = (orchestrator as any).closeTicket(task);
+      await vi.runAllTimersAsync();
+      await promise;
+
+      // retries: 2 → 1 initial attempt + 2 retries = 3 total calls (not the hardcoded default of 6).
+      expect(closeTicket).toHaveBeenCalledTimes(3);
       expect(stateStore.transition).toHaveBeenCalledWith(task.taskId, "FAILED");
     } finally {
       vi.useRealTimers();
