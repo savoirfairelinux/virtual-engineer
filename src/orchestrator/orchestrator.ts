@@ -41,7 +41,7 @@ import { NO_REVIEW_SYSTEM } from "../vcs/vcsConnector.js";
 import { VcsConnectorFactory } from "../vcs/vcsFactory.js";
 import { encryptToken } from "../utils/encryption.js";
 import { redactUrls } from "../utils/redactUrl.js";
-import { isInfrastructureError } from "../utils/errorClassifier.js";
+import { isInfrastructureError, safeStringify } from "../utils/errorClassifier.js";
 import type { ConcurrencyTracker } from "./concurrencyTracker.js";
 import { resolveAgentConfig } from "../state/stateStore.js";
 import {
@@ -1441,7 +1441,7 @@ export class Orchestrator {
         },
         (err: unknown) => {
           clearTimeout(timer);
-          reject(err instanceof Error ? err : new Error(typeof err === "string" ? err : JSON.stringify(err)));
+          reject(err instanceof Error ? err : new Error(typeof err === "string" ? err : safeStringify(err)));
         }
       );
     });
