@@ -1,5 +1,5 @@
 import { getLogger } from "../logger.js";
-import { writeJson, readBody, zodErrorBody } from "./adminRouteUtils.js";
+import { writeJson, readBody, zodErrorBody, requireStore } from "./adminRouteUtils.js";
 import type { Router } from "./router.js";
 import { listSkillSourceSkills } from "./skillSourceDiscovery.js";
 import { resolveRepositoryBindings } from "../workspace/integrationBindingResolver.js";
@@ -47,7 +47,7 @@ export function registerProjectWorkspaceRoutes(router: Router, deps: ProjectsRou
   router.add("POST", "/api/admin/projects/skill-sources/list", handleSkillSourceList, { permission: "project.write" });
 
   router.add("POST", "/api/admin/projects/resolve-repositories", async (req, res, _params) => {
-    if (!deps.integrationStore) { writeJson(res, 501, { error: "Integration store not available" }); return; }
+    if (!requireStore(deps.integrationStore, res, "Integration store not available")) return;
     const body = await readBody(req);
     if (!body) { writeJson(res, 400, { error: "Request body required" }); return; }
     const parsed = repositoryBindingResolutionSchema.safeParse(body);
@@ -62,7 +62,7 @@ export function registerProjectWorkspaceRoutes(router: Router, deps: ProjectsRou
   }, { permission: "integration.read" });
 
   router.add("POST", "/api/admin/projects/scan-push-targets", async (req, res, _params) => {
-    if (!deps.integrationStore) { writeJson(res, 501, { error: "Integration store not available" }); return; }
+    if (!requireStore(deps.integrationStore, res, "Integration store not available")) return;
     const body = await readBody(req);
     if (!body) { writeJson(res, 400, { error: "Request body required" }); return; }
     const parsed = pushTargetScanSchema.safeParse(body);

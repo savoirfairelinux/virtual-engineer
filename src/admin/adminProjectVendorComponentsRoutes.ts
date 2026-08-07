@@ -1,4 +1,4 @@
-import { writeJson, readBody, zodErrorBody } from "./adminRouteUtils.js";
+import { writeJson, readBody, zodErrorBody, requireStore } from "./adminRouteUtils.js";
 import { makeProjectId } from "../interfaces.js";
 import type { Router } from "./router.js";
 import {
@@ -11,7 +11,7 @@ import {
 /** Register project vendor-component routes (workspace-scanned third-party dependencies). */
 export function registerProjectVendorComponentsRoutes(router: Router, deps: ProjectsRouteDeps): void {
   router.add("GET", "/api/admin/projects/:id/vendor-components", async (_req, res, params) => {
-    if (!deps.projectStore) { writeJson(res, 501, { error: "Project store not available" }); return; }
+    if (!requireStore(deps.projectStore, res, "Project store not available")) return;
     const store = deps.projectStore;
     const id = makeProjectId(params["id"] ?? "");
     if (!await store.getProjectById(id)) { writeJson(res, 404, { error: "Project not found" }); return; }
@@ -19,7 +19,7 @@ export function registerProjectVendorComponentsRoutes(router: Router, deps: Proj
   }, { permission: "project.read", resourceParam: "id" });
 
   router.add("PUT", "/api/admin/projects/:id/vendor-components", async (req, res, params) => {
-    if (!deps.projectStore) { writeJson(res, 501, { error: "Project store not available" }); return; }
+    if (!requireStore(deps.projectStore, res, "Project store not available")) return;
     const store = deps.projectStore;
     const id = makeProjectId(params["id"] ?? "");
     const existing = await store.getProjectById(id);

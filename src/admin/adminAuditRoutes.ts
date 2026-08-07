@@ -1,5 +1,5 @@
 import type { AuditEntry } from "../interfaces.js";
-import { writeJson, toIsoTimestamp, parseNonNegativeInt } from "./adminRouteUtils.js";
+import { writeJson, toIsoTimestamp, parseNonNegativeInt, requireStore } from "./adminRouteUtils.js";
 import { maskAuditDetails } from "./adminAudit.js";
 import type { Router } from "./router.js";
 
@@ -38,7 +38,7 @@ function serializeAuditEntry(entry: AuditEntry): Record<string, unknown> {
 /** Register the audit-trail read route on the given router (admin only). */
 export function registerAuditRoutes(router: Router, deps: AuditRouteDeps): void {
   router.add("GET", "/api/admin/audit", async (req, res, _params) => {
-    if (!deps.auditStore) { writeJson(res, 501, { error: "Audit store not available" }); return; }
+    if (!requireStore(deps.auditStore, res, "Audit store not available")) return;
     const requestUrl = new URL(req.url ?? "/", "http://127.0.0.1");
     const limit = Math.min(parseNonNegativeInt(requestUrl.searchParams.get("limit")) ?? DEFAULT_LIMIT, MAX_LIMIT);
     const offset = parseNonNegativeInt(requestUrl.searchParams.get("offset")) ?? 0;

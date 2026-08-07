@@ -119,6 +119,21 @@ export function writeHtml(response: ServerResponse, statusCode: number, html: st
   response.end(html);
 }
 
+/**
+ * Guard a route dependency that may be absent (e.g. a store not wired up in this deployment).
+ * Writes a 501 and returns `false` when missing (`null` or `undefined`); narrows `store` to
+ * `NonNullable<T>` (via the type predicate) when present. Assign the checked expression to a
+ * local `const` first if it's used inside a closure — narrowing on a dotted property access
+ * does not survive crossing a closure boundary.
+ */
+export function requireStore<T>(store: T, res: ServerResponse, message: string): store is NonNullable<T> {
+  if (!store) {
+    writeJson(res, 501, { error: message });
+    return false;
+  }
+  return true;
+}
+
 /** Read and parse the request body as JSON, returning null on error or when body exceeds MAX_BODY_BYTES. */
 export async function readBody(request: IncomingMessage): Promise<Record<string, unknown> | null> {
   return new Promise((resolve) => {
