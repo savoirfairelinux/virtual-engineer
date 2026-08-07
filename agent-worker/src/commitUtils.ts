@@ -45,7 +45,7 @@ function git(args: string[], cwd: string): string {
 export function collectCommits(
   baseSha: string,
   cwd: string,
-  repositoryMap?: RepositoryMap | undefined,
+  repositoryMap?: RepositoryMap  ,
 ): CommitDescriptor[] {
   // NUL-delimited format: SHA%x00Subject%x00Body%x00, records separated by %x01.
   const logOutput = git(
@@ -273,7 +273,7 @@ export function injectChangeIds(
   commits: CommitDescriptor[],
   taskId: string,
   cwd: string,
-  options?: InjectChangeIdsOptions | undefined,
+  options?: InjectChangeIdsOptions  ,
 ): CommitDescriptor[] {
   if (commits.length === 0) return commits;
 

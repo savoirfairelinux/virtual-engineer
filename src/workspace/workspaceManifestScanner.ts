@@ -603,7 +603,7 @@ function scanBitbakeRecipe(file: WorkspaceManifestFile, result: MutableScanResul
 
 function scanCodeWorkspace(file: WorkspaceManifestFile, result: MutableScanResult): void {
   const errors: ParseError[] = [];
-  const parsed = parseJsonc(file.content, errors, { allowTrailingComma: true });
+  const parsed: unknown = parseJsonc(file.content, errors, { allowTrailingComma: true });
   if (errors.length > 0) {
     result.diagnostics.push({ sourcePath: file.path, severity: "error", message: "Invalid VS Code workspace JSONC." });
     return;

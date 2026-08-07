@@ -71,7 +71,7 @@ export function registerWebhookRoutes(router: Router, deps: WebhookRouteDeps): v
     if (!integration) { writeJson(res, 404, { error: "Integration not found" }); return; }
     const body = await readBody(req);
     if (!body) { writeJson(res, 400, { error: "Invalid JSON body" }); return; }
-    const { allowedIps } = body as Record<string, unknown>;
+    const { allowedIps } = body;
     if (!Array.isArray(allowedIps)) {
       writeJson(res, 400, { error: "allowedIps must be an array of IP strings" });
       return;

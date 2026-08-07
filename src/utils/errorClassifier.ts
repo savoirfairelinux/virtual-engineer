@@ -41,6 +41,12 @@ const INFRASTRUCTURE_ERROR_PATTERNS: readonly RegExp[] = [
  */
 export function isInfrastructureError(error: unknown): boolean {
   const message =
-    error instanceof Error ? error.message : typeof error === "string" ? error : String(error ?? "");
+    error instanceof Error
+      ? error.message
+      : typeof error === "string"
+        ? error
+        : error === undefined || error === null
+          ? ""
+          : JSON.stringify(error);
   return INFRASTRUCTURE_ERROR_PATTERNS.some((pattern) => pattern.test(message));
 }

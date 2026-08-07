@@ -212,20 +212,20 @@ export class PluginManager {
    * Build a connector instance for a specific integration id + capability,
    * optionally specialized by VE project binding context.
    */
-  async createConnectorForCapability<T>(
+  createConnectorForCapability<T>(
     integrationId: string,
     capability: DomainCapability,
     context?: IntegrationBindingContext
   ): Promise<T | null> {
     const activeIntegration = this.activeIntegrationsById.get(integrationId);
     if (!activeIntegration) {
-      return null;
+      return Promise.resolve(null);
     }
     if (context === undefined) {
-      return this.getConnectorForCapability<T>(integrationId, capability);
+      return Promise.resolve(this.getConnectorForCapability<T>(integrationId, capability));
     }
     const instance = this.buildCapabilityInstance(activeIntegration, capability, context);
-    return (instance as unknown as T) ?? null;
+    return Promise.resolve((instance as unknown as T) ?? null);
   }
 
   /** Return true if the given integration id currently has any active connector. */

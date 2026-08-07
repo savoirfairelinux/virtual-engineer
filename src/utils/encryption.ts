@@ -106,7 +106,7 @@ export function decryptToken(encrypted: string, adminAuthSecret: string | undefi
   const decipher = createDecipheriv(ALGORITHM, key, iv, { authTagLength: AUTH_TAG_LENGTH });
   decipher.setAuthTag(authTag);
 
-  return decipher.update(ciphertext) + decipher.final("utf8");
+  return decipher.update(ciphertext).toString("utf8") + decipher.final("utf8");
 }
 
 /**

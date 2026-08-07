@@ -40,7 +40,7 @@ export interface IntegrationRouteDeps {
   pluginManager?: PluginManager | undefined;
   oAuthAppStore?: OAuthAppStore | undefined;
   auditStore?: AuditCapableStore | undefined;
-  integrationStreams?: { getStatus(integrationId: string): unknown | null } | undefined;
+  integrationStreams?: { getStatus(integrationId: string): unknown } | undefined;
   onIntegrationUpdated?: ((integrationId: string) => void) | undefined;
   adminAuthSecret?: string | undefined;
 }
@@ -48,7 +48,7 @@ export interface IntegrationRouteDeps {
 /** Register integration, plugin and OAuth-app routes on the given router. */
 export function registerIntegrationRoutes(router: Router, deps: IntegrationRouteDeps): void {
   // ─── Plugin discovery ─────────────────────────────────────────────────────
-  router.add("GET", "/api/admin/plugins", async (_req, res, _params) => {
+  router.add("GET", "/api/admin/plugins", (_req, res, _params) => {
     const descriptors = getAllProviderDescriptors();
     writeJson(res, 200, {
       plugins: descriptors.map((d) => ({
@@ -66,6 +66,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
         ...(d.oauth !== undefined ? { oauth: d.oauth } : {}),
       })),
     });
+    return Promise.resolve();
   }, { permission: "integration.read" });
 
   // ─── OAuth Apps ────────────────────────────────────────────────────────────
@@ -656,12 +657,12 @@ function maskIntegrationConfig(integration: Integration): Record<string, unknown
   const masked = { ...config };
   for (const secretField of descriptor.requiredFields.filter((field) => field.type === "password")) {
     const currentValue = masked[secretField.key];
-    if (currentValue !== undefined && currentValue !== null && String(currentValue).length > 0) {
+    if (currentValue !== undefined && currentValue !== null && (typeof currentValue !== "string" || currentValue.length > 0)) {
       masked[secretField.key] = SECRET_MASK;
     }
   }
   for (const [key, value] of Object.entries(masked)) {
-    if (/secret/i.test(key) && value !== undefined && value !== null && String(value).length > 0) {
+    if (/secret/i.test(key) && value !== undefined && value !== null && (typeof value !== "string" || value.length > 0)) {
       masked[key] = SECRET_MASK;
     }
   }
@@ -805,7 +806,7 @@ function validateIntegrationConfig(
 function serializeIntegration(
   integration: Integration,
   pm?: PluginManager,
-  integrationStreams?: { getStatus(integrationId: string): unknown | null }
+  integrationStreams?: { getStatus(integrationId: string): unknown }
 ): Record<string, unknown> {
   const descriptor = getProviderDescriptor(integration.provider);
   const active = pm ? pm.isIntegrationActive(integration.id) : false;

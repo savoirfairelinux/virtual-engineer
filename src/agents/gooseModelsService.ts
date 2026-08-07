@@ -102,7 +102,7 @@ export async function fetchGooseModels(
       return fetchOpenAIStyleModels(`${base}/v1/models`, apiKey, deps);
     }
     default:
-      throw new Error(`Unknown Goose provider "${provider}".`);
+      throw new Error(`Unknown Goose provider "${String(provider)}".`);
   }
 }
 

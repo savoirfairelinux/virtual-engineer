@@ -29,7 +29,7 @@ export function normalizeAgentResult(result: AgentResult): AgentResult {
     result.modifiedFiles !== null &&
     !Array.isArray(result.modifiedFiles)
   ) {
-    const repoGrouped = result.modifiedFiles as Record<string, string[]>;
+    const repoGrouped = result.modifiedFiles;
     const flattened: string[] = [];
     for (const [repoKey, files] of Object.entries(repoGrouped)) {
       if (Array.isArray(files)) {
@@ -234,7 +234,9 @@ function sanitizeRecord(obj: Record<string, unknown>): Record<string, unknown> {
     if (typeof value === "string") {
       result[key] = sanitizeValue(value);
     } else if (Array.isArray(value)) {
-      result[key] = value.map((item) =>
+      // Array.isArray narrows to `any[]` in lib.es5.d.ts; re-type explicitly to avoid `any` leaking through `.map`.
+      const arr = value as unknown[];
+      result[key] = arr.map((item) =>
         typeof item === "string"
           ? sanitizeValue(item)
           : typeof item === "object" && item !== null
@@ -723,7 +725,7 @@ export function updateSessionMetrics(
           lastDenialReason: null,
         };
       }
-      const tool = metrics.tools[name]!;
+      const tool = metrics.tools[name];
       tool.callCount++;
       tool.lastStatus = "running";
       tool.lastStartTime = event.timestamp;
@@ -777,7 +779,7 @@ export function updateSessionMetrics(
             lastDenialReason: null,
           };
         }
-        const deniedTool = metrics.tools[deniedName]!;
+        const deniedTool = metrics.tools[deniedName];
         deniedTool.denialCount++;
         const reason = readStr(event.data, ["reason", "message", "feedback"]);
         deniedTool.lastDenialReason = reason ?? null;
