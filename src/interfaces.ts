@@ -32,6 +32,7 @@ export {
   CODE_REVIEW_STATES,
   CODE_REVIEW_TERMINAL_STATES,
   TASK_STATES,
+  TASK_WORKFLOW_BUCKETS,
   TERMINAL_STATES,
   type ChangePerRepository,
   type CodeGenState,
@@ -40,6 +41,7 @@ export {
   type Task,
   type TaskState,
   type TaskType,
+  type TaskWorkflowBucket,
 } from "./domain/tasks.js";
 
 // ─── Shared value types ───────────────────────────────────────────────────────
