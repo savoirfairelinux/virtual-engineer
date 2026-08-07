@@ -5,8 +5,11 @@ import { mkdir } from "fs/promises";
 import { dirname } from "path";
 import { getLogger } from "../logger.js";
 import { seedBuiltInPolicies } from "../admin/authorization/seedPolicies.js";
+import { computeCycleCost, hasCostData } from "../agents/cycleCost.js";
 import type {
+  AgentLogEvent,
   AgentRecord,
+  AgentResult,
   ProjectRecord,
   ResolvedAgentConfig,
   StateStore,
@@ -508,6 +511,7 @@ export class SqliteStateStore {
     this.ensureColumn("agent_cycles", "cost_cached_tokens", "INTEGER");
     this.ensureColumn("agent_cycles", "cost_cache_write_tokens", "INTEGER");
     this.ensureColumn("agent_cycles", "cost_model_id", "TEXT");
+    this.backfillLegacyCycleCosts();
     this.ensureColumn("integrations", "discovered_resources_json", "TEXT");
     this.ensureColumn("integrations", "discovered_at", "INTEGER");
     this.ensureColumn("tasks", "project_id", "TEXT");
@@ -557,6 +561,84 @@ export class SqliteStateStore {
         WHERE project_id IS NULL
           AND state NOT IN ('DONE', 'FAILED', 'ABANDONED', 'REVIEW_DONE', 'REVIEW_FAILED');
     `);
+  }
+
+  /**
+   * One-time, idempotent backfill: recompute and persist cost_* columns for
+   * agent_cycles rows saved before those columns existed (all 8 still NULL),
+   * so getCostSummary/getModelUsageSummary/getAgentCycles stop recomputing
+   * them from agent_events JSON on every read. Rows with no recoverable event
+   * log are left untouched (NULL stays "unknown", never a false zero).
+   */
+  private backfillLegacyCycleCosts(): void {
+    interface LegacyCycleRow {
+      id: number;
+      agent_events: string | null;
+      agent_result: string;
+    }
+
+    const legacyRows = this.raw
+      .prepare(
+        `SELECT id, agent_events, agent_result FROM agent_cycles
+         WHERE cost_usd IS NULL AND cost_ai_credits IS NULL AND premium_requests IS NULL
+           AND cost_input_tokens IS NULL AND cost_output_tokens IS NULL
+           AND cost_cached_tokens IS NULL AND cost_cache_write_tokens IS NULL
+           AND cost_model_id IS NULL`
+      )
+      .all() as LegacyCycleRow[];
+    if (legacyRows.length === 0) return;
+
+    const updateStmt = this.raw.prepare(`
+      UPDATE agent_cycles
+      SET cost_ai_credits = ?, cost_usd = ?, premium_requests = ?,
+          cost_input_tokens = ?, cost_output_tokens = ?,
+          cost_cached_tokens = ?, cost_cache_write_tokens = ?, cost_model_id = ?
+      WHERE id = ?
+    `);
+
+    let updatedCount = 0;
+    const backfill = this.raw.transaction(() => {
+      for (const row of legacyRows) {
+        let events: AgentLogEvent[] | undefined;
+        if (row.agent_events) {
+          try {
+            events = JSON.parse(row.agent_events) as AgentLogEvent[];
+          } catch {
+            events = undefined;
+          }
+        }
+        if (!events) {
+          try {
+            events = (JSON.parse(row.agent_result) as AgentResult).agentEvents;
+          } catch {
+            events = undefined;
+          }
+        }
+        const cost = computeCycleCost(events);
+        if (!hasCostData(cost)) continue;
+
+        updateStmt.run(
+          cost.priced ? cost.aiCredits : null,
+          cost.usd > 0 ? cost.usd : null,
+          cost.premiumRequests > 0 ? cost.premiumRequests : null,
+          cost.tokens.input > 0 ? cost.tokens.input : null,
+          cost.tokens.output > 0 ? cost.tokens.output : null,
+          cost.tokens.cached > 0 ? cost.tokens.cached : null,
+          cost.tokens.cacheWrite > 0 ? cost.tokens.cacheWrite : null,
+          cost.modelId,
+          row.id
+        );
+        updatedCount += 1;
+      }
+    });
+    backfill();
+
+    if (updatedCount > 0) {
+      getLogger("state-store").info(
+        { updatedCount, scannedCount: legacyRows.length },
+        "Backfilled cost_* columns for legacy agent_cycles rows"
+      );
+    }
   }
 
   private migrateReferencedPromptRoles(): void {
