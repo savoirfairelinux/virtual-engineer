@@ -52,6 +52,45 @@ export const TERMINAL_STATES: ReadonlySet<TaskState> = new Set<TaskState>([
   ...CODE_REVIEW_TERMINAL_STATES,
 ]);
 
+/** Dashboard-facing workflow bucket for a task state — distinct from state-machine terminality. */
+export type TaskWorkflowBucket = "active" | "watching" | "done" | "failed";
+
+function classifyTaskWorkflowBucket(state: TaskState): TaskWorkflowBucket {
+  switch (state) {
+    case "DETECTED":
+    case "CONTEXT_BUILDING":
+    case "AGENT_RUNNING":
+    case "FEEDBACK_PROCESSING":
+    case "RETRY_CYCLE":
+    case "CLOSING":
+    case "REVIEW_RUNNING":
+    case "REVIEW_COMMENTING":
+      return "active";
+    case "IN_REVIEW":
+    case "REVIEW_PENDING":
+    case "REVIEW_WATCHING":
+      return "watching";
+    case "MERGED":
+    case "DONE":
+    case "REVIEW_DONE":
+      return "done";
+    case "FAILED":
+    case "ABANDONED":
+    case "REVIEW_FAILED":
+      return "failed";
+    default: {
+      // Exhaustiveness check — a new TaskState must be classified here.
+      const _exhaustive: never = state;
+      throw new Error(`Unclassified task state: ${String(_exhaustive)}`);
+    }
+  }
+}
+
+/** Single source of truth for dashboard bucketing (active/watching/done/failed) across every `TaskState`. */
+export const TASK_WORKFLOW_BUCKETS: ReadonlyMap<TaskState, TaskWorkflowBucket> = new Map(
+  TASK_STATES.map((state) => [state, classifyTaskWorkflowBucket(state)])
+);
+
 export interface Task {
   taskId: TaskId;
   ticketId: TicketId;
