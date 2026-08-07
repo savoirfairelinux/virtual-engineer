@@ -744,7 +744,7 @@ describe("SqliteStateStore", () => {
       expect(cost?.modelId).toBe("gpt-test");
     });
 
-    it("recomputes legacy cycle cost from the agent_events column when the result JSON omits events", async () => {
+    it("backfills legacy cycle cost from the agent_events column on the next store creation", async () => {
       const dbPath = tempDbPath();
       let localStore = await SqliteStateStore.create(dbPath);
       const taskId = makeTaskId(randomUUID());
@@ -825,28 +825,135 @@ describe("SqliteStateStore", () => {
       expect(cost?.aiCredits).toBe(0);
       expect(cost?.premiumRequests).toBeCloseTo(0.5, 10);
     });
+  });
 
-    it("recomputes cost for legacy cycles persisted without cost columns", async () => {
+  describe("backfillLegacyCycleCosts (migration)", () => {
+    it("persists cost_* columns for a legacy row on the next store creation", async () => {
+      const dbPath = tempDbPath();
+      let localStore = await SqliteStateStore.create(dbPath);
       const taskId = makeTaskId(randomUUID());
-      await store.createTask(taskId, makeTicketId("cost-2"));
-      const raw = (store as unknown as { raw: { prepare: (sql: string) => { run: (...args: unknown[]) => void } } }).raw;
+      await localStore.createTask(taskId, makeTicketId("backfill-1"));
+
+      const raw = new Database(dbPath);
       const events = JSON.stringify([
         {
           type: "assistant.usage",
           timestamp: "2026-01-01T00:00:00.000Z",
-          data: { totalNanoAiu: 5_000_000_000, inputTokens: 12, outputTokens: 4 },
+          data: { totalNanoAiu: 3_000_000_000, inputTokens: 10, outputTokens: 2, model: "gpt-backfill" },
           taskId: String(taskId),
           cycleNumber: 1,
         },
       ]);
-      const agentResult = JSON.stringify({ status: "success", modifiedFiles: [], summary: "legacy", agentLogs: "", agentEvents: JSON.parse(events), metadata: {} });
       raw.prepare(
-        "INSERT INTO agent_cycles (task_id, cycle_number, agent_result, validation_result, agent_events, created_at) VALUES (?, ?, ?, ?, ?, ?)"
-      ).run(taskId, 1, agentResult, null, events, Date.now());
+        "INSERT INTO agent_cycles (task_id, cycle_number, agent_result, validation_result, agent_events, created_at) VALUES (?, ?, ?, NULL, ?, ?)"
+      ).run(
+        taskId,
+        1,
+        JSON.stringify({ status: "success", modifiedFiles: [], summary: "legacy", agentLogs: "", metadata: {} }),
+        events,
+        Math.floor(Date.now() / 1000)
+      );
+      raw.close();
+      localStore.close();
 
-      const cycles = await store.getAgentCycles(taskId);
-      expect(cycles[0]?.cost?.priced).toBe(true);
-      expect(cycles[0]?.cost?.aiCredits).toBe(5);
+      // Reopening triggers applyMigrations() again, running the backfill.
+      localStore = await SqliteStateStore.create(dbPath);
+      try {
+        const verify = new Database(dbPath);
+        const row = verify
+          .prepare(
+            "SELECT cost_ai_credits, cost_usd, cost_model_id FROM agent_cycles WHERE task_id = ?"
+          )
+          .get(taskId) as { cost_ai_credits: number; cost_usd: number; cost_model_id: string };
+        verify.close();
+        expect(row.cost_ai_credits).toBe(3);
+        expect(row.cost_usd).toBeCloseTo(0.03, 10);
+        expect(row.cost_model_id).toBe("gpt-backfill");
+
+        const cycles = await localStore.getAgentCycles(taskId);
+        expect(cycles[0]?.cost?.aiCredits).toBe(3);
+        expect(cycles[0]?.cost?.modelId).toBe("gpt-backfill");
+      } finally {
+        localStore.close();
+      }
+    });
+
+    it("leaves cost columns NULL when no event log is recoverable", async () => {
+      const dbPath = tempDbPath();
+      let localStore = await SqliteStateStore.create(dbPath);
+      const taskId = makeTaskId(randomUUID());
+      await localStore.createTask(taskId, makeTicketId("backfill-2"));
+
+      const raw = new Database(dbPath);
+      raw.prepare(
+        "INSERT INTO agent_cycles (task_id, cycle_number, agent_result, validation_result, agent_events, created_at) VALUES (?, ?, ?, NULL, NULL, ?)"
+      ).run(
+        taskId,
+        1,
+        JSON.stringify({ status: "success", modifiedFiles: [], summary: "no-events", agentLogs: "", metadata: {} }),
+        Math.floor(Date.now() / 1000)
+      );
+      raw.close();
+      localStore.close();
+
+      localStore = await SqliteStateStore.create(dbPath);
+      try {
+        const verify = new Database(dbPath);
+        const row = verify
+          .prepare("SELECT cost_usd, cost_model_id FROM agent_cycles WHERE task_id = ?")
+          .get(taskId) as { cost_usd: number | null; cost_model_id: string | null };
+        verify.close();
+        expect(row.cost_usd).toBeNull();
+        expect(row.cost_model_id).toBeNull();
+      } finally {
+        localStore.close();
+      }
+    });
+
+    it("is idempotent across repeated store creations", async () => {
+      const dbPath = tempDbPath();
+      let localStore = await SqliteStateStore.create(dbPath);
+      const taskId = makeTaskId(randomUUID());
+      await localStore.createTask(taskId, makeTicketId("backfill-3"));
+
+      const raw = new Database(dbPath);
+      const events = JSON.stringify([
+        {
+          type: "assistant.usage",
+          timestamp: "2026-01-01T00:00:00.000Z",
+          data: { totalNanoAiu: 1_000_000_000, model: "gpt-idem" },
+          taskId: String(taskId),
+          cycleNumber: 1,
+        },
+      ]);
+      raw.prepare(
+        "INSERT INTO agent_cycles (task_id, cycle_number, agent_result, validation_result, agent_events, created_at) VALUES (?, ?, ?, NULL, ?, ?)"
+      ).run(
+        taskId,
+        1,
+        JSON.stringify({ status: "success", modifiedFiles: [], summary: "legacy", agentLogs: "", metadata: {} }),
+        events,
+        Math.floor(Date.now() / 1000)
+      );
+      raw.close();
+      localStore.close();
+
+      localStore = await SqliteStateStore.create(dbPath);
+      localStore.close();
+      // Second reopen: the row is no longer "all NULL", so the backfill query
+      // should not re-select or alter it again.
+      localStore = await SqliteStateStore.create(dbPath);
+      try {
+        const verify = new Database(dbPath);
+        const row = verify
+          .prepare("SELECT cost_ai_credits, cost_model_id FROM agent_cycles WHERE task_id = ?")
+          .get(taskId) as { cost_ai_credits: number; cost_model_id: string };
+        verify.close();
+        expect(row.cost_ai_credits).toBe(1);
+        expect(row.cost_model_id).toBe("gpt-idem");
+      } finally {
+        localStore.close();
+      }
     });
   });
 
