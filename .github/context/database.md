@@ -34,6 +34,7 @@
 - Existing databases drop `skill_discovery_enabled` and `local_skills_path` through `dropColumnIfExists(...)`; project rows and the remaining columns are preserved.
 - Existing databases get `reviewer_emails` through `ensureColumn("project_push_targets", "reviewer_emails", "TEXT NOT NULL DEFAULT '[]'")`.
 - Existing databases get nullable `app_settings.agent_timeout_ms` through `ensureColumn(...)`; NULL falls back to the `AGENT_TIMEOUT_MS` config default.
+- Existing databases get nullable `app_settings.ticket_close_max_retries` and `app_settings.ticket_close_retry_min_timeout_ms` through `ensureColumn(...)`; NULL falls back to the `TICKET_CLOSE_MAX_RETRIES` / `TICKET_CLOSE_RETRY_MIN_TIMEOUT_MS` config defaults.
 - Existing databases get `prompt_type` through `ensureColumn("prompts", "prompt_type", "TEXT NOT NULL DEFAULT 'instructions'")`; null, `user`, and other unsupported values are normalized to `instructions`, the five canonical built-ins are assigned their declared roles, then custom roles are derived from agent and project override references. Dual-role rows are cloned for instructions references. Missing built-in rows recreated through `upsertPrompt()` use their declared role. Old provider-specific rows are treated as ordinary data and are not translated; deployments adopting the canonical-only model must reset or edit those references explicitly.
 - `src/state/schema.ts` mirrors these columns for Drizzle typed queries.
 

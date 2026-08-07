@@ -430,6 +430,8 @@ export const appSettings = sqliteTable(
     maxAgentCycles: integer("max_agent_cycles"),
     maxRetryAttempts: integer("max_retry_attempts"),
     agentTimeoutMs: integer("agent_timeout_ms"),
+    ticketCloseMaxRetries: integer("ticket_close_max_retries"),
+    ticketCloseRetryMinTimeoutMs: integer("ticket_close_retry_min_timeout_ms"),
     updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
   },
   (table) => ({

@@ -67,6 +67,8 @@ const baseProps: ConfigViewData = {
     maxAgentCycles: 3,
     maxRetryAttempts: 5,
     agentTimeoutMs: 3600000,
+    ticketCloseMaxRetries: 5,
+    ticketCloseRetryMinTimeoutMs: 5000,
   },
   status: null,
   onRefresh: vi.fn(),

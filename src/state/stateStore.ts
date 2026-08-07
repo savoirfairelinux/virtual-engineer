@@ -394,12 +394,14 @@ export class SqliteStateStore {
       );
 
       CREATE TABLE IF NOT EXISTS app_settings (
-        id                  TEXT    PRIMARY KEY CHECK (id = 'global'),
-        polling_interval_ms INTEGER,
-        max_agent_cycles    INTEGER,
-        max_retry_attempts  INTEGER,
-        agent_timeout_ms    INTEGER,
-        updated_at          INTEGER NOT NULL
+        id                                  TEXT    PRIMARY KEY CHECK (id = 'global'),
+        polling_interval_ms                 INTEGER,
+        max_agent_cycles                    INTEGER,
+        max_retry_attempts                  INTEGER,
+        agent_timeout_ms                    INTEGER,
+        ticket_close_max_retries            INTEGER,
+        ticket_close_retry_min_timeout_ms   INTEGER,
+        updated_at                          INTEGER NOT NULL
       );
 
       -- ─── Users / Sessions / Audit (admin RBAC) ───────────────────────────
@@ -525,6 +527,8 @@ export class SqliteStateStore {
     this.ensureColumn("project_push_targets", "reviewer_emails", "TEXT NOT NULL DEFAULT '[]'");
     this.ensureColumn("prompts", "prompt_type", "TEXT NOT NULL DEFAULT 'instructions'");
     this.ensureColumn("app_settings", "agent_timeout_ms", "INTEGER");
+    this.ensureColumn("app_settings", "ticket_close_max_retries", "INTEGER");
+    this.ensureColumn("app_settings", "ticket_close_retry_min_timeout_ms", "INTEGER");
 
     this.raw.exec(`
       UPDATE prompts SET prompt_type = 'instructions'

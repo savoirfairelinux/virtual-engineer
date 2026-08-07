@@ -73,12 +73,16 @@ async function main(): Promise<void> {
     maxAgentCycles: config.maxAgentCycles,
     maxRetryAttempts: config.maxRetryAttempts,
     agentTimeoutMs: config.agentTimeoutMs,
+    ticketCloseMaxRetries: config.ticketCloseMaxRetries,
+    ticketCloseRetryMinTimeoutMs: config.ticketCloseRetryMinTimeoutMs,
   };
   const persistedSettings = await stateStore.getAppSettings();
   config.pollingIntervalMs = persistedSettings.pollingIntervalMs ?? settingsDefaults.pollingIntervalMs;
   config.maxAgentCycles = persistedSettings.maxAgentCycles ?? settingsDefaults.maxAgentCycles;
   config.maxRetryAttempts = persistedSettings.maxRetryAttempts ?? settingsDefaults.maxRetryAttempts;
   config.agentTimeoutMs = persistedSettings.agentTimeoutMs ?? settingsDefaults.agentTimeoutMs;
+  config.ticketCloseMaxRetries = persistedSettings.ticketCloseMaxRetries ?? settingsDefaults.ticketCloseMaxRetries;
+  config.ticketCloseRetryMinTimeoutMs = persistedSettings.ticketCloseRetryMinTimeoutMs ?? settingsDefaults.ticketCloseRetryMinTimeoutMs;
 
   registerBuiltinPlugins(config.adminAuthSecret !== undefined ? { adminAuthSecret: config.adminAuthSecret } : undefined);
   // Agent adapters are self-describing: any provider whose descriptor declares
@@ -241,6 +245,8 @@ async function main(): Promise<void> {
     maxRetryAttempts: config.maxRetryAttempts,
     pollingIntervalMs: config.pollingIntervalMs,
     agentTimeoutMs: config.agentTimeoutMs,
+    ticketCloseMaxRetries: config.ticketCloseMaxRetries,
+    ticketCloseRetryMinTimeoutMs: config.ticketCloseRetryMinTimeoutMs,
     adminAuthSecret: config.adminAuthSecret,
   };
 
@@ -285,6 +291,8 @@ async function main(): Promise<void> {
       maxAgentCycles: config.maxAgentCycles,
       maxRetryAttempts: config.maxRetryAttempts,
       agentTimeoutMs: config.agentTimeoutMs,
+      ticketCloseMaxRetries: config.ticketCloseMaxRetries,
+      ticketCloseRetryMinTimeoutMs: config.ticketCloseRetryMinTimeoutMs,
     }),
     update: async (
       patch: import("./admin/adminSettingsRoutes.js").WorkflowSettingsPatch
@@ -294,6 +302,8 @@ async function main(): Promise<void> {
       config.maxAgentCycles = persisted.maxAgentCycles ?? settingsDefaults.maxAgentCycles;
       config.maxRetryAttempts = persisted.maxRetryAttempts ?? settingsDefaults.maxRetryAttempts;
       config.agentTimeoutMs = persisted.agentTimeoutMs ?? settingsDefaults.agentTimeoutMs;
+      config.ticketCloseMaxRetries = persisted.ticketCloseMaxRetries ?? settingsDefaults.ticketCloseMaxRetries;
+      config.ticketCloseRetryMinTimeoutMs = persisted.ticketCloseRetryMinTimeoutMs ?? settingsDefaults.ticketCloseRetryMinTimeoutMs;
 
       // Hot-apply to running subsystems.
       pollingLoop.updateConfig({
@@ -305,6 +315,8 @@ async function main(): Promise<void> {
       adminRuntimeConfig.maxAgentCycles = config.maxAgentCycles;
       adminRuntimeConfig.maxRetryAttempts = config.maxRetryAttempts;
       adminRuntimeConfig.agentTimeoutMs = config.agentTimeoutMs;
+      adminRuntimeConfig.ticketCloseMaxRetries = config.ticketCloseMaxRetries;
+      adminRuntimeConfig.ticketCloseRetryMinTimeoutMs = config.ticketCloseRetryMinTimeoutMs;
 
       log.info(
         {
@@ -312,6 +324,8 @@ async function main(): Promise<void> {
           maxAgentCycles: config.maxAgentCycles,
           maxRetryAttempts: config.maxRetryAttempts,
           agentTimeoutMs: config.agentTimeoutMs,
+          ticketCloseMaxRetries: config.ticketCloseMaxRetries,
+          ticketCloseRetryMinTimeoutMs: config.ticketCloseRetryMinTimeoutMs,
         },
         "workflow settings updated"
       );
