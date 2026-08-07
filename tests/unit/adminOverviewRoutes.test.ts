@@ -4,7 +4,8 @@ import { createAdminServer, type AdminServerDependencies } from "../../src/admin
 import { makeTaskId, makeTicketId } from "../../src/interfaces.js";
 import type { Task, TaskState } from "../../src/interfaces.js";
 
-async function rest(server: Server, path: string): Promise<{ status: number; body: Record<string, unknown> | null }> {
+async function rest(server: Server | null, path: string): Promise<{ status: number; body: Record<string, unknown> | null }> {
+  if (!server) throw new Error("Server not started");
   const addr = server.address();
   if (!addr || typeof addr === "string") throw new Error("Server not bound");
   const res = await fetch(`http://127.0.0.1:${addr.port}${path}`);
@@ -75,15 +76,18 @@ function makeDeps(tasks: Task[]): AdminServerDependencies {
 }
 
 describe("Admin API — Overview route stats bucketing", () => {
-  let server: Server;
+  let server: Server | null = null;
 
   async function start(tasks: Task[]): Promise<void> {
     server = createAdminServer(makeDeps(tasks));
-    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    await new Promise<void>((resolve) => server?.listen(0, "127.0.0.1", resolve));
   }
 
   afterEach(async () => {
-    await new Promise<void>((resolve, reject) => server.close((err) => err ? reject(err) : resolve()));
+    if (server) {
+      await new Promise<void>((resolve, reject) => server?.close((err) => err ? reject(err) : resolve()));
+      server = null;
+    }
   });
 
   it("counts a DETECTED task as active (previously fell into no bucket)", async () => {
