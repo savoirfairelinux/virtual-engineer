@@ -47,6 +47,15 @@ export function isInfrastructureError(error: unknown): boolean {
         ? error
         : error === undefined || error === null
           ? ""
-          : JSON.stringify(error);
+          : safeStringify(error);
   return INFRASTRUCTURE_ERROR_PATTERNS.some((pattern) => pattern.test(message));
+}
+
+/** Best-effort `JSON.stringify`; falls back to `String()` for circular/BigInt values that would throw. */
+export function safeStringify(value: unknown): string {
+  try {
+    return JSON.stringify(value) ?? String(value);
+  } catch {
+    return String(value);
+  }
 }
