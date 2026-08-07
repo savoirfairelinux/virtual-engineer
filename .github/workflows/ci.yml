@@ -30,6 +30,12 @@ jobs:
       - name: Audit dev-tooling dependencies (informational)
         run: npm audit --audit-level=high || true
 
+      - name: Audit agent-worker production dependencies
+        run: cd agent-worker && npm audit --omit=dev
+
+      - name: Audit agent-worker dev-tooling dependencies (informational)
+        run: cd agent-worker && npm audit --audit-level=high || true
+
       - name: Type check
         run: npm run typecheck
 
