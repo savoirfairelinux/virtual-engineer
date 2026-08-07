@@ -140,6 +140,8 @@ export async function buildOrchestratorConfig(
     maxAgentCycles: config.maxAgentCycles,
     maxRetryAttempts: config.maxRetryAttempts,
     agentTimeoutMs: config.agentTimeoutMs,
+    ticketCloseMaxRetries: config.ticketCloseMaxRetries,
+    ticketCloseRetryMinTimeoutMs: config.ticketCloseRetryMinTimeoutMs,
     gitAuthorName: gitAuthorName ?? "Virtual Engineer",
     gitAuthorEmail: gitAuthorEmail ?? "ve@virtual-engineer.local",
     agentContainerImage: config.agentContainerImage,

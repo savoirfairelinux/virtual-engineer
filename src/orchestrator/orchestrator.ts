@@ -63,6 +63,10 @@ export interface OrchestratorConfig {
   gitAuthorEmail: string;
   agentContainerImage: string;
   adminAuthSecret?: string | undefined;
+  /** Max retry attempts for the ticket-close call in `closeTicket()`. Defaults to 5 when omitted. */
+  ticketCloseMaxRetries?: number | undefined;
+  /** Minimum backoff (ms) between ticket-close retries. Defaults to 5000 when omitted. */
+  ticketCloseRetryMinTimeoutMs?: number | undefined;
 }
 
 /**
@@ -1274,7 +1278,7 @@ export class Orchestrator {
             throw err;
           }
         },
-        { retries: 5, minTimeout: 5000 }
+        { retries: this.config.ticketCloseMaxRetries ?? 5, minTimeout: this.config.ticketCloseRetryMinTimeoutMs ?? 5000 }
       );
 
       if (closeResult === "not_found") {

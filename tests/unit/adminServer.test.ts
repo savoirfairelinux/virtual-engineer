@@ -258,6 +258,8 @@ describe("createAdminServer", () => {
           maxRetryAttempts: 5,
           pollingIntervalMs: 30_000,
           agentTimeoutMs: 3_600_000,
+          ticketCloseMaxRetries: 5,
+          ticketCloseRetryMinTimeoutMs: 5_000,
         },
       });
     } finally {

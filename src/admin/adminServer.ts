@@ -77,6 +77,10 @@ export interface AdminRuntimeConfig {
   maxRetryAttempts: number;
   pollingIntervalMs: number;
   agentTimeoutMs?: number | undefined;
+  /** Max retry attempts for the ticket-close call. Defaults to 5 when omitted. */
+  ticketCloseMaxRetries?: number | undefined;
+  /** Minimum backoff (ms) between ticket-close retries. Defaults to 5000 when omitted. */
+  ticketCloseRetryMinTimeoutMs?: number | undefined;
   adminAuthSecret?: string | undefined;
   /** Mirror of `ADMIN_TRUST_PROXY`. When true, IP is read from X-Forwarded-For. */
   adminTrustProxy?: boolean | undefined;
@@ -367,6 +371,8 @@ function buildApiRouter(dependencies: AdminServerDependencies, authRuntime: Admi
         maxRetryAttempts: dependencies.config.maxRetryAttempts,
         pollingIntervalMs: dependencies.config.pollingIntervalMs,
         agentTimeoutMs: dependencies.config.agentTimeoutMs ?? 3_600_000,
+        ticketCloseMaxRetries: dependencies.config.ticketCloseMaxRetries ?? 5,
+        ticketCloseRetryMinTimeoutMs: dependencies.config.ticketCloseRetryMinTimeoutMs ?? 5000,
       },
     });
   }, { permission: "overview.read" });

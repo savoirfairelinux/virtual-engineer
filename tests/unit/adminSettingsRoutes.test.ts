@@ -61,7 +61,14 @@ function makeDeps(settings?: SettingsController): AdminServerDependencies {
 }
 
 function makeController(): SettingsController & { current: EffectiveWorkflowSettings; update: ReturnType<typeof vi.fn> } {
-  const defaults: EffectiveWorkflowSettings = { pollingIntervalMs: 30000, maxAgentCycles: 3, maxRetryAttempts: 5, agentTimeoutMs: 3600000 };
+  const defaults: EffectiveWorkflowSettings = {
+    pollingIntervalMs: 30000,
+    maxAgentCycles: 3,
+    maxRetryAttempts: 5,
+    agentTimeoutMs: 3600000,
+    ticketCloseMaxRetries: 5,
+    ticketCloseRetryMinTimeoutMs: 5000,
+  };
   const current: EffectiveWorkflowSettings = { ...defaults };
   const update = vi.fn(async (patch: WorkflowSettingsPatch) => {
     for (const [key, value] of Object.entries(patch) as [keyof EffectiveWorkflowSettings, number | null][]) {
@@ -90,7 +97,16 @@ describe("Admin API — Settings routes", () => {
   it("GET returns the current effective settings", async () => {
     const r = await rest(server, "/api/admin/settings");
     expect(r.status).toBe(200);
-    expect(r.body).toEqual({ settings: { pollingIntervalMs: 30000, maxAgentCycles: 3, maxRetryAttempts: 5, agentTimeoutMs: 3600000 } });
+    expect(r.body).toEqual({
+      settings: {
+        pollingIntervalMs: 30000,
+        maxAgentCycles: 3,
+        maxRetryAttempts: 5,
+        agentTimeoutMs: 3600000,
+        ticketCloseMaxRetries: 5,
+        ticketCloseRetryMinTimeoutMs: 5000,
+      },
+    });
   });
 
   it("PUT validates, persists, and returns updated settings", async () => {
@@ -100,7 +116,16 @@ describe("Admin API — Settings routes", () => {
     });
     expect(r.status).toBe(200);
     expect(controller.update).toHaveBeenCalledWith({ pollingIntervalMs: 15000, maxAgentCycles: 4, maxRetryAttempts: 8 });
-    expect(r.body).toEqual({ settings: { pollingIntervalMs: 15000, maxAgentCycles: 4, maxRetryAttempts: 8, agentTimeoutMs: 3600000 } });
+    expect(r.body).toEqual({
+      settings: {
+        pollingIntervalMs: 15000,
+        maxAgentCycles: 4,
+        maxRetryAttempts: 8,
+        agentTimeoutMs: 3600000,
+        ticketCloseMaxRetries: 5,
+        ticketCloseRetryMinTimeoutMs: 5000,
+      },
+    });
   });
 
   it("PUT persists and returns an agent timeout override", async () => {
@@ -110,7 +135,16 @@ describe("Admin API — Settings routes", () => {
     });
     expect(r.status).toBe(200);
     expect(controller.update).toHaveBeenCalledWith({ agentTimeoutMs: 900000 });
-    expect(r.body).toEqual({ settings: { pollingIntervalMs: 30000, maxAgentCycles: 3, maxRetryAttempts: 5, agentTimeoutMs: 900000 } });
+    expect(r.body).toEqual({
+      settings: {
+        pollingIntervalMs: 30000,
+        maxAgentCycles: 3,
+        maxRetryAttempts: 5,
+        agentTimeoutMs: 900000,
+        ticketCloseMaxRetries: 5,
+        ticketCloseRetryMinTimeoutMs: 5000,
+      },
+    });
   });
 
   it("PUT accepts a partial update", async () => {
@@ -143,13 +177,53 @@ describe("Admin API — Settings routes", () => {
     expect(controller.update).not.toHaveBeenCalled();
   });
 
+  it("PUT validates, persists, and returns a ticket-close retry policy override", async () => {
+    const r = await rest(server, "/api/admin/settings", {
+      method: "PUT",
+      body: { ticketCloseMaxRetries: 8, ticketCloseRetryMinTimeoutMs: 10000 },
+    });
+    expect(r.status).toBe(200);
+    expect(controller.update).toHaveBeenCalledWith({ ticketCloseMaxRetries: 8, ticketCloseRetryMinTimeoutMs: 10000 });
+    expect(r.body).toEqual({
+      settings: {
+        pollingIntervalMs: 30000,
+        maxAgentCycles: 3,
+        maxRetryAttempts: 5,
+        agentTimeoutMs: 3600000,
+        ticketCloseMaxRetries: 8,
+        ticketCloseRetryMinTimeoutMs: 10000,
+      },
+    });
+  });
+
+  it("PUT rejects a non-positive ticketCloseMaxRetries", async () => {
+    const r = await rest(server, "/api/admin/settings", { method: "PUT", body: { ticketCloseMaxRetries: 0 } });
+    expect(r.status).toBe(400);
+    expect(controller.update).not.toHaveBeenCalled();
+  });
+
+  it("PUT rejects a ticketCloseRetryMinTimeoutMs that is not a whole number of seconds", async () => {
+    const r = await rest(server, "/api/admin/settings", { method: "PUT", body: { ticketCloseRetryMinTimeoutMs: 1500 } });
+    expect(r.status).toBe(400);
+    expect(controller.update).not.toHaveBeenCalled();
+  });
+
   it("PUT accepts null to reset a value to its default", async () => {
     // First override, then clear it with null.
     await rest(server, "/api/admin/settings", { method: "PUT", body: { maxAgentCycles: 9 } });
     const r = await rest(server, "/api/admin/settings", { method: "PUT", body: { maxAgentCycles: null } });
     expect(r.status).toBe(200);
     expect(controller.update).toHaveBeenLastCalledWith({ maxAgentCycles: null });
-    expect(r.body).toEqual({ settings: { pollingIntervalMs: 30000, maxAgentCycles: 3, maxRetryAttempts: 5, agentTimeoutMs: 3600000 } });
+    expect(r.body).toEqual({
+      settings: {
+        pollingIntervalMs: 30000,
+        maxAgentCycles: 3,
+        maxRetryAttempts: 5,
+        agentTimeoutMs: 3600000,
+        ticketCloseMaxRetries: 5,
+        ticketCloseRetryMinTimeoutMs: 5000,
+      },
+    });
   });
 
   it("PUT rejects an empty payload", async () => {

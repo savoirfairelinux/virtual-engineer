@@ -24,6 +24,8 @@ describe("SqliteStateStore — app settings", () => {
       maxAgentCycles: null,
       maxRetryAttempts: null,
       agentTimeoutMs: null,
+      ticketCloseMaxRetries: null,
+      ticketCloseRetryMinTimeoutMs: null,
     });
   });
 
@@ -33,17 +35,47 @@ describe("SqliteStateStore — app settings", () => {
       maxAgentCycles: 4,
       maxRetryAttempts: 8,
       agentTimeoutMs: 900000,
+      ticketCloseMaxRetries: 8,
+      ticketCloseRetryMinTimeoutMs: 10000,
     });
-    expect(next).toEqual({ pollingIntervalMs: 15000, maxAgentCycles: 4, maxRetryAttempts: 8, agentTimeoutMs: 900000 });
+    expect(next).toEqual({
+      pollingIntervalMs: 15000,
+      maxAgentCycles: 4,
+      maxRetryAttempts: 8,
+      agentTimeoutMs: 900000,
+      ticketCloseMaxRetries: 8,
+      ticketCloseRetryMinTimeoutMs: 10000,
+    });
 
     const read = await store.getAppSettings();
-    expect(read).toEqual({ pollingIntervalMs: 15000, maxAgentCycles: 4, maxRetryAttempts: 8, agentTimeoutMs: 900000 });
+    expect(read).toEqual({
+      pollingIntervalMs: 15000,
+      maxAgentCycles: 4,
+      maxRetryAttempts: 8,
+      agentTimeoutMs: 900000,
+      ticketCloseMaxRetries: 8,
+      ticketCloseRetryMinTimeoutMs: 10000,
+    });
   });
 
   it("merges partial updates without clobbering unspecified fields", async () => {
-    await store.updateAppSettings({ pollingIntervalMs: 15000, maxAgentCycles: 4, maxRetryAttempts: 8, agentTimeoutMs: 900000 });
+    await store.updateAppSettings({
+      pollingIntervalMs: 15000,
+      maxAgentCycles: 4,
+      maxRetryAttempts: 8,
+      agentTimeoutMs: 900000,
+      ticketCloseMaxRetries: 8,
+      ticketCloseRetryMinTimeoutMs: 10000,
+    });
     const merged = await store.updateAppSettings({ maxAgentCycles: 2 });
-    expect(merged).toEqual({ pollingIntervalMs: 15000, maxAgentCycles: 2, maxRetryAttempts: 8, agentTimeoutMs: 900000 });
+    expect(merged).toEqual({
+      pollingIntervalMs: 15000,
+      maxAgentCycles: 2,
+      maxRetryAttempts: 8,
+      agentTimeoutMs: 900000,
+      ticketCloseMaxRetries: 8,
+      ticketCloseRetryMinTimeoutMs: 10000,
+    });
   });
 
   it("clears a value when passed an explicit null", async () => {
