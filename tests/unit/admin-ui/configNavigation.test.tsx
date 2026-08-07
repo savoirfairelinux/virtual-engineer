@@ -45,6 +45,8 @@ describe("Configuration navigation guard", () => {
             maxAgentCycles: 3,
             maxRetryAttempts: 5,
             agentTimeoutMs: 3600000,
+            ticketCloseMaxRetries: 5,
+            ticketCloseRetryMinTimeoutMs: 5000,
           }}
           status={null}
           onRefresh={vi.fn()}
@@ -120,6 +122,8 @@ describe("Configuration navigation guard", () => {
             maxAgentCycles: 3,
             maxRetryAttempts: 5,
             agentTimeoutMs: 3600000,
+            ticketCloseMaxRetries: 5,
+            ticketCloseRetryMinTimeoutMs: 5000,
           }}
           status={null}
           onRefresh={vi.fn()}
@@ -161,6 +165,8 @@ describe("Configuration navigation guard", () => {
             maxAgentCycles: 3,
             maxRetryAttempts: 5,
             agentTimeoutMs: 3600000,
+            ticketCloseMaxRetries: 5,
+            ticketCloseRetryMinTimeoutMs: 5000,
           }}
           status={null}
           onRefresh={onRefresh}
@@ -202,6 +208,8 @@ describe("Configuration navigation guard", () => {
             maxAgentCycles: 3,
             maxRetryAttempts: 5,
             agentTimeoutMs: 3600000,
+            ticketCloseMaxRetries: 5,
+            ticketCloseRetryMinTimeoutMs: 5000,
           }}
           status={null}
           onRefresh={vi.fn()}
@@ -238,6 +246,8 @@ describe("Configuration navigation guard", () => {
             maxAgentCycles: 3,
             maxRetryAttempts: 5,
             agentTimeoutMs: 900001,
+            ticketCloseMaxRetries: 5,
+            ticketCloseRetryMinTimeoutMs: 5000,
           }}
           status={null}
           onRefresh={vi.fn()}
@@ -316,6 +326,8 @@ describe("Configuration navigation guard", () => {
             maxAgentCycles: 3,
             maxRetryAttempts: 5,
             agentTimeoutMs: 3600000,
+            ticketCloseMaxRetries: 5,
+            ticketCloseRetryMinTimeoutMs: 5000,
           }}
           status={null}
           onRefresh={vi.fn()}

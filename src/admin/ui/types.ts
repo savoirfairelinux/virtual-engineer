@@ -273,6 +273,8 @@ export interface ApiConfig {
     maxRetryAttempts: number;
     pollingIntervalMs: number;
     agentTimeoutMs: number;
+    ticketCloseMaxRetries: number;
+    ticketCloseRetryMinTimeoutMs: number;
   };
 }
 
