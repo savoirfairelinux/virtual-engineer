@@ -37,6 +37,8 @@ export function ConfigOverview({ integrations, agents, projects, config }: Confi
               ["Max cycles",    String(config.maxAgentCycles)],
               ["Max retries",   String(config.maxRetryAttempts)],
               ["Polling interval", `${config.pollingIntervalMs / 1000}s`],
+              ["Ticket-close retries", String(config.ticketCloseMaxRetries)],
+              ["Ticket-close retry timeout", `${config.ticketCloseRetryMinTimeoutMs / 1000}s`],
             ] as [string, string][]).map(([k, v]) => (
               <div key={k} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 14px", background: "var(--panel)" }}>
                 <span style={{ fontSize: "12.5px", fontWeight: 500 }}>{k}</span>
