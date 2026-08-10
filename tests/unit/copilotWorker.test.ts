@@ -310,7 +310,7 @@ describe("runCopilotAgent", () => {
 
 describe("Copilot worker native profile", () => {
   it("builds a parent prompt that delegates the VE prompt exactly once", () => {
-    const prompt = buildNativeReviewPrompt("VE REVIEW CONTEXT\nDIFF CONTENT");
+    const prompt = buildNativeReviewPrompt("VE REVIEW CONTEXT\nDIFF CONTENT", "/sandbox/task-1-abc");
 
     expect(prompt).toBe([
       "Delegate exactly one review with the task tool:",
@@ -323,7 +323,7 @@ describe("Copilot worker native profile", () => {
       "",
       "VE_DELEGATED_PROMPT_START",
       "Review the Virtual Engineer context and supplied diff below as the source of truth.",
-      "For extra context, only read files under /workspace; do not execute commands, access the network, or edit files.",
+      "For extra context, only read files under /sandbox/task-1-abc; do not execute commands, access the network, or edit files.",
       "Do not recompute the diff or compare branches.",
       "Return findings to the parent; do not call submission tools.",
       "",

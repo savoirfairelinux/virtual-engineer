@@ -2,12 +2,13 @@
 
 **Source:** [src/vcs/](../../../src/vcs/).
 
-The VCS layer is host-owned. The agent container may edit files and create local commits, but the host still controls the final push and keeps review-system credentials outside the container.
+The VCS layer is host-owned. The agent sandbox may edit files and create local commits, but the host still controls the final push and keeps review-system credentials outside the sandbox. Push runs directly against the host workspace directory downloaded from the sandbox — there is no helper container and no Docker volume.
 
 ## Asynchronous Git runner
 
 - `gitRunner.ts` defines the narrow `GitRunner.run(args, options)` contract and typed `GitCommandError`. The runner executes one Git command; clone/push/commit workflows remain connector-owned.
 - `nodeGitRunner.ts` uses `child_process.execFile` without a shell. Callers can set `cwd`, environment, timeout, `AbortSignal`, and output limit; the default output cap is 1 MiB.
+- The runner is **hardened by default**: it wraps every argv with `trustedGitArgs()` and every environment with `trustedGitEnv()` from [src/utils/gitExec.ts](../../../src/utils/gitExec.ts), pinning `-c core.hooksPath=/dev/null`, `-c include.path=/dev/null`, `GIT_CONFIG_GLOBAL=/dev/null`, and `GIT_CONFIG_SYSTEM=/dev/null`. This neutralises hook/config code execution planted in a repository the agent wrote to. `src/workspace/hostGitExecutor.ts` applies the same two helpers to its own `execFile` calls.
 - Failures distinguish non-zero exit, timeout, cancellation, output-limit breach, and spawn errors. Captured stdout/stderr are bounded and passed through URL/token redaction before being returned or attached to errors. Human-facing error messages include at most 500 characters of stderr detail while the structured error retains the full bounded, redacted stderr; environment values and command arguments are never included in error messages.
 - Timeout policy is caller-owned. The runner accepts a per-command timeout or constructor default but imposes none when neither is set.
 - `VcsConnectorFactory` owns one shared `NodeGitRunner` and injects it through `SourceControlRuntimeContext` into descriptor-created connectors. Tests can inject a deterministic runner through the factory constructor.
@@ -17,28 +18,21 @@ The VCS layer is host-owned. The agent container may edit files and create local
 
 ```ts
 interface VcsConnector {
-  /** Legacy connector operation that may create a commit before pushing. */
-  push(
-    repoDir: string,
-    ref: string,
-    message: string,
-    changeId?: string,
-    volumeOpts?: VolumeExecOptions,
-    reviewerEmails?: string[]
-  ): Promise<VcsPushResult>;
-
   /** Push agent-created commits directly without a host commit step. */
   pushDirect?(
     repoDir: string,
     ref: string,
     topic?: string,
-    volumeOpts?: VolumeExecOptions,
     reviewerEmails?: string[]
   ): Promise<VcsPushResult>;
 }
 ```
 
-All built-in project push targets implement `pushDirect`, and `Orchestrator.pushProjectChanges()` requires it. The worker normalizes agent-created commits and injects missing Change-Ids and configured ticket trailers before returning; the host then pushes the existing commit chain through a credential-bearing helper container. It does not create another commit.
+There is **no** `push()` method any longer — the commit-creating legacy path and its `VolumeExecOptions` parameter were deleted. `pushDirect` is the only push path.
+
+All built-in project push targets implement `pushDirect`, and `Orchestrator.pushProjectChanges()` requires it. The worker normalizes agent-created commits and injects missing Change-Ids and configured ticket trailers before returning; the host then pushes the existing commit chain from the downloaded workspace. It does not create another commit.
+
+`pushProjectChanges()` only invokes git in repository sub-paths reported by `WorkspaceRunner.listTrustedRepoPaths()` — directories VE cloned itself and whose `.git` metadata was rebuilt from host-trusted remotes. A push target whose clone failed is agent-authored and is refused rather than handed credentials.
 
 `VcsPushResult.changeId` is the Gerrit Change-Id, GitLab MR IID, or GitHub PR identifier. Per-repository results are stored in `change_per_repository`; the legacy task-level `tasks.gerrit_change_id` and `tasks.review_url` fields retain the primary result.
 
@@ -50,7 +44,7 @@ All built-in project push targets implement `pushDirect`, and `Orchestrator.push
 - Uses SSH for change-status lookup and comment-thread follow-up (`gerrit query`, `gerrit review --json`) instead of Gerrit REST credentials.
 - `baseUrl` is optional and used only to build clickable review URLs.
 - Requires `gerrit_ssh_host`, `gerrit_ssh_port`, `gerrit_username`, `gerrit_ssh_key_path` from the resolved Gerrit integration.
-- `pushDirect(repoDir, ref, topic, volumeOpts, reviewerEmails)`: pushes HEAD via SSH with one Gerrit option suffix containing the topic and one `r=<email>` entry per configured reviewer. Existing ref options are extended with commas rather than a second `%`. Returns a `VcsPushResult` with the Change-Id parsed from the commit footer.
+- `pushDirect(repoDir, ref, topic, reviewerEmails)`: pushes HEAD via SSH with one Gerrit option suffix containing the topic and one `r=<email>` entry per configured reviewer. Existing ref options are extended with commas rather than a second `%`. Returns a `VcsPushResult` with the Change-Id parsed from the commit footer.
 
 ### `gitlabVcsConnector.ts`
 - Pushes via HTTPS using the project access token.
@@ -58,7 +52,7 @@ All built-in project push targets implement `pushDirect`, and `Orchestrator.push
 - The target GitLab project can come either from legacy integration config (`projectId`) or from the VE project push-target binding (`repoKey`) passed through `vcsFactory`.
 - Returns the MR web URL.
 - Reviewer emails are looked up through the Users API and matched exactly, case-insensitively, against visible `email` or `public_email` values. Matched IDs are included as `reviewer_ids`; unmatched or inaccessible addresses are logged and skipped. A 409 existing-MR path updates the existing MR when at least one reviewer resolves.
-- `pushDirect(repoDir, ref, topic, volumeOpts, reviewerEmails)`: force-pushes the feature branch and creates or updates the MR. `topic` is ignored because GitLab does not use Gerrit topics. Resets the remote URL after push to avoid token leakage.
+- `pushDirect(repoDir, ref, topic, reviewerEmails)`: force-pushes the feature branch and creates or updates the MR. `topic` is ignored because GitLab does not use Gerrit topics. Resets the remote URL after push to avoid token leakage.
 
 ### `githubVcsConnector.ts`
 - HTTP-based clone and push for GitHub, mirroring the GitLab design: clones via HTTPS with the token in the remote URL, pushes a feature branch, and creates or updates a Pull Request via the GitHub REST API (`apiBaseUrl` supports both `api.github.com` and GHE `/api/v3`).
@@ -91,7 +85,7 @@ All built-in project push targets implement `pushDirect`, and `Orchestrator.push
 
 1. Implement `VcsConnector` in a new file under `src/vcs/`.
 2. Add `capabilities.source_control.createVcsConnector(config, integration, context?, runtime?) → VcsConnector` to the integration's descriptor (e.g. `src/plugins/descriptors/<name>.ts`). Pass `runtime?.gitRunner` into the connector; `vcsFactory` will pick it up automatically.
-3. Add unit tests; inject `RecordingGitRunner` from `tests/unit/helpers/recordingGitRunner.ts` and mock `src/workspace/dockerVolume.ts` as appropriate rather than running real Git or Docker operations.
+3. Add unit tests; inject `RecordingGitRunner` from `tests/unit/helpers/recordingGitRunner.ts` rather than running real Git. There is no Docker volume module to mock — host-side git plumbing lives in `src/workspace/hostGitExecutor.ts` and connector git in `src/vcs/nodeGitRunner.ts`.
 
 ## Related docs
 

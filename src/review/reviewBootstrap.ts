@@ -445,6 +445,7 @@ export function buildReviewBundle(
     // determined once the task (and thus its project) is known.
     resolveAgentForProject: (project: ProjectRecord): ReturnType<typeof resolveReviewAgentForProject> =>
       resolveReviewAgentForProject(pluginManager, stateStore, project, bundleLog),
+    agentContainerImage: getConfig().agentContainerImage,
     maxDiffChars: getConfig().maxReviewDiffChars,
     maxReviewComments: getConfig().maxReviewComments,
     maxReviewReplies: getConfig().maxReviewReplies,

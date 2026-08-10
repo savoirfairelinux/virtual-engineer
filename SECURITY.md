@@ -20,23 +20,23 @@ Please include as much detail as possible: steps to reproduce, impact assessment
 
 ### Agent Container Isolation
 
-Each agent cycle runs in an ephemeral Docker container hardened with:
+Each agent cycle runs in an ephemeral OpenShell sandbox constrained by a deny-by-default runtime policy:
 
 - `--read-only` root filesystem
 - `--cap-drop ALL` — no Linux capabilities granted
 - `--security-opt no-new-privileges:true`
-- Only `/tmp` (tmpfs, 256 MB, `nosuid`) and named volumes are writable
+- Only `/sandbox`, `/tmp` and `/dev/null` are writable; `/usr`, `/lib`, `/app`, `/etc` are read-only
 - Isolated to the `ve-agent-net` bridge network — no host network access
 
 The host owns all push/review credentials and orchestrates network operations; the agent container never holds provider secrets.
 
 ### Project Skill Discovery
 
-Every coding and review run uses the selected agent's native repository behavior. VE does not define a local skill path, scan manifests, or provide a disable switch. Remote skill sources are separate optional project configuration (`projects.skill_sources_json`) and are fetched with `npx skills` into `/ve-home` only when configured. Skills are instructions executed by the agent, so a malicious repository or remote skill source could steer the agent. Mitigations:
+Every coding and review run uses the selected agent's native repository behavior. VE does not define a local skill path, scan manifests, or provide a disable switch. Remote skill sources are separate optional project configuration (`projects.skill_sources_json`); the worker does not currently install them — the Docker runner's `npx skills` step was removed with that runner and has no OpenShell replacement yet. Skills are instructions executed by the agent, so a malicious repository or remote skill source could steer the agent. Mitigations:
 
 - Run Virtual Engineer only against repositories whose agent configuration, skills, MCP files, and change-review trust boundary you accept.
 - Remote skill sources default to an empty list and must be configured explicitly; add only sources you trust.
-- Remote skills install globally in the agent home volume (`/ve-home`), not into the cloned repository. This keeps review workspaces read-only.
+- Review runs are never downloaded back to the host, so a review agent cannot modify the repository VE pushes.
 - SSH remote skill sources reuse the orchestrator process `SSH_AUTH_SOCK` only when such a source is configured; missing SSH agent access fails the run instead of silently skipping skills. Configured key and known-hosts files must live under `/app/secrets` (container deployment) or the repository `secrets/` directory (host development). Canonical-path validation blocks traversal and symlink escapes before host-file reads.
 - Copilot enables native config discovery, which couples repository skill discovery with repository MCP configuration discovery. VE permission handlers still mediate requested tools, but repository MCP servers may be initialized; trust the repository before running it.
 - Claude enables native user/project settings and skills while retaining `strictMcpConfig=true`, so Claude ignores repository MCP server configuration and accepts only VE-provided MCP servers.

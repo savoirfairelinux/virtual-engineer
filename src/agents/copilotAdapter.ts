@@ -87,7 +87,7 @@ const DEFAULT_CONFIG: CopilotAdapterConfig = {
 };
 
 /**
- * Build the user prompt written to `/ve-home/user-prompt.txt` for a code-generation cycle.
+ * Build the user prompt the runner uploads into the sandbox for a code-generation cycle.
  */
 export function buildCodegenUserPrompt(
   context: TaskContext,
@@ -298,7 +298,7 @@ export class CopilotAdapter implements AgentAdapter, ConfigurableAdapter {
     });
   }
 
-  /** Builds a container spec for review mode (REVIEW_MODE=1). Reads prompt from /ve-home/user-prompt.txt. */
+  /** Builds a container spec for review mode (REVIEW_MODE=1). Reads the prompt from the file the runner uploads into the sandbox. */
   buildReviewContainerSpec(
     input: ReviewWorkspaceInput,
     authEnv: Record<string, string> = {}

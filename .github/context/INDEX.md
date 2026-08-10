@@ -29,7 +29,7 @@ The repo-wide entry point for Copilot is [.github/copilot-instructions.md](../co
 | [modules/vcs.md](modules/vcs.md) | Host-owned direct push (Gerrit / GitLab / GitHub), branch naming |
 | [modules/plugins.md](modules/plugins.md) | Descriptor registry, PluginManager, runtime bootstrap |
 | [modules/admin.md](modules/admin.md) | Admin HTTP server + dashboard, secret masking, integration test endpoint |
-| [modules/workspace.md](modules/workspace.md) | Workspace manifest scanning, provider reads, limits, and current materialization boundary |
+| [modules/workspace.md](modules/workspace.md) | OpenShell sandbox lifecycle, host-side Git plumbing, workspace manifest scanning, provider reads, limits |
 
 ## Quick task → doc map
 
@@ -41,13 +41,13 @@ The repo-wide entry point for Copilot is [.github/copilot-instructions.md](../co
 - **Add a new agent engine** → [modules/agents.md](modules/agents.md) + the descriptor's `agent_execution` capability (see [modules/plugins.md](modules/plugins.md)).
 - **Run tests** → [testing.md](testing.md).
 - **Debug a stuck task** → SQL queries in [database.md](database.md) + the [`ve-debug` skill](../skills/ve-debug/SKILL.md).
-- **Debug Copilot execution** → [modules/agents.md](modules/agents.md) (in-container `copilot --headless`; reviews via `REVIEW_MODE=1`) + [copilot-instructions.md](../copilot-instructions.md).
+- **Debug Copilot execution** → [modules/agents.md](modules/agents.md) (in-sandbox `copilot --headless`; reviews via `REVIEW_MODE=1`) + [copilot-instructions.md](../copilot-instructions.md).
 
 ## Cross-cutting facts (worth memorising)
 
 - Timestamps are stored in **seconds**: use `datetime(col, 'unixepoch')`, never `col/1000`.
 - `tasks` PK = `task_id` (TEXT). No `id` column.
 - Pause/resume are `state_transitions` rows where `from_state == to_state`, with `metadata.action`.
-- The orchestrator runs on the **host**; the agent runs in an **ephemeral, hardened** Docker container. The worker creates or normalizes commits in-container; the host retains credentials and pushes those commits via `src/vcs/`.
+- The orchestrator runs on the **host**; the agent runs in an **ephemeral OpenShell sandbox** (create → upload → exec → download), isolated by deny-by-default runtime policies rather than Docker flags. The worker creates or normalizes commits inside the sandbox; the host retains credentials and pushes those commits via `src/vcs/`.
 - Provider selection is per-integration via the `integrations` table; multiple integrations of the same provider can be active simultaneously.
 - Agent engines (`agent_execution`) are **Copilot**, **Claude**, **Aider**, **Goose**, or **Mock**. Copilot defaults to model `auto`; Claude, Aider, and Goose have no hardcoded default (their CLIs pick one when no model is set).

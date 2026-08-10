@@ -23,16 +23,16 @@ describe("MCP submission contract", () => {
       additionalProperties: false,
     };
 
-    const config = buildSubmissionMcpConfig("review", schema, "/ve-home/review.json");
+    const config = buildSubmissionMcpConfig("review", schema, "/tmp/review.json");
 
     expect(config.toolName).toBe("ve_submit_review");
     expect(config.server).toEqual({
       type: "stdio",
       command: "node",
-      args: ["/agent-worker/dist/mcpSubmissionServer.js"],
+      args: ["/app/agent-worker/dist/mcpSubmissionServer.js"],
       env: {
         VE_SUBMISSION_MODE: "review",
-        VE_SUBMISSION_PATH: "/ve-home/review.json",
+        VE_SUBMISSION_PATH: "/tmp/review.json",
         VE_SUBMISSION_SCHEMA_JSON: JSON.stringify(schema),
       },
     });

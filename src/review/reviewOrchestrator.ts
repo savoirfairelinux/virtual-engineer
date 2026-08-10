@@ -122,6 +122,8 @@ export interface ReviewOrchestratorDeps {
   reviewMinSeverity?: string | undefined;
   /** Host-side deadline for one review-agent execution. */
   agentTimeoutMs?: number | undefined;
+  /** Sandbox image for review runs. Defaults to the agent image built into the runner. */
+  agentContainerImage?: string | undefined;
   concurrencyTracker?: Pick<ConcurrencyTracker, "acquireWhenAvailable" | "release"> | undefined;
   lifecycleCoordinator?: TaskLifecycleCoordinator | undefined;
   agentAdapter?: AgentAdapter | undefined;
@@ -775,6 +777,9 @@ export class ReviewOrchestrator {
             ? { providerOptions: projectAgentRuntime.providerOptions }
             : {}),
           agentAdapter: projectAgentRuntime.adapter,
+          ...(this.deps.agentContainerImage !== undefined
+            ? { containerImage: this.deps.agentContainerImage }
+            : {}),
           ...(projectAgentRuntime.aiderBackend !== undefined ? { aiderBackend: projectAgentRuntime.aiderBackend } : {}),
           ...(projectAgentRuntime.aiderApiBase !== undefined ? { aiderApiBase: projectAgentRuntime.aiderApiBase } : {}),
           ...(project.skillSourcesJson !== "[]"

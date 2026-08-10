@@ -6,8 +6,8 @@ Vendor-neutral entry point for AI coding assistants (Codex, Cursor, Aider, Gemin
 
 Virtual Engineer is a host-side Node.js/TypeScript orchestrator with two flows:
 
-- **Coding agent** — picks up assigned tickets, runs an agent cycle in a hardened, ephemeral **Docker** container, and pushes the result for review.
-- **Review agent** — on every new/updated patchset (Gerrit stream-event, GitLab/GitHub webhook, or poll), runs the agent in the same container (`REVIEW_MODE=1`) and posts comments + a vote.
+- **Coding agent** — picks up assigned tickets, runs an agent cycle in an ephemeral **OpenShell sandbox**, and pushes the result for review.
+- **Review agent** — on every new/updated patchset (Gerrit stream-event, GitLab/GitHub webhook, or poll), runs the agent in the same sandbox (`REVIEW_MODE=1`) and posts comments + a vote.
 
 All provider configuration lives in SQLite and is managed through the admin UI. The agent engine is pluggable: **Copilot**, **Claude**, **Aider**, **Goose**, or **Mock**.
 
@@ -50,7 +50,7 @@ Also: `npm run dev` (start orchestrator), `npm run build:ui` (admin SPA), `npm r
 - Timestamps are stored in **seconds** → `datetime(col, 'unixepoch')`, never `col / 1000`.
 - `tasks` primary key is `task_id` (TEXT); there is **no** `id` column.
 - Pause/resume are `state_transitions` rows where `from_state == to_state` (metadata `action`), not boolean columns.
-- Agents run in **ephemeral, hardened Docker containers** with named volumes (`/workspace`, `/ve-home`); the host owns push credentials.
+- Agents run in **ephemeral OpenShell sandboxes** (upload → exec → download); isolation comes from deny-by-default runtime policies, and the host owns all git plumbing and push credentials.
 - Editing an integration hot-refreshes runtime deps — no orchestrator restart needed.
 - Rebuild the agent image after touching `src/agents/copilotAdapter.ts`, `src/agents/claudeAdapter.ts`, `src/agents/aiderAdapter.ts`, `src/agents/gooseAdapter.ts`, `agent-worker/src/**`, or `Dockerfile.agent`:
   `docker build -f Dockerfile.agent -t virtual-engineer-workspace:latest .`

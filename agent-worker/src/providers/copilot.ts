@@ -43,10 +43,10 @@ export function buildCopilotSystemMessage(agentInstructions: string): {
   return { mode: 'append', content: agentInstructions };
 }
 
-export function buildNativeReviewPrompt(vePrompt: string): string {
+export function buildNativeReviewPrompt(vePrompt: string, repositoryRoot: string): string {
   const delegatedPrompt = [
     'Review the Virtual Engineer context and supplied diff below as the source of truth.',
-    'For extra context, only read files under /workspace; do not execute commands, access the network, or edit files.',
+    `For extra context, only read files under ${repositoryRoot}; do not execute commands, access the network, or edit files.`,
     'Do not recompute the diff or compare branches.',
     'Return findings to the parent; do not call submission tools.',
     '',
@@ -580,7 +580,7 @@ export async function runCopilotAgent(
   let response: AssistantMessageEvent | undefined;
   try {
     const sessionPrompt = mode === 'review' && options.reviewStrategy === 'copilot_native'
-      ? buildNativeReviewPrompt(prompt)
+      ? buildNativeReviewPrompt(prompt, cwd)
       : prompt;
     response = await session.sendAndWait({ prompt: sessionPrompt }, timeoutMs);
   } catch (err) {

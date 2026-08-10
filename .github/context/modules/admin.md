@@ -48,7 +48,7 @@ The admin server is a small HTTP service (default `127.0.0.1:3100`) that serves 
 
 The task live-log UI renders `skills.fetch_start`, `skills.fetch_complete`, and `skills.fetch_failed` payloads as human-readable skill fetch messages, including source repository, selected skills, and agent id when present.
 
-The new-project form preloads `ssh://g1.sfl.io/sfl/agent-skills` on port `29419` with **Install all** enabled. This is a client-side form default, not the database/API default (`skill_sources_json` remains `[]` when a project is created outside that form); saving the untouched form persists the source.
+The new-project form preloads `ssh://g1.sfl.io/sfl/agent-skills` on port `29419` with **Install all** enabled. This is a client-side form default, not the database/API default (`skill_sources_json` remains `[]` when a project is created outside that form); saving the untouched form persists the source. **Known regression:** persisting a skill source currently has no runtime effect — nothing in `agent-worker/` installs remote skills (see [modules/workspace.md](workspace.md#external-skill-sources--known-regression)).
 
 The project form identifies remote skill sources as Copilot/Claude-only and keeps their validation on the normal save path. While that save is waiting on SSH checks, the primary action keeps showing `Saving…`; clicking it aborts the in-flight request and immediately starts a new save with the current SSH user/port/key/known-host field values. The modal also shows a persistent external skill-source check dashboard with each source URL, SSH user, SSH port, and per-source status (`checking`, `checked`, `failed`, `cancelled`, or `not checked`) so users can see what was attempted after a save error.
 

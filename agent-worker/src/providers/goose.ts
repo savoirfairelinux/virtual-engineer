@@ -4,13 +4,13 @@
  * Runs INSIDE the Docker container for the `goose` provider. Goose is a Rust CLI
  * (https://goose-docs.ai) from the AAIF that wraps any LLM provider. This
  * runner spawns `goose run --instructions <prompt-file>` as a subprocess against
- * the pre-cloned `/workspace` repository and maps its streamed output onto the
+ * the pre-cloned repository working directory and maps its streamed output onto the
  * shared `__ve_event` stderr protocol used by every provider, so the host
  * adapter's event / commit / result pipeline is provider-agnostic.
  *
  * Unlike Aider (text transport), Goose uses **MCP submission transport**: the
  * runner writes a Goose `config.yaml` that registers the VE MCP submission
- * server (`/agent-worker/dist/mcpSubmissionServer.js`) as a Goose stdio
+ * server (`/app/agent-worker/dist/mcpSubmissionServer.js`) as a Goose stdio
  * extension, so Goose calls `ve_submit_changes` / `ve_submit_review` to deliver
  * the structured result. The worker then reads the submission file and asserts
  * exactly one accepted tool call, exactly like Copilot/Claude.
@@ -195,7 +195,7 @@ function resolveGooseBinary(): string {
  * `~/.config/goose/config.yaml` (or `$XDG_CONFIG_HOME/goose/config.yaml`).
  *
  * The VE MCP submission server is registered under the key `ve-submission` as a
- * stdio extension pointing at `node /agent-worker/dist/mcpSubmissionServer.js`
+ * stdio extension pointing at `node /app/agent-worker/dist/mcpSubmissionServer.js`
  * with the `VE_SUBMISSION_*` env vars. For codegen, the builtin `developer`
  * extension is enabled so Goose can edit files; for review, all builtin
  * extensions are disabled (read-only analysis).
@@ -270,8 +270,8 @@ function buildGooseArgs(
   ];
   if (mode === 'review') {
     // Review mode: read-only analysis. GOOSE_MODE=chat is set via env/config so
-    // Goose does not execute tools; the review container also mounts /workspace
-    // read-only as a hard backstop. The agent submits via ve_submit_review.
+    // Goose does not execute tools, and review runs are never downloaded back.
+    // The agent submits via ve_submit_review.
     return [...baseArgs, '--no-tui'];
   }
   // Codegen mode: Goose edits files and commits via the Developer extension.
@@ -291,7 +291,7 @@ export async function runGooseAgent(
 
   // Build the VE MCP submission config. The submission server is a stdio MCP
   // server spawned by Goose as a child process; it writes the submission
-  // artifact to /ve-home/agent-submission.json, which the worker reads after
+  // artifact to the VE submission file, which the worker reads after
   // the run.
   const submissionSchema = mode === 'review' ? reviewOutputSchema : CHANGE_SUBMISSION_JSON_SCHEMA;
   if (submissionSchema === undefined) {

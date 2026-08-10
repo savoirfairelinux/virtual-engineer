@@ -96,7 +96,7 @@ describe("runGooseAgent", () => {
     const configContent = String(configWrite![1]);
     expect(configContent).toContain("ve-submission");
     expect(configContent).toContain("type: stdio");
-    expect(configContent).toContain("/agent-worker/dist/mcpSubmissionServer.js");
+    expect(configContent).toContain("/app/agent-worker/dist/mcpSubmissionServer.js");
     expect(configContent).toContain("VE_SUBMISSION_MODE: \"codegen\"");
     expect(configContent).toContain("VE_SUBMISSION_PATH");
     expect(configContent).toContain("VE_SUBMISSION_SCHEMA_JSON");

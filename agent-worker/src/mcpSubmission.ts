@@ -16,8 +16,9 @@ export interface SubmissionMcpConfig {
   server: SubmissionMcpServerConfig;
 }
 
-const SUBMISSION_SERVER_PATH = '/agent-worker/dist/mcpSubmissionServer.js';
-export const DEFAULT_SUBMISSION_PATH = '/ve-home/agent-submission.json';
+const SUBMISSION_SERVER_PATH = '/app/agent-worker/dist/mcpSubmissionServer.js';
+// /tmp is one of the few paths the sandbox's deny-by-default filesystem policy makes writable.
+export const DEFAULT_SUBMISSION_PATH = '/tmp/ve-agent-submission.json';
 const MAX_SUBMISSION_BYTES = 256 * 1024;
 
 export const SUBMISSION_TOOL_ANNOTATIONS = {

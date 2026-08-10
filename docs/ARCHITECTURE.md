@@ -4,7 +4,7 @@
 
 ## 1. System overview
 
-Virtual Engineer is a **Node.js orchestrator** that runs on the host (or in a Docker container) and drives two autonomous workflows:
+Virtual Engineer is a **Node.js orchestrator** that runs on the host (or in a container) and drives two autonomous workflows:
 
 - **Code generation** — picks up tickets, clones the repo host-side, runs Copilot in an ephemeral **OpenShell sandbox**, then pushes for review host-side.
 - **Code review** — receives review events (Gerrit SSH stream, GitLab/GitHub webhooks, or polling), runs Copilot on the diff inside an **OpenShell sandbox**, and posts inline comments + a vote.
@@ -414,7 +414,7 @@ GitHub token for the Copilot LLM call); push credentials stay host-side.
 
 `src/agents/claudeAdapter.ts`
 
-An alternative `agent_execution` adapter that runs Anthropic **Claude Code** via the `@anthropic-ai/claude-agent-sdk` inside the same hardened container. It mirrors `CopilotAdapter` (same security args, `/ve-home` HOME volume, `__ve_event` stderr protocol, commit collection, and `AgentResult` contract) but:
+An alternative `agent_execution` adapter that runs Anthropic **Claude Code** via the `@anthropic-ai/claude-agent-sdk` inside the same agent sandbox. It mirrors `CopilotAdapter` (same sandbox spec, `/sandbox` HOME, `__ve_event` stderr protocol, commit collection, and `AgentResult` contract) but:
 
 - injects `AGENT_PROVIDER=claude` + `CLAUDE_MODEL` and exactly one auth env var — `ANTHROPIC_API_KEY` (api-key integrations, carried via the generic `apiKey`/`githubToken` field) or `CLAUDE_CODE_OAUTH_TOKEN` (subscription integrations, carried via `encryptedSessionToken`);
 - dispatches in the worker: `agent-worker/src/index.ts` resolves the runner via `providers/registry.ts` and calls `providers/claude.ts` `runClaudeAgent()` when `AGENT_PROVIDER=claude`, which drives the SDK `query()` and maps its message stream onto the shared event/commit/result pipeline.
@@ -429,7 +429,7 @@ Connection methods live on the `claude` descriptor (`src/plugins/descriptors/cla
 
 `src/agents/aiderAdapter.ts`
 
-An alternative `agent_execution` adapter that runs the [Aider CLI](https://aider.chat) (a Python package wrapping any LLM backend via litellm) inside the same hardened container. It mirrors `CopilotAdapter`/`ClaudeAdapter` (same security args, `/ve-home` HOME volume, `__ve_event` stderr protocol, commit collection, and `AgentResult` contract) but:
+An alternative `agent_execution` adapter that runs the [Aider CLI](https://aider.chat) (a Python package wrapping any LLM backend via litellm) inside the same agent sandbox. It mirrors `CopilotAdapter`/`ClaudeAdapter` (same sandbox spec, `/sandbox` HOME, `__ve_event` stderr protocol, commit collection, and `AgentResult` contract) but:
 
 - injects `AGENT_PROVIDER=aider` + `AIDER_MODEL` (only when configured) and the selected backend's litellm auth env var(s);
 - dispatches in the worker: `agent-worker/src/index.ts` resolves the runner via `providers/registry.ts` and calls `providers/aider.ts` `runAiderAgent()` when `AGENT_PROVIDER=aider`. Coding cycles use `--no-stream --git --auto-commits --dirty-commits --commit-prompt <conventional-commits>`. Review cycles omit `--no-stream` and use `--no-git --chat-mode ask --no-auto-commits --no-dirty-commits`; disabling Git avoids `.git/config.lock` writes in the read-only review workspace.
@@ -442,7 +442,7 @@ The adapter injects **no** default model: when the agent config leaves the model
 
 `src/agents/gooseAdapter.ts`
 
-An alternative `agent_execution` adapter that runs the [Goose CLI](https://goose-docs.ai) (a Rust agent from the AAIF that wraps any of 13 LLM providers) inside the same hardened container. It mirrors `CopilotAdapter`/`ClaudeAdapter`/`AiderAdapter` (same security args, `/ve-home` HOME volume, `__ve_event` stderr protocol, commit collection, and `AgentResult` contract) but:
+An alternative `agent_execution` adapter that runs the [Goose CLI](https://goose-docs.ai) (a Rust agent from the AAIF that wraps any of 13 LLM providers) inside the same agent sandbox. It mirrors `CopilotAdapter`/`ClaudeAdapter`/`AiderAdapter` (same sandbox spec, `/sandbox` HOME, `__ve_event` stderr protocol, commit collection, and `AgentResult` contract) but:
 
 - injects `AGENT_PROVIDER=goose` + `GOOSE_MODEL` (only when configured) and the selected provider's auth env var(s);
 - dispatches in the worker: `agent-worker/src/index.ts` resolves the runner via `providers/registry.ts` and calls `providers/goose.ts` `runGooseAgent()` when `AGENT_PROVIDER=goose`.
@@ -845,14 +845,14 @@ Runs inside the container. Two modes:
 5. Writes JSON `AgentResult` to stdout (status, modifiedFiles, summary, commitMessage)
 
 **Review mode** (`REVIEW_MODE=1`):
-1. Reads the prompt from `USER_PROMPT_FILE` (`/ve-home/user-prompt.txt`)
+1. Reads the prompt from `USER_PROMPT_FILE` (`/tmp/user-prompt.txt`, uploaded by the runner)
 2. Uses the immutable review-system JSON Schema when the provider supports native structured output (Claude), otherwise returns the provider response text (no git operations)
 3. Host `reviewResultParser.ts` enforces the integration-specific Gerrit/GitHub/GitLab result contract
 
 ### Security constraints
 
 The sandbox is governed by OpenShell's deny-by-default **policy engine**
-across four domains — **filesystem** (writes restricted to `/workspace`),
+across four domains — **filesystem** (writes restricted to `/sandbox`, `/tmp`, `/dev/null`),
 **network** (L7 egress allow-list, deny by default), **process** (no privilege
 escalation, dropped capabilities), and **inference** (model-endpoint routing).
 Policies are declarative YAML applied before the agent starts and surfaced/audited
