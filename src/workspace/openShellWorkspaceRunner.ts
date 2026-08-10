@@ -35,7 +35,7 @@ import { credentialFreeUrl, type HostGitExecutor } from "./hostGitExecutor.js";
 import type { OpenShellClient } from "../openshell/openShellClient.js";
 import { redactOpenShellText } from "../openshell/openShellClient.js";
 import { decodeReviewWorkerOutput } from "./agentWorkerProtocol.js";
-import { parseDenialEvent, type DenialSink } from "../openshell/denyEventPoller.js";
+import { parseDenialEvent, type DenialSink } from "../openshell/denialEvents.js";
 import { sandboxOwnershipLabels, sandboxTaskHash } from "../openshell/sandboxOwnership.js";
 import { buildDefaultPolicyYaml } from "../openshell/openShellPolicyBuilder.js";
 import type { ManagedOpenShellProviderRecord } from "../state/stores/openShellProviderStore.js";
@@ -147,8 +147,6 @@ export type PolicyResolver = (input: {
 export interface OpenShellRunnerDeps {
   git: HostGitExecutor;
   client: OpenShellClient;
-  /** Reported on WorkspaceHandle.containerImage (sandbox base image / BYOC ref). */
-  sandboxImage: string;
   /** Agent adapter used to build the sandbox spec (env/image/command) and review specs. */
   agentAdapter?: AgentAdapter | undefined;
   /** Optional per-task policy resolver; when it returns YAML, it is applied pre-exec. */
@@ -185,10 +183,7 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
     return {
       taskId,
       containerId: `openshell:${sandboxName}`,
-      volumeName: dir,
-      homeVolumeName: dir,
       hostWorkspacePath: dir,
-      containerImage: this.deps.sandboxImage,
     };
   }
 
@@ -614,7 +609,7 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
     return resolved.execute({ ...context, runtimeHandleId: _handle.containerId });
   }
 
-  async destroyWorkspace(handle: WorkspaceHandle, signal?: AbortSignal): Promise<void> {
+  async destroyWorkspace(handle: WorkspaceHandle): Promise<void> {
     const sandboxName = handle.containerId.startsWith("openshell:")
       ? handle.containerId.slice("openshell:".length)
       : this.sandboxName(String(handle.taskId));
@@ -622,7 +617,7 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
     const providerName = this.providerNames.get(handle.containerId);
     try {
       if (!this.removedSandboxes.has(handle.containerId)) {
-        await this.deps.client.removeSandbox(managedSandboxName, signal);
+        await this.deps.client.removeSandbox(managedSandboxName);
         this.removedSandboxes.add(handle.containerId);
       }
       if (providerName !== undefined) {

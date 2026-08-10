@@ -196,7 +196,7 @@ src/
   openshell/
     openShellClient.ts        # `openshell` CLI wrapper (sandbox lifecycle + policy)
     openShellPolicyBuilder.ts # deny-by-default policy YAML
-    denyEventPoller.ts        # scrubbed policy-denial events
+    denialEvents.ts           # scrubbed policy-denial events
   runtime/
     runtimeStartup.ts         # resolveOpenShellGateway + startRuntimeRecovery
                               # (called from index.ts at boot)

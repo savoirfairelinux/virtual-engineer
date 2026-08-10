@@ -82,8 +82,6 @@ function makeContext(overrides: Partial<TaskContext> = {}): TaskContext {
     acceptanceCriteria: ["Works correctly"],
     baseBranch: "main",
     workspacePath: "/workspace",
-    volumeName: "ve-ws-test-1234",
-    homeVolumeName: "ve-home-test-1234",
     constraints: [],
     priorFeedback: [],
     cycleNumber: 1,

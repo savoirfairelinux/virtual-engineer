@@ -39,24 +39,6 @@ export interface VcsConnector {
   clone(repoUrl: string, branch: string, targetDir: string, sshKeyPath?: string): Promise<void>;
 
   /**
-   * Push changes to the VCS and create/update a change request.
-   * Assumes the repository is already set up with git identity configured.
-   * @param repoDir Absolute path to the cloned repository
-   * @param ref The push reference (e.g., "refs/for/main" for Gerrit, "feature-branch" for GitLab)
-   * @param message Commit message (may include Change-Id trailer for Gerrit)
-   * @param changeId Optional existing Change-Id (Gerrit) or branch name (GitLab) to reuse
-   * @returns Push result with changeId, URL, and status
-   * @throws {Error} If push fails
-   */
-  push(
-    repoDir: string,
-    ref: string,
-    message: string,
-    changeId?: string,
-    reviewerEmails?: string[]
-  ): Promise<VcsPushResult>;
-
-  /**
    * Push HEAD directly to the VCS without creating a new commit on the host.
    * Used when the agent has already created commits inside the container.
    * For Gerrit: pushes N commits in the range, each becoming a separate change.

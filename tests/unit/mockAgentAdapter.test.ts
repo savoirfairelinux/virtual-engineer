@@ -15,8 +15,6 @@ function makeContext(workspacePath: string): TaskContext {
     acceptanceCriteria: ["Logs should be in JSON format"],
     baseBranch: "main",
     workspacePath,
-    volumeName: "ve-ws-test-mock",
-    homeVolumeName: "ve-home-test-mock",
     constraints: [],
     priorFeedback: [],
     cycleNumber: 1,

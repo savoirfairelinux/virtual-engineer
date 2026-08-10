@@ -5,7 +5,7 @@
  * `include.path` indirection, and user/system configuration files.
  */
 
-export const TRUSTED_GIT_PREFIX = [
+const TRUSTED_GIT_PREFIX = [
   "-c", "core.hooksPath=/dev/null",
   "-c", "include.path=/dev/null",
 ] as const;

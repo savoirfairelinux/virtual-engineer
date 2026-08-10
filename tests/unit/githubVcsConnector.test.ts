@@ -166,14 +166,29 @@ describe("GitHubVcsConnector", () => {
     });
   });
 
-  describe("push (createOrFindPullRequest)", () => {
+  describe("pushDirect (createOrFindPullRequest)", () => {
+    function gitRunnerWithHead(subject: string, body = ""): RecordingGitRunner {
+      const gitRunner = new RecordingGitRunner();
+      gitRunner.run.mockImplementation(async (args) => ({
+        stdout:
+          args[0] === "remote" && args[1] === "get-url"
+            ? "https://github.com/octocat/hello-world.git\n"
+            : args[0] === "log" && args[2] === "--pretty=%s"
+              ? subject
+              : args[0] === "log" && args[2] === "--pretty=%b"
+                ? body
+                : "",
+        stderr: "",
+      }));
+      return gitRunner;
+    }
+
     it("reuses an existing PR when one exists for the head branch", async () => {
       fetchMock.mockResolvedValueOnce(jsonResponse([PR_RESPONSE]));
 
-      const result = await makeConnector().push(
+      const result = await makeConnector(undefined, gitRunnerWithHead("Add feature X")).pushDirect(
         "/tmp/repo",
-        "feature-x",
-        "Add feature X"
+        "feature-x"
       );
 
       expect(result.changeId).toBe("42");
@@ -189,11 +204,10 @@ describe("GitHubVcsConnector", () => {
       fetchMock.mockResolvedValueOnce(jsonResponse([]));
       fetchMock.mockResolvedValueOnce(jsonResponse(PR_RESPONSE));
 
-      const result = await makeConnector().push(
-        "/tmp/repo",
-        "feature-x",
-        "Add feature X\n\nDetails here"
-      );
+      const result = await makeConnector(
+        undefined,
+        gitRunnerWithHead("Add feature X", "Details here")
+      ).pushDirect("/tmp/repo", "feature-x");
 
       expect(result.changeId).toBe("42");
       expect(fetchMock).toHaveBeenCalledTimes(2);
@@ -210,10 +224,9 @@ describe("GitHubVcsConnector", () => {
       fetchMock.mockResolvedValueOnce(jsonResponse([]));
       fetchMock.mockResolvedValueOnce(jsonResponse(PR_RESPONSE));
 
-      await makeConnector({ targetBranch: "develop" }).push(
+      await makeConnector({ targetBranch: "develop" }, gitRunnerWithHead("Subject")).pushDirect(
         "/tmp/repo",
-        "feature-x",
-        "Subject"
+        "feature-x"
       );
 
       const [, createInit] = fetchMock.mock.calls[1] as [string, RequestInit];
@@ -225,7 +238,7 @@ describe("GitHubVcsConnector", () => {
       fetchMock.mockResolvedValueOnce(jsonResponse([]));
       fetchMock.mockResolvedValueOnce(jsonResponse(PR_RESPONSE));
 
-      await makeConnector().push("/tmp/repo", "feature-x", "Subject");
+      await makeConnector(undefined, gitRunnerWithHead("Subject")).pushDirect("/tmp/repo", "feature-x");
 
       const [, createInit] = fetchMock.mock.calls[1] as [string, RequestInit];
       const headers = createInit.headers as Record<string, string>;
@@ -238,7 +251,7 @@ describe("GitHubVcsConnector", () => {
       fetchMock.mockResolvedValueOnce(errorResponse(422, "Validation failed"));
 
       await expect(
-        makeConnector().push("/tmp/repo", "feature-x", "Subject")
+        makeConnector(undefined, gitRunnerWithHead("Subject")).pushDirect("/tmp/repo", "feature-x")
       ).rejects.toThrow();
     });
   });

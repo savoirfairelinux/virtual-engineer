@@ -25,7 +25,6 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/state/migrate.ts",
     "e2e:mock": "tsx scripts/run-complete-mock-flow.ts",
-    "create:ticket": "tsx scripts/create-calculator-ticket.ts",
     "reset:instance": "./scripts/reset-instance.sh"
   },
   "dependencies": {

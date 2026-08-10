@@ -310,7 +310,7 @@ export interface ListSandboxesInput {
 }
 
 /** Access level for an egress endpoint. Copilot needs `full` (POST completions). */
-export type EgressAccess = "read-only" | "read-write" | "full";
+const EGRESS_ACCESS = "full";
 
 export interface AllowEgressInput {
   name: string;
@@ -318,8 +318,6 @@ export interface AllowEgressInput {
   hosts: string[];
   /** Absolute paths of the executables permitted to use the egress. */
   binaries?: string[] | undefined;
-  /** Access level (default `full`). */
-  access?: EgressAccess | undefined;
   signal?: AbortSignal | undefined;
 }
 
@@ -627,22 +625,6 @@ export class OpenShellClient {
     };
   }
 
-  /** Apply (hot-reload) a policy YAML on a running sandbox. Throws on failure. */
-  async setPolicy(name: string, policyYaml: string): Promise<void> {
-    // `policy set` requires a file path (no stdin support). Write to a temp file,
-    // apply, then clean up. Sandbox name is a positional arg after --policy.
-    const tmpPath = join(tmpdir(), `ve-policy-${randomUUID()}.yaml`);
-    try {
-      await writeFile(tmpPath, policyYaml, "utf8");
-      const result = await this.exec(["policy", "set", "--policy", tmpPath, name]);
-      if (result.code !== 0) {
-        throw new Error(`openshell policy set failed (${result.code}): ${redactOpenShellText(result.stderr).slice(0, 500)}`);
-      }
-    } finally {
-      await unlink(tmpPath).catch(() => undefined);
-    }
-  }
-
   /**
    * Incrementally open egress to `hosts` (port 443) on a running sandbox, scoped
    * to `binaries`. OpenShell is deny-by-default: without an allow rule the egress
@@ -653,7 +635,6 @@ export class OpenShellClient {
    */
   async allowEgress(input: AllowEgressInput): Promise<void> {
     if (input.hosts.length === 0) return;
-    const access = input.access ?? "full";
     const args = ["policy", "update"];
     // `host:port:access:protocol`. Hosts may carry an explicit `host:port`
     // (e.g. a self-hosted Ollama or OpenAI-compatible endpoint); everything
@@ -662,7 +643,7 @@ export class OpenShellClient {
       const separator = host.lastIndexOf(":");
       const hasPort = separator > 0 && /^\d+$/.test(host.slice(separator + 1));
       const endpoint = hasPort ? host : `${host}:443`;
-      args.push("--add-endpoint", `${endpoint}:${access}:rest`);
+      args.push("--add-endpoint", `${endpoint}:${EGRESS_ACCESS}:rest`);
     }
     // `--binary` applies to every `--add-endpoint` rule in the same invocation.
     for (const bin of input.binaries ?? []) args.push("--binary", bin);

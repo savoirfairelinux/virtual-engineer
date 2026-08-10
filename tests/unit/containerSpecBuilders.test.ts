@@ -20,8 +20,6 @@ function makeContext(): TaskContext {
     acceptanceCriteria: [],
     baseBranch: "main",
     workspacePath: "/workspace",
-    volumeName: "ve-ws-test",
-    homeVolumeName: "ve-home-test",
     constraints: [],
     priorFeedback: [],
     cycleNumber: 2,
@@ -129,7 +127,6 @@ describe("containerSpecBuilders", () => {
         AGENT_PROVIDER: "test",
         REVIEW_MODE: "1",
         REVIEW_STRATEGY: "ve_direct",
-        USER_PROMPT_FILE: "/ve-home/user-prompt.txt",
         SYSTEM_PROMPT: "Review carefully",
       },
       command: ["node", "/app/agent-worker/dist/index.js"],
@@ -210,7 +207,6 @@ describe("containerSpecBuilders", () => {
       expect(review.env).toMatchObject({
         REVIEW_MODE: "1",
         REVIEW_STRATEGY: "ve_direct",
-        USER_PROMPT_FILE: "/ve-home/user-prompt.txt",
         SYSTEM_PROMPT: "Review carefully",
       });
     }

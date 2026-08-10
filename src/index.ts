@@ -124,7 +124,6 @@ async function main(): Promise<void> {
   const openShellRunnerDeps: OpenShellRunnerDeps = {
     git: new HostGitExecutor({ baseDir: config.workspaceBaseDir }),
     client: openShellClient,
-    sandboxImage: config.agentContainerImage,
     agentAdapter: runtimeDependencies.agentAdapter,
     resolvePolicy: createRuntimePolicyResolver(stateStore),
     recordDenial: async (denial) => {

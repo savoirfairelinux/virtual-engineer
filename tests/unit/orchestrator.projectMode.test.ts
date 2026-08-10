@@ -146,10 +146,7 @@ function makeWorkspaceRunner(over: Partial<WorkspaceRunner> = {}): WorkspaceRunn
     createWorkspace: vi.fn().mockResolvedValue({
       taskId: makeTaskId("t-1"),
       containerId: "c1",
-      volumeName: "v1",
-      homeVolumeName: "h1",
       hostWorkspacePath: "/workspace",
-      containerImage: "img:latest",
     }),
     cloneRepo: vi.fn().mockResolvedValue({ success: true, localPath: "/workspace" }),
     prepareProjectWorkspace: vi.fn().mockResolvedValue({ success: true, localPath: "/workspace" }),
@@ -1938,7 +1935,7 @@ describe("Orchestrator — Phase 4 project mode", () => {
     expect(resolvePatchsetOptions).toHaveBeenCalledWith("Iabc123");
     // Should have applied the patchset
     expect(applyPriorPatchset).toHaveBeenCalledWith(
-      expect.objectContaining({ volumeName: "v1" }),
+      expect.objectContaining({ containerId: "c1" }),
       expect.objectContaining({ revisionNumber: 12345, patchset: 2 }),
     );
   });

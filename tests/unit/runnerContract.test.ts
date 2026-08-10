@@ -5,15 +5,7 @@ import {
 } from "../../src/workspace/openShellWorkspaceRunner.js";
 import { HostGitExecutor } from "../../src/workspace/hostGitExecutor.js";
 import type { OpenShellClient } from "../../src/openshell/openShellClient.js";
-import type { AgentAdapter, ReviewWorkspaceInput, TaskContext, TaskId, WorkspaceHandle, WorkspaceRunner } from "../../src/interfaces.js";
-
-/** Methods every WorkspaceRunner must implement (required by the interface). */
-const REQUIRED_METHODS: (keyof WorkspaceRunner)[] = [
-  "createWorkspace",
-  "cloneRepo",
-  "runAgent",
-  "destroyWorkspace",
-];
+import type { AgentAdapter, ReviewWorkspaceInput, TaskContext, TaskId, WorkspaceHandle } from "../../src/interfaces.js";
 
 function fakeClient(spy: {
   createSandbox: ReturnType<typeof vi.fn>;
@@ -27,7 +19,6 @@ function fakeClient(spy: {
     uploadToSandbox: vi.fn().mockResolvedValue(undefined),
     downloadFromSandbox: vi.fn().mockResolvedValue(undefined),
     execInSandbox: spy.exec,
-    setPolicy: vi.fn().mockResolvedValue(undefined),
     removeSandbox: vi.fn().mockResolvedValue(undefined),
     gatewayHealthy: vi.fn().mockResolvedValue(true),
   } as unknown as OpenShellClient;
@@ -46,28 +37,11 @@ class OpenShellWorkspaceRunner extends ProductionOpenShellWorkspaceRunner {
   }
 }
 
-describe("WorkspaceRunner contract — openshell (sole runtime)", () => {
-  const openShellRunner = new OpenShellWorkspaceRunner({
-    git: new HostGitExecutor({ baseDir: "/tmp" }),
-    client: fakeClient({ createSandbox: vi.fn(), exec: vi.fn().mockResolvedValue({ code: 0, stdout: "", stderr: "" }) }),
-    sandboxImage: "img",
-  });
-
-  for (const method of REQUIRED_METHODS) {
-    it(`openshell runner implements ${method}`, () => {
-      expect(typeof (openShellRunner as unknown as Record<string, unknown>)[method]).toBe("function");
-    });
-  }
-});
-
 describe("Security — push credentials never reach the OpenShell sandbox", () => {
   const handle: WorkspaceHandle = {
     taskId: "t1" as TaskId,
     containerId: "openshell:t1",
-    volumeName: "/tmp/ws",
-    homeVolumeName: "/tmp/ws",
     hostWorkspacePath: "/tmp/ws",
-    containerImage: "img",
   };
 
   function collectStrings(value: unknown, acc: string[]): void {
@@ -96,7 +70,6 @@ describe("Security — push credentials never reach the OpenShell sandbox", () =
     const runner = new OpenShellWorkspaceRunner({
       git: new HostGitExecutor({ baseDir: "/tmp", git: vi.fn().mockResolvedValue("") }),
       client: fakeClient({ createSandbox, exec }),
-      sandboxImage: "img",
       agentAdapter: reviewAdapter,
     });
 
@@ -128,7 +101,6 @@ describe("Security — push credentials never reach the OpenShell sandbox", () =
     const runner = new OpenShellWorkspaceRunner({
       git,
       client: fakeClient({ createSandbox, exec, createProvider }),
-      sandboxImage: "img",
     });
     const ctx = { taskId: "t1", workspacePath: "/tmp/ws" } as unknown as TaskContext;
     const PUSH_SECRET = "GERRIT_HTTP_PASSWORD_value";
@@ -143,7 +115,8 @@ describe("Security — push credentials never reach the OpenShell sandbox", () =
         command: ["node", "/agent-worker/dist/index.js"],
       }),
     } as unknown as AgentAdapter;
-    await runner.cloneRepo(handle, "https://trusted.example/repo.git", "main");
+    // Host-side clone URLs carry push credentials; they must stay on the host.
+    await runner.cloneRepo(handle, `https://ve:${PUSH_SECRET}@trusted.example/repo.git`, "main");
     await runner.runAgentInDocker(adapter, ctx, {});
 
     const args: string[] = [];

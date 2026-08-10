@@ -130,7 +130,6 @@ function makeWorkspaceRunner(rawOutput = GOOD_RAW_OUTPUT) {
   const handle = {
     taskId: makeTaskId("review-42-abcd"),
     containerId: "",
-    volumeName: "",
     hostWorkspacePath: "/workspaces/review-42",
   };
   const runner = {

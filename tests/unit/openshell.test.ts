@@ -6,10 +6,7 @@ import {
 import {
   parseDenialEvent,
   scrubSecrets,
-  pollDenials,
-  type NormalizedDenial,
-  type DenialContext,
-} from "../../src/openshell/denyEventPoller.js";
+} from "../../src/openshell/denialEvents.js";
 import {
   createCommandRunner,
   OpenShellClient,
@@ -36,7 +33,7 @@ describe("openShellPolicyBuilder", () => {
   });
 });
 
-describe("denyEventPoller", () => {
+describe("denialEvents", () => {
   it("scrubs tokens from free text", () => {
     expect(scrubSecrets("GET /x?token=abc123&y=1")).toContain("token=[REDACTED]");
     expect(scrubSecrets("Authorization: Bearer sk-abcdef123456")).toBe("Authorization: [REDACTED]");
@@ -97,21 +94,6 @@ describe("denyEventPoller", () => {
     expect(parseDenialEvent({ decision: "allow" })).toBeNull();
     expect(parseDenialEvent("nope")).toBeNull();
     expect(parseDenialEvent(null)).toBeNull();
-  });
-
-  it("polls a source and forwards scrubbed denials with context", async () => {
-    async function* source(): AsyncGenerator<unknown> {
-      yield { decision: "allow" };
-      yield { decision: "deny", host: "a", detail: "GET /x?api_key=secret1234 blocked" };
-      yield { error: "policy_denied", detail: "POST /y not permitted" };
-    }
-    const sink = vi.fn<(d: NormalizedDenial & DenialContext) => void>();
-    const count = await pollDenials(source(), sink, { taskId: "t1", projectId: "p1" });
-    expect(count).toBe(2);
-    expect(sink).toHaveBeenCalledTimes(2);
-    const first = sink.mock.calls[0]?.[0];
-    expect(first?.taskId).toBe("t1");
-    expect(first?.reason).toContain("api_key=[REDACTED]");
   });
 });
 
@@ -571,15 +553,6 @@ describe("OpenShellClient", () => {
     ]);
   });
 
-  it("allowEgress honours a non-default access level", async () => {
-    const { runner, calls } = runnerReturning({ code: 0 });
-    const client = new OpenShellClient({ runner });
-    await client.allowEgress({ name: "ve-t", hosts: ["api.github.com"], access: "read-only" });
-    expect(calls[0]?.args).toEqual([
-      "policy", "update", "--add-endpoint", "api.github.com:443:read-only:rest", "--wait", "ve-t",
-    ]);
-  });
-
   it("allowEgress keeps an explicit host port instead of defaulting to 443", async () => {
     const { runner, calls } = runnerReturning({ code: 0 });
     const client = new OpenShellClient({ runner });
@@ -696,18 +669,6 @@ describe("OpenShellClient", () => {
     const client = new OpenShellClient({ runner, retryBaseDelayMs: 0 });
     await expect(client.createSandbox({ name: "t", from: "img" })).rejects.toThrow(/sandbox create failed/i);
     expect(creates).toBe(1);
-  });
-
-  it("writes policy yaml to a temp file on setPolicy", async () => {
-    const { runner, calls } = runnerReturning({ code: 0 });
-    const client = new OpenShellClient({ runner });
-    await client.setPolicy("demo", "version: 1\nnetwork_policies: {}\n");
-    // args: policy set --policy <tempfile> demo
-    expect(calls[0]?.args[0]).toBe("policy");
-    expect(calls[0]?.args[1]).toBe("set");
-    expect(calls[0]?.args[2]).toBe("--policy");
-    expect(calls[0]?.args[3]).toMatch(/\.yaml$/);
-    expect(calls[0]?.args[4]).toBe("demo");
   });
 
   it("removeSandbox retries and throws when deletion cannot be confirmed", async () => {

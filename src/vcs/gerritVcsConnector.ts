@@ -3,7 +3,6 @@
  * Pushes to `refs/for/<branch>` with a Change-Id trailer; all git operations run host-side.
  */
 
-import { createHash } from "crypto";
 import { getLogger } from "../logger.js";
 import { trustedGitEnv } from "../utils/gitExec.js";
 import type { VcsConnector, VcsPushResult } from "./vcsConnector.js";
@@ -14,42 +13,6 @@ import type { GitRunner } from "./gitRunner.js";
 import { NodeGitRunner } from "./nodeGitRunner.js";
 
 const log = getLogger("gerrit-vcs");
-
-/**
- * Generate a Gerrit-style Change-Id ("I" followed by 40 hex chars).
- */
-function generateChangeId(seed: string): string {
-  const hash = createHash("sha1")
-    .update(`change-id-seed:${seed}\n${Date.now()}\n${Math.random()}`)
-    .digest("hex");
-  return `I${hash}`;
-}
-
-/**
- * Ensures the Change-Id trailer is in the last paragraph (footer) of the commit message.
- * Gerrit rejects pushes where Change-Id appears outside the footer; this function moves it there.
- */
-function ensureChangeIdInFooter(message: string, changeId?: string): string {
-  const existingMatch = message.match(/^Change-Id:\s*(\S+)/m);
-  const existingId = existingMatch?.[1];
-
-  const stripped = message
-    .replace(/^Change-Id:[^\n]*\n?/gm, "")
-    .replace(/\n{3,}/g, "\n\n")
-    .trimEnd();
-
-  const finalId = changeId ?? existingId ?? generateChangeId(stripped);
-
-  const lastParaMatch = stripped.match(/\n\n([^\n][\s\S]*)$/);
-  const lastPara = lastParaMatch?.[1] ?? "";
-  const isTrailerBlock =
-    lastPara.length > 0 &&
-    lastPara.split("\n").every((line) => /^[A-Za-z][A-Za-z0-9-]*:/.test(line));
-
-  return isTrailerBlock
-    ? `${stripped}\nChange-Id: ${finalId}`
-    : `${stripped}\n\nChange-Id: ${finalId}`;
-}
 
 export interface GerritVcsConnectorConfig {
   /** Optional Gerrit web URL used only to build clickable review links. */
@@ -193,65 +156,6 @@ export class GerritVcsConnector implements VcsConnector {
       throw new Error(`Failed to clone Gerrit repository: ${error.message.slice(0, 1000)}`);
     }
   }
-
-  /**
-   * Push changes to Gerrit via SSH.
-   * Configures git identity, commits changes, and pushes to refs/for/<branch>.
-   */
-  async push(
-    repoDir: string,
-    ref: string,
-    message: string,
-    changeId?: string,
-    reviewerEmails?: string[]
-  ): Promise<VcsPushResult> {
-    const commitMessage = ensureChangeIdInFooter(message, changeId);
-
-    log.info(
-      { repoDir, ref, changeId },
-      "preparing to push to Gerrit"
-    );
-
-    try {
-      // Configure git identity
-      await this.gitRunner.run(["config", "user.name", this.config.gitAuthorName], { cwd: repoDir });
-      await this.gitRunner.run(["config", "user.email", this.config.gitAuthorEmail], { cwd: repoDir });
-
-      // Stage all changes
-      await this.gitRunner.run(["add", "-A"], { cwd: repoDir });
-
-      // Commit
-      await this.gitRunner.run(["commit", "-m", commitMessage], { cwd: repoDir });
-      log.info({ repoDir }, "changes committed");
-
-      // Push to Gerrit
-      await this.gitRunner.run(
-        ["push", "origin", `HEAD:${appendGerritPushOptions(ref, undefined, reviewerEmails)}`],
-        {
-          cwd: repoDir,
-          env: buildGitEnv(this.config),
-          timeoutMs: 300_000,
-        }
-      );
-      log.info({ ref }, "pushed to Gerrit");
-
-      // Extract Change-Id from the message
-      const changeIdMatch = commitMessage.match(/Change-Id:\s*(\S+)/);
-      const extractedChangeId = changeIdMatch?.[1] ?? changeId ?? "unknown";
-
-      const url = this.config.baseUrl ? `${this.config.baseUrl}/c/${extractedChangeId}` : "";
-
-      return {
-        changeId: extractedChangeId,
-        url,
-        status: "OPEN",
-      };
-    } catch (err: unknown) {
-      const error = err instanceof Error ? err : new Error(String(err));
-      throw new Error(`Failed to push to Gerrit: ${error.message.slice(0, 500)}`);
-    }
-  }
-
 
   /**
    * Push HEAD directly to Gerrit without creating a new commit on the host.

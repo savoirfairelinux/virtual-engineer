@@ -25,7 +25,6 @@ const mockWorkspace = {
     taskId,
     hostWorkspacePath: "/tmp/x",
     containerId: "c",
-    volumeName: "v",
   })),
   cloneRepo: vi.fn(async () => ({ success: false, error: "boom" })), // force FAILED
   runAgent: vi.fn(),

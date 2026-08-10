@@ -111,7 +111,6 @@ function makeWorkspaceRunner(rawOutput = GOOD_RAW_OUTPUT) {
   const handle = {
     taskId: TASK_ID,
     containerId: "",
-    volumeName: "",
     hostWorkspacePath: "/workspaces/review-42",
   };
   return {

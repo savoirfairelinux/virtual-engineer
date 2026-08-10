@@ -70,8 +70,6 @@ function makeContext(overrides: Partial<TaskContext> = {}): TaskContext {
     acceptanceCriteria: ["Logs must be in JSON format"],
     baseBranch: "main",
     workspacePath: "/workspace",
-    volumeName: "ve-ws-test-1234",
-    homeVolumeName: "ve-home-test-1234",
     constraints: [],
     priorFeedback: [],
     cycleNumber: 1,

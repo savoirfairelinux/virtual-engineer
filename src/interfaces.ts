@@ -441,10 +441,6 @@ export interface TaskContext {
   baseBranch: string;
   /** Absolute path to the ephemeral workspace directory */
   workspacePath: string;
-  /** Named volume for the workspace (repo files) */
-  volumeName: string;
-  /** Named volume for the agent HOME directory */
-  homeVolumeName: string;
   /** Constraints e.g. "do not add new dependencies" */
   constraints: string[];
   priorFeedback: FeedbackItem[];
@@ -566,14 +562,8 @@ export interface ConfigurableAdapter extends AgentAdapter {
 export interface WorkspaceHandle {
   taskId: TaskId;
   containerId: string;
-  /** Named volume for the workspace (repo files) */
-  volumeName: string;
-  /** Named volume for the agent HOME directory (Copilot CLI native modules) */
-  homeVolumeName: string;
   /** In-container path (always /sandbox for the OpenShell sandbox) */
   hostWorkspacePath: string;
-  /** Docker image used for helper containers (clone, push, scripts) */
-  containerImage: string;
 }
 
 export type ValidationStatus = "passed" | "failed" | "skipped";
@@ -709,12 +699,6 @@ export interface WorkspaceRunner {
   ): Promise<{ stdout: string; stderr: string }>;
   /** Run agent adapter inside the ephemeral execution context. */
   runAgent(handle: WorkspaceHandle, context: TaskContext, adapter?: AgentAdapter): Promise<AgentResult>;
-  /**
-   * Repository sub-paths the runner cloned itself and whose Git metadata it
-   * rebuilt from host-trusted data. Callers that run host-side Git with push
-   * credentials must restrict themselves to these paths.
-   */
-  listTrustedRepoPaths?(handle: WorkspaceHandle): string[];
   /**
    * Repository sub-paths the runner cloned itself and whose Git metadata it
    * rebuilt from host-trusted data. Callers that run host-side Git with push

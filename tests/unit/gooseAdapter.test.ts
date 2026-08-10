@@ -12,8 +12,6 @@ function makeContext(overrides: Partial<TaskContext> = {}): TaskContext {
     acceptanceCriteria: ["Logs must be in JSON format"],
     baseBranch: "main",
     workspacePath: "/workspace",
-    volumeName: "ve-ws-test",
-    homeVolumeName: "ve-home-test",
     constraints: [],
     priorFeedback: [],
     cycleNumber: 1,
@@ -289,7 +287,6 @@ describe("GooseAdapter", () => {
       expect(spec.env).toMatchObject({
         AGENT_PROVIDER: "goose",
         REVIEW_MODE: "1",
-        USER_PROMPT_FILE: "/ve-home/user-prompt.txt",
         SYSTEM_PROMPT: "review sys",
         GOOSE_MODEL: "claude-sonnet-4-5",
         ANTHROPIC_API_KEY: "sk-ant-key",

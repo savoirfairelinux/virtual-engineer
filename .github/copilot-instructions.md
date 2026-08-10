@@ -105,7 +105,7 @@ src/
                         # agentContextBuilder, pushTargetEnrichment
   openshell/            # openShellClient (CLI surface), openShellPolicyBuilder,
                         # runtimePolicyResolver, openShellSandboxReconciler,
-                        # sandboxOwnership, denyEventPoller
+                        # sandboxOwnership, denialEvents
   runtime/              # runtimeStartup (recovery + reconciler scheduling)
   plugins/              # registry, pluginManager, init, descriptors/{index,github,
                         # gitlab,gerrit,redmine,copilot,claude,aider,goose,mock}.ts (unified

@@ -81,7 +81,6 @@ export function buildReviewContainerSpec(
     ...options.providerEnv,
     REVIEW_MODE: "1",
     REVIEW_STRATEGY: input.reviewStrategy,
-    USER_PROMPT_FILE: "/ve-home/user-prompt.txt",
     ...systemPromptEnv(input.systemPrompt),
   };
 

@@ -230,7 +230,6 @@ describe("Orchestrator", () => {
       createWorkspace: vi.fn().mockResolvedValue({
         taskId: makeTaskId("task-1"),
         containerId: "container-1",
-        volumeName: "volume-1",
         hostWorkspacePath: "/tmp/ve-task-1",
       }),
       cloneRepo: vi.fn().mockResolvedValue({ success: true, localPath: "/tmp/ve-task-1" }),

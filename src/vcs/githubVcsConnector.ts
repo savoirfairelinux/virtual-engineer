@@ -70,63 +70,6 @@ export class GitHubVcsConnector implements VcsConnector {
     }
   }
 
-  async push(
-    repoDir: string,
-    ref: string,
-    message: string,
-    _changeId?: string
-  ): Promise<VcsPushResult> {
-    try {
-      await this.gitRunner.run(["config", "user.name", this.config.gitAuthorName], { cwd: repoDir });
-      await this.gitRunner.run(["config", "user.email", this.config.gitAuthorEmail], { cwd: repoDir });
-
-      const featureBranch = ref;
-
-      // Inject token-in-URL credentials for push (x-access-token works for both PAT and OAuth user tokens)
-      const remoteUrl = (
-        await this.gitRunner.run(["remote", "get-url", "origin"], { cwd: repoDir })
-      ).stdout.trim();
-      const authenticatedUrl = new URL(remoteUrl);
-      authenticatedUrl.username = "x-access-token";
-      authenticatedUrl.password = this.config.token;
-
-      await this.gitRunner.run(
-        ["remote", "set-url", "origin", authenticatedUrl.toString()],
-        { cwd: repoDir }
-      );
-
-      await this.gitRunner.run(["add", "-A"], { cwd: repoDir });
-      await this.gitRunner.run(["commit", "-m", message], { cwd: repoDir });
-      log.info({ repoDir }, "changes committed");
-
-      try {
-        await this.gitRunner.run(["push", "-u", "origin", featureBranch], {
-          cwd: repoDir,
-          timeoutMs: 300_000,
-        });
-        log.info({ featureBranch }, "pushed to GitHub");
-      } finally {
-        await this.gitRunner.run(["remote", "set-url", "origin", remoteUrl], { cwd: repoDir });
-      }
-
-      const pr = await this.createOrFindPullRequest(
-        featureBranch,
-        this.config.targetBranch ?? "main",
-        message.split("\n")[0] || `[VE] Feature branch ${featureBranch}`,
-        message
-      );
-
-      return {
-        changeId: String(pr.number),
-        url: pr.html_url,
-        status: pr.state === "closed" ? (pr.merged ? "MERGED" : "ABANDONED") : "OPEN",
-      };
-    } catch (err: unknown) {
-      const error = err instanceof Error ? err : new Error(String(err));
-      throw new Error(`Failed to push to GitHub: ${redactUrls(error.message.slice(0, 500))}`);
-    }
-  }
-
   /**
    * Push HEAD directly without creating a new commit on the host.
    * Used when the agent has already committed inside the container.

@@ -14,18 +14,6 @@ describe("VcsConnector Interface", () => {
       async clone(_repoUrl: string, _branch: string, _targetDir: string): Promise<void> {
         // Mock implementation
       },
-      async push(
-        _repoDir: string,
-        _ref: string,
-        _message: string,
-        _changeId?: string
-      ): Promise<VcsPushResult> {
-        return {
-          changeId: "test-change-id",
-          url: "https://example.com/change/test",
-          status: "OPEN",
-        };
-      },
       async getChangeStatus(_changeId: string): Promise<string> {
         return "OPEN";
       },
@@ -36,7 +24,6 @@ describe("VcsConnector Interface", () => {
 
     expect(mockConnector).toBeDefined();
     expect(typeof mockConnector.clone).toBe("function");
-    expect(typeof mockConnector.push).toBe("function");
     expect(typeof mockConnector.getChangeStatus).toBe("function");
   });
 
@@ -68,9 +55,6 @@ describe("VcsConnector Interface", () => {
           expect(branch).toBeTruthy();
           expect(targetDir).toBeTruthy();
         },
-        async push(): Promise<VcsPushResult> {
-          throw new Error("Not implemented");
-        },
         async getChangeStatus(): Promise<string> {
           throw new Error("Not implemented");
         },
@@ -87,80 +71,10 @@ describe("VcsConnector Interface", () => {
     });
   });
 
-  describe("push method", () => {
-    it("should accept repoDir, ref, message, and optional changeId", async () => {
-      const mockConnector: VcsConnector = {
-        async clone(): Promise<void> {
-          throw new Error("Not implemented");
-        },
-        async push(
-          repoDir: string,
-          ref: string,
-          message: string,
-          changeId?: string
-        ): Promise<VcsPushResult> {
-          expect(repoDir).toBeTruthy();
-          expect(ref).toBeTruthy();
-          expect(message).toBeTruthy();
-          return {
-            changeId: changeId || "new-change-id",
-            url: "https://example.com/change/1",
-            status: "OPEN",
-          };
-        },
-        async getChangeStatus(): Promise<string> {
-          throw new Error("Not implemented");
-        },
-        buildPushSpec(_baseBranch: string, taskId: string) { return { ref: `refs/for/main`, topic: `VE-${taskId}` }; },
-        useChangeIdContinuity: true,
-        reviewSystemLabel: "gerrit",
-      };
-
-      const result = await mockConnector.push(
-        "/tmp/workspace/repo",
-        "refs/for/main",
-        "feat: add new feature\n\nChange-Id: I1234567890",
-        "I1234567890"
-      );
-
-      expect(result.changeId).toBe("I1234567890");
-      expect(result.url).toBeTruthy();
-      expect(result.status).toBe("OPEN");
-    });
-
-    it("should return VcsPushResult with required fields", async () => {
-      const mockConnector: VcsConnector = {
-        async clone(): Promise<void> {},
-        async push(): Promise<VcsPushResult> {
-          return {
-            changeId: "I1234567890abcdef",
-            url: "https://gerrit.example.com/c/12345",
-            status: "OPEN",
-          };
-        },
-        async getChangeStatus(): Promise<string> {
-          throw new Error("Not implemented");
-        },
-        buildPushSpec(_baseBranch: string, taskId: string) { return { ref: `refs/for/main`, topic: `VE-${taskId}` }; },
-        useChangeIdContinuity: true,
-        reviewSystemLabel: "gerrit",
-      };
-
-      const result = await mockConnector.push("/tmp/repo", "refs/for/main", "test message");
-
-      expect(result.changeId).toBeDefined();
-      expect(result.url).toBeDefined();
-      expect(result.status).toBeDefined();
-    });
-  });
-
   describe("getChangeStatus method", () => {
     it("should accept changeId and return status string", async () => {
       const mockConnector: VcsConnector = {
         async clone(): Promise<void> {},
-        async push(): Promise<VcsPushResult> {
-          throw new Error("Not implemented");
-        },
         async getChangeStatus(_changeId: string): Promise<string> {
           expect(_changeId).toBeTruthy();
           return "MERGED";

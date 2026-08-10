@@ -131,7 +131,6 @@ Do not manually work on this ticket.`;
     const workspaceRunner = new OpenShellWorkspaceRunner({
       git: new HostGitExecutor({ baseDir: appConfig.workspaceBaseDir }),
       client: new OpenShellClient({ gateway: process.env["OPENSHELL_GATEWAY"] ?? undefined }),
-      sandboxImage: appConfig.agentContainerImage,
       agentAdapter: mockAgentAdapter,
       managedProviderStore: stateStore,
     });

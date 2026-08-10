@@ -1,15 +1,11 @@
 /**
- * Deny-event poller — consumes OpenShell policy-decision events, scrubs secrets,
- * and forwards normalized denial records to a sink (typically the DenialStore).
+ * Denial events — parses OpenShell policy-decision events and scrubs secrets so
+ * normalized denial records can be persisted (typically via the DenialStore).
  *
  * Parsing is pure and defensive: OpenShell emits either structured decision
  * objects or a `{ error: "policy_denied", detail: "<METHOD> <path> ..." }`
  * shape. Both are supported; unrecognised/allow events yield `null`.
  */
-
-import { getLogger } from "../logger.js";
-
-const log = getLogger("openshell-deny-poller");
 
 /** Normalized, secret-scrubbed denial ready for persistence. */
 export interface NormalizedDenial {
@@ -140,30 +136,3 @@ export function parseDenialEvent(raw: unknown, runtime = "openshell"): Normalize
 
 /** Sink that persists a normalized denial with its originating context. */
 export type DenialSink = (denial: NormalizedDenial & DenialContext) => void | Promise<void>;
-
-/** Async source of raw OpenShell events for one sandbox. */
-export type DenialSource = AsyncIterable<unknown>;
-
-/**
- * Consume a {@link DenialSource}, forwarding parsed denials to the sink. Resolves
- * when the source is exhausted; individual parse/sink errors are logged, not thrown.
- */
-export async function pollDenials(
-  source: DenialSource,
-  sink: DenialSink,
-  context: DenialContext = {},
-  runtime = "openshell"
-): Promise<number> {
-  let count = 0;
-  for await (const raw of source) {
-    const denial = parseDenialEvent(raw, runtime);
-    if (!denial) continue;
-    try {
-      await sink({ ...denial, ...context });
-      count += 1;
-    } catch (err) {
-      log.warn({ err }, "failed to persist policy denial");
-    }
-  }
-  return count;
-}

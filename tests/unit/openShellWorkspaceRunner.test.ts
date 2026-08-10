@@ -37,7 +37,6 @@ function fakeClient(overrides: Partial<OpenShellClient> = {}): OpenShellClient {
     uploadToSandbox: vi.fn().mockResolvedValue(undefined),
     downloadFromSandbox: vi.fn().mockResolvedValue(undefined),
     execInSandbox: vi.fn().mockResolvedValue({ code: 0, stdout: "ok", stderr: "" }),
-    setPolicy: vi.fn().mockResolvedValue(undefined),
     allowEgress: vi.fn().mockResolvedValue(undefined),
     removeSandbox: vi.fn().mockResolvedValue(undefined),
     gatewayHealthy: vi.fn().mockResolvedValue(true),
@@ -104,10 +103,7 @@ function reviewWorkerStdout(rawOutput: string): string {
 const handle: WorkspaceHandle = {
   taskId: "t1" as TaskId,
   containerId: "openshell:t1",
-  volumeName: "/tmp/ws-1",
-  homeVolumeName: "/tmp/ws-1",
   hostWorkspacePath: "/tmp/ws-1",
-  containerImage: "base",
 };
 
 describe("OpenShellWorkspaceRunner", () => {
@@ -121,7 +117,6 @@ describe("OpenShellWorkspaceRunner", () => {
     const runner = new OpenShellWorkspaceRunner({
       git: fakeGit(),
       client,
-      sandboxImage: "base",
       recordDenial,
     });
     await runner.prepareProjectWorkspace(handle, [{
@@ -155,7 +150,6 @@ describe("OpenShellWorkspaceRunner", () => {
     const runner = new OpenShellWorkspaceRunner({
       git: fakeGit(),
       client: fakeClient({ createSandbox, getSandboxLogs } as unknown as Partial<OpenShellClient>),
-      sandboxImage: "base",
       recordDenial,
     });
     await runner.prepareProjectWorkspace(handle, [{
@@ -190,7 +184,6 @@ describe("OpenShellWorkspaceRunner", () => {
         createSandbox,
         getSandboxLogs: vi.fn().mockResolvedValue(event),
       } as unknown as Partial<OpenShellClient>),
-      sandboxImage: "base",
       recordDenial,
     });
     await runner.prepareProjectWorkspace(handle, [{
@@ -214,7 +207,7 @@ describe("OpenShellWorkspaceRunner", () => {
         "[1.0] [sandbox] [OCSF ] [ocsf] NET:OPEN [MED] DENIED /usr/bin/curl(64) -> blocked.example:443 [policy:- engine:opa]"
       ),
     } as unknown as Partial<OpenShellClient>);
-    const runner = new OpenShellWorkspaceRunner({ git: fakeGit(), client, sandboxImage: "base", recordDenial });
+    const runner = new OpenShellWorkspaceRunner({ git: fakeGit(), client, recordDenial });
 
     await expect(runner.runAgentInDocker(
       fakeCodingAdapter(),
@@ -237,7 +230,7 @@ describe("OpenShellWorkspaceRunner", () => {
       createSandbox: vi.fn().mockRejectedValue(new Error("gateway timeout")),
       getSandboxLogs,
     } as unknown as Partial<OpenShellClient>);
-    const runner = new OpenShellWorkspaceRunner({ git: fakeGit(), client, sandboxImage: "base", recordDenial });
+    const runner = new OpenShellWorkspaceRunner({ git: fakeGit(), client, recordDenial });
 
     await expect(runner.runAgentInDocker(
       fakeCodingAdapter(),
@@ -250,10 +243,9 @@ describe("OpenShellWorkspaceRunner", () => {
 
   it("createWorkspace returns a host-backed handle", async () => {
     const git = fakeGit();
-    const runner = new OpenShellWorkspaceRunner({ git, client: fakeClient(), sandboxImage: "base" });
+    const runner = new OpenShellWorkspaceRunner({ git, client: fakeClient() });
     const h = await runner.createWorkspace("t1" as TaskId);
     expect(h.hostWorkspacePath).toBe("/tmp/ws-1");
-    expect(h.containerImage).toBe("base");
   });
 
   it("uses a unique sandbox identity for each workspace attempt", async () => {
@@ -263,19 +255,19 @@ describe("OpenShellWorkspaceRunner", () => {
         .mockResolvedValueOnce({ dir: "/tmp/ws-2" }),
     });
     const client = fakeClient();
-    const runner = new OpenShellWorkspaceRunner({ git, client, sandboxImage: "base" });
+    const runner = new OpenShellWorkspaceRunner({ git, client });
 
     const first = await runner.createWorkspace("t1" as TaskId);
     const second = await runner.createWorkspace("t1" as TaskId);
     expect(first.containerId).not.toBe(second.containerId);
 
     await runner.destroyWorkspace(first);
-    expect(client.removeSandbox).toHaveBeenCalledWith(first.containerId.replace("openshell:", ""), undefined);
+    expect(client.removeSandbox).toHaveBeenCalledWith(first.containerId.replace("openshell:", ""));
   });
 
   it("delegates clone to HostGitExecutor and reports success", async () => {
     const git = fakeGit();
-    const runner = new OpenShellWorkspaceRunner({ git, client: fakeClient(), sandboxImage: "base" });
+    const runner = new OpenShellWorkspaceRunner({ git, client: fakeClient() });
     const res = await runner.cloneRepo(handle, "https://h/r.git", "main");
     expect(res.success).toBe(true);
     expect(git.cloneRepo).toHaveBeenCalledWith("/tmp/ws-1", "https://h/r.git", "main");
@@ -283,7 +275,7 @@ describe("OpenShellWorkspaceRunner", () => {
 
   it("clone failure returns a CloneResult error, not a throw", async () => {
     const git = fakeGit({ cloneRepo: vi.fn().mockRejectedValue(new Error("fatal: nope")) });
-    const runner = new OpenShellWorkspaceRunner({ git, client: fakeClient(), sandboxImage: "base" });
+    const runner = new OpenShellWorkspaceRunner({ git, client: fakeClient() });
     const res = await runner.cloneRepo(handle, "u", "main");
     expect(res.success).toBe(false);
     expect(res.error).toContain("fatal");
@@ -295,7 +287,7 @@ describe("OpenShellWorkspaceRunner", () => {
       .mockResolvedValueOnce(undefined) // root
       .mockRejectedValueOnce(new Error("secondary boom")); // lib
     const git = fakeGit({ cloneRepo });
-    const runner = new OpenShellWorkspaceRunner({ git, client: fakeClient(), sandboxImage: "base" });
+    const runner = new OpenShellWorkspaceRunner({ git, client: fakeClient() });
     const targets: ProjectPushTargetRecord[] = [
       { repoKey: "lib", cloneUrl: "u2", targetBranch: "main", role: "dependency", commitOrder: 2, localPath: "libs/lib", integrationId: "i", sshKeyPath: null } as unknown as ProjectPushTargetRecord,
       { repoKey: "root", cloneUrl: "u1", targetBranch: "main", role: "primary", commitOrder: 1, localPath: ".", integrationId: "i", sshKeyPath: null } as unknown as ProjectPushTargetRecord,
@@ -312,7 +304,6 @@ describe("OpenShellWorkspaceRunner", () => {
     const runner = new OpenShellWorkspaceRunner({
       git: fakeGit(),
       client: fakeClient({ execInSandbox } as unknown as Partial<OpenShellClient>),
-      sandboxImage: "base",
     });
     const targets = [{
       repoKey: "root", cloneUrl: "u1", targetBranch: "main", role: "primary",
@@ -345,7 +336,6 @@ describe("OpenShellWorkspaceRunner", () => {
     const runner = new OpenShellWorkspaceRunner({
       git: fakeGit(),
       client,
-      sandboxImage: "base",
       agentAdapter: fakeReviewAdapter(),
       resolvePolicy: ({ mode }) => (mode === "review" ? "version: 1\nprocess:\n  run_as_user: sandbox\n  run_as_group: sandbox\n" : undefined),
     });
@@ -364,7 +354,6 @@ describe("OpenShellWorkspaceRunner", () => {
       beforeRetryCleanup: expect.any(Function),
       signal: abortController.signal,
     }));
-    expect(client.setPolicy).not.toHaveBeenCalled();
     // Egress is opened for the review agent's model API.
     expect(client.allowEgress).toHaveBeenCalledWith(
       expect.objectContaining({ name: "ve-t1", hosts: ["api.githubcopilot.com"], binaries: ["/usr/local/bin/node"], signal: abortController.signal })
@@ -394,7 +383,6 @@ describe("OpenShellWorkspaceRunner", () => {
     const runner = new OpenShellWorkspaceRunner({
       git: fakeGit(),
       client: fakeClient({ execInSandbox } as unknown as Partial<OpenShellClient>),
-      sandboxImage: "base",
       agentAdapter: fakeReviewAdapter(),
       execTimeoutSec: 3600,
     });
@@ -423,7 +411,6 @@ describe("OpenShellWorkspaceRunner", () => {
     const runner = new OpenShellWorkspaceRunner({
       git: fakeGit(),
       client,
-      sandboxImage: "base",
       agentAdapter: fakeReviewAdapter({
         env: { REVIEW_MODE: "1", [credentialKey]: "secret" },
       }),
@@ -456,7 +443,6 @@ describe("OpenShellWorkspaceRunner", () => {
     const runner = new OpenShellWorkspaceRunner({
       git: fakeGit(),
       client,
-      sandboxImage: "base",
       agentAdapter: fakeReviewAdapter(),
     });
 
@@ -473,7 +459,6 @@ describe("OpenShellWorkspaceRunner", () => {
     const runner = new OpenShellWorkspaceRunner({
       git,
       client,
-      sandboxImage: "base",
       managedProviderStore: {
         recordManagedOpenShellProvider: recordManagedProvider,
         deleteManagedOpenShellProvider: vi.fn().mockResolvedValue(undefined),
@@ -544,7 +529,7 @@ describe("OpenShellWorkspaceRunner", () => {
     "CEREBRAS_API_KEY",
   ])("attaches the Aider/Goose backend credential %s as a provider instead of sandbox env", async (credentialKey) => {
     const client = fakeClient();
-    const runner = new OpenShellWorkspaceRunner({ git: fakeGit(), client, sandboxImage: "base" });
+    const runner = new OpenShellWorkspaceRunner({ git: fakeGit(), client });
     const adapter = fakeCodingAdapter({
       env: {
         AGENT_PROVIDER: "aider",
@@ -577,7 +562,7 @@ describe("OpenShellWorkspaceRunner", () => {
 
   it("fails the coding run when the spec carries an unmapped secret-looking variable", async () => {
     const client = fakeClient();
-    const runner = new OpenShellWorkspaceRunner({ git: fakeGit(), client, sandboxImage: "base" });
+    const runner = new OpenShellWorkspaceRunner({ git: fakeGit(), client });
     const adapter = fakeCodingAdapter({
       env: { AGENT_PROVIDER: "aider", SOME_OTHER_API_KEY: "leak-me" },
     });
@@ -597,7 +582,6 @@ describe("OpenShellWorkspaceRunner", () => {
     const runner = new OpenShellWorkspaceRunner({
       git: fakeGit(),
       client,
-      sandboxImage: "base",
       agentAdapter: fakeReviewAdapter({ env: { REVIEW_MODE: "1", VENDOR_SECRET: "leak-me" } }),
     });
 
@@ -614,7 +598,6 @@ describe("OpenShellWorkspaceRunner", () => {
     const runner = new OpenShellWorkspaceRunner({
       git: fakeGit(),
       client,
-      sandboxImage: "base",
       managedProviderStore: {
         recordManagedOpenShellProvider: vi.fn().mockRejectedValue(new Error("database unavailable")),
         deleteManagedOpenShellProvider: vi.fn().mockResolvedValue(undefined),
@@ -646,7 +629,6 @@ describe("OpenShellWorkspaceRunner", () => {
     const runner = new OpenShellWorkspaceRunner({
       git: fakeGit(),
       client: fakeClient({ execInSandbox } as unknown as Partial<OpenShellClient>),
-      sandboxImage: "base",
       execTimeoutSec: 3600,
     });
 
@@ -668,7 +650,7 @@ describe("OpenShellWorkspaceRunner", () => {
     const client = fakeClient({
       execInSandbox: vi.fn().mockResolvedValue({ code: 137, stdout: "partial", stderr: "killed" }),
     } as unknown as Partial<OpenShellClient>);
-    const runner = new OpenShellWorkspaceRunner({ git: fakeGit(), client, sandboxImage: "base" });
+    const runner = new OpenShellWorkspaceRunner({ git: fakeGit(), client });
 
     await expect(runner.runAgentInDocker(
       fakeCodingAdapter(),
@@ -682,7 +664,6 @@ describe("OpenShellWorkspaceRunner", () => {
     const runner = new OpenShellWorkspaceRunner({
       git: fakeGit(),
       client: fakeClient({ removeSandbox } as unknown as Partial<OpenShellClient>),
-      sandboxImage: "base",
     });
     const created = await runner.createWorkspace("t-clean" as TaskId);
     const r = runner as unknown as {
@@ -715,7 +696,6 @@ describe("OpenShellWorkspaceRunner", () => {
     const runner = new OpenShellWorkspaceRunner({
       git: fakeGit(),
       client: fakeClient({ removeProvider } as unknown as Partial<OpenShellClient>),
-      sandboxImage: "base",
     });
     const created = await runner.createWorkspace("t-prov-fail" as TaskId);
     const r = runner as unknown as {
@@ -755,7 +735,6 @@ describe("OpenShellWorkspaceRunner", () => {
     const runner = new OpenShellWorkspaceRunner({
       git: fakeGit(),
       client: fakeClient({ getSandboxLogs } as unknown as Partial<OpenShellClient>),
-      sandboxImage: "base",
       recordDenial: vi.fn(),
     });
     // Set up trusted remotes so restoreTrustedRemotes does not throw.
@@ -781,7 +760,6 @@ describe("OpenShellWorkspaceRunner", () => {
     const runner = new OpenShellWorkspaceRunner({
       git: fakeGit(),
       client,
-      sandboxImage: "base",
       resolvePolicy: () => undefined,
     });
 
@@ -807,7 +785,6 @@ describe("OpenShellWorkspaceRunner", () => {
     const runner = new OpenShellWorkspaceRunner({
       git: fakeGit(),
       client,
-      sandboxImage: "base",
       agentAdapter: fakeReviewAdapter(),
       resolvePolicy: () => undefined,
     });
@@ -823,7 +800,7 @@ describe("OpenShellWorkspaceRunner", () => {
   });
 
   it("runAgent delegates to adapter.execute and returns its result", async () => {
-    const runner = new OpenShellWorkspaceRunner({ git: fakeGit(), client: fakeClient(), sandboxImage: "base" });
+    const runner = new OpenShellWorkspaceRunner({ git: fakeGit(), client: fakeClient() });
     const ctx = { taskId: "t1", workspacePath: "/tmp/ws-1" } as unknown as TaskContext;
     const adapter = fakeCodingAdapter({}, { status: "success", modifiedFiles: ["a.ts"], summary: "s", agentLogs: "", metadata: {} });
     const result = await runner.runAgent(handle, ctx, adapter);
@@ -833,7 +810,7 @@ describe("OpenShellWorkspaceRunner", () => {
   });
 
   it("runAgent throws when no adapter is available", async () => {
-    const runner = new OpenShellWorkspaceRunner({ git: fakeGit(), client: fakeClient(), sandboxImage: "base" });
+    const runner = new OpenShellWorkspaceRunner({ git: fakeGit(), client: fakeClient() });
     await expect(
       runner.runAgent(handle, { taskId: "t1", workspacePath: "/tmp/ws-1" } as unknown as TaskContext)
     ).rejects.toThrow(/requires an agent adapter/);
@@ -842,9 +819,9 @@ describe("OpenShellWorkspaceRunner", () => {
   it("destroyWorkspace removes the sandbox and the host dir", async () => {
     const git = fakeGit();
     const client = fakeClient();
-    const runner = new OpenShellWorkspaceRunner({ git, client, sandboxImage: "base" });
+    const runner = new OpenShellWorkspaceRunner({ git, client });
     await runner.destroyWorkspace(handle);
-    expect(client.removeSandbox).toHaveBeenCalledWith("ve-t1", undefined);
+    expect(client.removeSandbox).toHaveBeenCalledWith("ve-t1");
     expect(git.destroyWorkspace).toHaveBeenCalledWith("/tmp/ws-1");
   });
 
@@ -856,7 +833,6 @@ describe("OpenShellWorkspaceRunner", () => {
     const runner = new OpenShellWorkspaceRunner({
       git,
       client: fakeClient({ removeSandbox } as unknown as Partial<OpenShellClient>),
-      sandboxImage: "base",
     });
     const created = await runner.createWorkspace("cleanup-task" as TaskId);
 
@@ -887,7 +863,6 @@ describe("OpenShellWorkspaceRunner", () => {
     const runner = new OpenShellWorkspaceRunner({
       git: fakeGit(),
       client,
-      sandboxImage: "base",
       managedProviderStore: {
         recordManagedOpenShellProvider: vi.fn().mockResolvedValue(undefined),
         deleteManagedOpenShellProvider: deleteManagedProvider,

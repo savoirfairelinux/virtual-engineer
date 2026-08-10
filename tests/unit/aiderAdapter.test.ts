@@ -12,8 +12,6 @@ function makeContext(overrides: Partial<TaskContext> = {}): TaskContext {
     acceptanceCriteria: ["Logs must be in JSON format"],
     baseBranch: "main",
     workspacePath: "/workspace",
-    volumeName: "ve-ws-test",
-    homeVolumeName: "ve-home-test",
     constraints: [],
     priorFeedback: [],
     cycleNumber: 1,
@@ -279,7 +277,6 @@ describe("AiderAdapter", () => {
       expect(spec.env).toMatchObject({
         AGENT_PROVIDER: "aider",
         REVIEW_MODE: "1",
-        USER_PROMPT_FILE: "/ve-home/user-prompt.txt",
         SYSTEM_PROMPT: "review sys",
         AIDER_MODEL: "gpt-4o",
         OPENAI_API_KEY: "sk-key",
