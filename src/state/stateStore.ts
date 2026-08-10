@@ -569,6 +569,10 @@ export class SqliteStateStore {
    * so getCostSummary/getModelUsageSummary/getAgentCycles stop recomputing
    * them from agent_events JSON on every read. Rows with no recoverable event
    * log are left untouched (NULL stays "unknown", never a false zero).
+   *
+   * Processes rows in bounded batches (cursor on id) rather than loading the
+   * whole legacy result set into memory, to keep startup cost/memory bounded
+   * on large instances.
    */
   private backfillLegacyCycleCosts(): void {
     interface LegacyCycleRow {
@@ -577,17 +581,15 @@ export class SqliteStateStore {
       agent_result: string;
     }
 
-    const legacyRows = this.raw
-      .prepare(
-        `SELECT id, agent_events, agent_result FROM agent_cycles
-         WHERE cost_usd IS NULL AND cost_ai_credits IS NULL AND premium_requests IS NULL
-           AND cost_input_tokens IS NULL AND cost_output_tokens IS NULL
-           AND cost_cached_tokens IS NULL AND cost_cache_write_tokens IS NULL
-           AND cost_model_id IS NULL`
-      )
-      .all() as LegacyCycleRow[];
-    if (legacyRows.length === 0) return;
-
+    const BATCH_SIZE = 500;
+    const selectStmt = this.raw.prepare(
+      `SELECT id, agent_events, agent_result FROM agent_cycles
+       WHERE id > ? AND cost_usd IS NULL AND cost_ai_credits IS NULL AND premium_requests IS NULL
+         AND cost_input_tokens IS NULL AND cost_output_tokens IS NULL
+         AND cost_cached_tokens IS NULL AND cost_cache_write_tokens IS NULL
+         AND cost_model_id IS NULL
+       ORDER BY id LIMIT ?`
+    );
     const updateStmt = this.raw.prepare(`
       UPDATE agent_cycles
       SET cost_ai_credits = ?, cost_usd = ?, premium_requests = ?,
@@ -596,9 +598,9 @@ export class SqliteStateStore {
       WHERE id = ?
     `);
 
-    let updatedCount = 0;
-    const backfill = this.raw.transaction(() => {
-      for (const row of legacyRows) {
+    const processBatch = this.raw.transaction((rows: LegacyCycleRow[]) => {
+      let batchUpdated = 0;
+      for (const row of rows) {
         let events: AgentLogEvent[] | undefined;
         if (row.agent_events) {
           try {
@@ -628,14 +630,26 @@ export class SqliteStateStore {
           cost.modelId,
           row.id
         );
-        updatedCount += 1;
+        batchUpdated += 1;
       }
+      return batchUpdated;
     });
-    backfill();
+
+    let lastId = 0;
+    let scannedCount = 0;
+    let updatedCount = 0;
+    for (;;) {
+      const batch = selectStmt.all(lastId, BATCH_SIZE) as LegacyCycleRow[];
+      if (batch.length === 0) break;
+      scannedCount += batch.length;
+      updatedCount += processBatch(batch);
+      lastId = batch[batch.length - 1]!.id;
+      if (batch.length < BATCH_SIZE) break;
+    }
 
     if (updatedCount > 0) {
       getLogger("state-store").info(
-        { updatedCount, scannedCount: legacyRows.length },
+        { updatedCount, scannedCount },
         "Backfilled cost_* columns for legacy agent_cycles rows"
       );
     }
