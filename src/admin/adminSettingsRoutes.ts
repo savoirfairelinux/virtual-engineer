@@ -1,4 +1,4 @@
-import { writeJson, readBody } from "./adminRouteUtils.js";
+import { writeJson, readBody, requireStore } from "./adminRouteUtils.js";
 import type { Router } from "./router.js";
 
 /** Effective (resolved) workflow settings surfaced to the admin UI. */
@@ -57,19 +57,14 @@ function parseSetting(value: unknown, field: keyof EffectiveWorkflowSettings): n
 
 /** Register the editable-workflow-settings routes on the given router. */
 export function registerSettingsRoutes(router: Router, deps: SettingsRouteDeps): void {
-  router.add("GET", "/api/admin/settings", async (_req, res, _params) => {
-    if (!deps.settings) {
-      writeJson(res, 501, { error: "Settings controller not available" });
-      return;
-    }
+  router.add("GET", "/api/admin/settings", (_req, res, _params) => {
+    if (!requireStore(deps.settings, res, "Settings controller not available")) return Promise.resolve();
     writeJson(res, 200, { settings: deps.settings.get() });
+    return Promise.resolve();
   }, { permission: "system.read" });
 
   router.add("PUT", "/api/admin/settings", async (req, res, _params) => {
-    if (!deps.settings) {
-      writeJson(res, 501, { error: "Settings controller not available" });
-      return;
-    }
+    if (!requireStore(deps.settings, res, "Settings controller not available")) return;
     const body = await readBody(req);
     if (!body) {
       writeJson(res, 400, { error: "Invalid JSON body" });

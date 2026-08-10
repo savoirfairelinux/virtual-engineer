@@ -293,14 +293,16 @@ export function createGitLabRedirectOAuthHandler(
   const resolvedConfig = config ?? {};
   return {
     kind: "redirect",
-    async start({ redirectUri, state, codeChallenge, codeChallengeMethod }): Promise<{ authorizationUrl: string }> {
+    start({ redirectUri, state, codeChallenge, codeChallengeMethod }): Promise<{ authorizationUrl: string }> {
       const baseUrl = getGitLabBaseUrl(resolvedConfig);
       const clientId = getGitLabRequiredConfigString(resolvedConfig, "oauthClientId", "GitLab OAuth client id");
+      // Not async: these validation failures must surface as a rejected promise
+      // (not a synchronous throw) for callers using await/`.catch()`.
       if (!codeChallenge) {
-        throw new Error("GitLab OAuth PKCE code challenge is required");
+        return Promise.reject(new Error("GitLab OAuth PKCE code challenge is required"));
       }
       if (codeChallengeMethod !== "S256") {
-        throw new Error("GitLab OAuth PKCE requires codeChallengeMethod=S256");
+        return Promise.reject(new Error("GitLab OAuth PKCE requires codeChallengeMethod=S256"));
       }
       const authorizationUrl = buildGitLabOAuthUrl(baseUrl, "/oauth/authorize");
       authorizationUrl.searchParams.set("client_id", clientId);
@@ -312,7 +314,7 @@ export function createGitLabRedirectOAuthHandler(
       }
       authorizationUrl.searchParams.set("code_challenge", codeChallenge);
       authorizationUrl.searchParams.set("code_challenge_method", codeChallengeMethod);
-      return { authorizationUrl: authorizationUrl.toString() };
+      return Promise.resolve({ authorizationUrl: authorizationUrl.toString() });
     },
     async complete({ code, redirectUri, state: _state, codeVerifier }): Promise<{ token: string }> {
       const baseUrl = getGitLabBaseUrl(resolvedConfig);

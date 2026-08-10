@@ -70,7 +70,7 @@ export const redmineDescriptor: ProviderDescriptor = {
       const currentLogin = authBody.user.login;
 
       const login = typeof cfg["virtualEngineerUserLogin"] === "string"
-        ? (cfg["virtualEngineerUserLogin"] as string).trim()
+        ? (cfg["virtualEngineerUserLogin"]).trim()
         : "";
       if (login && login !== currentLogin) {
         const lookupUrl = `${baseUrl}/users.json?name=${encodeURIComponent(login)}`;

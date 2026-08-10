@@ -153,7 +153,7 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
       ticketSourceLabel: row.ticketSourceLabel,
       ticketTitle: row.ticketTitle,
       ticketDescription: row.ticketDescription,
-      state: row.state as TaskState,
+      state: row.state,
       taskType: row.taskType,
       externalChangeId: row.gerritChangeId
         ? makeExternalChangeId(row.gerritChangeId)
@@ -578,15 +578,15 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
       return {
         id: row.id,
         taskId: row.taskId as TaskId,
-        fromState: row.fromState as TaskState,
-        toState: row.toState as TaskState,
+        fromState: row.fromState,
+        toState: row.toState,
         metadata,
         createdAt: row.createdAt,
       };
     });
   }
 
-  async function getFailedAttemptCount(
+  function getFailedAttemptCount(
     ticketId: TicketId,
     ticketSourceLabel?: string,
     projectId?: ProjectId
@@ -604,7 +604,7 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
     const row = raw
       .prepare(`SELECT COUNT(*) AS count FROM tasks WHERE ${clauses.join(" AND ")}`)
       .get(...args) as { count: number };
-    return row.count;
+    return Promise.resolve(row.count);
   }
 
   async function pauseTask(taskId: TaskId): Promise<Task> {
@@ -635,21 +635,21 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
     return task;
   }
 
-  async function isTaskPaused(taskId: TaskId): Promise<boolean> {
+  function isTaskPaused(taskId: TaskId): Promise<boolean> {
     const row = raw
       .prepare(
         "SELECT metadata FROM state_transitions WHERE task_id = ? ORDER BY id DESC LIMIT 1"
       )
       .get(taskId) as { metadata: string } | undefined;
 
-    if (!row) return false;
+    if (!row) return Promise.resolve(false);
 
     try {
       const metadata = JSON.parse(row.metadata) as Record<string, unknown>;
       const latestAction = metadata["action"] as string | undefined;
-      return latestAction === "pause";
+      return Promise.resolve(latestAction === "pause");
     } catch {
-      return false;
+      return Promise.resolve(false);
     }
   }
 
@@ -811,12 +811,12 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
     })();
   }
 
-  async function deleteTaskGroup(taskId: TaskId): Promise<void> {
+  function deleteTaskGroup(taskId: TaskId): Promise<void> {
     const anchor = raw
       .prepare("SELECT ticket_id, gerrit_change_id FROM tasks WHERE task_id = ?")
       .get(taskId) as { ticket_id: string; gerrit_change_id: string | null } | undefined;
 
-    if (!anchor) return;
+    if (!anchor) return Promise.resolve();
 
     const taskIds = new Set<string>();
 
@@ -832,7 +832,7 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
       for (const row of byChange) taskIds.add(row["task_id"] as string);
     }
 
-    if (taskIds.size === 0) return;
+    if (taskIds.size === 0) return Promise.resolve();
 
     raw.transaction(() => {
       for (const id of taskIds) {
@@ -845,9 +845,10 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
         raw.prepare("DELETE FROM tasks WHERE task_id = ?").run(id);
       }
     })();
+    return Promise.resolve();
   }
 
-  async function saveChangePerRepository(
+  function saveChangePerRepository(
     taskId: TaskId,
     repoKey: string,
     changeIdValue: string,
@@ -876,6 +877,7 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
            updated_at = excluded.updated_at`
       )
       .run(id, taskId, repoKey, changeIdValue, reviewUrl, status, integrationId, reviewSystem, commitIndex, subjectHash, Math.floor(now.getTime() / 1000), Math.floor(now.getTime() / 1000));
+    return Promise.resolve();
   }
 
   async function getChangesForTask(taskId: TaskId): Promise<ChangePerRepository[]> {
@@ -967,7 +969,7 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
       .prepare(
         "SELECT task_id FROM tasks WHERE gerrit_change_id = ? AND project_id = ? AND task_type = 'code-review' AND reviewed_patchset IS NOT NULL ORDER BY created_at DESC LIMIT 1"
       )
-      .get(changeId, projectId as string) as { task_id: string } | undefined;
+      .get(changeId, projectId) as { task_id: string } | undefined;
     if (!row) return null;
     const orm = await db.query.tasks.findFirst({
       where: eq(tasks.taskId, row.task_id as TaskId),
@@ -975,19 +977,21 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
     return orm ? rowToTask(orm) : null;
   }
 
-  async function setTaskProjectId(taskId: TaskId, projectId: ProjectId): Promise<void> {
+  function setTaskProjectId(taskId: TaskId, projectId: ProjectId): Promise<void> {
     raw
       .prepare("UPDATE tasks SET project_id = ?, updated_at = ? WHERE task_id = ?")
-      .run(projectId as string, Math.floor(Date.now() / 1000), taskId);
+      .run(projectId, Math.floor(Date.now() / 1000), taskId);
+    return Promise.resolve();
   }
 
-  async function setTaskPushRef(taskId: TaskId, pushRef: string): Promise<void> {
+  function setTaskPushRef(taskId: TaskId, pushRef: string): Promise<void> {
     raw
       .prepare("UPDATE tasks SET push_ref = ?, updated_at = ? WHERE task_id = ?")
       .run(pushRef, Math.floor(Date.now() / 1000), taskId);
+    return Promise.resolve();
   }
 
-  async function updateChangePerRepositoryStatus(
+  function updateChangePerRepositoryStatus(
     taskId: TaskId,
     repoKey: string,
     status: string,
@@ -1008,6 +1012,7 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
         )
         .run(status, now, id);
     }
+    return Promise.resolve();
   }
 
   /**
@@ -1023,7 +1028,7 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
     return rows.map((row) => rowToTask(row));
   }
 
-  async function orphanExcessChanges(
+  function orphanExcessChanges(
     taskId: TaskId,
     repoKey: string,
     maxCommitIndex: number
@@ -1036,7 +1041,7 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
            AND status NOT IN ('ORPHANED', 'NO_CHANGE', 'MERGED', 'ABANDONED')`
       )
       .run(now, taskId, repoKey, maxCommitIndex);
-    return result.changes;
+    return Promise.resolve(result.changes);
   }
 
   return {

@@ -24,4 +24,4 @@ async function migrate(): Promise<void> {
   }
 }
 
-migrate();
+void migrate();

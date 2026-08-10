@@ -11,6 +11,7 @@ import {
   CODE_GEN_STATES as DOMAIN_CODE_GEN_STATES,
   CODE_REVIEW_STATES as DOMAIN_CODE_REVIEW_STATES,
   TASK_STATES as DOMAIN_TASK_STATES,
+  TASK_WORKFLOW_BUCKETS as DOMAIN_TASK_WORKFLOW_BUCKETS,
   TERMINAL_STATES as DOMAIN_TERMINAL_STATES,
   type ChangePerRepository as DomainChangePerRepository,
   type StateTransition as DomainStateTransition,
@@ -20,6 +21,7 @@ import {
   CODE_GEN_STATES,
   CODE_REVIEW_STATES,
   TASK_STATES,
+  TASK_WORKFLOW_BUCKETS,
   TERMINAL_STATES,
   makeAgentId,
   makeExternalChangeId,
@@ -46,6 +48,25 @@ describe("task domain compatibility", () => {
     expect(CODE_REVIEW_STATES).toBe(DOMAIN_CODE_REVIEW_STATES);
     expect(TASK_STATES).toBe(DOMAIN_TASK_STATES);
     expect(TERMINAL_STATES).toBe(DOMAIN_TERMINAL_STATES);
+    expect(TASK_WORKFLOW_BUCKETS).toBe(DOMAIN_TASK_WORKFLOW_BUCKETS);
+  });
+
+  it("classifies every task state into exactly one dashboard workflow bucket", () => {
+    expect(TASK_WORKFLOW_BUCKETS.size).toBe(TASK_STATES.length);
+    for (const state of TASK_STATES) {
+      expect(TASK_WORKFLOW_BUCKETS.has(state)).toBe(true);
+    }
+  });
+
+  it("classifies DETECTED as active and ABANDONED as failed", () => {
+    expect(TASK_WORKFLOW_BUCKETS.get("DETECTED")).toBe("active");
+    expect(TASK_WORKFLOW_BUCKETS.get("ABANDONED")).toBe("failed");
+  });
+
+  it("classifies one representative state per remaining bucket", () => {
+    expect(TASK_WORKFLOW_BUCKETS.get("IN_REVIEW")).toBe("watching");
+    expect(TASK_WORKFLOW_BUCKETS.get("MERGED")).toBe("done");
+    expect(TASK_WORKFLOW_BUCKETS.get("FAILED")).toBe("failed");
   });
 
   it("keeps facade and domain task types interchangeable", () => {

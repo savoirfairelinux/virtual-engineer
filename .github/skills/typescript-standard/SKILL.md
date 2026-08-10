@@ -73,6 +73,8 @@ This project uses maximum TypeScript strictness. Ensure your code compiles with:
 }
 ```
 
+`src/**/*.ts` (excluding `src/admin/ui/**`) and `agent-worker/src/**/*.ts` also lint with the type-aware `recommended-type-checked` preset — `no-floating-promises`, `no-misused-promises`, `no-unsafe-*`, and `require-await` are enforced by `npm run lint`, not just this document. See [Async Programming Patterns](./async-patterns.md) for the correct way to drop `async` from a function without losing its throw-to-rejection behavior.
+
 ## TDD Workflow
 
 All code changes follow test-driven development — use the **ve-tdd** skill for the full red-green-refactor procedure, Vitest patterns, and mock conventions. The three gates before every commit:

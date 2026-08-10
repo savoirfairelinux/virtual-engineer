@@ -41,7 +41,7 @@ import { NO_REVIEW_SYSTEM } from "../vcs/vcsConnector.js";
 import { VcsConnectorFactory } from "../vcs/vcsFactory.js";
 import { encryptToken } from "../utils/encryption.js";
 import { redactUrls } from "../utils/redactUrl.js";
-import { isInfrastructureError } from "../utils/errorClassifier.js";
+import { isInfrastructureError, safeStringify } from "../utils/errorClassifier.js";
 import type { ConcurrencyTracker } from "./concurrencyTracker.js";
 import { resolveAgentConfig } from "../state/stateStore.js";
 import {
@@ -891,7 +891,7 @@ export class Orchestrator {
       if (secondaryChanges.length > 0 && this.workspaceRunner.cherryPickPriorPatchset) {
         for (const change of secondaryChanges) {
           try {
-            const secOpts = await rootConnector.resolvePatchsetOptions!(change.changeId);
+            const secOpts = await rootConnector.resolvePatchsetOptions(change.changeId);
             await this.workspaceRunner.cherryPickPriorPatchset(handle, secOpts);
             log.info(
               { taskId: task.taskId, changeId: change.changeId, commitIndex: change.commitIndex, revisionNumber: secOpts.revisionNumber, patchset: secOpts.patchset },
@@ -1390,7 +1390,7 @@ export class Orchestrator {
 
       if (this.isTicketApiError(err)) {
         log.warn(
-          { taskId: task.taskId, ticketId: task.ticketId, statusCode: (err as TicketApiError).statusCode, err },
+          { taskId: task.taskId, ticketId: task.ticketId, statusCode: (err).statusCode, err },
           "failed to add note to ticket (non-fatal)"
         );
         return false;
@@ -1441,7 +1441,7 @@ export class Orchestrator {
         },
         (err: unknown) => {
           clearTimeout(timer);
-          reject(err);
+          reject(err instanceof Error ? err : new Error(typeof err === "string" ? err : safeStringify(err)));
         }
       );
     });

@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { Group, Policy, PolicyBinding, PolicyRule, PrincipalType, UserRole } from "../interfaces.js";
 import type { PolicyRuleInput } from "../state/stores/policyStore.js";
-import { writeJson, readBody, zodErrorBody } from "./adminRouteUtils.js";
+import { writeJson, readBody, zodErrorBody, requireStore } from "./adminRouteUtils.js";
 import { recordAudit, type AuditCapableStore } from "./adminAudit.js";
 import { ALL_PERMISSIONS, PERMISSIONS, isKnownPermission, isScopeablePermission } from "./authorization/permissions.js";
 import type { Router } from "./router.js";
@@ -101,27 +101,30 @@ const bindingSchema = z.object({
 /** Register group + policy management routes (all require `policy.manage`). */
 export function registerPolicyRoutes(router: Router, deps: PolicyRoutesDeps): void {
   // ─── Permission catalog (for UI dropdowns) ────────────────────────────────
-  router.add("GET", "/api/admin/permissions", async (_req, res, _params) => {
+  router.add("GET", "/api/admin/permissions", (_req, res, _params) => {
     writeJson(res, 200, { permissions: ALL_PERMISSIONS });
+    return Promise.resolve();
   }, MANAGE);
 
   // ─── Groups ───────────────────────────────────────────────────────────────
   router.add("GET", "/api/admin/groups", async (_req, res, _params) => {
-    if (!deps.policyStore) { writeJson(res, 501, { error: "Policy store not available" }); return; }
-    const groups = await deps.policyStore.listGroups();
+    const policyStore = deps.policyStore;
+    if (!requireStore(policyStore, res, "Policy store not available")) return;
+    const groups = await policyStore.listGroups();
     const withCounts = await Promise.all(groups.map(async (g) => ({
       ...serializeGroup(g),
-      memberCount: (await deps.policyStore!.listGroupMemberIds(g.id)).length,
+      memberCount: (await policyStore.listGroupMemberIds(g.id)).length,
     })));
     writeJson(res, 200, { groups: withCounts });
   }, MANAGE);
 
   router.add("POST", "/api/admin/groups", async (req, res, _params) => {
-    if (!deps.policyStore) { writeJson(res, 501, { error: "Policy store not available" }); return; }
+    const policyStore = deps.policyStore;
+    if (!requireStore(policyStore, res, "Policy store not available")) return;
     const parsed = groupCreateSchema.safeParse(await readBody(req));
     if (!parsed.success) { writeJson(res, 400, zodErrorBody(parsed.error, "Invalid group payload")); return; }
     try {
-      const group = await deps.policyStore.createGroup({
+      const group = await policyStore.createGroup({
         name: parsed.data.name,
         ...(parsed.data.description !== undefined ? { description: parsed.data.description } : {}),
       });
@@ -134,24 +137,26 @@ export function registerPolicyRoutes(router: Router, deps: PolicyRoutesDeps): vo
   }, MANAGE);
 
   router.add("GET", "/api/admin/groups/:id", async (_req, res, params) => {
-    if (!deps.policyStore) { writeJson(res, 501, { error: "Policy store not available" }); return; }
+    const policyStore = deps.policyStore;
+    if (!requireStore(policyStore, res, "Policy store not available")) return;
     const id = params["id"] ?? "";
-    const group = await deps.policyStore.getGroupById(id);
+    const group = await policyStore.getGroupById(id);
     if (!group) { writeJson(res, 404, { error: "Group not found" }); return; }
-    const memberIds = await deps.policyStore.listGroupMemberIds(id);
-    const members = (await Promise.all(memberIds.map((uid) => deps.policyStore!.getUserById(uid))))
+    const memberIds = await policyStore.listGroupMemberIds(id);
+    const members = (await Promise.all(memberIds.map((uid) => policyStore.getUserById(uid))))
       .filter((u): u is PolicyRouteUser => u !== null)
       .map((u) => ({ id: u.id, username: u.username, role: u.role }));
     writeJson(res, 200, { group: { ...serializeGroup(group), members } });
   }, MANAGE);
 
   router.add("PUT", "/api/admin/groups/:id", async (req, res, params) => {
-    if (!deps.policyStore) { writeJson(res, 501, { error: "Policy store not available" }); return; }
+    const policyStore = deps.policyStore;
+    if (!requireStore(policyStore, res, "Policy store not available")) return;
     const id = params["id"] ?? "";
     const parsed = groupUpdateSchema.safeParse(await readBody(req));
     if (!parsed.success) { writeJson(res, 400, zodErrorBody(parsed.error, "Invalid group payload")); return; }
     try {
-      const updated = await deps.policyStore.updateGroup(id, {
+      const updated = await policyStore.updateGroup(id, {
         ...(parsed.data.name !== undefined ? { name: parsed.data.name } : {}),
         ...(parsed.data.description !== undefined ? { description: parsed.data.description } : {}),
       });
@@ -165,33 +170,36 @@ export function registerPolicyRoutes(router: Router, deps: PolicyRoutesDeps): vo
   }, MANAGE);
 
   router.add("DELETE", "/api/admin/groups/:id", async (req, res, params) => {
-    if (!deps.policyStore) { writeJson(res, 501, { error: "Policy store not available" }); return; }
+    const policyStore = deps.policyStore;
+    if (!requireStore(policyStore, res, "Policy store not available")) return;
     const id = params["id"] ?? "";
-    const removed = await deps.policyStore.deleteGroup(id);
+    const removed = await policyStore.deleteGroup(id);
     if (!removed) { writeJson(res, 404, { error: "Group not found" }); return; }
     recordAudit(deps.auditStore, req, { action: "group.delete", targetType: "group", targetId: id, details: {} });
     res.statusCode = 204; res.end();
   }, MANAGE);
 
   router.add("POST", "/api/admin/groups/:id/members", async (req, res, params) => {
-    if (!deps.policyStore) { writeJson(res, 501, { error: "Policy store not available" }); return; }
+    const policyStore = deps.policyStore;
+    if (!requireStore(policyStore, res, "Policy store not available")) return;
     const id = params["id"] ?? "";
-    const group = await deps.policyStore.getGroupById(id);
+    const group = await policyStore.getGroupById(id);
     if (!group) { writeJson(res, 404, { error: "Group not found" }); return; }
     const parsed = memberSchema.safeParse(await readBody(req));
     if (!parsed.success) { writeJson(res, 400, zodErrorBody(parsed.error, "Invalid member payload")); return; }
-    const user = await deps.policyStore.getUserById(parsed.data.userId);
+    const user = await policyStore.getUserById(parsed.data.userId);
     if (!user) { writeJson(res, 404, { error: "User not found" }); return; }
-    await deps.policyStore.addUserToGroup(id, parsed.data.userId);
+    await policyStore.addUserToGroup(id, parsed.data.userId);
     recordAudit(deps.auditStore, req, { action: "group.member_add", targetType: "group", targetId: id, details: { userId: parsed.data.userId } });
     writeJson(res, 200, { ok: true });
   }, MANAGE);
 
   router.add("DELETE", "/api/admin/groups/:id/members/:userId", async (req, res, params) => {
-    if (!deps.policyStore) { writeJson(res, 501, { error: "Policy store not available" }); return; }
+    const policyStore = deps.policyStore;
+    if (!requireStore(policyStore, res, "Policy store not available")) return;
     const id = params["id"] ?? "";
     const userId = params["userId"] ?? "";
-    const removed = await deps.policyStore.removeUserFromGroup(id, userId);
+    const removed = await policyStore.removeUserFromGroup(id, userId);
     if (!removed) { writeJson(res, 404, { error: "Membership not found" }); return; }
     recordAudit(deps.auditStore, req, { action: "group.member_remove", targetType: "group", targetId: id, details: { userId } });
     res.statusCode = 204; res.end();
@@ -199,24 +207,26 @@ export function registerPolicyRoutes(router: Router, deps: PolicyRoutesDeps): vo
 
   // ─── Policies ───────────────────────────────────────────────────────────────
   router.add("GET", "/api/admin/policies", async (_req, res, _params) => {
-    if (!deps.policyStore) { writeJson(res, 501, { error: "Policy store not available" }); return; }
-    const policies = await deps.policyStore.listPolicies();
+    const policyStore = deps.policyStore;
+    if (!requireStore(policyStore, res, "Policy store not available")) return;
+    const policies = await policyStore.listPolicies();
     const withCounts = await Promise.all(policies.map(async (p) => ({
       ...serializePolicy(p),
-      ruleCount: (await deps.policyStore!.listPolicyRules(p.id)).length,
-      bindingCount: (await deps.policyStore!.listBindingsForPolicy(p.id)).length,
+      ruleCount: (await policyStore.listPolicyRules(p.id)).length,
+      bindingCount: (await policyStore.listBindingsForPolicy(p.id)).length,
     })));
     writeJson(res, 200, { policies: withCounts });
   }, MANAGE);
 
   router.add("POST", "/api/admin/policies", async (req, res, _params) => {
-    if (!deps.policyStore) { writeJson(res, 501, { error: "Policy store not available" }); return; }
+    const policyStore = deps.policyStore;
+    if (!requireStore(policyStore, res, "Policy store not available")) return;
     const parsed = policyCreateSchema.safeParse(await readBody(req));
     if (!parsed.success) { writeJson(res, 400, zodErrorBody(parsed.error, "Invalid policy payload")); return; }
     try {
-      const policy = await deps.policyStore.createPolicy({ name: parsed.data.name, ...(parsed.data.description !== undefined ? { description: parsed.data.description } : {}) });
+      const policy = await policyStore.createPolicy({ name: parsed.data.name, ...(parsed.data.description !== undefined ? { description: parsed.data.description } : {}) });
       if (parsed.data.rules && parsed.data.rules.length > 0) {
-        await deps.policyStore.setPolicyRules(policy.id, parsed.data.rules.map((r) => ({ permission: r.permission, resourceId: r.resourceId ?? null })));
+        await policyStore.setPolicyRules(policy.id, parsed.data.rules.map((r) => ({ permission: r.permission, resourceId: r.resourceId ?? null })));
       }
       recordAudit(deps.auditStore, req, { action: "policy.create", targetType: "policy", targetId: policy.id, details: { name: policy.name } });
       writeJson(res, 201, { policy: serializePolicy(policy) });
@@ -227,27 +237,29 @@ export function registerPolicyRoutes(router: Router, deps: PolicyRoutesDeps): vo
   }, MANAGE);
 
   router.add("GET", "/api/admin/policies/:id", async (_req, res, params) => {
-    if (!deps.policyStore) { writeJson(res, 501, { error: "Policy store not available" }); return; }
+    const policyStore = deps.policyStore;
+    if (!requireStore(policyStore, res, "Policy store not available")) return;
     const id = params["id"] ?? "";
-    const policy = await deps.policyStore.getPolicyById(id);
+    const policy = await policyStore.getPolicyById(id);
     if (!policy) { writeJson(res, 404, { error: "Policy not found" }); return; }
     const [rules, bindings] = await Promise.all([
-      deps.policyStore.listPolicyRules(id),
-      deps.policyStore.listBindingsForPolicy(id),
+      policyStore.listPolicyRules(id),
+      policyStore.listBindingsForPolicy(id),
     ]);
     writeJson(res, 200, { policy: { ...serializePolicy(policy), rules: rules.map(serializeRule), bindings: bindings.map(serializeBinding) } });
   }, MANAGE);
 
   router.add("PUT", "/api/admin/policies/:id", async (req, res, params) => {
-    if (!deps.policyStore) { writeJson(res, 501, { error: "Policy store not available" }); return; }
+    const policyStore = deps.policyStore;
+    if (!requireStore(policyStore, res, "Policy store not available")) return;
     const id = params["id"] ?? "";
-    const existing = await deps.policyStore.getPolicyById(id);
+    const existing = await policyStore.getPolicyById(id);
     if (!existing) { writeJson(res, 404, { error: "Policy not found" }); return; }
     if (existing.builtin) { writeJson(res, 409, { error: "Built-in policies cannot be modified" }); return; }
     const parsed = policyUpdateSchema.safeParse(await readBody(req));
     if (!parsed.success) { writeJson(res, 400, zodErrorBody(parsed.error, "Invalid policy payload")); return; }
     try {
-      const updated = await deps.policyStore.updatePolicy(id, {
+      const updated = await policyStore.updatePolicy(id, {
         ...(parsed.data.name !== undefined ? { name: parsed.data.name } : {}),
         ...(parsed.data.description !== undefined ? { description: parsed.data.description } : {}),
       });
@@ -261,43 +273,46 @@ export function registerPolicyRoutes(router: Router, deps: PolicyRoutesDeps): vo
   }, MANAGE);
 
   router.add("DELETE", "/api/admin/policies/:id", async (req, res, params) => {
-    if (!deps.policyStore) { writeJson(res, 501, { error: "Policy store not available" }); return; }
+    const policyStore = deps.policyStore;
+    if (!requireStore(policyStore, res, "Policy store not available")) return;
     const id = params["id"] ?? "";
-    const existing = await deps.policyStore.getPolicyById(id);
+    const existing = await policyStore.getPolicyById(id);
     if (!existing) { writeJson(res, 404, { error: "Policy not found" }); return; }
     if (existing.builtin) { writeJson(res, 409, { error: "Built-in policies cannot be deleted" }); return; }
-    await deps.policyStore.deletePolicy(id);
+    await policyStore.deletePolicy(id);
     recordAudit(deps.auditStore, req, { action: "policy.delete", targetType: "policy", targetId: id, details: { name: existing.name } });
     res.statusCode = 204; res.end();
   }, MANAGE);
 
   router.add("PUT", "/api/admin/policies/:id/rules", async (req, res, params) => {
-    if (!deps.policyStore) { writeJson(res, 501, { error: "Policy store not available" }); return; }
+    const policyStore = deps.policyStore;
+    if (!requireStore(policyStore, res, "Policy store not available")) return;
     const id = params["id"] ?? "";
-    const existing = await deps.policyStore.getPolicyById(id);
+    const existing = await policyStore.getPolicyById(id);
     if (!existing) { writeJson(res, 404, { error: "Policy not found" }); return; }
     if (existing.builtin) { writeJson(res, 409, { error: "Built-in policy rules cannot be modified" }); return; }
     const parsed = rulesSchema.safeParse(await readBody(req));
     if (!parsed.success) { writeJson(res, 400, zodErrorBody(parsed.error, "Invalid rules payload")); return; }
-    const rules = await deps.policyStore.setPolicyRules(id, parsed.data.rules.map((r) => ({ permission: r.permission, resourceId: r.resourceId ?? null })));
+    const rules = await policyStore.setPolicyRules(id, parsed.data.rules.map((r) => ({ permission: r.permission, resourceId: r.resourceId ?? null })));
     recordAudit(deps.auditStore, req, { action: "policy.rules_set", targetType: "policy", targetId: id, details: { ruleCount: rules.length } });
     writeJson(res, 200, { rules: rules.map(serializeRule) });
   }, MANAGE);
 
   router.add("POST", "/api/admin/policies/:id/bindings", async (req, res, params) => {
-    if (!deps.policyStore) { writeJson(res, 501, { error: "Policy store not available" }); return; }
+    const policyStore = deps.policyStore;
+    if (!requireStore(policyStore, res, "Policy store not available")) return;
     const id = params["id"] ?? "";
-    const policy = await deps.policyStore.getPolicyById(id);
+    const policy = await policyStore.getPolicyById(id);
     if (!policy) { writeJson(res, 404, { error: "Policy not found" }); return; }
     const parsed = bindingSchema.safeParse(await readBody(req));
     if (!parsed.success) { writeJson(res, 400, zodErrorBody(parsed.error, "Invalid binding payload")); return; }
     const { principalType, principalId } = parsed.data;
     const principalExists = principalType === "user"
-      ? (await deps.policyStore.getUserById(principalId)) !== null
-      : (await deps.policyStore.getGroupById(principalId)) !== null;
+      ? (await policyStore.getUserById(principalId)) !== null
+      : (await policyStore.getGroupById(principalId)) !== null;
     if (!principalExists) { writeJson(res, 404, { error: `${principalType} not found` }); return; }
     try {
-      const binding = await deps.policyStore.createBinding({ policyId: id, principalType, principalId });
+      const binding = await policyStore.createBinding({ policyId: id, principalType, principalId });
       recordAudit(deps.auditStore, req, { action: "policy.binding_add", targetType: "policy", targetId: id, details: { principalType, principalId } });
       writeJson(res, 201, { binding: serializeBinding(binding) });
     } catch (err) {
@@ -307,12 +322,13 @@ export function registerPolicyRoutes(router: Router, deps: PolicyRoutesDeps): vo
   }, MANAGE);
 
   router.add("DELETE", "/api/admin/policies/:id/bindings/:principalType/:principalId", async (req, res, params) => {
-    if (!deps.policyStore) { writeJson(res, 501, { error: "Policy store not available" }); return; }
+    const policyStore = deps.policyStore;
+    if (!requireStore(policyStore, res, "Policy store not available")) return;
     const id = params["id"] ?? "";
     const principalType = params["principalType"] ?? "";
     const principalId = params["principalId"] ?? "";
     if (principalType !== "user" && principalType !== "group") { writeJson(res, 400, { error: "principalType must be user or group" }); return; }
-    const removed = await deps.policyStore.deleteBinding(id, principalType, principalId);
+    const removed = await policyStore.deleteBinding(id, principalType, principalId);
     if (!removed) { writeJson(res, 404, { error: "Binding not found" }); return; }
     recordAudit(deps.auditStore, req, { action: "policy.binding_remove", targetType: "policy", targetId: id, details: { principalType, principalId } });
     res.statusCode = 204; res.end();

@@ -87,9 +87,9 @@ function extractGitlabIssue(payload: unknown): GitlabIssuePayload | null {
     : undefined;
   return {
     iid,
-    title: typeof a["title"] === "string" ? (a["title"] as string) : undefined,
-    description: typeof a["description"] === "string" ? (a["description"] as string) : undefined,
-    url: typeof a["url"] === "string" ? (a["url"] as string) : undefined,
+    title: typeof a["title"] === "string" ? (a["title"]) : undefined,
+    description: typeof a["description"] === "string" ? (a["description"]) : undefined,
+    url: typeof a["url"] === "string" ? (a["url"]) : undefined,
     projectKey: typeof projectKey === "string" ? projectKey : undefined,
   };
 }

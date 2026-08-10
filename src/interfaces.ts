@@ -32,6 +32,7 @@ export {
   CODE_REVIEW_STATES,
   CODE_REVIEW_TERMINAL_STATES,
   TASK_STATES,
+  TASK_WORKFLOW_BUCKETS,
   TERMINAL_STATES,
   type ChangePerRepository,
   type CodeGenState,
@@ -40,6 +41,7 @@ export {
   type Task,
   type TaskState,
   type TaskType,
+  type TaskWorkflowBucket,
 } from "./domain/tasks.js";
 
 // ─── Shared value types ───────────────────────────────────────────────────────
@@ -669,14 +671,14 @@ export interface WorkspaceRunner {
   runReviewInDocker?(
     handle: WorkspaceHandle,
     input: ReviewWorkspaceInput & { agentAdapter: AgentAdapter },
-    callbacks?: { onStderrChunk?: ((chunk: string) => void) | undefined } | undefined
+    callbacks?: { onStderrChunk?: ((chunk: string) => void) | undefined }
   ): Promise<{ rawOutput: string }>;
   /** Spawn the adapter container and return raw stdout/stderr. Used by ConfigurableAdapter.configure. */
   runAgentInDocker?(
     adapter: AgentAdapter,
     context: TaskContext,
     authEnv?: Record<string, string>,
-    callbacks?: { onStdoutChunk?: ((chunk: string) => void) | undefined; onStderrChunk?: ((chunk: string) => void) | undefined } | undefined
+    callbacks?: { onStdoutChunk?: ((chunk: string) => void) | undefined; onStderrChunk?: ((chunk: string) => void) | undefined }
   ): Promise<{ stdout: string; stderr: string }>;
   /** Run agent adapter inside the ephemeral execution context. */
   runAgent(handle: WorkspaceHandle, context: TaskContext, adapter?: AgentAdapter): Promise<AgentResult>;

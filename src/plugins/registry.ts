@@ -268,7 +268,7 @@ export interface ProviderDescriptor {
   readWorkspaceManifestFiles?: (
     config: unknown,
     repoKey: string,
-    revision?: string | undefined
+    revision?: string
   ) => Promise<WorkspaceManifestFile[]>;
   /**
    * Optional connection tester used by `PluginManager.testConnectionConfig`.

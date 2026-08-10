@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { getLogger } from "../logger.js";
-import { writeJson, readBody, asRecord, SECRET_MASK, parseConfig, zodErrorBody } from "./adminRouteUtils.js";
+import { writeJson, readBody, asRecord, SECRET_MASK, parseConfig, zodErrorBody, requireStore } from "./adminRouteUtils.js";
 import { recordAudit, type AuditCapableStore } from "./adminAudit.js";
 import {
   makeAgentId,
@@ -141,7 +141,7 @@ function mergePluginOAuthConfig(
 async function resolvePluginOAuthConfig(
   pluginType: ProviderId,
   body: Record<string, unknown>,
-  integrationStore?: Pick<IntegrationStore, "getIntegration"> | undefined
+  integrationStore?: Pick<IntegrationStore, "getIntegration">
 ): Promise<Record<string, unknown>> {
   const updates = asRecord(body["config"]);
   const integrationId = body["integrationId"];
@@ -225,7 +225,7 @@ export interface AgentDetail extends AgentSummary {
 /** Convert an AgentRecord to its summary API shape. */
 function toAgentSummary(agent: AgentRecord, projectCount: number): AgentSummary {
   const config = parseConfig(agent.modelConfigJson);
-  const model = typeof config["model"] === "string" ? (config["model"] as string) : null;
+  const model = typeof config["model"] === "string" ? (config["model"]) : null;
   return {
     id: agent.id,
     name: agent.name,
@@ -499,7 +499,7 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
 
   // ── Agent CRUD ─────────────────────────────────────────────────────────────
   router.add("GET", "/api/admin/agents", async (_req, res, _params) => {
-    if (!deps.agentStore) { writeJson(res, 501, { error: "Agent store not available" }); return; }
+    if (!requireStore(deps.agentStore, res, "Agent store not available")) return;
     const store = deps.agentStore;
     const agents = await store.listAgents();
     const projects = await store.listProjects();
@@ -509,8 +509,8 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
   }, { permission: "agent.read" });
 
   router.add("POST", "/api/admin/agents", async (req, res, _params) => {
-    if (!deps.agentStore) { writeJson(res, 501, { error: "Agent store not available" }); return; }
-    if (!deps.promptStore) { writeJson(res, 501, { error: "Prompt store not available" }); return; }
+    if (!requireStore(deps.agentStore, res, "Agent store not available")) return;
+    if (!requireStore(deps.promptStore, res, "Prompt store not available")) return;
     const store = deps.agentStore;
     const body = await readBody(req);
     if (!body) { writeJson(res, 400, { error: "Request body required" }); return; }
@@ -576,7 +576,7 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
 
   // /agents/:id/available-models has a distinct path shape from /agents/:id (anchored regex), so registration order does not matter here
   router.add("GET", "/api/admin/agents/:id/available-models", async (_req, res, params) => {
-    if (!deps.agentStore) { writeJson(res, 501, { error: "Agent store not available" }); return; }
+    if (!requireStore(deps.agentStore, res, "Agent store not available")) return;
     const id = makeAgentId(params["id"] ?? "");
     const agent = await deps.agentStore.getAgentById(id);
     if (!agent) { writeJson(res, 404, { error: "Agent not found" }); return; }
@@ -636,7 +636,7 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
   }, { permission: "agent.read", resourceParam: "id" });
 
   router.add("GET", "/api/admin/agents/:id", async (_req, res, params) => {
-    if (!deps.agentStore) { writeJson(res, 501, { error: "Agent store not available" }); return; }
+    if (!requireStore(deps.agentStore, res, "Agent store not available")) return;
     const store = deps.agentStore;
     const id = makeAgentId(params["id"] ?? "");
     const existing = await store.getAgentById(id);
@@ -646,8 +646,8 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
   }, { permission: "agent.read", resourceParam: "id" });
 
   router.add("PUT", "/api/admin/agents/:id", async (req, res, params) => {
-    if (!deps.agentStore) { writeJson(res, 501, { error: "Agent store not available" }); return; }
-    if (!deps.promptStore) { writeJson(res, 501, { error: "Prompt store not available" }); return; }
+    if (!requireStore(deps.agentStore, res, "Agent store not available")) return;
+    if (!requireStore(deps.promptStore, res, "Prompt store not available")) return;
     const store = deps.agentStore;
     const id = makeAgentId(params["id"] ?? "");
     const existing = await store.getAgentById(id);
@@ -722,7 +722,7 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
   }, { permission: "agent.write", resourceParam: "id" });
 
   router.add("DELETE", "/api/admin/agents/:id", async (req, res, params) => {
-    if (!deps.agentStore) { writeJson(res, 501, { error: "Agent store not available" }); return; }
+    if (!requireStore(deps.agentStore, res, "Agent store not available")) return;
     const store = deps.agentStore;
     const id = makeAgentId(params["id"] ?? "");
     const existing = await store.getAgentById(id);
@@ -749,7 +749,7 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
   }, { permission: "agent.delete", resourceParam: "id" });
 
   router.add("PATCH", "/api/admin/agents/:id/enable", async (req, res, params) => {
-    if (!deps.agentStore) { writeJson(res, 501, { error: "Agent store not available" }); return; }
+    if (!requireStore(deps.agentStore, res, "Agent store not available")) return;
     const store = deps.agentStore;
     const id = makeAgentId(params["id"] ?? "");
     const existing = await store.getAgentById(id);
@@ -761,7 +761,7 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
   }, { permission: "agent.operate", resourceParam: "id" });
 
   router.add("PATCH", "/api/admin/agents/:id/disable", async (req, res, params) => {
-    if (!deps.agentStore) { writeJson(res, 501, { error: "Agent store not available" }); return; }
+    if (!requireStore(deps.agentStore, res, "Agent store not available")) return;
     const store = deps.agentStore;
     const id = makeAgentId(params["id"] ?? "");
     const existing = await store.getAgentById(id);

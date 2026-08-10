@@ -346,15 +346,21 @@ export class CopilotAdapter implements AgentAdapter, ConfigurableAdapter {
   // ── authentication ────────────────────────────────────────────────────────
 
   /** Retrieve the GitHub OAuth token, preferring the encrypted session token from agent config. */
-  private async getGitHubOAuthToken(context: TaskContext): Promise<string> {
-    const encrypted = context.agentSession.encryptedSessionToken;
-    if (encrypted) {
-      return decryptToken(encrypted, getConfig().adminAuthSecret);
+  private getGitHubOAuthToken(context: TaskContext): Promise<string> {
+    // Not async: errors here (including decryptToken's) must surface as a
+    // rejected promise, not a synchronous throw, for await/`.catch()` callers.
+    try {
+      const encrypted = context.agentSession.encryptedSessionToken;
+      if (encrypted) {
+        return Promise.resolve(decryptToken(encrypted, getConfig().adminAuthSecret));
+      }
+      if (context.agentSession.githubToken) {
+        return Promise.resolve(context.agentSession.githubToken);
+      }
+      throw new Error("No Copilot session token or GitHub token available. Connect via OAuth in the admin dashboard.");
+    } catch (err) {
+      return Promise.reject(err instanceof Error ? err : new Error(typeof err === "string" ? err : JSON.stringify(err)));
     }
-    if (context.agentSession.githubToken) {
-      return context.agentSession.githubToken;
-    }
-    throw new Error("No Copilot session token or GitHub token available. Connect via OAuth in the admin dashboard.");
   }
 
   // ── container runner ──────────────────────────────────────────────────────
