@@ -15,7 +15,8 @@ async function migrate(): Promise<void> {
   log.info({ dbPath: config.databasePath }, "Initializing database...");
 
   try {
-    await SqliteStateStore.create(config.databasePath);
+    const store = await SqliteStateStore.create(config.databasePath);
+    store.close();
     log.info("✓ Database schema created/verified successfully");
     process.exit(0);
   } catch (err) {

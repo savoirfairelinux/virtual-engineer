@@ -1,3 +1,5 @@
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { describe, it, expect } from "vitest";
 import Database from "better-sqlite3";
 import { SqliteStateStore } from "../../src/state/stateStore.js";
@@ -8,8 +10,27 @@ function tempDbPath(): string {
   return tempDatabasePath("ve-migrations");
 }
 
+/** Open a separate, read-only-in-spirit connection to the store's DB file to inspect raw SQLite state without reaching into store internals. */
+function openRaw(dbPath: string): Database.Database {
+  return new Database(dbPath);
+}
+
+async function trackedMigrationCount(): Promise<number> {
+  interface Journal {
+    entries: Array<{ tag: string }>;
+  }
+  const journal = JSON.parse(
+    await readFile(join(process.cwd(), "drizzle", "meta", "_journal.json"), "utf8")
+  ) as Journal;
+  return journal.entries.length;
+}
+
 interface TableInfoRow {
   name: string;
+}
+
+interface CountRow {
+  count: number;
 }
 
 interface ColumnInfoRow {
@@ -21,20 +42,41 @@ interface ColumnInfoRow {
 }
 
 describe("Phase 2 migrations", () => {
-  it("creates the new tables on a fresh DB", async () => {
-    const store = await SqliteStateStore.create(tempDbPath());
+  it("records tracked migrations when creating a fresh database", async () => {
+    const dbPath = tempDbPath();
+    const store = await SqliteStateStore.create(dbPath);
     try {
-      const raw = (store as unknown as { raw: { prepare: (s: string) => { all: () => unknown[] } } }).raw;
-      const tables = raw.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as TableInfoRow[];
-      const names = new Set(tables.map((t) => t.name));
-      for (const expected of [
-        "agents",
-        "projects",
-        "project_integration_bindings",
-        "project_push_targets",
-        "app_concurrency",
-      ]) {
-        expect(names.has(expected), `missing table ${expected}`).toBe(true);
+      const raw = openRaw(dbPath);
+      try {
+        const row = raw.prepare("SELECT COUNT(*) AS count FROM __drizzle_migrations").get() as CountRow;
+        expect(row.count).toBe(await trackedMigrationCount());
+      } finally {
+        raw.close();
+      }
+    } finally {
+      store.close();
+    }
+  });
+
+  it("creates the new tables on a fresh DB", async () => {
+    const dbPath = tempDbPath();
+    const store = await SqliteStateStore.create(dbPath);
+    try {
+      const raw = openRaw(dbPath);
+      try {
+        const tables = raw.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as TableInfoRow[];
+        const names = new Set(tables.map((t) => t.name));
+        for (const expected of [
+          "agents",
+          "projects",
+          "project_integration_bindings",
+          "project_push_targets",
+          "app_concurrency",
+        ]) {
+          expect(names.has(expected), `missing table ${expected}`).toBe(true);
+        }
+      } finally {
+        raw.close();
       }
     } finally {
       store.close();
@@ -42,13 +84,17 @@ describe("Phase 2 migrations", () => {
   });
 
   it("does not create removed local skill configuration columns", async () => {
-    const store = await SqliteStateStore.create(tempDbPath());
+    const dbPath = tempDbPath();
+    const store = await SqliteStateStore.create(dbPath);
     try {
-      const raw = (store as unknown as { raw: { prepare: (s: string) => { all: () => unknown[] } } }).raw;
-      const projectColumns = raw.prepare("PRAGMA table_info(projects)").all() as ColumnInfoRow[];
-
-      expect(projectColumns.map((column) => column.name)).not.toContain("skill_discovery_enabled");
-      expect(projectColumns.map((column) => column.name)).not.toContain("local_skills_path");
+      const raw = openRaw(dbPath);
+      try {
+        const projectColumns = raw.prepare("PRAGMA table_info(projects)").all() as ColumnInfoRow[];
+        expect(projectColumns.map((column) => column.name)).not.toContain("skill_discovery_enabled");
+        expect(projectColumns.map((column) => column.name)).not.toContain("local_skills_path");
+      } finally {
+        raw.close();
+      }
     } finally {
       store.close();
     }
@@ -59,11 +105,30 @@ describe("Phase 2 migrations", () => {
     const legacy = new Database(dbPath);
     const now = Math.floor(Date.now() / 1000);
     legacy.exec(`
+      CREATE TABLE prompts (
+        id TEXT PRIMARY KEY,
+        label TEXT NOT NULL,
+        content TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE TABLE agents (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        type TEXT NOT NULL,
+        model_config_json TEXT NOT NULL DEFAULT '{}',
+        system_prompt_id TEXT REFERENCES prompts(id),
+        instructions_prompt_id TEXT REFERENCES prompts(id),
+        max_concurrent INTEGER NOT NULL DEFAULT 1,
+        enabled INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
       CREATE TABLE projects (
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
         type TEXT NOT NULL,
-        agent_id TEXT NOT NULL,
+        agent_id TEXT NOT NULL REFERENCES agents(id),
         agent_override_json TEXT,
         post_clone_script TEXT NOT NULL DEFAULT '',
         skill_discovery_enabled INTEGER NOT NULL DEFAULT 0,
@@ -74,6 +139,11 @@ describe("Phase 2 migrations", () => {
       );
     `);
     legacy.prepare(`
+      INSERT INTO agents (
+        id, name, type, model_config_json, enabled, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run("legacy-agent", "Legacy agent", "coding", "{}", 1, now, now);
+    legacy.prepare(`
       INSERT INTO projects (
         id, name, type, agent_id, skill_discovery_enabled, enabled, created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -82,10 +152,14 @@ describe("Phase 2 migrations", () => {
 
     const store = await SqliteStateStore.create(dbPath);
     try {
-      const raw = (store as unknown as { raw: { prepare: (s: string) => { all: () => unknown[] } } }).raw;
-      const projectColumns = raw.prepare("PRAGMA table_info(projects)").all() as ColumnInfoRow[];
-      expect(projectColumns.map((column) => column.name)).not.toContain("skill_discovery_enabled");
-      expect(projectColumns.map((column) => column.name)).not.toContain("local_skills_path");
+      const raw = openRaw(dbPath);
+      try {
+        const projectColumns = raw.prepare("PRAGMA table_info(projects)").all() as ColumnInfoRow[];
+        expect(projectColumns.map((column) => column.name)).not.toContain("skill_discovery_enabled");
+        expect(projectColumns.map((column) => column.name)).not.toContain("local_skills_path");
+      } finally {
+        raw.close();
+      }
 
       const project = await store.getProjectById(makeProjectId("legacy-project"));
       expect(project).toMatchObject({
@@ -99,17 +173,22 @@ describe("Phase 2 migrations", () => {
   });
 
   it("adds discovered_resources_json + discovered_at to integrations and project_id to tasks", async () => {
-    const store = await SqliteStateStore.create(tempDbPath());
+    const dbPath = tempDbPath();
+    const store = await SqliteStateStore.create(dbPath);
     try {
-      const raw = (store as unknown as { raw: { prepare: (s: string) => { all: () => unknown[] } } }).raw;
-      const intCols = raw.prepare("PRAGMA table_info(integrations)").all() as ColumnInfoRow[];
-      const intColNames = new Set(intCols.map((c) => c.name));
-      expect(intColNames.has("discovered_resources_json")).toBe(true);
-      expect(intColNames.has("discovered_at")).toBe(true);
+      const raw = openRaw(dbPath);
+      try {
+        const intCols = raw.prepare("PRAGMA table_info(integrations)").all() as ColumnInfoRow[];
+        const intColNames = new Set(intCols.map((c) => c.name));
+        expect(intColNames.has("discovered_resources_json")).toBe(true);
+        expect(intColNames.has("discovered_at")).toBe(true);
 
-      const taskCols = raw.prepare("PRAGMA table_info(tasks)").all() as ColumnInfoRow[];
-      const taskColNames = new Set(taskCols.map((c) => c.name));
-      expect(taskColNames.has("project_id")).toBe(true);
+        const taskCols = raw.prepare("PRAGMA table_info(tasks)").all() as ColumnInfoRow[];
+        const taskColNames = new Set(taskCols.map((c) => c.name));
+        expect(taskColNames.has("project_id")).toBe(true);
+      } finally {
+        raw.close();
+      }
     } finally {
       store.close();
     }
@@ -256,14 +335,19 @@ describe("Phase 2 migrations", () => {
   });
 
   it("app_concurrency CHECK constraint blocks non-'global' ids", async () => {
-    const store = await SqliteStateStore.create(tempDbPath());
+    const dbPath = tempDbPath();
+    const store = await SqliteStateStore.create(dbPath);
     try {
-      const raw = (store as unknown as { raw: { prepare: (s: string) => { run: (...args: unknown[]) => void } } }).raw;
-      expect(() =>
-        raw
-          .prepare("INSERT INTO app_concurrency (id, max_concurrent, updated_at) VALUES (?, ?, ?)")
-          .run("not-global", 1, Math.floor(Date.now() / 1000))
-      ).toThrow();
+      const raw = openRaw(dbPath);
+      try {
+        expect(() =>
+          raw
+            .prepare("INSERT INTO app_concurrency (id, max_concurrent, updated_at) VALUES (?, ?, ?)")
+            .run("not-global", 1, Math.floor(Date.now() / 1000))
+        ).toThrow();
+      } finally {
+        raw.close();
+      }
     } finally {
       store.close();
     }

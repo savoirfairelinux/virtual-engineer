@@ -34,7 +34,7 @@ The repo-wide entry point for Copilot is [.github/copilot-instructions.md](../co
 ## Quick task → doc map
 
 - **Add or change a state** → [state-machine.md](state-machine.md) + [modules/orchestrator.md](modules/orchestrator.md).
-- **Add a column or table** → [database.md](database.md), update `src/state/schema.ts`, run `npm run db:generate`.
+- **Add a column, table, index, or constraint** → [database.md](database.md), update `src/state/schema.ts`, run `npm run db:generate`, and commit the new immutable `drizzle/` SQL + metadata.
 - **Add an env var** → [configuration.md](configuration.md), update `src/config.ts` (`ConfigSchema` + `fromEnv`).
 - **Add a new provider** → matching `modules/*.md` (connectors / vcs / plugins / agents).
 - **Change repository/workspace discovery** → [modules/workspace.md](modules/workspace.md) + [modules/plugins.md](modules/plugins.md).
