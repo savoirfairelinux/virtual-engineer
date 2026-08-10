@@ -30,23 +30,28 @@ Each agent cycle runs in an ephemeral Docker container hardened with:
 
 The host owns all push/review credentials and orchestrates network operations; the agent container never holds provider secrets.
 
-### Repository Skill Discovery
+### Project Skill Discovery
 
-Skill discovery is a **per-project** setting (`projects.skill_discovery_enabled`, default **off**) available to both coding and review projects — chosen in the project-setup form, not an environment flag. When enabled, the in-container agent loads team-defined skills from `<repo>/.github/skills` in the cloned repository. Skills are repository-controlled instructions executed by the agent, so they are a **prompt-injection surface**: a malicious or compromised repo could steer the agent. Mitigations:
+Every coding and review run uses the selected agent's native repository behavior. VE does not define a local skill path, scan manifests, or provide a disable switch. Remote skill sources are separate optional project configuration (`projects.skill_sources_json`) and are fetched with `npx skills` into `/ve-home` only when configured. Skills are instructions executed by the agent, so a malicious repository or remote skill source could steer the agent. Mitigations:
 
-- The setting is **disabled by default**; enable it only for repositories you trust.
-- Only skills are loaded — MCP discovery (`enableConfigDiscovery`) stays off, so untrusted `.mcp.json` / `.vscode/mcp.json` files are never honoured.
+- Run Virtual Engineer only against repositories whose agent configuration, skills, MCP files, and change-review trust boundary you accept.
+- Remote skill sources default to an empty list and must be configured explicitly; add only sources you trust.
+- Remote skills install globally in the agent home volume (`/ve-home`), not into the cloned repository. This keeps review workspaces read-only.
+- SSH remote skill sources reuse the orchestrator process `SSH_AUTH_SOCK` only when such a source is configured; missing SSH agent access fails the run instead of silently skipping skills. Configured key and known-hosts files must live under `/app/secrets` (container deployment) or the repository `secrets/` directory (host development). Canonical-path validation blocks traversal and symlink escapes before host-file reads.
+- Copilot enables native config discovery, which couples repository skill discovery with repository MCP configuration discovery. VE permission handlers still mediate requested tools, but repository MCP servers may be initialized; trust the repository before running it.
+- Claude enables native user/project settings and skills while retaining `strictMcpConfig=true`, so Claude ignores repository MCP server configuration and accepts only VE-provided MCP servers.
+- The internal VE stdio MCP server exposes only `ve_submit_review` or `ve_submit_changes`, validates one bounded JSON payload, and writes it to the ephemeral agent-home volume with mode `0600`. It has no network tools, database access, Docker socket, push/review credentials, or task-state operations.
 - The agent still runs inside the hardened, network-isolated container described above and never holds provider push/review credentials.
 
 ### Admin API Authentication
 
 The admin dashboard is protected by account-based authentication (username/password, DB-backed sessions). Admin users are managed via the Users tab (admin role required). Session tokens are opaque random values stored as SHA-256 hashes in the database. Bind the admin port to `127.0.0.1` in production.
 
-`ADMIN_AUTH_SECRET` is an optional encryption key used to encrypt OAuth session tokens stored in the database. It is not used for admin authentication.
+`ADMIN_AUTH_SECRET` is required before provider credentials can be created or loaded from the database. Credentials are encrypted with AES-256-GCM in a versioned `veenc:v1:` envelope. Startup fails closed if the secret is absent, if marked ciphertext cannot be authenticated, or if probable legacy unprefixed AES ciphertext cannot be decrypted with the configured secret. Legacy `plain:` and valid unprefixed AES values are rewritten into the versioned format during startup migration. `ADMIN_AUTH_SECRET` is not used for admin authentication.
 
 ### Secrets Storage
 
-Provider credentials are stored encrypted in SQLite and masked on all admin API reads. Webhook secrets support per-integration rotation and are never returned in plaintext after initial creation.
+Provider credentials are stored encrypted in SQLite and masked on all admin API reads. New plaintext credential writes are rejected. Webhook secrets support per-integration rotation and are never returned in plaintext after initial creation.
 
 ### Content Security Policy
 

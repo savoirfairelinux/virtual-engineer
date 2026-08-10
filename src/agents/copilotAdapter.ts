@@ -1,6 +1,4 @@
 import { randomUUID } from "crypto";
-import { homedir } from "os";
-import { join, resolve } from "path";
 import type {
   AgentAdapter,
   ConfigurableAdapter,
@@ -19,8 +17,19 @@ import { makeExternalChangeId } from "../interfaces.js";
 import { getLogger } from "../logger.js";
 import { DEFAULT_COPILOT_MODEL } from "../copilotModel.js";
 import { decryptToken } from "../utils/encryption.js";
+import { assertPromptRole } from "../utils/promptRole.js";
 import { getConfig } from "../config.js";
-import { agentLogBus, pushToTaskBuffer } from "./agentEventBus.js";
+import {
+  extractToolAuthorization,
+  toolListEnv,
+} from "./toolAuthorization.js";
+import {
+  buildCodegenContainerSpec,
+  buildReviewContainerSpec as buildSharedReviewContainerSpec,
+  systemPromptEnv,
+} from "./containerSpecBuilders.js";
+import { createStderrPipeline } from "./agentStderrPipeline.js";
+import type { StderrParseState } from "./agentStderrPipeline.js";
 
 // Re-export for backward compatibility — callers that import from copilotAdapter continue to work.
 export { agentLogBus, getTaskEventBuffer, clearTaskEventBuffer } from "./agentEventBus.js";
@@ -63,12 +72,6 @@ interface DockerInvocationResult {
 interface DockerInvocationCallbacks {
   onStdoutChunk?: ((chunk: string) => void) | undefined;
   onStderrChunk?: ((chunk: string) => void) | undefined;
-}
-
-interface StderrParseState {
-  buffer: string;
-  plainLogLines: string[];
-  agentEvents: AgentLogEvent[];
 }
 
 type DockerInvoker = (
@@ -170,6 +173,23 @@ export function buildCodegenUserPrompt(
     lines.push("");
   }
 
+  // Only origins VE cannot push to need patch guidance; internal and forked components are edited normally.
+  const vendorComponents = (context.agentSession.vendorComponents ?? [])
+    .filter((entry) => entry.origin === "patch_required" || entry.origin === "ambiguous");
+  if (vendorComponents.length > 0) {
+    lines.push("### Vendored / External Components");
+    lines.push("These paths declare third-party sources that VE cannot push to. Do NOT edit the upstream source; add a patch through the mechanism the declaring file already uses (for example a `.bbappend` plus patch file, or the contrib rules).");
+    for (const entry of vendorComponents) {
+      const label = entry.origin === "ambiguous" ? "ambiguous — confirm before changing" : "patch required";
+      // One manifest often declares many components, so name the component and keep the manifest as context.
+      const subject = entry.localPath && entry.localPath !== entry.sourcePath
+        ? `\`${entry.localPath}\` (declared in \`${entry.sourcePath}\`)`
+        : `\`${entry.sourcePath}\``;
+      lines.push(`- ${subject} (${label})`);
+    }
+    lines.push("");
+  }
+
   lines.push("### Instructions");
   lines.push(instructionsPromptContent);
   lines.push("");
@@ -258,67 +278,24 @@ export class CopilotAdapter implements AgentAdapter, ConfigurableAdapter {
     // filters to a minimal whitelist — DB credentials and API tokens are never exposed.
 
     const copilotModel = context.agentSession.copilotModel ?? this.config.model;
+    const reasoningEffort = session.providerOptions?.["reasoningEffort"];
 
-    const env: Record<string, string> = {
+    const providerEnv: Record<string, string> = {
       ...authEnv,
       COPILOT_MODEL: copilotModel,
-      ...(session.copilotReasoningEffort !== undefined
-        ? { COPILOT_REASONING_EFFORT: session.copilotReasoningEffort }
+      ...(typeof reasoningEffort === "string" && reasoningEffort.trim()
+        ? { COPILOT_REASONING_EFFORT: reasoningEffort.trim() }
         : {}),
-      GIT_AUTHOR_NAME: session.gitAuthorName,
-      GIT_AUTHOR_EMAIL: session.gitAuthorEmail,
-      GIT_COMMITTER_NAME: session.gitAuthorName,
-      GIT_COMMITTER_EMAIL: session.gitAuthorEmail,
-      TASK_ID: context.taskId,
-      MAX_CONTEXT_BYTES: String(this.config.maxRepositoryContextBytes),
-      MAX_COMMITS_PER_CYCLE: String(this.config.maxCommitsPerCycle ?? 10),
-      ...(session.repositoryMap !== undefined
-        ? { REPOSITORY_MAP_JSON: JSON.stringify(session.repositoryMap) }
-        : {}),
-      ...(session.existingChangeId !== undefined
-        ? { ROOT_CHANGE_ID: session.existingChangeId }
-        : {}),
-      ...(session.perRepoChangeIds !== undefined
-        ? { PER_REPO_CHANGE_IDS_JSON: JSON.stringify(session.perRepoChangeIds) }
-        : {}),
-      ...(session.skillDiscoveryEnabled ? { SKILL_DISCOVERY: "1" } : {}),
+      ...toolListEnv("copilot", extractToolAuthorization(session.providerOptions)),
     };
 
-    const additionalDockerArgs = [
-      "--read-only",
-      "--cap-drop",
-      "ALL",
-      "--security-opt",
-      "no-new-privileges:true",
-      // On SELinux hosts (e.g. Fedora/RHEL) Docker applies the svirt_lxc_net_t
-      // confinement which denies mprotect(PROT_READ) during glibc RELRO for the
-      // Copilot CLI native binary (copilot-linux-x64). label=disable turns off
-      // SELinux confinement for this container only.
-      "--security-opt",
-      "label=disable",
-      "--tmpfs",
-      // noexec is intentionally omitted: the Copilot CLI dlopen's pty.node into
-      // /ve-home (a real bind-mount), not /tmp. /tmp is only ephemeral scratch space
-      // that never needs mmap(PROT_EXEC). Under SELinux, noexec on tmpfs also blocks
-      // mmap(PROT_EXEC), which is why /ve-home uses a bind-mount with the :Z label.
-      "/tmp:rw,nosuid,size=256m",
-    ];
-
-    const resolvedPromptsDir = this.config.promptsDir
-      ? this.resolvePath(this.config.promptsDir)
-      : null;
-    if (resolvedPromptsDir) {
-      additionalDockerArgs.push("-v", `${resolvedPromptsDir}:/ve-prompts:ro,Z`);
-      env["PROMPTS_DIR"] = "/ve-prompts";
-    }
-
-    return {
-      image: session.agentContainerImage,
-      env,
-      command: ["node", "/app/agent-worker/dist/index.js"],
-      additionalDockerArgs,
+    return buildCodegenContainerSpec(context, {
+      providerEnv,
+      maxRepositoryContextBytes: this.config.maxRepositoryContextBytes,
+      maxCommitsPerCycle: this.config.maxCommitsPerCycle,
+      promptsDir: this.config.promptsDir,
       egress: COPILOT_EGRESS,
-    };
+    });
   }
 
   /** Builds a container spec for review mode (REVIEW_MODE=1). Reads prompt from /ve-home/user-prompt.txt. */
@@ -326,48 +303,25 @@ export class CopilotAdapter implements AgentAdapter, ConfigurableAdapter {
     input: ReviewWorkspaceInput,
     authEnv: Record<string, string> = {}
   ): AdapterContainerSpec {
-    const systemPromptEnv = /[\r\n]/u.test(input.systemPrompt)
-      ? { SYSTEM_PROMPT_BASE64: Buffer.from(input.systemPrompt, "utf8").toString("base64") }
-      : { SYSTEM_PROMPT: input.systemPrompt };
-    const env: Record<string, string> = {
+    const nativeReview = input.reviewStrategy === "copilot_native";
+    const reasoningEffort = input.providerOptions?.["reasoningEffort"];
+    const providerEnv: Record<string, string> = {
       ...authEnv,
       GITHUB_TOKEN: input.agentToken,
-      COPILOT_MODEL: input.model ?? this.config.model,
-      ...(input.reasoningEffort !== undefined
-        ? { COPILOT_REASONING_EFFORT: input.reasoningEffort }
+      ...(!nativeReview ? { COPILOT_MODEL: input.model ?? this.config.model } : {}),
+      ...(!nativeReview && typeof reasoningEffort === "string" && reasoningEffort.trim()
+        ? { COPILOT_REASONING_EFFORT: reasoningEffort.trim() }
         : {}),
-      REVIEW_MODE: "1",
-      // Prompt file is mounted at /ve-home to avoid conflicting with the
-      // --tmpfs /tmp mount (bind mounts under a tmpfs can be shadowed).
-      USER_PROMPT_FILE: "/ve-home/user-prompt.txt",
-      ...systemPromptEnv,
-      ...(input.skillDiscoveryEnabled ? { SKILL_DISCOVERY: "1" } : {}),
+      ...toolListEnv("copilot", extractToolAuthorization(input.providerOptions)),
+      ...(input.reviewOutputSchema !== undefined
+        ? { REVIEW_OUTPUT_SCHEMA: JSON.stringify(input.reviewOutputSchema) }
+        : {}),
     };
 
-    const additionalDockerArgs = [
-      "--read-only",
-      "--cap-drop",
-      "ALL",
-      "--security-opt",
-      "no-new-privileges:true",
-      // On SELinux hosts (e.g. Fedora/RHEL) Docker applies the svirt_lxc_net_t
-      // confinement which denies mprotect(PROT_READ) during glibc RELRO for the
-      // Copilot CLI native binary (copilot-linux-x64). label=disable turns off
-      // SELinux confinement for this container only. apparmor/seccomp are not
-      // needed here — the docker-default profiles already allow mprotect.
-      "--security-opt",
-      "label=disable",
-      "--tmpfs",
-      "/tmp:rw,nosuid,size=256m",
-    ];
-
-    return {
-      image: input.containerImage ?? "virtual-engineer-workspace:latest",
-      env,
-      command: ["node", "/app/agent-worker/dist/index.js"],
-      additionalDockerArgs,
+    return buildSharedReviewContainerSpec(input, {
+      providerEnv,
       egress: COPILOT_EGRESS,
-    };
+    });
   }
 
   /** Extend buildContainerSpec with resolved system and instructions prompt content. */
@@ -379,13 +333,13 @@ export class CopilotAdapter implements AgentAdapter, ConfigurableAdapter {
     const promptStore = this.promptStore;
 
     if (!promptStore) {
-      return spec;
+      throw new Error("Prompt store is required for agent execution");
     }
 
-    const systemPromptId = context.systemPromptId === undefined ? "system_generic_code" : context.systemPromptId;
-    const instructionsPromptId = context.instructionsPromptId === undefined
-      ? "instructions_generic_code"
-      : context.instructionsPromptId;
+    const systemPromptId = context.systemPromptId;
+    const instructionsPromptId = context.instructionsPromptId;
+    if (!systemPromptId) throw new Error("System prompt is required for agent execution");
+    if (!instructionsPromptId) throw new Error("Instructions prompt is required for agent execution");
     const promptIds = [...new Set([
       systemPromptId,
       instructionsPromptId,
@@ -399,18 +353,13 @@ export class CopilotAdapter implements AgentAdapter, ConfigurableAdapter {
       ? promptsById.get(instructionsPromptId) ?? null
       : null;
 
-    if (systemPrompt) {
-      if (/[\r\n]/u.test(systemPrompt.content)) {
-        delete spec.env["SYSTEM_PROMPT"];
-        spec.env["SYSTEM_PROMPT_BASE64"] = Buffer.from(systemPrompt.content, "utf8").toString("base64");
-      } else {
-        spec.env["SYSTEM_PROMPT"] = systemPrompt.content;
-      }
-    }
+    if (!systemPrompt) throw new Error(`System prompt '${systemPromptId}' not found`);
+    if (!instructionsPrompt) throw new Error(`Instructions prompt '${instructionsPromptId}' not found`);
+    assertPromptRole(systemPrompt, "system");
+    assertPromptRole(instructionsPrompt, "instructions");
 
-    if (instructionsPrompt) {
-      spec.userPromptContent = buildCodegenUserPrompt(context, instructionsPrompt.content);
-    }
+    Object.assign(spec.env, systemPromptEnv(systemPrompt.content));
+    spec.userPromptContent = buildCodegenUserPrompt(context, instructionsPrompt.content);
 
     return spec;
   }
@@ -418,15 +367,21 @@ export class CopilotAdapter implements AgentAdapter, ConfigurableAdapter {
   // ── authentication ────────────────────────────────────────────────────────
 
   /** Retrieve the GitHub OAuth token, preferring the encrypted session token from agent config. */
-  private async getGitHubOAuthToken(context: TaskContext): Promise<string> {
-    const encrypted = context.agentSession.encryptedSessionToken;
-    if (encrypted) {
-      return decryptToken(encrypted, getConfig().adminAuthSecret);
+  private getGitHubOAuthToken(context: TaskContext): Promise<string> {
+    // Not async: errors here (including decryptToken's) must surface as a
+    // rejected promise, not a synchronous throw, for await/`.catch()` callers.
+    try {
+      const encrypted = context.agentSession.encryptedSessionToken;
+      if (encrypted) {
+        return Promise.resolve(decryptToken(encrypted, getConfig().adminAuthSecret));
+      }
+      if (context.agentSession.githubToken) {
+        return Promise.resolve(context.agentSession.githubToken);
+      }
+      throw new Error("No Copilot session token or GitHub token available. Connect via OAuth in the admin dashboard.");
+    } catch (err) {
+      return Promise.reject(err instanceof Error ? err : new Error(typeof err === "string" ? err : JSON.stringify(err)));
     }
-    if (context.agentSession.githubToken) {
-      return context.agentSession.githubToken;
-    }
-    throw new Error("No Copilot session token or GitHub token available. Connect via OAuth in the admin dashboard.");
   }
 
   // ── container runner ──────────────────────────────────────────────────────
@@ -437,23 +392,33 @@ export class CopilotAdapter implements AgentAdapter, ConfigurableAdapter {
     githubToken: string,
     changeId: ExternalChangeId
   ): Promise<AgentResult> {
-    const stderrState: StderrParseState = {
-      buffer: "",
-      plainLogLines: [],
-      agentEvents: [],
-    };
-    const invocation = await this.invokeAgentContainer(context, githubToken, {
-      onStderrChunk: (chunk) => {
-        this.consumeStderrChunk(context, stderrState, chunk);
-      },
+    const stderrPipeline = createStderrPipeline(context, {
+      adapterName: "copilot",
+      log,
+      onEvent: (event) => this.logLiveAgentEvent(context, event),
     });
-    this.flushStderrBuffer(context, stderrState);
+    let invocation: DockerInvocationResult;
+    try {
+      invocation = await this.invokeAgentContainer(context, githubToken, {
+        onStderrChunk: (chunk) => {
+          stderrPipeline.consumeChunk(chunk);
+        },
+      });
+    } catch (err) {
+      stderrPipeline.flush();
+      if (stderrPipeline.state.agentEvents.length === 0 && stderrPipeline.state.plainLogLines.length === 0) {
+        throw err;
+      }
+      const message = err instanceof Error ? err.message : String(err);
+      return this.setupFailureResult(message, stderrPipeline.state);
+    }
+    stderrPipeline.flush();
 
     const result = await this.parseAgentResult(
       context,
       invocation.stdout,
       invocation.stderr,
-      stderrState
+      stderrPipeline.state
     );
 
     // Agent-created commits (multi-commit protocol): skip host commit processing.
@@ -476,6 +441,22 @@ export class CopilotAdapter implements AgentAdapter, ConfigurableAdapter {
     return result;
   }
 
+  private setupFailureResult(message: string, stderrState: StderrParseState): AgentResult {
+    const plainLogs = stderrState.plainLogLines.join("\n");
+    return {
+      status: "failed",
+      modifiedFiles: [],
+      summary: "Agent setup failed before container output",
+      agentLogs: [plainLogs, message].filter(Boolean).join("\n"),
+      agentEvents: stderrState.agentEvents,
+      metadata: {
+        adapter: "copilot",
+        setupError: true,
+        error: message.slice(0, 300),
+      },
+    };
+  }
+
   /** Delegate Docker invocation to the registered dockerInvoker, passing auth env. */
   private async invokeAgentContainer(
     context: TaskContext,
@@ -496,14 +477,18 @@ export class CopilotAdapter implements AgentAdapter, ConfigurableAdapter {
     stderr: string,
     stderrState?: StderrParseState
   ): Promise<AgentResult> | AgentResult {
-    const parseState = stderrState ?? {
-      buffer: "",
-      plainLogLines: [],
-      agentEvents: [],
-    };
-    if (!stderrState) {
-      this.consumeStderrChunk(context, parseState, stderr);
-      this.flushStderrBuffer(context, parseState);
+    let parseState: StderrParseState;
+    if (stderrState) {
+      parseState = stderrState;
+    } else {
+      const fallbackPipeline = createStderrPipeline(context, {
+        adapterName: "copilot",
+        log,
+        onEvent: (event) => this.logLiveAgentEvent(context, event),
+      });
+      fallbackPipeline.consumeChunk(stderr);
+      fallbackPipeline.flush();
+      parseState = fallbackPipeline.state;
     }
 
     const plainLogs = parseState.plainLogLines.join("\n");
@@ -578,76 +563,6 @@ export class CopilotAdapter implements AgentAdapter, ConfigurableAdapter {
       || output.includes("Failed to load native module: pty.node");
   }
 
-  /** Accumulate a stderr chunk into the line buffer and flush complete lines for processing. */
-  private consumeStderrChunk(
-    context: TaskContext,
-    state: StderrParseState,
-    chunk: string
-  ): void {
-    state.buffer += chunk;
-    const lines = state.buffer.split(/\r?\n/);
-    state.buffer = lines.pop() ?? "";
-    for (const line of lines) {
-      this.processStderrLine(context, state, line);
-    }
-  }
-
-  /** Flush any remaining buffered stderr content as a final line. */
-  private flushStderrBuffer(context: TaskContext, state: StderrParseState): void {
-    if (!state.buffer) {
-      return;
-    }
-
-    this.processStderrLine(context, state, state.buffer);
-    state.buffer = "";
-  }
-
-  /** Parse one stderr line as a VE event JSON or plain log, emitting to the live event bus. */
-  private processStderrLine(
-    context: TaskContext,
-    state: StderrParseState,
-    line: string
-  ): void {
-    if (!line) {
-      return;
-    }
-
-    try {
-      const parsed = JSON.parse(line) as Record<string, unknown>;
-      if (parsed["__ve_event"] === true) {
-        const event: AgentLogEvent = {
-          type: typeof parsed["type"] === "string" ? parsed["type"] : "unknown",
-          timestamp: typeof parsed["ts"] === "string" ? parsed["ts"] : new Date().toISOString(),
-          data: parsed["data"],
-          taskId: context.taskId,
-          cycleNumber: context.cycleNumber,
-        };
-        state.agentEvents.push(event);
-        this.logLiveAgentEvent(context, event);
-        pushToTaskBuffer(event);
-        agentLogBus.emit("event", event);
-        return;
-      }
-    } catch {
-      // plain stderr line
-    }
-
-    state.plainLogLines.push(line);
-    const stderrEvent: AgentLogEvent = {
-      type: "stderr.line",
-      timestamp: new Date().toISOString(),
-      data: { line },
-      taskId: context.taskId,
-      cycleNumber: context.cycleNumber,
-    };
-    pushToTaskBuffer(stderrEvent);
-    agentLogBus.emit("event", stderrEvent);
-    log.info(
-      { taskId: context.taskId, cycle: context.cycleNumber, line },
-      "copilot adapter: live stderr"
-    );
-  }
-
   /** Log a structured agent event at debug level for high-frequency types, info for others. */
   private logLiveAgentEvent(context: TaskContext, event: AgentLogEvent): void {
     if (event.type === "assistant.streaming_delta" || event.type === "session.usage_info") {
@@ -672,10 +587,4 @@ export class CopilotAdapter implements AgentAdapter, ConfigurableAdapter {
     return makeExternalChangeId(`I${uuid}${uuid.slice(0, 8)}`);
   }
 
-  /** Resolve a path string, expanding a leading `~/` to the current user's home directory. */
-  private resolvePath(value: string): string {
-    if (value.startsWith("~/")) return join(homedir(), value.slice(2));
-    if (value === "~") return homedir();
-    return resolve(value);
-  }
 }

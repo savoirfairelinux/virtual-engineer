@@ -24,6 +24,7 @@ import {
   GITLAB_COM_BASE_URL,
 } from "./gitlabOAuth.js";
 import { getGitLabAccessToken } from "../../utils/gitlabAuth.js";
+import { readGitLabWorkspaceManifestFiles } from "../../workspace/repositoryManifestAccess.js";
 
 const log = getLogger("gitlab-descriptor");
 
@@ -117,6 +118,15 @@ export const gitlabDescriptor: ProviderDescriptor = {
     });
     return mrConnector.listBranches(repoKey);
   },
+  readWorkspaceManifestFiles: async (config, repoKey, revision) => {
+    const parsed = gitlabConfigSchema.parse(config);
+    return readGitLabWorkspaceManifestFiles({
+      baseUrl: parsed.baseUrl ?? GITLAB_COM_BASE_URL,
+      token: getGitLabAccessToken(parsed),
+      repoKey,
+      ...(revision !== undefined ? { revision } : {}),
+    });
+  },
   testConnection: async (config) => {
     const cfg = config as Record<string, unknown>;
     const result = await testGitLabConnection(cfg);
@@ -157,8 +167,6 @@ export const gitlabDescriptor: ProviderDescriptor = {
       intake: ["polling", "webhook"],
     },
     code_review: {
-      systemPromptId: "system_gitlab_review",
-      userPromptId: "user_gitlab_review",
       createConnector: (config: unknown, _integration: Integration, context?: IntegrationBindingContext) => {
         const parsed = gitlabConfigSchema.parse(config);
         return new GitLabMergeRequestConnector({
@@ -174,8 +182,6 @@ export const gitlabDescriptor: ProviderDescriptor = {
         const host = new URL(baseUrl).host;
 
         return {
-          systemPromptId: "system_gitlab_review",
-          userPromptId: "user_gitlab_review",
           provider: new GitLabMergeRequestReviewProvider({
             baseUrl,
             projectId: UNBOUND_GITLAB_PROJECT_ID,
@@ -199,7 +205,7 @@ export const gitlabDescriptor: ProviderDescriptor = {
       intake: ["webhook"],
     },
     source_control: {
-      createVcsConnector: (cfg: Record<string, unknown>, _integration: Integration, context?: IntegrationBindingContext) => {
+      createVcsConnector: (cfg: Record<string, unknown>, _integration: Integration, context, runtime) => {
         const parsed = gitlabConfigSchema.parse(cfg);
         const targetBranch = context?.targetBranch ?? parsed.targetBranch;
         return new GitLabVcsConnector({
@@ -209,7 +215,7 @@ export const gitlabDescriptor: ProviderDescriptor = {
           gitAuthorName: parsed.gitAuthorName,
           gitAuthorEmail: parsed.gitAuthorEmail,
           ...(targetBranch !== undefined ? { targetBranch } : {}),
-        });
+        }, runtime?.gitRunner);
       },
     },
   },

@@ -29,15 +29,15 @@ Thank you for your interest in contributing! This document covers how to set up 
 ### Prerequisites
 
 | Tool | Minimum | Notes |
-|------|---------|-------|
-| Node.js | 20 LTS | Orchestrator runtime |
+| --- | --- | --- |
+| Node.js | 22 | Orchestrator runtime |
 | Docker | 24 | Agent container execution |
-| GitHub Copilot | — | Required for code-gen/review tasks (Copilot subscription) |
-| Claude | — | Alternative agent engine — Anthropic API key or Claude Pro/Max subscription (optional) |
+| Agent engine | — | GitHub Copilot, Claude Code, or Aider credentials for live agent runs |
 
 ```bash
 npm install
-cp .env.example .env         # set ADMIN_AUTH_SECRET if you want encrypted OAuth token storage
+cp .env.example .env
+printf 'ADMIN_AUTH_SECRET=%s\n' "$(openssl rand -hex 32)" >> .env
 npm run db:migrate
 docker build -f Dockerfile.agent -t virtual-engineer-workspace:latest .
 npm run dev                  # starts orchestrator at http://127.0.0.1:3100/admin
@@ -57,8 +57,11 @@ npm run lint                 # zero ESLint errors
 npm run dev                  # start orchestrator locally
 npm run build:ui             # build admin React SPA (Vite)
 npm run typecheck:ui         # TypeScript check for the admin UI (tsconfig.admin-ui.json)
-npm run db:migrate           # apply Drizzle migrations after schema changes
+npm run db:generate          # generate and commit a new migration after schema changes
+npm run db:migrate           # apply tracked migrations through the runtime runner
 ```
+
+Database changes start in `src/state/schema.ts`. Commit the newly generated SQL and metadata under `drizzle/` with the code change; never edit an already-applied migration.
 
 All three gates (`npm test`, `npm run typecheck`, `npm run lint`) must pass before opening a PR.
 
@@ -87,7 +90,7 @@ All three gates (`npm test`, `npm run typecheck`, `npm run lint`) must pass befo
 
 This project uses **Conventional Commits** (Gerrit-friendly format):
 
-```
+```text
 <type>(<scope>): <subject ≤50 chars>
 
 <body lines ≤72 chars>

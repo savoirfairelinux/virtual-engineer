@@ -7,7 +7,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { makeTaskId, makeExternalChangeId } from "../../src/interfaces.js";
-import type { TaskContext, AgentLogEvent, RepositoryMap } from "../../src/interfaces.js";
+import type { TaskContext, AgentLogEvent, Prompt, PromptStore, RepositoryMap } from "../../src/interfaces.js";
 import { randomUUID } from "crypto";
 
 // ── Mock child_process BEFORE importing CopilotAdapter ────────────────────────
@@ -34,10 +34,31 @@ vi.mock("child_process", () => {
 });
 
 import { execFile } from "child_process";
-import { CopilotAdapter, agentLogBus } from "../../src/agents/copilotAdapter.js";
+import { CopilotAdapter as BaseCopilotAdapter, agentLogBus } from "../../src/agents/copilotAdapter.js";
 import { buildCodegenUserPrompt } from "../../src/agents/copilotAdapter.js";
 
 const mockExecFile = vi.mocked(execFile);
+
+const testPromptStore: PromptStore = {
+  getPrompts: vi.fn(async () => []),
+  getPrompt: vi.fn(async (id: string): Promise<Prompt> => ({
+    id,
+    label: id,
+    content: id === "test-system" ? "You are a test engineer." : "Follow the test instructions.",
+    promptType: id.includes("system") ? "system" : "instructions",
+    updatedAt: new Date(),
+  })),
+  upsertPrompt: vi.fn(async (id: string, content: string): Promise<Prompt> => ({ id, label: id, content, promptType: id.includes("system") ? "system" : "instructions", updatedAt: new Date() })),
+  createPrompt: vi.fn(async (label: string, content: string, promptType): Promise<Prompt> => ({ id: label, label, content, promptType, updatedAt: new Date() })),
+  deletePrompt: vi.fn(async () => {}),
+};
+
+class CopilotAdapter extends BaseCopilotAdapter {
+  constructor(...args: ConstructorParameters<typeof BaseCopilotAdapter>) {
+    super(...args);
+    this.setPromptStore(testPromptStore);
+  }
+}
 
 // ── Test helpers ──────────────────────────────────────────────────────────────
 
@@ -56,6 +77,8 @@ function makeContext(overrides: Partial<TaskContext> = {}): TaskContext {
     cycleNumber: 1,
     commitMessage: "Add structured logging to user service",
     ticketUrl: "http://localhost:3000/issues/1",
+    systemPromptId: "test-system",
+    instructionsPromptId: "test-instructions",
     agentSession: {
       agentContainerImage: "virtual-engineer-workspace:latest",
       repoCloneUrl: "ssh://localhost:29418/demo-project",
@@ -131,11 +154,7 @@ describe("CopilotAdapter", () => {
         GIT_AUTHOR_NAME: "Virtual Engineer",
         GIT_AUTHOR_EMAIL: "virtual-engineer@localhost",
       });
-      expect(spec.additionalDockerArgs).toContain("--read-only");
-      expect(spec.additionalDockerArgs).toContain("no-new-privileges:true");
-      expect(spec.additionalDockerArgs).toContain("/tmp:rw,nosuid,size=256m");
       expect(spec.env["GH_CONFIG_DIR"]).toBeUndefined();
-      expect(spec.additionalDockerArgs?.some((arg) => arg.includes(":/ve-gh:ro,Z"))).toBe(false);
     });
 
     it("defaults COPILOT_MODEL to auto", () => {
@@ -165,7 +184,7 @@ describe("CopilotAdapter", () => {
     it("injects COPILOT_REASONING_EFFORT into container env when set", () => {
       const adapter = new CopilotAdapter({ model: "o3" });
       const context = makeContext();
-      context.agentSession.copilotReasoningEffort = "medium";
+      context.agentSession.providerOptions = { reasoningEffort: "medium" };
 
       const spec = adapter.buildContainerSpec(context, { GITHUB_TOKEN: "ghp_tok" });
 
@@ -181,26 +200,55 @@ describe("CopilotAdapter", () => {
       expect(spec.env["COPILOT_REASONING_EFFORT"]).toBeUndefined();
     });
 
-    it("injects SKILL_DISCOVERY=1 when the project enabled skill discovery", () => {
-      const adapter = new CopilotAdapter();
+    it("injects COPILOT_BLOCKED_TOOLS from toolAuthorization", () => {
+      const adapter = new CopilotAdapter({ model: "o3" });
       const context = makeContext();
-      context.agentSession.skillDiscoveryEnabled = true;
+      context.agentSession.providerOptions = {
+        toolAuthorization: {
+          blockedTools: ["Bash"],
+        },
+      };
       const spec = adapter.buildContainerSpec(context, { GITHUB_TOKEN: "ghp_tok" });
-
-      expect(spec.env["SKILL_DISCOVERY"]).toBe("1");
+      expect(spec.env["COPILOT_BLOCKED_TOOLS"]).toBe("Bash");
     });
 
-    it("omits SKILL_DISCOVERY when the project did not enable skill discovery", () => {
+    it("does not expose removed local skill configuration", () => {
+      const adapter = new CopilotAdapter();
+      const context = makeContext();
+      const spec = adapter.buildContainerSpec(context, { GITHUB_TOKEN: "ghp_tok" });
+
+      expect(spec.env["LOCAL_SKILLS_PATH"]).toBeUndefined();
+      expect(spec.env["SKILL_DISCOVERY"]).toBeUndefined();
+    });
+
+    it("does not expose SKILL_SOURCES_JSON to the agent container", () => {
+      const adapter = new CopilotAdapter();
+      const context = makeContext();
+      context.agentSession.skillSourcesJson = "[{\"source\":\"ssh://skills.example.com/org/agent-skills\",\"skills\":[\"skill-a\"]}]";
+      expect(adapter.buildContainerSpec(context, { GITHUB_TOKEN: "ghp_tok" }).env["SKILL_SOURCES_JSON"]).toBeUndefined();
+    });
+
+    it("injects TICKET_FOOTER_LINE when the project enabled full-URL ticket footers", () => {
+      const adapter = new CopilotAdapter();
+      const context = makeContext();
+      context.agentSession.ticketFooterLine = "GitLab: https://gitlab.example.com/issues/123";
+      const spec = adapter.buildContainerSpec(context, { GITHUB_TOKEN: "ghp_tok" });
+
+      expect(spec.env["TICKET_FOOTER_LINE"]).toBe("GitLab: https://gitlab.example.com/issues/123");
+    });
+
+    it("omits TICKET_FOOTER_LINE when not set", () => {
       const adapter = new CopilotAdapter();
       const spec = adapter.buildContainerSpec(makeContext(), { GITHUB_TOKEN: "ghp_tok" });
 
-      expect(spec.env["SKILL_DISCOVERY"]).toBeUndefined();
+      expect(spec.env["TICKET_FOOTER_LINE"]).toBeUndefined();
     });
   });
 
   describe("buildReviewContainerSpec", () => {
     function makeReviewInput() {
       return {
+        reviewStrategy: "ve_direct" as const,
         changeId: makeExternalChangeId("I1234567890abcdef1234567890abcdef12345678"),
         revisionNumber: 42,
         patchset: 1,
@@ -211,21 +259,45 @@ describe("CopilotAdapter", () => {
       };
     }
 
-    it("omits SKILL_DISCOVERY when skillDiscoveryEnabled is not set", () => {
+    it("does not expose removed local skill configuration in review specs", () => {
       const adapter = new CopilotAdapter();
-      const spec = adapter.buildReviewContainerSpec(makeReviewInput(), {
-        GITHUB_TOKEN: "ghp_tok",
-      });
+      const spec = adapter.buildReviewContainerSpec(makeReviewInput(), { GITHUB_TOKEN: "ghp_tok" });
 
+      expect(spec.env["LOCAL_SKILLS_PATH"]).toBeUndefined();
       expect(spec.env["SKILL_DISCOVERY"]).toBeUndefined();
     });
 
-    it("injects SKILL_DISCOVERY=1 when skillDiscoveryEnabled is true", () => {
+    it("does not expose SKILL_SOURCES_JSON in review specs", () => {
       const adapter = new CopilotAdapter();
-      const input = { ...makeReviewInput(), skillDiscoveryEnabled: true };
+      const skillSourcesJson = "[{\"source\":\"ssh://skills.example.com/org/agent-skills\",\"skills\":[\"skill-a\"]}]";
+      const input = { ...makeReviewInput(), skillSourcesJson };
       const spec = adapter.buildReviewContainerSpec(input, { GITHUB_TOKEN: "ghp_tok" });
 
-      expect(spec.env["SKILL_DISCOVERY"]).toBe("1");
+      expect(spec.env["SKILL_SOURCES_JSON"]).toBeUndefined();
+    });
+
+    it("uses CLI-managed models and omits reasoning effort in native review mode", () => {
+      const adapter = new CopilotAdapter({ model: "configured-model" });
+      const spec = adapter.buildReviewContainerSpec({
+        ...makeReviewInput(),
+        reviewStrategy: "copilot_native",
+        model: "project-model",
+        providerOptions: { reasoningEffort: "high" },
+      }, { GITHUB_TOKEN: "ghp_tok" });
+
+      expect(spec.env["REVIEW_STRATEGY"]).toBe("copilot_native");
+      expect(spec.env["COPILOT_MODEL"]).toBeUndefined();
+      expect(spec.env["COPILOT_REASONING_EFFORT"]).toBeUndefined();
+    });
+
+    it("ignores non-string reasoning effort in direct review mode", () => {
+      const adapter = new CopilotAdapter();
+      const spec = adapter.buildReviewContainerSpec({
+        ...makeReviewInput(),
+        providerOptions: { reasoningEffort: { invalid: true } },
+      }, { GITHUB_TOKEN: "ghp_tok" });
+
+      expect(spec.env["COPILOT_REASONING_EFFORT"]).toBeUndefined();
     });
 
       it("encodes multiline system prompts for OpenShell environment transport", () => {
@@ -694,6 +766,28 @@ describe("CopilotAdapter", () => {
       expect(result.agentLogs).not.toContain("__ve_event");
     });
 
+    it("returns a failed result with setup events when docker setup throws after stderr", async () => {
+      const adapter = new CopilotAdapter();
+      const veEvent = JSON.stringify({
+        __ve_event: true,
+        type: "skills.fetch_failed",
+        data: { source: "example-org/agent-skills", message: "network failed" },
+        ts: "2026-01-01T00:00:00.000Z",
+      });
+      adapter.setDockerInvoker(vi.fn().mockImplementation(async (_context, _authEnv, callbacks) => {
+        callbacks?.onStderrChunk?.(`${veEvent}\n`);
+        throw new Error("failed to fetch skills from example-org/agent-skills: network failed");
+      }));
+
+      const result = await adapter.execute(makeContext());
+
+      expect(result.status).toBe("failed");
+      expect(result.summary).toBe("Agent setup failed before container output");
+      expect(result.agentEvents).toHaveLength(1);
+      expect(result.agentEvents?.[0]?.type).toBe("skills.fetch_failed");
+      expect(result.metadata).toMatchObject({ adapter: "copilot", setupError: true });
+    });
+
     it("mixed stderr lines are correctly split", async () => {
       const veEvent = JSON.stringify({
         __ve_event: true,
@@ -887,6 +981,59 @@ describe("CopilotAdapter", () => {
       expect(prompt).toContain("`libs/utils/`");
       expect(prompt).toContain("cd libs/core && git add -A && git commit");
       expect(prompt).toContain("cd libs/utils && git add -A && git commit");
+    });
+
+    it("lists vendored components by their real source path", () => {
+      const ctx = makeContext({
+        agentSession: {
+          ...makeContext().agentSession,
+          vendorComponents: [
+            { sourcePath: "daemon/contrib/src/fmt/package.json", localPath: null, origin: "patch_required" },
+            { sourcePath: "meta-product/recipes-core/alpha/alpha_1.2.bb", localPath: null, origin: "patch_required" },
+            { sourcePath: "meta-product/recipes-core/beta/beta_1.0.bb", localPath: null, origin: "ambiguous" },
+          ],
+        },
+      });
+
+      const prompt = buildCodegenUserPrompt(ctx, "Do the work.");
+
+      expect(prompt).toContain("### Vendored / External Components");
+      expect(prompt).toContain("`daemon/contrib/src/fmt/package.json` (patch required)");
+      expect(prompt).toContain("`meta-product/recipes-core/alpha/alpha_1.2.bb` (patch required)");
+      expect(prompt).toContain("`meta-product/recipes-core/beta/beta_1.0.bb` (ambiguous — confirm before changing)");
+      expect(prompt).not.toContain(".ve-deps");
+    });
+
+    it("names the component when one manifest declares several", () => {
+      const ctx = makeContext({
+        agentSession: {
+          ...makeContext().agentSession,
+          vendorComponents: [
+            { sourcePath: ".config.yaml", localPath: "sources/meta-phytec", origin: "patch_required" },
+            { sourcePath: ".config.yaml", localPath: "sources/meta-freescale", origin: "patch_required" },
+          ],
+        },
+      });
+
+      const prompt = buildCodegenUserPrompt(ctx, "Do the work.");
+
+      expect(prompt).toContain("`sources/meta-phytec` (declared in `.config.yaml`) (patch required)");
+      expect(prompt).toContain("`sources/meta-freescale` (declared in `.config.yaml`) (patch required)");
+    });
+
+    it("omits the vendored components section when nothing is tracked or everything is directly writable", () => {
+      expect(buildCodegenUserPrompt(makeContext(), "Do the work.")).not.toContain("Vendored / External Components");
+
+      const writableOnly = makeContext({
+        agentSession: {
+          ...makeContext().agentSession,
+          vendorComponents: [
+            { sourcePath: "layers/meta-shared", localPath: null, origin: "internal" },
+            { sourcePath: "libs/core/CMakeLists.txt", localPath: null, origin: "fork_pushable" },
+          ],
+        },
+      });
+      expect(buildCodegenUserPrompt(writableOnly, "Do the work.")).not.toContain("Vendored / External Components");
     });
   });
 });

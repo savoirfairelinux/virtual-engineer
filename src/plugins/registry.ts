@@ -10,7 +10,9 @@ import type { DiscoveredResources, OAuthAppStore, Integration, IntegrationBindin
 import { DOMAIN_CAPABILITIES } from "../interfaces.js";
 import type { IntegrationEventStreamFactory } from "../connectors/integrationStreamEvents.js";
 import type { VcsConnector } from "../vcs/vcsConnector.js";
+import type { GitRunner } from "../vcs/gitRunner.js";
 import type { ProviderAuthHandler } from "../agents/providerAuthService.js";
+import type { WorkspaceManifestFile } from "../workspace/workspaceManifestScanner.js";
 
 // ─── Plugin descriptor types ──────────────────────────────────────────────
 
@@ -41,6 +43,9 @@ export interface PluginField {
   type: "text" | "password" | "url" | "number" | "select";
   required: boolean;
   placeholder?: string;
+  description?: string | undefined;
+  /** How the admin agent form serializes the field into modelConfig.providerOptions. */
+  valueType?: "string" | "number" | "boolean" | undefined;
   /**
    * When `true` this field is not rendered in the admin UI but is still used
    * by the server for secret masking / preservation logic.
@@ -105,10 +110,6 @@ export interface ReviewerBundle {
   provider: ReviewProvider;
   buildCloneTarget: (details: ReviewChangeDetails) => { cloneUrl: string; sshKeyPath: string | null; sshAgentPubKeyPath?: string | null; sshKnownHostsPath: string | null };
   applyPatchset?: (handle: WorkspaceHandle, details: ReviewChangeDetails, signal?: AbortSignal) => Promise<void>;
-  /** DB key for the system prompt passed to the review agent. */
-  systemPromptId: string;
-  /** DB key for the user instructions prompt injected into the review prompt. */
-  userPromptId: string;
 }
 
 /**
@@ -134,10 +135,6 @@ export interface CodeReviewCapability {
   createConnector?: ((config: unknown, integration: Integration, context?: IntegrationBindingContext) => PluginInstance) | undefined;
   /** Optional live event-stream factory (e.g. Gerrit `stream-events`). */
   streamEvents?: IntegrationEventStreamFactory | undefined;
-  /** ID of the system prompt used when running code-review sessions. */
-  systemPromptId?: string | undefined;
-  /** ID of the user prompt (instructions) used when running code-review sessions. */
-  userPromptId?: string | undefined;
   /** Optional reviewer factory (VE reads diffs and posts comments). */
   createReviewer?: ((config: Record<string, unknown>, integration: Integration, workspaceRunner: WorkspaceRunner) => ReviewerBundle) | undefined;
   /** How review events reach VE for this provider. */
@@ -145,8 +142,17 @@ export interface CodeReviewCapability {
 }
 
 /** `source_control` capability: clone, commit, and push to a repository. */
+export interface SourceControlRuntimeContext {
+  gitRunner: GitRunner;
+}
+
 export interface SourceControlCapability {
-  createVcsConnector: (config: Record<string, unknown>, integration: Integration, context?: IntegrationBindingContext) => VcsConnector;
+  createVcsConnector: (
+    config: Record<string, unknown>,
+    integration: Integration,
+    context?: IntegrationBindingContext,
+    runtime?: SourceControlRuntimeContext
+  ) => VcsConnector;
 }
 
 /**
@@ -161,8 +167,23 @@ export interface AgentAdapterContext {
   maxCommitsPerCycle: number;
 }
 
+export type ReviewStrategyId = "copilot_native" | "goose_native";
+
+export interface ReviewStrategyDescriptor {
+  id: ReviewStrategyId;
+  label: string;
+  description: string;
+  experimental: boolean;
+  modelSelection: "provider";
+  requiredSystemPromptId: string;
+}
+
 /** `agent_execution` capability: run a coding agent inside a workspace. */
 export interface AgentExecutionCapability {
+  /** Provider-owned fields rendered generically in the agent form. */
+  configFields?: PluginField[] | undefined;
+  /** Optional provider-owned review strategies exposed by the admin agent form. */
+  reviewStrategies?: ReviewStrategyDescriptor[] | undefined;
   /**
    * Factory for the runtime agent adapter, given host runtime context derived
    * from `AppConfig`. Declaring this makes a provider a fully self-describing
@@ -239,6 +260,15 @@ export interface ProviderDescriptor {
    */
   discoverBranches?: (config: unknown, repoKey: string) => Promise<string[]>;
   /**
+   * Read only supported root workspace manifests from a repository. Providers
+   * own credentialed transport; callers own parsing and never receive secrets.
+   */
+  readWorkspaceManifestFiles?: (
+    config: unknown,
+    repoKey: string,
+    revision?: string
+  ) => Promise<WorkspaceManifestFile[]>;
+  /**
    * Optional connection tester used by `PluginManager.testConnectionConfig`.
    * `index.ts`-registered testers always take precedence.
    */
@@ -280,7 +310,10 @@ export interface ProviderDescriptor {
    * Optional SSH key pair generator for providers that support UI-generated keys.
    * Called by the admin API `POST /integrations/:id/ssh-key/generate` endpoint.
    */
-  generateSshKeyPair?: (adminAuthSecret: string | undefined) => { sshPrivateKeyEnc: string; sshPublicKey: string };
+  generateSshKeyPair?: (
+    adminAuthSecret: string | undefined,
+    sshUser?: string
+  ) => { sshPrivateKeyEnc: string; sshPublicKey: string };
   /**
    * Returns the provider-specific detail lines shown in the admin provider
    * summary panel.
@@ -343,7 +376,7 @@ export function getCapabilityIntake(
 }
 
 /** Return the technical (non-domain) capabilities derived from descriptor hooks. */
-export function getProviderTechnicalCapabilities(descriptor: ProviderDescriptor): TechnicalCapability[] {
+function getProviderTechnicalCapabilities(descriptor: ProviderDescriptor): TechnicalCapability[] {
   const technical: TechnicalCapability[] = [];
   if (descriptor.oauth) technical.push("oauth");
   if (descriptor.discoverResources) technical.push("discovery");

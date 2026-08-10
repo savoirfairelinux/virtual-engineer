@@ -8,6 +8,9 @@ import { registerBuiltinPlugins } from "../../src/plugins/init.js";
 import { PluginManager } from "../../src/plugins/pluginManager.js";
 import { jsonResponse, errorResponse } from "./helpers/fixtures.js";
 import { fetchAvailableModelsWithPat } from "../../src/agents/copilotModelsService.js";
+import { encryptToken } from "../../src/utils/encryption.js";
+
+const TEST_ADMIN_AUTH_SECRET = "integration-discovery-test-secret";
 
 vi.mock("child_process", () => ({ execFile: vi.fn() }));
 
@@ -105,9 +108,11 @@ function makeBaseDeps(overrides: Partial<AdminServerDependencies> = {}): AdminSe
       getCostSummary: vi.fn(async () => ({ totalUsd: 0, totalAiCredits: 0, totalPremiumRequests: 0, totalRuns: 0, perProject: [], sinceEpochSeconds: null })),
       getModelUsageSummary: vi.fn(async () => ({ byModel: [], perProject: [], totalRuns: 0, totalUsd: 0, sinceEpochSeconds: null })),
     },
+    allowUnauthenticatedAdmin: true,
     config: {
       nodeEnv: "test",
       logLevel: "error",
+      adminAuthSecret: TEST_ADMIN_AUTH_SECRET,
       maxAgentCycles: 3,
       maxRetryAttempts: 5,
       pollingIntervalMs: 30000,
@@ -128,8 +133,14 @@ async function listenServer(server: Server): Promise<string> {
   return `http://127.0.0.1:${addr.port}`;
 }
 
-async function postJson(baseUrl: string, path: string): Promise<{ status: number; body: Record<string, unknown> }> {
-  const res = await fetch(`${baseUrl}${path}`, { method: "POST" });
+async function postJson(baseUrl: string, path: string, payload?: Record<string, unknown>): Promise<{ status: number; body: Record<string, unknown> }> {
+  const res = await fetch(`${baseUrl}${path}`, {
+    method: "POST",
+    ...(payload !== undefined ? {
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    } : {}),
+  });
   const body = (await res.json()) as Record<string, unknown>;
   return { status: res.status, body };
 }
@@ -220,7 +231,7 @@ describe("Admin API — POST /api/admin/integrations/:id/discover", () => {
   beforeEach(async () => {
     registerBuiltinPlugins();
     store = makeIntegrationStore([REDMINE_INTEGRATION, COPILOT_INTEGRATION, GERRIT_INTEGRATION, MOCK_INTEGRATION]);
-    const pm = new PluginManager(store);
+    const pm = new PluginManager(store, { adminAuthSecret: TEST_ADMIN_AUTH_SECRET });
     server = createAdminServer(makeBaseDeps({ integrationStore: store, pluginManager: pm }));
     baseUrl = await listenServer(server);
     realFetch = globalThis.fetch.bind(globalThis);
@@ -390,7 +401,10 @@ describe("Admin API — POST /api/admin/integrations/:id/discover", () => {
       id: "int-copilot-pat",
       provider: "copilot",
       name: "Copilot PAT",
-      configJson: JSON.stringify({ authMode: "pat", token: "github_pat_test123" }),
+      configJson: JSON.stringify({
+        authMode: "pat",
+        token: encryptToken("github_pat_test123", TEST_ADMIN_AUTH_SECRET),
+      }),
       enabled: false,
     });
     // PAT mode uses SDK (CLI subprocess) — mock it to avoid spawning copilot CLI
@@ -402,8 +416,46 @@ describe("Admin API — POST /api/admin/integrations/:id/discover", () => {
     expect(status).toBe(200);
     expect(body["ok"]).toBe(true);
     expect(body["counts"]).toEqual({ models: 1 });
+    expect(fetchAvailableModelsWithPat).toHaveBeenCalledWith("github_pat_test123");
     // SDK path calls no HTTP fetch
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("Copilot OAuth mode: discover resolves models from the decrypted session token", async () => {
+    await store.upsertIntegration({
+      id: "int-copilot-oauth",
+      provider: "copilot",
+      name: "Copilot OAuth",
+      configJson: JSON.stringify({
+        authMode: "oauth",
+        sessionToken: encryptToken("ghu_test123", TEST_ADMIN_AUTH_SECRET),
+      }),
+      enabled: false,
+    });
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ token: "copilot-session-token" }))
+      .mockResolvedValueOnce(jsonResponse({
+        data: [{
+          id: "gpt-4o",
+          name: "GPT-4o",
+          vendor: "OpenAI",
+          version: "gpt-4o",
+          model_picker_category: "versatile",
+          model_picker_enabled: true,
+          capabilities: { type: "chat" },
+          policy: { state: "enabled" },
+        }],
+      }));
+
+    const { status, body } = await postJson(baseUrl, "/api/admin/integrations/int-copilot-oauth/discover");
+    expect(status).toBe(200);
+    expect(body["ok"]).toBe(true);
+    expect(body["counts"]).toEqual({ models: 1 });
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "https://api.github.com/copilot_internal/v2/token",
+      expect.objectContaining({ headers: expect.objectContaining({ Authorization: "token ghu_test123" }) }),
+    );
   });
 
   it("Copilot PAT mode: discover returns 400 when token is missing", async () => {
@@ -460,7 +512,7 @@ describe("Admin API — GET /api/admin/integrations/:id/branches", () => {
   beforeEach(async () => {
     registerBuiltinPlugins();
     store = makeIntegrationStore([REDMINE_INTEGRATION, GERRIT_INTEGRATION, GITLAB_INTEGRATION, MOCK_INTEGRATION]);
-    const pm = new PluginManager(store);
+    const pm = new PluginManager(store, { adminAuthSecret: TEST_ADMIN_AUTH_SECRET });
     server = createAdminServer(makeBaseDeps({ integrationStore: store, pluginManager: pm }));
     baseUrl = await listenServer(server);
     realFetch = globalThis.fetch.bind(globalThis);
@@ -549,5 +601,69 @@ describe("Admin API — GET /api/admin/integrations/:id/branches", () => {
     );
     expect(status).toBe(502);
     expect(String(body["error"])).toContain("Branch discovery failed");
+  });
+});
+
+describe("Admin API — POST /api/admin/integrations/:id/workspace-scan", () => {
+  let server: Server;
+  let baseUrl: string;
+  let fetchMock: ReturnType<typeof vi.fn<(url: string | URL | Request, init?: RequestInit) => Promise<Response>>>;
+  let realFetch: typeof fetch;
+
+  beforeEach(async () => {
+    registerBuiltinPlugins();
+    const store = makeIntegrationStore([GITLAB_INTEGRATION]);
+    const pm = new PluginManager(store, { adminAuthSecret: TEST_ADMIN_AUTH_SECRET });
+    server = createAdminServer(makeBaseDeps({ integrationStore: store, pluginManager: pm }));
+    baseUrl = await listenServer(server);
+    realFetch = globalThis.fetch.bind(globalThis);
+    fetchMock = vi.fn<(url: string | URL | Request, init?: RequestInit) => Promise<Response>>();
+    vi.stubGlobal("fetch", (url: string | URL | Request, init?: RequestInit) => {
+      const value = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+      if (value.startsWith(baseUrl)) return realFetch(url as Parameters<typeof fetch>[0], init);
+      return fetchMock(url, init);
+    });
+  });
+
+  afterEach(async () => {
+    vi.unstubAllGlobals();
+    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  });
+
+  it("reads only supported root manifests and returns parsed repositories", async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse([
+        { path: ".gitmodules", type: "blob" },
+        { path: "README.md", type: "blob" },
+      ]))
+      .mockResolvedValueOnce(new Response(`
+[submodule "runtime"]
+  path = libs/runtime
+  url = ../runtime.git
+  branch = stable
+`, { status: 200 }));
+
+    const { status, body } = await postJson(
+      baseUrl,
+      "/api/admin/integrations/int-gitlab/workspace-scan",
+      {
+        repoKey: "platform/root",
+        cloneUrl: "https://gitlab.test/platform/root.git",
+        revision: "main",
+      },
+    );
+
+    expect(status).toBe(200);
+    expect(body["manifestFiles"]).toEqual([".gitmodules"]);
+    expect(body["repositories"]).toEqual([{
+      cloneUrl: "https://gitlab.test/platform/runtime.git",
+      localPath: "libs/runtime",
+      revision: "stable",
+      relation: "gitlink",
+      sourcePath: ".gitmodules",
+    }]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain("/repository/tree");
+    expect(String(fetchMock.mock.calls[1]?.[0])).toContain("/repository/files/.gitmodules/raw");
   });
 });

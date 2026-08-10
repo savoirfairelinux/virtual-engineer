@@ -1,11 +1,16 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { tmpdir } from "os";
-import { join } from "path";
-import { randomUUID } from "crypto";
 import type { Server } from "node:http";
 import { SqliteStateStore } from "../../src/state/stateStore.js";
 import { createAdminServer, type AdminServerDependencies } from "../../src/admin/adminServer.js";
 import { fetchAvailableModelsWithPat } from "../../src/agents/copilotModelsService.js";
+import { tempDatabasePath } from "./helpers/tempDatabase.js";
+import { PluginManager } from "../../src/plugins/pluginManager.js";
+import { registerBuiltinPlugins } from "../../src/plugins/init.js";
+import { encryptToken } from "../../src/utils/encryption.js";
+
+const ADMIN_SECRET = "agent-routes-admin-secret";
+
+registerBuiltinPlugins();
 
 // Partially mock copilotModelsService: replace the SDK-based PAT function with
 // a vi.fn() to avoid spawning the copilot CLI process in unit tests.
@@ -15,7 +20,7 @@ vi.mock("../../src/agents/copilotModelsService.js", async (importActual) => {
 });
 
 function tempDbPath(): string {
-  return join(tmpdir(), `ve-admin-agents-${randomUUID()}.db`);
+  return tempDatabasePath("ve-admin-agents");
 }
 
 interface FetchResult {
@@ -42,6 +47,7 @@ async function rest(server: Server, path: string, opts: { method?: string; body?
 }
 
 function makeDeps(store: SqliteStateStore): AdminServerDependencies {
+  const pluginManager = new PluginManager(store, { adminAuthSecret: ADMIN_SECRET });
   return {
     stateStore: {
       getActiveTasks: vi.fn(async () => []),
@@ -61,15 +67,19 @@ function makeDeps(store: SqliteStateStore): AdminServerDependencies {
       getCostSummary: vi.fn(async () => ({ totalUsd: 0, totalAiCredits: 0, totalPremiumRequests: 0, totalRuns: 0, perProject: [], sinceEpochSeconds: null })),
       getModelUsageSummary: vi.fn(async () => ({ byModel: [], perProject: [], totalRuns: 0, totalUsd: 0, sinceEpochSeconds: null })),
     },
+    allowUnauthenticatedAdmin: true,
     agentStore: store,
+    promptStore: store,
     projectStore: store,
     integrationStore: store,
+    pluginManager,
     config: {
       nodeEnv: "test",
       logLevel: "error",
       maxAgentCycles: 3,
       maxRetryAttempts: 5,
       pollingIntervalMs: 30000,
+      adminAuthSecret: ADMIN_SECRET,
     },
     polling: { isRunning: () => false, getIntervals: () => ({ intervalMs: 30000 }) },
     providers: [],
@@ -105,6 +115,8 @@ describe("Admin API — Agent routes (/api/admin/agents)", () => {
         name: "Coding Bot",
         type: "coding",
         modelConfig: { model: "gpt-4.1", githubToken: "ghp_secret", apiKey: "sk-1" },
+        systemPromptId: "system_generic_code",
+        instructionsPromptId: "instructions_generic_code",
         maxConcurrent: 2,
         enabled: true,
       },
@@ -135,6 +147,79 @@ describe("Admin API — Agent routes (/api/admin/agents)", () => {
     expect(r.status).toBe(400);
   });
 
+  it("POST / returns 400 when either required prompt is missing", async () => {
+    const withoutSystem = await rest(server, "/api/admin/agents", {
+      method: "POST",
+      body: {
+        name: "Missing system prompt",
+        type: "coding",
+        modelConfig: {},
+        instructionsPromptId: "instructions_generic_code",
+      },
+    });
+    const withoutInstructions = await rest(server, "/api/admin/agents", {
+      method: "POST",
+      body: {
+        name: "Missing instructions prompt",
+        type: "review",
+        modelConfig: {},
+        systemPromptId: "system_review",
+      },
+    });
+
+    expect(withoutSystem.status).toBe(400);
+    expect(withoutInstructions.status).toBe(400);
+  });
+
+  it("POST / returns 400 when a selected prompt does not exist", async () => {
+    const r = await rest(server, "/api/admin/agents", {
+      method: "POST",
+      body: {
+        name: "Unknown prompt",
+        type: "coding",
+        modelConfig: {},
+        systemPromptId: "missing-system",
+        instructionsPromptId: "instructions_generic_code",
+      },
+    });
+
+    expect(r.status).toBe(400);
+    expect(r.body?.["error"]).toMatch(/missing-system.*not found/i);
+  });
+
+  it("POST / returns 400 when selected prompts have the wrong roles", async () => {
+    const r = await rest(server, "/api/admin/agents", {
+      method: "POST",
+      body: {
+        name: "Swapped prompts",
+        type: "coding",
+        modelConfig: {},
+        systemPromptId: "instructions_generic_code",
+        instructionsPromptId: "system_generic_code",
+      },
+    });
+
+    expect(r.status).toBe(400);
+    expect(r.body?.["error"]).toMatch(/not a System Prompt/i);
+  });
+
+  it("POST / returns 400 when the feedback prompt has the wrong role", async () => {
+    const r = await rest(server, "/api/admin/agents", {
+      method: "POST",
+      body: {
+        name: "Wrong feedback prompt",
+        type: "coding",
+        modelConfig: {},
+        systemPromptId: "system_generic_code",
+        instructionsPromptId: "instructions_generic_code",
+        feedbackInstructionsPromptId: "system_generic_code",
+      },
+    });
+
+    expect(r.status).toBe(400);
+    expect(r.body?.["error"]).toMatch(/feedback.*not an Instructions Prompt/i);
+  });
+
   it("GET /:id returns 404 for unknown agent", async () => {
     const r = await rest(server, "/api/admin/agents/nope");
     expect(r.status).toBe(404);
@@ -145,6 +230,8 @@ describe("Admin API — Agent routes (/api/admin/agents)", () => {
       name: "Bot",
       type: "coding",
       modelConfigJson: JSON.stringify({ model: "gpt-4.1", githubToken: "tok" }),
+      systemPromptId: "system_generic_code",
+      instructionsPromptId: "instructions_generic_code",
     });
     const r = await rest(server, `/api/admin/agents/${created.id}`);
     expect(r.status).toBe(200);
@@ -158,6 +245,8 @@ describe("Admin API — Agent routes (/api/admin/agents)", () => {
       name: "Bot",
       type: "coding",
       modelConfigJson: JSON.stringify({ model: "gpt-4.1", githubToken: "real-token" }),
+      systemPromptId: "system_generic_code",
+      instructionsPromptId: "instructions_generic_code",
     });
     const r = await rest(server, `/api/admin/agents/${created.id}`, {
       method: "PUT",
@@ -175,6 +264,8 @@ describe("Admin API — Agent routes (/api/admin/agents)", () => {
       name: "Bot",
       type: "coding",
       modelConfigJson: JSON.stringify({ githubToken: "old" }),
+      systemPromptId: "system_generic_code",
+      instructionsPromptId: "instructions_generic_code",
     });
     await rest(server, `/api/admin/agents/${created.id}`, {
       method: "PUT",
@@ -185,15 +276,61 @@ describe("Admin API — Agent routes (/api/admin/agents)", () => {
     expect(cfg["githubToken"]).toBe("new-token");
   });
 
+  it("PUT /:id rejects clearing either required prompt", async () => {
+    const created = await store.createAgent({
+      name: "Bot",
+      type: "coding",
+      modelConfigJson: "{}",
+      systemPromptId: "system_generic_code",
+      instructionsPromptId: "instructions_generic_code",
+    });
+
+    const systemResult = await rest(server, `/api/admin/agents/${created.id}`, {
+      method: "PUT",
+      body: { systemPromptId: null },
+    });
+    const instructionsResult = await rest(server, `/api/admin/agents/${created.id}`, {
+      method: "PUT",
+      body: { instructionsPromptId: null },
+    });
+
+    expect(systemResult.status).toBe(400);
+    expect(instructionsResult.status).toBe(400);
+  });
+
+  it("PUT /:id returns 400 when the feedback prompt does not exist", async () => {
+    const created = await store.createAgent({
+      name: "Bot",
+      type: "coding",
+      modelConfigJson: "{}",
+      systemPromptId: "system_generic_code",
+      instructionsPromptId: "instructions_generic_code",
+    });
+
+    const r = await rest(server, `/api/admin/agents/${created.id}`, {
+      method: "PUT",
+      body: { feedbackInstructionsPromptId: "missing-feedback" },
+    });
+
+    expect(r.status).toBe(400);
+    expect(r.body?.["error"]).toMatch(/missing-feedback.*not found/i);
+  });
+
   it("DELETE /:id returns 204 on success", async () => {
-    const a = await store.createAgent({ name: "X", type: "coding", modelConfigJson: "{}" });
+    const a = await store.createAgent({
+      name: "X", type: "coding", modelConfigJson: "{}",
+      systemPromptId: "system_generic_code", instructionsPromptId: "instructions_generic_code",
+    });
     const r = await rest(server, `/api/admin/agents/${a.id}`, { method: "DELETE" });
     expect(r.status).toBe(204);
     expect(await store.getAgentById(a.id)).toBeNull();
   });
 
   it("DELETE /:id returns 409 when a project still references the agent", async () => {
-    const a = await store.createAgent({ name: "X", type: "coding", modelConfigJson: "{}" });
+    const a = await store.createAgent({
+      name: "X", type: "coding", modelConfigJson: "{}",
+      systemPromptId: "system_generic_code", instructionsPromptId: "instructions_generic_code",
+    });
     await store.createProject({ name: "P", type: "coding", agentId: a.id });
     const r = await rest(server, `/api/admin/agents/${a.id}`, { method: "DELETE" });
     expect(r.status).toBe(409);
@@ -201,7 +338,10 @@ describe("Admin API — Agent routes (/api/admin/agents)", () => {
   });
 
   it("PATCH /:id/enable and /disable toggle the flag", async () => {
-    const a = await store.createAgent({ name: "X", type: "coding", modelConfigJson: "{}", enabled: false });
+    const a = await store.createAgent({
+      name: "X", type: "coding", modelConfigJson: "{}", enabled: false,
+      systemPromptId: "system_generic_code", instructionsPromptId: "instructions_generic_code",
+    });
     const r1 = await rest(server, `/api/admin/agents/${a.id}/enable`, { method: "PATCH" });
     expect(r1.status).toBe(204);
     expect((await store.getAgentById(a.id))?.enabled).toBe(true);
@@ -211,7 +351,10 @@ describe("Admin API — Agent routes (/api/admin/agents)", () => {
   });
 
   it("GET / includes projectCount per agent", async () => {
-    const a = await store.createAgent({ name: "X", type: "coding", modelConfigJson: "{}" });
+    const a = await store.createAgent({
+      name: "X", type: "coding", modelConfigJson: "{}",
+      systemPromptId: "system_generic_code", instructionsPromptId: "instructions_generic_code",
+    });
     await store.createProject({ name: "P1", type: "coding", agentId: a.id });
     await store.createProject({ name: "P2", type: "coding", agentId: a.id });
     const r = await rest(server, "/api/admin/agents");
@@ -235,11 +378,226 @@ describe("Admin API — Agent routes (/api/admin/agents)", () => {
         type: "coding",
         modelConfig: {},
         integrationId: "copilot-1",
+        systemPromptId: "system_generic_code",
+        instructionsPromptId: "instructions_generic_code",
       },
     });
     expect(r.status).toBe(201);
     const agent = r.body?.["agent"] as Record<string, unknown>;
     expect(agent["integrationId"]).toBe("copilot-1");
+  });
+
+  it("POST / canonicalizes a Copilot native review agent", async () => {
+    await store.upsertIntegration({
+      id: "copilot-native",
+      provider: "copilot",
+      name: "Copilot Native",
+      configJson: "{}",
+      enabled: true,
+    });
+
+    const r = await rest(server, "/api/admin/agents", {
+      method: "POST",
+      body: {
+        name: "Native Reviewer",
+        type: "review",
+        integrationId: "copilot-native",
+        modelConfig: {
+          model: "gpt-4.1",
+          providerOptions: {
+            reviewStrategy: "copilot_native",
+            reasoningEffort: "high",
+            keepMe: true,
+          },
+        },
+        systemPromptId: "system_review",
+        instructionsPromptId: "instructions_review",
+        feedbackInstructionsPromptId: "instructions_feedback_code",
+      },
+    });
+
+    expect(r.status).toBe(201);
+    const agent = r.body?.["agent"] as Record<string, unknown>;
+    expect(agent["reviewStrategy"]).toBe("copilot_native");
+    expect(agent["model"]).toBeNull();
+    expect(agent["feedbackInstructionsPromptId"]).toBeNull();
+    expect(agent["modelConfig"]).toEqual({
+      providerOptions: {
+        reviewStrategy: "copilot_native",
+        keepMe: true,
+      },
+    });
+  });
+
+  it("POST / rejects Copilot native review for coding agents", async () => {
+    await store.upsertIntegration({
+      id: "copilot-coding",
+      provider: "copilot",
+      name: "Copilot",
+      configJson: "{}",
+      enabled: true,
+    });
+
+    const r = await rest(server, "/api/admin/agents", {
+      method: "POST",
+      body: {
+        name: "Invalid Native Agent",
+        type: "coding",
+        integrationId: "copilot-coding",
+        modelConfig: { providerOptions: { reviewStrategy: "copilot_native" } },
+        systemPromptId: "system_generic_code",
+        instructionsPromptId: "instructions_generic_code",
+      },
+    });
+
+    expect(r.status).toBe(400);
+    expect(r.body?.["error"]).toMatch(/only available for review agents/i);
+  });
+
+  it("POST / rejects native review when the linked provider does not support it", async () => {
+    await store.upsertIntegration({
+      id: "claude-native",
+      provider: "claude",
+      name: "Claude",
+      configJson: "{}",
+      enabled: true,
+    });
+
+    const r = await rest(server, "/api/admin/agents", {
+      method: "POST",
+      body: {
+        name: "Wrong Provider",
+        type: "review",
+        integrationId: "claude-native",
+        modelConfig: { providerOptions: { reviewStrategy: "copilot_native" } },
+        systemPromptId: "system_review",
+        instructionsPromptId: "instructions_review",
+      },
+    });
+
+    expect(r.status).toBe(400);
+    expect(r.body?.["error"]).toMatch(/does not support.*copilot_native/i);
+  });
+
+  it("POST / accepts a valid Claude toolAuthorization", async () => {
+    await store.upsertIntegration({
+      id: "claude-toolauth",
+      provider: "claude",
+      name: "Claude",
+      configJson: "{}",
+      enabled: true,
+    });
+
+    const r = await rest(server, "/api/admin/agents", {
+      method: "POST",
+      body: {
+        name: "Locked-down Claude",
+        type: "coding",
+        integrationId: "claude-toolauth",
+        modelConfig: {
+          providerOptions: {
+            toolAuthorization: { blockedTools: ["Bash"] },
+          },
+        },
+        systemPromptId: "system_generic_code",
+        instructionsPromptId: "instructions_generic_code",
+      },
+    });
+
+    expect(r.status).toBe(201);
+    const agent = r.body?.["agent"] as Record<string, unknown>;
+    expect(agent["modelConfig"]).toEqual({
+      providerOptions: {
+        toolAuthorization: { blockedTools: ["Bash"] },
+      },
+    });
+  });
+
+  it("POST / rejects allowedTools (no longer supported)", async () => {
+    await store.upsertIntegration({
+      id: "claude-floor",
+      provider: "claude",
+      name: "Claude",
+      configJson: "{}",
+      enabled: true,
+    });
+
+    const r = await rest(server, "/api/admin/agents", {
+      method: "POST",
+      body: {
+        name: "Bad Floor",
+        type: "coding",
+        integrationId: "claude-floor",
+        modelConfig: {
+          providerOptions: {
+            toolAuthorization: { allowedTools: ["WebFetch"] },
+          },
+        },
+        systemPromptId: "system_generic_code",
+        instructionsPromptId: "instructions_generic_code",
+      },
+    });
+
+    expect(r.status).toBe(400);
+    expect(r.body?.["error"]).toMatch(/allowedTools is not supported/i);
+  });
+
+  it("POST / rejects blocking a review-floor tool for a review agent", async () => {
+    await store.upsertIntegration({
+      id: "claude-review-floor",
+      provider: "claude",
+      name: "Claude",
+      configJson: "{}",
+      enabled: true,
+    });
+
+    const r = await rest(server, "/api/admin/agents", {
+      method: "POST",
+      body: {
+        name: "Bad Review Floor",
+        type: "review",
+        integrationId: "claude-review-floor",
+        modelConfig: {
+          providerOptions: {
+            toolAuthorization: { blockedTools: ["Read"] },
+          },
+        },
+        systemPromptId: "system_review",
+        instructionsPromptId: "instructions_review",
+      },
+    });
+
+    expect(r.status).toBe(400);
+    expect(r.body?.["error"]).toMatch(/required for review/i);
+  });
+
+  it("POST / rejects toolAuthorization for an unsupported provider", async () => {
+    await store.upsertIntegration({
+      id: "mock-unsupported",
+      provider: "mock",
+      name: "Mock",
+      configJson: "{}",
+      enabled: true,
+    });
+
+    const r = await rest(server, "/api/admin/agents", {
+      method: "POST",
+      body: {
+        name: "Mock Toolauth",
+        type: "coding",
+        integrationId: "mock-unsupported",
+        modelConfig: {
+          providerOptions: {
+            toolAuthorization: { blockedTools: ["Read"] },
+          },
+        },
+        systemPromptId: "system_generic_code",
+        instructionsPromptId: "instructions_generic_code",
+      },
+    });
+
+    expect(r.status).toBe(400);
+    expect(r.body?.["error"]).toMatch(/not supported by provider 'mock'/i);
   });
 
   it("PUT /:id updates integrationId", async () => {
@@ -250,7 +608,13 @@ describe("Admin API — Agent routes (/api/admin/agents)", () => {
       configJson: JSON.stringify({ apiKey: "ghp_test" }),
       enabled: true,
     });
-    const a = await store.createAgent({ name: "Bot", type: "coding", modelConfigJson: "{}" });
+    const a = await store.createAgent({
+      name: "Bot",
+      type: "coding",
+      modelConfigJson: "{}",
+      systemPromptId: "system_generic_code",
+      instructionsPromptId: "instructions_generic_code",
+    });
     const r = await rest(server, `/api/admin/agents/${a.id}`, {
       method: "PUT",
       body: { integrationId: "copilot-2" },
@@ -258,6 +622,50 @@ describe("Admin API — Agent routes (/api/admin/agents)", () => {
     expect(r.status).toBe(200);
     const stored = await store.getAgentById(a.id);
     expect(stored?.integrationId).toBe("copilot-2");
+  });
+
+  it("PUT /:id canonicalizes the complete agent state when enabling native review", async () => {
+    await store.upsertIntegration({
+      id: "copilot-edit-native",
+      provider: "copilot",
+      name: "Copilot",
+      configJson: "{}",
+      enabled: true,
+    });
+    const agent = await store.createAgent({
+      name: "Direct Reviewer",
+      type: "review",
+      integrationId: "copilot-edit-native",
+      modelConfigJson: JSON.stringify({
+        model: "gpt-4.1",
+        providerOptions: { reasoningEffort: "high", keepMe: true },
+      }),
+      systemPromptId: "system_review",
+      instructionsPromptId: "instructions_review",
+      feedbackInstructionsPromptId: "instructions_feedback_code",
+    });
+
+    const r = await rest(server, `/api/admin/agents/${agent.id}`, {
+      method: "PUT",
+      body: {
+        modelConfig: {
+          providerOptions: {
+            reviewStrategy: "copilot_native",
+            reasoningEffort: "low",
+            keepMe: true,
+          },
+        },
+      },
+    });
+
+    expect(r.status).toBe(200);
+    const updated = r.body?.["agent"] as Record<string, unknown>;
+    expect(updated["reviewStrategy"]).toBe("copilot_native");
+    expect(updated["model"]).toBeNull();
+    expect(updated["feedbackInstructionsPromptId"]).toBeNull();
+    expect(updated["modelConfig"]).toEqual({
+      providerOptions: { reviewStrategy: "copilot_native", keepMe: true },
+    });
   });
 
   it("GET /:id/available-models returns models for PAT-mode linked integration", async () => {
@@ -273,6 +681,8 @@ describe("Admin API — Agent routes (/api/admin/agents)", () => {
       type: "coding",
       modelConfigJson: "{}",
       integrationId: "copilot-pat",
+      systemPromptId: "system_generic_code",
+      instructionsPromptId: "instructions_generic_code",
     });
 
     try {
@@ -289,5 +699,30 @@ describe("Admin API — Agent routes (/api/admin/agents)", () => {
     } finally {
       vi.restoreAllMocks();
     }
+  });
+
+  it("GET /:id/available-models decrypts a PAT from the linked integration", async () => {
+    const encryptedPat = encryptToken("github_pat_encrypted123", ADMIN_SECRET);
+    await store.upsertIntegration({
+      id: "copilot-encrypted-pat",
+      provider: "copilot",
+      name: "Copilot encrypted PAT",
+      configJson: JSON.stringify({ authMode: "pat", token: encryptedPat }),
+      enabled: true,
+    });
+    const agent = await store.createAgent({
+      name: "Encrypted PAT Bot",
+      type: "coding",
+      modelConfigJson: "{}",
+      integrationId: "copilot-encrypted-pat",
+      systemPromptId: "system_generic_code",
+      instructionsPromptId: "instructions_generic_code",
+    });
+    vi.mocked(fetchAvailableModelsWithPat).mockResolvedValueOnce([]);
+
+    const response = await rest(server, `/api/admin/agents/${agent.id}/available-models`);
+
+    expect(response.status).toBe(200);
+    expect(fetchAvailableModelsWithPat).toHaveBeenCalledWith("github_pat_encrypted123");
   });
 });

@@ -3,15 +3,15 @@
  * Clone uses token in `.git-credentials`; push creates or updates a merge request via the REST API.
  */
 
-import { execFileSync } from "child_process";
 import { getLogger } from "../logger.js";
-import { execGit, trustedGitArgs, trustedGitEnv } from "../utils/gitExec.js";
 import type { VcsConnector, VcsPushResult } from "./vcsConnector.js";
 import { buildFeatureBranchRef } from "./branchNaming.js";
 import type { ReviewComment } from "../interfaces.js";
 import { ReviewApiError } from "../interfaces.js";
 import { GitLabHttpClient } from "../connectors/gitlabHttpClient.js";
 import { redactUrls } from "../utils/redactUrl.js";
+import type { GitRunner } from "./gitRunner.js";
+import { NodeGitRunner } from "./nodeGitRunner.js";
 
 const log = getLogger("gitlab-vcs");
 
@@ -31,7 +31,10 @@ export class GitLabVcsConnector implements VcsConnector {
 
   private readonly httpClient: GitLabHttpClient;
 
-  constructor(private readonly config: GitLabVcsConnectorConfig) {
+  constructor(
+    private readonly config: GitLabVcsConnectorConfig,
+    private readonly gitRunner: GitRunner = new NodeGitRunner()
+  ) {
     this.httpClient = new GitLabHttpClient(
       config.token,
       (statusCode, url, body) => new ReviewApiError(statusCode, url, body)
@@ -45,23 +48,21 @@ export class GitLabVcsConnector implements VcsConnector {
   /** Clone a GitLab repository via HTTP into the target directory. */
   async clone(repoUrl: string, branch: string, targetDir: string): Promise<void> {
     log.info(
-      { repoUrl, branch, targetDir },
+      { repoUrl: redactUrls(repoUrl), branch, targetDir },
       "cloning repository from GitLab via HTTP"
     );
 
     try {
-      execFileSync("git", trustedGitArgs(["clone", "--branch", branch, "--depth", "1", repoUrl, targetDir]), {
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "pipe"],
-        timeout: 300_000,
-        env: trustedGitEnv(),
-      });
+      await this.gitRunner.run(
+        ["clone", "--branch", branch, "--depth", "1", repoUrl, targetDir],
+        { cwd: process.cwd(), timeoutMs: 300_000 }
+      );
 
       log.info({ targetDir }, "repository cloned successfully");
     } catch (err: unknown) {
       const error = err instanceof Error ? err : new Error(String(err));
       throw new Error(
-        `Failed to clone GitLab repository: ${error.message.slice(0, 300)}`
+        redactUrls(`Failed to clone GitLab repository: ${error.message.slice(0, 300)}`)
       );
     }
   }
@@ -73,7 +74,8 @@ export class GitLabVcsConnector implements VcsConnector {
     repoDir: string,
     ref: string,
     message: string,
-    changeId?: string
+    changeId?: string,
+    reviewerEmails?: string[]
   ): Promise<VcsPushResult> {
     log.info(
       { repoDir, ref, changeId },
@@ -82,8 +84,8 @@ export class GitLabVcsConnector implements VcsConnector {
 
     try {
       // Configure git identity
-      execGit(["config", "user.name", this.config.gitAuthorName], repoDir);
-      execGit(["config", "user.email", this.config.gitAuthorEmail], repoDir);
+      await this.gitRunner.run(["config", "user.name", this.config.gitAuthorName], { cwd: repoDir });
+      await this.gitRunner.run(["config", "user.email", this.config.gitAuthorEmail], { cwd: repoDir });
 
       // The `ref` parameter is typically the feature branch name for GitLab
       // (unlike Gerrit's refs/for/main)
@@ -91,32 +93,41 @@ export class GitLabVcsConnector implements VcsConnector {
 
       // Configure HTTP credentials for push
       // GitLab expects oauth2:<token>@host URL credentials
-      const remoteUrl = execGit(["remote", "get-url", "origin"], repoDir).trim();
+      const remoteUrl = (
+        await this.gitRunner.run(["remote", "get-url", "origin"], { cwd: repoDir })
+      ).stdout.trim();
       const authenticatedUrl = new URL(remoteUrl);
       authenticatedUrl.username = "oauth2";
       authenticatedUrl.password = this.config.token;
 
-      execGit(["remote", "set-url", "origin", authenticatedUrl.toString()], repoDir);
+      await this.gitRunner.run(
+        ["remote", "set-url", "origin", authenticatedUrl.toString()],
+        { cwd: repoDir }
+      );
 
       // Stage and commit changes
-      execGit(["add", "-A"], repoDir);
-      execGit(["commit", "-m", message], repoDir);
+      await this.gitRunner.run(["add", "-A"], { cwd: repoDir });
+      await this.gitRunner.run(["commit", "-m", message], { cwd: repoDir });
       log.info({ repoDir }, "changes committed");
 
       try {
         // Push the feature branch
-        execGit(["push", "-u", "origin", featureBranch], repoDir);
+        await this.gitRunner.run(["push", "-u", "origin", featureBranch], {
+          cwd: repoDir,
+          timeoutMs: 300_000,
+        });
         log.info({ featureBranch }, "pushed to GitLab");
       } finally {
         // Always reset remote URL to original (avoid leaking token in logs or on failure)
-        execGit(["remote", "set-url", "origin", remoteUrl], repoDir);
+        await this.gitRunner.run(["remote", "set-url", "origin", remoteUrl], { cwd: repoDir });
       }
 
       // Create or find existing MR
       const mr = await this.createOrFindMergeRequest(
         featureBranch,
         this.config.targetBranch ?? "main",
-        message.split("\n")[0] || `[VE] Feature branch ${featureBranch}`
+        message.split("\n")[0] || `[VE] Feature branch ${featureBranch}`,
+        reviewerEmails
       );
 
       const mrIid = String(mr["iid"]);
@@ -145,7 +156,8 @@ export class GitLabVcsConnector implements VcsConnector {
   async pushDirect(
     repoDir: string,
     ref: string,
-    _topic?: string
+    _topic?: string,
+    reviewerEmails?: string[]
   ): Promise<VcsPushResult> {
     log.info({ repoDir, ref }, "pushing HEAD directly to GitLab (agent-created commits)");
 
@@ -153,28 +165,39 @@ export class GitLabVcsConnector implements VcsConnector {
       const featureBranch = ref;
 
       // Configure HTTP credentials for push
-      const remoteUrl = execGit(["remote", "get-url", "origin"], repoDir).trim();
+      const remoteUrl = (
+        await this.gitRunner.run(["remote", "get-url", "origin"], { cwd: repoDir })
+      ).stdout.trim();
       const authenticatedUrl = new URL(remoteUrl);
       authenticatedUrl.username = "oauth2";
       authenticatedUrl.password = this.config.token;
-      execGit(["remote", "set-url", "origin", authenticatedUrl.toString()], repoDir);
+      await this.gitRunner.run(
+        ["remote", "set-url", "origin", authenticatedUrl.toString()],
+        { cwd: repoDir }
+      );
 
       try {
         // Create the branch from HEAD and force-push (allows retry with amended commits)
-        execGit(["checkout", "-B", featureBranch], repoDir);
-        execGit(["push", "--force", "-u", "origin", featureBranch], repoDir);
+        await this.gitRunner.run(["checkout", "-B", featureBranch], { cwd: repoDir });
+        await this.gitRunner.run(["push", "--force", "-u", "origin", featureBranch], {
+          cwd: repoDir,
+          timeoutMs: 300_000,
+        });
         log.info({ featureBranch }, "direct push to GitLab completed");
       } finally {
         // Always reset remote URL to avoid leaking token on push failure
-        execGit(["remote", "set-url", "origin", remoteUrl], repoDir);
+        await this.gitRunner.run(["remote", "set-url", "origin", remoteUrl], { cwd: repoDir });
       }
 
       // Create or find existing MR
-      const headSubject = execGit(["log", "-1", "--format=%s"], repoDir).trim();
+      const headSubject = (
+        await this.gitRunner.run(["log", "-1", "--format=%s"], { cwd: repoDir })
+      ).stdout.trim();
       const mr = await this.createOrFindMergeRequest(
         featureBranch,
         this.config.targetBranch ?? "main",
-        headSubject || `[VE] Feature branch ${featureBranch}`
+        headSubject || `[VE] Feature branch ${featureBranch}`,
+        reviewerEmails
       );
 
       const mrIid = String(mr["iid"]);
@@ -213,19 +236,52 @@ export class GitLabVcsConnector implements VcsConnector {
   }
 
   /**
+   * Resolve reviewer emails to GitLab user IDs via the Users API. Unmatched
+   * emails are skipped with a warning — GitLab's `reviewer_ids` field only
+   * accepts numeric user IDs, not emails.
+   */
+  private async resolveReviewerIds(emails?: string[]): Promise<number[]> {
+    if (!emails || emails.length === 0) return [];
+    const ids = new Set<number>();
+    for (const email of emails) {
+      try {
+        const url = `${this.config.baseUrl}/api/v4/users?search=${encodeURIComponent(email)}`;
+        const users = await this.httpClient.fetchJson<Array<{
+          id: number;
+          email?: string;
+          public_email?: string;
+        }>>(url);
+        const normalizedEmail = email.toLowerCase();
+        const match = users.find((user) =>
+          user.email?.toLowerCase() === normalizedEmail
+          || user.public_email?.toLowerCase() === normalizedEmail
+        );
+        if (match) ids.add(match.id);
+        else log.warn({ email }, "no exact GitLab user match for reviewer email — skipping");
+      } catch (err: unknown) {
+        log.warn({ email, err: err instanceof Error ? err.message : String(err) }, "failed to resolve reviewer email to GitLab user");
+      }
+    }
+    return [...ids];
+  }
+
+  /**
    * Create a new MR or find existing one for the given branches.
    */
   private async createOrFindMergeRequest(
     sourceBranch: string,
     targetBranch: string,
-    title: string
+    title: string,
+    reviewerEmails?: string[]
   ): Promise<Record<string, unknown>> {
+    const reviewerIds = await this.resolveReviewerIds(reviewerEmails);
     const mrBody = {
       source_branch: sourceBranch,
       target_branch: targetBranch,
       title,
       description: `Automated MR created by Virtual Engineer`,
       remove_source_branch: false,
+      ...(reviewerIds.length > 0 ? { reviewer_ids: reviewerIds } : {}),
     };
 
     const createUrl = `${this.config.baseUrl}/api/v4/projects/${encodeURIComponent(String(this.config.projectId))}/merge_requests`;
@@ -240,7 +296,20 @@ export class GitLabVcsConnector implements VcsConnector {
       // If MR already exists (409 conflict), find and return it
       if (err instanceof ReviewApiError && err.statusCode === 409) {
         log.info({ sourceBranch }, "MR already exists, finding it");
-        return this.findExistingMergeRequest(sourceBranch, targetBranch);
+        const existing = await this.findExistingMergeRequest(sourceBranch, targetBranch);
+        if (reviewerIds.length === 0) return existing;
+
+        const mrIid = existing["iid"];
+        if (typeof mrIid !== "number" && typeof mrIid !== "string") {
+          throw new Error("Existing Merge Request response did not include an IID");
+        }
+        return this.httpClient.fetchJson<Record<string, unknown>>(
+          `${createUrl}/${encodeURIComponent(String(mrIid))}`,
+          {
+            method: "PUT",
+            body: JSON.stringify({ reviewer_ids: reviewerIds }),
+          }
+        );
       }
 
       const error = err instanceof Error ? err.message : String(err);

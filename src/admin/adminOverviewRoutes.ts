@@ -3,7 +3,7 @@ import { getLogger } from "../logger.js";
 import { writeJson } from "./adminRouteUtils.js";
 import type { Router } from "./router.js";
 import type { Task, AgentCycle, CostSummary, ModelUsageSummary } from "../interfaces.js";
-import { makeTaskId } from "../interfaces.js";
+import { makeTaskId, TASK_WORKFLOW_BUCKETS } from "../interfaces.js";
 import type { AdminRuntimeConfig } from "./adminServer.js";
 
 const log = getLogger("admin-overview");
@@ -35,15 +35,6 @@ function formatUptime(seconds: number): string {
   const m = Math.round((seconds % 3600) / 60);
   return `${h}h ${m}m`;
 }
-
-const ACTIVE_STATES = new Set([
-  "AGENT_RUNNING", "CONTEXT_BUILDING", "FEEDBACK_PROCESSING",
-  "RETRY_CYCLE", "REVIEW_RUNNING", "REVIEW_COMMENTING", "CLOSING",
-]);
-
-const WATCHING_STATES = new Set(["REVIEW_WATCHING", "IN_REVIEW", "REVIEW_PENDING"]);
-const DONE_STATES = new Set(["DONE", "MERGED", "REVIEW_DONE"]);
-const FAILED_STATES = new Set(["FAILED", "REVIEW_FAILED"]);
 
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 const NUM_TICKS = 14;
@@ -102,10 +93,10 @@ export function registerOverviewRoutes(router: Router, deps: OverviewRouteDeps):
       const sevenDaysAgo = now - SEVEN_DAYS_MS;
 
       const stats = {
-        activeTasks:      tasks.filter((t) => ACTIVE_STATES.has(t.state)).length,
-        watchingTasks:    tasks.filter((t) => WATCHING_STATES.has(t.state)).length,
-        completedLast7d:  tasks.filter((t) => DONE_STATES.has(t.state) && t.updatedAt.getTime() > sevenDaysAgo).length,
-        failedLast7d:     tasks.filter((t) => FAILED_STATES.has(t.state) && t.updatedAt.getTime() > sevenDaysAgo).length,
+        activeTasks:      tasks.filter((t) => TASK_WORKFLOW_BUCKETS.get(t.state) === "active").length,
+        watchingTasks:    tasks.filter((t) => TASK_WORKFLOW_BUCKETS.get(t.state) === "watching").length,
+        completedLast7d:  tasks.filter((t) => TASK_WORKFLOW_BUCKETS.get(t.state) === "done" && t.updatedAt.getTime() > sevenDaysAgo).length,
+        failedLast7d:     tasks.filter((t) => TASK_WORKFLOW_BUCKETS.get(t.state) === "failed" && t.updatedAt.getTime() > sevenDaysAgo).length,
         activeProviders:  0, // populated separately via /api/admin/providers
       };
 

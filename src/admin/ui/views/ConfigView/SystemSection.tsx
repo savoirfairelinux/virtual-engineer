@@ -1,21 +1,28 @@
 import { useEffect, useState } from "react";
 import { Field, FieldInput } from "../../components/Modal.tsx";
 import { api } from "../../api.ts";
+import { useCurrentUser } from "../../authContext.tsx";
 import type { ApiConfig, ApiStatus } from "../../types.ts";
 
 interface SystemSectionProps {
   config: ApiConfig["config"] | null;
   status: ApiStatus | null;
   onRefresh: () => void;
+  onDirtyChange: (dirty: boolean) => void;
 }
 
 interface EditableSettings {
   pollingIntervalMs: number;
   maxAgentCycles: number;
   maxRetryAttempts: number;
+  agentTimeoutMs: number;
+  ticketCloseMaxRetries: number;
+  ticketCloseRetryMinTimeoutMs: number;
 }
 
-export function SystemSection({ config, status, onRefresh }: SystemSectionProps) {
+export function SystemSection({ config, status, onRefresh, onDirtyChange }: SystemSectionProps) {
+  const { can } = useCurrentUser();
+  const canWrite = can("system.write");
   const runtime = status?.runtime;
   const polling = status?.polling;
 
@@ -25,10 +32,26 @@ export function SystemSection({ config, status, onRefresh }: SystemSectionProps)
   );
   const initialCycles = config?.maxAgentCycles ?? runtime?.maxAgentCycles ?? 3;
   const initialRetries = config?.maxRetryAttempts ?? runtime?.maxRetryAttempts ?? 5;
+  const initialTimeoutMs = config?.agentTimeoutMs ?? 3_600_000;
+  const initialTimeoutMinutes = Math.max(1, Math.round(initialTimeoutMs / 60_000));
+  const initialTicketCloseMaxRetries = config?.ticketCloseMaxRetries ?? 5;
+  const initialTicketCloseRetryTimeoutMs = config?.ticketCloseRetryMinTimeoutMs ?? 5000;
+  const initialTicketCloseRetrySeconds = Math.max(1, Math.round(initialTicketCloseRetryTimeoutMs / 1000));
 
   const [pollingSeconds, setPollingSeconds] = useState(String(initialPollingSeconds));
   const [maxCycles, setMaxCycles] = useState(String(initialCycles));
   const [maxRetries, setMaxRetries] = useState(String(initialRetries));
+  const [agentTimeoutMinutes, setAgentTimeoutMinutes] = useState(String(initialTimeoutMinutes));
+  const [ticketCloseMaxRetries, setTicketCloseMaxRetries] = useState(String(initialTicketCloseMaxRetries));
+  const [ticketCloseRetrySeconds, setTicketCloseRetrySeconds] = useState(String(initialTicketCloseRetrySeconds));
+  const [baseline, setBaseline] = useState<EditableSettings>({
+    pollingIntervalMs: initialPollingSeconds * 1000,
+    maxAgentCycles: initialCycles,
+    maxRetryAttempts: initialRetries,
+    agentTimeoutMs: initialTimeoutMs,
+    ticketCloseMaxRetries: initialTicketCloseMaxRetries,
+    ticketCloseRetryMinTimeoutMs: initialTicketCloseRetrySeconds * 1000,
+  });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
@@ -40,21 +63,53 @@ export function SystemSection({ config, status, onRefresh }: SystemSectionProps)
     setPollingSeconds(String(initialPollingSeconds));
     setMaxCycles(String(initialCycles));
     setMaxRetries(String(initialRetries));
-  }, [initialPollingSeconds, initialCycles, initialRetries]);
+    setAgentTimeoutMinutes(String(initialTimeoutMinutes));
+    setTicketCloseMaxRetries(String(initialTicketCloseMaxRetries));
+    setTicketCloseRetrySeconds(String(initialTicketCloseRetrySeconds));
+    setBaseline({
+      pollingIntervalMs: initialPollingSeconds * 1000,
+      maxAgentCycles: initialCycles,
+      maxRetryAttempts: initialRetries,
+      agentTimeoutMs: initialTimeoutMs,
+      ticketCloseMaxRetries: initialTicketCloseMaxRetries,
+      ticketCloseRetryMinTimeoutMs: initialTicketCloseRetrySeconds * 1000,
+    });
+  }, [initialPollingSeconds, initialCycles, initialRetries, initialTimeoutMs, initialTimeoutMinutes, initialTicketCloseMaxRetries, initialTicketCloseRetrySeconds]);
 
   const dirty =
-    Number(pollingSeconds) !== initialPollingSeconds ||
-    Number(maxCycles) !== initialCycles ||
-    Number(maxRetries) !== initialRetries;
+    Number(pollingSeconds) * 1000 !== baseline.pollingIntervalMs ||
+    Number(maxCycles) !== baseline.maxAgentCycles ||
+    Number(maxRetries) !== baseline.maxRetryAttempts ||
+    Number(agentTimeoutMinutes) * 60_000 !== baseline.agentTimeoutMs ||
+    Number(ticketCloseMaxRetries) !== baseline.ticketCloseMaxRetries ||
+    Number(ticketCloseRetrySeconds) * 1000 !== baseline.ticketCloseRetryMinTimeoutMs;
+
+  useEffect(() => {
+    onDirtyChange(dirty);
+    return () => onDirtyChange(false);
+  }, [dirty, onDirtyChange]);
 
   function validate(): EditableSettings | string {
     const seconds = Number(pollingSeconds);
     const cycles = Number(maxCycles);
     const retries = Number(maxRetries);
+    const timeoutMinutes = Number(agentTimeoutMinutes);
+    const closeRetries = Number(ticketCloseMaxRetries);
+    const closeRetrySeconds = Number(ticketCloseRetrySeconds);
     if (!Number.isInteger(seconds) || seconds <= 0) return "Polling interval must be a positive whole number of seconds.";
     if (!Number.isInteger(cycles) || cycles <= 0) return "Max cycles must be a positive whole number.";
     if (!Number.isInteger(retries) || retries <= 0) return "Max retries must be a positive whole number.";
-    return { pollingIntervalMs: seconds * 1000, maxAgentCycles: cycles, maxRetryAttempts: retries };
+    if (!Number.isInteger(timeoutMinutes) || timeoutMinutes <= 0) return "Agent timeout must be a positive whole number of minutes.";
+    if (!Number.isInteger(closeRetries) || closeRetries <= 0) return "Ticket-close max retries must be a positive whole number.";
+    if (!Number.isInteger(closeRetrySeconds) || closeRetrySeconds <= 0) return "Ticket-close retry timeout must be a positive whole number of seconds.";
+    return {
+      pollingIntervalMs: seconds * 1000,
+      maxAgentCycles: cycles,
+      maxRetryAttempts: retries,
+      agentTimeoutMs: timeoutMinutes * 60_000,
+      ticketCloseMaxRetries: closeRetries,
+      ticketCloseRetryMinTimeoutMs: closeRetrySeconds * 1000,
+    };
   }
 
   async function handleSave() {
@@ -68,12 +123,17 @@ export function SystemSection({ config, status, onRefresh }: SystemSectionProps)
     // Build a partial patch with only the fields that actually changed so we
     // never accidentally overwrite a server-side value the user didn't touch.
     const patch: Partial<typeof result> = {};
-    if (result.pollingIntervalMs !== initialPollingSeconds * 1000) patch.pollingIntervalMs = result.pollingIntervalMs;
-    if (result.maxAgentCycles !== initialCycles) patch.maxAgentCycles = result.maxAgentCycles;
-    if (result.maxRetryAttempts !== initialRetries) patch.maxRetryAttempts = result.maxRetryAttempts;
+    if (result.pollingIntervalMs !== baseline.pollingIntervalMs) patch.pollingIntervalMs = result.pollingIntervalMs;
+    if (result.maxAgentCycles !== baseline.maxAgentCycles) patch.maxAgentCycles = result.maxAgentCycles;
+    if (result.maxRetryAttempts !== baseline.maxRetryAttempts) patch.maxRetryAttempts = result.maxRetryAttempts;
+    if (result.agentTimeoutMs !== baseline.agentTimeoutMs) patch.agentTimeoutMs = result.agentTimeoutMs;
+    if (result.ticketCloseMaxRetries !== baseline.ticketCloseMaxRetries) patch.ticketCloseMaxRetries = result.ticketCloseMaxRetries;
+    if (result.ticketCloseRetryMinTimeoutMs !== baseline.ticketCloseRetryMinTimeoutMs) patch.ticketCloseRetryMinTimeoutMs = result.ticketCloseRetryMinTimeoutMs;
     setSaving(true);
     try {
       await api.put("/api/admin/settings", patch);
+      setBaseline(result);
+      onDirtyChange(false);
       setSaved(true);
       onRefresh();
     } catch (e) {
@@ -106,6 +166,7 @@ export function SystemSection({ config, status, onRefresh }: SystemSectionProps)
               type="number"
               min={1}
               step={1}
+              disabled={!canWrite}
               value={pollingSeconds}
               onChange={(e) => { setPollingSeconds(e.target.value); setSaved(false); }}
             />
@@ -116,6 +177,7 @@ export function SystemSection({ config, status, onRefresh }: SystemSectionProps)
               type="number"
               min={1}
               step={1}
+              disabled={!canWrite}
               value={maxCycles}
               onChange={(e) => { setMaxCycles(e.target.value); setSaved(false); }}
             />
@@ -126,19 +188,55 @@ export function SystemSection({ config, status, onRefresh }: SystemSectionProps)
               type="number"
               min={1}
               step={1}
+              disabled={!canWrite}
               value={maxRetries}
               onChange={(e) => { setMaxRetries(e.target.value); setSaved(false); }}
+            />
+          </Field>
+
+          <Field label="Agent timeout (minutes)" hint="Maximum time an agent cycle may run before it is stopped.">
+            <FieldInput
+              type="number"
+              min={1}
+              step={1}
+              disabled={!canWrite}
+              value={agentTimeoutMinutes}
+              onChange={(e) => { setAgentTimeoutMinutes(e.target.value); setSaved(false); }}
+            />
+          </Field>
+
+          <Field label="Ticket-close max retries" hint="Retries for the ticket-close call after a merged task, before marking it failed.">
+            <FieldInput
+              type="number"
+              min={1}
+              step={1}
+              disabled={!canWrite}
+              value={ticketCloseMaxRetries}
+              onChange={(e) => { setTicketCloseMaxRetries(e.target.value); setSaved(false); }}
+            />
+          </Field>
+
+          <Field label="Ticket-close retry min timeout (seconds)" hint="Minimum backoff between ticket-close retries.">
+            <FieldInput
+              type="number"
+              min={1}
+              step={1}
+              disabled={!canWrite}
+              value={ticketCloseRetrySeconds}
+              onChange={(e) => { setTicketCloseRetrySeconds(e.target.value); setSaved(false); }}
             />
           </Field>
 
           {error && <div style={{ color: "var(--danger)", fontSize: "12.5px" }}>{error}</div>}
           {saved && !dirty && <div style={{ color: "var(--accent-strong)", fontSize: "12.5px" }}>Settings saved.</div>}
 
-          <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
-            <button className="btn primary" onClick={() => void handleSave()} disabled={saving || !dirty}>
-              {saving ? "Saving…" : "Save changes"}
-            </button>
-          </div>
+          {canWrite && (
+            <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+              <button className="btn primary" onClick={() => void handleSave()} disabled={saving || !dirty}>
+                {saving ? "Saving…" : "Save changes"}
+              </button>
+            </div>
+          )}
         </div>
       </div>
 

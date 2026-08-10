@@ -1,10 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { tmpdir } from "os";
-import { join } from "path";
 import { randomUUID } from "crypto";
 import Database from "better-sqlite3";
 import { SqliteStateStore } from "../../src/state/stateStore.js";
 import { NANO_AIU_PER_CREDIT } from "../../src/agents/cycleCost.js";
+import { tempDatabasePath } from "./helpers/tempDatabase.js";
 import {
   makeTaskId,
   makeTicketId,
@@ -15,7 +14,7 @@ import {
 } from "../../src/interfaces.js";
 
 function tempDbPath(): string {
-  return join(tmpdir(), `ve-model-${randomUUID()}.db`);
+  return tempDatabasePath("ve-model");
 }
 
 function pricedResult(credits: number, modelId: string): AgentResult {
@@ -77,11 +76,13 @@ describe("SqliteStateStore — getModelUsageSummary", () => {
     store.close();
   });
 
-  it("aggregates model distribution globally and per project, including legacy runs", async () => {
+  it("aggregates model distribution globally and per project, including backfilled legacy runs", async () => {
     const agent = await store.createAgent({
       name: "A",
       type: "coding",
       modelConfigJson: JSON.stringify({ model: "gpt-4.1" }),
+      systemPromptId: "system_generic_code",
+      instructionsPromptId: "instructions_generic_code",
       enabled: true,
     });
     const p1 = await store.createProject({ name: "BACKEND", type: "coding", agentId: agent.id });
@@ -95,13 +96,16 @@ describe("SqliteStateStore — getModelUsageSummary", () => {
     const t2 = await makeTaskForProject(store, p2.id);
     await store.saveAgentCycle(t2, 1, pricedResult(3, "claude-sonnet"));
 
-    // Legacy run: no model snapshot, but events name the model.
+    // Legacy run: no model snapshot, but events name the model. The next store
+    // creation backfills its cost_model_id before this reads it.
     const t3 = await makeTaskForProject(store, p1.id);
     insertLegacyCycle(dbPath, {
       taskId: t3,
       createdAtEpochSeconds: Math.floor(Date.now() / 1000),
       events: pricedResult(5, "copilot/auto").agentEvents ?? null,
     });
+    store.close();
+    store = await SqliteStateStore.create(dbPath);
 
     const summary = await store.getModelUsageSummary();
 
@@ -129,6 +133,8 @@ describe("SqliteStateStore — getModelUsageSummary", () => {
       name: "A",
       type: "coding",
       modelConfigJson: JSON.stringify({ model: "gpt-4.1" }),
+      systemPromptId: "system_generic_code",
+      instructionsPromptId: "instructions_generic_code",
       enabled: true,
     });
     const p1 = await store.createProject({ name: "BACKEND", type: "coding", agentId: agent.id });
@@ -142,6 +148,8 @@ describe("SqliteStateStore — getModelUsageSummary", () => {
       createdAtEpochSeconds: nowSec - 60 * 24 * 60 * 60,
       events: pricedResult(1, "old-model").agentEvents ?? null,
     });
+    store.close();
+    store = await SqliteStateStore.create(dbPath);
 
     const all = await store.getModelUsageSummary();
     expect(all.totalRuns).toBe(2);
@@ -157,5 +165,37 @@ describe("SqliteStateStore — getModelUsageSummary", () => {
     expect(summary.totalRuns).toBe(0);
     expect(summary.byModel).toEqual([]);
     expect(summary.perProject).toEqual([]);
+  });
+
+  it("reopening the store backfills cost_model_id so getModelUsageSummary attributes the run directly", async () => {
+    const agent = await store.createAgent({
+      name: "A",
+      type: "coding",
+      modelConfigJson: JSON.stringify({ model: "gpt-4.1" }),
+      systemPromptId: "system_generic_code",
+      instructionsPromptId: "instructions_generic_code",
+      enabled: true,
+    });
+    const p1 = await store.createProject({ name: "BACKEND", type: "coding", agentId: agent.id });
+    const t1 = await makeTaskForProject(store, p1.id);
+
+    insertLegacyCycle(dbPath, {
+      taskId: t1,
+      createdAtEpochSeconds: Math.floor(Date.now() / 1000),
+      events: pricedResult(2, "claude-sonnet").agentEvents ?? null,
+    });
+
+    store.close();
+    store = await SqliteStateStore.create(dbPath);
+
+    const raw = new Database(dbPath);
+    const row = raw
+      .prepare("SELECT cost_model_id FROM agent_cycles WHERE task_id = ?")
+      .get(t1) as { cost_model_id: string };
+    raw.close();
+    expect(row.cost_model_id).toBe("claude-sonnet");
+
+    const summary = await store.getModelUsageSummary();
+    expect(summary.byModel).toEqual([{ modelId: "claude-sonnet", runCount: 1, usd: expect.any(Number) }]);
   });
 });

@@ -1,11 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { tmpdir } from "os";
-import { join } from "path";
 import { randomUUID } from "crypto";
 import { SqliteStateStore } from "../../src/state/stateStore.js";
+import { tempDatabasePath } from "./helpers/tempDatabase.js";
 
 function tempDbPath(): string {
-  return join(tmpdir(), `ve-users-${randomUUID()}.db`);
+  return tempDatabasePath("ve-users");
 }
 
 function futureDate(ms = 3_600_000): Date {

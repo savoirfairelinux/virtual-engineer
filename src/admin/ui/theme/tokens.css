@@ -8,6 +8,7 @@
   --accent-h: 248;
   --accent:        oklch(0.66 0.15 var(--accent-h));
   --accent-strong: oklch(0.72 0.16 var(--accent-h));
+  --accent-fg:     oklch(0.20 0.02 258);
   --accent-soft:   oklch(0.66 0.15 var(--accent-h) / 0.14);
   --accent-line:   oklch(0.66 0.15 var(--accent-h) / 0.40);
 
@@ -50,9 +51,9 @@
   --border-soft:   oklch(0.27 0.012 258);
   --border-strong: oklch(0.40 0.015 258);
   --text:          oklch(0.95 0.004 258);
-  --text-dim:      oklch(0.74 0.008 258);
-  --text-faint:    oklch(0.58 0.01 258);
-  --text-ghost:    oklch(0.46 0.012 258);
+  --text-dim:      oklch(0.89 0.007 258);
+  --text-faint:    oklch(0.84 0.008 258);
+  --text-ghost:    oklch(0.78 0.009 258);
   --shadow:        0 1px 2px oklch(0 0 0 / 0.4), 0 8px 28px oklch(0 0 0 / 0.32);
   --shadow-sm:     0 1px 2px oklch(0 0 0 / 0.35);
   --inset-hi:      oklch(1 0 0 / 0.04);
@@ -71,9 +72,10 @@
   --border-soft:   oklch(0.93 0.005 258);
   --border-strong: oklch(0.82 0.008 258);
   --text:          oklch(0.24 0.015 258);
-  --text-dim:      oklch(0.46 0.013 258);
-  --text-faint:    oklch(0.60 0.012 258);
-  --text-ghost:    oklch(0.72 0.01 258);
+  --text-dim:      oklch(0.40 0.013 258);
+  --text-faint:    oklch(0.50 0.012 258);
+  --text-ghost:    oklch(0.58 0.01 258);
+  --accent-fg:     oklch(0.24 0.015 258);
   --accent-soft:   oklch(0.66 0.15 var(--accent-h) / 0.10);
   --shadow:        0 1px 2px oklch(0.5 0.02 258 / 0.06), 0 10px 30px oklch(0.5 0.02 258 / 0.08);
   --shadow-sm:     0 1px 2px oklch(0.5 0.02 258 / 0.07);

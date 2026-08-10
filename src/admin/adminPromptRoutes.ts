@@ -1,6 +1,6 @@
 import { getLogger } from "../logger.js";
-import type { AgentRecord, Prompt, PromptStore } from "../interfaces.js";
-import { writeJson, readBody, toIsoTimestamp } from "./adminRouteUtils.js";
+import type { AgentRecord, Prompt, PromptStore, PromptType } from "../interfaces.js";
+import { writeJson, readBody, toIsoTimestamp, requireStore } from "./adminRouteUtils.js";
 import { recordAudit, type AuditCapableStore } from "./adminAudit.js";
 import type { Router } from "./router.js";
 
@@ -20,16 +20,17 @@ export interface PromptRouteDeps {
 /** Register prompt routes on the given router. */
 export function registerPromptRoutes(router: Router, deps: PromptRouteDeps): void {
   router.add("GET", "/api/admin/prompts", async (_req, res, _params) => {
-    if (!deps.promptStore) { writeJson(res, 501, { error: "Prompt store not available" }); return; }
+    if (!requireStore(deps.promptStore, res, "Prompt store not available")) return;
     const prompts = await deps.promptStore.getPrompts();
     writeJson(res, 200, { prompts: prompts.map(serializePrompt) });
   }, { permission: "prompt.read" });
 
   router.add("POST", "/api/admin/prompts", async (req, res, _params) => {
-    if (!deps.promptStore) { writeJson(res, 501, { error: "Prompt store not available" }); return; }
+    if (!requireStore(deps.promptStore, res, "Prompt store not available")) return;
     const body = await readBody(req);
     const label = body?.["label"];
     const content = body?.["content"];
+    const promptType = body?.["promptType"];
     if (typeof label !== "string" || label.trim().length === 0) {
       writeJson(res, 400, { error: "Prompt label must be provided as a non-empty string" });
       return;
@@ -38,10 +39,14 @@ export function registerPromptRoutes(router: Router, deps: PromptRouteDeps): voi
       writeJson(res, 400, { error: "Prompt content must be provided as a non-empty string" });
       return;
     }
+    if (!isPromptType(promptType)) {
+      writeJson(res, 400, { error: "Prompt type must be either 'system' or 'instructions'" });
+      return;
+    }
     try {
-      const prompt = await deps.promptStore.createPrompt(label, content);
+      const prompt = await deps.promptStore.createPrompt(label, content, promptType);
       log.info({ promptId: prompt.id, label }, "new prompt created via admin API");
-      recordAudit(deps.auditStore, req, { action: "prompt.create", targetType: "prompt", targetId: prompt.id, details: { label } });
+      recordAudit(deps.auditStore, req, { action: "prompt.create", targetType: "prompt", targetId: prompt.id, details: { label, promptType } });
       writeJson(res, 201, { prompt: serializePrompt(prompt) });
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Unknown error";
@@ -53,7 +58,7 @@ export function registerPromptRoutes(router: Router, deps: PromptRouteDeps): voi
 
   // Return the list of agents that reference the given prompt.
   router.add("GET", "/api/admin/prompts/:id/usage", async (_req, res, params) => {
-    if (!deps.promptStore) { writeJson(res, 501, { error: "Prompt store not available" }); return; }
+    if (!requireStore(deps.promptStore, res, "Prompt store not available")) return;
     const promptId = params["id"] ?? "";
     const prompt = await deps.promptStore.getPrompt(promptId);
     if (!prompt) { writeJson(res, 404, { error: "Prompt not found" }); return; }
@@ -65,7 +70,7 @@ export function registerPromptRoutes(router: Router, deps: PromptRouteDeps): voi
   }, { permission: "prompt.read" });
 
   router.add("GET", "/api/admin/prompts/:id", async (_req, res, params) => {
-    if (!deps.promptStore) { writeJson(res, 501, { error: "Prompt store not available" }); return; }
+    if (!requireStore(deps.promptStore, res, "Prompt store not available")) return;
     const promptId = params["id"] ?? "";
     const prompt = await deps.promptStore.getPrompt(promptId);
     if (!prompt) { writeJson(res, 404, { error: "Prompt not found" }); return; }
@@ -73,7 +78,7 @@ export function registerPromptRoutes(router: Router, deps: PromptRouteDeps): voi
   }, { permission: "prompt.read" });
 
   router.add("PUT", "/api/admin/prompts/:id", async (req, res, params) => {
-    if (!deps.promptStore) { writeJson(res, 501, { error: "Prompt store not available" }); return; }
+    if (!requireStore(deps.promptStore, res, "Prompt store not available")) return;
     const promptId = params["id"] ?? "";
     if (!/^[a-z][a-z0-9_-]{0,63}$/.test(promptId)) {
       writeJson(res, 404, { error: "Prompt not found" });
@@ -86,7 +91,7 @@ export function registerPromptRoutes(router: Router, deps: PromptRouteDeps): voi
       writeJson(res, 400, { error: "Prompt content must be provided as a string" });
       return;
     }
-    const newContent = body["content"] as string;
+    const newContent = body["content"];
     const prompt = await deps.promptStore.upsertPrompt(promptId, newContent);
     log.warn(
       { promptId, prevLength: existing.content.length, newLength: newContent.length },
@@ -97,7 +102,7 @@ export function registerPromptRoutes(router: Router, deps: PromptRouteDeps): voi
   }, { permission: "prompt.write" });
 
   router.add("DELETE", "/api/admin/prompts/:id", async (req, res, params) => {
-    if (!deps.promptStore) { writeJson(res, 501, { error: "Prompt store not available" }); return; }
+    if (!requireStore(deps.promptStore, res, "Prompt store not available")) return;
     const promptId = params["id"] ?? "";
     try {
       await deps.promptStore.deletePrompt(promptId);
@@ -114,6 +119,10 @@ export function registerPromptRoutes(router: Router, deps: PromptRouteDeps): voi
       throw err;
     }
   }, { permission: "prompt.delete" });
+}
+
+function isPromptType(value: unknown): value is PromptType {
+  return value === "system" || value === "instructions";
 }
 
 /** Serialize a Prompt to the admin API response shape. */

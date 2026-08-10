@@ -20,6 +20,8 @@ describe("getConfig", () => {
       "MAX_RETRY_ATTEMPTS",
       "MAX_COMMITS_PER_CYCLE",
       "AGENT_TIMEOUT_MS",
+      "TICKET_CLOSE_MAX_RETRIES",
+      "TICKET_CLOSE_RETRY_MIN_TIMEOUT_MS",
       "AGENT_CONTAINER_IMAGE",
       "WORKSPACE_BASE_DIR",
     ];
@@ -104,6 +106,14 @@ describe("getConfig", () => {
       expect(getConfig().agentTimeoutMs).toBe(3_600_000);
     });
 
+    it("ticketCloseMaxRetries defaults to 5", () => {
+      expect(getConfig().ticketCloseMaxRetries).toBe(5);
+    });
+
+    it("ticketCloseRetryMinTimeoutMs defaults to 5000", () => {
+      expect(getConfig().ticketCloseRetryMinTimeoutMs).toBe(5_000);
+    });
+
     it("databasePath defaults to ./data/virtual-engineer.db", () => {
       expect(getConfig().databasePath).toBe("./data/virtual-engineer.db");
     });
@@ -143,6 +153,18 @@ describe("getConfig", () => {
       resetConfig();
       expect(getConfig().pollingIntervalMs).toBe(60_000);
     });
+
+    it("reads TICKET_CLOSE_MAX_RETRIES", () => {
+      process.env["TICKET_CLOSE_MAX_RETRIES"] = "8";
+      resetConfig();
+      expect(getConfig().ticketCloseMaxRetries).toBe(8);
+    });
+
+    it("reads TICKET_CLOSE_RETRY_MIN_TIMEOUT_MS", () => {
+      process.env["TICKET_CLOSE_RETRY_MIN_TIMEOUT_MS"] = "10000";
+      resetConfig();
+      expect(getConfig().ticketCloseRetryMinTimeoutMs).toBe(10_000);
+    });
   });
 
   // ─── Validation errors ─────────────────────────────────────────────────────
@@ -158,6 +180,24 @@ describe("getConfig", () => {
       process.env["ADMIN_API_PORT"] = "0";
       resetConfig();
       expect(() => getConfig()).toThrow(/Invalid configuration/);
+    });
+
+    it("throws when ADMIN_AUTH_SECRET is shorter than 32 characters", () => {
+      process.env["ADMIN_AUTH_SECRET"] = "short-secret";
+      resetConfig();
+      expect(() => getConfig()).toThrow(/ADMIN_AUTH_SECRET must be at least 32 characters/);
+    });
+
+    it("accepts an ADMIN_AUTH_SECRET of 32 or more characters", () => {
+      process.env["ADMIN_AUTH_SECRET"] = "a".repeat(32);
+      resetConfig();
+      expect(getConfig().adminAuthSecret).toBe("a".repeat(32));
+    });
+
+    it("treats an empty ADMIN_AUTH_SECRET as unset instead of failing the min-length check", () => {
+      process.env["ADMIN_AUTH_SECRET"] = "";
+      resetConfig();
+      expect(getConfig().adminAuthSecret).toBeUndefined();
     });
   });
 });

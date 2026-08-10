@@ -6,6 +6,7 @@ import type { ApiCycle, CycleCost } from "../../types.ts";
 import { totalInputTokens, totalProcessedTokens } from "./liveMetrics.ts";
 import { formatUsd, formatCredits } from "./costFormat.ts";
 import { getCyclePresentation } from "./agentCyclePresentation.ts";
+import { summarizeToolUsage } from "./toolUsageSummary.ts";
 
 interface ReviewComment {
   file: string;
@@ -306,6 +307,35 @@ function CycleCard({ cycle, open, onToggle }: CycleCardProps) {
                   </div>
                 </>
               )}
+              {/* tool usage */}
+              {(() => {
+                const usage = summarizeToolUsage(cycle.result.agentEvents);
+                if (usage.totalCalls === 0 && usage.totalDenials === 0) return null;
+                return (
+                  <>
+                    <div className="eyebrow" style={{ margin: "20px 0 8px" }}>Tool usage</div>
+                    <div style={{ fontSize: "11.5px", color: "var(--text-dim)", marginBottom: "8px" }}>
+                      {usage.totalCalls} call(s){usage.totalDenials > 0 ? ` · ${usage.totalDenials} denial(s)` : ""}
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                      {usage.tools.map((t) => (
+                        <div key={t.name} style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                          <span className="mono" style={{ fontSize: "11.5px", color: "var(--text-dim)" }}>{t.name}</span>
+                          {t.callCount > 0 && (
+                            <Tag tone="muted" mono={false}>{t.callCount} call{t.callCount === 1 ? "" : "s"}</Tag>
+                          )}
+                          {t.denialCount > 0 && (
+                            <Tag tone="danger" mono={false}>{t.denialCount} denied</Tag>
+                          )}
+                          {t.lastDenialReason && (
+                            <span style={{ fontSize: "11px", color: "var(--text-faint)" }}>— {t.lastDenialReason}</span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                );
+              })()}
             </>
         </div>
       )}

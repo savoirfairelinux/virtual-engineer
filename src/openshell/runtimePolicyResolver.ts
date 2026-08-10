@@ -35,6 +35,41 @@ function policySections(policies: RuntimePolicyRecord[], owner: string): Map<str
   return sections;
 }
 
+/** Paths a bound filesystem policy must never make writable for the agent. */
+const PROTECTED_PATHS = ["/", "/usr", "/lib", "/etc", "/app", "/bin", "/sbin", "/boot", "/var"];
+
+/**
+ * A bound runtime policy replaces its whole section, so re-assert the two
+ * non-negotiable properties of the sandbox after composition: the agent runs as
+ * the unprivileged `sandbox` account, and it cannot gain write access to the
+ * image's executable or configuration trees.
+ */
+function enforceSandboxFloor(document: Record<string, unknown>): void {
+  const base = createDefaultPolicyDocument();
+  const process = document["process"];
+  if (typeof process === "object" && process !== null) {
+    Object.assign(process, base["process"]);
+  } else {
+    document["process"] = base["process"];
+  }
+
+  const filesystem = document["filesystem_policy"];
+  if (typeof filesystem === "object" && filesystem !== null) {
+    const policy = filesystem as Record<string, unknown>;
+    const readWrite = policy["read_write"];
+    if (Array.isArray(readWrite)) {
+      const offending = readWrite.filter(
+        (entry) => typeof entry === "string" && PROTECTED_PATHS.includes(entry.replace(/\/+$/, "") || "/")
+      );
+      if (offending.length > 0) {
+        throw new Error(
+          `Runtime filesystem policy may not grant write access to ${offending.join(", ")}`
+        );
+      }
+    }
+  }
+}
+
 function composePolicies(
   agentPolicies: RuntimePolicyRecord[],
   projectPolicies: RuntimePolicyRecord[],
@@ -48,6 +83,7 @@ function composePolicies(
   if (sections.size === 0) return undefined;
   const document = createDefaultPolicyDocument();
   for (const [yamlKey, section] of sections) document[yamlKey] = section;
+  enforceSandboxFloor(document);
   return stringify(document);
 }
 

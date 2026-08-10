@@ -20,6 +20,8 @@ import {
   createGitHubDeviceOAuthHandler,
   getGitHubAccessToken,
 } from "./githubOAuth.js";
+import { validateGitHubConnection } from "../../agents/githubConnectionValidator.js";
+import { readGitHubWorkspaceManifestFiles } from "../../workspace/repositoryManifestAccess.js";
 
 /**
  * Unified GitHub provider configuration. The single GitHub provider can fulfil
@@ -144,7 +146,7 @@ export const githubDescriptor: ProviderDescriptor = {
   createOAuthHandler: (config) => createGitHubDeviceOAuthHandler(config),
   discoverResources: async (config) => {
     const parsed = githubConfigSchema.parse(config);
-    const urls = resolveGitHubUrls(parsed.mode as GitHubMode, parsed.baseUrl);
+    const urls = resolveGitHubUrls(parsed.mode, parsed.baseUrl);
     const token = getGitHubAccessTokenSafe(parsed);
     if (!token) {
       return { ticketProjects: [], repositories: [], discoveredAt: new Date().toISOString() };
@@ -166,12 +168,29 @@ export const githubDescriptor: ProviderDescriptor = {
   },
   discoverBranches: async (config, repoKey) => {
     const parsed = githubConfigSchema.parse(config);
-    const urls = resolveGitHubUrls(parsed.mode as GitHubMode, parsed.baseUrl);
+    const urls = resolveGitHubUrls(parsed.mode, parsed.baseUrl);
     const token = getGitHubAccessTokenSafe(parsed);
     if (!token) {
       return [];
     }
     return listGitHubBranches(token, urls.apiBaseUrl, repoKey);
+  },
+  readWorkspaceManifestFiles: async (config, repoKey, revision) => {
+    const parsed = githubConfigSchema.parse(config);
+    const token = getGitHubAccessTokenSafe(parsed);
+    if (!token) throw new Error("GitHub workspace scan requires an access token");
+    const urls = resolveGitHubUrls(parsed.mode, parsed.baseUrl);
+    return readGitHubWorkspaceManifestFiles({
+      apiBaseUrl: urls.apiBaseUrl,
+      token,
+      repoKey,
+      ...(revision !== undefined ? { revision } : {}),
+    });
+  },
+  testConnection: async (config) => {
+    const parsed = githubConfigSchema.parse(config);
+    const urls = resolveGitHubUrls(parsed.mode, parsed.baseUrl);
+    return validateGitHubConnection({ token: parsed.token, apiBaseUrl: urls.apiBaseUrl });
   },
   getSummaryDetails(config) {
     const mode = typeof config["mode"] === "string" ? config["mode"] : "github.com";
@@ -184,12 +203,12 @@ export const githubDescriptor: ProviderDescriptor = {
         const { owner, repo } = resolveRepo(context?.ticketProjectKey, "ticketProjectKey", {
           allowUnboundFallback: context === undefined,
         });
-        const urls = resolveGitHubUrls(parsed.mode as GitHubMode, parsed.baseUrl);
+        const urls = resolveGitHubUrls(parsed.mode, parsed.baseUrl);
         return new GitHubIssueConnector({
           apiBaseUrl: urls.apiBaseUrl,
           owner,
           repo,
-          token: getGitHubAccessToken(parsed as Record<string, unknown>),
+          token: getGitHubAccessToken(parsed),
           ...(parsed.virtualEngineerUserLogin !== undefined
             ? { virtualEngineerUserLogin: parsed.virtualEngineerUserLogin }
             : {}),
@@ -198,20 +217,18 @@ export const githubDescriptor: ProviderDescriptor = {
       intake: ["polling", "webhook"],
     },
     code_review: {
-      systemPromptId: "system_github_review",
-      userPromptId: "user_github_review",
       intake: ["polling", "webhook"],
       createConnector: (config: unknown, _integration: Integration, context?: IntegrationBindingContext) => {
         const parsed = githubConfigSchema.parse(config);
         const { owner, repo } = resolveRepo(context?.repoKey, "repoKey", {
           allowUnboundFallback: context === undefined,
         });
-        const urls = resolveGitHubUrls(parsed.mode as GitHubMode, parsed.baseUrl);
+        const urls = resolveGitHubUrls(parsed.mode, parsed.baseUrl);
         return new GitHubPullRequestReviewConnector({
           apiBaseUrl: urls.apiBaseUrl,
           owner,
           repo,
-          token: getGitHubAccessToken(parsed as Record<string, unknown>),
+          token: getGitHubAccessToken(parsed),
           ...(parsed.virtualEngineerUserLogin !== undefined
             ? { virtualEngineerUserLogin: parsed.virtualEngineerUserLogin }
             : {}),
@@ -219,13 +236,11 @@ export const githubDescriptor: ProviderDescriptor = {
       },
       createReviewer: (cfg, _integration, workspaceRunner) => {
         const parsed = githubConfigSchema.parse(cfg);
-        const urls = resolveGitHubUrls(parsed.mode as GitHubMode, parsed.baseUrl);
-        const token = getGitHubAccessToken(parsed as Record<string, unknown>);
-        const host = deriveHost(parsed.mode as GitHubMode, parsed.baseUrl);
+        const urls = resolveGitHubUrls(parsed.mode, parsed.baseUrl);
+        const token = getGitHubAccessToken(parsed);
+        const host = deriveHost(parsed.mode, parsed.baseUrl);
 
         return {
-          systemPromptId: "system_github_review",
-          userPromptId: "user_github_review",
           provider: new GitHubReviewProvider({
             apiBaseUrl: urls.apiBaseUrl,
             token,
@@ -250,22 +265,22 @@ export const githubDescriptor: ProviderDescriptor = {
       },
     },
     source_control: {
-      createVcsConnector: (cfg: Record<string, unknown>, _integration: Integration, context?: IntegrationBindingContext) => {
+      createVcsConnector: (cfg: Record<string, unknown>, _integration: Integration, context, runtime) => {
         const parsed = githubConfigSchema.parse(cfg);
         const { owner, repo } = resolveRepo(context?.repoKey, "repoKey");
-        const urls = resolveGitHubUrls(parsed.mode as GitHubMode, parsed.baseUrl);
-        const host = deriveHost(parsed.mode as GitHubMode, parsed.baseUrl);
+        const urls = resolveGitHubUrls(parsed.mode, parsed.baseUrl);
+        const host = deriveHost(parsed.mode, parsed.baseUrl);
         const targetBranch = context?.targetBranch ?? parsed.targetBranch;
         return new GitHubVcsConnector({
           apiBaseUrl: urls.apiBaseUrl,
           host,
           owner,
           repo,
-          token: getGitHubAccessToken(parsed as Record<string, unknown>),
+          token: getGitHubAccessToken(parsed),
           gitAuthorName: parsed.gitAuthorName,
           gitAuthorEmail: parsed.gitAuthorEmail,
           ...(targetBranch !== undefined ? { targetBranch } : {}),
-        });
+        }, runtime?.gitRunner);
       },
     },
   },

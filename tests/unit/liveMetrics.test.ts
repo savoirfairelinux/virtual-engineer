@@ -128,4 +128,21 @@ describe("extractMetrics", () => {
     expect(m.inputTokens).toBe(200);
     expect(m.outputTokens).toBe(100);
   });
+
+  it("counts permission.denied events as denials", () => {
+    const m = extractMetrics([
+      { type: "permission.denied", data: { toolName: "Bash", reason: "blocked" } },
+      { type: "permission.denied", data: { toolName: "Bash", reason: "blocked" } },
+      { type: "permission.denied", data: { toolName: "WebFetch", reason: "network" } },
+    ]);
+    expect(m.denials).toBe(3);
+  });
+
+  it("does not count permission.approved as a denial", () => {
+    const m = extractMetrics([
+      { type: "permission.approved", data: { toolName: "Read" } },
+      { type: "permission.denied", data: { toolName: "Bash" } },
+    ]);
+    expect(m.denials).toBe(1);
+  });
 });

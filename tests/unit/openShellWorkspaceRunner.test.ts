@@ -531,6 +531,84 @@ describe("OpenShellWorkspaceRunner", () => {
     );
   });
 
+  it.each([
+    "OPENAI_API_KEY",
+    "OPENROUTER_API_KEY",
+    "DEEPSEEK_API_KEY",
+    "GROQ_API_KEY",
+    "GOOGLE_API_KEY",
+    "AZURE_OPENAI_API_KEY",
+    "PERPLEXITY_API_KEY",
+    "MISTRAL_API_KEY",
+    "XAI_API_KEY",
+    "CEREBRAS_API_KEY",
+  ])("attaches the Aider/Goose backend credential %s as a provider instead of sandbox env", async (credentialKey) => {
+    const client = fakeClient();
+    const runner = new OpenShellWorkspaceRunner({ git: fakeGit(), client, sandboxImage: "base" });
+    const adapter = fakeCodingAdapter({
+      env: {
+        AGENT_PROVIDER: "aider",
+        [credentialKey]: "sk-backend-secret",
+        OPENAI_API_BASE: "https://llm.internal.example/v1",
+      },
+    });
+
+    await runner.cloneRepo(handle, "https://trusted.example/repo.git", "main");
+    await runner.runAgentInDocker(
+      adapter,
+      { taskId: "t1", workspacePath: "/tmp/ws-1" } as unknown as TaskContext,
+      { [credentialKey]: "sk-backend-secret" },
+    );
+
+    expect(client.createProvider).toHaveBeenCalledWith({
+      name: "ve-t1-agent",
+      type: "generic",
+      credentials: { [credentialKey]: "sk-backend-secret" },
+    });
+    // Non-secret backend settings still travel through `sandbox create --env`,
+    // but the credential itself must never reach the child process argv.
+    expect(client.createSandbox).toHaveBeenCalledWith(expect.objectContaining({
+      env: { AGENT_PROVIDER: "aider", OPENAI_API_BASE: "https://llm.internal.example/v1" },
+      providers: ["ve-t1-agent"],
+    }));
+    const createSandboxArgs = (client.createSandbox as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(JSON.stringify(createSandboxArgs)).not.toContain("sk-backend-secret");
+  });
+
+  it("fails the coding run when the spec carries an unmapped secret-looking variable", async () => {
+    const client = fakeClient();
+    const runner = new OpenShellWorkspaceRunner({ git: fakeGit(), client, sandboxImage: "base" });
+    const adapter = fakeCodingAdapter({
+      env: { AGENT_PROVIDER: "aider", SOME_OTHER_API_KEY: "leak-me" },
+    });
+
+    await expect(runner.runAgentInDocker(
+      adapter,
+      { taskId: "t1", workspacePath: "/tmp/ws-1" } as unknown as TaskContext,
+      { SOME_OTHER_API_KEY: "leak-me" },
+    )).rejects.toThrow(/unmapped credential "SOME_OTHER_API_KEY"/);
+
+    expect(client.createProvider).not.toHaveBeenCalled();
+    expect(client.createSandbox).not.toHaveBeenCalled();
+  });
+
+  it("fails the review run when the spec carries an unmapped secret-looking variable", async () => {
+    const client = fakeClient();
+    const runner = new OpenShellWorkspaceRunner({
+      git: fakeGit(),
+      client,
+      sandboxImage: "base",
+      agentAdapter: fakeReviewAdapter({ env: { REVIEW_MODE: "1", VENDOR_SECRET: "leak-me" } }),
+    });
+
+    await expect(runner.runReviewInDocker(
+      handle,
+      { changeId: "Iabc", prompt: "review this diff" } as unknown as ReviewWorkspaceInput,
+    )).rejects.toThrow(/unmapped credential "VENDOR_SECRET"/);
+
+    expect(client.createSandbox).not.toHaveBeenCalled();
+  });
+
   it("does not create remote resources when provider ownership cannot be persisted", async () => {
     const client = fakeClient();
     const runner = new OpenShellWorkspaceRunner({

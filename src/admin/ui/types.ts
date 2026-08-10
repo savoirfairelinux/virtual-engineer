@@ -104,6 +104,16 @@ export interface ApiTransition {
 }
 
 export type DomainCapability = "issue_tracking" | "code_review" | "source_control" | "agent_execution";
+export type ReviewStrategy = "ve_direct" | "copilot_native";
+
+export interface ReviewStrategyDescriptor {
+  id: "copilot_native";
+  label: string;
+  description: string;
+  experimental: boolean;
+  modelSelection: "provider";
+  requiredSystemPromptId: string;
+}
 
 /**
  * Provider brand icon metadata as serialized by the admin API. `slug` is the
@@ -166,6 +176,7 @@ export interface PluginField {
   required?: boolean;
   placeholder?: string;
   description?: string;
+  valueType?: "string" | "number" | "boolean";
   options?: Array<{ value: string; label: string }>;
   dependsOn?: { field: string; value: string };
   /** When true the field is not rendered in the UI (managed internally by OAuth flows etc.). */
@@ -194,6 +205,8 @@ export interface ApiPlugin {
   domainCapabilities: DomainCapability[];
   icon?: ProviderIcon | null;
   requiredFields: PluginField[];
+  agentConfigFields: PluginField[];
+  reviewStrategies?: ReviewStrategyDescriptor[];
   /** True when the provider supports the generic SSH auth UI (agent / generated-key). */
   supportsSshAuth?: boolean;
   oauth?: ApiPluginOAuth;
@@ -207,6 +220,7 @@ export interface ApiAgent {
   enabled: boolean;
   maxConcurrent: number | null;
   model: string | null;
+  reviewStrategy: ReviewStrategy;
   systemPromptId: string | null;
   instructionsPromptId: string | null;
   feedbackInstructionsPromptId: string | null;
@@ -221,6 +235,7 @@ export interface ApiProject {
   type: "coding" | "review";
   enabled: boolean;
   agentId: string | null;
+  skillSources?: Array<{ source: string; skills: string[]; installAll?: boolean; sshUser?: string; sshPort?: number; sshKeyPath?: string; sshKnownHostsPath?: string }>;
   createdAt: string;
   updatedAt: string;
 }
@@ -229,6 +244,7 @@ export interface ApiPrompt {
   id: string;
   label: string;
   content: string;
+  promptType: "system" | "instructions";
   updatedAt: string;
   usedByCount?: number;
 }
@@ -256,6 +272,9 @@ export interface ApiConfig {
     maxAgentCycles: number;
     maxRetryAttempts: number;
     pollingIntervalMs: number;
+    agentTimeoutMs: number;
+    ticketCloseMaxRetries: number;
+    ticketCloseRetryMinTimeoutMs: number;
   };
 }
 
@@ -399,6 +418,7 @@ export interface ApiPolicyDetail extends ApiPolicy {
 
 export interface SetupStatus {
   needsSetup: boolean;
+  credentialEncryptionConfigured: boolean;
 }
 
 export interface ApiUser {

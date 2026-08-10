@@ -1,15 +1,36 @@
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { describe, it, expect } from "vitest";
-import { tmpdir } from "os";
-import { join } from "path";
-import { randomUUID } from "crypto";
+import Database from "better-sqlite3";
 import { SqliteStateStore } from "../../src/state/stateStore.js";
+import { makeAgentId, makeProjectId } from "../../src/interfaces.js";
+import { tempDatabasePath } from "./helpers/tempDatabase.js";
 
 function tempDbPath(): string {
-  return join(tmpdir(), `ve-migrations-${randomUUID()}.db`);
+  return tempDatabasePath("ve-migrations");
+}
+
+/** Open a separate, read-only-in-spirit connection to the store's DB file to inspect raw SQLite state without reaching into store internals. */
+function openRaw(dbPath: string): Database.Database {
+  return new Database(dbPath);
+}
+
+async function trackedMigrationCount(): Promise<number> {
+  interface Journal {
+    entries: Array<{ tag: string }>;
+  }
+  const journal = JSON.parse(
+    await readFile(join(process.cwd(), "drizzle", "meta", "_journal.json"), "utf8")
+  ) as Journal;
+  return journal.entries.length;
 }
 
 interface TableInfoRow {
   name: string;
+}
+
+interface CountRow {
+  count: number;
 }
 
 interface ColumnInfoRow {
@@ -21,38 +42,270 @@ interface ColumnInfoRow {
 }
 
 describe("Phase 2 migrations", () => {
-  it("creates the new tables on a fresh DB", async () => {
-    const store = await SqliteStateStore.create(tempDbPath());
+  it("records tracked migrations when creating a fresh database", async () => {
+    const dbPath = tempDbPath();
+    const store = await SqliteStateStore.create(dbPath);
     try {
-      const raw = (store as unknown as { raw: { prepare: (s: string) => { all: () => unknown[] } } }).raw;
-      const tables = raw.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as TableInfoRow[];
-      const names = new Set(tables.map((t) => t.name));
-      for (const expected of [
-        "agents",
-        "projects",
-        "project_integration_bindings",
-        "project_push_targets",
-        "app_concurrency",
-      ]) {
-        expect(names.has(expected), `missing table ${expected}`).toBe(true);
+      const raw = openRaw(dbPath);
+      try {
+        const row = raw.prepare("SELECT COUNT(*) AS count FROM __drizzle_migrations").get() as CountRow;
+        expect(row.count).toBe(await trackedMigrationCount());
+      } finally {
+        raw.close();
       }
     } finally {
       store.close();
     }
   });
 
-  it("adds discovered_resources_json + discovered_at to integrations and project_id to tasks", async () => {
-    const store = await SqliteStateStore.create(tempDbPath());
+  it("creates the new tables on a fresh DB", async () => {
+    const dbPath = tempDbPath();
+    const store = await SqliteStateStore.create(dbPath);
     try {
-      const raw = (store as unknown as { raw: { prepare: (s: string) => { all: () => unknown[] } } }).raw;
-      const intCols = raw.prepare("PRAGMA table_info(integrations)").all() as ColumnInfoRow[];
-      const intColNames = new Set(intCols.map((c) => c.name));
-      expect(intColNames.has("discovered_resources_json")).toBe(true);
-      expect(intColNames.has("discovered_at")).toBe(true);
+      const raw = openRaw(dbPath);
+      try {
+        const tables = raw.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as TableInfoRow[];
+        const names = new Set(tables.map((t) => t.name));
+        for (const expected of [
+          "agents",
+          "projects",
+          "project_integration_bindings",
+          "project_push_targets",
+          "app_concurrency",
+        ]) {
+          expect(names.has(expected), `missing table ${expected}`).toBe(true);
+        }
+      } finally {
+        raw.close();
+      }
+    } finally {
+      store.close();
+    }
+  });
 
-      const taskCols = raw.prepare("PRAGMA table_info(tasks)").all() as ColumnInfoRow[];
-      const taskColNames = new Set(taskCols.map((c) => c.name));
-      expect(taskColNames.has("project_id")).toBe(true);
+  it("does not create removed local skill configuration columns", async () => {
+    const dbPath = tempDbPath();
+    const store = await SqliteStateStore.create(dbPath);
+    try {
+      const raw = openRaw(dbPath);
+      try {
+        const projectColumns = raw.prepare("PRAGMA table_info(projects)").all() as ColumnInfoRow[];
+        expect(projectColumns.map((column) => column.name)).not.toContain("skill_discovery_enabled");
+        expect(projectColumns.map((column) => column.name)).not.toContain("local_skills_path");
+      } finally {
+        raw.close();
+      }
+    } finally {
+      store.close();
+    }
+  });
+
+  it("drops the legacy project skill discovery flag and preserves project data", async () => {
+    const dbPath = tempDbPath();
+    const legacy = new Database(dbPath);
+    const now = Math.floor(Date.now() / 1000);
+    legacy.exec(`
+      CREATE TABLE prompts (
+        id TEXT PRIMARY KEY,
+        label TEXT NOT NULL,
+        content TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE TABLE agents (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        type TEXT NOT NULL,
+        model_config_json TEXT NOT NULL DEFAULT '{}',
+        system_prompt_id TEXT REFERENCES prompts(id),
+        instructions_prompt_id TEXT REFERENCES prompts(id),
+        max_concurrent INTEGER NOT NULL DEFAULT 1,
+        enabled INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE TABLE projects (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        type TEXT NOT NULL,
+        agent_id TEXT NOT NULL REFERENCES agents(id),
+        agent_override_json TEXT,
+        post_clone_script TEXT NOT NULL DEFAULT '',
+        skill_discovery_enabled INTEGER NOT NULL DEFAULT 0,
+        local_skills_path TEXT NOT NULL DEFAULT '.github/skills',
+        enabled INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+    `);
+    legacy.prepare(`
+      INSERT INTO agents (
+        id, name, type, model_config_json, enabled, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run("legacy-agent", "Legacy agent", "coding", "{}", 1, now, now);
+    legacy.prepare(`
+      INSERT INTO projects (
+        id, name, type, agent_id, skill_discovery_enabled, enabled, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run("legacy-project", "Legacy project", "coding", "legacy-agent", 1, 1, now, now);
+    legacy.close();
+
+    const store = await SqliteStateStore.create(dbPath);
+    try {
+      const raw = openRaw(dbPath);
+      try {
+        const projectColumns = raw.prepare("PRAGMA table_info(projects)").all() as ColumnInfoRow[];
+        expect(projectColumns.map((column) => column.name)).not.toContain("skill_discovery_enabled");
+        expect(projectColumns.map((column) => column.name)).not.toContain("local_skills_path");
+      } finally {
+        raw.close();
+      }
+
+      const project = await store.getProjectById(makeProjectId("legacy-project"));
+      expect(project).toMatchObject({
+        id: "legacy-project",
+        name: "Legacy project",
+        enabled: true,
+      });
+    } finally {
+      store.close();
+    }
+  });
+
+  it("adds discovered_resources_json + discovered_at to integrations and project_id to tasks", async () => {
+    const dbPath = tempDbPath();
+    const store = await SqliteStateStore.create(dbPath);
+    try {
+      const raw = openRaw(dbPath);
+      try {
+        const intCols = raw.prepare("PRAGMA table_info(integrations)").all() as ColumnInfoRow[];
+        const intColNames = new Set(intCols.map((c) => c.name));
+        expect(intColNames.has("discovered_resources_json")).toBe(true);
+        expect(intColNames.has("discovered_at")).toBe(true);
+
+        const taskCols = raw.prepare("PRAGMA table_info(tasks)").all() as ColumnInfoRow[];
+        const taskColNames = new Set(taskCols.map((c) => c.name));
+        expect(taskColNames.has("project_id")).toBe(true);
+      } finally {
+        raw.close();
+      }
+    } finally {
+      store.close();
+    }
+  });
+
+  it("preserves a custom system prompt role when upgrading a legacy database", async () => {
+    const dbPath = tempDbPath();
+    const legacy = new Database(dbPath);
+    const now = Math.floor(Date.now() / 1000);
+    legacy.exec(`
+      CREATE TABLE prompts (
+        id TEXT PRIMARY KEY,
+        label TEXT NOT NULL,
+        content TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE TABLE agents (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        type TEXT NOT NULL,
+        model_config_json TEXT NOT NULL DEFAULT '{}',
+        system_prompt_id TEXT REFERENCES prompts(id),
+        instructions_prompt_id TEXT REFERENCES prompts(id),
+        max_concurrent INTEGER NOT NULL DEFAULT 1,
+        enabled INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+    `);
+    legacy.prepare(
+      "INSERT INTO prompts (id, label, content, created_at, updated_at) VALUES (?, ?, ?, ?, ?)"
+    ).run("custom-system", "Custom system", "System policy", now, now);
+    legacy.prepare(
+      "INSERT INTO prompts (id, label, content, created_at, updated_at) VALUES (?, ?, ?, ?, ?)"
+    ).run("shared-prompt", "Shared prompt", "Shared policy", now, now);
+    legacy.prepare(`
+      INSERT INTO agents (
+        id, name, type, model_config_json, system_prompt_id,
+        instructions_prompt_id, enabled, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      "legacy-agent",
+      "Legacy agent",
+      "coding",
+      "{}",
+      "custom-system",
+      null,
+      1,
+      now,
+      now,
+    );
+    legacy.prepare(`
+      INSERT INTO agents (
+        id, name, type, model_config_json, system_prompt_id,
+        instructions_prompt_id, enabled, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      "dual-role-agent",
+      "Dual role agent",
+      "coding",
+      "{}",
+      "shared-prompt",
+      "shared-prompt",
+      1,
+      now,
+      now,
+    );
+    legacy.close();
+
+    const store = await SqliteStateStore.create(dbPath);
+    try {
+      const prompt = await store.getPrompt("custom-system");
+      const agent = await store.getAgentById(makeAgentId("legacy-agent"));
+      const dualRoleAgent = await store.getAgentById(makeAgentId("dual-role-agent"));
+      const sharedSystemPrompt = await store.getPrompt("shared-prompt");
+      const sharedInstructionsPrompt = dualRoleAgent?.instructionsPromptId
+        ? await store.getPrompt(dualRoleAgent.instructionsPromptId)
+        : null;
+      expect(prompt?.promptType).toBe("system");
+      expect(agent?.systemPromptId).toBe("custom-system");
+      expect(sharedSystemPrompt?.promptType).toBe("system");
+      expect(dualRoleAgent?.systemPromptId).toBe("shared-prompt");
+      expect(dualRoleAgent?.instructionsPromptId).not.toBe("shared-prompt");
+      expect(sharedInstructionsPrompt?.promptType).toBe("instructions");
+      expect(sharedInstructionsPrompt?.content).toBe("Shared policy");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("normalizes unsupported legacy prompt roles during upgrade", async () => {
+    const dbPath = tempDbPath();
+    const legacy = new Database(dbPath);
+    const now = Math.floor(Date.now() / 1000);
+    legacy.exec(`
+      CREATE TABLE prompts (
+        id TEXT PRIMARY KEY,
+        label TEXT NOT NULL,
+        content TEXT NOT NULL,
+        prompt_type TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+    `);
+    legacy.prepare(
+      "INSERT INTO prompts (id, label, content, prompt_type, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)"
+    ).run("legacy-user", "Legacy user", "Legacy instructions", "user", now, now);
+    legacy.prepare(
+      "INSERT INTO prompts (id, label, content, prompt_type, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)"
+    ).run("legacy-null", "Legacy null", "Legacy instructions", null, now, now);
+    legacy.close();
+
+    const store = await SqliteStateStore.create(dbPath);
+    try {
+      expect((await store.getPrompt("legacy-user"))?.promptType).toBe("instructions");
+      expect((await store.getPrompt("legacy-null"))?.promptType).toBe("instructions");
     } finally {
       store.close();
     }
@@ -65,6 +318,8 @@ describe("Phase 2 migrations", () => {
         name: "A",
         type: "coding",
         modelConfigJson: "{}",
+        systemPromptId: "system_generic_code",
+        instructionsPromptId: "instructions_generic_code",
         enabled: true,
       });
       await store.upsertIntegration({ id: "r1", provider: "redmine", name: "R", configJson: "{}", enabled: true });
@@ -80,14 +335,19 @@ describe("Phase 2 migrations", () => {
   });
 
   it("app_concurrency CHECK constraint blocks non-'global' ids", async () => {
-    const store = await SqliteStateStore.create(tempDbPath());
+    const dbPath = tempDbPath();
+    const store = await SqliteStateStore.create(dbPath);
     try {
-      const raw = (store as unknown as { raw: { prepare: (s: string) => { run: (...args: unknown[]) => void } } }).raw;
-      expect(() =>
-        raw
-          .prepare("INSERT INTO app_concurrency (id, max_concurrent, updated_at) VALUES (?, ?, ?)")
-          .run("not-global", 1, Math.floor(Date.now() / 1000))
-      ).toThrow();
+      const raw = openRaw(dbPath);
+      try {
+        expect(() =>
+          raw
+            .prepare("INSERT INTO app_concurrency (id, max_concurrent, updated_at) VALUES (?, ?, ?)")
+            .run("not-global", 1, Math.floor(Date.now() / 1000))
+        ).toThrow();
+      } finally {
+        raw.close();
+      }
     } finally {
       store.close();
     }

@@ -1,37 +1,55 @@
 /** Core domain types and interface contracts. */
 
+import {
+  type AgentId,
+  type ExternalChangeId,
+  type ProjectId,
+  type TaskId,
+  type TicketId,
+} from "./domain/identifiers.js";
+import {
+  type ChangePerRepository,
+  type StateTransition,
+  type Task,
+  type TaskState,
+} from "./domain/tasks.js";
+
+export {
+  makeAgentId,
+  makeExternalChangeId,
+  makeProjectId,
+  makeTaskId,
+  makeTicketId,
+  type AgentId,
+  type ExternalChangeId,
+  type ProjectId,
+  type TaskId,
+  type TicketId,
+} from "./domain/identifiers.js";
+export {
+  CODE_GEN_STATES,
+  CODE_GEN_TERMINAL_STATES,
+  CODE_REVIEW_STATES,
+  CODE_REVIEW_TERMINAL_STATES,
+  TASK_STATES,
+  TASK_WORKFLOW_BUCKETS,
+  TERMINAL_STATES,
+  type ChangePerRepository,
+  type CodeGenState,
+  type CodeReviewState,
+  type StateTransition,
+  type Task,
+  type TaskState,
+  type TaskType,
+  type TaskWorkflowBucket,
+} from "./domain/tasks.js";
+
 // ─── Shared value types ───────────────────────────────────────────────────────
-
-export type TaskId = string & { readonly __brand: "TaskId" };
-export type TicketId = string & { readonly __brand: "TicketId" };
-export type ExternalChangeId = string & { readonly __brand: "ExternalChangeId" };
-export type AgentId = string & { readonly __brand: "AgentId" };
-export type ProjectId = string & { readonly __brand: "ProjectId" };
-
-/** Cast a plain string to the branded `TaskId` type. */
-export function makeTaskId(s: string): TaskId {
-  return s as TaskId;
-}
-/** Cast a plain string to the branded `TicketId` type. */
-export function makeTicketId(s: string): TicketId {
-  return s as TicketId;
-}
-/** Cast a plain string to the branded `ExternalChangeId` type. */
-export function makeExternalChangeId(s: string): ExternalChangeId {
-  return s as ExternalChangeId;
-}
-/** Cast a plain string to the branded `AgentId` type. */
-export function makeAgentId(s: string): AgentId {
-  return s as AgentId;
-}
-/** Cast a plain string to the branded `ProjectId` type. */
-export function makeProjectId(s: string): ProjectId {
-  return s as ProjectId;
-}
 
 // ─── Phase 2: Agents / Projects / Concurrency types ───────────────────────────
 
 export type AgentType = "coding" | "review";
+export type ReviewStrategy = "ve_direct" | "copilot_native" | "goose_native";
 export type ProjectType = "coding" | "review";
 export type PushTargetRole = "primary" | "submodule" | "dependency" | "related";
 
@@ -62,8 +80,16 @@ export interface ProjectRecord {
   agentOverrideJson: string | null;
   /** Bash script run on the host after cloning. Empty string means "no script". */
   postCloneScript: string;
-  /** When true, the agent container loads team-defined skills from `<repo>/.github/skills` (coding projects only). */
-  skillDiscoveryEnabled: boolean;
+  /** JSON list of remote skill sources fetched with `npx skills` when configured. */
+  skillSourcesJson: string;
+  /** Optional literal Gerrit topic that overrides the ticket-derived topic (buildGerritTopic) for all pushes from this project. NULL = use the ticket-derived topic. */
+  gerritTopicOverride: string | null;
+  /** When true, agent commit messages use the full ticket URL in the footer instead of the short "#id" form. */
+  useFullTicketUrlInCommits: boolean;
+  /** When true, VE posts a note on the source ticket with the review URL(s) once the first cycle opens a review. Default off — most teams already surface this via standard VCS/ticket integrations. */
+  postReviewLinkToTicket: boolean;
+  /** When true, CI build-failure notifications (e.g. Jenkins "Build Failed") count as actionable review feedback and trigger a retry cycle. Default off — some teams don't want VE auto-retrying on broken CI. Coding projects only. */
+  reactToCiFailures: boolean;
   enabled: boolean;
   createdAt: Date;
   updatedAt: Date;
@@ -110,8 +136,44 @@ export interface ProjectPushTargetRecord {
   sshKeyPath: string | null;
   /** SSH agent identity public-key path for identity pinning, or null when not pinning. */
   sshAgentPubKeyPath?: string | null | undefined;
+  /** Reviewer email addresses attached to every change pushed to this target. */
+  reviewerEmails: string[];
+  /** Runtime-resolved known_hosts path for this target's SSH integration. */
+  sshKnownHostsPath?: string | undefined;
   createdAt: Date;
   updatedAt: Date;
+}
+
+/**
+ * How a workspace-scanned repository relates to VE's push capability:
+ * `internal` lives inside the root repository, `fork_pushable` maps to an
+ * enabled integration VE can push to, `patch_required` is upstream-only, and
+ * `ambiguous` matches several integrations.
+ */
+export type VendorComponentOrigin = "internal" | "fork_pushable" | "patch_required" | "ambiguous";
+
+/** A vendored / external component of a coding project, as classified by a workspace scan. */
+export interface ProjectVendorComponentRecord {
+  id: number;
+  projectId: ProjectId;
+  /** Real manifest path in the checkout (e.g. "daemon/contrib/src/fmt/package.json"). */
+  sourcePath: string;
+  /** Declared checkout path, which may be synthetic and absent from disk. */
+  localPath: string | null;
+  cloneUrl: string | null;
+  revision: string | null;
+  origin: VendorComponentOrigin;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+/** Field set accepted when replacing a project's vendor components. */
+export interface ProjectVendorComponentInput {
+  sourcePath: string;
+  localPath?: string | null;
+  cloneUrl?: string | null;
+  revision?: string | null;
+  origin: VendorComponentOrigin;
 }
 
 /** Review-project configuration: integration + covered repos. */
@@ -274,8 +336,8 @@ export interface ResolvedAgentConfig {
   apiKey: string | undefined;
   /** Encrypted Copilot session token from OAuth device flow. */
   encryptedSessionToken: string | undefined;
-  systemPromptId: string | null;
-  instructionsPromptId: string | null;
+  systemPromptId: string;
+  instructionsPromptId: string;
   /** Optional override used on retry (feedback) cycles. Falls back to instructionsPromptId when null. */
   feedbackInstructionsPromptId: string | null;
   /** Any other model-related fields preserved from agent + override (override wins). */
@@ -283,61 +345,6 @@ export interface ResolvedAgentConfig {
 }
 
 // ─── Task state machine ───────────────────────────────────────────────────────
-
-/** States belonging to the ticket-driven code-generation workflow. */
-export const CODE_GEN_STATES = [
-  "DETECTED",
-  "CONTEXT_BUILDING",
-  "AGENT_RUNNING",
-  "IN_REVIEW",
-  "FEEDBACK_PROCESSING",
-  "RETRY_CYCLE",
-  "MERGED",
-  "CLOSING",
-  "DONE",
-  "FAILED",
-  "ABANDONED",
-] as const;
-
-/** States belonging to the VE-as-reviewer code-review workflow. */
-export const CODE_REVIEW_STATES = [
-  "REVIEW_PENDING",
-  "REVIEW_RUNNING",
-  "REVIEW_COMMENTING",
-  "REVIEW_WATCHING",
-  "REVIEW_DONE",
-  "REVIEW_FAILED",
-] as const;
-
-export type CodeGenState = (typeof CODE_GEN_STATES)[number];
-export type CodeReviewState = (typeof CODE_REVIEW_STATES)[number];
-
-/** Union of all task states across both workflows. */
-export const TASK_STATES = [...CODE_GEN_STATES, ...CODE_REVIEW_STATES] as const;
-
-export type TaskState = CodeGenState | CodeReviewState;
-
-/** "code-gen" = ticket-driven flow; "code-review" = VE acts as reviewer. */
-export type TaskType = "code-gen" | "code-review";
-
-/** Terminal states for the code-generation workflow. */
-export const CODE_GEN_TERMINAL_STATES: ReadonlySet<CodeGenState> = new Set<CodeGenState>([
-  "DONE",
-  "FAILED",
-  "ABANDONED",
-]);
-
-/** Terminal states for the code-review workflow. */
-export const CODE_REVIEW_TERMINAL_STATES: ReadonlySet<CodeReviewState> = new Set<CodeReviewState>([
-  "REVIEW_DONE",
-  "REVIEW_FAILED",
-]);
-
-/** Terminal states across both workflows — no further transitions allowed. */
-export const TERMINAL_STATES: ReadonlySet<TaskState> = new Set<TaskState>([
-  ...CODE_GEN_TERMINAL_STATES,
-  ...CODE_REVIEW_TERMINAL_STATES,
-]);
 
 // ─── Agent interfaces ─────────────────────────────────────────────────────────
 
@@ -359,6 +366,13 @@ export interface RepositoryMapEntry {
 export interface RepositoryMap {
   superproject: RepositoryMapEntry;
   submodules: RepositoryMapEntry[];
+}
+
+/** Human-validated vendored component surfaced to the agent. Carries the real editable path only. */
+export interface VendorComponentPromptEntry {
+  sourcePath: string;
+  localPath: string | null;
+  origin: VendorComponentOrigin;
 }
 
 export interface AgentSession {
@@ -389,12 +403,32 @@ export interface AgentSession {
   encryptedSessionToken?: string | undefined;
   /** Optional per-task Copilot model override resolved from agent/project config. */
   copilotModel?: string | undefined;
-  /** Optional reasoning effort level for models that support it (e.g. "low" | "medium" | "high" | "xhigh"). */
-  copilotReasoningEffort?: string | undefined;
+  /** Opaque provider-owned execution settings validated by the selected adapter. */
+  providerOptions?: Record<string, unknown> | undefined;
   /** Multi-repo workspace layout — when set, agent-worker uses it to group files/commits by repo. */
   repositoryMap?: RepositoryMap | undefined;
-  /** When true, the agent loads team-defined skills from `<repo>/.github/skills`. Sourced from the project's setting. */
-  skillDiscoveryEnabled?: boolean | undefined;
+  /** Vendored components the agent must patch rather than edit upstream. Empty lists are omitted. */
+  vendorComponents?: VendorComponentPromptEntry[] | undefined;
+  /** Remote skills fetched by the worker before opening the agent session. */
+  skillSourcesJson?: string | undefined;
+  /** Pre-formatted ticket-footer trailer line (e.g. "GitLab: https://…/issues/123") injected into every agent commit alongside its Change-Id. Sourced from the project's "full ticket URL in commits" setting. */
+  ticketFooterLine?: string | undefined;
+
+  // ── Aider (agent_execution) ────────────────────────────────────────────────
+  /** Aider LLM backend selector (openai | anthropic | ollama | openrouter | deepseek | openai_compat). */
+  aiderBackend?: string | undefined;
+  /** API key for the selected Aider backend (plaintext at rest, like `githubToken`). */
+  aiderApiKey?: string | undefined;
+  /** Custom API base URL (required for `openai_compat`; optional override for `ollama`). */
+  aiderApiBase?: string | undefined;
+
+  // ── Goose (agent_execution) ────────────────────────────────────────────────
+  /** Goose LLM provider selector (anthropic | openai | openrouter | ollama | deepseek | groq | gemini | azure_openai | bedrock | perplexity | mistral | xai | cerebras | openai_compat). */
+  gooseProvider?: string | undefined;
+  /** API key for the selected Goose provider (plaintext at rest, like `githubToken`). */
+  gooseApiKey?: string | undefined;
+  /** Custom API base URL (required for `openai_compat`; optional override for `ollama`). */
+  gooseApiBase?: string | undefined;
 }
 
 export interface TaskContext {
@@ -492,8 +526,6 @@ export interface AdapterContainerSpec {
   env: Record<string, string>;
   /** Command executed in the container */
   command: string[];
-  /** Optional extra docker args such as mounts or security options */
-  additionalDockerArgs?: string[] | undefined;
   /** Written to home volume as `user-prompt.txt`; sets `USER_PROMPT_FILE` in container env. */
   userPromptContent?: string | undefined;
   /**
@@ -563,6 +595,8 @@ export interface CloneResult {
 export interface ReviewWorkspaceInput {
   /** Owning VE project, used to attribute runtime audit events. */
   projectId?: ProjectId | undefined;
+  /** Agent-owned review execution strategy. */
+  reviewStrategy: ReviewStrategy;
   /** Change-Id (opaque string, e.g. "Iabc123..." for Gerrit, PR node id for GitHub) */
   changeId: ExternalChangeId;
   /** Provider-specific numeric change identifier (e.g. Gerrit change number, PR number) */
@@ -575,21 +609,37 @@ export interface ReviewWorkspaceInput {
   prompt: string;
   /** System prompt passed as SYSTEM_PROMPT env var to the review container */
   systemPrompt: string;
+  /** Immutable integration-owned JSON Schema for the structured review result. */
+  reviewOutputSchema?: Record<string, unknown> | undefined;
   /** Authentication token for the agent integration (e.g. GitHub token for Copilot) */
   agentToken: string;
   /** Model override for the agent */
   model?: string | undefined;
-  /** Reasoning effort override for the agent (e.g. "low" | "medium" | "high" | "xhigh") */
-  reasoningEffort?: string | undefined;
+  /** Opaque provider-owned execution settings validated by the selected adapter. */
+  providerOptions?: Record<string, unknown> | undefined;
   /** Container image (defaults to agentContainerImage from codegen config) */
   containerImage?: string | undefined;
-  /** When true, the agent container loads team-defined skills from <repo>/.github/skills. */
-  skillDiscoveryEnabled?: boolean | undefined;
+  /** Remote skills fetched by the worker before opening the agent session. */
+  skillSourcesJson?: string | undefined;
   /** Cancels the in-flight sandbox lifecycle when the review deadline expires. */
   abortSignal?: AbortSignal | undefined;
-}
 
-/** Options for checking out a prior patchset/revision onto a cloned workspace. */
+  // ── Aider (agent_execution) ────────────────────────────────────────────────
+  /** Aider LLM backend selector (openai | anthropic | ollama | openrouter | deepseek | openai_compat). */
+  aiderBackend?: string | undefined;
+  /** API key for the selected Aider backend (plaintext at rest, like `agentToken`). */
+  aiderApiKey?: string | undefined;
+  /** Custom API base URL (required for `openai_compat`; optional override for `ollama`). */
+  aiderApiBase?: string | undefined;
+
+  // ── Goose (agent_execution) ────────────────────────────────────────────────
+  /** Goose LLM provider selector (anthropic | openai | openrouter | ollama | deepseek | groq | gemini | azure_openai | bedrock | perplexity | mistral | xai | cerebras | openai_compat). */
+  gooseProvider?: string | undefined;
+  /** API key for the selected Goose provider (plaintext at rest, like `agentToken`). */
+  gooseApiKey?: string | undefined;
+  /** Custom API base URL (required for `openai_compat`; optional override for `ollama`). */
+  gooseApiBase?: string | undefined;
+}
 export interface PatchsetCheckoutOptions {
   /** VCS base URL (used to build the remote fetch URL) */
   vcsBaseUrl: string;
@@ -647,19 +697,30 @@ export interface WorkspaceRunner {
   /** Run the review agent container against the cloned+patched workspace. */
   runReviewInDocker?(
     handle: WorkspaceHandle,
-    input: ReviewWorkspaceInput,
-    callbacks?: { onStderrChunk?: ((chunk: string) => void) | undefined } | undefined,
-    adapter?: AgentAdapter | undefined,
+    input: ReviewWorkspaceInput & { agentAdapter: AgentAdapter },
+    callbacks?: { onStderrChunk?: ((chunk: string) => void) | undefined },
   ): Promise<{ rawOutput: string }>;
   /** Spawn the adapter container and return raw stdout/stderr. Used by ConfigurableAdapter.configure. */
   runAgentInDocker?(
     adapter: AgentAdapter,
     context: TaskContext,
     authEnv?: Record<string, string>,
-    callbacks?: { onStdoutChunk?: ((chunk: string) => void) | undefined; onStderrChunk?: ((chunk: string) => void) | undefined } | undefined
+    callbacks?: { onStdoutChunk?: ((chunk: string) => void) | undefined; onStderrChunk?: ((chunk: string) => void) | undefined }
   ): Promise<{ stdout: string; stderr: string }>;
   /** Run agent adapter inside the ephemeral execution context. */
   runAgent(handle: WorkspaceHandle, context: TaskContext, adapter?: AgentAdapter): Promise<AgentResult>;
+  /**
+   * Repository sub-paths the runner cloned itself and whose Git metadata it
+   * rebuilt from host-trusted data. Callers that run host-side Git with push
+   * credentials must restrict themselves to these paths.
+   */
+  listTrustedRepoPaths?(handle: WorkspaceHandle): string[];
+  /**
+   * Repository sub-paths the runner cloned itself and whose Git metadata it
+   * rebuilt from host-trusted data. Callers that run host-side Git with push
+   * credentials must restrict themselves to these paths.
+   */
+  listTrustedRepoPaths?(handle: WorkspaceHandle): string[];
   /** Run a git command in the workspace volume; returns stdout or throws. */
   execGitInVolume?(
     handle: WorkspaceHandle,
@@ -725,10 +786,7 @@ export type PluginInstance = TicketConnector | ReviewConnector | AgentAdapter;
 
 // ─── Code Review (Reviewer-side) interfaces ───────────────────────────────────
 
-/**
- * Severity from the review agent. Typed as `string` (not a strict union) because LLM output may use novel casing.
- * `computeVote` normalises: `'error'` → -1; `'warning'` → -1; `'suggestion'` → no vote change.
- */
+/** Severity from the review agent, normalized by the provider output contract. */
 export type ReviewSeverity = string;
 
 /** A single inline comment to post on a specific file/line of a change. */
@@ -779,7 +837,7 @@ export interface ReviewAgentResult {
   comments: InlineReviewComment[];
   /** High-level summary posted alongside the inline comments */
   summary: string;
-  /** Suggested vote score: -1, 0, or +1. */
+  /** Provider-neutral review decision: negative, neutral, or positive. */
   score: -1 | 0 | 1;
   /** Replies to existing human discussion threads (empty when none). */
   replies: ThreadReply[];
@@ -874,6 +932,18 @@ export interface ReviewProvider {
   getChangeDiff(changeId: ExternalChangeId, patchset?: number, signal?: AbortSignal): Promise<ReviewChangeDiff>;
 
   /**
+   * Fetch the diff between two patchsets of the same change (`fromPatchset` →
+   * `toPatchset`). Used on a re-review to surface "what changed since my last
+   * review". Optional — providers that cannot compute an inter-patchset diff
+   * omit it and the orchestrator falls back to the full diff only.
+   */
+  getInterPatchsetDiff?(
+    details: ReviewChangeDetails,
+    fromPatchset: number,
+    toPatchset: number
+  ): Promise<ReviewChangeDiff>;
+
+  /**
    * Post inline comments and a summary on the given revision.
    *
    * `allowedFiles`, when provided, restricts the comments actually submitted to
@@ -891,8 +961,8 @@ export interface ReviewProvider {
   ): Promise<void>;
 
   /**
-   * Post inline comments + vote atomically (optional; reviewOrchestrator falls back
-   * to separate postReviewComments + vote calls when absent).
+  * Post inline comments + a normalized review decision atomically. Providers
+  * translate -1/0/+1 to their native review action.
    *
    * `allowedFiles` semantics are the same as on `postReviewComments`. If all
    * comments are filtered out, the vote and summary are still submitted.
@@ -902,12 +972,12 @@ export interface ReviewProvider {
     revision: number,
     comments: InlineReviewComment[],
     summary: string,
-    score: -1 | 1,
+    score: -1 | 0 | 1,
     allowedFiles?: ReadonlySet<string>,
     signal?: AbortSignal,
   ): Promise<void>;
 
-  /** Cast a Code-Review-style vote (-1, 0, or +1). */
+  /** Apply a normalized review decision (-1, 0, or +1). */
   vote(
     changeId: ExternalChangeId,
     revision: number,
@@ -1056,62 +1126,6 @@ export class ReviewNotFoundError extends ReviewApiError {
 
 // ─── State Store interfaces ───────────────────────────────────────────────────
 
-export interface Task {
-  taskId: TaskId;
-  ticketId: TicketId;
-  ticketSourceLabel: string;
-  ticketTitle: string;
-  ticketDescription: string;
-  state: TaskState;
-  /** Discriminator: "code-gen" (default) or "code-review". */
-  taskType: TaskType;
-  externalChangeId: ExternalChangeId | null;
-  currentPatchset: number;
-  /** For code-review tasks: last patchset reviewed by VE. NULL otherwise. */
-  reviewedPatchset: number | null;
-  cycleCount: number;
-  createdAt: Date;
-  updatedAt: Date;
-  failureReason: string | null;
-  ticketUrl: string | null;
-  reviewUrl: string | null;
-  /** Project ID (null for legacy tasks). */
-  projectId?: ProjectId | null | undefined;
-  /** Human-readable identifier for the UI (e.g. ticket number, Gerrit change number). */
-  displayId: string | null;
-  /** Persisted feature branch ref for the first push; null for legacy tasks (falls back to legacy naming on resume). */
-  pushRef?: string | null;
-}
-
-/** Per-repository change tracking (Gerrit Change-Id or GitLab MR IID) for multi-repo tasks. */
-export interface ChangePerRepository {
-  id: string;
-  taskId: TaskId;
-  repoKey: string;
-  changeId: string;
-  reviewUrl: string | null;
-  status: string;
-  /** Integration ID of the VCS connector used for this repo */
-  integrationId: string;
-  /** Review system type: "gerrit" or "gitlab" */
-  reviewSystem: string;
-  /** Position in the commit chain (0 = legacy single-commit, 1..N for multi-commit) */
-  commitIndex: number;
-  /** SHA-1 hash of the normalized commit subject — for deterministic Change-Id mapping */
-  subjectHash: string | null;
-  createdAt: Date;
-  updatedAt: Date;
-}
-
-export interface StateTransition {
-  id: number;
-  taskId: TaskId;
-  fromState: TaskState;
-  toState: TaskState;
-  metadata: Record<string, unknown>;
-  createdAt: Date;
-}
-
 export interface AgentCycle {
   id: number;
   taskId: TaskId;
@@ -1226,12 +1240,14 @@ export interface ModelUsageSummary {
   sinceEpochSeconds: number | null;
 }
 
+export type PromptType = "system" | "instructions";
+
 export interface Prompt {
   id: string;
   label: string;
   content: string;
-  /** "system" = immutable format/integration-specific prompt; "user" = editable by admins. */
-  promptType: "system" | "user";
+  /** Role in the agent session. The user prompt is built dynamically from the ticket or review. */
+  promptType: PromptType;
   updatedAt: Date;
 }
 
@@ -1239,9 +1255,9 @@ export interface PromptStore {
   getPrompts(): Promise<Prompt[]>;
   getPrompt(id: string): Promise<Prompt | null>;
   upsertPrompt(id: string, content: string): Promise<Prompt>;
-  /** Create a prompt; id is derived from label. Rejects on duplicate (409) or bad label (400). */
-  createPrompt(label: string, content: string): Promise<Prompt>;
-  /** Delete a prompt. Rejects if not found (404) or if promptType === "system" (403). */
+  /** Create a prompt; id is derived from label. Rejects on duplicate (409) or bad input (400). */
+  createPrompt(label: string, content: string, promptType: PromptType): Promise<Prompt>;
+  /** Delete a prompt. Rejects if not found (404) or if it is built in (403). */
   deletePrompt(id: string): Promise<void>;
 }
 
@@ -1511,7 +1527,17 @@ export interface DiscoveredResources {
 // ─── Plugin / Integration types ───────────────────────────────────────────────
 
 /** Identifiers for the external systems Virtual Engineer can connect to. */
-export const PROVIDER_IDS = ["github", "gitlab", "gerrit", "redmine", "copilot", "claude", "mock"] as const;
+export const PROVIDER_IDS = [
+  "github",
+  "gitlab",
+  "gerrit",
+  "redmine",
+  "copilot",
+  "claude",
+  "aider",
+  "goose",
+  "mock",
+] as const;
 export type ProviderId = (typeof PROVIDER_IDS)[number];
 
 /**

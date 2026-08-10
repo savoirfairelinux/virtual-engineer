@@ -7,9 +7,14 @@
  * disallow list covers the web tools and network/push shell commands.
  */
 
-import { describe, it, expect } from "vitest";
+import { afterEach, describe, it, expect } from "vitest";
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   NETWORK_DISALLOWED_TOOLS,
+  createNativeReviewPermissionHandler,
+  createReviewPermissionHandler,
   isBlockedNetworkCommand,
   restrictNetworkPermissionHandler,
 } from "../../agent-worker/src/networkGuard.js";
@@ -133,6 +138,175 @@ describe("networkGuard.restrictNetworkPermissionHandler", () => {
       invocation,
     );
     expect(result).not.toEqual(expect.objectContaining({ kind: "reject" }));
+  });
+});
+
+describe("networkGuard.createReviewPermissionHandler", () => {
+  const restrictReviewPermissionHandler = createReviewPermissionHandler("/workspace");
+  const tempDirectories: string[] = [];
+
+  afterEach(() => {
+    for (const directory of tempDirectories.splice(0)) {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["shell", "write", "url", "memory", "hook", "custom-tool"])(
+    "rejects %s requests",
+    (kind) => {
+      const result = restrictReviewPermissionHandler(
+        { kind } as Parameters<typeof restrictReviewPermissionHandler>[0],
+        invocation,
+      );
+      expect(result).toEqual(expect.objectContaining({ kind: "reject" }));
+    },
+  );
+
+  it.each(["README.md", "src/index.ts"])("approves repository read %s", (requestedPath) => {
+    const workspace = mkdtempSync(join(tmpdir(), "ve-review-workspace-"));
+    tempDirectories.push(workspace);
+    mkdirSync(join(workspace, "src"));
+    writeFileSync(join(workspace, "README.md"), "read me");
+    writeFileSync(join(workspace, "src/index.ts"), "export {};");
+    const handler = createReviewPermissionHandler(workspace);
+
+    const result = handler(
+      { kind: "read", path: requestedPath } as unknown as Parameters<typeof handler>[0],
+      invocation,
+    );
+    expect(result).not.toEqual(expect.objectContaining({ kind: "reject" }));
+  });
+
+  it("approves an absolute path inside the repository", () => {
+    const workspace = mkdtempSync(join(tmpdir(), "ve-review-workspace-"));
+    tempDirectories.push(workspace);
+    const file = join(workspace, "README.md");
+    writeFileSync(file, "read me");
+    const handler = createReviewPermissionHandler(workspace);
+
+    const result = handler(
+      { kind: "read", path: file } as unknown as Parameters<typeof handler>[0],
+      invocation,
+    );
+
+    expect(result).not.toEqual(expect.objectContaining({ kind: "reject" }));
+  });
+
+  it.each(["../outside.txt", "/proc/self/environ", "/workspace-escape/file"])(
+    "rejects read outside the repository: %s",
+    (requestedPath) => {
+      const workspace = mkdtempSync(join(tmpdir(), "ve-review-workspace-"));
+      tempDirectories.push(workspace);
+      const handler = createReviewPermissionHandler(workspace);
+
+      const result = handler(
+        { kind: "read", path: requestedPath } as unknown as Parameters<typeof handler>[0],
+        invocation,
+      );
+
+      expect(result).toEqual(expect.objectContaining({ kind: "reject" }));
+    },
+  );
+
+  it("rejects read requests without a path", () => {
+    const workspace = mkdtempSync(join(tmpdir(), "ve-review-workspace-"));
+    tempDirectories.push(workspace);
+    const handler = createReviewPermissionHandler(workspace);
+
+    const result = handler(
+      { kind: "read" } as Parameters<typeof handler>[0],
+      invocation,
+    );
+
+    expect(result).toEqual(expect.objectContaining({ kind: "reject" }));
+  });
+
+  it("rejects repository symlinks that resolve outside the repository", () => {
+    const workspace = mkdtempSync(join(tmpdir(), "ve-review-workspace-"));
+    const outside = mkdtempSync(join(tmpdir(), "ve-review-outside-"));
+    tempDirectories.push(workspace, outside);
+    writeFileSync(join(outside, "secret"), "sensitive");
+    symlinkSync(join(outside, "secret"), join(workspace, "linked-secret"));
+    const handler = createReviewPermissionHandler(workspace);
+
+    const result = handler(
+      { kind: "read", path: "linked-secret" } as unknown as Parameters<typeof handler>[0],
+      invocation,
+    );
+
+    expect(result).toEqual(expect.objectContaining({ kind: "reject" }));
+  });
+
+  it.each([
+    ["ve-submission", "ve_submit_review"],
+    ["virtual-engineer-submission", "ve_submit_review"],
+    ["ve-submission", "ve-submission-ve_submit_review"],
+  ])("approves the VE submission MCP identity %s/%s", (serverName, toolName) => {
+    const approved = restrictReviewPermissionHandler(
+      { kind: "mcp", serverName, toolName } as unknown as Parameters<
+        typeof restrictReviewPermissionHandler
+      >[0],
+      invocation,
+    );
+
+    expect(approved).not.toEqual(expect.objectContaining({ kind: "reject" }));
+  });
+
+  it.each([
+    ["other", "write_file"],
+    ["ve-submission", "virtual-engineer-submission-ve_submit_review"],
+    ["virtual-engineer-submission", "ve-submission-ve_submit_review"],
+  ])("rejects unrelated MCP identity %s/%s", (serverName, toolName) => {
+    const result = restrictReviewPermissionHandler(
+      { kind: "mcp", serverName, toolName } as unknown as Parameters<
+        typeof restrictReviewPermissionHandler
+      >[0],
+      invocation,
+    );
+
+    expect(result).toEqual(expect.objectContaining({ kind: "reject" }));
+  });
+});
+
+describe("networkGuard native review delegation", () => {
+  const handler = createNativeReviewPermissionHandler("/workspace");
+
+  it("approves only a synchronous task delegation to code-review", () => {
+    const approved = handler({
+      kind: "custom-tool",
+      toolName: "task",
+      toolDescription: "Delegate review",
+      args: { agent_type: "code-review", mode: "sync" },
+    } as unknown as Parameters<typeof handler>[0], invocation);
+    const wrongAgent = handler({
+      kind: "custom-tool",
+      toolName: "task",
+      toolDescription: "Delegate research",
+      args: { agent_type: "research", mode: "sync" },
+    } as unknown as Parameters<typeof handler>[0], invocation);
+    const background = handler({
+      kind: "custom-tool",
+      toolName: "task",
+      toolDescription: "Delegate review",
+      args: { agent_type: "code-review", mode: "background" },
+    } as unknown as Parameters<typeof handler>[0], invocation);
+
+    expect(approved).not.toEqual(expect.objectContaining({ kind: "reject" }));
+    expect(wrongAgent).toEqual(expect.objectContaining({ kind: "reject" }));
+    expect(background).toEqual(expect.objectContaining({ kind: "reject" }));
+  });
+
+  it("retains the review read and VE MCP restrictions", () => {
+    const shell = handler({ kind: "shell" } as Parameters<typeof handler>[0], invocation);
+    const otherTool = handler({
+      kind: "custom-tool",
+      toolName: "edit",
+      toolDescription: "Edit files",
+      args: {},
+    } as unknown as Parameters<typeof handler>[0], invocation);
+
+    expect(shell).toEqual(expect.objectContaining({ kind: "reject" }));
+    expect(otherTool).toEqual(expect.objectContaining({ kind: "reject" }));
   });
 });
 

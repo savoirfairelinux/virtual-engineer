@@ -5,6 +5,7 @@ import {
   makeProjectId,
   makeTaskId,
   makeTicketId,
+  type AgentAdapter,
   type AgentLogEvent,
   type ProjectRecord,
   type ReviewChangeDetails,
@@ -82,7 +83,8 @@ const GOOD_RAW_OUTPUT = [
   JSON.stringify({
     comments: [{ file: "src/a.ts", line: 1, message: "Bug", severity: "error" }],
     summary: "blocking issue",
-    score: -1,
+    vote: -1,
+    replies: [],
   }),
   "REVIEW_RESULT_END",
 ].join("\n");
@@ -94,7 +96,11 @@ function makeProject(): ProjectRecord {  return {
     agentId: "agent-1" as import("../../src/interfaces.js").AgentId,
     agentOverrideJson: null,
     postCloneScript: "",
-    skillDiscoveryEnabled: false,
+    skillSourcesJson: "[]",
+    gerritTopicOverride: null,
+    useFullTicketUrlInCommits: false,
+    postReviewLinkToTicket: false,
+    reactToCiFailures: false,
     enabled: true,
     createdAt: new Date(),
     updatedAt: new Date(),
@@ -202,8 +208,15 @@ function makeOrch(mocks: ReturnType<typeof makeMocks>, runner: ReturnType<typeof
     stateStore: mocks.storeAsDep,
     reviewProvider: mocks.provider,
     integrationId: "gerrit-1",
-    agentToken: "gh_test_token",
     workspaceRunner: runner,
+    resolveAgentForProject: vi.fn(async () => ({
+      adapter: { name: "test-agent" } as AgentAdapter,
+      reviewStrategy: "ve_direct" as const,
+      model: "test-model",
+      token: "gh_test_token",
+      systemPrompt: "You are a code reviewer.",
+      instructionsPrompt: "Review the code changes.",
+    })),
     buildCloneTarget: (details) => ({
       cloneUrl: `ssh://admin@gerrit.test:29418/${details.project}`,
       sshKeyPath: "/path/to/key",
@@ -215,8 +228,6 @@ function makeOrch(mocks: ReturnType<typeof makeMocks>, runner: ReturnType<typeof
         await r.applyPriorPatchset(handle, { ...PATCHSET_OPTIONS, revisionNumber: details.changeNumber, patchset: details.currentPatchset });
       }
     },
-    reviewInstructions: "Review the code changes.",
-    reviewSystemPrompt: "You are a code reviewer.",
   });
 }
 

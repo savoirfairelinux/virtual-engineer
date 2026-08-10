@@ -378,7 +378,7 @@ function ModelUsageCard() {
 
 function ActivityFeed({ tasks, onOpen }: { tasks: ApiTask[]; onOpen: (v: "tasks") => void }) {
   const recent = tasks
-    .filter((t) => isActiveState(t.state) || ["DETECTED", "FEEDBACK_PROCESSING", "RETRY_CYCLE"].includes(t.state))
+    .filter((t) => isActiveState(t.state))
     .slice(0, 6);
   return (
     <div className="card" style={{ display: "flex", flexDirection: "column", overflow: "hidden", flex: 1, minWidth: 0 }}>

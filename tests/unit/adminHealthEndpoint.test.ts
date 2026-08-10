@@ -54,6 +54,7 @@ describe("Admin Server - Unauthenticated Health Endpoint", () => {
       polling,
       stateStore,
       integrationStore,
+      allowUnauthenticatedAdmin: true,
       config,
       providers: [],
     });
@@ -94,6 +95,7 @@ describe("Admin Server - Unauthenticated Health Endpoint", () => {
       polling,
       stateStore,
       integrationStore,
+      allowUnauthenticatedAdmin: true,
       config,
       providers: [],
     });
@@ -119,6 +121,7 @@ describe("Admin Server - Unauthenticated Health Endpoint", () => {
         maxRetryAttempts: 5, pollingIntervalMs: 30_000, adminAuthSecret: undefined,
       },
       providers: [],
+      allowUnauthenticatedAdmin: true,
       runtimeGateway: { healthy, address: "http://gateway" },
     });
     await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", resolve));

@@ -52,7 +52,8 @@ export interface VcsConnector {
     repoDir: string,
     ref: string,
     message: string,
-    changeId?: string
+    changeId?: string,
+    reviewerEmails?: string[]
   ): Promise<VcsPushResult>;
 
   /**
@@ -70,7 +71,8 @@ export interface VcsConnector {
   pushDirect?(
     repoDir: string,
     ref: string,
-    topic?: string
+    topic?: string,
+    reviewerEmails?: string[]
   ): Promise<VcsPushResult>;
 
   /**
@@ -130,6 +132,15 @@ export interface VcsConnector {
    * Only implemented by connectors that use Change-Id continuity (Gerrit).
    */
   resolvePatchsetOptions?(changeId: string): Promise<PatchsetCheckoutOptions>;
+
+  /**
+   * Best-effort lookup of the real name/email this connector's credentials
+   * authenticate as, so commit authorship matches the actual pushing account
+   * instead of a static placeholder. Only implemented by connectors that can
+   * derive identity from their existing credentials (Gerrit, via SSH).
+   * Returns `undefined` when the lookup isn't supported or fails.
+   */
+  queryAuthorIdentity?(): Promise<{ name: string; email: string } | undefined>;
 }
 
 /**

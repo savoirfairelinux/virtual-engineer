@@ -49,3 +49,14 @@ export function makeCan(user: ApiMe | null): (permission: string, resourceId?: s
     return scope.includes(resourceId);
   };
 }
+
+/** Check whether the user has any grant for a permission, including scoped grants. */
+export function makeHasPermission(user: ApiMe | null): (permission: string) => boolean {
+  const caps = user?.capabilities;
+  if (!caps) return () => user?.role === "admin";
+  if (caps.superuser) return () => true;
+  return (permission: string): boolean => {
+    const scope = caps.grants[permission];
+    return scope === "*" || (Array.isArray(scope) && scope.length > 0);
+  };
+}

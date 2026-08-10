@@ -1,13 +1,15 @@
-import { useEffect, useState, useCallback, useMemo, Component, type ReactNode, type ErrorInfo } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef, Component, type ReactNode, type ErrorInfo } from "react";
 import { TopBar } from "./shell/TopBar.tsx";
 import { AuthScreen } from "./shell/AuthScreen.tsx";
 import { ChangePasswordModal } from "./shell/ChangePasswordModal.tsx";
 import { TasksView } from "./views/TasksView/index.tsx";
 import { OverviewView } from "./views/OverviewView.tsx";
 import { ConfigView } from "./views/ConfigView/index.tsx";
-import { api, connectSse, getStoredToken, clearStoredToken, getMe, logout, onUnauthorized, ApiError } from "./api.ts";
-import { CurrentUserProvider, makeCan, type CurrentUserValue } from "./authContext.tsx";
+import { canViewConfiguration } from "./views/ConfigView/configPermissions.ts";
+import { api, connectSse, getStoredToken, clearStoredToken, getMe, logout, onUnauthorized, fetchSetupStatus, ApiError } from "./api.ts";
+import { CurrentUserProvider, makeCan, makeHasPermission, type CurrentUserValue } from "./authContext.tsx";
 import { isActiveState } from "./states.ts";
+import { applyIfCurrentGeneration } from "./useIdentityReset.ts";
 import type {
   ApiTask, ApiIntegration, ApiPlugin, ApiAgent, ApiProject,
   ApiPrompt, ApiOAuthApp, ApiStatus, ApiConfig, ApiProvider, ApiOverview,
@@ -16,6 +18,12 @@ import type {
 import "./theme/global.css";
 
 type ViewId = "overview" | "tasks" | "config";
+
+function viewFromHash(hash: string): ViewId {
+  if (hash.startsWith("#config")) return "config";
+  if (hash.startsWith("#tasks")) return "tasks";
+  return "overview";
+}
 
 const bootstrap: VeAdminBootstrap = window.__VE_ADMIN_BOOTSTRAP__ ?? {
   requiresAuth: false,
@@ -38,44 +46,44 @@ function useTheme() {
 
 export function App() {
   const [theme, toggleTheme] = useTheme();
+  const configNavigationGuardRef = useRef<(() => boolean) | null>(null);
   const [view, setView] = useState<ViewId>(() => {
-    const hash = window.location.hash;
-    if (hash.startsWith("#config")) return "config";
-    if (hash === "#overview") return "overview";
-    return "tasks";
+    return viewFromHash(window.location.hash);
   });
 
   useEffect(() => {
     const onHashChange = () => {
-      const hash = window.location.hash;
-      setView(hash.startsWith("#config") ? "config" : hash === "#overview" ? "overview" : "tasks");
+      const nextView = viewFromHash(window.location.hash);
+      if (view === "config" && nextView !== "config" && !configNavigationGuardRef.current?.()) return;
+      setView(nextView);
     };
     window.addEventListener("hashchange", onHashChange);
     return () => window.removeEventListener("hashchange", onHashChange);
-  }, []);
+  }, [view]);
 
   const [authenticated, setAuthenticated] = useState(() => !bootstrap.requiresAuth || !!getStoredToken());
   const [currentUser, setCurrentUser] = useState<ApiMe | null>(null);
   const [showChangePassword, setShowChangePassword] = useState(false);
-
-  const handleLoggedOut = useCallback(() => {
-    clearStoredToken();
-    setCurrentUser(null);
-    setShowChangePassword(false);
-    setAuthenticated(false);
-  }, []);
-
-  // Central 401 handling — any expired/revoked session drops back to the login screen.
+  const dataGenerationRef = useRef(0);
+  // When the server bootstrap data is unavailable (Vite dev mode), requiresAuth defaults to
+  // false and authenticated starts as true — skipping the setup screen. This effect catches
+  // that case: if the server reports no users exist, force the setup screen regardless.
+  const [forcedSetupScreen, setForcedSetupScreen] = useState(false);
   useEffect(() => {
-    onUnauthorized(handleLoggedOut);
-    return () => onUnauthorized(null);
-  }, [handleLoggedOut]);
+    if (!authenticated || bootstrap.requiresAuth) return;
+    fetchSetupStatus()
+      .then((s) => { if (s.needsSetup) setForcedSetupScreen(true); })
+      .catch(() => { /* server unreachable — stay in open mode */ });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Load the authenticated identity for role-aware UI gating.
   useEffect(() => {
     if (!authenticated) return;
     if (currentUser) return;
-    void getMe().then(setCurrentUser).catch((err: unknown) => {
+    const generation = dataGenerationRef.current;
+    void getMe().then((user) => {
+      applyIfCurrentGeneration(user, generation, dataGenerationRef.current, setCurrentUser);
+    }).catch((err: unknown) => {
       // 401 is already handled globally by onUnauthorized → handleLoggedOut.
       // Any other error (503, network failure, etc.) is unexpected; log it so
       // it is visible in the browser console rather than silently swallowed.
@@ -91,13 +99,7 @@ export function App() {
     can: makeCan(currentUser),
   }), [currentUser]);
 
-  // Viewers may only read overview + tasks; the config area and its data
-  // (integrations, agents, projects, prompts, oauth apps, providers) require
-  // operator+. Until the identity resolves, treat the user as a viewer so we
-  // never fire a config request the server would 403.
-  const canOperate = currentUserValue.canOperate;
-  const canManageRuntimePolicies = currentUserValue.can("policy.manage");
-  const canConfigure = canOperate || canManageRuntimePolicies;
+  const canViewConfig = canViewConfiguration(makeHasPermission(currentUser));
 
   // data state
   const [tasks,        setTasks]        = useState<ApiTask[]>([]);
@@ -112,7 +114,37 @@ export function App() {
   const [config,       setConfig]       = useState<ApiConfig["config"] | null>(null);
   const [overview,     setOverview]     = useState<ApiOverview | null>(null);
 
+  const resetLoadedData = useCallback(() => {
+    dataGenerationRef.current += 1;
+    setTasks([]);
+    setProviders([]);
+    setIntegrations([]);
+    setPlugins([]);
+    setAgents([]);
+    setProjects([]);
+    setPrompts([]);
+    setOauthApps([]);
+    setStatus(null);
+    setConfig(null);
+    setOverview(null);
+  }, []);
+
+  const handleLoggedOut = useCallback(() => {
+    clearStoredToken();
+    resetLoadedData();
+    setCurrentUser(null);
+    setShowChangePassword(false);
+    setAuthenticated(false);
+  }, [resetLoadedData]);
+
+  // Central 401 handling — any expired/revoked session drops back to the login screen.
+  useEffect(() => {
+    onUnauthorized(handleLoggedOut);
+    return () => onUnauthorized(null);
+  }, [handleLoggedOut]);
+
   const loadAll = useCallback(async () => {
+    const generation = dataGenerationRef.current;
     // Viewer-safe reads — always fetched.
     const baseResults = await Promise.allSettled([
       api.get<{ tasks:    ApiTask[] }>("/api/admin/tasks"),
@@ -120,13 +152,13 @@ export function App() {
       api.get<ApiConfig>("/api/admin/config"),
       api.get<ApiOverview>("/api/admin/overview").catch(() => null),
     ]);
+    if (generation !== dataGenerationRef.current) return;
     if (baseResults[0].status === "fulfilled") setTasks(baseResults[0].value.tasks);
     if (baseResults[1].status === "fulfilled") setStatus(baseResults[1].value);
     if (baseResults[2].status === "fulfilled") setConfig(baseResults[2].value.config);
     if (baseResults[3].status === "fulfilled" && baseResults[3].value) setOverview(baseResults[3].value);
 
-    // Operator+ config-area reads — skipped for viewers (would 403).
-    if (!canOperate) return;
+    if (!canViewConfig) return;
     const results = await Promise.allSettled([
       api.get<{ providers: ApiProvider[] }>("/api/admin/providers"),
       api.get<{ integrations: ApiIntegration[] }>("/api/admin/integrations"),
@@ -137,6 +169,7 @@ export function App() {
       api.get<{ apps: ApiOAuthApp[] }>("/api/admin/oauth-apps"),
     ]);
 
+    if (generation !== dataGenerationRef.current) return;
     if (results[0].status === "fulfilled") setProviders(results[0].value.providers);
     if (results[1].status === "fulfilled") setIntegrations(results[1].value.integrations);
     if (results[2].status === "fulfilled") setPlugins(results[2].value.plugins);
@@ -144,7 +177,7 @@ export function App() {
     if (results[4].status === "fulfilled") setProjects(results[4].value.projects);
     if (results[5].status === "fulfilled") setPrompts(results[5].value.prompts);
     if (results[6].status === "fulfilled") setOauthApps(results[6].value.apps);
-  }, [canOperate]);
+  }, [canViewConfig]);
 
   useEffect(() => {
     if (!authenticated) return;
@@ -154,7 +187,9 @@ export function App() {
   // SSE global event stream
   useEffect(() => {
     if (!authenticated) return;
+    const generation = dataGenerationRef.current;
     const stop = connectSse("/api/admin/events/stream", (evType, data) => {
+      if (generation !== dataGenerationRef.current) return;
       try {
         const payload = JSON.parse(data) as unknown;
         if (evType === "tasks" && Array.isArray(payload)) {
@@ -169,19 +204,27 @@ export function App() {
 
   useEffect(() => {
     if (!authenticated) return;
+    const generation = dataGenerationRef.current;
     const id = setInterval(() => {
       void api.get<{ tasks: ApiTask[] }>("/api/admin/tasks")
-        .then((r) => setTasks(r.tasks))
+        .then((r) => {
+          if (generation === dataGenerationRef.current) setTasks(r.tasks);
+        })
         .catch(() => { /* ignore — SSE or next poll will recover */ });
     }, 5_000);
     return () => clearInterval(id);
   }, [authenticated]);
 
-  if (!authenticated) {
+  if (!authenticated || forcedSetupScreen) {
     return (
       <div className="app">
         <AuthScreen
-          onAuthenticated={(user) => { setCurrentUser(user); setAuthenticated(true); }}
+          onAuthenticated={(user) => {
+            resetLoadedData();
+            setCurrentUser(user);
+            setAuthenticated(true);
+            setForcedSetupScreen(false);
+          }}
         />
       </div>
     );
@@ -190,13 +233,18 @@ export function App() {
   const activeTasks   = tasks.filter((t) => isActiveState(t.state)).length;
   const enabledIntegrations = integrations.filter((i) => i.enabled).length;
 
-  // Viewers have no Config view — fall back to Overview if they deep-link to it.
-  const configDenied = currentUser !== null && !canConfigure;
+  const configDenied = currentUser !== null && !canViewConfig;
   const effectiveView: ViewId = configDenied && view === "config" ? "overview" : view;
 
+  function requestViewChange(nextView: ViewId): boolean {
+    if (view === "config" && nextView !== "config" && !configNavigationGuardRef.current?.()) return false;
+    setView(nextView);
+    window.location.hash = nextView;
+    return true;
+  }
+
   function handleNavigate(v: "tasks" | "config") {
-    setView(v);
-    window.location.hash = v;
+    requestViewChange(v);
   }
 
   return (
@@ -204,19 +252,24 @@ export function App() {
       <div className="app">
         <TopBar
           view={effectiveView}
-          setView={(v) => { setView(v); window.location.hash = v; }}
+          setView={(nextView) => { requestViewChange(nextView); }}
           theme={theme}
           toggleTheme={toggleTheme}
           user={currentUser}
-          canConfigure={canConfigure}
+          canViewConfig={canViewConfig}
           onChangePassword={() => setShowChangePassword(true)}
-          onLogout={() => { void logout().finally(handleLoggedOut); }}
+          onLogout={() => {
+            if (view === "config" && !configNavigationGuardRef.current?.()) return;
+            const token = getStoredToken();
+            handleLoggedOut();
+            void logout(token);
+          }}
           taskCount={tasks.length}
           activeCount={activeTasks}
           providerCount={enabledIntegrations}
           pollingRunning={status?.polling.running ?? false}
         />
-        <div style={{ flex: 1, overflow: "hidden", display: "flex" }}>
+        <div className="app-workspace" style={{ flex: 1, overflow: "hidden", display: "flex" }}>
           {effectiveView === "overview" && (
             <OverviewView
               overview={overview}
@@ -241,6 +294,7 @@ export function App() {
               config={config}
               status={status}
               onRefresh={() => void loadAll()}
+              onNavigationGuardChange={(guard) => { configNavigationGuardRef.current = guard; }}
             />
           )}
         </div>

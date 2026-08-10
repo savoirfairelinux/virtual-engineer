@@ -1,12 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { getLogger } from "../logger.js";
+import { toRejectionError } from "../utils/rejection.js";
 import {
-  type AgentLogEvent,
   type AgentAdapter,
+  type AgentLogEvent,
   type AgentResult,
   type ExternalChangeId,
   type InlineReviewComment,
   type ProjectPushTargetRecord,
+  type ProjectRecord,
   type ReviewChangeDetails,
   type ReviewChangeDiff,
   type ReviewDiscussionThread,
@@ -21,12 +23,19 @@ import {
   makeTaskId,
   makeTicketId,
 } from "../interfaces.js";
-import { buildReviewPrompt } from "./reviewPromptBuilder.js";
-import { computeVote, parseReviewResult } from "./reviewResultParser.js";
+import { buildReviewPrompt, type SinceLastReviewDelta } from "./reviewPromptBuilder.js";
+import { getReviewDecision, parseReviewResult } from "./reviewResultParser.js";
+import {
+  appendReviewOutputContract,
+  getReviewOutputJsonSchema,
+} from "./reviewOutputContract.js";
 import { filterCommentsByAllowedFiles } from "./commentFilter.js";
 import { computeCommentHash, computeThreadReplyHash } from "./commentHash.js";
 import { applyVolumeAndSeverityGate, buildFoldedSummary } from "./commentSeverity.js";
 import { agentLogBus, pushToTaskBuffer, clearTaskEventBuffer } from "../agents/agentEventBus.js";
+import { evaluateExistingReviewTask } from "./reviewRetriggerGuard.js";
+import { processReviewStderrLine } from "./reviewStderrEvents.js";
+import { shouldSkipReviewPosting, selectRepliesToPost } from "./reviewPostingGate.js";
 import type { ConcurrencyLease, ConcurrencyTracker } from "../orchestrator/concurrencyTracker.js";
 import type { TaskLifecycleCoordinator } from "../orchestrator/taskLifecycleCoordinator.js";
 
@@ -41,18 +50,14 @@ class ReviewSupersededError extends Error {
   }
 }
 
-/** Legacy interface implemented by `CopilotReviewAgent`. Kept for backward compatibility. */
-export interface ReviewAgent {
-  runReview(
-    input: {
-      changeId: ExternalChangeId;
-      patchset: number;
-      project: string;
-      prompt: string;
-      workingDirectory?: string | undefined;
-    },
-    onEvent?: ((event: { type: string; data?: unknown }) => void) | undefined,
-  ): Promise<{ rawOutput: string }>;
+export function buildReviewSystemPrompt(
+  systemPrompt: string,
+  reviewProviderKind: string,
+  agentProvider: string,
+): string {
+  return agentProvider === "copilot" || agentProvider === "claude"
+    ? systemPrompt
+    : appendReviewOutputContract(systemPrompt, reviewProviderKind);
 }
 
 export interface ReviewOrchestratorDeps {
@@ -80,8 +85,6 @@ export interface ReviewOrchestratorDeps {
   reviewProvider: ReviewProvider;
   /** Gerrit integration ID — used to look up the project via the review_target table. */
   integrationId: string;
-  /** Authentication token for the agent integration (e.g. GitHub token for Copilot). */
-  agentToken: string;
   /** Workspace runner — the review always runs in a Docker container. */
   workspaceRunner: WorkspaceRunner;
   /** Build the git clone URL and optional SSH key paths for the change's repository. */
@@ -90,12 +93,25 @@ export interface ReviewOrchestratorDeps {
   applyPatchset?: (handle: WorkspaceHandle, details: ReviewChangeDetails, signal?: AbortSignal) => Promise<void>;
   /** Source label persisted on review tasks, typically `<provider>:<integrationId>`. */
   sourceLabel?: string | undefined;
-  /** Reviewer instructions (content of the `code-review` prompt from the DB). */
-  reviewInstructions: string;
-  /** System prompt for the review agent (integration-specific, e.g. `review-system-gerrit`). */
-  reviewSystemPrompt: string;
-  /** Model override for the agent. */
-  model?: string | undefined;
+  /**
+   * Per-project adapter+model+token resolver, invoked in `runReview()` once the task's
+   * own VE project is known. This orchestrator instance is shared across every
+   * project matching a given review integration (see `startReviewTask`), so model
+   * and token selection MUST happen per-task here rather than once at construction
+   * time. Returning `null` fails the task; review execution never falls back to
+   * an agent belonging to another project.
+   */
+  resolveAgentForProject: (project: ProjectRecord) => Promise<{
+    adapter: AgentAdapter;
+    reviewStrategy: import("../interfaces.js").ReviewStrategy;
+    model: string | undefined;
+    token: string;
+    systemPrompt: string;
+    instructionsPrompt: string;
+    providerOptions?: Record<string, unknown> | undefined;
+    aiderBackend?: string | undefined;
+    aiderApiBase?: string | undefined;
+  } | null>;
   /** Maximum diff characters injected into the review prompt. Defaults to 60 000. */
   maxDiffChars?: number | undefined;
   /** Maximum number of inline comments posted per review pass. Defaults to 20. */
@@ -207,79 +223,21 @@ export class ReviewOrchestrator {
 
       const existing = await this.deps.stateStore.getTaskByTicketId(ticketId);
       if (existing && existing.taskType === "code-review") {
-        // A patchset is "already reviewed" once VE has posted a review for it
-        // (reviewedPatchset is set after the COMMENTING transition). This is the
-        // authoritative signal — independent of the task's current state — so it
-        // also covers terminal REVIEW_DONE rows that would otherwise fall through
-        // and spawn a duplicate review task.
-        const alreadyReviewedThisPatchset =
-          existing.reviewedPatchset !== null &&
-          existing.reviewedPatchset === details.currentPatchset;
+        // Duplicate-review guard: decide whether to skip this trigger, reuse
+        // the existing task, re-queue it for the new patchset, or fall
+        // through to create a fresh task. See evaluateExistingReviewTask for
+        // the full rationale (duplicate-review bug seen when a project is
+        // "resynced" — automatic triggers must never re-review a patchset VE
+        // has already reviewed; only a manual `force` bypasses that guard).
+        const action = evaluateExistingReviewTask({
+          existingState: existing.state,
+          reviewedPatchset: existing.reviewedPatchset,
+          existingCurrentPatchset: existing.currentPatchset,
+          detailsCurrentPatchset: details.currentPatchset,
+          force: input.force === true,
+        });
 
-        // Legacy or interrupted REVIEW_DONE rows may have never recorded
-        // reviewedPatchset (null). Treat a completed review with an unknown
-        // patchset as already-reviewed so a startup backfill does not spawn a
-        // duplicate review on a change VE has already finished. Guarded on the
-        // stored currentPatchset still matching the change's current patchset so
-        // a NEW patchset (currentPatchset advanced) is still reviewed rather
-        // than silently skipped. REVIEW_FAILED is intentionally excluded so
-        // failed reviews can still retry.
-        const doneWithUnknownPatchset =
-          existing.state === "REVIEW_DONE" &&
-          existing.reviewedPatchset === null &&
-          existing.currentPatchset === details.currentPatchset;
-
-        // Automatic re-triggers (stream backfill on (re)connect, polling-loop
-        // discovery, webhook re-deliveries) must NOT re-review a patchset VE has
-        // already reviewed — that is the duplicate-review bug seen when a project
-        // is "resynced". Manual triggers set input.force (e.g. a human removed VE
-        // then re-added it as a reviewer) and intentionally bypass this guard.
-        if ((alreadyReviewedThisPatchset || doneWithUnknownPatchset) && input.force !== true) {
-          log.info(
-            { taskId: existing.taskId, patchset: details.currentPatchset, state: existing.state },
-            "patchset already reviewed — skipping automatic re-trigger"
-          );
-          continue;
-        }
-
-        if (!TERMINAL_STATES.has(existing.state)) {
-          if (existing.currentPatchset === details.currentPatchset) {
-            // Manual relaunch of an already-reviewed, still-watched patchset:
-            // re-queue so the caller re-runs the review (runReview is invoked
-            // with force to re-post the vote + summary).
-            if (existing.state === "REVIEW_WATCHING" && input.force === true) {
-              log.info(
-                { taskId: existing.taskId, patchset: details.currentPatchset },
-                "manual re-trigger — re-running review on current patchset"
-              );
-              tasks.push(existing);
-              continue;
-            }
-            if (existing.state === "REVIEW_WATCHING") {
-              // We already reviewed this patchset and are watching for a new one.
-              // Do NOT push to tasks — a second runReview call on the same patchset
-              // triggers a redundant agent run, a spurious `submitReview` call, and
-              // the 422 "Line could not be resolved" / race-condition failures we've seen.
-              log.debug(
-                { taskId: existing.taskId, patchset: existing.currentPatchset },
-                "review already completed for patchset — skipping re-trigger"
-              );
-              continue;
-            }
-            if (existing.state === "REVIEW_RUNNING" || existing.state === "REVIEW_COMMENTING") {
-              // Review is actively in flight — skip to avoid a concurrent second pass.
-              log.debug(
-                { taskId: existing.taskId, state: existing.state, changeId: input.changeId },
-                "review already in flight — skipping duplicate trigger"
-              );
-              continue;
-            }
-            // REVIEW_PENDING with same patchset: task was created (or manually reset)
-            // but runReview has not yet run. Push so the caller will run it.
-            tasks.push(existing);
-            continue;
-          }
-          // New patchset arrived while a task is still active.
+        if (action === "requeue-new-patchset" || action === "await-in-flight-new-patchset") {
           // Always update the stored patchset number for admin-UI bookkeeping.
           if (existing.externalChangeId !== null) {
             await this.deps.stateStore.updateExternalChangeId(
@@ -289,22 +247,64 @@ export class ReviewOrchestrator {
               details.url
             );
           }
-          if (existing.state === "REVIEW_WATCHING") {
+        }
+
+        switch (action) {
+          case "skip-already-reviewed":
+            log.info(
+              { taskId: existing.taskId, patchset: details.currentPatchset, state: existing.state },
+              "patchset already reviewed — skipping automatic re-trigger"
+            );
+            continue;
+          case "reuse-manual-retrigger":
+            log.info(
+              { taskId: existing.taskId, patchset: details.currentPatchset },
+              "manual re-trigger — re-running review on current patchset"
+            );
+            tasks.push(existing);
+            continue;
+          case "skip-watching":
+            // We already reviewed this patchset and are watching for a new one.
+            // Do NOT push to tasks — a second runReview call on the same patchset
+            // triggers a redundant agent run, a spurious `submitReview` call, and
+            // the 422 "Line could not be resolved" / race-condition failures we've seen.
+            log.debug(
+              { taskId: existing.taskId, patchset: existing.currentPatchset },
+              "review already completed for patchset — skipping re-trigger"
+            );
+            continue;
+          case "skip-in-flight":
+            // Review is actively in flight — skip to avoid a concurrent second pass.
+            log.debug(
+              { taskId: existing.taskId, state: existing.state, changeId: input.changeId },
+              "review already in flight — skipping duplicate trigger"
+            );
+            continue;
+          case "reuse-pending":
+            // REVIEW_PENDING with same patchset: task was created (or manually reset)
+            // but runReview has not yet run. Push so the caller will run it.
+            tasks.push(existing);
+            continue;
+          case "requeue-new-patchset":
             // Previous review completed — re-queue for a fresh review pass.
             log.info(
               { taskId: existing.taskId, oldPatchset: existing.currentPatchset, newPatchset: details.currentPatchset },
               "new patchset on watched change — re-triggering review"
             );
             tasks.push({ ...existing, currentPatchset: details.currentPatchset });
-          }
-          // REVIEW_PENDING / REVIEW_RUNNING: a run is already in flight.
-          // runReview fetches fresh details from Gerrit, so the new patchset
-          // will be picked up naturally. No second trigger needed.
-          continue;
+            continue;
+          case "await-in-flight-new-patchset":
+            // A run is already in flight. runReview fetches fresh details from
+            // the review provider, so the new patchset will be picked up
+            // naturally. No second trigger needed.
+            continue;
+          case "fallthrough":
+            // Terminal existing task that is NOT a duplicate of an
+            // already-reviewed patchset (e.g. REVIEW_FAILED retry, or a manual
+            // force on a change whose prior review is DONE): fall through to
+            // create a fresh review task.
+            break;
         }
-        // Terminal existing task that is NOT a duplicate of an already-reviewed
-        // patchset (e.g. REVIEW_FAILED retry, or a manual force on a change whose
-        // prior review is DONE): fall through to create a fresh review task.
       }
 
       // Secondary guard: when the integration was deleted and recreated with a
@@ -569,6 +569,21 @@ export class ReviewOrchestrator {
         );
       }
 
+      // Resolve the adapter/model/token to use for this project. This orchestrator instance
+      // may be shared across several projects (one per review integration), so the
+      // per-project agent must be resolved here — per task — rather than once when
+      // the orchestrator was built. A missing runtime is fatal for this task.
+      const projectAgentRuntime = await this.deps.resolveAgentForProject(project);
+      if (!projectAgentRuntime) {
+        throw new Error(`No runnable review agent configured for project ${project.id}`);
+      }
+      const reviewInstructions = projectAgentRuntime.instructionsPrompt;
+      const reviewSystemPrompt = buildReviewSystemPrompt(
+        projectAgentRuntime.systemPrompt,
+        this.deps.reviewProvider.kind,
+        projectAgentRuntime.adapter.name,
+      );
+
       const { cloneUrl, sshKeyPath, sshAgentPubKeyPath, sshKnownHostsPath } = this.deps.buildCloneTarget(details);
       const cloneTarget: ProjectPushTargetRecord = {
         id: -1,
@@ -582,6 +597,7 @@ export class ReviewOrchestrator {
         localPath: ".",
         sshKeyPath,
         ...(sshAgentPubKeyPath != null ? { sshAgentPubKeyPath } : {}),
+        reviewerEmails: [],
         createdAt: new Date(),
         updatedAt: new Date(),
       };
@@ -625,10 +641,40 @@ export class ReviewOrchestrator {
         }
       }
 
+      // On a re-review, surface what changed since the patchset VE last
+      // reviewed so the agent focuses new findings on the delta. Guarded:
+      // providers without inter-patchset diff support skip this entirely, and
+      // empty deltas are dropped by the prompt builder.
+      let sinceLastReview: SinceLastReviewDelta | undefined;
+      const previousReviewed = task.reviewedPatchset;
+      if (
+        previousReviewed !== null &&
+        previousReviewed < details.currentPatchset &&
+        typeof this.deps.reviewProvider.getInterPatchsetDiff === "function"
+      ) {
+        try {
+          const deltaDiff = await this.deps.reviewProvider.getInterPatchsetDiff(
+            details,
+            previousReviewed,
+            details.currentPatchset
+          );
+          sinceLastReview = {
+            fromPatchset: previousReviewed,
+            toPatchset: details.currentPatchset,
+            diff: deltaDiff,
+          };
+        } catch (err) {
+          log.warn(
+            { err, taskId, fromPatchset: previousReviewed, toPatchset: details.currentPatchset },
+            "failed to compute inter-patchset delta; continuing with full diff only"
+          );
+        }
+      }
+
       const prompt = buildReviewPrompt({
         details,
         diff,
-        userPrompt: this.deps.reviewInstructions,
+        instructionsPrompt: reviewInstructions,
         ...(priorComments.length > 0
           ? {
               priorComments: priorComments.map((c) => ({
@@ -640,6 +686,7 @@ export class ReviewOrchestrator {
           : {}),
         ...(eligibleThreads.length > 0 ? { discussionThreads: eligibleThreads } : {}),
         ...(this.deps.maxDiffChars !== undefined ? { maxDiffChars: this.deps.maxDiffChars } : {}),
+        ...(sinceLastReview !== undefined ? { sinceLastReview } : {}),
       });
 
       emitReviewEvent("review.prompt_built", { promptLength: prompt.length, patchset: details.currentPatchset });
@@ -704,22 +751,35 @@ export class ReviewOrchestrator {
           );
         }
 
-        emitReviewEvent("review.agent_started", { mode: "docker" });
+        emitReviewEvent("review.agent_started", {
+          mode: "docker",
+          reviewStrategy: projectAgentRuntime.reviewStrategy,
+        });
 
         const stderrLineBuffer = { partial: "" };
         const reviewHandle = handle;
         const reviewResult = await this.awaitSignalAware(runReviewInDocker(reviewHandle, {
           projectId: project.id,
+          reviewStrategy: projectAgentRuntime.reviewStrategy,
           changeId,
           revisionNumber: details.changeNumber,
           patchset: details.currentPatchset,
           repositoryName: details.project,
           prompt,
-          systemPrompt: this.deps.reviewSystemPrompt,
-          agentToken: this.deps.agentToken,
-          model: this.deps.model,
+          systemPrompt: reviewSystemPrompt,
+          reviewOutputSchema: getReviewOutputJsonSchema(this.deps.reviewProvider.kind),
+          agentToken: projectAgentRuntime.token,
+          model: projectAgentRuntime.model,
           abortSignal: deadlineController.signal,
-          ...(project.skillDiscoveryEnabled ? { skillDiscoveryEnabled: true } : {}),
+          ...(projectAgentRuntime.providerOptions !== undefined && Object.keys(projectAgentRuntime.providerOptions).length > 0
+            ? { providerOptions: projectAgentRuntime.providerOptions }
+            : {}),
+          agentAdapter: projectAgentRuntime.adapter,
+          ...(projectAgentRuntime.aiderBackend !== undefined ? { aiderBackend: projectAgentRuntime.aiderBackend } : {}),
+          ...(projectAgentRuntime.aiderApiBase !== undefined ? { aiderApiBase: projectAgentRuntime.aiderApiBase } : {}),
+          ...(project.skillSourcesJson !== "[]"
+            ? { skillSourcesJson: project.skillSourcesJson }
+            : {}),
         }, {
           onStderrChunk: (chunk: string) => {
             stderrLineBuffer.partial += chunk;
@@ -728,12 +788,12 @@ export class ReviewOrchestrator {
             for (const line of lines) {
               const trimmed = line.trim();
               if (!trimmed) continue;
-              this.processReviewStderrLine(trimmed, taskId, cycleNumber, collectedEvents);
+              processReviewStderrLine(trimmed, taskId, cycleNumber, collectedEvents);
             }
           },
-        }, this.deps.agentAdapter), deadlineController.signal, timeoutError);
+        }), deadlineController.signal, timeoutError);
         if (stderrLineBuffer.partial.trim()) {
-          this.processReviewStderrLine(stderrLineBuffer.partial.trim(), taskId, cycleNumber, collectedEvents);
+          processReviewStderrLine(stderrLineBuffer.partial.trim(), taskId, cycleNumber, collectedEvents);
         }
         rawOutput = reviewResult.rawOutput;
       } finally {
@@ -748,8 +808,8 @@ export class ReviewOrchestrator {
       emitReviewEvent("review.agent_completed", { outputLength: rawOutput.length });
       emitReviewEvent("review.parsing", {});
 
-      const result = parseReviewResult(rawOutput);
-      const vote = computeVote(result);
+      const result = parseReviewResult(rawOutput, this.deps.reviewProvider.kind);
+      const decision = getReviewDecision(result);
 
       // Drop comments referencing files outside the patchset diff before dedup,
       // gating, persistence and summary folding. Otherwise hallucinated-path
@@ -844,39 +904,30 @@ export class ReviewOrchestrator {
       // hallucinated threadIds and duplicates, require a non-empty body, and
       // cap the volume. Replies are posted independently of the summary gate.
       const maxReplies = this.deps.maxReviewReplies ?? 20;
-      const repliesToPost: Array<{ threadId: string; message: string; handledHash: string }> = [];
-      const seenReplyThreadIds = new Set<string>();
-      for (const reply of result.replies) {
-        if (repliesToPost.length >= maxReplies) break;
-        if (seenReplyThreadIds.has(reply.threadId)) continue;
-        const entry = threadById.get(reply.threadId);
-        if (entry === undefined) continue; // hallucinated or already-handled thread
-        const message = reply.message.trim();
-        if (message.length === 0) continue;
-        seenReplyThreadIds.add(reply.threadId);
-        repliesToPost.push({ threadId: reply.threadId, message, handledHash: entry.handledHash });
-      }
+      const repliesToPost = selectRepliesToPost(result.replies, threadById, maxReplies);
 
-      // Avoid re-posting an identical verdict on re-reviews. When a pass
-      // finds nothing new to say (no inline comments, no folded notes, no
-      // replies) and the overall vote matches the last review cycle, stay
-      // silent instead of spamming another summary + vote notification.
+      // Avoid re-posting an identical verdict on re-reviews. When a pass finds
+      // nothing new to say (no inline comments, no folded notes) and the overall
+      // vote matches the last review cycle, stay silent instead of spamming
+      // another summary + vote notification. This gate is decoupled from
+      // discussion replies: a pending reply is always delivered through its own
+      // path below and never forces the verdict to be re-posted.
       const hasNothingNew = commentsToPost.length === 0 && folded.length === 0;
-      const previousVote = await this.getLastReviewVote(taskId);
-      const skipPosting =
-        options?.force !== true &&
-        cycleNumber > 1 &&
-        hasNothingNew &&
-        previousVote !== null &&
-        previousVote === vote &&
-        repliesToPost.length === 0;
+      const previousDecision = await this.getLastReviewDecision(taskId);
+      const skipPosting = shouldSkipReviewPosting({
+        force: options?.force === true,
+        cycleNumber,
+        hasNothingNew,
+        previousDecision,
+        decision,
+      });
 
       emitReviewEvent("review.posting_comments", {
         commentCount: commentsToPost.length,
         foldedCount: folded.length,
         dedupedCount,
         replyCount: repliesToPost.length,
-        vote,
+        vote: decision,
         skipped: skipPosting,
         summary: summary.slice(0, 200),
       });
@@ -891,7 +942,7 @@ export class ReviewOrchestrator {
           reviewPatchset,
           commentsToPost,
           summary,
-          vote,
+          decision,
           diff,
           deadlineController.signal,
         ));
@@ -953,7 +1004,7 @@ export class ReviewOrchestrator {
         foldedCount: folded.length,
         dedupedCount,
         replyCount: postedReplies.length,
-        vote,
+        vote: decision,
         skipped: skipPosting,
         patchset: reviewPatchset,
       });
@@ -970,7 +1021,7 @@ export class ReviewOrchestrator {
           patchset: reviewPatchset,
           commentCount: result.comments.length,
           replyCount: postedReplies.length,
-          vote,
+          vote: decision,
           comments: result.comments,
           score: result.score,
         },
@@ -987,6 +1038,7 @@ export class ReviewOrchestrator {
       } else {
         await this.deps.stateStore.transition(taskId, "REVIEW_DONE");
       }
+      return;
     } catch (err) {
       if (err instanceof ReviewSupersededError) {
         await this.deps.stateStore.updateExternalChangeId(
@@ -1065,9 +1117,9 @@ export class ReviewOrchestrator {
   // ─── Internals ──────────────────────────────────────────────────────────────
 
   private withAbortSignal<T>(operation: Promise<T>, signal: AbortSignal, timeoutError: Error): Promise<T> {
-    if (signal.aborted) return Promise.reject(signal.reason ?? timeoutError);
+    if (signal.aborted) return Promise.reject(toRejectionError(signal.reason, timeoutError));
     return new Promise<T>((resolve, reject) => {
-      const onAbort = (): void => reject(signal.reason ?? timeoutError);
+      const onAbort = (): void => reject(toRejectionError(signal.reason, timeoutError));
       signal.addEventListener("abort", onAbort, { once: true });
       void operation.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
     });
@@ -1090,54 +1142,11 @@ export class ReviewOrchestrator {
   }
 
   /**
-   * Parse a single stderr line from the review container.
-   * If it is a structured `__ve_event` JSON line, parse it and emit on the bus.
-   * Otherwise wrap it as a generic `stderr.line` event.
+  * Return the normalized decision (-1/0/1) recorded on the most recent prior
+  * review cycle, or null when there is no prior cycle / decision stored.
+  * Used to suppress redundant publication when a re-review finds nothing new.
    */
-  private processReviewStderrLine(
-    line: string,
-    taskId: string,
-    cycleNumber: number,
-    collectedEvents: AgentLogEvent[]
-  ): void {
-    try {
-      const parsed = JSON.parse(line) as Record<string, unknown>;
-      if (parsed["__ve_event"] === true) {
-        const event: AgentLogEvent = {
-          type: typeof parsed["type"] === "string" ? parsed["type"] : "unknown",
-          timestamp: typeof parsed["ts"] === "string" ? parsed["ts"] : new Date().toISOString(),
-          data: parsed["data"] ?? null,
-          taskId,
-          cycleNumber,
-        };
-        collectedEvents.push(event);
-        pushToTaskBuffer(event);
-        agentLogBus.emit("event", event);
-        return;
-      }
-    } catch {
-      // Not JSON — fall through to plain text handling.
-    }
-
-    // Plain text stderr line.
-    const event: AgentLogEvent = {
-      type: "stderr.line",
-      timestamp: new Date().toISOString(),
-      data: { line },
-      taskId,
-      cycleNumber,
-    };
-    collectedEvents.push(event);
-    pushToTaskBuffer(event);
-    agentLogBus.emit("event", event);
-  }
-
-  /**
-   * Return the overall vote (-1/0/1) recorded on the most recent prior review
-   * cycle for this task, or null when there is no prior cycle / no vote stored.
-   * Used to suppress redundant re-votes when a re-review finds nothing new.
-   */
-  private async getLastReviewVote(taskId: TaskId): Promise<-1 | 0 | 1 | null> {
+  private async getLastReviewDecision(taskId: TaskId): Promise<-1 | 0 | 1 | null> {
     const cycles = await this.deps.stateStore.getAgentCycles(taskId);
     for (let i = cycles.length - 1; i >= 0; i--) {
       const meta = cycles[i]?.result?.metadata;
@@ -1154,7 +1163,7 @@ export class ReviewOrchestrator {
     revision: number,
     comments: InlineReviewComment[],
     summary: string,
-    score: -1 | 1,
+    score: -1 | 0 | 1,
     diff: ReviewChangeDiff,
     signal: AbortSignal,
   ): Promise<void> {

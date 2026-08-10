@@ -33,6 +33,7 @@ describe("Admin API — runtime policy bindings", () => {
       },
       polling: { isRunning: () => true, getIntervals: () => ({ intervalMs: 30_000 }) },
       providers: [],
+      allowUnauthenticatedAdmin: true,
     });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const address = server.address() as AddressInfo;
@@ -45,7 +46,7 @@ describe("Admin API — runtime policy bindings", () => {
   });
 
   it("lists persisted bindings for a policy", async () => {
-    const agent = await store.createAgent({ name: "agent", type: "coding", modelConfigJson: "{}" });
+    const agent = await store.createAgent({ name: "agent", type: "coding", modelConfigJson: "{}", systemPromptId: "system_generic_code", instructionsPromptId: "instructions_generic_code" });
     const policy = await store.createRuntimePolicy({
       name: "network-deny",
       kind: "network",

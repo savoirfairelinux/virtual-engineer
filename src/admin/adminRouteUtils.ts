@@ -31,8 +31,9 @@ function humanizeFieldPath(path: ReadonlyArray<string | number>): string {
     repoKeys: "Repositories",
     modelConfig: "Model config",
     maxConcurrent: "Max concurrent",
-    systemPromptId: "System prompt",
-    instructionsPromptId: "Instructions prompt",
+    systemPromptId: "System Prompt",
+    instructionsPromptId: "Instructions Prompt",
+    feedbackInstructionsPromptId: "Feedback Instructions Prompt",
     postCloneScript: "Post-clone script",
     agentOverrideJson: "Agent override (JSON)",
     enabled: "Enabled",
@@ -116,6 +117,21 @@ export function writeHtml(response: ServerResponse, statusCode: number, html: st
   response.statusCode = statusCode;
   response.setHeader("content-type", "text/html; charset=utf-8");
   response.end(html);
+}
+
+/**
+ * Guard a route dependency that may be absent (e.g. a store not wired up in this deployment).
+ * Writes a 501 and returns `false` when missing (`null` or `undefined`); narrows `store` to
+ * `NonNullable<T>` (via the type predicate) when present. Assign the checked expression to a
+ * local `const` first if it's used inside a closure — narrowing on a dotted property access
+ * does not survive crossing a closure boundary.
+ */
+export function requireStore<T>(store: T, res: ServerResponse, message: string): store is NonNullable<T> {
+  if (!store) {
+    writeJson(res, 501, { error: message });
+    return false;
+  }
+  return true;
 }
 
 /** Read and parse the request body as JSON, returning null on error or when body exceeds MAX_BODY_BYTES. */

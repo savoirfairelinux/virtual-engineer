@@ -3,7 +3,6 @@ import { randomUUID } from "crypto";
 import { makeTaskId } from "../../src/interfaces.js";
 import type { TaskContext, ReviewWorkspaceInput } from "../../src/interfaces.js";
 import { ClaudeAdapter } from "../../src/agents/claudeAdapter.js";
-import { encryptToken } from "../../src/utils/encryption.js";
 
 function makeContext(overrides: Partial<TaskContext> = {}): TaskContext {
   return {
@@ -34,6 +33,7 @@ function makeContext(overrides: Partial<TaskContext> = {}): TaskContext {
 
 function makeReviewInput(overrides: Partial<ReviewWorkspaceInput> = {}): ReviewWorkspaceInput {
   return {
+    reviewStrategy: "ve_direct",
     changeId: "Iabc" as ReviewWorkspaceInput["changeId"],
     revisionNumber: 1,
     patchset: 1,
@@ -70,8 +70,6 @@ describe("ClaudeAdapter", () => {
         IS_SANDBOX: "1",
         GIT_AUTHOR_NAME: "Virtual Engineer",
       });
-      expect(spec.additionalDockerArgs).toContain("--read-only");
-      expect(spec.additionalDockerArgs).toContain("ALL");
     });
 
     it("prefers the per-agent model from the session", () => {
@@ -88,12 +86,60 @@ describe("ClaudeAdapter", () => {
       expect(spec.env["AGENT_PROVIDER"]).toBe("claude");
       expect(spec.env["CLAUDE_MODEL"]).toBeUndefined();
     });
+
+    it("does not expose removed local skill configuration", () => {
+      const adapter = new ClaudeAdapter();
+      const ctx = makeContext();
+      const spec = adapter.buildContainerSpec(ctx);
+
+      expect(spec.env["LOCAL_SKILLS_PATH"]).toBeUndefined();
+      expect(spec.env["SKILL_DISCOVERY"]).toBeUndefined();
+    });
+
+    it("injects Claude native execution options", () => {
+      const adapter = new ClaudeAdapter();
+      const ctx = makeContext();
+      ctx.agentSession.providerOptions = {
+        effort: "high",
+        thinkingMode: "enabled",
+        thinkingBudgetTokens: 12000,
+        maxTurns: 30,
+        maxBudgetUsd: 8.5,
+      };
+
+      expect(adapter.buildContainerSpec(ctx).env).toMatchObject({
+        CLAUDE_EFFORT: "high",
+        CLAUDE_THINKING_MODE: "enabled",
+        CLAUDE_THINKING_BUDGET_TOKENS: "12000",
+        CLAUDE_MAX_TURNS: "30",
+        CLAUDE_MAX_BUDGET_USD: "8.5",
+      });
+    });
+
+    it("injects CLAUDE_BLOCKED_TOOLS from toolAuthorization", () => {
+      const adapter = new ClaudeAdapter();
+      const ctx = makeContext();
+      ctx.agentSession.providerOptions = {
+        toolAuthorization: {
+          blockedTools: ["Bash"],
+        },
+      };
+      const env = adapter.buildContainerSpec(ctx).env;
+      expect(env["CLAUDE_BLOCKED_TOOLS"]).toBe("Bash");
+    });
+
+    it("omits tool-list env vars when toolAuthorization is absent", () => {
+      const adapter = new ClaudeAdapter();
+      const env = adapter.buildContainerSpec(makeContext()).env;
+      expect(env["CLAUDE_BLOCKED_TOOLS"]).toBeUndefined();
+    });
   });
 
   describe("buildReviewContainerSpec", () => {
     it("sets review mode and prompt file", () => {
       const adapter = new ClaudeAdapter();
       const input: ReviewWorkspaceInput = {
+        reviewStrategy: "ve_direct",
         changeId: "Iabc" as ReviewWorkspaceInput["changeId"],
         revisionNumber: 1,
         patchset: 1,
@@ -148,6 +194,26 @@ describe("ClaudeAdapter", () => {
       const spec = adapter.buildReviewContainerSpec(makeReviewInput({ agentToken: "sk-ant-api-1" }));
       expect(spec.env["CLAUDE_MODEL"]).toBeUndefined();
     });
+
+    it("does not expose removed local skill configuration in review specs", () => {
+      const adapter = new ClaudeAdapter();
+      const spec = adapter.buildReviewContainerSpec(makeReviewInput());
+
+      expect(spec.env["LOCAL_SKILLS_PATH"]).toBeUndefined();
+      expect(spec.env["SKILL_DISCOVERY"]).toBeUndefined();
+    });
+
+    it("injects Claude native review options", () => {
+      const adapter = new ClaudeAdapter();
+      const spec = adapter.buildReviewContainerSpec(makeReviewInput({
+        providerOptions: { effort: "max", thinkingMode: "adaptive", maxTurns: 12 },
+      }));
+      expect(spec.env).toMatchObject({
+        CLAUDE_EFFORT: "max",
+        CLAUDE_THINKING_MODE: "adaptive",
+        CLAUDE_MAX_TURNS: "12",
+      });
+    });
   });
 
   describe("execute auth resolution", () => {
@@ -167,7 +233,7 @@ describe("ClaudeAdapter", () => {
       const adapter = new ClaudeAdapter();
       const ctx = makeContext();
       delete ctx.agentSession.githubToken;
-      ctx.agentSession.encryptedSessionToken = encryptToken("sk-ant-oat-tok", undefined);
+      ctx.agentSession.encryptedSessionToken = `plain:${Buffer.from("sk-ant-oat-tok", "utf8").toString("base64")}`;
       const invoker = vi.fn().mockImplementation(async (_ctx, authEnv) => {
         expect(authEnv).toMatchObject({ CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat-tok" });
         return { stdout: agentResultJson(), stderr: "" };
@@ -199,6 +265,28 @@ describe("ClaudeAdapter", () => {
       const result = await adapter.execute(makeContext());
       expect(result.status).toBe("failed");
       expect(result.metadata).toMatchObject({ adapter: "claude" });
+    });
+
+    it("returns a failed result with setup events when docker setup throws after stderr", async () => {
+      const adapter = new ClaudeAdapter();
+      const veEvent = JSON.stringify({
+        __ve_event: true,
+        type: "skills.fetch_failed",
+        data: { source: "example-org/agent-skills", message: "network failed" },
+        ts: "2026-01-01T00:00:00.000Z",
+      });
+      adapter.setDockerInvoker(vi.fn().mockImplementation(async (_ctx, _authEnv, callbacks) => {
+        callbacks?.onStderrChunk?.(`${veEvent}\n`);
+        throw new Error("failed to fetch skills from example-org/agent-skills: network failed");
+      }));
+
+      const result = await adapter.execute(makeContext());
+
+      expect(result.status).toBe("failed");
+      expect(result.summary).toBe("Agent setup failed before container output");
+      expect(result.agentEvents).toHaveLength(1);
+      expect(result.agentEvents?.[0]?.type).toBe("skills.fetch_failed");
+      expect(result.metadata).toMatchObject({ adapter: "claude", setupError: true });
     });
   });
 });

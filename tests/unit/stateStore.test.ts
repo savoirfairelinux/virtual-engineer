@@ -3,12 +3,11 @@ import Database from "better-sqlite3";
 import { SqliteStateStore } from "../../src/state/stateStore.js";
 import { InvalidTransitionError } from "../../src/state/stateMachine.js";
 import { makeTaskId, makeTicketId, makeExternalChangeId, makeProjectId } from "../../src/interfaces.js";
-import { tmpdir } from "os";
-import { join } from "path";
 import { randomUUID } from "crypto";
+import { tempDatabasePath } from "./helpers/tempDatabase.js";
 
 function tempDbPath(): string {
-  return join(tmpdir(), `ve-test-${randomUUID()}.db`);
+  return tempDatabasePath("ve-test");
 }
 
 describe("SqliteStateStore", () => {
@@ -479,6 +478,66 @@ describe("SqliteStateStore", () => {
     });
   });
 
+  describe("reconcileOrphanedActiveTasks", () => {
+    it("fails tasks stuck in AGENT_RUNNING / REVIEW_RUNNING / REVIEW_COMMENTING and leaves other states alone", async () => {
+      const idAgentRunning = makeTaskId(randomUUID());
+      const idReviewRunning = makeTaskId(randomUUID());
+      const idReviewCommenting = makeTaskId(randomUUID());
+      const idContextBuilding = makeTaskId(randomUUID());
+      const idDone = makeTaskId(randomUUID());
+
+      await store.createTask(idAgentRunning, makeTicketId("ar"));
+      await store.transition(idAgentRunning, "CONTEXT_BUILDING");
+      await store.transition(idAgentRunning, "AGENT_RUNNING");
+
+      await store.createReviewTask({
+        taskId: idReviewRunning,
+        ticketId: makeTicketId("rr"),
+        subject: "review running",
+        changeId: makeExternalChangeId("I3"),
+        patchset: 1,
+      });
+      await store.transition(idReviewRunning, "REVIEW_RUNNING");
+
+      await store.createReviewTask({
+        taskId: idReviewCommenting,
+        ticketId: makeTicketId("rc"),
+        subject: "review commenting",
+        changeId: makeExternalChangeId("I4"),
+        patchset: 1,
+      });
+      await store.transition(idReviewCommenting, "REVIEW_RUNNING");
+      await store.transition(idReviewCommenting, "REVIEW_COMMENTING");
+
+      await store.createTask(idContextBuilding, makeTicketId("cb"));
+      await store.transition(idContextBuilding, "CONTEXT_BUILDING");
+
+      await store.createTask(idDone, makeTicketId("dn"));
+      await store.transition(idDone, "CONTEXT_BUILDING");
+      await store.transition(idDone, "AGENT_RUNNING");
+      await store.transition(idDone, "IN_REVIEW");
+      await store.transition(idDone, "MERGED");
+      await store.transition(idDone, "CLOSING");
+      await store.transition(idDone, "DONE");
+
+      const count = await store.reconcileOrphanedActiveTasks();
+      expect(count).toBe(3);
+
+      expect((await store.getTask(idAgentRunning))?.state).toBe("FAILED");
+      expect((await store.getTask(idReviewRunning))?.state).toBe("REVIEW_FAILED");
+      expect((await store.getTask(idReviewCommenting))?.state).toBe("REVIEW_FAILED");
+      // Not an "actively executing" state: left untouched.
+      expect((await store.getTask(idContextBuilding))?.state).toBe("CONTEXT_BUILDING");
+      // Already terminal: left untouched.
+      expect((await store.getTask(idDone))?.state).toBe("DONE");
+    });
+
+    it("is a no-op when nothing is orphaned", async () => {
+      const count = await store.reconcileOrphanedActiveTasks();
+      expect(count).toBe(0);
+    });
+  });
+
   describe("getFailedTasksForProject", () => {
     it("returns both FAILED and REVIEW_FAILED tasks bound to the project", async () => {
       const projectId = makeProjectId(randomUUID());
@@ -702,134 +761,6 @@ describe("SqliteStateStore", () => {
     });
   });
 
-  describe("comment deduplication", () => {
-    it("tracks processed comment ids", async () => {
-      const taskId = makeTaskId(randomUUID());
-      await store.createTask(taskId, makeTicketId("7"));
-
-      const before = await store.getProcessedCommentIds(taskId);
-      expect(before.size).toBe(0);
-
-      await store.markCommentProcessed(taskId, "comment-abc");
-      await store.markCommentProcessed(taskId, "comment-def");
-
-      const after = await store.getProcessedCommentIds(taskId);
-      expect(after.has("comment-abc")).toBe(true);
-      expect(after.has("comment-def")).toBe(true);
-      expect(after.has("comment-xyz")).toBe(false);
-    });
-  });
-
-  describe("posted-review-comment deduplication", () => {
-    it("records posted comments and exposes their hashes", async () => {
-      const taskId = makeTaskId(randomUUID());
-      await store.createTask(taskId, makeTicketId("rev-1"));
-      const changeId = makeExternalChangeId("owner/repo#1");
-
-      expect((await store.getPostedReviewCommentHashes(taskId)).size).toBe(0);
-
-      await store.markReviewCommentsPosted(taskId, changeId, [
-        { commentHash: "hash-a", file: "src/a.ts", line: 10, message: "Issue A", severity: "error" },
-        { commentHash: "hash-b", file: "src/b.ts", line: 20, message: "Issue B", severity: "warning", providerThreadId: "thread-b" },
-      ]);
-
-      const hashes = await store.getPostedReviewCommentHashes(taskId);
-      expect(hashes.has("hash-a")).toBe(true);
-      expect(hashes.has("hash-b")).toBe(true);
-
-      const records = await store.getPostedReviewComments(taskId);
-      expect(records).toHaveLength(2);
-      const b = records.find((r) => r.commentHash === "hash-b");
-      expect(b?.providerThreadId).toBe("thread-b");
-      expect(b?.resolved).toBe(false);
-    });
-
-    it("ignores duplicate hashes for the same task", async () => {
-      const taskId = makeTaskId(randomUUID());
-      await store.createTask(taskId, makeTicketId("rev-2"));
-      const changeId = makeExternalChangeId("owner/repo#2");
-
-      await store.markReviewCommentsPosted(taskId, changeId, [
-        { commentHash: "dup", file: "src/a.ts", line: 1, message: "first", severity: "error" },
-      ]);
-      await store.markReviewCommentsPosted(taskId, changeId, [
-        { commentHash: "dup", file: "src/a.ts", line: 99, message: "second", severity: "error" },
-      ]);
-
-      const records = await store.getPostedReviewComments(taskId);
-      expect(records).toHaveLength(1);
-      expect(records[0]?.line).toBe(1);
-    });
-
-    it("marks a posted comment as resolved", async () => {
-      const taskId = makeTaskId(randomUUID());
-      await store.createTask(taskId, makeTicketId("rev-3"));
-      const changeId = makeExternalChangeId("owner/repo#3");
-
-      await store.markReviewCommentsPosted(taskId, changeId, [
-        { commentHash: "h", file: "src/a.ts", line: 5, message: "resolve me", severity: "error" },
-      ]);
-      const [rec] = await store.getPostedReviewComments(taskId);
-      expect(rec).toBeDefined();
-
-      await store.markReviewCommentResolved(rec!.id);
-
-      const [updated] = await store.getPostedReviewComments(taskId);
-      expect(updated?.resolved).toBe(true);
-    });
-  });
-
-  describe("thread-reply ledger", () => {
-    it("records posted replies and exposes their handled hashes", async () => {
-      const taskId = makeTaskId(randomUUID());
-      await store.createTask(taskId, makeTicketId("reply-1"));
-      const changeId = makeExternalChangeId("owner/repo#10");
-
-      expect((await store.getHandledThreadReplyHashes(taskId)).size).toBe(0);
-
-      await store.markThreadReplyPosted(taskId, changeId, [
-        { threadId: "disc-1", handledCommentHash: "hash-1", replyMessage: "Thanks, fixed." },
-        { threadId: "disc-2", handledCommentHash: "hash-2", replyMessage: "I disagree." },
-      ]);
-
-      const hashes = await store.getHandledThreadReplyHashes(taskId);
-      expect(hashes.has("hash-1")).toBe(true);
-      expect(hashes.has("hash-2")).toBe(true);
-      expect(hashes.has("hash-3")).toBe(false);
-    });
-
-    it("ignores duplicate (threadId, handledCommentHash) pairs", async () => {
-      const taskId = makeTaskId(randomUUID());
-      await store.createTask(taskId, makeTicketId("reply-2"));
-      const changeId = makeExternalChangeId("owner/repo#11");
-
-      await store.markThreadReplyPosted(taskId, changeId, [
-        { threadId: "disc-1", handledCommentHash: "dup", replyMessage: "first" },
-      ]);
-      await store.markThreadReplyPosted(taskId, changeId, [
-        { threadId: "disc-1", handledCommentHash: "dup", replyMessage: "second" },
-      ]);
-
-      const hashes = await store.getHandledThreadReplyHashes(taskId);
-      expect(hashes.size).toBe(1);
-    });
-
-    it("scopes handled hashes per task", async () => {
-      const taskA = makeTaskId(randomUUID());
-      const taskB = makeTaskId(randomUUID());
-      await store.createTask(taskA, makeTicketId("reply-3a"));
-      await store.createTask(taskB, makeTicketId("reply-3b"));
-      const changeId = makeExternalChangeId("owner/repo#12");
-
-      await store.markThreadReplyPosted(taskA, changeId, [
-        { threadId: "disc-1", handledCommentHash: "only-a", replyMessage: "hi" },
-      ]);
-
-      expect((await store.getHandledThreadReplyHashes(taskA)).has("only-a")).toBe(true);
-      expect((await store.getHandledThreadReplyHashes(taskB)).has("only-a")).toBe(false);
-    });
-  });
-
   describe("saveAgentCycle", () => {
     it("deduplicates legacy cycle rows before enforcing task-cycle uniqueness", async () => {
       const dbPath = tempDbPath();
@@ -839,7 +770,10 @@ describe("SqliteStateStore", () => {
           task_id TEXT PRIMARY KEY,
           ticket_id TEXT NOT NULL,
           state TEXT NOT NULL DEFAULT 'DETECTED',
+          gerrit_change_id TEXT,
+          current_patchset INTEGER NOT NULL DEFAULT 0,
           cycle_count INTEGER NOT NULL DEFAULT 0,
+          failure_reason TEXT,
           created_at INTEGER NOT NULL,
           updated_at INTEGER NOT NULL
         );
@@ -981,7 +915,7 @@ describe("SqliteStateStore", () => {
       expect(cost?.modelId).toBe("gpt-test");
     });
 
-    it("recomputes legacy cycle cost from the agent_events column when the result JSON omits events", async () => {
+    it("backfills legacy cycle cost from the agent_events column on the next store creation", async () => {
       const dbPath = tempDbPath();
       let localStore = await SqliteStateStore.create(dbPath);
       const taskId = makeTaskId(randomUUID());
@@ -1062,28 +996,135 @@ describe("SqliteStateStore", () => {
       expect(cost?.aiCredits).toBe(0);
       expect(cost?.premiumRequests).toBeCloseTo(0.5, 10);
     });
+  });
 
-    it("recomputes cost for legacy cycles persisted without cost columns", async () => {
+  describe("backfillLegacyCycleCosts (migration)", () => {
+    it("persists cost_* columns for a legacy row on the next store creation", async () => {
+      const dbPath = tempDbPath();
+      let localStore = await SqliteStateStore.create(dbPath);
       const taskId = makeTaskId(randomUUID());
-      await store.createTask(taskId, makeTicketId("cost-2"));
-      const raw = (store as unknown as { raw: { prepare: (sql: string) => { run: (...args: unknown[]) => void } } }).raw;
+      await localStore.createTask(taskId, makeTicketId("backfill-1"));
+
+      const raw = new Database(dbPath);
       const events = JSON.stringify([
         {
           type: "assistant.usage",
           timestamp: "2026-01-01T00:00:00.000Z",
-          data: { totalNanoAiu: 5_000_000_000, inputTokens: 12, outputTokens: 4 },
+          data: { totalNanoAiu: 3_000_000_000, inputTokens: 10, outputTokens: 2, model: "gpt-backfill" },
           taskId: String(taskId),
           cycleNumber: 1,
         },
       ]);
-      const agentResult = JSON.stringify({ status: "success", modifiedFiles: [], summary: "legacy", agentLogs: "", agentEvents: JSON.parse(events), metadata: {} });
       raw.prepare(
-        "INSERT INTO agent_cycles (task_id, cycle_number, agent_result, validation_result, agent_events, created_at) VALUES (?, ?, ?, ?, ?, ?)"
-      ).run(taskId, 1, agentResult, null, events, Date.now());
+        "INSERT INTO agent_cycles (task_id, cycle_number, agent_result, validation_result, agent_events, created_at) VALUES (?, ?, ?, NULL, ?, ?)"
+      ).run(
+        taskId,
+        1,
+        JSON.stringify({ status: "success", modifiedFiles: [], summary: "legacy", agentLogs: "", metadata: {} }),
+        events,
+        Math.floor(Date.now() / 1000)
+      );
+      raw.close();
+      localStore.close();
 
-      const cycles = await store.getAgentCycles(taskId);
-      expect(cycles[0]?.cost?.priced).toBe(true);
-      expect(cycles[0]?.cost?.aiCredits).toBe(5);
+      // Reopening triggers applyMigrations() again, running the backfill.
+      localStore = await SqliteStateStore.create(dbPath);
+      try {
+        const verify = new Database(dbPath);
+        const row = verify
+          .prepare(
+            "SELECT cost_ai_credits, cost_usd, cost_model_id FROM agent_cycles WHERE task_id = ?"
+          )
+          .get(taskId) as { cost_ai_credits: number; cost_usd: number; cost_model_id: string };
+        verify.close();
+        expect(row.cost_ai_credits).toBe(3);
+        expect(row.cost_usd).toBeCloseTo(0.03, 10);
+        expect(row.cost_model_id).toBe("gpt-backfill");
+
+        const cycles = await localStore.getAgentCycles(taskId);
+        expect(cycles[0]?.cost?.aiCredits).toBe(3);
+        expect(cycles[0]?.cost?.modelId).toBe("gpt-backfill");
+      } finally {
+        localStore.close();
+      }
+    });
+
+    it("leaves cost columns NULL when no event log is recoverable", async () => {
+      const dbPath = tempDbPath();
+      let localStore = await SqliteStateStore.create(dbPath);
+      const taskId = makeTaskId(randomUUID());
+      await localStore.createTask(taskId, makeTicketId("backfill-2"));
+
+      const raw = new Database(dbPath);
+      raw.prepare(
+        "INSERT INTO agent_cycles (task_id, cycle_number, agent_result, validation_result, agent_events, created_at) VALUES (?, ?, ?, NULL, NULL, ?)"
+      ).run(
+        taskId,
+        1,
+        JSON.stringify({ status: "success", modifiedFiles: [], summary: "no-events", agentLogs: "", metadata: {} }),
+        Math.floor(Date.now() / 1000)
+      );
+      raw.close();
+      localStore.close();
+
+      localStore = await SqliteStateStore.create(dbPath);
+      try {
+        const verify = new Database(dbPath);
+        const row = verify
+          .prepare("SELECT cost_usd, cost_model_id FROM agent_cycles WHERE task_id = ?")
+          .get(taskId) as { cost_usd: number | null; cost_model_id: string | null };
+        verify.close();
+        expect(row.cost_usd).toBeNull();
+        expect(row.cost_model_id).toBeNull();
+      } finally {
+        localStore.close();
+      }
+    });
+
+    it("is idempotent across repeated store creations", async () => {
+      const dbPath = tempDbPath();
+      let localStore = await SqliteStateStore.create(dbPath);
+      const taskId = makeTaskId(randomUUID());
+      await localStore.createTask(taskId, makeTicketId("backfill-3"));
+
+      const raw = new Database(dbPath);
+      const events = JSON.stringify([
+        {
+          type: "assistant.usage",
+          timestamp: "2026-01-01T00:00:00.000Z",
+          data: { totalNanoAiu: 1_000_000_000, model: "gpt-idem" },
+          taskId: String(taskId),
+          cycleNumber: 1,
+        },
+      ]);
+      raw.prepare(
+        "INSERT INTO agent_cycles (task_id, cycle_number, agent_result, validation_result, agent_events, created_at) VALUES (?, ?, ?, NULL, ?, ?)"
+      ).run(
+        taskId,
+        1,
+        JSON.stringify({ status: "success", modifiedFiles: [], summary: "legacy", agentLogs: "", metadata: {} }),
+        events,
+        Math.floor(Date.now() / 1000)
+      );
+      raw.close();
+      localStore.close();
+
+      localStore = await SqliteStateStore.create(dbPath);
+      localStore.close();
+      // Second reopen: the row is no longer "all NULL", so the backfill query
+      // should not re-select or alter it again.
+      localStore = await SqliteStateStore.create(dbPath);
+      try {
+        const verify = new Database(dbPath);
+        const row = verify
+          .prepare("SELECT cost_ai_credits, cost_model_id FROM agent_cycles WHERE task_id = ?")
+          .get(taskId) as { cost_ai_credits: number; cost_model_id: string };
+        verify.close();
+        expect(row.cost_ai_credits).toBe(1);
+        expect(row.cost_model_id).toBe("gpt-idem");
+      } finally {
+        localStore.close();
+      }
     });
   });
 

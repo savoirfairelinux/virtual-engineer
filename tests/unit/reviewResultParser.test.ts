@@ -1,9 +1,13 @@
 import { describe, it, expect } from "vitest";
 import {
   ReviewResultParseError,
-  computeVote,
+  getReviewDecision,
   parseReviewResult,
 } from "../../src/review/reviewResultParser.js";
+import {
+  getReviewOutputContract,
+  getReviewOutputJsonSchema,
+} from "../../src/review/reviewOutputContract.js";
 import type { ReviewAgentResult } from "../../src/interfaces.js";
 
 function wrap(json: unknown): string {
@@ -16,7 +20,74 @@ function wrap(json: unknown): string {
   ].join("\n");
 }
 
+describe("review output contracts", () => {
+  it("uses the native decision field for each review integration", () => {
+    const gerrit = getReviewOutputContract("gerrit");
+    const github = getReviewOutputContract("github");
+    const gitlab = getReviewOutputContract("gitlab");
+
+    expect(gerrit).toContain('"vote"');
+    expect(gerrit).not.toContain('"reviewAction"');
+    expect(github).toContain('"reviewAction"');
+    expect(github).not.toContain('"vote"');
+    expect(gitlab).toContain('"approvalAction"');
+    expect(gitlab).not.toContain('"vote"');
+  });
+
+  it("rejects integrations without a defined output contract", () => {
+    expect(() => getReviewOutputContract("unknown")).toThrow(
+      "Unsupported review output contract: unknown"
+    );
+  });
+
+  it("exposes the same provider-native decision in the JSON schema", () => {
+    expect(getReviewOutputJsonSchema("gerrit")).toMatchObject({
+      required: ["comments", "summary", "replies", "vote"],
+      properties: { vote: { enum: [-1, 0, 1] } },
+    });
+    expect(getReviewOutputJsonSchema("github")).toMatchObject({
+      properties: { reviewAction: { enum: ["APPROVE", "REQUEST_CHANGES", "COMMENT"] } },
+    });
+    expect(getReviewOutputJsonSchema("gitlab")).toMatchObject({
+      properties: { approvalAction: { enum: ["APPROVE", "UNAPPROVE", "COMMENT"] } },
+    });
+  });
+});
+
 describe("parseReviewResult", () => {
+  it("parses the native Gerrit vote contract", () => {
+    const result = parseReviewResult(
+      wrap({ comments: [], summary: "needs work", vote: -1, replies: [] }),
+      "gerrit"
+    );
+    expect(result.score).toBe(-1);
+  });
+
+  it("normalizes GitHub review actions without treating COMMENT as a vote", () => {
+    const result = parseReviewResult(
+      wrap({ comments: [], summary: "notes only", reviewAction: "COMMENT", replies: [] }),
+      "github"
+    );
+    expect(result.score).toBe(0);
+  });
+
+  it("normalizes GitLab approval actions", () => {
+    const result = parseReviewResult(
+      wrap({ comments: [], summary: "ready", approvalAction: "APPROVE", replies: [] }),
+      "gitlab"
+    );
+    expect(result.score).toBe(1);
+  });
+
+  it("rejects a native contract belonging to another integration", () => {
+    expect(() =>
+      parseReviewResult(
+        wrap({ comments: [], summary: "ready", reviewAction: "APPROVE", replies: [] }),
+        "gerrit"
+      )
+    ).toThrow(ReviewResultParseError);
+  });
+
   it("extracts and parses a well-formed REVIEW_RESULT block", () => {
     const result = parseReviewResult(
       wrap({
@@ -24,7 +95,8 @@ describe("parseReviewResult", () => {
           { file: "src/foo.ts", line: 10, message: "Possible NPE", severity: "error" },
         ],
         summary: "One blocking issue.",
-        score: -1,
+        vote: -1,
+        replies: [],
       })
     );
 
@@ -38,29 +110,58 @@ describe("parseReviewResult", () => {
     const raw = [
       "REVIEW_RESULT_START",
       "```json",
-      JSON.stringify({ comments: [], summary: "ok", score: 1 }),
+      JSON.stringify({ comments: [], summary: "ok", vote: 1, replies: [] }),
       "```",
       "REVIEW_RESULT_END",
     ].join("\n");
     expect(parseReviewResult(raw).score).toBe(1);
   });
 
-  it("defaults missing score to 0", () => {
-    const result = parseReviewResult(wrap({ comments: [], summary: "ok" }));
-    expect(result.score).toBe(0);
+  it("parses bare JSON after prose containing braces", () => {
+    const raw = [
+      "Checked configuration {foo} before producing the result.",
+      JSON.stringify({ comments: [], summary: "ok", vote: 1, replies: [] }),
+    ].join("\n");
+
+    expect(parseReviewResult(raw).score).toBe(1);
   });
 
-  it("defaults missing replies to an empty array", () => {
-    const result = parseReviewResult(wrap({ comments: [], summary: "ok", score: 1 }));
-    expect(result.replies).toEqual([]);
+  it("selects the valid review payload among balanced JSON objects", () => {
+    const raw = [
+      JSON.stringify({ diagnostic: "not a review" }),
+      JSON.stringify({ comments: [], summary: "ok", vote: 1, replies: [] }),
+    ].join("\n");
+
+    expect(parseReviewResult(raw).score).toBe(1);
   });
+
+  it("rejects the legacy generic score contract", () => {
+    expect(() =>
+      parseReviewResult(wrap({ comments: [], summary: "ok", score: 1 }))
+    ).toThrow(ReviewResultParseError);
+  });
+
+  it.each(["comments", "summary", "replies"])(
+    "rejects a payload missing required %s",
+    (missingField) => {
+      const payload: Record<string, unknown> = {
+        comments: [],
+        summary: "ok",
+        vote: 1,
+        replies: [],
+      };
+      delete payload[missingField];
+
+      expect(() => parseReviewResult(wrap(payload))).toThrow(ReviewResultParseError);
+    },
+  );
 
   it("parses thread replies", () => {
     const result = parseReviewResult(
       wrap({
         comments: [],
         summary: "ok",
-        score: 1,
+        vote: 1,
         replies: [
           { threadId: "disc-1", message: "Good point, fixed." },
           { threadId: "disc-2", message: "I disagree because X." },
@@ -75,7 +176,7 @@ describe("parseReviewResult", () => {
   it("drops replies with empty threadId or message via schema validation", () => {
     expect(() =>
       parseReviewResult(
-        wrap({ comments: [], summary: "ok", score: 1, replies: [{ threadId: "", message: "x" }] })
+        wrap({ comments: [], summary: "ok", vote: 1, replies: [{ threadId: "", message: "x" }] })
       )
     ).toThrow(ReviewResultParseError);
   });
@@ -98,7 +199,8 @@ describe("parseReviewResult", () => {
   });
 
   it("throws ReviewResultParseError when the end marker is missing", () => {
-    expect(() => parseReviewResult("REVIEW_RESULT_START\n{}")).toThrow(ReviewResultParseError);
+    expect(() => parseReviewResult("REVIEW_RESULT_START\n{}"))
+      .toThrow(ReviewResultParseError);
   });
 
   it("throws ReviewResultParseError on invalid JSON", () => {
@@ -114,13 +216,14 @@ describe("parseReviewResult", () => {
     const raw = wrap({
       comments: [{ file: "a.ts", line: 1, message: "x", severity: "Good" }],
       summary: "",
-      score: -1,
+      vote: -1,
+      replies: [],
     });
     expect(parseReviewResult(raw).comments[0]?.severity).toBe("Good");
   });
 });
 
-describe("computeVote", () => {
+describe("getReviewDecision", () => {
   const make = (overrides: Partial<ReviewAgentResult>): ReviewAgentResult => ({
     comments: [],
     summary: "",
@@ -130,44 +233,48 @@ describe("computeVote", () => {
   });
 
   it("honours an explicit -1 score", () => {
-    expect(computeVote(make({ score: -1 }))).toBe(-1);
+    expect(getReviewDecision(make({ score: -1 }))).toBe(-1);
   });
 
   it("honours an explicit +1 score", () => {
-    expect(computeVote(make({ score: 1 }))).toBe(1);
+    expect(getReviewDecision(make({ score: 1 }))).toBe(1);
   });
 
-  it("returns -1 when score=0 but at least one error comment is present", () => {
+  it("preserves an explicit neutral decision", () => {
+    expect(getReviewDecision(make({ score: 0 }))).toBe(0);
+  });
+
+  it("does not turn a neutral decision into a rejection based on error severity", () => {
     expect(
-      computeVote(
+      getReviewDecision(
         make({
           comments: [{ file: "a.ts", line: 1, message: "x", severity: "error" }],
         })
       )
-    ).toBe(-1);
+    ).toBe(0);
   });
 
-  it("returns -1 when score=0 but at least one warning comment is present", () => {
+  it("does not turn a neutral decision into a rejection based on warning severity", () => {
     expect(
-      computeVote(
+      getReviewDecision(
         make({
           comments: [{ file: "a.ts", line: 1, message: "x", severity: "warning" }],
         })
       )
-    ).toBe(-1);
+    ).toBe(0);
   });
 
-  it("returns +1 when score=0 and only non-blocking severities are present", () => {
+  it("does not turn a neutral decision into an approval based on non-blocking severities", () => {
     expect(
-      computeVote(
+      getReviewDecision(
         make({
           comments: [{ file: "a.ts", line: 1, message: "x", severity: "Good" }],
         })
       )
-    ).toBe(1);
+    ).toBe(0);
   });
 
-  it("returns +1 for an empty review", () => {
-    expect(computeVote(make({}))).toBe(1);
+  it("keeps an empty neutral review neutral", () => {
+    expect(getReviewDecision(make({}))).toBe(0);
   });
 });

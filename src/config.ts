@@ -55,7 +55,15 @@ const ConfigSchema = z.object({
     adminApiEnabled: booleanFromEnv.default(true),
     adminApiHost: z.string().min(1).default("127.0.0.1"),
     adminApiPort: z.coerce.number().int().positive().default(3100),
-    adminAuthSecret: z.string().min(1).optional(),
+    // An empty string (e.g. `ADMIN_AUTH_SECRET=` with no value) is treated as unset,
+    // consistent with how other optional env vars behave, rather than failing the min-length check.
+    adminAuthSecret: z.preprocess(
+      (value) => (value === "" ? undefined : value),
+      z
+        .string()
+        .min(32, "ADMIN_AUTH_SECRET must be at least 32 characters. Generate one with: openssl rand -hex 32")
+        .optional(),
+    ),
     /**
      * When `true`, the admin auth layer extracts the client IP from the
      * `X-Forwarded-For` header (first entry) instead of the raw socket address.
@@ -72,6 +80,10 @@ const ConfigSchema = z.object({
     maxRetryAttempts: z.coerce.number().int().positive().default(5),
     maxCommitsPerCycle: z.coerce.number().int().positive().default(10),
     agentTimeoutMs: z.coerce.number().int().positive().default(3_600_000),
+    /** Max retry attempts for the ticket-close call in `closeTicket()` (network/API hiccups only). */
+    ticketCloseMaxRetries: z.coerce.number().int().positive().default(5),
+    /** Minimum backoff between ticket-close retries (ms). */
+    ticketCloseRetryMinTimeoutMs: z.coerce.number().int().positive().default(5_000),
     /** Maximum diff characters injected into the review prompt (prevents token blow-ups). */
     maxReviewDiffChars: z.coerce.number().int().positive().default(60_000),
     /** Maximum number of inline comments VE posts per review pass (excess is folded into the summary). */
@@ -104,6 +116,8 @@ function fromEnv(): Record<string, string | undefined> {
     maxRetryAttempts: process.env["MAX_RETRY_ATTEMPTS"],
     maxCommitsPerCycle: process.env["MAX_COMMITS_PER_CYCLE"],
     agentTimeoutMs: process.env["AGENT_TIMEOUT_MS"],
+    ticketCloseMaxRetries: process.env["TICKET_CLOSE_MAX_RETRIES"],
+    ticketCloseRetryMinTimeoutMs: process.env["TICKET_CLOSE_RETRY_MIN_TIMEOUT_MS"],
     maxReviewDiffChars: process.env["MAX_REVIEW_DIFF_CHARS"],
     maxReviewComments: process.env["MAX_REVIEW_COMMENTS"],
     maxReviewReplies: process.env["MAX_REVIEW_REPLIES"],

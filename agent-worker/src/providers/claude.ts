@@ -16,9 +16,15 @@
  * integrations). The host adapter injects exactly one of these.
  */
 import { query } from '@anthropic-ai/claude-agent-sdk';
+import type { Options } from '@anthropic-ai/claude-agent-sdk';
 import { NETWORK_DISALLOWED_TOOLS } from '../networkGuard.js';
 import { emitEvent } from './events.js';
-import type { AgentRun, AgentRunOptions } from './types.js';
+import type { AgentProviderDefinition, AgentRun, AgentRunOptions } from './types.js';
+import {
+  CHANGE_SUBMISSION_JSON_SCHEMA,
+  appendSubmissionInstruction,
+  buildSubmissionMcpConfig,
+} from '../mcpSubmission.js';
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : null;
@@ -52,12 +58,116 @@ export function extractClaudeToolName(block: Record<string, unknown>): string | 
     : null;
 }
 
+interface ClaudeNativeOptions {
+  effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  thinkingMode?: 'adaptive' | 'enabled' | 'disabled';
+  thinkingBudgetTokens?: number;
+  maxTurns?: number;
+  maxBudgetUsd?: number;
+}
+
+function positiveNumberFromEnv(name: string): number | undefined {
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+function resolveClaudeNativeOptions(): ClaudeNativeOptions {
+  const effort = process.env['CLAUDE_EFFORT'];
+  const thinkingMode = process.env['CLAUDE_THINKING_MODE'];
+  const thinkingBudgetTokens = positiveNumberFromEnv('CLAUDE_THINKING_BUDGET_TOKENS');
+  const maxTurns = positiveNumberFromEnv('CLAUDE_MAX_TURNS');
+  const maxBudgetUsd = positiveNumberFromEnv('CLAUDE_MAX_BUDGET_USD');
+  return {
+    ...(effort === 'low' || effort === 'medium' || effort === 'high' || effort === 'xhigh' || effort === 'max'
+      ? { effort }
+      : {}),
+    ...(thinkingMode === 'adaptive' || thinkingMode === 'enabled' || thinkingMode === 'disabled'
+      ? { thinkingMode }
+      : {}),
+    ...(thinkingBudgetTokens !== undefined ? { thinkingBudgetTokens } : {}),
+    ...(maxTurns !== undefined ? { maxTurns } : {}),
+    ...(maxBudgetUsd !== undefined ? { maxBudgetUsd } : {}),
+  };
+}
+
+export function buildClaudeQueryOptions(
+  options: AgentRunOptions,
+  nativeOptions: ClaudeNativeOptions = resolveClaudeNativeOptions(),
+  runtime: Pick<Options, 'abortController' | 'stderr'> = {},
+): Options {
+  const {
+    model,
+    agentInstructions,
+    cwd,
+    mode,
+    reviewOutputSchema,
+  } = options;
+  const thinking = nativeOptions.thinkingMode === 'enabled'
+    ? { type: 'enabled' as const, budgetTokens: nativeOptions.thinkingBudgetTokens ?? 10_000 }
+    : nativeOptions.thinkingMode === 'adaptive'
+      ? { type: 'adaptive' as const }
+      : nativeOptions.thinkingMode === 'disabled'
+        ? { type: 'disabled' as const }
+        : undefined;
+  const submissionSchema = mode === 'review'
+    ? reviewOutputSchema
+    : CHANGE_SUBMISSION_JSON_SCHEMA;
+  const submission = submissionSchema !== undefined
+    ? buildSubmissionMcpConfig(mode, submissionSchema)
+    : null;
+
+  // Per-agent tool authorization (blocklist-only, network floor immutable).
+  // disallowedTools = VE network floor + user blockedTools. The floor can
+  // never be relaxed: user blockedTools only add to it. Everything else is
+  // allowed — codegen stays bypassPermissions, review keeps its read-only
+  // floor.
+  const userBlocked = options.blockedTools ?? [];
+  const disallowedTools = [...NETWORK_DISALLOWED_TOOLS, ...userBlocked];
+
+  const submissionTool = submission !== null ? `mcp__ve-submission__${submission.toolName}` : null;
+  const reviewFloor = ['Read', 'Glob', 'Grep', 'Skill', ...(submissionTool !== null ? [submissionTool] : [])];
+
+  return {
+    ...(model ? { model } : {}),
+    cwd,
+    systemPrompt: {
+      type: 'preset',
+      preset: 'claude_code',
+      append: submission !== null
+        ? appendSubmissionInstruction(agentInstructions, submission.toolName)
+        : agentInstructions,
+    },
+    ...(mode === 'review'
+      ? {
+          permissionMode: 'dontAsk' as const,
+          tools: reviewFloor,
+          allowedTools: reviewFloor,
+        }
+      : {
+          permissionMode: 'bypassPermissions' as const,
+          allowDangerouslySkipPermissions: true,
+        }),
+    disallowedTools,
+    settingSources: ['user', 'project'],
+    skills: 'all',
+    strictMcpConfig: true,
+    ...(submission !== null
+      ? { mcpServers: { 've-submission': submission.server } }
+      : {}),
+    ...(nativeOptions.effort !== undefined ? { effort: nativeOptions.effort } : {}),
+    ...(thinking !== undefined ? { thinking } : {}),
+    ...(nativeOptions.maxTurns !== undefined ? { maxTurns: nativeOptions.maxTurns } : {}),
+    ...(nativeOptions.maxBudgetUsd !== undefined ? { maxBudgetUsd: nativeOptions.maxBudgetUsd } : {}),
+    ...runtime,
+  };
+}
+
 /** Run a Claude Code session and return the assistant's final text + tool stats. */
 export async function runClaudeAgent(
   prompt: string,
   options: AgentRunOptions,
 ): Promise<AgentRun> {
-  const { model, systemPrompt, cwd, timeoutMs, mode, skillDiscovery } = options;
+  const { model, cwd, timeoutMs, mode } = options;
   const modelLabel = model || 'cli-default';
 
   emitEvent('session.start', { model: modelLabel, mode, workingDirectory: cwd });
@@ -78,27 +188,10 @@ export async function runClaudeAgent(
 
   const stream = query({
     prompt,
-    options: {
-      // Omit `model` entirely when unset so the CLI applies its own default.
-      ...(model ? { model } : {}),
-      cwd,
-      // Coding runs use Claude Code's default agent preset (tool-usage
-      // scaffolding) with VE's instructions appended. Review runs replace the
-      // prompt entirely with VE's reviewer prompt so it fully owns behavior.
-      systemPrompt:
-        mode === 'review'
-          ? systemPrompt
-          : { type: 'preset', preset: 'claude_code', append: systemPrompt },
-      permissionMode: 'bypassPermissions',
-      allowDangerouslySkipPermissions: true,
-      // Deny internet-reaching tools even under bypassPermissions.
-      disallowedTools: NETWORK_DISALLOWED_TOOLS,
-      // Load only team-shared project settings/skills when discovery is enabled;
-      // otherwise start from a clean slate (no user/local settings on disk).
-      settingSources: skillDiscovery ? ['project'] : [],
+    options: buildClaudeQueryOptions(options, resolveClaudeNativeOptions(), {
       abortController,
       stderr: (data: string) => process.stderr.write(data),
-    },
+    }),
   });
 
   try {
@@ -140,8 +233,10 @@ export async function runClaudeAgent(
 
       if (type === 'result') {
         const subtype = typeof msg['subtype'] === 'string' ? msg['subtype'] : '';
-        if (subtype === 'success' && typeof msg['result'] === 'string') {
-          content = msg['result'];
+        if (subtype === 'success') {
+          if (typeof msg['result'] === 'string') {
+            content = msg['result'];
+          }
         }
         const costUsd = numberOrNull(msg['total_cost_usd']);
         if (costUsd !== null) {
@@ -187,12 +282,22 @@ export async function runClaudeAgent(
     content: finalContent || 'Task completed',
     toolCallCount: state.toolCallCount,
     toolsByKind: state.toolsByKind,
-    cleanup: async (): Promise<void> => {
+    cleanup: (): Promise<void> => {
       try {
         stream.close();
       } catch {
         /* ignore */
       }
+      return Promise.resolve();
     },
   };
 }
+
+export const CLAUDE_PROVIDER: AgentProviderDefinition = {
+  id: 'claude',
+  adapterLabel: 'claude-agent-sdk',
+  resolveModel: () => process.env['CLAUDE_MODEL'] ?? '',
+  defaultModelLabel: 'cli-default',
+  submissionTransport: 'mcp',
+  runner: runClaudeAgent,
+};

@@ -1,13 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createHmac, randomUUID } from "node:crypto";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import type { StateStore } from "../../src/interfaces.js";
 import { makeTaskId, makeTicketId, makeProjectId, type AgentLogEvent } from "../../src/interfaces.js";
 import { SqliteStateStore } from "../../src/state/stateStore.js";
 import { createAdminServer } from "../../src/admin/adminServer.js";
-import { agentLogBus } from "../../src/agents/agentEventBus.js";
+import { agentLogBus, clearTaskEventBuffer, pushToTaskBuffer } from "../../src/agents/agentEventBus.js";
+import { tempDatabasePath } from "./helpers/tempDatabase.js";
 
 const SECRET = "rbac-test-secret";
 
@@ -18,7 +17,7 @@ function hmacToken(secret: string = SECRET): string {
 }
 
 function tempDbPath(): string {
-  return join(tmpdir(), `ve-rbac-${randomUUID()}.db`);
+  return tempDatabasePath("ve-rbac");
 }
 
 function makeServer(store: SqliteStateStore): ReturnType<typeof createAdminServer> {
@@ -103,19 +102,28 @@ describe("adminServer RBAC and session auth", () => {
     return (await login.json()) as SessionResponse;
   }
 
-  it("allows unauthenticated requests while zero users exist (bootstrap mode)", async () => {
+  it("exposes only bootstrap auth routes while zero users exist", async () => {
+    const setupStatus = await fetch(`${baseUrl}/api/admin/auth/setup-status`);
+    expect(setupStatus.status).toBe(200);
+      await expect(setupStatus.json()).resolves.toEqual({
+        needsSetup: true,
+        credentialEncryptionConfigured: true,
+      });
+
     for (const path of ["/api/admin/status", "/api/admin/tasks", "/api/admin/prompts"]) {
       const response = await fetch(`${baseUrl}${path}`);
-      expect(response.status).toBe(200);
+      expect(response.status).toBe(401);
     }
 
-    // Mutations work too (bootstrap actor is treated as admin).
+    const imageProxy = await fetch(`${baseUrl}/api/admin/img-proxy?url=https://gitlab.example.com/uploads/id/image.png`);
+    expect(imageProxy.status).toBe(401);
+
     const create = await fetch(`${baseUrl}/api/admin/prompts`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ label: "Bootstrap Prompt", content: "hello" }),
+      body: JSON.stringify({ label: "Bootstrap Prompt", content: "hello", promptType: "instructions" }),
     });
-    expect(create.status).toBe(201);
+    expect(create.status).toBe(401);
   });
 
   it("rejects unknown bearer tokens on normal routes once a user exists", async () => {
@@ -134,6 +142,45 @@ describe("adminServer RBAC and session auth", () => {
 
     const noToken = await fetch(`${baseUrl}/api/admin/status`);
     expect(noToken.status).toBe(401);
+  });
+
+  it("rejects the raw session bearer token as the img-proxy ?t= query token", async () => {
+    const admin = await setupAndLogin("root", "Str0ng-Pass-1x", "admin");
+
+    const imageProxy = await fetch(
+      `${baseUrl}/api/admin/img-proxy?url=https://gitlab.example.com/uploads/id/image.png&t=${admin.token}`
+    );
+    expect(imageProxy.status).toBe(401);
+  });
+
+  it("requires authentication to mint an image-proxy token", async () => {
+    const noToken = await fetch(`${baseUrl}/api/admin/img-proxy/token`);
+    expect(noToken.status).toBe(401);
+  });
+
+  it("mints a single-use image-proxy token that authorizes img-proxy exactly once", async () => {
+    const admin = await setupAndLogin("root", "Str0ng-Pass-1x", "admin");
+
+    const mint = await fetch(`${baseUrl}/api/admin/img-proxy/token`, {
+      headers: { authorization: `Bearer ${admin.token}` },
+    });
+    expect(mint.status).toBe(200);
+    expect(mint.headers.get("cache-control")).toBe("no-store");
+    const { token } = (await mint.json()) as { token: string; expiresAt: number };
+    expect(token).not.toBe(admin.token);
+
+    // No GitLab integration is configured in this test server, so a request
+    // that passes auth still fails proxy-target validation (400) rather than
+    // being rejected for auth (401) — this distinguishes the two failure modes.
+    const firstUse = await fetch(
+      `${baseUrl}/api/admin/img-proxy?url=https://gitlab.example.com/uploads/id/image.png&t=${token}`
+    );
+    expect(firstUse.status).toBe(400);
+
+    const reuse = await fetch(
+      `${baseUrl}/api/admin/img-proxy?url=https://gitlab.example.com/uploads/id/image.png&t=${token}`
+    );
+    expect(reuse.status).toBe(401);
   });
 
   it("populates the auth context for session-authenticated requests", async () => {
@@ -183,7 +230,7 @@ describe("adminServer RBAC and session auth", () => {
     const promptCreate = await fetch(`${baseUrl}/api/admin/prompts`, {
       method: "POST",
       headers: { authorization: `Bearer ${operator.token}`, "content-type": "application/json" },
-      body: JSON.stringify({ label: "Operator Prompt", content: "hello" }),
+      body: JSON.stringify({ label: "Operator Prompt", content: "hello", promptType: "instructions" }),
     });
     expect(promptCreate.status).toBe(201);
 
@@ -251,6 +298,7 @@ describe("adminServer RBAC and session auth", () => {
 
     const legacyServer = createAdminServer({
       stateStore: mockStore,
+      allowUnauthenticatedAdmin: true,
       config: {
         nodeEnv: "test",
         logLevel: "info",
@@ -269,7 +317,10 @@ describe("adminServer RBAC and session auth", () => {
 
       // Session auth is unavailable → setup-status reports no setup needed.
       const setupStatus = await fetch(`${legacyBase}/api/admin/auth/setup-status`);
-      await expect(setupStatus.json()).resolves.toEqual({ needsSetup: false });
+      await expect(setupStatus.json()).resolves.toEqual({
+        needsSetup: false,
+        credentialEncryptionConfigured: false,
+      });
     } finally {
       await closeServer(legacyServer);
     }
@@ -335,7 +386,10 @@ describe("adminServer PBAC project scoping", () => {
   }
 
   async function seedTwoProjects(): Promise<{ a: string; b: string }> {
-    const agent = await store.createAgent({ name: "rev-agent", type: "review", modelConfigJson: "{}" });
+    const agent = await store.createAgent({
+      name: "rev-agent", type: "review", modelConfigJson: "{}",
+      systemPromptId: "system_generic_code", instructionsPromptId: "instructions_generic_code",
+    });
     const a = await store.createProject({ name: "Project A", type: "review", agentId: agent.id });
     const b = await store.createProject({ name: "Project B", type: "review", agentId: agent.id });
     return { a: a.id, b: b.id };
@@ -450,8 +504,11 @@ describe("adminServer PBAC project scoping", () => {
     const { a, b } = await seedTwoProjects();
     const taskA = randomUUID();
     const taskB = randomUUID();
+    const orphanTask = randomUUID();
     await store.createTask(makeTaskId(taskA), makeTicketId("T-A"), "Task A", "", "redmine", undefined, undefined, undefined, makeProjectId(a));
     await store.createTask(makeTaskId(taskB), makeTicketId("T-B"), "Task B", "", "redmine", undefined, undefined, undefined, makeProjectId(b));
+    // Project-less (orphaned) task: nobody may receive its events on the global stream.
+    await store.createTask(makeTaskId(orphanTask), makeTicketId("T-ORPHAN"), "Orphan", "", "redmine");
 
     const user = await createUserAndLogin(admin, "streamscoped", "viewer");
     const viewerPolicy = (await store.listPolicies()).find((p) => p.name === "Viewer");
@@ -478,6 +535,8 @@ describe("adminServer PBAC project scoping", () => {
       cycleNumber: 1,
     });
     agentLogBus.emit("event", event(taskB, "forbidden-project-marker"));
+    agentLogBus.emit("event", event(orphanTask, "orphan-task-marker"));
+    agentLogBus.emit("event", event(randomUUID(), "unknown-task-marker"));
     agentLogBus.emit("event", event(taskA, "allowed-project-marker"));
 
     while (!output.includes("allowed-project-marker")) {
@@ -489,5 +548,47 @@ describe("adminServer PBAC project scoping", () => {
 
     expect(output).toContain("allowed-project-marker");
     expect(output).not.toContain("forbidden-project-marker");
+    expect(output).not.toContain("orphan-task-marker");
+    expect(output).not.toContain("unknown-task-marker");
+  });
+
+  it("denies project-scoped principals access to another project's log stream", async () => {
+    const admin = await setupAdmin();
+    const { a, b } = await seedTwoProjects();
+    const taskB = randomUUID();
+    const taskIdB = makeTaskId(taskB);
+    await store.createTask(taskIdB, makeTicketId("T-B-LOGS"), "Task B logs", "", "redmine", undefined, undefined, undefined, makeProjectId(b));
+    await store.saveAgentCycle(taskIdB, 1, {
+      status: "success",
+      modifiedFiles: [],
+      summary: "done",
+      agentLogs: "PROJECT_B_HISTORY_SECRET",
+      metadata: {},
+    });
+    pushToTaskBuffer({
+      type: "assistant.message",
+      timestamp: new Date().toISOString(),
+      data: { message: "PROJECT_B_LIVE_SECRET" },
+      taskId: taskB,
+      cycleNumber: 2,
+    });
+
+    try {
+      const user = await createUserAndLogin(admin, "logscoped", "viewer");
+      const viewerPolicy = (await store.listPolicies()).find((policy) => policy.name === "Viewer");
+      await store.deleteBinding(viewerPolicy!.id, "user", user.user.id);
+      const scoped = await store.createPolicy({ name: "Task-A-logs" });
+      await store.setPolicyRules(scoped.id, [{ permission: "task.read", resourceId: a }]);
+      await store.createBinding({ policyId: scoped.id, principalType: "user", principalId: user.user.id });
+
+      const response = await fetch(`${baseUrl}/api/admin/logs/stream?taskId=${encodeURIComponent(taskB)}`, authed(user.token));
+      const body = await response.text();
+
+      expect(response.status).toBe(403);
+      expect(body).not.toContain("PROJECT_B_HISTORY_SECRET");
+      expect(body).not.toContain("PROJECT_B_LIVE_SECRET");
+    } finally {
+      clearTaskEventBuffer(taskB);
+    }
   });
 });

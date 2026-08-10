@@ -2,7 +2,7 @@
 data/
 dist/
 node_modules/
-drizzle/
+secrets/
 coverage/
 test-results/
 *.db
@@ -23,11 +23,8 @@ ds-bundle/
 .design-sync/learnings/
 .design-sync/node_modules
 
-# Copilot/editor customization (local only)
-.github/context/
-.github/instructions/
-.github/skills/
-.github/agents/
-.github/*.md
-.claude
-AGENTS.md
+# Claude Code local config/tooling (not shared with the team)
+.claude/
+
+# graphify knowledge-graph output (generated, regenerate with /graphify)
+graphify-out/

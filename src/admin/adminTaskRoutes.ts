@@ -79,7 +79,7 @@ export function registerTaskRoutes(router: Router, deps: TaskRouteDeps): void {
     const task = await deps.stateStore.getTask(taskId);
     if (!task) { writeJson(res, 404, { error: "Task not found" }); return; }
     const changesPerRepo = await deps.stateStore.getChangesForTask(taskId);
-    const serialized = serializeTask(task) as Record<string, unknown>;
+    const serialized = serializeTask(task);
     serialized["changesPerRepo"] = changesPerRepo.map((c) => ({
       repoKey: c.repoKey,
       changeId: c.changeId,

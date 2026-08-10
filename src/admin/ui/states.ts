@@ -82,14 +82,50 @@ export const TERM_DIVERGE: Partial<Record<TaskState, TaskState>> = {
   REVIEW_FAILED: "REVIEW_RUNNING",
 };
 
-export const TERMINAL_STATES = new Set<TaskState>([
-  "DONE", "FAILED", "ABANDONED", "MERGED", "REVIEW_DONE", "REVIEW_FAILED",
-]);
+/* Dashboard workflow bucket, mirrored from src/domain/tasks.ts (not importable across the UI build boundary). */
+type WorkflowBucket = "active" | "watching" | "done" | "failed";
 
-export const ACTIVE_STATES = new Set<TaskState>([
-  "AGENT_RUNNING", "CONTEXT_BUILDING", "FEEDBACK_PROCESSING",
-  "RETRY_CYCLE", "REVIEW_RUNNING", "REVIEW_COMMENTING", "CLOSING",
-]);
+function classifyWorkflowBucket(state: TaskState): WorkflowBucket {
+  switch (state) {
+    case "DETECTED":
+    case "CONTEXT_BUILDING":
+    case "AGENT_RUNNING":
+    case "FEEDBACK_PROCESSING":
+    case "RETRY_CYCLE":
+    case "CLOSING":
+    case "REVIEW_RUNNING":
+    case "REVIEW_COMMENTING":
+      return "active";
+    case "IN_REVIEW":
+    case "REVIEW_PENDING":
+    case "REVIEW_WATCHING":
+      return "watching";
+    case "MERGED":
+    case "DONE":
+    case "REVIEW_DONE":
+      return "done";
+    case "FAILED":
+    case "ABANDONED":
+    case "REVIEW_FAILED":
+      return "failed";
+    default: {
+      // Exhaustiveness check — a new TaskState must be classified here.
+      const _exhaustive: never = state;
+      throw new Error(`Unclassified task state: ${String(_exhaustive)}`);
+    }
+  }
+}
+
+export const TERMINAL_STATES = new Set<TaskState>(
+  (Object.keys(STATES) as TaskState[]).filter((s) => {
+    const bucket = classifyWorkflowBucket(s);
+    return bucket === "done" || bucket === "failed";
+  })
+);
+
+export const ACTIVE_STATES = new Set<TaskState>(
+  (Object.keys(STATES) as TaskState[]).filter((s) => classifyWorkflowBucket(s) === "active")
+);
 
 export function isActiveState(s: TaskState): boolean {
   return ACTIVE_STATES.has(s);

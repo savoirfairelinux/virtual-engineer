@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { ReviewOrchestrator } from "../../src/review/reviewOrchestrator.js";
+import {
+  ReviewOrchestrator,
+  buildReviewSystemPrompt,
+} from "../../src/review/reviewOrchestrator.js";
 import { TaskLifecycleCoordinator } from "../../src/orchestrator/taskLifecycleCoordinator.js";
 import { computeCommentHash, computeThreadReplyHash } from "../../src/review/commentHash.js";
 import {
@@ -7,6 +10,7 @@ import {
   makeProjectId,
   makeTaskId,
   makeTicketId,
+  type AgentAdapter,
   type ProjectRecord,
   type ReviewChangeDetails,
   type ReviewChangeDiff,
@@ -19,6 +23,18 @@ import {
 } from "../../src/interfaces.js";
 
 const CHANGE_ID = makeExternalChangeId("p~master~Iabc");
+
+describe("buildReviewSystemPrompt", () => {
+  it("keeps the output contract out of MCP-native agent prompts", () => {
+    expect(buildReviewSystemPrompt("Review policy", "gerrit", "copilot")).toBe("Review policy");
+    expect(buildReviewSystemPrompt("Review policy", "gerrit", "claude")).toBe("Review policy");
+  });
+
+  it("retains the text contract for Aider", () => {
+    expect(buildReviewSystemPrompt("Review policy", "gerrit", "aider"))
+      .toContain("REVIEW_RESULT_START");
+  });
+});
 
 const PATCHSET_OPTIONS: Omit<PatchsetCheckoutOptions, "revisionNumber" | "patchset"> = {
   vcsBaseUrl: "ssh://admin@gerrit.test:29418",
@@ -87,7 +103,11 @@ function makeProject(overrides: Partial<ProjectRecord> = {}): ProjectRecord {
     agentId: "agent-1" as import("../../src/interfaces.js").AgentId,
     agentOverrideJson: null,
     postCloneScript: "",
-    skillDiscoveryEnabled: false,
+    skillSourcesJson: "[]",
+    gerritTopicOverride: null,
+    useFullTicketUrlInCommits: false,
+    postReviewLinkToTicket: false,
+    reactToCiFailures: false,
     enabled: true,
     createdAt: new Date(),
     updatedAt: new Date(),
@@ -100,7 +120,8 @@ const GOOD_RAW_OUTPUT = [
   JSON.stringify({
     comments: [{ file: "src/a.ts", line: 1, message: "Bug", severity: "error" }],
     summary: "blocking",
-    score: -1,
+    vote: -1,
+    replies: [],
   }),
   "REVIEW_RESULT_END",
 ].join("\n");
@@ -207,8 +228,15 @@ function makeDeps(
     stateStore: mocks.storeAsDep,
     reviewProvider: mocks.provider,
     integrationId: "gerrit-1",
-    agentToken: "gh_test_token",
     workspaceRunner: runner,
+    resolveAgentForProject: vi.fn(async () => ({
+      adapter: { name: "copilot" } as AgentAdapter,
+      reviewStrategy: "ve_direct" as const,
+      model: "test-model",
+      token: "gh_test_token",
+      systemPrompt: "You are a code reviewer.",
+      instructionsPrompt: "Review the code changes.",
+    })),
     buildCloneTarget: (details) => ({
       cloneUrl: `${GERRIT_SSH_BASE}/${details.project}`,
       sshKeyPath: "/path/to/key",
@@ -221,8 +249,6 @@ function makeDeps(
         patchset: details.currentPatchset,
       });
     },
-    reviewInstructions: "Review the code changes.",
-    reviewSystemPrompt: "You are a code reviewer.",
     ...overrides,
   };
 }
@@ -833,7 +859,8 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
           { file: "src/ghost.ts", line: 9, message: "Hallucinated", severity: "error" },
         ],
         summary: "blocking",
-        score: -1,
+        vote: -1,
+        replies: [],
       }),
       "REVIEW_RESULT_END",
     ].join("\n");
@@ -873,7 +900,8 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
           { file: "src/ghost.ts", line: 9, message: "Hallucinated", severity: "nit" },
         ],
         summary: "blocking",
-        score: -1,
+        vote: -1,
+        replies: [],
       }),
       "REVIEW_RESULT_END",
     ].join("\n");
@@ -900,6 +928,9 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
       .mockResolvedValueOnce(makeDetails({ currentPatchset: 2 })) // clone/apply: reviewed patchset
       .mockResolvedValueOnce(makeDetails({ currentPatchset: 3 })) // fresh fetch before posting
       .mockResolvedValue(makeDetails({ currentPatchset: 3 })); // rerun + post-check: still OPEN
+    (mocks.provider.getChangeDiff as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(makeDiff({ patchset: 2 }))
+      .mockResolvedValueOnce(makeDiff({ patchset: 3 }));
 
     const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
     await orch.runReview(initial.taskId);
@@ -914,6 +945,9 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
       expect.anything(),
       expect.objectContaining({ patchset: 3 })
     );
+    expect(mocks.provider.getChangeDiff).toHaveBeenNthCalledWith(1, CHANGE_ID, 2, expect.any(AbortSignal));
+    expect(mocks.provider.getChangeDiff).toHaveBeenNthCalledWith(2, CHANGE_ID, 3, expect.any(AbortSignal));
+    expect(runner.runReviewInDocker).toHaveBeenCalledTimes(2);
     expect(mocks.provider.postReviewComments).toHaveBeenCalledWith(
       CHANGE_ID,
       3,
@@ -924,12 +958,26 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
     );
     expect(mocks.provider.vote).toHaveBeenCalledWith(CHANGE_ID, 3, -1, "blocking", expect.any(AbortSignal));
     expect(mocks.store.setReviewedPatchset).toHaveBeenCalledWith(initial.taskId, 3);
-    expect(mocks.provider.postReviewComments).not.toHaveBeenCalledWith(
-      CHANGE_ID,
-      2,
-      expect.anything(),
-      expect.anything()
-    );
+    expect(mocks.provider.postReviewComments).toHaveBeenCalledTimes(1);
+    expect(mocks.provider.vote).toHaveBeenCalledTimes(1);
+  });
+
+  it("discards output when the change closes before posting", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+    (mocks.provider.getChangeDetails as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(makeDetails({ currentPatchset: 2, status: "OPEN" }))
+      .mockResolvedValueOnce(makeDetails({ currentPatchset: 2, status: "MERGED" }));
+
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+    await orch.runReview(initial.taskId);
+
+    expect(mocks.provider.postReviewComments).not.toHaveBeenCalled();
+    expect(mocks.provider.vote).not.toHaveBeenCalled();
+    expect(mocks.store.markReviewCommentsPosted).not.toHaveBeenCalled();
+    expect(mocks.store.setReviewedPatchset).not.toHaveBeenCalled();
+    expect(mocks.store.task?.state).toBe("REVIEW_DONE");
   });
 
   it("skips postReviewComments when all comments are outside the diff and summary is empty", async () => {
@@ -940,7 +988,8 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
       JSON.stringify({
         comments: [{ file: "src/ghost.ts", line: 9, message: "Hallucinated", severity: "error" }],
         summary: "",
-        score: -1,
+        vote: -1,
+        replies: [],
       }),
       "REVIEW_RESULT_END",
     ].join("\n");
@@ -999,8 +1048,7 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
     const initial = makeTask({ state: "REVIEW_PENDING", projectId: makeProjectId("proj-1") });
     const mocks = makeMocks(initial);
     const { runner } = makeWorkspaceRunner();
-    const agentAdapter = {} as import("../../src/interfaces.js").AgentAdapter;
-    const orch = new ReviewOrchestrator(makeDeps(mocks, runner, { agentAdapter }));
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
 
     await orch.runReview(initial.taskId);
 
@@ -1032,12 +1080,38 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
         patchset: 2,
         agentToken: "gh_test_token",
         prompt: expect.any(String),
-        systemPrompt: "You are a code reviewer.",
+        systemPrompt: expect.stringContaining("You are a code reviewer."),
+        reviewOutputSchema: expect.objectContaining({
+          required: expect.arrayContaining(["vote"]),
+        }),
+        agentAdapter: expect.anything(),
       }),
       expect.objectContaining({ onStderrChunk: expect.any(Function) }),
-      agentAdapter,
     );
     expect(runner.destroyWorkspace).toHaveBeenCalledOnce();
+  });
+
+  it("propagates native review strategy to the Docker workspace input", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING", projectId: makeProjectId("proj-1") });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+    const resolveAgentForProject = vi.fn(async () => ({
+      adapter: { name: "copilot" } as AgentAdapter,
+      reviewStrategy: "copilot_native" as const,
+      model: undefined,
+      token: "gh_test_token",
+      systemPrompt: "You are a code reviewer.",
+      instructionsPrompt: "Review the code changes.",
+    }));
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner, { resolveAgentForProject }));
+
+    await orch.runReview(initial.taskId);
+
+    expect(runner.runReviewInDocker).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ reviewStrategy: "copilot_native", model: undefined }),
+      expect.anything(),
+    );
   });
 
   it("passes postCloneScript to prepareProjectWorkspace when non-empty", async () => {
@@ -1058,6 +1132,310 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
       undefined,
       expect.any(AbortSignal),
     );
+  });
+
+  it("uses the project-resolved adapter/model/token when it resolves", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING", projectId: makeProjectId("proj-1") });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+    const projectAdapter = { name: "copilot" } as AgentAdapter;
+    const resolveAgentForProject = vi.fn(async () => ({
+      adapter: projectAdapter,
+      reviewStrategy: "ve_direct" as const,
+      model: "gpt-5",
+      token: "project-specific-token",
+      systemPrompt: "You are the project reviewer.",
+      instructionsPrompt: "Review this project.",
+    }));
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner, { resolveAgentForProject }));
+
+    await orch.runReview(initial.taskId);
+
+    expect(resolveAgentForProject).toHaveBeenCalledWith(expect.objectContaining({ id: makeProjectId("proj-1") }));
+    expect(runner.runReviewInDocker).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        agentAdapter: projectAdapter,
+        agentToken: "project-specific-token",
+        model: "gpt-5",
+      }),
+      expect.anything()
+    );
+  });
+
+  it("uses project-resolved prompts and passes the immutable integration schema", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING", projectId: makeProjectId("proj-1") });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+    const resolveAgentForProject = vi.fn(async () => ({
+      adapter: { name: "copilot" } as AgentAdapter,
+      reviewStrategy: "ve_direct" as const,
+      model: "gpt-5",
+      token: "project-specific-token",
+      systemPrompt: "Custom review role.",
+      instructionsPrompt: "Focus on authorization boundaries.",
+    }));
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner, { resolveAgentForProject }));
+
+    await orch.runReview(initial.taskId);
+
+    expect(runner.runReviewInDocker).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        prompt: expect.stringContaining("Focus on authorization boundaries."),
+        systemPrompt: "Custom review role.",
+        reviewOutputSchema: expect.objectContaining({
+          required: expect.arrayContaining(["vote"]),
+        }),
+      }),
+      expect.anything()
+    );
+  });
+
+  it("fails the review when resolveAgentForProject returns null", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING", projectId: makeProjectId("proj-1") });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+    const resolveAgentForProject = vi.fn(async () => null);
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner, { resolveAgentForProject }));
+
+    await expect(orch.runReview(initial.taskId)).rejects.toThrow("No runnable review agent configured");
+
+    expect(mocks.store.setFailureReason).toHaveBeenCalledWith(
+      initial.taskId,
+      "No runnable review agent configured for project proj-1"
+    );
+    expect(mocks.store.transition).toHaveBeenCalledWith(initial.taskId, "REVIEW_FAILED");
+    expect(runner.runReviewInDocker).not.toHaveBeenCalled();
+  });
+
+  it("fails the review when resolveAgentForProject throws", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING", projectId: makeProjectId("proj-1") });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+    const resolveAgentForProject = vi.fn(async () => { throw new Error("boom"); });
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner, { resolveAgentForProject }));
+
+    await expect(orch.runReview(initial.taskId)).rejects.toThrow("boom");
+
+    expect(mocks.store.setFailureReason).toHaveBeenCalledWith(initial.taskId, "boom");
+    expect(mocks.store.transition).toHaveBeenCalledWith(initial.taskId, "REVIEW_FAILED");
+    expect(runner.runReviewInDocker).not.toHaveBeenCalled();
+  });
+
+  it("resolves a distinct adapter/model/token per task when projects share an orchestrator", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING", projectId: makeProjectId("proj-1") });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+    const adapterA = { name: "agent-a" } as AgentAdapter;
+    const adapterB = { name: "agent-b" } as AgentAdapter;
+    const resolveAgentForProject = vi.fn(async (project: ProjectRecord) =>
+      project.id === makeProjectId("proj-1")
+        ? {
+            adapter: adapterA,
+          reviewStrategy: "ve_direct" as const,
+            model: "model-a",
+            token: "token-a",
+            systemPrompt: "System A",
+            instructionsPrompt: "Instructions A",
+          }
+        : {
+            adapter: adapterB,
+          reviewStrategy: "ve_direct" as const,
+            model: "model-b",
+            token: "token-b",
+            systemPrompt: "System B",
+            instructionsPrompt: "Instructions B",
+          }
+    );
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner, { resolveAgentForProject }));
+
+    await orch.runReview(initial.taskId);
+    expect(runner.runReviewInDocker).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ agentAdapter: adapterA, agentToken: "token-a", model: "model-a" }),
+      expect.anything()
+    );
+
+    const secondTask = makeTask({
+      taskId: makeTaskId("review-43-efgh"),
+      projectId: makeProjectId("proj-2"),
+      state: "REVIEW_PENDING",
+    });
+    mocks.store.task = secondTask;
+    mocks.store.getProjectById.mockResolvedValue(makeProject({ id: makeProjectId("proj-2") }));
+
+    await orch.runReview(secondTask.taskId);
+    expect(runner.runReviewInDocker).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.objectContaining({ agentAdapter: adapterB, agentToken: "token-b", model: "model-b" }),
+      expect.anything()
+    );
+  });
+
+  it("passes remote skill sources independently of mandatory local skills", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING", projectId: makeProjectId("proj-1") });
+    const sources = JSON.stringify([{ source: "ssh://skills.example.com/org/agent-skills", skills: ["skill-a"] }]);
+    const mocks = makeMocks(initial);
+    mocks.store.getProjectById.mockResolvedValue(
+      makeProject({ skillSourcesJson: sources })
+    );
+    const { runner } = makeWorkspaceRunner();
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+
+    await orch.runReview(initial.taskId);
+
+    expect(runner.runReviewInDocker).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ skillSourcesJson: sources }),
+      expect.anything()
+    );
+  });
+});
+
+describe("ReviewOrchestrator.runReview - inter-patchset delta", () => {
+  it("fetches the delta and injects it into the prompt on a re-review", async () => {
+    const initial = makeTask({
+      state: "REVIEW_WATCHING",
+      cycleCount: 1,
+      reviewedPatchset: 2,
+      currentPatchset: 3,
+    });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+
+    (mocks.provider.getChangeDetails as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makeDetails({ currentPatchset: 3 })
+    );
+    const getInterPatchsetDiff = vi.fn(async () =>
+      makeDiff({
+        patchset: 3,
+        files: [{ path: "src/a.ts", status: "modified", patch: "+delta-line" }],
+      })
+    );
+    mocks.provider.getInterPatchsetDiff =
+      getInterPatchsetDiff as NonNullable<ReviewProvider["getInterPatchsetDiff"]>;
+
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+    await orch.runReview(initial.taskId);
+
+    expect(getInterPatchsetDiff).toHaveBeenCalledWith(
+      expect.objectContaining({ changeId: CHANGE_ID, currentPatchset: 3 }),
+      2,
+      3
+    );
+    const prompt = runner.runReviewInDocker.mock.calls[0]?.[1]?.prompt as string;
+    expect(prompt).toContain("## Changes since last reviewed patchset (PS 2 \u2192 3)");
+    expect(prompt).toContain("+delta-line");
+  });
+
+  it("does not fetch a delta on the first review (no prior reviewed patchset)", async () => {
+    const initial = makeTask({
+      state: "REVIEW_PENDING",
+      reviewedPatchset: null,
+      currentPatchset: 2,
+    });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+    const getInterPatchsetDiff = vi.fn(async () => makeDiff());
+    mocks.provider.getInterPatchsetDiff =
+      getInterPatchsetDiff as NonNullable<ReviewProvider["getInterPatchsetDiff"]>;
+
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+    await orch.runReview(initial.taskId);
+
+    expect(getInterPatchsetDiff).not.toHaveBeenCalled();
+    const prompt = runner.runReviewInDocker.mock.calls[0]?.[1]?.prompt as string;
+    expect(prompt).not.toContain("## Changes since last reviewed patchset");
+  });
+
+  it("does not fetch a delta when the provider lacks getInterPatchsetDiff", async () => {
+    const initial = makeTask({
+      state: "REVIEW_WATCHING",
+      cycleCount: 1,
+      reviewedPatchset: 2,
+      currentPatchset: 3,
+    });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+    (mocks.provider.getChangeDetails as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makeDetails({ currentPatchset: 3 })
+    );
+    // Provider has no getInterPatchsetDiff (default mock omits it).
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+    await orch.runReview(initial.taskId);
+
+    const prompt = runner.runReviewInDocker.mock.calls[0]?.[1]?.prompt as string;
+    expect(prompt).not.toContain("## Changes since last reviewed patchset");
+  });
+
+  it("degrades gracefully when the delta fetch fails", async () => {
+    const initial = makeTask({
+      state: "REVIEW_WATCHING",
+      cycleCount: 1,
+      reviewedPatchset: 2,
+      currentPatchset: 3,
+    });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+    (mocks.provider.getChangeDetails as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makeDetails({ currentPatchset: 3 })
+    );
+    mocks.provider.getInterPatchsetDiff = vi.fn(async () => {
+      throw new Error("fetch failed");
+    }) as NonNullable<ReviewProvider["getInterPatchsetDiff"]>;
+
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+    await expect(orch.runReview(initial.taskId)).resolves.toBeUndefined();
+    const prompt = runner.runReviewInDocker.mock.calls[0]?.[1]?.prompt as string;
+    expect(prompt).not.toContain("## Changes since last reviewed patchset");
+  });
+
+  it("does not fetch a delta when reviewedPatchset equals currentPatchset", async () => {
+    const initial = makeTask({
+      state: "REVIEW_WATCHING",
+      cycleCount: 1,
+      reviewedPatchset: 3,
+      currentPatchset: 3,
+    });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+    (mocks.provider.getChangeDetails as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makeDetails({ currentPatchset: 3 })
+    );
+    const getInterPatchsetDiff = vi.fn(async () => makeDiff());
+    mocks.provider.getInterPatchsetDiff =
+      getInterPatchsetDiff as NonNullable<ReviewProvider["getInterPatchsetDiff"]>;
+
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+    await orch.runReview(initial.taskId);
+
+    expect(getInterPatchsetDiff).not.toHaveBeenCalled();
+    const prompt = runner.runReviewInDocker.mock.calls[0]?.[1]?.prompt as string;
+    expect(prompt).not.toContain("## Changes since last reviewed patchset");
+  });
+
+  it("omits the delta section in the prompt when the delta contains no files", async () => {
+    const initial = makeTask({
+      state: "REVIEW_WATCHING",
+      cycleCount: 1,
+      reviewedPatchset: 2,
+      currentPatchset: 3,
+    });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+    (mocks.provider.getChangeDetails as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makeDetails({ currentPatchset: 3 })
+    );
+    mocks.provider.getInterPatchsetDiff = vi.fn(async () =>
+      makeDiff({ patchset: 3, files: [] })
+    ) as NonNullable<ReviewProvider["getInterPatchsetDiff"]>;
+
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+    await orch.runReview(initial.taskId);
+
+    const prompt = runner.runReviewInDocker.mock.calls[0]?.[1]?.prompt as string;
+    expect(prompt).not.toContain("## Changes since last reviewed patchset");
   });
 });
 
@@ -1638,14 +2016,14 @@ describe("ReviewOrchestrator.runReview - discussion replies", () => {
 
   function rawWithReplies(
     replies: Array<{ threadId: string; message: string }>,
-    opts: { comments?: unknown[]; summary?: string; score?: number } = {}
+    opts: { comments?: unknown[]; summary?: string; vote?: number } = {}
   ): string {
     return [
       "REVIEW_RESULT_START",
       JSON.stringify({
         comments: opts.comments ?? [],
         summary: opts.summary ?? "",
-        score: opts.score ?? 0,
+        vote: opts.vote ?? 0,
         replies,
       }),
       "REVIEW_RESULT_END",
@@ -1804,7 +2182,7 @@ describe("ReviewOrchestrator.runReview - discussion replies", () => {
       rawWithReplies([{ threadId: "disc-1", message: "Replying here." }], {
         comments: [{ file: "src/a.ts", line: 1, message: "Bug", severity: "error" }],
         summary: "blocking",
-        score: -1,
+        vote: -1,
       })
     );
     const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
@@ -1819,6 +2197,35 @@ describe("ReviewOrchestrator.runReview - discussion replies", () => {
       expect.any(AbortSignal),
     );
     expect(mocks.store.markThreadReplyPosted).toHaveBeenCalledOnce();
+    // The verdict (summary + vote) is unchanged, so it must NOT be re-posted just
+    // because a reply was delivered — replies and the verdict are decoupled.
+    expect(mocks.provider.postReviewComments).not.toHaveBeenCalled();
+    expect(mocks.provider.vote).not.toHaveBeenCalled();
+  });
+
+  it("re-posts the verdict alongside a reply when a genuinely new finding exists", async () => {
+    const initial = makeTask({ state: "REVIEW_WATCHING", cycleCount: 1 });
+    const mocks = makeMocks(initial);
+    // Prior vote was 0; this pass surfaces a new blocking comment, so the
+    // verdict genuinely changed and must be posted even though a reply also goes out.
+    (mocks.store.getAgentCycles as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { result: { metadata: { vote: 0 } } },
+    ]);
+    const postThreadReply = withThreads(mocks, [makeThread()]);
+    const { runner } = makeWorkspaceRunner(
+      rawWithReplies([{ threadId: "disc-1", message: "Replying here." }], {
+        comments: [{ file: "src/a.ts", line: 1, message: "Brand new bug", severity: "error" }],
+        summary: "blocking",
+        vote: -1,
+      })
+    );
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+
+    await orch.runReview(initial.taskId);
+
+    expect(postThreadReply).toHaveBeenCalledOnce();
+    // A new finding → the verdict IS posted.
+    expect(mocks.provider.vote).toHaveBeenCalledWith(CHANGE_ID, 2, -1, "blocking", expect.any(AbortSignal));
   });
 
   it("ignores discussion threads when the provider lacks thread support", async () => {

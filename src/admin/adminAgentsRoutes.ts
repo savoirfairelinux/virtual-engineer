@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { getLogger } from "../logger.js";
-import { writeJson, readBody, asRecord, SECRET_MASK, parseConfig, zodErrorBody } from "./adminRouteUtils.js";
+import { writeJson, readBody, asRecord, SECRET_MASK, parseConfig, zodErrorBody, requireStore } from "./adminRouteUtils.js";
 import { recordAudit, type AuditCapableStore } from "./adminAudit.js";
 import {
   makeAgentId,
@@ -9,8 +9,10 @@ import {
   type AgentType,
   type OAuthAppStore,
   type IntegrationStore,
+  type PromptStore,
   type ProviderId,
   type ProjectRecord,
+  type ReviewStrategy,
 } from "../interfaces.js";
 import {
   defaultProviderAuthService,
@@ -20,6 +22,17 @@ import { exchangeForSessionToken, fetchAvailableModels, fetchAvailableModelsWith
 import { decryptToken } from "../utils/encryption.js";
 import { getProviderDescriptor } from "../plugins/registry.js";
 import type { Router } from "./router.js";
+import type { PluginManager } from "../plugins/pluginManager.js";
+import {
+  normalizeReviewStrategyConfig,
+  ReviewStrategyConfigError,
+  resolveReviewStrategy,
+  type ReviewStrategyConfigResult,
+} from "../agents/reviewStrategy.js";
+import {
+  normalizeModelConfigToolAuthorization,
+  ToolAuthorizationConfigError,
+} from "../agents/toolAuthorizationValidation.js";
 
 const log = getLogger("admin-agents");
 
@@ -31,8 +44,8 @@ export interface AgentsRouteStore {
     type: AgentType;
     modelConfigJson: string;
     integrationId?: string | null;
-    systemPromptId?: string | null;
-    instructionsPromptId?: string | null;
+    systemPromptId: string;
+    instructionsPromptId: string;
     feedbackInstructionsPromptId?: string | null;
     maxConcurrent?: number;
     enabled?: boolean;
@@ -49,7 +62,9 @@ export interface AgentsRouteStore {
 }
 
 export interface AgentsRouteDeps {
+    pluginManager?: PluginManager | undefined;
   agentStore?: AgentsRouteStore | undefined;
+  promptStore?: Pick<PromptStore, "getPrompt"> | undefined;
   integrationStore?: Pick<IntegrationStore, "getIntegration"> | undefined;
   oAuthAppStore?: OAuthAppStore | undefined;
   auditStore?: AuditCapableStore | undefined;
@@ -126,7 +141,7 @@ function mergePluginOAuthConfig(
 async function resolvePluginOAuthConfig(
   pluginType: ProviderId,
   body: Record<string, unknown>,
-  integrationStore?: Pick<IntegrationStore, "getIntegration"> | undefined
+  integrationStore?: Pick<IntegrationStore, "getIntegration">
 ): Promise<Record<string, unknown>> {
   const updates = asRecord(body["config"]);
   const integrationId = body["integrationId"];
@@ -193,6 +208,7 @@ export interface AgentSummary {
   enabled: boolean;
   maxConcurrent: number;
   model: string | null;
+  reviewStrategy: ReviewStrategy;
   integrationId: string | null;
   systemPromptId: string | null;
   instructionsPromptId: string | null;
@@ -209,7 +225,7 @@ export interface AgentDetail extends AgentSummary {
 /** Convert an AgentRecord to its summary API shape. */
 function toAgentSummary(agent: AgentRecord, projectCount: number): AgentSummary {
   const config = parseConfig(agent.modelConfigJson);
-  const model = typeof config["model"] === "string" ? (config["model"] as string) : null;
+  const model = typeof config["model"] === "string" ? (config["model"]) : null;
   return {
     id: agent.id,
     name: agent.name,
@@ -217,6 +233,7 @@ function toAgentSummary(agent: AgentRecord, projectCount: number): AgentSummary 
     enabled: agent.enabled,
     maxConcurrent: agent.maxConcurrent,
     model,
+    reviewStrategy: resolveReviewStrategy(config),
     integrationId: agent.integrationId,
     systemPromptId: agent.systemPromptId,
     instructionsPromptId: agent.instructionsPromptId,
@@ -244,8 +261,8 @@ const createSchema = z.object({
   }),
   modelConfig: z.record(z.unknown()).default({}),
   integrationId: z.string().nullable().optional(),
-  systemPromptId: z.string().nullable().optional(),
-  instructionsPromptId: z.string().nullable().optional(),
+  systemPromptId: z.string().trim().min(1, "System Prompt is required"),
+  instructionsPromptId: z.string().trim().min(1, "Instructions Prompt is required"),
   feedbackInstructionsPromptId: z.string().nullable().optional(),
   maxConcurrent: z.number({ invalid_type_error: "Max concurrent must be a number" }).int("Max concurrent must be an integer").min(1, "Max concurrent must be at least 1").optional(),
   enabled: z.boolean().optional(),
@@ -258,12 +275,64 @@ const updateSchema = z.object({
   }).optional(),
   modelConfig: z.record(z.unknown()).optional(),
   integrationId: z.string().nullable().optional(),
-  systemPromptId: z.string().nullable().optional(),
-  instructionsPromptId: z.string().nullable().optional(),
+  systemPromptId: z.string().trim().min(1, "System Prompt cannot be empty").optional(),
+  instructionsPromptId: z.string().trim().min(1, "Instructions Prompt cannot be empty").optional(),
   feedbackInstructionsPromptId: z.string().nullable().optional(),
   maxConcurrent: z.number({ invalid_type_error: "Max concurrent must be a number" }).int("Max concurrent must be an integer").min(1, "Max concurrent must be at least 1").optional(),
   enabled: z.boolean().optional(),
 });
+
+async function normalizeAgentStrategy(
+  deps: AgentsRouteDeps,
+  input: {
+    type: AgentType;
+    modelConfig: Record<string, unknown>;
+    integrationId: string | null;
+    systemPromptId: string;
+    feedbackInstructionsPromptId: string | null;
+  }
+): Promise<ReviewStrategyConfigResult> {
+  const strategy = resolveReviewStrategy(input.modelConfig);
+  if (strategy === "ve_direct") {
+    return normalizeReviewStrategyConfig({
+      agentType: input.type,
+      modelConfig: input.modelConfig,
+      systemPromptId: input.systemPromptId,
+      feedbackInstructionsPromptId: input.feedbackInstructionsPromptId,
+      providerName: null,
+      supportedStrategies: [],
+    });
+  }
+
+  if (!input.integrationId || !deps.integrationStore) {
+    throw new ReviewStrategyConfigError(`Review strategy '${strategy}' requires a linked agent integration`);
+  }
+  const integration = await deps.integrationStore.getIntegration(input.integrationId);
+  if (!integration) {
+    throw new ReviewStrategyConfigError(`Agent integration '${input.integrationId}' not found`);
+  }
+  const capability = getProviderDescriptor(integration.provider)?.capabilities.agent_execution;
+  return normalizeReviewStrategyConfig({
+    agentType: input.type,
+    modelConfig: input.modelConfig,
+    systemPromptId: input.systemPromptId,
+    feedbackInstructionsPromptId: input.feedbackInstructionsPromptId,
+    providerName: integration.provider,
+    supportedStrategies: capability?.reviewStrategies ?? [],
+  });
+}
+
+/** Resolve the provider id for an agent from its linked integration.
+ * Returns `null` when the agent has no integration or the integration cannot
+ * be found (the toolAuthorization validator treats null as "no provider"). */
+async function resolveAgentProvider(
+  deps: AgentsRouteDeps,
+  integrationId: string | null | undefined,
+): Promise<string | null> {
+  if (!integrationId || !deps.integrationStore) return null;
+  const integration = await deps.integrationStore.getIntegration(integrationId);
+  return integration ? integration.provider : null;
+}
 
 
 
@@ -271,6 +340,36 @@ const updateSchema = z.object({
 async function countProjectsForAgent(store: AgentsRouteStore, agentId: AgentId): Promise<number> {
   const all = await store.listProjects();
   return all.filter((p) => p.agentId === agentId).length;
+}
+
+async function validateRequiredPrompts(
+  promptStore: Pick<PromptStore, "getPrompt">,
+  systemPromptId: string,
+  instructionsPromptId: string,
+  feedbackInstructionsPromptId: string | null = null,
+): Promise<string | null> {
+  const [systemPrompt, instructionsPrompt, feedbackPrompt] = await Promise.all([
+    promptStore.getPrompt(systemPromptId),
+    promptStore.getPrompt(instructionsPromptId),
+    feedbackInstructionsPromptId === null
+      ? Promise.resolve(null)
+      : promptStore.getPrompt(feedbackInstructionsPromptId),
+  ]);
+  if (!systemPrompt) return `System Prompt '${systemPromptId}' not found`;
+  if (!instructionsPrompt) return `Instructions Prompt '${instructionsPromptId}' not found`;
+  if (feedbackInstructionsPromptId !== null && !feedbackPrompt) {
+    return `Feedback Instructions Prompt '${feedbackInstructionsPromptId}' not found`;
+  }
+  if (systemPrompt.promptType !== "system") {
+    return `Prompt '${systemPromptId}' is not a System Prompt`;
+  }
+  if (instructionsPrompt.promptType !== "instructions") {
+    return `Prompt '${instructionsPromptId}' is not an Instructions Prompt`;
+  }
+  if (feedbackPrompt !== null && feedbackPrompt.promptType !== "instructions") {
+    return `Feedback Instructions Prompt '${feedbackInstructionsPromptId}' is not an Instructions Prompt`;
+  }
+  return null;
 }
 
 /** Register agent and plugin OAuth routes on the given router. */
@@ -400,7 +499,7 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
 
   // ── Agent CRUD ─────────────────────────────────────────────────────────────
   router.add("GET", "/api/admin/agents", async (_req, res, _params) => {
-    if (!deps.agentStore) { writeJson(res, 501, { error: "Agent store not available" }); return; }
+    if (!requireStore(deps.agentStore, res, "Agent store not available")) return;
     const store = deps.agentStore;
     const agents = await store.listAgents();
     const projects = await store.listProjects();
@@ -410,29 +509,66 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
   }, { permission: "agent.read" });
 
   router.add("POST", "/api/admin/agents", async (req, res, _params) => {
-    if (!deps.agentStore) { writeJson(res, 501, { error: "Agent store not available" }); return; }
+    if (!requireStore(deps.agentStore, res, "Agent store not available")) return;
+    if (!requireStore(deps.promptStore, res, "Prompt store not available")) return;
     const store = deps.agentStore;
     const body = await readBody(req);
     if (!body) { writeJson(res, 400, { error: "Request body required" }); return; }
     const parsed = createSchema.safeParse(body);
     if (!parsed.success) { writeJson(res, 400, zodErrorBody(parsed.error, "Invalid agent payload")); return; }
     try {
+      const strategyConfig = await normalizeAgentStrategy(deps, {
+        type: parsed.data.type,
+        modelConfig: parsed.data.modelConfig,
+        integrationId: parsed.data.integrationId ?? null,
+        systemPromptId: parsed.data.systemPromptId,
+        feedbackInstructionsPromptId: parsed.data.feedbackInstructionsPromptId ?? null,
+      });
+      const provider = await resolveAgentProvider(deps, parsed.data.integrationId ?? null);
+      normalizeModelConfigToolAuthorization(provider, parsed.data.type, strategyConfig.modelConfig);
+      const promptError = await validateRequiredPrompts(
+        deps.promptStore,
+        parsed.data.systemPromptId,
+        parsed.data.instructionsPromptId,
+        strategyConfig.feedbackInstructionsPromptId,
+      );
+      if (promptError) { writeJson(res, 400, { error: promptError }); return; }
       const created = await store.createAgent({
         ...(parsed.data.id !== undefined ? { id: parsed.data.id } : {}),
         name: parsed.data.name,
         type: parsed.data.type,
-        modelConfigJson: JSON.stringify(parsed.data.modelConfig ?? {}),
+        modelConfigJson: JSON.stringify(strategyConfig.modelConfig),
         ...(parsed.data.integrationId !== undefined ? { integrationId: parsed.data.integrationId } : {}),
-        ...(parsed.data.systemPromptId !== undefined ? { systemPromptId: parsed.data.systemPromptId } : {}),
-        ...(parsed.data.instructionsPromptId !== undefined ? { instructionsPromptId: parsed.data.instructionsPromptId } : {}),
-        ...(parsed.data.feedbackInstructionsPromptId !== undefined ? { feedbackInstructionsPromptId: parsed.data.feedbackInstructionsPromptId } : {}),
+        systemPromptId: parsed.data.systemPromptId,
+        instructionsPromptId: parsed.data.instructionsPromptId,
+        ...(strategyConfig.feedbackInstructionsPromptId !== null
+          ? { feedbackInstructionsPromptId: strategyConfig.feedbackInstructionsPromptId }
+          : {}),
         ...(parsed.data.maxConcurrent !== undefined ? { maxConcurrent: parsed.data.maxConcurrent } : {}),
         ...(parsed.data.enabled !== undefined ? { enabled: parsed.data.enabled } : {}),
       });
-      recordAudit(deps.auditStore, req, { action: "agent.create", targetType: "agent", targetId: created.id, details: { name: created.name, type: created.type } });
+      recordAudit(deps.auditStore, req, {
+        action: "agent.create",
+        targetType: "agent",
+        targetId: created.id,
+        details: { name: created.name, type: created.type, reviewStrategy: strategyConfig.reviewStrategy },
+      });
+      log.info(
+        {
+          agentId: created.id,
+          name: created.name,
+          type: created.type,
+          integrationId: created.integrationId,
+        },
+        "agent created"
+      );
       writeJson(res, 201, { agent: toAgentDetail(created, 0) });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
+      if (err instanceof ReviewStrategyConfigError || err instanceof ToolAuthorizationConfigError) {
+        writeJson(res, 400, { error: msg });
+        return;
+      }
       log.warn({ err }, "create agent failed");
       writeJson(res, 500, { error: msg });
     }
@@ -440,7 +576,7 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
 
   // /agents/:id/available-models has a distinct path shape from /agents/:id (anchored regex), so registration order does not matter here
   router.add("GET", "/api/admin/agents/:id/available-models", async (_req, res, params) => {
-    if (!deps.agentStore) { writeJson(res, 501, { error: "Agent store not available" }); return; }
+    if (!requireStore(deps.agentStore, res, "Agent store not available")) return;
     const id = makeAgentId(params["id"] ?? "");
     const agent = await deps.agentStore.getAgentById(id);
     if (!agent) { writeJson(res, 404, { error: "Agent not found" }); return; }
@@ -459,7 +595,11 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
       const integration = await deps.integrationStore.getIntegration(agent.integrationId);
       if (integration) {
         let integrationConfig: Record<string, unknown> = {};
-        try { integrationConfig = JSON.parse(integration.configJson) as Record<string, unknown>; } catch { /* ignore */ }
+        try {
+          integrationConfig = deps.pluginManager
+            ? deps.pluginManager.decryptIntegrationConfig(integration)
+            : JSON.parse(integration.configJson) as Record<string, unknown>;
+        } catch { /* ignore */ }
         if (integrationConfig["authMode"] === "pat") {
           const pat = typeof integrationConfig["token"] === "string" ? integrationConfig["token"].trim() : "";
           if (!pat) {
@@ -496,7 +636,7 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
   }, { permission: "agent.read", resourceParam: "id" });
 
   router.add("GET", "/api/admin/agents/:id", async (_req, res, params) => {
-    if (!deps.agentStore) { writeJson(res, 501, { error: "Agent store not available" }); return; }
+    if (!requireStore(deps.agentStore, res, "Agent store not available")) return;
     const store = deps.agentStore;
     const id = makeAgentId(params["id"] ?? "");
     const existing = await store.getAgentById(id);
@@ -506,7 +646,8 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
   }, { permission: "agent.read", resourceParam: "id" });
 
   router.add("PUT", "/api/admin/agents/:id", async (req, res, params) => {
-    if (!deps.agentStore) { writeJson(res, 501, { error: "Agent store not available" }); return; }
+    if (!requireStore(deps.agentStore, res, "Agent store not available")) return;
+    if (!requireStore(deps.promptStore, res, "Prompt store not available")) return;
     const store = deps.agentStore;
     const id = makeAgentId(params["id"] ?? "");
     const existing = await store.getAgentById(id);
@@ -515,33 +656,73 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
     if (!body) { writeJson(res, 400, { error: "Request body required" }); return; }
     const parsed = updateSchema.safeParse(body);
     if (!parsed.success) { writeJson(res, 400, zodErrorBody(parsed.error, "Invalid agent payload")); return; }
-    const updates: Parameters<AgentsRouteStore["updateAgent"]>[1] = {};
-    if (parsed.data.name !== undefined) updates.name = parsed.data.name;
-    if (parsed.data.type !== undefined) updates.type = parsed.data.type;
-    if (parsed.data.modelConfig !== undefined) {
-      const existingConfig = parseConfig(existing.modelConfigJson);
-      updates.modelConfigJson = JSON.stringify(mergeAgentConfig(existingConfig, parsed.data.modelConfig));
+    const systemPromptId = parsed.data.systemPromptId ?? existing.systemPromptId;
+    const instructionsPromptId = parsed.data.instructionsPromptId ?? existing.instructionsPromptId;
+    const feedbackInstructionsPromptId = parsed.data.feedbackInstructionsPromptId === undefined
+      ? existing.feedbackInstructionsPromptId
+      : parsed.data.feedbackInstructionsPromptId;
+    if (!systemPromptId || !instructionsPromptId) {
+      writeJson(res, 400, { error: "System Prompt and Instructions Prompt are required" });
+      return;
     }
-    if (parsed.data.integrationId !== undefined) updates.integrationId = parsed.data.integrationId;
-    if (parsed.data.systemPromptId !== undefined) updates.systemPromptId = parsed.data.systemPromptId;
-    if (parsed.data.instructionsPromptId !== undefined) updates.instructionsPromptId = parsed.data.instructionsPromptId;
-    if (parsed.data.feedbackInstructionsPromptId !== undefined) updates.feedbackInstructionsPromptId = parsed.data.feedbackInstructionsPromptId;
-    if (parsed.data.maxConcurrent !== undefined) updates.maxConcurrent = parsed.data.maxConcurrent;
-    if (parsed.data.enabled !== undefined) updates.enabled = parsed.data.enabled;
+    const existingConfig = parseConfig(existing.modelConfigJson);
+    const prospectiveConfig = parsed.data.modelConfig === undefined
+      ? existingConfig
+      : mergeAgentConfig(existingConfig, parsed.data.modelConfig);
+    const prospectiveType = parsed.data.type ?? existing.type;
+    const prospectiveIntegrationId = parsed.data.integrationId === undefined
+      ? existing.integrationId
+      : parsed.data.integrationId;
     try {
+      const strategyConfig = await normalizeAgentStrategy(deps, {
+        type: prospectiveType,
+        modelConfig: prospectiveConfig,
+        integrationId: prospectiveIntegrationId,
+        systemPromptId,
+        feedbackInstructionsPromptId,
+      });
+      const provider = await resolveAgentProvider(deps, prospectiveIntegrationId);
+      normalizeModelConfigToolAuthorization(provider, prospectiveType, strategyConfig.modelConfig);
+      const promptError = await validateRequiredPrompts(
+        deps.promptStore,
+        systemPromptId,
+        instructionsPromptId,
+        strategyConfig.feedbackInstructionsPromptId,
+      );
+      if (promptError) { writeJson(res, 400, { error: promptError }); return; }
+      const updates: Parameters<AgentsRouteStore["updateAgent"]>[1] = {
+        modelConfigJson: JSON.stringify(strategyConfig.modelConfig),
+        feedbackInstructionsPromptId: strategyConfig.feedbackInstructionsPromptId,
+      };
+      if (parsed.data.name !== undefined) updates.name = parsed.data.name;
+      if (parsed.data.type !== undefined) updates.type = parsed.data.type;
+      if (parsed.data.integrationId !== undefined) updates.integrationId = parsed.data.integrationId;
+      if (parsed.data.systemPromptId !== undefined) updates.systemPromptId = parsed.data.systemPromptId;
+      if (parsed.data.instructionsPromptId !== undefined) updates.instructionsPromptId = parsed.data.instructionsPromptId;
+      if (parsed.data.maxConcurrent !== undefined) updates.maxConcurrent = parsed.data.maxConcurrent;
+      if (parsed.data.enabled !== undefined) updates.enabled = parsed.data.enabled;
       const updated = await store.updateAgent(id, updates);
       const count = await countProjectsForAgent(store, id);
-      recordAudit(deps.auditStore, req, { action: "agent.update", targetType: "agent", targetId: id, details: { name: updated.name, type: updated.type } });
+      recordAudit(deps.auditStore, req, {
+        action: "agent.update",
+        targetType: "agent",
+        targetId: id,
+        details: { name: updated.name, type: updated.type, reviewStrategy: strategyConfig.reviewStrategy },
+      });
       writeJson(res, 200, { agent: toAgentDetail(updated, count) });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
+      if (err instanceof ReviewStrategyConfigError || err instanceof ToolAuthorizationConfigError) {
+        writeJson(res, 400, { error: msg });
+        return;
+      }
       log.warn({ err, id }, "update agent failed");
       writeJson(res, 500, { error: msg });
     }
   }, { permission: "agent.write", resourceParam: "id" });
 
   router.add("DELETE", "/api/admin/agents/:id", async (req, res, params) => {
-    if (!deps.agentStore) { writeJson(res, 501, { error: "Agent store not available" }); return; }
+    if (!requireStore(deps.agentStore, res, "Agent store not available")) return;
     const store = deps.agentStore;
     const id = makeAgentId(params["id"] ?? "");
     const existing = await store.getAgentById(id);
@@ -568,7 +749,7 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
   }, { permission: "agent.delete", resourceParam: "id" });
 
   router.add("PATCH", "/api/admin/agents/:id/enable", async (req, res, params) => {
-    if (!deps.agentStore) { writeJson(res, 501, { error: "Agent store not available" }); return; }
+    if (!requireStore(deps.agentStore, res, "Agent store not available")) return;
     const store = deps.agentStore;
     const id = makeAgentId(params["id"] ?? "");
     const existing = await store.getAgentById(id);
@@ -580,7 +761,7 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
   }, { permission: "agent.operate", resourceParam: "id" });
 
   router.add("PATCH", "/api/admin/agents/:id/disable", async (req, res, params) => {
-    if (!deps.agentStore) { writeJson(res, 501, { error: "Agent store not available" }); return; }
+    if (!requireStore(deps.agentStore, res, "Agent store not available")) return;
     const store = deps.agentStore;
     const id = makeAgentId(params["id"] ?? "");
     const existing = await store.getAgentById(id);

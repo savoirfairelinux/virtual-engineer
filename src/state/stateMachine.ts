@@ -1,5 +1,9 @@
-import type { TaskState, CodeGenState, CodeReviewState } from "../interfaces.js";
-import { TERMINAL_STATES } from "../interfaces.js";
+import {
+  TERMINAL_STATES,
+  type CodeGenState,
+  type CodeReviewState,
+  type TaskState,
+} from "../domain/tasks.js";
 
 /**
  * Valid transitions for the code-generation workflow.

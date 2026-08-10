@@ -50,16 +50,18 @@ export function createClaudeRedirectOAuthHandler(
 
   return {
     kind: "redirect",
-    async start({
+    start({
       state,
       codeChallenge,
       codeChallengeMethod,
     }: ProviderAuthRedirectStartInput): Promise<{ authorizationUrl: string }> {
+      // Not async: these validation failures must surface as a rejected promise
+      // (not a synchronous throw) for callers using await/`.catch()`.
       if (!codeChallenge) {
-        throw new Error("Claude OAuth PKCE code challenge is required");
+        return Promise.reject(new Error("Claude OAuth PKCE code challenge is required"));
       }
       if (codeChallengeMethod !== "S256") {
-        throw new Error("Claude OAuth PKCE requires codeChallengeMethod=S256");
+        return Promise.reject(new Error("Claude OAuth PKCE requires codeChallengeMethod=S256"));
       }
       const url = new URL(authorizeUrl);
       // `code=true` tells Anthropic to render the authorization code on the
@@ -74,7 +76,7 @@ export function createClaudeRedirectOAuthHandler(
       }
       url.searchParams.set("code_challenge", codeChallenge);
       url.searchParams.set("code_challenge_method", codeChallengeMethod);
-      return { authorizationUrl: url.toString() };
+      return Promise.resolve({ authorizationUrl: url.toString() });
     },
     async complete({
       code,

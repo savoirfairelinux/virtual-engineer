@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { Orchestrator } from "../../src/orchestrator/orchestrator.js";
+import { extractAcceptanceCriteria } from "../../src/orchestrator/agentContextBuilder.js";
 import type {
   StateStore,
   WorkspaceRunner,
@@ -306,6 +307,7 @@ describe("Orchestrator", () => {
     workspaceRunner?: WorkspaceRunner;
     gerritConnector?: ReviewConnector;
     redmineConnector?: TicketConnector;
+    config?: Partial<{ ticketCloseMaxRetries: number; ticketCloseRetryMinTimeoutMs: number }>;
   } = {}) {
     return new Orchestrator(
       {
@@ -315,6 +317,7 @@ describe("Orchestrator", () => {
         gitAuthorName: "Virtual Engineer",
         gitAuthorEmail: "ve@example.com",
         agentContainerImage: "virtual-engineer-workspace:latest",
+        ...overrides.config,
       },
       overrides.stateStore ?? makeStateStore(),
       overrides.workspaceRunner ?? makeWorkspaceRunner(),
@@ -331,7 +334,7 @@ describe("Orchestrator", () => {
     const stateStore = makeStateStore({ findTaskByExternalChangeId: vi.fn().mockResolvedValue(null) });
     const orchestrator = makeOrchestrator({ stateStore });
 
-    await orchestrator.handleGerritEvent(makeExternalChangeId("Imissing"));
+    await orchestrator.handleReviewEvent(makeExternalChangeId("Imissing"));
 
     expect(stateStore.findTaskByExternalChangeId).toHaveBeenCalledWith(null, "Imissing");
   });
@@ -346,7 +349,7 @@ describe("Orchestrator", () => {
     const gerritConnector = makeGerritConnector();
     const orchestrator = makeOrchestrator({ stateStore, gerritConnector });
 
-    await orchestrator.handleGerritEvent(gerritChangeId);
+    await orchestrator.handleReviewEvent(gerritChangeId);
 
     expect(gerritConnector.getChangeStatus).not.toHaveBeenCalled();
   });
@@ -360,7 +363,7 @@ describe("Orchestrator", () => {
     const orchestrator = makeOrchestrator({ stateStore });
     const checkReviewProgress = vi.spyOn(orchestrator as any, "checkReviewProgress").mockResolvedValue(undefined);
 
-    await orchestrator.handleGerritEvent(gerritChangeId);
+    await orchestrator.handleReviewEvent(gerritChangeId);
 
     expect(checkReviewProgress).toHaveBeenCalledWith(task);
   });
@@ -375,7 +378,7 @@ describe("Orchestrator", () => {
     const orchestrator = makeOrchestrator({ stateStore });
     const checkReviewProgress = vi.spyOn(orchestrator as any, "checkReviewProgress").mockResolvedValue(undefined);
 
-    await orchestrator.handleGerritEvent(gerritChangeId);
+    await orchestrator.handleReviewEvent(gerritChangeId);
 
     expect(checkReviewProgress).not.toHaveBeenCalled();
   });
@@ -572,6 +575,35 @@ describe("Orchestrator", () => {
         task.taskId,
         expect.stringContaining("Ticket close failed (change is merged): redmine down")
       );
+      expect(stateStore.transition).toHaveBeenCalledWith(task.taskId, "FAILED");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("honors a configured ticket-close retry policy instead of the hardcoded default", async () => {
+    vi.useFakeTimers();
+    try {
+      const task = makeTask({ state: "MERGED" });
+      const stateStore = makeStateStore({
+        transition: vi.fn()
+          .mockResolvedValueOnce(makeTask({ state: "CLOSING" }))
+          .mockResolvedValueOnce(makeTask({ state: "FAILED" })),
+      });
+      const closeTicket = vi.fn().mockRejectedValue(new Error("redmine down"));
+      const redmineConnector = makeRedmineConnector({ closeTicket });
+      const orchestrator = makeOrchestrator({
+        stateStore,
+        redmineConnector,
+        config: { ticketCloseMaxRetries: 2, ticketCloseRetryMinTimeoutMs: 100 },
+      });
+
+      const promise = (orchestrator as any).closeTicket(task);
+      await vi.runAllTimersAsync();
+      await promise;
+
+      // retries: 2 → 1 initial attempt + 2 retries = 3 total calls (not the hardcoded default of 6).
+      expect(closeTicket).toHaveBeenCalledTimes(3);
       expect(stateStore.transition).toHaveBeenCalledWith(task.taskId, "FAILED");
     } finally {
       vi.useRealTimers();
@@ -800,15 +832,17 @@ describe("Orchestrator", () => {
     expect(redmineConnector.addNote).not.toHaveBeenCalled();
   });
 
-  it("extracts acceptance criteria and enforces timeouts", async () => {
+  it("extracts acceptance criteria from a ticket description", () => {
+    expect(extractAcceptanceCriteria(makeRedmineTicket().description)).toEqual([
+      "- [ ] Preserve Change-Id",
+      "1. Close the ticket on merge",
+    ]);
+  });
+
+  it("enforces timeouts", async () => {
     vi.useFakeTimers();
     try {
       const orchestrator = makeOrchestrator();
-      expect((orchestrator as any).extractAcceptanceCriteria(makeRedmineTicket().description)).toEqual([
-        "- [ ] Preserve Change-Id",
-        "1. Close the ticket on merge",
-      ]);
-
       let aborted = false;
       const timeoutPromise = (orchestrator as any).withTimeout(
         (signal: AbortSignal) => new Promise<string>((_resolve, reject) => {

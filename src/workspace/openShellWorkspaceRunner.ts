@@ -49,11 +49,29 @@ const log = getLogger("openshell-workspace-runner");
 const SANDBOX_WORKSPACE = "/sandbox";
 const SANDBOX_PROMPT_FILE = "/tmp/user-prompt.txt";
 const MAX_DENIAL_FINGERPRINTS_PER_SANDBOX = 1_000;
-const AGENT_CREDENTIAL_PROVIDER_TYPES = {
+const AGENT_CREDENTIAL_PROVIDER_TYPES: Readonly<Record<string, string>> = {
   GITHUB_TOKEN: "copilot",
   ANTHROPIC_API_KEY: "claude-code",
   CLAUDE_CODE_OAUTH_TOKEN: "generic",
-} as const;
+  // Aider / Goose LLM backends.
+  OPENAI_API_KEY: "generic",
+  OPENROUTER_API_KEY: "generic",
+  DEEPSEEK_API_KEY: "generic",
+  GROQ_API_KEY: "generic",
+  GOOGLE_API_KEY: "generic",
+  AZURE_OPENAI_API_KEY: "generic",
+  PERPLEXITY_API_KEY: "generic",
+  MISTRAL_API_KEY: "generic",
+  XAI_API_KEY: "generic",
+  CEREBRAS_API_KEY: "generic",
+};
+
+/**
+ * Any variable whose name looks like a credential must be attached through an
+ * OpenShell provider, never through `sandbox create --env` (which puts the value
+ * in the child process argv). Unmapped matches fail closed.
+ */
+const SECRET_ENV_NAME = /(^|_)(TOKEN|SECRET|API_KEY|APIKEY|PASSWORD|CREDENTIAL)(_|$)/;
 
 interface ManagedProviderSpec {
   name: string;
@@ -68,8 +86,14 @@ function splitManagedProviderEnv(
   const env: Record<string, string> = {};
   let provider: ManagedProviderSpec | undefined;
   for (const [key, value] of Object.entries(source)) {
-    const type = AGENT_CREDENTIAL_PROVIDER_TYPES[key as keyof typeof AGENT_CREDENTIAL_PROVIDER_TYPES];
+    const type = AGENT_CREDENTIAL_PROVIDER_TYPES[key];
     if (type === undefined) {
+      if (SECRET_ENV_NAME.test(key)) {
+        throw new Error(
+          `Agent sandbox spec carries an unmapped credential "${key}"; ` +
+          "add it to AGENT_CREDENTIAL_PROVIDER_TYPES so it is attached as an OpenShell provider"
+        );
+      }
       env[key] = value;
       continue;
     }
@@ -102,8 +126,6 @@ interface AgentSpec {
   env: Record<string, string>;
   image: string;
   command: string[];
-  networkMode?: string | undefined;
-  additionalDockerArgs?: string[] | undefined;
   userPromptContent?: string | undefined;
   egress?: { hosts: string[]; binaries: string[] } | undefined;
 }
@@ -247,6 +269,15 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
       const error = err instanceof Error ? err.message : String(err);
       return { success: false, localPath: handle.hostWorkspacePath, error };
     }
+  }
+
+  /**
+   * Repository sub-paths VE cloned itself and whose `.git` was rebuilt from
+   * host-trusted data. Any other directory in the downloaded workspace is
+   * agent-authored and must never be used as a host-side git working directory.
+   */
+  listTrustedRepoPaths(handle: WorkspaceHandle): string[] {
+    return [...(this.trustedRemotes.get(handle.containerId)?.keys() ?? [])];
   }
 
   private rememberTrustedRemote(taskId: string, localPath: string, cloneUrl: string): void {
@@ -416,8 +447,8 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
   async runReviewInDocker(
     handle: WorkspaceHandle,
     input: ReviewWorkspaceInput,
-    callbacks?: { onStderrChunk?: ((chunk: string) => void) | undefined } | undefined,
-    adapterOverride?: AgentAdapter | undefined,
+    callbacks?: { onStderrChunk?: ((chunk: string) => void) | undefined },
+    adapterOverride?: AgentAdapter,
   ): Promise<{ rawOutput: string }> {
     const taskId = String(handle.taskId);
     const name = this.sandboxName(taskId, handle.containerId);
@@ -491,7 +522,7 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
     callbacks?: {
       onStdoutChunk?: ((chunk: string) => void) | undefined;
       onStderrChunk?: ((chunk: string) => void) | undefined;
-    } | undefined
+    }
   ): Promise<{ stdout: string; stderr: string }> {
     // `authEnv` carries the agent's own inference credential (e.g. GITHUB_TOKEN
     // for Copilot), which the agent legitimately needs and is baked into the

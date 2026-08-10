@@ -11,6 +11,7 @@ interface Props {
   plugins: ApiPlugin[];
   onClose: () => void;
   onSaved: () => void;
+  onDirtyChange: (dirty: boolean) => void;
 }
 
 type Config = Record<string, string>;
@@ -47,34 +48,77 @@ function CapabilityBadge({ capability }: { capability: string }) {
 
 function TypePicker({ plugins, onSelect }: { plugins: ApiPlugin[]; onSelect: (provider: string) => void }) {
   const [hovered, setHovered] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+  const normalizedSearch = search.trim().toLocaleLowerCase();
+  const filteredPlugins = normalizedSearch.length === 0
+    ? plugins
+    : plugins.filter((plugin) => {
+        const capabilityTerms = plugin.domainCapabilities.flatMap((capability) => [
+          capability,
+          CAPABILITY_LABEL[capability] ?? capability,
+        ]);
+        return [plugin.name, plugin.provider, ...plugin.capabilities, ...capabilityTerms]
+          .join(" ")
+          .toLocaleLowerCase()
+          .includes(normalizedSearch);
+      });
+
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "10px", padding: "4px 0 8px" }}>
-      {plugins.map((p) => {
-        const active = hovered === p.provider;
-        return (
-          <button
-            key={p.provider}
-            onClick={() => onSelect(p.provider)}
-            onMouseEnter={() => setHovered(p.provider)}
-            onMouseLeave={() => setHovered(null)}
-            style={{
-              display: "flex", flexDirection: "column", alignItems: "center",
-              gap: "10px", padding: "20px 12px 18px", borderRadius: "12px",
-              background: active ? "var(--panel-2)" : "var(--panel)",
-              border: active ? "1px solid var(--accent-line)" : "1px solid var(--border-soft)",
-              cursor: "pointer", outline: "none", textAlign: "center",
-              transition: "border-color .12s, background .12s, box-shadow .12s",
-              boxShadow: active ? "0 0 0 3px var(--accent-soft)" : "none",
-            }}
-          >
-            <ProviderGlyph provider={p.provider} size={48} />
-            <span style={{ fontSize: "13px", fontWeight: 600, color: "var(--text)" }}>{p.name}</span>
-            {p.domainCapabilities.slice(0, 2).map((cap) => (
-              <CapabilityBadge key={cap} capability={cap} />
-            ))}
+    <div className="config-provider-picker">
+      <label className="config-provider-search">
+        <Icon name="search" size={16} />
+        <input
+          type="search"
+          aria-label="Search integrations"
+          autoComplete="off"
+          data-config-ignore-dirty
+          placeholder="Search integrations…"
+          value={search}
+          onChange={(event) => setSearch(event.currentTarget.value)}
+        />
+        {search.length > 0 && (
+          <button type="button" className="iconbtn" aria-label="Clear search" onClick={() => setSearch("")}>
+            <Icon name="x" size={14} />
           </button>
-        );
-      })}
+        )}
+      </label>
+
+      {filteredPlugins.length > 0 ? (
+        <div className="config-provider-grid">
+          {filteredPlugins.map((plugin) => {
+            const active = hovered === plugin.provider;
+            return (
+              <button
+                key={plugin.provider}
+                onClick={() => onSelect(plugin.provider)}
+                onMouseEnter={() => setHovered(plugin.provider)}
+                onMouseLeave={() => setHovered(null)}
+                style={{
+                  display: "flex", flexDirection: "column", alignItems: "center",
+                  gap: "10px", padding: "20px 12px 18px", borderRadius: "12px",
+                  background: active ? "var(--panel-2)" : "var(--panel)",
+                  border: active ? "1px solid var(--accent-line)" : "1px solid var(--border-soft)",
+                  cursor: "pointer", textAlign: "center",
+                  transition: "border-color .12s, background .12s, box-shadow .12s",
+                  boxShadow: active ? "0 0 0 3px var(--accent-soft)" : "none",
+                }}
+              >
+                <ProviderGlyph provider={plugin.provider} size={48} />
+                <span style={{ fontSize: "13px", fontWeight: 600, color: "var(--text)" }}>{plugin.name}</span>
+                {plugin.domainCapabilities.slice(0, 2).map((capability) => (
+                  <CapabilityBadge key={capability} capability={capability} />
+                ))}
+              </button>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="config-provider-empty" role="status">
+          <Icon name="search" size={20} />
+          <span>{`No integrations match "${search.trim()}".`}</span>
+          <button type="button" className="btn sm" onClick={() => setSearch("")}>Clear search</button>
+        </div>
+      )}
     </div>
   );
 }
@@ -313,8 +357,7 @@ function SshAuthSection({ provider, providerName, config, onConfigChange }: SshA
     // an empty string (e.g. a cleared field) must not be mistaken for a
     // configured value.
     const hasPrivateKey = typeof config["sshPrivateKeyEnc"] === "string" && config["sshPrivateKeyEnc"].trim().length > 0;
-    const hasPublicKey = typeof config["sshPublicKey"] === "string" && config["sshPublicKey"].trim().length > 0;
-    if (hasPrivateKey || hasPublicKey) return "generated";
+    if (hasPrivateKey) return "generated";
     return "agent";
   };
 
@@ -365,7 +408,7 @@ function SshAuthSection({ provider, providerName, config, onConfigChange }: SshA
     setGenerating(true);
     setGenError(null);
     try {
-      const result = await generateSshKeyPair(provider);
+      const result = await generateSshKeyPair(provider, config["sshUser"] as string | undefined);
       onConfigChange("sshPrivateKeyEnc", result.sshPrivateKeyEnc);
       onConfigChange("sshPublicKey", result.sshPublicKey);
     } catch (e) {
@@ -387,6 +430,7 @@ function SshAuthSection({ provider, providerName, config, onConfigChange }: SshA
     <button
       type="button"
       onClick={() => handleModeChange(m)}
+      aria-pressed={mode === m}
       style={{
         flex: 1, padding: "7px 10px", fontSize: "12.5px", fontWeight: mode === m ? 600 : 400,
         borderRadius: "6px", border: "none", cursor: "pointer",
@@ -513,7 +557,7 @@ function SshAuthSection({ provider, providerName, config, onConfigChange }: SshA
   );
 }
 
-export function IntegrationFormModal({ integration, plugins, onClose, onSaved }: Props) {
+export function IntegrationFormModal({ integration, plugins, onClose, onSaved, onDirtyChange }: Props) {
   const isEdit = !!integration;
 
   const [step, setStep] = useState<"pick" | "form">(isEdit ? "form" : "pick");
@@ -528,6 +572,7 @@ export function IntegrationFormModal({ integration, plugins, onClose, onSaved }:
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<string | null>(null);
+  const [testLogs, setTestLogs] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [copiedCode, setCopiedCode] = useState(false);
@@ -541,16 +586,18 @@ export function IntegrationFormModal({ integration, plugins, onClose, onSaved }:
     });
   }, []);
 
-  const setConfigField = (key: string, val: string) => {
+  const setConfigField = useCallback((key: string, val: string) => {
     setConfig((prev) => ({ ...prev, [key]: val }));
     setTestResult(null);
-  };
+    setTestLogs([]);
+    onDirtyChange(true);
+  }, [onDirtyChange]);
 
   const handleOAuthToken = useCallback((token: string) => {
     if (!plugin?.oauth) return;
     setConfigField(plugin.oauth.tokenField, token);
     setTestResult("OAuth connected — token received.");
-  }, [plugin]);
+  }, [plugin, setConfigField]);
 
   const oauth = useOAuthFlow(plugin?.oauth, handleOAuthToken);
 
@@ -571,8 +618,10 @@ export function IntegrationFormModal({ integration, plugins, onClose, onSaved }:
     setSelectedType(type);
     setConfig(defaults);
     setTestResult(null);
+    setTestLogs([]);
     setError(null);
     setStep("form");
+    onDirtyChange(true);
   };
 
   const handleBackToPicker = () => {
@@ -580,20 +629,24 @@ export function IntegrationFormModal({ integration, plugins, onClose, onSaved }:
     setSelectedType("");
     setConfig({});
     setTestResult(null);
+    setTestLogs([]);
     setError(null);
+    onDirtyChange(name.trim().length > 0);
   };
 
   const handleTest = async () => {
     setTesting(true);
     setTestResult(null);
+    setTestLogs([]);
     setError(null);
     try {
       const payload = { provider: selectedType, name: name || "test", config };
       const body = integration ? { ...payload, integrationId: integration.id } : payload;
-      const res = await api.post<{ success: boolean; message?: string; error?: string }>(
+      const res = await api.post<{ success: boolean; message?: string; error?: string; logs?: string[] }>(
         "/api/admin/integrations/test",
         body
       );
+      setTestLogs(res.logs ?? []);
       setTestResult(res.success ? (res.message ?? "Connection successful") : (res.error ?? "Test failed"));
     } catch (e) {
       setTestResult(e instanceof Error ? `Error: ${e.message}` : "Test failed");
@@ -628,7 +681,10 @@ export function IntegrationFormModal({ integration, plugins, onClose, onSaved }:
         wide
         onClose={onClose}
         footer={
-          <button className="btn" onClick={onClose}>Cancel</button>
+          <>
+            <span className="spacer" />
+            <button className="btn" onClick={onClose}>Cancel</button>
+          </>
         }
       >
         <TypePicker plugins={plugins} onSelect={handlePickType} />
@@ -646,6 +702,7 @@ export function IntegrationFormModal({ integration, plugins, onClose, onSaved }:
           <button className="btn ghost" onClick={handleTest} disabled={testing || saving}>
             {testing ? "Testing…" : <><Icon name="bolt" size={13} /> Test</>}
           </button>
+          <span className="spacer" />
           <button className="btn" onClick={onClose}>Cancel</button>
           <button className="btn primary" onClick={handleSave} disabled={saving}>
             {saving ? "Saving…" : isEdit ? "Save changes" : "Add integration"}
@@ -853,9 +910,26 @@ export function IntegrationFormModal({ integration, plugins, onClose, onSaved }:
                 ? "var(--ok)"
                 : "var(--danger)",
               borderRadius: "var(--radius-sm)",
+              display: "flex",
+              flexDirection: "column",
+              gap: testLogs.length > 0 ? "6px" : "0px",
             }}
           >
-            {testResult}
+            <div>{testResult}</div>
+            {testLogs.length > 0 && (
+              <div
+                style={{
+                  fontSize: "12px",
+                  fontFamily: "var(--font-mono, monospace)",
+                  lineHeight: "1.6",
+                  opacity: 0.9,
+                }}
+              >
+                {testLogs.map((line, i) => (
+                  <div key={i}>{line}</div>
+                ))}
+              </div>
+            )}
           </div>
         )}
 

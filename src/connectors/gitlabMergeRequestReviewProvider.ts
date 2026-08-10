@@ -286,7 +286,7 @@ export class GitLabMergeRequestReviewProvider implements ReviewProvider {
     _revision: number,
     comments: InlineReviewComment[],
     summary: string,
-    score: -1 | 1,
+    score: -1 | 0 | 1,
     allowedFiles?: ReadonlySet<string>,
     signal?: AbortSignal,
   ): Promise<void> {

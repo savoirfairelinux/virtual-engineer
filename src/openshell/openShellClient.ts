@@ -16,6 +16,7 @@ import { writeFile, unlink } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
 import { randomUUID } from "node:crypto";
+import { toRejectionError } from "../utils/rejection.js";
 import { getLogger } from "../logger.js";
 import { redactUrls } from "../utils/redactUrl.js";
 
@@ -30,7 +31,7 @@ async function abortableDelay(delayMs: number, signal: AbortSignal | undefined):
     }, delayMs);
     const onAbort = (): void => {
       clearTimeout(timer);
-      reject(signal?.reason);
+      reject(toRejectionError(signal?.reason));
     };
     signal?.addEventListener("abort", onAbort, { once: true });
   });
@@ -654,8 +655,15 @@ export class OpenShellClient {
     if (input.hosts.length === 0) return;
     const access = input.access ?? "full";
     const args = ["policy", "update"];
-    // `host:port:access:protocol` — REST over TLS is the shape the proxy enforces.
-    for (const host of input.hosts) args.push("--add-endpoint", `${host}:443:${access}:rest`);
+    // `host:port:access:protocol`. Hosts may carry an explicit `host:port`
+    // (e.g. a self-hosted Ollama or OpenAI-compatible endpoint); everything
+    // else defaults to REST over TLS.
+    for (const host of input.hosts) {
+      const separator = host.lastIndexOf(":");
+      const hasPort = separator > 0 && /^\d+$/.test(host.slice(separator + 1));
+      const endpoint = hasPort ? host : `${host}:443`;
+      args.push("--add-endpoint", `${endpoint}:${access}:rest`);
+    }
     // `--binary` applies to every `--add-endpoint` rule in the same invocation.
     for (const bin of input.binaries ?? []) args.push("--binary", bin);
     args.push("--wait", input.name);

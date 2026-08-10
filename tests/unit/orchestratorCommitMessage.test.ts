@@ -1,10 +1,8 @@
 /**
  * Unit tests for Orchestrator.buildCommitMessage() — conventional commit fallback.
- * Unit tests for Orchestrator.appendTicketFooter() — ticket reference footer.
  *
- * NOTE: As of the modular refactor, ticket footer formatting is delegated to
- * the ticketFooterFormatter utility. These tests verify orchestrator integration.
- * For comprehensive footer format tests, see ticketFooterFormatter.test.ts.
+ * NOTE: Ticket footer formatting was previously tested here but has been moved
+ * to ticketFooterFormatter.test.ts, which tests the utility directly.
  */
 
 import { describe, it, expect } from "vitest";
@@ -13,36 +11,6 @@ import { Orchestrator } from "../../src/orchestrator/orchestrator.js";
 // buildCommitMessage is private — access via any cast
 function callBuildCommitMessage(subject: string): string {
   return (Orchestrator.prototype as any).buildCommitMessage.call({}, {}, subject) as string;
-}
-
-// buildTicketFooter is private — access via any cast
-function callBuildTicketFooter(
-  reviewSystem: string,
-  ticketId: string,
-  ticketUrl: string,
-  ticketSourceLabel?: string
-): string | null {
-  const proto = Orchestrator.prototype as any;
-  const self = {
-    config: { reviewSystem },
-  };
-  return proto.buildTicketFooter.call(self, ticketId, ticketUrl, ticketSourceLabel) as string | null;
-}
-
-// appendTicketFooter is private — access via any cast
-function callAppendTicketFooter(
-  reviewSystem: string,
-  message: string,
-  ticketId: string,
-  ticketUrl: string,
-  ticketSourceLabel?: string
-): string {
-  const proto = Orchestrator.prototype as any;
-  const self = {
-    config: { reviewSystem },
-    buildTicketFooter: proto.buildTicketFooter,
-  };
-  return proto.appendTicketFooter.call(self, message, ticketId, ticketUrl, ticketSourceLabel) as string;
 }
 
 describe("Orchestrator.buildCommitMessage", () => {
@@ -69,73 +37,5 @@ describe("Orchestrator.buildCommitMessage", () => {
     expect(msg).not.toMatch(/Ticket:/);
     expect(msg).not.toMatch(/Cycle:/);
     expect(msg).not.toMatch(/Automated by/);
-  });
-});
-
-describe("Orchestrator.buildTicketFooter (modular approach)", () => {
-  it("formats gitlab as 'GitLab: #14'", () => {
-    const result = callBuildTicketFooter("gitlab", "14", "https://example.com/14", "gitlab:gl-1");
-    expect(result).toBe("GitLab: #14");
-  });
-
-  it("formats redmine as 'Redmine: #123'", () => {
-    const result = callBuildTicketFooter("gerrit", "123", "http://redmine.local/issues/123", "redmine");
-    expect(result).toBe("Redmine: #123");
-  });
-
-  it("returns null for unknown system", () => {
-    const result = callBuildTicketFooter("gerrit", "42", "https://example.com/42", "unknown-system");
-    expect(result).toBeNull();
-  });
-
-  it("returns null when no ticketSourceLabel provided", () => {
-    const result = callBuildTicketFooter("gerrit", "42", "https://example.com/42", undefined);
-    expect(result).toBeNull();
-  });
-});
-
-describe("Orchestrator.appendTicketFooter (integration)", () => {
-  it("appends 'GitLab: #14' footer for gitlab", () => {
-    const result = callAppendTicketFooter("gitlab", "feat: add feature", "14", "", "gitlab:gl-1");
-    expect(result).toMatch(/\n\nGitLab: #14\n$/);
-  });
-
-  it("appends 'Redmine: #123' footer for redmine", () => {
-    const result = callAppendTicketFooter(
-      "gerrit",
-      "feat: add feature",
-      "123",
-      "http://redmine.local/issues/123",
-      "redmine"
-    );
-    expect(result).toMatch(/\n\nRedmine: #123\n$/);
-  });
-
-  it("does NOT duplicate footer if message already contains 'GitLab:'", () => {
-    const msg = "feat: add feature\n\nGitLab: #14\n";
-    const result = callAppendTicketFooter("gitlab", msg, "14", "", "gitlab:gl-1");
-    expect(result).toBe(msg);
-    const occurrences = (result.match(/GitLab:/g) ?? []).length;
-    expect(occurrences).toBe(1);
-  });
-
-  it("does NOT duplicate footer if message already contains 'Redmine:'", () => {
-    const msg = "feat: add feature\n\nRedmine: #123\n";
-    const result = callAppendTicketFooter("gerrit", msg, "123", "http://redmine.local/issues/123", "redmine");
-    expect(result).toBe(msg);
-    const occurrences = (result.match(/Redmine:/g) ?? []).length;
-    expect(occurrences).toBe(1);
-  });
-
-  it("skips footer when source label is unknown", () => {
-    const msg = "feat: add feature";
-    const result = callAppendTicketFooter("gerrit", msg, "42", "https://example.com/42", "unknown-system");
-    expect(result).toBe(msg);
-  });
-
-  it("skips footer if reviewSystem is not a known type", () => {
-    const msg = "feat: add exit endpoint";
-    const result = callAppendTicketFooter("unknown-system", msg, "14", "https://example.com/123");
-    expect(result).toBe(msg);
   });
 });

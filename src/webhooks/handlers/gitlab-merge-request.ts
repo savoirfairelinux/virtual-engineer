@@ -99,7 +99,7 @@ function extractMr(payload: unknown): GitlabMrPayload | null {
   const a = attrs as Record<string, unknown>;
   const iid = a["iid"] ?? a["id"];
   if (typeof iid !== "number" && typeof iid !== "string") return null;
-  const action = typeof a["action"] === "string" ? (a["action"] as string) : undefined;
+  const action = typeof a["action"] === "string" ? (a["action"]) : undefined;
   return action !== undefined ? { iid, action } : { iid };
 }
 

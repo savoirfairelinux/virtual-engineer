@@ -1,0 +1,218 @@
+import { homedir } from "os";
+import { resolve } from "path";
+import { describe, expect, it } from "vitest";
+import { makeExternalChangeId, makeTaskId } from "../../src/interfaces.js";
+import type { ReviewWorkspaceInput, TaskContext } from "../../src/interfaces.js";
+import { AiderAdapter } from "../../src/agents/aiderAdapter.js";
+import { ClaudeAdapter } from "../../src/agents/claudeAdapter.js";
+import { CopilotAdapter } from "../../src/agents/copilotAdapter.js";
+import { GooseAdapter } from "../../src/agents/gooseAdapter.js";
+import {
+  buildCodegenContainerSpec,
+  buildReviewContainerSpec,
+} from "../../src/agents/containerSpecBuilders.js";
+
+function makeContext(): TaskContext {
+  return {
+    taskId: makeTaskId("task-123"),
+    ticketTitle: "Share container specs",
+    ticketDescription: "Keep provider container contracts aligned",
+    acceptanceCriteria: [],
+    baseBranch: "main",
+    workspacePath: "/workspace",
+    volumeName: "ve-ws-test",
+    homeVolumeName: "ve-home-test",
+    constraints: [],
+    priorFeedback: [],
+    cycleNumber: 2,
+    commitMessage: "Share container specs",
+    agentSession: {
+      agentContainerImage: "agent:test",
+      repoCloneUrl: "ssh://git.example.test/project",
+      pushRef: "refs/for/main",
+      existingChangeId: makeExternalChangeId("Iroot"),
+      perRepoChangeIds: { root: makeExternalChangeId("Irepo") },
+      gitAuthorName: "Virtual Engineer",
+      gitAuthorEmail: "ve@example.test",
+      ticketFooterLine: "GitLab: https://gitlab.example.test/issues/123",
+      aiderBackend: "openai",
+      aiderApiKey: "aider-token",
+      repositoryMap: {
+        superproject: { repoKey: "root", localPath: "." },
+        submodules: [],
+      },
+    },
+  };
+}
+
+function makeReviewInput(): ReviewWorkspaceInput {
+  return {
+    reviewStrategy: "ve_direct",
+    changeId: makeExternalChangeId("Ireview"),
+    revisionNumber: 42,
+    patchset: 3,
+    repositoryName: "project",
+    prompt: "Review this patch",
+    systemPrompt: "Review carefully",
+    agentToken: "token",
+    containerImage: "review:test",
+  };
+}
+
+describe("containerSpecBuilders", () => {
+  it("builds the common code-generation contract", () => {
+    const context = makeContext();
+
+    const spec = buildCodegenContainerSpec(context, {
+      providerEnv: { AGENT_PROVIDER: "test" },
+      maxRepositoryContextBytes: 123_456,
+      maxCommitsPerCycle: 7,
+      promptsDir: "~/ve-prompts",
+    });
+
+    expect(spec).toEqual({
+      image: "agent:test",
+      env: {
+        AGENT_PROVIDER: "test",
+        GIT_AUTHOR_NAME: "Virtual Engineer",
+        GIT_AUTHOR_EMAIL: "ve@example.test",
+        GIT_COMMITTER_NAME: "Virtual Engineer",
+        GIT_COMMITTER_EMAIL: "ve@example.test",
+        TASK_ID: "task-123",
+        MAX_CONTEXT_BYTES: "123456",
+        MAX_COMMITS_PER_CYCLE: "7",
+        REPOSITORY_MAP_JSON: JSON.stringify(context.agentSession.repositoryMap),
+        ROOT_CHANGE_ID: "Iroot",
+        PER_REPO_CHANGE_IDS_JSON: JSON.stringify(context.agentSession.perRepoChangeIds),
+        TICKET_FOOTER_LINE: "GitLab: https://gitlab.example.test/issues/123",
+        PROMPTS_DIR: `${homedir()}/ve-prompts`,
+      },
+      command: ["node", "/app/agent-worker/dist/index.js"],
+    });
+  });
+
+  it.each([
+    ["~", homedir()],
+    ["prompts", resolve("prompts")],
+  ])("resolves the %s prompt directory", (promptsDir, expectedPath) => {
+    const spec = buildCodegenContainerSpec(makeContext(), {
+      providerEnv: {},
+      maxRepositoryContextBytes: 123_456,
+      maxCommitsPerCycle: 7,
+      promptsDir,
+    });
+
+    expect(spec.env["PROMPTS_DIR"]).toBe(expectedPath);
+  });
+
+  it("uses the default commit limit when no override is configured", () => {
+    const spec = buildCodegenContainerSpec(makeContext(), {
+      providerEnv: {},
+      maxRepositoryContextBytes: 123_456,
+      maxCommitsPerCycle: undefined,
+    });
+
+    expect(spec.env["MAX_COMMITS_PER_CYCLE"]).toBe("10");
+  });
+
+  it("builds the common review contract with isolated security args", () => {
+    const first = buildReviewContainerSpec(makeReviewInput(), {
+      providerEnv: { AGENT_PROVIDER: "test" },
+    });
+    const second = buildReviewContainerSpec(makeReviewInput(), {
+      providerEnv: { AGENT_PROVIDER: "test" },
+    });
+
+    expect(first).toEqual({
+      image: "review:test",
+      env: {
+        AGENT_PROVIDER: "test",
+        REVIEW_MODE: "1",
+        REVIEW_STRATEGY: "ve_direct",
+        USER_PROMPT_FILE: "/ve-home/user-prompt.txt",
+        SYSTEM_PROMPT: "Review carefully",
+      },
+      command: ["node", "/app/agent-worker/dist/index.js"],
+    });
+
+    expect(second.command).toEqual(first.command);
+  });
+
+  it("uses the default image for review containers", () => {
+    const input = makeReviewInput();
+    delete input.containerImage;
+
+    const spec = buildReviewContainerSpec(input, { providerEnv: {} });
+
+    expect(spec.image).toBe("virtual-engineer-workspace:latest");
+  });
+
+  it("keeps common code-generation and review contracts aligned across providers", () => {
+    const context = makeContext();
+    const input = makeReviewInput();
+    const config = {
+      maxRepositoryContextBytes: 123_456,
+      maxCommitsPerCycle: 7,
+    };
+    const adapters = [
+      {
+        codegen: new CopilotAdapter(config).buildContainerSpec(context, {
+          GITHUB_TOKEN: "copilot-token",
+        }),
+        review: new CopilotAdapter(config).buildReviewContainerSpec(input, {
+          GITHUB_TOKEN: "copilot-token",
+        }),
+      },
+      {
+        codegen: new ClaudeAdapter(config).buildContainerSpec(context, {
+          ANTHROPIC_API_KEY: "claude-token",
+        }),
+        review: new ClaudeAdapter(config).buildReviewContainerSpec(input, {
+          ANTHROPIC_API_KEY: "claude-token",
+        }),
+      },
+      {
+        codegen: new AiderAdapter(config).buildContainerSpec(context, {
+          OPENAI_API_KEY: "aider-token",
+        }),
+        review: new AiderAdapter(config).buildReviewContainerSpec(input, {
+          OPENAI_API_KEY: "aider-token",
+        }),
+      },
+      {
+        codegen: new GooseAdapter(config).buildContainerSpec(context, {
+          ANTHROPIC_API_KEY: "goose-token",
+        }),
+        review: new GooseAdapter(config).buildReviewContainerSpec(input, {
+          ANTHROPIC_API_KEY: "goose-token",
+        }),
+      },
+    ];
+
+    for (const { codegen, review } of adapters) {
+      expect(codegen).toMatchObject({
+        image: "agent:test",
+        command: ["node", "/app/agent-worker/dist/index.js"],
+      });
+      expect(codegen.env).toMatchObject({
+        GIT_AUTHOR_NAME: "Virtual Engineer",
+        GIT_AUTHOR_EMAIL: "ve@example.test",
+        GIT_COMMITTER_NAME: "Virtual Engineer",
+        GIT_COMMITTER_EMAIL: "ve@example.test",
+        TASK_ID: "task-123",
+        MAX_CONTEXT_BYTES: "123456",
+        MAX_COMMITS_PER_CYCLE: "7",
+      });
+      expect(review).toMatchObject({
+        image: "review:test",
+        command: ["node", "/app/agent-worker/dist/index.js"],
+      });
+      expect(review.env).toMatchObject({
+        REVIEW_MODE: "1",
+        REVIEW_STRATEGY: "ve_direct",
+        USER_PROMPT_FILE: "/ve-home/user-prompt.txt",
+        SYSTEM_PROMPT: "Review carefully",
+      });
+    }
+  });
+});

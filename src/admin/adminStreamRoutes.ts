@@ -60,7 +60,7 @@ export function registerStreamRoutes(router: Router, deps: StreamRouteDeps): voi
         }
         if (projectId === null) return;
         const perms = getEffectivePermissions(req);
-        if (perms && !can(perms, "task.read", projectId)) return;
+        if (!perms || !can(perms, "task.read", projectId)) return;
         writeLiveEvent?.(event);
       }).catch(() => undefined);
     };
@@ -78,7 +78,7 @@ export function registerStreamRoutes(router: Router, deps: StreamRouteDeps): voi
       // Enforce project-scoped task.read: streaming a task's logs must respect
       // the caller's scope (agent logs can contain cross-project source/secrets).
       const perms = getEffectivePermissions(req);
-      if (perms && !can(perms, "task.read", task.projectId)) {
+      if (!perms || !can(perms, "task.read", task.projectId)) {
         writeJson(res, 403, { error: "forbidden", permission: "task.read" });
         return;
       }
@@ -108,10 +108,17 @@ export function registerStreamRoutes(router: Router, deps: StreamRouteDeps): voi
     res.socket?.setNoDelay(true);
     res.flushHeaders();
 
+    // Deduplicate the replayed backlog without letting a long-lived global
+    // stream retain every key it has ever emitted.
+    const MAX_EMITTED_KEYS = 5_000;
     const emittedKeys = new Set<string>();
     const writeEntry = (entry: Record<string, unknown>): void => {
       const key = streamEntryKey(entry);
       if (emittedKeys.has(key)) return;
+      if (emittedKeys.size >= MAX_EMITTED_KEYS) {
+        const oldest = emittedKeys.values().next().value;
+        if (oldest !== undefined) emittedKeys.delete(oldest);
+      }
       emittedKeys.add(key);
       res.write(`data: ${JSON.stringify(entry)}\n\n`);
     };
@@ -239,22 +246,35 @@ function serializeAgentEventEntry(event: AgentLogEvent): Record<string, unknown>
   };
 }
 
+/** Stringify an unknown log-entry field without risking `[object Object]` output. */
+function toKeyPart(value: unknown): string {
+  if (value === undefined || value === null) return "";
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return "";
+  }
+}
+
 /** Build a deterministic key used to deduplicate SSE entries. */
 function streamEntryKey(entry: Record<string, unknown>): string {
   const parts = [
-    String(entry["timestamp"] ?? ""),
-    String(entry["taskId"] ?? ""),
-    String(entry["cycleNumber"] ?? ""),
-    String(entry["type"] ?? ""),
-    String(entry["level"] ?? ""),
-    String(entry["message"] ?? ""),
+    toKeyPart(entry["timestamp"]),
+    toKeyPart(entry["taskId"]),
+    toKeyPart(entry["cycleNumber"]),
+    toKeyPart(entry["type"]),
+    toKeyPart(entry["level"]),
+    toKeyPart(entry["message"]),
   ];
   const data = entry["data"];
   if (data !== undefined) {
     try {
       parts.push(typeof data === "string" ? data : JSON.stringify(data));
     } catch {
-      parts.push(String(data));
+      parts.push(toKeyPart(data));
     }
   }
   return parts.join("|");

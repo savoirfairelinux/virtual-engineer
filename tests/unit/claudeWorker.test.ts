@@ -1,0 +1,347 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { AgentRunOptions } from "../../agent-worker/src/providers/types.js";
+
+const mocks = vi.hoisted(() => ({
+  emitEvent: vi.fn(),
+  query: vi.fn(),
+}));
+
+vi.mock("../../agent-worker/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs", () => ({
+  query: (...args: unknown[]) => mocks.query(...args),
+}));
+
+vi.mock("../../agent-worker/src/providers/events.js", () => ({
+  emitEvent: (...args: unknown[]) => mocks.emitEvent(...args),
+}));
+
+import {
+  buildClaudeQueryOptions,
+  runClaudeAgent,
+} from "../../agent-worker/src/providers/claude.js";
+
+interface FakeStream extends AsyncIterable<unknown> {
+  close: ReturnType<typeof vi.fn>;
+}
+
+function makeStream(messages: unknown[]): FakeStream {
+  return {
+    close: vi.fn(),
+    async *[Symbol.asyncIterator]() {
+      yield* messages;
+    },
+  };
+}
+
+function makeOptions(overrides: Partial<AgentRunOptions> = {}): AgentRunOptions {
+  return {
+    model: "claude-sonnet",
+    agentInstructions: "Follow repository instructions",
+    cwd: "/workspace",
+    timeoutMs: 1_000,
+    mode: "codegen",
+    ...overrides,
+  };
+}
+
+describe("runClaudeAgent", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("maps assistant tools, usage, cost, and the final result", async () => {
+    const stream = makeStream([
+      {
+        type: "assistant",
+        message: {
+          content: [
+            { type: "tool_use", name: "Edit", input: { file_path: "src/index.ts" } },
+            { type: "text", text: "Working on it" },
+          ],
+          usage: {
+            input_tokens: 20,
+            output_tokens: 10,
+            cache_read_input_tokens: 4,
+            cache_creation_input_tokens: 2,
+          },
+        },
+      },
+      {
+        type: "result",
+        subtype: "success",
+        result: "Implemented safely",
+        total_cost_usd: 0.12,
+        num_turns: 2,
+      },
+    ]);
+    mocks.query.mockReturnValue(stream);
+
+    const run = await runClaudeAgent("Implement the task", makeOptions());
+
+    expect(run).toMatchObject({
+      content: "Implemented safely",
+      toolCallCount: 1,
+      toolsByKind: { Edit: 1 },
+    });
+    expect(mocks.query).toHaveBeenCalledWith({
+      prompt: "Implement the task",
+      options: expect.objectContaining({
+        model: "claude-sonnet",
+        cwd: "/workspace",
+        systemPrompt: {
+          type: "preset",
+          preset: "claude_code",
+          append: expect.stringMatching(
+            /Follow repository instructions[\s\S]*ve_submit_changes/
+          ),
+        },
+        permissionMode: "bypassPermissions",
+        allowDangerouslySkipPermissions: true,
+        settingSources: ["user", "project"],
+        skills: "all",
+        strictMcpConfig: true,
+      }),
+    });
+    expect((mocks.query.mock.calls[0]?.[0] as { options: Record<string, unknown> }).options)
+      .not.toHaveProperty("plugins");
+    expect(mocks.emitEvent).toHaveBeenCalledWith("tool.execution_start", {
+      name: "Edit",
+      input: { file_path: "src/index.ts" },
+      callNumber: 1,
+    });
+    expect(mocks.emitEvent).toHaveBeenCalledWith("assistant.usage", {
+      inputTokens: 20,
+      outputTokens: 10,
+      cacheReadTokens: 4,
+      cacheWriteTokens: 2,
+      model: "claude-sonnet",
+    });
+    expect(mocks.emitEvent).toHaveBeenCalledWith("cost.total", {
+      costUsd: 0.12,
+      numTurns: 2,
+      model: "claude-sonnet",
+    });
+    expect(stream.close).toHaveBeenCalledOnce();
+
+    await run.cleanup();
+    expect(stream.close).toHaveBeenCalledTimes(2);
+  });
+
+  it("uses the review system prompt and assistant text fallback", async () => {
+    const stream = makeStream([
+      {
+        type: "assistant",
+        message: {
+          content: [
+            { type: "text", text: "First finding" },
+            { type: "text", text: "Second finding" },
+          ],
+        },
+      },
+      { type: "result", subtype: "success" },
+    ]);
+    mocks.query.mockReturnValue(stream);
+
+    const run = await runClaudeAgent("Review", makeOptions({
+      model: "",
+      mode: "review",
+    }));
+
+    const queryInput = mocks.query.mock.calls[0]?.[0] as {
+      options: Record<string, unknown>;
+    };
+    expect(queryInput.options["model"]).toBeUndefined();
+    expect(queryInput.options["systemPrompt"]).toEqual({
+      type: "preset",
+      preset: "claude_code",
+      append: "Follow repository instructions",
+    });
+    expect(queryInput.options["settingSources"]).toEqual(["user", "project"]);
+    expect(queryInput.options["skills"]).toBe("all");
+    expect(queryInput.options["tools"]).toEqual(expect.arrayContaining(["Skill"]));
+    expect(queryInput.options["allowedTools"]).toEqual(expect.arrayContaining(["Skill"]));
+    expect(run.content).toBe("First finding\nSecond finding");
+    expect(mocks.emitEvent).toHaveBeenCalledWith("session.end", expect.objectContaining({
+      mode: "review",
+      model: "cli-default",
+      outputLength: 28,
+    }));
+  });
+
+  it("reports a terminal SDK error and closes the stream", async () => {
+    const stream = makeStream([
+      {
+        type: "result",
+        subtype: "error_during_execution",
+        errors: ["tool failed", "permission denied"],
+      },
+    ]);
+    mocks.query.mockReturnValue(stream);
+
+    await expect(runClaudeAgent("Implement", makeOptions())).rejects.toThrow(
+      "Claude session ended with error: tool failed; permission denied"
+    );
+
+    expect(mocks.emitEvent).toHaveBeenCalledWith("session.error", {
+      message: "tool failed; permission denied",
+    });
+    expect(stream.close).toHaveBeenCalledOnce();
+  });
+
+  it("aborts at the timeout and closes a failing stream", async () => {
+    vi.useFakeTimers();
+    let abortController: AbortController | undefined;
+    const stream: FakeStream = {
+      close: vi.fn(),
+      [Symbol.asyncIterator]() {
+        return {
+          next: () => new Promise<IteratorResult<unknown>>((_, reject) => {
+            abortController?.signal.addEventListener("abort", () => {
+              reject(new Error("aborted by timeout"));
+            }, { once: true });
+          }),
+        };
+      },
+    };
+    mocks.query.mockImplementation((input: { options: { abortController: AbortController } }) => {
+      abortController = input.options.abortController;
+      return stream;
+    });
+
+    const rejection = expect(
+      runClaudeAgent("Implement", makeOptions({ timeoutMs: 50 }))
+    ).rejects.toThrow("aborted by timeout");
+    await vi.advanceTimersByTimeAsync(50);
+
+    await rejection;
+    expect(abortController?.signal.aborted).toBe(true);
+    expect(stream.close).toHaveBeenCalledOnce();
+    vi.useRealTimers();
+  });
+});
+
+describe("Claude worker native profile", () => {
+  it("preserves the Claude Code preset for review and requests structured output", () => {
+    const outputSchema = {
+      type: "object",
+      properties: { vote: { enum: [-1, 0, 1] } },
+      required: ["vote"],
+      additionalProperties: false,
+    };
+
+    const options = buildClaudeQueryOptions({
+      model: "claude-sonnet-4-6",
+      agentInstructions: "review policy",
+      cwd: "/workspace",
+      timeoutMs: 1000,
+      mode: "review",
+      reviewOutputSchema: outputSchema,
+    });
+
+    expect(options.systemPrompt).toEqual(expect.objectContaining({
+      type: "preset",
+      preset: "claude_code",
+      append: expect.stringContaining("review policy"),
+    }));
+    expect(options.outputFormat).toBeUndefined();
+    expect(options.tools).toEqual(["Read", "Glob", "Grep", "Skill", "mcp__ve-submission__ve_submit_review"]);
+    expect(options.allowedTools).toEqual([
+      "Read",
+      "Glob",
+      "Grep",
+      "Skill",
+      "mcp__ve-submission__ve_submit_review",
+    ]);
+    expect(options.permissionMode).toBe("dontAsk");
+    expect(options.strictMcpConfig).toBe(true);
+    expect(options.mcpServers).toEqual({
+      "ve-submission": expect.objectContaining({ type: "stdio" }),
+    });
+  });
+
+  it("maps advanced effort, thinking, turn, and cost limits to the SDK", () => {
+    const options = buildClaudeQueryOptions({
+      model: "claude-opus-4-6",
+      agentInstructions: "policy",
+      cwd: "/workspace",
+      timeoutMs: 1000,
+      mode: "codegen",
+    }, {
+      effort: "max",
+      thinkingMode: "enabled",
+      thinkingBudgetTokens: 12_000,
+      maxTurns: 30,
+      maxBudgetUsd: 8.5,
+    });
+
+    expect(options).toMatchObject({
+      effort: "max",
+      thinking: { type: "enabled", budgetTokens: 12_000 },
+      maxTurns: 30,
+      maxBudgetUsd: 8.5,
+    });
+    expect(options.systemPrompt).toEqual(expect.objectContaining({
+      append: expect.stringContaining("ve_submit_changes"),
+    }));
+    expect(options.mcpServers).toEqual({
+      "ve-submission": expect.objectContaining({ type: "stdio" }),
+    });
+    expect(options.tools).toBeUndefined();
+  });
+});
+
+describe("buildClaudeQueryOptions tool authorization", () => {
+  it("merges user blockedTools into disallowedTools (codegen)", () => {
+    const options = buildClaudeQueryOptions({
+      model: "claude-sonnet",
+      agentInstructions: "policy",
+      cwd: "/workspace",
+      timeoutMs: 1000,
+      mode: "codegen",
+      blockedTools: ["Bash(rm:*)", "WebFetch"],
+    });
+    expect(options.disallowedTools).toEqual(expect.arrayContaining([
+      "WebFetch", "WebSearch", "Bash(curl:*)", "Bash(rm:*)",
+    ]));
+    // codegen stays bypassPermissions (everything allowed by default).
+    expect(options.permissionMode).toBe("bypassPermissions");
+    expect(options.allowDangerouslySkipPermissions).toBe(true);
+  });
+
+  it("a tool in blockedTools is denied (codegen)", () => {
+    const options = buildClaudeQueryOptions({
+      model: "claude-sonnet",
+      agentInstructions: "policy",
+      cwd: "/workspace",
+      timeoutMs: 1000,
+      mode: "codegen",
+      blockedTools: ["Bash"],
+    });
+    expect(options.disallowedTools).toEqual(expect.arrayContaining(["Bash"]));
+    expect(options.permissionMode).toBe("bypassPermissions");
+  });
+
+  it("cannot relax the network floor: blocked network tools stay blocked even without a user list", () => {
+    const options = buildClaudeQueryOptions({
+      model: "claude-sonnet",
+      agentInstructions: "policy",
+      cwd: "/workspace",
+      timeoutMs: 1000,
+      mode: "codegen",
+    });
+    // WebFetch and Bash(curl:*) stay in disallowedTools (floor immutable).
+    expect(options.disallowedTools).toEqual(expect.arrayContaining(["WebFetch", "Bash(curl:*)"]));
+  });
+
+  it("review: keeps the full floor and applies user blockedTools", () => {
+    const options = buildClaudeQueryOptions({
+      model: "claude-sonnet",
+      agentInstructions: "policy",
+      cwd: "/workspace",
+      timeoutMs: 1000,
+      mode: "review",
+      blockedTools: ["Bash(rm:*)"],
+    });
+    expect(options.tools).toEqual(expect.arrayContaining(["Read", "Glob", "Grep", "Skill"]));
+    expect(options.disallowedTools).toEqual(expect.arrayContaining(["Bash(rm:*)"]));
+  });
+});

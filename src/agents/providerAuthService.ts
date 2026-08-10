@@ -114,6 +114,9 @@ export class DefaultProviderAuthService implements ProviderAuthService {
     input: ProviderAuthHandlerCompleteInput,
     options: { adminAuthSecret?: string | undefined }
   ): Promise<CompletedProviderAuth> {
+    if (!options.adminAuthSecret) {
+      throw new Error("ADMIN_AUTH_SECRET is required to store OAuth credentials.");
+    }
     switch (handler.kind) {
       case "device": {
         if (!("deviceCode" in input)) {
@@ -123,7 +126,7 @@ export class DefaultProviderAuthService implements ProviderAuthService {
         const encryptedToken = this.encryptTokenFn(token, options.adminAuthSecret);
         return {
           encryptedToken,
-          isPlaintext: !options.adminAuthSecret,
+          isPlaintext: false,
         };
       }
       case "redirect": {
@@ -137,7 +140,7 @@ export class DefaultProviderAuthService implements ProviderAuthService {
         const encryptedToken = this.encryptTokenFn(token, options.adminAuthSecret);
         return {
           encryptedToken,
-          isPlaintext: !options.adminAuthSecret,
+          isPlaintext: false,
         };
       }
     }

@@ -19,15 +19,44 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN groupadd --system sandbox \
   && useradd --system --gid sandbox --create-home \
     --home-dir /sandbox --shell /bin/bash sandbox
+
+# Install Python 3 + Aider (https://aider.chat) for the `aider` agent provider.
+# Aider wraps any LLM backend via litellm; it is installed as an isolated uv tool
+# so its dependencies don't clash with the Node toolchain. The binary is symlinked
+# onto /usr/local/bin so the agent-worker subprocess spawn resolves it on PATH.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 \
+    python3-venv \
+  && rm -rf /var/lib/apt/lists/* \
+  && curl -LsSf https://astral.sh/uv/install.sh | UV_VERSION=0.11.30 sh \
+  && /root/.local/bin/uv tool install --python python3 aider-chat==0.86.2 \
+  && ln -s /root/.local/bin/aider /usr/local/bin/aider
+ENV PATH="/root/.local/bin:${PATH}"
+
+# Install Goose CLI (https://goose-docs.ai) for the `goose` agent provider.
+# Goose is a Rust CLI from the AAIF that wraps any LLM provider. It is installed
+# via the official installer with a pinned version for reproducible builds. The
+# binary lands in /usr/local/bin so the agent-worker subprocess spawn resolves it
+# on PATH. CONFIGURE=false skips the interactive `goose configure` flow; the
+# agent-worker writes the config.yaml into the HOME volume at runtime. bzip2 is
+# required because the installer downloads a .tar.bz2 release archive; libxcb1
+# provides libxcb.so.1, a shared library the goose binary links against.
+#
+# The installer script is pinned to the v1.21.1 release tag (not the `stable`
+# channel) so the script itself is immutable and builds are reproducible.
+RUN apt-get update && apt-get install -y --no-install-recommends bzip2 libxcb1 \
+  && rm -rf /var/lib/apt/lists/* \
+  && curl -fsSL https://github.com/aaif-goose/goose/releases/download/v1.21.1/download_cli.sh \
+    | GOOSE_VERSION=1.21.1 CONFIGURE=false GOOSE_BIN_DIR=/usr/local/bin bash
 # Default SSH config — accepts unknown host keys as a fallback for ephemeral
 # sandboxes. When sshKnownHostsPath is configured on the Gerrit integration,
 # host-side git (HostGitExecutor / buildGitEnv) overrides GIT_SSH_COMMAND with
 # strict checking for the push that runs in the orchestrator.
-RUN mkdir -p ~/.ssh && echo "Host gerrit\n  StrictHostKeyChecking=no\n  UserKnownHostsFile=/dev/null" > ~/.ssh/config
+RUN mkdir -p ~/.ssh && printf '%s\n' "Host gerrit" "  StrictHostKeyChecking=no" "  UserKnownHostsFile=/dev/null" > ~/.ssh/config
 
 # Install GitHub CLI
-# Default GIT_SSH_COMMAND — overridden at runtime by dockerVolume.ts when
-# sshKeyPath (and optionally sshKnownHostsPath) are configured.
+# Default GIT_SSH_COMMAND — host-side git overrides it when sshKeyPath
+# (and optionally sshKnownHostsPath) are configured.
 ENV GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \

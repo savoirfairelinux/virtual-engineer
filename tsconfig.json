@@ -21,5 +21,10 @@
     "allowUnreachableCode": false
   },
   "include": ["src/**/*", "tests/**/*", "vitest.config.ts", "eslint.config.js", "vite.admin.config.ts"],
-  "exclude": ["node_modules", "dist", "src/admin/ui"]
+  "exclude": [
+    "node_modules",
+    "dist",
+    "src/admin/ui",
+    "tests/unit/admin-ui/**/*.test.ts*"
+  ]
 }

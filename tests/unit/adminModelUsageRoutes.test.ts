@@ -48,6 +48,7 @@ function makeDeps(getModelUsageSummary: AdminServerDependencies["stateStore"]["g
       getCostSummary: vi.fn(async () => ({ totalUsd: 0, totalAiCredits: 0, totalPremiumRequests: 0, totalRuns: 0, perProject: [], sinceEpochSeconds: null })),
       getModelUsageSummary,
     },
+    allowUnauthenticatedAdmin: true,
     config: {
       nodeEnv: "test",
       logLevel: "error",

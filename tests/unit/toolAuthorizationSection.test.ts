@@ -1,0 +1,149 @@
+/**
+ * Tests for the tool-authorization form state serialization helpers
+ * (src/admin/ui/views/ConfigView/toolAuthorizationHelpers.ts).
+ */
+import { describe, it, expect } from "vitest";
+import {
+  CLAUDE_TOOL_CATALOG,
+  COPILOT_TOOL_CATALOG,
+  emptyToolAuthorization,
+  getToolCatalog,
+  loadToolAuthorization,
+  serializeToolAuthorization,
+  supportsToolAuthorization,
+} from "../../src/admin/ui/views/ConfigView/toolAuthorizationHelpers.js";
+
+describe("supportsToolAuthorization", () => {
+  it("returns true for claude, copilot, aider, goose", () => {
+    expect(supportsToolAuthorization("claude")).toBe(true);
+    expect(supportsToolAuthorization("copilot")).toBe(true);
+    expect(supportsToolAuthorization("aider")).toBe(true);
+    expect(supportsToolAuthorization("goose")).toBe(true);
+  });
+
+  it("returns false for mock and undefined", () => {
+    expect(supportsToolAuthorization("mock")).toBe(false);
+    expect(supportsToolAuthorization(undefined)).toBe(false);
+  });
+});
+
+describe("getToolCatalog", () => {
+  it("returns the Claude catalog for claude", () => {
+    expect(getToolCatalog("claude")).toBe(CLAUDE_TOOL_CATALOG);
+    expect(CLAUDE_TOOL_CATALOG.map((t) => t.value)).toContain("Read");
+    expect(CLAUDE_TOOL_CATALOG.map((t) => t.value)).toContain("Bash");
+  });
+
+  it("returns the Copilot catalog for copilot (uses wrapper tool names)", () => {
+    expect(getToolCatalog("copilot")).toBe(COPILOT_TOOL_CATALOG);
+    expect(COPILOT_TOOL_CATALOG.map((t) => t.value)).toContain("Bash");
+    expect(COPILOT_TOOL_CATALOG.map((t) => t.value)).toContain("Read");
+  });
+
+  it("returns an empty catalog for non-list providers", () => {
+    expect(getToolCatalog("aider")).toEqual([]);
+    expect(getToolCatalog("mock")).toEqual([]);
+    expect(getToolCatalog(undefined)).toEqual([]);
+  });
+});
+
+describe("loadToolAuthorization", () => {
+  it("splits Claude known blocked tools into checkboxes and custom patterns into free text", () => {
+    const state = loadToolAuthorization(
+      { blockedTools: ["Bash", "Bash(curl:*)"] },
+      "claude",
+    );
+    expect(state.blockedTools).toEqual(["Bash"]);
+    expect(state.blockedToolsCustom).toBe("Bash(curl:*)");
+  });
+
+  it("loads Copilot blocked tools using the Copilot catalog (wrapper names)", () => {
+    const state = loadToolAuthorization(
+      { blockedTools: ["Write", "Bash"] },
+      "copilot",
+    );
+    expect(state.blockedTools).toEqual(["Write", "Bash"]);
+    expect(state.blockedToolsCustom).toBe("");
+  });
+
+  it("loads Aider toggles with defaults", () => {
+    const state = loadToolAuthorization({ suggestShellCommands: true }, "aider");
+    expect(state.suggestShellCommands).toBe(true);
+    expect(state.detectUrls).toBe(false);
+    expect(state.git).toBe(true);
+  });
+
+  it("preserves blockedTools as custom patterns when provider is undefined", () => {
+    const state = loadToolAuthorization(
+      { blockedTools: ["Read", "Bash(rm:*)"] },
+      undefined,
+    );
+    // Provider not yet resolved: all blocked tools go into custom patterns so
+    // the config isn't lost on edit.
+    expect(state.blockedTools).toEqual([]);
+    expect(state.blockedToolsCustom).toBe("Read\nBash(rm:*)");
+  });
+
+  it("loads Goose developerExtension", () => {
+    const state = loadToolAuthorization(
+      { developerExtension: false },
+      "goose",
+    );
+    expect(state.developerExtension).toBe(false);
+  });
+
+  it("returns empty state for non-object input", () => {
+    expect(loadToolAuthorization(null, "claude")).toEqual(emptyToolAuthorization());
+    expect(loadToolAuthorization("x", "claude")).toEqual(emptyToolAuthorization());
+  });
+});
+
+describe("serializeToolAuthorization", () => {
+  it("merges Claude checkboxes + custom patterns and returns undefined when empty", () => {
+    expect(serializeToolAuthorization(
+      { ...emptyToolAuthorization(), blockedTools: ["Bash"], blockedToolsCustom: "Bash(rm:*)" },
+      "claude",
+    )).toEqual({ blockedTools: ["Bash", "Bash(rm:*)"] });
+
+    expect(serializeToolAuthorization(emptyToolAuthorization(), "claude")).toBeUndefined();
+  });
+
+  it("serializes only custom patterns when no checkboxes selected", () => {
+    expect(serializeToolAuthorization(
+      { ...emptyToolAuthorization(), blockedToolsCustom: "Bash(rm:*)\nBash(curl:*)" },
+      "claude",
+    )).toEqual({ blockedTools: ["Bash(rm:*)", "Bash(curl:*)"] });
+  });
+
+  it("serializes Aider toggles when changed from defaults", () => {
+    expect(serializeToolAuthorization(
+      { ...emptyToolAuthorization(), suggestShellCommands: true, git: false },
+      "aider",
+    )).toEqual({
+      suggestShellCommands: true,
+      detectUrls: false,
+      playwright: false,
+      git: false,
+    });
+  });
+
+  it("returns undefined for Aider when all values match defaults (no config churn)", () => {
+    expect(serializeToolAuthorization(emptyToolAuthorization(), "aider")).toBeUndefined();
+  });
+
+  it("serializes Goose developerExtension when changed from default", () => {
+    expect(serializeToolAuthorization(
+      { ...emptyToolAuthorization(), developerExtension: false },
+      "goose",
+    )).toEqual({ developerExtension: false });
+  });
+
+  it("returns undefined for Goose when developerExtension matches default", () => {
+    expect(serializeToolAuthorization(emptyToolAuthorization(), "goose")).toBeUndefined();
+  });
+
+  it("returns undefined for unsupported providers", () => {
+    expect(serializeToolAuthorization(emptyToolAuthorization(), "mock")).toBeUndefined();
+    expect(serializeToolAuthorization(emptyToolAuthorization(), undefined)).toBeUndefined();
+  });
+});

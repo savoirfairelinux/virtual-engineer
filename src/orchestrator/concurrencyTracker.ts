@@ -17,6 +17,7 @@
  * effect within the cache TTL.
  */
 import type { AgentId, AgentRecord, ProjectId } from "../interfaces.js";
+import { toRejectionError } from "../utils/rejection.js";
 import { getLogger } from "../logger.js";
 
 const log = getLogger("concurrency-tracker");
@@ -259,7 +260,7 @@ export function createConcurrencyTracker(deps: ConcurrencyTrackerDeps): Concurre
     async acquireWhenAvailable(projectId, agentId, signal): Promise<ConcurrencyLease> {
       return new Promise<ConcurrencyLease>((resolve, reject) => {
         if (signal?.aborted === true) {
-          reject(signal.reason);
+          reject(toRejectionError(signal.reason));
           return;
         }
         const pending: PendingAcquisition = {
@@ -275,7 +276,7 @@ export function createConcurrencyTracker(deps: ConcurrencyTrackerDeps): Concurre
           pending.onAbort = (): void => {
             if (pending.settled) return;
             settlePending(pending);
-            reject(signal.reason);
+            reject(toRejectionError(signal.reason));
             void drainPendingAcquisitions().catch((err: unknown) => {
               log.error({ err, projectId, agentId }, "failed to drain concurrency waiters after abort");
             });

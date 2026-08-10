@@ -11,6 +11,9 @@ export interface AppSettings {
   pollingIntervalMs: number | null;
   maxAgentCycles: number | null;
   maxRetryAttempts: number | null;
+  agentTimeoutMs: number | null;
+  ticketCloseMaxRetries: number | null;
+  ticketCloseRetryMinTimeoutMs: number | null;
 }
 
 export interface SettingsStoreApi {
@@ -32,6 +35,9 @@ const EMPTY: AppSettings = {
   pollingIntervalMs: null,
   maxAgentCycles: null,
   maxRetryAttempts: null,
+  agentTimeoutMs: null,
+  ticketCloseMaxRetries: null,
+  ticketCloseRetryMinTimeoutMs: null,
 };
 
 export function createSettingsStore(context: SettingsStoreContext): SettingsStoreApi {
@@ -44,6 +50,9 @@ export function createSettingsStore(context: SettingsStoreContext): SettingsStor
       pollingIntervalMs: row.pollingIntervalMs ?? null,
       maxAgentCycles: row.maxAgentCycles ?? null,
       maxRetryAttempts: row.maxRetryAttempts ?? null,
+      agentTimeoutMs: row.agentTimeoutMs ?? null,
+      ticketCloseMaxRetries: row.ticketCloseMaxRetries ?? null,
+      ticketCloseRetryMinTimeoutMs: row.ticketCloseRetryMinTimeoutMs ?? null,
     };
   }
 
@@ -57,6 +66,9 @@ export function createSettingsStore(context: SettingsStoreContext): SettingsStor
     if (patch.pollingIntervalMs !== undefined) conflictSet["pollingIntervalMs"] = patch.pollingIntervalMs;
     if (patch.maxAgentCycles !== undefined) conflictSet["maxAgentCycles"] = patch.maxAgentCycles;
     if (patch.maxRetryAttempts !== undefined) conflictSet["maxRetryAttempts"] = patch.maxRetryAttempts;
+    if (patch.agentTimeoutMs !== undefined) conflictSet["agentTimeoutMs"] = patch.agentTimeoutMs;
+    if (patch.ticketCloseMaxRetries !== undefined) conflictSet["ticketCloseMaxRetries"] = patch.ticketCloseMaxRetries;
+    if (patch.ticketCloseRetryMinTimeoutMs !== undefined) conflictSet["ticketCloseRetryMinTimeoutMs"] = patch.ticketCloseRetryMinTimeoutMs;
 
     await db
       .insert(appSettings)
@@ -65,6 +77,9 @@ export function createSettingsStore(context: SettingsStoreContext): SettingsStor
         pollingIntervalMs: patch.pollingIntervalMs ?? null,
         maxAgentCycles: patch.maxAgentCycles ?? null,
         maxRetryAttempts: patch.maxRetryAttempts ?? null,
+        agentTimeoutMs: patch.agentTimeoutMs ?? null,
+        ticketCloseMaxRetries: patch.ticketCloseMaxRetries ?? null,
+        ticketCloseRetryMinTimeoutMs: patch.ticketCloseRetryMinTimeoutMs ?? null,
         updatedAt: now,
       })
       .onConflictDoUpdate({ target: appSettings.id, set: conflictSet });

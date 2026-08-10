@@ -46,6 +46,8 @@ describe("SqliteStateStore — runtime policies", () => {
       name: "a",
       type: "coding",
       modelConfigJson: "{}",
+      systemPromptId: "system_generic_code",
+      instructionsPromptId: "instructions_generic_code",
     });
     const policy = await store.createRuntimePolicy({ name: "p", kind: "network" });
 
@@ -72,7 +74,7 @@ describe("SqliteStateStore — runtime policies", () => {
   });
 
   it("rejects two policies of the same kind on one agent", async () => {
-    const agent = await store.createAgent({ name: "a", type: "coding", modelConfigJson: "{}" });
+    const agent = await store.createAgent({ name: "a", type: "coding", modelConfigJson: "{}", systemPromptId: "system_generic_code", instructionsPromptId: "instructions_generic_code" });
     const first = await store.createRuntimePolicy({ name: "first", kind: "network" });
     const second = await store.createRuntimePolicy({ name: "second", kind: "network" });
     await store.bindRuntimePolicy({ policyId: first.id, agentId: agent.id });
@@ -93,7 +95,7 @@ describe("SqliteStateStore — runtime policies", () => {
   });
 
   it("deleting a policy removes its bindings", async () => {
-    const agent = await store.createAgent({ name: "a", type: "coding", modelConfigJson: "{}" });
+    const agent = await store.createAgent({ name: "a", type: "coding", modelConfigJson: "{}", systemPromptId: "system_generic_code", instructionsPromptId: "instructions_generic_code" });
     const policy = await store.createRuntimePolicy({ name: "p", kind: "network" });
     await store.bindRuntimePolicy({ policyId: policy.id, agentId: agent.id });
 

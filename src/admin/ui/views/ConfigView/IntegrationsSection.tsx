@@ -9,17 +9,18 @@ import { useCurrentUser } from "../../authContext.tsx";
 import { IntegrationFormModal } from "./IntegrationFormModal.tsx";
 import { IntegrationDrawer } from "./ConfigDrawers.tsx";
 import type { ApiIntegration } from "../../types.ts";
-import type { ConfigViewData } from "./index.tsx";
+import type { ConfigSectionProps } from "./index.tsx";
 
-export function IntegrationsSection({ integrations, plugins, onRefresh }: ConfigViewData) {
-  const { canOperate } = useCurrentUser();
+export function IntegrationsSection({ integrations, plugins, onRefresh, route, navigate, markClean, setDirty }: ConfigSectionProps) {
+  const { can } = useCurrentUser();
+  const canWrite = can("integration.write");
+  const canDelete = can("integration.delete");
+  const canOperate = can("integration.operate");
   const [busy, setBusy] = useState<string | null>(null);
-  const [showAdd, setShowAdd] = useState(false);
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [drawerId, setDrawerId] = useState<string | null>(null);
-
-  const editingIntegration = editingId ? integrations.find((i) => i.id === editingId) : undefined;
-  const drawerItem = drawerId ? integrations.find((i) => i.id === drawerId) : undefined;
+  const routeId = route.section === "integrations" && (route.mode === "detail" || route.mode === "edit")
+    ? route.id
+    : null;
+  const routeItem = routeId ? integrations.find((integration) => integration.id === routeId) : undefined;
 
   async function toggleEnabled(id: string, enabled: boolean) {
     setBusy(id);
@@ -31,23 +32,56 @@ export function IntegrationsSection({ integrations, plugins, onRefresh }: Config
     }
   }
 
-  async function deleteIntegration(it: ApiIntegration) {
-    if (!window.confirm(`Delete integration "${it.name}"? This cannot be undone.`)) return;
+  async function deleteIntegration(it: ApiIntegration): Promise<boolean> {
+    if (!window.confirm(`Delete integration "${it.name}"? This cannot be undone.`)) return false;
     setBusy(it.id);
     try {
       await api.delete(`/api/admin/integrations/${it.id}`);
       onRefresh();
+      return true;
     } catch (e) {
       alert(e instanceof Error ? e.message : "Delete failed");
+      return false;
     } finally {
       setBusy(null);
     }
   }
 
   function handleSaved() {
-    setShowAdd(false);
-    setEditingId(null);
+    markClean();
     onRefresh();
+    navigate(route.mode === "edit" && routeId
+      ? { section: "integrations", mode: "detail", id: routeId }
+      : { section: "integrations", mode: "list" });
+  }
+
+  if (route.mode === "detail") {
+    if (!routeItem) return <MissingEntity label="integration" onBack={() => navigate({ section: "integrations", mode: "list" })} />;
+    return (
+      <IntegrationDrawer
+        item={routeItem}
+        onClose={() => navigate({ section: "integrations", mode: "list" })}
+        {...(canWrite ? { onEdit: () => navigate({ section: "integrations", mode: "edit", id: routeItem.id }) } : {})}
+        {...(canOperate ? { onToggle: () => { void toggleEnabled(routeItem.id, routeItem.enabled); } } : {})}
+        {...(canDelete ? { onDelete: () => { void deleteIntegration(routeItem).then((deleted) => { if (deleted) navigate({ section: "integrations", mode: "list" }); }); } } : {})}
+      />
+    );
+  }
+
+  if (route.mode === "create" || route.mode === "edit") {
+    if (!canWrite) return <MissingEntity label="page" onBack={() => navigate({ section: "integrations", mode: "list" })} />;
+    if (route.mode === "edit" && !routeItem) return <MissingEntity label="integration" onBack={() => navigate({ section: "integrations", mode: "list" })} />;
+    return (
+      <IntegrationFormModal
+        integration={route.mode === "edit" ? routeItem : undefined}
+        plugins={plugins}
+        onClose={() => navigate(route.mode === "edit" && routeId
+          ? { section: "integrations", mode: "detail", id: routeId }
+          : { section: "integrations", mode: "list" })}
+        onSaved={handleSaved}
+        onDirtyChange={setDirty}
+      />
+    );
   }
 
   return (
@@ -59,8 +93,8 @@ export function IntegrationsSection({ integrations, plugins, onRefresh }: Config
             <h1 style={{ margin: 0, fontSize: "22px", fontWeight: 600, letterSpacing: "-0.01em" }}>Integrations</h1>
             <p style={{ margin: "6px 0 0", color: "var(--text-faint)", fontSize: "13.5px" }}>External providers the orchestrator routes to by integration ID.</p>
           </div>
-          {canOperate && (
-            <button className="btn primary" onClick={() => setShowAdd(true)}>
+          {canWrite && (
+            <button className="btn primary" onClick={() => navigate({ section: "integrations", mode: "create" })}>
               <Icon name="plus" size={14} /> Add integration
             </button>
           )}
@@ -74,7 +108,7 @@ export function IntegrationsSection({ integrations, plugins, onRefresh }: Config
         {integrations.map((it) => {
           const tone = it.enabled ? "ok" : "muted";
           return (
-            <RowCard key={it.id} onClick={() => setDrawerId(it.id)}>
+            <RowCard key={it.id} ariaLabel={`Open integration ${it.name}`} onClick={() => navigate({ section: "integrations", mode: "detail", id: it.id })}>
               <ProviderGlyph provider={it.provider} size={36} />
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: "9px", minWidth: 0 }}>
@@ -100,12 +134,13 @@ export function IntegrationsSection({ integrations, plugins, onRefresh }: Config
                 <div onClick={(e) => e.stopPropagation()}>
                   <Toggle
                     on={it.enabled}
+                    label={`Integration ${it.name} enabled`}
                     disabled={busy === it.id}
                     onChange={() => void toggleEnabled(it.id, it.enabled)}
                   />
                 </div>
               )}
-              {canOperate && (
+              {canDelete && (
                 <button
                   className="iconbtn"
                   title="Delete"
@@ -120,27 +155,15 @@ export function IntegrationsSection({ integrations, plugins, onRefresh }: Config
         })}
       </div>
 
-      {/* Detail drawer */}
-      {drawerItem && (
-        <IntegrationDrawer
-          item={drawerItem}
-          onClose={() => setDrawerId(null)}
-          {...(canOperate ? {
-            onEdit: () => { setDrawerId(null); setEditingId(drawerItem.id); },
-            onToggle: () => { void toggleEnabled(drawerItem.id, drawerItem.enabled); setDrawerId(null); },
-            onDelete: () => { void deleteIntegration(drawerItem); setDrawerId(null); },
-          } : {})}
-        />
-      )}
-
-      {canOperate && (showAdd || editingIntegration) && (
-        <IntegrationFormModal
-          integration={editingIntegration}
-          plugins={plugins}
-          onClose={() => { setShowAdd(false); setEditingId(null); }}
-          onSaved={handleSaved}
-        />
-      )}
     </>
+  );
+}
+
+function MissingEntity({ label, onBack }: { label: string; onBack: () => void }) {
+  return (
+    <div className="config-missing">
+      <div className="placeholder">This {label} is unavailable or you do not have access.</div>
+      <button className="btn" onClick={onBack}>Back to integrations</button>
+    </div>
   );
 }

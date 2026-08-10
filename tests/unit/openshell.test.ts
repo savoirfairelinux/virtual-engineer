@@ -580,6 +580,24 @@ describe("OpenShellClient", () => {
     ]);
   });
 
+  it("allowEgress keeps an explicit host port instead of defaulting to 443", async () => {
+    const { runner, calls } = runnerReturning({ code: 0 });
+    const client = new OpenShellClient({ runner });
+    await client.allowEgress({
+      name: "ve-t",
+      hosts: ["127.0.0.1:11434", "api.openai.com", "host.example:8080"],
+      binaries: ["/usr/local/bin/aider"],
+    });
+    expect(calls[0]?.args).toEqual([
+      "policy", "update",
+      "--add-endpoint", "127.0.0.1:11434:full:rest",
+      "--add-endpoint", "api.openai.com:443:full:rest",
+      "--add-endpoint", "host.example:8080:full:rest",
+      "--binary", "/usr/local/bin/aider",
+      "--wait", "ve-t",
+    ]);
+  });
+
   it("allowEgress is a no-op when no hosts are given", async () => {
     const { runner, calls } = runnerReturning({ code: 0 });
     const client = new OpenShellClient({ runner });

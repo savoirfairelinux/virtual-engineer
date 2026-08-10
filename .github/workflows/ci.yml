@@ -24,14 +24,26 @@ jobs:
       - name: Install agent-worker dependencies
         run: cd agent-worker && npm ci
 
+      - name: Audit production dependencies
+        run: npm audit --omit=dev
+
+      - name: Audit dev-tooling dependencies (informational)
+        run: npm audit --audit-level=high || true
+
+      - name: Audit agent-worker production dependencies
+        run: cd agent-worker && npm audit --omit=dev
+
+      - name: Audit agent-worker dev-tooling dependencies (informational)
+        run: cd agent-worker && npm audit --audit-level=high || true
+
       - name: Type check
         run: npm run typecheck
 
       - name: Lint
         run: npm run lint
 
-      - name: Test
-        run: npm test
+      - name: Test with coverage
+        run: npm run test:coverage
 
       - name: Build
         run: npm run build

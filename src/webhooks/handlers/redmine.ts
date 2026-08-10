@@ -82,17 +82,17 @@ function extractIssue(payload: unknown): RedmineIssuePayload | null {
   const project = isRecord(issue["project"]) ? issue["project"] : null;
   const projectIdentifier =
     typeof project?.["identifier"] === "string"
-      ? (project["identifier"] as string)
+      ? (project["identifier"])
       : typeof project?.["name"] === "string"
-        ? (project["name"] as string)
+        ? (project["name"])
         : undefined;
 
   return {
     id,
-    subject: typeof issue["subject"] === "string" ? (issue["subject"] as string) : undefined,
-    description: typeof issue["description"] === "string" ? (issue["description"] as string) : undefined,
+    subject: typeof issue["subject"] === "string" ? (issue["subject"]) : undefined,
+    description: typeof issue["description"] === "string" ? (issue["description"]) : undefined,
     projectIdentifier,
-    webUrl: typeof root["url"] === "string" ? (root["url"] as string) : undefined,
+    webUrl: typeof root["url"] === "string" ? (root["url"]) : undefined,
   };
 }
 

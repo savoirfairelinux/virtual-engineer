@@ -3,14 +3,15 @@
  * Pushes to `refs/for/<branch>` with a Change-Id trailer; all git operations run host-side.
  */
 
-import { execFileSync } from "child_process";
 import { createHash } from "crypto";
 import { getLogger } from "../logger.js";
-import { execGit, trustedGitArgs, trustedGitEnv } from "../utils/gitExec.js";
+import { trustedGitEnv } from "../utils/gitExec.js";
 import type { VcsConnector, VcsPushResult } from "./vcsConnector.js";
 import type { PatchsetCheckoutOptions, ReviewComment } from "../interfaces.js";
 import { GerritSshClient, buildSshHostKeyOptions } from "../connectors/gerritSshClient.js";
 import { buildGerritTopic } from "./branchNaming.js";
+import type { GitRunner } from "./gitRunner.js";
+import { NodeGitRunner } from "./nodeGitRunner.js";
 
 const log = getLogger("gerrit-vcs");
 
@@ -86,6 +87,15 @@ function buildGitEnv(config: GerritVcsConnectorConfig, overrideSshKeyPath?: stri
   });
 }
 
+/** Append Gerrit push options to a ref, preserving any options already present. */
+function appendGerritPushOptions(ref: string, topic?: string, reviewerEmails?: string[]): string {
+  const opts: string[] = [];
+  if (topic) opts.push(`topic=${topic}`);
+  for (const email of reviewerEmails ?? []) opts.push(`r=${email}`);
+  if (opts.length === 0) return ref;
+  return `${ref}${ref.includes("%") ? "," : "%"}${opts.join(",")}`;
+}
+
 export class GerritVcsConnector implements VcsConnector {
   readonly useChangeIdContinuity = true;
   readonly reviewSystemLabel = "gerrit";
@@ -106,7 +116,10 @@ export class GerritVcsConnector implements VcsConnector {
     return this.config.sshAgentPubKeyPath;
   }
 
-  constructor(private readonly config: GerritVcsConnectorConfig) {
+  constructor(
+    private readonly config: GerritVcsConnectorConfig,
+    private readonly gitRunner: GitRunner = new NodeGitRunner()
+  ) {
     this.sshClient = new GerritSshClient({
       host: config.sshHost,
       port: config.sshPort,
@@ -120,6 +133,16 @@ export class GerritVcsConnector implements VcsConnector {
   /** Returns the Gerrit push ref (`refs/for/<branch>`) and topic for the given task. */
   buildPushSpec(baseBranch: string, taskId: string, ticketTitle?: string | null): { ref: string; topic?: string } {
     return { ref: `refs/for/${baseBranch}`, topic: buildGerritTopic(taskId, ticketTitle) };
+  }
+
+  /**
+   * Look up the real name/email registered on the Gerrit account this
+   * connector's SSH credentials authenticate as (see
+   * `GerritSshClient.queryOwnAccountIdentity`). Used to derive commit
+   * author/committer identity automatically instead of a placeholder.
+   */
+  async queryAuthorIdentity(): Promise<{ name: string; email: string } | undefined> {
+    return this.sshClient.queryOwnAccountIdentity();
   }
 
   /** Resolve a Change-Id to PatchsetCheckoutOptions by querying Gerrit via SSH. */
@@ -155,13 +178,14 @@ export class GerritVcsConnector implements VcsConnector {
     );
 
     try {
-      // Execute git clone
-      execFileSync("git", ["clone", "--branch", branch, "--depth", "1", repoUrl, targetDir], {
-        env: buildGitEnv(this.config, sshKeyPath),
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "pipe"],
-        timeout: 300_000, // 5 minutes
-      });
+      await this.gitRunner.run(
+        ["clone", "--branch", branch, "--depth", "1", repoUrl, targetDir],
+        {
+          cwd: process.cwd(),
+          env: buildGitEnv(this.config, sshKeyPath),
+          timeoutMs: 300_000,
+        }
+      );
 
       log.info({ targetDir }, "repository cloned successfully");
     } catch (err: unknown) {
@@ -178,7 +202,8 @@ export class GerritVcsConnector implements VcsConnector {
     repoDir: string,
     ref: string,
     message: string,
-    changeId?: string
+    changeId?: string,
+    reviewerEmails?: string[]
   ): Promise<VcsPushResult> {
     const commitMessage = ensureChangeIdInFooter(message, changeId);
 
@@ -189,24 +214,25 @@ export class GerritVcsConnector implements VcsConnector {
 
     try {
       // Configure git identity
-      execGit(["config", "user.name", this.config.gitAuthorName], repoDir);
-      execGit(["config", "user.email", this.config.gitAuthorEmail], repoDir);
+      await this.gitRunner.run(["config", "user.name", this.config.gitAuthorName], { cwd: repoDir });
+      await this.gitRunner.run(["config", "user.email", this.config.gitAuthorEmail], { cwd: repoDir });
 
       // Stage all changes
-      execGit(["add", "-A"], repoDir);
+      await this.gitRunner.run(["add", "-A"], { cwd: repoDir });
 
       // Commit
-      execGit(["commit", "-m", commitMessage], repoDir);
+      await this.gitRunner.run(["commit", "-m", commitMessage], { cwd: repoDir });
       log.info({ repoDir }, "changes committed");
 
       // Push to Gerrit
-      execFileSync("git", trustedGitArgs(["push", "origin", `HEAD:${ref}`]), {
-        cwd: repoDir,
-        env: buildGitEnv(this.config),
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "pipe"],
-        timeout: 300_000,
-      });
+      await this.gitRunner.run(
+        ["push", "origin", `HEAD:${appendGerritPushOptions(ref, undefined, reviewerEmails)}`],
+        {
+          cwd: repoDir,
+          env: buildGitEnv(this.config),
+          timeoutMs: 300_000,
+        }
+      );
       log.info({ ref }, "pushed to Gerrit");
 
       // Extract Change-Id from the message
@@ -235,28 +261,27 @@ export class GerritVcsConnector implements VcsConnector {
   async pushDirect(
     repoDir: string,
     ref: string,
-    topic?: string
+    topic?: string,
+    reviewerEmails?: string[]
   ): Promise<VcsPushResult> {
     log.info({ repoDir, ref, topic }, "pushing HEAD directly to Gerrit (agent-created commits)");
 
     try {
-      let pushRef = `HEAD:${ref}`;
-      if (topic) {
-        pushRef = `HEAD:${ref}%topic=${topic}`;
-      }
+      const pushRef = `HEAD:${appendGerritPushOptions(ref, topic, reviewerEmails)}`;
 
-      execFileSync("git", trustedGitArgs(["push", "origin", pushRef]), {
+      await this.gitRunner.run(["push", "origin", pushRef], {
         cwd: repoDir,
         env: buildGitEnv(this.config),
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "pipe"],
-        timeout: 300_000,
+        timeoutMs: 300_000,
       });
 
       log.info({ ref, topic }, "direct push to Gerrit completed");
 
       // Extract Change-Id from HEAD commit for backward-compat result
-      const headMsg = execGit(["log", "-1", "--format=%b"], repoDir);
+      const { stdout: headMsg } = await this.gitRunner.run(
+        ["log", "-1", "--format=%b"],
+        { cwd: repoDir }
+      );
       const changeIdMatch = headMsg.match(/^Change-Id:\s*(\S+)/m);
       const changeId = changeIdMatch?.[1] ?? "unknown";
 

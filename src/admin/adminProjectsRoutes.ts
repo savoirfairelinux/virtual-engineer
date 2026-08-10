@@ -1,436 +1,48 @@
-import { z } from "zod";
-import { isAbsolute, normalize, sep } from "node:path";
 import { getLogger } from "../logger.js";
-import { writeJson, readBody, zodErrorBody } from "./adminRouteUtils.js";
-import { recordAudit, type AuditCapableStore } from "./adminAudit.js";
-import {
-  makeAgentId,
-  makeProjectId,
-  makeTaskId,
-  type AgentId,
-  type AgentRecord,
-  type Integration,
-  type IntegrationStore,
-  type ProjectId,
-  type ProjectPushTargetRecord,
-  type ProjectRecord,
-  type ProjectReviewConfig,
-  type ProjectTicketSourceRecord,
-  type ProjectType,
-  type PushTargetRole,
-  type Task,
-} from "../interfaces.js";
+import { writeJson, readBody, zodErrorBody, requireStore } from "./adminRouteUtils.js";
+import { makeAgentId, makeProjectId, type AgentRecord, type ProjectRecord } from "../interfaces.js";
 import type { Router } from "./router.js";
 import { getEffectivePermissions } from "./authContext.js";
 import { accessibleResourceIds, ALL_RESOURCES } from "./authorization/policyEngine.js";
-import { getProviderDescriptor, getProviderDomainCapabilities } from "../plugins/registry.js";
+import { validateSkillSourcesConnection } from "./skillSourceDiscovery.js";
+import { registerProjectWorkspaceRoutes } from "./adminProjectWorkspaceRoutes.js";
+import { registerProjectVendorComponentsRoutes } from "./adminProjectVendorComponentsRoutes.js";
+import {
+  recordAudit,
+  relaunchFailedTasksForProject,
+  loadIntegrationsLookup,
+  buildProjectSummary,
+  buildProjectDetail,
+  validateAgentOverrideJson,
+  validatePushTargetCloneUrls,
+  validatePushTargetReviewerEmails,
+  validateSkillSourcesForSave,
+  skillSourcesForCreate,
+  normalizeSkillSources,
+  toVendorComponentInputs,
+  isUniqueConflict,
+  projectCreateSchema,
+  projectUpdateSchema,
+  type ProjectsRouteDeps,
+  type ProjectsRouteStore,
+  type ProjectSummary,
+  type ProjectDetail,
+  type SkillSource,
+} from "./adminProjectsShared.js";
 
 const log = getLogger("admin-projects");
 
-async function relaunchFailedTasksForProject(
-  store: ProjectsRouteStore,
-  projectId: ProjectId,
-  taskControl: ProjectsRouteDeps["taskControl"]
-): Promise<void> {
-  let failedTasks: Task[];
-  try {
-    failedTasks = await store.getFailedTasksForProject(projectId);
-  } catch (err: unknown) {
-    log.warn({ err, projectId }, "failed to list failed tasks for automatic relaunch");
-    return;
-  }
-
-  for (const task of failedTasks) {
-    try {
-      await store.retryTask(task.taskId);
-      void taskControl?.retryTask(task.taskId).catch((err: unknown) => {
-        log.warn({ err, projectId, taskId: task.taskId }, "relaunch retryTask failed");
-      });
-      log.info({ projectId, taskId: task.taskId }, "automatically relaunched failed task after reconfiguration");
-    } catch (err: unknown) {
-      log.warn({ err, projectId, taskId: task.taskId }, "failed to automatically relaunch task after reconfiguration");
-    }
-  }
-}
-
-export interface ProjectsRouteStore {
-  createProject(input: {
-    id?: string;
-    name: string;
-    type: ProjectType;
-    agentId: AgentId;
-    agentOverrideJson?: string | null;
-    postCloneScript?: string;
-    skillDiscoveryEnabled?: boolean;
-    enabled?: boolean;
-  }): Promise<ProjectRecord>;
-  getProjectById(id: ProjectId): Promise<ProjectRecord | null>;
-  listProjects(filter?: { type?: ProjectType; enabled?: boolean }): Promise<ProjectRecord[]>;
-  updateProject(
-    id: ProjectId,
-    partial: Partial<Pick<ProjectRecord, "name" | "type" | "agentId" | "agentOverrideJson" | "postCloneScript" | "skillDiscoveryEnabled" | "enabled">>
-  ): Promise<ProjectRecord>;
-  updateProjectConfiguration(
-    id: ProjectId,
-    input: {
-      project: Partial<Pick<ProjectRecord, "name" | "type" | "agentId" | "agentOverrideJson" | "postCloneScript" | "skillDiscoveryEnabled" | "enabled">>;
-      ticketSource?: { integrationId: string; ticketProjectKey: string } | undefined;
-      pushTargets?: Array<{
-        integrationId: string;
-        repoKey: string;
-        cloneUrl: string;
-        targetBranch: string;
-        role: PushTargetRole;
-        commitOrder: number;
-        localPath: string;
-        sshKeyPath?: string | null | undefined;
-      }> | undefined;
-      reviewConfig?: { integrationId: string; repoKeys: string[] } | undefined;
-    }
-  ): Promise<ProjectRecord>;
-  deleteProject(id: ProjectId): Promise<void>;
-  setProjectEnabled(id: ProjectId, enabled: boolean): Promise<void>;
-  setProjectTicketSource(
-    projectId: ProjectId,
-    input: { integrationId: string; ticketProjectKey: string }
-  ): Promise<ProjectTicketSourceRecord>;
-  getProjectTicketSource(projectId: ProjectId): Promise<ProjectTicketSourceRecord | null>;
-  replaceProjectPushTargets(
-    projectId: ProjectId,
-    inputs: Array<{
-      integrationId: string;
-      repoKey: string;
-      cloneUrl: string;
-      targetBranch: string;
-      role: PushTargetRole;
-      commitOrder: number;
-      localPath: string;
-      sshKeyPath?: string | null | undefined;
-    }>
-  ): Promise<ProjectPushTargetRecord[]>;
-  listProjectPushTargets(projectId: ProjectId): Promise<ProjectPushTargetRecord[]>;
-  setProjectReviewConfig(
-    projectId: ProjectId,
-    integrationId: string,
-    repoKeys: string[]
-  ): Promise<void>;
-  getProjectReviewConfig(projectId: ProjectId): Promise<ProjectReviewConfig | null>;
-  getAgentById(id: AgentId): Promise<AgentRecord | null>;
-  findProjectByTicketSource(integrationId: string, ticketProjectKey: string): Promise<ProjectRecord | null>;
-  getFailedTasksForProject(projectId: ProjectId): Promise<Task[]>;
-  retryTask(taskId: ReturnType<typeof makeTaskId>): Promise<Task>;
-}
-
-export interface ProjectsRouteDeps {
-  projectStore?: ProjectsRouteStore | undefined;
-  integrationStore?: IntegrationStore | undefined;
-  auditStore?: AuditCapableStore | undefined;
-  onProjectChange?: (() => void) | undefined;
-  taskControl?:
-    | {
-        retryTask(taskId: ReturnType<typeof makeTaskId>): Promise<void>;
-        deleteProject?(projectId: ProjectId): Promise<void>;
-      }
-    | undefined;
-}
-
-const pushTargetSchema = z.object({
-  integrationId: z.string().min(1, "VCS integration is required for each repository"),
-  repoKey: z.string().min(1, "Repository must be selected"),
-  cloneUrl: z.string().min(1, "Clone URL is required"),
-  targetBranch: z.string().min(1, "Target branch is required"),
-  role: z.enum(["primary", "submodule", "dependency", "related"]),
-  commitOrder: z.number().int().min(1),
-  localPath: z.string().min(1).refine(
-    (value) => {
-      if (isAbsolute(value)) return false;
-      const normalized = normalize(value);
-      return normalized !== ".." && !normalized.startsWith(`..${sep}`);
-    },
-    "localPath must stay within the project workspace",
-  ).transform((value) => normalize(value)),
-  sshKeyPath: z.string().optional(),
-});
-
-/** Validate push-target arrays: unique localPaths, at most one root ("."). */
-const pushTargetsArraySchema = z.array(pushTargetSchema).min(1).superRefine((targets, ctx) => {
-  const paths = targets.map((t) => normalize(t.localPath));
-  const roots = paths.filter((p) => p === ".");
-  if (roots.length > 1) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "Only one push target may have localPath \".\" (root)",
-    });
-  }
-  const seen = new Set<string>();
-  for (const p of paths) {
-    if (seen.has(p)) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: `Duplicate localPath "${p}" — each push target must have a unique workspace path`,
-      });
-      break;
-    }
-    seen.add(p);
-  }
-});
-
-const ticketSourceSchema = z.object({
-  integrationId: z.string().min(1, "Ticket source integration is required"),
-  ticketProjectKey: z.string().min(1, "Ticket source project is required"),
-});
-
-const reviewConfigSchema = z.object({
-  integrationId: z.string().min(1, "Review integration is required"),
-  repoKeys: z.array(z.string()).min(1, "Select at least one repository to review"),
-});
-
-const codingProjectCreateSchema = z.object({
-  id: z.string().optional(),
-  type: z.literal("coding"),
-  name: z.string().min(1, "Project name is required"),
-  agentId: z.string().min(1, "Agent is required — create and enable a coding agent first (Agents tab)"),
-  agentOverrideJson: z.string().nullable().optional(),
-  postCloneScript: z.string().optional(),
-  skillDiscoveryEnabled: z.boolean().optional(),
-  enabled: z.boolean().optional(),
-  ticketSource: ticketSourceSchema,
-  pushTargets: pushTargetsArraySchema,
-});
-
-const reviewProjectCreateSchema = z.object({
-  id: z.string().optional(),
-  type: z.literal("review"),
-  name: z.string().min(1, "Project name is required"),
-  agentId: z.string().min(1, "Agent is required — create and enable a review agent first (Agents tab)"),
-  agentOverrideJson: z.string().nullable().optional(),
-  postCloneScript: z.string().optional(),
-  skillDiscoveryEnabled: z.boolean().optional(),
-  enabled: z.boolean().optional(),
-  reviewConfig: reviewConfigSchema,
-});
-
-const projectCreateSchema = z.discriminatedUnion("type", [
-  codingProjectCreateSchema,
-  reviewProjectCreateSchema,
-]);
-
-const projectUpdateSchema = z.object({
-  name: z.string().min(1, "Project name is required").optional(),
-  agentId: z.string().min(1, "Agent is required").optional(),
-  agentOverrideJson: z.string().nullable().optional(),
-  postCloneScript: z.string().optional(),
-  skillDiscoveryEnabled: z.boolean().optional(),
-  enabled: z.boolean().optional(),
-  ticketSource: ticketSourceSchema.optional(),
-  pushTargets: pushTargetsArraySchema.optional(),
-  reviewConfig: reviewConfigSchema.optional(),
-});
-
-
-
-interface IntegrationLookup {
-  byId: Map<string, Integration>;
-}
-
-/** Load all integrations from the store and index them by id. */
-async function loadIntegrationsLookup(store: IntegrationStore | undefined): Promise<IntegrationLookup> {
-  const byId = new Map<string, Integration>();
-  if (store) {
-    const all = await store.getIntegrations();
-    for (const i of all) byId.set(i.id, i);
-  }
-  return { byId };
-}
-
-/** Integration types that use HTTPS for cloning — SSH URLs are invalid for these. */
-const HTTPS_ONLY_VCS_TYPES = new Set(["github", "gitlab"]);
-
-/**
- * Validate that push targets for HTTPS-based integrations (GitHub, GitLab) do
- * not use SSH clone URLs. Returns an error message or null.
- */
-async function validatePushTargetCloneUrls(
-  targets: Array<{ integrationId: string; cloneUrl: string; repoKey: string }>,
-  integrationStore: IntegrationStore | undefined
-): Promise<string | null> {
-  if (!integrationStore) return null;
-  for (const target of targets) {
-    let usesSsh = target.cloneUrl.startsWith("git@");
-    try {
-      usesSsh ||= new URL(target.cloneUrl).protocol === "ssh:";
-    } catch {
-      // Non-URL clone forms are handled by the explicit scp-style check.
-    }
-    if (!usesSsh) continue;
-    const integration = await integrationStore.getIntegration(target.integrationId).catch(() => null);
-    if (integration && HTTPS_ONLY_VCS_TYPES.has(integration.provider)) {
-      return `Push target "${target.repoKey}" uses an SSH clone URL (${target.cloneUrl}) which is not supported for ${integration.provider} integrations. Use an HTTPS URL instead (e.g. https://github.com/owner/repo.git).`;
-    }
-  }
-  return null;
-}
-
-/** Return a minimal integration descriptor object for embedding in project API responses. */
-function describeIntegration(
-  integ: Integration | undefined,
-): { id: string; name: string; provider: string; domainCapabilities: string[] } | null {
-  if (!integ) return null;
-  const descriptor = getProviderDescriptor(integ.provider);
-  const domainCapabilities = descriptor ? getProviderDomainCapabilities(descriptor) : [];
-  return { id: integ.id, name: integ.name, provider: integ.provider, domainCapabilities };
-}
-
-interface ProjectSummary {
-  id: string;
-  name: string;
-  type: ProjectRecord["type"];
-  agentId: string;
-  agentName: string | null;
-  enabled: boolean;
-  skillDiscoveryEnabled: boolean;
-  createdAt: string;
-  updatedAt: string;
-  ticketSource: { integration: { id: string; name: string; provider: string; domainCapabilities: string[] } | null; ticketProjectKey: string } | null;
-  reviewConfig: { integration: { id: string; name: string; provider: string; domainCapabilities: string[] } | null; repos: string[] } | null;
-  pushTargetCount: number;
-}
-
-interface ProjectDetail extends ProjectSummary {
-  agentOverrideJson: string | null;
-  postCloneScript: string;
-  pushTargets: Array<{
-    id: number;
-    integration: { id: string; name: string; provider: string; domainCapabilities: string[] } | null;
-    integrationId: string;
-    repoKey: string;
-    cloneUrl: string;
-    targetBranch: string;
-    role: ProjectPushTargetRecord["role"];
-    commitOrder: number;
-    localPath: string;
-    sshKeyPath: string | null;
-  }>
-}
-
-/** Build the summary API shape for a project including ticket source and review config metadata. */
-async function buildProjectSummary(
-  project: ProjectRecord,
-  store: ProjectsRouteStore,
-  integrations: IntegrationLookup,
-  agentsById: Map<string, AgentRecord>
-): Promise<ProjectSummary> {
-  const agent = agentsById.get(project.agentId) ?? (await store.getAgentById(makeAgentId(project.agentId)));
-  if (agent) agentsById.set(agent.id, agent);
-  let ticketSource: ProjectSummary["ticketSource"] = null;
-  let reviewConfig: ProjectSummary["reviewConfig"] = null;
-  let pushTargetCount = 0;
-  if (project.type === "coding") {
-    const ts = await store.getProjectTicketSource(project.id);
-    if (ts) {
-      ticketSource = {
-        integration: describeIntegration(integrations.byId.get(ts.integrationId)),
-        ticketProjectKey: ts.ticketProjectKey,
-      };
-    }
-    pushTargetCount = (await store.listProjectPushTargets(project.id)).length;
-  } else {
-    const rc = await store.getProjectReviewConfig(project.id);
-    if (rc) {
-      reviewConfig = {
-        integration: describeIntegration(integrations.byId.get(rc.integrationId)),
-        repos: rc.repos,
-      };
-    }
-  }
-  return {
-    id: project.id,
-    name: project.name,
-    type: project.type,
-    agentId: project.agentId,
-    agentName: agent ? agent.name : null,
-    enabled: project.enabled,
-    skillDiscoveryEnabled: project.skillDiscoveryEnabled,
-    createdAt: project.createdAt.toISOString(),
-    updatedAt: project.updatedAt.toISOString(),
-    ticketSource,
-    reviewConfig,
-    pushTargetCount,
-  };
-}
-
-/** Build the full detail API shape for a project including push targets and all child records. */
-async function buildProjectDetail(
-  project: ProjectRecord,
-  store: ProjectsRouteStore,
-  integrations: IntegrationLookup
-): Promise<ProjectDetail> {
-  const agent = await store.getAgentById(makeAgentId(project.agentId));
-  let ticketSource: ProjectSummary["ticketSource"] = null;
-  let reviewConfig: ProjectSummary["reviewConfig"] = null;
-  let pushTargets: ProjectDetail["pushTargets"] = [];
-  let pushTargetCount = 0;
-  if (project.type === "coding") {
-    const ts = await store.getProjectTicketSource(project.id);
-    if (ts) {
-      ticketSource = {
-        integration: describeIntegration(integrations.byId.get(ts.integrationId)),
-        ticketProjectKey: ts.ticketProjectKey,
-      };
-    }
-    const pts = await store.listProjectPushTargets(project.id);
-    pushTargetCount = pts.length;
-    pushTargets = pts.map((p) => ({
-      id: p.id,
-      integration: describeIntegration(integrations.byId.get(p.integrationId)),
-      integrationId: p.integrationId,
-      repoKey: p.repoKey,
-      cloneUrl: p.cloneUrl,
-      targetBranch: p.targetBranch,
-      role: p.role,
-      commitOrder: p.commitOrder,
-      localPath: p.localPath,
-      sshKeyPath: p.sshKeyPath,
-    }));
-  } else {
-    const rc = await store.getProjectReviewConfig(project.id);
-    if (rc) {
-      reviewConfig = {
-        integration: describeIntegration(integrations.byId.get(rc.integrationId)),
-        repos: rc.repos,
-      };
-    }
-  }
-  return {
-    id: project.id,
-    name: project.name,
-    type: project.type,
-    agentId: project.agentId,
-    agentName: agent ? agent.name : null,
-    enabled: project.enabled,
-    skillDiscoveryEnabled: project.skillDiscoveryEnabled,
-    createdAt: project.createdAt.toISOString(),
-    updatedAt: project.updatedAt.toISOString(),
-    agentOverrideJson: project.agentOverrideJson,
-    postCloneScript: project.postCloneScript,
-    ticketSource,
-    reviewConfig,
-    pushTargetCount,
-    pushTargets,
-  };
-}
-
-/** Returns true if the error represents a unique-constraint or ticket-source conflict. */
-function isUniqueConflict(err: unknown): boolean {
-  if (!(err instanceof Error)) return false;
-  const m = err.message;
-  return m.includes("already claimed by project") || /UNIQUE constraint/i.test(m);
-}
+export type { ProjectsRouteDeps, ProjectsRouteStore, SkillSource, ProjectSummary, ProjectDetail };
 
 /** Register project routes on the given router. */
 export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): void {
+  const skillSourceConnectionValidator = deps.validateSkillSourcesConnection ?? validateSkillSourcesConnection;
+
+  registerProjectWorkspaceRoutes(router, deps);
+  registerProjectVendorComponentsRoutes(router, deps);
+
   router.add("GET", "/api/admin/projects", async (req, res, _params) => {
-    if (!deps.projectStore) { writeJson(res, 501, { error: "Project store not available" }); return; }
+    if (!requireStore(deps.projectStore, res, "Project store not available")) return;
     const store = deps.projectStore;
     const projects = await store.listProjects();
     const integrations = await loadIntegrationsLookup(deps.integrationStore);
@@ -451,7 +63,7 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
   }, { permission: "project.read", collection: true });
 
   router.add("POST", "/api/admin/projects", async (req, res, _params) => {
-    if (!deps.projectStore) { writeJson(res, 501, { error: "Project store not available" }); return; }
+    if (!requireStore(deps.projectStore, res, "Project store not available")) return;
     const store = deps.projectStore;
     const body = await readBody(req);
     if (!body) { writeJson(res, 400, { error: "Request body required" }); return; }
@@ -462,6 +74,10 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
     if (!agent) { writeJson(res, 400, { error: `Agent not found: ${data.agentId}` }); return; }
     if (agent.type !== data.type) {
       writeJson(res, 400, { error: `Agent type mismatch: agent is '${agent.type}', project is '${data.type}'` }); return;
+    }
+    if (data.agentOverrideJson !== undefined) {
+      const overrideError = await validateAgentOverrideJson(store, data.agentOverrideJson, agent);
+      if (overrideError) { writeJson(res, 400, { error: overrideError }); return; }
     }
     if (data.type === "coding") {
       const conflict = await store.findProjectByTicketSource(data.ticketSource.integrationId, data.ticketSource.ticketProjectKey);
@@ -474,6 +90,13 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
       }
     }
     let project: ProjectRecord;
+    const skillSources = skillSourcesForCreate(data.skillSources);
+    try {
+      await validateSkillSourcesForSave(skillSources, skillSourceConnectionValidator);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      writeJson(res, 400, { error: msg }); return;
+    }
     try {
       project = await store.createProject({
         ...(data.id !== undefined ? { id: data.id } : {}),
@@ -481,7 +104,11 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
         agentId: makeAgentId(data.agentId),
         ...(data.agentOverrideJson !== undefined ? { agentOverrideJson: data.agentOverrideJson } : {}),
         ...(data.postCloneScript !== undefined ? { postCloneScript: data.postCloneScript } : {}),
-        ...(data.skillDiscoveryEnabled !== undefined ? { skillDiscoveryEnabled: data.skillDiscoveryEnabled } : {}),
+        skillSourcesJson: JSON.stringify(skillSources),
+        ...(data.gerritTopicOverride !== undefined ? { gerritTopicOverride: data.gerritTopicOverride } : {}),
+        ...(data.useFullTicketUrlInCommits !== undefined ? { useFullTicketUrlInCommits: data.useFullTicketUrlInCommits } : {}),
+        ...(data.postReviewLinkToTicket !== undefined ? { postReviewLinkToTicket: data.postReviewLinkToTicket } : {}),
+        ...(data.reactToCiFailures !== undefined ? { reactToCiFailures: data.reactToCiFailures } : {}),
         ...(data.enabled !== undefined ? { enabled: data.enabled } : {}),
       });
     } catch (err: unknown) {
@@ -497,8 +124,17 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
           writeJson(res, 400, { error: cloneUrlError });
           return;
         }
+        const reviewerEmailError = await validatePushTargetReviewerEmails(data.pushTargets, deps.integrationStore);
+        if (reviewerEmailError) {
+          try { await store.deleteProject(project.id); } catch { /* ignore */ }
+          writeJson(res, 400, { error: reviewerEmailError });
+          return;
+        }
         await store.setProjectTicketSource(project.id, data.ticketSource);
         await store.replaceProjectPushTargets(project.id, data.pushTargets);
+        if (data.vendorComponents !== undefined) {
+          await store.replaceProjectVendorComponents(project.id, toVendorComponentInputs(data.vendorComponents));
+        }
       } else {
         await store.setProjectReviewConfig(project.id, data.reviewConfig.integrationId, data.reviewConfig.repoKeys);
       }
@@ -524,6 +160,15 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
           : { repoKeys: data.reviewConfig.repoKeys }),
       },
     });
+    log.info(
+      {
+        projectId: project.id,
+        name: project.name,
+        type: project.type,
+        agentId: project.agentId,
+      },
+      "project created"
+    );
     writeJson(res, 201, { project: detail });
     deps.onProjectChange?.();
     if (project.enabled) {
@@ -533,7 +178,7 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
 
   // Enable or disable a project by id.
   router.add("PATCH", "/api/admin/projects/:id/enable", async (req, res, params) => {
-    if (!deps.projectStore) { writeJson(res, 501, { error: "Project store not available" }); return; }
+    if (!requireStore(deps.projectStore, res, "Project store not available")) return;
     const store = deps.projectStore;
     const id = makeProjectId(params["id"] ?? "");
     const existing = await store.getProjectById(id);
@@ -548,7 +193,7 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
   }, { permission: "project.operate", resourceParam: "id" });
 
   router.add("PATCH", "/api/admin/projects/:id/disable", async (req, res, params) => {
-    if (!deps.projectStore) { writeJson(res, 501, { error: "Project store not available" }); return; }
+    if (!requireStore(deps.projectStore, res, "Project store not available")) return;
     const store = deps.projectStore;
     const id = makeProjectId(params["id"] ?? "");
     const existing = await store.getProjectById(id);
@@ -560,7 +205,7 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
   }, { permission: "project.operate", resourceParam: "id" });
 
   router.add("GET", "/api/admin/projects/:id", async (_req, res, params) => {
-    if (!deps.projectStore) { writeJson(res, 501, { error: "Project store not available" }); return; }
+    if (!requireStore(deps.projectStore, res, "Project store not available")) return;
     const store = deps.projectStore;
     const id = makeProjectId(params["id"] ?? "");
     const existing = await store.getProjectById(id);
@@ -571,7 +216,7 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
   }, { permission: "project.read", resourceParam: "id" });
 
   router.add("PUT", "/api/admin/projects/:id", async (req, res, params) => {
-    if (!deps.projectStore) { writeJson(res, 501, { error: "Project store not available" }); return; }
+    if (!requireStore(deps.projectStore, res, "Project store not available")) return;
     const store = deps.projectStore;
     const id = makeProjectId(params["id"] ?? "");
     const existing = await store.getProjectById(id);
@@ -581,12 +226,20 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
     const parsed = projectUpdateSchema.safeParse(body);
     if (!parsed.success) { writeJson(res, 400, zodErrorBody(parsed.error, "Invalid project payload")); return; }
     const data = parsed.data;
+    let prospectiveAgent: AgentRecord | null = null;
     if (data.agentId !== undefined) {
       const agent = await store.getAgentById(makeAgentId(data.agentId));
       if (!agent) { writeJson(res, 400, { error: `Agent not found: ${data.agentId}` }); return; }
       if (agent.type !== existing.type) {
         writeJson(res, 400, { error: `Agent type mismatch: agent is '${agent.type}', project is '${existing.type}'` }); return;
       }
+      prospectiveAgent = agent;
+    }
+    if (data.agentOverrideJson !== undefined) {
+      prospectiveAgent ??= await store.getAgentById(existing.agentId);
+      if (!prospectiveAgent) { writeJson(res, 400, { error: `Agent not found: ${existing.agentId}` }); return; }
+      const overrideError = await validateAgentOverrideJson(store, data.agentOverrideJson, prospectiveAgent);
+      if (overrideError) { writeJson(res, 400, { error: overrideError }); return; }
     }
     if (data.ticketSource !== undefined && existing.type !== "coding") {
       writeJson(res, 400, { error: "ticketSource only valid for coding projects" }); return;
@@ -595,6 +248,8 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
       if (existing.type !== "coding") { writeJson(res, 400, { error: "pushTargets only valid for coding projects" }); return; }
       const cloneUrlError = await validatePushTargetCloneUrls(data.pushTargets, deps.integrationStore);
       if (cloneUrlError) { writeJson(res, 400, { error: cloneUrlError }); return; }
+      const reviewerEmailError = await validatePushTargetReviewerEmails(data.pushTargets, deps.integrationStore);
+      if (reviewerEmailError) { writeJson(res, 400, { error: reviewerEmailError }); return; }
     }
     if (data.reviewConfig !== undefined && existing.type !== "review") {
       writeJson(res, 400, { error: "reviewConfig only valid for review projects" }); return;
@@ -604,7 +259,20 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
     if (data.agentId !== undefined) updates.agentId = makeAgentId(data.agentId);
     if (data.agentOverrideJson !== undefined) updates.agentOverrideJson = data.agentOverrideJson;
     if (data.postCloneScript !== undefined) updates.postCloneScript = data.postCloneScript;
-    if (data.skillDiscoveryEnabled !== undefined) updates.skillDiscoveryEnabled = data.skillDiscoveryEnabled;
+    if (data.skillSources !== undefined) {
+      const skillSources = normalizeSkillSources(data.skillSources);
+      try {
+        await validateSkillSourcesForSave(skillSources, skillSourceConnectionValidator);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        writeJson(res, 400, { error: msg }); return;
+      }
+      updates.skillSourcesJson = JSON.stringify(skillSources);
+    }
+    if (data.gerritTopicOverride !== undefined) updates.gerritTopicOverride = data.gerritTopicOverride;
+    if (data.useFullTicketUrlInCommits !== undefined) updates.useFullTicketUrlInCommits = data.useFullTicketUrlInCommits;
+    if (data.postReviewLinkToTicket !== undefined) updates.postReviewLinkToTicket = data.postReviewLinkToTicket;
+    if (data.reactToCiFailures !== undefined) updates.reactToCiFailures = data.reactToCiFailures;
     if (data.enabled !== undefined) updates.enabled = data.enabled;
     const reconfigured =
       data.ticketSource !== undefined ||
@@ -613,7 +281,7 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
       updates.agentId !== undefined ||
       updates.agentOverrideJson !== undefined ||
       updates.postCloneScript !== undefined ||
-      updates.skillDiscoveryEnabled !== undefined ||
+      updates.skillSourcesJson !== undefined ||
       (updates.enabled === true && existing.enabled !== true);
     try {
       await store.updateProjectConfiguration(id, {
@@ -650,7 +318,7 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
   }, { permission: "project.write", resourceParam: "id" });
 
   router.add("DELETE", "/api/admin/projects/:id", async (req, res, params) => {
-    if (!deps.projectStore) { writeJson(res, 501, { error: "Project store not available" }); return; }
+    if (!requireStore(deps.projectStore, res, "Project store not available")) return;
     const store = deps.projectStore;
     const id = makeProjectId(params["id"] ?? "");
     const existing = await store.getProjectById(id);
@@ -672,5 +340,3 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
   }, { permission: "project.delete", resourceParam: "id" });
 }
 
-// Re-export types for tests
-export type { ProjectSummary, ProjectDetail };

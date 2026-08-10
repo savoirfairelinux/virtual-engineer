@@ -48,6 +48,7 @@ function makeDeps(runtimeGateway: AdminServerDependencies["runtimeGateway"]): Ad
     },
     polling: { isRunning: () => false, getIntervals: () => ({ intervalMs: 30000 }) },
     providers: [],
+    allowUnauthenticatedAdmin: true,
     runtimeGateway,
   };
 }

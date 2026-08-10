@@ -1,8 +1,7 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { tmpdir } from "os";
-import { join } from "path";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { randomUUID } from "crypto";
 import { SqliteStateStore, resolveAgentConfig } from "../../src/state/stateStore.js";
+import { tempDatabasePath } from "./helpers/tempDatabase.js";
 import {
   makeAgentId,
   makeProjectId,
@@ -13,7 +12,7 @@ import {
 } from "../../src/interfaces.js";
 
 function tempDbPath(): string {
-  return join(tmpdir(), `ve-projects-${randomUUID()}.db`);
+  return tempDatabasePath("ve-projects");
 }
 
 async function makeAgent(store: SqliteStateStore, overrides: Partial<Parameters<SqliteStateStore["createAgent"]>[0]> = {}) {
@@ -21,6 +20,8 @@ async function makeAgent(store: SqliteStateStore, overrides: Partial<Parameters<
     name: "Default Coding Agent",
     type: "coding",
     modelConfigJson: JSON.stringify({ model: "gpt-4.1", apiKey: "tok" }),
+    systemPromptId: "system_generic_code",
+    instructionsPromptId: "instructions_generic_code",
     enabled: true,
     ...overrides,
   });
@@ -51,6 +52,16 @@ describe("SqliteStateStore — Phase 2: agents", () => {
     expect(fetched?.id).toBe(a.id);
   });
 
+  it("rejects creating an agent with an empty required prompt id", async () => {
+    await expect(store.createAgent({
+      name: "Invalid",
+      type: "coding",
+      modelConfigJson: "{}",
+      systemPromptId: "",
+      instructionsPromptId: "instructions_generic_code",
+    })).rejects.toThrow(/system prompt is required/i);
+  });
+
   it("listAgents filters by type and enabled", async () => {
     await makeAgent(store, { name: "C1", type: "coding", enabled: true });
     await makeAgent(store, { name: "C2", type: "coding", enabled: false });
@@ -69,6 +80,13 @@ describe("SqliteStateStore — Phase 2: agents", () => {
     await store.setAgentEnabled(a.id, true);
     const after = await store.getAgentById(a.id);
     expect(after?.enabled).toBe(true);
+  });
+
+  it("rejects clearing a required prompt during a direct update", async () => {
+    const agent = await makeAgent(store);
+
+    await expect(store.updateAgent(agent.id, { systemPromptId: null }))
+      .rejects.toThrow(/system prompt is required/i);
   });
 
   it("deleteAgent throws if a project still references it", async () => {
@@ -108,23 +126,24 @@ describe("SqliteStateStore — Phase 2: projects", () => {
     expect(p.enabled).toBe(true);
   });
 
-  it("persists and updates skillDiscoveryEnabled (defaults to false)", async () => {
+  it("persists and updates skillSourcesJson (defaults to empty array)", async () => {
     const a = await makeAgent(store);
     const off = await store.createProject({ name: "Off", type: "coding", agentId: a.id });
-    expect(off.skillDiscoveryEnabled).toBe(false);
+    expect(off.skillSourcesJson).toBe("[]");
 
+    const sources = JSON.stringify([{ source: "ssh://skills.example.com/org/agent-skills", skills: ["skill-a", "skill-b"] }]);
     const on = await store.createProject({
       name: "On",
       type: "coding",
       agentId: a.id,
-      skillDiscoveryEnabled: true,
+      skillSourcesJson: sources,
     });
-    expect(on.skillDiscoveryEnabled).toBe(true);
-    expect((await store.getProjectById(on.id))?.skillDiscoveryEnabled).toBe(true);
+    expect(on.skillSourcesJson).toBe(sources);
+    expect((await store.getProjectById(on.id))?.skillSourcesJson).toBe(sources);
 
-    const toggled = await store.updateProject(on.id, { skillDiscoveryEnabled: false });
-    expect(toggled.skillDiscoveryEnabled).toBe(false);
-    expect((await store.getProjectById(on.id))?.skillDiscoveryEnabled).toBe(false);
+    const updated = await store.updateProject(on.id, { skillSourcesJson: "[]" });
+    expect(updated.skillSourcesJson).toBe("[]");
+    expect((await store.getProjectById(on.id))?.skillSourcesJson).toBe("[]");
   });
 
   it("atomically rejects agent reassignment and other parent updates while tasks are active", async () => {
@@ -215,7 +234,6 @@ describe("SqliteStateStore — Phase 2: projects", () => {
       type: "coding",
       agentId: agent.id,
       postCloneScript: "npm ci",
-      skillDiscoveryEnabled: true,
     });
     await store.setProjectTicketSource(project.id, {
       integrationId: "redmine-idempotent",
@@ -239,7 +257,6 @@ describe("SqliteStateStore — Phase 2: projects", () => {
         agentId: agent.id,
         agentOverrideJson: null,
         postCloneScript: "npm ci",
-        skillDiscoveryEnabled: true,
       },
       ticketSource: { integrationId: "redmine-idempotent", ticketProjectKey: "SAME" },
       pushTargets: [],
@@ -440,6 +457,101 @@ describe("SqliteStateStore — Phase 2: project ticket source", () => {
   });
 });
 
+describe("SqliteStateStore — project vendor components", () => {
+  let store: SqliteStateStore;
+
+  beforeEach(async () => {
+    store = await SqliteStateStore.create(tempDbPath());
+  });
+
+  afterEach(() => {
+    store.close();
+  });
+
+  it("replaces and lists vendor components ordered by source path", async () => {
+    const a = await makeAgent(store);
+    const p = await store.createProject({ name: "P", type: "coding", agentId: a.id });
+    await store.replaceProjectVendorComponents(p.id, [
+      { sourcePath: "daemon/contrib/src/gmp/package.json", localPath: "gmp", cloneUrl: "https://example.com/gmp.git", revision: "6.2.1", origin: "patch_required" },
+      { sourcePath: "daemon/contrib/src/fmt/package.json", origin: "patch_required" },
+    ]);
+
+    const components = await store.listProjectVendorComponents(p.id);
+    expect(components.map((component) => component.sourcePath)).toEqual([
+      "daemon/contrib/src/fmt/package.json",
+      "daemon/contrib/src/gmp/package.json",
+    ]);
+    expect(components[0]).toMatchObject({ localPath: null, cloneUrl: null, revision: null });
+    expect(components[1]).toMatchObject({ localPath: "gmp", origin: "patch_required" });
+  });
+
+  it("keeps two components declared by one manifest apart", async () => {
+    const a = await makeAgent(store);
+    const p = await store.createProject({ name: "P", type: "coding", agentId: a.id });
+    await store.replaceProjectVendorComponents(p.id, [
+      { sourcePath: ".config.yaml", localPath: "sources/meta-phytec", origin: "patch_required" },
+      { sourcePath: ".config.yaml", localPath: "sources/meta-freescale", origin: "patch_required" },
+    ]);
+
+    const components = await store.listProjectVendorComponents(p.id);
+    expect(components.map((component) => component.localPath)).toEqual([
+      "sources/meta-freescale",
+      "sources/meta-phytec",
+    ]);
+  });
+
+  it("replaceProjectVendorComponents is atomic — rolls back on duplicate source paths", async () => {
+    const a = await makeAgent(store);
+    const p = await store.createProject({ name: "P", type: "coding", agentId: a.id });
+    await store.replaceProjectVendorComponents(p.id, [
+      { sourcePath: "kas/config.yaml", origin: "internal" },
+    ]);
+
+    await expect(store.replaceProjectVendorComponents(p.id, [
+      { sourcePath: "dup.yaml", origin: "internal" },
+      { sourcePath: "dup.yaml", origin: "patch_required" },
+    ])).rejects.toThrow();
+
+    const after = await store.listProjectVendorComponents(p.id);
+    expect(after.map((component) => component.sourcePath)).toEqual(["kas/config.yaml"]);
+  });
+
+  it("keeps the original createdAt when a component is replaced", async () => {
+    const a = await makeAgent(store);
+    const p = await store.createProject({ name: "P", type: "coding", agentId: a.id });
+    vi.useFakeTimers({ now: new Date("2026-01-01T00:00:00Z") });
+    try {
+      await store.replaceProjectVendorComponents(p.id, [
+        { sourcePath: "kas/config.yaml", origin: "patch_required" },
+      ]);
+      const [initial] = await store.listProjectVendorComponents(p.id);
+      const firstTracked = initial?.createdAt.getTime();
+
+      vi.setSystemTime(new Date("2026-01-01T00:05:00Z"));
+      await store.replaceProjectVendorComponents(p.id, [
+        { sourcePath: "kas/config.yaml", origin: "patch_required" },
+        { sourcePath: "kas/extra.yaml", origin: "internal" },
+      ]);
+
+      const [config, extra] = await store.listProjectVendorComponents(p.id);
+      expect(config?.createdAt.getTime()).toBe(firstTracked);
+      expect(extra?.createdAt.getTime()).toBeGreaterThan(firstTracked ?? 0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("removes vendor components when the project is deleted", async () => {
+    const a = await makeAgent(store);
+    const p = await store.createProject({ name: "P", type: "coding", agentId: a.id });
+    await store.replaceProjectVendorComponents(p.id, [{ sourcePath: "kas/config.yaml", origin: "internal" }]);
+
+    await store.deleteProject(p.id);
+
+    expect(await store.listProjectVendorComponents(p.id)).toEqual([]);
+  });
+});
+
 describe("SqliteStateStore — Phase 2: project push targets", () => {
   let store: SqliteStateStore;
 
@@ -461,6 +573,25 @@ describe("SqliteStateStore — Phase 2: project push targets", () => {
     ]);
     const targets = await store.listProjectPushTargets(p.id);
     expect(targets.map((t) => t.repoKey)).toEqual(["main", "core"]);
+  });
+
+  it("round-trips reviewer emails", async () => {
+    const a = await makeAgent(store);
+    const p = await store.createProject({ name: "P", type: "coding", agentId: a.id });
+    await makeIntegration(store, "g1", "gerrit");
+    await store.replaceProjectPushTargets(p.id, [{
+      integrationId: "g1",
+      repoKey: "main",
+      cloneUrl: "ssh://x/main",
+      targetBranch: "main",
+      role: "primary",
+      commitOrder: 1,
+      localPath: ".",
+      reviewerEmails: ["alice@example.com", "bob@example.com"],
+    }]);
+
+    const targets = await store.listProjectPushTargets(p.id);
+    expect(targets[0]?.reviewerEmails).toEqual(["alice@example.com", "bob@example.com"]);
   });
 
   it("replaceProjectPushTargets is atomic — rolls back on commit_order conflict", async () => {
@@ -622,7 +753,11 @@ describe("resolveAgentConfig — partial-merge semantics", () => {
       agentId: makeAgentId("a1"),
       agentOverrideJson,
       postCloneScript: "",
-      skillDiscoveryEnabled: false,
+      skillSourcesJson: "[]",
+      gerritTopicOverride: null,
+      useFullTicketUrlInCommits: false,
+      postReviewLinkToTicket: false,
+      reactToCiFailures: false,
       enabled: true,
       createdAt: new Date(),
       updatedAt: new Date(),
@@ -636,6 +771,17 @@ describe("resolveAgentConfig — partial-merge semantics", () => {
     expect(r.systemPromptId).toBe("system");
     expect(r.instructionsPromptId).toBe("instructions");
     expect(r.extra["customFlag"]).toBe(true);
+  });
+
+  it("rejects an agent without required prompts instead of using generic defaults", () => {
+    expect(() => resolveAgentConfig(
+      buildAgent({ systemPromptId: null }),
+      buildProject(null)
+    )).toThrow(/system prompt/i);
+    expect(() => resolveAgentConfig(
+      buildAgent({ instructionsPromptId: null }),
+      buildProject(null)
+    )).toThrow(/instructions prompt/i);
   });
 
   it("override of model only changes model; prompts inherit", () => {
@@ -661,6 +807,23 @@ describe("resolveAgentConfig — partial-merge semantics", () => {
     );
     expect(r.systemPromptId).toBe("custom-sys");
     expect(r.instructionsPromptId).toBe("custom-ins");
+  });
+
+  it("trims prompt ids and rejects whitespace-only overrides", () => {
+    const resolved = resolveAgentConfig(
+      buildAgent(),
+      buildProject(JSON.stringify({
+        systemPromptId: "  custom-sys  ",
+        instructionsPromptId: "  custom-ins  ",
+      })),
+    );
+    expect(resolved.systemPromptId).toBe("custom-sys");
+    expect(resolved.instructionsPromptId).toBe("custom-ins");
+
+    expect(() => resolveAgentConfig(
+      buildAgent(),
+      buildProject(JSON.stringify({ systemPromptId: "   " })),
+    )).toThrow(/system prompt/i);
   });
 
   it("preserves apiKey overrides from project config", () => {

@@ -38,6 +38,19 @@ describe("formatTicketFooter", () => {
     expect(formatTicketFooter("123", "", "unknown-system")).toBeNull();
   });
 
+  it("uses URL format when forceUrlFormat is true, even for ID-format systems", () => {
+    expect(formatTicketFooter("123", "https://gitlab.example.com/issues/123", "gitlab:gl-1", true)).toBe(
+      "GitLab: https://gitlab.example.com/issues/123"
+    );
+    expect(formatTicketFooter("14", "http://redmine.local/issues/14", "redmine:redmine-1", true)).toBe(
+      "Redmine: http://redmine.local/issues/14"
+    );
+  });
+
+  it("with forceUrlFormat true, returns null when no URL is available", () => {
+    expect(formatTicketFooter("123", "", "gitlab:gl-1", true)).toBeNull();
+  });
+
   it("returns null when no ticketSourceLabel provided", () => {
     expect(formatTicketFooter("123", "", undefined)).toBeNull();
   });

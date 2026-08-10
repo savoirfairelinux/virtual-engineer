@@ -59,13 +59,13 @@ export function onUnauthorized(handler: (() => void) | null): void {
   unauthorizedHandler = handler;
 }
 
-function notifyUnauthorized(): void {
+function notifyUnauthorized(requestToken: string | null): void {
+  if (requestToken !== getStoredToken()) return;
   clearStoredToken();
   unauthorizedHandler?.();
 }
 
-function authHeaders(): Record<string, string> {
-  const token = getStoredToken();
+function authHeaders(token = getStoredToken()): Record<string, string> {
   if (!token) return {};
   return { authorization: `Bearer ${token}` };
 }
@@ -79,18 +79,25 @@ export class ApiError extends Error {
   }
 }
 
+interface RequestOptions {
+  signal?: AbortSignal;
+}
+
 async function request<T>(
   method: string,
   path: string,
-  body?: unknown
+  body?: unknown,
+  options: RequestOptions = {}
 ): Promise<T> {
+  const requestToken = getStoredToken();
   const headers: Record<string, string> = {
-    ...authHeaders(),
+    ...authHeaders(requestToken),
     ...(body !== undefined ? { "content-type": "application/json" } : {}),
   };
   const res = await fetch(path, {
     method,
     headers,
+    ...(options.signal !== undefined ? { signal: options.signal } : {}),
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
   });
   if (!res.ok) {
@@ -101,7 +108,7 @@ async function request<T>(
     } catch { /* ignore */ }
     // 401 = session expired/revoked → drop to login. 403 (insufficient role)
     // must NOT log out — it surfaces as a normal error message.
-    if (res.status === 401) notifyUnauthorized();
+    if (res.status === 401) notifyUnauthorized(requestToken);
     throw new ApiError(res.status, msg);
   }
   if (res.status === 204) return undefined as T;
@@ -109,11 +116,11 @@ async function request<T>(
 }
 
 export const api = {
-  get:    <T>(path: string) => request<T>("GET", path),
-  post:   <T>(path: string, body?: unknown) => request<T>("POST", path, body),
-  put:    <T>(path: string, body: unknown) => request<T>("PUT", path, body),
-  patch:  <T>(path: string, body?: unknown) => request<T>("PATCH", path, body ?? {}),
-  delete: <T>(path: string, body?: unknown) => request<T>("DELETE", path, body),
+  get:    <T>(path: string, options?: RequestOptions) => request<T>("GET", path, undefined, options),
+  post:   <T>(path: string, body?: unknown, options?: RequestOptions) => request<T>("POST", path, body, options),
+  put:    <T>(path: string, body: unknown, options?: RequestOptions) => request<T>("PUT", path, body, options),
+  patch:  <T>(path: string, body?: unknown, options?: RequestOptions) => request<T>("PATCH", path, body ?? {}, options),
+  delete: <T>(path: string, body?: unknown, options?: RequestOptions) => request<T>("DELETE", path, body, options),
 };
 
 /* ─── Auth flow ───────────────────────────────────────────────────────── */
@@ -173,12 +180,11 @@ export async function setup(username: string, password: string): Promise<ApiMe> 
   return data.user;
 }
 
-/** Revoke the current session server-side and clear the stored token. */
-export async function logout(): Promise<void> {
+/** Revoke a session server-side. Defaults to the current stored token. */
+export async function logout(token = getStoredToken()): Promise<void> {
   try {
-    await fetch("/api/admin/auth/logout", { method: "POST", headers: authHeaders() });
+    await fetch("/api/admin/auth/logout", { method: "POST", headers: authHeaders(token) });
   } catch { /* best-effort */ }
-  clearStoredToken();
 }
 
 /** Current authenticated identity. */
@@ -190,17 +196,9 @@ export function getMe(): Promise<ApiMe> {
 
 export interface AgentKey { publicKey: string; keyType: string; comment: string }
 
-export function generateSshKey(integrationId: string): Promise<{ publicKey: string }> {
-  return request<{ publicKey: string }>("POST", `/api/admin/integrations/${integrationId}/ssh-key/generate`);
-}
-
 /** Generate a key pair without requiring an existing integration (returns both values for in-form state). */
-export function generateSshKeyPair(provider: string): Promise<{ sshPrivateKeyEnc: string; sshPublicKey: string }> {
-  return request<{ sshPrivateKeyEnc: string; sshPublicKey: string }>("POST", "/api/admin/ssh-key/generate", { provider });
-}
-
-export function getSshPublicKey(integrationId: string): Promise<{ publicKey: string | null }> {
-  return request<{ publicKey: string | null }>("GET", `/api/admin/integrations/${integrationId}/ssh-key/public`);
+export function generateSshKeyPair(provider: string, sshUser?: string): Promise<{ sshPrivateKeyEnc: string; sshPublicKey: string }> {
+  return request<{ sshPrivateKeyEnc: string; sshPublicKey: string }>("POST", "/api/admin/ssh-key/generate", { provider, sshUser });
 }
 
 export function listAgentKeys(): Promise<{ keys: AgentKey[]; agentAvailable: boolean }> {
@@ -230,15 +228,15 @@ export function connectSse(
     if (stopped) return;
     onStateChange?.("connecting");
     abort = new AbortController();
+    const requestToken = getStoredToken();
     try {
       const res = await fetch(path, {
-        headers: authHeaders(),
+        headers: authHeaders(requestToken),
         signal: abort.signal,
       });
       if (res.status === 401) {
         stopped = true;
-        onStateChange?.("closed");
-        notifyUnauthorized();
+        notifyUnauthorized(requestToken);
         return;
       }
       if (res.status === 403) {

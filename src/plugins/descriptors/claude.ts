@@ -106,6 +106,42 @@ export function createClaudeDescriptor(adminAuthSecret?: string): ProviderDescri
     },
     capabilities: {
       agent_execution: {
+        configFields: [
+          {
+            key: "effort",
+            label: "Effort",
+            type: "select",
+            required: false,
+            options: [
+              { value: "low", label: "Low" },
+              { value: "medium", label: "Medium" },
+              { value: "high", label: "High" },
+              { value: "xhigh", label: "Extra high" },
+              { value: "max", label: "Maximum" },
+            ],
+          },
+          {
+            key: "thinkingMode",
+            label: "Thinking Mode",
+            type: "select",
+            required: false,
+            options: [
+              { value: "adaptive", label: "Adaptive" },
+              { value: "enabled", label: "Fixed budget" },
+              { value: "disabled", label: "Disabled" },
+            ],
+          },
+          {
+            key: "thinkingBudgetTokens",
+            label: "Thinking Token Budget",
+            type: "number",
+            valueType: "number",
+            required: false,
+            dependsOn: { field: "thinkingMode", value: "enabled" },
+          },
+          { key: "maxTurns", label: "Maximum Turns", type: "number", valueType: "number", required: false },
+          { key: "maxBudgetUsd", label: "Maximum Cost (USD)", type: "number", valueType: "number", required: false },
+        ],
         // No model default is passed: when the agent config leaves the model
         // unset, the Claude CLI selects its own default.
         buildAdapter: (context) =>

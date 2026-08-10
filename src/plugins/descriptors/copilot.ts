@@ -6,7 +6,6 @@ import { DEFAULT_COPILOT_MODEL } from "../../copilotModel.js";
 import { validateCopilotConnection, type CopilotConnectionValidationConfig } from "../../agents/copilotConnectionValidator.js";
 import { pollForAccessToken, startDeviceFlow } from "../../agents/copilotOAuthService.js";
 import { exchangeForSessionToken, fetchAvailableModels, fetchAvailableModelsWithPat } from "../../agents/copilotModelsService.js";
-import { decryptToken } from "../../utils/encryption.js";
 import type {
   DeviceProviderAuthHandler,
   ProviderAuthDeviceCompleteInput,
@@ -106,13 +105,13 @@ export function createCopilotDescriptor(adminAuthSecret?: string): ProviderDescr
         }
         githubToken = pat;
       } else {
-        const encryptedToken = typeof cfg["sessionToken"] === "string" ? cfg["sessionToken"] : undefined;
-        if (!encryptedToken) {
+        const sessionToken = typeof cfg["sessionToken"] === "string" ? cfg["sessionToken"].trim() : "";
+        if (!sessionToken) {
           throw new ModelDiscoveryConfigError(
             "No GitHub OAuth token stored. Connect via OAuth first (AI Adapters → Connect with GitHub)."
           );
         }
-        githubToken = decryptToken(encryptedToken, adminAuthSecret);
+        githubToken = sessionToken;
       }
       // PAT: use the @github/copilot-sdk CopilotClient which spawns the bundled
       //      CLI and handles its own token exchange internally.
@@ -127,6 +126,30 @@ export function createCopilotDescriptor(adminAuthSecret?: string): ProviderDescr
     },
     capabilities: {
       agent_execution: {
+        reviewStrategies: [
+          {
+            id: "copilot_native",
+            label: "Copilot native review",
+            description: "Use Copilot CLI's built-in code-review subagent.",
+            experimental: true,
+            modelSelection: "provider",
+            requiredSystemPromptId: "system_review",
+          },
+        ],
+        configFields: [
+          {
+            key: "reasoningEffort",
+            label: "Reasoning Effort",
+            type: "select",
+            required: false,
+            options: [
+              { value: "low", label: "Low" },
+              { value: "medium", label: "Medium" },
+              { value: "high", label: "High" },
+              { value: "xhigh", label: "Extra high" },
+            ],
+          },
+        ],
         buildAdapter: (context) =>
           new CopilotAdapter({
             model: DEFAULT_COPILOT_MODEL,

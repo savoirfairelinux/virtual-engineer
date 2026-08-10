@@ -12,6 +12,8 @@ import type {
   ProjectReviewConfig,
   ProjectTicketSourceRecord,
   ProjectType,
+  ProjectVendorComponentInput,
+  ProjectVendorComponentRecord,
   PushTargetRole,
 } from "../../interfaces.js";
 import { TERMINAL_STATES } from "../../interfaces.js";
@@ -19,6 +21,7 @@ import {
   agents,
   projectIntegrationBindings,
   projectPushTargets,
+  projectVendorComponents,
   projects,
 } from "../schema.js";
 import * as schema from "../schema.js";
@@ -31,19 +34,23 @@ export interface ProjectStoreApi {
     agentId: AgentId;
     agentOverrideJson?: string | null;
     postCloneScript?: string;
-    skillDiscoveryEnabled?: boolean;
+    skillSourcesJson?: string;
+    gerritTopicOverride?: string | null;
+    useFullTicketUrlInCommits?: boolean;
+    postReviewLinkToTicket?: boolean;
+    reactToCiFailures?: boolean;
     enabled?: boolean;
   }): Promise<ProjectRecord>;
   getProjectById(id: ProjectId): Promise<ProjectRecord | null>;
   listProjects(filter?: { type?: ProjectType; enabled?: boolean }): Promise<ProjectRecord[]>;
   updateProject(
     id: ProjectId,
-    partial: Partial<Pick<ProjectRecord, "name" | "type" | "agentId" | "agentOverrideJson" | "postCloneScript" | "skillDiscoveryEnabled" | "enabled">>
+    partial: Partial<Pick<ProjectRecord, "name" | "type" | "agentId" | "agentOverrideJson" | "postCloneScript" | "skillSourcesJson" | "gerritTopicOverride" | "useFullTicketUrlInCommits" | "postReviewLinkToTicket" | "reactToCiFailures" | "enabled">>
   ): Promise<ProjectRecord>;
   updateProjectConfiguration(
     id: ProjectId,
     input: {
-      project: Partial<Pick<ProjectRecord, "name" | "type" | "agentId" | "agentOverrideJson" | "postCloneScript" | "skillDiscoveryEnabled" | "enabled">>;
+      project: Partial<Pick<ProjectRecord, "name" | "type" | "agentId" | "agentOverrideJson" | "postCloneScript" | "skillSourcesJson" | "gerritTopicOverride" | "useFullTicketUrlInCommits" | "postReviewLinkToTicket" | "reactToCiFailures" | "enabled">>;
       ticketSource?: { integrationId: string; ticketProjectKey: string } | undefined;
       pushTargets?: Array<{
         integrationId: string;
@@ -54,6 +61,7 @@ export interface ProjectStoreApi {
         commitOrder: number;
         localPath: string;
         sshKeyPath?: string | null | undefined;
+        reviewerEmails?: string[] | undefined;
       }> | undefined;
       reviewConfig?: { integrationId: string; repoKeys: string[] } | undefined;
     }
@@ -78,6 +86,7 @@ export interface ProjectStoreApi {
       commitOrder: number;
       localPath: string;
       sshKeyPath?: string | null;
+      reviewerEmails?: string[];
     }
   ): Promise<ProjectPushTargetRecord>;
   listProjectPushTargets(projectId: ProjectId): Promise<ProjectPushTargetRecord[]>;
@@ -93,8 +102,14 @@ export interface ProjectStoreApi {
       commitOrder: number;
       localPath: string;
       sshKeyPath?: string | null;
+      reviewerEmails?: string[];
     }>
   ): Promise<ProjectPushTargetRecord[]>;
+  listProjectVendorComponents(projectId: ProjectId): Promise<ProjectVendorComponentRecord[]>;
+  replaceProjectVendorComponents(
+    projectId: ProjectId,
+    inputs: ProjectVendorComponentInput[]
+  ): Promise<ProjectVendorComponentRecord[]>;
   setProjectReviewConfig(projectId: ProjectId, integrationId: string, repoKeys: string[]): Promise<void>;
   getProjectReviewConfig(projectId: ProjectId): Promise<ProjectReviewConfig | null>;
   findProjectsByReviewTarget(integrationId: string, repoKey: string): Promise<ProjectRecord[]>;
@@ -119,7 +134,11 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
       agentId: row.agentId as AgentId,
       agentOverrideJson: row.agentOverrideJson ?? null,
       postCloneScript: row.postCloneScript,
-      skillDiscoveryEnabled: row.skillDiscoveryEnabled === 1,
+      skillSourcesJson: row.skillSourcesJson,
+      gerritTopicOverride: row.gerritTopicOverride ?? null,
+      useFullTicketUrlInCommits: row.useFullTicketUrlInCommits === 1,
+      postReviewLinkToTicket: row.postReviewLinkToTicket === 1,
+      reactToCiFailures: row.reactToCiFailures === 1,
       enabled: row.enabled === 1,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
@@ -147,6 +166,17 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
     };
   }
 
+  /** Parse the JSON-encoded reviewer_emails column; malformed/missing data falls back to []. */
+  function parseReviewerEmails(raw: string | null | undefined): string[] {
+    if (!raw) return [];
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed.filter((e): e is string => typeof e === "string") : [];
+    } catch {
+      return [];
+    }
+  }
+
   function rowToProjectPushTarget(row: typeof projectPushTargets.$inferSelect): ProjectPushTargetRecord {
     return {
       id: row.id,
@@ -159,6 +189,7 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
       commitOrder: row.commitOrder,
       localPath: row.localPath,
       sshKeyPath: row.sshKeyPath ?? null,
+      reviewerEmails: parseReviewerEmails(row.reviewerEmails),
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     };
@@ -176,7 +207,11 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
     agentId: AgentId;
     agentOverrideJson?: string | null;
     postCloneScript?: string;
-    skillDiscoveryEnabled?: boolean;
+    skillSourcesJson?: string;
+    gerritTopicOverride?: string | null;
+    useFullTicketUrlInCommits?: boolean;
+    postReviewLinkToTicket?: boolean;
+    reactToCiFailures?: boolean;
     enabled?: boolean;
   }): Promise<ProjectRecord> {
     const now = new Date();
@@ -192,7 +227,11 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
       agentId: input.agentId,
       agentOverrideJson: input.agentOverrideJson ?? null,
       postCloneScript: input.postCloneScript ?? "",
-      skillDiscoveryEnabled: input.skillDiscoveryEnabled === true ? 1 : 0,
+      skillSourcesJson: input.skillSourcesJson ?? "[]",
+      gerritTopicOverride: input.gerritTopicOverride ?? null,
+      useFullTicketUrlInCommits: input.useFullTicketUrlInCommits === true ? 1 : 0,
+      postReviewLinkToTicket: input.postReviewLinkToTicket === true ? 1 : 0,
+      reactToCiFailures: input.reactToCiFailures === true ? 1 : 0,
       enabled: input.enabled === false ? 0 : 1,
       createdAt: now,
       updatedAt: now,
@@ -212,9 +251,13 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
     return result;
   }
 
+  function readStringArray(value: unknown): string[] {
+    return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
+  }
+
   function updateProjectRow(
     id: ProjectId,
-    partial: Partial<Pick<ProjectRecord, "name" | "type" | "agentId" | "agentOverrideJson" | "postCloneScript" | "skillDiscoveryEnabled" | "enabled">>
+    partial: Partial<Pick<ProjectRecord, "name" | "type" | "agentId" | "agentOverrideJson" | "postCloneScript" | "skillSourcesJson" | "gerritTopicOverride" | "useFullTicketUrlInCommits" | "postReviewLinkToTicket" | "reactToCiFailures" | "enabled">>
   ): void {
     const existing = raw.prepare("SELECT agent_id FROM projects WHERE id = ?").get(id) as
       | { agent_id: string }
@@ -248,14 +291,18 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
     if (partial.agentId !== undefined) add("agent_id", partial.agentId);
     if (partial.agentOverrideJson !== undefined) add("agent_override_json", partial.agentOverrideJson);
     if (partial.postCloneScript !== undefined) add("post_clone_script", partial.postCloneScript);
-    if (partial.skillDiscoveryEnabled !== undefined) add("skill_discovery_enabled", partial.skillDiscoveryEnabled ? 1 : 0);
+    if (partial.skillSourcesJson !== undefined) add("skill_sources_json", partial.skillSourcesJson);
+    if (partial.gerritTopicOverride !== undefined) add("gerrit_topic_override", partial.gerritTopicOverride);
+    if (partial.useFullTicketUrlInCommits !== undefined) add("use_full_ticket_url_in_commits", partial.useFullTicketUrlInCommits ? 1 : 0);
+    if (partial.postReviewLinkToTicket !== undefined) add("post_review_link_to_ticket", partial.postReviewLinkToTicket ? 1 : 0);
+    if (partial.reactToCiFailures !== undefined) add("react_to_ci_failures", partial.reactToCiFailures ? 1 : 0);
     if (partial.enabled !== undefined) add("enabled", partial.enabled ? 1 : 0);
     raw.prepare(`UPDATE projects SET ${assignments.join(", ")} WHERE id = ?`).run(...values, id);
   }
 
   async function updateProject(
     id: ProjectId,
-    partial: Partial<Pick<ProjectRecord, "name" | "type" | "agentId" | "agentOverrideJson" | "postCloneScript" | "skillDiscoveryEnabled" | "enabled">>
+    partial: Partial<Pick<ProjectRecord, "name" | "type" | "agentId" | "agentOverrideJson" | "postCloneScript" | "skillSourcesJson" | "gerritTopicOverride" | "useFullTicketUrlInCommits" | "postReviewLinkToTicket" | "reactToCiFailures" | "enabled">>
   ): Promise<ProjectRecord> {
     raw.transaction(() => updateProjectRow(id, partial))();
     const updated = await getProjectById(id);
@@ -269,12 +316,12 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
   ): Promise<ProjectRecord> {
     raw.transaction(() => {
       const currentProject = raw.prepare(
-        "SELECT agent_id, agent_override_json, post_clone_script, skill_discovery_enabled FROM projects WHERE id = ?"
+        "SELECT agent_id, agent_override_json, post_clone_script, skill_sources_json FROM projects WHERE id = ?"
       ).get(id) as {
         agent_id: string;
         agent_override_json: string | null;
         post_clone_script: string;
-        skill_discovery_enabled: number;
+        skill_sources_json: string;
       } | undefined;
       if (!currentProject) throw new Error(`Project not found: ${id}`);
 
@@ -287,7 +334,7 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
         "WHERE project_id = ? AND capability = 'code_review'"
       ).get(id) as { integration_id: string; config_json: string } | undefined;
       const currentPushTargets = raw.prepare(
-        "SELECT integration_id, repo_key, clone_url, target_branch, role, commit_order, local_path, ssh_key_path " +
+        "SELECT integration_id, repo_key, clone_url, target_branch, role, commit_order, local_path, ssh_key_path, reviewer_emails " +
         "FROM project_push_targets WHERE project_id = ? ORDER BY commit_order, local_path"
       ).all(id) as Array<{
         integration_id: string;
@@ -298,6 +345,7 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
         commit_order: number;
         local_path: string;
         ssh_key_path: string | null;
+        reviewer_emails: string;
       }>;
       const parseConfig = (value: string | undefined): Record<string, unknown> => {
         if (value === undefined) return {};
@@ -315,6 +363,7 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
           commitOrder: target.commitOrder,
           localPath: target.localPath,
           sshKeyPath: target.sshKeyPath ?? null,
+          reviewerEmails: target.reviewerEmails ?? [],
         })).sort((left, right) => left.commitOrder - right.commitOrder || left.localPath.localeCompare(right.localPath))
       );
       const persistedPushTargets = JSON.stringify(currentPushTargets.map((target) => ({
@@ -326,12 +375,13 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
         commitOrder: target.commit_order,
         localPath: target.local_path,
         sshKeyPath: target.ssh_key_path,
+        reviewerEmails: JSON.parse(target.reviewer_emails) as string[],
       })));
       const changesExecutionIdentity =
         (input.project.agentId !== undefined && input.project.agentId !== currentProject.agent_id) ||
         (input.project.agentOverrideJson !== undefined && input.project.agentOverrideJson !== currentProject.agent_override_json) ||
         (input.project.postCloneScript !== undefined && input.project.postCloneScript !== currentProject.post_clone_script) ||
-        (input.project.skillDiscoveryEnabled !== undefined && input.project.skillDiscoveryEnabled !== (currentProject.skill_discovery_enabled === 1)) ||
+        (input.project.skillSourcesJson !== undefined && input.project.skillSourcesJson !== currentProject.skill_sources_json) ||
         (input.ticketSource !== undefined && (
           input.ticketSource.integrationId !== currentTicketSource?.integration_id ||
           input.ticketSource.ticketProjectKey !== ticketConfig["ticketProjectKey"]
@@ -340,7 +390,7 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
         (input.reviewConfig !== undefined && (
           input.reviewConfig.integrationId !== currentReviewConfig?.integration_id ||
           JSON.stringify([...input.reviewConfig.repoKeys].sort()) !==
-            JSON.stringify(Array.isArray(reviewConfig["repos"]) ? [...reviewConfig["repos"]].sort() : [])
+            JSON.stringify(readStringArray(reviewConfig["repos"]).sort())
         ));
       if (changesExecutionIdentity) {
         const terminalPlaceholders = [...TERMINAL_STATES].map(() => "?").join(", ");
@@ -395,8 +445,8 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
         raw.prepare("DELETE FROM project_push_targets WHERE project_id = ?").run(id);
         const statement = raw.prepare(
           `INSERT INTO project_push_targets
-           (project_id, integration_id, repo_key, clone_url, target_branch, role, commit_order, local_path, ssh_key_path, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+           (project_id, integration_id, repo_key, clone_url, target_branch, role, commit_order, local_path, ssh_key_path, reviewer_emails, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         );
         for (const target of input.pushTargets) {
           statement.run(
@@ -409,6 +459,7 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
             target.commitOrder,
             target.localPath,
             target.sshKeyPath ?? null,
+            JSON.stringify(target.reviewerEmails ?? []),
             nowSeconds,
             nowSeconds,
           );
@@ -440,7 +491,7 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
     return updated;
   }
 
-  async function deleteProject(id: ProjectId): Promise<void> {
+  function deleteProject(id: ProjectId): Promise<void> {
     const now = Math.floor(Date.now() / 1000);
     const reason = `project ${id} deleted while tasks were still active`;
     const placeholders = [...TERMINAL_STATES].map(() => "?").join(", ");
@@ -477,8 +528,10 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
         .run(now, id);
       raw.prepare("DELETE FROM project_integration_bindings WHERE project_id = ?").run(id);
       raw.prepare("DELETE FROM project_push_targets WHERE project_id = ?").run(id);
+      raw.prepare("DELETE FROM project_vendor_components WHERE project_id = ?").run(id);
       raw.prepare("DELETE FROM projects WHERE id = ?").run(id);
     })();
+    return Promise.resolve();
   }
 
   function adoptOrphanedTasksForProject(
@@ -494,7 +547,7 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
         "AND ticket_source_integration_id = ? " +
         "AND ticket_source_project_key = ?"
       )
-      .run(projectId as string, now, integrationId, ticketProjectKey);
+      .run(projectId, now, integrationId, ticketProjectKey);
     return Number(result.changes ?? 0);
   }
 
@@ -507,51 +560,57 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
       .where(eq(projects.id, id));
   }
 
-  async function setProjectTicketSource(
+  function setProjectTicketSource(
     projectId: ProjectId,
     input: { integrationId: string; ticketProjectKey: string }
   ): Promise<ProjectTicketSourceRecord> {
     const now = new Date();
     const nowSeconds = Math.floor(now.getTime() / 1000);
-    return raw.transaction((): ProjectTicketSourceRecord => {
-      const conflict = raw
-        .prepare(
-          "SELECT project_id FROM project_integration_bindings " +
-          "WHERE capability = 'issue_tracking' AND integration_id = ? " +
-          "AND json_extract(config_json, '$.ticketProjectKey') = ? AND project_id != ?"
-        )
-        .get(input.integrationId, input.ticketProjectKey, projectId) as { project_id: string } | undefined;
-      if (conflict) {
-        throw new Error(
-          `Ticket source (${input.integrationId}, ${input.ticketProjectKey}) is already claimed by project ${conflict.project_id}`
-        );
-      }
-      raw
-        .prepare("DELETE FROM project_integration_bindings WHERE project_id = ? AND capability = 'issue_tracking'")
-        .run(projectId);
-      const configJson = JSON.stringify({ ticketProjectKey: input.ticketProjectKey });
-      raw
-        .prepare(
-          "INSERT INTO project_integration_bindings (id, project_id, integration_id, capability, config_json, created_at, updated_at) " +
-          "VALUES (?, ?, ?, 'issue_tracking', ?, ?, ?)"
-        )
-        .run(randomUUID(), projectId, input.integrationId, configJson, nowSeconds, nowSeconds);
-      adoptOrphanedTasksForProject(projectId, input.integrationId, input.ticketProjectKey);
-      return {
-        id: 0,
-        projectId,
-        integrationId: input.integrationId,
-        ticketProjectKey: input.ticketProjectKey,
-        createdAt: now,
-      };
-    })();
+    // Not async: the conflict check below must surface as a rejected promise,
+    // not a synchronous throw, for await/`.catch()` callers.
+    try {
+      return Promise.resolve(raw.transaction((): ProjectTicketSourceRecord => {
+        const conflict = raw
+          .prepare(
+            "SELECT project_id FROM project_integration_bindings " +
+            "WHERE capability = 'issue_tracking' AND integration_id = ? " +
+            "AND json_extract(config_json, '$.ticketProjectKey') = ? AND project_id != ?"
+          )
+          .get(input.integrationId, input.ticketProjectKey, projectId) as { project_id: string } | undefined;
+        if (conflict) {
+          throw new Error(
+            `Ticket source (${input.integrationId}, ${input.ticketProjectKey}) is already claimed by project ${conflict.project_id}`
+          );
+        }
+        raw
+          .prepare("DELETE FROM project_integration_bindings WHERE project_id = ? AND capability = 'issue_tracking'")
+          .run(projectId);
+        const configJson = JSON.stringify({ ticketProjectKey: input.ticketProjectKey });
+        raw
+          .prepare(
+            "INSERT INTO project_integration_bindings (id, project_id, integration_id, capability, config_json, created_at, updated_at) " +
+            "VALUES (?, ?, ?, 'issue_tracking', ?, ?, ?)"
+          )
+          .run(randomUUID(), projectId, input.integrationId, configJson, nowSeconds, nowSeconds);
+        adoptOrphanedTasksForProject(projectId, input.integrationId, input.ticketProjectKey);
+        return {
+          id: 0,
+          projectId,
+          integrationId: input.integrationId,
+          ticketProjectKey: input.ticketProjectKey,
+          createdAt: now,
+        };
+      })());
+    } catch (err) {
+      return Promise.reject(err instanceof Error ? err : new Error(typeof err === "string" ? err : JSON.stringify(err)));
+    }
   }
 
   async function getProjectTicketSource(projectId: ProjectId): Promise<ProjectTicketSourceRecord | null> {
     const binding = await getProjectBinding(projectId, "issue_tracking");
     if (!binding) return null;
     const ticketProjectKey = typeof binding.config["ticketProjectKey"] === "string"
-      ? (binding.config["ticketProjectKey"] as string)
+      ? (binding.config["ticketProjectKey"])
       : "";
     return {
       id: 0,
@@ -585,14 +644,15 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
       commitOrder: number;
       localPath: string;
       sshKeyPath?: string | null;
+      reviewerEmails?: string[];
     }
   ): Promise<ProjectPushTargetRecord> {
     const now = new Date();
     const result = raw
       .prepare(
         `INSERT INTO project_push_targets
-         (project_id, integration_id, repo_key, clone_url, target_branch, role, commit_order, local_path, ssh_key_path, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         (project_id, integration_id, repo_key, clone_url, target_branch, role, commit_order, local_path, ssh_key_path, reviewer_emails, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         projectId,
@@ -604,6 +664,7 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
         input.commitOrder,
         input.localPath,
         input.sshKeyPath ?? null,
+        JSON.stringify(input.reviewerEmails ?? []),
         Math.floor(now.getTime() / 1000),
         Math.floor(now.getTime() / 1000)
       );
@@ -638,6 +699,7 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
       commitOrder: number;
       localPath: string;
       sshKeyPath?: string | null;
+      reviewerEmails?: string[];
     }>
   ): Promise<ProjectPushTargetRecord[]> {
     const now = new Date();
@@ -645,8 +707,8 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
       raw.prepare("DELETE FROM project_push_targets WHERE project_id = ?").run(projectId);
       const statement = raw.prepare(
         `INSERT INTO project_push_targets
-         (project_id, integration_id, repo_key, clone_url, target_branch, role, commit_order, local_path, ssh_key_path, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         (project_id, integration_id, repo_key, clone_url, target_branch, role, commit_order, local_path, ssh_key_path, reviewer_emails, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       );
       for (const input of inputs) {
         statement.run(
@@ -659,6 +721,7 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
           input.commitOrder,
           input.localPath,
           input.sshKeyPath ?? null,
+          JSON.stringify(input.reviewerEmails ?? []),
           Math.floor(now.getTime() / 1000),
           Math.floor(now.getTime() / 1000)
         );
@@ -667,7 +730,61 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
     return listProjectPushTargets(projectId);
   }
 
-  async function setProjectReviewConfig(
+  async function listProjectVendorComponents(projectId: ProjectId): Promise<ProjectVendorComponentRecord[]> {
+    const rows = await db.query.projectVendorComponents.findMany({
+      where: eq(projectVendorComponents.projectId, projectId),
+      orderBy: (table, { asc }) => [asc(table.sourcePath), asc(table.localPath)],
+    });
+    return rows.map((row) => ({
+      id: row.id,
+      projectId: row.projectId as ProjectId,
+      sourcePath: row.sourcePath,
+      localPath: row.localPath,
+      cloneUrl: row.cloneUrl,
+      revision: row.revision,
+      origin: row.origin,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    }));
+  }
+
+  async function replaceProjectVendorComponents(
+    projectId: ProjectId,
+    inputs: ProjectVendorComponentInput[]
+  ): Promise<ProjectVendorComponentRecord[]> {
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const identity = (sourcePath: string, localPath: string | null): string => `${sourcePath}\u0000${localPath ?? ""}`;
+    raw.transaction((): void => {
+      // created_at means "first tracked", so carry it over for components that survive the replace.
+      const previous = new Map<string, number>();
+      for (const row of raw
+        .prepare("SELECT source_path, local_path, created_at FROM project_vendor_components WHERE project_id = ?")
+        .all(projectId) as Array<{ source_path: string; local_path: string | null; created_at: number }>) {
+        previous.set(identity(row.source_path, row.local_path), row.created_at);
+      }
+      raw.prepare("DELETE FROM project_vendor_components WHERE project_id = ?").run(projectId);
+      const statement = raw.prepare(
+        `INSERT INTO project_vendor_components
+         (project_id, source_path, local_path, clone_url, revision, origin, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      );
+      for (const input of inputs) {
+        statement.run(
+          projectId,
+          input.sourcePath,
+          input.localPath ?? null,
+          input.cloneUrl ?? null,
+          input.revision ?? null,
+          input.origin,
+          previous.get(identity(input.sourcePath, input.localPath ?? null)) ?? nowSeconds,
+          nowSeconds
+        );
+      }
+    })();
+    return listProjectVendorComponents(projectId);
+  }
+
+  function setProjectReviewConfig(
     projectId: ProjectId,
     integrationId: string,
     repoKeys: string[]
@@ -685,6 +802,7 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
         )
         .run(randomUUID(), projectId, integrationId, configJson, nowSeconds, nowSeconds);
     })();
+    return Promise.resolve();
   }
 
   async function getProjectReviewConfig(projectId: ProjectId): Promise<ProjectReviewConfig | null> {
@@ -738,10 +856,11 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
     return rows.map((row) => rowToBinding(row));
   }
 
-  async function deleteProjectBinding(projectId: ProjectId, capability: DomainCapability): Promise<void> {
+  function deleteProjectBinding(projectId: ProjectId, capability: DomainCapability): Promise<void> {
     raw
       .prepare("DELETE FROM project_integration_bindings WHERE project_id = ? AND capability = ?")
       .run(projectId, capability);
+    return Promise.resolve();
   }
 
   return {
@@ -760,6 +879,8 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
     listProjectPushTargets,
     removeProjectPushTarget,
     replaceProjectPushTargets,
+    listProjectVendorComponents,
+    replaceProjectVendorComponents,
     setProjectReviewConfig,
     getProjectReviewConfig,
     findProjectsByReviewTarget,

@@ -1,12 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { randomUUID } from "node:crypto";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import { makeAgentId, makeTaskId, makeTicketId, type AuditEntry } from "../../src/interfaces.js";
 import { SqliteStateStore } from "../../src/state/stateStore.js";
 import { createAdminServer } from "../../src/admin/adminServer.js";
 import { registerBuiltinPlugins } from "../../src/plugins/init.js";
+import { tempDatabasePath } from "./helpers/tempDatabase.js";
 
 registerBuiltinPlugins();
 
@@ -14,7 +12,7 @@ const SECRET = "audit-routes-secret";
 
 
 function tempDbPath(): string {
-  return join(tmpdir(), `ve-audit-routes-${randomUUID()}.db`);
+  return tempDatabasePath("ve-audit-routes");
 }
 
 function makeServer(store: SqliteStateStore): ReturnType<typeof createAdminServer> {
@@ -226,7 +224,7 @@ describe("adminAuditRoutes + audit instrumentation", () => {
       const response = await fetch(`${baseUrl}/api/admin/prompts`, {
         method: "POST",
         headers: { authorization: `Bearer ${adminToken}`, "content-type": "application/json" },
-        body: JSON.stringify({ label: "Audit Prompt", content: "hello world" }),
+        body: JSON.stringify({ label: "Audit Prompt", content: "hello world", promptType: "instructions" }),
       });
       expect(response.status).toBe(201);
       const entries = await waitForAudit("prompt.create");
@@ -240,7 +238,10 @@ describe("adminAuditRoutes + audit instrumentation", () => {
     });
 
     it("records project.disable with the authenticated actor", async () => {
-      const agent = await store.createAgent({ name: "Coder", type: "coding", modelConfigJson: "{}" });
+      const agent = await store.createAgent({
+        name: "Coder", type: "coding", modelConfigJson: "{}",
+        systemPromptId: "system_generic_code", instructionsPromptId: "instructions_generic_code",
+      });
       const project = await store.createProject({ name: "Proj", type: "coding", agentId: makeAgentId(agent.id) });
       const response = await fetch(`${baseUrl}/api/admin/projects/${project.id}/disable`, {
         method: "PATCH",

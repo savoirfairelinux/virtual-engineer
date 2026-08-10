@@ -99,7 +99,6 @@ describe("MockAgentAdapter", () => {
     expect(spec.image).toBe("virtual-engineer-workspace:latest");
     expect(spec.command).toEqual(["node", "/app/agent-worker/dist/index.js"]);
     expect(spec.env).toEqual({});
-    expect(spec.additionalDockerArgs).toEqual([]);
   });
 
   it("honors simulateDelayMs before resolving", async () => {

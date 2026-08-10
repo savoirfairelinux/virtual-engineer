@@ -22,6 +22,8 @@ export interface Metrics {
   outputTokens: number;
   cacheRead: number;
   cacheWrite: number;
+  /** Number of tool calls denied by the permission layer. */
+  denials: number;
 }
 
 export interface TokenTotalsInput {
@@ -84,8 +86,13 @@ export function extractMetrics(events: readonly MetricEntry[]): Metrics {
   const usageByRequest = new Map<string, UsageTotals>();
   const seenToolIds = new Set<string>();
   let toolCalls = 0;
+  let denials = 0;
 
   for (const ev of events) {
+    if (ev.type === "permission.denied") {
+      denials++;
+      continue;
+    }
     if (isToolStart(ev.type)) {
       const d = asRecord(ev.data);
       // Dedup only when the SDK gives us an explicit tool-call identity;
@@ -141,5 +148,5 @@ export function extractMetrics(events: readonly MetricEntry[]): Metrics {
     cacheWrite += u.cacheWrite;
   }
 
-  return { toolCalls, inputTokens, outputTokens, cacheRead, cacheWrite };
+  return { toolCalls, inputTokens, outputTokens, cacheRead, cacheWrite, denials };
 }

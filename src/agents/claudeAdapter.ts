@@ -1,11 +1,8 @@
 import { randomUUID } from "crypto";
-import { homedir } from "os";
-import { join, resolve } from "path";
 import type {
   AgentAdapter,
   ConfigurableAdapter,
   AgentResult,
-  AgentLogEvent,
   TaskContext,
   ExternalChangeId,
   AdapterContainerSpec,
@@ -17,9 +14,20 @@ import type {
 import { makeExternalChangeId } from "../interfaces.js";
 import { getLogger } from "../logger.js";
 import { decryptToken } from "../utils/encryption.js";
+import { assertPromptRole } from "../utils/promptRole.js";
 import { getConfig } from "../config.js";
-import { agentLogBus, pushToTaskBuffer } from "./agentEventBus.js";
 import { buildCodegenUserPrompt } from "./copilotAdapter.js";
+import {
+  extractToolAuthorization,
+  toolListEnv,
+} from "./toolAuthorization.js";
+import {
+  buildCodegenContainerSpec,
+  buildReviewContainerSpec as buildSharedReviewContainerSpec,
+  systemPromptEnv,
+} from "./containerSpecBuilders.js";
+import { createStderrPipeline } from "./agentStderrPipeline.js";
+import type { StderrParseState } from "./agentStderrPipeline.js";
 
 /**
  * Network egress the Claude Code CLI needs under the OpenShell deny-by-default
@@ -32,6 +40,30 @@ const CLAUDE_EGRESS: AgentEgressSpec = {
 };
 
 const log = getLogger("claude-adapter");
+
+function claudeOptionEnv(options: Record<string, unknown> | undefined): Record<string, string> {
+  if (!options) return {};
+  const effort = options["effort"];
+  const thinkingMode = options["thinkingMode"];
+  const positiveNumber = (key: string): number | undefined => {
+    const value = options[key];
+    return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
+  };
+  const thinkingBudgetTokens = positiveNumber("thinkingBudgetTokens");
+  const maxTurns = positiveNumber("maxTurns");
+  const maxBudgetUsd = positiveNumber("maxBudgetUsd");
+  return {
+    ...(effort === "low" || effort === "medium" || effort === "high" || effort === "xhigh" || effort === "max"
+      ? { CLAUDE_EFFORT: effort }
+      : {}),
+    ...(thinkingMode === "adaptive" || thinkingMode === "enabled" || thinkingMode === "disabled"
+      ? { CLAUDE_THINKING_MODE: thinkingMode }
+      : {}),
+    ...(thinkingBudgetTokens !== undefined ? { CLAUDE_THINKING_BUDGET_TOKENS: String(thinkingBudgetTokens) } : {}),
+    ...(maxTurns !== undefined ? { CLAUDE_MAX_TURNS: String(maxTurns) } : {}),
+    ...(maxBudgetUsd !== undefined ? { CLAUDE_MAX_BUDGET_USD: String(maxBudgetUsd) } : {}),
+  };
+}
 
 export interface ClaudeAdapterConfig {
   /**
@@ -55,12 +87,6 @@ interface DockerInvocationCallbacks {
   onStderrChunk?: ((chunk: string) => void) | undefined;
 }
 
-interface StderrParseState {
-  buffer: string;
-  plainLogLines: string[];
-  agentEvents: AgentLogEvent[];
-}
-
 type DockerInvoker = (
   context: TaskContext,
   authEnv?: Record<string, string>,
@@ -71,20 +97,6 @@ const DEFAULT_CONFIG: ClaudeAdapterConfig = {
   maxRepositoryContextBytes: 120_000,
   maxCommitsPerCycle: 10,
 };
-
-const SECURITY_DOCKER_ARGS = [
-  "--read-only",
-  "--cap-drop",
-  "ALL",
-  "--security-opt",
-  "no-new-privileges:true",
-  // On SELinux hosts, label=disable turns off confinement for this container
-  // only so the bundled Claude Code native binary can load.
-  "--security-opt",
-  "label=disable",
-  "--tmpfs",
-  "/tmp:rw,nosuid,size=256m",
-];
 
 /**
  * Runs code-generation / review via a Docker agent container using the Anthropic
@@ -154,7 +166,7 @@ export class ClaudeAdapter implements AgentAdapter, ConfigurableAdapter {
     const session = context.agentSession;
     const claudeModel = session.copilotModel ?? this.config.model;
 
-    const env: Record<string, string> = {
+    const providerEnv: Record<string, string> = {
       ...authEnv,
       AGENT_PROVIDER: "claude",
       // The agent container runs as root; Claude Code refuses bypassPermissions
@@ -162,42 +174,17 @@ export class ClaudeAdapter implements AgentAdapter, ConfigurableAdapter {
       // sandboxed environment. Our container is a hardened, network-isolated sandbox.
       IS_SANDBOX: "1",
       ...(claudeModel ? { CLAUDE_MODEL: claudeModel } : {}),
-      GIT_AUTHOR_NAME: session.gitAuthorName,
-      GIT_AUTHOR_EMAIL: session.gitAuthorEmail,
-      GIT_COMMITTER_NAME: session.gitAuthorName,
-      GIT_COMMITTER_EMAIL: session.gitAuthorEmail,
-      TASK_ID: context.taskId,
-      MAX_CONTEXT_BYTES: String(this.config.maxRepositoryContextBytes),
-      MAX_COMMITS_PER_CYCLE: String(this.config.maxCommitsPerCycle ?? 10),
-      ...(session.repositoryMap !== undefined
-        ? { REPOSITORY_MAP_JSON: JSON.stringify(session.repositoryMap) }
-        : {}),
-      ...(session.existingChangeId !== undefined
-        ? { ROOT_CHANGE_ID: session.existingChangeId }
-        : {}),
-      ...(session.perRepoChangeIds !== undefined
-        ? { PER_REPO_CHANGE_IDS_JSON: JSON.stringify(session.perRepoChangeIds) }
-        : {}),
-      ...(session.skillDiscoveryEnabled ? { SKILL_DISCOVERY: "1" } : {}),
+      ...claudeOptionEnv(session.providerOptions),
+      ...toolListEnv("claude", extractToolAuthorization(session.providerOptions)),
     };
 
-    const additionalDockerArgs = [...SECURITY_DOCKER_ARGS];
-
-    const resolvedPromptsDir = this.config.promptsDir
-      ? this.resolvePath(this.config.promptsDir)
-      : null;
-    if (resolvedPromptsDir) {
-      additionalDockerArgs.push("-v", `${resolvedPromptsDir}:/ve-prompts:ro,Z`);
-      env["PROMPTS_DIR"] = "/ve-prompts";
-    }
-
-    return {
-      image: session.agentContainerImage,
-      env,
-      command: ["node", "/app/agent-worker/dist/index.js"],
-      additionalDockerArgs,
+    return buildCodegenContainerSpec(context, {
+      providerEnv,
+      maxRepositoryContextBytes: this.config.maxRepositoryContextBytes,
+      maxCommitsPerCycle: this.config.maxCommitsPerCycle,
+      promptsDir: this.config.promptsDir,
       egress: CLAUDE_EGRESS,
-    };
+    });
   }
 
   /** Builds a container spec for review mode (REVIEW_MODE=1). Reads prompt from /ve-home/user-prompt.txt. */
@@ -206,28 +193,23 @@ export class ClaudeAdapter implements AgentAdapter, ConfigurableAdapter {
     authEnv: Record<string, string> = {}
   ): AdapterContainerSpec {
     const reviewModel = input.model ?? this.config.model;
-    const systemPromptEnv = /[\r\n]/u.test(input.systemPrompt)
-      ? { SYSTEM_PROMPT_BASE64: Buffer.from(input.systemPrompt, "utf8").toString("base64") }
-      : { SYSTEM_PROMPT: input.systemPrompt };
-    const env: Record<string, string> = {
+    const providerEnv: Record<string, string> = {
       ...this.reviewAuthEnv(input.agentToken, authEnv),
       AGENT_PROVIDER: "claude",
       // Allow bypassPermissions as root inside the hardened sandbox container.
       IS_SANDBOX: "1",
       ...(reviewModel ? { CLAUDE_MODEL: reviewModel } : {}),
-      REVIEW_MODE: "1",
-      USER_PROMPT_FILE: "/ve-home/user-prompt.txt",
-      ...systemPromptEnv,
-      ...(input.skillDiscoveryEnabled ? { SKILL_DISCOVERY: "1" } : {}),
+      ...claudeOptionEnv(input.providerOptions),
+      ...toolListEnv("claude", extractToolAuthorization(input.providerOptions)),
+      ...(input.reviewOutputSchema !== undefined
+        ? { REVIEW_OUTPUT_SCHEMA: JSON.stringify(input.reviewOutputSchema) }
+        : {}),
     };
 
-    return {
-      image: input.containerImage ?? "virtual-engineer-workspace:latest",
-      env,
-      command: ["node", "/app/agent-worker/dist/index.js"],
-      additionalDockerArgs: [...SECURITY_DOCKER_ARGS],
+    return buildSharedReviewContainerSpec(input, {
+      providerEnv,
       egress: CLAUDE_EGRESS,
-    };
+    });
   }
 
   /**
@@ -261,15 +243,13 @@ export class ClaudeAdapter implements AgentAdapter, ConfigurableAdapter {
     const promptStore = this.promptStore;
 
     if (!promptStore) {
-      return spec;
+      throw new Error("Prompt store is required for agent execution");
     }
 
-    const systemPromptId =
-      context.systemPromptId === undefined ? "system_generic_code" : context.systemPromptId;
-    const instructionsPromptId =
-      context.instructionsPromptId === undefined
-        ? "instructions_generic_code"
-        : context.instructionsPromptId;
+    const systemPromptId = context.systemPromptId;
+    const instructionsPromptId = context.instructionsPromptId;
+    if (!systemPromptId) throw new Error("System prompt is required for agent execution");
+    if (!instructionsPromptId) throw new Error("Instructions prompt is required for agent execution");
     const promptIds = [
       ...new Set(
         [systemPromptId, instructionsPromptId].filter(
@@ -288,18 +268,13 @@ export class ClaudeAdapter implements AgentAdapter, ConfigurableAdapter {
         ? promptsById.get(instructionsPromptId) ?? null
         : null;
 
-    if (systemPrompt) {
-      if (/[\r\n]/u.test(systemPrompt.content)) {
-        delete spec.env["SYSTEM_PROMPT"];
-        spec.env["SYSTEM_PROMPT_BASE64"] = Buffer.from(systemPrompt.content, "utf8").toString("base64");
-      } else {
-        spec.env["SYSTEM_PROMPT"] = systemPrompt.content;
-      }
-    }
+    if (!systemPrompt) throw new Error(`System prompt '${systemPromptId}' not found`);
+    if (!instructionsPrompt) throw new Error(`Instructions prompt '${instructionsPromptId}' not found`);
+    assertPromptRole(systemPrompt, "system");
+    assertPromptRole(instructionsPrompt, "instructions");
 
-    if (instructionsPrompt) {
-      spec.userPromptContent = buildCodegenUserPrompt(context, instructionsPrompt.content);
-    }
+    Object.assign(spec.env, systemPromptEnv(systemPrompt.content));
+    spec.userPromptContent = buildCodegenUserPrompt(context, instructionsPrompt.content);
 
     return spec;
   }
@@ -335,19 +310,25 @@ export class ClaudeAdapter implements AgentAdapter, ConfigurableAdapter {
     authEnv: Record<string, string>,
     changeId: ExternalChangeId
   ): Promise<AgentResult> {
-    const stderrState: StderrParseState = {
-      buffer: "",
-      plainLogLines: [],
-      agentEvents: [],
-    };
-    const invocation = await this.invokeAgentContainer(context, authEnv, {
-      onStderrChunk: (chunk) => {
-        this.consumeStderrChunk(context, stderrState, chunk);
-      },
-    });
-    this.flushStderrBuffer(context, stderrState);
+    const stderrPipeline = createStderrPipeline(context, { adapterName: "claude", log });
+    let invocation: DockerInvocationResult;
+    try {
+      invocation = await this.invokeAgentContainer(context, authEnv, {
+        onStderrChunk: (chunk) => {
+          stderrPipeline.consumeChunk(chunk);
+        },
+      });
+    } catch (err) {
+      stderrPipeline.flush();
+      if (stderrPipeline.state.agentEvents.length === 0 && stderrPipeline.state.plainLogLines.length === 0) {
+        throw err;
+      }
+      const message = err instanceof Error ? err.message : String(err);
+      return this.setupFailureResult(message, stderrPipeline.state);
+    }
+    stderrPipeline.flush();
 
-    const result = this.parseAgentResult(context, invocation.stdout, stderrState);
+    const result = this.parseAgentResult(context, invocation.stdout, stderrPipeline.state);
 
     // Agent-created commits (multi-commit protocol): skip host commit processing.
     if (result.commits && result.commits.length > 0) {
@@ -365,6 +346,22 @@ export class ClaudeAdapter implements AgentAdapter, ConfigurableAdapter {
       result.externalChangeId = changeId;
     }
     return result;
+  }
+
+  private setupFailureResult(message: string, stderrState: StderrParseState): AgentResult {
+    const plainLogs = stderrState.plainLogLines.join("\n");
+    return {
+      status: "failed",
+      modifiedFiles: [],
+      summary: "Agent setup failed before container output",
+      agentLogs: [plainLogs, message].filter(Boolean).join("\n"),
+      agentEvents: stderrState.agentEvents,
+      metadata: {
+        adapter: "claude",
+        setupError: true,
+        error: message.slice(0, 300),
+      },
+    };
   }
 
   /** Delegate Docker invocation to the registered dockerInvoker, passing auth env. */
@@ -420,66 +417,6 @@ export class ClaudeAdapter implements AgentAdapter, ConfigurableAdapter {
     }
   }
 
-  /** Accumulate a stderr chunk into the line buffer and flush complete lines for processing. */
-  private consumeStderrChunk(context: TaskContext, state: StderrParseState, chunk: string): void {
-    state.buffer += chunk;
-    const lines = state.buffer.split(/\r?\n/);
-    state.buffer = lines.pop() ?? "";
-    for (const line of lines) {
-      this.processStderrLine(context, state, line);
-    }
-  }
-
-  /** Flush any remaining buffered stderr content as a final line. */
-  private flushStderrBuffer(context: TaskContext, state: StderrParseState): void {
-    if (!state.buffer) {
-      return;
-    }
-    this.processStderrLine(context, state, state.buffer);
-    state.buffer = "";
-  }
-
-  /** Parse one stderr line as a VE event JSON or plain log, emitting to the live event bus. */
-  private processStderrLine(context: TaskContext, state: StderrParseState, line: string): void {
-    if (!line) {
-      return;
-    }
-
-    try {
-      const parsed = JSON.parse(line) as Record<string, unknown>;
-      if (parsed["__ve_event"] === true) {
-        const event: AgentLogEvent = {
-          type: typeof parsed["type"] === "string" ? parsed["type"] : "unknown",
-          timestamp: typeof parsed["ts"] === "string" ? parsed["ts"] : new Date().toISOString(),
-          data: parsed["data"],
-          taskId: context.taskId,
-          cycleNumber: context.cycleNumber,
-        };
-        state.agentEvents.push(event);
-        pushToTaskBuffer(event);
-        agentLogBus.emit("event", event);
-        return;
-      }
-    } catch {
-      // plain stderr line
-    }
-
-    state.plainLogLines.push(line);
-    const stderrEvent: AgentLogEvent = {
-      type: "stderr.line",
-      timestamp: new Date().toISOString(),
-      data: { line },
-      taskId: context.taskId,
-      cycleNumber: context.cycleNumber,
-    };
-    pushToTaskBuffer(stderrEvent);
-    agentLogBus.emit("event", stderrEvent);
-    log.info(
-      { taskId: context.taskId, cycle: context.cycleNumber, line },
-      "claude adapter: live stderr"
-    );
-  }
-
   // ── helpers ───────────────────────────────────────────────────────────────
 
   /** Generate a unique Gerrit-compatible Change-Id string from a random UUID. */
@@ -488,10 +425,4 @@ export class ClaudeAdapter implements AgentAdapter, ConfigurableAdapter {
     return makeExternalChangeId(`I${uuid}${uuid.slice(0, 8)}`);
   }
 
-  /** Resolve a path string, expanding a leading `~/` to the current user's home directory. */
-  private resolvePath(value: string): string {
-    if (value.startsWith("~/")) return join(homedir(), value.slice(2));
-    if (value === "~") return homedir();
-    return resolve(value);
-  }
 }

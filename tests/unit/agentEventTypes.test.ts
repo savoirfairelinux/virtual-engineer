@@ -265,6 +265,48 @@ describe("normalizeAgentEvent", () => {
     expect(result.message).toContain("shell_exec");
     expect(result.message).toContain("50% complete");
   });
+
+  it("builds human-readable messages for remote skill fetch events", () => {
+    const start = normalizeAgentEvent({
+      ...baseEvent,
+      type: "skills.fetch_start",
+      data: {
+        source: "ssh://g1.sfl.io/sfl/agent-skills",
+        skills: ["fix-reviews", "pdf-index"],
+        agent: "github-copilot",
+      },
+    });
+    expect(start.message).toBe(
+      "Fetching skills from ssh://g1.sfl.io/sfl/agent-skills (skills: fix-reviews, pdf-index · agent: github-copilot)"
+    );
+
+    const complete = normalizeAgentEvent({
+      ...baseEvent,
+      type: "skills.fetch_complete",
+      data: {
+        source: "git@github.com:vercel-labs/agent-skills.git",
+        skills: "all",
+        agent: "github-copilot",
+      },
+    });
+    expect(complete.message).toBe(
+      "Fetched skills from git@github.com:vercel-labs/agent-skills.git (skills: all skills · agent: github-copilot)"
+    );
+
+    const failed = normalizeAgentEvent({
+      ...baseEvent,
+      type: "skills.fetch_failed",
+      data: {
+        source: "ssh://g1.sfl.io/sfl/agent-skills",
+        skills: [" fix-reviews ", "  "],
+        message: "Authentication failed",
+      },
+    });
+    expect(failed.message).toBe(
+      "Failed to fetch skills from ssh://g1.sfl.io/sfl/agent-skills (skills: fix-reviews): Authentication failed"
+    );
+  });
+
 });
 
 // ── SessionMetrics ──────────────────────────────────────────────────────────
@@ -462,6 +504,50 @@ describe("SessionMetrics", () => {
     // Even after processing events, quota stays unavailable
     updateSessionMetrics(metrics, makeNormEvent("assistant.usage", { inputTokens: 100 }, "usage"));
     expect(metrics.quotaAvailable).toBe(false);
+  });
+
+  it("tracks permission.denied per tool with denial count and reason", () => {
+    updateSessionMetrics(metrics, makeNormEvent(
+      "permission.denied",
+      { toolName: "Bash", reason: "Tool 'Bash' is blocked for this agent." },
+      "session",
+    ));
+    updateSessionMetrics(metrics, makeNormEvent(
+      "permission.denied",
+      { toolName: "Bash", reason: "blocked" },
+      "session",
+    ));
+    updateSessionMetrics(metrics, makeNormEvent(
+      "permission.denied",
+      { toolName: "WebFetch", reason: "Network access is disabled" },
+      "session",
+    ));
+    expect(metrics.totalDenials).toBe(3);
+    expect(metrics.tools["Bash"]).toBeDefined();
+    expect(metrics.tools["Bash"]!.denialCount).toBe(2);
+    expect(metrics.tools["Bash"]!.lastDenialReason).toBe("blocked");
+    expect(metrics.tools["WebFetch"]).toBeDefined();
+    expect(metrics.tools["WebFetch"]!.denialCount).toBe(1);
+  });
+
+  it("permission.denied without a toolName increments totalDenials only", () => {
+    updateSessionMetrics(metrics, makeNormEvent(
+      "permission.denied",
+      { reason: "rejected" },
+      "session",
+    ));
+    expect(metrics.totalDenials).toBe(1);
+    expect(Object.keys(metrics.tools)).toHaveLength(0);
+  });
+
+  it("permission.approved does not change denial counters", () => {
+    updateSessionMetrics(metrics, makeNormEvent(
+      "permission.approved",
+      { toolName: "Read" },
+      "session",
+    ));
+    expect(metrics.totalDenials).toBe(0);
+    expect(Object.keys(metrics.tools)).toHaveLength(0);
   });
 });
 

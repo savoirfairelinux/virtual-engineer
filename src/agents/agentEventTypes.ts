@@ -29,7 +29,7 @@ export function normalizeAgentResult(result: AgentResult): AgentResult {
     result.modifiedFiles !== null &&
     !Array.isArray(result.modifiedFiles)
   ) {
-    const repoGrouped = result.modifiedFiles as Record<string, string[]>;
+    const repoGrouped = result.modifiedFiles;
     const flattened: string[] = [];
     for (const [repoKey, files] of Object.entries(repoGrouped)) {
       if (Array.isArray(files)) {
@@ -100,6 +100,10 @@ export interface ToolMetrics {
   lastDurationMs: number | null;
   /** Total duration in ms across all calls */
   totalDurationMs: number;
+  /** Number of times a call to this tool was denied by the permission layer. */
+  denialCount: number;
+  /** Reason from the most recent denial, or null. */
+  lastDenialReason: string | null;
 }
 
 export interface TokenUsage {
@@ -117,6 +121,8 @@ export interface SessionMetrics {
   totalToolCalls: number;
   /** Currently running tool name, or null */
   activeToolName: string | null;
+  /** Total number of tool calls denied by the permission layer. */
+  totalDenials: number;
   /** Cumulative token usage (summed across distinct requests) */
   tokenUsage: TokenUsage;
   /** Number of usage events received */
@@ -228,7 +234,9 @@ function sanitizeRecord(obj: Record<string, unknown>): Record<string, unknown> {
     if (typeof value === "string") {
       result[key] = sanitizeValue(value);
     } else if (Array.isArray(value)) {
-      result[key] = value.map((item) =>
+      // Array.isArray narrows to `any[]` in lib.es5.d.ts; re-type explicitly to avoid `any` leaking through `.map`.
+      const arr = value as unknown[];
+      result[key] = arr.map((item) =>
         typeof item === "string"
           ? sanitizeValue(item)
           : typeof item === "object" && item !== null
@@ -262,7 +270,9 @@ function categorizeEvent(type: string, data: Record<string, unknown> | null): Ag
   if (
     type === "session.start" ||
     type === "session.end" ||
-    type === "permission.requested"
+    type === "permission.requested" ||
+    type === "permission.denied" ||
+    type === "permission.approved"
   ) {
     return "session";
   }
@@ -273,7 +283,8 @@ function categorizeEvent(type: string, data: Record<string, unknown> | null): Ag
 /** Map an event type string to its display log level. */
 function eventLevel(type: string): "info" | "warn" | "error" | "debug" {
   if (type === "session.error" || type === "review.failed") return "error";
-  if (type === "permission.requested") return "warn";
+  if (type === "permission.requested" || type === "permission.denied") return "warn";
+  if (type === "permission.approved") return "info";
   if (type === "assistant.streaming_delta") return "debug";
   return "info";
 }
@@ -489,6 +500,25 @@ function buildEventMessage(type: string, data: Record<string, unknown> | null): 
       const tool = readStr(data, ["tool", "name", "toolName"]);
       return tool ? `🔐 Permission: ${tool}` : "🔐 Permission requested";
     }
+    case "permission.denied": {
+      const tool = readStr(data, ["toolName", "tool", "name"]);
+      const reason = readStr(data, ["reason", "message", "feedback"]);
+      const prefix = tool ? `🚫 Denied: ${tool}` : "🚫 Permission denied";
+      return reason ? `${prefix} — ${reason}` : prefix;
+    }
+    case "permission.approved": {
+      const tool = readStr(data, ["toolName", "tool", "name"]);
+      return tool ? `✅ Approved: ${tool}` : "✅ Permission approved";
+    }
+    case "skills.fetch_start":
+      return buildSkillFetchMessage("Fetching skills from", data);
+    case "skills.fetch_complete":
+      return buildSkillFetchMessage("Fetched skills from", data);
+    case "skills.fetch_failed": {
+      const message = buildSkillFetchMessage("Failed to fetch skills from", data);
+      const reason = readStr(data, ["message", "error", "reason"]);
+      return reason ? `${message}: ${reason}` : message;
+    }
     // ── Review lifecycle events ───────────────────────────────────────────
     case "review.started":
       return "📝 Review started";
@@ -525,6 +555,28 @@ function buildEventMessage(type: string, data: Record<string, unknown> | null): 
     default:
       return type;
   }
+}
+
+/** Build a human-readable message for remote skill fetch events. */
+function buildSkillFetchMessage(prefix: string, data: Record<string, unknown> | null): string {
+  const source = readStr(data, ["source", "repo", "repository", "url"]) ?? "unknown source";
+  const agent = readStr(data, ["agent", "agentName"]);
+  const skills = formatSkillSelection(data?.["skills"]);
+  const details = [`skills: ${skills}`];
+  if (agent) details.push(`agent: ${agent}`);
+  return `${prefix} ${source} (${details.join(" · ")})`;
+}
+
+/** Format the selected remote skill list from worker event payloads. */
+function formatSkillSelection(value: unknown): string {
+  if (value === "all") return "all skills";
+  if (Array.isArray(value)) {
+    const skills = value
+      .filter((skill): skill is string => typeof skill === "string" && skill.trim().length > 0)
+      .map((skill) => skill.trim());
+    return skills.length > 0 ? skills.join(", ") : "no explicit skills";
+  }
+  return "no explicit skills";
 }
 
 /** Extract a file path from a tool event's input for inline display in the event message. */
@@ -608,6 +660,7 @@ export function createSessionMetrics(): SessionMetrics {
     tools: {},
     totalToolCalls: 0,
     activeToolName: null,
+    totalDenials: 0,
     tokenUsage: {
       inputTokens: 0,
       outputTokens: 0,
@@ -668,9 +721,11 @@ export function updateSessionMetrics(
           lastEndTime: null,
           lastDurationMs: null,
           totalDurationMs: 0,
+          denialCount: 0,
+          lastDenialReason: null,
         };
       }
-      const tool = metrics.tools[name]!;
+      const tool = metrics.tools[name];
       tool.callCount++;
       tool.lastStatus = "running";
       tool.lastStartTime = event.timestamp;
@@ -707,6 +762,36 @@ export function updateSessionMetrics(
       break;
     }
 
+    case "permission.denied": {
+      metrics.totalDenials++;
+      const deniedName = readStr(event.data, ["toolName", "tool", "name"]);
+      if (deniedName) {
+        if (!metrics.tools[deniedName]) {
+          metrics.tools[deniedName] = {
+            name: deniedName,
+            callCount: 0,
+            lastStatus: "unknown",
+            lastStartTime: null,
+            lastEndTime: null,
+            lastDurationMs: null,
+            totalDurationMs: 0,
+            denialCount: 0,
+            lastDenialReason: null,
+          };
+        }
+        const deniedTool = metrics.tools[deniedName];
+        deniedTool.denialCount++;
+        const reason = readStr(event.data, ["reason", "message", "feedback"]);
+        deniedTool.lastDenialReason = reason ?? null;
+      }
+      break;
+    }
+
+    case "permission.approved":
+      // No metric to update — approvals are the normal path. Tracked only as
+      // an event for the live log stream.
+      break;
+
     default:
       break;
   }
@@ -719,6 +804,7 @@ export function resetSessionMetrics(metrics: SessionMetrics): void {
   metrics.tools = {};
   metrics.totalToolCalls = 0;
   metrics.activeToolName = null;
+  metrics.totalDenials = 0;
   metrics.tokenUsage = {
     inputTokens: 0,
     outputTokens: 0,

@@ -14,7 +14,7 @@ describe("Copilot worker provider", () => {
     const config = buildCopilotSessionConfig(
       {
         model: "gpt-5-mini",
-        systemPrompt: "Return structured review JSON.",
+        agentInstructions: "Return structured review JSON.",
         cwd: "/sandbox/review",
         timeoutMs: 1_000,
         mode: "review",

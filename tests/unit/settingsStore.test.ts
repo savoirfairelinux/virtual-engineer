@@ -1,11 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { tmpdir } from "os";
-import { join } from "path";
-import { randomUUID } from "crypto";
 import { SqliteStateStore } from "../../src/state/stateStore.js";
+import { tempDatabasePath } from "./helpers/tempDatabase.js";
 
 function tempDbPath(): string {
-  return join(tmpdir(), `ve-settings-${randomUUID()}.db`);
+  return tempDatabasePath("ve-settings");
 }
 
 describe("SqliteStateStore — app settings", () => {
@@ -25,6 +23,9 @@ describe("SqliteStateStore — app settings", () => {
       pollingIntervalMs: null,
       maxAgentCycles: null,
       maxRetryAttempts: null,
+      agentTimeoutMs: null,
+      ticketCloseMaxRetries: null,
+      ticketCloseRetryMinTimeoutMs: null,
     });
   });
 
@@ -33,23 +34,55 @@ describe("SqliteStateStore — app settings", () => {
       pollingIntervalMs: 15000,
       maxAgentCycles: 4,
       maxRetryAttempts: 8,
+      agentTimeoutMs: 900000,
+      ticketCloseMaxRetries: 8,
+      ticketCloseRetryMinTimeoutMs: 10000,
     });
-    expect(next).toEqual({ pollingIntervalMs: 15000, maxAgentCycles: 4, maxRetryAttempts: 8 });
+    expect(next).toEqual({
+      pollingIntervalMs: 15000,
+      maxAgentCycles: 4,
+      maxRetryAttempts: 8,
+      agentTimeoutMs: 900000,
+      ticketCloseMaxRetries: 8,
+      ticketCloseRetryMinTimeoutMs: 10000,
+    });
 
     const read = await store.getAppSettings();
-    expect(read).toEqual({ pollingIntervalMs: 15000, maxAgentCycles: 4, maxRetryAttempts: 8 });
+    expect(read).toEqual({
+      pollingIntervalMs: 15000,
+      maxAgentCycles: 4,
+      maxRetryAttempts: 8,
+      agentTimeoutMs: 900000,
+      ticketCloseMaxRetries: 8,
+      ticketCloseRetryMinTimeoutMs: 10000,
+    });
   });
 
   it("merges partial updates without clobbering unspecified fields", async () => {
-    await store.updateAppSettings({ pollingIntervalMs: 15000, maxAgentCycles: 4, maxRetryAttempts: 8 });
+    await store.updateAppSettings({
+      pollingIntervalMs: 15000,
+      maxAgentCycles: 4,
+      maxRetryAttempts: 8,
+      agentTimeoutMs: 900000,
+      ticketCloseMaxRetries: 8,
+      ticketCloseRetryMinTimeoutMs: 10000,
+    });
     const merged = await store.updateAppSettings({ maxAgentCycles: 2 });
-    expect(merged).toEqual({ pollingIntervalMs: 15000, maxAgentCycles: 2, maxRetryAttempts: 8 });
+    expect(merged).toEqual({
+      pollingIntervalMs: 15000,
+      maxAgentCycles: 2,
+      maxRetryAttempts: 8,
+      agentTimeoutMs: 900000,
+      ticketCloseMaxRetries: 8,
+      ticketCloseRetryMinTimeoutMs: 10000,
+    });
   });
 
   it("clears a value when passed an explicit null", async () => {
-    await store.updateAppSettings({ pollingIntervalMs: 15000, maxAgentCycles: 4, maxRetryAttempts: 8 });
+    await store.updateAppSettings({ pollingIntervalMs: 15000, maxAgentCycles: 4, maxRetryAttempts: 8, agentTimeoutMs: 900000 });
     const cleared = await store.updateAppSettings({ pollingIntervalMs: null });
     expect(cleared.pollingIntervalMs).toBeNull();
     expect(cleared.maxAgentCycles).toBe(4);
+    expect(cleared.agentTimeoutMs).toBe(900000);
   });
 });

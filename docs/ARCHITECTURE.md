@@ -103,6 +103,12 @@ src/
     claudeAdapter.ts      # Claude Code adapter (agent_execution)
     claudeConnectionValidator.ts
     claudeModelsService.ts
+    aiderAdapter.ts       # Aider adapter (agent_execution; wraps any litellm backend)
+    aiderConnectionValidator.ts
+    aiderModelsService.ts
+    gooseAdapter.ts       # Goose adapter (agent_execution; wraps any of 13 LLM providers)
+    gooseConnectionValidator.ts
+    gooseModelsService.ts
     cycleCost.ts          # Derives per-cycle cost from assistant.usage events
     mockAgentAdapter.ts   # Deterministic mock, no Copilot needed
     agentEventBus.ts      # SSE event bus for live log streaming
@@ -135,11 +141,11 @@ src/
     pluginManager.ts      # DB-driven instance lifecycle
     init.ts               # Registers built-in descriptors at startup
     descriptors/          # One unified descriptor per provider (+ index.ts,
-                          # githubOAuth/gitlabOAuth/claudeOAuth helpers)
+                          # githubOAuth/gitlabOAuth/claudeOAuth helpers;
+                          # aider.ts for the Aider agent_execution provider)
 
   review/               # Code-review workflow
     reviewOrchestrator.ts # REVIEW_PENDING → REVIEW_DONE lifecycle
-    copilotReviewAgent.ts # Host-side Copilot SDK client for reviews
     reviewPromptBuilder.ts
     reviewResultParser.ts
     commentFilter.ts      # Filters comments to lines present in the diff
@@ -149,12 +155,13 @@ src/
 
   state/
     schema.ts             # Drizzle table definitions
+    databaseMigrations.ts # Tracked migration runner + pre-ledger adoption bridge
     stateMachine.ts       # VALID_TRANSITIONS + validateTransition
     stateStore.ts         # SqliteStateStore facade — all DB access
     stores/               # Domain-scoped DB modules: task, integration,
                           # project, prompt(+seeding), agent(+concurrency),
                           # settings (app_settings singleton)
-    migrate.ts            # Runs Drizzle migrations on startup
+    migrate.ts            # Explicit CLI entry; startup uses the same runner
 
   utils/
     encryption.ts         # AES-256-GCM token encryption
@@ -197,7 +204,7 @@ src/
 agent-worker/
   src/index.ts          # Provider-agnostic orchestrator INSIDE the agent
                         # container; built to dist/ via tsconfig.agent.json
-  src/providers/        # types, events, copilot, claude, registry
+  src/providers/        # types, events, copilot, claude, aider, registry
                         # (per-provider runners + registry dispatch)
   src/commitUtils.ts
   src/networkGuard.ts
@@ -258,7 +265,7 @@ Tick-based polling with exponential backoff on consecutive failures.
 ```
 
 - Backoff: doubles each failure (capped), resets on success.
-- Concurrency: skips projects where `ConcurrencyTracker.canStart()` returns false; logs at most once per tick.
+- Concurrency: polling discovers eligible work without pre-gating whole projects. `Orchestrator.runAgentCycle()` acquires capacity around the Docker-heavy agent phase; tasks deferred in `CONTEXT_BUILDING` or `RETRY_CYCLE` are re-driven on later ticks.
 - Review polling: the same tick also drives `pollInReviewTasks()` (feedback on open changes), `pollReviewWatchingTasks()` (patchset / merge status), and `pollReviewProjects()` (review-assignment discovery via `ReviewAssignmentTrigger`), with per-change review-poll cooldowns.
 - Hot-reload: `setProjectMode()` refreshes the project store and plugin manager reference without a restart.
 
@@ -286,6 +293,9 @@ The **sole** workspace runtime. Git plumbing runs natively on the orchestrator v
        │
        ├─ vcsConnector.push(dir, ref, ...)     ← git push host-side (src/vcs)
        │
+      ├─ worker normalizes commits    ← Change-Ids + configured ticket trailer
+      ├─ HostGitExecutor push          ← push existing HEAD commit chain host-side
+       │
        └─ client.removeSandbox()  +  HostGitExecutor.destroyWorkspace(dir)
 ```
 
@@ -294,6 +304,8 @@ agent's own inference token (from `buildContainerSpec`) is passed as sandbox env
 The OpenShell gateway's selected compute driver schedules the sandbox and
 enforces the deny-by-default policy applied before the agent starts. Docker is
 the default; Kubernetes is an explicit experimental deployment option.
+
+The worker validates the commits created during the agent run and injects missing Change-Ids and configured ticket trailers before returning. Project pushes require `VcsConnector.pushDirect()`: the host owns credentials and push orchestration but does not synthesize another commit.
 
 ---
 
@@ -309,7 +321,7 @@ Plain Node.js `http.createServer` — no framework. The main file handles auth, 
 
 | Module | Route group |
 |--------|-------------|
-| `adminServer.ts` | Dashboard (`GET /admin`), health (`GET /health`), img-proxy, status, config, providers |
+| `adminServer.ts` | Dashboard (`GET /admin`), health (`GET /health`), img-proxy, img-proxy/token (mints the short-lived image-proxy token), status, config, providers |
 | `adminOverviewRoutes.ts` | Dashboard overview aggregates + cost summary |
 | `adminTaskRoutes.ts` | `GET/DELETE /api/admin/tasks`, `GET /api/admin/tasks/:id`, `GET .../cycles`, `GET .../transitions`, `PATCH .../pause`, `PATCH .../resume`, `POST .../retry`, `POST .../abandon` |
 | `adminPromptRoutes.ts` | `GET/POST /api/admin/prompts`, `GET/PUT/DELETE /api/admin/prompts/:id`, `GET .../usage` |
@@ -317,7 +329,7 @@ Plain Node.js `http.createServer` — no framework. The main file handles auth, 
 | `adminIntegrationRoutes.ts` | `GET/POST /api/admin/integrations`, `GET/PUT/DELETE .../integrations/:id`, `POST .../test`, `PATCH .../{enable,disable}`, `POST .../discover`, `GET .../models`, `GET /api/admin/plugins`, `GET/POST/DELETE /api/admin/oauth-apps` |
 | `adminAgentsRoutes.ts` | `GET/POST /api/admin/agents`, `GET/PUT/DELETE .../agents/:id`, `PATCH .../{enable,disable}`, `POST /api/admin/plugins/:type/oauth/*` |
 | `adminProjectsRoutes.ts` | `GET/POST /api/admin/projects`, `GET/PUT/DELETE .../projects/:id`, `PATCH .../{enable,disable}` |
-| `adminConcurrencyRoutes.ts` | `GET/PUT /api/admin/concurrency` |
+| `adminConcurrencyRoutes.ts` | `GET /api/admin/concurrency` (read-only run-slot snapshot) |
 | `adminSettingsRoutes.ts` | `GET/PUT /api/admin/settings` (editable runtime workflow settings) |
 | `adminWebhookRoutes.ts` | `POST .../webhook-secret/rotate`, `GET/PUT .../webhook-allowed-ips`, `GET .../webhook-info` |
 | `adminRuntimePolicyRoutes.ts` | `GET/POST/PUT/DELETE /api/admin/runtime/policies`, bindings CRUD |
@@ -398,7 +410,7 @@ GitHub token for the Copilot LLM call); push credentials stay host-side.
 
 ---
 
-### 3.6.1 ClaudeAdapter
+#### 3.6.1 ClaudeAdapter
 
 `src/agents/claudeAdapter.ts`
 
@@ -410,6 +422,32 @@ An alternative `agent_execution` adapter that runs Anthropic **Claude Code** via
 The adapter injects **no** default model: when the agent config leaves the model unset, `CLAUDE_MODEL` is omitted and the Claude CLI picks its own default. Adapters are registered generically — any descriptor that declares `capabilities.agent_execution.buildAdapter` is instantiated by the plugin manager from host runtime context (`AgentAdapterContext`), so `index.ts` special-cases no provider.
 
 Connection methods live on the `claude` descriptor (`src/plugins/descriptors/claude.ts`, `authMode`): `api_key` and `subscription` (interactive authorization-code + PKCE OAuth via `claudeOAuth.ts`). Cost columns stay null (Claude has no AIU); token usage is still emitted.
+
+---
+
+#### 3.6.2 AiderAdapter
+
+`src/agents/aiderAdapter.ts`
+
+An alternative `agent_execution` adapter that runs the [Aider CLI](https://aider.chat) (a Python package wrapping any LLM backend via litellm) inside the same hardened container. It mirrors `CopilotAdapter`/`ClaudeAdapter` (same security args, `/ve-home` HOME volume, `__ve_event` stderr protocol, commit collection, and `AgentResult` contract) but:
+
+- injects `AGENT_PROVIDER=aider` + `AIDER_MODEL` (only when configured) and the selected backend's litellm auth env var(s);
+- dispatches in the worker: `agent-worker/src/index.ts` resolves the runner via `providers/registry.ts` and calls `providers/aider.ts` `runAiderAgent()` when `AGENT_PROVIDER=aider`. Coding cycles use `--no-stream --git --auto-commits --dirty-commits --commit-prompt <conventional-commits>`. Review cycles omit `--no-stream` and use `--no-git --chat-mode ask --no-auto-commits --no-dirty-commits`; disabling Git avoids `.git/config.lock` writes in the read-only review workspace.
+
+The adapter injects **no** default model: when the agent config leaves the model unset, `AIDER_MODEL` is omitted and the Aider CLI picks its own default. Six LLM backends are declared on the `aider` descriptor (`src/plugins/descriptors/aider.ts`, `aiderBackend` selector): `openai` → `OPENAI_API_KEY`; `anthropic` → `ANTHROPIC_API_KEY`; `ollama` → `OLLAMA_API_BASE` (no key); `openrouter` → `OPENROUTER_API_KEY`; `deepseek` → `DEEPSEEK_API_KEY`; `openai_compat` → `OPENAI_API_KEY` + `OPENAI_API_BASE`. `orchestrator.resolveProjectAgentRuntime` forwards these from the integration config onto `AgentSession` via `ResolvedAgentConfig.extra`. The Aider CLI is installed in the agent image via `uv tool install aider-chat` (see `Dockerfile.agent`). Cost columns stay null (Aider has no AIU); token usage is still emitted.
+
+---
+
+#### 3.6.3 GooseAdapter
+
+`src/agents/gooseAdapter.ts`
+
+An alternative `agent_execution` adapter that runs the [Goose CLI](https://goose-docs.ai) (a Rust agent from the AAIF that wraps any of 13 LLM providers) inside the same hardened container. It mirrors `CopilotAdapter`/`ClaudeAdapter`/`AiderAdapter` (same security args, `/ve-home` HOME volume, `__ve_event` stderr protocol, commit collection, and `AgentResult` contract) but:
+
+- injects `AGENT_PROVIDER=goose` + `GOOSE_MODEL` (only when configured) and the selected provider's auth env var(s);
+- dispatches in the worker: `agent-worker/src/index.ts` resolves the runner via `providers/registry.ts` and calls `providers/goose.ts` `runGooseAgent()` when `AGENT_PROVIDER=goose`.
+
+The adapter injects **no** default model: when the agent config leaves the model unset, `GOOSE_MODEL` is omitted and the Goose CLI picks its own default. Thirteen LLM providers are declared on the `goose` descriptor (`src/plugins/descriptors/goose.ts`, `gooseProvider` selector): `anthropic` → `ANTHROPIC_API_KEY`; `openai` → `OPENAI_API_KEY`; `openrouter` → `OPENROUTER_API_KEY`; `ollama` → `OLLAMA_HOST` (no key); `deepseek` → `DEEPSEEK_API_KEY`; `groq` → `GROQ_API_KEY`; `gemini` → `GOOGLE_API_KEY`; `azure_openai` → `AZURE_OPENAI_API_KEY` + `AZURE_OPENAI_ENDPOINT`; `bedrock` → AWS env credential chain (no key forwarded); `perplexity` → `PERPLEXITY_API_KEY`; `mistral` → `MISTRAL_API_KEY`; `xai` → `XAI_API_KEY`; `cerebras` → `CEREBRAS_API_KEY`; `openai_compat` → `OPENAI_API_KEY` + `OPENAI_API_BASE`. Goose reads these directly from the environment, never from config.yaml. Cost columns stay null (Goose has no AIU); token usage is still emitted.
 
 ---
 
@@ -572,6 +610,8 @@ Pause and resume are **not boolean columns**. They are `state_transitions` rows 
 | `gerrit` | code_review, source_control |
 | `copilot` | agent_execution |
 | `claude` | agent_execution |
+| `aider` | agent_execution |
+| `goose` | agent_execution |
 | `mock` | agent_execution |
 
 Technical capabilities (`oauth`, `discovery`, `stream-events`, `reviewer`) are derived from descriptor hooks. Multiple integrations of the same provider can be active simultaneously. The orchestrator routes by `integrationId` in project mode, and may build a project-bound connector instance when the VE project owns part of the provider binding.
@@ -648,7 +688,7 @@ review_thread_replies            ← dedup ledger: VE replies to human threads
 ```
 integrations
   id               TEXT  PK
-  provider         TEXT  github | gitlab | gerrit | redmine | copilot | claude | mock
+  provider         TEXT  github | gitlab | gerrit | redmine | copilot | claude | aider | mock
   name             TEXT
   config_json      TEXT  JSON (credentials + endpoints)
   enabled          INTEGER  0|1  (default 1)
@@ -657,7 +697,7 @@ integrations
   created_at / updated_at
 
 prompts
-  id / label / content / prompt_type ("system"|"user", default "user")
+  id / label / content / prompt_type ("system"|"instructions", default "instructions")
   created_at / updated_at
 
 oauth_apps                     ← per-host OAuth app registrations
@@ -679,7 +719,8 @@ projects
   agent_id → agents.id
   agent_override_json (partial model config override)
   post_clone_script (bash, runs on host after clone)
-  skill_discovery_enabled (default 0 — loads <repo>/.github/skills when 1)
+  skill_sources_json (DB/API default '[]' — remote npx skills sources installed when configured;
+                      the admin new-project form preloads the SFL agent-skills SSH source)
   enabled (default 0)
 
 project_integration_bindings   ← one row per (project, capability)
@@ -711,6 +752,8 @@ app_settings                   ← singleton (editable runtime workflow settings
      System Settings, hot-applied without restart)
   updated_at
 ```
+
+Repository behavior is provider-native on every coding and review run: VE does not store a local skill path, scan manifests, or inject repository skills. Copilot enables its coupled repository skill/MCP config discovery, Claude loads native user/project skills with strict MCP configuration, and Aider keeps its normal CLI repository behavior. Optional remote skill sources remain project configuration and are installed into the agent home volume before supported providers start.
 
 ---
 
@@ -766,14 +809,22 @@ Webhook secrets are per-integration (stored in `configJson.webhookSecret`), rota
 
 ### Image (`Dockerfile.agent`)
 
-Base: `node:24-bookworm-slim`. Includes: `git`, `openssh-client`, `curl`, `jq`, `iproute2` (the `ip` binary the OpenShell supervisor needs for sandbox network-namespace isolation), GitHub CLI (`gh`), and the required `sandbox` user/group whose home is the policy-writable `/sandbox` path.
+Base: `node:24-bookworm-slim`. Includes `git`, `openssh-client`, `curl`, `jq`, `iproute2` (the `ip` binary the OpenShell supervisor needs for sandbox network-namespace isolation), GitHub CLI (`gh`), Python 3 + Aider (isolated `uv` tool), the Goose CLI, and the required `sandbox` user/group whose home is the policy-writable `/sandbox` path.
 
-```
+```dockerfile
 FROM node:24-bookworm-slim
-RUN apt-get install git openssh-client curl ca-certificates jq iproute2 gh
+RUN apt-get install git openssh-client curl ca-certificates jq iproute2
 RUN groupadd --system sandbox && useradd --system --gid sandbox --home-dir /sandbox sandbox
+RUN curl -LsSf https://astral.sh/uv/install.sh | UV_VERSION=0.11.30 sh \
+  && /root/.local/bin/uv tool install --python python3 aider-chat==0.86.2 \
+  && ln -s /root/.local/bin/aider /usr/local/bin/aider
+# GitHub CLI and the Goose CLI are installed from their official distributions.
+# The runtime lives under /app, the only read-only executable path the default
+# OpenShell filesystem policy permits.
 COPY agent-worker/ /app/agent-worker/
-RUN npm --prefix /app/agent-worker ci --omit=dev
+RUN npm --prefix /app/agent-worker ci --no-fund \
+  && npm --prefix /app/agent-worker run build \
+  && npm --prefix /app/agent-worker prune --omit=dev --no-fund
 WORKDIR /workspace
 ```
 
@@ -787,16 +838,16 @@ mode. The Copilot CLI native binary
 Runs inside the container. Two modes:
 
 **Code-generation mode** (default):
-1. Opens a GitHub Copilot SDK session against `/workspace` (local `copilot --headless` CLI booted in-container)
-2. Sends a prompt built from `TASK_TITLE`, `TASK_DESCRIPTION`, `PRIOR_FEEDBACK_JSON`, `SYSTEM_PROMPT` (required) and the user prompt read from `USER_PROMPT_FILE`
-3. Copilot edits files autonomously and may create up to `MAX_COMMITS_PER_CYCLE` local commits (Change-Ids reused on retry cycles via `ROOT_CHANGE_ID` / `PER_REPO_CHANGE_IDS_JSON`)
+1. Resolves the complete provider definition from `AGENT_PROVIDER`; `index.ts` contains no Copilot/Claude/Aider branch
+2. Sends required Agent Instructions plus the dynamic user prompt read from `USER_PROMPT_FILE`; the host builds that file from ticket context and selected Workflow Instructions
+3. The selected provider edits files autonomously and may create up to `MAX_COMMITS_PER_CYCLE` local commits (Change-Ids reused on retry cycles via `ROOT_CHANGE_ID` / `PER_REPO_CHANGE_IDS_JSON`)
 4. Worker collects modified files via `git status`
 5. Writes JSON `AgentResult` to stdout (status, modifiedFiles, summary, commitMessage)
 
 **Review mode** (`REVIEW_MODE=1`):
 1. Reads the prompt from `USER_PROMPT_FILE` (`/ve-home/user-prompt.txt`)
-2. Returns raw LLM response text to stdout (no git operations)
-3. Host `reviewResultParser.ts` parses inline comments and vote
+2. Uses the immutable review-system JSON Schema when the provider supports native structured output (Claude), otherwise returns the provider response text (no git operations)
+3. Host `reviewResultParser.ts` enforces the integration-specific Gerrit/GitHub/GitLab result contract
 
 ### Security constraints
 

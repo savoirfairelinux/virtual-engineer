@@ -11,7 +11,7 @@ interface TopBarProps {
   theme: "dark" | "light";
   toggleTheme: () => void;
   user: ApiMe | null;
-  canConfigure: boolean;
+  canViewConfig: boolean;
   onChangePassword: () => void;
   onLogout: () => void;
   taskCount: number;
@@ -22,19 +22,20 @@ interface TopBarProps {
 
 const ROLE_TONE = { admin: "active", operator: "info", viewer: "muted" } as const;
 
-const NAV: { id: ViewId; label: string; icon: string; operatorOnly?: boolean }[] = [
+const NAV: { id: ViewId; label: string; icon: string; configOnly?: boolean }[] = [
   { id: "overview", label: "Overview", icon: "grid" },
   { id: "tasks",    label: "Tasks",    icon: "tasks" },
-  { id: "config",   label: "Configuration", icon: "config", operatorOnly: true },
+  { id: "config",   label: "Configuration", icon: "config", configOnly: true },
 ];
 
 export function TopBar({
-  view, setView, theme, toggleTheme, user, canConfigure, onChangePassword, onLogout,
+  view, setView, theme, toggleTheme, user, canViewConfig, onChangePassword, onLogout,
   taskCount, activeCount, providerCount, pollingRunning,
 }: TopBarProps) {
-  const visibleNav = NAV.filter((n) => !n.operatorOnly || canConfigure);
+  const visibleNav = NAV.filter((n) => !n.configOnly || canViewConfig);
   return (
     <header
+      className="topbar"
       style={{
         display: "flex", alignItems: "stretch", height: "54px", flex: "none",
         borderBottom: "1px solid var(--border-soft)", background: "var(--rail)",

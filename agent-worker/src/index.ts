@@ -26,14 +26,22 @@ import {
   collectCommits,
   validateCommits,
   injectChangeIds,
+  resolveExistingRootChange,
   squashIntoBaseIfNeeded,
   groupFilesByRepo,
 } from './commitUtils.js';
 import { emitEvent } from './providers/events.js';
 import { loadWorkerPrompts } from './promptLoader.js';
 import type { WorkerPrompts } from './promptLoader.js';
-import { resolveRunner, isAgentProvider, AGENT_PROVIDER_IDS } from './providers/registry.js';
+import { parseToolList } from './networkGuard.js';
+import { resolveProvider, isAgentProvider, AGENT_PROVIDER_IDS } from './providers/registry.js';
 import type { AgentRun } from './providers/types.js';
+import {
+  CHANGE_SUBMISSION_JSON_SCHEMA,
+  assertSingleNativeReviewDelegation,
+  assertSuccessfulSubmissionToolCall,
+  readSubmission,
+} from './mcpSubmission.js';
 
 // ── Environment ────────────────────────────────────────────────────────────────
 const AGENT_PROVIDER = process.env['AGENT_PROVIDER'] ?? 'copilot';
@@ -44,14 +52,10 @@ if (!isAgentProvider(AGENT_PROVIDER)) {
   );
   process.exit(1);
 }
-const GITHUB_TOKEN = process.env['GITHUB_TOKEN'] ?? '';
-const COPILOT_MODEL = process.env['COPILOT_MODEL'] ?? 'auto';
-/** Empty when unset — the Claude CLI then selects its own default model. */
-const CLAUDE_MODEL = process.env['CLAUDE_MODEL'] ?? '';
-/** Model + adapter label for the active provider (used in events and result metadata). */
-const ACTIVE_MODEL = AGENT_PROVIDER === 'claude' ? (CLAUDE_MODEL || 'cli-default') : COPILOT_MODEL;
-const ADAPTER_LABEL = AGENT_PROVIDER === 'claude' ? 'claude-agent-sdk' : 'copilot-sdk';
-const COPILOT_REASONING_EFFORT = process.env['COPILOT_REASONING_EFFORT'];
+const ACTIVE_PROVIDER = resolveProvider(AGENT_PROVIDER);
+const ACTIVE_MODEL = ACTIVE_PROVIDER.resolveModel();
+const ACTIVE_MODEL_LABEL = ACTIVE_MODEL || ACTIVE_PROVIDER.defaultModelLabel;
+const ADAPTER_LABEL = ACTIVE_PROVIDER.adapterLabel;
 const GIT_AUTHOR_NAME = process.env['GIT_AUTHOR_NAME'] ?? 'Virtual Engineer';
 const GIT_AUTHOR_EMAIL = process.env['GIT_AUTHOR_EMAIL'] ?? 've@virtual-engineer.local';
 const GIT_COMMITTER_NAME = process.env['GIT_COMMITTER_NAME'] ?? GIT_AUTHOR_NAME;
@@ -60,6 +64,8 @@ const TASK_ID = process.env['TASK_ID'] ?? '';
 const MAX_COMMITS_PER_CYCLE = Number(process.env['MAX_COMMITS_PER_CYCLE']) || 10;
 /** Change-Id to reuse for the root-repo's first commit on retry cycles. */
 const ROOT_CHANGE_ID = process.env['ROOT_CHANGE_ID'] ?? null;
+/** Pre-formatted ticket-footer trailer line injected into every agent commit (host-computed). */
+const TICKET_FOOTER_LINE = process.env['TICKET_FOOTER_LINE'] || null;
 /** Per-repo Change-Ids to reuse on retry cycles (JSON object or null). */
 let PER_REPO_CHANGE_IDS: Record<string, string | Record<string, string>> | null = null;
 try {
@@ -69,8 +75,6 @@ try {
   process.stderr.write('Warning: failed to parse PER_REPO_CHANGE_IDS_JSON\n');
 }
 const REVIEW_MODE = process.env['REVIEW_MODE'] === '1';
-const SKILL_DISCOVERY = process.env['SKILL_DISCOVERY'] === '1';
-
 function loadPromptsOrExit(): WorkerPrompts {
   try {
     return loadWorkerPrompts();
@@ -79,6 +83,65 @@ function loadPromptsOrExit(): WorkerPrompts {
     process.stderr.write(`FATAL: ${message}. Ensure the orchestrator injects both prompts before launching this container.\n`);
     process.exit(1);
   }
+}
+
+const REVIEW_STRATEGY_RAW = process.env['REVIEW_STRATEGY'] ?? 've_direct';
+if (REVIEW_STRATEGY_RAW !== 've_direct' && REVIEW_STRATEGY_RAW !== 'copilot_native' && REVIEW_STRATEGY_RAW !== 'goose_native') {
+  process.stderr.write(`FATAL: unknown REVIEW_STRATEGY "${REVIEW_STRATEGY_RAW}".\n`);
+  process.exit(1);
+}
+const REVIEW_STRATEGY: 've_direct' | 'copilot_native' | 'goose_native' =
+  REVIEW_STRATEGY_RAW === 'copilot_native'
+    ? 'copilot_native'
+    : REVIEW_STRATEGY_RAW === 'goose_native'
+      ? 'goose_native'
+      : 've_direct';
+if (REVIEW_STRATEGY === 'copilot_native' && (!REVIEW_MODE || AGENT_PROVIDER !== 'copilot')) {
+  process.stderr.write('FATAL: copilot_native review strategy requires Copilot review mode.\n');
+  process.exit(1);
+}
+if (REVIEW_STRATEGY === 'goose_native' && (!REVIEW_MODE || AGENT_PROVIDER !== 'goose')) {
+  process.stderr.write('FATAL: goose_native review strategy requires Goose review mode.\n');
+  process.exit(1);
+}
+
+// ── Per-agent tool authorization (Claude/Copilot) ────────────────────────────
+// Newline-separated blocked-tool list injected by the host adapter from
+// `modelConfig.providerOptions.toolAuthorization`. Empty/unset = everything
+// allowed (modulo VE's network floor). Only read for providers that support
+// per-tool blocklists (claude/copilot); aider/goose use TOOL_AUTHORIZATION_JSON.
+const BLOCKED_TOOLS = AGENT_PROVIDER === 'claude'
+  ? parseToolList(process.env['CLAUDE_BLOCKED_TOOLS'])
+  : AGENT_PROVIDER === 'copilot'
+    ? parseToolList(process.env['COPILOT_BLOCKED_TOOLS'])
+    : [];
+// Provider-specific tooling toggles (Aider/Goose) — opaque JSON object.
+let TOOL_AUTHORIZATION: Record<string, unknown> | undefined;
+try {
+  const rawToolAuth = process.env['TOOL_AUTHORIZATION_JSON'] ?? '';
+  if (rawToolAuth) {
+    const parsed: unknown = JSON.parse(rawToolAuth);
+    if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+      TOOL_AUTHORIZATION = parsed as Record<string, unknown>;
+    }
+  }
+} catch {
+  process.stderr.write('Warning: failed to parse TOOL_AUTHORIZATION_JSON\n');
+}
+let REVIEW_OUTPUT_SCHEMA: Record<string, unknown> | undefined;
+try {
+  const rawReviewOutputSchema = process.env['REVIEW_OUTPUT_SCHEMA'] ?? '';
+  if (rawReviewOutputSchema) {
+    const parsed: unknown = JSON.parse(rawReviewOutputSchema);
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      throw new Error('schema must be a JSON object');
+    }
+    REVIEW_OUTPUT_SCHEMA = parsed as Record<string, unknown>;
+  }
+} catch (err) {
+  const message = err instanceof Error ? err.message : String(err);
+  process.stderr.write(`FATAL: invalid REVIEW_OUTPUT_SCHEMA: ${message}\n`);
+  process.exit(1);
 }
 
 const PROMPTS = loadPromptsOrExit();
@@ -102,7 +165,6 @@ try {
 // --workdir there). Derive the repo path from cwd rather than hardcoding it.
 const WORKSPACE = process.cwd();
 const REPO_PATH = WORKSPACE;
-
 // ── Internal git helper ────────────────────────────────────────────────────────
 function git(args: string[], cwd: string = REPO_PATH): string {
   try {
@@ -132,16 +194,18 @@ async function runAgent(
   timeoutMs: number,
   mode: 'codegen' | 'review',
 ): Promise<AgentRun> {
-  const runner = resolveRunner(AGENT_PROVIDER);
-  const model = AGENT_PROVIDER === 'claude' ? CLAUDE_MODEL : COPILOT_MODEL;
-  return runner(prompt, {
-    model,
-    systemPrompt: PROMPTS.systemPrompt,
+  return ACTIVE_PROVIDER.runner(prompt, {
+    model: ACTIVE_MODEL,
+    agentInstructions: PROMPTS.systemPrompt,
     cwd: REPO_PATH,
     timeoutMs,
     mode,
-    skillDiscovery: SKILL_DISCOVERY,
-    ...(COPILOT_REASONING_EFFORT ? { reasoningEffort: COPILOT_REASONING_EFFORT } : {}),
+    ...(mode === 'review' ? { reviewStrategy: REVIEW_STRATEGY } : {}),
+    ...(mode === 'review' && REVIEW_OUTPUT_SCHEMA !== undefined
+      ? { reviewOutputSchema: REVIEW_OUTPUT_SCHEMA }
+      : {}),
+    ...(BLOCKED_TOOLS.length > 0 ? { blockedTools: BLOCKED_TOOLS } : {}),
+    ...(TOOL_AUTHORIZATION !== undefined ? { toolAuthorization: TOOL_AUTHORIZATION } : {}),
   });
 }
 
@@ -153,7 +217,11 @@ interface ReviewWorkerResult extends AgentResult {
 }
 
 async function runReviewMode(): Promise<ReviewWorkerResult> {
-  process.stderr.write(`review mode: provider=${AGENT_PROVIDER} model=${ACTIVE_MODEL}\n`);
+  process.stderr.write(
+    `review mode: provider=${AGENT_PROVIDER} strategy=${REVIEW_STRATEGY} ` +
+    `model=${REVIEW_STRATEGY === 'copilot_native' || REVIEW_STRATEGY === 'goose_native' ? 'CLI-managed' : ACTIVE_MODEL_LABEL}\n`,
+  );
+  emitEvent('review.strategy_selected', { reviewStrategy: REVIEW_STRATEGY });
   emitEvent('review.prompt_received', {
     userPromptLength: PROMPTS.userPrompt.length,
     systemPromptLength: PROMPTS.systemPrompt.length,
@@ -163,7 +231,19 @@ async function runReviewMode(): Promise<ReviewWorkerResult> {
 
   const agent = await runAgent(PROMPTS.userPrompt, 9 * 60 * 1000, 'review');
   try {
-    const rawOutput = agent.content ?? '';
+    let rawOutput = agent.content ?? '';
+    if (ACTIVE_PROVIDER.submissionTransport === 'mcp') {
+      if (REVIEW_OUTPUT_SCHEMA === undefined) {
+        throw new Error('REVIEW_OUTPUT_SCHEMA is required for MCP review submissions');
+      }
+      if (REVIEW_STRATEGY === 'copilot_native') {
+        assertSingleNativeReviewDelegation(agent.toolCalls ?? []);
+      }
+      if (agent.toolCalls !== undefined) {
+        assertSuccessfulSubmissionToolCall('review', agent.toolCalls);
+      }
+      rawOutput = JSON.stringify(readSubmission(undefined, REVIEW_OUTPUT_SCHEMA));
+    }
     // session.end is emitted by the provider runner (see providers/).
     process.stderr.write(`review complete (${rawOutput.length} chars)\n`);
 
@@ -173,7 +253,12 @@ async function runReviewMode(): Promise<ReviewWorkerResult> {
       modifiedFiles: [],
       summary: rawOutput.slice(0, 500),
       agentLogs: rawOutput,
-      metadata: { adapter: ADAPTER_LABEL, model: ACTIVE_MODEL, reviewMode: true },
+      metadata: {
+        adapter: ADAPTER_LABEL,
+        model: REVIEW_STRATEGY === 'copilot_native' || REVIEW_STRATEGY === 'goose_native' ? 'CLI-managed' : ACTIVE_MODEL_LABEL,
+        reviewMode: true,
+        reviewStrategy: REVIEW_STRATEGY,
+      },
     };
   } finally {
     await agent.cleanup();
@@ -182,9 +267,7 @@ async function runReviewMode(): Promise<ReviewWorkerResult> {
 
 // ── Main (code-generation mode) ───────────────────────────────────────────────
 async function main(): Promise<AgentResult> {
-  if (AGENT_PROVIDER === 'copilot' && !GITHUB_TOKEN) {
-    throw new Error('GITHUB_TOKEN env var is required');
-  }
+  ACTIVE_PROVIDER.validateEnvironment?.();
 
   if (REVIEW_MODE) {
     return runReviewMode();
@@ -232,22 +315,34 @@ async function main(): Promise<AgentResult> {
     }
   }
 
-  process.stderr.write(`starting agent (provider=${AGENT_PROVIDER}, model=${ACTIVE_MODEL})\n`);
+  process.stderr.write(`starting agent (provider=${AGENT_PROVIDER}, model=${ACTIVE_MODEL_LABEL})\n`);
 
   const agent = await runAgent(PROMPTS.userPrompt, 3_540_000, 'codegen');
   const handlerState = { toolCallCount: agent.toolCallCount, toolsByKind: agent.toolsByKind };
   const rawContent = agent.content ?? 'Task completed';
-  const summary = rawContent.trim().slice(0, 1000);
+  let summary = rawContent.trim().slice(0, 1000);
 
   let result: AgentResult = {
     status: 'failed',
     modifiedFiles: [],
     summary: 'Internal error: result not set',
     agentLogs: '',
-    metadata: { adapter: ADAPTER_LABEL, model: ACTIVE_MODEL },
+    metadata: { adapter: ADAPTER_LABEL, model: ACTIVE_MODEL_LABEL },
   };
 
   try {
+    let submission: Record<string, unknown> | null = null;
+    if (ACTIVE_PROVIDER.submissionTransport === 'mcp') {
+      if (agent.toolCalls !== undefined) {
+        assertSuccessfulSubmissionToolCall('codegen', agent.toolCalls);
+      }
+      submission = readSubmission(undefined, CHANGE_SUBMISSION_JSON_SCHEMA);
+    }
+    const submittedSummary = submission?.['summary'];
+    if (typeof submittedSummary === 'string') {
+      summary = submittedSummary.trim().slice(0, 1000);
+    }
+
     process.stderr.write('session idle — collecting changes\n');
     // session.end is emitted by the provider runner (see providers/).
 
@@ -301,7 +396,20 @@ async function main(): Promise<AgentResult> {
       if (validation.valid) {
         if (TASK_ID) {
           if (hasRootCommits) {
-            const squashResult = squashIntoBaseIfNeeded(baseSha, REPO_PATH);
+            const rootExistingChange = resolveExistingRootChange(
+              ROOT_CHANGE_ID,
+              PER_REPO_CHANGE_IDS,
+              REPOSITORY_MAP,
+            );
+            // Only squash into the base commit when continuing VE's own
+            // existing patchset (retry/feedback cycle). On the first cycle the
+            // base is upstream (e.g. a Gerrit `master` tip that carries its own
+            // Change-Id); squashing there would amend an upstream commit whose
+            // parent is absent from the --depth 1 shallow clone, making
+            // diff-tree report the entire repo. See squashIntoBaseIfNeeded.
+            const isContinuation =
+              rootExistingChange.changeId != null || rootExistingChange.repoKey != null;
+            const squashResult = squashIntoBaseIfNeeded(baseSha, REPO_PATH, isContinuation);
             if (squashResult.squashed && squashResult.commits != null) {
               rootCommits = squashResult.commits;
               if (REPOSITORY_MAP?.superproject != null) {
@@ -312,56 +420,15 @@ async function main(): Promise<AgentResult> {
               }
             }
 
-            // Resolve the existing Change-Id for the root repo.
-            let rootExistingChangeId: string | null = ROOT_CHANGE_ID;
-            let rootRepoKey: string | null = null;
-
-            if (PER_REPO_CHANGE_IDS != null) {
-              const superprojectKey = REPOSITORY_MAP?.superproject?.repoKey;
-              if (superprojectKey != null) {
-                const entry = PER_REPO_CHANGE_IDS[superprojectKey];
-                if (entry != null) {
-                  rootRepoKey = superprojectKey;
-                  if (!rootExistingChangeId) {
-                    rootExistingChangeId = typeof entry === 'string' ? entry : (entry['0'] ?? null);
-                  }
-                } else if (!rootExistingChangeId) {
-                  // Fallback: try the sole key in PER_REPO_CHANGE_IDS
-                  const keys = Object.keys(PER_REPO_CHANGE_IDS);
-                  if (keys.length === 1) {
-                    const k0 = keys[0];
-                    if (k0 != null) {
-                      rootRepoKey = k0;
-                      const e0 = PER_REPO_CHANGE_IDS[k0];
-                      if (e0 != null) {
-                        rootExistingChangeId = typeof e0 === 'string' ? e0 : (e0['0'] ?? null);
-                      }
-                    }
-                  }
-                }
-              } else if (!rootExistingChangeId) {
-                const keys = Object.keys(PER_REPO_CHANGE_IDS);
-                if (keys.length === 1) {
-                  const k0 = keys[0];
-                  if (k0 != null) {
-                    rootRepoKey = k0;
-                    const e0 = PER_REPO_CHANGE_IDS[k0];
-                    if (e0 != null) {
-                      rootExistingChangeId = typeof e0 === 'string' ? e0 : (e0['0'] ?? null);
-                    }
-                  }
-                }
-              }
-            }
-
             rootCommits = injectChangeIds(baseSha, rootCommits, TASK_ID, REPO_PATH, {
-              existingChangeId: rootExistingChangeId,
-              repoKeyForLookup: rootRepoKey,
+              existingChangeId: rootExistingChange.changeId,
+              repoKeyForLookup: rootExistingChange.repoKey,
               perRepoChangeIds: PER_REPO_CHANGE_IDS,
               gitAuthorName: GIT_AUTHOR_NAME,
               gitAuthorEmail: GIT_AUTHOR_EMAIL,
               gitCommitterName: GIT_COMMITTER_NAME,
               gitCommitterEmail: GIT_COMMITTER_EMAIL,
+              ticketFooterLine: TICKET_FOOTER_LINE,
             });
           }
 
@@ -389,6 +456,7 @@ async function main(): Promise<AgentResult> {
                 gitAuthorEmail: GIT_AUTHOR_EMAIL,
                 gitCommitterName: GIT_COMMITTER_NAME,
                 gitCommitterEmail: GIT_COMMITTER_EMAIL,
+                ticketFooterLine: TICKET_FOOTER_LINE,
               });
               const repoKey = subMeta ? subMeta.repoKey : localPath;
               subRepoCommits = subRepoCommits.filter((c) => c.repoKey !== repoKey).concat(injected);
@@ -418,7 +486,7 @@ async function main(): Promise<AgentResult> {
           commits,
           summary,
           agentLogs: summary,
-          metadata: { adapter: 'copilot-sdk', model: COPILOT_MODEL, agentCommits: true },
+          metadata: { adapter: ADAPTER_LABEL, model: ACTIVE_MODEL_LABEL, agentCommits: true },
         };
       } else {
         process.stderr.write(`commit validation failed: ${validation.reason ?? ''}\n`);
@@ -434,7 +502,7 @@ async function main(): Promise<AgentResult> {
           agentLogs: summary,
           metadata: {
             adapter: 'copilot-sdk',
-            model: COPILOT_MODEL,
+            model: ACTIVE_MODEL_LABEL,
             commitValidationError: validation.reason ?? null,
           },
         };
@@ -477,7 +545,7 @@ async function main(): Promise<AgentResult> {
           modifiedFiles: (REPOSITORY_MAP != null) ? {} : [],
           summary,
           agentLogs: summary,
-          metadata: { adapter: 'copilot-sdk', model: COPILOT_MODEL },
+          metadata: { adapter: ADAPTER_LABEL, model: ACTIVE_MODEL_LABEL },
         };
       } else {
         const reason = 'agent edited files but created no commits; run git add/git commit before finishing';
@@ -501,7 +569,7 @@ async function main(): Promise<AgentResult> {
           agentLogs: summary,
           metadata: {
             adapter: 'copilot-sdk',
-            model: COPILOT_MODEL,
+            model: ACTIVE_MODEL_LABEL,
             missingCommits: true,
             toolCallCount: handlerState.toolCallCount,
             toolsByKind: handlerState.toolsByKind,
@@ -516,7 +584,7 @@ async function main(): Promise<AgentResult> {
   // Normalize provider identity in the result metadata (the commit-collection
   // block above builds several result objects with default labels).
   if (result.metadata) {
-    result.metadata = { ...result.metadata, adapter: ADAPTER_LABEL, model: ACTIVE_MODEL };
+    result.metadata = { ...result.metadata, adapter: ADAPTER_LABEL, model: ACTIVE_MODEL_LABEL };
   }
 
   return result;
@@ -537,7 +605,7 @@ main()
         modifiedFiles: [],
         summary: `Agent worker error: ${msg}`,
         agentLogs: stack,
-        metadata: { adapter: 'copilot-sdk', error: msg },
+        metadata: { adapter: ADAPTER_LABEL, model: ACTIVE_MODEL_LABEL, error: msg },
       } satisfies AgentResult) + '\n',
     );
     process.exit(0); // always exit 0 so the host can read stdout

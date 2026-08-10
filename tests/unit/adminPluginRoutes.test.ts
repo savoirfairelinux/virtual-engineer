@@ -5,8 +5,10 @@ import type { Server } from "node:http";
 import type { AgentAdapter, AgentResult, IntegrationStore, Integration, TaskContext } from "../../src/interfaces.js";
 import { registerBuiltinPlugins } from "../../src/plugins/init.js";
 import { PluginManager } from "../../src/plugins/pluginManager.js";
+import { decryptToken } from "../../src/utils/encryption.js";
 
 const SECRET_MASK = "********";
+const TEST_ADMIN_AUTH_SECRET = "integration-route-test-secret";
 
 function makeIntegrationStore(initial: Integration[] = []): IntegrationStore {
   const data = new Map<string, Integration>();
@@ -54,9 +56,11 @@ function makeBaseDeps(overrides: Partial<AdminServerDependencies> = {}): AdminSe
       getCostSummary: vi.fn(async () => ({ totalUsd: 0, totalAiCredits: 0, totalPremiumRequests: 0, totalRuns: 0, perProject: [], sinceEpochSeconds: null })),
       getModelUsageSummary: vi.fn(async () => ({ byModel: [], perProject: [], totalRuns: 0, totalUsd: 0, sinceEpochSeconds: null })),
     },
+    allowUnauthenticatedAdmin: true,
     config: {
       nodeEnv: "test",
       logLevel: "error",
+      adminAuthSecret: TEST_ADMIN_AUTH_SECRET,
       maxAgentCycles: 3,
       maxRetryAttempts: 5,
       pollingIntervalMs: 30000,
@@ -112,7 +116,7 @@ describe("Admin API — Plugin & Integration routes", () => {
   beforeEach(async () => {
     registerBuiltinPlugins();
     integrationStore = makeIntegrationStore();
-    pluginManager = new PluginManager(integrationStore);
+    pluginManager = new PluginManager(integrationStore, { adminAuthSecret: TEST_ADMIN_AUTH_SECRET });
     pluginManager.registerFactory("redmine", vi.fn(() => makeMockAgentInstance("redmine-mock")));
     pluginManager.registerFactory("gerrit", vi.fn(() => makeMockAgentInstance("gerrit-mock")));
     pluginManager.registerFactory("copilot", vi.fn(() => makeMockAgentInstance("copilot-mock")));
@@ -122,6 +126,25 @@ describe("Admin API — Plugin & Integration routes", () => {
     server = createAdminServer(deps);
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   });
+
+  async function restartWithoutAdminAuthSecret(): Promise<void> {
+    await new Promise<void>((resolve, reject) => server.close((err) => err ? reject(err) : resolve()));
+    integrationStore = makeIntegrationStore();
+    pluginManager = new PluginManager(integrationStore);
+    server = createAdminServer(makeBaseDeps({
+      integrationStore,
+      pluginManager,
+      config: {
+        nodeEnv: "test",
+        logLevel: "error",
+        adminAuthSecret: undefined,
+        maxAgentCycles: 3,
+        maxRetryAttempts: 5,
+        pollingIntervalMs: 30000,
+      },
+    }));
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  }
 
   afterEach(async () => {
     await new Promise<void>((resolve, reject) => server.close((err) => err ? reject(err) : resolve()));
@@ -178,6 +201,38 @@ describe("Admin API — Plugin & Integration routes", () => {
       });
       expect(redmine?.["oauth"]).toBeUndefined();
     });
+
+    it("exposes provider-owned agent configuration fields", async () => {
+      const { status, body } = await fetchFromServer(server, "/api/admin/plugins");
+      expect(status).toBe(200);
+      const plugins = body["plugins"] as Array<Record<string, unknown>>;
+      const claude = plugins.find((plugin) => plugin["provider"] === "claude");
+      const redmine = plugins.find((plugin) => plugin["provider"] === "redmine");
+
+      expect(claude?.["agentConfigFields"]).toEqual(expect.arrayContaining([
+        expect.objectContaining({ key: "effort", type: "select" }),
+        expect.objectContaining({ key: "maxTurns", type: "number", valueType: "number" }),
+      ]));
+      expect(redmine?.["agentConfigFields"]).toEqual([]);
+    });
+
+    it("exposes Copilot native review as an experimental provider strategy", async () => {
+      const { status, body } = await fetchFromServer(server, "/api/admin/plugins");
+      expect(status).toBe(200);
+      const plugins = body["plugins"] as Array<Record<string, unknown>>;
+      const copilot = plugins.find((plugin) => plugin["provider"] === "copilot");
+
+      expect(copilot?.["reviewStrategies"]).toEqual([
+        {
+          id: "copilot_native",
+          label: "Copilot native review",
+          description: "Use Copilot CLI's built-in code-review subagent.",
+          experimental: true,
+          modelSelection: "provider",
+          requiredSystemPromptId: "system_review",
+        },
+      ]);
+    });
   });
 
   describe("POST /api/admin/integrations", () => {
@@ -195,6 +250,62 @@ describe("Admin API — Plugin & Integration routes", () => {
       expect(integration["provider"]).toBe("redmine");
       expect(integration["name"]).toBe("My Redmine");
       expect(integration["enabled"]).toBe(true);
+    });
+
+    it("encrypts internal webhook secrets before storage", async () => {
+      await fetchFromServer(server, "/api/admin/integrations", {
+        method: "POST",
+        body: {
+          provider: "redmine",
+          name: "Webhook Redmine",
+          config: {
+            baseUrl: "http://redmine:3000",
+            apiKey: "key1",
+            virtualEngineerUserLogin: "ve",
+            webhookSecret: "webhook-secret",
+          },
+        },
+      });
+
+      const stored = (await integrationStore.getIntegrations())[0];
+      const storedConfig = JSON.parse(stored?.configJson ?? "{}") as Record<string, unknown>;
+      expect(storedConfig["webhookSecret"]).not.toBe("webhook-secret");
+      expect(decryptToken(String(storedConfig["webhookSecret"]), TEST_ADMIN_AUTH_SECRET)).toBe("webhook-secret");
+    });
+
+    it("does not preserve legacy plaintext credential envelopes on new writes", async () => {
+      const legacyPlain = `plain:${Buffer.from("legacy-secret", "utf8").toString("base64")}`;
+
+      await fetchFromServer(server, "/api/admin/integrations", {
+        method: "POST",
+        body: {
+          provider: "redmine",
+          name: "Legacy Envelope Redmine",
+          config: { apiKey: legacyPlain },
+        },
+      });
+
+      const stored = (await integrationStore.getIntegrations())[0];
+      const storedConfig = JSON.parse(stored?.configJson ?? "{}") as Record<string, unknown>;
+      expect(storedConfig["apiKey"]).toMatch(/^veenc:v1:/);
+      expect(decryptToken(String(storedConfig["apiKey"]), TEST_ADMIN_AUTH_SECRET)).toBe(legacyPlain);
+    });
+
+    it("returns 400 when credentials cannot be encrypted", async () => {
+      await restartWithoutAdminAuthSecret();
+
+      const { status, body } = await fetchFromServer(server, "/api/admin/integrations", {
+        method: "POST",
+        body: {
+          provider: "redmine",
+          name: "Unencrypted Redmine",
+          config: { apiKey: "key1" },
+        },
+      });
+
+      expect(status).toBe(400);
+      expect(body["error"]).toMatch(/ADMIN_AUTH_SECRET.*encrypt credentials/i);
+      expect(integrationStore.upsertIntegration).not.toHaveBeenCalled();
     });
 
     it("rejects unknown config fields instead of storing them", async () => {
@@ -558,6 +669,27 @@ describe("Admin API — Plugin & Integration routes", () => {
       expect(integration["name"]).toBe("New Name");
     });
 
+    it("returns 400 when updated credentials cannot be encrypted", async () => {
+      await restartWithoutAdminAuthSecret();
+      await integrationStore.upsertIntegration({
+        id: "copilot-no-secret",
+        provider: "copilot",
+        name: "Copilot No Secret",
+        configJson: "{}",
+        enabled: false,
+      });
+      vi.mocked(integrationStore.upsertIntegration).mockClear();
+
+      const { status, body } = await fetchFromServer(server, "/api/admin/integrations/copilot-no-secret", {
+        method: "PUT",
+        body: { config: { sessionToken: "new-token" } },
+      });
+
+      expect(status).toBe(400);
+      expect(body["error"]).toMatch(/ADMIN_AUTH_SECRET.*encrypt credentials/i);
+      expect(integrationStore.upsertIntegration).not.toHaveBeenCalled();
+    });
+
     it("returns 404 for unknown id", async () => {
       const { status } = await fetchFromServer(server, "/api/admin/integrations/nonexistent", {
         method: "PUT",
@@ -660,11 +792,11 @@ describe("Admin API — Plugin & Integration routes", () => {
       });
 
       const stored = await integrationStore.getIntegration("redmine-edit");
-      expect(JSON.parse(stored?.configJson ?? "{}") as Record<string, unknown>).toMatchObject({
-        baseUrl: "http://redmine.internal:3000",
-        apiKey: "existing-api-key",
-        virtualEngineerUserLogin: "ve",
-      });
+      const storedConfig = JSON.parse(stored?.configJson ?? "{}") as Record<string, unknown>;
+      expect(storedConfig["baseUrl"]).toBe("http://redmine.internal:3000");
+      expect(storedConfig["virtualEngineerUserLogin"]).toBe("ve");
+      // apiKey must be stored encrypted; decrypting it must yield the original value
+      expect(decryptToken(storedConfig["apiKey"] as string, TEST_ADMIN_AUTH_SECRET)).toBe("existing-api-key");
     });
 
     it("preserves stored secrets when the UI echoes the secret mask or sends an empty secret", async () => {
@@ -693,11 +825,10 @@ describe("Admin API — Plugin & Integration routes", () => {
       expect(status).toBe(200);
 
       const stored = await integrationStore.getIntegration("redmine-secret-mask");
-      expect(JSON.parse(stored?.configJson ?? "{}") as Record<string, unknown>).toMatchObject({
-        baseUrl: "http://redmine:3000",
-        apiKey: "existing-api-key",
-        virtualEngineerUserLogin: "ve",
-      });
+      const storedConfig2 = JSON.parse(stored?.configJson ?? "{}") as Record<string, unknown>;
+      expect(storedConfig2["baseUrl"]).toBe("http://redmine:3000");
+      expect(storedConfig2["virtualEngineerUserLogin"]).toBe("ve");
+      expect(decryptToken(storedConfig2["apiKey"] as string, TEST_ADMIN_AUTH_SECRET)).toBe("existing-api-key");
     });
 
     it("reloads the provider when updating an enabled integration", async () => {
@@ -761,9 +892,9 @@ describe("Admin API — Plugin & Integration routes", () => {
       });
 
       const stored = await integrationStore.getIntegration("copilot-edit");
-      expect(JSON.parse(stored?.configJson ?? "{}") as Record<string, unknown>).toEqual({
-        sessionToken: "new-token",
-      });
+      const storedConfig3 = JSON.parse(stored?.configJson ?? "{}") as Record<string, unknown>;
+      // sessionToken must be stored encrypted; decrypting it must yield the new value
+      expect(decryptToken(storedConfig3["sessionToken"] as string, TEST_ADMIN_AUTH_SECRET)).toBe("new-token");
     });
   });
 });

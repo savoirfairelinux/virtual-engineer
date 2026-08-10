@@ -1,14 +1,16 @@
 import { getLogger } from "../logger.js";
 import type { IntegrationStore } from "../interfaces.js";
 import { generateWebhookSecret, listSupportedEvents } from "../webhooks/webhookServer.js";
-import { writeJson, readBody } from "./adminRouteUtils.js";
+import { writeJson, readBody, requireStore } from "./adminRouteUtils.js";
 import { recordAudit, type AuditCapableStore } from "./adminAudit.js";
 import type { Router } from "./router.js";
+import type { PluginManager } from "../plugins/pluginManager.js";
 
 const log = getLogger("admin-webhooks");
 
 export interface WebhookRouteDeps {
   integrationStore?: IntegrationStore | undefined;
+  pluginManager?: PluginManager | undefined;
   auditStore?: AuditCapableStore | undefined;
   onIntegrationUpdated?: ((integrationId: string) => void) | undefined;
   webhookPublicBaseUrl?: string | undefined;
@@ -17,7 +19,7 @@ export interface WebhookRouteDeps {
 /** Register webhook-management routes on the given router. */
 export function registerWebhookRoutes(router: Router, deps: WebhookRouteDeps): void {
   router.add("POST", "/api/admin/integrations/:id/webhook-secret/rotate", async (req, res, params) => {
-    if (!deps.integrationStore) { writeJson(res, 501, { error: "Integration store not available" }); return; }
+    if (!requireStore(deps.integrationStore, res, "Integration store not available")) return;
     const id = params["id"] ?? "";
     const integration = await deps.integrationStore.getIntegration(id);
     if (!integration) { writeJson(res, 404, { error: "Integration not found" }); return; }
@@ -32,12 +34,23 @@ export function registerWebhookRoutes(router: Router, deps: WebhookRouteDeps): v
       parsed = {};
     }
     parsed["webhookSecret"] = newSecret;
+    let storedConfig: Record<string, unknown>;
+    try {
+      storedConfig = deps.pluginManager
+        ? deps.pluginManager.encryptIntegrationConfigForStorage(integration, parsed)
+        : parsed;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log.warn({ id, err }, "rotate webhook secret encryption failed");
+      writeJson(res, 400, { error: msg });
+      return;
+    }
     try {
       await deps.integrationStore.upsertIntegration({
         id: integration.id,
         provider: integration.provider,
         name: integration.name,
-        configJson: JSON.stringify(parsed),
+        configJson: JSON.stringify(storedConfig),
         enabled: integration.enabled,
       });
     } catch (err) {
@@ -52,13 +65,13 @@ export function registerWebhookRoutes(router: Router, deps: WebhookRouteDeps): v
   }, { permission: "integration.write" });
 
   router.add("PUT", "/api/admin/integrations/:id/webhook-allowed-ips", async (req, res, params) => {
-    if (!deps.integrationStore) { writeJson(res, 501, { error: "Integration store not available" }); return; }
+    if (!requireStore(deps.integrationStore, res, "Integration store not available")) return;
     const id = params["id"] ?? "";
     const integration = await deps.integrationStore.getIntegration(id);
     if (!integration) { writeJson(res, 404, { error: "Integration not found" }); return; }
     const body = await readBody(req);
     if (!body) { writeJson(res, 400, { error: "Invalid JSON body" }); return; }
-    const { allowedIps } = body as Record<string, unknown>;
+    const { allowedIps } = body;
     if (!Array.isArray(allowedIps)) {
       writeJson(res, 400, { error: "allowedIps must be an array of IP strings" });
       return;
@@ -99,7 +112,7 @@ export function registerWebhookRoutes(router: Router, deps: WebhookRouteDeps): v
   }, { permission: "integration.write" });
 
   router.add("GET", "/api/admin/integrations/:id/webhook-allowed-ips", async (_req, res, params) => {
-    if (!deps.integrationStore) { writeJson(res, 501, { error: "Integration store not available" }); return; }
+    if (!requireStore(deps.integrationStore, res, "Integration store not available")) return;
     const id = params["id"] ?? "";
     const integration = await deps.integrationStore.getIntegration(id);
     if (!integration) { writeJson(res, 404, { error: "Integration not found" }); return; }
@@ -117,7 +130,7 @@ export function registerWebhookRoutes(router: Router, deps: WebhookRouteDeps): v
   }, { permission: "integration.read" });
 
   router.add("GET", "/api/admin/integrations/:id/webhook-info", async (req, res, params) => {
-    if (!deps.integrationStore) { writeJson(res, 501, { error: "Integration store not available" }); return; }
+    if (!requireStore(deps.integrationStore, res, "Integration store not available")) return;
     const id = params["id"] ?? "";
     const integration = await deps.integrationStore.getIntegration(id);
     if (!integration) { writeJson(res, 404, { error: "Integration not found" }); return; }
