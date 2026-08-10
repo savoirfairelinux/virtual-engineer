@@ -154,12 +154,13 @@ src/
 
   state/
     schema.ts             # Drizzle table definitions
+    databaseMigrations.ts # Tracked migration runner + pre-ledger adoption bridge
     stateMachine.ts       # VALID_TRANSITIONS + validateTransition
     stateStore.ts         # SqliteStateStore facade — all DB access
     stores/               # Domain-scoped DB modules: task, integration,
                           # project, prompt(+seeding), agent(+concurrency),
                           # settings (app_settings singleton)
-    migrate.ts            # Runs Drizzle migrations on startup
+    migrate.ts            # Explicit CLI entry; startup uses the same runner
 
   utils/
     encryption.ts         # AES-256-GCM token encryption

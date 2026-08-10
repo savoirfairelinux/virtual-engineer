@@ -3,60 +3,78 @@ import { sqliteTable, text, integer, real, index, uniqueIndex, unique, check, pr
 import { sql } from "drizzle-orm";
 import type { TaskState, ProviderId, TaskType, AgentType, ProjectType, PushTargetRole, DomainCapability, UserRole, PrincipalType, VendorComponentOrigin } from "../interfaces.js";
 
-export const tasks = sqliteTable("tasks", {
-  taskId: text("task_id").primaryKey(),
-  ticketId: text("ticket_id").notNull(),
-  ticketSourceLabel: text("ticket_source_label").notNull().default("redmine"),
-  ticketTitle: text("ticket_title").notNull().default(""),
-  ticketDescription: text("ticket_description").notNull().default(""),
-  state: text("state").$type<TaskState>().notNull().default("DETECTED"),
+export const tasks = sqliteTable(
+  "tasks",
+  {
+    taskId: text("task_id").primaryKey(),
+    ticketId: text("ticket_id").notNull(),
+    ticketSourceLabel: text("ticket_source_label").notNull().default("redmine"),
+    ticketTitle: text("ticket_title").notNull().default(""),
+    ticketDescription: text("ticket_description").notNull().default(""),
+    state: text("state").$type<TaskState>().notNull().default("DETECTED"),
   /**
    * Discriminator for the task lifecycle.
    * - "code-gen": legacy ticket-driven code generation flow
    * - "code-review": VE acts as a reviewer on a change in an external review system
    */
-  taskType: text("task_type").$type<TaskType>().notNull().default("code-gen"),
-  gerritChangeId: text("gerrit_change_id"),
-  currentPatchset: integer("current_patchset").notNull().default(0),
+    taskType: text("task_type").$type<TaskType>().notNull().default("code-gen"),
+    gerritChangeId: text("gerrit_change_id"),
+    currentPatchset: integer("current_patchset").notNull().default(0),
   /**
    * For code-review tasks: the patchset number that was last reviewed by VE.
    * Used to detect newly-uploaded patchsets and trigger re-reviews.
    */
-  reviewedPatchset: integer("reviewed_patchset"),
-  cycleCount: integer("cycle_count").notNull().default(0),
-  failureReason: text("failure_reason"),
-  ticketUrl: text("ticket_url"),
-  reviewUrl: text("review_url"),
-  /** Project ID — binds the task to a Project record. */
-  projectId: text("project_id"),
+    reviewedPatchset: integer("reviewed_patchset"),
+    cycleCount: integer("cycle_count").notNull().default(0),
+    failureReason: text("failure_reason"),
+    ticketUrl: text("ticket_url"),
+    reviewUrl: text("review_url"),
+    /** Project ID — binds the task to a Project record. */
+    projectId: text("project_id"),
   /**
    * Integration ID of the ticket source that produced this task (snapshot
    * taken at creation time, or backfilled before owning project deletion).
    * Used to re-attach orphaned tasks when a new project takes over the same
    * (integrationId, ticketProjectKey) ticket source.
    */
-  ticketSourceIntegrationId: text("ticket_source_integration_id"),
-  /** Ticket project key (provider-side identifier) of the originating ticket source. */
-  ticketSourceProjectKey: text("ticket_source_project_key"),
-  /** Human-readable identifier for the UI (e.g. ticket number, Gerrit change number). */
-  displayId: text("display_id"),
-  /** Persisted feature branch ref used for the first push; reused on subsequent pushes for idempotence and backward-compat with branches created under the legacy naming scheme. */
-  pushRef: text("push_ref"),
-  createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
-  updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
-});
+    ticketSourceIntegrationId: text("ticket_source_integration_id"),
+    /** Ticket project key (provider-side identifier) of the originating ticket source. */
+    ticketSourceProjectKey: text("ticket_source_project_key"),
+    /** Human-readable identifier for the UI (e.g. ticket number, Gerrit change number). */
+    displayId: text("display_id"),
+    /** Persisted feature branch ref used for the first push; reused on subsequent pushes for idempotence and backward-compat with branches created under the legacy naming scheme. */
+    pushRef: text("push_ref"),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
+  },
+  (table) => ({
+    idxTasksTicketId: index("idx_tasks_ticket_id").on(table.ticketId),
+    idxTasksActiveTicketId: uniqueIndex("idx_tasks_active_ticket_id")
+      .on(table.projectId, table.ticketId)
+      .where(sql`${table.state} NOT IN ('DONE', 'FAILED', 'ABANDONED', 'REVIEW_DONE', 'REVIEW_FAILED')`),
+    idxTasksActiveTicketIdNoProject: uniqueIndex("idx_tasks_active_ticket_id_noproject")
+      .on(table.ticketId)
+      .where(sql`${table.projectId} IS NULL AND ${table.state} NOT IN ('DONE', 'FAILED', 'ABANDONED', 'REVIEW_DONE', 'REVIEW_FAILED')`),
+  })
+);
 
-export const stateTransitions = sqliteTable("state_transitions", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
-  taskId: text("task_id")
-    .notNull()
-    .references(() => tasks.taskId),
-  fromState: text("from_state").$type<TaskState>().notNull(),
-  toState: text("to_state").$type<TaskState>().notNull(),
-  // JSON-serialised metadata
-  metadata: text("metadata").notNull().default("{}"),
-  createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
-});
+export const stateTransitions = sqliteTable(
+  "state_transitions",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    taskId: text("task_id")
+      .notNull()
+      .references(() => tasks.taskId),
+    fromState: text("from_state").$type<TaskState>().notNull(),
+    toState: text("to_state").$type<TaskState>().notNull(),
+    // JSON-serialised metadata
+    metadata: text("metadata").notNull().default("{}"),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+  },
+  (table) => ({
+    idxStateTransitionsTaskId: index("idx_state_transitions_task_id").on(table.taskId),
+  })
+);
 
 export const agentCycles = sqliteTable("agent_cycles", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -96,14 +114,20 @@ export const agentCycles = sqliteTable("agent_cycles", {
   idxAgentCyclesCreatedAt: index("idx_agent_cycles_created_at").on(table.createdAt),
 }));
 
-export const processedComments = sqliteTable("processed_comments", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
-  taskId: text("task_id")
-    .notNull()
-    .references(() => tasks.taskId),
-  gerritCommentId: text("gerrit_comment_id").notNull(),
-  createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
-});
+export const processedComments = sqliteTable(
+  "processed_comments",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    taskId: text("task_id")
+      .notNull()
+      .references(() => tasks.taskId),
+    gerritCommentId: text("gerrit_comment_id").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+  },
+  (table) => ({
+    idxProcessedCommentsTaskId: index("idx_processed_comments_task_id").on(table.taskId),
+  })
+);
 
 /**
  * Records every inline review comment VE has already posted on a change, keyed
@@ -268,11 +292,11 @@ export const agents = sqliteTable(
     name: text("name").notNull(),
     type: text("type").$type<AgentType>().notNull(),
     modelConfigJson: text("model_config_json").notNull().default("{}"),
-    integrationId: text("integration_id").references(() => integrations.id),
+    integrationId: text("integration_id").references(() => integrations.id, { onDelete: "set null" }),
     systemPromptId: text("system_prompt_id").references(() => prompts.id),
     instructionsPromptId: text("instructions_prompt_id").references(() => prompts.id),
     /** Optional instructions prompt used on retry (feedback) cycles. Falls back to instructionsPromptId when null. */
-    feedbackInstructionsPromptId: text("feedback_instructions_prompt_id").references(() => prompts.id),
+    feedbackInstructionsPromptId: text("feedback_instructions_prompt_id").references(() => prompts.id, { onDelete: "set null" }),
     maxConcurrent: integer("max_concurrent").notNull().default(1),
     enabled: integer("enabled").notNull().default(0),
     createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
@@ -396,7 +420,11 @@ export const projectVendorComponents = sqliteTable(
   },
   (table) => ({
     uqPvcProjectSourceLocal: uniqueIndex("uq_pvc_project_source_local")
-      .on(table.projectId, table.sourcePath, sql`coalesce(local_path, '')`),
+      .on(
+        table.projectId,
+        table.sourcePath,
+        sql`case when ${table.localPath} is null then '' else ${table.localPath} end`
+      ),
     idxPvcProjectId: index("idx_pvc_project_id").on(table.projectId),
   })
 );

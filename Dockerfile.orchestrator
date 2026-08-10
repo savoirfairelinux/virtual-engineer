@@ -58,6 +58,9 @@ COPY --from=builder /app/node_modules ./node_modules/
 # Compiled TypeScript output
 COPY --from=builder /app/dist ./dist/
 
+# Version-controlled migrations applied automatically at startup
+COPY drizzle/ ./drizzle/
+
 # Agent worker and default prompts
 COPY agent-worker/ ./agent-worker/
 COPY prompts/ ./prompts/
