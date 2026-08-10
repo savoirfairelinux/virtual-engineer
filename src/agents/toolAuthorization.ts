@@ -3,7 +3,7 @@
  * the env vars the agent worker reads.
  *
  * Storage shape (in `agents.modelConfigJson` → `providerOptions.toolAuthorization`):
- * - Claude/Copilot: `{ blockedTools: string[] }` — newline-separated when
+ * - Claude/Copilot: `{ blockedTools: string[] }` — comma-separated when
  *   forwarded to the worker. Everything is allowed by default (blocklist-only).
  * - Aider/Goose: provider-specific toggles forwarded as a single
  *   `TOOL_AUTHORIZATION_JSON` env var (parsed by the worker).
@@ -22,14 +22,14 @@ export function extractToolAuthorization(
   return raw as Record<string, unknown>;
 }
 
-/** String-array helper: accept `string[]`, newline-separated `string`, or undefined. */
+/** String-array helper: accept `string[]`, newline/comma-separated `string`, or undefined. */
 function asStringArray(value: unknown): string[] | undefined {
   if (Array.isArray(value)) {
     const out = value.filter((v): v is string => typeof v === "string" && v.trim() !== "").map((v) => v.trim());
     return out.length > 0 ? out : undefined;
   }
   if (typeof value === "string" && value.trim() !== "") {
-    const out = value.split("\n").map((v) => v.trim()).filter((v) => v !== "");
+    const out = value.split(/[\r\n,]/u).map((v) => v.trim()).filter((v) => v !== "");
     return out.length > 0 ? out : undefined;
   }
   return undefined;
@@ -48,8 +48,9 @@ export function toolListEnv(
   if (!toolAuthorization) return {};
   const blocked = asStringArray(toolAuthorization["blockedTools"]);
   const prefix = provider === "claude" ? "CLAUDE" : "COPILOT";
+  // Comma, not newline: OpenShell rejects CR/LF in sandbox env values.
   return {
-    ...(blocked ? { [`${prefix}_BLOCKED_TOOLS`]: blocked.join("\n") } : {}),
+    ...(blocked ? { [`${prefix}_BLOCKED_TOOLS`]: blocked.join(",") } : {}),
   };
 }
 

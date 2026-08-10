@@ -5,7 +5,7 @@
  * Covers:
  * - `AgentRunOptions.blockedTools` / `toolAuthorization` fields are present
  *   and typed (compile-time + runtime shape).
- * - `parseToolList()` splits a newline-separated env var into a trimmed,
+ * - `parseToolList()` splits a comma-separated env var into a trimmed,
  *   de-duplicated, empty-dropped string array.
  * - `createToolAuthorizingPermissionHandler`:
  *   - denies a tool in `blockedTools` and emits `permission.denied`.
@@ -96,6 +96,10 @@ describe("AgentRunOptions tool-authorization fields", () => {
 describe("parseToolList", () => {
   it("splits a newline-separated list, trims, drops empties, and de-duplicates", () => {
     expect(parseToolList("Read\nEdit\n\n  Bash  \nRead\n")).toEqual(["Read", "Edit", "Bash"]);
+  });
+
+  it("splits on commas, the separator the host now emits", () => {
+    expect(parseToolList("Read,Edit,,  Bash  ,Read")).toEqual(["Read", "Edit", "Bash"]);
   });
 
   it("returns an empty array for undefined / empty input", () => {

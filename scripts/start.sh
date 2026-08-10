@@ -289,6 +289,14 @@ else
     done
     [[ "$_keycloak_ready" == "true" ]] \
       || error "Managed local Keycloak did not become ready. Check: docker logs ve-local-keycloak"
+    # `start-dev --import-realm` skips a realm that already exists, so a data
+    # volume written under an older secret keeps rejecting the current one.
+    if ! printf 'grant_type=client_credentials&client_id=%s&client_secret=%s' \
+      "$OPENSHELL_OIDC_CLIENT_ID" "$OPENSHELL_OIDC_CLIENT_SECRET" \
+      | curl -fsS -o /dev/null --data-binary @- \
+        "http://127.0.0.1:18081/realms/openshell/protocol/openid-connect/token"; then
+      error "Managed local Keycloak rejects the ${OPENSHELL_OIDC_CLIENT_ID} secret in ${LOCAL_OIDC_DIR}/client-secret; its stored realm predates that file. Re-import the realm with: docker rm -f ve-local-keycloak && docker volume rm ve-local-keycloak-data"
+    fi
   else
     docker network inspect ve-openshell-control >/dev/null 2>&1 \
       || docker network create ve-openshell-control >/dev/null
@@ -556,12 +564,18 @@ if ! docker run --rm --network host \
     -e XDG_CONFIG_HOME=/ve-openshell-config \
     -v "${OPENSHELL_CONFIG_DIR}:/ve-openshell-config:rw,Z" \
     virtual-engineer:latest sh -c \
-      'openshell gateway remove "$OPENSHELL_GATEWAY_NAME" >/dev/null 2>&1 || true
-       attempt=0
-       until output=$(openshell gateway add "$OPENSHELL_GATEWAY_ENDPOINT" --local \
-         --name "$OPENSHELL_GATEWAY_NAME" --oidc-issuer "$OPENSHELL_OIDC_ISSUER" \
-         --oidc-client-id "$OPENSHELL_OIDC_CLIENT_ID" --oidc-audience "$OPENSHELL_OIDC_AUDIENCE" 2>&1); do
-         attempt=$((attempt + 1)); if [ "$attempt" -ge 20 ]; then printf "%s\n" "$output" >&2; exit 1; fi; sleep 1
+      'attempt=0
+       while :; do
+         openshell gateway remove "$OPENSHELL_GATEWAY_NAME" >/dev/null 2>&1 || true
+         output=$(openshell gateway add "$OPENSHELL_GATEWAY_ENDPOINT" --local \
+           --name "$OPENSHELL_GATEWAY_NAME" --oidc-issuer "$OPENSHELL_OIDC_ISSUER" \
+           --oidc-client-id "$OPENSHELL_OIDC_CLIENT_ID" --oidc-audience "$OPENSHELL_OIDC_AUDIENCE" 2>&1)
+         # gateway add exits 0 even when login fails and it rolls the
+         # registration back, so the stored profile is the only success signal.
+         openshell gateway info -g "$OPENSHELL_GATEWAY_NAME" >/dev/null 2>&1 && break
+         attempt=$((attempt + 1))
+         if [ "$attempt" -ge 20 ]; then printf "%s\n" "$output" >&2; exit 1; fi
+         sleep 1
        done
        OPENSHELL_GATEWAY="$OPENSHELL_GATEWAY_NAME" openshell status'; then
   kill "$_port_forward_pid" 2>/dev/null || true
@@ -659,12 +673,18 @@ else
       -e XDG_CONFIG_HOME=/ve-openshell-config \
       -v "${OPENSHELL_CONFIG_DIR}:/ve-openshell-config:rw,Z" \
       virtual-engineer:latest sh -c \
-        'openshell gateway remove "$OPENSHELL_GATEWAY_NAME" >/dev/null 2>&1 || true
-         attempt=0
-         until output=$(openshell gateway add "$OPENSHELL_GATEWAY_ENDPOINT" --local \
-           --name "$OPENSHELL_GATEWAY_NAME" --oidc-issuer "$OPENSHELL_OIDC_ISSUER" \
-           --oidc-client-id "$OPENSHELL_OIDC_CLIENT_ID" --oidc-audience "$OPENSHELL_OIDC_AUDIENCE" 2>&1); do
-           attempt=$((attempt + 1)); if [ "$attempt" -ge 20 ]; then printf "%s\n" "$output" >&2; exit 1; fi; sleep 1
+        'attempt=0
+         while :; do
+           openshell gateway remove "$OPENSHELL_GATEWAY_NAME" >/dev/null 2>&1 || true
+           output=$(openshell gateway add "$OPENSHELL_GATEWAY_ENDPOINT" --local \
+             --name "$OPENSHELL_GATEWAY_NAME" --oidc-issuer "$OPENSHELL_OIDC_ISSUER" \
+             --oidc-client-id "$OPENSHELL_OIDC_CLIENT_ID" --oidc-audience "$OPENSHELL_OIDC_AUDIENCE" 2>&1)
+           # gateway add exits 0 even when login fails and it rolls the
+           # registration back, so the stored profile is the only success signal.
+           openshell gateway info -g "$OPENSHELL_GATEWAY_NAME" >/dev/null 2>&1 && break
+           attempt=$((attempt + 1))
+           if [ "$attempt" -ge 20 ]; then printf "%s\n" "$output" >&2; exit 1; fi
+           sleep 1
          done
          OPENSHELL_GATEWAY="$OPENSHELL_GATEWAY_NAME" openshell status'; then
     error "OpenShell Docker gateway OIDC authentication failed. Check: docker logs ve-openshell-gateway"

@@ -25,9 +25,14 @@ describe("extractToolAuthorization", () => {
 });
 
 describe("toolListEnv", () => {
-  it("maps blockedTools to CLAUDE_BLOCKED_TOOLS (newline-separated)", () => {
+  it("maps blockedTools to CLAUDE_BLOCKED_TOOLS (comma-separated)", () => {
     expect(toolListEnv("claude", { blockedTools: ["Read", "Edit"] }))
-      .toEqual({ CLAUDE_BLOCKED_TOOLS: "Read\nEdit" });
+      .toEqual({ CLAUDE_BLOCKED_TOOLS: "Read,Edit" });
+  });
+
+  it("never emits CR/LF, which OpenShell rejects in sandbox env values", () => {
+    const env = toolListEnv("copilot", { blockedTools: ["Bash", "Write", "Edit"] });
+    expect(env["COPILOT_BLOCKED_TOOLS"]).not.toMatch(/[\r\n]/u);
   });
 
   it("maps to COPILOT_BLOCKED_TOOLS for the copilot provider", () => {
@@ -41,9 +46,11 @@ describe("toolListEnv", () => {
     expect(toolListEnv("claude", undefined)).toEqual({});
   });
 
-  it("accepts a newline-separated string and trims/drops empties", () => {
+  it("accepts a newline- or comma-separated string and trims/drops empties", () => {
     expect(toolListEnv("claude", { blockedTools: "Read\n\n  Edit  " }))
-      .toEqual({ CLAUDE_BLOCKED_TOOLS: "Read\nEdit" });
+      .toEqual({ CLAUDE_BLOCKED_TOOLS: "Read,Edit" });
+    expect(toolListEnv("claude", { blockedTools: "Read, Edit" }))
+      .toEqual({ CLAUDE_BLOCKED_TOOLS: "Read,Edit" });
   });
 });
 

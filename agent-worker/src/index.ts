@@ -106,7 +106,7 @@ if (REVIEW_STRATEGY === 'goose_native' && (!REVIEW_MODE || AGENT_PROVIDER !== 'g
 }
 
 // ── Per-agent tool authorization (Claude/Copilot) ────────────────────────────
-// Newline-separated blocked-tool list injected by the host adapter from
+// Comma-separated blocked-tool list injected by the host adapter from
 // `modelConfig.providerOptions.toolAuthorization`. Empty/unset = everything
 // allowed (modulo VE's network floor). Only read for providers that support
 // per-tool blocklists (claude/copilot); aider/goose use TOOL_AUTHORIZATION_JSON.
