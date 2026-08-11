@@ -103,6 +103,14 @@ function getProviderCompatibleAgentToken(
     const copilotApiKey = apiKey?.trim();
     return copilotApiKey && !copilotApiKey.startsWith("sk-ant-") ? copilotApiKey : null;
   }
+  if (provider === "codex") {
+    // Codex API keys are OpenAI keys (`sk-…`, never `sk-ant-…`); a subscription
+    // access token is any other opaque string.
+    const codexSession = sessionToken?.trim();
+    if (codexSession && !codexSession.startsWith("sk-")) return codexSession;
+    const codexApiKey = apiKey?.trim();
+    return codexApiKey?.startsWith("sk-") ? codexApiKey : null;
+  }
   return null;
 }
 

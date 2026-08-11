@@ -86,22 +86,33 @@ function loadPromptsOrExit(): WorkerPrompts {
 }
 
 const REVIEW_STRATEGY_RAW = process.env['REVIEW_STRATEGY'] ?? 've_direct';
-if (REVIEW_STRATEGY_RAW !== 've_direct' && REVIEW_STRATEGY_RAW !== 'copilot_native' && REVIEW_STRATEGY_RAW !== 'goose_native') {
+if (
+  REVIEW_STRATEGY_RAW !== 've_direct' &&
+  REVIEW_STRATEGY_RAW !== 'copilot_native' &&
+  REVIEW_STRATEGY_RAW !== 'goose_native' &&
+  REVIEW_STRATEGY_RAW !== 'codex_native'
+) {
   process.stderr.write(`FATAL: unknown REVIEW_STRATEGY "${REVIEW_STRATEGY_RAW}".\n`);
   process.exit(1);
 }
-const REVIEW_STRATEGY: 've_direct' | 'copilot_native' | 'goose_native' =
+const REVIEW_STRATEGY: 've_direct' | 'copilot_native' | 'goose_native' | 'codex_native' =
   REVIEW_STRATEGY_RAW === 'copilot_native'
     ? 'copilot_native'
     : REVIEW_STRATEGY_RAW === 'goose_native'
       ? 'goose_native'
-      : 've_direct';
+      : REVIEW_STRATEGY_RAW === 'codex_native'
+        ? 'codex_native'
+        : 've_direct';
 if (REVIEW_STRATEGY === 'copilot_native' && (!REVIEW_MODE || AGENT_PROVIDER !== 'copilot')) {
   process.stderr.write('FATAL: copilot_native review strategy requires Copilot review mode.\n');
   process.exit(1);
 }
 if (REVIEW_STRATEGY === 'goose_native' && (!REVIEW_MODE || AGENT_PROVIDER !== 'goose')) {
   process.stderr.write('FATAL: goose_native review strategy requires Goose review mode.\n');
+  process.exit(1);
+}
+if (REVIEW_STRATEGY === 'codex_native' && (!REVIEW_MODE || AGENT_PROVIDER !== 'codex')) {
+  process.stderr.write('FATAL: codex_native review strategy requires Codex review mode.\n');
   process.exit(1);
 }
 
@@ -219,7 +230,7 @@ interface ReviewWorkerResult extends AgentResult {
 async function runReviewMode(): Promise<ReviewWorkerResult> {
   process.stderr.write(
     `review mode: provider=${AGENT_PROVIDER} strategy=${REVIEW_STRATEGY} ` +
-    `model=${REVIEW_STRATEGY === 'copilot_native' || REVIEW_STRATEGY === 'goose_native' ? 'CLI-managed' : ACTIVE_MODEL_LABEL}\n`,
+    `model=${REVIEW_STRATEGY === 'copilot_native' || REVIEW_STRATEGY === 'goose_native' || REVIEW_STRATEGY === 'codex_native' ? 'CLI-managed' : ACTIVE_MODEL_LABEL}\n`,
   );
   emitEvent('review.strategy_selected', { reviewStrategy: REVIEW_STRATEGY });
   emitEvent('review.prompt_received', {
@@ -255,7 +266,7 @@ async function runReviewMode(): Promise<ReviewWorkerResult> {
       agentLogs: rawOutput,
       metadata: {
         adapter: ADAPTER_LABEL,
-        model: REVIEW_STRATEGY === 'copilot_native' || REVIEW_STRATEGY === 'goose_native' ? 'CLI-managed' : ACTIVE_MODEL_LABEL,
+        model: REVIEW_STRATEGY === 'copilot_native' || REVIEW_STRATEGY === 'goose_native' || REVIEW_STRATEGY === 'codex_native' ? 'CLI-managed' : ACTIVE_MODEL_LABEL,
         reviewMode: true,
         reviewStrategy: REVIEW_STRATEGY,
       },

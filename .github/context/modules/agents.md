@@ -1,6 +1,6 @@
 # Agents Module
 
-The `agent_execution` capability has five engines: **Copilot** (`copilotAdapter.ts`), **Claude Code** (`claudeAdapter.ts`), **Aider** (`aiderAdapter.ts`), **Goose** (`gooseAdapter.ts`), and **Mock** (`mockAgentAdapter.ts`). Both coding and review flows are supported by Copilot, Claude, Aider, and Goose; review uses `REVIEW_MODE=1`.
+The `agent_execution` capability has six engines: **Copilot** (`copilotAdapter.ts`), **Claude Code** (`claudeAdapter.ts`), **Aider** (`aiderAdapter.ts`), **Goose** (`gooseAdapter.ts`), **Codex** (`codexAdapter.ts`), and **Mock** (`mockAgentAdapter.ts`). Both coding and review flows are supported by Copilot, Claude, Aider, Goose, and Codex; review uses `REVIEW_MODE=1`.
 
 ## Provider ownership
 
@@ -8,7 +8,7 @@ The `agent_execution` capability has five engines: **Copilot** (`copilotAdapter.
 - Worker success and failure results identify the selected provider through its registered adapter label and active model; top-level failures never fall back to Copilot metadata for Claude or Aider runs.
 - Provider-specific agent settings are stored under `agents.model_config_json.providerOptions`. The orchestrator and review bootstrap transport that object without interpreting its keys; each host adapter validates its own values and maps them to provider environment variables.
 - Each `agent_execution` descriptor declares its own `configFields`, so `AgentFormModal.tsx` renders and serializes advanced settings without provider branches. Adding an engine requires its worker provider, host adapter/descriptor, and registry entries, but no branch in worker `index.ts` or the generic admin form.
-- Review strategy is agent-owned under `modelConfig.providerOptions.reviewStrategy`; absence means `ve_direct`. Descriptors may advertise optional `reviewStrategies` metadata for the generic admin form. Copilot currently advertises experimental `copilot_native`; Goose advertises experimental `goose_native`; Claude and Aider remain direct-only.
+- Review strategy is agent-owned under `modelConfig.providerOptions.reviewStrategy`; absence means `ve_direct`. Descriptors may advertise optional `reviewStrategies` metadata for the generic admin form. Copilot currently advertises experimental `copilot_native`; Goose advertises experimental `goose_native`; Codex advertises experimental `codex_native`; Claude and Aider remain direct-only.
 
 ## Per-agent tool authorization
 
@@ -45,7 +45,7 @@ Tool calls and permission decisions are recorded into `agent_cycles.agent_events
 - Multiline system prompts are transported as `SYSTEM_PROMPT_BASE64` because OpenShell rejects literal CR/LF in `sandbox exec --env` values; single-line prompts use `SYSTEM_PROMPT`.
 - Credential env vars are never passed via `--env`: `splitManagedProviderEnv()` attaches each one as a short-lived OpenShell provider and fails closed on an unmapped `TOKEN|SECRET|API_KEY|APIKEY|PASSWORD|CREDENTIAL` name.
 - Review runs upload the repository but never download it back, so review-side edits are discarded.
-- Review runs receive `REVIEW_STRATEGY=ve_direct|copilot_native|goose_native`. In `copilot_native` mode the Copilot adapter omits `COPILOT_MODEL` and `COPILOT_REASONING_EFFORT`; the parent uses `auto` and the CLI owns the sub-agent model, displayed as CLI-managed. In `goose_native` mode the Goose adapter omits `GOOSE_MODEL`; the Goose CLI manages model selection, displayed as CLI-managed.
+- Review runs receive `REVIEW_STRATEGY=ve_direct|copilot_native|goose_native|codex_native`. In `copilot_native` mode the Copilot adapter omits `COPILOT_MODEL` and `COPILOT_REASONING_EFFORT`; the parent uses `auto` and the CLI owns the sub-agent model, displayed as CLI-managed. In `goose_native` mode the Goose adapter omits `GOOSE_MODEL`; the Goose CLI manages model selection, displayed as CLI-managed. In `codex_native` mode the Codex adapter omits `CODEX_MODEL`/`CODEX_REASONING_EFFORT`; the Codex CLI's native subagent delegation manages the analysis and the parent submits, displayed as CLI-managed.
 - Repository skill discovery belongs to each provider. There is no project/session path or enable field and no `LOCAL_SKILLS_PATH` or `SKILL_DISCOVERY` environment variable.
 - Project remote skill source configuration (`SKILL_SOURCES_JSON`, `SSH_AUTH_SOCK`, `GIT_SSH_COMMAND`, private-key paths) is not passed into the sandbox — fetched skill sources are staged host-side before upload instead (see **External Skills** below), so only the resulting files, never the fetch credentials, reach the sandbox.
 - Copilot sets `workingDirectory` and Claude sets `cwd` to the sandbox repository directory (`process.cwd()` in the worker). Copilot keeps `enableConfigDiscovery=true`, so the CLI discovers repository skills and repository MCP configuration natively; Claude loads user/project settings and all native skills and keeps `strictMcpConfig=true`, so only VE-provided MCP servers are accepted.
@@ -54,7 +54,7 @@ Tool calls and permission decisions are recorded into `agent_cycles.agent_events
 
 - `projects.skill_sources_json` is persisted, editable in the admin UI, and forwarded onto `AgentSession.skillSourcesJson` / `ReviewWorkspaceInput.skillSourcesJson` by `src/orchestrator/agentContextBuilder.ts` and `src/review/reviewOrchestrator.ts`.
 - `src/workspace/openShellWorkspaceRunner.ts` calls `src/workspace/skillSourceInstaller.ts`'s `installSkillSources()` **on the host**, after checkout is finalized and before the workspace is uploaded to the sandbox. Each source is fetched via `npx skills add` (project scope) using the same host-local SSH key/known-hosts path convention as `HostGitExecutor` and `src/admin/skillSourceDiscovery.ts`.
-- Supported providers: Copilot (`.agents/skills/`), Claude (`.claude/skills/`), Goose (`.goose/skills/`) — the same project-relative directories their native repository skill discovery already scans. Aider and Mock have no such convention and are skipped.
+- Supported providers: Copilot (`.agents/skills/`), Claude (`.claude/skills/`), Goose (`.goose/skills/`), Codex (`.codex/skills/`, unverified against a live CLI — see "Codex engine specifics" below) — the same project-relative directories their native repository skill discovery already scans. Aider and Mock have no such convention and are skipped.
 - `agent-worker/` still contains no skill-install code path — installation is entirely host-side, before the workspace uploads to the sandbox (the sandbox itself is already created and its egress already applied by that point).
 
 ## Provider-Native Skill Loading
@@ -64,6 +64,7 @@ Tool calls and permission decisions are recorded into `agent_cycles.agent_events
 - Claude uses its repository `cwd`, `settingSources: ['user', 'project']`, and `skills: 'all'`. Review mode permits the native `Skill` tool. `strictMcpConfig=true` remains enabled and is independent of native skill loading.
 - Aider receives the selected Agent Instructions through `--read` but no VE-discovered repository skill manifests. Its normal CLI repository behavior is unchanged.
 - Goose receives the selected Agent Instructions appended to the workflow prompt and loads the VE MCP submission server as a stdio extension via its `config.yaml`. Goose's native repository behavior (built-in Developer extension, `.goosehints` convention) is unchanged; VE does not inject repository skill manifests.
+- Codex receives the selected Agent Instructions appended to the workflow prompt and loads the VE MCP submission server as a stdio `[mcp_servers.ve-submission]` entry via `$CODEX_HOME/config.toml`. Codex's native repository skill/plugin behavior is otherwise unchanged; VE does not inject repository skill manifests.
 - Remote skill fetching runs entirely host-side, before upload (see **External Skills** above); the files it stages feed directly into each provider's native repository skill discovery below — the worker itself performs no fetch or scan.
 
 ## Copilot native review compatibility
@@ -105,6 +106,20 @@ Tool calls and permission decisions are recorded into `agent_cycles.agent_events
 - Connection validation (`gooseConnectionValidator.ts`) and model discovery (`gooseModelsService.ts`) probe the upstream provider's `/models` (or Ollama `/api/tags`, Gemini `/v1/models`, Azure OpenAI `/openai/models`); Ollama model ids are prefixed with `ollama_chat/` (litellm convention). Bedrock model discovery is not supported (enter the model id manually); Bedrock validation checks AWS env var presence.
 - Cost: Goose has no AIU, so `agent_cycles` USD/credit columns stay null; token usage is still emitted as `assistant.usage` events (parsed from Goose's `Tokens: … Cost: …` line when present).
 - Network: Goose needs outbound HTTPS to the upstream LLM API (and HTTP to Ollama). Egress is deny-by-default; `gooseEgress()` (`src/agents/backendEgress.ts`) declares the provider hosts plus `/usr/local/bin/goose` as the permitted binary, and the runner opens them with `allowEgress` after sandbox creation. A custom `apiBase` host is added automatically.
+
+## Codex engine specifics
+
+- `codexAdapter.ts` injects `AGENT_PROVIDER=codex`, exactly one auth env var, `CODEX_MODEL` **only when a model is configured** (no hardcoded default — the Codex CLI picks its own), and `CODEX_REASONING_EFFORT` when configured.
+- Auth modes (descriptor `src/plugins/descriptors/codex.ts`): `api_key` → `CODEX_API_KEY` (honored directly by `codex exec`, no bootstrap); `subscription` → `CODEX_ACCESS_TOKEN`, a manually-pasted Codex/ChatGPT access token (no redirect OAuth flow — Codex has no publicly documented third-party OAuth client/endpoints).
+- Unlike Claude/Copilot, Codex has no embeddable Node SDK. The Codex runner (`agent-worker/src/providers/codex.ts`, selected by the worker's provider registry when `AGENT_PROVIDER=codex`) spawns `codex exec --json` as a subprocess in the sandbox repository directory (Aider/Goose-style), piping the prompt via stdin (`-` sentinel), and maps its streamed JSONL stdout onto the shared `__ve_event` / commit / `AgentResult` pipeline.
+- Codegen uses `--sandbox danger-full-access --ask-for-approval never` (OpenShell, not Codex's own OS sandbox, is the real isolation boundary); review uses `--sandbox read-only --ask-for-approval never`.
+- Subscription mode bootstraps via `codex login --with-access-token` (token piped over stdin) before the `codex exec` call, since Codex has no exec-time env var for session auth (unlike `CODEX_API_KEY`).
+- Codex declares the `mcp` submission transport, like Goose: the runner writes `$CODEX_HOME/config.toml` (`$CODEX_HOME` defaults to `~/.codex`, HOME is `/sandbox`) registering the VE MCP submission server as a stdio `[mcp_servers.ve-submission]` entry with `required = true`. The exact wire format of Codex's `mcp_tool_call` JSONL item is not fully documented upstream and needs live-CLI verification.
+- The `codex_native` review strategy runs inside the same `codex exec --json` session as `ve_direct` (not the separate non-JSON `codex review` subcommand, which has no MCP support): the prompt directs the top-level agent to delegate analysis to a spawned subagent via Codex's native multi-agent tools, then the parent submits through `ve_submit_review`. It omits `CODEX_MODEL`/`CODEX_REASONING_EFFORT` (CLI-managed), parallel to `copilot_native`/`goose_native`.
+- The Codex CLI is installed in the agent image via `npm install -g @openai/codex` (see `Dockerfile.agent`); the binary lands on the global npm bin directory (`/usr/local/bin/codex`). Codex's `~/.codex/` config and credentials land under the sandbox HOME (`/sandbox`).
+- Connection validation (`codexConnectionValidator.ts`) probes `api.openai.com/v1/models` for `api_key` mode; `subscription` mode only checks that a non-empty token was provided (no confirmed public endpoint to validate a Codex access token ahead of time). Model discovery (`codexModelsService.ts`) mirrors this split — live OpenAI models list for `api_key`, a curated static list for `subscription`.
+- Cost: Codex has no AIU, so `agent_cycles` USD/credit columns stay null; token usage is still emitted as `assistant.usage` events (parsed from `turn.completed.usage` — `input_tokens`/`output_tokens`/`cached_input_tokens`; no cache-write count or per-turn USD cost is reported).
+- Network: Codex needs outbound HTTPS to `api.openai.com` (API-key auth and model calls) and `chatgpt.com` (subscription access-token login bootstrap). Egress is deny-by-default; the static `CODEX_EGRESS` constant in `codexAdapter.ts` declares both hosts plus `/usr/local/bin/node` and `/usr/local/bin/codex` as permitted binaries — this default egress list should be verified against a live run with real credentials.
 
 ## Related docs
 

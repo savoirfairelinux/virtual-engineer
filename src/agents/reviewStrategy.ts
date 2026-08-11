@@ -24,10 +24,13 @@ export class ReviewStrategyConfigError extends Error {
   }
 }
 
+const NATIVE_REVIEW_STRATEGIES: readonly ReviewStrategy[] = ["copilot_native", "goose_native", "codex_native"];
+
 export function resolveReviewStrategy(modelConfig: Record<string, unknown>): ReviewStrategy {
   const value = resolveProviderOptions(modelConfig)["reviewStrategy"];
   if (value === undefined || value === "ve_direct") return "ve_direct";
-  if (value === "copilot_native") return "copilot_native";
+  const match = NATIVE_REVIEW_STRATEGIES.find((strategy) => strategy === value);
+  if (match) return match;
   throw new ReviewStrategyConfigError(`Unknown review strategy '${typeof value === "string" ? value : JSON.stringify(value)}'`);
 }
 
