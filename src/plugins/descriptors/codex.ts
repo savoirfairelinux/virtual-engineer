@@ -37,7 +37,7 @@ export function createCodexDescriptor(_adminAuthSecret?: string): ProviderDescri
   return {
     provider: "codex",
     name: "Codex",
-    icon: { slug: "openai", hex: "412991" },
+    icon: { slug: "codex", hex: "412991" },
     configSchema: codexConfigSchema,
     validateFullConfigOnCreate: true,
     requiredFields: [
