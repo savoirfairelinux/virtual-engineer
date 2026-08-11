@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
   buildSkillsCliArgs,
+  buildSkillSourceSubprocessEnv,
   parseRemoteSkillSources,
   resolveSkillSourceUrl,
   skillsAgentId,
@@ -163,6 +164,28 @@ describe("agent-worker remote skills", () => {
 
   it("wraps invalid JSON with skill source context", () => {
     expect(() => parseRemoteSkillSources("not-json")).toThrow("skillSourcesJson must be valid JSON");
+  });
+
+  it("pins npm config so a project-local .npmrc in an untrusted cwd cannot redirect resolution", () => {
+    const env = buildSkillSourceSubprocessEnv({ source: "example-org/agent-skills" });
+
+    expect(env["npm_config_registry"]).toBe("https://registry.npmjs.org/");
+    expect(env["npm_config_strict_ssl"]).toBe("true");
+    expect(env["npm_config_ignore_scripts"]).toBe("true");
+    expect(env["npm_config_userconfig"]).toBe("/dev/null");
+    expect(env["npm_config_globalconfig"]).toBe("/dev/null");
+  });
+
+  it("pins the proxy npm sees to the orchestrator's own configured proxy, not a repo-local override", () => {
+    const originalHttpsProxy = process.env["HTTPS_PROXY"];
+    process.env["HTTPS_PROXY"] = "https://trusted-proxy.internal:3128";
+    try {
+      const env = buildSkillSourceSubprocessEnv({ source: "example-org/agent-skills" });
+      expect(env["npm_config_https_proxy"]).toBe("https://trusted-proxy.internal:3128");
+    } finally {
+      if (originalHttpsProxy === undefined) delete process.env["HTTPS_PROXY"];
+      else process.env["HTTPS_PROXY"] = originalHttpsProxy;
+    }
   });
 
 });

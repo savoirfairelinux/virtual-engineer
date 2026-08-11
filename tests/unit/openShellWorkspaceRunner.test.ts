@@ -827,7 +827,7 @@ describe("OpenShellWorkspaceRunner", () => {
     await runner.cloneRepo(handle, "https://trusted.example/repo.git", "main");
     await runner.runAgentInDocker(fakeCodingAdapter(), ctx);
 
-    expect(installSkillSources).toHaveBeenCalledWith("/tmp/ws-1", skillSourcesJson, "copilot");
+    expect(installSkillSources).toHaveBeenCalledWith("/tmp/ws-1", skillSourcesJson, "copilot", undefined);
     const installOrder = (installSkillSources as unknown as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]!;
     const uploadOrder = (client.uploadToSandbox as unknown as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]!;
     expect(installOrder).toBeLessThan(uploadOrder);
@@ -846,7 +846,7 @@ describe("OpenShellWorkspaceRunner", () => {
       skillSourcesJson,
     } as unknown as ReviewWorkspaceInput);
 
-    expect(installSkillSources).toHaveBeenCalledWith("/tmp/ws-1", skillSourcesJson, "copilot");
+    expect(installSkillSources).toHaveBeenCalledWith("/tmp/ws-1", skillSourcesJson, "copilot", undefined);
     const installOrder = (installSkillSources as unknown as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]!;
     const uploadOrder = (client.uploadToSandbox as unknown as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]!;
     expect(installOrder).toBeLessThan(uploadOrder);
@@ -865,7 +865,24 @@ describe("OpenShellWorkspaceRunner", () => {
     await runner.cloneRepo(handle, "https://trusted.example/repo.git", "main");
     await runner.runAgentInDocker(adapter, ctx);
 
-    expect(installSkillSources).toHaveBeenCalledWith("/tmp/ws-1", expect.any(String), undefined);
+    expect(installSkillSources).toHaveBeenCalledWith("/tmp/ws-1", expect.any(String), undefined, undefined);
+  });
+
+  it("forwards the task's abort signal into installSkillSources so a cancelled deadline stops it promptly", async () => {
+    const abortController = new AbortController();
+    const runner = new OpenShellWorkspaceRunner({ git: fakeGit(), client: fakeClient() });
+    const skillSourcesJson = '[{"source":"example-org/agent-skills","installAll":true}]';
+    const ctx = {
+      taskId: "t1",
+      workspacePath: "/tmp/ws-1",
+      agentSession: { skillSourcesJson },
+      abortSignal: abortController.signal,
+    } as unknown as TaskContext;
+
+    await runner.cloneRepo(handle, "https://trusted.example/repo.git", "main");
+    await runner.runAgentInDocker(fakeCodingAdapter(), ctx);
+
+    expect(installSkillSources).toHaveBeenCalledWith("/tmp/ws-1", skillSourcesJson, "copilot", abortController.signal);
   });
 
   it("runAgent throws when no adapter is available", async () => {

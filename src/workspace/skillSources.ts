@@ -42,7 +42,22 @@ function copyEnv(env: NodeJS.ProcessEnv, key: string, target: NodeJS.ProcessEnv)
 }
 
 function skillSourceSubprocessEnv(): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { NPM_CONFIG_UPDATE_NOTIFIER: "false" };
+  const env: NodeJS.ProcessEnv = {
+    NPM_CONFIG_UPDATE_NOTIFIER: "false",
+    // `npx` can run with `cwd` inside a freshly cloned, untrusted repository
+    // (the install path). npm applies env-var config over any `.npmrc` file,
+    // including a project-level one in cwd, so pin the settings a malicious
+    // repo could otherwise abuse to redirect package resolution to an
+    // attacker-controlled registry/proxy or weaken TLS/script execution.
+    npm_config_registry: "https://registry.npmjs.org/",
+    npm_config_proxy: process.env["HTTP_PROXY"] ?? process.env["http_proxy"] ?? "",
+    npm_config_https_proxy: process.env["HTTPS_PROXY"] ?? process.env["https_proxy"] ?? "",
+    npm_config_noproxy: process.env["NO_PROXY"] ?? process.env["no_proxy"] ?? "",
+    npm_config_strict_ssl: "true",
+    npm_config_ignore_scripts: "true",
+    npm_config_userconfig: "/dev/null",
+    npm_config_globalconfig: "/dev/null",
+  };
   for (const key of [
     "PATH",
     "HOME",

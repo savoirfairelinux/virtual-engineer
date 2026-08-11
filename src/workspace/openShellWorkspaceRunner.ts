@@ -490,7 +490,7 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
         ...(input.abortSignal !== undefined ? { signal: input.abortSignal } : {}),
       });
       await this.applyEgress(name, spec.egress, input.abortSignal);
-      await installSkillSources(dir, input.skillSourcesJson, providerFromAdapterName(adapter.name));
+      await installSkillSources(dir, input.skillSourcesJson, providerFromAdapterName(adapter.name), input.abortSignal);
       // Read-only workspace: upload the repo so the review agent sees the diff. No download back.
       await this.deps.client.uploadToSandbox({
         name,
@@ -568,7 +568,7 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
         ...(context.abortSignal !== undefined ? { signal: context.abortSignal } : {}),
       });
       await this.applyEgress(name, spec.egress, context.abortSignal);
-      await installSkillSources(dir, context.agentSession?.skillSourcesJson, providerFromAdapterName(adapter.name));
+      await installSkillSources(dir, context.agentSession?.skillSourcesJson, providerFromAdapterName(adapter.name), context.abortSignal);
       // Upload the full workspace (incl. .git) so the agent can commit inside the sandbox.
       await this.deps.client.uploadToSandbox({
         name,
