@@ -11,7 +11,7 @@
 
 ## Projects Skill Columns
 
-- `projects.skill_sources_json` is a non-null text JSON column with default `[]`. It stores optional project-configured external skill sources. The empty value is the database/API default; the admin UI's new-project form preloads the SFL `agent-skills` SSH source with `installAll: true`, so saving that untouched form persists a non-empty value. **Known regression:** the value is still forwarded to `AgentSession.skillSourcesJson`, but nothing in `agent-worker/` installs those skills any more — the install step was removed with the Docker runner and has no OpenShell replacement (tracked as a follow-up).
+- `projects.skill_sources_json` is a non-null text JSON column with default `[]`. It stores optional project-configured external skill sources. The empty value is the database/API default; the admin UI's new-project form preloads the SFL `agent-skills` SSH source with `installAll: true`, so saving that untouched form persists a non-empty value. `OpenShellWorkspaceRunner` calls `skillSourceInstaller.ts` to fetch and install configured sources **host-side**, before the workspace is uploaded to the sandbox, so the resulting skill files reach the sandbox without any SSH material ever entering it (see [modules/workspace.md](modules/workspace.md#external-skill-sources)).
 - Repository skill discovery is provider-owned and is not project configuration. The former `projects.skill_discovery_enabled` and `projects.local_skills_path` columns are removed, and the admin API rejects both deleted request fields.
 
 ## Project Push Targets

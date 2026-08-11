@@ -32,7 +32,7 @@ The host owns all push/review credentials and orchestrates network operations; t
 
 ### Project Skill Discovery
 
-Every coding and review run uses the selected agent's native repository behavior. VE does not define a local skill path, scan manifests, or provide a disable switch. Remote skill sources are separate optional project configuration (`projects.skill_sources_json`); the worker does not currently install them — the Docker runner's `npx skills` step was removed with that runner and has no OpenShell replacement yet. Skills are instructions executed by the agent, so a malicious repository or remote skill source could steer the agent. Mitigations:
+Every coding and review run uses the selected agent's native repository behavior. VE does not define a local skill path, scan manifests, or provide a disable switch. Remote skill sources are separate optional project configuration (`projects.skill_sources_json`); `OpenShellWorkspaceRunner` fetches and installs them **on the host**, before the workspace is uploaded to the sandbox, so SSH material and `SKILL_SOURCES_JSON` never reach the sandbox — only the resulting skill files do. Skills are instructions executed by the agent, so a malicious repository or remote skill source could steer the agent. Mitigations:
 
 - Run Virtual Engineer only against repositories whose agent configuration, skills, MCP files, and change-review trust boundary you accept.
 - Remote skill sources default to an empty list and must be configured explicitly; add only sources you trust.

@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { resolveSshSkillSourceUrl, sshSkillSourceCommandPort } from "../workspace/skillSources.js";
+import { buildSkillSourceSubprocessEnv, resolveSshSkillSourceUrl } from "../workspace/skillSources.js";
 import { getLogger } from "../logger.js";
 import { readSshFileSecure } from "../utils/sshFilePath.js";
 
@@ -22,38 +22,6 @@ export interface SkillSourceDiscoveryInput {
 
 function skillsCliPackage(): string {
   return process.env["SKILLS_CLI_PACKAGE"]?.trim() || DEFAULT_SKILLS_CLI_PACKAGE;
-}
-
-function quoteSshArg(value: string): string {
-  return `'${value.replace(/'/g, "'\\''")}'`;
-}
-
-function copyEnv(env: NodeJS.ProcessEnv, key: string, target: NodeJS.ProcessEnv): void {
-  const value = env[key];
-  if (value !== undefined) target[key] = value;
-}
-
-function skillListSubprocessEnv(): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { NPM_CONFIG_UPDATE_NOTIFIER: "false" };
-  for (const key of [
-    "PATH",
-    "HOME",
-    "USER",
-    "TMPDIR",
-    "XDG_RUNTIME_DIR",
-    "HTTP_PROXY",
-    "HTTPS_PROXY",
-    "NO_PROXY",
-    "http_proxy",
-    "https_proxy",
-    "no_proxy",
-    "SSL_CERT_FILE",
-    "SSL_CERT_DIR",
-    "NODE_EXTRA_CA_CERTS",
-  ]) {
-    copyEnv(process.env, key, env);
-  }
-  return env;
 }
 
 function normalizedSourcePrefix(source: string): string {
@@ -96,23 +64,10 @@ export function buildSkillListArgs(source: SkillSourceDiscoveryInput): string[] 
   return ["--yes", skillsCliPackage(), "add", "-l", resolveSkillSourceUrl(source)];
 }
 
+/** Subprocess env for the admin "list skills" probe. Shares its SSH/env logic with the
+ * host-side skill installer via `buildSkillSourceSubprocessEnv`. */
 export function buildSkillListEnv(source: SkillSourceDiscoveryInput): NodeJS.ProcessEnv {
-  const env = skillListSubprocessEnv();
-  if (!isSshSkillSource(source)) return env;
-  if (!source.sshKeyPath) copyEnv(process.env, "SSH_AUTH_SOCK", env);
-  const sshPort = sshSkillSourceCommandPort(source);
-  const hostKeyOpts = source.sshKnownHostsPath
-    ? ["-o", "StrictHostKeyChecking=yes", "-o", `UserKnownHostsFile=${quoteSshArg(source.sshKnownHostsPath)}`]
-    : ["-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null"];
-  return {
-    ...env,
-    GIT_SSH_COMMAND: [
-      "ssh",
-      ...(source.sshKeyPath ? ["-i", quoteSshArg(source.sshKeyPath), "-o", "IdentitiesOnly=yes"] : []),
-      ...hostKeyOpts,
-      ...(sshPort !== undefined ? ["-p", String(sshPort)] : []),
-    ].join(" "),
-  };
+  return buildSkillSourceSubprocessEnv(source);
 }
 
 export function buildSshConnectionArgs(source: SkillSourceDiscoveryInput): string[] | undefined {

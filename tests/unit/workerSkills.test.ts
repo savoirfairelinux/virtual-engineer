@@ -23,7 +23,7 @@ describe("agent-worker remote skills", () => {
     ]);
   });
 
-  it("builds non-interactive npx skills commands for Copilot", () => {
+  it("builds non-interactive, project-scoped npx skills commands for Copilot", () => {
     const args = buildSkillsCliArgs(
       { source: "ssh://skills.example.com/org/agent-skills", skills: ["skill-a", "skill-b"] },
       "copilot",
@@ -38,7 +38,6 @@ describe("agent-worker remote skills", () => {
       "skill-a",
       "--skill",
       "skill-b",
-      "-g",
       "-a",
       "github-copilot",
       "--copy",
@@ -54,9 +53,25 @@ describe("agent-worker remote skills", () => {
       "skills@1.5.16",
       "add",
       "example-org/agent-skills",
-      "-g",
       "-a",
       "claude-code",
+      "--copy",
+      "-y",
+    ]);
+  });
+
+  it("builds project-scoped npx skills commands for Goose", () => {
+    const args = buildSkillsCliArgs({ source: "example-org/agent-skills", skills: ["skill-a"] }, "goose");
+
+    expect(args).toEqual([
+      "--yes",
+      "skills@1.5.16",
+      "add",
+      "example-org/agent-skills",
+      "--skill",
+      "skill-a",
+      "-a",
+      "goose",
       "--copy",
       "-y",
     ]);
@@ -65,6 +80,7 @@ describe("agent-worker remote skills", () => {
   it("maps provider IDs to npx skills agent IDs", () => {
     expect(skillsAgentId("copilot")).toBe("github-copilot");
     expect(skillsAgentId("claude")).toBe("claude-code");
+    expect(skillsAgentId("goose")).toBe("goose");
   });
 
   it("allows overriding the pinned skills CLI package", () => {

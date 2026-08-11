@@ -47,15 +47,15 @@ Tool calls and permission decisions are recorded into `agent_cycles.agent_events
 - Review runs upload the repository but never download it back, so review-side edits are discarded.
 - Review runs receive `REVIEW_STRATEGY=ve_direct|copilot_native|goose_native`. In `copilot_native` mode the Copilot adapter omits `COPILOT_MODEL` and `COPILOT_REASONING_EFFORT`; the parent uses `auto` and the CLI owns the sub-agent model, displayed as CLI-managed. In `goose_native` mode the Goose adapter omits `GOOSE_MODEL`; the Goose CLI manages model selection, displayed as CLI-managed.
 - Repository skill discovery belongs to each provider. There is no project/session path or enable field and no `LOCAL_SKILLS_PATH` or `SKILL_DISCOVERY` environment variable.
-- Project remote skill source configuration is not passed into the sandbox. `SKILL_SOURCES_JSON`, `SSH_AUTH_SOCK`, `GIT_SSH_COMMAND`, and private-key paths must stay outside the agent runtime.
+- Project remote skill source configuration (`SKILL_SOURCES_JSON`, `SSH_AUTH_SOCK`, `GIT_SSH_COMMAND`, private-key paths) is not passed into the sandbox — fetched skill sources are staged host-side before upload instead (see **External Skills** below), so only the resulting files, never the fetch credentials, reach the sandbox.
 - Copilot sets `workingDirectory` and Claude sets `cwd` to the sandbox repository directory (`process.cwd()` in the worker). Copilot keeps `enableConfigDiscovery=true`, so the CLI discovers repository skills and repository MCP configuration natively; Claude loads user/project settings and all native skills and keeps `strictMcpConfig=true`, so only VE-provided MCP servers are accepted.
 
-## External Skills (known regression)
+## External Skills
 
-- `projects.skill_sources_json` is still persisted, still editable in the admin UI, and still forwarded onto `AgentSession.skillSourcesJson` by `src/orchestrator/agentContextBuilder.ts` and `src/review/reviewOrchestrator.ts`.
-- **Nothing installs those skills any more.** The `npx skills` install step ran in the deleted Docker runner (`src/workspace/workspaceRunner.ts` + `execInVolume()`), and no OpenShell replacement exists. `agent-worker/` contains no skill-install code path.
-- `src/workspace/skillSources.ts` still exports `parseRemoteSkillSources()`, `buildSkillsCliArgs()`, `skillsAgentId()`, and the SSH URL helpers, but only `src/admin/skillSourceDiscovery.ts` (admin-side *listing* for the project form) still calls into that surface at runtime.
-- Treat configured skill sources as inert until an OpenShell-side install path is added. Do not document them as reaching the agent — tracked as a follow-up.
+- `projects.skill_sources_json` is persisted, editable in the admin UI, and forwarded onto `AgentSession.skillSourcesJson` / `ReviewWorkspaceInput.skillSourcesJson` by `src/orchestrator/agentContextBuilder.ts` and `src/review/reviewOrchestrator.ts`.
+- `src/workspace/openShellWorkspaceRunner.ts` calls `src/workspace/skillSourceInstaller.ts`'s `installSkillSources()` **on the host**, after checkout is finalized and before the workspace is uploaded to the sandbox. Each source is fetched via `npx skills add` (project scope) using the same host-local SSH key/known-hosts path convention as `HostGitExecutor` and `src/admin/skillSourceDiscovery.ts`.
+- Supported providers: Copilot (`.agents/skills/`), Claude (`.claude/skills/`), Goose (`.goose/skills/`) — the same project-relative directories their native repository skill discovery already scans. Aider and Mock have no such convention and are skipped.
+- `agent-worker/` still contains no skill-install code path — installation is entirely host-side, before the sandbox even exists for that cycle.
 
 ## Provider-Native Skill Loading
 
@@ -64,7 +64,7 @@ Tool calls and permission decisions are recorded into `agent_cycles.agent_events
 - Claude uses its repository `cwd`, `settingSources: ['user', 'project']`, and `skills: 'all'`. Review mode permits the native `Skill` tool. `strictMcpConfig=true` remains enabled and is independent of native skill loading.
 - Aider receives the selected Agent Instructions through `--read` but no VE-discovered repository skill manifests. Its normal CLI repository behavior is unchanged.
 - Goose receives the selected Agent Instructions appended to the workflow prompt and loads the VE MCP submission server as a stdio extension via its `config.yaml`. Goose's native repository behavior (built-in Developer extension, `.goosehints` convention) is unchanged; VE does not inject repository skill manifests.
-- Remote skill fetching has no host-side or worker-side implementation at HEAD (see **External Skills (known regression)**). Configured sources reach `AgentSession` and stop there.
+- Remote skill fetching runs entirely host-side, before upload (see **External Skills** above); the files it stages feed directly into each provider's native repository skill discovery below — the worker itself performs no fetch or scan.
 
 ## Copilot native review compatibility
 

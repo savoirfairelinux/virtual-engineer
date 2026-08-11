@@ -63,7 +63,7 @@ These are read directly from `process.env` and are **not** part of `AppConfig`:
 
 | Var | Default | Read by | Notes |
 |---|---|---|---|
-| `SKILLS_CLI_PACKAGE` | `skills@1.5.16` | `src/admin/skillSourceDiscovery.ts`, `src/workspace/skillSources.ts` | `npx` package used to **list** installable skills for the project form. Installation into the agent runtime no longer happens — see the regression note in [architecture.md](architecture.md#external-skill-sources-known-regression). |
+| `SKILLS_CLI_PACKAGE` | `skills@1.5.16` | `src/admin/skillSourceDiscovery.ts`, `src/workspace/skillSources.ts`, `src/workspace/skillSourceInstaller.ts` | `npx` package used both to **list** installable skills for the project form and to **install** them host-side before workspace upload — see [modules/workspace.md](modules/workspace.md#external-skill-sources). |
 | `OPENSHELL_GATEWAY` / `OPENSHELL_GATEWAY_ENDPOINT` | — | `src/runtime/runtimeStartup.ts` (`resolveOpenShellGateway`) | Gateway endpoint used for the startup health probe; `OPENSHELL_GATEWAY` wins. |
 | `OPENSHELL_OIDC_CLIENT_SECRET` | — | `src/index.ts` | Presence enables the OpenShell client-credentials re-login path. |
 | `SSH_AUTH_SOCK` | — | `src/admin/adminIntegrationRoutes.ts`, `src/admin/skillSourceDiscovery.ts` | Host-side SSH agent for admin-side discovery/validation only; never forwarded into a sandbox. |

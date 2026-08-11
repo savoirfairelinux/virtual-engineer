@@ -140,12 +140,12 @@ See [modules/admin.md](modules/admin.md).
 - `openShellWorkspaceRunner.ts` is the **sole** `WorkspaceRunner`. Per cycle it creates a uniquely named sandbox (`ve-<taskId>-<rand>`), applies the resolved runtime policy, opens the adapter's declared egress, uploads the host workspace (including `.git`, `noGitIgnore: true`) to `/sandbox`, runs the optional post-clone script **inside** the sandbox, execs the agent, downloads the repo back for the coding flow, then destroys sandbox, temporary credential provider, and host directory. Review runs upload only — nothing is downloaded back.
 - `hostGitExecutor.ts` owns all host-side git plumbing (create workspace, clone, fetch/checkout, cherry-pick, `execGit`, trusted-metadata rebuild, destroy). Every invocation goes through `trustedGitArgs` / `trustedGitEnv`.
 - After download, `restoreTrustedRemotes()` rebuilds `.git` metadata from host-recorded, credential-free remotes; `listTrustedRepoPaths()` reports the sub-paths VE itself cloned, and `Orchestrator.pushProjectChanges()` refuses to run git in any other directory.
-- `skillSources.ts` parses `projects.skill_sources_json` and can build `npx skills` arguments. <!-- Known regression: nothing in `agent-worker/` installs remote skills any more — see "External skill sources" below. -->
+- `skillSources.ts` parses `projects.skill_sources_json`, builds `npx skills` arguments, and exports the shared SSH/env-building helpers used by both admin-side discovery and the host-side installer (`skillSourceInstaller.ts`) — see "External skill sources" below.
 - Remaining files are discovery-side and unrelated to agent execution: `workspaceScanService.ts`, `workspaceManifestScanner.ts`, `repositoryManifestAccess.ts`, `integrationBindingResolver.ts`, `agentWorkerProtocol.ts`.
 
-### External skill sources (known regression)
+### External skill sources
 
-`projects.skill_sources_json` is still persisted, editable in the admin UI, and forwarded onto `AgentSession.skillSourcesJson` (`src/orchestrator/agentContextBuilder.ts`, `src/review/reviewOrchestrator.ts`). **Nothing installs it.** The `npx skills` install step lived in the deleted Docker runner and has no OpenShell replacement; `agent-worker/` contains no skill-install code. Treat configured skill sources as inert — tracked as a follow-up.
+`projects.skill_sources_json` is persisted, editable in the admin UI, and forwarded onto `AgentSession.skillSourcesJson` (`src/orchestrator/agentContextBuilder.ts`, `src/review/reviewOrchestrator.ts`). `OpenShellWorkspaceRunner` calls `skillSourceInstaller.ts`'s `installSkillSources()` on the **host**, after checkout and before upload, so the fetched skill files ride along with the ordinary workspace upload while SSH material never reaches the sandbox. Supported providers (Copilot, Claude, Goose) install into their native project-relative skill directory; Aider/Mock are skipped. See [modules/workspace.md](modules/workspace.md#external-skill-sources) for the full flow.
 
 ## Sandbox hardening
 
