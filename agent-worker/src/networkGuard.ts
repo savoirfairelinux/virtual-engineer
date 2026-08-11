@@ -186,18 +186,18 @@ export function createNativeReviewPermissionHandler(workspaceRoot: string): Perm
   };
 }
 
-export const restrictReviewPermissionHandler = createReviewPermissionHandler('/workspace');
 
 /**
- * Parse a newline-separated tool-list env var into a trimmed, de-duplicated,
+ * Parse a comma-separated tool-list env var into a trimmed, de-duplicated,
  * empty-dropped string array. Returns `[]` for undefined / blank input so
- * callers can treat "unset" and "empty" identically.
+ * callers can treat "unset" and "empty" identically. Newlines are still
+ * accepted as separators for compatibility with older hosts.
  */
 export function parseToolList(raw: string | undefined): string[] {
   if (raw === undefined) return [];
   const seen = new Set<string>();
   const out: string[] = [];
-  for (const entry of raw.split('\n')) {
+  for (const entry of raw.split(/[\r\n,]/u)) {
     const trimmed = entry.trim();
     if (trimmed === '' || seen.has(trimmed)) continue;
     seen.add(trimmed);

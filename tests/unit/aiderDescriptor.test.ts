@@ -33,7 +33,6 @@ describe("createAiderDescriptor", () => {
   it("buildAdapter returns an AiderAdapter", () => {
     const adapter = descriptor.capabilities.agent_execution!.buildAdapter!({
       maxCommitsPerCycle: 7,
-      dockerNetwork: "ve-net",
     });
     expect(adapter.name).toBe("aider");
   });

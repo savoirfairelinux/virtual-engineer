@@ -38,7 +38,6 @@ const baseConfig: AppConfig = {
   ticketCloseMaxRetries: 5,
   ticketCloseRetryMinTimeoutMs: 5_000,
   agentContainerImage: "virtual-engineer-workspace:latest",
-  agentDockerNetwork: "virtual-engineer_ve-agent-net",
   workspaceBaseDir: "/tmp/virtual-engineer/workspaces",
   maxReviewDiffChars: 60_000,
   maxReviewComments: 20,
@@ -239,7 +238,7 @@ async function importRuntime(
     reviewProviderInstances.push(instance as MockReviewProviderInstance);
     return instance;
   });
-  const DockerWorkspaceRunner = vi.fn().mockImplementation(function () {
+  const OpenShellWorkspaceRunner = vi.fn().mockImplementation(function () {
     return {
       runAgentInDocker: vi.fn(),
       destroyWorkspace: vi.fn(),
@@ -421,7 +420,7 @@ async function importRuntime(
   vi.doMock("../../src/review/reviewOrchestrator.js", () => ({ ReviewOrchestrator }));
   vi.doMock("../../src/connectors/gerritSshReviewProvider.js", () => ({ GerritSshReviewProvider }));
   vi.doMock("../../src/connectors/integrationStreamEvents.js", () => ({ PluginIntegrationStreamEventsManager }));
-  vi.doMock("../../src/workspace/workspaceRunner.js", () => ({ DockerWorkspaceRunner }));
+  vi.doMock("../../src/workspace/openShellWorkspaceRunner.js", () => ({ OpenShellWorkspaceRunner }));
   vi.doMock("../../src/vcs/vcsFactory.js", () => ({
     createVcsConnectorForIntegration,
   }));
@@ -458,7 +457,7 @@ async function importRuntime(
     GitLabMergeRequestConnector,
     MockAgentAdapter,
     CopilotAdapter,
-    DockerWorkspaceRunner,
+    OpenShellWorkspaceRunner,
     Orchestrator,
     createVcsConnectorForIntegration,
     createAdminServer,
@@ -499,15 +498,15 @@ describe("runtime bootstrap provider selection", () => {
     expect(runtime.HttpRedmineConnector).not.toHaveBeenCalled();
     expect(runtime.GerritSshConnector).not.toHaveBeenCalled();
     expect(runtime.MockAgentAdapter).not.toHaveBeenCalled();
-    expect(runtime.DockerWorkspaceRunner).toHaveBeenCalledWith(
-      expect.any(Object),
-      dbAgent
+    expect(runtime.OpenShellWorkspaceRunner).toHaveBeenCalledWith(
+      expect.objectContaining({ agentAdapter: dbAgent })
     );
     expect(runtime.Orchestrator).toHaveBeenCalledWith(
       expect.any(Object),
       expect.anything(),
       expect.anything(),
       undefined,
+      expect.anything(),
       expect.anything(),
       expect.anything()
     );
@@ -533,9 +532,8 @@ describe("runtime bootstrap provider selection", () => {
     const runtime = await importRuntime({ copilot: dbAgent });
 
     expect(runtime.MockAgentAdapter).not.toHaveBeenCalled();
-    expect(runtime.DockerWorkspaceRunner).toHaveBeenCalledWith(
-      expect.any(Object),
-      dbAgent
+    expect(runtime.OpenShellWorkspaceRunner).toHaveBeenCalledWith(
+      expect.objectContaining({ agentAdapter: dbAgent })
     );
   });
 
@@ -682,12 +680,13 @@ describe("runtime bootstrap provider selection", () => {
       expect.anything(),
       undefined,
       expect.anything(),
+      expect.anything(),
       expect.anything()
     );
 
     expect(runtime.CopilotAdapter).not.toHaveBeenCalled();
 
-    const runnerInstance = runtime.DockerWorkspaceRunner.mock.results[0]?.value as {
+    const runnerInstance = runtime.OpenShellWorkspaceRunner.mock.results[0]?.value as {
       runAgentInDocker: ReturnType<typeof vi.fn>;
     };
     expect((dbAgent as unknown as { configure: ReturnType<typeof vi.fn> }).configure).toHaveBeenCalledTimes(1);
@@ -725,6 +724,7 @@ describe("runtime bootstrap provider selection", () => {
       expect.anything(),
       undefined,
       expect.anything(),
+      expect.anything(),
       expect.anything()
     );
   });
@@ -754,6 +754,7 @@ describe("runtime bootstrap provider selection", () => {
       expect.anything(),
       expect.anything(),
       undefined,
+      expect.anything(),
       expect.anything(),
       expect.anything()
     );
@@ -813,6 +814,7 @@ describe("runtime bootstrap provider selection", () => {
       expect.anything(),
       expect.anything(),
       undefined,
+      expect.anything(),
       expect.anything(),
       expect.anything()
     );

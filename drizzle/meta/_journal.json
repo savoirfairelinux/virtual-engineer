@@ -15,6 +15,13 @@
       "when": 1786372373133,
       "tag": "0001_lumpy_human_robot",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1786376241469,
+      "tag": "0002_openshell_runtime_policies",
+      "breakpoints": true
     }
   ]
 }

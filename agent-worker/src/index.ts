@@ -3,7 +3,7 @@
  * Virtual Engineer — Agent Worker (TypeScript)
  *
  * Runs INSIDE the Docker container for each task cycle.
- * The repository is pre-cloned by the host orchestrator and mounted at /workspace.
+ * The repository is pre-cloned by the host orchestrator and mounted at /sandbox.
  * This worker is responsible ONLY for code generation.
  * It has no VCS credentials, does not clone, and never pushes.
  *
@@ -19,7 +19,6 @@
  */
 
 import { execFileSync } from 'child_process';
-import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 
 import type { AgentLogEvent, AgentResult, CommitDescriptor, RepositoryMap } from '../../src/interfaces.js';
@@ -32,6 +31,8 @@ import {
   groupFilesByRepo,
 } from './commitUtils.js';
 import { emitEvent } from './providers/events.js';
+import { loadWorkerPrompts } from './promptLoader.js';
+import type { WorkerPrompts } from './promptLoader.js';
 import { parseToolList } from './networkGuard.js';
 import { resolveProvider, isAgentProvider, AGENT_PROVIDER_IDS } from './providers/registry.js';
 import type { AgentRun } from './providers/types.js';
@@ -74,6 +75,16 @@ try {
   process.stderr.write('Warning: failed to parse PER_REPO_CHANGE_IDS_JSON\n');
 }
 const REVIEW_MODE = process.env['REVIEW_MODE'] === '1';
+function loadPromptsOrExit(): WorkerPrompts {
+  try {
+    return loadWorkerPrompts();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`FATAL: ${message}. Ensure the orchestrator injects both prompts before launching this container.\n`);
+    process.exit(1);
+  }
+}
+
 const REVIEW_STRATEGY_RAW = process.env['REVIEW_STRATEGY'] ?? 've_direct';
 if (REVIEW_STRATEGY_RAW !== 've_direct' && REVIEW_STRATEGY_RAW !== 'copilot_native' && REVIEW_STRATEGY_RAW !== 'goose_native') {
   process.stderr.write(`FATAL: unknown REVIEW_STRATEGY "${REVIEW_STRATEGY_RAW}".\n`);
@@ -93,11 +104,9 @@ if (REVIEW_STRATEGY === 'goose_native' && (!REVIEW_MODE || AGENT_PROVIDER !== 'g
   process.stderr.write('FATAL: goose_native review strategy requires Goose review mode.\n');
   process.exit(1);
 }
-const USER_PROMPT_FILE = process.env['USER_PROMPT_FILE'] ?? '';
-const SYSTEM_PROMPT = process.env['SYSTEM_PROMPT'] ?? '';
 
 // ── Per-agent tool authorization (Claude/Copilot) ────────────────────────────
-// Newline-separated blocked-tool list injected by the host adapter from
+// Comma-separated blocked-tool list injected by the host adapter from
 // `modelConfig.providerOptions.toolAuthorization`. Empty/unset = everything
 // allowed (modulo VE's network floor). Only read for providers that support
 // per-tool blocklists (claude/copilot); aider/goose use TOOL_AUTHORIZATION_JSON.
@@ -135,20 +144,7 @@ try {
   process.exit(1);
 }
 
-if (!process.env['SYSTEM_PROMPT']) {
-  process.stderr.write(
-    'FATAL: SYSTEM_PROMPT env var is required but was not set. ' +
-    'Ensure the orchestrator injects a prompt before launching this container.\n',
-  );
-  process.exit(1);
-}
-if (!USER_PROMPT_FILE) {
-  process.stderr.write(
-    'FATAL: USER_PROMPT_FILE env var is required but was not set. ' +
-    'Ensure the orchestrator writes the prompt file before launching this container.\n',
-  );
-  process.exit(1);
-}
+const PROMPTS = loadPromptsOrExit();
 
 // ── Structured event emitter is imported from ./providers/events.js ──────────
 
@@ -164,7 +160,10 @@ try {
   process.stderr.write(`Warning: Failed to parse REPOSITORY_MAP_JSON: ${msg}\n`);
 }
 
-const WORKSPACE = '/workspace';
+// The host runs this worker with its working directory set to the uploaded repo
+// (OpenShell nests the upload under /sandbox/<name>, so the runner points
+// --workdir there). Derive the repo path from cwd rather than hardcoding it.
+const WORKSPACE = process.cwd();
 const REPO_PATH = WORKSPACE;
 // ── Internal git helper ────────────────────────────────────────────────────────
 function git(args: string[], cwd: string = REPO_PATH): string {
@@ -197,7 +196,7 @@ async function runAgent(
 ): Promise<AgentRun> {
   return ACTIVE_PROVIDER.runner(prompt, {
     model: ACTIVE_MODEL,
-    agentInstructions: SYSTEM_PROMPT,
+    agentInstructions: PROMPTS.systemPrompt,
     cwd: REPO_PATH,
     timeoutMs,
     mode,
@@ -218,21 +217,19 @@ interface ReviewWorkerResult extends AgentResult {
 }
 
 async function runReviewMode(): Promise<ReviewWorkerResult> {
-  if (!existsSync(USER_PROMPT_FILE)) {
-    throw new Error(`User prompt file not found: ${USER_PROMPT_FILE}`);
-  }
-  const reviewPrompt = readFileSync(USER_PROMPT_FILE, 'utf8').trim();
-  if (!reviewPrompt) {
-    throw new Error(`User prompt file is empty: ${USER_PROMPT_FILE}`);
-  }
-
   process.stderr.write(
     `review mode: provider=${AGENT_PROVIDER} strategy=${REVIEW_STRATEGY} ` +
     `model=${REVIEW_STRATEGY === 'copilot_native' || REVIEW_STRATEGY === 'goose_native' ? 'CLI-managed' : ACTIVE_MODEL_LABEL}\n`,
   );
   emitEvent('review.strategy_selected', { reviewStrategy: REVIEW_STRATEGY });
+  emitEvent('review.prompt_received', {
+    userPromptLength: PROMPTS.userPrompt.length,
+    systemPromptLength: PROMPTS.systemPrompt.length,
+    userPromptSource: PROMPTS.userPromptSource,
+    systemPromptSource: PROMPTS.systemPromptSource,
+  });
 
-  const agent = await runAgent(reviewPrompt, 9 * 60 * 1000, 'review');
+  const agent = await runAgent(PROMPTS.userPrompt, 9 * 60 * 1000, 'review');
   try {
     let rawOutput = agent.content ?? '';
     if (ACTIVE_PROVIDER.submissionTransport === 'mcp') {
@@ -271,14 +268,6 @@ async function runReviewMode(): Promise<ReviewWorkerResult> {
 // ── Main (code-generation mode) ───────────────────────────────────────────────
 async function main(): Promise<AgentResult> {
   ACTIVE_PROVIDER.validateEnvironment?.();
-
-  if (!existsSync(USER_PROMPT_FILE)) {
-    throw new Error(`User prompt file not found: ${USER_PROMPT_FILE}`);
-  }
-  const userPrompt = readFileSync(USER_PROMPT_FILE, 'utf8').trim();
-  if (!userPrompt) {
-    throw new Error(`User prompt file is empty: ${USER_PROMPT_FILE}`);
-  }
 
   if (REVIEW_MODE) {
     return runReviewMode();
@@ -328,7 +317,7 @@ async function main(): Promise<AgentResult> {
 
   process.stderr.write(`starting agent (provider=${AGENT_PROVIDER}, model=${ACTIVE_MODEL_LABEL})\n`);
 
-  const agent = await runAgent(userPrompt, 3_540_000, 'codegen');
+  const agent = await runAgent(PROMPTS.userPrompt, 3_540_000, 'codegen');
   const handlerState = { toolCallCount: agent.toolCallCount, toolsByKind: agent.toolsByKind };
   const rawContent = agent.content ?? 'Task completed';
   let summary = rawContent.trim().slice(0, 1000);

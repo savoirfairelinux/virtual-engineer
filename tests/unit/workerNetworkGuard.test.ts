@@ -16,7 +16,6 @@ import {
   createNativeReviewPermissionHandler,
   createReviewPermissionHandler,
   isBlockedNetworkCommand,
-  restrictReviewPermissionHandler,
   restrictNetworkPermissionHandler,
 } from "../../agent-worker/src/networkGuard.js";
 
@@ -142,7 +141,8 @@ describe("networkGuard.restrictNetworkPermissionHandler", () => {
   });
 });
 
-describe("networkGuard.restrictReviewPermissionHandler", () => {
+describe("networkGuard.createReviewPermissionHandler", () => {
+  const restrictReviewPermissionHandler = createReviewPermissionHandler("/workspace");
   const tempDirectories: string[] = [];
 
   afterEach(() => {

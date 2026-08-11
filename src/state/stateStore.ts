@@ -26,6 +26,12 @@ import type { IntegrationStoreApi } from "./stores/integrationStore.js";
 import { createIntegrationStore } from "./stores/integrationStore.js";
 import type { PolicyStoreApi } from "./stores/policyStore.js";
 import { createPolicyStore } from "./stores/policyStore.js";
+import type { RuntimePolicyStoreApi } from "./stores/runtimePolicyStore.js";
+import { createRuntimePolicyStore } from "./stores/runtimePolicyStore.js";
+import type { DenialStoreApi } from "./stores/denialStore.js";
+import { createDenialStore } from "./stores/denialStore.js";
+import type { OpenShellProviderStoreApi } from "./stores/openShellProviderStore.js";
+import { createOpenShellProviderStore } from "./stores/openShellProviderStore.js";
 import type { ProjectStoreApi } from "./stores/projectStore.js";
 import { createProjectStore } from "./stores/projectStore.js";
 import type { PromptStoreApi } from "./stores/promptStore.js";
@@ -53,7 +59,10 @@ type ComposedStoreApi =
   & UserStoreApi
   & AuditStoreApi
   & GroupStoreApi
-  & PolicyStoreApi;
+  & PolicyStoreApi
+  & RuntimePolicyStoreApi
+  & DenialStoreApi
+  & OpenShellProviderStoreApi;
 
 /** Facade class that composes domain-scoped store modules over one shared SQLite connection. */
 // eslint-disable-next-line @typescript-eslint/no-unsafe-declaration-merging
@@ -72,6 +81,9 @@ export class SqliteStateStore {
   private readonly auditStore: AuditStoreApi;
   private readonly groupStore: GroupStoreApi;
   private readonly policyStore: PolicyStoreApi;
+  private readonly runtimePolicyStore: RuntimePolicyStoreApi;
+  private readonly denialStore: DenialStoreApi;
+  private readonly openShellProviderStore: OpenShellProviderStoreApi;
   private readonly taskTransitionListeners: Array<(task: Task) => void> = [];
 
   constructor(private readonly raw: Database.Database) {
@@ -100,6 +112,9 @@ export class SqliteStateStore {
     this.auditStore = createAuditStore({ db: this.db });
     this.groupStore = createGroupStore({ db: this.db });
     this.policyStore = createPolicyStore({ db: this.db });
+    this.runtimePolicyStore = createRuntimePolicyStore({ db: this.db });
+    this.denialStore = createDenialStore({ db: this.db });
+    this.openShellProviderStore = createOpenShellProviderStore({ db: this.db });
 
     Object.assign(
       this,
@@ -114,7 +129,10 @@ export class SqliteStateStore {
       this.userStore,
       this.auditStore,
       this.groupStore,
-      this.policyStore
+      this.policyStore,
+      this.runtimePolicyStore,
+      this.denialStore,
+      this.openShellProviderStore
     );
   }
 

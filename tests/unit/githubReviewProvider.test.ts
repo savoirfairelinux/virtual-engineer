@@ -114,16 +114,21 @@ describe("GitHubReviewProvider", () => {
       { filename: "src/a.ts", status: "modified", patch: "@@ -8,5 +8,5 @@\n line8\n line9\n line10\n line11\n line12" },
     ]));
     fetchMock.mockResolvedValueOnce(jsonResponse({ id: 1 }));
+    const controller = new AbortController();
     await new GitHubReviewProvider(config).postReviewWithComments!(
       cid, 1,
       [{ file: "src/a.ts", line: 10, message: "nit", severity: "suggestion" }],
       "LGTM",
       1,
+      undefined,
+      controller.signal,
     );
     // First call is the files fetch, second is the review POST
     const reviewCall = fetchMock.mock.calls[1];
     expect(reviewCall?.[0]).toBe("https://api.github.com/repos/octocat/hello-world/pulls/42/reviews");
     const init = reviewCall?.[1] as RequestInit;
+    expect((fetchMock.mock.calls[0]?.[1] as RequestInit).signal).toBe(controller.signal);
+    expect(init.signal).toBe(controller.signal);
     expect(init.method).toBe("POST");
     const body = JSON.parse(init.body as string);
     expect(body.event).toBe("APPROVE");

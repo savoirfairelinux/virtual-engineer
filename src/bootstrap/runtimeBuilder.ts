@@ -6,11 +6,11 @@
  * helpers used by the review and admin bootstrap modules.
  */
 import { MockAgentAdapter } from "../agents/mockAgentAdapter.js";
-import { DockerWorkspaceRunner } from "../workspace/workspaceRunner.js";
 import { PluginManager } from "../plugins/pluginManager.js";
 import { getProviderDescriptor } from "../plugins/registry.js";
 import { createVcsConnectorForIntegration } from "../vcs/vcsFactory.js";
-import type { AgentAdapter, ConfigurableAdapter, Integration, ProviderId } from "../interfaces.js";
+import type {
+  WorkspaceRunner, AgentAdapter, ConfigurableAdapter, Integration, ProviderId } from "../interfaces.js";
 import type { SqliteStateStore } from "../state/stateStore.js";
 import type { AppConfig } from "../config.js";
 
@@ -155,7 +155,7 @@ export async function buildOrchestratorConfig(
 export function configureAgentAdapter(
   agentAdapter: AgentAdapter,
   stateStore: SqliteStateStore,
-  workspaceRunner: DockerWorkspaceRunner
+  workspaceRunner: WorkspaceRunner
 ): void {
   if ("configure" in agentAdapter && typeof (agentAdapter as ConfigurableAdapter).configure === "function") {
     (agentAdapter as ConfigurableAdapter).configure({ store: stateStore, runner: workspaceRunner });

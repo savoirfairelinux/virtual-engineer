@@ -433,16 +433,14 @@ export interface AgentSession {
 
 export interface TaskContext {
   taskId: TaskId;
+  /** Owning VE project, used to attribute runtime audit events. */
+  projectId?: ProjectId | undefined;
   ticketTitle: string;
   ticketDescription: string;
   acceptanceCriteria: string[];
   baseBranch: string;
   /** Absolute path to the ephemeral workspace directory */
   workspacePath: string;
-  /** Named volume for the workspace (repo files) */
-  volumeName: string;
-  /** Named volume for the agent HOME directory */
-  homeVolumeName: string;
   /** Constraints e.g. "do not add new dependencies" */
   constraints: string[];
   priorFeedback: FeedbackItem[];
@@ -462,6 +460,10 @@ export interface TaskContext {
   instructionsPromptId?: string | null | undefined;
   /** Connection/session material the agent uses directly */
   agentSession: AgentSession;
+  /** Cancels the in-flight sandbox lifecycle when the orchestrator deadline expires. */
+  abortSignal?: AbortSignal | undefined;
+  /** Immutable workspace-attempt identity used to route sandbox operations. */
+  runtimeHandleId?: string | undefined;
 }
 
 export interface AgentLogEvent {
@@ -509,6 +511,10 @@ export interface AgentResult {
   metadata: Record<string, unknown>;
 }
 
+export interface AgentCycleResult extends Omit<AgentResult, "status"> {
+  status: AgentResultStatus | "running";
+}
+
 export interface AdapterContainerSpec {
   /** Container image used to run the adapter workload */
   image: string;
@@ -516,12 +522,23 @@ export interface AdapterContainerSpec {
   env: Record<string, string>;
   /** Command executed in the container */
   command: string[];
-  /** Optional network override for the container */
-  networkMode?: string | undefined;
-  /** Optional extra docker args such as mounts or security options */
-  additionalDockerArgs?: string[] | undefined;
   /** Written to home volume as `user-prompt.txt`; sets `USER_PROMPT_FILE` in container env. */
   userPromptContent?: string | undefined;
+  /**
+   * Network egress the agent requires (inference / auth). The OpenShell runtime
+   * is deny-by-default; the runner opens these hosts (port 443) scoped to the
+   * listed binaries after the sandbox starts, so the agent's CLI can reach the
+   * model API. Omitted for runtimes that do not enforce egress policy.
+   */
+  egress?: AgentEgressSpec | undefined;
+}
+
+/** Network egress an agent needs: allowed hosts + the executables permitted to use them. */
+export interface AgentEgressSpec {
+  /** Hostnames the agent must reach on port 443 (e.g. `api.githubcopilot.com`). */
+  hosts: string[];
+  /** Absolute paths of the executables permitted to use the egress. */
+  binaries: string[];
 }
 
 /** AI engine adapter interface. Host owns clone, commit, and push. */
@@ -545,14 +562,8 @@ export interface ConfigurableAdapter extends AgentAdapter {
 export interface WorkspaceHandle {
   taskId: TaskId;
   containerId: string;
-  /** Named volume for the workspace (repo files) */
-  volumeName: string;
-  /** Named volume for the agent HOME directory (Copilot CLI native modules) */
-  homeVolumeName: string;
-  /** In-container path (always /workspace for named-volume mode) */
+  /** In-container path (always /sandbox for the OpenShell sandbox) */
   hostWorkspacePath: string;
-  /** Docker image used for helper containers (clone, push, scripts) */
-  containerImage: string;
 }
 
 export type ValidationStatus = "passed" | "failed" | "skipped";
@@ -572,6 +583,8 @@ export interface CloneResult {
 
 /** Input for running the review agent container. Workspace must be pre-cloned and patched. */
 export interface ReviewWorkspaceInput {
+  /** Owning VE project, used to attribute runtime audit events. */
+  projectId?: ProjectId | undefined;
   /** Agent-owned review execution strategy. */
   reviewStrategy: ReviewStrategy;
   /** Change-Id (opaque string, e.g. "Iabc123..." for Gerrit, PR node id for GitHub) */
@@ -598,6 +611,8 @@ export interface ReviewWorkspaceInput {
   containerImage?: string | undefined;
   /** Remote skills fetched by the worker before opening the agent session. */
   skillSourcesJson?: string | undefined;
+  /** Cancels the in-flight sandbox lifecycle when the review deadline expires. */
+  abortSignal?: AbortSignal | undefined;
 
   // ── Aider (agent_execution) ────────────────────────────────────────────────
   /** Aider LLM backend selector (openai | anthropic | ollama | openrouter | deepseek | openai_compat). */
@@ -634,11 +649,12 @@ export interface PatchsetCheckoutOptions {
   sshPort?: number | undefined;
   /** Gerrit SSH user */
   sshUser?: string | undefined;
+  signal?: AbortSignal | undefined;
 }
 
 export interface WorkspaceRunner {
   /** Create a fresh ephemeral workspace directory/container for the agent */
-  createWorkspace(taskId: TaskId): Promise<WorkspaceHandle>;
+  createWorkspace(taskId: TaskId, signal?: AbortSignal): Promise<WorkspaceHandle>;
   /** Clone repository into the workspace — runs inside a helper container */
   cloneRepo(
     handle: WorkspaceHandle,
@@ -655,7 +671,8 @@ export interface WorkspaceRunner {
     handle: WorkspaceHandle,
     pushTargets: ProjectPushTargetRecord[],
     postCloneScript?: string,
-    sshKnownHostsPath?: string
+    sshKnownHostsPath?: string,
+    signal?: AbortSignal,
   ): Promise<CloneResult>;
   /** Fetch and checkout a prior patchset ref as detached HEAD. */
   applyPriorPatchset?(
@@ -671,7 +688,7 @@ export interface WorkspaceRunner {
   runReviewInDocker?(
     handle: WorkspaceHandle,
     input: ReviewWorkspaceInput & { agentAdapter: AgentAdapter },
-    callbacks?: { onStderrChunk?: ((chunk: string) => void) | undefined }
+    callbacks?: { onStderrChunk?: ((chunk: string) => void) | undefined },
   ): Promise<{ rawOutput: string }>;
   /** Spawn the adapter container and return raw stdout/stderr. Used by ConfigurableAdapter.configure. */
   runAgentInDocker?(
@@ -682,11 +699,18 @@ export interface WorkspaceRunner {
   ): Promise<{ stdout: string; stderr: string }>;
   /** Run agent adapter inside the ephemeral execution context. */
   runAgent(handle: WorkspaceHandle, context: TaskContext, adapter?: AgentAdapter): Promise<AgentResult>;
+  /**
+   * Repository sub-paths the runner cloned itself and whose Git metadata it
+   * rebuilt from host-trusted data. Callers that run host-side Git with push
+   * credentials must restrict themselves to these paths.
+   */
+  listTrustedRepoPaths?(handle: WorkspaceHandle): string[];
   /** Run a git command in the workspace volume; returns stdout or throws. */
   execGitInVolume?(
     handle: WorkspaceHandle,
     args: string[],
-    subPath?: string
+    subPath?: string,
+    signal?: AbortSignal,
   ): Promise<string>;
   /** Destroy workspace/container — always call in finally block */
   destroyWorkspace(handle: WorkspaceHandle): Promise<void>;
@@ -886,10 +910,10 @@ export interface ReviewProvider {
   readonly kind: string;
 
   /** Fetch full details for one change (current patchset, owner, status). */
-  getChangeDetails(changeId: ExternalChangeId): Promise<ReviewChangeDetails>;
+  getChangeDetails(changeId: ExternalChangeId, signal?: AbortSignal): Promise<ReviewChangeDetails>;
 
   /** Fetch the diff for a specific patchset (defaults to current). */
-  getChangeDiff(changeId: ExternalChangeId, patchset?: number): Promise<ReviewChangeDiff>;
+  getChangeDiff(changeId: ExternalChangeId, patchset?: number, signal?: AbortSignal): Promise<ReviewChangeDiff>;
 
   /**
    * Fetch the diff between two patchsets of the same change (`fromPatchset` →
@@ -916,7 +940,8 @@ export interface ReviewProvider {
     revision: number,
     comments: InlineReviewComment[],
     summary: string,
-    allowedFiles?: ReadonlySet<string>
+    allowedFiles?: ReadonlySet<string>,
+    signal?: AbortSignal,
   ): Promise<void>;
 
   /**
@@ -932,7 +957,8 @@ export interface ReviewProvider {
     comments: InlineReviewComment[],
     summary: string,
     score: -1 | 0 | 1,
-    allowedFiles?: ReadonlySet<string>
+    allowedFiles?: ReadonlySet<string>,
+    signal?: AbortSignal,
   ): Promise<void>;
 
   /** Apply a normalized review decision (-1, 0, or +1). */
@@ -940,7 +966,8 @@ export interface ReviewProvider {
     changeId: ExternalChangeId,
     revision: number,
     score: number,
-    message?: string
+    message?: string,
+    signal?: AbortSignal,
   ): Promise<void>;
 
   /**
@@ -972,7 +999,7 @@ export interface ReviewProvider {
    * Optional — providers that do not support thread fetching omit it, and the
    * orchestrator simply skips the reply flow.
    */
-  getDiscussionThreads?(changeId: ExternalChangeId): Promise<ReviewDiscussionThread[]>;
+  getDiscussionThreads?(changeId: ExternalChangeId, signal?: AbortSignal): Promise<ReviewDiscussionThread[]>;
 
   /**
    * Post a reply to an existing discussion thread identified by `threadId`.
@@ -982,7 +1009,8 @@ export interface ReviewProvider {
     changeId: ExternalChangeId,
     revision: number,
     threadId: string,
-    message: string
+    message: string,
+    signal?: AbortSignal,
   ): Promise<void>;
 }
 
@@ -1086,10 +1114,10 @@ export interface AgentCycle {
   id: number;
   taskId: TaskId;
   cycleNumber: number;
-  result: AgentResult;
+  result: AgentCycleResult;
   validationResult: ValidationResult | null;
   createdAt: Date;
-  /** GitHub-computed cost of this cycle, derived from Copilot `assistant.usage` events. */
+  /** Provider token usage and, when available, GitHub-computed execution cost. */
   cost?: CycleCost;
 }
 
@@ -1102,11 +1130,10 @@ export interface CycleCostTokens {
 }
 
 /**
- * Per-cycle execution cost derived from the Copilot SDK `assistant.usage`
- * events. The SDK reports cost per LLM request via `copilotUsage.totalNanoAiu`
- * (nano-AI-Units) and the `cost` model multiplier; `computeCycleCost`
- * deduplicates repeated emissions of a request and sums distinct requests.
- * 1 AI Unit = 1 AI credit = $0.01.
+ * Per-cycle provider usage derived from normalized `assistant.usage` events.
+ * Copilot additionally reports cost per LLM request via
+ * `copilotUsage.totalNanoAiu`; `computeCycleCost` deduplicates repeated
+ * emissions of a request and sums distinct requests.
  */
 export interface CycleCost {
   /** True when GitHub-computed cost (nano-AIU) was present in the usage events. */
@@ -1275,7 +1302,8 @@ export interface StateStore {
   transition(
     taskId: TaskId,
     toState: TaskState,
-    metadata?: Record<string, unknown>
+    metadata?: Record<string, unknown>,
+    expectedFromState?: TaskState,
   ): Promise<Task>;
 
   updateExternalChangeId(
@@ -1286,6 +1314,9 @@ export interface StateStore {
   ): Promise<void>;
 
   incrementCycle(taskId: TaskId): Promise<number>;
+
+  /** Atomically allocate a cycle number and persist its initial result. */
+  startAgentCycle(taskId: TaskId, result: AgentCycleResult): Promise<number>;
 
   setFailureReason(taskId: TaskId, reason: string): Promise<void>;
 
@@ -1314,7 +1345,7 @@ export interface StateStore {
   saveAgentCycle(
     taskId: TaskId,
     cycleNumber: number,
-    result: AgentResult,
+    result: AgentCycleResult,
     validationResult?: ValidationResult
   ): Promise<void>;
 

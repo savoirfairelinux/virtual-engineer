@@ -2,37 +2,43 @@ import { homedir } from "os";
 import { join, resolve } from "path";
 import type {
   AdapterContainerSpec,
+  AgentEgressSpec,
   ReviewWorkspaceInput,
   TaskContext,
 } from "../interfaces.js";
 
 const DEFAULT_AGENT_IMAGE = "virtual-engineer-workspace:latest";
-const DEFAULT_AGENT_NETWORK = "virtual-engineer_ve-agent-net";
-const AGENT_COMMAND = ["node", "/agent-worker/dist/index.js"];
-
-export const SECURITY_DOCKER_ARGS = [
-  "--read-only",
-  "--cap-drop",
-  "ALL",
-  "--security-opt",
-  "no-new-privileges:true",
-  "--security-opt",
-  "label=disable",
-  "--tmpfs",
-  "/tmp:rw,nosuid,size=256m",
-];
+// The worker lives under /app because OpenShell's default filesystem policy
+// only permits read-only executable content there.
+const AGENT_COMMAND = ["node", "/app/agent-worker/dist/index.js"];
 
 interface CodegenContainerSpecOptions {
   providerEnv: Record<string, string>;
   maxRepositoryContextBytes: number;
   maxCommitsPerCycle: number | undefined;
   promptsDir?: string | undefined;
-  dockerNetwork?: string | undefined;
+  egress?: AgentEgressSpec | undefined;
 }
 
 interface ReviewContainerSpecOptions {
   providerEnv: Record<string, string>;
-  dockerNetwork?: string | undefined;
+  egress?: AgentEgressSpec | undefined;
+}
+
+/**
+ * OpenShell rejects literal CR/LF in `sandbox exec --env` values, so a
+ * multiline system prompt is transported base64-encoded and decoded by the
+ * worker before provider dispatch.
+ */
+/** Spread helper that omits `egress` entirely when the provider declares none. */
+export function egressOption(spec: AgentEgressSpec | undefined): { egress?: AgentEgressSpec } {
+  return spec !== undefined ? { egress: spec } : {};
+}
+
+export function systemPromptEnv(systemPrompt: string): Record<string, string> {
+  return /[\r\n]/u.test(systemPrompt)
+    ? { SYSTEM_PROMPT_BASE64: Buffer.from(systemPrompt, "utf8").toString("base64") }
+    : { SYSTEM_PROMPT: systemPrompt };
 }
 
 export function buildCodegenContainerSpec(
@@ -60,20 +66,11 @@ export function buildCodegenContainerSpec(
       : {}),
     ...(session.ticketFooterLine ? { TICKET_FOOTER_LINE: session.ticketFooterLine } : {}),
   };
-  const additionalDockerArgs = [...SECURITY_DOCKER_ARGS];
-
   if (options.promptsDir) {
-    const promptsDir = resolvePath(options.promptsDir);
-    additionalDockerArgs.push("-v", `${promptsDir}:/ve-prompts:ro,Z`);
-    env["PROMPTS_DIR"] = "/ve-prompts";
+    env["PROMPTS_DIR"] = resolvePath(options.promptsDir);
   }
 
-  return buildBaseContainerSpec(
-    session.agentContainerImage,
-    env,
-    options.dockerNetwork,
-    additionalDockerArgs
-  );
+  return buildBaseContainerSpec(session.agentContainerImage, env, options.egress);
 }
 
 export function buildReviewContainerSpec(
@@ -84,30 +81,22 @@ export function buildReviewContainerSpec(
     ...options.providerEnv,
     REVIEW_MODE: "1",
     REVIEW_STRATEGY: input.reviewStrategy,
-    USER_PROMPT_FILE: "/ve-home/user-prompt.txt",
-    SYSTEM_PROMPT: input.systemPrompt,
+    ...systemPromptEnv(input.systemPrompt),
   };
 
-  return buildBaseContainerSpec(
-    input.containerImage ?? DEFAULT_AGENT_IMAGE,
-    env,
-    options.dockerNetwork,
-    [...SECURITY_DOCKER_ARGS]
-  );
+  return buildBaseContainerSpec(input.containerImage ?? DEFAULT_AGENT_IMAGE, env, options.egress);
 }
 
 function buildBaseContainerSpec(
   image: string,
   env: Record<string, string>,
-  dockerNetwork: string | undefined,
-  additionalDockerArgs: string[]
+  egress: AgentEgressSpec | undefined
 ): AdapterContainerSpec {
   return {
     image,
     env,
     command: [...AGENT_COMMAND],
-    networkMode: dockerNetwork ?? DEFAULT_AGENT_NETWORK,
-    additionalDockerArgs,
+    ...(egress !== undefined ? { egress } : {}),
   };
 }
 

@@ -1,0 +1,14 @@
+# Persistent volume for the SQLite state store (WAL mode). ReadWriteOnce is
+# sufficient because the orchestrator runs as a single replica (business
+# admission/scheduling is owned by VE, not Kubernetes).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: virtual-engineer-data
+  namespace: virtual-engineer
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi

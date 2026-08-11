@@ -2,10 +2,10 @@
 
 Virtual Engineer is a host-side Node.js orchestrator with two runtime flows:
 
-- **Ticket-driven code generation**: poll enabled coding projects for assigned work, run an agent cycle in a hardened, ephemeral Docker container, then push the resulting review objects through the host VCS layer.
-- **VE-as-reviewer**: accept review events (webhook, Gerrit stream-event, or review-assignment poll), create `code-review` tasks, and run the agent in the same hardened Docker container with `REVIEW_MODE=1` against the patchset diff.
+- **Ticket-driven code generation**: poll enabled coding projects for assigned work, run an agent cycle in an ephemeral **OpenShell sandbox**, then push the resulting review objects through the host VCS layer.
+- **VE-as-reviewer**: accept review events (webhook, Gerrit stream-event, or review-assignment poll), create `code-review` tasks, and run the agent in the same sandbox with `REVIEW_MODE=1` against the patchset diff.
 
-The orchestrator always runs **on the host**. Agent containers are **ephemeral** and are destroyed after each cycle. The pluggable agent engine is **Copilot**, **Claude**, **Aider**, **Goose**, or **Mock**.
+The orchestrator always runs **on the host**. Sandboxes are **ephemeral** and are destroyed after each cycle, together with the host scratch workspace. The pluggable agent engine is **Copilot**, **Claude**, **Aider**, **Goose**, or **Mock**.
 
 ## High-level flows
 
@@ -15,9 +15,10 @@ The orchestrator always runs **on the host**. Agent containers are **ephemeral**
 ticket source integration
    → PollingLoop.pollProjectTickets()
    → Orchestrator.startTaskForProject()
-   → WorkspaceRunner.clone + post-clone hook
+   → OpenShellWorkspaceRunner: host clone (HostGitExecutor) → sandbox create
+     → upload → post-clone hook (in sandbox) → exec → download
    → CopilotAdapter / ClaudeAdapter / AiderAdapter / GooseAdapter / MockAgentAdapter
-   → agent-worker (node /agent-worker/dist/index.js) in Docker
+   → agent-worker (node /app/agent-worker/dist/index.js) in the sandbox
    → AgentResult (+ optional commit chain)
    → host-side VCS push
    → Gerrit / GitLab / GitHub review
@@ -31,7 +32,7 @@ review-system webhook / Gerrit stream-event / review-assignment poll
    → /webhooks/:integrationId/:event (or stream listener / PollingLoop.pollReviewProjects())
    → buildReviewTrigger()
    → ReviewOrchestrator.startReviewTask()
-   → workspaceRunner.runReviewInDocker() (agent container, REVIEW_MODE=1)
+   → workspaceRunner.runReviewInDocker() (OpenShell sandbox, REVIEW_MODE=1)
    → Review provider posts comments / vote
    → REVIEW_WATCHING / REVIEW_DONE / REVIEW_FAILED
 ```
@@ -64,11 +65,11 @@ It builds `TaskContext`, launches agent cycles, persists agent output, manages r
 
 ### Review runtime — `src/review/`
 
-- `reviewOrchestrator.ts` drives `REVIEW_PENDING → ... → REVIEW_DONE/REVIEW_FAILED`; the agent runs in the workspace container via `workspaceRunner.runReviewInDocker()` (`REVIEW_MODE=1`, prompt read from `USER_PROMPT_FILE`)
+- `reviewOrchestrator.ts` drives `REVIEW_PENDING → ... → REVIEW_DONE/REVIEW_FAILED`; the agent runs in the OpenShell sandbox via `workspaceRunner.runReviewInDocker()` (name retained for compatibility; `REVIEW_MODE=1`, prompt read from `USER_PROMPT_FILE`). The repository is uploaded but never downloaded back, so review edits are discarded.
 - `reviewPromptBuilder.ts` assembles task context and editable instructions; `reviewOutputContract.ts` owns the immutable Gerrit/GitHub/GitLab JSON contracts; `reviewResultParser.ts` parses and normalizes them
 - Review system/instructions prompts are resolved per task from the project override or its assigned agent. Both references are mandatory and must resolve; review integrations provide no prompt fallback.
 
-`src/index.ts` wires the Docker review path through `buildReviewBundle()` / `buildReviewTrigger()`, resolving the active review integration's `createReviewer()` descriptor hook.
+`src/index.ts` wires the sandbox review path through `buildReviewBundle()` / `buildReviewTrigger()`, resolving the active review integration's `createReviewer()` descriptor hook.
 
 ### State — `src/state/`
 
@@ -88,7 +89,8 @@ See [state-machine.md](state-machine.md) and [database.md](database.md).
 
 ### Agents — `src/agents/`
 
-- `copilotAdapter.ts` builds the hardened container spec (Copilot engine)
+- `containerSpecBuilders.ts` owns the shared sandbox spec (`buildCodegenContainerSpec` / `buildReviewContainerSpec`); adapters supply only provider-specific env deltas and their egress spec
+- `copilotAdapter.ts` builds the sandbox spec for the Copilot engine
 - `claudeAdapter.ts` builds the container spec for the Claude Code engine (`AGENT_PROVIDER=claude`)
 - `aiderAdapter.ts` builds the container spec for the Aider engine (`AGENT_PROVIDER=aider`, wraps any litellm backend)
 - `gooseAdapter.ts` builds the container spec for the Goose engine (`AGENT_PROVIDER=goose`, MCP submission transport like Copilot/Claude)
@@ -116,9 +118,10 @@ Host-side push layer.
 
 - `gerritVcsConnector.ts` pushes to Gerrit
 - `gitlabVcsConnector.ts` pushes branches / MRs to GitLab
+- `nodeGitRunner.ts` executes every connector git command via `execFile` (no shell), hardened with `trustedGitArgs` / `trustedGitEnv` from `src/utils/gitExec.ts`
 - `vcsFactory.ts` resolves the connector from the active integration/runtime selection
 
-The agent may create local commits, but the host still owns the final push orchestration and review-system credentials.
+The agent may create local commits, but the host still owns the final push orchestration and review-system credentials. Push runs directly on the host workspace directory — there is no credential-bearing helper container.
 
 ### Plugin system — `src/plugins/`
 
@@ -134,20 +137,32 @@ See [modules/admin.md](modules/admin.md).
 
 ### Workspace — `src/workspace/`
 
-- `dockerVolume.ts` manages the Docker **named-volume** lifecycle (`/workspace` repo volume + `/ve-home` agent-HOME volume) and `execInVolume()` for helper-container operations. On startup, the orchestrator best-effort prunes orphaned `ve-ws-*` / `ve-home-*` volumes left by an earlier process; attached volumes are skipped via non-forced removal.
-- `workspaceRunner.ts` clones each project push target into the `/workspace` volume via a helper container, using the SSH key, agent identity, and `known_hosts` file resolved for that target's integration. It installs any project remote skill sources into `/ve-home`, then spawns the ephemeral agent container and, on exit, destroys the container and volumes. Push operations run in helper containers against the volume; the host retains review-system credentials and push orchestration.
-- `skillSources.ts` parses external skill sources and builds the `npx skills` install arguments.
-- `dockerVolume.ts` opens SSH key, public-key, and known-hosts files with no-follow semantics, checks the opened regular-file descriptor and approved-root containment, then reads from that same descriptor. Configured paths are confined to orchestrator secret directories. Runtime-generated key material lives in one process-private `0700` temporary directory and is accepted only when its exact path was registered by `sshKeyResolver`; filename patterns do not grant trust.
+- `openShellWorkspaceRunner.ts` is the **sole** `WorkspaceRunner`. Per cycle it creates a uniquely named sandbox (`ve-<taskId>-<rand>`), applies the resolved runtime policy, opens the adapter's declared egress, uploads the host workspace (including `.git`, `noGitIgnore: true`) to `/sandbox`, runs the optional post-clone script **inside** the sandbox, execs the agent, downloads the repo back for the coding flow, then destroys sandbox, temporary credential provider, and host directory. Review runs upload only — nothing is downloaded back.
+- `hostGitExecutor.ts` owns all host-side git plumbing (create workspace, clone, fetch/checkout, cherry-pick, `execGit`, trusted-metadata rebuild, destroy). Every invocation goes through `trustedGitArgs` / `trustedGitEnv`.
+- After download, `restoreTrustedRemotes()` rebuilds `.git` metadata from host-recorded, credential-free remotes; `listTrustedRepoPaths()` reports the sub-paths VE itself cloned, and `Orchestrator.pushProjectChanges()` refuses to run git in any other directory.
+- `skillSources.ts` parses `projects.skill_sources_json` and can build `npx skills` arguments. <!-- Known regression: nothing in `agent-worker/` installs remote skills any more — see "External skill sources" below. -->
+- Remaining files are discovery-side and unrelated to agent execution: `workspaceScanService.ts`, `workspaceManifestScanner.ts`, `repositoryManifestAccess.ts`, `integrationBindingResolver.ts`, `agentWorkerProtocol.ts`.
 
-## Container hardening
+### External skill sources (known regression)
 
-`buildContainerSpec()` / `buildReviewContainerSpec()` in [src/agents/copilotAdapter.ts](../../src/agents/copilotAdapter.ts)
-set: `--read-only` rootfs, `--cap-drop ALL`, `--security-opt no-new-privileges:true`,
-`--tmpfs /tmp:rw,nosuid,size=256m`, a `/workspace` named-volume mount, a `/ve-home`
-named-volume mount for the agent HOME, an optional `/ve-prompts` mount, and
-`networkMode=virtual-engineer_ve-agent-net`. Push credentials, database
-credentials, and admin secrets never reach the container; SSH sockets and
-private-key paths stay in short-lived helper containers only.
+`projects.skill_sources_json` is still persisted, editable in the admin UI, and forwarded onto `AgentSession.skillSourcesJson` (`src/orchestrator/agentContextBuilder.ts`, `src/review/reviewOrchestrator.ts`). **Nothing installs it.** The `npx skills` install step lived in the deleted Docker runner and has no OpenShell replacement; `agent-worker/` contains no skill-install code. Treat configured skill sources as inert — tracked as a follow-up.
+
+## Sandbox hardening
+
+Isolation comes from **OpenShell runtime policies**, not from Docker flags. `buildCodegenContainerSpec()` / `buildReviewContainerSpec()` in [src/agents/containerSpecBuilders.ts](../../src/agents/containerSpecBuilders.ts) return only:
+
+```ts
+{ image, env, command, userPromptContent?, egress? }
+```
+
+There is no `networkMode`, no `additionalDockerArgs`, and no `--read-only` / `--cap-drop` / `--security-opt` / `--tmpfs`. `command` is always `["node", "/app/agent-worker/dist/index.js"]`.
+
+- Base policy: `buildDefaultPolicyYaml()` ([src/openshell/openShellPolicyBuilder.ts](../../src/openshell/openShellPolicyBuilder.ts)) — `version: 1`, `filesystem_policy.read_only = [/usr, /lib, /proc, /dev/urandom, /app, /etc, /var/log]`, `filesystem_policy.read_write = [/sandbox, /tmp, /dev/null]`, `landlock.compatibility: best_effort`, `process.run_as_user/run_as_group = sandbox`. Network is deny-by-default (no `network_policies` section = no egress).
+- Per-project / per-agent overrides compose through [src/openshell/runtimePolicyResolver.ts](../../src/openshell/runtimePolicyResolver.ts); after composition `enforceSandboxFloor()` re-asserts `process.run_as_user/group = sandbox` and rejects a `read_write` entry naming `/`, `/usr`, `/lib`, `/etc`, `/app`, `/bin`, `/sbin`, `/boot`, or `/var`.
+- Egress is opened explicitly per run via `OpenShellClient.allowEgress({ hosts, binaries })` from the adapter's `AgentEgressSpec` (`COPILOT_EGRESS` / `CLAUDE_EGRESS` / `src/agents/backendEgress.ts`).
+- Sandbox paths: repository at `/sandbox/<basename(workspaceDir)>` (the exec `workdir`), prompt at `/tmp/user-prompt.txt`, worker runtime at `/app/agent-worker/`, MCP submission artifact at `/tmp/ve-agent-submission.json`. `/workspace` and `/ve-home` no longer exist.
+- Agent credentials never reach argv: `splitManagedProviderEnv()` moves each known credential env var into a short-lived attached OpenShell provider and fails closed on an unmapped `TOKEN|SECRET|API_KEY|APIKEY|PASSWORD|CREDENTIAL` name. Push credentials, database credentials, and admin secrets never enter the sandbox.
+- Policy denials are harvested best-effort after every attempt by `collectPolicyDenials()` — `OpenShellClient.getSandboxLogs()` parsed through [src/openshell/denialEvents.ts](../../src/openshell/denialEvents.ts) (`parseDenialEvent`, `scrubSecrets`), deduplicated per sandbox by line fingerprint.
 
 ## Provider selection rules
 
@@ -165,8 +180,8 @@ Pino, module-scoped via `getLogger(...)`. Pretty in development, JSON in product
 ## Deployment
 
 - Orchestrator: long-running host Node process (`npm run dev`, systemd, PM2, or containerized orchestrator image)
-- Agent runtime: per-cycle Docker container from [Dockerfile.agent](../../Dockerfile.agent)
-- Optional [scripts/start.sh](../../scripts/start.sh) containerises the orchestrator (host networking); it also creates the `virtual-engineer_ve-agent-net` bridge network used by agent containers
+- Agent runtime: per-cycle OpenShell sandbox from the image built by [Dockerfile.agent](../../Dockerfile.agent) (`AGENT_CONTAINER_IMAGE`, default `virtual-engineer-workspace:latest`); the image must contain a `sandbox` user/group whose home is `/sandbox`
+- Optional [scripts/start.sh](../../scripts/start.sh) containerises the orchestrator and brings up the OpenShell gateway. `OPENSHELL_COMPUTE_DRIVER` defaults to `docker` (gateway-owned `openshell-docker` bridge); `kubernetes` (k3s/Helm) is experimental. Docker appears only as the gateway's compute driver — VE never runs `docker run` for an agent.
 
 ## Related docs
 

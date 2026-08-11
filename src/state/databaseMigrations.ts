@@ -9,6 +9,8 @@ import { computeCycleCost, hasCostData } from "../agents/cycleCost.js";
 import { getLogger } from "../logger.js";
 import type { AgentLogEvent, AgentResult } from "../interfaces.js";
 
+const log = getLogger("db-migrations");
+
 interface SqliteNameRow {
   name: string;
 }
@@ -140,10 +142,25 @@ const LEGACY_TABLES = new Set([
   "projects",
   "prompts",
   "review_thread_replies",
+  "runtime_policies",
+  "runtime_policy_bindings",
   "state_transitions",
   "tasks",
   "user_sessions",
   "users",
+]);
+
+/**
+ * Tables a pre-ledger database may already carry but whose canonical form is
+ * owned by a migration applied after the frozen bridge prefix. They are dropped
+ * during adoption so the tracked migration creates them; they only exist in
+ * unreleased development databases.
+ */
+const POST_BRIDGE_LEGACY_TABLES: ReadonlySet<string> = new Set([
+  "managed_openshell_providers",
+  "policy_denial_events",
+  "runtime_policies",
+  "runtime_policy_bindings",
 ]);
 
 const LEGACY_SIGNATURES: ReadonlyArray<readonly [string, readonly string[]]> = [
@@ -179,6 +196,14 @@ const PREDECESSOR_TABLE_COLUMNS = new Map<string, ReadonlyArray<Pick<TableInfoRo
   ]],
 ]);
 
+/**
+ * Number of tracked migrations the frozen pre-ledger compatibility bridge knows
+ * about. An adopted legacy database is brought up to exactly this prefix and
+ * stamped for it; every later migration is applied by the normal runner. New
+ * schema changes therefore add a migration and never extend the bridge.
+ */
+const LEGACY_BRIDGE_MIGRATION_COUNT = 2;
+
 export function runDatabaseMigrations(raw: Database.Database): void {
   const migrationsFolder = resolveMigrationsFolder();
   const migrations = readMigrationFiles({ migrationsFolder });
@@ -191,7 +216,13 @@ export function runDatabaseMigrations(raw: Database.Database): void {
       validateLedger(raw, migrations);
     } else if (userTables.size > 0) {
       assertRecognizedLegacyDatabase(raw, userTables);
-      adoptLegacyDatabase(raw, canonical, migrations, userTables);
+      const bridgeMigrations = migrations.slice(0, LEGACY_BRIDGE_MIGRATION_COUNT);
+      const bridgeCanonical = createCanonicalDatabase(migrationsFolder, bridgeMigrations);
+      try {
+        adoptLegacyDatabase(raw, bridgeCanonical, bridgeMigrations, userTables);
+      } finally {
+        bridgeCanonical.close();
+      }
     }
 
     migrate(drizzle(raw), { migrationsFolder });
@@ -215,11 +246,20 @@ function resolveMigrationsFolder(): string {
   throw new Error(`Unable to locate tracked Drizzle migrations; checked: ${candidates.join(", ")}`);
 }
 
-function createCanonicalDatabase(migrationsFolder: string): Database.Database {
+function createCanonicalDatabase(
+  migrationsFolder: string,
+  only?: ReadonlyArray<MigrationMeta>
+): Database.Database {
   const canonical = new Database(":memory:");
   canonical.pragma("foreign_keys = ON");
   try {
-    migrate(drizzle(canonical), { migrationsFolder });
+    if (only === undefined) {
+      migrate(drizzle(canonical), { migrationsFolder });
+    } else {
+      for (const migration of only) {
+        for (const statement of migration.sql) canonical.exec(statement);
+      }
+    }
     return canonical;
   } catch (error) {
     canonical.close();
@@ -279,6 +319,7 @@ function adoptLegacyDatabase(
   if (foreignKeysEnabled) raw.pragma("foreign_keys = OFF");
   try {
     raw.transaction(() => {
+      dropPostBridgeTables(raw, canonical, originalTables);
       validateLegacySemantics(raw, canonical, originalTables);
       applyLegacyCompatibilityMigration(raw);
       canonicalizeLegacyTables(raw, canonical);
@@ -308,6 +349,24 @@ export function adoptLegacyDatabaseForTest(
   migrations: ReadonlyArray<Pick<MigrationMeta, "hash" | "folderMillis">>
 ): void {
   adoptLegacyDatabase(raw, canonical, migrations, listUserTables(raw));
+}
+
+function dropPostBridgeTables(
+  raw: Database.Database,
+  canonical: Database.Database,
+  originalTables: ReadonlySet<string>
+): void {
+  const canonicalTables = new Set(readCanonicalTables(canonical).map((table) => table.name));
+  for (const table of originalTables) {
+    if (!POST_BRIDGE_LEGACY_TABLES.has(table) || canonicalTables.has(table)) continue;
+    const quoted = `"${table.replaceAll('"', '""')}"`;
+    const rows = (raw.prepare(`SELECT COUNT(*) AS count FROM ${quoted}`).get() as { count: number }).count;
+    log.warn(
+      { table, rows },
+      "dropping pre-ledger table so the tracked migration recreates it; its rows are discarded"
+    );
+    raw.exec(`DROP TABLE IF EXISTS ${quoted}`);
+  }
 }
 
 function validateCanonicalSchema(raw: Database.Database, canonical: Database.Database): void {
@@ -1014,8 +1073,6 @@ function applyLegacyCompatibilityMigration(raw: Database.Database): void {
     DROP TABLE IF EXISTS project_review_repos;
     DROP TABLE IF EXISTS project_review_integration;
     DROP TABLE IF EXISTS project_ticket_source;
-    DROP TABLE IF EXISTS policy_denial_events;
-    DROP TABLE IF EXISTS managed_openshell_providers;
   `);
 }
 

@@ -15,7 +15,7 @@ describe("createClaudeDescriptor", () => {
     const d = createClaudeDescriptor();
     const buildAdapter = d.capabilities.agent_execution?.buildAdapter;
     expect(buildAdapter).toBeDefined();
-    const adapter = buildAdapter!({ maxCommitsPerCycle: 5, dockerNetwork: "ve-net" });
+    const adapter = buildAdapter!({ maxCommitsPerCycle: 5 });
     expect(adapter.name).toBe("claude");
   });
 

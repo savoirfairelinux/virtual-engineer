@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { getLogger } from "../logger.js";
+import { toRejectionError } from "../utils/rejection.js";
 import {
   type AgentAdapter,
   type AgentLogEvent,
@@ -31,13 +32,23 @@ import {
 import { filterCommentsByAllowedFiles } from "./commentFilter.js";
 import { computeCommentHash, computeThreadReplyHash } from "./commentHash.js";
 import { applyVolumeAndSeverityGate, buildFoldedSummary } from "./commentSeverity.js";
-import { clearTaskEventBuffer, agentLogBus, pushToTaskBuffer } from "../agents/agentEventBus.js";
+import { agentLogBus, pushToTaskBuffer, clearTaskEventBuffer } from "../agents/agentEventBus.js";
 import { evaluateExistingReviewTask } from "./reviewRetriggerGuard.js";
 import { processReviewStderrLine } from "./reviewStderrEvents.js";
 import { shouldSkipReviewPosting, selectRepliesToPost } from "./reviewPostingGate.js";
+import type { ConcurrencyLease, ConcurrencyTracker } from "../orchestrator/concurrencyTracker.js";
+import type { TaskLifecycleCoordinator } from "../orchestrator/taskLifecycleCoordinator.js";
 
 const log = getLogger("review-orchestrator");
-const MAX_SUPERSESSION_RETRIES = 3;
+const MAX_SUPERSEDED_REVIEW_RETRIES = 3;
+
+class ReviewCancelledError extends Error {}
+
+class ReviewSupersededError extends Error {
+  constructor(readonly latestDetails: ReviewChangeDetails) {
+    super(`Review superseded by patchset ${latestDetails.currentPatchset}`);
+  }
+}
 
 export function buildReviewSystemPrompt(
   systemPrompt: string,
@@ -58,7 +69,7 @@ export interface ReviewOrchestratorDeps {
     | "transition"
     | "setReviewedPatchset"
     | "setFailureReason"
-    | "incrementCycle"
+    | "startAgentCycle"
     | "saveAgentCycle"
     | "getAgentCycles"
     | "findProjectsByReviewTarget"
@@ -79,7 +90,7 @@ export interface ReviewOrchestratorDeps {
   /** Build the git clone URL and optional SSH key paths for the change's repository. */
   buildCloneTarget: (details: ReviewChangeDetails) => { cloneUrl: string; sshKeyPath: string | null; sshAgentPubKeyPath?: string | null; sshKnownHostsPath: string | null };
   /** Apply a provider-specific patchset onto the cloned workspace (e.g. Gerrit `refs/changes/…`). Omit for GitLab MR branches. */
-  applyPatchset?: (handle: WorkspaceHandle, details: ReviewChangeDetails) => Promise<void>;
+  applyPatchset?: (handle: WorkspaceHandle, details: ReviewChangeDetails, signal?: AbortSignal) => Promise<void>;
   /** Source label persisted on review tasks, typically `<provider>:<integrationId>`. */
   sourceLabel?: string | undefined;
   /**
@@ -109,6 +120,13 @@ export interface ReviewOrchestratorDeps {
   maxReviewReplies?: number | undefined;
   /** Minimum severity for a comment to be posted inline. Defaults to "info". */
   reviewMinSeverity?: string | undefined;
+  /** Host-side deadline for one review-agent execution. */
+  agentTimeoutMs?: number | undefined;
+  /** Sandbox image for review runs. Defaults to the agent image built into the runner. */
+  agentContainerImage?: string | undefined;
+  concurrencyTracker?: Pick<ConcurrencyTracker, "acquireWhenAvailable" | "release"> | undefined;
+  lifecycleCoordinator?: TaskLifecycleCoordinator | undefined;
+  agentAdapter?: AgentAdapter | undefined;
 }
 
 export interface StartReviewInput {
@@ -199,6 +217,9 @@ export class ReviewOrchestrator {
     const tasks: Task[] = [];
 
     for (const project of projects) {
+      const projectLease = await this.deps.lifecycleCoordinator?.acquireProjectStart(project.id);
+      if (projectLease === null) continue;
+      try {
       // Per-project ticketId prevents collisions when multiple projects cover the same change.
       const ticketId = makeTicketId(`${sourceLabel}:${details.changeNumber}:${project.id}`);
 
@@ -320,6 +341,9 @@ export class ReviewOrchestrator {
       });
       log.info({ taskId, changeId: input.changeId, patchset: details.currentPatchset, projectId: project.id }, "code-review task created");
       tasks.push({ ...task, projectId: project.id });
+      } finally {
+        projectLease?.release();
+      }
     }
 
     return tasks;
@@ -330,18 +354,95 @@ export class ReviewOrchestrator {
    * REVIEW_PENDING → ... → REVIEW_WATCHING / REVIEW_DONE transition.
    */
   async runReview(taskId: TaskId, options?: { force?: boolean }): Promise<void> {
-    let supersessionCount = 0;
-    while (await this.runReviewPass(taskId, options, supersessionCount)) {
-      supersessionCount += 1;
+    await this.runCoordinatedReview(taskId, options, false);
+  }
+
+  /** Recover an active code-review task after the host process restarts. */
+  async recoverReview(taskId: TaskId): Promise<void> {
+    const task = await this.deps.stateStore.getTask(taskId);
+    if (!task) throw new Error(`Review task not found: ${taskId}`);
+    if (task.taskType !== "code-review") {
+      throw new Error(`Task ${taskId} is not a code-review task`);
     }
+
+    if (task.state === "REVIEW_PENDING") {
+      await this.runReview(taskId);
+      return;
+    }
+    if (task.state === "REVIEW_RUNNING") {
+      await this.runCoordinatedReview(taskId, undefined, true);
+      return;
+    }
+    if (task.state === "REVIEW_WATCHING") {
+      return;
+    }
+    if (task.state !== "REVIEW_COMMENTING") {
+      throw new Error(
+        `recoverReview called on task in non-recoverable state: ${task.state} (taskId: ${taskId})`
+      );
+    }
+
+    const cycles = await this.deps.stateStore.getAgentCycles(taskId);
+    const currentCycle = cycles.find((cycle) => cycle.cycleNumber === task.cycleCount);
+    const metadata = currentCycle?.result.metadata;
+    const completedCurrentPatchset =
+      currentCycle?.result.status === "success" &&
+      metadata?.["reviewMode"] === true &&
+      metadata["patchset"] === task.currentPatchset &&
+      task.reviewedPatchset === task.currentPatchset;
+    const completedClosedChange =
+      currentCycle?.result.status === "success" &&
+      metadata?.["reviewMode"] === true &&
+      metadata["superseded"] === true &&
+      metadata["analyzedPatchset"] === task.currentPatchset &&
+      (metadata["changeStatus"] === "MERGED" || metadata["changeStatus"] === "ABANDONED");
+
+    if (completedClosedChange) {
+      await this.deps.stateStore.transition(taskId, "REVIEW_DONE");
+      return;
+    }
+
+    if (!completedCurrentPatchset) {
+      const reason =
+        "Review interrupted during provider posting; remote effects may be partial and require a controlled retry";
+      await this.deps.stateStore.setFailureReason(taskId, reason);
+      await this.deps.stateStore.transition(taskId, "REVIEW_FAILED");
+      return;
+    }
+
+    if (task.externalChangeId === null) {
+      throw new Error(`Review task ${taskId} has no change id`);
+    }
+    const details = await this.deps.reviewProvider.getChangeDetails(task.externalChangeId);
+    await this.deps.stateStore.transition(
+      taskId,
+      details.status === "OPEN" ? "REVIEW_WATCHING" : "REVIEW_DONE"
+    );
+  }
+
+  private async runCoordinatedReview(
+    taskId: TaskId,
+    options: { force?: boolean } | undefined,
+    resumeRunning: boolean,
+  ): Promise<void> {
+    if (this.deps.lifecycleCoordinator === undefined) {
+      await this.runReviewPass(taskId, options, 0, resumeRunning);
+      return;
+    }
+    await this.deps.lifecycleCoordinator.runTask(
+      taskId,
+      (signal) => this.runReviewPass(taskId, options, 0, resumeRunning, signal),
+    );
   }
 
   private async runReviewPass(
     taskId: TaskId,
     options: { force?: boolean } | undefined,
-    supersessionCount: number,
-  ): Promise<boolean> {
-    const task = await this.deps.stateStore.getTask(taskId);
+    supersededRetries: number,
+    resumeRunning: boolean,
+    lifecycleSignal?: AbortSignal,
+  ): Promise<void> {
+    let task = await this.deps.stateStore.getTask(taskId);
     if (!task) throw new Error(`Review task not found: ${taskId}`);
     if (task.taskType !== "code-review") {
       throw new Error(`Task ${taskId} is not a code-review task`);
@@ -349,6 +450,7 @@ export class ReviewOrchestrator {
     if (task.externalChangeId === null) {
       throw new Error(`Review task ${taskId} has no change id`);
     }
+    const changeId = task.externalChangeId;
 
     // Guard against calling runReview on terminal or otherwise non-resumable
     // states (e.g. REVIEW_DONE, REVIEW_FAILED, FAILED). Attempting transitions
@@ -361,18 +463,57 @@ export class ReviewOrchestrator {
       );
     }
 
-    if (task.state === "REVIEW_RUNNING") {
+    if (task.state === "REVIEW_RUNNING" && !resumeRunning) {
       log.warn(
         { taskId },
         "runReview: task already REVIEW_RUNNING — skipping concurrent invocation"
       );
-      return false;
+      return;
     }
 
-    const changeId = task.externalChangeId;
+    if (task.state === "REVIEW_WATCHING" || task.state === "REVIEW_PENDING") {
+      try {
+        task = await this.deps.stateStore.transition(taskId, "REVIEW_RUNNING", {}, task.state);
+      } catch (err: unknown) {
+        const current = await this.deps.stateStore.getTask(taskId);
+        if (
+          err instanceof Error &&
+          err.message.startsWith("Task state changed concurrently:") &&
+          current !== null &&
+          current.state !== task.state
+        ) {
+          log.info({ taskId, state: current.state }, "review execution already claimed by another invocation");
+          return;
+        }
+        throw err;
+      }
+    }
 
-    // Keep task.cycleCount in sync with persisted review cycles.
-    const cycleNumber = await this.deps.stateStore.incrementCycle(taskId);
+    const runningResult = {
+      status: "running" as const,
+      modifiedFiles: [],
+      summary: "",
+      agentLogs: "",
+      metadata: { reviewMode: true },
+    };
+    let cycleNumber: number;
+    try {
+      const currentCycle = resumeRunning && task.cycleCount > 0
+        ? (await this.deps.stateStore.getAgentCycles(taskId)).find(
+            (cycle) => cycle.cycleNumber === task.cycleCount && cycle.result.status === "running"
+          )
+        : undefined;
+      cycleNumber = currentCycle?.cycleNumber
+        ?? await this.deps.stateStore.startAgentCycle(taskId, runningResult);
+      if (currentCycle !== undefined) {
+        await this.deps.stateStore.saveAgentCycle(taskId, cycleNumber, runningResult);
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to allocate review cycle";
+      await this.deps.stateStore.setFailureReason(taskId, message);
+      await this.deps.stateStore.transition(taskId, "REVIEW_FAILED");
+      throw err;
+    }
 
     // Collected agent log events for persistence.
     const collectedEvents: AgentLogEvent[] = [];
@@ -390,20 +531,38 @@ export class ReviewOrchestrator {
       agentLogBus.emit("event", event);
     };
 
-    try {
-      // Allow re-runs from REVIEW_WATCHING by transitioning back to RUNNING.
-      if (task.state === "REVIEW_WATCHING" || task.state === "REVIEW_PENDING") {
-        await this.deps.stateStore.transition(taskId, "REVIEW_RUNNING");
-      }
+    const timeoutMs = this.deps.agentTimeoutMs ?? 3_600_000;
+    const timeoutError = new Error(`Review timed out after ${timeoutMs}ms`);
+    const deadlineController = new AbortController();
+    const cancelForLifecycle = (): void => {
+      deadlineController.abort(lifecycleSignal?.reason ?? new Error(`Review task ${taskId} was cancelled`));
+    };
+    lifecycleSignal?.addEventListener("abort", cancelForLifecycle, { once: true });
+    if (lifecycleSignal?.aborted === true) cancelForLifecycle();
+    const deadlineTimer = setTimeout(() => deadlineController.abort(timeoutError), timeoutMs);
+    let deadlineActive = true;
+    const clearDeadline = (): void => {
+      if (!deadlineActive) return;
+      deadlineActive = false;
+      clearTimeout(deadlineTimer);
+      lifecycleSignal?.removeEventListener("abort", cancelForLifecycle);
+    };
+    const withinDeadline = <T>(operation: Promise<T>): Promise<T> =>
+      this.withAbortSignal(operation, deadlineController.signal, timeoutError);
 
+    try {
       emitReviewEvent("review.started", { changeId, patchset: task.currentPatchset, cycleNumber });
 
-      const details = await this.deps.reviewProvider.getChangeDetails(changeId);
-      const diff = await this.deps.reviewProvider.getChangeDiff(changeId, details.currentPatchset);
+      const details = await withinDeadline(
+        this.deps.reviewProvider.getChangeDetails(changeId, deadlineController.signal)
+      );
+      const diff = await withinDeadline(
+        this.deps.reviewProvider.getChangeDiff(changeId, details.currentPatchset, deadlineController.signal)
+      );
 
       // Resolve the VE project directly from the task (set by startReviewTask).
       const project = task.projectId
-        ? await this.deps.stateStore.getProjectById(task.projectId)
+        ? await withinDeadline(this.deps.stateStore.getProjectById(task.projectId))
         : null;
       if (!project) {
         throw new Error(
@@ -447,7 +606,7 @@ export class ReviewOrchestrator {
 
       // Feed comments VE already posted on this change back into the
       // prompt so the agent does not re-raise points it has already made.
-      const priorComments = await this.deps.stateStore.getPostedReviewComments(taskId);
+      const priorComments = await withinDeadline(this.deps.stateStore.getPostedReviewComments(taskId));
 
       // Fetch open human discussion threads so the agent can reply. Guarded:
       // providers without thread support skip this entirely. A thread is
@@ -461,8 +620,10 @@ export class ReviewOrchestrator {
         typeof this.deps.reviewProvider.postThreadReply === "function";
       if (threadsSupported && this.deps.reviewProvider.getDiscussionThreads !== undefined) {
         try {
-          const handledHashes = await this.deps.stateStore.getHandledThreadReplyHashes(taskId);
-          const allThreads = await this.deps.reviewProvider.getDiscussionThreads(changeId);
+          const handledHashes = await withinDeadline(this.deps.stateStore.getHandledThreadReplyHashes(taskId));
+          const allThreads = await withinDeadline(
+            this.deps.reviewProvider.getDiscussionThreads(changeId, deadlineController.signal)
+          );
           for (const thread of allThreads) {
             if (thread.resolved) continue;
             const lastHuman = [...thread.comments].reverse().find((c) => !c.isOwn);
@@ -477,6 +638,7 @@ export class ReviewOrchestrator {
             threadById.set(thread.threadId, { thread, handledHash });
           }
         } catch (err) {
+          if (deadlineController.signal.aborted) throw timeoutError;
           log.warn({ err, taskId }, "failed to fetch discussion threads; continuing without replies");
         }
       }
@@ -542,25 +704,53 @@ export class ReviewOrchestrator {
           "workspaceRunner does not support runReviewInDocker — Docker review execution is required."
         );
       }
+      const prepareProjectWorkspace = this.deps.workspaceRunner.prepareProjectWorkspace.bind(this.deps.workspaceRunner);
+      const runReviewInDocker = this.deps.workspaceRunner.runReviewInDocker.bind(this.deps.workspaceRunner);
 
       let handle: WorkspaceHandle | undefined;
+      let cycleLease: ConcurrencyLease | undefined;
       let rawOutput: string;
 
       try {
-        handle = await this.deps.workspaceRunner.createWorkspace(taskId);
+        if (this.deps.concurrencyTracker !== undefined) {
+          cycleLease = await this.awaitSignalAware(
+            this.deps.concurrencyTracker.acquireWhenAvailable(
+              project.id,
+              project.agentId,
+              deadlineController.signal,
+            ),
+            deadlineController.signal,
+            timeoutError,
+          );
+          await withinDeadline(this.assertReviewStillActive(taskId));
+        }
+        handle = await this.awaitSignalAware(
+          this.deps.workspaceRunner.createWorkspace(taskId, deadlineController.signal),
+          deadlineController.signal,
+          timeoutError,
+        );
 
-        const cloneResult = await this.deps.workspaceRunner.prepareProjectWorkspace(
-          handle,
-          [cloneTarget],
-          project.postCloneScript || undefined,
-          sshKnownHostsPath ?? undefined
+        const cloneResult = await this.awaitSignalAware(
+          prepareProjectWorkspace(
+            handle,
+            [cloneTarget],
+            project.postCloneScript || undefined,
+            sshKnownHostsPath ?? undefined,
+            deadlineController.signal,
+          ),
+          deadlineController.signal,
+          timeoutError,
         );
         if (!cloneResult.success) {
           throw new Error(`Repository clone failed: ${cloneResult.error ?? "unknown error"}`);
         }
 
         if (this.deps.applyPatchset !== undefined) {
-          await this.deps.applyPatchset(handle, details);
+          await this.awaitSignalAware(
+            this.deps.applyPatchset(handle, details, deadlineController.signal),
+            deadlineController.signal,
+            timeoutError,
+          );
         }
 
         emitReviewEvent("review.agent_started", {
@@ -569,7 +759,9 @@ export class ReviewOrchestrator {
         });
 
         const stderrLineBuffer = { partial: "" };
-        const reviewResult = await this.deps.workspaceRunner.runReviewInDocker(handle, {
+        const reviewHandle = handle;
+        const reviewResult = await this.awaitSignalAware(runReviewInDocker(reviewHandle, {
+          projectId: project.id,
           reviewStrategy: projectAgentRuntime.reviewStrategy,
           changeId,
           revisionNumber: details.changeNumber,
@@ -580,10 +772,14 @@ export class ReviewOrchestrator {
           reviewOutputSchema: getReviewOutputJsonSchema(this.deps.reviewProvider.kind),
           agentToken: projectAgentRuntime.token,
           model: projectAgentRuntime.model,
+          abortSignal: deadlineController.signal,
           ...(projectAgentRuntime.providerOptions !== undefined && Object.keys(projectAgentRuntime.providerOptions).length > 0
             ? { providerOptions: projectAgentRuntime.providerOptions }
             : {}),
           agentAdapter: projectAgentRuntime.adapter,
+          ...(this.deps.agentContainerImage !== undefined
+            ? { containerImage: this.deps.agentContainerImage }
+            : {}),
           ...(projectAgentRuntime.aiderBackend !== undefined ? { aiderBackend: projectAgentRuntime.aiderBackend } : {}),
           ...(projectAgentRuntime.aiderApiBase !== undefined ? { aiderApiBase: projectAgentRuntime.aiderApiBase } : {}),
           ...(project.skillSourcesJson !== "[]"
@@ -600,7 +796,7 @@ export class ReviewOrchestrator {
               processReviewStderrLine(trimmed, taskId, cycleNumber, collectedEvents);
             }
           },
-        });
+        }), deadlineController.signal, timeoutError);
         if (stderrLineBuffer.partial.trim()) {
           processReviewStderrLine(stderrLineBuffer.partial.trim(), taskId, cycleNumber, collectedEvents);
         }
@@ -611,6 +807,7 @@ export class ReviewOrchestrator {
             log.warn({ err, taskId }, "failed to destroy review workspace")
           );
         }
+        if (cycleLease !== undefined) this.deps.concurrencyTracker?.release(cycleLease);
       }
 
       emitReviewEvent("review.agent_completed", { outputLength: rawOutput.length });
@@ -631,73 +828,64 @@ export class ReviewOrchestrator {
         phase: "pre-dedup",
       });
 
-      // Never apply findings to code the agent did not inspect. If a new
-      // patchset arrived during the run, preserve this cycle for auditability
-      // and immediately start a fresh pass against the new revision.
-      const latestDetails = await this.deps.reviewProvider.getChangeDetails(changeId);
+      // The result is valid only for the exact patchset used to build its diff,
+      // checkout and prompt. If a newer patchset arrived while the agent was
+      // running, archive this cycle without side effects and analyze the new
+      // revision before posting anything.
+      const latestDetails = await withinDeadline(
+        this.deps.reviewProvider.getChangeDetails(changeId, deadlineController.signal)
+      );
       if (latestDetails.status !== "OPEN") {
-        emitReviewEvent("review.closed_before_posting", {
-          patchset: details.currentPatchset,
+        await this.assertReviewStillActive(taskId);
+        emitReviewEvent("review.closed", {
+          analyzedPatchset: details.currentPatchset,
           status: latestDetails.status,
         });
-        await this.deps.stateStore.transition(taskId, "REVIEW_COMMENTING");
-
-        const closedResult: AgentResult = {
-          status: "no_change",
+        await this.deps.stateStore.saveAgentCycle(taskId, cycleNumber, {
+          status: "success",
           modifiedFiles: [],
-          summary: `Review discarded because the change is ${latestDetails.status.toLowerCase()}`,
-          agentLogs: rawOutput,
-          agentEvents: collectedEvents,
-          metadata: {
-            reviewMode: true,
-            discarded: true,
-            patchset: details.currentPatchset,
-            changeStatus: latestDetails.status,
-          },
-        };
-        await this.deps.stateStore.saveAgentCycle(taskId, cycleNumber, closedResult);
-        clearTaskEventBuffer(taskId);
-        await this.deps.stateStore.transition(taskId, "REVIEW_DONE");
-        return false;
-      }
-      if (latestDetails.currentPatchset !== details.currentPatchset) {
-        if (supersessionCount >= MAX_SUPERSESSION_RETRIES) {
-          throw new Error(
-            `Review superseded more than ${MAX_SUPERSESSION_RETRIES} times; latest patchset is ${latestDetails.currentPatchset}`,
-          );
-        }
-        emitReviewEvent("review.superseded", {
-          reviewedPatchset: details.currentPatchset,
-          currentPatchset: latestDetails.currentPatchset,
-        });
-        await this.deps.stateStore.updateExternalChangeId(
-          taskId,
-          changeId,
-          latestDetails.currentPatchset,
-          latestDetails.url,
-        );
-        await this.deps.stateStore.transition(taskId, "REVIEW_COMMENTING");
-
-        const supersededResult: AgentResult = {
-          status: "no_change",
-          modifiedFiles: [],
-          summary: `Review superseded by patchset ${latestDetails.currentPatchset}`,
+          summary: `Review result discarded because the change became ${latestDetails.status}`,
           agentLogs: rawOutput,
           agentEvents: collectedEvents,
           metadata: {
             reviewMode: true,
             superseded: true,
-            patchset: details.currentPatchset,
-            currentPatchset: latestDetails.currentPatchset,
+            analyzedPatchset: details.currentPatchset,
+            changeStatus: latestDetails.status,
           },
-        };
-        await this.deps.stateStore.saveAgentCycle(taskId, cycleNumber, supersededResult);
+        });
         clearTaskEventBuffer(taskId);
-
-        await this.deps.stateStore.transition(taskId, "REVIEW_WATCHING");
-        return true;
+        await this.deps.stateStore.transition(taskId, "REVIEW_COMMENTING");
+        await this.deps.stateStore.transition(taskId, "REVIEW_DONE");
+        return;
       }
-      const reviewPatchset = latestDetails.currentPatchset;
+      if (latestDetails.currentPatchset !== details.currentPatchset) {
+        if (supersededRetries >= MAX_SUPERSEDED_REVIEW_RETRIES) {
+          throw new Error(
+            `Review superseded more than ${MAX_SUPERSEDED_REVIEW_RETRIES} times; latest patchset is ${latestDetails.currentPatchset}`
+          );
+        }
+        emitReviewEvent("review.superseded", {
+          analyzedPatchset: details.currentPatchset,
+          latestPatchset: latestDetails.currentPatchset,
+        });
+        await this.deps.stateStore.saveAgentCycle(taskId, cycleNumber, {
+          status: "success",
+          modifiedFiles: [],
+          summary: `Review result discarded because patchset ${latestDetails.currentPatchset} replaced ${details.currentPatchset}`,
+          agentLogs: rawOutput,
+          agentEvents: collectedEvents,
+          metadata: {
+            reviewMode: true,
+            superseded: true,
+            analyzedPatchset: details.currentPatchset,
+            latestPatchset: latestDetails.currentPatchset,
+          },
+        });
+        clearTaskEventBuffer(taskId);
+        throw new ReviewSupersededError(latestDetails);
+      }
+      const reviewPatchset = details.currentPatchset;
 
       // Deduplicate inline comments against ones VE already posted on
       // this change. Only newly-found issues are published; the overall vote and
@@ -749,13 +937,26 @@ export class ReviewOrchestrator {
         summary: summary.slice(0, 200),
       });
 
+      await this.assertReviewStillActive(taskId);
+      await this.deps.stateStore.transition(taskId, "REVIEW_COMMENTING");
+
       if (!skipPosting) {
-        await this.postReview(changeId, reviewPatchset, commentsToPost, summary, decision, diff);
+        await withinDeadline(this.postReview(
+          taskId,
+          changeId,
+          reviewPatchset,
+          commentsToPost,
+          summary,
+          decision,
+          diff,
+          deadlineController.signal,
+        ));
       }
 
       // Persist all newly-handled comment hashes (posted inline AND folded) so
       // future re-reviews skip them — avoiding both inline and summary spam.
       if (newComments.length > 0) {
+        await this.assertReviewStillActive(taskId);
         await this.deps.stateStore.markReviewCommentsPosted(
           taskId,
           changeId,
@@ -776,22 +977,31 @@ export class ReviewOrchestrator {
       if (repliesToPost.length > 0 && this.deps.reviewProvider.postThreadReply !== undefined) {
         for (const r of repliesToPost) {
           try {
-            await this.deps.reviewProvider.postThreadReply(changeId, reviewPatchset, r.threadId, r.message);
+            await this.assertReviewStillActive(taskId);
+            await withinDeadline(this.deps.reviewProvider.postThreadReply(
+              changeId,
+              reviewPatchset,
+              r.threadId,
+              r.message,
+              deadlineController.signal,
+            ));
             postedReplies.push({
               threadId: r.threadId,
               handledCommentHash: r.handledHash,
               replyMessage: r.message,
             });
           } catch (err) {
+            if (deadlineController.signal.aborted) throw deadlineController.signal.reason ?? err;
             log.warn({ err, taskId, threadId: r.threadId }, "failed to post discussion reply");
           }
         }
         if (postedReplies.length > 0) {
+          await this.assertReviewStillActive(taskId);
           await this.deps.stateStore.markThreadReplyPosted(taskId, changeId, postedReplies);
         }
       }
 
-      await this.deps.stateStore.transition(taskId, "REVIEW_COMMENTING");
+      await this.assertReviewStillActive(taskId);
       await this.deps.stateStore.setReviewedPatchset(taskId, reviewPatchset);
 
       emitReviewEvent("review.completed", {
@@ -825,14 +1035,57 @@ export class ReviewOrchestrator {
       clearTaskEventBuffer(taskId);
 
       // After commenting we either keep watching (open) or finish.
-      const refreshed = await this.deps.reviewProvider.getChangeDetails(changeId);
+      const refreshed = await withinDeadline(
+        this.deps.reviewProvider.getChangeDetails(changeId, deadlineController.signal)
+      );
       if (refreshed.status === "OPEN") {
         await this.deps.stateStore.transition(taskId, "REVIEW_WATCHING");
       } else {
         await this.deps.stateStore.transition(taskId, "REVIEW_DONE");
       }
-      return false;
+      return;
     } catch (err) {
+      if (err instanceof ReviewSupersededError) {
+        await this.deps.stateStore.updateExternalChangeId(
+          taskId,
+          changeId,
+          err.latestDetails.currentPatchset,
+          err.latestDetails.url,
+        );
+        const current = await this.deps.stateStore.getTask(taskId);
+        if (current?.state !== "REVIEW_RUNNING" && current?.state !== "REVIEW_COMMENTING") {
+          log.info(
+            { taskId, state: current?.state },
+            "review patchset changed, but the task is no longer active; skipping rerun",
+          );
+          return;
+        }
+        log.info(
+          {
+            taskId,
+            patchset: err.latestDetails.currentPatchset,
+            retry: supersededRetries + 1,
+          },
+          "review patchset changed during analysis; restarting with latest revision",
+        );
+        return this.runReviewPass(taskId, options, supersededRetries + 1, true, lifecycleSignal);
+      }
+      if (err instanceof ReviewCancelledError || lifecycleSignal?.aborted === true) {
+        const message = "Review stopped because task is no longer active";
+        await this.deps.stateStore.saveAgentCycle(taskId, cycleNumber, {
+          status: "failed",
+          modifiedFiles: [],
+          summary: message,
+          agentLogs: "",
+          agentEvents: collectedEvents,
+          metadata: { reviewMode: true, error: message, cancelled: true },
+        }).catch((saveErr: unknown) =>
+          log.warn({ err: saveErr, taskId }, "failed to save cancelled review cycle")
+        );
+        clearTaskEventBuffer(taskId);
+        log.info({ taskId }, "review stopped because task is no longer active");
+        return;
+      }
       const message = (err as Error).message ?? "review failed";
       log.error({ err, taskId }, "code review failed");
       emitReviewEvent("review.failed", { message });
@@ -853,15 +1106,45 @@ export class ReviewOrchestrator {
 
       try {
         await this.deps.stateStore.setFailureReason(taskId, message);
-        await this.deps.stateStore.transition(taskId, "REVIEW_FAILED");
+        const failedTask = await this.deps.stateStore.getTask(taskId);
+        if (failedTask?.state !== "REVIEW_COMMENTING") {
+          await this.deps.stateStore.transition(taskId, "REVIEW_FAILED");
+        }
       } catch (transitionErr) {
         log.error({ err: transitionErr, taskId }, "failed to mark review task as REVIEW_FAILED");
       }
       throw err;
+    } finally {
+      clearDeadline();
     }
   }
 
   // ─── Internals ──────────────────────────────────────────────────────────────
+
+  private withAbortSignal<T>(operation: Promise<T>, signal: AbortSignal, timeoutError: Error): Promise<T> {
+    if (signal.aborted) return Promise.reject(toRejectionError(signal.reason, timeoutError));
+    return new Promise<T>((resolve, reject) => {
+      const onAbort = (): void => reject(toRejectionError(signal.reason, timeoutError));
+      signal.addEventListener("abort", onAbort, { once: true });
+      void operation.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+    });
+  }
+
+  private async awaitSignalAware<T>(operation: Promise<T>, signal: AbortSignal, timeoutError: Error): Promise<T> {
+    try {
+      return await operation;
+    } catch (err) {
+      if (signal.aborted) throw signal.reason ?? timeoutError;
+      throw err;
+    }
+  }
+
+  private async assertReviewStillActive(taskId: TaskId): Promise<void> {
+    const current = await this.deps.stateStore.getTask(taskId);
+    if (current?.state !== "REVIEW_RUNNING" && current?.state !== "REVIEW_COMMENTING") {
+      throw new ReviewCancelledError(`Review task ${taskId} is no longer active`);
+    }
+  }
 
   /**
   * Return the normalized decision (-1/0/1) recorded on the most recent prior
@@ -880,12 +1163,14 @@ export class ReviewOrchestrator {
 
   /** Post review comments and vote on the given change revision via the review provider. */
   private async postReview(
+    taskId: TaskId,
     changeId: ExternalChangeId,
     revision: number,
     comments: InlineReviewComment[],
     summary: string,
     score: -1 | 0 | 1,
-    diff: ReviewChangeDiff
+    diff: ReviewChangeDiff,
+    signal: AbortSignal,
   ): Promise<void> {
     // An empty diff (e.g. a transient fetch failure) must not silently drop every
     // comment: fall back to no filtering rather than an all-rejecting empty set.
@@ -901,6 +1186,8 @@ export class ReviewOrchestrator {
         filteredComments,
         summary,
         score,
+        undefined,
+        signal,
       );
       return;
     }
@@ -913,9 +1200,12 @@ export class ReviewOrchestrator {
         revision,
         filteredComments,
         summary,
+        undefined,
+        signal,
       );
     }
-    await this.deps.reviewProvider.vote(changeId, revision, score, summary);
+    await this.assertReviewStillActive(taskId);
+    await this.deps.reviewProvider.vote(changeId, revision, score, summary, signal);
   }
 
 }

@@ -10,7 +10,6 @@ import { GooseAdapter } from "../../src/agents/gooseAdapter.js";
 import {
   buildCodegenContainerSpec,
   buildReviewContainerSpec,
-  SECURITY_DOCKER_ARGS,
 } from "../../src/agents/containerSpecBuilders.js";
 
 function makeContext(): TaskContext {
@@ -21,8 +20,6 @@ function makeContext(): TaskContext {
     acceptanceCriteria: [],
     baseBranch: "main",
     workspacePath: "/workspace",
-    volumeName: "ve-ws-test",
-    homeVolumeName: "ve-home-test",
     constraints: [],
     priorFeedback: [],
     cycleNumber: 2,
@@ -69,7 +66,6 @@ describe("containerSpecBuilders", () => {
       maxRepositoryContextBytes: 123_456,
       maxCommitsPerCycle: 7,
       promptsDir: "~/ve-prompts",
-      dockerNetwork: "agent-network",
     });
 
     expect(spec).toEqual({
@@ -87,15 +83,9 @@ describe("containerSpecBuilders", () => {
         ROOT_CHANGE_ID: "Iroot",
         PER_REPO_CHANGE_IDS_JSON: JSON.stringify(context.agentSession.perRepoChangeIds),
         TICKET_FOOTER_LINE: "GitLab: https://gitlab.example.test/issues/123",
-        PROMPTS_DIR: "/ve-prompts",
+        PROMPTS_DIR: `${homedir()}/ve-prompts`,
       },
-      command: ["node", "/agent-worker/dist/index.js"],
-      networkMode: "agent-network",
-      additionalDockerArgs: [
-        ...SECURITY_DOCKER_ARGS,
-        "-v",
-        `${homedir()}/ve-prompts:/ve-prompts:ro,Z`,
-      ],
+      command: ["node", "/app/agent-worker/dist/index.js"],
     });
   });
 
@@ -110,7 +100,7 @@ describe("containerSpecBuilders", () => {
       promptsDir,
     });
 
-    expect(spec.additionalDockerArgs).toContain(`${expectedPath}:/ve-prompts:ro,Z`);
+    expect(spec.env["PROMPTS_DIR"]).toBe(expectedPath);
   });
 
   it("uses the default commit limit when no override is configured", () => {
@@ -126,11 +116,9 @@ describe("containerSpecBuilders", () => {
   it("builds the common review contract with isolated security args", () => {
     const first = buildReviewContainerSpec(makeReviewInput(), {
       providerEnv: { AGENT_PROVIDER: "test" },
-      dockerNetwork: "review-network",
     });
     const second = buildReviewContainerSpec(makeReviewInput(), {
       providerEnv: { AGENT_PROVIDER: "test" },
-      dockerNetwork: "review-network",
     });
 
     expect(first).toEqual({
@@ -139,26 +127,21 @@ describe("containerSpecBuilders", () => {
         AGENT_PROVIDER: "test",
         REVIEW_MODE: "1",
         REVIEW_STRATEGY: "ve_direct",
-        USER_PROMPT_FILE: "/ve-home/user-prompt.txt",
         SYSTEM_PROMPT: "Review carefully",
       },
-      command: ["node", "/agent-worker/dist/index.js"],
-      networkMode: "review-network",
-      additionalDockerArgs: SECURITY_DOCKER_ARGS,
+      command: ["node", "/app/agent-worker/dist/index.js"],
     });
 
-    first.additionalDockerArgs?.push("unsafe-mutation");
-    expect(second.additionalDockerArgs).toEqual(SECURITY_DOCKER_ARGS);
+    expect(second.command).toEqual(first.command);
   });
 
-  it("uses the default image and network for review containers", () => {
+  it("uses the default image for review containers", () => {
     const input = makeReviewInput();
     delete input.containerImage;
 
     const spec = buildReviewContainerSpec(input, { providerEnv: {} });
 
     expect(spec.image).toBe("virtual-engineer-workspace:latest");
-    expect(spec.networkMode).toBe("virtual-engineer_ve-agent-net");
   });
 
   it("keeps common code-generation and review contracts aligned across providers", () => {
@@ -167,7 +150,6 @@ describe("containerSpecBuilders", () => {
     const config = {
       maxRepositoryContextBytes: 123_456,
       maxCommitsPerCycle: 7,
-      dockerNetwork: "agent-network",
     };
     const adapters = [
       {
@@ -207,9 +189,7 @@ describe("containerSpecBuilders", () => {
     for (const { codegen, review } of adapters) {
       expect(codegen).toMatchObject({
         image: "agent:test",
-        command: ["node", "/agent-worker/dist/index.js"],
-        networkMode: "agent-network",
-        additionalDockerArgs: SECURITY_DOCKER_ARGS,
+        command: ["node", "/app/agent-worker/dist/index.js"],
       });
       expect(codegen.env).toMatchObject({
         GIT_AUTHOR_NAME: "Virtual Engineer",
@@ -222,14 +202,11 @@ describe("containerSpecBuilders", () => {
       });
       expect(review).toMatchObject({
         image: "review:test",
-        command: ["node", "/agent-worker/dist/index.js"],
-        networkMode: "agent-network",
-        additionalDockerArgs: SECURITY_DOCKER_ARGS,
+        command: ["node", "/app/agent-worker/dist/index.js"],
       });
       expect(review.env).toMatchObject({
         REVIEW_MODE: "1",
         REVIEW_STRATEGY: "ve_direct",
-        USER_PROMPT_FILE: "/ve-home/user-prompt.txt",
         SYSTEM_PROMPT: "Review carefully",
       });
     }

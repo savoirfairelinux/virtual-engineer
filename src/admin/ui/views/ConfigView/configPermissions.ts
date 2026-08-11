@@ -10,6 +10,8 @@ export const CONFIG_SECTION_PERMISSIONS: Record<ConfigSectionId, string> = {
   agents: "agent.read",
   projects: "project.read",
   prompts: "prompt.read",
+  "runtime-policies": "policy.manage",
+  denials: "audit.read",
   users: "user.manage",
   groups: "policy.manage",
   policies: "policy.manage",
@@ -29,6 +31,7 @@ export function canAccessConfigRoute(can: Can, hasPermission: HasPermission, rou
   if (route.section === "oauth") return can("oauth.manage");
   if (route.section === "users") return can("user.manage");
   if (route.section === "groups" || route.section === "policies") return can("policy.manage");
+  if (route.section === "runtime-policies") return can("policy.manage");
 
   const permission = `${route.section.slice(0, -1)}.write`;
   return route.mode === "edit" && route.section === "projects"

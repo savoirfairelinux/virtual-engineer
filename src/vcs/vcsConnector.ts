@@ -12,19 +12,6 @@
 import type { PatchsetCheckoutOptions, ReviewComment } from "../interfaces.js";
 
 /**
- * Options for running git commands inside a Docker named volume
- * instead of directly on the host filesystem.
- */
-export interface VolumeExecOptions {
-  /** Docker named volume containing the repository at /workspace */
-  volumeName: string;
-  /** Docker image for the helper container */
-  image: string;
-  /** Subdirectory within /workspace to use as cwd (defaults to root) */
-  subPath?: string | undefined;
-}
-
-/**
  * Result of a push operation.
  * Represents the change/MR that was created or updated.
  */
@@ -52,35 +39,14 @@ export interface VcsConnector {
   clone(repoUrl: string, branch: string, targetDir: string, sshKeyPath?: string): Promise<void>;
 
   /**
-   * Push changes to the VCS and create/update a change request.
-   * Assumes the repository is already set up with git identity configured.
-   * @param repoDir Absolute path to the cloned repository (ignored when volumeOpts is set)
-   * @param ref The push reference (e.g., "refs/for/main" for Gerrit, "feature-branch" for GitLab)
-   * @param message Commit message (may include Change-Id trailer for Gerrit)
-   * @param changeId Optional existing Change-Id (Gerrit) or branch name (GitLab) to reuse
-   * @param volumeOpts When provided, run git commands inside a Docker volume container
-   * @returns Push result with changeId, URL, and status
-   * @throws {Error} If push fails
-   */
-  push(
-    repoDir: string,
-    ref: string,
-    message: string,
-    changeId?: string,
-    volumeOpts?: VolumeExecOptions,
-    reviewerEmails?: string[]
-  ): Promise<VcsPushResult>;
-
-  /**
    * Push HEAD directly to the VCS without creating a new commit on the host.
    * Used when the agent has already created commits inside the container.
    * For Gerrit: pushes N commits in the range, each becoming a separate change.
    * For GitLab: pushes the branch (force-push on retry).
    *
-   * @param repoDir Absolute path to the cloned repository (ignored when volumeOpts is set)
+   * @param repoDir Absolute path to the cloned repository
    * @param ref The push reference (e.g., "refs/for/main" for Gerrit, "feature-branch" for GitLab)
    * @param topic Optional topic to group related changes (Gerrit only)
-   * @param volumeOpts When provided, run git commands inside a Docker volume container
    * @returns Push result with changeId, URL, and status
    * @throws {Error} If push fails
    */
@@ -88,7 +54,6 @@ export interface VcsConnector {
     repoDir: string,
     ref: string,
     topic?: string,
-    volumeOpts?: VolumeExecOptions,
     reviewerEmails?: string[]
   ): Promise<VcsPushResult>;
 

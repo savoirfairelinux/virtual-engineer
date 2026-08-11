@@ -1,8 +1,47 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { GitCommandError } from "../../src/vcs/gitRunner.js";
 import { NodeGitRunner } from "../../src/vcs/nodeGitRunner.js";
 
+// `execFile` keeps its real implementation so the behavioural tests below still
+// spawn a process; the hardening tests swap in a one-shot fake to inspect argv.
+const { execFileMock } = vi.hoisted(() => ({ execFileMock: vi.fn() }));
+
+vi.mock("child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("child_process")>();
+  execFileMock.mockImplementation((...args: unknown[]) =>
+    (actual.execFile as unknown as (...a: unknown[]) => unknown)(...args)
+  );
+  return { ...actual, execFile: execFileMock };
+});
+
 const runner = new NodeGitRunner({ executable: process.execPath });
+
+interface CapturedExec {
+  file: string;
+  args: string[];
+  env: NodeJS.ProcessEnv | undefined;
+}
+
+/** Capture the next `execFile` invocation and complete it successfully. */
+function captureNextExec(): { call: () => CapturedExec } {
+  let captured: CapturedExec | undefined;
+  execFileMock.mockImplementationOnce((
+    file: string,
+    args: string[],
+    options: { env?: NodeJS.ProcessEnv | undefined },
+    callback: (err: null, stdout: string, stderr: string) => void
+  ) => {
+    captured = { file, args, env: options.env };
+    setImmediate(() => callback(null, "", ""));
+    return { kill: () => undefined };
+  });
+  return {
+    call: () => {
+      if (!captured) throw new Error("execFile was not invoked");
+      return captured;
+    },
+  };
+}
 
 describe("NodeGitRunner", () => {
   it("returns stdout and stderr without using a shell", async () => {
@@ -108,5 +147,65 @@ describe("NodeGitRunner", () => {
     ], { cwd: process.cwd() }).catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(GitCommandError);
     expect((error as Error).message).not.toContain("another-secret");
+  });
+});
+
+describe("NodeGitRunner git hardening", () => {
+  it("neutralises hooks, include.path and user/system config for the git executable", async () => {
+    const captured = captureNextExec();
+
+    await new NodeGitRunner().run(["status", "--porcelain"], { cwd: "/tmp/ws" });
+
+    const call = captured.call();
+    expect(call.file).toBe("git");
+    expect(call.args).toEqual([
+      "-c", "core.hooksPath=/dev/null",
+      "-c", "include.path=/dev/null",
+      "status", "--porcelain",
+    ]);
+    expect(call.env).toMatchObject({
+      GIT_CONFIG_GLOBAL: "/dev/null",
+      GIT_CONFIG_SYSTEM: "/dev/null",
+    });
+  });
+
+  it("merges a caller-supplied env but keeps the GIT_CONFIG pins", async () => {
+    const captured = captureNextExec();
+
+    await new NodeGitRunner().run(["push"], {
+      cwd: "/tmp/ws",
+      env: {
+        GIT_SSH_COMMAND: "ssh -i /secrets/key",
+        GIT_CONFIG_GLOBAL: "/workspace/.evil-gitconfig",
+        GIT_CONFIG_SYSTEM: "/workspace/.evil-system",
+      },
+    });
+
+    const call = captured.call();
+    expect(call.env?.["GIT_SSH_COMMAND"]).toBe("ssh -i /secrets/key");
+    expect(call.env?.["GIT_CONFIG_GLOBAL"]).toBe("/dev/null");
+    expect(call.env?.["GIT_CONFIG_SYSTEM"]).toBe("/dev/null");
+  });
+
+  it("leaves a non-git executable unhardened", async () => {
+    const captured = captureNextExec();
+
+    await new NodeGitRunner({ executable: process.execPath }).run(["-e", ""], {
+      cwd: "/tmp/ws",
+      env: { FOO: "bar" },
+    });
+
+    const call = captured.call();
+    expect(call.file).toBe(process.execPath);
+    expect(call.args).toEqual(["-e", ""]);
+    expect(call.env).toEqual({ FOO: "bar" });
+  });
+
+  it("passes no env override at all for an unhardened runner without env", async () => {
+    const captured = captureNextExec();
+
+    await new NodeGitRunner({ executable: process.execPath }).run(["-e", ""], { cwd: "/tmp/ws" });
+
+    expect(captured.call().env).toBeUndefined();
   });
 });

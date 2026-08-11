@@ -12,11 +12,16 @@
 import { getConfig } from "./config.js";
 import { getLogger } from "./logger.js";
 import { SqliteStateStore } from "./state/stateStore.js";
-import { DockerWorkspaceRunner } from "./workspace/workspaceRunner.js";
-import { pruneOrphanedWorkspaceVolumes } from "./workspace/dockerVolume.js";
+import { HostGitExecutor } from "./workspace/hostGitExecutor.js";
+import { OpenShellWorkspaceRunner, type OpenShellRunnerDeps } from "./workspace/openShellWorkspaceRunner.js";
+import { OpenShellClient } from "./openshell/openShellClient.js";
+import { createRuntimePolicyResolver } from "./openshell/runtimePolicyResolver.js";
+import { OpenShellSandboxReconciler } from "./openshell/openShellSandboxReconciler.js";
+import { resolveOpenShellGateway, startRuntimeRecovery } from "./runtime/runtimeStartup.js";
 import { Orchestrator } from "./orchestrator/orchestrator.js";
 import { PollingLoop } from "./orchestrator/pollingLoop.js";
 import { createConcurrencyTracker } from "./orchestrator/concurrencyTracker.js";
+import { TaskLifecycleCoordinator } from "./orchestrator/taskLifecycleCoordinator.js";
 import { createAdminServer } from "./admin/adminServer.js";
 import { closeAdminServer } from "./admin/closeAdminServer.js";
 import { startAdminServer } from "./admin/startAdminServer.js";
@@ -24,6 +29,7 @@ import { buildAdminProviderSummaries } from "./admin/providerSummary.js";
 import { buildRuntimeDependencies, buildOrchestratorConfig, configureAgentAdapter } from "./bootstrap/runtimeBuilder.js";
 import { buildReviewBundle, buildReviewTrigger } from "./review/reviewBootstrap.js";
 import { PluginIntegrationStreamEventsManager } from "./connectors/integrationStreamEvents.js";
+import { recoverActiveReviews } from "./review/reviewRecovery.js";
 import { mkdir } from "fs/promises";
 import type { Server } from "node:http";
 import type { Integration, ProjectId, ProjectPushTargetRecord, ProjectRecord, ProjectReviewConfig, ProjectTicketSourceRecord, Task } from "./interfaces.js";
@@ -44,6 +50,7 @@ const POLLING_RECONCILE_DEBOUNCE_MS = 1_000;
 /** Bootstrap all runtime dependencies and start the Virtual Engineer main loop. */
 async function main(): Promise<void> {
   const config = getConfig();
+  const openShellGateway = resolveOpenShellGateway(process.env);
 
   log.info({ nodeEnv: config.nodeEnv }, "Virtual Engineer starting");
 
@@ -93,7 +100,6 @@ async function main(): Promise<void> {
     ...(config.adminAuthSecret !== undefined ? { adminAuthSecret: config.adminAuthSecret } : {}),
     agentAdapterContext: {
       maxCommitsPerCycle: config.maxCommitsPerCycle,
-      dockerNetwork: config.agentDockerNetwork,
     },
   });
 
@@ -102,22 +108,31 @@ async function main(): Promise<void> {
 
   let runtimeDependencies = buildRuntimeDependencies(pluginManager);
 
-  // ─── Workspace runner ────────────────────────────────────────────────────────
-  // A previous crash or forced restart can leave `ve-ws-*`/`ve-home-*` volumes
-  // behind — VE never resumes a Docker workspace across a restart, so anything
-  // still on disk at startup is orphaned. Fire-and-forget: cleanup shouldn't
-  // delay orchestrator startup.
-  pruneOrphanedWorkspaceVolumes().catch((err: unknown) => {
-    log.warn({ err }, "startup workspace volume cleanup failed (non-fatal)");
+  // ─── Workspace runner (OpenShell — the sole agent runtime) ────────────────────
+  // Agents run in OpenShell sandboxes. Git plumbing (clone/checkout/cherry-pick/
+  // push) stays host-side via HostGitExecutor so push credentials never enter the
+  // sandbox. The runner's agent adapter is hot-swapped on integration reload by
+  // mutating `openShellRunnerDeps.agentAdapter` (see refreshRuntimeDependencies).
+  const openShellClient = new OpenShellClient({
+    // Prefer the named OPENSHELL_GATEWAY profile so the CLI can load its OIDC
+    // metadata and bearer token. OPENSHELL_GATEWAY_ENDPOINT remains a fallback
+    // for legacy direct-endpoint deployments.
+    gateway: openShellGateway,
+    oidcClientCredentials: process.env["OPENSHELL_OIDC_CLIENT_SECRET"] !== undefined,
+    commandTimeoutMs: config.agentTimeoutMs + 30_000,
   });
-
-  const workspaceRunner = new DockerWorkspaceRunner(
-    {
-      agentContainerImage: config.agentContainerImage,
-      agentTimeoutMs: config.agentTimeoutMs,
+  const openShellRunnerDeps: OpenShellRunnerDeps = {
+    git: new HostGitExecutor({ baseDir: config.workspaceBaseDir }),
+    client: openShellClient,
+    agentAdapter: runtimeDependencies.agentAdapter,
+    resolvePolicy: createRuntimePolicyResolver(stateStore),
+    recordDenial: async (denial) => {
+      await stateStore.recordPolicyDenial(denial);
     },
-    runtimeDependencies.agentAdapter
-  );
+    managedProviderStore: stateStore,
+    execTimeoutSec: Math.ceil(config.agentTimeoutMs / 1000),
+  };
+  const workspaceRunner = new OpenShellWorkspaceRunner(openShellRunnerDeps);
   configureAgentAdapter(runtimeDependencies.agentAdapter, stateStore, workspaceRunner);
 
   // ─── Orchestrator ────────────────────────────────────────────────────────────
@@ -126,6 +141,7 @@ async function main(): Promise<void> {
   const concurrencyTracker = createConcurrencyTracker({
     agentStore: { getAgentById: (id) => stateStore.getAgentById(id) },
   });
+  const taskLifecycleCoordinator = new TaskLifecycleCoordinator();
   const projectModeBase = {
     projectStore: stateStore,
     pluginManager,
@@ -140,14 +156,22 @@ async function main(): Promise<void> {
     workspaceRunner,
     undefined,
     stateStore,
-    orchestratorProjectMode
+    orchestratorProjectMode,
+    taskLifecycleCoordinator,
   );
 
   // ─── Polling loop ────────────────────────────────────────────────────────────
   // Mutable holder so the review trigger survives hot-reload of the review
   // integration without recreating the stream-events manager.
   const reviewTriggerHolder = {
-    current: buildReviewTrigger(pluginManager, config.workspaceBaseDir, workspaceRunner, stateStore),
+    current: buildReviewTrigger(
+      pluginManager,
+      config.workspaceBaseDir,
+      workspaceRunner,
+      stateStore,
+      concurrencyTracker,
+      taskLifecycleCoordinator,
+    ),
   };
 
   /** Thin wrapper that forwards to the stream-events review trigger. Used by the polling loop. */
@@ -258,15 +282,21 @@ async function main(): Promise<void> {
    */
   async function refreshRuntimeDependencies(): Promise<void> {
     runtimeDependencies = buildRuntimeDependencies(pluginManager);
-    workspaceRunner.updateRuntime({
-      agentAdapter: runtimeDependencies.agentAdapter,
-    });
+    // Hot-swap the runner's agent adapter by mutating the shared deps object.
+    openShellRunnerDeps.agentAdapter = runtimeDependencies.agentAdapter;
     configureAgentAdapter(runtimeDependencies.agentAdapter, stateStore, workspaceRunner);
     orchestrator.updateRuntime({
       config: await buildOrchestratorConfig(config, pluginManager),
     });
     pollingLoop.resetBackoff();
-    reviewTriggerHolder.current = buildReviewTrigger(pluginManager, config.workspaceBaseDir, workspaceRunner, stateStore);
+    reviewTriggerHolder.current = buildReviewTrigger(
+      pluginManager,
+      config.workspaceBaseDir,
+      workspaceRunner,
+      stateStore,
+      concurrencyTracker,
+      taskLifecycleCoordinator,
+    );
     await integrationStreamEvents.reconcile(resolveStreamIntegrations());
     log.info("runtime dependencies refreshed");
     await reconcilePollingLoop();
@@ -353,7 +383,15 @@ async function main(): Promise<void> {
         resumeTask: async (taskId) => {
           const task = await stateStore.getTask(makeTaskId(String(taskId)));
           if (task?.taskType === "code-review") {
-            const bundle = await buildReviewBundle(pluginManager, config.workspaceBaseDir, stateStore, workspaceRunner, task);
+            const bundle = await buildReviewBundle(
+              pluginManager,
+              config.workspaceBaseDir,
+              stateStore,
+              workspaceRunner,
+              concurrencyTracker,
+              task,
+              taskLifecycleCoordinator,
+            );
             if (bundle.orchestrator) {
               await bundle.orchestrator.runReview(task.taskId);
               return;
@@ -364,7 +402,15 @@ async function main(): Promise<void> {
         retryTask: async (taskId) => {
           const task = await stateStore.getTask(makeTaskId(String(taskId)));
           if (task?.taskType === "code-review") {
-            const bundle = await buildReviewBundle(pluginManager, config.workspaceBaseDir, stateStore, workspaceRunner, task);
+            const bundle = await buildReviewBundle(
+              pluginManager,
+              config.workspaceBaseDir,
+              stateStore,
+              workspaceRunner,
+              concurrencyTracker,
+              task,
+              taskLifecycleCoordinator,
+            );
             if (bundle.orchestrator) {
               await bundle.orchestrator.runReview(task.taskId);
               return;
@@ -372,6 +418,8 @@ async function main(): Promise<void> {
           }
           await orchestrator.continueTask(taskId);
         },
+        abandonTask: (taskId) => orchestrator.abandonTask(taskId),
+        deleteProject: (projectId) => orchestrator.deleteProject(projectId),
       },
       onIntegrationUpdated: (id) => {
         orchestrator.invalidateVcsConnector(id);
@@ -399,6 +447,12 @@ async function main(): Promise<void> {
         snapshot: () => concurrencyTracker.snapshot(),
       },
       settings: settingsController,
+      runtimePolicyStore: stateStore,
+      denialStore: stateStore,
+      runtimeGateway: {
+        healthy: () => openShellClient.gatewayHealthy(),
+        address: openShellGateway,
+      },
     });
 
     await startAdminServer(adminServer, config.adminApiPort, config.adminApiHost);
@@ -408,7 +462,36 @@ async function main(): Promise<void> {
   // Resume any tasks that were in-flight before a restart.
   // Must run AFTER the admin server binds successfully so a port conflict
   // does not cause a partially-resumed orchestrator state.
-  await orchestrator.resumeActiveTasks();
+  const sandboxReconciler = new OpenShellSandboxReconciler({
+    client: openShellClient,
+    store: stateStore,
+  });
+  const runtimeRecovery = await startRuntimeRecovery({
+    recoverReviews: async () => {
+      const reviewRecovery = await recoverActiveReviews(stateStore, async (task) => {
+        const bundle = await buildReviewBundle(
+          pluginManager,
+          config.workspaceBaseDir,
+          stateStore,
+          workspaceRunner,
+          concurrencyTracker,
+          task,
+          taskLifecycleCoordinator,
+        );
+        return bundle.orchestrator;
+      });
+      log.info(reviewRecovery, "active review recovery completed");
+    },
+    resumeCodeGeneration: () => orchestrator.resumeActiveTasks(),
+    reconcileSandboxes: async () => {
+      const result = await sandboxReconciler.run();
+      log.info(result, "initial sandbox reconciliation completed");
+    },
+    startSandboxReconciler: () => sandboxReconciler.start(),
+    stopSandboxReconciler: () => sandboxReconciler.stop(),
+    onInitialReconcileError: (err) => log.warn({ err }, "initial sandbox reconciliation failed"),
+    checkGatewayHealth: () => openShellClient.gatewayHealthy(),
+  });
 
   // ─── Graceful shutdown ────────────────────────────────────────────────────────
   let shuttingDown = false;
@@ -426,6 +509,7 @@ async function main(): Promise<void> {
       pollingReconcileTimer = null;
     }
     pollingLoop.stop();
+    runtimeRecovery.stop();
 
     await closeAdminServer(adminServer, SHUTDOWN_TIMEOUT_MS);
 

@@ -139,7 +139,6 @@ export function createAiderDescriptor(_adminAuthSecret?: string): ProviderDescri
         buildAdapter: (context) =>
           new AiderAdapter({
             maxCommitsPerCycle: context.maxCommitsPerCycle,
-            dockerNetwork: context.dockerNetwork,
           }),
       },
     },

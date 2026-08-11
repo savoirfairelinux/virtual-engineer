@@ -35,7 +35,7 @@ const SSH_CONFIG = {
   host: "gerrit.test",
   user: "ve-bot",
   port: 29418,
-  keyPath: "/secrets/gerrit_id_ed25519",
+  keyPath: "/tmp/gerrit_id_ed25519",
 };
 
 describe("listRepositoriesViaSsh", () => {
@@ -77,7 +77,7 @@ describe("listRepositoriesViaSsh", () => {
     expect(args).toContain("-p");
     expect(args).toContain("29418");
     expect(args).toContain("-i");
-    expect(args).toContain("/secrets/gerrit_id_ed25519");
+    expect(args).toContain("/tmp/gerrit_id_ed25519");
     expect(args).toContain("ve-bot@gerrit.test");
     expect(args).toContain("gerrit");
     expect(args).toContain("ls-projects");

@@ -61,13 +61,6 @@ function makeGitRunner(): RecordingGitRunner {
   return gitRunner;
 }
 
-vi.mock("../../src/workspace/dockerVolume.js", () => ({
-  execInVolume: vi.fn().mockResolvedValue({ stdout: "feat: subject\n\nbody", stderr: "", exitCode: 0 }),
-}));
-
-import { execInVolume } from "../../src/workspace/dockerVolume.js";
-const execInVolumeMock = vi.mocked(execInVolume);
-
 describe("GitHubVcsConnector", () => {
   let fetchMock: ReturnType<typeof vi.fn>;
 
@@ -173,14 +166,29 @@ describe("GitHubVcsConnector", () => {
     });
   });
 
-  describe("push (createOrFindPullRequest)", () => {
+  describe("pushDirect (createOrFindPullRequest)", () => {
+    function gitRunnerWithHead(subject: string, body = ""): RecordingGitRunner {
+      const gitRunner = new RecordingGitRunner();
+      gitRunner.run.mockImplementation(async (args) => ({
+        stdout:
+          args[0] === "remote" && args[1] === "get-url"
+            ? "https://github.com/octocat/hello-world.git\n"
+            : args[0] === "log" && args[2] === "--pretty=%s"
+              ? subject
+              : args[0] === "log" && args[2] === "--pretty=%b"
+                ? body
+                : "",
+        stderr: "",
+      }));
+      return gitRunner;
+    }
+
     it("reuses an existing PR when one exists for the head branch", async () => {
       fetchMock.mockResolvedValueOnce(jsonResponse([PR_RESPONSE]));
 
-      const result = await makeConnector().push(
+      const result = await makeConnector(undefined, gitRunnerWithHead("Add feature X")).pushDirect(
         "/tmp/repo",
-        "feature-x",
-        "Add feature X"
+        "feature-x"
       );
 
       expect(result.changeId).toBe("42");
@@ -196,11 +204,10 @@ describe("GitHubVcsConnector", () => {
       fetchMock.mockResolvedValueOnce(jsonResponse([]));
       fetchMock.mockResolvedValueOnce(jsonResponse(PR_RESPONSE));
 
-      const result = await makeConnector().push(
-        "/tmp/repo",
-        "feature-x",
-        "Add feature X\n\nDetails here"
-      );
+      const result = await makeConnector(
+        undefined,
+        gitRunnerWithHead("Add feature X", "Details here")
+      ).pushDirect("/tmp/repo", "feature-x");
 
       expect(result.changeId).toBe("42");
       expect(fetchMock).toHaveBeenCalledTimes(2);
@@ -217,10 +224,9 @@ describe("GitHubVcsConnector", () => {
       fetchMock.mockResolvedValueOnce(jsonResponse([]));
       fetchMock.mockResolvedValueOnce(jsonResponse(PR_RESPONSE));
 
-      await makeConnector({ targetBranch: "develop" }).push(
+      await makeConnector({ targetBranch: "develop" }, gitRunnerWithHead("Subject")).pushDirect(
         "/tmp/repo",
-        "feature-x",
-        "Subject"
+        "feature-x"
       );
 
       const [, createInit] = fetchMock.mock.calls[1] as [string, RequestInit];
@@ -232,7 +238,7 @@ describe("GitHubVcsConnector", () => {
       fetchMock.mockResolvedValueOnce(jsonResponse([]));
       fetchMock.mockResolvedValueOnce(jsonResponse(PR_RESPONSE));
 
-      await makeConnector().push("/tmp/repo", "feature-x", "Subject");
+      await makeConnector(undefined, gitRunnerWithHead("Subject")).pushDirect("/tmp/repo", "feature-x");
 
       const [, createInit] = fetchMock.mock.calls[1] as [string, RequestInit];
       const headers = createInit.headers as Record<string, string>;
@@ -245,49 +251,8 @@ describe("GitHubVcsConnector", () => {
       fetchMock.mockResolvedValueOnce(errorResponse(422, "Validation failed"));
 
       await expect(
-        makeConnector().push("/tmp/repo", "feature-x", "Subject")
+        makeConnector(undefined, gitRunnerWithHead("Subject")).pushDirect("/tmp/repo", "feature-x")
       ).rejects.toThrow();
-    });
-  });
-
-  describe("pushDirect (volume)", () => {
-    beforeEach(() => {
-      execInVolumeMock.mockReset();
-      execInVolumeMock.mockResolvedValue({ stdout: "feat: subject\n\nbody", stderr: "", exitCode: 0 });
-    });
-
-    it("clears any stale http.extraheader and disables credential.helper before pushing", async () => {
-      fetchMock.mockResolvedValueOnce(jsonResponse([])); // no existing PR
-      fetchMock.mockResolvedValueOnce(jsonResponse(PR_RESPONSE)); // create PR
-
-      await makeConnector().pushDirect("/unused", "feature-x", undefined, {
-        volumeName: "vol-1",
-        image: "ve:latest",
-      });
-
-      const pushCall = execInVolumeMock.mock.calls[0]![0];
-      const script = (pushCall.command as string[])[2]!;
-      expect(script).toContain('git config --unset-all "http.https://github.com/.extraheader"');
-      expect(script).toContain("git -c credential.helper= push --force");
-      expect(pushCall.env).toEqual({ VE_PUSH_REF: "feature-x", VE_PUSH_URL: `https://x-access-token:${TOKEN}@github.com/${OWNER}/${REPO}.git` });
-    });
-
-    it("throws a redacted error when the volume push fails", async () => {
-      execInVolumeMock.mockResolvedValueOnce({
-        stdout: "",
-        stderr: `remote: Invalid username or token.\nfatal: Authentication failed for 'https://x-access-token:${TOKEN}@github.com/${OWNER}/${REPO}.git/'\n`,
-        exitCode: 1,
-      });
-
-      try {
-        await makeConnector().pushDirect("/unused", "feature-x", undefined, { volumeName: "vol-1", image: "ve:latest" });
-        throw new Error("Expected pushDirect to throw");
-      } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : String(err);
-        expect(message).toMatch(/Failed to push directly to GitHub \(volume\)/);
-        expect(message).not.toContain(TOKEN);
-        expect(message).toContain("<redacted>@");
-      }
     });
   });
 });

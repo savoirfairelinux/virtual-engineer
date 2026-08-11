@@ -1,10 +1,10 @@
 import type Database from "better-sqlite3";
-import { and, eq, inArray, isNull, notInArray } from "drizzle-orm";
+import { and, eq, inArray, isNull, notInArray, sql } from "drizzle-orm";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import type {
   AgentCycle,
+  AgentCycleResult,
   AgentLogEvent,
-  AgentResult,
   ChangePerRepository,
   CycleCost,
   ExternalChangeId,
@@ -59,7 +59,12 @@ export interface TaskStoreApi {
   getActiveTasks(): Promise<Task[]>;
   getAllTasks(): Promise<Task[]>;
   reconcileOrphanedActiveTasks(): Promise<number>;
-  transition(taskId: TaskId, toState: TaskState, metadata?: Record<string, unknown>): Promise<Task>;
+  transition(
+    taskId: TaskId,
+    toState: TaskState,
+    metadata?: Record<string, unknown>,
+    expectedFromState?: TaskState,
+  ): Promise<Task>;
   updateExternalChangeId(taskId: TaskId, changeId: ExternalChangeId, patchset: number, reviewUrl?: string): Promise<void>;
   createReviewTask(input: {
     taskId: TaskId;
@@ -75,11 +80,12 @@ export interface TaskStoreApi {
   }): Promise<Task>;
   setReviewedPatchset(taskId: TaskId, patchset: number): Promise<void>;
   incrementCycle(taskId: TaskId): Promise<number>;
+  startAgentCycle(taskId: TaskId, result: AgentCycleResult): Promise<number>;
   setFailureReason(taskId: TaskId, reason: string): Promise<void>;
   saveAgentCycle(
     taskId: TaskId,
     cycleNumber: number,
-    result: AgentResult,
+    result: AgentCycleResult,
     validationResult?: ValidationResult
   ): Promise<void>;
   getAgentCycles(taskId: TaskId): Promise<AgentCycle[]>;
@@ -341,10 +347,14 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
   async function transition(
     taskId: TaskId,
     toState: TaskState,
-    metadata: Record<string, unknown> = {}
+    metadata: Record<string, unknown> = {},
+    expectedFromState?: TaskState,
   ): Promise<Task> {
     const task = await getTask(taskId);
     if (!task) throw new Error(`Task not found: ${taskId}`);
+    if (expectedFromState !== undefined && task.state !== expectedFromState) {
+      throw new Error(`Task state changed concurrently: ${taskId}`);
+    }
 
     const result = validateTransition(task.state, toState);
     if (result === "idempotent") return task;
@@ -355,14 +365,18 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
       (task.state === "FEEDBACK_PROCESSING" && toState === "IN_REVIEW");
 
     raw.transaction(() => {
+      let updateResult: Database.RunResult;
       if (isReviewPollingTransition) {
-        raw
-          .prepare("UPDATE tasks SET state = ? WHERE task_id = ?")
-          .run(toState, taskId);
+        updateResult = raw
+          .prepare("UPDATE tasks SET state = ? WHERE task_id = ? AND state = ?")
+          .run(toState, taskId, task.state);
       } else {
-        raw
-          .prepare("UPDATE tasks SET state = ?, updated_at = ? WHERE task_id = ?")
-          .run(toState, Math.floor(now.getTime() / 1000), taskId);
+        updateResult = raw
+          .prepare("UPDATE tasks SET state = ?, updated_at = ? WHERE task_id = ? AND state = ?")
+          .run(toState, Math.floor(now.getTime() / 1000), taskId, task.state);
+      }
+      if (updateResult.changes !== 1) {
+        throw new Error(`Task state changed concurrently: ${taskId}`);
       }
 
       raw
@@ -448,15 +462,59 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
       .where(eq(tasks.taskId, taskId));
   }
 
-  async function incrementCycle(taskId: TaskId): Promise<number> {
-    const task = await getTask(taskId);
-    if (!task) throw new Error(`Task not found: ${taskId}`);
-    const newCount = task.cycleCount + 1;
-    await db
-      .update(tasks)
-      .set({ cycleCount: newCount, updatedAt: new Date() })
-      .where(eq(tasks.taskId, taskId));
-    return newCount;
+  function incrementCycle(taskId: TaskId): Promise<number> {
+    const row = raw.prepare(
+      "UPDATE tasks SET cycle_count = cycle_count + 1, updated_at = ? WHERE task_id = ? RETURNING cycle_count"
+    ).get(Math.floor(Date.now() / 1000), taskId) as { cycle_count: number } | undefined;
+    if (row === undefined) return Promise.reject(new Error(`Task not found: ${taskId}`));
+    return Promise.resolve(row.cycle_count);
+  }
+
+  function agentCycleValues(
+    result: AgentCycleResult,
+    validationResult?: ValidationResult,
+  ): Omit<typeof agentCycles.$inferInsert, "id" | "taskId" | "cycleNumber" | "createdAt"> {
+    const cost = computeCycleCost(result.agentEvents);
+    return {
+      agentResult: JSON.stringify(result),
+      validationResult: validationResult ? JSON.stringify(validationResult) : null,
+      agentEvents: result.agentEvents ? JSON.stringify(result.agentEvents) : null,
+      costAiCredits: cost.priced ? cost.aiCredits : null,
+      costUsd: cost.usd > 0 ? cost.usd : null,
+      premiumRequests: cost.premiumRequests > 0 ? cost.premiumRequests : null,
+      costInputTokens: cost.tokens.input > 0 ? cost.tokens.input : null,
+      costOutputTokens: cost.tokens.output > 0 ? cost.tokens.output : null,
+      costCachedTokens: cost.tokens.cached > 0 ? cost.tokens.cached : null,
+      costCacheWriteTokens: cost.tokens.cacheWrite > 0 ? cost.tokens.cacheWrite : null,
+      costModelId: cost.modelId,
+    };
+  }
+
+  function startAgentCycle(taskId: TaskId, result: AgentCycleResult): Promise<number> {
+    // Not async: the synchronous transaction must surface failures as a
+    // rejected promise for await/`.catch()` callers.
+    try {
+      return Promise.resolve(db.transaction((tx) => {
+        const row = tx
+          .update(tasks)
+          .set({ cycleCount: sql`${tasks.cycleCount} + 1`, updatedAt: new Date() })
+          .where(eq(tasks.taskId, taskId))
+          .returning({ cycleCount: tasks.cycleCount })
+          .get();
+        if (row === undefined) throw new Error(`Task not found: ${taskId}`);
+        tx.insert(agentCycles)
+          .values({
+            taskId,
+            cycleNumber: row.cycleCount,
+            ...agentCycleValues(result),
+            createdAt: new Date(),
+          })
+          .run();
+        return row.cycleCount;
+      }));
+    } catch (err) {
+      return Promise.reject(err instanceof Error ? err : new Error(String(err)));
+    }
   }
 
   async function setFailureReason(taskId: TaskId, reason: string): Promise<void> {
@@ -469,37 +527,29 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
   async function saveAgentCycle(
     taskId: TaskId,
     cycleNumber: number,
-    result: AgentResult,
+    result: AgentCycleResult,
     validationResult?: ValidationResult
   ): Promise<void> {
-    const cost = computeCycleCost(result.agentEvents);
-    await db.insert(agentCycles).values({
-      taskId,
-      cycleNumber,
-      agentResult: JSON.stringify(result),
-      validationResult: validationResult ? JSON.stringify(validationResult) : null,
-      agentEvents: result.agentEvents ? JSON.stringify(result.agentEvents) : null,
-      costAiCredits: cost.priced ? cost.aiCredits : null,
-      costUsd: cost.usd > 0 ? cost.usd : null,
-      premiumRequests: cost.premiumRequests > 0 ? cost.premiumRequests : null,
-      costInputTokens: cost.tokens.input > 0 ? cost.tokens.input : null,
-      costOutputTokens: cost.tokens.output > 0 ? cost.tokens.output : null,
-      costCachedTokens: cost.tokens.cached > 0 ? cost.tokens.cached : null,
-      costCacheWriteTokens: cost.tokens.cacheWrite > 0 ? cost.tokens.cacheWrite : null,
-      costModelId: cost.modelId,
-      createdAt: new Date(),
-    });
+    const values = agentCycleValues(result, validationResult);
+    await db
+      .insert(agentCycles)
+      .values({ taskId, cycleNumber, ...values, createdAt: new Date() })
+      .onConflictDoUpdate({
+        target: [agentCycles.taskId, agentCycles.cycleNumber],
+        set: values,
+      });
   }
 
   async function getAgentCycles(taskId: TaskId): Promise<AgentCycle[]> {
     const rows = await db.query.agentCycles.findMany({
       where: eq(agentCycles.taskId, taskId),
+      orderBy: (table, { asc }) => [asc(table.cycleNumber), asc(table.id)],
     });
     return rows.map((row) => {
-      let result: AgentResult;
+      let result: AgentCycleResult;
       let validationResult: ValidationResult | null = null;
       try {
-        result = JSON.parse(row.agentResult) as AgentResult;
+        result = JSON.parse(row.agentResult) as AgentCycleResult;
       } catch {
         result = { status: "failed", summary: "[corrupt cycle data]", modifiedFiles: [], agentLogs: "", metadata: {} };
       }
@@ -762,10 +812,18 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
 
     // Already abandoned — return current state without re-notifying listeners.
     if (task.state === "ABANDONED") return task;
+    if (TERMINAL_STATES.has(task.state)) {
+      throw new Error(`Cannot abandon terminal task ${taskId} in state ${task.state}`);
+    }
 
     const now = new Date();
     raw.transaction(() => {
-      raw.prepare("UPDATE tasks SET state = ?, updated_at = ? WHERE task_id = ?").run("ABANDONED", Math.floor(now.getTime() / 1000), taskId);
+      const updateResult = raw
+        .prepare("UPDATE tasks SET state = ?, updated_at = ? WHERE task_id = ? AND state = ?")
+        .run("ABANDONED", Math.floor(now.getTime() / 1000), taskId, task.state);
+      if (updateResult.changes !== 1) {
+        throw new Error(`Task state changed concurrently: ${taskId}`);
+      }
 
       raw
         .prepare(
@@ -786,9 +844,35 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
 
     const now = Math.floor(Date.now() / 1000);
 
+    if (task.state === "ABANDONED") {
+      const latestTransition = raw
+        .prepare("SELECT metadata FROM state_transitions WHERE task_id = ? ORDER BY id DESC LIMIT 1")
+        .get(taskId) as { metadata: string } | undefined;
+      if (latestTransition !== undefined) {
+        try {
+          const metadata = JSON.parse(latestTransition.metadata) as unknown;
+          if (
+            typeof metadata === "object" &&
+            metadata !== null &&
+            "action" in metadata &&
+            metadata.action === "delete"
+          ) {
+            return;
+          }
+        } catch {
+          // Malformed historical metadata must not prevent normal terminal cleanup.
+        }
+      }
+    }
+
     if (!TERMINAL_STATES.has(task.state)) {
       raw.transaction(() => {
-        raw.prepare("UPDATE tasks SET state = ?, updated_at = ? WHERE task_id = ?").run("ABANDONED", now, taskId);
+        const updateResult = raw
+          .prepare("UPDATE tasks SET state = ?, updated_at = ? WHERE task_id = ? AND state = ?")
+          .run("ABANDONED", now, taskId, task.state);
+        if (updateResult.changes !== 1) {
+          throw new Error(`Task state changed concurrently: ${taskId}`);
+        }
         raw
           .prepare(
             "INSERT INTO state_transitions (task_id, from_state, to_state, metadata, created_at) VALUES (?, ?, ?, ?, ?)"
@@ -805,47 +889,45 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
       raw.prepare("DELETE FROM processed_comments WHERE task_id = ?").run(taskId);
       raw.prepare("DELETE FROM posted_review_comments WHERE task_id = ?").run(taskId);
       raw.prepare("DELETE FROM review_thread_replies WHERE task_id = ?").run(taskId);
+      raw.prepare("UPDATE policy_denial_events SET task_id = NULL WHERE task_id = ?").run(taskId);
       raw.prepare("DELETE FROM agent_cycles WHERE task_id = ?").run(taskId);
       raw.prepare("DELETE FROM state_transitions WHERE task_id = ?").run(taskId);
       raw.prepare("DELETE FROM tasks WHERE task_id = ?").run(taskId);
     })();
   }
 
-  function deleteTaskGroup(taskId: TaskId): Promise<void> {
+  async function deleteTaskGroup(taskId: TaskId): Promise<void> {
     const anchor = raw
-      .prepare("SELECT ticket_id, gerrit_change_id FROM tasks WHERE task_id = ?")
-      .get(taskId) as { ticket_id: string; gerrit_change_id: string | null } | undefined;
+      .prepare("SELECT ticket_id, ticket_source_integration_id, ticket_source_project_key, project_id, gerrit_change_id FROM tasks WHERE task_id = ?")
+      .get(taskId) as {
+        ticket_id: string;
+        ticket_source_integration_id: string | null;
+        ticket_source_project_key: string | null;
+        project_id: string | null;
+        gerrit_change_id: string | null;
+      } | undefined;
 
-    if (!anchor) return Promise.resolve();
+    if (!anchor) return;
 
-    const taskIds = new Set<string>();
+    const taskIds = new Set<TaskId>();
 
     const byTicket = raw
-      .prepare("SELECT task_id FROM tasks WHERE ticket_id = ?")
-      .all(anchor.ticket_id) as Array<Record<string, unknown>>;
-    for (const row of byTicket) taskIds.add(row["task_id"] as string);
+      .prepare(`SELECT task_id FROM tasks
+        WHERE ticket_id = ?
+          AND project_id IS ?
+          AND ticket_source_integration_id IS ?
+          AND ticket_source_project_key IS ?`)
+      .all(
+        anchor.ticket_id,
+        anchor.project_id,
+        anchor.ticket_source_integration_id,
+        anchor.ticket_source_project_key,
+      ) as Array<Record<string, unknown>>;
+    for (const row of byTicket) taskIds.add(row["task_id"] as TaskId);
 
-    if (anchor.gerrit_change_id) {
-      const byChange = raw
-        .prepare("SELECT task_id FROM tasks WHERE gerrit_change_id = ?")
-        .all(anchor.gerrit_change_id) as Array<Record<string, unknown>>;
-      for (const row of byChange) taskIds.add(row["task_id"] as string);
-    }
+    if (taskIds.size === 0) return;
 
-    if (taskIds.size === 0) return Promise.resolve();
-
-    raw.transaction(() => {
-      for (const id of taskIds) {
-        raw.prepare("DELETE FROM change_per_repository WHERE task_id = ?").run(id);
-        raw.prepare("DELETE FROM processed_comments WHERE task_id = ?").run(id);
-        raw.prepare("DELETE FROM posted_review_comments WHERE task_id = ?").run(id);
-        raw.prepare("DELETE FROM review_thread_replies WHERE task_id = ?").run(id);
-        raw.prepare("DELETE FROM agent_cycles WHERE task_id = ?").run(id);
-        raw.prepare("DELETE FROM state_transitions WHERE task_id = ?").run(id);
-        raw.prepare("DELETE FROM tasks WHERE task_id = ?").run(id);
-      }
-    })();
-    return Promise.resolve();
+    for (const id of taskIds) await deleteTask(id);
   }
 
   function saveChangePerRepository(
@@ -1057,6 +1139,7 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
     createReviewTask,
     setReviewedPatchset,
     incrementCycle,
+    startAgentCycle,
     setFailureReason,
     saveAgentCycle,
     getAgentCycles,

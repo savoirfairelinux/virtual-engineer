@@ -111,57 +111,6 @@ describe("GitLabVcsConnector", () => {
     });
   });
 
-  describe("push", () => {
-    it("should perform git operations in sequence and create MR", async () => {
-      const httpClient = getHttpClient(connector);
-      httpClient.fetchJson.mockResolvedValue({ iid: 1, web_url: "https://gitlab.example.com/mr/1" });
-
-      const repoDir = "/tmp/workspace/repo";
-      const message = "feat: add new feature";
-      const featureBranch = "feature-new";
-
-      const result = await connector.push(repoDir, featureBranch, message);
-
-      const calls = gitRunner.run.mock.calls.map((call) => call[0]);
-      expect(calls).toContainEqual(["config", "user.name", mockConfig.gitAuthorName]);
-      expect(calls).toContainEqual(["config", "user.email", mockConfig.gitAuthorEmail]);
-      expect(calls).toContainEqual(["add", "-A"]);
-      expect(calls).toContainEqual(["commit", "-m", message]);
-      expect(result.changeId).toBe("1");
-      expect(result.url).toBe("https://gitlab.example.com/mr/1");
-    });
-
-    it("should handle push errors gracefully", async () => {
-      gitRunner.run.mockImplementation(async (args) => {
-        if (args[0] === "push") {
-          throw new Error("Permission denied");
-        }
-        return {
-          stdout: args[0] === "remote" && args[1] === "get-url"
-            ? "https://gitlab.example.com/my-project.git"
-            : "",
-          stderr: "",
-        };
-      });
-
-      await expect(
-        connector.push("/tmp/workspace/repo", "feature-test", "feat: test")
-      ).rejects.toThrow("Failed to push to GitLab");
-    });
-
-    it("passes branch names as standalone git arguments", async () => {
-      const httpClient = getHttpClient(connector);
-      httpClient.fetchJson.mockResolvedValue({ iid: 2, web_url: "https://gitlab.example.com/mr/2" });
-
-      await connector.push("/tmp/workspace/repo", "feature/test-123", "feat: add new feature");
-
-      expect(gitRunner.run).toHaveBeenCalledWith(
-        ["push", "-u", "origin", "feature/test-123"],
-        expect.any(Object)
-      );
-    });
-  });
-
   describe("getChangeStatus", () => {
     it("returns the uppercased MR state on success", async () => {
       const httpClient = getHttpClient(connector);
@@ -254,18 +203,16 @@ describe("GitLabVcsConnector", () => {
     });
   });
 
-  describe("createOrFindMergeRequest (via push)", () => {
+  describe("createOrFindMergeRequest (via pushDirect)", () => {
     it("resolves reviewer IDs from public_email and includes them in MR creation", async () => {
       const httpClient = getHttpClient(connector);
       httpClient.fetchJson
         .mockResolvedValueOnce([{ id: 42, public_email: "Alice@Example.com" }])
         .mockResolvedValueOnce({ iid: 8, web_url: "https://gitlab.example.com/mr/8" });
 
-      await connector.push(
+      await connector.pushDirect(
         "/tmp/workspace/repo",
         "feature-reviewers",
-        "feat: reviewers",
-        undefined,
         undefined,
         ["alice@example.com"]
       );
@@ -287,7 +234,7 @@ describe("GitLabVcsConnector", () => {
         .mockRejectedValueOnce(new ReviewApiError(409, "/api/v4/projects/my-project/merge_requests", "Already exists"))
         .mockResolvedValueOnce([{ iid: 3, web_url: "https://gitlab.example.com/mr/3" }]);
 
-      const result = await connector.push("/tmp/workspace/repo", "feature-dup", "feat: dup");
+      const result = await connector.pushDirect("/tmp/workspace/repo", "feature-dup");
       expect(result.changeId).toBe("3");
     });
 
@@ -299,11 +246,9 @@ describe("GitLabVcsConnector", () => {
         .mockResolvedValueOnce([{ iid: 3, web_url: "https://gitlab.example.com/mr/3" }])
         .mockResolvedValueOnce({ iid: 3, web_url: "https://gitlab.example.com/mr/3" });
 
-      await connector.push(
+      await connector.pushDirect(
         "/tmp/workspace/repo",
         "feature-dup",
-        "feat: dup",
-        undefined,
         undefined,
         ["alice@example.com"]
       );

@@ -6,6 +6,7 @@ import type {
   TaskContext,
   ExternalChangeId,
   AdapterContainerSpec,
+  AgentEgressSpec,
   PromptStore,
   ReviewWorkspaceInput,
   WorkspaceRunner,
@@ -23,9 +24,20 @@ import {
 import {
   buildCodegenContainerSpec,
   buildReviewContainerSpec as buildSharedReviewContainerSpec,
+  systemPromptEnv,
 } from "./containerSpecBuilders.js";
 import { createStderrPipeline } from "./agentStderrPipeline.js";
 import type { StderrParseState } from "./agentStderrPipeline.js";
+
+/**
+ * Network egress the Claude Code CLI needs under the OpenShell deny-by-default
+ * runtime. `api.anthropic.com` serves the model API. The Claude Code CLI runs
+ * under `node` (via the agent SDK), so `node` is the permitted binary.
+ */
+const CLAUDE_EGRESS: AgentEgressSpec = {
+  hosts: ["api.anthropic.com"],
+  binaries: ["/usr/local/bin/node"],
+};
 
 const log = getLogger("claude-adapter");
 
@@ -63,8 +75,6 @@ export interface ClaudeAdapterConfig {
   maxRepositoryContextBytes: number;
   maxCommitsPerCycle: number;
   promptsDir?: string | undefined;
-  /** Docker network for agent/review containers. Defaults to `virtual-engineer_ve-agent-net`. */
-  dockerNetwork?: string | undefined;
 }
 
 interface DockerInvocationResult {
@@ -173,11 +183,11 @@ export class ClaudeAdapter implements AgentAdapter, ConfigurableAdapter {
       maxRepositoryContextBytes: this.config.maxRepositoryContextBytes,
       maxCommitsPerCycle: this.config.maxCommitsPerCycle,
       promptsDir: this.config.promptsDir,
-      dockerNetwork: this.config.dockerNetwork,
+      egress: CLAUDE_EGRESS,
     });
   }
 
-  /** Builds a container spec for review mode (REVIEW_MODE=1). Reads prompt from /ve-home/user-prompt.txt. */
+  /** Builds a container spec for review mode (REVIEW_MODE=1). Reads the prompt from the file the runner uploads into the sandbox. */
   buildReviewContainerSpec(
     input: ReviewWorkspaceInput,
     authEnv: Record<string, string> = {}
@@ -198,7 +208,7 @@ export class ClaudeAdapter implements AgentAdapter, ConfigurableAdapter {
 
     return buildSharedReviewContainerSpec(input, {
       providerEnv,
-      dockerNetwork: this.config.dockerNetwork,
+      egress: CLAUDE_EGRESS,
     });
   }
 
@@ -263,7 +273,7 @@ export class ClaudeAdapter implements AgentAdapter, ConfigurableAdapter {
     assertPromptRole(systemPrompt, "system");
     assertPromptRole(instructionsPrompt, "instructions");
 
-    spec.env["SYSTEM_PROMPT"] = systemPrompt.content;
+    Object.assign(spec.env, systemPromptEnv(systemPrompt.content));
     spec.userPromptContent = buildCodegenUserPrompt(context, instructionsPrompt.content);
 
     return spec;

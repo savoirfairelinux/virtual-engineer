@@ -5,6 +5,8 @@ import type { ChildProcess } from "child_process";
 
 const mocks = vi.hoisted(() => ({
   createSession: vi.fn(),
+  clientStart: vi.fn(),
+  clientGetAuthStatus: vi.fn(),
   clientStop: vi.fn(),
   createConnection: vi.fn(),
   emitEvent: vi.fn(),
@@ -16,6 +18,8 @@ vi.mock("../../agent-worker/node_modules/@github/copilot-sdk/dist/index.js", () 
   CopilotClient: vi.fn(function CopilotClient() {
     return {
       createSession: mocks.createSession,
+      start: mocks.clientStart,
+      getAuthStatus: mocks.clientGetAuthStatus,
       stop: mocks.clientStop,
     };
   }),
@@ -97,6 +101,8 @@ describe("runCopilotAgent", () => {
     session = makeFakeSession();
     mocks.spawn.mockReturnValue(child);
     mocks.createSession.mockResolvedValue(session);
+    mocks.clientStart.mockResolvedValue(undefined);
+    mocks.clientGetAuthStatus.mockResolvedValue({ isAuthenticated: true });
     mocks.clientStop.mockResolvedValue(undefined);
     mocks.statSync.mockReturnValue({ isDirectory: () => true });
     mocks.createConnection.mockImplementation(() => {
@@ -170,8 +176,16 @@ describe("runCopilotAgent", () => {
       }],
     });
     expect(mocks.spawn).toHaveBeenCalledWith(
-      "/agent-worker/node_modules/.bin/copilot",
-      ["--headless", "--port", "3000"],
+      "/app/agent-worker/node_modules/.bin/copilot",
+      [
+        "--headless",
+        "--no-auto-update",
+        "--port",
+        "3000",
+        "--auth-token-env",
+        "GITHUB_TOKEN",
+        "--no-auto-login",
+      ],
       expect.objectContaining({ cwd: "/workspace" })
     );
     const spawnOptions = mocks.spawn.mock.calls[0]?.[2] as { env: Record<string, string> };
@@ -296,7 +310,7 @@ describe("runCopilotAgent", () => {
 
 describe("Copilot worker native profile", () => {
   it("builds a parent prompt that delegates the VE prompt exactly once", () => {
-    const prompt = buildNativeReviewPrompt("VE REVIEW CONTEXT\nDIFF CONTENT");
+    const prompt = buildNativeReviewPrompt("VE REVIEW CONTEXT\nDIFF CONTENT", "/sandbox/task-1-abc");
 
     expect(prompt).toBe([
       "Delegate exactly one review with the task tool:",
@@ -309,7 +323,7 @@ describe("Copilot worker native profile", () => {
       "",
       "VE_DELEGATED_PROMPT_START",
       "Review the Virtual Engineer context and supplied diff below as the source of truth.",
-      "For extra context, only read files under /workspace; do not execute commands, access the network, or edit files.",
+      "For extra context, only read files under /sandbox/task-1-abc; do not execute commands, access the network, or edit files.",
       "Do not recompute the diff or compare branches.",
       "Return findings to the parent; do not call submission tools.",
       "",

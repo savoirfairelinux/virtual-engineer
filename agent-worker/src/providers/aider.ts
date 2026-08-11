@@ -4,7 +4,7 @@
  * Runs INSIDE the Docker container for the `aider` provider. Aider is a Python
  * CLI (https://aider.chat) that wraps any LLM backend via litellm. This runner
  * spawns `aider --message-file <prompt> --yes --no-pretty --no-stream` as a
- * subprocess against the pre-cloned `/workspace` repository and maps its
+ * subprocess against the pre-cloned repository working directory and maps its
  * streamed output onto the shared `__ve_event` stderr protocol used by every
  * provider, so the host adapter's event / commit / result pipeline is
  * provider-agnostic.
@@ -194,8 +194,8 @@ function buildAiderArgs(
     // contents instead of the REVIEW_RESULT_START…END block we parse.
     //
     // --no-git disables Aider's git integration entirely. This is required because
-    // the review container mounts /workspace read-only (`:ro`), and Aider's
-    // setup_git() unconditionally tries to write /workspace/.git/config.lock to
+    // review runs are never downloaded back, and Aider's setup_git()
+    // unconditionally tries to write `.git/config.lock` in the repository to
     // set user.name/user.email even in ask mode, crashing with EROFS. No commits
     // are made in review mode so git integration is not needed; Aider still scans
     // the filesystem for its context window.

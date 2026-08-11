@@ -24,7 +24,6 @@ describe("getConfig", () => {
       "TICKET_CLOSE_RETRY_MIN_TIMEOUT_MS",
       "AGENT_CONTAINER_IMAGE",
       "WORKSPACE_BASE_DIR",
-      "AGENT_DOCKER_NETWORK",
     ];
     for (const key of allKeys) {
       savedEnv[key] = process.env[key];
@@ -126,10 +125,6 @@ describe("getConfig", () => {
     it("workspaceBaseDir defaults to /tmp/virtual-engineer/workspaces", () => {
       expect(getConfig().workspaceBaseDir).toBe("/tmp/virtual-engineer/workspaces");
     });
-
-    it("agentDockerNetwork defaults to virtual-engineer_ve-agent-net", () => {
-      expect(getConfig().agentDockerNetwork).toBe("virtual-engineer_ve-agent-net");
-    });
   });
 
   // ─── Overrides ─────────────────────────────────────────────────────────────
@@ -157,12 +152,6 @@ describe("getConfig", () => {
       process.env["POLLING_INTERVAL_MS"] = "60000";
       resetConfig();
       expect(getConfig().pollingIntervalMs).toBe(60_000);
-    });
-
-    it("reads AGENT_DOCKER_NETWORK", () => {
-      process.env["AGENT_DOCKER_NETWORK"] = "bridge";
-      resetConfig();
-      expect(getConfig().agentDockerNetwork).toBe("bridge");
     });
 
     it("reads TICKET_CLOSE_MAX_RETRIES", () => {

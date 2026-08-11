@@ -1,0 +1,26 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: openshell-gateway-ingress
+  namespace: virtual-engineer
+  labels:
+    app.kubernetes.io/part-of: virtual-engineer
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: openshell
+      app.kubernetes.io/instance: openshell
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: virtual-engineer
+              app.kubernetes.io/component: orchestrator
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ve-agents
+      ports:
+        - protocol: TCP
+          port: 8080

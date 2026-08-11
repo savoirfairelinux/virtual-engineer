@@ -12,8 +12,6 @@ function makeContext(overrides: Partial<TaskContext> = {}): TaskContext {
     acceptanceCriteria: ["Logs must be in JSON format"],
     baseBranch: "main",
     workspacePath: "/workspace",
-    volumeName: "ve-ws-test",
-    homeVolumeName: "ve-home-test",
     constraints: [],
     priorFeedback: [],
     cycleNumber: 1,
@@ -63,16 +61,13 @@ describe("AiderAdapter", () => {
       const adapter = new AiderAdapter({ model: "gpt-4o" });
       const spec = adapter.buildContainerSpec(makeContext());
 
-      expect(spec.command).toEqual(["node", "/agent-worker/dist/index.js"]);
-      expect(spec.networkMode).toBe("virtual-engineer_ve-agent-net");
+      expect(spec.command).toEqual(["node", "/app/agent-worker/dist/index.js"]);
       expect(spec.env).toMatchObject({
         AGENT_PROVIDER: "aider",
         AIDER_MODEL: "gpt-4o",
         OPENAI_API_KEY: "sk-key",
         GIT_AUTHOR_NAME: "Virtual Engineer",
       });
-      expect(spec.additionalDockerArgs).toContain("--read-only");
-      expect(spec.additionalDockerArgs).toContain("ALL");
     });
 
     it("prefers the per-agent model from the session", () => {
@@ -208,6 +203,61 @@ describe("AiderAdapter", () => {
     });
   });
 
+  describe("backend egress", () => {
+    it("keeps the explicit port of a self-hosted Ollama base", () => {
+      const adapter = new AiderAdapter();
+      const ctx = makeContext();
+      ctx.agentSession.aiderBackend = "ollama";
+      ctx.agentSession.aiderApiBase = "http://127.0.0.1:11434";
+      delete ctx.agentSession.aiderApiKey;
+
+      expect(adapter.buildContainerSpec(ctx).egress).toEqual({
+        hosts: ["127.0.0.1:11434"],
+        binaries: ["/usr/local/bin/aider"],
+      });
+    });
+
+    it("emits a bare host for a default-port backend", () => {
+      const adapter = new AiderAdapter();
+
+      expect(adapter.buildContainerSpec(makeContext()).egress).toEqual({
+        hosts: ["api.openai.com"],
+        binaries: ["/usr/local/bin/aider"],
+      });
+    });
+
+    it("deduplicates an API base that repeats the static backend host", () => {
+      const adapter = new AiderAdapter();
+      const ctx = makeContext();
+      ctx.agentSession.aiderApiBase = "https://api.openai.com";
+
+      expect(adapter.buildContainerSpec(ctx).egress).toEqual({
+        hosts: ["api.openai.com"],
+        binaries: ["/usr/local/bin/aider"],
+      });
+    });
+
+    it("contributes no host for a non-URL API base", () => {
+      const adapter = new AiderAdapter();
+      const ctx = makeContext();
+      ctx.agentSession.aiderBackend = "ollama";
+      ctx.agentSession.aiderApiBase = "not-a-url";
+      delete ctx.agentSession.aiderApiKey;
+
+      expect(adapter.buildContainerSpec(ctx).egress).toBeUndefined();
+    });
+
+    it("contributes no host for an empty API base", () => {
+      const adapter = new AiderAdapter();
+      const ctx = makeContext();
+      ctx.agentSession.aiderBackend = "ollama";
+      ctx.agentSession.aiderApiBase = "   ";
+      delete ctx.agentSession.aiderApiKey;
+
+      expect(adapter.buildContainerSpec(ctx).egress).toBeUndefined();
+    });
+  });
+
   describe("buildReviewContainerSpec", () => {
     it("sets review mode and prompt file", () => {
       const adapter = new AiderAdapter();
@@ -227,7 +277,6 @@ describe("AiderAdapter", () => {
       expect(spec.env).toMatchObject({
         AGENT_PROVIDER: "aider",
         REVIEW_MODE: "1",
-        USER_PROMPT_FILE: "/ve-home/user-prompt.txt",
         SYSTEM_PROMPT: "review sys",
         AIDER_MODEL: "gpt-4o",
         OPENAI_API_KEY: "sk-key",

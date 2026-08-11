@@ -1,0 +1,181 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ve-local-keycloak-realm
+  namespace: virtual-engineer
+  labels:
+    app.kubernetes.io/part-of: virtual-engineer
+data:
+  openshell-realm.json: |
+    {
+      "realm": "openshell",
+      "enabled": true,
+      "sslRequired": "none",
+      "roles": {
+        "realm": [
+          { "name": "openshell-admin" },
+          { "name": "openshell-user" }
+        ]
+      },
+      "clients": [
+        {
+          "clientId": "openshell-cli",
+          "name": "OpenShell API",
+          "enabled": true,
+          "bearerOnly": true,
+          "protocol": "openid-connect"
+        },
+        {
+          "clientId": "openshell-ci",
+          "name": "Virtual Engineer OpenShell client",
+          "enabled": true,
+          "clientAuthenticatorType": "client-secret",
+          "secret": "${OPENSHELL_OIDC_CLIENT_SECRET}",
+          "serviceAccountsEnabled": true,
+          "standardFlowEnabled": false,
+          "directAccessGrantsEnabled": false,
+          "publicClient": false,
+          "protocol": "openid-connect",
+          "protocolMappers": [
+            {
+              "name": "openshell-audience",
+              "protocol": "openid-connect",
+              "protocolMapper": "oidc-audience-mapper",
+              "config": {
+                "included.client.audience": "openshell-cli",
+                "access.token.claim": "true"
+              }
+            },
+            {
+              "name": "openshell-realm-roles",
+              "protocol": "openid-connect",
+              "protocolMapper": "oidc-usermodel-realm-role-mapper",
+              "config": {
+                "multivalued": "true",
+                "claim.name": "realm_access.roles",
+                "jsonType.label": "String",
+                "access.token.claim": "true"
+              }
+            }
+          ]
+        }
+      ],
+      "users": [
+        {
+          "username": "service-account-openshell-ci",
+          "enabled": true,
+          "serviceAccountClientId": "openshell-ci",
+          "realmRoles": ["openshell-admin", "openshell-user"]
+        }
+      ]
+    }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ve-local-keycloak-data
+  namespace: virtual-engineer
+  labels:
+    app.kubernetes.io/part-of: virtual-engineer
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ve-local-keycloak
+  namespace: virtual-engineer
+  labels:
+    app.kubernetes.io/name: ve-local-keycloak
+    app.kubernetes.io/part-of: virtual-engineer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ve-local-keycloak
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ve-local-keycloak
+        app.kubernetes.io/part-of: virtual-engineer
+    spec:
+      securityContext:
+        fsGroup: 1000
+      containers:
+        - name: keycloak
+          image: quay.io/keycloak/keycloak@sha256:98fab020a3a490aba0978f237e2a06cd0ea42bf149c6cf10f11c0aaf27728ff2
+          imagePullPolicy: IfNotPresent
+          args:
+            - start-dev
+            - --import-realm
+          env:
+            - name: KC_HOSTNAME
+              value: http://keycloak.virtual-engineer.svc.cluster.local:8080
+            - name: KC_HTTP_ENABLED
+              value: "true"
+            - name: KC_BOOTSTRAP_ADMIN_USERNAME
+              value: ve-bootstrap
+            - name: KC_BOOTSTRAP_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: ve-local-keycloak
+                  key: KC_BOOTSTRAP_ADMIN_PASSWORD
+            - name: OPENSHELL_OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: ve-local-keycloak
+                  key: OPENSHELL_OIDC_CLIENT_SECRET
+          ports:
+            - name: http
+              containerPort: 8080
+          startupProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 3
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /realms/openshell/.well-known/openid-configuration
+              port: http
+            periodSeconds: 5
+            failureThreshold: 12
+          resources:
+            requests:
+              cpu: 100m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          volumeMounts:
+            - name: data
+              mountPath: /opt/keycloak/data
+            - name: realm
+              mountPath: /opt/keycloak/data/import
+              readOnly: true
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: ve-local-keycloak-data
+        - name: realm
+          configMap:
+            name: ve-local-keycloak-realm
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: keycloak
+  namespace: virtual-engineer
+  labels:
+    app.kubernetes.io/name: ve-local-keycloak
+    app.kubernetes.io/part-of: virtual-engineer
+spec:
+  selector:
+    app.kubernetes.io/name: ve-local-keycloak
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

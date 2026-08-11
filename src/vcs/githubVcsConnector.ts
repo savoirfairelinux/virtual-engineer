@@ -7,11 +7,10 @@
  */
 
 import { getLogger } from "../logger.js";
-import type { VcsConnector, VcsPushResult, VolumeExecOptions } from "./vcsConnector.js";
+import type { VcsConnector, VcsPushResult } from "./vcsConnector.js";
 import { buildFeatureBranchRef } from "./branchNaming.js";
 import type { ReviewComment } from "../interfaces.js";
 import { ReviewApiError } from "../interfaces.js";
-import { execInVolume } from "../workspace/dockerVolume.js";
 import { redactUrls } from "../utils/redactUrl.js";
 import type { GitRunner } from "./gitRunner.js";
 import { NodeGitRunner } from "./nodeGitRunner.js";
@@ -71,64 +70,6 @@ export class GitHubVcsConnector implements VcsConnector {
     }
   }
 
-  async push(
-    repoDir: string,
-    ref: string,
-    message: string,
-    _changeId?: string,
-    _volumeOpts?: VolumeExecOptions
-  ): Promise<VcsPushResult> {
-    try {
-      await this.gitRunner.run(["config", "user.name", this.config.gitAuthorName], { cwd: repoDir });
-      await this.gitRunner.run(["config", "user.email", this.config.gitAuthorEmail], { cwd: repoDir });
-
-      const featureBranch = ref;
-
-      // Inject token-in-URL credentials for push (x-access-token works for both PAT and OAuth user tokens)
-      const remoteUrl = (
-        await this.gitRunner.run(["remote", "get-url", "origin"], { cwd: repoDir })
-      ).stdout.trim();
-      const authenticatedUrl = new URL(remoteUrl);
-      authenticatedUrl.username = "x-access-token";
-      authenticatedUrl.password = this.config.token;
-
-      await this.gitRunner.run(
-        ["remote", "set-url", "origin", authenticatedUrl.toString()],
-        { cwd: repoDir }
-      );
-
-      await this.gitRunner.run(["add", "-A"], { cwd: repoDir });
-      await this.gitRunner.run(["commit", "-m", message], { cwd: repoDir });
-      log.info({ repoDir }, "changes committed");
-
-      try {
-        await this.gitRunner.run(["push", "-u", "origin", featureBranch], {
-          cwd: repoDir,
-          timeoutMs: 300_000,
-        });
-        log.info({ featureBranch }, "pushed to GitHub");
-      } finally {
-        await this.gitRunner.run(["remote", "set-url", "origin", remoteUrl], { cwd: repoDir });
-      }
-
-      const pr = await this.createOrFindPullRequest(
-        featureBranch,
-        this.config.targetBranch ?? "main",
-        message.split("\n")[0] || `[VE] Feature branch ${featureBranch}`,
-        message
-      );
-
-      return {
-        changeId: String(pr.number),
-        url: pr.html_url,
-        status: pr.state === "closed" ? (pr.merged ? "MERGED" : "ABANDONED") : "OPEN",
-      };
-    } catch (err: unknown) {
-      const error = err instanceof Error ? err : new Error(String(err));
-      throw new Error(`Failed to push to GitHub: ${redactUrls(error.message.slice(0, 500))}`);
-    }
-  }
-
   /**
    * Push HEAD directly without creating a new commit on the host.
    * Used when the agent has already committed inside the container.
@@ -136,13 +77,8 @@ export class GitHubVcsConnector implements VcsConnector {
   async pushDirect(
     repoDir: string,
     ref: string,
-    _topic?: string,
-    volumeOpts?: VolumeExecOptions
+    _topic?: string
   ): Promise<VcsPushResult> {
-    if (volumeOpts) {
-      return this.pushDirectInVolume(volumeOpts, ref);
-    }
-
     const remoteUrl = (
       await this.gitRunner.run(["remote", "get-url", "origin"], { cwd: repoDir })
     ).stdout.trim();
@@ -169,66 +105,6 @@ export class GitHubVcsConnector implements VcsConnector {
     const body = (
       await this.gitRunner.run(["log", "-1", "--pretty=%b"], { cwd: repoDir })
     ).stdout.trim();
-    const pr = await this.createOrFindPullRequest(
-      ref,
-      this.config.targetBranch ?? "main",
-      subject || `[VE] Push ${ref}`,
-      body
-    );
-
-    return {
-      changeId: String(pr.number),
-      url: pr.html_url,
-      status: pr.state === "closed" ? (pr.merged ? "MERGED" : "ABANDONED") : "OPEN",
-    };
-  }
-
-  private async pushDirectInVolume(volumeOpts: VolumeExecOptions, ref: string): Promise<VcsPushResult> {
-    log.info({ volumeName: volumeOpts.volumeName, ref }, "pushing HEAD directly to GitHub via volume container");
-
-    const cwd = volumeOpts.subPath && volumeOpts.subPath !== "."
-      ? `/workspace/${volumeOpts.subPath}`
-      : "/workspace";
-
-    const httpsRemote = `https://x-access-token:${this.config.token}@${this.config.host}/${this.config.owner}/${this.config.repo}.git`;
-
-    // The agent's coding session (Copilot CLI / gh) may leave a stale `http.<url>.extraheader` in /workspace/.git/config
-    // and/or configure a `credential.helper` (often in the global ~/.gitconfig) for this host,
-    // using a *different* token (e.g. the Copilot integration's own GitHub OAuth token for LLM calls).
-    // Git sends `http.extraheader` regardless of URL-embedded credentials, so a leftover header here
-    // shadows the push credentials below and GitHub rejects the request with a generic auth error.
-    // Clear it and disable any configured credential helper for this push so only the explicit
-    // token embedded in $VE_PUSH_URL is used (mirrors the documented actions/checkout workaround).
-    const pushHost = `https://${this.config.host}/`;
-    const pushResult = await execInVolume({
-      volumeName: volumeOpts.volumeName,
-      image: volumeOpts.image,
-      command: ["bash", "-c", [
-        `cd "${cwd}"`,
-        `git config --unset-all "http.${pushHost}.extraheader" 2>/dev/null || true`,
-        `git checkout -B "$VE_PUSH_REF"`,
-        `git -c credential.helper= push --force -u "$VE_PUSH_URL" "$VE_PUSH_REF"`,
-      ].join(" && ")],
-      env: {
-        VE_PUSH_REF: ref,
-        VE_PUSH_URL: httpsRemote,
-      },
-    });
-
-    if (pushResult.exitCode !== 0) {
-      throw new Error(`Failed to push directly to GitHub (volume): ${redactUrls(pushResult.stderr.slice(0, 500))}`);
-    }
-
-    const logResult = await execInVolume({
-      volumeName: volumeOpts.volumeName,
-      image: volumeOpts.image,
-      command: ["bash", "-c", `cd "${cwd}" && git log -1 --format=%s%n%b`],
-    });
-
-    const lines = logResult.stdout.split("\n");
-    const subject = (lines[0] ?? "").trim();
-    const body = lines.slice(1).join("\n").trim();
-
     const pr = await this.createOrFindPullRequest(
       ref,
       this.config.targetBranch ?? "main",

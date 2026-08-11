@@ -5,6 +5,8 @@ export const CONFIG_SECTIONS = [
   "agents",
   "projects",
   "prompts",
+  "runtime-policies",
+  "denials",
   "users",
   "groups",
   "policies",
@@ -14,7 +16,7 @@ export const CONFIG_SECTIONS = [
 
 export type ConfigSectionId = typeof CONFIG_SECTIONS[number];
 
-type ConfigEntitySection = Exclude<ConfigSectionId, "overview" | "audit" | "system">;
+type ConfigEntitySection = Exclude<ConfigSectionId, "overview" | "audit" | "system" | "denials">;
 type ConfigStandardEntitySection = Exclude<ConfigEntitySection, "oauth">;
 
 export type ConfigRoute =

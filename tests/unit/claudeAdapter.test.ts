@@ -12,8 +12,6 @@ function makeContext(overrides: Partial<TaskContext> = {}): TaskContext {
     acceptanceCriteria: ["Logs must be in JSON format"],
     baseBranch: "main",
     workspacePath: "/workspace",
-    volumeName: "ve-ws-test",
-    homeVolumeName: "ve-home-test",
     constraints: [],
     priorFeedback: [],
     cycleNumber: 1,
@@ -62,8 +60,7 @@ describe("ClaudeAdapter", () => {
       const adapter = new ClaudeAdapter({ model: "sonnet" });
       const spec = adapter.buildContainerSpec(makeContext(), { ANTHROPIC_API_KEY: "sk-ant-key" });
 
-      expect(spec.command).toEqual(["node", "/agent-worker/dist/index.js"]);
-      expect(spec.networkMode).toBe("virtual-engineer_ve-agent-net");
+      expect(spec.command).toEqual(["node", "/app/agent-worker/dist/index.js"]);
       expect(spec.env).toMatchObject({
         AGENT_PROVIDER: "claude",
         CLAUDE_MODEL: "sonnet",
@@ -71,8 +68,6 @@ describe("ClaudeAdapter", () => {
         IS_SANDBOX: "1",
         GIT_AUTHOR_NAME: "Virtual Engineer",
       });
-      expect(spec.additionalDockerArgs).toContain("--read-only");
-      expect(spec.additionalDockerArgs).toContain("ALL");
     });
 
     it("prefers the per-agent model from the session", () => {
@@ -157,10 +152,22 @@ describe("ClaudeAdapter", () => {
         AGENT_PROVIDER: "claude",
         IS_SANDBOX: "1",
         REVIEW_MODE: "1",
-        USER_PROMPT_FILE: "/ve-home/user-prompt.txt",
         SYSTEM_PROMPT: "review sys",
         CLAUDE_MODEL: "opus",
       });
+    });
+
+    it("encodes multiline system prompts for OpenShell environment transport", () => {
+      const adapter = new ClaudeAdapter();
+      const spec = adapter.buildReviewContainerSpec(
+        makeReviewInput({ systemPrompt: "Review carefully.\nReturn structured JSON." })
+      );
+
+      expect(spec.env["SYSTEM_PROMPT"]).toBeUndefined();
+      expect(spec.env["SYSTEM_PROMPT_BASE64"]).toBe(
+        Buffer.from("Review carefully.\nReturn structured JSON.", "utf8").toString("base64")
+      );
+      expect(Object.values(spec.env).every((value) => !/[\r\n]/u.test(value))).toBe(true);
     });
 
     it("maps an API-key agentToken to ANTHROPIC_API_KEY when no explicit authEnv is given", () => {

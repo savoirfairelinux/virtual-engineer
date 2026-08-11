@@ -2,7 +2,37 @@
 
 **Source:** [src/workspace/](../../../src/workspace/).
 
-The workspace module currently owns Docker named-volume materialization for agent runs and the bounded, read-only discovery path used to preview multi-repository manifests before project configuration is changed. `integrationBindingResolver.ts` implements the repository-URL-to-integration matching used by `POST /api/admin/projects/resolve-repositories` (normalized by host, optional port, and path) so a scanned manifest member can be linked back to an existing enabled integration.
+The workspace module owns two unrelated concerns: (a) the **agent runtime** — host-side Git plumbing plus the OpenShell sandbox lifecycle — and (b) the bounded, read-only discovery path used to preview multi-repository manifests before project configuration is changed. `integrationBindingResolver.ts` implements the repository-URL-to-integration matching used by `POST /api/admin/projects/resolve-repositories` (normalized by host, optional port, and path) so a scanned manifest member can be linked back to an existing enabled integration.
+
+## Agent runtime
+
+`openShellWorkspaceRunner.ts` is the **sole** `WorkspaceRunner`. There is no `DockerWorkspaceRunner`, no `dockerVolume.ts`, no `execInVolume()`, and no `ve-ws-*` / `ve-home-*` named volumes.
+
+| File | Role |
+|---|---|
+| `hostGitExecutor.ts` | All host-side Git plumbing: `createWorkspace`, `cloneRepo`, `fetchAndCheckout`, `fetchAndCherryPick`, `execGit`, `rebuildTrustedMetadata`, `destroyWorkspace`, `credentialFreeUrl`. Every `execFile` goes through `trustedGitArgs` / `trustedGitEnv` (`src/utils/gitExec.ts`). |
+| `openShellWorkspaceRunner.ts` | Sandbox lifecycle: create → upload → exec → download → destroy. |
+| `agentWorkerProtocol.ts` | Validates the worker's JSON result envelope at the workspace boundary (`decodeReviewWorkerOutput`). |
+| `skillSources.ts` | Parses `projects.skill_sources_json` and builds `npx skills` arguments — **currently only consumed by admin-side discovery**, see below. |
+
+### Sandbox lifecycle (per cycle)
+
+1. `createWorkspace()` — `HostGitExecutor.createWorkspace()` makes a host scratch dir under `WORKSPACE_BASE_DIR`; the sandbox name is `ve-<taskId>-<8 hex>`; the handle's `containerId` is `openshell:<sandboxName>`.
+2. `prepareProjectWorkspace()` / `cloneRepo()` — clones each push target **on the host** (ordered by `commitOrder`; secondary-target failures are non-fatal) and records a credential-free remote per local path in `trustedRemotes`.
+3. `runAgentInDocker()` (name retained for compatibility) — resolves the policy (`resolvePolicy` → `runtimePolicyResolver`, falling back to `buildDefaultPolicyYaml()`), splits credential env vars into a temporary OpenShell provider (`splitManagedProviderEnv`, recorded in `managed_openshell_providers` **before** remote creation), creates the sandbox with ownership labels, calls `allowEgress` for the adapter's `AgentEgressSpec`, uploads the workspace to `/sandbox` with `noGitIgnore: true`, runs the optional post-clone script **inside** the sandbox, then execs `spec.command` with `workdir = /sandbox/<basename(dir)>`.
+4. Download — the coding flow downloads the sandbox repo path back onto the host dir, then `restoreTrustedRemotes()` rebuilds `.git` config/hooks/attributes/alternates from the recorded host-trusted remotes. `runReviewInDocker()` uploads only; nothing is downloaded back.
+5. `destroyWorkspace()` — removes the sandbox, then the temporary provider, clears the ledger row, and finally deletes the host directory.
+
+Additional invariants:
+
+- `listTrustedRepoPaths(handle)` returns only sub-paths VE itself cloned. `Orchestrator.pushProjectChanges()` refuses to run git anywhere else, so an agent-authored directory never receives push credentials.
+- Sandbox paths: `/sandbox` (writable workspace root), `/tmp/user-prompt.txt` (`USER_PROMPT_FILE`), `/app/agent-worker/` (worker runtime, read-only). `/workspace` and `/ve-home` do not exist.
+- `collectPolicyDenials()` runs in a `finally` after every attempt: bounded `getSandboxLogs({ lines: 200, since: "75m" })` with a 30 s abort, parsed by `parseDenialEvent` (`src/openshell/denialEvents.ts`), deduplicated per sandbox by a fingerprint cache capped at 1 000 raw lines, and persisted through the injected `recordDenial` sink. There is no `denyEventPoller.ts`, no `pollDenials()`, and no `DenialSource`.
+- `execTimeoutSec` (from `AGENT_TIMEOUT_MS`) is passed to `sandbox exec --timeout`.
+
+### External skill sources — known regression
+
+`projects.skill_sources_json` is still persisted, still editable in the admin UI, and still forwarded onto `AgentSession.skillSourcesJson`, but **nothing installs those skills into the agent runtime**. The `npx skills` install step lived in the deleted Docker runner and has no OpenShell replacement; `agent-worker/` contains no skill-install code. `skillSources.ts` remains only as a parsing/URL-resolution helper for `src/admin/skillSourceDiscovery.ts` (listing skills for the project form). Tracked as a follow-up — do not document skill sources as reaching the agent.
 
 ## Manifest scan pipeline
 

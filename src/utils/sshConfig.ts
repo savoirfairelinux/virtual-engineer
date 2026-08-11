@@ -4,7 +4,7 @@
  * Any provider descriptor that needs SSH connectivity should extend this
  * schema with `.extend({})` rather than re-declaring the common fields.
  * This guarantees consistent field names across providers and lets generic
- * helpers (`sshKeyResolver`, `dockerVolume`, etc.) rely on a single source
+ * helpers (`sshKeyResolver`, the VCS connectors, etc.) rely on a single source
  * of truth for SSH config field names.
  *
  * Two authentication modes are supported (mutually exclusive by priority):

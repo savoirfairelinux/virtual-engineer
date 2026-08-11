@@ -12,8 +12,6 @@ function makeContext(overrides: Partial<TaskContext> = {}): TaskContext {
     acceptanceCriteria: ["Logs must be in JSON format"],
     baseBranch: "main",
     workspacePath: "/workspace",
-    volumeName: "ve-ws-test",
-    homeVolumeName: "ve-home-test",
     constraints: [],
     priorFeedback: [],
     cycleNumber: 1,
@@ -63,16 +61,13 @@ describe("GooseAdapter", () => {
       const adapter = new GooseAdapter({ model: "claude-sonnet-4-5" });
       const spec = adapter.buildContainerSpec(makeContext());
 
-      expect(spec.command).toEqual(["node", "/agent-worker/dist/index.js"]);
-      expect(spec.networkMode).toBe("virtual-engineer_ve-agent-net");
+      expect(spec.command).toEqual(["node", "/app/agent-worker/dist/index.js"]);
       expect(spec.env).toMatchObject({
         AGENT_PROVIDER: "goose",
         GOOSE_MODEL: "claude-sonnet-4-5",
         ANTHROPIC_API_KEY: "sk-ant-key",
         GIT_AUTHOR_NAME: "Virtual Engineer",
       });
-      expect(spec.additionalDockerArgs).toContain("--read-only");
-      expect(spec.additionalDockerArgs).toContain("ALL");
     });
 
     it("prefers the per-agent model from the session", () => {
@@ -118,6 +113,30 @@ describe("GooseAdapter", () => {
       const spec = adapter.buildContainerSpec(ctx);
       expect(spec.env["OLLAMA_HOST"]).toBe("http://host.docker.internal:11434");
       expect(spec.env["OPENAI_API_KEY"]).toBeUndefined();
+      // Egress must target the Ollama port, not the default 443.
+      expect(spec.egress).toEqual({
+        hosts: ["host.docker.internal:11434"],
+        binaries: ["/usr/local/bin/goose"],
+      });
+    });
+
+    it("emits a bare egress host for a default-port provider", () => {
+      const adapter = new GooseAdapter();
+
+      expect(adapter.buildContainerSpec(makeContext()).egress).toEqual({
+        hosts: ["api.anthropic.com"],
+        binaries: ["/usr/local/bin/goose"],
+      });
+    });
+
+    it("contributes no egress host for a non-URL API base", () => {
+      const adapter = new GooseAdapter();
+      const ctx = makeContext();
+      ctx.agentSession.gooseProvider = "ollama";
+      ctx.agentSession.gooseApiBase = "localhost:11434";
+      delete ctx.agentSession.gooseApiKey;
+
+      expect(adapter.buildContainerSpec(ctx).egress).toBeUndefined();
     });
 
     it("maps openrouter provider to OPENROUTER_API_KEY", () => {
@@ -268,7 +287,6 @@ describe("GooseAdapter", () => {
       expect(spec.env).toMatchObject({
         AGENT_PROVIDER: "goose",
         REVIEW_MODE: "1",
-        USER_PROMPT_FILE: "/ve-home/user-prompt.txt",
         SYSTEM_PROMPT: "review sys",
         GOOSE_MODEL: "claude-sonnet-4-5",
         ANTHROPIC_API_KEY: "sk-ant-key",

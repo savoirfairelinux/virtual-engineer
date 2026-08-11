@@ -1,55 +1,18 @@
 /**
  * GerritVcsConnector — SSH-based clone and push for Gerrit.
- * Pushes to `refs/for/<branch>` with a Change-Id trailer; all operations run inside Docker volumes.
+ * Pushes to `refs/for/<branch>` with a Change-Id trailer; all git operations run host-side.
  */
 
-import { createHash } from "crypto";
 import { getLogger } from "../logger.js";
-import type { VcsConnector, VcsPushResult, VolumeExecOptions } from "./vcsConnector.js";
+import { trustedGitEnv } from "../utils/gitExec.js";
+import type { VcsConnector, VcsPushResult } from "./vcsConnector.js";
 import type { PatchsetCheckoutOptions, ReviewComment } from "../interfaces.js";
-import { execInVolume } from "../workspace/dockerVolume.js";
 import { GerritSshClient, buildSshHostKeyOptions } from "../connectors/gerritSshClient.js";
 import { buildGerritTopic } from "./branchNaming.js";
 import type { GitRunner } from "./gitRunner.js";
 import { NodeGitRunner } from "./nodeGitRunner.js";
 
 const log = getLogger("gerrit-vcs");
-
-/**
- * Generate a Gerrit-style Change-Id ("I" followed by 40 hex chars).
- */
-function generateChangeId(seed: string): string {
-  const hash = createHash("sha1")
-    .update(`change-id-seed:${seed}\n${Date.now()}\n${Math.random()}`)
-    .digest("hex");
-  return `I${hash}`;
-}
-
-/**
- * Ensures the Change-Id trailer is in the last paragraph (footer) of the commit message.
- * Gerrit rejects pushes where Change-Id appears outside the footer; this function moves it there.
- */
-function ensureChangeIdInFooter(message: string, changeId?: string): string {
-  const existingMatch = message.match(/^Change-Id:\s*(\S+)/m);
-  const existingId = existingMatch?.[1];
-
-  const stripped = message
-    .replace(/^Change-Id:[^\n]*\n?/gm, "")
-    .replace(/\n{3,}/g, "\n\n")
-    .trimEnd();
-
-  const finalId = changeId ?? existingId ?? generateChangeId(stripped);
-
-  const lastParaMatch = stripped.match(/\n\n([^\n][\s\S]*)$/);
-  const lastPara = lastParaMatch?.[1] ?? "";
-  const isTrailerBlock =
-    lastPara.length > 0 &&
-    lastPara.split("\n").every((line) => /^[A-Za-z][A-Za-z0-9-]*:/.test(line));
-
-  return isTrailerBlock
-    ? `${stripped}\nChange-Id: ${finalId}`
-    : `${stripped}\n\nChange-Id: ${finalId}`;
-}
 
 export interface GerritVcsConnectorConfig {
   /** Optional Gerrit web URL used only to build clickable review links. */
@@ -82,10 +45,9 @@ function buildSshCommand(config: GerritVcsConnectorConfig, overrideSshKeyPath?: 
 
 /** Build the process env object that injects GIT_SSH_COMMAND for Gerrit operations. */
 function buildGitEnv(config: GerritVcsConnectorConfig, overrideSshKeyPath?: string): NodeJS.ProcessEnv {
-  return {
-    ...process.env,
+  return trustedGitEnv({
     GIT_SSH_COMMAND: buildSshCommand(config, overrideSshKeyPath),
-  };
+  });
 }
 
 /** Append Gerrit push options to a ref, preserving any options already present. */
@@ -149,8 +111,11 @@ export class GerritVcsConnector implements VcsConnector {
   /** Resolve a Change-Id to PatchsetCheckoutOptions by querying Gerrit via SSH. */
   async resolvePatchsetOptions(changeId: string): Promise<PatchsetCheckoutOptions> {
     const info = await this.sshClient.queryChange(changeId);
+    // Build the SSH fetch URL from connection params — config.baseUrl is the Gerrit
+    // web UI URL (optional, used only for review links) and must NOT be used here.
+    const sshBaseUrl = `ssh://${this.config.sshUser}@${this.config.sshHost}:${this.config.sshPort}`;
     return {
-      vcsBaseUrl: this.config.baseUrl ?? "",
+      vcsBaseUrl: sshBaseUrl,
       revisionNumber: info.number,
       patchset: info.currentPatchSet?.number ?? 1,
       ...(this.config.sshKeyPath !== undefined ? { sshKeyPath: this.config.sshKeyPath } : {}),
@@ -193,70 +158,6 @@ export class GerritVcsConnector implements VcsConnector {
   }
 
   /**
-   * Push changes to Gerrit via SSH.
-   * Configures git identity, commits changes, and pushes to refs/for/<branch>.
-   */
-  async push(
-    repoDir: string,
-    ref: string,
-    message: string,
-    changeId?: string,
-    volumeOpts?: VolumeExecOptions,
-    reviewerEmails?: string[]
-  ): Promise<VcsPushResult> {
-    const commitMessage = ensureChangeIdInFooter(message, changeId);
-
-    if (volumeOpts) {
-      return this.pushInVolume(volumeOpts, ref, commitMessage, reviewerEmails);
-    }
-
-    log.info(
-      { repoDir, ref, changeId },
-      "preparing to push to Gerrit"
-    );
-
-    try {
-      // Configure git identity
-      await this.gitRunner.run(["config", "user.name", this.config.gitAuthorName], { cwd: repoDir });
-      await this.gitRunner.run(["config", "user.email", this.config.gitAuthorEmail], { cwd: repoDir });
-
-      // Stage all changes
-      await this.gitRunner.run(["add", "-A"], { cwd: repoDir });
-
-      // Commit
-      await this.gitRunner.run(["commit", "-m", commitMessage], { cwd: repoDir });
-      log.info({ repoDir }, "changes committed");
-
-      // Push to Gerrit
-      await this.gitRunner.run(
-        ["push", "origin", `HEAD:${appendGerritPushOptions(ref, undefined, reviewerEmails)}`],
-        {
-          cwd: repoDir,
-          env: buildGitEnv(this.config),
-          timeoutMs: 300_000,
-        }
-      );
-      log.info({ ref }, "pushed to Gerrit");
-
-      // Extract Change-Id from the message
-      const changeIdMatch = commitMessage.match(/Change-Id:\s*(\S+)/);
-      const extractedChangeId = changeIdMatch?.[1] ?? changeId ?? "unknown";
-
-      const url = this.config.baseUrl ? `${this.config.baseUrl}/c/${extractedChangeId}` : "";
-
-      return {
-        changeId: extractedChangeId,
-        url,
-        status: "OPEN",
-      };
-    } catch (err: unknown) {
-      const error = err instanceof Error ? err : new Error(String(err));
-      throw new Error(`Failed to push to Gerrit: ${error.message.slice(0, 500)}`);
-    }
-  }
-
-
-  /**
    * Push HEAD directly to Gerrit without creating a new commit on the host.
    * Used when the agent has already created N commits inside the container.
    * Each commit becomes a separate Gerrit change, grouped by topic.
@@ -265,13 +166,8 @@ export class GerritVcsConnector implements VcsConnector {
     repoDir: string,
     ref: string,
     topic?: string,
-    volumeOpts?: VolumeExecOptions,
     reviewerEmails?: string[]
   ): Promise<VcsPushResult> {
-    if (volumeOpts) {
-      return this.pushDirectInVolume(volumeOpts, ref, topic, reviewerEmails);
-    }
-
     log.info({ repoDir, ref, topic }, "pushing HEAD directly to Gerrit (agent-created commits)");
 
     try {
@@ -302,101 +198,6 @@ export class GerritVcsConnector implements VcsConnector {
       const error = err instanceof Error ? err : new Error(String(err));
       throw new Error(`Failed to push directly to Gerrit: ${error.message.slice(0, 500)}`);
     }
-  }
-
-  // ─── Volume-based push helpers ──────────────────────────────────────────────
-
-  /** Stage, commit and push via a helper container that mounts the named Docker volume. */
-  private async pushInVolume(
-    volumeOpts: VolumeExecOptions,
-    ref: string,
-    commitMessage: string,
-    reviewerEmails?: string[]
-  ): Promise<VcsPushResult> {
-    log.info({ volumeName: volumeOpts.volumeName, ref }, "pushing to Gerrit via volume container");
-
-    const encodedMsg = Buffer.from(commitMessage).toString("base64");
-    const cwd = volumeOpts.subPath && volumeOpts.subPath !== "."
-      ? `/workspace/${volumeOpts.subPath}`
-      : "/workspace";
-    const pushRef = appendGerritPushOptions(ref, undefined, reviewerEmails);
-
-    const result = await execInVolume({
-      volumeName: volumeOpts.volumeName,
-      image: volumeOpts.image,
-      command: ["bash", "-c", [
-        `cd "${cwd}"`,
-        `git config user.name "$VE_GIT_NAME"`,
-        `git config user.email "$VE_GIT_EMAIL"`,
-        `git add -A`,
-        `echo "$VE_COMMIT_MSG_B64" | base64 -d > /tmp/ve-commit-msg.txt`,
-        `git commit -F /tmp/ve-commit-msg.txt`,
-        `git push origin "HEAD:$VE_PUSH_REF"`,
-      ].join(" && ")],
-      sshKeyPath: this.config.sshKeyPath,
-      ...(this.config.sshKnownHostsPath !== undefined ? { sshKnownHostsPath: this.config.sshKnownHostsPath } : {}),
-      env: {
-        VE_GIT_NAME: this.config.gitAuthorName,
-        VE_GIT_EMAIL: this.config.gitAuthorEmail,
-        VE_COMMIT_MSG_B64: encodedMsg,
-        VE_PUSH_REF: pushRef,
-      },
-    });
-
-    if (result.exitCode !== 0) {
-      throw new Error(`Failed to push to Gerrit (volume): ${result.stderr.slice(0, 500)}`);
-    }
-
-    const changeIdMatch = commitMessage.match(/Change-Id:\s*(\S+)/);
-    const extractedChangeId = changeIdMatch?.[1] ?? "unknown";
-    const url = this.config.baseUrl ? `${this.config.baseUrl}/c/${extractedChangeId}` : "";
-
-    return { changeId: extractedChangeId, url, status: "OPEN" };
-  }
-
-  /** Push HEAD directly to Gerrit from inside the named Docker volume (no new commit created). */
-  private async pushDirectInVolume(
-    volumeOpts: VolumeExecOptions,
-    ref: string,
-    topic?: string,
-    reviewerEmails?: string[]
-  ): Promise<VcsPushResult> {
-    log.info({ volumeName: volumeOpts.volumeName, ref, topic }, "pushing HEAD directly to Gerrit via volume container");
-
-    const pushRef = `HEAD:${appendGerritPushOptions(ref, topic, reviewerEmails)}`;
-
-    const cwd = volumeOpts.subPath && volumeOpts.subPath !== "."
-      ? `/workspace/${volumeOpts.subPath}`
-      : "/workspace";
-
-    const pushResult = await execInVolume({
-      volumeName: volumeOpts.volumeName,
-      image: volumeOpts.image,
-      command: ["bash", "-c", `cd "${cwd}" && git push origin "${pushRef}"`],
-      sshKeyPath: this.config.sshKeyPath,
-      ...(this.config.sshKnownHostsPath !== undefined ? { sshKnownHostsPath: this.config.sshKnownHostsPath } : {}),
-      env: {},
-    });
-
-    if (pushResult.exitCode !== 0) {
-      throw new Error(`Failed to push directly to Gerrit (volume): ${pushResult.stderr.slice(0, 500)}`);
-    }
-
-    // Extract Change-Id from HEAD commit
-    const logResult = await execInVolume({
-      volumeName: volumeOpts.volumeName,
-      image: volumeOpts.image,
-      command: ["bash", "-c", `cd "${cwd}" && git log -1 --format=%b`],
-    });
-
-    const changeIdMatch = logResult.stdout.match(/^Change-Id:\s*(\S+)/m);
-    const changeId = changeIdMatch?.[1] ?? "unknown";
-
-    return {
-      changeId,
-      url: this.config.baseUrl ? `${this.config.baseUrl}/c/${changeId}` : "",
-      status: "OPEN",
-    };
   }
 
   /**

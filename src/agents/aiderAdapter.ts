@@ -22,6 +22,8 @@ import {
   buildCodegenContainerSpec,
   buildReviewContainerSpec as buildSharedReviewContainerSpec,
 } from "./containerSpecBuilders.js";
+import { aiderEgress } from "./backendEgress.js";
+import { egressOption } from "./containerSpecBuilders.js";
 import { createStderrPipeline } from "./agentStderrPipeline.js";
 import type { StderrParseState } from "./agentStderrPipeline.js";
 
@@ -59,8 +61,6 @@ export interface AiderAdapterConfig {
   maxRepositoryContextBytes: number;
   maxCommitsPerCycle: number;
   promptsDir?: string | undefined;
-  /** Docker network for agent/review containers. Defaults to `virtual-engineer_ve-agent-net`. */
-  dockerNetwork?: string | undefined;
 }
 
 interface DockerInvocationResult {
@@ -175,11 +175,11 @@ export class AiderAdapter implements AgentAdapter, ConfigurableAdapter {
       maxRepositoryContextBytes: this.config.maxRepositoryContextBytes,
       maxCommitsPerCycle: this.config.maxCommitsPerCycle,
       promptsDir: this.config.promptsDir,
-      dockerNetwork: this.config.dockerNetwork,
+      ...egressOption(aiderEgress(session.aiderBackend, session.aiderApiBase)),
     });
   }
 
-  /** Builds a container spec for review mode (REVIEW_MODE=1). Reads prompt from /ve-home/user-prompt.txt. */
+  /** Builds a container spec for review mode (REVIEW_MODE=1). Reads the prompt from the file the runner uploads into the sandbox. */
   buildReviewContainerSpec(
     input: ReviewWorkspaceInput,
     authEnv: Record<string, string> = {}
@@ -198,7 +198,7 @@ export class AiderAdapter implements AgentAdapter, ConfigurableAdapter {
 
     return buildSharedReviewContainerSpec(input, {
       providerEnv,
-      dockerNetwork: this.config.dockerNetwork,
+      ...egressOption(aiderEgress(input.aiderBackend, input.aiderApiBase)),
     });
   }
 

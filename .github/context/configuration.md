@@ -48,14 +48,25 @@ There is no `PUBLIC_BASE_URL` env var in `ConfigSchema`; a `publicBaseUrl` value
 | `MAX_REVIEW_REPLIES` | `20` | Max discussion-thread replies VE posts per review pass. |
 | `REVIEW_MIN_SEVERITY` | `info` | Minimum severity (`nit` < `info` < `warning` < `error`) for an inline comment; lower severities are folded into the summary. |
 
-### Docker / workspace
+### Agent runtime / workspace
 
 | Var | Default | Notes |
 |---|---|---|
-| `AGENT_CONTAINER_IMAGE` | `virtual-engineer-workspace:latest` | |
-| `AGENT_DOCKER_NETWORK` | `virtual-engineer_ve-agent-net` | Bridge network attached to agent containers. |
-| `SKILLS_CLI_PACKAGE` | `skills@1.5.16` | `npx` package used to list/install configured remote skill sources. Read directly via `process.env` in `skillSourceDiscovery.ts` / `workspace/skillSources.ts` — **not** part of `ConfigSchema`/`AppConfig`. |
-| `WORKSPACE_BASE_DIR` | `/tmp/virtual-engineer/workspaces` | Scratch space for host-side review diffs; agent workspaces use Docker **named volumes** (`/workspace` + `/ve-home`), not host bind mounts. |
+| `AGENT_CONTAINER_IMAGE` | `virtual-engineer-workspace:latest` | Image the OpenShell sandbox is created from (`sandbox create --from`). |
+| `WORKSPACE_BASE_DIR` | `/tmp/virtual-engineer/workspaces` | Host scratch directory for the per-task git workspace. The workspace is uploaded into the sandbox at `/sandbox` and (for coding runs) downloaded back; there are no Docker named volumes or bind mounts. |
+
+There is **no** `AGENT_DOCKER_NETWORK` variable — sandbox egress is opened per run through OpenShell (`allowEgress`), not by attaching a Docker bridge network. `ConfigSchema` / `fromEnv()` cover exactly the 21 keys in the four tables above; nothing else in `src/config.ts` is env-backed.
+
+### Read outside `ConfigSchema`
+
+These are read directly from `process.env` and are **not** part of `AppConfig`:
+
+| Var | Default | Read by | Notes |
+|---|---|---|---|
+| `SKILLS_CLI_PACKAGE` | `skills@1.5.16` | `src/admin/skillSourceDiscovery.ts`, `src/workspace/skillSources.ts` | `npx` package used to **list** installable skills for the project form. Installation into the agent runtime no longer happens — see the regression note in [architecture.md](architecture.md#external-skill-sources-known-regression). |
+| `OPENSHELL_GATEWAY` / `OPENSHELL_GATEWAY_ENDPOINT` | — | `src/runtime/runtimeStartup.ts` (`resolveOpenShellGateway`) | Gateway endpoint used for the startup health probe; `OPENSHELL_GATEWAY` wins. |
+| `OPENSHELL_OIDC_CLIENT_SECRET` | — | `src/index.ts` | Presence enables the OpenShell client-credentials re-login path. |
+| `SSH_AUTH_SOCK` | — | `src/admin/adminIntegrationRoutes.ts`, `src/admin/skillSourceDiscovery.ts` | Host-side SSH agent for admin-side discovery/validation only; never forwarded into a sandbox. |
 
 ## Boot-time validation
 

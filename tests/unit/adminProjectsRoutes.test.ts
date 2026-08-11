@@ -4,7 +4,7 @@ import { SqliteStateStore } from "../../src/state/stateStore.js";
 import { createAdminServer, type AdminServerDependencies } from "../../src/admin/adminServer.js";
 import { Router } from "../../src/admin/router.js";
 import { registerProjectRoutes, type SkillSource } from "../../src/admin/adminProjectsRoutes.js";
-import { makeProjectId, type AgentRecord, type AgentType } from "../../src/interfaces.js";
+import { makeProjectId, makeTaskId, makeTicketId, type AgentRecord, type AgentType } from "../../src/interfaces.js";
 import { registerBuiltinPlugins } from "../../src/plugins/init.js";
 import { tempDatabasePath } from "./helpers/tempDatabase.js";
 
@@ -38,7 +38,7 @@ function makeDeps(
 ): AdminServerDependencies {
   return {
     stateStore: {
-      getActiveTasks: vi.fn(async () => []),
+      getActiveTasks: vi.fn(() => store.getActiveTasks()),
       getAllTasks: vi.fn(async () => []),
       getTask: vi.fn(async () => null),
       getAgentCycles: vi.fn(async () => []),
@@ -1235,6 +1235,69 @@ FetchContent_Declare(googletest
     expect(noTicket.status).toBe(400);
   });
 
+  it.each(["../outside", "/absolute/path", "libs/../../outside"])(
+    "POST / rejects push-target paths outside the workspace: %s",
+    async (localPath) => {
+      const agent = await makeAgent(store, "coding");
+      const r = await rest(server, "/api/admin/projects", {
+        method: "POST",
+        body: {
+          type: "coding",
+          name: "Unsafe path",
+          agentId: agent.id,
+          ticketSource: { integrationId: "tickets", ticketProjectKey: "P" },
+          pushTargets: [{
+            integrationId: "git",
+            repoKey: "repo",
+            cloneUrl: "https://host/repo.git",
+            targetBranch: "main",
+            role: "primary",
+            commitOrder: 1,
+            localPath,
+          }],
+        },
+      });
+      expect(r.status).toBe(400);
+      expect(JSON.stringify(r.body)).toMatch(/localPath|workspace/i);
+    },
+  );
+
+  it("POST / rejects push targets that normalize to the same workspace path", async () => {
+    const agent = await makeAgent(store, "coding");
+    const r = await rest(server, "/api/admin/projects", {
+      method: "POST",
+      body: {
+        type: "coding", name: "Duplicate paths", agentId: agent.id,
+        ticketSource: { integrationId: "tickets", ticketProjectKey: "P" },
+        pushTargets: [
+          { integrationId: "git", repoKey: "one", cloneUrl: "https://host/one.git", targetBranch: "main", role: "primary", commitOrder: 1, localPath: "repo" },
+          { integrationId: "git", repoKey: "two", cloneUrl: "https://host/two.git", targetBranch: "main", role: "related", commitOrder: 2, localPath: "libs/../repo" },
+        ],
+      },
+    });
+    expect(r.status).toBe(400);
+    expect(JSON.stringify(r.body)).toMatch(/duplicate localPath/i);
+  });
+
+  it("POST / rejects ssh protocol URLs for HTTPS-only integrations", async () => {
+    const agent = await makeAgent(store, "coding");
+    await seedIntegration(store, "github-1", "github");
+    const r = await rest(server, "/api/admin/projects", {
+      method: "POST",
+      body: {
+        type: "coding", name: "SSH GitHub", agentId: agent.id,
+        ticketSource: { integrationId: "tickets", ticketProjectKey: "P" },
+        pushTargets: [{
+          integrationId: "github-1", repoKey: "owner/repo",
+          cloneUrl: "ssh://git@github.com/owner/repo.git", targetBranch: "main",
+          role: "primary", commitOrder: 1, localPath: ".",
+        }],
+      },
+    });
+    expect(r.status).toBe(400);
+    expect(JSON.stringify(r.body)).toMatch(/SSH clone URL/i);
+  });
+
   it("POST / review requires reviewConfig", async () => {
     const agent = await makeAgent(store, "review");
     const r = await rest(server, "/api/admin/projects", {
@@ -1297,6 +1360,31 @@ FetchContent_Declare(googletest
     expect(r.body?.["error"]).toBe(
       "skillDiscoveryEnabled has been removed; omit it from project payloads"
     );
+  });
+
+  it("PUT /:id rejects agent reassignment while the project has active tasks", async () => {
+    const originalAgent = await makeAgent(store, "coding");
+    const replacementAgent = await makeAgent(store, "coding");
+    await seedIntegration(store, "redmine-1");
+    await seedIntegration(store, "gerrit-1", "gerrit");
+    const created = await rest(server, "/api/admin/projects", {
+      method: "POST",
+      body: {
+        type: "coding", name: "Active", agentId: originalAgent.id,
+        ticketSource: { integrationId: "redmine-1", ticketProjectKey: "K" },
+        pushTargets: [{ integrationId: "gerrit-1", repoKey: "r", cloneUrl: "u", targetBranch: "main", role: "primary", commitOrder: 1, localPath: "." }],
+      },
+    });
+    const id = (created.body?.["project"] as Record<string, unknown>)["id"] as string;
+    await store.createTask(makeTaskId("active-agent-change"), makeTicketId("42"), undefined, undefined, undefined, undefined, undefined, undefined, id as import("../../src/interfaces.js").ProjectId);
+
+    const response = await rest(server, `/api/admin/projects/${id}`, {
+      method: "PUT",
+      body: { agentId: replacementAgent.id },
+    });
+
+    expect(response.status).toBe(409);
+    expect((await store.getProjectById(id as import("../../src/interfaces.js").ProjectId))?.agentId).toBe(originalAgent.id);
   });
 
   it("PUT /:id preserves local skill loading when remote skill sources are configured", async () => {

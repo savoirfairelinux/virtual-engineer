@@ -60,7 +60,6 @@ describe("createGooseDescriptor", () => {
   it("buildAdapter returns a GooseAdapter", () => {
     const adapter = descriptor.capabilities.agent_execution!.buildAdapter!({
       maxCommitsPerCycle: 7,
-      dockerNetwork: "ve-net",
     });
     expect(adapter.name).toBe("goose");
   });

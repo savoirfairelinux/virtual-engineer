@@ -25,7 +25,6 @@ const mockWorkspace = {
     taskId,
     hostWorkspacePath: "/tmp/x",
     containerId: "c",
-    volumeName: "v",
   })),
   cloneRepo: vi.fn(async () => ({ success: false, error: "boom" })), // force FAILED
   runAgent: vi.fn(),
@@ -104,7 +103,8 @@ describe("Orchestrator — Phase 6 concurrency gating", () => {
       agentStore: { getAgentById: (id) => store.getAgentById(id) },
     });
     // Saturate the integration slot externally.
-    expect(await tracker.acquire(project.id, project.agentId)).toBe(true);
+    const externalLease = await tracker.acquire(project.id, project.agentId);
+    expect(externalLease).not.toBeNull();
 
     const orch = buildOrchestrator(store, tracker);
     await orch.startTaskForProject(
@@ -116,6 +116,7 @@ describe("Orchestrator — Phase 6 concurrency gating", () => {
     const existing = await store.getTaskByTicketId("ticket-1" as TicketId);
     expect(existing).not.toBeNull();
     expect(tracker.snapshot().global).toBeGreaterThanOrEqual(0);
+    tracker.release(externalLease!);
   });
 
   it("continueTask remains safe after a prior startTaskForProject run", async () => {
@@ -123,7 +124,8 @@ describe("Orchestrator — Phase 6 concurrency gating", () => {
     const tracker = createConcurrencyTracker({
       agentStore: { getAgentById: (id) => store.getAgentById(id) },
     });
-    expect(await tracker.acquire(project.id, project.agentId)).toBe(true);
+    const externalLease = await tracker.acquire(project.id, project.agentId);
+    expect(externalLease).not.toBeNull();
 
     const orch = buildOrchestrator(store, tracker);
     await orch.startTaskForProject(
@@ -135,7 +137,7 @@ describe("Orchestrator — Phase 6 concurrency gating", () => {
     const first = await store.getTaskByTicketId("ticket-2" as TicketId);
     expect(first).not.toBeNull();
 
-    tracker.release(project.id, project.agentId);
+    tracker.release(externalLease!);
     await orch.continueTask(first!.taskId);
 
     const task = await store.getTaskByTicketId("ticket-2" as TicketId);
@@ -186,6 +188,29 @@ describe("Orchestrator — Phase 6 concurrency gating", () => {
     expect(tracker.snapshot()).toEqual({ global: 0, perProject: {}, perAgent: {} });
   });
 
+  it("releases a slot when ticket resolution fails before cycle creation", async () => {
+    const project = await seedProjectAndAgent(store, { agentMax: 1 });
+    const tracker = createConcurrencyTracker({
+      agentStore: { getAgentById: (id) => store.getAgentById(id) },
+    });
+    const orch = buildOrchestrator(store, tracker);
+    const failingTask = await store.createTask(
+      `task-${randomUUID()}` as never,
+      "missing-ticket" as TicketId,
+      "x",
+      "",
+      "redmine:missing",
+      undefined,
+    );
+    await store.setTaskProjectId(failingTask.taskId, project.id);
+
+    await expect(
+      (orch as unknown as { runAgentCycle: (task: Task) => Promise<void> }).runAgentCycle(failingTask),
+    ).rejects.toThrow();
+
+    expect(tracker.snapshot()).toEqual({ global: 0, perProject: {}, perAgent: {} });
+  });
+
   it("resumeStalledCodeGenTask advances a CONTEXT_BUILDING task once the slot frees up", async () => {
     const project = await seedProjectAndAgent(store, { agentMax: 1 });
     const tracker = createConcurrencyTracker({
@@ -206,13 +231,14 @@ describe("Orchestrator — Phase 6 concurrency gating", () => {
     await store.transition(task.taskId, "CONTEXT_BUILDING");
 
     // Slot saturated externally → resume defers without advancing the task.
-    expect(await tracker.acquire(project.id, project.agentId)).toBe(true);
+    const lease = await tracker.acquire(project.id, project.agentId);
+    expect(lease).not.toBeNull();
     await orch.resumeStalledCodeGenTask(task.taskId);
     expect((await store.getTask(task.taskId))!.state).toBe("CONTEXT_BUILDING");
 
     // Free the slot → next resume drives the cycle to completion (FAILED here
     // because the mock workspace cannot clone), and releases the slot.
-    tracker.release(project.id, project.agentId);
+    tracker.release(lease!);
     await orch.resumeStalledCodeGenTask(task.taskId);
     expect((await store.getTask(task.taskId))!.state).toBe("FAILED");
     expect(tracker.snapshot()).toEqual({ global: 0, perProject: {}, perAgent: {} });
@@ -245,11 +271,15 @@ describe("Orchestrator — Phase 6 concurrency gating", () => {
     internal.runFromContextBuilding = runFromContextBuilding;
 
     const firstRun = internal.runWorkflow(stalledTask);
-    await internal.runWorkflow(stalledTask);
+    await vi.waitFor(() => expect(runFromContextBuilding).toHaveBeenCalledTimes(1));
+    // A second trigger joins the in-flight workflow instead of starting a
+    // second drive of the same task.
+    const secondRun = internal.runWorkflow(stalledTask);
 
     expect(runFromContextBuilding).toHaveBeenCalledTimes(1);
     finishFirstRun!();
-    await firstRun;
+    await Promise.all([firstRun, secondRun]);
+    expect(runFromContextBuilding).toHaveBeenCalledTimes(1);
   });
 
   it("resumeStalledCodeGenTask is a no-op for non-stalled or code-review tasks", async () => {

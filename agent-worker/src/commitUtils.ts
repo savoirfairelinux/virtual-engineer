@@ -5,7 +5,7 @@
  *  1. Functions can be imported directly by tests (no duplication).
  *  2. The logic is covered by TypeScript strict checks.
  *
- * These run inside the agent container (committed commits in /workspace)
+ * These run inside the agent container (committed commits in /sandbox)
  * as well as on the host in unit tests against real temp git repos.
  */
 import { execFileSync } from 'child_process';

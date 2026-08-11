@@ -74,6 +74,7 @@ function makeStore(
     getProjectById: vi.fn(async () => project),
     listProjects: vi.fn(async () => [project]),
     updateProject: vi.fn(async () => project),
+    updateProjectConfiguration: vi.fn(async () => project),
     deleteProject: vi.fn(),
     setProjectEnabled: vi.fn(),
     setProjectTicketSource: vi.fn(async () => ({}) as never),

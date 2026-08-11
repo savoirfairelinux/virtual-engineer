@@ -78,7 +78,21 @@ export function parseReviewResult(raw: string, providerKind = "gerrit"): ReviewA
         typeof fallbackJson === "object" &&
         fallbackJson !== null &&
         !Array.isArray(fallbackJson) &&
-        (fallbackJson as Record<string, unknown>)["status"] !== "failed"
+        (fallbackJson as Record<string, unknown>)["status"] === "failed"
+      ) {
+        const summary = (fallbackJson as Record<string, unknown>)["summary"];
+        throw new ReviewResultParseError(
+          typeof summary === "string" && summary.trim()
+            ? summary
+            : "Agent worker reported a failed review execution",
+          raw
+        );
+      }
+      if (
+        fallbackJson !== undefined &&
+        typeof fallbackJson === "object" &&
+        fallbackJson !== null &&
+        !Array.isArray(fallbackJson)
       ) {
         const fallbackParsed = parseReviewPayload(providerKind, fallbackJson);
         if (fallbackParsed) {

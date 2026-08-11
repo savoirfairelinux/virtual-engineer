@@ -170,7 +170,6 @@ export function createGooseDescriptor(_adminAuthSecret?: string): ProviderDescri
         buildAdapter: (context) =>
           new GooseAdapter({
             maxCommitsPerCycle: context.maxCommitsPerCycle,
-            dockerNetwork: context.dockerNetwork,
           }),
       },
     },

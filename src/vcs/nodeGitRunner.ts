@@ -1,6 +1,7 @@
 import { execFile } from "child_process";
 import type { ExecFileException } from "child_process";
 import { redactUrls } from "../utils/redactUrl.js";
+import { trustedGitArgs, trustedGitEnv } from "../utils/gitExec.js";
 import {
   GitCommandError,
   type GitCommandFailureReason,
@@ -16,17 +17,21 @@ interface NodeGitRunnerOptions {
   executable?: string | undefined;
   defaultTimeoutMs?: number | undefined;
   defaultMaxBufferBytes?: number | undefined;
+  /** Disable the git hardening prefix/env. Only for tests that spawn a non-git executable. */
+  hardened?: boolean | undefined;
 }
 
 export class NodeGitRunner implements GitRunner {
   private readonly executable: string;
   private readonly defaultTimeoutMs: number | undefined;
   private readonly defaultMaxBufferBytes: number;
+  private readonly hardened: boolean;
 
   constructor(options: NodeGitRunnerOptions = {}) {
     this.executable = options.executable ?? "git";
     this.defaultTimeoutMs = options.defaultTimeoutMs;
     this.defaultMaxBufferBytes = options.defaultMaxBufferBytes ?? DEFAULT_MAX_BUFFER_BYTES;
+    this.hardened = options.hardened ?? this.executable === "git";
   }
 
   run(args: readonly string[], options: GitRunOptions): Promise<GitCommandResult> {
@@ -38,12 +43,17 @@ export class NodeGitRunner implements GitRunner {
       let timer: NodeJS.Timeout | undefined;
       let settled = false;
 
+      // The working directory came back from the agent sandbox, so neutralise
+      // git's config-driven code-execution vectors (hooks, `include.path`, and
+      // user/system config) on every invocation that carries push credentials.
       const child = execFile(
         this.executable,
-        [...args],
+        this.hardened ? trustedGitArgs(args) : [...args],
         {
           cwd: options.cwd,
-          ...(options.env !== undefined ? { env: options.env } : {}),
+          ...(this.hardened
+            ? { env: trustedGitEnv(options.env) }
+            : options.env !== undefined ? { env: options.env } : {}),
           encoding: "utf8",
           maxBuffer: maxBufferBytes,
           windowsHide: true,

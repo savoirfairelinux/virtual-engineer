@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { extractMetrics } from "../../src/admin/ui/views/TasksView/liveMetrics.js";
+import {
+  extractMetrics,
+  totalInputTokens,
+  totalProcessedTokens,
+} from "../../src/admin/ui/views/TasksView/liveMetrics.js";
 import type { MetricEntry } from "../../src/admin/ui/views/TasksView/liveMetrics.js";
 
 function usage(data: Record<string, unknown>): MetricEntry {
@@ -86,6 +90,12 @@ describe("extractMetrics", () => {
     ]);
     expect(m.cacheRead).toBe(35);
     expect(m.cacheWrite).toBe(12);
+  });
+
+  it("includes cache reads and writes in total input and processed tokens", () => {
+    const usage = { inputTokens: 10, outputTokens: 5, cacheRead: 30, cacheWrite: 20 };
+    expect(totalInputTokens(usage)).toBe(60);
+    expect(totalProcessedTokens(usage)).toBe(65);
   });
 
   it("treats identical token counts from different models as distinct requests", () => {

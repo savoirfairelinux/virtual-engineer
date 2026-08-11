@@ -49,7 +49,7 @@ export interface AgentLogEvent {
 }
 
 export interface AgentResult {
-  status: "success" | "no_change" | "failed";
+  status: "running" | "success" | "no_change" | "failed";
   modifiedFiles: string[] | Record<string, string[]>;
   summary: string;
   agentLogs: string;
@@ -74,7 +74,7 @@ export interface ApiCycle {
   createdAt: string;
   /** Wall-clock ms from cycle start to last agent event. Null when no events were recorded. */
   durationMs: number | null;
-  /** GitHub-computed cost for the cycle. Null when no usage data was captured. */
+  /** Provider usage and, when available, GitHub-computed cost. Null when no usage data was captured. */
   cost: CycleCost | null;
 }
 

@@ -38,7 +38,7 @@ read_env_value() {
     $1 ~ "^[[:space:]]*" key "[[:space:]]*$" {
       value = substr($0, index($0, "=") + 1)
       gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
-      gsub(/^\"|\"$/, "", value)
+      gsub(/^"|"$/, "", value)
       gsub(/^\047|\047$/, "", value)
       print value
       exit
@@ -87,6 +87,30 @@ if command -v docker >/dev/null 2>&1; then
       warn "Could not remove ve-orchestrator container; continuing cleanup"
     fi
   fi
+  # Also uninstall the OpenShell gateway Helm release if it was deployed by start.sh.
+  # start.sh prefers data/kubeconfig over the (often root-only) system path.
+  K3S_KUBECONFIG="${K3S_KUBECONFIG:-}"
+  if [[ -z "$K3S_KUBECONFIG" ]]; then
+    if [[ -r "${ROOT_DIR}/data/kubeconfig" ]] \
+      && KUBECONFIG="${ROOT_DIR}/data/kubeconfig" kubectl get nodes >/dev/null 2>&1; then
+      K3S_KUBECONFIG="${ROOT_DIR}/data/kubeconfig"
+    else
+      K3S_KUBECONFIG="/etc/rancher/k3s/k3s.yaml"
+    fi
+  fi
+  HELM_BIN=""
+  for _h in "$HOME/.local/bin/helm" /usr/local/bin/helm /usr/bin/helm; do
+    if [[ -x "$_h" ]]; then HELM_BIN="$_h"; break; fi
+  done
+  if [[ -n "$HELM_BIN" ]] && KUBECONFIG="$K3S_KUBECONFIG" "$HELM_BIN" status openshell -n virtual-engineer >/dev/null 2>&1; then
+    info "Uninstalling OpenShell gateway Helm release..."
+    KUBECONFIG="$K3S_KUBECONFIG" "$HELM_BIN" uninstall openshell -n virtual-engineer 2>/dev/null || \
+      warn "Could not uninstall Helm release; continuing cleanup"
+  fi
+  # Compatibility: also remove legacy Docker gateway container if present.
+  if docker inspect ve-openshell-gateway >/dev/null 2>&1; then
+    docker rm -f ve-openshell-gateway >/dev/null 2>&1 || true
+  fi
 else
   warn "docker is not installed; skipping container shutdown"
 fi
@@ -102,8 +126,6 @@ fi
 remove_path "$DATABASE_PATH"
 remove_path "${DATABASE_PATH}-wal"
 remove_path "${DATABASE_PATH}-shm"
-remove_path "./secrets/gerrit_id_ed25519"
-remove_path "./secrets/gerrit_id_ed25519.pub"
 remove_path "./coverage"
 remove_path "./test-results"
 remove_path "./dist"

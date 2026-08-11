@@ -14,7 +14,9 @@ import {
 import { resolveReviewStrategy } from "../agents/reviewStrategy.js";
 import { PluginManager } from "../plugins/pluginManager.js";
 import { ReviewOrchestrator } from "./reviewOrchestrator.js";
-import { DockerWorkspaceRunner } from "../workspace/workspaceRunner.js";
+import type { WorkspaceRunner } from "../interfaces.js";
+import type { ConcurrencyTracker } from "../orchestrator/concurrencyTracker.js";
+import type { TaskLifecycleCoordinator } from "../orchestrator/taskLifecycleCoordinator.js";
 import { getProviderDescriptor } from "../plugins/registry.js";
 import { buildTicketSourceLabel, parseIntegrationIdFromSourceLabel } from "../utils/ticketSourceLabel.js";
 import { makeExternalChangeId } from "../interfaces.js";
@@ -375,8 +377,10 @@ export function buildReviewBundle(
   pluginManager: PluginManager,
   _workspaceBaseDir: string,
   stateStore: StateStore & PromptStore,
-  workspaceRunner?: DockerWorkspaceRunner,
+  workspaceRunner?: WorkspaceRunner,
+  concurrencyTracker?: ConcurrencyTracker,
   target?: string | Task,
+  lifecycleCoordinator?: TaskLifecycleCoordinator,
 ): Promise<ReviewBundle> {
   const bundleLog = getLogger("review-bundle");
   const targetId = typeof target === "string" ? target : target?.taskId ?? "(none)";
@@ -420,7 +424,7 @@ export function buildReviewBundle(
   if (!workspaceRunner) {
     bundleLog.warn(
       { integrationId: integration.id },
-      "buildReviewBundle: no DockerWorkspaceRunner available"
+      "buildReviewBundle: no workspace runner available"
     );
     return Promise.resolve({ integration: null, provider: null, orchestrator: null });
   }
@@ -441,10 +445,14 @@ export function buildReviewBundle(
     // determined once the task (and thus its project) is known.
     resolveAgentForProject: (project: ProjectRecord): ReturnType<typeof resolveReviewAgentForProject> =>
       resolveReviewAgentForProject(pluginManager, stateStore, project, bundleLog),
+    agentContainerImage: getConfig().agentContainerImage,
     maxDiffChars: getConfig().maxReviewDiffChars,
     maxReviewComments: getConfig().maxReviewComments,
     maxReviewReplies: getConfig().maxReviewReplies,
     reviewMinSeverity: getConfig().reviewMinSeverity,
+    agentTimeoutMs: getConfig().agentTimeoutMs,
+    ...(concurrencyTracker !== undefined ? { concurrencyTracker } : {}),
+    ...(lifecycleCoordinator !== undefined ? { lifecycleCoordinator } : {}),
   });
   return Promise.resolve({ integration, provider: reviewer.provider, orchestrator });
 }
@@ -467,8 +475,10 @@ export function buildReviewBundle(
 export function buildReviewTrigger(
   pluginManager: PluginManager,
   workspaceBaseDir: string,
-  workspaceRunner: DockerWorkspaceRunner,
-  stateStore: StateStore & PromptStore
+  workspaceRunner: WorkspaceRunner,
+  stateStore: StateStore & PromptStore,
+  concurrencyTracker?: ConcurrencyTracker,
+  lifecycleCoordinator?: TaskLifecycleCoordinator,
 ): import("../connectors/integrationStreamEvents.js").IntegrationEventStreamReviewTrigger | null {
   if (resolveReviewIntegration(pluginManager) === null) return null;
 
@@ -476,7 +486,7 @@ export function buildReviewTrigger(
 
   return {
     async triggerReviewForChange(integrationId: string, changeId: string, options?: { force?: boolean }): Promise<void> {
-      const bundle = await buildReviewBundle(pluginManager, workspaceBaseDir, stateStore, workspaceRunner, integrationId);
+      const bundle = await buildReviewBundle(pluginManager, workspaceBaseDir, stateStore, workspaceRunner, concurrencyTracker, integrationId, lifecycleCoordinator);
       if (!bundle.orchestrator || !bundle.provider || !bundle.integration) {
         log.warn({ integrationId, changeId }, "review trigger: integration not configured for review routing");
         return;

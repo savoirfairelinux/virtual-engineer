@@ -3,7 +3,7 @@
  *
  * Runs INSIDE the Docker container for the default `copilot` provider. Spawns a
  * local headless Copilot CLI server, drives the GitHub Copilot SDK against the
- * pre-cloned `/workspace` repository, and maps the SDK's session events onto the
+ * pre-cloned `/sandbox` repository, and maps the SDK's session events onto the
  * shared `__ve_event` stderr protocol so the host adapter's event / commit /
  * result pipeline stays provider-agnostic.
  *
@@ -19,11 +19,12 @@ import type { CopilotSession, AssistantMessageEvent, SessionConfig } from '@gith
 import { spawn } from 'child_process';
 import type { ChildProcess } from 'child_process';
 import { createConnection } from 'net';
+import { buildCopilotCliArgs, buildCopilotNetworkEnvironment } from '../copilotCliArgs.js';
 import {
   createNativeReviewPermissionHandler,
+  createReviewPermissionHandler,
   createToolAuthorizingPermissionHandler,
   restrictNetworkPermissionHandler,
-  restrictReviewPermissionHandler,
 } from '../networkGuard.js';
 import { emitEvent } from './events.js';
 import type { AgentProviderDefinition, AgentRun, AgentRunOptions, ObservedToolCall } from './types.js';
@@ -42,10 +43,10 @@ export function buildCopilotSystemMessage(agentInstructions: string): {
   return { mode: 'append', content: agentInstructions };
 }
 
-export function buildNativeReviewPrompt(vePrompt: string): string {
+export function buildNativeReviewPrompt(vePrompt: string, repositoryRoot: string): string {
   const delegatedPrompt = [
     'Review the Virtual Engineer context and supplied diff below as the source of truth.',
-    'For extra context, only read files under /workspace; do not execute commands, access the network, or edit files.',
+    `For extra context, only read files under ${repositoryRoot}; do not execute commands, access the network, or edit files.`,
     'Do not recompute the diff or compare branches.',
     'Return findings to the parent; do not call submission tools.',
     '',
@@ -106,8 +107,19 @@ interface LocalCliServer {
   cliUrl: string;
 }
 
+export async function initializeCopilotClient(
+  client: Pick<CopilotClient, 'start' | 'getAuthStatus'>,
+): Promise<void> {
+  await client.start();
+  const authStatus = await client.getAuthStatus();
+  if (!authStatus.isAuthenticated) {
+    const detail = authStatus.statusMessage?.trim();
+    throw new Error(detail || 'GitHub Copilot authentication is not available.');
+  }
+}
+
 async function startLocalCliServer(cwd: string): Promise<LocalCliServer> {
-  const cliPath = '/agent-worker/node_modules/.bin/copilot';
+  const cliPath = '/app/agent-worker/node_modules/.bin/copilot';
   const port = 3000;
   // These buffers only feed the startup-failure error detail, but the stream
   // handlers stay attached for the whole session. Cap them to the most recent
@@ -122,7 +134,7 @@ async function startLocalCliServer(cwd: string): Promise<LocalCliServer> {
 
   // Environment Variable Allowlist (Security):
   // Subprocess has only whitelisted env vars to prevent secrets leakage.
-  const child = spawn(cliPath, ['--headless', '--port', String(port)], {
+  const child = spawn(cliPath, buildCopilotCliArgs(port), {
     cwd,
     env: {
       GITHUB_TOKEN: process.env['GITHUB_TOKEN'] ?? '',
@@ -137,6 +149,7 @@ async function startLocalCliServer(cwd: string): Promise<LocalCliServer> {
       TEMP: process.env['TEMP'] ?? '',
       USER: process.env['USER'] ?? '',
       XDG_RUNTIME_DIR: process.env['XDG_RUNTIME_DIR'] ?? '',
+      ...buildCopilotNetworkEnvironment(),
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -176,7 +189,7 @@ export function buildCopilotSessionConfig(
   const baseHandler = mode === 'review'
     ? (nativeReview
       ? createNativeReviewPermissionHandler(cwd)
-      : restrictReviewPermissionHandler)
+      : createReviewPermissionHandler(cwd))
     : restrictNetworkPermissionHandler;
   const onPermissionRequest = createToolAuthorizingPermissionHandler(baseHandler, {
     ...(options.blockedTools !== undefined ? { blockedTools: options.blockedTools } : {}),
@@ -217,6 +230,7 @@ async function runSession(
   const client = new CopilotClient({ cliUrl: localCliServer.cliUrl });
 
   try {
+    await initializeCopilotClient(client);
     const session = await client.createSession(buildCopilotSessionConfig(options));
     return { session, client, localCliServer };
   } catch (err) {
@@ -278,6 +292,10 @@ function deepFindNum(obj: unknown, keys: string[]): number | null {
   return visit(obj);
 }
 
+export function extractToolName(e: unknown): string | null {
+  return deepFindStr(e, ['name', 'toolName', 'tool_name', 'functionName', 'function_name']);
+}
+
 function deepFindBool(obj: unknown, keys: string[]): boolean | null {
   const seen = new Set<object>();
 
@@ -332,9 +350,6 @@ function permissionRequestEventData(event: unknown): Record<string, unknown> {
   };
 }
 
-function extractToolName(e: unknown): string {
-  return deepFindStr(e, ['name', 'toolName', 'tool_name']) ?? 'unknown_tool';
-}
 
 function parseToolInputValue(value: unknown): Record<string, unknown> {
   if (!value) return {};
@@ -408,9 +423,10 @@ function registerSessionEventHandlers(
   const toolCallsById = new Map<string, ObservedToolCall>();
 
   session.on('tool.execution_start', (e) => {
-    state.toolCallCount++;
     const event = e as unknown;
     const toolName = extractToolName(event);
+    if (toolName === null) return;
+    state.toolCallCount++;
     const toolInput = extractToolInput(event);
     const callId = deepFindStr(event, ['toolCallId']) ?? `${toolName}_${state.toolCallCount}`;
     const toolCall: ObservedToolCall = { callId, name: toolName, input: toolInput };
@@ -436,6 +452,7 @@ function registerSessionEventHandlers(
     const callId = deepFindStr(event, ['toolCallId']);
     const observedCall = callId === null ? undefined : toolCallsById.get(callId);
     const toolName = observedCall?.name ?? extractToolName(event);
+    if (toolName === null) return;
     const output = deepFindStr(event, ['content', 'detailedContent', 'output']);
     const success = deepFindBool(event, ['success']);
     const error = deepFindStr(event, ['message']);
@@ -470,7 +487,10 @@ function registerSessionEventHandlers(
 
   session.on('tool.execution_progress', (e) => {
     const event = e as unknown;
-    const toolName = extractToolName(event);
+    const progressCallId = deepFindStr(event, ['toolCallId']);
+    const toolName = (progressCallId === null ? undefined : toolCallsById.get(progressCallId)?.name)
+      ?? extractToolName(event);
+    if (toolName === null) return;
     emitEvent('tool.execution_progress', {
       name: toolName,
       message: deepFindStr(event, ['message', 'progress', 'text']),
@@ -560,7 +580,7 @@ export async function runCopilotAgent(
   let response: AssistantMessageEvent | undefined;
   try {
     const sessionPrompt = mode === 'review' && options.reviewStrategy === 'copilot_native'
-      ? buildNativeReviewPrompt(prompt)
+      ? buildNativeReviewPrompt(prompt, cwd)
       : prompt;
     response = await session.sendAndWait({ prompt: sessionPrompt }, timeoutMs);
   } catch (err) {

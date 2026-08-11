@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { TaskList } from "./TaskList.tsx";
 import { TaskDetail } from "./TaskDetail.tsx";
+import { shouldClearDeletedTask } from "./taskDetailRequests.ts";
 import type { ApiTask } from "../../types.ts";
 
 interface TasksViewProps {
@@ -15,6 +16,8 @@ export function TasksView({ tasks, onRefresh }: TasksViewProps) {
   });
 
   const tasksRef = useRef(tasks);
+  const selectedIdRef = useRef(selectedId);
+  selectedIdRef.current = selectedId;
   useEffect(() => { tasksRef.current = tasks; }, [tasks]);
 
   useEffect(() => {
@@ -45,7 +48,8 @@ export function TasksView({ tasks, onRefresh }: TasksViewProps) {
     window.location.hash = `tasks/${id}`;
   }
 
-  function handleDeleted() {
+  function handleDeleted(deletedTaskId: string) {
+    if (!shouldClearDeletedTask(deletedTaskId, selectedIdRef.current)) return;
     setSelectedId("");
     window.location.hash = "tasks";
   }

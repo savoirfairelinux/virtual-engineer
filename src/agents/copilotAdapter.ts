@@ -8,6 +8,7 @@ import type {
   FeedbackItem,
   ExternalChangeId,
   AdapterContainerSpec,
+  AgentEgressSpec,
   PromptStore,
   ReviewWorkspaceInput,
   WorkspaceRunner,
@@ -25,6 +26,7 @@ import {
 import {
   buildCodegenContainerSpec,
   buildReviewContainerSpec as buildSharedReviewContainerSpec,
+  systemPromptEnv,
 } from "./containerSpecBuilders.js";
 import { createStderrPipeline } from "./agentStderrPipeline.js";
 import type { StderrParseState } from "./agentStderrPipeline.js";
@@ -34,13 +36,32 @@ export { agentLogBus, getTaskEventBuffer, clearTaskEventBuffer } from "./agentEv
 
 const log = getLogger("copilot-adapter");
 
+/**
+ * Network egress the Copilot CLI needs under the OpenShell deny-by-default
+ * runtime. `api.githubcopilot.com` serves completions (POST → needs `full`
+ * access); `api.github.com` serves token/auth. The calls are made by the native
+ * Copilot CLI binary (`copilot-linux-x64/copilot`, spawned by the npm loader),
+ * not by `node`, so both are listed as permitted binaries.
+ */
+const COPILOT_EGRESS: AgentEgressSpec = {
+  hosts: [
+    "api.githubcopilot.com",
+    "api.github.com",
+    "api.business.githubcopilot.com",
+    "origin-tracker.business.githubcopilot.com",
+    "proxy.business.githubcopilot.com",
+    "telemetry.business.githubcopilot.com",
+  ],
+  binaries: [
+    "/app/agent-worker/node_modules/@github/copilot-linux-x64/copilot",
+  ],
+};
+
 export interface CopilotAdapterConfig {
   model: string;
   maxRepositoryContextBytes: number;
   maxCommitsPerCycle: number;
   promptsDir?: string | undefined;
-  /** Docker network for agent/review containers. Defaults to `virtual-engineer_ve-agent-net`. */
-  dockerNetwork?: string | undefined;
 }
 
 interface DockerInvocationResult {
@@ -66,7 +87,7 @@ const DEFAULT_CONFIG: CopilotAdapterConfig = {
 };
 
 /**
- * Build the user prompt written to `/ve-home/user-prompt.txt` for a code-generation cycle.
+ * Build the user prompt the runner uploads into the sandbox for a code-generation cycle.
  */
 export function buildCodegenUserPrompt(
   context: TaskContext,
@@ -114,9 +135,9 @@ export function buildCodegenUserPrompt(
     lines.push("### CRITICAL: Commit Requirement");
     lines.push("After making all your changes you **MUST** commit them using `bash`. Every commit needs BOTH a Conventional-Commits subject AND a body (2–4 sentences explaining what changed and why):");
     lines.push("```");
-    lines.push("git -C /workspace add -A");
-    lines.push("git -C /workspace commit -m 'type(scope): short imperative subject' \\");
-    lines.push("                          -m 'Body: explain WHAT changed and WHY in 2-4 sentences. Reference the ticket goal.'");
+    lines.push("git add -A");
+    lines.push("git commit -m 'type(scope): short imperative subject' \\");
+    lines.push("           -m 'Body: explain WHAT changed and WHY in 2-4 sentences. Reference the ticket goal.'");
     lines.push("```");
     lines.push("The commit message **must** follow Conventional Commits format (`type(scope): subject`). Replace `type` with one of: `feat`, `fix`, `refactor`, `test`, `chore`, `docs`, `perf`, `ci`, `build`.");
     lines.push("A subject-only commit is treated as missing — the body is mandatory.");
@@ -129,24 +150,24 @@ export function buildCodegenUserPrompt(
     lines.push("Do NOT stop after one repo. Do NOT say \"let me know\" or \"Next:\". This session ends when you respond — there is no next turn.");
     lines.push("");
     lines.push("### Workspace Layout (multi-repository)");
-    lines.push("This workspace contains multiple repositories cloned side-by-side:");
-    lines.push(`- **${repoMap.superproject.repoKey}** (root): \`/workspace/\` — use \`glob\`, \`grep\`, \`view\`, \`edit\` normally`);
+    lines.push("This workspace contains multiple repositories cloned side-by-side under your current working directory (the repository root):");
+    lines.push(`- **${repoMap.superproject.repoKey}** (root): the current working directory — use \`glob\`, \`grep\`, \`view\`, \`edit\` normally`);
     for (const sub of repoMap.submodules) {
-      lines.push(`- **${sub.repoKey}**: \`/workspace/${sub.localPath}/\` — use \`bash\` for discovery, \`edit\`/\`create\` for changes`);
+      lines.push(`- **${sub.repoKey}**: \`${sub.localPath}/\` (relative to the root) — use \`bash\` for discovery, \`edit\`/\`create\` for changes`);
     }
     lines.push("");
     lines.push("For the root repository, use the standard tools (`glob`, `grep`, `view`, `edit`) as usual.");
     lines.push("For sub-repositories, `glob`/`grep`/`view` cannot reach them. Use `bash` only for discovery:");
-    lines.push(`- \`find /workspace/${repoMap.submodules[0]!.localPath}/ -name '*.cpp' | head -30\``);
-    lines.push(`- \`grep -rn 'pattern' /workspace/${repoMap.submodules[0]!.localPath}/src/\``);
+    lines.push(`- \`find ${repoMap.submodules[0]!.localPath}/ -name '*.cpp' | head -30\``);
+    lines.push(`- \`grep -rn 'pattern' ${repoMap.submodules[0]!.localPath}/src/\``);
     lines.push("Use `edit` or `create` with the full path to modify files in any repository.");
     lines.push("");
     lines.push("**Committing**: You MUST `git add -A && git commit` **separately in each repository you modify**. Every commit needs BOTH a Conventional-Commits subject AND a body (2–4 sentences explaining what changed and why) — a subject-only commit is treated as missing.");
     lines.push("Use `bash` for commits in sub-repositories:");
     for (const sub of repoMap.submodules) {
-      lines.push(`- \`cd /workspace/${sub.localPath} && git add -A && git commit -m 'feat(scope): subject' -m 'Body explaining what changed and why.'\``);
+      lines.push(`- \`cd ${sub.localPath} && git add -A && git commit -m 'feat(scope): subject' -m 'Body explaining what changed and why.'\``);
     }
-    lines.push("For the root repository, commit from `/workspace/`.");
+    lines.push("For the root repository, commit from the repository root (your current working directory).");
     lines.push("");
     lines.push("**Focus on implementation, not exploration.** Limit exploration to what you need, then edit and commit.");
     lines.push("");
@@ -273,11 +294,11 @@ export class CopilotAdapter implements AgentAdapter, ConfigurableAdapter {
       maxRepositoryContextBytes: this.config.maxRepositoryContextBytes,
       maxCommitsPerCycle: this.config.maxCommitsPerCycle,
       promptsDir: this.config.promptsDir,
-      dockerNetwork: this.config.dockerNetwork,
+      egress: COPILOT_EGRESS,
     });
   }
 
-  /** Builds a container spec for review mode (REVIEW_MODE=1). Reads prompt from /ve-home/user-prompt.txt. */
+  /** Builds a container spec for review mode (REVIEW_MODE=1). Reads the prompt from the file the runner uploads into the sandbox. */
   buildReviewContainerSpec(
     input: ReviewWorkspaceInput,
     authEnv: Record<string, string> = {}
@@ -299,7 +320,7 @@ export class CopilotAdapter implements AgentAdapter, ConfigurableAdapter {
 
     return buildSharedReviewContainerSpec(input, {
       providerEnv,
-      dockerNetwork: this.config.dockerNetwork,
+      egress: COPILOT_EGRESS,
     });
   }
 
@@ -337,7 +358,7 @@ export class CopilotAdapter implements AgentAdapter, ConfigurableAdapter {
     assertPromptRole(systemPrompt, "system");
     assertPromptRole(instructionsPrompt, "instructions");
 
-    spec.env["SYSTEM_PROMPT"] = systemPrompt.content;
+    Object.assign(spec.env, systemPromptEnv(systemPrompt.content));
     spec.userPromptContent = buildCodegenUserPrompt(context, instructionsPrompt.content);
 
     return spec;

@@ -75,7 +75,11 @@ export function evaluateExistingReviewTask(
 
   if (!TERMINAL_STATES.has(input.existingState)) {
     if (input.existingCurrentPatchset === input.detailsCurrentPatchset) {
-      if (alreadyReviewedThisPatchset && input.force === true) return "reuse-manual-retrigger";
+      // A forced relaunch also re-queues a legacy/interrupted REVIEW_WATCHING
+      // row whose reviewedPatchset was never recorded.
+      if (input.force === true && (alreadyReviewedThisPatchset || input.existingState === "REVIEW_WATCHING")) {
+        return "reuse-manual-retrigger";
+      }
       if (input.existingState === "REVIEW_WATCHING") return "skip-watching";
       if (input.existingState === "REVIEW_RUNNING" || input.existingState === "REVIEW_COMMENTING") {
         return "skip-in-flight";

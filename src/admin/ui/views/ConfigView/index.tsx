@@ -22,6 +22,8 @@ import { UsersSection }         from "./UsersSection.tsx";
 import { GroupsSection }        from "./GroupsSection.tsx";
 import { PoliciesSection }      from "./PoliciesSection.tsx";
 import { AuditSection }         from "./AuditSection.tsx";
+import { RuntimePoliciesSection } from "./RuntimePoliciesSection.tsx";
+import { DenialsSection }       from "./DenialsSection.tsx";
 import { makeHasPermission, useCurrentUser } from "../../authContext.tsx";
 
 /* ─── Nav items ────────────────────────────────────────────────────────── */
@@ -32,6 +34,8 @@ const CONFIG_NAV = [
   { id: "agents",        label: "Agents Library",   sub: "Reusable agents",   icon: "spark" },
   { id: "projects",      label: "Projects",         sub: "Execution units",   icon: "box" },
   { id: "prompts",       label: "Prompts",          sub: "System & custom",   icon: "edit" },
+  { id: "runtime-policies", label: "Runtime Policies", sub: "Sandbox governance", icon: "layers" },
+  { id: "denials",       label: "Policy Denials",   sub: "Audit log",         icon: "alert" },
   { id: "users",         label: "Users",            sub: "Accounts & roles",  icon: "user" },
   { id: "groups",        label: "Groups",           sub: "User collections",  icon: "layers" },
   { id: "policies",      label: "Policies",         sub: "Access control",    icon: "config" },
@@ -235,6 +239,8 @@ export function ConfigView(props: ConfigViewData) {
       {effectiveSec === "agents"       && <AgentsSection {...routedProps} />}
       {effectiveSec === "projects"     && <ProjectsSection {...routedProps} />}
       {effectiveSec === "prompts"      && <PromptsSection {...routedProps} />}
+      {effectiveSec === "runtime-policies" && <RuntimePoliciesSection />}
+      {effectiveSec === "denials"      && <DenialsSection />}
       {effectiveSec === "users"        && <UsersSection {...routedProps} />}
       {effectiveSec === "groups"       && <GroupsSection {...routedProps} />}
       {effectiveSec === "policies"     && <PoliciesSection {...routedProps} />}

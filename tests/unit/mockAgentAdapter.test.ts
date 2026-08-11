@@ -15,8 +15,6 @@ function makeContext(workspacePath: string): TaskContext {
     acceptanceCriteria: ["Logs should be in JSON format"],
     baseBranch: "main",
     workspacePath,
-    volumeName: "ve-ws-test-mock",
-    homeVolumeName: "ve-home-test-mock",
     constraints: [],
     priorFeedback: [],
     cycleNumber: 1,
@@ -97,9 +95,8 @@ describe("MockAgentAdapter", () => {
     const spec = adapter.buildContainerSpec(makeContext(workspacePath));
 
     expect(spec.image).toBe("virtual-engineer-workspace:latest");
-    expect(spec.command).toEqual(["node", "/agent-worker/dist/index.js"]);
+    expect(spec.command).toEqual(["node", "/app/agent-worker/dist/index.js"]);
     expect(spec.env).toEqual({});
-    expect(spec.additionalDockerArgs).toEqual([]);
   });
 
   it("honors simulateDelayMs before resolving", async () => {
