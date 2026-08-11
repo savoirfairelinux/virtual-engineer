@@ -39,6 +39,9 @@ const PROJECT_SKILL_DIR: Readonly<Record<string, string>> = {
   "github-copilot": ".agents/skills/",
   "claude-code": ".claude/skills/",
   goose: ".goose/skills/",
+  // Best-guess convention, unconfirmed against a live Codex CLI — verify
+  // before relying on this in production (see agents.md "Codex engine specifics").
+  codex: ".codex/skills/",
 };
 
 function assertSshPathsReadable(source: RemoteSkillSource): void {
