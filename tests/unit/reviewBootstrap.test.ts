@@ -1,9 +1,11 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { getAgentTokenForReview } from "../../src/review/reviewBootstrap.js";
 import { encryptToken } from "../../src/utils/encryption.js";
-import { getConfig } from "../../src/config.js";
+import { resetConfig } from "../../src/config.js";
 import type { Integration, ProviderId } from "../../src/interfaces.js";
 import type { PluginManager } from "../../src/plugins/pluginManager.js";
+
+const TEST_ADMIN_AUTH_SECRET = "test-secret-32-bytes-min-padding!";
 
 function makeIntegration(provider: ProviderId, configJson: Record<string, unknown>): Integration {
   return {
@@ -25,8 +27,18 @@ function makePluginManager(decrypted: Record<string, unknown>): PluginManager {
 }
 
 describe("getAgentTokenForReview", () => {
+  beforeEach(() => {
+    process.env["ADMIN_AUTH_SECRET"] = TEST_ADMIN_AUTH_SECRET;
+    resetConfig();
+  });
+
+  afterEach(() => {
+    delete process.env["ADMIN_AUTH_SECRET"];
+    resetConfig();
+  });
+
   it("reads the codex subscription credential from accessToken, not sessionToken", () => {
-    const encrypted = encryptToken("codex-access-xyz", getConfig().adminAuthSecret);
+    const encrypted = encryptToken("codex-access-xyz", TEST_ADMIN_AUTH_SECRET);
     const integration = makeIntegration("codex", { authMode: "subscription", accessToken: encrypted });
     const pluginManager = makePluginManager({ authMode: "subscription", accessToken: encrypted });
 
@@ -49,7 +61,7 @@ describe("getAgentTokenForReview", () => {
   });
 
   it("still reads the claude subscription credential from sessionToken (no regression)", () => {
-    const encrypted = encryptToken("sk-ant-oat-xyz", getConfig().adminAuthSecret);
+    const encrypted = encryptToken("sk-ant-oat-xyz", TEST_ADMIN_AUTH_SECRET);
     const integration = makeIntegration("claude", { authMode: "subscription", sessionToken: encrypted });
     const pluginManager = makePluginManager({ authMode: "subscription", sessionToken: encrypted });
 
