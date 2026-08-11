@@ -169,6 +169,7 @@ export function parseRemoteSkillSources(raw: string): RemoteSkillSource[] {
 export function skillsAgentId(provider: AgentProvider): string {
   if (provider === "claude") return "claude-code";
   if (provider === "goose") return "goose";
+  if (provider === "codex") return "codex";
   return "github-copilot";
 }
 
