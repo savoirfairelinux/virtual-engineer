@@ -262,6 +262,15 @@ if [[ "$OIDC_MODE" == "local" ]]; then
     -n virtual-engineer -o jsonpath='{.spec.clusterIP}')
   [[ -n "$KEYCLOAK_CLUSTER_IP" && "$KEYCLOAK_CLUSTER_IP" != "None" ]] \
     || error "Managed local Keycloak Service has no ClusterIP."
+  # `--import-realm` skips a realm that already exists, so a PVC written
+  # under an older secret (e.g. a cluster reused across sessions) keeps
+  # rejecting the current one.
+  if ! printf 'grant_type=client_credentials&client_id=%s&client_secret=%s' \
+    "$OPENSHELL_OIDC_CLIENT_ID" "$OPENSHELL_OIDC_CLIENT_SECRET" \
+    | curl -fsS -o /dev/null --data-binary @- \
+      "http://${KEYCLOAK_CLUSTER_IP}:8080/realms/openshell/protocol/openid-connect/token"; then
+    error "Managed local Keycloak rejects the ${OPENSHELL_OIDC_CLIENT_ID} secret in ${LOCAL_OIDC_DIR}/client-secret; its PVC-persisted realm predates that file. Re-import the realm with: KUBECONFIG=$K3S_KUBECONFIG kubectl delete deployment ve-local-keycloak pvc ve-local-keycloak-data -n virtual-engineer"
+  fi
   OIDC_DOCKER_HOST_ARGS=(--add-host "keycloak.virtual-engineer.svc.cluster.local:${KEYCLOAK_CLUSTER_IP}")
 fi
 else

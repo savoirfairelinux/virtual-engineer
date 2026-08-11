@@ -337,6 +337,13 @@ describe("OpenShell deployment contract", () => {
     expect(installIdx).toBeGreaterThan(reclaimIdx);
   });
 
+  it("detects a stale Kubernetes-mode Keycloak realm before registering the gateway", () => {
+    const script = readFileSync("scripts/start.sh", "utf8");
+
+    expect(script).toContain("its PVC-persisted realm predates that file");
+    expect(script).toContain("kubectl delete deployment ve-local-keycloak pvc ve-local-keycloak-data");
+  });
+
   it("provides a Docker-local Keycloak realm for the default driver", () => {
     const script = readFileSync("scripts/start.sh", "utf8");
     const realm = readFileSync("deploy/docker/keycloak-realm.json", "utf8");
@@ -446,5 +453,43 @@ describe("OpenShell deployment contract", () => {
     expect(rbacManifest).toContain("pod-security.kubernetes.io/audit: restricted");
     expect(rbacManifest).toContain("pod-security.kubernetes.io/warn: restricted");
     expect(rbacManifest).not.toContain("pod-security.kubernetes.io/enforce: baseline");
+  });
+});
+
+describe("reset-instance.sh", () => {
+  it("parses quoted .env values without an invalid awk regex escape", () => {
+    const script = readFileSync("scripts/reset-instance.sh", "utf8");
+
+    expect(script).toContain('gsub(/^"|"$/, "", value)');
+    expect(script).not.toContain('gsub(/^\\"|\\"$/, "", value)');
+
+    const tmpDir = mkdtempSync(join(tmpdir(), "ve-reset-instance-"));
+    tempDirs.push(tmpDir);
+    const envFile = join(tmpDir, "test.env");
+    writeFileSync(envFile, 'TEST_KEY = "hello world"\n');
+    const result = execFileSync("awk", [
+      "-F=", "-v", "key=TEST_KEY",
+      `/^[[:space:]]*#/ { next }
+       $1 ~ "^[[:space:]]*" key "[[:space:]]*$" {
+         value = substr($0, index($0, "=") + 1)
+         gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+         gsub(/^"|"$/, "", value)
+         print value
+         exit
+       }`,
+      envFile,
+    ], { encoding: "utf8" });
+    expect(result.trim()).toBe("hello world");
+  });
+
+  it("resolves the same kubeconfig start.sh uses before uninstalling the Helm release", () => {
+    const script = readFileSync("scripts/reset-instance.sh", "utf8");
+
+    expect(script).toContain('K3S_KUBECONFIG="${ROOT_DIR}/data/kubeconfig"');
+    expect(script).toContain('K3S_KUBECONFIG="/etc/rancher/k3s/k3s.yaml"');
+    const dataKubeconfigIdx = script.indexOf('K3S_KUBECONFIG="${ROOT_DIR}/data/kubeconfig"');
+    const helmStatusIdx = script.indexOf('"$HELM_BIN" status openshell');
+    expect(dataKubeconfigIdx).toBeGreaterThan(-1);
+    expect(helmStatusIdx).toBeGreaterThan(dataKubeconfigIdx);
   });
 });
