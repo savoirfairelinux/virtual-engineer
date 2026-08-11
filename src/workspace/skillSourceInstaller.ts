@@ -14,7 +14,7 @@
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { appendFile, mkdir, readFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -44,6 +44,25 @@ const PROJECT_SKILL_DIR: Readonly<Record<string, string>> = {
 function assertSshPathsReadable(source: RemoteSkillSource): void {
   if (source.sshKeyPath) readSshFileSecure(source.sshKeyPath, "SSH private key");
   if (source.sshKnownHostsPath) readSshFileSecure(source.sshKnownHostsPath, "SSH known_hosts");
+}
+
+/** `skills add` (project scope) writes/updates a `skills-lock.json` manifest at the
+ * workspace root, tracked or not. Snapshot it before installing and restore it
+ * after so the agent never sees it as a new/modified file to accidentally commit. */
+async function readLockFileSnapshot(lockFilePath: string): Promise<Buffer | null> {
+  try {
+    return await readFile(lockFilePath);
+  } catch {
+    return null;
+  }
+}
+
+async function restoreLockFileSnapshot(lockFilePath: string, snapshot: Buffer | null): Promise<void> {
+  if (snapshot !== null) {
+    await writeFile(lockFilePath, snapshot);
+  } else {
+    await rm(lockFilePath, { force: true });
+  }
 }
 
 /** Adds `relDir` to `.git/info/exclude` (local-only, never committed) so the agent's own
@@ -78,6 +97,7 @@ export async function installSkillSources(
   workspaceDir: string,
   skillSourcesJson: string | undefined,
   provider: AgentProvider | undefined,
+  signal?: AbortSignal,
 ): Promise<void> {
   if (!skillSourcesJson || skillSourcesJson === "[]") return;
   if (provider === undefined) {
@@ -95,20 +115,36 @@ export async function installSkillSources(
   if (sources.length === 0) return;
 
   const agentId = skillsAgentId(provider);
-  for (const [index, source] of sources.entries()) {
+  const lockFilePath = join(workspaceDir, "skills-lock.json");
+  const lockSnapshot = await readLockFileSnapshot(lockFilePath);
+  try {
+    for (const [index, source] of sources.entries()) {
+      if (signal?.aborted) break;
+      try {
+        assertSshPathsReadable(source);
+        await execFileAsync("npx", buildSkillsCliArgs(source, provider), {
+          cwd: workspaceDir,
+          env: buildSkillSourceSubprocessEnv(source),
+          encoding: "utf8",
+          maxBuffer: OUTPUT_MAX_BUFFER,
+          timeout: SKILL_INSTALL_TIMEOUT_MS,
+          signal,
+        });
+        log.info({ source: source.source, agentId }, "installed skill source");
+      } catch (err) {
+        if (signal?.aborted) {
+          log.warn({ source: source.source, index, agentId }, "skill source install aborted; stopping further installs");
+          break;
+        }
+        const message = err instanceof Error ? err.message : String(err);
+        log.warn({ source: source.source, index, agentId, err: message }, "skill source install failed; continuing without it");
+      }
+    }
+  } finally {
     try {
-      assertSshPathsReadable(source);
-      await execFileAsync("npx", buildSkillsCliArgs(source, provider), {
-        cwd: workspaceDir,
-        env: buildSkillSourceSubprocessEnv(source),
-        encoding: "utf8",
-        maxBuffer: OUTPUT_MAX_BUFFER,
-        timeout: SKILL_INSTALL_TIMEOUT_MS,
-      });
-      log.info({ source: source.source, agentId }, "installed skill source");
+      await restoreLockFileSnapshot(lockFilePath, lockSnapshot);
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      log.warn({ source: source.source, index, agentId, err: message }, "skill source install failed; continuing without it");
+      log.warn({ err }, "failed to restore pre-install skills-lock.json state");
     }
   }
 

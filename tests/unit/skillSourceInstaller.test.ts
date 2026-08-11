@@ -1,12 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { promisify } from "node:util";
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-type ExecFileImpl = () => Promise<{ stdout: string; stderr: string }>;
-
-function mockExecFile(impl: ExecFileImpl): ReturnType<typeof vi.fn> {
+function mockExecFile(impl: (...args: unknown[]) => Promise<{ stdout: string; stderr: string }>): ReturnType<typeof vi.fn> {
   vi.resetModules();
   const execFile = vi.fn();
   Object.defineProperty(execFile, promisify.custom, { value: vi.fn(impl) });
@@ -148,5 +146,89 @@ describe("skill source installer", () => {
       await installSkillSources(dir, sources, "goose");
       await expect(readFile(join(dir, ".git", "info", "exclude"), "utf8")).rejects.toThrow();
     });
+  });
+
+  it("removes a skills-lock.json generated during install when none existed before", async () => {
+    const execFile = mockExecFile(async (_cmd, _args, options) => {
+      await writeFile(join((options as { cwd: string }).cwd, "skills-lock.json"), '{"generated":true}\n', "utf8");
+      return { stdout: "", stderr: "" };
+    });
+    const { installSkillSources } = await import("../../src/workspace/skillSourceInstaller.js");
+    const sources = JSON.stringify([{ source: "example-org/agent-skills", installAll: true }]);
+
+    await withWorkspace(true, async (dir) => {
+      await installSkillSources(dir, sources, "claude");
+      await expect(readFile(join(dir, "skills-lock.json"), "utf8")).rejects.toThrow();
+    });
+
+    expect(execFileAsyncOf(execFile)).toHaveBeenCalledTimes(1);
+  });
+
+  it("restores the pre-install skills-lock.json content, hiding the CLI's modification from the agent", async () => {
+    const execFile = mockExecFile(async (_cmd, _args, options) => {
+      await writeFile(join((options as { cwd: string }).cwd, "skills-lock.json"), '{"modified":true}\n', "utf8");
+      return { stdout: "", stderr: "" };
+    });
+    const { installSkillSources } = await import("../../src/workspace/skillSourceInstaller.js");
+    const sources = JSON.stringify([{ source: "example-org/agent-skills", installAll: true }]);
+
+    await withWorkspace(true, async (dir) => {
+      await writeFile(join(dir, "skills-lock.json"), '{"original":true}\n', "utf8");
+      await installSkillSources(dir, sources, "claude");
+      const lock = await readFile(join(dir, "skills-lock.json"), "utf8");
+      expect(lock).toBe('{"original":true}\n');
+    });
+
+    expect(execFileAsyncOf(execFile)).toHaveBeenCalledTimes(1);
+  });
+
+  it("forwards the abort signal to the underlying npx invocation", async () => {
+    const controller = new AbortController();
+    const execFile = mockExecFile(async () => ({ stdout: "", stderr: "" }));
+    const { installSkillSources } = await import("../../src/workspace/skillSourceInstaller.js");
+    const sources = JSON.stringify([{ source: "example-org/agent-skills", installAll: true }]);
+
+    await withWorkspace(true, async (dir) => {
+      await installSkillSources(dir, sources, "claude", controller.signal);
+    });
+
+    expect(execFileAsyncOf(execFile)).toHaveBeenCalledWith(
+      "npx",
+      expect.any(Array),
+      expect.objectContaining({ signal: controller.signal })
+    );
+  });
+
+  it("stops processing further sources once the signal is aborted mid-install", async () => {
+    const controller = new AbortController();
+    const execFile = mockExecFile(async () => {
+      controller.abort();
+      return { stdout: "", stderr: "" };
+    });
+    const { installSkillSources } = await import("../../src/workspace/skillSourceInstaller.js");
+    const sources = JSON.stringify([
+      { source: "org/agent-skills-a", installAll: true },
+      { source: "org/agent-skills-b", installAll: true },
+    ]);
+
+    await withWorkspace(true, async (dir) => {
+      await installSkillSources(dir, sources, "claude", controller.signal);
+    });
+
+    expect(execFileAsyncOf(execFile)).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not start any install when the signal is already aborted", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const execFile = mockExecFile(async () => ({ stdout: "", stderr: "" }));
+    const { installSkillSources } = await import("../../src/workspace/skillSourceInstaller.js");
+    const sources = JSON.stringify([{ source: "example-org/agent-skills", installAll: true }]);
+
+    await withWorkspace(true, async (dir) => {
+      await installSkillSources(dir, sources, "claude", controller.signal);
+    });
+
+    expect(execFileAsyncOf(execFile)).not.toHaveBeenCalled();
   });
 });

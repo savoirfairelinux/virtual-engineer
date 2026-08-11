@@ -157,7 +157,7 @@ export function ProjectSkillSourcesField({
   return (
     <Field
       label="Additional Skills"
-      hint="Add optional skills from trusted remote repositories for Copilot and Claude projects. Configured sources are installed before each agent run."
+      hint="Add optional skills from trusted remote repositories for Copilot, Claude, and Goose projects. Configured sources are installed host-side before each agent run."
     >
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -255,7 +255,7 @@ export function ProjectSkillSourcesField({
           </div>
         )}
         <div style={{ fontSize: "11.5px", color: "var(--text-faint)", lineHeight: 1.45 }}>
-          Copilot and Claude external sources are installed in the agent home volume with <code>npx skills</code>. Aider does not support external skill sources. SSH sources can use the orchestrator SSH agent or a configured private key path; set a <code>known_hosts</code> path to enforce host key verification.
+          Copilot, Claude, and Goose external sources are fetched and installed host-side with <code>npx skills</code>, project-scoped into the workspace, before it uploads to the sandbox. Aider does not support external skill sources. SSH sources can use the orchestrator SSH agent or a configured private key path; set a <code>known_hosts</code> path to enforce host key verification.
         </div>
       </div>
     </Field>

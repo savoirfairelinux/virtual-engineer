@@ -55,7 +55,7 @@ Tool calls and permission decisions are recorded into `agent_cycles.agent_events
 - `projects.skill_sources_json` is persisted, editable in the admin UI, and forwarded onto `AgentSession.skillSourcesJson` / `ReviewWorkspaceInput.skillSourcesJson` by `src/orchestrator/agentContextBuilder.ts` and `src/review/reviewOrchestrator.ts`.
 - `src/workspace/openShellWorkspaceRunner.ts` calls `src/workspace/skillSourceInstaller.ts`'s `installSkillSources()` **on the host**, after checkout is finalized and before the workspace is uploaded to the sandbox. Each source is fetched via `npx skills add` (project scope) using the same host-local SSH key/known-hosts path convention as `HostGitExecutor` and `src/admin/skillSourceDiscovery.ts`.
 - Supported providers: Copilot (`.agents/skills/`), Claude (`.claude/skills/`), Goose (`.goose/skills/`) — the same project-relative directories their native repository skill discovery already scans. Aider and Mock have no such convention and are skipped.
-- `agent-worker/` still contains no skill-install code path — installation is entirely host-side, before the sandbox even exists for that cycle.
+- `agent-worker/` still contains no skill-install code path — installation is entirely host-side, before the workspace uploads to the sandbox (the sandbox itself is already created and its egress already applied by that point).
 
 ## Provider-Native Skill Loading
 
