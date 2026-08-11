@@ -341,7 +341,7 @@ describe("OpenShell deployment contract", () => {
     const script = readFileSync("scripts/start.sh", "utf8");
 
     expect(script).toContain("its PVC-persisted realm predates that file");
-    expect(script).toContain("kubectl delete deployment ve-local-keycloak pvc ve-local-keycloak-data");
+    expect(script).toContain("kubectl delete deployment/ve-local-keycloak pvc/ve-local-keycloak-data");
   });
 
   it("provides a Docker-local Keycloak realm for the default driver", () => {
