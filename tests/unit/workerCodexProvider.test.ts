@@ -160,6 +160,28 @@ describe("runCodexAgent", () => {
     expect(configContent).toContain("VE_SUBMISSION_MODE");
   });
 
+  it("scopes CODEX_HOME to an isolated per-run directory rather than the shared default", async () => {
+    const fake = makeFakeChild();
+    spawnMock.mockReturnValue(fake);
+    const promise = runCodexAgent("task", {
+      model: "gpt-5.5",
+      agentInstructions: "policy",
+      cwd: "/workspace",
+      timeoutMs: 1000,
+      mode: "codegen",
+    });
+    await new Promise((r) => setImmediate(r));
+    fake.emit("close", 0);
+    await promise;
+
+    const writes = vi.mocked(writeFileSync).mock.calls;
+    const configWrite = writes.find((w) => String(w[0]).endsWith("config.toml"));
+    expect(String(configWrite![0])).toBe("/tmp/ve-codex-test/config.toml");
+
+    const spawnEnv = spawnMock.mock.calls[0]![2] as { env: Record<string, string> };
+    expect(spawnEnv.env["CODEX_HOME"]).toBe("/tmp/ve-codex-test");
+  });
+
   it("pipes the prompt with the submission instruction via stdin", async () => {
     const fake = makeFakeChild();
     spawnMock.mockReturnValue(fake);

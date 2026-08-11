@@ -24,7 +24,6 @@
  */
 import { spawn } from 'child_process';
 import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from 'fs';
-import { homedir } from 'os';
 import { join } from 'path';
 import { emitEvent } from './events.js';
 import type { AgentProviderDefinition, AgentRun, AgentRunOptions, ObservedToolCall } from './types.js';
@@ -50,11 +49,6 @@ function resolveCodexReasoningEffort(): string | undefined {
 function resolveCodexBinary(): string {
   // The Dockerfile installs the Codex CLI via `npm install -g @openai/codex`.
   return process.env['CODEX_BIN'] ?? 'codex';
-}
-
-/** `$CODEX_HOME` per the Codex CLI convention — defaults to `~/.codex`. */
-function resolveCodexHome(): string {
-  return process.env['CODEX_HOME'] ?? join(homedir(), '.codex');
 }
 
 /**
@@ -124,8 +118,10 @@ async function bootstrapCodexAccessTokenLogin(env: Record<string, string>): Prom
  * to deliver the structured result. `required = true` fails the run instead
  * of silently proceeding without the submission tool available.
  */
-function writeCodexConfig(submissionServer: { command: string; args: string[]; env: Record<string, string> }): string {
-  const codexHome = resolveCodexHome();
+function writeCodexConfig(
+  submissionServer: { command: string; args: string[]; env: Record<string, string> },
+  codexHome: string,
+): string {
   mkdirSync(codexHome, { recursive: true });
   const configPath = join(codexHome, 'config.toml');
 
@@ -292,10 +288,15 @@ export async function runCodexAgent(
   const fullAgentInstructions = appendSubmissionInstruction(baseInstructions, submission.toolName);
 
   const env = buildCodexEnv();
-  await bootstrapCodexAccessTokenLogin(env);
-  writeCodexConfig(submission.server);
-
+  // Scope Codex's config + credentials to an isolated per-run directory rather
+  // than the shared default `~/.codex`, so concurrent/successive runs on the
+  // same HOME never see each other's auth.json or MCP registration.
   const tmpDir = mkdtempSync(join('/tmp', 've-codex-'));
+  const codexHome = process.env['CODEX_HOME'] ?? tmpDir;
+  env['CODEX_HOME'] = codexHome;
+  await bootstrapCodexAccessTokenLogin(env);
+  writeCodexConfig(submission.server, codexHome);
+
   const args = buildCodexArgs(cwd, options);
   const fullPrompt = `${prompt}\n\n${fullAgentInstructions}`;
 

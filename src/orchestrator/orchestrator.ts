@@ -1087,7 +1087,7 @@ export class Orchestrator {
       if (integration) {
         try {
           const integCfg = this.resolveIntegrationConfig(integration);
-          if (integration.provider === "claude" || integration.provider === "codex") {
+          if (integration.provider === "claude") {
             if (integCfg["authMode"] === "api_key") {
               if (!apiKey) {
                 const key = integCfg["apiKey"];
@@ -1097,6 +1097,20 @@ export class Orchestrator {
               const sess = integCfg["sessionToken"];
               if (typeof sess === "string" && sess) {
                 encryptedSessionToken = sess;
+              }
+            }
+          } else if (integration.provider === "codex") {
+            // Codex stores its subscription credential under `accessToken`
+            // (see src/plugins/descriptors/codex.ts), not `sessionToken`.
+            if (integCfg["authMode"] === "api_key") {
+              if (!apiKey) {
+                const key = integCfg["apiKey"];
+                if (typeof key === "string" && key) apiKey = key;
+              }
+            } else if (!encryptedSessionToken) {
+              const token = integCfg["accessToken"];
+              if (typeof token === "string" && token) {
+                encryptedSessionToken = token;
               }
             }
           } else if (integration.provider === "aider") {

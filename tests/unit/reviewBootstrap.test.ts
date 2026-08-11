@@ -1,0 +1,62 @@
+import { describe, it, expect } from "vitest";
+import { getAgentTokenForReview } from "../../src/review/reviewBootstrap.js";
+import { encryptToken } from "../../src/utils/encryption.js";
+import { getConfig } from "../../src/config.js";
+import type { Integration, ProviderId } from "../../src/interfaces.js";
+import type { PluginManager } from "../../src/plugins/pluginManager.js";
+
+function makeIntegration(provider: ProviderId, configJson: Record<string, unknown>): Integration {
+  return {
+    id: "int-1",
+    provider,
+    name: "test",
+    configJson: JSON.stringify(configJson),
+    enabled: true,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  };
+}
+
+/** Minimal PluginManager stub exposing only decryptIntegrationConfig, as used by getAgentTokenForReview. */
+function makePluginManager(decrypted: Record<string, unknown>): PluginManager {
+  return {
+    decryptIntegrationConfig: () => decrypted,
+  } as unknown as PluginManager;
+}
+
+describe("getAgentTokenForReview", () => {
+  it("reads the codex subscription credential from accessToken, not sessionToken", () => {
+    const encrypted = encryptToken("codex-access-xyz", getConfig().adminAuthSecret);
+    const integration = makeIntegration("codex", { authMode: "subscription", accessToken: encrypted });
+    const pluginManager = makePluginManager({ authMode: "subscription", accessToken: encrypted });
+
+    const token = getAgentTokenForReview(pluginManager, integration);
+    expect(token).toBe("codex-access-xyz");
+  });
+
+  it("returns null for codex subscription mode when accessToken is absent", () => {
+    const integration = makeIntegration("codex", { authMode: "subscription" });
+    const pluginManager = makePluginManager({ authMode: "subscription" });
+
+    expect(getAgentTokenForReview(pluginManager, integration)).toBeNull();
+  });
+
+  it("reads the codex api_key credential from apiKey", () => {
+    const integration = makeIntegration("codex", { authMode: "api_key", apiKey: "sk-openai-key" });
+    const pluginManager = makePluginManager({ authMode: "api_key", apiKey: "sk-openai-key" });
+
+    expect(getAgentTokenForReview(pluginManager, integration)).toBe("sk-openai-key");
+  });
+
+  it("still reads the claude subscription credential from sessionToken (no regression)", () => {
+    const encrypted = encryptToken("sk-ant-oat-xyz", getConfig().adminAuthSecret);
+    const integration = makeIntegration("claude", { authMode: "subscription", sessionToken: encrypted });
+    const pluginManager = makePluginManager({ authMode: "subscription", sessionToken: encrypted });
+
+    expect(getAgentTokenForReview(pluginManager, integration)).toBe("sk-ant-oat-xyz");
+  });
+
+  it("returns null for a null integration", () => {
+    expect(getAgentTokenForReview(makePluginManager({}), null)).toBeNull();
+  });
+});
