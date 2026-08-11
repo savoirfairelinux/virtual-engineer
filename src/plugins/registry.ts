@@ -167,7 +167,7 @@ export interface AgentAdapterContext {
   maxCommitsPerCycle: number;
 }
 
-export type ReviewStrategyId = "copilot_native" | "goose_native" | "codex_native";
+export type ReviewStrategyId = "copilot_native" | "goose_native" | "codex_native" | "opencode_native";
 
 export interface ReviewStrategyDescriptor {
   id: ReviewStrategyId;

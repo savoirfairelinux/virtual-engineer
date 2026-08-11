@@ -47,7 +47,7 @@ const log = getLogger("openshell-workspace-runner");
 /** Maps an adapter's `name` to the skill-installer's provider id; `undefined` skips
  * installation (Aider/Mock have no upstream skill-directory convention). */
 function providerFromAdapterName(name: string): AgentProvider | undefined {
-  if (name === "copilot" || name === "claude" || name === "goose" || name === "codex") return name;
+  if (name === "copilot" || name === "claude" || name === "goose" || name === "codex" || name === "opencode") return name;
   return undefined;
 }
 

@@ -11,10 +11,11 @@ import { COPILOT_PROVIDER } from './copilot.js';
 import { AIDER_PROVIDER } from './aider.js';
 import { GOOSE_PROVIDER } from './goose.js';
 import { CODEX_PROVIDER } from './codex.js';
+import { OPENCODE_PROVIDER } from './opencode.js';
 import type { AgentProviderDefinition } from './types.js';
 
 const AGENT_PROVIDERS = new Map<string, AgentProviderDefinition>(
-  [COPILOT_PROVIDER, CLAUDE_PROVIDER, AIDER_PROVIDER, GOOSE_PROVIDER, CODEX_PROVIDER].map((provider) => [provider.id, provider])
+  [COPILOT_PROVIDER, CLAUDE_PROVIDER, AIDER_PROVIDER, GOOSE_PROVIDER, CODEX_PROVIDER, OPENCODE_PROVIDER].map((provider) => [provider.id, provider])
 );
 
 /** The set of supported agent provider ids. */

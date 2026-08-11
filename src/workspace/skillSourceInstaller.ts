@@ -42,6 +42,9 @@ const PROJECT_SKILL_DIR: Readonly<Record<string, string>> = {
   // Best-guess convention, unconfirmed against a live Codex CLI — verify
   // before relying on this in production (see agents.md "Codex engine specifics").
   codex: ".codex/skills/",
+  // OpenCode's own native skill directory (in addition to the .claude/skills/
+  // and .agents/skills/ compatibility paths it also reads natively).
+  opencode: ".opencode/skills/",
 };
 
 function assertSshPathsReadable(source: RemoteSkillSource): void {

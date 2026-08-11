@@ -1139,6 +1139,20 @@ export class Orchestrator {
             if (typeof provider === "string" && provider) extra["gooseProvider"] = provider;
             if (typeof key === "string" && key) extra["gooseApiKey"] = key;
             if (typeof base === "string" && base) extra["gooseApiBase"] = base;
+          } else if (integration.provider === "opencode") {
+            // OpenCode carries a provider selector + that provider's API key /
+            // base URL on the integration config, exactly like Goose. Forward
+            // them via `extra` so the OpenCodeAdapter can map them onto the
+            // provider's auth env vars. This must be checked before the generic
+            // `!encryptedSessionToken` branch below, since OpenCode never
+            // populates `encryptedSessionToken` and would otherwise be
+            // swallowed by that branch and never forwarded.
+            const provider = integCfg["openCodeProvider"];
+            const key = integCfg["openCodeApiKey"];
+            const base = integCfg["openCodeApiBase"];
+            if (typeof provider === "string" && provider) extra["openCodeProvider"] = provider;
+            if (typeof key === "string" && key) extra["openCodeApiKey"] = key;
+            if (typeof base === "string" && base) extra["openCodeApiBase"] = base;
           } else if (!encryptedSessionToken) {
             const t = integCfg["sessionToken"];
             if (typeof t === "string" && t) {

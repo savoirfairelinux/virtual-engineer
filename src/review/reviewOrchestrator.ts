@@ -55,7 +55,7 @@ export function buildReviewSystemPrompt(
   reviewProviderKind: string,
   agentProvider: string,
 ): string {
-  return agentProvider === "copilot" || agentProvider === "claude" || agentProvider === "codex"
+  return agentProvider === "copilot" || agentProvider === "claude" || agentProvider === "codex" || agentProvider === "opencode"
     ? systemPrompt
     : appendReviewOutputContract(systemPrompt, reviewProviderKind);
 }
@@ -111,6 +111,8 @@ export interface ReviewOrchestratorDeps {
     providerOptions?: Record<string, unknown> | undefined;
     aiderBackend?: string | undefined;
     aiderApiBase?: string | undefined;
+    openCodeProvider?: string | undefined;
+    openCodeApiBase?: string | undefined;
   } | null>;
   /** Maximum diff characters injected into the review prompt. Defaults to 60 000. */
   maxDiffChars?: number | undefined;
@@ -782,6 +784,8 @@ export class ReviewOrchestrator {
             : {}),
           ...(projectAgentRuntime.aiderBackend !== undefined ? { aiderBackend: projectAgentRuntime.aiderBackend } : {}),
           ...(projectAgentRuntime.aiderApiBase !== undefined ? { aiderApiBase: projectAgentRuntime.aiderApiBase } : {}),
+          ...(projectAgentRuntime.openCodeProvider !== undefined ? { openCodeProvider: projectAgentRuntime.openCodeProvider } : {}),
+          ...(projectAgentRuntime.openCodeApiBase !== undefined ? { openCodeApiBase: projectAgentRuntime.openCodeApiBase } : {}),
           ...(project.skillSourcesJson !== "[]"
             ? { skillSourcesJson: project.skillSourcesJson }
             : {}),

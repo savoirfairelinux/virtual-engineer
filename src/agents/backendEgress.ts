@@ -31,6 +31,9 @@ const GOOSE_PROVIDER_HOSTS: Record<string, readonly string[]> = {
   openai_compat: [],
 };
 
+/** Same backend set as Goose — OpenCode wraps any LLM provider the same way. */
+const OPENCODE_PROVIDER_HOSTS: Record<string, readonly string[]> = GOOSE_PROVIDER_HOSTS;
+
 /** `host` or `host:port` for a configured API base; empty when it is not a URL. */
 function hostOf(apiBase: string | undefined): string[] {
   const trimmed = apiBase?.trim();
@@ -55,4 +58,8 @@ export function aiderEgress(backend: string | undefined, apiBase: string | undef
 
 export function gooseEgress(provider: string | undefined, apiBase: string | undefined): AgentEgressSpec | undefined {
   return egress(GOOSE_PROVIDER_HOSTS[provider ?? "anthropic"] ?? [], apiBase, "/usr/local/bin/goose");
+}
+
+export function opencodeEgress(provider: string | undefined, apiBase: string | undefined): AgentEgressSpec | undefined {
+  return egress(OPENCODE_PROVIDER_HOSTS[provider ?? "anthropic"] ?? [], apiBase, "/usr/local/bin/opencode");
 }

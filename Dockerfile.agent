@@ -55,6 +55,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends bzip2 libxcb1 \
 # image, so no extra symlink step is needed. `NPM_CONFIG_UPDATE_NOTIFIER=false`
 # (set above) suppresses the interactive update banner during CI builds.
 RUN npm install -g @openai/codex
+
+# Install the OpenCode CLI (https://opencode.ai) for the `opencode` agent
+# provider. Like Codex, OpenCode is a standalone binary distributed as an npm
+# package; the global npm bin directory is already on PATH, so no extra
+# symlink step is needed.
+RUN npm install -g opencode-ai
 # Default SSH config — accepts unknown host keys as a fallback for ephemeral
 # sandboxes. When sshKnownHostsPath is configured on the Gerrit integration,
 # host-side git (HostGitExecutor / buildGitEnv) overrides GIT_SSH_COMMAND with
