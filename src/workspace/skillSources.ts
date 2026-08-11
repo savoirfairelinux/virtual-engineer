@@ -1,4 +1,4 @@
-export type AgentProvider = "copilot" | "claude";
+export type AgentProvider = "copilot" | "claude" | "goose";
 
 export interface RemoteSkillSource {
   source: string;
@@ -16,11 +16,72 @@ export interface SkillSourceUrlInput {
   sshPort?: number;
 }
 
+/** Minimal shape shared by admin discovery and the host-side installer for SSH/env resolution. */
+export interface SkillSourceConnectionInput {
+  source: string;
+  sshUser?: string;
+  sshPort?: number;
+  sshKeyPath?: string;
+  sshKnownHostsPath?: string;
+}
+
 const DEFAULT_SKILLS_CLI_PACKAGE = "skills@1.5.16";
 const MAX_TCP_PORT = 65_535;
 
 function skillsCliPackage(): string {
   return process.env["SKILLS_CLI_PACKAGE"]?.trim() || DEFAULT_SKILLS_CLI_PACKAGE;
+}
+
+function quoteSshArg(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+function copyEnv(env: NodeJS.ProcessEnv, key: string, target: NodeJS.ProcessEnv): void {
+  const value = env[key];
+  if (value !== undefined) target[key] = value;
+}
+
+function skillSourceSubprocessEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { NPM_CONFIG_UPDATE_NOTIFIER: "false" };
+  for (const key of [
+    "PATH",
+    "HOME",
+    "USER",
+    "TMPDIR",
+    "XDG_RUNTIME_DIR",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "no_proxy",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "NODE_EXTRA_CA_CERTS",
+  ]) {
+    copyEnv(process.env, key, env);
+  }
+  return env;
+}
+
+/** Subprocess env for any `skills` CLI invocation (list or install) against `source`. */
+export function buildSkillSourceSubprocessEnv(source: SkillSourceConnectionInput): NodeJS.ProcessEnv {
+  const env = skillSourceSubprocessEnv();
+  if (!isSshSkillSource(source)) return env;
+  if (!source.sshKeyPath) copyEnv(process.env, "SSH_AUTH_SOCK", env);
+  const sshPort = sshSkillSourceCommandPort(source);
+  const hostKeyOpts = source.sshKnownHostsPath
+    ? ["-o", "StrictHostKeyChecking=yes", "-o", `UserKnownHostsFile=${quoteSshArg(source.sshKnownHostsPath)}`]
+    : ["-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null"];
+  return {
+    ...env,
+    GIT_SSH_COMMAND: [
+      "ssh",
+      ...(source.sshKeyPath ? ["-i", quoteSshArg(source.sshKeyPath), "-o", "IdentitiesOnly=yes"] : []),
+      ...hostKeyOpts,
+      ...(sshPort !== undefined ? ["-p", String(sshPort)] : []),
+    ].join(" "),
+  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -91,7 +152,9 @@ export function parseRemoteSkillSources(raw: string): RemoteSkillSource[] {
 }
 
 export function skillsAgentId(provider: AgentProvider): string {
-  return provider === "claude" ? "claude-code" : "github-copilot";
+  if (provider === "claude") return "claude-code";
+  if (provider === "goose") return "goose";
+  return "github-copilot";
 }
 
 function isSshUrlSource(source: string): boolean {
@@ -140,6 +203,9 @@ export function resolveSkillSourceUrl(source: RemoteSkillSource): string {
   return resolveSshSkillSourceUrl(source);
 }
 
+/** Builds a non-interactive `npx skills add` invocation, project-scoped (no `-g`) so
+ * installed skill files land at agent-relative paths inside the given workspace
+ * (e.g. `.claude/skills/`) rather than a global HOME directory. */
 export function buildSkillsCliArgs(source: RemoteSkillSource, provider: AgentProvider): string[] {
   const args = ["--yes", skillsCliPackage(), "add", resolveSkillSourceUrl(source)];
   if (source.installAll !== true) {
@@ -147,11 +213,11 @@ export function buildSkillsCliArgs(source: RemoteSkillSource, provider: AgentPro
       args.push("--skill", skill);
     }
   }
-  args.push("-g", "-a", skillsAgentId(provider), "--copy", "-y");
+  args.push("-a", skillsAgentId(provider), "--copy", "-y");
   return args;
 }
 
-export function isSshSkillSource(source: RemoteSkillSource): boolean {
+export function isSshSkillSource(source: SkillSourceConnectionInput): boolean {
   const normalized = source.source.trimStart().toLowerCase();
   return normalized.startsWith("ssh://") || normalized.startsWith("git@");
 }

@@ -15,6 +15,11 @@ import type {
 } from "../../src/interfaces.js";
 import { sandboxTaskHash } from "../../src/openshell/sandboxOwnership.js";
 
+vi.mock("../../src/workspace/skillSourceInstaller.js", () => ({
+  installSkillSources: vi.fn().mockResolvedValue(undefined),
+}));
+import { installSkillSources } from "../../src/workspace/skillSourceInstaller.js";
+
 function fakeGit(overrides: Partial<HostGitExecutor> = {}): HostGitExecutor {
   return {
     createWorkspace: vi.fn().mockResolvedValue({ dir: "/tmp/ws-1" }),
@@ -807,6 +812,60 @@ describe("OpenShellWorkspaceRunner", () => {
     expect(adapter.execute).toHaveBeenCalledWith({ ...ctx, runtimeHandleId: handle.containerId });
     expect(result.status).toBe("success");
     expect(result.modifiedFiles).toEqual(["a.ts"]);
+  });
+
+  it("stages configured skill sources into the coding workspace before upload", async () => {
+    const client = fakeClient();
+    const runner = new OpenShellWorkspaceRunner({ git: fakeGit(), client });
+    const skillSourcesJson = '[{"source":"example-org/agent-skills","installAll":true}]';
+    const ctx = {
+      taskId: "t1",
+      workspacePath: "/tmp/ws-1",
+      agentSession: { skillSourcesJson },
+    } as unknown as TaskContext;
+
+    await runner.cloneRepo(handle, "https://trusted.example/repo.git", "main");
+    await runner.runAgentInDocker(fakeCodingAdapter(), ctx);
+
+    expect(installSkillSources).toHaveBeenCalledWith("/tmp/ws-1", skillSourcesJson, "copilot");
+    const installOrder = (installSkillSources as unknown as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]!;
+    const uploadOrder = (client.uploadToSandbox as unknown as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]!;
+    expect(installOrder).toBeLessThan(uploadOrder);
+  });
+
+  it("stages configured skill sources into the review workspace before upload", async () => {
+    const client = fakeClient({
+      execInSandbox: vi.fn().mockResolvedValue({ code: 0, stdout: reviewWorkerStdout("ok"), stderr: "" }),
+    } as unknown as Partial<OpenShellClient>);
+    const runner = new OpenShellWorkspaceRunner({ git: fakeGit(), client, agentAdapter: fakeReviewAdapter() });
+    const skillSourcesJson = '[{"source":"example-org/agent-skills","installAll":true}]';
+
+    await runner.runReviewInDocker(handle, {
+      changeId: "Iabc",
+      prompt: "review this diff",
+      skillSourcesJson,
+    } as unknown as ReviewWorkspaceInput);
+
+    expect(installSkillSources).toHaveBeenCalledWith("/tmp/ws-1", skillSourcesJson, "copilot");
+    const installOrder = (installSkillSources as unknown as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]!;
+    const uploadOrder = (client.uploadToSandbox as unknown as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]!;
+    expect(installOrder).toBeLessThan(uploadOrder);
+  });
+
+  it("does not resolve a skill-installer provider for Aider (no skill-directory support)", async () => {
+    const runner = new OpenShellWorkspaceRunner({ git: fakeGit(), client: fakeClient() });
+    const adapter = fakeCodingAdapter({ env: { AGENT_PROVIDER: "aider" } });
+    (adapter as { name: string }).name = "aider";
+    const ctx = {
+      taskId: "t1",
+      workspacePath: "/tmp/ws-1",
+      agentSession: { skillSourcesJson: '[{"source":"example-org/agent-skills","installAll":true}]' },
+    } as unknown as TaskContext;
+
+    await runner.cloneRepo(handle, "https://trusted.example/repo.git", "main");
+    await runner.runAgentInDocker(adapter, ctx);
+
+    expect(installSkillSources).toHaveBeenCalledWith("/tmp/ws-1", expect.any(String), undefined);
   });
 
   it("runAgent throws when no adapter is available", async () => {

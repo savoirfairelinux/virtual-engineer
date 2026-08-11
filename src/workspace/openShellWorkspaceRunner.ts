@@ -39,8 +39,17 @@ import { parseDenialEvent, type DenialSink } from "../openshell/denialEvents.js"
 import { sandboxOwnershipLabels, sandboxTaskHash } from "../openshell/sandboxOwnership.js";
 import { buildDefaultPolicyYaml } from "../openshell/openShellPolicyBuilder.js";
 import type { ManagedOpenShellProviderRecord } from "../state/stores/openShellProviderStore.js";
+import { installSkillSources } from "./skillSourceInstaller.js";
+import type { AgentProvider } from "./skillSources.js";
 
 const log = getLogger("openshell-workspace-runner");
+
+/** Maps an adapter's `name` to the skill-installer's provider id; `undefined` skips
+ * installation (Aider/Mock have no upstream skill-directory convention). */
+function providerFromAdapterName(name: string): AgentProvider | undefined {
+  if (name === "copilot" || name === "claude" || name === "goose") return name;
+  return undefined;
+}
 
 /** Where the workspace is mounted inside the sandbox and where the prompt lands. */
 // OpenShell's default sandbox policy makes `/sandbox` the writable working
@@ -481,6 +490,7 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
         ...(input.abortSignal !== undefined ? { signal: input.abortSignal } : {}),
       });
       await this.applyEgress(name, spec.egress, input.abortSignal);
+      await installSkillSources(dir, input.skillSourcesJson, providerFromAdapterName(adapter.name));
       // Read-only workspace: upload the repo so the review agent sees the diff. No download back.
       await this.deps.client.uploadToSandbox({
         name,
@@ -558,6 +568,7 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
         ...(context.abortSignal !== undefined ? { signal: context.abortSignal } : {}),
       });
       await this.applyEgress(name, spec.egress, context.abortSignal);
+      await installSkillSources(dir, context.agentSession?.skillSourcesJson, providerFromAdapterName(adapter.name));
       // Upload the full workspace (incl. .git) so the agent can commit inside the sandbox.
       await this.deps.client.uploadToSandbox({
         name,

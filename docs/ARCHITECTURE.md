@@ -719,7 +719,8 @@ projects
   agent_id → agents.id
   agent_override_json (partial model config override)
   post_clone_script (bash, runs on host after clone)
-  skill_sources_json (DB/API default '[]' — remote npx skills sources installed when configured;
+  skill_sources_json (DB/API default '[]' — remote npx skills sources, fetched and
+                      installed host-side before workspace upload when configured;
                       the admin new-project form preloads the SFL agent-skills SSH source)
   enabled (default 0)
 
@@ -753,7 +754,7 @@ app_settings                   ← singleton (editable runtime workflow settings
   updated_at
 ```
 
-Repository behavior is provider-native on every coding and review run: VE does not store a local skill path, scan manifests, or inject repository skills. Copilot enables its coupled repository skill/MCP config discovery, Claude loads native user/project skills with strict MCP configuration, and Aider keeps its normal CLI repository behavior. Optional remote skill sources remain project configuration and are installed into the agent home volume before supported providers start.
+Repository behavior is provider-native on every coding and review run: VE does not store a local skill path, scan manifests, or inject repository skills. Copilot enables its coupled repository skill/MCP config discovery, Claude loads native user/project skills with strict MCP configuration, and Aider keeps its normal CLI repository behavior. Optional remote skill sources remain project configuration and are fetched/installed **host-side** (`skillSourceInstaller.ts`), before the workspace uploads to the sandbox, into the target agent's native project-relative skill directory (Copilot/Claude/Goose only) — no SSH material ever enters the sandbox.
 
 ---
 
