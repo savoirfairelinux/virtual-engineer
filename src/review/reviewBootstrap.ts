@@ -197,6 +197,13 @@ function getAgentTokenFromIntegration(
     return decryptManagedSessionToken(agentIntegration, rawConfig, bundleLog, "accessToken");
   }
 
+  if (agentIntegration.provider === "gemini") {
+    // Both auth modes (api_key, vertex_ai) authenticate with the same `apiKey`
+    // field; review always treats it as a Gemini Developer API key (Vertex
+    // AI-mode review is not yet supported).
+    return getDecryptedPasswordField(pluginManager, agentIntegration, "apiKey");
+  }
+
   return null;
 }
 

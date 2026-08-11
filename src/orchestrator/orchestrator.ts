@@ -1139,6 +1139,20 @@ export class Orchestrator {
             if (typeof provider === "string" && provider) extra["gooseProvider"] = provider;
             if (typeof key === "string" && key) extra["gooseApiKey"] = key;
             if (typeof base === "string" && base) extra["gooseApiBase"] = base;
+          } else if (integration.provider === "gemini") {
+            // Gemini stores its credential under the generic `apiKey` field for
+            // both auth modes (Vertex AI Express Mode also authenticates via an
+            // API key). Non-secret Vertex AI settings flow through `extra`.
+            if (!apiKey) {
+              const key = integCfg["apiKey"];
+              if (typeof key === "string" && key) apiKey = key;
+            }
+            const authMode = integCfg["authMode"];
+            const project = integCfg["googleCloudProject"];
+            const location = integCfg["googleCloudLocation"];
+            if (typeof authMode === "string" && authMode) extra["geminiAuthMode"] = authMode;
+            if (typeof project === "string" && project) extra["geminiGoogleCloudProject"] = project;
+            if (typeof location === "string" && location) extra["geminiGoogleCloudLocation"] = location;
           } else if (!encryptedSessionToken) {
             const t = integCfg["sessionToken"];
             if (typeof t === "string" && t) {

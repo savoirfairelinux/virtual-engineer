@@ -55,6 +55,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends bzip2 libxcb1 \
 # image, so no extra symlink step is needed. `NPM_CONFIG_UPDATE_NOTIFIER=false`
 # (set above) suppresses the interactive update banner during CI builds.
 RUN npm install -g @openai/codex
+
+# Install the Gemini CLI (https://github.com/google-gemini/gemini-cli) for the
+# `gemini` agent provider. Gemini CLI is a Node package; the global npm bin
+# directory is already on PATH, so no extra symlink step is needed.
+RUN npm install -g @google/gemini-cli
 # Default SSH config — accepts unknown host keys as a fallback for ephemeral
 # sandboxes. When sshKnownHostsPath is configured on the Gerrit integration,
 # host-side git (HostGitExecutor / buildGitEnv) overrides GIT_SSH_COMMAND with

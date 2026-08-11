@@ -1073,9 +1073,24 @@ describe("Orchestrator — Phase 4 project mode", () => {
         expect(resolved.extra["aiderApiKey"]).toBe("aider-key");
       },
     },
+    {
+      provider: "gemini" as const,
+      config: {
+        authMode: "vertex_ai",
+        apiKey: "gemini-key",
+        googleCloudProject: "proj-1",
+        googleCloudLocation: "us-central1",
+      },
+      assertResolved: (resolved: ResolvedAgentConfig) => {
+        expect(resolved.apiKey).toBe("gemini-key");
+        expect(resolved.extra["geminiAuthMode"]).toBe("vertex_ai");
+        expect(resolved.extra["geminiGoogleCloudProject"]).toBe("proj-1");
+        expect(resolved.extra["geminiGoogleCloudLocation"]).toBe("us-central1");
+      },
+    },
   ])("resolves encrypted $provider integration credentials for agent runtime", async ({ provider, config, assertResolved }) => {
     const adminSecret = "orchestrator-runtime-admin-secret";
-    const credentialKey = provider === "copilot" ? "token" : provider === "claude" ? "apiKey" : provider === "codex" ? "accessToken" : "aiderApiKey";
+    const credentialKey = provider === "copilot" ? "token" : provider === "claude" ? "apiKey" : provider === "codex" ? "accessToken" : provider === "gemini" ? "apiKey" : "aiderApiKey";
     const encryptedConfig = { ...config, [credentialKey]: encryptToken(String(config[credentialKey]), adminSecret) };
     const integration = {
       id: `${provider}-integration`,

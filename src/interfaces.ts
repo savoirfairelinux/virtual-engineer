@@ -429,6 +429,14 @@ export interface AgentSession {
   gooseApiKey?: string | undefined;
   /** Custom API base URL (required for `openai_compat`; optional override for `ollama`). */
   gooseApiBase?: string | undefined;
+
+  // ── Gemini CLI (agent_execution) ───────────────────────────────────────────
+  /** Gemini CLI auth mode selector (api_key | vertex_ai); defaults to api_key when absent. */
+  geminiAuthMode?: string | undefined;
+  /** Google Cloud project id for Vertex AI mode. */
+  geminiGoogleCloudProject?: string | undefined;
+  /** Google Cloud location/region for Vertex AI mode. */
+  geminiGoogleCloudLocation?: string | undefined;
 }
 
 export interface TaskContext {
@@ -1521,6 +1529,7 @@ export const PROVIDER_IDS = [
   "aider",
   "goose",
   "codex",
+  "gemini",
   "mock",
 ] as const;
 export type ProviderId = (typeof PROVIDER_IDS)[number];

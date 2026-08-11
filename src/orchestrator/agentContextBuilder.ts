@@ -187,6 +187,18 @@ export async function buildAgentTaskContext(params: BuildAgentTaskContextParams)
       ...(typeof projectAgentRuntime.config.extra["gooseApiBase"] === "string"
         ? { gooseApiBase: projectAgentRuntime.config.extra["gooseApiBase"] }
         : {}),
+      // Gemini CLI Vertex AI settings flow through `extra` (set by
+      // resolveProjectAgentRuntime from the integration config). The API key
+      // itself is carried generically via `githubToken` above.
+      ...(typeof projectAgentRuntime.config.extra["geminiAuthMode"] === "string"
+        ? { geminiAuthMode: projectAgentRuntime.config.extra["geminiAuthMode"] }
+        : {}),
+      ...(typeof projectAgentRuntime.config.extra["geminiGoogleCloudProject"] === "string"
+        ? { geminiGoogleCloudProject: projectAgentRuntime.config.extra["geminiGoogleCloudProject"] }
+        : {}),
+      ...(typeof projectAgentRuntime.config.extra["geminiGoogleCloudLocation"] === "string"
+        ? { geminiGoogleCloudLocation: projectAgentRuntime.config.extra["geminiGoogleCloudLocation"] }
+        : {}),
       ...(projectPushTargets.length > 1 || projectPushTargets.some((t) => t.localPath !== ".")
         ? { repositoryMap: buildRepositoryMap(projectPushTargets) }
         : {}),
