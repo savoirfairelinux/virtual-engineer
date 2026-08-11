@@ -139,7 +139,9 @@ export function RuntimePoliciesSection() {
               flexShrink: 0,
             }}
           />
-          <span style={{ fontSize: "13px", fontWeight: 600 }}>Agent runtime: OpenShell · Kubernetes (k3s)</span>
+          <span style={{ fontSize: "13px", fontWeight: 600 }}>
+            Agent runtime: OpenShell · {status.driver === "kubernetes" ? "Kubernetes (k3s)" : "Docker"}
+          </span>
           <span style={{ fontSize: "12px", color: "var(--text-ghost)" }}>
             Gateway {status.gatewayConfigured ? (status.gatewayAddress ?? "") : "not configured"} —{" "}
             {status.gatewayHealthy ? "healthy" : "unreachable"}

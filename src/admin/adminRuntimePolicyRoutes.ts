@@ -10,7 +10,7 @@ const MAX_POLICY_YAML_BYTES = 64 * 1024;
 
 export interface RuntimePolicyRouteDeps {
   runtimePolicyStore?: RuntimePolicyStoreApi | undefined;
-  /** OpenShell gateway probe: reports whether the k8s-backed agent runtime is reachable. */
+  /** OpenShell gateway probe: reports whether the agent runtime is reachable. */
   gateway?: { healthy(): Promise<boolean>; address: string | undefined } | undefined;
 }
 
@@ -90,13 +90,17 @@ export function registerRuntimePolicyRoutes(router: Router, deps: RuntimePolicyR
     return deps.runtimePolicyStore;
   };
 
-  // Read-only status of the OpenShell/Kubernetes agent runtime for the admin UI.
+  // Read-only status of the OpenShell agent runtime for the admin UI.
   router.add("GET", "/api/admin/runtime/status", async (_req, res) => {
     const gateway = deps.gateway;
     const gatewayHealthy = gateway ? await gateway.healthy().catch(() => false) : false;
     const address = gateway?.address;
+    // Not part of ConfigSchema (like SKILLS_CLI_PACKAGE): scripts/start.sh only
+    // uses this to pick how it deploys the gateway itself, but forwards it
+    // into the orchestrator's env via --env-file so it can be surfaced here.
+    const driver = process.env["OPENSHELL_COMPUTE_DRIVER"] === "kubernetes" ? "kubernetes" : "docker";
     writeJson(res, 200, {
-      driver: "kubernetes",
+      driver,
       gatewayConfigured: address !== undefined && address !== "",
       gatewayAddress: address ?? null,
       gatewayHealthy,

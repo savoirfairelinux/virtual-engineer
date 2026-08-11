@@ -70,11 +70,24 @@ describe("Admin API — Runtime status route", () => {
     const r = await rest(server, "/api/admin/runtime/status");
     expect(r.status).toBe(200);
     expect(r.body).toEqual({
-      driver: "kubernetes",
+      driver: "docker",
       gatewayConfigured: true,
       gatewayAddress: "127.0.0.1:8080",
       gatewayHealthy: true,
     });
+  });
+
+  it("reports driver: kubernetes only when OPENSHELL_COMPUTE_DRIVER is set to kubernetes", async () => {
+    const original = process.env["OPENSHELL_COMPUTE_DRIVER"];
+    process.env["OPENSHELL_COMPUTE_DRIVER"] = "kubernetes";
+    try {
+      await start({ healthy: async () => true, address: "127.0.0.1:8080" });
+      const r = await rest(server, "/api/admin/runtime/status");
+      expect(r.body?.["driver"]).toBe("kubernetes");
+    } finally {
+      if (original === undefined) delete process.env["OPENSHELL_COMPUTE_DRIVER"];
+      else process.env["OPENSHELL_COMPUTE_DRIVER"] = original;
+    }
   });
 
   it("reports unhealthy when the probe throws (best-effort)", async () => {

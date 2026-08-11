@@ -171,7 +171,7 @@ export interface AdminServerDependencies {
   runtimePolicyStore?: import("../state/stores/runtimePolicyStore.js").RuntimePolicyStoreApi | undefined;
   /** When provided, mounts the policy-denial audit-log routes. */
   denialStore?: import("../state/stores/denialStore.js").DenialStoreApi | undefined;
-  /** OpenShell/Kubernetes gateway health probe surfaced at GET /api/admin/runtime/status. */
+  /** OpenShell gateway health probe surfaced at GET /api/admin/runtime/status. */
   runtimeGateway?: { healthy(): Promise<boolean>; address: string | undefined } | undefined;
 }
 
