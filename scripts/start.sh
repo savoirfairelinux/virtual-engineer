@@ -82,6 +82,19 @@ ensure_dir() {
   chmod "$perms" "$dir"
 }
 
+# The gateway-registration `docker run` steps below write into
+# OPENSHELL_CONFIG_DIR as root (the image has no USER directive), so a
+# subtree they touch first is root-owned and blocks later host-side writes
+# to the same path. Reclaim ownership before creating anything under it.
+reclaim_root_owned_tree() {
+  local dir="$1"
+  [[ -e "$dir" ]] || return 0
+  if [[ "$(stat -c '%u' "$dir")" != "$(id -u)" ]]; then
+    warn "${dir} is owned by root (a prior gateway-registration container created it). Fixing ownership..."
+    sudo chown -R "$(id -u):$(id -g)" "$dir"
+  fi
+}
+
 ensure_dir "$DATA_DIR"    755
 DATA_DIR="$(cd "$DATA_DIR" && pwd)"
 OPENSHELL_PORT_FORWARD_PID="${DATA_DIR}/.openshell-port-forward.pid"
@@ -531,6 +544,7 @@ fi
 
 OPENSHELL_GATEWAY_ENDPOINT="https://127.0.0.1:${OPENSHELL_GW_LOCAL_PORT}"
 OPENSHELL_MTLS_DIR="${OPENSHELL_CONFIG_DIR}/openshell/gateways/${OPENSHELL_GATEWAY_NAME}/mtls"
+reclaim_root_owned_tree "${OPENSHELL_CONFIG_DIR}/openshell"
 install -d -m 0700 "$OPENSHELL_MTLS_DIR"
 for _tls_key in ca.crt tls.crt tls.key; do
   KUBECONFIG="$K3S_KUBECONFIG" kubectl get secret openshell-client-tls \

@@ -327,6 +327,16 @@ describe("OpenShell deployment contract", () => {
     expect(script).toContain('-p "${OPENSHELL_DOCKER_BRIDGE_IP}:${OPENSHELL_GW_LOCAL_PORT}:${OPENSHELL_GW_LOCAL_PORT}"');
   });
 
+  it("reclaims root-owned CLI config before creating the mTLS directory", () => {
+    const script = readFileSync("scripts/start.sh", "utf8");
+
+    expect(script).toContain('reclaim_root_owned_tree "${OPENSHELL_CONFIG_DIR}/openshell"');
+    const reclaimIdx = script.indexOf('reclaim_root_owned_tree "${OPENSHELL_CONFIG_DIR}/openshell"');
+    const installIdx = script.indexOf('install -d -m 0700 "$OPENSHELL_MTLS_DIR"');
+    expect(reclaimIdx).toBeGreaterThan(-1);
+    expect(installIdx).toBeGreaterThan(reclaimIdx);
+  });
+
   it("provides a Docker-local Keycloak realm for the default driver", () => {
     const script = readFileSync("scripts/start.sh", "utf8");
     const realm = readFileSync("deploy/docker/keycloak-realm.json", "utf8");
