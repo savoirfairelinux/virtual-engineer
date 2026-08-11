@@ -1058,6 +1058,15 @@ describe("Orchestrator — Phase 4 project mode", () => {
       },
     },
     {
+      provider: "codex" as const,
+      config: { authMode: "subscription", accessToken: "codex-token" },
+      assertResolved: (resolved: ResolvedAgentConfig) => {
+        // Codex stores its subscription credential under `accessToken`, not
+        // `sessionToken` — regression test for a PR review finding.
+        expect(resolved.encryptedSessionToken).toBe("codex-token");
+      },
+    },
+    {
       provider: "aider" as const,
       config: { aiderBackend: "openai", aiderApiKey: "aider-key" },
       assertResolved: (resolved: ResolvedAgentConfig) => {
@@ -1066,7 +1075,7 @@ describe("Orchestrator — Phase 4 project mode", () => {
     },
   ])("resolves encrypted $provider integration credentials for agent runtime", async ({ provider, config, assertResolved }) => {
     const adminSecret = "orchestrator-runtime-admin-secret";
-    const credentialKey = provider === "copilot" ? "token" : provider === "claude" ? "apiKey" : "aiderApiKey";
+    const credentialKey = provider === "copilot" ? "token" : provider === "claude" ? "apiKey" : provider === "codex" ? "accessToken" : "aiderApiKey";
     const encryptedConfig = { ...config, [credentialKey]: encryptToken(String(config[credentialKey]), adminSecret) };
     const integration = {
       id: `${provider}-integration`,

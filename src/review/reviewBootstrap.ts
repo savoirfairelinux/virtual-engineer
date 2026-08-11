@@ -129,9 +129,10 @@ function getDecryptedPasswordField(
 function decryptManagedSessionToken(
   integration: Integration,
   rawConfig: Record<string, unknown>,
-  bundleLog?: ReturnType<typeof getLogger>
+  bundleLog?: ReturnType<typeof getLogger>,
+  field: "sessionToken" | "accessToken" = "sessionToken"
 ): string | null {
-  const encrypted = asOptionalString(rawConfig["sessionToken"]);
+  const encrypted = asOptionalString(rawConfig[field]);
   if (!encrypted) return null;
   try {
     return decryptToken(encrypted, getConfig().adminAuthSecret);
@@ -184,6 +185,16 @@ function getAgentTokenFromIntegration(
     if (aiderApiKey) return aiderApiKey;
     if (asOptionalString(rawConfig["aiderBackend"]) === "ollama") return "ollama-keyless";
     return null;
+  }
+
+  if (agentIntegration.provider === "codex") {
+    const authMode = asOptionalString(rawConfig["authMode"])
+      ?? (asOptionalString(rawConfig["apiKey"]) ? "api_key" : "subscription");
+    if (authMode === "api_key") {
+      return getDecryptedPasswordField(pluginManager, agentIntegration, "apiKey");
+    }
+    // Codex stores its subscription credential under `accessToken`, not `sessionToken`.
+    return decryptManagedSessionToken(agentIntegration, rawConfig, bundleLog, "accessToken");
   }
 
   return null;
