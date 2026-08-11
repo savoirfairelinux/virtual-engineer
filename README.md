@@ -70,7 +70,7 @@ Multiple active integrations of the same provider are supported in parallel. Cre
 | **Node.js** | 20 LTS | Orchestrator runtime (local development) |
 | **Docker** | 24 | Runs the orchestrator, OpenShell gateway, and agent sandboxes |
 | **OpenSSL** | — | Generates the credential-encryption secret |
-| **k3s + kubectl** | current | Optional; only for the experimental Kubernetes compute driver |
+| **k3s + kubectl** | current | Optional; only for the experimental Kubernetes compute driver. `start.sh` installs k3s and Helm automatically; `kubectl` must be on `PATH` |
 | **GitHub Copilot** | — | Subscription required for code-gen/review tasks; GitHub account required |
 | **Claude / Aider / Goose** | — | Alternative agent engines — API key or subscription per engine (optional) |
 
@@ -114,7 +114,18 @@ OPENSHELL_OIDC_CLIENT_SECRET=replace-with-the-confidential-client-secret
 
 The Docker gateway API and health ports are published on host loopback only. The control port is also published on the private `openshell-docker` bridge so sandbox supervisors can authenticate with their gateway-minted JWT and call back without exposing the gateway on a public host interface.
 
-To exercise the experimental Kubernetes path, set `OPENSHELL_COMPUTE_DRIVER=kubernetes`; `start.sh` then installs or reuses k3s, deploys the gateway through Helm, and schedules sandbox Pods. The application still uses the same `OpenShellWorkspaceRunner`; this setting only changes the gateway compute driver.
+#### Switching from Docker to Kubernetes (k3s)
+
+`OPENSHELL_COMPUTE_DRIVER` selects how the OpenShell gateway schedules sandboxes: sibling Docker containers (`docker`, the default) or Pods on a k3s cluster (`kubernetes`, experimental). `start.sh` never changes this value on its own.
+
+To switch:
+
+1. Set `OPENSHELL_COMPUTE_DRIVER=kubernetes` in `.env`.
+2. Re-run `./scripts/start.sh`. It installs `k3s` and `helm` if not already present, deploys the OpenShell gateway via Helm into the `virtual-engineer` namespace, and schedules sandbox Pods instead of Docker containers. `kubectl` must be on `PATH`.
+
+To switch back, set `OPENSHELL_COMPUTE_DRIVER=docker` (or delete the line) and re-run `./scripts/start.sh`. Both drivers use the same `OpenShellWorkspaceRunner`; only the gateway's compute backend changes.
+
+Both drivers share `data/local-oidc/client-secret` for the managed local Keycloak. The first time you switch to a driver, `start.sh` deploys that driver's own Keycloak instance using this secret, so no manual sync is needed. If a driver's Keycloak was already deployed with a *different* secret (for example, a `data/` directory reused from another machine or an older session), `start.sh` fails with an explicit error naming the exact command to delete that driver's stale Keycloak deployment so it can re-import the realm.
 
 Keep the generated `ADMIN_AUTH_SECRET` stable and stored securely. It encrypts provider credentials at rest; changing or losing it prevents existing credentials from being decrypted. It is separate from the Admin UI account password.
 
