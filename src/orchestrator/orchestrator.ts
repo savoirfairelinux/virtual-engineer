@@ -1087,7 +1087,7 @@ export class Orchestrator {
       if (integration) {
         try {
           const integCfg = this.resolveIntegrationConfig(integration);
-          if (integration.provider === "claude") {
+          if (integration.provider === "claude" || integration.provider === "codex") {
             if (integCfg["authMode"] === "api_key") {
               if (!apiKey) {
                 const key = integCfg["apiKey"];

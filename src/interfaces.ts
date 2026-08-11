@@ -49,7 +49,7 @@ export {
 // ─── Phase 2: Agents / Projects / Concurrency types ───────────────────────────
 
 export type AgentType = "coding" | "review";
-export type ReviewStrategy = "ve_direct" | "copilot_native" | "goose_native";
+export type ReviewStrategy = "ve_direct" | "copilot_native" | "goose_native" | "codex_native";
 export type ProjectType = "coding" | "review";
 export type PushTargetRole = "primary" | "submodule" | "dependency" | "related";
 
@@ -1520,6 +1520,7 @@ export const PROVIDER_IDS = [
   "claude",
   "aider",
   "goose",
+  "codex",
   "mock",
 ] as const;
 export type ProviderId = (typeof PROVIDER_IDS)[number];

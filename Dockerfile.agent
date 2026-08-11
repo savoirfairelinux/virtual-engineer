@@ -48,6 +48,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends bzip2 libxcb1 \
   && rm -rf /var/lib/apt/lists/* \
   && curl -fsSL https://github.com/aaif-goose/goose/releases/download/v1.21.1/download_cli.sh \
     | GOOSE_VERSION=1.21.1 CONFIGURE=false GOOSE_BIN_DIR=/usr/local/bin bash
+
+# Install the Codex CLI (https://github.com/openai/codex) for the `codex` agent
+# provider. Codex is a standalone Rust binary distributed as an npm package; the
+# global npm bin directory is already on PATH for the node:24-bookworm-slim base
+# image, so no extra symlink step is needed. `NPM_CONFIG_UPDATE_NOTIFIER=false`
+# (set above) suppresses the interactive update banner during CI builds.
+RUN npm install -g @openai/codex
 # Default SSH config — accepts unknown host keys as a fallback for ephemeral
 # sandboxes. When sshKnownHostsPath is configured on the Gerrit integration,
 # host-side git (HostGitExecutor / buildGitEnv) overrides GIT_SSH_COMMAND with

@@ -47,7 +47,7 @@ const log = getLogger("openshell-workspace-runner");
 /** Maps an adapter's `name` to the skill-installer's provider id; `undefined` skips
  * installation (Aider/Mock have no upstream skill-directory convention). */
 function providerFromAdapterName(name: string): AgentProvider | undefined {
-  if (name === "copilot" || name === "claude" || name === "goose") return name;
+  if (name === "copilot" || name === "claude" || name === "goose" || name === "codex") return name;
   return undefined;
 }
 
@@ -62,6 +62,9 @@ const AGENT_CREDENTIAL_PROVIDER_TYPES: Readonly<Record<string, string>> = {
   GITHUB_TOKEN: "copilot",
   ANTHROPIC_API_KEY: "claude-code",
   CLAUDE_CODE_OAUTH_TOKEN: "generic",
+  // Codex (OpenAI) auth.
+  CODEX_API_KEY: "generic",
+  CODEX_ACCESS_TOKEN: "generic",
   // Aider / Goose LLM backends.
   OPENAI_API_KEY: "generic",
   OPENROUTER_API_KEY: "generic",

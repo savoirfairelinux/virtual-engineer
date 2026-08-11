@@ -1,4 +1,4 @@
-export type AgentProvider = "copilot" | "claude" | "goose";
+export type AgentProvider = "copilot" | "claude" | "goose" | "codex";
 
 export interface RemoteSkillSource {
   source: string;

@@ -19,7 +19,7 @@ export interface AgentRunOptions {
   /** Whether this is a code-generation or review session. */
   mode: 'codegen' | 'review';
   /** Review-only execution strategy selected by the agent configuration. */
-  reviewStrategy?: 've_direct' | 'copilot_native' | 'goose_native';
+  reviewStrategy?: 've_direct' | 'copilot_native' | 'goose_native' | 'codex_native';
   /** Review-only integration-owned JSON Schema for native structured output. */
   reviewOutputSchema?: Record<string, unknown>;
   /**
