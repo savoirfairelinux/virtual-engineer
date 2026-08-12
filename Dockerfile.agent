@@ -55,6 +55,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends bzip2 libxcb1 \
 # image, so no extra symlink step is needed. `NPM_CONFIG_UPDATE_NOTIFIER=false`
 # (set above) suppresses the interactive update banner during CI builds.
 RUN npm install -g @openai/codex
+
+# Install the Cursor CLI (https://cursor.com/cli) for the `cursor` agent
+# provider. Cursor ships no npm package; its official installer downloads a
+# platform-specific binary and symlinks it to `~/.local/bin/{agent,cursor-agent}`
+# (both names) for whichever user runs it — here, root during the image build.
+# The installer has no documented version-pin option (it always fetches
+# whatever release its own script currently embeds), unlike Goose's pinned
+# release tag — a reproducibility gap to revisit if Cursor adds one. The
+# resulting binary is symlinked onto /usr/local/bin so the agent-worker
+# subprocess spawn (running as the unprivileged `sandbox` user) resolves it on
+# PATH, exactly like Aider.
+RUN curl https://cursor.com/install -fsS | bash \
+  && ln -s /root/.local/bin/cursor-agent /usr/local/bin/cursor-agent
 # Default SSH config — accepts unknown host keys as a fallback for ephemeral
 # sandboxes. When sshKnownHostsPath is configured on the Gerrit integration,
 # host-side git (HostGitExecutor / buildGitEnv) overrides GIT_SSH_COMMAND with

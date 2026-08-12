@@ -65,6 +65,8 @@ const AGENT_CREDENTIAL_PROVIDER_TYPES: Readonly<Record<string, string>> = {
   // Codex (OpenAI) auth.
   CODEX_API_KEY: "generic",
   CODEX_ACCESS_TOKEN: "generic",
+  // Cursor auth.
+  CURSOR_API_KEY: "generic",
   // Aider / Goose LLM backends.
   OPENAI_API_KEY: "generic",
   OPENROUTER_API_KEY: "generic",

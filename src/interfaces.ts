@@ -1521,6 +1521,7 @@ export const PROVIDER_IDS = [
   "aider",
   "goose",
   "codex",
+  "cursor",
   "mock",
 ] as const;
 export type ProviderId = (typeof PROVIDER_IDS)[number];
