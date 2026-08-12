@@ -175,7 +175,11 @@ export class OpenCodeAdapter implements AgentAdapter, ConfigurableAdapter {
       maxRepositoryContextBytes: this.config.maxRepositoryContextBytes,
       maxCommitsPerCycle: this.config.maxCommitsPerCycle,
       promptsDir: this.config.promptsDir,
-      ...egressOption(opencodeEgress(session.openCodeProvider, session.openCodeApiBase)),
+      ...egressOption(opencodeEgress(
+        session.openCodeProvider,
+        session.openCodeApiBase,
+        process.env["AWS_REGION"] ?? process.env["AWS_DEFAULT_REGION"],
+      )),
     });
   }
 
@@ -199,7 +203,11 @@ export class OpenCodeAdapter implements AgentAdapter, ConfigurableAdapter {
 
     return buildSharedReviewContainerSpec(input, {
       providerEnv,
-      ...egressOption(opencodeEgress(input.openCodeProvider, input.openCodeApiBase)),
+      ...egressOption(opencodeEgress(
+        input.openCodeProvider,
+        input.openCodeApiBase,
+        process.env["AWS_REGION"] ?? process.env["AWS_DEFAULT_REGION"],
+      )),
     });
   }
 
@@ -212,27 +220,14 @@ export class OpenCodeAdapter implements AgentAdapter, ConfigurableAdapter {
     input: ReviewWorkspaceInput,
     authEnv: Record<string, string>
   ): Record<string, string> {
-    if (
-      authEnv["OPENAI_API_KEY"] ||
-      authEnv["ANTHROPIC_API_KEY"] ||
-      authEnv["OPENROUTER_API_KEY"] ||
-      authEnv["DEEPSEEK_API_KEY"] ||
-      authEnv["GROQ_API_KEY"] ||
-      authEnv["GOOGLE_GENERATIVE_AI_API_KEY"] ||
-      authEnv["OLLAMA_HOST"] ||
-      authEnv["OPENAI_API_BASE"] ||
-      authEnv["PERPLEXITY_API_KEY"] ||
-      authEnv["MISTRAL_API_KEY"] ||
-      authEnv["XAI_API_KEY"] ||
-      authEnv["CEREBRAS_API_KEY"]
-    ) {
-      return authEnv;
-    }
-    const token = input.agentToken.trim();
-    if (!token) {
+    if (Object.keys(authEnv).length > 0) {
       return authEnv;
     }
     const provider = (input.openCodeProvider ?? "anthropic") as OpenCodeProvider;
+    const token = input.agentToken.trim();
+    if (!token && provider !== "ollama" && provider !== "bedrock") {
+      return authEnv;
+    }
     return opencodeProviderAuthEnv(provider, token, input.openCodeApiBase ?? "");
   }
 
@@ -493,9 +488,9 @@ export function opencodeProviderAuthEnv(
  * `spec.env`, so these must be read from the host process and forwarded.
  */
 const AWS_ENV_ALLOWLIST = [
-  "AWS_PROFILE",
   "AWS_ACCESS_KEY_ID",
   "AWS_SECRET_ACCESS_KEY",
+  "AWS_SESSION_TOKEN",
   "AWS_REGION",
   "AWS_DEFAULT_REGION",
   "AWS_BEARER_TOKEN_BEDROCK",
@@ -509,5 +504,23 @@ function forwardAwsEnv(): Record<string, string> {
       env[key] = value;
     }
   }
-  return env;
+  if (env["AWS_BEARER_TOKEN_BEDROCK"]) {
+    return env;
+  }
+  if (env["AWS_ACCESS_KEY_ID"] && env["AWS_SECRET_ACCESS_KEY"]) {
+    return env;
+  }
+  if (process.env["AWS_PROFILE"]) {
+    throw new Error(
+      "OpenCode Bedrock requires environment credentials; AWS_PROFILE files are not uploaded to the sandbox."
+    );
+  }
+  if (env["AWS_ACCESS_KEY_ID"] || env["AWS_SECRET_ACCESS_KEY"] || env["AWS_SESSION_TOKEN"]) {
+    throw new Error(
+      "OpenCode Bedrock requires both AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY for access-key authentication."
+    );
+  }
+  throw new Error(
+    "OpenCode Bedrock requires AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY or AWS_BEARER_TOKEN_BEDROCK in the host environment."
+  );
 }

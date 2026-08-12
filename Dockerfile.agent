@@ -59,8 +59,9 @@ RUN npm install -g @openai/codex
 # Install the OpenCode CLI (https://opencode.ai) for the `opencode` agent
 # provider. Like Codex, OpenCode is a standalone binary distributed as an npm
 # package; the global npm bin directory is already on PATH, so no extra
-# symlink step is needed.
-RUN npm install -g opencode-ai
+# symlink step is needed. Pin the version because CLI flags, config, and JSONL
+# event shapes are runtime contracts consumed by the worker.
+RUN npm install -g opencode-ai@1.18.16
 # Default SSH config — accepts unknown host keys as a fallback for ephemeral
 # sandboxes. When sshKnownHostsPath is configured on the Gerrit integration,
 # host-side git (HostGitExecutor / buildGitEnv) overrides GIT_SSH_COMMAND with

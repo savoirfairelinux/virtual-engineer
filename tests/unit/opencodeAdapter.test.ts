@@ -101,6 +101,29 @@ describe("OpenCodeAdapter", () => {
         binaries: ["/usr/local/bin/opencode"],
       });
     });
+
+    it("declares regional Bedrock egress from the host AWS region", () => {
+      process.env["AWS_ACCESS_KEY_ID"] = "aws-access-key";
+      process.env["AWS_SECRET_ACCESS_KEY"] = "aws-secret-key";
+      process.env["AWS_REGION"] = "ca-central-1";
+      try {
+        const adapter = new OpenCodeAdapter();
+        const ctx = makeContext();
+        ctx.agentSession.openCodeProvider = "bedrock";
+        ctx.agentSession.openCodeApiKey = undefined;
+        const spec = adapter.buildContainerSpec(ctx);
+
+        expect(spec.egress?.hosts).toEqual([
+          "bedrock-runtime.ca-central-1.amazonaws.com",
+          "sts.ca-central-1.amazonaws.com",
+          "sts.amazonaws.com",
+        ]);
+      } finally {
+        delete process.env["AWS_ACCESS_KEY_ID"];
+        delete process.env["AWS_SECRET_ACCESS_KEY"];
+        delete process.env["AWS_REGION"];
+      }
+    });
   });
 
   describe("buildReviewContainerSpec", () => {
@@ -122,6 +145,28 @@ describe("OpenCodeAdapter", () => {
         makeReviewInput({ openCodeProvider: "openai", agentToken: "sk-openai-abc" })
       );
       expect(spec.env["OPENAI_API_KEY"]).toBe("sk-openai-abc");
+    });
+
+    it("forwards host AWS temporary credentials for Bedrock review without an agent token", () => {
+      process.env["AWS_ACCESS_KEY_ID"] = "aws-access-key";
+      process.env["AWS_SECRET_ACCESS_KEY"] = "aws-secret-key";
+      process.env["AWS_SESSION_TOKEN"] = "aws-session-token";
+      try {
+        const adapter = new OpenCodeAdapter();
+        const spec = adapter.buildReviewContainerSpec(
+          makeReviewInput({ openCodeProvider: "bedrock", agentToken: "" })
+        );
+
+        expect(spec.env).toMatchObject({
+          AWS_ACCESS_KEY_ID: "aws-access-key",
+          AWS_SECRET_ACCESS_KEY: "aws-secret-key",
+          AWS_SESSION_TOKEN: "aws-session-token",
+        });
+      } finally {
+        delete process.env["AWS_ACCESS_KEY_ID"];
+        delete process.env["AWS_SECRET_ACCESS_KEY"];
+        delete process.env["AWS_SESSION_TOKEN"];
+      }
     });
 
     it("omits OPENCODE_MODEL for opencode_native review (CLI-managed)", () => {
@@ -164,6 +209,23 @@ describe("OpenCodeAdapter", () => {
       });
       adapter.setDockerInvoker(invoker);
       await expect(adapter.execute(ctx)).resolves.toBeDefined();
+    });
+
+    it("rejects profile-only Bedrock auth because profile files are not uploaded", async () => {
+      process.env["AWS_PROFILE"] = "developer";
+      delete process.env["AWS_ACCESS_KEY_ID"];
+      delete process.env["AWS_SECRET_ACCESS_KEY"];
+      delete process.env["AWS_BEARER_TOKEN_BEDROCK"];
+      try {
+        const adapter = new OpenCodeAdapter();
+        const ctx = makeContext();
+        ctx.agentSession.openCodeProvider = "bedrock";
+        ctx.agentSession.openCodeApiKey = undefined;
+
+        await expect(adapter.execute(ctx)).rejects.toThrow(/environment credentials.*AWS_PROFILE.*not uploaded/i);
+      } finally {
+        delete process.env["AWS_PROFILE"];
+      }
     });
   });
 });

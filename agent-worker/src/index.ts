@@ -237,7 +237,7 @@ interface ReviewWorkerResult extends AgentResult {
 async function runReviewMode(): Promise<ReviewWorkerResult> {
   process.stderr.write(
     `review mode: provider=${AGENT_PROVIDER} strategy=${REVIEW_STRATEGY} ` +
-    `model=${REVIEW_STRATEGY === 'copilot_native' || REVIEW_STRATEGY === 'goose_native' || REVIEW_STRATEGY === 'codex_native' ? 'CLI-managed' : ACTIVE_MODEL_LABEL}\n`,
+    `model=${REVIEW_STRATEGY === 'copilot_native' || REVIEW_STRATEGY === 'goose_native' || REVIEW_STRATEGY === 'codex_native' || REVIEW_STRATEGY === 'opencode_native' ? 'CLI-managed' : ACTIVE_MODEL_LABEL}\n`,
   );
   emitEvent('review.strategy_selected', { reviewStrategy: REVIEW_STRATEGY });
   emitEvent('review.prompt_received', {
@@ -273,7 +273,7 @@ async function runReviewMode(): Promise<ReviewWorkerResult> {
       agentLogs: rawOutput,
       metadata: {
         adapter: ADAPTER_LABEL,
-        model: REVIEW_STRATEGY === 'copilot_native' || REVIEW_STRATEGY === 'goose_native' || REVIEW_STRATEGY === 'codex_native' ? 'CLI-managed' : ACTIVE_MODEL_LABEL,
+        model: REVIEW_STRATEGY === 'copilot_native' || REVIEW_STRATEGY === 'goose_native' || REVIEW_STRATEGY === 'codex_native' || REVIEW_STRATEGY === 'opencode_native' ? 'CLI-managed' : ACTIVE_MODEL_LABEL,
         reviewMode: true,
         reviewStrategy: REVIEW_STRATEGY,
       },

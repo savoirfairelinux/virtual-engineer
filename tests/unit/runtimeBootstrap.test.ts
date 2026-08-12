@@ -21,7 +21,7 @@ const PROVIDER_CAPABILITIES: Record<ProviderId, DomainCapability[]> = {
   opencode: ["agent_execution"],
 };
 
-const ALL_PROVIDERS: ProviderId[] = ["redmine", "gitlab", "gerrit", "github", "copilot", "claude", "aider", "goose", "codex", "mock"];
+const ALL_PROVIDERS: ProviderId[] = ["redmine", "gitlab", "gerrit", "github", "copilot", "claude", "aider", "goose", "codex", "opencode", "mock"];
 
 const baseConfig: AppConfig = {
   nodeEnv: "test" as const,

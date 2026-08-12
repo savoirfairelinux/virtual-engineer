@@ -145,7 +145,7 @@ See [modules/admin.md](modules/admin.md).
 
 ### External skill sources
 
-`projects.skill_sources_json` is persisted, editable in the admin UI, and forwarded onto `AgentSession.skillSourcesJson` (`src/orchestrator/agentContextBuilder.ts`, `src/review/reviewOrchestrator.ts`). `OpenShellWorkspaceRunner` calls `skillSourceInstaller.ts`'s `installSkillSources()` on the **host**, after checkout and before upload, so the fetched skill files ride along with the ordinary workspace upload while SSH material never reaches the sandbox. Supported providers (Copilot, Claude, Goose) install into their native project-relative skill directory; Aider/Mock are skipped. See [modules/workspace.md](modules/workspace.md#external-skill-sources) for the full flow.
+`projects.skill_sources_json` is persisted, editable in the admin UI, and forwarded onto `AgentSession.skillSourcesJson` (`src/orchestrator/agentContextBuilder.ts`, `src/review/reviewOrchestrator.ts`). `OpenShellWorkspaceRunner` calls `skillSourceInstaller.ts`'s `installSkillSources()` on the **host**, after checkout and before upload, so the fetched skill files ride along with the ordinary workspace upload while SSH material never reaches the sandbox. Copilot, Claude, Goose, Codex, and OpenCode install into their native project-relative skill directories; Aider and Mock are skipped. See [modules/workspace.md](modules/workspace.md#external-skill-sources) for the full flow.
 
 ## Sandbox hardening
 

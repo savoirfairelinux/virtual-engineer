@@ -37,6 +37,8 @@ describe("runOpenCodeAgent", () => {
     delete process.env["OPENCODE_PROVIDER"];
     delete process.env["OPENCODE_VARIANT"];
     delete process.env["ANTHROPIC_API_KEY"];
+    delete process.env["OPENAI_API_KEY"];
+    delete process.env["OPENAI_API_BASE"];
     vi.mocked(writeFileSync).mockReset();
     vi.mocked(mkdirSync).mockReset();
   });
@@ -135,10 +137,48 @@ describe("runOpenCodeAgent", () => {
     const config = JSON.parse(String(configWrite![1])) as {
       mcp: { "ve-submission": { command: string[] } };
       permission: unknown;
+      enabled_providers: string[];
     };
     expect(config.mcp["ve-submission"].command[0]).toBe("node");
     expect(config.mcp["ve-submission"].command[1]).toContain("mcpSubmissionServer.js");
     expect(config.permission).toEqual({ "*": "allow", edit: "deny", bash: "deny" });
+    expect(config.enabled_providers).toEqual(["anthropic"]);
+    expect(configWrite![2]).toEqual({ encoding: "utf8", mode: 0o600 });
+  });
+
+  it("references custom-provider credentials through environment substitution", async () => {
+    process.env["OPENCODE_PROVIDER"] = "openai_compat";
+    process.env["OPENAI_API_KEY"] = "super-secret-key";
+    process.env["OPENAI_API_BASE"] = "https://llm.example.test/v1";
+    const fake = makeFakeChild();
+    spawnMock.mockReturnValue(fake);
+    const promise = runOpenCodeAgent("do the thing", {
+      model: "custom-model",
+      agentInstructions: "sys",
+      cwd: "/workspace",
+      timeoutMs: 1000,
+      mode: "codegen",
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    fake.emit("close", 0);
+    await promise;
+
+    const configWrite = vi.mocked(writeFileSync).mock.calls.find((write) =>
+      String(write[0]).endsWith("opencode.json")
+    );
+    const configText = String(configWrite![1]);
+    const config = JSON.parse(configText) as {
+      enabled_providers: string[];
+      provider: Record<string, { options: { apiKey: string; baseURL: string } }>;
+    };
+    expect(config.enabled_providers).toEqual(["opencode-custom"]);
+    expect(config.provider["opencode-custom"]?.options).toEqual({
+      apiKey: "{env:OPENAI_API_KEY}",
+      baseURL: "{env:OPENAI_API_BASE}",
+    });
+    expect(configText).not.toContain("super-secret-key");
+    delete process.env["OPENAI_API_KEY"];
+    delete process.env["OPENAI_API_BASE"];
   });
 
   it("uses blanket allow permission for codegen", async () => {
@@ -159,6 +199,75 @@ describe("runOpenCodeAgent", () => {
     const configWrite = writes.find((w) => String(w[0]).endsWith("opencode.json"));
     const config = JSON.parse(String(configWrite![1])) as { permission: unknown };
     expect(config.permission).toBe("allow");
+  });
+
+  it("records a completed nested tool_use event from OpenCode JSONL", async () => {
+    const fake = makeFakeChild();
+    spawnMock.mockReturnValue(fake);
+    const promise = runOpenCodeAgent("do the thing", {
+      model: "claude-sonnet-4-5",
+      agentInstructions: "sys",
+      cwd: "/workspace",
+      timeoutMs: 1000,
+      mode: "codegen",
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    fake.stdout?.emit("data", Buffer.from(
+      `${JSON.stringify({
+        type: "tool_use",
+        part: {
+          tool: "ve_submit_changes",
+          state: { status: "completed", input: {}, output: "submitted" },
+        },
+      })}\n`
+    ));
+    fake.emit("close", 0);
+    const result = await promise;
+
+    expect(result.toolCalls).toEqual([{
+      name: "ve_submit_changes",
+      input: {},
+      success: true,
+    }]);
+    expect(result.toolCallCount).toBe(1);
+    expect(result.toolsByKind).toEqual({ ve_submit_changes: 1 });
+  });
+
+  it("emits assistant.usage from step_finish.part.tokens", async () => {
+    const fake = makeFakeChild();
+    spawnMock.mockReturnValue(fake);
+    const emitSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const promise = runOpenCodeAgent("do the thing", {
+      model: "claude-sonnet-4-5",
+      agentInstructions: "sys",
+      cwd: "/workspace",
+      timeoutMs: 1000,
+      mode: "codegen",
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    fake.stdout?.emit("data", Buffer.from(
+      `${JSON.stringify({
+        type: "step_finish",
+        part: {
+          tokens: {
+            input: 120,
+            output: 45,
+            cache: { read: 30, write: 5 },
+          },
+        },
+      })}\n`
+    ));
+    fake.emit("close", 0);
+    await promise;
+
+    const writes = emitSpy.mock.calls.map((call) => String(call[0]));
+    const usageEvent = writes.find((write) => write.includes('"assistant.usage"'));
+    expect(usageEvent).toBeDefined();
+    expect(usageEvent).toContain('"inputTokens":120');
+    expect(usageEvent).toContain('"outputTokens":45');
+    expect(usageEvent).toContain('"cacheReadTokens":30');
+    expect(usageEvent).toContain('"cacheWriteTokens":5');
+    emitSpy.mockRestore();
   });
 
   it("rejects with a timeout error and kills the process when the session exceeds timeoutMs", async () => {

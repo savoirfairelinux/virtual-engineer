@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { createOpenCodeDescriptor } from "../../src/plugins/descriptors/opencode.js";
 import { ModelDiscoveryConfigError } from "../../src/plugins/registry.js";
+import { validateOpenCodeConnection } from "../../src/agents/opencodeConnectionValidator.js";
 
 describe("createOpenCodeDescriptor", () => {
   beforeEach(() => {
@@ -92,5 +93,18 @@ describe("createOpenCodeDescriptor", () => {
   it("discoverModels returns an empty list for bedrock (env-only)", async () => {
     const models = await descriptor.discoverModels!({ openCodeProvider: "bedrock" });
     expect(models).toEqual([]);
+  });
+
+  it("rejects profile-only Bedrock validation because profile files are not uploaded", async () => {
+    process.env["AWS_PROFILE"] = "developer";
+    delete process.env["AWS_ACCESS_KEY_ID"];
+    delete process.env["AWS_BEARER_TOKEN_BEDROCK"];
+    try {
+      const result = await validateOpenCodeConnection({ openCodeProvider: "bedrock" });
+      expect(result.success).toBe(false);
+      expect(result.error).toMatch(/AWS_PROFILE.*not uploaded/i);
+    } finally {
+      delete process.env["AWS_PROFILE"];
+    }
   });
 });

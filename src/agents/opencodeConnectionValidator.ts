@@ -102,11 +102,25 @@ export async function validateOpenCodeConnection(
         // Bedrock uses AWS credential chains configured in the environment; VE
         // cannot probe it with a single API key. Validate that the operator has
         // set the AWS env vars on the host before the agent runs.
-        if (!process.env["AWS_ACCESS_KEY_ID"] && !process.env["AWS_PROFILE"] && !process.env["AWS_BEARER_TOKEN_BEDROCK"]) {
+        if (process.env["AWS_PROFILE"] && !process.env["AWS_ACCESS_KEY_ID"] && !process.env["AWS_BEARER_TOKEN_BEDROCK"]) {
+          return {
+            success: false,
+            error: "AWS_PROFILE cannot be used because profile files are not uploaded to the OpenCode sandbox. Configure environment credentials instead.",
+            models: [],
+          };
+        }
+        if (!process.env["AWS_ACCESS_KEY_ID"] && !process.env["AWS_BEARER_TOKEN_BEDROCK"]) {
           return {
             success: false,
             error:
-              "Bedrock requires AWS credentials in the environment (AWS_PROFILE, AWS_ACCESS_KEY_ID, or AWS_BEARER_TOKEN_BEDROCK). Configure them on the host before running the agent.",
+              "Bedrock requires AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY or AWS_BEARER_TOKEN_BEDROCK in the host environment.",
+            models: [],
+          };
+        }
+        if (process.env["AWS_ACCESS_KEY_ID"] && !process.env["AWS_SECRET_ACCESS_KEY"]) {
+          return {
+            success: false,
+            error: "Bedrock access-key authentication requires AWS_SECRET_ACCESS_KEY.",
             models: [],
           };
         }

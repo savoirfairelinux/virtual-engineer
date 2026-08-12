@@ -60,6 +60,20 @@ export function gooseEgress(provider: string | undefined, apiBase: string | unde
   return egress(GOOSE_PROVIDER_HOSTS[provider ?? "anthropic"] ?? [], apiBase, "/usr/local/bin/goose");
 }
 
-export function opencodeEgress(provider: string | undefined, apiBase: string | undefined): AgentEgressSpec | undefined {
-  return egress(OPENCODE_PROVIDER_HOSTS[provider ?? "anthropic"] ?? [], apiBase, "/usr/local/bin/opencode");
+export function opencodeEgress(
+  provider: string | undefined,
+  apiBase: string | undefined,
+  awsRegion: string | undefined = undefined,
+): AgentEgressSpec | undefined {
+  const selectedProvider = provider ?? "anthropic";
+  const region = awsRegion?.trim();
+  const bedrockRegion = region && /^[a-z0-9-]+$/.test(region) ? region : "us-east-1";
+  const hosts = selectedProvider === "bedrock"
+    ? [
+        `bedrock-runtime.${bedrockRegion}.amazonaws.com`,
+        `sts.${bedrockRegion}.amazonaws.com`,
+        "sts.amazonaws.com",
+      ]
+    : OPENCODE_PROVIDER_HOSTS[selectedProvider] ?? [];
+  return egress(hosts, apiBase, "/usr/local/bin/opencode");
 }

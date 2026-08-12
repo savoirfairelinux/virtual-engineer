@@ -86,10 +86,10 @@ function buildOpenCodeEnv(configPath: string): Record<string, string> {
     'MISTRAL_API_KEY',
     'XAI_API_KEY',
     'CEREBRAS_API_KEY',
-    // Bedrock uses AWS credential chains.
-    'AWS_PROFILE',
+    // Bedrock uses environment credentials; host profile files are not uploaded.
     'AWS_ACCESS_KEY_ID',
     'AWS_SECRET_ACCESS_KEY',
+    'AWS_SESSION_TOKEN',
     'AWS_REGION',
     'AWS_DEFAULT_REGION',
     'AWS_BEARER_TOKEN_BEDROCK',
@@ -156,8 +156,8 @@ function buildProviderConfigEntry(
         npm: '@ai-sdk/openai-compatible',
         name: 'OpenAI-compatible',
         options: {
-          baseURL: process.env['OPENAI_API_BASE'] ?? '',
-          apiKey: process.env['OPENAI_API_KEY'] ?? '',
+          baseURL: '{env:OPENAI_API_BASE}',
+          apiKey: '{env:OPENAI_API_KEY}',
         },
       },
     };
@@ -166,8 +166,8 @@ function buildProviderConfigEntry(
     return {
       [providerId]: {
         options: {
-          baseURL: process.env['AZURE_RESOURCE_NAME'] ?? '',
-          apiKey: process.env['AZURE_OPENAI_API_KEY'] ?? '',
+          baseURL: '{env:AZURE_RESOURCE_NAME}',
+          apiKey: '{env:AZURE_OPENAI_API_KEY}',
         },
       },
     };
@@ -196,6 +196,7 @@ function writeOpenCodeConfig(
 
   const config: Record<string, unknown> = {
     $schema: 'https://opencode.ai/config.json',
+    enabled_providers: [providerId],
     mcp: {
       've-submission': {
         type: 'local',
@@ -208,7 +209,7 @@ function writeOpenCodeConfig(
     ...(providerConfigEntry !== undefined ? { provider: providerConfigEntry } : {}),
   };
 
-  writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf8');
+  writeFileSync(configPath, JSON.stringify(config, null, 2), { encoding: 'utf8', mode: 0o600 });
   process.stderr.write(`opencode config written to ${configPath} (provider=${providerId}, mode=${mode})\n`);
   return configPath;
 }
@@ -272,14 +273,16 @@ function processOpenCodeLine(
     throw new Error(`OpenCode ${type}: ${message}`);
   }
 
-  if (type === 'usage' || type === 'session.idle') {
-    const usage = asRecord(event['usage']) ?? asRecord(event['tokens']);
+  if (type === 'usage' || type === 'session.idle' || type === 'step_finish') {
+    const part = asRecord(event['part']);
+    const usage = asRecord(event['usage']) ?? asRecord(event['tokens']) ?? asRecord(part?.['tokens']);
     if (usage) {
+      const cache = asRecord(usage['cache']);
       emitEvent('assistant.usage', {
         inputTokens: numberOrNull(usage['input'] ?? usage['input_tokens']),
         outputTokens: numberOrNull(usage['output'] ?? usage['output_tokens']),
-        cacheReadTokens: numberOrNull(usage['cache_read'] ?? usage['cached_tokens']),
-        cacheWriteTokens: numberOrNull(usage['cache_write']),
+        cacheReadTokens: numberOrNull(usage['cache_read'] ?? usage['cached_tokens'] ?? cache?.['read']),
+        cacheWriteTokens: numberOrNull(usage['cache_write'] ?? cache?.['write']),
         model: modelLabel,
       });
     }
@@ -295,7 +298,30 @@ function processOpenCodeLine(
     return;
   }
 
-  if (type === 'tool_call' || type === 'tool.start' || type === 'tool_use') {
+  if (type === 'tool_use') {
+    const part = asRecord(event['part']);
+    const toolState = asRecord(part?.['state']);
+    const toolName = typeof part?.['tool'] === 'string' ? part['tool'] : 'unknown';
+    const status = typeof toolState?.['status'] === 'string' ? toolState['status'] : '';
+    const success = status === 'completed' || status === 'success';
+    const completed = success || status === 'error' || status === 'failed';
+    const errorMessage = typeof toolState?.['error'] === 'string' ? toolState['error'] : undefined;
+    state.toolCallCount++;
+    state.toolsByKind[toolName] = (state.toolsByKind[toolName] ?? 0) + 1;
+    emitEvent('tool.execution_start', { name: toolName, callNumber: state.toolCallCount });
+    if (completed) {
+      state.toolCalls.push({
+        name: toolName,
+        input: asRecord(toolState?.['input']) ?? {},
+        success,
+        ...(errorMessage !== undefined ? { error: errorMessage } : {}),
+      });
+      emitEvent('tool.execution_complete', { name: toolName, success });
+    }
+    return;
+  }
+
+  if (type === 'tool_call' || type === 'tool.start') {
     const toolName = typeof event['tool'] === 'string' ? event['tool'] : typeof event['name'] === 'string' ? event['name'] : 'unknown';
     state.toolCallCount++;
     state.toolsByKind[toolName] = (state.toolsByKind[toolName] ?? 0) + 1;
