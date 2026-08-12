@@ -49,4 +49,18 @@ describe("admin API identity boundary", () => {
     expect(unauthorized).not.toHaveBeenCalled();
     stop();
   });
+
+  it("prefers a detailed server message over a generic error label", async () => {
+    const message = 'Integration "Shared GitHub" is still in use by:\n- agent "Build Agent"';
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      error: "Conflict",
+      message,
+    }), {
+      status: 409,
+      headers: { "content-type": "application/json" },
+    })));
+
+    await expect(api.delete("/api/admin/integrations/shared-github"))
+      .rejects.toMatchObject({ status: 409, message });
+  });
 });

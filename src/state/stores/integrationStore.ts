@@ -2,6 +2,7 @@ import { and, eq } from "drizzle-orm";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import type {
   Integration,
+  IntegrationReferenceDetails,
   OAuthApp,
 } from "../../interfaces.js";
 import { normalizeGitLabBaseUrl } from "../../utils/gitlabAuth.js";
@@ -11,6 +12,7 @@ import {
   oauthApps,
   projectIntegrationBindings,
   projectPushTargets,
+  projects,
 } from "../schema.js";
 import * as schema from "../schema.js";
 
@@ -19,6 +21,7 @@ export interface IntegrationStoreApi {
   getIntegration(id: string): Promise<Integration | null>;
   upsertIntegration(data: Omit<Integration, "createdAt" | "updatedAt">): Promise<Integration>;
   deleteIntegration(id: string): Promise<void>;
+  getIntegrationReferenceDetails(id: string): Promise<IntegrationReferenceDetails>;
   countIntegrationReferences(id: string): Promise<number>;
   setIntegrationEnabled(id: string, enabled: boolean): Promise<Integration>;
   listOAuthApps(provider?: string): Promise<OAuthApp[]>;
@@ -107,13 +110,41 @@ export function createIntegrationStore(context: IntegrationStoreContext): Integr
     await db.delete(integrations).where(eq(integrations.id, id));
   }
 
-  async function countIntegrationReferences(id: string): Promise<number> {
+  async function getIntegrationReferenceDetails(id: string): Promise<IntegrationReferenceDetails> {
     const [agentRows, bindingRows, pushRows] = await Promise.all([
-      db.query.agents.findMany({ where: eq(agents.integrationId, id) }),
-      db.query.projectIntegrationBindings.findMany({ where: eq(projectIntegrationBindings.integrationId, id) }),
-      db.query.projectPushTargets.findMany({ where: eq(projectPushTargets.integrationId, id) }),
+      db
+        .select({ id: agents.id, name: agents.name })
+        .from(agents)
+        .where(eq(agents.integrationId, id)),
+      db
+        .select({
+          projectId: projectIntegrationBindings.projectId,
+          projectName: projects.name,
+          capability: projectIntegrationBindings.capability,
+        })
+        .from(projectIntegrationBindings)
+        .innerJoin(projects, eq(projectIntegrationBindings.projectId, projects.id))
+        .where(eq(projectIntegrationBindings.integrationId, id)),
+      db
+        .select({
+          projectId: projectPushTargets.projectId,
+          projectName: projects.name,
+          repoKey: projectPushTargets.repoKey,
+        })
+        .from(projectPushTargets)
+        .innerJoin(projects, eq(projectPushTargets.projectId, projects.id))
+        .where(eq(projectPushTargets.integrationId, id)),
     ]);
-    return agentRows.length + bindingRows.length + pushRows.length;
+    return {
+      agents: agentRows,
+      projectBindings: bindingRows,
+      projectPushTargets: pushRows,
+    };
+  }
+
+  async function countIntegrationReferences(id: string): Promise<number> {
+    const references = await getIntegrationReferenceDetails(id);
+    return references.agents.length + references.projectBindings.length + references.projectPushTargets.length;
   }
 
   async function setIntegrationEnabled(id: string, enabled: boolean): Promise<Integration> {
@@ -202,6 +233,7 @@ export function createIntegrationStore(context: IntegrationStoreContext): Integr
     getIntegration,
     upsertIntegration,
     deleteIntegration,
+    getIntegrationReferenceDetails,
     countIntegrationReferences,
     setIntegrationEnabled,
     listOAuthApps,

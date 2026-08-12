@@ -650,6 +650,39 @@ describe("Admin API — Plugin & Integration routes", () => {
       const { status: getStatus } = await fetchFromServer(server, `/api/admin/integrations/${id}`);
       expect(getStatus).toBe(200);
     });
+
+    it("returns the names and roles of integration dependents", async () => {
+      const references = {
+        agents: [{ id: "agent-1", name: "Build Agent" }],
+        projectBindings: [{ projectId: "project-1", projectName: "Platform", capability: "issue_tracking" }],
+        projectPushTargets: [{ projectId: "project-1", projectName: "Platform", repoKey: "platform/app" }],
+      };
+      Object.assign(integrationStore, {
+        getIntegrationReferenceDetails: vi.fn(async () => references),
+      });
+
+      const { body: createBody } = await fetchFromServer(server, "/api/admin/integrations", {
+        method: "POST",
+        body: { provider: "mock", name: "In Use", config: {} },
+      });
+      const id = (createBody["integration"] as Record<string, unknown>)["id"] as string;
+
+      const { status, body } = await fetchFromServer(server, `/api/admin/integrations/${id}`, {
+        method: "DELETE",
+      });
+
+      expect(status).toBe(409);
+      expect(body["error"]).toBe("Conflict");
+      expect(body["message"]).toBe(
+        'Integration "In Use" is still in use by:\n' +
+        '- agent "Build Agent"\n' +
+        '- project "Platform" (issue_tracking)\n' +
+        '- project "Platform" push target "platform/app"\n' +
+        "Remove these dependencies before deleting it.",
+      );
+      expect(body["references"]).toEqual(references);
+      expect(body["referenceCount"]).toBe(3);
+    });
   });
 
   describe("PUT /api/admin/integrations/:id", () => {

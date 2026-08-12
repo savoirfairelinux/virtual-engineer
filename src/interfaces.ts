@@ -1573,6 +1573,12 @@ export interface Integration {
   discoveredAt?: Date | null | undefined;
 }
 
+export interface IntegrationReferenceDetails {
+  agents: Array<{ id: string; name: string }>;
+  projectBindings: Array<{ projectId: string; projectName: string; capability: DomainCapability }>;
+  projectPushTargets: Array<{ projectId: string; projectName: string; repoKey: string }>;
+}
+
 export interface OAuthApp {
   provider: string;
   baseUrl: string;
@@ -1596,6 +1602,8 @@ export interface IntegrationStore {
   setIntegrationEnabled(id: string, enabled: boolean): Promise<Integration>;
   /** Count FK references across agents/projects tables; used to guard deletes with 409. */
   countIntegrationReferences(id: string): Promise<number>;
+  /** List the named agents and projects that prevent an integration delete. */
+  getIntegrationReferenceDetails?(id: string): Promise<IntegrationReferenceDetails>;
   /** persist a fresh resource-discovery snapshot for an integration. */
   setIntegrationDiscoveredResources?(id: string, json: string): Promise<void>;
   /** load the latest persisted snapshot (raw JSON + when). */

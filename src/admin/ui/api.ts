@@ -103,8 +103,9 @@ async function request<T>(
   if (!res.ok) {
     let msg = res.statusText;
     try {
-      const j = (await res.json()) as { error?: string };
-      if (j.error) msg = j.error;
+      const j = (await res.json()) as { error?: unknown; message?: unknown };
+      if (typeof j.message === "string" && j.message) msg = j.message;
+      else if (typeof j.error === "string" && j.error) msg = j.error;
     } catch { /* ignore */ }
     // 401 = session expired/revoked → drop to login. 403 (insufficient role)
     // must NOT log out — it surfaces as a normal error message.
