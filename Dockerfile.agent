@@ -63,11 +63,15 @@ RUN npm install -g @openai/codex
 # The installer has no documented version-pin option (it always fetches
 # whatever release its own script currently embeds), unlike Goose's pinned
 # release tag — a reproducibility gap to revisit if Cursor adds one. The
-# resulting binary is symlinked onto /usr/local/bin so the agent-worker
-# subprocess spawn (running as the unprivileged `sandbox` user) resolves it on
-# PATH, exactly like Aider.
+# complete version bundle is copied under /usr/local/lib and linked from
+# /usr/local/bin so the unprivileged `sandbox` user does not need to traverse
+# root's mode-0700 home directory. The whole bundle is required because the
+# launcher loads sibling JavaScript chunks at runtime.
 RUN curl https://cursor.com/install -fsS | bash \
-  && ln -s /root/.local/bin/cursor-agent /usr/local/bin/cursor-agent
+  && cursor_bin="$(readlink -f /root/.local/bin/cursor-agent)" \
+  && install -d /usr/local/lib/cursor-agent \
+  && cp -a "$(dirname "$cursor_bin")/." /usr/local/lib/cursor-agent/ \
+  && ln -s ../lib/cursor-agent/cursor-agent /usr/local/bin/cursor-agent
 # Default SSH config — accepts unknown host keys as a fallback for ephemeral
 # sandboxes. When sshKnownHostsPath is configured on the Gerrit integration,
 # host-side git (HostGitExecutor / buildGitEnv) overrides GIT_SSH_COMMAND with

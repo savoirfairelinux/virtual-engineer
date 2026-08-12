@@ -365,6 +365,20 @@ describe("OpenShell deployment contract", () => {
     expect(dockerfile).toContain("--home-dir /sandbox");
   });
 
+  it("materializes the Cursor CLI outside root's home", () => {
+    const dockerfile = readFileSync("Dockerfile.agent", "utf8");
+
+    expect(dockerfile).toContain(
+      'cp -a "$(dirname "$cursor_bin")/." /usr/local/lib/cursor-agent/'
+    );
+    expect(dockerfile).toContain(
+      "ln -s ../lib/cursor-agent/cursor-agent /usr/local/bin/cursor-agent"
+    );
+    expect(dockerfile).not.toContain(
+      "ln -s /root/.local/bin/cursor-agent /usr/local/bin/cursor-agent"
+    );
+  });
+
   it("provides an authenticated local Keycloak fallback", () => {
     const script = readFileSync("scripts/start.sh", "utf8");
     const manifest = readFileSync("deploy/k8s/17-keycloak-local.yaml", "utf8");

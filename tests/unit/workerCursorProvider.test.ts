@@ -11,13 +11,15 @@ vi.mock("child_process", () => ({
 
 // Mock fs so the runner's config writes don't touch disk.
 vi.mock("fs", () => ({
+  existsSync: vi.fn(() => false),
+  readFileSync: vi.fn(),
   mkdirSync: vi.fn(),
   writeFileSync: vi.fn(),
   rmSync: vi.fn(),
 }));
 
 import { runCursorAgent, CURSOR_PROVIDER } from "../../agent-worker/src/providers/cursor.js";
-import { writeFileSync, mkdirSync } from "fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from "fs";
 import type { ChildProcess } from "child_process";
 
 function makeFakeChild(): ChildProcess {
@@ -28,6 +30,17 @@ function makeFakeChild(): ChildProcess {
   return ee;
 }
 
+function mockCursorProcesses(agentChild: ChildProcess): void {
+  spawnMock.mockImplementation((_binary: string, args: string[]) => {
+    if (args[0] === "mcp") {
+      const setupChild = makeFakeChild();
+      setImmediate(() => setupChild.emit("close", 0));
+      return setupChild;
+    }
+    return agentChild;
+  });
+}
+
 describe("runCursorAgent", () => {
   beforeEach(() => {
     spawnMock.mockReset();
@@ -36,6 +49,9 @@ describe("runCursorAgent", () => {
     delete process.env["HOME"];
     vi.mocked(writeFileSync).mockReset();
     vi.mocked(mkdirSync).mockReset();
+    vi.mocked(rmSync).mockReset();
+    vi.mocked(existsSync).mockReset().mockReturnValue(false);
+    vi.mocked(readFileSync).mockReset();
   });
 
   afterEach(() => {
@@ -50,7 +66,7 @@ describe("runCursorAgent", () => {
 
   it("spawns cursor-agent for codegen with --force and a disabled sandbox", async () => {
     const fake = makeFakeChild();
-    spawnMock.mockReturnValue(fake);
+    mockCursorProcesses(fake);
     const promise = runCursorAgent("do the thing", {
       model: "gpt-5",
       agentInstructions: "sys",
@@ -62,12 +78,18 @@ describe("runCursorAgent", () => {
     fake.emit("close", 0);
     await promise;
 
-    const binary = spawnMock.mock.calls[0]![0] as string;
-    const args = spawnMock.mock.calls[0]![1] as string[];
+    const agentCall = spawnMock.mock.calls.find((call) => (call[1] as string[])[0] === "-p");
+    expect(agentCall).toBeDefined();
+    const binary = agentCall![0] as string;
+    const args = agentCall![1] as string[];
     expect(binary).toBe("cursor-agent");
     expect(args[0]).toBe("-p");
     expect(args).toEqual(expect.arrayContaining(["--output-format", "stream-json"]));
-    expect(args).toEqual(expect.arrayContaining(["--approve-mcps"]));
+    expect(args).not.toContain("--approve-mcps");
+    expect(spawnMock.mock.calls.some((call) => (
+      call[0] === "cursor-agent"
+      && JSON.stringify(call[1]) === JSON.stringify(["mcp", "enable", "ve-submission"])
+    ))).toBe(true);
     expect(args).toEqual(expect.arrayContaining(["--trust"]));
     expect(args).toEqual(expect.arrayContaining(["--force"]));
     expect(args).toEqual(expect.arrayContaining(["--sandbox", "disabled"]));
@@ -76,7 +98,7 @@ describe("runCursorAgent", () => {
 
   it("uses --mode ask (no --force) for review mode", async () => {
     const fake = makeFakeChild();
-    spawnMock.mockReturnValue(fake);
+    mockCursorProcesses(fake);
     const promise = runCursorAgent("review the diff", {
       model: "gpt-5",
       agentInstructions: "review policy",
@@ -89,14 +111,14 @@ describe("runCursorAgent", () => {
     fake.emit("close", 0);
     await promise;
 
-    const args = spawnMock.mock.calls[0]![1] as string[];
+    const args = spawnMock.mock.calls.find((call) => (call[1] as string[])[0] === "-p")![1] as string[];
     expect(args).toEqual(expect.arrayContaining(["--mode", "ask"]));
     expect(args).not.toContain("--force");
   });
 
   it("passes the prompt as the -p positional argument, not via stdin", async () => {
     const fake = makeFakeChild();
-    spawnMock.mockReturnValue(fake);
+    mockCursorProcesses(fake);
     const promise = runCursorAgent("base task", {
       model: "gpt-5",
       agentInstructions: "base policy",
@@ -108,7 +130,7 @@ describe("runCursorAgent", () => {
     fake.emit("close", 0);
     await promise;
 
-    const args = spawnMock.mock.calls[0]![1] as string[];
+    const args = spawnMock.mock.calls.find((call) => (call[1] as string[])[0] === "-p")![1] as string[];
     expect(args[1]).toContain("base task");
     expect(args[1]).toContain("base policy");
   });
@@ -116,7 +138,7 @@ describe("runCursorAgent", () => {
   it("writes a Cursor mcp.json under HOME/.cursor with the VE MCP submission server", async () => {
     process.env["HOME"] = "/sandbox";
     const fake = makeFakeChild();
-    spawnMock.mockReturnValue(fake);
+    mockCursorProcesses(fake);
     const promise = runCursorAgent("workflow task", {
       model: "gpt-5",
       agentInstructions: "permanent agent policy",
@@ -136,9 +158,74 @@ describe("runCursorAgent", () => {
     expect(configContent).toContain("/app/agent-worker/dist/mcpSubmissionServer.js");
   });
 
+  it("fails closed when exact MCP server approval fails", async () => {
+    process.env["HOME"] = "/sandbox";
+    const setupChild = makeFakeChild();
+    spawnMock.mockReturnValue(setupChild);
+
+    const promise = runCursorAgent("workflow task", {
+      model: "gpt-5",
+      agentInstructions: "permanent agent policy",
+      cwd: "/workspace",
+      timeoutMs: 1000,
+      mode: "codegen",
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    setupChild.stderr!.emit("data", Buffer.from("approval rejected\n"));
+    setupChild.emit("close", 1);
+
+    await expect(promise).rejects.toThrow(/Cursor MCP setup exited with code 1/);
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    expect(rmSync).toHaveBeenCalledWith("/sandbox/.cursor/mcp.json", { force: true });
+  });
+
+  it("rejects a project MCP server that collides with VE submission", async () => {
+    vi.mocked(existsSync).mockReturnValue(true);
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify({
+      mcpServers: {
+        "ve-submission": { command: "./untrusted-review-tool" },
+      },
+    }));
+
+    await expect(runCursorAgent("review the diff", {
+      model: "gpt-5",
+      agentInstructions: "review policy",
+      cwd: "/workspace",
+      timeoutMs: 1000,
+      mode: "review",
+      reviewOutputSchema: { type: "object" },
+    })).rejects.toThrow(/project MCP config cannot define reserved server 've-submission'/);
+
+    expect(readFileSync).toHaveBeenCalledWith("/workspace/.cursor/mcp.json", "utf8");
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it("escalates a timed-out MCP setup process before rejecting", async () => {
+    vi.useFakeTimers();
+    const setupChild = makeFakeChild();
+    spawnMock.mockReturnValue(setupChild);
+
+    const promise = runCursorAgent("workflow task", {
+      model: "gpt-5",
+      agentInstructions: "permanent agent policy",
+      cwd: "/workspace",
+      timeoutMs: 1000,
+      mode: "codegen",
+    });
+
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(setupChild.kill).toHaveBeenCalledWith("SIGTERM");
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(setupChild.kill).toHaveBeenCalledWith("SIGKILL");
+    setupChild.emit("close", null, "SIGKILL");
+
+    await expect(promise).rejects.toThrow(/Cursor MCP setup timed out after 30000ms/);
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+  });
+
   it("parses assistant and tool_call stream-json events", async () => {
     const fake = makeFakeChild();
-    spawnMock.mockReturnValue(fake);
+    mockCursorProcesses(fake);
     const promise = runCursorAgent("task", {
       model: "gpt-5",
       agentInstructions: "policy",
@@ -168,7 +255,7 @@ describe("runCursorAgent", () => {
 
   it("rejects with the tail of stderr on a non-zero exit code", async () => {
     const fake = makeFakeChild();
-    spawnMock.mockReturnValue(fake);
+    mockCursorProcesses(fake);
     const promise = runCursorAgent("task", {
       model: "gpt-5",
       agentInstructions: "policy",

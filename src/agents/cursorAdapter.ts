@@ -25,17 +25,19 @@ import { assertPromptRole } from "../utils/promptRole.js";
 
 /**
  * Network egress the Cursor CLI needs under the OpenShell deny-by-default
- * runtime. These hosts come from Cursor's published network-configuration
- * docs (`api2.cursor.sh` for most API requests, `api5.cursor.sh` + its
- * `agent.*`/`agentn.*` subdomains for agent requests, `repo42.cursor.sh` for
- * codebase indexing) — a best-effort default; verify against a live run once
- * real credentials are available (see .github/copilot-instructions.md
- * "Further Considerations"). The Cursor CLI runs as its own binary plus the
- * Node-based MCP submission server, so both `cursor-agent` and `node` are
- * permitted binaries.
+ * runtime. Cursor's published network-configuration docs recommend these
+ * domain patterns instead of a brittle list of regional API hosts. The Cursor
+ * CLI runs as its own binary plus the Node-based MCP submission server, so
+ * both `cursor-agent` and `node` are permitted binaries.
  */
 const CURSOR_EGRESS: AgentEgressSpec = {
-  hosts: ["api2.cursor.sh", "api5.cursor.sh", "agent.api5.cursor.sh", "agentn.api5.cursor.sh", "repo42.cursor.sh"],
+  hosts: [
+    "*.cursor.sh",
+    "*.cursor-cdn.com",
+    "*.cursorapi.com",
+    "*.cursorvm.com",
+    "*.*.cursorvm.com",
+  ],
   binaries: ["/usr/local/bin/node", "/usr/local/bin/cursor-agent"],
 };
 

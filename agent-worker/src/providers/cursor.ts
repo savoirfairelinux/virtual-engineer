@@ -23,8 +23,9 @@
  * Cursor calls `ve_submit_changes` / `ve_submit_review` to deliver the
  * structured result. The worker then reads the submission file and asserts
  * exactly one accepted tool call, exactly like Copilot/Claude/Goose/Codex/
- * Gemini. `--approve-mcps` auto-approves that server headlessly (no per-server
- * trust flag needed in the config file itself, unlike Gemini's `trust: true`).
+ * Gemini. Before the session starts, `cursor-agent mcp enable ve-submission`
+ * approves only that server; repository-controlled MCP servers are never
+ * broadly auto-approved.
  *
  * Trust: `--trust` grants workspace trust without an interactive prompt
  * (headless-mode only) — otherwise Cursor would refuse to load repository
@@ -49,7 +50,7 @@
  * the CLI — no bootstrap login needed.
  */
 import { spawn } from 'child_process';
-import { mkdirSync, writeFileSync, rmSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'fs';
 import { join } from 'path';
 import { emitEvent } from './events.js';
 import type { AgentProviderDefinition, AgentRun, AgentRunOptions, ObservedToolCall } from './types.js';
@@ -63,6 +64,8 @@ const GIT_AUTHOR_NAME = process.env['GIT_AUTHOR_NAME'] ?? 'Virtual Engineer';
 const GIT_AUTHOR_EMAIL = process.env['GIT_AUTHOR_EMAIL'] ?? 've@virtual-engineer.local';
 const GIT_COMMITTER_NAME = process.env['GIT_COMMITTER_NAME'] ?? GIT_AUTHOR_NAME;
 const GIT_COMMITTER_EMAIL = process.env['GIT_COMMITTER_EMAIL'] ?? GIT_AUTHOR_EMAIL;
+const CURSOR_MCP_SETUP_TIMEOUT_MS = 30_000;
+const CURSOR_MCP_TERMINATION_GRACE_MS = 2_000;
 
 /** Resolve the cursor-agent binary path. Falls back to `cursor-agent` on PATH. */
 function resolveCursorBinary(): string {
@@ -113,8 +116,8 @@ function buildCursorEnv(): Record<string, string> {
 /**
  * Write `$HOME/.cursor/mcp.json` registering the VE MCP submission server.
  * Written outside the repository working directory (HOME, not cwd) so it
- * never pollutes the agent's git status. Approval is handled by the global
- * `--approve-mcps` CLI flag, not a per-server field in this file.
+ * never pollutes the agent's git status. Approval is handled separately by
+ * Cursor's exact-name `mcp enable` command.
  */
 function writeCursorMcpConfig(
   submissionServer: { command: string; args: string[]; env: Record<string, string> },
@@ -140,6 +143,91 @@ function writeCursorMcpConfig(
   return configPath;
 }
 
+/** Reject a repository-controlled MCP server that shadows VE's trusted name. */
+function assertNoProjectSubmissionMcpCollision(cwd: string): void {
+  const projectConfigPath = join(cwd, '.cursor', 'mcp.json');
+  if (!existsSync(projectConfigPath)) return;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(projectConfigPath, 'utf8'));
+  } catch {
+    throw new Error(
+      `Cursor project MCP config '${projectConfigPath}' must be valid JSON before VE can approve its submission server`,
+    );
+  }
+  const servers = asRecord(asRecord(parsed)?.['mcpServers']);
+  if (servers && Object.prototype.hasOwnProperty.call(servers, 've-submission')) {
+    throw new Error("Cursor project MCP config cannot define reserved server 've-submission'");
+  }
+}
+
+/** Approve only VE's submission server before starting a headless session. */
+function enableCursorSubmissionMcp(
+  binary: string,
+  cwd: string,
+  env: Record<string, string>,
+): Promise<void> {
+  const child = spawn(binary, ['mcp', 'enable', 've-submission'], {
+    cwd,
+    env,
+    stdio: ['ignore', 'ignore', 'pipe'],
+  });
+
+  return new Promise<void>((resolve, reject) => {
+    let settled = false;
+    let stderr = '';
+    let timeoutError: Error | undefined;
+    let escalationTimer: ReturnType<typeof setTimeout> | undefined;
+    let forceSettleTimer: ReturnType<typeof setTimeout> | undefined;
+    let timer: ReturnType<typeof setTimeout>;
+    const finish = (error?: Error): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (escalationTimer) clearTimeout(escalationTimer);
+      if (forceSettleTimer) clearTimeout(forceSettleTimer);
+      if (error) reject(error);
+      else resolve();
+    };
+    timer = setTimeout(() => {
+      timeoutError = new Error(`Cursor MCP setup timed out after ${CURSOR_MCP_SETUP_TIMEOUT_MS}ms`);
+      child.kill('SIGTERM');
+      escalationTimer = setTimeout(() => {
+        child.kill('SIGKILL');
+        forceSettleTimer = setTimeout(() => {
+          child.stderr?.destroy();
+          child.unref();
+          finish(timeoutError);
+        }, CURSOR_MCP_TERMINATION_GRACE_MS);
+      }, CURSOR_MCP_TERMINATION_GRACE_MS);
+    }, CURSOR_MCP_SETUP_TIMEOUT_MS);
+
+    child.stderr?.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString('utf8');
+    });
+    child.on('error', (error) => {
+      if (!timeoutError) finish(error);
+    });
+    child.on('close', (code, signal) => {
+      if (timeoutError) {
+        finish(timeoutError);
+        return;
+      }
+      if (typeof signal === 'string') {
+        finish(new Error(`Cursor MCP setup terminated by signal ${signal}`));
+        return;
+      }
+      if (code !== 0) {
+        const tail = stderr.trim().split('\n').slice(-20).join('\n');
+        finish(new Error(`Cursor MCP setup exited with code ${code ?? 'null'}${tail ? `: ${tail}` : ''}`));
+        return;
+      }
+      finish();
+    });
+  });
+}
+
 /** Build the cursor-agent argv. Prompt is passed as the `-p` positional argument (documented usage), not piped via stdin. */
 function buildCursorArgs(fullPrompt: string, options: AgentRunOptions): string[] {
   const modeArgs = options.mode === 'review'
@@ -148,7 +236,6 @@ function buildCursorArgs(fullPrompt: string, options: AgentRunOptions): string[]
   return [
     '-p', fullPrompt,
     '--output-format', 'stream-json',
-    '--approve-mcps',
     '--trust',
     ...modeArgs,
     ...(options.model ? ['--model', options.model] : []),
@@ -272,7 +359,24 @@ export async function runCursorAgent(
 
   const env = buildCursorEnv();
   const home = resolveCursorHome();
+  try {
+    assertNoProjectSubmissionMcpCollision(cwd);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    emitEvent('session.error', { message });
+    throw error;
+  }
   const configPath = writeCursorMcpConfig(submission.server, home);
+  const binary = resolveCursorBinary();
+
+  try {
+    await enableCursorSubmissionMcp(binary, cwd, env);
+  } catch (error) {
+    rmSync(configPath, { force: true });
+    const message = error instanceof Error ? error.message : String(error);
+    emitEvent('session.error', { message });
+    throw error;
+  }
 
   const fullPrompt = `${prompt}\n\n${fullAgentInstructions}`;
   const args = buildCursorArgs(fullPrompt, options);
@@ -281,7 +385,7 @@ export async function runCursorAgent(
   let assistantText = '';
   let stderrAccum = '';
 
-  const child = spawn(resolveCursorBinary(), args, {
+  const child = spawn(binary, args, {
     cwd,
     env,
     stdio: ['ignore', 'pipe', 'pipe'],
