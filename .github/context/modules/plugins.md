@@ -18,6 +18,8 @@ src/plugins/
     claudeOAuth.ts     # Claude Pro/Max subscription OAuth (auth-code + PKCE)
     aider.ts           # Aider agent_execution provider (wraps any litellm backend)
     goose.ts           # Goose agent_execution provider (MCP submission transport, 14 LLM providers)
+    codex.ts           # Codex CLI agent_execution provider (MCP submission transport)
+    gemini.ts          # Gemini CLI agent_execution provider (Developer API or Vertex AI)
     gerrit.ts
     github.ts          # github-issue + github-pull-request merged
     githubOAuth.ts     # GitHub OAuth device-flow helper
@@ -27,7 +29,7 @@ src/plugins/
     redmine.ts
 ```
 
-Provider ids are `github | gitlab | gerrit | redmine | copilot | claude | aider | goose | codex | mock` (`PROVIDER_IDS` in `src/interfaces.ts`). The former split descriptors (`github-issue` + `github-pull-request`, `gitlab-issue` + `gitlab-merge-request`) were merged into single `github` / `gitlab` descriptors. `PLUGIN_CATEGORIES` / `category` no longer exist.
+Provider ids are `github | gitlab | gerrit | redmine | copilot | claude | aider | goose | codex | gemini | mock` (`PROVIDER_IDS` in `src/interfaces.ts`). The former split descriptors (`github-issue` + `github-pull-request`, `gitlab-issue` + `gitlab-merge-request`) were merged into single `github` / `gitlab` descriptors. `PLUGIN_CATEGORIES` / `category` no longer exist.
 
 A descriptor (`ProviderDescriptor`) provides:
 
@@ -36,7 +38,7 @@ A descriptor (`ProviderDescriptor`) provides:
   - `capabilities.issue_tracking.{ createConnector(config, integration, context?), intake? }`
   - `capabilities.code_review.{ createConnector?, createReviewer?, streamEvents?, intake? }`; prompt selection belongs to the configured agent, not the review integration descriptor
   - `capabilities.source_control.createVcsConnector(config, integration, context?, runtime?)`; `runtime.gitRunner` is the shared host-side async Git executor owned by `VcsConnectorFactory`
-  - `capabilities.agent_execution.{ buildAdapter(context), configFields? }` (optional). Agent adapters are **descriptor-driven** and receive an `AgentAdapterContext`. `configFields` defines provider-owned controls persisted under `modelConfig.providerOptions`; the generic admin form renders text, number, boolean-select, and ordinary select values without provider branches. `PluginManager.registerFactory` remains as an explicit test/extension hook and takes precedence when used; production startup does not register overrides. Copilot, Claude, Aider, Goose, and Mock expose this capability.
+  - `capabilities.agent_execution.{ buildAdapter(context), configFields? }` (optional). Agent adapters are **descriptor-driven** and receive an `AgentAdapterContext`. `configFields` defines provider-owned controls persisted under `modelConfig.providerOptions`; the generic admin form renders text, number, boolean-select, and ordinary select values without provider branches. `PluginManager.registerFactory` remains as an explicit test/extension hook and takes precedence when used; production startup does not register overrides. Copilot, Claude, Aider, Goose, Codex, Gemini CLI, and Mock expose this capability.
 - Zod `configSchema` plus `requiredFields` UI metadata (with conditional visibility via `dependsOn`)
 - optional `oauth` metadata + `createOAuthHandler` / `resolveOAuthConfig` for dashboard-driven provider auth flows (`mode: "device" | "redirect"`)
 - optional `discoverResources(config)` discovery hook

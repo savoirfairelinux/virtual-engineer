@@ -27,7 +27,7 @@ Connectors are unchanged in shape, but they are now produced by **capability fac
 | `issue_tracking` | `redmineConnector`, `gitlabIssueConnector`, `githubIssueConnector` | `capabilities.issue_tracking.createConnector` |
 | `code_review` | `gerritConnector`, `gerritSshReviewProvider`, `integrationStreamEvents`, `gerritStreamEvents`, `gitlabMergeRequestConnector`, `gitlabMergeRequestReviewProvider`, `githubPullRequestReviewConnector`, `githubReviewProvider` | `capabilities.code_review.{ createConnector, createReviewer, streamEvents }` |
 
-The `provider` ids are `github | gitlab | gerrit | redmine | copilot | claude | aider | goose | codex | mock`. Repository push/commit lives in [src/vcs/](../../../src/vcs/) via `capabilities.source_control.createVcsConnector` — see [vcs.md](vcs.md). The `copilot`, `claude`, `aider`, `goose`, `codex`, and `mock` providers expose only `agent_execution` and have no connectors here.
+The `provider` ids are `github | gitlab | gerrit | redmine | copilot | claude | aider | goose | codex | gemini | mock`. Repository push/commit lives in [src/vcs/](../../../src/vcs/) via `capabilities.source_control.createVcsConnector` — see [vcs.md](vcs.md). The `copilot`, `claude`, `aider`, `goose`, `codex`, `gemini`, and `mock` providers expose only `agent_execution` and have no connectors here.
 
 Reviewer-side `ReviewProvider` reads and effects accept an optional `AbortSignal`. GitHub and GitLab forward it to `fetch`; Gerrit forwards it to SSH and temporary Git subprocesses. Multi-request best-effort fallbacks rethrow cancellation instead of folding or suppressing it, so the orchestrator's single review deadline can terminate freshness checks, comments, replies, and votes.
 

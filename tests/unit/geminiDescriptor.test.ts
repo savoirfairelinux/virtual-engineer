@@ -33,5 +33,28 @@ describe("createGeminiDescriptor", () => {
         ModelDiscoveryConfigError
       );
     });
+
+    it("forwards Vertex routing config to model discovery", async () => {
+      const fetch = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ publisherModels: [] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        })
+      );
+      vi.stubGlobal("fetch", fetch);
+
+      await descriptor.discoverModels?.({
+        authMode: "vertex_ai",
+        apiKey: "vertex-key",
+        googleCloudProject: "my-project",
+        googleCloudLocation: "us-central1",
+      });
+
+      expect(fetch).toHaveBeenCalledWith(
+        "https://us-central1-aiplatform.googleapis.com/v1beta1/publishers/google/models",
+        expect.any(Object)
+      );
+      vi.unstubAllGlobals();
+    });
   });
 });

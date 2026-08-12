@@ -43,13 +43,24 @@ describe("validateGeminiConnection", () => {
   });
 
   describe("vertex_ai mode", () => {
-    it("returns success for a valid Express Mode key", async () => {
+    it("validates against the configured regional Vertex backend", async () => {
       const fetch = vi.fn().mockResolvedValue(jsonResponse(200));
       const result = await validateGeminiConnection(
-        { authMode: "vertex_ai", apiKey: "vertex-key" },
+        {
+          authMode: "vertex_ai",
+          apiKey: "vertex-key",
+          googleCloudProject: "my-project",
+          googleCloudLocation: "us-central1",
+        },
         { fetch: fetch as unknown as typeof globalThis.fetch }
       );
       expect(result.success).toBe(true);
+      expect(fetch).toHaveBeenCalledWith(
+        "https://us-central1-aiplatform.googleapis.com/v1beta1/publishers/google/models",
+        expect.objectContaining({
+          headers: expect.objectContaining({ "x-goog-api-key": "vertex-key" }),
+        })
+      );
     });
 
     it("fails when no key is configured", async () => {

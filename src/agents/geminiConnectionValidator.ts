@@ -9,6 +9,7 @@
  */
 import type { ConnectionTestResult } from "../plugins/pluginManager.js";
 import { getLogger } from "../logger.js";
+import { buildGeminiModelsRequest } from "./geminiApi.js";
 
 const log = getLogger("gemini-connection-validator");
 
@@ -29,8 +30,6 @@ export interface GeminiConnectionValidatorDependencies {
   fetch?: typeof globalThis.fetch | undefined;
 }
 
-const GEMINI_MODELS_URL = "https://generativelanguage.googleapis.com/v1beta/models";
-
 /** Validate a stored Gemini API key (api_key or vertex_ai Express Mode). */
 export async function validateGeminiConnection(
   config: GeminiConnectionValidationConfig,
@@ -50,29 +49,31 @@ export async function validateGeminiConnection(
       models: [],
     };
   }
-  return callGeminiModelsApi(apiKey, dependencies);
+  return callGeminiModelsApi({ ...config, authMode, apiKey }, dependencies);
 }
 
 async function callGeminiModelsApi(
-  apiKey: string,
+  config: GeminiConnectionValidationConfig & { apiKey: string },
   dependencies: GeminiConnectionValidatorDependencies
 ): Promise<ConnectionTestResult> {
   const fetchFn = dependencies.fetch ?? globalThis.fetch;
-  const url = `${GEMINI_MODELS_URL}?key=${encodeURIComponent(apiKey)}`;
+  const request = buildGeminiModelsRequest(config);
 
   try {
-    const response = await fetchFn(url, {
+    const response = await fetchFn(request.url, {
       method: "GET",
-      headers: { Accept: "application/json", "User-Agent": "virtual-engineer" },
+      headers: request.headers,
     });
 
     if (response.status === 200) {
       log.info({ success: true }, "Gemini credentials are valid");
       const body = (await response.json().catch(() => ({}))) as {
         models?: Array<{ name?: string }>;
+        publisherModels?: Array<{ name?: string }>;
       };
-      const modelIds = Array.isArray(body.models)
-        ? body.models.map((m) => m.name).filter((id): id is string => typeof id === "string")
+      const rawModels = body.publisherModels ?? body.models;
+      const modelIds = Array.isArray(rawModels)
+        ? rawModels.map((model) => model.name).filter((id): id is string => typeof id === "string")
         : [];
       const logs: string[] = ["Authentication successful."];
       if (modelIds.length > 0) logs.push(`Available models: ${modelIds.join(", ")}.`);
@@ -80,12 +81,13 @@ async function callGeminiModelsApi(
     }
 
     if (response.status === 400 || response.status === 401 || response.status === 403) {
-      const error = "Gemini API key is invalid or unauthorized.";
+      const error = `${config.authMode === "vertex_ai" ? "Vertex AI" : "Gemini"} API key is invalid or unauthorized.`;
       log.warn({ success: false, status: response.status }, error);
       return { success: false, error, models: [] };
     }
 
-    const error = `Gemini API returned unexpected status ${response.status}.`;
+    const provider = config.authMode === "vertex_ai" ? "Vertex AI" : "Gemini API";
+    const error = `${provider} returned unexpected status ${response.status}.`;
     log.warn({ success: false, status: response.status }, error);
     return { success: false, error, models: [] };
   } catch (err) {

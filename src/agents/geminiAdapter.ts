@@ -22,23 +22,29 @@ import {
 import { createStderrPipeline } from "./agentStderrPipeline.js";
 import type { StderrParseState } from "./agentStderrPipeline.js";
 import { assertPromptRole } from "../utils/promptRole.js";
+import { resolveGeminiVertexHost } from "./geminiApi.js";
 
 /**
  * Network egress the Gemini CLI needs under the OpenShell deny-by-default
- * runtime. `generativelanguage.googleapis.com` serves both api_key and
- * vertex_ai (Express Mode) model calls; `aiplatform.googleapis.com` is added
- * for non-Express Vertex AI project/location routing. `oauth2.googleapis.com`
- * may be needed for Application Default Credentials refresh in some Vertex AI
- * configurations. This list is a best-effort default — verify against a live
- * run once real credentials are available (see .github/copilot-instructions.md
- * "Further Considerations"), since the CLI may also contact update-check or
- * telemetry hosts. The Gemini CLI runs as its own binary plus the Node-based
- * MCP submission server, so both `gemini` and `node` are permitted binaries.
+ * runtime. Developer API calls use `generativelanguage.googleapis.com`; Vertex
+ * calls use either the global endpoint or a host derived from the configured
+ * region/multi-region. `oauth2.googleapis.com` covers possible ADC refreshes.
+ * The Gemini CLI runs as its own binary plus the Node-based MCP submission
+ * server, so both `gemini` and `node` are permitted binaries.
  */
-const GEMINI_EGRESS: AgentEgressSpec = {
-  hosts: ["generativelanguage.googleapis.com", "aiplatform.googleapis.com", "oauth2.googleapis.com"],
-  binaries: ["/usr/local/bin/node", "/usr/local/bin/gemini"],
-};
+function buildGeminiEgress(googleCloudLocation?: string): AgentEgressSpec {
+  return {
+    hosts: [
+      ...new Set([
+        "generativelanguage.googleapis.com",
+        "aiplatform.googleapis.com",
+        ...(googleCloudLocation ? [resolveGeminiVertexHost(googleCloudLocation)] : []),
+        "oauth2.googleapis.com",
+      ]),
+    ],
+    binaries: ["/usr/local/bin/node", "/usr/local/bin/gemini"],
+  };
+}
 
 const log = getLogger("gemini-adapter");
 
@@ -183,7 +189,7 @@ export class GeminiAdapter implements AgentAdapter, ConfigurableAdapter {
       maxRepositoryContextBytes: this.config.maxRepositoryContextBytes,
       maxCommitsPerCycle: this.config.maxCommitsPerCycle,
       promptsDir: this.config.promptsDir,
-      egress: GEMINI_EGRESS,
+      egress: buildGeminiEgress(session.geminiGoogleCloudLocation),
     });
   }
 
@@ -201,7 +207,7 @@ export class GeminiAdapter implements AgentAdapter, ConfigurableAdapter {
 
     return buildSharedReviewContainerSpec(input, {
       providerEnv,
-      egress: GEMINI_EGRESS,
+      egress: buildGeminiEgress(),
     });
   }
 

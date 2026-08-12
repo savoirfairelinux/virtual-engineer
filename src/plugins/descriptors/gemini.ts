@@ -85,13 +85,25 @@ export function createGeminiDescriptor(_adminAuthSecret?: string): ProviderDescr
       validateGeminiConnection(config as GeminiConnectionValidationConfig, {}),
     discoverModels: async (config): Promise<Array<{ id: string; name: string }>> => {
       const cfg = (config && typeof config === "object" ? config : {}) as Record<string, unknown>;
+      const authMode = typeof cfg["authMode"] === "string" ? cfg["authMode"] : "api_key";
       const apiKey = typeof cfg["apiKey"] === "string" ? cfg["apiKey"].trim() : "";
+      const googleCloudProject = typeof cfg["googleCloudProject"] === "string"
+        ? cfg["googleCloudProject"].trim()
+        : "";
+      const googleCloudLocation = typeof cfg["googleCloudLocation"] === "string"
+        ? cfg["googleCloudLocation"].trim()
+        : "";
       if (!apiKey) {
         throw new ModelDiscoveryConfigError(
           "No Gemini API key configured. Set a key in the integration config."
         );
       }
-      return fetchGeminiModels(apiKey);
+      return fetchGeminiModels({
+        authMode,
+        apiKey,
+        ...(googleCloudProject ? { googleCloudProject } : {}),
+        ...(googleCloudLocation ? { googleCloudLocation } : {}),
+      });
     },
     getSummaryDetails(_config: Record<string, unknown>): string[] {
       return [];

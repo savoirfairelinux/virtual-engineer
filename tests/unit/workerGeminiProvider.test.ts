@@ -35,6 +35,13 @@ describe("runGeminiAgent", () => {
     delete process.env["GEMINI_MODEL"];
     delete process.env["GEMINI_API_KEY"];
     delete process.env["GOOGLE_API_KEY"];
+    delete process.env["HTTP_PROXY"];
+    delete process.env["HTTPS_PROXY"];
+    delete process.env["NO_PROXY"];
+    delete process.env["NODE_EXTRA_CA_CERTS"];
+    delete process.env["SSL_CERT_FILE"];
+    delete process.env["CURL_CA_BUNDLE"];
+    delete process.env["REQUESTS_CA_BUNDLE"];
     process.env["HOME"] = "/sandbox";
     vi.mocked(writeFileSync).mockReset();
     vi.mocked(mkdirSync).mockReset();
@@ -159,7 +166,7 @@ describe("runGeminiAgent", () => {
     expect(written).toContain("ve_submit_changes");
   });
 
-  it("parses message and tool_use/tool_result events into content and tool calls", async () => {
+  it("correlates documented tool_use/tool_result events into content and tool calls", async () => {
     const fake = makeFakeChild();
     spawnMock.mockReturnValue(fake);
     const promise = runGeminiAgent("task", {
@@ -171,10 +178,10 @@ describe("runGeminiAgent", () => {
     });
     await new Promise((r) => setImmediate(r));
     fake.stdout?.emit("data", Buffer.from(
-      `${JSON.stringify({ type: "tool_use", name: "ve_submit_changes" })}\n`
+      `${JSON.stringify({ type: "tool_use", tool_name: "ve_submit_changes", tool_id: "submit-1", parameters: {} })}\n`
     ));
     fake.stdout?.emit("data", Buffer.from(
-      `${JSON.stringify({ type: "tool_result", name: "ve_submit_changes", success: true })}\n`
+      `${JSON.stringify({ type: "tool_result", tool_id: "submit-1", status: "success", output: "accepted" })}\n`
     ));
     fake.stdout?.emit("data", Buffer.from(
       `${JSON.stringify({ type: "message", role: "assistant", content: "done" })}\n`
@@ -186,6 +193,71 @@ describe("runGeminiAgent", () => {
     expect(result.toolCalls).toHaveLength(1);
     expect(result.toolCalls![0]!.name).toBe("ve_submit_changes");
     expect(result.toolCalls![0]!.success).toBe(true);
+  });
+
+  it("records documented cached token usage", async () => {
+    const fake = makeFakeChild();
+    spawnMock.mockReturnValue(fake);
+    const stderrWrite = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const promise = runGeminiAgent("task", {
+      model: "gemini-2.5-pro",
+      agentInstructions: "policy",
+      cwd: "/workspace",
+      timeoutMs: 1000,
+      mode: "codegen",
+    });
+    await new Promise((r) => setImmediate(r));
+    fake.stdout?.emit("data", Buffer.from(
+      `${JSON.stringify({
+        type: "result",
+        status: "success",
+        stats: { input_tokens: 40, output_tokens: 12, cached: 8 },
+      })}\n`
+    ));
+    fake.emit("close", 0);
+    await promise;
+
+    const usageLine = stderrWrite.mock.calls
+      .map(([chunk]) => String(chunk))
+      .find((line) => line.includes('"assistant.usage"'));
+    expect(usageLine).toBeDefined();
+    expect(JSON.parse(usageLine!) as unknown).toMatchObject({
+      data: { inputTokens: 40, outputTokens: 12, cacheReadTokens: 8 },
+    });
+    stderrWrite.mockRestore();
+  });
+
+  it("forwards OpenShell proxy and CA transport variables", async () => {
+    process.env["HTTP_PROXY"] = "http://gateway:3128";
+    process.env["HTTPS_PROXY"] = "http://gateway:3128";
+    process.env["NO_PROXY"] = "localhost";
+    process.env["NODE_EXTRA_CA_CERTS"] = "/etc/openshell/ca.pem";
+    process.env["SSL_CERT_FILE"] = "/etc/openshell/ca.pem";
+    process.env["CURL_CA_BUNDLE"] = "/etc/openshell/ca.pem";
+    process.env["REQUESTS_CA_BUNDLE"] = "/etc/openshell/ca.pem";
+    const fake = makeFakeChild();
+    spawnMock.mockReturnValue(fake);
+    const promise = runGeminiAgent("task", {
+      model: "gemini-2.5-pro",
+      agentInstructions: "policy",
+      cwd: "/workspace",
+      timeoutMs: 1000,
+      mode: "codegen",
+    });
+    await new Promise((r) => setImmediate(r));
+    fake.emit("close", 0);
+    await promise;
+
+    const options = spawnMock.mock.calls[0]![2] as { env: Record<string, string> };
+    expect(options.env).toMatchObject({
+      HTTP_PROXY: "http://gateway:3128",
+      HTTPS_PROXY: "http://gateway:3128",
+      NO_PROXY: "localhost",
+      NODE_EXTRA_CA_CERTS: "/etc/openshell/ca.pem",
+      SSL_CERT_FILE: "/etc/openshell/ca.pem",
+      CURL_CA_BUNDLE: "/etc/openshell/ca.pem",
+      REQUESTS_CA_BUNDLE: "/etc/openshell/ca.pem",
+    });
   });
 
   it("treats stream error events as non-fatal", async () => {

@@ -81,6 +81,21 @@ describe("GeminiAdapter", () => {
         binaries: ["/usr/local/bin/node", "/usr/local/bin/gemini"],
       });
     });
+
+    it.each([
+      ["us-central1", "us-central1-aiplatform.googleapis.com"],
+      ["us", "aiplatform.us.rep.googleapis.com"],
+      ["eu", "aiplatform.eu.rep.googleapis.com"],
+    ])("allows the Vertex endpoint for location %s", (location, expectedHost) => {
+      const adapter = new GeminiAdapter();
+      const context = makeContext();
+      context.agentSession.geminiAuthMode = "vertex_ai";
+      context.agentSession.geminiGoogleCloudLocation = location;
+
+      const spec = adapter.buildContainerSpec(context);
+
+      expect(spec.egress?.hosts).toContain(expectedHost);
+    });
   });
 
   describe("execute auth resolution", () => {

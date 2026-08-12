@@ -6,10 +6,9 @@
  * on the `agents` table and passed to the CLI via `--model`.
  */
 import { getLogger } from "../logger.js";
+import { buildGeminiModelsRequest, type GeminiApiRoutingConfig } from "./geminiApi.js";
 
 const log = getLogger("gemini-models-service");
-
-const GEMINI_MODELS_URL = "https://generativelanguage.googleapis.com/v1beta/models";
 
 export interface GeminiModelsServiceDependencies {
   fetch?: typeof globalThis.fetch | undefined;
@@ -22,18 +21,19 @@ interface RawGeminiModel {
 
 interface GeminiModelsResponse {
   models?: RawGeminiModel[] | undefined;
+  publisherModels?: RawGeminiModel[] | undefined;
 }
 
 /** Fetch the list of models available to a Gemini API key. */
 export async function fetchGeminiModels(
-  apiKey: string,
+  config: GeminiApiRoutingConfig,
   deps: GeminiModelsServiceDependencies = {}
 ): Promise<Array<{ id: string; name: string }>> {
   const fetchFn = deps.fetch ?? globalThis.fetch;
-  const url = `${GEMINI_MODELS_URL}?key=${encodeURIComponent(apiKey)}`;
-  const res = await fetchFn(url, {
+  const request = buildGeminiModelsRequest(config);
+  const res = await fetchFn(request.url, {
     method: "GET",
-    headers: { Accept: "application/json", "User-Agent": "virtual-engineer" },
+    headers: request.headers,
   });
 
   if (!res.ok) {
@@ -41,15 +41,17 @@ export async function fetchGeminiModels(
   }
 
   const data = (await res.json()) as GeminiModelsResponse;
-  const models = (data.models ?? [])
+  const models = (data.publisherModels ?? data.models ?? [])
     .map((m) => {
       const rawName = typeof m.name === "string" ? m.name.trim() : "";
-      const id = rawName.startsWith("models/") ? rawName.slice("models/".length) : rawName;
+      const id = rawName
+        .replace(/^publishers\/google\/models\//, "")
+        .replace(/^models\//, "");
       const name = typeof m.displayName === "string" && m.displayName ? m.displayName : id;
       return id ? { id, name } : null;
     })
     .filter((m): m is { id: string; name: string } => m !== null);
 
-  log.info({ count: models.length }, "discovered Gemini models");
+  log.info({ count: models.length, authMode: config.authMode ?? "api_key" }, "discovered Gemini models");
   return models;
 }

@@ -79,6 +79,13 @@ function buildGeminiEnv(): Record<string, string> {
     'USER',
     'LANG',
     'LC_ALL',
+    'HTTP_PROXY',
+    'HTTPS_PROXY',
+    'NO_PROXY',
+    'NODE_EXTRA_CA_CERTS',
+    'SSL_CERT_FILE',
+    'CURL_CA_BUNDLE',
+    'REQUESTS_CA_BUNDLE',
     'GIT_AUTHOR_NAME',
     'GIT_AUTHOR_EMAIL',
     'GIT_COMMITTER_NAME',
@@ -165,6 +172,7 @@ interface GeminiRunState {
   toolCallCount: number;
   toolsByKind: Record<string, number>;
   toolCalls: ObservedToolCall[];
+  pendingToolsById: Record<string, { name: string; input: Record<string, unknown> }>;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -219,7 +227,12 @@ function processGeminiLine(
   }
 
   if (type === 'tool_use') {
-    const toolName = typeof event['name'] === 'string' ? event['name'] : 'unknown_tool';
+    const toolName = typeof event['tool_name'] === 'string' ? event['tool_name'] : 'unknown_tool';
+    const toolId = typeof event['tool_id'] === 'string' ? event['tool_id'] : '';
+    const input = asRecord(event['parameters']) ?? {};
+    if (toolId) {
+      state.pendingToolsById[toolId] = { name: toolName, input };
+    }
     state.toolCallCount++;
     state.toolsByKind[toolName] = (state.toolsByKind[toolName] ?? 0) + 1;
     emitEvent('tool.execution_start', { name: toolName, callNumber: state.toolCallCount });
@@ -227,15 +240,22 @@ function processGeminiLine(
   }
 
   if (type === 'tool_result') {
-    const toolName = typeof event['name'] === 'string' ? event['name'] : 'unknown_tool';
-    const errorMessage = typeof event['error'] === 'string' ? event['error'] : undefined;
-    const success = errorMessage === undefined && event['success'] !== false;
+    const toolId = typeof event['tool_id'] === 'string' ? event['tool_id'] : '';
+    const pendingTool = toolId ? state.pendingToolsById[toolId] : undefined;
+    const toolName = pendingTool?.name ?? 'unknown_tool';
+    const error = asRecord(event['error']);
+    const errorMessage = typeof error?.['message'] === 'string' ? error['message'] : undefined;
+    const success = event['status'] === 'success';
     state.toolCalls.push({
+      ...(toolId ? { callId: toolId } : {}),
       name: toolName,
-      input: {},
+      input: pendingTool?.input ?? {},
       success,
       ...(errorMessage !== undefined ? { error: errorMessage } : {}),
     });
+    if (toolId) {
+      delete state.pendingToolsById[toolId];
+    }
     emitEvent('tool.execution_complete', { name: toolName, success });
     return;
   }
@@ -247,7 +267,7 @@ function processGeminiLine(
       emitEvent('assistant.usage', {
         inputTokens: numberOrNull(usage['inputTokens'] ?? usage['input_tokens']),
         outputTokens: numberOrNull(usage['outputTokens'] ?? usage['output_tokens']),
-        cacheReadTokens: numberOrNull(usage['cachedTokens'] ?? usage['cached_tokens']),
+        cacheReadTokens: numberOrNull(usage['cached'] ?? usage['cachedTokens'] ?? usage['cached_tokens']),
         cacheWriteTokens: null,
         model: modelLabel,
       });
@@ -298,7 +318,12 @@ export async function runGeminiAgent(
   const args = buildGeminiArgs(options);
   const fullPrompt = `${prompt}\n\n${fullAgentInstructions}`;
 
-  const state: GeminiRunState = { toolCallCount: 0, toolsByKind: {}, toolCalls: [] };
+  const state: GeminiRunState = {
+    toolCallCount: 0,
+    toolsByKind: {},
+    toolCalls: [],
+    pendingToolsById: {},
+  };
   let assistantText = '';
   let stderrAccum = '';
 
