@@ -1,5 +1,5 @@
 /** @vitest-environment jsdom */
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CurrentUserProvider, makeCan } from "../../../src/admin/ui/authContext.js";
 import { api } from "../../../src/admin/ui/api.js";
@@ -98,6 +98,39 @@ describe("Configuration navigation guard", () => {
     window.dispatchEvent(new HashChangeEvent("hashchange"));
 
     await screen.findByRole("heading", { name: "Projects" });
+  });
+
+  it("organizes sections into fixed navigation groups", () => {
+    window.history.replaceState({}, "", "#config/projects");
+    render(
+      <CurrentUserProvider value={{
+        user: admin,
+        isAdmin: true,
+        canOperate: true,
+        can: makeCan(admin),
+      }}>
+        <ConfigView
+          integrations={[]}
+          plugins={[]}
+          agents={[]}
+          projects={[]}
+          prompts={[]}
+          oauthApps={[]}
+          config={null}
+          status={null}
+          onRefresh={vi.fn()}
+        />
+      </CurrentUserProvider>,
+    );
+
+    const navigation = screen.getByRole("complementary", { name: "Configuration sections" });
+    expect(within(navigation).getAllByRole("heading", { level: 2 }).map((heading) => heading.textContent)).toEqual([
+      "Automation & execution",
+      "Integrations & connectivity",
+      "Execution governance",
+      "Access & accountability",
+    ]);
+    expect(within(navigation).getByRole("button", { name: /Projects/, current: "page" })).toBeDefined();
   });
 
   it("restores the current hash when direct dirty navigation is rejected", async () => {
