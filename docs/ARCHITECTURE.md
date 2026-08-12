@@ -754,7 +754,7 @@ app_settings                   ← singleton (editable runtime workflow settings
   updated_at
 ```
 
-Repository behavior is provider-native on every coding and review run: VE does not store a local skill path, scan manifests, or inject repository skills. Copilot enables its coupled repository skill/MCP config discovery, Claude loads native user/project skills with strict MCP configuration, and Aider keeps its normal CLI repository behavior. Optional remote skill sources remain project configuration and are fetched/installed **host-side** (`skillSourceInstaller.ts`), before the workspace uploads to the sandbox, into the target agent's native project-relative skill directory (Copilot/Claude/Goose only) — no SSH material ever enters the sandbox.
+Repository behavior is provider-native on every coding and review run: VE does not store a local skill path, scan manifests, or inject repository skills. Copilot enables its coupled repository skill/MCP config discovery, Claude loads native user/project skills with strict MCP configuration, and each CLI provider keeps its native repository behavior. Optional remote skill sources remain project configuration and are fetched/installed **host-side** (`skillSourceInstaller.ts`), before the workspace uploads to the sandbox, into the target agent's native project-relative skill directory for Copilot, Claude, Goose, Codex, and OpenCode — no SSH material ever enters the sandbox. Aider and Mock are skipped.
 
 ---
 

@@ -363,6 +363,21 @@ describe("OpenShell deployment contract", () => {
     expect(dockerfile).toContain("groupadd --system sandbox");
     expect(dockerfile).toContain("useradd --system --gid sandbox");
     expect(dockerfile).toContain("--home-dir /sandbox");
+    expect(dockerfile).toContain("npm install -g opencode-ai@1.18.16");
+  });
+
+  it("materializes the Cursor CLI outside root's home", () => {
+    const dockerfile = readFileSync("Dockerfile.agent", "utf8");
+
+    expect(dockerfile).toContain(
+      'cp -a "$(dirname "$cursor_bin")/." /usr/local/lib/cursor-agent/'
+    );
+    expect(dockerfile).toContain(
+      "ln -s ../lib/cursor-agent/cursor-agent /usr/local/bin/cursor-agent"
+    );
+    expect(dockerfile).not.toContain(
+      "ln -s /root/.local/bin/cursor-agent /usr/local/bin/cursor-agent"
+    );
   });
 
   it("provides an authenticated local Keycloak fallback", () => {

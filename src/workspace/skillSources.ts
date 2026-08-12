@@ -1,4 +1,4 @@
-export type AgentProvider = "copilot" | "claude" | "goose" | "codex";
+export type AgentProvider = "copilot" | "claude" | "goose" | "codex" | "opencode";
 
 export interface RemoteSkillSource {
   source: string;
@@ -170,6 +170,7 @@ export function skillsAgentId(provider: AgentProvider): string {
   if (provider === "claude") return "claude-code";
   if (provider === "goose") return "goose";
   if (provider === "codex") return "codex";
+  if (provider === "opencode") return "opencode";
   return "github-copilot";
 }
 

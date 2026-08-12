@@ -7,6 +7,8 @@ import { AiderAdapter } from "../../src/agents/aiderAdapter.js";
 import { ClaudeAdapter } from "../../src/agents/claudeAdapter.js";
 import { CopilotAdapter } from "../../src/agents/copilotAdapter.js";
 import { GooseAdapter } from "../../src/agents/gooseAdapter.js";
+import { CodexAdapter } from "../../src/agents/codexAdapter.js";
+import { OpenCodeAdapter } from "../../src/agents/opencodeAdapter.js";
 import {
   buildCodegenContainerSpec,
   buildReviewContainerSpec,
@@ -182,6 +184,22 @@ describe("containerSpecBuilders", () => {
         }),
         review: new GooseAdapter(config).buildReviewContainerSpec(input, {
           ANTHROPIC_API_KEY: "goose-token",
+        }),
+      },
+      {
+        codegen: new CodexAdapter(config).buildContainerSpec(context, {
+          CODEX_API_KEY: "codex-token",
+        }),
+        review: new CodexAdapter(config).buildReviewContainerSpec(input, {
+          CODEX_API_KEY: "codex-token",
+        }),
+      },
+      {
+        codegen: new OpenCodeAdapter(config).buildContainerSpec(context, {
+          ANTHROPIC_API_KEY: "opencode-token",
+        }),
+        review: new OpenCodeAdapter(config).buildReviewContainerSpec(input, {
+          ANTHROPIC_API_KEY: "opencode-token",
         }),
       },
     ];

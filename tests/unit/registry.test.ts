@@ -506,6 +506,8 @@ describe("Plugin Registry", () => {
         "goose",
         "codex",
         "gemini",
+        "opencode",
+        "cursor",
         "mock",
         "github",
       ]);

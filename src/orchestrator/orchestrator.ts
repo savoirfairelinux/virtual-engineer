@@ -1113,6 +1113,13 @@ export class Orchestrator {
                 encryptedSessionToken = token;
               }
             }
+          } else if (integration.provider === "cursor") {
+            // Cursor authenticates with a single plaintext apiKey — no auth
+            // mode, no OAuth/subscription branch (see src/plugins/descriptors/cursor.ts).
+            if (!apiKey) {
+              const key = integCfg["apiKey"];
+              if (typeof key === "string" && key) apiKey = key;
+            }
           } else if (integration.provider === "aider") {
             // Aider carries a backend selector + that backend's API key / base
             // URL on the integration config. Forward them via `extra` so the
@@ -1153,6 +1160,20 @@ export class Orchestrator {
             if (typeof authMode === "string" && authMode) extra["geminiAuthMode"] = authMode;
             if (typeof project === "string" && project) extra["geminiGoogleCloudProject"] = project;
             if (typeof location === "string" && location) extra["geminiGoogleCloudLocation"] = location;
+          } else if (integration.provider === "opencode") {
+            // OpenCode carries a provider selector + that provider's API key /
+            // base URL on the integration config, exactly like Goose. Forward
+            // them via `extra` so the OpenCodeAdapter can map them onto the
+            // provider's auth env vars. This must be checked before the generic
+            // `!encryptedSessionToken` branch below, since OpenCode never
+            // populates `encryptedSessionToken` and would otherwise be
+            // swallowed by that branch and never forwarded.
+            const provider = integCfg["openCodeProvider"];
+            const key = integCfg["openCodeApiKey"];
+            const base = integCfg["openCodeApiBase"];
+            if (typeof provider === "string" && provider) extra["openCodeProvider"] = provider;
+            if (typeof key === "string" && key) extra["openCodeApiKey"] = key;
+            if (typeof base === "string" && base) extra["openCodeApiBase"] = base;
           } else if (!encryptedSessionToken) {
             const t = integCfg["sessionToken"];
             if (typeof t === "string" && t) {

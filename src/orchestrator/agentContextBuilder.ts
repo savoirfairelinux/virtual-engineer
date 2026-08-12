@@ -199,6 +199,17 @@ export async function buildAgentTaskContext(params: BuildAgentTaskContextParams)
       ...(typeof projectAgentRuntime.config.extra["geminiGoogleCloudLocation"] === "string"
         ? { geminiGoogleCloudLocation: projectAgentRuntime.config.extra["geminiGoogleCloudLocation"] }
         : {}),
+      // OpenCode provider credentials flow through `extra` (set by
+      // resolveProjectAgentRuntime from the integration config).
+      ...(typeof projectAgentRuntime.config.extra["openCodeProvider"] === "string"
+        ? { openCodeProvider: projectAgentRuntime.config.extra["openCodeProvider"] }
+        : {}),
+      ...(typeof projectAgentRuntime.config.extra["openCodeApiKey"] === "string"
+        ? { openCodeApiKey: projectAgentRuntime.config.extra["openCodeApiKey"] }
+        : {}),
+      ...(typeof projectAgentRuntime.config.extra["openCodeApiBase"] === "string"
+        ? { openCodeApiBase: projectAgentRuntime.config.extra["openCodeApiBase"] }
+        : {}),
       ...(projectPushTargets.length > 1 || projectPushTargets.some((t) => t.localPath !== ".")
         ? { repositoryMap: buildRepositoryMap(projectPushTargets) }
         : {}),

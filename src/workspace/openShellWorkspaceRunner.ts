@@ -47,7 +47,7 @@ const log = getLogger("openshell-workspace-runner");
 /** Maps an adapter's `name` to the skill-installer's provider id; `undefined` skips
  * installation (Aider/Mock have no upstream skill-directory convention). */
 function providerFromAdapterName(name: string): AgentProvider | undefined {
-  if (name === "copilot" || name === "claude" || name === "goose" || name === "codex") return name;
+  if (name === "copilot" || name === "claude" || name === "goose" || name === "codex" || name === "opencode") return name;
   return undefined;
 }
 
@@ -67,17 +67,25 @@ const AGENT_CREDENTIAL_PROVIDER_TYPES: Readonly<Record<string, string>> = {
   CODEX_ACCESS_TOKEN: "generic",
   // Gemini CLI auth (GOOGLE_API_KEY below is shared with Goose's `gemini` backend).
   GEMINI_API_KEY: "generic",
+  // Cursor auth.
+  CURSOR_API_KEY: "generic",
   // Aider / Goose LLM backends.
   OPENAI_API_KEY: "generic",
   OPENROUTER_API_KEY: "generic",
   DEEPSEEK_API_KEY: "generic",
   GROQ_API_KEY: "generic",
   GOOGLE_API_KEY: "generic",
+  GOOGLE_GENERATIVE_AI_API_KEY: "generic",
   AZURE_OPENAI_API_KEY: "generic",
   PERPLEXITY_API_KEY: "generic",
   MISTRAL_API_KEY: "generic",
   XAI_API_KEY: "generic",
   CEREBRAS_API_KEY: "generic",
+  // AWS Bedrock static, temporary-session, and bearer credentials.
+  AWS_ACCESS_KEY_ID: "generic",
+  AWS_SECRET_ACCESS_KEY: "generic",
+  AWS_SESSION_TOKEN: "generic",
+  AWS_BEARER_TOKEN_BEDROCK: "generic",
 };
 
 /**
@@ -112,7 +120,11 @@ function splitManagedProviderEnv(
       continue;
     }
     if (provider !== undefined) {
-      throw new Error("Agent sandbox spec contains multiple managed credentials");
+      if (provider.type !== type) {
+        throw new Error("Agent sandbox spec contains credentials for multiple managed provider types");
+      }
+      provider.credentials[key] = value;
+      continue;
     }
     provider = {
       name: `${sandboxName}-agent`,

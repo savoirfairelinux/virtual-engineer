@@ -255,7 +255,7 @@ export function ProjectSkillSourcesField({
           </div>
         )}
         <div style={{ fontSize: "11.5px", color: "var(--text-faint)", lineHeight: 1.45 }}>
-          Copilot, Claude, and Goose external sources are fetched and installed host-side with <code>npx skills</code>, project-scoped into the workspace, before it uploads to the sandbox. Aider does not support external skill sources. SSH sources can use the orchestrator SSH agent or a configured private key path; set a <code>known_hosts</code> path to enforce host key verification.
+          Copilot, Claude, Goose, Codex, and OpenCode external sources are fetched and installed host-side with <code>npx skills</code>, project-scoped into the workspace, before it uploads to the sandbox. Aider does not support external skill sources. SSH sources can use the orchestrator SSH agent or a configured private key path; set a <code>known_hosts</code> path to enforce host key verification.
         </div>
       </div>
     </Field>

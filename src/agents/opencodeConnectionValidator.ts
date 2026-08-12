@@ -1,31 +1,33 @@
 /**
- * Goose connection validator.
+ * OpenCode connection validator.
  *
- * Tests a configured Goose integration by probing the upstream LLM provider's
- * models endpoint (or Ollama's `/api/tags`). Goose itself wraps any LLM
- * provider, so the "connection" is really the upstream provider's credentials.
+ * Tests a configured OpenCode integration by probing the upstream LLM
+ * provider's models endpoint (or Ollama's `/api/tags`). OpenCode itself wraps
+ * any LLM provider (https://opencode.ai), so the "connection" is really the
+ * upstream provider's credentials.
  *
- * Mirrors the Aider validator contract so the plugin descriptor `testConnection`
- * hook stays uniform. Password-type API keys are encrypted before persistence;
- * this validator receives the decrypted runtime configuration.
+ * Mirrors the Goose validator contract so the plugin descriptor
+ * `testConnection` hook stays uniform. API keys are stored plaintext at rest
+ * (like the Aider/Goose backends); there is no encrypted token to decrypt for
+ * OpenCode.
  */
 import type { ConnectionTestResult } from "../plugins/pluginManager.js";
 import { getLogger } from "../logger.js";
 
-const log = getLogger("goose-connection-validator");
+const log = getLogger("opencode-connection-validator");
 
-export interface GooseConnectionValidationConfig {
+export interface OpenCodeConnectionValidationConfig {
   /** Provider selector: anthropic | openai | openrouter | ollama | deepseek | groq | gemini | azure_openai | bedrock | perplexity | mistral | xai | cerebras | openai_compat. */
-  gooseProvider?: string | undefined;
+  openCodeProvider?: string | undefined;
   /** API key for the selected provider (ollama/bedrock usually need none). */
-  gooseApiKey?: string | undefined;
+  openCodeApiKey?: string | undefined;
   /** Custom API base URL (required for openai_compat; optional override for ollama). */
-  gooseApiBase?: string | undefined;
+  openCodeApiBase?: string | undefined;
   /** Accepted but ignored — the model lives on the agents table. */
   model?: string | undefined;
 }
 
-export interface GooseConnectionValidatorDependencies {
+export interface OpenCodeConnectionValidatorDependencies {
   fetch?: typeof globalThis.fetch | undefined;
 }
 
@@ -33,15 +35,15 @@ const DEFAULT_OLLAMA_BASE = "http://127.0.0.1:11434";
 const ANTHROPIC_MODELS_URL = "https://api.anthropic.com/v1/models";
 const ANTHROPIC_VERSION = "2023-06-01";
 
-/** Validate a configured Goose integration by probing the upstream provider. */
-export async function validateGooseConnection(
-  config: GooseConnectionValidationConfig,
-  dependencies: GooseConnectionValidatorDependencies = {}
+/** Validate a configured OpenCode integration by probing the upstream provider. */
+export async function validateOpenCodeConnection(
+  config: OpenCodeConnectionValidationConfig,
+  dependencies: OpenCodeConnectionValidatorDependencies = {}
 ): Promise<ConnectionTestResult> {
-  const provider = config.gooseProvider ?? "anthropic";
-  const apiKey = config.gooseApiKey?.trim() ?? "";
-  const apiBase = config.gooseApiBase?.trim() ?? "";
-  log.info({ provider }, "testing Goose connection");
+  const provider = config.openCodeProvider ?? "anthropic";
+  const apiKey = config.openCodeApiKey?.trim() ?? "";
+  const apiBase = config.openCodeApiBase?.trim() ?? "";
+  log.info({ provider }, "testing OpenCode connection");
 
   const fetchFn = dependencies.fetch ?? globalThis.fetch;
 
@@ -86,7 +88,7 @@ export async function validateGooseConnection(
         if (!apiBase) {
           return {
             success: false,
-            error: "No Azure OpenAI endpoint configured for the Goose provider.",
+            error: "No Azure OpenAI endpoint configured for the OpenCode provider.",
             models: [],
           };
         }
@@ -100,11 +102,25 @@ export async function validateGooseConnection(
         // Bedrock uses AWS credential chains configured in the environment; VE
         // cannot probe it with a single API key. Validate that the operator has
         // set the AWS env vars on the host before the agent runs.
-        if (!process.env["AWS_ACCESS_KEY_ID"] && !process.env["AWS_PROFILE"] && !process.env["AWS_BEARER_TOKEN_BEDROCK"]) {
+        if (process.env["AWS_PROFILE"] && !process.env["AWS_ACCESS_KEY_ID"] && !process.env["AWS_BEARER_TOKEN_BEDROCK"]) {
+          return {
+            success: false,
+            error: "AWS_PROFILE cannot be used because profile files are not uploaded to the OpenCode sandbox. Configure environment credentials instead.",
+            models: [],
+          };
+        }
+        if (!process.env["AWS_ACCESS_KEY_ID"] && !process.env["AWS_BEARER_TOKEN_BEDROCK"]) {
           return {
             success: false,
             error:
-              "Bedrock requires AWS credentials in the environment (AWS_PROFILE, AWS_ACCESS_KEY_ID, or AWS_BEARER_TOKEN_BEDROCK). Configure them on the host before running the agent.",
+              "Bedrock requires AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY or AWS_BEARER_TOKEN_BEDROCK in the host environment.",
+            models: [],
+          };
+        }
+        if (process.env["AWS_ACCESS_KEY_ID"] && !process.env["AWS_SECRET_ACCESS_KEY"]) {
+          return {
+            success: false,
+            error: "Bedrock access-key authentication requires AWS_SECRET_ACCESS_KEY.",
             models: [],
           };
         }
@@ -134,7 +150,7 @@ export async function validateGooseConnection(
         if (!apiBase) {
           return {
             success: false,
-            error: "No API base URL configured for the openai-compatible Goose provider.",
+            error: "No API base URL configured for the openai-compatible OpenCode provider.",
             models: [],
           };
         }
@@ -148,13 +164,13 @@ export async function validateGooseConnection(
       default:
         return {
           success: false,
-          error: `Unknown Goose provider "${provider}".`,
+          error: `Unknown OpenCode provider "${provider}".`,
           models: [],
         };
     }
 
     if (response.status === 200) {
-      log.info({ provider }, "Goose connection is valid");
+      log.info({ provider }, "OpenCode connection is valid");
       const body = await response.json().catch(() => ({})) as Record<string, unknown>;
       const rawModels = provider === "ollama" ? body["models"] : body["data"];
       const modelCount = Array.isArray(rawModels) ? rawModels.length : undefined;
@@ -163,11 +179,11 @@ export async function validateGooseConnection(
       return { success: true, error: null, models: [], logs };
     }
     if (response.status === 401 || response.status === 403) {
-      const error = `Goose provider "${provider}" credentials are invalid or unauthorized.`;
+      const error = `OpenCode provider "${provider}" credentials are invalid or unauthorized.`;
       log.warn({ provider, status: response.status }, error);
       return { success: false, error, models: [] };
     }
-    const error = `Goose provider "${provider}" returned unexpected status ${response.status}.`;
+    const error = `OpenCode provider "${provider}" returned unexpected status ${response.status}.`;
     log.warn({ provider, status: response.status }, error);
     return { success: false, error, models: [] };
   } catch (err) {
@@ -182,7 +198,7 @@ export async function validateGooseConnection(
 function missingKey(): ConnectionTestResult {
   return {
     success: false,
-    error: "No API key provided for the selected Goose provider.",
+    error: "No API key provided for the selected OpenCode provider.",
     models: [],
   };
 }

@@ -117,7 +117,7 @@ function getProviderCompatibleAgentToken(
 function getDecryptedPasswordField(
   pluginManager: PluginManager,
   integration: Integration,
-  field: "token" | "apiKey" | "aiderApiKey"
+  field: "token" | "apiKey" | "aiderApiKey" | "openCodeApiKey"
 ): string | null {
   try {
     return asOptionalString(pluginManager.decryptIntegrationConfig(integration)[field]) ?? null;
@@ -187,6 +187,14 @@ function getAgentTokenFromIntegration(
     return null;
   }
 
+  if (agentIntegration.provider === "opencode") {
+    const openCodeApiKey = getDecryptedPasswordField(pluginManager, agentIntegration, "openCodeApiKey");
+    if (openCodeApiKey) return openCodeApiKey;
+    const provider = asOptionalString(rawConfig["openCodeProvider"]);
+    if (provider === "ollama" || provider === "bedrock") return "opencode-keyless";
+    return null;
+  }
+
   if (agentIntegration.provider === "codex") {
     const authMode = asOptionalString(rawConfig["authMode"])
       ?? (asOptionalString(rawConfig["apiKey"]) ? "api_key" : "subscription");
@@ -201,6 +209,11 @@ function getAgentTokenFromIntegration(
     // Both auth modes (api_key, vertex_ai) authenticate with the same `apiKey`
     // field; review always treats it as a Gemini Developer API key (Vertex
     // AI-mode review is not yet supported).
+    return getDecryptedPasswordField(pluginManager, agentIntegration, "apiKey");
+  }
+
+  if (agentIntegration.provider === "cursor") {
+    // Cursor authenticates with a single plaintext apiKey — no auth mode.
     return getDecryptedPasswordField(pluginManager, agentIntegration, "apiKey");
   }
 
@@ -283,6 +296,8 @@ async function resolveReviewAgentForProject(
   providerOptions?: Record<string, unknown> | undefined;
   aiderBackend?: string | undefined;
   aiderApiBase?: string | undefined;
+  openCodeProvider?: string | undefined;
+  openCodeApiBase?: string | undefined;
 } | null> {
   if (!project.agentId) return null;
 
@@ -367,6 +382,19 @@ async function resolveReviewAgentForProject(
       }
     }
 
+    // For OpenCode integrations, extract the provider selector and API base URL.
+    let openCodeProvider: string | undefined;
+    let openCodeApiBase: string | undefined;
+    if (agentIntegration.provider === "opencode") {
+      try {
+        const openCodeCfg = pluginManager.decryptIntegrationConfig(agentIntegration);
+        openCodeProvider = asOptionalString(openCodeCfg["openCodeProvider"]);
+        openCodeApiBase = asOptionalString(openCodeCfg["openCodeApiBase"]);
+      } catch {
+        // non-fatal — adapter falls back to defaults
+      }
+    }
+
     return {
       adapter,
       reviewStrategy: strategyConfig.reviewStrategy,
@@ -377,6 +405,8 @@ async function resolveReviewAgentForProject(
       ...(Object.keys(providerOptions).length > 0 ? { providerOptions } : {}),
       ...(aiderBackend !== undefined ? { aiderBackend } : {}),
       ...(aiderApiBase !== undefined ? { aiderApiBase } : {}),
+      ...(openCodeProvider !== undefined ? { openCodeProvider } : {}),
+      ...(openCodeApiBase !== undefined ? { openCodeApiBase } : {}),
     };
   } catch (err) {
     bundleLog.warn({ err, projectId: project.id }, "resolveReviewAgentForProject: failed to resolve project agent");

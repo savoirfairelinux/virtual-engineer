@@ -23,6 +23,8 @@ const PROVIDER_CAPABILITY: Record<ProviderId, DomainCapability> = {
   goose: "agent_execution",
   codex: "agent_execution",
   gemini: "agent_execution",
+  opencode: "agent_execution",
+  cursor: "agent_execution",
 };
 
 function activeConnector<T>(mgr: PluginManager, provider: ProviderId): T | null {

@@ -19,9 +19,11 @@ const PROVIDER_CAPABILITIES: Record<ProviderId, DomainCapability[]> = {
   goose: ["agent_execution"],
   codex: ["agent_execution"],
   gemini: ["agent_execution"],
+  opencode: ["agent_execution"],
+  cursor: ["agent_execution"],
 };
 
-const ALL_PROVIDERS: ProviderId[] = ["redmine", "gitlab", "gerrit", "github", "copilot", "claude", "aider", "goose", "codex", "gemini", "mock"];
+const ALL_PROVIDERS: ProviderId[] = ["redmine", "gitlab", "gerrit", "github", "copilot", "claude", "aider", "goose", "codex", "gemini", "opencode", "cursor", "mock"];
 
 const baseConfig: AppConfig = {
   nodeEnv: "test" as const,

@@ -1,31 +1,33 @@
 import { z } from "zod";
 import type { ProviderDescriptor } from "../registry.js";
 import { ModelDiscoveryConfigError } from "../registry.js";
-import { GooseAdapter } from "../../agents/gooseAdapter.js";
+import { OpenCodeAdapter } from "../../agents/opencodeAdapter.js";
 import {
-  validateGooseConnection,
-  type GooseConnectionValidationConfig,
-} from "../../agents/gooseConnectionValidator.js";
-import { fetchGooseModels } from "../../agents/gooseModelsService.js";
+  validateOpenCodeConnection,
+  type OpenCodeConnectionValidationConfig,
+} from "../../agents/opencodeConnectionValidator.js";
+import { fetchOpenCodeModels } from "../../agents/opencodeModelsService.js";
 
 /**
- * Goose (https://goose-docs.ai) integration descriptor.
+ * OpenCode (https://opencode.ai) integration descriptor.
  *
- * Goose is a Rust CLI agent from the AAIF that wraps any LLM provider. A single
- * integration selects a provider (`gooseProvider`) and carries that provider's
- * API key / base URL. The chosen model lives on the `agents` table, not the
- * integration config, and is passed to the CLI via the `GOOSE_MODEL` env var.
+ * OpenCode is an open-source terminal CLI agent that wraps any LLM provider
+ * behind a `provider/model` selector — like Goose, a single integration
+ * selects a provider (`openCodeProvider`) and carries that provider's API key
+ * / base URL. The chosen model lives on the `agents` table, not the
+ * integration config, and is combined with the provider selector into
+ * `<provider>/<model>` for the CLI's `--model` flag.
  *
- * Goose reads provider API keys from the environment (never from config.yaml).
- * Supported providers:
+ * OpenCode reads provider API keys from the environment for scripted/headless
+ * use (see https://opencode.ai/docs/providers). Supported providers:
  *  - `anthropic`     — Anthropic API (`ANTHROPIC_API_KEY`).
  *  - `openai`        — OpenAI API (`OPENAI_API_KEY`).
  *  - `openrouter`    — OpenRouter (`OPENROUTER_API_KEY`).
- *  - `ollama`        — local Ollama server (`OLLAMA_HOST`, no key needed).
+ *  - `ollama`        — local Ollama server (`OLLAMA_API_BASE`, no key needed).
  *  - `deepseek`      — DeepSeek (`DEEPSEEK_API_KEY`).
  *  - `groq`          — Groq (`GROQ_API_KEY`).
- *  - `gemini`        — Google Gemini (`GOOGLE_API_KEY`).
- *  - `azure_openai`  — Azure OpenAI (`AZURE_OPENAI_API_KEY` + `AZURE_OPENAI_ENDPOINT`).
+ *  - `gemini`        — Google Gemini (`GOOGLE_GENERATIVE_AI_API_KEY`).
+ *  - `azure_openai`  — Azure OpenAI (`AZURE_OPENAI_API_KEY` + `AZURE_RESOURCE_NAME`).
  *  - `bedrock`       — Amazon Bedrock (AWS env credential chain; no key forwarded).
  *  - `perplexity`    — Perplexity (`PERPLEXITY_API_KEY`).
  *  - `mistral`       — Mistral AI (`MISTRAL_API_KEY`).
@@ -33,9 +35,9 @@ import { fetchGooseModels } from "../../agents/gooseModelsService.js";
  *  - `cerebras`      — Cerebras (`CEREBRAS_API_KEY`).
  *  - `openai_compat` — any OpenAI-compatible endpoint (`OPENAI_API_KEY` + `OPENAI_API_BASE`).
  */
-export const gooseConfigSchema = z.object({
+export const opencodeConfigSchema = z.object({
   /** LLM provider selector. */
-  gooseProvider: z
+  openCodeProvider: z
     .enum([
       "anthropic",
       "openai",
@@ -54,26 +56,26 @@ export const gooseConfigSchema = z.object({
     ])
     .default("anthropic"),
   /** API key for the selected provider (ollama/bedrock usually need none). */
-  gooseApiKey: z.string().optional(),
+  openCodeApiKey: z.string().optional(),
   /** Custom API base URL (required for openai_compat and azure_openai; optional override for ollama). */
-  gooseApiBase: z.string().optional(),
+  openCodeApiBase: z.string().optional(),
   /** Accepted but discarded — the model lives on the agents table. */
   model: z.string().optional().transform(() => undefined),
 });
 
-export type GoosePluginConfig = z.infer<typeof gooseConfigSchema>;
+export type OpenCodePluginConfig = z.infer<typeof opencodeConfigSchema>;
 
-/** Returns the Goose plugin descriptor. Password fields are encrypted generically by PluginManager before persistence. */
-export function createGooseDescriptor(_adminAuthSecret?: string): ProviderDescriptor {
+/** Returns the OpenCode plugin descriptor. `adminAuthSecret` is accepted for API parity with the other provider factories but is unused — OpenCode stores API keys plaintext at rest (like Aider/Goose). */
+export function createOpenCodeDescriptor(_adminAuthSecret?: string): ProviderDescriptor {
   return {
-    provider: "goose",
-    name: "Goose",
-    icon: { slug: "goose", hex: "6B7FD7" },
-    configSchema: gooseConfigSchema,
+    provider: "opencode",
+    name: "OpenCode",
+    icon: { slug: "opencode", hex: "000000" },
+    configSchema: opencodeConfigSchema,
     validateFullConfigOnCreate: true,
     requiredFields: [
       {
-        key: "gooseProvider",
+        key: "openCodeProvider",
         label: "LLM Provider",
         type: "select",
         required: true,
@@ -95,14 +97,14 @@ export function createGooseDescriptor(_adminAuthSecret?: string): ProviderDescri
         ],
       },
       {
-        key: "gooseApiKey",
+        key: "openCodeApiKey",
         label: "API Key",
         type: "password",
         required: false,
         placeholder: "API key (leave empty for keyless providers, e.g. Ollama / Bedrock)",
       },
       {
-        key: "gooseApiBase",
+        key: "openCodeApiBase",
         label: "API Base URL",
         type: "url",
         required: false,
@@ -110,27 +112,27 @@ export function createGooseDescriptor(_adminAuthSecret?: string): ProviderDescri
       },
     ],
     testConnection: (config) =>
-      validateGooseConnection(config as GooseConnectionValidationConfig, {}),
+      validateOpenCodeConnection(config as OpenCodeConnectionValidationConfig, {}),
     discoverModels: async (config): Promise<Array<{ id: string; name: string }>> => {
       const cfg = (config && typeof config === "object" ? config : {}) as Record<string, unknown>;
-      const provider = typeof cfg["gooseProvider"] === "string" ? cfg["gooseProvider"] : "anthropic";
-      const apiKey = typeof cfg["gooseApiKey"] === "string" ? cfg["gooseApiKey"].trim() : "";
-      const apiBase = typeof cfg["gooseApiBase"] === "string" ? cfg["gooseApiBase"].trim() : "";
+      const provider = typeof cfg["openCodeProvider"] === "string" ? cfg["openCodeProvider"] : "anthropic";
+      const apiKey = typeof cfg["openCodeApiKey"] === "string" ? cfg["openCodeApiKey"].trim() : "";
+      const apiBase = typeof cfg["openCodeApiBase"] === "string" ? cfg["openCodeApiBase"].trim() : "";
 
       // Ollama and Bedrock need no key; the other providers do.
       if (provider !== "ollama" && provider !== "bedrock" && !apiKey) {
         throw new ModelDiscoveryConfigError(
-          "No API key configured for the selected Goose provider. Set a key in the integration config."
+          "No API key configured for the selected OpenCode provider. Set a key in the integration config."
         );
       }
       if ((provider === "openai_compat" || provider === "azure_openai") && !apiBase) {
         throw new ModelDiscoveryConfigError(
           provider === "openai_compat"
-            ? "No API base URL configured for the openai-compatible Goose provider."
-            : "No Azure OpenAI endpoint configured for the Goose provider."
+            ? "No API base URL configured for the openai-compatible OpenCode provider."
+            : "No Azure OpenAI endpoint configured for the OpenCode provider."
         );
       }
-      return fetchGooseModels({ gooseProvider: provider, gooseApiKey: apiKey, gooseApiBase: apiBase });
+      return fetchOpenCodeModels({ openCodeProvider: provider, openCodeApiKey: apiKey, openCodeApiBase: apiBase });
     },
     getSummaryDetails(_config: Record<string, unknown>): string[] {
       return [];
@@ -139,9 +141,9 @@ export function createGooseDescriptor(_adminAuthSecret?: string): ProviderDescri
       agent_execution: {
         reviewStrategies: [
           {
-            id: "goose_native",
-            label: "Goose native review",
-            description: "Run Goose's native agent review loop with the CLI managing model selection.",
+            id: "opencode_native",
+            label: "OpenCode native review",
+            description: "Delegate analysis to OpenCode's own agent/task delegation; the parent submits via ve_submit_review.",
             experimental: true,
             modelSelection: "provider",
             requiredSystemPromptId: "system_review",
@@ -149,26 +151,17 @@ export function createGooseDescriptor(_adminAuthSecret?: string): ProviderDescri
         ],
         configFields: [
           {
-            key: "gooseMode",
-            label: "Tool Mode",
-            type: "select",
+            key: "variant",
+            label: "Model Variant",
+            type: "text",
             required: false,
-            options: [
-              { value: "auto", label: "Auto (run tools without asking)" },
-              { value: "approve", label: "Approve (ask before each tool)" },
-              { value: "chat", label: "Chat (no tools)" },
-              { value: "smart_approve", label: "Smart Approve" },
-            ],
+            placeholder: "Optional provider-specific reasoning-effort variant (passed via --variant)",
           },
-          { key: "gooseMaxTurns", label: "Max Turns", type: "number", valueType: "number", required: false },
-          { key: "gooseMaxTokens", label: "Max Tokens", type: "number", valueType: "number", required: false },
-          { key: "gooseTemperature", label: "Temperature", type: "number", valueType: "number", required: false },
-          { key: "gooseAutoCompactThreshold", label: "Auto-Compact Threshold", type: "number", valueType: "number", required: false },
         ],
         // No model default is passed: when the agent config leaves the model
-        // unset, the Goose CLI selects its own default.
+        // unset, the OpenCode CLI selects its own default.
         buildAdapter: (context) =>
-          new GooseAdapter({
+          new OpenCodeAdapter({
             maxCommitsPerCycle: context.maxCommitsPerCycle,
           }),
       },
