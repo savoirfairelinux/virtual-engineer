@@ -43,6 +43,35 @@ const CONFIG_NAV = [
   { id: "system",        label: "System Settings",  sub: "Runtime settings",  icon: "config" },
 ] as const;
 
+type ConfigNavItem = typeof CONFIG_NAV[number];
+
+const CONFIG_GROUPS: ReadonlyArray<{
+  id: string;
+  label: string;
+  sections: readonly ConfigSectionId[];
+}> = [
+  {
+    id: "automation",
+    label: "Automation & execution",
+    sections: ["overview", "agents", "projects", "prompts"],
+  },
+  {
+    id: "integrations",
+    label: "Integrations & connectivity",
+    sections: ["integrations", "oauth"],
+  },
+  {
+    id: "governance",
+    label: "Execution governance",
+    sections: ["runtime-policies", "denials", "system"],
+  },
+  {
+    id: "access",
+    label: "Access & accountability",
+    sections: ["users", "groups", "policies", "audit"],
+  },
+];
+
 export interface ConfigViewData {
   integrations: ApiIntegration[];
   plugins: ApiPlugin[];
@@ -70,6 +99,17 @@ export function ConfigView(props: ConfigViewData) {
   const { can, user } = useCurrentUser();
   const hasPermission = useMemo(() => makeHasPermission(user), [user]);
   const visibleNav = CONFIG_NAV.filter((item) => canAccessConfigSection(hasPermission, item.id));
+  const visibleNavById = useMemo(
+    () => new Map(visibleNav.map((item) => [item.id, item] as const)),
+    [visibleNav],
+  );
+  const visibleGroups = useMemo(() => CONFIG_GROUPS.map((group) => ({
+    ...group,
+    items: group.sections.flatMap((section) => {
+      const item: ConfigNavItem | undefined = visibleNavById.get(section);
+      return item ? [item] : [];
+    }),
+  })).filter((group) => group.items.length > 0), [visibleNavById]);
 
   const [route, setRoute] = useState<ConfigRoute>(() => parseConfigHash(window.location.hash));
   const [isDirty, setIsDirty] = useState(false);
@@ -255,35 +295,42 @@ export function ConfigView(props: ConfigViewData) {
       <aside className="config-nav" aria-label="Configuration sections">
         <div className="eyebrow" style={{ padding: "0 8px", marginBottom: "4px" }}>Admin</div>
         <div style={{ padding: "0 8px 16px", fontSize: "16px", fontWeight: 600 }}>Configuration</div>
-        <div className="config-nav-items" style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
-          {visibleNav.map((n) => {
-            const active = effectiveSec === n.id;
-            return (
-              <button
-                key={n.id}
-                aria-current={active ? "page" : undefined}
-                onClick={() => handleSectionChange(n.id)}
-                style={{
-                  display: "flex", alignItems: "center", gap: "11px", padding: "9px 10px",
-                  borderRadius: "var(--radius-sm)",
-                  border: `1px solid ${active ? "var(--border-soft)" : "transparent"}`,
-                  background: active ? "var(--panel-2)" : "transparent",
-                  cursor: "pointer", textAlign: "left", width: "100%", color: "inherit",
-                  transition: "background 0.12s var(--ease)",
-                }}
-                onMouseEnter={(e) => { if (!active) e.currentTarget.style.background = "color-mix(in oklab,var(--panel-2) 55%, transparent)"; }}
-                onMouseLeave={(e) => { if (!active) e.currentTarget.style.background = "transparent"; }}
-              >
-                <Icon name={n.icon} size={16} style={{ color: active ? "var(--accent-strong)" : "var(--text-faint)" }} />
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: "13px", fontWeight: active ? 600 : 500, color: active ? "var(--text)" : "var(--text-dim)" }}>
-                    {n.label}
-                  </div>
-                  <div style={{ fontSize: "10.5px", color: "var(--text-ghost)" }}>{n.sub}</div>
-                </div>
-              </button>
-            );
-          })}
+        <div className="config-nav-groups">
+          {visibleGroups.map((group) => (
+            <section className="config-nav-group" key={group.id} aria-labelledby={`config-nav-group-${group.id}`}>
+              <h2 className="config-nav-group-title" id={`config-nav-group-${group.id}`}>{group.label}</h2>
+              <div className="config-nav-items">
+                {group.items.map((n) => {
+                  const active = effectiveSec === n.id;
+                  return (
+                    <button
+                      key={n.id}
+                      aria-current={active ? "page" : undefined}
+                      onClick={() => handleSectionChange(n.id)}
+                      style={{
+                        display: "flex", alignItems: "center", gap: "11px", padding: "9px 10px",
+                        borderRadius: "var(--radius-sm)",
+                        border: `1px solid ${active ? "var(--border-soft)" : "transparent"}`,
+                        background: active ? "var(--panel-2)" : "transparent",
+                        cursor: "pointer", textAlign: "left", width: "100%", color: "inherit",
+                        transition: "background 0.12s var(--ease)",
+                      }}
+                      onMouseEnter={(e) => { if (!active) e.currentTarget.style.background = "color-mix(in oklab,var(--panel-2) 55%, transparent)"; }}
+                      onMouseLeave={(e) => { if (!active) e.currentTarget.style.background = "transparent"; }}
+                    >
+                      <Icon name={n.icon} size={16} style={{ color: active ? "var(--accent-strong)" : "var(--text-faint)" }} />
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: "13px", fontWeight: active ? 600 : 500, color: active ? "var(--text)" : "var(--text-dim)" }}>
+                          {n.label}
+                        </div>
+                        <div style={{ fontSize: "10.5px", color: "var(--text-ghost)" }}>{n.sub}</div>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </section>
+          ))}
         </div>
       </aside>
 

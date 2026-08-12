@@ -136,6 +136,9 @@ describe("Configuration PBAC", () => {
 
     expect(screen.getByRole("heading", { name: "Prompts" })).toBeDefined();
     const navigation = screen.getByRole("complementary", { name: "Configuration sections" });
+    expect(within(navigation).getAllByRole("heading", { level: 2 }).map((heading) => heading.textContent)).toEqual([
+      "Automation & execution",
+    ]);
     expect(within(navigation).getByRole("button", { name: /Prompts/ })).toBeDefined();
     expect(within(navigation).queryByRole("button", { name: /Projects/ })).toBeNull();
     expect(within(navigation).queryByRole("button", { name: /Overview/ })).toBeNull();

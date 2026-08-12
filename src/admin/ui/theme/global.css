@@ -241,6 +241,31 @@ body.ve-drawer-open .app {
   overflow-y: auto;
 }
 
+.config-nav-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.config-nav-group {
+  min-width: 0;
+}
+
+.config-nav-group-title {
+  margin: 0;
+  padding: 0 8px 6px;
+  color: var(--text-ghost);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.config-nav-items {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
 .config-main {
   flex: 1;
   min-width: 0;
@@ -465,10 +490,28 @@ body.ve-drawer-open .app {
     display: none;
   }
 
-  .config-nav-items {
-    flex-direction: row !important;
+  .config-nav-groups {
+    flex-direction: row;
+    gap: 12px;
     overflow-x: auto;
-    padding: 2px;
+    scrollbar-width: none;
+  }
+
+  .config-nav-groups::-webkit-scrollbar {
+    display: none;
+  }
+
+  .config-nav-group {
+    flex: 0 0 auto;
+  }
+
+  .config-nav-group-title {
+    padding: 0 4px 5px;
+    white-space: nowrap;
+  }
+
+  .config-nav-items {
+    flex-direction: row;
   }
 
   .config-nav-items > button {
