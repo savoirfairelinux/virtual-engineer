@@ -19,7 +19,7 @@ Coding tasks progress from detection through implementation and review to comple
 
 - **Isolated execution**: every coding and review run happens in an ephemeral OpenShell sandbox created per cycle and destroyed on exit. Isolation comes from the OpenShell gateway and deny-by-default runtime policies (network, filesystem, process, inference), not from ad-hoc container flags.
 - **Host-owned credentials**: all Git plumbing (clone, checkout, cherry-pick, push) and review credentials remain with the orchestrator; they are never placed in the agent sandbox.
-- **Multiple agent engines**: use GitHub Copilot, Claude Code, Aider, or Goose. Aider and Goose each wrap many LLM backends — see [Agent Engines & LLM Providers](#-agent-engines--llm-providers) below.
+- **Multiple agent engines**: use GitHub Copilot, Claude Code, Aider, Goose, Codex, or Cursor. Aider and Goose each wrap many LLM backends — see [Agent Engines & LLM Providers](#-agent-engines--llm-providers) below.
 - **Provider flexibility**: connect Redmine, GitLab, GitHub, or Gerrit, including multiple active instances of the same provider.
 - **Feedback-aware delivery**: coding agents can iterate on reviewer feedback and selected CI failures while preserving the review history.
 - **Automated review controls**: severity thresholds, comment limits, patchset-aware deduplication, and discussion-thread replies keep reviews useful and repeatable.
@@ -30,7 +30,7 @@ Coding tasks progress from detection through implementation and review to comple
 
 | Capability | Providers |
 | --- | --- |
-| Agent execution | GitHub Copilot, Claude Code, Aider, Goose |
+| Agent execution | GitHub Copilot, Claude Code, Aider, Goose, Codex, Cursor |
 | Issue tracking | Redmine, GitLab Issues, GitHub Issues |
 | Source control and code review | Gerrit, GitLab Merge Requests, GitHub Pull Requests |
 | Local development and workflow testing | Mock agent |
@@ -39,7 +39,7 @@ Provider integrations are configured in the Admin UI and stored encrypted in SQL
 
 ## 🧠 Agent Engines & LLM Providers
 
-Virtual Engineer supports five agent execution engines. The selected model lives on the `agents` table, not the integration config, so a single integration can serve many models.
+Virtual Engineer supports seven agent execution engines. The selected model lives on the `agents` table, not the integration config, so a single integration can serve many models.
 
 | Engine | Auth / connection |
 | --- | --- |
@@ -47,6 +47,8 @@ Virtual Engineer supports five agent execution engines. The selected model lives
 | **Claude Code** | Anthropic API key, or Claude Pro/Max subscription via OAuth (auth-code + PKCE) |
 | **Aider** | Per-backend API key (Ollama needs none) |
 | **Goose** | Per-provider API key (Ollama/Bedrock need none) |
+| **Codex** | OpenAI API key, or a manually-pasted Codex/ChatGPT access token |
+| **Cursor** | Cursor API key |
 | **Mock** | None |
 
 Each engine wraps one or more LLM backends:
@@ -55,9 +57,11 @@ Each engine wraps one or more LLM backends:
 - **Claude Code** — Anthropic Claude models
 - **Aider** — OpenAI, Anthropic, Ollama (local), OpenRouter, DeepSeek, OpenAI-compatible (custom base URL)
 - **Goose** — Anthropic, OpenAI, OpenRouter, Ollama (local), DeepSeek, Groq, Google Gemini, Azure OpenAI, Amazon Bedrock (AWS env), Perplexity, Mistral, xAI (Grok), Cerebras, OpenAI-compatible (custom base URL)
+- **Codex** — OpenAI Codex models (CLI-managed)
+- **Cursor** — Cursor-router models (GPT, Claude, Gemini, Grok, and Cursor's own Composer, all behind Cursor's own model catalog)
 - **Mock** — Local testing only (success / no_change / failed)
 
-Multiple active integrations of the same provider are supported in parallel. Credentials are stored encrypted in SQLite (Mock, Aider, and Goose store API keys plaintext at rest per their descriptors). For engine-specific behavior and native review strategies, see the [agent reference](.github/context/modules/agents.md).
+Multiple active integrations of the same provider are supported in parallel. Credentials are stored encrypted in SQLite (Mock, Aider, Goose, and Cursor store API keys plaintext at rest per their descriptors). For engine-specific behavior and native review strategies, see the [agent reference](.github/context/modules/agents.md).
 
 ## 🚀 Quick Start
 
@@ -72,7 +76,7 @@ Multiple active integrations of the same provider are supported in parallel. Cre
 | **OpenSSL** | — | Generates the credential-encryption secret |
 | **k3s + kubectl** | current | Optional; only for the experimental Kubernetes compute driver. `start.sh` installs k3s and Helm automatically; `kubectl` must be on `PATH` |
 | **GitHub Copilot** | — | Subscription required for code-gen/review tasks; GitHub account required |
-| **Claude / Aider / Goose** | — | Alternative agent engines — API key or subscription per engine (optional) |
+| **Claude / Aider / Goose / Codex / Cursor** | — | Alternative agent engines — API key or subscription per engine (optional) |
 
 Plus credentials for the external systems you choose to connect.
 
@@ -135,7 +139,7 @@ Keep the generated `ADMIN_AUTH_SECRET` stable and stored securely. It encrypts p
 
 Use the Admin UI to assemble a workflow from reusable integrations, agents, and projects:
 
-1. Add and test an **agent integration**: GitHub Copilot, Claude Code, Aider, or Goose.
+1. Add and test an **agent integration**: GitHub Copilot, Claude Code, Aider, Goose, Codex, or Cursor.
 2. Add the external integration required by the workflow: an **issue tracker** for coding, or a **review system** for code review.
 3. Create a coding or review **agent**, select its model and prompts, and set its concurrency limit.
 4. Create a matching **project** and bind its repository, target branch, integrations, and agent.

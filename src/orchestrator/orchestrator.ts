@@ -1113,6 +1113,13 @@ export class Orchestrator {
                 encryptedSessionToken = token;
               }
             }
+          } else if (integration.provider === "cursor") {
+            // Cursor authenticates with a single plaintext apiKey — no auth
+            // mode, no OAuth/subscription branch (see src/plugins/descriptors/cursor.ts).
+            if (!apiKey) {
+              const key = integCfg["apiKey"];
+              if (typeof key === "string" && key) apiKey = key;
+            }
           } else if (integration.provider === "aider") {
             // Aider carries a backend selector + that backend's API key / base
             // URL on the integration config. Forward them via `extra` so the

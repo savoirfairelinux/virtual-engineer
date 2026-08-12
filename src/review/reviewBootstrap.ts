@@ -197,6 +197,11 @@ function getAgentTokenFromIntegration(
     return decryptManagedSessionToken(agentIntegration, rawConfig, bundleLog, "accessToken");
   }
 
+  if (agentIntegration.provider === "cursor") {
+    // Cursor authenticates with a single plaintext apiKey — no auth mode.
+    return getDecryptedPasswordField(pluginManager, agentIntegration, "apiKey");
+  }
+
   return null;
 }
 
