@@ -61,7 +61,7 @@ Each engine wraps one or more LLM backends:
 - **Cursor** — Cursor-router models (GPT, Claude, Gemini, Grok, and Cursor's own Composer, all behind Cursor's own model catalog)
 - **Mock** — Local testing only (success / no_change / failed)
 
-Multiple active integrations of the same provider are supported in parallel. Credentials are stored encrypted in SQLite (Mock, Aider, Goose, and Cursor store API keys plaintext at rest per their descriptors). For engine-specific behavior and native review strategies, see the [agent reference](.github/context/modules/agents.md).
+Multiple active integrations of the same provider are supported in parallel. Password fields such as provider API keys are encrypted before persistence in SQLite. For engine-specific behavior and native review strategies, see the [agent reference](.github/context/modules/agents.md).
 
 ## 🚀 Quick Start
 

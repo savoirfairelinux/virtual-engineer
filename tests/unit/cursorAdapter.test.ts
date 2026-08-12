@@ -77,7 +77,13 @@ describe("CursorAdapter", () => {
       const adapter = new CursorAdapter();
       const spec = adapter.buildContainerSpec(makeContext());
       expect(spec.egress).toEqual({
-        hosts: ["api2.cursor.sh", "api5.cursor.sh", "agent.api5.cursor.sh", "agentn.api5.cursor.sh", "repo42.cursor.sh"],
+        hosts: [
+          "*.cursor.sh",
+          "*.cursor-cdn.com",
+          "*.cursorapi.com",
+          "*.cursorvm.com",
+          "*.*.cursorvm.com",
+        ],
         binaries: ["/usr/local/bin/node", "/usr/local/bin/cursor-agent"],
       });
     });
