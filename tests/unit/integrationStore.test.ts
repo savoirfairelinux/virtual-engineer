@@ -88,6 +88,40 @@ describe("SqliteStateStore — IntegrationStore", () => {
     });
   });
 
+  describe("getIntegrationReferenceDetails", () => {
+    it("returns dependent agents and project integration uses with names", async () => {
+      await store.upsertIntegration({ id: "int-1", provider: "mock", name: "Shared Mock", configJson: "{}", enabled: true });
+      const agent = await store.createAgent({
+        name: "Build Agent",
+        type: "coding",
+        modelConfigJson: "{}",
+        integrationId: "int-1",
+        systemPromptId: "system_generic_code",
+        instructionsPromptId: "instructions_generic_code",
+      });
+      const project = await store.createProject({ name: "Platform", type: "coding", agentId: agent.id });
+      await store.setProjectTicketSource(project.id, { integrationId: "int-1", ticketProjectKey: "PLATFORM" });
+      await store.addProjectPushTarget(project.id, {
+        integrationId: "int-1",
+        repoKey: "platform/app",
+        cloneUrl: "https://example.test/platform/app.git",
+        targetBranch: "main",
+        role: "primary",
+        commitOrder: 0,
+        localPath: ".",
+      });
+
+      const references = await store.getIntegrationReferenceDetails("int-1");
+
+      expect(references).toEqual({
+        agents: [{ id: agent.id, name: "Build Agent" }],
+        projectBindings: [{ projectId: project.id, projectName: "Platform", capability: "issue_tracking" }],
+        projectPushTargets: [{ projectId: project.id, projectName: "Platform", repoKey: "platform/app" }],
+      });
+      await expect(store.countIntegrationReferences("int-1")).resolves.toBe(3);
+    });
+  });
+
   describe("deleteIntegration", () => {
     it("removes an integration", async () => {
       await store.upsertIntegration({ id: "d1", provider: "mock", name: "Mock", configJson: "{}", enabled: true });
