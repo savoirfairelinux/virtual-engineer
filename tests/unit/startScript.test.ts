@@ -363,6 +363,7 @@ describe("OpenShell deployment contract", () => {
     expect(dockerfile).toContain("groupadd --system sandbox");
     expect(dockerfile).toContain("useradd --system --gid sandbox");
     expect(dockerfile).toContain("--home-dir /sandbox");
+    expect(dockerfile).toContain("npm install -g opencode-ai@1.18.16");
   });
 
   it("materializes the Cursor CLI outside root's home", () => {

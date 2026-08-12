@@ -36,6 +36,7 @@ Every coding and review run uses the selected agent's native repository behavior
 
 - Run Virtual Engineer only against repositories whose agent configuration, skills, MCP files, and change-review trust boundary you accept.
 - Remote skill sources default to an empty list and must be configured explicitly; add only sources you trust.
+- Host installation targets only the selected agent's native project directory: Copilot, Claude, Goose, Codex, and OpenCode are supported; Aider and Mock are skipped.
 - Review runs are never downloaded back to the host, so a review agent cannot modify the repository VE pushes.
 - SSH remote skill sources reuse the orchestrator process `SSH_AUTH_SOCK` only when such a source is configured; missing SSH agent access fails the run instead of silently skipping skills. Configured key and known-hosts files must live under `/app/secrets` (container deployment) or the repository `secrets/` directory (host development). Canonical-path validation blocks traversal and symlink escapes before host-file reads.
 - Copilot enables native config discovery, which couples repository skill discovery with repository MCP configuration discovery. VE permission handlers still mediate requested tools, but repository MCP servers may be initialized; trust the repository before running it.

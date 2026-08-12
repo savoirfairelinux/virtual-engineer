@@ -24,7 +24,7 @@ export class ReviewStrategyConfigError extends Error {
   }
 }
 
-const NATIVE_REVIEW_STRATEGIES: readonly ReviewStrategy[] = ["copilot_native", "goose_native", "codex_native"];
+const NATIVE_REVIEW_STRATEGIES: readonly ReviewStrategy[] = ["copilot_native", "goose_native", "codex_native", "opencode_native"];
 
 export function resolveReviewStrategy(modelConfig: Record<string, unknown>): ReviewStrategy {
   const value = resolveProviderOptions(modelConfig)["reviewStrategy"];

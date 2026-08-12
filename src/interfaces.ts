@@ -49,7 +49,7 @@ export {
 // ─── Phase 2: Agents / Projects / Concurrency types ───────────────────────────
 
 export type AgentType = "coding" | "review";
-export type ReviewStrategy = "ve_direct" | "copilot_native" | "goose_native" | "codex_native";
+export type ReviewStrategy = "ve_direct" | "copilot_native" | "goose_native" | "codex_native" | "opencode_native";
 export type ProjectType = "coding" | "review";
 export type PushTargetRole = "primary" | "submodule" | "dependency" | "related";
 
@@ -429,6 +429,14 @@ export interface AgentSession {
   gooseApiKey?: string | undefined;
   /** Custom API base URL (required for `openai_compat`; optional override for `ollama`). */
   gooseApiBase?: string | undefined;
+
+  // ── OpenCode (agent_execution) ─────────────────────────────────────────────
+  /** OpenCode LLM provider selector (same set as Goose's, e.g. anthropic | openai | openrouter | ollama | deepseek | groq | gemini | azure_openai | bedrock | perplexity | mistral | xai | cerebras | openai_compat). */
+  openCodeProvider?: string | undefined;
+  /** API key for the selected OpenCode provider (plaintext at rest, like `githubToken`). */
+  openCodeApiKey?: string | undefined;
+  /** Custom API base URL (required for `openai_compat`; optional override for `ollama`). */
+  openCodeApiBase?: string | undefined;
 }
 
 export interface TaskContext {
@@ -629,6 +637,14 @@ export interface ReviewWorkspaceInput {
   gooseApiKey?: string | undefined;
   /** Custom API base URL (required for `openai_compat`; optional override for `ollama`). */
   gooseApiBase?: string | undefined;
+
+  // ── OpenCode (agent_execution) ─────────────────────────────────────────────
+  /** OpenCode LLM provider selector (same set as Goose's). */
+  openCodeProvider?: string | undefined;
+  /** API key for the selected OpenCode provider (plaintext at rest, like `agentToken`). */
+  openCodeApiKey?: string | undefined;
+  /** Custom API base URL (required for `openai_compat`; optional override for `ollama`). */
+  openCodeApiBase?: string | undefined;
 }
 export interface PatchsetCheckoutOptions {
   /** VCS base URL (used to build the remote fetch URL) */
@@ -1521,6 +1537,7 @@ export const PROVIDER_IDS = [
   "aider",
   "goose",
   "codex",
+  "opencode",
   "cursor",
   "mock",
 ] as const;

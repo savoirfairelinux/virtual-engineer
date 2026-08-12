@@ -527,11 +527,16 @@ describe("OpenShellWorkspaceRunner", () => {
     "DEEPSEEK_API_KEY",
     "GROQ_API_KEY",
     "GOOGLE_API_KEY",
+    "GOOGLE_GENERATIVE_AI_API_KEY",
     "AZURE_OPENAI_API_KEY",
     "PERPLEXITY_API_KEY",
     "MISTRAL_API_KEY",
     "XAI_API_KEY",
     "CEREBRAS_API_KEY",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "AWS_BEARER_TOKEN_BEDROCK",
   ])("attaches the Aider/Goose backend credential %s as a provider instead of sandbox env", async (credentialKey) => {
     const client = fakeClient();
     const runner = new OpenShellWorkspaceRunner({ git: fakeGit(), client });
@@ -563,6 +568,36 @@ describe("OpenShellWorkspaceRunner", () => {
     }));
     const createSandboxArgs = (client.createSandbox as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
     expect(JSON.stringify(createSandboxArgs)).not.toContain("sk-backend-secret");
+  });
+
+  it("attaches a temporary AWS credential set through one managed provider", async () => {
+    const client = fakeClient();
+    const runner = new OpenShellWorkspaceRunner({ git: fakeGit(), client });
+    const credentials = {
+      AWS_ACCESS_KEY_ID: "aws-access-key",
+      AWS_SECRET_ACCESS_KEY: "aws-secret-key",
+      AWS_SESSION_TOKEN: "aws-session-token",
+    };
+    const adapter = fakeCodingAdapter({
+      env: { AGENT_PROVIDER: "opencode", ...credentials, AWS_REGION: "ca-central-1" },
+    });
+
+    await runner.cloneRepo(handle, "https://trusted.example/repo.git", "main");
+    await runner.runAgentInDocker(
+      adapter,
+      { taskId: "t1", workspacePath: "/tmp/ws-1" } as unknown as TaskContext,
+      credentials,
+    );
+
+    expect(client.createProvider).toHaveBeenCalledWith({
+      name: "ve-t1-agent",
+      type: "generic",
+      credentials,
+    });
+    expect(client.createSandbox).toHaveBeenCalledWith(expect.objectContaining({
+      env: { AGENT_PROVIDER: "opencode", AWS_REGION: "ca-central-1" },
+      providers: ["ve-t1-agent"],
+    }));
   });
 
   it("fails the coding run when the spec carries an unmapped secret-looking variable", async () => {

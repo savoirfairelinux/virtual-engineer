@@ -31,6 +31,9 @@ const GOOSE_PROVIDER_HOSTS: Record<string, readonly string[]> = {
   openai_compat: [],
 };
 
+/** Same backend set as Goose — OpenCode wraps any LLM provider the same way. */
+const OPENCODE_PROVIDER_HOSTS: Record<string, readonly string[]> = GOOSE_PROVIDER_HOSTS;
+
 /** `host` or `host:port` for a configured API base; empty when it is not a URL. */
 function hostOf(apiBase: string | undefined): string[] {
   const trimmed = apiBase?.trim();
@@ -55,4 +58,22 @@ export function aiderEgress(backend: string | undefined, apiBase: string | undef
 
 export function gooseEgress(provider: string | undefined, apiBase: string | undefined): AgentEgressSpec | undefined {
   return egress(GOOSE_PROVIDER_HOSTS[provider ?? "anthropic"] ?? [], apiBase, "/usr/local/bin/goose");
+}
+
+export function opencodeEgress(
+  provider: string | undefined,
+  apiBase: string | undefined,
+  awsRegion: string | undefined = undefined,
+): AgentEgressSpec | undefined {
+  const selectedProvider = provider ?? "anthropic";
+  const region = awsRegion?.trim();
+  const bedrockRegion = region && /^[a-z0-9-]+$/.test(region) ? region : "us-east-1";
+  const hosts = selectedProvider === "bedrock"
+    ? [
+        `bedrock-runtime.${bedrockRegion}.amazonaws.com`,
+        `sts.${bedrockRegion}.amazonaws.com`,
+        "sts.amazonaws.com",
+      ]
+    : OPENCODE_PROVIDER_HOSTS[selectedProvider] ?? [];
+  return egress(hosts, apiBase, "/usr/local/bin/opencode");
 }
