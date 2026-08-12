@@ -651,7 +651,7 @@ describe("Admin API — Plugin & Integration routes", () => {
       expect(getStatus).toBe(200);
     });
 
-    it("returns the names and roles of integration dependents", async () => {
+    it("returns detailed integration dependent references", async () => {
       const references = {
         agents: [{ id: "agent-1", name: "Build Agent" }],
         projectBindings: [{ projectId: "project-1", projectName: "Platform", capability: "issue_tracking" }],
