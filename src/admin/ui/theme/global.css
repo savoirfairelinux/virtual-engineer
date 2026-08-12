@@ -247,6 +247,10 @@ body.ve-drawer-open .app {
   gap: 18px;
 }
 
+.config-nav-overview {
+  margin-bottom: 18px;
+}
+
 .config-nav-group {
   min-width: 0;
 }
@@ -495,6 +499,10 @@ body.ve-drawer-open .app {
     gap: 12px;
     overflow-x: auto;
     scrollbar-width: none;
+  }
+
+  .config-nav-overview {
+    margin-bottom: 12px;
   }
 
   .config-nav-groups::-webkit-scrollbar {

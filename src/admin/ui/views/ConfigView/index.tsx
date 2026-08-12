@@ -51,24 +51,24 @@ const CONFIG_GROUPS: ReadonlyArray<{
   sections: readonly ConfigSectionId[];
 }> = [
   {
-    id: "integrations",
-    label: "Integrations & agents",
-    sections: ["integrations", "oauth", "agents"],
+    id: "setup",
+    label: "Setup & workflow",
+    sections: ["integrations", "oauth", "agents", "projects", "prompts"],
   },
   {
-    id: "workflow",
-    label: "Workflow & automation",
-    sections: ["overview", "projects", "prompts"],
-  },
-  {
-    id: "governance",
-    label: "Execution governance",
-    sections: ["runtime-policies", "denials", "system"],
+    id: "runtime",
+    label: "Runtime safety",
+    sections: ["runtime-policies", "denials"],
   },
   {
     id: "access",
-    label: "Access & accountability",
-    sections: ["users", "groups", "policies", "audit"],
+    label: "Access control",
+    sections: ["users", "groups", "policies"],
+  },
+  {
+    id: "operations",
+    label: "Operations & audit",
+    sections: ["audit", "system"],
   },
 ];
 
@@ -256,6 +256,35 @@ export function ConfigView(props: ConfigViewData) {
     navigate({ section: id, mode: "list" });
   }
 
+  const renderNavItem = (item: ConfigNavItem) => {
+    const active = effectiveSec === item.id;
+    return (
+      <button
+        key={item.id}
+        aria-current={active ? "page" : undefined}
+        onClick={() => handleSectionChange(item.id)}
+        style={{
+          display: "flex", alignItems: "center", gap: "11px", padding: "9px 10px",
+          borderRadius: "var(--radius-sm)",
+          border: `1px solid ${active ? "var(--border-soft)" : "transparent"}`,
+          background: active ? "var(--panel-2)" : "transparent",
+          cursor: "pointer", textAlign: "left", width: "100%", color: "inherit",
+          transition: "background 0.12s var(--ease)",
+        }}
+        onMouseEnter={(event) => { if (!active) event.currentTarget.style.background = "color-mix(in oklab,var(--panel-2) 55%, transparent)"; }}
+        onMouseLeave={(event) => { if (!active) event.currentTarget.style.background = "transparent"; }}
+      >
+        <Icon name={item.icon} size={16} style={{ color: active ? "var(--accent-strong)" : "var(--text-faint)" }} />
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: "13px", fontWeight: active ? 600 : 500, color: active ? "var(--text)" : "var(--text-dim)" }}>
+            {item.label}
+          </div>
+          <div style={{ fontSize: "10.5px", color: "var(--text-ghost)" }}>{item.sub}</div>
+        </div>
+      </button>
+    );
+  };
+
   const routedProps: ConfigSectionProps = {
     ...props,
     route: effectiveRoute,
@@ -295,40 +324,16 @@ export function ConfigView(props: ConfigViewData) {
       <aside className="config-nav" aria-label="Configuration sections">
         <div className="eyebrow" style={{ padding: "0 8px", marginBottom: "4px" }}>Admin</div>
         <div style={{ padding: "0 8px 16px", fontSize: "16px", fontWeight: 600 }}>Configuration</div>
+        {visibleNavById.get("overview") && (
+          <div className="config-nav-overview">
+            {renderNavItem(visibleNavById.get("overview")!)}
+          </div>
+        )}
         <div className="config-nav-groups">
           {visibleGroups.map((group) => (
             <section className="config-nav-group" key={group.id} aria-labelledby={`config-nav-group-${group.id}`}>
               <h2 className="config-nav-group-title" id={`config-nav-group-${group.id}`}>{group.label}</h2>
-              <div className="config-nav-items">
-                {group.items.map((n) => {
-                  const active = effectiveSec === n.id;
-                  return (
-                    <button
-                      key={n.id}
-                      aria-current={active ? "page" : undefined}
-                      onClick={() => handleSectionChange(n.id)}
-                      style={{
-                        display: "flex", alignItems: "center", gap: "11px", padding: "9px 10px",
-                        borderRadius: "var(--radius-sm)",
-                        border: `1px solid ${active ? "var(--border-soft)" : "transparent"}`,
-                        background: active ? "var(--panel-2)" : "transparent",
-                        cursor: "pointer", textAlign: "left", width: "100%", color: "inherit",
-                        transition: "background 0.12s var(--ease)",
-                      }}
-                      onMouseEnter={(e) => { if (!active) e.currentTarget.style.background = "color-mix(in oklab,var(--panel-2) 55%, transparent)"; }}
-                      onMouseLeave={(e) => { if (!active) e.currentTarget.style.background = "transparent"; }}
-                    >
-                      <Icon name={n.icon} size={16} style={{ color: active ? "var(--accent-strong)" : "var(--text-faint)" }} />
-                      <div style={{ flex: 1 }}>
-                        <div style={{ fontSize: "13px", fontWeight: active ? 600 : 500, color: active ? "var(--text)" : "var(--text-dim)" }}>
-                          {n.label}
-                        </div>
-                        <div style={{ fontSize: "10.5px", color: "var(--text-ghost)" }}>{n.sub}</div>
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
+              <div className="config-nav-items">{group.items.map(renderNavItem)}</div>
             </section>
           ))}
         </div>

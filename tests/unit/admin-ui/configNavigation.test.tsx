@@ -125,15 +125,17 @@ describe("Configuration navigation guard", () => {
 
     const navigation = screen.getByRole("complementary", { name: "Configuration sections" });
     expect(within(navigation).getAllByRole("heading", { level: 2 }).map((heading) => heading.textContent)).toEqual([
-      "Integrations & agents",
-      "Workflow & automation",
-      "Execution governance",
-      "Access & accountability",
+      "Setup & workflow",
+      "Runtime safety",
+      "Access control",
+      "Operations & audit",
     ]);
-    expect(within(navigation).getByRole("region", { name: "Integrations & agents" }).textContent).toContain("Agents Library");
     const buttonTexts = within(navigation).getAllByRole("button").map((button) => button.textContent ?? "");
+    expect(buttonTexts[0]).toContain("Overview");
     expect(buttonTexts.findIndex((text) => text.includes("Integrations"))).toBeLessThan(buttonTexts.findIndex((text) => text.includes("Agents Library")));
     expect(buttonTexts.findIndex((text) => text.includes("Agents Library"))).toBeLessThan(buttonTexts.findIndex((text) => text.includes("Projects")));
+    expect(buttonTexts.findIndex((text) => text.includes("Audit"))).toBeLessThan(buttonTexts.findIndex((text) => text.includes("System Settings")));
+    expect(buttonTexts.at(-1)).toContain("System Settings");
     expect(within(navigation).getByRole("button", { name: /Projects/, current: "page" })).toBeDefined();
   });
 
