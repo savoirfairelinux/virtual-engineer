@@ -27,7 +27,7 @@ src/plugins/
     redmine.ts
 ```
 
-Provider ids are `github | gitlab | gerrit | redmine | copilot | claude | aider | goose | codex | opencode | mock` (`PROVIDER_IDS` in `src/interfaces.ts`). The former split descriptors (`github-issue` + `github-pull-request`, `gitlab-issue` + `gitlab-merge-request`) were merged into single `github` / `gitlab` descriptors. `PLUGIN_CATEGORIES` / `category` no longer exist.
+Provider ids are `github | gitlab | gerrit | redmine | copilot | claude | aider | goose | codex | opencode | cursor | mock` (`PROVIDER_IDS` in `src/interfaces.ts`). The former split descriptors (`github-issue` + `github-pull-request`, `gitlab-issue` + `gitlab-merge-request`) were merged into single `github` / `gitlab` descriptors. `PLUGIN_CATEGORIES` / `category` no longer exist.
 
 A descriptor (`ProviderDescriptor`) provides:
 

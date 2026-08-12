@@ -35,6 +35,7 @@ tests/
 | Agents / Goose | `gooseAdapter`, `gooseDescriptor`, `gooseConnectionValidator`, `gooseModelsService`, `gooseWorker` |
 | Agents / Codex | `codexAdapter`, `codexDescriptor`, `codexConnectionValidator`, `codexModelsService`, `workerCodexProvider` |
 | Agents / OpenCode | `opencodeAdapter`, `opencodeDescriptor`, `opencodeConnectionValidator`, `opencodeModelsService`, `opencodeWorker` |
+| Agents / Cursor | `cursorAdapter`, `cursorDescriptor`, `cursorConnectionValidator`, `cursorModelsService`, `workerCursorProvider` |
 | Review runtime | `reviewOrchestrator`, `reviewRecovery`, `reviewRetriggerGuard`, `reviewStderrEvents`, `reviewPostingGate`, `reviewPromptBuilder`, `reviewOutputContract` (covered through parser/orchestrator suites), `reviewResultParser`, `reviewLiveLogs`, `liveLogFormat`, `liveLogWindow`, `agentCyclePresentation`, `commentHash`, `commentSeverity`, `revisionPatchset` |
 | Cost / token tracking | `cycleCost`, `stateStore.cost`, `adminCostRoutes`, `liveMetrics`, `workerClaudeProvider` |
 | Plugins / runtime wiring | `pluginManager` (+ `.multiInstance`), `registry`, `runtimeBootstrap` (historical name; covers bootstrap wiring in `src/index.ts`), `runtimeStartup`, `openShellWorkspaceRunner`, `openShellSandboxReconciler`, `runtimePolicyResolver`, `agentWorkerProtocol`, `openshell`, `hostGitExecutor`, `runnerContract`, `integrationStreamEvents` |

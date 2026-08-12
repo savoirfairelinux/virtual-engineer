@@ -63,7 +63,7 @@ export const gooseConfigSchema = z.object({
 
 export type GoosePluginConfig = z.infer<typeof gooseConfigSchema>;
 
-/** Returns the Goose plugin descriptor. `adminAuthSecret` is accepted for API parity with the other provider factories but is unused — Goose stores API keys plaintext at rest (like Aider). */
+/** Returns the Goose plugin descriptor. Password fields are encrypted generically by PluginManager before persistence. */
 export function createGooseDescriptor(_adminAuthSecret?: string): ProviderDescriptor {
   return {
     provider: "goose",

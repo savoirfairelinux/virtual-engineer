@@ -16,6 +16,7 @@ const PROVIDER_CAPABILITY: Record<ProviderId, DomainCapability> = {
   goose: "agent_execution",
   codex: "agent_execution",
   opencode: "agent_execution",
+  cursor: "agent_execution",
 };
 
 /** Resolve the first active connector for a provider via its primary capability. */

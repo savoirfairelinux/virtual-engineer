@@ -6,8 +6,8 @@
  * backend, so the "connection" is really the upstream provider's credentials.
  *
  * Mirrors the Claude validator contract so the plugin descriptor `testConnection`
- * hook stays uniform. API keys are stored plaintext at rest (like the Claude
- * `api_key` mode); there is no encrypted token to decrypt for Aider.
+ * hook stays uniform. Password-type API keys are encrypted before persistence;
+ * this validator receives the decrypted runtime configuration.
  */
 import type { ConnectionTestResult } from "../plugins/pluginManager.js";
 import { getLogger } from "../logger.js";

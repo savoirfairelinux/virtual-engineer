@@ -55,7 +55,7 @@ export function buildReviewSystemPrompt(
   reviewProviderKind: string,
   agentProvider: string,
 ): string {
-  return agentProvider === "copilot" || agentProvider === "claude" || agentProvider === "codex" || agentProvider === "opencode"
+  return agentProvider === "copilot" || agentProvider === "claude" || agentProvider === "codex" || agentProvider === "opencode" || agentProvider === "cursor"
     ? systemPrompt
     : appendReviewOutputContract(systemPrompt, reviewProviderKind);
 }
