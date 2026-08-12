@@ -51,14 +51,14 @@ const CONFIG_GROUPS: ReadonlyArray<{
   sections: readonly ConfigSectionId[];
 }> = [
   {
-    id: "automation",
-    label: "Automation & execution",
-    sections: ["overview", "agents", "projects", "prompts"],
+    id: "workflow",
+    label: "Workflow & automation",
+    sections: ["overview", "projects", "prompts"],
   },
   {
     id: "integrations",
-    label: "Integrations & connectivity",
-    sections: ["integrations", "oauth"],
+    label: "Integrations & agents",
+    sections: ["integrations", "oauth", "agents"],
   },
   {
     id: "governance",
