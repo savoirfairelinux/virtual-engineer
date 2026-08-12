@@ -125,11 +125,12 @@ describe("Configuration navigation guard", () => {
 
     const navigation = screen.getByRole("complementary", { name: "Configuration sections" });
     expect(within(navigation).getAllByRole("heading", { level: 2 }).map((heading) => heading.textContent)).toEqual([
-      "Automation & execution",
-      "Integrations & connectivity",
+      "Workflow & automation",
+      "Integrations & agents",
       "Execution governance",
       "Access & accountability",
     ]);
+    expect(within(navigation).getByRole("region", { name: "Integrations & agents" }).textContent).toContain("Agents Library");
     expect(within(navigation).getByRole("button", { name: /Projects/, current: "page" })).toBeDefined();
   });
 
