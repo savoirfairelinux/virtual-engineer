@@ -34,6 +34,7 @@ tests/
 | Agents / Aider | `aiderAdapter`, `aiderDescriptor`, `aiderConnectionValidator`, `aiderModelsService`, `aiderWorker` |
 | Agents / Goose | `gooseAdapter`, `gooseDescriptor`, `gooseConnectionValidator`, `gooseModelsService`, `gooseWorker` |
 | Agents / Codex | `codexAdapter`, `codexDescriptor`, `codexConnectionValidator`, `codexModelsService`, `workerCodexProvider` |
+| Agents / Gemini CLI | `geminiAdapter`, `geminiDescriptor`, `geminiConnectionValidator`, `geminiModelsService`, `workerGeminiProvider` |
 | Agents / OpenCode | `opencodeAdapter`, `opencodeDescriptor`, `opencodeConnectionValidator`, `opencodeModelsService`, `opencodeWorker` |
 | Agents / Cursor | `cursorAdapter`, `cursorDescriptor`, `cursorConnectionValidator`, `cursorModelsService`, `workerCursorProvider` |
 | Review runtime | `reviewOrchestrator`, `reviewRecovery`, `reviewRetriggerGuard`, `reviewStderrEvents`, `reviewPostingGate`, `reviewPromptBuilder`, `reviewOutputContract` (covered through parser/orchestrator suites), `reviewResultParser`, `reviewLiveLogs`, `liveLogFormat`, `liveLogWindow`, `agentCyclePresentation`, `commentHash`, `commentSeverity`, `revisionPatchset` |

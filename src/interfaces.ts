@@ -430,6 +430,14 @@ export interface AgentSession {
   /** Custom API base URL (required for `openai_compat`; optional override for `ollama`). */
   gooseApiBase?: string | undefined;
 
+  // ── Gemini CLI (agent_execution) ───────────────────────────────────────────
+  /** Gemini CLI auth mode selector (api_key | vertex_ai); defaults to api_key when absent. */
+  geminiAuthMode?: string | undefined;
+  /** Google Cloud project id for Vertex AI mode. */
+  geminiGoogleCloudProject?: string | undefined;
+  /** Google Cloud location/region for Vertex AI mode. */
+  geminiGoogleCloudLocation?: string | undefined;
+
   // ── OpenCode (agent_execution) ─────────────────────────────────────────────
   /** OpenCode LLM provider selector (same set as Goose's, e.g. anthropic | openai | openrouter | ollama | deepseek | groq | gemini | azure_openai | bedrock | perplexity | mistral | xai | cerebras | openai_compat). */
   openCodeProvider?: string | undefined;
@@ -1537,6 +1545,7 @@ export const PROVIDER_IDS = [
   "aider",
   "goose",
   "codex",
+  "gemini",
   "opencode",
   "cursor",
   "mock",

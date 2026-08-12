@@ -13,6 +13,7 @@ import { createClaudeDescriptor } from "./claude.js";
 import { createAiderDescriptor } from "./aider.js";
 import { createGooseDescriptor } from "./goose.js";
 import { createCodexDescriptor } from "./codex.js";
+import { createGeminiDescriptor } from "./gemini.js";
 import { createOpenCodeDescriptor } from "./opencode.js";
 import { createCursorDescriptor } from "./cursor.js";
 import { mockDescriptor } from "./mock.js";
@@ -29,6 +30,7 @@ export function buildBuiltinDescriptors(options?: { adminAuthSecret?: string }):
     createAiderDescriptor(options?.adminAuthSecret),
     createGooseDescriptor(options?.adminAuthSecret),
     createCodexDescriptor(options?.adminAuthSecret),
+    createGeminiDescriptor(options?.adminAuthSecret),
     createOpenCodeDescriptor(options?.adminAuthSecret),
     createCursorDescriptor(options?.adminAuthSecret),
     mockDescriptor,

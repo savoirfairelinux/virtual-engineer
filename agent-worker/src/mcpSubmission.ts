@@ -57,6 +57,10 @@ export function assertSuccessfulSubmissionToolCall(
     `mcp__ve-submission__${toolName}`,
     `ve-submission-${toolName}`,
     `virtual-engineer-submission-${toolName}`,
+    // Gemini CLI's documented MCP tool FQN scheme is `mcp_{serverName}_{toolName}`
+    // (server name here is `ve-submission`, hyphenated so it doesn't collide
+    // with the parser's underscore-splitting rule) — verify against a live run.
+    `mcp_ve-submission_${toolName}`,
   ]);
   const calls = toolCalls.filter(({ name }) => submissionNames.has(name));
   const acceptedCalls = calls.filter(({ success }) => success === true);

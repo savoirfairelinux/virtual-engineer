@@ -56,6 +56,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends bzip2 libxcb1 \
 # (set above) suppresses the interactive update banner during CI builds.
 RUN npm install -g @openai/codex
 
+# Install the Gemini CLI (https://github.com/google-gemini/gemini-cli) for the
+# `gemini` agent provider. Gemini CLI is a Node package; the global npm bin
+# directory is already on PATH, so no extra symlink step is needed.
+RUN npm install -g @google/gemini-cli
+
 # Install the OpenCode CLI (https://opencode.ai) for the `opencode` agent
 # provider. Like Codex, OpenCode is a standalone binary distributed as an npm
 # package; the global npm bin directory is already on PATH, so no extra

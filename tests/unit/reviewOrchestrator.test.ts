@@ -28,6 +28,8 @@ describe("buildReviewSystemPrompt", () => {
   it("keeps the output contract out of MCP-native agent prompts", () => {
     expect(buildReviewSystemPrompt("Review policy", "gerrit", "copilot")).toBe("Review policy");
     expect(buildReviewSystemPrompt("Review policy", "gerrit", "claude")).toBe("Review policy");
+    expect(buildReviewSystemPrompt("Review policy", "gerrit", "codex")).toBe("Review policy");
+    expect(buildReviewSystemPrompt("Review policy", "gerrit", "gemini")).toBe("Review policy");
   });
 
   it("retains the text contract for Aider", () => {

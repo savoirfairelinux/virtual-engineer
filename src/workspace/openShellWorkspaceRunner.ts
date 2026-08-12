@@ -65,6 +65,8 @@ const AGENT_CREDENTIAL_PROVIDER_TYPES: Readonly<Record<string, string>> = {
   // Codex (OpenAI) auth.
   CODEX_API_KEY: "generic",
   CODEX_ACCESS_TOKEN: "generic",
+  // Gemini CLI auth (GOOGLE_API_KEY below is shared with Goose's `gemini` backend).
+  GEMINI_API_KEY: "generic",
   // Cursor auth.
   CURSOR_API_KEY: "generic",
   // Aider / Goose LLM backends.

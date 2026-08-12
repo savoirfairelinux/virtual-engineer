@@ -30,6 +30,7 @@ const TYPE_TO_BRAND: Record<string, string> = {
   aider:                  "aider",
   goose:                  "goose",
   codex:                  "codex",
+  gemini:                 "gemini",
   opencode:               "opencode",
   cursor:                 "cursor",
   mock:                   "mock",
