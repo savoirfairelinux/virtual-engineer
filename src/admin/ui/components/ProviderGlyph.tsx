@@ -9,7 +9,7 @@ const BRAND_SVG_FILES = import.meta.glob("../icons/brands/*.svg", {
 
 const BRAND_SVG_URLS: Record<string, string> = Object.fromEntries(
   Object.entries(BRAND_SVG_FILES).map(([filePath, src]) => {
-    const name = (filePath.split("/").pop() ?? "mock.svg").replace(/\.svg$/, "");
+    const name = (filePath.split("/").pop() ?? "fallback.svg").replace(/\.svg$/, "");
     return [name, src];
   })
 );
@@ -33,11 +33,10 @@ const TYPE_TO_BRAND: Record<string, string> = {
   gemini:                 "gemini",
   opencode:               "opencode",
   cursor:                 "cursor",
-  mock:                   "mock",
 };
 
 /** Logos that need `filter: invert(1)` in dark theme (dark fill on transparent bg) */
-const DARK_INVERT: ReadonlySet<string> = new Set(["github", "mock", "codex", "opencode"]);
+const DARK_INVERT: ReadonlySet<string> = new Set(["github", "codex", "opencode"]);
 /** Logos that need `filter: invert(1)` in light theme (light fill on transparent bg) */
 const LIGHT_INVERT: ReadonlySet<string> = new Set(["copilot", "gerrit", "cursor"]);
 
@@ -69,8 +68,8 @@ interface ProviderGlyphProps {
 
 export function ProviderGlyph({ provider, size = 34 }: ProviderGlyphProps) {
   const theme = useUiTheme();
-  const brandKey = TYPE_TO_BRAND[provider] ?? "mock";
-  const src = BRAND_SVG_URLS[brandKey] ?? BRAND_SVG_URLS["mock"] ?? "";
+  const brandKey = TYPE_TO_BRAND[provider] ?? "fallback";
+  const src = BRAND_SVG_URLS[brandKey] ?? BRAND_SVG_URLS["fallback"] ?? "";
   const logoSize = Math.round(size * 0.66);
   const shouldInvert =
     (theme === "dark" && DARK_INVERT.has(brandKey)) ||

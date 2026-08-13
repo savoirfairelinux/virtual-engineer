@@ -187,7 +187,7 @@ describe("adminAuditRoutes + audit instrumentation", () => {
       const response = await fetch(`${baseUrl}/api/admin/integrations`, {
         method: "POST",
         headers: { authorization: `Bearer ${adminToken}`, "content-type": "application/json" },
-        body: JSON.stringify({ id: "int-mock-1", provider: "mock", name: "Mock Agent", config: {} }),
+        body: JSON.stringify({ id: "int-redmine-1", provider: "redmine", name: "Redmine Agent", config: {} }),
       });
       expect(response.status).toBe(201);
       const entries = await waitForAudit("integration.create");
@@ -197,8 +197,8 @@ describe("adminAuditRoutes + audit instrumentation", () => {
         actorName: "root",
         action: "integration.create",
         targetType: "integration",
-        targetId: "int-mock-1",
-        details: { name: "Mock Agent", provider: "mock" },
+        targetId: "int-redmine-1",
+        details: { name: "Redmine Agent", provider: "redmine" },
       });
     });
 

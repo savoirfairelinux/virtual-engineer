@@ -16,7 +16,6 @@ import { createCodexDescriptor } from "./codex.js";
 import { createGeminiDescriptor } from "./gemini.js";
 import { createOpenCodeDescriptor } from "./opencode.js";
 import { createCursorDescriptor } from "./cursor.js";
-import { mockDescriptor } from "./mock.js";
 import { githubDescriptor } from "./github.js";
 
 /** Return all built-in provider descriptors in their registration order. */
@@ -33,7 +32,6 @@ export function buildBuiltinDescriptors(options?: { adminAuthSecret?: string }):
     createGeminiDescriptor(options?.adminAuthSecret),
     createOpenCodeDescriptor(options?.adminAuthSecret),
     createCursorDescriptor(options?.adminAuthSecret),
-    mockDescriptor,
     githubDescriptor,
   ];
 }

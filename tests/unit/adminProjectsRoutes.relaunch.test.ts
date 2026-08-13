@@ -13,9 +13,14 @@ import {
   makeTaskId,
   makeTicketId,
   type AgentRecord,
+  type Integration,
+  type IntegrationStore,
   type ProjectRecord,
   type Task,
 } from "../../src/interfaces.js";
+import { registerBuiltinPlugins } from "../../src/plugins/init.js";
+
+registerBuiltinPlugins();
 
 function projectRecord(overrides: Partial<ProjectRecord> = {}): ProjectRecord {
   const now = new Date();
@@ -94,6 +99,23 @@ function makeStore(
     getFailedTasksForProject: state.getFailedTasksForProject,
     retryTask: state.retryTask,
   } as unknown as ProjectsRouteStore;
+}
+
+function makeAgentIntegrationStore(): IntegrationStore {
+  const now = new Date();
+  const integration: Integration = {
+    id: "agent-copilot",
+    provider: "copilot",
+    name: "Agent Copilot",
+    configJson: "{}",
+    enabled: true,
+    createdAt: now,
+    updatedAt: now,
+  };
+  return {
+    getIntegrations: vi.fn(async () => [integration]),
+    getIntegration: vi.fn(async (id: string) => id === integration.id ? integration : null),
+  } as unknown as IntegrationStore;
 }
 
 function mockRequest(body: unknown): IncomingMessage {
@@ -245,7 +267,12 @@ describe("adminProjectsRoutes — automatic relaunch of failed tasks", () => {
 });
 
 describe("adminProjectsRoutes — relaunch on create", () => {
-  const codingAgent = { id: makeAgentId("agent-1"), type: "coding" } as unknown as AgentRecord;
+  const codingAgent = {
+    id: makeAgentId("agent-1"),
+    type: "coding",
+    enabled: true,
+    integrationId: "agent-copilot",
+  } as unknown as AgentRecord;
 
   function createBody(enabled: boolean): Record<string, unknown> {
     return {
@@ -284,7 +311,7 @@ describe("adminProjectsRoutes — relaunch on create", () => {
       res,
       "/api/admin/projects",
       "POST",
-      { projectStore: store, taskControl }
+      { projectStore: store, integrationStore: makeAgentIntegrationStore(), taskControl }
     );
     await done;
 
@@ -307,7 +334,7 @@ describe("adminProjectsRoutes — relaunch on create", () => {
       res,
       "/api/admin/projects",
       "POST",
-      { projectStore: store, taskControl }
+      { projectStore: store, integrationStore: makeAgentIntegrationStore(), taskControl }
     );
     await done;
 

@@ -24,7 +24,7 @@ The repo-wide entry point for Copilot is [.github/copilot-instructions.md](../co
 | File | Covers |
 |---|---|
 | [modules/orchestrator.md](modules/orchestrator.md) | `orchestrator.ts`, `pollingLoop.ts`, `feedbackProcessor.ts` |
-| [modules/agents.md](modules/agents.md) | `copilotAdapter`, `claudeAdapter`, `aiderAdapter`, `gooseAdapter`, `mockAgentAdapter`, agent worker, auth, validators, cycle cost |
+| [modules/agents.md](modules/agents.md) | `copilotAdapter`, `claudeAdapter`, `aiderAdapter`, `gooseAdapter`, `codexAdapter`, `geminiAdapter`, `opencodeAdapter`, `cursorAdapter`, agent worker, auth, validators, cycle cost |
 | [modules/connectors.md](modules/connectors.md) | Redmine, GitLab Issues, GitHub Issues, Gerrit, GitLab MR, GitHub PR connectors |
 | [modules/vcs.md](modules/vcs.md) | Host-owned direct push (Gerrit / GitLab / GitHub), branch naming |
 | [modules/plugins.md](modules/plugins.md) | Descriptor registry, PluginManager, runtime bootstrap |
@@ -50,4 +50,4 @@ The repo-wide entry point for Copilot is [.github/copilot-instructions.md](../co
 - Pause/resume are `state_transitions` rows where `from_state == to_state`, with `metadata.action`.
 - The orchestrator runs on the **host**; the agent runs in an **ephemeral OpenShell sandbox** (create → upload → exec → download), isolated by deny-by-default runtime policies rather than Docker flags. The worker creates or normalizes commits inside the sandbox; the host retains credentials and pushes those commits via `src/vcs/`.
 - Provider selection is per-integration via the `integrations` table; multiple integrations of the same provider can be active simultaneously.
-- Agent engines (`agent_execution`) are **Copilot**, **Claude**, **Aider**, **Goose**, or **Mock**. Copilot defaults to model `auto`; Claude, Aider, and Goose have no hardcoded default (their CLIs pick one when no model is set).
+- Agent engines (`agent_execution`) are **Copilot**, **Claude**, **Aider**, **Goose**, **Codex**, **Gemini CLI**, **OpenCode**, and **Cursor**. Copilot defaults to model `auto`; the other CLIs pick their own default when no model is set.

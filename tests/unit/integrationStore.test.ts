@@ -90,7 +90,7 @@ describe("SqliteStateStore — IntegrationStore", () => {
 
   describe("getIntegrationReferenceDetails", () => {
     it("returns dependent agents and project integration uses with names", async () => {
-      await store.upsertIntegration({ id: "int-1", provider: "mock", name: "Shared Mock", configJson: "{}", enabled: true });
+      await store.upsertIntegration({ id: "int-1", provider: "redmine", name: "Shared Redmine", configJson: "{}", enabled: true });
       const agent = await store.createAgent({
         name: "Build Agent",
         type: "coding",
@@ -124,7 +124,7 @@ describe("SqliteStateStore — IntegrationStore", () => {
 
   describe("deleteIntegration", () => {
     it("removes an integration", async () => {
-      await store.upsertIntegration({ id: "d1", provider: "mock", name: "Mock", configJson: "{}", enabled: true });
+      await store.upsertIntegration({ id: "d1", provider: "redmine", name: "Redmine", configJson: "{}", enabled: true });
       await store.deleteIntegration("d1");
 
       const result = await store.getIntegration("d1");

@@ -17,6 +17,7 @@ import {
   validatePushTargetCloneUrls,
   validatePushTargetReviewerEmails,
   validateSkillSourcesForSave,
+  validateProjectAgent,
   skillSourcesForCreate,
   normalizeSkillSources,
   toVendorComponentInputs,
@@ -71,10 +72,9 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
     if (!parsed.success) { writeJson(res, 400, zodErrorBody(parsed.error, "Invalid project payload")); return; }
     const data = parsed.data;
     const agent = await store.getAgentById(makeAgentId(data.agentId));
+    const agentError = await validateProjectAgent(agent, data.type, deps.integrationStore, data.agentId);
+    if (agentError) { writeJson(res, 400, { error: agentError }); return; }
     if (!agent) { writeJson(res, 400, { error: `Agent not found: ${data.agentId}` }); return; }
-    if (agent.type !== data.type) {
-      writeJson(res, 400, { error: `Agent type mismatch: agent is '${agent.type}', project is '${data.type}'` }); return;
-    }
     if (data.agentOverrideJson !== undefined) {
       const overrideError = await validateAgentOverrideJson(store, data.agentOverrideJson, agent);
       if (overrideError) { writeJson(res, 400, { error: overrideError }); return; }
@@ -229,10 +229,8 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
     let prospectiveAgent: AgentRecord | null = null;
     if (data.agentId !== undefined) {
       const agent = await store.getAgentById(makeAgentId(data.agentId));
-      if (!agent) { writeJson(res, 400, { error: `Agent not found: ${data.agentId}` }); return; }
-      if (agent.type !== existing.type) {
-        writeJson(res, 400, { error: `Agent type mismatch: agent is '${agent.type}', project is '${existing.type}'` }); return;
-      }
+      const agentError = await validateProjectAgent(agent, existing.type, deps.integrationStore, data.agentId);
+      if (agentError) { writeJson(res, 400, { error: agentError }); return; }
       prospectiveAgent = agent;
     }
     if (data.agentOverrideJson !== undefined) {

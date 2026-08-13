@@ -5,7 +5,7 @@ Virtual Engineer is a host-side Node.js orchestrator with two runtime flows:
 - **Ticket-driven code generation**: poll enabled coding projects for assigned work, run an agent cycle in an ephemeral **OpenShell sandbox**, then push the resulting review objects through the host VCS layer.
 - **VE-as-reviewer**: accept review events (webhook, Gerrit stream-event, or review-assignment poll), create `code-review` tasks, and run the agent in the same sandbox with `REVIEW_MODE=1` against the patchset diff.
 
-The orchestrator always runs **on the host**. Sandboxes are **ephemeral** and are destroyed after each cycle, together with the host scratch workspace. The pluggable agent engine is **Copilot**, **Claude**, **Aider**, **Goose**, or **Mock**.
+The orchestrator always runs **on the host**. Sandboxes are **ephemeral** and are destroyed after each cycle, together with the host scratch workspace. The pluggable agent engines are **Copilot**, **Claude**, **Aider**, **Goose**, **Codex**, **Gemini CLI**, **OpenCode**, and **Cursor**.
 
 ## High-level flows
 
@@ -17,7 +17,8 @@ ticket source integration
    → Orchestrator.startTaskForProject()
    → OpenShellWorkspaceRunner: host clone (HostGitExecutor) → sandbox create
      → upload → post-clone hook (in sandbox) → exec → download
-   → CopilotAdapter / ClaudeAdapter / AiderAdapter / GooseAdapter / MockAgentAdapter
+    → CopilotAdapter / ClaudeAdapter / AiderAdapter / GooseAdapter / CodexAdapter
+       / GeminiAdapter / OpenCodeAdapter / CursorAdapter
    → agent-worker (node /app/agent-worker/dist/index.js) in the sandbox
    → AgentResult (+ optional commit chain)
    → host-side VCS push
@@ -96,7 +97,8 @@ See [state-machine.md](state-machine.md) and [database.md](database.md).
 - `gooseAdapter.ts` builds the container spec for the Goose engine (`AGENT_PROVIDER=goose`, MCP submission transport like Copilot/Claude)
 - `copilotOAuthService.ts` / `copilotModelsService.ts` / `copilotConnectionValidator.ts` handle GitHub OAuth Device Flow, model discovery, and `POST /api/admin/integrations/test`
 - `claudeConnectionValidator.ts` / `claudeModelsService.ts` provide the Claude equivalents; `aiderConnectionValidator.ts` / `aiderModelsService.ts` provide the Aider equivalents; `gooseConnectionValidator.ts` / `gooseModelsService.ts` provide the Goose equivalents; `providerAuthService.ts` is the shared auth surface
-- `mockAgentAdapter.ts` provides deterministic test behavior
+- Agent adapters are production providers; deterministic behavior in unit tests
+   comes from local fakes and Vitest mocks rather than an application provider.
 - `cycleCost.ts` derives per-cycle cost from `assistant.usage` events
 - `agentEventTypes.ts` normalizes persisted `AgentLogEvent` frames; `agentEventBus.ts` is the shared event bus for live agent log streaming
 
@@ -145,7 +147,7 @@ See [modules/admin.md](modules/admin.md).
 
 ### External skill sources
 
-`projects.skill_sources_json` is persisted, editable in the admin UI, and forwarded onto `AgentSession.skillSourcesJson` (`src/orchestrator/agentContextBuilder.ts`, `src/review/reviewOrchestrator.ts`). `OpenShellWorkspaceRunner` calls `skillSourceInstaller.ts`'s `installSkillSources()` on the **host**, after checkout and before upload, so the fetched skill files ride along with the ordinary workspace upload while SSH material never reaches the sandbox. Copilot, Claude, Goose, Codex, and OpenCode install into their native project-relative skill directories; Aider and Mock are skipped. See [modules/workspace.md](modules/workspace.md#external-skill-sources) for the full flow.
+`projects.skill_sources_json` is persisted, editable in the admin UI, and forwarded onto `AgentSession.skillSourcesJson` (`src/orchestrator/agentContextBuilder.ts`, `src/review/reviewOrchestrator.ts`). `OpenShellWorkspaceRunner` calls `skillSourceInstaller.ts`'s `installSkillSources()` on the **host**, after checkout and before upload, so the fetched skill files ride along with the ordinary workspace upload while SSH material never reaches the sandbox. Copilot, Claude, Goose, Codex, and OpenCode install into their native project-relative skill directories; Aider, Gemini CLI, and Cursor are skipped. See [modules/workspace.md](modules/workspace.md#external-skill-sources) for the full flow.
 
 ## Sandbox hardening
 

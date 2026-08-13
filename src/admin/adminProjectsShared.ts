@@ -341,6 +341,32 @@ export async function validateSkillSourcesForSave(
   }
 }
 
+/** Validate the agent execution dependency required by every project. */
+export async function validateProjectAgent(
+  agent: AgentRecord | null,
+  projectType: ProjectType,
+  integrationStore: IntegrationStore | undefined,
+  requestedAgentId: string,
+): Promise<string | null> {
+  if (!agent) return `Agent not found: ${requestedAgentId}`;
+  if (agent.type !== projectType) {
+    return `Agent type mismatch: agent is '${agent.type}', project is '${projectType}'`;
+  }
+  if (!agent.enabled) return `Agent '${requestedAgentId}' is disabled`;
+
+  const integrationId = agent.integrationId?.trim();
+  if (!integrationId) return `Agent '${requestedAgentId}' has no linked integration`;
+  if (!integrationStore) return "Agent integration store is not available";
+
+  const integration = await integrationStore.getIntegration(integrationId);
+  if (!integration) return `Agent integration '${integrationId}' not found`;
+  if (!integration.enabled) return `Agent integration '${integrationId}' is disabled`;
+  if (!getProviderDescriptor(integration.provider)?.capabilities.agent_execution) {
+    return `Agent integration '${integrationId}' provider '${integration.provider}' does not support agent execution`;
+  }
+  return null;
+}
+
 export function parseStoredSkillSources(project: ProjectRecord): SkillSource[] {
   try {
     const parsed: unknown = JSON.parse(project.skillSourcesJson || "[]");

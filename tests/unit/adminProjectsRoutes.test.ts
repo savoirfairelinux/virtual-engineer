@@ -4,6 +4,7 @@ import { SqliteStateStore } from "../../src/state/stateStore.js";
 import { createAdminServer, type AdminServerDependencies } from "../../src/admin/adminServer.js";
 import { Router } from "../../src/admin/router.js";
 import { registerProjectRoutes, type SkillSource } from "../../src/admin/adminProjectsRoutes.js";
+import { validateProjectAgent } from "../../src/admin/adminProjectsShared.js";
 import { makeProjectId, makeTaskId, makeTicketId, type AgentRecord, type AgentType } from "../../src/interfaces.js";
 import { registerBuiltinPlugins } from "../../src/plugins/init.js";
 import { tempDatabasePath } from "./helpers/tempDatabase.js";
@@ -73,14 +74,16 @@ function makeDeps(
 }
 
 async function makeAgent(store: SqliteStateStore, type: AgentType = "coding"): Promise<AgentRecord> {
+  await seedIntegration(store, "agent-copilot", "copilot");
   return store.createAgent({
     name: `${type}-bot`, type, modelConfigJson: "{}", enabled: true,
+    integrationId: "agent-copilot",
     systemPromptId: "system_generic_code", instructionsPromptId: "instructions_generic_code",
   });
 }
 
-async function seedIntegration(store: SqliteStateStore, id: string, provider: "redmine" | "gerrit" | "github" = "redmine"): Promise<void> {
-  await store.upsertIntegration({ id, provider, name: id, configJson: "{}", enabled: true });
+async function seedIntegration(store: SqliteStateStore, id: string, provider: "redmine" | "gerrit" | "github" | "copilot" = "redmine", enabled = true): Promise<void> {
+  await store.upsertIntegration({ id, provider, name: id, configJson: "{}", enabled });
 }
 
 describe("Admin API — Project routes (/api/admin/projects)", () => {
@@ -98,6 +101,14 @@ describe("Admin API — Project routes (/api/admin/projects)", () => {
   afterEach(async () => {
     await new Promise<void>((resolve, reject) => server.close((err) => err ? reject(err) : resolve()));
     store.close();
+  });
+
+  it("rejects an enabled agent whose linked integration no longer exists", async () => {
+    const agent = await makeAgent(store);
+    vi.spyOn(store, "getIntegration").mockResolvedValue(null);
+
+    await expect(validateProjectAgent(agent, "coding", store, agent.id))
+      .resolves.toBe("Agent integration 'agent-copilot' not found");
   });
 
   it("registers project-scoped skill source listing for edits", () => {
@@ -1078,6 +1089,81 @@ FetchContent_Declare(googletest
     expect(r.body?.["error"]).toMatch(/mismatch/i);
   });
 
+  it("POST / requires an enabled agent with an active agent-execution integration", async () => {
+    await seedIntegration(store, "agent-copilot", "copilot");
+    await seedIntegration(store, "disabled-agent-integration", "copilot", false);
+    await seedIntegration(store, "redmine-agent-integration", "redmine");
+
+    const cases: Array<{
+      name: string;
+      enabled: boolean;
+      integrationId: string | null;
+      expected: RegExp;
+    }> = [
+      { name: "DisabledAgent", enabled: false, integrationId: "agent-copilot", expected: /disabled/i },
+      { name: "UnlinkedAgent", enabled: true, integrationId: null, expected: /linked integration/i },
+      { name: "DisabledIntegration", enabled: true, integrationId: "disabled-agent-integration", expected: /disabled/i },
+      { name: "NonAgentIntegration", enabled: true, integrationId: "redmine-agent-integration", expected: /agent.execution|agent execution/i },
+    ];
+
+    for (const testCase of cases) {
+      const agent = await store.createAgent({
+        name: testCase.name,
+        type: "review",
+        modelConfigJson: "{}",
+        enabled: testCase.enabled,
+        integrationId: testCase.integrationId,
+        systemPromptId: "system_review",
+        instructionsPromptId: "instructions_review",
+      });
+      const response = await rest(server, "/api/admin/projects", {
+        method: "POST",
+        body: {
+          type: "review",
+          name: testCase.name,
+          agentId: agent.id,
+          reviewConfig: { integrationId: "gerrit-1", repoKeys: ["x"] },
+        },
+      });
+
+      expect(response.status).toBe(400);
+      expect(response.body?.["error"]).toMatch(testCase.expected);
+    }
+  });
+
+  it("PUT /:id rejects reassignment to an agent without an active agent integration", async () => {
+    const originalAgent = await makeAgent(store, "review");
+    await seedIntegration(store, "gerrit-1", "gerrit");
+    const created = await rest(server, "/api/admin/projects", {
+      method: "POST",
+      body: {
+        type: "review",
+        name: "Reassignment",
+        agentId: originalAgent.id,
+        reviewConfig: { integrationId: "gerrit-1", repoKeys: ["x"] },
+      },
+    });
+    expect(created.status).toBe(201);
+    const projectId = (created.body?.["project"] as { id: string }).id;
+    const disabledAgent = await store.createAgent({
+      name: "disabled-replacement",
+      type: "review",
+      modelConfigJson: "{}",
+      enabled: false,
+      integrationId: "agent-copilot",
+      systemPromptId: "system_review",
+      instructionsPromptId: "instructions_review",
+    });
+
+    const response = await rest(server, `/api/admin/projects/${projectId}`, {
+      method: "PUT",
+      body: { agentId: disabledAgent.id },
+    });
+
+    expect(response.status).toBe(400);
+    expect(response.body?.["error"]).toMatch(/disabled/i);
+  });
+
   it("POST / rejects malformed agent override JSON", async () => {
     const agent = await makeAgent(store, "review");
     await seedIntegration(store, "gerrit-1", "gerrit");
@@ -1098,11 +1184,13 @@ FetchContent_Declare(googletest
   });
 
   it("POST / returns 400 when the agent has an unknown review strategy", async () => {
+    await seedIntegration(store, "agent-copilot", "copilot");
     const agent = await store.createAgent({
       name: "invalid-review-bot",
       type: "review",
       modelConfigJson: JSON.stringify({ providerOptions: { reviewStrategy: "unknown" } }),
       enabled: true,
+      integrationId: "agent-copilot",
       systemPromptId: "system_review",
       instructionsPromptId: "instructions_review",
     });
@@ -1172,11 +1260,13 @@ FetchContent_Declare(googletest
   });
 
   it("rejects conflicting project overrides for native review agents", async () => {
+    await seedIntegration(store, "agent-copilot", "copilot");
     const agent = await store.createAgent({
       name: "native-review-bot",
       type: "review",
       modelConfigJson: JSON.stringify({ providerOptions: { reviewStrategy: "copilot_native" } }),
       enabled: true,
+      integrationId: "agent-copilot",
       systemPromptId: "system_review",
       instructionsPromptId: "instructions_review",
     });

@@ -109,8 +109,19 @@ src/
     gooseAdapter.ts       # Goose adapter (agent_execution; wraps any of 13 LLM providers)
     gooseConnectionValidator.ts
     gooseModelsService.ts
+    codexAdapter.ts       # Codex CLI adapter (agent_execution)
+    codexConnectionValidator.ts
+    codexModelsService.ts
+    geminiAdapter.ts      # Gemini CLI adapter (agent_execution)
+    geminiConnectionValidator.ts
+    geminiModelsService.ts
+    opencodeAdapter.ts    # OpenCode CLI adapter (agent_execution)
+    opencodeConnectionValidator.ts
+    opencodeModelsService.ts
+    cursorAdapter.ts      # Cursor CLI adapter (agent_execution)
+    cursorConnectionValidator.ts
+    cursorModelsService.ts
     cycleCost.ts          # Derives per-cycle cost from assistant.usage events
-    mockAgentAdapter.ts   # Deterministic mock, no Copilot needed
     agentEventBus.ts      # SSE event bus for live log streaming
     agentEventTypes.ts
 
@@ -370,6 +381,12 @@ Bridges the **static plugin registry** (compile-time descriptors) with the **dyn
     providerSupportsCapability(provider, cap)  →  static descriptor check
 ```
 
+  Rows whose provider no longer has a registered descriptor, including legacy
+  rows for a removed provider, remain in the database for inspection or deletion
+  but are logged and skipped during activation. They are serialized as inactive
+  with no capabilities, and admin create/update rejects unknown providers. There
+  is no implicit fallback adapter.
+
 There is no "type-leader" or category concept: routing is always by `integrationId` or by **domain capability** (`issue_tracking`, `code_review`, `source_control`, `agent_execution`). Project-bound connector instances can be built via `createConnectorForIntegration(integrationId, context)` when a VE project owns part of the provider binding.
 
 Enabling/disabling an integration via the admin API calls `enablePlugin` / `disablePlugin`, updates the DB, and refreshes the in-memory maps — no restart needed.
@@ -612,7 +629,10 @@ Pause and resume are **not boolean columns**. They are `state_transitions` rows 
 | `claude` | agent_execution |
 | `aider` | agent_execution |
 | `goose` | agent_execution |
-| `mock` | agent_execution |
+| `codex` | agent_execution |
+| `gemini` | agent_execution |
+| `opencode` | agent_execution |
+| `cursor` | agent_execution |
 
 Technical capabilities (`oauth`, `discovery`, `stream-events`, `reviewer`) are derived from descriptor hooks. Multiple integrations of the same provider can be active simultaneously. The orchestrator routes by `integrationId` in project mode, and may build a project-bound connector instance when the VE project owns part of the provider binding.
 
@@ -688,7 +708,7 @@ review_thread_replies            ← dedup ledger: VE replies to human threads
 ```
 integrations
   id               TEXT  PK
-  provider         TEXT  github | gitlab | gerrit | redmine | copilot | claude | aider | mock
+  provider         TEXT  github | gitlab | gerrit | redmine | copilot | claude | aider | goose | codex | gemini | opencode | cursor
   name             TEXT
   config_json      TEXT  JSON (credentials + endpoints)
   enabled          INTEGER  0|1  (default 1)
@@ -754,7 +774,7 @@ app_settings                   ← singleton (editable runtime workflow settings
   updated_at
 ```
 
-Repository behavior is provider-native on every coding and review run: VE does not store a local skill path, scan manifests, or inject repository skills. Copilot enables its coupled repository skill/MCP config discovery, Claude loads native user/project skills with strict MCP configuration, and each CLI provider keeps its native repository behavior. Optional remote skill sources remain project configuration and are fetched/installed **host-side** (`skillSourceInstaller.ts`), before the workspace uploads to the sandbox, into the target agent's native project-relative skill directory for Copilot, Claude, Goose, Codex, and OpenCode — no SSH material ever enters the sandbox. Aider and Mock are skipped.
+Repository behavior is provider-native on every coding and review run: VE does not store a local skill path, scan manifests, or inject repository skills. Copilot enables its coupled repository skill/MCP config discovery, Claude loads native user/project skills with strict MCP configuration, and each CLI provider keeps its native repository behavior. Optional remote skill sources remain project configuration and are fetched/installed **host-side** (`skillSourceInstaller.ts`), before the workspace uploads to the sandbox, into the target agent's native project-relative skill directory for Copilot, Claude, Goose, Codex, and OpenCode — no SSH material ever enters the sandbox. Aider, Gemini CLI, and Cursor are skipped.
 
 ---
 
@@ -1013,7 +1033,7 @@ The **Agents Library** is the catalogue of reusable agent configurations. Each p
 | `id` | TEXT PK |
 | `name` | Display name |
 | `type` | `coding` or `review` |
-| `integration_id` | FK → `integrations.id` (the Copilot/Claude/mock integration) |
+| `integration_id` | FK → `integrations.id` (the selected agent-execution integration) |
 | `model_config_json` | Provider-specific model params (model id, temperature, etc.) |
 | `system_prompt_id` | FK → `prompts.id` (optional system prompt override) |
 | `instructions_prompt_id` | FK → `prompts.id` (main instructions prompt) |

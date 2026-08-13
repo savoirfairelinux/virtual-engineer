@@ -120,7 +120,7 @@ describe("Admin API — Plugin & Integration routes", () => {
     pluginManager.registerFactory("redmine", vi.fn(() => makeMockAgentInstance("redmine-mock")));
     pluginManager.registerFactory("gerrit", vi.fn(() => makeMockAgentInstance("gerrit-mock")));
     pluginManager.registerFactory("copilot", vi.fn(() => makeMockAgentInstance("copilot-mock")));
-    pluginManager.registerFactory("mock", vi.fn(() => makeMockAgentInstance("mock-mock")));
+    pluginManager.registerFactory("claude", vi.fn(() => makeMockAgentInstance("claude-mock")));
 
     const deps = makeBaseDeps({ integrationStore, pluginManager });
     server = createAdminServer(deps);
@@ -162,17 +162,17 @@ describe("Admin API — Plugin & Integration routes", () => {
       expect(providers).toContain("gitlab");
       expect(providers).toContain("github");
       expect(providers).toContain("copilot");
-      expect(providers).toContain("mock");
+      expect(providers).not.toContain("mock");
     });
 
-    it("serializes provider icon metadata (null for unbranded providers)", async () => {
+    it("serializes provider icon metadata", async () => {
       const { status, body } = await fetchFromServer(server, "/api/admin/plugins");
       expect(status).toBe(200);
       const plugins = body["plugins"] as Array<Record<string, unknown>>;
       const github = plugins.find((p) => p["provider"] === "github");
-      const mock = plugins.find((p) => p["provider"] === "mock");
+      const redmine = plugins.find((p) => p["provider"] === "redmine");
       expect(github?.["icon"]).toEqual({ slug: "github", hex: "181717" });
-      expect(mock).toHaveProperty("icon", null);
+      expect(redmine?.["icon"]).toEqual({ slug: "redmine", hex: "B32024" });
     });
 
     it("exposes OAuth metadata for providers that support dashboard auth flows", async () => {
@@ -430,8 +430,8 @@ describe("Admin API — Plugin & Integration routes", () => {
       const { body: createBody } = await fetchFromServer(server, "/api/admin/integrations", {
         method: "POST",
         body: {
-          provider: "mock",
-          name: "Mock Dev",
+          provider: "copilot",
+          name: "Copilot Dev",
           config: {},
         },
       });
@@ -446,15 +446,15 @@ describe("Admin API — Plugin & Integration routes", () => {
     });
 
     it("keeps both providers in the same category active (Phase 4 multi-instance)", async () => {
-      const { body: mockBody } = await fetchFromServer(server, "/api/admin/integrations", {
+      const { body: claudeBody } = await fetchFromServer(server, "/api/admin/integrations", {
         method: "POST",
         body: {
-          provider: "mock",
-          name: "Mock Agent",
-          config: { status: "success", simulateDelayMs: 0 },
+          provider: "claude",
+          name: "Claude Agent",
+          config: {},
         },
       });
-      const mockId = (mockBody["integration"] as Record<string, unknown>)["id"] as string;
+      const claudeId = (claudeBody["integration"] as Record<string, unknown>)["id"] as string;
 
       const { body: copilotBody } = await fetchFromServer(server, "/api/admin/integrations", {
         method: "POST",
@@ -466,7 +466,7 @@ describe("Admin API — Plugin & Integration routes", () => {
       });
       const copilotId = (copilotBody["integration"] as Record<string, unknown>)["id"] as string;
 
-      await fetchFromServer(server, `/api/admin/integrations/${mockId}/enable`, {
+      await fetchFromServer(server, `/api/admin/integrations/${claudeId}/enable`, {
         method: "PATCH",
       });
 
@@ -475,10 +475,9 @@ describe("Admin API — Plugin & Integration routes", () => {
       });
 
       expect(status).toBe(200);
-      // Phase 4: enabling a second integration in the same category no longer auto-disables
-      // the first — multiple integrations of the same category may be enabled simultaneously
+      // Multiple integrations may be enabled simultaneously
       // and the orchestrator routes by project via getConnectorForIntegration(id).
-      await expect(integrationStore.getIntegration(mockId)).resolves.toMatchObject({ enabled: true });
+      await expect(integrationStore.getIntegration(claudeId)).resolves.toMatchObject({ enabled: true });
       await expect(integrationStore.getIntegration(copilotId)).resolves.toMatchObject({ enabled: true });
     });
   });
@@ -487,7 +486,7 @@ describe("Admin API — Plugin & Integration routes", () => {
     it("disables a plugin", async () => {
       const { body: createBody } = await fetchFromServer(server, "/api/admin/integrations", {
         method: "POST",
-        body: { provider: "mock", name: "Mock Dev", config: {} },
+        body: { provider: "copilot", name: "Copilot Dev", config: {} },
       });
       const id = (createBody["integration"] as Record<string, unknown>)["id"] as string;
 
@@ -616,7 +615,7 @@ describe("Admin API — Plugin & Integration routes", () => {
     it("deletes an integration", async () => {
       const { body: createBody } = await fetchFromServer(server, "/api/admin/integrations", {
         method: "POST",
-        body: { provider: "mock", name: "To Delete", config: {} },
+        body: { provider: "copilot", name: "To Delete", config: {} },
       });
       const id = (createBody["integration"] as Record<string, unknown>)["id"] as string;
 
@@ -636,7 +635,7 @@ describe("Admin API — Plugin & Integration routes", () => {
 
       const { body: createBody } = await fetchFromServer(server, "/api/admin/integrations", {
         method: "POST",
-        body: { provider: "mock", name: "In Use", config: {} },
+        body: { provider: "copilot", name: "In Use", config: {} },
       });
       const id = (createBody["integration"] as Record<string, unknown>)["id"] as string;
 
@@ -663,7 +662,7 @@ describe("Admin API — Plugin & Integration routes", () => {
 
       const { body: createBody } = await fetchFromServer(server, "/api/admin/integrations", {
         method: "POST",
-        body: { provider: "mock", name: "In Use", config: {} },
+        body: { provider: "copilot", name: "In Use", config: {} },
       });
       const id = (createBody["integration"] as Record<string, unknown>)["id"] as string;
 

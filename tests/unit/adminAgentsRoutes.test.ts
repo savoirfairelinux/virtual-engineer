@@ -573,9 +573,9 @@ describe("Admin API — Agent routes (/api/admin/agents)", () => {
 
   it("POST / rejects toolAuthorization for an unsupported provider", async () => {
     await store.upsertIntegration({
-      id: "mock-unsupported",
-      provider: "mock",
-      name: "Mock",
+      id: "redmine-unsupported",
+      provider: "redmine",
+      name: "Redmine",
       configJson: "{}",
       enabled: true,
     });
@@ -585,7 +585,7 @@ describe("Admin API — Agent routes (/api/admin/agents)", () => {
       body: {
         name: "Mock Toolauth",
         type: "coding",
-        integrationId: "mock-unsupported",
+        integrationId: "redmine-unsupported",
         modelConfig: {
           providerOptions: {
             toolAuthorization: { blockedTools: ["Read"] },
@@ -597,7 +597,7 @@ describe("Admin API — Agent routes (/api/admin/agents)", () => {
     });
 
     expect(r.status).toBe(400);
-    expect(r.body?.["error"]).toMatch(/not supported by provider 'mock'/i);
+    expect(r.body?.["error"]).toMatch(/not supported by provider 'redmine'/i);
   });
 
   it("PUT /:id updates integrationId", async () => {

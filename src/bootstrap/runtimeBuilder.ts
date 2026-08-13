@@ -5,7 +5,6 @@
  * from the current plugin manager state. Also exports shared low-level
  * helpers used by the review and admin bootstrap modules.
  */
-import { MockAgentAdapter } from "../agents/mockAgentAdapter.js";
 import { PluginManager } from "../plugins/pluginManager.js";
 import { getProviderDescriptor } from "../plugins/registry.js";
 import { createVcsConnectorForIntegration } from "../vcs/vcsFactory.js";
@@ -53,27 +52,27 @@ function getPrimaryActiveIntegration(pluginManager: PluginManager, provider: Pro
 
 // ─── Agent adapter ───────────────────────────────────────────────────────────
 
-/** Return the first active agent-adapter connector found in the plugin manager, or null. */
-function getDatabaseAgentAdapter(pluginManager: PluginManager): AgentAdapter | null {
-  // Any provider that declares agent_execution qualifies — copilot, claude,
-  // aider, mock, and future AI providers are all picked up automatically.
+/** Return the first active agent-adapter connector found in the plugin manager, or undefined. */
+function getDatabaseAgentAdapter(pluginManager: PluginManager): AgentAdapter | undefined {
+  // Any provider that declares agent_execution qualifies, so future AI
+  // providers are picked up automatically.
   for (const integration of pluginManager.getActiveIntegrationsByCapability("agent_execution")) {
     const connector = pluginManager.getConnectorForCapability<AgentAdapter>(integration.id, "agent_execution");
     if (connector) {
       return connector;
     }
   }
-  return null;
+  return undefined;
 }
 
 export interface RuntimeDependencies {
-  agentAdapter: AgentAdapter;
+  agentAdapter: AgentAdapter | undefined;
 }
 
 /** Assemble the mutable runtime dependencies (agent adapter) from the current plugin state. */
 export function buildRuntimeDependencies(pluginManager: PluginManager): RuntimeDependencies {
   return {
-    agentAdapter: getDatabaseAgentAdapter(pluginManager) ?? new MockAgentAdapter(),
+    agentAdapter: getDatabaseAgentAdapter(pluginManager),
   };
 }
 
