@@ -73,6 +73,12 @@ function makeDeps(
   };
 }
 
+function makeDepsWithoutIntegrationStore(store: SqliteStateStore): AdminServerDependencies {
+  const deps = makeDeps(store);
+  delete deps.integrationStore;
+  return deps;
+}
+
 async function makeAgent(store: SqliteStateStore, type: AgentType = "coding"): Promise<AgentRecord> {
   await seedIntegration(store, "agent-copilot", "copilot");
   return store.createAgent({
@@ -539,8 +545,7 @@ FetchContent_Declare(googletest
 
   it("POST / returns 501 (not 400) when the integration store is not wired", async () => {
     const agent = await makeAgent(store, "review");
-    const deps = makeDeps(store);
-    const serverWithout = createAdminServer({ ...deps, integrationStore: undefined });
+    const serverWithout = createAdminServer(makeDepsWithoutIntegrationStore(store));
     await new Promise<void>((resolve) => serverWithout.listen(0, "127.0.0.1", resolve));
     try {
       const r = await rest(serverWithout, "/api/admin/projects", {
@@ -581,8 +586,7 @@ FetchContent_Declare(googletest
     const projectId = (created.body?.["project"] as Record<string, unknown>)["id"] as string;
     const otherAgent = await makeAgent(store, "coding");
 
-    const deps = makeDeps(store);
-    const serverWithout = createAdminServer({ ...deps, integrationStore: undefined });
+    const serverWithout = createAdminServer(makeDepsWithoutIntegrationStore(store));
     await new Promise<void>((resolve) => serverWithout.listen(0, "127.0.0.1", resolve));
     try {
       const r = await rest(serverWithout, `/api/admin/projects/${projectId}`, {
