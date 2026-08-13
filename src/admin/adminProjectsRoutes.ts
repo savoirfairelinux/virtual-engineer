@@ -71,8 +71,10 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
     const parsed = projectCreateSchema.safeParse(body);
     if (!parsed.success) { writeJson(res, 400, zodErrorBody(parsed.error, "Invalid project payload")); return; }
     const data = parsed.data;
+    if (!requireStore(deps.integrationStore, res, "Integration store not available")) return;
+    const integrationStore = deps.integrationStore;
     const agent = await store.getAgentById(makeAgentId(data.agentId));
-    const agentError = await validateProjectAgent(agent, data.type, deps.integrationStore, data.agentId);
+    const agentError = await validateProjectAgent(agent, data.type, integrationStore, data.agentId);
     if (agentError) { writeJson(res, 400, { error: agentError }); return; }
     if (!agent) { writeJson(res, 400, { error: `Agent not found: ${data.agentId}` }); return; }
     if (data.agentOverrideJson !== undefined) {
@@ -228,8 +230,10 @@ export function registerProjectRoutes(router: Router, deps: ProjectsRouteDeps): 
     const data = parsed.data;
     let prospectiveAgent: AgentRecord | null = null;
     if (data.agentId !== undefined) {
+      if (!requireStore(deps.integrationStore, res, "Integration store not available")) return;
+      const integrationStore = deps.integrationStore;
       const agent = await store.getAgentById(makeAgentId(data.agentId));
-      const agentError = await validateProjectAgent(agent, existing.type, deps.integrationStore, data.agentId);
+      const agentError = await validateProjectAgent(agent, existing.type, integrationStore, data.agentId);
       if (agentError) { writeJson(res, 400, { error: agentError }); return; }
       prospectiveAgent = agent;
     }

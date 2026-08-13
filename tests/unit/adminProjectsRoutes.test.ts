@@ -537,6 +537,67 @@ FetchContent_Declare(googletest
     expect(r.body?.["projects"]).toEqual([]);
   });
 
+  it("POST / returns 501 (not 400) when the integration store is not wired", async () => {
+    const agent = await makeAgent(store, "review");
+    const deps = makeDeps(store);
+    const serverWithout = createAdminServer({ ...deps, integrationStore: undefined });
+    await new Promise<void>((resolve) => serverWithout.listen(0, "127.0.0.1", resolve));
+    try {
+      const r = await rest(serverWithout, "/api/admin/projects", {
+        method: "POST",
+        body: {
+          type: "review",
+          name: "App",
+          agentId: agent.id,
+          reviewConfig: { integrationId: "gerrit-1", repoKeys: ["superproject"] },
+        },
+      });
+      expect(r.status).toBe(501);
+      expect(r.body?.["error"]).toMatch(/Integration store not available/);
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        serverWithout.close((err) => (err ? reject(err) : resolve()))
+      );
+    }
+  });
+
+  it("PUT /:id returns 501 (not 400) when reassigning agentId without a wired integration store", async () => {
+    const agent = await makeAgent(store, "coding");
+    await seedIntegration(store, "redmine-1", "redmine");
+    await seedIntegration(store, "gerrit-1", "gerrit");
+    const created = await rest(server, "/api/admin/projects", {
+      method: "POST",
+      body: {
+        type: "coding",
+        name: "App",
+        agentId: agent.id,
+        ticketSource: { integrationId: "redmine-1", ticketProjectKey: "PLATFORM" },
+        pushTargets: [
+          { integrationId: "gerrit-1", repoKey: "superproject", cloneUrl: "ssh://g/super", targetBranch: "main", role: "primary", commitOrder: 1, localPath: "." },
+        ],
+      },
+    });
+    expect(created.status).toBe(201);
+    const projectId = (created.body?.["project"] as Record<string, unknown>)["id"] as string;
+    const otherAgent = await makeAgent(store, "coding");
+
+    const deps = makeDeps(store);
+    const serverWithout = createAdminServer({ ...deps, integrationStore: undefined });
+    await new Promise<void>((resolve) => serverWithout.listen(0, "127.0.0.1", resolve));
+    try {
+      const r = await rest(serverWithout, `/api/admin/projects/${projectId}`, {
+        method: "PUT",
+        body: { agentId: otherAgent.id },
+      });
+      expect(r.status).toBe(501);
+      expect(r.body?.["error"]).toMatch(/Integration store not available/);
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        serverWithout.close((err) => (err ? reject(err) : resolve()))
+      );
+    }
+  });
+
   it("POST / creates a coding project with ticket source and 2 push targets", async () => {
     const agent = await makeAgent(store, "coding");
     await seedIntegration(store, "redmine-1", "redmine");
