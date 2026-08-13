@@ -16,7 +16,6 @@ const PROVIDER_CAPABILITY: Record<ProviderId, DomainCapability> = {
   gerrit: "code_review",
   gitlab: "issue_tracking",
   github: "issue_tracking",
-  mock: "agent_execution",
   copilot: "agent_execution",
   claude: "agent_execution",
   aider: "agent_execution",

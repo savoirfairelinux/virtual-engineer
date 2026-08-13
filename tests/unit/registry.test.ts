@@ -4,7 +4,6 @@ import { redmineDescriptor } from "../../src/plugins/descriptors/redmine.js";
 import { gerritDescriptor } from "../../src/plugins/descriptors/gerrit.js";
 import { createCopilotDescriptor } from "../../src/plugins/descriptors/copilot.js";
 import { gitlabDescriptor } from "../../src/plugins/descriptors/gitlab.js";
-import { mockDescriptor } from "../../src/plugins/descriptors/mock.js";
 import { buildBuiltinDescriptors } from "../../src/plugins/descriptors/index.js";
 import { registerBuiltinPlugins } from "../../src/plugins/init.js";
 
@@ -26,7 +25,7 @@ describe("Plugin Registry", () => {
     expect(types).toContain("gitlab");
     expect(types).toContain("github");
     expect(types).toContain("copilot");
-    expect(types).toContain("mock");
+    expect(types).toContain("cursor");
   });
 
   it("returns all descriptors", () => {
@@ -51,7 +50,6 @@ describe("Plugin Registry", () => {
 
     it("returns an empty array for capabilities without intake metadata", () => {
       expect(getCapabilityIntake(redmineDescriptor, "code_review")).toEqual([]);
-      expect(getCapabilityIntake(mockDescriptor, "agent_execution")).toEqual([]);
     });
   });
 
@@ -467,18 +465,6 @@ describe("Plugin Registry", () => {
     });
   });
 
-  describe("mock descriptor", () => {
-    it("has correct metadata", () => {
-      const desc = getProviderDescriptor("mock");
-      expect(desc?.name).toBe("Mock Agent");
-    });
-
-    it("validates minimal mock config", () => {
-      const result = mockDescriptor.configSchema.safeParse({});
-      expect(result.success).toBe(true);
-    });
-  });
-
   describe("provider icon metadata", () => {
     it("exposes brand icon metadata on branded providers", () => {
       expect(getProviderDescriptor("github")?.icon).toEqual({ slug: "github", hex: "181717" });
@@ -488,9 +474,6 @@ describe("Plugin Registry", () => {
       expect(getProviderDescriptor("copilot")?.icon).toEqual({ slug: "githubcopilot", hex: "000000" });
     });
 
-    it("omits icon metadata for the unbranded mock provider", () => {
-      expect(getProviderDescriptor("mock")?.icon).toBeUndefined();
-    });
   });
 
   describe("buildBuiltinDescriptors", () => {
@@ -508,7 +491,6 @@ describe("Plugin Registry", () => {
         "gemini",
         "opencode",
         "cursor",
-        "mock",
         "github",
       ]);
     });

@@ -1548,7 +1548,6 @@ export const PROVIDER_IDS = [
   "gemini",
   "opencode",
   "cursor",
-  "mock",
 ] as const;
 export type ProviderId = (typeof PROVIDER_IDS)[number];
 

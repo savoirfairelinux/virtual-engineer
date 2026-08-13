@@ -97,7 +97,7 @@ async function excludeFromGitStatus(workspaceDir: string, relDir: string): Promi
  * the workspace is uploaded to the sandbox. Best-effort per source: a single source
  * failing (auth, network, malformed repo) is logged and skipped, never fatal to the
  * agent cycle. No-op when no sources are configured or `provider` has no upstream
- * skill-directory convention (e.g. Aider, Mock).
+ * skill-directory convention (e.g. Aider).
  */
 export async function installSkillSources(
   workspaceDir: string,

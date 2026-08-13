@@ -13,7 +13,6 @@ const PROVIDER_CAPABILITIES: Record<ProviderId, DomainCapability[]> = {
   github: ["issue_tracking", "code_review", "source_control"],
   gerrit: ["code_review", "source_control"],
   copilot: ["agent_execution"],
-  mock: ["agent_execution"],
   claude: ["agent_execution"],
   aider: ["agent_execution"],
   goose: ["agent_execution"],
@@ -23,7 +22,7 @@ const PROVIDER_CAPABILITIES: Record<ProviderId, DomainCapability[]> = {
   cursor: ["agent_execution"],
 };
 
-const ALL_PROVIDERS: ProviderId[] = ["redmine", "gitlab", "gerrit", "github", "copilot", "claude", "aider", "goose", "codex", "gemini", "opencode", "cursor", "mock"];
+const ALL_PROVIDERS: ProviderId[] = ["redmine", "gitlab", "gerrit", "github", "copilot", "claude", "aider", "goose", "codex", "gemini", "opencode", "cursor"];
 
 const baseConfig: AppConfig = {
   nodeEnv: "test" as const,
@@ -212,7 +211,6 @@ async function importRuntime(
   const GerritSshConnector = vi.fn().mockImplementation(function () { return envReview; });
   const GitLabIssueConnector = vi.fn().mockImplementation(function () { return envTicketing; });
   const GitLabMergeRequestConnector = vi.fn().mockImplementation(function () { return envReview; });
-  const MockAgentAdapter = vi.fn().mockImplementation(function () { return envAgent; });
   const CopilotAdapter = vi.fn().mockImplementation(function () { return envAgent; });
   const integrationStreamEventsInstance = {
     reconcile: vi.fn().mockResolvedValue(undefined),
@@ -411,7 +409,6 @@ async function importRuntime(
   vi.doMock("../../src/connectors/gitlabMergeRequestConnector.js", () => ({
     GitLabMergeRequestConnector,
   }));
-  vi.doMock("../../src/agents/mockAgentAdapter.js", () => ({ MockAgentAdapter }));
   vi.doMock("../../src/agents/copilotAdapter.js", () => ({
     CopilotAdapter,
   }));
@@ -459,7 +456,6 @@ async function importRuntime(
     GerritSshConnector,
     GitLabIssueConnector,
     GitLabMergeRequestConnector,
-    MockAgentAdapter,
     CopilotAdapter,
     OpenShellWorkspaceRunner,
     Orchestrator,
@@ -492,7 +488,7 @@ describe("runtime bootstrap provider selection", () => {
     const runtime = await importRuntime({
       redmine: dbTicketing,
       gerrit: dbReview,
-      mock: dbAgent,
+      copilot: dbAgent,
     });
 
     expect(runtime.registerBuiltinPlugins).toHaveBeenCalledTimes(1);
@@ -501,7 +497,6 @@ describe("runtime bootstrap provider selection", () => {
     expect(runtime.loadFromDatabase).toHaveBeenCalledTimes(1);
     expect(runtime.HttpRedmineConnector).not.toHaveBeenCalled();
     expect(runtime.GerritSshConnector).not.toHaveBeenCalled();
-    expect(runtime.MockAgentAdapter).not.toHaveBeenCalled();
     expect(runtime.OpenShellWorkspaceRunner).toHaveBeenCalledWith(
       expect.objectContaining({ agentAdapter: dbAgent })
     );
@@ -528,14 +523,12 @@ describe("runtime bootstrap provider selection", () => {
     expect(runtime.GerritSshConnector).not.toHaveBeenCalled();
     expect(runtime.GitLabIssueConnector).not.toHaveBeenCalled();
     expect(runtime.GitLabMergeRequestConnector).not.toHaveBeenCalled();
-    expect(runtime.MockAgentAdapter).toHaveBeenCalledTimes(1);
   });
 
-  it("uses agent adapter from plugin manager when available, bypasses MockAgentAdapter fallback", async () => {
+  it("uses an agent adapter from the plugin manager when available", async () => {
     const dbAgent = makeDbAgentAdapter("copilot");
     const runtime = await importRuntime({ copilot: dbAgent });
 
-    expect(runtime.MockAgentAdapter).not.toHaveBeenCalled();
     expect(runtime.OpenShellWorkspaceRunner).toHaveBeenCalledWith(
       expect.objectContaining({ agentAdapter: dbAgent })
     );
@@ -901,7 +894,7 @@ describe("runtime bootstrap provider selection", () => {
       {
         redmine: { source: "env-ticketing" } as unknown as TicketConnector,
         gerrit: { source: "env-review" } as unknown as ReviewConnector,
-        mock: makeDbAgentAdapter("mock"),
+        copilot: makeDbAgentAdapter("copilot"),
       },
       {},
       {
@@ -921,10 +914,10 @@ describe("runtime bootstrap provider selection", () => {
   it("starts the polling loop immediately when all three integrations are configured from DB with project", async () => {
     const dbTicketing = { source: "db-ticketing" } as unknown as TicketConnector;
     const dbReview = { source: "db-review" } as unknown as ReviewConnector;
-    const dbAgent = makeDbAgentAdapter("mock");
+    const dbAgent = makeDbAgentAdapter("copilot");
 
     const runtime = await importRuntime(
-      { redmine: dbTicketing, gerrit: dbReview, mock: dbAgent },
+      { redmine: dbTicketing, gerrit: dbReview, copilot: dbAgent },
       {},
       {
         configOverrides: {
@@ -964,7 +957,7 @@ describe("runtime bootstrap provider selection", () => {
     expect(pollingInstance.start).not.toHaveBeenCalled();
 
     // Simulate adding the AI adapter + making a project runnable by mutating mock data
-    activeProviders.mock = makeDbAgentAdapter("mock");
+    activeProviders.copilot = makeDbAgentAdapter("copilot");
     runtime.stateStore.listProjects.mockResolvedValue([
       { id: "p1", type: "coding", name: "test", enabled: true, agentId: "agent-1" },
     ]);
@@ -987,11 +980,11 @@ describe("runtime bootstrap provider selection", () => {
 
   it("does not start the polling loop for a stream-only (Gerrit) review project", async () => {
     const dbReview = { source: "db-review" } as unknown as ReviewConnector;
-    const dbAgent = makeDbAgentAdapter("mock");
+    const dbAgent = makeDbAgentAdapter("copilot");
 
     const runtime = await importRuntime(
       // no redmine / gitlab-issue connector
-      { gerrit: dbReview, mock: dbAgent },
+      { gerrit: dbReview, copilot: dbAgent },
       {
         gerrit: makeIntegration({
           id: "gerrit-review-only",
@@ -1024,7 +1017,7 @@ describe("runtime bootstrap provider selection", () => {
 
   it("starts polling as fallback when the Gerrit stream-events connection is degraded", async () => {
     const dbReview = { source: "db-review" } as unknown as ReviewConnector;
-    const dbAgent = makeDbAgentAdapter("mock");
+    const dbAgent = makeDbAgentAdapter("copilot");
 
     const runtime = await importRuntime(
       { gerrit: dbReview, copilot: dbAgent },
@@ -1080,10 +1073,10 @@ describe("runtime bootstrap provider selection", () => {
 
   it("does not start the polling loop for a webhook-only (GitLab MR) review project", async () => {
     const dbReview = { source: "db-review" } as unknown as ReviewConnector;
-    const dbAgent = makeDbAgentAdapter("mock");
+    const dbAgent = makeDbAgentAdapter("copilot");
 
     const runtime = await importRuntime(
-      { gitlab: dbReview, mock: dbAgent },
+      { gitlab: dbReview, copilot: dbAgent },
       {
         gitlab: makeIntegration({
           id: "gitlab-review-only",
@@ -1111,10 +1104,10 @@ describe("runtime bootstrap provider selection", () => {
 
   it("starts the polling loop when an active IN_REVIEW task needs the fallback poll, even in a stream-only setup", async () => {
     const dbReview = { source: "db-review" } as unknown as ReviewConnector;
-    const dbAgent = makeDbAgentAdapter("mock");
+    const dbAgent = makeDbAgentAdapter("copilot");
 
     const runtime = await importRuntime(
-      { gerrit: dbReview, mock: dbAgent },
+      { gerrit: dbReview, copilot: dbAgent },
       {
         gerrit: makeIntegration({
           id: "gerrit-review-only",
@@ -1156,11 +1149,11 @@ describe("runtime bootstrap provider selection", () => {
 
   it("starts the polling loop live when a task requiring fallback polling appears, without a plugin change or restart", async () => {
     const dbReview = { source: "db-review" } as unknown as ReviewConnector;
-    const dbAgent = makeDbAgentAdapter("mock");
+    const dbAgent = makeDbAgentAdapter("copilot");
 
     // Stream-only setup (Gerrit review project): polling loop must not start at boot.
     const runtime = await importRuntime(
-      { gerrit: dbReview, mock: dbAgent },
+      { gerrit: dbReview, copilot: dbAgent },
       {
         gerrit: makeIntegration({
           id: "gerrit-review-only",
@@ -1227,12 +1220,12 @@ describe("runtime bootstrap provider selection", () => {
 
   it("stops the polling loop live once no project or task requires polling", async () => {
     const dbReview = { source: "db-review" } as unknown as ReviewConnector;
-    const dbAgent = makeDbAgentAdapter("mock");
+    const dbAgent = makeDbAgentAdapter("copilot");
 
     // Stream-only Gerrit review project, but an active IN_REVIEW task means
     // polling is required at boot (fallback poller) so the loop starts.
     const runtime = await importRuntime(
-      { gerrit: dbReview, mock: dbAgent },
+      { gerrit: dbReview, copilot: dbAgent },
       {
         gerrit: makeIntegration({
           id: "gerrit-review-only",
@@ -1301,10 +1294,10 @@ describe("runtime bootstrap provider selection", () => {
 
   it("does not start the polling loop from a transition when nothing requires polling", async () => {
     const dbReview = { source: "db-review" } as unknown as ReviewConnector;
-    const dbAgent = makeDbAgentAdapter("mock");
+    const dbAgent = makeDbAgentAdapter("copilot");
 
     const runtime = await importRuntime(
-      { gerrit: dbReview, mock: dbAgent },
+      { gerrit: dbReview, copilot: dbAgent },
       {
         gerrit: makeIntegration({
           id: "gerrit-review-only",
@@ -1526,7 +1519,7 @@ describe("runtime bootstrap provider selection", () => {
 
   it("passes the agent token into the review orchestrator", async () => {
     const dbReview = { source: "db-review" } as unknown as ReviewConnector;
-    const dbAgent = makeDbAgentAdapter("mock");
+    const dbAgent = makeDbAgentAdapter("copilot");
     const reviewAgent: AgentRecord = {
       id: "agent-review-rewrite" as AgentRecord["id"],
       name: "Review agent",

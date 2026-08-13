@@ -78,7 +78,7 @@ function makeCycle(overrides: Partial<AgentCycle> = {}): AgentCycle {
       agentLogs: "ok",
       externalChangeId: makeExternalChangeId("I123"),
       commitSha: "abc123",
-      metadata: { adapter: "mock" },
+      metadata: { adapter: "copilot" },
     },
     validationResult: null,
     createdAt: new Date("2026-04-07T09:30:00.000Z"),
@@ -848,7 +848,7 @@ describe("createAdminServer", () => {
               agentLogs: "connected to redmine\npublished gerrit change",
               externalChangeId: makeExternalChangeId("I123"),
               commitSha: "abc123",
-              metadata: { adapter: "mock" },
+              metadata: { adapter: "copilot" },
             },
           })];
         },

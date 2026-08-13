@@ -9,7 +9,7 @@ Virtual Engineer is a host-side Node.js/TypeScript orchestrator with two flows:
 - **Coding agent** — picks up assigned tickets, runs an agent cycle in an ephemeral **OpenShell sandbox**, and pushes the result for review.
 - **Review agent** — on every new/updated patchset (Gerrit stream-event, GitLab/GitHub webhook, or poll), runs the agent in the same sandbox (`REVIEW_MODE=1`) and posts comments + a vote.
 
-All provider configuration lives in SQLite and is managed through the admin UI. The agent engine is pluggable: **Copilot**, **Claude**, **Aider**, **Goose**, **Codex**, **Gemini CLI**, **OpenCode**, **Cursor**, or **Mock**.
+All provider configuration lives in SQLite and is managed through the admin UI. The agent engine is pluggable: **Copilot**, **Claude**, **Aider**, **Goose**, **Codex**, **Gemini CLI**, **OpenCode**, or **Cursor**.
 
 ## Knowledge base (read before non-trivial work)
 

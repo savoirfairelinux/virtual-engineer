@@ -240,7 +240,7 @@ describe("Orchestrator", () => {
         agentLogs: "ok",
         gerritChangeId: makeExternalChangeId("I123"),
         commitSha: "abc123",
-        metadata: { adapter: "mock" },
+        metadata: { adapter: "copilot" },
       }),
       destroyWorkspace: vi.fn().mockResolvedValue(undefined),
       ...overrides,

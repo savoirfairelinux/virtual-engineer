@@ -192,16 +192,6 @@ const COPILOT_INTEGRATION: Integration = {
   updatedAt: new Date(),
 };
 
-const MOCK_INTEGRATION: Integration = {
-  id: "int-mock",
-  provider: "mock",
-  name: "Mock Test",
-  configJson: JSON.stringify({ status: "success" }),
-  enabled: false,
-  createdAt: new Date(),
-  updatedAt: new Date(),
-};
-
 const GERRIT_INTEGRATION: Integration = {
   id: "int-gerrit",
   provider: "gerrit",
@@ -230,7 +220,7 @@ describe("Admin API — POST /api/admin/integrations/:id/discover", () => {
 
   beforeEach(async () => {
     registerBuiltinPlugins();
-    store = makeIntegrationStore([REDMINE_INTEGRATION, COPILOT_INTEGRATION, GERRIT_INTEGRATION, MOCK_INTEGRATION]);
+    store = makeIntegrationStore([REDMINE_INTEGRATION, COPILOT_INTEGRATION, GERRIT_INTEGRATION]);
     const pm = new PluginManager(store, { adminAuthSecret: TEST_ADMIN_AUTH_SECRET });
     server = createAdminServer(makeBaseDeps({ integrationStore: store, pluginManager: pm }));
     baseUrl = await listenServer(server);
@@ -291,12 +281,6 @@ describe("Admin API — POST /api/admin/integrations/:id/discover", () => {
     expect(body["counts"]).toEqual({ ticketProjects: 0, repositories: 1 });
   });
 
-  it("returns 400 when descriptor doesn't support discovery (mock)", async () => {
-    const { status, body } = await postJson(baseUrl, "/api/admin/integrations/int-mock/discover");
-    expect(status).toBe(400);
-    expect(String(body["error"])).toContain("does not support");
-  });
-
   it("returns 404 for unknown integration id", async () => {
     const { status } = await postJson(baseUrl, "/api/admin/integrations/no-such/discover");
     expect(status).toBe(404);
@@ -345,15 +329,9 @@ describe("Admin API — POST /api/admin/integrations/:id/discover", () => {
     const integration = body["integration"] as Record<string, unknown>;
     expect(integration["icon"]).toEqual({ slug: "redmine", hex: "B32024" });
 
-    const { body: mockBody } = await getJson(baseUrl, "/api/admin/integrations/int-mock");
-    const mockIntegration = mockBody["integration"] as Record<string, unknown>;
-    expect(mockIntegration).toHaveProperty("icon", null);
-  });
-
-  it("GET reports discoverySupported=false for mock", async () => {
-    const { body } = await getJson(baseUrl, "/api/admin/integrations/int-mock");
-    const integration = body["integration"] as Record<string, unknown>;
-    expect(integration["discoverySupported"]).toBe(false);
+    const { body: copilotBody } = await getJson(baseUrl, "/api/admin/integrations/int-copilot");
+    const copilotIntegration = copilotBody["integration"] as Record<string, unknown>;
+    expect(copilotIntegration["icon"]).toEqual({ slug: "githubcopilot", hex: "000000" });
   });
 
   it("GET reports discoverySupported=false for copilot", async () => {
@@ -511,7 +489,7 @@ describe("Admin API — GET /api/admin/integrations/:id/branches", () => {
 
   beforeEach(async () => {
     registerBuiltinPlugins();
-    store = makeIntegrationStore([REDMINE_INTEGRATION, GERRIT_INTEGRATION, GITLAB_INTEGRATION, MOCK_INTEGRATION]);
+    store = makeIntegrationStore([REDMINE_INTEGRATION, GERRIT_INTEGRATION, GITLAB_INTEGRATION]);
     const pm = new PluginManager(store, { adminAuthSecret: TEST_ADMIN_AUTH_SECRET });
     server = createAdminServer(makeBaseDeps({ integrationStore: store, pluginManager: pm }));
     baseUrl = await listenServer(server);

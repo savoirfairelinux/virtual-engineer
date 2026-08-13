@@ -81,7 +81,8 @@ Validation rules:
 
 - Unit tests use `vi.stubEnv("KEY", "VALUE")` or temporary `process.env` mutation plus `resetConfig()`.
 - Integration tests seed DB-backed integrations and agents via the admin API.
-- Mock-mode runs (`npm run e2e:mock`) avoid external systems entirely.
+- Unit tests use Vitest mocks and local fakes, so the test suite does not require
+	external provider systems.
 
 ## Related docs
 

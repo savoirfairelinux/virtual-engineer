@@ -9,7 +9,6 @@ const PROVIDER_CAPABILITY: Record<ProviderId, DomainCapability> = {
   gerrit: "code_review",
   gitlab: "issue_tracking",
   github: "issue_tracking",
-  mock: "agent_execution",
   copilot: "agent_execution",
   claude: "agent_execution",
   aider: "agent_execution",
@@ -368,13 +367,13 @@ describe("PluginManager", () => {
       expect(store.setIntegrationEnabled).toHaveBeenCalledWith("r1", true);
     });
 
-    it("keeps both providers in the same category active (Phase 4 multi-instance)", async () => {
+    it("keeps multiple agent providers active (Phase 4 multi-instance)", async () => {
       const store = makeStore([
         makeIntegration({
           id: "m1",
-          provider: "mock",
-          name: "Mock Agent",
-          configJson: JSON.stringify({ status: "success", simulateDelayMs: 0 }),
+          provider: "claude",
+          name: "Claude Agent",
+          configJson: "{}",
           enabled: true,
         }),
         makeIntegration({
@@ -386,22 +385,22 @@ describe("PluginManager", () => {
         }),
       ]);
 
-      const mockInstance = makeMockPluginInstance("mock-agent");
+      const claudeInstance = makeMockPluginInstance("claude-agent");
       const copilotInstance = makeMockPluginInstance("copilot-agent");
       const mgr = new PluginManager(store);
-      mgr.registerFactory("mock", vi.fn(() => mockInstance));
+      mgr.registerFactory("claude", vi.fn(() => claudeInstance));
       mgr.registerFactory("copilot", vi.fn(() => copilotInstance));
 
       await mgr.loadFromDatabase();
-      expect(activeConnector(mgr, "mock")).toBe(mockInstance);
+      expect(activeConnector(mgr, "claude")).toBe(claudeInstance);
 
       await mgr.enablePlugin("c1");
 
-      // Phase 4: do not auto-disable other integrations in the same category.
+      // Phase 4: do not auto-disable other integrations.
       // The orchestrator picks the right one per-project via getConnectorForIntegration.
       expect(store.setIntegrationEnabled).not.toHaveBeenCalledWith("m1", false);
       expect(store.setIntegrationEnabled).toHaveBeenCalledWith("c1", true);
-      expect(activeConnector(mgr, "mock")).toBe(mockInstance);
+      expect(activeConnector(mgr, "claude")).toBe(claudeInstance);
       expect(activeConnector(mgr, "copilot")).toBe(copilotInstance);
       await expect(store.getIntegration("m1")).resolves.toMatchObject({ enabled: true });
       await expect(store.getIntegration("c1")).resolves.toMatchObject({ enabled: true });
@@ -513,21 +512,6 @@ describe("PluginManager", () => {
 
       const result = await mgr.testConnection("r1");
       expect(result).toMatchObject({ success: false, error: "Invalid API key" });
-    });
-
-    it("validates config schema when no tester is registered", async () => {
-      const store = makeStore([
-        makeIntegration({
-          id: "m1",
-          provider: "mock",
-          configJson: "{}",
-          enabled: false,
-        }),
-      ]);
-
-      const mgr = new PluginManager(store);
-      const result = await mgr.testConnection("m1");
-      expect(result).toMatchObject({ success: true, error: null });
     });
 
     it("tests raw config and preserves structured tester details", async () => {
@@ -687,8 +671,8 @@ describe("PluginManager", () => {
           enabled: true,
         }),
         makeIntegration({
-          id: "m1",
-          provider: "mock",
+          id: "c1",
+          provider: "claude",
           configJson: "{}",
           enabled: true,
         }),
@@ -696,12 +680,12 @@ describe("PluginManager", () => {
 
         const mgr = new PluginManager(store);
         mgr.registerFactory("redmine", vi.fn(() => makeMockPluginInstance("r")));
-        mgr.registerFactory("mock", vi.fn(() => makeMockPluginInstance("m")));
+        mgr.registerFactory("claude", vi.fn(() => makeMockPluginInstance("c")));
       await mgr.loadFromDatabase();
 
       const types = mgr.getActiveProviders();
       expect(types).toContain("redmine");
-      expect(types).toContain("mock");
+      expect(types).toContain("claude");
     });
   });
 
@@ -726,24 +710,6 @@ describe("PluginManager", () => {
 
       // The descriptor's createInstance should have been used.
       expect(activeConnector(mgr, "redmine")).toBeTruthy();
-    });
-
-    it("uses descriptor.createInstance for mock when no factory is registered", async () => {
-      const store = makeStore([
-        makeIntegration({
-          id: "m1",
-          provider: "mock",
-          configJson: JSON.stringify({ status: "success", simulateDelayMs: 0 }),
-          enabled: true,
-        }),
-      ]);
-
-      const mgr = new PluginManager(store);
-      // Intentionally no registerFactory("mock", ...) call.
-
-      await mgr.loadFromDatabase();
-
-      expect(activeConnector(mgr, "mock")).toBeTruthy();
     });
 
     it("uses descriptor.testConnection when no tester is registered (redmine)", async () => {

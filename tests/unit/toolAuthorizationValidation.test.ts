@@ -148,9 +148,9 @@ describe("validateToolAuthorization (Goose)", () => {
 });
 
 describe("validateToolAuthorization (unsupported providers)", () => {
-  it("rejects toolAuthorization for mock provider", () => {
-    expect(() => validateToolAuthorization("mock", "coding", { blockedTools: ["Read"] }))
-      .toThrow(/not supported by provider 'mock'/i);
+  it("rejects toolAuthorization for a non-agent provider", () => {
+    expect(() => validateToolAuthorization("gerrit", "coding", { blockedTools: ["Read"] }))
+      .toThrow(/not supported by provider 'gerrit'/i);
   });
 
   it("fails closed when provider is null/undefined but toolAuthorization is set", () => {

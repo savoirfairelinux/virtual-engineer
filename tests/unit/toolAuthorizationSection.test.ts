@@ -21,8 +21,8 @@ describe("supportsToolAuthorization", () => {
     expect(supportsToolAuthorization("goose")).toBe(true);
   });
 
-  it("returns false for mock and undefined", () => {
-    expect(supportsToolAuthorization("mock")).toBe(false);
+  it("returns false for non-agent providers and undefined", () => {
+    expect(supportsToolAuthorization("gerrit")).toBe(false);
     expect(supportsToolAuthorization(undefined)).toBe(false);
   });
 });
@@ -42,7 +42,7 @@ describe("getToolCatalog", () => {
 
   it("returns an empty catalog for non-list providers", () => {
     expect(getToolCatalog("aider")).toEqual([]);
-    expect(getToolCatalog("mock")).toEqual([]);
+    expect(getToolCatalog("gerrit")).toEqual([]);
     expect(getToolCatalog(undefined)).toEqual([]);
   });
 });
@@ -143,7 +143,7 @@ describe("serializeToolAuthorization", () => {
   });
 
   it("returns undefined for unsupported providers", () => {
-    expect(serializeToolAuthorization(emptyToolAuthorization(), "mock")).toBeUndefined();
+    expect(serializeToolAuthorization(emptyToolAuthorization(), "gerrit")).toBeUndefined();
     expect(serializeToolAuthorization(emptyToolAuthorization(), undefined)).toBeUndefined();
   });
 });
