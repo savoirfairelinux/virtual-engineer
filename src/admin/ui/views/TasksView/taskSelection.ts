@@ -31,3 +31,9 @@ export function selectTaskIds(
 }
 
 export type BulkTaskAction = "retry" | "abandon" | "delete";
+
+export const BULK_ACTION_PAST_TENSE: Record<BulkTaskAction, string> = {
+  retry: "retried",
+  abandon: "abandoned",
+  delete: "deleted",
+};

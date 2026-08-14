@@ -4,7 +4,7 @@ import { TaskDetail } from "./TaskDetail.tsx";
 import { shouldClearDeletedTask } from "./taskDetailRequests.ts";
 import { api } from "../../api.ts";
 import { useCurrentUser } from "../../authContext.tsx";
-import type { BulkTaskAction } from "./taskSelection.ts";
+import { BULK_ACTION_PAST_TENSE, type BulkTaskAction } from "./taskSelection.ts";
 import type { ApiTask } from "../../types.ts";
 
 interface TasksViewProps {
@@ -108,7 +108,7 @@ export function TasksView({ tasks, onRefresh }: TasksViewProps) {
     }
     if (failureCount > 0) {
       const message = firstFailure instanceof Error ? firstFailure.message : "Operation failed";
-      setBulkError(`${failureCount} task${failureCount === 1 ? "" : "s"} could not be ${actionLabel}d: ${message}`);
+        setBulkError(`${failureCount} task${failureCount === 1 ? "" : "s"} could not be ${BULK_ACTION_PAST_TENSE[action]}: ${message}`);
     }
     setBulkBusy(false);
     onRefresh();

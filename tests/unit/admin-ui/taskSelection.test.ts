@@ -1,8 +1,19 @@
 import { describe, expect, it } from "vitest";
-import { selectTaskIds } from "../../../src/admin/ui/views/TasksView/taskSelection.ts";
+import {
+  BULK_ACTION_PAST_TENSE,
+  selectTaskIds,
+} from "../../../src/admin/ui/views/TasksView/taskSelection.ts";
 
 describe("task selection", () => {
   const taskIds = ["task-a", "task-b", "task-c", "task-d"];
+
+  it("uses explicit past-tense labels for bulk action failures", () => {
+    expect(BULK_ACTION_PAST_TENSE).toEqual({
+      retry: "retried",
+      abandon: "abandoned",
+      delete: "deleted",
+    });
+  });
 
   it("selects one task for a normal click", () => {
     expect([...selectTaskIds(taskIds, new Set(["task-a"]), "task-c")]).toEqual(["task-c"]);

@@ -37,6 +37,7 @@ function TaskRow({ task, selected, checked, onClick, onActivate, onMouseDown, on
       aria-pressed={selected}
       onClick={onClick}
       onKeyDown={(event) => {
+          if (event.target !== event.currentTarget) return;
         if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();
           onActivate();
