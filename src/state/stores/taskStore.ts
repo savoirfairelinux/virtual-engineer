@@ -1019,12 +1019,25 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
           "SELECT task_id FROM change_per_repository WHERE change_id = ? AND integration_id = ? ORDER BY updated_at DESC LIMIT 1"
         )
         .get(externalChangeId, integrationId) as { task_id: string } | undefined;
-      if (!scopedChangeRow) return null;
+      if (scopedChangeRow) {
+        const scopedTask = await db.query.tasks.findFirst({
+          where: eq(tasks.taskId, scopedChangeRow.task_id as TaskId),
+        });
+        if (scopedTask) return rowToTask(scopedTask);
+      }
 
-      const scopedTask = await db.query.tasks.findFirst({
-        where: eq(tasks.taskId, scopedChangeRow.task_id as TaskId),
-      });
-      return scopedTask ? rowToTask(scopedTask) : null;
+      const reviewTaskRow = raw
+        .prepare(
+          "SELECT task_id FROM tasks WHERE task_type = 'code-review' AND gerrit_change_id = ? AND instr(ticket_source_label, ':') > 0 AND substr(ticket_source_label, instr(ticket_source_label, ':') + 1) = ? ORDER BY created_at DESC LIMIT 1"
+        )
+        .get(externalChangeId, integrationId) as { task_id: string } | undefined;
+      if (reviewTaskRow) {
+        const reviewTask = await db.query.tasks.findFirst({
+          where: eq(tasks.taskId, reviewTaskRow.task_id as TaskId),
+        });
+        if (reviewTask) return rowToTask(reviewTask);
+      }
+      return null;
     }
 
     const singleRow = raw

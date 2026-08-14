@@ -40,6 +40,8 @@ function policySections(policies: RuntimePolicyRecord[], owner: string): Map<str
 const PROTECTED_PATHS = ["/", "/usr", "/lib", "/etc", "/app", "/bin", "/sbin", "/boot", "/var"];
 
 function isProtectedWritePath(entry: string): boolean {
+  if (!posix.isAbsolute(entry) || entry.length === 0) return true;
+
   const segments = entry.split("/");
   if (segments.some((segment) => segment === "." || segment === "..")) return true;
 
@@ -72,7 +74,7 @@ function enforceSandboxFloor(document: Record<string, unknown>): void {
     const readWrite = policy["read_write"];
     if (Array.isArray(readWrite)) {
       const offending = readWrite.filter(
-        (entry) => typeof entry === "string" && isProtectedWritePath(entry),
+        (entry) => typeof entry !== "string" || isProtectedWritePath(entry),
       );
       if (offending.length > 0) {
         throw new Error(

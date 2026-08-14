@@ -1222,6 +1222,36 @@ describe("SqliteStateStore", () => {
       });
     });
 
+    it("falls back to integration-scoped review tasks without per-repository rows", async () => {
+      const firstTaskId = makeTaskId(randomUUID());
+      const secondTaskId = makeTaskId(randomUUID());
+      const changeId = makeExternalChangeId("review-change");
+
+      await store.createReviewTask({
+        taskId: firstTaskId,
+        ticketId: makeTicketId("review-a"),
+        subject: "Review A",
+        sourceLabel: "gerrit:integration-a",
+        changeId,
+        patchset: 1,
+      });
+      await store.createReviewTask({
+        taskId: secondTaskId,
+        ticketId: makeTicketId("review-b"),
+        subject: "Review B",
+        sourceLabel: "gerrit:integration-b",
+        changeId,
+        patchset: 1,
+      });
+
+      await expect(store.findTaskByExternalChangeId("integration-a", changeId)).resolves.toMatchObject({
+        taskId: firstTaskId,
+      });
+      await expect(store.findTaskByExternalChangeId("integration-b", changeId)).resolves.toMatchObject({
+        taskId: secondTaskId,
+      });
+    });
+
     it("upserts existing per-repo change", async () => {
       const taskId = makeTaskId(randomUUID());
       await store.createTask(taskId, makeTicketId("repo-2"));
