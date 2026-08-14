@@ -294,7 +294,9 @@ describe("PluginManager", () => {
       });
       const mgr = new PluginManager(makeStore([integration]), { adminAuthSecret: "current-secret" });
 
-      expect(() => mgr.decryptIntegrationConfig(integration)).toThrow(/decrypt.*credential/i);
+      expect(() => mgr.decryptIntegrationConfig(integration)).toThrow(
+        "Stored token cannot be decrypted; reconnect OAuth."
+      );
     });
 
     it("fails closed for undecryptable legacy ciphertext in historically encrypted fields", () => {
@@ -308,7 +310,9 @@ describe("PluginManager", () => {
       });
       const mgr = new PluginManager(makeStore([integration]), { adminAuthSecret: "current-secret" });
 
-      expect(() => mgr.decryptIntegrationConfig(integration)).toThrow(/decrypt.*credential/i);
+      expect(() => mgr.decryptIntegrationConfig(integration)).toThrow(
+        "Stored token cannot be decrypted; reconnect OAuth."
+      );
     });
 
     it("preserves raw plaintext credentials for unsaved connection tests", async () => {
@@ -427,7 +431,9 @@ describe("PluginManager", () => {
       ]);
       const mgr = new PluginManager(store, { adminAuthSecret: "current-secret" });
 
-      await expect(mgr.enablePlugin("redmine-hot-malformed")).rejects.toThrow(/decrypt.*credential/i);
+      await expect(mgr.enablePlugin("redmine-hot-malformed")).rejects.toThrow(
+        "Stored token cannot be decrypted; reconnect OAuth."
+      );
       expect(store.setIntegrationEnabled).not.toHaveBeenCalled();
     });
 

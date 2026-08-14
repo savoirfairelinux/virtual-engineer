@@ -19,7 +19,7 @@ import {
   type ProviderAuthService,
 } from "../agents/providerAuthService.js";
 import { exchangeForSessionToken, fetchAvailableModels, fetchAvailableModelsWithPat } from "../agents/copilotModelsService.js";
-import { decryptManagedCredential, StoredCredentialDecryptionError } from "../utils/encryption.js";
+import { decryptRequiredManagedCredential, StoredCredentialDecryptionError } from "../utils/encryption.js";
 import { getProviderDescriptor } from "../plugins/registry.js";
 import type { Router } from "./router.js";
 import type { PluginManager } from "../plugins/pluginManager.js";
@@ -626,7 +626,7 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
         return;
       }
       try {
-        githubToken = decryptManagedCredential(encrypted, deps.adminAuthSecret, "sessionToken");
+        githubToken = decryptRequiredManagedCredential(encrypted, deps.adminAuthSecret);
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : "Stored token cannot be decrypted; reconnect OAuth.";
         log.warn({ err, agentId: id }, "agent session token could not be decrypted");

@@ -13,7 +13,7 @@ import type {
 } from "../interfaces.js";
 import { makeExternalChangeId } from "../interfaces.js";
 import { getLogger } from "../logger.js";
-import { decryptManagedCredential } from "../utils/encryption.js";
+import { decryptRequiredManagedCredential } from "../utils/encryption.js";
 import { assertPromptRole } from "../utils/promptRole.js";
 import { getConfig } from "../config.js";
 import { buildCodegenUserPrompt } from "./copilotAdapter.js";
@@ -292,7 +292,7 @@ export class ClaudeAdapter implements AgentAdapter, ConfigurableAdapter {
   private resolveAuthEnv(context: TaskContext): Record<string, string> {
     const encrypted = context.agentSession.encryptedSessionToken;
     if (encrypted) {
-      return { CLAUDE_CODE_OAUTH_TOKEN: decryptManagedCredential(encrypted, getConfig().adminAuthSecret, "sessionToken") };
+      return { CLAUDE_CODE_OAUTH_TOKEN: decryptRequiredManagedCredential(encrypted, getConfig().adminAuthSecret) };
     }
     if (context.agentSession.githubToken) {
       return { ANTHROPIC_API_KEY: context.agentSession.githubToken.trim() };

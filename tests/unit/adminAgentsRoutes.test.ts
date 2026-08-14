@@ -727,6 +727,7 @@ describe("Admin API — Agent routes (/api/admin/agents)", () => {
   });
 
   it("GET /:id/available-models returns a controlled error for an undecryptable token", async () => {
+    vi.mocked(fetchAvailableModelsWithPat).mockClear();
     await store.upsertIntegration({
       id: "copilot-invalid-token",
       provider: "copilot",
