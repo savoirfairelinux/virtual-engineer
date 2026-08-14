@@ -68,6 +68,19 @@ describe("GitLabHttpClient", () => {
       expect(err).toBeInstanceOf(TicketApiError);
       expect((err as TicketApiError).statusCode).toBe(403);
     });
+
+    it("redacts credential-bearing details from TicketApiError messages", async () => {
+      const secret = "glpat-sensitive-value";
+      const requestUrl = `${URL}?private_token=${secret}`;
+      fetchMock.mockResolvedValue(errorResponse(403, JSON.stringify({ token: secret })));
+
+      const err = await makeClient().fetchJson(requestUrl).catch((e: unknown) => e) as TicketApiError;
+
+      expect(err.message).not.toContain(secret);
+      expect(err.url).not.toContain(secret);
+      expect(err.body).not.toContain(secret);
+      expect(err.message).toContain("<redacted>");
+    });
   });
 
   // ─── fetchJsonVoid ─────────────────────────────────────────────────────────

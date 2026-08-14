@@ -511,7 +511,7 @@ export class GitHubReviewProvider implements ReviewProvider {
       errors?: Array<{ message: string }>;
     };
     if (json.errors && json.errors.length > 0) {
-      throw new Error(`GitHub GraphQL error: ${json.errors.map((e) => e.message).join("; ")}`);
+      throw new Error(`GitHub GraphQL error: ${sanitizeErrorDetail(json.errors.map((e) => e.message).join("; "))}`);
     }
     if (json.data === undefined) {
       throw new Error("GitHub GraphQL response missing data");

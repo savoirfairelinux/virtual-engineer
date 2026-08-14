@@ -88,6 +88,20 @@ describe("GitLabMergeRequestConnector", () => {
         makeConnector().getChange(makeExternalChangeId("not-a-number"))
       ).rejects.toThrow("Invalid GitLab MR number");
     });
+
+    it("redacts credential-bearing details from ReviewApiError messages", () => {
+      const secret = "glpat-review-sensitive-value";
+      const err = new ReviewApiError(
+        403,
+        `${BASE_URL}/api/v4/user?private_token=${secret}`,
+        JSON.stringify({ token: secret }),
+      );
+
+      expect(err.message).not.toContain(secret);
+      expect(err.url).not.toContain(secret);
+      expect(err.body).not.toContain(secret);
+      expect(err.message).toContain("<redacted>");
+    });
   });
 
   // ─── getChangeStatus ───────────────────────────────────────────────────────
