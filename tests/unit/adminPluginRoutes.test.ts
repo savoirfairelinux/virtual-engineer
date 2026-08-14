@@ -631,7 +631,9 @@ describe("Admin API — Plugin & Integration routes", () => {
     });
 
     it("deletes an integration even when it has dependents", async () => {
-      vi.mocked(integrationStore.countIntegrationReferences).mockResolvedValueOnce(2);
+      vi.mocked(integrationStore.countIntegrationReferences).mockRejectedValueOnce(
+        new Error("legacy reference counting should not be consulted"),
+      );
 
       const { body: createBody } = await fetchFromServer(server, "/api/admin/integrations", {
         method: "POST",
@@ -644,19 +646,24 @@ describe("Admin API — Plugin & Integration routes", () => {
       });
       expect(status).toBe(200);
       expect(body["deleted"]).toBe(true);
+      expect(integrationStore.countIntegrationReferences).not.toHaveBeenCalled();
       const { status: getStatus } = await fetchFromServer(server, `/api/admin/integrations/${id}`);
       expect(getStatus).toBe(404);
     });
 
-    it("deletes an integration when detailed dependent references are available", async () => {
+    it("does not consult legacy reference helpers when deleting", async () => {
       const references = {
         agents: [{ id: "agent-1", name: "Build Agent" }],
         projectBindings: [{ projectId: "project-1", projectName: "Platform", capability: "issue_tracking" }],
         projectPushTargets: [{ projectId: "project-1", projectName: "Platform", repoKey: "platform/app" }],
       };
+      const getReferences = vi.fn(async () => references);
       Object.assign(integrationStore, {
-        getIntegrationReferenceDetails: vi.fn(async () => references),
+        getIntegrationReferenceDetails: getReferences,
       });
+      vi.mocked(integrationStore.countIntegrationReferences).mockRejectedValueOnce(
+        new Error("legacy reference counting should not be consulted"),
+      );
 
       const { body: createBody } = await fetchFromServer(server, "/api/admin/integrations", {
         method: "POST",
@@ -670,6 +677,8 @@ describe("Admin API — Plugin & Integration routes", () => {
 
       expect(status).toBe(200);
       expect(body["deleted"]).toBe(true);
+      expect(integrationStore.countIntegrationReferences).not.toHaveBeenCalled();
+      expect(getReferences).not.toHaveBeenCalled();
     });
   });
 
