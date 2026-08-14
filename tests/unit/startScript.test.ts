@@ -74,14 +74,14 @@ function runInstaller(
   args: string[] = [],
   expectedCommit?: string,
 ): string {
-  const env = {
+  const env: NodeJS.ProcessEnv = {
     ...process.env,
-    PATH: `${createFakeDockerBin()}:${process.env.PATH ?? ""}`,
+    PATH: `${createFakeDockerBin()}:${process.env["PATH"] ?? ""}`,
     VE_REPOSITORY_URL: fixtureDir,
     VE_ALLOW_CUSTOM_REPOSITORY: "true",
     VE_TEST_START_ARGS_FILE: argsFile,
   };
-  if (expectedCommit) env.VE_EXPECTED_COMMIT = expectedCommit;
+  if (expectedCommit) env["VE_EXPECTED_COMMIT"] = expectedCommit;
   return execFileSync("bash", [join(process.cwd(), "scripts/install.sh"), ...args], {
     cwd,
     encoding: "utf8",
