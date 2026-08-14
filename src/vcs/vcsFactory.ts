@@ -10,7 +10,7 @@
 import type { Integration, IntegrationBindingContext } from "../interfaces.js";
 import type { VcsConnector } from "./vcsConnector.js";
 import { getProviderDescriptor } from "../plugins/registry.js";
-import { decryptToken } from "../utils/encryption.js";
+import { decryptManagedCredential, isManagedCredentialValue } from "../utils/encryption.js";
 import type { GitRunner } from "./gitRunner.js";
 import { NodeGitRunner } from "./nodeGitRunner.js";
 import type { SourceControlRuntimeContext } from "../plugins/registry.js";
@@ -49,10 +49,8 @@ function parseConfig(integration: Integration, adminAuthSecret?: string): Record
     for (const field of descriptor.requiredFields.filter((f) => f.type === "password")) {
       const raw = cfg[field.key];
       if (typeof raw === "string" && raw.length > 0) {
-        try {
-          cfg[field.key] = decryptToken(raw, adminAuthSecret);
-        } catch {
-          // Already plaintext — leave as-is
+        if (isManagedCredentialValue(raw, field.key)) {
+          cfg[field.key] = decryptManagedCredential(raw, adminAuthSecret, field.key);
         }
       }
     }

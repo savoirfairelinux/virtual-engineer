@@ -14,8 +14,10 @@ import { getProviderDescriptor, getProviderDomainCapabilities, getCapabilityInta
 import type { ProviderDescriptor, IntakeMechanism, AgentAdapterContext } from "./registry.js";
 import { getLogger } from "../logger.js";
 import {
+  decryptManagedCredential,
   decryptToken,
   encryptToken,
+  isManagedCredentialValue,
   isLegacyPlainToken,
   isProbableLegacyEncryptedToken,
   isVersionedEncryptedToken,
@@ -553,16 +555,8 @@ export class PluginManager {
     for (const fieldKey of getCredentialFieldKeys(descriptor)) {
       const raw = result[fieldKey];
       if (typeof raw === "string" && raw.length > 0) {
-        const isManagedCredential = raw.startsWith("veenc:")
-          || isLegacyPlainToken(raw)
-          || (LEGACY_UNPREFIXED_CIPHERTEXT_FIELDS.has(fieldKey) && isProbableLegacyEncryptedToken(raw));
-        try {
-          result[fieldKey] = decryptToken(raw, this.options.adminAuthSecret);
-        } catch (error) {
-          if (isManagedCredential) {
-            throw new Error(`Unable to decrypt managed credential field ${fieldKey}.`, { cause: error });
-          }
-          // Not a managed encrypted token (e.g. a raw PAT typed by the user) — leave as-is.
+        if (isManagedCredentialValue(raw, fieldKey)) {
+          result[fieldKey] = decryptManagedCredential(raw, this.options.adminAuthSecret, fieldKey);
         }
       }
     }

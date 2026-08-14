@@ -56,7 +56,7 @@ GitLab descriptors treat project selection as VE-project-owned rather than integ
 
 Factories receive the stripped config (Zod defaults removed for keys absent in the raw DB row) plus the full `Integration` row. Descriptor hooks are the production construction and connection-testing path. Explicit `registerFactory` / `registerConnectionTester` hooks remain available for tests and embedders and take precedence when registered.
 
-Credential fields are encrypted for storage with the versioned `veenc:v1:` envelope. Startup migration encrypts raw and legacy `plain:` values for every descriptor password field plus internal webhook secrets. Migration and runtime decryption restrict unprefixed AES-GCM ciphertext detection to `sessionToken` and `sshPrivateKeyEnc`, the fields written in that historical format; canonical base64 values in other credential fields are treated as plaintext provider credentials and encrypted normally.
+Credential fields are encrypted for storage with the versioned `veenc:v1:` envelope. Startup migration encrypts raw and legacy `plain:` values for every descriptor password field plus internal webhook secrets. Migration and runtime decryption restrict unprefixed AES-GCM ciphertext detection to `sessionToken` and `sshPrivateKeyEnc`, the fields written in that historical format; canonical base64 values in other credential fields are treated as plaintext provider credentials and encrypted normally. A marked or historically managed credential that cannot be decrypted fails closed with `Stored token cannot be decrypted; reconnect OAuth.` rather than being passed through as plaintext/ciphertext.
 
 ## Resolution rules
 

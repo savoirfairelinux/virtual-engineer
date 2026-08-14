@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { encryptToken, decryptToken, isEncryptedToken } from "../../src/utils/encryption.js";
+import {
+  decryptManagedCredential,
+  encryptToken,
+  decryptToken,
+  isEncryptedToken,
+  StoredCredentialDecryptionError,
+} from "../../src/utils/encryption.js";
 
 const SECRET = "test-admin-auth-secret-for-unit-tests";
 
@@ -55,6 +61,26 @@ describe("encryption", () => {
 
   it("throws on invalid encrypted data (too short)", () => {
     expect(() => decryptToken("dG9v", SECRET)).toThrow("too short");
+  });
+
+  it("returns explicitly allowed legacy plaintext unchanged", () => {
+    expect(decryptManagedCredential("ghp_legacy_plaintext", SECRET, "token")).toBe("ghp_legacy_plaintext");
+  });
+
+  it("wraps an undecryptable managed token with a stable safe error", () => {
+    const encrypted = encryptToken("ghu_secret", SECRET);
+
+    expect(() => decryptManagedCredential(encrypted, "wrong-secret", "sessionToken"))
+      .toThrow("Stored token cannot be decrypted; reconnect OAuth.");
+    expect(() => decryptManagedCredential(encrypted, "wrong-secret", "sessionToken"))
+      .toThrow(StoredCredentialDecryptionError);
+  });
+
+  it("reports a missing admin secret without attempting plaintext fallback", () => {
+    const encrypted = encryptToken("ghu_secret", SECRET);
+
+    expect(() => decryptManagedCredential(encrypted, undefined, "sessionToken"))
+      .toThrow("ADMIN_AUTH_SECRET is required to decrypt stored credentials.");
   });
 
   it("handles long tokens", () => {
