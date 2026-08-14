@@ -6,7 +6,7 @@
  */
 import { getConfig } from "../config.js";
 import { getLogger } from "../logger.js";
-import { decryptManagedCredential, StoredCredentialDecryptionError } from "../utils/encryption.js";
+import { decryptRequiredManagedCredential, decryptManagedCredential } from "../utils/encryption.js";
 import { assertPromptRole } from "../utils/promptRole.js";
 import {
   resolveProviderOptions,
@@ -128,7 +128,7 @@ function decryptManagedSessionToken(
 ): string | null {
   const encrypted = asOptionalString(rawConfig[field]);
   if (!encrypted) return null;
-  return decryptManagedCredential(encrypted, getConfig().adminAuthSecret, field);
+  return decryptRequiredManagedCredential(encrypted, getConfig().adminAuthSecret);
 }
 
 /** Extract the agent token selected by provider + auth mode. */
@@ -401,7 +401,6 @@ async function resolveReviewAgentForProject(
     };
   } catch (err) {
     bundleLog.warn({ err, projectId: project.id }, "resolveReviewAgentForProject: failed to resolve project agent");
-    if (err instanceof StoredCredentialDecryptionError) throw err;
     return null;
   }
 }

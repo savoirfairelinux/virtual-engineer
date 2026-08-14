@@ -16,7 +16,7 @@ import type {
 import { makeExternalChangeId } from "../interfaces.js";
 import { getLogger } from "../logger.js";
 import { DEFAULT_COPILOT_MODEL } from "../copilotModel.js";
-import { decryptManagedCredential } from "../utils/encryption.js";
+import { decryptRequiredManagedCredential } from "../utils/encryption.js";
 import { assertPromptRole } from "../utils/promptRole.js";
 import { getConfig } from "../config.js";
 import {
@@ -373,7 +373,7 @@ export class CopilotAdapter implements AgentAdapter, ConfigurableAdapter {
     try {
       const encrypted = context.agentSession.encryptedSessionToken;
       if (encrypted) {
-        return Promise.resolve(decryptManagedCredential(encrypted, getConfig().adminAuthSecret, "sessionToken"));
+        return Promise.resolve(decryptRequiredManagedCredential(encrypted, getConfig().adminAuthSecret));
       }
       if (context.agentSession.githubToken) {
         return Promise.resolve(context.agentSession.githubToken);

@@ -45,13 +45,11 @@ function parseConfig(integration: Integration, adminAuthSecret?: string): Record
   const cfg = result.data as Record<string, unknown>;
 
   // Decrypt password fields so connectors always receive plaintext credentials.
-  if (adminAuthSecret !== undefined) {
-    for (const field of descriptor.requiredFields.filter((f) => f.type === "password")) {
-      const raw = cfg[field.key];
-      if (typeof raw === "string" && raw.length > 0) {
-        if (isManagedCredentialValue(raw, field.key)) {
-          cfg[field.key] = decryptManagedCredential(raw, adminAuthSecret, field.key);
-        }
+  for (const field of descriptor.requiredFields.filter((f) => f.type === "password")) {
+    const raw = cfg[field.key];
+    if (typeof raw === "string" && raw.length > 0) {
+      if (isManagedCredentialValue(raw, field.key)) {
+        cfg[field.key] = decryptManagedCredential(raw, adminAuthSecret, field.key);
       }
     }
   }

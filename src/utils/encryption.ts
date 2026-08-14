@@ -102,6 +102,14 @@ export function decryptManagedCredential(
   fieldKey?: string,
 ): string {
   if (!isManagedCredentialValue(value, fieldKey)) return value;
+  return decryptRequiredManagedCredential(value, adminAuthSecret);
+}
+
+/** Decrypt a credential field that must use the managed/legacy envelope format. */
+export function decryptRequiredManagedCredential(
+  value: string,
+  adminAuthSecret: string | undefined,
+): string {
   try {
     return decryptToken(value, adminAuthSecret);
   } catch (error) {
