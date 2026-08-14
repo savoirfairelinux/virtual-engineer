@@ -47,8 +47,8 @@ describe("redactUrls", () => {
 
     expect(out).toContain("token=<redacted>");
     expect(out).toContain("access_token=<redacted>");
-    expect(out).toContain('private_token: "<redacted>"');
-    expect(out).toContain('client_secret: "<redacted>"');
+    expect(out).toContain('"private_token":"<redacted>"');
+    expect(out).toContain('"client_secret":"<redacted>"');
     expect(out).toContain("keep=visible");
     expect(out).not.toMatch(/one|two|three|four/);
   });
