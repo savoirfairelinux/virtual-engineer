@@ -41,7 +41,6 @@ import { resolveProviderOptions } from "../agents/providerOptions.js";
 import type { VcsConnector } from "../vcs/vcsConnector.js";
 import { NO_REVIEW_SYSTEM } from "../vcs/vcsConnector.js";
 import { VcsConnectorFactory } from "../vcs/vcsFactory.js";
-import { encryptToken } from "../utils/encryption.js";
 import { redactUrls } from "../utils/redactUrl.js";
 import { toRejectionError } from "../utils/rejection.js";
 import { isInfrastructureError } from "../utils/errorClassifier.js";
@@ -1181,8 +1180,8 @@ export class Orchestrator {
             encryptedSessionToken = t;
           } else if (integCfg["authMode"] === "pat") {
             const pat = integCfg["token"];
-            if (typeof pat === "string" && pat) {
-              encryptedSessionToken = encryptToken(pat, this.config.adminAuthSecret);
+            if (!apiKey && typeof pat === "string" && pat) {
+              apiKey = pat;
               }
             }
         }
