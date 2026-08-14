@@ -11,6 +11,7 @@ import { GerritSshClient, buildSshHostKeyOptions } from "../connectors/gerritSsh
 import { buildGerritTopic } from "./branchNaming.js";
 import type { GitRunner } from "./gitRunner.js";
 import { NodeGitRunner } from "./nodeGitRunner.js";
+import { sanitizeErrorDetail } from "../utils/redactUrl.js";
 
 const log = getLogger("gerrit-vcs");
 
@@ -136,7 +137,7 @@ export class GerritVcsConnector implements VcsConnector {
    */
   async clone(repoUrl: string, branch: string, targetDir: string, sshKeyPath?: string): Promise<void> {
     log.info(
-      { repoUrl, branch, targetDir, usingCustomSshKey: Boolean(sshKeyPath) },
+      { repoUrl: sanitizeErrorDetail(repoUrl, 1000), branch, targetDir, usingCustomSshKey: Boolean(sshKeyPath) },
       "cloning repository from Gerrit via SSH"
     );
 
@@ -153,7 +154,7 @@ export class GerritVcsConnector implements VcsConnector {
       log.info({ targetDir }, "repository cloned successfully");
     } catch (err: unknown) {
       const error = err instanceof Error ? err : new Error(String(err));
-      throw new Error(`Failed to clone Gerrit repository: ${error.message.slice(0, 1000)}`);
+      throw new Error(`Failed to clone Gerrit repository: ${sanitizeErrorDetail(error.message, 1000)}`);
     }
   }
 
@@ -196,7 +197,7 @@ export class GerritVcsConnector implements VcsConnector {
       };
     } catch (err: unknown) {
       const error = err instanceof Error ? err : new Error(String(err));
-      throw new Error(`Failed to push directly to Gerrit: ${error.message.slice(0, 500)}`);
+      throw new Error(`Failed to push directly to Gerrit: ${sanitizeErrorDetail(error.message)}`);
     }
   }
 

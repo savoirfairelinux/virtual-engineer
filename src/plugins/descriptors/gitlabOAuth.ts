@@ -7,6 +7,7 @@ import {
 } from "../../utils/gitlabAuth.js";
 import type { PluginField, PluginOAuthConfig, PluginOAuthConfigResolverContext } from "../registry.js";
 import { fetchGitLabCurrentUser } from "../../utils/gitlabAuth.js";
+import { sanitizeErrorDetail } from "../../utils/redactUrl.js";
 
 export const gitlabAuthModeSchema = z.enum(["oauth", "pat"]).default("pat");
 export const gitlabOAuthClientIdSchema = z.string().min(1).optional();
@@ -153,7 +154,7 @@ export async function listGitLabAccessibleProjects(
   });
   if (!response.ok) {
     const body = await response.text().catch(() => `HTTP ${response.status}`);
-    throw new Error(`GitLab project listing failed: ${body}`);
+    throw new Error(`GitLab project listing failed: ${sanitizeErrorDetail(body)}`);
   }
   const raw = await response.json().catch(() => []);
   if (!Array.isArray(raw)) {
@@ -228,7 +229,7 @@ export function createGitLabDeviceOAuthHandler(
       });
       if (!response.ok) {
         const errorBody = await response.text().catch(() => `HTTP ${response.status}`);
-        throw new Error(`GitLab device authorization failed: ${errorBody}`);
+        throw new Error(`GitLab device authorization failed: ${sanitizeErrorDetail(errorBody)}`);
       }
       const raw = await response.json().catch(() => ({}));
       const data = (typeof raw === "object" && raw !== null) ? (raw as Record<string, unknown>) : {};
@@ -280,7 +281,7 @@ export function createGitLabDeviceOAuthHandler(
         if (errorCode === "expired_token") {
           throw new Error("GitLab device authorization expired. Please try again.");
         }
-        throw new Error(`GitLab device authorization failed: ${errorCode}${errorDescription ? `: ${errorDescription}` : ""}`);
+        throw new Error(`GitLab device authorization failed: ${sanitizeErrorDetail(`${errorCode}${errorDescription ? `: ${errorDescription}` : ""}`)}`);
       }
       throw new Error("GitLab device authorization timed out.");
     },
@@ -341,7 +342,7 @@ export function createGitLabRedirectOAuthHandler(
       });
       if (!response.ok) {
         const errorBody = await response.text().catch(() => `HTTP ${response.status}`);
-        throw new Error(`GitLab OAuth token exchange failed: ${errorBody}`);
+        throw new Error(`GitLab OAuth token exchange failed: ${sanitizeErrorDetail(errorBody)}`);
       }
 
       const rawPayload = await response.json().catch(() => ({}));
