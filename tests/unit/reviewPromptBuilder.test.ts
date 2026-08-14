@@ -156,7 +156,7 @@ describe("buildReviewPrompt", () => {
         { file: "src/foo.ts", line: 12, message: "Null check missing here." },
       ],
     });
-    expect(prompt).toContain("return an empty comments list");
+    expect(prompt).toContain("return an empty `comments` array");
   });
 });
 
