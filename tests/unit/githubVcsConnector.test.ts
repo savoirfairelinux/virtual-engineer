@@ -115,6 +115,18 @@ describe("GitHubVcsConnector", () => {
       );
     });
 
+    it("accepts an explicit HTTPS default port", async () => {
+      const gitRunner = makeGitRunner();
+      const repoUrl = "https://github.com:443/octocat/hello-world.git";
+
+      await makeConnector(undefined, gitRunner).clone(repoUrl, "main", "/tmp/repo");
+
+      expect(gitRunner.run).toHaveBeenCalledWith(
+        ["clone", "--branch", "main", "--depth", "1", "--", repoUrl, "/tmp/repo"],
+        expect.any(Object)
+      );
+    });
+
     it("redacts credentials from clone failures", async () => {
       const gitRunner = makeGitRunner();
       const repoUrl =
