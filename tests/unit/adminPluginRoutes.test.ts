@@ -630,7 +630,7 @@ describe("Admin API — Plugin & Integration routes", () => {
       expect(getStatus).toBe(404);
     });
 
-    it("returns 409 when the integration is still referenced by agents or project relations", async () => {
+    it("deletes an integration even when it has dependents", async () => {
       vi.mocked(integrationStore.countIntegrationReferences).mockResolvedValueOnce(2);
 
       const { body: createBody } = await fetchFromServer(server, "/api/admin/integrations", {
@@ -642,15 +642,13 @@ describe("Admin API — Plugin & Integration routes", () => {
       const { status, body } = await fetchFromServer(server, `/api/admin/integrations/${id}`, {
         method: "DELETE",
       });
-      expect(status).toBe(409);
-      expect(body["error"]).toBe("Conflict");
-      expect(body["referenceCount"]).toBe(2);
-      // integration should still exist
+      expect(status).toBe(200);
+      expect(body["deleted"]).toBe(true);
       const { status: getStatus } = await fetchFromServer(server, `/api/admin/integrations/${id}`);
-      expect(getStatus).toBe(200);
+      expect(getStatus).toBe(404);
     });
 
-    it("returns detailed integration dependent references", async () => {
+    it("deletes an integration when detailed dependent references are available", async () => {
       const references = {
         agents: [{ id: "agent-1", name: "Build Agent" }],
         projectBindings: [{ projectId: "project-1", projectName: "Platform", capability: "issue_tracking" }],
@@ -670,17 +668,8 @@ describe("Admin API — Plugin & Integration routes", () => {
         method: "DELETE",
       });
 
-      expect(status).toBe(409);
-      expect(body["error"]).toBe("Conflict");
-      expect(body["message"]).toBe(
-        'Integration "In Use" is still in use by:\n' +
-        '- agent "Build Agent"\n' +
-        '- project "Platform" (issue_tracking)\n' +
-        '- project "Platform" push target "platform/app"\n' +
-        "Remove these dependencies before deleting it.",
-      );
-      expect(body["references"]).toEqual(references);
-      expect(body["referenceCount"]).toBe(3);
+      expect(status).toBe(200);
+      expect(body["deleted"]).toBe(true);
     });
   });
 

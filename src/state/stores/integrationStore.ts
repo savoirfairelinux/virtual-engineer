@@ -106,8 +106,59 @@ export function createIntegrationStore(context: IntegrationStoreContext): Integr
     return result;
   }
 
-  async function deleteIntegration(id: string): Promise<void> {
-    await db.delete(integrations).where(eq(integrations.id, id));
+  function deleteIntegration(id: string): Promise<void> {
+    try {
+      const now = new Date();
+      db.transaction((tx) => {
+        const projectIds = new Set<string>();
+        const bindingRows = tx
+          .select({ projectId: projectIntegrationBindings.projectId })
+          .from(projectIntegrationBindings)
+          .where(eq(projectIntegrationBindings.integrationId, id))
+          .all();
+        const pushTargetRows = tx
+          .select({ projectId: projectPushTargets.projectId })
+          .from(projectPushTargets)
+          .where(eq(projectPushTargets.integrationId, id))
+          .all();
+        for (const row of [...bindingRows, ...pushTargetRows]) projectIds.add(row.projectId);
+
+        const agentRows = tx
+          .select({ id: agents.id })
+          .from(agents)
+          .where(eq(agents.integrationId, id))
+          .all();
+        for (const agent of agentRows) {
+          tx.update(agents)
+            .set({ integrationId: null, enabled: 0, updatedAt: now })
+            .where(eq(agents.id, agent.id))
+            .run();
+          const agentProjectRows = tx
+            .select({ id: projects.id })
+            .from(projects)
+            .where(eq(projects.agentId, agent.id))
+            .all();
+          for (const project of agentProjectRows) projectIds.add(project.id);
+        }
+
+        for (const projectId of projectIds) {
+          tx.update(projects)
+            .set({ enabled: 0, updatedAt: now })
+            .where(eq(projects.id, projectId))
+            .run();
+        }
+        tx.delete(projectPushTargets)
+          .where(eq(projectPushTargets.integrationId, id))
+          .run();
+        tx.delete(projectIntegrationBindings)
+          .where(eq(projectIntegrationBindings.integrationId, id))
+          .run();
+        tx.delete(integrations).where(eq(integrations.id, id)).run();
+      });
+      return Promise.resolve();
+    } catch (err) {
+      return Promise.reject(err instanceof Error ? err : new Error(String(err)));
+    }
   }
 
   async function getIntegrationReferenceDetails(id: string): Promise<IntegrationReferenceDetails> {

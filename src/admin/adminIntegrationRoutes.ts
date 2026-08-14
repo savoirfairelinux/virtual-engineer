@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { getLogger } from "../logger.js";
-import type { Integration, IntegrationReferenceDetails, IntegrationStore, OAuthApp, OAuthAppStore, ProviderId } from "../interfaces.js";
+import type { Integration, IntegrationStore, OAuthApp, OAuthAppStore, ProviderId } from "../interfaces.js";
 import { getCredentialFieldKeys, type PluginManager } from "../plugins/pluginManager.js";
 import {
   getAllProviderDescriptors,
@@ -25,15 +25,6 @@ const workspaceScanSchema = z.object({
   cloneUrl: z.string().trim().min(1).max(2048),
   revision: z.string().trim().min(1).max(512).optional(),
 });
-
-function formatIntegrationReferenceMessage(name: string, references: IntegrationReferenceDetails): string {
-  const consumers = [
-    ...references.agents.map((agent) => `agent "${agent.name}"`),
-    ...references.projectBindings.map((binding) => `project "${binding.projectName}" (${binding.capability})`),
-    ...references.projectPushTargets.map((target) => `project "${target.projectName}" push target "${target.repoKey}"`),
-  ];
-  return `Integration "${name}" is still in use by:\n${consumers.map((consumer) => `- ${consumer}`).join("\n")}\nRemove these dependencies before deleting it.`;
-}
 
 function logConnectionTestResult(context: Record<string, string | undefined>, result: { logs?: string[] | undefined }): void {
   if (!Array.isArray(result.logs) || result.logs.length === 0) {
@@ -292,25 +283,6 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
     const id = params["id"] ?? "";
     const existing = await deps.integrationStore.getIntegration(id);
     if (!existing) { writeJson(res, 404, { error: "Integration not found" }); return; }
-    if (deps.integrationStore.countIntegrationReferences) {
-      const references = typeof deps.integrationStore.getIntegrationReferenceDetails === "function"
-        ? await deps.integrationStore.getIntegrationReferenceDetails(id)
-        : undefined;
-      const refCount = references
-        ? references.agents.length + references.projectBindings.length + references.projectPushTargets.length
-        : await deps.integrationStore.countIntegrationReferences(id);
-      if (refCount > 0) {
-        writeJson(res, 409, {
-          error: "Conflict",
-          message: references
-            ? formatIntegrationReferenceMessage(existing.name, references)
-            : `Integration "${existing.name}" is still referenced by ${refCount} agent(s) or project relation(s) and cannot be deleted`,
-          ...(references ? { references } : {}),
-          referenceCount: refCount,
-        });
-        return;
-      }
-    }
     try {
       if (existing.enabled && deps.pluginManager) await deps.pluginManager.disablePlugin(id);
       await deps.integrationStore.deleteIntegration(id);

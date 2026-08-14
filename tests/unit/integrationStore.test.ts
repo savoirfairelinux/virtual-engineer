@@ -131,6 +131,49 @@ describe("SqliteStateStore — IntegrationStore", () => {
       expect(result).toBeNull();
     });
 
+    it("disables dependents and removes project bindings before deleting", async () => {
+      await store.upsertIntegration({ id: "d2", provider: "redmine", name: "Redmine", configJson: "{}", enabled: true });
+      const agent = await store.createAgent({
+        name: "Dependent Agent",
+        type: "coding",
+        modelConfigJson: "{}",
+        integrationId: "d2",
+        systemPromptId: "system_generic_code",
+        instructionsPromptId: "instructions_generic_code",
+        enabled: true,
+      });
+      const project = await store.createProject({
+        name: "Dependent Project",
+        type: "coding",
+        agentId: agent.id,
+        enabled: true,
+      });
+      await store.setProjectTicketSource(project.id, {
+        integrationId: "d2",
+        ticketProjectKey: "DEPENDENT",
+      });
+      await store.addProjectPushTarget(project.id, {
+        integrationId: "d2",
+        repoKey: "dependent/repo",
+        cloneUrl: "https://example.test/dependent/repo.git",
+        targetBranch: "main",
+        role: "primary",
+        commitOrder: 0,
+        localPath: ".",
+      });
+
+      await store.deleteIntegration("d2");
+
+      await expect(store.getIntegration("d2")).resolves.toBeNull();
+      await expect(store.getAgentById(agent.id)).resolves.toMatchObject({
+        integrationId: null,
+        enabled: false,
+      });
+      await expect(store.getProjectById(project.id)).resolves.toMatchObject({ enabled: false });
+      await expect(store.getProjectTicketSource(project.id)).resolves.toBeNull();
+      await expect(store.listProjectPushTargets(project.id)).resolves.toEqual([]);
+    });
+
     it("does not throw when deleting nonexistent integration", async () => {
       await expect(store.deleteIntegration("nonexistent")).resolves.toBeUndefined();
     });
