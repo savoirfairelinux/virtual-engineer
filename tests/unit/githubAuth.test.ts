@@ -227,6 +227,24 @@ describe("githubAuth", () => {
         fetchGitHubCurrentUser("bad-token", "https://api.github.com")
       ).rejects.toThrow(GitHubAuthError);
     });
+
+    it("sanitizes token-bearing upstream error bodies", async () => {
+      fetchMock.mockResolvedValueOnce(errorResponse(
+        401,
+        JSON.stringify({ access_token: "gho_secret_from_upstream", message: "denied" }),
+      ));
+
+      let caught: unknown;
+      try {
+        await fetchGitHubCurrentUser("bad-token", "https://api.github.com");
+      } catch (error: unknown) {
+        caught = error;
+      }
+      expect(caught).toBeInstanceOf(GitHubAuthError);
+      if (!(caught instanceof Error)) throw new Error("Expected GitHubAuthError");
+      expect(caught.message).toContain("access_token");
+      expect(caught.message).not.toContain("gho_secret_from_upstream");
+    });
   });
 
   describe("listGitHubRepositoriesForOwner", () => {

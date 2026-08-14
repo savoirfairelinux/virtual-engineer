@@ -21,6 +21,7 @@ import type {
   ProviderAuthRedirectStartInput,
   RedirectProviderAuthHandler,
 } from "../../agents/providerAuthService.js";
+import { sanitizeErrorDetail } from "../../utils/redactUrl.js";
 
 /** Public Claude Code OAuth client id (fixed). */
 export const CLAUDE_CODE_OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
@@ -112,7 +113,7 @@ export function createClaudeRedirectOAuthHandler(
 
       if (!response.ok) {
         const errorBody = await response.text().catch(() => `HTTP ${response.status}`);
-        throw new Error(`Claude OAuth token exchange failed: ${errorBody}`);
+        throw new Error(`Claude OAuth token exchange failed: ${sanitizeErrorDetail(errorBody)}`);
       }
 
       const rawPayload = await response.json().catch(() => ({}));

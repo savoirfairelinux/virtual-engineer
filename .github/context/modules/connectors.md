@@ -16,7 +16,7 @@ Shared SSH transport and Gerrit protocol helper. Encapsulates `ssh gerrit …` e
 
 ### `GitLabHttpClient` — [src/connectors/gitlabHttpClient.ts](../../../src/connectors/gitlabHttpClient.ts)
 
-Shared HTTP helper with `Authorization: Bearer` injection, error translation, and paginated fetching. Used by both `GitLabIssueConnector` and `GitLabMergeRequestConnector`, so the same runtime path works for both GitLab PATs and GitLab OAuth access tokens.
+Shared HTTP helper with `Authorization: Bearer` injection, error translation, paginated fetching, and bounded credential redaction for URLs and upstream response bodies. Used by both `GitLabIssueConnector` and `GitLabMergeRequestConnector`, so the same runtime path works for both GitLab PATs and GitLab OAuth access tokens.
 
 ## Capabilities
 
