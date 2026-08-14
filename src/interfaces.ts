@@ -1104,7 +1104,7 @@ export class TicketApiError extends ApiHttpError {
     body: string
   ) {
     super(statusCode, url, body);
-    this.message = `Ticket API error ${statusCode} on ${url}: ${body}`;
+    this.message = `Ticket API error ${statusCode} on ${this.url}: ${this.body}`;
     this.name = "TicketApiError";
   }
 }
@@ -1127,7 +1127,7 @@ export class ReviewApiError extends ApiHttpError {
     body: string
   ) {
     super(statusCode, url, body);
-    this.message = `Review API error ${statusCode} on ${url}: ${body}`;
+    this.message = `Review API error ${statusCode} on ${this.url}: ${this.body}`;
     this.name = "ReviewApiError";
   }
 }
