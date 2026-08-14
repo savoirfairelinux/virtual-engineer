@@ -1046,8 +1046,8 @@ describe("Orchestrator — Phase 4 project mode", () => {
       provider: "copilot" as const,
       config: { authMode: "pat", token: "copilot-pat" },
       assertResolved: (resolved: ResolvedAgentConfig) => {
-        expect(resolved.encryptedSessionToken).toMatch(/^veenc:v1:/);
-        expect(resolved.encryptedSessionToken).not.toContain("copilot-pat");
+          expect(resolved.apiKey).toBe("copilot-pat");
+          expect(resolved.encryptedSessionToken).toBeUndefined();
       },
     },
     {
