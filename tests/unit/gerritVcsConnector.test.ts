@@ -70,7 +70,7 @@ describe("GerritVcsConnector", () => {
       await connector.clone(repoUrl, branch, targetDir);
 
       expect(gitRunner.run).toHaveBeenCalledWith(
-        ["clone", "--branch", branch, "--depth", "1", repoUrl, targetDir],
+        ["clone", "--branch", branch, "--depth", "1", "--", repoUrl, targetDir],
         expect.objectContaining({
           env: expect.objectContaining({
             GIT_SSH_COMMAND: expect.stringContaining(mockConfig.sshKeyPath!),
@@ -80,11 +80,33 @@ describe("GerritVcsConnector", () => {
       );
     });
 
+    it("accepts a configured-host scp-style URL", async () => {
+      await connector.clone("virtual-engineer@gerrit.example.com:my-repo.git", "main", "/tmp/repo");
+
+      expect(gitRunner.run).toHaveBeenCalledWith(
+        ["clone", "--branch", "main", "--depth", "1", "--", "virtual-engineer@gerrit.example.com:my-repo.git", "/tmp/repo"],
+        expect.any(Object)
+      );
+    });
+
+    it.each([
+      ["/tmp/local-repo", "local path"],
+      ["ext::sh -c whoami", "ext protocol"],
+      ["-unsafe", "option-like value"],
+      ["ssh://gerrit.evil.example:29418/my-repo.git", "unconfigured host"],
+      ["https://gerrit.example.com/my-repo.git", "wrong scheme"],
+    ])("rejects %s (%s) before invoking git", async (repoUrl) => {
+      gitRunner.run.mockClear();
+
+      await expect(connector.clone(repoUrl, "main", "/tmp/repo")).rejects.toThrow();
+      expect(gitRunner.run).not.toHaveBeenCalled();
+    });
+
     it("should throw on clone failure", async () => {
       gitRunner.run.mockRejectedValueOnce(new Error("SSH connection refused"));
 
       await expect(
-        connector.clone("ssh://invalid.com/repo.git", "main", "/tmp/repo")
+        connector.clone("ssh://gerrit.example.com:29418/repo.git", "main", "/tmp/repo")
       ).rejects.toThrow("Failed to clone Gerrit repository");
     });
 

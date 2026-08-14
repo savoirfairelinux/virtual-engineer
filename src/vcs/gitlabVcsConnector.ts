@@ -12,6 +12,7 @@ import { GitLabHttpClient } from "../connectors/gitlabHttpClient.js";
 import { redactUrls } from "../utils/redactUrl.js";
 import type { GitRunner } from "./gitRunner.js";
 import { NodeGitRunner } from "./nodeGitRunner.js";
+import { validateHttpsCloneUrl } from "./cloneUrlValidation.js";
 
 const log = getLogger("gitlab-vcs");
 
@@ -47,6 +48,7 @@ export class GitLabVcsConnector implements VcsConnector {
 
   /** Clone a GitLab repository via HTTP into the target directory. */
   async clone(repoUrl: string, branch: string, targetDir: string): Promise<void> {
+    validateHttpsCloneUrl(repoUrl, new URL(this.config.baseUrl).host, "GitLab");
     log.info(
       { repoUrl: redactUrls(repoUrl), branch, targetDir },
       "cloning repository from GitLab via HTTP"
@@ -54,7 +56,7 @@ export class GitLabVcsConnector implements VcsConnector {
 
     try {
       await this.gitRunner.run(
-        ["clone", "--branch", branch, "--depth", "1", repoUrl, targetDir],
+        ["clone", "--branch", branch, "--depth", "1", "--", repoUrl, targetDir],
         { cwd: process.cwd(), timeoutMs: 300_000 }
       );
 

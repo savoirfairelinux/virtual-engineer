@@ -106,7 +106,7 @@ describe("GitHubVcsConnector", () => {
       await makeConnector(undefined, gitRunner).clone(repoUrl, "main", "/tmp/repo");
 
       expect(gitRunner.run).toHaveBeenCalledWith(
-        ["clone", "--branch", "main", "--depth", "1", repoUrl, "/tmp/repo"],
+        ["clone", "--branch", "main", "--depth", "1", "--", repoUrl, "/tmp/repo"],
         expect.any(Object)
       );
       expect(logger.info).toHaveBeenCalledWith(
@@ -124,6 +124,20 @@ describe("GitHubVcsConnector", () => {
       await expect(makeConnector(undefined, gitRunner).clone(repoUrl, "main", "/tmp/repo")).rejects.not.toThrow(
         /ghp_/
       );
+    });
+
+    it.each([
+      ["/tmp/local-repo", "local path"],
+      ["ext::sh -c whoami", "ext protocol"],
+      ["-unsafe", "option-like value"],
+      ["https://evil.example/octocat/hello-world.git", "unconfigured host"],
+      ["http://github.com/octocat/hello-world.git", "insecure scheme"],
+    ])("rejects %s (%s) before invoking git", async (repoUrl) => {
+      const gitRunner = makeGitRunner();
+
+      await expect(makeConnector(undefined, gitRunner).clone(repoUrl, "main", "/tmp/repo"))
+        .rejects.toThrow();
+      expect(gitRunner.run).not.toHaveBeenCalled();
     });
   });
 

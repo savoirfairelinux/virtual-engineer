@@ -11,6 +11,7 @@ import { GerritSshClient, buildSshHostKeyOptions } from "../connectors/gerritSsh
 import { buildGerritTopic } from "./branchNaming.js";
 import type { GitRunner } from "./gitRunner.js";
 import { NodeGitRunner } from "./nodeGitRunner.js";
+import { validateSshCloneUrl } from "./cloneUrlValidation.js";
 
 const log = getLogger("gerrit-vcs");
 
@@ -35,12 +36,13 @@ function buildSshCommand(config: GerritVcsConnectorConfig, overrideSshKeyPath?: 
   const keyPath = overrideSshKeyPath ?? config.sshKeyPath;
   const agentPubKeyPath = config.sshAgentPubKeyPath;
   const hostKeyOpts = buildSshHostKeyOptions(config.sshKnownHostsPath).join(" ");
+  const portPart = `-p ${config.sshPort}`;
   const identityPart = keyPath
     ? `-i "${keyPath.replace(/"/g, '\\"')}" -o IdentitiesOnly=yes`
     : agentPubKeyPath
       ? `-o IdentitiesOnly=yes -i "${agentPubKeyPath.replace(/"/g, '\\"')}"`
       : "";
-  return ["ssh", identityPart, hostKeyOpts].filter(Boolean).join(" ");
+  return ["ssh", portPart, identityPart, hostKeyOpts].filter(Boolean).join(" ");
 }
 
 /** Build the process env object that injects GIT_SSH_COMMAND for Gerrit operations. */
@@ -135,6 +137,7 @@ export class GerritVcsConnector implements VcsConnector {
    * @param sshKeyPath Optional SSH key path override for this specific clone
    */
   async clone(repoUrl: string, branch: string, targetDir: string, sshKeyPath?: string): Promise<void> {
+    validateSshCloneUrl(repoUrl, this.config.sshHost, this.config.sshPort, this.config.sshUser, "Gerrit");
     log.info(
       { repoUrl, branch, targetDir, usingCustomSshKey: Boolean(sshKeyPath) },
       "cloning repository from Gerrit via SSH"
@@ -142,7 +145,7 @@ export class GerritVcsConnector implements VcsConnector {
 
     try {
       await this.gitRunner.run(
-        ["clone", "--branch", branch, "--depth", "1", repoUrl, targetDir],
+        ["clone", "--branch", branch, "--depth", "1", "--", repoUrl, targetDir],
         {
           cwd: process.cwd(),
           env: buildGitEnv(this.config, sshKeyPath),
