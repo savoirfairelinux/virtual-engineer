@@ -68,6 +68,42 @@ Multiple active integrations of the same provider are supported in parallel. Pas
 
 `scripts/start.sh` is a one-shot setup: it builds the agent and orchestrator images, starts the pinned **OpenShell gateway** with its Docker compute driver, and starts the orchestrator wired to that gateway.
 
+### One-line install
+
+From an empty directory, run:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/savoirfairelinux/virtual-engineer/main/scripts/install.sh | bash
+```
+
+The bootstrap checks Git, curl, OpenSSL, Docker, and the Docker daemon, clones
+the repository into the current directory, creates `.env`, generates
+`ADMIN_AUTH_SECRET` once, and delegates the rest to `scripts/start.sh`. It does
+not install system packages or update an existing checkout. A non-empty
+directory that is not already a Virtual Engineer checkout is rejected.
+
+For a reviewable download into a separate empty target, use:
+
+```bash
+tmp_dir=$(mktemp -d)
+curl -fsSLo "$tmp_dir/install.sh" https://raw.githubusercontent.com/savoirfairelinux/virtual-engineer/main/scripts/install.sh
+less "$tmp_dir/install.sh"
+VE_INSTALL_DIR="$PWD/virtual-engineer" bash "$tmp_dir/install.sh"
+rm -rf "$tmp_dir"
+```
+
+Set `VE_INSTALL_DIR` to choose another target directory or `VE_REF` to select a
+branch or release tag. Pass startup options after `--`, for example:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/savoirfairelinux/virtual-engineer/main/scripts/install.sh | bash -s -- --no-k3s-install
+```
+
+For a release tag, use that same tag in the raw GitHub URL and in `VE_REF`. For
+stronger source verification, also set `VE_EXPECTED_COMMIT` to the tag's full
+40-character commit. The one-line path still uses the same pinned OpenShell,
+local Keycloak, Docker, and persistence behavior described below.
+
 ### Requirements
 
 | Tool | Minimum | Notes |
