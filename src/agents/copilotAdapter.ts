@@ -16,7 +16,7 @@ import type {
 import { makeExternalChangeId } from "../interfaces.js";
 import { getLogger } from "../logger.js";
 import { DEFAULT_COPILOT_MODEL } from "../copilotModel.js";
-import { decryptToken } from "../utils/encryption.js";
+import { decryptManagedCredential } from "../utils/encryption.js";
 import { assertPromptRole } from "../utils/promptRole.js";
 import { getConfig } from "../config.js";
 import {
@@ -368,12 +368,12 @@ export class CopilotAdapter implements AgentAdapter, ConfigurableAdapter {
 
   /** Retrieve the GitHub OAuth token, preferring the encrypted session token from agent config. */
   private getGitHubOAuthToken(context: TaskContext): Promise<string> {
-    // Not async: errors here (including decryptToken's) must surface as a
+    // Not async: errors here must surface as a
     // rejected promise, not a synchronous throw, for await/`.catch()` callers.
     try {
       const encrypted = context.agentSession.encryptedSessionToken;
       if (encrypted) {
-        return Promise.resolve(decryptToken(encrypted, getConfig().adminAuthSecret));
+        return Promise.resolve(decryptManagedCredential(encrypted, getConfig().adminAuthSecret, "sessionToken"));
       }
       if (context.agentSession.githubToken) {
         return Promise.resolve(context.agentSession.githubToken);

@@ -725,4 +725,28 @@ describe("Admin API — Agent routes (/api/admin/agents)", () => {
     expect(response.status).toBe(200);
     expect(fetchAvailableModelsWithPat).toHaveBeenCalledWith("github_pat_encrypted123");
   });
+
+  it("GET /:id/available-models returns a controlled error for an undecryptable token", async () => {
+    await store.upsertIntegration({
+      id: "copilot-invalid-token",
+      provider: "copilot",
+      name: "Copilot invalid token",
+      configJson: JSON.stringify({ authMode: "pat", token: "veenc:v1:not-valid-ciphertext" }),
+      enabled: true,
+    });
+    const agent = await store.createAgent({
+      name: "Invalid token bot",
+      type: "coding",
+      modelConfigJson: "{}",
+      integrationId: "copilot-invalid-token",
+      systemPromptId: "system_generic_code",
+      instructionsPromptId: "instructions_generic_code",
+    });
+
+    const response = await rest(server, `/api/admin/agents/${agent.id}/available-models`);
+
+    expect(response.status).toBe(400);
+    expect(response.body?.["error"]).toBe("Stored token cannot be decrypted; reconnect OAuth.");
+    expect(fetchAvailableModelsWithPat).not.toHaveBeenCalled();
+  });
 });
