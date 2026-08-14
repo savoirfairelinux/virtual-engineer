@@ -124,7 +124,20 @@ describe("createRuntimePolicyResolver", () => {
       expect(yaml).toContain("no_new_privs: true");
     });
 
-    it.each(["/", "/usr", "/lib", "/etc", "/app", "/bin", "/sbin", "/boot", "/var"])(
+    it.each([
+      "/",
+      "/usr",
+      "/usr/local/bin",
+      "/lib",
+      "/etc",
+      "/etc/ssh",
+      "/app",
+      "/app/config",
+      "/bin",
+      "/sbin",
+      "/boot",
+      "/var",
+    ])(
       "rejects a filesystem policy that makes %s writable",
       async (path) => {
         const escalate = {

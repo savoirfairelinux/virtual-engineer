@@ -25,7 +25,7 @@ Key public methods:
 
 - `startTaskForProject(ticket, project, ticketSourceLabel)`
 - `resumeActiveTasks()`
-- `handleReviewEvent(changeId)`
+- `handleReviewEvent(changeId, taskId?)`
 - `triggerFeedbackForChange(integrationId, externalChangeId)`
 - `markChangeMerged(integrationId, externalChangeId)`
 - `markChangeAbandoned(integrationId, externalChangeId)`
@@ -87,7 +87,7 @@ Every tick (`POLLING_INTERVAL_MS`, exponential backoff on repeated failures) run
 
 ### `pollInReviewTasks()` (always on)
 
-- re-checks active code-gen tasks stuck in `IN_REVIEW` (with a non-null external change id) by calling `orchestrator.handleReviewEvent(changeId)` — the polling equivalent of the Gerrit stream-events trigger for GitHub / GitLab integrations
+- re-checks active code-gen tasks stuck in `IN_REVIEW` (with a non-null external change id) by calling `orchestrator.handleReviewEvent(changeId, taskId)`. Passing the task selected from the active-task query prevents a shared external change id from being re-resolved to another integration's task; direct event callers may omit `taskId` and retain the legacy lookup path.
 
 ### `pollReviewWatchingTasks()` (always on)
 

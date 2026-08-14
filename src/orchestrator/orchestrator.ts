@@ -336,8 +336,10 @@ export class Orchestrator {
   }
 
   /** Handle an external review event by looking up the in-flight task and checking review progress. */
-  async handleReviewEvent(changeId: ExternalChangeId): Promise<void> {
-    const task = await this.stateStore.findTaskByExternalChangeId(null, changeId);
+  async handleReviewEvent(changeId: ExternalChangeId, taskId?: Task["taskId"]): Promise<void> {
+    const task = taskId !== undefined
+      ? await this.stateStore.getTask(taskId)
+      : await this.stateStore.findTaskByExternalChangeId(null, changeId);
     if (!task) {
       log.debug({ changeId }, "no active task for review change");
       return;

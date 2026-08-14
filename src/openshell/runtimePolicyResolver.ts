@@ -1,6 +1,7 @@
 import type { PolicyResolver } from "../workspace/openShellWorkspaceRunner.js";
 import type { RuntimePolicyRecord } from "../state/stores/runtimePolicyStore.js";
 import { createDefaultPolicyDocument, OPEN_SHELL_POLICY_KEYS } from "./openShellPolicyBuilder.js";
+import { posix } from "node:path";
 import { parse, stringify } from "yaml";
 
 interface RuntimePolicyResolverStore {
@@ -38,6 +39,18 @@ function policySections(policies: RuntimePolicyRecord[], owner: string): Map<str
 /** Paths a bound filesystem policy must never make writable for the agent. */
 const PROTECTED_PATHS = ["/", "/usr", "/lib", "/etc", "/app", "/bin", "/sbin", "/boot", "/var"];
 
+function isProtectedWritePath(entry: string): boolean {
+  const segments = entry.split("/");
+  if (segments.some((segment) => segment === "." || segment === "..")) return true;
+
+  const normalized = posix.normalize(entry).replace(/\/+$/, "") || "/";
+  return PROTECTED_PATHS.some(
+    (protectedPath) =>
+      normalized === protectedPath ||
+      (protectedPath !== "/" && normalized.startsWith(`${protectedPath}/`)),
+  );
+}
+
 /**
  * A bound runtime policy replaces its whole section, so re-assert the two
  * non-negotiable properties of the sandbox after composition: the agent runs as
@@ -59,7 +72,7 @@ function enforceSandboxFloor(document: Record<string, unknown>): void {
     const readWrite = policy["read_write"];
     if (Array.isArray(readWrite)) {
       const offending = readWrite.filter(
-        (entry) => typeof entry === "string" && PROTECTED_PATHS.includes(entry.replace(/\/+$/, "") || "/")
+        (entry) => typeof entry === "string" && isProtectedWritePath(entry),
       );
       if (offending.length > 0) {
         throw new Error(

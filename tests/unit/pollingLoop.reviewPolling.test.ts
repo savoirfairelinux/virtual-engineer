@@ -115,7 +115,8 @@ describe("PollingLoop — pollInReviewTasks", () => {
 
     expect(orchestrator.handleReviewEvent).toHaveBeenCalledTimes(1);
     expect(orchestrator.handleReviewEvent).toHaveBeenCalledWith(
-      makeExternalChangeId("octocat/repo#42")
+      makeExternalChangeId("octocat/repo#42"),
+      task.taskId,
     );
   });
 
