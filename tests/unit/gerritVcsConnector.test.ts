@@ -119,7 +119,7 @@ describe("GerritVcsConnector", () => {
       await connector.clone(repoUrl, branch, targetDir, overrideSshKeyPath);
 
       expect(gitRunner.run).toHaveBeenCalledWith(
-        ["clone", "--branch", branch, "--depth", "1", repoUrl, targetDir],
+        ["clone", "--branch", branch, "--depth", "1", "--", repoUrl, targetDir],
         expect.objectContaining({
           env: expect.objectContaining({
             GIT_SSH_COMMAND: expect.stringContaining(overrideSshKeyPath),
