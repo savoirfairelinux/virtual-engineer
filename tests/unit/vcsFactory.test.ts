@@ -198,7 +198,7 @@ describe("createVcsConnectorForIntegration", () => {
       });
 
       expect(() => createVcsConnectorForIntegration(integration, { repoKey: "team/repo" }))
-        .toThrow("Stored token cannot be decrypted; reconnect OAuth.");
+        .toThrow("ADMIN_AUTH_SECRET is required to decrypt stored credentials.");
     });
 
     it("throws when projectId is missing", () => {
