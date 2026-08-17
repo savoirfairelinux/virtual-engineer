@@ -170,11 +170,10 @@ describe("GuidedTour", () => {
         expect(sectionTour).toBe(CONFIG_WORKFLOW_TOUR);
         continue;
       }
-      expect(sectionTour[0]?.target).toBe(`[data-tour="config-nav-${section}"]`);
-      expect(sectionTour[1]?.target).toBe(actionTargets[section]);
-      expect(sectionTour.length).toBeGreaterThan(2);
-      expect(sectionTour[2]?.target).toBe(deepTargets[section]);
-      expect(sectionTour.slice(2).some((step) => step.advance === "continue")).toBe(true);
+      expect(sectionTour[0]?.target).toBe(actionTargets[section]);
+      expect(sectionTour.length).toBeGreaterThan(1);
+      expect(sectionTour[1]?.target).toBe(deepTargets[section]);
+      expect(sectionTour.slice(1).some((step) => step.advance === "continue")).toBe(true);
     }
   });
 

@@ -64,12 +64,6 @@ export const CONFIG_SECTION_TOURS: Record<ConfigSectionId, TourStep[]> = {
   overview: CONFIG_WORKFLOW_TOUR,
   integrations: [
     {
-      target: '[data-tour="config-nav-integrations"]',
-      title: "Integrations",
-      body: "Connect the ticket, repository, review, and agent providers VE will use.",
-      placement: "right",
-    },
-    {
       target: '[data-tour="integrations-add"]',
       title: "Add an integration",
       body: "Create a provider connection, then test and save its credentials.",
@@ -142,12 +136,6 @@ export const CONFIG_SECTION_TOURS: Record<ConfigSectionId, TourStep[]> = {
   ],
   oauth: [
     {
-      target: '[data-tour="config-nav-oauth"]',
-      title: "OAuth apps",
-      body: "Register provider applications used for short-lived OAuth tokens.",
-      placement: "right",
-    },
-    {
       target: '[data-tour="oauth-register"]',
       title: "Register an app",
       body: "Add a client ID for the provider host that will authorize VE.",
@@ -185,12 +173,6 @@ export const CONFIG_SECTION_TOURS: Record<ConfigSectionId, TourStep[]> = {
     },
   ],
   agents: [
-    {
-      target: '[data-tour="config-nav-agents"]',
-      title: "Agents library",
-      body: "Reuse configured coding and review agents across your projects.",
-      placement: "right",
-    },
     {
       target: '[data-tour="agents-new"]',
       title: "Create an agent",
@@ -268,12 +250,6 @@ export const CONFIG_SECTION_TOURS: Record<ConfigSectionId, TourStep[]> = {
     },
   ],
   projects: [
-    {
-      target: '[data-tour="config-nav-projects"]',
-      title: "Projects",
-      body: "Connect an agent to ticket sources, repositories, and review targets.",
-      placement: "right",
-    },
     {
       target: '[data-tour="projects-new-button"]',
       title: "Create a project",
@@ -391,12 +367,6 @@ export const CONFIG_SECTION_TOURS: Record<ConfigSectionId, TourStep[]> = {
   ],
   prompts: [
     {
-      target: '[data-tour="config-nav-prompts"]',
-      title: "Prompts",
-      body: "Maintain the system and instruction prompts assigned to agents.",
-      placement: "right",
-    },
-    {
       target: '[data-tour="prompts-new"]',
       title: "Create a prompt",
       body: "Add reusable instructions for coding, review, or a custom workflow.",
@@ -435,12 +405,6 @@ export const CONFIG_SECTION_TOURS: Record<ConfigSectionId, TourStep[]> = {
     },
   ],
   "runtime-policies": [
-    {
-      target: '[data-tour="config-nav-runtime-policies"]',
-      title: "Runtime policies",
-      body: "Define the sandbox rules that govern agent files, processes, and network access.",
-      placement: "right",
-    },
     {
       target: '[data-tour="runtime-policies-new"]',
       title: "Create a runtime policy",
@@ -486,12 +450,6 @@ export const CONFIG_SECTION_TOURS: Record<ConfigSectionId, TourStep[]> = {
   ],
   denials: [
     {
-      target: '[data-tour="config-nav-denials"]',
-      title: "Policy denials",
-      body: "Review sandbox requests that the runtime policy engine blocked.",
-      placement: "right",
-    },
-    {
       target: '[data-tour="denials-refresh"]',
       title: "Refresh the log",
       body: "Reload the latest denials to inspect their runtime, path, and reason.",
@@ -506,12 +464,6 @@ export const CONFIG_SECTION_TOURS: Record<ConfigSectionId, TourStep[]> = {
     },
   ],
   users: [
-    {
-      target: '[data-tour="config-nav-users"]',
-      title: "Users",
-      body: "Manage dashboard accounts and the roles that start their default access.",
-      placement: "right",
-    },
     {
       target: '[data-tour="users-new"]',
       title: "Add a user",
@@ -551,12 +503,6 @@ export const CONFIG_SECTION_TOURS: Record<ConfigSectionId, TourStep[]> = {
   ],
   groups: [
     {
-      target: '[data-tour="config-nav-groups"]',
-      title: "Groups",
-      body: "Organize dashboard users so policies can grant access to a whole collection.",
-      placement: "right",
-    },
-    {
       target: '[data-tour="groups-new"]',
       title: "Create a group",
       body: "Add a group, then manage its members and policy bindings.",
@@ -587,12 +533,6 @@ export const CONFIG_SECTION_TOURS: Record<ConfigSectionId, TourStep[]> = {
     },
   ],
   policies: [
-    {
-      target: '[data-tour="config-nav-policies"]',
-      title: "Policies",
-      body: "Define permissions for resources and assign them to users or groups.",
-      placement: "right",
-    },
     {
       target: '[data-tour="policies-new"]',
       title: "Create a policy",
@@ -625,12 +565,6 @@ export const CONFIG_SECTION_TOURS: Record<ConfigSectionId, TourStep[]> = {
   ],
   audit: [
     {
-      target: '[data-tour="config-nav-audit"]',
-      title: "Audit trail",
-      body: "Trace the configuration changes made by dashboard users over time.",
-      placement: "right",
-    },
-    {
       target: '[data-tour="audit-refresh"]',
       title: "Refresh the audit trail",
       body: "Reload the latest entries and use the filters to narrow the history.",
@@ -660,12 +594,6 @@ export const CONFIG_SECTION_TOURS: Record<ConfigSectionId, TourStep[]> = {
     },
   ],
   system: [
-    {
-      target: '[data-tour="config-nav-system"]',
-      title: "System settings",
-      body: "Adjust the runtime workflow values that apply without restarting VE.",
-      placement: "right",
-    },
     {
       target: '[data-tour="system-settings"]',
       title: "Runtime controls",
