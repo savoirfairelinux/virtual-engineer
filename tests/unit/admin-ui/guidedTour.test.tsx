@@ -34,6 +34,7 @@ describe("GuidedTour", () => {
     );
 
     await waitFor(() => expect(screen.getByText("Tour step")).toBeTruthy());
+    expect(screen.getByRole("button", { name: "Continue" })).toBeTruthy();
     expect(onActiveChange).toHaveBeenLastCalledWith(true);
     expect(screen.queryByText(/click the highlighted area to continue/i)).toBeNull();
     await user.click(screen.getByRole("button", { name: "Skip tour" }));
@@ -142,6 +143,7 @@ describe("GuidedTour", () => {
         target: "#route-action",
         title: "Open the form",
         body: "This action is guarded by the current form.",
+        advance: "click",
         completion: "route-changes",
       },
       {
@@ -161,8 +163,45 @@ describe("GuidedTour", () => {
     );
 
     await waitFor(() => expect(screen.getByText("Open the form")).toBeTruthy());
+  expect(screen.getByRole("button", { name: "Continue" })).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "Open" }));
     expect(screen.getByText("Open the form")).toBeTruthy();
+  });
+
+  it("can continue past a route-backed step without changing the route", async () => {
+    const user = userEvent.setup();
+    render(
+      <>
+        <button id="workflow-integrations">Integrations</button>
+        <div id="workflow-agents">Agents library</div>
+        <GuidedTour
+          tourKey="workflow-continue-test"
+          steps={[
+            {
+              target: "#workflow-integrations",
+              title: "Integrations first",
+              body: "Start with your provider connections.",
+              advance: "click",
+              completion: "route-changes",
+            },
+            {
+              target: "#workflow-agents",
+              title: "Agents library",
+              body: "Then configure a reusable agent.",
+              advance: "continue",
+            },
+          ]}
+          enabled
+        />
+      </>,
+    );
+
+    await waitFor(() => expect(screen.getByText("Integrations first")).toBeTruthy());
+    const initialHash = window.location.hash;
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+
+    await waitFor(() => expect(screen.getByText("Then configure a reusable agent.")).toBeTruthy());
+    expect(window.location.hash).toBe(initialHash);
   });
 
   it("guides configuration in integration, agent, and project order", () => {
