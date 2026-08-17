@@ -47,6 +47,7 @@ export function GuidedTour({ tourKey, steps, enabled, restartToken, onActiveChan
   const [index, setIndex] = useState(0);
   const [rect, setRect] = useState<DOMRect | null>(null);
   const targetElRef = useRef<Element | null>(null);
+  const waitForTargetRef = useRef(false);
   const armedRef = useRef(false);
   const activeRef = useRef(false);
   const lastRestartTokenRef = useRef<number | undefined>(restartToken);
@@ -67,6 +68,7 @@ export function GuidedTour({ tourKey, steps, enabled, restartToken, onActiveChan
       lastRestartTokenRef.current = restartToken;
       armedRef.current = true;
       targetElRef.current = null;
+      waitForTargetRef.current = false;
       setRect(null);
       setIndex(0);
       setStarted(true);
@@ -77,6 +79,7 @@ export function GuidedTour({ tourKey, steps, enabled, restartToken, onActiveChan
     if (armedRef.current) return;
     armedRef.current = true;
     if (hasSeenTour(tourKey)) return;
+    waitForTargetRef.current = false;
     setStarted(true);
     setIndex(0);
     reportActive(true);
@@ -87,6 +90,7 @@ export function GuidedTour({ tourKey, steps, enabled, restartToken, onActiveChan
     setStarted(false);
     setRect(null);
     targetElRef.current = null;
+    waitForTargetRef.current = false;
     reportActive(false);
   }, [enabled, started, reportActive]);
 
@@ -95,6 +99,7 @@ export function GuidedTour({ tourKey, steps, enabled, restartToken, onActiveChan
     setStarted(false);
     setRect(null);
     targetElRef.current = null;
+    waitForTargetRef.current = false;
     reportActive(false);
   }, [reportActive, tourKey]);
 
@@ -109,6 +114,7 @@ export function GuidedTour({ tourKey, steps, enabled, restartToken, onActiveChan
     let cancelled = false;
     let elapsed = 0;
     const timeout = step.optional ? OPTIONAL_TARGET_POLL_TIMEOUT_MS : TARGET_POLL_TIMEOUT_MS;
+    let retryTimer: number | undefined;
     targetElRef.current = null;
     setRect(null);
     const tryFind = () => {
@@ -116,22 +122,47 @@ export function GuidedTour({ tourKey, steps, enabled, restartToken, onActiveChan
       const el = document.querySelector(step.target);
       if (el && isUsableTarget(el)) {
         targetElRef.current = el;
+        waitForTargetRef.current = false;
         if (el instanceof HTMLElement && typeof el.scrollIntoView === "function") {
           el.scrollIntoView({ block: "nearest", inline: "nearest" });
         }
         setRect(el.getBoundingClientRect());
         return;
       }
-      elapsed += TARGET_POLL_MS;
       if (elapsed >= timeout) {
+        // A target reached through Continue may belong to the next route.
+        // Keep the advanced index alive until that page mounts it.
+        if (waitForTargetRef.current) return;
         // Target never appeared (e.g. permission-gated nav item) — skip it.
         setIndex((i) => i + 1);
         return;
       }
-      setTimeout(tryFind, TARGET_POLL_MS);
+      elapsed += TARGET_POLL_MS;
+      retryTimer = window.setTimeout(() => {
+        retryTimer = undefined;
+        tryFind();
+      }, TARGET_POLL_MS);
     };
+    const retryNow = () => {
+      if (cancelled) return;
+      if (retryTimer !== undefined) {
+        window.clearTimeout(retryTimer);
+        retryTimer = undefined;
+      }
+      tryFind();
+    };
+    const observer = typeof MutationObserver === "undefined"
+      ? null
+      : new MutationObserver(retryNow);
+    observer?.observe(document.body, { attributes: true, childList: true, subtree: true });
+    window.addEventListener("hashchange", retryNow);
     tryFind();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      if (retryTimer !== undefined) window.clearTimeout(retryTimer);
+      observer?.disconnect();
+      window.removeEventListener("hashchange", retryNow);
+    };
   }, [started, index, steps, finish]);
 
   // Keep the highlight glued to its target as the page scrolls/resizes.
@@ -266,7 +297,10 @@ export function GuidedTour({ tourKey, steps, enabled, restartToken, onActiveChan
         </div>
         <button
           className="btn primary"
-          onClick={() => setIndex((i) => i + 1)}
+          onClick={() => {
+            waitForTargetRef.current = true;
+            setIndex((i) => i + 1);
+          }}
           style={{ marginTop: "10px", alignSelf: "flex-end" }}
         >
           Continue
