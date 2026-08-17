@@ -82,6 +82,7 @@ export interface ConfigViewData {
   config: ApiConfig["config"] | null;
   status: ApiStatus | null;
   onRefresh: () => void;
+  onSectionChange?: ((section: ConfigSectionId) => void) | undefined;
   onNavigationGuardChange?: ((guard: (() => boolean) | null) => void) | undefined;
 }
 
@@ -95,7 +96,7 @@ export interface ConfigSectionRouting {
 export type ConfigSectionProps = ConfigViewData & ConfigSectionRouting;
 
 export function ConfigView(props: ConfigViewData) {
-  const { onNavigationGuardChange } = props;
+  const { onNavigationGuardChange, onSectionChange } = props;
   const { can, user } = useCurrentUser();
   const hasPermission = useMemo(() => makeHasPermission(user), [user]);
   const visibleNav = CONFIG_NAV.filter((item) => canAccessConfigSection(hasPermission, item.id));
@@ -228,6 +229,10 @@ export function ConfigView(props: ConfigViewData) {
 
   const effectiveSec = effectiveRoute.section;
 
+  useEffect(() => {
+    onSectionChange?.(effectiveSec);
+  }, [effectiveSec, onSectionChange]);
+
   const navigate = useCallback((nextRoute: ConfigRoute) => {
     if (!confirmDiscard()) return;
     commitRoute(nextRoute);
@@ -261,6 +266,7 @@ export function ConfigView(props: ConfigViewData) {
     return (
       <button
         key={item.id}
+        data-tour={`config-nav-${item.id}`}
         aria-current={active ? "page" : undefined}
         onClick={() => handleSectionChange(item.id)}
         style={{

@@ -44,16 +44,16 @@ function UserFormModal({ onClose, onSaved }: { onClose: () => void; onSaved: () 
     <Modal title="New user" sub="Create a dashboard account" onClose={onClose}>
       <FormRow>
         <Field label="Username" required>
-          <FieldInput value={username} autoComplete="off" onChange={(e) => setUsername(e.target.value)} />
+          <FieldInput data-tour="user-form-username" value={username} autoComplete="off" onChange={(e) => setUsername(e.target.value)} />
         </Field>
         <Field label="Password" required hint="Minimum 8 characters">
-          <PasswordField value={password} autoComplete="new-password" onChange={(e) => setPassword(e.target.value)} />
+          <PasswordField data-tour="user-form-password" value={password} autoComplete="new-password" onChange={(e) => setPassword(e.target.value)} />
         </Field>
         <Field label="Confirm password" required>
           <PasswordField value={confirm} autoComplete="new-password" onChange={(e) => setConfirm(e.target.value)} />
         </Field>
         <Field label="Role" required hint="viewer = overview + tasks (read-only) · operator = all config incl. integrations/OAuth/webhooks · admin = adds user management + audit">
-          <FieldSelect value={role} onChange={(e) => setRole(e.target.value as UserRole)}>
+          <FieldSelect data-tour="user-form-role" value={role} onChange={(e) => setRole(e.target.value as UserRole)}>
             {ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
           </FieldSelect>
         </Field>
@@ -62,7 +62,7 @@ function UserFormModal({ onClose, onSaved }: { onClose: () => void; onSaved: () 
 
         <FormActions>
           <button className="btn ghost" onClick={onClose}>Cancel</button>
-          <button className="btn primary" onClick={() => void handleSave()} disabled={saving || !canSubmit}>
+          <button className="btn primary" data-tour="user-form-actions" onClick={() => void handleSave()} disabled={saving || !canSubmit}>
             {saving ? "Creating…" : "Create user"}
           </button>
         </FormActions>
@@ -283,7 +283,7 @@ export function UsersSection({ route, navigate, markClean }: ConfigSectionProps)
             <h1 style={{ margin: 0, fontSize: "22px", fontWeight: 600, letterSpacing: "-0.01em" }}>Users</h1>
             <p style={{ margin: "6px 0 0", color: "var(--text-faint)", fontSize: "13.5px" }}>Dashboard accounts and their roles — admin, operator, or viewer.</p>
           </div>
-          <button className="btn primary" onClick={() => navigate({ section: "users", mode: "create" })}>
+          <button className="btn primary" data-tour="users-new" onClick={() => navigate({ section: "users", mode: "create" })}>
             <Icon name="plus" size={14} /> New user
           </button>
         </div>

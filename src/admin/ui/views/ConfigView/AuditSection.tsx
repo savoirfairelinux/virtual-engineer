@@ -67,14 +67,14 @@ export function AuditSection() {
             <h1 style={{ margin: 0, fontSize: "22px", fontWeight: 600, letterSpacing: "-0.01em" }}>Audit trail</h1>
             <p style={{ margin: "6px 0 0", color: "var(--text-faint)", fontSize: "13.5px" }}>Timestamped record of every admin configuration change.</p>
           </div>
-          <button className="btn" onClick={() => void load(offset, actionFilter, actorFilter)} disabled={loading}>
+          <button className="btn" data-tour="audit-refresh" onClick={() => void load(offset, actionFilter, actorFilter)} disabled={loading}>
             <Icon name="refresh" size={14} /> Refresh
           </button>
         </div>
       </div>
 
       {/* filters */}
-      <div style={{ display: "flex", gap: "10px", alignItems: "center", marginBottom: "14px" }}>
+      <div data-tour="audit-filters" style={{ display: "flex", gap: "10px", alignItems: "center", marginBottom: "14px" }}>
         <input
           value={actionFilter}
           onChange={(e) => setActionFilter(e.target.value)}
@@ -107,7 +107,7 @@ export function AuditSection() {
       )}
 
       {/* table */}
-      <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+      <div className="card" data-tour="audit-table" style={{ padding: 0, overflow: "hidden" }}>
         <div
           style={{
             display: "grid", gridTemplateColumns: "170px 140px 1fr 220px 32px",
@@ -175,7 +175,7 @@ export function AuditSection() {
       </div>
 
       {/* pagination */}
-      <div style={{ display: "flex", justifyContent: "flex-end", gap: "8px", marginTop: "14px" }}>
+      <div data-tour="audit-pagination" style={{ display: "flex", justifyContent: "flex-end", gap: "8px", marginTop: "14px" }}>
         <button
           className="btn"
           disabled={loading || offset === 0}
