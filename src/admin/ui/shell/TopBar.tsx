@@ -13,6 +13,7 @@ interface TopBarProps {
   user: ApiMe | null;
   canViewConfig: boolean;
   onChangePassword: () => void;
+  onStartTutorial: () => void;
   onLogout: () => void;
   taskCount: number;
   activeCount: number;
@@ -29,7 +30,7 @@ const NAV: { id: ViewId; label: string; icon: string; configOnly?: boolean }[] =
 ];
 
 export function TopBar({
-  view, setView, theme, toggleTheme, user, canViewConfig, onChangePassword, onLogout,
+  view, setView, theme, toggleTheme, user, canViewConfig, onChangePassword, onStartTutorial, onLogout,
   taskCount, activeCount, providerCount, pollingRunning,
 }: TopBarProps) {
   const visibleNav = NAV.filter((n) => !n.configOnly || canViewConfig);
@@ -97,6 +98,7 @@ export function TopBar({
           return (
             <button
               key={n.id}
+              data-tour={`nav-${n.id}`}
               onClick={() => setView(n.id)}
               style={{
                 position: "relative", display: "inline-flex", alignItems: "center", gap: "8px",
@@ -146,7 +148,10 @@ export function TopBar({
             <Icon name="edit" size={15} />
           </button>
         )}
-        <button className="iconbtn" title="Sign out" onClick={onLogout}>
+        <button className="iconbtn" data-tour="tutorial-launcher" title="Start tutorial" aria-label="Start tutorial" onClick={onStartTutorial}>
+          <Icon name="question" size={15} />
+        </button>
+        <button className="iconbtn" title="Sign out" aria-label="Sign out" onClick={onLogout}>
           <Icon name="logout" size={16} />
         </button>
       </div>

@@ -159,10 +159,11 @@ export function SystemSection({ config, status, onRefresh, onDirtyChange }: Syst
         </p>
       </div>
 
-      <div className="card" style={{ padding: "20px 18px", marginBottom: "22px" }}>
+      <div className="card" data-tour="system-settings-form" style={{ padding: "20px 18px", marginBottom: "22px" }}>
         <div style={{ display: "flex", flexDirection: "column", gap: "16px", maxWidth: "360px" }}>
           <Field label="Polling interval (seconds)" hint="How often the ticket sources are polled for new work.">
             <FieldInput
+              data-tour="system-settings"
               type="number"
               min={1}
               step={1}
@@ -232,7 +233,7 @@ export function SystemSection({ config, status, onRefresh, onDirtyChange }: Syst
 
           {canWrite && (
             <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
-              <button className="btn primary" onClick={() => void handleSave()} disabled={saving || !dirty}>
+              <button className="btn primary" data-tour="system-save" onClick={() => void handleSave()} disabled={saving || !dirty}>
                 {saving ? "Saving…" : "Save changes"}
               </button>
             </div>
@@ -241,7 +242,7 @@ export function SystemSection({ config, status, onRefresh, onDirtyChange }: Syst
       </div>
 
       <div className="eyebrow" style={{ marginBottom: "8px" }}>Runtime</div>
-      <div className="card" style={{ overflow: "hidden" }}>
+      <div className="card" data-tour="system-runtime" style={{ overflow: "hidden" }}>
         {readOnlyRows.map(([k, v], i) => (
           <div
             key={k}
