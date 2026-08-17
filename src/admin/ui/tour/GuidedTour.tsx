@@ -39,8 +39,8 @@ function isUsableTarget(element: Element): boolean {
 
 /**
  * Spotlight product tour: highlights a real UI element and shows a floating
- * callout next to it. Action steps follow the real element click, while
- * explanatory steps wait for the callout's Continue button.
+ * callout next to it. Action steps follow the real element click, and every
+ * callout also offers Continue as a non-mutating way to move on.
  */
 export function GuidedTour({ tourKey, steps, enabled, restartToken, onActiveChange }: GuidedTourProps) {
   const [started, setStarted] = useState(false);
@@ -204,7 +204,6 @@ export function GuidedTour({ tourKey, steps, enabled, restartToken, onActiveChan
   if (!started || !rect) return null;
   const step = steps[index];
   if (!step) return null;
-  const showContinue = step.advance === "continue";
 
   const placement = step.placement ?? "bottom";
   const padding = 6;
@@ -265,15 +264,13 @@ export function GuidedTour({ tourKey, steps, enabled, restartToken, onActiveChan
         <div style={{ fontSize: "12.5px", color: "var(--text-dim)", marginTop: "4px", lineHeight: 1.5 }}>
           {step.body}
         </div>
-        {showContinue && (
-          <button
-            className="btn primary"
-            onClick={() => setIndex((i) => i + 1)}
-            style={{ marginTop: "10px", alignSelf: "flex-end" }}
-          >
-            Continue
-          </button>
-        )}
+        <button
+          className="btn primary"
+          onClick={() => setIndex((i) => i + 1)}
+          style={{ marginTop: "10px", alignSelf: "flex-end" }}
+        >
+          Continue
+        </button>
       </div>
     </>,
     document.body
