@@ -204,6 +204,48 @@ describe("GuidedTour", () => {
     expect(window.location.hash).toBe(initialHash);
   });
 
+  it("keeps a continued tour alive until a later-page target appears", async () => {
+    const user = userEvent.setup();
+    const onActiveChange = vi.fn();
+    render(
+      <>
+        <button id="integration-add">Add integration</button>
+        <GuidedTour
+          tourKey="cross-page-test"
+          steps={[
+            {
+              target: "#integration-add",
+              title: "Add an integration",
+              body: "Open the integration form.",
+              completion: "route-changes",
+            },
+            {
+              target: "#integration-form-name",
+              title: "Name the connection",
+              body: "This field appears on the next page.",
+              optional: true,
+              advance: "continue",
+            },
+          ]}
+          enabled
+          onActiveChange={onActiveChange}
+        />
+      </>,
+    );
+
+    await waitFor(() => expect(screen.getByText("Add an integration")).toBeTruthy());
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    expect(onActiveChange).toHaveBeenLastCalledWith(true);
+
+    const formName = document.createElement("input");
+    formName.id = "integration-form-name";
+    document.body.append(formName);
+    window.dispatchEvent(new Event("hashchange"));
+
+    await waitFor(() => expect(screen.getByText("This field appears on the next page.")).toBeTruthy());
+  });
+
   it("guides configuration in integration, agent, and project order", () => {
     expect(CONFIG_WORKFLOW_TOUR.map((step) => step.target)).toEqual([
       '[data-tour="config-nav-integrations"]',
