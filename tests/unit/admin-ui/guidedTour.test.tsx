@@ -76,7 +76,9 @@ describe("GuidedTour", () => {
     );
 
     await waitFor(() => expect(screen.getByText("Read this field")).toBeTruthy());
-    expect(screen.getByRole("button", { name: "Continue" })).toBeTruthy();
+    const continueButton = screen.getByRole("button", { name: "Continue" });
+    expect(continueButton.className).toContain("btn primary");
+    expect((continueButton as HTMLButtonElement).style.alignSelf).toBe("flex-end");
 
     await user.click(screen.getByText("Field"));
     expect(screen.getByText("Read this field")).toBeTruthy();
@@ -85,6 +87,52 @@ describe("GuidedTour", () => {
 
     await waitFor(() => expect(screen.getByText("Next field")).toBeTruthy());
     expect(screen.getByRole("button", { name: "Continue" })).toBeTruthy();
+  });
+
+  it("keeps an explanatory spotlight aligned with its target while scrolling", async () => {
+    const target = document.createElement("div");
+    target.id = "scroll-target";
+    target.textContent = "Scrollable field";
+    document.body.append(target);
+
+    let targetRect = {
+      top: 40,
+      left: 20,
+      right: 120,
+      bottom: 80,
+      width: 100,
+      height: 40,
+    } as DOMRect;
+    vi.spyOn(target, "getBoundingClientRect").mockImplementation(() => targetRect);
+
+    render(
+      <GuidedTour
+        tourKey="scroll-test"
+        steps={[{
+          target: "#scroll-target",
+          title: "Scrollable field",
+          body: "This explanation follows the field.",
+          advance: "continue",
+        }]}
+        enabled
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText("This explanation follows the field.")).toBeTruthy());
+    const bubble = document.querySelector<HTMLElement>(".ve-tour-bubble");
+    expect(bubble?.style.top).toBe("94px");
+
+    targetRect = {
+      top: 180,
+      left: 20,
+      right: 120,
+      bottom: 220,
+      width: 100,
+      height: 40,
+    } as DOMRect;
+    window.dispatchEvent(new Event("scroll"));
+
+    await waitFor(() => expect(bubble?.style.top).toBe("234px"));
   });
 
   it("waits for a route-backed action instead of advancing after a rejected navigation", async () => {

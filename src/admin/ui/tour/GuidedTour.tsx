@@ -136,7 +136,7 @@ export function GuidedTour({ tourKey, steps, enabled, restartToken, onActiveChan
 
   // Keep the highlight glued to its target as the page scrolls/resizes.
   useEffect(() => {
-    if (!started || steps[index]?.advance === "continue") return;
+    if (!started) return;
     const update = () => {
       if (targetElRef.current) setRect(targetElRef.current.getBoundingClientRect());
     };
@@ -227,7 +227,13 @@ export function GuidedTour({ tourKey, steps, enabled, restartToken, onActiveChan
     transition: "all 0.25s var(--ease)",
   };
 
-  const bubbleStyle: React.CSSProperties = { position: "fixed", zIndex: 9999, maxWidth: bubbleMaxWidth };
+  const bubbleStyle: React.CSSProperties = {
+    position: "fixed",
+    zIndex: 9999,
+    maxWidth: bubbleMaxWidth,
+    display: "flex",
+    flexDirection: "column",
+  };
   if (placement === "bottom") {
     bubbleStyle.top = rect.bottom + gap;
     bubbleStyle.left = Math.min(Math.max(12, rect.left), bubbleMaxLeft);
@@ -261,9 +267,9 @@ export function GuidedTour({ tourKey, steps, enabled, restartToken, onActiveChan
         </div>
         {showContinue && (
           <button
-            className="btn ghost"
+            className="btn primary"
             onClick={() => setIndex((i) => i + 1)}
-            style={{ marginTop: "10px", width: "100%" }}
+            style={{ marginTop: "10px", alignSelf: "flex-end" }}
           >
             Continue
           </button>
