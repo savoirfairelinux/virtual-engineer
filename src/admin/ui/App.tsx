@@ -40,6 +40,14 @@ function viewFromHash(hash: string): ViewId {
   return "overview";
 }
 
+export function shouldEnableConfigWorkflow(
+  configSection: ConfigSectionId,
+  workflowActive: boolean,
+  tutorialKey: TutorialKey | null,
+): boolean {
+  return configSection === "overview" || workflowActive || tutorialKey === "config-workflow";
+}
+
 const bootstrap: VeAdminBootstrap = window.__VE_ADMIN_BOOTSTRAP__ ?? {
   requiresAuth: false,
   authMode: "none",
@@ -283,6 +291,9 @@ export function App() {
   const effectiveView: ViewId = configDenied && view === "config" ? "overview" : view;
   const mainNavRestartToken = tutorialLaunch?.key === "main-nav" ? tutorialLaunch.token : undefined;
   const configWorkflowRestartToken = tutorialLaunch?.key === "config-workflow" ? tutorialLaunch.token : undefined;
+  const configWorkflowEnabled = authenticated
+    && currentUser !== null
+    && shouldEnableConfigWorkflow(configSection, configWorkflowActive, tutorialLaunch?.key ?? null);
 
   function requestViewChange(nextView: ViewId): boolean {
     if (view === "config" && nextView !== "config" && !configNavigationGuardRef.current?.()) return false;
@@ -328,7 +339,7 @@ export function App() {
           <GuidedTour
             tourKey="config-workflow"
             steps={CONFIG_WORKFLOW_TOUR}
-            enabled={authenticated && currentUser !== null && configSection === "overview"}
+            enabled={configWorkflowEnabled}
             onActiveChange={handleConfigWorkflowActiveChange}
             {...(configWorkflowRestartToken === undefined ? {} : { restartToken: configWorkflowRestartToken })}
           />
