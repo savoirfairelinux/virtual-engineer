@@ -278,6 +278,8 @@ export function GuidedTour({ tourKey, steps, enabled, restartToken, onActiveChan
     bubbleStyle.left = Math.max(12, rect.left - gap - bubbleMaxWidth);
   }
 
+  const showContinue = step.advance === "continue";
+
   return createPortal(
     <>
       <div style={highlightStyle} />
@@ -295,16 +297,18 @@ export function GuidedTour({ tourKey, steps, enabled, restartToken, onActiveChan
         <div style={{ fontSize: "12.5px", color: "var(--text-dim)", marginTop: "4px", lineHeight: 1.5 }}>
           {step.body}
         </div>
-        <button
-          className="btn primary"
-          onClick={() => {
-            waitForTargetRef.current = true;
-            setIndex((i) => i + 1);
-          }}
-          style={{ marginTop: "10px", alignSelf: "flex-end" }}
-        >
-          Continue
-        </button>
+        {showContinue && (
+          <button
+            className="btn primary"
+            onClick={() => {
+              waitForTargetRef.current = true;
+              setIndex((i) => i + 1);
+            }}
+            style={{ marginTop: "10px", alignSelf: "flex-end" }}
+          >
+            Continue
+          </button>
+        )}
       </div>
     </>,
     document.body

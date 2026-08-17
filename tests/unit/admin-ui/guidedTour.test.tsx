@@ -1,5 +1,5 @@
 /** @vitest-environment jsdom */
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { GuidedTour, type TourStep } from "../../../src/admin/ui/tour/GuidedTour.js";
@@ -34,7 +34,7 @@ describe("GuidedTour", () => {
     );
 
     await waitFor(() => expect(screen.getByText("Tour step")).toBeTruthy());
-    expect(screen.getByRole("button", { name: "Continue" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Continue" })).toBeNull();
     expect(onActiveChange).toHaveBeenLastCalledWith(true);
     expect(screen.queryByText(/click the highlighted area to continue/i)).toBeNull();
     await user.click(screen.getByRole("button", { name: "Skip tour" }));
@@ -163,7 +163,7 @@ describe("GuidedTour", () => {
     );
 
     await waitFor(() => expect(screen.getByText("Open the form")).toBeTruthy());
-  expect(screen.getByRole("button", { name: "Continue" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Continue" })).toBeNull();
     await user.click(screen.getByRole("button", { name: "Open" }));
     expect(screen.getByText("Open the form")).toBeTruthy();
   });
@@ -181,7 +181,7 @@ describe("GuidedTour", () => {
               target: "#workflow-integrations",
               title: "Integrations first",
               body: "Start with your provider connections.",
-              advance: "click",
+              advance: "continue",
               completion: "route-changes",
             },
             {
@@ -217,6 +217,7 @@ describe("GuidedTour", () => {
               target: "#integration-add",
               title: "Add an integration",
               body: "Open the integration form.",
+              advance: "continue",
               completion: "route-changes",
             },
             {
@@ -235,7 +236,9 @@ describe("GuidedTour", () => {
 
     await waitFor(() => expect(screen.getByText("Add an integration")).toBeTruthy());
     await user.click(screen.getByRole("button", { name: "Continue" }));
-    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 1_050));
+    });
     expect(onActiveChange).toHaveBeenLastCalledWith(true);
 
     const formName = document.createElement("input");
@@ -255,6 +258,7 @@ describe("GuidedTour", () => {
     ]);
     expect(MAIN_NAV_TOUR.find((step) => step.target === '[data-tour="nav-config"]')?.optional).toBe(true);
     expect(CONFIG_SECTION_TOURS.prompts.at(-1)?.optional).toBe(true);
+    expect(CONFIG_SECTION_TOURS.integrations[1]?.placement).toBe("left");
     expect(CONFIG_WORKFLOW_TOUR.at(-1)?.placement).toBe("left");
     expect([...MAIN_NAV_TOUR, ...CONFIG_WORKFLOW_TOUR, ...Object.values(CONFIG_SECTION_TOURS).flat()]
       .every((step) => !/\bclick\b/i.test(step.body))).toBe(true);

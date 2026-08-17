@@ -75,7 +75,7 @@ export const CONFIG_SECTION_TOURS: Record<ConfigSectionId, TourStep[]> = {
       target: '[data-tour="integration-provider-picker"]',
       title: "Choose the provider",
       body: "Select the provider that owns the ticket, repository, review, or agent connection you are configuring.",
-      placement: "bottom",
+      placement: "left",
       advance: "click",
       optional: true,
     },
