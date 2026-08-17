@@ -17,7 +17,11 @@
   "buildCmd": "node .ds-sync/package-build.mjs --config .design-sync/config.json --node-modules ./node_modules --entry .design-sync/bundle-entry.tsx --out ./ds-bundle",
   "readmeHeader": ".design-sync/conventions.md",
   "overrides": {
-    "Icon": { "cardMode": "column" }
+    "Icon": { "cardMode": "column" },
+    "GuidedTour": { "cardMode": "single", "primaryStory": "MainNav", "viewport": "560x300" }
+  },
+  "libOverrides": {
+    "detect.mjs": "repo root walk hits root-owned 0700 data/openshell-gateway-state/pki and crashes with EACCES; guard readdir against permission errors"
   },
   "componentSrcMap": {
     "Bars":          "src/admin/ui/components/Bars.tsx",
@@ -35,6 +39,7 @@
     "FormError":     ".design-sync/shims/Modal.tsx",
     "FormRow":       ".design-sync/shims/Modal.tsx",
     "FormActions":   ".design-sync/shims/Modal.tsx",
+    "GuidedTour":    "src/admin/ui/tour/GuidedTour.tsx",
     "ProviderGlyph": ".design-sync/shims/ProviderGlyph.tsx",
     "RowCard":       "src/admin/ui/components/RowCard.tsx",
     "Stat":          ".design-sync/shims/Stat.tsx",
@@ -60,6 +65,7 @@
     "FormError":     "msg: string | null;",
     "FormRow":       "children: React.ReactNode;",
     "FormActions":   "children: React.ReactNode;",
+    "GuidedTour":    "tourKey: string; steps: Array<{ target: string; title: string; body: string; placement?: 'top' | 'bottom' | 'left' | 'right' }>; enabled: boolean; restartToken?: number; onActiveChange?: (active: boolean) => void;",
     "ProviderGlyph": "provider: string; size?: number;",
     "RowCard":       "children: React.ReactNode; onClick?: () => void;",
     "Stat":          "label: string; value: number | string; sub?: string; tone?: 'active' | 'ok' | 'warn' | 'danger' | 'info' | 'muted'; icon?: string; big?: boolean;",
