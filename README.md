@@ -39,8 +39,9 @@ Requirements: Git, curl, OpenSSL, Docker 24+, and a running Docker daemon.
 curl -fsSL https://raw.githubusercontent.com/savoirfairelinux/virtual-engineer/main/scripts/install.sh | bash
 ```
 
-The installer creates `.env` and generates `ADMIN_AUTH_SECRET`. It supports
-`VE_INSTALL_DIR`, `VE_REF`, and `VE_EXPECTED_COMMIT`; see the
+The installer clones the repository into `./virtual-engineer` (or reuses the
+current directory when it already is a checkout), creates `.env`, and generates
+`ADMIN_AUTH_SECRET`. It supports `VE_REF` and `VE_EXPECTED_COMMIT`; see the
 [installer script](scripts/install.sh) for reviewable and pinned-install flows.
 
 Open the Admin UI at [http://127.0.0.1:3100/admin](http://127.0.0.1:3100/admin),
