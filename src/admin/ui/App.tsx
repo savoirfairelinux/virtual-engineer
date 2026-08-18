@@ -291,8 +291,7 @@ export function App() {
   const effectiveView: ViewId = configDenied && view === "config" ? "overview" : view;
   const mainNavRestartToken = tutorialLaunch?.key === "main-nav" ? tutorialLaunch.token : undefined;
   const configWorkflowRestartToken = tutorialLaunch?.key === "config-workflow" ? tutorialLaunch.token : undefined;
-  const configWorkflowEnabled = authenticated
-    && currentUser !== null
+  const configWorkflowEnabled = currentUser !== null
     && shouldEnableConfigWorkflow(configSection, configWorkflowActive, tutorialLaunch?.key ?? null);
 
   function requestViewChange(nextView: ViewId): boolean {
@@ -331,7 +330,7 @@ export function App() {
           <GuidedTour
             tourKey="main-nav"
             steps={MAIN_NAV_TOUR}
-            enabled={authenticated && currentUser !== null}
+            enabled={currentUser !== null}
             {...(mainNavRestartToken === undefined ? {} : { restartToken: mainNavRestartToken })}
           />
         )}
@@ -349,7 +348,7 @@ export function App() {
             key={contextualTourKey}
             tourKey={contextualTourKey}
             steps={contextualTour}
-            enabled={authenticated && currentUser !== null && tutorialLaunch?.key === contextualTourKey}
+            enabled={currentUser !== null && tutorialLaunch?.key === contextualTourKey}
             {...(tutorialLaunch?.key === contextualTourKey ? { restartToken: tutorialLaunch.token } : {})}
           />
         )}

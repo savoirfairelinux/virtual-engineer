@@ -46,6 +46,7 @@ export function GuidedTour({ tourKey, steps, enabled, restartToken, onActiveChan
   const [started, setStarted] = useState(false);
   const [index, setIndex] = useState(0);
   const [rect, setRect] = useState<DOMRect | null>(null);
+  const [reducedMotion, setReducedMotion] = useState(false);
   const targetElRef = useRef<Element | null>(null);
   const waitForTargetRef = useRef(false);
   const armedRef = useRef(false);
@@ -60,10 +61,22 @@ export function GuidedTour({ tourKey, steps, enabled, restartToken, onActiveChan
     onActiveChange?.(active);
   }, [onActiveChange]);
 
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const mediaQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const update = () => setReducedMotion(mediaQuery.matches);
+    update();
+    mediaQuery.addEventListener("change", update);
+    return () => mediaQuery.removeEventListener("change", update);
+  }, []);
+
   // Arm once when enabled becomes true, unless already seen. A changed token
   // explicitly replays the tour for the manual launcher.
   useEffect(() => {
-    if (!enabled) return;
+    if (!enabled) {
+      armedRef.current = false;
+      return;
+    }
     if (restartToken !== undefined && restartToken !== lastRestartTokenRef.current) {
       lastRestartTokenRef.current = restartToken;
       armedRef.current = true;
@@ -254,7 +267,7 @@ export function GuidedTour({ tourKey, steps, enabled, restartToken, onActiveChan
     outlineOffset: "2px",
     pointerEvents: "none",
     zIndex: 9998,
-    transition: "all 0.25s var(--ease)",
+    transition: reducedMotion ? "none" : "all 0.25s var(--ease)",
   };
 
   const bubbleStyle: React.CSSProperties = {
