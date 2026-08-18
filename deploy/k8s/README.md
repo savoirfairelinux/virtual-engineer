@@ -95,8 +95,12 @@ This section applies to the production `deploy.sh` path. Local single-node
 startup through `scripts/start.sh` deploys the authenticated development
 Keycloak manifest in `17-keycloak-local.yaml` automatically when issuer and
 client secret are both absent. Generated local credentials remain under
-`data/local-oidc/` with mode `0600`. Setting both variables switches local
-startup to the external provider; setting only one is rejected.
+`$XDG_STATE_HOME/virtual-engineer/local-oidc/` or
+`$HOME/.local/state/virtual-engineer/local-oidc/` with mode `0600`. Existing
+`data/local-oidc/` files are migrated automatically. Set
+`OPENSHELL_STATE_DIR` to override the persistent state root. Setting both
+variables switches local startup to the external provider; setting only one is
+rejected.
 
 ## 4. Deploy OpenShell and Virtual Engineer
 

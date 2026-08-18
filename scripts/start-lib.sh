@@ -59,6 +59,47 @@ normalize_openshell_compute_driver() {
   esac
 }
 
+resolve_openshell_state_dir() {
+  local configured_dir="$1"
+  local xdg_state_home="$2"
+  local home_dir="$3"
+  if [[ -n "$configured_dir" ]]; then
+    printf '%s\n' "$configured_dir"
+  elif [[ -n "$xdg_state_home" ]]; then
+    printf '%s/virtual-engineer\n' "$xdg_state_home"
+  elif [[ -n "$home_dir" ]]; then
+    printf '%s/.local/state/virtual-engineer\n' "$home_dir"
+  else
+    printf 'Set OPENSHELL_STATE_DIR, XDG_STATE_HOME, or HOME: managed OpenShell state must outlive the checkout.\n' >&2
+    return 1
+  fi
+}
+
+migrate_local_oidc_state() {
+  local legacy_dir="$1"
+  local state_dir="$2"
+  local secret_name target
+
+  [[ "$legacy_dir" != "$state_dir" ]] || return 0
+  [[ -d "$legacy_dir" && ! -L "$legacy_dir" ]] || return 0
+  # Fail closed rather than let a symlink or non-directory redirect secrets.
+  if [[ -e "$state_dir" || -L "$state_dir" ]]; then
+    [[ -d "$state_dir" && ! -L "$state_dir" ]] || return 1
+  fi
+  mkdir -p "$state_dir"
+  [[ -d "$state_dir" && ! -L "$state_dir" ]] || return 1
+  chmod 700 "$state_dir"
+  for secret_name in client-secret admin-password; do
+    target="$state_dir/$secret_name"
+    if [[ -e "$target" || -L "$target" ]]; then
+      [[ -f "$target" && ! -L "$target" ]] || return 1
+      continue
+    fi
+    [[ -f "$legacy_dir/$secret_name" && ! -L "$legacy_dir/$secret_name" ]] || continue
+    install -m 600 "$legacy_dir/$secret_name" "$target"
+  done
+}
+
 toml_escape_string() {
   local value="$1"
   if [[ "$value" =~ [[:cntrl:]] ]]; then

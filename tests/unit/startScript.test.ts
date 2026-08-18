@@ -8,6 +8,7 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -318,6 +319,82 @@ describe("start.sh helpers", () => {
     expect(bytes.trim()).toBe("64");
   });
 
+  it.each([
+    {
+      configuredDir: "/tmp/ve-state",
+      xdgStateHome: "/tmp/xdg-state",
+      homeDir: "/home/test",
+      expected: "/tmp/ve-state",
+    },
+    {
+      configuredDir: "",
+      xdgStateHome: "/tmp/xdg-state",
+      homeDir: "/home/test",
+      expected: "/tmp/xdg-state/virtual-engineer",
+    },
+    {
+      configuredDir: "",
+      xdgStateHome: "",
+      homeDir: "/home/test",
+      expected: "/home/test/.local/state/virtual-engineer",
+    },
+  ])("resolves managed OpenShell state outside the checkout", ({ configuredDir, xdgStateHome, homeDir, expected }) => {
+    expect(runHelper(
+      'resolve_openshell_state_dir "$1" "$2" "$3"',
+      [configuredDir, xdgStateHome, homeDir],
+    )).toBe(expected);
+  });
+
+  it("refuses to resolve managed OpenShell state without a location outside the checkout", () => {
+    expect(() => runHelper('resolve_openshell_state_dir "$1" "$2" "$3"', ["", "", ""])).toThrow();
+  });
+
+  it("refuses to migrate local OIDC secrets into a symlinked state directory", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ve-start-test-"));
+    tempDirs.push(dir);
+    const legacyDir = join(dir, "legacy", "local-oidc");
+    const elsewhere = join(dir, "elsewhere");
+    const stateDir = join(dir, "state", "local-oidc");
+    mkdirSync(legacyDir, { recursive: true });
+    mkdirSync(elsewhere, { recursive: true });
+    mkdirSync(join(dir, "state"), { recursive: true });
+    symlinkSync(elsewhere, stateDir);
+    writeFileSync(join(legacyDir, "client-secret"), "legacy-client-secret\n");
+
+    expect(() => runHelper('migrate_local_oidc_state "$1" "$2"', [legacyDir, stateDir])).toThrow();
+    expect(existsSync(join(elsewhere, "client-secret"))).toBe(false);
+  });
+
+  it("refuses to migrate local OIDC secrets over a non-regular target", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ve-start-test-"));
+    tempDirs.push(dir);
+    const legacyDir = join(dir, "legacy", "local-oidc");
+    const stateDir = join(dir, "state", "local-oidc");
+    mkdirSync(legacyDir, { recursive: true });
+    mkdirSync(join(stateDir, "client-secret"), { recursive: true });
+    writeFileSync(join(legacyDir, "client-secret"), "legacy-client-secret\n");
+
+    expect(() => runHelper('migrate_local_oidc_state "$1" "$2"', [legacyDir, stateDir])).toThrow();
+  });
+
+  it("migrates legacy local OIDC secrets without overwriting newer state", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ve-start-test-"));
+    tempDirs.push(dir);
+    const legacyDir = join(dir, "legacy", "local-oidc");
+    const stateDir = join(dir, "state", "local-oidc");
+    mkdirSync(legacyDir, { recursive: true });
+    mkdirSync(stateDir, { recursive: true });
+    writeFileSync(join(legacyDir, "client-secret"), "legacy-client-secret\n");
+    writeFileSync(join(legacyDir, "admin-password"), "legacy-admin-password\n");
+    writeFileSync(join(stateDir, "client-secret"), "new-client-secret\n");
+
+    runHelper('migrate_local_oidc_state "$1" "$2"', [legacyDir, stateDir]);
+
+    expect(readFileSync(join(stateDir, "client-secret"), "utf8")).toBe("new-client-secret\n");
+    expect(readFileSync(join(stateDir, "admin-password"), "utf8")).toBe("legacy-admin-password\n");
+    expect(statSync(join(stateDir, "admin-password")).mode & 0o777).toBe(0o600);
+  });
+
   it("loads startup variables from a dotenv file", () => {
     const dir = mkdtempSync(join(tmpdir(), "ve-start-test-"));
     tempDirs.push(dir);
@@ -543,6 +620,18 @@ describe("OpenShell deployment contract", () => {
     expect(realm).toContain('"serviceAccountsEnabled": true');
     expect(realm).toContain('"openshell-admin"');
     expect(realm).toContain('"openshell-user"');
+  });
+
+  it("keeps managed local OIDC state outside the replaceable checkout", () => {
+    const script = readFileSync("scripts/start.sh", "utf8");
+    const envExample = readFileSync(".env.example", "utf8");
+
+    expect(script).toContain("resolve_openshell_state_dir");
+    expect(script).not.toContain('"${HOME:-$ROOT_DIR}"');
+    expect(script).toContain('LOCAL_OIDC_DIR="${OPENSHELL_STATE_DIR}/local-oidc"');
+    expect(script).toContain('LEGACY_LOCAL_OIDC_DIR="${DATA_DIR}/local-oidc"');
+    expect(script).toContain('migrate_local_oidc_state "$LEGACY_LOCAL_OIDC_DIR" "$LOCAL_OIDC_DIR"');
+    expect(envExample).toContain("OPENSHELL_STATE_DIR=");
   });
 
   it("builds the agent image with the account required by OpenShell", () => {
