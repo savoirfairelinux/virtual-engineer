@@ -219,6 +219,20 @@ wait_for_tcp_port() {
   return 1
 }
 
+wait_for_container_log() {
+  local container="$1"
+  local pattern="$2"
+  local attempts="${3:-30}"
+  while (( attempts > 0 )); do
+    if docker logs "$container" 2>&1 | grep -qF -- "$pattern"; then
+      return 0
+    fi
+    sleep 1
+    ((attempts--)) || true
+  done
+  return 1
+}
+
 is_managed_openshell_port_forward() {
   local pid="$1"
   local workspace="$2"

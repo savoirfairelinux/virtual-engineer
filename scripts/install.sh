@@ -5,7 +5,8 @@ umask 077
 REPOSITORY_URL="${VE_REPOSITORY_URL:-https://github.com/savoirfairelinux/virtual-engineer.git}"
 REF="${VE_REF:-main}"
 EXPECTED_COMMIT="${VE_EXPECTED_COMMIT:-}"
-INSTALL_DIR="${VE_INSTALL_DIR:-$PWD}"
+CHECKOUT_NAME="virtual-engineer"
+INSTALL_DIR=""
 START_ARGS=()
 TEMP_ENV_FILE=""
 TEMP_SECRET_FILE=""
@@ -31,9 +32,10 @@ Usage:
   curl -fsSL https://raw.githubusercontent.com/savoirfairelinux/virtual-engineer/main/scripts/install.sh | bash
   bash scripts/install.sh [installer options] [-- start.sh options]
 
-The installer uses the current directory by default. Set VE_INSTALL_DIR to
-choose another directory, VE_REF to select a branch or release tag, and
-VE_EXPECTED_COMMIT to verify the resolved 40-character commit.
+The installer clones into ./virtual-engineer, or reuses the current directory
+when it already is a Virtual Engineer checkout. Set VE_REF to select a branch
+or release tag, and VE_EXPECTED_COMMIT to verify the resolved 40-character
+commit.
 Pass start.sh options after --, for example:
   curl -fsSL https://raw.githubusercontent.com/savoirfairelinux/virtual-engineer/main/scripts/install.sh | bash -s -- --no-k3s-install
 EOF
@@ -63,15 +65,6 @@ while [[ $# -gt 0 ]]; do
       ;;
     --ref=*)
       REF="${1#*=}"
-      shift
-      ;;
-    --dir)
-      [[ $# -ge 2 ]] || error "--dir requires an installation directory."
-      INSTALL_DIR="$2"
-      shift 2
-      ;;
-    --dir=*)
-      INSTALL_DIR="${1#*=}"
       shift
       ;;
     --)
@@ -122,13 +115,6 @@ done
 docker info >/dev/null 2>&1 \
   || error "The Docker daemon is not accessible. Start Docker and retry."
 
-if [[ ! -e "$INSTALL_DIR" ]]; then
-  mkdir -p "$INSTALL_DIR" || error "Could not create installation directory: ${INSTALL_DIR}"
-fi
-[[ -d "$INSTALL_DIR" && ! -L "$INSTALL_DIR" ]] \
-  || error "Installation path is not a real directory: ${INSTALL_DIR}"
-INSTALL_DIR="$(cd "$INSTALL_DIR" && pwd -P)"
-
 assert_safe_directory() {
   local directory="$1"
   local mode owner
@@ -142,8 +128,6 @@ assert_safe_directory() {
     warn "Installation directory is group/world-writable: ${directory}"
   fi
 }
-
-assert_safe_directory "$INSTALL_DIR"
 
 is_virtual_engineer_checkout() {
   local directory="$1"
@@ -162,6 +146,22 @@ is_empty_directory() {
   done
   return 0
 }
+
+WORK_DIR="$(pwd -P)" || error "Could not resolve the current directory."
+if is_virtual_engineer_checkout "$WORK_DIR"; then
+  INSTALL_DIR="$WORK_DIR"
+else
+  INSTALL_DIR="${WORK_DIR}/${CHECKOUT_NAME}"
+fi
+
+if [[ ! -e "$INSTALL_DIR" ]]; then
+  mkdir -p "$INSTALL_DIR" || error "Could not create installation directory: ${INSTALL_DIR}"
+fi
+[[ -d "$INSTALL_DIR" && ! -L "$INSTALL_DIR" ]] \
+  || error "Installation path is not a real directory: ${INSTALL_DIR}"
+INSTALL_DIR="$(cd "$INSTALL_DIR" && pwd -P)"
+
+assert_safe_directory "$INSTALL_DIR"
 
 clone_repository() {
   if [[ "$REF" =~ ^[0-9a-f]{40}$ ]]; then
@@ -189,7 +189,7 @@ elif is_empty_directory "$INSTALL_DIR"; then
   is_virtual_engineer_checkout "$INSTALL_DIR" \
     || error "The cloned repository is missing the Virtual Engineer startup files."
 else
-  error "Installation directory is not empty and is not a Virtual Engineer checkout: ${INSTALL_DIR}"
+  error "Installation directory already exists and is not a Virtual Engineer checkout: ${INSTALL_DIR}. Remove it or run the installer from another directory."
 fi
 
 verify_checkout() {

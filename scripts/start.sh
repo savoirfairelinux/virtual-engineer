@@ -678,24 +678,30 @@ else
   fi
 
   _gateway_pid=$(docker inspect --format='{{.State.Pid}}' ve-openshell-gateway 2>/dev/null || true)
-  if [[ ! "$_gateway_pid" =~ ^[1-9][0-9]*$ ]] \
+  _gateway_up=$(docker inspect --format='{{.State.Running}}' ve-openshell-gateway 2>/dev/null || true)
+  # The published port answers as soon as the container exists, so the log line
+  # is the only proof that the gateway process itself is accepting connections.
+  if [[ ! "$_gateway_pid" =~ ^[1-9][0-9]*$ ]] || [[ "$_gateway_up" != "true" ]] \
+    || ! wait_for_container_log ve-openshell-gateway "Server listening" 60 \
     || ! wait_for_tcp_port 127.0.0.1 "$OPENSHELL_GW_LOCAL_PORT" 30; then
     docker logs ve-openshell-gateway >&2 2>/dev/null || true
     error "OpenShell Docker gateway did not become ready."
   fi
 
   OPENSHELL_GATEWAY_ENDPOINT="http://127.0.0.1:${OPENSHELL_GW_LOCAL_PORT}"
-  if ! docker run --rm --network host \
-    "${OIDC_DOCKER_HOST_ARGS[@]}" \
-      -e OPENSHELL_OIDC_CLIENT_SECRET \
-      -e "OPENSHELL_GATEWAY_NAME=${OPENSHELL_GATEWAY_NAME}" \
-      -e "OPENSHELL_GATEWAY_ENDPOINT=${OPENSHELL_GATEWAY_ENDPOINT}" \
-      -e "OPENSHELL_OIDC_ISSUER=${OPENSHELL_OIDC_ISSUER}" \
-      -e "OPENSHELL_OIDC_CLIENT_ID=${OPENSHELL_OIDC_CLIENT_ID}" \
-      -e "OPENSHELL_OIDC_AUDIENCE=${OPENSHELL_OIDC_AUDIENCE}" \
-      -e XDG_CONFIG_HOME=/ve-openshell-config \
-      -v "${OPENSHELL_CONFIG_DIR}:/ve-openshell-config:rw,Z" \
-      virtual-engineer:latest sh -c \
+  OPENSHELL_CLI_RUN_ARGS=(
+    --rm --network host
+    "${OIDC_DOCKER_HOST_ARGS[@]}"
+    -e OPENSHELL_OIDC_CLIENT_SECRET
+    -e "OPENSHELL_GATEWAY_NAME=${OPENSHELL_GATEWAY_NAME}"
+    -e "OPENSHELL_GATEWAY_ENDPOINT=${OPENSHELL_GATEWAY_ENDPOINT}"
+    -e "OPENSHELL_OIDC_ISSUER=${OPENSHELL_OIDC_ISSUER}"
+    -e "OPENSHELL_OIDC_CLIENT_ID=${OPENSHELL_OIDC_CLIENT_ID}"
+    -e "OPENSHELL_OIDC_AUDIENCE=${OPENSHELL_OIDC_AUDIENCE}"
+    -e XDG_CONFIG_HOME=/ve-openshell-config
+    -v "${OPENSHELL_CONFIG_DIR}:/ve-openshell-config:rw,Z"
+  )
+  if ! docker run "${OPENSHELL_CLI_RUN_ARGS[@]}" virtual-engineer:latest sh -c \
         'attempt=0
          while :; do
            openshell gateway remove "$OPENSHELL_GATEWAY_NAME" >/dev/null 2>&1 || true
@@ -708,9 +714,20 @@ else
            attempt=$((attempt + 1))
            if [ "$attempt" -ge 20 ]; then printf "%s\n" "$output" >&2; exit 1; fi
            sleep 1
-         done
-         OPENSHELL_GATEWAY="$OPENSHELL_GATEWAY_NAME" openshell status'; then
+         done'; then
     error "OpenShell Docker gateway OIDC authentication failed. Check: docker logs ve-openshell-gateway"
+  fi
+  if ! docker run "${OPENSHELL_CLI_RUN_ARGS[@]}" virtual-engineer:latest sh -c \
+        'attempt=0
+         while :; do
+           output=$(OPENSHELL_GATEWAY="$OPENSHELL_GATEWAY_NAME" openshell status 2>&1) \
+             && { printf "%s\n" "$output"; break; }
+           attempt=$((attempt + 1))
+           if [ "$attempt" -ge 30 ]; then printf "%s\n" "$output" >&2; exit 1; fi
+           sleep 1
+         done'; then
+    docker logs ve-openshell-gateway >&2 2>/dev/null || true
+    error "OpenShell Docker gateway did not accept an authenticated connection at ${OPENSHELL_GATEWAY_ENDPOINT}."
   fi
 fi
 

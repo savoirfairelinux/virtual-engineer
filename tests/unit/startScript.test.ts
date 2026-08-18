@@ -2,6 +2,7 @@ import { execFileSync, spawn } from "node:child_process";
 import {
   chmodSync,
   copyFileSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -19,10 +20,11 @@ afterEach(() => {
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-function runHelper(script: string, args: string[] = []): string {
+function runHelper(script: string, args: string[] = [], env?: NodeJS.ProcessEnv): string {
   return execFileSync("bash", ["-c", `source scripts/start-lib.sh; ${script}`, "test", ...args], {
     cwd: process.cwd(),
     encoding: "utf8",
+    ...(env ? { env: { ...process.env, ...env } } : {}),
   }).trim();
 }
 
@@ -90,43 +92,76 @@ function runInstaller(
 }
 
 describe("install.sh bootstrap", () => {
-  it("clones into an empty directory, creates a stable secret, and delegates arguments", () => {
-    const installDir = mkdtempSync(join(tmpdir(), "ve-install-"));
-    tempDirs.push(installDir);
+  it("clones into ./virtual-engineer from a non-empty directory and delegates arguments", () => {
+    const workDir = mkdtempSync(join(tmpdir(), "ve-install-"));
+    tempDirs.push(workDir);
+    writeFileSync(join(workDir, "unrelated.txt"), "keep me");
+    const checkoutDir = join(workDir, "virtual-engineer");
     const { fixtureDir, argsFile } = createInstallerFixture();
     const expectedCommit = execFileSync("git", ["-C", fixtureDir, "rev-parse", "HEAD"], {
       encoding: "utf8",
     }).trim();
 
-    const firstOutput = runInstaller(installDir, fixtureDir, argsFile, ["--no-k3s-install"], expectedCommit);
-    const envContent = readFileSync(join(installDir, ".env"), "utf8");
+    const firstOutput = runInstaller(workDir, fixtureDir, argsFile, ["--no-k3s-install"], expectedCommit);
+    const envContent = readFileSync(join(checkoutDir, ".env"), "utf8");
     const secret = envContent.match(/^ADMIN_AUTH_SECRET=([a-f0-9]{64})$/m)?.[1];
 
     if (!secret) throw new Error("Expected generated ADMIN_AUTH_SECRET");
     expect(firstOutput).not.toContain(secret);
-    expect(statSync(join(installDir, ".env")).mode & 0o777).toBe(0o600);
+    expect(statSync(join(checkoutDir, ".env")).mode & 0o777).toBe(0o600);
     expect(readFileSync(argsFile, "utf8")).toBe("--no-k3s-install");
+    expect(readFileSync(join(workDir, "unrelated.txt"), "utf8")).toBe("keep me");
 
     rmSync(fixtureDir, { recursive: true, force: true });
-    const secondOutput = runInstaller(installDir, fixtureDir, argsFile, [], expectedCommit);
-    const secondEnvContent = readFileSync(join(installDir, ".env"), "utf8");
+    const secondOutput = runInstaller(workDir, fixtureDir, argsFile, [], expectedCommit);
+    const secondEnvContent = readFileSync(join(checkoutDir, ".env"), "utf8");
 
     expect(secondOutput).toContain("existing Virtual Engineer checkout");
     expect(secondEnvContent).toBe(envContent);
     expect(secondEnvContent.match(/^ADMIN_AUTH_SECRET=/gm)).toHaveLength(1);
   });
 
-  it("refuses to clone into a non-empty directory that is not Virtual Engineer", () => {
-    const installDir = mkdtempSync(join(tmpdir(), "ve-install-"));
-    tempDirs.push(installDir);
-    writeFileSync(join(installDir, "keep.txt"), "do not delete");
+  it("reuses the current directory when it already is a Virtual Engineer checkout", () => {
+    const workDir = mkdtempSync(join(tmpdir(), "ve-install-"));
+    tempDirs.push(workDir);
+    const checkoutDir = join(workDir, "virtual-engineer");
+    const { fixtureDir, argsFile } = createInstallerFixture();
+    const expectedCommit = execFileSync("git", ["-C", fixtureDir, "rev-parse", "HEAD"], {
+      encoding: "utf8",
+    }).trim();
+    runInstaller(workDir, fixtureDir, argsFile, [], expectedCommit);
+
+    const output = runInstaller(checkoutDir, fixtureDir, argsFile, [], expectedCommit);
+
+    expect(output).toContain("existing Virtual Engineer checkout");
+    expect(existsSync(join(checkoutDir, "virtual-engineer"))).toBe(false);
+  });
+
+  it("refuses to clone when ./virtual-engineer exists and is not Virtual Engineer", () => {
+    const workDir = mkdtempSync(join(tmpdir(), "ve-install-"));
+    tempDirs.push(workDir);
+    const checkoutDir = join(workDir, "virtual-engineer");
+    mkdirSync(checkoutDir);
+    writeFileSync(join(checkoutDir, "keep.txt"), "do not delete");
     const { fixtureDir, argsFile } = createInstallerFixture();
     const expectedCommit = execFileSync("git", ["-C", fixtureDir, "rev-parse", "HEAD"], {
       encoding: "utf8",
     }).trim();
 
-    expect(() => runInstaller(installDir, fixtureDir, argsFile, [], expectedCommit)).toThrow();
-    expect(readFileSync(join(installDir, "keep.txt"), "utf8")).toBe("do not delete");
+    expect(() => runInstaller(workDir, fixtureDir, argsFile, [], expectedCommit)).toThrow();
+    expect(readFileSync(join(checkoutDir, "keep.txt"), "utf8")).toBe("do not delete");
+  });
+
+  it("documents a fixed installation directory without a directory option", () => {
+    const workDir = mkdtempSync(join(tmpdir(), "ve-install-"));
+    tempDirs.push(workDir);
+    const { fixtureDir, argsFile } = createInstallerFixture();
+
+    const usage = runInstaller(workDir, fixtureDir, argsFile, ["--help"]);
+
+    expect(usage).toContain("virtual-engineer");
+    expect(usage).not.toContain("--dir");
+    expect(usage).not.toContain("VE_INSTALL_DIR");
   });
 });
 
@@ -154,6 +189,39 @@ describe("start.sh helpers", () => {
       [dockerId, runtimeId],
     );
     expect(actual).toBe(expected);
+  });
+
+  it("waits until the container log reports the expected line", () => {
+    const binDir = mkdtempSync(join(tmpdir(), "ve-start-bin-"));
+    tempDirs.push(binDir);
+    const counterFile = join(binDir, "attempts");
+    writeFileSync(
+      join(binDir, "docker"),
+      [
+        "#!/usr/bin/env bash",
+        `count=$(cat "${counterFile}" 2>/dev/null || true)`,
+        'count=${count:-0}',
+        `printf '%s' "$((count + 1))" > "${counterFile}"`,
+        '[ "$count" -ge 1 ] && printf \'Server listening address=0.0.0.0:30808\\n\'',
+        "exit 0",
+      ].join("\n"),
+    );
+    chmodSync(join(binDir, "docker"), 0o755);
+    const env = { PATH: `${binDir}:${process.env["PATH"] ?? ""}` };
+
+    const found = runHelper(
+      'if wait_for_container_log ve-openshell-gateway "Server listening" 5; then printf yes; else printf no; fi',
+      [],
+      env,
+    );
+    const missing = runHelper(
+      'if wait_for_container_log ve-openshell-gateway "Compute driver connected" 2; then printf yes; else printf no; fi',
+      [],
+      env,
+    );
+
+    expect(found).toBe("yes");
+    expect(missing).toBe("no");
   });
 
   it("waits for a live process to open the expected TCP port", async () => {
@@ -431,6 +499,20 @@ describe("OpenShell deployment contract", () => {
     expect(script).toContain("docker network inspect openshell-docker");
     expect(script).toContain("OPENSHELL_DOCKER_BRIDGE_IP=");
     expect(script).toContain('-p "${OPENSHELL_DOCKER_BRIDGE_IP}:${OPENSHELL_GW_LOCAL_PORT}:${OPENSHELL_GW_LOCAL_PORT}"');
+  });
+
+  it("gates gateway registration on a listening gateway and retries the status call", () => {
+    const script = readFileSync("scripts/start.sh", "utf8");
+
+    expect(script).toContain('wait_for_container_log ve-openshell-gateway "Server listening"');
+    expect(script).toContain('[[ "$_gateway_up" != "true" ]]');
+    expect(script).toContain("OpenShell Docker gateway OIDC authentication failed");
+    expect(script).toContain("did not accept an authenticated connection");
+    const registrationIdx = script.indexOf("OpenShell Docker gateway OIDC authentication failed");
+    const statusIdx = script.indexOf("did not accept an authenticated connection");
+    expect(registrationIdx).toBeGreaterThan(-1);
+    expect(statusIdx).toBeGreaterThan(registrationIdx);
+    expect(script).toContain('openshell status 2>&1)');
   });
 
   it("reclaims root-owned CLI config before creating the mTLS directory", () => {
