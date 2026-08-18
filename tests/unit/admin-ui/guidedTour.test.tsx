@@ -51,6 +51,71 @@ describe("GuidedTour", () => {
     await waitFor(() => expect(screen.getByText("Tour step")).toBeTruthy());
   });
 
+  it("rearms when enabled changes from false back to true", async () => {
+    const { rerender } = render(
+      <>
+        <button id="tour-target">Target</button>
+        <GuidedTour tourKey="rearm-test" steps={steps} enabled />
+      </>,
+    );
+
+    await waitFor(() => expect(screen.getByText("Tour step")).toBeTruthy());
+
+    rerender(
+      <>
+        <button id="tour-target">Target</button>
+        <GuidedTour tourKey="rearm-test" steps={steps} enabled={false} />
+      </>,
+    );
+    await waitFor(() => expect(screen.queryByText("Tour step")).toBeNull());
+
+    rerender(
+      <>
+        <button id="tour-target">Target</button>
+        <GuidedTour tourKey="rearm-test" steps={steps} enabled />
+      </>,
+    );
+
+    await waitFor(() => expect(screen.getByText("Tour step")).toBeTruthy());
+  });
+
+  it("disables spotlight transitions when reduced motion is preferred", async () => {
+    const originalMatchMedia = window.matchMedia;
+    Object.defineProperty(window, "matchMedia", {
+      configurable: true,
+      value: vi.fn().mockImplementation((query: string) => ({
+        matches: query === "(prefers-reduced-motion: reduce)",
+        media: query,
+        onchange: null,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      })),
+    });
+
+    const { unmount } = render(
+      <>
+        <button id="tour-target">Target</button>
+        <GuidedTour tourKey="reduced-motion-test" steps={steps} enabled />
+      </>,
+    );
+
+    try {
+      await waitFor(() => expect(screen.getByText("Tour step")).toBeTruthy());
+      const highlight = Array.from(document.querySelectorAll<HTMLElement>("div"))
+        .find((element) => element.style.boxShadow.includes("9999px"));
+      expect(highlight?.style.transition).toBe("none");
+    } finally {
+      unmount();
+      Object.defineProperty(window, "matchMedia", {
+        configurable: true,
+        value: originalMatchMedia,
+      });
+    }
+  });
+
   it("advances explanatory steps with Continue", async () => {
     const user = userEvent.setup();
     const continueSteps: TourStep[] = [
