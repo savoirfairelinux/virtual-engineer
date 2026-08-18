@@ -1,5 +1,14 @@
 import { execFileSync, spawn } from "node:child_process";
-import { chmodSync, copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -23,6 +32,103 @@ function runDeployHelper(script: string, args: string[] = []): string {
     encoding: "utf8",
   }).trim();
 }
+
+function createInstallerFixture(): { fixtureDir: string; argsFile: string } {
+  const fixtureDir = mkdtempSync(join(tmpdir(), "ve-install-fixture-"));
+  tempDirs.push(fixtureDir);
+  const scriptsDir = join(fixtureDir, "scripts");
+  const argsDir = mkdtempSync(join(tmpdir(), "ve-install-args-"));
+  tempDirs.push(argsDir);
+  const argsFile = join(argsDir, "start-args.txt");
+  mkdirSync(scriptsDir, { recursive: true });
+  writeFileSync(join(fixtureDir, ".env.example"), "ADMIN_AUTH_SECRET=\nLOG_LEVEL=info\n");
+  writeFileSync(
+    join(scriptsDir, "start.sh"),
+    '#!/usr/bin/env bash\nprintf \'%s\' "$*" > "$VE_TEST_START_ARGS_FILE"\n',
+  );
+  chmodSync(join(scriptsDir, "start.sh"), 0o755);
+  execFileSync("git", ["init", "--initial-branch=main"], { cwd: fixtureDir, encoding: "utf8" });
+  execFileSync("git", ["config", "user.email", "tests@example.invalid"], { cwd: fixtureDir });
+  execFileSync("git", ["config", "user.name", "Virtual Engineer Tests"], { cwd: fixtureDir });
+  execFileSync("git", ["add", ".env.example", "scripts/start.sh"], { cwd: fixtureDir });
+  execFileSync("git", ["commit", "-m", "fixture"], { cwd: fixtureDir, encoding: "utf8" });
+  return { fixtureDir, argsFile };
+}
+
+function createFakeDockerBin(): string {
+  const binDir = mkdtempSync(join(tmpdir(), "ve-install-bin-"));
+  tempDirs.push(binDir);
+  const dockerPath = join(binDir, "docker");
+  writeFileSync(
+    dockerPath,
+    '#!/usr/bin/env bash\ncase "${1:-}" in\n  --version) printf "Docker version 99.0.0\\n" ;;\n  info) exit 0 ;;\n  *) exit 0 ;;\nesac\n',
+  );
+  chmodSync(dockerPath, 0o755);
+  return binDir;
+}
+
+function runInstaller(
+  cwd: string,
+  fixtureDir: string,
+  argsFile: string,
+  args: string[] = [],
+  expectedCommit?: string,
+): string {
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    PATH: `${createFakeDockerBin()}:${process.env["PATH"] ?? ""}`,
+    VE_REPOSITORY_URL: fixtureDir,
+    VE_ALLOW_CUSTOM_REPOSITORY: "true",
+    VE_TEST_START_ARGS_FILE: argsFile,
+  };
+  if (expectedCommit) env["VE_EXPECTED_COMMIT"] = expectedCommit;
+  return execFileSync("bash", [join(process.cwd(), "scripts/install.sh"), ...args], {
+    cwd,
+    encoding: "utf8",
+    env,
+  });
+}
+
+describe("install.sh bootstrap", () => {
+  it("clones into an empty directory, creates a stable secret, and delegates arguments", () => {
+    const installDir = mkdtempSync(join(tmpdir(), "ve-install-"));
+    tempDirs.push(installDir);
+    const { fixtureDir, argsFile } = createInstallerFixture();
+    const expectedCommit = execFileSync("git", ["-C", fixtureDir, "rev-parse", "HEAD"], {
+      encoding: "utf8",
+    }).trim();
+
+    const firstOutput = runInstaller(installDir, fixtureDir, argsFile, ["--no-k3s-install"], expectedCommit);
+    const envContent = readFileSync(join(installDir, ".env"), "utf8");
+    const secret = envContent.match(/^ADMIN_AUTH_SECRET=([a-f0-9]{64})$/m)?.[1];
+
+    if (!secret) throw new Error("Expected generated ADMIN_AUTH_SECRET");
+    expect(firstOutput).not.toContain(secret);
+    expect(statSync(join(installDir, ".env")).mode & 0o777).toBe(0o600);
+    expect(readFileSync(argsFile, "utf8")).toBe("--no-k3s-install");
+
+    rmSync(fixtureDir, { recursive: true, force: true });
+    const secondOutput = runInstaller(installDir, fixtureDir, argsFile, [], expectedCommit);
+    const secondEnvContent = readFileSync(join(installDir, ".env"), "utf8");
+
+    expect(secondOutput).toContain("existing Virtual Engineer checkout");
+    expect(secondEnvContent).toBe(envContent);
+    expect(secondEnvContent.match(/^ADMIN_AUTH_SECRET=/gm)).toHaveLength(1);
+  });
+
+  it("refuses to clone into a non-empty directory that is not Virtual Engineer", () => {
+    const installDir = mkdtempSync(join(tmpdir(), "ve-install-"));
+    tempDirs.push(installDir);
+    writeFileSync(join(installDir, "keep.txt"), "do not delete");
+    const { fixtureDir, argsFile } = createInstallerFixture();
+    const expectedCommit = execFileSync("git", ["-C", fixtureDir, "rev-parse", "HEAD"], {
+      encoding: "utf8",
+    }).trim();
+
+    expect(() => runInstaller(installDir, fixtureDir, argsFile, [], expectedCommit)).toThrow();
+    expect(readFileSync(join(installDir, "keep.txt"), "utf8")).toBe("do not delete");
+  });
+});
 
 describe("start.sh helpers", () => {
   it.each([

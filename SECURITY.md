@@ -20,13 +20,15 @@ Please include as much detail as possible: steps to reproduce, impact assessment
 
 ### Agent Container Isolation
 
-Each agent cycle runs in an ephemeral OpenShell sandbox constrained by a deny-by-default runtime policy:
+Each agent cycle runs in an ephemeral OpenShell sandbox constrained by
+deny-by-default gateway runtime policies:
 
-- `--read-only` root filesystem
-- `--cap-drop ALL` — no Linux capabilities granted
-- `--security-opt no-new-privileges:true`
-- Only `/sandbox`, `/tmp` and `/dev/null` are writable; `/usr`, `/lib`, `/app`, `/etc` are read-only
-- Isolated to the `ve-agent-net` bridge network — no host network access
+- Network, filesystem, process, and inference access is denied by default.
+- Only `/sandbox`, `/tmp`, and `/dev/null` are writable; the runtime image and
+	worker paths remain read-only.
+- The agent runs as the unprivileged `sandbox` user and group.
+- The same policy floor applies whether OpenShell schedules the sandbox through
+	Docker or Kubernetes; isolation is not based on direct Docker flags.
 
 The host owns all push/review credentials and orchestrates network operations; the agent container never holds provider secrets.
 
