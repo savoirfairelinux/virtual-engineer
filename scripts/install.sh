@@ -29,7 +29,7 @@ usage() {
 Virtual Engineer bootstrap installer
 
 Usage:
-  curl -fsSL https://raw.githubusercontent.com/savoirfairelinux/virtual-engineer/main/scripts/install.sh | bash
+  curl -fsSL https://virtual-engineer.dev/install.sh | bash
   bash scripts/install.sh [installer options] [-- start.sh options]
 
 The installer clones into ./virtual-engineer, or reuses the current directory
@@ -37,7 +37,7 @@ when it already is a Virtual Engineer checkout. Set VE_REF to select a branch
 or release tag, and VE_EXPECTED_COMMIT to verify the resolved 40-character
 commit.
 Pass start.sh options after --, for example:
-  curl -fsSL https://raw.githubusercontent.com/savoirfairelinux/virtual-engineer/main/scripts/install.sh | bash -s -- --no-k3s-install
+  curl -fsSL https://virtual-engineer.dev/install.sh | bash -s -- --no-k3s-install
 EOF
 }
 

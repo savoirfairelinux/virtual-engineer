@@ -36,13 +36,22 @@ when needed, starts the pinned OpenShell gateway, and launches the orchestrator.
 Requirements: Git, curl, OpenSSL, Docker 24+, and a running Docker daemon.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/savoirfairelinux/virtual-engineer/main/scripts/install.sh | bash
+curl -fsSL https://virtual-engineer.dev/install.sh | bash
 ```
 
 The installer clones the repository into `./virtual-engineer` (or reuses the
 current directory when it already is a checkout), creates `.env`, and generates
 `ADMIN_AUTH_SECRET`. It supports `VE_REF` and `VE_EXPECTED_COMMIT`; see the
 [installer script](scripts/install.sh) for reviewable and pinned-install flows.
+
+Managed local Keycloak bootstrap state is stored outside the checkout by
+default, under `$XDG_STATE_HOME/virtual-engineer/local-oidc/` or
+`$HOME/.local/state/virtual-engineer/local-oidc/`. This keeps the OIDC secret
+aligned with the persistent Docker realm when the repository is replaced.
+Existing `data/local-oidc/` files are migrated automatically. Set
+`OPENSHELL_STATE_DIR` to use a different persistent location; startup fails
+when none of `OPENSHELL_STATE_DIR`, `XDG_STATE_HOME`, or `HOME` is set, rather
+than falling back to the replaceable checkout.
 
 Open the Admin UI at [http://127.0.0.1:3100/admin](http://127.0.0.1:3100/admin),
 create the first admin account, and configure the integrations and projects.
