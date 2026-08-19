@@ -25,7 +25,7 @@ Key public methods:
 
 - `startTaskForProject(ticket, project, ticketSourceLabel)`
 - `resumeActiveTasks()`
-- `handleReviewEvent(changeId)`
+- `handleReviewEvent(changeId, taskId?)`
 - `triggerFeedbackForChange(integrationId, externalChangeId)`
 - `markChangeMerged(integrationId, externalChangeId)`
 - `markChangeAbandoned(integrationId, externalChangeId)`
@@ -36,6 +36,7 @@ Important behaviors:
 - project-aware task creation stores `projectId` on the task row
 - project-mode agent execution resolves the adapter exclusively through `project.agentId -> agents.integrationId`; a missing, disabled, non-coding, unlinked, or inactive project agent fails the task before `runAgent()` and never falls back to the process-wide runtime adapter
 - when that project-linked agent is active, `runAgentCycle()` also applies `resolveAgentConfig(agent, project)` to the `TaskContext`, so per-project Copilot model, GitHub token, CLI URL, and prompt ids flow into the agent without changing the integration routing
+- project agent runtime resolution fails closed when a managed integration or agent token cannot be decrypted; it never falls back to forwarding the stored ciphertext or a different credential path
 - OpenCode runtime resolution reads `openCodeProvider`, `openCodeApiKey`, and `openCodeApiBase` from the selected integration into `ResolvedAgentConfig.extra`; `agentContextBuilder.ts` forwards them onto coding `AgentSession` values, while `reviewBootstrap.ts` and `reviewOrchestrator.ts` carry the same selector, credential, and base URL into `ReviewWorkspaceInput`
 - project-mode ticket/review/VCS resolution can build project-bound connectors from the active integration plus VE-owned binding context; GitLab therefore reads ticket project selection from the `issue_tracking` binding's `ticketProjectKey` and MR/push project selection from the relevant `repoKey` rather than from integration-global `projectId`
 - `runWorkflow()` is state-driven and restart-safe; an interrupted `AGENT_RUNNING` task with a persisted running result resumes that same cycle instead of consuming another cycle number
@@ -87,7 +88,7 @@ Every tick (`POLLING_INTERVAL_MS`, exponential backoff on repeated failures) run
 
 ### `pollInReviewTasks()` (always on)
 
-- re-checks active code-gen tasks stuck in `IN_REVIEW` (with a non-null external change id) by calling `orchestrator.handleReviewEvent(changeId)` — the polling equivalent of the Gerrit stream-events trigger for GitHub / GitLab integrations
+- re-checks active code-gen tasks stuck in `IN_REVIEW` (with a non-null external change id) by calling `orchestrator.handleReviewEvent(changeId, taskId)`. Passing the task selected from the active-task query prevents a shared external change id from being re-resolved to another integration's task; direct event callers may omit `taskId` and retain the legacy lookup path.
 
 ### `pollReviewWatchingTasks()` (always on)
 
