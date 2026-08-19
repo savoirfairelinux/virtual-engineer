@@ -119,7 +119,7 @@ export function AgentsSection({ agents, integrations, plugins, prompts, onRefres
             <p style={{ margin: "6px 0 0", color: "var(--text-faint)", fontSize: "13.5px" }}>Reusable agent definitions — model config, concurrency, and bound prompts.</p>
           </div>
           {canWrite && (
-            <button className="btn primary" onClick={() => navigate({ section: "agents", mode: "create" })}>
+            <button className="btn primary" data-tour="agents-new" onClick={() => navigate({ section: "agents", mode: "create" })}>
               <Icon name="plus" size={14} /> New agent
             </button>
           )}

@@ -46,12 +46,12 @@ export function DenialsSection() {
             Secrets are scrubbed before storage.
           </p>
         </div>
-        <button className="btn" disabled={loading} onClick={() => void load()}>{loading ? "Refreshing…" : "Refresh"}</button>
+        <button className="btn" data-tour="denials-refresh" disabled={loading} onClick={() => void load()}>{loading ? "Refreshing…" : "Refresh"}</button>
       </div>
 
       {error && <div className="card" style={{ padding: "12px 14px", marginBottom: "16px", color: "var(--danger, #f85149)" }}>{error}</div>}
 
-      <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+      <div className="card" data-tour="denials-table" style={{ padding: 0, overflow: "hidden" }}>
         {denials.length === 0 ? (
           <div style={{ padding: "22px", color: "var(--text-ghost)", fontSize: "13px" }}>No policy denials recorded.</div>
         ) : (

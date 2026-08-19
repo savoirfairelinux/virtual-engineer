@@ -2,8 +2,8 @@ import React from "react";
 import { Icon } from "virtual-engineer";
 
 const SAMPLE_ICONS = [
-  "check", "x", "alert", "bolt", "arrow", "dot", "eye", "gear",
-  "branch", "commit", "pr", "lock", "clock", "robot", "zap", "tag",
+  "check", "x", "alert", "bolt", "arrow", "eye", "eye-off", "edit",
+  "trash", "plus", "search", "refresh", "clock", "config", "git", "question",
 ];
 
 export function Grid() {
@@ -41,7 +41,7 @@ export function Tones() {
     ["alert", "var(--warn)"],
     ["x", "var(--danger)"],
     ["bolt", "var(--info)"],
-    ["zap", "var(--accent)"],
+    ["spark", "var(--accent)"],
     ["dot", "var(--text-ghost)"],
   ];
   return (

@@ -6,10 +6,20 @@ import { TasksView } from "./views/TasksView/index.tsx";
 import { OverviewView } from "./views/OverviewView.tsx";
 import { ConfigView } from "./views/ConfigView/index.tsx";
 import { canViewConfiguration } from "./views/ConfigView/configPermissions.ts";
+import { parseConfigHash, type ConfigSectionId } from "./views/ConfigView/configRouting.ts";
 import { api, connectSse, getStoredToken, clearStoredToken, getMe, logout, onUnauthorized, fetchSetupStatus, ApiError } from "./api.ts";
 import { CurrentUserProvider, makeCan, makeHasPermission, type CurrentUserValue } from "./authContext.tsx";
 import { isActiveState } from "./states.ts";
 import { applyIfCurrentGeneration } from "./useIdentityReset.ts";
+import { GuidedTour } from "./tour/GuidedTour.tsx";
+import {
+  CONFIG_SECTION_TOURS,
+  CONFIG_WORKFLOW_TOUR,
+  MAIN_NAV_TOUR,
+  contextualTutorialKey,
+  selectTutorial,
+  type TutorialKey,
+} from "./tour/tourSteps.ts";
 import type {
   ApiTask, ApiIntegration, ApiPlugin, ApiAgent, ApiProject,
   ApiPrompt, ApiOAuthApp, ApiStatus, ApiConfig, ApiProvider, ApiOverview,
@@ -19,10 +29,23 @@ import "./theme/global.css";
 
 type ViewId = "overview" | "tasks" | "config";
 
+interface TutorialLaunch {
+  key: TutorialKey;
+  token: number;
+}
+
 function viewFromHash(hash: string): ViewId {
   if (hash.startsWith("#config")) return "config";
   if (hash.startsWith("#tasks")) return "tasks";
   return "overview";
+}
+
+export function shouldEnableConfigWorkflow(
+  configSection: ConfigSectionId,
+  workflowActive: boolean,
+  tutorialKey: TutorialKey | null,
+): boolean {
+  return configSection === "overview" || workflowActive || tutorialKey === "config-workflow";
 }
 
 const bootstrap: VeAdminBootstrap = window.__VE_ADMIN_BOOTSTRAP__ ?? {
@@ -50,6 +73,12 @@ export function App() {
   const [view, setView] = useState<ViewId>(() => {
     return viewFromHash(window.location.hash);
   });
+  const [configSection, setConfigSection] = useState<ConfigSectionId>(
+    () => parseConfigHash(window.location.hash).section,
+  );
+  const handleConfigSectionChange = useCallback((section: ConfigSectionId) => {
+    setConfigSection((current) => current === section ? current : section);
+  }, []);
 
   useEffect(() => {
     const onHashChange = () => {
@@ -64,6 +93,31 @@ export function App() {
   const [authenticated, setAuthenticated] = useState(() => !bootstrap.requiresAuth || !!getStoredToken());
   const [currentUser, setCurrentUser] = useState<ApiMe | null>(null);
   const [showChangePassword, setShowChangePassword] = useState(false);
+  const [tutorialLaunch, setTutorialLaunch] = useState<TutorialLaunch | null>(null);
+  const [configWorkflowActive, setConfigWorkflowActive] = useState(false);
+  const [pendingTutorialKey, setPendingTutorialKey] = useState<TutorialKey | null>(null);
+  const handleConfigWorkflowActiveChange = useCallback((active: boolean) => {
+    setConfigWorkflowActive((current) => current === active ? current : active);
+  }, []);
+
+  useEffect(() => {
+    if (pendingTutorialKey === null || configWorkflowActive) return;
+    if (view !== "config") {
+      setPendingTutorialKey(null);
+      return;
+    }
+    const currentSelection = selectTutorial("config", configSection);
+    if (currentSelection.key !== pendingTutorialKey) {
+      setPendingTutorialKey(null);
+      return;
+    }
+    const key = pendingTutorialKey;
+    setPendingTutorialKey(null);
+    setTutorialLaunch((previous) => ({
+      key,
+      token: (previous?.token ?? 0) + 1,
+    }));
+  }, [configSection, configWorkflowActive, pendingTutorialKey, view]);
   const dataGenerationRef = useRef(0);
   // When the server bootstrap data is unavailable (Vite dev mode), requiresAuth defaults to
   // false and authenticated starts as true — skipping the setup screen. This effect catches
@@ -235,6 +289,10 @@ export function App() {
 
   const configDenied = currentUser !== null && !canViewConfig;
   const effectiveView: ViewId = configDenied && view === "config" ? "overview" : view;
+  const mainNavRestartToken = tutorialLaunch?.key === "main-nav" ? tutorialLaunch.token : undefined;
+  const configWorkflowRestartToken = tutorialLaunch?.key === "config-workflow" ? tutorialLaunch.token : undefined;
+  const configWorkflowEnabled = currentUser !== null
+    && shouldEnableConfigWorkflow(configSection, configWorkflowActive, tutorialLaunch?.key ?? null);
 
   function requestViewChange(nextView: ViewId): boolean {
     if (view === "config" && nextView !== "config" && !configNavigationGuardRef.current?.()) return false;
@@ -247,9 +305,53 @@ export function App() {
     requestViewChange(v);
   }
 
+  function handleStartTutorial() {
+    const selection = selectTutorial(effectiveView, configSection);
+    if (configWorkflowActive && selection.key !== "config-workflow") {
+      setPendingTutorialKey(selection.key);
+      return;
+    }
+    setTutorialLaunch((previous) => ({
+      key: selection.key,
+      token: (previous?.token ?? 0) + 1,
+    }));
+  }
+
+  const contextualTourKey: TutorialKey | null = configSection === "overview"
+    ? null
+    : contextualTutorialKey(configSection);
+  const contextualTour = configSection === "overview" ? null : CONFIG_SECTION_TOURS[configSection];
+  const contextualTourActive = contextualTourKey !== null && tutorialLaunch?.key === contextualTourKey;
+
   return (
     <CurrentUserProvider value={currentUserValue}>
       <div className="app">
+        {effectiveView !== "config" && (
+          <GuidedTour
+            tourKey="main-nav"
+            steps={MAIN_NAV_TOUR}
+            enabled={currentUser !== null}
+            {...(mainNavRestartToken === undefined ? {} : { restartToken: mainNavRestartToken })}
+          />
+        )}
+        {effectiveView === "config" && !contextualTourActive && (
+          <GuidedTour
+            tourKey="config-workflow"
+            steps={CONFIG_WORKFLOW_TOUR}
+            enabled={configWorkflowEnabled}
+            onActiveChange={handleConfigWorkflowActiveChange}
+            {...(configWorkflowRestartToken === undefined ? {} : { restartToken: configWorkflowRestartToken })}
+          />
+        )}
+        {effectiveView === "config" && contextualTourKey !== null && contextualTour !== null && (
+          <GuidedTour
+            key={contextualTourKey}
+            tourKey={contextualTourKey}
+            steps={contextualTour}
+            enabled={currentUser !== null && tutorialLaunch?.key === contextualTourKey}
+            {...(tutorialLaunch?.key === contextualTourKey ? { restartToken: tutorialLaunch.token } : {})}
+          />
+        )}
         <TopBar
           view={effectiveView}
           setView={(nextView) => { requestViewChange(nextView); }}
@@ -258,6 +360,7 @@ export function App() {
           user={currentUser}
           canViewConfig={canViewConfig}
           onChangePassword={() => setShowChangePassword(true)}
+          onStartTutorial={handleStartTutorial}
           onLogout={() => {
             if (view === "config" && !configNavigationGuardRef.current?.()) return;
             const token = getStoredToken();
@@ -295,6 +398,7 @@ export function App() {
               status={status}
               onRefresh={() => void loadAll()}
               onNavigationGuardChange={(guard) => { configNavigationGuardRef.current = guard; }}
+              onSectionChange={handleConfigSectionChange}
             />
           )}
         </div>

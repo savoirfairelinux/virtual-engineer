@@ -29,6 +29,7 @@ function SearchableSelect({
   emptyMessage = "No matches.",
   freeTextPlaceholder,
   placeholderLabel = "— select —",
+  dataTour,
 }: {
   options: SelectOption[];
   value: string;
@@ -40,6 +41,7 @@ function SearchableSelect({
   emptyMessage?: string;
   freeTextPlaceholder?: string;
   placeholderLabel?: string;
+  dataTour?: string | undefined;
 }) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
@@ -64,6 +66,7 @@ function SearchableSelect({
   if (options.length === 0) {
     return (
       <FieldInput
+        {...(dataTour ? { "data-tour": dataTour } : {})}
         value={value}
         placeholder={loading ? "Loading…" : (freeTextPlaceholder ?? "")}
         disabled={loading || disabled}
@@ -98,6 +101,7 @@ function SearchableSelect({
     <div ref={containerRef} style={{ position: "relative" }}>
       <button
         type="button"
+        {...(dataTour ? { "data-tour": dataTour } : {})}
         disabled={loading || disabled}
         onClick={() => setOpen((o) => !o)}
         style={{
@@ -178,6 +182,7 @@ export function TargetBranchField({
         searchPlaceholder="Search branches…"
         freeTextPlaceholder="main"
         emptyMessage="No branches match this search."
+        dataTour="project-target-branch"
       />
     </Field>
   );
@@ -193,6 +198,7 @@ export function RepositoryKeyField({
   onRepositorySelected,
   required,
   placeholder,
+  dataTour,
 }: {
   label: string;
   hint?: string;
@@ -203,6 +209,7 @@ export function RepositoryKeyField({
   onRepositorySelected?: (repo: RepositoryOption) => void;
   required?: boolean;
   placeholder: string;
+  dataTour?: string | undefined;
 }) {
   const { repositories, loading } = useRepositoryOptions(integrationId, integrations);
   const selected = useMemo(() => repositories.find((repo) => repo.key === value) ?? null, [repositories, value]);
@@ -241,6 +248,7 @@ export function RepositoryKeyField({
         searchPlaceholder="Search repositories by name or key"
         freeTextPlaceholder={placeholder}
         emptyMessage="No repositories match this search."
+        dataTour={dataTour}
       />
     </Field>
   );
@@ -291,6 +299,7 @@ export function TicketProjectKeyField({
         searchPlaceholder="Search projects by name or key"
         freeTextPlaceholder="PROJECT_KEY"
         emptyMessage="No projects match this search."
+        dataTour="project-ticket-key"
       />
     </Field>
   );

@@ -239,32 +239,34 @@ export function AgentFormModal({ agent, integrations, plugins, prompts, onClose,
   return (
     <Modal title={isEdit ? `Edit Agent — ${agent!.name}` : "New Agent"} onClose={onClose}>
       <FormRow>
-        <Field label="Name" required>
-          <FieldInput value={form.name} placeholder="My coding agent" onChange={set("name")} />
-        </Field>
+        <div data-tour="agent-form-basics" style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+          <Field label="Name" required>
+            <FieldInput value={form.name} placeholder="My coding agent" onChange={set("name")} />
+          </Field>
 
-        <Field label="Type" required>
-          <FieldSelect value={form.type} onChange={setType}>
-            <option value="coding">Coding</option>
-            <option value="review">Review</option>
-          </FieldSelect>
-        </Field>
-
-        {reviewStrategies.length > 0 && (
-          <Field label="Review strategy" required hint="Choose how this provider performs code review">
-            <FieldSelect value={form.reviewStrategy} onChange={setReviewStrategy}>
-              <option value="ve_direct">VE direct</option>
-              {reviewStrategies.map((strategy) => (
-                <option key={strategy.id} value={strategy.id}>
-                  {strategy.label}{strategy.experimental ? " (experimental)" : ""}
-                </option>
-              ))}
+          <Field label="Type" required>
+            <FieldSelect value={form.type} onChange={setType}>
+              <option value="coding">Coding</option>
+              <option value="review">Review</option>
             </FieldSelect>
           </Field>
-        )}
+
+          {reviewStrategies.length > 0 && (
+            <Field label="Review strategy" required hint="Choose how this provider performs code review">
+              <FieldSelect value={form.reviewStrategy} onChange={setReviewStrategy}>
+                <option value="ve_direct">VE direct</option>
+                {reviewStrategies.map((strategy) => (
+                  <option key={strategy.id} value={strategy.id}>
+                    {strategy.label}{strategy.experimental ? " (experimental)" : ""}
+                  </option>
+                ))}
+              </FieldSelect>
+            </Field>
+          )}
+        </div>
 
         <Field label="Agent Integration" required hint="An enabled agent-execution integration (e.g. Copilot, Claude, Aider)">
-          <FieldSelect value={form.integrationId} onChange={setIntegration}>
+          <FieldSelect data-tour="agent-form-integration" value={form.integrationId} onChange={setIntegration}>
             {agentIntegrations.length === 0 && <option value="">— no agent integrations —</option>}
             {agentIntegrations.map((i) => (
               <option key={i.id} value={i.id}>{i.name} ({i.provider})</option>
@@ -274,7 +276,7 @@ export function AgentFormModal({ agent, integrations, plugins, prompts, onClose,
 
         {!nativeReview && <Field label="Model" hint={availableModels.length > 0 ? "Select a model or leave on default" : "Leave blank to use default (auto)"}>
           {availableModels.length > 0 ? (
-            <FieldSelect value={form.model} onChange={set("model") as React.ChangeEventHandler<HTMLSelectElement>} disabled={modelsLoading}>
+            <FieldSelect data-tour="agent-form-model" value={form.model} onChange={set("model") as React.ChangeEventHandler<HTMLSelectElement>} disabled={modelsLoading}>
               <option value="">— default (auto) —</option>
               {availableModels.map((model) => {
                 const label = [model.name, model.vendor, model.version].filter(Boolean).join(" · ");
@@ -286,46 +288,49 @@ export function AgentFormModal({ agent, integrations, plugins, prompts, onClose,
               })}
             </FieldSelect>
           ) : (
-            <FieldInput value={form.model} placeholder={modelsLoading ? "Loading models…" : "auto"} onChange={set("model")} disabled={modelsLoading} />
+            <FieldInput data-tour="agent-form-model" value={form.model} placeholder={modelsLoading ? "Loading models…" : "auto"} onChange={set("model")} disabled={modelsLoading} />
           )}
         </Field>}
 
         <Field label="Max Concurrent" hint="Maximum simultaneous agent cycles (≥1)">
-          <FieldInput type="number" min={1} value={form.maxConcurrent} onChange={set("maxConcurrent")} />
+          <FieldInput data-tour="agent-form-concurrency" type="number" min={1} value={form.maxConcurrent} onChange={set("maxConcurrent")} />
         </Field>
 
-        <Field label="System Prompt" required hint="Permanent policy appended to the provider's native agent foundation">
-          <FieldSelect value={form.systemPromptId} onChange={set("systemPromptId")} disabled={nativeReview}>
-            <option value="">— select a prompt —</option>
-            {systemPrompts.map((p) => (
-              <option key={p.id} value={p.id}>{p.label}</option>
-            ))}
-          </FieldSelect>
-        </Field>
+        <div data-tour="agent-form-prompts" style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+          <Field label="System Prompt" required hint="Permanent policy appended to the provider's native agent foundation">
+            <FieldSelect value={form.systemPromptId} onChange={set("systemPromptId")} disabled={nativeReview}>
+              <option value="">— select a prompt —</option>
+              {systemPrompts.map((p) => (
+                <option key={p.id} value={p.id}>{p.label}</option>
+              ))}
+            </FieldSelect>
+          </Field>
 
-        <Field label="Instructions Prompt" required hint="Task-specific guidance included in the generated user request">
-          <FieldSelect value={form.instructionsPromptId} onChange={set("instructionsPromptId")}>
-            <option value="">— select a prompt —</option>
-            {instructionsPrompts.map((p) => (
-              <option key={p.id} value={p.id}>{p.label}</option>
-            ))}
-          </FieldSelect>
-        </Field>
+          <Field label="Instructions Prompt" required hint="Task-specific guidance included in the generated user request">
+            <FieldSelect value={form.instructionsPromptId} onChange={set("instructionsPromptId")}>
+              <option value="">— select a prompt —</option>
+              {instructionsPrompts.map((p) => (
+                <option key={p.id} value={p.id}>{p.label}</option>
+              ))}
+            </FieldSelect>
+          </Field>
 
-        {(form.type === "coding" || form.feedbackInstructionsPromptId) && !nativeReview && <Field label="Feedback Instructions Prompt" hint="Replaces the Instructions Prompt on retry cycles">
-          <FieldSelect value={form.feedbackInstructionsPromptId} onChange={set("feedbackInstructionsPromptId")}>
-            <option value="">— none —</option>
-            {instructionsPrompts.map((p) => (
-              <option key={p.id} value={p.id}>{p.label}</option>
-            ))}
-          </FieldSelect>
-        </Field>}
+          {(form.type === "coding" || form.feedbackInstructionsPromptId) && !nativeReview && <Field label="Feedback Instructions Prompt" hint="Replaces the Instructions Prompt on retry cycles">
+            <FieldSelect value={form.feedbackInstructionsPromptId} onChange={set("feedbackInstructionsPromptId")}>
+              <option value="">— none —</option>
+              {instructionsPrompts.map((p) => (
+                <option key={p.id} value={p.id}>{p.label}</option>
+              ))}
+            </FieldSelect>
+          </Field>}
+        </div>
 
         {agentConfigFields.length > 0 && (
           <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
             <button
               type="button"
               className="btn sm"
+              data-tour="agent-form-provider-settings-toggle"
               onClick={() => setShowAdvanced((previous) => !previous)}
               style={{ alignSelf: "flex-start", gap: "6px" }}
             >
@@ -333,48 +338,54 @@ export function AgentFormModal({ agent, integrations, plugins, prompts, onClose,
               Provider settings
               <Icon name="chevdown" size={12} style={{ transform: showAdvanced ? "rotate(180deg)" : "none" }} />
             </button>
-            {showAdvanced && agentConfigFields.map((field) => {
-              if (nativeReview && field.key === "reasoningEffort") return null;
-              if (field.dependsOn && form.providerOptions[field.dependsOn.field] !== field.dependsOn.value) return null;
-              const value = form.providerOptions[field.key] ?? "";
-              return field.type === "select" ? (
-                <Field key={field.key} label={field.label} required={field.required} hint={field.description}>
-                  <FieldSelect value={value} onChange={(event) => setProviderOption(field.key, event.currentTarget.value)}>
-                    {!field.required && <option value="">— provider default —</option>}
-                    {field.options?.map((option) => (
-                      <option key={option.value} value={option.value}>{option.label}</option>
-                    ))}
-                  </FieldSelect>
-                </Field>
-              ) : (
-                <Field key={field.key} label={field.label} required={field.required} hint={field.description}>
-                  <FieldInput
-                    type={field.type === "number" ? "number" : "text"}
-                    min={field.type === "number" ? 1 : undefined}
-                    value={value}
-                    placeholder={field.placeholder ?? "Provider default"}
-                    onChange={(event) => setProviderOption(field.key, event.currentTarget.value)}
-                  />
-                </Field>
-              );
-            })}
+            {showAdvanced && (
+              <div data-tour="agent-form-provider-settings" style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+                {agentConfigFields.map((field) => {
+                  if (nativeReview && field.key === "reasoningEffort") return null;
+                  if (field.dependsOn && form.providerOptions[field.dependsOn.field] !== field.dependsOn.value) return null;
+                  const value = form.providerOptions[field.key] ?? "";
+                  return field.type === "select" ? (
+                    <Field key={field.key} label={field.label} required={field.required} hint={field.description}>
+                      <FieldSelect value={value} onChange={(event) => setProviderOption(field.key, event.currentTarget.value)}>
+                        {!field.required && <option value="">— provider default —</option>}
+                        {field.options?.map((option) => (
+                          <option key={option.value} value={option.value}>{option.label}</option>
+                        ))}
+                      </FieldSelect>
+                    </Field>
+                  ) : (
+                    <Field key={field.key} label={field.label} required={field.required} hint={field.description}>
+                      <FieldInput
+                        type={field.type === "number" ? "number" : "text"}
+                        min={field.type === "number" ? 1 : undefined}
+                        value={value}
+                        placeholder={field.placeholder ?? "Provider default"}
+                        onChange={(event) => setProviderOption(field.key, event.currentTarget.value)}
+                      />
+                    </Field>
+                  );
+                })}
+              </div>
+            )}
           </div>
         )}
 
         {supportsToolAuthorization(selectedIntegration?.provider) && (
-          <ToolAuthorizationSection
-            state={toolAuth}
-            onChange={setToolAuth}
-            provider={selectedIntegration?.provider}
-            plugin={selectedPlugin}
-          />
+          <div data-tour="agent-form-tool-authorization">
+            <ToolAuthorizationSection
+              state={toolAuth}
+              onChange={setToolAuth}
+              provider={selectedIntegration?.provider}
+              plugin={selectedPlugin}
+            />
+          </div>
         )}
 
         <FormError msg={error} />
 
         <FormActions>
           <button className="btn ghost" onClick={onClose}>Cancel</button>
-          <button className="btn primary" onClick={handleSave} disabled={saving}>
+          <button className="btn primary" data-tour="agent-form-actions" onClick={handleSave} disabled={saving}>
             {saving ? "Saving…" : isEdit ? "Save changes" : "Create agent"}
           </button>
         </FormActions>
