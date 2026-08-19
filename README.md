@@ -36,7 +36,7 @@ when needed, starts the pinned OpenShell gateway, and launches the orchestrator.
 Requirements: Git, curl, OpenSSL, Docker 24+, and a running Docker daemon.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/savoirfairelinux/virtual-engineer/main/scripts/install.sh | bash
+curl -fsSL https://virtual-engineer.dev/install.sh | bash
 ```
 
 The installer clones the repository into `./virtual-engineer` (or reuses the
