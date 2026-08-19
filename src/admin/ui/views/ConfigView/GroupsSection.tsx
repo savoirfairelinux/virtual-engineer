@@ -32,15 +32,15 @@ function GroupFormModal({ onClose, onSaved }: { onClose: () => void; onSaved: ()
     <Modal title="New group" sub="A named set of users that policies can target" onClose={onClose}>
       <FormRow>
         <Field label="Name" required>
-          <FieldInput value={name} autoComplete="off" onChange={(e) => setName(e.target.value)} />
+          <FieldInput data-tour="group-form-name" value={name} autoComplete="off" onChange={(e) => setName(e.target.value)} />
         </Field>
         <Field label="Description">
-          <FieldInput value={description} onChange={(e) => setDescription(e.target.value)} />
+          <FieldInput data-tour="group-form-description" value={description} onChange={(e) => setDescription(e.target.value)} />
         </Field>
         <FormError msg={error} />
         <FormActions>
           <button className="btn ghost" onClick={onClose}>Cancel</button>
-          <button className="btn primary" onClick={() => void handleSave()} disabled={saving || name.trim().length === 0}>
+          <button className="btn primary" data-tour="group-form-actions" onClick={() => void handleSave()} disabled={saving || name.trim().length === 0}>
             {saving ? "Creating…" : "Create group"}
           </button>
         </FormActions>
@@ -203,7 +203,7 @@ export function GroupsSection({ route, navigate, markClean }: ConfigSectionProps
             <h1 style={{ margin: 0, fontSize: "22px", fontWeight: 600, letterSpacing: "-0.01em" }}>Groups</h1>
             <p style={{ margin: "6px 0 0", color: "var(--text-faint)", fontSize: "13.5px" }}>Collections of users. Bind a policy to a group to grant access to all its members.</p>
           </div>
-          <button className="btn primary" onClick={() => navigate({ section: "groups", mode: "create" })}>
+          <button className="btn primary" data-tour="groups-new" onClick={() => navigate({ section: "groups", mode: "create" })}>
             <Icon name="plus" size={14} /> New group
           </button>
         </div>

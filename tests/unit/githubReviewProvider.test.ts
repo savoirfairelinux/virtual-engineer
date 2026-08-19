@@ -319,6 +319,20 @@ describe("GitHubReviewProvider", () => {
       expect(fetchMock.mock.calls[0]?.[0]).toBe("https://api.github.com/graphql");
     });
 
+    it("redacts credential-bearing GraphQL error messages", async () => {
+      const secret = "github-graphql-sensitive-value";
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse({ errors: [{ message: `invalid token=${secret}` }] }),
+      );
+
+      const err = await new GitHubReviewProvider(config)
+        .postThreadReply(cid, 1, "THREAD_1", "reply")
+        .catch((error: unknown) => error) as Error;
+
+      expect(err.message).not.toContain(secret);
+      expect(err.message).toContain("<redacted>");
+    });
+
     it("postThreadReply issues the addPullRequestReviewThreadReply mutation", async () => {
       fetchMock.mockResolvedValueOnce(
         jsonResponse({ data: { addPullRequestReviewThreadReply: { comment: { id: "C1" } } } })

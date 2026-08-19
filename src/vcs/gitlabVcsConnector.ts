@@ -9,7 +9,7 @@ import { buildFeatureBranchRef } from "./branchNaming.js";
 import type { ReviewComment } from "../interfaces.js";
 import { ReviewApiError } from "../interfaces.js";
 import { GitLabHttpClient } from "../connectors/gitlabHttpClient.js";
-import { redactUrls } from "../utils/redactUrl.js";
+import { redactUrls, sanitizeErrorDetail } from "../utils/redactUrl.js";
 import type { GitRunner } from "./gitRunner.js";
 import { NodeGitRunner } from "./nodeGitRunner.js";
 
@@ -62,7 +62,7 @@ export class GitLabVcsConnector implements VcsConnector {
     } catch (err: unknown) {
       const error = err instanceof Error ? err : new Error(String(err));
       throw new Error(
-        redactUrls(`Failed to clone GitLab repository: ${error.message.slice(0, 300)}`)
+        `Failed to clone GitLab repository: ${sanitizeErrorDetail(error.message)}`
       );
     }
   }
@@ -130,7 +130,7 @@ export class GitLabVcsConnector implements VcsConnector {
       };
     } catch (err: unknown) {
       const error = err instanceof Error ? err : new Error(String(err));
-      throw new Error(`Failed to push directly to GitLab: ${redactUrls(error.message.slice(0, 500))}`);
+      throw new Error(`Failed to push directly to GitLab: ${sanitizeErrorDetail(error.message)}`);
     }
   }
 

@@ -106,7 +106,7 @@ export function PromptsSection({ prompts, onRefresh, route, navigate, markClean 
               <option value="instructions">Instructions Prompt</option>
             </select>
             {canWrite && (
-              <button className="btn primary" onClick={() => { setFilter("all"); navigate({ section: "prompts", mode: "create" }); }}>
+              <button className="btn primary" data-tour="prompts-new" onClick={() => { setFilter("all"); navigate({ section: "prompts", mode: "create" }); }}>
                 <Icon name="plus" size={14} /> New prompt
               </button>
             )}

@@ -11,7 +11,7 @@ import type { VcsConnector, VcsPushResult } from "./vcsConnector.js";
 import { buildFeatureBranchRef } from "./branchNaming.js";
 import type { ReviewComment } from "../interfaces.js";
 import { ReviewApiError } from "../interfaces.js";
-import { redactUrls } from "../utils/redactUrl.js";
+import { redactUrls, sanitizeErrorDetail } from "../utils/redactUrl.js";
 import type { GitRunner } from "./gitRunner.js";
 import { NodeGitRunner } from "./nodeGitRunner.js";
 
@@ -65,7 +65,7 @@ export class GitHubVcsConnector implements VcsConnector {
     } catch (err: unknown) {
       const error = err instanceof Error ? err : new Error(String(err));
       throw new Error(
-        redactUrls(`Failed to clone ${repoUrl}: ${error.message.slice(0, 500)}`)
+        `Failed to clone ${sanitizeErrorDetail(repoUrl, 1000)}: ${sanitizeErrorDetail(error.message)}`
       );
     }
   }

@@ -68,6 +68,7 @@ export function PromptFormModal({ prompt, readOnly, onEdit, onClose, onSaved }: 
       <FormRow>
         <Field label="Label" required hint="Short name used to generate the prompt ID">
           <FieldInput
+            data-tour="prompt-form-label"
             value={label}
             placeholder="my_prompt_label"
             readOnly={readOnly || isEdit}
@@ -77,6 +78,7 @@ export function PromptFormModal({ prompt, readOnly, onEdit, onClose, onSaved }: 
 
         <Field label="Prompt type" required hint={PROMPT_TYPE_HINTS[promptType]}>
           <FieldSelect
+            data-tour="prompt-form-type"
             value={promptType}
             disabled={isEdit || readOnly}
             onChange={(event) => setPromptType(event.target.value as "system" | "instructions")}
@@ -88,6 +90,7 @@ export function PromptFormModal({ prompt, readOnly, onEdit, onClose, onSaved }: 
 
         <Field label="Content" required hint={PROMPT_CONTENT_HINTS[promptType]}>
           <FieldTextarea
+            data-tour="prompt-form-content"
             value={content}
             placeholder={PROMPT_TYPE_EXAMPLES[promptType]}
             readOnly={readOnly}
@@ -104,7 +107,7 @@ export function PromptFormModal({ prompt, readOnly, onEdit, onClose, onSaved }: 
             <button className="btn primary" onClick={onEdit}>Edit prompt</button>
           )}
           {!readOnly && (
-            <button className="btn primary" onClick={handleSave} disabled={saving}>
+            <button className="btn primary" data-tour="prompt-form-actions" onClick={handleSave} disabled={saving}>
               {saving ? "Saving…" : isEdit ? "Save changes" : "Create prompt"}
             </button>
           )}

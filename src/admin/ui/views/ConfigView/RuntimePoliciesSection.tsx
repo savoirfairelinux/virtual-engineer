@@ -118,7 +118,7 @@ export function RuntimePoliciesSection() {
             Create a policy then <strong>assign</strong> it to a project or agent.
           </p>
         </div>
-        <button className="btn primary" onClick={() => setCreating(true)}>
+        <button className="btn primary" data-tour="runtime-policies-new" onClick={() => setCreating(true)}>
           <Icon name="plus" size={14} /> New policy
         </button>
       </div>
@@ -390,7 +390,7 @@ function PolicyEditor({ policy, onClose, onSaved }: { policy: RuntimePolicy | nu
       footer={
         <>
           <button className="btn" onClick={onClose}>Cancel</button>
-          <button className="btn btn-primary" disabled={saving} onClick={() => void handleSave()}>
+          <button className="btn btn-primary" data-tour="runtime-policy-form-actions" disabled={saving} onClick={() => void handleSave()}>
             {saving ? "Saving…" : "Save"}
           </button>
         </>
@@ -398,10 +398,10 @@ function PolicyEditor({ policy, onClose, onSaved }: { policy: RuntimePolicy | nu
     >
       {error && <div style={{ marginBottom: "12px", color: "var(--danger, #f85149)", fontSize: "13px" }}>{error}</div>}
       <Field label="Name" required>
-        <FieldInput value={name} onChange={(e) => setName(e.target.value)} placeholder="review-readonly" />
+        <FieldInput data-tour="runtime-policy-form-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="review-readonly" />
       </Field>
       <Field label="Kind" required>
-        <FieldSelect value={kind} onChange={(e) => {
+        <FieldSelect data-tour="runtime-policy-form-kind" value={kind} onChange={(e) => {
           const nextKind = e.target.value as RuntimePolicy["kind"];
           setYaml((current) => current === RUNTIME_POLICY_TEMPLATES[kind]
             ? RUNTIME_POLICY_TEMPLATES[nextKind]
@@ -412,10 +412,10 @@ function PolicyEditor({ policy, onClose, onSaved }: { policy: RuntimePolicy | nu
         </FieldSelect>
       </Field>
       <Field label="Description">
-        <FieldInput value={description} onChange={(e) => setDescription(e.target.value)} placeholder="read-only egress" />
+        <FieldInput data-tour="runtime-policy-form-description" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="read-only egress" />
       </Field>
       <Field label="Policy YAML" hint="Applied to the sandbox before the agent runs.">
-        <FieldTextarea rows={12} value={yaml} onChange={(e) => setYaml(e.target.value)} style={{ fontFamily: "var(--mono, monospace)", fontSize: "12.5px" }} />
+        <FieldTextarea data-tour="runtime-policy-form-yaml" rows={12} value={yaml} onChange={(e) => setYaml(e.target.value)} style={{ fontFamily: "var(--mono, monospace)", fontSize: "12.5px" }} />
       </Field>
     </Modal>
   );
