@@ -140,7 +140,7 @@ export function ProjectsSection({ projects, agents, integrations, onRefresh, rou
             <p style={{ margin: "6px 0 0", color: "var(--text-faint)", fontSize: "13.5px" }}>Execution units binding an agent to ticket sources and push / review targets.</p>
           </div>
           {can("project.write") && (
-            <button className="btn primary" onClick={() => navigate({ section: "projects", mode: "create" })}>
+            <button className="btn primary" data-tour="projects-new-button" onClick={() => navigate({ section: "projects", mode: "create" })}>
               <Icon name="plus" size={14} /> New project
             </button>
           )}

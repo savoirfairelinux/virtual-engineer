@@ -64,7 +64,7 @@ function TypePicker({ plugins, onSelect }: { plugins: ApiPlugin[]; onSelect: (pr
       });
 
   return (
-    <div className="config-provider-picker">
+    <div className="config-provider-picker" data-tour="integration-provider-picker">
       <label className="config-provider-search">
         <Icon name="search" size={16} />
         <input
@@ -445,6 +445,7 @@ function SshAuthSection({ provider, providerName, config, onConfigChange }: SshA
 
   return (
     <div
+      data-tour="integration-form-ssh"
       style={{
         display: "flex", flexDirection: "column", gap: "12px",
         padding: "14px 16px",
@@ -698,7 +699,10 @@ export function IntegrationFormModal({ integration, plugins, onClose, onSaved, o
       sub={plugin ? `Configure ${plugin.name} integration` : undefined}
       onClose={onClose}
       footer={
-        <>
+        <div
+          data-tour="integration-form-actions"
+          style={{ display: "flex", alignItems: "center", gap: "10px", width: "100%" }}
+        >
           <button className="btn ghost" onClick={handleTest} disabled={testing || saving}>
             {testing ? "Testing…" : <><Icon name="bolt" size={13} /> Test</>}
           </button>
@@ -707,7 +711,7 @@ export function IntegrationFormModal({ integration, plugins, onClose, onSaved, o
           <button className="btn primary" onClick={handleSave} disabled={saving}>
             {saving ? "Saving…" : isEdit ? "Save changes" : "Add integration"}
           </button>
-        </>
+        </div>
       }
     >
       <FormRow>
@@ -740,6 +744,7 @@ export function IntegrationFormModal({ integration, plugins, onClose, onSaved, o
 
         <Field label="Name" required>
           <FieldInput
+            data-tour="integration-form-name"
             value={name}
             placeholder={`My ${plugin?.name ?? "integration"}`}
             onChange={(e) => setName(e.currentTarget.value)}
@@ -747,15 +752,17 @@ export function IntegrationFormModal({ integration, plugins, onClose, onSaved, o
         </Field>
 
         {/* Regular dynamic fields */}
-        {plugin?.requiredFields.filter((f) => !f.advanced && !f.hidden).map((field) => (
-          <DynamicField
-            key={field.key}
-            field={field}
-            value={config[field.key] ?? ""}
-            onChange={(v) => setConfigField(field.key, v)}
-            allValues={config}
-          />
-        ))}
+        <div data-tour="integration-form-provider-fields" style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+          {plugin?.requiredFields.filter((f) => !f.advanced && !f.hidden).map((field) => (
+            <DynamicField
+              key={field.key}
+              field={field}
+              value={config[field.key] ?? ""}
+              onChange={(v) => setConfigField(field.key, v)}
+              allValues={config}
+            />
+          ))}
+        </div>
 
         {/* SSH Authentication section — shown for any provider that supports SSH auth */}
         {plugin?.supportsSshAuth && (
@@ -773,6 +780,7 @@ export function IntegrationFormModal({ integration, plugins, onClose, onSaved, o
             <button
               type="button"
               className="btn sm"
+              data-tour="integration-form-advanced-toggle"
               onClick={() => setShowAdvanced((p) => !p)}
               style={{ alignSelf: "flex-start", gap: "6px" }}
             >
@@ -780,21 +788,26 @@ export function IntegrationFormModal({ integration, plugins, onClose, onSaved, o
               Advanced settings
               <Icon name="chevdown" size={12} style={{ transition: "transform 0.15s", transform: showAdvanced ? "rotate(180deg)" : "none" }} />
             </button>
-            {showAdvanced && plugin.requiredFields.filter((f) => f.advanced).map((field) => (
-              <DynamicField
-                key={field.key}
-                field={field}
-                value={config[field.key] ?? ""}
-                onChange={(v) => setConfigField(field.key, v)}
-                allValues={config}
-              />
-            ))}
+            {showAdvanced && (
+              <div data-tour="integration-form-advanced-fields" style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+                {plugin.requiredFields.filter((f) => f.advanced).map((field) => (
+                  <DynamicField
+                    key={field.key}
+                    field={field}
+                    value={config[field.key] ?? ""}
+                    onChange={(v) => setConfigField(field.key, v)}
+                    allValues={config}
+                  />
+                ))}
+              </div>
+            )}
           </div>
         )}
 
         {/* OAuth device flow */}
         {showOAuth && plugin?.oauth && (
           <div
+            data-tour="integration-form-oauth"
             style={{
               padding: "14px 16px",
               background: "var(--panel-2)",

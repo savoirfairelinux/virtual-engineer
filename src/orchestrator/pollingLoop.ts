@@ -435,7 +435,7 @@ export class PollingLoop {
       this.reviewPollCooldowns.set(changeId, now);
 
       Promise.resolve()
-        .then(() => this.orchestrator.handleReviewEvent(changeId))
+        .then(() => this.orchestrator.handleReviewEvent(changeId, task.taskId))
         .catch((err: unknown) =>
           log.error({ taskId: task.taskId, changeId, err }, "failed to check in-review task progress")
         );

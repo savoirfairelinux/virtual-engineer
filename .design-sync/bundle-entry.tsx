@@ -4,6 +4,7 @@
 
 export { Bars } from "../src/admin/ui/components/Bars.tsx";
 export { Drawer, DetailSection, DetailRow, StatusBanner } from "./shims/Drawer.tsx";
+export { GuidedTour } from "../src/admin/ui/tour/GuidedTour.tsx";
 export { Icon } from "./shims/Icon.tsx";
 export { Meta } from "../src/admin/ui/components/Meta.tsx";
 export {
