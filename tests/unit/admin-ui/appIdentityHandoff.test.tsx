@@ -37,7 +37,7 @@ vi.mock("../../../src/admin/ui/views/OverviewView.js", () => ({ OverviewView: ()
 vi.mock("../../../src/admin/ui/views/TasksView/index.js", () => ({ TasksView: () => null }));
 vi.mock("../../../src/admin/ui/views/ConfigView/index.js", () => ({ ConfigView: () => null }));
 
-import { App } from "../../../src/admin/ui/App.js";
+import { App, shouldEnableConfigWorkflow } from "../../../src/admin/ui/App.js";
 
 describe("App identity loading", () => {
   beforeEach(() => {
@@ -94,5 +94,14 @@ describe("App identity loading", () => {
       expect(state.getAttribute("data-user")).toBe("task-reader");
       expect(state.textContent).toBe("1");
     });
+  });
+
+  it("keeps the Configuration workflow active across its setup sections", () => {
+    expect(shouldEnableConfigWorkflow("overview", false, null)).toBe(true);
+    expect(shouldEnableConfigWorkflow("integrations", true, null)).toBe(true);
+    expect(shouldEnableConfigWorkflow("agents", true, null)).toBe(true);
+    expect(shouldEnableConfigWorkflow("projects", true, null)).toBe(true);
+    expect(shouldEnableConfigWorkflow("integrations", false, "config-workflow")).toBe(true);
+    expect(shouldEnableConfigWorkflow("integrations", false, null)).toBe(false);
   });
 });

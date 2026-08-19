@@ -10,6 +10,9 @@
 #
 # Optional environment variables:
 #   DATA_DIR       (default: ./data)
+#   OPENSHELL_STATE_DIR (default: $XDG_STATE_HOME/virtual-engineer or
+#                        $HOME/.local/state/virtual-engineer) persistent local
+#                        OpenShell/Keycloak bootstrap state
 #   OPENSHELL_COMPUTE_DRIVER (default: docker; kubernetes is experimental)
 #   K3S_KUBECONFIG (default: /etc/rancher/k3s/k3s.yaml)  k3s admin kubeconfig path
 #   OPENSHELL_OIDC_ISSUER external Keycloak realm issuer URL; omit with the
@@ -109,7 +112,17 @@ fi
 
 OIDC_DOCKER_HOST_ARGS=()
 if [[ "$OIDC_MODE" == "local" ]]; then
-  LOCAL_OIDC_DIR="${DATA_DIR}/local-oidc"
+  OPENSHELL_STATE_DIR=$(resolve_openshell_state_dir \
+    "${OPENSHELL_STATE_DIR:-}" "${XDG_STATE_HOME:-}" "${HOME:-}") \
+    || error "Cannot resolve a persistent OpenShell state directory outside ${ROOT_DIR}."
+  [[ ! -L "$OPENSHELL_STATE_DIR" ]] \
+    || error "OpenShell state directory must not be a symlink: ${OPENSHELL_STATE_DIR}"
+  ensure_dir "$OPENSHELL_STATE_DIR" 700
+  OPENSHELL_STATE_DIR="$(cd "$OPENSHELL_STATE_DIR" && pwd)"
+  LOCAL_OIDC_DIR="${OPENSHELL_STATE_DIR}/local-oidc"
+  LEGACY_LOCAL_OIDC_DIR="${DATA_DIR}/local-oidc"
+  migrate_local_oidc_state "$LEGACY_LOCAL_OIDC_DIR" "$LOCAL_OIDC_DIR" \
+    || error "Could not migrate managed local OIDC state into ${LOCAL_OIDC_DIR}."
   ensure_dir "$LOCAL_OIDC_DIR" 700
   if [[ "$OPENSHELL_COMPUTE_DRIVER" == "kubernetes" ]]; then
     OPENSHELL_OIDC_ISSUER="http://keycloak.virtual-engineer.svc.cluster.local:8080/realms/openshell"

@@ -94,7 +94,7 @@ export function IntegrationsSection({ integrations, plugins, onRefresh, route, n
             <p style={{ margin: "6px 0 0", color: "var(--text-faint)", fontSize: "13.5px" }}>External providers the orchestrator routes to by integration ID.</p>
           </div>
           {canWrite && (
-            <button className="btn primary" onClick={() => navigate({ section: "integrations", mode: "create" })}>
+            <button className="btn primary" data-tour="integrations-add" onClick={() => navigate({ section: "integrations", mode: "create" })}>
               <Icon name="plus" size={14} /> Add integration
             </button>
           )}
