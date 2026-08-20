@@ -444,11 +444,12 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
     <Modal title={isEditMode ? "Edit Project" : "New Project"} onClose={onClose} width={640}>
       <FormRow>
         <Field label="Name" required>
-          <FieldInput value={name} placeholder="My project" onChange={(e) => setName(e.target.value)} />
+          <FieldInput data-tour="project-form-name" value={name} placeholder="My project" onChange={(e) => setName(e.target.value)} />
         </Field>
 
         <Field label="Type" required hint={isEditMode ? "Project type cannot be changed after creation" : undefined}>
           <FieldSelect
+            data-tour="project-form-type"
             value={projectType}
             disabled={isEditMode}
             onChange={(e) => { setProjectType(e.target.value as "coding" | "review"); setAgentId(""); }}
@@ -459,7 +460,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
         </Field>
 
         <Field label="Agent" required hint={`Select an enabled ${projectType} agent`}>
-          <FieldSelect value={agentId} onChange={(e) => setAgentId(e.target.value)}>
+          <FieldSelect data-tour="project-form-agent" value={agentId} onChange={(e) => setAgentId(e.target.value)}>
             {currentAgents.length === 0 && <option value="">— no {projectType} agents —</option>}
             {currentAgents.length > 0 && <option value="">— select —</option>}
             {currentAgents.map((a) => (
@@ -470,7 +471,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
 
         {projectType === "coding" && (
           <>
-            <div style={{ paddingTop: 4 }}>
+            <div data-tour="project-ticket-source" style={{ paddingTop: 4 }}>
               <div style={{ fontSize: "13px", fontWeight: 600, marginBottom: 12 }}>Ticket Source</div>
               <div style={{ display: "flex", flexDirection: "column", gap: 12, padding: "14px 16px", background: "var(--panel-2)", borderRadius: "var(--radius-sm)", border: "1px solid var(--border-soft)" }}>
                 <Field label="Ticketing Integration" required>
@@ -492,7 +493,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
               </div>
             </div>
 
-            <div>
+            <div data-tour="project-push-targets">
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
                 <div style={{ fontSize: "13px", fontWeight: 600 }}>Push Targets ({pushTargets.length})</div>
                 <button data-config-dirty className="btn ghost" style={{ fontSize: "12px", padding: "4px 10px" }} onClick={addPushTarget}>
@@ -522,6 +523,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
                   <RepositoryKeyField
                     label="Repository Key"
                     required
+                    dataTour="project-repository-key"
                     integrationId={t.integrationId}
                     integrations={integrations}
                     value={t.repoKey}
@@ -558,7 +560,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
                       !normalizedMemberQuery || workspaceMemberSearchText(member).includes(normalizedMemberQuery)
                     ) ?? [];
                     return (
-                      <div style={{ display: "flex", flexDirection: "column", gap: 8, paddingTop: 10, borderTop: "1px solid var(--border-soft)" }}>
+                      <div data-tour="project-workspace-scan" style={{ display: "flex", flexDirection: "column", gap: 8, paddingTop: 10, borderTop: "1px solid var(--border-soft)" }}>
                         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
                           <div style={{ fontSize: "12px", fontWeight: 600, color: "var(--text-dim)" }}>Workspace manifests</div>
                           <button
@@ -722,63 +724,65 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
               </Field>
             )}
 
-            <Field label="Custom Gerrit Topic" hint="Overrides the ticket-derived topic (e.g. VE-<taskId>-<ticket-title>) for all changes pushed from this project. Leave blank to keep the default per-ticket topic.">
-              <FieldInput
-                value={gerritTopicOverride}
-                placeholder="my-custom-topic"
-                onChange={(e) => setGerritTopicOverride(e.target.value)}
-              />
-            </Field>
-
-            <Field
-              label="Ticket URL in Commits"
-              hint="When enabled, agent commit messages include the full ticket URL instead of the short #id form."
-            >
-              <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: "13px", userSelect: "none" }}>
-                <input
-                  type="checkbox"
-                  checked={useFullTicketUrlInCommits}
-                  onChange={(e) => setUseFullTicketUrlInCommits(e.target.checked)}
-                  style={{ accentColor: "var(--accent)", cursor: "pointer", flexShrink: 0 }}
+            <div data-tour="project-options" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+              <Field label="Custom Gerrit Topic" hint="Overrides the ticket-derived topic (e.g. VE-<taskId>-<ticket-title>) for all changes pushed from this project. Leave blank to keep the default per-ticket topic.">
+                <FieldInput
+                  value={gerritTopicOverride}
+                  placeholder="my-custom-topic"
+                  onChange={(e) => setGerritTopicOverride(e.target.value)}
                 />
-                <span>Include full ticket URL in commit message footers</span>
-              </label>
-            </Field>
+              </Field>
 
-            <Field
-              label="Post Review Link to Ticket"
-              hint="When enabled, VE adds a note on the source ticket with the Gerrit/review URL(s) once the first cycle opens a review. Off by default — most teams already surface this via standard VCS/ticket integrations."
-            >
-              <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: "13px", userSelect: "none" }}>
-                <input
-                  type="checkbox"
-                  checked={postReviewLinkToTicket}
-                  onChange={(e) => setPostReviewLinkToTicket(e.target.checked)}
-                  style={{ accentColor: "var(--accent)", cursor: "pointer", flexShrink: 0 }}
-                />
-                <span>Post a ticket comment with the review link(s)</span>
-              </label>
-            </Field>
+              <Field
+                label="Ticket URL in Commits"
+                hint="When enabled, agent commit messages include the full ticket URL instead of the short #id form."
+              >
+                <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: "13px", userSelect: "none" }}>
+                  <input
+                    type="checkbox"
+                    checked={useFullTicketUrlInCommits}
+                    onChange={(e) => setUseFullTicketUrlInCommits(e.target.checked)}
+                    style={{ accentColor: "var(--accent)", cursor: "pointer", flexShrink: 0 }}
+                  />
+                  <span>Include full ticket URL in commit message footers</span>
+                </label>
+              </Field>
 
-            <Field
-              label="React to CI Failures"
-              hint="When enabled, CI build-failure notifications (e.g. Jenkins 'Build Failed') count as actionable review feedback and trigger a retry cycle. Off by default — some teams don't want VE auto-retrying on broken CI."
-            >
-              <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: "13px", userSelect: "none" }}>
-                <input
-                  type="checkbox"
-                  checked={reactToCiFailures}
-                  onChange={(e) => setReactToCiFailures(e.target.checked)}
-                  style={{ accentColor: "var(--accent)", cursor: "pointer", flexShrink: 0 }}
-                />
-                <span>Retry a cycle when CI reports a build failure</span>
-              </label>
-            </Field>
+              <Field
+                label="Post Review Link to Ticket"
+                hint="When enabled, VE adds a note on the source ticket with the Gerrit/review URL(s) once the first cycle opens a review. Off by default — most teams already surface this via standard VCS/ticket integrations."
+              >
+                <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: "13px", userSelect: "none" }}>
+                  <input
+                    type="checkbox"
+                    checked={postReviewLinkToTicket}
+                    onChange={(e) => setPostReviewLinkToTicket(e.target.checked)}
+                    style={{ accentColor: "var(--accent)", cursor: "pointer", flexShrink: 0 }}
+                  />
+                  <span>Post a ticket comment with the review link(s)</span>
+                </label>
+              </Field>
+
+              <Field
+                label="React to CI Failures"
+                hint="When enabled, CI build-failure notifications (e.g. Jenkins 'Build Failed') count as actionable review feedback and trigger a retry cycle. Off by default — some teams don't want VE auto-retrying on broken CI."
+              >
+                <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: "13px", userSelect: "none" }}>
+                  <input
+                    type="checkbox"
+                    checked={reactToCiFailures}
+                    onChange={(e) => setReactToCiFailures(e.target.checked)}
+                    style={{ accentColor: "var(--accent)", cursor: "pointer", flexShrink: 0 }}
+                  />
+                  <span>Retry a cycle when CI reports a build failure</span>
+                </label>
+              </Field>
+            </div>
           </>
         )}
 
         {projectType === "review" && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 12, padding: "14px 16px", background: "var(--panel-2)", borderRadius: "var(--radius-sm)", border: "1px solid var(--border-soft)" }}>
+          <div data-tour="project-review-config" style={{ display: "flex", flexDirection: "column", gap: 12, padding: "14px 16px", background: "var(--panel-2)", borderRadius: "var(--radius-sm)", border: "1px solid var(--border-soft)" }}>
             <div style={{ fontSize: "13px", fontWeight: 600, marginBottom: 2 }}>Review Configuration</div>
             <Field label="Review Integration" required>
               <FieldSelect value={reviewIntegrationId} onChange={(e) => setReviewIntegrationId(e.target.value)}>
@@ -809,6 +813,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
 
         <Field label="Post-Clone Script" hint="Optional shell script to run after repo clone (before agent runs)">
           <FieldTextarea
+            data-tour="project-post-clone"
             value={postCloneScript}
             placeholder="#!/bin/sh&#10;npm install"
             onChange={(e) => setPostCloneScript(e.target.value)}
@@ -853,7 +858,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
 
         <FormActions>
           <button className="btn ghost" onClick={onClose}>Cancel</button>
-          <button className="btn primary" onClick={handleSave} disabled={saving}>
+          <button className="btn primary" data-tour="project-form-actions" onClick={handleSave} disabled={saving}>
             {saving ? "Saving…" : (isEditMode ? "Save changes" : "Create project")}
           </button>
         </FormActions>

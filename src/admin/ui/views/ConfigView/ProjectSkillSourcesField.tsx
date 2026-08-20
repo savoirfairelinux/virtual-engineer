@@ -159,7 +159,7 @@ export function ProjectSkillSourcesField({
       label="Additional Skills"
       hint="Add optional skills from trusted remote repositories for Copilot, Claude, and Goose projects. Configured sources are installed host-side before each agent run."
     >
-      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+      <div data-tour="project-skill-sources" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <div style={{ fontSize: "12px", fontWeight: 600, color: "var(--text-dim)" }}>External skill sources</div>
           <button data-config-dirty type="button" className="btn ghost" style={{ fontSize: "12px", padding: "5px 10px" }} onClick={() => setRows((prev) => [...prev, emptySkillSourceRow()])}>

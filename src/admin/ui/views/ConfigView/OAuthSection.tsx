@@ -60,7 +60,7 @@ export function OAuthSection({ oauthApps, onRefresh, route, navigate, markClean 
             <h1 style={{ margin: 0, fontSize: "22px", fontWeight: 600, letterSpacing: "-0.01em" }}>OAuth apps</h1>
             <p style={{ margin: "6px 0 0", color: "var(--text-faint)", fontSize: "13.5px" }}>Provider OAuth registrations used to mint short-lived agent tokens.</p>
           </div>
-          {canManage && <button className="btn primary" onClick={() => navigate({ section: "oauth", mode: "create" })}><Icon name="plus" size={14} /> Register app</button>}
+          {canManage && <button className="btn primary" data-tour="oauth-register" onClick={() => navigate({ section: "oauth", mode: "create" })}><Icon name="plus" size={14} /> Register app</button>}
         </div>
       </div>
 

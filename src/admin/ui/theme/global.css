@@ -810,9 +810,36 @@ body.ve-drawer-open .app {
 .pick-card.sel .pick-check { opacity: 1; }
 .pick-name { font-size: 12.5px; font-weight: 600; text-align: center; }
 
+/* Guided product tour: spotlight highlight ring + speech-bubble callout */
+@keyframes tour-pop {
+  from { opacity: 0; transform: scale(0.92); }
+  to   { opacity: 1; transform: none; }
+}
+.ve-tour-bubble {
+  animation: tour-pop 0.18s var(--ease) both;
+  background: var(--panel);
+  border: 1px solid var(--accent-line);
+  border-radius: var(--radius-lg);
+  padding: 12px 14px;
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.4);
+}
+.ve-tour-bubble::after {
+  content: "";
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  background: var(--panel);
+  border: 1px solid var(--accent-line);
+}
+.ve-tour-bubble.arrow-bottom::after { top: -7px; left: 20px; border-right: none; border-bottom: none; transform: rotate(45deg); }
+.ve-tour-bubble.arrow-top::after    { bottom: -7px; left: 20px; border-left: none; border-top: none; transform: rotate(45deg); }
+.ve-tour-bubble.arrow-right::after  { left: -7px; top: 16px; border-top: none; border-right: none; transform: rotate(45deg); }
+.ve-tour-bubble.arrow-left::after   { right: -7px; top: 16px; border-bottom: none; border-left: none; transform: rotate(45deg); }
+
 @media (prefers-reduced-motion: reduce) {
   .modal { animation: none; }
   .drawer { animation: none; }
+  .ve-tour-bubble { animation: none; }
   .drawer-scrim { animation: none; }
   .modal-scrim { animation: none; }
 }

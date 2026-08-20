@@ -33,7 +33,7 @@ export function OAuthFormModal({ onClose, onSaved }: Props) {
     <Modal title="Register OAuth App" onClose={onClose}>
       <FormRow>
         <Field label="Provider" required>
-          <FieldSelect value={provider} onChange={(e) => setProvider(e.target.value)}>
+          <FieldSelect data-tour="oauth-form-provider" value={provider} onChange={(e) => setProvider(e.target.value)}>
             <option value="gitlab">GitLab</option>
             <option value="github">GitHub</option>
           </FieldSelect>
@@ -41,6 +41,7 @@ export function OAuthFormModal({ onClose, onSaved }: Props) {
 
         <Field label="Base URL" required hint={provider === "gitlab" ? "e.g. https://gitlab.example.com" : "e.g. https://github.com"}>
           <FieldInput
+            data-tour="oauth-form-base-url"
             value={baseUrl}
             placeholder={provider === "gitlab" ? "https://gitlab.example.com" : "https://github.com"}
             onChange={(e) => setBaseUrl(e.target.value)}
@@ -49,6 +50,7 @@ export function OAuthFormModal({ onClose, onSaved }: Props) {
 
         <Field label="Client ID" required hint="OAuth application client_id from the provider">
           <FieldInput
+            data-tour="oauth-form-client-id"
             value={clientId}
             placeholder="your-client-id"
             onChange={(e) => setClientId(e.target.value)}
@@ -59,7 +61,7 @@ export function OAuthFormModal({ onClose, onSaved }: Props) {
 
         <FormActions>
           <button className="btn ghost" onClick={onClose}>Cancel</button>
-          <button className="btn primary" onClick={handleSave} disabled={saving}>
+          <button className="btn primary" data-tour="oauth-form-actions" onClick={handleSave} disabled={saving}>
             {saving ? "Saving…" : "Register app"}
           </button>
         </FormActions>

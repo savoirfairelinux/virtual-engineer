@@ -13,6 +13,7 @@ import type {
 import { getLogger } from "../logger.js";
 import { filterCommentsByAllowedFiles } from "../review/commentFilter.js";
 import { patchsetFromRevisionSha } from "../review/revisionPatchset.js";
+import { sanitizeErrorDetail } from "../utils/redactUrl.js";
 
 const log = getLogger("github-pr-review-provider");
 
@@ -387,7 +388,7 @@ export class GitHubReviewProvider implements ReviewProvider {
     });
     if (!response.ok) {
       const text = await response.text().catch(() => "");
-      throw new Error(`GitHub API ${response.status} ${url}: ${text.slice(0, 500)}`);
+      throw new Error(`GitHub API ${response.status} ${sanitizeErrorDetail(url, 1000)}: ${sanitizeErrorDetail(text)}`);
     }
     return response.json() as Promise<T>;
   }
@@ -503,14 +504,14 @@ export class GitHubReviewProvider implements ReviewProvider {
     });
     if (!response.ok) {
       const text = await response.text().catch(() => "");
-      throw new Error(`GitHub GraphQL ${response.status}: ${text.slice(0, 500)}`);
+      throw new Error(`GitHub GraphQL ${response.status}: ${sanitizeErrorDetail(text)}`);
     }
     const json = (await response.json()) as {
       data?: T;
       errors?: Array<{ message: string }>;
     };
     if (json.errors && json.errors.length > 0) {
-      throw new Error(`GitHub GraphQL error: ${json.errors.map((e) => e.message).join("; ")}`);
+      throw new Error(`GitHub GraphQL error: ${sanitizeErrorDetail(json.errors.map((e) => e.message).join("; "))}`);
     }
     if (json.data === undefined) {
       throw new Error("GitHub GraphQL response missing data");

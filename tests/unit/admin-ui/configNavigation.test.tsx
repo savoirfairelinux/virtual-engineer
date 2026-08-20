@@ -73,6 +73,7 @@ describe("Configuration navigation guard", () => {
   });
 
   it("handles direct hash navigation between Configuration sections", async () => {
+    const onSectionChange = vi.fn();
     render(
       <CurrentUserProvider value={{
         user: admin,
@@ -90,14 +91,17 @@ describe("Configuration navigation guard", () => {
           config={null}
           status={null}
           onRefresh={vi.fn()}
+          onSectionChange={onSectionChange}
         />
       </CurrentUserProvider>,
     );
 
+    await waitFor(() => expect(onSectionChange).toHaveBeenLastCalledWith("system"));
     window.location.hash = "#config/projects";
     window.dispatchEvent(new HashChangeEvent("hashchange"));
 
     await screen.findByRole("heading", { name: "Projects" });
+    await waitFor(() => expect(onSectionChange).toHaveBeenLastCalledWith("projects"));
   });
 
   it("organizes sections into fixed navigation groups", () => {

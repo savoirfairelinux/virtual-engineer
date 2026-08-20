@@ -38,15 +38,15 @@ function PolicyFormModal({ onClose, onSaved }: { onClose: () => void; onSaved: (
     <Modal title="New policy" sub="A reusable set of permission grants" onClose={onClose}>
       <FormRow>
         <Field label="Name" required>
-          <FieldInput value={name} autoComplete="off" onChange={(e) => setName(e.target.value)} />
+          <FieldInput data-tour="policy-form-name" value={name} autoComplete="off" onChange={(e) => setName(e.target.value)} />
         </Field>
         <Field label="Description">
-          <FieldInput value={description} onChange={(e) => setDescription(e.target.value)} />
+          <FieldInput data-tour="policy-form-description" value={description} onChange={(e) => setDescription(e.target.value)} />
         </Field>
         <FormError msg={error} />
         <FormActions>
           <button className="btn ghost" onClick={onClose}>Cancel</button>
-          <button className="btn primary" onClick={() => void handleSave()} disabled={saving || name.trim().length === 0}>
+          <button className="btn primary" data-tour="policy-form-actions" onClick={() => void handleSave()} disabled={saving || name.trim().length === 0}>
             {saving ? "Creating…" : "Create policy"}
           </button>
         </FormActions>
@@ -302,7 +302,7 @@ export function PoliciesSection({ route, navigate, markClean }: ConfigSectionPro
             <h1 style={{ margin: 0, fontSize: "22px", fontWeight: 600, letterSpacing: "-0.01em" }}>Policies</h1>
             <p style={{ margin: "6px 0 0", color: "var(--text-faint)", fontSize: "13.5px" }}>Grant permissions on specific resources, then assign policies to users or groups.</p>
           </div>
-          <button className="btn primary" onClick={() => navigate({ section: "policies", mode: "create" })}>
+          <button className="btn primary" data-tour="policies-new" onClick={() => navigate({ section: "policies", mode: "create" })}>
             <Icon name="plus" size={14} /> New policy
           </button>
         </div>

@@ -9,6 +9,7 @@ import type {
   ReviewAssignmentDiscovery,
 } from "../interfaces.js";
 import { getLogger } from "../logger.js";
+import { sanitizeErrorDetail } from "../utils/redactUrl.js";
 
 const log = getLogger("github-pr-review-connector");
 
@@ -574,12 +575,21 @@ export class GitHubPullRequestReviewConnector implements ReviewConnector, Review
 }
 
 export class GitHubPrApiError extends Error {
+  public readonly statusCode: number;
+  public readonly url: string;
+  public readonly body: string;
+
   constructor(
-    public readonly statusCode: number,
-    public readonly url: string,
-    public readonly body: string
+    statusCode: number,
+    url: string,
+    body: string
   ) {
-    super(`GitHub PR API error ${statusCode} on ${url}: ${body}`);
+    const safeUrl = sanitizeErrorDetail(url, 1000);
+    const safeBody = sanitizeErrorDetail(body, 500, "");
+    super(`GitHub PR API error ${statusCode} on ${safeUrl}: ${safeBody}`);
+    this.statusCode = statusCode;
+    this.url = safeUrl;
+    this.body = safeBody;
     this.name = "GitHubPrApiError";
   }
 }

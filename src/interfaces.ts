@@ -13,6 +13,7 @@ import {
   type Task,
   type TaskState,
 } from "./domain/tasks.js";
+import { sanitizeErrorDetail } from "./utils/redactUrl.js";
 
 export {
   makeAgentId,
@@ -1076,12 +1077,19 @@ export interface TicketConnector {
 
 /** Shared base for HTTP-based connector failures (ticket and review systems). */
 export class ApiHttpError extends Error {
+  public readonly url: string;
+  public readonly body: string;
+
   constructor(
     public readonly statusCode: number,
-    public readonly url: string,
-    public readonly body: string
+    url: string,
+    body: string
   ) {
-    super(`API error ${statusCode} on ${url}: ${body}`);
+    const safeUrl = sanitizeErrorDetail(url, 1000);
+    const safeBody = sanitizeErrorDetail(body, 500, "");
+    super(`API error ${statusCode} on ${safeUrl}: ${safeBody}`);
+    this.url = safeUrl;
+    this.body = safeBody;
     this.name = "ApiHttpError";
   }
 }
@@ -1096,7 +1104,7 @@ export class TicketApiError extends ApiHttpError {
     body: string
   ) {
     super(statusCode, url, body);
-    this.message = `Ticket API error ${statusCode} on ${url}: ${body}`;
+    this.message = `Ticket API error ${statusCode} on ${this.url}: ${this.body}`;
     this.name = "TicketApiError";
   }
 }
@@ -1119,7 +1127,7 @@ export class ReviewApiError extends ApiHttpError {
     body: string
   ) {
     super(statusCode, url, body);
-    this.message = `Review API error ${statusCode} on ${url}: ${body}`;
+    this.message = `Review API error ${statusCode} on ${this.url}: ${this.body}`;
     this.name = "ReviewApiError";
   }
 }
