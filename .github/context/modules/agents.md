@@ -51,6 +51,15 @@ Tool calls and permission decisions are recorded into `agent_cycles.agent_events
 - Project remote skill source configuration (`SKILL_SOURCES_JSON`, `SSH_AUTH_SOCK`, `GIT_SSH_COMMAND`, private-key paths) is not passed into the sandbox — fetched skill sources are staged host-side before upload instead (see **External Skills** below), so only the resulting files, never the fetch credentials, reach the sandbox.
 - Copilot sets `workingDirectory` and Claude sets `cwd` to the sandbox repository directory (`process.cwd()` in the worker). Copilot keeps `enableConfigDiscovery=true`, so the CLI discovers repository skills and repository MCP configuration natively; Claude loads user/project settings and all native skills and keeps `strictMcpConfig=true`, so only VE-provided MCP servers are accepted.
 
+## Git Hardening (agent-worker)
+
+Every git invocation inside the agent worker goes through `agent-worker/src/gitHardened.ts` — there are no local `execFileSync('git', ...)` call sites in `index.ts` or `commitUtils.ts`.
+
+- **Env isolation**: `buildHardenedGitEnv()` builds a minimal env containing only `PATH`, `HOME`, `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_SYSTEM=/dev/null`, `GIT_PAGER=cat`, `TERM=dumb`, and optional git identity vars. All other variables (including `*_TOKEN`, `*_API_KEY`, provider credentials) are stripped, so git child processes never inherit sandbox credentials.
+- **Argv hardening**: `hardenedGit()` prepends five `-c` flags to every invocation: `core.hooksPath=/dev/null` (hooks disabled), `include.path=` (no injected config includes), `core.fsmonitor=false`, `protocol.allow=never` (no protocol smuggling), `core.pager=cat`.
+- **Centralised error handling**: git failures throw with stderr truncated to 500 characters.
+- `hardenedGitWithEnv()` is for callers that must inject specific vars (e.g. `GIT_SEQUENCE_EDITOR` for interactive rebase); caller values are merged over the hardened base so hardening flags cannot be accidentally overwritten.
+
 ## External Skills
 
 - `projects.skill_sources_json` is persisted, editable in the admin UI, and forwarded onto `AgentSession.skillSourcesJson` / `ReviewWorkspaceInput.skillSourcesJson` by `src/orchestrator/agentContextBuilder.ts` and `src/review/reviewOrchestrator.ts`.
