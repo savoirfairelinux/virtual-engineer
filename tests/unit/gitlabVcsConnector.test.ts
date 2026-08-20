@@ -72,9 +72,22 @@ describe("GitLabVcsConnector", () => {
       await connector.clone(repoUrl, branch, targetDir);
 
       expect(gitRunner.run).toHaveBeenCalledWith(
-        ["clone", "--branch", branch, "--depth", "1", repoUrl, targetDir],
+        ["clone", "--branch", branch, "--depth", "1", "--", repoUrl, targetDir],
         expect.any(Object)
       );
+    });
+
+    it.each([
+      ["/tmp/local-repo", "local path"],
+      ["ext::sh -c whoami", "ext protocol"],
+      ["-unsafe", "option-like value"],
+      ["https://evil.example/group/my-project.git", "unconfigured host"],
+      ["http://gitlab.example.com/group/my-project.git", "insecure scheme"],
+    ])("rejects %s (%s) before invoking git", async (repoUrl) => {
+      gitRunner.run.mockClear();
+
+      await expect(connector.clone(repoUrl, "main", "/tmp/repo")).rejects.toThrow();
+      expect(gitRunner.run).not.toHaveBeenCalled();
     });
 
     it("redacts credentials from clone logs without changing the Git command", async () => {
@@ -84,7 +97,7 @@ describe("GitLabVcsConnector", () => {
       await connector.clone(repoUrl, "main", "/tmp/repo");
 
       expect(gitRunner.run).toHaveBeenCalledWith(
-        ["clone", "--branch", "main", "--depth", "1", repoUrl, "/tmp/repo"],
+        ["clone", "--branch", "main", "--depth", "1", "--", repoUrl, "/tmp/repo"],
         expect.any(Object)
       );
       expect(logger.info).toHaveBeenCalledWith(
@@ -97,7 +110,7 @@ describe("GitLabVcsConnector", () => {
       gitRunner.run.mockRejectedValueOnce(new Error("Network error"));
 
       await expect(
-        connector.clone("https://invalid.com/repo.git", "main", "/tmp/repo")
+        connector.clone("https://gitlab.example.com/my-project.git", "main", "/tmp/repo")
       ).rejects.toThrow("Failed to clone GitLab repository");
     });
 
