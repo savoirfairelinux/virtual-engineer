@@ -8,28 +8,18 @@
  * These run inside the agent container (committed commits in /sandbox)
  * as well as on the host in unit tests against real temp git repos.
  */
-import { execFileSync } from 'child_process';
 import { createHash } from 'crypto';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import type { CommitDescriptor, RepositoryMap } from '../../src/interfaces.js';
+import { hardenedGit, hardenedGitWithEnv, buildHardenedGitEnv } from './gitHardened.js';
 
 const CONVENTIONAL_COMMIT_RE =
   /^(feat|fix|refactor|test|chore|docs|perf|ci|build)(\([^)]+\))?: .{1,72}$/;
 
-// ── Internal git helper (not exported — consumers supply their own) ────────────
+// ── Internal git helper (delegates to hardenedGit) ───────────────────────────
 function git(args: string[], cwd: string): string {
-  try {
-    return execFileSync('git', args, {
-      cwd,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-  } catch (err) {
-    const e = err as { stderr?: string; stdout?: string; message?: string };
-    const detail = (e.stderr ?? e.stdout ?? e.message ?? '').slice(0, 500);
-    throw new Error(`git ${args[0] ?? ''}: ${detail}`);
-  }
+  return hardenedGit(args, cwd);
 }
 
 // ── Exported utilities ────────────────────────────────────────────────────────
@@ -305,23 +295,16 @@ export function injectChangeIds(
   }
 
   // Build a minimal env for git rebase (only what is strictly required).
-  const gitEnv: Record<string, string> = {
-    PATH: process.env['PATH'] ?? '',
-    HOME: process.env['HOME'] ?? '',
+  const rebaseEnv = buildHardenedGitEnv({
     GIT_SEQUENCE_EDITOR: "sed -i 's/^pick /edit /g'",
-  };
-  if (gitAuthorName) gitEnv['GIT_AUTHOR_NAME'] = gitAuthorName;
-  if (gitAuthorEmail) gitEnv['GIT_AUTHOR_EMAIL'] = gitAuthorEmail;
-  if (gitCommitterName) gitEnv['GIT_COMMITTER_NAME'] = gitCommitterName;
-  if (gitCommitterEmail) gitEnv['GIT_COMMITTER_EMAIL'] = gitCommitterEmail;
+    ...(gitAuthorName   ? { GIT_AUTHOR_NAME: gitAuthorName }     : {}),
+    ...(gitAuthorEmail  ? { GIT_AUTHOR_EMAIL: gitAuthorEmail }   : {}),
+    ...(gitCommitterName  ? { GIT_COMMITTER_NAME: gitCommitterName }   : {}),
+    ...(gitCommitterEmail ? { GIT_COMMITTER_EMAIL: gitCommitterEmail } : {}),
+  });
 
   try {
-    execFileSync('git', ['rebase', '-i', baseSha], {
-      cwd,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-      env: gitEnv,
-    });
+    hardenedGitWithEnv(['rebase', '-i', baseSha], cwd, rebaseEnv);
   } catch {
     // rebase -i stops at the first commit — this is expected
   }
@@ -362,7 +345,7 @@ export function injectChangeIds(
     const rebaseMergePath = join(gitDir, 'rebase-merge');
     const rebaseApplyPath = join(gitDir, 'rebase-apply');
     if (existsSync(rebaseMergePath) || existsSync(rebaseApplyPath)) {
-      try { execFileSync('git', ['rebase', '--abort'], { cwd }); } catch { /* ignore */ }
+      try { hardenedGit(['rebase', '--abort'], cwd); } catch { /* ignore */ }
       return commits;
     }
   }

@@ -18,7 +18,7 @@
  * ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN for Claude).
  */
 
-import { execFileSync } from 'child_process';
+import { hardenedGit } from './gitHardened.js'
 import { join } from 'path';
 
 import type { AgentLogEvent, AgentResult, CommitDescriptor, RepositoryMap } from '../../src/interfaces.js';
@@ -183,19 +183,9 @@ try {
 // --workdir there). Derive the repo path from cwd rather than hardcoding it.
 const WORKSPACE = process.cwd();
 const REPO_PATH = WORKSPACE;
-// ── Internal git helper ────────────────────────────────────────────────────────
+// ── Internal git helper (delegates to hardenedGit) ───────────────────────────
 function git(args: string[], cwd: string = REPO_PATH): string {
-  try {
-    return execFileSync('git', args, {
-      cwd,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-  } catch (err) {
-    const e = err as { stderr?: string; stdout?: string; message?: string };
-    const detail = (e.stderr ?? e.stdout ?? e.message ?? '').slice(0, 500);
-    throw new Error(`git ${args[0] ?? ''}: ${detail}`);
-  }
+  return hardenedGit(args, cwd);
 }
 
 // ── Provider-agnostic agent driver ────────────────────────────────────────────
