@@ -19,7 +19,7 @@ import {
   type ProviderAuthService,
 } from "../agents/providerAuthService.js";
 import { exchangeForSessionToken, fetchAvailableModels, fetchAvailableModelsWithPat } from "../agents/copilotModelsService.js";
-import { decryptToken } from "../utils/encryption.js";
+import { decryptRequiredManagedCredential, StoredCredentialDecryptionError } from "../utils/encryption.js";
 import { getProviderDescriptor } from "../plugins/registry.js";
 import type { Router } from "./router.js";
 import type { PluginManager } from "../plugins/pluginManager.js";
@@ -594,12 +594,20 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
     if (agent.integrationId && deps.integrationStore) {
       const integration = await deps.integrationStore.getIntegration(agent.integrationId);
       if (integration) {
+        const pluginManager = deps.pluginManager;
+        if (!requireStore(pluginManager, res, "Plugin manager not available")) return;
         let integrationConfig: Record<string, unknown> = {};
         try {
-          integrationConfig = deps.pluginManager
-            ? deps.pluginManager.decryptIntegrationConfig(integration)
-            : JSON.parse(integration.configJson) as Record<string, unknown>;
-        } catch { /* ignore */ }
+          integrationConfig = pluginManager.decryptIntegrationConfig(integration);
+        } catch (err: unknown) {
+          if (err instanceof StoredCredentialDecryptionError) {
+            log.warn({ err, integrationId: integration.id }, "linked integration credential could not be decrypted");
+            writeJson(res, 400, { error: err.message });
+            return;
+          }
+          writeJson(res, 400, { error: "Stored integration config is invalid" });
+          return;
+        }
         if (integrationConfig["authMode"] === "pat") {
           const pat = typeof integrationConfig["token"] === "string" ? integrationConfig["token"].trim() : "";
           if (!pat) {
@@ -617,7 +625,14 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
         writeJson(res, 400, { error: "No session token configured for this agent" });
         return;
       }
-      githubToken = decryptToken(encrypted, deps.adminAuthSecret);
+      try {
+        githubToken = decryptRequiredManagedCredential(encrypted, deps.adminAuthSecret);
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : "Stored token cannot be decrypted; reconnect OAuth.";
+        log.warn({ err, agentId: id }, "agent session token could not be decrypted");
+        writeJson(res, 400, { error: message });
+        return;
+      }
     }
     try {
       // PAT: use the @github/copilot-sdk CopilotClient which spawns the

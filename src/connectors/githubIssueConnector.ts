@@ -3,6 +3,7 @@ import type { TicketConnector, Ticket, TicketId, AssignedTicketQueryOptions } fr
 import { makeTicketId } from "../interfaces.js";
 import { AbstractTicketConnector } from "./baseTicketConnector.js";
 import { getLogger } from "../logger.js";
+import { sanitizeErrorDetail } from "../utils/redactUrl.js";
 
 const log = getLogger("github-issue-connector");
 
@@ -266,12 +267,21 @@ export class GitHubIssueConnector extends AbstractTicketConnector implements Tic
 }
 
 export class GitHubApiError extends Error {
+  public readonly statusCode: number;
+  public readonly url: string;
+  public readonly body: string;
+
   constructor(
-    public readonly statusCode: number,
-    public readonly url: string,
-    public readonly body: string
+    statusCode: number,
+    url: string,
+    body: string
   ) {
-    super(`GitHub API error ${statusCode} on ${url}: ${body}`);
+    const safeUrl = sanitizeErrorDetail(url, 1000);
+    const safeBody = sanitizeErrorDetail(body, 500, "");
+    super(`GitHub API error ${statusCode} on ${safeUrl}: ${safeBody}`);
+    this.statusCode = statusCode;
+    this.url = safeUrl;
+    this.body = safeBody;
     this.name = "GitHubApiError";
   }
 }

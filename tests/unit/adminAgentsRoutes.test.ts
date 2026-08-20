@@ -725,4 +725,62 @@ describe("Admin API — Agent routes (/api/admin/agents)", () => {
     expect(response.status).toBe(200);
     expect(fetchAvailableModelsWithPat).toHaveBeenCalledWith("github_pat_encrypted123");
   });
+
+  it("GET /:id/available-models returns a controlled error for an undecryptable token", async () => {
+    vi.mocked(fetchAvailableModelsWithPat).mockClear();
+    await store.upsertIntegration({
+      id: "copilot-invalid-token",
+      provider: "copilot",
+      name: "Copilot invalid token",
+      configJson: JSON.stringify({ authMode: "pat", token: "veenc:v1:not-valid-ciphertext" }),
+      enabled: true,
+    });
+    const agent = await store.createAgent({
+      name: "Invalid token bot",
+      type: "coding",
+      modelConfigJson: "{}",
+      integrationId: "copilot-invalid-token",
+      systemPromptId: "system_generic_code",
+      instructionsPromptId: "instructions_generic_code",
+    });
+
+    const response = await rest(server, `/api/admin/agents/${agent.id}/available-models`);
+
+    expect(response.status).toBe(400);
+    expect(response.body?.["error"]).toBe("Stored token cannot be decrypted; reconnect OAuth.");
+    expect(fetchAvailableModelsWithPat).not.toHaveBeenCalled();
+  });
+
+  it("GET /:id/available-models fails closed when the plugin manager is unavailable", async () => {
+    vi.mocked(fetchAvailableModelsWithPat).mockClear();
+    await store.upsertIntegration({
+      id: "copilot-no-plugin-manager",
+      provider: "copilot",
+      name: "Copilot without plugin manager",
+      configJson: JSON.stringify({ authMode: "pat", token: "veenc:v1:not-valid-ciphertext" }),
+      enabled: true,
+    });
+    const agent = await store.createAgent({
+      name: "No plugin manager bot",
+      type: "coding",
+      modelConfigJson: "{}",
+      integrationId: "copilot-no-plugin-manager",
+      systemPromptId: "system_generic_code",
+      instructionsPromptId: "instructions_generic_code",
+    });
+    const depsWithoutPluginManager = makeDeps(store);
+    delete depsWithoutPluginManager.pluginManager;
+    const noPluginManagerServer = createAdminServer(depsWithoutPluginManager);
+    await new Promise<void>((resolve) => noPluginManagerServer.listen(0, "127.0.0.1", resolve));
+
+    try {
+      const response = await rest(noPluginManagerServer, `/api/admin/agents/${agent.id}/available-models`);
+
+      expect(response.status).toBe(501);
+      expect(response.body?.["error"]).toBe("Plugin manager not available");
+      expect(fetchAvailableModelsWithPat).not.toHaveBeenCalled();
+    } finally {
+      await new Promise<void>((resolve, reject) => noPluginManagerServer.close((err) => err ? reject(err) : resolve()));
+    }
+  });
 });

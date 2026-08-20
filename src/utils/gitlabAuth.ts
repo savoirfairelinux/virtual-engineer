@@ -1,5 +1,7 @@
 /** Shared GitLab auth helpers for PAT and OAuth-backed access tokens. */
 
+import { sanitizeErrorDetail } from "./redactUrl.js";
+
 type GitLabHeaderInput = RequestInit["headers"];
 
 const GITLAB_UPLOAD_SUFFIX = "uploads/[0-9a-f]{32}/[^/]+";
@@ -139,7 +141,7 @@ export async function fetchGitLabCurrentUser(config: Record<string, unknown>): P
   });
   if (!response.ok) {
     const body = await response.text().catch(() => `HTTP ${response.status}`);
-    throw new Error(`GitLab authentication failed: ${body}`);
+    throw new Error(`GitLab authentication failed: ${sanitizeErrorDetail(body)}`);
   }
   const user = await response.json().catch(() => ({}));
   if (!user || typeof user !== "object" || !("id" in user)) {

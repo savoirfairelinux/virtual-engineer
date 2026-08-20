@@ -1,4 +1,5 @@
 import { getLogger } from "../logger.js";
+import { sanitizeErrorDetail } from "./redactUrl.js";
 
 const log = getLogger("github-auth");
 
@@ -79,7 +80,7 @@ export async function startGitHubDeviceFlow(
           `Check that the OAuth App exists at ${baseUrl}/settings/developers and that "Device flow" is enabled in its settings.`
       );
     }
-    throw new GitHubAuthError(`Device flow start failed (${response.status}): ${body}`);
+    throw new GitHubAuthError(`Device flow start failed (${response.status}): ${sanitizeErrorDetail(body)}`);
   }
 
   const data = (await response.json()) as Record<string, unknown>;
@@ -125,7 +126,7 @@ export async function pollGitHubDeviceToken(
 
   if (!response.ok) {
     const body = await response.text().catch(() => "");
-    throw new GitHubAuthError(`Token poll failed (${response.status}): ${body}`);
+    throw new GitHubAuthError(`Token poll failed (${response.status}): ${sanitizeErrorDetail(body)}`);
   }
 
   const data = (await response.json()) as Record<string, unknown>;
@@ -144,7 +145,7 @@ export async function pollGitHubDeviceToken(
       return { status: "expired" };
     }
 
-    return { status: "error", error: (data["error_description"] as string) ?? errorCode };
+    return { status: "error", error: sanitizeErrorDetail(data["error_description"] ?? errorCode) };
   }
 
   return {
@@ -174,7 +175,7 @@ export async function fetchGitHubCurrentUser(
 
   if (!response.ok) {
     const body = await response.text().catch(() => "");
-    throw new GitHubAuthError(`Fetch current user failed (${response.status}): ${body}`);
+    throw new GitHubAuthError(`Fetch current user failed (${response.status}): ${sanitizeErrorDetail(body)}`);
   }
 
   const data = (await response.json()) as Record<string, unknown>;
@@ -220,7 +221,7 @@ export async function fetchGitHubRepository(
           `Check the owner/repo spelling and that the token has access to it.`
       );
     }
-    throw new GitHubAuthError(`Fetch repository failed (${response.status}): ${body}`);
+    throw new GitHubAuthError(`Fetch repository failed (${response.status}): ${sanitizeErrorDetail(body)}`);
   }
 
   const data = (await response.json()) as Record<string, unknown>;
@@ -262,7 +263,7 @@ export async function listGitHubRepositoriesForOwner(
 
   const result = await fetchPaginated(token, url);
   if (!result.ok) {
-    throw new GitHubAuthError(`List repositories failed (${result.status}): ${result.body}`);
+    throw new GitHubAuthError(`List repositories failed (${result.status}): ${sanitizeErrorDetail(result.body)}`);
   }
 
   const ownerLc = owner.toLowerCase();
@@ -335,7 +336,7 @@ export async function listGitHubRepositoriesForUser(
   const url = `${apiBaseUrl}/user/repos?per_page=100&type=all&sort=full_name`;
   const result = await fetchPaginated(token, url);
   if (!result.ok) {
-    throw new GitHubAuthError(`List user repositories failed (${result.status}): ${result.body}`);
+    throw new GitHubAuthError(`List user repositories failed (${result.status}): ${sanitizeErrorDetail(result.body)}`);
   }
   return result.repos;
 }
@@ -364,7 +365,7 @@ export async function listGitHubBranches(
     });
     if (!response.ok) {
       const body = await response.text().catch(() => "");
-      throw new GitHubAuthError(`List branches failed (${response.status}): ${body}`);
+      throw new GitHubAuthError(`List branches failed (${response.status}): ${sanitizeErrorDetail(body)}`);
     }
     const page = (await response.json()) as Array<Record<string, unknown>>;
     for (const item of page) {
@@ -379,7 +380,7 @@ export async function listGitHubBranches(
 
 export class GitHubAuthError extends Error {
   constructor(message: string) {
-    super(message);
+    super(sanitizeErrorDetail(message));
     this.name = "GitHubAuthError";
   }
 }

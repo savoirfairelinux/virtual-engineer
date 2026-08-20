@@ -8,6 +8,7 @@
  */
 import type { ApiHttpError } from "../interfaces.js";
 import { buildGitLabApiHeaders } from "../utils/gitlabAuth.js";
+import { sanitizeErrorDetail } from "../utils/redactUrl.js";
 
 export const DISCOVERY_TIMEOUT_MS = 30_000;
 
@@ -30,7 +31,7 @@ export class GitLabHttpClient {
 
     if (!response.ok) {
       const body = await response.text().catch(() => "");
-      throw this.errorFactory(response.status, url, body);
+      throw this.errorFactory(response.status, sanitizeErrorDetail(url, 1000), sanitizeErrorDetail(body));
     }
 
     return response.json() as Promise<T>;
@@ -45,7 +46,7 @@ export class GitLabHttpClient {
 
     if (!response.ok) {
       const body = await response.text().catch(() => "");
-      throw this.errorFactory(response.status, url, body);
+      throw this.errorFactory(response.status, sanitizeErrorDetail(url, 1000), sanitizeErrorDetail(body));
     }
 
     await response.text();
@@ -62,7 +63,7 @@ export class GitLabHttpClient {
       });
       if (!response.ok) {
         const body = await response.text().catch(() => "");
-        throw this.errorFactory(response.status, url, body);
+        throw this.errorFactory(response.status, sanitizeErrorDetail(url, 1000), sanitizeErrorDetail(body));
       }
       const next = response.headers.get("x-next-page");
       const nextPage = next && next.trim().length > 0 ? Number(next) : null;
