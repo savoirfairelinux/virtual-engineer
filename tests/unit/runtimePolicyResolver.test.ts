@@ -124,7 +124,20 @@ describe("createRuntimePolicyResolver", () => {
       expect(yaml).toContain("no_new_privs: true");
     });
 
-    it.each(["/", "/usr", "/lib", "/etc", "/app", "/bin", "/sbin", "/boot", "/var"])(
+    it.each([
+      "/",
+      "/usr",
+      "/usr/local/bin",
+      "/lib",
+      "/etc",
+      "/etc/ssh",
+      "/app",
+      "/app/config",
+      "/bin",
+      "/sbin",
+      "/boot",
+      "/var",
+    ])(
       "rejects a filesystem policy that makes %s writable",
       async (path) => {
         const escalate = {
@@ -146,6 +159,19 @@ describe("createRuntimePolicyResolver", () => {
       await expect(resolverWithProjectPolicy(escalate)({ taskId: "task-1", mode: "coding" }))
         .rejects.toThrow(/may not grant write access to \/etc\//);
     });
+
+    it.each(["", "etc/ssh", "./etc/ssh"])(
+      "rejects a non-absolute writable path: %s",
+      async (path) => {
+        const escalate = {
+          ...policy("fs-relative", `filesystem_policy:\n  read_write: [\"${path}\"]\n`),
+          kind: "filesystem" as const,
+        };
+
+        await expect(resolverWithProjectPolicy(escalate)({ taskId: "task-1", mode: "coding" }))
+          .rejects.toThrow(/may not grant write access to/);
+      },
+    );
 
     it("still composes a legitimate tightening policy", async () => {
       const tighten = {

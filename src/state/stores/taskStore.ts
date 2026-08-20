@@ -326,7 +326,7 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
   // to resume, so fail them outright — this lets normal retry/re-trigger
   // logic pick them back up instead of leaving them stuck in RUNNING forever.
   async function reconcileOrphanedActiveTasks(): Promise<number> {
-    const orphanable: TaskState[] = ["AGENT_RUNNING", "REVIEW_RUNNING", "REVIEW_COMMENTING"];
+    const orphanable: TaskState[] = ["AGENT_RUNNING", "REVIEW_RUNNING"];
     const rows = await db.query.tasks.findMany({ where: inArray(tasks.state, orphanable) });
     for (const row of rows) {
       const task = rowToTask(row);
@@ -1013,6 +1013,33 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
   ): Promise<Task | null> {
     if (!externalChangeId) return null;
 
+    if (integrationId !== null) {
+      const scopedChangeRow = raw
+        .prepare(
+          "SELECT task_id FROM change_per_repository WHERE change_id = ? AND integration_id = ? ORDER BY updated_at DESC LIMIT 1"
+        )
+        .get(externalChangeId, integrationId) as { task_id: string } | undefined;
+      if (scopedChangeRow) {
+        const scopedTask = await db.query.tasks.findFirst({
+          where: eq(tasks.taskId, scopedChangeRow.task_id as TaskId),
+        });
+        if (scopedTask) return rowToTask(scopedTask);
+      }
+
+      const reviewTaskRow = raw
+        .prepare(
+          "SELECT task_id FROM tasks WHERE task_type = 'code-review' AND gerrit_change_id = ? AND instr(ticket_source_label, ':') > 0 AND substr(ticket_source_label, instr(ticket_source_label, ':') + 1) = ? ORDER BY created_at DESC LIMIT 1"
+        )
+        .get(externalChangeId, integrationId) as { task_id: string } | undefined;
+      if (reviewTaskRow) {
+        const reviewTask = await db.query.tasks.findFirst({
+          where: eq(tasks.taskId, reviewTaskRow.task_id as TaskId),
+        });
+        if (reviewTask) return rowToTask(reviewTask);
+      }
+      return null;
+    }
+
     const singleRow = raw
       .prepare("SELECT * FROM tasks WHERE gerrit_change_id = ? ORDER BY created_at DESC LIMIT 1")
       .get(externalChangeId) as Record<string, unknown> | undefined;
@@ -1023,17 +1050,11 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
       if (orm) return rowToTask(orm);
     }
 
-    const cprRow = integrationId
-      ? raw
-          .prepare(
-            "SELECT task_id FROM change_per_repository WHERE change_id = ? AND integration_id = ? ORDER BY updated_at DESC LIMIT 1"
-          )
-          .get(externalChangeId, integrationId) as { task_id: string } | undefined
-      : raw
-          .prepare(
-            "SELECT task_id FROM change_per_repository WHERE change_id = ? ORDER BY updated_at DESC LIMIT 1"
-          )
-          .get(externalChangeId) as { task_id: string } | undefined;
+    const cprRow = raw
+      .prepare(
+        "SELECT task_id FROM change_per_repository WHERE change_id = ? ORDER BY updated_at DESC LIMIT 1"
+      )
+      .get(externalChangeId) as { task_id: string } | undefined;
 
     if (cprRow) {
       const orm = await db.query.tasks.findFirst({

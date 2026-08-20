@@ -479,7 +479,7 @@ describe("SqliteStateStore", () => {
   });
 
   describe("reconcileOrphanedActiveTasks", () => {
-    it("fails tasks stuck in AGENT_RUNNING / REVIEW_RUNNING / REVIEW_COMMENTING and leaves other states alone", async () => {
+    it("fails AGENT_RUNNING / REVIEW_RUNNING and preserves REVIEW_COMMENTING for recovery", async () => {
       const idAgentRunning = makeTaskId(randomUUID());
       const idReviewRunning = makeTaskId(randomUUID());
       const idReviewCommenting = makeTaskId(randomUUID());
@@ -521,11 +521,11 @@ describe("SqliteStateStore", () => {
       await store.transition(idDone, "DONE");
 
       const count = await store.reconcileOrphanedActiveTasks();
-      expect(count).toBe(3);
+      expect(count).toBe(2);
 
       expect((await store.getTask(idAgentRunning))?.state).toBe("FAILED");
       expect((await store.getTask(idReviewRunning))?.state).toBe("REVIEW_FAILED");
-      expect((await store.getTask(idReviewCommenting))?.state).toBe("REVIEW_FAILED");
+      expect((await store.getTask(idReviewCommenting))?.state).toBe("REVIEW_COMMENTING");
       // Not an "actively executing" state: left untouched.
       expect((await store.getTask(idContextBuilding))?.state).toBe("CONTEXT_BUILDING");
       // Already terminal: left untouched.
@@ -1186,6 +1186,70 @@ describe("SqliteStateStore", () => {
       expect(changes[0]?.changeId).toBe("I111");
       expect(changes[0]?.status).toBe("OPEN");
       expect(changes[1]?.repoKey).toBe("core-lib");
+    });
+
+    it("scopes external change lookup to the requested integration", async () => {
+      const firstTaskId = makeTaskId(randomUUID());
+      const secondTaskId = makeTaskId(randomUUID());
+      const changeId = makeExternalChangeId("shared-change");
+
+      await store.createTask(firstTaskId, makeTicketId("shared-change-a"));
+      await store.createTask(secondTaskId, makeTicketId("shared-change-b"));
+      await store.updateExternalChangeId(firstTaskId, changeId, 1);
+      await store.updateExternalChangeId(secondTaskId, changeId, 1);
+      await store.saveChangePerRepository(
+        firstTaskId,
+        "superproject",
+        changeId,
+        null,
+        "OPEN",
+        "integration-a",
+      );
+      await store.saveChangePerRepository(
+        secondTaskId,
+        "superproject",
+        changeId,
+        null,
+        "OPEN",
+        "integration-b",
+      );
+
+      await expect(store.findTaskByExternalChangeId("integration-a", changeId)).resolves.toMatchObject({
+        taskId: firstTaskId,
+      });
+      await expect(store.findTaskByExternalChangeId("integration-b", changeId)).resolves.toMatchObject({
+        taskId: secondTaskId,
+      });
+    });
+
+    it("falls back to integration-scoped review tasks without per-repository rows", async () => {
+      const firstTaskId = makeTaskId(randomUUID());
+      const secondTaskId = makeTaskId(randomUUID());
+      const changeId = makeExternalChangeId("review-change");
+
+      await store.createReviewTask({
+        taskId: firstTaskId,
+        ticketId: makeTicketId("review-a"),
+        subject: "Review A",
+        sourceLabel: "gerrit:integration-a",
+        changeId,
+        patchset: 1,
+      });
+      await store.createReviewTask({
+        taskId: secondTaskId,
+        ticketId: makeTicketId("review-b"),
+        subject: "Review B",
+        sourceLabel: "gerrit:integration-b",
+        changeId,
+        patchset: 1,
+      });
+
+      await expect(store.findTaskByExternalChangeId("integration-a", changeId)).resolves.toMatchObject({
+        taskId: firstTaskId,
+      });
+      await expect(store.findTaskByExternalChangeId("integration-b", changeId)).resolves.toMatchObject({
+        taskId: secondTaskId,
+      });
     });
 
     it("upserts existing per-repo change", async () => {
