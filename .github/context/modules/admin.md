@@ -172,7 +172,7 @@ The dashboard stores the session token client-side (sessionStorage `ve-admin-tok
 
 ## Secret masking
 
-The admin server never returns plaintext password-like fields. Descriptor password fields and internal credentials such as integration `webhookSecret` values use the same versioned encrypted storage path. Credential-bearing integration creates and updates return 400 when `ADMIN_AUTH_SECRET` is unavailable. Managed-token decryption failures return the controlled error `Stored token cannot be decrypted; reconnect OAuth.` and never fall back to forwarding ciphertext. On `PUT`, values equal to `"********"`, empty strings, or omitted properties are merged from the stored row before validation so partial edits do not erase secrets.
+The admin server never returns plaintext password-like fields. Descriptor password fields and internal credentials such as integration `webhookSecret` values use the same versioned encrypted storage path. Credential-bearing integration creates and updates return 400 when `ADMIN_AUTH_SECRET` is unavailable. Managed-token decryption failures return the controlled error `Stored token cannot be decrypted; reconnect OAuth.` and never fall back to forwarding ciphertext. Linked-agent model discovery requires the `PluginManager` to decrypt integration credentials and returns `501 Plugin manager not available` when that dependency is missing; it never parses stored integration JSON as a fallback. On `PUT`, values equal to `"********"`, empty strings, or omitted properties are merged from the stored row before validation so partial edits do not erase secrets.
 
 ## Dashboard behavior
 
