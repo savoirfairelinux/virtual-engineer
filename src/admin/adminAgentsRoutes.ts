@@ -594,11 +594,11 @@ export function registerAgentRoutes(router: Router, deps: AgentsRouteDeps): void
     if (agent.integrationId && deps.integrationStore) {
       const integration = await deps.integrationStore.getIntegration(agent.integrationId);
       if (integration) {
+        const pluginManager = deps.pluginManager;
+        if (!requireStore(pluginManager, res, "Plugin manager not available")) return;
         let integrationConfig: Record<string, unknown> = {};
         try {
-          integrationConfig = deps.pluginManager
-            ? deps.pluginManager.decryptIntegrationConfig(integration)
-            : JSON.parse(integration.configJson) as Record<string, unknown>;
+          integrationConfig = pluginManager.decryptIntegrationConfig(integration);
         } catch (err: unknown) {
           if (err instanceof StoredCredentialDecryptionError) {
             log.warn({ err, integrationId: integration.id }, "linked integration credential could not be decrypted");
