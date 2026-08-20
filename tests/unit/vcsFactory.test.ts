@@ -187,6 +187,23 @@ describe("createVcsConnectorForIntegration", () => {
       );
     });
 
+    it("fails closed when a stored token cannot be decrypted", () => {
+      const integration = makeIntegration({
+        id: "gitlab-managed-invalid",
+        provider: "gitlab",
+        configJson: JSON.stringify({
+          baseUrl: "https://gitlab.local",
+          token: "veenc:v1:not-valid-ciphertext",
+        }),
+      });
+
+      expect(() => createVcsConnectorForIntegration(
+        integration,
+        { repoKey: "team/repo" },
+        "vcs-factory-test-secret",
+      )).toThrow("Stored token cannot be decrypted; reconnect OAuth.");
+    });
+
     it("throws when projectId is missing", () => {
       const integration = makeIntegration({
         id: "gitlab-bad",

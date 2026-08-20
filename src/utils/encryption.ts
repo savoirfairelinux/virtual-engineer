@@ -16,6 +16,19 @@ const AUTH_TAG_LENGTH = 16;
 const KEY_DERIVATION_LABEL = "ve-copilot-token-encryption";
 const PLAIN_PREFIX = "plain:";
 const ENCRYPTED_PREFIX = "veenc:v1:";
+const LEGACY_UNPREFIXED_CIPHERTEXT_FIELDS = new Set(["sessionToken", "sshPrivateKeyEnc"]);
+
+export const STORED_TOKEN_DECRYPTION_ERROR = "Stored token cannot be decrypted; reconnect OAuth.";
+export const MISSING_ADMIN_AUTH_SECRET_ERROR = "ADMIN_AUTH_SECRET is required to decrypt stored credentials.";
+
+export class StoredCredentialDecryptionError extends Error {
+  readonly code = "STORED_CREDENTIAL_DECRYPTION_FAILED";
+
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "StoredCredentialDecryptionError";
+  }
+}
 
 /** Derive a 256-bit AES key from `secret` using HMAC-SHA256 keyed on a fixed label. */
 function deriveKey(secret: string): Buffer {
@@ -70,6 +83,42 @@ export function isProbableLegacyEncryptedToken(value: string): boolean {
       && decoded.toString("base64") === value;
   } catch {
     return false;
+  }
+}
+
+/** Return whether a stored value is explicitly marked as managed credential data. */
+export function isManagedCredentialValue(value: string, fieldKey?: string): boolean {
+  return value.startsWith("veenc:")
+    || isLegacyPlainToken(value)
+    || (fieldKey !== undefined
+      && LEGACY_UNPREFIXED_CIPHERTEXT_FIELDS.has(fieldKey)
+      && isProbableLegacyEncryptedToken(value));
+}
+
+/** Decrypt a managed stored credential without ever returning undecryptable ciphertext. */
+export function decryptManagedCredential(
+  value: string,
+  adminAuthSecret: string | undefined,
+  fieldKey?: string,
+): string {
+  if (!isManagedCredentialValue(value, fieldKey)) return value;
+  return decryptRequiredManagedCredential(value, adminAuthSecret);
+}
+
+/** Decrypt a credential field that must use the managed/legacy envelope format. */
+export function decryptRequiredManagedCredential(
+  value: string,
+  adminAuthSecret: string | undefined,
+): string {
+  try {
+    return decryptToken(value, adminAuthSecret);
+  } catch (error) {
+    const message = !adminAuthSecret && !isLegacyPlainToken(value)
+      ? MISSING_ADMIN_AUTH_SECRET_ERROR
+      : STORED_TOKEN_DECRYPTION_ERROR;
+    throw new StoredCredentialDecryptionError(message, {
+      cause: error instanceof Error ? error : new Error(String(error)),
+    });
   }
 }
 

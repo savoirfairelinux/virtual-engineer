@@ -6,7 +6,7 @@
  */
 import { getConfig } from "../config.js";
 import { getLogger } from "../logger.js";
-import { decryptToken } from "../utils/encryption.js";
+import { decryptRequiredManagedCredential, decryptManagedCredential } from "../utils/encryption.js";
 import { assertPromptRole } from "../utils/promptRole.js";
 import {
   resolveProviderOptions,
@@ -119,30 +119,16 @@ function getDecryptedPasswordField(
   integration: Integration,
   field: "token" | "apiKey" | "aiderApiKey" | "openCodeApiKey"
 ): string | null {
-  try {
-    return asOptionalString(pluginManager.decryptIntegrationConfig(integration)[field]) ?? null;
-  } catch {
-    return null;
-  }
+  return asOptionalString(pluginManager.decryptIntegrationConfig(integration)[field]) ?? null;
 }
 
 function decryptManagedSessionToken(
-  integration: Integration,
   rawConfig: Record<string, unknown>,
-  bundleLog?: ReturnType<typeof getLogger>,
   field: "sessionToken" | "accessToken" = "sessionToken"
 ): string | null {
   const encrypted = asOptionalString(rawConfig[field]);
   if (!encrypted) return null;
-  try {
-    return decryptToken(encrypted, getConfig().adminAuthSecret);
-  } catch (err) {
-    bundleLog?.warn(
-      { err, integrationId: integration.id, provider: integration.provider },
-      "getAgentTokenFromIntegration: failed to decrypt the integration session token"
-    );
-    return null;
-  }
+  return decryptRequiredManagedCredential(encrypted, getConfig().adminAuthSecret);
 }
 
 /** Extract the agent token selected by provider + auth mode. */
@@ -168,7 +154,7 @@ function getAgentTokenFromIntegration(
     if (authMode === "pat") {
       return getDecryptedPasswordField(pluginManager, agentIntegration, "token");
     }
-    return decryptManagedSessionToken(agentIntegration, rawConfig, bundleLog);
+    return decryptManagedSessionToken(rawConfig);
   }
 
   if (agentIntegration.provider === "claude") {
@@ -177,7 +163,7 @@ function getAgentTokenFromIntegration(
     if (authMode === "api_key") {
       return getDecryptedPasswordField(pluginManager, agentIntegration, "apiKey");
     }
-    return decryptManagedSessionToken(agentIntegration, rawConfig, bundleLog);
+    return decryptManagedSessionToken(rawConfig);
   }
 
   if (agentIntegration.provider === "aider") {
@@ -202,7 +188,7 @@ function getAgentTokenFromIntegration(
       return getDecryptedPasswordField(pluginManager, agentIntegration, "apiKey");
     }
     // Codex stores its subscription credential under `accessToken`, not `sessionToken`.
-    return decryptManagedSessionToken(agentIntegration, rawConfig, bundleLog, "accessToken");
+    return decryptManagedSessionToken(rawConfig, "accessToken");
   }
 
   if (agentIntegration.provider === "gemini") {
@@ -352,12 +338,17 @@ async function resolveReviewAgentForProject(
     let localSessionToken: string | null = null;
     if (resolved.encryptedSessionToken) {
       try {
-        localSessionToken = decryptToken(resolved.encryptedSessionToken, getConfig().adminAuthSecret);
+        localSessionToken = decryptManagedCredential(
+          resolved.encryptedSessionToken,
+          getConfig().adminAuthSecret,
+          "sessionToken",
+        );
       } catch (err) {
         bundleLog.warn(
           { err, projectId: project.id, agentId: agent.id, integrationId: agent.integrationId },
-          "resolveReviewAgentForProject: failed to decrypt the project agent token — falling back to the integration token"
+          "resolveReviewAgentForProject: failed to decrypt the project agent token"
         );
+        throw err;
       }
     }
     const token = getProviderCompatibleAgentToken(

@@ -71,4 +71,20 @@ describe("getAgentTokenForReview", () => {
   it("returns null for a null integration", () => {
     expect(getAgentTokenForReview(makePluginManager({}), null)).toBeNull();
   });
+
+  it("fails closed when the managed integration token cannot be decrypted", () => {
+    const integration = makeIntegration("aider", {
+      aiderBackend: "openai",
+      aiderApiKey: "veenc:v1:not-valid-ciphertext",
+    });
+    const pluginManager = {
+      decryptIntegrationConfig: () => {
+        throw new Error("Stored token cannot be decrypted; reconnect OAuth.");
+      },
+    } as unknown as PluginManager;
+
+    expect(() => getAgentTokenForReview(pluginManager, integration)).toThrow(
+      "Stored token cannot be decrypted; reconnect OAuth."
+    );
+  });
 });
