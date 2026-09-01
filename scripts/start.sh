@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # start.sh — One-shot setup + launch for Virtual Engineer.
-#   Builds the agent + orchestrator images, starts an OpenShell gateway using
-#   its Docker compute driver by default, and runs the orchestrator. The
-#   experimental Kubernetes driver remains available as an explicit opt-in.
+#   The legacy Docker workspace runtime is the default. OpenShell remains
+#   available as an explicit WORKSPACE_RUNTIME=openshell opt-in.
 #
 # Usage:
 #   ./scripts/start.sh                     # full setup + launch
@@ -36,6 +35,15 @@ error() { echo "[ERROR] $*" >&2; exit 1; }
 
 cd "$ROOT_DIR"
 load_dotenv "$ROOT_DIR/.env"
+
+# Keep the supported OpenShell bootstrap below intact, but do not make every
+# Docker deployment depend on a configured OpenShell gateway.
+WORKSPACE_RUNTIME="${WORKSPACE_RUNTIME:-legacy}"
+if [[ "$WORKSPACE_RUNTIME" == "legacy" ]]; then
+  exec "$SCRIPT_DIR/start-legacy.sh" "$@"
+fi
+[[ "$WORKSPACE_RUNTIME" == "openshell" ]] \
+  || error "WORKSPACE_RUNTIME must be legacy or openshell."
 
 # ─── Parse arguments ──────────────────────────────────────────────────────────
 K3S_INSTALL=true
@@ -298,6 +306,13 @@ else
     docker volume inspect ve-local-keycloak-data >/dev/null 2>&1 \
       || docker volume create ve-local-keycloak-data >/dev/null
     docker rm -f ve-local-keycloak >/dev/null 2>&1 || true
+    KEYCLOAK_REALM_FILE=$(mktemp "${DATA_DIR}/.openshell-keycloak-realm.XXXXXX.json")
+    trap 'rm -f "$KEYCLOAK_REALM_FILE"' EXIT
+    render_keycloak_realm \
+      "$ROOT_DIR/deploy/docker/keycloak-realm.json" \
+      "$KEYCLOAK_REALM_FILE" \
+      "$OPENSHELL_OIDC_CLIENT_SECRET" \
+      || error "Could not render the managed local Keycloak realm."
     info "Starting managed local Keycloak in Docker..."
     docker run -d \
       --name ve-local-keycloak \
@@ -312,7 +327,7 @@ else
       -e "KC_BOOTSTRAP_ADMIN_PASSWORD=${KEYCLOAK_BOOTSTRAP_ADMIN_PASSWORD}" \
       -e OPENSHELL_OIDC_CLIENT_SECRET \
       -v ve-local-keycloak-data:/opt/keycloak/data \
-      -v "$ROOT_DIR/deploy/docker/keycloak-realm.json:/opt/keycloak/data/import/openshell-realm.json:ro,Z" \
+      -v "$KEYCLOAK_REALM_FILE:/opt/keycloak/data/import/openshell-realm.json:ro,Z" \
       "$KEYCLOAK_IMAGE" start-dev --import-realm >/dev/null
     _keycloak_ready=false
     for _ in {1..80}; do
@@ -332,6 +347,9 @@ else
         "http://127.0.0.1:18081/realms/openshell/protocol/openid-connect/token"; then
       error "Managed local Keycloak rejects the ${OPENSHELL_OIDC_CLIENT_ID} secret in ${LOCAL_OIDC_DIR}/client-secret; its stored realm predates that file. Re-import the realm with: docker rm -f ve-local-keycloak && docker volume rm ve-local-keycloak-data"
     fi
+    rm -f "$KEYCLOAK_REALM_FILE"
+    KEYCLOAK_REALM_FILE=""
+    trap - EXIT
   else
     docker network inspect ve-openshell-control >/dev/null 2>&1 \
       || docker network create ve-openshell-control >/dev/null
@@ -811,4 +829,3 @@ info "ve-orchestrator started."
 
 info "Admin UI : http://127.0.0.1:3100/admin (binds per ADMIN_API_HOST in .env)"
 info "Logs     : docker logs -f ve-orchestrator"
-

@@ -41,7 +41,9 @@ const baseConfig: AppConfig = {
   ticketCloseMaxRetries: 5,
   ticketCloseRetryMinTimeoutMs: 5_000,
   agentContainerImage: "virtual-engineer-workspace:latest",
+  agentDockerNetwork: "virtual-engineer_ve-agent-net",
   workspaceBaseDir: "/tmp/virtual-engineer/workspaces",
+  workspaceRuntime: "legacy" as const,
   maxReviewDiffChars: 60_000,
   maxReviewComments: 20,
   maxReviewReplies: 20,
@@ -247,6 +249,13 @@ async function importRuntime(
       updateRuntime: vi.fn(),
     };
   });
+  const DockerWorkspaceRunner = vi.fn().mockImplementation(function () {
+    return {
+      runAgentInDocker: vi.fn(),
+      destroyWorkspace: vi.fn(),
+      updateRuntime: vi.fn(),
+    };
+  });
   const createVcsConnectorForIntegration = vi.fn((integration: Integration) => {
     return options.vcsConnectorsByProvider?.[integration.provider] ?? { pushRepo: vi.fn() };
   });
@@ -422,6 +431,7 @@ async function importRuntime(
   vi.doMock("../../src/connectors/gerritSshReviewProvider.js", () => ({ GerritSshReviewProvider }));
   vi.doMock("../../src/connectors/integrationStreamEvents.js", () => ({ PluginIntegrationStreamEventsManager }));
   vi.doMock("../../src/workspace/openShellWorkspaceRunner.js", () => ({ OpenShellWorkspaceRunner }));
+  vi.doMock("../../src/workspace/workspaceRunner.js", () => ({ DockerWorkspaceRunner }));
   vi.doMock("../../src/vcs/vcsFactory.js", () => ({
     createVcsConnectorForIntegration,
   }));
@@ -458,6 +468,7 @@ async function importRuntime(
     GitLabMergeRequestConnector,
     CopilotAdapter,
     OpenShellWorkspaceRunner,
+    DockerWorkspaceRunner,
     Orchestrator,
     createVcsConnectorForIntegration,
     createAdminServer,
@@ -497,9 +508,14 @@ describe("runtime bootstrap provider selection", () => {
     expect(runtime.loadFromDatabase).toHaveBeenCalledTimes(1);
     expect(runtime.HttpRedmineConnector).not.toHaveBeenCalled();
     expect(runtime.GerritSshConnector).not.toHaveBeenCalled();
-    expect(runtime.OpenShellWorkspaceRunner).toHaveBeenCalledWith(
-      expect.objectContaining({ agentAdapter: dbAgent })
+    expect(runtime.DockerWorkspaceRunner).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentContainerImage: baseConfig.agentContainerImage,
+        networkMode: "virtual-engineer_ve-agent-net",
+      }),
+      dbAgent,
     );
+    expect(runtime.OpenShellWorkspaceRunner).not.toHaveBeenCalled();
     expect(runtime.Orchestrator).toHaveBeenCalledWith(
       expect.any(Object),
       expect.anything(),
@@ -529,9 +545,22 @@ describe("runtime bootstrap provider selection", () => {
     const dbAgent = makeDbAgentAdapter("copilot");
     const runtime = await importRuntime({ copilot: dbAgent });
 
-    expect(runtime.OpenShellWorkspaceRunner).toHaveBeenCalledWith(
-      expect.objectContaining({ agentAdapter: dbAgent })
+    expect(runtime.DockerWorkspaceRunner).toHaveBeenCalledWith(
+      expect.any(Object),
+      dbAgent,
     );
+    expect(runtime.OpenShellWorkspaceRunner).not.toHaveBeenCalled();
+  });
+
+  it("uses the legacy Docker runner without constructing OpenShell", async () => {
+    const runtime = await importRuntime(
+      {},
+      {},
+      { configOverrides: { workspaceRuntime: "legacy" } },
+    );
+
+    expect(runtime.DockerWorkspaceRunner).toHaveBeenCalledTimes(1);
+    expect(runtime.OpenShellWorkspaceRunner).not.toHaveBeenCalled();
   });
 
   it("does not call reloadIntegration on the plugin manager during bootstrap", async () => {
@@ -683,7 +712,7 @@ describe("runtime bootstrap provider selection", () => {
 
     expect(runtime.CopilotAdapter).not.toHaveBeenCalled();
 
-    const runnerInstance = runtime.OpenShellWorkspaceRunner.mock.results[0]?.value as {
+    const runnerInstance = runtime.DockerWorkspaceRunner.mock.results[0]?.value as {
       runAgentInDocker: ReturnType<typeof vi.fn>;
     };
     expect((dbAgent as unknown as { configure: ReturnType<typeof vi.fn> }).configure).toHaveBeenCalledTimes(1);

@@ -6,8 +6,8 @@
 
 Virtual Engineer is a **Node.js orchestrator** that runs on the host (or in a container) and drives two autonomous workflows:
 
-- **Code generation** — picks up tickets, clones the repo host-side, runs Copilot in an ephemeral **OpenShell sandbox**, then pushes for review host-side.
-- **Code review** — receives review events (Gerrit SSH stream, GitLab/GitHub webhooks, or polling), runs Copilot on the diff inside an **OpenShell sandbox**, and posts inline comments + a vote.
+- **Code generation** — picks up tickets, runs the selected agent in an ephemeral hardened **Docker workspace** by default (or an opt-in OpenShell sandbox), then pushes for review host-side.
+- **Code review** — receives review events (Gerrit SSH stream, GitLab/GitHub webhooks, or polling), runs the selected agent on the diff inside the configured workspace runtime, and posts inline comments + a vote.
 
 ```
   ┌──────────────────────────────────────────────────────────────────────────┐
@@ -30,13 +30,10 @@ Virtual Engineer is a **Node.js orchestrator** that runs on the host (or in a co
   │                                └──────────────┬────────────────────┘   │
   │                                               │                        │
   │                                ┌──────────────▼────────────────────┐   │
-  │                                │  OpenShellWorkspaceRunner         │   │
-  │                                │  1. HostGitExecutor: clone (host) │   │
-  │                                │  2. sandbox create (container/Pod)│   │
-  │                                │  3. sandbox upload  → /sandbox/* │   │
-  │                                │  4. sandbox exec    (agent)       │   │
-  │                                │  5. sandbox download ← /sandbox/*│   │
-  │                                │  6. git push (host)  + sandbox rm │   │
+  │                                │  WorkspaceRunner                  │   │
+  │                                │  Docker named volumes by default  │   │
+  │                                │  or OpenShell upload/exec/download │   │
+  │                                │  git push (host/helper) + cleanup  │   │
   │                                └──────────────┬────────────────────┘   │
   └──────────────────────────────────────────────-┼────────────────────────┘
        git push SSH / HTTP (host-side)            │ OpenShell gateway (gRPC)
@@ -57,8 +54,8 @@ Virtual Engineer is a **Node.js orchestrator** that runs on the host (or in a co
 **Key design decisions:**
 
 - The host owns all credentials (SSH keys, API tokens) and all git plumbing (clone, checkout, cherry-pick, **push**). The agent sandbox receives only the agent's own inference token (e.g. a GitHub token for the Copilot LLM call).
-- The workspace is moved between host and sandbox with OpenShell's **upload → exec → download** lifecycle (no shared filesystem). `HostGitExecutor` keeps the working directory (incl. `.git`) on the orchestrator.
-- OpenShell is the **sole** agent runtime. Its gateway uses the `docker` compute driver by default and can use the experimental `kubernetes` driver without changing `OpenShellWorkspaceRunner`. Docker mode keeps the client API on host loopback, adds a publication restricted to the private `openshell-docker` bridge for supervisor callbacks, and persists gateway-minted sandbox JWT keys. Deny-by-default sandbox **policies** and **policy-denial** auditing are enforced by OpenShell in either mode.
+- The default Docker runtime keeps repositories in ephemeral named volumes mounted at `/workspace`; helper containers perform Git operations and the host retains push orchestration. OpenShell uses its **upload → exec → download** lifecycle when explicitly selected with `WORKSPACE_RUNTIME=openshell`.
+- OpenShell remains an optional policy-based runtime with Docker or experimental Kubernetes compute drivers. Its gateway and policy-denial auditing are only initialized for that runtime; legacy Docker deployments do not require an OpenShell gateway.
 - Multiple integrations of the same type (e.g. two Gerrit servers) can be active simultaneously; runtime routing is by `integrationId`, not type.
 
 ---

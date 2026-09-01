@@ -7,7 +7,7 @@
  */
 
 import { getLogger } from "../logger.js";
-import type { VcsConnector, VcsPushResult } from "./vcsConnector.js";
+import type { VcsConnector, VcsPushResult, VolumeExecOptions } from "./vcsConnector.js";
 import { buildFeatureBranchRef } from "./branchNaming.js";
 import type { ReviewComment } from "../interfaces.js";
 import { ReviewApiError } from "../interfaces.js";
@@ -15,6 +15,7 @@ import { redactUrls, sanitizeErrorDetail } from "../utils/redactUrl.js";
 import type { GitRunner } from "./gitRunner.js";
 import { NodeGitRunner } from "./nodeGitRunner.js";
 import { validateHttpsCloneUrl } from "./cloneUrlValidation.js";
+import { execInVolume } from "../workspace/dockerVolume.js";
 
 const log = getLogger("github-vcs");
 
@@ -79,8 +80,14 @@ export class GitHubVcsConnector implements VcsConnector {
   async pushDirect(
     repoDir: string,
     ref: string,
-    _topic?: string
+    _topic?: string,
+    _reviewerEmails?: string[],
+    volumeOpts?: VolumeExecOptions
   ): Promise<VcsPushResult> {
+    if (volumeOpts) {
+      return this.pushDirectInVolume(volumeOpts, ref);
+    }
+
     const remoteUrl = (
       await this.gitRunner.run(["remote", "get-url", "origin"], { cwd: repoDir })
     ).stdout.trim();
@@ -114,6 +121,53 @@ export class GitHubVcsConnector implements VcsConnector {
       body
     );
 
+    return {
+      changeId: String(pr.number),
+      url: pr.html_url,
+      status: pr.state === "closed" ? (pr.merged ? "MERGED" : "ABANDONED") : "OPEN",
+    };
+  }
+
+  /** Push agent-created commits from a legacy Docker workspace volume. */
+  private async pushDirectInVolume(volumeOpts: VolumeExecOptions, ref: string): Promise<VcsPushResult> {
+    log.info({ volumeName: volumeOpts.volumeName, ref }, "pushing HEAD directly to GitHub via volume container");
+
+    const cwd = volumeOpts.subPath && volumeOpts.subPath !== "."
+      ? `/workspace/${volumeOpts.subPath}`
+      : "/workspace";
+    const httpsRemote = `https://x-access-token:${this.config.token}@${this.config.host}/${this.config.owner}/${this.config.repo}.git`;
+    const pushResult = await execInVolume({
+      volumeName: volumeOpts.volumeName,
+      image: volumeOpts.image,
+      command: ["bash", "-c", [
+        `cd "${cwd}"`,
+        `git checkout -B "$VE_PUSH_REF"`,
+        `git push --force -u "$VE_PUSH_URL" "$VE_PUSH_REF"`,
+      ].join(" && ")],
+      env: {
+        VE_PUSH_REF: ref,
+        VE_PUSH_URL: httpsRemote,
+      },
+    });
+    if (pushResult.exitCode !== 0) {
+      throw new Error(`Failed to push directly to GitHub (volume): ${redactUrls(pushResult.stderr.slice(0, 500))}`);
+    }
+
+    const logResult = await execInVolume({
+      volumeName: volumeOpts.volumeName,
+      image: volumeOpts.image,
+      command: ["bash", "-c", `cd "${cwd}" && git log -1 --format=%s%n%b`],
+    });
+    if (logResult.exitCode !== 0) {
+      throw new Error(`Failed to read pushed GitHub commit (volume): ${redactUrls(logResult.stderr.slice(0, 500))}`);
+    }
+    const lines = logResult.stdout.split("\n");
+    const pr = await this.createOrFindPullRequest(
+      ref,
+      this.config.targetBranch ?? "main",
+      lines[0]?.trim() || `[VE] Push ${ref}`,
+      lines.slice(1).join("\n").trim(),
+    );
     return {
       changeId: String(pr.number),
       url: pr.html_url,

@@ -481,6 +481,10 @@ export interface TaskContext {
   abortSignal?: AbortSignal | undefined;
   /** Immutable workspace-attempt identity used to route sandbox operations. */
   runtimeHandleId?: string | undefined;
+  /** Docker workspace volume used by the legacy runtime. */
+  volumeName?: string | undefined;
+  /** Docker home volume used by the legacy runtime. */
+  homeVolumeName?: string | undefined;
 }
 
 export interface AgentLogEvent {
@@ -541,6 +545,10 @@ export interface AdapterContainerSpec {
   command: string[];
   /** Written to home volume as `user-prompt.txt`; sets `USER_PROMPT_FILE` in container env. */
   userPromptContent?: string | undefined;
+  /** Docker network used by the legacy runtime. */
+  networkMode?: string | undefined;
+  /** Additional Docker arguments used by the legacy runtime. */
+  additionalDockerArgs?: string[] | undefined;
   /**
    * Network egress the agent requires (inference / auth). The OpenShell runtime
    * is deny-by-default; the runner opens these hosts (port 443) scoped to the
@@ -579,8 +587,14 @@ export interface ConfigurableAdapter extends AgentAdapter {
 export interface WorkspaceHandle {
   taskId: TaskId;
   containerId: string;
-  /** In-container path (always /sandbox for the OpenShell sandbox) */
+  /** Workspace path visible to the active runtime. */
   hostWorkspacePath: string;
+  /** Legacy runtime workspace volume. Absent for OpenShell handles. */
+  volumeName?: string | undefined;
+  /** Legacy runtime agent-home volume. Absent for OpenShell handles. */
+  homeVolumeName?: string | undefined;
+  /** Legacy runtime helper image. Absent for OpenShell handles. */
+  containerImage?: string | undefined;
 }
 
 export type ValidationStatus = "passed" | "failed" | "skipped";
@@ -630,6 +644,8 @@ export interface ReviewWorkspaceInput {
   skillSourcesJson?: string | undefined;
   /** Cancels the in-flight sandbox lifecycle when the review deadline expires. */
   abortSignal?: AbortSignal | undefined;
+  /** Adapter selected for this review task, when runtime dependencies are project-scoped. */
+  agentAdapter?: AgentAdapter | undefined;
 
   // ── Aider (agent_execution) ────────────────────────────────────────────────
   /** Aider LLM backend selector (openai | anthropic | ollama | openrouter | deepseek | openai_compat). */
@@ -722,6 +738,8 @@ export interface WorkspaceRunner {
     authEnv?: Record<string, string>,
     callbacks?: { onStdoutChunk?: ((chunk: string) => void) | undefined; onStderrChunk?: ((chunk: string) => void) | undefined }
   ): Promise<{ stdout: string; stderr: string }>;
+  /** Hot-swap the selected agent adapter without recreating the runner. */
+  updateRuntime?(runtime: { agentAdapter?: AgentAdapter | undefined }): void;
   /** Run agent adapter inside the ephemeral execution context. */
   runAgent(handle: WorkspaceHandle, context: TaskContext, adapter?: AgentAdapter): Promise<AgentResult>;
   /**

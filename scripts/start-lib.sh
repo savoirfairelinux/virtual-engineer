@@ -197,6 +197,43 @@ load_or_create_secret() {
   tr -d '\r\n' < "$secret_file"
 }
 
+render_keycloak_realm() {
+  local template="$1"
+  local output="$2"
+  local secret="$3"
+  [[ -f "$template" && ! -L "$template" ]] || return 1
+  [[ -n "$output" && -n "$secret" ]] || return 1
+
+  OPENSHELL_REALM_TEMPLATE="$template" \
+  OPENSHELL_REALM_OUTPUT="$output" \
+  OPENSHELL_REALM_SECRET="$secret" \
+    node --input-type=module <<'NODE'
+import { chmodSync, lstatSync, readFileSync, writeFileSync } from "node:fs";
+
+const template = process.env.OPENSHELL_REALM_TEMPLATE;
+const output = process.env.OPENSHELL_REALM_OUTPUT;
+const secret = process.env.OPENSHELL_REALM_SECRET;
+if (template === undefined || output === undefined || secret === undefined) {
+  throw new Error("Keycloak realm rendering environment is incomplete.");
+}
+const templateStat = lstatSync(template);
+if (!templateStat.isFile()) throw new Error("Keycloak realm template is not a regular file.");
+const realm = JSON.parse(readFileSync(template, "utf8"));
+if (!Array.isArray(realm.clients)) throw new Error("Keycloak realm has no clients array.");
+const client = realm.clients.find(
+  (candidate) => candidate !== null
+    && typeof candidate === "object"
+    && candidate.clientId === "openshell-ci",
+);
+if (client === undefined || client === null || typeof client !== "object") {
+  throw new Error("Keycloak realm has no openshell-ci client.");
+}
+client.secret = secret;
+writeFileSync(output, `${JSON.stringify(realm)}\n`, { mode: 0o600 });
+chmodSync(output, 0o600);
+NODE
+}
+
 restore_kubernetes_secret_value() {
   local kubeconfig="$1"
   local namespace="$2"

@@ -94,7 +94,9 @@ const ConfigSchema = z.object({
     reviewMinSeverity: z.enum(["nit", "info", "warning", "error"]).default("info"),
 
     // Docker
+    workspaceRuntime: z.enum(["legacy", "openshell"]).default("legacy"),
     agentContainerImage: z.string().default("virtual-engineer-workspace:latest"),
+    agentDockerNetwork: z.string().min(1).default("virtual-engineer_ve-agent-net"),
     workspaceBaseDir: z.string().default("/tmp/virtual-engineer/workspaces"),
   });
 
@@ -122,7 +124,9 @@ function fromEnv(): Record<string, string | undefined> {
     maxReviewComments: process.env["MAX_REVIEW_COMMENTS"],
     maxReviewReplies: process.env["MAX_REVIEW_REPLIES"],
     reviewMinSeverity: process.env["REVIEW_MIN_SEVERITY"],
+    workspaceRuntime: process.env["WORKSPACE_RUNTIME"],
     agentContainerImage: process.env["AGENT_CONTAINER_IMAGE"],
+    agentDockerNetwork: process.env["AGENT_DOCKER_NETWORK"],
     workspaceBaseDir: process.env["WORKSPACE_BASE_DIR"],
   };
 }

@@ -11,6 +11,16 @@
  */
 import type { PatchsetCheckoutOptions, ReviewComment } from "../interfaces.js";
 
+/** Options for running git commands inside a Docker named volume. */
+export interface VolumeExecOptions {
+  /** Docker named volume containing the repository at /workspace. */
+  volumeName: string;
+  /** Docker image used for the helper container. */
+  image: string;
+  /** Workspace-relative repository path. */
+  subPath?: string | undefined;
+}
+
 /**
  * Result of a push operation.
  * Represents the change/MR that was created or updated.
@@ -54,7 +64,8 @@ export interface VcsConnector {
     repoDir: string,
     ref: string,
     topic?: string,
-    reviewerEmails?: string[]
+    reviewerEmails?: string[],
+    volumeOpts?: VolumeExecOptions
   ): Promise<VcsPushResult>;
 
   /**

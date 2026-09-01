@@ -39,7 +39,7 @@ import {
 import { clearTaskEventBuffer } from "../agents/agentEventBus.js";
 import { normalizeAgentResult, getModifiedFileCount } from "../agents/agentEventTypes.js";
 import { resolveProviderOptions } from "../agents/providerOptions.js";
-import type { VcsConnector } from "../vcs/vcsConnector.js";
+import type { VcsConnector, VolumeExecOptions } from "../vcs/vcsConnector.js";
 import { NO_REVIEW_SYSTEM } from "../vcs/vcsConnector.js";
 import { VcsConnectorFactory } from "../vcs/vcsFactory.js";
 import { redactUrls } from "../utils/redactUrl.js";
@@ -1352,18 +1352,22 @@ export class Orchestrator {
       // targets live in sub-directories of the workspace, so join the target's
       // localPath ("." for the root repo) onto the host workspace path.
       const repoDir = resolveWorkspaceSubPath(handle.hostWorkspacePath, target.localPath);
+      const volumeOpts: VolumeExecOptions | undefined = handle.volumeName
+        ? {
+            volumeName: handle.volumeName,
+            image: this.config.agentContainerImage,
+            subPath: target.localPath,
+          }
+        : undefined;
       try {
         const subjectHash = createHash("sha1").update(fallbackCommitMessage.split("\n")[0] ?? "").digest("hex");
 
         if (!vcsConnector.pushDirect) {
           throw new Error(`VCS connector for ${reviewSystemLabel} does not implement pushDirect`);
         }
-        const pushResult = await vcsConnector.pushDirect(
-          repoDir,
-          ref,
-          topic,
-          target.reviewerEmails
-        );
+        const pushResult = volumeOpts
+          ? await vcsConnector.pushDirect(repoDir, ref, topic, target.reviewerEmails, volumeOpts)
+          : await vcsConnector.pushDirect(repoDir, ref, topic, target.reviewerEmails);
 
         // Use Change-Ids from agent commits when available — this is the source of truth
         // for multi-commit pushes where pushResult.changeId only reflects HEAD (the last commit).

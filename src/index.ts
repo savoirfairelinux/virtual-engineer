@@ -14,6 +14,7 @@ import { getLogger } from "./logger.js";
 import { SqliteStateStore } from "./state/stateStore.js";
 import { HostGitExecutor } from "./workspace/hostGitExecutor.js";
 import { OpenShellWorkspaceRunner, type OpenShellRunnerDeps } from "./workspace/openShellWorkspaceRunner.js";
+import { DockerWorkspaceRunner } from "./workspace/workspaceRunner.js";
 import { OpenShellClient } from "./openshell/openShellClient.js";
 import { createRuntimePolicyResolver } from "./openshell/runtimePolicyResolver.js";
 import { OpenShellSandboxReconciler } from "./openshell/openShellSandboxReconciler.js";
@@ -50,7 +51,8 @@ const POLLING_RECONCILE_DEBOUNCE_MS = 1_000;
 /** Bootstrap all runtime dependencies and start the Virtual Engineer main loop. */
 async function main(): Promise<void> {
   const config = getConfig();
-  const openShellGateway = resolveOpenShellGateway(process.env);
+  const useOpenShell = config.workspaceRuntime === "openshell";
+  const openShellGateway = useOpenShell ? resolveOpenShellGateway(process.env) : undefined;
 
   log.info({ nodeEnv: config.nodeEnv }, "Virtual Engineer starting");
 
@@ -108,31 +110,39 @@ async function main(): Promise<void> {
 
   let runtimeDependencies = buildRuntimeDependencies(pluginManager);
 
-  // ─── Workspace runner (OpenShell — the sole agent runtime) ────────────────────
-  // Agents run in OpenShell sandboxes. Git plumbing (clone/checkout/cherry-pick/
-  // push) stays host-side via HostGitExecutor so push credentials never enter the
-  // sandbox. The runner's agent adapter is hot-swapped on integration reload by
-  // mutating `openShellRunnerDeps.agentAdapter` (see refreshRuntimeDependencies).
-  const openShellClient = new OpenShellClient({
-    // Prefer the named OPENSHELL_GATEWAY profile so the CLI can load its OIDC
-    // metadata and bearer token. OPENSHELL_GATEWAY_ENDPOINT remains a fallback
-    // for legacy direct-endpoint deployments.
-    gateway: openShellGateway,
-    oidcClientCredentials: process.env["OPENSHELL_OIDC_CLIENT_SECRET"] !== undefined,
-    commandTimeoutMs: config.agentTimeoutMs + 30_000,
-  });
-  const openShellRunnerDeps: OpenShellRunnerDeps = {
-    git: new HostGitExecutor({ baseDir: config.workspaceBaseDir }),
-    client: openShellClient,
-    agentAdapter: runtimeDependencies.agentAdapter,
-    resolvePolicy: createRuntimePolicyResolver(stateStore),
-    recordDenial: async (denial) => {
-      await stateStore.recordPolicyDenial(denial);
-    },
-    managedProviderStore: stateStore,
-    execTimeoutSec: Math.ceil(config.agentTimeoutMs / 1000),
-  };
-  const workspaceRunner = new OpenShellWorkspaceRunner(openShellRunnerDeps);
+  // ─── Workspace runner ────────────────────────────────────────────────────────
+  // Docker remains the default runtime. OpenShell is opt-in for deployments
+  // that provide a configured gateway.
+  const openShellClient = useOpenShell
+    ? new OpenShellClient({
+        gateway: openShellGateway,
+        oidcClientCredentials: process.env["OPENSHELL_OIDC_CLIENT_SECRET"] !== undefined,
+        commandTimeoutMs: config.agentTimeoutMs + 30_000,
+      })
+    : undefined;
+  const openShellRunnerDeps: OpenShellRunnerDeps | undefined = openShellClient
+    ? {
+        git: new HostGitExecutor({ baseDir: config.workspaceBaseDir }),
+        client: openShellClient,
+        agentAdapter: runtimeDependencies.agentAdapter,
+        resolvePolicy: createRuntimePolicyResolver(stateStore),
+        recordDenial: async (denial): Promise<void> => {
+          await stateStore.recordPolicyDenial(denial);
+        },
+        managedProviderStore: stateStore,
+        execTimeoutSec: Math.ceil(config.agentTimeoutMs / 1000),
+      }
+    : undefined;
+  const workspaceRunner: import("./interfaces.js").WorkspaceRunner = openShellRunnerDeps
+    ? new OpenShellWorkspaceRunner(openShellRunnerDeps)
+    : new DockerWorkspaceRunner(
+        {
+          agentContainerImage: config.agentContainerImage,
+          agentTimeoutMs: config.agentTimeoutMs,
+          networkMode: config.agentDockerNetwork,
+        },
+        runtimeDependencies.agentAdapter,
+      );
   if (runtimeDependencies.agentAdapter) {
     configureAgentAdapter(runtimeDependencies.agentAdapter, stateStore, workspaceRunner);
   }
@@ -271,6 +281,7 @@ async function main(): Promise<void> {
     maxRetryAttempts: config.maxRetryAttempts,
     pollingIntervalMs: config.pollingIntervalMs,
     agentTimeoutMs: config.agentTimeoutMs,
+    workspaceRuntime: config.workspaceRuntime,
     ticketCloseMaxRetries: config.ticketCloseMaxRetries,
     ticketCloseRetryMinTimeoutMs: config.ticketCloseRetryMinTimeoutMs,
     adminAuthSecret: config.adminAuthSecret,
@@ -285,7 +296,11 @@ async function main(): Promise<void> {
   async function refreshRuntimeDependencies(): Promise<void> {
     runtimeDependencies = buildRuntimeDependencies(pluginManager);
     // Hot-swap the runner's agent adapter by mutating the shared deps object.
-    openShellRunnerDeps.agentAdapter = runtimeDependencies.agentAdapter;
+    if (openShellRunnerDeps) {
+      openShellRunnerDeps.agentAdapter = runtimeDependencies.agentAdapter;
+    } else {
+      workspaceRunner.updateRuntime?.({ agentAdapter: runtimeDependencies.agentAdapter });
+    }
     if (runtimeDependencies.agentAdapter) {
       configureAgentAdapter(runtimeDependencies.agentAdapter, stateStore, workspaceRunner);
     }
@@ -454,10 +469,14 @@ async function main(): Promise<void> {
       settings: settingsController,
       runtimePolicyStore: stateStore,
       denialStore: stateStore,
-      runtimeGateway: {
-        healthy: () => openShellClient.gatewayHealthy(),
-        address: openShellGateway,
-      },
+      ...(openShellClient
+        ? {
+            runtimeGateway: {
+              healthy: (): Promise<boolean> => openShellClient.gatewayHealthy(),
+              address: openShellGateway,
+            },
+          }
+        : {}),
     });
 
     await startAdminServer(adminServer, config.adminApiPort, config.adminApiHost);
@@ -467,35 +486,51 @@ async function main(): Promise<void> {
   // Resume any tasks that were in-flight before a restart.
   // Must run AFTER the admin server binds successfully so a port conflict
   // does not cause a partially-resumed orchestrator state.
-  const sandboxReconciler = new OpenShellSandboxReconciler({
-    client: openShellClient,
-    store: stateStore,
-  });
+  const recoverReviews = async (): Promise<void> => {
+    const reviewRecovery = await recoverActiveReviews(stateStore, async (task) => {
+      const bundle = await buildReviewBundle(
+        pluginManager,
+        config.workspaceBaseDir,
+        stateStore,
+        workspaceRunner,
+        concurrencyTracker,
+        task,
+        taskLifecycleCoordinator,
+      );
+      return bundle.orchestrator;
+    });
+    log.info(reviewRecovery, "active review recovery completed");
+  };
+  const sandboxReconciler = openShellClient
+    ? new OpenShellSandboxReconciler({
+        client: openShellClient,
+        store: stateStore,
+      })
+    : undefined;
+  const gatewayHealth: (() => Promise<boolean>) | undefined = openShellClient
+    ? (): Promise<boolean> => openShellClient.gatewayHealthy()
+    : undefined;
   const runtimeRecovery = await startRuntimeRecovery({
-    recoverReviews: async () => {
-      const reviewRecovery = await recoverActiveReviews(stateStore, async (task) => {
-        const bundle = await buildReviewBundle(
-          pluginManager,
-          config.workspaceBaseDir,
-          stateStore,
-          workspaceRunner,
-          concurrencyTracker,
-          task,
-          taskLifecycleCoordinator,
-        );
-        return bundle.orchestrator;
-      });
-      log.info(reviewRecovery, "active review recovery completed");
-    },
-    resumeCodeGeneration: () => orchestrator.resumeActiveTasks(),
-    reconcileSandboxes: async () => {
-      const result = await sandboxReconciler.run();
-      log.info(result, "initial sandbox reconciliation completed");
-    },
-    startSandboxReconciler: () => sandboxReconciler.start(),
-    stopSandboxReconciler: () => sandboxReconciler.stop(),
-    onInitialReconcileError: (err) => log.warn({ err }, "initial sandbox reconciliation failed"),
-    checkGatewayHealth: () => openShellClient.gatewayHealthy(),
+    recoverReviews,
+    resumeCodeGeneration: (): Promise<void> => orchestrator.resumeActiveTasks(),
+    reconcileSandboxes: sandboxReconciler
+      ? async (): Promise<void> => {
+          const result = await sandboxReconciler.run();
+          log.info(result, "initial sandbox reconciliation completed");
+        }
+      : (): Promise<void> => Promise.resolve(),
+    startSandboxReconciler: sandboxReconciler
+      ? (): void => sandboxReconciler.start()
+      : (): void => undefined,
+    stopSandboxReconciler: sandboxReconciler
+      ? (): void => sandboxReconciler.stop()
+      : (): void => undefined,
+    ...(sandboxReconciler && gatewayHealth
+      ? {
+          onInitialReconcileError: (err: unknown): void => log.warn({ err }, "initial sandbox reconciliation failed"),
+          checkGatewayHealth: gatewayHealth,
+        }
+      : {}),
   });
 
   // ─── Graceful shutdown ────────────────────────────────────────────────────────

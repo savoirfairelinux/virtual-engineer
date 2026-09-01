@@ -167,6 +167,26 @@ describe("install.sh bootstrap", () => {
 });
 
 describe("start.sh helpers", () => {
+  it("renders the managed Keycloak client secret into the import realm", () => {
+    const outputDir = mkdtempSync(join(tmpdir(), "ve-keycloak-realm-"));
+    tempDirs.push(outputDir);
+    const output = join(outputDir, "openshell-realm.json");
+    const secret = "secret-with-&-slashes";
+
+    runHelper(
+      'render_keycloak_realm "$1" "$2" "$3"',
+      ["deploy/docker/keycloak-realm.json", output, secret],
+    );
+
+    const realm = JSON.parse(readFileSync(output, "utf8")) as {
+      clients: Array<{ clientId: string; secret?: string }>;
+    };
+    const client = realm.clients.find((candidate) => candidate.clientId === "openshell-ci");
+    expect(client?.secret).toBe(secret);
+    expect(readFileSync(output, "utf8")).not.toContain("${OPENSHELL_OIDC_CLIENT_SECRET}");
+    expect(statSync(output).mode & 0o777).toBe(0o600);
+  });
+
   it.each([
     { clusterReady: "true", noNewPrivileges: "true", expected: "yes" },
     { clusterReady: "false", noNewPrivileges: "false", expected: "yes" },
@@ -667,6 +687,7 @@ describe("OpenShell deployment contract", () => {
     expect(script).toContain('--from-file="OPENSHELL_OIDC_CLIENT_SECRET=${LOCAL_OIDC_DIR}/client-secret"');
     expect(script).not.toContain('--from-literal="OPENSHELL_OIDC_CLIENT_SECRET=');
     expect(script).toContain("--add-host");
+    expect(script).toContain("render_keycloak_realm");
     expect(manifest).toContain("quay.io/keycloak/keycloak@sha256:");
     expect(manifest).not.toContain("allowUnauthenticatedUsers: true");
     expect(manifest).toContain('"serviceAccountsEnabled": true');
@@ -686,6 +707,7 @@ describe("OpenShell deployment contract", () => {
     expect(script).toContain("sha256:583bcd4eecf7a255c6201ba3b571b5207ee0f643630dfa4835e981e62c754cc7");
     expect(script).toContain('oci://ghcr.io/nvidia/openshell/helm-chart@${OPENSHELL_CHART_DIGEST}');
     expect(dockerfile).toContain("ARG OPENSHELL_VERSION=v0.0.83");
+    expect(dockerfile).toContain("ARG INSTALL_OPENSHELL=false");
     expect(values).toContain("0.0.83@sha256:80e898dc9ad46e4f40b8b0e8648658d0e51b83f1c2071cf4983ac6d52b9c95d6");
     expect(values).toContain("0.0.83@sha256:9f5c14d914731f84ce38e61cba4cec425a59f0aad4be0c0906342c68ba65a86f");
   });

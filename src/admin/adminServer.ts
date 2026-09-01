@@ -84,6 +84,7 @@ export interface AdminRuntimeConfig {
   /** Minimum backoff (ms) between ticket-close retries. Defaults to 5000 when omitted. */
   ticketCloseRetryMinTimeoutMs?: number | undefined;
   adminAuthSecret?: string | undefined;
+  workspaceRuntime?: "legacy" | "openshell" | undefined;
   /** Mirror of `ADMIN_TRUST_PROXY`. When true, IP is read from X-Forwarded-For. */
   adminTrustProxy?: boolean | undefined;
 }
@@ -468,7 +469,11 @@ function buildApiRouter(dependencies: AdminServerDependencies, authRuntime: Admi
   });
   registerConcurrencyRoutes(router, { concurrency: dependencies.concurrency });
   registerSettingsRoutes(router, { settings: dependencies.settings });
-  registerRuntimePolicyRoutes(router, { runtimePolicyStore: dependencies.runtimePolicyStore, gateway: dependencies.runtimeGateway });
+  registerRuntimePolicyRoutes(router, {
+    runtimePolicyStore: dependencies.runtimePolicyStore,
+    gateway: dependencies.runtimeGateway,
+    runtime: dependencies.config.workspaceRuntime ?? "legacy",
+  });
   registerDenialRoutes(router, { denialStore: dependencies.denialStore });
   registerWebhookRoutes(router, {
     integrationStore: dependencies.integrationStore,

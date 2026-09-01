@@ -19,7 +19,10 @@ async function rest(server: Server, path: string): Promise<Result> {
   return { status: r.status, body: parsed };
 }
 
-function makeDeps(runtimeGateway: AdminServerDependencies["runtimeGateway"]): AdminServerDependencies {
+function makeDeps(
+  runtimeGateway: AdminServerDependencies["runtimeGateway"],
+  workspaceRuntime: "legacy" | "openshell" = "openshell",
+): AdminServerDependencies {
   return {
     stateStore: {
       getActiveTasks: vi.fn(async () => []),
@@ -45,6 +48,7 @@ function makeDeps(runtimeGateway: AdminServerDependencies["runtimeGateway"]): Ad
       maxAgentCycles: 3,
       maxRetryAttempts: 5,
       pollingIntervalMs: 30000,
+      workspaceRuntime,
     },
     polling: { isRunning: () => false, getIntervals: () => ({ intervalMs: 30000 }) },
     providers: [],
@@ -60,8 +64,11 @@ describe("Admin API — Runtime status route", () => {
     await new Promise<void>((resolve, reject) => server.close((err) => err ? reject(err) : resolve()));
   });
 
-  async function start(runtimeGateway: AdminServerDependencies["runtimeGateway"]): Promise<void> {
-    server = createAdminServer(makeDeps(runtimeGateway));
+  async function start(
+    runtimeGateway: AdminServerDependencies["runtimeGateway"],
+    workspaceRuntime: "legacy" | "openshell" = "openshell",
+  ): Promise<void> {
+    server = createAdminServer(makeDeps(runtimeGateway, workspaceRuntime));
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   }
 
@@ -70,6 +77,7 @@ describe("Admin API — Runtime status route", () => {
     const r = await rest(server, "/api/admin/runtime/status");
     expect(r.status).toBe(200);
     expect(r.body).toEqual({
+      runtime: "openshell",
       driver: "docker",
       gatewayConfigured: true,
       gatewayAddress: "127.0.0.1:8080",
@@ -103,5 +111,20 @@ describe("Admin API — Runtime status route", () => {
     expect(r.status).toBe(200);
     expect(r.body?.["gatewayConfigured"]).toBe(false);
     expect(r.body?.["gatewayAddress"]).toBe(null);
+  });
+
+  it("reports the legacy Docker runtime without probing an OpenShell gateway", async () => {
+    const healthy = vi.fn(async () => false);
+    await start({ healthy, address: undefined }, "legacy");
+    const r = await rest(server, "/api/admin/runtime/status");
+    expect(r.status).toBe(200);
+    expect(r.body).toEqual({
+      runtime: "legacy",
+      driver: "docker",
+      gatewayConfigured: false,
+      gatewayAddress: null,
+      gatewayHealthy: true,
+    });
+    expect(healthy).not.toHaveBeenCalled();
   });
 });

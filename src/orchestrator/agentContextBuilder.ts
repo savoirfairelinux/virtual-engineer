@@ -111,6 +111,8 @@ export async function buildAgentTaskContext(params: BuildAgentTaskContextParams)
     acceptanceCriteria: extractAcceptanceCriteria(ticket.description),
     baseBranch: cloneBranch,
     workspacePath: handle.hostWorkspacePath,
+    ...(handle.volumeName !== undefined ? { volumeName: handle.volumeName } : {}),
+    ...(handle.homeVolumeName !== undefined ? { homeVolumeName: handle.homeVolumeName } : {}),
     constraints: [],
     priorFeedback,
     cycleNumber,
