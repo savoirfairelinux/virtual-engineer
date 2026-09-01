@@ -229,8 +229,9 @@ export function ConfigView(props: ConfigViewData) {
   const isFormRoute = ["create", "edit", "copy", "password"].includes(effectiveRoute.mode);
 
   useEffect(() => {
+    if (user === null) return;
     onSectionChange?.(effectiveSec);
-  }, [effectiveSec, onSectionChange]);
+  }, [effectiveSec, onSectionChange, user]);
 
   const navigate = useCallback((nextRoute: ConfigRoute) => {
     if (!confirmDiscard()) return;

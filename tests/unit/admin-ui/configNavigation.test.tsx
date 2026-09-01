@@ -104,6 +104,35 @@ describe("Configuration navigation guard", () => {
     await waitFor(() => expect(onSectionChange).toHaveBeenLastCalledWith("projects"));
   });
 
+  it("does not report the permission fallback before identity is loaded", async () => {
+    window.history.replaceState({}, "", "#config/agents/agent-1/edit");
+    const onSectionChange = vi.fn();
+    render(
+      <CurrentUserProvider value={{
+        user: null,
+        isAdmin: false,
+        canOperate: false,
+        can: () => false,
+      }}>
+        <ConfigView
+          integrations={[]}
+          plugins={[]}
+          agents={[]}
+          projects={[]}
+          prompts={[]}
+          oauthApps={[]}
+          config={null}
+          status={null}
+          onRefresh={vi.fn()}
+          onSectionChange={onSectionChange}
+        />
+      </CurrentUserProvider>,
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(onSectionChange).not.toHaveBeenCalled();
+  });
+
   it("organizes sections into fixed navigation groups", () => {
     window.history.replaceState({}, "", "#config/projects");
     render(
