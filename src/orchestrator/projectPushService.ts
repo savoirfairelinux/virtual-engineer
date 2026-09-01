@@ -9,7 +9,7 @@ import type {
   WorkspaceHandle,
 } from "../interfaces.js";
 import { getLogger } from "../logger.js";
-import type { VcsConnector } from "../vcs/vcsConnector.js";
+import type { VcsConnector, VolumeExecOptions } from "../vcs/vcsConnector.js";
 import { NO_REVIEW_SYSTEM } from "../vcs/vcsConnector.js";
 
 const log = getLogger("project-push-service");
@@ -150,11 +150,20 @@ export class ProjectPushService {
         if (!vcsConnector.pushDirect) {
           throw new Error(`VCS connector for ${reviewSystemLabel} does not implement pushDirect`);
         }
+        const volumeOptions: VolumeExecOptions | undefined =
+          handle.volumeName !== undefined && handle.containerImage !== undefined
+            ? {
+                volumeName: handle.volumeName,
+                image: handle.containerImage,
+                subPath: target.localPath,
+              }
+            : undefined;
         const pushResult = await vcsConnector.pushDirect(
           repoDir,
           ref,
           topic,
           target.reviewerEmails,
+          ...(volumeOptions !== undefined ? [volumeOptions] : []),
         );
 
         const repoCommits = (agentCommits ?? []).filter((commit) => commit.repoKey === target.repoKey);

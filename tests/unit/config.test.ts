@@ -23,6 +23,8 @@ describe("getConfig", () => {
       "TICKET_CLOSE_MAX_RETRIES",
       "TICKET_CLOSE_RETRY_MIN_TIMEOUT_MS",
       "AGENT_CONTAINER_IMAGE",
+      "WORKSPACE_RUNTIME",
+      "AGENT_DOCKER_NETWORK",
       "WORKSPACE_BASE_DIR",
     ];
     for (const key of allKeys) {
@@ -125,6 +127,14 @@ describe("getConfig", () => {
     it("workspaceBaseDir defaults to /tmp/virtual-engineer/workspaces", () => {
       expect(getConfig().workspaceBaseDir).toBe("/tmp/virtual-engineer/workspaces");
     });
+
+    it("workspaceRuntime defaults to legacy Docker", () => {
+      expect(getConfig().workspaceRuntime).toBe("legacy");
+    });
+
+    it("agentDockerNetwork defaults to virtual-engineer_ve-agent-net", () => {
+      expect(getConfig().agentDockerNetwork).toBe("virtual-engineer_ve-agent-net");
+    });
   });
 
   // ─── Overrides ─────────────────────────────────────────────────────────────
@@ -201,4 +211,3 @@ describe("getConfig", () => {
     });
   });
 });
-

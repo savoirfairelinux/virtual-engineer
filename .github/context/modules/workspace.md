@@ -2,14 +2,16 @@
 
 **Source:** [src/workspace/](../../../src/workspace/).
 
-The workspace module owns two unrelated concerns: (a) the **agent runtime** — host-side Git plumbing plus the OpenShell sandbox lifecycle — and (b) the bounded, read-only discovery path used to preview multi-repository manifests before project configuration is changed. `integrationBindingResolver.ts` implements the repository-URL-to-integration matching used by `POST /api/admin/projects/resolve-repositories` (normalized by host, optional port, and path) so a scanned manifest member can be linked back to an existing enabled integration.
+The workspace module owns two unrelated concerns: (a) the **agent runtime** — either the default legacy Docker named-volume lifecycle or the opt-in OpenShell sandbox lifecycle — and (b) the bounded, read-only discovery path used to preview multi-repository manifests before project configuration is changed. `integrationBindingResolver.ts` implements the repository-URL-to-integration matching used by `POST /api/admin/projects/resolve-repositories` (normalized by host, optional port, and path) so a scanned manifest member can be linked back to an existing enabled integration.
 
 ## Agent runtime
 
-`openShellWorkspaceRunner.ts` is the **sole** `WorkspaceRunner`. There is no `DockerWorkspaceRunner`, no `dockerVolume.ts`, no `execInVolume()`, and no `ve-ws-*` / `ve-home-*` named volumes.
+`DockerWorkspaceRunner` is the default `WorkspaceRunner`; `OpenShellWorkspaceRunner` is selected only when `WORKSPACE_RUNTIME=openshell`. The legacy runner uses `dockerVolume.ts` / `execInVolume()` and `ve-ws-*` / `ve-home-*` named volumes. OpenShell uses host-side Git plus sandbox upload/exec/download and does not use those volumes.
 
 | File | Role |
 |---|---|
+| `workspaceRunner.ts` | Legacy Docker lifecycle: named workspace/home volumes, helper-container Git operations, and agent/review containers. |
+| `dockerVolume.ts` | Creates/removes named volumes and runs bounded helper-container commands with SSH/network options. |
 | `hostGitExecutor.ts` | All host-side Git plumbing: `createWorkspace`, `cloneRepo`, `fetchAndCheckout`, `fetchAndCherryPick`, `execGit`, `rebuildTrustedMetadata`, `destroyWorkspace`, `credentialFreeUrl`. Every `execFile` goes through `trustedGitArgs` / `trustedGitEnv` (`src/utils/gitExec.ts`). Project clones are shallow (`--depth 1`) and retry transient transfer failures up to three attempts, with a five-minute per-attempt timeout and partial-destination cleanup. |
 | `openShellWorkspaceRunner.ts` | Sandbox lifecycle: create → upload → exec → download → destroy. |
 | `agentWorkerProtocol.ts` | Validates the worker's JSON result envelope at the workspace boundary (`decodeReviewWorkerOutput`). Execution/protocol errors carry non-enumerable, secret-filtered stdout/stderr diagnostics for cycle persistence, not general error serialization. Each stream is capped at 64 KiB with UTF-8-safe head/tail retention, original received byte counts, truncation flags, exit code, and a masked parser detail. |
@@ -23,11 +25,13 @@ The workspace module owns two unrelated concerns: (a) the **agent runtime** — 
 3. `runAgentInDocker()` (name retained for compatibility) — resolves the policy (`resolvePolicy` → `runtimePolicyResolver`, falling back to `buildDefaultPolicyYaml()`), splits credential env vars into a temporary OpenShell provider (`splitManagedProviderEnv`, recorded in `managed_openshell_providers` **before** remote creation), creates the sandbox with ownership labels, calls `allowEgress` for the adapter's `AgentEgressSpec`, calls `installSkillSources()` (see below) to stage any configured skill sources into the host workspace dir, uploads the workspace to `/sandbox` with `noGitIgnore: true`, runs the optional post-clone script **inside** the sandbox, then execs `spec.command` with `workdir = /sandbox/<basename(dir)>`. Review execution follows the same lifecycle but selects the exact project-bound adapter carried by `ReviewWorkspaceInput` rather than the process-wide default.
 4. Download — the coding flow downloads the sandbox repo path back onto the host dir, then `restoreTrustedRemotes()` rebuilds `.git` config/hooks/attributes/alternates from the recorded host-trusted remotes. `runReviewInDocker()` uploads only; nothing is downloaded back.
 5. `destroyWorkspace()` — removes the sandbox, then the temporary provider, clears the ledger row, and finally deletes the host directory.
+6. Legacy `createWorkspace()` instead creates `ve-ws-*` and `ve-home-*` named volumes; legacy clone and agent/review execution use helper containers with `/workspace` and `/ve-home`. Legacy VCS pushes run in short-lived helper containers against the named volume. OpenShell retains the host-clone upload/exec/download lifecycle described above.
 
 Additional invariants:
 
 - `listTrustedRepoPaths(handle)` returns only sub-paths VE itself cloned. `Orchestrator.pushProjectChanges()` refuses to run git anywhere else, so an agent-authored directory never receives push credentials.
 - Sandbox paths: `/sandbox` (writable workspace root), `/tmp/user-prompt.txt` (`USER_PROMPT_FILE`), `/app/agent-worker/` (worker runtime, read-only), and `/dev/pts` (the narrow PTY device tree needed by nested agent shells). `/workspace` and `/ve-home` do not exist.
+- Runtime paths: legacy uses `/workspace` and `/ve-home` volume mounts; OpenShell uses `/sandbox`, `/tmp/user-prompt.txt`, and `/app/agent-worker/`.
 - `collectPolicyDenials()` runs in a `finally` after every attempt: bounded `getSandboxLogs({ lines: 200, since: "75m" })` with a 30 s abort, parsed by `parseDenialEvent` (`src/openshell/denialEvents.ts`), deduplicated per sandbox by a fingerprint cache capped at 1 000 raw lines, and persisted through the injected `recordDenial` sink. There is no `denyEventPoller.ts`, no `pollDenials()`, and no `DenialSource`.
 - `execTimeoutSec` (from `AGENT_TIMEOUT_MS`) is passed to `sandbox exec --timeout`.
 

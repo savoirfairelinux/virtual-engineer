@@ -5,7 +5,7 @@
 
 import { getLogger } from "../logger.js";
 import { trustedGitEnv } from "../utils/gitExec.js";
-import type { VcsConnector, VcsPushResult } from "./vcsConnector.js";
+import type { VcsConnector, VcsPushResult, VolumeExecOptions } from "./vcsConnector.js";
 import type { PatchsetCheckoutOptions, ReviewComment } from "../interfaces.js";
 import { GerritSshClient, buildSshHostKeyOptions } from "../connectors/gerritSshClient.js";
 import { buildGerritTopic } from "./branchNaming.js";
@@ -13,6 +13,7 @@ import type { GitRunner } from "./gitRunner.js";
 import { NodeGitRunner } from "./nodeGitRunner.js";
 import { validateSshCloneUrl } from "./cloneUrlValidation.js";
 import { sanitizeErrorDetail } from "../utils/redactUrl.js";
+import { execInVolume } from "../workspace/dockerVolume.js";
 
 const log = getLogger("gerrit-vcs");
 
@@ -170,8 +171,13 @@ export class GerritVcsConnector implements VcsConnector {
     repoDir: string,
     ref: string,
     topic?: string,
-    reviewerEmails?: string[]
+    reviewerEmails?: string[],
+    volumeOpts?: VolumeExecOptions
   ): Promise<VcsPushResult> {
+    if (volumeOpts) {
+      return this.pushDirectInVolume(volumeOpts, ref, topic, reviewerEmails);
+    }
+
     log.info({ repoDir, ref, topic }, "pushing HEAD directly to Gerrit (agent-created commits)");
 
     try {
@@ -202,6 +208,50 @@ export class GerritVcsConnector implements VcsConnector {
       const error = err instanceof Error ? err : new Error(String(err));
       throw new Error(`Failed to push directly to Gerrit: ${sanitizeErrorDetail(error.message)}`);
     }
+
+  }
+
+  /** Push agent-created commits from a legacy Docker workspace volume. */
+  private async pushDirectInVolume(
+    volumeOpts: VolumeExecOptions,
+    ref: string,
+    topic?: string,
+    reviewerEmails?: string[],
+  ): Promise<VcsPushResult> {
+    log.info({ volumeName: volumeOpts.volumeName, ref, topic }, "pushing HEAD directly to Gerrit via volume container");
+
+    const cwd = volumeOpts.subPath && volumeOpts.subPath !== "."
+      ? `/workspace/${volumeOpts.subPath}`
+      : "/workspace";
+    const pushRef = `HEAD:${appendGerritPushOptions(ref, topic, reviewerEmails)}`;
+    const pushResult = await execInVolume({
+      volumeName: volumeOpts.volumeName,
+      image: volumeOpts.image,
+      command: ["bash", "-c", `cd "${cwd}" && git push origin "${pushRef}"`],
+      ...(this.config.sshKeyPath !== undefined ? { sshKeyPath: this.config.sshKeyPath } : {}),
+      ...(this.config.sshAgentPubKeyPath !== undefined ? { sshAgentPubKeyPath: this.config.sshAgentPubKeyPath } : {}),
+      ...(this.config.sshKnownHostsPath !== undefined ? { sshKnownHostsPath: this.config.sshKnownHostsPath } : {}),
+      sshPort: this.config.sshPort,
+      env: {},
+    });
+    if (pushResult.exitCode !== 0) {
+      throw new Error(`Failed to push directly to Gerrit (volume): ${sanitizeErrorDetail(pushResult.stderr.slice(0, 500))}`);
+    }
+
+    const headResult = await execInVolume({
+      volumeName: volumeOpts.volumeName,
+      image: volumeOpts.image,
+      command: ["bash", "-c", `cd "${cwd}" && git log -1 --format=%b`],
+    });
+    if (headResult.exitCode !== 0) {
+      throw new Error(`Failed to read pushed Gerrit commit (volume): ${sanitizeErrorDetail(headResult.stderr.slice(0, 500))}`);
+    }
+    const changeId = headResult.stdout.match(/^Change-Id:\s*(\S+)/m)?.[1] ?? "unknown";
+    return {
+      changeId,
+      url: this.config.baseUrl ? `${this.config.baseUrl}/c/${changeId}` : "",
+      status: "OPEN",
+    };
   }
 
   /**

@@ -1,150 +1,497 @@
-# Virtual Engineer - Copilot Guidelines
+# Virtual Engineer — Copilot Guidelines
 
-This file is always loaded. Keep it limited to rules and facts that apply to
-almost every task. Use [.github/context/INDEX.md](./context/INDEX.md) to route
-task-specific questions to the canonical reference documents.
+Concise, accurate facts Copilot must rely on when working in this repo. For deeper context see [.github/context/INDEX.md](./context/INDEX.md).
 
-## Graphify
+## graphify
 
-When `graphify-out/graph.json` exists, start codebase questions with:
+This project has a knowledge graph at `graphify-out/` with god nodes, community structure, and cross-file relationships.
 
-```text
-graphify query "<question>"
+Rules:
+- For codebase questions, first run `graphify query "<question>"` when `graphify-out/graph.json` exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than `GRAPH_REPORT.md` or raw grep output.
+- If `graphify-out/wiki/index.md` exists, use it for broad navigation instead of raw source browsing.
+- Read `graphify-out/GRAPH_REPORT.md` only for broad architecture review or when query/path/explain do not surface enough context.
+- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
+
+## Documentation auto-sync
+
+Whenever you modify code, also update the matching docs in `.github/`. Per-area rules live in [`.github/instructions/*.instructions.md`](./instructions/) and are loaded automatically by Copilot via their `applyTo` globs:
+
+| When you change… | …also update |
+|---|---|
+| `src/state/schema.ts` / `databaseMigrations.ts` / `stateStore.ts` / `migrate.ts` | `context/database.md` |
+| `src/state/stateMachine.ts` / `interfaces.ts` (states) | `context/state-machine.md` + this file's transition map |
+| `src/config.ts` | `context/configuration.md` + this file's env table |
+| `src/agents/**` / `agent-worker/**` | `context/modules/agents.md` + container-spec bullets here |
+| `src/connectors/**` / `src/vcs/**` / `src/plugins/**` | `context/modules/{connectors,vcs,plugins}.md` |
+| `src/admin/**` | `context/modules/admin.md` |
+| `src/orchestrator/**` | `context/modules/orchestrator.md` |
+| `tests/**` | `context/testing.md` (inventory + conventions) |
+| `package.json`, `Dockerfile.agent`, `vitest.config.ts`, `tsconfig.json`, … | this file's Build & Test block + relevant context doc |
+
+Updates land in the **same commit** as the code change. If a change is purely internal (no observable impact on schema, config, contracts, or behaviour), no doc edit is required.
+
+## Build & Test (gate every change)
+```
+npm test            # Vitest — must pass
+npm run typecheck   # zero TS errors (backend, agent worker, admin UI + UI tests)
+npm run lint        # zero ESLint errors (src, tests, agent-worker/src)
+npm run dev         # start orchestrator (tsx src/index.ts)
+npm run build:ui    # Vite build of the admin React SPA → dist/admin-ui
+npm run db:migrate  # apply tracked Drizzle migrations through the runtime runner
 ```
 
-Use `graphify path "<A>" "<B>"` for relationships and `graphify explain
-"<concept>"` for a focused concept. Use `graphify-out/wiki/index.md` for broad
-navigation when it exists. After modifying code, run `graphify update .` to
-keep the graph current. If the executable is unavailable, use the persisted
-graph data or ordinary repository search without blocking the task.
+Helper scripts: `npm run reset:instance`, `npm run build:agent` (agent-worker TS build), `npm run dev:ui` (Vite watch), `npm run typecheck:ui` (admin source + jsdom UI tests), `npm run db:generate`, `npm run build` (`build:ui` + `tsc` + `copy:prompts`, used by CI). `npm run copy:prompts` copies `prompts/*.md` into `dist/prompts` — required for `npm start` (`node dist/src/index.js`) to seed built-in prompts outside Docker, since `promptStore.ts`'s compiled path resolves prompts relative to `dist/`; `Dockerfile.orchestrator` copies them independently and is unaffected.
 
-## Documentation Ownership
+Keep the root `@github/copilot-sdk` dependency aligned with `agent-worker/package.json`; `npm run typecheck` compiles `agent-worker/src` from the root install and relies on the same permission-handler result types.
 
-When code changes, update the matching documentation in the same commit. The
-file-scoped rules in [`.github/instructions/`](./instructions/) are the
-authoritative ownership map:
+## Architecture (one screen)
 
-| Code area | Canonical documentation |
-|---|---|
-| `src/state/schema.ts`, `src/state/databaseMigrations.ts`, `src/state/stateStore.ts`, `src/state/stores/**`, `src/state/migrate.ts` | [`context/database.md`](./context/database.md) |
-| `src/state/stateMachine.ts`, `src/interfaces.ts`, `src/domain/tasks.ts` | [`context/state-machine.md`](./context/state-machine.md) |
-| `src/config.ts` | [`context/configuration.md`](./context/configuration.md) |
-| `src/agents/**`, `agent-worker/**` | [`context/modules/agents.md`](./context/modules/agents.md) |
-| `src/connectors/**`, `src/vcs/**`, `src/plugins/**` | the matching connector, VCS, or plugin module doc |
-| `src/admin/**` | [`context/modules/admin.md`](./context/modules/admin.md) |
-| `src/orchestrator/**`, `src/review/**` | [`context/modules/orchestrator.md`](./context/modules/orchestrator.md) |
-| `src/workspace/**` | [`context/architecture.md`](./context/architecture.md) and [`context/modules/workspace.md`](./context/modules/workspace.md) |
-| `src/index.ts`, `src/bootstrap/**`, `src/runtime/**`, `src/openshell/**` | the affected architecture, runtime, workspace, agent, or database doc |
-| `tests/**` | [`context/testing.md`](./context/testing.md) |
-| project tooling configuration | this file's gates plus [`context/testing.md`](./context/testing.md) or [`context/configuration.md`](./context/configuration.md) |
+- **Orchestrator** normally runs on the **host** in development (Node.js, `tsx src/index.ts`). Optional Docker deployment uses `scripts/start.sh` (host networking, admin UI bound to `127.0.0.1:3100`).
+- For each agent cycle the default legacy runtime creates ephemeral `ve-ws-*` and `ve-home-*` Docker volumes, clones repositories with helper containers, and runs the agent container with `/workspace` and `/ve-home` mounts. The host owns review-system credentials and volume-based VCS push orchestration; `AGENT_DOCKER_NETWORK` controls the agent network. `WORKSPACE_RUNTIME=openshell` selects the alternative host-clone upload/exec/download sandbox path. Both runtimes destroy their temporary workspace on exit.
+- **Container spec** (built by `buildCodegenContainerSpec` / `buildReviewContainerSpec` in `src/agents/containerSpecBuilders.ts`, consumed by all adapters): provider-specific env, command, and optional runtime arguments are passed to the selected runner. Legacy Docker applies read-only rootfs, dropped capabilities, no-new-privileges, tmpfs, and named-volume mounts. OpenShell applies its deny-by-default runtime policies and gateway egress. Push credentials never enter the agent container or sandbox.
+- **Secret transport**: every supported agent credential (Copilot/Claude tokens plus all Aider/Goose backend API keys) is removed from sandbox env and supplied through short-lived attached OpenShell providers. Provider creation uses bare `--credential KEY` arguments whose values exist only in the child process environment, keeping secrets out of argv, logs, labels, SQLite, and the parent environment. `sandbox create --env` and `sandbox exec --env` carry only non-secret values; exec-time env is limited to values such as `USER_PROMPT_FILE` because OpenShell includes that prefix in gateway command-preview logs. `splitManagedProviderEnv` fails closed: an env name matching `TOKEN|SECRET|API_KEY|APIKEY|PASSWORD|CREDENTIAL` that is not in `AGENT_CREDENTIAL_PROVIDER_TYPES` aborts the run instead of reaching argv.
+- **Persistence**: SQLite WAL via `better-sqlite3` (sync) + Drizzle ORM at `DATABASE_PATH` (default `./data/virtual-engineer.db`).
+- **Sandbox cleanup**: every sandbox is labeled with `app.kubernetes.io/managed-by=virtual-engineer` plus a non-sensitive SHA-256 task hash. Temporary provider ownership is persisted before remote creation in `managed_openshell_providers` without credentials. Failed deletes retain ownership metadata for retry while host workspaces are still removed; cleanup always deletes the sandbox before its provider and clears the ledger only after provider deletion succeeds. Startup and a non-overlapping 15-minute scheduler scan label-selected sandboxes in pages of 100, bounded to 1,000 entries per pass, combine that inventory with the provider ledger, preserve active/recent/foreign resources, and best-effort delete old VE orphans. Provider names alone never authorize deletion.
+- **OpenShell command output**: each host CLI process retains at most 32 MiB total across stdout/stderr while live callbacks continue. Overflow and abort terminate the detached process group with `SIGTERM`, then `SIGKILL` after two seconds if needed. Uploads carry the task abort signal; transient sandbox-create retries perform bounded ambiguous-resource cleanup but never start another attempt after cancellation.
+- **Workspace runtime deployment**: `scripts/start.sh` launches legacy Docker by default, building the orchestrator without the optional OpenShell CLI and starting it with Docker socket, named-volume, and SSH-agent access. Set `WORKSPACE_RUNTIME=openshell` to use the pinned OpenShell 0.0.83 gateway bootstrap; `OPENSHELL_COMPUTE_DRIVER=kubernetes` remains experimental. OpenShell gateway/auth behavior and its verified OCI digests remain unchanged when explicitly selected.
+- **Providers (per capability)**: issue_tracking = Redmine | GitLab Issues | GitHub Issues; code_review / source_control = Gerrit | GitLab Merge Requests | GitHub Pull Requests; agent_execution = Copilot | Claude | Aider | Goose | Codex | Gemini CLI | OpenCode | Cursor. Provider credentials live on `integrations`, while GitLab project selection is VE-project-owned (`project_integration_bindings` issue_tracking `{ ticketProjectKey }`, `project_push_targets.repoKey`, code_review `{ repos }` bindings).
+- **Gemini sandbox integration**: `geminiAdapter.ts` consumes the same shared `buildCodegenContainerSpec` / `buildReviewContainerSpec` contract as the other adapters; `GEMINI_API_KEY` uses the managed OpenShell credential-provider path rather than sandbox env or argv.
+- **Admin server** (`src/admin/`) exposes the dashboard plus integrations, agents, projects, prompts, concurrency, editable runtime settings (`GET/PUT /api/admin/settings`), webhook-secret operations, and PBAC management (groups/policies/bindings under `/api/admin/{groups,policies,permissions}`); secrets are masked on read and the runtime is hot-refreshed after integration changes. Authorization is **pure PBAC** (`src/admin/authorization/`) enforced at the route gate — every route is authorized by a declared permission, with `admin` as the only superuser bypass and role solely selecting the default policy bundle at user creation. The dashboard client is a **Vite-built React SPA** (`src/admin/ui/`, served from `dist/admin-ui`; build with `npm run build:ui`).
 
-Purely internal changes with no observable contract or behavior change do not
-need documentation churn.
-
-## Quality Gates
-
-Run the relevant focused check first, then all three gates before a commit:
-
-```text
-npm test
-npm run typecheck
-npm run lint
+### Source layout
+```
+src/
+  index.ts              # process entry; boots admin + plugins + orchestrator
+  bootstrap/            # runtimeBuilder (agent adapter, orchestrator config,
+                        # shared helpers: asOptionalString, parseIntegrationConfig,
+                        # getActiveIntegrationsByType, getPrimaryActiveIntegration)
+  config.ts             # Zod-validated AppConfig (loads .env)
+  domain/               # identifiers (branded IDs) + tasks (states/persisted task contracts)
+  interfaces.ts         # compatibility facade + AgentSession, AgentResult, AgentLogEvent
+  copilotModel.ts       # Copilot model defaults
+  logger.ts             # Pino (silent in NODE_ENV=test by default)
+  admin/                # Node.js admin HTTP server; serves the Vite-built React SPA
+                        # adminServer (multiplexer/auth), router, adminRouteUtils,
+                        # adminTaskRoutes, adminPromptRoutes, adminStreamRoutes,
+                        # adminIntegrationRoutes, adminAgentsRoutes,
+                        # adminProjectsRoutes(+Shared, +WorkspaceRoutes,
+                        # +VendorComponentsRoutes), adminConcurrencyRoutes,
+                        # adminSettingsRoutes, adminWebhookRoutes,
+                        # adminOverviewRoutes, adminPoliciesRoutes,
+                        # adminRuntimePolicyRoutes, adminDenialRoutes,
+                        # providerSummary (AdminProviderSummary builder),
+                        # dashboard (SPA shell), start/close helpers
+    ui/                 # React SPA source (App.tsx, views/, components/,
+                        # shell/, theme/, icons/, api.ts, states.ts)
+  agents/               # copilotAdapter, copilotConnectionValidator,
+                        # copilotOAuthService, providerAuthService,
+                        # copilotModelsService, cycleCost,
+                        # claudeAdapter, claudeConnectionValidator,
+                        # claudeModelsService,
+                        # aiderAdapter, aiderConnectionValidator,
+                        # aiderModelsService,
+                        # gooseAdapter, gooseConnectionValidator,
+                        # gooseModelsService,
+                        # codexAdapter, codexConnectionValidator,
+                        # codexModelsService,
+                        # geminiAdapter, geminiConnectionValidator,
+                        # geminiModelsService,
+                        # opencodeAdapter, opencodeConnectionValidator,
+                        # opencodeModelsService,
+                        # cursorAdapter, cursorConnectionValidator,
+                        # cursorModelsService,
+                        # agentEventTypes, agentEventBus
+  connectors/           # redmineConnector, gerritConnector,
+                        # gerritSshClient, gerritSshReviewProvider,
+                        # gerritStreamEvents, integrationStreamEvents,
+                        # gitlabIssueConnector, gitlabHttpClient,
+                        # gitlabMergeRequestConnector,
+                        # gitlabMergeRequestReviewProvider, baseTicketConnector,
+                        # githubIssueConnector, githubPullRequestReviewConnector,
+                        # githubReviewProvider
+  orchestrator/         # orchestrator, reviewProgressService, pollingLoop,
+                        # feedbackProcessor, concurrencyTracker,
+                        # agentContextBuilder, pushTargetEnrichment
+  openshell/            # openShellClient (CLI surface), openShellPolicyBuilder,
+                        # runtimePolicyResolver, openShellSandboxReconciler,
+                        # sandboxOwnership, denialEvents
+  runtime/              # runtimeStartup (recovery + reconciler scheduling)
+  plugins/              # registry, pluginManager, init, descriptors/{index,github,
+                        # gitlab,gerrit,redmine,copilot,claude,aider,goose,codex,
+                        # gemini,opencode,cursor}.ts
+                        # (unified provider descriptors; githubOAuth/gitlabOAuth helpers)
+  review/               # reviewOrchestrator,
+                        # reviewRetriggerGuard, reviewStderrEvents, reviewPostingGate,
+                        # reviewBootstrap (bundle + trigger factory),
+                        # reviewPromptBuilder, reviewOutputContract,
+                        # reviewResultParser,
+                        # commentFilter, commentHash, commentSeverity,
+                        # revisionPatchset
+  state/                # schema (Drizzle), databaseMigrations, stateMachine,
+                        # stateStore facade, migrate CLI
+    stores/             # domain-scoped DB modules: task, reviewDedup, cost,
+                        # integration, project, prompt(+seeding), agent(+concurrency),
+                        # user, audit, group, policy (RBAC/PBAC), runtimePolicy
+  utils/                # ticketFooterFormatter, ticketSourceLabel, encryption,
+                        # errorClassifier, gitExec, githubAuth, gitlabAuth,
+                        # redactUrl
+  vcs/                  # vcsConnector + gerrit/gitlab/github VcsConnectors,
+                        # vcsFactory, async gitRunner/nodeGitRunner, branchNaming
+  webhooks/             # webhook server + handlers/{redmine,gitlab-issue,
+                        # gitlab-merge-request,github-pull-request}
+  workspace/            # hostGitExecutor (host-side clone/checkout/cherry-pick/
+                        # push plumbing), openShellWorkspaceRunner (sole
+                        # WorkspaceRunner: sandbox upload/exec/download lifecycle),
+                        # agentWorkerProtocol (worker result envelope validation),
+                        # repositoryManifestAccess + workspaceManifestScanner,
+                        # workspaceScanService (provider scan orchestration),
+                        # integrationBindingResolver (repo URL → integration match),
+                        # skillSources (external skill-source URL/SSH resolution),
+                        # skillSourceInstaller (host-side skill fetch/install
+                        # before workspace upload)
+agent-worker/src/       # TS worker inside the agent sandbox: index.ts
+                        # (provider-agnostic orchestrator), providers/
+                        # {types,events,copilot,claude,aider,goose,codex,gemini,
+                        # opencode,cursor,registry}.ts
+                        # (complete provider definitions + registry dispatch),
+                        # commitUtils.ts, copilotCliArgs.ts, promptLoader.ts,
+                        # mcpSubmission.ts, mcpSubmissionServer.ts,
+                        # networkGuard.ts, validate-copilot-connection.ts;
+                        # built via tsconfig.agent.json / npm run build:agent
 ```
 
-Useful project commands include `npm run build:ui`, `npm run build:agent`,
-`npm run db:migrate`, `npm run db:generate`, `npm run build`, and `npm run
-dev`. See [`context/testing.md`](./context/testing.md) for test conventions.
+## Critical Schema Facts
+- `tasks` PK = `task_id` (TEXT). There is **no** `id` column. Key columns also include `display_id`, `task_type`, `gerrit_change_id`, `current_patchset`, `reviewed_patchset`, `push_ref`, `project_id`, `ticket_source_integration_id`, `ticket_source_project_key`, `cycle_count`, `failure_reason`, `ticket_url`, `review_url`, `created_at`, `updated_at`. `ticket_source_integration_id` / `ticket_source_project_key` snapshot the originating ticket source so orphaned tasks can be adopted by a future project bound to the same ticket source.
+- `state_transitions`, `agent_cycles`, `processed_comments` use INTEGER `id` PKs. `agent_cycles` additionally has unique `(task_id, cycle_number)`; runtime migration consolidates legacy duplicates before creating the index, `startAgentCycle` atomically allocates and inserts the running row, and `saveAgentCycle` atomically upserts later payloads for that logical cycle.
+- `posted_review_comments` (INTEGER `id` PK): dedup table for the **review posting** side (VE as reviewer). Columns: `task_id`, `change_id`, `comment_hash` (`sha1(file+"\n"+normalized(message))`, line excluded), `file`, `line`, `message`, `severity`, `provider_thread_id` (nullable), `resolved` (0/1), `created_at`. Unique `(task_id, comment_hash)` drives `INSERT OR IGNORE` idempotency; prevents re-posting the same finding across patchsets. Integration-agnostic.
+- `review_thread_replies` (INTEGER `id` PK): dedup ledger for **discussion-thread replies** (VE answering human review comments). Columns: `task_id` (FK), `change_id`, `thread_id`, `handled_comment_hash` (`sha1(thread+"\n"+lower(author)+"\n"+normalized(message))` of the latest human comment), `reply_message`, `created_at`. Unique `(task_id, thread_id, handled_comment_hash)` drives `INSERT OR IGNORE`; VE replies once per new human message and never re-answers an already-handled thread across re-reviews. Integration-agnostic.
+- `agent_cycles.agent_events` (TEXT, JSON `AgentLogEvent[]`) records the streamed agent log.
+- `agent_cycles` cost columns (all nullable): `cost_ai_credits` (REAL), `cost_usd` (REAL), `premium_requests` (REAL), `cost_input_tokens` / `cost_output_tokens` / `cost_cached_tokens` / `cost_cache_write_tokens` (INTEGER), `cost_model_id` (TEXT). Derived by `computeCycleCost()` (`src/agents/cycleCost.ts`) from `assistant.usage` events (per-request: events are grouped by request identity — `apiCallId`/`providerCallId` or content signature — to drop duplicate emissions, then summed across distinct requests: `copilotUsage.totalNanoAiu` → `cost_usd`/`cost_ai_credits` where 1 AIU = 1 credit = $0.01). When `totalNanoAiu` is absent, `cost_usd` is **estimated** from `premium_requests` × $0.04 (GitHub overage rate) and `cost_ai_credits` stays null. `SqliteStateStore.backfillLegacyCycleCosts()` runs on every startup and persists these columns for any pre-existing row where all 8 are still NULL; reads (`getCostSummary`, `getModelUsageSummary`, `getAgentCycles`) trust the stored snapshot directly with no read-time recompute.
+- `integrations` (TEXT `id` PK): `provider`, `name`, `config_json`, `enabled` (INTEGER), `discovered_resources_json`, `discovered_at`, timestamps. `provider` is one of `github | gitlab | gerrit | redmine | copilot | claude | aider | goose | codex | gemini | opencode | cursor` (the former `type` column and the `category` concept were removed).
+- `prompts` (TEXT `id` PK): `label`, `content`, `prompt_type` (`system | instructions`, default `instructions`), timestamps. Agents require one prompt of each role. The user prompt is not stored: each cycle builds it dynamically from the ticket or review, then appends the selected instructions. Startup normalizes unsupported legacy roles to `instructions`, derives custom roles from agent/project references, and clones dual-role rows for the instructions side while preserving content. Hydration defensively coerces unsupported roles to `instructions`; built-in rows recreated by `upsertPrompt()` retain their declared role.
+- Exactly five built-in prompt IDs exist: `system_generic_code`, `instructions_generic_code`, `instructions_feedback_code`, `system_review`, and `instructions_review`. Provider-specific aliases and alias overrides are not supported. System prompts own durable role/safety/commit boundaries; instructions own workflow only. Review output shape is never stored in these defaults: MCP supplies the provider-specific JSON Schema for Copilot/Claude/Goose, while Aider receives the corresponding text contract at runtime.
+- `oauth_apps` (composite PK `(provider, base_url)`): `provider`, `base_url`, `client_id`, timestamps — stores per-host OAuth app registrations. A legacy `gitlab_oauth_apps` table also exists.
+- `change_per_repository` (TEXT `id` PK): `task_id`, `repo_key`, `change_id`, `review_url`, `status`, `integration_id`, `review_system`, `commit_index` (INTEGER NOT NULL DEFAULT 0), `subject_hash` (TEXT), timestamps. PK format: `${taskId}:${repoKey}:${commitIndex}` when commitIndex > 0, else `${taskId}:${repoKey}`. Status values: `OPEN`, `NEW`, `MERGED`, `ABANDONED`, `ORPHANED`, `NO_CHANGE`. The `review_system` column is **kept** (not renamed) and stores `gerrit | gitlab | github` via `VcsConnector.reviewSystemLabel`.
+- `project_integration_bindings` (TEXT `id` PK): `project_id`, `integration_id`, `capability` (`issue_tracking | code_review | source_control | agent_execution`), `config_json`, timestamps. `UNIQUE(project_id, capability)` (`uq_pib_project_capability`). Replaces the dropped `project_ticket_source` / `project_review_integration` / `project_review_repos` tables. `config_json` shapes: issue_tracking = `{ ticketProjectKey }`; code_review = `{ repos: string[] }`. Cross-project ticket-source uniqueness is enforced in **application code** (throws), not by a DB unique index.
+- `project_push_targets.reviewer_emails` is non-null TEXT containing a JSON string array (default `[]`). The admin API normalizes and deduplicates at most 20 emails per target. Gerrit appends them as `r=<email>` push options; GitLab resolves exact visible `email`/`public_email` matches to `reviewer_ids` and updates existing MRs; GitHub reviewer emails are rejected because its API requires usernames.
+- `project_vendor_components` (INTEGER `id` PK): workspace-scanned third-party components of a coding project. Columns: `project_id` (FK), `source_path` (the **real** manifest path, e.g. `daemon/contrib/src/fmt/package.json` — never the scan `localPath`, which for a build-time `fetched` dependency is only the repository name like `fmt`), nullable `local_path` / `clone_url` / `revision`, `origin` (`internal | fork_pushable | patch_required | ambiguous`), timestamps. `uq_pvc_project_source_local` is unique over `(project_id, source_path, NULL-normalized local_path)` — implemented with a `CASE` expression equivalent to `COALESCE(local_path, '')` — so one manifest can declare several components without collapsing distinct local paths. Only components no VE repository owns land here — one we own becomes a `project_push_targets` row instead, so the agent edits and pushes it. Managed via `GET`/`PUT /api/admin/projects/:id/vendor-components`; `classifyRepositoryOrigin()` (`src/workspace/workspaceScanService.ts`) derives `origin` from the clone URL + integration binding resolution.
+- Database migrations have one active path: `src/state/schema.ts` declares the schema; version-controlled `drizzle/*.sql` plus `drizzle/meta/` are immutable migration history; and `src/state/databaseMigrations.ts` applies them both at startup and through `npm run db:migrate`. `drizzle/0002_openshell_runtime_policies.sql` is the OpenShell migration: it creates `runtime_policies`, `runtime_policy_bindings`, `policy_denial_events`, and `managed_openshell_providers`, plus the `uq_agent_cycles_task_cycle` index. A frozen, transactional compatibility bridge adopts recognized pre-ledger Virtual Engineer databases, validates their canonical tables, columns, constraints, indexes, triggers, and foreign keys against a temporary database built from tracked SQL, normalizes SQLite integer-PK/index-ordinal artifacts, preserves AUTOINCREMENT high-water marks, rejects orphan predecessor review-repository and review-integration rows, installs canonical triggers after creating the ledger, and stamps the baseline. That bridge stops at the first `LEGACY_BRIDGE_MIGRATION_COUNT` (= 2) tracked migrations; every later migration, including `0002`, is applied through the normal runner. It recognizes only explicitly retired columns, including the former project skill fields and `project_vendor_components.note` / `integration_id` / `repo_key`. Every migration run also executes `PRAGMA foreign_key_check`. Future schema changes must generate a new migration and must not extend that bridge.
+- Phase 2 tables also exist and are live: `agents`, `projects`, `project_integration_bindings`, `project_push_targets` (the `source_control` binding, unchanged), and singleton `app_concurrency`.
+- `app_settings` (TEXT `id` PK, singleton `id = 'global'`): nullable INTEGER columns `polling_interval_ms`, `max_agent_cycles`, `max_retry_attempts`, `agent_timeout_ms`, `ticket_close_max_retries`, `ticket_close_retry_min_timeout_ms`, plus `updated_at`. Holds the editable runtime workflow settings surfaced in admin UI → System Settings. NULL = fall back to the `config.ts` default (env-seeded). On boot, `src/index.ts` resolves effective values (`db ?? config default`) and overwrites the corresponding `config` fields; `PUT /api/admin/settings` persists overrides and hot-applies them to the running `PollingLoop` (`updateConfig`), `Orchestrator` (`updateRuntime`), and admin runtime config — no restart. Store methods: `getAppSettings` / `updateAppSettings` (`src/state/stores/settingsStore.ts`).
+- **Admin RBAC tables**: `users` (TEXT `id` PK, `username` UNIQUE, `password_hash`, `role` = `admin | operator | viewer`, `enabled` default 1), `user_sessions` (INTEGER `id` PK, `token_hash` UNIQUE = hash of the raw bearer token, `user_id` FK → users, `expires_at` + `last_seen_at` for sliding expiry — `getSessionByTokenHash` returns null when expired or the user is disabled), and append-only `audit_log` (INTEGER `id` PK, nullable `actor_user_id`, `actor_name`, dotted `action`, nullable `target_type`/`target_id`, `details_json` default `'{}'`, indexes `idx_audit_log_created_at`, `idx_audit_log_action_created_at`, `idx_audit_log_actor_created_at`; `listAuditEntries` orders `created_at DESC, id DESC`, default limit 50, cap 200). Stores: `src/state/stores/userStore.ts` / `auditStore.ts`; duplicate username throws Error with `code = "DUPLICATE"`.
+- **PBAC tables** (policy-based access control, layered over roles): `groups` (TEXT `id` PK, `name` UNIQUE, `description`), `group_members` (composite PK `(group_id, user_id)`, both FKs cascade), `policies` (TEXT `id` PK, `name` UNIQUE, `builtin` INTEGER default 0), `policy_rules` (TEXT `id` PK, `policy_id` FK cascade, `permission` = `"<resourceType>.<action>"`, nullable `resource_id` = NULL grants all resources of that type / else scoped), `policy_bindings` (TEXT `id` PK, `policy_id` FK cascade, `principal_type` = `user|group`, `principal_id`, UNIQUE `uq_policy_bindings`). Stores: `src/state/stores/groupStore.ts` / `policyStore.ts`. A user's effective permissions = union of rules from policies bound to the user + their groups (`getEffectivePolicyRulesForUser`); `admin` role bypasses as superuser. Built-in `Operator`/`Viewer` policies are seeded (`src/admin/authorization/seedPolicies.ts`) and legacy/new operator/viewer users auto-bound (role = default access bundle). Engine + catalog: `src/admin/authorization/{permissions,policyEngine,seedPolicies}.ts`. Authorization is **pure PBAC**: the route gate enforces `RouteMeta.permission` (+ `resourceParam` for resource scoping / `collection` for list routes), or `RouteMeta.authenticated` for auth-self routes — there is **no role fallback**. Only `project.*` and `task.*` are scopeable (task rules scope by owning project id; the API rejects a `resource_id` on any other/global permission); integrations/agents/prompts and admin capabilities are global. Roles remain only as the `admin` superuser bypass and the default-policy-bundle selector at user creation. All ~95 admin routes are permission-annotated (403 → `{ error, permission }`).
+- **Runtime policy tables** are separate from PBAC: `runtime_policies` stores bounded, alias-free OpenShell policy YAML with exactly one section matching its protection kind; `runtime_policy_bindings` assigns a runtime policy to exactly one project or agent and copies its `kind`. The resolver composes those sections onto OpenShell 0.0.83's canonical `version: 1` filesystem/Landlock/process base. `network_policies` is a map of named rules (`name`, `binaries`, `endpoints`); do not use the obsolete `default: deny` / `allow: []` shape. Partial unique indexes on `(project_id, kind)` / `(agent_id, kind)` enforce one binding per kind atomically. Project bindings override agent bindings of the same kind while different kinds compose. After composition the resolver re-asserts the sandbox floor: `process.run_as_user`/`run_as_group` are forced back to `sandbox`, and a `filesystem_policy.read_write` entry naming `/`, `/usr`, `/lib`, `/etc`, `/app`, `/bin`, `/sbin`, `/boot`, or `/var` is rejected. After every post-creation sandbox attempt VE reads a bounded warning-level `openshell logs` snapshot in a `finally` block, parses OCSF/key-value denials, scrubs secrets, and appends task- and project-attributed `policy_denial_events` best-effort. Overlapping retry/final snapshots are deduplicated only in memory per sandbox using a bounded fingerprint cache of raw event lines; there is intentionally no SQL uniqueness rule because identical denials at different times are distinct audit events. Task deletion nulls the denial's `task_id` instead of erasing the audit record; `project_id` remains available. Runtime store: `src/state/stores/runtimePolicyStore.ts`; resolver: `src/openshell/runtimePolicyResolver.ts`. Never reuse PBAC's `policy_bindings` for sandbox assignments.
+- `agents.enabled` defaults to `0` (disabled), not `1`.
+- Repository skill behavior is provider-native; there is no persisted/API/session path or enable field. Startup drops the former `projects.local_skills_path` and `projects.skill_discovery_enabled` columns. The worker does not scan local skill directories or inject manifests: Copilot owns repository skill/MCP discovery through `enableConfigDiscovery=true`, Claude owns repository skills through project/user settings and `skills: 'all'`, Aider keeps its normal CLI repository behavior, and Goose keeps its native repository behavior (built-in Developer extension, `.goosehints` convention) with the VE MCP submission server registered as a stdio extension via its `config.yaml`. Externally configured skill sources (below) are staged host-side into these same native paths before upload, so this provider-native discovery is what ultimately picks them up.
+- `projects.skill_sources_json` (TEXT JSON, default `'[]'`) stores optional external skill sources as `[{ source, skills, installAll?, sshUser?, sshPort?, sshKeyPath?, sshKnownHostsPath? }]`. Empty `skills` is valid only with `installAll: true`; `sshUser`/`sshPort`/`sshKeyPath` are optional per-source SSH connection hints, and `sshKnownHostsPath` enables strict SSH host key verification. `src/workspace/skillSources.ts` resolves source URLs / SSH connection details, and `src/admin/skillSourceDiscovery.ts` lists available skills via `npx skills add -l` for the project form. The database/API default remains empty, but the admin UI's new-project form preloads `ssh://g1.sfl.io/sfl/agent-skills` on port `29419` with `installAll: true`; saving the untouched form persists that source. Presets must not hardcode selected skill names. `OpenShellWorkspaceRunner` fetches and installs each configured source **host-side** via `src/workspace/skillSourceInstaller.ts`'s `installSkillSources()`, after checkout is finalized and before the workspace uploads to the sandbox, using the same host-local SSH key/known-hosts convention as `HostGitExecutor` — so SSH material and `SKILL_SOURCES_JSON` never reach the sandbox, only the resulting skill files do. Each source installs in **project scope** (no `-g`) into the target agent's native skill directory (`.agents/skills/`, `.claude/skills/`, `.goose/skills/`, `.codex/skills/`, or `.opencode/skills/`) for Copilot, Claude, Goose, Codex, or OpenCode; Aider, Gemini CLI, and Cursor are skipped. When the workspace root is a single git repo, the staged directory is appended to `.git/info/exclude` so the agent's own git commands never see or stage it. A single source's failure is logged and skipped, never fatal to the cycle.
+- Gemini CLI and Cursor are also intentionally skipped by external skill-source installation: the `skills` CLI's Gemini agent-id support is unconfirmed, and Cursor has no wired native target directory.
+- `projects.gerrit_topic_override` (nullable TEXT) is a **per-project, coding-only** override for the Gerrit change topic. When set (non-empty), `orchestrator.pushProjectChanges` uses it verbatim instead of `buildGerritTopic(taskId, ticketTitle)`'s computed per-ticket topic (`VE-<shortTaskId>-<ticket-title-slug>`); the ticket-derived topic logic itself is unchanged and remains the default. Configurable via admin UI project form ("Custom Gerrit Topic").
+- `projects.use_full_ticket_url_in_commits` (INTEGER, default `0`) is a **per-project, coding-only** toggle. When 1, the orchestrator computes a `ticketFooterLine` (via `formatTicketFooter(ticketId, ticketUrl, ticketSourceLabel, forceUrlFormat=true)`) and forwards it on `AgentSession.ticketFooterLine`; `copilotAdapter`/`claudeAdapter` inject it as `TICKET_FOOTER_LINE` env var. The agent-worker's `injectChangeIds()` (`agent-worker/src/commitUtils.ts`) appends this line to the trailer block of every agent commit alongside its Change-Id (idempotent — skipped if already present). Worker-side trailer injection is the only path that modifies pushed commit messages: project pushes require `VcsConnector.pushDirect()`, which pushes the agent-created commit chain verbatim without creating a host-side commit.
+- `projects.post_review_link_to_ticket` (INTEGER, default `0`) posts each non-orphaned review URL to the source ticket after the first successful push cycle. Later cycles reuse the same reviews and do not add another note.
+- `projects.react_to_ci_failures` (INTEGER, default `0`) lets coding projects treat GitHub check failures (`ci-run-*`) and Gerrit failed/aborted/unstable build messages (`ci-failure-*`) as actionable retry feedback. CI lifecycle notices and vote-only Gerrit messages remain noise; with the toggle off, failure comments are filtered before feedback deduplication.
+- `agents.system_prompt_id` and `agents.instructions_prompt_id` are nullable at the SQLite schema level but required by the admin API and agent store for every create/update and cannot be cleared. Runtime resolution is fail-closed and never substitutes generic or review-integration descriptor prompts.
+- `agents.feedback_instructions_prompt_id` (nullable, FK → `prompts.id`) is an optional **per-agent override** used only on retry (feedback) cycles. The admin API requires it to resolve to an `instructions` prompt. When set on a coding agent, the orchestrator swaps it in as the instructions prompt for `cycleNumber > 1`; otherwise the regular `instructions_prompt_id` is reused. The seeded default prompt is `instructions_feedback_code` (from `prompts/instructions_feedback_code.md`).
+- `agents.model_config_json` → `providerOptions.toolAuthorization` carries per-agent tool authorization (blocklist-only, provider-specific shape). Claude/Copilot: `{ blockedTools: string[] }` (everything allowed by default; VE's network floor is immutable — user lists can only tighten). Aider: capability toggles (`suggestShellCommands`, `detectUrls`, `playwright`, `git`). Goose: `{ developerExtension }`. `allowedTools` is rejected by the admin API. The admin API validates per provider; host adapters forward as `CLAUDE_BLOCKED_TOOLS`/`COPILOT_BLOCKED_TOOLS` or `TOOL_AUTHORIZATION_JSON`. See `.github/context/modules/agents.md` § "Per-agent tool authorization".
+- `agent_cycles.agent_events` records `permission.denied` and `permission.approved` events (in addition to `tool.execution_start`/`tool.execution_complete`) so the admin cycle card "Tool usage" section can show per-tool call counts and denials. `SessionMetrics.totalDenials` and `ToolMetrics.denialCount`/`lastDenialReason` aggregate them.
+- All `created_at`/`updated_at` are stored as **seconds since epoch** (Drizzle `mode: "timestamp"`). Correct query: `datetime(created_at, 'unixepoch')`.
 
-## Non-negotiable Boundaries
+Quick troubleshooting query:
+```sql
+SELECT task_id, state, cycle_count, failure_reason
+FROM tasks WHERE ticket_id = 'X' ORDER BY created_at DESC;
+```
 
-- The orchestrator runs on the host. Agents run in ephemeral OpenShell
-  sandboxes using upload -> exec -> download for coding and upload -> exec for
-  review. There is no direct Docker workspace runner or named workspace volume.
-- OpenShell runtime policies provide the isolation floor: deny-by-default
-  filesystem, network, and process access; the `sandbox` user/group; and
-  writable paths limited to `/sandbox`, `/tmp`, `/dev/null`, and the narrow
-  `/dev/pts` PTY device tree required by nested agent shells. Do not restore
-  Docker security flags as a substitute.
-- The host owns clone, checkout, cherry-pick, and push orchestration. The
-  worker owns commit collection and Change-Id/trailer injection inside the
-  sandbox. Push credentials never enter the sandbox. Provider commit behavior
-  is governed by the provider-native runtime contract.
-- Provider credentials and provider configuration live in the database and are
-  managed through the admin UI. Do not add provider settings to environment
-  variables or hardcode credentials.
-- Multiple integrations of the same provider may be active. Resolve runtime
-  dependencies by integration id, capability, or an explicit integration list;
-  never assume one active integration per provider.
-- Agent engines are Copilot, Claude, Aider, Goose, Codex, Gemini CLI, OpenCode,
-  and Cursor. Their execution, auth, egress, prompt, and submission contracts
-  live in [`context/modules/agents.md`](./context/modules/agents.md).
+## State Machine (`src/state/stateMachine.ts`)
+Two task lifecycles share the same `TaskState` union:
 
-## Critical Invariants
+- **Code-gen happy path**: `DETECTED → CONTEXT_BUILDING → AGENT_RUNNING → IN_REVIEW → MERGED → CLOSING → DONE`
+- **Code-review happy path**: `REVIEW_PENDING → REVIEW_RUNNING → REVIEW_COMMENTING → REVIEW_WATCHING → REVIEW_DONE`
 
-- Timestamps are stored in seconds since epoch. Use
-  `datetime(column, 'unixepoch')`, never divide by 1000.
-- The `tasks` primary key is `task_id` (TEXT); there is no `tasks.id` column.
-- Pause and resume are `state_transitions` rows with equal `from_state` and
-  `to_state` plus `metadata.action`, not boolean task columns.
-- State definitions and transitions are owned by `src/domain/tasks.ts`,
-  `src/interfaces.ts`, and `src/state/stateMachine.ts`; consult
-  [`context/state-machine.md`](./context/state-machine.md) before changing them.
-- Database schema changes require a new immutable Drizzle migration. Never
-  extend the frozen compatibility bridge or edit an applied migration.
-- Runtime sandbox policies are separate from PBAC policies. Never reuse
-  `policy_bindings` for OpenShell assignments.
+**Full transition map** (`VALID_TRANSITIONS`):
+- `DETECTED → CONTEXT_BUILDING | FAILED`
+- `CONTEXT_BUILDING → AGENT_RUNNING | FAILED`
+- `AGENT_RUNNING → IN_REVIEW | RETRY_CYCLE | FAILED | ABANDONED`
+- `IN_REVIEW → FEEDBACK_PROCESSING | MERGED | ABANDONED | FAILED`
+- `FEEDBACK_PROCESSING → RETRY_CYCLE | IN_REVIEW | FAILED | ABANDONED`
+- `RETRY_CYCLE → AGENT_RUNNING | ABANDONED | FAILED`
+- `MERGED → CLOSING | DONE | FAILED`
+- `CLOSING → DONE | FAILED`
+- `REVIEW_PENDING → REVIEW_RUNNING | REVIEW_FAILED`
+- `REVIEW_RUNNING → REVIEW_COMMENTING | REVIEW_FAILED`
+- `REVIEW_COMMENTING → REVIEW_WATCHING | REVIEW_DONE | REVIEW_FAILED`
+- `REVIEW_WATCHING → REVIEW_RUNNING | REVIEW_DONE | REVIEW_FAILED`
 
-## Canonical References
+**Terminal**: `DONE`, `FAILED`, `ABANDONED`, `REVIEW_DONE`, `REVIEW_FAILED` (no outgoing transitions). Same-state → `"idempotent"`. Anything else → `InvalidTransitionError`.
 
-| Task | Read first |
-|---|---|
-| Architecture or data flow | [`context/architecture.md`](./context/architecture.md) |
-| Database or migrations | [`context/database.md`](./context/database.md) |
-| Configuration or environment | [`context/configuration.md`](./context/configuration.md) |
-| Agent engine or sandbox behavior | [`context/modules/agents.md`](./context/modules/agents.md) |
-| Workspace, Git hardening, or skill staging | [`context/modules/workspace.md`](./context/modules/workspace.md) |
-| Connectors, VCS, or provider resolution | the matching doc in [`context/modules/`](./context/modules/) |
-| Admin routes or PBAC | [`context/modules/admin.md`](./context/modules/admin.md) |
-| Orchestrator or review lifecycle | [`context/modules/orchestrator.md`](./context/modules/orchestrator.md) |
-| Tests and fixtures | [`context/testing.md`](./context/testing.md) |
-| TypeScript implementation | [`skills/typescript-standard/SKILL.md`](./skills/typescript-standard/SKILL.md) |
-| TDD implementation workflow | [`skills/ve-tdd/SKILL.md`](./skills/ve-tdd/SKILL.md) |
-| Runtime debugging | [`skills/ve-debug/SKILL.md`](./skills/ve-debug/SKILL.md) |
-| Multi-stage work | [`DEVELOPMENT-WORKFLOW.md`](./DEVELOPMENT-WORKFLOW.md) |
+**Pause/Resume** are NOT boolean columns. `stateStore.pauseTask()` writes a `state_transitions` row with `from_state == to_state` and `metadata.action = "pause"` (similarly for `"resume"`). Polling reads the latest pause-row to gate cycles.
 
-## TypeScript Conventions
+**Retry counting** is source-aware (per-ticket FAILED/ABANDONED count vs. `MAX_RETRY_ATTEMPTS`). No-change agent outcomes can transition to `ABANDONED` instead of cycling.
 
-- ESM with NodeNext requires `.js` import suffixes.
-- Use strict TypeScript, `unknown` plus type guards instead of `any`, and
-  explicit `T | undefined` for optional properties.
-- Prefix intentionally unused locals and parameters with `_`.
-- Type-aware lint covers `src/**/*.ts` and `agent-worker/src/**/*.ts`; heed
-  `no-floating-promises`, `no-misused-promises`, and `no-unsafe-*` diagnostics.
-- Follow the `ve-tdd` skill for tests and the `typescript-standard` skill for
-  error handling, async behavior, and commit format.
+## Key Configuration (`src/config.ts`)
+All env vars are optional. Only system/infra settings remain — provider credentials live exclusively in the database.
 
-## Commit Policy
+| Var | Default | Notes |
+|---|---|---|
+| `NODE_ENV` | `development` | `test` silences logger |
+| `LOG_LEVEL` | `info` | pino levels |
+| `DATABASE_PATH` | `./data/virtual-engineer.db` | |
+| `ADMIN_API_ENABLED` | `true` | |
+| `ADMIN_API_HOST` / `ADMIN_API_PORT` | `127.0.0.1` / `3100` | |
+| `ADMIN_AUTH_SECRET` | — | Required when provider credentials are created or stored; encrypts them at rest with AES-256-GCM in a versioned `veenc:v1:` envelope. Startup fails closed when the secret is absent, shorter than the enforced 32-character minimum (`ConfigSchema.adminAuthSecret`), or cannot authenticate marked ciphertext; valid legacy values are migrated. Unprefixed legacy AES-GCM detection is limited to historically encrypted `sessionToken` / `sshPrivateKeyEnc` fields so other base64 credentials remain valid plaintext inputs. Admin auth itself uses DB-backed user accounts + session tokens, not HMAC. |
+| `ADMIN_TRUST_PROXY` | `false` | When `true`, extract the client IP from the first `X-Forwarded-For` value for login rate-limiting and webhook IP restrictions. Only enable behind a trusted reverse proxy that overwrites inbound forwarding headers. Webhook signatures remain mandatory. |
+| `POLLING_INTERVAL_MS` | `30000` | **DB-managed** default seed — polling loop tick interval; runtime value lives in `app_settings` and is edited from admin UI → System Settings |
+| `MAX_AGENT_CYCLES` | `3` | **DB-managed** default seed — per-task cap → FAILED; runtime value in `app_settings` |
+| `MAX_RETRY_ATTEMPTS` | `5` | **DB-managed** default seed — per-ticket cap; runtime value in `app_settings` |
+| `MAX_COMMITS_PER_CYCLE` | `10` | max atomic commits per agent cycle |
+| `AGENT_TIMEOUT_MS` | `3_600_000` | **DB-managed** default seed — host-side agent timeout (60 min); runtime value in `app_settings` |
+| `TICKET_CLOSE_MAX_RETRIES` | `5` | **DB-managed** default seed — `pRetry` retry count for closing the ticket after MERGED; runtime value in `app_settings` |
+| `TICKET_CLOSE_RETRY_MIN_TIMEOUT_MS` | `5000` | **DB-managed** default seed — `pRetry` minimum backoff (ms) between ticket-close retries; runtime value in `app_settings` |
+| `MAX_REVIEW_DIFF_CHARS` | `60_000` | max diff chars injected into review prompt |
+| `MAX_REVIEW_COMMENTS` | `20` | max inline comments posted per review pass (excess folded into summary) |
+| `MAX_REVIEW_REPLIES` | `20` | max discussion-thread replies VE posts per review pass |
+| `REVIEW_MIN_SEVERITY` | `info` | min severity (`nit`<`info`<`warning`<`error`) to post inline; lower folded into summary |
+| `AGENT_CONTAINER_IMAGE` | `virtual-engineer-workspace:latest` | |
+| `WORKSPACE_BASE_DIR` | `/tmp/virtual-engineer/workspaces` | scratch space for host-side git workspaces; agents run in OpenShell sandboxes (upload/exec/download) |
+| `SKILLS_CLI_PACKAGE` | `skills@1.5.16` | `npx` package used to list configured remote skill sources (read directly from `process.env`, not via `ConfigSchema`) |
 
-Assistant-created or assistant-organized commits use the English Conventional
-Commits policy in [the TypeScript skill](./skills/typescript-standard/SKILL.md).
-When AI generated or materially contributed to the work, include a
-`Co-authored-by:` trailer identifying the AI assistant. Provider-native commit
-prompts are separate runtime contracts and must be updated with their provider
-implementation rather than inferred from this assistant workflow rule.
+Provider configuration (Redmine, Gerrit, GitLab credentials, ticket-source/push-target selection, agent model and prompts, project lifecycle) lives entirely in the `integrations`, `agents`, `projects`, `project_integration_bindings`, and `project_push_targets` tables and is managed via the admin UI. The legacy provider env vars (`TICKET_SYSTEM`, `REVIEW_SYSTEM`, `REDMINE_*`, `GERRIT_*`, `GITLAB_*`, `REPO_CLONE_URL`, `BASE_BRANCH`, `GERRIT_TARGET_BRANCH`) have been **removed** from `src/config.ts` as part of Phase 7 cleanup.
+
+Workflow settings (`POLLING_INTERVAL_MS`, `MAX_AGENT_CYCLES`, `MAX_RETRY_ATTEMPTS`, `AGENT_TIMEOUT_MS`, `TICKET_CLOSE_MAX_RETRIES`, `TICKET_CLOSE_RETRY_MIN_TIMEOUT_MS`) are **editable at runtime** from admin UI → System Settings and persisted in the `app_settings` singleton table. Their `config.ts` entries remain only as the first-run/default seed (no longer set in `.env.example`); the DB value wins once saved.
+
+Empty strings in env are treated as `undefined` (helpful for env overrides).
+
+
+## Plugin System (`src/plugins/`)
+- Static **registry** (`registry.ts`) defines one unified **provider descriptor** per `provider` in `src/plugins/descriptors/{github,gitlab,gerrit,redmine,copilot,claude,aider,goose,codex,gemini,opencode,cursor}.ts`. The former split descriptors were merged: `github-issue` + `github-pull-request` → `github`; `gitlab-issue` + `gitlab-merge-request` → `gitlab`. `PLUGIN_CATEGORIES` / `category` no longer exist.
+- Descriptors declare a `capabilities` map keyed by **domain capability** (`issue_tracking`, `code_review`, `source_control`, `agent_execution`) with capability factories: `capabilities.issue_tracking.createConnector`, `capabilities.code_review.{createConnector,createReviewer,streamEvents}`, `capabilities.source_control.createVcsConnector`, `capabilities.agent_execution.{buildAdapter,configFields,reviewStrategies}`. Agent `configFields` and optional review-strategy metadata are rendered generically; provider settings and the agent-owned strategy are persisted under `modelConfig.providerOptions`. Technical capabilities (`oauth`, `discovery`, `stream-events`, `reviewer`) are derived from descriptor hooks via `getProviderTechnicalCapabilities(descriptor)`; domain ones via `getProviderDomainCapabilities(descriptor)`.
+- **PluginManager** loads every enabled row from `integrations`, keeps multiple active integrations in parallel even for the same provider, resolves by `integrationId` (`getConnectorForIntegration`, `getActiveIntegrationById`, `isIntegrationActive`) or by capability/provider (`getConnectorForCapability(integrationId, capability)`, `getActiveIntegrationsByCapability(capability)`, `getActiveIntegrationsByProvider(provider)`, `providerSupportsCapability(provider, capability)`). `integrationHasStreamEvents` checks `capabilities.code_review.streamEvents`. It can also build project-bound connector instances via `createConnectorForIntegration(integrationId, context)` when a VE project owns part of the provider binding.
+- Admin dashboard / API can hot-add or toggle integrations; `src/index.ts` refreshes runtime dependencies without restart.
+- Test the connection of an unsaved form via `POST /api/admin/integrations/test` (does not persist; merges masked secrets from the existing row when `integrationId` is supplied).
+
+## Copilot Execution
+
+1. **Worker-local headless CLI** — code-generation sandboxes always spawn `copilot --headless --auth-token-env GITHUB_TOKEN --no-auto-login` inside the sandbox, call `CopilotClient.start()` followed by `getAuthStatus()` to resolve and verify the CLI-owned identity, then create SDK sessions against that local CLI server. Because the CLI server is external to the SDK client, sessions omit `SessionConfig.gitHubToken`; supplying both causes redundant token resolution. Adapters encode multiline system prompts as `SYSTEM_PROMPT_BASE64` because OpenShell rejects literal CR/LF characters in `sandbox exec --env` values; the shared worker decodes this before provider dispatch.
+  The subprocess environment allowlist must retain OpenShell's proxy and CA variables (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `CURL_CA_BUNDLE`, `REQUESTS_CA_BUNDLE`) so the native CLI trusts the gateway's TLS proxy.
+  The OpenShell egress policy must include `api.github.com`, `api.githubcopilot.com`, and the Copilot Business token endpoints (`api.business.githubcopilot.com`, `proxy.business.githubcopilot.com`, `origin-tracker.business.githubcopilot.com`, `telemetry.business.githubcopilot.com`).
+2. **Sandbox review execution** — review tasks also run in the agent sandbox (`REVIEW_MODE=1` via `openShellWorkspaceRunner.runReviewInDocker`). `promptLoader.ts` decodes `SYSTEM_PROMPT_BASE64` (or reads single-line `SYSTEM_PROMPT`) and reads `USER_PROMPT_FILE` (`/tmp/user-prompt.txt`), then emits `review.prompt_received` with lengths/sources only. Worker stdout is a JSON result envelope; `agentWorkerProtocol.ts` validates it at the workspace boundary and passes its exact `rawOutput` to the strict review parser without arbitrary unescaping.
+  Tool events require a precise provider name (or an unambiguous correlation to one active named call); unattributable events are omitted rather than displayed as `unknown_tool`.
+3. **Sandbox validation fallback** — when the local Node runtime lacks `node:sqlite`, `copilotConnectionValidator` runs the validation script inside `AGENT_CONTAINER_IMAGE`, which also starts a local headless CLI in-sandbox.
+
+Copilot preserves its native CLI system foundation by sending the selected Agent Instructions with explicit SDK `systemMessage.mode = "append"`. Its descriptor exposes native reasoning effort through `modelConfig.providerOptions.reasoningEffort`. Coding and review sessions set `workingDirectory` to the sandbox repository directory (`/sandbox/<repo>`) and `enableConfigDiscovery=true`, so the CLI natively discovers repository skill directories and repository MCP configuration together. They also receive one explicit worker-owned stdio MCP server (`ve_submit_changes` or `ve_submit_review`). Review sessions approve only reads whose requested and canonical paths remain under that working directory, plus `ve_submit_review`; traversal, symlink escapes, shell, write, URL, and unrelated tool requests are rejected. Repository MCP servers may be initialized, but tool requests remain subject to VE permission handling. The permission guard accepts the configured `ve-submission` alias or declared `virtual-engineer-submission` server identity only when paired with the corresponding raw/CLI-qualified review tool name. Permission events retain kind/call/server/tool/path metadata but never MCP arguments. The worker requires exactly one successfully accepted MCP submission and a schema-valid exclusive artifact. Rejected payloads may be corrected; Copilot tool starts/completions are correlated by `toolCallId` so the final SDK error is preserved when no attempt succeeds. Copilot CLI reports the tool as `ve-submission-<tool>`, while Claude reports `mcp__ve-submission__<tool>`. The accepted MCP call records a typed completion intent only; the host still owns validation, push/review effects, and state transitions.
+
+Experimental per-agent `copilot_native` review is stored as `modelConfig.providerOptions.reviewStrategy` (absence = `ve_direct`) with no schema migration. It requires `system_review`, keeps Workflow Instructions customizable, rejects/neutralizes project model/system/reasoning/strategy overrides, and exposes no model choice. `buildReviewContainerSpec` sends `REVIEW_STRATEGY` and omits `COPILOT_MODEL`/`COPILOT_REASONING_EFFORT`; models are CLI-managed. The worker does not send literal `/review`: the parent calls `task` exactly once with `agent_type="code-review"`, `mode="sync"`, and the complete VE prompt as source of truth, then submits through `ve_submit_review`. Submission guidance is omitted from the shared system message and appended after the delegated prompt block, so only the parent submits; the child performs analysis only. Native permission handling allows only that task delegation plus canonical reads under the sandbox repository working directory and the VE MCP tool. Success requires exactly one delegation, one accepted MCP submission, and a schema-valid artifact; rejected payload attempts may be corrected, while unsupported behavior fails explicitly with no `ve_direct` fallback. Copilot SDK/CLI lockfile upgrades require an opt-in real-token smoke test in the hardened image; prompt/diff content must not appear in strategy/delegation telemetry.
+
+Worker `sendAndWait` timeout ≈ 540s. `AGENT_TIMEOUT_MS` (default 60 min) bounds both the host orchestration and the OpenShell remote exec (`--timeout`, rounded up to seconds). On expiry the orchestrator aborts the local OpenShell CLI process group and awaits termination before sandbox/workspace cleanup.
+
+Implementation: `src/agents/copilotAdapter.ts`, `src/agents/copilotOAuthService.ts`, `src/agents/copilotModelsService.ts`, `src/agents/copilotConnectionValidator.ts`, `agent-worker/src/index.ts`.
+
+## Claude Execution (`agent_execution` alternative to Copilot)
+
+The `claude` provider runs Anthropic **Claude Code** via the `@anthropic-ai/claude-agent-sdk` inside the same agent container. The host `ClaudeAdapter` (`src/agents/claudeAdapter.ts`) injects `AGENT_PROVIDER=claude`, exactly one auth env var, and `CLAUDE_MODEL` **only when a model is configured** (otherwise the Claude CLI picks its own default — no hardcoded default in VE). The Claude runner (`agent-worker/src/providers/claude.ts`, resolved by the worker's provider registry when `AGENT_PROVIDER=claude`) drives `query()` and maps its message stream onto the shared `__ve_event` / commit / `AgentResult` pipeline. Both coding and review flows are supported (review uses `REVIEW_MODE=1`).
+
+Agent adapters are **descriptor-driven**: a provider that declares `capabilities.agent_execution.buildAdapter(context)` is instantiated by `PluginManager` from an `AgentAdapterContext` (`maxCommitsPerCycle`) supplied via constructor options. Worker `index.ts`, host `src/index.ts`, and the admin form contain no provider branches: adding an engine requires its worker `AgentProviderDefinition`, host adapter/descriptor, and registry aggregation entries. `PluginManager.registerFactory` still exists and takes precedence (used by tests).
+
+Worker success and failure metadata always uses the selected provider's adapter label and active model, including top-level failures before commit collection.
+
+Two connection methods (descriptor `src/plugins/descriptors/claude.ts`, `authMode`):
+- `api_key` — Anthropic API key → `ANTHROPIC_API_KEY` (carried via the generic `apiKey`/`agentSession.githubToken` field).
+- `subscription` — Claude Pro/Max OAuth token → `CLAUDE_CODE_OAUTH_TOKEN` (carried via `encryptedSessionToken`); obtained through the interactive authorization-code + PKCE OAuth flow (`src/plugins/descriptors/claudeOAuth.ts`, stored encrypted in `sessionToken`). `orchestrator.resolveProjectAgentRuntime` maps these provider-specific fields onto the generic `ResolvedAgentConfig`.
+
+Cost: Claude has no AIU, so `agent_cycles` USD/credit columns stay null; token usage is still emitted as `assistant.usage` events. Claude OAuth client id/endpoints are fixed public Claude Code values (not overridable via config — intentionally hard-coded to prevent SSRF/credential redirection) — see `claudeOAuth.ts`.
+
+Claude preserves the native `claude_code` preset and appends the selected Agent Instructions. Its descriptor exposes effort, thinking mode/budget, maximum turns, and maximum USD cost through `modelConfig.providerOptions`. Every run sets the repository `cwd`, enables user/project settings and all native skills, and review permits the `Skill` tool; VE creates no local plugin. Coding and review sessions use the same worker-owned VE submission MCP server as Copilot with `strictMcpConfig=true`, which limits Claude MCP configuration to explicitly supplied VE servers without disabling native skills. Review uses the immutable integration-specific JSON Schema as the `ve_submit_review` input contract. Claude `outputFormat` is not combined with MCP, and the generic `score` payload is not accepted.
+
+## Aider Execution (`agent_execution` alternative to Copilot/Claude)
+
+The `aider` provider runs the **Aider** CLI (https://aider.chat, a Python package that wraps any LLM backend via litellm) inside the same agent container. The host `AiderAdapter` (`src/agents/aiderAdapter.ts`) injects `AGENT_PROVIDER=aider`, the selected backend's litellm auth env var(s), and `AIDER_MODEL` **only when a model is configured** (otherwise the Aider CLI picks its own default — no hardcoded default in VE). The Aider runner (`agent-worker/src/providers/aider.ts`, resolved by the worker's provider registry when `AGENT_PROVIDER=aider`) sends the dynamic workflow request with `--message-file`, loads only the selected Agent Instructions through `--read`, and leaves repository behavior to Aider without VE-discovered skill manifests. It maps output onto the shared `__ve_event` / commit / `AgentResult` pipeline. Its descriptor exposes coding mode, reasoning effort, thinking tokens, repository-map tokens, automatic lint, and automatic tests through `modelConfig.providerOptions`. Both coding and review flows are supported (review uses `REVIEW_MODE=1` with `--no-git --chat-mode ask --no-auto-commits --no-dirty-commits`). <!-- TODO: verify — the `--no-git` source comment still cites the deleted read-only `/workspace` mount; the flag remains, but review isolation now comes from the sandbox policy and from the fact that review runs are never downloaded back. -->
+
+Aider timeout and signal termination fail the worker run; terminated child processes cannot return partial output or commits as a successful cycle.
+
+Six LLM backends (descriptor `src/plugins/descriptors/aider.ts`, `aiderBackend` selector; the model lives on the `agents` table):
+- `openai` → `OPENAI_API_KEY`
+- `anthropic` → `ANTHROPIC_API_KEY`
+- `ollama` → `OLLAMA_API_BASE` (no key; default `http://127.0.0.1:11434`)
+- `openrouter` → `OPENROUTER_API_KEY`
+- `deepseek` → `DEEPSEEK_API_KEY`
+- `openai_compat` → `OPENAI_API_KEY` + `OPENAI_API_BASE` (any OpenAI-compatible endpoint)
+
+`orchestrator.resolveProjectAgentRuntime` reads `aiderBackend` / `aiderApiKey` / `aiderApiBase` from the integration config for backend authentication. Advanced execution settings use the common opaque `providerOptions` envelope; only `AiderAdapter` interprets them. Connection validation (`aiderConnectionValidator.ts`) and model discovery (`aiderModelsService.ts`) probe the upstream provider's `/models` (or Ollama `/api/tags`); Ollama model ids are prefixed with `ollama_chat/` per Aider's recommendation.
+
+The Aider CLI is installed in the agent image via `uv tool install aider-chat` (see `Dockerfile.agent`); the binary is symlinked onto `/usr/local/bin/aider`. Aider's `~/.aider*` cache lands under the sandbox HOME (`/sandbox`). Aider needs outbound HTTPS to the upstream LLM API (and HTTP to Ollama); the sandbox's OpenShell **network runtime policy** must allow that egress explicitly, since the default posture is deny-all.
+
+Aider's worker timeout terminates the CLI, rejects with an explicit timeout error, removes the temporary prompt directory, and emits `session.error`; a null close code after timeout is not a successful run.
+
+Cost: Aider has no AIU, so `agent_cycles` USD/credit columns stay null; token usage is still emitted as `assistant.usage` events (parsed from Aider's `Tokens: … Cost: …` line when present).
+
+## Goose Execution (`agent_execution` alternative to Copilot/Claude/Aider)
+
+The `goose` provider runs the **Goose** CLI (https://goose-docs.ai, a Rust CLI from the AAIF) inside the same agent container. The host `GooseAdapter` (`src/agents/gooseAdapter.ts`) injects `AGENT_PROVIDER=goose`, the selected provider's auth env var(s), and `GOOSE_MODEL` **only when a model is configured** (otherwise the Goose CLI picks its own default — no hardcoded default in VE). The Goose runner (`agent-worker/src/providers/goose.ts`, resolved by the worker's provider registry when `AGENT_PROVIDER=goose`) spawns `goose run --instructions <prompt-file> --no-tui --no-session` as a subprocess and maps its output onto the shared `__ve_event` / commit / `AgentResult` pipeline. Both coding and review flows are supported (review uses `REVIEW_MODE=1`).
+
+Unlike Aider (text transport), Goose uses **MCP submission transport** like Copilot/Claude: the runner writes a Goose `config.yaml` into `<HOME>/.config/goose/` (HOME is `/sandbox`) that registers the VE MCP submission server (`/app/agent-worker/dist/mcpSubmissionServer.js`) as a stdio extension, so Goose calls `ve_submit_changes` / `ve_submit_review` to deliver the structured result. The worker then reads the submission file and asserts exactly one accepted tool call, exactly like Copilot/Claude. Coding cycles enable the builtin `developer` extension (so Goose can edit files and commit); review cycles disable all builtin extensions (read-only analysis) and force `GOOSE_MODE=chat`.
+
+Fourteen LLM providers (descriptor `src/plugins/descriptors/goose.ts`, `gooseProvider` selector; the model lives on the `agents` table):
+- `anthropic` → `ANTHROPIC_API_KEY`
+- `openai` → `OPENAI_API_KEY`
+- `openrouter` → `OPENROUTER_API_KEY`
+- `ollama` → `OLLAMA_HOST` (no key)
+- `deepseek` → `DEEPSEEK_API_KEY`
+- `groq` → `GROQ_API_KEY`
+- `gemini` → `GOOGLE_API_KEY`
+- `azure_openai` → `AZURE_OPENAI_API_KEY` + `AZURE_OPENAI_ENDPOINT`
+- `bedrock` → AWS env credential chain (no key forwarded by VE)
+- `perplexity` → `PERPLEXITY_API_KEY`
+- `mistral` → `MISTRAL_API_KEY`
+- `xai` → `XAI_API_KEY`
+- `cerebras` → `CEREBRAS_API_KEY`
+- `openai_compat` → `OPENAI_API_KEY` + `OPENAI_API_BASE` (any OpenAI-compatible endpoint)
+
+`orchestrator.resolveProjectAgentRuntime` reads `gooseProvider` / `gooseApiKey` / `gooseApiBase` from the integration config and forwards them via `ResolvedAgentConfig.extra`.
+
+Goose reads provider API keys from the environment (never from `config.yaml`); the runner sets `GOOSE_DISABLE_KEYRING=true` so Goose does not attempt to use a desktop keyring inside the container. The subprocess env is allowlisted to the supported provider auth vars plus git identity and Goose global settings.
+
+Experimental per-agent `goose_native` review (stored as `modelConfig.providerOptions.reviewStrategy`) is declared in the Goose descriptor. It requires `system_review`, keeps Workflow Instructions customizable, and omits `GOOSE_MODEL` (CLI-managed, like `copilot_native`). The worker does not send a literal `/review`: Goose runs its native agent review loop with the CLI managing model selection, then submits through `ve_submit_review`. Success requires exactly one accepted MCP submission and a schema-valid artifact; rejected submission attempts may be corrected.
+
+The Goose CLI is installed in the agent image via the official `download_cli.sh` installer with a pinned `GOOSE_VERSION` (see `Dockerfile.agent`); the binary lands in `/usr/local/bin/goose`. Goose's `~/.config/goose/` config lands under the sandbox HOME (`/sandbox`). Goose needs outbound HTTPS to the upstream LLM API (and HTTP to Ollama); the sandbox's OpenShell **network runtime policy** must allow that egress explicitly, since the default posture is deny-all.
+
+Goose's worker timeout terminates the CLI, rejects with an explicit timeout error, removes the temporary prompt directory, and emits `session.error`; a null close code after timeout is not a successful run.
+
+Cost: Goose has no AIU, so `agent_cycles` USD/credit columns stay null; token usage is still emitted as `assistant.usage` events (parsed from Goose's `Tokens: … Cost: …` line when present).
+
+## Codex Execution (`agent_execution` alternative to Copilot/Claude/Aider/Goose)
+
+The `codex` provider runs the **OpenAI Codex CLI** (https://github.com/openai/codex) inside the same agent container. Unlike Claude/Copilot, Codex has no embeddable Node SDK — it is a standalone CLI, so the worker drives it as a **subprocess** exactly like Aider/Goose rather than an in-process SDK session. The host `CodexAdapter` (`src/agents/codexAdapter.ts`) injects `AGENT_PROVIDER=codex`, exactly one auth env var, `CODEX_MODEL` **only when a model is configured** (otherwise the Codex CLI picks its own default — no hardcoded default in VE), and `CODEX_REASONING_EFFORT` when configured. The Codex runner (`agent-worker/src/providers/codex.ts`, resolved by the worker's provider registry when `AGENT_PROVIDER=codex`) spawns `codex exec --json --sandbox {danger-full-access|read-only} --ask-for-approval never [--model …] [-c model_reasoning_effort=…] -` as a subprocess, piping the prompt via stdin, and maps its streamed JSONL stdout onto the shared `__ve_event` / commit / `AgentResult` pipeline. Both coding and review flows are supported (review uses `REVIEW_MODE=1` and the `read-only` sandbox mode; codegen uses `danger-full-access` since OpenShell — not Codex's own OS-level sandbox — is the real isolation boundary).
+
+Like Goose, Codex uses **MCP submission transport**: the runner writes `$CODEX_HOME/config.toml` registering the VE MCP submission server (`/app/agent-worker/dist/mcpSubmissionServer.js`) as a stdio `[mcp_servers.ve-submission]` entry with `required = true`, so Codex calls `ve_submit_changes` / `ve_submit_review` to deliver the structured result. `$CODEX_HOME` is scoped to an isolated per-run temp directory rather than the shared default `~/.codex` (HOME is `/sandbox`), so `auth.json` and the MCP registration never leak between runs; the directory is removed on cleanup. The exact wire format of Codex's `mcp_tool_call` JSONL item (tool-name field, success signal) is not fully documented upstream and should be verified against a live run before relying on it in production.
+
+Two auth modes (descriptor `src/plugins/descriptors/codex.ts`, `authMode` selector):
+- `api_key` — an OpenAI API key → `CODEX_API_KEY`, honored directly by `codex exec` for a single invocation (no login bootstrap needed; carried via the generic `apiKey`/`agentSession.githubToken` field).
+- `subscription` — a **manually-pasted** Codex/ChatGPT access token → `CODEX_ACCESS_TOKEN` (carried via `encryptedSessionToken`, same generic field Claude's subscription mode uses). Unlike Claude, Codex has no publicly documented third-party OAuth client id or authorize endpoint, so this is a plain password field rather than a redirect/PKCE OAuth flow. The worker bootstraps this mode by piping the token into `codex login --with-access-token` before the `codex exec` call, since Codex has no exec-time env var for session auth.
+
+`orchestrator.resolveProjectAgentRuntime` reads `authMode`/`apiKey`/`accessToken` from the integration config (a dedicated branch, not shared with Claude, since Codex's subscription field is named `accessToken` rather than `sessionToken`) and maps them onto the same generic `apiKey`/`encryptedSessionToken` `ResolvedAgentConfig` fields Claude uses — Codex needed no new `AgentSession` fields. `src/review/reviewBootstrap.ts`'s review-side token resolution mirrors this: `getAgentTokenFromIntegration()` has its own `codex` branch reading `accessToken`, and `getProviderCompatibleAgentToken()` classifies a resolved token by prefix (`sk-` → API key, anything else → access token).
+
+Experimental per-agent `codex_native` review (stored as `modelConfig.providerOptions.reviewStrategy`) is declared in the Codex descriptor. It requires `system_review`, keeps Workflow Instructions customizable, and omits `CODEX_MODEL`/`CODEX_REASONING_EFFORT` (CLI-managed, like `copilot_native`/`goose_native`). Rather than shelling out to the separate non-JSON `codex review` subcommand (which has no MCP support), `codex_native` runs inside the same `codex exec --json` session used for `ve_direct`: the system/instructions prompt directs the top-level Codex agent to delegate analysis to a spawned subagent via Codex's native multi-agent tools, then the parent submits through `ve_submit_review` itself — mirroring Copilot's `task()` delegation and Goose's native loop, but without a dedicated delegation-assertion check (Codex's subagent tool-call shape is not yet verified live).
+
+The Codex CLI is installed in the agent image via `npm install -g @openai/codex` (see `Dockerfile.agent`); the binary lands on the global npm bin directory (`/usr/local/bin/codex`). Codex's `~/.codex/` config and credentials land under the sandbox HOME (`/sandbox`). Codex needs outbound HTTPS to `api.openai.com` (API-key auth and model calls) and `chatgpt.com` (subscription access-token login bootstrap) — both are a best-effort default egress list that should be verified against a live run with real credentials, since the sandbox's OpenShell **network runtime policy** denies all egress by default.
+
+Codex's worker timeout terminates the CLI, rejects with an explicit timeout error, and emits `session.error`; a non-zero close code is not a successful run.
+
+Cost: Codex has no AIU, so `agent_cycles` USD/credit columns stay null; token usage is still emitted as `assistant.usage` events (parsed from `turn.completed.usage` — `input_tokens`/`output_tokens`/`cached_input_tokens`; Codex does not report a cache-write token count or a per-turn USD cost).
+
+## Gemini CLI Execution (`agent_execution` alternative to Copilot/Claude/Aider/Goose/Codex)
+
+The `gemini` provider runs **Gemini CLI** (https://github.com/google-gemini/gemini-cli) inside the same agent container. Like Codex/Goose, Gemini CLI has no embeddable Node SDK, so the worker drives it as a **subprocess**. The host `GeminiAdapter` (`src/agents/geminiAdapter.ts`) injects `AGENT_PROVIDER=gemini`, exactly one auth env combination, and `GEMINI_MODEL` **only when a model is configured** (otherwise the CLI picks its own default `auto` alias — no hardcoded default in VE). The Gemini runner (`agent-worker/src/providers/gemini.ts`, resolved by the worker's provider registry when `AGENT_PROVIDER=gemini`) spawns `gemini --output-format stream-json --approval-mode {yolo|plan} --skip-trust [--model …]` as a subprocess, piping the prompt via stdin (non-TTY stdio triggers the CLI's headless mode even without `-p`), and maps its streamed JSONL stdout onto the shared `__ve_event` / commit / `AgentResult` pipeline. Both coding and review flows are supported: codegen uses `--approval-mode yolo` (auto-approve all tool calls — OpenShell is the real isolation boundary); review uses `--approval-mode plan` (analysis-oriented, intended to avoid destructive edits). The `plan` choice for review is inferred from CLI docs and **not yet verified live** to fully block writes while still allowing the trusted MCP submission call — validate before relying on it in production.
+
+Like Codex/Goose, Gemini uses **MCP submission transport**: the runner writes `$HOME/.gemini/settings.json` (user scope, sibling to the repo directory so it never pollutes git status) registering the VE MCP submission server (`/app/agent-worker/dist/mcpSubmissionServer.js`) as a `mcpServers.ve-submission` stdio entry with `"trust": true` (bypasses tool confirmation for that server regardless of approval mode), so Gemini calls `ve_submit_changes` / `ve_submit_review` to deliver the structured result. `--skip-trust` grants session-only folder trust — required in headless mode, since Gemini's interactive trust dialog can't run and untrusted folders refuse to connect to any MCP server at all. The worker follows the documented stream schema: `tool_use` carries `tool_name`, `tool_id`, and `parameters`; `tool_result` carries the correlating `tool_id` and `status`; `result.stats.cached` reports cache-read tokens. Stream `error` events are logged as non-fatal warnings, while the process exit code is authoritative (0 success, 1 general error, 42 invalid prompt/arguments, 53 turn limit exceeded). The Gemini subprocess environment retains OpenShell's proxy and CA variables so the CLI trusts gateway-routed TLS.
+
+Two auth modes (descriptor `src/plugins/descriptors/gemini.ts`, `authMode` selector), both authenticating with an API key:
+- `api_key` — a Gemini Developer API key from AI Studio → `GEMINI_API_KEY` (carried via the generic `apiKey`/`agentSession.githubToken` field).
+- `vertex_ai` — a Vertex AI Express Mode key → `GOOGLE_API_KEY` + `GOOGLE_GENAI_USE_VERTEXAI=true`, with optional `GOOGLE_CLOUD_PROJECT`/`GOOGLE_CLOUD_LOCATION` (carried via dedicated `agentSession.geminiAuthMode`/`geminiGoogleCloudProject`/`geminiGoogleCloudLocation` fields, forwarded through `ResolvedAgentConfig.extra` like Aider/Goose's provider-specific settings). "Sign in with Google" (browser OAuth) is intentionally **not** offered: Gemini CLI has no publicly documented third-party OAuth client for automation, and the flow needs a local browser redirect that doesn't fit an ephemeral sandbox.
+
+`orchestrator.resolveProjectAgentRuntime` reads `authMode`/`apiKey`/`googleCloudProject`/`googleCloudLocation` from the integration config and forwards the non-secret Vertex AI settings via `extra`; `agentContextBuilder.ts` maps them onto the `AgentSession` fields above. Review always authenticates as a plain Gemini API key from the resolved `agentToken` (`src/review/reviewBootstrap.ts`'s `getAgentTokenFromIntegration()` has a `gemini` branch reading the generic `apiKey` field); Vertex AI-mode review is not yet supported — a known limitation matching Goose's existing review-time provider-selection gap.
+
+The Gemini CLI is installed in the agent image via `npm install -g @google/gemini-cli` (see `Dockerfile.agent`); the binary lands on the global npm bin directory (`/usr/local/bin/gemini`). Gemini's `~/.gemini/` config lands under the sandbox HOME (`/sandbox`). Developer API requests use `generativelanguage.googleapis.com`; Vertex requests use `aiplatform.googleapis.com`, `${location}-aiplatform.googleapis.com`, or `aiplatform.{us|eu}.rep.googleapis.com`. The adapter derives and permits the configured Vertex host alongside `oauth2.googleapis.com`. Connection validation and model discovery use the Developer `v1beta/models?key=…` route or the regional Vertex `v1beta1/publishers/google/models` route with `x-goog-api-key`, according to auth mode.
+
+Gemini's worker timeout terminates the CLI, rejects with an explicit timeout error, and emits `session.error`; a non-zero close code is not a successful run.
+
+Cost: Gemini CLI has no AIU, so `agent_cycles` USD/credit columns stay null; token usage is still emitted as `assistant.usage` events, including cache-read tokens from `result.stats.cached`.
+
+## OpenCode Execution (`agent_execution` alternative to Copilot/Claude/Aider/Goose/Codex)
+
+The `opencode` provider runs the **OpenCode CLI** (https://opencode.ai, an open-source terminal agent) inside the same agent sandbox. Like Codex, OpenCode has no embeddable Node SDK, so the worker drives it as a **subprocess**. Like Goose, OpenCode wraps any LLM provider behind a `provider/model` selector rather than owning one fixed backend. The host `OpenCodeAdapter` (`src/agents/opencodeAdapter.ts`) injects `AGENT_PROVIDER=opencode`, the selected provider's auth env var(s), `OPENCODE_PROVIDER` (the backend selector, e.g. `anthropic`/`openai`/`ollama`), `OPENCODE_MODEL` **only when a model is configured** (otherwise the CLI picks its own default), and an optional `OPENCODE_VARIANT`. The OpenCode runner (`agent-worker/src/providers/opencode.ts`, resolved by the worker's provider registry when `AGENT_PROVIDER=opencode`) spawns `opencode run --format json --auto [--model <providerId>/<model>] [--variant …] <prompt>` as a subprocess and maps its streamed JSONL stdout onto the shared `__ve_event` / commit / `AgentResult` pipeline. Both coding and review flows are supported (review uses `REVIEW_MODE=1` with a permission posture that denies `edit`/`bash`, keeping analysis read-only; codegen uses a blanket `permission: "allow"` since OpenShell — not OpenCode's own permission system — is the real isolation boundary). The prompt is passed as a single CLI argument (OpenCode's `run` command has no documented `--message-file` flag); this should be re-verified against a live run and switched to stdin/`--file` if argv proves unreliable for very large prompts.
+
+Like Codex/Goose, OpenCode uses **MCP submission transport**: the runner writes a mode-`0600` per-run `opencode.json` (via `OPENCODE_CONFIG`, isolated in a temp directory) registering the VE MCP submission server (`/app/agent-worker/dist/mcpSubmissionServer.js`) as a `local` stdio MCP server, allowlisting only the selected provider, and referencing custom/Azure credentials through OpenCode's `{env:VAR}` substitution rather than serializing values. OpenCode calls `ve_submit_changes` / `ve_submit_review` to deliver the structured result. The worker parses completed tools from `tool_use.part` and token counts from `step_finish.part.tokens`; these shapes are covered by fixtures but should still be verified against a live CLI run.
+
+Fourteen LLM backends (descriptor `src/plugins/descriptors/opencode.ts`, `openCodeProvider` selector — the same set Goose supports, since OpenCode reads provider API keys from the environment the same way; the model lives on the `agents` table and is combined with the selector into `<providerId>/<model>` for `--model`):
+- `anthropic` → `ANTHROPIC_API_KEY`
+- `openai` → `OPENAI_API_KEY`
+- `openrouter` → `OPENROUTER_API_KEY`
+- `ollama` → `OLLAMA_API_BASE` (no key; default `http://127.0.0.1:11434`)
+- `deepseek` → `DEEPSEEK_API_KEY`
+- `groq` → `GROQ_API_KEY`
+- `gemini` → `GOOGLE_GENERATIVE_AI_API_KEY` (mapped to OpenCode's `google` provider id)
+- `azure_openai` → `AZURE_OPENAI_API_KEY` + `AZURE_RESOURCE_NAME` (mapped to `azure`)
+- `bedrock` → host environment access-key pair (optional session token) or `AWS_BEARER_TOKEN_BEDROCK` (mapped to `amazon-bedrock`; secrets use the same short-lived attached OpenShell provider transport as other agent credentials; profile-only auth is rejected because host `~/.aws` files are not uploaded)
+- `perplexity` → `PERPLEXITY_API_KEY`
+- `mistral` → `MISTRAL_API_KEY`
+- `xai` → `XAI_API_KEY`
+- `cerebras` → `CEREBRAS_API_KEY`
+- `openai_compat` → `OPENAI_API_KEY` + `OPENAI_API_BASE` (mapped to a generated custom `provider.opencode-custom` config entry)
+
+The exact backend → OpenCode provider-id mapping (especially `google`/`azure`/`amazon-bedrock`) is a best-effort reading of OpenCode's public provider directory and should be verified against a live `opencode models` run before relying on it in production. `orchestrator.resolveProjectAgentRuntime` reads `openCodeProvider` / `openCodeApiKey` / `openCodeApiBase` from the integration config for backend authentication, exactly like Aider/Goose. Connection validation (`opencodeConnectionValidator.ts`) and model discovery (`opencodeModelsService.ts`) probe the upstream provider's `/models` (or Ollama `/api/tags`) endpoint.
+
+The OpenCode CLI is pinned to `opencode-ai@1.18.16` in the agent image (see `Dockerfile.agent`); the binary lands on the global npm bin directory (`/usr/local/bin/opencode`). OpenCode needs outbound HTTPS to the selected backend's upstream LLM API (and HTTP to Ollama); the sandbox's OpenShell **network runtime policy** must allow that egress explicitly, since the default posture is deny-all. Bedrock egress follows `AWS_REGION` / `AWS_DEFAULT_REGION` (default `us-east-1`) for both the runtime and regional STS endpoints.
+
+Experimental per-agent `opencode_native` review (stored as `modelConfig.providerOptions.reviewStrategy`) is declared in the OpenCode descriptor. It requires `system_review`, keeps Workflow Instructions customizable, and omits `OPENCODE_MODEL` (CLI-managed, like `copilot_native`/`goose_native`/`codex_native`). The worker does not send a fixed slash command: the system/instructions prompt directs OpenCode to delegate analysis to a spawned subagent/task, then the parent submits through `ve_submit_review` itself — mirroring Copilot/Goose/Codex's native delegation pattern, but without a dedicated delegation-assertion check (OpenCode's subagent tool-call shape is not yet verified live).
+
+OpenCode's worker timeout terminates the CLI, rejects with an explicit timeout error, and emits `session.error`; a non-zero close code is not a successful run.
+
+Cost: OpenCode has no AIU, so `agent_cycles` USD/credit columns stay null; token usage is still emitted as `assistant.usage` events parsed from `step_finish.part.tokens`, including nested cache read/write counts.
+
+Skills: OpenCode natively reads `.opencode/skills/` (its own convention) plus the `.claude/skills/` and `.agents/skills/` compatibility paths; `skillSourceInstaller.ts` installs configured external skill sources into `.opencode/skills/` for this provider, alongside the Copilot, Claude, Goose, and Codex targets.
+
+## Cursor CLI Execution (`agent_execution` alternative to Copilot/Claude/Aider/Goose/Codex)
+
+The `cursor` provider runs the **Cursor CLI** (https://cursor.com/cli, binary `cursor-agent`) inside the same agent container. Like Codex/Goose, Cursor has no embeddable Node SDK — it is a standalone CLI, so the worker drives it as a **subprocess**. The host `CursorAdapter` (`src/agents/cursorAdapter.ts`) injects `AGENT_PROVIDER=cursor`, `CURSOR_API_KEY`, and `CURSOR_MODEL` **only when a model is configured** (otherwise the Cursor CLI picks its own default — no hardcoded default in VE). The Cursor runner (`agent-worker/src/providers/cursor.ts`, resolved by the worker's provider registry when `AGENT_PROVIDER=cursor`) spawns `cursor-agent -p <prompt> --output-format stream-json --trust [--force --sandbox disabled | --mode ask] [--model …]` as a subprocess, passing the prompt as the documented `-p` positional argument (not piped via stdin, unlike Codex/Gemini), and maps its streamed NDJSON stdout onto the shared `__ve_event` / commit / `AgentResult` pipeline. Both coding and review flows are supported (review uses `REVIEW_MODE=1` and `--mode ask` instead of `--force`, so changes are only proposed, not applied; codegen uses `--sandbox disabled` since OpenShell — not Cursor's own OS-level sandbox — is the real isolation boundary).
+
+Unlike every other provider, Cursor authenticates with a single plaintext `CURSOR_API_KEY` — no OAuth, no subscription mode, no `authMode` selector on its descriptor (`src/plugins/descriptors/cursor.ts`).
+
+Like Codex/Goose, Cursor uses **MCP submission transport**: the runner writes `$HOME/.cursor/mcp.json` (global scope — not the project-scoped `.cursor/mcp.json` — so it never pollutes the agent's git status) registering the VE MCP submission server. It rejects a project `.cursor/mcp.json` that shadows the reserved `ve-submission` name, then runs `cursor-agent mcp enable ve-submission` to approve only VE's server before the headless session. The bounded setup process is terminated before failure, and the broad `--approve-mcps` flag is intentionally omitted so repository-controlled MCP servers are never auto-approved. `--trust` grants headless workspace trust without an interactive prompt.
+
+Cursor has no experimental native review strategy (`ve_direct` only) — no documented subagent/delegation tool exists in the Cursor CLI to mirror `copilot_native`/`goose_native`/`codex_native`.
+
+Unlike Codex/Gemini, Cursor exposes a real documented REST API for host-side use (`api.cursor.com`, the "Cloud Agents API", public beta): `validateCursorConnection()` (`cursorConnectionValidator.ts`) calls `GET /v1/me` to validate the key's identity, and `fetchCursorModels()` (`cursorModelsService.ts`) calls `GET /v1/models` for live model discovery — no curated static fallback list is needed. These are Cloud Agents API model ids; verify they match the local CLI's actual accepted `--model` values before relying on them in production.
+
+The Cursor CLI is installed in the agent image via its official installer (`curl https://cursor.com/install -fsS | bash`, see `Dockerfile.agent`), which symlinks the resulting launcher to `~/.local/bin/{agent,cursor-agent}`. The Dockerfile copies the launcher's complete version bundle under `/usr/local/lib/cursor-agent` and links it from `/usr/local/bin/cursor-agent`, so the unprivileged sandbox user never traverses `/root` and the launcher can still load its sibling chunks. The installer has no documented version-pin option (unlike Goose's pinned release tag) — a reproducibility gap to revisit. Cursor's `~/.cursor/` config and credentials land under the sandbox HOME (`/sandbox`). Cursor's published network-configuration docs recommend allowing `*.cursor.sh`, `*.cursor-cdn.com`, `*.cursorapi.com`, `*.cursorvm.com`, and `*.*.cursorvm.com`; `CURSOR_EGRESS` uses those patterns because the sandbox's OpenShell **network runtime policy** denies all other egress by default.
+
+Cursor's worker timeout terminates the CLI, rejects with an explicit timeout error, and emits `session.error`; a non-zero close code is not a successful run.
+
+Cost: Cursor has no AIU, so `agent_cycles` USD/credit columns stay null. Unlike every other subprocess-driven provider, Cursor's documented `stream-json` terminal `result` event has **no token/cost field at all**, so `assistant.usage` cannot be emitted for this provider either — a stronger limitation than Aider/Goose/Codex, which at least report token counts.
+
+## Test Layout
+- **Unit + integration tests**: `tests/unit/` (Vitest). All external I/O (fetch, fs, Docker, SDK) is mocked via `vi.mock`/`vi.spyOn`. Current project-mode and webhook-oriented scenarios live alongside unit specs (for example `orchestrator.projectMode.test.ts`, `orchestrator.webhookEntryPoints.test.ts`, `pollingLoop.projects.test.ts`).
+- **Helpers/fixtures**: `tests/unit/helpers/`.
+
+## Development Workflow (TDD mandatory)
+Use the `ve-tdd` skill. Gate every commit on the three checks above. Reuse the `tested-engineer` agent for full TDD cycles, `codebase-analyst` for read-only review, `log-debugger` for runtime diagnosis, `dev-coordinator` for multi-stage features (see [DEVELOPMENT-WORKFLOW.md](./DEVELOPMENT-WORKFLOW.md)).
+
+## TypeScript / Lint Conventions
+- ESM with NodeNext: imports require `.js` suffix (`from "./foo.js"`).
+- `strict: true`, `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`, `noPropertyAccessFromIndexSignature`.
+- No `any` in `src/` — use `unknown` + type guards.
+- Optional props: declare `T | undefined` explicitly.
+- Unused locals/params must be `_`-prefixed.
+- `src/**/*.ts` (excluding `src/admin/ui/**`) and `agent-worker/src/**/*.ts` lint with `@typescript-eslint`'s type-aware `recommended-type-checked` preset (`eslint.config.js`), so `no-floating-promises`/`no-misused-promises`/`no-unsafe-*`/`require-await` etc. are enforced by `npm run lint`, not just convention. `tests/**`, `tests/unit/admin-ui/**`, and `src/admin/ui/**` still use the non-type-checked `recommended` preset. A function converted from `async` to a plain `Promise`-returning function must keep throwing as a **rejected promise** (wrap the body in `try { ... } catch (err) { return Promise.reject(...); }`), not a synchronous throw — dropping `async` loses the automatic sync-throw-to-rejection conversion.
+
+## Commit Messages (Conventional Commits, Gerrit-friendly)
+`<type>(<scope>): <≤50-char subject>`
+
+Types: `feat`, `fix`, `test`, `refactor`, `perf`, `docs`, `chore`, `ci`.
+Scopes: `orchestrator`, `polling-loop`, `state`, `gerrit`, `redmine`, `gitlab`, `agent`, `copilot-cli`, `vcs`, `plugins`, `admin`, `dashboard`, `prompts`, `config`, `workspace`, `db`.
+Body lines ≤72 chars. See `typescript-standard` skill.
 
 ## Recent Gotchas
-
-- `getTaskByTicketId()` orders by newest `created_at`; do not reintroduce stale
-  FAILED-task selection.
-- Editing integrations hot-refreshes runtime dependencies; no orchestrator
-  restart is needed.
-- GitLab project selection belongs to project bindings (`ticketProjectKey` and
-  `repoKey`), not new integration-form fields.
-- Review tasks are integration-scoped and patchset-bound; never post effects
-  for a stale patchset or choose the first repository from an ambiguous binding.
-- Rebuild the agent image after changing an adapter, `agent-worker/src/**`, or
-  `Dockerfile.agent`:
-
-```text
-docker build -f Dockerfile.agent -t virtual-engineer-workspace:latest .
-```
+- **Orphaned-task adoption**: `deleteProject` snapshots `(integrationId, ticketProjectKey)` onto the project's tasks, sets their `project_id` to `NULL`, and abandons non-terminal ones. When a new project is created and `setProjectTicketSource` binds the same `(integrationId, ticketProjectKey)`, `adoptOrphanedTasksForProject` re-attaches those orphan tasks to the new project — preventing "No ticket source configured for project …" errors.
+- **Copilot defaults**: `src/copilotModel.ts` only defines the default model (`auto`); runtime code should trim optional overrides but not rewrite model ids.
+- **Task resolution**: `getTaskByTicketId()` orders by `createdAt DESC` so polling sees the newest task, not a stale FAILED row.
+- **Pause/Resume** are state_transitions metadata rows, not boolean columns.
+- **Plugin reload**: editing integrations triggers `refreshRuntimeDependencies()` from `src/index.ts`; no orchestrator restart needed.
+- **Container image rebuild**: after editing `src/agents/copilotAdapter.ts`, `src/agents/claudeAdapter.ts`, `src/agents/aiderAdapter.ts`, `src/agents/gooseAdapter.ts`, `src/agents/codexAdapter.ts`, `src/agents/geminiAdapter.ts`, `src/agents/opencodeAdapter.ts`, `src/agents/cursorAdapter.ts`, `agent-worker/src/**`, or `Dockerfile.agent`, run `docker build -f Dockerfile.agent -t virtual-engineer-workspace:latest .` and restart `npm run dev`.
+- **Timestamp queries**: stored in seconds → `datetime(created_at, 'unixepoch')` (NOT `created_at/1000`).
+- **`exactOptionalPropertyTypes`**: when forwarding optional fields, prefer conditional spreading (`...(x !== undefined ? { x } : {})`) over `x: x ?? undefined`.
+- **Provider config lives in admin DB**: do not add new env-var-driven provider settings — extend the relevant `integrations` descriptor or the `agents` / `projects` tables instead.
+- **GitLab project binding is project-owned**: do not reintroduce GitLab `projectId`, label IDs, or label names into Add Integration forms; use `ticketProjectKey` / `repoKey` from VE project configuration and treat old integration fields as compatibility fallbacks only.
+- **One provider, many capabilities**: there is no longer a `github-issue` vs `github-pull-request` (or `gitlab-issue` vs `gitlab-merge-request`) split. A single `github` / `gitlab` provider descriptor exposes multiple domain capabilities; resolve runtime dependencies by capability (`getConnectorForCapability`, `getActiveIntegrationsByCapability`) rather than by an integration type/role.
+- **Ticket-source uniqueness is app-enforced**: there is no DB unique index across projects for the issue_tracking binding. `projectStore` throws when a second project binds the same `(integrationId, ticketProjectKey)`; keep that check in application code.
+- **Multi-instance plugins**: all enabled integrations stay active in memory, including multiple rows of the same provider. Resolve runtime dependencies by `integrationId`, capability, or explicit integration lists; do not add new logic that assumes a single active integration per provider.
+- **Copilot execution path**: no host/external CLI server support remains. Containers and validation scripts always boot a local headless CLI; reviews run in the agent container with `REVIEW_MODE=1`.
+- **Descriptor-driven event streams**: stream-capable integrations are reconciled through `descriptor.streamEvents` plus `PluginManager.getActiveIntegrations()`. Gerrit is the current stream-backed implementation, but the bootstrap is no longer Gerrit-specific.
+- **Descriptor-driven review backends**: generic review routing resolves active review integrations through `descriptor.createReviewer`; keep provider-specific clone/setup logic in the descriptor and out of `src/index.ts` / `src/review/reviewOrchestrator.ts`.
+- **Review tasks are integration-scoped**: webhook-triggered review flows must resolve the exact review integration by `integrationId`, and code-review tasks should preserve that integration in `ticketSourceLabel` / derived `ticketId` to avoid collisions between multiple active Gerrit instances.
+- **Review event intake is provider-specific**: Redmine / GitLab still use per-integration webhook secrets in `configJson.webhookSecret`, while Gerrit review events now come from one host-side `ssh gerrit stream-events` listener per active integration.
+- **Three event-intake mechanisms**: work reaches VE via **polling** (`PollingLoop`), **webhooks** (`src/webhooks/`, `PROVIDER_HANDLERS`), or **stream-events** (Gerrit SSH). Each capability declares its `intake` (`polling | webhook | stream`) in the descriptor; resolve per-integration via `PluginManager.getIntegrationCapabilityIntake(integrationId, capability)`. All three tag tasks with the canonical `<provider>:<integrationId>` label (`src/utils/ticketSourceLabel.ts`) — issue connectors return bare provider ids (`gitlab`/`github`, not `gitlab-issue`/`github-issue`) and the footer formatter strips the `:integrationId` suffix before lookup. GitHub Issues are ingested via the `issues` `X-GitHub-Event` in the github webhook handler.
+- **Concurrency gating is integration-scoped at agent-cycle time**: `ConcurrencyTracker` keys limits by `agents.integrationId` using `agents.maxConcurrent`. It no longer gates `PollingLoop` or `startTaskForProject`; it gates active code-generation cycles and review workspace/agent execution. Review credentials, model, adapter, and lease all resolve from the task project's selected agent integration; project agent reassignment is rejected while tasks are active. `acquire()` returns an opaque single-use lease that captures the exact integration counter, `acquireWhenAvailable()` queues cancellable review work, and one review deadline covers provider reads, queueing, abortable host-Git preparation, and agent completion. Cleanup releases the original lease without re-reading mutable agent configuration. Code-generation workflow entry is single-flight and polling/webhook lifecycle operations are serialized per task within the orchestrator process.
+- **Reviews are patchset-bound**: `runReview` may post comments, replies, or a vote only when a fresh provider lookup still reports the exact patchset used for checkout, diff construction, and agent analysis. If a newer patchset arrives during the agent run, the completed cycle is persisted with `superseded: true`, no provider or posting-ledger side effect occurs, and the task is updated and re-analyzed against the newest patchset. Internal supersession retries are bounded; exhaustion fails the review instead of posting a stale verdict.
+- **Review deadline owns the full pass**: one `AGENT_TIMEOUT_MS` deadline covers provider reads, capacity, abortable workspace/Git preparation, agent execution, freshness checks, posting/replies/vote, and final status. Signal-aware workspace work must terminate before cleanup. A timeout in `REVIEW_COMMENTING` remains ambiguous for restart recovery.
+- **Lifecycle ownership includes admin mutations**: the shared `TaskLifecycleCoordinator` owns code-gen workflows, review passes, task creation, manual abandonment, and project deletion. Deletion tombstones the project before waiting on creation/task barriers; never bypass it to mutate a task terminal or remove its project while host push or provider posting may be active.
+- **Review restart recovery is state-aware**: startup delegates active code-review tasks to `recoverActiveReviews`, separate from code-gen `resumeActiveTasks`. PENDING/RUNNING are replayable, WATCHING stays with the poller, and COMMENTING is finalized only when `reviewedPatchset` plus the current successful review cycle prove posting completed; otherwise it fails explicitly because provider effects may be partial. `AGENT_TIMEOUT_MS` also bounds review execution and its AbortSignal reaches the OpenShell lifecycle before cleanup.
+- **Review idempotency keys on `reviewedPatchset`, not state**: `startReviewTask` skips automatic re-triggers when `existing.reviewedPatchset === details.currentPatchset` (covers REVIEW_WATCHING *and* terminal REVIEW_DONE rows) — this prevents the duplicate reviews seen on project resync (stream backfill / polling / webhook re-deliveries). `StartReviewInput.force` (and `runReview(taskId, { force })`) bypasses the skip for **manual** relaunches only: re-adding VE as a Gerrit reviewer (`gerritStreamEvents.ts` `reviewer-added` → `triggerReviewForChange(..., { force: true })`). A forced current-patchset rerun also requeues a legacy/interrupted `REVIEW_WATCHING` row whose `reviewedPatchset` is still null. Force re-runs the agent and re-posts vote + summary, but inline-comment dedup (`posted_review_comments`) is preserved so no duplicate inline comments are posted. New patchsets always re-review regardless of force. Do NOT thread `force` into automatic paths (patchset-created, backfill, GitLab/GitHub webhooks).

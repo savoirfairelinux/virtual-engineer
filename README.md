@@ -12,8 +12,10 @@ repositories while keeping Git and code-review credentials on the host.
 | **Coding** | An assigned issue-tracker ticket | Agent commits pushed for review, with feedback cycles |
 | **Review** | A new patchset, merge request, or pull request | Inline findings, discussion replies, and a review decision |
 
-Every cycle runs in an ephemeral OpenShell sandbox. The host performs the Git
-clone and push operations; the sandbox is destroyed after the cycle.
+Every cycle runs in an ephemeral hardened Docker workspace by default. The host
+performs Git push operations and the workspace is destroyed after the cycle.
+OpenShell remains available as an explicit alternative with
+`WORKSPACE_RUNTIME=openshell`.
 
 ## 🔌 Supported Systems
 
@@ -30,8 +32,9 @@ encrypted at rest.
 
 ## 🚀 Quick Start
 
-The installer builds the agent and orchestrator images, starts local Keycloak
-when needed, starts the pinned OpenShell gateway, and launches the orchestrator.
+The installer builds the agent and orchestrator images and launches the
+orchestrator with the legacy Docker workspace runtime. OpenShell and its
+gateway are only started when `WORKSPACE_RUNTIME=openshell` is selected.
 
 Requirements: Git, curl, OpenSSL, Docker 24+, and a running Docker daemon.
 
@@ -64,8 +67,10 @@ printf '\nADMIN_AUTH_SECRET=%s\n' "$(openssl rand -hex 32)" >> .env
 ./scripts/start.sh
 ```
 
-The default deployment uses Docker for OpenShell sandboxes. Kubernetes is an
-experimental alternative; see the [Kubernetes deployment guide](deploy/k8s/README.md).
+The default deployment uses ephemeral Docker named volumes and helper
+containers. To opt into OpenShell, set `WORKSPACE_RUNTIME=openshell`; its
+Kubernetes compute driver remains experimental. See the
+[Kubernetes deployment guide](deploy/k8s/README.md).
 
 ## 🧭 First Workflow
 
@@ -79,8 +84,7 @@ stream events or GitLab/GitHub webhook events and do not require an issue tracke
 
 ## 🛠️ Local Development
 
-Requirements: Node.js 22+, npm 10+, Docker 24+, OpenShell CLI 0.0.83, and a
-reachable OpenShell gateway.
+Requirements: Node.js 22+, npm 10+, and Docker 24+.
 
 ```bash
 npm install
@@ -92,10 +96,10 @@ docker build -f Dockerfile.agent -t virtual-engineer-workspace:latest .
 npm run dev
 ```
 
-`npm run dev` starts the host orchestrator only. Configure
-`OPENSHELL_GATEWAY` with an existing CLI profile or
-`OPENSHELL_GATEWAY_ENDPOINT` with a reachable endpoint before running it.
-Use `./scripts/start.sh` for the complete containerized path.
+`npm run dev` starts the host orchestrator only and uses Docker by default.
+Use `WORKSPACE_RUNTIME=openshell npm run dev` only when a reachable OpenShell
+gateway is configured. Use `./scripts/start.sh` for the complete containerized
+path.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for tests, type-checking, linting, and
 database workflow.

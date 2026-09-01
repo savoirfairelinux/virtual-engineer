@@ -52,10 +52,12 @@ There is no `PUBLIC_BASE_URL` env var in `ConfigSchema`; a `publicBaseUrl` value
 
 | Var | Default | Notes |
 |---|---|---|
-| `AGENT_CONTAINER_IMAGE` | `virtual-engineer-workspace:latest` | Image the OpenShell sandbox is created from (`sandbox create --from`). |
-| `WORKSPACE_BASE_DIR` | `/tmp/virtual-engineer/workspaces` | Host scratch directory for the per-task git workspace. The workspace is uploaded into the sandbox at `/sandbox` and (for coding runs) downloaded back; there are no Docker named volumes or bind mounts. |
+| `WORKSPACE_RUNTIME` | `legacy` | `legacy` uses the Docker named-volume runner; `openshell` opts into the OpenShell sandbox runner and requires a reachable gateway. |
+| `AGENT_CONTAINER_IMAGE` | `virtual-engineer-workspace:latest` | Agent image used by either runtime. |
+| `AGENT_DOCKER_NETWORK` | `virtual-engineer_ve-agent-net` | Docker network attached to legacy agent containers. |
+| `WORKSPACE_BASE_DIR` | `/tmp/virtual-engineer/workspaces` | Host scratch directory used by the legacy runner and by OpenShell's host-side Git workspace. |
 
-There is **no** `AGENT_DOCKER_NETWORK` variable — sandbox egress is opened per run through OpenShell (`allowEgress`), not by attaching a Docker bridge network. `ConfigSchema` / `fromEnv()` cover exactly the 21 keys in the four tables above; nothing else in `src/config.ts` is env-backed.
+The default `legacy` runtime creates `ve-ws-*` and `ve-home-*` named volumes, runs agent/review containers with the configured Docker network, and performs Git operations in helper containers. The `openshell` runtime opens egress through `allowEgress` and requires `OPENSHELL_GATEWAY` or `OPENSHELL_GATEWAY_ENDPOINT`. `ConfigSchema` / `fromEnv()` cover the keys in the four tables above; nothing else in `src/config.ts` is env-backed.
 
 ### Read outside `ConfigSchema`
 

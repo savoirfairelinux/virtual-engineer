@@ -69,7 +69,7 @@ export function RuntimePoliciesSection() {
   const [creating, setCreating] = useState(false);
   const [assigning, setAssigning] = useState<RuntimePolicy | null>(null);
   const [status, setStatus] = useState<
-    { driver: string; gatewayConfigured: boolean; gatewayAddress: string | null; gatewayHealthy: boolean } | null
+    { runtime: "legacy" | "openshell"; driver: string; gatewayConfigured: boolean; gatewayAddress: string | null; gatewayHealthy: boolean } | null
   >(null);
 
   async function load() {
@@ -85,7 +85,7 @@ export function RuntimePoliciesSection() {
       setAgents(agData.status === "fulfilled" ? agData.value.agents : []);
       // Gateway status is best-effort — never block the policy list on it.
       api
-        .get<{ driver: string; gatewayConfigured: boolean; gatewayAddress: string | null; gatewayHealthy: boolean }>(
+        .get<{ runtime: "legacy" | "openshell"; driver: string; gatewayConfigured: boolean; gatewayAddress: string | null; gatewayHealthy: boolean }>(
           "/api/admin/runtime/status"
         )
         .then(setStatus)
@@ -130,22 +130,28 @@ export function RuntimePoliciesSection() {
           className="card"
           style={{ padding: "12px 14px", marginBottom: "16px", display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}
         >
-          <span
-            style={{
-              width: 9,
-              height: 9,
-              borderRadius: "50%",
-              background: status.gatewayHealthy ? "var(--ok, #3fb950)" : "var(--danger, #f85149)",
-              flexShrink: 0,
-            }}
-          />
+          {status.runtime === "openshell" && (
+            <span
+              style={{
+                width: 9,
+                height: 9,
+                borderRadius: "50%",
+                background: status.gatewayHealthy ? "var(--ok, #3fb950)" : "var(--danger, #f85149)",
+                flexShrink: 0,
+              }}
+            />
+          )}
           <span style={{ fontSize: "13px", fontWeight: 600 }}>
-            Agent runtime: OpenShell · {status.driver === "kubernetes" ? "Kubernetes (k3s)" : "Docker"}
+            Agent runtime: {status.runtime === "openshell"
+              ? `OpenShell · ${status.driver === "kubernetes" ? "Kubernetes (k3s)" : "Docker"}`
+              : "Docker"}
           </span>
-          <span style={{ fontSize: "12px", color: "var(--text-ghost)" }}>
-            Gateway {status.gatewayConfigured ? (status.gatewayAddress ?? "") : "not configured"} —{" "}
-            {status.gatewayHealthy ? "healthy" : "unreachable"}
-          </span>
+          {status.runtime === "openshell" && (
+            <span style={{ fontSize: "12px", color: "var(--text-ghost)" }}>
+              Gateway {status.gatewayConfigured ? (status.gatewayAddress ?? "") : "not configured"} —{" "}
+              {status.gatewayHealthy ? "healthy" : "unreachable"}
+            </span>
+          )}
         </div>
       )}
 
