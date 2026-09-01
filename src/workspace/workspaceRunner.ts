@@ -544,6 +544,7 @@ export class DockerWorkspaceRunner implements WorkspaceRunner {
     } else {
       throw new Error("Agent adapter does not support buildReviewContainerSpec; cannot run review in Docker");
     }
+    spec.env["USER_PROMPT_FILE"] = "/ve-home/user-prompt.txt";
 
     const dockerArgs = [
       "run",
