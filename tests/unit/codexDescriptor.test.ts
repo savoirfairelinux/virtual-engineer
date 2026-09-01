@@ -2,6 +2,14 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { createCodexDescriptor } from "../../src/plugins/descriptors/codex.js";
 import { ModelDiscoveryConfigError } from "../../src/plugins/registry.js";
 
+vi.mock("../../src/agents/codexModelsService.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/agents/codexModelsService.js")>();
+  return {
+    ...actual,
+    fetchCodexSubscriptionModels: vi.fn(async () => [{ id: "gpt-5.6-sol", name: "GPT-5.6-Sol" }]),
+  };
+});
+
 describe("createCodexDescriptor", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -40,9 +48,9 @@ describe("createCodexDescriptor", () => {
       ).rejects.toThrow(ModelDiscoveryConfigError);
     });
 
-    it("returns the curated list for subscription mode", async () => {
+    it("discovers models via the Codex CLI's live catalog for subscription mode", async () => {
       const models = await descriptor.discoverModels?.({ authMode: "subscription" });
-      expect(models?.length).toBeGreaterThan(0);
+      expect(models).toEqual([{ id: "gpt-5.6-sol", name: "GPT-5.6-Sol" }]);
     });
   });
 });

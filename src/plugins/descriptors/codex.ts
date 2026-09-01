@@ -6,7 +6,7 @@ import {
   validateCodexConnection,
   type CodexConnectionValidationConfig,
 } from "../../agents/codexConnectionValidator.js";
-import { CODEX_SUBSCRIPTION_MODELS, fetchOpenAiModels } from "../../agents/codexModelsService.js";
+import { fetchCodexSubscriptionModels, fetchOpenAiModels } from "../../agents/codexModelsService.js";
 
 /**
  * Codex (OpenAI Codex CLI) integration descriptor.
@@ -82,9 +82,10 @@ export function createCodexDescriptor(_adminAuthSecret?: string): ProviderDescri
         }
         return fetchOpenAiModels(apiKey);
       }
-      // Subscription mode: the models API is not reliably reachable with an
-      // access token, so offer a curated list of known Codex-capable models.
-      return CODEX_SUBSCRIPTION_MODELS;
+      // Subscription mode: the OpenAI models API is not reliably reachable
+      // with a ChatGPT access token, so discover models from the Codex CLI's
+      // own live catalog instead of a hand-maintained list.
+      return fetchCodexSubscriptionModels();
     },
     getSummaryDetails(_config: Record<string, unknown>): string[] {
       return [];
