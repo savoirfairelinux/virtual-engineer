@@ -84,6 +84,7 @@ export function App() {
     const onHashChange = () => {
       const nextView = viewFromHash(window.location.hash);
       if (view === "config" && nextView !== "config" && !configNavigationGuardRef.current?.()) return;
+      if (nextView === "config") setConfigSection(parseConfigHash(window.location.hash).section);
       setView(nextView);
     };
     window.addEventListener("hashchange", onHashChange);

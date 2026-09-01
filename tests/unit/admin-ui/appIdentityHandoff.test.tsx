@@ -1,5 +1,5 @@
 /** @vitest-environment jsdom */
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApiMe } from "../../../src/admin/ui/types.js";
 
@@ -36,6 +36,10 @@ vi.mock("../../../src/admin/ui/shell/ChangePasswordModal.js", () => ({ ChangePas
 vi.mock("../../../src/admin/ui/views/OverviewView.js", () => ({ OverviewView: () => null }));
 vi.mock("../../../src/admin/ui/views/TasksView/index.js", () => ({ TasksView: () => null }));
 vi.mock("../../../src/admin/ui/views/ConfigView/index.js", () => ({ ConfigView: () => null }));
+vi.mock("../../../src/admin/ui/tour/GuidedTour.js", () => ({
+  GuidedTour: ({ tourKey, enabled }: { tourKey: string; enabled: boolean }) =>
+    enabled ? <div data-testid={`tour-${tourKey}`} /> : null,
+}));
 
 import { App, shouldEnableConfigWorkflow } from "../../../src/admin/ui/App.js";
 
@@ -103,5 +107,25 @@ describe("App identity loading", () => {
     expect(shouldEnableConfigWorkflow("projects", true, null)).toBe(true);
     expect(shouldEnableConfigWorkflow("integrations", false, "config-workflow")).toBe(true);
     expect(shouldEnableConfigWorkflow("integrations", false, null)).toBe(false);
+  });
+
+  it("does not keep the workflow tour active after a deep-linked config navigation", async () => {
+    apiMocks.getMe.mockResolvedValue({
+      id: "admin-1",
+      username: "admin",
+      role: "admin",
+      capabilities: { superuser: true, grants: {} },
+    });
+    window.history.replaceState({}, "", "#config");
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByTestId("tour-config-workflow")).toBeTruthy());
+
+    act(() => {
+      window.location.hash = "#config/agents/agent-1/edit";
+      window.dispatchEvent(new HashChangeEvent("hashchange"));
+    });
+
+    await waitFor(() => expect(screen.queryByTestId("tour-config-workflow")).toBeNull());
   });
 });
