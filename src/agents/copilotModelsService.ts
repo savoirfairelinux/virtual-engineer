@@ -76,14 +76,6 @@ interface CopilotModelsResponse {
   data?: RawModelEntry[] | undefined;
 }
 
-const CATEGORY_ORDER: Record<ModelCategory, number> = {
-  powerful: 0,
-  versatile: 1,
-  balanced: 2,
-  lightweight: 3,
-  unknown: 4,
-};
-
 /**
  * Exchange a GitHub OAuth token (`ghu_...`) for a short-lived Copilot session
  * token. This session token is used for API calls to `api.githubcopilot.com`.
@@ -128,7 +120,7 @@ function isValidReasoningEffort(v: unknown): v is ReasoningEffort {
  *  2. `model_picker_enabled == true`
  *  3. Policy not blocked
  *
- * Deduplicates by model version and sorts by category (powerful first).
+ * Deduplicates by model version. Preserves the order returned by the API.
  */
 export async function fetchAvailableModels(
   sessionToken: string,
@@ -200,9 +192,8 @@ export async function fetchAvailableModels(
     return true;
   });
 
-  // Sort by category order
-  deduped.sort((a, b) => CATEGORY_ORDER[a.category] - CATEGORY_ORDER[b.category]);
-
+  // Preserve the order returned by the Copilot API (its own relevance ranking)
+  // rather than re-sorting by category.
   log.info({ count: deduped.length }, "fetched and filtered Copilot models");
   return deduped;
 }
@@ -306,8 +297,8 @@ export async function fetchAvailableModelsWithPat(
     return true;
   });
 
-  deduped.sort((a, b) => CATEGORY_ORDER[a.category] - CATEGORY_ORDER[b.category]);
-
+  // Preserve the order returned by the SDK (Copilot's own relevance ranking)
+  // rather than re-sorting by category.
   log.info({ count: deduped.length }, "fetched Copilot models via SDK (PAT mode)");
   return deduped;
 }
