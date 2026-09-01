@@ -67,7 +67,8 @@ describe("fetchAvailableModels", () => {
 
     const models = await fetchAvailableModels("session_tok", { fetch: mockFetch });
 
-    expect(models.map((m) => m.id)).toEqual(["o1-pro", "gpt-4o"]);
+    // Filtered result preserves the API's original response order.
+    expect(models.map((m) => m.id)).toEqual(["gpt-4o", "o1-pro"]);
   });
 
   it("deduplicates by model id", async () => {
@@ -82,7 +83,7 @@ describe("fetchAvailableModels", () => {
     expect(models[0]!.name).toBe("GPT-4o");
   });
 
-  it("sorts by category: powerful > versatile > balanced > lightweight", async () => {
+  it("preserves the API's response order rather than re-sorting by category", async () => {
     const mockFetch = makeModelsFetch([
       { id: "gpt-4o-mini", name: "GPT-4o Mini", capabilities: { type: "chat" }, model_picker_enabled: true },
       { id: "o3-pro", name: "o3 Pro", capabilities: { type: "chat" }, model_picker_enabled: true },
@@ -91,9 +92,8 @@ describe("fetchAvailableModels", () => {
     ]);
 
     const models = await fetchAvailableModels("session_tok", { fetch: mockFetch });
-    const categories = models.map((m) => m.category);
 
-    expect(categories).toEqual(["powerful", "versatile", "balanced", "lightweight"]);
+    expect(models.map((m) => m.id)).toEqual(["gpt-4o-mini", "o3-pro", "gpt-4o", "claude-haiku"]);
   });
 
   it("returns empty array when no models pass filters", async () => {
