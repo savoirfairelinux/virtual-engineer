@@ -7,9 +7,16 @@
  *                                      GIT_CONFIG_SYSTEM=/dev/null,
  *                                      GIT_CONFIG_NOSYSTEM=1)
  *   - git hooks                       (-c core.hooksPath=/dev/null)
- *   - included config files           (-c include.path=/dev/null)
+ *   - signing helper programs         (-c commit.gpgsign=false)
  *   - filesystem monitor extensions   (-c core.fsmonitor=false)
  *   - unexpected protocol helpers     (-c protocol.allow=never)
+ *   - external diff / textconv helpers declared by the repository
+ *                                     (--no-ext-diff --no-textconv)
+ *
+ * Note on repository-local config: `.git/config` and `.gitattributes` live in
+ * the workspace the agent can write, and git offers no switch to ignore them.
+ * The `-c` flags above therefore override the *specific* directives that make
+ * git execute a helper program, rather than trying to block config loading.
  *
  * The environment is reduced to a minimal allowlist so that provider
  * credentials (GITHUB_TOKEN, ANTHROPIC_API_KEY, …) never leak into git
@@ -27,11 +34,41 @@ import { execFileSync, type ExecFileSyncOptionsWithStringEncoding } from 'child_
  */
 const GIT_HARDENED_FLAGS: readonly string[] = [
   '-c', 'core.hooksPath=/dev/null',
-  // Must be an absolute path: git rejects an empty/relative command-line include.
+  // Only neutralises an inherited include chain; a repo-local `[include]` in
+  // .git/config is still read. Kept for parity with the host trustedGitArgs.
   '-c', 'include.path=/dev/null',
   '-c', 'core.fsmonitor=false',
   '-c', 'protocol.allow=never',
+  // A repo-set gpg.program would otherwise run when signing is turned on.
+  '-c', 'commit.gpgsign=false',
 ];
+
+/**
+ * Subcommands that render a diff and can therefore execute the helper programs
+ * named by `diff.external` (.git/config) or `diff.<driver>.textconv`
+ * (.gitattributes). Setting `-c diff.external=` is not an option: git then
+ * aborts with "external diff died" instead of falling back to the internal
+ * diff, so the per-command flags below are used instead.
+ */
+const DIFF_PRODUCING_SUBCOMMANDS = new Set([
+  'diff',
+  'diff-tree',
+  'diff-index',
+  'log',
+  'show',
+  'whatchanged',
+]);
+
+const DIFF_SAFETY_FLAGS = ['--no-ext-diff', '--no-textconv'];
+
+/** Insert the diff-safety flags right after the subcommand, before any pathspec. */
+function applyDiffSafety(args: readonly string[]): string[] {
+  const [subcommand, ...rest] = args;
+  if (subcommand === undefined || !DIFF_PRODUCING_SUBCOMMANDS.has(subcommand)) {
+    return [...args];
+  }
+  return [subcommand, ...DIFF_SAFETY_FLAGS, ...rest];
+}
 
 const GIT_IDENTITY_VARS = [
   'GIT_AUTHOR_NAME',
@@ -58,6 +95,8 @@ export function buildHardenedGitEnv(extra: Record<string, string> = {}): NodeJS.
     // Disable terminal paging.
     GIT_PAGER: 'cat',
     TERM: 'dumb',
+    // Neutralise a repo-set core.editor rather than letting git launch it.
+    GIT_EDITOR: 'true',
   };
   // Preserve git identity if set by the host.
   for (const key of GIT_IDENTITY_VARS) {
@@ -94,7 +133,7 @@ export function hardenedGit(
     env: buildHardenedGitEnv(extraEnv),
   };
   try {
-    return execFileSync('git', [...GIT_HARDENED_FLAGS, ...args], options);
+    return execFileSync('git', [...GIT_HARDENED_FLAGS, ...applyDiffSafety(args)], options);
   } catch (err) {
     throw decodeGitFailure(err, args);
   }
