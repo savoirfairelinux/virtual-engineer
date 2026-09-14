@@ -18,9 +18,9 @@ interface CostStoreContext {
 }
 
 /**
- * 1 when a cycle's provider reported any token usage. A cycle with all four
- * columns NULL never reported usage (e.g. Cursor), which is distinct from a
- * cycle that genuinely used zero tokens.
+ * 1 when a cycle's provider reported token metrics. A cycle with all four
+ * columns NULL never reported them (e.g. Cursor), while a reported all-zero
+ * event persists four zeroes.
  */
 const REPORTED_TOKENS_CASE = `CASE WHEN c.cost_input_tokens IS NOT NULL
                                      OR c.cost_output_tokens IS NOT NULL
