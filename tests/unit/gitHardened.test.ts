@@ -2,14 +2,14 @@
  * Tests for the hardened git invocation module (A1 fix).
  *
  * Verifies that every git subprocess spawned by the agent worker:
- *  1. Receives the six hardening `-c` flags.
+ *  1. Receives the four hardening `-c` flags.
  *  2. Runs with a minimal env (PATH, HOME, git identity only) — no provider
  *     credentials leak into child processes.
  *  3. Disables git hooks, config includes, fsmonitor, and arbitrary protocols.
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { execFileSync } from 'child_process';
-import { hardenedGit, hardenedGitWithEnv, buildHardenedGitEnv } from '../../agent-worker/src/gitHardened.js';
+import { hardenedGit, buildHardenedGitEnv } from '../../agent-worker/src/gitHardened.js';
 
 // Mock child_process so no real git binary is invoked.
 vi.mock('child_process', () => ({
@@ -37,7 +37,7 @@ function lastCall(): {
 describe('gitHardened', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockedExecFileSync.mockReturnValue(Buffer.from('ok\n'));
+    mockedExecFileSync.mockReturnValue('ok\n');
   });
 
   // ── Env hardening ──────────────────────────────────────────────────────────
@@ -46,8 +46,6 @@ describe('gitHardened', () => {
     process.env['GITHUB_TOKEN'] = 'ghp_secret';
     process.env['ANTHROPIC_API_KEY'] = 'sk-ant-secret';
     process.env['OPENAI_API_KEY'] = 'sk-openai-secret';
-
-    buildHardenedGitEnv();
 
     const env = buildHardenedGitEnv();
     expect(env['GITHUB_TOKEN']).toBeUndefined();
@@ -91,6 +89,22 @@ describe('gitHardened', () => {
     expect(env['GIT_SEQUENCE_EDITOR']).toBe("sed -i 's/^pick /edit /g'");
   });
 
+  it('extraEnv identity wins over the inherited process identity', () => {
+    process.env['GIT_AUTHOR_NAME'] = 'Inherited Author';
+    process.env['GIT_COMMITTER_EMAIL'] = 'inherited@test.invalid';
+
+    const env = buildHardenedGitEnv({
+      GIT_AUTHOR_NAME: 'Explicit Author',
+      GIT_COMMITTER_EMAIL: 'explicit@test.invalid',
+    });
+
+    expect(env['GIT_AUTHOR_NAME']).toBe('Explicit Author');
+    expect(env['GIT_COMMITTER_EMAIL']).toBe('explicit@test.invalid');
+
+    delete process.env['GIT_AUTHOR_NAME'];
+    delete process.env['GIT_COMMITTER_EMAIL'];
+  });
+
   // ── hardenedGit: argv prefix + env sanitisation ───────────────────────────
 
   it('prepends -c core.hooksPath=/dev/null to argv', () => {
@@ -100,10 +114,12 @@ describe('gitHardened', () => {
     expect(args).toContain('core.hooksPath=/dev/null');
   });
 
-  it('prepends -c include.path= to argv', () => {
+  it('prepends -c include.path=/dev/null to argv', () => {
     hardenedGit(['log', '--oneline'], '/repo');
     const { args } = lastCall();
-    expect(args).toContain('include.path=');
+    // An empty or relative include path makes git abort with
+    // "relative config includes must come from files".
+    expect(args).toContain('include.path=/dev/null');
   });
 
   it('prepends -c core.fsmonitor=false to argv', () => {
@@ -121,10 +137,16 @@ describe('gitHardened', () => {
   it('does not inject hooksPath after the subcommand args', () => {
     hardenedGit(['commit', '--amend', '-m', 'msg'], '/repo');
     const { args } = lastCall();
-    // All six -c flags must appear before 'commit'.
+    // All hardening -c flags must appear before 'commit'.
     const commitIdx = args.indexOf('commit');
     const flagIdx = args.indexOf('-c');
     expect(commitIdx).toBeGreaterThan(flagIdx);
+    expect(args.slice(0, 8)).toEqual([
+      '-c', 'core.hooksPath=/dev/null',
+      '-c', 'include.path=/dev/null',
+      '-c', 'core.fsmonitor=false',
+      '-c', 'protocol.allow=never',
+    ]);
   });
 
   it('passes a sanitised env (no GITHUB_TOKEN) to git', () => {
@@ -140,18 +162,18 @@ describe('gitHardened', () => {
 
   it('throws on git stderr non-empty', () => {
     mockedExecFileSync.mockImplementation(() => {
-      const err = new Error('exit 1') as NodeJS.ErrnoException & { stderr?: Buffer };
-      err.stderr = Buffer.from('fatal: not a git repo\n');
+      const err = new Error('exit 1') as NodeJS.ErrnoException & { stderr?: string };
+      err.stderr = 'fatal: not a git repo\n';
       throw err;
     });
 
-    expect(() => hardenedGit(['status'], '/repo')).toThrow(/git status:/);
+    expect(() => hardenedGit(['status'], '/repo')).toThrow(/git status: fatal: not a git repo/);
   });
 
-  // ── hardenedGitWithEnv ────────────────────────────────────────────────────
+  // ── extraEnv forwarding ───────────────────────────────────────────────────
 
   it('merges caller env while keeping hardened base vars', () => {
-    hardenedGitWithEnv(
+    hardenedGit(
       ['rebase', '-i', 'abc123'],
       '/repo',
       { GIT_SEQUENCE_EDITOR: "sed -i 's/^pick /edit /g'" },
@@ -164,7 +186,7 @@ describe('gitHardened', () => {
   });
 
   it('caller env vars override the hardened base', () => {
-    hardenedGitWithEnv(['status'], '/repo', { PATH: '/custom/path' });
+    hardenedGit(['status'], '/repo', { PATH: '/custom/path' });
     const { options } = lastCall();
     expect(options.env?.['PATH']).toBe('/custom/path');
   });

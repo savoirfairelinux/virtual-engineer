@@ -55,10 +55,10 @@ Tool calls and permission decisions are recorded into `agent_cycles.agent_events
 
 Every git invocation inside the agent worker goes through `agent-worker/src/gitHardened.ts` — there are no local `execFileSync('git', ...)` call sites in `index.ts` or `commitUtils.ts`.
 
-- **Env isolation**: `buildHardenedGitEnv()` builds a minimal env containing only `PATH`, `HOME`, `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_SYSTEM=/dev/null`, `GIT_PAGER=cat`, `TERM=dumb`, and optional git identity vars. All other variables (including `*_TOKEN`, `*_API_KEY`, provider credentials) are stripped, so git child processes never inherit sandbox credentials.
-- **Argv hardening**: `hardenedGit()` prepends five `-c` flags to every invocation: `core.hooksPath=/dev/null` (hooks disabled), `include.path=` (no injected config includes), `core.fsmonitor=false`, `protocol.allow=never` (no protocol smuggling), `core.pager=cat`.
+- **Env isolation**: `buildHardenedGitEnv(extra)` builds a minimal env containing only `PATH`, `HOME`, `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_SYSTEM=/dev/null`, `GIT_PAGER=cat`, `TERM=dumb`, the inherited git identity vars, and the caller's `extra` (which wins over the inherited identity). All other variables (including `*_TOKEN`, `*_API_KEY`, provider credentials) are stripped, so git child processes never inherit sandbox credentials.
+- **Argv hardening**: `hardenedGit()` prepends four `-c` flags to every invocation: `core.hooksPath=/dev/null` (hooks disabled), `include.path=/dev/null` (no injected config includes — the value must be an absolute path, git rejects an empty/relative command-line include), `core.fsmonitor=false`, and `protocol.allow=never` (no protocol smuggling). Worker git calls are repository-local only; the host owns clone/fetch/push.
 - **Centralised error handling**: git failures throw with stderr truncated to 500 characters.
-- `hardenedGitWithEnv()` is for callers that must inject specific vars (e.g. `GIT_SEQUENCE_EDITOR` for interactive rebase); caller values are merged over the hardened base so hardening flags cannot be accidentally overwritten.
+- Callers needing extra vars (e.g. `GIT_SEQUENCE_EDITOR` for an interactive rebase, or an explicit commit identity) pass them as the third `extraEnv` argument.
 
 ## External Skills
 

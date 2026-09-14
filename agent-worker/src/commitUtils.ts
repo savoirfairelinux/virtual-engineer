@@ -12,7 +12,7 @@ import { createHash } from 'crypto';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import type { CommitDescriptor, RepositoryMap } from '../../src/interfaces.js';
-import { hardenedGit, hardenedGitWithEnv, buildHardenedGitEnv } from './gitHardened.js';
+import { hardenedGit } from './gitHardened.js';
 
 const CONVENTIONAL_COMMIT_RE =
   /^(feat|fix|refactor|test|chore|docs|perf|ci|build)(\([^)]+\))?: .{1,72}$/;
@@ -294,17 +294,17 @@ export function injectChangeIds(
     }
   }
 
-  // Build a minimal env for git rebase (only what is strictly required).
-  const rebaseEnv = buildHardenedGitEnv({
+  // Only what `rebase -i` strictly requires, on top of the hardened base env.
+  const rebaseEnv = {
     GIT_SEQUENCE_EDITOR: "sed -i 's/^pick /edit /g'",
-    ...(gitAuthorName   ? { GIT_AUTHOR_NAME: gitAuthorName }     : {}),
-    ...(gitAuthorEmail  ? { GIT_AUTHOR_EMAIL: gitAuthorEmail }   : {}),
-    ...(gitCommitterName  ? { GIT_COMMITTER_NAME: gitCommitterName }   : {}),
+    ...(gitAuthorName ? { GIT_AUTHOR_NAME: gitAuthorName } : {}),
+    ...(gitAuthorEmail ? { GIT_AUTHOR_EMAIL: gitAuthorEmail } : {}),
+    ...(gitCommitterName ? { GIT_COMMITTER_NAME: gitCommitterName } : {}),
     ...(gitCommitterEmail ? { GIT_COMMITTER_EMAIL: gitCommitterEmail } : {}),
-  });
+  };
 
   try {
-    hardenedGitWithEnv(['rebase', '-i', baseSha], cwd, rebaseEnv);
+    hardenedGit(['rebase', '-i', baseSha], cwd, rebaseEnv);
   } catch {
     // rebase -i stops at the first commit — this is expected
   }

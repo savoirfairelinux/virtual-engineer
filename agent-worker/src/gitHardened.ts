@@ -7,7 +7,7 @@
  *                                      GIT_CONFIG_SYSTEM=/dev/null,
  *                                      GIT_CONFIG_NOSYSTEM=1)
  *   - git hooks                       (-c core.hooksPath=/dev/null)
- *   - included config files           (-c include.path=)
+ *   - included config files           (-c include.path=/dev/null)
  *   - filesystem monitor extensions   (-c core.fsmonitor=false)
  *   - unexpected protocol helpers     (-c protocol.allow=never)
  *
@@ -19,7 +19,7 @@
  *   const out = hardenedGit(['log', '--oneline'], '/path/to/repo');
  */
 
-import { execFileSync, type ExecFileSyncOptionsWithBufferEncoding } from 'child_process';
+import { execFileSync, type ExecFileSyncOptionsWithStringEncoding } from 'child_process';
 
 /**
  * Hardened -c flags prepended to every git invocation.
@@ -27,15 +27,25 @@ import { execFileSync, type ExecFileSyncOptionsWithBufferEncoding } from 'child_
  */
 const GIT_HARDENED_FLAGS: readonly string[] = [
   '-c', 'core.hooksPath=/dev/null',
-  '-c', 'include.path=',
+  // Must be an absolute path: git rejects an empty/relative command-line include.
+  '-c', 'include.path=/dev/null',
   '-c', 'core.fsmonitor=false',
   '-c', 'protocol.allow=never',
 ];
+
+const GIT_IDENTITY_VARS = [
+  'GIT_AUTHOR_NAME',
+  'GIT_AUTHOR_EMAIL',
+  'GIT_COMMITTER_NAME',
+  'GIT_COMMITTER_EMAIL',
+] as const;
 
 /**
  * Build a minimal environment for git subprocesses.
  * Only the listed variables are forwarded; everything else (including
  * provider credentials) is stripped.
+ *
+ * Caller-supplied `extra` values always win over the inherited environment.
  */
 export function buildHardenedGitEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
   const safe: NodeJS.ProcessEnv = {
@@ -48,14 +58,19 @@ export function buildHardenedGitEnv(extra: Record<string, string> = {}): NodeJS.
     // Disable terminal paging.
     GIT_PAGER: 'cat',
     TERM: 'dumb',
-    ...extra,
   };
   // Preserve git identity if set by the host.
-  for (const key of ['GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL']) {
+  for (const key of GIT_IDENTITY_VARS) {
     const val = process.env[key];
     if (val) safe[key] = val;
   }
-  return safe;
+  return { ...safe, ...extra };
+}
+
+function decodeGitFailure(err: unknown, args: readonly string[]): Error {
+  const e = err as { stderr?: string; stdout?: string; message?: string };
+  const detail = (e.stderr ?? e.stdout ?? e.message ?? '').slice(0, 500);
+  return new Error(`git ${args[0] ?? ''}: ${detail}`);
 }
 
 /**
@@ -63,7 +78,8 @@ export function buildHardenedGitEnv(extra: Record<string, string> = {}): NodeJS.
  *
  * @param args  git subcommand + arguments (no leading 'git').
  * @param cwd   Working directory.
- * @param extraEnv  Additional env vars to merge on top of the hardened set.
+ * @param extraEnv  Additional env vars merged on top of the hardened set
+ *                  (e.g. `GIT_SEQUENCE_EDITOR` for an interactive rebase).
  * @returns stdout as UTF-8 string.
  */
 export function hardenedGit(
@@ -71,55 +87,15 @@ export function hardenedGit(
   cwd: string,
   extraEnv: Record<string, string> = {},
 ): string {
-  const env = buildHardenedGitEnv(extraEnv);
-  const options: ExecFileSyncOptionsWithBufferEncoding = {
+  const options: ExecFileSyncOptionsWithStringEncoding = {
     cwd,
-    encoding: 'buffer',
+    encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
-    env,
+    env: buildHardenedGitEnv(extraEnv),
   };
   try {
-    // Prepend hardening flags before the subcommand.
-    const fullArgs = [...GIT_HARDENED_FLAGS, ...args];
-    const buf = execFileSync('git', fullArgs, options);
-    return (buf as unknown as { toString(enc: string): string }).toString('utf8');
+    return execFileSync('git', [...GIT_HARDENED_FLAGS, ...args], options);
   } catch (err) {
-    const e = err as { stderr?: Buffer | string; stdout?: Buffer | string; message?: string };
-    const raw = e.stderr ?? e.stdout ?? String(e.message ?? '');
-    const detail = (typeof raw === 'string' ? raw : raw.toString('utf8')).slice(0, 500);
-    throw new Error(`git ${args[0] ?? ''}: ${detail}`);
-  }
-}
-
-/**
- * Run git with a fully custom environment (used by rebase sequences where
- * GIT_SEQUENCE_EDITOR / GIT_EDITOR must be forwarded).
- *
- * The caller is responsible for providing git identity vars in extraEnv when
- * they differ from what the process inherited.
- */
-export function hardenedGitWithEnv(
-  args: string[],
-  cwd: string,
-  env: NodeJS.ProcessEnv,
-): string {
-  const mergedEnv = buildHardenedGitEnv();
-  // Merge caller env on top (caller wins, but hardened base is the floor).
-  Object.assign(mergedEnv, env);
-  const options: ExecFileSyncOptionsWithBufferEncoding = {
-    cwd,
-    encoding: 'buffer',
-    stdio: ['ignore', 'pipe', 'pipe'],
-    env: mergedEnv,
-  };
-  try {
-    const fullArgs = [...GIT_HARDENED_FLAGS, ...args];
-    const buf = execFileSync('git', fullArgs, options);
-    return (buf as unknown as { toString(enc: string): string }).toString('utf8');
-  } catch (err) {
-    const e = err as { stderr?: Buffer | string; stdout?: Buffer | string; message?: string };
-    const raw = e.stderr ?? e.stdout ?? String(e.message ?? '');
-    const detail = (typeof raw === 'string' ? raw : raw.toString('utf8')).slice(0, 500);
-    throw new Error(`git ${args[0] ?? ''}: ${detail}`);
+    throw decodeGitFailure(err, args);
   }
 }
