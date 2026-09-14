@@ -2,10 +2,14 @@
  * Tests for the hardened git invocation module (A1 fix).
  *
  * Verifies that every git subprocess spawned by the agent worker:
- *  1. Receives the four hardening `-c` flags.
+ *  1. Receives the hardening `-c` flags.
  *  2. Runs with a minimal env (PATH, HOME, git identity only) — no provider
  *     credentials leak into child processes.
- *  3. Disables git hooks, config includes, fsmonitor, and arbitrary protocols.
+ *  3. Disables git hooks, fsmonitor, arbitrary protocols, signing helpers, and
+ *     external diff/textconv helpers.
+ *
+ * Behaviour against a real malicious `.git/config` is covered separately in
+ * gitHardenedMaliciousRepo.test.ts — these tests mock child_process.
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { execFileSync } from 'child_process';
@@ -141,12 +145,30 @@ describe('gitHardened', () => {
     const commitIdx = args.indexOf('commit');
     const flagIdx = args.indexOf('-c');
     expect(commitIdx).toBeGreaterThan(flagIdx);
-    expect(args.slice(0, 8)).toEqual([
+    expect(args.slice(0, 10)).toEqual([
       '-c', 'core.hooksPath=/dev/null',
       '-c', 'include.path=/dev/null',
       '-c', 'core.fsmonitor=false',
       '-c', 'protocol.allow=never',
+      '-c', 'commit.gpgsign=false',
     ]);
+  });
+
+  it('injects --no-ext-diff --no-textconv after a diff-producing subcommand', () => {
+    hardenedGit(['diff', '--name-only', 'base', 'head'], '/repo');
+    const { args } = lastCall();
+    expect(args.slice(-6)).toEqual([
+      'diff', '--no-ext-diff', '--no-textconv', '--name-only', 'base', 'head',
+    ]);
+  });
+
+  it('does not inject diff-only flags into subcommands that reject them', () => {
+    for (const subcommand of ['status', 'commit', 'cat-file', 'rev-parse']) {
+      hardenedGit([subcommand], '/repo');
+      const { args } = lastCall();
+      expect(args).not.toContain('--no-ext-diff');
+      expect(args).not.toContain('--no-textconv');
+    }
   });
 
   it('passes a sanitised env (no GITHUB_TOKEN) to git', () => {
