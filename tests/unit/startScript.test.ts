@@ -225,6 +225,30 @@ describe("start.sh helpers", () => {
     expect(missing).toBe("no");
   });
 
+  it("consumes the full container log stream without hiding docker failures", () => {
+    const binDir = mkdtempSync(join(tmpdir(), "ve-start-bin-"));
+    tempDirs.push(binDir);
+    writeFileSync(
+      join(binDir, "docker"),
+      [
+        "#!/usr/bin/env bash",
+        "printf 'Server listening address=0.0.0.0:30808\\n'",
+        'if [[ "${VE_TEST_DOCKER_FAILURE:-}" == "true" ]]; then exit 42; fi',
+        "trap 'exit 141' PIPE",
+        "for ((line = 0; line < 10000; line++)); do",
+        "  printf 'post-match log line %s padding padding padding\\n' \"$line\" || exit 141",
+        "done",
+      ].join("\n"),
+    );
+    chmodSync(join(binDir, "docker"), 0o755);
+    const baseEnv = { PATH: `${binDir}:${process.env["PATH"] ?? ""}` };
+    const script =
+      'set -o pipefail; if wait_for_container_log ve-openshell-gateway "Server listening" 1; then printf yes; else printf no; fi';
+
+    expect(runHelper(script, [], baseEnv)).toBe("yes");
+    expect(runHelper(script, [], { ...baseEnv, VE_TEST_DOCKER_FAILURE: "true" })).toBe("no");
+  });
+
   it("waits for a live process to open the expected TCP port", async () => {
     const server = spawn("node", [
       "-e",
