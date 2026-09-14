@@ -1196,6 +1196,14 @@ export interface CostSummaryProject {
   premiumRequests: number;
   /** Number of agent cycles (runs) counted for the project in the period. */
   runCount: number;
+  /** Summed token usage across the project's agent cycles in the period. */
+  tokens: CycleCostTokens;
+  /**
+   * Cycles whose provider reported any token usage. Always `<= runCount`; the
+   * difference is cycles whose engine reports no usage at all (e.g. Cursor), so
+   * a zero token total can be told apart from an unmeasured one.
+   */
+  runCountWithTokens: number;
 }
 
 /**
@@ -1212,6 +1220,10 @@ export interface CostSummary {
   totalPremiumRequests: number;
   /** Instance-wide total number of agent cycles (runs) over the period. */
   totalRuns: number;
+  /** Instance-wide summed token usage over the period. */
+  totalTokens: CycleCostTokens;
+  /** Instance-wide count of cycles whose provider reported any token usage. */
+  totalRunsWithTokens: number;
   /** Per-project breakdown, sorted by descending USD. */
   perProject: CostSummaryProject[];
   /** Inclusive lower bound of the period in epoch seconds, or null for all-time. */
@@ -1226,6 +1238,10 @@ export interface ModelUsageEntry {
   runCount: number;
   /** Total USD attributed to this model in the period. */
   usd: number;
+  /** Summed token usage attributed to this model in the period. */
+  tokens: CycleCostTokens;
+  /** Cycles on this model whose provider reported any token usage. */
+  runCountWithTokens: number;
 }
 
 /** Per-project model distribution slice. */
@@ -1252,6 +1268,8 @@ export interface ModelUsageSummary {
   totalRuns: number;
   /** Instance-wide total USD over the period. */
   totalUsd: number;
+  /** Instance-wide summed token usage over the period. */
+  totalTokens: CycleCostTokens;
   /** Inclusive lower bound of the period in epoch seconds, or null for all-time. */
   sinceEpochSeconds: number | null;
 }

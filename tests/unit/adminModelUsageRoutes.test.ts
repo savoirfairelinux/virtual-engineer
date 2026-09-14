@@ -25,6 +25,7 @@ const emptySummary: ModelUsageSummary = {
   perProject: [],
   totalRuns: 0,
   totalUsd: 0,
+  totalTokens: { input: 0, output: 0, cached: 0, cacheWrite: 0 },
   sinceEpochSeconds: null,
 };
 
@@ -45,7 +46,7 @@ function makeDeps(getModelUsageSummary: AdminServerDependencies["stateStore"]["g
       getChangesForTask: vi.fn(async () => []),
       getChangesForTasks: vi.fn(async () => []),
       deleteTaskGroup: vi.fn(async () => {}),
-      getCostSummary: vi.fn(async () => ({ totalUsd: 0, totalAiCredits: 0, totalPremiumRequests: 0, totalRuns: 0, perProject: [], sinceEpochSeconds: null })),
+      getCostSummary: vi.fn(async () => ({ totalUsd: 0, totalAiCredits: 0, totalPremiumRequests: 0, totalRuns: 0, totalTokens: { input: 0, output: 0, cached: 0, cacheWrite: 0 }, totalRunsWithTokens: 0, perProject: [], sinceEpochSeconds: null })),
       getModelUsageSummary,
     },
     allowUnauthenticatedAdmin: true,
@@ -71,10 +72,33 @@ describe("Admin API — Model usage route", () => {
 
   it("returns the model usage summary", async () => {
     const summary: ModelUsageSummary = {
-      byModel: [{ modelId: "claude-sonnet", runCount: 3, usd: 0.06 }],
-      perProject: [{ projectId: "p1", projectName: "BACKEND", models: [{ modelId: "claude-sonnet", runCount: 3, usd: 0.06 }] }],
+      byModel: [
+        {
+          modelId: "claude-sonnet",
+          runCount: 3,
+          usd: 0.06,
+          tokens: { input: 1500, output: 300, cached: 800, cacheWrite: 50 },
+          runCountWithTokens: 3,
+        },
+      ],
+      perProject: [
+        {
+          projectId: "p1",
+          projectName: "BACKEND",
+          models: [
+            {
+              modelId: "claude-sonnet",
+              runCount: 3,
+              usd: 0.06,
+              tokens: { input: 1500, output: 300, cached: 800, cacheWrite: 50 },
+              runCountWithTokens: 3,
+            },
+          ],
+        },
+      ],
       totalRuns: 3,
       totalUsd: 0.06,
+      totalTokens: { input: 1500, output: 300, cached: 800, cacheWrite: 50 },
       sinceEpochSeconds: null,
     };
     const fn = vi.fn(async () => summary);
