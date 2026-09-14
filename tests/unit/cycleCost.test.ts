@@ -25,6 +25,7 @@ describe("computeCycleCost", () => {
     expect(cost.aiCredits).toBe(0);
     expect(cost.usd).toBe(0);
     expect(cost.premiumRequests).toBe(0);
+    expect(cost.tokensReported).toBe(false);
     expect(cost.modelId).toBeNull();
     expect(hasCostData(cost)).toBe(false);
   });
@@ -101,6 +102,16 @@ describe("computeCycleCost", () => {
     expect(cost.modelId).toBe("claude-opus");
   });
 
+  it("distinguishes an all-zero token report from absent token metrics", () => {
+    const cost = computeCycleCost([
+      usage({ inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }),
+    ]);
+
+    expect(cost.tokens).toEqual({ input: 0, output: 0, cached: 0, cacheWrite: 0 });
+    expect(cost.tokensReported).toBe(true);
+    expect(hasCostData(cost)).toBe(true);
+  });
+
   it("estimates USD from the premium-request multiplier when nano-AIU is absent", () => {
     const cost = computeCycleCost([usage({ cost: 0.25, inputTokens: 50, outputTokens: 10 })]);
     expect(cost.priced).toBe(false);
@@ -130,5 +141,6 @@ describe("computeCycleCost", () => {
     const cost = computeCycleCost([usage({ totalNanoAiu: Number.NaN, inputTokens: Number.POSITIVE_INFINITY })]);
     expect(cost.priced).toBe(false);
     expect(cost.tokens.input).toBe(0);
+    expect(cost.tokensReported).toBe(false);
   });
 });

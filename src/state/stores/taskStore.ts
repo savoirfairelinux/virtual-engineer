@@ -482,10 +482,10 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
       costAiCredits: cost.priced ? cost.aiCredits : null,
       costUsd: cost.usd > 0 ? cost.usd : null,
       premiumRequests: cost.premiumRequests > 0 ? cost.premiumRequests : null,
-      costInputTokens: cost.tokens.input > 0 ? cost.tokens.input : null,
-      costOutputTokens: cost.tokens.output > 0 ? cost.tokens.output : null,
-      costCachedTokens: cost.tokens.cached > 0 ? cost.tokens.cached : null,
-      costCacheWriteTokens: cost.tokens.cacheWrite > 0 ? cost.tokens.cacheWrite : null,
+      costInputTokens: cost.tokensReported ? cost.tokens.input : null,
+      costOutputTokens: cost.tokensReported ? cost.tokens.output : null,
+      costCachedTokens: cost.tokensReported ? cost.tokens.cached : null,
+      costCacheWriteTokens: cost.tokensReported ? cost.tokens.cacheWrite : null,
       costModelId: cost.modelId,
     };
   }
@@ -563,14 +563,16 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
       // cost_* columns are always populated at write time (saveAgentCycle) or
       // by the startup backfill migration (backfillLegacyCycleCosts); a row with
       // no snapshot genuinely has no recoverable cost data.
+      const tokensReported =
+        row.costInputTokens !== null ||
+        row.costOutputTokens !== null ||
+        row.costCachedTokens !== null ||
+        row.costCacheWriteTokens !== null;
       const hasSnapshot =
         row.costUsd !== null ||
         row.costAiCredits !== null ||
         row.premiumRequests !== null ||
-        row.costInputTokens !== null ||
-        row.costOutputTokens !== null ||
-        row.costCachedTokens !== null ||
-        row.costCacheWriteTokens !== null ||
+        tokensReported ||
         row.costModelId !== null;
       const cost: CycleCost | undefined = hasSnapshot
         ? {

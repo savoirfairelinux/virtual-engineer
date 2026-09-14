@@ -1,5 +1,10 @@
 import type { AgentLogEvent, CycleCost } from "../interfaces.js";
 
+export interface ComputedCycleCost extends CycleCost {
+  /** True when at least one usage event reported a finite token field. */
+  tokensReported: boolean;
+}
+
 /** 1 GitHub AI credit = 1 AI Unit (AIU) = 1e9 nano-AIU. */
 export const NANO_AIU_PER_CREDIT = 1_000_000_000;
 
@@ -54,9 +59,10 @@ interface RequestUsage {
  * summed. This avoids double-counting duplicate emissions while still totalling
  * genuine multi-request cycles.
  */
-export function computeCycleCost(events: readonly AgentLogEvent[] | undefined): CycleCost {
+export function computeCycleCost(events: readonly AgentLogEvent[] | undefined): ComputedCycleCost {
   const requests = new Map<string, RequestUsage>();
   let modelId: string | null = null;
+  let tokensReported = false;
 
   for (const event of events ?? []) {
     if (event.type !== "assistant.usage") continue;
@@ -65,10 +71,19 @@ export function computeCycleCost(events: readonly AgentLogEvent[] | undefined): 
 
     const nanoAiu = readNum(data, "totalNanoAiu");
     const cost = readNum(data, "cost");
-    const input = readNum(data, "inputTokens") ?? 0;
-    const output = readNum(data, "outputTokens") ?? 0;
-    const cached = readNum(data, "cacheReadTokens") ?? 0;
-    const cacheWrite = readNum(data, "cacheWriteTokens") ?? 0;
+    const reportedInput = readNum(data, "inputTokens");
+    const reportedOutput = readNum(data, "outputTokens");
+    const reportedCached = readNum(data, "cacheReadTokens");
+    const reportedCacheWrite = readNum(data, "cacheWriteTokens");
+    tokensReported ||=
+      reportedInput !== null ||
+      reportedOutput !== null ||
+      reportedCached !== null ||
+      reportedCacheWrite !== null;
+    const input = reportedInput ?? 0;
+    const output = reportedOutput ?? 0;
+    const cached = reportedCached ?? 0;
+    const cacheWrite = reportedCacheWrite ?? 0;
     const model = readStr(data, "model");
     if (model !== null) modelId = model;
 
@@ -120,14 +135,16 @@ export function computeCycleCost(events: readonly AgentLogEvent[] | undefined): 
     usd,
     premiumRequests,
     tokens: { input, output, cached, cacheWrite },
+    tokensReported,
     modelId,
   };
 }
 
 /** True when the cost object carries any signal worth persisting or surfacing. */
-export function hasCostData(cost: CycleCost): boolean {
+export function hasCostData(cost: ComputedCycleCost): boolean {
   return cost.priced
     || cost.premiumRequests > 0
+    || cost.tokensReported
     || cost.tokens.input > 0
     || cost.tokens.output > 0
     || cost.tokens.cached > 0

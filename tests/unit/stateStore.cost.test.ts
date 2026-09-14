@@ -303,6 +303,67 @@ describe("SqliteStateStore — getCostSummary", () => {
     expect(summary.totalRunsWithTokens).toBe(1);
   });
 
+  it("counts all-zero token reports from current and legacy write paths", async () => {
+    const agent = await store.createAgent({
+      name: "A",
+      type: "coding",
+      modelConfigJson: JSON.stringify({ model: "gpt-4.1" }),
+      systemPromptId: "system_generic_code",
+      instructionsPromptId: "instructions_generic_code",
+      enabled: true,
+    });
+    const project = await store.createProject({ name: "PLATFORM", type: "coding", agentId: agent.id });
+    const currentTask = await makeTaskForProject(store, project.id);
+    const legacyTask = await makeTaskForProject(store, project.id);
+
+    await store.saveAgentCycle(
+      currentTask,
+      1,
+      tokenResult({ input: 0, output: 0, cached: 0, cacheWrite: 0 })
+    );
+    insertRawCycle(dbPath, {
+      taskId: legacyTask,
+      createdAtEpochSeconds: Math.floor(Date.now() / 1000),
+      costUsd: null,
+      costAiCredits: null,
+      agentEvents: JSON.stringify(
+        tokenResult({ input: 0, output: 0, cached: 0, cacheWrite: 0 }).agentEvents
+      ),
+    });
+    store.close();
+    store = await SqliteStateStore.create(dbPath);
+
+    const summary = await store.getCostSummary();
+    expect(summary.totalRunsWithTokens).toBe(2);
+    expect(summary.totalTokens).toEqual({ input: 0, output: 0, cached: 0, cacheWrite: 0 });
+
+    const raw = new Database(dbPath);
+    const rows = raw
+      .prepare(
+        `SELECT task_id, cost_input_tokens, cost_output_tokens,
+                cost_cached_tokens, cost_cache_write_tokens
+         FROM agent_cycles WHERE task_id IN (?, ?)`
+      )
+      .all(currentTask, legacyTask) as Array<{
+        task_id: string;
+        cost_input_tokens: number | null;
+        cost_output_tokens: number | null;
+        cost_cached_tokens: number | null;
+        cost_cache_write_tokens: number | null;
+      }>;
+    raw.close();
+
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      expect(row).toMatchObject({
+        cost_input_tokens: 0,
+        cost_output_tokens: 0,
+        cost_cached_tokens: 0,
+        cost_cache_write_tokens: 0,
+      });
+    }
+  });
+
   it("includes tokens backfilled onto legacy rows from their event log", async () => {
     const agent = await store.createAgent({
       name: "A",

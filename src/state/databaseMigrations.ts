@@ -1274,10 +1274,10 @@ function backfillLegacyCycleCosts(raw: Database.Database): void {
         cost.priced ? cost.aiCredits : null,
         cost.usd > 0 ? cost.usd : null,
         cost.premiumRequests > 0 ? cost.premiumRequests : null,
-        cost.tokens.input > 0 ? cost.tokens.input : null,
-        cost.tokens.output > 0 ? cost.tokens.output : null,
-        cost.tokens.cached > 0 ? cost.tokens.cached : null,
-        cost.tokens.cacheWrite > 0 ? cost.tokens.cacheWrite : null,
+        cost.tokensReported ? cost.tokens.input : null,
+        cost.tokensReported ? cost.tokens.output : null,
+        cost.tokensReported ? cost.tokens.cached : null,
+        cost.tokensReported ? cost.tokens.cacheWrite : null,
         cost.modelId,
         row.id
       );
