@@ -310,6 +310,13 @@ export interface ApiOverview {
   };
 }
 
+export interface ApiCycleCostTokens {
+  input: number;
+  output: number;
+  cached: number;
+  cacheWrite: number;
+}
+
 export interface ApiCostSummaryProject {
   projectId: string | null;
   projectName: string | null;
@@ -317,6 +324,8 @@ export interface ApiCostSummaryProject {
   aiCredits: number;
   premiumRequests: number;
   runCount: number;
+  tokens: ApiCycleCostTokens;
+  runCountWithTokens: number;
 }
 
 export interface ApiCostSummary {
@@ -324,6 +333,8 @@ export interface ApiCostSummary {
   totalAiCredits: number;
   totalPremiumRequests: number;
   totalRuns: number;
+  totalTokens: ApiCycleCostTokens;
+  totalRunsWithTokens: number;
   perProject: ApiCostSummaryProject[];
   sinceEpochSeconds: number | null;
 }
@@ -332,6 +343,8 @@ export interface ApiModelUsageEntry {
   modelId: string | null;
   runCount: number;
   usd: number;
+  tokens: ApiCycleCostTokens;
+  runCountWithTokens: number;
 }
 
 export interface ApiModelUsageProject {
@@ -345,6 +358,7 @@ export interface ApiModelUsageSummary {
   perProject: ApiModelUsageProject[];
   totalRuns: number;
   totalUsd: number;
+  totalTokens: ApiCycleCostTokens;
   sinceEpochSeconds: number | null;
 }
 

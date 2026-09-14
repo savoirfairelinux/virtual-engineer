@@ -7,7 +7,7 @@ import { ProviderGlyph } from "../components/ProviderGlyph.tsx";
 import { Icon } from "../components/Icon.tsx";
 import { TONE, STATES, isActiveState } from "../states.ts";
 import { api } from "../api.ts";
-import type { ApiOverview, ApiTask, ApiProvider, ApiCostSummary, ApiModelUsageSummary } from "../types.ts";
+import type { ApiOverview, ApiTask, ApiProvider, ApiCostSummary, ApiCycleCostTokens, ApiModelUsageSummary } from "../types.ts";
 
 interface OverviewViewProps {
   overview: ApiOverview | null;
@@ -129,6 +129,19 @@ function formatUsd(n: number): string {
   return `$${n.toFixed(2)}`;
 }
 
+function formatTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return String(n);
+}
+
+/** Share of prompt tokens served from cache, or null when nothing was read in. */
+function cacheHitPct(tokens: ApiCycleCostTokens): number | null {
+  const prompt = tokens.input + tokens.cached;
+  if (prompt <= 0) return null;
+  return Math.round((tokens.cached / prompt) * 100);
+}
+
 const MODEL_BAR_COLORS = [
   "var(--accent-strong)",
   TONE.ok.c,
@@ -213,9 +226,22 @@ function CostSummaryCard() {
             </span>
             <span style={{ fontSize: "12px", color: "var(--text-faint)" }}>instance total</span>
           </div>
-          <div style={{ fontSize: "11.5px", color: "var(--text-faint)", marginBottom: "16px" }}>
+          <div style={{ fontSize: "11.5px", color: "var(--text-faint)", marginBottom: "4px" }}>
             {summary.totalRuns} run{summary.totalRuns === 1 ? "" : "s"}
             {summary.totalAiCredits > 0 ? ` · ${summary.totalAiCredits.toFixed(2)} credits` : ""}
+          </div>
+          <div style={{ fontSize: "11.5px", color: "var(--text-faint)", marginBottom: "16px" }}>
+            {summary.totalRunsWithTokens > 0 ? (
+              <>
+                {formatTokens(summary.totalTokens.input)} in · {formatTokens(summary.totalTokens.output)} out
+                {cacheHitPct(summary.totalTokens) !== null ? ` · ${cacheHitPct(summary.totalTokens)}% cached` : ""}
+                {summary.totalRunsWithTokens < summary.totalRuns
+                  ? ` · ${summary.totalRuns - summary.totalRunsWithTokens} run(s) report no usage`
+                  : ""}
+              </>
+            ) : (
+              "No token usage reported by this engine."
+            )}
           </div>
           {projects.length === 0 ? (
             <div style={{ fontSize: "12.5px", color: "var(--text-faint)" }}>No recorded cost in this period.</div>
@@ -333,6 +359,15 @@ function ModelUsageCard() {
                   </span>
                   <span className="mono" style={{ fontSize: "11.5px", color: "var(--text-faint)" }}>{pct}%</span>
                   <span className="mono metric-val" style={{ width: "44px", textAlign: "right", fontSize: "12px", fontWeight: 600 }}>{m.runCount}</span>
+                  <span
+                    className="mono"
+                    title={`${m.tokens.input} in / ${m.tokens.output} out / ${m.tokens.cached} cached / ${m.tokens.cacheWrite} cache-write`}
+                    style={{ width: "70px", textAlign: "right", fontSize: "11.5px", color: "var(--text-faint)" }}
+                  >
+                    {m.runCountWithTokens > 0
+                      ? `${formatTokens(m.tokens.input + m.tokens.output + m.tokens.cached)} tok`
+                      : "—"}
+                  </span>
                   <span className="mono" style={{ width: "58px", textAlign: "right", fontSize: "11.5px", color: "var(--text-faint)" }}>{formatUsd(m.usd)}</span>
                 </div>
               );
