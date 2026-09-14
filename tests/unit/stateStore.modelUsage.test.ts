@@ -30,6 +30,30 @@ function pricedResult(credits: number, modelId: string): AgentResult {
   return { status: "success", summary: "ok", modifiedFiles: [], agentLogs: "", metadata: {}, agentEvents: events };
 }
 
+/** A usage event carrying token counts but no nano-AIU (the non-Copilot provider shape). */
+function tokenResult(
+  tokens: { input: number; output: number; cached: number; cacheWrite: number },
+  modelId: string
+): AgentResult {
+  const events: AgentLogEvent[] = [
+    {
+      type: "assistant.usage",
+      timestamp: "2026-01-01T00:00:00.000Z",
+      data: {
+        apiCallId: `call-${randomUUID()}`,
+        model: modelId,
+        inputTokens: tokens.input,
+        outputTokens: tokens.output,
+        cacheReadTokens: tokens.cached,
+        cacheWriteTokens: tokens.cacheWrite,
+      },
+      taskId: "t",
+      cycleNumber: 1,
+    },
+  ];
+  return { status: "success", summary: "ok", modifiedFiles: [], agentLogs: "", metadata: {}, agentEvents: events };
+}
+
 async function makeTaskForProject(store: SqliteStateStore, projectId?: ProjectId): Promise<TaskId> {
   const taskId = makeTaskId(randomUUID());
   await store.createTask(taskId, makeTicketId(`TKT-${randomUUID()}`));
@@ -165,6 +189,41 @@ describe("SqliteStateStore — getModelUsageSummary", () => {
     expect(summary.totalRuns).toBe(0);
     expect(summary.byModel).toEqual([]);
     expect(summary.perProject).toEqual([]);
+    expect(summary.totalTokens).toEqual({ input: 0, output: 0, cached: 0, cacheWrite: 0 });
+  });
+
+  it("aggregates token usage per model, globally and per project", async () => {
+    const agent = await store.createAgent({
+      name: "A",
+      type: "coding",
+      modelConfigJson: JSON.stringify({ model: "gpt-4.1" }),
+      systemPromptId: "system_generic_code",
+      instructionsPromptId: "instructions_generic_code",
+      enabled: true,
+    });
+    const p1 = await store.createProject({ name: "BACKEND", type: "coding", agentId: agent.id });
+    const t1 = await makeTaskForProject(store, p1.id);
+
+    await store.saveAgentCycle(t1, 1, tokenResult({ input: 1000, output: 200, cached: 600, cacheWrite: 40 }, "claude-sonnet"));
+    await store.saveAgentCycle(t1, 2, tokenResult({ input: 500, output: 100, cached: 200, cacheWrite: 10 }, "claude-sonnet"));
+    await store.saveAgentCycle(t1, 3, tokenResult({ input: 300, output: 60, cached: 0, cacheWrite: 0 }, "gpt-5"));
+    // Priced but tokenless: counted as a run, excluded from runCountWithTokens.
+    await store.saveAgentCycle(t1, 4, pricedResult(2, "gpt-5"));
+
+    const summary = await store.getModelUsageSummary();
+
+    expect(summary.totalTokens).toEqual({ input: 1800, output: 360, cached: 800, cacheWrite: 50 });
+
+    const byModel = new Map(summary.byModel.map((m) => [m.modelId, m]));
+    expect(byModel.get("claude-sonnet")?.tokens).toEqual({ input: 1500, output: 300, cached: 800, cacheWrite: 50 });
+    expect(byModel.get("claude-sonnet")?.runCountWithTokens).toBe(2);
+    expect(byModel.get("gpt-5")?.tokens).toEqual({ input: 300, output: 60, cached: 0, cacheWrite: 0 });
+    expect(byModel.get("gpt-5")?.runCount).toBe(2);
+    expect(byModel.get("gpt-5")?.runCountWithTokens).toBe(1);
+
+    const proj = summary.perProject.find((p) => p.projectId === p1.id);
+    const projModels = new Map(proj?.models.map((m) => [m.modelId, m]));
+    expect(projModels.get("claude-sonnet")?.tokens).toEqual({ input: 1500, output: 300, cached: 800, cacheWrite: 50 });
   });
 
   it("reopening the store backfills cost_model_id so getModelUsageSummary attributes the run directly", async () => {
@@ -196,6 +255,14 @@ describe("SqliteStateStore — getModelUsageSummary", () => {
     expect(row.cost_model_id).toBe("claude-sonnet");
 
     const summary = await store.getModelUsageSummary();
-    expect(summary.byModel).toEqual([{ modelId: "claude-sonnet", runCount: 1, usd: expect.any(Number) }]);
+    expect(summary.byModel).toEqual([
+      {
+        modelId: "claude-sonnet",
+        runCount: 1,
+        runCountWithTokens: 0,
+        usd: expect.any(Number),
+        tokens: { input: 0, output: 0, cached: 0, cacheWrite: 0 },
+      },
+    ]);
   });
 });

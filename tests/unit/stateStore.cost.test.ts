@@ -30,6 +30,30 @@ function pricedResult(credits: number, modelId = "claude-sonnet"): AgentResult {
   return { status: "success", summary: "ok", modifiedFiles: [], agentLogs: "", metadata: {}, agentEvents: events };
 }
 
+/** A usage event carrying token counts but no nano-AIU (the non-Copilot provider shape). */
+function tokenResult(
+  tokens: { input: number; output: number; cached: number; cacheWrite: number },
+  modelId = "claude-sonnet"
+): AgentResult {
+  const events: AgentLogEvent[] = [
+    {
+      type: "assistant.usage",
+      timestamp: "2026-01-01T00:00:00.000Z",
+      data: {
+        apiCallId: `call-${randomUUID()}`,
+        model: modelId,
+        inputTokens: tokens.input,
+        outputTokens: tokens.output,
+        cacheReadTokens: tokens.cached,
+        cacheWriteTokens: tokens.cacheWrite,
+      },
+      taskId: "t",
+      cycleNumber: 1,
+    },
+  ];
+  return { status: "success", summary: "ok", modifiedFiles: [], agentLogs: "", metadata: {}, agentEvents: events };
+}
+
 async function makeTaskForProject(
   store: SqliteStateStore,
   projectId?: ProjectId
@@ -220,6 +244,92 @@ describe("SqliteStateStore — getCostSummary", () => {
     expect(summary.totalRuns).toBe(0);
     expect(summary.totalUsd).toBe(0);
     expect(summary.perProject).toEqual([]);
+    expect(summary.totalTokens).toEqual({ input: 0, output: 0, cached: 0, cacheWrite: 0 });
+    expect(summary.totalRunsWithTokens).toBe(0);
+  });
+
+  it("aggregates token usage per project and instance-wide", async () => {
+    const agent = await store.createAgent({
+      name: "A",
+      type: "coding",
+      modelConfigJson: JSON.stringify({ model: "gpt-4.1" }),
+      systemPromptId: "system_generic_code",
+      instructionsPromptId: "instructions_generic_code",
+      enabled: true,
+    });
+    const p1 = await store.createProject({ name: "PLATFORM", type: "coding", agentId: agent.id });
+    const p2 = await store.createProject({ name: "MOBILE", type: "coding", agentId: agent.id });
+
+    const t1 = await makeTaskForProject(store, p1.id);
+    await store.saveAgentCycle(t1, 1, tokenResult({ input: 1000, output: 200, cached: 800, cacheWrite: 50 }));
+    await store.saveAgentCycle(t1, 2, tokenResult({ input: 500, output: 100, cached: 0, cacheWrite: 0 }));
+
+    const t2 = await makeTaskForProject(store, p2.id);
+    await store.saveAgentCycle(t2, 1, tokenResult({ input: 300, output: 60, cached: 100, cacheWrite: 10 }));
+
+    const summary = await store.getCostSummary();
+
+    expect(summary.totalTokens).toEqual({ input: 1800, output: 360, cached: 900, cacheWrite: 60 });
+    expect(summary.totalRunsWithTokens).toBe(3);
+
+    const byId = new Map(summary.perProject.map((p) => [p.projectId, p]));
+    expect(byId.get(p1.id)?.tokens).toEqual({ input: 1500, output: 300, cached: 800, cacheWrite: 50 });
+    expect(byId.get(p2.id)?.tokens).toEqual({ input: 300, output: 60, cached: 100, cacheWrite: 10 });
+  });
+
+  it("counts runs that reported no token usage separately from runs that did", async () => {
+    const agent = await store.createAgent({
+      name: "A",
+      type: "coding",
+      modelConfigJson: JSON.stringify({ model: "gpt-4.1" }),
+      systemPromptId: "system_generic_code",
+      instructionsPromptId: "instructions_generic_code",
+      enabled: true,
+    });
+    const p1 = await store.createProject({ name: "PLATFORM", type: "coding", agentId: agent.id });
+    const t1 = await makeTaskForProject(store, p1.id);
+
+    // Priced-but-tokenless (all four token columns stay NULL) vs. token-reporting.
+    await store.saveAgentCycle(t1, 1, pricedResult(2));
+    await store.saveAgentCycle(t1, 2, tokenResult({ input: 400, output: 80, cached: 0, cacheWrite: 0 }));
+
+    const summary = await store.getCostSummary();
+    const project = summary.perProject.find((p) => p.projectId === p1.id);
+
+    expect(project?.runCount).toBe(2);
+    expect(project?.runCountWithTokens).toBe(1);
+    expect(project?.tokens).toEqual({ input: 400, output: 80, cached: 0, cacheWrite: 0 });
+    expect(summary.totalRuns).toBe(2);
+    expect(summary.totalRunsWithTokens).toBe(1);
+  });
+
+  it("includes tokens backfilled onto legacy rows from their event log", async () => {
+    const agent = await store.createAgent({
+      name: "A",
+      type: "coding",
+      modelConfigJson: JSON.stringify({ model: "gpt-4.1" }),
+      systemPromptId: "system_generic_code",
+      instructionsPromptId: "instructions_generic_code",
+      enabled: true,
+    });
+    const p1 = await store.createProject({ name: "PLATFORM", type: "coding", agentId: agent.id });
+    const t1 = await makeTaskForProject(store, p1.id);
+
+    insertRawCycle(dbPath, {
+      taskId: t1,
+      createdAtEpochSeconds: Math.floor(Date.now() / 1000),
+      costUsd: null,
+      costAiCredits: null,
+      agentEvents: JSON.stringify(
+        tokenResult({ input: 900, output: 120, cached: 700, cacheWrite: 30 }).agentEvents
+      ),
+    });
+    store.close();
+    store = await SqliteStateStore.create(dbPath);
+
+    const summary = await store.getCostSummary();
+    expect(summary.totalTokens).toEqual({ input: 900, output: 120, cached: 700, cacheWrite: 30 });
+    expect(summary.totalRunsWithTokens).toBe(1);
   });
 
   it("reopening the store backfills legacy rows before getCostSummary counts their cost", async () => {
