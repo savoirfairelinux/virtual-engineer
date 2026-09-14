@@ -12,7 +12,7 @@ confirm a signal exists, I say so explicitly rather than assuming.
 
 **Vocabulary used throughout:** `TaskState` (`src/domain/tasks.ts` via `src/interfaces.ts`),
 `TaskType` (`code-gen` | `code-review`), `DomainCapability` (`issue_tracking` | `code_review` |
-`source_control` | `agent_execution`), `ProviderId` (the 13 providers in `src/state/schema.ts`
+`source_control` | `agent_execution`), `ProviderId` (the 12 providers in `src/state/schema.ts`
 `integrations.provider`).
 
 ---
