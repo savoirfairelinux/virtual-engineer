@@ -18,7 +18,7 @@
  * ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN for Claude).
  */
 
-import { hardenedGit } from './gitHardened.js'
+import { hardenedGit } from './gitHardened.js';
 import { join } from 'path';
 
 import type { AgentLogEvent, AgentResult, CommitDescriptor, RepositoryMap } from '../../src/interfaces.js';
