@@ -7,6 +7,7 @@ import { ProviderGlyph } from "../components/ProviderGlyph.tsx";
 import { Icon } from "../components/Icon.tsx";
 import { TONE, STATES, isActiveState } from "../states.ts";
 import { api } from "../api.ts";
+import { totalProcessedTokens } from "./TasksView/liveMetrics.ts";
 import type { ApiOverview, ApiTask, ApiProvider, ApiCostSummary, ApiCycleCostTokens, ApiModelUsageSummary } from "../types.ts";
 
 interface OverviewViewProps {
@@ -140,6 +141,15 @@ function cacheHitPct(tokens: ApiCycleCostTokens): number | null {
   const prompt = tokens.input + tokens.cached;
   if (prompt <= 0) return null;
   return Math.round((tokens.cached / prompt) * 100);
+}
+
+function processedTokenCount(tokens: ApiCycleCostTokens): number {
+  return totalProcessedTokens({
+    inputTokens: tokens.input,
+    outputTokens: tokens.output,
+    cacheRead: tokens.cached,
+    cacheWrite: tokens.cacheWrite,
+  });
 }
 
 const MODEL_BAR_COLORS = [
@@ -365,7 +375,7 @@ function ModelUsageCard() {
                     style={{ width: "70px", textAlign: "right", fontSize: "11.5px", color: "var(--text-faint)" }}
                   >
                     {m.runCountWithTokens > 0
-                      ? `${formatTokens(m.tokens.input + m.tokens.output + m.tokens.cached)} tok`
+                      ? `${formatTokens(processedTokenCount(m.tokens))} tok`
                       : "—"}
                   </span>
                   <span className="mono" style={{ width: "58px", textAlign: "right", fontSize: "11.5px", color: "var(--text-faint)" }}>{formatUsd(m.usd)}</span>
