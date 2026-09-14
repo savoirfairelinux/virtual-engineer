@@ -265,7 +265,10 @@ wait_for_container_log() {
   local pattern="$2"
   local attempts="${3:-30}"
   while (( attempts > 0 )); do
-    if docker logs "$container" 2>&1 | grep -qF -- "$pattern"; then
+    # `grep -q` exits at the first match and SIGPIPEs `docker logs`; without the
+    # `|| true` that 141 would surface through `pipefail` as "pattern not found"
+    # once the container has logged enough to still be writing.
+    if { docker logs "$container" 2>&1 || true; } | grep -qF -- "$pattern"; then
       return 0
     fi
     sleep 1
