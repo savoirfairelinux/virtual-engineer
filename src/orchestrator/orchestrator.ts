@@ -57,6 +57,34 @@ import {
 
 const log = getLogger("orchestrator");
 
+interface ReviewRepositorySelection {
+  repoKey: string | undefined;
+  hasQualifiedRepository: boolean;
+}
+
+function selectReviewRepository(
+  externalChangeId: ExternalChangeId | null | undefined,
+  repositories: readonly string[]
+): ReviewRepositorySelection {
+  const rawChangeId = externalChangeId === null || externalChangeId === undefined
+    ? ""
+    : String(externalChangeId).trim();
+  const hashIndex = rawChangeId.indexOf("#");
+
+  if (hashIndex > 0) {
+    const requestedRepoKey = rawChangeId.slice(0, hashIndex);
+    return {
+      repoKey: repositories.includes(requestedRepoKey) ? requestedRepoKey : undefined,
+      hasQualifiedRepository: true,
+    };
+  }
+
+  return {
+    repoKey: repositories.length === 1 ? repositories[0] : undefined,
+    hasQualifiedRepository: false,
+  };
+}
+
 /**
  * Resolve a push target's `localPath` inside the workspace. `localPath` is
  * already validated at the admin API, but the workspace round-trips through the
@@ -535,7 +563,9 @@ export class Orchestrator {
   }
 
   /** Resolve the review connector for a project-bound task via review config or push targets. */
-  private async resolveReviewConnector(task: Pick<Task, "taskId" | "projectId">): Promise<ReviewConnector> {
+  private async resolveReviewConnector(
+    task: Pick<Task, "taskId" | "projectId" | "externalChangeId">
+  ): Promise<ReviewConnector> {
     if (!task.projectId || !this.projectMode) {
       throw new Error(`Task ${task.taskId} is not project-bound; cannot resolve review connector`);
     }
@@ -545,14 +575,45 @@ export class Orchestrator {
     // connector first — which lacks `getChangeStatus`.
     const rc = await this.projectMode.projectStore.getProjectReviewConfig(task.projectId);
     if (rc) {
-      const connector = this.resolveReviewCapabilityConnector(rc.integrationId);
+      const selection = selectReviewRepository(task.externalChangeId, rc.repos);
+      if (selection.hasQualifiedRepository && selection.repoKey === undefined) {
+        throw new Error(
+          `Review change ${task.externalChangeId ?? ""} does not match a repository bound to project ${task.projectId}`
+        );
+      }
+      const connector = await this.resolveReviewCapabilityConnector(rc.integrationId, selection.repoKey);
       if (connector) return connector;
     }
     // Fall back to push targets (for coding projects — the VCS connector often doubles as review)
     const pts = await this.projectMode.projectStore.listProjectPushTargets(task.projectId);
-    for (const pt of pts) {
-      const connector = this.resolveReviewCapabilityConnector(pt.integrationId);
-      if (connector) return connector;
+    const selection = selectReviewRepository(task.externalChangeId, pts.map((pt) => pt.repoKey));
+    if (selection.hasQualifiedRepository && selection.repoKey === undefined) {
+      throw new Error(
+        `Review change ${task.externalChangeId ?? ""} does not match a repository push target for project ${task.projectId}`
+      );
+    }
+
+    if (selection.repoKey !== undefined) {
+      const target = pts.find((pt) => pt.repoKey === selection.repoKey);
+      if (target) {
+        const connector = await this.resolveReviewCapabilityConnector(target.integrationId, target.repoKey);
+        if (connector) return connector;
+      }
+    } else if (pts.length === 1) {
+      const target = pts[0];
+      if (target) {
+        const connector = await this.resolveReviewCapabilityConnector(target.integrationId, target.repoKey);
+        if (connector) return connector;
+      }
+    } else {
+      const integrationIds = [...new Set(pts.map((pt) => pt.integrationId))];
+      if (integrationIds.length === 1) {
+        const integrationId = integrationIds[0];
+        if (integrationId !== undefined) {
+          const connector = await this.resolveReviewCapabilityConnector(integrationId);
+          if (connector) return connector;
+        }
+      }
     }
     throw new Error(`No active review connector found for project ${task.projectId} (task ${task.taskId})`);
   }
@@ -564,9 +625,30 @@ export class Orchestrator {
    * lacks `getChangeStatus`. Falls back to `getConnectorForIntegration` only
    * when the capability resolver is unavailable.
    */
-  private resolveReviewCapabilityConnector(integrationId: string): ReviewConnector | null {
+  private async resolveReviewCapabilityConnector(
+    integrationId: string,
+    repoKey?: string
+  ): Promise<ReviewConnector | null> {
     const pm = this.projectMode?.pluginManager;
     if (!pm) return null;
+
+    if (repoKey !== undefined && pm.createConnectorForCapability) {
+      const contextualized = await pm.createConnectorForCapability<ReviewConnector>(
+        integrationId,
+        "code_review",
+        { repoKey }
+      );
+      if (contextualized) return contextualized;
+    }
+
+    const integration = pm.getActiveIntegrationById?.(integrationId);
+    if (
+      repoKey === undefined &&
+      (integration?.provider === "github" || integration?.provider === "gitlab")
+    ) {
+      return null;
+    }
+
     if (pm.getConnectorForCapability) {
       const byCapability = pm.getConnectorForCapability<ReviewConnector>(integrationId, "code_review");
       if (byCapability) return byCapability;

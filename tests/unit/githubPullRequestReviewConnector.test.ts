@@ -117,6 +117,29 @@ describe("GitHubPullRequestReviewConnector", () => {
       expect(await makeConnector().getChangeStatus(makeExternalChangeId("42"))).toBe("MERGED");
     });
 
+    it("accepts repository-qualified PR ids and targets the configured repository", async () => {
+      fetchMock.mockResolvedValueOnce(jsonResponse(githubPrMerged));
+
+      expect(
+        await makeConnector({ owner: "octocat", repo: "hello-world" }).getChangeStatus(
+          makeExternalChangeId("octocat/hello-world#42")
+        )
+      ).toBe("MERGED");
+
+      expect(fetchMock).toHaveBeenCalledWith(
+        "https://api.github.com/repos/octocat/hello-world/pulls/42",
+        expect.any(Object)
+      );
+    });
+
+    it("rejects a repository-qualified id for a different configured repository", async () => {
+      await expect(
+        makeConnector().getChangeStatus(makeExternalChangeId("octocat/other-repo#42"))
+      ).rejects.toThrow("Invalid GitHub repository");
+
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
     it("returns ABANDONED for closed (not merged) PRs", async () => {
       fetchMock.mockResolvedValueOnce(jsonResponse(githubPrClosed));
       expect(await makeConnector().getChangeStatus(makeExternalChangeId("42"))).toBe("ABANDONED");

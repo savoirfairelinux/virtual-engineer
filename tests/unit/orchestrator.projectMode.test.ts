@@ -1431,6 +1431,97 @@ describe("Orchestrator — Phase 4 project mode", () => {
     expect(reviewConnector.getChangeStatus).toHaveBeenCalledWith("17");
   });
 
+  it("resolves a REVIEW_WATCHING review connector for the repository in the change id", async () => {
+    const task = makeTask({
+      state: "REVIEW_WATCHING",
+      taskType: "code-review",
+      externalChangeId: makeExternalChangeId("octocat/hello-world#42"),
+    });
+    const stateStore = makeStateStore({
+      getTask: vi.fn().mockResolvedValue(task),
+      transition: vi.fn().mockResolvedValue(makeTask({ ...task, state: "REVIEW_DONE" })),
+    });
+    const reviewConnector = {
+      getChangeStatus: vi.fn().mockResolvedValue("MERGED"),
+    } as unknown as import("../../src/interfaces.js").ReviewConnector;
+    const projectMode: ProjectModeDeps = {
+      projectStore: {
+        getProjectById: vi.fn(async () => makeProject({ type: "review" })),
+        listProjectPushTargets: vi.fn(async () => []),
+        getProjectTicketSource: vi.fn().mockResolvedValue(null),
+        getProjectReviewConfig: vi.fn().mockResolvedValue({
+          integrationId: "github-int",
+          repos: ["octocat/other-repo", "octocat/hello-world"],
+        }),
+        getAgentById: makeProjectAgentLookup(),
+      },
+      pluginManager: {
+        getConnectorForCapability: vi.fn().mockReturnValue(null),
+        getConnectorForIntegration: vi.fn().mockReturnValue(null),
+        createConnectorForCapability: vi.fn().mockImplementation(
+          async (_integrationId: string, _capability: string, context?: { repoKey?: string }) =>
+            context?.repoKey === "octocat/hello-world" ? reviewConnector : null
+        ),
+      },
+    };
+
+    const orch = new Orchestrator(baseConfig(), stateStore, makeWorkspaceRunner(), undefined, undefined, projectMode);
+
+    await orch.checkReviewWatchingTask(task.taskId);
+
+    expect(projectMode.pluginManager.createConnectorForCapability).toHaveBeenCalledWith(
+      "github-int",
+      "code_review",
+      { repoKey: "octocat/hello-world" }
+    );
+    expect(reviewConnector.getChangeStatus).toHaveBeenCalledWith("octocat/hello-world#42");
+    expect(stateStore.transition).toHaveBeenCalledWith(task.taskId, "REVIEW_DONE");
+  });
+
+  it("abandons a REVIEW_WATCHING task when the bound change is closed without merging", async () => {
+    const task = makeTask({
+      state: "REVIEW_WATCHING",
+      taskType: "code-review",
+      externalChangeId: makeExternalChangeId("octocat/hello-world#42"),
+    });
+    const setFailureReason = vi.fn();
+    const stateStore = makeStateStore({
+      getTask: vi.fn().mockResolvedValue(task),
+      setFailureReason,
+      transition: vi.fn().mockResolvedValue(makeTask({ ...task, state: "ABANDONED" })),
+    });
+    const reviewConnector = {
+      getChangeStatus: vi.fn().mockResolvedValue("ABANDONED"),
+    } as unknown as import("../../src/interfaces.js").ReviewConnector;
+    const projectMode: ProjectModeDeps = {
+      projectStore: {
+        getProjectById: vi.fn(async () => makeProject({ type: "review" })),
+        listProjectPushTargets: vi.fn(async () => []),
+        getProjectTicketSource: vi.fn().mockResolvedValue(null),
+        getProjectReviewConfig: vi.fn().mockResolvedValue({
+          integrationId: "github-int",
+          repos: ["octocat/hello-world"],
+        }),
+        getAgentById: makeProjectAgentLookup(),
+      },
+      pluginManager: {
+        getConnectorForCapability: vi.fn().mockReturnValue(null),
+        getConnectorForIntegration: vi.fn().mockReturnValue(null),
+        createConnectorForCapability: vi.fn().mockResolvedValue(reviewConnector),
+      },
+    };
+
+    const orch = new Orchestrator(baseConfig(), stateStore, makeWorkspaceRunner(), undefined, undefined, projectMode);
+
+    await orch.checkReviewWatchingTask(task.taskId);
+
+    expect(setFailureReason).toHaveBeenCalledWith(
+      task.taskId,
+      "change was abandoned externally (poll)"
+    );
+    expect(stateStore.transition).toHaveBeenCalledWith(task.taskId, "ABANDONED");
+  });
+
   it("ignores a CI build-failure comment when reactToCiFailures is off (default) — no retry cycle", async () => {
     const task = makeTask({ state: "IN_REVIEW" });
     const stateStore = makeStateStore({

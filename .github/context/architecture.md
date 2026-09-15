@@ -49,7 +49,7 @@ cannot collide on the same change number.
 
 ### Polling — `src/orchestrator/pollingLoop.ts`
 
-Ticket polling is **project-aware**. The loop iterates enabled coding projects, resolves each project's ticket source via the `issue_tracking` binding in `project_integration_bindings`, fetches assigned tickets through the linked integration, and calls `Orchestrator.startTaskForProject()`. Each tick also runs review-side polling: `pollReviewProjects()` discovers open PR/MR review assignments for enabled review projects (skipped for stream-events integrations such as Gerrit), `pollInReviewTasks()` re-checks `IN_REVIEW` code-gen tasks for new feedback, and `pollReviewWatchingTasks()` re-checks `REVIEW_WATCHING` review tasks for merged/abandoned outcomes. See [modules/orchestrator.md](modules/orchestrator.md).
+Ticket polling is **project-aware**. The loop iterates enabled coding projects, resolves each project's ticket source via the `issue_tracking` binding in `project_integration_bindings`, fetches assigned tickets through the linked integration, and calls `Orchestrator.startTaskForProject()`. Each tick also runs review-side polling: `pollReviewProjects()` discovers open PR/MR review assignments for enabled review projects (skipped for stream-events integrations such as Gerrit), `pollInReviewTasks()` re-checks `IN_REVIEW` code-gen tasks for new feedback, and `pollReviewWatchingTasks()` re-checks `REVIEW_WATCHING` review tasks for merged/abandoned outcomes. The watcher resolves project-bound review connectors from repository-qualified change ids and never chooses an arbitrary repository when a binding is ambiguous. See [modules/orchestrator.md](modules/orchestrator.md).
 
 ### Code-gen orchestrator — `src/orchestrator/orchestrator.ts`
 

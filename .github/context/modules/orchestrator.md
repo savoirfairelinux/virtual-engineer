@@ -38,7 +38,7 @@ Important behaviors:
 - when that project-linked agent is active, `runAgentCycle()` also applies `resolveAgentConfig(agent, project)` to the `TaskContext`, so per-project Copilot model, GitHub token, CLI URL, and prompt ids flow into the agent without changing the integration routing
 - project agent runtime resolution fails closed when a managed integration or agent token cannot be decrypted; it never falls back to forwarding the stored ciphertext or a different credential path
 - OpenCode runtime resolution reads `openCodeProvider`, `openCodeApiKey`, and `openCodeApiBase` from the selected integration into `ResolvedAgentConfig.extra`; `agentContextBuilder.ts` forwards them onto coding `AgentSession` values, while `reviewBootstrap.ts` and `reviewOrchestrator.ts` carry the same selector, credential, and base URL into `ReviewWorkspaceInput`
-- project-mode ticket/review/VCS resolution can build project-bound connectors from the active integration plus VE-owned binding context; GitLab therefore reads ticket project selection from the `issue_tracking` binding's `ticketProjectKey` and MR/push project selection from the relevant `repoKey` rather than from integration-global `projectId`
+- project-mode ticket/review/VCS resolution can build project-bound connectors from the active integration plus VE-owned binding context; GitLab therefore reads ticket project selection from the `issue_tracking` binding's `ticketProjectKey` and MR/push project selection from the relevant `repoKey` rather than from integration-global `projectId`. Review status polling applies the same rule: a repository-qualified change id must match a bound `repoKey`, while a bare id may use context only when one repository is bound; ambiguous multi-repository changes never select the first repository implicitly
 - `runWorkflow()` is state-driven and restart-safe; an interrupted `AGENT_RUNNING` task with a persisted running result resumes that same cycle instead of consuming another cycle number
 - one shared `TaskLifecycleCoordinator` serializes code-gen workflows, review passes, polling/webhooks, manual abandon, and project deletion. Review cancellation aborts and awaits provider/agent work before the admin mutation. Project deletion first tombstones the project against both code-gen and review task creation, waits any in-progress creation lease, then cancels and barriers every project task before removing rows; stale invocations for deleted task ids are suppressed
 - webhook merge handling is dual-path: code-gen tasks in `IN_REVIEW` transition through `MERGED -> CLOSING -> DONE`, while review tasks in `REVIEW_WATCHING` transition directly to `REVIEW_DONE`
@@ -92,7 +92,7 @@ Every tick (`POLLING_INTERVAL_MS`, exponential backoff on repeated failures) run
 
 ### `pollReviewWatchingTasks()` (always on)
 
-- polling fallback for code-review tasks in `REVIEW_WATCHING`: calls `orchestrator.checkReviewWatchingTask(taskId)` to compensate for missed `change-merged` stream events
+- polling fallback for code-review tasks in `REVIEW_WATCHING`: calls `orchestrator.checkReviewWatchingTask(taskId)` to compensate for missed `change-merged` stream events. The watcher queries the project-bound `code_review` connector and transitions merged changes to `REVIEW_DONE` or abandons externally closed changes
 
 All review-side polls share a per-change **cooldown map** (`reviewPollCooldowns`, keyed by change id or `integrationId:changeId`) so a given change is queried at most once per polling interval; stale entries are evicted when tasks leave `IN_REVIEW`.
 
