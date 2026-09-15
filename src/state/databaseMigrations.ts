@@ -7,7 +7,7 @@ import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import { readMigrationFiles, type MigrationMeta } from "drizzle-orm/migrator";
 import { computeCycleCost, hasCostData } from "../agents/cycleCost.js";
 import { getLogger } from "../logger.js";
-import type { AgentLogEvent, AgentResult } from "../interfaces.js";
+import type { AgentLogEvent, CycleCost } from "../interfaces.js";
 
 const log = getLogger("db-migrations");
 
@@ -1213,12 +1213,48 @@ function dropColumnIfExists(raw: Database.Database, table: string, column: strin
   raw.exec(`ALTER TABLE ${quoteIdentifier(table)} DROP COLUMN ${quoteIdentifier(column)}`);
 }
 
+function asAgentLogEvents(value: unknown): AgentLogEvent[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const events = value.filter(
+    (entry): entry is AgentLogEvent =>
+      typeof entry === "object" &&
+      entry !== null &&
+      typeof (entry as { type?: unknown }).type === "string"
+  );
+  return events.length > 0 ? events : undefined;
+}
+
+function parseAgentLogEventsJson(value: string): AgentLogEvent[] | undefined {
+  try {
+    return asAgentLogEvents(JSON.parse(value) as unknown);
+  } catch {
+    return undefined;
+  }
+}
+
+function parseEmbeddedAgentLogEvents(value: string): AgentLogEvent[] | undefined {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (typeof parsed !== "object" || parsed === null) return undefined;
+    return asAgentLogEvents((parsed as { agentEvents?: unknown }).agentEvents);
+  } catch {
+    return undefined;
+  }
+}
+
+function hasRequiredBackfillData(
+  cost: CycleCost & { tokensReported: boolean },
+  needsFullBackfill: boolean
+): boolean {
+  return needsFullBackfill ? hasCostData(cost) : cost.tokensReported;
+}
+
 /**
- * One-time, idempotent backfill: recompute and persist cost_* columns for
- * agent_cycles rows saved before those columns existed (all 8 still NULL),
- * so getCostSummary/getModelUsageSummary/getAgentCycles stop recomputing
- * them from agent_events JSON on every read. Rows with no recoverable event
- * log are left untouched (NULL stays "unknown", never a false zero).
+ * Idempotent backfill: recompute and persist missing cost_* columns for legacy
+ * agent_cycles rows. This also repairs token snapshots left fully NULL by the
+ * former null-if-zero writer even when cost/model columns already exist.
+ * Existing snapshot values remain authoritative. Rows with no recoverable
+ * event log are left untouched (NULL stays "unknown", never a false zero).
  *
  * Runs on every runDatabaseMigrations() call (i.e. every process start).
  * Processes rows in bounded batches (cursor on id) rather than loading the
@@ -1230,45 +1266,109 @@ function backfillLegacyCycleCosts(raw: Database.Database): void {
     id: number;
     agent_events: string | null;
     agent_result: string;
+    needs_full_backfill: number;
   }
 
   const BATCH_SIZE = 500;
   const selectStmt = raw.prepare(
-    `SELECT id, agent_events, agent_result FROM agent_cycles
-     WHERE id > ? AND cost_usd IS NULL AND cost_ai_credits IS NULL AND premium_requests IS NULL
+    `SELECT id, agent_events, agent_result,
+            CASE WHEN cost_usd IS NULL AND cost_ai_credits IS NULL
+                       AND premium_requests IS NULL AND cost_model_id IS NULL
+                 THEN 1 ELSE 0 END AS needs_full_backfill
+     FROM agent_cycles
+     WHERE id > ?
        AND cost_input_tokens IS NULL AND cost_output_tokens IS NULL
        AND cost_cached_tokens IS NULL AND cost_cache_write_tokens IS NULL
-       AND cost_model_id IS NULL
+       AND (
+         (cost_usd IS NULL AND cost_ai_credits IS NULL
+          AND premium_requests IS NULL AND cost_model_id IS NULL)
+         OR EXISTS (
+           SELECT 1
+           FROM json_each(
+             CASE WHEN json_valid(agent_events) THEN agent_events ELSE '[]' END
+           ) AS event
+           WHERE json_extract(
+                   CASE WHEN event.type = 'object' THEN event.value ELSE '{}' END,
+                   '$.type'
+                 ) = 'assistant.usage'
+             AND (
+               json_type(
+                   CASE WHEN event.type = 'object' THEN event.value ELSE '{}' END,
+                   '$.data.inputTokens'
+                 ) IN ('integer', 'real')
+              OR json_type(
+                   CASE WHEN event.type = 'object' THEN event.value ELSE '{}' END,
+                   '$.data.outputTokens'
+                 ) IN ('integer', 'real')
+              OR json_type(
+                   CASE WHEN event.type = 'object' THEN event.value ELSE '{}' END,
+                   '$.data.cacheReadTokens'
+                 ) IN ('integer', 'real')
+              OR json_type(
+                   CASE WHEN event.type = 'object' THEN event.value ELSE '{}' END,
+                   '$.data.cacheWriteTokens'
+                 ) IN ('integer', 'real')
+             )
+         )
+         OR EXISTS (
+           SELECT 1
+           FROM json_each(
+             CASE WHEN json_valid(agent_result) THEN
+               CASE WHEN json_type(agent_result, '$.agentEvents') = 'array'
+                    THEN json_extract(agent_result, '$.agentEvents') ELSE '[]' END
+             ELSE '[]' END
+           ) AS event
+           WHERE json_extract(
+                   CASE WHEN event.type = 'object' THEN event.value ELSE '{}' END,
+                   '$.type'
+                 ) = 'assistant.usage'
+             AND (
+               json_type(
+                   CASE WHEN event.type = 'object' THEN event.value ELSE '{}' END,
+                   '$.data.inputTokens'
+                 ) IN ('integer', 'real')
+              OR json_type(
+                   CASE WHEN event.type = 'object' THEN event.value ELSE '{}' END,
+                   '$.data.outputTokens'
+                 ) IN ('integer', 'real')
+              OR json_type(
+                   CASE WHEN event.type = 'object' THEN event.value ELSE '{}' END,
+                   '$.data.cacheReadTokens'
+                 ) IN ('integer', 'real')
+              OR json_type(
+                   CASE WHEN event.type = 'object' THEN event.value ELSE '{}' END,
+                   '$.data.cacheWriteTokens'
+                 ) IN ('integer', 'real')
+             )
+         )
+       )
      ORDER BY id LIMIT ?`
   );
   const updateStmt = raw.prepare(`
     UPDATE agent_cycles
-    SET cost_ai_credits = ?, cost_usd = ?, premium_requests = ?,
+    SET cost_ai_credits = COALESCE(cost_ai_credits, ?),
+        cost_usd = COALESCE(cost_usd, ?),
+        premium_requests = COALESCE(premium_requests, ?),
         cost_input_tokens = ?, cost_output_tokens = ?,
-        cost_cached_tokens = ?, cost_cache_write_tokens = ?, cost_model_id = ?
+        cost_cached_tokens = ?, cost_cache_write_tokens = ?,
+        cost_model_id = COALESCE(cost_model_id, ?)
     WHERE id = ?
   `);
 
   const processBatch = raw.transaction((rows: LegacyCycleRow[]) => {
     let batchUpdated = 0;
     for (const row of rows) {
-      let events: AgentLogEvent[] | undefined;
-      if (row.agent_events) {
-        try {
-          events = JSON.parse(row.agent_events) as AgentLogEvent[];
-        } catch {
-          events = undefined;
-        }
+      const primaryEvents = row.agent_events
+        ? parseAgentLogEventsJson(row.agent_events)
+        : undefined;
+      let cost = computeCycleCost(primaryEvents);
+      const needsFullBackfill = row.needs_full_backfill === 1;
+      if (!hasRequiredBackfillData(cost, needsFullBackfill)) {
+        const embeddedCost = computeCycleCost(parseEmbeddedAgentLogEvents(row.agent_result));
+        if (hasRequiredBackfillData(embeddedCost, needsFullBackfill)) cost = embeddedCost;
       }
-      if (!events) {
-        try {
-          events = (JSON.parse(row.agent_result) as AgentResult).agentEvents;
-        } catch {
-          events = undefined;
-        }
-      }
-      const cost = computeCycleCost(events);
       if (!hasCostData(cost)) continue;
+      if (row.needs_full_backfill === 0 && !cost.tokensReported) continue;
 
       updateStmt.run(
         cost.priced ? cost.aiCredits : null,

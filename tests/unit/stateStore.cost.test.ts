@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { randomUUID } from "crypto";
 import Database from "better-sqlite3";
 import { SqliteStateStore } from "../../src/state/stateStore.js";
@@ -74,6 +74,8 @@ function insertRawCycle(
     costAiCredits: number | null;
     agentEvents: string | null;
     cycleNumber?: number;
+    premiumRequests?: number | null;
+    costModelId?: string | null;
     /** When set, events are embedded in the serialized AgentResult (predates the agent_events column). */
     resultEvents?: unknown;
   }
@@ -86,7 +88,7 @@ function insertRawCycle(
           cost_ai_credits, cost_usd, premium_requests,
           cost_input_tokens, cost_output_tokens, cost_cached_tokens, cost_cache_write_tokens,
           cost_model_id, created_at)
-       VALUES (?, ?, ?, NULL, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, ?)`
+         VALUES (?, ?, ?, NULL, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?)`
     ).run(
       row.taskId,
       row.cycleNumber ?? 1,
@@ -101,6 +103,8 @@ function insertRawCycle(
       row.agentEvents,
       row.costAiCredits,
       row.costUsd,
+      row.premiumRequests ?? null,
+      row.costModelId ?? null,
       row.createdAtEpochSeconds
     );
   } finally {
@@ -362,6 +366,178 @@ describe("SqliteStateStore — getCostSummary", () => {
         cost_cache_write_tokens: 0,
       });
     }
+  });
+
+  it("backfills missing tokens without replacing an existing cost snapshot", async () => {
+    const agent = await store.createAgent({
+      name: "A",
+      type: "coding",
+      modelConfigJson: JSON.stringify({ model: "gpt-4.1" }),
+      systemPromptId: "system_generic_code",
+      instructionsPromptId: "instructions_generic_code",
+      enabled: true,
+    });
+    const project = await store.createProject({ name: "PLATFORM", type: "coding", agentId: agent.id });
+    const taskId = await makeTaskForProject(store, project.id);
+
+    insertRawCycle(dbPath, {
+      taskId,
+      createdAtEpochSeconds: Math.floor(Date.now() / 1000),
+      costUsd: 12.34,
+      costAiCredits: 56.78,
+      premiumRequests: 9.5,
+      costModelId: "persisted-model",
+      agentEvents: JSON.stringify(
+        tokenResult({ input: 0, output: 0, cached: 0, cacheWrite: 0 }, "event-model").agentEvents
+      ),
+    });
+    store.close();
+    store = await SqliteStateStore.create(dbPath);
+
+    const summary = await store.getCostSummary();
+    expect(summary.totalRunsWithTokens).toBe(1);
+
+    const raw = new Database(dbPath);
+    const row = raw
+      .prepare(
+        `SELECT cost_ai_credits, cost_usd, premium_requests, cost_model_id,
+                cost_input_tokens, cost_output_tokens,
+                cost_cached_tokens, cost_cache_write_tokens
+         FROM agent_cycles WHERE task_id = ?`
+      )
+      .get(taskId) as {
+        cost_ai_credits: number;
+        cost_usd: number;
+        premium_requests: number;
+        cost_model_id: string;
+        cost_input_tokens: number;
+        cost_output_tokens: number;
+        cost_cached_tokens: number;
+        cost_cache_write_tokens: number;
+      };
+    raw.close();
+
+    expect(row).toEqual({
+      cost_ai_credits: 56.78,
+      cost_usd: 12.34,
+      premium_requests: 9.5,
+      cost_model_id: "persisted-model",
+      cost_input_tokens: 0,
+      cost_output_tokens: 0,
+      cost_cached_tokens: 0,
+      cost_cache_write_tokens: 0,
+    });
+  });
+
+  it("falls back to embedded events when the legacy event column has no usable usage", async () => {
+    const agent = await store.createAgent({
+      name: "A",
+      type: "coding",
+      modelConfigJson: JSON.stringify({ model: "gpt-4.1" }),
+      systemPromptId: "system_generic_code",
+      instructionsPromptId: "instructions_generic_code",
+      enabled: true,
+    });
+    const project = await store.createProject({ name: "PLATFORM", type: "coding", agentId: agent.id });
+    const taskId = await makeTaskForProject(store, project.id);
+
+    insertRawCycle(dbPath, {
+      taskId,
+      createdAtEpochSeconds: Math.floor(Date.now() / 1000),
+      costUsd: 1.25,
+      costAiCredits: null,
+      costModelId: "persisted-model",
+      agentEvents: JSON.stringify([null, { type: "assistant.usage" }]),
+      resultEvents: tokenResult({ input: 0, output: 0, cached: 0, cacheWrite: 0 }).agentEvents,
+    });
+    store.close();
+    store = await SqliteStateStore.create(dbPath);
+
+    const summary = await store.getCostSummary();
+    expect(summary.totalRunsWithTokens).toBe(1);
+    expect(summary.totalUsd).toBe(1.25);
+  });
+
+  it("leaves producer-reported null token fields unmeasured across restarts", async () => {
+    const agent = await store.createAgent({
+      name: "A",
+      type: "coding",
+      modelConfigJson: JSON.stringify({ model: "gpt-4.1" }),
+      systemPromptId: "system_generic_code",
+      instructionsPromptId: "instructions_generic_code",
+      enabled: true,
+    });
+    const project = await store.createProject({ name: "PLATFORM", type: "coding", agentId: agent.id });
+    const taskId = await makeTaskForProject(store, project.id);
+    const events: AgentLogEvent[] = [
+      {
+        type: "assistant.usage",
+        timestamp: "2026-01-01T00:00:00.000Z",
+        data: {
+          inputTokens: null,
+          outputTokens: null,
+          cacheReadTokens: null,
+          cacheWriteTokens: null,
+          model: "tokenless-model",
+        },
+        taskId: "t",
+        cycleNumber: 1,
+      },
+      {
+        type: "assistant.message",
+        timestamp: "2026-01-01T00:00:01.000Z",
+        data: { inputTokens: 123 },
+        taskId: "t",
+        cycleNumber: 1,
+      },
+    ];
+    const serializedEvents = JSON.stringify(events);
+
+    insertRawCycle(dbPath, {
+      taskId,
+      createdAtEpochSeconds: Math.floor(Date.now() / 1000),
+      costUsd: 1.25,
+      costAiCredits: null,
+      costModelId: "persisted-model",
+      agentEvents: serializedEvents,
+      resultEvents: events,
+    });
+    const parseSpy = vi.spyOn(JSON, "parse");
+    try {
+      store.close();
+      store = await SqliteStateStore.create(dbPath);
+      store.close();
+      store = await SqliteStateStore.create(dbPath);
+
+      const backfillParses = parseSpy.mock.calls.filter(([value]) => value === serializedEvents);
+      expect(backfillParses).toHaveLength(0);
+    } finally {
+      parseSpy.mockRestore();
+    }
+
+    const summary = await store.getCostSummary();
+    expect(summary.totalRunsWithTokens).toBe(0);
+
+    const raw = new Database(dbPath);
+    const row = raw
+      .prepare(
+        `SELECT cost_input_tokens, cost_output_tokens,
+                cost_cached_tokens, cost_cache_write_tokens
+         FROM agent_cycles WHERE task_id = ?`
+      )
+      .get(taskId) as {
+        cost_input_tokens: number | null;
+        cost_output_tokens: number | null;
+        cost_cached_tokens: number | null;
+        cost_cache_write_tokens: number | null;
+      };
+    raw.close();
+    expect(row).toEqual({
+      cost_input_tokens: null,
+      cost_output_tokens: null,
+      cost_cached_tokens: null,
+      cost_cache_write_tokens: null,
+    });
   });
 
   it("includes tokens backfilled onto legacy rows from their event log", async () => {
