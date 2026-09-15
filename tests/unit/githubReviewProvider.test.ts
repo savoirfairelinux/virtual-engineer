@@ -323,9 +323,14 @@ describe("GitHubReviewProvider", () => {
 
   describe("discussion threads (GraphQL)", () => {
     it("getDiscussionThreads maps review threads and tags isOwn / resolved", async () => {
-      // 1) viewer login lookup, 2) reviewThreads page.
+      // 1) viewer login lookup, 2) submitted reviews, 3) reviewThreads page.
       fetchMock
         .mockResolvedValueOnce(jsonResponse({ data: { viewer: { login: "ve-bot" } } }))
+        .mockResolvedValueOnce(jsonResponse([
+          { state: "COMMENTED", user: { login: "alice" }, commit_id: "sha-a" },
+          { state: "COMMENTED", user: { login: "bob" }, commit_id: "sha-b" },
+          { state: "COMMENTED", user: { login: "ve-bot" }, commit_id: "sha-ve" },
+        ]))
         .mockResolvedValueOnce(
           jsonResponse({
             data: {
@@ -353,6 +358,13 @@ describe("GitHubReviewProvider", () => {
                         line: 3,
                         comments: { nodes: [{ body: "nit", author: { login: "bob" } }] },
                       },
+                      {
+                        id: "THREAD_3",
+                        isResolved: false,
+                        path: "src/c.ts",
+                        line: 7,
+                        comments: { nodes: [{ body: "outsider comment", author: { login: "charlie" } }] },
+                      },
                     ],
                   },
                 },
@@ -370,6 +382,7 @@ describe("GitHubReviewProvider", () => {
       expect(t1?.comments[0]).toEqual({ author: "alice", message: "Why not a Map?", isOwn: false });
       expect(t1?.comments[1]?.isOwn).toBe(true);
       expect(threads.find((t) => t.threadId === "THREAD_2")?.resolved).toBe(true);
+      expect(threads.find((t) => t.threadId === "THREAD_3")).toBeUndefined();
 
       // First GraphQL call hit the api.github.com/graphql endpoint.
       expect(fetchMock.mock.calls[0]?.[0]).toBe("https://api.github.com/graphql");

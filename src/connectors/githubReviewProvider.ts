@@ -462,6 +462,8 @@ export class GitHubReviewProvider implements ReviewProvider {
   async getDiscussionThreads(changeId: ExternalChangeId, signal?: AbortSignal): Promise<ReviewDiscussionThread[]> {
     const { owner, repo, prNumber } = this.parseChangeId(changeId);
     const me = await this.resolveCurrentLogin(signal);
+    const reviewerLogins = await this.getReviewerLogins(owner, repo, prNumber, signal);
+    if (me !== null) reviewerLogins.add(me);
 
     const query = `
       query($owner:String!,$repo:String!,$number:Int!,$cursor:String){
@@ -491,11 +493,13 @@ export class GitHubReviewProvider implements ReviewProvider {
       if (!reviewThreads) break;
 
       for (const node of reviewThreads.nodes) {
-        const comments: ReviewDiscussionComment[] = node.comments.nodes.map((c) => ({
-          author: c.author?.login ?? "unknown",
-          message: c.body,
-          isOwn: me !== null && c.author?.login === me,
-        }));
+        const comments: ReviewDiscussionComment[] = node.comments.nodes
+          .filter((comment) => comment.author?.login !== undefined && reviewerLogins.has(comment.author.login))
+          .map((c) => ({
+            author: c.author!.login,
+            message: c.body,
+            isOwn: me !== null && c.author?.login === me,
+          }));
         if (comments.length === 0) continue;
         threads.push({
           threadId: node.id,
@@ -511,6 +515,35 @@ export class GitHubReviewProvider implements ReviewProvider {
       if (cursor === null) break;
     }
     return threads;
+  }
+
+  private async getReviewerLogins(
+    owner: string,
+    repo: string,
+    prNumber: number,
+    signal?: AbortSignal,
+  ): Promise<Set<string>> {
+    const reviewerLogins = new Set<string>();
+    try {
+      const perPage = 100;
+      for (let page = 1; page <= 20; page++) {
+        const reviews = GitHubReviewListSchema.parse(
+          await this.fetchJson(
+            `${this.prUrl(owner, repo, prNumber)}/reviews?per_page=${perPage}&page=${page}`,
+            signal !== undefined ? { signal } : undefined,
+          )
+        );
+        for (const review of reviews) {
+          const login = review.user?.login;
+          if (login !== undefined) reviewerLogins.add(login);
+        }
+        if (reviews.length < perPage) break;
+      }
+    } catch (err) {
+      if (signal?.aborted === true) throw signal.reason ?? err;
+      log.warn({ owner, repo, prNumber, err }, "failed to resolve GitHub PR reviewers; ignoring external thread authors");
+    }
+    return reviewerLogins;
   }
 
   async postThreadReply(
