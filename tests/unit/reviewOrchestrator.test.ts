@@ -1330,6 +1330,41 @@ describe("ReviewOrchestrator.runReview - inter-patchset delta", () => {
     expect(prompt).toContain("+delta-line");
   });
 
+  it("fetches a delta when a provider patchset identifier decreases", async () => {
+    const initial = makeTask({
+      state: "REVIEW_WATCHING",
+      cycleCount: 1,
+      reviewedPatchset: 9,
+      currentPatchset: 8,
+    });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+
+    (mocks.provider.getChangeDetails as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makeDetails({ currentPatchset: 8 })
+    );
+    const getInterPatchsetDiff = vi.fn(async () =>
+      makeDiff({
+        patchset: 8,
+        files: [{ path: "src/a.ts", status: "modified", patch: "+delta-line" }],
+      })
+    );
+    mocks.provider.getInterPatchsetDiff =
+      getInterPatchsetDiff as NonNullable<ReviewProvider["getInterPatchsetDiff"]>;
+
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+    await orch.runReview(initial.taskId);
+
+    expect(getInterPatchsetDiff).toHaveBeenCalledWith(
+      expect.objectContaining({ changeId: CHANGE_ID, currentPatchset: 8 }),
+      9,
+      8
+    );
+    const prompt = runner.runReviewInDocker.mock.calls[0]?.[1]?.prompt as string;
+    expect(prompt).toContain("## Changes since last reviewed patchset (PS 9 \u2192 8)");
+    expect(prompt).toContain("+delta-line");
+  });
+
   it("does not fetch a delta on the first review (no prior reviewed patchset)", async () => {
     const initial = makeTask({
       state: "REVIEW_PENDING",

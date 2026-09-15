@@ -7,6 +7,7 @@ This module set covers the **ticket-driven code-generation runtime**. The separa
 ## Review execution — `src/review/reviewOrchestrator.ts`
 
 - A review result is bound to the patchset used for checkout, diff construction, prompt construction, and agent execution. Immediately before provider effects, `runReview()` fetches fresh change details and posts only when both the patchset still matches and the change remains `OPEN`.
+- On re-review, providers that implement `getInterPatchsetDiff()` contribute a focused delta between the last reviewed revision and the current one; patchset identifiers are identity tokens, so the orchestrator checks inequality rather than assuming numeric ordering.
 - Copilot and Claude submit their typed result through the worker-owned `ve_submit_review` MCP tool; Aider retains the delimited JSON fallback. In both cases `parseReviewResult()` remains the host-side authority before filtering, deduplication, comments, replies, or votes. The MCP server never performs provider effects itself.
 - When a newer patchset arrives during analysis, the completed cycle is retained with `metadata.superseded = true`, while provider and posting-ledger effects are skipped. The task records the latest patchset and starts a fresh internal pass; repeated supersession is bounded to three retries before `REVIEW_FAILED`.
 - When the change becomes merged or abandoned during analysis, the discarded cycle is retained and the task finishes at `REVIEW_DONE` without comments, replies, vote, ledger writes, or `reviewedPatchset` advancement.

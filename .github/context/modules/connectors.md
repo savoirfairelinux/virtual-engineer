@@ -133,6 +133,7 @@ Methods used by the orchestrator:
 
 - Reviewer-side `ReviewProvider` (`kind = "github"`) that lets VE act as a reviewer on GitHub Pull Requests, mirroring the Gerrit/GitLab providers.
 - `getChangeDetails` / `getChangeDiff` read the PR and its file list (`/pulls/:number/files`, unified `patch` per file); `postReviewComments` / `postReviewWithComments` / `vote` submit through the PR Reviews API, mapping normalized `-1 | 0 | 1` decisions to `REQUEST_CHANGES` / `COMMENT` / `APPROVE`.
+- `getInterPatchsetDiff` resolves the previously reviewed SHA from the PR commit list and uses GitHub's `compare/{from}...{head}` endpoint to provide the delta on re-review. SHA-derived patchset identifiers are compared for equality, not chronological ordering.
 - Discussion-thread replies use the GraphQL API (`reviewThreads { isResolved, comments }` for fetch, `addPullRequestReviewThreadReply` mutation for replies); the GraphQL endpoint is derived from the REST `apiBaseUrl`.
 
 ### Discussion-thread replies (all review providers)
