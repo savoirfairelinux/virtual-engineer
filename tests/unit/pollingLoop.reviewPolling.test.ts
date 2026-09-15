@@ -600,4 +600,144 @@ describe("PollingLoop — pollReviewProjects", () => {
     expect(discoveryConnector.hasReviewAssignment).toHaveBeenCalledWith(task.externalChangeId);
     expect(trigger.triggerReview).not.toHaveBeenCalled();
   });
+
+  it("reuses one repo-bound connector for watched tasks in the same repository", async () => {
+    const tasks = [
+      makeTask({
+        taskId: "watched-3",
+        externalChangeId: "octocat/hello-world#44",
+        projectId: "rp-watched-3",
+        state: "REVIEW_WATCHING",
+        taskType: "code-review",
+      }),
+      makeTask({
+        taskId: "watched-4",
+        externalChangeId: "octocat/hello-world#45",
+        projectId: "rp-watched-3",
+        state: "REVIEW_WATCHING",
+        taskType: "code-review",
+      }),
+    ];
+    const project = makeProject({ id: "rp-watched-3", type: "review" });
+    const connector: ReviewDiscoveryConnector & {
+      hasReviewAssignment: ReturnType<typeof vi.fn>;
+    } = {
+      getOpenReviewAssignments: vi.fn().mockResolvedValue([]),
+      hasReviewAssignment: vi.fn().mockResolvedValue(true),
+    };
+    const projectStore = {
+      getProjectReviewConfig: vi.fn(async () => ({
+        integrationId: "int-gh-3",
+        repos: ["octocat/hello-world"],
+      })),
+    };
+    const pluginManager = {
+      createConnectorForCapability: vi.fn(async () => connector),
+      integrationHasStreamEvents: vi.fn(() => false),
+      getIntegrationCapabilityIntake: vi.fn(() => ["polling"]),
+    };
+    const trigger = makeReviewTrigger();
+    const orchestrator = makeOrchestrator();
+    const stateStore = makeStore(tasks);
+    const loop = new PollingLoop(
+      { ticketIntervalMs: 30_000, maxRetryAttempts: 5 },
+      orchestrator,
+      stateStore,
+      {
+        projectStore: projectStore as never,
+        pluginManager: pluginManager as never,
+        reviewTrigger: trigger,
+      },
+    );
+
+    await loop.pollReviewWatchingTasks();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(project).toBeDefined();
+    expect(pluginManager.createConnectorForCapability).toHaveBeenCalledTimes(1);
+    expect(connector.hasReviewAssignment).toHaveBeenCalledTimes(2);
+  });
+
+  it("clears review trigger cooldowns when polling stops", async () => {
+    const assignments: ReviewAssignmentDiscovery[] = [
+      { changeId: "octocat/repo#46", project: "octocat/repo" },
+    ];
+    const discoveryConnector: ReviewDiscoveryConnector = {
+      getOpenReviewAssignments: vi.fn().mockResolvedValue(assignments),
+    };
+    const project = makeProject({ id: "rp-stop", type: "review" });
+    const projectStore = {
+      listProjects: vi.fn(async () => [project]),
+      getProjectTicketSource: vi.fn(async () => null),
+      getProjectReviewConfig: vi.fn(async () => ({
+        integrationId: "int-stop",
+        repos: ["octocat/repo"],
+      })),
+    };
+    const pluginManager = {
+      getConnectorForCapability: vi.fn(() => discoveryConnector),
+    };
+    const trigger = makeReviewTrigger();
+    const loop = new PollingLoop(
+      { ticketIntervalMs: 30_000, maxRetryAttempts: 5 },
+      makeOrchestrator(),
+      makeStore(),
+      {
+        projectStore: projectStore as never,
+        pluginManager: pluginManager as never,
+        reviewTrigger: trigger,
+      },
+    );
+
+    await loop.pollReviewProjects();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    loop.stop();
+    await loop.pollReviewProjects();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(trigger.triggerReview).toHaveBeenCalledTimes(2);
+  });
+
+  it("prunes expired review trigger cooldowns", async () => {
+    const baseNow = Date.now();
+    vi.spyOn(Date, "now").mockReturnValue(baseNow);
+    const assignments: ReviewAssignmentDiscovery[] = [
+      { changeId: "octocat/repo#47", project: "octocat/repo" },
+    ];
+    const discoveryConnector: ReviewDiscoveryConnector = {
+      getOpenReviewAssignments: vi.fn().mockResolvedValue(assignments),
+    };
+    const project = makeProject({ id: "rp-prune", type: "review" });
+    const projectStore = {
+      listProjects: vi.fn(async () => [project]),
+      getProjectTicketSource: vi.fn(async () => null),
+      getProjectReviewConfig: vi.fn(async () => ({
+        integrationId: "int-prune",
+        repos: ["octocat/repo"],
+      })),
+    };
+    const pluginManager = {
+      getConnectorForCapability: vi.fn(() => discoveryConnector),
+    };
+    const loop = new PollingLoop(
+      { ticketIntervalMs: 30_000, maxRetryAttempts: 5 },
+      makeOrchestrator(),
+      makeStore(),
+      {
+        projectStore: projectStore as never,
+        pluginManager: pluginManager as never,
+        reviewTrigger: makeReviewTrigger(),
+      },
+    );
+
+    await loop.pollReviewProjects();
+    vi.spyOn(Date, "now").mockReturnValue(baseNow + 30_001);
+    await loop.pollReviewProjects();
+
+    const cooldowns = (loop as unknown as {
+      reviewTriggerCooldowns: Map<string, number>;
+    }).reviewTriggerCooldowns;
+    expect(cooldowns.has("int-prune:octocat/repo#47")).toBe(true);
+    expect(cooldowns.size).toBe(1);
+  });
 });

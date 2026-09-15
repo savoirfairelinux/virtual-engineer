@@ -80,6 +80,12 @@ const GitHubPrReviewSchema = z.object({
   user: z.object({ login: z.string() }),
 });
 const GitHubPrReviewListSchema = z.array(GitHubPrReviewSchema);
+const SUBMITTED_REVIEW_STATES = new Set([
+  "APPROVED",
+  "CHANGES_REQUESTED",
+  "COMMENTED",
+  "DISMISSED",
+]);
 
 // Schema for GET /repos/{owner}/{repo}/pulls?state=open — used for review discovery
 const GitHubPrListItemSchema = z.object({
@@ -148,7 +154,9 @@ export class GitHubPullRequestReviewConnector implements ReviewConnector, Review
     const reviews = GitHubPrReviewListSchema.parse(
       await this.fetchJson(`${baseUrl}/pulls/${prNumber}/reviews`)
     );
-    const hasChangesRequestedReview = reviews.some((r) => r.state === "CHANGES_REQUESTED");
+    const hasChangesRequestedReview = reviews.some(
+      (review) => SUBMITTED_REVIEW_STATES.has(review.state) && review.state === "CHANGES_REQUESTED"
+    );
     if (!hasChangesRequestedReview) {
       log.debug({ changeId }, "no CHANGES_REQUESTED review — skipping feedback");
       return [];
@@ -166,11 +174,15 @@ export class GitHubPullRequestReviewConnector implements ReviewConnector, Review
 
     const reviewerLogins = new Set(
       reviews
+        .filter((review) => SUBMITTED_REVIEW_STATES.has(review.state))
         .map((review) => review.user.login)
         .filter((login) => login !== veLogin)
     );
     const hasExternalChangesRequested = reviews.some(
-      (review) => review.state === "CHANGES_REQUESTED" && review.user.login !== veLogin
+      (review) =>
+        SUBMITTED_REVIEW_STATES.has(review.state) &&
+        review.state === "CHANGES_REQUESTED" &&
+        review.user.login !== veLogin
     );
     if (!hasExternalChangesRequested) {
       log.debug({ changeId }, "no CHANGES_REQUESTED review — skipping feedback");

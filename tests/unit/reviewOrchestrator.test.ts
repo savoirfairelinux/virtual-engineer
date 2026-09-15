@@ -1323,7 +1323,8 @@ describe("ReviewOrchestrator.runReview - inter-patchset delta", () => {
     expect(getInterPatchsetDiff).toHaveBeenCalledWith(
       expect.objectContaining({ changeId: CHANGE_ID, currentPatchset: 3 }),
       2,
-      3
+      3,
+      expect.any(AbortSignal),
     );
     const prompt = runner.runReviewInDocker.mock.calls[0]?.[1]?.prompt as string;
     expect(prompt).toContain("## Changes since last reviewed patchset (PS 2 \u2192 3)");
@@ -1358,7 +1359,8 @@ describe("ReviewOrchestrator.runReview - inter-patchset delta", () => {
     expect(getInterPatchsetDiff).toHaveBeenCalledWith(
       expect.objectContaining({ changeId: CHANGE_ID, currentPatchset: 8 }),
       9,
-      8
+      8,
+      expect.any(AbortSignal),
     );
     const prompt = runner.runReviewInDocker.mock.calls[0]?.[1]?.prompt as string;
     expect(prompt).toContain("## Changes since last reviewed patchset (PS 9 \u2192 8)");
