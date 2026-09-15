@@ -952,7 +952,8 @@ export interface ReviewProvider {
   getInterPatchsetDiff?(
     details: ReviewChangeDetails,
     fromPatchset: number,
-    toPatchset: number
+    toPatchset: number,
+    signal?: AbortSignal,
   ): Promise<ReviewChangeDiff>;
 
   /**

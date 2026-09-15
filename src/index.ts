@@ -292,6 +292,9 @@ async function main(): Promise<void> {
     orchestrator.updateRuntime({
       config: await buildOrchestratorConfig(config, pluginManager),
     });
+    if (typeof pollingLoop.setProjectMode === "function") {
+      pollingLoop.setProjectMode(pollingProjectMode);
+    }
     pollingLoop.resetBackoff();
     reviewTriggerHolder.current = buildReviewTrigger(
       pluginManager,

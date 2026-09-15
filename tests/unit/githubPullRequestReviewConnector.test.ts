@@ -182,17 +182,20 @@ describe("GitHubPullRequestReviewConnector", () => {
         jsonResponse([
           { state: "CHANGES_REQUESTED", user: { login: "reviewer" } },
           { state: "APPROVED", user: { login: "second-reviewer" } },
+          { state: "PENDING", user: { login: "pending-reviewer" } },
         ])
       );
       fetchMock.mockResolvedValueOnce(jsonResponse([
         { ...reviewComments[0], id: 301, user: { login: "reviewer" } },
         { ...reviewComments[0], id: 302, user: { login: "second-reviewer" } },
         { ...reviewComments[0], id: 303, user: { login: "outsider" } },
+        { ...reviewComments[0], id: 304, user: { login: "pending-reviewer" } },
       ]));
       fetchMock.mockResolvedValueOnce(jsonResponse([
         { ...issueComments[0], id: 401, user: { login: "reviewer" } },
         { ...issueComments[0], id: 402, user: { login: "second-reviewer" } },
         { ...issueComments[0], id: 403, user: { login: "outsider" } },
+        { ...issueComments[0], id: 404, user: { login: "pending-reviewer" } },
       ]));
 
       const comments = await makeConnector().getUnresolvedComments(makeExternalChangeId("42"));
@@ -205,6 +208,8 @@ describe("GitHubPullRequestReviewConnector", () => {
       ]);
       expect(comments.map((comment) => comment.id)).not.toContain("303");
       expect(comments.map((comment) => comment.id)).not.toContain("issue-403");
+      expect(comments.map((comment) => comment.id)).not.toContain("304");
+      expect(comments.map((comment) => comment.id)).not.toContain("issue-404");
     });
 
     it("returns empty array when no CHANGES_REQUESTED review exists", async () => {

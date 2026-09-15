@@ -660,7 +660,8 @@ export class ReviewOrchestrator {
           const deltaDiff = await this.deps.reviewProvider.getInterPatchsetDiff(
             details,
             previousReviewed,
-            details.currentPatchset
+            details.currentPatchset,
+            deadlineController.signal,
           );
           sinceLastReview = {
             fromPatchset: previousReviewed,

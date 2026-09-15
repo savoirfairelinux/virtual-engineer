@@ -95,8 +95,9 @@ Every tick (`POLLING_INTERVAL_MS`, exponential backoff on repeated failures) run
 
 - polling fallback for code-review tasks in `REVIEW_WATCHING`: calls `orchestrator.checkReviewWatchingTask(taskId)` to compensate for missed `change-merged` stream events. The watcher queries the project-bound `code_review` connector and transitions merged changes to `REVIEW_DONE` or abandons externally closed changes through `StateStore.abandonTask()` (the generic review transition map intentionally has no `REVIEW_WATCHING → ABANDONED` edge)
 - for enabled polling-capable review integrations, the watcher also checks the exact PR/MR assignment when the connector exposes `hasReviewAssignment(changeId)`. If VE remains assigned, it fires the same review trigger used by assignment discovery; `ReviewOrchestrator.startReviewTask()` then compares the provider's current revision identity (GitHub `head.sha` → SHA-derived patchset) and only re-runs the agent for a new revision. Trigger cooldowns are qualified by integration and change and shared with initial assignment polling, while status cooldowns remain separate.
+- Trigger cooldowns are pruned after one polling interval, removed immediately when a watched change is unassigned, and cleared together with the repo-bound connector cache when polling stops or integrations hot-reload. The cache is keyed by integration and repository so several watched PRs do not recreate a connector or repeat `/user` resolution.
 
-All review-side polls share a per-change **cooldown map** (`reviewPollCooldowns`, keyed by change id or `integrationId:changeId`) so a given change is queried at most once per polling interval; stale entries are evicted when tasks leave `IN_REVIEW`.
+Status polling uses the separate per-change `reviewPollCooldowns` map for `IN_REVIEW` and `REVIEW_WATCHING` checks; the `IN_REVIEW` reconciliation evicts entries no longer active, and polling stop/hot-reload clears the map. Trigger cooldowns use `reviewTriggerCooldowns` and are never used to suppress status checks.
 
 ## `concurrencyTracker.ts`
 

@@ -85,6 +85,11 @@ export class PollingLoop {
   private readonly reviewPollCooldowns = new Map<string, number>();
   /** Per-integration/change timestamp of the last automatic review trigger. */
   private readonly reviewTriggerCooldowns = new Map<string, number>();
+  /** Reuses repo-bound discovery connectors across watched tasks and polling ticks. */
+  private readonly reviewDiscoveryConnectorCache = new Map<
+    string,
+    Promise<ReviewDiscoveryConnector | null>
+  >();
 
   constructor(
     private config: PollingConfig,
@@ -108,6 +113,7 @@ export class PollingLoop {
     projectStore: ProjectAwareStore;
     pluginManager: ProjectAwarePluginManager;
   } | null): void {
+    this.clearReviewPollingState();
     if (mode) {
       this.projectStore = mode.projectStore;
       this.pluginManager = mode.pluginManager;
@@ -141,6 +147,7 @@ export class PollingLoop {
       patch.ticketIntervalMs !== undefined && patch.ticketIntervalMs !== prevInterval;
 
     if (intervalChanged && this.running && this.ticketTimer) {
+      this.clearReviewPollingState();
       clearInterval(this.ticketTimer);
       this.ticketTimer = setInterval(() => {
         this.runTicketPollCycle("ticket poll error");
@@ -172,10 +179,19 @@ export class PollingLoop {
 
   /** Stop the polling interval timer. */
   stop(): void {
+    this.clearReviewPollingState();
     if (!this.running) return;
     this.running = false;
     if (this.ticketTimer) clearInterval(this.ticketTimer);
+    this.ticketTimer = null;
     log.info("polling loop stopped");
+  }
+
+  /** Clear review cooldowns and cached provider connectors after polling stops or reloads. */
+  clearReviewPollingState(): void {
+    this.reviewPollCooldowns.clear();
+    this.reviewTriggerCooldowns.clear();
+    this.reviewDiscoveryConnectorCache.clear();
   }
 
   /** Return whether the polling loop is currently active. */
@@ -337,6 +353,9 @@ export class PollingLoop {
    */
   async pollReviewProjects(): Promise<void> {
     if (!this.projectStore || !this.pluginManager || !this.reviewTrigger) return;
+    const now = Date.now();
+    const cooldownMs = this.config.ticketIntervalMs;
+    this.pruneReviewTriggerCooldowns(now, cooldownMs);
     const projects = await this.projectStore.listProjects({ type: "review", enabled: true });
     log.debug({ count: projects.length }, "polling review project assignments");
 
@@ -378,8 +397,6 @@ export class PollingLoop {
       }
 
       const trigger = this.reviewTrigger;
-      const now = Date.now();
-      const cooldownMs = this.config.ticketIntervalMs;
       for (const assignment of assignments) {
         const cooldownKey = `${reviewConfig.integrationId}:${assignment.changeId}`;
         const lastTriggered = this.reviewTriggerCooldowns.get(cooldownKey);
@@ -462,6 +479,7 @@ export class PollingLoop {
 
     const now = Date.now();
     const cooldownMs = this.config.ticketIntervalMs;
+    this.pruneReviewTriggerCooldowns(now, cooldownMs);
 
     for (const task of watchingTasks) {
       const changeId = task.externalChangeId!;
@@ -506,16 +524,7 @@ export class PollingLoop {
     const repoKey = repositoryFromChangeId(String(changeId), reviewConfig.repos);
     if (repoKey === undefined) return;
 
-    const connector = this.pluginManager.createConnectorForCapability
-      ? await this.pluginManager.createConnectorForCapability<ReviewDiscoveryConnector>(
-        reviewConfig.integrationId,
-        "code_review",
-        { repoKey },
-      )
-      : this.pluginManager.getConnectorForCapability<ReviewDiscoveryConnector>(
-        reviewConfig.integrationId,
-        "code_review",
-      );
+    const connector = await this.getReviewDiscoveryConnector(reviewConfig.integrationId, repoKey);
     if (!connector || typeof connector.hasReviewAssignment !== "function") return;
 
     const cooldownKey = `${reviewConfig.integrationId}:${changeId}`;
@@ -523,13 +532,57 @@ export class PollingLoop {
     if (lastTriggered !== undefined && now - lastTriggered < cooldownMs) return;
     this.reviewTriggerCooldowns.set(cooldownKey, now);
 
-    const assigned = await connector.hasReviewAssignment(changeId);
+    let assigned: boolean;
+    try {
+      assigned = await connector.hasReviewAssignment(changeId);
+    } catch (err) {
+      this.reviewTriggerCooldowns.delete(cooldownKey);
+      throw err;
+    }
     if (!assigned) {
+      this.reviewTriggerCooldowns.delete(cooldownKey);
       log.debug({ taskId: task.taskId, changeId }, "watched review assignment no longer includes VE");
       return;
     }
 
     await this.reviewTrigger.triggerReview(reviewConfig.integrationId, String(changeId));
+  }
+
+  private async getReviewDiscoveryConnector(
+    integrationId: string,
+    repoKey: string,
+  ): Promise<ReviewDiscoveryConnector | null> {
+    if (!this.pluginManager) return null;
+    const cacheKey = `${integrationId}:${repoKey}`;
+    const cached = this.reviewDiscoveryConnectorCache.get(cacheKey);
+    if (cached !== undefined) return cached;
+
+    const connectorPromise = (async (): Promise<ReviewDiscoveryConnector | null> => {
+      if (this.pluginManager?.createConnectorForCapability) {
+        return this.pluginManager.createConnectorForCapability<ReviewDiscoveryConnector>(
+          integrationId,
+          "code_review",
+          { repoKey },
+        );
+      }
+      return this.pluginManager?.getConnectorForCapability<ReviewDiscoveryConnector>(
+        integrationId,
+        "code_review",
+      ) ?? null;
+    })();
+    this.reviewDiscoveryConnectorCache.set(cacheKey, connectorPromise);
+    void connectorPromise.catch(() => {
+      if (this.reviewDiscoveryConnectorCache.get(cacheKey) === connectorPromise) {
+        this.reviewDiscoveryConnectorCache.delete(cacheKey);
+      }
+    });
+    return connectorPromise;
+  }
+
+  private pruneReviewTriggerCooldowns(now: number, cooldownMs: number): void {
+    for (const [key, timestamp] of this.reviewTriggerCooldowns) {
+      if (now - timestamp >= cooldownMs) this.reviewTriggerCooldowns.delete(key);
+    }
   }
 
   // ─── Stalled code-gen task polling ─────────────────────────────────────────

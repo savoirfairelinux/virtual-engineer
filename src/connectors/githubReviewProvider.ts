@@ -52,6 +52,12 @@ const GitHubReviewListSchema = z.array(
     commit_id: z.string().nullable().optional(),
   })
 );
+const SUBMITTED_REVIEW_STATES = new Set([
+  "APPROVED",
+  "CHANGES_REQUESTED",
+  "COMMENTED",
+  "DISMISSED",
+]);
 
 const GraphQLThreadCommentSchema = z.object({
   body: z.string().default(""),
@@ -242,9 +248,13 @@ export class GitHubReviewProvider implements ReviewProvider {
     details: ReviewChangeDetails,
     fromPatchset: number,
     toPatchset: number,
+    signal?: AbortSignal,
   ): Promise<ReviewChangeDiff> {
     const { owner, repo, prNumber } = this.parseChangeId(details.changeId);
-    const pr = GitHubPrSchema.parse(await this.fetchJson(this.prUrl(owner, repo, prNumber)));
+    const pr = GitHubPrSchema.parse(await this.fetchJson(
+      this.prUrl(owner, repo, prNumber),
+      signal !== undefined ? { signal } : undefined,
+    ));
     const currentPatchset = patchsetFromRevisionSha(pr.head.sha);
     if (currentPatchset !== toPatchset) {
       throw new Error(
@@ -252,14 +262,15 @@ export class GitHubReviewProvider implements ReviewProvider {
       );
     }
 
-    const fromSha = await this.resolvePatchsetSha(owner, repo, prNumber, fromPatchset);
+    const fromSha = await this.resolvePatchsetSha(owner, repo, prNumber, fromPatchset, signal);
     if (fromSha === undefined) {
       throw new Error(`GitHub PR commit for patchset ${fromPatchset} was not found`);
     }
 
     const compare = GitHubCompareResponseSchema.parse(
       await this.fetchJson(
-        `${this.config.apiBaseUrl}/repos/${owner}/${repo}/compare/${fromSha}...${pr.head.sha}?per_page=300`
+        `${this.config.apiBaseUrl}/repos/${owner}/${repo}/compare/${fromSha}...${pr.head.sha}?per_page=300`,
+        signal !== undefined ? { signal } : undefined,
       )
     );
     const files: ReviewDiffFile[] = compare.files.map((file) => ({
@@ -426,12 +437,15 @@ export class GitHubReviewProvider implements ReviewProvider {
     repo: string,
     prNumber: number,
     patchset: number,
+    signal?: AbortSignal,
   ): Promise<string | undefined> {
     const perPage = 100;
     for (let page = 1; page <= 100; page++) {
+      if (signal?.aborted === true) throw signal.reason ?? new Error("GitHub patchset lookup aborted");
       const commits = GitHubPrCommitListSchema.parse(
         await this.fetchJson(
-          `${this.prUrl(owner, repo, prNumber)}/commits?per_page=${perPage}&page=${page}`
+          `${this.prUrl(owner, repo, prNumber)}/commits?per_page=${perPage}&page=${page}`,
+          signal !== undefined ? { signal } : undefined,
         )
       );
       const matchingCommit = commits.find((commit) => patchsetFromRevisionSha(commit.sha) === patchset);
@@ -535,7 +549,9 @@ export class GitHubReviewProvider implements ReviewProvider {
         );
         for (const review of reviews) {
           const login = review.user?.login;
-          if (login !== undefined) reviewerLogins.add(login);
+          if (login !== undefined && SUBMITTED_REVIEW_STATES.has(review.state)) {
+            reviewerLogins.add(login);
+          }
         }
         if (reviews.length < perPage) break;
       }

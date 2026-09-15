@@ -330,6 +330,7 @@ describe("GitHubReviewProvider", () => {
           { state: "COMMENTED", user: { login: "alice" }, commit_id: "sha-a" },
           { state: "COMMENTED", user: { login: "bob" }, commit_id: "sha-b" },
           { state: "COMMENTED", user: { login: "ve-bot" }, commit_id: "sha-ve" },
+          { state: "PENDING", user: { login: "charlie" }, commit_id: "sha-pending" },
         ]))
         .mockResolvedValueOnce(
           jsonResponse({
@@ -386,6 +387,57 @@ describe("GitHubReviewProvider", () => {
 
       // First GraphQL call hit the api.github.com/graphql endpoint.
       expect(fetchMock.mock.calls[0]?.[0]).toBe("https://api.github.com/graphql");
+    });
+
+    it("passes the abort signal through paginated patchset lookup", async () => {
+      const fromSha = "1111111111111aaaaaaaaaaaaaaaaaaaaaaaaaaa";
+      const toSha = "2222222222222bbbbbbbbbbbbbbbbbbbbbbbbb";
+      const details: ReviewChangeDetails = {
+        changeId: cid,
+        changeNumber: 42,
+        subject: "Add feature X",
+        description: "",
+        ownerAccountId: "123",
+        currentPatchset: patchsetFromRevisionSha(toSha),
+        status: "OPEN",
+        project: "octocat/hello-world",
+        targetBranch: "main",
+        url: "https://github.com/octocat/hello-world/pull/42",
+      };
+      const controller = new AbortController();
+      const fullPage = Array.from({ length: 100 }, () => ({ sha: "a".repeat(40) }));
+      let commitPageCalls = 0;
+
+      fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url.endsWith("/pulls/42")) {
+          return jsonResponse({
+            number: 42,
+            state: "open",
+            title: "Add feature X",
+            html_url: "https://github.com/octocat/hello-world/pull/42",
+            merged: false,
+            base: { ref: "main", repo: { full_name: "octocat/hello-world" } },
+            head: { ref: "feature-x", sha: toSha },
+          });
+        }
+        if (url.includes("/commits?")) {
+          commitPageCalls += 1;
+          expect(init?.signal).toBe(controller.signal);
+          controller.abort();
+          return jsonResponse(fullPage);
+        }
+        throw new Error(`unexpected request: ${url}`);
+      });
+
+      await expect(
+        new GitHubReviewProvider(config).getInterPatchsetDiff(
+          details,
+          patchsetFromRevisionSha(fromSha),
+          patchsetFromRevisionSha(toSha),
+          controller.signal,
+        )
+      ).rejects.toThrow();
+      expect(commitPageCalls).toBe(1);
     });
 
     it("redacts credential-bearing GraphQL error messages", async () => {
