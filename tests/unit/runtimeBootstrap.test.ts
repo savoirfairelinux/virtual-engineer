@@ -296,6 +296,13 @@ async function importRuntime(
         ? [{ integrationId: runnableProject.pushTargetIntegrationId, repoKey: "test/repo" }]
         : []
     ),
+    hasEnabledCodingProjectWithActiveIntegrations: vi.fn(async (activeIntegrationIds: readonly string[]) => {
+      if (runnableProject?.type !== "coding") return false;
+      return runnableProject.ticketSourceIntegrationId !== undefined
+        && runnableProject.pushTargetIntegrationId !== undefined
+        && activeIntegrationIds.includes(runnableProject.ticketSourceIntegrationId)
+        && activeIntegrationIds.includes(runnableProject.pushTargetIntegrationId);
+    }),
     getProjectReviewConfig: vi.fn(async () =>
       runnableProject?.reviewTargetIntegrationId
         ? { integrationId: runnableProject.reviewTargetIntegrationId, repos: ["test/repo"] }
@@ -909,6 +916,9 @@ describe("runtime bootstrap provider selection", () => {
 
     const pollingInstance = runtime.PollingLoop.mock.results[0]?.value as { start: ReturnType<typeof vi.fn> };
     expect(pollingInstance.start).toHaveBeenCalledTimes(1);
+    expect(runtime.stateStore.hasEnabledCodingProjectWithActiveIntegrations).toHaveBeenCalledTimes(1);
+    expect(runtime.stateStore.getProjectTicketSource).not.toHaveBeenCalled();
+    expect(runtime.stateStore.listProjectPushTargets).not.toHaveBeenCalled();
   });
 
   it("starts the polling loop immediately when all three integrations are configured from DB with project", async () => {
@@ -967,6 +977,7 @@ describe("runtime bootstrap provider selection", () => {
     runtime.stateStore.listProjectPushTargets.mockResolvedValue(
       [{ integrationId: "gerrit-active", repoKey: "test/repo" }],
     );
+    runtime.stateStore.hasEnabledCodingProjectWithActiveIntegrations.mockResolvedValue(true);
 
     const onPluginChangeCallback = runtime.pluginManagerInstance.onPluginChange.mock.calls[0]?.[0] as (() => void) | undefined;
     expect(onPluginChangeCallback).toBeTypeOf("function");

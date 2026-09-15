@@ -1524,6 +1524,9 @@ export interface StateStore {
   /** Look up a project by its ID. */
   getProjectById(id: ProjectId): Promise<ProjectRecord | null>;
 
+  /** Return whether an enabled coding project has active ticket and push integrations. */
+  hasEnabledCodingProjectWithActiveIntegrations(activeIntegrationIds: readonly string[]): Promise<boolean>;
+
   /** Look up ALL VE projects whose repo inclusion list contains this repoKey for the given integration. */
   findProjectsByReviewTarget(integrationId: string, repoKey: string): Promise<ProjectRecord[]>;
 

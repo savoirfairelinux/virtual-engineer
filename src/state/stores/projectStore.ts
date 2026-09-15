@@ -74,6 +74,7 @@ export interface ProjectStoreApi {
     input: { integrationId: string; ticketProjectKey: string }
   ): Promise<ProjectTicketSourceRecord>;
   getProjectTicketSource(projectId: ProjectId): Promise<ProjectTicketSourceRecord | null>;
+  hasEnabledCodingProjectWithActiveIntegrations(activeIntegrationIds: readonly string[]): Promise<boolean>;
   findProjectByTicketSource(integrationId: string, ticketProjectKey: string): Promise<ProjectRecord | null>;
   addProjectPushTarget(
     projectId: ProjectId,
@@ -621,6 +622,36 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
     };
   }
 
+  function hasEnabledCodingProjectWithActiveIntegrations(
+    activeIntegrationIds: readonly string[]
+  ): Promise<boolean> {
+    try {
+      const integrationIds = [...new Set(activeIntegrationIds)].filter((id) => id.length > 0);
+      if (integrationIds.length === 0) return Promise.resolve(false);
+
+      const placeholders = integrationIds.map(() => "?").join(", ");
+      const row = raw
+        .prepare(
+          `SELECT 1 AS found
+           FROM projects p
+           JOIN project_integration_bindings ticket_binding
+             ON ticket_binding.project_id = p.id
+            AND ticket_binding.capability = 'issue_tracking'
+           JOIN project_push_targets push_target
+             ON push_target.project_id = p.id
+           WHERE p.enabled = 1
+             AND p.type = 'coding'
+             AND ticket_binding.integration_id IN (${placeholders})
+             AND push_target.integration_id IN (${placeholders})
+           LIMIT 1`
+        )
+        .get(...integrationIds, ...integrationIds) as { found: number } | undefined;
+      return Promise.resolve(row !== undefined);
+    } catch (err: unknown) {
+      return Promise.reject(err instanceof Error ? err : new Error(typeof err === "string" ? err : JSON.stringify(err)));
+    }
+  }
+
   async function findProjectByTicketSource(integrationId: string, ticketProjectKey: string): Promise<ProjectRecord | null> {
     const row = raw
       .prepare(
@@ -874,6 +905,7 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
     setProjectEnabled,
     setProjectTicketSource,
     getProjectTicketSource,
+    hasEnabledCodingProjectWithActiveIntegrations,
     findProjectByTicketSource,
     addProjectPushTarget,
     listProjectPushTargets,

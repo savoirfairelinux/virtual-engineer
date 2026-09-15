@@ -32,7 +32,7 @@ import { PluginIntegrationStreamEventsManager } from "./connectors/integrationSt
 import { recoverActiveReviews } from "./review/reviewRecovery.js";
 import { mkdir } from "fs/promises";
 import type { Server } from "node:http";
-import type { Integration, ProjectId, ProjectPushTargetRecord, ProjectRecord, ProjectReviewConfig, ProjectTicketSourceRecord, Task } from "./interfaces.js";
+import type { Integration, ProjectId, ProjectRecord, ProjectReviewConfig, Task } from "./interfaces.js";
 import { makeTaskId } from "./interfaces.js";
 import { registerBuiltinPlugins } from "./plugins/init.js";
 import { PluginManager } from "./plugins/pluginManager.js";
@@ -575,9 +575,8 @@ interface StreamStatusChecker {
  */
 async function pollingIsRequired(
   store: {
-    listProjects(filter?: { enabled?: boolean }): Promise<ProjectRecord[]>;
-    getProjectTicketSource(id: ProjectId): Promise<ProjectTicketSourceRecord | null>;
-    listProjectPushTargets(id: ProjectId): Promise<ProjectPushTargetRecord[]>;
+    listProjects(filter?: { type?: ProjectRecord["type"]; enabled?: boolean }): Promise<ProjectRecord[]>;
+    hasEnabledCodingProjectWithActiveIntegrations(activeIntegrationIds: readonly string[]): Promise<boolean>;
     getProjectReviewConfig(id: ProjectId): Promise<ProjectReviewConfig | null>;
     getActiveTasks(): Promise<Task[]>;
   },
@@ -596,31 +595,27 @@ async function pollingIsRequired(
   );
   if (needsFallbackPoll) return true;
 
-  const projects = await store.listProjects({ enabled: true });
-  for (const project of projects) {
-    if (project.type === "coding") {
-      const ts = await store.getProjectTicketSource(project.id);
-      if (!ts || !pluginManager.isIntegrationActive(ts.integrationId)) continue;
-      const pts = await store.listProjectPushTargets(project.id);
-      if (pts.some(pt => pluginManager.isIntegrationActive(pt.integrationId))) return true;
-    } else if (project.type === "review") {
-      const rc = await store.getProjectReviewConfig(project.id);
-      if (!rc || !pluginManager.isIntegrationActive(rc.integrationId)) continue;
-      if (!pluginManager.integrationHasStreamEvents(rc.integrationId)) {
-        // Only start polling if the provider implements polling-based
-        // assignment discovery (e.g. GitHub).  Webhook-only providers
-        // (e.g. GitLab) do not implement getOpenReviewAssignments, so
-        // starting the loop would achieve nothing.
-        const intake = pluginManager.getIntegrationCapabilityIntake(rc.integrationId, "code_review");
-        if (intake.includes("polling")) return true;
-        continue;
-      }
-      // Stream-backed (e.g. Gerrit): fall back to polling when the stream
-      // connection is degraded so in-progress tasks are not stranded.
-      if (streamEvents) {
-        const status = streamEvents.getStatus(rc.integrationId);
-        if (status?.state === "error" || status?.state === "stopped") return true;
-      }
+  const activeIntegrationIds = pluginManager.getActiveIntegrations().map((integration) => integration.id);
+  if (await store.hasEnabledCodingProjectWithActiveIntegrations(activeIntegrationIds)) return true;
+
+  const reviewProjects = await store.listProjects({ type: "review", enabled: true });
+  for (const project of reviewProjects) {
+    const rc = await store.getProjectReviewConfig(project.id);
+    if (!rc || !pluginManager.isIntegrationActive(rc.integrationId)) continue;
+    if (!pluginManager.integrationHasStreamEvents(rc.integrationId)) {
+      // Only start polling if the provider implements polling-based
+      // assignment discovery (e.g. GitHub).  Webhook-only providers
+      // (e.g. GitLab) do not implement getOpenReviewAssignments, so
+      // starting the loop would achieve nothing.
+      const intake = pluginManager.getIntegrationCapabilityIntake(rc.integrationId, "code_review");
+      if (intake.includes("polling")) return true;
+      continue;
+    }
+    // Stream-backed (e.g. Gerrit): fall back to polling when the stream
+    // connection is degraded so in-progress tasks are not stranded.
+    if (streamEvents) {
+      const status = streamEvents.getStatus(rc.integrationId);
+      if (status?.state === "error" || status?.state === "stopped") return true;
     }
   }
   return false;
