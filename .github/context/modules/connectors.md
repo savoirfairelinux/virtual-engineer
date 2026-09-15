@@ -122,6 +122,7 @@ Methods used by the orchestrator:
 ### `GitHubPullRequestReviewConnector` — [src/connectors/githubPullRequestReviewConnector.ts](../../../src/connectors/githubPullRequestReviewConnector.ts)
 
 - Implements `ReviewConnector` (feedback/status/merge polling) and `ReviewDiscoveryConnector` (open-PR review-assignment discovery for `pollReviewProjects()`).
+- Accepts numeric PR ids for legacy single-repository calls and repository-qualified ids in the `owner/repo#number` format used by GitHub webhooks and assignment discovery; qualified ids must match the connector's project-bound repository before an API request is made.
 - Reads PR state/merge status, unresolved review comments, and GitHub Checks API run/annotation data so `react_to_ci_failures` can classify `ci-run-*` / CI failure events the same way Gerrit does.
 - Token auth through `Authorization: Bearer` (GitHub PAT or OAuth token); `apiBaseUrl` supports both `api.github.com` and GitHub Enterprise `/api/v3` hosts.
 

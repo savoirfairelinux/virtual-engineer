@@ -106,7 +106,8 @@ export interface GitHubPullRequestReviewConnectorConfig {
  * GitHubPullRequestReviewConnector — implements the ReviewConnector interface
  * against GitHub Pull Requests.
  *
- * changeId convention: the PR number stored as a string, e.g. "42".
+ * changeId convention: a PR number or a repository-qualified id such as
+ * "owner/repo#42".
  */
 export class GitHubPullRequestReviewConnector implements ReviewConnector, ReviewDiscoveryConnector {
   private readonly threadIdCache = new Map<number, string>();
@@ -526,8 +527,24 @@ export class GitHubPullRequestReviewConnector implements ReviewConnector, Review
   }
 
   private parsePrNumber(changeId: string): number {
-    const n = parseInt(changeId, 10);
-    if (isNaN(n) || n <= 0) {
+    const rawChangeId = changeId.trim();
+    const hashIndex = rawChangeId.indexOf("#");
+    const numberPart = hashIndex >= 0 ? rawChangeId.slice(hashIndex + 1) : rawChangeId;
+    const repositoryPart = hashIndex >= 0 ? rawChangeId.slice(0, hashIndex) : "";
+
+    if (hashIndex >= 0 && repositoryPart !== `${this.config.owner}/${this.config.repo}`) {
+      throw new Error(`Invalid GitHub repository in change id: "${changeId}"`);
+    }
+
+    if (
+      (hashIndex >= 0 && repositoryPart.length === 0) ||
+      !/^\d+$/.test(numberPart)
+    ) {
+      throw new Error(`Invalid GitHub PR number: "${changeId}"`);
+    }
+
+    const n = Number(numberPart);
+    if (!Number.isSafeInteger(n) || n <= 0) {
       throw new Error(`Invalid GitHub PR number: "${changeId}"`);
     }
     return n;

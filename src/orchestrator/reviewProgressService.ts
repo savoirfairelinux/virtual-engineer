@@ -24,7 +24,7 @@ export interface ReviewProgressDependencies {
     changeId: string
   ): Promise<void>;
   getTask(taskId: TaskId): Promise<Task | null>;
-  resolveReviewConnector(task: Pick<Task, "taskId" | "projectId">): Promise<ReviewConnector>;
+  resolveReviewConnector(task: Pick<Task, "taskId" | "projectId" | "externalChangeId">): Promise<ReviewConnector>;
   resolveVcsConnector(
     integrationId: string,
     context: IntegrationBindingContext
