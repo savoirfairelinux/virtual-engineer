@@ -301,6 +301,7 @@ describe("GitLabVcsConnector", () => {
       expect(comments).toHaveLength(1);
       expect(comments[0]).toMatchObject({
         id: "disc-1",
+        reviewSystem: "gitlab",
         author: "reviewer",
         message: "Please fix this",
         filePath: "src/foo.ts",

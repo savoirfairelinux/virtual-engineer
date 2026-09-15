@@ -9,7 +9,7 @@
  * Key principle: All VCS credentials stay on the host. The container
  * receives a pre-cloned repository and never interacts with the VCS.
  */
-import type { PatchsetCheckoutOptions, ReviewComment } from "../interfaces.js";
+import type { PatchsetCheckoutOptions, ReviewComment, ReviewSystem } from "../interfaces.js";
 
 /**
  * Result of a push operation.
@@ -101,7 +101,7 @@ export interface VcsConnector {
    * Opaque label persisted in change_per_repository.review_system.
    * Connector-declared — the orchestrator never reads this for control flow.
    */
-  readonly reviewSystemLabel: "gerrit" | "gitlab" | "github";
+  readonly reviewSystemLabel: ReviewSystem;
 
   /** Optional path to a known_hosts file used by this connector's SSH transport. */
   readonly sshKnownHostsPath?: string | undefined;

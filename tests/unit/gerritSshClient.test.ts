@@ -287,6 +287,7 @@ describe("GerritSshClient", () => {
 
       expect(comments).toHaveLength(1);
       expect(comments[0]!.author).toBe("reviewer@example.com");
+      expect(comments[0]!.reviewSystem).toBe("gerrit");
       expect(comments[0]!.filePath).toBe("src/main.ts");
       expect(comments[0]!.line).toBe(12);
       expect(comments[0]!.unresolved).toBe(true);
@@ -347,6 +348,7 @@ describe("GerritSshClient", () => {
       expect(comments).toHaveLength(1);
       expect(comments[0]!.author).toBe("alice@example.com");
       expect(comments[0]!.message).toBe("Please fix the error handling");
+      expect(comments[0]!.reviewSystem).toBe("gerrit");
       expect(comments[0]!.filePath).toBeUndefined();
       expect(comments[0]!.line).toBeUndefined();
       expect(comments[0]!.unresolved).toBe(true);

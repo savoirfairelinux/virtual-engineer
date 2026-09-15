@@ -70,9 +70,10 @@ describe("FeedbackProcessor", () => {
     expect(store.markCommentProcessed).toHaveBeenCalledWith(taskId, comment.id);
   });
 
-  it("maps comment fields to FeedbackItem", async () => {
+  it("maps comment fields and review provenance to FeedbackItem", async () => {
     const comment = makeComment({
       message: "This function is wrong",
+      reviewSystem: "gerrit",
       filePath: "src/foo.ts",
       line: 42,
     });
@@ -87,15 +88,16 @@ describe("FeedbackProcessor", () => {
     );
 
     expect(items[0]).toMatchObject({
-      source: "gerrit_review",
+      source: "review_comment",
+      reviewSystem: "gerrit",
       content: "This function is wrong",
       filePath: "src/foo.ts",
       line: 42,
     });
   });
 
-  it("uses gerrit_review source for ssh-prefixed comment ids", async () => {
-    const comment = makeComment({ id: "ssh-1234567890-2", message: "Please fix this" });
+  it("uses generic review_comment source for Gerrit comments", async () => {
+    const comment = makeComment({ id: "ssh-1234567890-2", message: "Please fix this", reviewSystem: "gerrit" });
     const store = makeStateStoreMock();
     const processor = new FeedbackProcessor(store);
 
@@ -105,11 +107,11 @@ describe("FeedbackProcessor", () => {
       [comment]
     );
 
-    expect(items[0]?.source).toBe("gerrit_review");
+    expect(items[0]).toMatchObject({ source: "review_comment", reviewSystem: "gerrit" });
   });
 
-  it("uses github_review source for issue-prefixed comment ids", async () => {
-    const comment = makeComment({ id: "issue-98765", message: "Please update docs" });
+  it("uses generic review_comment source for opaque GitLab discussion ids", async () => {
+    const comment = makeComment({ id: "discussion-98765", message: "Please update this", reviewSystem: "gitlab" });
     const store = makeStateStoreMock();
     const processor = new FeedbackProcessor(store);
 
@@ -119,11 +121,25 @@ describe("FeedbackProcessor", () => {
       [comment]
     );
 
-    expect(items[0]?.source).toBe("github_review");
+    expect(items[0]).toMatchObject({ source: "review_comment", reviewSystem: "gitlab" });
   });
 
-  it("uses github_review source for numeric comment ids (GitHub inline review)", async () => {
-    const comment = makeComment({ id: "123456789", message: "Suggestion here" });
+  it("uses generic review_comment source for GitHub issue comments", async () => {
+    const comment = makeComment({ id: "issue-98765", message: "Please update docs", reviewSystem: "github" });
+    const store = makeStateStoreMock();
+    const processor = new FeedbackProcessor(store);
+
+    const [items] = await processor.extractNewFeedback(
+      makeTaskId(randomUUID()),
+      makeExternalChangeId("42"),
+      [comment]
+    );
+
+    expect(items[0]).toMatchObject({ source: "review_comment", reviewSystem: "github" });
+  });
+
+  it("uses generic review_comment source for GitHub inline review comments", async () => {
+    const comment = makeComment({ id: "123456789", message: "Suggestion here", reviewSystem: "github" });
     const store = makeStateStoreMock();
     const processor = new FeedbackProcessor(store);
 
@@ -133,7 +149,7 @@ describe("FeedbackProcessor", () => {
       [comment]
     );
 
-    expect(items[0]?.source).toBe("github_review");
+    expect(items[0]).toMatchObject({ source: "review_comment", reviewSystem: "github" });
   });
 
   it("handles comments with no file path (patchset-level)", async () => {

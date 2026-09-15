@@ -352,12 +352,15 @@ export interface ResolvedAgentConfig {
 
 // ─── Agent interfaces ─────────────────────────────────────────────────────────
 
+export type ReviewSystem = "gerrit" | "gitlab" | "github";
+
 export interface FeedbackItem {
-  source: "gerrit_review" | "github_review" | "test_failure" | "lint_failure" | "ci_failure";
+  source: "review_comment" | "test_failure" | "lint_failure" | "ci_failure";
   content: string;
   filePath?: string | undefined;
   line?: number | undefined;
-  _gerritCommentId?: string | undefined; // For gerrit_review source — used to resolve Gerrit comments
+  reviewSystem?: ReviewSystem | undefined;
+  _gerritCommentId?: string | undefined;
 }
 
 /** Describes one repository entry in a multi-repo workspace layout. */
@@ -759,6 +762,7 @@ export interface ReviewComment {
   id: string;
   author: string;
   message: string;
+  reviewSystem?: ReviewSystem | undefined;
   filePath?: string | undefined;
   line?: number | undefined;
   unresolved: boolean;

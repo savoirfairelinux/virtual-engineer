@@ -248,6 +248,7 @@ describe("GerritStreamEventsManager", () => {
         id: "gerrit-msg-1710000500",
         author: "alice@example.com",
         message: "Please add documentation for each function",
+        reviewSystem: "gerrit",
         unresolved: true,
       })]
     );

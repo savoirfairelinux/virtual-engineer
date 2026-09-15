@@ -258,7 +258,7 @@ describe("ReviewProgressService", () => {
   it("reads the current cycle limit before abandoning feedback", async () => {
     const task = makeTask({ cycleCount: 4 });
     const comment = makeComment();
-    const feedback: FeedbackItem = { source: "gerrit_review", content: comment.message };
+    const feedback: FeedbackItem = { source: "review_comment", content: comment.message };
     const reviewConnector = {
       getChangeStatus: vi.fn().mockResolvedValue("OPEN"),
       getUnresolvedComments: vi.fn().mockResolvedValue([comment]),
@@ -283,7 +283,7 @@ describe("ReviewProgressService", () => {
   it("runs a retry and resolves newly processed comments after review resumes", async () => {
     const task = makeTask();
     const comment = makeComment();
-    const feedback: FeedbackItem = { source: "gerrit_review", content: comment.message };
+    const feedback: FeedbackItem = { source: "review_comment", content: comment.message };
     const reviewConnector = {
       getChangeStatus: vi.fn().mockResolvedValue("OPEN"),
       getUnresolvedComments: vi.fn().mockResolvedValue([comment]),
@@ -324,5 +324,88 @@ describe("ReviewProgressService", () => {
     );
     expect(dependencies.transition).toHaveBeenNthCalledWith(2, task.taskId, "IN_REVIEW");
     expect(dependencies.abandonTask).not.toHaveBeenCalled();
+  });
+
+  it("preserves provider provenance while aggregating multi-repository feedback", async () => {
+    const task = makeTask();
+    const changes = [
+      makeChange(task, {
+        id: "change-gerrit",
+        repoKey: "team/api",
+        changeId: "Iapi",
+        integrationId: "gerrit-1",
+        reviewSystem: "gerrit",
+      }),
+      makeChange(task, {
+        id: "change-gitlab",
+        repoKey: "team/ui",
+        changeId: "7",
+        integrationId: "gitlab-1",
+        reviewSystem: "gitlab",
+      }),
+    ];
+    const gerritComment = makeComment({
+      id: "ssh-1-1",
+      filePath: "team/api/src/index.ts",
+      message: "Fix the API validation",
+      reviewSystem: "gerrit",
+    });
+    const gitlabComment = makeComment({
+      id: "discussion-1",
+      filePath: "team/ui/src/index.ts",
+      message: "Fix the UI state",
+      reviewSystem: "gitlab",
+    });
+    const gerritConnector = {
+      getChangeStatus: vi.fn().mockResolvedValue("OPEN"),
+      getUnresolvedComments: vi.fn().mockResolvedValue([gerritComment]),
+      resolveComments: vi.fn().mockResolvedValue(undefined),
+    } as unknown as VcsConnector;
+    const gitlabConnector = {
+      getChangeStatus: vi.fn().mockResolvedValue("OPEN"),
+      getUnresolvedComments: vi.fn().mockResolvedValue([gitlabComment]),
+      resolveComments: vi.fn().mockResolvedValue(undefined),
+    } as unknown as VcsConnector;
+    const feedback = vi.fn().mockImplementation(
+      async (_taskId: string, _changeId: string, comments: ReviewComment[]) => [
+        comments.map((comment) => ({
+          source: "review_comment" as const,
+          reviewSystem: comment.reviewSystem,
+          content: comment.message,
+          ...(comment.filePath !== undefined ? { filePath: comment.filePath } : {}),
+          ...(comment.line !== undefined ? { line: comment.line } : {}),
+        })),
+        comments,
+      ]
+    );
+    const dependencies = makeDependencies(task, {} as ReviewConnector, {
+      getChangesForTask: vi.fn().mockResolvedValue(changes),
+      resolveVcsConnector: vi.fn().mockImplementation(async (_integrationId, context) =>
+        context.repoKey === "team/api" ? gerritConnector : gitlabConnector
+      ),
+      extractNewFeedback: feedback,
+      getTask: vi.fn().mockResolvedValue({ ...task, state: "IN_REVIEW" }),
+    });
+    const service = new ReviewProgressService(dependencies);
+
+    await service.check(task);
+
+    expect(dependencies.runAgentCycle).toHaveBeenCalledWith(
+      expect.objectContaining({ state: "RETRY_CYCLE" }),
+      [
+        expect.objectContaining({
+          source: "review_comment",
+          reviewSystem: "gerrit",
+          content: "[team/api] Fix the API validation",
+        }),
+        expect.objectContaining({
+          source: "review_comment",
+          reviewSystem: "gitlab",
+          content: "[team/ui] Fix the UI state",
+        }),
+      ]
+    );
+    expect(gerritConnector.resolveComments).toHaveBeenCalledWith("Iapi", [gerritComment]);
+    expect(gitlabConnector.resolveComments).toHaveBeenCalledWith("7", [gitlabComment]);
   });
 });
