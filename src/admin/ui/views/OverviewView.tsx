@@ -8,7 +8,7 @@ import { Icon } from "../components/Icon.tsx";
 import { TONE, STATES, isActiveState } from "../states.ts";
 import { api } from "../api.ts";
 import { totalProcessedTokens } from "./TasksView/liveMetrics.ts";
-import type { ApiOverview, ApiTask, ApiProvider, ApiCostSummary, ApiCycleCostTokens, ApiModelUsageSummary } from "../types.ts";
+import type { ApiOverview, ApiTask, ApiProvider, ApiCostSummary, ApiCostSummaryProject, ApiCycleCostTokens, ApiModelUsageSummary } from "../types.ts";
 
 interface OverviewViewProps {
   overview: ApiOverview | null;
@@ -152,14 +152,33 @@ function processedTokenCount(tokens: ApiCycleCostTokens): number {
   });
 }
 
-const MODEL_BAR_COLORS = [
-  "var(--accent-strong)",
-  TONE.ok.c,
-  TONE.warn.c,
-  TONE.info.c,
-  TONE.danger.c,
-  TONE.muted.c,
-];
+type WorkflowBucket = ApiCostSummaryProject["workflowBucket"];
+
+const WORKFLOW_BUCKET_LABELS: Record<WorkflowBucket, string> = {
+  active: "Active",
+  watching: "Watching",
+  done: "Done",
+  failed: "Failed",
+};
+
+const WORKFLOW_BUCKET_TONES: Record<WorkflowBucket, keyof typeof TONE> = {
+  active: "active",
+  watching: "warn",
+  done: "ok",
+  failed: "danger",
+};
+
+function workflowBucketLabel(bucket: WorkflowBucket): string {
+  return WORKFLOW_BUCKET_LABELS[bucket] ?? bucket;
+}
+
+function workflowBucketColor(bucket: WorkflowBucket): string {
+  return TONE[WORKFLOW_BUCKET_TONES[bucket] ?? "muted"].c;
+}
+
+function modelUsageKey(modelId: string | null, workflowBucket: WorkflowBucket): string {
+  return `${modelId ?? "\x00null"}:${workflowBucket}`;
+}
 
 function modelLabel(modelId: string | null): string {
   return modelId ?? "unknown";
@@ -258,12 +277,17 @@ function CostSummaryCard() {
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: "11px" }}>
               {projects.map((p) => (
-                <div key={p.projectId ?? "__unassigned__"} style={{ display: "flex", alignItems: "center", gap: "11px" }}>
-                  <span style={{ flex: "0 0 30%", fontSize: "12.5px", color: "var(--text-dim)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {p.projectName ?? (p.projectId ? p.projectId : "Unassigned")}
-                  </span>
+                <div key={`${p.projectId ?? "__unassigned__"}:${p.workflowBucket}`} style={{ display: "flex", alignItems: "center", gap: "11px" }}>
+                  <div style={{ flex: "0 0 30%", minWidth: 0, display: "flex", flexDirection: "column", gap: "2px" }}>
+                    <span style={{ fontSize: "12.5px", color: "var(--text-dim)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {p.projectName ?? (p.projectId ? p.projectId : "Unassigned")}
+                    </span>
+                    <span className="mono" style={{ fontSize: "10.5px", color: workflowBucketColor(p.workflowBucket) }}>
+                      {workflowBucketLabel(p.workflowBucket)}
+                    </span>
+                  </div>
                   <div style={{ flex: 1, height: "8px", background: "var(--panel-2)", borderRadius: "99px", overflow: "hidden" }}>
-                    <div style={{ width: `${(p.usd / maxUsd) * 100}%`, height: "100%", background: TONE.active.c, opacity: 0.85, borderRadius: "99px" }} />
+                    <div style={{ width: `${(p.usd / maxUsd) * 100}%`, height: "100%", background: workflowBucketColor(p.workflowBucket), opacity: 0.85, borderRadius: "99px" }} />
                   </div>
                   <span className="mono metric-val" style={{ flex: "none", width: "62px", textAlign: "right", fontSize: "12px", fontWeight: 600 }}>
                     {formatUsd(p.usd)}
@@ -307,7 +331,6 @@ function ModelUsageCard() {
 
   const models = summary ? summary.byModel : [];
   const totalRuns = summary?.totalRuns ?? 0;
-  const colorFor = (i: number): string => MODEL_BAR_COLORS[i % MODEL_BAR_COLORS.length] as string;
   const projects = summary
     ? summary.perProject.filter((p) => p.models.some((m) => m.runCount > 0))
     : [];
@@ -348,25 +371,30 @@ function ModelUsageCard() {
       ) : (
         <>
           <div style={{ display: "flex", height: "10px", borderRadius: "99px", overflow: "hidden", gap: "2px", marginBottom: "16px" }}>
-            {models.map((m, i) =>
+            {models.map((m) =>
               m.runCount > 0 ? (
                 <div
-                  key={m.modelId ?? "\x00null"}
-                  title={`${modelLabel(m.modelId)} · ${m.runCount} runs`}
-                  style={{ flex: m.runCount, background: colorFor(i), opacity: 0.9 }}
+                  key={modelUsageKey(m.modelId, m.workflowBucket)}
+                  title={`${modelLabel(m.modelId)} · ${workflowBucketLabel(m.workflowBucket)} · ${m.runCount} runs`}
+                  style={{ flex: m.runCount, background: workflowBucketColor(m.workflowBucket), opacity: 0.9 }}
                 />
               ) : null
             )}
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-            {models.map((m, i) => {
+            {models.map((m) => {
               const pct = totalRuns > 0 ? Math.round((m.runCount / totalRuns) * 100) : 0;
               return (
-                <div key={m.modelId ?? "\x00null"} style={{ display: "flex", alignItems: "center", gap: "9px" }}>
-                  <span style={{ width: 9, height: 9, borderRadius: 99, background: colorFor(i), flex: "none" }} />
-                  <span style={{ fontSize: "12.5px", color: "var(--text-dim)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {modelLabel(m.modelId)}
-                  </span>
+                <div key={modelUsageKey(m.modelId, m.workflowBucket)} style={{ display: "flex", alignItems: "center", gap: "9px" }}>
+                  <span style={{ width: 9, height: 9, borderRadius: 99, background: workflowBucketColor(m.workflowBucket), flex: "none" }} />
+                  <div style={{ display: "flex", alignItems: "baseline", gap: "7px", flex: 1, minWidth: 0 }}>
+                    <span style={{ fontSize: "12.5px", color: "var(--text-dim)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {modelLabel(m.modelId)}
+                    </span>
+                    <span className="mono" style={{ flex: "none", fontSize: "10.5px", color: workflowBucketColor(m.workflowBucket) }}>
+                      {workflowBucketLabel(m.workflowBucket)}
+                    </span>
+                  </div>
                   <span className="mono" style={{ fontSize: "11.5px", color: "var(--text-faint)" }}>{pct}%</span>
                   <span className="mono metric-val" style={{ width: "44px", textAlign: "right", fontSize: "12px", fontWeight: 600 }}>{m.runCount}</span>
                   <span
@@ -390,22 +418,26 @@ function ModelUsageCard() {
               {projects.map((p) => {
                 const projTotal = p.models.reduce((s, m) => s + m.runCount, 0);
                 return (
-                  <div key={p.projectId ?? "__unassigned__"} style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12px" }}>
-                      <span style={{ color: "var(--text-dim)", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        {p.projectName ?? (p.projectId ? p.projectId : "Unassigned")}
-                      </span>
+                  <div key={`${p.projectId ?? "__unassigned__"}:${p.workflowBucket}`} style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12px", gap: "10px" }}>
+                      <div style={{ display: "flex", alignItems: "baseline", gap: "7px", minWidth: 0 }}>
+                        <span style={{ color: "var(--text-dim)", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {p.projectName ?? (p.projectId ? p.projectId : "Unassigned")}
+                        </span>
+                        <span className="mono" style={{ flex: "none", fontSize: "10.5px", color: workflowBucketColor(p.workflowBucket) }}>
+                          {workflowBucketLabel(p.workflowBucket)}
+                        </span>
+                      </div>
                       <span className="mono" style={{ color: "var(--text-faint)" }}>{projTotal} runs</span>
                     </div>
                     <div style={{ display: "flex", height: "7px", borderRadius: "99px", overflow: "hidden", gap: "2px" }}>
-                      {p.models.map((m, i) => {
+                      {p.models.map((m) => {
                         if (m.runCount <= 0) return null;
-                        const globalIdx = models.findIndex((g) => g.modelId === m.modelId);
                         return (
                           <div
-                            key={m.modelId ?? "\x00null"}
-                            title={`${modelLabel(m.modelId)} · ${m.runCount} runs · ${formatUsd(m.usd)}`}
-                            style={{ flex: m.runCount, background: colorFor(globalIdx >= 0 ? globalIdx : i), opacity: 0.85 }}
+                            key={modelUsageKey(m.modelId, m.workflowBucket)}
+                            title={`${modelLabel(m.modelId)} · ${workflowBucketLabel(m.workflowBucket)} · ${m.runCount} runs · ${formatUsd(m.usd)}`}
+                            style={{ flex: m.runCount, background: workflowBucketColor(m.workflowBucket), opacity: 0.85 }}
                           />
                         );
                       })}

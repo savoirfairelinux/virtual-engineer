@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { TASK_WORKFLOW_BUCKETS, type TaskState, type TaskWorkflowBucket } from "../../domain/tasks.js";
 import type {
   CostSummary,
   CostSummaryProject,
@@ -28,6 +29,12 @@ const REPORTED_TOKENS_CASE = `CASE WHEN c.cost_input_tokens IS NOT NULL
                                      OR c.cost_cache_write_tokens IS NOT NULL
                                 THEN 1 ELSE 0 END`;
 
+function workflowBucketForState(state: string): TaskWorkflowBucket {
+  const bucket = TASK_WORKFLOW_BUCKETS.get(state as TaskState);
+  if (!bucket) throw new Error(`Unclassified task state in cost aggregate: ${state}`);
+  return bucket;
+}
+
 export function createCostStore(context: CostStoreContext): CostStoreApi {
   const { raw } = context;
 
@@ -44,6 +51,7 @@ export function createCostStore(context: CostStoreContext): CostStoreApi {
     interface Bucket {
       projectId: string | null;
       projectName: string | null;
+      workflowBucket: TaskWorkflowBucket;
       usd: number;
       aiCredits: number;
       premiumRequests: number;
@@ -55,14 +63,20 @@ export function createCostStore(context: CostStoreContext): CostStoreApi {
       runCountWithTokens: number;
     }
     const buckets = new Map<string, Bucket>();
-    const keyOf = (projectId: string | null): string => projectId ?? "\u0000__unassigned__";
-    const bucketFor = (projectId: string | null, projectName: string | null): Bucket => {
-      const key = keyOf(projectId);
+    const keyOf = (projectId: string | null, workflowBucket: TaskWorkflowBucket): string =>
+      `${projectId ?? "\u0000__unassigned__"}\u0000${workflowBucket}`;
+    const bucketFor = (
+      projectId: string | null,
+      projectName: string | null,
+      workflowBucket: TaskWorkflowBucket,
+    ): Bucket => {
+      const key = keyOf(projectId, workflowBucket);
       let bucket = buckets.get(key);
       if (!bucket) {
         bucket = {
           projectId,
           projectName,
+          workflowBucket,
           usd: 0,
           aiCredits: 0,
           premiumRequests: 0,
@@ -83,10 +97,10 @@ export function createCostStore(context: CostStoreContext): CostStoreApi {
     const periodClause = sinceEpochSeconds !== null ? "WHERE c.created_at >= ?" : "";
     const periodArgs = sinceEpochSeconds !== null ? [sinceEpochSeconds] : [];
 
-    // SQL aggregation of recorded snapshot costs + run counts per project.
+    // SQL aggregation of recorded snapshot costs + run counts per project and workflow bucket.
     const aggregateRows = raw
       .prepare(
-        `SELECT t.project_id AS projectId, p.name AS projectName,
+        `SELECT t.project_id AS projectId, p.name AS projectName, t.state AS taskState,
                 SUM(COALESCE(c.cost_usd, 0)) AS usd,
                 SUM(COALESCE(c.cost_ai_credits, 0)) AS aiCredits,
                 SUM(COALESCE(c.premium_requests, 0)) AS premiumRequests,
@@ -100,11 +114,12 @@ export function createCostStore(context: CostStoreContext): CostStoreApi {
          JOIN tasks t ON t.task_id = c.task_id
          LEFT JOIN projects p ON p.id = t.project_id
          ${periodClause}
-         GROUP BY t.project_id, p.name`
+         GROUP BY t.project_id, p.name, t.state`
       )
       .all(...periodArgs) as Array<{
         projectId: string | null;
         projectName: string | null;
+        taskState: string;
         usd: number;
         aiCredits: number;
         premiumRequests: number;
@@ -116,7 +131,7 @@ export function createCostStore(context: CostStoreContext): CostStoreApi {
         runCountWithTokens: number;
       }>;
     for (const row of aggregateRows) {
-      const bucket = bucketFor(row.projectId, row.projectName);
+      const bucket = bucketFor(row.projectId, row.projectName, workflowBucketForState(row.taskState));
       bucket.usd += row.usd;
       bucket.aiCredits += row.aiCredits;
       bucket.premiumRequests += row.premiumRequests;
@@ -132,6 +147,7 @@ export function createCostStore(context: CostStoreContext): CostStoreApi {
       .map((b) => ({
         projectId: b.projectId,
         projectName: b.projectName,
+        workflowBucket: b.workflowBucket,
         usd: b.usd,
         aiCredits: b.aiCredits,
         premiumRequests: b.premiumRequests,
@@ -172,18 +188,36 @@ export function createCostStore(context: CostStoreContext): CostStoreApi {
     const sinceEpochSeconds =
       options?.since !== undefined ? Math.floor(options.since.getTime() / 1000) : null;
 
-    interface ModelAgg { runCount: number; usd: number; tokens: CycleCostTokens; runCountWithTokens: number }
-    interface ProjectAgg { projectId: string | null; projectName: string | null; models: Map<string, ModelAgg> }
+    interface ModelAgg {
+      modelId: string | null;
+      workflowBucket: TaskWorkflowBucket;
+      runCount: number;
+      usd: number;
+      tokens: CycleCostTokens;
+      runCountWithTokens: number;
+    }
+    interface ProjectAgg {
+      projectId: string | null;
+      projectName: string | null;
+      workflowBucket: TaskWorkflowBucket;
+      models: Map<string, ModelAgg>;
+    }
 
-    const projectKey = (projectId: string | null): string => projectId ?? "\u0000__unassigned__";
-    const modelKey = (modelId: string | null): string => modelId ?? "\u0000__unknown__";
+    const projectKey = (projectId: string | null, workflowBucket: TaskWorkflowBucket): string =>
+      `${projectId ?? "\u0000__unassigned__"}\u0000${workflowBucket}`;
+    const modelKey = (modelId: string | null, workflowBucket: TaskWorkflowBucket): string =>
+      `${modelId ?? "\u0000__unknown__"}\u0000${workflowBucket}`;
     const projects = new Map<string, ProjectAgg>();
 
-    const projectAggFor = (projectId: string | null, projectName: string | null): ProjectAgg => {
-      const key = projectKey(projectId);
+    const projectAggFor = (
+      projectId: string | null,
+      projectName: string | null,
+      workflowBucket: TaskWorkflowBucket,
+    ): ProjectAgg => {
+      const key = projectKey(projectId, workflowBucket);
       let agg = projects.get(key);
       if (!agg) {
-        agg = { projectId, projectName, models: new Map() };
+        agg = { projectId, projectName, workflowBucket, models: new Map() };
         projects.set(key, agg);
       } else if (agg.projectName === null && projectName !== null) {
         agg.projectName = projectName;
@@ -193,12 +227,13 @@ export function createCostStore(context: CostStoreContext): CostStoreApi {
     const addModel = (
       project: ProjectAgg,
       modelId: string | null,
+      workflowBucket: TaskWorkflowBucket,
       runCount: number,
       usd: number,
       tokens: CycleCostTokens,
       runCountWithTokens: number
     ): void => {
-      const key = modelKey(modelId);
+      const key = modelKey(modelId, workflowBucket);
       const existing = project.models.get(key);
       if (existing) {
         existing.runCount += runCount;
@@ -209,16 +244,23 @@ export function createCostStore(context: CostStoreContext): CostStoreApi {
         existing.tokens.cacheWrite += tokens.cacheWrite;
         existing.runCountWithTokens += runCountWithTokens;
       } else {
-        project.models.set(key, { runCount, usd, tokens: { ...tokens }, runCountWithTokens });
+        project.models.set(key, {
+          modelId,
+          workflowBucket,
+          runCount,
+          usd,
+          tokens: { ...tokens },
+          runCountWithTokens,
+        });
       }
     };
 
     const periodArgs = sinceEpochSeconds !== null ? [sinceEpochSeconds] : [];
 
-    // SQL aggregation of recorded model snapshots + run counts per project.
+    // SQL aggregation of recorded model snapshots + run counts per project and workflow bucket.
     const aggregateRows = raw
       .prepare(
-        `SELECT t.project_id AS projectId, p.name AS projectName,
+        `SELECT t.project_id AS projectId, p.name AS projectName, t.state AS taskState,
                 c.cost_model_id AS modelId,
                 COUNT(*) AS runCount,
                 SUM(COALESCE(c.cost_usd, 0)) AS usd,
@@ -231,11 +273,12 @@ export function createCostStore(context: CostStoreContext): CostStoreApi {
          JOIN tasks t ON t.task_id = c.task_id
          LEFT JOIN projects p ON p.id = t.project_id
          ${sinceEpochSeconds !== null ? "WHERE c.created_at >= ?" : ""}
-         GROUP BY t.project_id, p.name, c.cost_model_id`
+         GROUP BY t.project_id, p.name, t.state, c.cost_model_id`
       )
       .all(...periodArgs) as Array<{
         projectId: string | null;
         projectName: string | null;
+        taskState: string;
         modelId: string | null;
         runCount: number;
         usd: number;
@@ -246,10 +289,12 @@ export function createCostStore(context: CostStoreContext): CostStoreApi {
         runCountWithTokens: number;
       }>;
     for (const row of aggregateRows) {
-      const project = projectAggFor(row.projectId, row.projectName);
+      const workflowBucket = workflowBucketForState(row.taskState);
+      const project = projectAggFor(row.projectId, row.projectName, workflowBucket);
       addModel(
         project,
         row.modelId,
+        workflowBucket,
         row.runCount,
         row.usd,
         {
@@ -268,9 +313,9 @@ export function createCostStore(context: CostStoreContext): CostStoreApi {
     for (const project of projects.values()) {
       const models: ModelUsageEntry[] = [];
       for (const [key, agg] of project.models) {
-        const modelId = key === "\u0000__unknown__" ? null : key;
         models.push({
-          modelId,
+          modelId: agg.modelId,
+          workflowBucket: agg.workflowBucket,
           runCount: agg.runCount,
           usd: agg.usd,
           tokens: { ...agg.tokens },
@@ -287,7 +332,8 @@ export function createCostStore(context: CostStoreContext): CostStoreApi {
           g.runCountWithTokens += agg.runCountWithTokens;
         } else {
           globalModels.set(key, {
-            modelId,
+            modelId: agg.modelId,
+            workflowBucket: agg.workflowBucket,
             runCount: agg.runCount,
             usd: agg.usd,
             tokens: { ...agg.tokens },
@@ -296,12 +342,18 @@ export function createCostStore(context: CostStoreContext): CostStoreApi {
         }
       }
       models.sort((a, b) => b.runCount - a.runCount || b.usd - a.usd);
-      perProject.push({ projectId: project.projectId, projectName: project.projectName, models });
+      perProject.push({
+        projectId: project.projectId,
+        projectName: project.projectName,
+        workflowBucket: project.workflowBucket,
+        models,
+      });
     }
 
     const byModel: ModelUsageEntry[] = [...globalModels.values()]
       .map((m) => ({
         modelId: m.modelId,
+        workflowBucket: m.workflowBucket,
         runCount: m.runCount,
         usd: m.usd,
         tokens: { ...m.tokens },

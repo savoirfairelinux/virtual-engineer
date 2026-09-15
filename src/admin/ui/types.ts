@@ -8,6 +8,7 @@ export type TaskState =
   | "REVIEW_WATCHING" | "REVIEW_DONE" | "REVIEW_FAILED";
 
 export type TaskType = "code-gen" | "code-review";
+export type TaskWorkflowBucket = "active" | "watching" | "done" | "failed";
 
 export interface ApiTask {
   taskId: string;
@@ -320,6 +321,7 @@ export interface ApiCycleCostTokens {
 export interface ApiCostSummaryProject {
   projectId: string | null;
   projectName: string | null;
+  workflowBucket: TaskWorkflowBucket;
   usd: number;
   aiCredits: number;
   premiumRequests: number;
@@ -341,6 +343,7 @@ export interface ApiCostSummary {
 
 export interface ApiModelUsageEntry {
   modelId: string | null;
+  workflowBucket: TaskWorkflowBucket;
   runCount: number;
   usd: number;
   tokens: ApiCycleCostTokens;
@@ -350,6 +353,7 @@ export interface ApiModelUsageEntry {
 export interface ApiModelUsageProject {
   projectId: string | null;
   projectName: string | null;
+  workflowBucket: TaskWorkflowBucket;
   models: ApiModelUsageEntry[];
 }
 

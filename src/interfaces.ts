@@ -12,6 +12,7 @@ import {
   type StateTransition,
   type Task,
   type TaskState,
+  type TaskWorkflowBucket,
 } from "./domain/tasks.js";
 import { sanitizeErrorDetail } from "./utils/redactUrl.js";
 
@@ -1188,6 +1189,8 @@ export interface CostSummaryProject {
   projectId: string | null;
   /** Project name, or null when the project no longer exists or is unassigned. */
   projectName: string | null;
+  /** Workflow outcome bucket for the task owning these cycles. */
+  workflowBucket: TaskWorkflowBucket;
   /** Total USD across the project's agent cycles in the period. */
   usd: number;
   /** Total GitHub AI credits across the project's agent cycles in the period. */
@@ -1234,6 +1237,8 @@ export interface CostSummary {
 export interface ModelUsageEntry {
   /** Model id, or null when the model could not be resolved from the cycle. */
   modelId: string | null;
+  /** Workflow outcome bucket for the task owning these cycles. */
+  workflowBucket: TaskWorkflowBucket;
   /** Number of agent cycles (runs) executed with this model in the period. */
   runCount: number;
   /** Total USD attributed to this model in the period. */
@@ -1250,6 +1255,8 @@ export interface ModelUsageProject {
   projectId: string | null;
   /** Project name, or null when unassigned / deleted. */
   projectName: string | null;
+  /** Workflow outcome bucket for the task owning these cycles. */
+  workflowBucket: TaskWorkflowBucket;
   /** Models used by the project, sorted by descending run count. */
   models: ModelUsageEntry[];
 }

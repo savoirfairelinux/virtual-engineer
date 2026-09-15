@@ -179,6 +179,69 @@ describe("SqliteStateStore — getCostSummary", () => {
     expect(summary.perProject[0]?.projectId).toBeNull();
   });
 
+  it("separates cost by workflow bucket and consolidates states within a bucket", async () => {
+    const agent = await store.createAgent({
+      name: "A",
+      type: "coding",
+      modelConfigJson: JSON.stringify({ model: "gpt-4.1" }),
+      systemPromptId: "system_generic_code",
+      instructionsPromptId: "instructions_generic_code",
+      enabled: true,
+    });
+    const project = await store.createProject({ name: "PLATFORM", type: "coding", agentId: agent.id });
+
+    const mergedTask = await makeTaskForProject(store, project.id);
+    await store.transition(mergedTask, "CONTEXT_BUILDING");
+    await store.transition(mergedTask, "AGENT_RUNNING");
+    await store.transition(mergedTask, "IN_REVIEW");
+    await store.transition(mergedTask, "MERGED");
+    await store.saveAgentCycle(mergedTask, 1, pricedResult(2));
+
+    const doneTask = await makeTaskForProject(store, project.id);
+    await store.transition(doneTask, "CONTEXT_BUILDING");
+    await store.transition(doneTask, "AGENT_RUNNING");
+    await store.transition(doneTask, "IN_REVIEW");
+    await store.transition(doneTask, "MERGED");
+    await store.transition(doneTask, "CLOSING");
+    await store.transition(doneTask, "DONE");
+    await store.saveAgentCycle(doneTask, 1, tokenResult({ input: 10, output: 4, cached: 2, cacheWrite: 1 }));
+
+    const failedTask = await makeTaskForProject(store, project.id);
+    await store.transition(failedTask, "FAILED");
+    await store.saveAgentCycle(failedTask, 1, pricedResult(5));
+
+    const abandonedTask = await makeTaskForProject(store, project.id);
+    await store.transition(abandonedTask, "CONTEXT_BUILDING");
+    await store.transition(abandonedTask, "AGENT_RUNNING");
+    await store.transition(abandonedTask, "ABANDONED");
+    await store.saveAgentCycle(abandonedTask, 1, tokenResult({ input: 20, output: 8, cached: 3, cacheWrite: 2 }));
+
+    const summary = await store.getCostSummary();
+
+    expect(summary.perProject).toHaveLength(2);
+    const byBucket = new Map(summary.perProject.map((projectSummary) => [projectSummary.workflowBucket, projectSummary]));
+    expect(byBucket.get("done")).toMatchObject({
+      projectId: project.id,
+      workflowBucket: "done",
+      usd: expect.closeTo(0.02, 6),
+      runCount: 2,
+      tokens: { input: 10, output: 4, cached: 2, cacheWrite: 1 },
+      runCountWithTokens: 1,
+    });
+    expect(byBucket.get("failed")).toMatchObject({
+      projectId: project.id,
+      workflowBucket: "failed",
+      usd: expect.closeTo(0.05, 6),
+      runCount: 2,
+      tokens: { input: 20, output: 8, cached: 3, cacheWrite: 2 },
+      runCountWithTokens: 1,
+    });
+    expect(summary.totalRuns).toBe(4);
+    expect(summary.totalUsd).toBeCloseTo(0.07, 6);
+    expect(summary.totalTokens).toEqual({ input: 30, output: 12, cached: 5, cacheWrite: 3 });
+    expect(summary.totalRunsWithTokens).toBe(2);
+  });
+
   it("backfills legacy cost from agent_result when the agent_events column is null", async () => {
     const agent = await store.createAgent({
       name: "A",

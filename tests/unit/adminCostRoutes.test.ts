@@ -32,6 +32,7 @@ const SAMPLE: CostSummary = {
     {
       projectId: "p1",
       projectName: "PLATFORM",
+      workflowBucket: "done",
       usd: 28,
       aiCredits: 2800,
       premiumRequests: 2,
@@ -42,6 +43,7 @@ const SAMPLE: CostSummary = {
     {
       projectId: "p2",
       projectName: "MOBILE",
+      workflowBucket: "failed",
       usd: 14,
       aiCredits: 1400,
       premiumRequests: 1,
