@@ -8,6 +8,7 @@ import type {
   ProjectTicketSourceRecord,
   ProjectReviewConfig,
   ProjectId,
+  Task,
   ReviewDiscoveryConnector,
   ReviewAssignmentDiscovery,
 } from "../interfaces.js";
@@ -45,6 +46,7 @@ export interface ReviewAssignmentTrigger {
 export interface ProjectAwarePluginManager {
   getConnectorForCapability<T>(integrationId: string, capability: DomainCapability): T | null;
   createConnectorForCapability?<T>(integrationId: string, capability: DomainCapability, context?: IntegrationBindingContext): Promise<T | null>;
+  getIntegrationCapabilityIntake?(integrationId: string, capability: DomainCapability): readonly ("polling" | "webhook" | "stream")[];
   /**
    * Returns true when the integration's descriptor declares a `streamEvents`
    * factory, meaning review discovery is driven by a live event stream rather
@@ -81,6 +83,8 @@ export class PollingLoop {
   private reviewTrigger: ReviewAssignmentTrigger | null = null;
   /** Per-changeId timestamp of last review poll — prevents redundant API calls within the same interval. */
   private readonly reviewPollCooldowns = new Map<string, number>();
+  /** Per-integration/change timestamp of the last automatic review trigger. */
+  private readonly reviewTriggerCooldowns = new Map<string, number>();
 
   constructor(
     private config: PollingConfig,
@@ -378,12 +382,12 @@ export class PollingLoop {
       const cooldownMs = this.config.ticketIntervalMs;
       for (const assignment of assignments) {
         const cooldownKey = `${reviewConfig.integrationId}:${assignment.changeId}`;
-        const lastTriggered = this.reviewPollCooldowns.get(cooldownKey);
+        const lastTriggered = this.reviewTriggerCooldowns.get(cooldownKey);
         if (lastTriggered !== undefined && now - lastTriggered < cooldownMs) {
           log.debug({ changeId: assignment.changeId }, "skipping recently triggered review assignment");
           continue;
         }
-        this.reviewPollCooldowns.set(cooldownKey, now);
+        this.reviewTriggerCooldowns.set(cooldownKey, now);
         Promise.resolve()
           .then(() => trigger.triggerReview(reviewConfig.integrationId, assignment.changeId))
           .catch((err: unknown) =>
@@ -474,7 +478,58 @@ export class PollingLoop {
         .catch((err: unknown) =>
           log.error({ taskId: task.taskId, changeId, err }, "failed to check review-watching task status")
         );
+
+      Promise.resolve()
+        .then(() => this.triggerWatchedReview(task, now, cooldownMs))
+        .catch((err: unknown) =>
+          log.warn({ taskId: task.taskId, changeId, err }, "failed to check watched review assignment")
+        );
     }
+  }
+
+  /** Recheck a persisted review assignment so polling detects pushes after the first review. */
+  private async triggerWatchedReview(task: Task, now: number, cooldownMs: number): Promise<void> {
+    if (!this.projectStore || !this.pluginManager || !this.reviewTrigger || task.projectId == null) return;
+
+    const reviewConfig = await this.projectStore.getProjectReviewConfig(task.projectId);
+    if (!reviewConfig) return;
+
+    if (this.pluginManager.integrationHasStreamEvents?.(reviewConfig.integrationId)) return;
+    const intake = this.pluginManager.getIntegrationCapabilityIntake?.(
+      reviewConfig.integrationId,
+      "code_review",
+    );
+    if (!intake?.includes("polling")) return;
+
+    const changeId = task.externalChangeId;
+    if (changeId === null) return;
+    const repoKey = repositoryFromChangeId(String(changeId), reviewConfig.repos);
+    if (repoKey === undefined) return;
+
+    const connector = this.pluginManager.createConnectorForCapability
+      ? await this.pluginManager.createConnectorForCapability<ReviewDiscoveryConnector>(
+        reviewConfig.integrationId,
+        "code_review",
+        { repoKey },
+      )
+      : this.pluginManager.getConnectorForCapability<ReviewDiscoveryConnector>(
+        reviewConfig.integrationId,
+        "code_review",
+      );
+    if (!connector || typeof connector.hasReviewAssignment !== "function") return;
+
+    const cooldownKey = `${reviewConfig.integrationId}:${changeId}`;
+    const lastTriggered = this.reviewTriggerCooldowns.get(cooldownKey);
+    if (lastTriggered !== undefined && now - lastTriggered < cooldownMs) return;
+    this.reviewTriggerCooldowns.set(cooldownKey, now);
+
+    const assigned = await connector.hasReviewAssignment(changeId);
+    if (!assigned) {
+      log.debug({ taskId: task.taskId, changeId }, "watched review assignment no longer includes VE");
+      return;
+    }
+
+    await this.reviewTrigger.triggerReview(reviewConfig.integrationId, String(changeId));
   }
 
   // ─── Stalled code-gen task polling ─────────────────────────────────────────
@@ -505,5 +560,14 @@ export class PollingLoop {
     }
   }
 
+}
+
+function repositoryFromChangeId(changeId: string, configuredRepos: readonly string[]): string | undefined {
+  const hashIndex = changeId.indexOf("#");
+  if (hashIndex > 0) {
+    const repoKey = changeId.slice(0, hashIndex);
+    return configuredRepos.includes(repoKey) ? repoKey : undefined;
+  }
+  return configuredRepos.length === 1 ? configuredRepos[0] : undefined;
 }
 

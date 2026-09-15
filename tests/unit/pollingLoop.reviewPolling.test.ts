@@ -38,7 +38,13 @@ function makeProject(
 }
 
 function makeTask(
-  over: { taskId: string; externalChangeId?: string | null; state?: Task["state"]; taskType?: Task["taskType"] }
+  over: {
+    taskId: string;
+    externalChangeId?: string | null;
+    projectId?: string | null;
+    state?: Task["state"];
+    taskType?: Task["taskType"];
+  }
 ): Task {
   return {
     taskId: makeTaskId(over.taskId),
@@ -59,6 +65,11 @@ function makeTask(
     failureReason: null,
     ticketUrl: null,
     reviewUrl: null,
+    projectId: over.projectId === null
+      ? null
+      : over.projectId !== undefined
+        ? makeProjectId(over.projectId)
+        : undefined,
     displayId: null,
   };
 }
@@ -77,8 +88,12 @@ function makeOrchestrator() {
   return {
     startTaskForProject: vi.fn().mockResolvedValue(undefined),
     handleReviewEvent: vi.fn().mockResolvedValue(undefined),
+    checkReviewWatchingTask: vi.fn().mockResolvedValue(undefined),
     continueTask: vi.fn().mockResolvedValue(undefined),
-  } as unknown as Orchestrator & { handleReviewEvent: ReturnType<typeof vi.fn> };
+  } as unknown as Orchestrator & {
+    checkReviewWatchingTask: ReturnType<typeof vi.fn>;
+    handleReviewEvent: ReturnType<typeof vi.fn>;
+  };
 }
 
 function makeReviewTrigger(): ReviewAssignmentTrigger & { calls: Array<{ integrationId: string; changeId: string }> } {
@@ -478,5 +493,111 @@ describe("PollingLoop — pollReviewProjects", () => {
     await new Promise((r) => setTimeout(r, 0));
 
     expect(trigger.triggerReview).toHaveBeenCalledWith("int-1", "octocat/repo#1");
+  });
+
+  it("rechecks watched polling review tasks when VE remains assigned", async () => {
+    const task = makeTask({
+      taskId: "watched-1",
+      externalChangeId: "octocat/hello-world#42",
+      projectId: "rp-watched",
+      state: "REVIEW_WATCHING",
+      taskType: "code-review",
+    });
+    const project = makeProject({ id: "rp-watched", type: "review" });
+    const reviewConfig: ProjectReviewConfig = {
+      integrationId: "int-gh-1",
+      repos: ["octocat/hello-world"],
+    };
+    const discoveryConnector: ReviewDiscoveryConnector & {
+      hasReviewAssignment: ReturnType<typeof vi.fn>;
+    } = {
+      getOpenReviewAssignments: vi.fn().mockResolvedValue([]),
+      hasReviewAssignment: vi.fn().mockResolvedValue(true),
+    };
+    const projectStore = {
+      listProjects: vi.fn(async (filter?: { type?: string }) =>
+        filter?.type === "review" ? [project] : []
+      ),
+      getProjectTicketSource: vi.fn(async () => null),
+      getProjectReviewConfig: vi.fn(async (id: ProjectId) =>
+        id === project.id ? reviewConfig : null
+      ),
+    };
+    const pluginManager = {
+      getConnectorForCapability: vi.fn(() => discoveryConnector),
+      createConnectorForCapability: vi.fn(async () => discoveryConnector),
+      integrationHasStreamEvents: vi.fn(() => false),
+      getIntegrationCapabilityIntake: vi.fn(() => ["polling"]),
+    };
+    const trigger = makeReviewTrigger();
+    const orchestrator = makeOrchestrator();
+    const stateStore = makeStore([task]);
+
+    const loop = new PollingLoop(
+      { ticketIntervalMs: 30_000, maxRetryAttempts: 5 },
+      orchestrator,
+      stateStore,
+      {
+        projectStore: projectStore as never,
+        pluginManager: pluginManager as never,
+        reviewTrigger: trigger,
+      },
+    );
+
+    await loop.pollReviewWatchingTasks();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(orchestrator.checkReviewWatchingTask).toHaveBeenCalledWith(task.taskId);
+    expect(discoveryConnector.hasReviewAssignment).toHaveBeenCalledWith(task.externalChangeId);
+    expect(trigger.triggerReview).toHaveBeenCalledWith("int-gh-1", "octocat/hello-world#42");
+  });
+
+  it("does not re-trigger a watched review after VE is unassigned", async () => {
+    const task = makeTask({
+      taskId: "watched-2",
+      externalChangeId: "octocat/hello-world#43",
+      projectId: "rp-watched-2",
+      state: "REVIEW_WATCHING",
+      taskType: "code-review",
+    });
+    const project = makeProject({ id: "rp-watched-2", type: "review" });
+    const discoveryConnector: ReviewDiscoveryConnector & {
+      hasReviewAssignment: ReturnType<typeof vi.fn>;
+    } = {
+      getOpenReviewAssignments: vi.fn().mockResolvedValue([]),
+      hasReviewAssignment: vi.fn().mockResolvedValue(false),
+    };
+    const projectStore = {
+      listProjects: vi.fn(async () => [project]),
+      getProjectTicketSource: vi.fn(async () => null),
+      getProjectReviewConfig: vi.fn(async () => ({
+        integrationId: "int-gh-2",
+        repos: ["octocat/hello-world"],
+      })),
+    };
+    const pluginManager = {
+      createConnectorForCapability: vi.fn(async () => discoveryConnector),
+      integrationHasStreamEvents: vi.fn(() => false),
+      getIntegrationCapabilityIntake: vi.fn(() => ["polling"]),
+    };
+    const trigger = makeReviewTrigger();
+    const orchestrator = makeOrchestrator();
+    const stateStore = makeStore([task]);
+    const loop = new PollingLoop(
+      { ticketIntervalMs: 30_000, maxRetryAttempts: 5 },
+      orchestrator,
+      stateStore,
+      {
+        projectStore: projectStore as never,
+        pluginManager: pluginManager as never,
+        reviewTrigger: trigger,
+      },
+    );
+
+    await loop.pollReviewWatchingTasks();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(discoveryConnector.hasReviewAssignment).toHaveBeenCalledWith(task.externalChangeId);
+    expect(trigger.triggerReview).not.toHaveBeenCalled();
   });
 });

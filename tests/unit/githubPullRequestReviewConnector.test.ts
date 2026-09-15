@@ -537,6 +537,32 @@ describe("GitHubPullRequestReviewConnector", () => {
     });
   });
 
+  describe("hasReviewAssignment", () => {
+    it("returns true when VE is still requested on an open PR", async () => {
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse({ ...githubPr, requested_reviewers: [{ login: "ve-bot" }] })
+      );
+
+      const assigned = await makeConnector().hasReviewAssignment!(
+        makeExternalChangeId("octocat/hello-world#42")
+      );
+
+      expect(assigned).toBe(true);
+    });
+
+    it("returns false when VE is no longer requested", async () => {
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse({ ...githubPr, requested_reviewers: [{ login: "alice" }] })
+      );
+
+      const assigned = await makeConnector().hasReviewAssignment!(
+        makeExternalChangeId("octocat/hello-world#42")
+      );
+
+      expect(assigned).toBe(false);
+    });
+  });
+
   // ─── getCICheckFailures ───────────────────────────────────────────────────
 
   describe("getCICheckFailures", () => {

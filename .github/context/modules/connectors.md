@@ -33,6 +33,8 @@ Reviewer-side `ReviewProvider` reads and effects accept an optional `AbortSignal
 
 Reviewer decisions are normalized internally as `-1 | 0 | 1`, then translated by each provider. Gerrit always submits the corresponding `Code-Review` label, including `0` to clear a prior vote; GitHub maps them to `REQUEST_CHANGES` / `COMMENT` / `APPROVE`; GitLab maps them to unapprove / no approval action / approve. The agent-facing JSON contract uses provider-native field names (`vote`, `reviewAction`, or `approvalAction`) and is selected from `reviewProvider.kind`.
 
+Review-discovery connectors expose `getOpenReviewAssignments(repos)` for initial assignment polling and may expose `hasReviewAssignment(changeId)` for persisted `REVIEW_WATCHING` tasks. The latter lets a polling-capable provider confirm that VE is still an assigned reviewer before the existing review trigger checks the current revision and decides whether a new patchset needs analysis.
+
 ## Ticketing contract (`TicketConnector`)
 
 Methods used by the orchestrator:
@@ -122,6 +124,7 @@ Methods used by the orchestrator:
 ### `GitHubPullRequestReviewConnector` — [src/connectors/githubPullRequestReviewConnector.ts](../../../src/connectors/githubPullRequestReviewConnector.ts)
 
 - Implements `ReviewConnector` (feedback/status/merge polling) and `ReviewDiscoveryConnector` (open-PR review-assignment discovery for `pollReviewProjects()`).
+- `hasReviewAssignment(changeId)` fetches one PR and returns whether VE is still listed in `requested_reviewers`; this keeps polling-based re-reviews opt-in to the current GitHub reviewer assignment.
 - Accepts numeric PR ids for legacy single-repository calls and repository-qualified ids in the `owner/repo#number` format used by GitHub webhooks and assignment discovery; qualified ids must match the connector's project-bound repository before an API request is made.
 - Reads PR state/merge status, unresolved review comments, and GitHub Checks API run/annotation data so `react_to_ci_failures` can classify `ci-run-*` / CI failure events the same way Gerrit does.
 - Token auth through `Authorization: Bearer` (GitHub PAT or OAuth token); `apiBaseUrl` supports both `api.github.com` and GitHub Enterprise `/api/v3` hosts.

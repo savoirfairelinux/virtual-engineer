@@ -93,6 +93,7 @@ Every tick (`POLLING_INTERVAL_MS`, exponential backoff on repeated failures) run
 ### `pollReviewWatchingTasks()` (always on)
 
 - polling fallback for code-review tasks in `REVIEW_WATCHING`: calls `orchestrator.checkReviewWatchingTask(taskId)` to compensate for missed `change-merged` stream events. The watcher queries the project-bound `code_review` connector and transitions merged changes to `REVIEW_DONE` or abandons externally closed changes through `StateStore.abandonTask()` (the generic review transition map intentionally has no `REVIEW_WATCHING → ABANDONED` edge)
+- for enabled polling-capable review integrations, the watcher also checks the exact PR/MR assignment when the connector exposes `hasReviewAssignment(changeId)`. If VE remains assigned, it fires the same review trigger used by assignment discovery; `ReviewOrchestrator.startReviewTask()` then compares the provider's current revision identity (GitHub `head.sha` → SHA-derived patchset) and only re-runs the agent for a new revision. Trigger cooldowns are qualified by integration and change and shared with initial assignment polling, while status cooldowns remain separate.
 
 All review-side polls share a per-change **cooldown map** (`reviewPollCooldowns`, keyed by change id or `integrationId:changeId`) so a given change is queried at most once per polling interval; stale entries are evicted when tasks leave `IN_REVIEW`.
 
