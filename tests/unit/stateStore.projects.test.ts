@@ -575,6 +575,37 @@ describe("SqliteStateStore — Phase 2: project push targets", () => {
     expect(targets.map((t) => t.repoKey)).toEqual(["main", "core"]);
   });
 
+  it("detects enabled coding projects with active ticket and push integrations", async () => {
+    const a = await makeAgent(store);
+    const coding = await store.createProject({ name: "Coding", type: "coding", agentId: a.id, enabled: true });
+    const disabled = await store.createProject({ name: "Disabled", type: "coding", agentId: a.id, enabled: false });
+    const review = await store.createProject({ name: "Review", type: "review", agentId: a.id, enabled: true });
+    await makeIntegration(store, "ticket-active", "redmine");
+    await makeIntegration(store, "push-active", "gerrit");
+    await makeIntegration(store, "push-inactive", "gerrit");
+    await store.setProjectTicketSource(coding.id, {
+      integrationId: "ticket-active",
+      ticketProjectKey: "PROJECT",
+    });
+    await store.replaceProjectPushTargets(coding.id, [
+      { integrationId: "push-inactive", repoKey: "inactive", cloneUrl: "ssh://x/inactive", targetBranch: "main", role: "submodule", commitOrder: 1, localPath: "libs/inactive" },
+      { integrationId: "push-active", repoKey: "active", cloneUrl: "ssh://x/active", targetBranch: "main", role: "primary", commitOrder: 2, localPath: "." },
+    ]);
+    await store.setProjectTicketSource(disabled.id, {
+      integrationId: "ticket-active",
+      ticketProjectKey: "DISABLED",
+    });
+    await store.replaceProjectPushTargets(disabled.id, [
+      { integrationId: "push-active", repoKey: "disabled", cloneUrl: "ssh://x/disabled", targetBranch: "main", role: "primary", commitOrder: 1, localPath: "." },
+    ]);
+    await store.setProjectReviewConfig(review.id, "ticket-active", ["review"]);
+
+    await expect(store.hasEnabledCodingProjectWithActiveIntegrations(["ticket-active", "push-active"])).resolves.toBe(true);
+    await expect(store.hasEnabledCodingProjectWithActiveIntegrations(["ticket-active", "unrelated"])).resolves.toBe(false);
+    await expect(store.hasEnabledCodingProjectWithActiveIntegrations(["push-active"])).resolves.toBe(false);
+    await expect(store.hasEnabledCodingProjectWithActiveIntegrations([])).resolves.toBe(false);
+  });
+
   it("round-trips reviewer emails", async () => {
     const a = await makeAgent(store);
     const p = await store.createProject({ name: "P", type: "coding", agentId: a.id });
