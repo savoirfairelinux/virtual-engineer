@@ -75,6 +75,7 @@ describe("Admin API — Model usage route", () => {
       byModel: [
         {
           modelId: "claude-sonnet",
+          workflowBucket: "done",
           runCount: 3,
           usd: 0.06,
           tokens: { input: 1500, output: 300, cached: 800, cacheWrite: 50 },
@@ -85,9 +86,11 @@ describe("Admin API — Model usage route", () => {
         {
           projectId: "p1",
           projectName: "BACKEND",
+          workflowBucket: "done",
           models: [
             {
               modelId: "claude-sonnet",
+              workflowBucket: "done",
               runCount: 3,
               usd: 0.06,
               tokens: { input: 1500, output: 300, cached: 800, cacheWrite: 50 },
