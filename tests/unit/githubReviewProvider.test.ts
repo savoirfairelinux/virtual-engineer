@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { GitHubReviewProvider, parsePatchNewLineNumbers } from "../../src/connectors/githubReviewProvider.js";
-import type { ExternalChangeId } from "../../src/interfaces.js";
+import type { ExternalChangeId, ReviewChangeDetails } from "../../src/interfaces.js";
+import { patchsetFromRevisionSha } from "../../src/review/revisionPatchset.js";
 
 const fetchMock = vi.fn();
 globalThis.fetch = fetchMock as unknown as typeof fetch;
@@ -106,6 +107,61 @@ describe("GitHubReviewProvider", () => {
     ]));
     const r = await new GitHubReviewProvider(config).getChangeDiff(cid, 42);
     expect(r.patchset).toBe(42);
+  });
+
+  it("getInterPatchsetDiff compares the old reviewed commit with the current head", async () => {
+    const fromSha = "1111111111111aaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const toSha = "2222222222222bbbbbbbbbbbbbbbbbbbbbbbbb";
+    const fromPatchset = patchsetFromRevisionSha(fromSha);
+    const toPatchset = patchsetFromRevisionSha(toSha);
+    const details: ReviewChangeDetails = {
+      changeId: cid,
+      changeNumber: 42,
+      subject: "Add feature X",
+      description: "",
+      ownerAccountId: "123",
+      currentPatchset: toPatchset,
+      status: "OPEN",
+      project: "octocat/hello-world",
+      targetBranch: "main",
+      url: "https://github.com/octocat/hello-world/pull/42",
+    };
+
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({
+        number: 42,
+        state: "open",
+        title: "Add feature X",
+        html_url: "https://github.com/octocat/hello-world/pull/42",
+        merged: false,
+        base: { ref: "main", repo: { full_name: "octocat/hello-world" } },
+        head: { ref: "feature-x", sha: toSha },
+      }))
+      .mockResolvedValueOnce(jsonResponse([{ sha: fromSha }]))
+      .mockResolvedValueOnce(jsonResponse({
+        files: [{ filename: "src/a.ts", status: "modified", patch: "@@ -1 +1 @@\n-old\n+new" }],
+      }));
+
+    const result = await new GitHubReviewProvider(config).getInterPatchsetDiff(
+      details,
+      fromPatchset,
+      toPatchset,
+    );
+
+    expect(result).toEqual({
+      changeId: cid,
+      patchset: toPatchset,
+      files: [{ path: "src/a.ts", status: "modified", patch: "@@ -1 +1 @@\n-old\n+new" }],
+    });
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "https://api.github.com/repos/octocat/hello-world/pulls/42"
+    );
+    expect(fetchMock.mock.calls[1]?.[0]).toBe(
+      "https://api.github.com/repos/octocat/hello-world/pulls/42/commits?per_page=100&page=1"
+    );
+    expect(fetchMock.mock.calls[2]?.[0]).toBe(
+      `https://api.github.com/repos/octocat/hello-world/compare/${fromSha}...${toSha}?per_page=300`
+    );
   });
 
   it("postReviewWithComments posts an APPROVE review with inline comments", async () => {

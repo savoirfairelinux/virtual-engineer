@@ -653,7 +653,7 @@ export class ReviewOrchestrator {
       const previousReviewed = task.reviewedPatchset;
       if (
         previousReviewed !== null &&
-        previousReviewed < details.currentPatchset &&
+        previousReviewed !== details.currentPatchset &&
         typeof this.deps.reviewProvider.getInterPatchsetDiff === "function"
       ) {
         try {

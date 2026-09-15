@@ -36,6 +36,15 @@ const GitHubPrFileSchema = z.object({
 });
 const GitHubPrFileListSchema = z.array(GitHubPrFileSchema);
 
+const GitHubPrCommitListSchema = z.array(z.object({ sha: z.string() }));
+const GitHubCompareResponseSchema = z.object({
+  files: z.array(z.object({
+    filename: z.string(),
+    status: z.string(),
+    patch: z.string().nullable().optional(),
+  })).default([]),
+});
+
 const GitHubReviewListSchema = z.array(
   z.object({
     user: z.object({ login: z.string() }).nullable().optional(),
@@ -229,6 +238,43 @@ export class GitHubReviewProvider implements ReviewProvider {
     };
   }
 
+  async getInterPatchsetDiff(
+    details: ReviewChangeDetails,
+    fromPatchset: number,
+    toPatchset: number,
+  ): Promise<ReviewChangeDiff> {
+    const { owner, repo, prNumber } = this.parseChangeId(details.changeId);
+    const pr = GitHubPrSchema.parse(await this.fetchJson(this.prUrl(owner, repo, prNumber)));
+    const currentPatchset = patchsetFromRevisionSha(pr.head.sha);
+    if (currentPatchset !== toPatchset) {
+      throw new Error(
+        `GitHub PR head changed while resolving patchset ${toPatchset}; current patchset is ${currentPatchset}`,
+      );
+    }
+
+    const fromSha = await this.resolvePatchsetSha(owner, repo, prNumber, fromPatchset);
+    if (fromSha === undefined) {
+      throw new Error(`GitHub PR commit for patchset ${fromPatchset} was not found`);
+    }
+
+    const compare = GitHubCompareResponseSchema.parse(
+      await this.fetchJson(
+        `${this.config.apiBaseUrl}/repos/${owner}/${repo}/compare/${fromSha}...${pr.head.sha}?per_page=300`
+      )
+    );
+    const files: ReviewDiffFile[] = compare.files.map((file) => ({
+      path: file.filename,
+      status: mapFileStatus(file.status),
+      patch: file.patch ?? "",
+    }));
+
+    log.info(
+      { changeId: details.changeId, fromPatchset, toPatchset, fileCount: files.length },
+      "computed GitHub inter-patchset diff",
+    );
+    return { changeId: details.changeId, patchset: toPatchset, files };
+  }
+
   async postReviewComments(
     changeId: ExternalChangeId,
     _revision: number,
@@ -373,6 +419,26 @@ export class GitHubReviewProvider implements ReviewProvider {
 
   private prUrl(owner: string, repo: string, prNumber: number): string {
     return `${this.config.apiBaseUrl}/repos/${owner}/${repo}/pulls/${prNumber}`;
+  }
+
+  private async resolvePatchsetSha(
+    owner: string,
+    repo: string,
+    prNumber: number,
+    patchset: number,
+  ): Promise<string | undefined> {
+    const perPage = 100;
+    for (let page = 1; page <= 100; page++) {
+      const commits = GitHubPrCommitListSchema.parse(
+        await this.fetchJson(
+          `${this.prUrl(owner, repo, prNumber)}/commits?per_page=${perPage}&page=${page}`
+        )
+      );
+      const matchingCommit = commits.find((commit) => patchsetFromRevisionSha(commit.sha) === patchset);
+      if (matchingCommit !== undefined) return matchingCommit.sha;
+      if (commits.length < perPage) break;
+    }
+    return undefined;
   }
 
   private async fetchJson<T = unknown>(url: string, init?: RequestInit): Promise<T> {
