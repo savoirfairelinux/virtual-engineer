@@ -44,6 +44,7 @@ function makeStateStore(overrides: Partial<StateStore> = {}): StateStore {
     getActiveTasks: vi.fn().mockResolvedValue([]),
     getFailedAttemptCount: vi.fn().mockResolvedValue(0),
     transition: vi.fn().mockImplementation(async (taskId, toState) => makeTask({ taskId, state: toState })),
+    abandonTask: vi.fn().mockImplementation(async (taskId) => makeTask({ taskId, state: "ABANDONED" })),
     updateGerritChangeId: vi.fn().mockResolvedValue(undefined),
     incrementCycle: vi.fn().mockResolvedValue(1),
     setFailureReason: vi.fn().mockResolvedValue(undefined),
@@ -273,13 +274,13 @@ describe("Orchestrator — webhook entry points (Phase 5)", () => {
       expect(stateStore.transition).not.toHaveBeenCalled();
     });
 
-    it("transitions task to ABANDONED via handleAbandoned", async () => {
+    it("abandons task via the dedicated mutator", async () => {
       const task = makeTask({ state: "IN_REVIEW" });
       const stateStore = makeStateStore({ findTaskByExternalChangeId: vi.fn().mockResolvedValue(task) });
       const orch = makeOrchestrator(stateStore);
       await orch.markChangeAbandoned("g-1", "Iabc");
-      const calls = (stateStore.transition as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[1]);
-      expect(calls).toContain("ABANDONED");
+      expect(stateStore.abandonTask).toHaveBeenCalledWith(task.taskId);
+      expect(stateStore.transition).not.toHaveBeenCalledWith(task.taskId, "ABANDONED");
       expect(stateStore.setFailureReason).toHaveBeenCalled();
     });
   });

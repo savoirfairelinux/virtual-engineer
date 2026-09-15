@@ -1585,11 +1585,11 @@ export class Orchestrator {
     await this.notifyTicketFailure(task, reason);
   }
 
-  /** Persist a failure reason and transition the task to ABANDONED, then notify the ticket. */
+  /** Persist a failure reason and abandon the task through the dedicated mutator, then notify the ticket. */
   private async handleAbandoned(task: Task, reason: string): Promise<void> {
     log.warn({ taskId: task.taskId, reason }, "task abandoned");
     await this.stateStore.setFailureReason(task.taskId, reason);
-    await this.stateStore.transition(task.taskId, "ABANDONED");
+    await this.stateStore.abandonTask(task.taskId);
     await this.notifyTicketFailure(task, reason);
   }
 

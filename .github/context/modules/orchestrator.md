@@ -92,7 +92,7 @@ Every tick (`POLLING_INTERVAL_MS`, exponential backoff on repeated failures) run
 
 ### `pollReviewWatchingTasks()` (always on)
 
-- polling fallback for code-review tasks in `REVIEW_WATCHING`: calls `orchestrator.checkReviewWatchingTask(taskId)` to compensate for missed `change-merged` stream events. The watcher queries the project-bound `code_review` connector and transitions merged changes to `REVIEW_DONE` or abandons externally closed changes
+- polling fallback for code-review tasks in `REVIEW_WATCHING`: calls `orchestrator.checkReviewWatchingTask(taskId)` to compensate for missed `change-merged` stream events. The watcher queries the project-bound `code_review` connector and transitions merged changes to `REVIEW_DONE` or abandons externally closed changes through `StateStore.abandonTask()` (the generic review transition map intentionally has no `REVIEW_WATCHING → ABANDONED` edge)
 
 All review-side polls share a per-change **cooldown map** (`reviewPollCooldowns`, keyed by change id or `integrationId:changeId`) so a given change is queried at most once per polling interval; stale entries are evicted when tasks leave `IN_REVIEW`.
 

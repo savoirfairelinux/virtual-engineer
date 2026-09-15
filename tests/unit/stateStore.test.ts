@@ -1405,6 +1405,29 @@ describe("SqliteStateStore", () => {
       expect(fetched?.state).toBe("ABANDONED");
     });
 
+    it("abandons a REVIEW_WATCHING review task with the dedicated mutator", async () => {
+      const taskId = makeTaskId(randomUUID());
+      await store.createReviewTask({
+        taskId,
+        ticketId: makeTicketId("abandon-review"),
+        subject: "Review task",
+        changeId: makeExternalChangeId("octocat/hello-world#42"),
+        patchset: 1,
+      });
+      await store.transition(taskId, "REVIEW_RUNNING");
+      await store.transition(taskId, "REVIEW_COMMENTING");
+      await store.transition(taskId, "REVIEW_WATCHING");
+
+      const result = await store.abandonTask(taskId);
+
+      expect(result.state).toBe("ABANDONED");
+      const transitions = await store.getStateTransitions(taskId);
+      const abandonTransition = transitions.at(-1);
+      expect(abandonTransition?.fromState).toBe("REVIEW_WATCHING");
+      expect(abandonTransition?.toState).toBe("ABANDONED");
+      expect(abandonTransition?.metadata).toEqual({ action: "abandon" });
+    });
+
     it("records a state transition for the abandon action", async () => {
       const taskId = makeTaskId(randomUUID());
       await store.createTask(taskId, makeTicketId("abandon-2"));
