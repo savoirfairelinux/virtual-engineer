@@ -745,6 +745,7 @@ function extractStreamComment(payload: unknown, sshUser: string): ReviewComment 
     id: `${isCiFailureMessage(raw) ? "ci-failure" : "gerrit-msg"}-${ts}`,
     author: authorEmail,
     message: body,
+    reviewSystem: "gerrit",
     filePath: undefined,
     line: undefined,
     unresolved: true,

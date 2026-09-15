@@ -73,7 +73,7 @@ Methods used by the orchestrator:
 
 - `getChange(changeRef)` — resolve change/MR + current patchset.
 - `getChangeStatus(changeRef)` → `"OPEN" | "MERGED" | "ABANDONED"`.
-- `getUnresolvedComments(changeRef)` — comments with stable IDs for dedup.
+- `getUnresolvedComments(changeRef)` — comments with stable IDs for dedup. `ReviewComment.reviewSystem` optionally identifies the producing review system; all built-in Gerrit, GitLab, and GitHub feedback producers populate it, including Gerrit stream comments and GitHub CI check comments.
 - `addChangeComment(changeRef, body)`.
 - `resolveComments(changeRef, commentIds)`.
 
@@ -85,6 +85,7 @@ Methods used by the orchestrator:
 - `baseUrl` is optional and used only to build clickable Gerrit web links; review operations no longer depend on REST credentials.
 - `listRepositoriesViaSsh()` is the shared SSH discovery helper used by integration testing, admin discovery, and runtime connection checks.
 - `listBranchesViaSsh(ssh, repoKey)` runs `git ls-remote --heads ssh://…/<repoKey>` (with `GIT_SSH_COMMAND` carrying the key + host-key options) and parses `refs/heads/*` into branch names; surfaced via `GerritSshConnector.listBranches()` and the descriptor `discoverBranches` hook.
+- Gerrit polling and stream comments carry `reviewSystem = "gerrit"`; CI build failures retain that provenance while the feedback processor classifies them as `ci_failure`.
 - Push happens through [src/vcs/gerritVcsConnector.ts](../../../src/vcs/gerritVcsConnector.ts) (SSH).
 
 ### `GerritSshReviewProvider`
@@ -110,7 +111,7 @@ Methods used by the orchestrator:
 
 - PAT auth.
 - The GitLab project selector can come from the VE project repo binding (`repoKey`) rather than from the integration row.
-- Uses MR notes as the comment surface; thread resolution via the discussion API.
+- Uses MR notes as the comment surface; thread resolution via the discussion API. Returned discussions carry `reviewSystem = "gitlab"`, so opaque discussion IDs are not mistaken for Gerrit comments.
 - Push happens through [src/vcs/gitlabVcsConnector.ts](../../../src/vcs/gitlabVcsConnector.ts) (HTTPS + REST).
 
 ### `GitLabMergeRequestReviewProvider` — [src/connectors/gitlabMergeRequestReviewProvider.ts](../../../src/connectors/gitlabMergeRequestReviewProvider.ts)
@@ -127,6 +128,7 @@ Methods used by the orchestrator:
 - `hasReviewAssignment(changeId)` fetches one PR and returns whether VE is still listed in `requested_reviewers`; this keeps polling-based re-reviews opt-in to the current GitHub reviewer assignment.
 - Accepts numeric PR ids for legacy single-repository calls and repository-qualified ids in the `owner/repo#number` format used by GitHub webhooks and assignment discovery; qualified ids must match the connector's project-bound repository before an API request is made.
 - `getUnresolvedComments` requires an external `CHANGES_REQUESTED` review and filters both inline and general PR comments to authors who submitted a review; comments from other collaborators and VE's own comments are ignored.
+- Inline, general, and CI check comments carry `reviewSystem = "github"`; the feedback processor uses the generic `review_comment` source for human review comments rather than inferring the provider from numeric or prefixed IDs.
 - Reads PR state/merge status, unresolved review comments, and GitHub Checks API run/annotation data so `react_to_ci_failures` can classify `ci-run-*` / CI failure events the same way Gerrit does.
 - Token auth through `Authorization: Bearer` (GitHub PAT or OAuth token); `apiBaseUrl` supports both `api.github.com` and GitHub Enterprise `/api/v3` hosts.
 
@@ -148,6 +150,7 @@ Methods used by the orchestrator:
 ## Comment dedup
 
 `feedbackProcessor.extractNewFeedback` queries `processed_comments` (per task) and only forwards comments whose IDs have not been processed yet. After a successful retry cycle the IDs are inserted to prevent loops.
+Review provenance is transient: `FeedbackItem.source` is `review_comment` for human review comments, while `FeedbackItem.reviewSystem` copies the optional provider identity from `ReviewComment`; CI failures keep `ci_failure`. Neither field changes the `(taskId, comment.id)` deduplication key.
 
 ## Mocking in tests
 

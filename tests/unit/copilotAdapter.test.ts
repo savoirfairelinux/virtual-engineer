@@ -917,6 +917,21 @@ describe("CopilotAdapter", () => {
   });
 
   describe("buildCodegenUserPrompt", () => {
+    it("uses the generic source label for review feedback", () => {
+      const ctx = makeContext({
+        priorFeedback: [{
+          source: "review_comment",
+          reviewSystem: "gitlab",
+          content: "Please update the discussion thread",
+        }],
+      });
+
+      const prompt = buildCodegenUserPrompt(ctx, "Do the work.");
+
+      expect(prompt).toContain("- [review_comment]: Please update the discussion thread");
+      expect(prompt).not.toContain("[gerrit_review]");
+    });
+
     it("includes workspace layout section when repositoryMap has submodules", () => {
       const repoMap: RepositoryMap = {
         superproject: { repoKey: "jami-client-qt", localPath: "." },

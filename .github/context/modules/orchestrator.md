@@ -109,6 +109,7 @@ Status polling uses the separate per-change `reviewPollCooldowns` map for `IN_RE
 
 - `extractNewFeedback()` filters out comments/notes already recorded in `processed_comments`
 - `isCiFeedbackComment()` recognizes GitHub check-run and Gerrit build-failure IDs so the orchestrator can apply the per-project CI retry setting before deduplication
+- Human review comments are emitted with the generic `FeedbackItem.source = "review_comment"`; the explicit `ReviewComment.reviewSystem` (`gerrit`, `gitlab`, or `github`) is copied through when a built-in connector supplies it, so provider identity is not guessed from comment ID formats. CI failures remain `source = "ci_failure"`.
 - `markProcessed()` persists processed IDs once feedback has been consumed
 - used on the `IN_REVIEW → FEEDBACK_PROCESSING` path
 
@@ -117,6 +118,7 @@ Status polling uses the separate per-change `reviewPollCooldowns` map for `IN_RE
 - polls legacy single-repository changes and `change_per_repository` rows through provider-neutral review/VCS contracts
 - converges to `MERGED` when every active repository is merged (or all rows are `NO_CHANGE` / `ORPHANED`) and abandons the task when any active repository is abandoned
 - aggregates repository-tagged feedback, applies the project `reactToCiFailures` policy before deduplication, enforces the current runtime cycle limit, and invokes the orchestrator-owned retry callback
+- preserves each comment's `reviewSystem` while aggregating mixed-provider feedback and prefixing content with its repository key
 - resolves processed comments only after the retry returns the task to `IN_REVIEW`; connector lookup, CI lookup, status polling, and comment-resolution failures remain non-fatal where they were before extraction
 
 ## Runtime wiring

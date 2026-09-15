@@ -168,12 +168,14 @@ describe("GitHubPullRequestReviewConnector", () => {
       const inline = comments.find((c) => c.id === "101");
       expect(inline).toBeDefined();
       expect(inline?.author).toBe("reviewer");
+      expect(inline?.reviewSystem).toBe("github");
       expect(inline?.filePath).toBe("src/main.ts");
       expect(inline?.line).toBe(10);
 
       const general = comments.find((c) => c.id === "issue-201");
       expect(general).toBeDefined();
       expect(general?.author).toBe("reviewer");
+      expect(general?.reviewSystem).toBe("github");
       expect(general?.filePath).toBeUndefined();
     });
 
@@ -634,6 +636,7 @@ describe("GitHubPullRequestReviewConnector", () => {
       const r = results[0]!;
       expect(r.id).toBe("ci-run-9001");
       expect(r.author).toBe("github-actions[bot]");
+      expect(r.reviewSystem).toBe("github");
       expect(r.message).toContain("CI / test");
       expect(r.message).toContain("failure");
       expect(r.message).toContain("2 tests failed");

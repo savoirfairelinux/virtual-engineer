@@ -153,6 +153,8 @@ describe("GitLabMergeRequestConnector", () => {
 
       expect(comments[0]?.id).toBe("disc-1");
       expect(comments[1]?.id).toBe("disc-3");
+      expect(comments[0]?.reviewSystem).toBe("gitlab");
+      expect(comments[1]?.reviewSystem).toBe("gitlab");
     });
 
     it("maps note author username to comment author", async () => {

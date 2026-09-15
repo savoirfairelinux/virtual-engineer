@@ -696,7 +696,7 @@ describe("Orchestrator", () => {
     expect(stateStore.markCommentProcessed).toHaveBeenCalledWith(task.taskId, comment.id);
     expect(runAgentCycle).toHaveBeenCalledWith(
       expect.objectContaining({ state: "RETRY_CYCLE" }),
-      expect.arrayContaining([expect.objectContaining({ source: "gerrit_review" })]),
+      expect.arrayContaining([expect.objectContaining({ source: "review_comment" })]),
     );
     expect(gerritConnector.resolveComments).toHaveBeenCalledWith(task.externalChangeId, [comment]);
   });
@@ -770,7 +770,7 @@ describe("Orchestrator", () => {
     expect(stateStore.markCommentProcessed).toHaveBeenCalledWith(task.taskId, comment.id);
     expect(runAgentCycle).toHaveBeenCalledWith(
       expect.objectContaining({ state: "RETRY_CYCLE" }),
-      expect.arrayContaining([expect.objectContaining({ source: "gerrit_review" })]),
+      expect.arrayContaining([expect.objectContaining({ source: "review_comment" })]),
     );
     expect(stateStore.getTask).toHaveBeenCalledWith(task.taskId);
     expect(gerritConnector.resolveComments).not.toHaveBeenCalled();
@@ -1302,7 +1302,7 @@ describe("Orchestrator", () => {
       expect.objectContaining({ state: "RETRY_CYCLE" }),
       expect.arrayContaining([
         expect.objectContaining({
-          source: "gerrit_review",
+          source: "review_comment",
           content: expect.stringContaining("Refactor this method"),
         }),
       ])
@@ -1324,12 +1324,12 @@ describe("Orchestrator", () => {
       ]),
     });
     const orchestrator = makeOrchestrator({ stateStore });
-    const reviewFeedback = [{ source: "gerrit_review" as const, content: "Please fix naming" }];
+    const reviewFeedback = [{ source: "review_comment" as const, content: "Please fix naming" }];
 
     const result = await (orchestrator as any).buildPriorFeedback(task, reviewFeedback);
 
     expect(result).toHaveLength(2);
     expect(result[0]).toMatchObject({ source: "lint_failure", content: "lint error" });
-    expect(result[1]).toMatchObject({ source: "gerrit_review", content: "Please fix naming" });
+    expect(result[1]).toMatchObject({ source: "review_comment", content: "Please fix naming" });
   });
 });

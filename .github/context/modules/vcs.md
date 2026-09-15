@@ -28,6 +28,8 @@ interface VcsConnector {
 }
 ```
 
+The optional feedback methods use the shared `ReviewComment` contract. Built-in VCS fallbacks that return comments attach `reviewSystem` (`gerrit`, `gitlab`, or `github`); the orchestrator emits human review feedback with the generic `review_comment` source.
+
 There is **no** `push()` method any longer — the commit-creating legacy path and its `VolumeExecOptions` parameter were deleted. `pushDirect` is the only push path.
 
 All built-in project push targets implement `pushDirect`, and `Orchestrator.pushProjectChanges()` requires it. The worker normalizes agent-created commits and injects missing Change-Ids and configured ticket trailers before returning; the host then pushes the existing commit chain from the downloaded workspace. It does not create another commit.

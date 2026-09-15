@@ -143,6 +143,7 @@ export class GitLabMergeRequestConnector implements ReviewConnector {
         id: discussion.id,
         author: note.author.username,
         message: note.body,
+        reviewSystem: "gitlab",
         filePath: position?.new_path,
         line: position?.new_line,
         unresolved: true,
