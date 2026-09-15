@@ -39,6 +39,7 @@ import type { VcsConnector } from "../../src/vcs/vcsConnector.js";
 import { PluginManager } from "../../src/plugins/pluginManager.js";
 import { registerBuiltinPlugins } from "../../src/plugins/init.js";
 import { encryptToken } from "../../src/utils/encryption.js";
+import { validateTransition } from "../../src/state/stateMachine.js";
 
 registerBuiltinPlugins();
 
@@ -1485,10 +1486,15 @@ describe("Orchestrator — Phase 4 project mode", () => {
       externalChangeId: makeExternalChangeId("octocat/hello-world#42"),
     });
     const setFailureReason = vi.fn();
+    const abandonTask = vi.fn().mockResolvedValue(makeTask({ ...task, state: "ABANDONED" }));
     const stateStore = makeStateStore({
       getTask: vi.fn().mockResolvedValue(task),
       setFailureReason,
-      transition: vi.fn().mockResolvedValue(makeTask({ ...task, state: "ABANDONED" })),
+      transition: vi.fn(async (taskId, state) => {
+        validateTransition(task.state, state);
+        return makeTask({ taskId, state });
+      }),
+      abandonTask,
     });
     const reviewConnector = {
       getChangeStatus: vi.fn().mockResolvedValue("ABANDONED"),
@@ -1519,7 +1525,8 @@ describe("Orchestrator — Phase 4 project mode", () => {
       task.taskId,
       "change was abandoned externally (poll)"
     );
-    expect(stateStore.transition).toHaveBeenCalledWith(task.taskId, "ABANDONED");
+    expect(abandonTask).toHaveBeenCalledWith(task.taskId);
+    expect(stateStore.transition).not.toHaveBeenCalledWith(task.taskId, "ABANDONED");
   });
 
   it("ignores a CI build-failure comment when reactToCiFailures is off (default) — no retry cycle", async () => {

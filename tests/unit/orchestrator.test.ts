@@ -206,6 +206,7 @@ describe("Orchestrator", () => {
       getActiveTasks: vi.fn().mockResolvedValue([]),
       getFailedAttemptCount: vi.fn().mockResolvedValue(0),
       transition: vi.fn().mockImplementation(async (taskId, toState) => makeTask({ taskId, state: toState })),
+      abandonTask: vi.fn().mockImplementation(async (taskId) => makeTask({ taskId, state: "ABANDONED" })),
       updateGerritChangeId: vi.fn().mockResolvedValue(undefined),
       startAgentCycle: vi.fn().mockResolvedValue(1),
       setFailureReason: vi.fn().mockResolvedValue(undefined),
@@ -872,7 +873,7 @@ describe("Orchestrator", () => {
     await (orchestrator as any).handleAbandoned(task, "review abandoned");
 
     expect(stateStore.setFailureReason).toHaveBeenCalledWith(task.taskId, "review abandoned");
-    expect(stateStore.transition).toHaveBeenCalledWith(task.taskId, "ABANDONED");
+    expect(stateStore.abandonTask).toHaveBeenCalledWith(task.taskId);
     expect(redmineConnector.addNote).toHaveBeenCalledWith(
       task.ticketId,
       expect.stringContaining("Reason: review abandoned"),
