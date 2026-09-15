@@ -58,7 +58,7 @@ const modelUsageSummary: ApiModelUsageSummary = {
       runCountWithTokens: 0,
     },
     {
-      modelId: "claude-sonnet",
+      modelId: "gpt-5",
       workflowBucket: "failed",
       runCount: 1,
       usd: 0.05,
@@ -88,7 +88,7 @@ const modelUsageSummary: ApiModelUsageSummary = {
       workflowBucket: "failed",
       models: [
         {
-          modelId: "claude-sonnet",
+          modelId: "gpt-5",
           workflowBucket: "failed",
           runCount: 1,
           usd: 0.05,
@@ -128,10 +128,10 @@ describe("Overview outcome cost dimensions", () => {
 
     await waitFor(() => {
       expect(screen.getByTitle("claude-sonnet · Done · 1 runs")).toBeTruthy();
-      expect(screen.getByTitle("claude-sonnet · Failed · 1 runs")).toBeTruthy();
+      expect(screen.queryByTitle("gpt-5 · Failed · 1 runs")).toBeNull();
     });
 
     expect(screen.getAllByText("Done")).toHaveLength(3);
-    expect(screen.getAllByText("Failed")).toHaveLength(3);
+    expect(screen.getAllByText("Failed")).toHaveLength(1);
   });
 });

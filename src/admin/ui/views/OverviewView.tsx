@@ -329,10 +329,14 @@ function ModelUsageCard() {
     };
   }, [days]);
 
-  const models = summary ? summary.byModel : [];
-  const totalRuns = summary?.totalRuns ?? 0;
+  const models = summary
+    ? summary.byModel.filter((model) => model.workflowBucket !== "failed")
+    : [];
+  const totalRuns = models.reduce((sum, model) => sum + model.runCount, 0);
   const projects = summary
-    ? summary.perProject.filter((p) => p.models.some((m) => m.runCount > 0))
+    ? summary.perProject
+      .filter((project) => project.workflowBucket !== "failed")
+      .filter((project) => project.models.some((model) => model.runCount > 0 && model.workflowBucket !== "failed"))
     : [];
 
   return (
