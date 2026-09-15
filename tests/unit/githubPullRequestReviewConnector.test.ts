@@ -177,6 +177,36 @@ describe("GitHubPullRequestReviewConnector", () => {
       expect(general?.filePath).toBeUndefined();
     });
 
+    it("ignores comments from users who did not submit a review", async () => {
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse([
+          { state: "CHANGES_REQUESTED", user: { login: "reviewer" } },
+          { state: "APPROVED", user: { login: "second-reviewer" } },
+        ])
+      );
+      fetchMock.mockResolvedValueOnce(jsonResponse([
+        { ...reviewComments[0], id: 301, user: { login: "reviewer" } },
+        { ...reviewComments[0], id: 302, user: { login: "second-reviewer" } },
+        { ...reviewComments[0], id: 303, user: { login: "outsider" } },
+      ]));
+      fetchMock.mockResolvedValueOnce(jsonResponse([
+        { ...issueComments[0], id: 401, user: { login: "reviewer" } },
+        { ...issueComments[0], id: 402, user: { login: "second-reviewer" } },
+        { ...issueComments[0], id: 403, user: { login: "outsider" } },
+      ]));
+
+      const comments = await makeConnector().getUnresolvedComments(makeExternalChangeId("42"));
+
+      expect(comments.map((comment) => comment.author)).toEqual([
+        "reviewer",
+        "second-reviewer",
+        "reviewer",
+        "second-reviewer",
+      ]);
+      expect(comments.map((comment) => comment.id)).not.toContain("303");
+      expect(comments.map((comment) => comment.id)).not.toContain("issue-403");
+    });
+
     it("returns empty array when no CHANGES_REQUESTED review exists", async () => {
       // PR reviews: only APPROVED — no CHANGES_REQUESTED
       fetchMock.mockResolvedValueOnce(

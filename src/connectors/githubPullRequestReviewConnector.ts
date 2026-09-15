@@ -148,11 +148,31 @@ export class GitHubPullRequestReviewConnector implements ReviewConnector, Review
     const reviews = GitHubPrReviewListSchema.parse(
       await this.fetchJson(`${baseUrl}/pulls/${prNumber}/reviews`)
     );
-    const veLogin = this.config.virtualEngineerUserLogin;
-    const hasChangesRequested = reviews.some(
-      (r) => r.state === "CHANGES_REQUESTED" && (veLogin === undefined || r.user.login !== veLogin)
+    const hasChangesRequestedReview = reviews.some((r) => r.state === "CHANGES_REQUESTED");
+    if (!hasChangesRequestedReview) {
+      log.debug({ changeId }, "no CHANGES_REQUESTED review — skipping feedback");
+      return [];
+    }
+
+    let veLogin = this.config.virtualEngineerUserLogin;
+    if (veLogin === undefined) {
+      try {
+        veLogin = await this.resolveLogin();
+      } catch (err) {
+        log.warn({ changeId, err }, "could not resolve VE login — skipping GitHub feedback");
+        return [];
+      }
+    }
+
+    const reviewerLogins = new Set(
+      reviews
+        .map((review) => review.user.login)
+        .filter((login) => login !== veLogin)
     );
-    if (!hasChangesRequested) {
+    const hasExternalChangesRequested = reviews.some(
+      (review) => review.state === "CHANGES_REQUESTED" && review.user.login !== veLogin
+    );
+    if (!hasExternalChangesRequested) {
       log.debug({ changeId }, "no CHANGES_REQUESTED review — skipping feedback");
       return [];
     }
@@ -182,9 +202,9 @@ export class GitHubPullRequestReviewConnector implements ReviewConnector, Review
 
     const comments: ReviewComment[] = [];
 
-    // Filter inline review comments: skip those authored by VE
+    // Filter inline review comments to authors who submitted a review.
     for (const rc of reviewComments) {
-      if (rc.user.login === this.config.virtualEngineerUserLogin) continue;
+      if (!reviewerLogins.has(rc.user.login)) continue;
       // Only include top-level comments (not replies) as "unresolved"
       if (rc.in_reply_to_id) continue;
 
@@ -200,9 +220,9 @@ export class GitHubPullRequestReviewConnector implements ReviewConnector, Review
       });
     }
 
-    // General issue comments — skip VE's own
+    // General issue comments are accepted only from review authors as well.
     for (const ic of issueComments) {
-      if (ic.user.login === this.config.virtualEngineerUserLogin) continue;
+      if (!reviewerLogins.has(ic.user.login)) continue;
 
       comments.push({
         id: `issue-${ic.id}`,
