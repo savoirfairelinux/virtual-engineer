@@ -320,6 +320,8 @@ export interface ReviewAssignmentDiscovery {
  */
 export interface ReviewDiscoveryConnector {
   getOpenReviewAssignments(repos: string[]): Promise<ReviewAssignmentDiscovery[]>;
+  /** Return true when VE is still requested as a reviewer for one change. */
+  hasReviewAssignment?(changeId: ExternalChangeId): Promise<boolean>;
 }
 
 /** Optional VE project-owned binding data used to specialize integration connectors at runtime. */

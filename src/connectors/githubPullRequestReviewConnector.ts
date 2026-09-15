@@ -22,6 +22,7 @@ const GitHubPrSchema = z.object({
   title: z.string(),
   head: z.object({ ref: z.string(), sha: z.string() }),
   merged: z.boolean().optional().default(false),
+  requested_reviewers: z.array(z.object({ login: z.string() })).default([]),
 });
 
 const CheckRunSchema = z.object({
@@ -504,6 +505,16 @@ export class GitHubPullRequestReviewConnector implements ReviewConnector, Review
 
     log.debug({ repos: repos.length, found: results.length }, "review assignment poll complete");
     return results;
+  }
+
+  /** Return true while VE remains a requested reviewer on an open PR. */
+  async hasReviewAssignment(changeId: ExternalChangeId): Promise<boolean> {
+    const prNumber = this.parsePrNumber(String(changeId));
+    const pr = GitHubPrSchema.parse(await this.fetchJson(this.prUrl(prNumber)));
+    if (pr.merged || pr.state === "closed") return false;
+
+    const veLogin = await this.resolveLogin();
+    return pr.requested_reviewers.some((reviewer) => reviewer.login === veLogin);
   }
 
   /** Resolve VE's GitHub login: uses configured value or fetches from GET /user once. */
