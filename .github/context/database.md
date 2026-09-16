@@ -41,5 +41,5 @@
 - [INDEX.md](INDEX.md) — navigable context index
 - [state-machine.md](state-machine.md) — `state_transitions` rows and pause/resume
 - [configuration.md](configuration.md) — `app_settings` (DB-managed workflow settings)
-- [copilot-instructions.md](../copilot-instructions.md) — Critical Schema Facts (always-loaded, authoritative)
+- [copilot-instructions.md](../copilot-instructions.md) — always-loaded schema invariants (`task_id`, second-based timestamps, migration rules)
 - [ve-debug skill](../skills/ve-debug/SKILL.md) — SQLite query recipes for debugging

@@ -37,7 +37,7 @@ You: describe task → Coordinator: clarify & propose stages → You: approve
 | 3 | Plan Validation | dev-plan-validator | Check plan against codebase patterns & dependencies |
 | 4 | Implementation (TDD) | tested-engineer | Tests first, then code; all gates green |
 | 5 | Security Review | dev-security-auditor | OWASP review + secret scan |
-| 6 | Commit Organization | dev-commit-expert | Conventional Commits ready to push |
+| 6 | Commit Organization | dev-commit-expert | Canonical English Conventional Commits with AI attribution, ready to push |
 
 The coordinator may re-run the quality gates itself (`npm test`, `npm run typecheck`, `npm run lint`) after implementation or loop-back fixes. Documentation sync happens in the same commits via `.github/instructions/*.instructions.md` rules.
 
@@ -108,7 +108,7 @@ All agent definitions live under [.github/agents/](./agents/). The full inventor
 | `dev-planner` | Designs detailed implementation plan (3–5 phases) | Subagent |
 | `dev-plan-validator` | Validates plan against actual codebase | Subagent |
 | `dev-security-auditor` | OWASP vulnerability review + secret scan | Subagent |
-| `dev-commit-expert` | Conventional Commits organization (final stage) | Subagent |
+| `dev-commit-expert` | Canonical commit-policy enforcement and organization (final stage) | Subagent |
 | `explore` | Fast read-only exploration / Q&A | User-invocable |
 
 ## See Also

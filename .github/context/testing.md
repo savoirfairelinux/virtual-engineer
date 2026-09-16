@@ -143,4 +143,4 @@ npm run lint        # zero ESLint errors
 - [configuration.md](configuration.md) — env-var stubbing and `resetConfig`
 - [modules/orchestrator.md](modules/orchestrator.md) — orchestrator test families
 - [modules/agents.md](modules/agents.md) — agent test families
-- [copilot-instructions.md](../copilot-instructions.md) — Build & Test block (always-loaded)
+- [copilot-instructions.md](../copilot-instructions.md) — always-loaded Quality Gates

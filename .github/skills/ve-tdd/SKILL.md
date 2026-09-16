@@ -52,14 +52,9 @@ npm run lint          # zero ESLint errors
 
 ### 5. Commit
 
-```
-<type>(<scope>): <≤50-char subject, imperative>
-
-<optional body, ≤72 chars per line>
-```
-
-Types: `feat`, `fix`, `test`, `refactor`, `perf`, `docs`, `chore`, `ci`  
-Scopes: `orchestrator`, `polling-loop`, `state`, `gerrit`, `redmine`, `gitlab`, `agent`, `copilot-cli`, `vcs`, `plugins`, `admin`, `dashboard`, `prompts`, `config`, `workspace`, `db`
+Follow the canonical commit policy in
+[the TypeScript skill](../typescript-standard/SKILL.md). Commit messages are in
+English, and AI-generated or AI-assisted work gets a `Co-authored-by:` trailer.
 
 ## Vitest Mock Patterns
 

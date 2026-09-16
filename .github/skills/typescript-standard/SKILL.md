@@ -93,6 +93,8 @@ This project uses **Conventional Commits** with the following constraints enforc
 - Blank line between subject and body.
 - Body lines: **≤72 characters**.
 - Footer: `Closes #<n>` or `BREAKING CHANGE: <desc>` when applicable.
+- Language: write the entire commit message in English.
+- AI attribution: when AI generates or materially contributes to the work, add a `Co-authored-by:` trailer identifying the AI assistant (for example, `Co-authored-by: GitHub Copilot <copilot@github.com>`).
 
 ### Types
 

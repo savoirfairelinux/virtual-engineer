@@ -1,6 +1,7 @@
 ---
 description: "Use when assessing project viability and constraints before detailed planning. Quick read-only scan to identify blockers, dependencies, architectural concerns, or scope warnings. Returns findings in <30 seconds."
 tools: [read, search]
+agents: [dev-planner]
 user-invocable: false
 handoffs:
   - label: Plan the approach

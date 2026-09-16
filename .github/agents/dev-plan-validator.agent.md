@@ -1,6 +1,7 @@
 ---
 description: "Use when analyzing a specific implementation plan against the actual codebase to validate feasibility and suggest adjustments. Checks architectural alignment, identifies hidden dependencies, verifies test coverage baselines, and flags any conflicts with existing patterns."
 tools: [read, search]
+agents: [tested-engineer]
 user-invocable: false
 handoffs:
   - label: Implement with TDD

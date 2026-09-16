@@ -5,7 +5,7 @@
 ## Layered configuration
 
 1. **Environment variables** populate `AppConfig` (system/infra settings only).
-2. **All provider config** (Redmine, Gerrit, GitLab, Copilot, and Claude credentials) lives exclusively in the `integrations` database table, managed via the admin UI.
+2. **All provider config** (Redmine, Gerrit, GitLab, GitHub, Copilot, Claude, Aider, Goose, Codex, Gemini, OpenCode, and Cursor credentials) lives exclusively in the `integrations` database table, managed via the admin UI.
 3. `src/index.ts` hot-refreshes runtime dependencies after integration changes, so admin edits are picked up without a process restart.
 
 ## Environment variables
@@ -89,4 +89,4 @@ Validation rules:
 - [architecture.md](architecture.md) — layered architecture and data flow
 - [database.md](database.md) — `app_settings` (DB-managed workflow settings, including the agent timeout)
 - [testing.md](testing.md) — env-var stubbing patterns (`resetConfig`)
-- [copilot-instructions.md](../copilot-instructions.md) — Key Configuration table (always-loaded)
+- [copilot-instructions.md](../copilot-instructions.md) — always-loaded routing and the rule that provider config lives in the database

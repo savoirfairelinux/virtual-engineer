@@ -2,7 +2,7 @@
 
 This folder contains AI-consumable reference docs for the Virtual Engineer codebase. Start here, then jump to the section relevant to your task.
 
-> **Navigation hierarchy**: [AGENTS.md](../../AGENTS.md) (vendor-neutral orientation) → [copilot-instructions.md](../copilot-instructions.md) (always-loaded primary reference) → **this index** (on-demand deep-dives). Every doc below ends with a **Related docs** block linking back here and to its siblings.
+> **Navigation hierarchy**: [AGENTS.md](../../AGENTS.md) (vendor-neutral orientation) → [copilot-instructions.md](../copilot-instructions.md) (always-loaded routing, gates, and invariants) → **this index** (on-demand deep-dives). Every doc below ends with a **Related docs** block linking back here and to its siblings.
 
 The repo-wide entry point for Copilot is [.github/copilot-instructions.md](../copilot-instructions.md). It is loaded automatically; this folder is loaded **on demand**.
 
@@ -41,7 +41,7 @@ The repo-wide entry point for Copilot is [.github/copilot-instructions.md](../co
 - **Add a new agent engine** → [modules/agents.md](modules/agents.md) + the descriptor's `agent_execution` capability (see [modules/plugins.md](modules/plugins.md)).
 - **Run tests** → [testing.md](testing.md).
 - **Debug a stuck task** → SQL queries in [database.md](database.md) + the [`ve-debug` skill](../skills/ve-debug/SKILL.md).
-- **Debug Copilot execution** → [modules/agents.md](modules/agents.md) (in-sandbox `copilot --headless`; reviews via `REVIEW_MODE=1`) + [copilot-instructions.md](../copilot-instructions.md).
+- **Debug Copilot execution** → [modules/agents.md](modules/agents.md) (in-sandbox `copilot --headless`; reviews via `REVIEW_MODE=1`).
 
 ## Cross-cutting facts (worth memorising)
 
