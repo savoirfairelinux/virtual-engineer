@@ -1,11 +1,7 @@
 import pRetry from "p-retry";
-import { randomUUID, createHash } from "crypto";
-import { isAbsolute, relative, resolve, sep } from "path";
+import { randomUUID } from "crypto";
 import type {
-  AgentAdapter,
-  CommitDescriptor,
   FeedbackItem,
-  Integration,
   IntegrationBindingContext,
   ReviewConnector,
   TicketConnector,
@@ -39,69 +35,25 @@ import { clearTaskEventBuffer } from "../agents/agentEventBus.js";
 import { normalizeAgentResult, getModifiedFileCount } from "../agents/agentEventTypes.js";
 import { resolveProviderOptions } from "../agents/providerOptions.js";
 import type { VcsConnector } from "../vcs/vcsConnector.js";
-import { NO_REVIEW_SYSTEM } from "../vcs/vcsConnector.js";
 import { VcsConnectorFactory } from "../vcs/vcsFactory.js";
 import { redactUrls } from "../utils/redactUrl.js";
 import { toRejectionError } from "../utils/rejection.js";
 import { isInfrastructureError } from "../utils/errorClassifier.js";
-import type { ConcurrencyTracker } from "./concurrencyTracker.js";
-import { resolveAgentConfig } from "../state/stateStore.js";
 import {
   buildAgentTaskContext,
   type ProjectAgentRuntime,
 } from "./agentContextBuilder.js";
+import { AgentRuntimeResolver } from "./agentRuntimeResolver.js";
+import { ProjectPushService } from "./projectPushService.js";
 import {
   enrichPushTargets,
   resolveCloneKnownHostsPath,
 } from "./pushTargetEnrichment.js";
+import { ProjectConnectorResolver } from "./projectConnectorResolver.js";
+import { type ProjectModeDeps } from "./projectMode.js";
+export type { ProjectModeDeps } from "./projectMode.js";
 
 const log = getLogger("orchestrator");
-
-interface ReviewRepositorySelection {
-  repoKey: string | undefined;
-  hasQualifiedRepository: boolean;
-}
-
-function selectReviewRepository(
-  externalChangeId: ExternalChangeId | null | undefined,
-  repositories: readonly string[]
-): ReviewRepositorySelection {
-  const rawChangeId = externalChangeId === null || externalChangeId === undefined
-    ? ""
-    : String(externalChangeId).trim();
-  const hashIndex = rawChangeId.indexOf("#");
-
-  if (hashIndex > 0) {
-    const requestedRepoKey = rawChangeId.slice(0, hashIndex);
-    return {
-      repoKey: repositories.includes(requestedRepoKey) ? requestedRepoKey : undefined,
-      hasQualifiedRepository: true,
-    };
-  }
-
-  return {
-    repoKey: repositories.length === 1 ? repositories[0] : undefined,
-    hasQualifiedRepository: false,
-  };
-}
-
-/**
- * Resolve a push target's `localPath` inside the workspace. `localPath` is
- * already validated at the admin API, but the workspace round-trips through the
- * agent sandbox, so re-assert containment before running Git there.
- */
-function resolveWorkspaceSubPath(workspacePath: string, localPath: string): string {
-  if (isAbsolute(localPath)) {
-    throw new Error(`Push target path must stay within the workspace: ${localPath}`);
-  }
-  const workspace = resolve(workspacePath);
-  const target = resolve(workspace, localPath);
-  const relativePath = relative(workspace, target);
-  if (relativePath === ".." || relativePath.startsWith(`..${sep}`)) {
-    throw new Error(`Push target path must stay within the workspace: ${localPath}`);
-  }
-  return target;
-}
 
 export interface OrchestratorConfig {
   maxAgentCycles: number;
@@ -118,38 +70,6 @@ export interface OrchestratorConfig {
 }
 
 /**
- * Project-mode dependencies. When provided, the orchestrator resolves
- * agent + VCS connectors via project relations rather than env-var fallback.
- */
-export interface ProjectModeDeps {
-  projectStore: {
-    getProjectById(id: import("../interfaces.js").ProjectId): Promise<ProjectRecord | null>;
-    listProjectPushTargets(id: import("../interfaces.js").ProjectId): Promise<import("../interfaces.js").ProjectPushTargetRecord[]>;
-    listProjectVendorComponents?(id: import("../interfaces.js").ProjectId): Promise<import("../interfaces.js").ProjectVendorComponentRecord[]>;
-    getProjectTicketSource(id: import("../interfaces.js").ProjectId): Promise<import("../interfaces.js").ProjectTicketSourceRecord | null>;
-    getProjectReviewConfig(id: import("../interfaces.js").ProjectId): Promise<import("../interfaces.js").ProjectReviewConfig | null>;
-    getAgentById(id: import("../interfaces.js").AgentId): Promise<import("../interfaces.js").AgentRecord | null>;
-    deleteProject?(id: import("../interfaces.js").ProjectId): Promise<void>;
-  };
-  pluginManager: {
-    getConnectorForIntegration<T>(integrationId: string): T | null;
-    getConnectorForCapability?<T>(integrationId: string, capability: import("../interfaces.js").DomainCapability): T | null;
-    createConnectorForCapability?<T>(integrationId: string, capability: import("../interfaces.js").DomainCapability, context?: IntegrationBindingContext): Promise<T | null>;
-    createConnectorForIntegration?<T>(integrationId: string, context?: IntegrationBindingContext): Promise<T | null>;
-    getActiveIntegrationById?(integrationId: string): import("../interfaces.js").Integration | null;
-    decryptIntegrationConfig?(integration: import("../interfaces.js").Integration): Record<string, unknown>;
-  };
-  /** Inject a function to build a VcsConnector for a given integration id (host-side). */
-  resolveVcsForIntegration?: (integrationId: string, context?: IntegrationBindingContext) => Promise<VcsConnector | null>;
-  /**
-   * Optional in-memory concurrency tracker. When provided, project-mode tasks
-   * must `acquire()` a slot before running and `release()` it on terminal
-   * states. Legacy tasks (no projectId) are not gated.
-   */
-  concurrencyTracker?: ConcurrencyTracker;
-}
-
-/**
  * Drives the ticket-driven code-generation lifecycle: clone → agent → push → review → merge → close.
  * Persists all state via `StateStore`; resumes in-flight tasks after a restart via `resumeActiveTasks()`.
  */
@@ -160,6 +80,9 @@ export class Orchestrator {
   private config: OrchestratorConfig;
   private vcsConnector: VcsConnector | undefined;
   private readonly vcsConnectorFactory: VcsConnectorFactory;
+  private readonly projectConnectorResolver: ProjectConnectorResolver;
+  private readonly agentRuntimeResolver: AgentRuntimeResolver;
+  private readonly projectPushService: ProjectPushService;
   private projectMode: ProjectModeDeps | null = null;
   /**
    * Task ids whose `runWorkflow` is currently executing. Guards against
@@ -181,6 +104,25 @@ export class Orchestrator {
     this.vcsConnector = vcsConnector;
     this.feedbackProcessor = new FeedbackProcessor(stateStore);
     this.projectMode = projectMode ?? null;
+    this.projectConnectorResolver = new ProjectConnectorResolver({
+      getProjectMode: (): ProjectModeDeps | null => this.projectMode,
+      stateStore,
+      vcsConnectorFactory: this.vcsConnectorFactory,
+      ...(integrationStore !== undefined ? { integrationStore } : {}),
+    });
+    this.agentRuntimeResolver = new AgentRuntimeResolver({
+      getProjectMode: (): ProjectModeDeps | null => this.projectMode,
+    });
+    this.projectPushService = new ProjectPushService({
+      stateStore,
+      workspaceRunner,
+      resolveVcsConnectorForTarget: (integrationId, context): Promise<VcsConnector> =>
+        this.projectConnectorResolver.resolveVcsConnectorForTarget(integrationId, context),
+      resolvePushRef: (
+        task: Pick<Task, "taskId" | "pushRef">,
+        compute: () => string,
+      ): Promise<string> => this.resolvePushRef(task, compute),
+    });
     this.reviewProgressService = new ReviewProgressService({
       getChangesForTask: (taskId): ReturnType<ReviewProgressDependencies["getChangesForTask"]> =>
         this.stateStore.getChangesForTask(taskId),
@@ -498,162 +440,24 @@ export class Orchestrator {
     integrationId: string,
     context?: IntegrationBindingContext
   ): Promise<VcsConnector | undefined> {
-    try {
-      if (this.projectMode?.resolveVcsForIntegration) {
-        return (await this.projectMode.resolveVcsForIntegration(integrationId, context)) ?? undefined;
-      }
-      return await this.resolveConnectorForIntegration(integrationId, context);
-    } catch (err) {
-      log.warn({ integrationId, context, err }, "failed to resolve VCS connector for target");
-      return undefined;
-    }
+    return this.projectConnectorResolver.tryResolveVcsConnectorForTarget(integrationId, context);
   }
 
   /** Resolve the VCS connector for a push target, throwing if none is available. */
   private async resolveVcsConnectorForTarget(integrationId: string, context?: IntegrationBindingContext): Promise<VcsConnector> {
-    const connector = await this.tryResolveVcsConnectorForTarget(integrationId, context);
-    if (!connector) {
-      throw new Error(`No VCS connector available for integration ${integrationId}`);
-    }
-    return connector;
-  }
-
-  /** Resolve a VCS connector for an integration ID using the factory; returns undefined if unavailable. */
-  private async resolveConnectorForIntegration(
-    integrationId: string,
-    context?: IntegrationBindingContext
-  ): Promise<VcsConnector | undefined> {
-    try {
-      const store = this.integrationStore ?? (this.stateStore as unknown as IntegrationStore);
-      const integration = await store.getIntegration(integrationId);
-      if (integration && integration.enabled) {
-        return this.vcsConnectorFactory.getConnector(integration, context);
-      }
-    } catch (err) {
-      log.warn({ integrationId, err }, "failed to resolve connector for integration");
-    }
-    return undefined;
+    return this.projectConnectorResolver.resolveVcsConnectorForTarget(integrationId, context);
   }
 
   /** Resolve the ticket connector for a project-bound task via the project's ticket source. */
   private async resolveTicketConnector(task: Pick<Task, "taskId" | "projectId">): Promise<TicketConnector> {
-    if (!task.projectId || !this.projectMode) {
-      throw new Error(`Task ${task.taskId} is not project-bound; cannot resolve ticket connector`);
-    }
-    const ts = await this.projectMode.projectStore.getProjectTicketSource(task.projectId);
-    if (!ts) {
-      throw new Error(`No ticket source configured for project ${task.projectId} (task ${task.taskId})`);
-    }
-    const connector = this.projectMode.pluginManager.createConnectorForCapability
-      ? await this.projectMode.pluginManager.createConnectorForCapability<TicketConnector>(
-        ts.integrationId,
-        "issue_tracking",
-        { ticketProjectKey: ts.ticketProjectKey }
-      )
-      : this.projectMode.pluginManager.createConnectorForIntegration
-        ? await this.projectMode.pluginManager.createConnectorForIntegration<TicketConnector>(
-          ts.integrationId,
-          { ticketProjectKey: ts.ticketProjectKey }
-        )
-        : this.projectMode.pluginManager.getConnectorForIntegration<TicketConnector>(ts.integrationId);
-    if (!connector) {
-      throw new Error(`Ticket source integration ${ts.integrationId} is not active (task ${task.taskId})`);
-    }
-    return connector;
+    return this.projectConnectorResolver.resolveTicketConnector(task);
   }
 
   /** Resolve the review connector for a project-bound task via review config or push targets. */
   private async resolveReviewConnector(
     task: Pick<Task, "taskId" | "projectId" | "externalChangeId">
   ): Promise<ReviewConnector> {
-    if (!task.projectId || !this.projectMode) {
-      throw new Error(`Task ${task.taskId} is not project-bound; cannot resolve review connector`);
-    }
-    // Try review config first (for review projects). Resolve the `code_review`
-    // capability explicitly: a unified provider (e.g. github/gitlab) also exposes
-    // `issue_tracking`, and `getConnectorForIntegration` would return the issue
-    // connector first — which lacks `getChangeStatus`.
-    const rc = await this.projectMode.projectStore.getProjectReviewConfig(task.projectId);
-    if (rc) {
-      const selection = selectReviewRepository(task.externalChangeId, rc.repos);
-      if (selection.hasQualifiedRepository && selection.repoKey === undefined) {
-        throw new Error(
-          `Review change ${task.externalChangeId ?? ""} does not match a repository bound to project ${task.projectId}`
-        );
-      }
-      const connector = await this.resolveReviewCapabilityConnector(rc.integrationId, selection.repoKey);
-      if (connector) return connector;
-    }
-    // Fall back to push targets (for coding projects — the VCS connector often doubles as review)
-    const pts = await this.projectMode.projectStore.listProjectPushTargets(task.projectId);
-    const selection = selectReviewRepository(task.externalChangeId, pts.map((pt) => pt.repoKey));
-    if (selection.hasQualifiedRepository && selection.repoKey === undefined) {
-      throw new Error(
-        `Review change ${task.externalChangeId ?? ""} does not match a repository push target for project ${task.projectId}`
-      );
-    }
-
-    if (selection.repoKey !== undefined) {
-      const target = pts.find((pt) => pt.repoKey === selection.repoKey);
-      if (target) {
-        const connector = await this.resolveReviewCapabilityConnector(target.integrationId, target.repoKey);
-        if (connector) return connector;
-      }
-    } else if (pts.length === 1) {
-      const target = pts[0];
-      if (target) {
-        const connector = await this.resolveReviewCapabilityConnector(target.integrationId, target.repoKey);
-        if (connector) return connector;
-      }
-    } else {
-      const integrationIds = [...new Set(pts.map((pt) => pt.integrationId))];
-      if (integrationIds.length === 1) {
-        const integrationId = integrationIds[0];
-        if (integrationId !== undefined) {
-          const connector = await this.resolveReviewCapabilityConnector(integrationId);
-          if (connector) return connector;
-        }
-      }
-    }
-    throw new Error(`No active review connector found for project ${task.projectId} (task ${task.taskId})`);
-  }
-
-  /**
-   * Resolve a review-capable connector for an integration id. Prefers the
-   * explicit `code_review` capability so unified providers (github/gitlab) that
-   * also expose `issue_tracking` do not resolve to the issue connector, which
-   * lacks `getChangeStatus`. Falls back to `getConnectorForIntegration` only
-   * when the capability resolver is unavailable.
-   */
-  private async resolveReviewCapabilityConnector(
-    integrationId: string,
-    repoKey?: string
-  ): Promise<ReviewConnector | null> {
-    const pm = this.projectMode?.pluginManager;
-    if (!pm) return null;
-
-    if (repoKey !== undefined && pm.createConnectorForCapability) {
-      const contextualized = await pm.createConnectorForCapability<ReviewConnector>(
-        integrationId,
-        "code_review",
-        { repoKey }
-      );
-      if (contextualized) return contextualized;
-    }
-
-    const integration = pm.getActiveIntegrationById?.(integrationId);
-    if (
-      repoKey === undefined &&
-      (integration?.provider === "github" || integration?.provider === "gitlab")
-    ) {
-      return null;
-    }
-
-    if (pm.getConnectorForCapability) {
-      const byCapability = pm.getConnectorForCapability<ReviewConnector>(integrationId, "code_review");
-      if (byCapability) return byCapability;
-    }
-    return pm.getConnectorForIntegration<ReviewConnector>(integrationId);
+    return this.projectConnectorResolver.resolveReviewConnector(task);
   }
 
   /** Drive the state machine from the task's current state, dispatching to the appropriate step. */
@@ -860,7 +664,7 @@ export class Orchestrator {
       const enrichedPushTargets = await enrichPushTargets(projectPushTargets, {
         getIntegration: (integrationId) =>
           (this.integrationStore ?? (this.stateStore as unknown as IntegrationStore)).getIntegration(integrationId),
-        resolveIntegrationConfig: (integration) => this.resolveIntegrationConfig(integration),
+        resolveIntegrationConfig: (integration) => this.projectConnectorResolver.resolveIntegrationConfig(integration),
         resolveVcsConnectorForTarget: (integrationId, context) => this.resolveVcsConnectorForTarget(integrationId, context),
       });
 
@@ -1129,162 +933,7 @@ export class Orchestrator {
 
   /** Resolve the per-project agent adapter and resolved config from the project's agent record. */
   private async resolveProjectAgentRuntime(project: ProjectRecord | null): Promise<ProjectAgentRuntime> {
-    if (!project || !this.projectMode) {
-      throw new Error("Project agent runtime cannot be resolved outside project mode");
-    }
-
-    const agent = await this.projectMode.projectStore.getAgentById(project.agentId);
-    if (!agent) {
-      throw new Error(`Project agent ${project.agentId} was not found for project ${project.id}`);
-    }
-    if (!agent.enabled || agent.type !== "coding") {
-      throw new Error(`Project agent ${agent.id} is not an enabled coding agent for project ${project.id}`);
-    }
-    if (!agent.integrationId) {
-      throw new Error(`Project agent ${agent.id} has no agent integration configured`);
-    }
-
-    const adapter = this.projectMode.pluginManager.getConnectorForIntegration<AgentAdapter>(agent.integrationId);
-    if (!adapter) {
-      throw new Error(
-        `Project agent adapter is unavailable for agent ${agent.id} ` +
-        `(integration ${agent.integrationId}, project ${project.id})`
-      );
-    }
-
-    const resolvedConfig = resolveAgentConfig(agent, project);
-
-    // The agent's modelConfigJson rarely carries credentials; fall back to the
-    // agent-execution integration's own configJson. This is provider-aware:
-    // Copilot stores an OAuth `sessionToken` or a PAT (`token`); Claude stores
-    // an `apiKey` (api_key mode) or an interactive-OAuth `sessionToken`
-    // (subscription mode).
-    //
-    let encryptedSessionToken = resolvedConfig.encryptedSessionToken;
-    let apiKey = resolvedConfig.apiKey;
-    // Aider forwards backend credentials via `extra`; start from the resolved
-    // extras so we don't clobber agent-level overrides.
-    const extra: Record<string, unknown> = { ...resolvedConfig.extra };
-    if (!encryptedSessionToken || !apiKey || Object.keys(extra).length === 0) {
-      const integration = this.projectMode.pluginManager.getActiveIntegrationById?.(agent.integrationId);
-      if (integration) {
-        const integCfg = this.resolveIntegrationConfig(integration);
-        if (integration.provider === "claude") {
-          if (integCfg["authMode"] === "api_key") {
-            if (!apiKey) {
-              const key = integCfg["apiKey"];
-              if (typeof key === "string" && key) apiKey = key;
-            }
-          } else if (!encryptedSessionToken) {
-            const sess = integCfg["sessionToken"];
-            if (typeof sess === "string" && sess) {
-              encryptedSessionToken = sess;
-            }
-          }
-        } else if (integration.provider === "codex") {
-          // Codex stores its subscription credential under `accessToken`
-          // (see src/plugins/descriptors/codex.ts), not `sessionToken`.
-          if (integCfg["authMode"] === "api_key") {
-            if (!apiKey) {
-              const key = integCfg["apiKey"];
-              if (typeof key === "string" && key) apiKey = key;
-            }
-          } else if (!encryptedSessionToken) {
-            const token = integCfg["accessToken"];
-            if (typeof token === "string" && token) {
-              encryptedSessionToken = token;
-            }
-          }
-        } else if (integration.provider === "cursor") {
-          // Cursor authenticates with a single plaintext apiKey — no auth
-          // mode, no OAuth/subscription branch (see src/plugins/descriptors/cursor.ts).
-          if (!apiKey) {
-            const key = integCfg["apiKey"];
-            if (typeof key === "string" && key) apiKey = key;
-          }
-        } else if (integration.provider === "aider") {
-          // Aider carries a backend selector + that backend's API key / base
-          // URL on the integration config. Forward them via `extra` so the
-          // AiderAdapter can map them onto the litellm env vars. This must be
-          // checked before the generic `!encryptedSessionToken` branch below,
-          // since Aider never populates `encryptedSessionToken` and would
-          // otherwise be swallowed by that branch and never forwarded.
-          const backend = integCfg["aiderBackend"];
-          const key = integCfg["aiderApiKey"];
-          const base = integCfg["aiderApiBase"];
-          if (typeof backend === "string" && backend) extra["aiderBackend"] = backend;
-          if (typeof key === "string" && key) extra["aiderApiKey"] = key;
-          if (typeof base === "string" && base) extra["aiderApiBase"] = base;
-        } else if (integration.provider === "goose") {
-          // Goose carries a provider selector + that provider's API key / base
-          // URL on the integration config. Forward them via `extra` so the
-          // GooseAdapter can map them onto the provider's auth env vars. This
-          // must be checked before the generic `!encryptedSessionToken` branch
-          // below, since Goose never populates `encryptedSessionToken` and
-          // would otherwise be swallowed by that branch and never forwarded.
-          const provider = integCfg["gooseProvider"];
-          const key = integCfg["gooseApiKey"];
-          const base = integCfg["gooseApiBase"];
-          if (typeof provider === "string" && provider) extra["gooseProvider"] = provider;
-          if (typeof key === "string" && key) extra["gooseApiKey"] = key;
-          if (typeof base === "string" && base) extra["gooseApiBase"] = base;
-        } else if (integration.provider === "gemini") {
-          // Gemini stores its credential under the generic `apiKey` field for
-          // both auth modes (Vertex AI Express Mode also authenticates via an
-          // API key). Non-secret Vertex AI settings flow through `extra`.
-          if (!apiKey) {
-            const key = integCfg["apiKey"];
-            if (typeof key === "string" && key) apiKey = key;
-          }
-          const authMode = integCfg["authMode"];
-          const project = integCfg["googleCloudProject"];
-          const location = integCfg["googleCloudLocation"];
-          if (typeof authMode === "string" && authMode) extra["geminiAuthMode"] = authMode;
-          if (typeof project === "string" && project) extra["geminiGoogleCloudProject"] = project;
-          if (typeof location === "string" && location) extra["geminiGoogleCloudLocation"] = location;
-        } else if (integration.provider === "opencode") {
-          // OpenCode carries a provider selector + that provider's API key /
-          // base URL on the integration config, exactly like Goose. Forward
-          // them via `extra` so the OpenCodeAdapter can map them onto the
-          // provider's auth env vars. This must be checked before the generic
-          // `!encryptedSessionToken` branch below, since OpenCode never
-          // populates `encryptedSessionToken` and would otherwise be
-          // swallowed by that branch and never forwarded.
-          const provider = integCfg["openCodeProvider"];
-          const key = integCfg["openCodeApiKey"];
-          const base = integCfg["openCodeApiBase"];
-          if (typeof provider === "string" && provider) extra["openCodeProvider"] = provider;
-          if (typeof key === "string" && key) extra["openCodeApiKey"] = key;
-          if (typeof base === "string" && base) extra["openCodeApiBase"] = base;
-        } else if (!encryptedSessionToken) {
-          const t = integCfg["sessionToken"];
-          if (typeof t === "string" && t) {
-            encryptedSessionToken = t;
-          } else if (integCfg["authMode"] === "pat") {
-            const pat = integCfg["token"];
-            if (!apiKey && typeof pat === "string" && pat) {
-              apiKey = pat;
-              }
-            }
-        }
-      }
-    }
-
-    const authChanged =
-      encryptedSessionToken !== resolvedConfig.encryptedSessionToken ||
-      apiKey !== resolvedConfig.apiKey ||
-      Object.keys(extra).length > 0;
-    return {
-      adapter,
-      config: authChanged
-        ? { ...resolvedConfig, encryptedSessionToken, apiKey, extra }
-        : resolvedConfig,
-    };
-  }
-
-  private resolveIntegrationConfig(integration: Integration): Record<string, unknown> {
-    return this.projectMode?.pluginManager.decryptIntegrationConfig?.(integration)
-      ?? JSON.parse(integration.configJson) as Record<string, unknown>;
+    return this.agentRuntimeResolver.resolve(project);
   }
 
   /** Poll review system status; advance to MERGED, trigger a retry cycle, or stay IN_REVIEW. */
@@ -1303,7 +952,10 @@ export class Orchestrator {
    * Returns the task's persisted pushRef if set, otherwise computes one via `compute()`,
    * persists it, and returns it. Guarantees a stable branch name across resume/retry cycles.
    */
-  private async resolvePushRef(task: Task, compute: () => string): Promise<string> {
+  private async resolvePushRef(
+    task: Pick<Task, "taskId" | "pushRef">,
+    compute: () => string,
+  ): Promise<string> {
     if (task.pushRef) {
       return task.pushRef;
     }
@@ -1319,210 +971,19 @@ export class Orchestrator {
   private async pushProjectChanges(
     task: Task,
     handle: WorkspaceHandle,
-    pushTargets: import("../interfaces.js").ProjectPushTargetRecord[],
+    pushTargets: ProjectPushTargetRecord[],
     fallbackCommitMessage: string,
-    agentCommits: CommitDescriptor[] | undefined = undefined,
-    topicOverride: string | null = null
+    agentCommits: import("../interfaces.js").CommitDescriptor[] | undefined = undefined,
+    topicOverride: string | null = null,
   ): Promise<void> {
-    const sorted = [...pushTargets].sort((a, b) => a.commitOrder - b.commitOrder);
-    // Only repositories VE cloned itself (and whose `.git` it rebuilt from
-    // host-trusted data) may be used as a host-side Git working directory. A
-    // target whose clone failed would otherwise be an agent-authored directory
-    // that the push would hand credentials to.
-    const trustedRepoPaths = this.workspaceRunner.listTrustedRepoPaths
-      ? new Set(this.workspaceRunner.listTrustedRepoPaths(handle))
-      : null;
-
-    let dirtyCount = 0;
-    let successCount = 0;
-    const pushErrors: Array<{ repoKey: string; err: unknown }> = [];
-
-    for (const target of sorted) {
-      if (trustedRepoPaths !== null && !trustedRepoPaths.has(target.localPath)) {
-        const err = new Error(
-          `Push target "${target.repoKey}" was not cloned by Virtual Engineer; refusing to push from an untrusted workspace path`
-        );
-        log.warn({ taskId: task.taskId, repoKey: target.repoKey, localPath: target.localPath }, err.message);
-        pushErrors.push({ repoKey: target.repoKey, err });
-        // An untrusted target is never dirty-checked, but it must still count as
-        // an attempt so a cycle where nothing could be pushed fails loudly.
-        dirtyCount++;
-        continue;
-      }
-      // Check whether there are local commits ahead of origin that need pushing.
-      // The agent always commits its work, so git status --porcelain is always empty
-      // after a successful cycle. The only meaningful question is: are there commits
-      // on this branch that haven't been pushed yet?
-      let isDirty = false;
-      if (this.workspaceRunner.execGitInVolume) {
-        try {
-          const aheadOut = await this.workspaceRunner.execGitInVolume(
-            handle,
-            ["rev-list", "--count", "HEAD", `^origin/${target.targetBranch}`],
-            target.localPath
-          );
-          isDirty = (parseInt(aheadOut.trim(), 10) || 0) > 0;
-        } catch (err) {
-          // rev-list failed — assume there is something to push.
-          log.warn({ taskId: task.taskId, repoKey: target.repoKey, err }, "git rev-list failed for project push target; assuming changes present");
-          isDirty = true;
-        }
-      }
-
-      if (!isDirty) {
-        await this.stateStore.saveChangePerRepository(
-          task.taskId,
-          target.repoKey,
-          "",
-          "",
-          "NO_CHANGE",
-          target.integrationId,
-          NO_REVIEW_SYSTEM,
-          0,
-          ""
-        );
-        log.info({ taskId: task.taskId, repoKey: target.repoKey }, "project push target had no changes");
-        continue;
-      }
-
-      dirtyCount++;
-
-      // Connector is only needed when the repo has changes to push.
-      let vcsConnector: VcsConnector;
-      try {
-        vcsConnector = await this.resolveVcsConnectorForTarget(target.integrationId, { repoKey: target.repoKey });
-      } catch (err) {
-        log.warn(
-          { taskId: task.taskId, repoKey: target.repoKey, integrationId: target.integrationId, err },
-          "no VCS connector for push target; skipping"
-        );
-        pushErrors.push({ repoKey: target.repoKey, err });
-        continue;
-      }
-      const { ref: computedRef, topic: computedTopic } = vcsConnector.buildPushSpec(
-        target.targetBranch,
-        task.taskId,
-        task.ticketTitle
-      );
-      const ref = await this.resolvePushRef(task, () => computedRef);
-      const topic = topicOverride?.trim() ? topicOverride.trim() : computedTopic;
-      const reviewSystemLabel = vcsConnector.reviewSystemLabel;
-
-      // Push runs host-side against the repo's working directory. Multi-repo
-      // targets live in sub-directories of the workspace, so join the target's
-      // localPath ("." for the root repo) onto the host workspace path.
-      const repoDir = resolveWorkspaceSubPath(handle.hostWorkspacePath, target.localPath);
-      try {
-        const subjectHash = createHash("sha1").update(fallbackCommitMessage.split("\n")[0] ?? "").digest("hex");
-
-        if (!vcsConnector.pushDirect) {
-          throw new Error(`VCS connector for ${reviewSystemLabel} does not implement pushDirect`);
-        }
-        const pushResult = await vcsConnector.pushDirect(
-          repoDir,
-          ref,
-          topic,
-          target.reviewerEmails
-        );
-
-        // Use Change-Ids from agent commits when available — this is the source of truth
-        // for multi-commit pushes where pushResult.changeId only reflects HEAD (the last commit).
-        // The agent already injected deterministic Change-Ids into each commit before pushing.
-        const repoCommits = (agentCommits ?? []).filter((c) => c.repoKey === target.repoKey);
-
-        // Derive URL for a given Change-Id by replacing the head Change-Id in pushResult.url.
-        // Falls back to pushResult.url when changeId is absent or replacement is not possible.
-        const makeChangeUrl = (targetChangeId: string): string => {
-          if (!pushResult.url) return "";
-          if (pushResult.changeId && pushResult.url.includes(pushResult.changeId)) {
-            return pushResult.url.replace(pushResult.changeId, targetChangeId);
-          }
-          return pushResult.url;
-        };
-
-        if (repoCommits.length > 1) {
-          // Multi-commit: save each commit at its own index so the retry cycle can
-          // retrieve commit[0]'s Change-Id and reuse it to produce a new patchset.
-          for (let i = 0; i < repoCommits.length; i++) {
-            const commit = repoCommits[i]!;
-            const cHash = createHash("sha1").update(commit.subject).digest("hex");
-            await this.stateStore.saveChangePerRepository(
-              task.taskId,
-              target.repoKey,
-              commit.changeId,
-              i === 0 ? makeChangeUrl(commit.changeId) : "",
-              pushResult.status || "OPEN",
-              target.integrationId,
-              reviewSystemLabel,
-              i,
-              cHash
-            );
-          }
-          log.info(
-            { taskId: task.taskId, repoKey: target.repoKey, commitCount: repoCommits.length, firstChangeId: repoCommits[0]?.changeId },
-            "pushed project target (multi-commit)"
-          );
-          // Orphan stale rows from prior cycles that had more commits than this one
-          const orphaned = await this.stateStore.orphanExcessChanges(task.taskId, target.repoKey, repoCommits.length - 1);
-          if (orphaned > 0) {
-            log.info(
-              { taskId: task.taskId, repoKey: target.repoKey, orphanedCount: orphaned },
-              "marked excess change_per_repository rows as ORPHANED"
-            );
-          }
-        } else {
-          // Single-commit: prefer the agent's own Change-Id (commit[0]) over the VCS
-          // push result which may differ when the connector re-reads from HEAD.
-          const primaryChangeId = repoCommits[0]?.changeId || pushResult.changeId;
-          await this.stateStore.saveChangePerRepository(
-            task.taskId,
-            target.repoKey,
-            primaryChangeId,
-            makeChangeUrl(primaryChangeId),
-            pushResult.status || "OPEN",
-            target.integrationId,
-            reviewSystemLabel,
-            0,
-            subjectHash
-          );
-          log.info(
-            { taskId: task.taskId, repoKey: target.repoKey, changeId: primaryChangeId, url: makeChangeUrl(primaryChangeId) },
-            "pushed project target"
-          );
-          // Orphan stale rows from prior cycles that had more commits
-          const orphaned = await this.stateStore.orphanExcessChanges(task.taskId, target.repoKey, 0);
-          if (orphaned > 0) {
-            log.info(
-              { taskId: task.taskId, repoKey: target.repoKey, orphanedCount: orphaned },
-              "marked excess change_per_repository rows as ORPHANED"
-            );
-          }
-        }
-        successCount++;
-      } catch (err) {
-        log.error(
-          { taskId: task.taskId, repoKey: target.repoKey, err },
-          "project push target push failed; continuing with remaining targets"
-        );
-        pushErrors.push({ repoKey: target.repoKey, err });
-      }
-    }
-
-    // If every dirty target failed, surface the errors so the task transitions
-    // to FAILED (visible in the UI) instead of silently advancing to IN_REVIEW.
-    if (dirtyCount > 0 && successCount === 0 && pushErrors.length > 0) {
-      const detail = pushErrors
-        .map((e) => `${e.repoKey}: ${e.err instanceof Error ? e.err.message : String(e.err)}`)
-        .join("; ");
-      throw new Error(`All push targets failed: ${detail}`);
-    }
-
-    if (pushErrors.length > 0) {
-      log.warn(
-        { taskId: task.taskId, successCount, failedCount: pushErrors.length },
-        "some push targets failed but at least one succeeded; proceeding to IN_REVIEW"
-      );
-    }
+    return this.projectPushService.pushProjectChanges(
+      task,
+      handle,
+      pushTargets,
+      fallbackCommitMessage,
+      agentCommits,
+      topicOverride,
+    );
   }
 
   /** Re-enter review progress check from the FEEDBACK_PROCESSING state. */

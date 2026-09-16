@@ -22,6 +22,18 @@ This module set covers the **ticket-driven code-generation runtime**. The separa
 
 `Orchestrator` owns the code-gen task lifecycle. It builds `TaskContext`, invokes the selected agent adapter, persists results, and coordinates VCS / review feedback.
 
+Project-specific responsibilities are delegated to focused services while the
+existing private methods remain compatibility facades:
+
+- `projectMode.ts` defines the shared project-mode dependency contract.
+- `projectConnectorResolver.ts` resolves ticket, review, and host-side VCS
+	connectors, including repository-qualified change IDs and binding context.
+- `agentRuntimeResolver.ts` resolves the project-linked coding adapter and its
+	provider-specific credentials and options, including fail-closed fallbacks.
+- `projectPushService.ts` performs trusted host-side multi-repository pushes,
+	direct push calls, Change-Id persistence, and orphan-row tracking. It does
+	not perform task transitions or provider-side workflow effects.
+
 Key public methods:
 
 - `startTaskForProject(ticket, project, ticketSourceLabel)`
@@ -54,6 +66,7 @@ Important behaviors:
 - `reactToCiFailures` controls whether comments tagged as GitHub `ci-run-*` or Gerrit `ci-failure-*` become retry feedback; the default remains off
 - `checkReviewProgress()` delegates to a single `ReviewProgressService` instance; the service owns single- and multi-repository status convergence, feedback aggregation, CI filtering, retry limits, and post-retry comment resolution
 - review-progress dependencies are narrow callbacks for state access, connector resolution, feedback extraction, agent retry, ticket closure, and abandonment. They read the current project mode, VCS connector, and `maxAgentCycles`, so `setProjectMode()` and `updateRuntime()` remain effective without reconstructing the service
+- project connector resolution is delegated to `ProjectConnectorResolver`, agent adapter/config resolution to `AgentRuntimeResolver`, and multi-repository push/change tracking to `ProjectPushService`; each service reads the current project mode through a getter so hot-refresh remains effective
 - Gerrit push chains are tracked in `change_per_repository` with `commitIndex` and `subjectHash`
 - orphaned prior changes are marked `ORPHANED` and excluded from merge convergence; `orphanExcessChanges()` automatically marks rows with `commitIndex > newCommitCount - 1` after each push
 - **multi-commit Change-Id continuity**: on retry cycles, `perRepoChangeIds` now carries ALL commit indices per repo (single-commit repos get a flat string for backward compat; multi-commit repos get `{ "0": "I...", "1": "I..." }`). The agent-worker `resolveExistingChangeId()` looks up per-index entries so every commit reuses its prior Gerrit Change-Id
@@ -146,6 +159,9 @@ All provider-specific credentials (SSH keys, GitLab tokens, Redmine URLs, status
 - `tests/unit/orchestrator.webhookEntryPoints.test.ts`
 - `tests/unit/orchestrator.concurrency.test.ts`
 - `tests/unit/orchestratorCommitMessage.test.ts`
+- `tests/unit/projectConnectorResolver.test.ts`
+- `tests/unit/agentRuntimeResolver.test.ts`
+- `tests/unit/projectPushService.test.ts`
 - `tests/unit/reviewOrchestrator.test.ts`
 - `tests/unit/reviewRecovery.test.ts`
 - `tests/unit/pollingLoop.projects.test.ts`
