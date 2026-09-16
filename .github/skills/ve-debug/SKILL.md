@@ -113,8 +113,7 @@ Source files:
 - `src/state/stateMachine.ts` — `VALID_TRANSITIONS`
 - `src/state/schema.ts` — tasks, integrations, prompts, agents, projects, project_* tables, concurrency, change tracking
 - `src/agents/{copilot,claude,aider,goose,codex,gemini,opencode,cursor}Adapter.ts` — provider sandbox specs
-- `src/agents/copilotConnectionValidator.ts` — token-backed Copilot validation plus container fallback
-- `src/agents/claudeConnectionValidator.ts` / `src/agents/aiderConnectionValidator.ts` — Claude / Aider connection validators
+- `src/agents/{copilot,claude,aider,goose,codex,gemini,opencode,cursor}ConnectionValidator.ts` plus the matching `*ModelsService.ts` — per-engine connection validation and model discovery; Copilot additionally falls back to in-sandbox validation. See [modules/agents.md](../../context/modules/agents.md) for the canonical engine inventory.
 - `src/review/reviewOrchestrator.ts` — code-review lifecycle
 - `src/connectors/{redmine,gerrit,gitlabIssue,gitlabMergeRequest,githubIssue,githubPullRequestReview}Connector.ts`
 - `src/vcs/{gerrit,gitlab,github}VcsConnector.ts` + `vcsFactory.ts`
