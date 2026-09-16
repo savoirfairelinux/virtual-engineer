@@ -11,6 +11,7 @@ import type { ExternalChangeId } from "../domain/identifiers.js";
 import { getLogger } from "../logger.js";
 import type { VcsConnector } from "../vcs/vcsConnector.js";
 import { VcsConnectorFactory } from "../vcs/vcsFactory.js";
+import { resolveIntegrationConfig } from "./integrationConfig.js";
 import type { ProjectModeDeps } from "./projectMode.js";
 
 const log = getLogger("project-connector-resolver");
@@ -102,8 +103,9 @@ export class ProjectConnectorResolver {
   }
 
   resolveIntegrationConfig(integration: Integration): Record<string, unknown> {
-    return this.dependencies.getProjectMode()?.pluginManager.decryptIntegrationConfig?.(integration)
-      ?? JSON.parse(integration.configJson) as Record<string, unknown>;
+    const mode = this.dependencies.getProjectMode();
+    if (!mode) return JSON.parse(integration.configJson) as Record<string, unknown>;
+    return resolveIntegrationConfig(mode, integration);
   }
 
   /** Resolve the ticket connector for a project-bound task. */
