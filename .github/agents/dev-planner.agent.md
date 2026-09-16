@@ -1,6 +1,7 @@
 ---
 description: "Use when designing a detailed step-by-step implementation plan. Breaks down goals into phases, identifies files to modify, outlines key decisions, and flags risks."
 tools: [read, search]
+agents: [dev-plan-validator]
 user-invocable: false
 handoffs:
   - label: Validate plan against codebase

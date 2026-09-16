@@ -100,6 +100,10 @@ This project uses **Conventional Commits** (Gerrit-friendly format):
 
 **Scopes**: `orchestrator`, `polling-loop`, `state`, `gerrit`, `redmine`, `gitlab`, `agent`, `copilot-cli`, `vcs`, `plugins`, `admin`, `dashboard`, `prompts`, `config`, `workspace`, `db`
 
+Write the entire commit message in English. When AI generates or materially
+contributes to the work, add a `Co-authored-by:` trailer identifying the AI
+assistant.
+
 ---
 
 ## Adding a New Integration

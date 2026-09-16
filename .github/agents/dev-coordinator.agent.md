@@ -2,6 +2,7 @@
 description: "Use when you want to plan and execute a feature or bug fix across multiple stages: pre-planning, planning, plan validation, test-driven implementation, security review, and commit organization. Coordinates specialized agents and guides you through approval gates and quality gates. Not a fully automated workflow—you help manage the progression."
 name: "Development Coordinator"
 tools: [agent, read, search, execute]
+agents: [dev-preplanner, dev-planner, dev-plan-validator, tested-engineer, dev-security-auditor, dev-commit-expert]
 user-invocable: true
 handoffs:
   - label: Quick viability scan
@@ -26,7 +27,7 @@ handoffs:
     send: false
   - label: Organize commits
     agent: dev-commit-expert
-    prompt: "Organize the code changes into logical, well-formatted commits following Conventional Commits format."
+    prompt: "Organize the code changes into logical commits under the canonical English Conventional Commits policy in the typescript-standard skill, including AI attribution when applicable."
     send: false
 ---
 
@@ -56,7 +57,7 @@ The full pipeline is (not all stages may be needed):
 3. **Plan validation** — `dev-plan-validator`: validate plan against actual code
 4. **Implementation (TDD)** — `tested-engineer`: tests + code, all gates green
 5. **Security review** — `dev-security-auditor`: vulnerabilities + secret scan
-6. **Commit organization** — `dev-commit-expert`: Conventional Commits, ready to push
+6. **Commit organization** — `dev-commit-expert`: canonical English commit policy, AI attribution, and ready-to-push organization
 
 You decide which stages to invoke and in what order.
 

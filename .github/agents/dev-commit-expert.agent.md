@@ -1,6 +1,7 @@
 ---
 description: "Use when organizing code changes into logical, well-formatted commits. Follows Conventional Commits format, groups related changes, writes clear commit messages, and prepares the branch for review."
 tools: [execute, read, search]
+agents: []
 user-invocable: false
 ---
 
@@ -17,11 +18,14 @@ You are the commit organizer and the **final stage of the pipeline**. Your job i
 
 ## Format
 
-`<type>(<scope>): <subject>` — subject ≤50 chars, imperative mood, no trailing period; body lines ≤72 chars explaining *why*.
+Follow [the TypeScript skill](../skills/typescript-standard/SKILL.md) for the
+subject, body, footer, language, and AI-attribution requirements.
+This policy applies to commits organized by this assistant stage; provider-native
+commit prompts remain separate runtime contracts.
 
 **Types**: `feat`, `fix`, `test`, `refactor`, `perf`, `docs`, `chore`, `ci`
 
-**Scopes** (canonical list — see `typescript-standard` skill and `.github/copilot-instructions.md`):
+**Scopes** (canonical list — see the `typescript-standard` skill):
 `orchestrator`, `polling-loop`, `state`, `gerrit`, `redmine`, `gitlab`, `agent`, `copilot-cli`, `vcs`, `plugins`, `admin`, `dashboard`, `prompts`, `config`, `workspace`, `db`
 
 ## Organizing Changes Into Commits

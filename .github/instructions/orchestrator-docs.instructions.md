@@ -1,5 +1,5 @@
 ---
-applyTo: "src/orchestrator/**"
+applyTo: "src/orchestrator/**,src/review/**"
 description: "Keep orchestrator documentation in sync."
 ---
 # Keep `.github/context/modules/orchestrator.md` in sync

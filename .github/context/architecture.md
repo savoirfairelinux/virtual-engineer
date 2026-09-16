@@ -95,8 +95,9 @@ See [state-machine.md](state-machine.md) and [database.md](database.md).
 - `claudeAdapter.ts` builds the container spec for the Claude Code engine (`AGENT_PROVIDER=claude`)
 - `aiderAdapter.ts` builds the container spec for the Aider engine (`AGENT_PROVIDER=aider`, wraps any litellm backend)
 - `gooseAdapter.ts` builds the container spec for the Goose engine (`AGENT_PROVIDER=goose`, MCP submission transport like Copilot/Claude)
+- `codexAdapter.ts`, `geminiAdapter.ts`, `opencodeAdapter.ts`, and `cursorAdapter.ts` build specs for the remaining CLI engines; all eight engines support coding and review flows
 - `copilotOAuthService.ts` / `copilotModelsService.ts` / `copilotConnectionValidator.ts` handle GitHub OAuth Device Flow, model discovery, and `POST /api/admin/integrations/test`
-- `claudeConnectionValidator.ts` / `claudeModelsService.ts` provide the Claude equivalents; `aiderConnectionValidator.ts` / `aiderModelsService.ts` provide the Aider equivalents; `gooseConnectionValidator.ts` / `gooseModelsService.ts` provide the Goose equivalents; `providerAuthService.ts` is the shared auth surface
+- `claudeConnectionValidator.ts` / `claudeModelsService.ts`, `aiderConnectionValidator.ts` / `aiderModelsService.ts`, `gooseConnectionValidator.ts` / `gooseModelsService.ts`, `codexConnectionValidator.ts` / `codexModelsService.ts`, `geminiConnectionValidator.ts` / `geminiModelsService.ts`, `opencodeConnectionValidator.ts` / `opencodeModelsService.ts`, and `cursorConnectionValidator.ts` / `cursorModelsService.ts` provide engine-specific validation and model discovery; `providerAuthService.ts` is the shared auth surface
 - Agent adapters are production providers; deterministic behavior in unit tests
    comes from local fakes and Vitest mocks rather than an application provider.
 - `cycleCost.ts` derives per-cycle cost from `assistant.usage` events

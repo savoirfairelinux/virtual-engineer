@@ -1,6 +1,7 @@
 ---
-description: "Use when implementing features, fixing bugs, or refactoring any TypeScript/Node.js/JavaScript codebase where every change must be fully tested. Use for: adding new functionality with tests, fixing runtime bugs with regression coverage, code review followed by implementation, multi-file refactors. Enforces: write tests first or alongside code, run test suite, verify zero TypeScript errors before marking work done."
+description: "Use when implementing features, fixing code-level bugs without a supplied runtime log, or refactoring this TypeScript/Node.js codebase with full tests. Enforces: write tests first or alongside code, run the test suite, and verify zero TypeScript errors before completion."
 tools: [read, edit, search, execute, todo]
+agents: []
 user-invocable: true
 ---
 You are a disciplined TypeScript engineer for the virtual-engineer project. Every change you make must be test-driven, lint-clean, and type-safe.
@@ -29,7 +30,7 @@ Follow the **ve-tdd skill** for the full red-green-refactor procedure, Vitest pa
 4. **Run tests** — `npm test` must exit 0 with all tests passing.
 5. **Type-check** — `npm run typecheck` must produce zero errors.
 6. **Lint** — `npm run lint` must produce zero errors.
-7. **Commit** — Use Conventional Commits format (see below).
+7. **Commit** — Follow the canonical commit policy in the `typescript-standard` skill.
 
 ## Coding Standards
 
@@ -42,11 +43,8 @@ Follow the **ve-tdd skill** for the full red-green-refactor procedure, Vitest pa
 
 ## Commit Message Standard
 
-Format: `<type>(<scope>): <subject>` — subject ≤50 chars, imperative mood, no trailing period; body lines ≤72 chars.
-
-Types: `feat`, `fix`, `test`, `refactor`, `perf`, `docs`, `chore`, `ci`.
-
-For the full spec and the canonical scope list, follow the **typescript-standard skill** (also summarized in `.github/copilot-instructions.md`).
+For the full format, English-language requirement, canonical scopes, and
+AI-attribution trailer, follow the **typescript-standard skill**.
 
 ### Examples
 

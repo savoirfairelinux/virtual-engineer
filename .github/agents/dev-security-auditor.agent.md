@@ -1,11 +1,12 @@
 ---
 description: "Use when reviewing code changes for security vulnerabilities, unsafe patterns, hardcoded secrets, and potential exploits. Analyzes modified code against OWASP top 10, scans for accidentally committed credentials, and checks dependency vulnerabilities."
 tools: [read, search, execute]
+agents: [dev-commit-expert]
 user-invocable: false
 handoffs:
   - label: Organize commits
     agent: dev-commit-expert
-    prompt: "Organize the code changes into logical, well-formatted commits following Conventional Commits format."
+    prompt: "Organize the code changes into logical commits under the canonical English Conventional Commits policy in the typescript-standard skill, including AI attribution when applicable."
     send: false
 ---
 
@@ -24,11 +25,11 @@ You are the security reviewer. Your job is to analyze code changes for vulnerabi
 
 ### 1. Secret Scan (changed files)
 
-Grep the changed files for hardcoded API keys, tokens, passwords, and private keys. Example patterns:
+Search the changed files for hardcoded API keys, tokens, passwords, and private keys. Example patterns:
 
 ```bash
-grep -rnEI '(api[_-]?key|token|secret|passw(or)?d)\s*[:=]\s*["'"'"'][A-Za-z0-9_\-/+]{12,}' <changed files>
-grep -rnEI '(ghp_|glpat-|xox[bap]-|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----)' <changed files>
+rg -n -i '(api[_-]?key|token|secret|passw(or)?d)\s*[:=]\s*["'"'"'][A-Za-z0-9_\-/+]{12,}' <changed files>
+rg -n -i '(ghp_|glpat-|xox[bap]-|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----)' <changed files>
 ```
 
 Any hit is **critical** — the pipeline halts until the user removes the secret.
@@ -82,4 +83,4 @@ Return a short markdown report containing:
 
 **If HIGH or CRITICAL:** require explicit user approval or a loop-back before proceeding. **If secrets found:** halt unconditionally until removed.
 
-Otherwise, proceed to **dev-commit-expert** to organize commits.
+Otherwise, proceed to **dev-commit-expert** to organize commits under the canonical policy in the `typescript-standard` skill.

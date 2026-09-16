@@ -1,6 +1,7 @@
 ---
 description: "Use when you need to generate comprehensive, AI-consumable codebase documentation — architecture overviews, module references, interface contracts, state machine diagrams, database schemas, data-flow narratives — intended for another agent to use as context when implementing new features. Use for: onboarding docs, pre-implementation reference generation, creating persistent knowledge files that implementing agents (e.g. tested-engineer) can read before starting work."
 tools: [read, search, edit, todo]
+agents: []
 argument-hint: "What to document: 'full codebase', 'module X', 'state machine', 'database schema', 'data flow for feature Y'"
 user-invocable: true
 ---

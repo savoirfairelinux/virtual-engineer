@@ -51,7 +51,7 @@ sqlite3 ./data/virtual-engineer.db \
 
 | Log message | Component | Meaning | Action |
 |---|---|---|---|
-| `ticket exceeded max retry attempts` | polling-loop | `failedAttemptsCount >= MAX_RETRY_ATTEMPTS`. Task will never restart. | Delete FAILED tasks for ticket in DB, or raise `MAX_RETRY_ATTEMPTS` in `.env` |
+| `ticket exceeded max retry attempts` | polling-loop | `failedAttemptsCount >= MAX_RETRY_ATTEMPTS`. Task will never restart. | Review or raise `MAX_RETRY_ATTEMPTS` in admin UI → System Settings (or `PUT /api/admin/settings`); `.env` only seeds the first-run default. |
 | `Invalid state transition: X → Y` | orchestrator | State machine rejected transition. Task left in limbo. | Check `stateMachine.ts` valid transitions. Task likely needs manual DB reset. |
 | `no new actionable comments, back to IN_REVIEW` | orchestrator | Gerrit polling found no unresolved comments. Normal steady state. | Expected — not a bug |
 | `fatal task error` | orchestrator | Unhandled exception in workflow. Check `err` field. | Read full error; often a state machine violation |
@@ -62,8 +62,8 @@ sqlite3 ./data/virtual-engineer.db \
 ## Known Failure Modes
 
 ### Ticket stuck at `maxAttempts: 2`
-**Cause:** Old process ran before `MAX_RETRY_ATTEMPTS=5` fix was deployed; DB has 2+ FAILED tasks.  
-**Fix:** Add `MAX_RETRY_ATTEMPTS=5` (or higher) to `.env`. The count check reads the env at startup.  
+**Cause:** Old process ran before the runtime setting was raised; DB has 2+ FAILED tasks.
+**Fix:** Raise `MAX_RETRY_ATTEMPTS` in admin UI → System Settings (or `PUT /api/admin/settings`). The database value is applied live; the env var is only the first-run seed.
 **Or:** Delete the extra FAILED tasks: `DELETE FROM tasks WHERE ticket_id='X' AND state='FAILED' AND task_id != '<keep_this_id>';`
 
 ### `Invalid state transition: FAILED → IN_REVIEW`
@@ -86,19 +86,19 @@ sqlite3 ./data/virtual-engineer.db \
 2. **Get task state from DB** — Run the "tasks for specific ticket" query above.
 3. **Get state transition history** — Run the transition history query for the task.
 4. **Match to known failure modes** — Check table above.
-5. **If unknown** — Search source: `grep -r "the exact error string" src/`
+5. **If unknown** — Search source: `rg -n "the exact error string" src/`
 6. **Fix in source** — Make the minimal change.
 7. **Add regression test** — Test must fail before fix, pass after.
-8. **Verify** — `npm test && npm run typecheck`
+8. **Verify** — `npm test && npm run typecheck && npm run lint`
 
 ## Architecture Quick Reference
 
 ```
-ticket poll (project mode) ─→ pollingLoop ─→ orchestrator ─→ workspaceRunner ─→ ephemeral container
+ticket poll (project mode) ─→ pollingLoop ─→ orchestrator ─→ workspaceRunner ─→ OpenShell sandbox
                      ↕                                  (edits files, may commit)
                    stateStore (SQLite/Drizzle)             ↓
                      ↕                             host push via src/vcs/
-review intake (webhook / Gerrit stream-event / poll) ─→ review trigger ─→ reviewOrchestrator ─→ workspaceRunner.runReviewInDocker (agent container, REVIEW_MODE=1)
+review intake (webhook / Gerrit stream-event / poll) ─→ review trigger ─→ reviewOrchestrator ─→ workspaceRunner.runReviewInDocker (OpenShell sandbox, REVIEW_MODE=1)
                      ↕
                pluginManager (resolves integrations / connectors)
                      ↕
@@ -112,9 +112,7 @@ Source files:
 - `src/state/stateStore.ts` — all SQLite operations
 - `src/state/stateMachine.ts` — `VALID_TRANSITIONS`
 - `src/state/schema.ts` — tasks, integrations, prompts, agents, projects, project_* tables, concurrency, change tracking
-- `src/agents/copilotAdapter.ts` — Copilot container spec (`buildContainerSpec`)
-- `src/agents/claudeAdapter.ts` — Claude Code container spec
-- `src/agents/aiderAdapter.ts` — Aider container spec
+- `src/agents/{copilot,claude,aider,goose,codex,gemini,opencode,cursor}Adapter.ts` — provider sandbox specs
 - `src/agents/copilotConnectionValidator.ts` — token-backed Copilot validation plus container fallback
 - `src/agents/claudeConnectionValidator.ts` / `src/agents/aiderConnectionValidator.ts` — Claude / Aider connection validators
 - `src/review/reviewOrchestrator.ts` — code-review lifecycle

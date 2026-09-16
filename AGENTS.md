@@ -15,7 +15,7 @@ All provider configuration lives in SQLite and is managed through the admin UI. 
 
 | You need… | Read |
 |---|---|
-| Repo-wide conventions, schema facts, gotchas | [.github/copilot-instructions.md](.github/copilot-instructions.md) — the primary, always-loaded reference (vendor-agnostic despite the filename) |
+| Repo-wide routing, quality gates, invariants, gotchas | [.github/copilot-instructions.md](.github/copilot-instructions.md) — the primary, always-loaded reference (vendor-agnostic despite the filename) |
 | Navigable context index | [.github/context/INDEX.md](.github/context/INDEX.md) |
 | Architecture / data flow | [.github/context/architecture.md](.github/context/architecture.md) |
 | State machine | [.github/context/state-machine.md](.github/context/state-machine.md) |
@@ -42,7 +42,7 @@ Also: `npm run dev` (start orchestrator), `npm run build:ui` (admin SPA), `npm r
 - **Test-driven**: write or extend a failing test before production code. See the `ve-tdd` skill.
 - **TypeScript strict**: no `any` in `src/`; ESM with NodeNext (`.js` import suffix); respect `exactOptionalPropertyTypes` / `noUncheckedIndexedAccess`.
 - **Docs auto-sync**: when you change code, update the matching docs in the **same commit**. The per-area rules live in [.github/instructions/](.github/instructions/) with `applyTo` globs; the mapping table is in [.github/copilot-instructions.md](.github/copilot-instructions.md).
-- **Conventional Commits**, Gerrit-friendly: `<type>(<scope>): <≤50-char subject>`. Scopes and types are listed in the `typescript-standard` skill.
+- **Commit policy**: assistant-created or assistant-organized commits use English Conventional Commits and include a `Co-authored-by:` trailer when AI generated or materially contributed to the work. See the [`typescript-standard` skill](.github/skills/typescript-standard/SKILL.md) for the canonical format and scopes.
 - **Secrets & safety**: provider credentials live in the DB, never in env or code. Never commit secrets. Confirm before destructive/irreversible actions.
 
 ## Critical facts (memorise)
