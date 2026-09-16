@@ -109,9 +109,11 @@ src/
                         # gitlabMergeRequestReviewProvider, baseTicketConnector,
                         # githubIssueConnector, githubPullRequestReviewConnector,
                         # githubReviewProvider
-  orchestrator/         # orchestrator, reviewProgressService, pollingLoop,
-                        # feedbackProcessor, concurrencyTracker,
-                        # agentContextBuilder, pushTargetEnrichment
+  orchestrator/         # orchestrator, projectMode, projectConnectorResolver,
+                        # agentRuntimeResolver, projectPushService,
+                        # reviewProgressService, pollingLoop, feedbackProcessor,
+                        # concurrencyTracker, agentContextBuilder,
+                        # pushTargetEnrichment
   openshell/            # openShellClient (CLI surface), openShellPolicyBuilder,
                         # runtimePolicyResolver, openShellSandboxReconciler,
                         # sandboxOwnership, denialEvents
