@@ -104,6 +104,10 @@ Write the entire commit message in English. When AI generates or materially
 contributes to the work, add a `Co-authored-by:` trailer identifying the AI
 assistant.
 
+This section is the human-facing summary. The canonical policy lives in
+[.github/skills/typescript-standard/SKILL.md](.github/skills/typescript-standard/SKILL.md);
+if the two ever disagree, the skill wins.
+
 ---
 
 ## Adding a New Integration
