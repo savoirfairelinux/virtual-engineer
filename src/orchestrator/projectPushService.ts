@@ -169,7 +169,7 @@ export class ProjectPushService {
         if (repoCommits.length > 1) {
           for (let i = 0; i < repoCommits.length; i++) {
             const commit = repoCommits[i]!;
-            const subjectHash = createHash("sha1").update(commit.subject).digest("hex");
+            const commitSubjectHash = createHash("sha1").update(commit.subject).digest("hex");
             await this.dependencies.stateStore.saveChangePerRepository(
               task.taskId,
               target.repoKey,
@@ -179,7 +179,7 @@ export class ProjectPushService {
               target.integrationId,
               reviewSystemLabel,
               i,
-              subjectHash,
+              commitSubjectHash,
             );
           }
           log.info(

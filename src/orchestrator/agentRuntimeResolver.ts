@@ -1,10 +1,10 @@
 import type {
   AgentAdapter,
-  Integration,
   ProjectRecord,
 } from "../interfaces.js";
 import { resolveAgentConfig } from "../state/stateStore.js";
 import type { ProjectAgentRuntime } from "./agentContextBuilder.js";
+import { resolveIntegrationConfig } from "./integrationConfig.js";
 import type { ProjectModeDeps } from "./projectMode.js";
 
 export interface AgentRuntimeResolverDependencies {
@@ -47,7 +47,7 @@ export class AgentRuntimeResolver {
     if (!encryptedSessionToken || !apiKey || Object.keys(extra).length === 0) {
       const integration = projectMode.pluginManager.getActiveIntegrationById?.(agent.integrationId);
       if (integration) {
-        const integrationConfig = this.resolveIntegrationConfig(projectMode, integration);
+        const integrationConfig = resolveIntegrationConfig(projectMode, integration);
         if (integration.provider === "claude") {
           if (integrationConfig["authMode"] === "api_key") {
             if (!apiKey) {
@@ -137,13 +137,5 @@ export class AgentRuntimeResolver {
         ? { ...resolvedConfig, encryptedSessionToken, apiKey, extra }
         : resolvedConfig,
     };
-  }
-
-  private resolveIntegrationConfig(
-    projectMode: ProjectModeDeps,
-    integration: Integration,
-  ): Record<string, unknown> {
-    return projectMode.pluginManager.decryptIntegrationConfig?.(integration)
-      ?? JSON.parse(integration.configJson) as Record<string, unknown>;
   }
 }
