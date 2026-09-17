@@ -666,7 +666,7 @@ describe("SqliteStateStore — Phase 2: project review config", () => {
     store.close();
   });
 
-  it("setProjectReviewConfig + getProjectReviewConfig round-trips integration + repos", async () => {
+  it("setProjectReviewConfig + getProjectReviewConfig round-trips integration, repos, and assignment mode", async () => {
     const a = await makeAgent(store, { type: "review" });
     const p = await store.createProject({ name: "R", type: "review", agentId: a.id, enabled: true });
     await makeIntegration(store, "g1", "gerrit");
@@ -675,6 +675,35 @@ describe("SqliteStateStore — Phase 2: project review config", () => {
     expect(rc).not.toBeNull();
     expect(rc!.integrationId).toBe("g1");
     expect(rc!.repos).toEqual(expect.arrayContaining(["repo/a", "repo/b"]));
+    expect(rc!.assignmentMode).toBe("manual");
+
+    await store.setProjectReviewConfig(p.id, "g1", ["repo/a"], "automatic");
+    const automatic = await store.getProjectReviewConfig(p.id);
+    expect(automatic?.assignmentMode).toBe("automatic");
+  });
+
+  it("rejects changing review assignment mode while a project task is active", async () => {
+    const a = await makeAgent(store, { type: "review" });
+    const p = await store.createProject({ name: "R", type: "review", agentId: a.id, enabled: true });
+    await makeIntegration(store, "g1", "gerrit");
+    await store.setProjectReviewConfig(p.id, "g1", ["repo/a"], "manual");
+    await store.createTask(
+      makeTaskId("active-review-mode"),
+      makeTicketId("review-1"),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      p.id,
+    );
+
+    await expect(store.updateProjectConfiguration(p.id, {
+      project: {},
+      reviewConfig: { integrationId: "g1", repoKeys: ["repo/a"], assignmentMode: "automatic" },
+    })).rejects.toMatchObject({ code: "ACTIVE_TASKS" });
+    expect((await store.getProjectReviewConfig(p.id))?.assignmentMode).toBe("manual");
   });
 
   it("multiple projects can share the same (integrationId, repoKey)", async () => {

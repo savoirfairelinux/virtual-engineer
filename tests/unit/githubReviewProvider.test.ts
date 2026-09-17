@@ -11,6 +11,7 @@ const config = {
   owner: "octocat",
   repo: "hello-world",
   token: "ghp_test",
+  virtualEngineerUserLogin: "ve-bot",
 };
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -48,6 +49,51 @@ describe("GitHubReviewProvider", () => {
       "https://api.github.com/repos/octocat/hello-world/pulls/42",
       expect.objectContaining({ headers: expect.objectContaining({ Authorization: "Bearer ghp_test" }) })
     );
+  });
+
+  describe("reviewer assignment", () => {
+    it("confirms VE is a requested reviewer", async () => {
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({
+          number: 42,
+          state: "open",
+          title: "t",
+          html_url: "u",
+          merged: false,
+          user: { login: "alice", id: 123 },
+          base: { ref: "main", repo: { full_name: "octocat/hello-world" } },
+          head: { ref: "feature", sha: "abc" },
+        }))
+        .mockResolvedValueOnce(jsonResponse({ users: [{ login: "ve-bot" }], teams: [] }));
+
+      await expect(new GitHubReviewProvider(config).isReviewer(cid)).resolves.toBe(true);
+    });
+
+    it("requests VE without replacing existing requested reviewers", async () => {
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({
+          number: 42,
+          state: "open",
+          title: "t",
+          html_url: "u",
+          merged: false,
+          user: { login: "alice", id: 123 },
+          base: { ref: "main", repo: { full_name: "octocat/hello-world" } },
+          head: { ref: "feature", sha: "abc" },
+        }))
+        .mockResolvedValueOnce(jsonResponse({ users: [{ login: "alice-reviewer" }], teams: [{ slug: "maintainers" }] }))
+        .mockResolvedValueOnce(jsonResponse({}));
+
+      await new GitHubReviewProvider(config).ensureReviewerAssignment(cid);
+
+      expect(fetchMock).toHaveBeenLastCalledWith(
+        "https://api.github.com/repos/octocat/hello-world/pulls/42/requested_reviewers",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ reviewers: ["ve-bot"], team_reviewers: [] }),
+        }),
+      );
+    });
   });
 
   it("getChangeDetails maps merged PR to MERGED", async () => {

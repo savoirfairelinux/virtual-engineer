@@ -1424,7 +1424,13 @@ describe("runtime bootstrap provider selection", () => {
 
     expect(reviewerB).toBeDefined();
     expect(reviewerA?.isReviewer ?? vi.fn()).not.toHaveBeenCalled();
-    expect(reviewerB?.isReviewer).toHaveBeenCalledWith("Iabc123");
+    expect(reviewerB?.isReviewer).not.toHaveBeenCalled();
+    const reviewOrchestrator = runtime.ReviewOrchestrator.mock.results[0]?.value as {
+      startReviewTask: ReturnType<typeof vi.fn>;
+    } | undefined;
+    expect(reviewOrchestrator?.startReviewTask).toHaveBeenCalledWith(
+      expect.objectContaining({ changeId: "Iabc123" }),
+    );
     expect(runtime.ReviewOrchestrator).toHaveBeenCalledWith(
       expect.objectContaining({ sourceLabel: "gerrit:gerrit-review-b" })
     );

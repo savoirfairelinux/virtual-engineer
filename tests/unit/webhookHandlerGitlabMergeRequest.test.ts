@@ -23,6 +23,7 @@ function makeCtx(event: string, payload: unknown): {
     triggerFeedbackForChange: vi.fn(async () => {}),
     markChangeMerged: vi.fn(async () => {}),
     markChangeAbandoned: vi.fn(async () => {}),
+    triggerReviewForChange: vi.fn(async () => {}),
   };
   const projectStore: ProjectLookupStore = { findProjectByTicketSource: vi.fn(async () => null) };
   return {
@@ -63,6 +64,17 @@ describe("gitlabMergeRequestWebhookHandler", () => {
     const r = await gitlabMergeRequestWebhookHandler(ctx);
     expect(r.status).toBe(202);
     expect(orch.triggerFeedbackForChange).toHaveBeenCalledWith("mr-1", "5");
+  });
+
+  it("qualifies the review trigger with the GitLab project path", async () => {
+    const { ctx, orch } = makeCtx("merge_request", {
+      object_attributes: { iid: 15, action: "update" },
+      project: { path_with_namespace: "group/project" },
+    });
+    const r = await gitlabMergeRequestWebhookHandler(ctx);
+    expect(r.status).toBe(202);
+    expect(orch.triggerReviewForChange).toHaveBeenCalledWith("mr-1", "group/project#15");
+    expect(orch.triggerFeedbackForChange).toHaveBeenCalledWith("mr-1", "15");
   });
 
   it("routes action 'approved' to triggerFeedbackForChange", async () => {
