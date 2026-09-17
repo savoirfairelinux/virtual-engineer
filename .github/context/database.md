@@ -9,6 +9,16 @@
 - Fresh databases seed exactly five built-ins: `system_generic_code`, `instructions_generic_code`, `instructions_feedback_code`, `system_review`, and `instructions_review`. Provider-specific aliases and alias override files are not seeded or migrated.
 - Startup preserves unknown prompt rows, normalizes unsupported stored roles to `instructions`, and derives referenced roles from existing agent and project-override references. A prompt referenced in both roles is cloned for the instructions side and those references are repointed without changing content; prompt hydration also defensively maps any unsupported role to `instructions`, and obsolete `user_*_review.md` files are ignored.
 
+## Project Integration Bindings
+
+`project_integration_bindings.config_json` stores capability-specific JSON. The
+`code_review` shape is `{ repos: string[], assignmentMode?: "manual" | "automatic" }`.
+The project store normalizes an absent or invalid `assignmentMode` to `manual`;
+no SQL column or migration is required. `automatic` means the reviewer provider
+adds VE idempotently on revision events, while initial open-change backfill is
+disabled. Mode changes are execution-affecting and are rejected while the
+project has active tasks.
+
 ## Projects Skill Columns
 
 - `projects.skill_sources_json` is a non-null text JSON column with default `[]`. It stores optional project-configured external skill sources. The empty value is the database/API default; the admin UI's new-project form preloads the SFL `agent-skills` SSH source with `installAll: true`, so saving that untouched form persists a non-empty value. `OpenShellWorkspaceRunner` calls `skillSourceInstaller.ts` to fetch and install configured sources **host-side**, before the workspace is uploaded to the sandbox, so the resulting skill files reach the sandbox without any SSH material ever entering it (see [modules/workspace.md](modules/workspace.md#external-skill-sources)).

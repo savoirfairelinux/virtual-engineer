@@ -1,4 +1,4 @@
-import type { Integration, ProviderId, ReviewComment } from "../interfaces.js";
+import type { Integration, ProviderId, ReviewComment, ReviewTriggerCause } from "../interfaces.js";
 import { getProviderDescriptor } from "../plugins/registry.js";
 
 export interface IntegrationEventStreamStatus {
@@ -19,7 +19,11 @@ export interface IntegrationEventStreamOrchestrator {
 }
 
 export interface IntegrationEventStreamReviewTrigger {
-  triggerReviewForChange(integrationId: string, changeId: string, options?: { force?: boolean }): Promise<void>;
+  triggerReviewForChange(
+    integrationId: string,
+    changeId: string,
+    options?: { force?: boolean; triggerCause?: ReviewTriggerCause },
+  ): Promise<void>;
 }
 
 export interface IntegrationEventStreamDependencies {

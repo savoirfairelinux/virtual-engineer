@@ -18,6 +18,7 @@ interface ApiProjectDetail extends ApiProject {
   reviewConfig?: {
     integration: { id: string; name: string; type: string } | null;
     repos: string[];
+    assignmentMode?: "manual" | "automatic";
   } | null;
   pushTargets?: Array<{
     integrationId: string;

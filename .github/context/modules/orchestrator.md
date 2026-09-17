@@ -96,8 +96,9 @@ Every tick (`POLLING_INTERVAL_MS`, exponential backoff on repeated failures) run
 ### `pollReviewProjects()` (project mode + review trigger only)
 
 - iterates enabled **review** projects and reads their review config
+- skips `automatic` projects during assignment discovery so saving a project does not backfill already-open changes; those projects rely on revision webhooks/streams and provider-native assignment
 - skips integrations whose descriptor declares `streamEvents` (e.g. Gerrit — those receive review assignments via the persistent SSH stream instead)
-- calls the code_review connector's `getOpenReviewAssignments(repos)` and fires the `ReviewAssignmentTrigger` (`triggerReview(integrationId, changeId)`) for each new discovery
+- calls the code_review connector's `getOpenReviewAssignments(repos)` for `manual` projects and fires the `ReviewAssignmentTrigger` (`triggerReview(integrationId, changeId)`) for each new discovery
 - wired from `src/index.ts` via `setReviewTrigger()`; a no-op when no trigger is set
 
 ### `pollInReviewTasks()` (always on)
@@ -107,7 +108,7 @@ Every tick (`POLLING_INTERVAL_MS`, exponential backoff on repeated failures) run
 ### `pollReviewWatchingTasks()` (always on)
 
 - polling fallback for code-review tasks in `REVIEW_WATCHING`: calls `orchestrator.checkReviewWatchingTask(taskId)` to compensate for missed `change-merged` stream events. The watcher queries the project-bound `code_review` connector and transitions merged changes to `REVIEW_DONE` or abandons externally closed changes through `StateStore.abandonTask()` (the generic review transition map intentionally has no `REVIEW_WATCHING → ABANDONED` edge)
-- for enabled polling-capable review integrations, the watcher also checks the exact PR/MR assignment when the connector exposes `hasReviewAssignment(changeId)`. If VE remains assigned, it fires the same review trigger used by assignment discovery; `ReviewOrchestrator.startReviewTask()` then compares the provider's current revision identity (GitHub `head.sha` → SHA-derived patchset) and only re-runs the agent for a new revision. Trigger cooldowns are qualified by integration and change and shared with initial assignment polling, while status cooldowns remain separate.
+- for enabled polling-capable review integrations, manual projects check the exact PR/MR assignment when the connector exposes `hasReviewAssignment(changeId)`, except an explicit `reviewer-assigned` event is already assignment evidence and is trusted per project. Automatic projects trigger without that membership check; `ReviewOrchestrator.startReviewTask()` performs additive assignment without an eventual-consistency confirmation read, then compares the provider's current revision identity (GitHub `head.sha` → SHA-derived patchset) before re-running the agent. Trigger cooldowns are qualified by integration and change and shared with initial assignment polling, while status cooldowns remain separate.
 - Trigger cooldowns are pruned after one polling interval, removed immediately when a watched change is unassigned, and cleared together with the repo-bound connector cache when polling stops or integrations hot-reload. The cache is keyed by integration and repository so several watched PRs do not recreate a connector or repeat `/user` resolution.
 
 Status polling uses the separate per-change `reviewPollCooldowns` map for `IN_REVIEW` and `REVIEW_WATCHING` checks; the `IN_REVIEW` reconciliation evicts entries no longer active, and polling stop/hot-reload clears the map. Trigger cooldowns use `reviewTriggerCooldowns` and are never used to suppress status checks.

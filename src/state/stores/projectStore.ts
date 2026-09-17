@@ -16,7 +16,11 @@ import type {
   ProjectVendorComponentRecord,
   PushTargetRole,
 } from "../../interfaces.js";
-import { TERMINAL_STATES } from "../../interfaces.js";
+import {
+  DEFAULT_REVIEW_ASSIGNMENT_MODE,
+  isReviewAssignmentMode,
+  TERMINAL_STATES,
+} from "../../interfaces.js";
 import {
   agents,
   projectIntegrationBindings,
@@ -63,7 +67,11 @@ export interface ProjectStoreApi {
         sshKeyPath?: string | null | undefined;
         reviewerEmails?: string[] | undefined;
       }> | undefined;
-      reviewConfig?: { integrationId: string; repoKeys: string[] } | undefined;
+      reviewConfig?: {
+        integrationId: string;
+        repoKeys: string[];
+        assignmentMode?: ProjectReviewConfig["assignmentMode"];
+      } | undefined;
     }
   ): Promise<ProjectRecord>;
   deleteProject(id: ProjectId): Promise<void>;
@@ -111,7 +119,12 @@ export interface ProjectStoreApi {
     projectId: ProjectId,
     inputs: ProjectVendorComponentInput[]
   ): Promise<ProjectVendorComponentRecord[]>;
-  setProjectReviewConfig(projectId: ProjectId, integrationId: string, repoKeys: string[]): Promise<void>;
+  setProjectReviewConfig(
+    projectId: ProjectId,
+    integrationId: string,
+    repoKeys: string[],
+    assignmentMode?: ProjectReviewConfig["assignmentMode"]
+  ): Promise<void>;
   getProjectReviewConfig(projectId: ProjectId): Promise<ProjectReviewConfig | null>;
   findProjectsByReviewTarget(integrationId: string, repoKey: string): Promise<ProjectRecord[]>;
   getProjectBinding(projectId: ProjectId, capability: DomainCapability): Promise<ProjectIntegrationBindingRecord | null>;
@@ -390,6 +403,10 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
         (input.pushTargets !== undefined && normalizePushTargets(input.pushTargets) !== persistedPushTargets) ||
         (input.reviewConfig !== undefined && (
           input.reviewConfig.integrationId !== currentReviewConfig?.integration_id ||
+          (input.reviewConfig.assignmentMode ?? DEFAULT_REVIEW_ASSIGNMENT_MODE) !==
+            (isReviewAssignmentMode(reviewConfig["assignmentMode"])
+              ? reviewConfig["assignmentMode"]
+              : DEFAULT_REVIEW_ASSIGNMENT_MODE) ||
           JSON.stringify([...input.reviewConfig.repoKeys].sort()) !==
             JSON.stringify(readStringArray(reviewConfig["repos"]).sort())
         ));
@@ -480,7 +497,10 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
             randomUUID(),
             id,
             input.reviewConfig.integrationId,
-            JSON.stringify({ repos: input.reviewConfig.repoKeys }),
+            JSON.stringify({
+              repos: input.reviewConfig.repoKeys,
+              assignmentMode: input.reviewConfig.assignmentMode ?? DEFAULT_REVIEW_ASSIGNMENT_MODE,
+            }),
             nowSeconds,
             nowSeconds,
           );
@@ -818,14 +838,20 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
   function setProjectReviewConfig(
     projectId: ProjectId,
     integrationId: string,
-    repoKeys: string[]
+    repoKeys: string[],
+    assignmentMode: ProjectReviewConfig["assignmentMode"] = DEFAULT_REVIEW_ASSIGNMENT_MODE,
   ): Promise<void> {
     const nowSeconds = Math.floor(Date.now() / 1000);
     raw.transaction((): void => {
       raw
         .prepare("DELETE FROM project_integration_bindings WHERE project_id = ? AND capability = 'code_review'")
         .run(projectId);
-      const configJson = JSON.stringify({ repos: repoKeys });
+      const configJson = JSON.stringify({
+        repos: repoKeys,
+        assignmentMode: isReviewAssignmentMode(assignmentMode)
+          ? assignmentMode
+          : DEFAULT_REVIEW_ASSIGNMENT_MODE,
+      });
       raw
         .prepare(
           "INSERT INTO project_integration_bindings (id, project_id, integration_id, capability, config_json, created_at, updated_at) " +
@@ -842,9 +868,13 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
     const repos = Array.isArray(binding.config["repos"])
       ? (binding.config["repos"] as unknown[]).filter((r): r is string => typeof r === "string")
       : [];
+    const assignmentMode = isReviewAssignmentMode(binding.config["assignmentMode"])
+      ? binding.config["assignmentMode"]
+      : DEFAULT_REVIEW_ASSIGNMENT_MODE;
     return {
       integrationId: binding.integrationId,
       repos,
+      assignmentMode,
     };
   }
 

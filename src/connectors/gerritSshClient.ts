@@ -198,6 +198,23 @@ export class GerritSshClient {
     return stdout;
   }
 
+  /** Add reviewers to a change without replacing its existing reviewer list. */
+  async addReviewers(changeId: string, reviewers: string[], signal?: AbortSignal): Promise<void> {
+    if (reviewers.length === 0) return;
+    await execFileAsync(
+      "ssh",
+      this.buildArgs([
+        "set-reviewers",
+        ...reviewers.flatMap((reviewer) => ["--add", reviewer]),
+        changeId,
+      ]),
+      {
+        timeout: SSH_TIMEOUT_MS,
+        ...(signal !== undefined ? { signal } : {}),
+      },
+    );
+  }
+
   /**
    * Pipe `input` to `gerrit review --json CHANGESPEC` via SSH stdin.
    *

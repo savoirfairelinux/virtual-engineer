@@ -25,7 +25,7 @@ Connectors are unchanged in shape, but they are now produced by **capability fac
 | Domain capability | Implementations | Factory |
 | --- | --- | --- |
 | `issue_tracking` | `redmineConnector`, `gitlabIssueConnector`, `githubIssueConnector` | `capabilities.issue_tracking.createConnector` |
-| `code_review` | `gerritConnector`, `gerritSshReviewProvider`, `integrationStreamEvents`, `gerritStreamEvents`, `gitlabMergeRequestConnector`, `gitlabMergeRequestReviewProvider`, `githubPullRequestReviewConnector`, `githubReviewProvider` | `capabilities.code_review.{ createConnector, createReviewer, streamEvents }` |
+| `code_review` | `gerritConnector`, `gerritSshReviewProvider`, `integrationStreamEvents`, `gerritStreamEvents`, `gitlabMergeRequestConnector`, `gitlabMergeRequestReviewProvider`, `githubPullRequestReviewConnector`, `githubReviewProvider` | `capabilities.code_review.{ createConnector, createReviewer, streamEvents, assignmentModes }` |
 
 The `provider` ids are `github | gitlab | gerrit | redmine | copilot | claude | aider | goose | codex | gemini | opencode | cursor`. Repository push/commit lives in [src/vcs/](../../../src/vcs/) via `capabilities.source_control.createVcsConnector` — see [vcs.md](vcs.md). The `copilot`, `claude`, `aider`, `goose`, `codex`, `gemini`, `opencode`, and `cursor` providers expose only `agent_execution` and have no connectors here.
 
@@ -33,7 +33,7 @@ Reviewer-side `ReviewProvider` reads and effects accept an optional `AbortSignal
 
 Reviewer decisions are normalized internally as `-1 | 0 | 1`, then translated by each provider. Gerrit always submits the corresponding `Code-Review` label, including `0` to clear a prior vote; GitHub maps them to `REQUEST_CHANGES` / `COMMENT` / `APPROVE`; GitLab maps them to unapprove / no approval action / approve. The agent-facing JSON contract uses provider-native field names (`vote`, `reviewAction`, or `approvalAction`) and is selected from `reviewProvider.kind`.
 
-Review-discovery connectors expose `getOpenReviewAssignments(repos)` for initial assignment polling and may expose `hasReviewAssignment(changeId)` for persisted `REVIEW_WATCHING` tasks. The latter lets a polling-capable provider confirm that VE is still an assigned reviewer before the existing review trigger checks the current revision and decides whether a new patchset needs analysis.
+Review-discovery connectors expose `getOpenReviewAssignments(repos)` for manual-assignment polling and may expose `hasReviewAssignment(changeId)` for persisted `REVIEW_WATCHING` tasks. Automatic projects do not backfill open changes; their watcher triggers revision checks without requiring VE to remain in the remote reviewer list. Reviewer providers expose cancellable `isReviewer(changeId)` and additive `ensureReviewerAssignment(changeId)` operations when their descriptor advertises the automatic mode.
 
 ## Ticketing contract (`TicketConnector`)
 
@@ -92,6 +92,7 @@ Methods used by the orchestrator:
 
 - Reviewer-side Gerrit review flow is SSH-only.
 - [src/connectors/gerritSshReviewProvider.ts](../../../src/connectors/gerritSshReviewProvider.ts) owns change queries, diff retrieval, review posting, and reviewer-account filtering.
+- `isReviewer()` reads Gerrit's reviewer list fail-closed; `ensureReviewerAssignment()` uses `gerrit set-reviewers --add` and never replaces existing reviewers. Stream patchset events reach the per-project assignment policy; trivial rebases remain excluded.
 - `getInterPatchsetDiff(changeId, fromPatchset, toPatchset)` (optional `ReviewProvider` method) shallow-fetches both patchset refs and diffs their tips (`git diff fromTip..toTip`) so re-reviews can surface "what changed since my last review" as a focused delta section in the prompt.
 
 ### `PluginIntegrationStreamEventsManager` — [src/connectors/integrationStreamEvents.ts](../../../src/connectors/integrationStreamEvents.ts)
@@ -112,6 +113,7 @@ Methods used by the orchestrator:
 - PAT auth.
 - The GitLab project selector can come from the VE project repo binding (`repoKey`) rather than from the integration row.
 - Uses MR notes as the comment surface; thread resolution via the discussion API. Returned discussions carry `reviewSystem = "gitlab"`, so opaque discussion IDs are not mistaken for Gerrit comments.
+- Implements `ReviewDiscoveryConnector` through `reviewer_id`-filtered, paginated MR queries and supports qualified `project#iid` assignment checks for manual polling.
 - Push happens through [src/vcs/gitlabVcsConnector.ts](../../../src/vcs/gitlabVcsConnector.ts) (HTTPS + REST).
 
 ### `GitLabMergeRequestReviewProvider` — [src/connectors/gitlabMergeRequestReviewProvider.ts](../../../src/connectors/gitlabMergeRequestReviewProvider.ts)
@@ -119,6 +121,7 @@ Methods used by the orchestrator:
 - Reviewer-side `ReviewProvider` (`kind = "gitlab"`) that lets VE act as a reviewer on GitLab MRs, mirroring the Gerrit/GitHub providers.
 - Built via the `gitlab` descriptor's `createReviewer`; resolves base URL, OAuth/PAT token, and project id (with the VE-project repo binding as the source of truth and `config.projectId` as a legacy fallback).
 - `changeId` accepts `project#iid` or a legacy bare `iid` (which falls back to the bound project).
+- `isReviewer()` resolves `/user` and compares MR reviewers; `ensureReviewerAssignment()` updates `reviewer_ids` as a union, preserving all existing reviewers.
 - `getChangeDetails` / `getChangeDiff` read the MR and its `/changes`; `postReviewComments` / `postReviewWithComments` / `vote` all funnel through one `submitReview` that posts inline `/discussions` (using the MR `diff_refs` for line positioning), folds out-of-diff or overflow findings into a summary `/notes`, and approves/unapproves best-effort via `/approve` / `/unapprove`.
 - Inline lines are validated against the new-file line numbers parsed from each hunk; comments that don't land on an added line are folded into the summary.
 
@@ -135,6 +138,7 @@ Methods used by the orchestrator:
 ### `GitHubReviewProvider` — [src/connectors/githubReviewProvider.ts](../../../src/connectors/githubReviewProvider.ts)
 
 - Reviewer-side `ReviewProvider` (`kind = "github"`) that lets VE act as a reviewer on GitHub Pull Requests, mirroring the Gerrit/GitLab providers.
+- `isReviewer()` reads `requested_reviewers`; `ensureReviewerAssignment()` uses `POST /requested_reviewers` with the configured login or `/user` identity. GitHub removes a requested reviewer after that reviewer submits, so automatic mode re-requests VE on a later head revision.
 - `getChangeDetails` / `getChangeDiff` read the PR and its file list (`/pulls/:number/files`, unified `patch` per file); `postReviewComments` / `postReviewWithComments` / `vote` submit through the PR Reviews API, mapping normalized `-1 | 0 | 1` decisions to `REQUEST_CHANGES` / `COMMENT` / `APPROVE`.
 - `getInterPatchsetDiff` resolves the previously reviewed SHA from the PR commit list and uses GitHub's `compare/{from}...{head}` endpoint to provide the delta on re-review. SHA-derived patchset identifiers are compared for equality, not chronological ordering.
 - Discussion-thread replies use the GraphQL API (`reviewThreads { isResolved, comments }` for fetch, `addPullRequestReviewThreadReply` mutation for replies); the GraphQL endpoint is derived from the REST `apiBaseUrl`.

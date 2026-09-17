@@ -331,44 +331,6 @@ export class GerritStreamEventsManager implements IntegrationEventStreamManager 
   }
 
   /**
-   * Query Gerrit over SSH to check whether VE's SSH user (`sshUser`) is in
-   * the reviewer list for the given change. Used to gate `patchset-created`
-   * review triggers — if VE was never added as a reviewer, it should not
-   * review the change.
-   *
-   * Returns `false` on any error to be conservative (log a warning).
-   */
-  private async queryVeIsReviewer(handle: GerritStreamHandle, changeId: string): Promise<boolean> {
-    try {
-      const out = await this.sshQueryFn(
-        ["query", "--format", "JSON", "--all-reviewers", `change:${changeId}`],
-        handle.config
-      );
-      const rows = out
-        .split("\n")
-        .map((l) => l.trim())
-        .filter((l) => l.startsWith("{"))
-        .map((l) => JSON.parse(l) as unknown)
-        .filter((o) => (o as Record<string, unknown>)["type"] !== "stats");
-
-      if (rows.length === 0) return false;
-      const entry = rows[0] as Record<string, unknown>;
-      const allReviewers = entry["allReviewers"];
-      if (!Array.isArray(allReviewers)) return false;
-      return allReviewers.some((r) => {
-        if (typeof r !== "object" || r === null) return false;
-        return (r as Record<string, unknown>)["username"] === handle.config.sshUser;
-      });
-    } catch (err) {
-      log.warn(
-        { integrationId: handle.integration.id, changeId, err },
-        "Gerrit stream-events: SSH reviewer query failed — skipping review trigger"
-      );
-      return false;
-    }
-  }
-
-  /**
    * Backfill assigned open reviews on the integration's first successful
    * connect. `stream-events` is real-time only — changes where VE was added
    * as reviewer before the SSH stream connected would otherwise be missed.
@@ -428,7 +390,9 @@ export class GerritStreamEventsManager implements IntegrationEventStreamManager 
 
     for (const changeId of capped) {
       try {
-        await reviewTrigger.triggerReviewForChange(handle.integration.id, changeId);
+        await reviewTrigger.triggerReviewForChange(handle.integration.id, changeId, {
+          triggerCause: "backfill",
+        });
       } catch (err) {
         log.warn(
           { integrationId: handle.integration.id, changeId, err },
@@ -534,7 +498,10 @@ export class GerritStreamEventsManager implements IntegrationEventStreamManager 
             // Manual trigger: a human (re)added VE as a reviewer. Force a fresh
             // review even if VE already reviewed the current patchset — this is
             // how a reviewer intentionally relaunches VE's review.
-            await reviewTriggerOnAdded.triggerReviewForChange(handle.integration.id, changeId, { force: true });
+            await reviewTriggerOnAdded.triggerReviewForChange(handle.integration.id, changeId, {
+              force: true,
+              triggerCause: "reviewer-assigned",
+            });
           } else {
             log.debug(
               { integrationId: handle.integration.id, changeId, addedUsername, veUser: handle.config.sshUser },
@@ -555,15 +522,9 @@ export class GerritStreamEventsManager implements IntegrationEventStreamManager 
               "Gerrit stream-events: patchset-created skipped — trivial patchset kind"
             );
           } else {
-            const veIsReviewer = await this.queryVeIsReviewer(handle, changeId);
-            if (veIsReviewer) {
-              await reviewTriggerOnPatchset.triggerReviewForChange(handle.integration.id, changeId);
-            } else {
-              log.debug(
-                { integrationId: handle.integration.id, changeId, veUser: handle.config.sshUser },
-                "Gerrit stream-events: patchset-created skipped — VE is not a reviewer on this change"
-              );
-            }
+            await reviewTriggerOnPatchset.triggerReviewForChange(handle.integration.id, changeId, {
+              triggerCause: "revision",
+            });
           }
         }
         return;

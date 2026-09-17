@@ -217,6 +217,7 @@ export const githubDescriptor: ProviderDescriptor = {
       intake: ["polling", "webhook"],
     },
     code_review: {
+      assignmentModes: ["manual", "automatic"],
       intake: ["polling", "webhook"],
       createConnector: (config: unknown, _integration: Integration, context?: IntegrationBindingContext) => {
         const parsed = githubConfigSchema.parse(config);
@@ -244,6 +245,9 @@ export const githubDescriptor: ProviderDescriptor = {
           provider: new GitHubReviewProvider({
             apiBaseUrl: urls.apiBaseUrl,
             token,
+            ...(parsed.virtualEngineerUserLogin !== undefined
+              ? { virtualEngineerUserLogin: parsed.virtualEngineerUserLogin }
+              : {}),
           }),
           buildCloneTarget: (details): { cloneUrl: string; sshKeyPath: null; sshKnownHostsPath: null } => {
             const slash = details.project.indexOf("/");

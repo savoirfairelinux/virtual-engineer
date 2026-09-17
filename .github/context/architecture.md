@@ -32,7 +32,7 @@ ticket source integration
 review-system webhook / Gerrit stream-event / review-assignment poll
    → /webhooks/:integrationId/:event (or stream listener / PollingLoop.pollReviewProjects())
    → buildReviewTrigger()
-   → ReviewOrchestrator.startReviewTask()
+   → ReviewOrchestrator.startReviewTask() [per-project manual/automatic policy]
    → workspaceRunner.runReviewInDocker() (OpenShell sandbox, REVIEW_MODE=1)
    → Review provider posts comments / vote
    → REVIEW_WATCHING / REVIEW_DONE / REVIEW_FAILED
@@ -82,7 +82,7 @@ It builds `TaskContext`, launches agent cycles, persists agent output, manages r
 - `databaseMigrations.ts` — canonical tracked migration runner plus frozen pre-ledger adoption bridge
 - `migrate.ts` — explicit migration CLI entry; startup delegates to the same runner
 
-The former `project_ticket_source` / `project_review_integration` / `project_review_repos` tables were **dropped** and replaced by `project_integration_bindings` (one row per `(project_id, capability)` with `capability ∈ issue_tracking | code_review | source_control | agent_execution`; `config_json` shapes: issue_tracking = `{ ticketProjectKey }`, code_review = `{ repos }`). Push targets stay in the dedicated `project_push_targets` table.
+The former `project_ticket_source` / `project_review_integration` / `project_review_repos` tables were **dropped** and replaced by `project_integration_bindings` (one row per `(project_id, capability)` with `capability ∈ issue_tracking | code_review | source_control | agent_execution`; `config_json` shapes: issue_tracking = `{ ticketProjectKey }`, code_review = `{ repos, assignmentMode }`). `assignmentMode` is `manual` or `automatic`, with legacy/missing values normalized to `manual`; automatic mode assigns VE remotely on revision events and does not backfill open changes. Push targets stay in the dedicated `project_push_targets` table.
 
 See [state-machine.md](state-machine.md) and [database.md](database.md).
 

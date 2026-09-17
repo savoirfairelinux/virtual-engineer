@@ -167,6 +167,7 @@ export const gitlabDescriptor: ProviderDescriptor = {
       intake: ["polling", "webhook"],
     },
     code_review: {
+      assignmentModes: ["manual", "automatic"],
       createConnector: (config: unknown, _integration: Integration, context?: IntegrationBindingContext) => {
         const parsed = gitlabConfigSchema.parse(config);
         return new GitLabMergeRequestConnector({
@@ -202,7 +203,7 @@ export const gitlabDescriptor: ProviderDescriptor = {
           },
         };
       },
-      intake: ["webhook"],
+      intake: ["polling", "webhook"],
     },
     source_control: {
       createVcsConnector: (cfg: Record<string, unknown>, _integration: Integration, context, runtime) => {

@@ -1,7 +1,7 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { getLogger } from "../logger.js";
-import type { Integration, IntegrationStore, ProjectRecord } from "../interfaces.js";
+import type { Integration, IntegrationStore, ProjectRecord, ReviewTriggerCause } from "../interfaces.js";
 import type { PluginManager } from "../plugins/pluginManager.js";
 import { getHandlerForProviderEvent, getSupportedEventsForProvider, providerHasWebhookHandler } from "./handlers/index.js";
 
@@ -24,7 +24,11 @@ export interface WebhookCapableOrchestrator {
    * the index.ts wrapper that bridges to the active reviewTrigger holder. A
    * no-op when no review-capable integration is configured.
    */
-  triggerReviewForChange?(integrationId: string, changeId: string): Promise<void>;
+  triggerReviewForChange?(
+    integrationId: string,
+    changeId: string,
+    options?: { force?: boolean; triggerCause?: ReviewTriggerCause },
+  ): Promise<void>;
 }
 
 export interface ProjectLookupStore {
